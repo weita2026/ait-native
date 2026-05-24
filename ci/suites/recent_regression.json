@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "suite_id": "recent_regression",
+  "display_name": "Recent Regression",
+  "plane": "patchset",
+  "default_blocking": false,
+  "mode": "diagnostic",
+  "purpose": "Track the checked-in recent regression corpus seeded from the 2026-05-12 investigation.",
+  "runner": {
+    "kind": "corpus_seed",
+    "seed_glob": ".ait/generated/regression/recent_7d_regression_corpus_2026-05-12.*"
+  },
+  "artifacts": {
+    "log_path": ".ait/generated/ci/recent_regression.log"
+  }
+}

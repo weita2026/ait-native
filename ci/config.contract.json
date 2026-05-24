@@ -1,0 +1,79 @@
+{
+  "schema_version": 1,
+  "ci": {
+    "default_remote": "origin",
+    "informational_patchset_suites": [
+      "recent_regression",
+      "task_batch"
+    ],
+    "nightly_suites": [
+      "full_repo",
+      "postgres_preview",
+      "release_readiness"
+    ],
+    "release_suites": [
+      "release_artifact_smoke"
+    ],
+    "required_patchset_suites": [
+      "preflight",
+      "stable_smoke",
+      "package_smoke",
+      "tg1_required"
+    ],
+    "rollout": {
+      "phase": 0,
+      "phase0": {
+        "blocking_patchset_suites": [
+          "preflight",
+          "stable_smoke",
+          "package_smoke",
+          "tg1_required"
+        ],
+        "informational_patchset_suites": [
+          "recent_regression"
+        ],
+        "informational_repo_suites": [
+          "task_batch",
+          "full_repo",
+          "postgres_preview",
+          "release_readiness",
+          "release_artifact_smoke"
+        ]
+      },
+      "promotion_candidates": {
+        "phase1": [
+          "recent_regression",
+          "task_batch"
+        ],
+        "phase2": [
+          "full_repo"
+        ]
+      },
+      "release_evidence": {
+        "compliance_keys": [
+          "compliance_report",
+          "license_exception_review"
+        ],
+        "dependency_keys": [
+          "dependency_report",
+          "dependency_review"
+        ],
+        "required_before_distribution": false
+      }
+    },
+    "suite_manifest_dir": "ci/suites",
+    "target_line": "main",
+    "task_batch": {
+      "audit_first": true,
+      "blocking": false,
+      "count": 0,
+      "include_lineage_representatives": true,
+      "max_parallel": 4,
+      "remote": "origin",
+      "require_land_status": "succeeded",
+      "selector": "recent_remote_landed",
+      "target_line": "main",
+      "window_days": 7
+    }
+  }
+}

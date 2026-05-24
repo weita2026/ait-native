@@ -1,0 +1,10 @@
+AGPL/commercial module notice
+
+This package root (`src/ait_server/**`) is licensed as:
+
+  AGPL-3.0-only OR LicenseRef-AIT-Commercial
+
+Use `LICENSES/AGPL-3.0-only.txt` for the GNU Affero General Public License
+reference notice and canonical text URLs, and
+`LICENSES/LicenseRef-AIT-Commercial.txt` for the current commercial reference
+notice.

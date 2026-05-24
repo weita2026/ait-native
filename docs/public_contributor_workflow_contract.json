@@ -1,0 +1,54 @@
+{
+  "schema_version": 1,
+  "revision_date": "2026-05-24",
+  "audiences": [
+    "external_agent",
+    "external_operator",
+    "external_contributor"
+  ],
+  "guides": {
+    "overview": "README.md",
+    "contributing": "docs/CONTRIBUTING.md",
+    "local_development": "docs/LOCAL_DEVELOPMENT.md",
+    "quickstart_reference": "docs/ait_native_quickstart.md",
+    "runtime_reference": "docs/SELF_HOSTED_TEAM_DEPLOYMENT.md"
+  },
+  "workflow_contract": {
+    "author_markdown_first": true,
+    "markdown_sync_command": "ait plan sync <file-or-dir> --remote <name>",
+    "task_bootstrap_command": "ait task start",
+    "remote_land_command": "ait workflow land <change-id> --apply",
+    "complex_work_planning_commands": [
+      "ait plan graph <plan-id> --from-json <task-graph-json>",
+      "ait plan ready <plan-id> --from-json <task-graph-json>",
+      "ait plan schedule <plan-id> --from-json <task-graph-json>"
+    ]
+  },
+  "mode_boundaries": {
+    "local_only": {
+      "recommended_when": "The work should stay private and land locally without shared review, policy, or remote coordination.",
+      "mode": "solo_local",
+      "land_command": "ait workflow land-local <change-id>"
+    },
+    "solo_remote": {
+      "recommended_when": "The work needs shared Markdown publication, remote-backed task/change lineage, shared review, or remote land.",
+      "mode": "solo_remote",
+      "land_command": "ait workflow land <change-id> --apply"
+    },
+    "self_hosted_shared": {
+      "recommended_when": "The developer needs the shared control plane for team/server/web/worker workflows instead of the local-only trust layer.",
+      "reference": "docs/SELF_HOSTED_TEAM_DEPLOYMENT.md"
+    }
+  },
+  "development_expectations": {
+    "requires_python": ">=3.11",
+    "editable_install_examples": [
+      "python3 -m pip install -e .[test]",
+      "python3 -m pip install -e .[postgres,test]"
+    ],
+    "targeted_test_command": "python3 -m pytest tests/<target>.py -q",
+    "full_suite_reference": "python3 -m pytest -q",
+    "task_worktree_rule": "Code/runtime changes belong in a task-bound worktree; authored Markdown lineage is synced from repo root.",
+    "doc_update_rule": "When CLI/web/API/workflow behavior changes, update the nearest user-facing docs before treating the work as ready."
+  }
+}

@@ -1,0 +1,54 @@
+{
+  "schema_version": 1,
+  "gate_doc_path": "docs/WHITEPAPER_PATENT_GATE.md",
+  "doctrine_path": "docs/PUBLIC_DOCTRINE.md",
+  "whitepaper_draft_path": "docs/AIT_WHITEPAPER_DRAFT.md",
+  "current_publication_state": "draft_only_pending_patent_gate",
+  "repo_release_facing_draft_allowed": true,
+  "broader_public_whitepaper_release_allowed": false,
+  "broader_public_doctrine_repackaging_allowed": false,
+  "filing_order_review_required": true,
+  "claims_governance_review_required": true,
+  "explicit_approval_record_required": true,
+  "allowed_repo_draft_surfaces": [
+    "README.md",
+    "docs/PUBLIC_DOCTRINE.md",
+    "docs/AIT_WHITEPAPER_DRAFT.md",
+    "docs/WHITEPAPER_PATENT_GATE.md"
+  ],
+  "required_review_inputs": [
+    "docs/legal_plan.md",
+    "docs/legal/patent_license_policy.md",
+    "docs/PUBLIC_DOCTRINE.md",
+    "docs/AIT_WHITEPAPER_DRAFT.md",
+    "docs/PUBLIC_DEMO_DATA.md",
+    "docs/public_whitepaper_contract.json"
+  ],
+  "required_gate_decisions": [
+    "patent_sensitive_content_review",
+    "filing_order_decision",
+    "claims_governance_review",
+    "publication_scope_decision",
+    "redaction_or_deferral_decision_when_needed"
+  ],
+  "blocked_broader_outputs": [
+    "standalone_public_whitepaper_release",
+    "broader_public_doctrine_repackaging",
+    "marketing_or_press_excerpt_with_unreviewed_patent_sensitive_detail",
+    "claims_expansion_beyond_committed_public_evidence"
+  ],
+  "manual_clearance_fields": [
+    "approval_date",
+    "approver_role",
+    "publication_scope",
+    "filing_order_status",
+    "redaction_required",
+    "notes_ref"
+  ],
+  "claim_boundary_reminders": [
+    "no_generalized_token_savings_guarantee",
+    "no_product_wide_one_hour_success_promise",
+    "no_unreviewed_security_or_compliance_claim",
+    "no_new_package_or_license_promise"
+  ]
+}

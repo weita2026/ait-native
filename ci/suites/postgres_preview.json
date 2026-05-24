@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "suite_id": "postgres_preview",
+  "display_name": "Postgres Preview",
+  "plane": "nightly",
+  "default_blocking": false,
+  "mode": "diagnostic",
+  "purpose": "Preview PostgreSQL-backed runtime health outside the default patchset gate.",
+  "runner": {
+    "kind": "pytest",
+    "args": [
+      "tests/test_native_postgres_runtime.py",
+      "tests/test_postgres_cutover.py",
+      "-q"
+    ]
+  },
+  "artifacts": {
+    "junit_xml": ".ait/generated/ci/postgres_preview.junit.xml",
+    "log_path": ".ait/generated/ci/postgres_preview.log"
+  }
+}

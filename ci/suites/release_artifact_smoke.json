@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "suite_id": "release_artifact_smoke",
+  "display_name": "Release Artifact Smoke",
+  "plane": "release",
+  "default_blocking": false,
+  "mode": "gate",
+  "purpose": "Validate release build and install smoke through native `ait release` surfaces.",
+  "runner": {
+    "kind": "command_bundle",
+    "commands": [
+      "ait release candidate create",
+      "ait release check",
+      "ait release build"
+    ]
+  },
+  "release_gate_evidence": {
+    "required_before_distribution": false,
+    "dependency_keys": [
+      "dependency_report",
+      "dependency_review"
+    ],
+    "compliance_keys": [
+      "compliance_report",
+      "license_exception_review"
+    ]
+  },
+  "artifacts": {
+    "log_path": ".ait/generated/ci/release_artifact_smoke.log"
+  }
+}

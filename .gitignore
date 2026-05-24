@@ -1,0 +1,31 @@
+# Local ait runtime/state; do not publish repo-local workflow data.
+.ait/
+.ait-server/
+
+# Local environment and developer machine noise.
+.DS_Store
+deploy/dev/.env
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+
+# Build/test artifacts.
+build/
+dist/
+htmlcov/
+.coverage*
+.mypy_cache/
+.nox/
+.pytest_cache/
+.ruff_cache/
+.tox/
+node_modules/
+*.egg-info/
+
+# Benchmark fixture repository with its own nested .git/.ait state.
+docs/benchmarks/runs/static_web_hardening_ait_linear_normalized_measured_20260508/fixtures/ait_linear/
+
+deploy/site/.env
+deploy/site/macos-nginx/site.env
+deploy/site/nginx-rendered/

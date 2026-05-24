@@ -1,0 +1,82 @@
+{
+  "schema_version": 1,
+  "suite_id": "safe_parallel_xdist_preview",
+  "display_name": "Safe Parallel xdist Preview",
+  "plane": "post_land_regression",
+  "default_blocking": false,
+  "mode": "diagnostic",
+  "purpose": "Run an explicit low-coupling pytest whitelist with 8 xdist workers while keeping known state-coupled workflow/runtime tests out of the parallel set.",
+  "runner": {
+    "kind": "pytest",
+    "args": [
+      "tests/cli/test_auth_remote_ref.py",
+      "tests/cli/test_benchmark_help_contracts.py",
+      "tests/cli/test_cli_bootstrap.py",
+      "tests/cli/test_config.py",
+      "tests/cli/test_extra_help_contracts.py",
+      "tests/cli/test_help_contracts.py",
+      "tests/cli/test_land_workflow.py",
+      "tests/cli/test_line_worktree.py",
+      "tests/cli/test_patchset_publish_contract.py",
+      "tests/cli/test_queue_repo_context.py",
+      "tests/cli/test_release_help_contracts.py",
+      "tests/cli/test_task_change.py",
+      "tests/test_authority_store.py",
+      "tests/test_ci_suite_contract.py",
+      "tests/test_plan_schema_contract.py",
+      "tests/test_planning_compiler.py",
+      "tests/test_snapshot_diff.py",
+      "tests/ait_web/test_compat_shim.py",
+      "tests/ait_web/test_import_boundaries.py",
+      "-q",
+      "-n",
+      "8",
+      "--dist",
+      "loadfile"
+    ]
+  },
+  "selection": {
+    "strategy": "explicit_file_whitelist",
+    "whitelist_files": [
+      "tests/cli/test_auth_remote_ref.py",
+      "tests/cli/test_benchmark_help_contracts.py",
+      "tests/cli/test_cli_bootstrap.py",
+      "tests/cli/test_config.py",
+      "tests/cli/test_extra_help_contracts.py",
+      "tests/cli/test_help_contracts.py",
+      "tests/cli/test_land_workflow.py",
+      "tests/cli/test_line_worktree.py",
+      "tests/cli/test_patchset_publish_contract.py",
+      "tests/cli/test_queue_repo_context.py",
+      "tests/cli/test_release_help_contracts.py",
+      "tests/cli/test_task_change.py",
+      "tests/test_authority_store.py",
+      "tests/test_ci_suite_contract.py",
+      "tests/test_plan_schema_contract.py",
+      "tests/test_planning_compiler.py",
+      "tests/test_snapshot_diff.py",
+      "tests/ait_web/test_compat_shim.py",
+      "tests/ait_web/test_import_boundaries.py"
+    ],
+    "excluded_high_coupling_files": [
+      "tests/test_native_worker_queue.py",
+      "tests/test_native_postgres_runtime.py",
+      "tests/test_native_pack_gc.py",
+      "tests/test_native_storage_split.py"
+    ],
+    "exclusion_signals": [
+      "repo-root chdir",
+      "shared runtime/server fixtures",
+      "process-global env mutation",
+      "generated-state coupling",
+      "fixed localhost port reuse"
+    ]
+  },
+  "artifacts": {
+    "junit_xml": ".ait/generated/ci/safe_parallel_xdist_preview.junit.xml",
+    "log_path": ".ait/generated/ci/safe_parallel_xdist_preview.log"
+  },
+  "references": [
+    "docs/sprints/ait_native_complete_ci_execution.md"
+  ]
+}

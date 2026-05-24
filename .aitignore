@@ -1,0 +1,11 @@
+# Mirror repo-local Git ignore rules that ait snapshot and status should honor.
+.ait/agent-runtime/*.env
+build/
+dist/
+htmlcov/
+.ruff_cache/
+.tox/
+.nox/
+node_modules/
+.coverage*
+*.egg-info/

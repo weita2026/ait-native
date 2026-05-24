@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "suite_id": "release_readiness",
+  "display_name": "Release Readiness",
+  "plane": "nightly",
+  "default_blocking": false,
+  "mode": "diagnostic",
+  "purpose": "Run the documented release-readiness regression slices without coupling to one patchset.",
+  "runner": {
+    "kind": "pytest",
+    "args": [
+      "tests/cli/test_land_workflow.py",
+      "tests/cli/test_task_change.py",
+      "tests/cli/test_patchset_publish_contract.py",
+      "-q"
+    ]
+  },
+  "artifacts": {
+    "junit_xml": ".ait/generated/ci/release_readiness.junit.xml",
+    "log_path": ".ait/generated/ci/release_readiness.log"
+  },
+  "references": [
+    "docs/ait_release_readiness.md"
+  ]
+}

@@ -1,0 +1,5 @@
+Apache-2.0 module notice
+
+This package root (`src/ait_tk/**`) is part of the Apache-2.0 local companion
+surface for `aitk`. See the repository root `LICENSE` for the full Apache
+License, Version 2.0 text and the current scope notice.

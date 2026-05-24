@@ -1,0 +1,105 @@
+{
+  "schema_version": 1,
+  "revision_date": "2026-05-18",
+  "guide_path": "docs/PUBLIC_DEMO_DATA.md",
+  "audiences": [
+    "external_agent",
+    "external_operator",
+    "external_contributor"
+  ],
+  "demo_surface": {
+    "mode": "repo_contained_public_demo_pack",
+    "requires_private_ait_state": false,
+    "separate_example_repo_promised": false
+  },
+  "workflow_shape": {
+    "input_kind": "authored_markdown",
+    "derived_object_kind": "task_graph_json",
+    "handoff_kind": "measured_report_bundle",
+    "policy_boundary": "review_attestation_policy_and_land_remain_explicit"
+  },
+  "read_order": [
+    "README.md",
+    "docs/LOCAL_QUICKSTART.md",
+    "docs/PUBLIC_DEMO_DATA.md",
+    "docs/sprints/m3_one_hour_sprint_compression_demo.md",
+    "docs/benchmarks/m3_one_hour_sprint_20_node_measured_20260423_report.md",
+    "docs/benchmarks/m3_one_hour_sprint_20_node_physical_fanout_20260423_report.md"
+  ],
+  "demo_bundles": [
+    {
+      "bundle_id": "one_hour_sprint_markdown_and_graph",
+      "purpose": "public Markdown input references plus derived graph shape",
+      "human_markdown_inputs": [
+        "docs/sprints/m3_one_hour_sprint_compression_demo.md",
+        "docs/sprints/m3_one_hour_sprint_20_node_measured_run.md"
+      ],
+      "artifact_paths": [
+        "docs/sprints/m3_one_hour_sprint_compression_demo.task_graph.json",
+        "docs/sprints/retired/m3_one_hour_sprint_20_node_measured_run.task_graph.retired.json"
+      ]
+    },
+    {
+      "bundle_id": "provider_measured_compact_dag",
+      "purpose": "compact single-packet measured proof point",
+      "artifact_paths": [
+        "docs/benchmarks/m3_one_hour_sprint_20_node_measured_20260423.json",
+        "docs/benchmarks/m3_one_hour_sprint_20_node_measured_20260423_status.json",
+        "docs/benchmarks/m3_one_hour_sprint_20_node_measured_20260423_outputs.json",
+        "docs/benchmarks/m3_one_hour_sprint_20_node_measured_20260423_report.json"
+      ],
+      "claim_ready": false,
+      "headline_metrics": {
+        "measured_ready_runs": 3,
+        "git_linear_total_tokens": 67249,
+        "ait_linear_total_tokens": 22981,
+        "ait_dag_total_tokens": 21681,
+        "ait_dag_savings_percent_vs_git_linear": 67.76
+      },
+      "human_summary_paths": [
+        "docs/benchmarks/m3_one_hour_sprint_20_node_measured_20260423_report.md"
+      ]
+    },
+    {
+      "bundle_id": "physical_fanout_followup",
+      "purpose": "per-node physical fan-out caveat bundle",
+      "artifact_paths": [
+        "docs/benchmarks/m3_one_hour_sprint_20_node_physical_fanout_20260423.json",
+        "docs/benchmarks/m3_one_hour_sprint_20_node_physical_fanout_20260423_outputs.json",
+        "docs/benchmarks/m3_one_hour_sprint_20_node_physical_fanout_20260423_report.json",
+        "docs/benchmarks/m3_one_hour_sprint_20_node_physical_fanout_prompts"
+      ],
+      "claim_ready": false,
+      "headline_metrics": {
+        "passed_nodes": 20,
+        "total_nodes": 20,
+        "physical_fanout_total_tokens": 251979,
+        "physical_vs_single_packet_multiplier": 11.622
+      },
+      "human_summary_paths": [
+        "docs/benchmarks/m3_one_hour_sprint_20_node_physical_fanout_20260423_report.md"
+      ]
+    }
+  ],
+  "operator_success_checks": [
+    "compact_report_claim_ready_false",
+    "compact_report_measured_ready_runs_3_of_3",
+    "compact_report_ait_dag_savings_67_76_percent",
+    "physical_fanout_claim_ready_false",
+    "physical_fanout_multiplier_11_622x"
+  ],
+  "boundary_rules": [
+    "Do not treat the compact measured proof point as a product-level marketing claim.",
+    "Do not treat naive one-provider-session-per-node fan-out as the default token-saving execution model.",
+    "Do not require private .ait state or unpublished worktrees to understand the public demo pack.",
+    "Do not infer that a second standalone example repository is already promised by this slice."
+  ],
+  "related_guides": [
+    "README.md",
+    "docs/LOCAL_QUICKSTART.md",
+    "docs/SELF_HOSTED_TEAM_DEPLOYMENT.md",
+    "docs/COMPATIBILITY_MATRIX.md",
+    "docs/PACKAGE_TARGETS.md",
+    "docs/benchmarks/README.md"
+  ]
+}

@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "suite_id": "package_smoke",
+  "display_name": "Package Smoke",
+  "plane": "patchset",
+  "default_blocking": true,
+  "mode": "gate",
+  "purpose": "Validate the packaged source tree still exposes the CLI boot surface for a candidate patchset.",
+  "runner": {
+    "kind": "command_bundle",
+    "commands": [
+      "PYTHONPATH=src python3 - <<'PY'\nfrom ait.cli.app import app\nfrom typer.main import get_command\nget_command(app).main(args=['--help'], prog_name='ait', standalone_mode=False)\nPY",
+      "PYTHONPATH=src python3 scripts/check_plan_cli_contracts.py"
+    ]
+  },
+  "artifacts": {
+    "log_path": ".ait/generated/ci/package_smoke.log"
+  }
+}

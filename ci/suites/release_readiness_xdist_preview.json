@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "suite_id": "release_readiness_xdist_preview",
+  "display_name": "Release Readiness xdist Preview",
+  "plane": "post_land_regression",
+  "default_blocking": false,
+  "mode": "diagnostic",
+  "purpose": "Run the release-readiness regression slice with the first two-process pytest xdist preview contract.",
+  "runner": {
+    "kind": "pytest",
+    "args": [
+      "tests/cli/test_land_workflow.py",
+      "tests/cli/test_task_change.py",
+      "tests/cli/test_patchset_publish_contract.py",
+      "-q",
+      "-n",
+      "2",
+      "--dist",
+      "loadfile"
+    ]
+  },
+  "artifacts": {
+    "junit_xml": ".ait/generated/ci/release_readiness_xdist_preview.junit.xml",
+    "log_path": ".ait/generated/ci/release_readiness_xdist_preview.log"
+  },
+  "references": [
+    "docs/ait_release_readiness.md",
+    "docs/sprints/ait_native_complete_ci_execution.md"
+  ]
+}

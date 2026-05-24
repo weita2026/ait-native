@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "suite_id": "task_batch",
+  "display_name": "Task Batch",
+  "plane": "post_land_regression",
+  "default_blocking": false,
+  "mode": "diagnostic",
+  "purpose": "Run configurable recent remote-land task regression coverage.",
+  "runner": {
+    "kind": "task_batch",
+    "supported_selectors": [
+      "recent_remote_landed",
+      "recent_remote_landed_high_risk",
+      "explicit_task_ids",
+      "curated_corpus"
+    ],
+    "audit_first": true,
+    "behavior_suite_ids": [
+      "full_repo"
+    ],
+    "curated_corpus_dir": "ci/task_corpora"
+  },
+  "artifacts": {
+    "summary_json": ".ait/generated/ci/task_batch_summary.json",
+    "summary_markdown": ".ait/generated/ci/task_batch_summary.md"
+  },
+  "defaults": {
+    "selector": "recent_remote_landed",
+    "count": 0,
+    "window_days": 7,
+    "remote": "origin",
+    "target_line": "main",
+    "require_land_status": "succeeded",
+    "blocking": false,
+    "max_parallel": 4,
+    "audit_first": true,
+    "include_lineage_representatives": true
+  }
+}

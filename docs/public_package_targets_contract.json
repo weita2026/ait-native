@@ -1,0 +1,76 @@
+{
+  "schema_version": 1,
+  "guide_path": "docs/PACKAGE_TARGETS.md",
+  "distribution": {
+    "name": "ait-native",
+    "version": "0.10.3",
+    "artifact_model": "single_distribution_multi_command"
+  },
+  "target_rules": {
+    "monorepo_boundary_rule": "One combined distribution or checkout does not mean every command is the same package target, install promise, or public license surface.",
+    "separate_public_wheels_promised": false,
+    "worker_bundling_rule": "ait-worker remains bundled with ait-server for the current release-facing posture."
+  },
+  "package_targets": [
+    {
+      "target_id": "ait",
+      "current_distribution": "ait-native",
+      "profile": "local_only_first_loop",
+      "public_boundary": "Apache-2.0",
+      "extraction_state": "defined_public_target",
+      "standalone_public_wheel_promised": false
+    },
+    {
+      "target_id": "aitk",
+      "current_distribution": "ait-native",
+      "profile": "local_only_first_loop",
+      "public_boundary": "Apache-2.0",
+      "extraction_state": "defined_public_target",
+      "standalone_public_wheel_promised": false
+    },
+    {
+      "target_id": "ait-agent",
+      "current_distribution": "ait-native",
+      "profile": "local_only_first_loop",
+      "public_boundary": "Apache-2.0",
+      "extraction_state": "defined_public_target",
+      "standalone_public_wheel_promised": false
+    },
+    {
+      "target_id": "ait-server",
+      "current_distribution": "ait-native[postgres]",
+      "profile": "self_hosted_shared_control_plane_core",
+      "public_boundary": "AGPL-3.0-only OR LicenseRef-AIT-Commercial",
+      "extraction_state": "defined_target_not_separate_wheel_promise",
+      "standalone_public_wheel_promised": false
+    },
+    {
+      "target_id": "ait-worker",
+      "current_distribution": "ait-native[postgres]",
+      "profile": "self_hosted_shared_control_plane_core",
+      "public_boundary": "AGPL-3.0-only OR LicenseRef-AIT-Commercial",
+      "extraction_state": "bundled_with_server",
+      "bundled_with": "ait-server",
+      "standalone_public_wheel_promised": false
+    }
+  ],
+  "operator_profiles": [
+    {
+      "profile_id": "local_only_first_loop",
+      "required_targets": ["ait"],
+      "optional_targets": ["aitk", "ait-agent"]
+    },
+    {
+      "profile_id": "self_hosted_shared_control_plane_core",
+      "required_targets": ["ait-server", "ait-worker"],
+      "optional_targets": ["ait"]
+    }
+  ],
+  "related_docs": [
+    "docs/LOCAL_QUICKSTART.md",
+    "docs/SELF_HOSTED_TEAM_DEPLOYMENT.md",
+    "docs/COMPATIBILITY_MATRIX.md",
+    "docs/legal/public_package_surface_map.json",
+    "docs/legal/public_release_license_summary.md"
+  ]
+}

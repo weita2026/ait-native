@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "suite_id": "full_repo",
+  "display_name": "Full Repo",
+  "plane": "nightly",
+  "default_blocking": false,
+  "mode": "diagnostic",
+  "purpose": "Run full repository pytest as a complete-failure-set diagnostic surface.",
+  "runner": {
+    "kind": "pytest",
+    "args": [
+      "-q"
+    ],
+    "allow_fail_fast": false,
+    "collect_complete_failure_set": true
+  },
+  "triage": {
+    "ownership_rules": [
+      {
+        "test_path_prefix": "tests/cli/",
+        "owner": "workflow-core"
+      },
+      {
+        "test_path_prefix": "tests/ait_web/",
+        "owner": "web"
+      },
+      {
+        "test_glob": "tests/test_native_*bot.py",
+        "owner": "transport-runtime"
+      }
+    ],
+    "suspect_task_selector": "recent_remote_landed"
+  },
+  "artifacts": {
+    "junit_xml": ".ait/generated/ci/full_repo.junit.xml",
+    "log_path": ".ait/generated/ci/full_repo.log"
+  }
+}

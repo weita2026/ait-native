@@ -1,0 +1,67 @@
+{
+  "schema_version": 1,
+  "guide_path": "docs/COMPATIBILITY_MATRIX.md",
+  "distribution": {
+    "name": "ait-native",
+    "version": "0.10.3"
+  },
+  "audiences": [
+    "external_agent",
+    "external_operator",
+    "self_hosted_team_operator"
+  ],
+  "support_policy": {
+    "shared_surfaces": "same_release_family_only",
+    "shared_skew": "no_long_lived_skew_supported",
+    "local_path": "no_shared_runtime_required"
+  },
+  "profiles": [
+    {
+      "profile_id": "local_only_first_loop",
+      "required_surfaces": ["ait"],
+      "optional_surfaces": ["ait-agent"],
+      "postgres_required": false,
+      "supported": true
+    },
+    {
+      "profile_id": "self_hosted_shared_control_plane_core",
+      "required_surfaces": ["postgres", "ait-server", "ait-worker"],
+      "optional_surfaces": ["ait"],
+      "postgres_required": true,
+      "supported": true
+    }
+  ],
+  "unsupported_mixes": [
+    {
+      "mix_id": "shared_sqlite_deployment",
+      "reason": "Deployed shared server/worker stacks must use PostgreSQL, not SQLite."
+    },
+    {
+      "mix_id": "worker_without_matching_server",
+      "reason": "Long-lived shared ait-worker service is not supported without the matching ait-server control plane."
+    },
+    {
+      "mix_id": "mixed_release_family_shared_stack",
+      "reason": "Long-lived mixed-version server/worker/developer CLI stacks are not a supported target yet."
+    }
+  ],
+  "upgrade_order": [
+    "backup_postgres_and_runtime_root",
+    "upgrade_ait_server",
+    "upgrade_ait_worker",
+    "run_readiness_and_job_diagnostics",
+    "reconnect_developer_cli_and_external_runtime_workers"
+  ],
+  "required_checks_after_upgrade": [
+    "ait repo readiness --json",
+    "ait repo jobs --diagnostics --json",
+    "ait doctor postgres --connect --json"
+  ],
+  "related_docs": [
+    "docs/LOCAL_QUICKSTART.md",
+    "docs/SELF_HOSTED_TEAM_DEPLOYMENT.md",
+    "docs/legal/public_release_license_summary.md",
+    "docs/legal/public_package_surface_map.json",
+    "docs/legal/component_license_matrix.md"
+  ]
+}

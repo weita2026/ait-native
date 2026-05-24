@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "suite_id": "task_linked_case_matrix",
+  "display_name": "Task Linked Case Matrix",
+  "plane": "post_land_regression",
+  "default_blocking": false,
+  "mode": "diagnostic",
+  "purpose": "Run each task's linked pytest node inventory from PostgreSQL task_test_case_links as a per-task CI matrix.",
+  "runner": {
+    "kind": "command_bundle",
+    "commands": [
+      "PYTHONPATH=src python3 scripts/task_linked_case_matrix.py --output .ait/generated/ci/task_linked_case_matrix.json --markdown .ait/generated/ci/task_linked_case_matrix.md"
+    ]
+  },
+  "artifacts": {
+    "summary_json": ".ait/generated/ci/task_linked_case_matrix.json",
+    "summary_markdown": ".ait/generated/ci/task_linked_case_matrix.md",
+    "log_path": ".ait/generated/ci/task_linked_case_matrix.log"
+  }
+}

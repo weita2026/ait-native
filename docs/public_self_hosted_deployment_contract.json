@@ -1,0 +1,76 @@
+{
+  "schema_version": 1,
+  "revision_date": "2026-05-24",
+  "guide_path": "docs/SELF_HOSTED_TEAM_DEPLOYMENT.md",
+  "audiences": [
+    "external_operator",
+    "self_hosted_team_operator",
+    "external_agent"
+  ],
+  "deployment_mode": "self_hosted_team",
+  "topology": {
+    "required_services": [
+      "postgres",
+      "ait-server",
+      "ait-worker"
+    ],
+    "optional_services": [
+      "ait-agent"
+    ]
+  },
+  "licensing": {
+    "control_plane": "AGPL-3.0-only OR LicenseRef-AIT-Commercial",
+    "local_trust_layer": "Apache-2.0 for ait and ait-agent"
+  },
+  "bootstrap_steps": [
+    {
+      "id": "operator_repo",
+      "command": "cd ../ait_docker && cp .env.example .env"
+    },
+    {
+      "id": "compose_config",
+      "command": "cd ../ait_docker && ./ait-docker.sh stack config"
+    },
+    {
+      "id": "core_up",
+      "commands": [
+        "cd ../ait_docker && ./ait-docker.sh stack up postgres",
+        "cd ../ait_docker && ./ait-docker.sh stack up ait-server",
+        "cd ../ait_docker && ./ait-docker.sh stack up ait-worker"
+      ]
+    }
+  ],
+  "boot_order": [
+    "postgres",
+    "ait-server",
+    "ait-worker",
+    "external runtime workers (optional)"
+  ],
+  "readiness_commands": [
+    "curl -fsS https://<ait-server-host>/healthz",
+    "cd ../ait_docker && ./ait-docker.sh stack exec ait-server ait doctor postgres --connect --json",
+    "cd ../ait_docker && ./ait-docker.sh stack exec ait-server ait repo readiness --json",
+    "cd ../ait_docker && ./ait-docker.sh stack exec ait-server ait repo jobs --diagnostics --json"
+  ],
+  "backup_and_recovery": {
+    "must_backup": [
+      "postgres content/control schemas",
+      "server runtime root"
+    ],
+    "daily_helper": "python3 scripts/runtime_backup.py --runtime-root \"$AIT_NATIVE_SERVER_DATA\" --output-dir /srv/ait-backups --keep 8",
+    "related_docs": [
+      "docs/server_backup_restore_dr.md",
+      "docs/server_disaster_recovery_checklist.md"
+    ]
+  },
+  "decision_boundary": [
+    {
+      "when": "single developer and first md-to-land loop",
+      "guide": "docs/LOCAL_QUICKSTART.md"
+    },
+    {
+      "when": "shared review, policy, or worker-backed execution is required",
+      "guide": "docs/SELF_HOSTED_TEAM_DEPLOYMENT.md"
+    }
+  ]
+}

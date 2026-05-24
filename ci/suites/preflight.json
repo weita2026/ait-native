@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "suite_id": "preflight",
+  "display_name": "Preflight",
+  "plane": "patchset",
+  "default_blocking": true,
+  "mode": "gate",
+  "purpose": "Validate bootstrap health before broader patchset execution.",
+  "runner": {
+    "kind": "command_bundle",
+    "commands": [
+      "python3 -m pytest --collect-only -q",
+      "python3 scripts/check_markdown_links.py"
+    ]
+  },
+  "artifacts": {
+    "log_path": ".ait/generated/ci/preflight.log"
+  }
+}

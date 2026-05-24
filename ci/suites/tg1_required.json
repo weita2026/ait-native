@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "suite_id": "tg1_required",
+  "display_name": "TG-1 Required",
+  "plane": "patchset",
+  "default_blocking": true,
+  "mode": "gate",
+  "purpose": "Resolve TG-1 membership from the PostgreSQL catalog via checked-in SQL and run the sibling ait_test live pytest membership as a blocking patchset gate.",
+  "runner": {
+    "kind": "command_bundle",
+    "commands": [
+      "PYTHONPATH=src python3 scripts/check_tg1_required_cases.py --repo-name ait_test --pytest-workers 6 --pytest-dist loadfile --output .ait/generated/ci/tg1_required.json --markdown .ait/generated/ci/tg1_required.md --junit-xml .ait/generated/ci/tg1_required.junit.xml"
+    ]
+  },
+  "artifacts": {
+    "summary_json": ".ait/generated/ci/tg1_required.json",
+    "summary_markdown": ".ait/generated/ci/tg1_required.md",
+    "junit_xml": ".ait/generated/ci/tg1_required.junit.xml",
+    "log_path": ".ait/generated/ci/tg1_required.log"
+  }
+}

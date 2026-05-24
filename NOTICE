@@ -1,0 +1,18 @@
+ait
+Copyright (c) 2026 Weita and contributors.
+
+`ait-native` is the public umbrella brand and official website brand for the
+`ait` product family. The official website domain is
+`https://ait-native.dev`.
+
+This repository currently uses a provisional component-specific licensing posture.
+Use the repository LICENSE file together with docs/legal/component_license_matrix.md
+and docs/legal_plan.md to determine the intended license boundary for each
+component, artifact, and release surface.
+
+Use `TRADEMARK_POLICY.md` for trademark, wordmark, logo, and official-domain
+rules. Source-code and content licenses do not by themselves grant trademark
+rights in `ait-native`, `ait`, related logos, or confusingly similar domains.
+
+This NOTICE file is included to support release-candidate packaging and may be
+refined before any broader public release.

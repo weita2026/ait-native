@@ -1,0 +1,128 @@
+{
+  "schema_version": 1,
+  "revision_date": "2026-05-25",
+  "audience": [
+    "external_agents",
+    "external_operators",
+    "external_contributors"
+  ],
+  "public_umbrella_brand": "ait-native",
+  "official_website_domain": "https://ait-native.dev",
+  "summary": "Current release-facing package, command, and source-root map for the ait product family.",
+  "monorepo_boundary_rule": "One repository checkout or build can expose multiple console scripts without collapsing them into one uniform public license grant.",
+  "pyproject_console_scripts": [
+    "ait",
+    "ait-server",
+    "ait-worker",
+    "ait-agent",
+    "aitk"
+  ],
+  "surfaces": [
+    {
+      "surface_id": "ait",
+      "product_family": "ait Local",
+      "console_scripts": [
+        "ait"
+      ],
+      "source_roots": [
+        "src/ait/**"
+      ],
+      "install_surface": "local_cli_and_local_repo_workflow",
+      "release_posture": "Apache-2.0",
+      "boundary_notes": [
+        "Primary local trust-layer CLI.",
+        "Does not imply shared control-plane or web rights."
+      ]
+    },
+    {
+      "surface_id": "aitk",
+      "product_family": "ait Local companion",
+      "console_scripts": [
+        "aitk"
+      ],
+      "source_roots": [
+        "src/ait_tk/**",
+        "src/ait/aitk_*"
+      ],
+      "install_surface": "bundled_local_history_browser_companion",
+      "release_posture": "Apache-2.0",
+      "boundary_notes": [
+        "Local read-only Tcl/Tk history browser companion.",
+        "Not a shared control-plane or buyer-facing web surface."
+      ]
+    },
+    {
+      "surface_id": "ait-agent",
+      "product_family": "ait-agent",
+      "console_scripts": [
+        "ait-agent"
+      ],
+      "source_roots": [
+        "src/ait_agent/**"
+      ],
+      "install_surface": "baseline_transport_runtime",
+      "release_posture": "Apache-2.0",
+      "boundary_notes": [
+        "Baseline transport/runtime layer.",
+        "Durable workflow authority remains outside this surface."
+      ]
+    },
+    {
+      "surface_id": "ait-server",
+      "product_family": "ait Server",
+      "console_scripts": [
+        "ait-server"
+      ],
+      "source_roots": [
+        "src/ait_server/**"
+      ],
+      "install_surface": "self_hosted_shared_control_plane",
+      "release_posture": "AGPL-3.0-only OR LicenseRef-AIT-Commercial",
+      "boundary_notes": [
+        "Shared workflow authority for self-hosted/community use.",
+        "Commercial exceptions require separate written terms."
+      ]
+    },
+    {
+      "surface_id": "ait-worker",
+      "product_family": "ait Worker",
+      "console_scripts": [
+        "ait-worker"
+      ],
+      "source_roots": [
+        "src/ait_server/**"
+      ],
+      "install_surface": "self_hosted_shared_control_plane_worker",
+      "release_posture": "AGPL-3.0-only OR LicenseRef-AIT-Commercial",
+      "boundary_notes": [
+        "Operationally tied to the shared control plane.",
+        "Do not treat it as part of the permissive local trust layer."
+      ]
+    },
+    {
+      "surface_id": "ait-native-site",
+      "product_family": "ait-native official website",
+      "console_scripts": [],
+      "source_roots": [
+        "site/src/**",
+        "site/public/**",
+        "site/**/index.html",
+        "site/index.html"
+      ],
+      "install_surface": "official_public_website",
+      "release_posture": "component_specific_release_facing_surface",
+      "boundary_notes": [
+        "Official website surface served at https://ait-native.dev.",
+        "Do not assume the public-site scaffold inherits the permissive local CLI grant by default.",
+        "Official brand assets and confusingly similar domains remain governed by trademark policy."
+      ]
+    }
+  ],
+  "related_documents": [
+    "LICENSE",
+    "LICENSES/LicenseRef-AIT-Commercial.txt",
+    "docs/TRADEMARK_POLICY.md",
+    "docs/legal/public_release_license_summary.md",
+    "docs/legal/component_license_matrix.md"
+  ]
+}

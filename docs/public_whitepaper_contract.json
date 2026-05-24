@@ -1,0 +1,53 @@
+{
+  "schema_version": 1,
+  "doctrine_path": "docs/PUBLIC_DOCTRINE.md",
+  "whitepaper_draft_path": "docs/AIT_WHITEPAPER_DRAFT.md",
+  "publication_state": "draft_only_pending_patent_gate",
+  "requires_private_execution_plan_context": false,
+  "patent_gate_ref": "engineering/release/whitepaper-patent-gate",
+  "audiences": [
+    "external_agent",
+    "external_operator",
+    "external_contributor",
+    "self_hosted_team_operator"
+  ],
+  "required_source_docs": [
+    "README.md",
+    "docs/CONTRIBUTING.md",
+    "docs/LOCAL_DEVELOPMENT.md",
+    "docs/LOCAL_QUICKSTART.md",
+    "docs/SELF_HOSTED_TEAM_DEPLOYMENT.md",
+    "docs/COMPATIBILITY_MATRIX.md",
+    "docs/PACKAGE_TARGETS.md",
+    "docs/PUBLIC_DEMO_DATA.md",
+    "docs/plan.md",
+    "docs/product_plan.md",
+    "docs/engineering_plan.md",
+    "docs/legal_plan.md",
+    "docs/ait.md",
+    "docs/ait_solo_remote.md"
+  ],
+  "required_claims": [
+    "constitutional_legal_command_layer_split",
+    "agent_first_md_task_land_contract",
+    "local_only_vs_self_hosted_boundary",
+    "package_and_license_boundary_awareness",
+    "public_demo_data_as_bounded_proof_point"
+  ],
+  "excluded_claims": [
+    "final_publication_clearance",
+    "patent_sensitive_scheduler_detail",
+    "new_package_or_license_promise",
+    "generalized_token_savings_claim"
+  ],
+  "recommended_read_order": [
+    "README.md",
+    "docs/PUBLIC_DOCTRINE.md",
+    "docs/LOCAL_QUICKSTART.md",
+    "docs/SELF_HOSTED_TEAM_DEPLOYMENT.md",
+    "docs/COMPATIBILITY_MATRIX.md",
+    "docs/PACKAGE_TARGETS.md",
+    "docs/PUBLIC_DEMO_DATA.md",
+    "docs/AIT_WHITEPAPER_DRAFT.md"
+  ]
+}

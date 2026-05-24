@@ -1,0 +1,81 @@
+{
+  "schema_version": 1,
+  "revision_date": "2026-05-24",
+  "guide_path": "docs/LOCAL_QUICKSTART.md",
+  "audiences": [
+    "external_agent",
+    "external_operator"
+  ],
+  "mode": "local_only",
+  "prerequisites": {
+    "python": ">=3.11",
+    "pip": true,
+    "pytest": true
+  },
+  "install_commands": [
+    "python3 -m venv .venv",
+    ". .venv/bin/activate",
+    "python3 -m pip install --upgrade pip",
+    "python3 -m pip install -e .[test]"
+  ],
+  "sanity_commands": [
+    "ait --help",
+    "ait status --json"
+  ],
+  "workflow_steps": [
+    {
+      "id": "shape_markdown",
+      "instruction": "Ask the agent to shape the work into the narrowest honest Markdown artifact before implementation."
+    },
+    {
+      "id": "plan_sync",
+      "command": "ait plan sync <file-or-dir>",
+      "scope": "local_markdown_lineage"
+    },
+    {
+      "id": "task_start",
+      "command": "ait task start --local --title \"<title>\" --intent \"<intent>\"",
+      "scope": "local_task_change_bootstrap"
+    },
+    {
+      "id": "verify",
+      "command_examples": [
+        "python3 -m pytest tests/<target>.py -q",
+        "python3 -m pytest -q"
+      ]
+    },
+    {
+      "id": "land_local",
+      "command": "ait workflow land-local <change-id>",
+      "scope": "local_land"
+    }
+  ],
+  "success_criteria": [
+    "task start prints a bound worktree cd command",
+    "the local-only loop runs without requiring server, web, worker, or PostgreSQL services",
+    "land-local reports a landed result on the target line",
+    "the final workspace returns to clean status"
+  ],
+  "troubleshooting": [
+    {
+      "issue": "forgot_local_flag",
+      "symptom": "task start follows the repository's remote-backed default",
+      "fix": "restart the slice with ait task start --local ... when you want a local-only loop"
+    },
+    {
+      "issue": "worked_in_repo_root",
+      "symptom": "root guard warnings appear after task start",
+      "fix": "switch into the bound worktree using the printed cd command"
+    },
+    {
+      "issue": "skipped_markdown_sync",
+      "symptom": "task intent and implementation drift because Markdown lineage was never synced",
+      "fix": "shape the work in Markdown first and run ait plan sync <file-or-dir> before implementation"
+    },
+    {
+      "issue": "expected_shared_runtime",
+      "symptom": "developer starts trying to bootstrap server/web/PostgreSQL for the first local loop",
+      "fix": "stay on the local trust-layer path; use runtime/deployment docs only when the task really needs shared surfaces"
+    }
+  ]
+}

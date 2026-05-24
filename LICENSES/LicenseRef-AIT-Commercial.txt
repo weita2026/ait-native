@@ -1,0 +1,25 @@
+LicenseRef-AIT-Commercial
+
+This identifier names the non-public commercial license surface used by
+release-facing `ait` license documents for components that are not granted
+under the repository root `LICENSE`.
+
+Scope of this reference:
+
+- commercial self-hosted rights for components that are otherwise marked
+  `AGPL-3.0-only OR LicenseRef-AIT-Commercial`
+- commercial-only product surfaces such as `ait-web` and enterprise
+  extensions when release-facing docs mark them with this identifier
+- package targets, deployment bundles, or managed offers that require a
+  separate written commercial agreement
+
+This file is a command-layer reference text only.
+
+It is not a complete commercial agreement, customer subscription contract,
+hosted-service terms, patent license instrument, or enterprise order form.
+Those terms must be supplied through separate counsel-reviewed commercial
+documents before customer-facing use.
+
+Until a separate commercial agreement is executed, this identifier does not
+grant public open-source rights beyond the licenses explicitly stated
+elsewhere in the repository.

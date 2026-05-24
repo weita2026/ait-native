@@ -1,0 +1,10 @@
+Compatibility-surface module notice
+
+`src/ait_native/**` is a compatibility package and does not have one uniform
+license posture across every shim.
+
+Use `docs/legal/module_license_map.md` as the source of truth for the current
+submodule-by-submodule mapping:
+- local/trust-layer compatibility shims follow Apache-2.0
+- server/worker compatibility shims follow AGPL-3.0-only OR LicenseRef-AIT-Commercial
+- web compatibility shims follow LicenseRef-AIT-Commercial by default
