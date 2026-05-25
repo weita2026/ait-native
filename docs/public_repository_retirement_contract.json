@@ -1,0 +1,74 @@
+{
+  "schema_version": 1,
+  "revision_date": "2026-05-26",
+  "guide_path": "docs/SELF_HOSTED_TEAM_DEPLOYMENT.md",
+  "audiences": [
+    "external_operator",
+    "self_hosted_team_operator",
+    "external_agent"
+  ],
+  "scope": "shared_repository_retirement",
+  "selector_contract": {
+    "cli_command": "ait repo retire --remote <name> --json",
+    "api_route": "POST /v1/native/admin/repositories/{repo_name}:retire",
+    "repo_selector": "repo_name",
+    "destructive_guard_field": "expected_repo_id",
+    "caller_supplied_user_id": false,
+    "caller_supplied_export_path": false,
+    "require_verified_export_default": true
+  },
+  "server_requirements": {
+    "admin_auth_required": true,
+    "required_env": {
+      "AIT_SERVER_RETIRE_EXPORT_ROOT": {
+        "kind": "absolute_directory_path",
+        "must_exist": true,
+        "must_be_writable": true,
+        "must_be_outside_active_runtime_root": true
+      }
+    }
+  },
+  "workflow": [
+    "set_repository_lifecycle_to_retiring",
+    "freeze_new_mutating_activity",
+    "export_repo_scoped_bundle_to_server_owned_root",
+    "verify_manifest_and_checksums_before_purge",
+    "record_retirement_tombstone",
+    "purge_repo_scoped_control_and_storage_state"
+  ],
+  "preflight_blockers": [
+    "active_jobs",
+    "active_tasks",
+    "open_changes",
+    "active_sessions",
+    "active_planning_sessions",
+    "queued_or_running_land_requests",
+    "cross_repo_shared_pack_dependencies"
+  ],
+  "request_example": {
+    "expected_repo_id": "REPO-0123456789ABCDEF0123456789ABCDEF",
+    "require_verified_export": true
+  },
+  "success_response_shape": {
+    "repo_name": "ait",
+    "queued": false,
+    "result": {
+      "retirement_id": "RET-01ABCDEFGHJKLMNPQRSTUV",
+      "repo_name": "ait",
+      "repo_id": "REPO-0123456789ABCDEF0123456789ABCDEF",
+      "export_path": "/srv/ait-archives/ait/2026-05-26T07-10-00Z",
+      "manifest_path": "/srv/ait-archives/ait/2026-05-26T07-10-00Z/manifest.json",
+      "manifest_sha256": "<sha256>",
+      "verification": {
+        "ok": true
+      },
+      "purge": {
+        "ok": true
+      }
+    }
+  },
+  "failure_semantics": {
+    "before_purge": "If export or verification fails before purge, the repository lifecycle returns to active and operators can fix config or blockers before retrying the same retirement command.",
+    "after_purge_started": "If a later purge step fails, the retirement tombstone is kept with failure details instead of pretending the destructive path never started."
+  }
+}

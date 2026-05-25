@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import json
+import secrets
+import sqlite3
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -33,6 +36,7 @@ from .local_workflow_sessions import (
 )
 
 from .local_workflow_identity import (
+    LOCAL_IDENTITY_SOURCE_LEGACY,
     LOCAL_IDENTITY_SOURCE_SEQUENCE,
     _ensure_local_task_change_identity_schema,
     _normalize_change_identity_metadata,
@@ -242,6 +246,14 @@ create table if not exists workflow_snapshot_provenance (
 );
 """
 
+LOCAL_CONTROL_SCHEMA_VERSION = 1
+_LOCAL_CONTROL_INIT_MIGRATION_BACKUP_PREFIX = "control.db.before-local-control-init-migration"
+_LEGACY_WORKFLOW_CHANGE_CLOSE_COLUMNS = (
+    "closed_reason",
+    "superseded_by_change_id",
+    "closed_at",
+)
+
 
 def _ensure_schema(conn) -> None:
     conn.executescript(SCHEMA)
@@ -292,13 +304,42 @@ def _table_columns(conn, table_name: str) -> set[str]:
     return {row[1] for row in conn.execute(f"pragma table_info({table_name})")}
 
 
-def _drop_column_if_exists(conn, table_name: str, column_name: str) -> None:
+def _drop_column_if_exists(conn, table_name: str, column_name: str) -> bool:
     if column_name not in _table_columns(conn, table_name):
-        return
+        return False
     try:
         conn.execute(f"alter table {table_name} drop column {column_name}")
-    except Exception:
-        pass
+    except sqlite3.Error:
+        return False
+    return column_name not in _table_columns(conn, table_name)
+
+
+def _legacy_workflow_change_close_columns_present(conn) -> tuple[str, ...]:
+    columns = _table_columns(conn, "workflow_changes")
+    return tuple(column_name for column_name in _LEGACY_WORKFLOW_CHANGE_CLOSE_COLUMNS if column_name in columns)
+
+
+def _control_db_explicit_init_migration_needed(conn) -> bool:
+    return bool(_legacy_workflow_change_close_columns_present(conn))
+
+
+def _write_init_migration_backup(conn, ctx: RepoContext) -> Path:
+    backup_root = ctx.ait_dir / "repair_backups"
+    backup_root.mkdir(parents=True, exist_ok=True)
+    stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+    backup_path = backup_root / (
+        f"{_LOCAL_CONTROL_INIT_MIGRATION_BACKUP_PREFIX}.{stamp}.{secrets.token_hex(2)}.bak"
+    )
+    backup_conn = sqlite3.connect(backup_path)
+    try:
+        conn.backup(backup_conn)
+    finally:
+        backup_conn.close()
+    return backup_path
+
+
+def _set_local_control_schema_version(conn, version: int = LOCAL_CONTROL_SCHEMA_VERSION) -> None:
+    conn.execute(f"pragma user_version = {int(version)}")
 
 
 def _remove_historical_publication_identity_columns(conn) -> None:
@@ -313,6 +354,14 @@ def _remove_historical_publication_identity_columns(conn) -> None:
         ("workflow_changes", "historical_published_at"),
     ):
         _drop_column_if_exists(conn, table_name, column_name)
+
+
+def _remove_legacy_workflow_change_close_columns(conn) -> tuple[str, ...]:
+    removed: list[str] = []
+    for column_name in _LEGACY_WORKFLOW_CHANGE_CLOSE_COLUMNS:
+        if _drop_column_if_exists(conn, "workflow_changes", column_name):
+            removed.append(column_name)
+    return tuple(removed)
 
 
 def _migrate_workflow_plan_revisions(conn) -> None:
@@ -353,7 +402,13 @@ def _connect_control(ctx: RepoContext):
 
 
 def initialize(ctx: RepoContext, repo_name: str, default_line: str) -> None:
-    conn = _connect_control(ctx)
+    existing_db = ctx.control_db_path.exists() and ctx.control_db_path.stat().st_size > 0
+    conn = connect_sqlite(ctx.control_db_path)
+    if existing_db and _control_db_explicit_init_migration_needed(conn):
+        _write_init_migration_backup(conn, ctx)
+    _ensure_schema(conn)
+    _remove_legacy_workflow_change_close_columns(conn)
+    _set_local_control_schema_version(conn)
     meta = {
         "repo_name": repo_name,
         "default_line": default_line,

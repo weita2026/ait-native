@@ -22,6 +22,7 @@ from .repo_ops import (
     snapshot_existence,
     update_line,
 )
+from .repo_retire import retire_repository
 from .releases import (
     get_release,
     get_release_for_repo,

@@ -58,12 +58,6 @@ def _render_init_summary(data: dict[str, Any]) -> None:
     if bootstrap_guide.get("path"):
         lines.append(f"- bootstrap guide: {bootstrap_guide['path']}")
     lines.append(f"- policy profile: {data.get('policy_profile')}")
-    task_worktree = data.get("task_worktree") if isinstance(data.get("task_worktree"), dict) else {}
-    root_mode = task_worktree.get("root_mode") if isinstance(task_worktree.get("root_mode"), dict) else {}
-    lines.append(
-        "- task worktree root mode: "
-        f"{root_mode.get('value') or 'unknown'} ({root_mode.get('source') or 'unknown'})"
-    )
     lines.extend(["", "Bootstrap files"])
     for row in data.get("bootstrap_files") or []:
         if isinstance(row, dict):

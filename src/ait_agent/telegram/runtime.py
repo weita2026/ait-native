@@ -5,6 +5,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
 
+from ait_chat.runtime_config import DEFAULT_REPLY_CODEX_CHILD_REAP_TIMEOUT_SECONDS
+
 from ait_agent.runtime_bindings import (
     binding_surface_id,
     binding_transport,
@@ -23,7 +25,7 @@ DEFAULT_TELEGRAM_POLL_TIMEOUT_SECONDS = 45
 DEFAULT_TELEGRAM_OPENAI_TIMEOUT_SECONDS: float | None = None
 DEFAULT_TELEGRAM_CODEX_APP_SERVER_READY_TIMEOUT_SECONDS = 30.0
 DEFAULT_TELEGRAM_CODEX_TURN_TIMEOUT_SECONDS: float | None = None
-DEFAULT_TELEGRAM_CODEX_CHILD_REAP_TIMEOUT_SECONDS = 3.5
+DEFAULT_TELEGRAM_CODEX_CHILD_REAP_TIMEOUT_SECONDS = DEFAULT_REPLY_CODEX_CHILD_REAP_TIMEOUT_SECONDS
 PLACEHOLDER_OPENAI_API_KEYS = {
     "your-openai-api-key",
     "sk-your-openai-api-key",
@@ -129,6 +131,9 @@ def telegram_worker_seed_env_defaults() -> dict[str, str]:
         "AIT_TELEGRAM_CODEX_TURN_TIMEOUT_SECONDS": _format_env_seconds_value(
             DEFAULT_TELEGRAM_CODEX_TURN_TIMEOUT_SECONDS,
             none_token="inf",
+        ),
+        "AIT_CHAT_CODEX_CHILD_REAP_TIMEOUT_SECONDS": _format_env_seconds_value(
+            DEFAULT_TELEGRAM_CODEX_CHILD_REAP_TIMEOUT_SECONDS
         ),
         "AIT_TELEGRAM_CODEX_CHILD_REAP_TIMEOUT_SECONDS": _format_env_seconds_value(
             DEFAULT_TELEGRAM_CODEX_CHILD_REAP_TIMEOUT_SECONDS

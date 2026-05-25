@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 
 from ait import remote_client
@@ -203,3 +205,33 @@ def test_read_queue_summary_bundle_builds_expected_query(monkeypatch) -> None:
     assert result == {"task_queue": {"count": 1}, "reviewer_inbox": {"count": 0}}
     assert captured["url"] == "http://example.test/v1/native/read/queue-summary?repo_name=housekeeper&status=completed"
     assert captured["timeout"] == remote_client._DEFAULT_REQUEST_TIMEOUT_SECONDS
+
+
+def test_retire_repo_posts_expected_repo_id(monkeypatch) -> None:
+    monkeypatch.setattr(remote_client, "_auth_headers", lambda: {})
+    captured: dict[str, Any] = {}
+
+    def fake_request(method: str, url: str, payload=None, timeout=30):
+        captured["method"] = method
+        captured["url"] = url
+        captured["payload"] = payload
+        return {"queued": False}
+
+    monkeypatch.setattr(remote_client, "_request", fake_request)
+
+    result = remote_client.retire_repo(
+        "http://example.test",
+        "housekeeper",
+        expected_repo_id="REPO-HOUSEKEEPER",
+        require_verified_export=True,
+    )
+
+    assert result == {"queued": False}
+    assert captured == {
+        "method": "POST",
+        "url": "http://example.test/v1/native/admin/repositories/housekeeper:retire",
+        "payload": {
+            "expected_repo_id": "REPO-HOUSEKEEPER",
+            "require_verified_export": True,
+        },
+    }

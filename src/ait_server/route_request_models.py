@@ -239,6 +239,11 @@ class GcRequest(BaseModel):
     prune_orphan_packs: bool = True
 
 
+class RetireRepositoryRequest(BaseModel):
+    expected_repo_id: str
+    require_verified_export: bool = True
+
+
 class RoleBindingGrant(BaseModel):
     actor_identity: str
     roles: list[str] = Field(default_factory=list)
@@ -258,6 +263,7 @@ __all__ = [
     "ReconcileRequest",
     "ReleaseArtifactUpload",
     "ReleasePublishRequest",
+    "RetireRepositoryRequest",
     "RepositoryCreate",
     "RequestReviewRequest",
     "RetryLandRequest",

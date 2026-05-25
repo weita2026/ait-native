@@ -19,10 +19,14 @@ from urllib.error import URLError
 from urllib.parse import urlsplit, urlunsplit
 from urllib.request import Request, urlopen
 
+from .runtime_config import DEFAULT_REPLY_CODEX_CHILD_REAP_TIMEOUT_SECONDS
+
 
 DEFAULT_CODEX_APP_SERVER_HOST = "127.0.0.1"
 DEFAULT_CODEX_APP_SERVER_WEBSOCKET_MAX_SIZE_BYTES = 64 * 1024 * 1024
 NORMAL_WEBSOCKET_CLOSE_CODES = {1000, 1001}
+DEFAULT_CODEX_CHILD_REAP_RETRY_ATTEMPTS = 5
+DEFAULT_CODEX_CHILD_REAP_MIN_RETRY_INTERVAL_SECONDS = 0.1
 MANAGED_APP_SERVER_REGISTRY_FILENAME = "codex-app-server-registry.json"
 MANAGED_STDERR_LOG_RE = re.compile(r"^codex-app-server-(?P<port>[0-9]+)\.stderr\.log$")
 
@@ -44,7 +48,7 @@ class CodexAppServerConfig:
     ready_timeout_seconds: float = 30.0
     turn_timeout_seconds: float | None = None
     child_kill_grace_seconds: float = 2.0
-    child_reap_timeout_seconds: float = 3.5
+    child_reap_timeout_seconds: float = DEFAULT_REPLY_CODEX_CHILD_REAP_TIMEOUT_SECONDS
     websocket_max_size_bytes: int | None = DEFAULT_CODEX_APP_SERVER_WEBSOCKET_MAX_SIZE_BYTES
 
 
@@ -124,6 +128,28 @@ def _log_codex_ws(event: str, **fields: Any) -> None:
 
 def _elapsed_seconds(start: float) -> str:
     return f"{max(time.monotonic() - start, 0.0):.2f}"
+
+
+def _child_reap_wait_intervals(
+    total_timeout_seconds: float,
+    *,
+    max_attempts: int = DEFAULT_CODEX_CHILD_REAP_RETRY_ATTEMPTS,
+    minimum_interval_seconds: float = DEFAULT_CODEX_CHILD_REAP_MIN_RETRY_INTERVAL_SECONDS,
+) -> tuple[float, ...]:
+    budget = max(float(total_timeout_seconds or 0.0), float(minimum_interval_seconds or 0.1))
+    attempts = 1
+    min_interval = max(float(minimum_interval_seconds or 0.1), 0.01)
+    max_attempts = max(int(max_attempts or 1), 1)
+    for candidate in range(max_attempts, 0, -1):
+        weight_sum = candidate * (candidate + 1) / 2.0
+        if budget / weight_sum >= min_interval:
+            attempts = candidate
+            break
+    weight_sum = attempts * (attempts + 1) / 2.0
+    intervals = [budget * (index + 1) / weight_sum for index in range(attempts)]
+    if intervals:
+        intervals[-1] = max(budget - sum(intervals[:-1]), min_interval)
+    return tuple(intervals)
 
 
 def _managed_stderr_log_path(repo_root: Path, port: int) -> Path:
@@ -483,7 +509,7 @@ class CodexAppServerClient:
                 "clientInfo": {
                     "name": "ait",
                     "title": "ait Telegram reply path",
-                    "version": "0.10.3",
+                    "version": "0.10.4",
                 },
                 "capabilities": {"experimentalApi": True},
             },
@@ -850,22 +876,43 @@ class CodexAppServerClient:
                 stderr_handle.close()
             _unregister_managed_app_server(self._config.repo_root, managed_pid or child.pid)
             return
+        reap_intervals = _child_reap_wait_intervals(self._config.child_reap_timeout_seconds)
         try:
-            child.wait(timeout=self._config.child_reap_timeout_seconds)
-            _log_codex_ws(
-                "app_server.child_killed",
-                pid=child.pid,
-                return_code=child.returncode,
-                child_elapsed_sec=_elapsed_seconds(started_at) if started_at is not None else None,
-                stderr_log=stderr_log_path,
-            )
-        except subprocess.TimeoutExpired:
-            _log_codex_ws(
-                "app_server.child_kill_timeout",
-                pid=child.pid,
-                child_elapsed_sec=_elapsed_seconds(started_at) if started_at is not None else None,
-                stderr_log=stderr_log_path,
-            )
+            for attempt, wait_timeout in enumerate(reap_intervals, start=1):
+                try:
+                    child.wait(timeout=wait_timeout)
+                    _log_codex_ws(
+                        "app_server.child_killed",
+                        pid=child.pid,
+                        return_code=child.returncode,
+                        child_elapsed_sec=_elapsed_seconds(started_at) if started_at is not None else None,
+                        stderr_log=stderr_log_path,
+                        reap_attempt=attempt,
+                        reap_attempts_total=len(reap_intervals),
+                        reap_wait_budget_seconds=self._config.child_reap_timeout_seconds,
+                    )
+                    break
+                except subprocess.TimeoutExpired:
+                    if attempt >= len(reap_intervals):
+                        _log_codex_ws(
+                            "app_server.child_kill_timeout",
+                            pid=child.pid,
+                            child_elapsed_sec=_elapsed_seconds(started_at) if started_at is not None else None,
+                            stderr_log=stderr_log_path,
+                            reap_attempt=attempt,
+                            reap_attempts_total=len(reap_intervals),
+                            reap_wait_budget_seconds=self._config.child_reap_timeout_seconds,
+                        )
+                        break
+                    _log_codex_ws(
+                        "app_server.child_kill_retrying",
+                        pid=child.pid,
+                        child_elapsed_sec=_elapsed_seconds(started_at) if started_at is not None else None,
+                        stderr_log=stderr_log_path,
+                        reap_attempt=attempt,
+                        reap_attempts_total=len(reap_intervals),
+                        reap_wait_timeout_seconds=f"{wait_timeout:.2f}",
+                    )
         finally:
             if stderr_handle is not None:
                 stderr_handle.close()

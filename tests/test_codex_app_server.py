@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -160,3 +161,123 @@ def test_prune_terminates_orphaned_registry_entries(tmp_path: Path, monkeypatch)
     assert terminated == [201]
     assert actions[0]["reason"] == "orphaned_registry_entry"
     assert codex_app_server._read_managed_registry(tmp_path) == {}
+
+
+def test_child_reap_wait_intervals_use_bounded_backoff_budget():
+    intervals = codex_app_server._child_reap_wait_intervals(30.0)
+
+    assert len(intervals) == 5
+    assert list(intervals) == sorted(intervals)
+    assert abs(sum(intervals) - 30.0) < 1e-9
+
+
+def test_close_retries_child_reap_after_kill_until_child_exits(tmp_path: Path, monkeypatch):
+    events: list[tuple[str, dict[str, object]]] = []
+    unregistered: list[tuple[Path, int | None]] = []
+
+    class FakeChild:
+        def __init__(self):
+            self.pid = 4321
+            self.returncode = None
+            self.wait_calls: list[float] = []
+            self.kill_calls = 0
+            self.term_calls = 0
+            self._reap_attempts = 0
+
+        def poll(self):
+            return self.returncode
+
+        def send_signal(self, sig):
+            assert sig == codex_app_server.signal.SIGTERM
+            self.term_calls += 1
+
+        def wait(self, timeout):
+            self.wait_calls.append(timeout)
+            if len(self.wait_calls) == 1:
+                raise subprocess.TimeoutExpired(cmd='codex', timeout=timeout)
+            self._reap_attempts += 1
+            if self._reap_attempts < 3:
+                raise subprocess.TimeoutExpired(cmd='codex', timeout=timeout)
+            self.returncode = -9
+            return self.returncode
+
+        def kill(self):
+            self.kill_calls += 1
+
+    child = FakeChild()
+    monkeypatch.setattr(codex_app_server, '_log_codex_ws', lambda event, **fields: events.append((event, fields)))
+    monkeypatch.setattr(codex_app_server, '_unregister_managed_app_server', lambda repo_root, pid: unregistered.append((repo_root, pid)))
+
+    client = codex_app_server.CodexAppServerClient(
+        codex_app_server.CodexAppServerConfig(
+            repo_root=tmp_path,
+            bin_path='codex',
+            model='gpt-5.4',
+            reasoning_effort=None,
+            sandbox='workspace-write',
+            child_reap_timeout_seconds=30.0,
+        )
+    )
+    client._child = child
+    client._managed_pid = child.pid
+
+    client.close()
+
+    assert child.term_calls == 1
+    assert child.kill_calls == 1
+    assert [event for event, _fields in events].count('app_server.child_kill_retrying') == 2
+    killed_event = next(fields for event, fields in events if event == 'app_server.child_killed')
+    assert killed_event['reap_attempt'] == 3
+    assert killed_event['reap_attempts_total'] == 5
+    assert unregistered == [(tmp_path, child.pid)]
+
+
+def test_close_logs_child_kill_timeout_after_reap_retries_exhaust(tmp_path: Path, monkeypatch):
+    events: list[tuple[str, dict[str, object]]] = []
+    unregistered: list[tuple[Path, int | None]] = []
+
+    class FakeChild:
+        def __init__(self):
+            self.pid = 9876
+            self.returncode = None
+            self.kill_calls = 0
+            self.term_calls = 0
+
+        def poll(self):
+            return self.returncode
+
+        def send_signal(self, sig):
+            assert sig == codex_app_server.signal.SIGTERM
+            self.term_calls += 1
+
+        def wait(self, timeout):
+            raise subprocess.TimeoutExpired(cmd='codex', timeout=timeout)
+
+        def kill(self):
+            self.kill_calls += 1
+
+    child = FakeChild()
+    monkeypatch.setattr(codex_app_server, '_log_codex_ws', lambda event, **fields: events.append((event, fields)))
+    monkeypatch.setattr(codex_app_server, '_unregister_managed_app_server', lambda repo_root, pid: unregistered.append((repo_root, pid)))
+
+    client = codex_app_server.CodexAppServerClient(
+        codex_app_server.CodexAppServerConfig(
+            repo_root=tmp_path,
+            bin_path='codex',
+            model='gpt-5.4',
+            reasoning_effort=None,
+            sandbox='workspace-write',
+            child_reap_timeout_seconds=30.0,
+        )
+    )
+    client._child = child
+    client._managed_pid = child.pid
+
+    client.close()
+
+    assert child.term_calls == 1
+    assert child.kill_calls == 1
+    timeout_event = next(fields for event, fields in events if event == 'app_server.child_kill_timeout')
+    assert timeout_event['reap_attempt'] == 5
+    assert timeout_event['reap_attempts_total'] == 5
+    assert unregistered == [(tmp_path, child.pid)]

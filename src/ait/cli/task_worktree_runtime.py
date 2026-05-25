@@ -373,7 +373,6 @@ def _maybe_auto_create_task_worktree(
         worktree_location = resolve_task_auto_worktree_location(
             repo_ctx,
             worktree_name=worktree_name,
-            root_mode=policy["root_mode"]["value"],
             ephemeral_root=policy["ephemeral_root"]["value"],
             alias_root=policy["alias_root"]["value"],
         )
@@ -385,7 +384,6 @@ def _maybe_auto_create_task_worktree(
             alias_path=str(worktree_location["alias_path"]) if worktree_location.get("alias_path") is not None else None,
             creation_kind="task_auto_created",
             cleanup_policy="after_remote_land",
-            root_mode=str(worktree_location["root_mode"]),
             root_source=str(worktree_location["root_source"]),
         )
         return local_bind_worktree(
@@ -572,10 +570,6 @@ def _maybe_auto_remove_bound_worktree_after_task_complete(
     task_id: str,
     task_status: str | None,
 ) -> dict[str, Any] | None:
-    policy = _effective_task_worktree(ctx)
-    if str(policy["auto_remove_after_remote_land"]["value"]) != "when_task_complete_and_clean":
-        return None
-
     resolved_task_status = str(task_status or "").strip()
     if resolved_task_status != "completed":
         return None
@@ -616,9 +610,6 @@ def _maybe_auto_remove_bound_worktree_after_land(
     land_result: dict[str, Any],
 ) -> dict[str, Any]:
     result = dict(land_result)
-    policy = _effective_task_worktree(ctx)
-    if str(policy["auto_remove_after_remote_land"]["value"]) != "when_task_complete_and_clean":
-        return result
     if str(result.get("status") or "").strip() != "succeeded":
         return result
 

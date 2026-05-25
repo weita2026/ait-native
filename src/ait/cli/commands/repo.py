@@ -100,6 +100,29 @@ def repo_gc_cmd(
     _emit(data, json_output)
 
 
+@repo_app.command("retire")
+def repo_retire_cmd(
+    remote: Optional[str] = typer.Option(None, "--remote"),
+    json_output: bool = typer.Option(False, "--json"),
+):
+    ctx = _ctx()
+    try:
+        remote_cfg, repo_name = _remote_tuple(ctx, remote)
+        repo = remote_get_repository(remote_cfg["url"], repo_name)
+        expected_repo_id = str(repo.get("repo_id") or "").strip()
+        if not expected_repo_id:
+            raise typer.BadParameter(f"Remote repository {repo_name} did not return a repo_id")
+        data = remote_retire_repo(
+            remote_cfg["url"],
+            repo_name,
+            expected_repo_id=expected_repo_id,
+            require_verified_export=True,
+        )
+    except (KeyError, RemoteError) as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    _emit(data, json_output)
+
+
 @repo_app.command("jobs")
 def repo_jobs_cmd(
     remote: Optional[str] = typer.Option(None, "--remote"),

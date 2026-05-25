@@ -94,6 +94,24 @@ def test_init_keeps_docs_sprints_readme_forbidden_as_bootstrap_surface(tmp_path:
     assert not (repo / "docs" / "sprints" / "README.md").exists()
 
 
+def test_init_refuses_existing_ait_directory_and_help_no_longer_advertises_force(tmp_path: Path, monkeypatch):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    monkeypatch.chdir(repo)
+
+    help_out = runner.invoke(app, ["init", "--help"], catch_exceptions=False)
+    assert help_out.exit_code == 0, help_out.stdout
+    assert "--force" not in help_out.stdout
+
+    first_out = runner.invoke(app, ["init", "--name", "repo"], catch_exceptions=False)
+    assert first_out.exit_code == 0, first_out.stdout
+
+    second_out = runner.invoke(app, ["init", "--name", "repo"])
+    assert second_out.exit_code == 1
+    assert isinstance(second_out.exception, FileExistsError)
+    assert ".ait already exists" in str(second_out.exception)
+
+
 def test_status_uses_ait_repo_root_from_other_working_directory(tmp_path: Path, monkeypatch):
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -1157,7 +1175,6 @@ def test_worktree_remove_cleans_managed_alias(tmp_path: Path, monkeypatch):
     metadata_path = repo / ".ait" / "worktrees" / "aliascase.json"
     metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
     metadata["alias_path"] = str(alias_path)
-    metadata["root_mode"] = "ephemeral_auto"
     metadata["root_source"] = "linux_tmp"
     metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
     alias_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1168,7 +1185,6 @@ def test_worktree_remove_cleans_managed_alias(tmp_path: Path, monkeypatch):
     shown = json.loads(show_out.stdout)
     assert shown["alias_path"] == str(alias_path)
     assert shown["open_path"] == str(alias_path)
-    assert shown["root_mode"] == "ephemeral_auto"
 
     path_out = runner.invoke(app, ["worktree", "path", "aliascase", "--json"])
     assert path_out.exit_code == 0, path_out.stdout

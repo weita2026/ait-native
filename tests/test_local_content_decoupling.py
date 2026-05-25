@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import base64
 from pathlib import Path
+import sqlite3
 
 import pytest
 
 from ait import local_content
 from ait import local_content_bundle as local_content_bundle_helpers
 from ait import local_content_workspace as local_content_workspace_helpers
+from ait import snapshot_blame
 from ait import store
 
 
@@ -130,6 +133,188 @@ def test_local_content_bundle_helpers_round_trip_between_repos(tmp_path: Path) -
     assert local_content.ensure_snapshot_chain(target_ctx, [bundle])[0]["snapshot_id"] == snapshot["snapshot_id"]
 
 
+def test_local_content_bundle_export_derives_missing_blob_pack_entry_name(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir(parents=True, exist_ok=True)
+    (repo / "alpha.txt").write_text("alpha\n", encoding="utf-8")
+    ctx = store.init_repo(repo, "repo", "main")
+
+    snapshot = local_content.create_snapshot(ctx, "repo", "main", "seed")
+
+    conn = sqlite3.connect(ctx.content_db_path)
+    blob_columns = {row[1] for row in conn.execute("pragma table_info(blobs)").fetchall()}
+    conn.close()
+
+    assert "pack_entry_name" not in blob_columns
+    bundle = local_content_bundle_helpers.export_snapshot_bundle(ctx, snapshot["snapshot_id"], "repo")
+    assert bundle["snapshot_id"] == snapshot["snapshot_id"]
+    restored = base64.b64decode(bundle["files"][0]["content_b64"]).decode("utf-8")
+    assert restored == "alpha\n"
+
+
+def test_local_writers_stop_persisting_deterministic_pack_entry_names(tmp_path: Path) -> None:
+    source_repo = tmp_path / "source"
+    source_repo.mkdir(parents=True, exist_ok=True)
+    (source_repo / "alpha.txt").write_text("alpha\n", encoding="utf-8")
+    source_ctx = store.init_repo(source_repo, "repo", "main")
+
+    first = local_content.create_snapshot(source_ctx, "repo", "main", "seed")
+    (source_repo / "alpha.txt").write_text("alpha updated\n", encoding="utf-8")
+    second = local_content.create_snapshot(source_ctx, "repo", "main", "update")
+
+    conn = sqlite3.connect(source_ctx.content_db_path)
+    source_blob_columns = {row[1] for row in conn.execute("pragma table_info(blobs)").fetchall()}
+    source_tree_columns = {row[1] for row in conn.execute("pragma table_info(trees)").fetchall()}
+    conn.close()
+
+    assert first["snapshot_id"] != second["snapshot_id"]
+    assert "pack_entry_name" not in source_blob_columns
+    assert "tree_pack_entry_name" not in source_tree_columns
+
+    repack = local_content.create_pack(source_ctx, repack=True)
+    assert repack["created"] is True
+
+    bundle = local_content_bundle_helpers.export_snapshot_bundle(source_ctx, second["snapshot_id"], "repo")
+
+    target_repo = tmp_path / "target"
+    target_repo.mkdir(parents=True, exist_ok=True)
+    target_ctx = store.init_repo(target_repo, "repo", "main")
+    imported = local_content_bundle_helpers.import_snapshot_bundle(target_ctx, bundle)
+
+    conn = sqlite3.connect(target_ctx.content_db_path)
+    target_blob_columns = {row[1] for row in conn.execute("pragma table_info(blobs)").fetchall()}
+    target_tree_columns = {row[1] for row in conn.execute("pragma table_info(trees)").fetchall()}
+    conn.close()
+
+    assert imported["root_tree_id"]
+    assert "pack_entry_name" not in target_blob_columns
+    assert "tree_pack_entry_name" not in target_tree_columns
+
+
+def test_local_writers_stop_persisting_deterministic_packed_timestamps(tmp_path: Path) -> None:
+    source_repo = tmp_path / "source-packed-at"
+    source_repo.mkdir(parents=True, exist_ok=True)
+    (source_repo / "alpha.txt").write_text("alpha\n", encoding="utf-8")
+    source_ctx = store.init_repo(source_repo, "repo", "main")
+
+    snapshot = local_content.create_snapshot(source_ctx, "repo", "main", "seed")
+
+    conn = sqlite3.connect(source_ctx.content_db_path)
+    source_blob_columns = {row[1] for row in conn.execute("pragma table_info(blobs)").fetchall()}
+    source_tree_columns = {row[1] for row in conn.execute("pragma table_info(trees)").fetchall()}
+    conn.close()
+
+    assert "packed_at" not in source_blob_columns
+    assert "tree_packed_at" not in source_tree_columns
+
+    repack = local_content.create_pack(source_ctx, repack=True)
+    assert repack["created"] is True
+
+    bundle = local_content_bundle_helpers.export_snapshot_bundle(source_ctx, snapshot["snapshot_id"], "repo")
+
+    target_repo = tmp_path / "target-packed-at"
+    target_repo.mkdir(parents=True, exist_ok=True)
+    target_ctx = store.init_repo(target_repo, "repo", "main")
+    imported = local_content_bundle_helpers.import_snapshot_bundle(target_ctx, bundle)
+
+    conn = sqlite3.connect(target_ctx.content_db_path)
+    target_blob_columns = {row[1] for row in conn.execute("pragma table_info(blobs)").fetchall()}
+    target_tree_columns = {row[1] for row in conn.execute("pragma table_info(trees)").fetchall()}
+    conn.close()
+
+    assert imported["root_tree_id"]
+    assert "packed_at" not in target_blob_columns
+    assert "tree_packed_at" not in target_tree_columns
+
+
+def test_local_reduced_schema_omits_tree_entry_blob_size_column_for_new_and_imported_snapshots(tmp_path: Path) -> None:
+    source_repo = tmp_path / "source-tree-entry-size"
+    source_repo.mkdir(parents=True, exist_ok=True)
+    (source_repo / "alpha.txt").write_text("alpha\n", encoding="utf-8")
+    source_ctx = store.init_repo(source_repo, "repo", "main")
+
+    snapshot = local_content.create_snapshot(source_ctx, "repo", "main", "seed")
+
+    conn = sqlite3.connect(source_ctx.content_db_path)
+    source_columns = {row[1] for row in conn.execute("pragma table_info(tree_entries)").fetchall()}
+    conn.close()
+
+    assert "size_bytes" not in source_columns
+
+    bundle = local_content_bundle_helpers.export_snapshot_bundle(source_ctx, snapshot["snapshot_id"], "repo")
+
+    target_repo = tmp_path / "target-tree-entry-size"
+    target_repo.mkdir(parents=True, exist_ok=True)
+    target_ctx = store.init_repo(target_repo, "repo", "main")
+    imported = local_content_bundle_helpers.import_snapshot_bundle(target_ctx, bundle)
+
+    conn = sqlite3.connect(target_ctx.content_db_path)
+    target_columns = {row[1] for row in conn.execute("pragma table_info(tree_entries)").fetchall()}
+    conn.close()
+
+    assert imported["root_tree_id"]
+    assert "size_bytes" not in target_columns
+
+
+def test_local_reads_derive_tree_entry_blob_sizes_without_stored_column(tmp_path: Path) -> None:
+    repo = tmp_path / "repo-tree-size"
+    repo.mkdir(parents=True, exist_ok=True)
+    (repo / "alpha.txt").write_text("alpha\n", encoding="utf-8")
+    ctx = store.init_repo(repo, "repo", "main")
+
+    snapshot = local_content.create_snapshot(ctx, "repo", "main", "seed")
+    root_tree_id = snapshot["root_tree_id"]
+
+    conn = sqlite3.connect(ctx.content_db_path)
+    conn.row_factory = sqlite3.Row
+    columns = {row["name"] for row in conn.execute("pragma table_info(tree_entries)").fetchall()}
+    view_row = conn.execute(
+        "select size_bytes from snapshot_files where snapshot_id = ? and path = 'alpha.txt'",
+        (snapshot["snapshot_id"],),
+    ).fetchone()
+    tree_pack_rows = local_content._tree_pack_entry_rows(conn, [root_tree_id])
+    blame_row = snapshot_blame._tree_entry_row(conn, root_tree_id, "alpha.txt", cache={})
+    conn.close()
+
+    assert "size_bytes" not in columns
+    assert view_row is not None
+    assert view_row["size_bytes"] == len("alpha\n")
+    assert blame_row is not None
+    assert blame_row["size_bytes"] == len("alpha\n")
+    assert next(row for row in tree_pack_rows if row["entry_name"] == "alpha.txt")["size_bytes"] == len("alpha\n")
+    assert local_content.get_snapshot(ctx, snapshot["snapshot_id"])["files"][0]["size_bytes"] == len("alpha\n")
+
+
+def test_local_manifest_path_and_storage_stats_derive_missing_tree_pack_entry_name(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir(parents=True, exist_ok=True)
+    (repo / "alpha.txt").write_text("alpha\n", encoding="utf-8")
+    ctx = store.init_repo(repo, "repo", "main")
+
+    snapshot = local_content.create_snapshot(ctx, "repo", "main", "seed")
+    root_tree_id = snapshot["root_tree_id"]
+
+    conn = sqlite3.connect(ctx.content_db_path)
+    conn.row_factory = sqlite3.Row
+    tree_columns = {row["name"] for row in conn.execute("pragma table_info(trees)").fetchall()}
+    pack_row = conn.execute(
+        """
+        select tp.pack_path
+        from trees t
+        join tree_packs tp on tp.pack_id = t.tree_pack_id
+        where t.tree_id = ?
+        """,
+        (root_tree_id,),
+    ).fetchone()
+    derived_manifest_path = local_content._manifest_path_for_tree(conn, root_tree_id)
+    conn.close()
+
+    assert pack_row is not None
+    assert "tree_pack_entry_name" not in tree_columns
+    assert derived_manifest_path == f"{pack_row['pack_path']}#trees/{root_tree_id}.json"
+    assert local_content.storage_stats(ctx)["schema_cleanup_summary"]["stale_manifest_count"] == 0
+
+
 def test_local_content_operations_skip_schema_migration_after_init(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     repo = tmp_path / "repo"
     repo.mkdir(parents=True, exist_ok=True)
@@ -159,6 +344,34 @@ def test_local_content_operations_skip_schema_migration_after_init(tmp_path: Pat
         == snapshot["snapshot_id"]
     )
     assert local_content_bundle_helpers.collect_snapshot_chain(ctx, snapshot["snapshot_id"]) == [snapshot["snapshot_id"]]
+
+
+def test_local_server_catalog_cleanup_does_not_run_during_normal_content_operations(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir(parents=True, exist_ok=True)
+    (repo / "alpha.txt").write_text("alpha\n", encoding="utf-8")
+    ctx = store.init_repo(repo, "repo", "main")
+
+    conn = sqlite3.connect(ctx.content_db_path)
+    conn.execute("create table repositories (repo_name text primary key)")
+    conn.execute("create table repository_groups (group_id text primary key)")
+    conn.execute("create table repository_group_memberships (repo_name text primary key)")
+    conn.commit()
+    conn.close()
+
+    snapshot = local_content.create_snapshot(ctx, "repo", "main", "seed")
+    assert snapshot["snapshot_id"].startswith("SNP-")
+
+    conn = sqlite3.connect(ctx.content_db_path)
+    rows = conn.execute(
+        "select name from sqlite_master where type = 'table' and name in ('repositories', 'repository_groups', 'repository_group_memberships') order by name"
+    ).fetchall()
+    conn.close()
+    assert [row[0] for row in rows] == [
+        "repositories",
+        "repository_group_memberships",
+        "repository_groups",
+    ]
 
 
 def test_snapshot_file_map_uses_tree_traversal_for_tree_backed_snapshots(

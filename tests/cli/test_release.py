@@ -17,6 +17,10 @@ def _write_release_fixture(repo: Path) -> None:
         "# Local Quickstart\n\nContinue to the [deployment guide](./SELF_HOSTED_TEAM_DEPLOYMENT.md).\n",
         encoding="utf-8",
     )
+    (docs_dir / "HOMEBREW_TAP.md").write_text(
+        "# Homebrew Tap\n\nUse `brew tap weita2026/ait-native https://github.com/weita2026/ait-native` and then `brew install weita2026/ait-native/ait-native`.\n",
+        encoding="utf-8",
+    )
     (docs_dir / "SELF_HOSTED_TEAM_DEPLOYMENT.md").write_text(
         "# Deployment Guide\n\nCheck the [compatibility matrix](./COMPATIBILITY_MATRIX.md).\n",
         encoding="utf-8",
@@ -292,6 +296,7 @@ def test_release_candidate_e2e_builds_and_generates_formula(tmp_path: Path, monk
     assert formula_out.exit_code == 0, formula_out.stdout
     formula = json.loads(formula_out.stdout)
     assert formula["formula"]["name"] == "fixture-release"
+    assert formula["formula"]["artifact_kind"] == "wheel"
     assert (repo / formula["formula"]["path"]).exists()
 
     show_out = runner.invoke(app, ["release", "show", release_record["release_id"], "--json"], catch_exceptions=False)
@@ -431,6 +436,7 @@ def test_public_self_hosted_release_candidate_excludes_ait_web_surface(tmp_path:
     assert not any(name.endswith("/src/ait_native/web.py") for name in sdist_names)
     assert not any(name.endswith("/tests/ait_web/test_smoke.py") for name in sdist_names)
     assert any(name.endswith("/README.pypi.md") for name in sdist_names)
+    assert any(name.endswith("/docs/HOMEBREW_TAP.md") for name in sdist_names)
     assert any(name.endswith("/docs/PYPI_PUBLISHING.md") for name in sdist_names)
     assert "Description-Content-Type: text/markdown" in pkg_info_text
     assert "Project-URL: Homepage, https://ait-native.dev" in pkg_info_text
@@ -448,6 +454,20 @@ def test_public_self_hosted_release_candidate_excludes_ait_web_surface(tmp_path:
     formula_text = (repo / formula["formula"]["path"]).read_text(encoding="utf-8")
     assert 'homepage "https://ait-native.dev"' in formula_text
     assert 'license all_of: ["Apache-2.0", "AGPL-3.0-only"]' in formula_text
+    assert "preserve_rpath" in formula_text
+    assert 'url "file://' in formula_text
+    assert 'system Formula["python@' in formula_text
+    assert 'system Formula["python@3' in formula_text
+    assert '"-m", "venv", libexec' in formula_text
+    assert 'cp cached_download, wheel' in formula_text
+    assert 'system libexec/"bin/python", "-m", "pip", "install", wheel' in formula_text
+    assert "`ait-server` and `ait-worker` still require self-hosted runtime configuration." in formula_text
+    assert 'bin.install_symlink libexec/"bin/ait"' in formula_text
+    assert 'bin.install_symlink libexec/"bin/ait-server"' in formula_text
+    assert 'bin.install_symlink libexec/"bin/ait-worker"' in formula_text
+    assert 'bin.install_symlink libexec/"bin/aitk"' in formula_text
+    assert 'bin.install_symlink libexec/"bin/ait-web"' not in formula_text
+    assert formula["formula"]["artifact_kind"] == "wheel"
 
 
 def test_release_publish_uploads_built_candidate_to_remote(tmp_path: Path, monkeypatch):
@@ -516,6 +536,7 @@ def test_release_publish_uploads_built_candidate_to_remote(tmp_path: Path, monke
         assert remote_release["status"] == "published"
         assert remote_release["formula"]["url"].startswith(base_url)
         assert remote_release["formula"]["download_url"].startswith(base_url)
+        assert remote_release["formula"]["artifact_kind"] == "wheel"
 
         artifact_map = {row["kind"]: row for row in remote_release["artifacts"]}
         assert {"sdist", "wheel", "manifest", "checksum", "formula"} <= set(artifact_map)

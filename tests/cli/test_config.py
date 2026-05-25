@@ -13,6 +13,19 @@ def _disable_host_macos_ram_volume_detection(monkeypatch):
     monkeypatch.setattr(task_worktree_layout, "_windows_ram_disk_roots", lambda: [])
 
 
+def _task_worktree_summary(
+    *,
+    ephemeral_root: str | None = None,
+    ephemeral_root_source: str = "built_in",
+    alias_root: str = ".ait/worktree-links",
+    alias_root_source: str = "built_in",
+) -> dict[str, dict[str, str | None]]:
+    return {
+        "ephemeral_root": {"value": ephemeral_root, "source": ephemeral_root_source},
+        "alias_root": {"value": alias_root, "source": alias_root_source},
+    }
+
+
 def test_init_writes_prototype_policy_by_default(tmp_path: Path, monkeypatch):
     repo = tmp_path / "housekeeper"
     repo.mkdir()
@@ -22,12 +35,7 @@ def test_init_writes_prototype_policy_by_default(tmp_path: Path, monkeypatch):
     assert result.exit_code == 0, result.stdout
     payload = json.loads(result.stdout)
     assert payload["policy_profile"] == "prototype"
-    assert payload["task_worktree"] == {
-        "auto_remove_after_remote_land": {"value": "off", "source": "built_in"},
-        "root_mode": {"value": "ephemeral_auto", "source": "repo_config"},
-        "ephemeral_root": {"value": None, "source": "built_in"},
-        "alias_root": {"value": ".ait/worktree-links", "source": "built_in"},
-    }
+    assert payload["task_worktree"] == _task_worktree_summary()
 
     policy_text = (repo / ".ait" / "policy.yaml").read_text(encoding="utf-8")
     assert "policy_id: prototype" in policy_text
@@ -41,7 +49,7 @@ def test_init_writes_prototype_policy_by_default(tmp_path: Path, monkeypatch):
 
     config_data = json.loads((repo / ".ait" / "config.json").read_text(encoding="utf-8"))
     assert config_data["id_namespace_prefix"] == ""
-    assert config_data["task_worktree"] == {"root_mode": "ephemeral_auto"}
+    assert "task_worktree" not in config_data
 
 
 def test_init_persists_empty_id_namespace_prefix_by_default(tmp_path: Path, monkeypatch):
@@ -64,34 +72,28 @@ def test_init_persists_empty_id_namespace_prefix_by_default(tmp_path: Path, monk
     }
 
 
-def test_init_persists_detected_macos_ram_volume_as_ephemeral_root(tmp_path: Path, monkeypatch):
+def test_init_persists_detected_macos_ram_volume_as_ephemeral_root(tmp_path: Path, monkeypatch, host_ram_root: Path):
     repo = tmp_path / "housekeeper-macos-init-ram-root"
     repo.mkdir()
     monkeypatch.chdir(repo)
 
     task_worktree_layout = import_module("ait.task_worktree_layout")
-    ram_root = (tmp_path / "AIT_RAM").resolve()
     monkeypatch.setattr(task_worktree_layout.sys, "platform", "darwin")
-    monkeypatch.setattr(task_worktree_layout, "_macos_ram_volume_roots", lambda: [ram_root])
+    monkeypatch.setattr(task_worktree_layout, "_macos_ram_volume_roots", lambda: [host_ram_root])
 
     result = runner.invoke(app, ["init", "--name", "housekeeper", "--json"], catch_exceptions=False)
     assert result.exit_code == 0, result.stdout
     payload = json.loads(result.stdout)
     configured_root = payload["task_worktree"]["ephemeral_root"]["value"]
     assert configured_root is not None
-    assert str(configured_root).startswith(str((ram_root / ".ait-repos").resolve()))
-    assert payload["task_worktree"] == {
-        "auto_remove_after_remote_land": {"value": "off", "source": "built_in"},
-        "root_mode": {"value": "ephemeral_auto", "source": "repo_config"},
-        "ephemeral_root": {"value": configured_root, "source": "repo_config"},
-        "alias_root": {"value": ".ait/worktree-links", "source": "built_in"},
-    }
+    assert str(configured_root).startswith(str((host_ram_root / ".ait-repos").resolve()))
+    assert payload["task_worktree"] == _task_worktree_summary(
+        ephemeral_root=configured_root,
+        ephemeral_root_source="repo_config",
+    )
 
     config_data = json.loads((repo / ".ait" / "config.json").read_text(encoding="utf-8"))
-    assert config_data["task_worktree"] == {
-        "root_mode": "ephemeral_auto",
-        "ephemeral_root": configured_root,
-    }
+    assert config_data["task_worktree"] == {"ephemeral_root": configured_root}
 
 
 def test_init_persists_detected_linux_memory_root_as_ephemeral_root(tmp_path: Path, monkeypatch):
@@ -110,48 +112,37 @@ def test_init_persists_detected_linux_memory_root_as_ephemeral_root(tmp_path: Pa
     configured_root = payload["task_worktree"]["ephemeral_root"]["value"]
     assert configured_root is not None
     assert str(configured_root).startswith(str((memory_root / ".ait-repos").resolve()))
-    assert payload["task_worktree"] == {
-        "auto_remove_after_remote_land": {"value": "off", "source": "built_in"},
-        "root_mode": {"value": "ephemeral_auto", "source": "repo_config"},
-        "ephemeral_root": {"value": configured_root, "source": "repo_config"},
-        "alias_root": {"value": ".ait/worktree-links", "source": "built_in"},
-    }
+    assert payload["task_worktree"] == _task_worktree_summary(
+        ephemeral_root=configured_root,
+        ephemeral_root_source="repo_config",
+    )
 
     config_data = json.loads((repo / ".ait" / "config.json").read_text(encoding="utf-8"))
-    assert config_data["task_worktree"] == {
-        "root_mode": "ephemeral_auto",
-        "ephemeral_root": configured_root,
-    }
+    assert config_data["task_worktree"] == {"ephemeral_root": configured_root}
 
 
-def test_init_persists_detected_windows_ram_disk_as_ephemeral_root(tmp_path: Path, monkeypatch):
+def test_init_persists_detected_windows_ram_disk_as_ephemeral_root(tmp_path: Path, monkeypatch, host_ram_root: Path):
     repo = tmp_path / "housekeeper-windows-init-ram-root"
     repo.mkdir()
     monkeypatch.chdir(repo)
 
     task_worktree_layout = import_module("ait.task_worktree_layout")
-    ram_root = (tmp_path / "RamDisk").resolve()
     monkeypatch.setattr(task_worktree_layout.sys, "platform", "win32")
-    monkeypatch.setattr(task_worktree_layout, "_windows_ram_disk_roots", lambda: [ram_root])
+    monkeypatch.setattr(task_worktree_layout, "_windows_ram_disk_roots", lambda: [host_ram_root])
 
     result = runner.invoke(app, ["init", "--name", "housekeeper", "--json"], catch_exceptions=False)
     assert result.exit_code == 0, result.stdout
     payload = json.loads(result.stdout)
     configured_root = payload["task_worktree"]["ephemeral_root"]["value"]
     assert configured_root is not None
-    assert str(configured_root).startswith(str((ram_root / ".ait-repos").resolve()))
-    assert payload["task_worktree"] == {
-        "auto_remove_after_remote_land": {"value": "off", "source": "built_in"},
-        "root_mode": {"value": "ephemeral_auto", "source": "repo_config"},
-        "ephemeral_root": {"value": configured_root, "source": "repo_config"},
-        "alias_root": {"value": ".ait/worktree-links", "source": "built_in"},
-    }
+    assert str(configured_root).startswith(str((host_ram_root / ".ait-repos").resolve()))
+    assert payload["task_worktree"] == _task_worktree_summary(
+        ephemeral_root=configured_root,
+        ephemeral_root_source="repo_config",
+    )
 
     config_data = json.loads((repo / ".ait" / "config.json").read_text(encoding="utf-8"))
-    assert config_data["task_worktree"] == {
-        "root_mode": "ephemeral_auto",
-        "ephemeral_root": configured_root,
-    }
+    assert config_data["task_worktree"] == {"ephemeral_root": configured_root}
 
 
 def test_policy_yaml_roundtrip_supports_class_overrides():
@@ -470,14 +461,12 @@ def test_config_set_accepts_hidden_legacy_task_auto_worktree_flag_as_noop(tmp_pa
     )
     assert set_out.exit_code == 0, set_out.stdout
     payload = json.loads(set_out.stdout)
-    assert payload["task_worktree"]["root_mode"] == {
-        "value": "ephemeral_auto",
-        "source": "repo_config",
-    }
+    assert payload["task_worktree"] == _task_worktree_summary()
 
     config_data = json.loads((repo / ".ait" / "config.json").read_text(encoding="utf-8"))
     task_worktree_cfg = config_data.get("task_worktree") if isinstance(config_data.get("task_worktree"), dict) else {}
     assert "auto_create" not in task_worktree_cfg
+    assert "root_mode" not in task_worktree_cfg
 
     help_out = runner.invoke(app, ["config", "set", "--help"], catch_exceptions=False)
     assert help_out.exit_code == 0, help_out.stdout
@@ -770,22 +759,13 @@ def test_config_set_task_worktree_lifecycle_modes_without_auto_create_toggle(tmp
     show_out = runner.invoke(app, ["config", "show", "--json"], catch_exceptions=False)
     assert show_out.exit_code == 0, show_out.stdout
     shown = json.loads(show_out.stdout)
-    assert shown["task_worktree"] == {
-        "auto_remove_after_remote_land": {"value": "off", "source": "built_in"},
-        "root_mode": {"value": "ephemeral_auto", "source": "repo_config"},
-        "ephemeral_root": {"value": None, "source": "built_in"},
-        "alias_root": {"value": ".ait/worktree-links", "source": "built_in"},
-    }
+    assert shown["task_worktree"] == _task_worktree_summary()
 
     set_out = runner.invoke(
         app,
         [
             "config",
             "set",
-            "--land-auto-remove-bound-worktree",
-            "when_task_complete_and_clean",
-            "--task-worktree-root-mode",
-            "ephemeral_auto",
             "--task-worktree-ephemeral-root",
             "/tmp/ait-ram",
             "--task-worktree-alias-root",
@@ -796,21 +776,16 @@ def test_config_set_task_worktree_lifecycle_modes_without_auto_create_toggle(tmp
     )
     assert set_out.exit_code == 0, set_out.stdout
     updated = json.loads(set_out.stdout)
-    assert updated["task_worktree"] == {
-        "auto_remove_after_remote_land": {
-            "value": "when_task_complete_and_clean",
-            "source": "repo_config",
-        },
-        "root_mode": {"value": "ephemeral_auto", "source": "repo_config"},
-        "ephemeral_root": {"value": "/tmp/ait-ram", "source": "repo_config"},
-        "alias_root": {"value": ".ait/ram-links", "source": "repo_config"},
-    }
+    assert updated["task_worktree"] == _task_worktree_summary(
+        ephemeral_root="/tmp/ait-ram",
+        ephemeral_root_source="repo_config",
+        alias_root=".ait/ram-links",
+        alias_root_source="repo_config",
+    )
 
     config_path = repo / ".ait" / "config.json"
     saved = json.loads(config_path.read_text(encoding="utf-8"))
     assert saved["task_worktree"] == {
-        "auto_remove_after_remote_land": "when_task_complete_and_clean",
-        "root_mode": "ephemeral_auto",
         "ephemeral_root": "/tmp/ait-ram",
         "alias_root": ".ait/ram-links",
     }
@@ -820,8 +795,6 @@ def test_config_set_task_worktree_lifecycle_modes_without_auto_create_toggle(tmp
         [
             "config",
             "set",
-            "--clear-land-auto-remove-bound-worktree",
-            "--clear-task-worktree-root-mode",
             "--clear-task-worktree-ephemeral-root",
             "--clear-task-worktree-alias-root",
             "--json",
@@ -830,12 +803,7 @@ def test_config_set_task_worktree_lifecycle_modes_without_auto_create_toggle(tmp
     )
     assert clear_out.exit_code == 0, clear_out.stdout
     cleared = json.loads(clear_out.stdout)
-    assert cleared["task_worktree"] == {
-        "auto_remove_after_remote_land": {"value": "off", "source": "built_in"},
-        "root_mode": {"value": "workspace", "source": "built_in"},
-        "ephemeral_root": {"value": None, "source": "built_in"},
-        "alias_root": {"value": ".ait/worktree-links", "source": "built_in"},
-    }
+    assert cleared["task_worktree"] == _task_worktree_summary()
 
 
 def test_task_start_auto_creates_ephemeral_bound_worktree_alias_on_linux(tmp_path: Path, monkeypatch):
@@ -847,9 +815,11 @@ def test_task_start_auto_creates_ephemeral_bound_worktree_alias_on_linux(tmp_pat
     assert runner.invoke(app, ["init", "--name", "housekeeper"], catch_exceptions=False).exit_code == 0
     snapshot_out = runner.invoke(app, ["snapshot", "create", "--message", "seed", "--json"], catch_exceptions=False)
     assert snapshot_out.exit_code == 0, snapshot_out.stdout
-    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path / "runtime-root"))
+    runtime_root = (tmp_path / "runtime-root").resolve()
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(runtime_root))
     task_worktree_layout = import_module("ait.task_worktree_layout")
     monkeypatch.setattr(task_worktree_layout.sys, "platform", "linux")
+    monkeypatch.setattr(task_worktree_layout, "_linux_detected_memory_roots", lambda: [runtime_root])
     set_out = runner.invoke(
         app,
         [
@@ -857,8 +827,6 @@ def test_task_start_auto_creates_ephemeral_bound_worktree_alias_on_linux(tmp_pat
             "set",
             "--plan-task-binding-mode",
             "advisory",
-            "--task-worktree-root-mode",
-            "ephemeral_auto",
             "--json",
         ],
         catch_exceptions=False,
@@ -889,11 +857,13 @@ def test_task_start_auto_creates_ephemeral_bound_worktree_alias_on_linux(tmp_pat
     worktree_path = Path(worktree["path"])
     alias_path = Path(worktree["alias_path"])
     expected_worktree_name = payload["task_id"].lower()
+    expected_target_root = (
+        task_worktree_layout._auto_detected_ephemeral_root(RepoContext.discover(repo), runtime_root) / "housekeeper"
+    )
 
     assert worktree["name"] == expected_worktree_name
-    assert worktree["root_mode"] == "ephemeral_auto"
     assert worktree["root_source"] == "linux_xdg_runtime_dir"
-    assert worktree_path.parent.parent == (tmp_path / "runtime-root" / "ait-worktrees")
+    assert worktree_path.parent == expected_target_root
     assert alias_path == (repo / ".ait" / "worktree-links" / expected_worktree_name)
     assert alias_path.is_symlink()
     assert alias_path.resolve() == worktree_path.resolve()
@@ -915,9 +885,10 @@ def test_task_start_auto_creates_windows_ephemeral_bound_worktree_links_without_
     assert runner.invoke(app, ["init", "--name", "housekeeper"], catch_exceptions=False).exit_code == 0
     snapshot_out = runner.invoke(app, ["snapshot", "create", "--message", "seed", "--json"], catch_exceptions=False)
     assert snapshot_out.exit_code == 0, snapshot_out.stdout
-    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "LocalAppData"))
+    ram_root = (tmp_path / "RamDisk").resolve()
     task_worktree_layout = import_module("ait.task_worktree_layout")
     monkeypatch.setattr(task_worktree_layout.sys, "platform", "win32")
+    monkeypatch.setattr(task_worktree_layout, "_windows_ram_disk_roots", lambda: [ram_root])
     store_worktree_filesystem = import_module("ait.store_worktree_filesystem")
     monkeypatch.setattr(store_worktree_filesystem, "_is_windows_platform", lambda: True)
 
@@ -933,8 +904,6 @@ def test_task_start_auto_creates_windows_ephemeral_bound_worktree_links_without_
             "set",
             "--plan-task-binding-mode",
             "advisory",
-            "--task-worktree-root-mode",
-            "ephemeral_auto",
             "--json",
         ],
         catch_exceptions=False,
@@ -964,10 +933,10 @@ def test_task_start_auto_creates_windows_ephemeral_bound_worktree_links_without_
     worktree = payload["worktree"]
     worktree_path = Path(worktree["path"])
     alias_path = Path(worktree["alias_path"])
+    expected_target_root = task_worktree_layout._auto_detected_ephemeral_root(RepoContext.discover(repo), ram_root) / "housekeeper"
 
-    assert worktree["root_mode"] == "ephemeral_auto"
-    assert worktree["root_source"] == "windows_localappdata_temp"
-    assert worktree_path.parent.parent == (tmp_path / "LocalAppData" / "Temp" / "ait-worktrees")
+    assert worktree["root_source"] == "windows_ramdisk"
+    assert worktree_path.parent == expected_target_root
     assert alias_path.is_symlink()
     assert alias_path.resolve() == worktree_path.resolve()
     assert worktree["open_path"] == str(alias_path)
@@ -1231,8 +1200,6 @@ def test_land_submit_auto_removes_bound_task_worktree_when_configured(tmp_path: 
                 "set",
                 "--plan-task-binding-mode",
                 "advisory",
-                "--land-auto-remove-bound-worktree",
-                "when_task_complete_and_clean",
                 "--json",
             ],
             catch_exceptions=False,
@@ -1341,8 +1308,6 @@ def test_workflow_land_apply_auto_removes_bound_task_worktree_when_configured(tm
                 "set",
                 "--plan-task-binding-mode",
                 "advisory",
-                "--land-auto-remove-bound-worktree",
-                "when_task_complete_and_clean",
                 "--json",
             ],
             catch_exceptions=False,
@@ -1447,8 +1412,8 @@ def test_remote_land_preserves_unrelated_repo_root_dirty_and_untracked_paths(tmp
                 "set",
                 "--plan-task-binding-mode",
                 "advisory",
-                "--land-auto-remove-bound-worktree",
-                "when_task_complete_and_clean",
+                "--id-namespace-prefix",
+                "AIT",
                 "--json",
             ],
             catch_exceptions=False,
@@ -1569,8 +1534,8 @@ def test_workflow_land_auto_removes_bound_task_worktree_with_lr_prefixed_publish
                 "set",
                 "--plan-task-binding-mode",
                 "advisory",
-                "--land-auto-remove-bound-worktree",
-                "when_task_complete_and_clean",
+                "--id-namespace-prefix",
+                "AIT",
                 "--json",
             ],
             catch_exceptions=False,
@@ -1603,18 +1568,6 @@ def test_workflow_land_auto_removes_bound_task_worktree_with_lr_prefixed_publish
             catch_exceptions=False,
         )
         assert remove_seed_worktree_out.exit_code == 0, remove_seed_worktree_out.stdout
-
-        assert runner.invoke(
-            app,
-            [
-                "config",
-                "set",
-                "--land-auto-remove-bound-worktree",
-                "when_task_complete_and_clean",
-                "--json",
-            ],
-            catch_exceptions=False,
-        ).exit_code == 0
 
         start_out = runner.invoke(
             app,
@@ -1740,8 +1693,6 @@ def test_worktree_cleanup_can_remove_current_worktree_land_after_task_completion
                 "set",
                 "--plan-task-binding-mode",
                 "advisory",
-                "--land-auto-remove-bound-worktree",
-                "when_task_complete_and_clean",
                 "--json",
             ],
             catch_exceptions=False,
@@ -1855,8 +1806,6 @@ def test_task_complete_from_current_worktree_clears_root_binding_for_repo_cleanu
                 "set",
                 "--plan-task-binding-mode",
                 "advisory",
-                "--land-auto-remove-bound-worktree",
-                "when_task_complete_and_clean",
                 "--json",
             ],
             catch_exceptions=False,

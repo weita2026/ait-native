@@ -14,12 +14,9 @@ WORKSPACE_ROOT = Path(__file__).resolve().parents[1]
 AUTHORED_ROOT = RepoContext.discover(WORKSPACE_ROOT).repo_root
 SITE_BUILD_PATH = WORKSPACE_ROOT / "site" / "build.py"
 DEFAULT_OUTPUT = WORKSPACE_ROOT / "site" / "dist"
-OPERATOR_REPO_LABEL = "../ait_docker"
-OPERATOR_HELPER_LABEL = "../ait_docker/ait-docker.sh"
-DEFAULT_OPERATOR_ROOT = AUTHORED_ROOT.parent / "ait_docker"
-DEFAULT_ENV_FILE = DEFAULT_OPERATOR_ROOT / ".env"
 MACOS_NGINX_DIR = WORKSPACE_ROOT / "deploy" / "site" / "macos-nginx"
 DEFAULT_NGINX_ENV_FILE = MACOS_NGINX_DIR / "site.env"
+DEFAULT_ENV_FILE = DEFAULT_NGINX_ENV_FILE
 DEFAULT_NGINX_RENDER_DIR = WORKSPACE_ROOT / "deploy" / "site" / "nginx-rendered"
 AUTHORED_MACOS_NGINX_DIR = AUTHORED_ROOT / "deploy" / "site" / "macos-nginx"
 
@@ -195,7 +192,7 @@ def _print_checks(checks: list[EnvCheck]) -> None:
 
 
 def _doctor_checks(env_path: Path, env: dict[str, str]) -> list[EnvCheck]:
-    checks = [
+    return [
         EnvCheck("ENV_FILE", env_path.exists(), str(env_path) if env_path.exists() else f"missing: {env_path}"),
         _domain_check(env),
         _email_check(env),
@@ -204,15 +201,6 @@ def _doctor_checks(env_path: Path, env: dict[str, str]) -> list[EnvCheck]:
         _port_check(env, "SITE_HTTPS_PORT", "443"),
         _acme_check(env),
     ]
-
-    checks.append(
-        EnvCheck(
-            "OPERATOR_REPO",
-            True,
-            str(DEFAULT_OPERATOR_ROOT),
-        )
-    )
-    return checks
 
 
 def _doctor_nginx_checks(
@@ -251,7 +239,7 @@ def command_doctor(args: argparse.Namespace) -> int:
 
     if args.require_public_ports:
         print("[INFO] Live issuance still requires inbound reachability on ports 80 and 443 plus correct DNS.")
-    print(f"[INFO] Operator bootstrap lives in the sibling {OPERATOR_REPO_LABEL} repository via {OPERATOR_HELPER_LABEL}.")
+    print("[INFO] Shared stack bootstrap belongs in an operator-managed workspace outside this repository checkout.")
 
     return 0 if all(check.ok for check in checks) else 1
 
@@ -418,7 +406,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     doctor_parser = subparsers.add_parser(
         "doctor",
-        help="Validate the sibling ait_docker operator env contract and build output for official-site deployment.",
+        help="Validate the local official-site build/env contract without routing through legacy external operator wrappers.",
     )
     doctor_parser.add_argument("--env-file", default=str(DEFAULT_ENV_FILE), help="Path to the deployment env file.")
     doctor_parser.add_argument(

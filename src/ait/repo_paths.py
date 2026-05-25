@@ -52,6 +52,10 @@ class RepoContext:
         return self.ait_dir / "workspace"
 
     @property
+    def task_worktree_dir(self) -> Path:
+        return self.ait_dir / "worktree"
+
+    @property
     def worktree_registry_dir(self) -> Path:
         return self.ait_dir / "worktrees"
 

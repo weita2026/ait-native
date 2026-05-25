@@ -9,3 +9,6 @@ htmlcov/
 node_modules/
 .coverage*
 *.egg-info/
+deploy/site/.env
+deploy/site/macos-nginx/site.env
+deploy/site/nginx-rendered/

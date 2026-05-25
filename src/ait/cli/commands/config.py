@@ -34,26 +34,6 @@ def config_set(
         "--task-dag-allow-multi-worker",
         help="Allow multi-worker DAG fan-out: on or off.",
     ),
-    land_auto_remove_bound_worktree: Optional[str] = typer.Option(
-        None,
-        "--land-auto-remove-bound-worktree",
-        help="Set remote-land bound-worktree cleanup: off or when_task_complete_and_clean.",
-    ),
-    clear_land_auto_remove_bound_worktree: bool = typer.Option(
-        False,
-        "--clear-land-auto-remove-bound-worktree",
-        help="Remove the stored remote-land bound-worktree cleanup setting.",
-    ),
-    task_worktree_root_mode: Optional[str] = typer.Option(
-        None,
-        "--task-worktree-root-mode",
-        help="Set the default root selection mode for auto-created task worktrees: workspace or ephemeral_auto.",
-    ),
-    clear_task_worktree_root_mode: bool = typer.Option(
-        False,
-        "--clear-task-worktree-root-mode",
-        help="Remove the stored task worktree root-mode setting.",
-    ),
     task_worktree_ephemeral_root: Optional[str] = typer.Option(
         None,
         "--task-worktree-ephemeral-root",
@@ -151,14 +131,8 @@ def config_set(
         raise typer.BadParameter("Choose either --default-author-mode or --clear-default-author-mode")
     if default_model is not None and clear_default_model:
         raise typer.BadParameter("Choose either --default-model or --clear-default-model")
-    if land_auto_remove_bound_worktree is not None and clear_land_auto_remove_bound_worktree:
-        raise typer.BadParameter(
-            "Choose either --land-auto-remove-bound-worktree or --clear-land-auto-remove-bound-worktree"
-        )
     if legacy_task_auto_worktree is not None and legacy_clear_task_auto_worktree:
         raise typer.BadParameter("Choose either --task-auto-worktree or --clear-task-auto-worktree")
-    if task_worktree_root_mode is not None and clear_task_worktree_root_mode:
-        raise typer.BadParameter("Choose either --task-worktree-root-mode or --clear-task-worktree-root-mode")
     if task_worktree_ephemeral_root is not None and clear_task_worktree_ephemeral_root:
         raise typer.BadParameter(
             "Choose either --task-worktree-ephemeral-root or --clear-task-worktree-ephemeral-root"
@@ -200,9 +174,7 @@ def config_set(
         and task_tracking is None
         and command_profiling is None
         and task_dag_allow_multi_worker is None
-        and land_auto_remove_bound_worktree is None
         and legacy_task_auto_worktree is None
-        and task_worktree_root_mode is None
         and task_worktree_ephemeral_root is None
         and task_worktree_alias_root is None
         and workflow_mode is None
@@ -215,9 +187,7 @@ def config_set(
         and user_email is None
         and not clear_default_author_mode
         and not clear_default_model
-        and not clear_land_auto_remove_bound_worktree
         and not legacy_clear_task_auto_worktree
-        and not clear_task_worktree_root_mode
         and not clear_task_worktree_ephemeral_root
         and not clear_task_worktree_alias_root
         and not clear_workflow_default_scope
@@ -265,20 +235,8 @@ def config_set(
         _normalize_toggle_mode(legacy_task_auto_worktree, option_name="`--task-auto-worktree`")
 
     task_worktree_cfg = _task_worktree_config(cfg)
-    if clear_land_auto_remove_bound_worktree:
-        task_worktree_cfg.pop("auto_remove_after_remote_land", None)
-    elif land_auto_remove_bound_worktree is not None:
-        task_worktree_cfg["auto_remove_after_remote_land"] = _normalize_land_auto_remove_bound_worktree_mode(
-            land_auto_remove_bound_worktree,
-            option_name="--land-auto-remove-bound-worktree",
-        )
-    if clear_task_worktree_root_mode:
-        task_worktree_cfg.pop("root_mode", None)
-    elif task_worktree_root_mode is not None:
-        task_worktree_cfg["root_mode"] = _normalize_task_worktree_root_mode(
-            task_worktree_root_mode,
-            option_name="--task-worktree-root-mode",
-        )
+    task_worktree_cfg.pop("auto_remove_after_remote_land", None)
+    task_worktree_cfg.pop("root_mode", None)
 
     if clear_task_worktree_ephemeral_root:
         task_worktree_cfg.pop("ephemeral_root", None)

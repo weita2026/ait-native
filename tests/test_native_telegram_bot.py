@@ -2163,6 +2163,54 @@ def test_load_reply_generation_config_reads_codex_websocket_max_size(tmp_path: P
     assert config.codex_websocket_max_size_bytes == 33_554_432
 
 
+def test_load_reply_generation_config_reads_shared_child_reap_timeout_override(tmp_path: Path, monkeypatch):
+    repo_root = tmp_path / "repo"
+    env_dir = repo_root / ".ait" / "agent-runtime"
+    env_dir.mkdir(parents=True)
+    (env_dir / "telegram.env").write_text(
+        "AIT_CHAT_CODEX_CHILD_REAP_TIMEOUT_SECONDS=30\n",
+        encoding="utf-8",
+    )
+    for name in [
+        "AIT_CHAT_CODEX_CHILD_REAP_TIMEOUT_SECONDS",
+        "AIT_TELEGRAM_CODEX_CHILD_REAP_TIMEOUT_SECONDS",
+        "CODEX_APP_SERVER_CHILD_REAP_TIMEOUT_MS",
+        "AIT_TELEGRAM_ENV_PATH",
+    ]:
+        monkeypatch.delenv(name, raising=False)
+
+    config = session_reply_module.load_reply_generation_config(repo_root=repo_root)
+
+    assert config.codex_child_reap_timeout_seconds == 30.0
+
+
+def test_load_reply_generation_config_prefers_shared_child_reap_timeout_override(tmp_path: Path, monkeypatch):
+    repo_root = tmp_path / "repo"
+    env_dir = repo_root / ".ait" / "agent-runtime"
+    env_dir.mkdir(parents=True)
+    (env_dir / "telegram.env").write_text(
+        "\n".join(
+            [
+                "AIT_CHAT_CODEX_CHILD_REAP_TIMEOUT_SECONDS=30",
+                "AIT_TELEGRAM_CODEX_CHILD_REAP_TIMEOUT_SECONDS=7",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    for name in [
+        "AIT_CHAT_CODEX_CHILD_REAP_TIMEOUT_SECONDS",
+        "AIT_TELEGRAM_CODEX_CHILD_REAP_TIMEOUT_SECONDS",
+        "CODEX_APP_SERVER_CHILD_REAP_TIMEOUT_MS",
+        "AIT_TELEGRAM_ENV_PATH",
+    ]:
+        monkeypatch.delenv(name, raising=False)
+
+    config = session_reply_module.load_reply_generation_config(repo_root=repo_root)
+
+    assert config.codex_child_reap_timeout_seconds == 30.0
+
+
 def test_load_reply_generation_config_reads_codex_persistent_client_override(tmp_path: Path, monkeypatch):
     repo_root = tmp_path / "repo"
     env_dir = repo_root / ".ait" / "agent-runtime"
@@ -3483,6 +3531,7 @@ def test_generate_codex_session_reply_retries_retryable_teardown_failure_once(mo
     class FakeCodexClient:
         attempts = 0
         instances = 0
+        closes = 0
         developer_instructions: list[str] = []
 
         def __init__(self, config):
@@ -3495,6 +3544,7 @@ def test_generate_codex_session_reply_retries_retryable_teardown_failure_once(mo
 
         def close(self):
             self.is_started = False
+            self.__class__.closes += 1
 
         def start_thread(self, *, base_instructions, developer_instructions, persist_extended_history, trace_context):
             self.developer_instructions.append(developer_instructions)
@@ -3531,6 +3581,7 @@ def test_generate_codex_session_reply_retries_retryable_teardown_failure_once(mo
     assert result.text == "Recovered after teardown retry."
     assert FakeCodexClient.attempts == 2
     assert FakeCodexClient.instances == 2
+    assert FakeCodexClient.closes == 1
     assert len(FakeCodexClient.developer_instructions) == 2
     assert "Retry safety note" not in FakeCodexClient.developer_instructions[0]
     assert "Retry safety note" in FakeCodexClient.developer_instructions[1]

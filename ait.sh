@@ -67,6 +67,14 @@ export AIT_NATIVE_COMMUNITY_WEB_HOST="${AIT_NATIVE_COMMUNITY_WEB_HOST:-${AIT_NAT
 export AIT_NATIVE_COMMUNITY_WEB_PORT="${AIT_NATIVE_COMMUNITY_WEB_PORT:-8100}"
 export AIT_NATIVE_COMMUNITY_WEB_SURFACE="${AIT_NATIVE_COMMUNITY_WEB_SURFACE:-community_hosted}"
 
+SERVER_PORT="${AIT_NATIVE_SERVER_PORT}"
+WEB_PORT="${AIT_NATIVE_WEB_PORT}"
+COMMUNITY_WEB_PORT="${AIT_NATIVE_COMMUNITY_WEB_PORT}"
+SERVER_LOG_FILE="${AIT_LOG_DIR}/ait-server.log"
+WEB_LOG_FILE="${AIT_LOG_DIR}/ait-web.log"
+COMMUNITY_WEB_LOG_FILE="${AIT_LOG_DIR}/ait-web-community.log"
+TELEGRAM_LOG_FILE="${AIT_LOG_DIR}/ait-agent-telegram.log"
+
 export AIT_CLI_BIN="${AIT_CLI_BIN:-${AIT_CONSOLE_BIN_DIR}/ait}"
 export AIT_SERVER_BIN="${AIT_SERVER_BIN:-${AIT_CONSOLE_BIN_DIR}/ait-server}"
 export AIT_WEB_BIN="${AIT_WEB_BIN:-${AIT_CONSOLE_BIN_DIR}/ait-web}"
@@ -115,20 +123,39 @@ ensure_runtime_dir() {
 ensure_runtime_ready() {
   ensure_runtime_volume_root_available
 
+  ensure_runtime_dir
+  /usr/bin/touch "${AIT_LOG_DIR}/launchd-access.ok"
+}
+
+ensure_server_bin_ready() {
   if [[ ! -x "${AIT_SERVER_BIN}" ]]; then
     log "Missing executable: ${AIT_SERVER_BIN}"
     log "Refresh Homebrew console scripts with: ${AIT_PYTHON_BIN} -m pip install --user --break-system-packages -e ${AIT_REPO_ROOT}"
     exit 1
   fi
+}
 
+ensure_web_bin_ready() {
   if [[ ! -x "${AIT_WEB_BIN}" ]]; then
     log "Missing executable: ${AIT_WEB_BIN}"
     log "Refresh Homebrew console scripts with: ${AIT_PYTHON_BIN} -m pip install --user --break-system-packages -e ${AIT_REPO_ROOT}"
     exit 1
   fi
+}
 
-  ensure_runtime_dir
-  /usr/bin/touch "${AIT_LOG_DIR}/launchd-access.ok"
+ensure_service_start_ready() {
+  local service="$1"
+
+  ensure_runtime_ready
+
+  case "$service" in
+    server)
+      ensure_server_bin_ready
+      ;;
+    web|community-web)
+      ensure_web_bin_ready
+      ;;
+  esac
 }
 
 ensure_agent_ready() {
@@ -547,7 +574,7 @@ start_service() {
   shift 5
   local cmd=( "$@" )
 
-  ensure_runtime_ready
+  ensure_service_start_ready "$service"
 
   if service_is_running "$service" "$port" "$pid_file"; then
     local pid

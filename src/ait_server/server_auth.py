@@ -125,6 +125,17 @@ def ensure_repo_action(ctx: ServerContext, actor: ActorContext, repo_name: str, 
     if not (roles & allowed):
         message = detail or f"Actor {actor.identity} lacks permission for {action} on repository {repo_name}"
         raise AuthzError(status_code=403, detail=message)
+    if action != "read":
+        try:
+            repository = get_repository(ctx, repo_name)
+        except KeyError:
+            repository = None
+        lifecycle_state = str((repository or {}).get("lifecycle_state") or "active").strip().lower() or "active"
+        if lifecycle_state != "active":
+            raise AuthzError(
+                status_code=409,
+                detail=f"Repository {repo_name} is {lifecycle_state} and does not accept {action} actions",
+            )
     return roles
 
 

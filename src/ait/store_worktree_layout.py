@@ -100,7 +100,6 @@ def _main_seed_location(ctx: RepoContext, *, line_name: str) -> dict[str, Any] |
     return resolve_main_seed_mirror_location(
         repo_ctx,
         seed_name=_main_seed_worktree_name(line_name),
-        root_mode=policy["root_mode"],
         ephemeral_root=policy["ephemeral_root"],
     )
 
@@ -133,7 +132,6 @@ def _refresh_main_seed_mirror(
                 line_name=line_name,
                 created_at=refreshed_at,
                 seed_snapshot_id=target_snapshot_id,
-                root_mode=seed_location.get("root_mode"),
                 root_source=seed_location.get("root_source"),
             ),
         )
@@ -172,7 +170,6 @@ def _refresh_main_seed_mirror(
             "path": str(seed_path),
             "line_name": line_name,
             "seed_snapshot_id": target_snapshot_id,
-            "root_mode": seed_location.get("root_mode"),
             "root_source": seed_location.get("root_source"),
             "seed_refreshed_at": refreshed_at,
         }
@@ -185,7 +182,6 @@ def _refresh_main_seed_mirror(
             "path": str(seed_path),
             "line_name": line_name,
             "seed_snapshot_id": target_snapshot_id,
-            "root_mode": seed_location.get("root_mode"),
             "root_source": seed_location.get("root_source"),
             "error": str(exc),
         }
@@ -242,7 +238,6 @@ def ensure_main_seed_mirror(
             "path": str(seed_path),
             "line_name": effective_line_name,
             "seed_snapshot_id": target_snapshot_id,
-            "root_mode": seed_location.get("root_mode"),
             "root_source": seed_location.get("root_source"),
             "seed_refreshed_at": seed_state.get("seed_refreshed_at"),
         }
@@ -261,7 +256,6 @@ def _managed_worktree_location_from_defaults(ctx: RepoContext, *, worktree_name:
     return resolve_managed_worktree_location(
         ctx,
         worktree_name=worktree_name,
-        root_mode=policy["root_mode"],
         ephemeral_root=policy["ephemeral_root"],
         alias_root=policy["alias_root"],
     )

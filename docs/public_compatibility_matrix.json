@@ -3,7 +3,7 @@
   "guide_path": "docs/COMPATIBILITY_MATRIX.md",
   "distribution": {
     "name": "ait-native",
-    "version": "0.10.3"
+    "version": "0.10.4"
   },
   "audiences": [
     "external_agent",
@@ -60,6 +60,7 @@
   "related_docs": [
     "docs/LOCAL_QUICKSTART.md",
     "docs/SELF_HOSTED_TEAM_DEPLOYMENT.md",
+    "docs/public_repository_retirement_contract.json",
     "docs/legal/public_release_license_summary.md",
     "docs/legal/public_package_surface_map.json",
     "docs/legal/component_license_matrix.md"

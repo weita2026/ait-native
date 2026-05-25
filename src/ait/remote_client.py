@@ -1390,3 +1390,20 @@ def gc_repo(
             "prune_orphan_packs": bool(prune_orphan_packs),
         },
     )
+
+
+def retire_repo(
+    base_url: str,
+    repo_name: str,
+    *,
+    expected_repo_id: str,
+    require_verified_export: bool = True,
+) -> dict:
+    return _request(
+        "POST",
+        _join(base_url, f"/v1/native/admin/repositories/{urllib.parse.quote(repo_name, safe='')}:retire"),
+        {
+            "expected_repo_id": expected_repo_id,
+            "require_verified_export": bool(require_verified_export),
+        },
+    )

@@ -157,11 +157,17 @@ def _tree_entry_row(
     key = (tree_id, entry_name)
     if key in cache:
         return cache[key]
+    size_expr = local_content._tree_entry_blob_size_sql(conn, "te", "b")
     row = conn.execute(
-        """
-        select entry_type, target_id, size_bytes, mode
-        from tree_entries
-        where tree_id = ? and entry_name = ?
+        f"""
+        select
+            te.entry_type,
+            te.target_id,
+            {size_expr} as size_bytes,
+            te.mode
+        from tree_entries te
+        left join blobs b on b.blob_id = te.target_id
+        where te.tree_id = ? and te.entry_name = ?
         """,
         (tree_id, entry_name),
     ).fetchone()

@@ -176,7 +176,7 @@ Fix:
 
 Symptom:
 
-- you start trying to bootstrap Docker or shared services even though the goal is only a local-only slice.
+- you start trying to bootstrap external shared services even though the goal is only a local-only slice.
 
 Fix:
 

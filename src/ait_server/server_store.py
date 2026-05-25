@@ -126,6 +126,7 @@ from .store.repo_ops import (
     snapshot_existence,
     update_line,
 )
+from .store.repo_retire import retire_repository
 from .store.releases import (
     get_release,
     get_release_for_repo,

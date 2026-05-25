@@ -14,6 +14,7 @@ import sys
 import tarfile
 import tempfile
 import tomllib
+import urllib.parse
 import zipfile
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -62,6 +63,7 @@ SUPPORTED_RELEASE_PROFILES = {
             "README.md",
             "README.pypi.md",
             "docs/LOCAL_QUICKSTART.md",
+            "docs/HOMEBREW_TAP.md",
             "docs/SELF_HOSTED_TEAM_DEPLOYMENT.md",
             "docs/PYPI_PUBLISHING.md",
             "docs/PACKAGE_TARGETS.md",
@@ -81,7 +83,11 @@ SUPPORTED_RELEASE_PROFILES = {
             "docs/TRADEMARK_POLICY.md",
         ],
         "contributor_files": ["docs/CONTRIBUTING.md", "docs/LOCAL_DEVELOPMENT.md"],
-        "quickstart_files": ["docs/LOCAL_QUICKSTART.md", "docs/SELF_HOSTED_TEAM_DEPLOYMENT.md"],
+        "quickstart_files": [
+            "docs/LOCAL_QUICKSTART.md",
+            "docs/HOMEBREW_TAP.md",
+            "docs/SELF_HOSTED_TEAM_DEPLOYMENT.md",
+        ],
         "excluded_paths": [
             "docs/benchmarks/**",
             "docs/sprints/**",
@@ -623,6 +629,7 @@ def _release_next_action(record: dict[str, Any]) -> dict[str, str]:
     blocking = [row for row in checks if isinstance(row, dict) and bool(row.get("blocking"))]
     artifacts = record.get("artifacts") if isinstance(record.get("artifacts"), list) else []
     formula = record.get("formula") if isinstance(record.get("formula"), dict) else {}
+    package = record.get("package") if isinstance(record.get("package"), dict) else {}
     metadata = record.get("metadata") if isinstance(record.get("metadata"), dict) else {}
     remote_publish = metadata.get("remote_publish") if isinstance(metadata.get("remote_publish"), dict) else {}
     artifact_kinds = {str(row.get("kind") or "") for row in artifacts if isinstance(row, dict)}
@@ -648,9 +655,10 @@ def _release_next_action(record: dict[str, Any]) -> dict[str, str]:
             "detail": f"Run `ait release build {release_id}` to produce deterministic release artifacts.",
         }
     if not formula.get("path"):
+        formula_name = str(package.get("name") or "ait").strip() or "ait"
         return {
             "code": "generate_formula",
-            "detail": f"Run `ait release formula {release_id} --name ait` to draft the Homebrew formula surface.",
+            "detail": f"Run `ait release formula {release_id} --name {formula_name}` to draft the Homebrew formula surface.",
         }
     return {
         "code": "publish_remote",
@@ -1705,37 +1713,66 @@ def _package_homepage(package: dict[str, Any], repo_name: str) -> str:
     return f"https://example.invalid/{repo_name}"
 
 
+def _artifact_download_name(artifact: dict[str, Any]) -> str:
+    explicit_path = str(artifact.get("path") or "").strip()
+    if explicit_path:
+        name = Path(explicit_path).name.strip()
+        if name:
+            return name
+    explicit_url = str(artifact.get("url") or "").strip()
+    if explicit_url:
+        parsed = urllib.parse.urlparse(explicit_url)
+        name = Path(parsed.path).name.strip()
+        if name:
+            return name
+    raise ValueError("Release artifact is missing a usable download filename.")
+
+
 def generate_release_formula(ctx: RepoContext, release_id: str, *, name: str) -> dict[str, Any]:
     record = get_release_candidate(ctx, release_id)
     artifacts = [row for row in record.get("artifacts") or [] if isinstance(row, dict)]
-    sdist = next((row for row in artifacts if str(row.get("kind") or "") == "sdist"), None)
-    if sdist is None:
-        raise ValueError(f"Release {release_id} does not have a source archive yet. Run `ait release build {release_id}` first.")
+    wheel = next((row for row in artifacts if str(row.get("kind") or "") == "wheel"), None)
+    if wheel is None:
+        raise ValueError(f"Release {release_id} does not have a wheel artifact yet. Run `ait release build {release_id}` first.")
     package = record.get("package") if isinstance(record.get("package"), dict) else {}
     scripts = package.get("scripts") if isinstance(package.get("scripts"), dict) else {}
+    script_names = sorted(name for name in scripts if str(name).strip())
     python_formula = f"python@{sys.version_info.major}.{sys.version_info.minor}"
     formula_path = ctx.root / "dist" / f"{name}.rb"
     formula_path.parent.mkdir(parents=True, exist_ok=True)
     homepage = _package_homepage(package, str(record["repo_name"]))
     license_literal = _homebrew_license_literal(str(package.get("license") or ""))
+    wheel_filename = _artifact_download_name(wheel)
+    symlink_lines = "\n".join(
+        f'    bin.install_symlink libexec/"bin/{script_name}"' for script_name in script_names
+    )
+    if not symlink_lines:
+        symlink_lines = '    odie "Formula generated without any console scripts to link."'
     formula_text = f"""class {_formula_class_name(name)} < Formula
+  preserve_rpath
+
   desc {json.dumps(str(package.get("description") or f"{record['repo_name']} release candidate"))}
   homepage {json.dumps(homepage)}
-  url {json.dumps(str(sdist["url"]))}
-  sha256 {json.dumps(str(sdist["sha256"]))}
+  url {json.dumps(str(wheel["url"]))}
+  sha256 {json.dumps(str(wheel["sha256"]))}
   license {license_literal}
 
   depends_on "{python_formula}"
 
   def install
-    system Formula["{python_formula}"].opt_bin/"python3", "-m", "pip", "install", *std_pip_args, cached_download
+    system Formula["{python_formula}"].opt_bin/"python3", "-m", "venv", libexec
+    wheel = buildpath/{json.dumps(wheel_filename)}
+    cp cached_download, wheel
+    system libexec/"bin/python", "-m", "pip", "install", wheel
+{symlink_lines}
   end
 
   def caveats
     <<~EOS
-      Draft formula generated by `ait release formula`.
-      Expected console scripts from this package: {", ".join(sorted(scripts)) or "none"}.
+      Homebrew tap formula generated by `ait release formula`.
+      Expected console scripts from this package: {", ".join(script_names) or "none"}.
       This draft intentionally avoids auto-starting services.
+      `ait-server` and `ait-worker` still require self-hosted runtime configuration.
     EOS
   end
 end
@@ -1748,11 +1785,12 @@ end
         "name": name,
         "class_name": _formula_class_name(name),
         "path": formula_path.as_posix(),
-        "artifact_kind": "sdist",
+        "artifact_kind": "wheel",
         "homepage": homepage,
         "license": str(package.get("license") or ""),
-        "url": sdist["url"],
-        "sha256": sdist["sha256"],
+        "url": wheel["url"],
+        "sha256": wheel["sha256"],
+        "wheel_filename": wheel_filename,
     }
     metadata = _merge_metadata(
         record,

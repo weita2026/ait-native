@@ -10,8 +10,6 @@ from .store_repo_config import load_config
 from .store_worktree_state import _normalize_worktree_name
 from .task_worktree_layout import (
     DEFAULT_TASK_WORKTREE_ALIAS_ROOT,
-    DEFAULT_TASK_WORKTREE_ROOT_MODE,
-    TASK_WORKTREE_ROOT_MODES,
 )
 
 _WORKTREE_STATUS_CACHE_KEY = "workspace_status_cache"
@@ -27,11 +25,7 @@ def _configured_task_worktree_policy(ctx: RepoContext) -> dict[str, Any]:
     raw = cfg.get("task_worktree")
     if not isinstance(raw, dict):
         raw = {}
-    root_mode = normalize_optional_text(raw.get("root_mode")) or DEFAULT_TASK_WORKTREE_ROOT_MODE
-    if root_mode not in TASK_WORKTREE_ROOT_MODES:
-        root_mode = DEFAULT_TASK_WORKTREE_ROOT_MODE
     return {
-        "root_mode": root_mode,
         "ephemeral_root": normalize_optional_text(raw.get("ephemeral_root")),
         "alias_root": normalize_optional_text(raw.get("alias_root")) or DEFAULT_TASK_WORKTREE_ALIAS_ROOT,
     }
@@ -48,7 +42,6 @@ def _main_seed_config_payload(
     line_name: str,
     created_at: str,
     seed_snapshot_id: str | None,
-    root_mode: str | None,
     root_source: str | None,
 ) -> dict[str, Any]:
     return {
@@ -59,7 +52,6 @@ def _main_seed_config_payload(
         "seed_line_name": line_name,
         "seed_snapshot_id": seed_snapshot_id,
         "seed_refreshed_at": created_at,
-        "root_mode": normalize_optional_text(root_mode),
         "root_source": normalize_optional_text(root_source),
     }
 
@@ -95,7 +87,6 @@ def _main_seed_state(seed_path: Path) -> dict[str, Any]:
         or normalize_optional_text(payload.get("materialized_snapshot_id")),
         "worktree_name": normalize_optional_text(payload.get("worktree_name")),
         "current_line": normalize_optional_text(payload.get("current_line")),
-        "root_mode": normalize_optional_text(payload.get("root_mode")),
         "root_source": normalize_optional_text(payload.get("root_source")),
         "seed_refreshed_at": normalize_optional_text(payload.get("seed_refreshed_at")),
     }

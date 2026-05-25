@@ -414,6 +414,26 @@ create table if not exists jobs (
     updated_at text not null
 );
 
+create table if not exists repository_retirements (
+    retirement_id text primary key,
+    repo_name text not null,
+    repo_id text not null,
+    state text not null,
+    actor_identity text not null,
+    actor_type text not null,
+    export_path text not null,
+    manifest_path text not null,
+    manifest_sha256 text not null,
+    summary_json text not null default '{}',
+    created_at text not null,
+    exported_at text,
+    verified_at text,
+    purged_at text,
+    updated_at text not null,
+    last_error text
+);
+create index if not exists idx_repository_retirements_repo on repository_retirements(repo_id, created_at desc);
+
 create table if not exists events (
     event_id integer primary key autoincrement,
     event_type text not null,
@@ -926,6 +946,26 @@ create table if not exists jobs (
 );
 create index if not exists idx_jobs_state_available on jobs(state, available_at, job_id);
 create index if not exists idx_jobs_repo_state on jobs(repo_name, state, job_id);
+
+create table if not exists repository_retirements (
+    retirement_id text primary key,
+    repo_name text not null,
+    repo_id text not null,
+    state text not null,
+    actor_identity text not null,
+    actor_type text not null,
+    export_path text not null,
+    manifest_path text not null,
+    manifest_sha256 text not null,
+    summary_json text not null default '{}',
+    created_at timestamptz not null,
+    exported_at timestamptz,
+    verified_at timestamptz,
+    purged_at timestamptz,
+    updated_at timestamptz not null,
+    last_error text
+);
+create index if not exists idx_repository_retirements_repo on repository_retirements(repo_id, created_at desc);
 
 create table if not exists events (
     event_id bigserial primary key,

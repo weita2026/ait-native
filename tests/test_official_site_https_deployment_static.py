@@ -16,9 +16,8 @@ def _read(path: Path) -> str:
     return path.read_text(encoding="utf-8")
 
 
-def test_official_site_docs_keep_local_nginx_assets_and_redirect_operator_surface_to_ait_docker() -> None:
+def test_official_site_helper_keeps_local_nginx_assets_and_avoids_docker_operator_routing() -> None:
     expected = [
-        AUTHORED_DEPLOY / "README.md",
         DEPLOY / "macos-nginx" / "site.env.example",
         SCRIPT,
     ]
@@ -33,10 +32,10 @@ def test_official_site_docs_keep_local_nginx_assets_and_redirect_operator_surfac
     for path in unexpected:
         assert not path.exists(), path
 
-    readme = _read(AUTHORED_DEPLOY / "README.md")
-    assert "../ait_docker" in readme
-    assert "macos-nginx" in readme
-    assert "./ait-docker.sh site config" in readme
+    script_text = _read(SCRIPT)
+    assert "../ait_docker" not in script_text
+    assert "ait-docker.sh" not in script_text
+    assert "macos-nginx" in script_text
 
 
 def test_official_site_https_helper_builds_static_output_and_validates_env(tmp_path: Path):
@@ -77,4 +76,6 @@ def test_official_site_https_helper_builds_static_output_and_validates_env(tmp_p
     assert "[OK] SITE_DOMAIN: ait-native.dev" in doctor.stdout
     assert f"[OK] SITE_BUILD_DIR: {output}" in doctor.stdout
     assert "[INFO] Live issuance still requires inbound reachability on ports 80 and 443 plus correct DNS." in doctor.stdout
-    assert "../ait_docker/ait-docker.sh" in doctor.stdout
+    assert "../ait_docker" not in doctor.stdout
+    assert "Docker" not in doctor.stdout
+    assert "operator-managed workspace outside this repository checkout" in doctor.stdout

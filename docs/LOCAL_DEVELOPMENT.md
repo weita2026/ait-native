@@ -21,7 +21,7 @@ Optional extras:
 - `.[test]` for contributor test work
 - `.[postgres,test]` if you need PostgreSQL-backed server/runtime paths
 
-The local `ait` CLI does **not** require Docker, PostgreSQL, `ait-server`, or `ait-worker` just to develop the local trust layer.
+The local `ait` CLI does **not** require external PostgreSQL, `ait-server`, or `ait-worker` just to develop the local trust layer.
 
 ## 2. Editable install bootstrap
 
@@ -69,7 +69,11 @@ If you need `ait-server`, `ait-worker`, PostgreSQL, or the shared developer-mana
 This repository intentionally does **not** carry deployment bootstrap commands or stack assets anymore. Start with:
 
 - [docs/ait_native_runtime_operations.md](./ait_native_runtime_operations.md)
-- the sibling deployment repository at `../ait_docker` on the same machine when you need shared stack lifecycle control via `../ait_docker/ait-docker.sh`
+- an operator-managed deployment workspace outside this repository when you need shared stack lifecycle control
+
+If your local work does include a host-side shared `ait-server` and `/healthz`
+goes down, reload the operator env file and use `./ait.sh server restart`
+rather than reaching for ad hoc stack/bootstrap commands.
 
 ## 4. Normal contributor loop
 

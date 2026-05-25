@@ -61,11 +61,9 @@ create table if not exists blobs (
     size_bytes integer not null,
     storage_kind text not null default 'pack_full',
     pack_id text,
-    pack_entry_name text,
     pack_entry_type text,
     pack_base_blob_id text,
     pack_chain_depth integer,
-    packed_at text,
     pruned_at text,
     created_at text not null
 );
@@ -98,9 +96,7 @@ create table if not exists trees (
     tree_id text primary key,
     entry_count integer not null,
     tree_pack_id text,
-    tree_pack_entry_name text,
     tree_pack_checksum text,
-    tree_packed_at text,
     created_at text not null
 );
 
@@ -109,7 +105,6 @@ create table if not exists tree_entries (
     entry_name text not null,
     entry_type text not null,
     target_id text not null,
-    size_bytes integer,
     mode text not null,
     primary key (tree_id, entry_name)
 );
@@ -138,6 +133,15 @@ create table if not exists tree_packs (
     created_at text not null
 );
 """
+
+FIRST_WAVE_LOCAL_CONTENT_SCHEMA_VERSION = 1
+LOCAL_CONTENT_SCHEMA_VERSION = 3
+_LOCAL_CONTENT_INIT_MIGRATION_BACKUP_PREFIX = "content.db.before-local-content-init-migration"
+_LOCAL_SERVER_CATALOG_TABLE_DROP_ORDER = (
+    "repository_group_memberships",
+    "repository_groups",
+    "repositories",
+)
 
 
 _TASK_WORKTREE_MARKDOWN_BASE_RULES = _parse_workspace_ignore_rules(
@@ -270,8 +274,82 @@ def _filter_workspace_state_for_workspace(
     }
 
 
-def _snapshot_files_view_sql() -> str:
-    return """
+def _table_columns(conn, table_name: str) -> set[str]:
+    rows = conn.execute(f"pragma table_info({table_name})").fetchall()
+    columns: set[str] = set()
+    for row in rows:
+        if isinstance(row, sqlite3.Row):
+            name = row["name"]
+        else:
+            name = row[1]
+        if name is not None:
+            columns.add(str(name))
+    return columns
+
+
+def _drop_column_if_exists(conn, table_name: str, column_name: str) -> bool:
+    if column_name not in _table_columns(conn, table_name):
+        return False
+    try:
+        conn.execute(f"alter table {table_name} drop column {column_name}")
+    except sqlite3.Error:
+        return False
+    return column_name not in _table_columns(conn, table_name)
+
+
+def _tree_entry_size_column_present(conn) -> bool:
+    return "size_bytes" in _table_columns(conn, "tree_entries")
+
+
+def _blob_pack_entry_name_column_present(conn) -> bool:
+    return "pack_entry_name" in _table_columns(conn, "blobs")
+
+
+def _blob_packed_at_column_present(conn) -> bool:
+    return "packed_at" in _table_columns(conn, "blobs")
+
+
+def _tree_pack_entry_name_column_present(conn) -> bool:
+    return "tree_pack_entry_name" in _table_columns(conn, "trees")
+
+
+def _tree_packed_at_column_present(conn) -> bool:
+    return "tree_packed_at" in _table_columns(conn, "trees")
+
+
+def _legacy_pack_metadata_columns_present(conn) -> tuple[tuple[str, str], ...]:
+    present: list[tuple[str, str]] = []
+    if _blob_pack_entry_name_column_present(conn):
+        present.append(("blobs", "pack_entry_name"))
+    if _blob_packed_at_column_present(conn):
+        present.append(("blobs", "packed_at"))
+    if _tree_pack_entry_name_column_present(conn):
+        present.append(("trees", "tree_pack_entry_name"))
+    if _tree_packed_at_column_present(conn):
+        present.append(("trees", "tree_packed_at"))
+    return tuple(present)
+
+
+def _tree_pack_entry_name_sql(conn, tree_alias: str) -> str:
+    derived = f"'trees/' || {tree_alias}.tree_id || '.json'"
+    if _tree_pack_entry_name_column_present(conn):
+        return f"coalesce(nullif({tree_alias}.tree_pack_entry_name, ''), {derived})"
+    return derived
+
+
+def _manifest_path_sql(conn, *, tree_alias: str, tree_pack_alias: str, root_tree_expr: str) -> str:
+    return (
+        "case "
+        f"when coalesce({tree_pack_alias}.pack_path, '') != '' "
+        f"then {tree_pack_alias}.pack_path || '#' || {_tree_pack_entry_name_sql(conn, tree_alias)} "
+        f"else 'trees/' || {root_tree_expr} "
+        "end"
+    )
+
+
+def _snapshot_files_view_sql(conn) -> str:
+    size_expr = _tree_entry_blob_size_sql(conn, "te", "b")
+    return f"""
     create view if not exists snapshot_files as
     with recursive snapshot_walk(snapshot_id, prefix, entry_name, entry_type, target_id, size_bytes, mode) as (
         select
@@ -280,10 +358,11 @@ def _snapshot_files_view_sql() -> str:
             te.entry_name,
             te.entry_type,
             te.target_id,
-            te.size_bytes,
+            {size_expr},
             te.mode
         from snapshots s
         join tree_entries te on te.tree_id = s.root_tree_id
+        left join blobs b on b.blob_id = te.target_id
       union all
         select
             sw.snapshot_id,
@@ -291,10 +370,11 @@ def _snapshot_files_view_sql() -> str:
             te.entry_name,
             te.entry_type,
             te.target_id,
-            te.size_bytes,
+            {size_expr},
             te.mode
         from snapshot_walk sw
         join tree_entries te on te.tree_id = sw.target_id
+        left join blobs b on b.blob_id = te.target_id
         where sw.entry_type = 'tree'
     )
     select
@@ -308,11 +388,35 @@ def _snapshot_files_view_sql() -> str:
     """
 
 
+def _tree_entry_blob_size_sql(conn, entry_alias: str = "te", blob_alias: str = "b") -> str:
+    if _tree_entry_size_column_present(conn):
+        return (
+            f"case when {entry_alias}.entry_type = 'blob' "
+            f"then coalesce({entry_alias}.size_bytes, {blob_alias}.size_bytes) "
+            f"else {entry_alias}.size_bytes end"
+        )
+    return f"case when {entry_alias}.entry_type = 'blob' then {blob_alias}.size_bytes else null end"
+
+
 def _snapshot_files_object_type(conn) -> str | None:
     row = conn.execute(
         "select type from sqlite_master where name = 'snapshot_files' and type in ('table', 'view')"
     ).fetchone()
     return row["type"] if row else None
+
+
+def _snapshot_files_view_needs_refresh(conn) -> bool:
+    row = conn.execute(
+        "select sql from sqlite_master where name = 'snapshot_files' and type = 'view'"
+    ).fetchone()
+    if row is None:
+        return False
+    sql = " ".join(str(row["sql"] or "").split()).lower()
+    expected_expr = " ".join(_tree_entry_blob_size_sql(conn, "te", "b").split()).lower()
+    return (
+        "left join blobs b on b.blob_id = te.target_id" not in sql
+        or expected_expr not in sql
+    )
 
 
 def _tree_reachability_cte_sql(snapshot_predicate: str = "coalesce(root_tree_id, '') != ''") -> str:
@@ -397,23 +501,41 @@ def _insert_tree_records(conn, tree_rows: list[dict[str, Any]], tree_entry_rows:
             [(row["tree_id"], int(row["entry_count"]), created_at) for row in tree_rows],
         )
     if tree_entry_rows:
-        conn.executemany(
-            """
-            insert or ignore into tree_entries(tree_id, entry_name, entry_type, target_id, size_bytes, mode)
-            values (?, ?, ?, ?, ?, ?)
-            """,
-            [
-                (
-                    row["tree_id"],
-                    row["entry_name"],
-                    row["entry_type"],
-                    row["target_id"],
-                    row["size_bytes"],
-                    row["mode"],
-                )
-                for row in tree_entry_rows
-            ],
-        )
+        if _tree_entry_size_column_present(conn):
+            conn.executemany(
+                """
+                insert or ignore into tree_entries(tree_id, entry_name, entry_type, target_id, size_bytes, mode)
+                values (?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    (
+                        row["tree_id"],
+                        row["entry_name"],
+                        row["entry_type"],
+                        row["target_id"],
+                        None if str(row["entry_type"] or "") == "blob" else row["size_bytes"],
+                        row["mode"],
+                    )
+                    for row in tree_entry_rows
+                ],
+            )
+        else:
+            conn.executemany(
+                """
+                insert or ignore into tree_entries(tree_id, entry_name, entry_type, target_id, mode)
+                values (?, ?, ?, ?, ?)
+                """,
+                [
+                    (
+                        row["tree_id"],
+                        row["entry_name"],
+                        row["entry_type"],
+                        row["target_id"],
+                        row["mode"],
+                    )
+                    for row in tree_entry_rows
+                ],
+            )
 
 
 def _tree_pack_entry_rows(conn, tree_ids: Iterable[str]) -> list[dict[str, Any]]:
@@ -421,12 +543,20 @@ def _tree_pack_entry_rows(conn, tree_ids: Iterable[str]) -> list[dict[str, Any]]
     if not ids:
         return []
     placeholder_sql = ", ".join("?" for _ in ids)
+    size_expr = _tree_entry_blob_size_sql(conn, "te", "b")
     rows = conn.execute(
         f"""
-        select tree_id, entry_name, entry_type, target_id, size_bytes, mode
-        from tree_entries
-        where tree_id in ({placeholder_sql})
-        order by tree_id asc, entry_name asc
+        select
+            te.tree_id,
+            te.entry_name,
+            te.entry_type,
+            te.target_id,
+            {size_expr} as size_bytes,
+            te.mode
+        from tree_entries te
+        left join blobs b on b.blob_id = te.target_id
+        where te.tree_id in ({placeholder_sql})
+        order by te.tree_id asc, te.entry_name asc
         """,
         tuple(ids),
     ).fetchall()
@@ -440,7 +570,12 @@ def _tree_pack_row_map(conn, tree_ids: Iterable[str]) -> dict[str, dict[str, Any
     placeholder_sql = ", ".join("?" for _ in ids)
     rows = conn.execute(
         f"""
-        select tree_id, entry_count, tree_pack_id, tree_pack_entry_name, tree_pack_checksum
+        select
+            tree_id,
+            entry_count,
+            tree_pack_id,
+            {_tree_pack_entry_name_sql(conn, 'trees')} as tree_pack_entry_name,
+            tree_pack_checksum
         from trees
         where tree_id in ({placeholder_sql})
         order by tree_id asc
@@ -448,6 +583,133 @@ def _tree_pack_row_map(conn, tree_ids: Iterable[str]) -> dict[str, dict[str, Any
         tuple(ids),
     ).fetchall()
     return {str(row["tree_id"]): dict(row) for row in rows}
+
+
+def _derived_blob_pack_entry_name(blob_id: str) -> str:
+    return f"blobs/{blob_id}"
+
+
+def _row_optional_value(row: dict[str, Any] | sqlite3.Row, key: str) -> Any:
+    if isinstance(row, sqlite3.Row):
+        return row[key] if key in row.keys() else None
+    return row.get(key)
+
+
+def _blob_pack_entry_name(row: dict[str, Any] | sqlite3.Row) -> str:
+    explicit_raw = _row_optional_value(row, "pack_entry_name")
+    explicit = normalize_optional_text(explicit_raw) if explicit_raw is not None else None
+    return explicit or _derived_blob_pack_entry_name(str(row["blob_id"]))
+
+
+def _derived_tree_pack_entry_name(tree_id: str) -> str:
+    return f"trees/{tree_id}.json"
+
+
+def _tree_pack_entry_name(row: dict[str, Any] | sqlite3.Row) -> str:
+    explicit_raw = _row_optional_value(row, "tree_pack_entry_name")
+    explicit = normalize_optional_text(explicit_raw) if explicit_raw is not None else None
+    return explicit or _derived_tree_pack_entry_name(str(row["tree_id"]))
+
+
+def _insert_blob_record(
+    conn,
+    *,
+    blob_id: str,
+    sha256: str,
+    storage_path: str,
+    size_bytes: int,
+    storage_kind: str,
+    pack_id: str | None,
+    pack_entry_type: str | None,
+    pack_base_blob_id: str | None,
+    pack_chain_depth: int | None,
+    pruned_at: str | None,
+    created_at: str,
+    pack_entry_name: str | None = None,
+    packed_at: str | None = None,
+) -> None:
+    columns = [
+        "blob_id",
+        "sha256",
+        "storage_path",
+        "size_bytes",
+        "storage_kind",
+        "pack_id",
+    ]
+    values: list[Any] = [
+        blob_id,
+        sha256,
+        storage_path,
+        size_bytes,
+        storage_kind,
+        pack_id,
+    ]
+    if _blob_pack_entry_name_column_present(conn):
+        columns.append("pack_entry_name")
+        values.append(pack_entry_name)
+    columns.extend(
+        [
+            "pack_entry_type",
+            "pack_base_blob_id",
+            "pack_chain_depth",
+        ]
+    )
+    values.extend(
+        [
+            pack_entry_type,
+            pack_base_blob_id,
+            pack_chain_depth,
+        ]
+    )
+    if _blob_packed_at_column_present(conn):
+        columns.append("packed_at")
+        values.append(packed_at)
+    columns.extend(["pruned_at", "created_at"])
+    values.extend([pruned_at, created_at])
+    placeholder_sql = ", ".join("?" for _ in columns)
+    conn.execute(
+        f"insert or ignore into blobs({', '.join(columns)}) values ({placeholder_sql})",
+        tuple(values),
+    )
+
+
+def _update_blob_pack_metadata(
+    conn,
+    *,
+    pack_id: str,
+    pack_entry_type: str,
+    pack_base_blob_id: str | None,
+    pack_chain_depth: int,
+    storage_kind: str,
+    blob_id: str,
+    pack_entry_name: str | None = None,
+    packed_at: str | None = None,
+) -> None:
+    assignments = [
+        "pack_id = ?",
+        "pack_entry_type = ?",
+        "pack_base_blob_id = ?",
+        "pack_chain_depth = ?",
+        "storage_kind = ?",
+    ]
+    values: list[Any] = [
+        pack_id,
+        pack_entry_type,
+        pack_base_blob_id,
+        pack_chain_depth,
+        storage_kind,
+    ]
+    if _blob_pack_entry_name_column_present(conn):
+        assignments.append("pack_entry_name = ?")
+        values.append(pack_entry_name)
+    if _blob_packed_at_column_present(conn):
+        assignments.append("packed_at = ?")
+        values.append(packed_at)
+    values.append(blob_id)
+    conn.execute(
+        f"update blobs set {', '.join(assignments)} where blob_id = ?",
+        tuple(values),
+    )
 
 
 def _write_tree_pack(
@@ -503,35 +765,42 @@ def _write_tree_pack(
         member = members_by_tree_id.get(tree_id)
         if member is None:
             continue
+        assignments = [
+            "tree_pack_id = ?",
+            "tree_pack_checksum = ?",
+        ]
+        values: list[Any] = [pack_id, member["checksum"]]
+        if _tree_pack_entry_name_column_present(conn):
+            assignments.append("tree_pack_entry_name = ?")
+            values.append(None)
+        if _tree_packed_at_column_present(conn):
+            assignments.append("tree_packed_at = ?")
+            values.append(None)
+        values.append(tree_id)
         conn.execute(
-            """
-            update trees
-            set tree_pack_id = ?,
-                tree_pack_entry_name = ?,
-                tree_pack_checksum = ?,
-                tree_packed_at = ?
-            where tree_id = ?
-            """,
-            (pack_id, member["entry_name"], member["checksum"], created_at, tree_id),
+            f"update trees set {', '.join(assignments)} where tree_id = ?",
+            tuple(values),
         )
     return _tree_pack_row_map(conn, tree_id_list)
 
 
 def _manifest_path_for_tree(conn, tree_id: str) -> str:
     row = conn.execute(
-        """
-        select tp.pack_path, t.tree_pack_entry_name
+        f"""
+        select
+            tp.pack_path,
+            t.tree_id,
+            {_tree_pack_entry_name_sql(conn, 't')} as tree_pack_entry_name
         from trees t
         join tree_packs tp on tp.pack_id = t.tree_pack_id
         where t.tree_id = ?
           and coalesce(t.tree_pack_id, '') != ''
-          and coalesce(t.tree_pack_entry_name, '') != ''
         """,
         (tree_id,),
     ).fetchone()
     if row is None:
         return f"trees/{tree_id}"
-    return tree_pack_manifest_path(str(row["pack_path"]), str(row["tree_pack_entry_name"]))
+    return tree_pack_manifest_path(str(row["pack_path"]), _tree_pack_entry_name(row))
 
 
 def _sync_tree_pack_metadata(conn, ctx: RepoContext | None) -> None:
@@ -545,15 +814,17 @@ def _sync_tree_pack_metadata(conn, ctx: RepoContext | None) -> None:
     ]
     if tree_ids:
         _write_tree_pack(ctx, conn, tree_ids, created_at=utc_now(), seed_hint="tree-metadata-migration")
+    manifest_path_sql = _manifest_path_sql(
+        conn,
+        tree_alias="t",
+        tree_pack_alias="tp",
+        root_tree_expr="snapshots.root_tree_id",
+    )
     conn.execute(
-        """
+        f"""
         update snapshots
         set manifest_path = (
-            select case
-                when coalesce(tp.pack_path, '') != '' and coalesce(t.tree_pack_entry_name, '') != ''
-                then tp.pack_path || '#' || t.tree_pack_entry_name
-                else 'trees/' || snapshots.root_tree_id
-            end
+            select {manifest_path_sql}
             from trees t
             left join tree_packs tp on tp.pack_id = t.tree_pack_id
             where t.tree_id = snapshots.root_tree_id
@@ -568,6 +839,124 @@ def _cleanup_manifest_files(ctx: RepoContext | None) -> None:
         return
     for path in ctx.manifest_dir.glob("*.json"):
         path.unlink(missing_ok=True)
+
+
+def _sqlite_table_exists(conn, table_name: str) -> bool:
+    row = conn.execute(
+        "select 1 from sqlite_master where type = 'table' and name = ?",
+        (table_name,),
+    ).fetchone()
+    return row is not None
+
+
+def _local_server_catalog_tables_ready_for_drop(conn) -> tuple[str, ...]:
+    droppable: list[str] = []
+    for table_name in _LOCAL_SERVER_CATALOG_TABLE_DROP_ORDER:
+        if not _sqlite_table_exists(conn, table_name):
+            continue
+        row = conn.execute(f"select count(*) as c from {table_name}").fetchone()
+        if int(row["c"] or 0) != 0:
+            return ()
+        droppable.append(table_name)
+    return tuple(droppable)
+
+
+def _count_stale_manifest_paths(conn) -> int:
+    try:
+        manifest_path_sql = _manifest_path_sql(
+            conn,
+            tree_alias="t",
+            tree_pack_alias="tp",
+            root_tree_expr="s.root_tree_id",
+        )
+        row = conn.execute(
+            f"""
+            select count(*) as c
+            from snapshots s
+            left join trees t on t.tree_id = s.root_tree_id
+            left join tree_packs tp on tp.pack_id = t.tree_pack_id
+            where coalesce(s.root_tree_id, '') != ''
+              and coalesce(s.manifest_path, '') != {manifest_path_sql}
+            """
+        ).fetchone()
+    except sqlite3.OperationalError:
+        return 0
+    return int((row["c"] if row is not None else 0) or 0)
+
+
+def _schema_cleanup_summary(conn) -> dict[str, Any]:
+    schema_version = int(conn.execute("pragma user_version").fetchone()[0] or 0)
+    present_tables = [
+        table_name
+        for table_name in _LOCAL_SERVER_CATALOG_TABLE_DROP_ORDER
+        if _sqlite_table_exists(conn, table_name)
+    ]
+    stale_manifest_count = _count_stale_manifest_paths(conn)
+    legacy_pack_metadata_columns = [
+        f"{table_name}.{column_name}"
+        for table_name, column_name in _legacy_pack_metadata_columns_present(conn)
+    ]
+    return {
+        "schema_version": schema_version,
+        "legacy_local_server_catalog_tables_present": present_tables,
+        "legacy_local_server_catalog_table_count": len(present_tables),
+        "legacy_pack_metadata_columns_present": legacy_pack_metadata_columns,
+        "legacy_pack_metadata_column_count": len(legacy_pack_metadata_columns),
+        "stale_manifest_count": stale_manifest_count,
+        "first_wave_schema_cleanup_applied": (
+            schema_version >= FIRST_WAVE_LOCAL_CONTENT_SCHEMA_VERSION
+            and not present_tables
+            and stale_manifest_count == 0
+        ),
+    }
+
+
+def _content_db_explicit_init_migration_needed(conn) -> bool:
+    if _snapshot_files_object_type(conn) == "table":
+        return True
+    if _tree_entry_size_column_present(conn):
+        return True
+    if _legacy_pack_metadata_columns_present(conn):
+        return True
+    if _snapshot_files_view_needs_refresh(conn):
+        return True
+    if _local_server_catalog_tables_ready_for_drop(conn):
+        return True
+    return _count_stale_manifest_paths(conn) > 0
+
+
+def _write_init_migration_backup(conn, ctx: RepoContext) -> Path:
+    backup_root = ctx.ait_dir / "repair_backups"
+    backup_root.mkdir(parents=True, exist_ok=True)
+    stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+    backup_path = backup_root / (
+        f"{_LOCAL_CONTENT_INIT_MIGRATION_BACKUP_PREFIX}.{stamp}.{secrets.token_hex(2)}.bak"
+    )
+    backup_conn = sqlite3.connect(backup_path)
+    try:
+        conn.backup(backup_conn)
+    finally:
+        backup_conn.close()
+    return backup_path
+
+
+def _drop_empty_local_server_catalog_tables(conn) -> tuple[str, ...]:
+    droppable = _local_server_catalog_tables_ready_for_drop(conn)
+    for table_name in droppable:
+        conn.execute(f"drop table if exists {table_name}")
+    return droppable
+
+
+def _drop_legacy_pack_metadata_columns(conn) -> tuple[tuple[str, str], ...]:
+    dropped: list[tuple[str, str]] = []
+    for table_name, column_name in _legacy_pack_metadata_columns_present(conn):
+        if _drop_column_if_exists(conn, table_name, column_name):
+            dropped.append((table_name, column_name))
+    return tuple(dropped)
+
+
+def _set_local_content_schema_version(conn, version: int = LOCAL_CONTENT_SCHEMA_VERSION) -> None:
+    conn.execute(f"pragma user_version = {int(version)}")
 
 
 def _migrate_snapshot_metadata(conn, ctx: RepoContext | None = None) -> None:
@@ -607,14 +996,21 @@ def _migrate_snapshot_metadata(conn, ctx: RepoContext | None = None) -> None:
     ).fetchone()["c"]
     if snapshot_files_type == "table" and remaining == 0:
         conn.execute("drop table snapshot_files")
+        snapshot_files_type = None
+    if snapshot_files_type == "view" and (
+        _tree_entry_size_column_present(conn) or _snapshot_files_view_needs_refresh(conn)
+    ):
         conn.execute("drop view if exists snapshot_files")
-        conn.execute(_snapshot_files_view_sql())
+        snapshot_files_type = None
+    if remaining == 0 and _tree_entry_size_column_present(conn):
+        _drop_column_if_exists(conn, "tree_entries", "size_bytes")
+    if snapshot_files_type is None:
+        conn.execute(_snapshot_files_view_sql(conn))
         _cleanup_manifest_files(ctx)
-    elif snapshot_files_type is None:
-        conn.execute(_snapshot_files_view_sql())
     elif snapshot_files_type == "view":
         _cleanup_manifest_files(ctx)
     _sync_tree_pack_metadata(conn, ctx)
+    _drop_legacy_pack_metadata_columns(conn)
 
 
 def _initialize_schema(conn, ctx: RepoContext | None = None) -> None:
@@ -635,27 +1031,19 @@ def _initialize_schema(conn, ctx: RepoContext | None = None) -> None:
     tree_cols = {row["name"] for row in conn.execute("pragma table_info(trees)")}
     if "tree_pack_id" not in tree_cols:
         conn.execute("alter table trees add column tree_pack_id text")
-    if "tree_pack_entry_name" not in tree_cols:
-        conn.execute("alter table trees add column tree_pack_entry_name text")
     if "tree_pack_checksum" not in tree_cols:
         conn.execute("alter table trees add column tree_pack_checksum text")
-    if "tree_packed_at" not in tree_cols:
-        conn.execute("alter table trees add column tree_packed_at text")
     blob_cols = {row["name"] for row in conn.execute("pragma table_info(blobs)")}
     if "storage_kind" not in blob_cols:
         conn.execute("alter table blobs add column storage_kind text not null default 'pack_full'")
     if "pack_id" not in blob_cols:
         conn.execute("alter table blobs add column pack_id text")
-    if "pack_entry_name" not in blob_cols:
-        conn.execute("alter table blobs add column pack_entry_name text")
     if "pack_entry_type" not in blob_cols:
         conn.execute("alter table blobs add column pack_entry_type text")
     if "pack_base_blob_id" not in blob_cols:
         conn.execute("alter table blobs add column pack_base_blob_id text")
     if "pack_chain_depth" not in blob_cols:
         conn.execute("alter table blobs add column pack_chain_depth integer")
-    if "packed_at" not in blob_cols:
-        conn.execute("alter table blobs add column packed_at text")
     if "pruned_at" not in blob_cols:
         conn.execute("alter table blobs add column pruned_at text")
     conn.execute("create index if not exists idx_blobs_pack_id on blobs(pack_id)")
@@ -679,11 +1067,17 @@ def _initialize_schema(conn, ctx: RepoContext | None = None) -> None:
     conn.execute("create index if not exists idx_tree_entries_target on tree_entries(target_id)")
     conn.execute("create index if not exists idx_trees_tree_pack_id on trees(tree_pack_id)")
     _migrate_snapshot_metadata(conn, ctx)
+    _drop_empty_local_server_catalog_tables(conn)
+    _set_local_content_schema_version(conn)
     conn.commit()
 
 
 def initialize(ctx: RepoContext, default_line: str) -> None:
+    existing_db = ctx.content_db_path.exists() and ctx.content_db_path.stat().st_size > 0
+    existing_line_head = read_ref(ctx, default_line)
     conn = connect_sqlite(ctx.content_db_path)
+    if existing_db and _content_db_explicit_init_migration_needed(conn):
+        _write_init_migration_backup(conn, ctx)
     _initialize_schema(conn, ctx)
     now = utc_now()
     conn.execute(
@@ -692,7 +1086,7 @@ def initialize(ctx: RepoContext, default_line: str) -> None:
     )
     conn.commit()
     conn.close()
-    write_ref(ctx, default_line, None)
+    write_ref(ctx, default_line, existing_line_head)
 
 
 
@@ -759,14 +1153,14 @@ def _blob_bytes_by_row(ctx: RepoContext, conn, row, *, seen_blob_ids: set[str] |
     if blob_id in visited:
         raise ValueError(f"Cyclic blob resolution detected for {blob_id}")
     visited.add(blob_id)
-    if row["pack_id"] and row["pack_entry_name"]:
+    if row["pack_id"]:
         pack_row = conn.execute("select * from packs where pack_id = ?", (row["pack_id"],)).fetchone()
         if pack_row is None:
             raise FileNotFoundError(f"Missing pack metadata for {row['pack_id']}")
         pack_abs = ctx.root / pack_row["pack_path"]
         return read_pack_entry(
             pack_abs,
-            row["pack_entry_name"],
+            _blob_pack_entry_name(row),
             resolve_base_blob=lambda base_blob_id: _blob_bytes_by_id(ctx, conn, base_blob_id, seen_blob_ids=visited),
         )
     raise FileNotFoundError(f"Packed blob payload not available for {row['blob_id']}")
@@ -912,27 +1306,21 @@ def ensure_blob_bytes(ctx: RepoContext, data: bytes, *, path_hint: str | None = 
     member = members_by_blob_id[blob_id]
     entry_type = member.get("entry_type", "full")
     target_storage_kind = "pack_delta" if entry_type == "delta" else "pack_full"
-    conn.execute(
-        """
-        insert or ignore into blobs(
-            blob_id, sha256, storage_path, size_bytes, storage_kind, pack_id, pack_entry_name,
-            pack_entry_type, pack_base_blob_id, pack_chain_depth, packed_at, pruned_at, created_at
-        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, null, ?)
-        """,
-        (
-            blob_id,
-            digest,
-            blob_item["storage_path"],
-            len(data),
-            target_storage_kind,
-            pack_id,
-            member["entry_name"],
-            entry_type,
-            member.get("base_blob_id"),
-            int(member.get("chain_depth", 0) or 0),
-            created_at,
-            created_at,
-        ),
+    _insert_blob_record(
+        conn,
+        blob_id=blob_id,
+        sha256=digest,
+        storage_path=blob_item["storage_path"],
+        size_bytes=len(data),
+        storage_kind=target_storage_kind,
+        pack_id=pack_id,
+        pack_entry_type=entry_type,
+        pack_base_blob_id=member.get("base_blob_id"),
+        pack_chain_depth=int(member.get("chain_depth", 0) or 0),
+        pruned_at=None,
+        created_at=created_at,
+        pack_entry_name=None,
+        packed_at=None,
     )
     conn.commit()
     conn.close()
@@ -1165,27 +1553,21 @@ def create_snapshot(
             member = members_by_blob_id[row["blob_id"]]
             entry_type = member.get("entry_type", "full")
             target_storage_kind = "pack_delta" if entry_type == "delta" else "pack_full"
-            conn.execute(
-                """
-                insert or ignore into blobs(
-                    blob_id, sha256, storage_path, size_bytes, storage_kind, pack_id, pack_entry_name,
-                    pack_entry_type, pack_base_blob_id, pack_chain_depth, packed_at, pruned_at, created_at
-                ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, null, ?)
-                """,
-                (
-                    row["blob_id"],
-                    row["sha256"],
-                    row["storage_path"],
-                    row["size_bytes"],
-                    target_storage_kind,
-                    pack_id,
-                    member["entry_name"],
-                    entry_type,
-                    member.get("base_blob_id"),
-                    int(member.get("chain_depth", 0) or 0),
-                    created_at,
-                    created_at,
-                ),
+            _insert_blob_record(
+                conn,
+                blob_id=row["blob_id"],
+                sha256=row["sha256"],
+                storage_path=row["storage_path"],
+                size_bytes=row["size_bytes"],
+                storage_kind=target_storage_kind,
+                pack_id=pack_id,
+                pack_entry_type=entry_type,
+                pack_base_blob_id=member.get("base_blob_id"),
+                pack_chain_depth=int(member.get("chain_depth", 0) or 0),
+                pruned_at=None,
+                created_at=created_at,
+                pack_entry_name=None,
+                packed_at=None,
             )
 
     tree_record_stage_started = time.perf_counter()
@@ -1470,12 +1852,19 @@ def _snapshot_file_map_via_tree_traversal(conn, root_tree_id: str) -> dict[str, 
     stack: list[tuple[str, str]] = [("", root_tree_id)]
     while stack:
         prefix, tree_id = stack.pop()
+        size_expr = _tree_entry_blob_size_sql(conn, "te", "b")
         rows = conn.execute(
-            """
-            select entry_name, entry_type, target_id, size_bytes, mode
-            from tree_entries
-            where tree_id = ?
-            order by entry_name asc
+            f"""
+            select
+                te.entry_name,
+                te.entry_type,
+                te.target_id,
+                {size_expr} as size_bytes,
+                te.mode
+            from tree_entries te
+            left join blobs b on b.blob_id = te.target_id
+            where te.tree_id = ?
+            order by te.entry_name asc
             """,
             (tree_id,),
         ).fetchall()
@@ -1779,6 +2168,7 @@ def storage_stats(ctx: RepoContext) -> dict:
     tree_stats = _tree_metadata_stats(conn)
     pack_rows = [dict(r) for r in conn.execute("select * from packs order by created_at desc")]
     tree_pack_rows = [dict(r) for r in conn.execute("select * from tree_packs order by created_at desc")]
+    schema_cleanup_summary = _schema_cleanup_summary(conn)
     conn.close()
     pack_summary = summarize_pack_archives(ctx.root, pack_rows)
     tree_pack_summary = summarize_tree_pack_archives(ctx.root, tree_pack_rows)
@@ -1860,6 +2250,7 @@ def storage_stats(ctx: RepoContext) -> dict:
         "pack_count": len(pack_rows),
         "pack_archive_bytes": pack_summary["pack_archive_bytes"],
         "tree_pack_archive_bytes": tree_pack_summary["archive_bytes"],
+        "schema_cleanup_summary": schema_cleanup_summary,
         "optimization_summary": optimization_summary,
         "efficiency_summary": efficiency_summary,
         "metadata_summary": {
@@ -1907,7 +2298,6 @@ def create_pack(ctx: RepoContext, *, max_members: int | None = None, repack: boo
                 b.size_bytes,
                 b.storage_kind,
                 b.pack_id,
-                b.pack_entry_name,
                 min(sf.path) as path_hint,
                 min(s.created_at) as first_seen_at
             from blobs b
@@ -1916,7 +2306,7 @@ def create_pack(ctx: RepoContext, *, max_members: int | None = None, repack: boo
             where """
             + where_clause
             + """
-            group by b.blob_id, b.sha256, b.storage_path, b.size_bytes, b.storage_kind, b.pack_id, b.pack_entry_name
+            group by b.blob_id, b.sha256, b.storage_path, b.size_bytes, b.storage_kind, b.pack_id
             order by path_hint asc, first_seen_at asc, b.blob_id asc
             """
         )
@@ -1960,24 +2350,20 @@ def create_pack(ctx: RepoContext, *, max_members: int | None = None, repack: boo
     )
     for row in rows:
         member = members_by_blob_id[row["blob_id"]]
-        entry_name = member["entry_name"]
         entry_type = member.get("entry_type", "full")
         base_blob_id = member.get("base_blob_id")
         chain_depth = int(member.get("chain_depth", 0) or 0)
         target_storage_kind = "pack_delta" if entry_type == "delta" else "pack_full"
-        conn.execute(
-            """
-            update blobs
-            set pack_id = ?,
-                pack_entry_name = ?,
-                pack_entry_type = ?,
-                pack_base_blob_id = ?,
-                pack_chain_depth = ?,
-                storage_kind = ?,
-                packed_at = ?
-            where blob_id = ?
-            """,
-            (pack_id, entry_name, entry_type, base_blob_id, chain_depth, target_storage_kind, now, row["blob_id"]),
+        _update_blob_pack_metadata(
+            conn,
+            pack_id=pack_id,
+            pack_entry_type=entry_type,
+            pack_base_blob_id=base_blob_id,
+            pack_chain_depth=chain_depth,
+            storage_kind=target_storage_kind,
+            blob_id=row["blob_id"],
+            pack_entry_name=None,
+            packed_at=None,
         )
     conn.commit()
     conn.close()
@@ -2047,14 +2433,12 @@ def gc_content(
                 # Repack the surviving tree metadata so stale archives do not linger
                 # after GC removes unreachable trees.
                 conn.execute(
-                    """
-                    update trees
-                    set tree_pack_id = null,
-                        tree_pack_entry_name = null,
-                        tree_pack_checksum = null,
-                        tree_packed_at = null
-                    """
+                    "update trees set tree_pack_id = null, tree_pack_checksum = null"
                 )
+                if _tree_pack_entry_name_column_present(conn):
+                    conn.execute("update trees set tree_pack_entry_name = null")
+                if _tree_packed_at_column_present(conn):
+                    conn.execute("update trees set tree_packed_at = null")
                 _write_tree_pack(
                     ctx,
                     conn,

@@ -219,14 +219,13 @@ def init_repo(
     root: Path,
     repo_name: Optional[str],
     default_line: str,
-    force: bool = False,
     policy_profile_name: str = "prototype",
     default_author_mode: str = "ai_with_human_review",
     default_model: str | None = None,
 ) -> RepoContext:
     root = root.resolve()
     ait_dir = root / APP_DIR
-    if ait_dir.exists() and not force:
+    if ait_dir.exists():
         raise FileExistsError(f"{ait_dir} already exists")
     ait_dir.mkdir(exist_ok=True)
     _ensure_dirs(ait_dir)
@@ -238,9 +237,11 @@ def init_repo(
         control_db_path=ait_dir / "control.db",
         config_path=ait_dir / CONFIG_NAME,
     )
-    repo_name = repo_name or root.name
-    local_control.initialize(ctx, repo_name, default_line)
-    local_content.initialize(ctx, default_line)
+    existing_config = load_config(ctx) if ctx.config_path.exists() else {}
+    resolved_repo_name = str(existing_config.get("repo_name") or repo_name or root.name)
+    resolved_default_line = str(existing_config.get("default_line") or default_line)
+    local_control.initialize(ctx, resolved_repo_name, resolved_default_line)
+    local_content.initialize(ctx, resolved_default_line)
 
     if not ctx.policy_path.exists():
         save_policy(ctx, policy_profile(policy_profile_name))
@@ -248,17 +249,21 @@ def init_repo(
     model_name = default_model.strip() if isinstance(default_model, str) else None
     if model_name == "":
         model_name = None
-    config = {
-        "repo_name": repo_name,
-        "default_line": default_line,
-        "current_line": default_line,
-        "default_remote": None,
-        "id_namespace_prefix": "",
-        "policy_profile": load_policy(ctx)["policy_id"],
-        "default_author_mode": normalize_author_mode(default_author_mode),
-        "task_worktree": detect_init_task_worktree_defaults(ctx),
-    }
-    if model_name:
+    config = dict(existing_config)
+    config["repo_name"] = resolved_repo_name
+    config["default_line"] = resolved_default_line
+    config["current_line"] = str(config.get("current_line") or resolved_default_line)
+    config.setdefault("default_remote", None)
+    config.setdefault("id_namespace_prefix", "")
+    config.setdefault("policy_profile", load_policy(ctx)["policy_id"])
+    config["default_author_mode"] = normalize_author_mode(
+        str(config.get("default_author_mode") or default_author_mode)
+    )
+    if "task_worktree" not in config:
+        detected_task_worktree_defaults = detect_init_task_worktree_defaults(ctx)
+        if detected_task_worktree_defaults:
+            config["task_worktree"] = detected_task_worktree_defaults
+    if model_name and "default_model" not in config:
         config["default_model"] = model_name
     save_config(ctx, config)
 
@@ -266,10 +271,15 @@ def init_repo(
         ctx,
         "repository.initialized",
         "repository",
-        repo_name,
-        {"repo_name": repo_name, "default_line": default_line, "content_db": str(ctx.content_db_path), "control_db": str(ctx.control_db_path)},
+        resolved_repo_name,
+        {
+            "repo_name": resolved_repo_name,
+            "default_line": resolved_default_line,
+            "content_db": str(ctx.content_db_path),
+            "control_db": str(ctx.control_db_path),
+        },
     )
-    _ensure_repo_governance_bootstrap(root, repo_name, default_line)
+    _ensure_repo_governance_bootstrap(root, resolved_repo_name, resolved_default_line)
     return ctx
 
 

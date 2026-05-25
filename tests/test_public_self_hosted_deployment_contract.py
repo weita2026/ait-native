@@ -16,21 +16,32 @@ def test_public_self_hosted_deployment_contract_shape() -> None:
     assert any(command.endswith("ait repo readiness --json") for command in payload["readiness_commands"])
 
 
-def test_public_self_hosted_deployment_contract_routes_bootstrap_through_operator_wrapper() -> None:
+def test_public_self_hosted_deployment_contract_routes_bootstrap_through_direct_binary_operator_contract() -> None:
     payload = json.loads(Path("docs/public_self_hosted_deployment_contract.json").read_text(encoding="utf-8"))
 
-    assert payload["bootstrap_steps"][0]["command"] == "cd ../ait_docker && cp .env.example .env"
-    assert payload["bootstrap_steps"][1]["command"] == "cd ../ait_docker && ./ait-docker.sh stack config"
-    assert payload["bootstrap_steps"][2]["commands"] == [
-        "cd ../ait_docker && ./ait-docker.sh stack up postgres",
-        "cd ../ait_docker && ./ait-docker.sh stack up ait-server",
-        "cd ../ait_docker && ./ait-docker.sh stack up ait-worker",
+    assert payload["bootstrap_steps"][:3] == [
+        {
+            "id": "runtime_root",
+            "command": "mkdir -p /srv/ait/server-data && export AIT_NATIVE_SERVER_DATA=/srv/ait/server-data",
+        },
+        {
+            "id": "runtime_backend",
+            "command": "export AIT_NATIVE_SERVER_DB_BACKEND=postgres",
+        },
+        {
+            "id": "postgres_dsn",
+            "command": "export AIT_NATIVE_SERVER_POSTGRES_DSN='postgresql://<user>:<password>@<host>:5432/ait_native'",
+        },
     ]
+    assert payload["bootstrap_steps"][3]["commands"][0] == 'pg_isready -d "$AIT_NATIVE_SERVER_POSTGRES_DSN"'
+    assert payload["bootstrap_steps"][3]["commands"][1].endswith("ait-server")
+    assert payload["bootstrap_steps"][3]["commands"][2].endswith("ait-worker run --worker-id worker-1")
     assert payload["readiness_commands"] == [
-        "curl -fsS https://<ait-server-host>/healthz",
-        "cd ../ait_docker && ./ait-docker.sh stack exec ait-server ait doctor postgres --connect --json",
-        "cd ../ait_docker && ./ait-docker.sh stack exec ait-server ait repo readiness --json",
-        "cd ../ait_docker && ./ait-docker.sh stack exec ait-server ait repo jobs --diagnostics --json",
+        "curl -fsS http://<ait-server-host>:<port>/healthz",
+        'ait doctor runtime-root --server-data "$AIT_NATIVE_SERVER_DATA" --json',
+        'ait doctor postgres --server-data "$AIT_NATIVE_SERVER_DATA" --dsn "$AIT_NATIVE_SERVER_POSTGRES_DSN" --content-schema "${AIT_NATIVE_SERVER_POSTGRES_CONTENT_SCHEMA:-ait_native_content}" --control-schema "${AIT_NATIVE_SERVER_POSTGRES_CONTROL_SCHEMA:-ait_native_control}" --connect --json',
+        "ait repo readiness --json",
+        "ait repo jobs --diagnostics --json",
     ]
     assert payload["backup_and_recovery"]["daily_helper"].startswith(
         'python3 scripts/runtime_backup.py --runtime-root "$AIT_NATIVE_SERVER_DATA"'

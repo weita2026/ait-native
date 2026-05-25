@@ -70,16 +70,13 @@ def _seed_fast_path_candidate(
     ctx: RepoContext,
     *,
     target_snapshot_id: str | None,
-    root_mode: str | None,
     root_source: str | None,
 ) -> dict[str, Any] | None:
     repo_ctx = _repo_worktree_ctx(ctx)
     if normalize_optional_text(target_snapshot_id) is None:
         return None
-    if normalize_optional_text(root_mode) != 'ephemeral_auto':
-        return None
     resolved_root_source = normalize_optional_text(root_source)
-    if resolved_root_source in {None, 'workspace_default', 'workspace_fallback'}:
+    if resolved_root_source in {None, 'repo_internal_fallback'}:
         return None
     default_line = _default_line_name(repo_ctx)
     try:
@@ -106,11 +103,10 @@ def add_worktree(
     alias_path: str | None = None,
     creation_kind: str | None = None,
     cleanup_policy: str | None = None,
-    root_mode: str | None = None,
     root_source: str | None = None,
 ) -> dict[str, Any]:
     ctx.worktree_registry_dir.mkdir(parents=True, exist_ok=True)
-    ctx.workspace_dir.mkdir(parents=True, exist_ok=True)
+    ctx.task_worktree_dir.mkdir(parents=True, exist_ok=True)
     worktree_name = _normalize_worktree_name(name)
     effective_line_name = line_name or current_line(ctx)
     line_row = local_content.get_line(ctx, effective_line_name)
@@ -125,9 +121,6 @@ def add_worktree(
             if managed_location is not None and managed_location.get('alias_path') is not None
             else None
         )
-    )
-    resolved_root_mode = normalize_optional_text(root_mode) or (
-        normalize_optional_text(managed_location.get('root_mode')) if managed_location is not None else None
     )
     resolved_root_source = normalize_optional_text(root_source) or (
         normalize_optional_text(managed_location.get('root_source')) if managed_location is not None else None
@@ -179,7 +172,6 @@ def add_worktree(
     seed_candidate = _seed_fast_path_candidate(
         ctx,
         target_snapshot_id=target_snapshot_id,
-        root_mode=resolved_root_mode,
         root_source=resolved_root_source,
     )
     worktree_ctx: RepoContext | None = None
@@ -249,7 +241,6 @@ def add_worktree(
         'created_at': created_at,
         'creation_kind': resolved_creation_kind,
         'cleanup_policy': resolved_cleanup_policy,
-        'root_mode': resolved_root_mode,
         'root_source': resolved_root_source,
         'last_used_at': created_at,
         _WORKTREE_STATUS_CACHE_KEY: _build_worktree_status_cache_payload(

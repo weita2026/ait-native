@@ -79,6 +79,53 @@ def test_gc_validate_returns_condensed_storage_validation_view(tmp_path: Path, m
     assert payload["pack_count"] == 1
 
 
+def test_gc_stats_reports_first_wave_schema_cleanup_audit(tmp_path: Path, monkeypatch):
+    repo = tmp_path / "housekeeper-gc-audit"
+    repo.mkdir()
+    (repo / "app.py").write_text("hello\n", encoding="utf-8")
+    monkeypatch.chdir(repo)
+
+    assert runner.invoke(app, ["init", "--name", "housekeeper-gc-audit"], catch_exceptions=False).exit_code == 0
+    snap_out = runner.invoke(app, ["snapshot", "create", "--message", "seed", "--json"], catch_exceptions=False)
+    assert snap_out.exit_code == 0, snap_out.stdout
+    snapshot = json.loads(snap_out.stdout)
+
+    content_db = repo / ".ait" / "content.db"
+    conn = sqlite3.connect(content_db)
+    conn.row_factory = sqlite3.Row
+    conn.execute("create table repositories (repo_name text primary key)")
+    conn.execute("create table repository_groups (group_id text primary key)")
+    conn.execute("create table repository_group_memberships (repo_name text primary key)")
+    snapshot_row = conn.execute(
+        "select root_tree_id from snapshots where snapshot_id = ?",
+        (snapshot["snapshot_id"],),
+    ).fetchone()
+    assert snapshot_row is not None
+    root_tree_id = snapshot_row["root_tree_id"]
+    conn.execute(
+        "update snapshots set manifest_path = ? where snapshot_id = ?",
+        (f".ait/objects/tree-packs/TPK-STALE.zip#trees/{root_tree_id}.json", snapshot["snapshot_id"]),
+    )
+    conn.commit()
+    conn.close()
+
+    stats_out = runner.invoke(app, ["gc", "stats", "--json"], catch_exceptions=False)
+    assert stats_out.exit_code == 0, stats_out.stdout
+    payload = json.loads(stats_out.stdout)
+    audit = payload["schema_cleanup_summary"]
+    assert audit["schema_version"] == 3
+    assert audit["legacy_local_server_catalog_tables_present"] == [
+        "repository_group_memberships",
+        "repository_groups",
+        "repositories",
+    ]
+    assert audit["legacy_local_server_catalog_table_count"] == 3
+    assert audit["legacy_pack_metadata_columns_present"] == []
+    assert audit["legacy_pack_metadata_column_count"] == 0
+    assert audit["stale_manifest_count"] == 1
+    assert audit["first_wave_schema_cleanup_applied"] is False
+
+
 def test_repo_validate_returns_condensed_storage_validation_view(tmp_path: Path, monkeypatch):
     repo = tmp_path / "housekeeper-repo-validate"
     repo.mkdir()

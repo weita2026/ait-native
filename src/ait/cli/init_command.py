@@ -38,7 +38,6 @@ def register_init_command(app: typer.Typer) -> None:
             "--default-model",
             help="Default provenance model name when auto-detection is unavailable",
         ),
-        force: bool = typer.Option(False, "--force", help="Reuse existing .ait directory"),
         json_output: bool = typer.Option(False, "--json", help="JSON output"),
     ):
         cwd = Path.cwd()
@@ -48,7 +47,6 @@ def register_init_command(app: typer.Typer) -> None:
                 cwd,
                 name,
                 default_line,
-                force=force,
                 policy_profile_name=policy_profile,
                 default_author_mode=default_author_mode.value,
                 default_model=default_model,

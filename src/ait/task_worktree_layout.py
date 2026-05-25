@@ -16,8 +16,6 @@ from ait_protocol.common import normalize_optional_text
 
 from .repo_paths import RepoContext, configured_repo_name
 
-TASK_WORKTREE_ROOT_MODES = frozenset({"workspace", "ephemeral_auto"})
-DEFAULT_TASK_WORKTREE_ROOT_MODE = "workspace"
 DEFAULT_TASK_WORKTREE_ALIAS_ROOT = ".ait/worktree-links"
 INTERNAL_WORKTREE_ROOT_DIRNAME = ".ait-internal"
 _REPO_SEGMENT_RE = re.compile(r"[^A-Za-z0-9._-]+")
@@ -59,44 +57,33 @@ def _configured_ephemeral_root(ctx: RepoContext, configured_root: Any) -> Path |
 
 
 def _linux_ephemeral_root_candidates(ctx: RepoContext) -> list[tuple[Path, str]]:
-    repo_segment = _repo_path_segment(ctx)
-    candidates: list[tuple[Path, str]] = []
     xdg_runtime_dir = normalize_optional_text(os.environ.get("XDG_RUNTIME_DIR"))
-    if xdg_runtime_dir is not None:
-        candidates.append((Path(xdg_runtime_dir).expanduser() / "ait-worktrees" / repo_segment, "linux_xdg_runtime_dir"))
-    candidates.append((Path("/dev/shm/ait-worktrees") / repo_segment, "linux_dev_shm"))
-    candidates.append((Path("/tmp/ait-worktrees") / repo_segment, "linux_tmp"))
+    xdg_runtime_root = Path(xdg_runtime_dir).expanduser().resolve() if xdg_runtime_dir is not None else None
+    candidates: list[tuple[Path, str]] = []
+    for root in _linux_detected_memory_roots():
+        source = "linux_memory_root"
+        if xdg_runtime_root is not None and root == xdg_runtime_root:
+            source = "linux_xdg_runtime_dir"
+        elif root == Path("/dev/shm").resolve():
+            source = "linux_dev_shm"
+        elif root == Path("/tmp").resolve():
+            source = "linux_tmpfs"
+        candidates.append((_auto_detected_ephemeral_root(ctx, root) / _repo_path_segment(ctx), source))
     return candidates
 
 
 def _windows_ephemeral_root_candidates(ctx: RepoContext) -> list[tuple[Path, str]]:
-    repo_segment = _repo_path_segment(ctx)
-    raw_candidates: list[tuple[Path, str]] = []
-    local_app_data = normalize_optional_text(os.environ.get("LOCALAPPDATA"))
-    if local_app_data is not None:
-        raw_candidates.append(
-            (
-                Path(local_app_data).expanduser() / "Temp" / "ait-worktrees" / repo_segment,
-                "windows_localappdata_temp",
-            )
-        )
-    temp_dir = normalize_optional_text(os.environ.get("TEMP"))
-    if temp_dir is not None:
-        raw_candidates.append((Path(temp_dir).expanduser() / "ait-worktrees" / repo_segment, "windows_temp"))
-    tmp_dir = normalize_optional_text(os.environ.get("TMP"))
-    if tmp_dir is not None:
-        raw_candidates.append((Path(tmp_dir).expanduser() / "ait-worktrees" / repo_segment, "windows_tmp"))
-    raw_candidates.append((Path(tempfile.gettempdir()).expanduser() / "ait-worktrees" / repo_segment, "windows_tempfile"))
+    return [
+        (_auto_detected_ephemeral_root(ctx, root) / _repo_path_segment(ctx), "windows_ramdisk")
+        for root in _windows_ram_disk_roots()
+    ]
 
-    seen: set[str] = set()
-    candidates: list[tuple[Path, str]] = []
-    for path, source in raw_candidates:
-        key = str(path)
-        if key in seen:
-            continue
-        seen.add(key)
-        candidates.append((path, source))
-    return candidates
+
+def _macos_ephemeral_root_candidates(ctx: RepoContext) -> list[tuple[Path, str]]:
+    return [
+        (_auto_detected_ephemeral_root(ctx, root) / _repo_path_segment(ctx), "macos_ram_volume")
+        for root in _macos_ram_volume_roots()
+    ]
 
 
 def _decode_mountinfo_path(text: str) -> str:
@@ -275,22 +262,19 @@ def _auto_detected_ephemeral_root(ctx: RepoContext, root: Path) -> Path:
 
 
 def detect_init_task_worktree_defaults(ctx: RepoContext) -> dict[str, Any]:
-    defaults: dict[str, Any] = {"root_mode": "ephemeral_auto"}
     if sys.platform.startswith("linux"):
         roots = _linux_detected_memory_roots()
         if roots:
-            defaults["ephemeral_root"] = str(_auto_detected_ephemeral_root(ctx, roots[0]))
-            return defaults
+            return {"ephemeral_root": str(_auto_detected_ephemeral_root(ctx, roots[0]))}
     if sys.platform.startswith("win"):
         roots = _windows_ram_disk_roots()
         if roots:
-            defaults["ephemeral_root"] = str(_auto_detected_ephemeral_root(ctx, roots[0]))
-            return defaults
+            return {"ephemeral_root": str(_auto_detected_ephemeral_root(ctx, roots[0]))}
     if sys.platform.startswith("darwin"):
         roots = _macos_ram_volume_roots()
         if roots:
-            defaults["ephemeral_root"] = str(_auto_detected_ephemeral_root(ctx, roots[0]))
-    return defaults
+            return {"ephemeral_root": str(_auto_detected_ephemeral_root(ctx, roots[0]))}
+    return {}
 
 
 def _ensure_root_candidate(path: Path) -> Path | None:
@@ -304,19 +288,9 @@ def _ensure_root_candidate(path: Path) -> Path | None:
 def _resolve_managed_worktree_root(
     ctx: RepoContext,
     *,
-    root_mode: str | None,
     ephemeral_root: Any,
 ) -> dict[str, Any]:
-    effective_root_mode = str(root_mode or DEFAULT_TASK_WORKTREE_ROOT_MODE).strip() or DEFAULT_TASK_WORKTREE_ROOT_MODE
-    default_root = ctx.workspace_dir.resolve()
-
-    if effective_root_mode != "ephemeral_auto":
-        return {
-            "target_root": default_root,
-            "root_mode": effective_root_mode,
-            "root_source": "workspace_default",
-            "ephemeral_enabled": False,
-        }
+    default_root = ctx.task_worktree_dir.resolve()
 
     configured_root = _configured_ephemeral_root(ctx, ephemeral_root)
     if configured_root is not None:
@@ -324,7 +298,6 @@ def _resolve_managed_worktree_root(
         if target_root is not None:
             return {
                 "target_root": target_root,
-                "root_mode": effective_root_mode,
                 "root_source": "configured_ephemeral_root",
                 "ephemeral_enabled": True,
             }
@@ -336,7 +309,6 @@ def _resolve_managed_worktree_root(
                 continue
             return {
                 "target_root": target_root,
-                "root_mode": effective_root_mode,
                 "root_source": source,
                 "ephemeral_enabled": True,
             }
@@ -348,15 +320,24 @@ def _resolve_managed_worktree_root(
                 continue
             return {
                 "target_root": target_root,
-                "root_mode": effective_root_mode,
+                "root_source": source,
+                "ephemeral_enabled": True,
+            }
+
+    if sys.platform.startswith("darwin"):
+        for candidate, source in _macos_ephemeral_root_candidates(ctx):
+            target_root = _ensure_root_candidate(candidate)
+            if target_root is None:
+                continue
+            return {
+                "target_root": target_root,
                 "root_source": source,
                 "ephemeral_enabled": True,
             }
 
     return {
         "target_root": default_root,
-        "root_mode": effective_root_mode,
-        "root_source": "workspace_fallback",
+        "root_source": "repo_internal_fallback",
         "ephemeral_enabled": False,
     }
 
@@ -365,13 +346,11 @@ def resolve_managed_worktree_location(
     ctx: RepoContext,
     *,
     worktree_name: str,
-    root_mode: str | None,
     ephemeral_root: Any,
     alias_root: Any,
 ) -> dict[str, Any]:
     root_info = _resolve_managed_worktree_root(
         ctx,
-        root_mode=root_mode,
         ephemeral_root=ephemeral_root,
     )
     target_root = Path(root_info["target_root"]).resolve()
@@ -385,7 +364,6 @@ def resolve_managed_worktree_location(
     return {
         "target_path": target_path,
         "alias_path": alias_path,
-        "root_mode": root_info["root_mode"],
         "root_source": root_info["root_source"],
         "preferred_path": preferred_path,
         "ephemeral_enabled": bool(root_info["ephemeral_enabled"]),
@@ -396,14 +374,12 @@ def resolve_task_auto_worktree_location(
     ctx: RepoContext,
     *,
     worktree_name: str,
-    root_mode: str | None,
     ephemeral_root: Any,
     alias_root: Any,
 ) -> dict[str, Any]:
     return resolve_managed_worktree_location(
         ctx,
         worktree_name=worktree_name,
-        root_mode=root_mode,
         ephemeral_root=ephemeral_root,
         alias_root=alias_root,
     )
@@ -413,12 +389,10 @@ def resolve_main_seed_mirror_location(
     ctx: RepoContext,
     *,
     seed_name: str,
-    root_mode: str | None,
     ephemeral_root: Any,
 ) -> dict[str, Any] | None:
     root_info = _resolve_managed_worktree_root(
         ctx,
-        root_mode=root_mode,
         ephemeral_root=ephemeral_root,
     )
     if not bool(root_info["ephemeral_enabled"]):
@@ -427,7 +401,6 @@ def resolve_main_seed_mirror_location(
     target_path = (target_root / INTERNAL_WORKTREE_ROOT_DIRNAME / seed_name).resolve()
     return {
         "target_path": target_path,
-        "root_mode": root_info["root_mode"],
         "root_source": root_info["root_source"],
         "preferred_path": target_path,
         "ephemeral_enabled": True,

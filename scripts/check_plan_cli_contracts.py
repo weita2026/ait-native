@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+from contextlib import ExitStack, contextmanager
 import json
 import os
 import re
 import tempfile
 from pathlib import Path
+from unittest.mock import patch
 
 from typer.testing import CliRunner
 
@@ -32,6 +34,17 @@ PLAN_SOURCE_REGEX_FORBIDDEN: dict[Path, tuple[str, ...]] = {
         r"(?is)--default-line.{0,400}plan sync",
     ),
 }
+
+
+@contextmanager
+def _disable_host_memory_root_detection():
+    from ait import task_worktree_layout
+
+    with ExitStack() as stack:
+        stack.enter_context(patch.object(task_worktree_layout, "_macos_ram_volume_roots", lambda: []))
+        stack.enter_context(patch.object(task_worktree_layout, "_linux_detected_memory_roots", lambda: []))
+        stack.enter_context(patch.object(task_worktree_layout, "_windows_ram_disk_roots", lambda: []))
+        yield
 
 
 def _invoke_ok(*argv: str):
@@ -226,12 +239,13 @@ def _assert_sprint_readme_contract() -> None:
 
 
 def main() -> None:
-    _assert_public_plan_contract()
-    _assert_plan_sync_stays_lineage_only()
-    _assert_plan_sync_bypasses_root_worktree_guard()
-    _assert_plan_source_files_omit_legacy_line_alignment_contract()
-    _assert_init_keeps_sprint_readme_forbidden()
-    _assert_sprint_readme_contract()
+    with _disable_host_memory_root_detection():
+        _assert_public_plan_contract()
+        _assert_plan_sync_stays_lineage_only()
+        _assert_plan_sync_bypasses_root_worktree_guard()
+        _assert_plan_source_files_omit_legacy_line_alignment_contract()
+        _assert_init_keeps_sprint_readme_forbidden()
+        _assert_sprint_readme_contract()
 
 
 if __name__ == "__main__":

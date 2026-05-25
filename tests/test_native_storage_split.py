@@ -46,6 +46,14 @@ def _sqlite_object_type(db_path: Path, name: str) -> str | None:
     return row["type"] if row else None
 
 
+def _sqlite_table_columns(db_path: Path, table_name: str) -> set[str]:
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute(f"pragma table_info({table_name})").fetchall()
+    conn.close()
+    return {str(row["name"]) for row in rows if row["name"] is not None}
+
+
 @contextmanager
 def running_server(data_dir: Path):
     old = os.environ.get("AIT_NATIVE_SERVER_DATA")
@@ -300,12 +308,14 @@ def test_local_snapshot_uses_tree_shared_metadata_view(tmp_path: Path, monkeypat
 
     conn = sqlite3.connect(content_db)
     conn.row_factory = sqlite3.Row
+    tree_columns = _sqlite_table_columns(content_db, "trees")
+    blob_columns = _sqlite_table_columns(content_db, "blobs")
     snap_row = conn.execute(
         "select snapshot_id, root_tree_id, manifest_hash, manifest_path from snapshots where snapshot_id = ?",
         (snapshot["snapshot_id"],),
     ).fetchone()
     tree_row = conn.execute(
-        "select tree_pack_id, tree_pack_entry_name, tree_pack_checksum from trees where tree_id = ?",
+        "select tree_pack_id, tree_pack_checksum from trees where tree_id = ?",
         (snap_row["root_tree_id"],),
     ).fetchone()
     tree_pack_rows = conn.execute("select pack_id, pack_path from tree_packs order by created_at").fetchall()
@@ -320,129 +330,15 @@ def test_local_snapshot_uses_tree_shared_metadata_view(tmp_path: Path, monkeypat
     assert snap_row["manifest_path"].endswith(f"{snap_row['root_tree_id']}.json")
     assert tree_row is not None
     assert tree_row["tree_pack_id"]
-    assert tree_row["tree_pack_entry_name"] == f"trees/{snap_row['root_tree_id']}.json"
     assert tree_row["tree_pack_checksum"]
+    assert "tree_pack_entry_name" not in tree_columns
+    assert "tree_packed_at" not in tree_columns
+    assert "pack_entry_name" not in blob_columns
+    assert "packed_at" not in blob_columns
     assert tree_pack_rows
     assert any(row["pack_id"] == tree_row["tree_pack_id"] for row in tree_pack_rows)
     assert tree_rows
     assert [row["path"] for row in file_rows] == ["app.py"]
-    assert list((repo / ".ait" / "objects" / "manifests").glob("*.json")) == []
-
-
-def test_local_tree_metadata_migrates_legacy_snapshot_files_table_via_init_force(tmp_path: Path, monkeypatch):
-    repo = tmp_path / "housekeeper-tree-migrate"
-    repo.mkdir()
-    (repo / "app.py").write_text("hello\n", encoding="utf-8")
-    monkeypatch.chdir(repo)
-
-    assert runner.invoke(app, ["init", "--name", "housekeeper-tree-migrate"], catch_exceptions=False).exit_code == 0
-
-    content_db = repo / ".ait" / "content.db"
-    blob_id = "BLB-LEGACY"
-    snapshot_id = "SNP-LEGACY"
-    manifest_hash = "legacy-manifest"
-    manifest_path = repo / ".ait" / "objects" / "manifests" / f"{manifest_hash}.json"
-    manifest_path.write_text("{\"legacy\":true}\n", encoding="utf-8")
-    blob_bytes = b"legacy\n"
-    blob_sha = hashlib.sha256(blob_bytes).hexdigest()
-    pack_id = "PCK-LEGACY"
-    pack_path = repo / ".ait" / "objects" / "packs" / f"{pack_id}.zip"
-    pack_members = build_pack_members([{"entry_name": f"blobs/{blob_id}", "blob_id": blob_id, "data": blob_bytes, "path_hint": "app.py"}])
-    pack_stats = write_pack_archive(pack_path, pack_id, "2026-04-16T00:00:00+00:00", pack_members)
-    pack_member = pack_members[0]
-
-    conn = sqlite3.connect(content_db)
-    conn.execute("drop view if exists snapshot_files")
-    conn.execute(
-        """
-        create table snapshot_files (
-            snapshot_id text not null,
-            path text not null,
-            blob_id text not null,
-            size_bytes integer not null,
-            mode text not null,
-            primary key (snapshot_id, path)
-        )
-        """
-    )
-    conn.execute(
-        """
-        insert into packs(pack_id, status, member_count, total_bytes, pack_path, pack_format, pack_index_entry_name, pack_index_checksum, created_at)
-        values (?, 'ready', ?, ?, ?, ?, ?, ?, '2026-04-16T00:00:00+00:00')
-        """,
-        (
-            pack_id,
-            pack_stats["member_count"],
-            pack_stats["total_bytes"],
-            f".ait/objects/packs/{pack_id}.zip",
-            pack_stats["pack_format"],
-            pack_stats["pack_index_entry_name"],
-            pack_stats["pack_index_checksum"],
-        ),
-    )
-    conn.execute(
-        """
-        insert into blobs(
-            blob_id, sha256, storage_path, size_bytes, storage_kind, pack_id, pack_entry_name,
-            pack_entry_type, pack_base_blob_id, pack_chain_depth, packed_at, created_at
-        )
-        values (?, ?, ?, ?, 'pack_full', ?, ?, 'full', null, 0, '2026-04-16T00:00:00+00:00', '2026-04-16T00:00:00+00:00')
-        """,
-        (blob_id, blob_sha, f".ait/objects/packs/{pack_id}.zip", len(blob_bytes), pack_id, pack_member["entry_name"]),
-    )
-    conn.execute(
-        """
-        insert into snapshots(snapshot_id, parent_snapshot_id, root_tree_id, manifest_hash, manifest_path, message, line_name, file_count, total_bytes, created_at)
-        values (?, null, null, ?, ?, 'legacy', 'main', 1, ?, '2026-04-16T00:00:00+00:00')
-        """,
-        (snapshot_id, manifest_hash, f"objects/manifests/{manifest_hash}.json", len(blob_bytes)),
-    )
-    conn.execute(
-        "insert into snapshot_files(snapshot_id, path, blob_id, size_bytes, mode) values (?, 'app.py', ?, ?, '0o644')",
-        (snapshot_id, blob_id, len(blob_bytes)),
-    )
-    conn.commit()
-    conn.close()
-
-    show_out = runner.invoke(app, ["snapshot", "show", snapshot_id, "--json"], catch_exceptions=False)
-    assert show_out.exit_code == 0, show_out.stdout
-    payload = json.loads(show_out.stdout)
-    assert payload["files"][0]["path"] == "app.py"
-    assert _sqlite_object_type(content_db, "snapshot_files") == "table"
-
-    conn = sqlite3.connect(content_db)
-    root_tree_before = conn.execute(
-        "select root_tree_id from snapshots where snapshot_id = ?",
-        (snapshot_id,),
-    ).fetchone()[0]
-    conn.close()
-    assert root_tree_before in (None, "")
-
-    init_out = runner.invoke(
-        app,
-        ["init", "--name", "housekeeper-tree-migrate", "--force"],
-        catch_exceptions=False,
-    )
-    assert init_out.exit_code == 0, init_out.stdout
-
-    assert _sqlite_object_type(content_db, "snapshot_files") == "view"
-    conn = sqlite3.connect(content_db)
-    conn.row_factory = sqlite3.Row
-    migrated = conn.execute("select root_tree_id, manifest_path from snapshots where snapshot_id = ?", (snapshot_id,)).fetchone()
-    tree_row = conn.execute(
-        "select tree_pack_id, tree_pack_entry_name from trees where tree_id = ?",
-        (migrated["root_tree_id"],),
-    ).fetchone()
-    tree_pack_rows = conn.execute("select pack_id from tree_packs").fetchall()
-    conn.close()
-    assert migrated is not None
-    assert migrated["root_tree_id"]
-    assert "#trees/" in migrated["manifest_path"]
-    assert migrated["manifest_path"].endswith(f"{migrated['root_tree_id']}.json")
-    assert tree_row is not None
-    assert tree_row["tree_pack_id"]
-    assert tree_row["tree_pack_entry_name"] == f"trees/{migrated['root_tree_id']}.json"
-    assert tree_pack_rows
     assert list((repo / ".ait" / "objects" / "manifests").glob("*.json")) == []
 
 
@@ -488,7 +384,7 @@ def test_server_snapshot_import_uses_tree_shared_metadata_view(tmp_path: Path, m
         assert snap_row["manifest_path"].endswith(f"{snap_row['root_tree_id']}.json")
         assert tree_row is not None
         assert tree_row["tree_pack_id"]
-        assert tree_row["tree_pack_entry_name"] == f"trees/{snap_row['root_tree_id']}.json"
+        assert tree_row["tree_pack_entry_name"] in (None, f"trees/{snap_row['root_tree_id']}.json")
         assert tree_row["tree_pack_checksum"]
         assert tree_pack_rows
         assert [row["path"] for row in file_rows] == ["app.py"]
@@ -652,6 +548,43 @@ def test_workspace_status_ignores_repo_local_aitignore_patterns(tmp_path: Path, 
     assert status["phase_timings_ms"]["hashing"] >= 0
     assert status["phase_timings_ms"]["compare_manifest"] >= 0
     assert status["phase_timings_ms"]["total"] >= 0
+
+
+def test_workspace_status_ignores_local_deploy_runtime_artifacts_from_aitignore(tmp_path: Path, monkeypatch):
+    repo = tmp_path / "housekeeper-aitignore-deploy-runtime"
+    repo.mkdir()
+    (repo / "app.py").write_text("hello\n", encoding="utf-8")
+    (repo / ".aitignore").write_text(
+        "deploy/site/.env\n"
+        "deploy/site/macos-nginx/site.env\n"
+        "deploy/site/nginx-rendered/\n",
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(repo)
+
+    init_out = runner.invoke(app, ["init", "--name", "housekeeper"], catch_exceptions=False)
+    assert init_out.exit_code == 0, init_out.stdout
+    seed_out = runner.invoke(app, ["snapshot", "create", "--message", "seed", "--json"], catch_exceptions=False)
+    assert seed_out.exit_code == 0, seed_out.stdout
+
+    (repo / "deploy" / "site").mkdir(parents=True)
+    (repo / "deploy" / "site" / ".env").write_text("SITE_ENV=local\n", encoding="utf-8")
+    (repo / "deploy" / "site" / "macos-nginx").mkdir(parents=True)
+    (repo / "deploy" / "site" / "macos-nginx" / "site.env").write_text("SITE_DOMAIN=ait-native.dev\n", encoding="utf-8")
+    (repo / "deploy" / "site" / "nginx-rendered").mkdir(parents=True)
+    (repo / "deploy" / "site" / "nginx-rendered" / "official-site-http.conf").write_text("server {}\n", encoding="utf-8")
+
+    status_out = runner.invoke(app, ["workspace", "status", "--json"], catch_exceptions=False)
+    assert status_out.exit_code == 0, status_out.stdout
+    status = json.loads(status_out.stdout)
+    assert status["clean"] is True
+    assert status["changed_paths"] == []
+    assert status["ignore_policy"]["rule_files"] == [".aitignore"]
+    assert status["ignore_policy"]["custom_patterns"] == [
+        "deploy/site/.env",
+        "deploy/site/macos-nginx/site.env",
+        "deploy/site/nginx-rendered/",
+    ]
 
 
 def test_snapshot_create_json_exposes_phase_timings_for_ignore_policy_runs(tmp_path: Path, monkeypatch):

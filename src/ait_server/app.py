@@ -54,6 +54,7 @@ from .route_request_models import (
     PatchsetPublish,
     RecordReviewRequest,
     ReconcileRequest,
+    RetireRepositoryRequest,
     ReleasePublishRequest,
     RepositoryCreate,
     RequestReviewRequest,
@@ -179,6 +180,7 @@ from .server_store import (
     read_release_artifact,
     record_review,
     request_review,
+    retire_repository,
     retry_land,
     select_patchset,
     submit_land,
@@ -503,7 +505,7 @@ def create_app() -> FastAPI:
             startup_policy.component,
             ctx.root,
         )
-    app = FastAPI(title="ait native server", version="0.10.3")
+    app = FastAPI(title="ait native server", version="0.10.4")
 
     @app.get("/healthz")
     def healthz() -> dict:
@@ -687,6 +689,26 @@ def create_app() -> FastAPI:
             raise _not_found(exc) from exc
         except ValueError as exc:
             raise _bad_request(exc) from exc
+        except ValueError as exc:
+            raise _bad_request(exc) from exc
+
+    @app.post("/v1/native/admin/repositories/{repo_name}:retire")
+    def api_retire_repo(repo_name: str, req: RetireRepositoryRequest, request: Request) -> dict:
+        ctx = _ctx()
+        actor = actor_from_request(request)
+        ensure_admin_action(ctx, actor, repo_name)
+        try:
+            result = retire_repository(
+                ctx,
+                repo_name,
+                expected_repo_id=req.expected_repo_id,
+                actor_identity=actor.identity,
+                actor_type=actor.actor_type,
+                require_verified_export=bool(req.require_verified_export),
+            )
+            return {"repo_name": repo_name, "queued": False, "result": result}
+        except KeyError as exc:
+            raise _not_found(exc) from exc
         except ValueError as exc:
             raise _bad_request(exc) from exc
 

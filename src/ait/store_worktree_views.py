@@ -225,7 +225,6 @@ def _worktree_summary(
         "auto_created_for_task": bool(metadata.get("auto_created_for_task", False)),
         "creation_kind": decision["creation_kind"],
         "cleanup_policy": decision["cleanup_policy"],
-        "root_mode": normalize_optional_text(metadata.get("root_mode")),
         "root_source": normalize_optional_text(metadata.get("root_source")),
         "last_used_at": decision["last_used_at"],
         "cleanup_class": decision["cleanup_class"],

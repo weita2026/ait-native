@@ -133,12 +133,12 @@ def _seed_orphan_tree_metadata(conn, *, root_tree_id: str = "TRE-ORPHAN-ROOT", c
     conn.execute("insert into trees(tree_id, entry_count, created_at) values (?, ?, ?)", (root_tree_id, 1, created_at))
     conn.execute("insert into trees(tree_id, entry_count, created_at) values (?, ?, ?)", (child_tree_id, 1, created_at))
     conn.execute(
-        "insert into tree_entries(tree_id, entry_name, entry_type, target_id, size_bytes, mode) values (?, ?, ?, ?, ?, ?)",
-        (root_tree_id, "nested", "tree", child_tree_id, None, "tree"),
+        "insert into tree_entries(tree_id, entry_name, entry_type, target_id, mode) values (?, ?, ?, ?, ?)",
+        (root_tree_id, "nested", "tree", child_tree_id, "tree"),
     )
     conn.execute(
-        "insert into tree_entries(tree_id, entry_name, entry_type, target_id, size_bytes, mode) values (?, ?, ?, ?, ?, ?)",
-        (child_tree_id, "app.py", "blob", "BLB-ORPHAN-TREE", 17, "0o644"),
+        "insert into tree_entries(tree_id, entry_name, entry_type, target_id, mode) values (?, ?, ?, ?, ?)",
+        (child_tree_id, "app.py", "blob", "BLB-ORPHAN-TREE", "0o644"),
     )
 
 

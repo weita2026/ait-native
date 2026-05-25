@@ -11,6 +11,7 @@ from .local_content import (
     _blob_bytes_by_row,
     _blob_path,
     _blob_row,
+    _insert_blob_record,
     _insert_tree_records,
     _manifest_path_for_tree,
     _parent_delta_candidates,
@@ -28,7 +29,7 @@ def export_snapshot_bundle(ctx: RepoContext, snapshot_id: str, repo_name: str) -
         raise KeyError(f"Unknown snapshot: {snapshot_id}")
     file_rows = conn.execute(
         """
-        select sf.path, sf.blob_id, sf.size_bytes, sf.mode, b.sha256, b.storage_path, b.storage_kind, b.pack_id, b.pack_entry_name
+        select sf.path, sf.blob_id, sf.size_bytes, sf.mode, b.sha256, b.storage_path, b.storage_kind, b.pack_id
         from snapshot_files sf
         join blobs b on b.blob_id = sf.blob_id
         where sf.snapshot_id = ?
@@ -133,27 +134,21 @@ def import_snapshot_bundle(ctx: RepoContext, bundle: dict) -> dict:
             member = members_by_blob_id[row["blob_id"]]
             entry_type = member.get("entry_type", "full")
             target_storage_kind = "pack_delta" if entry_type == "delta" else "pack_full"
-            conn.execute(
-                """
-                insert or ignore into blobs(
-                    blob_id, sha256, storage_path, size_bytes, storage_kind, pack_id, pack_entry_name,
-                    pack_entry_type, pack_base_blob_id, pack_chain_depth, packed_at, pruned_at, created_at
-                ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, null, ?)
-                """,
-                (
-                    row["blob_id"],
-                    row["sha256"],
-                    row["storage_path"],
-                    row["size_bytes"],
-                    target_storage_kind,
-                    pack_id,
-                    member["entry_name"],
-                    entry_type,
-                    member.get("base_blob_id"),
-                    int(member.get("chain_depth", 0) or 0),
-                    created_at,
-                    created_at,
-                ),
+            _insert_blob_record(
+                conn,
+                blob_id=row["blob_id"],
+                sha256=row["sha256"],
+                storage_path=row["storage_path"],
+                size_bytes=row["size_bytes"],
+                storage_kind=target_storage_kind,
+                pack_id=pack_id,
+                pack_entry_type=entry_type,
+                pack_base_blob_id=member.get("base_blob_id"),
+                pack_chain_depth=int(member.get("chain_depth", 0) or 0),
+                pruned_at=None,
+                created_at=created_at,
+                pack_entry_name=None,
+                packed_at=None,
             )
 
     root_tree_id, tree_rows, tree_entry_rows = build_tree_records(file_rows)

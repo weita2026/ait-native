@@ -1587,12 +1587,11 @@ def main() -> None:
                 print(f'ait Discord delivery sweep crashed: {exc}', file=sys.stderr, flush=True)
             next_delivery_sweep_at = time.monotonic() + DISCORD_DELIVERY_SWEEP_INTERVAL_SECONDS
         try:
-            gateway_info = discord_api.gateway_info()
-            gateway_base_url = _clean_optional_str(
-                resume_gateway_url if session_id and resume_gateway_url else gateway_info.get('url')
+            gateway_base_url = _resolve_gateway_base_url(
+                discord_api,
+                session_id=session_id,
+                resume_gateway_url=resume_gateway_url,
             )
-            if gateway_base_url is None:
-                raise BotRuntimeError('Discord gateway info did not include a gateway URL.')
             gateway_url = _discord_gateway_socket_url(gateway_base_url)
             print(f'ait Discord bot connected · gateway={gateway_url}', flush=True)
             with connect(
@@ -1730,6 +1729,22 @@ def _discord_gateway_socket_url(base_url: str) -> str:
     normalized = base_url.rstrip('/')
     separator = '&' if '?' in normalized else '?'
     return f'{normalized}{separator}v=10&encoding=json'
+
+
+def _resolve_gateway_base_url(
+    discord_api: DiscordApiClient,
+    *,
+    session_id: str | None,
+    resume_gateway_url: str | None,
+) -> str:
+    resumed_gateway_url = _clean_optional_str(resume_gateway_url)
+    if session_id and resumed_gateway_url:
+        return resumed_gateway_url
+    gateway_info = discord_api.gateway_info()
+    gateway_base_url = _clean_optional_str(gateway_info.get('url'))
+    if gateway_base_url is None:
+        raise BotRuntimeError('Discord gateway info did not include a gateway URL.')
+    return gateway_base_url
 
 
 def _drop_message_content_intent(gateway_intents: int) -> int:

@@ -23,6 +23,7 @@ from ait_agent.discord.app import (
     DISCORD_MESSAGE_CONTENT_INTENT,
     InvalidInteractionSignatureError,
     _drop_message_content_intent,
+    _resolve_gateway_base_url,
     _should_drop_message_content_intent_for_gateway_error,
     load_config,
     parse_interaction_payload,
@@ -448,7 +449,7 @@ def test_discord_gateway_info_uses_explicit_user_agent(tmp_path: Path, monkeypat
         captured['method'] = request.get_method()
         return _Response()
 
-    monkeypatch.setattr('ait_agent.discord.app.urlopen', fake_urlopen)
+    monkeypatch.setattr('ait_agent.discord.clients.urlopen', fake_urlopen)
 
     payload = DiscordApiClient(config).gateway_info()
 
@@ -456,6 +457,47 @@ def test_discord_gateway_info_uses_explicit_user_agent(tmp_path: Path, monkeypat
     assert captured['method'] == 'GET'
     assert captured['headers']['Authorization'] == 'Bot discord-bot-token'
     assert captured['headers']['User-agent'] == DEFAULT_DISCORD_HTTP_USER_AGENT
+
+
+def test_resolve_gateway_base_url_reuses_resume_gateway_url_without_refetching(tmp_path: Path):
+    config = replace(
+        _config(tmp_path / 'discord-sync.json', public_key='ab' * 32),
+        bot_token='discord-bot-token',
+    )
+    discord_api = DiscordApiClient(config)
+
+    def fail_gateway_info() -> dict[str, Any]:
+        raise AssertionError('gateway_info should not be called when resume gateway URL is available.')
+
+    discord_api.gateway_info = fail_gateway_info  # type: ignore[method-assign]
+
+    assert _resolve_gateway_base_url(
+        discord_api,
+        session_id='discord-session-1',
+        resume_gateway_url='wss://gateway.discord.gg',
+    ) == 'wss://gateway.discord.gg'
+
+
+def test_resolve_gateway_base_url_fetches_gateway_info_without_resume_url(tmp_path: Path):
+    config = replace(
+        _config(tmp_path / 'discord-sync.json', public_key='ab' * 32),
+        bot_token='discord-bot-token',
+    )
+    discord_api = DiscordApiClient(config)
+    calls = {'count': 0}
+
+    def fake_gateway_info() -> dict[str, Any]:
+        calls['count'] += 1
+        return {'url': 'wss://gateway-us-east1.discord.gg'}
+
+    discord_api.gateway_info = fake_gateway_info  # type: ignore[method-assign]
+
+    assert _resolve_gateway_base_url(
+        discord_api,
+        session_id='discord-session-1',
+        resume_gateway_url=None,
+    ) == 'wss://gateway-us-east1.discord.gg'
+    assert calls['count'] == 1
 
 
 def test_discord_service_rejects_bad_signature(tmp_path: Path):
@@ -1125,7 +1167,7 @@ def test_discord_ait_api_client_uses_turn_timeout_for_turn_posts(tmp_path: Path,
         captured['timeout'] = timeout
         return {'ok': True}
 
-    monkeypatch.setattr('ait_agent.discord.app._json_request', fake_json_request)
+    monkeypatch.setattr('ait_agent.discord.clients._json_request', fake_json_request)
 
     client.create_discord_turn(
         'AITS-DISCORD-0001',

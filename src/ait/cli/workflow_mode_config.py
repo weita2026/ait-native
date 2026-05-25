@@ -9,8 +9,6 @@ from ait_protocol.common import DEFAULT_ID_NAMESPACE_PREFIX, normalize_id_namesp
 from ..store import RepoContext, load_config
 from ..task_worktree_layout import (
     DEFAULT_TASK_WORKTREE_ALIAS_ROOT,
-    DEFAULT_TASK_WORKTREE_ROOT_MODE,
-    TASK_WORKTREE_ROOT_MODES,
 )
 
 PLAN_TASK_BINDING_MODES = frozenset({"advisory", "strict", "required"})
@@ -47,10 +45,7 @@ WORKFLOW_MODE_PRESETS: dict[str, dict[str, str]] = {
     },
 }
 WORKFLOW_MODES = frozenset(WORKFLOW_MODE_PRESETS)
-LAND_AUTO_REMOVE_BOUND_WORKTREE_MODES = frozenset({"off", "when_task_complete_and_clean"})
 DEFAULT_TASK_WORKTREE = {
-    "auto_remove_after_remote_land": "off",
-    "root_mode": DEFAULT_TASK_WORKTREE_ROOT_MODE,
     "ephemeral_root": None,
     "alias_root": DEFAULT_TASK_WORKTREE_ALIAS_ROOT,
 }
@@ -290,50 +285,11 @@ def _effective_workflow_mode(ctx: RepoContext) -> dict[str, Any]:
     }
 
 
-def _normalize_land_auto_remove_bound_worktree_mode(value: Any, *, option_name: str) -> str | None:
-    text = _normalize_text_value(value)
-    if text is None:
-        return None
-    lowered = text.lower()
-    if lowered not in LAND_AUTO_REMOVE_BOUND_WORKTREE_MODES:
-        raise typer.BadParameter(f"{option_name} must be `off` or `when_task_complete_and_clean`.")
-    return lowered
-
-
-def _normalize_task_worktree_root_mode(value: Any, *, option_name: str) -> str | None:
-    text = _normalize_text_value(value)
-    if text is None:
-        return None
-    lowered = text.lower()
-    if lowered not in TASK_WORKTREE_ROOT_MODES:
-        allowed = "`, `".join(sorted(TASK_WORKTREE_ROOT_MODES))
-        raise typer.BadParameter(f"{option_name} must be `{allowed}`.")
-    return lowered
-
-
 def _task_worktree_config(cfg: dict[str, Any]) -> dict[str, Any]:
     raw = cfg.get("task_worktree")
     if not isinstance(raw, dict):
         return {}
     out: dict[str, Any] = {}
-    try:
-        auto_remove = _normalize_land_auto_remove_bound_worktree_mode(
-            raw.get("auto_remove_after_remote_land"),
-            option_name="`task_worktree.auto_remove_after_remote_land`",
-        )
-    except typer.BadParameter:
-        auto_remove = None
-    if auto_remove is not None:
-        out["auto_remove_after_remote_land"] = auto_remove
-    try:
-        root_mode = _normalize_task_worktree_root_mode(
-            raw.get("root_mode"),
-            option_name="`task_worktree.root_mode`",
-        )
-    except typer.BadParameter:
-        root_mode = None
-    if root_mode is not None:
-        out["root_mode"] = root_mode
     ephemeral_root = _normalize_text_value(raw.get("ephemeral_root"))
     if ephemeral_root is not None:
         out["ephemeral_root"] = ephemeral_root
@@ -346,14 +302,6 @@ def _task_worktree_config(cfg: dict[str, Any]) -> dict[str, Any]:
 def _effective_task_worktree(ctx: RepoContext) -> dict[str, Any]:
     stored = _task_worktree_config(load_config(ctx))
     return {
-        "auto_remove_after_remote_land": {
-            "value": stored.get("auto_remove_after_remote_land", DEFAULT_TASK_WORKTREE["auto_remove_after_remote_land"]),
-            "source": "repo_config" if "auto_remove_after_remote_land" in stored else "built_in",
-        },
-        "root_mode": {
-            "value": stored.get("root_mode", DEFAULT_TASK_WORKTREE["root_mode"]),
-            "source": "repo_config" if "root_mode" in stored else "built_in",
-        },
         "ephemeral_root": {
             "value": stored.get("ephemeral_root", DEFAULT_TASK_WORKTREE["ephemeral_root"]),
             "source": "repo_config" if "ephemeral_root" in stored else "built_in",

@@ -57,6 +57,7 @@ create table if not exists repositories (
     repo_name text primary key,
     repo_id text not null unique,
     default_line text not null,
+    lifecycle_state text not null default 'active',
     id_namespace_prefix text not null default 'AIT',
     policy_json text not null default '{}',
     created_at text not null,
@@ -191,6 +192,7 @@ create table if not exists repositories (
     repo_name text primary key,
     repo_id text not null unique,
     default_line text not null,
+    lifecycle_state text not null default 'active',
     id_namespace_prefix text not null default 'AIT',
     policy_json text not null default '{}',
     created_at timestamptz not null,
@@ -324,6 +326,7 @@ REPOSITORY_GROUP_MEMBERSHIPS_REPO_ID_UNIQUE_INDEX = "idx_repository_group_member
 REPOSITORY_GROUP_MEMBERSHIPS_GROUP_REPO_ID_INDEX = "idx_repository_group_memberships_group_repo_id"
 _POSTGRES_CONTENT_SCHEMA_READY: set[tuple[str, str]] = set()
 _POSTGRES_CONTENT_SCHEMA_READY_GUARD = threading.RLock()
+REPOSITORY_LIFECYCLE_STATES = {"active", "retiring"}
 
 
 def _connect(ctx: ServerContext):
@@ -395,6 +398,7 @@ def _ensure_schema_postgres(conn, ctx: ServerContext) -> None:
     _ensure_column(conn, ctx, "lines", "archived_at", "timestamptz")
     _ensure_column(conn, ctx, "lines", "repo_id", "text")
     _ensure_column(conn, ctx, "repositories", "repo_id", "text")
+    _ensure_column(conn, ctx, "repositories", "lifecycle_state", "text not null default 'active'")
     _ensure_column(conn, ctx, "repositories", "id_namespace_prefix", "text not null default 'AIT'")
     _ensure_column(conn, ctx, "repositories", "policy_json", "text not null default '{}'")
     _ensure_column(conn, ctx, "snapshots", "repo_id", "text")
@@ -448,6 +452,7 @@ def _ensure_schema(conn, ctx: ServerContext) -> None:
         _ensure_column(conn, ctx, "lines", "archived_at", "text")
         _ensure_column(conn, ctx, "lines", "repo_id", "text")
         _ensure_column(conn, ctx, "repositories", "repo_id", "text")
+        _ensure_column(conn, ctx, "repositories", "lifecycle_state", "text not null default 'active'")
         _ensure_column(conn, ctx, "repositories", "id_namespace_prefix", "text not null default 'AIT'")
         _ensure_column(conn, ctx, "repositories", "policy_json", "text not null default '{}'")
         _ensure_column(conn, ctx, "snapshots", "repo_id", "text")
@@ -1323,6 +1328,10 @@ def _repository_out(row) -> dict[str, Any]:
     if not repo_id:
         raise ValueError(f"Repository {out.get('repo_name')!r} is missing repo_id")
     out["repo_id"] = repo_id
+    lifecycle_state = str(out.get("lifecycle_state") or "active").strip().lower() or "active"
+    if lifecycle_state not in REPOSITORY_LIFECYCLE_STATES:
+        lifecycle_state = "active"
+    out["lifecycle_state"] = lifecycle_state
     try:
         raw_policy = json.loads(out.get("policy_json") or "{}")
     except Exception:
@@ -1467,6 +1476,39 @@ def get_repository(ctx: ServerContext, repo_name: str) -> dict:
         row = conn.execute("select * from repositories where repo_name = ?", (repo_name,)).fetchone()
     if row is None:
         raise KeyError(f"Unknown repository: {repo_name}")
+    return _repository_out(row)
+
+
+def set_repository_lifecycle_state(
+    ctx: ServerContext,
+    repo_name: str,
+    lifecycle_state: str,
+    *,
+    expected_repo_id: str | None = None,
+) -> dict:
+    normalized_state = str(lifecycle_state or "").strip().lower()
+    if normalized_state not in REPOSITORY_LIFECYCLE_STATES:
+        raise ValueError(f"Unsupported repository lifecycle state: {lifecycle_state!r}")
+    with _connect(ctx) as conn:
+        _ensure_schema(conn, ctx)
+        row = conn.execute("select * from repositories where repo_name = ?", (repo_name,)).fetchone()
+        if row is None:
+            raise KeyError(f"Unknown repository: {repo_name}")
+        current = _repository_out(row)
+        normalized_expected_repo_id = str(expected_repo_id or "").strip()
+        if normalized_expected_repo_id and normalized_expected_repo_id != current["repo_id"]:
+            raise ValueError(
+                f"Repository scope mismatch for {repo_name}: repo_id {normalized_expected_repo_id} does not match {current['repo_id']}"
+            )
+        if current["lifecycle_state"] == normalized_state:
+            return current
+        conn.execute(
+            "update repositories set lifecycle_state = ?, updated_at = ? where repo_name = ?",
+            (normalized_state, utc_now(), repo_name),
+        )
+        conn.commit()
+        row = conn.execute("select * from repositories where repo_name = ?", (repo_name,)).fetchone()
+    assert row is not None
     return _repository_out(row)
 
 

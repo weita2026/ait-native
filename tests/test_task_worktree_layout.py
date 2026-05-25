@@ -40,12 +40,10 @@ def test_resolve_task_auto_worktree_location_prefers_configured_ephemeral_root_o
     location = resolve_task_auto_worktree_location(
         ctx,
         worktree_name="t-1234",
-        root_mode="ephemeral_auto",
         ephemeral_root=".ram-root",
         alias_root=None,
     )
 
-    assert location["root_mode"] == "ephemeral_auto"
     assert location["root_source"] == "configured_ephemeral_root"
     assert location["target_path"] == (repo / ".ram-root" / "housekeeper-layout-macos-configured-root" / "t-1234").resolve()
     assert location["alias_path"] == (repo / ".ait" / "worktree-links" / "t-1234").resolve()
@@ -60,12 +58,10 @@ def test_resolve_main_seed_mirror_location_uses_hidden_internal_root(tmp_path: P
     location = resolve_main_seed_mirror_location(
         ctx,
         seed_name="main-seed",
-        root_mode="ephemeral_auto",
         ephemeral_root=tmp_path / "ram-root",
     )
 
     assert location is not None
-    assert location["root_mode"] == "ephemeral_auto"
     assert location["root_source"] == "configured_ephemeral_root"
     assert location["target_path"] == (
         tmp_path / "ram-root" / "housekeeper-layout-main-seed" / ".ait-internal" / "main-seed"
@@ -73,21 +69,17 @@ def test_resolve_main_seed_mirror_location_uses_hidden_internal_root(tmp_path: P
     assert location["preferred_path"] == location["target_path"]
 
 
-def test_detect_init_task_worktree_defaults_persists_first_macos_ram_volume(tmp_path: Path, monkeypatch):
+def test_detect_init_task_worktree_defaults_persists_first_macos_ram_volume(tmp_path: Path, monkeypatch, host_ram_root: Path):
     repo, ctx = _init_repo(tmp_path, monkeypatch, "housekeeper-layout-macos-init-defaults")
     layout = import_module("ait.task_worktree_layout")
     monkeypatch.setattr(layout.sys, "platform", "darwin")
-    ram_root = (tmp_path / "AIT_RAM").resolve()
-    monkeypatch.setattr(layout, "_macos_ram_volume_roots", lambda: [ram_root, (tmp_path / "Z_RAM").resolve()])
+    monkeypatch.setattr(layout, "_macos_ram_volume_roots", lambda: [host_ram_root, (tmp_path / "Z_RAM").resolve()])
 
     defaults = detect_init_task_worktree_defaults(ctx)
 
-    expected_root = layout._auto_detected_ephemeral_root(ctx, ram_root)
-    assert defaults == {
-        "root_mode": "ephemeral_auto",
-        "ephemeral_root": str(expected_root),
-    }
-    assert str(expected_root).startswith(str((ram_root / ".ait-repos").resolve()))
+    expected_root = layout._auto_detected_ephemeral_root(ctx, host_ram_root)
+    assert defaults == {"ephemeral_root": str(expected_root)}
+    assert str(expected_root).startswith(str((host_ram_root / ".ait-repos").resolve()))
     assert str(expected_root) != str((repo / ".ait").resolve())
 
 
@@ -161,10 +153,7 @@ def test_detect_init_task_worktree_defaults_persists_first_linux_memory_root(tmp
     defaults = detect_init_task_worktree_defaults(ctx)
 
     expected_root = layout._auto_detected_ephemeral_root(ctx, memory_root)
-    assert defaults == {
-        "root_mode": "ephemeral_auto",
-        "ephemeral_root": str(expected_root),
-    }
+    assert defaults == {"ephemeral_root": str(expected_root)}
 
 
 def test_macos_ram_volume_roots_parse_hdiutil_plist(monkeypatch):
@@ -196,7 +185,7 @@ def test_macos_ram_volume_roots_parse_hdiutil_plist(monkeypatch):
     assert roots == [Path("/Volumes/AIT_RAM").resolve()]
 
 
-def test_auto_detected_ephemeral_root_scopes_by_repo_path(tmp_path: Path, monkeypatch):
+def test_auto_detected_ephemeral_root_scopes_by_repo_path(tmp_path: Path, monkeypatch, host_ram_root: Path):
     repo_a, ctx_a = _init_repo(tmp_path, monkeypatch, "housekeeper-layout-scope-a")
     repo_b = tmp_path / "housekeeper-layout-scope-b"
     repo_b.mkdir()
@@ -208,12 +197,11 @@ def test_auto_detected_ephemeral_root_scopes_by_repo_path(tmp_path: Path, monkey
     assert init_out.exit_code == 0, init_out.stdout
     ctx_b = RepoContext.discover(repo_b)
 
-    ram_root = (tmp_path / "AIT_RAM").resolve()
-    scoped_a = layout._auto_detected_ephemeral_root(ctx_a, ram_root)
-    scoped_b = layout._auto_detected_ephemeral_root(ctx_b, ram_root)
+    scoped_a = layout._auto_detected_ephemeral_root(ctx_a, host_ram_root)
+    scoped_b = layout._auto_detected_ephemeral_root(ctx_b, host_ram_root)
 
     assert scoped_a != scoped_b
-    assert scoped_a.parent == scoped_b.parent == (ram_root / ".ait-repos").resolve()
+    assert scoped_a.parent == scoped_b.parent == (host_ram_root / ".ait-repos").resolve()
 
 
 def test_windows_ram_disk_roots_prefers_env_roots_and_dedupes(monkeypatch):
@@ -246,10 +234,7 @@ def test_detect_init_task_worktree_defaults_persists_first_windows_ram_disk(tmp_
     defaults = detect_init_task_worktree_defaults(ctx)
 
     expected_root = layout._auto_detected_ephemeral_root(ctx, ram_root)
-    assert defaults == {
-        "root_mode": "ephemeral_auto",
-        "ephemeral_root": str(expected_root),
-    }
+    assert defaults == {"ephemeral_root": str(expected_root)}
 
 
 def test_resolve_task_auto_worktree_location_linux_falls_back_through_candidate_chain(tmp_path: Path, monkeypatch):
@@ -275,12 +260,10 @@ def test_resolve_task_auto_worktree_location_linux_falls_back_through_candidate_
     location = resolve_task_auto_worktree_location(
         ctx,
         worktree_name="t-1234",
-        root_mode="ephemeral_auto",
         ephemeral_root=None,
         alias_root=None,
     )
 
-    assert location["root_mode"] == "ephemeral_auto"
     assert location["root_source"] == "linux_dev_shm"
     assert location["target_path"] == (candidate_paths[1][0] / "t-1234").resolve()
     assert location["preferred_path"] == location["alias_path"]
@@ -304,14 +287,12 @@ def test_resolve_task_auto_worktree_location_linux_falls_back_to_workspace_when_
     location = resolve_task_auto_worktree_location(
         ctx,
         worktree_name="t-1234",
-        root_mode="ephemeral_auto",
         ephemeral_root=None,
         alias_root=None,
     )
 
-    assert location["root_mode"] == "ephemeral_auto"
-    assert location["root_source"] == "workspace_fallback"
-    assert location["target_path"] == (repo / ".ait" / "workspace" / "t-1234").resolve()
+    assert location["root_source"] == "repo_internal_fallback"
+    assert location["target_path"] == (repo / ".ait" / "worktree" / "t-1234").resolve()
     assert location["alias_path"] is None
     assert location["preferred_path"] == location["target_path"]
 
@@ -339,12 +320,10 @@ def test_resolve_task_auto_worktree_location_windows_falls_back_through_candidat
     location = resolve_task_auto_worktree_location(
         ctx,
         worktree_name="t-1234",
-        root_mode="ephemeral_auto",
         ephemeral_root=None,
         alias_root=None,
     )
 
-    assert location["root_mode"] == "ephemeral_auto"
     assert location["root_source"] == "windows_temp"
     assert location["target_path"] == (candidate_paths[1][0] / "t-1234").resolve()
     assert location["preferred_path"] == location["alias_path"]
@@ -367,13 +346,11 @@ def test_resolve_task_auto_worktree_location_windows_falls_back_to_workspace_whe
     location = resolve_task_auto_worktree_location(
         ctx,
         worktree_name="t-1234",
-        root_mode="ephemeral_auto",
         ephemeral_root=None,
         alias_root=None,
     )
 
-    assert location["root_mode"] == "ephemeral_auto"
-    assert location["root_source"] == "workspace_fallback"
-    assert location["target_path"] == (repo / ".ait" / "workspace" / "t-1234").resolve()
+    assert location["root_source"] == "repo_internal_fallback"
+    assert location["target_path"] == (repo / ".ait" / "worktree" / "t-1234").resolve()
     assert location["alias_path"] is None
     assert location["preferred_path"] == location["target_path"]
