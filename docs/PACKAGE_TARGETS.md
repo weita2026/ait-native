@@ -34,6 +34,13 @@ Today, one repository checkout or one built distribution may expose multiple con
 - `ait-worker`
 - `aitk`
 
+Current install-channel note:
+
+- the macOS Homebrew tap is a convenience path for this same `ait-native`
+  distribution;
+- it does not create a separate target boundary; and
+- it does not add `ait-web` back into the public install surface.
+
 Important boundary rule:
 
 > **One combined distribution or checkout does not mean every command is the same package target, the same install promise, or the same public license surface.**

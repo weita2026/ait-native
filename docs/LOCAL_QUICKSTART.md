@@ -10,6 +10,9 @@ Use this guide when:
 
 This guide is intentionally **not** the self-hosted path. If you need `ait-server`, `ait-worker`, PostgreSQL, or a shared control plane, stop here and use [SELF_HOSTED_TEAM_DEPLOYMENT.md](./SELF_HOSTED_TEAM_DEPLOYMENT.md).
 
+If you are on macOS and want the public convenience installer instead of a
+repository checkout first, use [HOMEBREW_TAP.md](./HOMEBREW_TAP.md).
+
 ## 1. Prerequisites
 
 Minimum baseline:
