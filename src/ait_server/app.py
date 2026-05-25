@@ -131,7 +131,6 @@ from .workflow_async_jobs import (
     _land_job_payload,
     _maybe_enqueue_land,
     _maybe_follow_patchset_publish_with_ci,
-    _maybe_start_patchset_ci,
     _maybe_enqueue_policy,
     _patchset_publish_policy_followup,
     _patchset_ci_job_payload,
@@ -1897,14 +1896,16 @@ def create_app() -> FastAPI:
             actor = actor_from_request(request)
             ensure_repo_action(ctx, actor, change["repo_name"], "land")
             result = select_patchset(ctx, change_id, req.patchset_id)
-            ci_state = _maybe_start_patchset_ci(ctx, req.patchset_id, trigger="patchset_select")
-            if isinstance(ci_state, dict):
-                result.update(ci_state)
             policy_job = _maybe_enqueue_policy(ctx, req.patchset_id)
             if policy_job is not None:
                 result["policy_job"] = policy_job
-            _trigger_task_dag_telegram_notifications(ctx, change["repo_name"], event_type="patchset.selected", entity_id=req.patchset_id)
-            return result
+            return _attach_notification_followup(
+                result,
+                ctx,
+                change["repo_name"],
+                event_type="patchset.selected",
+                entity_id=req.patchset_id,
+            )
         except KeyError as exc:
             raise _not_found(exc) from exc
         except ValueError as exc:

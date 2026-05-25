@@ -1,0 +1,50 @@
+# PyPI Publishing
+
+This repository publishes `ait-native` to PyPI from the clean public GitHub
+repository: `weita2026/ait-native`.
+
+The release automation lives at `.github/workflows/pypi-publish.yml` and is
+designed for PyPI `Trusted Publisher` flow instead of a long-lived API token in
+CI.
+
+## First-time setup
+
+1. In PyPI account settings, add a pending publisher for project `ait-native`
+   if the project does not exist yet.
+2. For the GitHub publisher fields, use:
+   - owner: `weita2026`
+   - repository: `ait-native`
+   - workflow: `.github/workflows/pypi-publish.yml`
+   - environment: `pypi`
+3. If the project already exists on PyPI, add the same GitHub workflow as a
+   normal project-level publisher instead of a pending publisher.
+
+## Publish from the public repo
+
+1. Push the clean public release commit and tag to `weita2026/ait-native`.
+2. Create a GitHub Release for the matching version tag, or run the workflow
+   manually from GitHub Actions.
+3. Let `.github/workflows/pypi-publish.yml` build the wheel/sdist, run
+   `twine check`, smoke install the wheel, and publish to PyPI.
+4. Verify the release with:
+
+```bash
+python -m pip index versions ait-native
+python -m pip install ait-native==<version>
+```
+
+## Manual fallback
+
+Prefer trusted publishing. If PyPI or GitHub Actions needs an emergency manual
+upload path, use a project-scoped PyPI token only for the fallback upload:
+
+```bash
+python -m pip install --upgrade build twine
+python -m build
+python -m twine check dist/*
+TWINE_USERNAME=__token__ TWINE_PASSWORD=<token> python -m twine upload dist/*
+```
+
+Do not publish from the internal/private repository tree. Publish only from the
+clean public repo that already excludes governance files, `ait-web`, and other
+non-public surfaces.

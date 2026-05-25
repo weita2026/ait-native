@@ -5,10 +5,15 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "ait-native"
 version = "0.10.3"
-description = "ait native local repository, sync, review, policy, landing, and PostgreSQL-ready runtime prototype"
-readme = "README.md"
+description = "Agent-first Markdown workflow CLI with optional self-hosted server and worker surfaces"
+readme = { file = "README.pypi.md", content-type = "text/markdown" }
 requires-python = ">=3.11"
 dependencies = ["typer>=0.12,<1.0", "rich>=13,<15", "fastapi>=0.115,<1.0", "uvicorn>=0.30,<1.0", "httpx>=0.27,<1.0", "websockets>=12,<17", "cryptography>=42,<47"]
+license = "Apache-2.0 AND AGPL-3.0-only"
+license-files = ["LICENSE", "NOTICE", "LICENSES/AGPL-3.0-only.txt"]
+keywords = ["ai", "agent", "workflow", "markdown", "cli"]
+classifiers = ["Development Status :: 3 - Alpha", "Environment :: Console", "Intended Audience :: Developers", "Operating System :: OS Independent", "Programming Language :: Python :: 3", "Programming Language :: Python :: 3.11", "Topic :: Software Development :: Build Tools", "Topic :: Software Development :: Version Control"]
+urls = { Homepage = "https://ait-native.dev", Documentation = "https://ait-native.dev", Source = "https://github.com/weita2026/ait-native", Issues = "https://github.com/weita2026/ait-native/issues", Releases = "https://github.com/weita2026/ait-native/releases" }
 
 [project.scripts]
 ait = "ait.cli:app"

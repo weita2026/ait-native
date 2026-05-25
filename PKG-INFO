@@ -1,0 +1,73 @@
+Metadata-Version: 2.4
+Name: ait-native
+Version: 0.10.3
+Summary: Agent-first Markdown workflow CLI with optional self-hosted server and worker surfaces
+Requires-Python: >=3.11
+License-Expression: Apache-2.0 AND AGPL-3.0-only
+Keywords: ai, agent, workflow, markdown, cli
+Project-URL: Documentation, https://ait-native.dev
+Project-URL: Homepage, https://ait-native.dev
+Project-URL: Issues, https://github.com/weita2026/ait-native/issues
+Project-URL: Releases, https://github.com/weita2026/ait-native/releases
+Project-URL: Source, https://github.com/weita2026/ait-native
+Classifier: Development Status :: 3 - Alpha
+Classifier: Environment :: Console
+Classifier: Intended Audience :: Developers
+Classifier: Operating System :: OS Independent
+Classifier: Programming Language :: Python :: 3
+Classifier: Programming Language :: Python :: 3.11
+Classifier: Topic :: Software Development :: Build Tools
+Classifier: Topic :: Software Development :: Version Control
+Requires-Dist: typer>=0.12,<1.0
+Requires-Dist: rich>=13,<15
+Requires-Dist: fastapi>=0.115,<1.0
+Requires-Dist: uvicorn>=0.30,<1.0
+Requires-Dist: httpx>=0.27,<1.0
+Requires-Dist: websockets>=12,<17
+Requires-Dist: cryptography>=42,<47
+Description-Content-Type: text/markdown
+License-File: LICENSE
+License-File: NOTICE
+License-File: LICENSES/AGPL-3.0-only.txt
+
+# ait-native
+
+`ait-native` is the first public Python distribution for the `ait` workflow family.
+
+It packages these command surfaces today:
+
+- `ait` for the local trust-layer CLI
+- `ait-agent` for transport/runtime helper flows
+- `ait-server` for the shared workflow control plane
+- `ait-worker` for the async shared-control-plane worker
+- `aitk` for the local read-only history companion
+
+## Install
+
+```bash
+pip install ait-native
+```
+
+If you plan to run the shared self-hosted control plane, install the PostgreSQL extra:
+
+```bash
+pip install "ait-native[postgres]"
+```
+
+## Quick start
+
+- Local-first path: https://ait-native.dev
+- Self-hosted guide: https://ait-native.dev
+- Source: https://github.com/weita2026/ait-native
+
+## Important license boundary
+
+`ait-native` is a combined public distribution with multiple release-facing license surfaces.
+
+- Local CLI and local companion surfaces remain Apache-2.0.
+- Public self-hosted `ait-server` / `ait-worker` surfaces follow AGPL-3.0-only.
+
+Read the release-facing summary before relying on a broader grant:
+
+- https://ait-native.dev
+- https://github.com/weita2026/ait-native

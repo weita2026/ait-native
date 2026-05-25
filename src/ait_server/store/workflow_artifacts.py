@@ -96,7 +96,7 @@ def _release_artifact_view(release_id: str, artifact: dict[str, Any]) -> dict[st
 def _release_row(row: dict[str, Any] | Any) -> dict[str, Any]:
     out = dict(row)
     out["line"] = out.pop("line_name")
-    out["package"] = {
+    package = {
         "name": out.pop("package_name", None),
         "version": out.pop("package_version", None),
         "requires_python": out.pop("package_requires_python", None),
@@ -112,6 +112,11 @@ def _release_row(row: dict[str, Any] | Any) -> dict[str, Any]:
             out[target_key] = json.loads(raw or json.dumps(default))
         except Exception:
             out[target_key] = default
+    metadata = out.get("metadata") if isinstance(out.get("metadata"), dict) else {}
+    metadata_package = metadata.get("package") if isinstance(metadata.get("package"), dict) else {}
+    if metadata_package:
+        package.update({key: value for key, value in metadata_package.items() if value is not None})
+    out["package"] = package
     artifacts = [
         _release_artifact_view(str(out["release_id"]), artifact)
         for artifact in out.get("artifacts", [])

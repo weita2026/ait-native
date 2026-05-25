@@ -1,0 +1,70 @@
+name: pypi-publish
+
+on:
+  workflow_dispatch:
+  release:
+    types:
+      - published
+
+concurrency:
+  group: pypi-publish-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-distributions:
+    name: Build distributions
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install packaging tools
+        run: python -m pip install --upgrade pip build twine
+
+      - name: Build wheel and sdist
+        run: python -m build
+
+      - name: Validate distribution metadata
+        run: python -m twine check dist/*
+
+      - name: Smoke install the built wheel
+        run: |
+          python -m venv .venv-smoke
+          . .venv-smoke/bin/activate
+          python -m pip install --upgrade pip
+          python -m pip install dist/*.whl
+          ait --help
+          ait-agent --help
+
+      - name: Upload distributions
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-distributions
+          path: dist/*
+
+  publish-pypi:
+    name: Publish to PyPI
+    needs:
+      - build-distributions
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/ait-native
+    permissions:
+      id-token: write
+    steps:
+      - name: Download distributions
+        uses: actions/download-artifact@v4
+        with:
+          name: python-distributions
+          path: dist
+
+      - name: Publish package distributions to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1

@@ -1,0 +1,16 @@
+.ait/
+.ait-server/
+build/
+dist/
+htmlcov/
+.coverage*
+.mypy_cache/
+.nox/
+.pytest_cache/
+.ruff_cache/
+.tox/
+.venv/
+__pycache__/
+node_modules/
+venv/
+*.egg-info/

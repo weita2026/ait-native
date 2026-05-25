@@ -1334,6 +1334,11 @@ def test_patchset_ci_jobs_publish_select_and_rerun_with_attestation_writeback(tm
         assert rerun["queued"] is True
         assert rerun["job"]["job_type"] == "patchset.ci"
         assert _drain_jobs(data_dir) >= 1
+        rerun_status_out = runner.invoke(app, ["patchset", "ci-status", patchset["patchset_id"], "--json"], catch_exceptions=False)
+        assert rerun_status_out.exit_code == 0, rerun_status_out.stdout
+        rerun_status = json.loads(rerun_status_out.stdout)
+        latest_job = rerun_status["latest_job"]
+        assert latest_job["state"] == "succeeded"
 
         (worktree_path / "app.py").write_text("print('ci second patchset')\n", encoding="utf-8")
         second_snap_out = runner.invoke(app, ["snapshot", "create", "--message", "feature ci second", "--json"], catch_exceptions=False)
@@ -1354,7 +1359,16 @@ def test_patchset_ci_jobs_publish_select_and_rerun_with_attestation_writeback(tm
         )
         assert select_out.exit_code == 0, select_out.stdout
         selected = json.loads(select_out.stdout)
-        assert selected["ci_job"]["job_type"] == "patchset.ci"
+        assert selected["selected_patchset_id"] == patchset["patchset_id"]
+        assert "ci_job" not in selected
+        assert "ci_result" not in selected
+        assert selected["policy_job"]["job_type"] == "policy.evaluate"
+        assert selected["notification_followup"]["delivery"] == "background"
+        post_select_status_out = runner.invoke(app, ["patchset", "ci-status", patchset["patchset_id"], "--json"], catch_exceptions=False)
+        assert post_select_status_out.exit_code == 0, post_select_status_out.stdout
+        post_select_status = json.loads(post_select_status_out.stdout)
+        assert post_select_status["latest_job"]["job_id"] == latest_job["job_id"]
+        assert post_select_status["attestation_updated_at"] == rerun_status["attestation_updated_at"]
 
 
 def test_patchset_publish_defers_inline_ci_until_explicit_run_ci(tmp_path: Path, monkeypatch):
@@ -1446,12 +1460,43 @@ def test_patchset_publish_defers_inline_ci_until_explicit_run_ci(tmp_path: Path,
         rerun = json.loads(rerun_out.stdout)
         assert rerun["tests_status"] == "pass"
         assert rerun["attestation"]["evaluation_summary"]["tests"] == "pass"
+        rerun_status_out = runner.invoke(app, ["patchset", "ci-status", patchset["patchset_id"], "--json"], catch_exceptions=False)
+        assert rerun_status_out.exit_code == 0, rerun_status_out.stdout
+        rerun_status = json.loads(rerun_status_out.stdout)
 
         attestation_out = runner.invoke(app, ["attest", "show", patchset["patchset_id"], "--json"], catch_exceptions=False)
         assert attestation_out.exit_code == 0, attestation_out.stdout
         attestation = json.loads(attestation_out.stdout)
         assert attestation["evaluation_summary"]["tests"] == "pass"
         assert set(attestation["detail"]["patchset_ci"]["selected_suite_ids"]) == {"preflight", "stable_smoke", "package_smoke"}
+
+        (worktree_path / "app.py").write_text("print('ci inline second patchset')\n", encoding="utf-8")
+        second_snap_out = runner.invoke(app, ["snapshot", "create", "--message", "feature ci inline second", "--json"], catch_exceptions=False)
+        assert second_snap_out.exit_code == 0, second_snap_out.stdout
+        second_patchset_out = runner.invoke(
+            app,
+            ["patchset", "publish", "--change", change["change_id"], "--summary", "inline ci patchset second", "--json"],
+            catch_exceptions=False,
+        )
+        assert second_patchset_out.exit_code == 0, second_patchset_out.stdout
+
+        select_out = runner.invoke(
+            app,
+            ["patchset", "select", patchset["patchset_id"], "--change", change["change_id"], "--json"],
+            catch_exceptions=False,
+        )
+        assert select_out.exit_code == 0, select_out.stdout
+        selected = json.loads(select_out.stdout)
+        assert selected["selected_patchset_id"] == patchset["patchset_id"]
+        assert "ci_job" not in selected
+        assert "ci_result" not in selected
+        assert "policy_job" not in selected
+        assert selected["notification_followup"]["delivery"] == "background"
+
+        post_select_status_out = runner.invoke(app, ["patchset", "ci-status", patchset["patchset_id"], "--json"], catch_exceptions=False)
+        assert post_select_status_out.exit_code == 0, post_select_status_out.stdout
+        post_select_status = json.loads(post_select_status_out.stdout)
+        assert post_select_status["attestation_updated_at"] == rerun_status["attestation_updated_at"]
 
 
 def test_patchset_ci_status_exposes_tg1_required_summary(tmp_path: Path, monkeypatch):

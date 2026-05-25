@@ -33,6 +33,14 @@ from .store import (
     update_local_release,
 )
 
+_PUBLIC_PACKAGE_RELEASE_URLS = {
+    "Homepage": "https://ait-native.dev",
+    "Documentation": "https://ait-native.dev",
+    "Source": "https://github.com/weita2026/ait-native",
+    "Issues": "https://github.com/weita2026/ait-native/issues",
+    "Releases": "https://github.com/weita2026/ait-native/releases",
+}
+
 SUPPORTED_RELEASE_PROFILES = {
     "local-cli": {
         "required_scripts": ["ait"],
@@ -52,8 +60,10 @@ SUPPORTED_RELEASE_PROFILES = {
         "forbidden_scripts": ["ait-web"],
         "release_docs": [
             "README.md",
+            "README.pypi.md",
             "docs/LOCAL_QUICKSTART.md",
             "docs/SELF_HOSTED_TEAM_DEPLOYMENT.md",
+            "docs/PYPI_PUBLISHING.md",
             "docs/PACKAGE_TARGETS.md",
             "docs/COMPATIBILITY_MATRIX.md",
             "docs/public_package_targets_contract.json",
@@ -82,6 +92,59 @@ SUPPORTED_RELEASE_PROFILES = {
             "src/ait_native/web.py",
         ],
         "setuptools_package_excludes": ["ait_web*"],
+        "project_overrides": {
+            "description": "Agent-first Markdown workflow CLI with optional self-hosted server and worker surfaces",
+            "readme": {
+                "file": "README.pypi.md",
+                "content-type": "text/markdown",
+            },
+            "license": "Apache-2.0 AND AGPL-3.0-only",
+            "license-files": [
+                "LICENSE",
+                "NOTICE",
+                "LICENSES/AGPL-3.0-only.txt",
+            ],
+            "keywords": ["ai", "agent", "workflow", "markdown", "cli"],
+            "classifiers": [
+                "Development Status :: 3 - Alpha",
+                "Environment :: Console",
+                "Intended Audience :: Developers",
+                "Operating System :: OS Independent",
+                "Programming Language :: Python :: 3",
+                "Programming Language :: Python :: 3.11",
+                "Topic :: Software Development :: Build Tools",
+                "Topic :: Software Development :: Version Control",
+            ],
+            "urls": _PUBLIC_PACKAGE_RELEASE_URLS,
+        },
+        "required_package_metadata": {
+            "license": "Apache-2.0 AND AGPL-3.0-only",
+            "readme_file": "README.pypi.md",
+            "keywords_min_count": 3,
+            "classifiers_min_count": 5,
+            "project_urls": ["Homepage", "Documentation", "Source", "Issues", "Releases"],
+        },
+        "publish_support": {
+            "files": [
+                ".github/workflows/pypi-publish.yml",
+                "docs/PYPI_PUBLISHING.md",
+            ],
+            "workflow_path": ".github/workflows/pypi-publish.yml",
+            "workflow_contains": [
+                "workflow_dispatch:",
+                "pypa/gh-action-pypi-publish@release/v1",
+                "id-token: write",
+                "name: pypi",
+                "https://pypi.org/p/ait-native",
+            ],
+            "doc_path": "docs/PYPI_PUBLISHING.md",
+            "doc_contains": [
+                "weita2026/ait-native",
+                ".github/workflows/pypi-publish.yml",
+                "Trusted Publisher",
+                "twine upload dist/*",
+            ],
+        },
     },
 }
 
@@ -128,6 +191,51 @@ def _bundle_entry_with_bytes(entry: dict[str, Any], data: bytes) -> dict[str, An
 
 def _bundle_entry_with_text(entry: dict[str, Any], text: str) -> dict[str, Any]:
     return _bundle_entry_with_bytes(entry, text.encode("utf-8"))
+
+
+def _public_pypi_readme() -> str:
+    return """# ait-native
+
+`ait-native` is the first public Python distribution for the `ait` workflow family.
+
+It packages these command surfaces today:
+
+- `ait` for the local trust-layer CLI
+- `ait-agent` for transport/runtime helper flows
+- `ait-server` for the shared workflow control plane
+- `ait-worker` for the async shared-control-plane worker
+- `aitk` for the local read-only history companion
+
+## Install
+
+```bash
+pip install ait-native
+```
+
+If you plan to run the shared self-hosted control plane, install the PostgreSQL extra:
+
+```bash
+pip install "ait-native[postgres]"
+```
+
+## Quick start
+
+- Local-first path: https://ait-native.dev
+- Self-hosted guide: https://ait-native.dev
+- Source: https://github.com/weita2026/ait-native
+
+## Important license boundary
+
+`ait-native` is a combined public distribution with multiple release-facing license surfaces.
+
+- Local CLI and local companion surfaces remain Apache-2.0.
+- Public self-hosted `ait-server` / `ait-worker` surfaces follow AGPL-3.0-only.
+
+Read the release-facing summary before relying on a broader grant:
+
+- https://ait-native.dev
+- https://github.com/weita2026/ait-native
+"""
 
 
 def _workspace_candidate_roots(ctx: RepoContext) -> list[Path]:
@@ -334,6 +442,13 @@ def _shape_release_pyproject(pyproject_text: str, profile_settings: dict[str, An
     project = data.get("project")
     if not isinstance(project, dict):
         return pyproject_text
+    project_overrides = (
+        profile_settings.get("project_overrides")
+        if isinstance(profile_settings.get("project_overrides"), dict)
+        else {}
+    )
+    for key, value in project_overrides.items():
+        project[key] = value
     scripts = dict(project.get("scripts") or {})
     forbidden_scripts = [str(name) for name in profile_settings.get("forbidden_scripts") or []]
     for script_name in forbidden_scripts:
@@ -367,6 +482,7 @@ def _shape_release_pyproject(pyproject_text: str, profile_settings: dict[str, An
 def _shape_release_bundle(bundle: dict[str, Any], profile_settings: dict[str, Any]) -> dict[str, Any]:
     excluded_paths = [str(path).strip() for path in profile_settings.get("excluded_paths") or [] if str(path).strip()]
     files: list[dict[str, Any]] = []
+    generated_entries: dict[str, dict[str, Any]] = {}
     for entry in bundle.get("files", []):
         if not isinstance(entry, dict):
             continue
@@ -380,9 +496,51 @@ def _shape_release_bundle(bundle: dict[str, Any], profile_settings: dict[str, An
             files.append(_bundle_entry_with_text(entry, shaped_text))
             continue
         files.append(entry)
+    project_overrides = (
+        profile_settings.get("project_overrides")
+        if isinstance(profile_settings.get("project_overrides"), dict)
+        else {}
+    )
+    readme_override = project_overrides.get("readme")
+    if isinstance(readme_override, dict) and str(readme_override.get("file") or "").strip() == "README.pypi.md":
+        generated_entries["README.pypi.md"] = {
+            "path": "README.pypi.md",
+            "mode": "0644",
+            "size_bytes": 0,
+            "content_b64": "",
+        }
+        generated_entries["README.pypi.md"] = _bundle_entry_with_text(generated_entries["README.pypi.md"], _public_pypi_readme())
+    existing_paths = {str(entry.get("path") or "") for entry in files if isinstance(entry, dict)}
+    for path in sorted(generated_entries):
+        if path in existing_paths:
+            continue
+        files.append(generated_entries[path])
     updated = dict(bundle)
     updated["files"] = files
     return updated
+
+
+def _pyproject_readme_value(project: dict[str, Any]) -> str | dict[str, Any] | None:
+    readme = project.get("readme")
+    if isinstance(readme, str):
+        value = readme.strip()
+        return value or None
+    if isinstance(readme, dict):
+        return {
+            str(key): value
+            for key, value in readme.items()
+            if value is not None and str(key).strip()
+        }
+    return None
+
+
+def _readme_declared_file(readme_value: str | dict[str, Any] | None) -> str | None:
+    if isinstance(readme_value, str):
+        return readme_value
+    if isinstance(readme_value, dict):
+        file_path = str(readme_value.get("file") or "").strip()
+        return file_path or None
+    return None
 
 
 def _release_source_bundle(
@@ -418,15 +576,43 @@ def _pyproject_metadata(bundle: dict[str, Any]) -> dict[str, Any]:
         if isinstance(project.get("dependencies"), list)
         else []
     )
+    urls = (
+        {
+            str(key).strip(): str(value).strip()
+            for key, value in project.get("urls", {}).items()
+            if str(key).strip() and str(value).strip()
+        }
+        if isinstance(project.get("urls"), dict)
+        else {}
+    )
+    classifiers = (
+        [str(item).strip() for item in project.get("classifiers", []) if str(item).strip()]
+        if isinstance(project.get("classifiers"), list)
+        else []
+    )
+    keywords = (
+        [str(item).strip() for item in project.get("keywords", []) if str(item).strip()]
+        if isinstance(project.get("keywords"), list)
+        else []
+    )
+    license_files = (
+        [str(item).strip() for item in project.get("license-files", []) if str(item).strip()]
+        if isinstance(project.get("license-files"), list)
+        else []
+    )
     return {
         "name": name,
         "version": version,
         "requires_python": str(project.get("requires-python") or "").strip() or None,
         "description": str(project.get("description") or "").strip() or None,
-        "readme": str(project.get("readme") or "").strip() or None,
+        "readme": _pyproject_readme_value(project),
         "license": project.get("license"),
+        "license_files": license_files,
         "dependencies": dependencies,
         "scripts": scripts,
+        "urls": urls,
+        "classifiers": classifiers,
+        "keywords": keywords,
     }
 
 
@@ -890,6 +1076,131 @@ def run_release_checks(
         )
     )
 
+    required_package_metadata = (
+        profile_settings.get("required_package_metadata")
+        if isinstance(profile_settings.get("required_package_metadata"), dict)
+        else {}
+    )
+    if required_package_metadata:
+        package_urls = pyproject.get("urls") if isinstance(pyproject.get("urls"), dict) else {}
+        package_keywords = pyproject.get("keywords") if isinstance(pyproject.get("keywords"), list) else []
+        package_classifiers = pyproject.get("classifiers") if isinstance(pyproject.get("classifiers"), list) else []
+        readme_file = _readme_declared_file(pyproject.get("readme"))
+        required_urls = [
+            str(label).strip()
+            for label in required_package_metadata.get("project_urls", [])
+            if str(label).strip()
+        ]
+        missing_url_labels = [label for label in required_urls if label not in package_urls]
+        expected_license = str(required_package_metadata.get("license") or "").strip()
+        keywords_min_count = int(required_package_metadata.get("keywords_min_count") or 0)
+        classifiers_min_count = int(required_package_metadata.get("classifiers_min_count") or 0)
+        expected_readme_file = str(required_package_metadata.get("readme_file") or "").strip() or None
+        metadata_failures: list[str] = []
+        if expected_license and str(pyproject.get("license") or "").strip() != expected_license:
+            metadata_failures.append(f"license should be {expected_license!r}")
+        if expected_readme_file and readme_file != expected_readme_file:
+            metadata_failures.append(f"readme should target {expected_readme_file}")
+        if missing_url_labels:
+            metadata_failures.append(f"missing project URLs: {', '.join(missing_url_labels)}")
+        if len(package_keywords) < keywords_min_count:
+            metadata_failures.append(f"keywords count {len(package_keywords)} is below {keywords_min_count}")
+        if len(package_classifiers) < classifiers_min_count:
+            metadata_failures.append(f"classifier count {len(package_classifiers)} is below {classifiers_min_count}")
+        checks.append(
+            _check_result(
+                "package_metadata",
+                "Public package metadata is ready for PyPI-facing publication",
+                status="pass" if not metadata_failures else "fail",
+                details=(
+                    "Project URLs, readme target, keywords, classifiers, and license expression are present."
+                    if not metadata_failures
+                    else "; ".join(metadata_failures)
+                ),
+                blocking=bool(metadata_failures),
+            )
+        )
+        if expected_readme_file:
+            readme_entry = file_map.get(expected_readme_file)
+            readme_findings: list[str] = []
+            if readme_entry is None:
+                readme_findings.append(f"missing readme file: {expected_readme_file}")
+            else:
+                for match in _MARKDOWN_LINK_RE.finditer(_bundle_entry_text(readme_entry)):
+                    target = match.group(1).strip()
+                    if target and not target.startswith(("#", "http://", "https://", "mailto:")):
+                        readme_findings.append(target)
+            checks.append(
+                _check_result(
+                    "package_readme_links",
+                    "PyPI-facing package readme avoids local relative links",
+                    status="pass" if not readme_findings else "fail",
+                    details=(
+                        "The public package readme uses only absolute or fragment links."
+                        if not readme_findings
+                        else f"Relative or missing readme targets: {', '.join(readme_findings[:5])}"
+                    ),
+                    blocking=bool(readme_findings),
+                )
+            )
+
+    publish_support = (
+        profile_settings.get("publish_support")
+        if isinstance(profile_settings.get("publish_support"), dict)
+        else {}
+    )
+    if publish_support:
+        expected_files = [
+            str(path).strip()
+            for path in publish_support.get("files", [])
+            if str(path).strip()
+        ]
+        missing_publish_files = [path for path in expected_files if path not in file_map]
+        publish_failures: list[str] = []
+        if missing_publish_files:
+            publish_failures.append(f"missing files: {', '.join(missing_publish_files)}")
+        workflow_path = str(publish_support.get("workflow_path") or "").strip()
+        if workflow_path:
+            workflow_entry = file_map.get(workflow_path)
+            if workflow_entry is None:
+                publish_failures.append(f"missing workflow: {workflow_path}")
+            else:
+                workflow_text = _bundle_entry_text(workflow_entry)
+                workflow_missing = [
+                    str(fragment)
+                    for fragment in publish_support.get("workflow_contains", [])
+                    if str(fragment).strip() and str(fragment) not in workflow_text
+                ]
+                if workflow_missing:
+                    publish_failures.append(f"workflow missing fragments: {', '.join(workflow_missing)}")
+        doc_path = str(publish_support.get("doc_path") or "").strip()
+        if doc_path:
+            doc_entry = file_map.get(doc_path)
+            if doc_entry is None:
+                publish_failures.append(f"missing publish doc: {doc_path}")
+            else:
+                doc_text = _bundle_entry_text(doc_entry)
+                doc_missing = [
+                    str(fragment)
+                    for fragment in publish_support.get("doc_contains", [])
+                    if str(fragment).strip() and str(fragment) not in doc_text
+                ]
+                if doc_missing:
+                    publish_failures.append(f"publish doc missing fragments: {', '.join(doc_missing)}")
+        checks.append(
+            _check_result(
+                "publish_automation",
+                "PyPI trusted-publishing workflow and operator handoff are present",
+                status="pass" if not publish_failures else "fail",
+                details=(
+                    "Trusted publishing workflow and operator doc are bundled for the clean public repo."
+                    if not publish_failures
+                    else "; ".join(publish_failures)
+                ),
+                blocking=bool(publish_failures),
+            )
+        )
+
     failed = [row for row in checks if row["status"] == "fail"]
     decision = "fail" if failed else "pass"
     metadata = _merge_metadata(
@@ -1019,11 +1330,143 @@ def _record_digest(data: bytes) -> str:
     return base64.urlsafe_b64encode(hashlib.sha256(data).digest()).decode("ascii").rstrip("=")
 
 
-def _build_sdist(source_dir: Path, dist_dir: Path, *, package_name: str, version: str, epoch: int) -> Path:
+def _infer_readme_content_type(path: str) -> str | None:
+    suffix = Path(path).suffix.lower()
+    if suffix == ".md":
+        return "text/markdown"
+    if suffix == ".rst":
+        return "text/x-rst"
+    if suffix == ".txt":
+        return "text/plain"
+    return None
+
+
+def _readme_payload(source_dir: Path, readme_value: str | dict[str, Any] | None) -> tuple[str | None, str | None]:
+    if isinstance(readme_value, str):
+        target = source_dir / readme_value
+        if not target.exists():
+            return None, _infer_readme_content_type(readme_value)
+        return target.read_text(encoding="utf-8"), _infer_readme_content_type(readme_value)
+    if isinstance(readme_value, dict):
+        content_type = str(readme_value.get("content-type") or "").strip() or None
+        inline_text = readme_value.get("text")
+        if isinstance(inline_text, str):
+            return inline_text, content_type or "text/markdown"
+        file_path = str(readme_value.get("file") or "").strip()
+        if file_path:
+            target = source_dir / file_path
+            if not target.exists():
+                return None, content_type or _infer_readme_content_type(file_path)
+            return target.read_text(encoding="utf-8"), content_type or _infer_readme_content_type(file_path)
+    return None, None
+
+
+def _distribution_metadata_bytes(
+    source_dir: Path,
+    *,
+    package_name: str,
+    version: str,
+    description: str | None,
+    requires_python: str | None,
+    license_value: Any,
+    license_files: list[str],
+    dependencies: list[str],
+    scripts: dict[str, Any],
+    urls: dict[str, str],
+    classifiers: list[str],
+    keywords: list[str],
+    readme_value: str | dict[str, Any] | None,
+) -> tuple[bytes, bytes, list[tuple[str, bytes]]]:
+    readme_body, readme_content_type = _readme_payload(source_dir, readme_value)
+    metadata_lines = [
+        "Metadata-Version: 2.4",
+        f"Name: {package_name}",
+        f"Version: {version}",
+    ]
+    if description:
+        metadata_lines.append(f"Summary: {description}")
+    if requires_python:
+        metadata_lines.append(f"Requires-Python: {requires_python}")
+    if license_value:
+        metadata_lines.append(f"License-Expression: {license_value}")
+    if keywords:
+        metadata_lines.append(f"Keywords: {', '.join(keywords)}")
+    for label, url in sorted(urls.items()):
+        metadata_lines.append(f"Project-URL: {label}, {url}")
+    for classifier in classifiers:
+        metadata_lines.append(f"Classifier: {classifier}")
+    for requirement in dependencies:
+        metadata_lines.append(f"Requires-Dist: {requirement}")
+    if readme_content_type:
+        metadata_lines.append(f"Description-Content-Type: {readme_content_type}")
+    for license_file in license_files:
+        metadata_lines.append(f"License-File: {license_file}")
+    metadata_text = "\n".join(metadata_lines) + "\n"
+    if readme_body:
+        metadata_text += "\n" + readme_body.rstrip() + "\n"
+
+    entry_lines = []
+    if scripts:
+        entry_lines.append("[console_scripts]")
+        for name in sorted(scripts):
+            entry_lines.append(f"{name} = {scripts[name]}")
+    entry_points_bytes = ("\n".join(entry_lines) + "\n").encode("utf-8") if entry_lines else b""
+
+    license_entries: list[tuple[str, bytes]] = []
+    for license_file in license_files:
+        target = source_dir / license_file
+        if not target.exists() or not target.is_file():
+            continue
+        license_entries.append((license_file, target.read_bytes()))
+    return metadata_text.encode("utf-8"), entry_points_bytes, license_entries
+
+
+def _build_sdist(
+    source_dir: Path,
+    dist_dir: Path,
+    *,
+    package_name: str,
+    version: str,
+    description: str | None,
+    requires_python: str | None,
+    license_value: Any,
+    license_files: list[str],
+    dependencies: list[str],
+    scripts: dict[str, Any],
+    urls: dict[str, str],
+    classifiers: list[str],
+    keywords: list[str],
+    readme_value: str | dict[str, Any] | None,
+    epoch: int,
+) -> Path:
     filename = f"{_distribution_name(package_name, wheel_safe=False)}-{version}.tar.gz"
     target = dist_dir / filename
     root_name = f"{_distribution_name(package_name, wheel_safe=False)}-{version}"
+    metadata_bytes, _, _ = _distribution_metadata_bytes(
+        source_dir,
+        package_name=package_name,
+        version=version,
+        description=description,
+        requires_python=requires_python,
+        license_value=license_value,
+        license_files=license_files,
+        dependencies=dependencies,
+        scripts=scripts,
+        urls=urls,
+        classifiers=classifiers,
+        keywords=keywords,
+        readme_value=readme_value,
+    )
     with tarfile.open(target, "w:gz") as tar:
+        info = tarfile.TarInfo(name=f"{root_name}/PKG-INFO")
+        info.size = len(metadata_bytes)
+        info.mtime = epoch
+        info.mode = 0o644
+        info.uid = 0
+        info.gid = 0
+        info.uname = "root"
+        info.gname = "root"
+        tar.addfile(info, io.BytesIO(metadata_bytes))
         for path in sorted(source_dir.rglob("*")):
             if not path.is_file():
                 continue
@@ -1051,8 +1494,13 @@ def _build_wheel(
     description: str | None,
     requires_python: str | None,
     license_value: Any,
+    license_files: list[str],
     dependencies: list[str],
     scripts: dict[str, Any],
+    urls: dict[str, str],
+    classifiers: list[str],
+    keywords: list[str],
+    readme_value: str | dict[str, Any] | None,
     epoch: int,
 ) -> Path:
     dist_name = _distribution_name(package_name, wheel_safe=True)
@@ -1060,27 +1508,22 @@ def _build_wheel(
     target = dist_dir / filename
     source_root = _wheel_source_root(source_dir)
     metadata_dir = f"{dist_name}-{version}.dist-info"
-    metadata_lines = [
-        "Metadata-Version: 2.1",
-        f"Name: {package_name}",
-        f"Version: {version}",
-    ]
-    if description:
-        metadata_lines.append(f"Summary: {description}")
-    if requires_python:
-        metadata_lines.append(f"Requires-Python: {requires_python}")
-    if license_value:
-        metadata_lines.append(f"License: {license_value}")
-    for requirement in dependencies:
-        metadata_lines.append(f"Requires-Dist: {requirement}")
-    metadata_bytes = ("\n".join(metadata_lines) + "\n").encode("utf-8")
+    metadata_bytes, entry_points_bytes, license_entries = _distribution_metadata_bytes(
+        source_dir,
+        package_name=package_name,
+        version=version,
+        description=description,
+        requires_python=requires_python,
+        license_value=license_value,
+        license_files=license_files,
+        dependencies=dependencies,
+        scripts=scripts,
+        urls=urls,
+        classifiers=classifiers,
+        keywords=keywords,
+        readme_value=readme_value,
+    )
     wheel_bytes = b"Wheel-Version: 1.0\nGenerator: ait release\nRoot-Is-Purelib: true\nTag: py3-none-any\n"
-    entry_lines = []
-    if scripts:
-        entry_lines.append("[console_scripts]")
-        for name in sorted(scripts):
-            entry_lines.append(f"{name} = {scripts[name]}")
-    entry_points_bytes = ("\n".join(entry_lines) + "\n").encode("utf-8") if entry_lines else b""
 
     records: list[tuple[str, bytes]] = []
     with zipfile.ZipFile(target, "w") as zf:
@@ -1095,6 +1538,8 @@ def _build_wheel(
         ]
         if entry_points_bytes:
             generated_entries.append((f"{metadata_dir}/entry_points.txt", entry_points_bytes))
+        for relative_path, data in license_entries:
+            generated_entries.append((f"{metadata_dir}/licenses/{relative_path}", data))
         for arcname, data in generated_entries:
             _write_wheel_entry(zf, arcname, data, epoch=epoch)
             records.append((arcname, data))
@@ -1146,6 +1591,16 @@ def build_release_candidate(ctx: RepoContext, release_id: str) -> dict[str, Any]
                 dist_dir,
                 package_name=package_name,
                 version=str(record["version"]),
+                description=pyproject.get("description"),
+                requires_python=pyproject.get("requires_python"),
+                license_value=pyproject.get("license"),
+                license_files=pyproject.get("license_files") if isinstance(pyproject.get("license_files"), list) else [],
+                dependencies=pyproject.get("dependencies") if isinstance(pyproject.get("dependencies"), list) else [],
+                scripts=pyproject.get("scripts") if isinstance(pyproject.get("scripts"), dict) else {},
+                urls=pyproject.get("urls") if isinstance(pyproject.get("urls"), dict) else {},
+                classifiers=pyproject.get("classifiers") if isinstance(pyproject.get("classifiers"), list) else [],
+                keywords=pyproject.get("keywords") if isinstance(pyproject.get("keywords"), list) else [],
+                readme_value=pyproject.get("readme"),
                 epoch=epoch,
             )
             wheel_path = _build_wheel(
@@ -1156,8 +1611,13 @@ def build_release_candidate(ctx: RepoContext, release_id: str) -> dict[str, Any]
                 description=pyproject.get("description"),
                 requires_python=pyproject.get("requires_python"),
                 license_value=pyproject.get("license"),
+                license_files=pyproject.get("license_files") if isinstance(pyproject.get("license_files"), list) else [],
                 dependencies=pyproject.get("dependencies") if isinstance(pyproject.get("dependencies"), list) else [],
                 scripts=pyproject.get("scripts") if isinstance(pyproject.get("scripts"), dict) else {},
+                urls=pyproject.get("urls") if isinstance(pyproject.get("urls"), dict) else {},
+                classifiers=pyproject.get("classifiers") if isinstance(pyproject.get("classifiers"), list) else [],
+                keywords=pyproject.get("keywords") if isinstance(pyproject.get("keywords"), list) else [],
+                readme_value=pyproject.get("readme"),
                 epoch=epoch,
             )
         built_paths = [sdist_path, wheel_path]
@@ -1223,6 +1683,28 @@ def _formula_class_name(name: str) -> str:
     return "".join(token[:1].upper() + token[1:] for token in tokens if token) or "Ait"
 
 
+def _homebrew_license_literal(license_value: str | None) -> str:
+    value = str(license_value or "").strip()
+    if not value:
+        return ":cannot_represent"
+    if " AND " in value and "(" not in value and ")" not in value:
+        parts = [part.strip() for part in value.split(" AND ") if part.strip()]
+        return "all_of: [" + ", ".join(json.dumps(part) for part in parts) + "]"
+    if " OR " in value and "(" not in value and ")" not in value:
+        parts = [part.strip() for part in value.split(" OR ") if part.strip()]
+        return "any_of: [" + ", ".join(json.dumps(part) for part in parts) + "]"
+    return json.dumps(value)
+
+
+def _package_homepage(package: dict[str, Any], repo_name: str) -> str:
+    urls = package.get("urls") if isinstance(package.get("urls"), dict) else {}
+    for label in ("Homepage", "Documentation", "Source"):
+        value = str(urls.get(label) or "").strip()
+        if value:
+            return value
+    return f"https://example.invalid/{repo_name}"
+
+
 def generate_release_formula(ctx: RepoContext, release_id: str, *, name: str) -> dict[str, Any]:
     record = get_release_candidate(ctx, release_id)
     artifacts = [row for row in record.get("artifacts") or [] if isinstance(row, dict)]
@@ -1234,12 +1716,14 @@ def generate_release_formula(ctx: RepoContext, release_id: str, *, name: str) ->
     python_formula = f"python@{sys.version_info.major}.{sys.version_info.minor}"
     formula_path = ctx.root / "dist" / f"{name}.rb"
     formula_path.parent.mkdir(parents=True, exist_ok=True)
+    homepage = _package_homepage(package, str(record["repo_name"]))
+    license_literal = _homebrew_license_literal(str(package.get("license") or ""))
     formula_text = f"""class {_formula_class_name(name)} < Formula
   desc {json.dumps(str(package.get("description") or f"{record['repo_name']} release candidate"))}
-  homepage "https://example.invalid/{record['repo_name']}"
+  homepage {json.dumps(homepage)}
   url {json.dumps(str(sdist["url"]))}
   sha256 {json.dumps(str(sdist["sha256"]))}
-  license {json.dumps(str(package.get("license") or "TODO"))}
+  license {license_literal}
 
   depends_on "{python_formula}"
 
@@ -1265,6 +1749,8 @@ end
         "class_name": _formula_class_name(name),
         "path": formula_path.as_posix(),
         "artifact_kind": "sdist",
+        "homepage": homepage,
+        "license": str(package.get("license") or ""),
         "url": sdist["url"],
         "sha256": sdist["sha256"],
     }

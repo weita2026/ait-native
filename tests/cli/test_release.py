@@ -21,6 +21,10 @@ def _write_release_fixture(repo: Path) -> None:
         "# Deployment Guide\n\nCheck the [compatibility matrix](./COMPATIBILITY_MATRIX.md).\n",
         encoding="utf-8",
     )
+    (docs_dir / "PYPI_PUBLISHING.md").write_text(
+        "# PyPI Publishing\n\nUse the clean public repo `weita2026/ait-native`, the workflow `.github/workflows/pypi-publish.yml`, a `Trusted Publisher`, and `twine upload dist/*` only as the manual fallback.\n",
+        encoding="utf-8",
+    )
     (docs_dir / "PACKAGE_TARGETS.md").write_text(
         "# Package Targets\n\nThis release ships `ait`, `ait-agent`, `ait-server`, `ait-worker`, and `aitk`.\n",
         encoding="utf-8",
@@ -102,6 +106,27 @@ def _write_release_fixture(repo: Path) -> None:
     licenses_dir.mkdir(parents=True, exist_ok=True)
     (licenses_dir / "AGPL-3.0-only.txt").write_text("AGPL fixture text.\n", encoding="utf-8")
     (licenses_dir / "LicenseRef-AIT-Commercial.txt").write_text("Commercial fixture text.\n", encoding="utf-8")
+
+    workflows_dir = repo / ".github" / "workflows"
+    workflows_dir.mkdir(parents=True, exist_ok=True)
+    (workflows_dir / "pypi-publish.yml").write_text(
+        """
+name: pypi-publish
+on:
+  workflow_dispatch:
+jobs:
+  publish-pypi:
+    environment:
+      name: pypi
+      url: https://pypi.org/p/ait-native
+    permissions:
+      id-token: write
+    steps:
+      - uses: pypa/gh-action-pypi-publish@release/v1
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
 
     src_dir = repo / "src"
     src_dir.mkdir(parents=True, exist_ok=True)
@@ -355,6 +380,12 @@ def test_public_self_hosted_release_candidate_excludes_ait_web_surface(tmp_path:
     assert checked["check_summary"]["decision"] == "pass"
     package_targets = next(row for row in checked["checks"] if row["check_id"] == "package_targets")
     assert package_targets["status"] == "pass"
+    package_metadata = next(row for row in checked["checks"] if row["check_id"] == "package_metadata")
+    assert package_metadata["status"] == "pass"
+    package_readme_links = next(row for row in checked["checks"] if row["check_id"] == "package_readme_links")
+    assert package_readme_links["status"] == "pass"
+    publish_automation = next(row for row in checked["checks"] if row["check_id"] == "publish_automation")
+    assert publish_automation["status"] == "pass"
 
     build_out = runner.invoke(app, ["release", "build", release_record["release_id"], "--json"], catch_exceptions=False)
     assert build_out.exit_code == 0, build_out.stdout
@@ -365,24 +396,58 @@ def test_public_self_hosted_release_candidate_excludes_ait_web_surface(tmp_path:
         wheel_names = set(zf.namelist())
         entry_points_name = next(name for name in wheel_names if name.endswith(".dist-info/entry_points.txt"))
         entry_points_text = zf.read(entry_points_name).decode("utf-8")
+        metadata_name = next(name for name in wheel_names if name.endswith(".dist-info/METADATA"))
+        metadata_text = zf.read(metadata_name).decode("utf-8")
     assert "ait = fixture_release:main" in entry_points_text
     assert "ait-agent = ait_agent.cli:main" in entry_points_text
     assert "ait-server = ait_server.app:main" in entry_points_text
     assert "ait-worker = ait_server.worker:main" in entry_points_text
     assert "aitk = ait_tk.launcher:main" in entry_points_text
     assert "ait-web =" not in entry_points_text
+    assert "License-Expression: Apache-2.0 AND AGPL-3.0-only" in metadata_text
+    assert "Project-URL: Homepage, https://ait-native.dev" in metadata_text
+    assert "Project-URL: Source, https://github.com/weita2026/ait-native" in metadata_text
+    assert "Classifier: Development Status :: 3 - Alpha" in metadata_text
+    assert "Description-Content-Type: text/markdown" in metadata_text
+    assert "License-File: LICENSE" in metadata_text
+    assert "License-File: LICENSES/AGPL-3.0-only.txt" in metadata_text
+    assert "## Install" in metadata_text
     assert "ait_web/app.py" not in wheel_names
     assert "ait_web/__init__.py" not in wheel_names
     assert "ait_native/web.py" not in wheel_names
     assert "ait_server/app.py" in wheel_names
+    assert any(name.endswith(".dist-info/licenses/LICENSE") for name in wheel_names)
+    assert any(name.endswith(".dist-info/licenses/LICENSES/AGPL-3.0-only.txt") for name in wheel_names)
 
     sdist_row = next(row for row in built["artifacts"] if row["kind"] == "sdist")
     with tarfile.open(repo / sdist_row["path"], "r:gz") as tf:
         sdist_names = set(tf.getnames())
+        pkg_info_name = next(name for name in sdist_names if name.endswith("/PKG-INFO"))
+        pkg_info_text = tf.extractfile(pkg_info_name).read().decode("utf-8")
+        workflow_name = next(name for name in sdist_names if name.endswith("/.github/workflows/pypi-publish.yml"))
+        workflow_text = tf.extractfile(workflow_name).read().decode("utf-8")
     assert not any(name.endswith("/src/ait_web/app.py") for name in sdist_names)
     assert not any(name.endswith("/src/ait_web/__init__.py") for name in sdist_names)
     assert not any(name.endswith("/src/ait_native/web.py") for name in sdist_names)
     assert not any(name.endswith("/tests/ait_web/test_smoke.py") for name in sdist_names)
+    assert any(name.endswith("/README.pypi.md") for name in sdist_names)
+    assert any(name.endswith("/docs/PYPI_PUBLISHING.md") for name in sdist_names)
+    assert "Description-Content-Type: text/markdown" in pkg_info_text
+    assert "Project-URL: Homepage, https://ait-native.dev" in pkg_info_text
+    assert "## Install" in pkg_info_text
+    assert "pypa/gh-action-pypi-publish@release/v1" in workflow_text
+    assert "id-token: write" in workflow_text
+
+    formula_out = runner.invoke(
+        app,
+        ["release", "formula", release_record["release_id"], "--name", "fixture-release", "--json"],
+        catch_exceptions=False,
+    )
+    assert formula_out.exit_code == 0, formula_out.stdout
+    formula = json.loads(formula_out.stdout)
+    formula_text = (repo / formula["formula"]["path"]).read_text(encoding="utf-8")
+    assert 'homepage "https://ait-native.dev"' in formula_text
+    assert 'license all_of: ["Apache-2.0", "AGPL-3.0-only"]' in formula_text
 
 
 def test_release_publish_uploads_built_candidate_to_remote(tmp_path: Path, monkeypatch):
