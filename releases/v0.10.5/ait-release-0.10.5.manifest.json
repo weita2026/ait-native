@@ -1,0 +1,85 @@
+{
+  "artifacts": [
+    {
+      "absolute_path": "/Users/weita/AI_Play_Ground/ait/dist/ait-native-0.10.5.tar.gz",
+      "kind": "sdist",
+      "path": "/Users/weita/AI_Play_Ground/ait/dist/ait-native-0.10.5.tar.gz",
+      "sha256": "918ab9e4e375367997dc27cde0e385c11c68367b2f590722f2b765cbaf1a4ef8",
+      "size_bytes": 1844852,
+      "url": "file:///Users/weita/AI_Play_Ground/ait/dist/ait-native-0.10.5.tar.gz"
+    },
+    {
+      "absolute_path": "/Users/weita/AI_Play_Ground/ait/dist/ait_native-0.10.5-py3-none-any.whl",
+      "kind": "wheel",
+      "path": "/Users/weita/AI_Play_Ground/ait/dist/ait_native-0.10.5-py3-none-any.whl",
+      "sha256": "0d6c36ccff304aacfcecbb4ecb69c06da734bd574ffdbc9e212233b8ffc4fdab",
+      "size_bytes": 972695,
+      "url": "file:///Users/weita/AI_Play_Ground/ait/dist/ait_native-0.10.5-py3-none-any.whl"
+    }
+  ],
+  "built_at": "2026-05-26T06:31:49.365384+00:00",
+  "line": "main",
+  "manifest_hash": "a4292fd876b8b91b26572aaac1681f4b501ad1c74896ca10bca4b98aa2dec1eb",
+  "package": {
+    "classifiers": [
+      "Development Status :: 3 - Alpha",
+      "Environment :: Console",
+      "Intended Audience :: Developers",
+      "Operating System :: OS Independent",
+      "Programming Language :: Python :: 3",
+      "Programming Language :: Python :: 3.11",
+      "Topic :: Software Development :: Build Tools",
+      "Topic :: Software Development :: Version Control"
+    ],
+    "dependencies": [
+      "typer>=0.12,<1.0",
+      "rich>=13,<15",
+      "fastapi>=0.115,<1.0",
+      "uvicorn>=0.30,<1.0",
+      "httpx>=0.27,<1.0",
+      "websockets>=12,<17",
+      "cryptography>=42,<47"
+    ],
+    "description": "Agent-first Markdown workflow CLI with optional self-hosted server and worker surfaces",
+    "keywords": [
+      "ai",
+      "agent",
+      "workflow",
+      "markdown",
+      "cli"
+    ],
+    "license": "Apache-2.0 AND AGPL-3.0-only",
+    "license_files": [
+      "LICENSE",
+      "NOTICE",
+      "LICENSES/AGPL-3.0-only.txt"
+    ],
+    "name": "ait-native",
+    "readme": {
+      "content-type": "text/markdown",
+      "file": "README.pypi.md"
+    },
+    "requires_python": ">=3.11",
+    "scripts": {
+      "ait": "ait.cli:app",
+      "ait-agent": "ait_agent.cli:main",
+      "ait-server": "ait_server.app:main",
+      "ait-worker": "ait_server.worker:main",
+      "aitk": "ait_tk.launcher:main"
+    },
+    "urls": {
+      "Documentation": "https://ait-native.dev",
+      "Homepage": "https://ait-native.dev",
+      "Issues": "https://github.com/weita2026/ait-native/issues",
+      "Releases": "https://github.com/weita2026/ait-native/releases",
+      "Source": "https://github.com/weita2026/ait-native"
+    },
+    "version": "0.10.5"
+  },
+  "profile": "public-self-hosted-core",
+  "release_id": "R-01KSHFESPCF03QK29C2G5EGVH6",
+  "repo_name": "ait",
+  "snapshot_id": "SNP-A4292FD876B8",
+  "source_date_epoch": 1779776463,
+  "version": "0.10.5"
+}
