@@ -21,12 +21,14 @@ CI.
 
 ## Publish from the public repo
 
-1. Push the clean public release commit and tag to `weita2026/ait-native`.
-2. Create a GitHub Release for the matching version tag, or run the workflow
-   manually from GitHub Actions.
-3. Let `.github/workflows/pypi-publish.yml` build the wheel/sdist, run
+1. Push the clean public release commit to `weita2026/ait-native`.
+2. Push the matching `v*` version tag, for example `v0.10.4`.
+3. Let `.github/workflows/pypi-publish.yml` start automatically from that tag
+   push, build the wheel/sdist, run
    `twine check`, smoke install the wheel, and publish to PyPI.
-4. Verify the release with:
+4. If the tag-triggered run needs recovery, use `workflow_dispatch` from
+   GitHub Actions instead of creating a GitHub Release first.
+5. Verify the release with:
 
 ```bash
 python -m pip index versions ait-native

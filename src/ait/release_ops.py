@@ -138,6 +138,9 @@ SUPPORTED_RELEASE_PROFILES = {
             "workflow_path": ".github/workflows/pypi-publish.yml",
             "workflow_contains": [
                 "workflow_dispatch:",
+                "push:",
+                "tags:",
+                '"v*"',
                 "pypa/gh-action-pypi-publish@release/v1",
                 "id-token: write",
                 "name: pypi",
@@ -147,6 +150,7 @@ SUPPORTED_RELEASE_PROFILES = {
             "doc_contains": [
                 "weita2026/ait-native",
                 ".github/workflows/pypi-publish.yml",
+                "matching `v*` tag",
                 "Trusted Publisher",
                 "twine upload dist/*",
             ],

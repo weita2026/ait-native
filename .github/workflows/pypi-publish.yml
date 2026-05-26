@@ -2,9 +2,9 @@ name: pypi-publish
 
 on:
   workflow_dispatch:
-  release:
-    types:
-      - published
+  push:
+    tags:
+      - "v*"
 
 concurrency:
   group: pypi-publish-${{ github.ref }}

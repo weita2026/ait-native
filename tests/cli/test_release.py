@@ -26,7 +26,7 @@ def _write_release_fixture(repo: Path) -> None:
         encoding="utf-8",
     )
     (docs_dir / "PYPI_PUBLISHING.md").write_text(
-        "# PyPI Publishing\n\nUse the clean public repo `weita2026/ait-native`, the workflow `.github/workflows/pypi-publish.yml`, a `Trusted Publisher`, and `twine upload dist/*` only as the manual fallback.\n",
+        "# PyPI Publishing\n\nPush the clean public release commit and matching `v*` tag to `weita2026/ait-native`, let the workflow `.github/workflows/pypi-publish.yml` run through a `Trusted Publisher`, and keep `twine upload dist/*` only as the manual fallback.\n",
         encoding="utf-8",
     )
     (docs_dir / "PACKAGE_TARGETS.md").write_text(
@@ -118,6 +118,9 @@ def _write_release_fixture(repo: Path) -> None:
 name: pypi-publish
 on:
   workflow_dispatch:
+  push:
+    tags:
+      - "v*"
 jobs:
   publish-pypi:
     environment:
@@ -431,6 +434,8 @@ def test_public_self_hosted_release_candidate_excludes_ait_web_surface(tmp_path:
         pkg_info_text = tf.extractfile(pkg_info_name).read().decode("utf-8")
         workflow_name = next(name for name in sdist_names if name.endswith("/.github/workflows/pypi-publish.yml"))
         workflow_text = tf.extractfile(workflow_name).read().decode("utf-8")
+        publish_doc_name = next(name for name in sdist_names if name.endswith("/docs/PYPI_PUBLISHING.md"))
+        publish_doc_text = tf.extractfile(publish_doc_name).read().decode("utf-8")
     assert not any(name.endswith("/src/ait_web/app.py") for name in sdist_names)
     assert not any(name.endswith("/src/ait_web/__init__.py") for name in sdist_names)
     assert not any(name.endswith("/src/ait_native/web.py") for name in sdist_names)
@@ -441,8 +446,14 @@ def test_public_self_hosted_release_candidate_excludes_ait_web_surface(tmp_path:
     assert "Description-Content-Type: text/markdown" in pkg_info_text
     assert "Project-URL: Homepage, https://ait-native.dev" in pkg_info_text
     assert "## Install" in pkg_info_text
+    assert "workflow_dispatch:" in workflow_text
+    assert "push:" in workflow_text
+    assert "tags:" in workflow_text
+    assert '"v*"' in workflow_text
     assert "pypa/gh-action-pypi-publish@release/v1" in workflow_text
     assert "id-token: write" in workflow_text
+    assert "matching `v*` tag" in publish_doc_text
+    assert "Trusted Publisher" in publish_doc_text
 
     formula_out = runner.invoke(
         app,
