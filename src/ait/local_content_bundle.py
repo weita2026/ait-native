@@ -29,7 +29,8 @@ def export_snapshot_bundle(ctx: RepoContext, snapshot_id: str, repo_name: str) -
         raise KeyError(f"Unknown snapshot: {snapshot_id}")
     file_rows = conn.execute(
         """
-        select sf.path, sf.blob_id, sf.size_bytes, sf.mode, b.sha256, b.storage_path, b.storage_kind, b.pack_id
+        select sf.path, sf.blob_id, coalesce(sf.size_bytes, b.size_bytes) as size_bytes, sf.mode,
+               b.sha256, b.storage_path, b.storage_kind, b.pack_id
         from snapshot_files sf
         join blobs b on b.blob_id = sf.blob_id
         where sf.snapshot_id = ?
@@ -109,7 +110,7 @@ def import_snapshot_bundle(ctx: RepoContext, bundle: dict) -> dict:
             {
                 "path": file_entry["path"],
                 "blob_id": blob_id,
-                "size_bytes": file_entry["size_bytes"],
+                "size_bytes": file_entry["size_bytes"] if file_entry.get("size_bytes") is not None else size,
                 "mode": file_entry["mode"],
                 "sha256": file_entry["sha256"],
             }

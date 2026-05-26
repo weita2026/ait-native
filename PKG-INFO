@@ -1,6 +1,6 @@
 Metadata-Version: 2.4
 Name: ait-native
-Version: 0.10.3
+Version: 0.10.5
 Summary: Agent-first Markdown workflow CLI with optional self-hosted server and worker surfaces
 Requires-Python: >=3.11
 License-Expression: Apache-2.0 AND AGPL-3.0-only

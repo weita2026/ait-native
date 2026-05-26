@@ -9,6 +9,9 @@ from ait_protocol.common import DEFAULT_ID_NAMESPACE_PREFIX, normalize_id_namesp
 from ..store import RepoContext, load_config
 from ..task_worktree_layout import (
     DEFAULT_TASK_WORKTREE_ALIAS_ROOT,
+    derived_task_worktree_ephemeral_root,
+    normalize_task_worktree_main_seed_ram_max_bytes,
+    normalize_task_worktree_memory_root,
 )
 
 PLAN_TASK_BINDING_MODES = frozenset({"advisory", "strict", "required"})
@@ -48,6 +51,8 @@ WORKFLOW_MODES = frozenset(WORKFLOW_MODE_PRESETS)
 DEFAULT_TASK_WORKTREE = {
     "ephemeral_root": None,
     "alias_root": DEFAULT_TASK_WORKTREE_ALIAS_ROOT,
+    "memory_root": None,
+    "main_seed_ram_max_bytes": None,
 }
 
 
@@ -296,19 +301,39 @@ def _task_worktree_config(cfg: dict[str, Any]) -> dict[str, Any]:
     alias_root = _normalize_text_value(raw.get("alias_root"))
     if alias_root is not None:
         out["alias_root"] = alias_root
+    memory_root = normalize_task_worktree_memory_root(raw.get("memory_root"))
+    if memory_root is not None:
+        out["memory_root"] = memory_root
+    main_seed_ram_max_bytes = normalize_task_worktree_main_seed_ram_max_bytes(raw.get("main_seed_ram_max_bytes"))
+    if main_seed_ram_max_bytes is not None:
+        out["main_seed_ram_max_bytes"] = main_seed_ram_max_bytes
     return out
 
 
 def _effective_task_worktree(ctx: RepoContext) -> dict[str, Any]:
     stored = _task_worktree_config(load_config(ctx))
+    if "ephemeral_root" in stored:
+        ephemeral_root_value = stored["ephemeral_root"]
+        ephemeral_root_source = "repo_config"
+    else:
+        ephemeral_root_value = derived_task_worktree_ephemeral_root(ctx, stored.get("memory_root"))
+        ephemeral_root_source = "derived_from_memory_root" if ephemeral_root_value is not None else "built_in"
     return {
         "ephemeral_root": {
-            "value": stored.get("ephemeral_root", DEFAULT_TASK_WORKTREE["ephemeral_root"]),
-            "source": "repo_config" if "ephemeral_root" in stored else "built_in",
+            "value": ephemeral_root_value if ephemeral_root_value is not None else DEFAULT_TASK_WORKTREE["ephemeral_root"],
+            "source": ephemeral_root_source,
         },
         "alias_root": {
             "value": stored.get("alias_root", DEFAULT_TASK_WORKTREE["alias_root"]),
             "source": "repo_config" if "alias_root" in stored else "built_in",
+        },
+        "memory_root": {
+            "value": stored.get("memory_root", DEFAULT_TASK_WORKTREE["memory_root"]),
+            "source": "repo_config" if "memory_root" in stored else "built_in",
+        },
+        "main_seed_ram_max_bytes": {
+            "value": stored.get("main_seed_ram_max_bytes", DEFAULT_TASK_WORKTREE["main_seed_ram_max_bytes"]),
+            "source": "repo_config" if "main_seed_ram_max_bytes" in stored else "built_in",
         },
     }
 

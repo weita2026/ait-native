@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from decimal import Decimal
 import hashlib
 import json
 import os
@@ -98,9 +99,18 @@ def _sha256_path(path: Path) -> str:
     return _sha256_bytes(path.read_bytes())
 
 
+def _json_default(value: Any) -> Any:
+    if isinstance(value, Decimal):
+        integral = value.to_integral_value()
+        return int(value) if value == integral else float(value)
+    if isinstance(value, Path):
+        return str(value)
+    raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable")
+
+
 def _write_json(path: Path, payload: Any) -> dict[str, Any]:
     path.parent.mkdir(parents=True, exist_ok=True)
-    data = json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=True).encode("utf-8") + b"\n"
+    data = json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=True, default=_json_default).encode("utf-8") + b"\n"
     path.write_bytes(data)
     return {"path": path, "sha256": _sha256_bytes(data), "size_bytes": len(data)}
 

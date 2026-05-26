@@ -25,7 +25,7 @@
   "bootstrap_steps": [
     {
       "id": "runtime_root",
-      "command": "mkdir -p /srv/ait/server-data && export AIT_NATIVE_SERVER_DATA=/srv/ait/server-data"
+      "command": "mkdir -p /srv/ait/server-data /srv/ait/retire-exports && export AIT_NATIVE_SERVER_DATA=/srv/ait/server-data && export AIT_SERVER_RETIRE_EXPORT_ROOT=/srv/ait/retire-exports"
     },
     {
       "id": "runtime_backend",
@@ -39,8 +39,8 @@
       "id": "core_up",
       "commands": [
         "pg_isready -d \"$AIT_NATIVE_SERVER_POSTGRES_DSN\"",
-        "AIT_NATIVE_SERVER_DATA=\"$AIT_NATIVE_SERVER_DATA\" AIT_NATIVE_SERVER_DB_BACKEND=postgres AIT_NATIVE_SERVER_POSTGRES_DSN=\"$AIT_NATIVE_SERVER_POSTGRES_DSN\" AIT_NATIVE_SERVER_POSTGRES_CONTENT_SCHEMA=\"${AIT_NATIVE_SERVER_POSTGRES_CONTENT_SCHEMA:-ait_native_content}\" AIT_NATIVE_SERVER_POSTGRES_CONTROL_SCHEMA=\"${AIT_NATIVE_SERVER_POSTGRES_CONTROL_SCHEMA:-ait_native_control}\" AIT_NATIVE_SERVER_HOST=\"${AIT_NATIVE_SERVER_HOST:-127.0.0.1}\" AIT_NATIVE_SERVER_PORT=\"${AIT_NATIVE_SERVER_PORT:-8088}\" ait-server",
-        "AIT_NATIVE_SERVER_DATA=\"$AIT_NATIVE_SERVER_DATA\" AIT_NATIVE_SERVER_DB_BACKEND=postgres AIT_NATIVE_SERVER_POSTGRES_DSN=\"$AIT_NATIVE_SERVER_POSTGRES_DSN\" AIT_NATIVE_SERVER_POSTGRES_CONTENT_SCHEMA=\"${AIT_NATIVE_SERVER_POSTGRES_CONTENT_SCHEMA:-ait_native_content}\" AIT_NATIVE_SERVER_POSTGRES_CONTROL_SCHEMA=\"${AIT_NATIVE_SERVER_POSTGRES_CONTROL_SCHEMA:-ait_native_control}\" ait-worker run --worker-id worker-1"
+        "AIT_NATIVE_SERVER_DATA=\"$AIT_NATIVE_SERVER_DATA\" AIT_SERVER_RETIRE_EXPORT_ROOT=\"$AIT_SERVER_RETIRE_EXPORT_ROOT\" AIT_NATIVE_SERVER_DB_BACKEND=postgres AIT_NATIVE_SERVER_POSTGRES_DSN=\"$AIT_NATIVE_SERVER_POSTGRES_DSN\" AIT_NATIVE_SERVER_POSTGRES_CONTENT_SCHEMA=\"${AIT_NATIVE_SERVER_POSTGRES_CONTENT_SCHEMA:-ait_native_content}\" AIT_NATIVE_SERVER_POSTGRES_CONTROL_SCHEMA=\"${AIT_NATIVE_SERVER_POSTGRES_CONTROL_SCHEMA:-ait_native_control}\" AIT_NATIVE_SERVER_HOST=\"${AIT_NATIVE_SERVER_HOST:-127.0.0.1}\" AIT_NATIVE_SERVER_PORT=\"${AIT_NATIVE_SERVER_PORT:-8088}\" ait-server",
+        "AIT_NATIVE_SERVER_DATA=\"$AIT_NATIVE_SERVER_DATA\" AIT_SERVER_RETIRE_EXPORT_ROOT=\"$AIT_SERVER_RETIRE_EXPORT_ROOT\" AIT_NATIVE_SERVER_DB_BACKEND=postgres AIT_NATIVE_SERVER_POSTGRES_DSN=\"$AIT_NATIVE_SERVER_POSTGRES_DSN\" AIT_NATIVE_SERVER_POSTGRES_CONTENT_SCHEMA=\"${AIT_NATIVE_SERVER_POSTGRES_CONTENT_SCHEMA:-ait_native_content}\" AIT_NATIVE_SERVER_POSTGRES_CONTROL_SCHEMA=\"${AIT_NATIVE_SERVER_POSTGRES_CONTROL_SCHEMA:-ait_native_control}\" ait-worker run --worker-id worker-1"
       ]
     }
   ],
@@ -53,6 +53,7 @@
   "readiness_commands": [
     "curl -fsS http://<ait-server-host>:<port>/healthz",
     "ait doctor runtime-root --server-data \"$AIT_NATIVE_SERVER_DATA\" --json",
+    "test -d \"$AIT_SERVER_RETIRE_EXPORT_ROOT\" && test -w \"$AIT_SERVER_RETIRE_EXPORT_ROOT\"",
     "ait doctor postgres --server-data \"$AIT_NATIVE_SERVER_DATA\" --dsn \"$AIT_NATIVE_SERVER_POSTGRES_DSN\" --content-schema \"${AIT_NATIVE_SERVER_POSTGRES_CONTENT_SCHEMA:-ait_native_content}\" --control-schema \"${AIT_NATIVE_SERVER_POSTGRES_CONTROL_SCHEMA:-ait_native_control}\" --connect --json",
     "ait repo readiness --json",
     "ait repo jobs --diagnostics --json"
@@ -60,7 +61,8 @@
   "backup_and_recovery": {
     "must_backup": [
       "postgres content/control schemas",
-      "server runtime root"
+      "server runtime root",
+      "retire export root"
     ],
     "daily_helper": "python3 scripts/runtime_backup.py --runtime-root \"$AIT_NATIVE_SERVER_DATA\" --output-dir /srv/ait-backups --keep 8",
     "related_docs": [

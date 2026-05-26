@@ -23,12 +23,16 @@ from typing import Any, Callable, Iterable
 
 from .store import (
     RepoContext,
+    collect_snapshot_chain,
     create_local_release,
     current_line,
     export_snapshot_bundle,
     get_line,
     get_local_release,
     get_snapshot,
+    list_local_changes,
+    list_local_releases,
+    list_local_tasks,
     load_config,
     repo_status,
     update_local_release,
@@ -159,6 +163,13 @@ SUPPORTED_RELEASE_PROFILES = {
 }
 
 _MARKDOWN_LINK_RE = re.compile(r"(?<!!)\[[^\]]*\]\(([^)]+)\)")
+_RELEASE_NOTES_START = "<!-- ait-release-notes:start -->"
+_RELEASE_NOTES_END = "<!-- ait-release-notes:end -->"
+_RELEASE_NOTES_BLOCK_RE = re.compile(
+    rf"\n?{re.escape(_RELEASE_NOTES_START)}.*?{re.escape(_RELEASE_NOTES_END)}\n?",
+    re.DOTALL,
+)
+_MAX_RELEASE_NOTES_TASKS = 10
 
 
 def _require_profile(profile: str) -> dict[str, Any]:
@@ -336,6 +347,12 @@ def _supplement_workspace_release_bundle(
         allowed_paths=allowed_paths,
         workspace_matches_release_source=workspace_matches_release_source,
     )
+    updated = dict(bundle)
+    updated["files"] = _ordered_bundle_files(bundle, file_map)
+    return updated
+
+
+def _ordered_bundle_files(bundle: dict[str, Any], file_map: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
     ordered_paths = [
         str(entry.get("path") or "")
         for entry in bundle.get("files", [])
@@ -353,9 +370,7 @@ def _supplement_workspace_release_bundle(
         if path in seen:
             continue
         files.append(file_map[path])
-    updated = dict(bundle)
-    updated["files"] = files
-    return updated
+    return files
 
 
 def _path_matches_any(path: str, patterns: Iterable[str]) -> bool:
@@ -568,6 +583,195 @@ def _release_source_bundle(
         workspace_matches_release_source=workspace_matches_release_source,
     )
     return _shape_release_bundle(bundle, profile_settings)
+
+
+def _parse_iso_datetime(value: str | None) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    normalized = text[:-1] + "+00:00" if text.endswith("Z") else text
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
+def _datetime_sort_key(value: str | None) -> tuple[int, str]:
+    parsed = _parse_iso_datetime(value)
+    if parsed is None:
+        return (0, "")
+    return (1, parsed.isoformat())
+
+
+def _previous_published_release(ctx: RepoContext, record: dict[str, Any]) -> dict[str, Any] | None:
+    current_release_id = str(record.get("release_id") or "").strip()
+    current_profile = str(record.get("profile") or "").strip()
+    current_created_at = _parse_iso_datetime(record.get("created_at"))
+    candidates: list[tuple[tuple[int, str], dict[str, Any]]] = []
+    for release in list_local_releases(ctx):
+        if str(release.get("release_id") or "").strip() == current_release_id:
+            continue
+        if str(release.get("profile") or "").strip() != current_profile:
+            continue
+        if str(release.get("status") or "").strip() != "published":
+            continue
+        created_at = _parse_iso_datetime(release.get("created_at"))
+        if current_created_at is not None and created_at is not None and created_at > current_created_at:
+            continue
+        candidates.append((_datetime_sort_key(release.get("created_at")), release))
+    if not candidates:
+        return None
+    return max(candidates, key=lambda item: item[0])[1]
+
+
+def _collect_release_note_tasks(
+    ctx: RepoContext,
+    record: dict[str, Any],
+) -> dict[str, Any]:
+    previous = _previous_published_release(ctx, record)
+    summary: dict[str, Any] = {
+        "version": str(record.get("version") or "").strip(),
+        "profile": str(record.get("profile") or "").strip(),
+        "mode": "delta",
+        "previous_release_id": None,
+        "previous_version": None,
+        "task_count": 0,
+        "shown_task_count": 0,
+        "omitted_task_count": 0,
+        "tasks": [],
+    }
+    if previous is None:
+        summary["mode"] = "initial_release"
+        return summary
+
+    previous_snapshot_id = str(previous.get("snapshot_id") or "").strip()
+    previous_version = str(previous.get("version") or "").strip()
+    summary["previous_release_id"] = str(previous.get("release_id") or "").strip() or None
+    summary["previous_version"] = previous_version or None
+
+    if not previous_snapshot_id:
+        summary["mode"] = "baseline_unavailable"
+        return summary
+
+    current_snapshot_id = str(record.get("snapshot_id") or "").strip()
+    ancestry = collect_snapshot_chain(ctx, current_snapshot_id)
+    if previous_snapshot_id not in ancestry:
+        summary["mode"] = "baseline_not_ancestor"
+        return summary
+
+    cutoff = ancestry.index(previous_snapshot_id)
+    snapshot_window = set(ancestry[cutoff + 1 :])
+    if not snapshot_window:
+        return summary
+
+    task_titles = {
+        str(task.get("task_id") or "").strip(): str(task.get("title") or "").strip()
+        for task in list_local_tasks(ctx)
+        if str(task.get("task_id") or "").strip()
+    }
+    latest_task_rows: dict[str, dict[str, Any]] = {}
+    for change in sorted(
+        list_local_changes(ctx),
+        key=lambda row: (_datetime_sort_key(row.get("landed_at")), str(row.get("change_id") or "")),
+    ):
+        if str(change.get("status") or "").strip() != "landed":
+            continue
+        if str(change.get("target_line") or "").strip() != str(record.get("line") or "").strip():
+            continue
+        landed_snapshot_id = str(change.get("landed_snapshot_id") or "").strip()
+        if not landed_snapshot_id or landed_snapshot_id not in snapshot_window:
+            continue
+        task_id = str(change.get("task_id") or "").strip()
+        if not task_id:
+            continue
+        latest_task_rows[task_id] = {
+            "task_id": task_id,
+            "title": task_titles.get(task_id) or str(change.get("title") or "").strip() or task_id,
+            "landed_at": str(change.get("landed_at") or "").strip() or None,
+            "landed_snapshot_id": landed_snapshot_id,
+            "change_id": str(change.get("change_id") or "").strip() or None,
+        }
+
+    ordered_tasks = sorted(
+        latest_task_rows.values(),
+        key=lambda row: (_datetime_sort_key(row.get("landed_at")), str(row.get("task_id") or "")),
+    )
+    shown_tasks = ordered_tasks[-_MAX_RELEASE_NOTES_TASKS:]
+    summary["task_count"] = len(ordered_tasks)
+    summary["shown_task_count"] = len(shown_tasks)
+    summary["omitted_task_count"] = max(0, len(ordered_tasks) - len(shown_tasks))
+    summary["tasks"] = shown_tasks
+    return summary
+
+
+def _render_release_notes(record: dict[str, Any], notes: dict[str, Any]) -> str:
+    version = str(record.get("version") or "").strip() or "unknown"
+    mode = str(notes.get("mode") or "delta").strip()
+    previous_version = str(notes.get("previous_version") or "").strip()
+    task_count = int(notes.get("task_count") or 0)
+    shown_count = int(notes.get("shown_task_count") or 0)
+    omitted_count = int(notes.get("omitted_task_count") or 0)
+    tasks = notes.get("tasks") if isinstance(notes.get("tasks"), list) else []
+    lines = [
+        _RELEASE_NOTES_START,
+        "## Release Notes",
+        "",
+        f"### v{version}",
+        "",
+    ]
+    if mode == "initial_release":
+        lines.append("Initial published release for this profile. Task-based delta notes start after the first published baseline.")
+    elif mode in {"baseline_unavailable", "baseline_not_ancestor"}:
+        if previous_version:
+            lines.append(
+                f"Previous published release `v{previous_version}` is not an ancestor baseline for this snapshot, so task-based delta notes are unavailable for this build."
+            )
+        else:
+            lines.append("A previous published baseline is unavailable for this profile, so task-based delta notes are unavailable for this build.")
+    elif task_count == 0:
+        if previous_version:
+            lines.append(f"No landed tasks were recorded between this release and the previous published release `v{previous_version}`.")
+        else:
+            lines.append("No landed tasks were recorded for this release window.")
+    else:
+        if previous_version:
+            summary_line = f"Tasks landed since `v{previous_version}`"
+        else:
+            summary_line = "Tasks landed for this release window"
+        if omitted_count > 0:
+            summary_line += f" (showing latest {shown_count} of {task_count})"
+        elif task_count == 1:
+            summary_line += " (1 task)"
+        else:
+            summary_line += f" ({task_count} tasks)"
+        lines.append(summary_line + ":")
+        lines.append("")
+        for task in tasks:
+            lines.append(f"- `{task['task_id']}` {task['title']}")
+    lines.extend(["", _RELEASE_NOTES_END])
+    return "\n".join(lines)
+
+
+def _with_release_notes_readme(
+    ctx: RepoContext,
+    record: dict[str, Any],
+    bundle: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    file_map = _bundle_file_map(bundle)
+    readme_entry = file_map.get("README.md")
+    if readme_entry is None:
+        return bundle, None
+
+    notes = _collect_release_note_tasks(ctx, record)
+    readme_text = _bundle_text(file_map, "README.md")
+    base_text = _RELEASE_NOTES_BLOCK_RE.sub("\n", readme_text).rstrip()
+    updated_text = base_text + "\n\n" + _render_release_notes(record, notes) + "\n"
+    file_map["README.md"] = _bundle_entry_with_text(readme_entry, updated_text)
+
+    updated = dict(bundle)
+    updated["files"] = _ordered_bundle_files(bundle, file_map)
+    return updated, notes
 
 
 def _pyproject_metadata(bundle: dict[str, Any]) -> dict[str, Any]:
@@ -1587,6 +1791,7 @@ def build_release_candidate(ctx: RepoContext, release_id: str) -> dict[str, Any]
         allowed_paths=["pyproject.toml", *release_surface_paths],
         workspace_matches_release_source=workspace_clean and workspace_matches_line,
     )
+    bundle, release_notes = _with_release_notes_readme(ctx, record, bundle)
     pyproject = _pyproject_metadata(bundle)
     dist_dir = ctx.root / "dist"
     dist_dir.mkdir(parents=True, exist_ok=True)
@@ -1677,6 +1882,7 @@ def build_release_candidate(ctx: RepoContext, release_id: str) -> dict[str, Any]
             "source_date_epoch": epoch,
             "builder": "ait_internal_sdist_and_wheel",
         },
+        release_notes=release_notes,
     )
     updated = update_local_release(
         ctx,

@@ -509,7 +509,7 @@ class CodexAppServerClient:
                 "clientInfo": {
                     "name": "ait",
                     "title": "ait Telegram reply path",
-                    "version": "0.10.4",
+                    "version": "0.10.5",
                 },
                 "capabilities": {"experimentalApi": True},
             },

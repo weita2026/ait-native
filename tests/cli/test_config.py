@@ -9,6 +9,7 @@ from ._shared import *  # noqa: F401,F403
 def _disable_host_macos_ram_volume_detection(monkeypatch):
     task_worktree_layout = import_module("ait.task_worktree_layout")
     monkeypatch.setattr(task_worktree_layout, "_macos_ram_volume_roots", lambda: [])
+    monkeypatch.setattr(task_worktree_layout, "_macos_ram_volume_specs", lambda: [])
     monkeypatch.setattr(task_worktree_layout, "_linux_detected_memory_roots", lambda: [])
     monkeypatch.setattr(task_worktree_layout, "_windows_ram_disk_roots", lambda: [])
 
@@ -19,10 +20,19 @@ def _task_worktree_summary(
     ephemeral_root_source: str = "built_in",
     alias_root: str = ".ait/worktree-links",
     alias_root_source: str = "built_in",
-) -> dict[str, dict[str, str | None]]:
+    memory_root: dict[str, object] | None = None,
+    memory_root_source: str = "built_in",
+    main_seed_ram_max_bytes: int | None = None,
+    main_seed_ram_max_bytes_source: str = "built_in",
+) -> dict[str, dict[str, object | None]]:
     return {
         "ephemeral_root": {"value": ephemeral_root, "source": ephemeral_root_source},
         "alias_root": {"value": alias_root, "source": alias_root_source},
+        "memory_root": {"value": memory_root, "source": memory_root_source},
+        "main_seed_ram_max_bytes": {
+            "value": main_seed_ram_max_bytes,
+            "source": main_seed_ram_max_bytes_source,
+        },
     }
 
 
@@ -79,6 +89,13 @@ def test_init_persists_detected_macos_ram_volume_as_ephemeral_root(tmp_path: Pat
 
     task_worktree_layout = import_module("ait.task_worktree_layout")
     monkeypatch.setattr(task_worktree_layout.sys, "platform", "darwin")
+    memory_root = {
+        "kind": "macos_ram_volume",
+        "root": str(host_ram_root),
+        "volume_name": host_ram_root.name,
+        "sector_count": 4194304,
+    }
+    monkeypatch.setattr(task_worktree_layout, "_macos_ram_volume_specs", lambda: [dict(memory_root)])
     monkeypatch.setattr(task_worktree_layout, "_macos_ram_volume_roots", lambda: [host_ram_root])
 
     result = runner.invoke(app, ["init", "--name", "housekeeper", "--json"], catch_exceptions=False)
@@ -89,11 +106,15 @@ def test_init_persists_detected_macos_ram_volume_as_ephemeral_root(tmp_path: Pat
     assert str(configured_root).startswith(str((host_ram_root / ".ait-repos").resolve()))
     assert payload["task_worktree"] == _task_worktree_summary(
         ephemeral_root=configured_root,
-        ephemeral_root_source="repo_config",
+        ephemeral_root_source="derived_from_memory_root",
+        memory_root=memory_root,
+        memory_root_source="repo_config",
     )
 
     config_data = json.loads((repo / ".ait" / "config.json").read_text(encoding="utf-8"))
-    assert config_data["task_worktree"] == {"ephemeral_root": configured_root}
+    assert config_data["task_worktree"] == {
+        "memory_root": memory_root,
+    }
 
 
 def test_init_persists_detected_linux_memory_root_as_ephemeral_root(tmp_path: Path, monkeypatch):
@@ -114,11 +135,15 @@ def test_init_persists_detected_linux_memory_root_as_ephemeral_root(tmp_path: Pa
     assert str(configured_root).startswith(str((memory_root / ".ait-repos").resolve()))
     assert payload["task_worktree"] == _task_worktree_summary(
         ephemeral_root=configured_root,
-        ephemeral_root_source="repo_config",
+        ephemeral_root_source="derived_from_memory_root",
+        memory_root={"kind": "linux_memory_root", "root": str(memory_root)},
+        memory_root_source="repo_config",
     )
 
     config_data = json.loads((repo / ".ait" / "config.json").read_text(encoding="utf-8"))
-    assert config_data["task_worktree"] == {"ephemeral_root": configured_root}
+    assert config_data["task_worktree"] == {
+        "memory_root": {"kind": "linux_memory_root", "root": str(memory_root)},
+    }
 
 
 def test_init_persists_detected_windows_ram_disk_as_ephemeral_root(tmp_path: Path, monkeypatch, host_ram_root: Path):
@@ -138,11 +163,128 @@ def test_init_persists_detected_windows_ram_disk_as_ephemeral_root(tmp_path: Pat
     assert str(configured_root).startswith(str((host_ram_root / ".ait-repos").resolve()))
     assert payload["task_worktree"] == _task_worktree_summary(
         ephemeral_root=configured_root,
-        ephemeral_root_source="repo_config",
+        ephemeral_root_source="derived_from_memory_root",
+        memory_root={"kind": "windows_ramdisk", "root": str(host_ram_root)},
+        memory_root_source="repo_config",
     )
 
     config_data = json.loads((repo / ".ait" / "config.json").read_text(encoding="utf-8"))
-    assert config_data["task_worktree"] == {"ephemeral_root": configured_root}
+    assert config_data["task_worktree"] == {
+        "memory_root": {"kind": "windows_ramdisk", "root": str(host_ram_root)},
+    }
+
+
+def test_config_set_rejects_removed_task_worktree_ephemeral_root_options(tmp_path: Path, monkeypatch):
+    repo = tmp_path / "housekeeper-config-set-removed-task-worktree-root"
+    repo.mkdir()
+    monkeypatch.chdir(repo)
+
+    assert runner.invoke(app, ["init", "--name", "housekeeper"], catch_exceptions=False).exit_code == 0
+
+    set_out = runner.invoke(app, ["config", "set", "--task-worktree-ephemeral-root", "/tmp/ait-ram"], catch_exceptions=False)
+    assert set_out.exit_code != 0
+
+    clear_out = runner.invoke(app, ["config", "set", "--clear-task-worktree-ephemeral-root"], catch_exceptions=False)
+    assert clear_out.exit_code != 0
+
+
+def test_config_set_alias_root_prunes_derived_ephemeral_root_compat_entry(tmp_path: Path, monkeypatch):
+    repo = tmp_path / "housekeeper-config-set-prune-derived-root"
+    repo.mkdir()
+    monkeypatch.chdir(repo)
+
+    assert runner.invoke(app, ["init", "--name", "housekeeper"], catch_exceptions=False).exit_code == 0
+
+    repo_ctx = RepoContext.discover(repo)
+    task_worktree_layout = import_module("ait.task_worktree_layout")
+    derived_root = str(task_worktree_layout._auto_detected_ephemeral_root(repo_ctx, Path("/Volumes/AIT_RAM")))
+    config_path = repo / ".ait" / "config.json"
+    saved = json.loads(config_path.read_text(encoding="utf-8"))
+    saved["task_worktree"] = {
+        "ephemeral_root": derived_root,
+        "memory_root": {
+            "kind": "macos_ram_volume",
+            "root": "/Volumes/AIT_RAM",
+            "volume_name": "AIT_RAM",
+            "sector_count": 4194304,
+        },
+    }
+    config_path.write_text(json.dumps(saved, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+    set_out = runner.invoke(
+        app,
+        ["config", "set", "--task-worktree-alias-root", ".ait/ram-links", "--json"],
+        catch_exceptions=False,
+    )
+    assert set_out.exit_code == 0, set_out.stdout
+
+    updated = json.loads(config_path.read_text(encoding="utf-8"))
+    assert updated["task_worktree"] == {
+        "alias_root": ".ait/ram-links",
+        "memory_root": {
+            "kind": "macos_ram_volume",
+            "root": "/Volumes/AIT_RAM",
+            "volume_name": "AIT_RAM",
+            "sector_count": 4194304,
+        },
+    }
+
+
+def test_repo_config_update_path_preserves_default_remote_after_earlier_write(tmp_path: Path, monkeypatch):
+    repo = tmp_path / "housekeeper-config-update-preserves-default-remote"
+    repo.mkdir()
+    monkeypatch.chdir(repo)
+
+    assert runner.invoke(app, ["init", "--name", "housekeeper"], catch_exceptions=False).exit_code == 0
+
+    store_module = import_module("ait.store")
+    store_repo_config = import_module("ait.store_repo_config")
+    config_module = import_module("ait.cli.commands.config")
+    ctx = RepoContext.discover(repo)
+
+    store_module.add_remote(ctx, "origin", "http://example.invalid", "housekeeper", make_default=True)
+
+    store_repo_config.update_config(
+        ctx,
+        lambda cfg: config_module._apply_config_set_updates(
+            ctx,
+            cfg,
+            default_author_mode=None,
+            clear_default_author_mode=False,
+            default_model=None,
+            clear_default_model=False,
+            task_tracking=None,
+            command_profiling=None,
+            task_dag_allow_multi_worker=None,
+            task_worktree_alias_root=None,
+            clear_task_worktree_alias_root=False,
+            task_worktree_main_seed_ram_max_bytes=None,
+            clear_task_worktree_main_seed_ram_max_bytes=False,
+            legacy_task_auto_worktree=None,
+            workflow_mode="solo_remote",
+            workflow_default_scope=None,
+            clear_workflow_default_scope=False,
+            task_default_scope=None,
+            clear_task_default_scope=False,
+            change_default_scope=None,
+            clear_change_default_scope=False,
+            id_namespace_prefix=None,
+            clear_id_namespace_prefix=False,
+            plan_task_binding_mode=None,
+            clear_plan_task_binding=False,
+            user_name=None,
+            clear_user_name=False,
+            user_email=None,
+            clear_user_email=False,
+        ),
+    )
+
+    saved = json.loads((repo / ".ait" / "config.json").read_text(encoding="utf-8"))
+    assert saved["default_remote"] == "origin"
+    assert saved["workflow_mode"] == "solo_remote"
+    assert saved["workflow_default_scope"] == "remote"
+    assert saved["task_default_scope"] == "remote"
+    assert saved["change_default_scope"] == "remote"
 
 
 def test_policy_yaml_roundtrip_supports_class_overrides():
@@ -766,8 +908,6 @@ def test_config_set_task_worktree_lifecycle_modes_without_auto_create_toggle(tmp
         [
             "config",
             "set",
-            "--task-worktree-ephemeral-root",
-            "/tmp/ait-ram",
             "--task-worktree-alias-root",
             ".ait/ram-links",
             "--json",
@@ -777,8 +917,6 @@ def test_config_set_task_worktree_lifecycle_modes_without_auto_create_toggle(tmp
     assert set_out.exit_code == 0, set_out.stdout
     updated = json.loads(set_out.stdout)
     assert updated["task_worktree"] == _task_worktree_summary(
-        ephemeral_root="/tmp/ait-ram",
-        ephemeral_root_source="repo_config",
         alias_root=".ait/ram-links",
         alias_root_source="repo_config",
     )
@@ -786,7 +924,6 @@ def test_config_set_task_worktree_lifecycle_modes_without_auto_create_toggle(tmp
     config_path = repo / ".ait" / "config.json"
     saved = json.loads(config_path.read_text(encoding="utf-8"))
     assert saved["task_worktree"] == {
-        "ephemeral_root": "/tmp/ait-ram",
         "alias_root": ".ait/ram-links",
     }
 
@@ -795,8 +932,54 @@ def test_config_set_task_worktree_lifecycle_modes_without_auto_create_toggle(tmp
         [
             "config",
             "set",
-            "--clear-task-worktree-ephemeral-root",
             "--clear-task-worktree-alias-root",
+            "--json",
+        ],
+        catch_exceptions=False,
+    )
+    assert clear_out.exit_code == 0, clear_out.stdout
+    cleared = json.loads(clear_out.stdout)
+    assert cleared["task_worktree"] == _task_worktree_summary()
+
+
+def test_config_set_main_seed_ram_budget_updates_task_worktree_policy(tmp_path: Path, monkeypatch):
+    repo = tmp_path / "housekeeper-task-worktree-main-seed-budget"
+    repo.mkdir()
+    (repo / "README.md").write_text("base\n", encoding="utf-8")
+    monkeypatch.chdir(repo)
+
+    assert runner.invoke(app, ["init", "--name", "housekeeper"], catch_exceptions=False).exit_code == 0
+
+    set_out = runner.invoke(
+        app,
+        [
+            "config",
+            "set",
+            "--task-worktree-main-seed-ram-max-bytes",
+            "52428800",
+            "--json",
+        ],
+        catch_exceptions=False,
+    )
+    assert set_out.exit_code == 0, set_out.stdout
+    updated = json.loads(set_out.stdout)
+    assert updated["task_worktree"] == _task_worktree_summary(
+        main_seed_ram_max_bytes=52428800,
+        main_seed_ram_max_bytes_source="repo_config",
+    )
+
+    config_path = repo / ".ait" / "config.json"
+    saved = json.loads(config_path.read_text(encoding="utf-8"))
+    assert saved["task_worktree"] == {
+        "main_seed_ram_max_bytes": 52428800,
+    }
+
+    clear_out = runner.invoke(
+        app,
+        [
+            "config",
+            "set",
+            "--clear-task-worktree-main-seed-ram-max-bytes",
             "--json",
         ],
         catch_exceptions=False,
@@ -863,6 +1046,92 @@ def test_task_start_auto_creates_ephemeral_bound_worktree_alias_on_linux(tmp_pat
 
     assert worktree["name"] == expected_worktree_name
     assert worktree["root_source"] == "linux_xdg_runtime_dir"
+    assert worktree_path.parent == expected_target_root
+    assert alias_path == (repo / ".ait" / "worktree-links" / expected_worktree_name)
+    assert alias_path.is_symlink()
+    assert alias_path.resolve() == worktree_path.resolve()
+    assert worktree["open_path"] == str(alias_path)
+    assert worktree["cd_command"] == f"cd {shlex.quote(str(alias_path))}"
+    guidance = payload["worktree_guidance"]
+    assert guidance["target_workspace_root"] == str(alias_path)
+    assert guidance["cd_command"] == worktree["cd_command"]
+
+
+def test_task_start_auto_bootstraps_macos_ram_volume_when_none_is_pre_mounted(tmp_path: Path, monkeypatch):
+    repo = tmp_path / "housekeeper-task-start-macos-ram-bootstrap"
+    repo.mkdir()
+    (repo / "README.md").write_text("base\n", encoding="utf-8")
+    monkeypatch.chdir(repo)
+
+    assert runner.invoke(app, ["init", "--name", "housekeeper"], catch_exceptions=False).exit_code == 0
+    snapshot_out = runner.invoke(app, ["snapshot", "create", "--message", "seed", "--json"], catch_exceptions=False)
+    assert snapshot_out.exit_code == 0, snapshot_out.stdout
+    task_worktree_layout = import_module("ait.task_worktree_layout")
+    monkeypatch.setattr(task_worktree_layout.sys, "platform", "darwin")
+    ram_root = (tmp_path / "Volumes" / "AIT_RAM").resolve()
+    mounted_roots: list[Path] = []
+    default_spec = {
+        "kind": "macos_ram_volume",
+        "root": str(ram_root),
+        "volume_name": "AIT_RAM",
+        "sector_count": 4194304,
+    }
+
+    def fake_specs():
+        if not mounted_roots:
+            return []
+        return [dict(default_spec)]
+
+    def fake_provision(spec: dict[str, object]) -> bool:
+        assert spec == default_spec
+        mounted_roots[:] = [ram_root]
+        ram_root.mkdir(parents=True, exist_ok=True)
+        return True
+
+    monkeypatch.setattr(task_worktree_layout, "_macos_ram_volume_specs", fake_specs)
+    monkeypatch.setattr(task_worktree_layout, "_default_macos_ram_volume_spec", lambda: dict(default_spec))
+    monkeypatch.setattr(task_worktree_layout, "_provision_macos_ram_volume", fake_provision)
+    set_out = runner.invoke(
+        app,
+        [
+            "config",
+            "set",
+            "--plan-task-binding-mode",
+            "advisory",
+            "--json",
+        ],
+        catch_exceptions=False,
+    )
+    assert set_out.exit_code == 0, set_out.stdout
+
+    start_out = runner.invoke(
+        app,
+        [
+            "task",
+            "start",
+            "--local",
+            "--title",
+            "Bootstrap macOS RAM workflow",
+            "--intent",
+            "open a bound worktree after provisioning the managed RAM volume",
+            "--base-line",
+            "main",
+            "--risk",
+            "medium",
+            "--json",
+        ],
+        catch_exceptions=False,
+    )
+    assert start_out.exit_code == 0, start_out.stdout
+    payload = json.loads(start_out.stdout)
+    worktree = payload["worktree"]
+    worktree_path = Path(worktree["path"])
+    alias_path = Path(worktree["alias_path"])
+    expected_worktree_name = payload["task_id"].lower()
+    expected_target_root = task_worktree_layout._auto_detected_ephemeral_root(RepoContext.discover(repo), ram_root) / "housekeeper"
+
+    assert worktree["name"] == expected_worktree_name
+    assert worktree["root_source"] == "macos_ram_volume"
     assert worktree_path.parent == expected_target_root
     assert alias_path == (repo / ".ait" / "worktree-links" / expected_worktree_name)
     assert alias_path.is_symlink()

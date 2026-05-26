@@ -1,5 +1,4 @@
 from __future__ import annotations
-
 from pathlib import Path
 
 import pytest
@@ -11,9 +10,11 @@ from ait import store_worktree_cleanup
 from ait import store_worktree_state
 from ait import store_worktree_filesystem
 from ait import store_worktree_lifecycle
+from ait import store_worktree_layout
 from ait import store_worktree_rebase
 from ait import store_worktree_restore
 from ait import store_worktrees
+from ait.store_repo_config import update_config
 
 WORKSPACE_ROOT = Path(__file__).resolve().parents[1]
 
@@ -167,3 +168,109 @@ def test_list_worktrees_hoists_shared_indexes_for_cached_status_reads(
     assert counts["tasks"] == 1
     assert counts["changes"] == 1
     assert counts["chains"] <= 2
+
+
+def test_add_worktree_refreshes_main_seed_when_memory_backed_root_is_available(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir(parents=True, exist_ok=True)
+    readme = repo / "README.md"
+    readme.write_text("base\n", encoding="utf-8")
+    ctx = store.init_repo(repo, "repo", "main")
+    local_content.create_snapshot(ctx, "repo", "main", "main seed")
+    store.create_line(ctx, "feature/a")
+    store.switch_line(ctx, "feature/a")
+    readme.write_text("feature work\n", encoding="utf-8")
+    local_content.create_snapshot(ctx, "repo", "feature/a", "feature seed")
+
+    calls: list[str] = []
+
+    monkeypatch.setattr(store_worktree_lifecycle, "path_is_memory_backed", lambda path: True)
+
+    def fake_ensure_main_seed_mirror(repo_ctx, *, force_refresh: bool = False, line_name: str | None = None):
+        calls.append(str(line_name or ""))
+        return {"status": "aligned", "name": "main-seed", "path": str(tmp_path / "ram-root" / "main-seed")}
+
+    monkeypatch.setattr(store_worktree_lifecycle, "ensure_main_seed_mirror", fake_ensure_main_seed_mirror)
+
+    worktree = store.add_worktree(
+        ctx,
+        "wt-feature-a",
+        line_name="feature/a",
+        path=str(tmp_path / "worktrees" / "wt-feature-a"),
+    )
+
+    assert worktree["name"] == "wt-feature-a"
+    assert calls == ["main"]
+
+
+def test_add_worktree_skips_main_seed_refresh_when_memory_backed_root_is_unavailable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir(parents=True, exist_ok=True)
+    readme = repo / "README.md"
+    readme.write_text("base\n", encoding="utf-8")
+    ctx = store.init_repo(repo, "repo", "main")
+    local_content.create_snapshot(ctx, "repo", "main", "main seed")
+    store.create_line(ctx, "feature/a")
+    store.switch_line(ctx, "feature/a")
+    readme.write_text("feature work\n", encoding="utf-8")
+    local_content.create_snapshot(ctx, "repo", "feature/a", "feature seed")
+
+    calls: list[str] = []
+
+    monkeypatch.setattr(store_worktree_lifecycle, "path_is_memory_backed", lambda path: False)
+
+    def fake_ensure_main_seed_mirror(repo_ctx, *, force_refresh: bool = False, line_name: str | None = None):
+        calls.append(str(line_name or ""))
+        return {"status": "aligned", "name": "main-seed", "path": str(tmp_path / "ram-root" / "main-seed")}
+
+    monkeypatch.setattr(store_worktree_lifecycle, "ensure_main_seed_mirror", fake_ensure_main_seed_mirror)
+
+    worktree = store.add_worktree(
+        ctx,
+        "wt-feature-a",
+        line_name="feature/a",
+        path=str(tmp_path / "worktrees" / "wt-feature-a"),
+    )
+
+    assert worktree["name"] == "wt-feature-a"
+    assert calls == []
+
+
+def test_ensure_main_seed_mirror_reports_budget_exceeded_before_using_ram(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir(parents=True, exist_ok=True)
+    readme = repo / "README.md"
+    readme.write_text("base\n", encoding="utf-8")
+    ctx = store.init_repo(repo, "repo", "main")
+    local_content.create_snapshot(ctx, "repo", "main", "main seed")
+    update_config(
+        ctx,
+        lambda cfg: cfg.setdefault("task_worktree", {}).__setitem__("main_seed_ram_max_bytes", 1),
+    )
+    monkeypatch.setattr(
+        store_worktree_layout,
+        "main_seed_ram_budget_status",
+        lambda *_args, **_kwargs: {
+            "default_line": "main",
+            "seed_snapshot_id": "SNP-123",
+            "seed_snapshot_total_bytes": 5,
+            "main_seed_ram_max_bytes": 1,
+            "exceeded": True,
+        },
+    )
+
+    result = store.ensure_main_seed_mirror(ctx, line_name="main")
+
+    assert result["status"] == "skipped"
+    assert result["reason"] == "main_seed_ram_budget_exceeded"
+    assert result["seed_snapshot_total_bytes"] == 5
+    assert result["main_seed_ram_max_bytes"] == 1

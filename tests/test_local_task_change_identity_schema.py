@@ -107,6 +107,96 @@ def test_local_control_initialize_drops_historical_publication_identity_columns(
         conn.close()
 
 
+def test_local_control_operations_skip_schema_bootstrap_after_init(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = _repo_context(tmp_path)
+    local_control.initialize(ctx, repo_name="repo-a", default_line="main")
+
+    def fail_ensure_schema(*_args, **_kwargs):
+        raise AssertionError("control schema bootstrap should only run during `ait init`")
+
+    monkeypatch.setattr(local_control, "_ensure_schema", fail_ensure_schema)
+
+    task = local_control.create_workflow_task(
+        ctx,
+        task_id="ABCT-101",
+        repo_name="repo-a",
+        title="Runtime task",
+        intent="prove normal control operations skip request-time schema shaping",
+        risk_tier="medium",
+    )
+    fetched_task = local_control.get_workflow_task(ctx, task["task_id"])
+    listed_tasks = local_control.list_workflow_tasks(ctx)
+
+    change = local_control.create_workflow_change(
+        ctx,
+        change_id="ABCC-101",
+        task_id=task["task_id"],
+        repo_name="repo-a",
+        title="Runtime change",
+        base_line="main",
+        risk_tier="medium",
+        lane="assisted",
+    )
+    fetched_change = local_control.get_workflow_change(ctx, change["change_id"])
+    listed_changes = local_control.list_workflow_changes(ctx)
+
+    assert fetched_task["task_id"] == task["task_id"]
+    assert any(row["task_id"] == task["task_id"] for row in listed_tasks)
+    assert fetched_change["change_id"] == change["change_id"]
+    assert any(row["change_id"] == change["change_id"] for row in listed_changes)
+
+
+def test_local_control_runtime_operations_do_not_drop_compatibility_columns_after_init(tmp_path: Path) -> None:
+    ctx = _repo_context(tmp_path)
+    local_control.initialize(ctx, repo_name="repo-a", default_line="main")
+
+    conn = connect_sqlite(ctx.control_db_path)
+    try:
+        conn.execute("alter table workflow_tasks add column historical_publication_remote_name text")
+        conn.execute("alter table workflow_tasks add column historical_publication_id text")
+        conn.execute("alter table workflow_changes add column historical_publication_remote_name text")
+        conn.execute("alter table workflow_changes add column historical_publication_id text")
+        conn.commit()
+    finally:
+        conn.close()
+
+    task = local_control.create_workflow_task(
+        ctx,
+        task_id="ABCT-102",
+        repo_name="repo-a",
+        title="Compatibility task",
+        intent="prove runtime paths do not perform legacy column cleanup",
+        risk_tier="medium",
+    )
+    change = local_control.create_workflow_change(
+        ctx,
+        change_id="ABCC-102",
+        task_id=task["task_id"],
+        repo_name="repo-a",
+        title="Compatibility change",
+        base_line="main",
+        risk_tier="medium",
+        lane="assisted",
+    )
+
+    conn = connect_sqlite(ctx.control_db_path)
+    try:
+        task_columns = _table_columns(conn, "workflow_tasks")
+        change_columns = _table_columns(conn, "workflow_changes")
+    finally:
+        conn.close()
+
+    assert task["task_id"] == "ABCT-102"
+    assert change["change_id"] == "ABCC-102"
+    assert "historical_publication_remote_name" in task_columns
+    assert "historical_publication_id" in task_columns
+    assert "historical_publication_remote_name" in change_columns
+    assert "historical_publication_id" in change_columns
+
+
 def test_local_control_create_workflow_task_persists_plan_linkage(tmp_path: Path) -> None:
     ctx = _repo_context(tmp_path)
     local_control.initialize(ctx, repo_name="repo-a", default_line="main")

@@ -48,6 +48,10 @@ from ait_storage.treepacks import (
 _T = TypeVar("_T")
 
 
+class RepositoryNamespacePrefixConflictError(ValueError):
+    pass
+
+
 def _elapsed_ms(start: float, end: float | None = None) -> float:
     finished = time.perf_counter() if end is None else end
     return round((finished - start) * 1000.0, 3)
@@ -635,6 +639,8 @@ def _repository_namespace_prefix_duplicates(conn) -> list[dict[str, Any]]:
     grouped: dict[str, list[str]] = {}
     for row in rows:
         prefix = str(row["id_namespace_prefix"])
+        if not prefix:
+            continue
         grouped.setdefault(prefix, []).append(str(row["repo_name"]))
     return [
         {
@@ -651,12 +657,16 @@ def _ensure_repository_namespace_prefix_unique_index(conn, ctx: ServerContext) -
     duplicates = _repository_namespace_prefix_duplicates(conn)
     if duplicates:
         return
+    conn.execute(f"drop index if exists {REPOSITORY_NAMESPACE_PREFIX_UNIQUE_INDEX}")
     conn.execute(
-        f"create unique index if not exists {REPOSITORY_NAMESPACE_PREFIX_UNIQUE_INDEX} on repositories(id_namespace_prefix)"
+        f"create unique index if not exists {REPOSITORY_NAMESPACE_PREFIX_UNIQUE_INDEX} "
+        "on repositories(id_namespace_prefix) where id_namespace_prefix <> ''"
     )
 
 
 def _repository_namespace_prefix_conflict(conn, prefix: str, *, exclude_repo_name: str | None = None) -> dict[str, Any] | None:
+    if not str(prefix or "").strip():
+        return None
     query = "select repo_name, id_namespace_prefix from repositories where id_namespace_prefix = ?"
     params: list[Any] = [prefix]
     if exclude_repo_name is not None:
@@ -668,7 +678,7 @@ def _repository_namespace_prefix_conflict(conn, prefix: str, *, exclude_repo_nam
 
 
 def _raise_repository_namespace_prefix_conflict(prefix: str, conflicting_repo_name: str) -> None:
-    raise ValueError(
+    raise RepositoryNamespacePrefixConflictError(
         f"Repository namespace prefix {prefix!r} is already in use by repository {conflicting_repo_name!r}."
     )
 

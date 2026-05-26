@@ -55,6 +55,7 @@ from .store_worktree_views import (
     list_worktrees,
     worktree_doctor,
 )
+from .task_worktree_layout import path_is_memory_backed
 
 __all__ = [
     'add_worktree',
@@ -71,6 +72,7 @@ def _seed_fast_path_candidate(
     *,
     target_snapshot_id: str | None,
     root_source: str | None,
+    prefetched_main_seed: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     repo_ctx = _repo_worktree_ctx(ctx)
     if normalize_optional_text(target_snapshot_id) is None:
@@ -86,12 +88,26 @@ def _seed_fast_path_candidate(
     default_snapshot_id = normalize_optional_text(default_line_row.get('head_snapshot_id'))
     if target_snapshot_id != default_snapshot_id:
         return None
-    main_seed = ensure_main_seed_mirror(repo_ctx, line_name=default_line)
+    main_seed = dict(prefetched_main_seed) if isinstance(prefetched_main_seed, dict) else ensure_main_seed_mirror(
+        repo_ctx,
+        line_name=default_line,
+    )
     return {
         'default_line': default_line,
         'default_snapshot_id': default_snapshot_id,
         'seed': main_seed,
     }
+
+
+def _maybe_refresh_main_seed_for_memory_backed_root(
+    ctx: RepoContext,
+    *,
+    target_path: Path,
+) -> dict[str, Any] | None:
+    if not path_is_memory_backed(target_path):
+        return None
+    repo_ctx = _repo_worktree_ctx(ctx)
+    return ensure_main_seed_mirror(repo_ctx, line_name=_default_line_name(repo_ctx))
 
 
 def add_worktree(
@@ -169,10 +185,15 @@ def add_worktree(
     main_seed: dict[str, Any] | None = None
     materialization_source = 'snapshot_restore'
     copy_strategy: str | None = None
+    prefetched_main_seed = _maybe_refresh_main_seed_for_memory_backed_root(
+        ctx,
+        target_path=target_path,
+    )
     seed_candidate = _seed_fast_path_candidate(
         ctx,
         target_snapshot_id=target_snapshot_id,
         root_source=resolved_root_source,
+        prefetched_main_seed=prefetched_main_seed,
     )
     worktree_ctx: RepoContext | None = None
     if seed_candidate is not None:

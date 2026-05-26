@@ -373,3 +373,12 @@ The expected public contribution posture is:
 3. open an honest task / change boundary;
 4. implement in the bound worktree;
 5. review, attest, and land honestly.
+
+<!-- ait-release-notes:start -->
+## Release Notes
+
+### v0.10.5
+
+Initial published release for this profile. Task-based delta notes start after the first published baseline.
+
+<!-- ait-release-notes:end -->

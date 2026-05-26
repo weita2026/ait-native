@@ -27,6 +27,8 @@ def test_pytest_harness_disables_ambient_memory_root_detection(tmp_path: Path, m
     assert payload["task_worktree"] == {
         "ephemeral_root": {"value": None, "source": "built_in"},
         "alias_root": {"value": ".ait/worktree-links", "source": "built_in"},
+        "memory_root": {"value": None, "source": "built_in"},
+        "main_seed_ram_max_bytes": {"value": None, "source": "built_in"},
     }
 
 

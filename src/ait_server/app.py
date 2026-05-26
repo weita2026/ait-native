@@ -505,7 +505,7 @@ def create_app() -> FastAPI:
             startup_policy.component,
             ctx.root,
         )
-    app = FastAPI(title="ait native server", version="0.10.4")
+    app = FastAPI(title="ait native server", version="0.10.5")
 
     @app.get("/healthz")
     def healthz() -> dict:
@@ -906,6 +906,7 @@ def create_app() -> FastAPI:
         ctx_getter=_ctx,
         not_found=_not_found,
         bad_request=_bad_request,
+        conflict=_conflict,
     )
 
     register_planning_routes(

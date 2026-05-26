@@ -3,7 +3,7 @@
   "guide_path": "docs/PACKAGE_TARGETS.md",
   "distribution": {
     "name": "ait-native",
-    "version": "0.10.4",
+    "version": "0.10.5",
     "artifact_model": "single_distribution_multi_command"
   },
   "target_rules": {

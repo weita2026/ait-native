@@ -35,6 +35,7 @@ def disable_host_memory_root_detection_for_init(monkeypatch):
 
     original_detect = layout.detect_init_task_worktree_defaults
     original_macos = layout._macos_ram_volume_roots
+    original_macos_specs = layout._macos_ram_volume_specs
     original_linux = layout._linux_detected_memory_roots
     original_windows = layout._windows_ram_disk_roots
 
@@ -43,6 +44,9 @@ def disable_host_memory_root_detection_for_init(monkeypatch):
             if layout._macos_ram_volume_roots is original_macos:
                 stack.callback(setattr, layout, "_macos_ram_volume_roots", layout._macos_ram_volume_roots)
                 layout._macos_ram_volume_roots = lambda: []
+            if layout._macos_ram_volume_specs is original_macos_specs:
+                stack.callback(setattr, layout, "_macos_ram_volume_specs", layout._macos_ram_volume_specs)
+                layout._macos_ram_volume_specs = lambda: []
             if layout._linux_detected_memory_roots is original_linux:
                 stack.callback(setattr, layout, "_linux_detected_memory_roots", layout._linux_detected_memory_roots)
                 layout._linux_detected_memory_roots = lambda: []

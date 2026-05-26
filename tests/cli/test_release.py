@@ -3,6 +3,16 @@ from __future__ import annotations
 import tarfile
 import zipfile
 
+from ait.store import (
+    close_local_task,
+    create_local_change,
+    create_snapshot,
+    create_local_release,
+    create_local_task,
+    export_snapshot_bundle,
+    land_local_change,
+)
+
 from ._shared import *  # noqa: F401,F403
 
 
@@ -285,6 +295,13 @@ def test_release_candidate_e2e_builds_and_generates_formula(tmp_path: Path, monk
     assert {"sdist", "wheel", "manifest", "checksum"} <= artifact_kinds
     for row in built["artifacts"]:
         assert (repo / row["path"]).exists(), row
+    sdist_row = next(row for row in built["artifacts"] if row["kind"] == "sdist")
+    with tarfile.open(repo / sdist_row["path"], "r:gz") as tf:
+        readme_name = next(name for name in tf.getnames() if name.endswith("/README.md"))
+        readme_text = tf.extractfile(readme_name).read().decode("utf-8")
+    assert "## Release Notes" in readme_text
+    assert "### v0.1.0" in readme_text
+    assert "Initial published release for this profile." in readme_text
     wheel_row = next(row for row in built["artifacts"] if row["kind"] == "wheel")
     with zipfile.ZipFile(repo / wheel_row["path"]) as zf:
         metadata_name = next(name for name in zf.namelist() if name.endswith(".dist-info/METADATA"))
@@ -347,6 +364,88 @@ def test_release_candidate_flow_supplements_ignored_pyproject_from_clean_workspa
     built = json.loads(build_out.stdout)
     artifact_kinds = {row["kind"] for row in built["artifacts"]}
     assert {"sdist", "wheel", "manifest", "checksum"} <= artifact_kinds
+
+
+def test_release_build_appends_task_based_notes_to_readme(tmp_path: Path, monkeypatch):
+    repo = tmp_path / "fixture-release-task-notes"
+    repo.mkdir()
+    monkeypatch.chdir(repo)
+
+    assert runner.invoke(app, ["init", "--name", "fixture-release"], catch_exceptions=False).exit_code == 0
+    _write_release_fixture(repo)
+    baseline_out = runner.invoke(app, ["snapshot", "create", "--message", "baseline", "--json"], catch_exceptions=False)
+    assert baseline_out.exit_code == 0, baseline_out.stdout
+    baseline_snapshot_id = json.loads(baseline_out.stdout)["snapshot_id"]
+
+    ctx = RepoContext.discover()
+    baseline_bundle = export_snapshot_bundle(ctx, baseline_snapshot_id)
+    create_local_release(
+        ctx,
+        version="0.1.0",
+        line_name="main",
+        snapshot_id=baseline_snapshot_id,
+        manifest_hash=str(baseline_bundle["manifest_hash"]),
+        profile="local-cli",
+        package_name="fixture-release",
+        package_version="0.1.0",
+        package_requires_python=">=3.11",
+        status="published",
+    )
+
+    task = create_local_task(
+        ctx,
+        title="Add task-based release notes",
+        intent="Record landed tasks in release README output.",
+        risk_tier="medium",
+    )
+    change = create_local_change(
+        ctx,
+        task["task_id"],
+        "Add task-based release notes",
+        "main",
+        "medium",
+    )
+
+    pyproject_path = repo / "pyproject.toml"
+    pyproject_path.write_text(
+        pyproject_path.read_text(encoding="utf-8").replace('version = "0.1.0"', 'version = "0.2.0"', 1),
+        encoding="utf-8",
+    )
+    (repo / "README.md").write_text(
+        (repo / "README.md").read_text(encoding="utf-8") + "\nRelease delta body.\n",
+        encoding="utf-8",
+    )
+
+    delta_snapshot_id = create_snapshot(ctx, "delta")["snapshot_id"]
+    land_local_change(
+        ctx,
+        change["change_id"],
+        target_line="main",
+        landed_snapshot_id=delta_snapshot_id,
+        pre_land_target_snapshot_id=baseline_snapshot_id,
+    )
+    close_local_task(ctx, task["task_id"], "completed")
+
+    create_out = runner.invoke(
+        app,
+        ["release", "candidate", "create", "--version", "0.2.0", "--line", "main", "--profile", "local-cli", "--json"],
+        catch_exceptions=False,
+    )
+    assert create_out.exit_code == 0, create_out.stdout
+    release_record = json.loads(create_out.stdout)
+
+    build_out = runner.invoke(app, ["release", "build", release_record["release_id"], "--json"], catch_exceptions=False)
+    assert build_out.exit_code == 0, build_out.stdout
+    built = json.loads(build_out.stdout)
+    sdist_row = next(row for row in built["artifacts"] if row["kind"] == "sdist")
+    with tarfile.open(repo / sdist_row["path"], "r:gz") as tf:
+        readme_name = next(name for name in tf.getnames() if name.endswith("/README.md"))
+        readme_text = tf.extractfile(readme_name).read().decode("utf-8")
+
+    assert "## Release Notes" in readme_text
+    assert "### v0.2.0" in readme_text
+    assert "Tasks landed since `v0.1.0` (1 task):" in readme_text
+    assert f"`{task['task_id']}` Add task-based release notes" in readme_text
 
 
 def test_public_self_hosted_release_candidate_excludes_ait_web_surface(tmp_path: Path, monkeypatch):

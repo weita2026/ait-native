@@ -5,6 +5,7 @@ from typing import Any, Callable
 from fastapi import FastAPI, HTTPException, Request
 
 from .route_request_models import LineCloseRequest, LineUpdate, RepositoryCreate, SnapshotExistsRequest
+from .server_content import RepositoryNamespacePrefixConflictError
 from .server_auth import actor_from_request, ensure_admin_action, ensure_line_update, ensure_repo_action
 from .server_store import (
     ServerContext,
@@ -28,19 +29,25 @@ def register_repository_routes(
     ctx_getter: Callable[[], ServerContext],
     not_found: ErrorBuilder,
     bad_request: ErrorBuilder,
+    conflict: ErrorBuilder,
 ) -> None:
     @app.post("/v1/native/repositories")
     def api_create_repo(req: RepositoryCreate, request: Request) -> dict:
         ctx = ctx_getter()
         actor = actor_from_request(request)
         ensure_admin_action(ctx, actor, req.repo_name)
-        return ensure_repository(
-            ctx,
-            req.repo_name,
-            req.default_line,
-            policy=req.policy,
-            id_namespace_prefix=req.id_namespace_prefix,
-        )
+        try:
+            return ensure_repository(
+                ctx,
+                req.repo_name,
+                req.default_line,
+                policy=req.policy,
+                id_namespace_prefix=req.id_namespace_prefix,
+            )
+        except RepositoryNamespacePrefixConflictError as exc:
+            raise conflict(exc) from exc
+        except ValueError as exc:
+            raise bad_request(exc) from exc
 
     @app.get("/v1/native/repositories/{repo_name}")
     def api_get_repo(repo_name: str, request: Request) -> dict:
@@ -143,4 +150,3 @@ def register_repository_routes(
             return export_snapshot(ctx, repo_name, snapshot_id, include_content=include_content, path=path)
         except KeyError as exc:
             raise not_found(exc) from exc
-

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from typing import Any
+import os
+from contextlib import contextmanager
+from typing import Any, Callable, Iterator
 
 from ait_protocol.common import (
     DEFAULT_ID_NAMESPACE_PREFIX,
@@ -15,6 +17,16 @@ from ait_protocol.common import (
 
 from .repo_paths import RepoContext
 
+try:  # pragma: no cover - platform-specific import
+    import fcntl  # type: ignore[attr-defined]
+except ImportError:  # pragma: no cover - Windows
+    fcntl = None
+
+try:  # pragma: no cover - platform-specific import
+    import msvcrt  # type: ignore[attr-defined]
+except ImportError:  # pragma: no cover - Unix
+    msvcrt = None
+
 WORKTREE_LOCAL_KEYS = {
     "current_line",
     "worktree_name",
@@ -27,6 +39,47 @@ WORKTREE_LOCAL_KEYS = {
     "tracked_session_scope",
     "tracked_session_remote",
 }
+
+
+def _repo_config_lock_path(ctx: RepoContext) -> Any:
+    return ctx.workspace_dir / "locks" / "repo-config.lock"
+
+
+def _acquire_repo_config_lock(handle) -> None:
+    if fcntl is not None:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        return
+    if msvcrt is not None:
+        handle.seek(0, os.SEEK_END)
+        if handle.tell() == 0:
+            handle.write(b"\0")
+            handle.flush()
+        handle.seek(0)
+        msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+        return
+    raise RuntimeError("Repo config locking is not supported on this platform.")
+
+
+def _release_repo_config_lock(handle) -> None:
+    if fcntl is not None:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        return
+    if msvcrt is not None:
+        handle.seek(0)
+        msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+        return
+
+
+@contextmanager
+def _repo_config_lock(ctx: RepoContext) -> Iterator[None]:
+    lock_path = _repo_config_lock_path(ctx)
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("a+b") as handle:
+        _acquire_repo_config_lock(handle)
+        try:
+            yield
+        finally:
+            _release_repo_config_lock(handle)
 
 
 def _configured_id_namespace_prefix(config: dict[str, object]) -> str | None:
@@ -70,6 +123,14 @@ def save_config(ctx: RepoContext, config: dict) -> None:
     if isinstance(existing_shared, dict) and "current_line" in existing_shared:
         shared["current_line"] = existing_shared["current_line"]
     write_json(ctx.config_path, shared)
+
+
+def update_config(ctx: RepoContext, updater: Callable[[dict], None]) -> dict:
+    with _repo_config_lock(ctx):
+        config = load_config(ctx)
+        updater(config)
+        save_config(ctx, config)
+        return config
 
 
 def _load_worktree_config(ctx: RepoContext) -> dict:

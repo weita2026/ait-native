@@ -22,7 +22,7 @@ CI.
 ## Publish from the public repo
 
 1. Push the clean public release commit to `weita2026/ait-native`.
-2. Push the matching `v*` version tag, for example `v0.10.4`.
+2. Push the matching `v*` tag, for example `v0.10.5`.
 3. Let `.github/workflows/pypi-publish.yml` start automatically from that tag
    push, build the wheel/sdist, run
    `twine check`, smoke install the wheel, and publish to PyPI.

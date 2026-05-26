@@ -30,6 +30,7 @@ from .store_repo_config import (
     load_policy,
     save_config,
     save_policy,
+    update_config,
 )
 from .store_local_views import (
     _local_change_view,
@@ -287,9 +288,7 @@ def init_repo(
 def add_remote(ctx: RepoContext, name: str, url: str, repo_name: Optional[str], make_default: bool = False) -> dict:
     row = local_control.add_remote(ctx, name, url, repo_name, make_default=make_default)
     if make_default:
-        cfg = load_config(ctx)
-        cfg["default_remote"] = name
-        save_config(ctx, cfg)
+        update_config(ctx, lambda cfg: cfg.__setitem__("default_remote", name))
     return row
 
 

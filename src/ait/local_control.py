@@ -396,9 +396,7 @@ def _migrate_workflow_plan_revisions(conn) -> None:
 
 
 def _connect_control(ctx: RepoContext):
-    conn = connect_sqlite(ctx.control_db_path)
-    _ensure_schema(conn)
-    return conn
+    return connect_sqlite(ctx.control_db_path)
 
 
 def initialize(ctx: RepoContext, repo_name: str, default_line: str) -> None:

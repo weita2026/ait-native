@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+from decimal import Decimal
 import hashlib
 import json
 from pathlib import Path
@@ -9,6 +10,7 @@ from fastapi.testclient import TestClient
 
 import ait_server.app as server_app
 from ait_server import server_store
+from ait_server.store import repo_retire as repo_retire_store
 from ait_server.server_content import set_repository_lifecycle_state
 from ait_server.server_paths import ServerContext
 from tests.postgres_fake import fake_postgres_context, fake_postgres_dsn
@@ -159,6 +161,51 @@ def test_native_repository_snapshot_route_rejects_path_body_mismatch(tmp_path: P
         assert mismatch_resp.json()["detail"] == "snapshot_id path/body mismatch"
 
 
+def test_repository_create_returns_conflict_for_duplicate_nonempty_namespace_prefix(tmp_path: Path, monkeypatch):
+    _server_ctx(tmp_path, monkeypatch)
+
+    with TestClient(server_app.create_app()) as client:
+        first_resp = client.post(
+            "/v1/native/repositories",
+            json={"repo_name": "repo-a", "default_line": "main", "policy": {}, "id_namespace_prefix": "AAA"},
+        )
+        assert first_resp.status_code == 200
+
+        duplicate_resp = client.post(
+            "/v1/native/repositories",
+            json={"repo_name": "repo-b", "default_line": "main", "policy": {}, "id_namespace_prefix": "AAA"},
+        )
+        assert duplicate_resp.status_code == 409
+        assert "already in use" in duplicate_resp.json()["detail"]
+
+
+def test_repository_create_allows_repeated_empty_namespace_prefix(tmp_path: Path, monkeypatch):
+    _server_ctx(tmp_path, monkeypatch)
+
+    with TestClient(server_app.create_app()) as client:
+        repo_a_resp = client.post(
+            "/v1/native/repositories",
+            json={"repo_name": "repo-a", "default_line": "main", "policy": {}, "id_namespace_prefix": ""},
+        )
+        assert repo_a_resp.status_code == 200, repo_a_resp.text
+
+        repo_b_resp = client.post(
+            "/v1/native/repositories",
+            json={"repo_name": "repo-b", "default_line": "main", "policy": {}, "id_namespace_prefix": ""},
+        )
+        assert repo_b_resp.status_code == 200, repo_b_resp.text
+        assert repo_b_resp.json()["repo_name"] == "repo-b"
+        assert repo_b_resp.json()["id_namespace_prefix"] == ""
+
+
+def test_openapi_includes_repository_retire_route(tmp_path: Path, monkeypatch):
+    _server_ctx(tmp_path, monkeypatch)
+
+    with TestClient(server_app.create_app()) as client:
+        payload = client.get("/openapi.json").json()
+        assert "/v1/native/admin/repositories/{repo_name}:retire" in payload["paths"]
+
+
 def test_admin_repository_retire_exports_and_purges_repo(tmp_path: Path, monkeypatch):
     ctx = _server_ctx(tmp_path, monkeypatch)
     export_root = tmp_path / "retired-repos"
@@ -206,6 +253,49 @@ def test_admin_repository_retire_exports_and_purges_repo(tmp_path: Path, monkeyp
         ).fetchone()
     assert retirement_row is not None
     assert retirement_row["state"] == "purged"
+
+
+def test_admin_repository_retire_serializes_decimal_storage_stats(tmp_path: Path, monkeypatch):
+    ctx = _server_ctx(tmp_path, monkeypatch)
+    export_root = tmp_path / "retired-repos"
+    export_root.mkdir()
+    monkeypatch.setenv("AIT_SERVER_RETIRE_EXPORT_ROOT", str(export_root))
+    monkeypatch.setattr(server_app, "_RUNTIME_CTX", None)
+
+    repo = server_store.ensure_repository(ctx, "repo-a", "main", id_namespace_prefix="AAA")
+    bundle = _snapshot_bundle(
+        "repo-a",
+        "SNP-RETIRE-DECIMAL-1",
+        parent_snapshot_id=None,
+        line_name="main",
+        message="decimal",
+        files={"README.md": b"decimal retire\n"},
+    )
+    server_store.import_snapshot(ctx, "repo-a", bundle)
+    server_store.update_line(ctx, "repo-a", "main", "SNP-RETIRE-DECIMAL-1")
+
+    original_get_repository_storage = repo_retire_store.get_repository_storage
+
+    def _storage_with_decimal(runtime_ctx: ServerContext, repo_name: str) -> dict:
+        payload = dict(original_get_repository_storage(runtime_ctx, repo_name))
+        payload["packed_blob_bytes"] = Decimal("12")
+        payload["packed_full_blob_bytes"] = Decimal("7")
+        payload["packed_delta_blob_bytes"] = Decimal("5")
+        return payload
+
+    monkeypatch.setattr(repo_retire_store, "get_repository_storage", _storage_with_decimal)
+
+    with TestClient(server_app.create_app()) as client:
+        retire_resp = client.post(
+            "/v1/native/admin/repositories/repo-a:retire",
+            json={"expected_repo_id": repo["repo_id"], "require_verified_export": True},
+        )
+        assert retire_resp.status_code == 200, retire_resp.text
+        payload = retire_resp.json()["result"]
+        storage_payload = json.loads((Path(payload["manifest_path"]).parent / "content" / "storage.json").read_text(encoding="utf-8"))
+        assert storage_payload["packed_blob_bytes"] == 12
+        assert storage_payload["packed_full_blob_bytes"] == 7
+        assert storage_payload["packed_delta_blob_bytes"] == 5
 
 
 def test_admin_repository_retire_rejects_cross_repo_pack_dependencies(tmp_path: Path, monkeypatch):

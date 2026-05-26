@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ait-native"
-version = "0.10.4"
+version = "0.10.5"
 description = "Agent-first Markdown workflow CLI with optional self-hosted server and worker surfaces"
 readme = { file = "README.pypi.md", content-type = "text/markdown" }
 requires-python = ">=3.11"

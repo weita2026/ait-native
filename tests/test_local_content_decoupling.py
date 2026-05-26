@@ -133,6 +133,53 @@ def test_local_content_bundle_helpers_round_trip_between_repos(tmp_path: Path) -
     assert local_content.ensure_snapshot_chain(target_ctx, [bundle])[0]["snapshot_id"] == snapshot["snapshot_id"]
 
 
+def test_local_content_bundle_import_derives_missing_file_size_bytes(tmp_path: Path) -> None:
+    source_repo = tmp_path / "source-null-size"
+    source_repo.mkdir(parents=True, exist_ok=True)
+    source_ctx = store.init_repo(source_repo, "repo", "main")
+    (source_repo / "alpha.txt").write_text("alpha\n", encoding="utf-8")
+
+    snapshot = local_content.create_snapshot(source_ctx, "repo", "main", "seed")
+    bundle = local_content_bundle_helpers.export_snapshot_bundle(source_ctx, snapshot["snapshot_id"], "repo")
+    bundle["files"][0]["size_bytes"] = None
+
+    target_repo = tmp_path / "target-null-size"
+    target_repo.mkdir(parents=True, exist_ok=True)
+    target_ctx = store.init_repo(target_repo, "repo", "main")
+    imported = local_content_bundle_helpers.import_snapshot_bundle(target_ctx, bundle)
+
+    imported_snapshot = local_content.get_snapshot(target_ctx, imported["snapshot_id"])
+    assert imported_snapshot["files"][0]["size_bytes"] == len("alpha\n")
+
+
+def test_local_content_bundle_export_derives_missing_snapshot_file_size_bytes(tmp_path: Path) -> None:
+    repo = tmp_path / "repo-degraded-view"
+    repo.mkdir(parents=True, exist_ok=True)
+    (repo / "alpha.txt").write_text("alpha\n", encoding="utf-8")
+    ctx = store.init_repo(repo, "repo", "main")
+
+    snapshot = local_content.create_snapshot(ctx, "repo", "main", "seed")
+
+    conn = sqlite3.connect(ctx.content_db_path)
+    conn.execute(
+        "create table snapshot_files_stub as select snapshot_id, path, blob_id, mode from snapshot_files"
+    )
+    conn.execute("drop view snapshot_files")
+    conn.execute(
+        """
+        create view snapshot_files as
+        select snapshot_id, path, blob_id, null as size_bytes, mode
+        from snapshot_files_stub
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    bundle = local_content_bundle_helpers.export_snapshot_bundle(ctx, snapshot["snapshot_id"], "repo")
+
+    assert bundle["files"][0]["size_bytes"] == len("alpha\n")
+
+
 def test_local_content_bundle_export_derives_missing_blob_pack_entry_name(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     repo.mkdir(parents=True, exist_ok=True)

@@ -29,6 +29,7 @@ def test_in_repo_operator_assets_are_removed_and_live_guides_avoid_docker_routin
     local_dev = _read(AUTHORED_DOCS / "LOCAL_DEVELOPMENT.md")
     self_hosted = _read(AUTHORED_DOCS / "SELF_HOSTED_TEAM_DEPLOYMENT.md")
     public_contract = _read(AUTHORED_DOCS / "public_self_hosted_deployment_contract.json")
+    ait_sh = _read(WORKSPACE_ROOT / "ait.sh")
 
     assert "../ait_docker" not in local_dev
     assert "../ait_docker" not in self_hosted
@@ -38,7 +39,10 @@ def test_in_repo_operator_assets_are_removed_and_live_guides_avoid_docker_routin
     assert "docker compose" not in self_hosted
     assert "docker-compose.yml" not in public_contract
     assert "AIT_NATIVE_SERVER_DB_BACKEND=postgres" in self_hosted
+    assert "AIT_SERVER_RETIRE_EXPORT_ROOT" in self_hosted
     assert "AIT_NATIVE_SERVER_POSTGRES_DSN" in public_contract
+    assert "AIT_SERVER_RETIRE_EXPORT_ROOT" in public_contract
+    assert 'AIT_SERVER_RETIRE_EXPORT_ROOT="${AIT_SERVER_RETIRE_EXPORT_ROOT:-${AIT_RUNTIME_ROOT}/retire-exports}"' in ait_sh
 
 
 def test_ait_sh_no_longer_exposes_operator_lifecycle_stubs() -> None:

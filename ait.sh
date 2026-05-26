@@ -40,6 +40,7 @@ export AIT_CONSOLE_BIN_DIR="${AIT_CONSOLE_BIN_DIR:-$(python_user_script_dir "$AI
 export PATH="${AIT_CONSOLE_BIN_DIR}:${PATH}"
 export AIT_RUNTIME_ROOT="${AIT_RUNTIME_ROOT:-/Volumes/lyravo/ait-runtime}"
 export AIT_NATIVE_SERVER_DATA="${AIT_NATIVE_SERVER_DATA:-${AIT_RUNTIME_ROOT}/server-data}"
+export AIT_SERVER_RETIRE_EXPORT_ROOT="${AIT_SERVER_RETIRE_EXPORT_ROOT:-${AIT_RUNTIME_ROOT}/retire-exports}"
 export AIT_NATIVE_SERVER_DB_BACKEND="${AIT_NATIVE_SERVER_DB_BACKEND:-postgres}"
 export AIT_NATIVE_SERVER_POSTGRES_DSN="${AIT_NATIVE_SERVER_POSTGRES_DSN:-postgresql://weita@127.0.0.1:5432/ait_native}"
 export AIT_LOG_DIR="${AIT_LOG_DIR:-${AIT_RUNTIME_ROOT}/logs}"
@@ -117,7 +118,7 @@ log() {
 }
 
 ensure_runtime_dir() {
-  mkdir -p "${AIT_NATIVE_SERVER_DATA}" "${AIT_LOG_DIR}"
+  mkdir -p "${AIT_NATIVE_SERVER_DATA}" "${AIT_SERVER_RETIRE_EXPORT_ROOT}" "${AIT_LOG_DIR}"
 }
 
 ensure_runtime_ready() {
@@ -941,6 +942,7 @@ show_status() {
   echo ""
   echo "  Runtime root: ${AIT_RUNTIME_ROOT}"
   echo "  Data root:    ${AIT_NATIVE_SERVER_DATA}"
+  echo "  Retire root:  ${AIT_SERVER_RETIRE_EXPORT_ROOT}"
   echo "  Python:       ${AIT_PYTHON_BIN}"
   echo "  Script bin:   ${AIT_CONSOLE_BIN_DIR}"
   echo "  Server log:   ${SERVER_LOG_FILE}"

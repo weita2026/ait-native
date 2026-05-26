@@ -10,6 +10,8 @@ from .store_repo_config import load_config
 from .store_worktree_state import _normalize_worktree_name
 from .task_worktree_layout import (
     DEFAULT_TASK_WORKTREE_ALIAS_ROOT,
+    normalize_task_worktree_main_seed_ram_max_bytes,
+    normalize_task_worktree_memory_root,
 )
 
 _WORKTREE_STATUS_CACHE_KEY = "workspace_status_cache"
@@ -28,6 +30,10 @@ def _configured_task_worktree_policy(ctx: RepoContext) -> dict[str, Any]:
     return {
         "ephemeral_root": normalize_optional_text(raw.get("ephemeral_root")),
         "alias_root": normalize_optional_text(raw.get("alias_root")) or DEFAULT_TASK_WORKTREE_ALIAS_ROOT,
+        "memory_root": normalize_task_worktree_memory_root(raw.get("memory_root")),
+        "main_seed_ram_max_bytes": normalize_task_worktree_main_seed_ram_max_bytes(
+            raw.get("main_seed_ram_max_bytes")
+        ),
     }
 
 

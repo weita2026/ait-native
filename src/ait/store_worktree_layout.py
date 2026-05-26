@@ -25,6 +25,7 @@ from .store_worktree_metadata import (
 )
 from .store_worktree_state import _repo_worktree_ctx
 from .task_worktree_layout import (
+    main_seed_ram_budget_status,
     resolve_main_seed_mirror_location,
     resolve_managed_worktree_location,
 )
@@ -101,6 +102,8 @@ def _main_seed_location(ctx: RepoContext, *, line_name: str) -> dict[str, Any] |
         repo_ctx,
         seed_name=_main_seed_worktree_name(line_name),
         ephemeral_root=policy["ephemeral_root"],
+        memory_root=policy["memory_root"],
+        main_seed_ram_max_bytes=policy["main_seed_ram_max_bytes"],
     )
 
 
@@ -220,6 +223,23 @@ def ensure_main_seed_mirror(
             "default_line": default_line,
             "line_name": effective_line_name,
         }
+    policy = _configured_task_worktree_policy(repo_ctx)
+    budget_status = main_seed_ram_budget_status(
+        repo_ctx,
+        main_seed_ram_max_bytes=policy["main_seed_ram_max_bytes"],
+        line_name=effective_line_name,
+        snapshot_id=target_snapshot_id,
+    )
+    if budget_status is not None and bool(budget_status.get("exceeded")):
+        return {
+            "status": "skipped",
+            "reason": "main_seed_ram_budget_exceeded",
+            "default_line": default_line,
+            "line_name": effective_line_name,
+            "seed_snapshot_id": target_snapshot_id,
+            "seed_snapshot_total_bytes": budget_status.get("seed_snapshot_total_bytes"),
+            "main_seed_ram_max_bytes": budget_status.get("main_seed_ram_max_bytes"),
+        }
     seed_location = _main_seed_location(repo_ctx, line_name=effective_line_name)
     if seed_location is None:
         return {
@@ -258,4 +278,6 @@ def _managed_worktree_location_from_defaults(ctx: RepoContext, *, worktree_name:
         worktree_name=worktree_name,
         ephemeral_root=policy["ephemeral_root"],
         alias_root=policy["alias_root"],
+        memory_root=policy["memory_root"],
+        main_seed_ram_max_bytes=policy["main_seed_ram_max_bytes"],
     )

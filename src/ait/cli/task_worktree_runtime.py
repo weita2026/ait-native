@@ -375,6 +375,8 @@ def _maybe_auto_create_task_worktree(
             worktree_name=worktree_name,
             ephemeral_root=policy["ephemeral_root"]["value"],
             alias_root=policy["alias_root"]["value"],
+            memory_root=policy["memory_root"]["value"],
+            main_seed_ram_max_bytes=policy["main_seed_ram_max_bytes"]["value"],
         )
         created = local_add_worktree(
             repo_ctx,

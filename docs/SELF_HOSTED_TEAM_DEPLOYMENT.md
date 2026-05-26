@@ -142,6 +142,12 @@ AIT_NATIVE_SERVER_POSTGRES_CONTROL_SCHEMA="$AIT_NATIVE_SERVER_POSTGRES_CONTROL_S
 ait-worker run --worker-id worker-1
 ```
 
+After a source checkout update or package upgrade, restart both `ait-server` and
+`ait-worker` from the same operator-managed environment before you assume new
+shared behavior is live. A stale long-running process will keep serving the old
+route set, and the restarted `ait-server` is also where missing control-plane
+tables such as `repository_retirements` get bootstrapped.
+
 If you run the shared stack under a service manager, keep the same environment values in the managed service definition instead of relying on an interactive shell.
 
 If your deployment already uses `launchd`, `systemd`, or another real service
