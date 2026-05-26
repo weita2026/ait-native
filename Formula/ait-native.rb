@@ -3,7 +3,7 @@ class AitNative < Formula
 
   desc "Agent-first Markdown workflow CLI with optional self-hosted server and worker surfaces"
   homepage "https://ait-native.dev"
-  url "https://raw.githubusercontent.com/weita2026/ait-native/release-assets-v0.10.5/releases/v0.10.5/ait_native-0.10.5-py3-none-any.whl"
+  url "https://github.com/weita2026/ait-native/releases/download/v0.10.5/ait_native-0.10.5-py3-none-any.whl"
   sha256 "0d6c36ccff304aacfcecbb4ecb69c06da734bd574ffdbc9e212233b8ffc4fdab"
   license all_of: ["Apache-2.0", "AGPL-3.0-only"]
 

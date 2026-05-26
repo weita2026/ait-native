@@ -26,9 +26,11 @@ CI.
 3. Let `.github/workflows/pypi-publish.yml` start automatically from that tag
    push, build the wheel/sdist, run
    `twine check`, smoke install the wheel, and publish to PyPI.
-4. If the tag-triggered run needs recovery, use `workflow_dispatch` from
+4. If the same public release also needs GitHub Release assets for Homebrew or
+   direct downloads, follow [GitHub Release Publishing](./GITHUB_RELEASE_PUBLISHING.md).
+5. If the tag-triggered PyPI run needs recovery, use `workflow_dispatch` from
    GitHub Actions instead of creating a GitHub Release first.
-5. Verify the release with:
+6. Verify the release with:
 
 ```bash
 python -m pip index versions ait-native

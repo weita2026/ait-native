@@ -1,0 +1,125 @@
+name: github-release-publish
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Release tag to publish, for example v0.10.5
+        required: true
+        type: string
+      assets-ref:
+        description: Optional ref that carries releases/<version>/ assets; defaults to release-assets-v*
+        required: false
+        type: string
+  push:
+    tags:
+      - "v*"
+
+concurrency:
+  group: github-release-publish-${{ github.event.inputs.version || github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  publish-release:
+    name: Publish GitHub Release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Resolve release metadata
+        id: meta
+        shell: bash
+        run: |
+          version="${{ github.event.inputs.version }}"
+          if [[ -z "${version}" ]]; then
+            version="${GITHUB_REF_NAME}"
+          fi
+          if [[ -z "${version}" ]]; then
+            echo "Could not determine release version." >&2
+            exit 1
+          fi
+          if [[ "${version}" != v* ]]; then
+            version="v${version}"
+          fi
+          package_version="${version#v}"
+          assets_ref="${{ github.event.inputs.assets-ref }}"
+          if [[ -z "${assets_ref}" ]]; then
+            assets_ref="release-assets-${version}"
+          fi
+          echo "version=${version}" >>"${GITHUB_OUTPUT}"
+          echo "package_version=${package_version}" >>"${GITHUB_OUTPUT}"
+          echo "assets_ref=${assets_ref}" >>"${GITHUB_OUTPUT}"
+          echo "release_dir=releases/${version}" >>"${GITHUB_OUTPUT}"
+          echo "wheel_name=ait_native-${package_version}-py3-none-any.whl" >>"${GITHUB_OUTPUT}"
+          echo "sdist_name=ait-native-${package_version}.tar.gz" >>"${GITHUB_OUTPUT}"
+          echo "manifest_name=ait-release-${package_version}.manifest.json" >>"${GITHUB_OUTPUT}"
+          echo "checksum_name=ait-release-${package_version}.sha256" >>"${GITHUB_OUTPUT}"
+
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          path: source
+
+      - name: Verify the release tag exists
+        shell: bash
+        run: |
+          git -C source rev-parse "refs/tags/${{ steps.meta.outputs.version }}" >/dev/null
+
+      - name: Check out release asset ref
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          path: assets
+          ref: ${{ steps.meta.outputs.assets_ref }}
+
+      - name: Verify release asset payload
+        id: verify
+        shell: bash
+        run: |
+          release_dir="assets/${{ steps.meta.outputs.release_dir }}"
+          notes_path="${release_dir}/release-notes.md"
+          for name in \
+            "${{ steps.meta.outputs.wheel_name }}" \
+            "${{ steps.meta.outputs.sdist_name }}" \
+            "${{ steps.meta.outputs.manifest_name }}" \
+            "${{ steps.meta.outputs.checksum_name }}"; do
+            if [[ ! -f "${release_dir}/${name}" ]]; then
+              echo "Missing release asset: ${release_dir}/${name}" >&2
+              exit 1
+            fi
+          done
+          if [[ ! -f "${notes_path}" ]]; then
+            printf '# %s\n\nAutomated GitHub Release publication for %s.\n' \
+              "${{ steps.meta.outputs.version }}" \
+              "${{ steps.meta.outputs.version }}" >"${notes_path}"
+          fi
+          echo "notes_path=${notes_path}" >>"${GITHUB_OUTPUT}"
+
+      - name: Create or update GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          release_tag="${{ steps.meta.outputs.version }}"
+          notes_path="${{ steps.verify.outputs.notes_path }}"
+          if gh release view "${release_tag}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            gh release edit "${release_tag}" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --title "${release_tag}" \
+              --notes-file "${notes_path}"
+          else
+            gh release create "${release_tag}" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --title "${release_tag}" \
+              --notes-file "${notes_path}" \
+              --verify-tag
+          fi
+          gh release upload "${release_tag}" \
+            "assets/${{ steps.meta.outputs.release_dir }}/${{ steps.meta.outputs.wheel_name }}" \
+            "assets/${{ steps.meta.outputs.release_dir }}/${{ steps.meta.outputs.sdist_name }}" \
+            "assets/${{ steps.meta.outputs.release_dir }}/${{ steps.meta.outputs.manifest_name }}" \
+            "assets/${{ steps.meta.outputs.release_dir }}/${{ steps.meta.outputs.checksum_name }}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --clobber
