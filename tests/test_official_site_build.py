@@ -30,6 +30,8 @@ def test_build_site_renders_first_public_routes(tmp_path):
     assert tmp_path.joinpath("services", "index.html").exists()
     assert tmp_path.joinpath("proof", "index.html").exists()
     assert tmp_path.joinpath("public", "styles.css").exists()
+    assert tmp_path.joinpath("robots.txt").exists()
+    assert tmp_path.joinpath("sitemap.xml").exists()
     assert len(built) == len(build.PAGES)
 
     home = tmp_path.joinpath("index.html").read_text()
@@ -39,6 +41,8 @@ def test_build_site_renders_first_public_routes(tmp_path):
     self_hosted = tmp_path.joinpath("self-hosted", "index.html").read_text()
     services = tmp_path.joinpath("services", "index.html").read_text()
     proof = tmp_path.joinpath("proof", "index.html").read_text()
+    robots = tmp_path.joinpath("robots.txt").read_text()
+    sitemap = tmp_path.joinpath("sitemap.xml").read_text()
 
     assert "Watch the workflow" in home
     assert ">Learn</a>" in home
@@ -46,7 +50,10 @@ def test_build_site_renders_first_public_routes(tmp_path):
     assert ">Proof</a>" in home
     assert "Switch scene" in home
     assert "homepage_plan_story.md" in home
+    assert '<link rel="canonical" href="https://ait-native.dev/" />' in home
+    assert '<meta name="robots" content="index,follow" />' in home
     assert "../public/styles.css" in learn
+    assert '<link rel="canonical" href="https://ait-native.dev/learn/" />' in learn
     assert "What you are learning" in learn
     assert "Read the Workflow Doctrine" in learn
     assert "Why the workflow is agent-mediated" in doctrine
@@ -54,3 +61,9 @@ def test_build_site_renders_first_public_routes(tmp_path):
     assert "Use self-hosting when the work needs a shared control plane." in self_hosted
     assert "Services at a glance" in services
     assert "Keep proof explicit and measured." in proof
+    assert "User-agent: *" in robots
+    assert "Allow: /" in robots
+    assert "Sitemap: https://ait-native.dev/sitemap.xml" in robots
+    assert "<loc>https://ait-native.dev/</loc>" in sitemap
+    assert "<loc>https://ait-native.dev/learn/</loc>" in sitemap
+    assert "<loc>https://ait-native.dev/legal/trademark/</loc>" in sitemap

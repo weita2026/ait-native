@@ -1,5 +1,9 @@
 # ait Local-Only Quickstart
 
+Authority: command layer under [plan.md](./plan.md), the applicable legal-layer governance documents, and [ait_native_quickstart.md](./ait_native_quickstart.md).
+Status: current release-facing local-only quickstart.
+Scope: shortest public local-only `md -> task -> land-local` workflow path.
+
 ## What this quickstart is for
 
 Use this guide when:

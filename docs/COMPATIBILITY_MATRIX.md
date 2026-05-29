@@ -1,5 +1,9 @@
 # ait Compatibility Matrix
 
+Authority: command layer under [plan.md](./plan.md), the applicable legal-layer governance documents, and [PACKAGE_TARGETS.md](./PACKAGE_TARGETS.md).
+Status: current release-facing compatibility matrix.
+Scope: supported local-only and self-hosted shared-control-plane combinations, version-skew policy, and upgrade direction for the `ait-native` release family.
+
 ## What this matrix is for
 
 Use this matrix when you need to answer:
@@ -16,7 +20,7 @@ This matrix is intentionally conservative. It tells you what is supported **now*
 Current public release-family anchor:
 
 - distribution: `ait-native`
-- version: `0.10.3`
+- version: `0.10.6`
 
 Today, the release-facing support rule is:
 
@@ -38,7 +42,7 @@ This matrix does **not** imply that every console script exposed by one checkout
 
 | Profile | Required surfaces | Optional surfaces | Current version rule | Supported | Notes |
 | --- | --- | --- | --- | --- | --- |
-| Local-only first loop | `ait` | `ait-agent` | `ait-native 0.10.3` for the local CLI path | Yes | No PostgreSQL, `ait-server`, or `ait-worker` required. Start here with [LOCAL_QUICKSTART.md](./LOCAL_QUICKSTART.md). |
+| Local-only first loop | `ait` | `ait-agent` | `ait-native 0.10.6` for the local CLI path | Yes | No PostgreSQL, `ait-server`, or `ait-worker` required. Start here with [LOCAL_QUICKSTART.md](./LOCAL_QUICKSTART.md). |
 | Local CLI plus transport/runtime helper | `ait` | `ait-agent` | Same release family recommended | Yes | Durable shared workflow authority is still out of scope unless you add the self-hosted control plane. |
 | Self-hosted shared control-plane core | PostgreSQL, `ait-server`, `ait-worker` | `ait` CLI for developer checks | Same release-family version across the shared core | Yes | This is the minimum supported shared deployment shape. Use [SELF_HOSTED_TEAM_DEPLOYMENT.md](./SELF_HOSTED_TEAM_DEPLOYMENT.md). |
 

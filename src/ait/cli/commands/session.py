@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from ...session_list_contract import session_list_summary_rows
 from ..shared import export_app_namespace
 from ..workflow_authoring import _validate_local_scope
 
@@ -86,6 +87,11 @@ def session_list(
     status: Optional[str] = typer.Option(None, "--status"),
     local: bool = typer.Option(False, "--local", help="List local sessions from .ait/control.db."),
     remote: Optional[str] = typer.Option(None, "--remote"),
+    full: bool = typer.Option(
+        False,
+        "--full",
+        help="Include full session payloads, including metadata and runtime state, when listing sessions.",
+    ),
     json_output: bool = typer.Option(False, "--json"),
 ):
     ctx = _ctx()
@@ -95,9 +101,11 @@ def session_list(
             rows = list_local_sessions(ctx, status=status)
         else:
             remote_row, repo_name = _remote_tuple(ctx, remote)
-            rows = remote_list_sessions(remote_row["url"], repo_name, status=status)
+            rows = remote_list_sessions(remote_row["url"], repo_name, status=status, full=full)
     except (KeyError, RemoteError, ValueError) as exc:
         raise typer.BadParameter(str(exc)) from exc
+    if not full:
+        rows = session_list_summary_rows(rows)
     if json_output:
         _emit(rows, True)
         return

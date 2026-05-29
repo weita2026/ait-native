@@ -27,3 +27,6 @@ def test_store_workspace_restore_is_extracted_from_store_facade() -> None:
     assert "def restore_workspace(" not in store_text
     assert "def restore_workspace_paths(" not in store_text
     assert "from .store import (" not in restore_text
+    assert "local_content_snapshots" in restore_text
+    assert "local_content.restore_workspace(" not in restore_text
+    assert "local_content.restore_workspace_paths(" not in restore_text

@@ -6,7 +6,8 @@ from typing import Any
 from ..plan_graph import load_task_graph
 from ..remote_client import create_session as remote_create_session
 from ..remote_client import list_sessions as remote_list_sessions
-from ..store import RepoContext, list_local_sessions
+from ..store import RepoContext
+from ..store_local_sessions import list_local_sessions
 from ..task_dag_readiness import task_dag_final_output_later_remote_promotion_allowed
 from .plan_task_linkage import _task_dag_node_for_plan_item_ref
 from .runtime_defaults import _effective_model_name, _normalize_text_value

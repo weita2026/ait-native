@@ -36,7 +36,11 @@ def _write_release_fixture(repo: Path) -> None:
         encoding="utf-8",
     )
     (docs_dir / "PYPI_PUBLISHING.md").write_text(
-        "# PyPI Publishing\n\nPush the clean public release commit and matching `v*` tag to `weita2026/ait-native`, let the workflow `.github/workflows/pypi-publish.yml` run through a `Trusted Publisher`, and keep `twine upload dist/*` only as the manual fallback.\n",
+        "# PyPI Publishing\n\nPush the clean public release commit and matching `v*` tag to `weita2026/ait-native`, let the workflow `.github/workflows/pypi-publish.yml` run through a `Trusted Publisher`, and keep `twine upload dist/*` only as the manual fallback. For GitHub Releases asset publication, follow [GitHub Release Publishing](./GITHUB_RELEASE_PUBLISHING.md).\n",
+        encoding="utf-8",
+    )
+    (docs_dir / "GITHUB_RELEASE_PUBLISHING.md").write_text(
+        "# GitHub Release Publishing\n\nUse `scripts/github_release_publish.sh` to prepare `release-assets-v*`, then let `.github/workflows/github-release-publish.yml` consume that asset ref and publish the real GitHub Release with `GITHUB_TOKEN`. Recovery can use `workflow_dispatch`.\n",
         encoding="utf-8",
     )
     (docs_dir / "PACKAGE_TARGETS.md").write_text(
@@ -142,6 +146,34 @@ jobs:
       - uses: pypa/gh-action-pypi-publish@release/v1
 """.strip()
         + "\n",
+        encoding="utf-8",
+    )
+    (workflows_dir / "github-release-publish.yml").write_text(
+        """
+name: github-release-publish
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+permissions:
+  contents: write
+jobs:
+  publish-release:
+    steps:
+      - uses: actions/checkout@v4
+      - run: echo release-assets-v0.1.0
+      - run: gh release create
+      - run: gh release upload
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+
+    scripts_dir = repo / "scripts"
+    scripts_dir.mkdir(parents=True, exist_ok=True)
+    (scripts_dir / "github_release_publish.sh").write_text(
+        "#!/usr/bin/env bash\nrelease-assets-v0.1.0\n",
         encoding="utf-8",
     )
 
@@ -533,15 +565,23 @@ def test_public_self_hosted_release_candidate_excludes_ait_web_surface(tmp_path:
         pkg_info_text = tf.extractfile(pkg_info_name).read().decode("utf-8")
         workflow_name = next(name for name in sdist_names if name.endswith("/.github/workflows/pypi-publish.yml"))
         workflow_text = tf.extractfile(workflow_name).read().decode("utf-8")
+        github_release_workflow_name = next(
+            name for name in sdist_names if name.endswith("/.github/workflows/github-release-publish.yml")
+        )
+        github_release_workflow_text = tf.extractfile(github_release_workflow_name).read().decode("utf-8")
         publish_doc_name = next(name for name in sdist_names if name.endswith("/docs/PYPI_PUBLISHING.md"))
         publish_doc_text = tf.extractfile(publish_doc_name).read().decode("utf-8")
+        github_release_doc_name = next(name for name in sdist_names if name.endswith("/docs/GITHUB_RELEASE_PUBLISHING.md"))
+        github_release_doc_text = tf.extractfile(github_release_doc_name).read().decode("utf-8")
     assert not any(name.endswith("/src/ait_web/app.py") for name in sdist_names)
     assert not any(name.endswith("/src/ait_web/__init__.py") for name in sdist_names)
     assert not any(name.endswith("/src/ait_native/web.py") for name in sdist_names)
     assert not any(name.endswith("/tests/ait_web/test_smoke.py") for name in sdist_names)
     assert any(name.endswith("/README.pypi.md") for name in sdist_names)
     assert any(name.endswith("/docs/HOMEBREW_TAP.md") for name in sdist_names)
+    assert any(name.endswith("/docs/GITHUB_RELEASE_PUBLISHING.md") for name in sdist_names)
     assert any(name.endswith("/docs/PYPI_PUBLISHING.md") for name in sdist_names)
+    assert any(name.endswith("/scripts/github_release_publish.sh") for name in sdist_names)
     assert "Description-Content-Type: text/markdown" in pkg_info_text
     assert "Project-URL: Homepage, https://ait-native.dev" in pkg_info_text
     assert "## Install" in pkg_info_text
@@ -551,8 +591,21 @@ def test_public_self_hosted_release_candidate_excludes_ait_web_surface(tmp_path:
     assert '"v*"' in workflow_text
     assert "pypa/gh-action-pypi-publish@release/v1" in workflow_text
     assert "id-token: write" in workflow_text
+    assert "workflow_dispatch:" in github_release_workflow_text
+    assert "push:" in github_release_workflow_text
+    assert '"v*"' in github_release_workflow_text
+    assert "contents: write" in github_release_workflow_text
+    assert "gh release create" in github_release_workflow_text
+    assert "gh release upload" in github_release_workflow_text
+    assert "release-assets-" in github_release_workflow_text
     assert "matching `v*` tag" in publish_doc_text
     assert "Trusted Publisher" in publish_doc_text
+    assert "GITHUB_RELEASE_PUBLISHING.md" in publish_doc_text
+    assert "scripts/github_release_publish.sh" in github_release_doc_text
+    assert ".github/workflows/github-release-publish.yml" in github_release_doc_text
+    assert "release-assets-v*" in github_release_doc_text
+    assert "workflow_dispatch" in github_release_doc_text
+    assert "GITHUB_TOKEN" in github_release_doc_text
 
     formula_out = runner.invoke(
         app,

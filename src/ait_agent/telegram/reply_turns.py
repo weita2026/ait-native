@@ -8,6 +8,7 @@ from ait_agent.envelope import build_transport_event_envelope
 from .session_views import _session_url
 from .turn_inputs import (
     _attachment_should_send_as_audio,
+    _attachment_should_send_as_photo,
     _transport_reply_attachments,
     _transport_reply_text,
 )
@@ -427,5 +428,7 @@ class TelegramReplyTurnManager:
         for attachment in attachments:
             if _attachment_should_send_as_audio(attachment):
                 self._telegram_api.send_audio(chat_id, attachment)
+            elif _attachment_should_send_as_photo(attachment):
+                self._telegram_api.send_photo(chat_id, attachment)
             else:
                 self._telegram_api.send_document(chat_id, attachment)

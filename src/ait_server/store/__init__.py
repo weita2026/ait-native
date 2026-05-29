@@ -7,6 +7,16 @@ from .plans import (
     revise_plan,
     update_plan_status,
 )
+from .patchsets import (
+    get_attestation,
+    get_patchset,
+    get_patchset_for_repo,
+    list_patchsets,
+    list_patchsets_for_repo,
+    publish_patchset,
+    select_patchset,
+    upsert_attestation,
+)
 from .repo_ops import (
     close_line,
     ensure_repository,

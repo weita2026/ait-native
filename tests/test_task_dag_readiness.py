@@ -3,12 +3,14 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import ait.task_dag_execution_policy as task_dag_execution_policy_module
 import ait_server.read_models as read_models
 import ait_server.read_models_domains.task_dag as task_dag_domain
 import ait_server.task_graph_runs as task_graph_runs
 from ait_server import server_store
 from ait_server.server_control import connect
 from ait.task_dag_readiness import (
+    build_task_dag_token_budget_hint_summary,
     build_task_dag_promotion_policy,
     build_task_graph_execution_strategy,
     compute_task_graph_readiness,
@@ -1767,6 +1769,71 @@ def test_task_dag_execution_strategy_supports_explicit_worker_execution_mode_ove
     assert strategy["max_worker_sessions"] == 1
     assert strategy["recommended_worker_sessions"] == 1
     assert strategy["recommended_total_sessions"] == 1
+
+
+def test_task_dag_execution_policy_helpers_are_reexported_from_narrower_module():
+    assert build_task_graph_execution_strategy is task_dag_execution_policy_module.build_task_graph_execution_strategy
+    assert build_task_dag_promotion_policy is task_dag_execution_policy_module.build_task_dag_promotion_policy
+    assert (
+        build_task_dag_token_budget_hint_summary
+        is task_dag_execution_policy_module.build_task_dag_token_budget_hint_summary
+    )
+
+
+def test_task_dag_token_budget_hint_summary_tracks_hint_sources_and_ready_gaps():
+    graph = {
+        "execution_policy": {
+            "min_batch_token_budget": 300,
+            "small_node_token_threshold": 200,
+        },
+        "nodes": [
+            {"node_id": "A", "node_kind": "task", "title": "A", "dispatch_token_estimate": 120},
+            {"node_id": "B", "node_kind": "task", "title": "B", "token_budget_hint": 180},
+            {
+                "node_id": "C",
+                "node_kind": "task",
+                "title": "C",
+                "task_template": {"dispatch_token_estimate": 600},
+            },
+            {"node_id": "D", "node_kind": "task", "title": "D"},
+        ],
+    }
+
+    summary = build_task_dag_token_budget_hint_summary(graph, [{"node_id": "A"}, {"node_id": "D"}])
+
+    assert summary["hinted_node_count"] == 3
+    assert summary["ready_hinted_node_count"] == 1
+    assert summary["estimated_total_tokens"] == 900
+    assert summary["ready_unhinted_node_ids"] == ["D"]
+    assert summary["all_unhinted_node_ids"] == ["D"]
+    assert summary["min_batch_token_budget"] == 300
+    assert summary["small_node_token_threshold"] == 200
+    assert summary["nodes"] == [
+        {
+            "node_id": "A",
+            "title": "A",
+            "dispatch_token_estimate": 120,
+            "hint_source": "node.dispatch_token_estimate",
+            "ready": True,
+            "small_node_candidate": True,
+        },
+        {
+            "node_id": "B",
+            "title": "B",
+            "dispatch_token_estimate": 180,
+            "hint_source": "node.token_budget_hint",
+            "ready": False,
+            "small_node_candidate": True,
+        },
+        {
+            "node_id": "C",
+            "title": "C",
+            "dispatch_token_estimate": 600,
+            "hint_source": "task_template.dispatch_token_estimate",
+            "ready": False,
+            "small_node_candidate": False,
+        },
+    ]
 
 
 def test_advance_task_dag_run_limits_takeover_to_available_worker_slots(monkeypatch):

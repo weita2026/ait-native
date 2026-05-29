@@ -44,7 +44,7 @@ def test_local_session_checkpoint_resume_flow(tmp_path: Path, monkeypatch):
     )
     assert session_out.exit_code == 0, session_out.stdout
     session = json.loads(session_out.stdout)
-    assert session["session_id"].startswith("AITS-")
+    assert session["session_id"].startswith("S-")
     assert session["session_kind"] == "agent_run"
     assert session["status"] == "active"
     assert session["metadata"]["objective"] == "Resume without replaying full history"
@@ -80,7 +80,7 @@ def test_local_session_checkpoint_resume_flow(tmp_path: Path, monkeypatch):
     )
     assert checkpoint_out.exit_code == 0, checkpoint_out.stdout
     checkpoint = json.loads(checkpoint_out.stdout)
-    assert checkpoint["checkpoint_id"].startswith("AITK-")
+    assert checkpoint["checkpoint_id"].startswith("K-")
     assert checkpoint["based_on_sequence"] == 1
     assert checkpoint["resume_payload"]["decisions"] == ["Use durable checkpoints"]
     assert checkpoint["resume_payload"]["next_actions"] == ["Wire CLI and API"]
@@ -116,6 +116,48 @@ def test_local_session_checkpoint_resume_flow(tmp_path: Path, monkeypatch):
     assert checkpoints_out.exit_code == 0, checkpoints_out.stdout
     checkpoints = json.loads(checkpoints_out.stdout)
     assert [row["checkpoint_id"] for row in checkpoints] == [checkpoint["checkpoint_id"]]
+
+
+def test_local_session_list_json_defaults_to_summary_rows_with_full_opt_in(tmp_path: Path, monkeypatch):
+    repo = tmp_path / "housekeeper-local-session-list"
+    repo.mkdir()
+    monkeypatch.chdir(repo)
+
+    assert runner.invoke(app, ["init", "--name", "housekeeper"], catch_exceptions=False).exit_code == 0
+
+    session_out = runner.invoke(
+        app,
+        [
+            "session",
+            "create",
+            "--local",
+            "--kind",
+            "agent_run",
+            "--title",
+            "Local session list",
+            "--meta",
+            "topic=session-list",
+            "--json",
+        ],
+        catch_exceptions=False,
+    )
+    assert session_out.exit_code == 0, session_out.stdout
+    session = json.loads(session_out.stdout)
+
+    list_out = runner.invoke(app, ["session", "list", "--local", "--json"], catch_exceptions=False)
+    assert list_out.exit_code == 0, list_out.stdout
+    rows = json.loads(list_out.stdout)
+    row = next(row for row in rows if row["session_id"] == session["session_id"])
+    assert row["title"] == "Local session list"
+    assert "metadata" not in row
+    assert "repo_id" not in row
+    assert "session_local_id" not in row
+
+    full_out = runner.invoke(app, ["session", "list", "--local", "--json", "--full"], catch_exceptions=False)
+    assert full_out.exit_code == 0, full_out.stdout
+    full_rows = json.loads(full_out.stdout)
+    full_row = next(row for row in full_rows if row["session_id"] == session["session_id"])
+    assert full_row["metadata"]["topic"] == "session-list"
 
 
 def test_local_session_analyze_reports_ait_command_counts_and_optimization_hints(tmp_path: Path, monkeypatch):
@@ -764,7 +806,7 @@ def test_remote_session_checkpoint_resume_and_attestation_provenance(tmp_path: P
         )
         assert session_out.exit_code == 0, session_out.stdout
         session = json.loads(session_out.stdout)
-        assert session["session_id"].startswith("AITS-")
+        assert session["session_id"].startswith("S-")
         assert session["change_id"] == change["change_id"]
         assert session["metadata"]["objective"] == "Keep enough state for remote resume"
 
@@ -1134,6 +1176,61 @@ def test_remote_task_tracking_reuses_server_created_task_run_session(tmp_path: P
         assert len(sessions) == 1
         assert sessions[0]["session_id"] == task["tracking"]["session_id"]
         assert sessions[0]["metadata"]["objective"] == "Reuse server-guaranteed session"
+
+
+def test_remote_session_list_json_defaults_to_summary_rows_with_full_opt_in(tmp_path: Path, monkeypatch):
+    repo = tmp_path / "housekeeper-remote-session-list"
+    repo.mkdir()
+    (repo / "README.md").write_text("base\n", encoding="utf-8")
+
+    with running_server(tmp_path / "server-data-remote-session-list") as base_url:
+        monkeypatch.chdir(repo)
+        assert runner.invoke(app, ["init", "--name", "housekeeper"], catch_exceptions=False).exit_code == 0
+        assert runner.invoke(app, ["remote", "add", "origin", base_url, "--repo-name", "housekeeper", "--default"], catch_exceptions=False).exit_code == 0
+        assert runner.invoke(app, ["config", "set", "--workflow-mode", "solo_remote"], catch_exceptions=False).exit_code == 0
+        snap_out = runner.invoke(app, ["snapshot", "create", "--message", "seed", "--json"], catch_exceptions=False)
+        assert snap_out.exit_code == 0, snap_out.stdout
+        assert runner.invoke(app, ["push", "--line", "main"], catch_exceptions=False).exit_code == 0
+
+        session = remote_client_module.create_session(
+            base_url,
+            "housekeeper",
+            "telegram_chat",
+            title="Telegram chat · Wei",
+            metadata={
+                "source": "telegram",
+                "telegram_chat_id": "123",
+                "telegram_chat_title": "Wei",
+                "topic": "session-list-remote",
+            },
+        )
+
+        list_out = runner.invoke(app, ["session", "list", "--json"], catch_exceptions=False)
+        assert list_out.exit_code == 0, list_out.stdout
+        rows = json.loads(list_out.stdout)
+        row = next(row for row in rows if row["session_id"] == session["session_id"])
+        assert row["title"] == "Telegram chat · Wei"
+        assert "metadata" not in row
+        assert "telegram_context_runtime" not in row
+        assert "repo_id" not in row
+        assert "session_local_id" not in row
+
+        full_out = runner.invoke(app, ["session", "list", "--json", "--full"], catch_exceptions=False)
+        assert full_out.exit_code == 0, full_out.stdout
+        full_rows = json.loads(full_out.stdout)
+        full_row = next(row for row in full_rows if row["session_id"] == session["session_id"])
+        assert full_row["metadata"]["topic"] == "session-list-remote"
+        assert full_row["telegram_context_runtime"]["reply_context_mode"] == "recent_tail"
+
+        default_remote_rows = remote_client_module.list_sessions(base_url, "housekeeper")
+        default_remote_row = next(row for row in default_remote_rows if row["session_id"] == session["session_id"])
+        assert default_remote_row["metadata"]["topic"] == "session-list-remote"
+        assert default_remote_row["telegram_context_runtime"]["reply_context_mode"] == "recent_tail"
+
+        summary_remote_rows = remote_client_module.list_sessions(base_url, "housekeeper", full=False)
+        summary_remote_row = next(row for row in summary_remote_rows if row["session_id"] == session["session_id"])
+        assert "metadata" not in summary_remote_row
+        assert "telegram_context_runtime" not in summary_remote_row
 
 
 def test_task_backfill_sessions_command_recovers_missing_remote_task_run_session(tmp_path: Path, monkeypatch):

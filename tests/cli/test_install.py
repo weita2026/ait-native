@@ -56,6 +56,13 @@ def test_install_initializes_repo_and_keeps_local_mode_by_default(tmp_path: Path
     assert payload["server"]["action"] == "not_applicable"
     assert payload["runtime_root"]["classification"] == "installed_but_not_configured"
     assert payload["transport_actions"] == []
+    assert payload["next_steps"] == [
+        "Turn the requirement into the right Markdown artifact first.",
+        "Run `ait plan sync <file-or-dir>` for that Markdown artifact.",
+        'Start the task for that requirement with `ait task start --plan <plan-id> --plan-item-ref <ref> --title "<title>" --intent "<intent>"`.',
+        "Carry the change through `ait workflow land-local <change-id>` when the local slice is ready.",
+        "You can add Telegram or Discord later by rerunning `ait install --attach ...`.",
+    ]
     assert (repo / ".ait" / "config.json").exists()
 
     show_out = runner.invoke(app, ["config", "show", "--json"], catch_exceptions=False)
@@ -160,6 +167,14 @@ def test_install_remote_server_connect_adds_default_remote(tmp_path: Path, monke
             "Publish Markdown lineage with `ait plan sync <file-or-dir> --remote origin` when the plan should become shared.",
         ],
     }
+    assert payload["next_steps"] == [
+        "Turn the requirement into the right Markdown artifact first.",
+        "Verify the ait-server with `ait queue summary --remote origin`.",
+        "Publish Markdown lineage with `ait plan sync <file-or-dir> --remote origin` when the plan should become shared.",
+        'Start the remote-backed task for that requirement with `ait task start --plan <plan-id> --plan-item-ref <ref> --title "<title>" --intent "<intent>"` after shared lineage is ready.',
+        "Carry the change through `ait workflow land <change-id> --apply` once the shared slice is ready.",
+        "You can add Telegram or Discord later by rerunning `ait install --attach ...`.",
+    ]
 
     remotes = runner.invoke(app, ["remote", "list", "--json"], catch_exceptions=False)
     assert remotes.exit_code == 0, remotes.stdout

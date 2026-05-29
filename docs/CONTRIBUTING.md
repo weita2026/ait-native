@@ -1,5 +1,9 @@
 # Contributing to ait
 
+Authority: command layer under [plan.md](./plan.md), the applicable legal-layer governance documents, and [legal/contributor_rights_policy.md](./legal/contributor_rights_policy.md).
+Status: current release-facing contribution guide pending final counsel-reviewed contributor-rights instrument.
+Scope: public contribution workflow, Markdown/task discipline, verification expectations, AI-assisted contribution disclosure, and contributor-rights routing.
+
 Thanks for your interest in contributing to `ait`.
 
 This repository is intentionally **agent-first**. The public contribution path is not “edit random files and hope a maintainer reconstructs intent later.” The expected path is:

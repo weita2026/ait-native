@@ -1256,7 +1256,7 @@ def test_task_start_auto_creates_bound_worktree_by_default(tmp_path: Path, monke
     worktree = payload["worktree"]
     worktree_path = Path(worktree["path"])
     expected_worktree_name = payload["task_id"].lower()
-    feature_line_name = f"feature/{payload['task_id'].lower()}"
+    feature_line_name = f"feature/{expected_worktree_name}"
 
     assert worktree["name"] == expected_worktree_name
     assert worktree["bound_task_id"] == payload["task_id"]
@@ -1874,16 +1874,24 @@ def test_workflow_land_auto_removes_bound_task_worktree_with_lr_prefixed_publish
         task_publish_out = runner.invoke(app, ["task", "publish", start_payload["task_id"], "--json"], catch_exceptions=False)
         assert task_publish_out.exit_code == 0, task_publish_out.stdout
         published_task = json.loads(task_publish_out.stdout)
-        assert published_task["published_task_id"] == start_payload["task_id"]
+        assert published_task["published_task_id"].startswith("RAITT-")
 
         change_publish_out = runner.invoke(app, ["change", "publish", change["change_id"], "--json"], catch_exceptions=False)
         assert change_publish_out.exit_code == 0, change_publish_out.stdout
         published_change = json.loads(change_publish_out.stdout)
-        assert published_change["published_change_id"] == change["change_id"]
+        assert published_change["published_change_id"].startswith("RAITC-")
 
         patchset_out = runner.invoke(
             app,
-            ["patchset", "publish", "--change", change["change_id"], "--summary", "alias cleanup patchset", "--json"],
+            [
+                "patchset",
+                "publish",
+                "--change",
+                published_change["published_change_id"],
+                "--summary",
+                "alias cleanup patchset",
+                "--json",
+            ],
             catch_exceptions=False,
         )
         assert patchset_out.exit_code == 0, patchset_out.stdout

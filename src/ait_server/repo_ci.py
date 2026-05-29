@@ -12,7 +12,7 @@ from typing import Any
 
 from .patchset_ci import _artifact_payload, _load_suite_manifests, _materialize_snapshot, _run_one_suite
 from .read_models import task_audit
-from .server_content import read_ref
+from .server_content_repo_lines import read_ref
 from .server_control import connect
 from .server_paths import ServerContext
 from .server_store import get_repository, get_task

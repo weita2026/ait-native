@@ -1,5 +1,9 @@
 # ait Self-Hosted Team Deployment
 
+Authority: command layer under [plan.md](./plan.md), the applicable legal-layer governance documents, [PACKAGE_TARGETS.md](./PACKAGE_TARGETS.md), and [COMPATIBILITY_MATRIX.md](./COMPATIBILITY_MATRIX.md).
+Status: current release-facing self-hosted shared-control-plane guide.
+Scope: PostgreSQL-backed `ait-server`/`ait-worker` deployment boundary, operational checks, and shared workflow authority setup.
+
 ## What this guide is for
 
 Use this guide when:

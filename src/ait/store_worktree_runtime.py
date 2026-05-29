@@ -8,6 +8,7 @@ from ait_protocol.common import normalize_optional_text, read_json
 
 from . import local_content, local_control
 from .repo_paths import RepoContext
+from .store_remotes import get_remote
 from .store_repo_config import (
     _load_worktree_config,
     _save_worktree_config,
@@ -135,14 +136,6 @@ def _normalize_older_than(value: str | None) -> tuple[timedelta, str]:
         "m": timedelta(minutes=count),
     }[unit]
     return delta, f"{count}{unit}"
-
-
-def get_remote(ctx: RepoContext, name: Optional[str] = None) -> dict:
-    if name is None:
-        name = load_config(ctx).get("default_remote")
-    if not name:
-        raise KeyError("No remote configured. Run `ait remote add ... --default` first.")
-    return local_control.get_remote(ctx, name)
 
 
 def list_lines(ctx: RepoContext) -> list[dict]:

@@ -4,9 +4,10 @@ from typing import Any
 
 from ait_protocol.common import generate_namespaced_sequence_id, utc_now
 
-from ..server_content import repository_exists
+from ..server_content_repo_lines import repository_exists
 from ..server_control import connect, record_event
 from ..server_paths import ServerContext
+from .repo_scoped_keys import _next_repo_sequence, _repo_scope_predicate
 from .repo_ops import _repo_id, _repo_id_namespace_prefix
 
 
@@ -16,16 +17,8 @@ def _legacy_server_store_module():
     return legacy_server_store
 
 
-def _next_repo_sequence(*args, **kwargs):
-    return _legacy_server_store_module()._next_repo_sequence(*args, **kwargs)
-
-
 def _refresh_stack_state(*args, **kwargs):
     return _legacy_server_store_module()._refresh_stack_state(*args, **kwargs)
-
-
-def _repo_scope_predicate(*args, **kwargs):
-    return _legacy_server_store_module()._repo_scope_predicate(*args, **kwargs)
 
 
 def create_stack(ctx: ServerContext, repo_name: str, title: str, change_ids: list[str] | None = None, landing_policy: str = "ordered") -> dict:

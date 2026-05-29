@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from contextlib import ExitStack
 import importlib
+import os
 import sys
 from pathlib import Path
 
@@ -24,10 +25,49 @@ def restore_postgres_driver_after_test():
     restore_real_psycopg()
 
 
+@pytest.fixture
+def disable_host_ram_root_cleanup():
+    """Opt out only for tests that need to verify the autouse guard itself."""
+
+
+def _ambient_host_ram_root_cleanup_disabled() -> bool:
+    value = os.environ.get("AIT_TEST_DISABLE_GLOBAL_HOST_RAM_ROOT_CLEANUP", "")
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+@pytest.fixture
+def explicit_host_ram_root_cleanup():
+    root = detect_host_ram_root()
+    if root is None:
+        yield
+        return
+
+    with managed_host_ram_root(root):
+        yield
+
+
+@pytest.fixture(autouse=True)
+def auto_manage_host_ram_root_for_test(request):
+    if "disable_host_ram_root_cleanup" in request.fixturenames or _ambient_host_ram_root_cleanup_disabled():
+        yield
+        return
+
+    root = detect_host_ram_root()
+    if root is None:
+        yield
+        return
+
+    with managed_host_ram_root(root):
+        yield
+
+
 @pytest.fixture(autouse=True)
 def disable_host_memory_root_detection_for_init(monkeypatch):
     layout = importlib.import_module("ait.task_worktree_layout")
-    store_modules = [importlib.import_module("ait.store")]
+    store_modules = [
+        importlib.import_module("ait.store"),
+        importlib.import_module("ait.store_bootstrap"),
+    ]
     try:
         store_modules.append(importlib.import_module("ait_native.store"))
     except ModuleNotFoundError:

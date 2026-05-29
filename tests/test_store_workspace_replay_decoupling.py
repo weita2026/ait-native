@@ -31,3 +31,4 @@ def test_store_workspace_replay_is_extracted_from_store_facade() -> None:
     assert "def revert_change(" not in store_text
     assert "def replay_change(" not in store_text
     assert "from .store import (" not in replay_text
+    assert "local_content_snapshots" in replay_text

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import shlex
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -45,9 +46,30 @@ class PlanningModeTriggerConfig:
 
 
 @dataclass(frozen=True)
+class TelegramOperationalTriggerMatchConfig:
+    phrases: tuple[str, ...] = ()
+    commands: tuple[str, ...] = ()
+    pattern: str | None = None
+    allow_trailing_punctuation: bool = True
+    reply_only: bool = False
+    case_sensitive: bool = False
+
+
+@dataclass(frozen=True)
+class TelegramOperationalTriggerConfig:
+    trigger_id: str
+    display_trigger: str
+    handler_command: tuple[str, ...]
+    source_path: str
+    match: TelegramOperationalTriggerMatchConfig
+    priority: int = 0
+
+
+@dataclass(frozen=True)
 class EventTriggerRegistry:
     fresh_topic: FreshTopicTriggerConfig
     planning_mode: PlanningModeTriggerConfig
+    telegram_operational: tuple[TelegramOperationalTriggerConfig, ...] = ()
 
 
 def _repo_root_from_path(repo_root: Path | None = None) -> Path:
@@ -83,6 +105,40 @@ def _clean_tuple(values: Any, *, fallback: tuple[str, ...]) -> tuple[str, ...]:
     return tuple(normalized) or fallback
 
 
+def _clean_optional_str(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _clean_command_tuple(values: Any) -> tuple[str, ...]:
+    if isinstance(values, str):
+        return tuple(part for part in shlex.split(values.strip()) if part)
+    if not isinstance(values, list):
+        return ()
+    normalized: list[str] = []
+    for value in values:
+        cleaned = _clean_optional_str(value)
+        if cleaned:
+            normalized.append(cleaned)
+    return tuple(normalized)
+
+
+def _clean_command_names(values: Any) -> tuple[str, ...]:
+    if not isinstance(values, list):
+        return ()
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        cleaned = str(value or '').strip().lstrip('/').lower()
+        if not cleaned or cleaned in seen:
+            continue
+        seen.add(cleaned)
+        normalized.append(cleaned)
+    return tuple(normalized)
+
+
 def default_event_trigger_registry() -> EventTriggerRegistry:
     return EventTriggerRegistry(
         fresh_topic=FreshTopicTriggerConfig(
@@ -104,6 +160,7 @@ def default_event_trigger_registry() -> EventTriggerRegistry:
             display_trigger='進行計劃',
             allow_trailing_punctuation=True,
         ),
+        telegram_operational=(),
     )
 
 
@@ -113,6 +170,64 @@ def _load_json_config(resolved_root: Path, relative_path: str) -> dict[str, Any]
         return _extract_json_code_block(config_path.read_text(encoding='utf-8'), config_path)
     except (OSError, ValueError, json.JSONDecodeError):
         return {}
+
+
+def _relative_repo_path(path: Path, repo_root: Path) -> str:
+    try:
+        return path.resolve().relative_to(repo_root.resolve()).as_posix()
+    except ValueError:
+        return str(path)
+
+
+def _parse_operational_trigger_config(
+    repo_root: Path,
+    path: Path,
+    payload: dict[str, Any],
+) -> TelegramOperationalTriggerConfig | None:
+    kind = str(payload.get('kind') or '').strip().lower()
+    if kind not in {'telegram_operational_trigger', 'telegram-operational-trigger'}:
+        return None
+    match_payload = payload.get('match') if isinstance(payload.get('match'), dict) else {}
+    handler_command = _clean_command_tuple(payload.get('handlerCommand'))
+    trigger_id = _clean_optional_str(payload.get('id'))
+    display_trigger = _clean_optional_str(payload.get('displayTrigger'))
+    phrases = _clean_tuple(match_payload.get('phrases'), fallback=())
+    commands = _clean_command_names(match_payload.get('commands'))
+    pattern = _clean_optional_str(match_payload.get('pattern'))
+    if not trigger_id or not handler_command or (not phrases and not commands and not pattern):
+        return None
+    return TelegramOperationalTriggerConfig(
+        trigger_id=trigger_id,
+        display_trigger=display_trigger or trigger_id,
+        handler_command=handler_command,
+        source_path=_relative_repo_path(path, repo_root),
+        match=TelegramOperationalTriggerMatchConfig(
+            phrases=phrases,
+            commands=commands,
+            pattern=pattern,
+            allow_trailing_punctuation=bool(match_payload.get('allowTrailingPunctuation', True)),
+            reply_only=bool(match_payload.get('replyOnly', False)),
+            case_sensitive=bool(match_payload.get('caseSensitive', False)),
+        ),
+        priority=int(payload.get('priority') or 0),
+    )
+
+
+def _load_operational_trigger_configs(resolved_root: Path) -> tuple[TelegramOperationalTriggerConfig, ...]:
+    trigger_dir = resolved_root / 'docs' / 'event_trigger'
+    if not trigger_dir.is_dir():
+        return ()
+    configs: list[TelegramOperationalTriggerConfig] = []
+    for path in sorted(trigger_dir.glob('*.md')):
+        try:
+            payload = _extract_json_code_block(path.read_text(encoding='utf-8'), path)
+        except (OSError, ValueError, json.JSONDecodeError):
+            continue
+        config = _parse_operational_trigger_config(resolved_root, path, payload)
+        if config is not None:
+            configs.append(config)
+    configs.sort(key=lambda item: (-item.priority, item.source_path, item.trigger_id))
+    return tuple(configs)
 
 
 def load_event_trigger_registry(repo_root: Path | None = None) -> EventTriggerRegistry:
@@ -152,6 +267,7 @@ def load_event_trigger_registry(repo_root: Path | None = None) -> EventTriggerRe
                 planning_payload.get('allowTrailingPunctuation', fallback.planning_mode.allow_trailing_punctuation)
             ),
         ),
+        telegram_operational=_load_operational_trigger_configs(resolved_root),
     )
 
 
@@ -210,3 +326,69 @@ def parse_planning_mode_trigger(text: str, config: PlanningModeTriggerConfig) ->
                 'display_trigger': config.display_trigger,
             }
     return None
+
+
+def parse_telegram_operational_trigger(
+    *,
+    raw_text: str,
+    normalized_text: str,
+    command: tuple[str, str] | None,
+    reply_to_message_id: int | None,
+    config: TelegramOperationalTriggerConfig,
+) -> dict[str, Any] | None:
+    match_config = config.match
+    if match_config.reply_only and reply_to_message_id is None:
+        return None
+    if command is not None and match_config.commands:
+        command_name, command_args = command
+        normalized_name = str(command_name or '').strip().lstrip('/').lower()
+        if normalized_name in match_config.commands:
+            return {
+                'mode': 'command',
+                'display_trigger': config.display_trigger,
+                'command_name': normalized_name,
+                'command_args': str(command_args or '').strip(),
+            }
+    candidate = _strip_allowed_trailing_punctuation(
+        normalized_text,
+        enabled=match_config.allow_trailing_punctuation,
+    )
+    if not candidate:
+        return None
+    compare_candidate = candidate if match_config.case_sensitive else candidate.lower()
+    for phrase in match_config.phrases:
+        compare_phrase = phrase if match_config.case_sensitive else phrase.lower()
+        if compare_candidate == compare_phrase:
+            return {
+                'mode': 'phrase',
+                'display_trigger': config.display_trigger,
+                'matched_text': candidate,
+            }
+    if match_config.pattern:
+        pattern_flags = 0 if match_config.case_sensitive else re.IGNORECASE
+        match = re.match(match_config.pattern, raw_text or candidate, pattern_flags)
+        if match:
+            return {
+                'mode': 'pattern',
+                'display_trigger': config.display_trigger,
+                'matched_text': match.group(0),
+                'groups': list(match.groups()),
+                'groupdict': dict(match.groupdict()),
+            }
+    return None
+
+
+__all__ = [
+    'EventTriggerRegistry',
+    'FreshTopicClearTriggerConfig',
+    'FreshTopicTopicTriggerConfig',
+    'FreshTopicTriggerConfig',
+    'PlanningModeTriggerConfig',
+    'TelegramOperationalTriggerConfig',
+    'TelegramOperationalTriggerMatchConfig',
+    'default_event_trigger_registry',
+    'load_event_trigger_registry',
+    'parse_fresh_topic_trigger',
+    'parse_planning_mode_trigger',
+    'parse_telegram_operational_trigger',
+]

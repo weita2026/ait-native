@@ -59,6 +59,8 @@ def test_local_control_initialize_creates_alias_ready_schema(tmp_path: Path) -> 
             "landed_snapshot_id",
             "landed_at",
         } <= _table_columns(conn, "workflow_changes")
+        assert "plan_links_surface_hash" not in _table_columns(conn, "workflow_plan_revisions")
+        assert "plan_links_changed_count_to_prev" not in _table_columns(conn, "workflow_plan_revisions")
 
         index_names = _index_names(conn)
         assert "idx_workflow_task_aliases_task_id" in index_names
@@ -105,6 +107,32 @@ def test_local_control_initialize_drops_historical_publication_identity_columns(
         assert "historical_published_at" not in _table_columns(conn, "workflow_changes")
     finally:
         conn.close()
+
+
+def test_local_control_initialize_drops_local_plan_link_diff_metadata_columns(tmp_path: Path) -> None:
+    ctx = _repo_context(tmp_path)
+    local_control.initialize(ctx, repo_name="repo-a", default_line="main")
+
+    conn = connect_sqlite(ctx.control_db_path)
+    try:
+        conn.execute("alter table workflow_plan_revisions add column plan_links_surface_hash text")
+        conn.execute(
+            "alter table workflow_plan_revisions add column plan_links_changed_count_to_prev integer not null default 0"
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    local_control.initialize(ctx, repo_name="repo-a", default_line="main")
+
+    conn = connect_sqlite(ctx.control_db_path)
+    try:
+        revision_columns = _table_columns(conn, "workflow_plan_revisions")
+    finally:
+        conn.close()
+
+    assert "plan_links_surface_hash" not in revision_columns
+    assert "plan_links_changed_count_to_prev" not in revision_columns
 
 
 def test_local_control_operations_skip_schema_bootstrap_after_init(
@@ -195,6 +223,66 @@ def test_local_control_runtime_operations_do_not_drop_compatibility_columns_afte
     assert "historical_publication_id" in task_columns
     assert "historical_publication_remote_name" in change_columns
     assert "historical_publication_id" in change_columns
+
+
+def test_local_plan_operations_do_not_drop_compatibility_columns_after_init(tmp_path: Path) -> None:
+    ctx = _repo_context(tmp_path)
+    local_control.initialize(ctx, repo_name="repo-a", default_line="main")
+
+    conn = connect_sqlite(ctx.control_db_path)
+    try:
+        conn.execute("alter table workflow_plan_revisions add column plan_links_surface_hash text")
+        conn.execute(
+            "alter table workflow_plan_revisions add column plan_links_changed_count_to_prev integer not null default 0"
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    plan = local_control.create_workflow_plan(
+        ctx,
+        plan_id="PL-local",
+        plan_revision_id="PR-local-1",
+        repo_name="repo-a",
+        title="Compatibility plan",
+        items=[
+            {
+                "plan_item_ref": "compat/runtime-plan-op-cleanup-boundary",
+                "title": "Keep runtime cleanup out of plan writes",
+                "status": "pending",
+            }
+        ],
+        artifact_path="docs/sprints/compat.md",
+        artifact_selector=None,
+        artifact_heading="Compatibility plan",
+        source_kind="manual_edit",
+    )
+    revised = local_control.revise_workflow_plan(
+        ctx,
+        plan_id=plan["plan_id"],
+        plan_revision_id="PR-local-2",
+        artifact_path="docs/sprints/compat.md",
+        artifact_selector=None,
+        artifact_heading="Compatibility plan",
+        items=[
+            {
+                "plan_item_ref": "compat/runtime-plan-op-cleanup-boundary",
+                "title": "Still present after revise",
+                "status": "pending",
+            }
+        ],
+        source_kind="manual_edit",
+    )
+
+    conn = connect_sqlite(ctx.control_db_path)
+    try:
+        revision_columns = _table_columns(conn, "workflow_plan_revisions")
+    finally:
+        conn.close()
+
+    assert revised["head_revision_id"] == "PR-local-2"
+    assert "plan_links_surface_hash" in revision_columns
+    assert "plan_links_changed_count_to_prev" in revision_columns
 
 
 def test_local_control_create_workflow_task_persists_plan_linkage(tmp_path: Path) -> None:

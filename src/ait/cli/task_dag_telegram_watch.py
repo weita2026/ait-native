@@ -7,14 +7,18 @@ from ait_protocol.common import normalize_optional_text
 
 from ..remote_client import read_task_dag_progress as remote_read_task_dag_progress
 from ..repo_paths import RepoContext
-from ..store import (
+from ..store_local_changes import (
     get_local_change,
-    get_local_task,
     list_local_changes,
-    list_local_sessions,
+)
+from ..store_local_tasks import (
+    get_local_task,
     list_local_tasks,
+)
+from ..store import (
     load_config,
 )
+from ..store_local_sessions import list_local_sessions
 from ..task_dag_readiness import compute_task_graph_readiness
 from .runtime_defaults import _effective_session_id, _normalize_text_value
 from .task_dag_readiness_views import _task_dag_blocked_nodes, _task_dag_progress_payload

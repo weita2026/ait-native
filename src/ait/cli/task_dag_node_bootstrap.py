@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import inspect
 import shutil
 import sys
 from pathlib import Path
@@ -12,9 +13,11 @@ from ..plan_graph import topological_node_order
 from ..remote_client import (
     RemoteError,
     create_change as _fallback_remote_create_change,
+    get_change as _fallback_remote_get_change,
     create_session as _fallback_remote_create_session,
     create_task as _fallback_remote_create_task,
 )
+from ..store_local_changes import get_local_change as _fallback_get_local_change
 from ..snapshot_diff import diff_snapshot_file_maps as _fallback_diff_snapshot_file_maps
 from ..store import (
     RepoContext,
@@ -48,6 +51,7 @@ from .task_dag_readiness_views import (
 )
 from .task_dag_runtime_helpers import (
     _task_dag_relative_path as _fallback_task_dag_relative_path,
+    _task_dag_remote_plan_revision_id as _fallback_task_dag_remote_plan_revision_id,
     _task_dag_target_line_name as _fallback_task_dag_target_line_name,
 )
 from .task_dag_topology_helpers import (
@@ -57,6 +61,7 @@ from .task_dag_topology_helpers import (
 from .task_tracking_bindings import _task_worktree_repo_ctx as _fallback_task_worktree_repo_ctx
 from .task_worktree_guidance import _task_worktree_output as _fallback_task_worktree_output
 from .task_worktree_resolution import (
+    _change_bootstrap_lineage as _fallback_change_bootstrap_lineage,
     _ensure_task_feature_line as _fallback_ensure_task_feature_line,
     _find_bound_task_worktree as _fallback_find_bound_task_worktree,
     _resolve_task_bound_worktree_name as _fallback_resolve_task_bound_worktree_name,
@@ -87,6 +92,14 @@ def create_local_change(*args: Any, **kwargs: Any) -> Any:
 
 def remote_create_change(*args: Any, **kwargs: Any) -> Any:
     return _app_override("remote_create_change", _fallback_remote_create_change)(*args, **kwargs)
+
+
+def remote_get_change(*args: Any, **kwargs: Any) -> Any:
+    return _app_override("remote_get_change", _fallback_remote_get_change)(*args, **kwargs)
+
+
+def get_local_change(*args: Any, **kwargs: Any) -> Any:
+    return _app_override("get_local_change", _fallback_get_local_change)(*args, **kwargs)
 
 
 def remote_create_session(*args: Any, **kwargs: Any) -> Any:
@@ -126,7 +139,20 @@ def collect_snapshot_chain(ctx: RepoContext, snapshot_id: str) -> list[str]:
 
 
 def export_snapshot_bundle(ctx: RepoContext, snapshot_id: str, repo_name: str) -> dict[str, Any]:
-    return _app_override("export_snapshot_bundle", _fallback_export_snapshot_bundle)(ctx, snapshot_id, repo_name)
+    exporter = _app_override("export_snapshot_bundle", _fallback_export_snapshot_bundle)
+    try:
+        parameters = tuple(inspect.signature(exporter).parameters.values())
+    except (TypeError, ValueError):
+        parameters = ()
+    positional_parameters = [
+        parameter
+        for parameter in parameters
+        if parameter.kind in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
+    ]
+    accepts_varargs = any(parameter.kind is inspect.Parameter.VAR_POSITIONAL for parameter in parameters)
+    if accepts_varargs or len(positional_parameters) >= 3:
+        return exporter(ctx, snapshot_id, repo_name)
+    return exporter(ctx, snapshot_id)
 
 
 def diff_snapshot_file_maps(*args: Any, **kwargs: Any) -> dict[str, Any]:
@@ -159,6 +185,10 @@ def _task_dag_relative_path(*args: Any, **kwargs: Any) -> Any:
 
 def _task_dag_target_line_name(*args: Any, **kwargs: Any) -> Any:
     return _app_override("_task_dag_target_line_name", _fallback_task_dag_target_line_name)(*args, **kwargs)
+
+
+def _task_dag_remote_plan_revision_id(*args: Any, **kwargs: Any) -> Any:
+    return _app_override("_task_dag_remote_plan_revision_id", _fallback_task_dag_remote_plan_revision_id)(*args, **kwargs)
 
 
 def _task_dag_view_row_by_node_id(*args: Any, **kwargs: Any) -> Any:
@@ -215,6 +245,10 @@ def _resolve_task_bound_worktree_name(*args: Any, **kwargs: Any) -> Any:
 
 def _task_feature_line_name(*args: Any, **kwargs: Any) -> Any:
     return _app_override("_task_feature_line_name", _fallback_task_feature_line_name)(*args, **kwargs)
+
+
+def _change_bootstrap_lineage(*args: Any, **kwargs: Any) -> Any:
+    return _app_override("_change_bootstrap_lineage", _fallback_change_bootstrap_lineage)(*args, **kwargs)
 
 
 def build_task_dag_promotion_policy(*args: Any, **kwargs: Any) -> Any:
@@ -579,6 +613,13 @@ def _task_dag_create_task_for_node(
             origin_plan_revision_id=plan_revision_id,
             plan_item_ref=plan_item_ref or None,
         )
+    remote_name = _normalize_text_value(remote_row.get("name")) or _normalize_text_value(load_config(ctx).get("default_remote"))
+    remote_plan_revision_id = _task_dag_remote_plan_revision_id(
+        ctx,
+        graph,
+        remote_name=remote_name,
+        auto_publish_if_needed=True,
+    )
     return remote_create_task(
         remote_row["url"],
         repo_name,
@@ -586,7 +627,7 @@ def _task_dag_create_task_for_node(
         intent,
         risk_tier,
         plan_id=plan_id,
-        origin_plan_revision_id=plan_revision_id,
+        origin_plan_revision_id=remote_plan_revision_id or plan_revision_id,
         plan_item_ref=plan_item_ref or None,
     )
 
@@ -769,11 +810,34 @@ def _task_dag_materialize_node_lineage(
             )
         change_id = str(created_change.get("change_id") or "")
 
+    resolved_change = dict(created_change) if isinstance(created_change, dict) else None
+    resolved_change_id = str(change_id or "").strip() or None
+    if resolved_change is None and resolved_change_id is not None:
+        if final_remote_disposition_default and shared_boundary_node:
+            try:
+                resolved_change = remote_get_change(remote_row["url"], resolved_change_id, repo_name=repo_name)
+            except (KeyError, RemoteError, ValueError):
+                resolved_change = None
+        else:
+            try:
+                resolved_change = get_local_change(ctx, resolved_change_id)
+            except KeyError:
+                resolved_change = None
+        if resolved_change is None:
+            raise ValueError(
+                f"Cannot resolve change `{resolved_change_id}` lineage for DAG task-worktree bootstrap."
+            )
+    resolved_base_line_name, resolved_fork_snapshot_id = _change_bootstrap_lineage(
+        resolved_change,
+        fallback_base_line_name=target_line,
+    )
+
     repo_ctx = _task_worktree_repo_ctx(ctx)
     feature_line = _ensure_task_feature_line(
         repo_ctx,
         task_id=task_id,
-        base_line_name=target_line,
+        base_line_name=resolved_base_line_name,
+        base_snapshot_id=resolved_fork_snapshot_id,
     )
     feature_line_name = str(feature_line.get("line_name") or _task_feature_line_name(task_id))
 
@@ -785,8 +849,8 @@ def _task_dag_materialize_node_lineage(
             task_id,
             str(graph_node.get("title") or template.get("title") or task_id),
         )
-        base_line_name = target_line
-        base_line = get_line(repo_ctx, base_line_name)
+        base_line = get_line(repo_ctx, resolved_base_line_name)
+        bootstrap_fork_snapshot_id = resolved_fork_snapshot_id or _normalize_text_value(base_line.get("head_snapshot_id"))
         created_worktree = local_bind_worktree(
             repo_ctx,
             local_add_worktree(
@@ -797,25 +861,26 @@ def _task_dag_materialize_node_lineage(
                 cleanup_policy="after_remote_land",
             )["name"],
             task_id=task_id,
-            change_id=change_id or None,
+            change_id=resolved_change_id,
             auto_created_for_task=True,
-            fork_snapshot_id=_normalize_text_value(base_line.get("head_snapshot_id")),
-            forked_from_line=base_line_name,
-            target_base_line=base_line_name,
+            fork_snapshot_id=bootstrap_fork_snapshot_id,
+            forked_from_line=resolved_base_line_name,
+            target_base_line=resolved_base_line_name,
         )
         worktree = created_worktree
     if worktree is not None and (
-        (change_id and str(worktree.get("bound_change_id") or "").strip() != change_id)
-        or _normalize_text_value(worktree.get("target_base_line")) != target_line
+        (resolved_change_id and str(worktree.get("bound_change_id") or "").strip() != resolved_change_id)
+        or _normalize_text_value(worktree.get("target_base_line")) != resolved_base_line_name
     ):
-        target_base_line = target_line
         worktree = local_bind_worktree(
             repo_ctx,
             str(worktree.get("name") or ""),
             task_id=task_id,
-            change_id=change_id,
+            change_id=resolved_change_id,
             auto_created_for_task=bool(worktree.get("auto_created_for_task")),
-            target_base_line=target_base_line,
+            fork_snapshot_id=resolved_fork_snapshot_id,
+            forked_from_line=resolved_base_line_name,
+            target_base_line=resolved_base_line_name,
         )
     if not allow_execution_only_without_change and not shared_boundary_node and not change_id:
         raise ValueError(

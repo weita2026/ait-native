@@ -14,7 +14,9 @@ from ..remote_client import (
     resume_session as _remote_resume_session,
 )
 from ..repo_paths import RepoContext
-from ..store import list_remotes
+from ..store_remotes import (
+    list_remotes,
+)
 from .workflow_mode_config import _normalize_text_value
 
 

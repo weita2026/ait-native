@@ -50,6 +50,8 @@ def test_official_site_https_helper_builds_static_output_and_validates_env(tmp_p
     assert "Built" in build.stdout
     assert output.joinpath("index.html").exists()
     assert output.joinpath("public", "styles.css").exists()
+    assert output.joinpath("robots.txt").exists()
+    assert output.joinpath("sitemap.xml").exists()
 
     env_file = tmp_path / ".env"
     env_file.write_text(

@@ -2,18 +2,18 @@ from __future__ import annotations
 
 from typing import Any
 
-from . import local_content, local_control
+from . import local_content, local_content_pack_runtime, local_control
 from .repo_paths import RepoContext
 from .store_repo_config import load_config
 
 
 def content_storage_stats(ctx: RepoContext) -> dict:
-    return local_content.storage_stats(ctx)
+    return local_content_pack_runtime.storage_stats(ctx)
 
 
 
 def pack_content(ctx: RepoContext, *, max_members: int | None = None, repack: bool = False) -> dict:
-    row = local_content.create_pack(ctx, max_members=max_members, repack=repack)
+    row = local_content_pack_runtime.create_pack(ctx, max_members=max_members, repack=repack)
     if row.get("created"):
         local_control.record_event(
             ctx,
@@ -32,7 +32,7 @@ def pack_content(ctx: RepoContext, *, max_members: int | None = None, repack: bo
 
 
 def gc_content(ctx: RepoContext, *, prune_unreferenced: bool = True, prune_orphan_packs: bool = True) -> dict:
-    row = local_content.gc_content(
+    row = local_content_pack_runtime.gc_content(
         ctx,
         prune_unreferenced=prune_unreferenced,
         prune_orphan_packs=prune_orphan_packs,

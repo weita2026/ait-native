@@ -4,10 +4,9 @@ import json
 from typing import Any, Callable, Iterable, TypeVar
 
 from ait_protocol.common import extract_plan_items, normalize_plan_items, utc_now
-from .server_content import get_repository
+from .server_content_repo_lines import get_repository
 from .server_db import (
     connect_server_plane,
-    enable_sqlite_wal,
     ensure_schema_version,
     postgres_advisory_lock,
     read_server_plane,
@@ -16,478 +15,6 @@ from .server_db import (
 from .server_paths import ServerContext
 
 _T = TypeVar("_T")
-
-SCHEMA_SQLITE = """
-create table if not exists tasks (
-    task_id text primary key,
-    repo_name text not null,
-    repo_id text,
-    task_seq integer,
-    title text not null,
-    intent text not null,
-    risk_tier text not null,
-    planning_state text not null default 'unplanned',
-    plan_id text,
-    origin_plan_revision_id text,
-    plan_item_ref text,
-    plan_section_ref text,
-    plan_drift_state text,
-    plan_linked_at text,
-    source_completion_mode text,
-    source_local_task_id text,
-    source_local_completed_at text,
-    status text not null,
-    created_at text not null
-);
-create index if not exists idx_tasks_repo_created on tasks(repo_name, created_at desc);
-
-create table if not exists plans (
-    plan_id text primary key,
-    repo_name text not null,
-    repo_id text,
-    title text not null,
-    status text not null,
-    head_revision_id text,
-    created_by text not null,
-    created_at text not null,
-    updated_at text not null
-);
-create index if not exists idx_plans_repo_id_updated on plans(repo_id, updated_at desc);
-
-create table if not exists plan_revisions (
-    plan_revision_id text primary key,
-    plan_id text not null,
-    revision_number integer not null,
-    parent_plan_revision_id text,
-    title_snapshot text not null,
-    summary text,
-    artifact_path text,
-    artifact_selector text,
-    artifact_heading text,
-    items_json text not null,
-    plan_links_surface_hash text,
-    plan_links_changed_count_to_prev integer not null default 0,
-    source_kind text not null,
-    source_session_id text,
-    created_by text not null,
-    actor_type text not null,
-    created_at text not null,
-    unique(plan_id, revision_number)
-);
-create index if not exists idx_plan_revisions_plan_created on plan_revisions(plan_id, created_at desc);
-
-create table if not exists plan_revision_blobs (
-    plan_revision_id text primary key,
-    repo_name text not null,
-    repo_id text,
-    blob_id text not null,
-    media_type text not null default 'text/markdown',
-    encoding text not null default 'utf-8',
-    byte_count integer,
-    created_at text not null
-);
-create index if not exists idx_plan_revision_blobs_repo_blob on plan_revision_blobs(repo_name, blob_id);
-create index if not exists idx_plan_revision_blobs_repo_id_blob on plan_revision_blobs(repo_id, blob_id);
-
-create table if not exists plan_revision_artifacts (
-    plan_revision_id text not null,
-    artifact_path text not null,
-    repo_name text not null,
-    repo_id text,
-    role text not null,
-    blob_id text not null,
-    media_type text not null,
-    encoding text,
-    byte_count integer not null,
-    sha256 text not null,
-    metadata_json text not null default '{}',
-    created_at text not null,
-    updated_at text not null,
-    primary key (plan_revision_id, artifact_path)
-);
-create index if not exists idx_plan_revision_artifacts_repo on plan_revision_artifacts(repo_name, artifact_path);
-create index if not exists idx_plan_revision_artifacts_repo_id on plan_revision_artifacts(repo_id, artifact_path);
-
-create table if not exists changes (
-    change_id text primary key,
-    repo_name text not null,
-    repo_id text,
-    change_seq integer,
-    task_id text not null,
-    title text not null,
-    base_line text not null,
-    fork_snapshot_id text,
-    forked_from_line text,
-    risk_tier text not null,
-    lane text not null default 'assisted',
-    source_completion_mode text,
-    source_local_change_id text,
-    source_local_status text,
-    source_target_line text,
-    source_landed_snapshot_id text,
-    source_landed_at text,
-    status text not null,
-    current_patchset_number integer not null default 0,
-    selected_patchset_number integer,
-    created_at text not null,
-    updated_at text not null,
-    landed_at text
-);
-
-create table if not exists releases (
-    release_id text primary key,
-    repo_name text not null,
-    repo_id text,
-    version text not null,
-    line_name text not null,
-    snapshot_id text not null,
-    manifest_hash text not null,
-    profile text not null,
-    package_name text,
-    package_version text,
-    package_requires_python text,
-    status text not null,
-    checks_json text not null default '[]',
-    artifacts_json text not null default '[]',
-    formula_json text not null default '{}',
-    metadata_json text not null default '{}',
-    created_by text not null,
-    actor_type text not null,
-    created_at text not null,
-    updated_at text not null,
-    unique(repo_name, version)
-);
-create index if not exists idx_releases_repo_updated on releases(repo_name, updated_at desc);
-
-create table if not exists sessions (
-    session_id text primary key,
-    repo_name text not null,
-    repo_id text,
-    session_local_id text,
-    task_id text,
-    change_id text,
-    title text,
-    session_kind text not null,
-    status text not null,
-    line_name text,
-    worktree_name text,
-    model_name text,
-    actor_identity text,
-    actor_type text,
-    metadata_json text not null,
-    last_event_sequence integer not null default 0,
-    head_checkpoint_id text,
-    created_at text not null,
-    updated_at text not null
-);
-
-create table if not exists planning_sessions (
-    planning_session_id text primary key,
-    repo_name text not null,
-    repo_id text,
-    planning_session_local_id text,
-    plan_id text not null,
-    title text,
-    mode text not null,
-    status text not null,
-    preferred_agent text,
-    artifact_status text not null,
-    derived_task_id text,
-    last_promoted_plan_revision_id text,
-    last_event_sequence integer not null default 0,
-    created_by text not null,
-    created_at text not null,
-    updated_at text not null
-);
-
-create table if not exists planning_session_events (
-    repo_id text,
-    planning_session_id text not null,
-    sequence integer not null,
-    event_type text not null,
-    payload_json text not null,
-    actor_identity text not null,
-    actor_type text not null,
-    created_at text not null,
-    primary key(planning_session_id, sequence)
-);
-
-create table if not exists session_events (
-    repo_id text,
-    session_id text not null,
-    sequence integer not null,
-    event_type text not null,
-    payload_json text not null,
-    actor_identity text not null,
-    actor_type text not null,
-    created_at text not null,
-    primary key(session_id, sequence)
-);
-
-create table if not exists session_checkpoints (
-    checkpoint_id text primary key,
-    repo_id text,
-    checkpoint_local_id text,
-    session_id text not null,
-    based_on_sequence integer not null,
-    summary text not null,
-    snapshot_id text,
-    resume_payload_json text not null,
-    created_at text not null
-);
-
-create table if not exists patchsets (
-    patchset_id text primary key,
-    repo_id text,
-    change_id text not null,
-    patchset_number integer not null,
-    base_snapshot_id text not null,
-    revision_snapshot_id text not null,
-    summary text not null,
-    author_mode text not null,
-    publish_state text not null,
-    diff_stats_json text not null,
-    evaluation_state text not null default 'pending',
-    created_at text not null,
-    unique(change_id, patchset_number)
-);
-
-create table if not exists review_requests (
-    review_request_id integer primary key autoincrement,
-    repo_id text,
-    change_id text not null,
-    patchset_id text not null,
-    reviewer_group text not null,
-    note text,
-    created_at text not null
-);
-
-create table if not exists reviews (
-    review_id integer primary key autoincrement,
-    repo_id text,
-    change_id text not null,
-    patchset_id text not null,
-    reviewer text not null,
-    action text not null,
-    comment text,
-    blocking integer not null default 0,
-    created_at text not null
-);
-
-create table if not exists attestations (
-    attestation_id text primary key,
-    repo_id text,
-    patchset_id text not null unique,
-    author_mode text not null,
-    evaluation_summary_json text not null,
-    provenance_summary_json text not null,
-    detail_json text,
-    created_at text not null,
-    updated_at text not null
-);
-
-create table if not exists policy_decisions (
-    policy_decision_id integer primary key autoincrement,
-    repo_id text,
-    patchset_id text not null,
-    lane text not null,
-    decision text not null,
-    checks_json text not null,
-    input_fingerprint text,
-    created_at text not null
-);
-
-create table if not exists waivers (
-    waiver_id text primary key,
-    repo_id text,
-    patchset_id text not null,
-    rule_name text not null,
-    reason text not null,
-    expires_at text,
-    created_at text not null
-);
-
-create table if not exists land_requests (
-    submission_id text primary key,
-    repo_id text,
-    land_seq integer,
-    change_id text not null,
-    patchset_id text not null,
-    target_line text not null,
-    mode text not null,
-    status text not null,
-    result_json text not null,
-    created_at text not null,
-    updated_at text not null
-);
-
-create table if not exists stacks (
-    stack_id text primary key,
-    repo_name text not null,
-    repo_id text,
-    stack_seq integer,
-    title text not null,
-    landing_policy text not null,
-    status text not null,
-    created_at text not null,
-    updated_at text not null
-);
-
-create table if not exists stack_changes (
-    repo_id text,
-    stack_id text not null,
-    change_id text not null,
-    position integer not null,
-    primary key (stack_id, change_id),
-    unique (stack_id, position)
-);
-
-create table if not exists role_bindings (
-    binding_id integer primary key autoincrement,
-    repo_name text not null,
-    repo_id text,
-    actor_identity text not null,
-    role text not null,
-    created_at text not null,
-    unique (repo_name, actor_identity, role)
-);
-create index if not exists idx_role_bindings_repo_actor on role_bindings(repo_name, actor_identity);
-create index if not exists idx_role_bindings_repo_id_actor on role_bindings(repo_id, actor_identity);
-
-create table if not exists community_accounts (
-    account_id text primary key,
-    email_normalized text not null,
-    full_name text not null,
-    display_name text,
-    organization text,
-    role_title text,
-    status text not null,
-    primary_auth_method text not null,
-    created_at text not null,
-    updated_at text not null
-);
-
-create table if not exists community_password_credentials (
-    account_id text primary key references community_accounts(account_id) on delete cascade,
-    password_hash text not null,
-    password_algo text not null,
-    password_params_json text not null,
-    password_updated_at text not null,
-    must_rotate integer not null default 0
-);
-
-create table if not exists community_web_sessions (
-    web_session_id text primary key,
-    account_id text not null references community_accounts(account_id) on delete cascade,
-    session_source text not null,
-    created_at text not null,
-    expires_at text not null,
-    revoked_at text,
-    last_seen_at text
-);
-
-create table if not exists community_external_identities (
-    account_id text not null references community_accounts(account_id) on delete cascade,
-    provider text not null,
-    subject text not null,
-    email_normalized text,
-    linked_at text not null,
-    primary key (account_id, provider),
-    unique (provider, subject)
-);
-
-create table if not exists jobs (
-    job_id integer primary key autoincrement,
-    repo_name text not null,
-    repo_id text,
-    job_type text not null,
-    state text not null check (state in ('queued','running','succeeded','failed')),
-    payload_json text not null,
-    result_json text not null default '{}',
-    attempt_count integer not null default 0,
-    max_attempts integer not null default 5,
-    available_at text not null,
-    locked_at text,
-    locked_by text,
-    last_error text,
-    created_at text not null,
-    updated_at text not null
-);
-
-create table if not exists repository_retirements (
-    retirement_id text primary key,
-    repo_name text not null,
-    repo_id text not null,
-    state text not null,
-    actor_identity text not null,
-    actor_type text not null,
-    export_path text not null,
-    manifest_path text not null,
-    manifest_sha256 text not null,
-    summary_json text not null default '{}',
-    created_at text not null,
-    exported_at text,
-    verified_at text,
-    purged_at text,
-    updated_at text not null,
-    last_error text
-);
-create index if not exists idx_repository_retirements_repo on repository_retirements(repo_id, created_at desc);
-
-create table if not exists events (
-    event_id integer primary key autoincrement,
-    event_type text not null,
-    entity_type text not null,
-    entity_id text not null,
-    payload_json text not null,
-    actor_identity text not null default 'system',
-    actor_type text not null default 'system_worker',
-    created_at text not null
-);
-
-create table if not exists authority_maps (
-    authority_map_id text primary key,
-    repo_name text not null unique,
-    repo_id text,
-    root_document_path text not null,
-    milestone_document_path text not null,
-    schema_version integer not null default 1,
-    created_at timestamptz not null,
-    updated_at timestamptz not null
-);
-
-create table if not exists authority_nodes (
-    authority_node_id text primary key,
-    authority_map_id text not null references authority_maps(authority_map_id) on delete cascade,
-    node_kind text not null,
-    parent_node_id text references authority_nodes(authority_node_id) on delete cascade,
-    document_path text not null,
-    title text not null,
-    slug text not null,
-    sort_index integer not null,
-    connection_mode text not null,
-    created_at timestamptz not null,
-    updated_at timestamptz not null,
-    unique (authority_map_id, document_path)
-);
-
-create table if not exists authority_mutations (
-    mutation_id text primary key,
-    authority_map_id text not null references authority_maps(authority_map_id) on delete cascade,
-    authority_node_id text references authority_nodes(authority_node_id) on delete set null,
-    mutation_kind text not null,
-    payload_json text not null,
-    actor_label text not null,
-    created_at text not null
-);
-
-create index if not exists idx_authority_maps_repo on authority_maps(repo_name);
-create index if not exists idx_authority_maps_repo_id on authority_maps(repo_id, repo_name);
-create index if not exists idx_authority_nodes_map_parent_sort on authority_nodes(authority_map_id, parent_node_id, sort_index);
-create index if not exists idx_authority_nodes_document_path on authority_nodes(document_path);
-create index if not exists idx_authority_mutations_map_created on authority_mutations(authority_map_id, created_at desc);
-create index if not exists idx_authority_mutations_node on authority_mutations(authority_node_id);
-"""
 
 SCHEMA_POSTGRES = """
 create table if not exists schema_versions (
@@ -513,9 +40,6 @@ create table if not exists tasks (
     plan_section_ref text,
     plan_drift_state text,
     plan_linked_at timestamptz,
-    source_completion_mode text,
-    source_local_task_id text,
-    source_local_completed_at timestamptz,
     status text not null,
     created_at timestamptz not null
 );
@@ -527,9 +51,6 @@ alter table if exists tasks add column if not exists plan_section_ref text;
 alter table if exists tasks add column if not exists plan_drift_state text;
 alter table if exists tasks add column if not exists plan_linked_at timestamptz;
 alter table if exists tasks add column if not exists planning_state text not null default 'unplanned';
-alter table if exists tasks add column if not exists source_completion_mode text;
-alter table if exists tasks add column if not exists source_local_task_id text;
-alter table if exists tasks add column if not exists source_local_completed_at timestamptz;
 
 create table if not exists plans (
     plan_id text primary key,
@@ -632,12 +153,6 @@ create table if not exists changes (
     forked_from_line text,
     risk_tier text not null,
     lane text not null default 'assisted',
-    source_completion_mode text,
-    source_local_change_id text,
-    source_local_status text,
-    source_target_line text,
-    source_landed_snapshot_id text,
-    source_landed_at timestamptz,
     status text not null,
     current_patchset_number integer not null default 0,
     selected_patchset_number integer,
@@ -1028,9 +543,8 @@ create index if not exists idx_authority_mutations_node on authority_mutations(a
 def initialize(ctx: ServerContext) -> None:
     conn = connect(ctx)
     try:
-        enable_sqlite_wal(conn)
         with postgres_advisory_lock(conn, scope=f"{ctx.control_schema}:server-control-initialize"):
-            conn.executescript(SCHEMA_POSTGRES if ctx.db_backend == "postgres" else SCHEMA_SQLITE)
+            conn.executescript(SCHEMA_POSTGRES)
             _ensure_column(conn, "events", "actor_identity", "text not null default 'system'")
             _ensure_column(conn, "events", "actor_type", "text not null default 'system_worker'")
             _ensure_column(conn, "role_bindings", "repo_id", "text")
@@ -1044,9 +558,6 @@ def initialize(ctx: ServerContext) -> None:
             _ensure_column(conn, "tasks", "plan_drift_state", "text")
             _ensure_column(conn, "tasks", "plan_linked_at", "text")
             _ensure_column(conn, "tasks", "planning_state", "text not null default 'unplanned'")
-            _ensure_column(conn, "tasks", "source_completion_mode", "text")
-            _ensure_column(conn, "tasks", "source_local_task_id", "text")
-            _ensure_column(conn, "tasks", "source_local_completed_at", "text")
             _ensure_column(conn, "plans", "repo_id", "text")
             _ensure_column(conn, "releases", "repo_id", "text")
             _ensure_column(conn, "releases", "checks_json", "text not null default '[]'")
@@ -1057,12 +568,6 @@ def initialize(ctx: ServerContext) -> None:
             _ensure_column(conn, "changes", "change_seq", "integer")
             _ensure_column(conn, "changes", "fork_snapshot_id", "text")
             _ensure_column(conn, "changes", "forked_from_line", "text")
-            _ensure_column(conn, "changes", "source_completion_mode", "text")
-            _ensure_column(conn, "changes", "source_local_change_id", "text")
-            _ensure_column(conn, "changes", "source_local_status", "text")
-            _ensure_column(conn, "changes", "source_target_line", "text")
-            _ensure_column(conn, "changes", "source_landed_snapshot_id", "text")
-            _ensure_column(conn, "changes", "source_landed_at", "text")
             _ensure_column(conn, "sessions", "repo_id", "text")
             _ensure_column(conn, "sessions", "session_local_id", "text")
             _ensure_column(conn, "planning_sessions", "plan_id", "text")
@@ -1116,7 +621,7 @@ def initialize(ctx: ServerContext) -> None:
             _ensure_column(conn, "plan_revision_artifacts", "created_at", "text")
             _ensure_column(conn, "plan_revision_artifacts", "updated_at", "text")
             _migrate_plan_revisions(conn)
-            _migrate_plan_revision_blobs(conn)
+            _remove_imported_completion_source_lineage_columns(conn)
             _remove_historical_publication_storage(conn)
             repository_ids = _content_repository_ids(ctx)
             _migrate_role_bindings_repo_id(conn, repository_ids)
@@ -1185,24 +690,19 @@ def initialize(ctx: ServerContext) -> None:
 def _ensure_column(conn, table_name: str, column_name: str, ddl: str) -> None:
     cols = _table_columns(conn, table_name)
     if column_name not in cols:
-        if conn.backend == "postgres":
-            conn.execute(f"alter table if exists {table_name} add column if not exists {column_name} {ddl}")
-        else:
-            conn.execute(f"alter table {table_name} add column {column_name} {ddl}")
+        conn.execute(f"alter table if exists {table_name} add column if not exists {column_name} {ddl}")
 
 
 def _table_columns(conn, table_name: str) -> set[str]:
-    if conn.backend == "postgres":
-        rows = conn.execute(
-            """
-            select column_name
-            from information_schema.columns
-            where table_schema = current_schema() and table_name = %s
-            """,
-            (table_name,),
-        ).fetchall()
-        return {row["column_name"] for row in rows}
-    return {row["name"] for row in conn.execute(f"pragma table_info({table_name})")}
+    rows = conn.execute(
+        """
+        select column_name
+        from information_schema.columns
+        where table_schema = current_schema() and table_name = %s
+        """,
+        (table_name,),
+    ).fetchall()
+    return {row["column_name"] for row in rows}
 
 
 def _content_repository_ids(ctx: ServerContext) -> dict[str, str]:
@@ -1269,10 +769,7 @@ def _drop_column_if_exists(conn, table_name: str, column_name: str) -> None:
     if column_name not in _table_columns(conn, table_name):
         return
     try:
-        if conn.backend == "postgres":
-            conn.execute(f"alter table if exists {table_name} drop column if exists {column_name}")
-        else:
-            conn.execute(f"alter table {table_name} drop column {column_name}")
+        conn.execute(f"alter table if exists {table_name} drop column if exists {column_name}")
     except Exception:
         pass
 
@@ -1286,6 +783,24 @@ def _remove_historical_publication_storage(conn) -> None:
     conn.execute("drop index if exists idx_historical_publications_repo_created")
     conn.execute("drop index if exists uq_historical_publications_repo_id_seq")
     conn.execute("drop index if exists uq_historical_publications_repo_id_idempotency")
+
+
+def _remove_imported_completion_source_lineage_columns(conn) -> None:
+    for column_name in (
+        "source_completion_mode",
+        "source_local_task_id",
+        "source_local_completed_at",
+    ):
+        _drop_column_if_exists(conn, "tasks", column_name)
+    for column_name in (
+        "source_completion_mode",
+        "source_local_change_id",
+        "source_local_status",
+        "source_target_line",
+        "source_landed_snapshot_id",
+        "source_landed_at",
+    ):
+        _drop_column_if_exists(conn, "changes", column_name)
 
 
 def _migrate_plan_revisions(conn) -> None:
@@ -1316,55 +831,6 @@ def _migrate_plan_revisions(conn) -> None:
             ),
         )
     _drop_column_if_exists(conn, "plan_revisions", "body_markdown")
-
-
-def _migrate_plan_revision_blobs(conn) -> None:
-    if conn.backend == "postgres":
-        return
-    columns = _table_columns(conn, "plan_revision_blobs")
-    row = conn.execute(
-        "select sql from sqlite_master where type = 'table' and name = 'plan_revision_blobs'"
-    ).fetchone()
-    table_sql = str((row or {}).get("sql") or "").lower()
-    if "blob_id text not null unique" not in table_sql:
-        return
-
-    conn.execute("drop table if exists plan_revision_blobs_new")
-    conn.execute(
-        """
-        create table plan_revision_blobs_new (
-            plan_revision_id text primary key,
-            repo_name text not null,
-            repo_id text,
-            blob_id text not null,
-            media_type text not null default 'text/markdown',
-            encoding text not null default 'utf-8',
-            byte_count integer,
-            created_at text not null
-        )
-        """
-    )
-    conn.execute(
-        """
-        insert into plan_revision_blobs_new(
-            plan_revision_id, repo_name, repo_id, blob_id, media_type, encoding, byte_count, created_at
-        )
-        select
-            plan_revision_id,
-            repo_name,
-            {repo_id_expr},
-            blob_id,
-            coalesce(media_type, 'text/markdown'),
-            coalesce(encoding, 'utf-8'),
-            byte_count,
-            coalesce(created_at, '')
-        from plan_revision_blobs
-        """
-        .format(repo_id_expr="repo_id" if "repo_id" in columns else "null")
-    )
-    conn.execute("drop table plan_revision_blobs")
-    conn.execute("alter table plan_revision_blobs_new rename to plan_revision_blobs")
-
 
 
 def connect(ctx: ServerContext):

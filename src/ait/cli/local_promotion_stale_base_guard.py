@@ -3,7 +3,10 @@ from __future__ import annotations
 from typing import Any
 
 from ..repo_paths import RepoContext
-from ..store import get_local_change, list_worktrees as local_list_worktrees
+from ..store_local_changes import (
+    get_local_change,
+)
+from ..store import list_worktrees as local_list_worktrees
 from .task_tracking_bindings import _task_worktree_repo_ctx
 from .task_worktree_resolution import _find_bound_task_worktree
 from .workflow_mode_config import _normalize_text_value

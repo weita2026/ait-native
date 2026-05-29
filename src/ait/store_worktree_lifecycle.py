@@ -417,6 +417,9 @@ def bind_worktree(
         metadata=metadata,
         task_id=task_id,
         change_id=change_id,
+        fork_snapshot_id=fork_snapshot_id,
+        forked_from_line=forked_from_line,
+        target_base_line=target_base_line,
     )
     updates: dict[str, object] = {}
     if task_id is not None:

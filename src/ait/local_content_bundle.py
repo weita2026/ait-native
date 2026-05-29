@@ -7,7 +7,7 @@ from typing import Any
 from ait_protocol.common import connect_sqlite, utc_now
 from ait_storage.revision_trees import build_snapshot_id, build_tree_records
 
-from .local_content import (
+from .local_content_pack_runtime import (
     _blob_bytes_by_row,
     _blob_path,
     _blob_row,
@@ -30,7 +30,7 @@ def export_snapshot_bundle(ctx: RepoContext, snapshot_id: str, repo_name: str) -
     file_rows = conn.execute(
         """
         select sf.path, sf.blob_id, coalesce(sf.size_bytes, b.size_bytes) as size_bytes, sf.mode,
-               b.sha256, b.storage_path, b.storage_kind, b.pack_id
+               b.sha256, b.storage_path, b.pack_id
         from snapshot_files sf
         join blobs b on b.blob_id = sf.blob_id
         where sf.snapshot_id = ?
@@ -134,14 +134,12 @@ def import_snapshot_bundle(ctx: RepoContext, bundle: dict) -> dict:
         for row in new_blob_rows:
             member = members_by_blob_id[row["blob_id"]]
             entry_type = member.get("entry_type", "full")
-            target_storage_kind = "pack_delta" if entry_type == "delta" else "pack_full"
             _insert_blob_record(
                 conn,
                 blob_id=row["blob_id"],
                 sha256=row["sha256"],
                 storage_path=row["storage_path"],
                 size_bytes=row["size_bytes"],
-                storage_kind=target_storage_kind,
                 pack_id=pack_id,
                 pack_entry_type=entry_type,
                 pack_base_blob_id=member.get("base_blob_id"),

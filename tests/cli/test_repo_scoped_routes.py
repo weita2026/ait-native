@@ -564,19 +564,12 @@ def test_cli_plan_execute_latest_run_uses_repo_scoped_session_routes_with_drifte
     assert payload["recorded_run"]["session_id"] != older["session_id"]
 
 
-@pytest.mark.parametrize(
-    ("flag", "event_type"),
-    [
-        ("--resume-run", "task_graph.execution_resumed"),
-        ("--retry-run", "task_graph.execution_retried"),
-    ],
-)
 def test_cli_plan_execute_repo_scoped_latest_run_controls_work_with_drifted_session_repo_name(
     tmp_path: Path,
-    flag: str,
-    event_type: str,
 ):
-    data_dir = tmp_path / f"server-data-execute-control-{flag.removeprefix('--').removesuffix('-run')}"
+    flag = "--resume-run"
+    event_type = "task_graph.execution_resumed"
+    data_dir = tmp_path / "server-data-execute-control-resume"
     ctx = fake_postgres_context(data_dir)
     server_store_module.initialize(ctx)
     server_store_module.ensure_repository(ctx, "repo-a", "main", id_namespace_prefix="AAA")

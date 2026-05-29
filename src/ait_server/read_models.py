@@ -21,12 +21,11 @@ from ait_protocol.common import utc_now, workflow_id_matches
 from .authority_store import list_authority_graph, replace_authority_graph
 from .server_content import (
     connect as connect_content,
-    ensure_repository,
     list_repository_groups,
     read_blob_bytes,
-    read_ref,
     snapshot_manifest_map,
 )
+from .server_content_repo_lines import read_ref
 from .server_control import connect, latest_policy_status
 from .server_paths import ServerContext
 from .server_db import postgres_schema_upgrade_checks
@@ -169,16 +168,10 @@ WORKFLOW_CONTEXT_SPECS: dict[str, tuple[dict[str, str], ...]] = {
 
 def _table_exists(conn, table_name: str) -> bool:
     try:
-        if conn.backend == "sqlite":
-            row = conn.execute(
-                "select 1 from sqlite_master where type in ('table', 'view') and name = ?",
-                (table_name,),
-            ).fetchone()
-        else:
-            row = conn.execute(
-                "select 1 from information_schema.tables where table_schema = current_schema() and table_name = ?",
-                (table_name,),
-            ).fetchone()
+        row = conn.execute(
+            "select 1 from information_schema.tables where table_schema = current_schema() and table_name = ?",
+            (table_name,),
+        ).fetchone()
         return row is not None
     except Exception:
         return False
@@ -186,11 +179,6 @@ def _table_exists(conn, table_name: str) -> bool:
 
 def _table_has_column(conn, table_name: str, column_name: str) -> bool:
     try:
-        if conn.backend == "sqlite":
-            for row in conn.execute(f"pragma table_info({table_name})").fetchall():
-                if str(row.get("name") or "").strip() == column_name:
-                    return True
-            return False
         row = conn.execute(
             "select 1 from information_schema.columns where table_schema = current_schema() and table_name = ? and column_name = ?",
             (table_name, column_name),

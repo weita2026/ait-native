@@ -8,9 +8,14 @@ import pytest
 
 from ait import local_content
 from ait import local_content_bundle as local_content_bundle_helpers
+from ait import local_content_pack_runtime as local_content_pack_runtime_helpers
+from ait import local_content_schema as local_content_schema_helpers
+from ait import local_content_snapshots as local_content_snapshot_helpers
+from ait import local_content_storage as local_content_storage_helpers
 from ait import local_content_workspace as local_content_workspace_helpers
 from ait import snapshot_blame
 from ait import store
+from ait_protocol.common import connect_sqlite
 
 
 def test_local_content_workspace_helpers_match_facade(tmp_path: Path) -> None:
@@ -131,6 +136,148 @@ def test_local_content_bundle_helpers_round_trip_between_repos(tmp_path: Path) -
         snapshot["snapshot_id"]
     ]
     assert local_content.ensure_snapshot_chain(target_ctx, [bundle])[0]["snapshot_id"] == snapshot["snapshot_id"]
+
+
+def test_local_content_storage_helpers_match_facade(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir(parents=True, exist_ok=True)
+    ctx = store.init_repo(repo, "repo", "main")
+    (repo / "alpha.txt").write_text("alpha\n", encoding="utf-8")
+
+    snapshot = local_content.create_snapshot(ctx, "repo", "main", "seed")
+
+    assert local_content._read_blob_bytes is local_content_pack_runtime_helpers._read_blob_bytes
+    assert local_content.ensure_blob_bytes is local_content_pack_runtime_helpers.ensure_blob_bytes
+    assert local_content.storage_stats is local_content_pack_runtime_helpers.storage_stats
+    assert local_content.create_pack is local_content_pack_runtime_helpers.create_pack
+    assert local_content.gc_content is local_content_pack_runtime_helpers.gc_content
+    assert local_content_storage_helpers._read_blob_bytes is local_content_pack_runtime_helpers._read_blob_bytes
+    assert local_content_storage_helpers.ensure_blob_bytes is local_content_pack_runtime_helpers.ensure_blob_bytes
+    assert local_content_storage_helpers.storage_stats is local_content_pack_runtime_helpers.storage_stats
+    assert local_content_storage_helpers.create_pack is local_content_pack_runtime_helpers.create_pack
+    assert local_content_storage_helpers.gc_content is local_content_pack_runtime_helpers.gc_content
+
+    conn = connect_sqlite(ctx.content_db_path)
+    try:
+        assert local_content._manifest_path_for_tree(conn, snapshot["root_tree_id"]) == (
+            local_content_pack_runtime_helpers._manifest_path_for_tree(conn, snapshot["root_tree_id"])
+        )
+        assert local_content_storage_helpers._manifest_path_for_tree(conn, snapshot["root_tree_id"]) == (
+            local_content_pack_runtime_helpers._manifest_path_for_tree(conn, snapshot["root_tree_id"])
+        )
+    finally:
+        conn.close()
+
+
+def test_local_content_schema_helpers_match_facade(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir(parents=True, exist_ok=True)
+    ctx = store.init_repo(repo, "repo", "main")
+
+    assert local_content.SCHEMA == local_content_schema_helpers.SCHEMA
+    assert (
+        local_content.LOCAL_CONTENT_SCHEMA_VERSION
+        == local_content_schema_helpers.LOCAL_CONTENT_SCHEMA_VERSION
+    )
+    assert (
+        local_content._LOCAL_CONTENT_INIT_MIGRATION_BACKUP_PREFIX
+        == local_content_schema_helpers._LOCAL_CONTENT_INIT_MIGRATION_BACKUP_PREFIX
+    )
+    assert (
+        local_content._snapshot_files_object_type
+        is local_content_schema_helpers._snapshot_files_object_type
+    )
+    assert (
+        local_content._snapshot_files_view_needs_refresh
+        is local_content_schema_helpers._snapshot_files_view_needs_refresh
+    )
+    assert (
+        local_content._content_db_explicit_init_migration_needed
+        is local_content_schema_helpers._content_db_explicit_init_migration_needed
+    )
+    assert (
+        local_content._write_init_migration_backup
+        is local_content_schema_helpers._write_init_migration_backup
+    )
+    assert (
+        local_content._drop_empty_local_server_catalog_tables
+        is local_content_schema_helpers._drop_empty_local_server_catalog_tables
+    )
+    assert (
+        local_content._drop_legacy_pack_metadata_columns
+        is local_content_schema_helpers._drop_legacy_pack_metadata_columns
+    )
+    assert (
+        local_content._backfill_blob_pack_entry_type_from_storage_kind
+        is local_content_schema_helpers._backfill_blob_pack_entry_type_from_storage_kind
+    )
+    assert (
+        local_content._drop_redundant_blob_storage_kind_column
+        is local_content_schema_helpers._drop_redundant_blob_storage_kind_column
+    )
+    assert (
+        local_content._set_local_content_schema_version
+        is local_content_schema_helpers._set_local_content_schema_version
+    )
+    assert local_content._migrate_snapshot_metadata is local_content_schema_helpers._migrate_snapshot_metadata
+
+    conn = connect_sqlite(ctx.content_db_path)
+    try:
+        assert local_content._snapshot_files_view_sql(conn) == (
+            local_content_schema_helpers._snapshot_files_view_sql(conn)
+        )
+        assert local_content._snapshot_files_object_type(conn) == (
+            local_content_schema_helpers._snapshot_files_object_type(conn)
+        )
+        assert local_content._snapshot_files_view_needs_refresh(conn) == (
+            local_content_schema_helpers._snapshot_files_view_needs_refresh(conn)
+        )
+        assert local_content._content_db_explicit_init_migration_needed(conn) == (
+            local_content_schema_helpers._content_db_explicit_init_migration_needed(conn)
+        )
+    finally:
+        conn.close()
+
+
+def test_local_content_snapshot_helpers_match_facade(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir(parents=True, exist_ok=True)
+    ctx = store.init_repo(repo, "repo", "main")
+    (repo / "alpha.txt").write_text("alpha\n", encoding="utf-8")
+
+    snapshot = local_content.create_snapshot(ctx, "repo", "main", "seed")
+
+    assert local_content._canonical_snapshot_metadata is local_content_snapshot_helpers._canonical_snapshot_metadata
+    assert local_content.snapshot_exists is local_content_snapshot_helpers.snapshot_exists
+    assert local_content.create_snapshot is local_content_snapshot_helpers.create_snapshot
+    assert local_content.list_snapshots is local_content_snapshot_helpers.list_snapshots
+    assert local_content._stash_select_sql is local_content_snapshot_helpers._stash_select_sql
+    assert local_content._stash_view is local_content_snapshot_helpers._stash_view
+    assert local_content.create_stash is local_content_snapshot_helpers.create_stash
+    assert local_content.list_stashes is local_content_snapshot_helpers.list_stashes
+    assert local_content.get_stash is local_content_snapshot_helpers.get_stash
+    assert local_content.drop_stash is local_content_snapshot_helpers.drop_stash
+    assert local_content.get_snapshot is local_content_snapshot_helpers.get_snapshot
+    assert local_content._parse_mode_bits is local_content_snapshot_helpers._parse_mode_bits
+    assert local_content._blob_sha256_map is local_content_snapshot_helpers._blob_sha256_map
+    assert local_content.workspace_delta is local_content_snapshot_helpers.workspace_delta
+    assert local_content._prune_empty_parent_dirs is local_content_snapshot_helpers._prune_empty_parent_dirs
+    assert local_content.restore_workspace is local_content_snapshot_helpers.restore_workspace
+    assert local_content.restore_workspace_paths is local_content_snapshot_helpers.restore_workspace_paths
+
+    conn = connect_sqlite(ctx.content_db_path)
+    try:
+        assert local_content._snapshot_file_map(conn, snapshot["snapshot_id"]) == (
+            local_content_snapshot_helpers._snapshot_file_map(conn, snapshot["snapshot_id"])
+        )
+        assert local_content._snapshot_file_map_via_view(conn, snapshot["snapshot_id"]) == (
+            local_content_snapshot_helpers._snapshot_file_map_via_view(conn, snapshot["snapshot_id"])
+        )
+        assert local_content._snapshot_file_map_via_tree_traversal(conn, snapshot["root_tree_id"]) == (
+            local_content_snapshot_helpers._snapshot_file_map_via_tree_traversal(conn, snapshot["root_tree_id"])
+        )
+    finally:
+        conn.close()
 
 
 def test_local_content_bundle_import_derives_missing_file_size_bytes(tmp_path: Path) -> None:
@@ -274,6 +421,35 @@ def test_local_writers_stop_persisting_deterministic_packed_timestamps(tmp_path:
     assert "tree_packed_at" not in target_tree_columns
 
 
+def test_local_reduced_schema_omits_blob_storage_kind_column_for_new_and_imported_snapshots(tmp_path: Path) -> None:
+    source_repo = tmp_path / "source-blob-storage-kind"
+    source_repo.mkdir(parents=True, exist_ok=True)
+    (source_repo / "alpha.txt").write_text("alpha\n", encoding="utf-8")
+    source_ctx = store.init_repo(source_repo, "repo", "main")
+
+    snapshot = local_content.create_snapshot(source_ctx, "repo", "main", "seed")
+
+    conn = sqlite3.connect(source_ctx.content_db_path)
+    source_columns = {row[1] for row in conn.execute("pragma table_info(blobs)").fetchall()}
+    conn.close()
+
+    assert "storage_kind" not in source_columns
+
+    bundle = local_content_bundle_helpers.export_snapshot_bundle(source_ctx, snapshot["snapshot_id"], "repo")
+
+    target_repo = tmp_path / "target-blob-storage-kind"
+    target_repo.mkdir(parents=True, exist_ok=True)
+    target_ctx = store.init_repo(target_repo, "repo", "main")
+    imported = local_content_bundle_helpers.import_snapshot_bundle(target_ctx, bundle)
+
+    conn = sqlite3.connect(target_ctx.content_db_path)
+    target_columns = {row[1] for row in conn.execute("pragma table_info(blobs)").fetchall()}
+    conn.close()
+
+    assert imported["root_tree_id"]
+    assert "storage_kind" not in target_columns
+
+
 def test_local_reduced_schema_omits_tree_entry_blob_size_column_for_new_and_imported_snapshots(tmp_path: Path) -> None:
     source_repo = tmp_path / "source-tree-entry-size"
     source_repo.mkdir(parents=True, exist_ok=True)
@@ -360,6 +536,128 @@ def test_local_manifest_path_and_storage_stats_derive_missing_tree_pack_entry_na
     assert "tree_pack_entry_name" not in tree_columns
     assert derived_manifest_path == f"{pack_row['pack_path']}#trees/{root_tree_id}.json"
     assert local_content.storage_stats(ctx)["schema_cleanup_summary"]["stale_manifest_count"] == 0
+
+
+def test_local_explicit_init_migration_drops_legacy_blob_storage_kind_after_backup(tmp_path: Path) -> None:
+    repo = tmp_path / "repo-storage-kind-migration"
+    repo.mkdir(parents=True, exist_ok=True)
+    payload = repo / "alpha.txt"
+    base_lines = [f"line {i:02d} keep same text for compression\n" for i in range(20)]
+    updated_lines = list(base_lines)
+    updated_lines[10] = "line 10 changed text for compression\n"
+    updated_lines.append("line 20 keep same text for compression\n")
+    payload.write_text("".join(base_lines), encoding="utf-8")
+    ctx = store.init_repo(repo, "repo", "main")
+
+    base = local_content.create_snapshot(ctx, "repo", "main", "base")
+    payload.write_text("".join(updated_lines), encoding="utf-8")
+    target = local_content.create_snapshot(ctx, "repo", "main", "update")
+
+    conn = sqlite3.connect(ctx.content_db_path)
+    conn.execute("alter table blobs add column storage_kind text not null default 'pack_full'")
+    conn.execute(
+        """
+        update blobs
+        set storage_kind = case
+            when coalesce(pack_id, '') = '' then 'loose'
+            when coalesce(pack_entry_type, 'full') = 'delta' then 'pack_delta'
+            else 'pack_full'
+        end,
+            pack_entry_type = null
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    conn = local_content.connect_sqlite(ctx.content_db_path)
+    try:
+        assert local_content._content_db_explicit_init_migration_needed(conn) is True
+    finally:
+        conn.close()
+
+    local_content.initialize(ctx, "main")
+
+    backup_dir = ctx.ait_dir / "repair_backups"
+    backups = sorted(backup_dir.glob(f"{local_content._LOCAL_CONTENT_INIT_MIGRATION_BACKUP_PREFIX}.*.bak"))
+    assert backups
+
+    conn = sqlite3.connect(ctx.content_db_path)
+    conn.row_factory = sqlite3.Row
+    blob_columns = {row["name"] for row in conn.execute("pragma table_info(blobs)").fetchall()}
+    pack_entry_types = {
+        row["pack_entry_type"]: int(row["count"])
+        for row in conn.execute(
+            """
+            select pack_entry_type, count(*) as count
+            from blobs
+            where coalesce(pack_id, '') != ''
+            group by pack_entry_type
+            """
+        ).fetchall()
+    }
+    conn.close()
+
+    assert "storage_kind" not in blob_columns
+    assert pack_entry_types.get("full", 0) >= 1
+    assert pack_entry_types.get("delta", 0) >= 1
+    assert local_content.storage_stats(ctx)["schema_cleanup_summary"]["redundant_blob_storage_kind_present"] is False
+    assert (
+        local_content_bundle_helpers.export_snapshot_bundle(ctx, target["snapshot_id"], "repo")["snapshot_id"]
+        == target["snapshot_id"]
+    )
+    assert base["snapshot_id"] != target["snapshot_id"]
+
+
+def test_local_explicit_init_migration_rebuilds_tree_metadata_from_legacy_snapshot_files_table(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo-legacy-tree-metadata"
+    repo.mkdir(parents=True, exist_ok=True)
+    (repo / "nested").mkdir(parents=True, exist_ok=True)
+    (repo / "alpha.txt").write_text("alpha\n", encoding="utf-8")
+    (repo / "nested" / "beta.txt").write_text("beta\n", encoding="utf-8")
+    ctx = store.init_repo(repo, "repo", "main")
+
+    snapshot = local_content.create_snapshot(ctx, "repo", "main", "seed")
+
+    conn = sqlite3.connect(ctx.content_db_path)
+    conn.row_factory = sqlite3.Row
+    conn.execute(
+        "create table snapshot_files_legacy as select snapshot_id, path, blob_id, size_bytes, mode from snapshot_files"
+    )
+    conn.execute("drop view snapshot_files")
+    conn.execute("alter table snapshot_files_legacy rename to snapshot_files")
+    conn.execute(
+        "update snapshots set root_tree_id = '', manifest_hash = '', manifest_path = '' where snapshot_id = ?",
+        (snapshot["snapshot_id"],),
+    )
+    conn.commit()
+    conn.close()
+
+    conn = local_content.connect_sqlite(ctx.content_db_path)
+    try:
+        assert local_content._content_db_explicit_init_migration_needed(conn) is True
+    finally:
+        conn.close()
+
+    local_content.initialize(ctx, "main")
+
+    conn = local_content.connect_sqlite(ctx.content_db_path)
+    try:
+        row = conn.execute(
+            "select root_tree_id, manifest_path from snapshots where snapshot_id = ?",
+            (snapshot["snapshot_id"],),
+        ).fetchone()
+        assert row is not None
+        assert row["root_tree_id"] == snapshot["root_tree_id"]
+        assert row["manifest_path"] == local_content._manifest_path_for_tree(conn, snapshot["root_tree_id"])
+        assert local_content._snapshot_files_object_type(conn) == "view"
+    finally:
+        conn.close()
+
+    migrated_snapshot = local_content.get_snapshot(ctx, snapshot["snapshot_id"])
+    assert migrated_snapshot["root_tree_id"] == snapshot["root_tree_id"]
+    assert [row["path"] for row in migrated_snapshot["files"]] == ["alpha.txt", "nested/beta.txt"]
 
 
 def test_local_content_operations_skip_schema_migration_after_init(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

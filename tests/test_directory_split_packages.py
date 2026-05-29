@@ -106,10 +106,12 @@ import ait.store_worktree_restore as ait_store_worktree_restore
 import ait.store_worktree_lifecycle as ait_store_worktree_lifecycle
 import ait.store_worktrees as ait_store_worktrees
 import ait_protocol.common as protocol_common
+import ait_protocol.reply_runtime as protocol_reply_runtime
 import ait_protocol.runtime_roots as protocol_runtime_roots
 import ait_agent.runtime_backend as agent_runtime_backend
 import ait_agent.runtime_bindings as agent_runtime_bindings
 import ait_agent.telegram.background_sync as telegram_background_sync
+import ait_agent.telegram.clients as telegram_clients
 import ait_agent.telegram.config as telegram_config
 import ait_agent.telegram.transport_io as telegram_transport_io
 import ait_agent.telegram.workflow_queries as telegram_workflow_queries
@@ -117,6 +119,7 @@ import ait.server_runtime_seam as local_server_runtime_seam
 import ait_server.agent_transport_runtime as server_agent_transport_runtime
 import ait_server.server_auth as server_auth
 import ait_server.server_content as server_content
+import ait_server.server_content_repo_lines as server_content_repo_lines
 import ait_server.server_content_storage as server_content_storage
 import ait_server.server_control as server_control
 import ait_server.server_db as server_db
@@ -125,6 +128,7 @@ import ait_server.server_queue as server_queue
 import ait_server.server_store as server_store
 import ait_server.store.land_request_payloads as server_store_land_request_payloads
 import ait_server.store.plans as server_store_plans
+import ait_server.store.repo_scoped_keys as server_store_repo_scoped_keys
 import ait_server.store.releases as server_store_releases
 import ait_server.store.sessions as server_store_sessions
 import ait_server.store.task_tracking as server_store_task_tracking
@@ -137,6 +141,7 @@ import ait_server.server_process_runtime as server_process_runtime
 import ait_server.read_models as server_read_models
 import ait_server.repository_routes as server_repository_routes
 import ait_server.route_request_models as server_route_request_models
+import ait_server.session_routes as server_session_routes
 import ait_server.stack_routes as server_stack_routes
 import ait_server.task_routes as server_task_routes
 import ait_server.task_dag_route_helpers as server_task_dag_route_helpers
@@ -208,6 +213,8 @@ def test_directory_split_packages_expose_new_product_roots():
     assert native_web.create_web_app is web_app.create_web_app
     assert native_web.main is web_app.main
     assert native_common is protocol_common
+    assert protocol_reply_runtime.__file__
+    assert isinstance(protocol_reply_runtime.DEFAULT_REPLY_CODEX_CHILD_REAP_TIMEOUT_SECONDS, float)
     assert native_local_content_bundle is ait_local_content_bundle
     assert native_local_content is ait_local_content
     assert native_local_content_workspace is ait_local_content_workspace
@@ -258,6 +265,18 @@ def test_directory_split_packages_expose_new_product_roots():
     assert server_content.repository_storage_signals is server_content_storage.repository_storage_signals
     assert server_content.pack_repository is server_content_storage.pack_repository
     assert server_content.gc_repository_content is server_content_storage.gc_repository_content
+    assert server_content_repo_lines.__file__
+    assert server_content.read_ref is server_content_repo_lines.read_ref
+    assert server_content.write_ref is server_content_repo_lines.write_ref
+    assert server_content.ensure_repository is server_content_repo_lines.ensure_repository
+    assert server_content.repository_exists is server_content_repo_lines.repository_exists
+    assert server_content.get_repository is server_content_repo_lines.get_repository
+    assert server_content.get_line is server_content_repo_lines.get_line
+    assert server_content.list_lines is server_content_repo_lines.list_lines
+    assert server_content.list_lines_by_head_snapshot_ids is server_content_repo_lines.list_lines_by_head_snapshot_ids
+    assert server_content.update_line is server_content_repo_lines.update_line
+    assert server_content.archive_line is server_content_repo_lines.archive_line
+    assert server_content.set_repository_lifecycle_state is server_content_repo_lines.set_repository_lifecycle_state
     assert native_server_control is server_control
     assert native_server_db is server_db
     assert native_server_paths is server_paths
@@ -282,6 +301,9 @@ def test_directory_split_packages_expose_new_product_roots():
     assert server_store.ensure_task_tracking_session is server_store_task_tracking.ensure_task_tracking_session
     assert server_store.backfill_task_tracking_sessions is server_store_task_tracking.backfill_task_tracking_sessions
     assert server_store.list_sessions is server_store_sessions.list_sessions
+    assert server_store._repo_scope_predicate is server_store_repo_scoped_keys._repo_scope_predicate
+    assert server_store._next_repo_sequence is server_store_repo_scoped_keys._next_repo_sequence
+    assert server_store._repo_scoped_sequence_ref is server_store_repo_scoped_keys._repo_scoped_sequence_ref
     assert server_store.create_stack is server_store_stacks.create_stack
     assert server_store.list_stacks is server_store_stacks.list_stacks
 
@@ -310,6 +332,9 @@ def test_directory_split_packages_expose_new_product_roots():
     assert callable(agent_runtime_bindings.RuntimeSurfaceBindingStore)
     assert telegram_background_sync.__file__
     assert callable(telegram_background_sync.TelegramBackgroundSyncManager)
+    assert telegram_clients.__file__
+    assert callable(telegram_clients.TelegramApiClient)
+    assert callable(telegram_clients.AitApiClient)
     assert telegram_transport_io.__file__
     assert callable(telegram_transport_io._json_request)
     assert callable(telegram_transport_io.parse_webhook_payload)
@@ -540,6 +565,7 @@ def test_directory_split_packages_expose_new_product_roots():
     assert callable(ait_cli_plan_publish_helpers._local_plan_publish)
     assert callable(ait_cli_plan_publish_helpers._map_equivalent_remote_plan_revision_suffix)
     assert callable(server_repository_routes.register_repository_routes)
+    assert callable(server_session_routes.register_session_routes)
     assert callable(server_stack_routes.register_stack_routes)
     assert callable(server_task_routes.register_task_routes)
     assert web_clients.__file__

@@ -116,6 +116,7 @@ def _format_hunk(row: dict[str, Any]) -> str:
 def _render_human_blame(payload: dict[str, Any], *, restore: dict[str, Any] | None = None) -> None:
     target = payload.get("target") if isinstance(payload.get("target"), dict) else {}
     lines = list(payload.get("hunks") or [])
+    warnings = [warning for warning in list(payload.get("warnings") or []) if isinstance(warning, dict)]
     header: list[str] = []
     target_kind = str(target.get("kind") or "current_line")
     if target_kind == "patchset":
@@ -145,6 +146,12 @@ def _render_human_blame(payload: dict[str, Any], *, restore: dict[str, Any] | No
         typer.echo("\n".join(_format_hunk(row) for row in lines))
     else:
         typer.echo("no blameable lines")
+    if warnings:
+        typer.echo("")
+        for warning in warnings:
+            message = str(warning.get("message") or "").strip()
+            if message:
+                typer.echo(f"warning: {message}")
     if restore is None:
         return
     typer.echo("")
@@ -177,6 +184,16 @@ def blame_cmd(
     remote: str | None = typer.Option(None, "--remote", help="Remote to use when resolving --patchset."),
     repo: str | None = typer.Option(None, "--repo", help="Resolve repo-scoped patchset refs within this remote repository."),
     change: str | None = typer.Option(None, "--change", help="Required with repo-scoped numeric patchset refs."),
+    plan_id: str | None = typer.Option(
+        None,
+        "--plan-id",
+        help="Select one current Markdown lineage plan explicitly when the same artifact path is tracked by multiple current plans.",
+    ),
+    plan_ref: str | None = typer.Option(
+        None,
+        "--plan-ref",
+        help="Select one current Markdown lineage plan by artifact selector/ref.",
+    ),
     json_output: bool = typer.Option(False, "--json"),
 ):
     ctx = _ctx()
@@ -206,8 +223,15 @@ def blame_cmd(
                 line=line,
                 start_line=start,
                 end_line=end,
+                plan_id=plan_id,
+                plan_ref=plan_ref,
             )
         else:
+            if plan_id or plan_ref:
+                raise ValueError(
+                    f"Path {normalize_blame_path(ctx, path)} uses snapshot lineage. "
+                    "`--plan-id` and `--plan-ref` are only valid for lineage-only Markdown blame."
+                )
             target = _resolve_blame_target(
                 ctx,
                 snapshot_id=snapshot_id,

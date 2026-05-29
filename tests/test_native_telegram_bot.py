@@ -25,6 +25,7 @@ from ait_agent.envelope import (
 from ait_agent.runtime_bindings import load_runtime_binding_state
 import ait_agent.transport_retry as transport_retry_module
 import ait_agent.telegram.app as telegram_app
+import ait_agent.telegram.clients as telegram_clients
 import ait_agent.telegram.graph_watches as telegram_graph_watches
 from ait_chat.session_reply import ReplyGenerationConfig, ReplyGenerationError, generate_session_reply
 from ait_server.server_paths import ServerContext
@@ -39,6 +40,7 @@ class FakeTelegramApi:
         self.sent_messages: list[tuple[str | int, str]] = []
         self.sent_documents: list[tuple[str | int, dict[str, Any]]] = []
         self.sent_audios: list[tuple[str | int, dict[str, Any]]] = []
+        self.sent_photos: list[tuple[str | int, dict[str, Any]]] = []
 
     def send_message(self, chat_id, text):
         self.sent_messages.append((chat_id, text))
@@ -48,6 +50,9 @@ class FakeTelegramApi:
 
     def send_audio(self, chat_id, attachment):
         self.sent_audios.append((chat_id, dict(attachment)))
+
+    def send_photo(self, chat_id, attachment):
+        self.sent_photos.append((chat_id, dict(attachment)))
 
 
 class FakeSpeechToTextRuntime:
@@ -535,6 +540,50 @@ def _config(state_path: Path, **overrides) -> BotConfig:
     return BotConfig(**payload)
 
 
+def _trigger_runtime_env_path(repo_root: Path) -> Path:
+    return repo_root / ".ait" / "agent-runtime" / "telegram.env"
+
+
+def _write_repo_operational_trigger(
+    repo_root: Path,
+    *,
+    trigger_id: str = "router_blacklist_sync",
+    phrases: list[str] | None = None,
+    commands: list[str] | None = None,
+    pattern: str | None = None,
+    reply_only: bool = False,
+    handler_command: list[str] | None = None,
+    display_trigger: str | None = None,
+) -> Path:
+    trigger_dir = repo_root / "docs" / "event_trigger"
+    trigger_dir.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "kind": "telegram_operational_trigger",
+        "id": trigger_id,
+        "displayTrigger": display_trigger or trigger_id,
+        "handlerCommand": handler_command or [sys.executable, str(repo_root / "telegram-trigger-handler.py")],
+        "match": {
+            "phrases": phrases or [],
+            "commands": commands or [],
+            "pattern": pattern,
+            "replyOnly": reply_only,
+            "allowTrailingPunctuation": True,
+        },
+    }
+    path = trigger_dir / f"{trigger_id}.md"
+    path.write_text(
+        "# Test trigger\n\n```json\n" + json.dumps(payload, ensure_ascii=False, indent=2) + "\n```\n",
+        encoding="utf-8",
+    )
+    return path
+
+
+def _write_telegram_trigger_handler(repo_root: Path, source: str) -> Path:
+    path = repo_root / "telegram-trigger-handler.py"
+    path.write_text(source, encoding="utf-8")
+    return path
+
+
 def _claim_telegram_owner(
     service: TelegramBotService,
     *,
@@ -631,9 +680,9 @@ def test_ait_api_client_re_resolves_runtime_backend_per_call(monkeypatch, tmp_pa
             "reply_text": "remote reply",
         }
 
-    monkeypatch.setattr(telegram_app, "resolve_agent_runtime_target", fake_resolve_agent_runtime_target)
-    monkeypatch.setattr(telegram_app, "LocalAitRuntime", FakeLocalRuntime)
-    monkeypatch.setattr(telegram_app, "_json_request", fake_json_request)
+    monkeypatch.setattr(telegram_clients, "resolve_agent_runtime_target", fake_resolve_agent_runtime_target)
+    monkeypatch.setattr(telegram_clients, "LocalAitRuntime", FakeLocalRuntime)
+    monkeypatch.setattr(telegram_clients, "_json_request", fake_json_request)
 
     remote_turn = client.create_telegram_turn(
         "S-REMOTE",
@@ -907,6 +956,217 @@ def test_service_fresh_topic_trigger_with_topic_hint_skips_ai_turn(tmp_path: Pat
     )
 
 
+def test_load_event_trigger_registry_reads_repo_defined_operational_trigger(tmp_path: Path):
+    handler_path = tmp_path / "telegram-trigger-handler.py"
+    _write_repo_operational_trigger(
+        tmp_path,
+        trigger_id="router_blacklist_sync",
+        phrases=["加入黑名單"],
+        commands=["routerblock"],
+        pattern=r"^[A-Za-z0-9]{4}$",
+        reply_only=True,
+        handler_command=[sys.executable, str(handler_path)],
+        display_trigger="加入黑名單",
+    )
+
+    registry = telegram_app.load_event_trigger_registry(tmp_path)
+
+    assert len(registry.telegram_operational) == 1
+    trigger = registry.telegram_operational[0]
+    assert trigger.trigger_id == "router_blacklist_sync"
+    assert trigger.display_trigger == "加入黑名單"
+    assert trigger.match.phrases == ("加入黑名單",)
+    assert trigger.match.commands == ("routerblock",)
+    assert trigger.match.pattern == r"^[A-Za-z0-9]{4}$"
+    assert trigger.match.reply_only is True
+    assert trigger.handler_command == (sys.executable, str(handler_path))
+
+
+def test_service_dispatches_repo_defined_operational_phrase_trigger_without_ai_turn(tmp_path: Path):
+    state_path = tmp_path / "telegram-sync.json"
+    _write_telegram_trigger_handler(
+        tmp_path,
+        "import json, sys\n"
+        "json.dump({'handled': True, 'reply': {'text': '黑名單設定成功'}}, sys.stdout)\n",
+    )
+    _write_repo_operational_trigger(
+        tmp_path,
+        trigger_id="router_blacklist_sync",
+        phrases=["加入黑名單"],
+        handler_command=[sys.executable, str(tmp_path / "telegram-trigger-handler.py")],
+        display_trigger="加入黑名單",
+    )
+    ait_api = FakeAitApi(reply_text="should not be used")
+    telegram_api = FakeTelegramApi()
+    service = TelegramBotService(
+        _config(state_path, env_path=_trigger_runtime_env_path(tmp_path)),
+        ait_api=ait_api,
+        telegram_api=telegram_api,
+        state_store=TelegramSyncStateStore(state_path),
+    )
+
+    service.handle_update(
+        {
+            "update_id": 1,
+            "message": {
+                "message_id": 10,
+                "text": "加入黑名單",
+                "chat": {"id": 123, "type": "private", "first_name": "Wei"},
+                "from": {"id": 456, "username": "weita"},
+            },
+        }
+    )
+
+    assert ait_api.turn_calls == []
+    assert telegram_api.sent_messages[-1] == (123, "黑名單設定成功")
+
+
+def test_service_dispatches_repo_defined_operational_command_trigger_without_ai_turn(tmp_path: Path):
+    state_path = tmp_path / "telegram-sync.json"
+    _write_telegram_trigger_handler(
+        tmp_path,
+        "import json, sys\n"
+        "payload = json.load(sys.stdin)\n"
+        "json.dump({'handled': True, 'reply': {'text': payload['message']['command_args'] or 'ok'}}, sys.stdout)\n",
+    )
+    _write_repo_operational_trigger(
+        tmp_path,
+        trigger_id="router_blacklist_sync",
+        commands=["routerblock"],
+        handler_command=[sys.executable, str(tmp_path / "telegram-trigger-handler.py")],
+        display_trigger="/routerblock",
+    )
+    ait_api = FakeAitApi(reply_text="should not be used")
+    telegram_api = FakeTelegramApi()
+    service = TelegramBotService(
+        _config(state_path, env_path=_trigger_runtime_env_path(tmp_path)),
+        ait_api=ait_api,
+        telegram_api=telegram_api,
+        state_store=TelegramSyncStateStore(state_path),
+    )
+
+    service.handle_update(
+        {
+            "update_id": 1,
+            "message": {
+                "message_id": 10,
+                "text": "/routerblock apply now",
+                "chat": {"id": 123, "type": "private", "first_name": "Wei"},
+                "from": {"id": 456, "username": "weita"},
+            },
+        }
+    )
+
+    assert ait_api.turn_calls == []
+    assert telegram_api.sent_messages[-1] == (123, "apply now")
+
+
+def test_service_repo_defined_operational_trigger_can_fall_back_to_ai_turn(tmp_path: Path):
+    state_path = tmp_path / "telegram-sync.json"
+    _write_telegram_trigger_handler(
+        tmp_path,
+        "import json, sys\n"
+        "json.dump({'handled': False}, sys.stdout)\n",
+    )
+    _write_repo_operational_trigger(
+        tmp_path,
+        trigger_id="router_blacklist_sync",
+        phrases=["加入黑名單"],
+        handler_command=[sys.executable, str(tmp_path / "telegram-trigger-handler.py")],
+        display_trigger="加入黑名單",
+    )
+    ait_api = FakeAitApi(reply_text="AI says hello.")
+    telegram_api = FakeTelegramApi()
+    service = TelegramBotService(
+        _config(state_path, env_path=_trigger_runtime_env_path(tmp_path)),
+        ait_api=ait_api,
+        telegram_api=telegram_api,
+        state_store=TelegramSyncStateStore(state_path),
+    )
+
+    service.handle_update(
+        {
+            "update_id": 1,
+            "message": {
+                "message_id": 10,
+                "text": "加入黑名單",
+                "chat": {"id": 123, "type": "private", "first_name": "Wei"},
+                "from": {"id": 456, "username": "weita"},
+            },
+        }
+    )
+
+    assert len(ait_api.turn_calls) == 1
+    assert telegram_api.sent_messages[-1] == (123, "AI says hello.")
+
+
+def test_service_repo_defined_operational_trigger_handles_reply_bound_attachment_flow(tmp_path: Path):
+    state_path = tmp_path / "telegram-sync.json"
+    photo_path = tmp_path / "captcha.png"
+    photo_path.write_bytes(b"png-bytes")
+    _write_telegram_trigger_handler(
+        tmp_path,
+        "import json, sys\n"
+        "payload = json.load(sys.stdin)\n"
+        "json.dump({"
+        "'handled': True, "
+        "'reply': {"
+        "'text': f\"reply-to={payload['message']['reply_to_message_id']}\", "
+        "'attachments': ["
+        "{'kind': 'photo', 'file_name': 'captcha.png', 'mime_type': 'image/png', 'local_path': payload['repo_root'] + '/captcha.png'}"
+        "]"
+        "}"
+        "}, sys.stdout)\n",
+    )
+    _write_repo_operational_trigger(
+        tmp_path,
+        trigger_id="router_blacklist_captcha",
+        pattern=r"^[A-Za-z0-9]{4}$",
+        reply_only=True,
+        handler_command=[sys.executable, str(tmp_path / "telegram-trigger-handler.py")],
+        display_trigger="captcha",
+    )
+    ait_api = FakeAitApi(reply_text="should not be used")
+    telegram_api = FakeTelegramApi()
+    service = TelegramBotService(
+        _config(state_path, env_path=_trigger_runtime_env_path(tmp_path)),
+        ait_api=ait_api,
+        telegram_api=telegram_api,
+        state_store=TelegramSyncStateStore(state_path),
+    )
+
+    service.handle_update(
+        {
+            "update_id": 1,
+            "message": {
+                "message_id": 10,
+                "text": "lkk6",
+                "chat": {"id": 123, "type": "private", "first_name": "Wei"},
+                "from": {"id": 456, "username": "weita"},
+                "reply_to_message": {
+                    "message_id": 77,
+                    "text": "RTF8207W captcha",
+                    "chat": {"id": 123, "type": "private", "first_name": "Wei"},
+                },
+            },
+        }
+    )
+
+    assert ait_api.turn_calls == []
+    assert telegram_api.sent_messages[-1] == (123, "reply-to=77")
+    assert telegram_api.sent_photos == [
+        (
+            123,
+            {
+                "kind": "photo",
+                "file_name": "captcha.png",
+                "mime_type": "image/png",
+                "local_path": str(photo_path),
+            },
+        )
+    ]
+
+
 def test_status_command_reports_relink_required_after_runtime_backend_change(tmp_path: Path):
     state_path = tmp_path / "telegram-sync.json"
     telegram_api = FakeTelegramApi()
@@ -973,7 +1233,7 @@ def test_telegram_api_send_message_retries_retryable_transport_errors(monkeypatc
                 raise exc
         return {"ok": True}
 
-    monkeypatch.setattr(telegram_app, "_json_request", fake_json_request)
+    monkeypatch.setattr(telegram_clients, "_json_request", fake_json_request)
     monkeypatch.setattr(telegram_app.time, "sleep", lambda seconds: sleep_delays.append(seconds))
 
     client.send_message(123, "hello from ait")
@@ -997,7 +1257,7 @@ def test_telegram_api_get_updates_retries_retryable_transport_errors(monkeypatch
             ) from ConnectionResetError(54, "Connection reset by peer")
         return {"ok": True, "result": [{"update_id": 7}]}
 
-    monkeypatch.setattr(telegram_app, "_json_request", fake_json_request)
+    monkeypatch.setattr(telegram_clients, "_json_request", fake_json_request)
     monkeypatch.setattr(telegram_app.time, "sleep", lambda seconds: sleep_delays.append(seconds))
 
     updates = client.get_updates(offset=3, timeout_seconds=5)
@@ -1016,7 +1276,7 @@ def test_telegram_api_get_updates_keeps_larger_explicit_request_timeout(monkeypa
         captured.append(timeout)
         return {"ok": True, "result": []}
 
-    monkeypatch.setattr(telegram_app, "_json_request", fake_json_request)
+    monkeypatch.setattr(telegram_clients, "_json_request", fake_json_request)
 
     updates = client.get_updates(offset=3, timeout_seconds=5)
 
@@ -1056,7 +1316,7 @@ def test_async_telegram_api_send_message_retries_retryable_transport_errors(monk
     async def fake_sleep(seconds: float) -> None:
         sleep_delays.append(seconds)
 
-    monkeypatch.setattr(telegram_app, "_async_json_request", fake_async_json_request)
+    monkeypatch.setattr(telegram_clients, "_async_json_request", fake_async_json_request)
     monkeypatch.setattr(transport_retry_module.asyncio, "sleep", fake_sleep)
 
     asyncio.run(client.send_message(123, "hello from ait"))
@@ -1098,7 +1358,7 @@ def test_async_telegram_api_get_updates_retries_retryable_transport_errors(monke
     async def fake_sleep(seconds: float) -> None:
         sleep_delays.append(seconds)
 
-    monkeypatch.setattr(telegram_app, "_async_json_request", fake_async_json_request)
+    monkeypatch.setattr(telegram_clients, "_async_json_request", fake_async_json_request)
     monkeypatch.setattr(transport_retry_module.asyncio, "sleep", fake_sleep)
 
     updates = asyncio.run(client.get_updates(offset=3, timeout_seconds=5))
@@ -1130,9 +1390,9 @@ def test_async_ait_api_client_read_calls_are_repo_scoped(monkeypatch, tmp_path: 
         calls.append({"url": url, "method": method, "payload": payload, "timeout": timeout, "headers": headers})
         return {}
 
-    monkeypatch.setattr(telegram_app, "_async_json_request", fake_async_json_request)
+    monkeypatch.setattr(telegram_clients, "_async_json_request", fake_async_json_request)
     monkeypatch.setattr(
-        telegram_app,
+        telegram_clients,
         "resolve_agent_runtime_target",
         lambda _repo_root: telegram_app.AgentRuntimeTarget(
             mode="remote",
@@ -1188,10 +1448,10 @@ def test_async_ait_api_client_retries_retryable_loopback_read_requests(monkeypat
     async def fake_sleep(seconds: float) -> None:
         sleep_delays.append(seconds)
 
-    monkeypatch.setattr(telegram_app, "_async_json_request", fake_async_json_request)
+    monkeypatch.setattr(telegram_clients, "_async_json_request", fake_async_json_request)
     monkeypatch.setattr(transport_retry_module.asyncio, "sleep", fake_sleep)
     monkeypatch.setattr(
-        telegram_app,
+        telegram_clients,
         "resolve_agent_runtime_target",
         lambda _repo_root: telegram_app.AgentRuntimeTarget(
             mode="remote",
@@ -1245,10 +1505,10 @@ def test_async_ait_api_client_retries_retryable_loopback_telegram_turn_writes(mo
     async def fake_sleep(seconds: float) -> None:
         sleep_delays.append(seconds)
 
-    monkeypatch.setattr(telegram_app, "_async_json_request", fake_async_json_request)
+    monkeypatch.setattr(telegram_clients, "_async_json_request", fake_async_json_request)
     monkeypatch.setattr(transport_retry_module.asyncio, "sleep", fake_sleep)
     monkeypatch.setattr(
-        telegram_app,
+        telegram_clients,
         "resolve_agent_runtime_target",
         lambda _repo_root: telegram_app.AgentRuntimeTarget(
             mode="remote",
@@ -1295,9 +1555,9 @@ def test_ait_api_client_read_calls_are_repo_scoped(monkeypatch, tmp_path: Path):
         calls.append({"url": url, "method": method, "payload": payload, "timeout": timeout, "headers": headers})
         return {}
 
-    monkeypatch.setattr(telegram_app, "_json_request", fake_json_request)
+    monkeypatch.setattr(telegram_clients, "_json_request", fake_json_request)
     monkeypatch.setattr(
-        telegram_app,
+        telegram_clients,
         "resolve_agent_runtime_target",
         lambda _repo_root: telegram_app.AgentRuntimeTarget(
             mode="remote",
@@ -1418,8 +1678,9 @@ def test_trigger_graph_watch_notifications_uses_request_helpers_for_remote_runti
         raise AssertionError(f"Unexpected request URL: {request.full_url}")
 
     monkeypatch.setattr(telegram_app, "urlopen", fake_urlopen)
+    monkeypatch.setattr(telegram_clients, "urlopen", fake_urlopen)
     monkeypatch.setattr(
-        telegram_app,
+        telegram_clients,
         "resolve_agent_runtime_target",
         lambda _repo_root: telegram_app.AgentRuntimeTarget(
             mode="remote",
@@ -1568,10 +1829,10 @@ def test_ait_api_client_retries_retryable_loopback_read_requests(monkeypatch, tm
             ) from ConnectionRefusedError(61, "Connection refused")
         return {"summary": {"active": 0}}
 
-    monkeypatch.setattr(telegram_app, "_json_request", fake_json_request)
+    monkeypatch.setattr(telegram_clients, "_json_request", fake_json_request)
     monkeypatch.setattr(telegram_app.time, "sleep", lambda seconds: sleep_delays.append(seconds))
     monkeypatch.setattr(
-        telegram_app,
+        telegram_clients,
         "resolve_agent_runtime_target",
         lambda _repo_root: telegram_app.AgentRuntimeTarget(
             mode="remote",
@@ -1618,10 +1879,10 @@ def test_ait_api_client_retries_retryable_loopback_telegram_turn_writes(monkeypa
             "reply_text": "Recovered reply.",
         }
 
-    monkeypatch.setattr(telegram_app, "_json_request", fake_json_request)
+    monkeypatch.setattr(telegram_clients, "_json_request", fake_json_request)
     monkeypatch.setattr(telegram_app.time, "sleep", lambda seconds: sleep_delays.append(seconds))
     monkeypatch.setattr(
-        telegram_app,
+        telegram_clients,
         "resolve_agent_runtime_target",
         lambda _repo_root: telegram_app.AgentRuntimeTarget(
             mode="remote",
@@ -1659,7 +1920,7 @@ def test_telegram_api_send_message_does_not_retry_non_retryable_transport_errors
         request_calls.append(url)
         raise telegram_app.BotRuntimeError("POST https://api.telegram.org/bottest-token/sendMessage failed: 400 bad request")
 
-    monkeypatch.setattr(telegram_app, "_json_request", fake_json_request)
+    monkeypatch.setattr(telegram_clients, "_json_request", fake_json_request)
     monkeypatch.setattr(telegram_app.time, "sleep", lambda seconds: sleep_delays.append(seconds))
 
     with pytest.raises(telegram_app.BotRuntimeError, match="400 bad request"):
@@ -2612,6 +2873,8 @@ def test_codex_base_instructions_use_packet_bootstrap_for_task_dag_surface():
 
     assert "worker-only compact DAG packet session" in instructions
     assert "Start from the packet manifest path supplied in the session context" in instructions
+    assert "then follow the packet turn text before broadening scope" in instructions
+    assert "runtime digest" not in instructions
     assert "Do not begin with repo-root governance discovery" in instructions
     assert "raw git status/diff/log probes" in instructions
     assert "docs/plan.md" not in instructions
@@ -2635,7 +2898,7 @@ def test_telegram_api_client_send_audio_uses_multipart_for_local_file(tmp_path: 
         captured.update(kwargs)
         return {"ok": True}
 
-    monkeypatch.setattr(telegram_app, "_multipart_json_request", fake_multipart)
+    monkeypatch.setattr(telegram_clients, "_multipart_json_request", fake_multipart)
 
     track_path = tmp_path / "demo.mp3"
     track_path.write_bytes(b"demo-track")
@@ -2669,6 +2932,42 @@ def test_telegram_api_client_send_audio_uses_multipart_for_local_file(tmp_path: 
     assert captured["mime_type"] == "audio/mpeg"
 
 
+def test_telegram_api_client_send_photo_uses_multipart_for_local_file(tmp_path: Path, monkeypatch):
+    captured: dict[str, Any] = {}
+
+    def fake_multipart(url, **kwargs):
+        captured["url"] = url
+        captured.update(kwargs)
+        return {"ok": True}
+
+    monkeypatch.setattr(telegram_clients, "_multipart_json_request", fake_multipart)
+
+    image_path = tmp_path / "demo.png"
+    image_path.write_bytes(b"png-bytes")
+    client = telegram_app.TelegramApiClient(_config(tmp_path / "telegram-sync.json"))
+
+    client.send_photo(
+        123,
+        {
+            "kind": "photo",
+            "file_name": "demo.png",
+            "mime_type": "image/png",
+            "local_path": str(image_path),
+            "caption": "demo image",
+        },
+    )
+
+    assert captured["url"].endswith("/sendPhoto")
+    assert captured["fields"] == {
+        "chat_id": 123,
+        "caption": "demo image",
+    }
+    assert captured["file_field"] == "photo"
+    assert captured["file_name"] == "demo.png"
+    assert captured["file_bytes"] == b"png-bytes"
+    assert captured["mime_type"] == "image/png"
+
+
 def test_telegram_api_client_send_document_accepts_telegram_file_id(tmp_path: Path, monkeypatch):
     captured: dict[str, Any] = {}
 
@@ -2678,7 +2977,7 @@ def test_telegram_api_client_send_document_accepts_telegram_file_id(tmp_path: Pa
         captured["payload"] = payload
         return {"ok": True}
 
-    monkeypatch.setattr(telegram_app, "_json_request", fake_json)
+    monkeypatch.setattr(telegram_clients, "_json_request", fake_json)
 
     client = telegram_app.TelegramApiClient(_config(tmp_path / "telegram-sync.json"))
     client.send_document(
@@ -3595,6 +3894,7 @@ def test_generate_codex_session_reply_reuses_persistent_client_thread(monkeypatc
         starts = 0
         start_threads = 0
         run_thread_ids: list[str] = []
+        input_texts: list[str] = []
 
         def __init__(self, config):
             self.config = config
@@ -3615,6 +3915,7 @@ def test_generate_codex_session_reply_reuses_persistent_client_thread(monkeypatc
 
         def run_turn(self, *, thread_id, input_text, trace_context):
             self.__class__.run_thread_ids.append(thread_id)
+            self.__class__.input_texts.append(input_text)
             return SimpleNamespace(
                 text=f"reply {len(self.__class__.run_thread_ids)}",
                 turn_id=f"turn-{len(self.__class__.run_thread_ids)}",
@@ -3648,6 +3949,89 @@ def test_generate_codex_session_reply_reuses_persistent_client_thread(monkeypatc
     assert FakeCodexClient.starts == 1
     assert FakeCodexClient.start_threads == 1
     assert FakeCodexClient.run_thread_ids == ["thread-persistent-1", "thread-persistent-1"]
+    assert "Shared Telegram-linked session transcript (oldest to newest):" in FakeCodexClient.input_texts[0]
+    assert "telegram_chat_id=123" in FakeCodexClient.input_texts[0]
+    assert "first" in FakeCodexClient.input_texts[0]
+    assert "Shared Telegram-linked session transcript (oldest to newest):" not in FakeCodexClient.input_texts[1]
+    assert "telegram_chat_id=123" not in FakeCodexClient.input_texts[1]
+    assert "Continue the existing durable shared-session thread from this delta only." in FakeCodexClient.input_texts[1]
+    assert "second" in FakeCodexClient.input_texts[1]
+
+
+def test_generate_codex_session_reply_reused_thread_sends_only_delta_without_checkpoint_replay(monkeypatch, tmp_path: Path):
+    codex_reply_module._reset_persistent_codex_clients_for_tests()
+
+    class FakeCodexClient:
+        run_inputs: list[str] = []
+
+        def __init__(self, config):
+            self.config = config
+            self.is_started = False
+
+        def start(self):
+            self.is_started = True
+
+        def close(self):
+            self.is_started = False
+
+        def start_thread(self, *, base_instructions, developer_instructions, persist_extended_history, trace_context):
+            return {"id": "thread-persistent-delta"}
+
+        def run_turn(self, *, thread_id, input_text, trace_context):
+            self.__class__.run_inputs.append(input_text)
+            return SimpleNamespace(
+                text=f"reply {len(self.__class__.run_inputs)}",
+                turn_id=f"turn-{len(self.__class__.run_inputs)}",
+                usage=None,
+                command_executions=(),
+            )
+
+    monkeypatch.setattr(codex_reply_module, "CodexAppServerClient", FakeCodexClient)
+    config = _reply_config(openai_api_key=None, repo_root=tmp_path)
+
+    first_messages = [
+        {
+            "role": "user",
+            "content": "[durable checkpoint context]\ncheckpoint_id=AITK-TEST-0001\nsummary:\nOlder checkpoint summary.",
+        },
+        {"role": "user", "content": "[web note from alice@example.com] Policy is still pending."},
+        {"role": "user", "content": "first request"},
+    ]
+    second_messages = [
+        {
+            "role": "user",
+            "content": "[durable checkpoint context]\ncheckpoint_id=AITK-TEST-0001\nsummary:\nOlder checkpoint summary.",
+        },
+        {"role": "assistant", "content": "first reply"},
+        {"role": "user", "content": "[web note from alice@example.com] RC-1412 is ready for review."},
+        {"role": "user", "content": "second request"},
+    ]
+
+    codex_reply_module.generate_codex_session_reply(
+        config,
+        session={"session_id": "S-PERSIST-CHECKPOINT", "title": "Telegram chat · Wei"},
+        messages=first_messages,
+        chat_id="123",
+        chat_title="Wei",
+        assistant_instructions="Use the shared session.",
+    )
+    codex_reply_module.generate_codex_session_reply(
+        config,
+        session={"session_id": "S-PERSIST-CHECKPOINT", "title": "Telegram chat · Wei"},
+        messages=second_messages,
+        chat_id="123",
+        chat_title="Wei",
+        assistant_instructions="Use the shared session.",
+    )
+
+    assert len(FakeCodexClient.run_inputs) == 2
+    assert "[durable checkpoint context]" in FakeCodexClient.run_inputs[0]
+    assert "Older checkpoint summary." in FakeCodexClient.run_inputs[0]
+    assert "[durable checkpoint context]" not in FakeCodexClient.run_inputs[1]
+    assert "Older checkpoint summary." not in FakeCodexClient.run_inputs[1]
+    assert "first reply" not in FakeCodexClient.run_inputs[1]
+    assert "RC-1412 is ready for review." in FakeCodexClient.run_inputs[1]
+    assert "second request" in FakeCodexClient.run_inputs[1]
 
 
 def test_generate_codex_session_reply_resumes_thread_after_persistent_reconnect(monkeypatch, tmp_path: Path):
@@ -4558,6 +4942,76 @@ def test_service_sends_music_reply_attachments(tmp_path: Path):
                 "file_name": "reply-track.flac",
                 "mime_type": "audio/flac",
                 "local_path": str(lossless_path),
+            },
+        )
+    ]
+
+
+def test_service_sends_image_reply_attachments(tmp_path: Path):
+    state_path = tmp_path / "telegram-sync.json"
+    photo_path = tmp_path / "reply-image.png"
+    photo_path.write_bytes(b"png-bytes")
+    diagram_path = tmp_path / "diagram.gif"
+    diagram_path.write_bytes(b"gif-bytes")
+    telegram_api = FakeTelegramApi()
+    ait_api = FakeAitApi(
+        reply_text="這是你要的圖片。",
+        reply_transport_attachments=[
+            {
+                "kind": "photo",
+                "file_name": "reply-image.png",
+                "mime_type": "image/png",
+                "local_path": str(photo_path),
+                "caption": "reply image",
+            },
+            {
+                "kind": "document",
+                "file_name": "diagram.gif",
+                "mime_type": "image/gif",
+                "local_path": str(diagram_path),
+            },
+        ],
+    )
+    service = TelegramBotService(
+        _config(state_path),
+        ait_api=ait_api,
+        telegram_api=telegram_api,
+        state_store=TelegramSyncStateStore(state_path),
+    )
+
+    update = {
+        "update_id": 1,
+        "message": {
+            "message_id": 11,
+            "text": "請把圖片回傳給我",
+            "chat": {"id": 123, "type": "private", "first_name": "Wei"},
+            "from": {"id": 456, "username": "weita"},
+        },
+    }
+
+    service.handle_update(update)
+
+    assert telegram_api.sent_messages[-1] == (123, "這是你要的圖片。")
+    assert telegram_api.sent_photos == [
+        (
+            123,
+            {
+                "kind": "photo",
+                "file_name": "reply-image.png",
+                "mime_type": "image/png",
+                "local_path": str(photo_path),
+                "caption": "reply image",
+            },
+        )
+    ]
+    assert telegram_api.sent_documents == [
+        (
+            123,
+            {
+                "kind": "document",
+                "file_name": "diagram.gif",
+                "mime_type": "image/gif",
+                "local_path": str(diagram_path),
             },
         )
     ]
@@ -8039,6 +8493,90 @@ def test_server_session_turn_endpoint_persists_transport_reply_attachments_for_d
     assert events[-1]["payload"]["transport_reply_envelope"]["transport"] == "discord"
     assert events[-1]["payload"]["transport_reply_envelope"]["message"]["attachments"][0]["local_path"] == str(export_path)
 
+
+def test_server_session_turn_endpoint_persists_transport_reply_attachments_for_telegram_surface(tmp_path: Path, monkeypatch):
+    ctx = _configure_server_env(tmp_path, monkeypatch)
+    session = create_session(
+        ctx,
+        "ait",
+        "agent_run",
+        title="Wei",
+        metadata={"source": "telegram"},
+        actor_identity="ait-agent-telegram",
+        actor_type="telegram_bot",
+    )
+    image_path = tmp_path / "diagram.png"
+    image_path.write_bytes(b"png")
+    transport_envelope = build_transport_event_envelope(
+        transport="telegram",
+        actor_identity="telegram:456:@weita",
+        actor_transport_id="456",
+        actor_display_name="Wei",
+        channel_id="123",
+        channel_title="Wei",
+        channel_kind="private",
+        text="請把圖片回傳給我",
+        message_id=11,
+        event_id="telegram:123:message:11",
+        dedupe_key="telegram:123:message:11",
+    )
+
+    def fake_generate(config, *, session, events, chat_id, chat_title, checkpoint=None, surface="telegram", actor_identity=None):
+        assert events[-1]["event_type"] == "telegram.user_message"
+        assert events[-1]["payload"]["transport_envelope"]["transport"] == "telegram"
+        assert surface == "telegram"
+        return AiReplyResult(
+            text="這是你要的圖片。",
+            attachments=(
+                {
+                    "kind": "photo",
+                    "file_name": image_path.name,
+                    "mime_type": "image/png",
+                    "caption": "diagram",
+                    "local_path": str(image_path),
+                },
+            ),
+            model="gpt-5.4-mini",
+            response_id="resp_telegram_turn_123",
+            usage={"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},
+            source="codex",
+        )
+
+    monkeypatch.setattr(server_app, "generate_session_reply", fake_generate)
+
+    with TestClient(server_app.create_app()) as client:
+        response = client.post(
+            f"/v1/native/sessions/{session['session_id']}:telegramTurn",
+            json={
+                "text": "請把圖片回傳給我",
+                "chat_id": "123",
+                "chat_title": "Wei",
+                "chat_type": "private",
+                "telegram_message_id": 11,
+                "transport_envelope": transport_envelope,
+            },
+            headers={"X-AIT-Actor": "telegram:456:@weita", "X-AIT-Actor-Type": "telegram_user"},
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is True
+    assert payload["assistant_event"]["payload"]["delivered_via"] == "telegram_live"
+    assert payload["assistant_event"]["payload"]["transport_reply_envelope"]["transport"] == "telegram"
+    assert payload["assistant_event"]["payload"]["transport_reply_envelope"]["message"]["attachments"] == [
+        {
+            "kind": "photo",
+            "file_name": "diagram.png",
+            "mime_type": "image/png",
+            "caption": "diagram",
+            "local_path": str(image_path),
+        }
+    ]
+
+    events = list_session_events(ctx, session["session_id"], after_sequence=0, limit=10)
+    assert [event["event_type"] for event in events] == ["telegram.user_message", "assistant.reply"]
+    assert events[-1]["payload"]["transport_reply_envelope"]["transport"] == "telegram"
+    assert events[-1]["payload"]["transport_reply_envelope"]["message"]["attachments"][0]["local_path"] == str(image_path)
 
 @pytest.mark.parametrize(
     (

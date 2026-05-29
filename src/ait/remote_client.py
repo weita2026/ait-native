@@ -764,10 +764,21 @@ def create_session(
     return _request("POST", _join(base_url, f"/v1/native/repositories/{repo_name}/sessions"), body)
 
 
-def list_sessions(base_url: str, repo_name: str, *, status: str | None = None) -> list[dict]:
+def list_sessions(
+    base_url: str,
+    repo_name: str,
+    *,
+    status: str | None = None,
+    full: bool = True,
+) -> list[dict]:
     path = f"/v1/native/repositories/{repo_name}/sessions"
+    query: dict[str, str] = {}
     if status:
-        path += "?" + urllib.parse.urlencode({"status": status})
+        query["status"] = status
+    if full:
+        query["full"] = "1"
+    if query:
+        path += "?" + urllib.parse.urlencode(query)
     return _request("GET", _join(base_url, path))
 
 

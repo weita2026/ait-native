@@ -12,13 +12,17 @@ from ..remote_client import (
     list_session_events as remote_list_session_events,
     list_tasks as remote_list_tasks,
 )
+from ..store_local_changes import (
+    get_local_change,
+    list_local_changes,
+)
+from ..store_local_tasks import (
+    get_local_task,
+    list_local_tasks,
+)
 from ..store import (
     RepoContext,
-    get_local_change,
     get_local_plan,
-    get_local_task,
-    list_local_changes,
-    list_local_tasks,
     load_config,
 )
 from .plan_task_linkage import _normalize_plan_task_linkage

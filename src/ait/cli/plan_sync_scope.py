@@ -9,7 +9,8 @@ from typing import Any, Iterable
 
 import typer
 
-from ..local_content import IGNORED_DIRS, ensure_blob_bytes, workspace_path_is_ignored
+from ..local_content import IGNORED_DIRS, workspace_path_is_ignored
+from ..local_content_pack_runtime import ensure_blob_bytes
 from ..plan_graph import load_task_graph
 from ..remote_client import (
     create_plan as remote_create_plan,

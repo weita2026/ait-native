@@ -11,14 +11,20 @@ from ..remote_client import (
     read_reviewer_inbox as remote_read_reviewer_inbox,
     read_task_queue as remote_read_task_queue,
 )
+from ..store_local_tasks import (
+    list_local_tasks,
+)
+from ..store_local_changes import (
+    list_local_changes,
+)
 from ..store import (
     RepoContext,
-    list_local_changes,
-    list_local_tasks,
-    list_remotes,
     load_config,
     worktree_doctor as local_worktree_doctor,
     workspace_status as local_workspace_status,
+)
+from ..store_remotes import (
+    list_remotes,
 )
 from .queue_views import (
     _queue_actionable_local_changes,

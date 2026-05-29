@@ -58,4 +58,8 @@ def _bootstrap_worktree_source() -> None:
 
 _bootstrap_worktree_source()
 
+_app_module = importlib.import_module(f"{__name__}.app")
 from .app import *  # noqa: F401,F403,E402
+
+globals()["app"] = _app_module.app
+del _app_module

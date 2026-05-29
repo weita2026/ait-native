@@ -5,6 +5,8 @@ from pathlib import Path
 import ait_agent.telegram.app as telegram_app
 import ait_agent.telegram.service_entry as telegram_service_entry
 
+WORKSPACE_ROOT = Path(__file__).resolve().parents[1]
+
 
 def test_telegram_app_reexports_service_entry_helpers() -> None:
     assert telegram_app.run_webhook_updates is telegram_service_entry.run_webhook_updates
@@ -13,7 +15,7 @@ def test_telegram_app_reexports_service_entry_helpers() -> None:
 
 
 def test_telegram_app_imports_service_entry_module() -> None:
-    text = Path("src/ait_agent/telegram/app.py").read_text(encoding="utf-8")
+    text = (WORKSPACE_ROOT / "src/ait_agent/telegram/app.py").read_text(encoding="utf-8")
     assert "from .service_entry import (" in text
     assert "run_webhook_updates" in text
     assert "webhook_main" in text

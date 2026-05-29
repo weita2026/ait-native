@@ -6,9 +6,10 @@ from typing import Any
 from ait_protocol.common import generate_namespaced_workflow_id, utc_now
 from ait_protocol.task_statuses import TASK_CLOSED_STATUSES, task_close_session_status
 
-from ..server_content import repository_exists
+from ..server_content_repo_lines import repository_exists
 from ..server_control import connect, record_event
 from ..server_paths import ServerContext
+from .repo_scoped_keys import _local_id_after_first_dash, _repo_scope_predicate
 from .repo_ops import _repo_id, _repo_id_namespace_prefix
 
 
@@ -18,16 +19,8 @@ def _legacy_server_store_module():
     return legacy_server_store
 
 
-def _local_id_after_first_dash(*args, **kwargs):
-    return _legacy_server_store_module()._local_id_after_first_dash(*args, **kwargs)
-
-
 def _normalize_optional_text(*args, **kwargs):
     return _legacy_server_store_module()._normalize_optional_text(*args, **kwargs)
-
-
-def _repo_scope_predicate(*args, **kwargs):
-    return _legacy_server_store_module()._repo_scope_predicate(*args, **kwargs)
 
 
 def _session_row(*args, **kwargs):

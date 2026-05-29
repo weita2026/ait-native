@@ -1,5 +1,9 @@
 # ait Homebrew Tap
 
+Authority: command layer under [plan.md](./plan.md), the applicable legal-layer governance documents, and [PACKAGE_TARGETS.md](./PACKAGE_TARGETS.md).
+Status: current release-facing Homebrew tap guide.
+Scope: macOS install/update path for the public `ait-native` distribution without creating a separate package or license boundary.
+
 ## What this guide is for
 
 Use this guide when:

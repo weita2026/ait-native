@@ -52,6 +52,24 @@ from .local_workflow_identity import (
     get_workflow_sequence_floor,
     workflow_sequence_from_id,
 )
+from .local_workflow_releases import (
+    WORKFLOW_RELEASE_UNSET,
+    create_workflow_release,
+    get_workflow_release,
+    list_workflow_releases,
+    update_workflow_release,
+)
+from .local_workflow_plans import (
+    close_workflow_plan,
+    create_workflow_plan,
+    get_workflow_plan,
+    get_workflow_plan_revision,
+    get_workflow_plan_revision_by_id,
+    list_workflow_plan_revisions,
+    list_workflow_plans,
+    mark_workflow_plan_published,
+    revise_workflow_plan,
+)
 
 SCHEMA = """
 create table if not exists control_meta (
@@ -154,8 +172,6 @@ create table if not exists workflow_plan_revisions (
     artifact_heading text,
     artifact_blob_id text,
     items_json text not null,
-    plan_links_surface_hash text,
-    plan_links_changed_count_to_prev integer not null default 0,
     source_kind text not null,
     source_session_id text,
     created_by text,
@@ -253,6 +269,10 @@ _LEGACY_WORKFLOW_CHANGE_CLOSE_COLUMNS = (
     "superseded_by_change_id",
     "closed_at",
 )
+_LOCAL_PLAN_LINK_DIFF_METADATA_COLUMNS = (
+    "plan_links_surface_hash",
+    "plan_links_changed_count_to_prev",
+)
 
 
 def _ensure_schema(conn) -> None:
@@ -273,14 +293,13 @@ def _ensure_schema(conn) -> None:
     _ensure_column(conn, "workflow_plan_revisions", "artifact_heading", "text")
     _ensure_column(conn, "workflow_plan_revisions", "artifact_blob_id", "text")
     _ensure_column(conn, "workflow_plan_revisions", "items_json", "text not null default '[]'")
-    _ensure_column(conn, "workflow_plan_revisions", "plan_links_surface_hash", "text")
-    _ensure_column(conn, "workflow_plan_revisions", "plan_links_changed_count_to_prev", "integer not null default 0")
     _ensure_column(conn, "workflow_releases", "checks_json", "text not null default '[]'")
     _ensure_column(conn, "workflow_releases", "artifacts_json", "text not null default '[]'")
     _ensure_column(conn, "workflow_releases", "formula_json", "text not null default '{}'")
     _ensure_column(conn, "workflow_releases", "metadata_json", "text not null default '{}'")
     _ensure_local_task_change_identity_schema(conn)
     _migrate_workflow_plan_revisions(conn)
+    _remove_local_plan_link_diff_metadata_columns(conn)
     _remove_historical_publication_identity_columns(conn)
     conn.execute(
         "create index if not exists idx_workflow_snapshot_provenance_task on workflow_snapshot_provenance(task_id)"
@@ -319,8 +338,16 @@ def _legacy_workflow_change_close_columns_present(conn) -> tuple[str, ...]:
     return tuple(column_name for column_name in _LEGACY_WORKFLOW_CHANGE_CLOSE_COLUMNS if column_name in columns)
 
 
+def _local_plan_link_diff_metadata_columns_present(conn) -> tuple[str, ...]:
+    columns = _table_columns(conn, "workflow_plan_revisions")
+    return tuple(column_name for column_name in _LOCAL_PLAN_LINK_DIFF_METADATA_COLUMNS if column_name in columns)
+
+
 def _control_db_explicit_init_migration_needed(conn) -> bool:
-    return bool(_legacy_workflow_change_close_columns_present(conn))
+    return bool(
+        _legacy_workflow_change_close_columns_present(conn)
+        or _local_plan_link_diff_metadata_columns_present(conn)
+    )
 
 
 def _write_init_migration_backup(conn, ctx: RepoContext) -> Path:
@@ -354,6 +381,14 @@ def _remove_historical_publication_identity_columns(conn) -> None:
         ("workflow_changes", "historical_published_at"),
     ):
         _drop_column_if_exists(conn, table_name, column_name)
+
+
+def _remove_local_plan_link_diff_metadata_columns(conn) -> tuple[str, ...]:
+    removed: list[str] = []
+    for column_name in _LOCAL_PLAN_LINK_DIFF_METADATA_COLUMNS:
+        if _drop_column_if_exists(conn, "workflow_plan_revisions", column_name):
+            removed.append(column_name)
+    return tuple(removed)
 
 
 def _remove_legacy_workflow_change_close_columns(conn) -> tuple[str, ...]:
@@ -599,6 +634,28 @@ def get_workflow_task(ctx: RepoContext, task_id: str) -> dict:
     if row is None:
         raise KeyError(f"Unknown local task: {task_id}")
     return dict(row)
+
+
+def find_latest_workflow_task_for_plan_item(
+    ctx: RepoContext,
+    *,
+    repo_name: str,
+    plan_id: str,
+    plan_item_ref: str,
+) -> dict | None:
+    conn = _connect_control(ctx)
+    row = conn.execute(
+        """
+        select *
+        from workflow_tasks
+        where repo_name = ? and plan_id = ? and plan_item_ref = ?
+        order by coalesce(task_seq, 0) desc, created_at desc, task_id desc
+        limit 1
+        """,
+        (repo_name, plan_id, plan_item_ref),
+    ).fetchone()
+    conn.close()
+    return dict(row) if row is not None else None
 
 
 def close_workflow_task(ctx: RepoContext, task_id: str, status: str) -> dict:
@@ -990,433 +1047,4 @@ def mark_workflow_change_published(
     return dict(row)
 
 
-def create_workflow_plan(
-    ctx: RepoContext,
-    plan_id: str,
-    plan_revision_id: str,
-    repo_name: str,
-    title: str,
-    artifact_path: str,
-    artifact_selector: str | None,
-    artifact_heading: str,
-    items: list[dict],
-    *,
-    artifact_blob_id: str | None = None,
-    summary: str | None = None,
-    status: str = "draft",
-    source_kind: str = "manual_edit",
-    source_session_id: str | None = None,
-    created_by: str | None = None,
-    actor_type: str | None = None,
-    publication_state: str = "local_draft",
-) -> dict:
-    conn = _connect_control(ctx)
-    now = utc_now()
-    conn.execute(
-        """
-        insert into workflow_plans(
-            plan_id, repo_name, title, status, head_revision_id, publication_state, published_remote_name,
-            published_plan_id, published_head_revision_id, published_at, created_by, created_at, updated_at
-        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            plan_id,
-            repo_name,
-            title,
-            status,
-            plan_revision_id,
-            publication_state,
-            None,
-            None,
-            None,
-            None,
-            created_by,
-            now,
-            now,
-        ),
-    )
-    conn.execute(
-        """
-        insert into workflow_plan_revisions(
-            plan_revision_id, plan_id, revision_number, parent_plan_revision_id, title_snapshot, summary,
-            artifact_path, artifact_selector, artifact_heading, artifact_blob_id, items_json,
-            source_kind, source_session_id, created_by, actor_type, publication_state, published_plan_revision_id, published_at, created_at
-        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            plan_revision_id,
-            plan_id,
-            1,
-            None,
-            title,
-            summary,
-            artifact_path,
-            artifact_selector,
-            artifact_heading,
-            artifact_blob_id,
-            json.dumps(normalize_plan_items(items), sort_keys=True),
-            source_kind,
-            source_session_id,
-            created_by,
-            actor_type or "human",
-            publication_state,
-            None,
-            None,
-            now,
-        ),
-    )
-    conn.commit()
-    row = conn.execute("select * from workflow_plans where plan_id = ?", (plan_id,)).fetchone()
-    conn.close()
-    assert row is not None
-    return dict(row)
-
-
-def list_workflow_plans(ctx: RepoContext) -> list[dict]:
-    conn = _connect_control(ctx)
-    rows = [
-        dict(r)
-        for r in conn.execute(
-            """
-            select
-                p.*,
-                pr.revision_number as head_revision_number,
-                pr.summary as head_revision_summary,
-                pr.artifact_path as head_artifact_path,
-                pr.artifact_selector as head_artifact_selector,
-                pr.artifact_heading as head_artifact_heading,
-                pr.artifact_blob_id as head_artifact_blob_id,
-                pr.created_at as head_revision_created_at
-            from workflow_plans p
-            left join workflow_plan_revisions pr on pr.plan_revision_id = p.head_revision_id
-            order by p.updated_at desc, p.created_at desc, p.plan_id desc
-            """
-        )
-    ]
-    conn.close()
-    return rows
-
-
-def get_workflow_plan(ctx: RepoContext, plan_id: str) -> dict:
-    conn = _connect_control(ctx)
-    row = conn.execute("select * from workflow_plans where plan_id = ?", (plan_id,)).fetchone()
-    conn.close()
-    if row is None:
-        raise KeyError(f"Unknown local plan: {plan_id}")
-    return dict(row)
-
-
-def list_workflow_plan_revisions(ctx: RepoContext, plan_id: str) -> list[dict]:
-    conn = _connect_control(ctx)
-    if conn.execute("select 1 from workflow_plans where plan_id = ?", (plan_id,)).fetchone() is None:
-        conn.close()
-        raise KeyError(f"Unknown local plan: {plan_id}")
-    rows = [
-        dict(r)
-        for r in conn.execute(
-            """
-            select
-                plan_revision_id, plan_id, revision_number, parent_plan_revision_id, title_snapshot, summary,
-                artifact_path, artifact_selector, artifact_heading, artifact_blob_id, items_json, source_kind, source_session_id, created_by, actor_type,
-                publication_state, published_plan_revision_id, published_at, created_at
-            from workflow_plan_revisions
-            where plan_id = ?
-            order by revision_number desc
-            """,
-            (plan_id,),
-        )
-    ]
-    conn.close()
-    return rows
-
-
-def get_workflow_plan_revision(ctx: RepoContext, plan_id: str, plan_revision_id: str) -> dict:
-    conn = _connect_control(ctx)
-    if conn.execute("select 1 from workflow_plans where plan_id = ?", (plan_id,)).fetchone() is None:
-        conn.close()
-        raise KeyError(f"Unknown local plan: {plan_id}")
-    row = conn.execute(
-        "select * from workflow_plan_revisions where plan_id = ? and plan_revision_id = ?",
-        (plan_id, plan_revision_id),
-    ).fetchone()
-    conn.close()
-    if row is None:
-        raise KeyError(f"Unknown local plan revision: {plan_revision_id}")
-    return dict(row)
-
-
-def get_workflow_plan_revision_by_id(ctx: RepoContext, plan_revision_id: str) -> dict:
-    conn = _connect_control(ctx)
-    row = conn.execute(
-        "select * from workflow_plan_revisions where plan_revision_id = ?",
-        (plan_revision_id,),
-    ).fetchone()
-    conn.close()
-    if row is None:
-        raise KeyError(f"Unknown local plan revision: {plan_revision_id}")
-    return dict(row)
-
-
-def revise_workflow_plan(
-    ctx: RepoContext,
-    plan_id: str,
-    plan_revision_id: str,
-    artifact_path: str,
-    artifact_selector: str | None,
-    artifact_heading: str,
-    items: list[dict],
-    *,
-    artifact_blob_id: str | None = None,
-    title: str | None = None,
-    summary: str | None = None,
-    source_kind: str = "manual_edit",
-    source_session_id: str | None = None,
-    created_by: str | None = None,
-    actor_type: str | None = None,
-) -> dict:
-    conn = _connect_control(ctx)
-    plan_row = conn.execute("select * from workflow_plans where plan_id = ?", (plan_id,)).fetchone()
-    if plan_row is None:
-        conn.close()
-        raise KeyError(f"Unknown local plan: {plan_id}")
-    plan = dict(plan_row)
-    head_revision_id = plan["head_revision_id"]
-    next_revision_number = 1
-    if head_revision_id:
-        head_row = conn.execute(
-            "select revision_number from workflow_plan_revisions where plan_revision_id = ?",
-            (head_revision_id,),
-        ).fetchone()
-        if head_row is not None:
-            next_revision_number = int(head_row["revision_number"]) + 1
-    current_title = title or plan["title"]
-    now = utc_now()
-    conn.execute(
-        """
-        insert into workflow_plan_revisions(
-            plan_revision_id, plan_id, revision_number, parent_plan_revision_id, title_snapshot, summary,
-            artifact_path, artifact_selector, artifact_heading, artifact_blob_id, items_json,
-            source_kind, source_session_id, created_by, actor_type, publication_state, published_plan_revision_id, published_at, created_at
-        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            plan_revision_id,
-            plan_id,
-            next_revision_number,
-            head_revision_id,
-            current_title,
-            summary,
-            artifact_path,
-            artifact_selector,
-            artifact_heading,
-            artifact_blob_id,
-            json.dumps(normalize_plan_items(items), sort_keys=True),
-            source_kind,
-            source_session_id,
-            created_by,
-            actor_type or "human",
-            "local_draft",
-            None,
-            None,
-            now,
-        ),
-    )
-    conn.execute(
-        "update workflow_plans set title = ?, head_revision_id = ?, updated_at = ? where plan_id = ?",
-        (current_title, plan_revision_id, now, plan_id),
-    )
-    conn.commit()
-    row = conn.execute("select * from workflow_plans where plan_id = ?", (plan_id,)).fetchone()
-    conn.close()
-    assert row is not None
-    return dict(row)
-
-
-def close_workflow_plan(ctx: RepoContext, plan_id: str, status: str) -> dict:
-    if status not in {"archived", "superseded"}:
-        raise ValueError(f"Unsupported historical local plan status: {status}")
-    conn = _connect_control(ctx)
-    row = conn.execute("select * from workflow_plans where plan_id = ?", (plan_id,)).fetchone()
-    if row is None:
-        conn.close()
-        raise KeyError(f"Unknown local plan: {plan_id}")
-    plan = dict(row)
-    if plan["status"] == status:
-        conn.close()
-        return plan
-    now = utc_now()
-    conn.execute("update workflow_plans set status = ?, updated_at = ? where plan_id = ?", (status, now, plan_id))
-    row = conn.execute("select * from workflow_plans where plan_id = ?", (plan_id,)).fetchone()
-    conn.commit()
-    conn.close()
-    assert row is not None
-    return dict(row)
-
-
-def mark_workflow_plan_published(
-    ctx: RepoContext,
-    plan_id: str,
-    *,
-    remote_name: str | None,
-    published_plan_id: str,
-    published_head_revision_id: str | None,
-    revision_mappings: list[tuple[str, str]],
-) -> dict:
-    conn = _connect_control(ctx)
-    existing = conn.execute("select * from workflow_plans where plan_id = ?", (plan_id,)).fetchone()
-    if existing is None:
-        conn.close()
-        raise KeyError(f"Unknown local plan: {plan_id}")
-    now = utc_now()
-    for local_revision_id, remote_revision_id in revision_mappings:
-        conn.execute(
-            """
-            update workflow_plan_revisions
-            set publication_state = 'published',
-                published_plan_revision_id = ?,
-                published_at = coalesce(published_at, ?)
-            where plan_revision_id = ? and plan_id = ?
-            """,
-            (remote_revision_id, now, local_revision_id, plan_id),
-        )
-    conn.execute(
-        """
-        update workflow_plans
-        set publication_state = 'published',
-            published_remote_name = ?,
-            published_plan_id = ?,
-            published_head_revision_id = ?,
-            published_at = coalesce(published_at, ?),
-            updated_at = ?
-        where plan_id = ?
-        """,
-        (remote_name, published_plan_id, published_head_revision_id, now, now, plan_id),
-    )
-    row = conn.execute("select * from workflow_plans where plan_id = ?", (plan_id,)).fetchone()
-    conn.commit()
-    conn.close()
-    if row is None:
-        raise KeyError(f"Unknown local plan: {plan_id}")
-    return dict(row)
-
-
-_UNSET = object()
-
-
-def create_workflow_release(
-    ctx: RepoContext,
-    release_id: str,
-    repo_name: str,
-    version: str,
-    line_name: str,
-    snapshot_id: str,
-    manifest_hash: str,
-    profile: str,
-    *,
-    package_name: str | None = None,
-    package_version: str | None = None,
-    package_requires_python: str | None = None,
-    status: str = "candidate",
-    checks: list[dict] | None = None,
-    artifacts: list[dict] | None = None,
-    formula: dict | None = None,
-    metadata: dict | None = None,
-) -> dict:
-    conn = _connect_control(ctx)
-    now = utc_now()
-    conn.execute(
-        """
-        insert into workflow_releases(
-            release_id, repo_name, version, line_name, snapshot_id, manifest_hash, profile,
-            package_name, package_version, package_requires_python, status,
-            checks_json, artifacts_json, formula_json, metadata_json, created_at, updated_at
-        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            release_id,
-            repo_name,
-            version,
-            line_name,
-            snapshot_id,
-            manifest_hash,
-            profile,
-            package_name,
-            package_version,
-            package_requires_python,
-            status,
-            json.dumps(checks or [], sort_keys=True),
-            json.dumps(artifacts or [], sort_keys=True),
-            json.dumps(formula or {}, sort_keys=True),
-            json.dumps(metadata or {}, sort_keys=True),
-            now,
-            now,
-        ),
-    )
-    conn.commit()
-    row = conn.execute("select * from workflow_releases where release_id = ?", (release_id,)).fetchone()
-    conn.close()
-    assert row is not None
-    return dict(row)
-
-
-def list_workflow_releases(ctx: RepoContext) -> list[dict]:
-    conn = _connect_control(ctx)
-    rows = [dict(r) for r in conn.execute("select * from workflow_releases order by created_at desc, release_id desc")]
-    conn.close()
-    return rows
-
-
-def get_workflow_release(ctx: RepoContext, release_id: str) -> dict:
-    conn = _connect_control(ctx)
-    row = conn.execute("select * from workflow_releases where release_id = ?", (release_id,)).fetchone()
-    conn.close()
-    if row is None:
-        raise KeyError(f"Unknown local release: {release_id}")
-    return dict(row)
-
-
-def update_workflow_release(
-    ctx: RepoContext,
-    release_id: str,
-    *,
-    status: str | None = None,
-    checks: list[dict] | object = _UNSET,
-    artifacts: list[dict] | object = _UNSET,
-    formula: dict | object = _UNSET,
-    metadata: dict | object = _UNSET,
-) -> dict:
-    conn = _connect_control(ctx)
-    existing = conn.execute("select * from workflow_releases where release_id = ?", (release_id,)).fetchone()
-    if existing is None:
-        conn.close()
-        raise KeyError(f"Unknown local release: {release_id}")
-    assignments: list[str] = []
-    params: list[object] = []
-    if status is not None:
-        assignments.append("status = ?")
-        params.append(status)
-    if checks is not _UNSET:
-        assignments.append("checks_json = ?")
-        params.append(json.dumps(checks, sort_keys=True))
-    if artifacts is not _UNSET:
-        assignments.append("artifacts_json = ?")
-        params.append(json.dumps(artifacts, sort_keys=True))
-    if formula is not _UNSET:
-        assignments.append("formula_json = ?")
-        params.append(json.dumps(formula, sort_keys=True))
-    if metadata is not _UNSET:
-        assignments.append("metadata_json = ?")
-        params.append(json.dumps(metadata, sort_keys=True))
-    if not assignments:
-        conn.close()
-        return dict(existing)
-    now = utc_now()
-    assignments.append("updated_at = ?")
-    params.append(now)
-    params.append(release_id)
-    conn.execute(f"update workflow_releases set {', '.join(assignments)} where release_id = ?", tuple(params))
-    conn.commit()
-    row = conn.execute("select * from workflow_releases where release_id = ?", (release_id,)).fetchone()
-    conn.close()
-    assert row is not None
-    return dict(row)
+_UNSET = WORKFLOW_RELEASE_UNSET

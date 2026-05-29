@@ -4,7 +4,12 @@ from typing import Any
 
 from ait_protocol.common import connect_sqlite, normalize_optional_text
 
-from . import local_content, local_control
+from . import local_content, local_content_snapshots, local_control
+from .local_content_projection import (
+    _effective_workspace_ignore_rules,
+    _filter_snapshot_file_map_for_workspace,
+    _filter_workspace_state_for_workspace,
+)
 from .repo_paths import RepoContext
 from .store_repo_config import _set_worktree_materialized_snapshot, load_config
 from .store_worktree_runtime import current_line
@@ -69,7 +74,7 @@ def _apply_workspace_revert_range(
         old_snapshot_id=base_snapshot_id,
         new_snapshot_id=head_snapshot_id,
     )
-    result = local_content.restore_workspace_paths(
+    result = local_content_snapshots.restore_workspace_paths(
         ctx,
         base_snapshot_id,
         affected_paths,
@@ -114,13 +119,13 @@ def _apply_workspace_replay_range(
     from .snapshot_diff import snapshot_diff as build_snapshot_diff
 
     conn = connect_sqlite(ctx.content_db_path)
-    source_base_files = local_content._filter_snapshot_file_map_for_workspace(
+    source_base_files = _filter_snapshot_file_map_for_workspace(
         ctx,
-        local_content._snapshot_file_map(conn, source_base_snapshot_id),
+        local_content_snapshots._snapshot_file_map(conn, source_base_snapshot_id),
     )
-    source_head_files = local_content._filter_snapshot_file_map_for_workspace(
+    source_head_files = _filter_snapshot_file_map_for_workspace(
         ctx,
-        local_content._snapshot_file_map(conn, source_head_snapshot_id),
+        local_content_snapshots._snapshot_file_map(conn, source_head_snapshot_id),
     )
     delta = build_snapshot_diff(
         ctx,
@@ -145,9 +150,9 @@ def _apply_workspace_replay_range(
         source_head_files,
         lambda blob_id: local_content._blob_bytes_by_id(ctx, conn, blob_id).decode("utf-8", errors="replace"),
     )
-    effective_ignore_rules = local_content._effective_workspace_ignore_rules(ctx, snapshot_ignore_rules)
-    dirty = local_content.workspace_delta(ctx, baseline_snapshot_id, ignore_rules=snapshot_ignore_rules)
-    workspace_files = local_content._filter_workspace_state_for_workspace(
+    effective_ignore_rules = _effective_workspace_ignore_rules(ctx, snapshot_ignore_rules)
+    dirty = local_content_snapshots.workspace_delta(ctx, baseline_snapshot_id, ignore_rules=snapshot_ignore_rules)
+    workspace_files = _filter_workspace_state_for_workspace(
         ctx,
         local_content._workspace_state(ctx.root, ignore_rules=effective_ignore_rules),
     )
@@ -224,7 +229,7 @@ def _apply_workspace_replay_range(
         abs_path = ctx.root / rel
         if abs_path.exists():
             abs_path.unlink()
-            local_content._prune_empty_parent_dirs(ctx.root, abs_path)
+            local_content_snapshots._prune_empty_parent_dirs(ctx.root, abs_path)
 
     for rel in sorted(write_paths):
         source_row = source_head_files[rel]
@@ -235,7 +240,7 @@ def _apply_workspace_replay_range(
             raise IsADirectoryError(f"Cannot replay file over directory: {rel}")
         data = local_content._blob_bytes_by_id(ctx, conn, source_row["blob_id"])
         abs_path.write_bytes(data)
-        abs_path.chmod(local_content._parse_mode_bits(source_row["mode"]))
+        abs_path.chmod(local_content_snapshots._parse_mode_bits(source_row["mode"]))
 
     conn.close()
     result["applied"] = True
@@ -251,7 +256,7 @@ def revert_snapshot(
     force: bool = False,
     dry_run: bool = False,
 ) -> dict[str, Any]:
-    snapshot = local_content.get_snapshot(ctx, snapshot_id)
+    snapshot = local_content_snapshots.get_snapshot(ctx, snapshot_id)
     snapshot_kind = str(snapshot.get("snapshot_kind") or "line").strip() or "line"
     if snapshot_kind != "line":
         raise ValueError(
@@ -306,7 +311,7 @@ def replay_snapshot(
     force: bool = False,
     dry_run: bool = False,
 ) -> dict[str, Any]:
-    snapshot = local_content.get_snapshot(ctx, snapshot_id)
+    snapshot = local_content_snapshots.get_snapshot(ctx, snapshot_id)
     snapshot_kind = str(snapshot.get("snapshot_kind") or "line").strip() or "line"
     if snapshot_kind != "line":
         raise ValueError(
@@ -385,9 +390,9 @@ def revert_change(
         raise ValueError(
             f"Change {resolved_change_id} is missing fork_snapshot_id lineage metadata, so `ait change revert` cannot compute a safe base."
         )
-    if not local_content.snapshot_exists(ctx, latest_snapshot_id):
+    if not local_content_snapshots.snapshot_exists(ctx, latest_snapshot_id):
         raise KeyError(f"Latest recorded change snapshot is not available locally: {latest_snapshot_id}")
-    if not local_content.snapshot_exists(ctx, resolved_fork_snapshot_id):
+    if not local_content_snapshots.snapshot_exists(ctx, resolved_fork_snapshot_id):
         raise KeyError(f"Change fork snapshot is not available locally: {resolved_fork_snapshot_id}")
     latest_chain = local_content.collect_snapshot_chain(ctx, latest_snapshot_id)
     if resolved_fork_snapshot_id not in latest_chain:
@@ -463,9 +468,9 @@ def replay_change(
         raise ValueError(
             f"Change {resolved_change_id} is missing fork_snapshot_id lineage metadata, so `ait change replay` cannot compute a safe base."
         )
-    if not local_content.snapshot_exists(ctx, latest_snapshot_id):
+    if not local_content_snapshots.snapshot_exists(ctx, latest_snapshot_id):
         raise KeyError(f"Latest recorded change snapshot is not available locally: {latest_snapshot_id}")
-    if not local_content.snapshot_exists(ctx, resolved_fork_snapshot_id):
+    if not local_content_snapshots.snapshot_exists(ctx, resolved_fork_snapshot_id):
         raise KeyError(f"Change fork snapshot is not available locally: {resolved_fork_snapshot_id}")
     latest_chain = local_content.collect_snapshot_chain(ctx, latest_snapshot_id)
     if resolved_fork_snapshot_id not in latest_chain:

@@ -95,12 +95,50 @@ def test_render_plan_sync_summary_smoke_with_artifact_uploads(capsys) -> None:
                     "blob_id": "BLB-123",
                 }
             ],
+            "task_start_advisory": {
+                "advisory_only": True,
+                "dispatch_validation_still_required": True,
+                "task_start_validation_hint": "task start still revalidates",
+                "summary": {
+                    "touched_plan_count": 1,
+                    "taskable_plan_count": 1,
+                    "taskable_item_count": 1,
+                },
+                "plans": [
+                    {
+                        "plan_id": "PL-123",
+                        "plan_title": "CLI app plan rendering extraction",
+                        "item_count": 2,
+                        "open_item_count": 1,
+                        "taskable_item_count": 1,
+                        "taskable_refs": ["cli-app-plan-rendering-extraction/module-split"],
+                        "taskable_items": [
+                            {
+                                "plan_item_ref": "cli-app-plan-rendering-extraction/module-split",
+                                "line_number": 8,
+                                "text": "extract plan renderers",
+                            }
+                        ],
+                        "blocked_open_items": [],
+                        "task_start_command_hint": (
+                            'ait task start --plan PL-123 '
+                            '--plan-item-ref cli-app-plan-rendering-extraction/module-split '
+                            '--title "..." --intent "..."'
+                        ),
+                    }
+                ],
+            },
         }
     )
     captured = capsys.readouterr().out
     assert "ait plan sync" in captured
     assert "plan sync results" in captured
     assert "paired artifact uploads" in captured
+    assert "task-start advisory" in captured
+    assert "next task candidates" in captured
+    assert "extract plan renderers" in captured
+    assert "Suggested task start:" in captured
+    assert "ait task start --plan PL-123" in captured
     assert "BLB-123" in captured
 
 

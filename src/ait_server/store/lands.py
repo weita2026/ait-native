@@ -6,9 +6,10 @@ from typing import Any, Mapping
 
 from ait_protocol.common import utc_now
 
-from ..server_content import (
+# Snapshot/tree helpers remain in the broader storage facade for now.
+from ..server_content import connect as connect_content
+from ..server_content_repo_lines import (
     archive_line as archive_content_line,
-    connect as connect_content,
     get_line as get_content_line,
     get_repository as get_content_repository,
     list_lines_by_head_snapshot_ids as list_content_lines_by_head_snapshot_ids,
@@ -24,6 +25,13 @@ from .land_request_payloads import (
     phase_timings_from_result as _phase_timings_from_result,
 )
 from .land_validation import _validate_task_graph_change_land_request
+from .repo_scoped_keys import (
+    _assert_repo_scope,
+    _next_repo_sequence,
+    _repo_name_for_repo_id,
+    _repo_scope_predicate,
+    _repo_scoped_sequence_ref,
+)
 from .repo_ops import _repo_id
 from .workflow_artifacts import _land_submission_id_for_change
 
@@ -34,16 +42,8 @@ def _legacy_server_store_module():
     return legacy_server_store
 
 
-def _assert_repo_scope(*args, **kwargs):
-    return _legacy_server_store_module()._assert_repo_scope(*args, **kwargs)
-
-
 def _ensure_change_mutable(*args, **kwargs):
     return _legacy_server_store_module()._ensure_change_mutable(*args, **kwargs)
-
-
-def _next_repo_sequence(*args, **kwargs):
-    return _legacy_server_store_module()._next_repo_sequence(*args, **kwargs)
 
 
 def _refresh_change_state(*args, **kwargs):
@@ -52,18 +52,6 @@ def _refresh_change_state(*args, **kwargs):
 
 def _refresh_stacks_for_change(*args, **kwargs):
     return _legacy_server_store_module()._refresh_stacks_for_change(*args, **kwargs)
-
-
-def _repo_name_for_repo_id(*args, **kwargs):
-    return _legacy_server_store_module()._repo_name_for_repo_id(*args, **kwargs)
-
-
-def _repo_scope_predicate(*args, **kwargs):
-    return _legacy_server_store_module()._repo_scope_predicate(*args, **kwargs)
-
-
-def _repo_scoped_sequence_ref(*args, **kwargs):
-    return _legacy_server_store_module()._repo_scoped_sequence_ref(*args, **kwargs)
 
 
 def _resolve_patchset_for_change(*args, **kwargs):

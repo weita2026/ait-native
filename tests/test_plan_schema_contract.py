@@ -19,6 +19,21 @@ LANE_A_TASK_COLUMNS = {
     "planning_state",
 }
 
+RETIRED_IMPORTED_COMPLETION_TASK_SOURCE_COLUMNS = {
+    "source_completion_mode",
+    "source_local_task_id",
+    "source_local_completed_at",
+}
+
+RETIRED_IMPORTED_COMPLETION_CHANGE_SOURCE_COLUMNS = {
+    "source_completion_mode",
+    "source_local_change_id",
+    "source_local_status",
+    "source_target_line",
+    "source_landed_snapshot_id",
+    "source_landed_at",
+}
+
 LANE_A_PLAN_COLUMNS = {
     "repo_id",
 }
@@ -84,7 +99,11 @@ def _indexes(conn) -> set[str]:
 
 
 def _assert_lane_a_schema(conn) -> None:
-    assert LANE_A_TASK_COLUMNS <= _columns(conn, "tasks")
+    task_columns = _columns(conn, "tasks")
+    change_columns = _columns(conn, "changes")
+    assert LANE_A_TASK_COLUMNS <= task_columns
+    assert RETIRED_IMPORTED_COMPLETION_TASK_SOURCE_COLUMNS.isdisjoint(task_columns)
+    assert RETIRED_IMPORTED_COMPLETION_CHANGE_SOURCE_COLUMNS.isdisjoint(change_columns)
     assert LANE_A_PLAN_COLUMNS <= _columns(conn, "plans")
     assert LANE_A_PLANNING_SESSION_COLUMNS <= _columns(conn, "planning_sessions")
     assert LANE_A_PLAN_REVISION_DIFF_COLUMNS <= _columns(conn, "plan_revisions")
@@ -238,6 +257,9 @@ def test_lane_a_postgres_sql_file_matches_runtime_contract():
     for column in sorted(LANE_A_TASK_COLUMNS):
         assert column in server_control.SCHEMA_POSTGRES
         assert column in sql
+    for column in sorted(RETIRED_IMPORTED_COMPLETION_TASK_SOURCE_COLUMNS | RETIRED_IMPORTED_COMPLETION_CHANGE_SOURCE_COLUMNS):
+        assert column not in server_control.SCHEMA_POSTGRES
+        assert column not in sql
     for column in sorted(LANE_A_PLAN_COLUMNS):
         assert column in server_control.SCHEMA_POSTGRES
         assert column in sql

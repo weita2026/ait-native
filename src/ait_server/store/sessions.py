@@ -5,24 +5,12 @@ from typing import Any
 
 from ait_protocol.common import generate_namespaced_workflow_id, utc_now
 
-from ..server_content import get_snapshot_repo, repository_exists
+from ..server_content import get_snapshot_repo
+from ..server_content_repo_lines import repository_exists
 from ..server_control import connect, record_event
 from ..server_paths import ServerContext
+from .repo_scoped_keys import _local_id_after_first_dash, _repo_scope_predicate
 from .repo_ops import _repo_id, _repo_id_namespace_prefix
-
-
-def _legacy_server_store_module():
-    from .. import server_store as legacy_server_store
-
-    return legacy_server_store
-
-
-def _local_id_after_first_dash(*args, **kwargs):
-    return _legacy_server_store_module()._local_id_after_first_dash(*args, **kwargs)
-
-
-def _repo_scope_predicate(*args, **kwargs):
-    return _legacy_server_store_module()._repo_scope_predicate(*args, **kwargs)
 
 
 def _session_local_reference(value: str | None) -> str | None:

@@ -1,5 +1,9 @@
 # ait Local Development Guide
 
+Authority: command layer under [plan.md](./plan.md), the applicable legal-layer governance documents, and [CONTRIBUTING.md](./CONTRIBUTING.md).
+Status: current repo-local development guide.
+Scope: editable checkout bootstrap, local test routing, contributor workflow, and local/shared operating-path selection.
+
 ## Purpose
 
 Use this guide when you want to develop `ait` in a local checkout with enough public context to bootstrap, run targeted tests, and contribute safely.
@@ -79,7 +83,9 @@ rather than reaching for ad hoc stack/bootstrap commands.
 
 ### Step A — shape the work in Markdown
 
-Before implementation, shape the work in the narrowest honest Markdown surface.
+Before implementation, start from the plain-language requirement and shape it
+into the narrowest honest Markdown surface.
+
 For authored Markdown lineage, sync it explicitly:
 
 ```bash
@@ -89,7 +95,13 @@ ait plan sync <file-or-dir> --remote origin
 
 ### Step B — open a task
 
-Typical bootstrap:
+Preferred plan-linked bootstrap after Markdown sync:
+
+```bash
+ait task start --plan <plan-id> --plan-item-ref <ref> --title "<title>" --intent "<intent>"
+```
+
+Plain bootstrap for an unplanned slice:
 
 ```bash
 ait task start --title "<title>" --intent "<intent>"

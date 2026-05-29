@@ -19,6 +19,13 @@ MUSIC_DOCUMENT_EXTENSIONS = {
     ".wma",
 }
 
+PHOTO_DOCUMENT_EXTENSIONS = {
+    ".jpg",
+    ".jpeg",
+    ".png",
+    ".webp",
+}
+
 
 def _clean_optional_str(value: object) -> str | None:
     if value is None:
@@ -265,3 +272,16 @@ def _attachment_should_send_as_audio(attachment: Mapping[str, Any]) -> bool:
         return True
     suffix = Path(str(attachment.get("file_name") or attachment.get("local_path") or "").strip().lower()).suffix
     return suffix in MUSIC_DOCUMENT_EXTENSIONS and kind != "document"
+
+
+def _attachment_should_send_as_photo(attachment: Mapping[str, Any]) -> bool:
+    kind = str(attachment.get("kind") or "").strip().lower()
+    if kind == "document":
+        return False
+    if kind in {"photo", "image"}:
+        return True
+    mime_type = str(attachment.get("mime_type") or "").strip().lower()
+    if mime_type.startswith("image/") and mime_type != "image/gif":
+        return True
+    suffix = Path(str(attachment.get("file_name") or attachment.get("local_path") or "").strip().lower()).suffix
+    return suffix in PHOTO_DOCUMENT_EXTENSIONS

@@ -1,32 +1,49 @@
 from __future__ import annotations
 
 import re
-from typing import Any
+from typing import Any, Mapping
 
 from ait_protocol.common import read_json
 
 from ..remote_client import RemoteError, get_change as remote_get_change
 from ..repo_paths import RepoContext
+from ..store_local_changes import (
+    get_local_change,
+)
+from ..store_local_tasks import (
+    get_local_task,
+)
 from ..store import (
     create_line,
     get_line,
-    get_local_change,
-    get_local_task,
-    get_remote,
     get_worktree as local_get_worktree,
     list_worktrees as local_list_worktrees,
     load_config,
+)
+from ..store_remotes import (
+    get_remote,
 )
 from .task_tracking_bindings import _task_worktree_repo_ctx
 from .workflow_mode_config import _normalize_text_value
 
 
-def _task_bound_worktree_name(task_id: str, title: str | None = None) -> str:
-    del title  # retained for call-site compatibility while extraction stays behavior-neutral
+_LEGACY_TASK_EXECUTION_NAMESPACE_PREFIX = "task"
+
+
+def _task_identity_slug(task_id: str) -> str:
     task_slug = re.sub(r"[^a-z0-9]+", "-", task_id.lower()).strip("-")
     if not task_slug:
         raise ValueError("Task id is required to derive a task worktree name.")
     return task_slug
+
+
+def _task_bound_worktree_name(task_id: str, title: str | None = None) -> str:
+    del title  # retained for call-site compatibility while extraction stays behavior-neutral
+    return _task_identity_slug(task_id)
+
+
+def _legacy_task_bound_worktree_name(task_id: str) -> str:
+    return f"{_LEGACY_TASK_EXECUTION_NAMESPACE_PREFIX}-{_task_bound_worktree_name(task_id)}"
 
 
 def _resolve_task_bound_worktree_name(ctx: RepoContext, task_id: str, title: str | None = None) -> str:
@@ -42,10 +59,48 @@ def _resolve_task_bound_worktree_name(ctx: RepoContext, task_id: str, title: str
 
 
 def _task_feature_line_name(task_id: str) -> str:
-    task_slug = re.sub(r"[^a-z0-9]+", "-", task_id.lower()).strip("-")
-    if not task_slug:
-        raise ValueError("Task id is required to derive a feature line.")
-    return f"feature/{task_slug}"
+    return f"feature/{_task_bound_worktree_name(task_id)}"
+
+
+def _legacy_task_feature_line_name(task_id: str) -> str:
+    return f"feature/{_legacy_task_bound_worktree_name(task_id)}"
+
+
+def _task_feature_line_candidates(task_id: str) -> list[str]:
+    candidates = [
+        _task_feature_line_name(task_id),
+        _legacy_task_feature_line_name(task_id),
+    ]
+    return list(dict.fromkeys(candidates))
+
+
+def _change_bootstrap_lineage(
+    change_row: Mapping[str, Any] | None,
+    *,
+    fallback_base_line_name: str,
+) -> tuple[str, str | None]:
+    resolved_base_line_name = str(fallback_base_line_name or "").strip() or fallback_base_line_name
+    if not isinstance(change_row, Mapping):
+        return resolved_base_line_name, None
+    change_id = _normalize_text_value(change_row.get("change_id")) or "unknown change"
+    change_base_line = (
+        _normalize_text_value(change_row.get("base_line"))
+        or _normalize_text_value(change_row.get("forked_from_line"))
+    )
+    if (
+        change_base_line is not None
+        and resolved_base_line_name
+        and change_base_line != resolved_base_line_name
+    ):
+        raise ValueError(
+            f"Bound change `{change_id}` forks from `{change_base_line}`, not `{resolved_base_line_name}`."
+        )
+    fork_snapshot_id = _normalize_text_value(change_row.get("fork_snapshot_id"))
+    if fork_snapshot_id is None:
+        raise ValueError(
+            f"Bound change `{change_id}` is missing fork_snapshot_id lineage, so task worktree bootstrap cannot safely continue."
+        )
+    return change_base_line or resolved_base_line_name, fork_snapshot_id
 
 
 def _ensure_task_feature_line(
@@ -53,13 +108,22 @@ def _ensure_task_feature_line(
     *,
     task_id: str,
     base_line_name: str,
+    base_snapshot_id: str | None = None,
 ) -> dict[str, Any]:
-    feature_line_name = _task_feature_line_name(task_id)
-    try:
-        feature_line = get_line(ctx, feature_line_name)
-    except KeyError:
-        base_line = get_line(ctx, base_line_name)
-        feature_line = create_line(ctx, feature_line_name, base_line.get("head_snapshot_id"))
+    feature_line = None
+    for feature_line_name in _task_feature_line_candidates(task_id):
+        try:
+            feature_line = get_line(ctx, feature_line_name)
+            break
+        except KeyError:
+            continue
+    if feature_line is None:
+        resolved_base_snapshot_id = _normalize_text_value(base_snapshot_id)
+        if resolved_base_snapshot_id is None:
+            base_line = get_line(ctx, base_line_name)
+            resolved_base_snapshot_id = _normalize_text_value(base_line.get("head_snapshot_id"))
+        feature_line = create_line(ctx, _task_feature_line_name(task_id), resolved_base_snapshot_id)
+    feature_line_name = str(feature_line.get("line_name") or "")
     if str(feature_line.get("status") or "active").strip() == "archived":
         raise ValueError(f"Feature line {feature_line_name} is archived and cannot be reused for task {task_id}.")
     return feature_line

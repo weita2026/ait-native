@@ -4,10 +4,12 @@ import json
 import re
 from pathlib import Path
 
+WORKSPACE_ROOT = Path(__file__).resolve().parents[1]
+
 
 def test_public_compatibility_matrix_matches_project_version() -> None:
-    payload = json.loads(Path("docs/public_compatibility_matrix.json").read_text(encoding="utf-8"))
-    package_init = Path("src/ait_native/__init__.py").read_text(encoding="utf-8")
+    payload = json.loads((WORKSPACE_ROOT / "docs/public_compatibility_matrix.json").read_text(encoding="utf-8"))
+    package_init = (WORKSPACE_ROOT / "src/ait_native/__init__.py").read_text(encoding="utf-8")
     version_match = re.search(r'^__version__\s*=\s*"([^"]+)"', package_init, re.MULTILINE)
 
     assert version_match is not None
@@ -19,7 +21,7 @@ def test_public_compatibility_matrix_matches_project_version() -> None:
 
 
 def test_public_compatibility_matrix_profiles_and_unsupported_mixes() -> None:
-    payload = json.loads(Path("docs/public_compatibility_matrix.json").read_text(encoding="utf-8"))
+    payload = json.loads((WORKSPACE_ROOT / "docs/public_compatibility_matrix.json").read_text(encoding="utf-8"))
 
     profiles = {profile["profile_id"]: profile for profile in payload["profiles"]}
     assert profiles["local_only_first_loop"]["required_surfaces"] == ["ait"]

@@ -1,5 +1,9 @@
 # PyPI Publishing
 
+Authority: command layer under [plan.md](./plan.md), the applicable legal-layer governance documents, and [ait_release_readiness.md](./ait_release_readiness.md).
+Status: current PyPI publishing guide for the public `ait-native` repository.
+Scope: PyPI Trusted Publisher setup, tag-triggered publication, verification, and emergency manual fallback.
+
 This repository publishes `ait-native` to PyPI from the clean public GitHub
 repository: `weita2026/ait-native`.
 
@@ -22,7 +26,7 @@ CI.
 ## Publish from the public repo
 
 1. Push the clean public release commit to `weita2026/ait-native`.
-2. Push the matching `v*` tag, for example `v0.10.5`.
+2. Push the matching `v*` tag, for example `v0.10.6`.
 3. Let `.github/workflows/pypi-publish.yml` start automatically from that tag
    push, build the wheel/sdist, run
    `twine check`, smoke install the wheel, and publish to PyPI.

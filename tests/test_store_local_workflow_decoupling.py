@@ -54,4 +54,8 @@ def test_store_local_workflow_helpers_match_store_facade() -> None:
 def test_store_local_workflow_uses_narrow_runtime_seam() -> None:
     text = (WORKSPACE_ROOT / "src/ait/store_local_workflow.py").read_text(encoding="utf-8")
     assert "from .store import (" not in text
-    assert "from .store_local_workflow_runtime import current_line, resolve_local_task_plan_linkage" in text
+    assert "from .store_local_changes import (" in text
+    assert "from .store_local_releases import (" in text
+    assert "from .store_local_sessions import (" in text
+    assert "from .store_local_tasks import (" in text
+    assert "from .store_local_workflow_runtime import resolve_local_task_plan_linkage" in text

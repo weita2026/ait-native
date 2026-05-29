@@ -10,7 +10,7 @@ import typer
 
 from ait_protocol.common import extract_plan_section, list_plan_section_refs
 
-from ..local_content import _path_is_projected_out_for_workspace
+from ..local_content_projection import _path_is_projected_out_for_workspace
 from ..remote_client import RemoteError
 from ..repo_paths import RepoContext
 from ..store import (

@@ -14,6 +14,7 @@ from ..remote_client import (
     get_task as remote_get_task,
     publish_patchset as remote_publish_patchset,
 )
+from ..store_local_changes import get_local_change
 from ..store import (
     RepoContext,
     bind_worktree as local_bind_worktree,
@@ -36,6 +37,35 @@ from .remote_repository_defaults import _remote_tuple, _sync_remote_repository_d
 from .runtime_defaults import _effective_author_mode, _normalize_text_value
 from .task_tracking_bindings import _task_worktree_repo_ctx
 from .workflow_land_snapshot_replay import _patchset_publish_context
+
+
+def _remote_change_reference_for_publish(ctx: RepoContext, change_id: str) -> tuple[str, dict[str, Any] | None]:
+    try:
+        local_change = get_local_change(ctx, change_id)
+    except KeyError:
+        return change_id, None
+    published_change_id = _normalize_text_value(local_change.get("published_change_id"))
+    if str(local_change.get("publication_state") or "") == "published" and published_change_id is not None:
+        return published_change_id, local_change
+    return change_id, local_change
+
+
+def _change_identity_aliases(ctx: RepoContext, change_id: str | None) -> set[str]:
+    resolved_change_id = _normalize_text_value(change_id)
+    if resolved_change_id is None:
+        return set()
+    aliases = {resolved_change_id}
+    try:
+        local_change = get_local_change(ctx, resolved_change_id)
+    except KeyError:
+        return aliases
+    canonical_change_id = _normalize_text_value(local_change.get("change_id"))
+    published_change_id = _normalize_text_value(local_change.get("published_change_id"))
+    if canonical_change_id is not None:
+        aliases.add(canonical_change_id)
+    if published_change_id is not None:
+        aliases.add(published_change_id)
+    return aliases
 
 
 def _local_snapshot_chain_segment(
@@ -70,6 +100,7 @@ def _guard_patchset_revision_scope(
     command_name: str,
     task_id: str | None = None,
     change_id: str | None = None,
+    enforce_task_ownership: bool = True,
 ) -> None:
     lineage_snapshot_ids = _local_snapshot_chain_segment(
         ctx,
@@ -77,7 +108,7 @@ def _guard_patchset_revision_scope(
         revision_snapshot_id=revision_snapshot_id,
         command_name=command_name,
     )
-    if not ctx.is_worktree or not lineage_snapshot_ids:
+    if not ctx.is_worktree or not lineage_snapshot_ids or not enforce_task_ownership:
         return
     try:
         worktree = local_get_worktree(ctx)
@@ -85,6 +116,7 @@ def _guard_patchset_revision_scope(
         return
     expected_task_id = _normalize_text_value(task_id) or _normalize_text_value(worktree.get("bound_task_id"))
     expected_change_id = _normalize_text_value(change_id) or _normalize_text_value(worktree.get("bound_change_id"))
+    expected_change_aliases = _change_identity_aliases(ctx, expected_change_id)
     expected_worktree_name = _normalize_text_value(worktree.get("name"))
     if expected_task_id is None:
         return
@@ -105,7 +137,7 @@ def _guard_patchset_revision_scope(
         if provenance_task_id != expected_task_id:
             ownership_issues.append(f"{snapshot_id} (task {provenance_task_id or 'none'})")
             continue
-        if expected_change_id is not None and provenance_change_id not in {None, expected_change_id}:
+        if expected_change_aliases and provenance_change_id not in {None, *expected_change_aliases}:
             ownership_issues.append(f"{snapshot_id} (change {provenance_change_id})")
             continue
         if expected_worktree_name is not None and provenance_worktree_name not in {None, expected_worktree_name}:
@@ -119,6 +151,19 @@ def _guard_patchset_revision_scope(
             f"current head: {issue_sample}. Restore or reopen the correct task worktree before running "
             f"`ait {command_name}`."
         )
+
+
+def _default_line_publish_skips_task_ownership_guard(ctx: RepoContext, *, line_name: str) -> bool:
+    if not ctx.is_worktree:
+        return False
+    default_line = str(load_config(ctx).get("default_line") or "main")
+    if line_name != default_line:
+        return False
+    try:
+        worktree = local_get_worktree(ctx)
+    except (KeyError, ValueError):
+        return False
+    return not bool(worktree.get("auto_created_for_task"))
 
 
 def _workflow_publish_auto_rebase_if_needed(
@@ -218,7 +263,8 @@ def _publish_patchset_from_current_line(
         raise KeyError(f"Current line {line_name} has no snapshot to publish")
 
     remote_row, repo_name = _sync_remote_repository_defaults(ctx, remote_name)
-    change_info = remote_get_change(remote_row["url"], change_id, repo_name=repo_name)
+    remote_change_ref, _ = _remote_change_reference_for_publish(ctx, change_id)
+    change_info = remote_get_change(remote_row["url"], remote_change_ref, repo_name=repo_name)
     resolved_change_id = str(change_info.get("change_id") or change_id)
     worktree_retarget = _current_worktree_retarget_state(ctx, change_id)
     if isinstance(worktree_retarget, dict):
@@ -241,6 +287,7 @@ def _publish_patchset_from_current_line(
         revision_snapshot_id=revision_snapshot_id,
         command_name="patchset publish",
         change_id=change_id,
+        enforce_task_ownership=not _default_line_publish_skips_task_ownership_guard(ctx, line_name=line_name),
     )
     _ensure_patchset_not_empty(
         change_id=change_id,
@@ -288,7 +335,8 @@ def _workflow_refresh_patchset_for_land(
     author_mode: AuthorMode | None,
 ) -> dict[str, Any]:
     remote_row, repo_name = _sync_remote_repository_defaults(ctx, remote_name)
-    change = remote_get_change(remote_row["url"], change_id, repo_name=repo_name)
+    remote_change_ref, _ = _remote_change_reference_for_publish(ctx, change_id)
+    change = remote_get_change(remote_row["url"], remote_change_ref, repo_name=repo_name)
     auto_rebase = _workflow_publish_auto_rebase_if_needed(
         ctx,
         target_line=str(change.get("base_line") or "main"),
@@ -336,6 +384,7 @@ def _workflow_publish_payload(
     author_mode: AuthorMode | None,
 ) -> dict[str, Any]:
     remote_row, repo_name = _remote_tuple(ctx, remote_name)
+    default_line_name = _normalize_text_value(load_config(ctx).get("default_line")) or "main"
     task = remote_get_task(remote_row["url"], task_id, repo_name=repo_name)
     if task.get("repo_name") != repo_name:
         raise KeyError(f"Remote task {task_id} belongs to repository {task.get('repo_name')}, not {repo_name}")
@@ -355,6 +404,9 @@ def _workflow_publish_payload(
         raise KeyError(f"Current line {revision_line_name} has no snapshot to publish")
 
     resolved_target_line = _normalize_text_value(target_line)
+    resolved_base_line = _normalize_text_value(base_line_name)
+    if resolved_target_line is None and resolved_base_line is None and selected_base_snapshot is None:
+        resolved_target_line = default_line_name
     if resolved_target_line is not None:
         auto_rebase = _workflow_publish_auto_rebase_if_needed(ctx, target_line=resolved_target_line)
         revision_line_name = current_line(ctx)
@@ -372,6 +424,10 @@ def _workflow_publish_payload(
             revision_snapshot_id=revision_snapshot_id,
             command_name="workflow publish",
             task_id=task_id,
+            enforce_task_ownership=not _default_line_publish_skips_task_ownership_guard(
+                ctx,
+                line_name=revision_line_name,
+            ),
         )
         _ensure_patchset_not_empty(
             change_id=task_id,
@@ -459,6 +515,10 @@ def _workflow_publish_payload(
         revision_snapshot_id=revision_snapshot_id,
         command_name="workflow publish",
         task_id=task_id,
+        enforce_task_ownership=not _default_line_publish_skips_task_ownership_guard(
+            ctx,
+            line_name=revision_line_name,
+        ),
     )
     _ensure_patchset_not_empty(
         change_id=task_id,
@@ -466,7 +526,6 @@ def _workflow_publish_payload(
         revision_snapshot_id=revision_snapshot_id,
     )
 
-    resolved_base_line = _normalize_text_value(base_line_name)
     if resolved_base_line is None:
         resolved_base_line = f"review-base/{_workflow_publish_slug(task_id)}-{selected_base_snapshot[-12:].lower()}"
     base_line = _ensure_local_line_at_snapshot(ctx, resolved_base_line, selected_base_snapshot)

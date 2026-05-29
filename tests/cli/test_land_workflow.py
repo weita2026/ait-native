@@ -1373,9 +1373,9 @@ def test_workflow_land_apply_prefers_patchset_ci_over_manual_attestation(tmp_pat
             "submit_land",
             "complete_task",
         ]
-        assert applied["patchset"]["patchset_id"].startswith("RAITP-")
+        assert applied["patchset"]["patchset_id"].startswith("RP-")
         assert applied["next_action"]["code"] == "done"
-        assert applied["patchset"]["patchset_id"].startswith("RAITP-")
+        assert applied["patchset"]["patchset_id"].startswith("RP-")
 
 
 def test_workflow_land_reports_land_submit_then_task_complete(tmp_path: Path, monkeypatch):
@@ -2053,7 +2053,7 @@ def test_workflow_land_apply_drives_change_to_landed_and_completes_task(tmp_path
         assert applied["next_action"]["code"] == "done"
         assert applied["change"]["status"] == "landed"
         assert applied["task"]["status"] == "completed"
-        assert applied["patchset"]["patchset_id"].startswith("RAITP-")
+        assert applied["patchset"]["patchset_id"].startswith("RP-")
         submit_result = next(row["result"] for row in applied["applied_actions"] if row["code"] == "submit_land")
         assert submit_result["local_sync"]["status"] == "synced"
         assert submit_result["local_sync"]["line"] == "main"

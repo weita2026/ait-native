@@ -18,18 +18,9 @@ from ait_protocol.common import (
     normalize_storage_ingest_mode,
     utc_now,
 )
-from ait_storage.packfiles import (
-    build_pack_members,
-    build_storage_validation_summary,
-    read_pack_entry,
-    read_pack_index,
-    summarize_pack_archives,
-    write_pack_archive,
-)
 from ait_storage.revision_trees import build_snapshot_id, build_tree_records
 from .server_db import (
     connect_server_plane,
-    enable_sqlite_wal,
     ensure_schema_version,
     postgres_advisory_lock,
     read_server_plane,
@@ -55,133 +46,6 @@ class RepositoryNamespacePrefixConflictError(ValueError):
 def _elapsed_ms(start: float, end: float | None = None) -> float:
     finished = time.perf_counter() if end is None else end
     return round((finished - start) * 1000.0, 3)
-
-SCHEMA_SQLITE = """
-create table if not exists repositories (
-    repo_name text primary key,
-    repo_id text not null unique,
-    default_line text not null,
-    lifecycle_state text not null default 'active',
-    id_namespace_prefix text not null default 'AIT',
-    policy_json text not null default '{}',
-    created_at text not null,
-    updated_at text not null
-);
-
-create table if not exists lines (
-    repo_name text not null references repositories(repo_name) on delete cascade,
-    repo_id text not null,
-    line_name text not null,
-    head_snapshot_id text,
-    status text not null default 'active',
-    archived_at text,
-    created_at text not null,
-    updated_at text not null,
-    primary key (repo_id, line_name)
-);
-create index if not exists idx_lines_repo on lines(repo_name, line_name);
-create index if not exists idx_lines_repo_id on lines(repo_id, line_name);
-
-create table if not exists blobs (
-    blob_id text primary key,
-    sha256 text not null unique,
-    storage_path text not null,
-    size_bytes integer not null,
-    storage_kind text not null default 'pack_full',
-    pack_id text,
-    pack_entry_name text,
-    pack_entry_type text,
-    pack_base_blob_id text,
-    pack_chain_depth integer,
-    packed_at text,
-    pruned_at text,
-    created_at text not null
-);
-
-create table if not exists snapshots (
-    snapshot_id text primary key,
-    repo_name text not null references repositories(repo_name) on delete cascade,
-    repo_id text not null,
-    parent_snapshot_id text,
-    root_tree_id text,
-    manifest_hash text not null default '',
-    manifest_path text not null default '',
-    message text,
-    line_name text,
-    file_count integer not null,
-    total_bytes integer not null,
-    created_at text not null
-);
-create index if not exists idx_snapshots_repo_created on snapshots(repo_name, created_at desc);
-
-create table if not exists trees (
-    tree_id text primary key,
-    entry_count integer not null,
-    tree_pack_id text,
-    tree_pack_entry_name text,
-    tree_pack_checksum text,
-    tree_packed_at text,
-    created_at text not null
-);
-
-create table if not exists tree_entries (
-    tree_id text not null references trees(tree_id) on delete cascade,
-    entry_name text not null,
-    entry_type text not null,
-    target_id text not null,
-    size_bytes integer,
-    mode text not null,
-    primary key (tree_id, entry_name)
-);
-create index if not exists idx_tree_entries_target on tree_entries(target_id);
-
-create table if not exists packs (
-    pack_id text primary key,
-    repo_name text not null references repositories(repo_name) on delete cascade,
-    repo_id text not null,
-    status text not null,
-    member_count integer not null,
-    total_bytes integer not null,
-    pack_path text,
-    pack_format text not null default 'ait-pack-v1',
-    pack_index_entry_name text,
-    pack_index_checksum text,
-    created_at text not null
-);
-create index if not exists idx_packs_repo on packs(repo_name, created_at desc);
-
-create table if not exists tree_packs (
-    pack_id text primary key,
-    status text not null,
-    tree_count integer not null,
-    total_bytes integer not null,
-    pack_path text,
-    pack_format text not null default 'ait-tree-pack-v1',
-    pack_index_entry_name text,
-    pack_index_checksum text,
-    created_at text not null
-);
-
-create table if not exists repository_groups (
-    group_id text primary key,
-    title text not null,
-    sort_index integer not null,
-    system_slug text unique,
-    created_at text not null,
-    updated_at text not null
-);
-create index if not exists idx_repository_groups_sort on repository_groups(sort_index, group_id);
-
-create table if not exists repository_group_memberships (
-    repo_name text not null references repositories(repo_name) on delete cascade,
-    repo_id text primary key,
-    group_id text not null references repository_groups(group_id) on delete cascade,
-    sort_index integer not null,
-    created_at text not null,
-    updated_at text not null
-);
-create index if not exists idx_repository_group_memberships_group on repository_group_memberships(group_id, sort_index, repo_name);
-"""
 
 SCHEMA_POSTGRES = """
 create table if not exists schema_versions (
@@ -215,7 +79,6 @@ create table if not exists lines (
     primary key (repo_id, line_name)
 );
 create index if not exists idx_lines_repo on lines(repo_name, line_name);
-create index if not exists idx_lines_repo_id on lines(repo_id, line_name);
 
 create table if not exists blobs (
     blob_id text primary key,
@@ -436,90 +299,19 @@ def _ensure_schema_postgres(conn, ctx: ServerContext) -> None:
 
 
 def _ensure_schema(conn, ctx: ServerContext) -> None:
-    if ctx.db_backend == "postgres":
-        ready_key = _postgres_schema_ready_key(ctx)
-        if ready_key is not None:
-            with _POSTGRES_CONTENT_SCHEMA_READY_GUARD:
-                if ready_key in _POSTGRES_CONTENT_SCHEMA_READY:
-                    return
-                with postgres_advisory_lock(conn, scope=f"{ctx.content_schema}:server-content-initialize"):
-                    _ensure_schema_postgres(conn, ctx)
-                    _migrate_snapshot_metadata(conn, ctx)
-                    ensure_schema_version(conn, plane="content")
-                    conn.commit()
-                _mark_postgres_schema_ready(ctx)
+    ready_key = _postgres_schema_ready_key(ctx)
+    if ready_key is not None:
+        with _POSTGRES_CONTENT_SCHEMA_READY_GUARD:
+            if ready_key in _POSTGRES_CONTENT_SCHEMA_READY:
                 return
-        _ensure_schema_postgres(conn, ctx)
-    else:
-        conn.executescript(SCHEMA_SQLITE)
-        _ensure_column(conn, ctx, "lines", "status", "text not null default 'active'")
-        _ensure_column(conn, ctx, "lines", "archived_at", "text")
-        _ensure_column(conn, ctx, "lines", "repo_id", "text")
-        _ensure_column(conn, ctx, "repositories", "repo_id", "text")
-        _ensure_column(conn, ctx, "repositories", "lifecycle_state", "text not null default 'active'")
-        _ensure_column(conn, ctx, "repositories", "id_namespace_prefix", "text not null default 'AIT'")
-        _ensure_column(conn, ctx, "repositories", "policy_json", "text not null default '{}'")
-        _ensure_column(conn, ctx, "snapshots", "repo_id", "text")
-        _ensure_column(conn, ctx, "snapshots", "root_tree_id", "text")
-        tree_cols = {row["name"] for row in conn.execute("pragma table_info(trees)")}
-        if "tree_pack_id" not in tree_cols:
-            conn.execute("alter table trees add column tree_pack_id text")
-        if "tree_pack_entry_name" not in tree_cols:
-            conn.execute("alter table trees add column tree_pack_entry_name text")
-        if "tree_pack_checksum" not in tree_cols:
-            conn.execute("alter table trees add column tree_pack_checksum text")
-        if "tree_packed_at" not in tree_cols:
-            conn.execute("alter table trees add column tree_packed_at text")
-        blob_cols = {row["name"] for row in conn.execute("pragma table_info(blobs)")}
-        if "storage_kind" not in blob_cols:
-            conn.execute("alter table blobs add column storage_kind text not null default 'pack_full'")
-        if "pack_id" not in blob_cols:
-            conn.execute("alter table blobs add column pack_id text")
-        if "pack_entry_name" not in blob_cols:
-            conn.execute("alter table blobs add column pack_entry_name text")
-        if "pack_entry_type" not in blob_cols:
-            conn.execute("alter table blobs add column pack_entry_type text")
-        if "pack_base_blob_id" not in blob_cols:
-            conn.execute("alter table blobs add column pack_base_blob_id text")
-        if "pack_chain_depth" not in blob_cols:
-            conn.execute("alter table blobs add column pack_chain_depth integer")
-        if "packed_at" not in blob_cols:
-            conn.execute("alter table blobs add column packed_at text")
-        if "pruned_at" not in blob_cols:
-            conn.execute("alter table blobs add column pruned_at text")
-        conn.execute("create index if not exists idx_blobs_pack_id on blobs(pack_id)")
-        pack_cols = {row["name"] for row in conn.execute("pragma table_info(packs)")}
-        if "repo_id" not in pack_cols:
-            conn.execute("alter table packs add column repo_id text")
-        if "pack_format" not in pack_cols:
-            conn.execute("alter table packs add column pack_format text not null default 'ait-pack-v1'")
-        if "pack_index_entry_name" not in pack_cols:
-            conn.execute("alter table packs add column pack_index_entry_name text")
-        if "pack_index_checksum" not in pack_cols:
-            conn.execute("alter table packs add column pack_index_checksum text")
-        tree_pack_cols = {row["name"] for row in conn.execute("pragma table_info(tree_packs)")}
-        if "pack_format" not in tree_pack_cols:
-            conn.execute("alter table tree_packs add column pack_format text not null default 'ait-tree-pack-v1'")
-        if "pack_index_entry_name" not in tree_pack_cols:
-            conn.execute("alter table tree_packs add column pack_index_entry_name text")
-        if "pack_index_checksum" not in tree_pack_cols:
-            conn.execute("alter table tree_packs add column pack_index_checksum text")
-        group_cols = {row["name"] for row in conn.execute("pragma table_info(repository_groups)")}
-        if "system_slug" not in group_cols:
-            conn.execute("alter table repository_groups add column system_slug text")
-        membership_cols = {row["name"] for row in conn.execute("pragma table_info(repository_group_memberships)")}
-        if "repo_id" not in membership_cols:
-            conn.execute("alter table repository_group_memberships add column repo_id text")
-        conn.execute("create index if not exists idx_trees_tree_pack_id on trees(tree_pack_id)")
-        conn.execute("create index if not exists idx_repository_groups_sort on repository_groups(sort_index, group_id)")
-        conn.execute(
-            "create index if not exists idx_repository_group_memberships_group on repository_group_memberships(group_id, sort_index, repo_name)"
-        )
-        _backfill_missing_repository_ids(conn)
-        _backfill_content_plane_repo_ids(conn)
-        _ensure_repository_repo_id_unique_index(conn)
-        _ensure_content_repo_id_indexes(conn)
-        _ensure_repository_namespace_prefix_unique_index(conn, ctx)
+            with postgres_advisory_lock(conn, scope=f"{ctx.content_schema}:server-content-initialize"):
+                _ensure_schema_postgres(conn, ctx)
+                _migrate_snapshot_metadata(conn, ctx)
+                ensure_schema_version(conn, plane="content")
+                conn.commit()
+            _mark_postgres_schema_ready(ctx)
+            return
+    _ensure_schema_postgres(conn, ctx)
     _migrate_snapshot_metadata(conn, ctx)
     ensure_schema_version(conn, plane="content")
     conn.commit()
@@ -684,25 +476,16 @@ def _raise_repository_namespace_prefix_conflict(prefix: str, conflicting_repo_na
 
 
 def _ensure_column(conn, ctx: ServerContext, table_name: str, column_name: str, ddl: str) -> None:
-    if ctx.db_backend == "postgres":
-        row = conn.execute(
-            "select 1 from information_schema.columns where table_schema = current_schema() and table_name = ? and column_name = ?",
-            (table_name, column_name),
-        ).fetchone()
-        if row is None:
-            try:
-                conn.execute(f"alter table {table_name} add column {column_name} {ddl}")
-            except Exception as exc:
-                message = str(exc).lower()
-                if "already exists" not in message and "duplicate column" not in message:
-                    raise
-        return
-    cols = {row["name"] for row in conn.execute(f"pragma table_info({table_name})")}
-    if column_name not in cols:
+    row = conn.execute(
+        "select 1 from information_schema.columns where table_schema = current_schema() and table_name = ? and column_name = ?",
+        (table_name, column_name),
+    ).fetchone()
+    if row is None:
         try:
             conn.execute(f"alter table {table_name} add column {column_name} {ddl}")
         except Exception as exc:
-            if "duplicate column name" not in str(exc).lower():
+            message = str(exc).lower()
+            if "already exists" not in message and "duplicate column" not in message:
                 raise
 
 
@@ -751,31 +534,20 @@ def _snapshot_files_view_sql() -> str:
 
 
 def _snapshot_files_object_type(conn, ctx: ServerContext) -> str | None:
-    def _sqlite_catalog_type() -> str | None:
-        row = conn.execute(
-            "select type from sqlite_master where name = 'snapshot_files' and type in ('table', 'view')"
-        ).fetchone()
-        return row["type"] if row else None
-
-    if ctx.db_backend == "postgres":
-        try:
-            table = conn.execute(
-                """
-                select table_type
-                from information_schema.tables
-                where table_schema = current_schema()
-                  and table_name = 'snapshot_files'
-                """
-            ).fetchone()
-        except Exception:
-            return _sqlite_catalog_type()
-        if table is not None:
-            return "view" if str(table.get("table_type") or "").upper() == "VIEW" else "table"
-        view = conn.execute(
-            "select 1 from information_schema.views where table_schema = current_schema() and table_name = 'snapshot_files'"
-        ).fetchone()
-        return "view" if view is not None else None
-    return _sqlite_catalog_type()
+    table = conn.execute(
+        """
+        select table_type
+        from information_schema.tables
+        where table_schema = current_schema()
+          and table_name = 'snapshot_files'
+        """
+    ).fetchone()
+    if table is not None:
+        return "view" if str(table.get("table_type") or "").upper() == "VIEW" else "table"
+    view = conn.execute(
+        "select 1 from information_schema.views where table_schema = current_schema() and table_name = 'snapshot_files'"
+    ).fetchone()
+    return "view" if view is not None else None
 
 
 def _tree_reachability_cte_sql(
@@ -1101,81 +873,20 @@ def _migrate_snapshot_metadata(conn, ctx: ServerContext) -> None:
 
 def initialize(ctx: ServerContext) -> None:
     with _connect(ctx) as conn:
-        enable_sqlite_wal(conn)
         with postgres_advisory_lock(conn, scope=f"{ctx.content_schema}:server-content-initialize"):
             _ensure_schema(conn, ctx)
             _migrate_line_head_snapshot_index(conn, ctx)
         conn.commit()
 
-
-
-def _repo_ref_path(ctx: ServerContext, repo_token: str, line_name: str) -> Path:
-    return ctx.ref_root / encode_ref_name(repo_token) / "lines" / encode_ref_name(line_name)
-
-
-def _ref_paths(ctx: ServerContext, repo_name: str, repo_id: str | None, line_name: str) -> tuple[Path, Path | None]:
-    current = _repo_ref_path(ctx, repo_id or repo_name, line_name)
-    legacy = None if repo_id is None or repo_id == repo_name else _repo_ref_path(ctx, repo_name, line_name)
-    return current, legacy
-
-
-
-def _read_ref_from_paths(current_path: Path, legacy_path: Path | None) -> str | None:
-    for path in (current_path, legacy_path):
-        if path is None or not path.exists():
-            continue
-        text = path.read_text(encoding="utf-8").strip()
-        return text or None
-    return None
-
-
-
-def _read_ref_for_repository(ctx: ServerContext, repo_name: str, repo_id: str | None, line_name: str) -> str | None:
-    current_path, legacy_path = _ref_paths(ctx, repo_name, repo_id, line_name)
-    return _read_ref_from_paths(current_path, legacy_path)
-
-
-
-def _write_ref_for_repository(
-    ctx: ServerContext,
-    repo_name: str,
-    repo_id: str | None,
-    line_name: str,
-    snapshot_id: str | None,
-) -> None:
-    path, legacy_path = _ref_paths(ctx, repo_name, repo_id, line_name)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text((snapshot_id or "") + "\n", encoding="utf-8")
-    if legacy_path is not None and legacy_path.exists():
-        legacy_path.unlink()
-
-
-
-def read_ref(ctx: ServerContext, repo_name: str, line_name: str) -> str | None:
-    try:
-        repo = get_repository(ctx, repo_name)
-        repo_id = str(repo.get("repo_id") or "").strip() or None
-    except KeyError:
-        repo_id = None
-    return _read_ref_for_repository(ctx, repo_name, repo_id, line_name)
-
-
-
-def write_ref(ctx: ServerContext, repo_name: str, line_name: str, snapshot_id: str | None) -> None:
-    repo = get_repository(ctx, repo_name)
-    repo_id = str(repo.get("repo_id") or "").strip() or None
-    _write_ref_for_repository(ctx, repo_name, repo_id, line_name, snapshot_id)
-    with _connect(ctx) as conn:
-        _ensure_schema(conn, ctx)
-        scoped_repo_id, scoped_repo_name = _repository_scope_params(conn, repo_name)
-        _set_line_head_snapshot_id(
-            conn,
-            repo_id=scoped_repo_id,
-            scoped_repo_name=scoped_repo_name,
-            line_name=line_name,
-            head_snapshot_id=_normalize_head_snapshot_id(snapshot_id),
-        )
-        conn.commit()
+from .server_content_repo_lines import (
+    _read_ref_for_repository,
+    _read_ref_from_paths,
+    _ref_paths,
+    _repo_ref_path,
+    _write_ref_for_repository,
+    read_ref,
+    write_ref,
+)
 
 
 
@@ -1202,134 +913,12 @@ def _snapshot_row(conn, snapshot_id: str):
     return conn.execute("select * from snapshots where snapshot_id = ?", (snapshot_id,)).fetchone()
 
 
-
-def _blob_row(conn, blob_id: str):
-    return conn.execute("select * from blobs where blob_id = ?", (blob_id,)).fetchone()
-
-
-
-def _blob_bytes_by_id(ctx: ServerContext, conn, blob_id: str, *, seen_blob_ids: set[str] | None = None) -> bytes:
-    row = _blob_row(conn, blob_id)
-    if row is None:
-        raise KeyError(f"Unknown blob: {blob_id}")
-    return _blob_bytes_by_row(ctx, conn, row, seen_blob_ids=seen_blob_ids)
-
-
-def _blob_bytes_by_row(ctx: ServerContext, conn, row, *, seen_blob_ids: set[str] | None = None) -> bytes:
-    blob_id = row["blob_id"]
-    visited = set(seen_blob_ids or ())
-    if blob_id in visited:
-        raise ValueError(f"Cyclic blob resolution detected for {blob_id}")
-    visited.add(blob_id)
-    if row["pack_id"] and row["pack_entry_name"]:
-        pack_row = conn.execute("select * from packs where pack_id = ?", (row["pack_id"],)).fetchone()
-        if pack_row is None:
-            raise FileNotFoundError(f"Missing pack metadata for {row['pack_id']}")
-        pack_abs = ctx.root / pack_row["pack_path"]
-    return read_pack_entry(
-        pack_abs,
-        row["pack_entry_name"],
-        resolve_base_blob=lambda base_blob_id: _blob_bytes_by_id(ctx, conn, base_blob_id, seen_blob_ids=visited),
-    )
-
-
 def _bootstrap_authority_files_not_seeded(_: ServerContext, repo_name: str) -> None:
     # Remote repository bootstrap is metadata-only; governance documents remain
     # repository-scoped and are intentionally materialized by local/new-repo flow.
     # Keep this hook explicit to preserve compatibility when future server-side
     # bootstrap seeds are added.
     return None
-
-
-
-def read_blob_bytes(ctx: ServerContext, blob_id: str) -> bytes:
-    with _connect(ctx) as conn:
-        _ensure_schema(conn, ctx)
-        return _blob_bytes_by_id(ctx, conn, blob_id)
-
-
-def write_blob_bytes(
-    ctx: ServerContext,
-    repo_name: str,
-    data: bytes,
-    *,
-    path_hint: str | None = None,
-    created_at: str | None = None,
-) -> dict[str, Any]:
-    """Store standalone blob bytes in the shared content store.
-
-    Snapshot import already writes file blobs, but plan revisions need a
-    revision-level Markdown payload without manufacturing a repository snapshot.
-    Keep the blob row compatible with snapshot blobs so later pack/gc layers can
-    reason about the payload through the same content table.
-    """
-
-    ensure_repository(ctx, repo_name, "main")
-    with _connect(ctx) as conn:
-        _ensure_schema(conn, ctx)
-        repo_id, _ = _repository_scope_params(conn, repo_name)
-        digest = hashlib.sha256(data).hexdigest()
-        blob_id = f"BLB-{digest[:20]}"
-        size = len(data)
-        now = created_at or utc_now()
-        blob_storage = _blob_path(ctx, blob_id)
-        existing = _blob_row(conn, blob_id)
-        if existing is None:
-            pack_id, members_by_blob_id = _write_packed_blobs(
-                ctx,
-                conn,
-                repo_name,
-                repo_id,
-                f"standalone:{blob_id}:{now}",
-                now,
-                [
-                    {
-                        "blob_id": blob_id,
-                        "sha256": digest,
-                        "storage_path": str(blob_storage.relative_to(ctx.root)),
-                        "size_bytes": size,
-                        "data": data,
-                        "entry_name": f"blobs/{blob_id}",
-                        "path_hint": path_hint,
-                    }
-                ],
-            )
-            member = members_by_blob_id[blob_id]
-            entry_type = member.get("entry_type", "full")
-            target_storage_kind = "pack_delta" if entry_type == "delta" else "pack_full"
-            conn.execute(
-                """
-                insert or ignore into blobs(
-                    blob_id, sha256, storage_path, size_bytes, storage_kind, pack_id, pack_entry_name,
-                    pack_entry_type, pack_base_blob_id, pack_chain_depth, packed_at, pruned_at, created_at
-                ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, null, ?)
-                """,
-                (
-                    blob_id,
-                    digest,
-                    str(blob_storage.relative_to(ctx.root)),
-                    size,
-                    target_storage_kind,
-                    pack_id,
-                    member["entry_name"],
-                    entry_type,
-                    member.get("base_blob_id"),
-                    int(member.get("chain_depth", 0) or 0),
-                    now,
-                    now,
-                ),
-            )
-        else:
-            stored = dict(existing)
-            if stored.get("sha256") != digest or int(stored.get("size_bytes") or 0) != size:
-                raise ValueError(f"Blob {blob_id} already exists with different metadata")
-        conn.commit()
-        row = conn.execute("select * from blobs where blob_id = ?", (blob_id,)).fetchone()
-    assert row is not None
-    out = dict(row)
-    if path_hint is not None:
-        out["path_hint"] = path_hint
-    return out
 
 
 def _repository_out(row) -> dict[str, Any]:
@@ -1385,307 +974,35 @@ from .server_content_groups import (
 )
 
 
+from .server_content_repo_lines import (
+    archive_line,
+    ensure_repository,
+    get_line,
+    get_repository,
+    list_lines,
+    list_lines_by_head_snapshot_ids,
+    repository_exists,
+    set_repository_lifecycle_state,
+    update_line,
+)
+
+
 from .server_content_storage import (
+    _blob_bytes_by_id,
+    _blob_bytes_by_row,
+    _blob_path,
+    _blob_row,
+    _pack_path,
+    _parent_delta_candidates,
+    _write_packed_blobs,
+    read_blob_bytes,
+    write_blob_bytes,
     snapshot_manifest_map,
     repository_storage_stats,
     repository_storage_signals,
     pack_repository,
     gc_repository_content,
 )
-
-
-def ensure_repository(
-    ctx: ServerContext,
-    repo_name: str,
-    default_line: str,
-    policy: dict[str, Any] | None = None,
-    *,
-    id_namespace_prefix: str | None = None,
-) -> dict:
-    with _connect(ctx) as conn:
-        _ensure_schema(conn, ctx)
-        row = conn.execute("select * from repositories where repo_name = ?", (repo_name,)).fetchone()
-        now = utc_now()
-        normalized_policy = normalize_policy(policy) if policy is not None else None
-        normalized_prefix = (
-            normalize_id_namespace_prefix(id_namespace_prefix, default=DEFAULT_ID_NAMESPACE_PREFIX)
-            if id_namespace_prefix is not None
-            else None
-        )
-        if row is None:
-            stored_policy = normalized_policy or normalize_policy(None)
-            stored_prefix = normalized_prefix if normalized_prefix is not None else _derived_repository_namespace_prefix(repo_name)
-            repo_id = _new_repository_id()
-            conflict = _repository_namespace_prefix_conflict(conn, stored_prefix)
-            if conflict is not None:
-                _raise_repository_namespace_prefix_conflict(stored_prefix, str(conflict["repo_name"]))
-            conn.execute(
-                """
-                insert into repositories(repo_name, repo_id, default_line, id_namespace_prefix, policy_json, created_at, updated_at)
-                values (?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    repo_name,
-                    repo_id,
-                    default_line,
-                    stored_prefix,
-                    json.dumps(stored_policy, sort_keys=True),
-                    now,
-                    now,
-                ),
-            )
-            conn.execute(
-                "insert into lines(repo_name, repo_id, line_name, created_at, updated_at) values (?, ?, ?, ?, ?)",
-                (repo_name, repo_id, default_line, now, now),
-            )
-            _bootstrap_authority_files_not_seeded(ctx, repo_name)
-            conn.commit()
-            row = conn.execute("select * from repositories where repo_name = ?", (repo_name,)).fetchone()
-            write_ref(ctx, repo_name, default_line, None)
-        else:
-            existing = _repository_out(row)
-            updates: list[str] = []
-            parameters: list[Any] = []
-            if normalized_policy is not None and existing["policy"] != normalized_policy:
-                updates.append("policy_json = ?")
-                parameters.append(json.dumps(normalized_policy, sort_keys=True))
-            if normalized_prefix is not None and existing.get("id_namespace_prefix") != normalized_prefix:
-                conflict = _repository_namespace_prefix_conflict(conn, normalized_prefix, exclude_repo_name=repo_name)
-                if conflict is not None:
-                    _raise_repository_namespace_prefix_conflict(normalized_prefix, str(conflict["repo_name"]))
-                updates.append("id_namespace_prefix = ?")
-                parameters.append(normalized_prefix)
-            if updates:
-                updates.append("updated_at = ?")
-                parameters.append(now)
-                parameters.append(repo_name)
-                conn.execute(
-                    f"update repositories set {', '.join(updates)} where repo_name = ?",
-                    tuple(parameters),
-                )
-                conn.commit()
-                row = conn.execute("select * from repositories where repo_name = ?", (repo_name,)).fetchone()
-        _ensure_default_repository_group(conn)
-        _sync_repository_group_memberships(conn)
-        conn.commit()
-    return _repository_out(row)
-
-
-
-def repository_exists(ctx: ServerContext, repo_name: str) -> bool:
-    with _connect(ctx) as conn:
-        _ensure_schema(conn, ctx)
-        row = conn.execute("select 1 from repositories where repo_name = ?", (repo_name,)).fetchone()
-    return row is not None
-
-
-
-def get_repository(ctx: ServerContext, repo_name: str) -> dict:
-    with _connect(ctx) as conn:
-        _ensure_schema(conn, ctx)
-        row = conn.execute("select * from repositories where repo_name = ?", (repo_name,)).fetchone()
-    if row is None:
-        raise KeyError(f"Unknown repository: {repo_name}")
-    return _repository_out(row)
-
-
-def set_repository_lifecycle_state(
-    ctx: ServerContext,
-    repo_name: str,
-    lifecycle_state: str,
-    *,
-    expected_repo_id: str | None = None,
-) -> dict:
-    normalized_state = str(lifecycle_state or "").strip().lower()
-    if normalized_state not in REPOSITORY_LIFECYCLE_STATES:
-        raise ValueError(f"Unsupported repository lifecycle state: {lifecycle_state!r}")
-    with _connect(ctx) as conn:
-        _ensure_schema(conn, ctx)
-        row = conn.execute("select * from repositories where repo_name = ?", (repo_name,)).fetchone()
-        if row is None:
-            raise KeyError(f"Unknown repository: {repo_name}")
-        current = _repository_out(row)
-        normalized_expected_repo_id = str(expected_repo_id or "").strip()
-        if normalized_expected_repo_id and normalized_expected_repo_id != current["repo_id"]:
-            raise ValueError(
-                f"Repository scope mismatch for {repo_name}: repo_id {normalized_expected_repo_id} does not match {current['repo_id']}"
-            )
-        if current["lifecycle_state"] == normalized_state:
-            return current
-        conn.execute(
-            "update repositories set lifecycle_state = ?, updated_at = ? where repo_name = ?",
-            (normalized_state, utc_now(), repo_name),
-        )
-        conn.commit()
-        row = conn.execute("select * from repositories where repo_name = ?", (repo_name,)).fetchone()
-    assert row is not None
-    return _repository_out(row)
-
-
-
-def list_lines(ctx: ServerContext, repo_name: str) -> list[dict]:
-    with _connect(ctx) as conn:
-        _ensure_schema(conn, ctx)
-        repo_id, scoped_repo_name = _repository_scope_params(conn, repo_name)
-        rows = [
-            dict(r)
-            for r in conn.execute(
-                "select * from lines where " + _repository_id_scope_predicate() + " order by line_name",
-                (repo_id, scoped_repo_name),
-            )
-        ]
-    for row in rows:
-        row["status"] = row.get("status") or "active"
-        resolved_repo_id = str(row.get("repo_id") or repo_id or "").strip() or None
-        row["head_snapshot_id"] = _read_ref_for_repository(ctx, repo_name, resolved_repo_id, row["line_name"])
-    return rows
-
-
-
-def get_line(ctx: ServerContext, repo_name: str, line_name: str) -> dict:
-    with _connect(ctx) as conn:
-        _ensure_schema(conn, ctx)
-        repo_id, scoped_repo_name = _repository_scope_params(conn, repo_name)
-        row = conn.execute(
-            "select * from lines where " + _repository_id_scope_predicate() + " and line_name = ?",
-            (repo_id, scoped_repo_name, line_name),
-        ).fetchone()
-    if row is None:
-        raise KeyError(f"Unknown line {line_name} for repository {repo_name}")
-    out = dict(row)
-    out["status"] = out.get("status") or "active"
-    resolved_repo_id = str(out.get("repo_id") or "").strip() or None
-    out["head_snapshot_id"] = _read_ref_for_repository(ctx, repo_name, resolved_repo_id, line_name)
-    return out
-
-
-def list_lines_by_head_snapshot_ids(
-    ctx: ServerContext,
-    repo_name: str,
-    head_snapshot_ids: set[str] | list[str] | tuple[str, ...],
-    *,
-    exclude_line_names: set[str] | list[str] | tuple[str, ...] | None = None,
-) -> list[dict]:
-    normalized_snapshot_ids = sorted(
-        item for item in {_normalize_head_snapshot_id(item) for item in head_snapshot_ids if item} if item is not None
-    )
-    if not normalized_snapshot_ids:
-        return []
-    normalized_excluded_line_names = sorted({str(item).strip() for item in exclude_line_names or [] if str(item).strip()})
-    with _connect(ctx) as conn:
-        _ensure_schema(conn, ctx)
-        repo_id, scoped_repo_name = _repository_scope_params(conn, repo_name)
-        snapshot_placeholders = ", ".join("?" for _ in normalized_snapshot_ids)
-        exclude_clause = ""
-        query_params: list[Any] = [repo_id, scoped_repo_name, *normalized_snapshot_ids]
-        if normalized_excluded_line_names:
-            exclude_placeholders = ", ".join("?" for _ in normalized_excluded_line_names)
-            exclude_clause = f" and line_name not in ({exclude_placeholders})"
-            query_params.extend(normalized_excluded_line_names)
-        rows = [
-            dict(r)
-            for r in conn.execute(
-                "select * from lines where "
-                + _repository_id_scope_predicate()
-                + f" and head_snapshot_id in ({snapshot_placeholders}){exclude_clause} order by line_name",
-                tuple(query_params),
-            )
-        ]
-    for row in rows:
-        row["status"] = row.get("status") or "active"
-        row["head_snapshot_id"] = _normalize_head_snapshot_id(row.get("head_snapshot_id"))
-    return rows
-
-
-def update_line(
-    ctx: ServerContext,
-    repo_name: str,
-    line_name: str,
-    head_snapshot_id: Optional[str],
-    *,
-    expected_head_snapshot_id: Optional[str] = None,
-    timings: Optional[dict[str, Any]] = None,
-) -> dict:
-    def _update(conn):
-        _ensure_schema(conn, ctx)
-        repo_id, scoped_repo_name = _repository_scope_params(conn, repo_name)
-        resolved_repo_id = str(repo_id or "").strip() or None
-        lock_scope = f"{ctx.content_schema or 'content'}:line:{resolved_repo_id or scoped_repo_name}:{line_name}"
-        total_started = time.perf_counter()
-        lock_wait_started = total_started
-        lock_hold_started: float | None = None
-        try:
-            with postgres_advisory_lock(conn, scope=lock_scope):
-                lock_hold_started = time.perf_counter()
-                row = conn.execute(
-                    "select * from lines where " + _repository_id_scope_predicate() + " and line_name = ?",
-                    (repo_id, scoped_repo_name, line_name),
-                ).fetchone()
-                current_head_snapshot_id = _read_ref_for_repository(ctx, repo_name, resolved_repo_id, line_name)
-                if expected_head_snapshot_id is not None and current_head_snapshot_id != expected_head_snapshot_id:
-                    raise ValueError(
-                        f"Line {line_name} head advanced before update: "
-                        f"expected {expected_head_snapshot_id!r}, got {current_head_snapshot_id!r}"
-                    )
-                now = utc_now()
-                if row is None:
-                    conn.execute(
-                        "insert into lines(repo_name, repo_id, line_name, head_snapshot_id, status, archived_at, created_at, updated_at) "
-                        "values (?, ?, ?, ?, 'active', null, ?, ?)",
-                        (repo_name, repo_id, line_name, head_snapshot_id, now, now),
-                    )
-                else:
-                    if (row["status"] or "active") == "archived":
-                        raise ValueError(f"Line {line_name} is archived and cannot move")
-                    conn.execute(
-                        "update lines set head_snapshot_id = ?, updated_at = ? where "
-                        + _repository_id_scope_predicate()
-                        + " and line_name = ?",
-                        (head_snapshot_id, now, repo_id, scoped_repo_name, line_name),
-                    )
-                _write_ref_for_repository(ctx, repo_name, resolved_repo_id, line_name, head_snapshot_id)
-                refreshed = conn.execute(
-                    "select * from lines where " + _repository_id_scope_predicate() + " and line_name = ?",
-                    (repo_id, scoped_repo_name, line_name),
-                ).fetchone()
-                assert refreshed is not None
-                out = dict(refreshed)
-                out["status"] = out.get("status") or "active"
-                out["head_snapshot_id"] = head_snapshot_id
-                return out
-        finally:
-            if timings is not None:
-                finished = time.perf_counter()
-                if lock_hold_started is None:
-                    timings["advisory_lock_wait"] = _elapsed_ms(lock_wait_started, finished)
-                else:
-                    timings["advisory_lock_wait"] = _elapsed_ms(lock_wait_started, lock_hold_started)
-                    timings["advisory_lock_hold"] = _elapsed_ms(lock_hold_started, finished)
-                timings["total"] = _elapsed_ms(total_started, finished)
-
-    return write(ctx, _update)
-
-
-def archive_line(ctx: ServerContext, repo_name: str, line_name: str) -> dict:
-    with _connect(ctx) as conn:
-        _ensure_schema(conn, ctx)
-        repo_id, scoped_repo_name = _repository_scope_params(conn, repo_name)
-        row = conn.execute(
-            "select * from lines where " + _repository_id_scope_predicate() + " and line_name = ?",
-            (repo_id, scoped_repo_name, line_name),
-        ).fetchone()
-        if row is None:
-            raise KeyError(f"Unknown line {line_name} for repository {repo_name}")
-        if (row["status"] or "active") == "archived":
-            return get_line(ctx, repo_name, line_name)
-        now = utc_now()
-        conn.execute(
-            "update lines set status = 'archived', archived_at = ?, updated_at = ? "
-            "where " + _repository_id_scope_predicate() + " and line_name = ?",
-            (now, now, repo_id, scoped_repo_name, line_name),
-        )
-        conn.commit()
-    return get_line(ctx, repo_name, line_name)
 
 
 
@@ -1746,78 +1063,6 @@ def get_snapshot_repo(ctx: ServerContext, snapshot_id: str) -> str | None:
 def _snapshot_storage_ingest_mode(bundle: dict[str, Any]) -> str:
     explicit = bundle.get("storage_ingest_mode")
     return normalize_storage_ingest_mode(explicit, allow_default=False)
-
-
-def _parent_delta_candidates(
-    ctx: ServerContext,
-    conn,
-    parent_snapshot_id: str | None,
-    paths: set[str],
-) -> dict[str, dict[str, Any]]:
-    if not parent_snapshot_id or not paths:
-        return {}
-    placeholders = ", ".join("?" for _ in paths)
-    rows = conn.execute(
-        f"""
-        select sf.path, b.blob_id, b.pack_chain_depth
-        from snapshot_files sf
-        join blobs b on b.blob_id = sf.blob_id
-        where sf.snapshot_id = ?
-          and sf.path in ({placeholders})
-        order by sf.path
-        """,
-        (parent_snapshot_id, *sorted(paths)),
-    ).fetchall()
-    candidates: dict[str, dict[str, Any]] = {}
-    for row in rows:
-        blob_id = row["blob_id"]
-        candidates[row["path"]] = {
-            "blob_id": blob_id,
-            "data": _blob_bytes_by_id(ctx, conn, blob_id),
-            "chain_depth": int(row["pack_chain_depth"] or 0),
-        }
-    return candidates
-
-
-def _write_packed_blobs(
-    ctx: ServerContext,
-    conn,
-    repo_name: str,
-    repo_id: str | None,
-    snapshot_id: str,
-    created_at: str,
-    blob_items: list[dict[str, Any]],
-    *,
-    initial_by_path: dict[str, dict[str, Any]] | None = None,
-) -> tuple[str, dict[str, dict[str, Any]]]:
-    pack_seed = f"{repo_name}|{snapshot_id}|{json.dumps(sorted(item['blob_id'] for item in blob_items))}"
-    pack_id = f"PCK-{hashlib.sha256(pack_seed.encode('utf-8')).hexdigest()[:12].upper()}"
-    pack_abs = _pack_path(ctx, pack_id)
-    members = build_pack_members(blob_items, initial_by_path=initial_by_path)
-    members_by_blob_id = {member["blob_id"]: member for member in members}
-    archive_stats = write_pack_archive(pack_abs, pack_id, created_at, members)
-    existing_pack = conn.execute("select pack_id from packs where pack_id = ?", (pack_id,)).fetchone()
-    if existing_pack is None:
-        conn.execute(
-            """
-            insert into packs(pack_id, repo_name, repo_id, status, member_count, total_bytes, pack_path, pack_format, pack_index_entry_name, pack_index_checksum, created_at)
-            values (?, ?, ?, 'ready', ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                pack_id,
-                repo_name,
-                repo_id,
-                archive_stats["member_count"],
-                archive_stats["total_bytes"],
-                str(pack_abs.relative_to(ctx.root)),
-                archive_stats["pack_format"],
-                archive_stats["pack_index_entry_name"],
-                archive_stats["pack_index_checksum"],
-                created_at,
-            ),
-        )
-    return pack_id, members_by_blob_id
-
 
 def _canonical_snapshot_metadata(
     repo_name: str,

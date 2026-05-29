@@ -151,7 +151,8 @@ def test_native_local_draft_workflow_smoke(tmp_path: Path, monkeypatch):
             assert task_publish_out.exit_code == 0, task_publish_out.stdout
             published_task = json.loads(task_publish_out.stdout)
             assert published_task["publication_state"] == "published"
-            assert published_task["published_task_id"] == task_id
+            assert published_task["published_task_id"] != task_id
+            assert published_task["published_task_id"].startswith("R")
             assert published_task["published_remote_name"] == "origin"
             assert isinstance(published_task["published_at"], str) and published_task["published_at"]
 
@@ -160,7 +161,8 @@ def test_native_local_draft_workflow_smoke(tmp_path: Path, monkeypatch):
             published_change = json.loads(change_publish_out.stdout)
             assert published_change["publication_state"] == "published"
             assert published_change["identity_source"] == change["identity_source"]
-            assert published_change["published_change_id"] == change["change_id"]
+            assert published_change["published_change_id"] != change["change_id"]
+            assert published_change["published_change_id"].startswith("R")
             assert published_change["published_remote_name"] == "origin"
             assert isinstance(published_change["published_at"], str) and published_change["published_at"]
 

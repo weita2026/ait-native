@@ -195,6 +195,8 @@ def test_official_site_macos_nginx_release_helper_and_ait_sh_wrapper(tmp_path: P
     assert release.returncode == 0, release.stdout + release.stderr
     assert output.joinpath("index.html").exists()
     assert output.joinpath("public", "styles.css").exists()
+    assert output.joinpath("robots.txt").exists()
+    assert output.joinpath("sitemap.xml").exists()
     assert rendered.joinpath("official-site-http.conf").exists()
     assert rendered.joinpath("official-site-https.conf").exists()
     assert rendered.joinpath("issue_and_install_letsencrypt.sh").exists()
@@ -269,6 +271,8 @@ def test_official_site_preview_wrapper_builds_and_serves_static_output(tmp_path:
         assert "Learn — ait" in body
         assert preview_dir.joinpath("index.html").exists()
         assert preview_dir.joinpath("public", "styles.css").exists()
+        assert preview_dir.joinpath("robots.txt").exists()
+        assert preview_dir.joinpath("sitemap.xml").exists()
     finally:
         preview.terminate()
         try:

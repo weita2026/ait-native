@@ -1,17 +1,36 @@
 from __future__ import annotations
 
 import base64
+import sqlite3
+from uuid import uuid4
 import pytest
 
 import ait_native.local_control as local_control
 from ait import snapshot_diff as snapshot_diff_module
 from ait_native.store import create_snapshot, mark_local_plan_published
+from tests._ram_root import detect_host_ram_root
 
 from ._shared import *  # noqa: F401,F403
 
 
+pytestmark = pytest.mark.usefixtures("explicit_host_ram_root_cleanup")
+
+
 def _work_file(root: Path) -> Path:
     return root / "work.txt"
+
+
+def test_batch_suite_explicit_host_ram_cleanup_contract_creates_probe_root():
+    root = detect_host_ram_root()
+    if root is None:
+        pytest.skip("No host memory-backed root is available on this machine.")
+
+    probe_hash_dir = root / ".ait-repos" / f"pytest-batch-suite-probe-{uuid4().hex}"
+    probe_repo_dir = probe_hash_dir / "batch-probe"
+    probe_repo_dir.mkdir(parents=True)
+    (probe_repo_dir / "README.md").write_text("probe\n", encoding="utf-8")
+
+    assert probe_repo_dir.exists()
 
 
 def _land_local_with_rebase_recovery(
@@ -140,6 +159,43 @@ def _complete_local_only_batch_task(
     )
     assert restore_out.exit_code == 0, restore_out.stdout
     return task_payload
+
+
+def _rewrite_local_task_plan_linkage(
+    repo: Path,
+    *,
+    task_id: str,
+    plan_id: str,
+    plan_revision_id: str,
+    plan_item_ref: str,
+) -> None:
+    repo_ctx = RepoContext.discover(repo)
+    task = local_control.get_workflow_task(repo_ctx, task_id)
+    conn = sqlite3.connect(repo_ctx.control_db_path)
+    try:
+        conn.execute(
+            """
+            update workflow_tasks
+            set planning_state = 'planned',
+                plan_id = ?,
+                origin_plan_revision_id = ?,
+                plan_item_ref = ?,
+                plan_linked_at = ?,
+                updated_at = ?
+            where task_id = ?
+            """,
+            (
+                plan_id,
+                plan_revision_id,
+                plan_item_ref,
+                str(task.get("created_at") or task.get("updated_at") or ""),
+                str(task.get("updated_at") or task.get("created_at") or ""),
+                task_id,
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def _land_and_complete_local_task_from_existing_worktree(
@@ -500,21 +556,21 @@ def test_workflow_land_routes_local_change_ids_without_remote_sequence_collision
         assert apply_out.exit_code == 0, apply_out.stdout
         apply_payload = json.loads(apply_out.stdout)
         assert apply_payload["routing"]["kind"] == "completed_local"
-        assert apply_payload["change"]["change_id"] == "LC-0001"
-        assert apply_payload["task"]["task_id"] == "LT-0001"
+        assert apply_payload["change"]["change_id"].startswith("RC-")
+        assert apply_payload["task"]["task_id"].startswith("RT-")
         assert apply_payload["change"]["status"] == "landed"
         assert apply_payload["task"]["status"] == "completed"
 
         remote_local_change_out = runner.invoke(
             app,
-            ["change", "show", "LC-0001", "--remote", "origin", "--json"],
+            ["change", "show", apply_payload["change"]["change_id"], "--remote", "origin", "--json"],
             catch_exceptions=False,
         )
         assert remote_local_change_out.exit_code == 0, remote_local_change_out.stdout
         remote_local_change = json.loads(remote_local_change_out.stdout)
-        assert remote_local_change["change_id"] == "LC-0001"
+        assert remote_local_change["change_id"] == apply_payload["change"]["change_id"]
         assert remote_local_change["status"] == "landed"
-        assert remote_local_change["task_id"] == "LT-0001"
+        assert remote_local_change["task_id"] == apply_payload["task"]["task_id"]
 
         remote_collision_out = runner.invoke(
             app,
@@ -731,6 +787,7 @@ def test_workflow_land_all_completed_local_skips_ineligible_local_draft_rows_and
         assert plan_sync_out.exit_code == 0, plan_sync_out.stdout
         plan_sync_payload = json.loads(plan_sync_out.stdout)
         plan_id = str(plan_sync_payload["results"][0]["plan_id"])
+        plan_revision_id = str(plan_sync_payload["results"][0]["plan_revision_id"])
 
         skipped_task = _complete_local_only_batch_task(
             repo,
@@ -1980,6 +2037,7 @@ def test_workflow_land_all_completed_local_skips_duplicate_local_plan_item_ref_r
         assert plan_sync_out.exit_code == 0, plan_sync_out.stdout
         plan_sync_payload = json.loads(plan_sync_out.stdout)
         plan_id = str(plan_sync_payload["results"][0]["plan_id"])
+        plan_revision_id = str(plan_sync_payload["results"][0]["plan_revision_id"])
 
         first_task = _complete_local_only_batch_task(
             repo,
@@ -1995,11 +2053,16 @@ def test_workflow_land_all_completed_local_skips_duplicate_local_plan_item_ref_r
         duplicate_task = _complete_local_only_batch_task(
             repo,
             monkeypatch,
-            title="Later local completed row on shared plan item ref",
-            intent="Leave a later local completed row on the same execution slice so batch remote land must skip it.",
+            title="Later local completed row rewritten onto shared plan item ref",
+            intent="Simulate historical local residue on the same execution slice so batch remote land must skip it.",
             change_title="Do not publish the duplicate local row",
             readme_append="second duplicate\n",
+        )
+        _rewrite_local_task_plan_linkage(
+            repo,
+            task_id=str(duplicate_task["task_id"]),
             plan_id=plan_id,
+            plan_revision_id=plan_revision_id,
             plan_item_ref="batch-remote-land-duplicate-local-plan-item-ref/shared",
         )
 

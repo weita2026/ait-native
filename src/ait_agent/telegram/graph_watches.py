@@ -22,13 +22,13 @@ from .workflow_notifications import (
 
 
 def _bot_runtime_error_type() -> type[Exception]:
-    from .app import BotRuntimeError
+    from .config import BotRuntimeError
 
     return BotRuntimeError
 
 
 def _telegram_api_client_type() -> type[Any]:
-    from .app import TelegramApiClient
+    from .clients import TelegramApiClient
 
     return TelegramApiClient
 

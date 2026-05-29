@@ -130,6 +130,7 @@ def _run_task_start_command(
             task_id=str(data["task_id"]),
             title=str(data["title"]),
             base_line_name=resolved_base_line,
+            change=change,
             change_id=str(change["change_id"]) if change is not None else None,
         )
     except (KeyError, ValueError, WorkspaceCommandBusyError, IsADirectoryError) as exc:

@@ -33,3 +33,7 @@ def test_store_stash_is_extracted_from_store_facade() -> None:
     assert "def apply_stash(" not in store_text
     assert "def drop_stash(" not in store_text
     assert "from .store import (" not in stash_text
+    assert "local_content_snapshots" in stash_text
+    assert "local_content.workspace_delta(" not in stash_text
+    assert "local_content.create_snapshot(" not in stash_text
+    assert "local_content.restore_workspace(" not in stash_text

@@ -13,11 +13,12 @@ from ait_protocol.common import normalize_optional_text, utc_now
 from ..remote_client import RemoteError
 from ..store import (
     RepoContext,
-    append_local_session_event,
     current_line,
-    get_local_session,
-    list_remotes,
     load_config,
+)
+from ..store_local_sessions import append_local_session_event, get_local_session
+from ..store_remotes import (
+    list_remotes,
 )
 from .remote_repository_defaults import _remote_tuple
 from .remote_session_wrappers import remote_append_session_event, remote_get_session

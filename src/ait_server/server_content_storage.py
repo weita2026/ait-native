@@ -10,6 +10,7 @@ from ait_protocol.common import utc_now
 from ait_storage.packfiles import (
     build_pack_members,
     build_storage_validation_summary,
+    read_pack_entry,
     read_pack_index,
     summarize_pack_archives,
     write_pack_archive,
@@ -27,6 +28,205 @@ def _server_content_module():
     from . import server_content as _server_content
 
     return _server_content
+
+
+def _blob_path(ctx: ServerContext, blob_id: str) -> Path:
+    return ctx.pack_dir / f"{blob_id}.packref"
+
+
+def _pack_path(ctx: ServerContext, pack_id: str) -> Path:
+    return ctx.pack_dir / f"{pack_id}.zip"
+
+
+def _blob_row(conn, blob_id: str):
+    return conn.execute("select * from blobs where blob_id = ?", (blob_id,)).fetchone()
+
+
+def _blob_bytes_by_id(ctx: ServerContext, conn, blob_id: str, *, seen_blob_ids: set[str] | None = None) -> bytes:
+    row = _blob_row(conn, blob_id)
+    if row is None:
+        raise KeyError(f"Unknown blob: {blob_id}")
+    return _blob_bytes_by_row(ctx, conn, row, seen_blob_ids=seen_blob_ids)
+
+
+def _blob_bytes_by_row(ctx: ServerContext, conn, row, *, seen_blob_ids: set[str] | None = None) -> bytes:
+    blob_id = row["blob_id"]
+    visited = set(seen_blob_ids or ())
+    if blob_id in visited:
+        raise ValueError(f"Cyclic blob resolution detected for {blob_id}")
+    visited.add(blob_id)
+    if row["pack_id"] and row["pack_entry_name"]:
+        pack_row = conn.execute("select * from packs where pack_id = ?", (row["pack_id"],)).fetchone()
+        if pack_row is None:
+            raise FileNotFoundError(f"Missing pack metadata for {row['pack_id']}")
+        pack_abs = ctx.root / pack_row["pack_path"]
+        return read_pack_entry(
+            pack_abs,
+            row["pack_entry_name"],
+            resolve_base_blob=lambda base_blob_id: _blob_bytes_by_id(ctx, conn, base_blob_id, seen_blob_ids=visited),
+        )
+    raise FileNotFoundError(f"Packed blob payload not available for {row['blob_id']}")
+
+
+def read_blob_bytes(ctx: ServerContext, blob_id: str) -> bytes:
+    with _server_content_module()._connect(ctx) as conn:
+        _server_content_module()._ensure_schema(conn, ctx)
+        return _blob_bytes_by_id(ctx, conn, blob_id)
+
+
+def _parent_delta_candidates(
+    ctx: ServerContext,
+    conn,
+    parent_snapshot_id: str | None,
+    paths: set[str],
+) -> dict[str, dict[str, Any]]:
+    if not parent_snapshot_id or not paths:
+        return {}
+    placeholders = ", ".join("?" for _ in paths)
+    rows = conn.execute(
+        f"""
+        select sf.path, b.blob_id, b.pack_chain_depth
+        from snapshot_files sf
+        join blobs b on b.blob_id = sf.blob_id
+        where sf.snapshot_id = ?
+          and sf.path in ({placeholders})
+        order by sf.path
+        """,
+        (parent_snapshot_id, *sorted(paths)),
+    ).fetchall()
+    candidates: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        blob_id = row["blob_id"]
+        candidates[row["path"]] = {
+            "blob_id": blob_id,
+            "data": _blob_bytes_by_id(ctx, conn, blob_id),
+            "chain_depth": int(row["pack_chain_depth"] or 0),
+        }
+    return candidates
+
+
+def _write_packed_blobs(
+    ctx: ServerContext,
+    conn,
+    repo_name: str,
+    repo_id: str | None,
+    snapshot_id: str,
+    created_at: str,
+    blob_items: list[dict[str, Any]],
+    *,
+    initial_by_path: dict[str, dict[str, Any]] | None = None,
+) -> tuple[str, dict[str, dict[str, Any]]]:
+    pack_seed = f"{repo_name}|{snapshot_id}|{json.dumps(sorted(item['blob_id'] for item in blob_items))}"
+    pack_id = f"PCK-{hashlib.sha256(pack_seed.encode('utf-8')).hexdigest()[:12].upper()}"
+    pack_abs = _pack_path(ctx, pack_id)
+    members = build_pack_members(blob_items, initial_by_path=initial_by_path)
+    members_by_blob_id = {member["blob_id"]: member for member in members}
+    archive_stats = write_pack_archive(pack_abs, pack_id, created_at, members)
+    existing_pack = conn.execute("select pack_id from packs where pack_id = ?", (pack_id,)).fetchone()
+    if existing_pack is None:
+        conn.execute(
+            """
+            insert into packs(pack_id, repo_name, repo_id, status, member_count, total_bytes, pack_path, pack_format, pack_index_entry_name, pack_index_checksum, created_at)
+            values (?, ?, ?, 'ready', ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                pack_id,
+                repo_name,
+                repo_id,
+                archive_stats["member_count"],
+                archive_stats["total_bytes"],
+                str(pack_abs.relative_to(ctx.root)),
+                archive_stats["pack_format"],
+                archive_stats["pack_index_entry_name"],
+                archive_stats["pack_index_checksum"],
+                created_at,
+            ),
+        )
+    return pack_id, members_by_blob_id
+
+
+def write_blob_bytes(
+    ctx: ServerContext,
+    repo_name: str,
+    data: bytes,
+    *,
+    path_hint: str | None = None,
+    created_at: str | None = None,
+) -> dict[str, Any]:
+    """Store standalone blob bytes in the shared content store.
+
+    Snapshot import already writes file blobs, but plan revisions need a
+    revision-level Markdown payload without manufacturing a repository snapshot.
+    Keep the blob row compatible with snapshot blobs so later pack/gc layers can
+    reason about the payload through the same content table.
+    """
+
+    _server_content_module().ensure_repository(ctx, repo_name, "main")
+    with _server_content_module()._connect(ctx) as conn:
+        _server_content_module()._ensure_schema(conn, ctx)
+        repo_id, _ = _server_content_module()._repository_scope_params(conn, repo_name)
+        digest = hashlib.sha256(data).hexdigest()
+        blob_id = f"BLB-{digest[:20]}"
+        size = len(data)
+        now = created_at or utc_now()
+        blob_storage = _blob_path(ctx, blob_id)
+        existing = _blob_row(conn, blob_id)
+        if existing is None:
+            pack_id, members_by_blob_id = _write_packed_blobs(
+                ctx,
+                conn,
+                repo_name,
+                repo_id,
+                f"standalone:{blob_id}:{now}",
+                now,
+                [
+                    {
+                        "blob_id": blob_id,
+                        "sha256": digest,
+                        "storage_path": str(blob_storage.relative_to(ctx.root)),
+                        "size_bytes": size,
+                        "data": data,
+                        "entry_name": f"blobs/{blob_id}",
+                        "path_hint": path_hint,
+                    }
+                ],
+            )
+            member = members_by_blob_id[blob_id]
+            entry_type = member.get("entry_type", "full")
+            target_storage_kind = "pack_delta" if entry_type == "delta" else "pack_full"
+            conn.execute(
+                """
+                insert or ignore into blobs(
+                    blob_id, sha256, storage_path, size_bytes, storage_kind, pack_id, pack_entry_name,
+                    pack_entry_type, pack_base_blob_id, pack_chain_depth, packed_at, pruned_at, created_at
+                ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, null, ?)
+                """,
+                (
+                    blob_id,
+                    digest,
+                    str(blob_storage.relative_to(ctx.root)),
+                    size,
+                    target_storage_kind,
+                    pack_id,
+                    member["entry_name"],
+                    entry_type,
+                    member.get("base_blob_id"),
+                    int(member.get("chain_depth", 0) or 0),
+                    now,
+                    now,
+                ),
+            )
+        else:
+            stored = dict(existing)
+            if stored.get("sha256") != digest or int(stored.get("size_bytes") or 0) != size:
+                raise ValueError(f"Blob {blob_id} already exists with different metadata")
+        conn.commit()
+        row = conn.execute("select * from blobs where blob_id = ?", (blob_id,)).fetchone()
+    assert row is not None
+    out = dict(row)
+    if path_hint is not None:
+        out["path_hint"] = path_hint
+    return out
 
 
 def snapshot_manifest_map(ctx: ServerContext, snapshot_id: str) -> dict[str, dict[str, Any]]:

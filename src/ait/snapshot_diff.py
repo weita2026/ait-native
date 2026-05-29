@@ -9,7 +9,7 @@ from typing import Any
 
 from ait_protocol.common import connect_sqlite
 
-from . import local_content
+from . import local_content, local_content_snapshots
 
 
 DEFAULT_SNAPSHOT_DIFF_MAX_BYTES = 128_000
@@ -358,8 +358,8 @@ def snapshot_diff(
 ) -> dict[str, Any]:
     conn = connect_sqlite(ctx.content_db_path)
     try:
-        old_files = local_content._snapshot_file_map(conn, old_snapshot_id) if old_snapshot_id else {}
-        new_files = local_content._snapshot_file_map(conn, new_snapshot_id) if new_snapshot_id else {}
+        old_files = local_content_snapshots._snapshot_file_map(conn, old_snapshot_id) if old_snapshot_id else {}
+        new_files = local_content_snapshots._snapshot_file_map(conn, new_snapshot_id) if new_snapshot_id else {}
     finally:
         conn.close()
 

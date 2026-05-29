@@ -22,8 +22,10 @@ from ..store import (
     get_local_plan_revision,
     list_local_plan_revisions,
     mark_local_plan_published,
-    mark_local_task_published,
     workspace_status as local_workspace_status,
+)
+from ..store_local_tasks import (
+    mark_local_task_published,
 )
 from .plan_sync_adoption import _plan_revision_artifact_body, _plan_revisions_ascending
 from .plan_task_linkage import _normalize_plan_task_linkage, _published_local_task_plan_linkage

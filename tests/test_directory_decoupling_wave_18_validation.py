@@ -22,16 +22,23 @@ def test_wave_18_docs_route_to_latest_shipped_boundary_batch() -> None:
     wave_text = _read_text(WAVE_18_MARKDOWN)
 
     assert (
-        "| Latest shipped internal hotspot wave | "
+        "- For the shipped residual boundary batch after the shipped wave-17 follow-up,"
+    ) in plan_text
+    assert (
         "[Directory Decoupling Compact DAG Wave 18]"
-        "(./sprints/directory_decoupling_compact_dag_wave_18.md) |"
+        "(./sprints/directory_decoupling_compact_dag_wave_18.md)"
+    ) in plan_text
+    assert "./sprints/directory_decoupling_compact_dag_wave_18.md" in plan_text
+    assert (
+        "| Latest shipped internal hotspot wave | "
+        "[Directory Decoupling Compact DAG Wave 22]"
+        "(./sprints/directory_decoupling_compact_dag_wave_22.md) |"
     ) in plan_text
     assert (
         "| Latest internal hotspot DAG artifact | "
-        "[Directory Decoupling Compact DAG Wave 18]"
-        "(./sprints/directory_decoupling_compact_dag_wave_18.md) |"
+        "[Directory Decoupling Compact DAG Wave 23]"
+        "(./sprints/directory_decoupling_compact_dag_wave_23.md) |"
     ) in plan_text
-    assert "./sprints/directory_decoupling_compact_dag_wave_18.md" in plan_text
     assert "Status: completed sprint artifact" in wave_text
     assert "LT-1283 /" in wave_text
     assert "LC-1091" in wave_text

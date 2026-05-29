@@ -7,15 +7,17 @@ import click
 from ..remote_client import RemoteError, list_sessions as remote_list_sessions
 from ..repo_paths import RepoContext
 from ..store import (
+    current_line,
+    load_config,
+)
+from ..store_local_sessions import (
     append_local_session_event,
     close_local_session,
     create_local_checkpoint,
     create_local_session,
-    current_line,
     get_local_session,
     list_local_session_events,
     list_local_sessions,
-    load_config,
     resume_local_session,
 )
 from ..task_statuses import task_close_session_status

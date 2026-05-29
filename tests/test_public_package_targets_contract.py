@@ -4,10 +4,12 @@ import json
 import re
 from pathlib import Path
 
+WORKSPACE_ROOT = Path(__file__).resolve().parents[1]
+
 
 def test_public_package_targets_contract_matches_current_distribution_anchor() -> None:
-    payload = json.loads(Path("docs/public_package_targets_contract.json").read_text(encoding="utf-8"))
-    package_init = Path("src/ait_native/__init__.py").read_text(encoding="utf-8")
+    payload = json.loads((WORKSPACE_ROOT / "docs/public_package_targets_contract.json").read_text(encoding="utf-8"))
+    package_init = (WORKSPACE_ROOT / "src/ait_native/__init__.py").read_text(encoding="utf-8")
     version_match = re.search(r'^__version__\s*=\s*"([^"]+)"', package_init, re.MULTILINE)
 
     assert version_match is not None
@@ -20,8 +22,8 @@ def test_public_package_targets_contract_matches_current_distribution_anchor() -
 
 
 def test_public_package_targets_contract_aligns_with_release_surface_map() -> None:
-    payload = json.loads(Path("docs/public_package_targets_contract.json").read_text(encoding="utf-8"))
-    surface_map = json.loads(Path("docs/legal/public_package_surface_map.json").read_text(encoding="utf-8"))
+    payload = json.loads((WORKSPACE_ROOT / "docs/public_package_targets_contract.json").read_text(encoding="utf-8"))
+    surface_map = json.loads((WORKSPACE_ROOT / "docs/legal/public_package_surface_map.json").read_text(encoding="utf-8"))
 
     contract_targets = {item["target_id"]: item for item in payload["package_targets"]}
     mapped_targets = {item["surface_id"]: item for item in surface_map["surfaces"]}

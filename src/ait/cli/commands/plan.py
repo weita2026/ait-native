@@ -10,6 +10,7 @@ from ..task_dag_graph_artifacts import (
 )
 from ..workflow_authoring import _plan_uses_local_store
 from ..plan_sync_matching import _select_sync_existing_plan_with_continuity
+from ..plan_dispatch_helpers import _plan_sync_task_start_advisory
 from ..plan_sync_scope import (
     _load_plan_sync_existing_plans,
     _prune_missing_plan_artifacts,
@@ -100,7 +101,15 @@ def plan_revisions(
     _render_plan_revisions(plan_id, rows)
 
 
-@plan_app.command("items", help="List stable plan item refs from the current or selected plan revision.", short_help="List stable plan items.")
+@plan_app.command(
+    "items",
+    help=(
+        "List stable plan item refs from the current or selected plan revision. "
+        "This is identity discovery only; use `plan inspect` or `plan candidates` "
+        "before `task start` to confirm the ref is still taskable."
+    ),
+    short_help="List stable plan items.",
+)
 def plan_items(
     plan_id: str,
     revision: Optional[str] = typer.Option(None, "--revision", help="Read plan items from a specific revision instead of the current head."),
@@ -246,6 +255,11 @@ def plan_sync(
     artifact_results: list[dict[str, Any]] = []
 
     def _plan_sync_payload(status: str, *, error: dict[str, Any] | None = None) -> dict[str, Any]:
+        touched_plan_ids = [
+            str(row.get("plan_id") or "")
+            for row in results
+            if row.get("action") != "pruned" and str(row.get("plan_id") or "").strip()
+        ]
         payload = {
             "status": status,
             "target": str(target),
@@ -266,6 +280,11 @@ def plan_sync(
                 "artifact_count": len(artifact_results),
             },
         }
+        if touched_plan_ids:
+            payload["task_start_advisory"] = _plan_sync_task_start_advisory(
+                ctx,
+                plan_ids=touched_plan_ids,
+            )
         if error is not None:
             payload["error"] = error
         return payload
@@ -442,14 +461,19 @@ def plan_sync(
                         key=lambda item: (item[0], item[1] or ""),
                     )
                     for _, artifact_selector in identity_keys:
-                        _, adoption = _resolve_local_sync_plan_candidate(
+                        _, adoption, _ = _resolve_local_sync_plan_candidate(
                             ctx,
-                            artifact_path,
-                            artifact_selector=artifact_selector,
+                            {
+                                "artifact_path": artifact_path,
+                                "artifact_selector": artifact_selector,
+                            },
+                            local_plans=plans,
                             local_indexed_plans=indexed_plans_by_identity,
+                            remote_plans=remote_plans,
                             remote_indexed_plans=remote_indexed_plans_by_identity,
                             remote_name=remote,
                             repo_name=repo_name,
+                            load_full_remote_plan_candidates=load_full_remote_plan_candidates,
                             load_remote_plan=load_remote_plan,
                             load_remote_revisions=load_remote_revisions,
                             load_remote_revision=load_remote_revision,
@@ -655,11 +679,6 @@ def plan_execute_cmd(
         "--resume-run",
         help="Resume a recorded graph-run session after an operator pause or cleared gate.",
     ),
-    retry_run: bool = typer.Option(
-        False,
-        "--retry-run",
-        help="Retry a recorded graph-run session after a recoverable stop or gate reset.",
-    ),
     abort_run: bool = typer.Option(
         False,
         "--abort-run",
@@ -687,7 +706,7 @@ def plan_execute_cmd(
             raise ValueError("--comparison-evidence-workload-id requires --comparison-evidence-report.")
         if comparison_evidence_report is not None and not auto_compact_worker:
             raise ValueError("--comparison-evidence-report currently requires --auto-compact-worker.")
-        operator_actions = [name for name, enabled in (("pause", pause_run is not None), ("resume", resume_run), ("retry", retry_run), ("abort", abort_run)) if enabled]
+        operator_actions = [name for name, enabled in (("pause", pause_run is not None), ("resume", resume_run), ("abort", abort_run)) if enabled]
         if run_session and latest_run:
             raise ValueError("Choose either --run-session or --latest-run, not both.")
         if (run_session or latest_run) and open_execute_run:
@@ -814,7 +833,7 @@ def plan_execute_cmd(
                     comparison_evidence_workload_id=comparison_evidence_workload_id,
                 )
             payload["mode"] = "record_run"
-        if payload.get("mode") in {"bootstrap_node", "advance_run", "pause_run", "resume_run", "retry_run", "abort_run", "record_run"}:
+        if payload.get("mode") in {"bootstrap_node", "advance_run", "pause_run", "resume_run", "abort_run", "record_run"}:
             payload["telegram_graph_watch"] = _maybe_auto_register_task_dag_telegram_watch(
                 ctx=ctx,
                 remote_row=remote_row,

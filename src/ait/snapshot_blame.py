@@ -8,7 +8,13 @@ from typing import Any
 from ait_protocol.common import connect_sqlite
 
 from . import local_content, local_control
-from .remote_client import RemoteError, get_change_detail as remote_get_change_detail, list_patchsets as remote_list_patchsets
+from .local_content_projection import _is_lineage_only_markdown_artifact_path
+from .remote_client import (
+    RemoteError,
+    get_change_detail as remote_get_change_detail,
+    get_plan_revision as remote_get_plan_revision,
+    list_patchsets as remote_list_patchsets,
+)
 from .repo_paths import RepoContext
 from .store import (
     get_local_plan,
@@ -23,6 +29,10 @@ PROVENANCE_CONFIDENCE_PATCHSET = "derived_from_patchset"
 PROVENANCE_CONFIDENCE_LAND = "derived_from_land"
 PROVENANCE_CONFIDENCE_EVENT = "event_inferred"
 PROVENANCE_CONFIDENCE_UNKNOWN = "unknown"
+
+
+class MissingMarkdownRevisionBodyError(ValueError):
+    """Raised when a lineage-only Markdown revision body cannot be materialized."""
 
 __all__ = [
     "PROVENANCE_CONFIDENCE_DIRECT",
@@ -272,7 +282,7 @@ def _snapshot_row_map(conn, snapshot_ids: list[str]) -> dict[str, dict[str, Any]
 
 def path_uses_markdown_plan_lineage(ctx: RepoContext, path_value: str | Path) -> bool:
     rel_path = normalize_blame_path(ctx, path_value)
-    return bool(local_content._is_lineage_only_markdown_artifact_path(rel_path))
+    return bool(_is_lineage_only_markdown_artifact_path(rel_path))
 
 
 def _normalize_text(value: Any) -> str | None:
@@ -437,7 +447,23 @@ def _plan_head_artifact_field(plan: dict[str, Any], field: str) -> str | None:
     return None
 
 
-def _current_plan_for_artifact_path(ctx: RepoContext, rel_path: str) -> dict[str, Any]:
+def _known_markdown_plan_refs(plans: list[dict[str, Any]]) -> list[str]:
+    return sorted(
+        {
+            str(_plan_head_artifact_field(plan, "artifact_selector") or "").strip()
+            for plan in plans
+            if str(_plan_head_artifact_field(plan, "artifact_selector") or "").strip()
+        }
+    )
+
+
+def _current_plan_for_artifact_path(
+    ctx: RepoContext,
+    rel_path: str,
+    *,
+    plan_id: str | None = None,
+    plan_ref: str | None = None,
+) -> dict[str, Any]:
     candidates = [
         plan
         for plan in list_local_plans(ctx)
@@ -454,25 +480,81 @@ def _current_plan_for_artifact_path(ctx: RepoContext, rel_path: str) -> dict[str
             f"Lineage-only Markdown path {rel_path} is not present in line snapshots and is not yet tracked in local plan lineage. "
             f"Run `ait plan sync {rel_path}` first."
         )
+    if plan_id is not None:
+        selected = [plan for plan in open_candidates if str(plan.get("plan_id") or "").strip() == str(plan_id).strip()]
+        if not selected:
+            raise ValueError(
+                f"Lineage-only Markdown path {rel_path} is not tracked by current plan {plan_id}. "
+                "Use a current plan id for this artifact path."
+            )
+        return get_local_plan(ctx, str(selected[0]["plan_id"]))
+    if plan_ref is not None:
+        resolved_ref = str(plan_ref).strip()
+        selected = [
+            plan
+            for plan in open_candidates
+            if str(_plan_head_artifact_field(plan, "artifact_selector") or "").strip() == resolved_ref
+        ]
+        if not selected:
+            known_refs = _known_markdown_plan_refs(open_candidates)
+            known_detail = f" Known tracked refs: {', '.join(known_refs)}." if known_refs else ""
+            raise ValueError(
+                f"Lineage-only Markdown path {rel_path} is not tracked by current plan ref {resolved_ref}.{known_detail}"
+            )
+        if len(selected) > 1:
+            raise ValueError(
+                f"Multiple current plans track lineage-only Markdown path {rel_path} with selector {resolved_ref}. "
+                "Use `--plan-id` to choose one concrete plan."
+            )
+        return get_local_plan(ctx, str(selected[0]["plan_id"]))
     if len(open_candidates) > 1:
-        selector_sample = sorted(
-            {
-                str(_plan_head_artifact_field(plan, "artifact_selector") or "").strip()
-                for plan in open_candidates
-                if str(_plan_head_artifact_field(plan, "artifact_selector") or "").strip()
-            }
-        )
+        selector_sample = _known_markdown_plan_refs(open_candidates)
         selector_detail = f" Known tracked refs: {', '.join(selector_sample)}." if selector_sample else ""
         raise ValueError(
             f"Multiple current plans track lineage-only Markdown path {rel_path}.{selector_detail} "
-            "Use a file with one current tracked plan, or sync and inspect the specific plan directly."
+            "Use `--plan-ref` or `--plan-id` to choose one current tracked plan."
         )
     return get_local_plan(ctx, str(open_candidates[0]["plan_id"]))
+
+
+def _repair_markdown_plan_revision_blob_bytes(
+    ctx: RepoContext,
+    *,
+    plan: dict[str, Any],
+    revision: dict[str, Any],
+    rel_path: str,
+) -> bytes | None:
+    published_remote_name = _normalize_text(plan.get("published_remote_name"))
+    published_plan_id = _normalize_text(plan.get("published_plan_id")) or _normalize_text(plan.get("plan_id"))
+    published_revision_id = _normalize_text(revision.get("published_plan_revision_id"))
+    expected_blob_id = _normalize_text(revision.get("artifact_blob_id"))
+    if published_remote_name is None or published_plan_id is None or published_revision_id is None:
+        return None
+    remote = resolve_remote(ctx, published_remote_name)
+    remote_revision = remote_get_plan_revision(remote["url"], published_plan_id, published_revision_id)
+    artifact_body = remote_revision.get("artifact_body")
+    if not isinstance(artifact_body, str):
+        raise ValueError(
+            f"Published remote plan revision {published_revision_id} for lineage-only Markdown path {rel_path} "
+            "does not expose readable artifact body content."
+        )
+    materialized_blob_id = local_content.ensure_blob_bytes(
+        ctx,
+        artifact_body.encode("utf-8"),
+        path_hint=_normalize_text(remote_revision.get("artifact_path")) or rel_path,
+    )
+    if expected_blob_id is not None and materialized_blob_id != expected_blob_id:
+        raise ValueError(
+            f"Published remote plan revision {published_revision_id} for lineage-only Markdown path {rel_path} "
+            f"materialized blob {materialized_blob_id}, expected {expected_blob_id}."
+        )
+    return local_content._read_blob_bytes(ctx, materialized_blob_id)
 
 
 def _plan_revision_body_bytes(
     ctx: RepoContext,
     *,
+    plan: dict[str, Any],
     rel_path: str,
     revision: dict[str, Any],
     current_head_revision_id: str,
@@ -492,8 +574,18 @@ def _plan_revision_body_bytes(
         try:
             return local_content._read_blob_bytes(ctx, blob_id)
         except KeyError:
-            pass
-    raise ValueError(
+            try:
+                repaired = _repair_markdown_plan_revision_blob_bytes(
+                    ctx,
+                    plan=plan,
+                    revision=revision,
+                    rel_path=rel_path,
+                )
+            except (KeyError, RemoteError, ValueError):
+                repaired = None
+            if repaired is not None:
+                return repaired
+    raise MissingMarkdownRevisionBodyError(
         f"Plan revision {revision_id or '<unknown>'} for lineage-only Markdown path {rel_path} is missing readable artifact content locally."
     )
 
@@ -501,10 +593,11 @@ def _plan_revision_body_bytes(
 def _compute_markdown_plan_line_owners(
     ctx: RepoContext,
     *,
+    plan: dict[str, Any],
     rel_path: str,
     revisions: list[dict[str, Any]],
     current_head_revision_id: str,
-) -> tuple[list[str], list[str]]:
+) -> tuple[list[str], list[str], list[str]]:
     if not revisions:
         raise ValueError(f"No local plan revisions exist for lineage-only Markdown path {rel_path}.")
     current_bytes = _current_repo_root_bytes(ctx, rel_path)
@@ -512,27 +605,37 @@ def _compute_markdown_plan_line_owners(
 
     previous_lines: list[str] = []
     previous_owners: list[str] = []
+    skipped_revision_ids: list[str] = []
     for revision in revisions:
         revision_id = str(revision.get("plan_revision_id") or "").strip()
         if not revision_id:
             raise ValueError(f"Plan revision for lineage-only Markdown path {rel_path} is missing a revision id.")
-        next_lines = _decode_text_lines(
-            _plan_revision_body_bytes(
-                ctx,
-                rel_path=rel_path,
-                revision=revision,
-                current_head_revision_id=current_head_revision_id,
-                current_bytes=current_bytes,
-            ),
-            label=f"Plan revision {revision_id}:{rel_path}",
-        )
+        try:
+            next_lines = _decode_text_lines(
+                _plan_revision_body_bytes(
+                    ctx,
+                    plan=plan,
+                    rel_path=rel_path,
+                    revision=revision,
+                    current_head_revision_id=current_head_revision_id,
+                    current_bytes=current_bytes,
+                ),
+                label=f"Plan revision {revision_id}:{rel_path}",
+            )
+        except MissingMarkdownRevisionBodyError:
+            skipped_revision_ids.append(revision_id)
+            continue
         if not previous_lines:
             previous_lines = next_lines
             previous_owners = [revision_id] * len(next_lines)
             continue
         previous_owners = _apply_line_diff(previous_lines, next_lines, previous_owners, revision_id)
         previous_lines = next_lines
-    return current_lines, previous_owners
+    if not previous_lines:
+        raise MissingMarkdownRevisionBodyError(
+            f"Lineage-only Markdown path {rel_path} does not have any readable plan revision bodies locally or from the published remote lineage."
+        )
+    return current_lines, previous_owners, skipped_revision_ids
 
 
 def _compute_line_owners(
@@ -801,11 +904,13 @@ def compute_markdown_plan_blame(
     line: int | None = None,
     start_line: int | None = None,
     end_line: int | None = None,
+    plan_id: str | None = None,
+    plan_ref: str | None = None,
 ) -> dict[str, Any]:
     rel_path = normalize_blame_path(ctx, path_value)
-    if not local_content._is_lineage_only_markdown_artifact_path(rel_path):
+    if not _is_lineage_only_markdown_artifact_path(rel_path):
         raise ValueError(f"Path {rel_path} does not use lineage-only Markdown plan history.")
-    plan = _current_plan_for_artifact_path(ctx, rel_path)
+    plan = _current_plan_for_artifact_path(ctx, rel_path, plan_id=plan_id, plan_ref=plan_ref)
     revisions_desc = list_local_plan_revisions(ctx, str(plan["plan_id"]))
     revisions = sorted(revisions_desc, key=lambda row: int(row.get("revision_number") or 0))
     head_revision = plan.get("head_revision") if isinstance(plan.get("head_revision"), dict) else {}
@@ -813,8 +918,9 @@ def compute_markdown_plan_blame(
     if not head_revision_id:
         raise ValueError(f"Current plan {plan['plan_id']} is missing a head revision for lineage-only Markdown path {rel_path}.")
 
-    target_lines, owners = _compute_markdown_plan_line_owners(
+    target_lines, owners, skipped_revision_ids = _compute_markdown_plan_line_owners(
         ctx,
+        plan=plan,
         rel_path=rel_path,
         revisions=revisions,
         current_head_revision_id=head_revision_id,
@@ -847,6 +953,7 @@ def compute_markdown_plan_blame(
         "target": {
             "kind": "markdown_plan",
             "plan_id": plan.get("plan_id"),
+            "plan_ref": _plan_head_artifact_field(plan, "artifact_selector"),
             "artifact_path": rel_path,
             "resolved_plan_revision_id": head_revision_id,
         },
@@ -856,12 +963,23 @@ def compute_markdown_plan_blame(
             "start": selected_start,
             "end": selected_end,
         },
+        "warnings": [
+            {
+                "kind": "missing_markdown_revision_body",
+                "plan_revision_id": revision_id,
+                "message": (
+                    f"Skipped unreadable historical plan revision {revision_id} while attributing lineage-only Markdown path {rel_path}."
+                ),
+            }
+            for revision_id in skipped_revision_ids
+        ],
         "hunks": _collapse_line_rows(line_rows),
         "lines": line_rows,
         "_internal": {
             "target_file_lines": target_lines,
             "selected_owner_plan_revision_ids": unique_owner_ids,
             "selected_owner_count": len(unique_owner_ids),
+            "skipped_plan_revision_ids": skipped_revision_ids,
         },
     }
 

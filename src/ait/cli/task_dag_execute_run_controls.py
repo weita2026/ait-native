@@ -14,6 +14,7 @@ from ..remote_client import (
 )
 from ..store import RepoContext, current_line, load_config
 from .remote_ci_readiness_helpers import _remote_error_status_code, _remote_read_task_dag_readiness
+from .remote_session_wrappers import remote_close_session
 from .runtime_defaults import _normalize_text_value
 from .task_dag_execute_run_state import (
     _task_dag_execute_run_summary,
@@ -712,6 +713,168 @@ def _task_dag_refresh_execute_run(
     }
 
 
+def _task_dag_fail_execute_run(
+    *,
+    ctx: RepoContext,
+    remote_row: dict[str, Any],
+    repo_name: str,
+    plan_id: str,
+    graph: dict[str, Any],
+    graph_path: Path,
+    session_id: str,
+    failure_reason: str,
+    failure_detail: str | None = None,
+    worker_session_id: str | None = None,
+    readiness: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    remote_get_session_fn = _app_override("remote_get_session", remote_get_session)
+    remote_list_session_events_fn = _app_override("remote_list_session_events", remote_list_session_events)
+    execute_run_summary_fn = _app_override("_task_dag_execute_run_summary", _task_dag_execute_run_summary)
+    execute_state_digest_fn = _app_override("_task_dag_execute_state_digest", _task_dag_execute_state_digest)
+    graph_run_id_fn = _app_override("_task_dag_graph_run_id", _task_dag_graph_run_id)
+    state_snapshot_payload_fn = _app_override("_task_dag_state_snapshot_payload", _task_dag_state_snapshot_payload)
+    relative_path_fn = _app_override("_task_dag_relative_path", _task_dag_relative_path)
+    remote_append_session_event_fn = _app_override("remote_append_session_event", remote_append_session_event)
+    remote_close_session_fn = _app_override("remote_close_session", remote_close_session)
+    readiness_payload_fn = _app_override("_task_dag_readiness_payload", _task_dag_readiness_payload)
+    if not session_id:
+        raise ValueError("Graph-run failure reconciliation requires a graph-run session id.")
+    session = remote_get_session_fn(remote_row["url"], session_id, repo_name=repo_name)
+    metadata = session.get("metadata") if isinstance(session.get("metadata"), dict) else {}
+    session_plan_id = str(metadata.get("plan_id") or "").strip()
+    session_graph_id = str(metadata.get("graph_id") or "").strip()
+    graph_id = str(graph.get("graph_id") or "")
+    if session_plan_id and session_plan_id != plan_id:
+        raise ValueError(f"Session {session_id} belongs to plan {session_plan_id}, not {plan_id}.")
+    if session_graph_id and session_graph_id != graph_id:
+        raise ValueError(f"Session {session_id} belongs to graph {session_graph_id}, not {graph_id}.")
+
+    events = remote_list_session_events_fn(remote_row["url"], session_id, repo_name=repo_name)
+    prior_summary = execute_run_summary_fn(session, events)
+    previous_snapshot = (
+        prior_summary.get("latest_state_snapshot")
+        if isinstance(prior_summary.get("latest_state_snapshot"), dict)
+        else {}
+    )
+
+    source_plan = graph.get("source_plan") if isinstance(graph.get("source_plan"), dict) else {}
+    plan_revision_id = str(source_plan.get("plan_revision_id") or "").strip() or None
+    graph_run_id = str(metadata.get("graph_run_id") or previous_snapshot.get("graph_run_id") or "").strip()
+    if not graph_run_id:
+        graph_run_id = graph_run_id_fn(plan_id, graph_id)
+    current_readiness = (
+        readiness
+        if isinstance(readiness, dict)
+        else readiness_payload_fn(
+            ctx,
+            graph,
+            _normalize_text_value(remote_row.get("name")) or _normalize_text_value(remote_row.get("remote_name")),
+        )
+    )
+    current_snapshot = state_snapshot_payload_fn(
+        ctx=ctx,
+        plan_id=plan_id,
+        plan_revision_id=plan_revision_id,
+        graph=graph,
+        graph_path=graph_path,
+        readiness=current_readiness,
+        graph_run_id=graph_run_id,
+    )
+    current_snapshot["execution_state"] = "failed"
+    current_snapshot["next_action"] = "operator retry after compact worker failure"
+    current_snapshot["failure_reason"] = str(failure_reason or "compact_worker_exception").strip()
+    if failure_detail:
+        current_snapshot["failure_detail"] = str(failure_detail)
+    if worker_session_id:
+        current_snapshot["failed_worker_session_id"] = str(worker_session_id)
+    current_snapshot["readiness_digest"] = execute_state_digest_fn(current_snapshot)
+
+    failure_event_payload = {
+        "graph_run_id": graph_run_id,
+        "plan_id": plan_id,
+        "plan_revision_id": plan_revision_id,
+        "graph_id": graph_id,
+        "graph_artifact_path": relative_path_fn(ctx, graph_path),
+        "previous_execution_state": previous_snapshot.get("execution_state") or metadata.get("execution_state"),
+        "execution_state": current_snapshot.get("execution_state"),
+        "next_action": current_snapshot.get("next_action"),
+        "workflow_summary": current_snapshot.get("workflow_summary") or {},
+        "readiness_summary": current_snapshot.get("readiness_summary") or {},
+        "failure_reason": current_snapshot.get("failure_reason"),
+    }
+    if failure_detail:
+        failure_event_payload["failure_detail"] = failure_detail
+    if worker_session_id:
+        failure_event_payload["worker_session_id"] = worker_session_id
+    failure_event = remote_append_session_event_fn(
+        remote_row["url"],
+        session_id,
+        "task_graph.execution_failed",
+        failure_event_payload,
+        repo_name=repo_name,
+    )
+    state_snapshot_event = remote_append_session_event_fn(
+        remote_row["url"],
+        session_id,
+        "task_graph.state_snapshot",
+        current_snapshot,
+        repo_name=repo_name,
+    )
+    telegram_graph_watch_notifications = _trigger_task_dag_execute_run_telegram_notifications(
+        ctx,
+        remote_row=remote_row,
+        repo_name=repo_name,
+        plan_id=plan_id,
+    )
+
+    worker_session_close_out = None
+    if worker_session_id:
+        try:
+            worker_session_close_out = remote_close_session_fn(
+                remote_row["url"],
+                worker_session_id,
+                status="failed",
+                repo_name=repo_name,
+            )
+        except Exception as exc:
+            worker_session_close_out = {
+                "session_id": worker_session_id,
+                "status": "close_failed",
+                "detail": str(exc),
+            }
+
+    try:
+        graph_run_close_out = remote_close_session_fn(
+            remote_row["url"],
+            session_id,
+            status="failed",
+            repo_name=repo_name,
+        )
+    except Exception as exc:
+        graph_run_close_out = {
+            "session_id": session_id,
+            "status": "close_failed",
+            "detail": str(exc),
+        }
+
+    return {
+        **execute_run_summary_fn(session, [*events, failure_event, state_snapshot_event]),
+        "graph_artifact_path": relative_path_fn(ctx, graph_path),
+        "current_readiness_summary": current_readiness.get("summary") or {},
+        "execution_state": current_snapshot.get("execution_state"),
+        "workflow_summary": current_snapshot.get("workflow_summary") or {},
+        "failure_event": failure_event,
+        "state_snapshot_event": state_snapshot_event,
+        "previous_state_snapshot": previous_snapshot or None,
+        "latest_state_snapshot": current_snapshot,
+        "failure_reason": current_snapshot.get("failure_reason"),
+        "failure_detail": current_snapshot.get("failure_detail"),
+        "worker_session_close_out": worker_session_close_out,
+        "graph_run_close_out": graph_run_close_out,
+        "telegram_graph_watch_notifications": telegram_graph_watch_notifications,
+    }
+
+
 def _task_dag_pause_execution_state(reason: str) -> str:
     normalized = str(reason or "manual").strip().lower().replace("-", "_")
     mapping = {
@@ -807,9 +970,6 @@ def _task_dag_control_execute_run(
     elif action == "resume":
         state_snapshot["execution_state"] = execute_state_from_snapshot_fn(state_snapshot)
         event_type = "task_graph.execution_resumed"
-    elif action == "retry":
-        state_snapshot["execution_state"] = execute_state_from_snapshot_fn(state_snapshot)
-        event_type = "task_graph.execution_retried"
     elif action == "abort":
         state_snapshot["execution_state"] = "aborted"
         state_snapshot["next_action"] = "aborted by operator"

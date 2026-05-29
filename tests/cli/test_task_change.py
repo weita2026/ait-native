@@ -283,6 +283,76 @@ def test_task_start_task_only_keeps_single_public_entrypoint_without_opening_cha
     assert json.loads(task_show_out.stdout)["status"] == "active"
 
 
+def test_local_task_start_rejects_reusing_plan_item_ref_for_new_task(tmp_path: Path, monkeypatch):
+    repo = tmp_path / "housekeeper-local-duplicate-plan-item-ref"
+    repo.mkdir()
+    (repo / "README.md").write_text("base\n", encoding="utf-8")
+    monkeypatch.chdir(repo)
+
+    assert runner.invoke(app, ["init", "--name", "housekeeper"], catch_exceptions=False).exit_code == 0
+    assert runner.invoke(app, ["config", "set", "--plan-task-binding-mode", "advisory"], catch_exceptions=False).exit_code == 0
+
+    plan_file = _write_plan_artifact(
+        repo,
+        "docs/sprints/local_duplicate_plan_item_ref.md",
+        "# Local Duplicate Plan Item Ref\n\n"
+        "## Bootstrap [plan-ref: local-duplicate-plan-item-ref/root]\n\n"
+        "- [ ] keep one honest execution slice [ref: local-duplicate-plan-item-ref/slice]\n",
+    )
+    sync_out = runner.invoke(app, ["plan", "sync", plan_file, "--json"], catch_exceptions=False)
+    assert sync_out.exit_code == 0, sync_out.stdout
+    plan_id = str(json.loads(sync_out.stdout)["results"][0]["plan_id"])
+
+    first_task_out = runner.invoke(
+        app,
+        [
+            "task",
+            "start",
+            "--local",
+            "--task-only",
+            "--title",
+            "First local plan-linked task",
+            "--intent",
+            "claim the execution slice once",
+            "--risk",
+            "low",
+            "--plan",
+            plan_id,
+            "--plan-item-ref",
+            "local-duplicate-plan-item-ref/slice",
+            "--json",
+        ],
+        catch_exceptions=False,
+    )
+    assert first_task_out.exit_code == 0, first_task_out.stdout
+
+    duplicate_task_out = runner.invoke(
+        app,
+        [
+            "task",
+            "start",
+            "--local",
+            "--task-only",
+            "--title",
+            "Incorrect second local task",
+            "--intent",
+            "this should be rejected because the ref already has task history",
+            "--risk",
+            "low",
+            "--plan",
+            plan_id,
+            "--plan-item-ref",
+            "local-duplicate-plan-item-ref/slice",
+        ],
+        catch_exceptions=False,
+    )
+    assert duplicate_task_out.exit_code != 0
+    output = duplicate_task_out.output or duplicate_task_out.stdout
+    assert "already linked to task" in output
+    assert "plan inspect" in output
+    assert "plan candidates" in output
+
+
 def test_task_reads_and_change_close_remain_mode_safe_across_three_workflow_modes(tmp_path: Path, monkeypatch):
     repo = tmp_path / "housekeeper-read-close-mode-safety"
     repo.mkdir()
@@ -479,7 +549,7 @@ def test_native_task_change_and_patchset_publish(tmp_path: Path, monkeypatch):
         )
         assert task_out.exit_code == 0, task_out.stdout
         task = json.loads(task_out.stdout)
-        assert task["task_id"].startswith("RAITT-")
+        assert task["task_id"].startswith("RT-")
         workspace = _bind_task_worktree(task["task_id"], monkeypatch, name="native-task-change")
 
         assert runner.invoke(app, ["line", "create", "feature/bootstrap"], catch_exceptions=False).exit_code == 0
@@ -496,7 +566,7 @@ def test_native_task_change_and_patchset_publish(tmp_path: Path, monkeypatch):
         )
         assert change_out.exit_code == 0, change_out.stdout
         change = json.loads(change_out.stdout)
-        assert change["change_id"].startswith("RAITC-")
+        assert change["change_id"].startswith("RC-")
 
         patchset_out = runner.invoke(
             app,
@@ -508,7 +578,7 @@ def test_native_task_change_and_patchset_publish(tmp_path: Path, monkeypatch):
         assert patchset["revision_snapshot_id"] == feature_snapshot["snapshot_id"]
         assert patchset["base_snapshot_id"] == main_snapshot["snapshot_id"]
         assert patchset["patchset_number"] == 1
-        assert patchset["patchset_id"].startswith("RAITP-")
+        assert patchset["patchset_id"].startswith("RP-")
 
         patchset_show = runner.invoke(app, ["patchset", "show", patchset["patchset_id"], "--json"], catch_exceptions=False)
         assert patchset_show.exit_code == 0, patchset_show.stdout
@@ -570,8 +640,163 @@ def test_patchset_publish_refuses_when_bound_worktree_needs_retarget(tmp_path: P
         )
         assert publish_out.exit_code != 0
         output = publish_out.output or publish_out.stdout or ""
-        assert "worktree rebase --onto main" in output
+        assert "ait worktree rebase" in output
+        assert "--onto main" in output
         assert "before publishing" in output
+
+
+def test_change_create_refuses_when_bound_worktree_needs_retarget(tmp_path: Path, monkeypatch):
+    repo = tmp_path / "housekeeper-change-create-retarget"
+    repo.mkdir()
+    (repo / "README.md").write_text("base\n", encoding="utf-8")
+
+    with running_server(tmp_path / "server-data-change-create-retarget") as base_url:
+        monkeypatch.chdir(repo)
+        assert runner.invoke(app, ["init", "--name", "housekeeper"], catch_exceptions=False).exit_code == 0
+        assert runner.invoke(app, ["remote", "add", "origin", base_url, "--repo-name", "housekeeper", "--default"], catch_exceptions=False).exit_code == 0
+        _set_solo_remote_advisory()
+
+        main_snap_out = runner.invoke(app, ["snapshot", "create", "--message", "main seed", "--json"], catch_exceptions=False)
+        assert main_snap_out.exit_code == 0, main_snap_out.stdout
+        assert runner.invoke(app, ["push", "--line", "main"], catch_exceptions=False).exit_code == 0
+
+        task_out = runner.invoke(
+            app,
+            [
+                "task",
+                "start",
+                "--task-only",
+                "--title",
+                "Change create rebase advisory",
+                "--intent",
+                "block new change creation from a stale bound worktree",
+                "--risk",
+                "medium",
+                "--json",
+            ],
+            catch_exceptions=False,
+        )
+        assert task_out.exit_code == 0, task_out.stdout
+        payload = json.loads(task_out.stdout)
+        task = payload
+        workspace = Path(payload["worktree"]["path"])
+        monkeypatch.chdir(workspace)
+
+        assert runner.invoke(app, ["line", "create", "feature/change-create-retarget"], catch_exceptions=False).exit_code == 0
+        assert runner.invoke(app, ["line", "switch", "feature/change-create-retarget"], catch_exceptions=False).exit_code == 0
+        (workspace / "feature.txt").write_text("feature only\n", encoding="utf-8")
+        feature_out = runner.invoke(app, ["snapshot", "create", "--message", "feature side", "--json"], catch_exceptions=False)
+        assert feature_out.exit_code == 0, feature_out.stdout
+
+        monkeypatch.chdir(repo)
+        (repo / "README.md").write_text("base\nmain advanced\n", encoding="utf-8")
+        repo_ctx = RepoContext.discover(repo)
+        local_create_snapshot(repo_ctx, "main advance")
+
+        monkeypatch.chdir(workspace)
+        change_out = runner.invoke(
+            app,
+            [
+                "change",
+                "create",
+                "--task",
+                task["task_id"],
+                "--title",
+                "Should block on stale base",
+                "--base-line",
+                "main",
+            ],
+            catch_exceptions=False,
+        )
+        assert change_out.exit_code != 0
+        output = change_out.output or change_out.stdout or ""
+        assert "worktree rebase" in output
+        assert "--onto main" in output
+        assert "before creating a new change" in output
+
+
+def test_change_create_refuses_when_bound_worktree_rebase_is_conflicted(tmp_path: Path, monkeypatch):
+    repo = tmp_path / "housekeeper-change-create-conflicted-rebase"
+    repo.mkdir()
+    (repo / "README.md").write_text("base\n", encoding="utf-8")
+    root_conflict = repo / "conflict.txt"
+
+    with running_server(tmp_path / "server-data-change-create-conflicted-rebase") as base_url:
+        monkeypatch.chdir(repo)
+        assert runner.invoke(app, ["init", "--name", "housekeeper"], catch_exceptions=False).exit_code == 0
+        assert runner.invoke(app, ["remote", "add", "origin", base_url, "--repo-name", "housekeeper", "--default"], catch_exceptions=False).exit_code == 0
+        _set_solo_remote_advisory()
+
+        main_snap_out = runner.invoke(app, ["snapshot", "create", "--message", "main seed", "--json"], catch_exceptions=False)
+        assert main_snap_out.exit_code == 0, main_snap_out.stdout
+        assert runner.invoke(app, ["push", "--line", "main"], catch_exceptions=False).exit_code == 0
+
+        task_out = runner.invoke(
+            app,
+            [
+                "task",
+                "start",
+                "--task-only",
+                "--title",
+                "Change create conflicted rebase guard",
+                "--intent",
+                "block new change creation while rebase conflicts are unresolved",
+                "--risk",
+                "medium",
+                "--json",
+            ],
+            catch_exceptions=False,
+        )
+        assert task_out.exit_code == 0, task_out.stdout
+        payload = json.loads(task_out.stdout)
+        task = payload
+        worktree = payload["worktree"]
+        workspace = Path(worktree["path"])
+        workspace_conflict = workspace / "conflict.txt"
+        monkeypatch.chdir(workspace)
+
+        assert runner.invoke(app, ["line", "create", "feature/change-create-conflicted-rebase"], catch_exceptions=False).exit_code == 0
+        assert runner.invoke(app, ["line", "switch", "feature/change-create-conflicted-rebase"], catch_exceptions=False).exit_code == 0
+        workspace_conflict.write_text("feature side\n", encoding="utf-8")
+        feature_out = runner.invoke(app, ["snapshot", "create", "--message", "feature conflict", "--json"], catch_exceptions=False)
+        assert feature_out.exit_code == 0, feature_out.stdout
+
+        monkeypatch.chdir(repo)
+        root_conflict.write_text("main side\n", encoding="utf-8")
+        repo_ctx = RepoContext.discover(repo)
+        local_create_snapshot(repo_ctx, "main conflict")
+
+        rebase_out = runner.invoke(
+            app,
+            ["worktree", "rebase", worktree["name"], "--onto", "main", "--json"],
+            catch_exceptions=False,
+        )
+        assert rebase_out.exit_code == 0, rebase_out.stdout
+        rebased = json.loads(rebase_out.stdout)
+        assert rebased["rebase"]["status"] == "conflicted"
+        assert rebased["rebase_state"] == "conflicted"
+
+        monkeypatch.chdir(workspace)
+        change_out = runner.invoke(
+            app,
+            [
+                "change",
+                "create",
+                "--task",
+                task["task_id"],
+                "--title",
+                "Should block on conflicted rebase",
+                "--base-line",
+                "main",
+            ],
+            catch_exceptions=False,
+        )
+        assert change_out.exit_code != 0
+        output = change_out.output or change_out.stdout or ""
+        assert "worktree rebase" in output
+        assert "--continue" in output
+        assert "--abort" in output
+        assert "before creating a new change" in output
 
 
 def test_task_show_surfaces_bound_worktree_rebase_advisory_when_stale(tmp_path: Path, monkeypatch):
@@ -937,7 +1162,7 @@ def test_patchset_publish_rejects_empty_diff_without_allow_empty(tmp_path: Path,
         assert patchset["base_snapshot_id"] == patchset["revision_snapshot_id"]
 
 
-def test_workflow_publish_creates_review_base_change_and_patchset(tmp_path: Path, monkeypatch):
+def test_workflow_publish_defaults_to_default_target_line_change_and_patchset(tmp_path: Path, monkeypatch):
     repo = tmp_path / "housekeeper-workflow-publish"
     repo.mkdir()
     (repo / "README.md").write_text("base\n", encoding="utf-8")
@@ -970,7 +1195,74 @@ def test_workflow_publish_creates_review_base_change_and_patchset(tmp_path: Path
         assert publish_out.exit_code == 0, publish_out.stdout
         payload = json.loads(publish_out.stdout)
         assert payload["snapshot"]["snapshot_id"] != base_snapshot_id
-        assert payload["change"]["base_line"].startswith("review-base/")
+        assert payload["change"]["base_line"] == "main"
+        assert payload["base_line"]["line_name"] == "main"
+        assert payload["patchset"]["base_snapshot_id"] == base_snapshot_id
+        assert payload["patchset"]["revision_snapshot_id"] == payload["snapshot"]["snapshot_id"]
+        assert payload["patchset"]["diff_stats"]["files_changed"] >= 1
+        assert payload["patchset"]["publish_context"]["base_line"] == "main"
+
+        status_out = runner.invoke(app, ["workspace", "status", "--json"], catch_exceptions=False)
+        assert status_out.exit_code == 0, status_out.stdout
+        assert json.loads(status_out.stdout)["clean"] is True
+
+        remote_lines_out = runner.invoke(app, ["line", "list", "--remote", "origin", "--json"], catch_exceptions=False)
+        assert remote_lines_out.exit_code == 0, remote_lines_out.stdout
+        remote_main = next(row for row in json.loads(remote_lines_out.stdout) if row["line_name"] == "main")
+        assert remote_main["head_snapshot_id"] == base_snapshot_id
+
+        ready_out = runner.invoke(app, ["workflow", "land", payload["change"]["change_id"], "--json"], catch_exceptions=False)
+        assert ready_out.exit_code == 0, ready_out.stdout
+        ready = json.loads(ready_out.stdout)
+        assert ready["base_line"]["line_name"] == "main"
+
+
+def test_workflow_publish_explicit_review_base_change_and_patchset(tmp_path: Path, monkeypatch):
+    repo = tmp_path / "housekeeper-workflow-publish-review-base"
+    repo.mkdir()
+    (repo / "README.md").write_text("base\n", encoding="utf-8")
+    (repo / "app.py").write_text("print('base')\n", encoding="utf-8")
+
+    with running_server(tmp_path / "server-data-workflow-publish-review-base") as base_url:
+        monkeypatch.chdir(repo)
+        assert runner.invoke(app, ["init", "--name", "housekeeper"], catch_exceptions=False).exit_code == 0
+        assert runner.invoke(app, ["remote", "add", "origin", base_url, "--repo-name", "housekeeper", "--default"], catch_exceptions=False).exit_code == 0
+        _set_solo_remote_advisory()
+        seed_out = runner.invoke(app, ["snapshot", "create", "--message", "main seed", "--json"], catch_exceptions=False)
+        assert seed_out.exit_code == 0, seed_out.stdout
+        base_snapshot_id = json.loads(seed_out.stdout)["snapshot_id"]
+        assert runner.invoke(app, ["push", "--line", "main"], catch_exceptions=False).exit_code == 0
+        task_out = runner.invoke(
+            app,
+            ["task", "start", "--task-only", "--remote", "origin", "--title", "Publish helper", "--intent", "collapse review publish commands", "--risk", "medium", "--json"],
+            catch_exceptions=False,
+        )
+        assert task_out.exit_code == 0, task_out.stdout
+        task = json.loads(task_out.stdout)
+        workspace = _bind_task_worktree(task["task_id"], monkeypatch, name="workflow-publish-review-base")
+
+        (workspace / "app.py").write_text("print('workflow helper review base')\n", encoding="utf-8")
+        publish_out = runner.invoke(
+            app,
+            [
+                "workflow",
+                "publish",
+                "--task",
+                task["task_id"],
+                "--summary",
+                "workflow helper patchset",
+                "--remote",
+                "origin",
+                "--base-line",
+                "review-base/workflow-publish",
+                "--json",
+            ],
+            catch_exceptions=False,
+        )
+        assert publish_out.exit_code == 0, publish_out.stdout
+        payload = json.loads(publish_out.stdout)
+        assert payload["snapshot"]["snapshot_id"] != base_snapshot_id
+        assert payload["change"]["base_line"] == "review-base/workflow-publish"
         assert payload["patchset"]["base_snapshot_id"] == base_snapshot_id
         assert payload["patchset"]["revision_snapshot_id"] == payload["snapshot"]["snapshot_id"]
         assert payload["patchset"]["diff_stats"]["files_changed"] >= 1
@@ -1008,8 +1300,8 @@ def test_local_draft_task_and_change_can_be_published_without_id_renaming(tmp_pa
         )
         assert task_out.exit_code == 0, task_out.stdout
         task = json.loads(task_out.stdout)
-        assert task["task_id"].startswith("LAITT-")
-        assert len(task["task_id"]) == len("LAITT-0001")
+        assert task["task_id"].startswith("LT-")
+        assert len(task["task_id"]) == len("LT-0001")
         assert task["task_seq"] == 1
         assert task["publication_state"] == "local_draft"
 
@@ -1037,8 +1329,8 @@ def test_local_draft_task_and_change_can_be_published_without_id_renaming(tmp_pa
         )
         assert change_out.exit_code == 0, change_out.stdout
         change = json.loads(change_out.stdout)
-        assert change["change_id"].startswith("LAITC-")
-        assert len(change["change_id"]) == len("LAITC-0001")
+        assert change["change_id"].startswith("LC-")
+        assert len(change["change_id"]) == len("LC-0001")
         assert change["change_seq"] == 1
         assert change["publication_state"] == "local_draft"
         assert change["current_patchset_number"] == 0
@@ -1077,29 +1369,39 @@ def test_local_draft_task_and_change_can_be_published_without_id_renaming(tmp_pa
         published_task = json.loads(task_publish_out.stdout)
         assert published_task["task_id"] == task["task_id"]
         assert published_task["publication_state"] == "published"
+        assert published_task["published_task_id"].startswith("R")
 
         task_republish_out = runner.invoke(app, ["task", "publish", task["task_id"], "--json"], catch_exceptions=False)
         assert task_republish_out.exit_code == 0, task_republish_out.stdout
         assert json.loads(task_republish_out.stdout)["task_id"] == task["task_id"]
 
-        remote_task_out = runner.invoke(app, ["task", "show", task["task_id"], "--json"], catch_exceptions=False)
+        remote_task_out = runner.invoke(
+            app,
+            ["task", "show", published_task["published_task_id"], "--json"],
+            catch_exceptions=False,
+        )
         assert remote_task_out.exit_code == 0, remote_task_out.stdout
-        assert json.loads(remote_task_out.stdout)["task_id"] == task["task_id"]
+        assert json.loads(remote_task_out.stdout)["task_id"] == published_task["published_task_id"]
 
         change_publish_out = runner.invoke(app, ["change", "publish", change["change_id"], "--json"], catch_exceptions=False)
         assert change_publish_out.exit_code == 0, change_publish_out.stdout
         published_change = json.loads(change_publish_out.stdout)
         assert published_change["change_id"] == change["change_id"]
         assert published_change["publication_state"] == "published"
+        assert published_change["published_change_id"].startswith("R")
 
         change_republish_out = runner.invoke(app, ["change", "publish", change["change_id"], "--json"], catch_exceptions=False)
         assert change_republish_out.exit_code == 0, change_republish_out.stdout
         assert json.loads(change_republish_out.stdout)["change_id"] == change["change_id"]
 
-        remote_change_out = runner.invoke(app, ["change", "show", change["change_id"], "--json"], catch_exceptions=False)
+        remote_change_out = runner.invoke(
+            app,
+            ["change", "show", published_change["published_change_id"], "--json"],
+            catch_exceptions=False,
+        )
         assert remote_change_out.exit_code == 0, remote_change_out.stdout
         remote_change = json.loads(remote_change_out.stdout)
-        assert remote_change["change_id"] == change["change_id"]
+        assert remote_change["change_id"] == published_change["published_change_id"]
         assert remote_change["fork_snapshot_id"] == main_snapshot["snapshot_id"]
         assert remote_change["forked_from_line"] == "main"
 
@@ -1110,7 +1412,7 @@ def test_local_draft_task_and_change_can_be_published_without_id_renaming(tmp_pa
         )
         assert patchset_out.exit_code == 0, patchset_out.stdout
         patchset = json.loads(patchset_out.stdout)
-        assert patchset["change_id"] == change["change_id"]
+        assert patchset["change_id"].startswith("R")
 
 
 def test_change_publish_refuses_when_local_base_advanced_after_local_main_land(tmp_path: Path, monkeypatch):
@@ -1169,7 +1471,8 @@ def test_change_publish_refuses_when_local_base_advanced_after_local_main_land(t
         assert change_publish_out.exit_code != 0
         output = change_publish_out.output or change_publish_out.stdout or ""
         assert change["change_id"] in output
-        assert "worktree rebase --onto main" in output
+        assert "ait worktree rebase" in output
+        assert "--onto main" in output
         assert "before publishing change" in output
 
 
@@ -1507,13 +1810,13 @@ def test_task_start_creates_local_draft_task_and_change_with_tracking(tmp_path: 
     )
     assert start_out.exit_code == 0, start_out.stdout
     payload = json.loads(start_out.stdout)
-    assert payload["task_id"].startswith("LAITT-")
-    assert len(payload["task_id"]) == len("LAITT-0001")
+    assert payload["task_id"].startswith("LT-")
+    assert len(payload["task_id"]) == len("LT-0001")
     assert payload["task_seq"] == 1
     assert payload["publication_state"] == "local_draft"
     assert payload["tracking"]["session_scope"] == "local"
-    assert payload["change"]["change_id"].startswith("LAITC-")
-    assert len(payload["change"]["change_id"]) == len("LAITC-0001")
+    assert payload["change"]["change_id"].startswith("LC-")
+    assert len(payload["change"]["change_id"]) == len("LC-0001")
     assert payload["change"]["change_seq"] == 1
     assert payload["change"]["publication_state"] == "local_draft"
     assert payload["change"]["task_id"] == payload["task_id"]
@@ -1802,7 +2105,8 @@ def test_task_restart_rejects_completed_local_task(tmp_path: Path, monkeypatch):
     assert restart_out.exit_code != 0
     output = restart_out.output or restart_out.stderr or ""
     assert "completed" in output
-    assert "task canceled lineage" in output
+    assert "restart only supports task" in output
+    assert "canceled lineage" in output
 
 
 def test_task_restart_reopens_local_abandoned_task_and_unique_archived_change(tmp_path: Path, monkeypatch):

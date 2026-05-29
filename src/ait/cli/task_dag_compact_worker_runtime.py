@@ -46,7 +46,10 @@ from .task_dag_compact_packet_authoring import (
     _task_dag_generate_compact_packet_artifacts as _fallback_task_dag_generate_compact_packet_artifacts,
     _task_dag_load_comparison_evidence as _fallback_task_dag_load_comparison_evidence,
 )
-from .task_dag_execute_run_controls import _task_dag_refresh_execute_run as _fallback_task_dag_refresh_execute_run
+from .task_dag_execute_run_controls import (
+    _task_dag_fail_execute_run as _fallback_task_dag_fail_execute_run,
+    _task_dag_refresh_execute_run as _fallback_task_dag_refresh_execute_run,
+)
 from .task_dag_runtime_helpers import (
     _task_dag_readiness_payload as _fallback_task_dag_readiness_payload,
     _task_dag_readiness_from_remote_inventory as _fallback_task_dag_readiness_from_remote_inventory,
@@ -145,6 +148,10 @@ def _task_dag_load_comparison_evidence(*args: Any, **kwargs: Any) -> Any:
 
 def _task_dag_refresh_execute_run(*args: Any, **kwargs: Any) -> Any:
     return _app_override("_task_dag_refresh_execute_run", _fallback_task_dag_refresh_execute_run)(*args, **kwargs)
+
+
+def _task_dag_fail_execute_run(*args: Any, **kwargs: Any) -> Any:
+    return _app_override("_task_dag_fail_execute_run", _fallback_task_dag_fail_execute_run)(*args, **kwargs)
 
 
 def _remote_read_task_dag_readiness(*args: Any, **kwargs: Any) -> Any:
@@ -1209,48 +1216,19 @@ def _task_dag_start_auto_compact_worker(
     graph_run_session_id = str(recorded_run.get("session_id") or "").strip()
     graph_run_id = str(recorded_run.get("graph_run_id") or "").strip()
     comparison_evidence = None
-    if comparison_evidence_report is not None:
-        comparison_evidence = _task_dag_load_comparison_evidence(
-            ctx,
-            graph=graph,
-            report_path=comparison_evidence_report,
-            workload_id=comparison_evidence_workload_id,
-        )
     graph_id = str(graph.get("graph_id") or "")
     graph_artifact_path = _task_dag_relative_path(ctx, graph_path)
-    iteration = _task_dag_prepare_auto_compact_worker_iteration(
-        ctx=ctx,
-        remote_row=remote_row,
-        repo_name=repo_name,
-        plan_id=plan_id,
-        graph=graph,
-        graph_path=graph_path,
-        recorded_run=recorded_run,
-        compact_packet_surface=compact_packet_surface,
-        comparison_evidence=comparison_evidence,
-        graph_run_session_id=graph_run_session_id,
-        graph_run_id=graph_run_id,
-    )
-    compact_packet_surface = iteration["compact_packet_surface"]
-    packet_bundle = iteration["packet_bundle"]
-    final_remote_disposition_default = bool(iteration["final_remote_disposition_default"])
-    worker_workspace_root = str(iteration["worker_workspace_root"])
-    worker_repo_root = str(iteration["worker_repo_root"])
-    reply_poll_timeout_seconds = float(iteration["reply_poll_timeout_seconds"])
-    worker_worktree_name = iteration["worker_worktree_name"]
-    worker_metadata = dict(iteration["worker_metadata"])
+    iteration: dict[str, Any] | None = None
+    packet_bundle: dict[str, Any] = {}
+    final_remote_disposition_default = False
+    worker_workspace_root = ""
+    worker_repo_root = ""
+    reply_poll_timeout_seconds = 0.0
+    worker_worktree_name = None
+    worker_metadata: dict[str, Any] = {}
     worker_title = f"Compact DAG worker: {graph_id or plan_id}"
-    worker_session = remote_create_session(
-        remote_row["url"],
-        repo_name,
-        "agent_run",
-        title=worker_title,
-        line_name=current_line(ctx),
-        worktree_name=worker_worktree_name,
-        model_name=_effective_model_name(ctx),
-        metadata=worker_metadata,
-    )
-    worker_session_id = str(worker_session.get("session_id") or "")
+    worker_session: dict[str, Any] = {}
+    worker_session_id = ""
     turn_delivery_status = "local_cli_reply_generation"
     outcome = None
     boundary_report = None
@@ -1260,181 +1238,15 @@ def _task_dag_start_auto_compact_worker(
     worker_session_close_out = None
     continuation_count = 0
     continued_focus_node_ids: list[str] = []
-    auto_continue_supported = bool(_task_dag_auto_continue_profile(ctx, graph).get("auto_continue_supported"))
-    max_iterations = max(1, len(graph.get("nodes") or [])) + 1
-    for _ in range(max_iterations):
-        worker_session_payload = {
-            **worker_session,
-            "worktree_name": iteration.get("worker_worktree_name"),
-            "metadata": dict(worker_metadata),
-        }
-        turn_result = _task_dag_run_local_compact_worker_turn(
-            remote_row=remote_row,
-            repo_name=repo_name,
-            worker_session=worker_session_payload,
-            worker_session_id=worker_session_id,
-            worker_title=worker_title,
-            worker_metadata=worker_metadata,
-            turn_text=str(iteration.get("turn_text") or ""),
-            repo_root=Path(worker_repo_root).expanduser(),
-        )
-        if not bool((turn_result or {}).get("ok", True)):
-            raise ValueError(
-                str((turn_result or {}).get("error") or f"Compact worker local reply failed for {worker_session_id}.")
+    try:
+        if comparison_evidence_report is not None:
+            comparison_evidence = _task_dag_load_comparison_evidence(
+                ctx,
+                graph=graph,
+                report_path=comparison_evidence_report,
+                workload_id=comparison_evidence_workload_id,
             )
-        assistant_event = (turn_result or {}).get("assistant_event") if isinstance((turn_result or {}).get("assistant_event"), dict) else None
-        outcome = _task_dag_compact_worker_turn_outcome(turn_result=turn_result, assistant_event=assistant_event)
-        boundary_report = _task_dag_compact_worker_boundary_report(
-            packet_bundle.get("packet_root_policy") if isinstance(packet_bundle.get("packet_root_policy"), dict) else {},
-            outcome.get("turn_analysis") if isinstance(outcome.get("turn_analysis"), dict) else {},
-        )
-        reply_excerpt = _task_dag_compact_worker_reply_excerpt(outcome.get("reply_text"))
-        focus_metadata = _task_dag_compact_worker_focus_metadata(worker_metadata)
-        local_progress_payload = _task_dag_compact_worker_local_progress_payload(
-            outcome.get("reply_text"),
-            worker_metadata=worker_metadata,
-            worker_session_id=worker_session_id,
-            reply_excerpt=reply_excerpt,
-        )
-        if (
-            isinstance(local_progress_payload, dict)
-            and str(local_progress_payload.get("status") or "").strip().lower() == "completed"
-        ):
-            local_progress_payload = {
-                **local_progress_payload,
-                **_task_dag_compact_worker_completion_snapshot_evidence(
-                    ctx,
-                    remote_row=remote_row,
-                    compact_packet_surface=compact_packet_surface,
-                    recorded_run=recorded_run,
-                    node_id=_normalize_text_value(local_progress_payload.get("node_id")),
-                ),
-            }
-        worker_started_payload = {
-            "graph_run_id": graph_run_id,
-            "graph_id": graph_id,
-            "worker_session_id": worker_session_id,
-            "worker_session_kind": worker_session.get("session_kind") or worker_session.get("kind") or "agent_run",
-            "worker_title": worker_session.get("title") or worker_title,
-            "packet_artifact_path": packet_bundle.get("packet_artifact_path"),
-            "surface_artifact_path": packet_bundle.get("surface_artifact_path"),
-            "turn_artifact_path": packet_bundle.get("turn_artifact_path"),
-            "packet_root_path": packet_bundle.get("packet_root_path"),
-            "packet_root_manifest_path": packet_bundle.get("packet_root_manifest_path"),
-            "comparison_inputs_packaged": packet_bundle.get("comparison_inputs_packaged"),
-            "comparison_evidence_artifact_path": packet_bundle.get("comparison_evidence_artifact_path"),
-            "execution_mode": packet_bundle.get("execution_mode"),
-            "final_remote_disposition_default": final_remote_disposition_default,
-            "reply_poll_timeout_seconds": reply_poll_timeout_seconds,
-            "turn_surface": "task_dag_compact_packet",
-            "reply_excerpt": reply_excerpt,
-            "turn_delivery_status": turn_delivery_status,
-            "assistant_reply_sequence": outcome.get("assistant_reply_sequence"),
-            "boundary_status": boundary_report.get("status"),
-            "change_focus_policy": compact_packet_surface.get("change_focus_policy") or {},
-            "next_focus_node_id": worker_metadata.get("next_focus_node_id"),
-            "next_focus_task_id": worker_metadata.get("next_focus_task_id"),
-            "next_focus_change_id": worker_metadata.get("next_focus_change_id"),
-        }
-        usage = outcome.get("usage") if isinstance(outcome.get("usage"), dict) else {}
-        if usage:
-            worker_started_payload["usage"] = usage
-        if graph_run_session_id:
-            if focus_metadata.get("node_id"):
-                remote_append_session_event(
-                    remote_row["url"],
-                    graph_run_session_id,
-                    "task_graph.node_local_progress",
-                    {
-                        "node_id": focus_metadata.get("node_id"),
-                        "status": "running",
-                        "task_id": focus_metadata.get("task_id"),
-                        "change_id": focus_metadata.get("change_id"),
-                        "worker_session_id": worker_session_id,
-                        "summary": "Compact DAG worker session started local-first execution for the current focus node.",
-                    },
-                    repo_name=repo_name,
-                )
-            if local_progress_payload is not None:
-                event_type = (
-                    "task_graph.node_completed"
-                    if str(local_progress_payload.get("status") or "").strip().lower() == "completed"
-                    else "task_graph.node_local_progress"
-                )
-                remote_append_session_event(
-                    remote_row["url"],
-                    graph_run_session_id,
-                    event_type,
-                    {
-                        "graph_run_id": graph_run_id,
-                        "graph_id": graph_id,
-                        **local_progress_payload,
-                    },
-                    repo_name=repo_name,
-                )
-            remote_append_session_event(
-                remote_row["url"],
-                graph_run_session_id,
-                "task_graph.compact_worker_started",
-                worker_started_payload,
-                repo_name=repo_name,
-            )
-            remote_append_session_event(
-                remote_row["url"],
-                graph_run_session_id,
-                "task_graph.compact_worker_boundary_report",
-                {
-                    "graph_run_id": graph_run_id,
-                    "graph_id": graph_id,
-                    "worker_session_id": worker_session_id,
-                    **boundary_report,
-                },
-                repo_name=repo_name,
-            )
-        should_refresh_execute_run = bool(graph_run_session_id) and auto_continue_supported and comparison_evidence is None
-        if not should_refresh_execute_run:
-            break
-        refreshed_readiness = _task_dag_readiness_payload(
-            ctx,
-            graph,
-            _normalize_text_value(remote_row.get("name")) or _normalize_text_value(remote_row.get("remote_name")),
-        )
-        post_worker_run = _task_dag_refresh_execute_run(
-            ctx=ctx,
-            remote_row=remote_row,
-            repo_name=repo_name,
-            plan_id=plan_id,
-            graph=graph,
-            graph_path=graph_path,
-            readiness=refreshed_readiness,
-            session_id=graph_run_session_id,
-            trigger="worker_session_completion",
-            worker_session_id=worker_session_id,
-        )
-        if str((post_worker_run or {}).get("execution_state") or "").strip() == "completed":
-            worker_session_close_out = remote_close_session(
-                remote_row["url"],
-                worker_session_id,
-                status="completed",
-                repo_name=repo_name,
-            )
-            graph_run_close_out = remote_close_session(
-                remote_row["url"],
-                graph_run_session_id,
-                status="completed",
-                repo_name=repo_name,
-            )
-            break
-        latest_snapshot = (
-            post_worker_run.get("latest_state_snapshot")
-            if isinstance(post_worker_run.get("latest_state_snapshot"), dict)
-            else {}
-        )
-        ready_node_ids = [str(value).strip() for value in latest_snapshot.get("ready_node_ids") or [] if str(value).strip()]
-        if not ready_node_ids or str(latest_snapshot.get("execution_state") or "").strip() != "active":
-            break
-        next_surface = _task_dag_compact_worker_surface_from_snapshot(compact_packet_surface, latest_snapshot)
-        next_surface, _ = _task_dag_seed_compact_worker_focus_lineage(
+        iteration = _task_dag_prepare_auto_compact_worker_iteration(
             ctx=ctx,
             remote_row=remote_row,
             repo_name=repo_name,
@@ -1442,38 +1254,273 @@ def _task_dag_start_auto_compact_worker(
             graph=graph,
             graph_path=graph_path,
             recorded_run=recorded_run,
-            compact_packet_surface=next_surface,
-        )
-        next_focus = _task_dag_compact_worker_focus_lineage(next_surface, recorded_run=recorded_run)
-        next_focus_node_id = _normalize_text_value(next_focus.get("node_id"))
-        current_focus_node_id = _normalize_text_value(worker_metadata.get("next_focus_node_id"))
-        if next_focus_node_id is None or next_focus_node_id == current_focus_node_id:
-            break
-        next_iteration = _task_dag_prepare_auto_compact_worker_iteration(
-            ctx=ctx,
-            remote_row=remote_row,
-            repo_name=repo_name,
-            plan_id=plan_id,
-            graph=graph,
-            graph_path=graph_path,
-            recorded_run=recorded_run,
-            compact_packet_surface=next_surface,
+            compact_packet_surface=compact_packet_surface,
             comparison_evidence=comparison_evidence,
             graph_run_session_id=graph_run_session_id,
             graph_run_id=graph_run_id,
         )
-        continuation_count += 1
-        continued_focus_node_ids.append(next_focus_node_id)
-        compact_packet_surface = next_iteration["compact_packet_surface"]
-        packet_bundle = next_iteration["packet_bundle"]
-        final_remote_disposition_default = bool(next_iteration["final_remote_disposition_default"])
-        worker_workspace_root = str(next_iteration["worker_workspace_root"])
-        worker_repo_root = str(next_iteration["worker_repo_root"])
-        reply_poll_timeout_seconds = float(next_iteration["reply_poll_timeout_seconds"])
-        worker_metadata = dict(next_iteration["worker_metadata"])
-        iteration = next_iteration
-    else:
-        raise ValueError("Compact DAG auto worker exceeded the guarded in-session continuation budget.")
+        compact_packet_surface = iteration["compact_packet_surface"]
+        packet_bundle = iteration["packet_bundle"]
+        final_remote_disposition_default = bool(iteration["final_remote_disposition_default"])
+        worker_workspace_root = str(iteration["worker_workspace_root"])
+        worker_repo_root = str(iteration["worker_repo_root"])
+        reply_poll_timeout_seconds = float(iteration["reply_poll_timeout_seconds"])
+        worker_worktree_name = iteration["worker_worktree_name"]
+        worker_metadata = dict(iteration["worker_metadata"])
+        worker_session = remote_create_session(
+            remote_row["url"],
+            repo_name,
+            "agent_run",
+            title=worker_title,
+            line_name=current_line(ctx),
+            worktree_name=worker_worktree_name,
+            model_name=_effective_model_name(ctx),
+            metadata=worker_metadata,
+        )
+        worker_session_id = str(worker_session.get("session_id") or "")
+        auto_continue_supported = bool(_task_dag_auto_continue_profile(ctx, graph).get("auto_continue_supported"))
+        max_iterations = max(1, len(graph.get("nodes") or [])) + 1
+        for _ in range(max_iterations):
+            worker_session_payload = {
+                **worker_session,
+                "worktree_name": iteration.get("worker_worktree_name"),
+                "metadata": dict(worker_metadata),
+            }
+            turn_result = _task_dag_run_local_compact_worker_turn(
+                remote_row=remote_row,
+                repo_name=repo_name,
+                worker_session=worker_session_payload,
+                worker_session_id=worker_session_id,
+                worker_title=worker_title,
+                worker_metadata=worker_metadata,
+                turn_text=str(iteration.get("turn_text") or ""),
+                repo_root=Path(worker_repo_root).expanduser(),
+            )
+            if not bool((turn_result or {}).get("ok", True)):
+                raise ValueError(
+                    str((turn_result or {}).get("error") or f"Compact worker local reply failed for {worker_session_id}.")
+                )
+            assistant_event = (turn_result or {}).get("assistant_event") if isinstance((turn_result or {}).get("assistant_event"), dict) else None
+            outcome = _task_dag_compact_worker_turn_outcome(turn_result=turn_result, assistant_event=assistant_event)
+            boundary_report = _task_dag_compact_worker_boundary_report(
+                packet_bundle.get("packet_root_policy") if isinstance(packet_bundle.get("packet_root_policy"), dict) else {},
+                outcome.get("turn_analysis") if isinstance(outcome.get("turn_analysis"), dict) else {},
+            )
+            reply_excerpt = _task_dag_compact_worker_reply_excerpt(outcome.get("reply_text"))
+            focus_metadata = _task_dag_compact_worker_focus_metadata(worker_metadata)
+            local_progress_payload = _task_dag_compact_worker_local_progress_payload(
+                outcome.get("reply_text"),
+                worker_metadata=worker_metadata,
+                worker_session_id=worker_session_id,
+                reply_excerpt=reply_excerpt,
+            )
+            if (
+                isinstance(local_progress_payload, dict)
+                and str(local_progress_payload.get("status") or "").strip().lower() == "completed"
+            ):
+                local_progress_payload = {
+                    **local_progress_payload,
+                    **_task_dag_compact_worker_completion_snapshot_evidence(
+                        ctx,
+                        remote_row=remote_row,
+                        compact_packet_surface=compact_packet_surface,
+                        recorded_run=recorded_run,
+                        node_id=_normalize_text_value(local_progress_payload.get("node_id")),
+                    ),
+                }
+            worker_started_payload = {
+                "graph_run_id": graph_run_id,
+                "graph_id": graph_id,
+                "worker_session_id": worker_session_id,
+                "worker_session_kind": worker_session.get("session_kind") or worker_session.get("kind") or "agent_run",
+                "worker_title": worker_session.get("title") or worker_title,
+                "packet_artifact_path": packet_bundle.get("packet_artifact_path"),
+                "surface_artifact_path": packet_bundle.get("surface_artifact_path"),
+                "turn_artifact_path": packet_bundle.get("turn_artifact_path"),
+                "packet_root_path": packet_bundle.get("packet_root_path"),
+                "packet_root_manifest_path": packet_bundle.get("packet_root_manifest_path"),
+                "comparison_inputs_packaged": packet_bundle.get("comparison_inputs_packaged"),
+                "comparison_evidence_artifact_path": packet_bundle.get("comparison_evidence_artifact_path"),
+                "execution_mode": packet_bundle.get("execution_mode"),
+                "final_remote_disposition_default": final_remote_disposition_default,
+                "reply_poll_timeout_seconds": reply_poll_timeout_seconds,
+                "turn_surface": "task_dag_compact_packet",
+                "reply_excerpt": reply_excerpt,
+                "turn_delivery_status": turn_delivery_status,
+                "assistant_reply_sequence": outcome.get("assistant_reply_sequence"),
+                "boundary_status": boundary_report.get("status"),
+                "change_focus_policy": compact_packet_surface.get("change_focus_policy") or {},
+                "next_focus_node_id": worker_metadata.get("next_focus_node_id"),
+                "next_focus_task_id": worker_metadata.get("next_focus_task_id"),
+                "next_focus_change_id": worker_metadata.get("next_focus_change_id"),
+            }
+            usage = outcome.get("usage") if isinstance(outcome.get("usage"), dict) else {}
+            if usage:
+                worker_started_payload["usage"] = usage
+            if graph_run_session_id:
+                if focus_metadata.get("node_id"):
+                    remote_append_session_event(
+                        remote_row["url"],
+                        graph_run_session_id,
+                        "task_graph.node_local_progress",
+                        {
+                            "node_id": focus_metadata.get("node_id"),
+                            "status": "running",
+                            "task_id": focus_metadata.get("task_id"),
+                            "change_id": focus_metadata.get("change_id"),
+                            "worker_session_id": worker_session_id,
+                            "summary": "Compact DAG worker session started local-first execution for the current focus node.",
+                        },
+                        repo_name=repo_name,
+                    )
+                if local_progress_payload is not None:
+                    event_type = (
+                        "task_graph.node_completed"
+                        if str(local_progress_payload.get("status") or "").strip().lower() == "completed"
+                        else "task_graph.node_local_progress"
+                    )
+                    remote_append_session_event(
+                        remote_row["url"],
+                        graph_run_session_id,
+                        event_type,
+                        {
+                            "graph_run_id": graph_run_id,
+                            "graph_id": graph_id,
+                            **local_progress_payload,
+                        },
+                        repo_name=repo_name,
+                    )
+                remote_append_session_event(
+                    remote_row["url"],
+                    graph_run_session_id,
+                    "task_graph.compact_worker_started",
+                    {
+                        **worker_started_payload,
+                    },
+                    repo_name=repo_name,
+                )
+                remote_append_session_event(
+                    remote_row["url"],
+                    graph_run_session_id,
+                    "task_graph.compact_worker_boundary_report",
+                    {
+                        "graph_run_id": graph_run_id,
+                        "graph_id": graph_id,
+                        "worker_session_id": worker_session_id,
+                        **boundary_report,
+                    },
+                    repo_name=repo_name,
+                )
+            should_refresh_execute_run = bool(graph_run_session_id) and auto_continue_supported and comparison_evidence is None
+            if not should_refresh_execute_run:
+                break
+            refreshed_readiness = _task_dag_readiness_payload(
+                ctx,
+                graph,
+                _normalize_text_value(remote_row.get("name")) or _normalize_text_value(remote_row.get("remote_name")),
+            )
+            post_worker_run = _task_dag_refresh_execute_run(
+                ctx=ctx,
+                remote_row=remote_row,
+                repo_name=repo_name,
+                plan_id=plan_id,
+                graph=graph,
+                graph_path=graph_path,
+                readiness=refreshed_readiness,
+                session_id=graph_run_session_id,
+                trigger="worker_session_completion",
+                worker_session_id=worker_session_id,
+            )
+            if str((post_worker_run or {}).get("execution_state") or "").strip() == "completed":
+                worker_session_close_out = remote_close_session(
+                    remote_row["url"],
+                    worker_session_id,
+                    status="completed",
+                    repo_name=repo_name,
+                )
+                graph_run_close_out = remote_close_session(
+                    remote_row["url"],
+                    graph_run_session_id,
+                    status="completed",
+                    repo_name=repo_name,
+                )
+                break
+            latest_snapshot = (
+                post_worker_run.get("latest_state_snapshot")
+                if isinstance(post_worker_run.get("latest_state_snapshot"), dict)
+                else {}
+            )
+            ready_node_ids = [str(value).strip() for value in latest_snapshot.get("ready_node_ids") or [] if str(value).strip()]
+            if not ready_node_ids or str(latest_snapshot.get("execution_state") or "").strip() != "active":
+                break
+            next_surface = _task_dag_compact_worker_surface_from_snapshot(compact_packet_surface, latest_snapshot)
+            next_surface, _ = _task_dag_seed_compact_worker_focus_lineage(
+                ctx=ctx,
+                remote_row=remote_row,
+                repo_name=repo_name,
+                plan_id=plan_id,
+                graph=graph,
+                graph_path=graph_path,
+                recorded_run=recorded_run,
+                compact_packet_surface=next_surface,
+            )
+            next_focus = _task_dag_compact_worker_focus_lineage(next_surface, recorded_run=recorded_run)
+            next_focus_node_id = _normalize_text_value(next_focus.get("node_id"))
+            current_focus_node_id = _normalize_text_value(worker_metadata.get("next_focus_node_id"))
+            if next_focus_node_id is None or next_focus_node_id == current_focus_node_id:
+                break
+            next_iteration = _task_dag_prepare_auto_compact_worker_iteration(
+                ctx=ctx,
+                remote_row=remote_row,
+                repo_name=repo_name,
+                plan_id=plan_id,
+                graph=graph,
+                graph_path=graph_path,
+                recorded_run=recorded_run,
+                compact_packet_surface=next_surface,
+                comparison_evidence=comparison_evidence,
+                graph_run_session_id=graph_run_session_id,
+                graph_run_id=graph_run_id,
+            )
+            continuation_count += 1
+            continued_focus_node_ids.append(next_focus_node_id)
+            compact_packet_surface = next_iteration["compact_packet_surface"]
+            packet_bundle = next_iteration["packet_bundle"]
+            final_remote_disposition_default = bool(next_iteration["final_remote_disposition_default"])
+            worker_workspace_root = str(next_iteration["worker_workspace_root"])
+            worker_repo_root = str(next_iteration["worker_repo_root"])
+            reply_poll_timeout_seconds = float(next_iteration["reply_poll_timeout_seconds"])
+            worker_metadata = dict(next_iteration["worker_metadata"])
+            iteration = next_iteration
+        else:
+            raise ValueError("Compact DAG auto worker exceeded the guarded in-session continuation budget.")
+    except Exception as exc:
+        failure_detail = f"{type(exc).__name__}: {exc}"
+        if graph_run_session_id:
+            try:
+                failure_writeback = _task_dag_fail_execute_run(
+                    ctx=ctx,
+                    remote_row=remote_row,
+                    repo_name=repo_name,
+                    plan_id=plan_id,
+                    graph=graph,
+                    graph_path=graph_path,
+                    session_id=graph_run_session_id,
+                    worker_session_id=worker_session_id or None,
+                    failure_reason="auto_compact_worker_exception",
+                    failure_detail=failure_detail,
+                )
+                post_worker_run = failure_writeback
+                worker_session_close_out = failure_writeback.get("worker_session_close_out")
+                graph_run_close_out = failure_writeback.get("graph_run_close_out")
+            except Exception as failure_writeback_exc:
+                raise ValueError(
+                    f"{failure_detail}; additionally failed to record graph-run failure state: "
+                    f"{type(failure_writeback_exc).__name__}: {failure_writeback_exc}"
+                ) from exc
+        if isinstance(exc, ValueError):
+            raise
+        raise ValueError(f"Compact DAG auto worker failed: {failure_detail}") from exc
     return {
         "graph_run_session_id": graph_run_session_id,
         "graph_run_id": graph_run_id,

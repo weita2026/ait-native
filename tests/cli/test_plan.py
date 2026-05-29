@@ -18,7 +18,10 @@ def test_plan_help_frames_discovery_and_dispatch_story():
 
     items_help = runner.invoke(app, ["plan", "items", "--help"])
     assert items_help.exit_code == 0, items_help.stdout
-    assert "List stable plan item refs from the current or selected plan revision." in " ".join(items_help.stdout.split())
+    normalized_items_help = " ".join(items_help.stdout.split())
+    assert "List stable plan item refs from the current or selected plan revision." in normalized_items_help
+    assert "identity discovery only" in normalized_items_help
+    assert "plan inspect" in normalized_items_help
 
     candidates_help = runner.invoke(app, ["plan", "candidates", "--help"])
     assert candidates_help.exit_code == 0, candidates_help.stdout
@@ -131,6 +134,73 @@ def test_local_only_plan_sync_task_start_snapshot_and_land_local_e2e(tmp_path: P
     assert status_out.exit_code == 0, status_out.stdout
     assert json.loads(status_out.stdout)["clean"] is True
     assert app_file.read_text(encoding="utf-8") == "print('local-only e2e')\n"
+
+
+def test_plan_sync_json_includes_task_start_advisory_for_touched_structured_plan(tmp_path: Path, monkeypatch):
+    repo = tmp_path / "housekeeper-plan-sync-task-start-advisory-json"
+    repo.mkdir()
+    (repo / "README.md").write_text("base\n", encoding="utf-8")
+    monkeypatch.chdir(repo)
+
+    assert runner.invoke(app, ["init", "--name", "housekeeper-plan-sync-task-start-advisory-json"]).exit_code == 0
+
+    plan_file = _write_plan_artifact(
+        repo,
+        "docs/sprints/task_start_advisory.md",
+        (
+            "# Task Start Advisory\n\n"
+            "## Bootstrap a task [plan-ref: task-start-advisory/root]\n\n"
+            "- [ ] open runnable item [ref: task-start-advisory/open]\n"
+            "- [ ] open item without stable ref\n"
+            "- [x] already done item [ref: task-start-advisory/done]\n"
+        ),
+    )
+
+    sync_out = runner.invoke(app, ["plan", "sync", plan_file, "--json"])
+    assert sync_out.exit_code == 0, sync_out.stdout
+    payload = json.loads(sync_out.stdout)
+    advisory = payload["task_start_advisory"]
+    assert advisory["advisory_only"] is True
+    assert advisory["dispatch_validation_still_required"] is True
+    assert advisory["summary"]["touched_plan_count"] == 1
+    assert advisory["summary"]["taskable_plan_count"] == 1
+    assert advisory["summary"]["taskable_item_count"] == 1
+
+    plan_hint = advisory["plans"][0]
+    assert plan_hint["plan_id"] == payload["results"][0]["plan_id"]
+    assert plan_hint["taskable_refs"] == ["task-start-advisory/open"]
+    assert plan_hint["taskable_items"][0]["plan_item_ref"] == "task-start-advisory/open"
+    assert isinstance(plan_hint["blocked_open_items"], list)
+    assert "ait task start --plan" in plan_hint["task_start_command_hint"]
+    assert "--plan-item-ref task-start-advisory/open" in plan_hint["task_start_command_hint"]
+
+
+def test_plan_sync_renders_task_start_advisory_for_touched_plan(tmp_path: Path, monkeypatch):
+    repo = tmp_path / "housekeeper-plan-sync-task-start-advisory-render"
+    repo.mkdir()
+    (repo / "README.md").write_text("base\n", encoding="utf-8")
+    monkeypatch.chdir(repo)
+
+    assert runner.invoke(app, ["init", "--name", "housekeeper-plan-sync-task-start-advisory-render"]).exit_code == 0
+
+    plan_file = _write_plan_artifact(
+        repo,
+        "docs/sprints/task_start_advisory_render.md",
+        (
+            "# Task Start Advisory Render\n\n"
+            "## Bootstrap a task [plan-ref: task-start-advisory-render/root]\n\n"
+            "- [ ] open runnable item [ref: task-start-advisory-render/open]\n"
+        ),
+    )
+
+    sync_out = runner.invoke(app, ["plan", "sync", plan_file])
+    assert sync_out.exit_code == 0, sync_out.stdout
+    normalized = " ".join(sync_out.stdout.split())
+    assert "task-start advisory" in normalized
+    assert "next task candidates" in normalized
+    assert "task-start-advisory-render/open" in normalized
+    assert "Suggested task start:" in sync_out.stdout
+    assert "ait task start --plan" in normalized
 
 
 def test_plan_publish_command_is_not_public():
@@ -762,7 +832,7 @@ def test_task_create_links_remote_plan_item_from_plan_id(tmp_path: Path, monkeyp
         assert linked_task["intent"] == "Deliver Move init to startup only from Stabilize Runtime Execution Tasks."
         assert linked_task["plan_id"] == plan_id
         assert linked_task["plan_item_ref"] == "runtime/startup-only-init"
-        assert linked_task["tracking"]["session_id"].startswith("AITS-")
+        assert linked_task["tracking"]["session_id"].startswith("S-")
 
 
 def test_plan_sync_remote_auto_uploads_sibling_task_graph_artifact(tmp_path: Path, monkeypatch):
@@ -988,6 +1058,13 @@ def test_plan_candidates_and_inspect_report_taskable_items_and_local_unpublished
         assert revise_out.exit_code == 0, revise_out.stdout
         assert json.loads(revise_out.stdout)["summary"]["updated_count"] == 1
 
+        items_out = runner.invoke(app, ["plan", "items", plan_id, "--remote", "origin", "--json"])
+        assert items_out.exit_code == 0, items_out.stdout
+        items_payload = json.loads(items_out.stdout)
+        assert items_payload["identity_only"] is True
+        assert items_payload["dispatch_validation_required"] is True
+        assert "plan inspect" in items_payload["dispatch_validation_hint"]
+
         candidates_out = runner.invoke(app, ["plan", "candidates", "--remote", "origin", "--json"])
         assert candidates_out.exit_code == 0, candidates_out.stdout
         candidates_payload = json.loads(candidates_out.stdout)
@@ -1062,7 +1139,7 @@ def test_plan_session_create_append_promote_and_close(tmp_path: Path, monkeypatc
         )
         assert session_out.exit_code == 0, session_out.stdout
         session = json.loads(session_out.stdout)
-        assert session["planning_session_id"].startswith("AITPS-")
+        assert session["planning_session_id"].startswith("PS-")
         assert session["plan_id"] == plan["plan_id"]
         assert session["status"] == "active"
         assert session["artifact_status"] == "not_promoted"
@@ -1503,7 +1580,7 @@ def test_task_start_can_pin_plan_lineage_in_strict_mode(tmp_path: Path, monkeypa
         )
         assert start_out.exit_code == 0, start_out.stdout
         payload = json.loads(start_out.stdout)
-        assert payload["task_id"].startswith("RAITT-")
+        assert payload["task_id"].startswith("RT-")
         assert payload["plan_id"] == plan["plan_id"]
         assert payload["origin_plan_revision_id"] == plan["head_revision"]["plan_revision_id"]
         assert payload["plan_item_ref"] == "milestone-1/bootstrap-native-workflow"

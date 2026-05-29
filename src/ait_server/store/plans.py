@@ -12,9 +12,11 @@ from ait_protocol.common import (
     utc_now,
 )
 
-from ..server_content import read_blob_bytes, repository_exists, write_blob_bytes
+from ..server_content_repo_lines import repository_exists
+from ..server_content_storage import read_blob_bytes, write_blob_bytes
 from ..server_control import connect, record_event
 from ..server_paths import ServerContext
+from .repo_scoped_keys import _local_id_after_first_dash
 from .sessions import create_session, list_sessions
 
 PLAN_STATUSES = {"draft", "active", "superseded", "archived"}
@@ -34,16 +36,6 @@ def _repo_id(ctx: ServerContext, repo_name: str) -> str:
     from .repo_ops import _repo_id as repo_id_for_repo
 
     return repo_id_for_repo(ctx, repo_name)
-
-
-def _local_id_after_first_dash(value: str | None) -> str | None:
-    text = str(value or "").strip()
-    if not text:
-        return None
-    if "-" not in text:
-        return text
-    suffix = text.split("-", 1)[1].strip()
-    return suffix or text
 
 
 def _normalize_nonempty_text(value: str | None, *, field: str) -> str:

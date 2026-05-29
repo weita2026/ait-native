@@ -11,9 +11,11 @@ from ..remote_client import (
 from ..store import (
     RepoContext,
     effective_id_namespace_prefix as repo_id_namespace_prefix,
-    get_remote,
     load_config,
     load_policy,
+)
+from ..store_remotes import (
+    get_remote,
 )
 
 

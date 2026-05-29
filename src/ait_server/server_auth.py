@@ -7,7 +7,7 @@ from typing import Iterable, Optional
 from fastapi import HTTPException, Request
 
 from .server_control import connect, resolve_bound_roles
-from .server_content import get_repository
+from .server_content_repo_lines import get_repository
 from .server_paths import ServerContext
 
 REPO_READER = "repo_reader"

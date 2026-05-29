@@ -29,6 +29,15 @@ def test_build_plan_renders_root_table_exports_and_repo_id_backfill() -> None:
     assert set(tables) == {"plans", "tasks", "changes", "releases", "sessions", "planning_sessions", "stacks", "role_bindings", "jobs", "authority_maps"}
     assert tables["plans"]["source_relation"] == '"rollback_schema"."plans"'
     assert tables["tasks"]["target_relation"] == '"active_schema"."tasks"'
+    assert "source_completion_mode" not in tables["tasks"]["columns"]
+    assert "source_local_task_id" not in tables["tasks"]["columns"]
+    assert "source_local_completed_at" not in tables["tasks"]["columns"]
+    assert "source_completion_mode" not in tables["changes"]["columns"]
+    assert "source_local_change_id" not in tables["changes"]["columns"]
+    assert "source_local_status" not in tables["changes"]["columns"]
+    assert "source_target_line" not in tables["changes"]["columns"]
+    assert "source_landed_snapshot_id" not in tables["changes"]["columns"]
+    assert "source_landed_at" not in tables["changes"]["columns"]
     assert 'psql "$ROLLBACK_DSN"' in tables["changes"]["export_command"]
     assert "coalesce(t.repo_id, r.repo_id) as repo_id" in tables["releases"]["export_query"]
     assert any("root-constraints helper" in step for step in tables["sessions"]["rebuild_checklist"])

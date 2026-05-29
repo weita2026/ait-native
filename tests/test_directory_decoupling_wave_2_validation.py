@@ -59,11 +59,14 @@ def test_wave_2_sprint_card_marks_all_parallel_items_complete() -> None:
 
 def test_wave_2_hotspot_facades_import_extracted_modules() -> None:
     cli_app_text = _read_text(WORKSPACE_ROOT / "src/ait/cli/app.py")
+    task_dag_exports_text = _read_text(WORKSPACE_ROOT / "src/ait/cli/task_dag_app_exports.py")
     store_text = _read_text(WORKSPACE_ROOT / "src/ait/store.py")
     store_worktrees_text = _read_text(WORKSPACE_ROOT / "src/ait/store_worktrees.py")
     server_store_text = _read_text(WORKSPACE_ROOT / "src/ait_server/server_store.py")
 
-    assert "from .task_dag_telegram_watch import (" in cli_app_text
+    assert "from . import task_dag_app_exports as _task_dag_app_exports" in cli_app_text
+    assert "_export_from_module(globals(), _task_dag_app_exports)" in cli_app_text
+    assert "from .task_dag_telegram_watch import (" in task_dag_exports_text
     assert "from . import store_worktrees as _store_worktrees" in store_text
     assert "from .store_worktree_filesystem import (" in store_worktrees_text
     assert "from .store.plans import (" in server_store_text

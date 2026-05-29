@@ -7,10 +7,13 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
+from uuid import uuid4
 
 from typer.testing import CliRunner
 
 import pytest
+
+from tests._ram_root import detect_host_ram_root
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
@@ -31,10 +34,24 @@ app = cli_module.app
 
 
 runner = CliRunner()
+pytestmark = pytest.mark.usefixtures("explicit_host_ram_root_cleanup")
 
 
 def _allow_planless_tasks(monkeypatch):
     monkeypatch.setattr(plan_task_linkage_module, "_effective_plan_task_binding", lambda ctx: {"mode": "optional"})
+
+
+def test_demo_suite_explicit_host_ram_cleanup_contract_creates_probe_root():
+    root = detect_host_ram_root()
+    if root is None:
+        pytest.skip("No host memory-backed root is available on this machine.")
+
+    probe_hash_dir = root / ".ait-repos" / f"pytest-demo-suite-probe-{uuid4().hex}"
+    probe_repo_dir = probe_hash_dir / "demo-probe"
+    probe_repo_dir.mkdir(parents=True)
+    (probe_repo_dir / "README.md").write_text("probe\n", encoding="utf-8")
+
+    assert probe_repo_dir.exists()
 
 
 def _worker_execution_policy() -> dict:
@@ -100,6 +117,8 @@ def _graph_with_dispatch_artifacts() -> dict:
         "parallel_execution_markdown": "docs/sprints/demo.md",
         "task_graph_json": "docs/sprints/demo.task_graph.json",
         "supporting_markdown": "docs/sprints/demo_supporting.md",
+        "decoupling_plan_markdown": "docs/ait_directory_structure_decoupling_plan.md",
+        "ownership_map_markdown": "docs/ait_module_ownership_map.md",
     }
     return graph
 
@@ -328,6 +347,17 @@ def _write_demo_markdown(filename: str = "demo.md") -> Path:
         encoding="utf-8",
     )
     return path
+
+
+def _write_demo_dispatch_supporting_docs() -> None:
+    Path("docs/ait_directory_structure_decoupling_plan.md").write_text(
+        "# Demo decoupling root plan\n\n- broad root plan\n",
+        encoding="utf-8",
+    )
+    Path("docs/ait_module_ownership_map.md").write_text(
+        "# Demo ownership map\n\n- broad ownership map\n",
+        encoding="utf-8",
+    )
 
 
 def _write_comparison_report(filename: str = "demo.report.json") -> Path:
@@ -2379,17 +2409,30 @@ def test_plan_execute_auto_compact_worker_generates_packet_and_posts_turn(monkey
         assert generated_turns[0]["session"]["session_id"] == created_sessions[1]["session_id"]
         assert generated_turns[0]["surface"] == "task_dag_compact_packet"
         packet_text = generated_turns[0]["events"][0]["payload"]["text"]
-        assert "Do not use physical fan-out" in packet_text
-        assert "Keep exactly one reviewable focus change active at a time." in packet_text
-        assert "Reviewable focus queue:" in packet_text
+        assert "Start here:" in packet_text
+        assert "Read `cat .ait/generated/task_dag_compact_packets/" in packet_text
+        assert "Execution-only focus with file edits:" in packet_text
+        assert "`ait workspace status --json`" in packet_text
+        assert '`ait snapshot create --message "<focused slice>"`' in packet_text
+        assert "Reviewable-output focus:" not in packet_text
+        assert '`ait workflow land <change-id> --apply`' not in packet_text
+        assert "Keep one reviewable focus change active at a time" not in packet_text
+        assert "Do not use physical fan-out" not in packet_text
+        assert "Execute this DAG as a worker-only compact `ait_dag` packet." not in packet_text
+        assert "Reviewable focus queue:" not in packet_text
         assert "Suggested packet / graph entry files:" in packet_text
         assert auto_worker["packet_root_manifest_path"] in packet_text
+        assert "compact_packet.md" not in packet_text
         assert "resolved authoring workspace" in packet_text
         assert "bound task worktree" in packet_text
-        assert "Use only this compact DAG execution packet." in packet_text
+        assert "Packet prompt:" not in packet_text
+        assert "Use only this compact DAG execution packet." not in packet_text
         assert "80%+ packet savings" not in packet_text
         assert "Manifest fallback reply:" not in packet_text
-        assert "Packet context:" in packet_text
+        assert "Current focus context:" in packet_text
+        assert "- node B · Ready node" in packet_text
+        assert "- plan ref demo/b · boundary task" in packet_text
+        assert "IR carries dependency edges." in packet_text
         assert "Packet artifact:" not in packet_text
         assert auto_worker["turn_delivery_status"] == "local_cli_reply_generation"
         assert auto_worker["assistant_reply_sequence"] == 2
@@ -2402,7 +2445,19 @@ def test_plan_execute_auto_compact_worker_generates_packet_and_posts_turn(monkey
         assert auto_worker["change_focus_policy"]["next_focus"]["node_id"] == "B"
         assert auto_worker["next_focus_node_id"] == "B"
         manifest = json.loads(Path(auto_worker["packet_root_manifest_path"]).read_text(encoding="utf-8"))
-        assert manifest["change_focus_policy"]["next_focus"]["node_id"] == "B"
+        assert manifest["current_focus"]["node_id"] == "B"
+        assert "compact_packet.md" not in manifest["secondary_context_files"]
+        assert not Path(auto_worker["packet_root_path"], "compact_packet.md").exists()
+        assert "IR carries dependency edges." in manifest["current_focus"]["acceptance"]
+        assert "ignore_non_active_nodes" not in manifest["current_focus"]
+        assert "change_focus_policy" not in manifest
+        assert "worker_context_scope" not in manifest
+        assert "turn_contains_packet_context" not in manifest
+        assert "final_remote_disposition_default" not in manifest
+        assert "packet_available" not in manifest
+        assert "source_surface_artifact_path" not in manifest
+        assert "source_packet_artifact_path" not in manifest
+        assert "source_turn_artifact_path" not in manifest
         graph_run_rows = [row for row in appended_events if row["session_id"] == created_sessions[0]["session_id"]]
         worker_rows = [row for row in appended_events if row["session_id"] == created_sessions[1]["session_id"]]
         graph_run_events = [row["event_type"] for row in graph_run_rows]
@@ -2893,6 +2948,7 @@ def test_task_dag_generate_compact_packet_artifacts_bridges_authoring_workspace_
         _init_repo(monkeypatch)
         graph_path = _write_graph(_graph_with_dispatch_artifacts())
         _write_demo_markdown()
+        _write_demo_dispatch_supporting_docs()
         Path("docs/sprints/demo_supporting.md").write_text("supporting\n", encoding="utf-8")
         ctx = RepoContext.discover(Path.cwd())
         worktree_root = (Path.cwd() / ".ait" / "workspace" / "lt-bridge").resolve()
@@ -2919,17 +2975,16 @@ def test_task_dag_generate_compact_packet_artifacts_bridges_authoring_workspace_
             assert any("authoring_workspace_context/docs/sprints/demo.md" in row for row in allowed_hints)
             assert any("authoring_workspace_context/docs/sprints/demo_supporting.md" in row for row in allowed_hints)
             assert not any("authoring_workspace_context/AGENTS.md" in row for row in allowed_hints)
-            assert any("authoring_workspace_context/ait-dag.md" in row for row in allowed_hints)
+            assert not any("authoring_workspace_context/ait-dag.md" in row for row in allowed_hints)
+            assert not any("authoring_workspace_context/docs/ait_directory_structure_decoupling_plan.md" in row for row in allowed_hints)
+            assert not any("authoring_workspace_context/docs/ait_module_ownership_map.md" in row for row in allowed_hints)
             assert (worktree_root / bundle["packet_root_manifest_path"]).exists()
-            assert (worktree_root / bundle["packet_artifact_path"]).exists()
+            assert not (worktree_root / bundle["packet_artifact_path"]).exists()
             assert (worktree_root / bundle["turn_artifact_path"]).exists()
+            assert Path(bundle["packet_artifact_path"]).exists()
             assert (
                 worktree_root
                 / next(row for row in allowed_hints if "authoring_workspace_context/docs/sprints/demo.task_graph.json" in row)
-            ).exists()
-            assert (
-                worktree_root
-                / next(row for row in allowed_hints if "authoring_workspace_context/docs/sprints/demo.md" in row)
             ).exists()
             assert (
                 worktree_root
@@ -2937,30 +2992,82 @@ def test_task_dag_generate_compact_packet_artifacts_bridges_authoring_workspace_
             ).exists()
             assert (
                 worktree_root
-                / next(row for row in allowed_hints if "authoring_workspace_context/ait-dag.md" in row)
+                / next(row for row in allowed_hints if "authoring_workspace_context/docs/sprints/demo.md" in row)
             ).exists()
-            runtime_digest = (
-                worktree_root
-                / next(row for row in allowed_hints if "authoring_workspace_context/ait-dag.md" in row)
-            ).read_text(encoding="utf-8")
-            packet_markdown = (worktree_root / bundle["packet_artifact_path"]).read_text(encoding="utf-8")
+            packet_markdown = Path(bundle["packet_artifact_path"]).read_text(encoding="utf-8")
             turn_text = (worktree_root / bundle["turn_artifact_path"]).read_text(encoding="utf-8")
-            assert "runtime-only helper" in runtime_digest
-            assert "compact `ait_dag` packets" in runtime_digest
-            assert "## Stable command playbook" in runtime_digest
-            assert "`cat packet_root_manifest.json`" in runtime_digest
-            assert "`ait task complete <task-id>`" in runtime_digest
-            assert "`ait change create --task <task-id> --title \"<focused slice>\" --local`" in runtime_digest
-            assert "true no-op / pure verification slice" in runtime_digest
-            assert "skip honest local lineage" in runtime_digest
-            assert "`ait workflow land <change-id>`" in runtime_digest
-            assert "## Anti-exploration rules" in runtime_digest
-            assert "Do not run broad discovery commands" in runtime_digest
-            assert "smallest next command" in runtime_digest
+            assert not (worktree_root / "authoring_workspace_context" / "ait-dag.md").exists()
+            assert "Start here:" in turn_text
+            assert "`ait workspace status --json`" in turn_text
+            assert "`ait snapshot create --message \"<focused slice>\"`" in turn_text
+            assert "`ait task complete --local <task-id>`" in turn_text
+            assert "create or reuse the local change" in turn_text
+            assert "Reviewable-output focus:" not in turn_text
+            assert "`ait workflow land <change-id>`" not in turn_text
             assert "Source: docs/sprints/demo.md#demo/root" not in packet_markdown
             assert "authoring_workspace_context/docs/sprints/demo.md#demo/root" in packet_markdown
-            assert "prefer those packet-scoped copies over repo-root `docs/sprints/...` lookup" in turn_text
-            assert "scoped code/test/file edits must not skip honest local change lineage" in turn_text
+            assert bundle["worker_context_scope"] == "packet"
+            assert "worker_context_scope" not in manifest
+            assert "current_focus" not in manifest
+            assert "compact_packet.md" not in manifest["secondary_context_files"]
+            assert "current_focus_plan_excerpt.md" not in manifest["secondary_context_files"]
+            assert not any("compact_packet.md" in row for row in allowed_hints)
+            assert not (worktree_root / bundle["packet_root_path"] / "compact_packet.md").exists()
+            assert "Reviewable-output focus:" not in turn_text
+            assert "This run ends at remote land" not in turn_text
+            assert "Required remote gate bundle for this run" not in turn_text
+
+
+def test_task_dag_generate_compact_packet_artifacts_keeps_gate_prompts_on_reviewable_focus(monkeypatch, tmp_path):
+    with runner.isolated_filesystem(temp_dir=tmp_path):
+        _init_repo(monkeypatch)
+        _write_demo_markdown("demo_selective_promotion.md")
+        _write_demo_dispatch_supporting_docs()
+        graph = _selective_promotion_graph()
+        graph_path = _write_graph(graph, filename="demo_selective_promotion.task_graph.json")
+        ctx = RepoContext.discover(Path.cwd())
+        worktree_root = (Path.cwd() / ".ait" / "workspace" / "lt-reviewable").resolve()
+        worktree_root.mkdir(parents=True, exist_ok=True)
+
+        compact_packet_surface = task_dag_compact_packet_authoring_module._task_dag_compact_packet_surface_payload(
+            ctx,
+            graph_path=graph_path,
+            final_remote_disposition_default=True,
+        )
+        compact_packet_surface["change_focus_policy"]["next_focus"] = {
+            "node_id": "C",
+            "task_id": "RT-C",
+            "change_id": "RC-C",
+        }
+        compact_packet_surface["next_focus_node_id"] = "C"
+        compact_packet_surface["next_focus_task_id"] = "RT-C"
+        compact_packet_surface["next_focus_change_id"] = "RC-C"
+
+        bundle = task_dag_compact_packet_authoring_module._task_dag_generate_compact_packet_artifacts(
+            ctx,
+            plan_id="PL-demo-selective-promotion",
+            graph=graph,
+            graph_path=graph_path,
+            compact_packet_surface=compact_packet_surface,
+            final_remote_disposition_default=True,
+            authoring_workspace_root=str(worktree_root),
+        )
+
+        manifest = json.loads(Path(bundle["packet_root_manifest_path"]).read_text(encoding="utf-8"))
+        allowed_hints = manifest["allowed_file_hints"]
+        turn_text = (worktree_root / bundle["turn_artifact_path"]).read_text(encoding="utf-8")
+
+        assert "Reviewable-output focus:" in turn_text
+        assert '`ait workflow land <change-id> --apply`' in turn_text
+        assert "This run ends at remote land" in turn_text
+        assert "Required remote gate bundle for this run" in turn_text
+        assert any("/packet_root/current_focus_plan_excerpt.md" in row for row in allowed_hints)
+        assert not any("authoring_workspace_context/docs/sprints/demo_selective_promotion.md" in row for row in allowed_hints)
+        assert not any("authoring_workspace_context/ait-dag.md" in row for row in allowed_hints)
+        assert not any("authoring_workspace_context/docs/ait_directory_structure_decoupling_plan.md" in row for row in allowed_hints)
+        assert not any("authoring_workspace_context/docs/ait_module_ownership_map.md" in row for row in allowed_hints)
+        assert not (worktree_root / "authoring_workspace_context" / "ait-dag.md").exists()
+        assert "current_focus_plan_excerpt.md" in manifest["secondary_context_files"]
 
 
 def test_task_dag_generate_compact_packet_artifacts_bridges_repo_root_plan_inputs_for_worktree_ctx(monkeypatch, tmp_path):
@@ -2968,6 +3075,7 @@ def test_task_dag_generate_compact_packet_artifacts_bridges_repo_root_plan_input
         _init_repo(monkeypatch)
         graph_path = _write_graph(_graph_with_dispatch_artifacts())
         _write_demo_markdown()
+        _write_demo_dispatch_supporting_docs()
         ctx = RepoContext.discover(Path.cwd())
         runner_root = (Path.cwd() / ".ait" / "workspace" / "lt-runner").resolve()
         runner_root.mkdir(parents=True, exist_ok=True)
@@ -3003,8 +3111,17 @@ def test_task_dag_generate_compact_packet_artifacts_bridges_repo_root_plan_input
         assert not any("/Users/" in row for row in allowed_hints)
         assert any("authoring_workspace_context/docs/sprints/demo.task_graph.json" in row for row in allowed_hints)
         assert any("authoring_workspace_context/docs/sprints/demo.md" in row for row in allowed_hints)
+        assert not any("authoring_workspace_context/ait-dag.md" in row for row in allowed_hints)
+        assert not any("authoring_workspace_context/docs/ait_directory_structure_decoupling_plan.md" in row for row in allowed_hints)
+        assert not any("authoring_workspace_context/docs/ait_module_ownership_map.md" in row for row in allowed_hints)
+        assert not any("compact_packet.md" in row for row in allowed_hints)
+        assert "compact_packet.md" not in manifest["secondary_context_files"]
+        assert "current_focus_plan_excerpt.md" not in manifest["secondary_context_files"]
+        assert not (authoring_root / bundle["packet_artifact_path"]).exists()
+        assert not (authoring_root / bundle["packet_root_path"] / "compact_packet.md").exists()
+        assert not (authoring_root / "authoring_workspace_context" / "ait-dag.md").exists()
 
-        packet_markdown = (authoring_root / bundle["packet_artifact_path"]).read_text(encoding="utf-8")
+        packet_markdown = (runner_root / bundle["packet_artifact_path"]).read_text(encoding="utf-8")
         turn_text = (authoring_root / bundle["turn_artifact_path"]).read_text(encoding="utf-8")
         assert "Packet context:\nCompact DAG execution packet unavailable." not in packet_markdown
         assert "graph-derived only" not in packet_markdown
@@ -3614,6 +3731,11 @@ def test_task_dag_materialize_reviewable_output_uses_local_lineage_for_solo_loca
             "remote_create_change",
             lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("solo_local reviewable node should not open remote change")),
         )
+        monkeypatch.setattr(
+            plan_cli_module,
+            "plan_sync",
+            lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("solo_local reviewable node should not auto-publish plan lineage")),
+        )
         monkeypatch.setattr(task_dag_node_bootstrap_module, "_task_worktree_repo_ctx", lambda current_ctx: current_ctx)
         monkeypatch.setattr(task_dag_node_bootstrap_module, "current_line", lambda current_ctx: "main")
         monkeypatch.setattr(task_dag_node_bootstrap_module, "get_line", lambda current_ctx, name: {"head_snapshot_id": "SNP-MAIN"})
@@ -3674,6 +3796,7 @@ def test_task_dag_materialize_reviewable_output_uses_local_lineage_for_solo_loca
         assert payload["workflow_boundary"] == "reviewable_output"
         assert len(local_task_calls) == 1
         assert len(local_change_calls) == 1
+        assert local_task_calls[0]["origin_plan_revision_id"] == graph["source_plan"]["plan_revision_id"]
         assert local_change_calls[0]["task_id"] == "LT-LOCAL-F"
         assert payload["worktree"]["name"] == "lt-local-f"
         assert payload["dependency_replay"]["replayed_node_ids"] == ["A", "B"]
@@ -3689,7 +3812,9 @@ def test_task_dag_materialize_reviewable_output_uses_remote_lineage_for_solo_rem
 
         _init_repo(monkeypatch)
         monkeypatch.setattr(task_dag_node_bootstrap_module, "_effective_workflow_mode", lambda ctx: {"value": "solo_remote"})
+        monkeypatch.setattr(cli_module, "_effective_workflow_mode", lambda ctx: {"value": "solo_remote"}, raising=False)
         graph = _solo_convergence_graph()
+        graph["source_plan"]["plan_revision_id"] = "PR-local-demo"
         ctx = _ctx()
         readiness = _solo_convergence_ready_for_gate(graph)
         readiness["summary"].update({"ready_nodes": 1, "completed_nodes": 2, "next_action": "start C"})
@@ -3779,6 +3904,46 @@ def test_task_dag_materialize_reviewable_output_uses_remote_lineage_for_solo_rem
                 }
             ),
         )
+        local_plan_row = {
+            "plan_id": "PL-demo",
+            "head_revision_id": "PR-local-demo",
+            "published_head_revision_id": None,
+        }
+        local_revision_row = {
+            "plan_id": "PL-demo",
+            "plan_revision_id": "PR-local-demo",
+            "published_plan_revision_id": None,
+        }
+        plan_sync_calls = []
+        monkeypatch.setattr(task_dag_runtime_helpers_module, "get_local_plan", lambda current_ctx, plan_id: dict(local_plan_row))
+        monkeypatch.setattr(
+            task_dag_runtime_helpers_module,
+            "get_local_plan_revision",
+            lambda current_ctx, plan_id, plan_revision_id: dict(local_revision_row),
+        )
+        monkeypatch.setattr(cli_module, "get_local_plan", lambda current_ctx, plan_id: dict(local_plan_row), raising=False)
+        monkeypatch.setattr(
+            cli_module,
+            "get_local_plan_revision",
+            lambda current_ctx, plan_id, plan_revision_id: dict(local_revision_row),
+            raising=False,
+        )
+        monkeypatch.setattr(
+            plan_cli_module,
+            "plan_sync",
+            lambda target, **kwargs: (
+                plan_sync_calls.append(
+                    {
+                        "target": str(target),
+                        "remote": kwargs.get("remote"),
+                        "json_output": kwargs.get("json_output"),
+                    }
+                )
+                or local_plan_row.__setitem__("published_head_revision_id", "PR-remote-demo")
+                or local_revision_row.__setitem__("published_plan_revision_id", "PR-remote-demo")
+                or print(json.dumps({"status": "ok", "publish_results": [{"published_head_revision_id": "PR-remote-demo"}]}))
+            ),
+        )
         monkeypatch.setattr(
             task_dag_node_bootstrap_module,
             "remote_create_change",
@@ -3845,7 +4010,7 @@ def test_task_dag_materialize_reviewable_output_uses_remote_lineage_for_solo_rem
 
         payload = task_dag_node_bootstrap_module._task_dag_materialize_node_lineage(
             ctx=ctx,
-            remote_row={"url": "http://example.test"},
+            remote_row={"url": "http://example.test", "name": "origin"},
             repo_name="demo",
             plan_id="PL-demo",
             graph=graph,
@@ -3859,12 +4024,162 @@ def test_task_dag_materialize_reviewable_output_uses_remote_lineage_for_solo_rem
         assert payload["change_id"] == "RC-REMOTE-F"
         assert len(remote_task_calls) == 1
         assert len(remote_change_calls) == 1
+        assert len(plan_sync_calls) == 1
+        assert plan_sync_calls[0]["remote"] == "origin"
+        assert plan_sync_calls[0]["json_output"] is True
+        assert remote_task_calls[0]["origin_plan_revision_id"] == "PR-remote-demo"
         assert remote_change_calls[0]["task_id"] == "RT-REMOTE-F"
         assert payload["worktree"]["name"] == "rt-remote-f"
         assert payload["dependency_replay"]["replayed_node_ids"] == ["A", "B"]
         assert (target_root / "alpha.txt").read_text(encoding="utf-8") == "remote A\n"
         assert (target_root / "beta.txt").read_text(encoding="utf-8") == "remote B\n"
         assert not (target_root / "live-only.txt").exists()
+
+
+def test_task_dag_export_snapshot_bundle_accepts_two_arg_app_override(monkeypatch, tmp_path):
+    with runner.isolated_filesystem(temp_dir=tmp_path):
+        from ait.cli.app_surfaces import _ctx
+
+        _init_repo(monkeypatch)
+        ctx = _ctx()
+        export_calls = []
+        monkeypatch.setattr(
+            cli_module,
+            "export_snapshot_bundle",
+            lambda current_ctx, snapshot_id: (
+                export_calls.append(
+                    {
+                        "ctx_root": str(current_ctx.root),
+                        "snapshot_id": snapshot_id,
+                    }
+                )
+                or {
+                    "snapshot_id": snapshot_id,
+                    "files": [],
+                }
+            ),
+            raising=False,
+        )
+
+        payload = task_dag_node_bootstrap_module.export_snapshot_bundle(ctx, "SNP-demo", "demo")
+
+        assert payload["snapshot_id"] == "SNP-demo"
+        assert export_calls == [
+            {
+                "ctx_root": str(ctx.root),
+                "snapshot_id": "SNP-demo",
+            }
+        ]
+
+
+def test_task_dag_graph_for_remote_prefers_published_plan_revision_mapping(monkeypatch, tmp_path):
+    with runner.isolated_filesystem(temp_dir=tmp_path):
+        from ait.cli.app_surfaces import _ctx
+
+        _init_repo(monkeypatch)
+        ctx = _ctx()
+        graph = _graph_with_dispatch_artifacts()
+        graph["source_plan"]["plan_revision_id"] = "PR-local-demo"
+        graph_path = Path("docs/sprints/demo.task_graph.json")
+
+        local_plan_row = {
+            "plan_id": "PL-demo",
+            "head_revision_id": "PR-local-demo",
+            "published_head_revision_id": "PR-remote-demo",
+        }
+        local_revision_row = {
+            "plan_id": "PL-demo",
+            "plan_revision_id": "PR-local-demo",
+            "published_plan_revision_id": "PR-remote-demo",
+        }
+        monkeypatch.setattr(task_dag_runtime_helpers_module, "get_local_plan", lambda current_ctx, plan_id: dict(local_plan_row))
+        monkeypatch.setattr(
+            task_dag_runtime_helpers_module,
+            "get_local_plan_revision",
+            lambda current_ctx, plan_id, plan_revision_id: dict(local_revision_row),
+        )
+        monkeypatch.setattr(cli_module, "get_local_plan", lambda current_ctx, plan_id: dict(local_plan_row), raising=False)
+        monkeypatch.setattr(
+            cli_module,
+            "get_local_plan_revision",
+            lambda current_ctx, plan_id, plan_revision_id: dict(local_revision_row),
+            raising=False,
+        )
+
+        payload = task_dag_runtime_helpers_module._task_dag_graph_for_remote(ctx, graph, graph_path)
+
+        assert payload["source_plan"]["plan_revision_id"] == "PR-remote-demo"
+        assert payload["dispatch_artifacts"]["task_graph_json"] == "docs/sprints/demo.task_graph.json"
+
+
+def test_task_dag_remote_plan_revision_id_auto_publishes_source_plan_only_in_solo_remote(monkeypatch, tmp_path):
+    with runner.isolated_filesystem(temp_dir=tmp_path):
+        from ait.cli.app_surfaces import _ctx
+
+        _init_repo(monkeypatch)
+        ctx = _ctx()
+        graph = _graph()
+        graph["source_plan"]["plan_revision_id"] = "PR-local-demo"
+
+        local_plan_row = {
+            "plan_id": "PL-demo",
+            "head_revision_id": "PR-local-demo",
+            "published_head_revision_id": None,
+        }
+        local_revision_row = {
+            "plan_id": "PL-demo",
+            "plan_revision_id": "PR-local-demo",
+            "published_plan_revision_id": None,
+        }
+        plan_sync_calls = []
+        monkeypatch.setattr(task_dag_runtime_helpers_module, "get_local_plan", lambda current_ctx, plan_id: dict(local_plan_row))
+        monkeypatch.setattr(
+            task_dag_runtime_helpers_module,
+            "get_local_plan_revision",
+            lambda current_ctx, plan_id, plan_revision_id: dict(local_revision_row),
+        )
+        monkeypatch.setattr(cli_module, "get_local_plan", lambda current_ctx, plan_id: dict(local_plan_row), raising=False)
+        monkeypatch.setattr(
+            cli_module,
+            "get_local_plan_revision",
+            lambda current_ctx, plan_id, plan_revision_id: dict(local_revision_row),
+            raising=False,
+        )
+        monkeypatch.setattr(
+            plan_cli_module,
+            "plan_sync",
+            lambda target, **kwargs: (
+                plan_sync_calls.append({"target": str(target), "remote": kwargs.get("remote")})
+                or local_plan_row.__setitem__("published_head_revision_id", "PR-remote-demo")
+                or local_revision_row.__setitem__("published_plan_revision_id", "PR-remote-demo")
+                or print(json.dumps({"status": "ok", "publish_results": [{"published_head_revision_id": "PR-remote-demo"}]}))
+            ),
+        )
+
+        monkeypatch.setattr(cli_module, "_effective_workflow_mode", lambda ctx: {"value": "solo_remote"}, raising=False)
+        remote_revision_id = task_dag_runtime_helpers_module._task_dag_remote_plan_revision_id(
+            ctx,
+            graph,
+            remote_name="origin",
+            auto_publish_if_needed=True,
+        )
+
+        assert len(plan_sync_calls) == 1
+        assert plan_sync_calls[0]["remote"] == "origin"
+        assert remote_revision_id == "PR-remote-demo"
+
+        local_plan_row["published_head_revision_id"] = None
+        local_revision_row["published_plan_revision_id"] = None
+        monkeypatch.setattr(cli_module, "_effective_workflow_mode", lambda ctx: {"value": "solo_local"}, raising=False)
+        remote_revision_id = task_dag_runtime_helpers_module._task_dag_remote_plan_revision_id(
+            ctx,
+            graph,
+            remote_name="origin",
+            auto_publish_if_needed=True,
+        )
+
+        assert len(plan_sync_calls) == 1
+        assert remote_revision_id == "PR-local-demo"
 
 
 def test_task_dag_materialize_reviewable_output_blocks_stale_dependency_worktree(monkeypatch, tmp_path):
@@ -3910,7 +4225,13 @@ def test_task_dag_materialize_reviewable_output_blocks_stale_dependency_worktree
         monkeypatch.setattr(
             task_dag_node_bootstrap_module,
             "remote_create_change",
-            lambda *args, **kwargs: {"change_id": "RC-REMOTE-F", "status": "draft"},
+            lambda *args, **kwargs: {
+                "change_id": "RC-REMOTE-F",
+                "status": "draft",
+                "base_line": kwargs.get("base_line"),
+                "fork_snapshot_id": kwargs.get("fork_snapshot_id"),
+                "forked_from_line": kwargs.get("forked_from_line"),
+            },
         )
         monkeypatch.setattr(task_dag_node_bootstrap_module, "_task_worktree_repo_ctx", lambda current_ctx: current_ctx)
         monkeypatch.setattr(task_dag_node_bootstrap_module, "current_line", lambda current_ctx: "main")
@@ -4049,7 +4370,13 @@ def test_task_dag_materialize_reviewable_output_blocks_conflicted_dependency_wor
         monkeypatch.setattr(
             task_dag_node_bootstrap_module,
             "remote_create_change",
-            lambda *args, **kwargs: {"change_id": "RC-REMOTE-F", "status": "draft"},
+            lambda *args, **kwargs: {
+                "change_id": "RC-REMOTE-F",
+                "status": "draft",
+                "base_line": kwargs.get("base_line"),
+                "fork_snapshot_id": kwargs.get("fork_snapshot_id"),
+                "forked_from_line": kwargs.get("forked_from_line"),
+            },
         )
         monkeypatch.setattr(task_dag_node_bootstrap_module, "_task_worktree_repo_ctx", lambda current_ctx: current_ctx)
         monkeypatch.setattr(task_dag_node_bootstrap_module, "current_line", lambda current_ctx: "main")
@@ -4162,7 +4489,13 @@ def test_task_dag_materialize_reviewable_output_detects_dependency_hotspots_befo
         monkeypatch.setattr(
             task_dag_node_bootstrap_module,
             "remote_create_change",
-            lambda *args, **kwargs: {"change_id": "RC-REMOTE-F", "status": "draft"},
+            lambda *args, **kwargs: {
+                "change_id": "RC-REMOTE-F",
+                "status": "draft",
+                "base_line": kwargs.get("base_line"),
+                "fork_snapshot_id": kwargs.get("fork_snapshot_id"),
+                "forked_from_line": kwargs.get("forked_from_line"),
+            },
         )
         monkeypatch.setattr(task_dag_node_bootstrap_module, "_task_worktree_repo_ctx", lambda current_ctx: current_ctx)
         monkeypatch.setattr(task_dag_node_bootstrap_module, "current_line", lambda current_ctx: "main")
@@ -4248,7 +4581,13 @@ def test_task_dag_materialize_reviewable_output_bootstraps_feature_line_from_tar
         monkeypatch.setattr(
             task_dag_node_bootstrap_module,
             "remote_create_change",
-            lambda *args, **kwargs: {"change_id": "RC-REMOTE-F", "status": "draft"},
+            lambda *args, **kwargs: {
+                "change_id": "RC-REMOTE-F",
+                "status": "draft",
+                "base_line": kwargs.get("base_line"),
+                "fork_snapshot_id": kwargs.get("fork_snapshot_id"),
+                "forked_from_line": kwargs.get("forked_from_line"),
+            },
         )
         monkeypatch.setattr(task_dag_node_bootstrap_module, "_task_worktree_repo_ctx", lambda current_ctx: current_ctx)
         monkeypatch.setattr(task_dag_node_bootstrap_module, "current_line", lambda current_ctx: "main")
@@ -4257,10 +4596,16 @@ def test_task_dag_materialize_reviewable_output_bootstraps_feature_line_from_tar
             "get_line",
             lambda current_ctx, name: {"head_snapshot_id": f"SNP-{name}"},
         )
-        monkeypatch.setattr(task_dag_node_bootstrap_module, "_remote_change_lineage_payload", lambda *args, **kwargs: {})
+        monkeypatch.setattr(
+            task_dag_node_bootstrap_module,
+            "_remote_change_lineage_payload",
+            lambda *args, **kwargs: {"fork_snapshot_id": "SNP-release-main", "forked_from_line": "release-main"},
+        )
 
-        def fake_ensure_task_feature_line(current_ctx, *, task_id, base_line_name):
-            ensure_calls.append({"task_id": task_id, "base_line_name": base_line_name})
+        def fake_ensure_task_feature_line(current_ctx, *, task_id, base_line_name, base_snapshot_id=None):
+            ensure_calls.append(
+                {"task_id": task_id, "base_line_name": base_line_name, "base_snapshot_id": base_snapshot_id}
+            )
             return {"line_name": "feature/rt-remote-f"}
 
         monkeypatch.setattr(task_dag_node_bootstrap_module, "_ensure_task_feature_line", fake_ensure_task_feature_line)
@@ -4304,7 +4649,14 @@ def test_task_dag_materialize_reviewable_output_bootstraps_feature_line_from_tar
         )
 
         assert payload["change_id"] == "RC-REMOTE-F"
-        assert ensure_calls == [{"task_id": "RT-REMOTE-F", "base_line_name": "release-main"}]
+        assert ensure_calls == [
+            {
+                "task_id": "RT-REMOTE-F",
+                "base_line_name": "release-main",
+                "base_snapshot_id": "SNP-release-main",
+            }
+        ]
+        assert bind_calls[0]["fork_snapshot_id"] == "SNP-release-main"
         assert bind_calls[0]["target_base_line"] == "release-main"
 
 
@@ -4555,9 +4907,9 @@ def test_plan_execute_auto_compact_worker_refreshes_graph_run_through_final_remo
         assert created_sessions[1]["metadata"]["final_remote_disposition_default"] is True
         assert created_sessions[1]["metadata"]["packet_root_policy"]["policy_strength"] == "authoring_workspace_with_gate_autonomy"
         packet_text = generated_turns[0]["events"][0]["payload"]["text"]
-        assert "Full final-remote-disposition mode is enabled for this run." in packet_text
-        assert "ait workflow land <change-id> --apply" in packet_text
-        assert "Do not stop at the converged output gate bundle" in packet_text
+        assert "This run ends at remote land" not in packet_text
+        assert "carry it through `ait workflow land`" not in packet_text
+        assert "Required remote gate bundle for this run" not in packet_text
         post_worker_run = auto_worker["post_worker_run"]
         assert post_worker_run["advanced"] is True
         assert post_worker_run["execution_state"] == "completed"
@@ -4586,10 +4938,11 @@ def test_plan_execute_auto_compact_worker_refreshes_graph_run_through_final_remo
 
 
 def test_plan_execute_auto_compact_worker_refreshes_graph_run_for_local_final_disposition(monkeypatch, tmp_path):
-    with runner.isolated_filesystem(temp_dir=tmp_path):
-        _init_repo(monkeypatch)
-        monkeypatch.setattr(cli_module, "_effective_workflow_mode", lambda ctx: {"value": "solo_local"})
-        graph = _solo_convergence_graph()
+        with runner.isolated_filesystem(temp_dir=tmp_path):
+            _init_repo(monkeypatch)
+            monkeypatch.setattr(cli_module, "_effective_workflow_mode", lambda ctx: {"value": "solo_local"})
+            _write_demo_markdown("demo_solo_convergence.md")
+            graph = _solo_convergence_graph()
         graph["execution_policy"]["change_strategy"] = "local_first_final_local_land"
         graph_path = _write_graph(graph, filename="demo_solo_local_final_refresh.task_graph.json")
 
@@ -4797,6 +5150,7 @@ def test_plan_execute_auto_compact_worker_continues_next_focus_inside_same_worke
     with runner.isolated_filesystem(temp_dir=tmp_path):
         _init_repo(monkeypatch)
         monkeypatch.setattr(cli_module, "_effective_workflow_mode", lambda ctx: {"value": "solo_local"})
+        _write_demo_markdown("demo_solo_convergence.md")
         graph = _solo_convergence_graph()
         graph["execution_policy"]["change_strategy"] = "local_first_final_local_land"
         graph["nodes"][2]["title"] = "Execution-only follow-up node"
@@ -5214,6 +5568,14 @@ def test_plan_execute_auto_compact_worker_continues_next_focus_inside_same_worke
         assert generated_turns[1]["codex_persistent_client"] is False
         assert generated_turns[0]["session"]["session_id"] == created_sessions[1]["session_id"]
         assert generated_turns[1]["session"]["session_id"] == created_sessions[1]["session_id"]
+        first_turn_text = generated_turns[0]["events"][0]["payload"]["text"]
+        second_turn_text = generated_turns[1]["events"][0]["payload"]["text"]
+        assert "Current focus context:" in first_turn_text
+        assert "Current focus context:" in second_turn_text
+        assert "- node B · Execution-only node" in first_turn_text
+        assert "- node C · Execution-only follow-up node" in second_turn_text
+        assert "- node C · Execution-only follow-up node" not in first_turn_text
+        assert "- node B · Execution-only node" not in second_turn_text
         assert auto_worker["continuation_count"] == 1
         assert auto_worker["continued_focus_node_ids"] == ["C"]
         graph_run_session_id = auto_worker["graph_run_session_id"]
@@ -5242,6 +5604,252 @@ def test_plan_execute_auto_compact_worker_continues_next_focus_inside_same_worke
         assert event_store[graph_run_session_id][11]["payload"]["completion_snapshot_id"] == "SNP-C"
         assert event_store[graph_run_session_id][11]["payload"]["completion_fork_snapshot_id"] == "SNP-base-C"
         assert event_store[graph_run_session_id][-1]["payload"]["completed_node_ids"] == ["A", "B", "C", "D"]
+
+
+def test_plan_execute_auto_compact_worker_records_graph_run_failure_when_continuation_bootstrap_raises(monkeypatch, tmp_path):
+    with runner.isolated_filesystem(temp_dir=tmp_path):
+        _init_repo(monkeypatch)
+        _write_demo_markdown("demo_solo_convergence.md")
+        graph = _solo_convergence_graph()
+        graph_path = _write_graph(graph, filename="demo_solo_remote_failure.task_graph.json")
+
+        def readiness_after_b(current_graph):
+            return {
+                "schema_version": 1,
+                "graph_id": current_graph["graph_id"],
+                "source_plan": current_graph["source_plan"],
+                "source_plan_revision_id": current_graph["source_plan"]["plan_revision_id"],
+                "current_plan_revision_id": current_graph["source_plan"]["plan_revision_id"],
+                "stale_source_plan": False,
+                "summary": {
+                    "total_nodes": 3,
+                    "ready_nodes": 1,
+                    "running_nodes": 0,
+                    "blocked_nodes": 0,
+                    "completed_nodes": 2,
+                    "next_action": "start C",
+                },
+                "counts": {"ready": 1, "running": 0, "blocked": 0, "completed": 2, "total": 3},
+                "nodes": [
+                    {
+                        "node_id": "A",
+                        "node_kind": "task",
+                        "title": "Completed execution-only node",
+                        "plan_item_ref": "demo/a",
+                        "state": "completed",
+                        "reason": "done",
+                        "depends_on": [],
+                        "lineage": {
+                            "task_id": "T-A",
+                            "landed_snapshot_id": "SNP-A",
+                            "completion_snapshot_id": "SNP-A",
+                            "completion_fork_snapshot_id": "SNP-base-A",
+                        },
+                        "session_recommendation": {"action": "none"},
+                        "blockers": [],
+                    },
+                    {
+                        "node_id": "B",
+                        "node_kind": "task",
+                        "title": "Execution-only node",
+                        "plan_item_ref": "demo/b",
+                        "state": "completed",
+                        "reason": "done",
+                        "depends_on": ["A"],
+                        "lineage": {"task_id": "T-B"},
+                        "session_recommendation": {"action": "none"},
+                        "blockers": [],
+                    },
+                    {
+                        "node_id": "C",
+                        "node_kind": "task",
+                        "title": "Converged output node",
+                        "plan_item_ref": "demo/c",
+                        "state": "ready",
+                        "reason": "ready",
+                        "depends_on": ["B"],
+                        "lineage": {},
+                        "session_recommendation": {"action": "open_new_session"},
+                        "blockers": [],
+                    },
+                ],
+            }
+
+        reply_counter = {"count": 0}
+
+        def fake_readiness(base_url, current_graph, *, repo_name=None, current_plan_revision_id=None):
+            if reply_counter["count"] <= 0:
+                return _solo_convergence_initial_readiness(current_graph)
+            return readiness_after_b(current_graph)
+
+        remote_tuple = lambda ctx, remote_name: ({"url": "http://example.test"}, "demo")
+        monkeypatch.setattr(cli_module, "_remote_tuple", remote_tuple)
+        monkeypatch.setattr(plan_cli_module, "_remote_tuple", remote_tuple)
+        monkeypatch.setattr(
+            cli_module,
+            "_task_dag_readiness_payload",
+            lambda ctx, current_graph, remote_name: fake_readiness("http://example.test", current_graph, repo_name="demo"),
+        )
+        monkeypatch.setattr(
+            plan_cli_module,
+            "_task_dag_readiness_payload",
+            lambda ctx, current_graph, remote_name: fake_readiness("http://example.test", current_graph, repo_name="demo"),
+        )
+
+        created_sessions = []
+        sessions_by_id = {}
+        event_store = {}
+
+        def fake_create_session(base_url, repo_name, session_kind, **kwargs):
+            session_id = f"S-FAIL-{len(created_sessions) + 1}"
+            session = {
+                "session_id": session_id,
+                "session_kind": session_kind,
+                "status": "active",
+                "title": kwargs.get("title"),
+                "metadata": kwargs.get("metadata") or {},
+                "repo_name": repo_name,
+            }
+            sessions_by_id[session_id] = session
+            event_store.setdefault(session_id, [])
+            created_sessions.append({"base_url": base_url, "repo_name": repo_name, **session, **kwargs})
+            return session
+
+        def fake_append_session_event(base_url, session_id, event_type, payload=None, repo_name=None):
+            events = event_store.setdefault(session_id, [])
+            event = {
+                "sequence": len(events) + 1,
+                "event_type": event_type,
+                "payload": payload or {},
+                "repo_name": repo_name,
+            }
+            events.append(event)
+            return event
+
+        def fake_list_session_events(base_url, session_id, repo_name=None):
+            return list(event_store.get(session_id, []))
+
+        def fake_get_session(base_url, session_id, repo_name=None):
+            return sessions_by_id[session_id]
+
+        def fake_close_session(base_url, session_id, status="paused", repo_name=None):
+            session = dict(sessions_by_id[session_id])
+            session["status"] = status
+            sessions_by_id[session_id] = session
+            return session
+
+        monkeypatch.setattr(cli_module, "remote_create_session", fake_create_session)
+        monkeypatch.setattr(cli_module, "remote_append_session_event", fake_append_session_event)
+        monkeypatch.setattr(cli_module, "remote_list_session_events", fake_list_session_events)
+        monkeypatch.setattr(cli_module, "remote_get_session", fake_get_session)
+        monkeypatch.setattr(cli_module, "remote_close_session", fake_close_session)
+
+        def fake_load_reply_generation_config(*, repo_name, repo_root, env):
+            return ReplyGenerationConfig(
+                repo_name=repo_name,
+                openai_api_key=None,
+                openai_base_url="https://example.test/v1",
+                openai_model="gpt-5.4-mini",
+                openai_reasoning_effort=None,
+                openai_timeout_seconds=20.0,
+                openai_max_output_tokens=1000,
+                history_limit=8,
+                telegram_checkpoint_event_threshold=6,
+                telegram_checkpoint_summary_event_limit=8,
+                repo_root=Path(repo_root),
+                codex_persistent_client=True,
+            )
+
+        monkeypatch.setattr(cli_module, "load_reply_generation_config", fake_load_reply_generation_config)
+
+        def fake_generate_session_reply(config, *, session, events, chat_id, chat_title, checkpoint, surface, actor_identity=None):
+            reply_counter["count"] += 1
+            assert reply_counter["count"] == 1
+            return SimpleNamespace(
+                text='compact worker completed B\ntask_dag_local_progress={"node_id":"B","status":"completed","summary":"B done"}',
+                model="gpt-5.4",
+                response_id="resp-b",
+                usage={"inputTokens": 90, "outputTokens": 25, "totalTokens": 115},
+                source="codex",
+                turn_analysis={"command_count": 1},
+            )
+
+        monkeypatch.setattr(cli_module, "generate_session_reply", fake_generate_session_reply)
+
+        local_task_counter = {"value": 0}
+
+        def fake_create_local_task(ctx, title, intent, risk_tier, *, plan_id=None, origin_plan_revision_id=None, plan_item_ref=None):
+            local_task_counter["value"] += 1
+            return {
+                "task_id": f"LT-LOCAL-{local_task_counter['value']}",
+                "title": title,
+                "intent": intent,
+                "risk_tier": risk_tier,
+                "plan_id": plan_id,
+                "origin_plan_revision_id": origin_plan_revision_id,
+                "plan_item_ref": plan_item_ref,
+                "status": "active",
+            }
+
+        monkeypatch.setattr(task_dag_node_bootstrap_module, "create_local_task", fake_create_local_task)
+        monkeypatch.setattr(
+            task_dag_node_bootstrap_module,
+            "remote_create_task",
+            lambda *args, **kwargs: (_ for _ in ()).throw(ValueError("demo reviewable bootstrap failed")),
+        )
+        monkeypatch.setattr(
+            task_dag_compact_worker_runtime_module,
+            "_task_dag_compact_worker_completion_snapshot_evidence",
+            lambda *args, **kwargs: {
+                "completion_snapshot_id": "SNP-B",
+                "completion_fork_snapshot_id": "SNP-base-B",
+            },
+        )
+
+        result = runner.invoke(
+            app,
+            [
+                "plan",
+                "execute",
+                "PL-demo",
+                "--from-json",
+                str(graph_path),
+                "--auto-compact-worker",
+                "--yes",
+                "--json",
+            ],
+        )
+
+        assert result.exit_code != 0
+        assert "demo reviewable bootstrap failed" in result.output
+        graph_run_session_id = created_sessions[0]["session_id"]
+        worker_session_id = created_sessions[1]["session_id"]
+        event_types = [row["event_type"] for row in event_store[graph_run_session_id]]
+        assert event_types == [
+            "task_graph.execution_started",
+            "task_graph.state_snapshot",
+            "task_graph.compact_packet_generated",
+            "task_graph.node_local_progress",
+            "task_graph.node_completed",
+            "task_graph.compact_worker_started",
+            "task_graph.compact_worker_boundary_report",
+            "task_graph.execution_advanced",
+            "task_graph.state_snapshot",
+            "task_graph.execution_failed",
+            "task_graph.state_snapshot",
+        ]
+        failure_event = event_store[graph_run_session_id][-2]["payload"]
+        assert failure_event["failure_reason"] == "auto_compact_worker_exception"
+        assert failure_event["worker_session_id"] == worker_session_id
+        assert "demo reviewable bootstrap failed" in failure_event["failure_detail"]
+        failed_snapshot = event_store[graph_run_session_id][-1]["payload"]
+        assert failed_snapshot["execution_state"] == "failed"
+        assert failed_snapshot["next_action"] == "operator retry after compact worker failure"
+        assert failed_snapshot["failure_reason"] == "auto_compact_worker_exception"
+        assert failed_snapshot["failed_worker_session_id"] == worker_session_id
+        assert failed_snapshot["ready_node_ids"] == ["C"]
+        assert sessions_by_id[worker_session_id]["status"] == "failed"
+        assert sessions_by_id[graph_run_session_id]["status"] == "failed"
 
 
 def test_plan_execute_auto_compact_worker_packages_comparison_evidence(monkeypatch, tmp_path):
@@ -5347,9 +5955,12 @@ def test_plan_execute_auto_compact_worker_packages_comparison_evidence(monkeypat
         packet_root = Path(auto_worker["packet_root_path"])
         manifest = json.loads(Path(auto_worker["packet_root_manifest_path"]).read_text(encoding="utf-8"))
         assert manifest["execution_mode"] == "benchmark"
-        assert manifest["comparison_inputs_packaged"] is True
         assert manifest["comparison_evidence_file"] == "comparison_evidence.json"
         assert "comparison_evidence.json" in manifest["secondary_context_files"]
+        assert "compact_packet.md" not in manifest["secondary_context_files"]
+        assert "comparison_inputs_packaged" not in manifest
+        assert "current_focus" not in manifest
+        assert not (packet_root / "compact_packet.md").exists()
         assert (packet_root / "comparison_evidence.json").exists()
         assert len(generated_turns) == 1
         packet_text = generated_turns[0]["events"][0]["payload"]["text"]
@@ -5634,6 +6245,22 @@ def test_plan_execute_rejects_removed_record_run_alias(monkeypatch, tmp_path):
 
         assert result.exit_code != 0
         assert "No such option: --record-run" in result.output
+
+
+def test_plan_execute_rejects_removed_retry_run_operator_alias(monkeypatch, tmp_path):
+    with runner.isolated_filesystem(temp_dir=tmp_path):
+        _init_repo(monkeypatch)
+        graph_path = _write_graph()
+        _stub_remote(monkeypatch)
+
+        result = runner.invoke(
+            app,
+            ["plan", "execute", "PL-demo", "--from-json", str(graph_path), "--retry-run", "--json"],
+            catch_exceptions=False,
+        )
+
+        assert result.exit_code != 0
+        assert "No such option: --retry-run" in result.output
 
 
 def test_plan_execute_rejects_removed_compact_packet_run_alias(monkeypatch, tmp_path):

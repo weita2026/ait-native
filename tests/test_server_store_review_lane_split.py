@@ -5,6 +5,8 @@ from pathlib import Path
 from ait_server import server_store
 from ait_server.store import reviews as review_store
 
+WORKSPACE_ROOT = Path(__file__).resolve().parents[1]
+
 
 def test_server_store_review_lane_facade_reexports_review_module() -> None:
     assert server_store.request_review is review_store.request_review
@@ -15,7 +17,7 @@ def test_server_store_review_lane_facade_reexports_review_module() -> None:
 
 
 def test_server_store_imports_review_lane_module() -> None:
-    content = Path("src/ait_server/server_store.py").read_text(encoding="utf-8")
+    content = (WORKSPACE_ROOT / "src/ait_server/server_store.py").read_text(encoding="utf-8")
     assert "from .store.reviews import (" in content
     assert "_required_approvals" in content
     assert "_review_summary" in content

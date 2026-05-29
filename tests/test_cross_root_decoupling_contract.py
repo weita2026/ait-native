@@ -74,8 +74,10 @@ def test_cross_root_contract_keeps_known_ait_agent_direct_import_surface_small()
 
 def test_cross_root_contract_freezes_known_ait_server_to_ait_seam():
     assert _python_files_with_direct_import(REPO_ROOT / "src/ait_server", "ait.") == {
+        "src/ait_server/app.py",
         "src/ait_server/local_repo_seams.py",
         "src/ait_server/session_route_helpers.py",
+        "src/ait_server/session_routes.py",
         "src/ait_server/task_dag_seams.py",
     }
 
@@ -103,6 +105,7 @@ def test_cross_root_contract_freezes_known_ait_server_to_ait_chat_reply_runtime_
     assert _python_files_with_direct_import(REPO_ROOT / "src/ait_server", "ait_chat") == {
         "src/ait_server/app.py",
         "src/ait_server/session_route_helpers.py",
+        "src/ait_server/session_routes.py",
     }
 
 

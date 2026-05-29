@@ -3,15 +3,15 @@ class AitNative < Formula
 
   desc "Agent-first Markdown workflow CLI with optional self-hosted server and worker surfaces"
   homepage "https://ait-native.dev"
-  url "https://github.com/weita2026/ait-native/releases/download/v0.10.5/ait_native-0.10.5-py3-none-any.whl"
-  sha256 "0d6c36ccff304aacfcecbb4ecb69c06da734bd574ffdbc9e212233b8ffc4fdab"
+  url "https://github.com/weita2026/ait-native/releases/download/v0.10.6/ait_native-0.10.6-py3-none-any.whl"
+  sha256 "49b8fb182efa43cb1c8deead4ccf473315f472db347ffb3ac22ebbf2e9e19a10"
   license all_of: ["Apache-2.0", "AGPL-3.0-only"]
 
   depends_on "python@3.14"
 
   def install
     system Formula["python@3.14"].opt_bin/"python3", "-m", "venv", libexec
-    wheel = buildpath/"ait_native-0.10.5-py3-none-any.whl"
+    wheel = buildpath/"ait_native-0.10.6-py3-none-any.whl"
     cp cached_download, wheel
     system libexec/"bin/python", "-m", "pip", "install", wheel
     bin.install_symlink libexec/"bin/ait"

@@ -48,6 +48,11 @@ def change_create(
             plan_item_ref=None,
             command_name="change create",
         )
+        _require_fresh_bound_task_worktree(
+            ctx,
+            task_id=task,
+            operation="creating a new change",
+        )
         use_local = _workflow_uses_local_scope(ctx, kind="change", local=local, remote_name=remote)
         data = _create_change_record(
             ctx,

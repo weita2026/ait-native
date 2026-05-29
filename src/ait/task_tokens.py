@@ -9,7 +9,8 @@ from .remote_client import (
     list_sessions as remote_list_sessions,
 )
 from .repo_paths import RepoContext
-from .store import get_local_task, list_local_session_events, list_local_sessions
+from .store_local_tasks import get_local_task
+from .store_local_sessions import list_local_session_events, list_local_sessions
 
 _EVENT_PAGE_LIMIT = 200
 _USAGE_TOKEN_KEYS = (

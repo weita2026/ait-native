@@ -5,6 +5,7 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
 from typer.testing import CliRunner
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -14,6 +15,7 @@ from ait.cli import app
 
 runner = CliRunner()
 cli_app_module = importlib.import_module("ait.cli.app")
+pytestmark = pytest.mark.usefixtures("explicit_host_ram_root_cleanup")
 
 
 def _graph() -> dict:

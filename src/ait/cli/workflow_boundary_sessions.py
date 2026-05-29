@@ -15,7 +15,13 @@ from ..remote_client import (
     list_sessions as remote_list_sessions,
     submit_land as remote_submit_land,
 )
-from ..store import RepoContext, current_line, get_local_change, get_local_task, get_worktree as local_get_worktree, load_config
+from ..store_local_changes import (
+    get_local_change,
+)
+from ..store_local_tasks import (
+    get_local_task,
+)
+from ..store import RepoContext, current_line, get_worktree as local_get_worktree, load_config
 from ..workflow_conversation import infer_workflow_context
 from .remote_repository_defaults import _remote_tuple
 from .runtime_defaults import _effective_author_mode, _effective_model_name

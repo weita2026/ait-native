@@ -6,16 +6,20 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from ..remote_client import RemoteError, get_change as remote_get_change, read_task_audit as remote_read_task_audit
+from ..store_local_changes import (
+    get_local_change,
+)
+from ..store_local_tasks import (
+    get_local_task,
+    list_local_tasks,
+)
 from ..store import (
     RepoContext,
     add_worktree as local_add_worktree,
     bind_worktree as local_bind_worktree,
     current_line,
     get_line,
-    get_local_change,
-    get_local_task,
     get_worktree as local_get_worktree,
-    list_local_tasks,
     load_config,
     remove_worktree as local_remove_worktree,
     save_config,
@@ -26,6 +30,7 @@ from .remote_repository_defaults import _remote_tuple
 from .task_tracking_bindings import _default_line_name, _task_tracking_enabled, _task_worktree_repo_ctx, _tracked_session_binding
 from .task_worktree_guidance import _task_worktree_output
 from .task_worktree_resolution import (
+    _change_bootstrap_lineage,
     _ensure_task_feature_line,
     _find_auto_created_task_worktree,
     _resolve_task_bound_worktree_name,
@@ -357,19 +362,44 @@ def _maybe_auto_create_task_worktree(
     task_id: str,
     title: str,
     base_line_name: str,
+    change: Mapping[str, Any] | None = None,
     change_id: str | None = None,
 ) -> dict[str, Any] | None:
     policy = _effective_task_worktree(ctx)
     repo_ctx = _task_worktree_repo_ctx(ctx)
     worktree_name = _resolve_task_bound_worktree_name(repo_ctx, task_id, title)
 
+    resolved_change_id = _normalize_text_value(change_id) or _normalize_text_value((change or {}).get("change_id"))
+    resolved_change = dict(change) if isinstance(change, Mapping) else None
+    if resolved_change is None and resolved_change_id is not None:
+        try:
+            resolved_change = get_local_change(repo_ctx, resolved_change_id)
+        except KeyError:
+            resolved_change = None
+        if resolved_change is None:
+            try:
+                remote_row, repo_name = _remote_tuple(ctx, None)
+                resolved_change = remote_get_change(remote_row["url"], resolved_change_id, repo_name=repo_name)
+            except (KeyError, RemoteError, ValueError):
+                resolved_change = None
+        if resolved_change is None:
+            raise ValueError(
+                f"Cannot resolve change `{resolved_change_id}` lineage for task-bound worktree bootstrap."
+            )
+    resolved_base_line_name, resolved_fork_snapshot_id = _change_bootstrap_lineage(
+        resolved_change,
+        fallback_base_line_name=base_line_name,
+    )
+
     def _create_and_bind() -> dict[str, Any]:
         feature_line = _ensure_task_feature_line(
             repo_ctx,
             task_id=task_id,
-            base_line_name=base_line_name,
+            base_line_name=resolved_base_line_name,
+            base_snapshot_id=resolved_fork_snapshot_id,
         )
-        base_line = get_line(repo_ctx, base_line_name)
+        base_line = get_line(repo_ctx, resolved_base_line_name)
+        bootstrap_fork_snapshot_id = resolved_fork_snapshot_id or _normalize_text_value(base_line.get("head_snapshot_id"))
         worktree_location = resolve_task_auto_worktree_location(
             repo_ctx,
             worktree_name=worktree_name,
@@ -392,11 +422,11 @@ def _maybe_auto_create_task_worktree(
             repo_ctx,
             created["name"],
             task_id=task_id,
-            change_id=change_id,
+            change_id=resolved_change_id,
             auto_created_for_task=True,
-            fork_snapshot_id=_normalize_text_value(base_line.get("head_snapshot_id")),
-            forked_from_line=base_line_name,
-            target_base_line=base_line_name,
+            fork_snapshot_id=bootstrap_fork_snapshot_id,
+            forked_from_line=resolved_base_line_name,
+            target_base_line=resolved_base_line_name,
         )
 
     worktree = _run_locked_workspace_command(repo_ctx, "task auto worktree add", _create_and_bind)

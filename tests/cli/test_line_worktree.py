@@ -3049,7 +3049,7 @@ def test_task_start_tracking_session_inherits_auto_created_worktree(tmp_path: Pa
     worktree = payload["worktree"]
     tracking = payload["tracking"]
     expected_worktree_name = payload["task_id"].lower()
-    feature_line_name = f"feature/{payload['task_id'].lower()}"
+    feature_line_name = f"feature/{expected_worktree_name}"
     assert worktree["name"] == expected_worktree_name
     assert tracking["worktree_name"] == worktree["name"]
     assert tracking["workspace_root"] == worktree["path"]

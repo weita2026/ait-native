@@ -5,13 +5,15 @@ from pathlib import Path
 from ait_agent.telegram import app as telegram_app
 from ait_agent.telegram import update_dispatch as telegram_update_dispatch
 
+WORKSPACE_ROOT = Path(__file__).resolve().parents[1]
+
 
 def test_telegram_update_dispatch_helpers_stay_reexported() -> None:
     assert telegram_app.TelegramUpdateDispatch is telegram_update_dispatch.TelegramUpdateDispatch
 
 
 def test_telegram_app_imports_update_dispatch_module() -> None:
-    text = Path("src/ait_agent/telegram/app.py").read_text(encoding="utf-8")
+    text = (WORKSPACE_ROOT / "src/ait_agent/telegram/app.py").read_text(encoding="utf-8")
     assert "from .update_dispatch import TelegramUpdateDispatch" in text
     assert "self._update_dispatch = TelegramUpdateDispatch()" in text
     assert "return self._update_dispatch.dispatch_key(update)" in text

@@ -7,7 +7,7 @@ from typing import Any, Callable
 from ait_protocol.common import generate_namespaced_workflow_id
 
 from .. import local_control
-from ..local_content import _read_blob_bytes, ensure_blob_bytes
+from ..local_content_pack_runtime import _read_blob_bytes, ensure_blob_bytes
 from ..repo_paths import RepoContext
 from ..store import (
     close_local_plan,

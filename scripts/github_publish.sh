@@ -277,11 +277,16 @@ bootstrap_hidden_git() {
   local remote_name="${1:-${DEFAULT_REMOTE_NAME}}"
   local remote_url="${2:-${DEFAULT_REMOTE_URL}}"
   local branch_name="${3:-${DEFAULT_BRANCH}}"
+  local allow_missing_fetch="${4:-0}"
   local local_branch="publish-${branch_name}"
 
   init_git_dir
   ensure_remote "${remote_name}" "${remote_url}"
-  git_cmd fetch --prune "${remote_name}"
+  if ! git_cmd fetch --prune "${remote_name}"; then
+    if [[ "${allow_missing_fetch}" != "1" ]]; then
+      return 1
+    fi
+  fi
 
   if git_cmd show-ref --verify --quiet "refs/remotes/${remote_name}/${branch_name}"; then
     git_cmd update-ref "refs/heads/${local_branch}" "refs/remotes/${remote_name}/${branch_name}"
@@ -299,7 +304,11 @@ bootstrap_hidden_git() {
 
 ensure_bootstrapped() {
   if [[ ! -f "${GIT_DIR_PATH}/HEAD" ]]; then
-    bootstrap_hidden_git "${DEFAULT_REMOTE_NAME}" "${DEFAULT_REMOTE_URL}" "${DEFAULT_BRANCH}" >/dev/null
+    local allow_missing_fetch=0
+    if [[ -z "${AIT_GITHUB_PUBLISH_REMOTE_URL:-}" ]]; then
+      allow_missing_fetch=1
+    fi
+    bootstrap_hidden_git "${DEFAULT_REMOTE_NAME}" "${DEFAULT_REMOTE_URL}" "${DEFAULT_BRANCH}" "${allow_missing_fetch}" >/dev/null
   else
     init_git_dir
   fi
@@ -327,6 +336,7 @@ case "${cmd}" in
     remote_name="${DEFAULT_REMOTE_NAME}"
     remote_url="${DEFAULT_REMOTE_URL}"
     branch_name="${DEFAULT_BRANCH}"
+    allow_missing_fetch=0
     while [[ $# -gt 0 ]]; do
       case "$1" in
         --remote)
@@ -335,6 +345,7 @@ case "${cmd}" in
           ;;
         --remote-url)
           remote_url="$2"
+          allow_missing_fetch=0
           shift 2
           ;;
         --branch)
@@ -347,7 +358,10 @@ case "${cmd}" in
           ;;
       esac
     done
-    bootstrap_hidden_git "${remote_name}" "${remote_url}" "${branch_name}"
+    if [[ "${remote_url}" == "${DEFAULT_REMOTE_URL}" && -z "${AIT_GITHUB_PUBLISH_REMOTE_URL:-}" ]]; then
+      allow_missing_fetch=1
+    fi
+    bootstrap_hidden_git "${remote_name}" "${remote_url}" "${branch_name}" "${allow_missing_fetch}"
     ;;
   python-release)
     emit_python_release_metadata

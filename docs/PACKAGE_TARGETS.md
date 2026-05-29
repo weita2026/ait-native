@@ -1,5 +1,9 @@
 # ait Package Targets
 
+Authority: command layer under [plan.md](./plan.md), the applicable legal-layer governance documents, and [legal/public_release_license_summary.md](./legal/public_release_license_summary.md).
+Status: current release-facing package-target guide.
+Scope: package targets, console scripts, install profiles, extraction posture, and package/license boundary routing for the `ait-native` release family.
+
 ## What this guide is for
 
 Use this guide when you need to answer:
@@ -16,7 +20,7 @@ This guide is intentionally narrower than a future build-system or multi-wheel e
 Current public release-family anchor:
 
 - distribution: `ait-native`
-- version: `0.10.3`
+- version: `0.10.6`
 
 Public naming rule for this release-facing slice:
 

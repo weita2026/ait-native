@@ -190,6 +190,11 @@ def test_shared_sqlite_web_runtime_requires_postgres_even_if_legacy_override_is_
         create_web_app()
 
 
+def test_server_runtime_modules_no_longer_define_sqlite_schema_bootstraps():
+    assert not hasattr(server_content, "SCHEMA_SQLITE")
+    assert not hasattr(server_control, "SCHEMA_SQLITE")
+
+
 def test_normalize_sql_rewrites_insert_or_ignore_for_postgres():
     sql = "insert or ignore into role_bindings(repo_name, actor_identity, role, created_at) values (?, ?, ?, ?)"
     normalized = normalize_sql(sql, "postgres")

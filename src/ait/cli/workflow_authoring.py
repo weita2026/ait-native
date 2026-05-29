@@ -10,11 +10,15 @@ from ..remote_client import (
     get_remote_line,
 )
 from ..repo_paths import RepoContext
-from ..store import (
+from ..store_local_changes import (
     create_local_change,
+)
+from ..store_local_tasks import (
     create_local_task,
-    get_line,
     get_local_task,
+)
+from ..store import (
+    get_line,
     load_config,
 )
 from .plan_task_linkage import _normalize_plan_task_linkage

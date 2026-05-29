@@ -210,6 +210,44 @@ def test_server_control_initialize_drops_historical_publication_storage(tmp_path
         conn.close()
 
 
+def test_server_control_initialize_drops_imported_completion_source_lineage_columns(tmp_path: Path):
+    ctx = fake_postgres_context(tmp_path / "server-data")
+    server_control.initialize(ctx)
+
+    conn = server_control.connect(ctx)
+    try:
+        conn.execute("alter table tasks add column source_completion_mode text")
+        conn.execute("alter table tasks add column source_local_task_id text")
+        conn.execute("alter table tasks add column source_local_completed_at text")
+        conn.execute("alter table changes add column source_completion_mode text")
+        conn.execute("alter table changes add column source_local_change_id text")
+        conn.execute("alter table changes add column source_local_status text")
+        conn.execute("alter table changes add column source_target_line text")
+        conn.execute("alter table changes add column source_landed_snapshot_id text")
+        conn.execute("alter table changes add column source_landed_at text")
+        conn.commit()
+    finally:
+        conn.close()
+
+    server_control.initialize(ctx)
+
+    conn = server_control.connect(ctx)
+    try:
+        task_columns = _authority_columns(conn, "tasks")
+        change_columns = _authority_columns(conn, "changes")
+        assert "source_completion_mode" not in task_columns
+        assert "source_local_task_id" not in task_columns
+        assert "source_local_completed_at" not in task_columns
+        assert "source_completion_mode" not in change_columns
+        assert "source_local_change_id" not in change_columns
+        assert "source_local_status" not in change_columns
+        assert "source_target_line" not in change_columns
+        assert "source_landed_snapshot_id" not in change_columns
+        assert "source_landed_at" not in change_columns
+    finally:
+        conn.close()
+
+
 def test_authority_map_crud_and_reorder_helpers(tmp_path: Path):
     ctx = fake_postgres_context(tmp_path / "server-data")
     server_store.initialize(ctx)

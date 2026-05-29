@@ -205,7 +205,7 @@ def _sync_plan_and_load(
 
 def _bind_task_worktree(task_id: str, monkeypatch, *, name: str | None = None, line_name: str = "main", chdir: bool = True) -> Path:
     normalized = re.sub(r"[^a-z0-9]+", "-", task_id.lower()).strip("-") or "task"
-    worktree_name = name or f"task-{normalized}"
+    worktree_name = name or normalized
     repo_root = RepoContext.discover().repo_root
     if name is None:
         task_show = runner.invoke(app, ["task", "show", task_id, "--json"], catch_exceptions=False)

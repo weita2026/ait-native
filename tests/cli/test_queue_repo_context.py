@@ -194,10 +194,12 @@ def test_workflow_publish_payload_forwards_repo_name_to_repo_scoped_helpers(monk
         return {"patchset_id": "PS-1", "revision_snapshot_id": revision_snapshot_id}
 
     monkeypatch.setattr(publish_module, "_remote_tuple", fake_remote_tuple)
+    monkeypatch.setattr(publish_module, "load_config", lambda ctx: {"default_line": "main"})
     monkeypatch.setattr(publish_module, "remote_get_task", fake_remote_get_task)
     monkeypatch.setattr(publish_module, "local_workspace_status", lambda ctx: {"clean": True, "baseline_snapshot_id": "SNP-BASE"})
     monkeypatch.setattr(publish_module, "current_line", lambda ctx: "main")
     monkeypatch.setattr(publish_module, "get_line", lambda ctx, line_name: {"head_snapshot_id": "SNP-REV"})
+    monkeypatch.setattr(publish_module, "get_remote_line", lambda base_url, repo_name, line_name: {"head_snapshot_id": "SNP-BASE"})
     monkeypatch.setattr(publish_module, "get_snapshot", lambda ctx, snapshot_id: {"parent_snapshot_id": "SNP-PARENT"})
     monkeypatch.setattr(publish_module, "_guard_patchset_revision_scope", lambda *args, **kwargs: None)
     monkeypatch.setattr(publish_module, "_ensure_patchset_not_empty", lambda *args, **kwargs: None)
@@ -209,7 +211,14 @@ def test_workflow_publish_payload_forwards_repo_name_to_repo_scoped_helpers(monk
         lambda *args, **kwargs: {"line": kwargs.get("line_name"), "line_updated": True},
     )
     monkeypatch.setattr(publish_module, "_effective_author_mode", lambda ctx, author_mode=None: "human")
-    monkeypatch.setattr(publish_module, "remote_create_change", lambda *args, **kwargs: {"change_id": "C-NEW"})
+    monkeypatch.setattr(
+        publish_module,
+        "remote_create_change",
+        lambda base_url, repo_name, task_id, title, base_line, risk_tier, **kwargs: {
+            "change_id": "C-NEW",
+            "base_line": base_line,
+        },
+    )
     monkeypatch.setattr(publish_module, "remote_publish_patchset", fake_publish_patchset)
 
     queue_module._workflow_publish_payload(
@@ -237,6 +246,67 @@ def test_workflow_publish_payload_forwards_repo_name_to_repo_scoped_helpers(monk
         "repo-alpha",
         True,
     ) in calls
+
+
+def test_workflow_publish_payload_defaults_to_repo_default_target_line(monkeypatch):
+    calls: list[tuple] = []
+
+    def fake_remote_tuple(ctx, remote_name):
+        return {"url": "http://example.test"}, "repo-alpha"
+
+    def fake_remote_get_task(base_url, task_id, *, repo_name=None):
+        return {
+            "task_id": task_id,
+            "status": "active",
+            "repo_name": "repo-alpha",
+            "title": "task-title",
+            "risk_tier": "medium",
+        }
+
+    def fake_create_change(base_url, repo_name, task_id, title, base_line, risk_tier, **kwargs):
+        calls.append(("create_change", base_line, kwargs.get("fork_snapshot_id"), kwargs.get("forked_from_line")))
+        return {"change_id": "C-DEFAULT", "base_line": base_line}
+
+    monkeypatch.setattr(publish_module, "_remote_tuple", fake_remote_tuple)
+    monkeypatch.setattr(publish_module, "load_config", lambda ctx: {"default_line": "main"})
+    monkeypatch.setattr(publish_module, "remote_get_task", fake_remote_get_task)
+    monkeypatch.setattr(publish_module, "local_workspace_status", lambda ctx: {"clean": True, "baseline_snapshot_id": "SNP-OLD"})
+    monkeypatch.setattr(publish_module, "current_line", lambda ctx: "feature/t-1")
+    monkeypatch.setattr(publish_module, "get_line", lambda ctx, line_name: {"head_snapshot_id": "SNP-REV"})
+    monkeypatch.setattr(publish_module, "get_remote_line", lambda base_url, repo_name, line_name: {"head_snapshot_id": "SNP-MAIN"})
+    monkeypatch.setattr(publish_module, "_guard_patchset_revision_scope", lambda *args, **kwargs: None)
+    monkeypatch.setattr(publish_module, "_ensure_patchset_not_empty", lambda *args, **kwargs: None)
+    monkeypatch.setattr(publish_module, "_workflow_publish_auto_rebase_if_needed", lambda ctx, target_line: {"rebase": {"status": "applied"}})
+    monkeypatch.setattr(
+        publish_module,
+        "_sync_patchset_revision_snapshot",
+        lambda *args, **kwargs: {"line": kwargs.get("line_name"), "line_updated": True},
+    )
+    monkeypatch.setattr(publish_module, "_effective_author_mode", lambda ctx, author_mode=None: "human")
+    monkeypatch.setattr(publish_module, "remote_create_change", fake_create_change)
+    monkeypatch.setattr(
+        publish_module,
+        "remote_publish_patchset",
+        lambda *args, **kwargs: {"patchset_id": "P-DEFAULT", "revision_snapshot_id": "SNP-REV"},
+    )
+
+    payload = queue_module._workflow_publish_payload(
+        _build_ctx(),
+        task_id="T-1",
+        summary="summary",
+        remote_name="origin",
+        base_snapshot_id=None,
+        base_line_name=None,
+        target_line=None,
+        change_title=None,
+        snapshot_message=None,
+        author_mode=None,
+    )
+
+    assert payload["promotion_mode"] == "local_first_final_remote_land"
+    assert payload["change"]["base_line"] == "main"
+    assert payload["base_line"]["line_name"] == "main"
+    assert ("create_change", "main", "SNP-MAIN", "main") in calls
 
 
 def test_workflow_publish_payload_target_line_uses_remote_target_head(monkeypatch):
@@ -273,6 +343,7 @@ def test_workflow_publish_payload_target_line_uses_remote_target_head(monkeypatc
         return {"patchset_id": "P-FINAL", "revision_snapshot_id": revision_snapshot_id}
 
     monkeypatch.setattr(publish_module, "_remote_tuple", fake_remote_tuple)
+    monkeypatch.setattr(publish_module, "load_config", lambda ctx: {"default_line": "main"})
     monkeypatch.setattr(publish_module, "remote_get_task", fake_remote_get_task)
     monkeypatch.setattr(publish_module, "local_workspace_status", lambda ctx: {"clean": True, "baseline_snapshot_id": "SNP-OLD"})
     monkeypatch.setattr(publish_module, "current_line", lambda ctx: "feature/t-1")

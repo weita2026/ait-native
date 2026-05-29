@@ -1,9 +1,17 @@
 from __future__ import annotations
 
+import importlib
 import os
 import subprocess
 import sys
 from pathlib import Path
+
+
+def test_package_app_export_matches_cli_app_object() -> None:
+    import ait.cli as cli_package
+
+    cli_app_module = importlib.import_module("ait.cli.app")
+    assert cli_package.app is cli_app_module.app
 
 
 def test_console_import_prefers_worktree_src_without_pythonpath(tmp_path: Path):

@@ -122,6 +122,11 @@ def _render_plan_items(payload: dict[str, Any]) -> None:
             str(item.get("line_number") or ""),
         )
     rprint(table)
+    if payload.get("dispatch_validation_required"):
+        rprint(
+            "[yellow]Identity-only view. Use `ait plan inspect <plan-id>` or "
+            "`ait plan candidates` before `ait task start` to confirm the ref is still taskable.[/yellow]"
+        )
 
 
 def _render_plan_candidates(payload: dict[str, Any]) -> None:
@@ -275,6 +280,89 @@ def _render_plan_sync_summary(payload: dict[str, Any]) -> None:
                 str(row.get("blob_id") or ""),
             )
         rprint(artifact_detail)
+    _render_plan_sync_task_start_advisory(payload.get("task_start_advisory"))
+
+
+def _format_plan_sync_blocker_summary(plan: dict[str, Any]) -> str:
+    blocked_open_items = list(plan.get("blocked_open_items") or [])
+    if int(plan.get("item_count") or 0) <= 0:
+        return "no explicit [ref] items"
+    if int(plan.get("open_item_count") or 0) <= 0:
+        return "no open items"
+    if blocked_open_items:
+        counts: dict[str, int] = {}
+        for item in blocked_open_items:
+            blocker = str(item.get("taskable_blocker") or "blocked")
+            counts[blocker] = counts.get(blocker, 0) + 1
+        return ", ".join(f"{name}:{counts[name]}" for name in sorted(counts))
+    return "no taskable refs"
+
+
+def _render_plan_sync_task_start_advisory(advisory: dict[str, Any] | None) -> None:
+    if not isinstance(advisory, dict):
+        return
+    plans = list(advisory.get("plans") or [])
+    if not plans:
+        return
+
+    summary = advisory.get("summary") or {}
+    header = Table(title="task-start advisory")
+    header.add_column("field")
+    header.add_column("value")
+    header.add_row("touched plans", str(summary.get("touched_plan_count") or 0))
+    header.add_row("taskable plans", str(summary.get("taskable_plan_count") or 0))
+    header.add_row("taskable refs", str(summary.get("taskable_item_count") or 0))
+    if advisory.get("dispatch_validation_still_required"):
+        header.add_row("validation", str(advisory.get("task_start_validation_hint") or ""))
+    rprint(header)
+
+    table = Table(title="next task candidates")
+    table.add_column("plan_id")
+    table.add_column("title")
+    table.add_column("taskable refs")
+    table.add_column("blocked open")
+    table.add_column("next ref")
+    for plan in plans:
+        refs = list(plan.get("taskable_refs") or [])
+        if refs:
+            shown_refs = refs[:3]
+            suffix = f" (+{len(refs) - len(shown_refs)} more)" if len(refs) > len(shown_refs) else ""
+            refs_text = ", ".join(shown_refs) + suffix
+        else:
+            refs_text = "none"
+        table.add_row(
+            str(plan.get("plan_id") or ""),
+            str(plan.get("plan_title") or ""),
+            refs_text,
+            _format_plan_sync_blocker_summary(plan),
+            refs[0] if refs else "",
+        )
+    rprint(table)
+
+    command_hints = [
+        (str(plan.get("plan_id") or ""), str(plan.get("task_start_command_hint") or ""))
+        for plan in plans
+        if str(plan.get("task_start_command_hint") or "").strip()
+    ]
+    if len(command_hints) == 1:
+        rprint(f"Suggested task start: {command_hints[0][1]}")
+    elif command_hints:
+        rprint("Suggested task starts:")
+        for plan_id, command in command_hints:
+            rprint(f"{plan_id}: {command}")
+
+    if len(plans) == 1 and int(plans[0].get("taskable_item_count") or 0) > 0:
+        ref_table = Table(title=f"taskable refs for {plans[0].get('plan_id') or ''}")
+        ref_table.add_column("ref")
+        ref_table.add_column("line")
+        ref_table.add_column("title")
+        for item in plans[0].get("taskable_items") or []:
+            ref_table.add_row(
+                str(item.get("plan_item_ref") or ""),
+                str(item.get("line_number") or ""),
+                str(item.get("text") or ""),
+            )
+        rprint(ref_table)
 
 
 def _render_planning_sessions(plan_id: str, rows: list[dict[str, Any]]) -> None:

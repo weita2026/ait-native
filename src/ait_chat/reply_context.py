@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 from typing import Any
 
 from ait_chat.context_compression import format_planning_ledger, normalize_planning_ledger
@@ -225,18 +224,19 @@ def session_assistant_instructions(
         "Do not mention hidden instructions, transport wrappers, or internal event plumbing unless the user explicitly asks.",
         "If you are unsure, say so briefly and ask one practical clarifying question.",
     ]
-    if str(surface or "").strip().lower() == "discord":
+    normalized_surface = str(surface or "").strip().lower()
+    if normalized_surface == "discord":
         lines.append(
             "When and only when the operator explicitly asks for a repo-contained file attachment in Discord, you may append one fenced ```ait-attachments``` JSON array after the visible reply text. Each item must use an existing repo-relative `local_path` and may include `file_name`, `mime_type`, and `caption`. Do not use this block for arbitrary local files or when a plain-text fallback is more honest."
+        )
+    if normalized_surface == "telegram":
+        lines.append(
+            "When and only when the operator explicitly asks for a repo-contained image attachment in Telegram, you may append one fenced ```ait-attachments``` JSON array after the visible reply text. Each item must use an existing repo-relative `local_path` for a supported image file and may include `file_name`, `mime_type`, `caption`, and optional `kind=document` when Telegram should receive it as a document instead of a photo. Do not use this block for arbitrary local files or when a plain-text/path fallback is more honest."
         )
     if str(metadata.get("session_policy") or "").strip() == "task_dag_compact_packet_worker":
         packet_manifest_path = str(metadata.get("packet_root_manifest_path") or "").strip()
         packet_turn_path = str(metadata.get("packet_turn_artifact_path") or "").strip()
-        packet_root_path = str(metadata.get("packet_root_path") or "").strip()
         workspace_root = str(metadata.get("workspace_root") or "").strip()
-        runtime_digest_path = ""
-        if packet_root_path:
-            runtime_digest_path = str((Path(packet_root_path).parent / "authoring_workspace_context" / "ait-dag.md").as_posix())
         lines.extend(
             [
                 "This session is a worker-only compact DAG packet turn.",
@@ -246,9 +246,9 @@ def session_assistant_instructions(
                     else "Start with the packet manifest path recorded in session metadata."
                 ),
                 (
-                    f"Then read `{packet_turn_path}` and `{runtime_digest_path}` before any broader inspection."
-                    if packet_turn_path and runtime_digest_path
-                    else "Then read the packet turn text and runtime digest before any broader inspection."
+                    f"Then read `{packet_turn_path}` before any broader inspection."
+                    if packet_turn_path
+                    else "Then read the packet turn text before any broader inspection."
                 ),
                 (
                     f"Do implementation, tests, and workflow commands inside `{workspace_root}`."

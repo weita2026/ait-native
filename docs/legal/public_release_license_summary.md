@@ -1,4 +1,8 @@
 # ait Public Release License Summary
+
+Authority: command layer under [../plan.md](../plan.md), [Legal Plan](../legal_plan.md), [component_license_matrix.md](./component_license_matrix.md), and [module_license_map.md](./module_license_map.md).
+Status: current release-facing license summary; not a legal-layer governance document or final license instrument.
+Scope: public release license posture, command/package boundaries, website/content/trademark pointers, and lookup routing for external readers.
 Revision date: 2026-05-25.  
 
 > This file is a release-facing summary, not a final commercial agreement and not legal advice.
@@ -82,7 +86,7 @@ This table is intentionally narrower than the future full package-target extract
 - The official website domain is `https://ait-native.dev`; domain control does not replace trademark clearance or filing work.
 - Trademark rights in `ait-native`, `ait`, related logos, and official website branding are governed by `docs/TRADEMARK_POLICY.md`, not by source-code licenses alone.
 - Public examples or docs must be explicitly released as such; internal planning/legal material should not be assumed public just because it lives in the repository.
-- If a package or file does not clearly state a public grant, treat this summary, [component_license_matrix.md](./component_license_matrix.md), and [module_license_map.md](./module_license_map.md) as the current source of truth.
+- If a package or file does not clearly state a public grant, treat this summary, [component_license_matrix.md](./component_license_matrix.md), and [module_license_map.md](./module_license_map.md) as the current release-facing command-layer lookup, with [Legal Plan](../legal_plan.md) retaining legal-layer governance.
 
 ## 4. Related files
 

@@ -75,10 +75,9 @@ def _aligned_remote_publish_identity_request(
     row_id = _normalize_text_value(row.get(f"{entity_type}_id"))
     if row_id is None:
         return None
-    family = {"task": "T", "change": "C"}[entity_type]
     if _local_workflow_identity_requests_explicit_remote_id(row):
         return row_id
-    return row_id if _workflow_sequence_for_row(row, family=family) is not None else None
+    return None
 
 
 def _is_remote_publish_identity_conflict(exc: Exception, *, entity_type: str, requested_id: str | None) -> bool:

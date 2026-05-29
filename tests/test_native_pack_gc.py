@@ -190,10 +190,11 @@ def test_local_pack_and_prune_preserves_snapshot_export(tmp_path: Path, monkeypa
 
     ctx = RepoContext.discover(repo)
     conn = connect_sqlite(ctx.content_db_path)
-    blob_rows = [dict(row) for row in conn.execute("select storage_kind, pack_entry_type, pack_base_blob_id, pack_chain_depth from blobs order by blob_id")]
+    blob_columns = {row["name"] for row in conn.execute("pragma table_info(blobs)")}
+    blob_rows = [dict(row) for row in conn.execute("select pack_entry_type, pack_base_blob_id, pack_chain_depth from blobs order by blob_id")]
     conn.close()
     assert blob_rows
-    assert all(row["storage_kind"] == "pack_full" for row in blob_rows)
+    assert "storage_kind" not in blob_columns
     assert all(row["pack_entry_type"] == "full" for row in blob_rows)
     assert all(row["pack_base_blob_id"] is None for row in blob_rows)
     assert all(row["pack_chain_depth"] == 0 for row in blob_rows)
@@ -564,7 +565,7 @@ def test_local_repack_can_consolidate_existing_direct_delta_layout(tmp_path: Pat
     ).fetchone()["blob_id"]
     second_blob_row = conn.execute(
         """
-        select blob_id, storage_kind, pack_entry_type, pack_base_blob_id, pack_chain_depth
+        select blob_id, pack_entry_type, pack_base_blob_id, pack_chain_depth
         from blobs
         where blob_id = (
             select blob_id from snapshot_files where snapshot_id = ? and path = 'app.py'
@@ -573,7 +574,6 @@ def test_local_repack_can_consolidate_existing_direct_delta_layout(tmp_path: Pat
         (second_snapshot["snapshot_id"],),
     ).fetchone()
     conn.close()
-    assert second_blob_row["storage_kind"] == "pack_delta"
     assert second_blob_row["pack_entry_type"] == "delta"
     assert second_blob_row["pack_base_blob_id"] == first_blob_id
     assert second_blob_row["pack_chain_depth"] == 1
@@ -700,7 +700,7 @@ def test_local_snapshot_export_reads_direct_pack_delta_by_default(tmp_path: Path
     ).fetchone()["blob_id"]
     target_blob_row = conn.execute(
         """
-        select blob_id, storage_kind, pack_entry_type, pack_base_blob_id, pack_chain_depth
+        select blob_id, pack_entry_type, pack_base_blob_id, pack_chain_depth
         from blobs
         where blob_id = ?
         """,
@@ -708,7 +708,6 @@ def test_local_snapshot_export_reads_direct_pack_delta_by_default(tmp_path: Path
     ).fetchone()
     conn.close()
 
-    assert target_blob_row["storage_kind"] == "pack_delta"
     assert target_blob_row["pack_entry_type"] == "delta"
     assert target_blob_row["pack_base_blob_id"] == base_blob_id
     assert target_blob_row["pack_chain_depth"] == 1
@@ -766,7 +765,7 @@ def test_local_snapshot_create_emits_text_delta_entries_by_default(tmp_path: Pat
     ).fetchone()["blob_id"]
     second_blob_row = conn.execute(
         """
-        select blob_id, storage_kind, pack_entry_type, pack_base_blob_id, pack_chain_depth
+        select blob_id, pack_entry_type, pack_base_blob_id, pack_chain_depth
         from blobs
         where blob_id = (
             select blob_id from snapshot_files where snapshot_id = ? and path = 'app.py'
@@ -775,7 +774,6 @@ def test_local_snapshot_create_emits_text_delta_entries_by_default(tmp_path: Pat
         (second_snapshot["snapshot_id"],),
     ).fetchone()
     conn.close()
-    assert second_blob_row["storage_kind"] == "pack_delta"
     assert second_blob_row["pack_entry_type"] == "delta"
     assert second_blob_row["pack_base_blob_id"] == first_blob_id
     assert second_blob_row["pack_chain_depth"] == 1

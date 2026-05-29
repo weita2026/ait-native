@@ -6,7 +6,7 @@ from typing import Any, Mapping
 from ait_protocol.common import workflow_id_matches_any_namespace_prefix
 
 from .ci_status import patchset_ci_status
-from ..server_content import read_ref
+from ..server_content_repo_lines import read_ref
 from ..server_control import connect
 from ..server_paths import ServerContext
 from ..server_store import (

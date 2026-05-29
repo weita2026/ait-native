@@ -105,7 +105,6 @@ def test_extra_help_group_command_inventory_is_stable(argv: tuple[str, ...], exp
                 "--comparison-evidence-workload",
                 "--pause-run",
                 "--resume-run",
-                "--retry-run",
                 "--abort-run",
                 "--run-session",
                 "--latest-run",

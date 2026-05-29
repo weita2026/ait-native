@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
 
-from ait_chat.runtime_config import DEFAULT_REPLY_CODEX_CHILD_REAP_TIMEOUT_SECONDS
+from ait_protocol.reply_runtime import DEFAULT_REPLY_CODEX_CHILD_REAP_TIMEOUT_SECONDS
 
 from ait_agent.runtime_bindings import (
     binding_surface_id,

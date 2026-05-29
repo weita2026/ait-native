@@ -4,35 +4,45 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ait-native"
-version = "0.10.5"
-description = "Agent-first Markdown workflow CLI with optional self-hosted server and worker surfaces"
-readme = { file = "README.pypi.md", content-type = "text/markdown" }
+version = "0.10.6"
+description = "ait native local repository, sync, review, policy, landing, and PostgreSQL-ready runtime prototype"
+readme = "README.md"
 requires-python = ">=3.11"
-dependencies = ["typer>=0.12,<1.0", "rich>=13,<15", "fastapi>=0.115,<1.0", "uvicorn>=0.30,<1.0", "httpx>=0.27,<1.0", "websockets>=12,<17", "cryptography>=42,<47"]
-license = "Apache-2.0 AND AGPL-3.0-only"
-license-files = ["LICENSE", "NOTICE", "LICENSES/AGPL-3.0-only.txt"]
-keywords = ["ai", "agent", "workflow", "markdown", "cli"]
-classifiers = ["Development Status :: 3 - Alpha", "Environment :: Console", "Intended Audience :: Developers", "Operating System :: OS Independent", "Programming Language :: Python :: 3", "Programming Language :: Python :: 3.11", "Topic :: Software Development :: Build Tools", "Topic :: Software Development :: Version Control"]
-urls = { Homepage = "https://ait-native.dev", Documentation = "https://ait-native.dev", Source = "https://github.com/weita2026/ait-native", Issues = "https://github.com/weita2026/ait-native/issues", Releases = "https://github.com/weita2026/ait-native/releases" }
+dependencies = [
+  "typer>=0.12,<1.0",
+  "rich>=13,<15",
+  "fastapi>=0.115,<1.0",
+  "uvicorn>=0.30,<1.0",
+  "httpx>=0.27,<1.0",
+  "websockets>=12,<17",
+  "cryptography>=42,<47"
+]
 
 [project.scripts]
 ait = "ait.cli:app"
 ait-server = "ait_server.app:main"
 ait-worker = "ait_server.worker:main"
+ait-web = "ait_web.app:main"
 ait-agent = "ait_agent.cli:main"
 aitk = "ait_tk.launcher:main"
 
-[project.optional-dependencies]
-postgres = ["psycopg[binary]>=3.2,<4.0"]
-test = ["pytest>=8,<10", "pytest-xdist>=3,<4"]
-
 [tool.setuptools]
-package-dir = { "" = "src" }
+package-dir = {"" = "src"}
 
 [tool.setuptools.packages.find]
 where = ["src"]
-exclude = ["ait_web*"]
+
+[project.optional-dependencies]
+postgres = [
+  "psycopg[binary]>=3.2,<4.0"
+]
+test = [
+  "pytest>=8,<10",
+  "pytest-xdist>=3,<4"
+]
 
 [tool.pytest.ini_options]
 addopts = "-n 3 --dist loadfile"
-pythonpath = ["src"]
+pythonpath = [
+  "src",
+]

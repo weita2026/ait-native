@@ -15,7 +15,9 @@ from .store_worktree_filesystem import (
     _create_directory_link,
     _remove_tree_force,
 )
-from .store_worktree_layout import ensure_main_seed_mirror
+from .store_worktree_layout import (
+    ensure_main_seed_mirror,
+)
 from .store_worktree_lifecycle import (
     add_worktree,
     bind_worktree,
@@ -33,6 +35,14 @@ from .store_worktree_restore import (
     restore_owned_head,
     sync_all_worktrees,
     sync_worktree,
+)
+from .store_worktree_runtime import (
+    _set_current_line,
+    current_line,
+    create_snapshot,
+    list_lines,
+    set_line_head,
+    workspace_status,
 )
 from .store_worktree_state import (
     _normalize_worktree_name,

@@ -21,7 +21,6 @@ from .task_dag_topology_helpers import (
 
 
 DEFAULT_TASK_DAG_FINAL_GATE_BUNDLE = ("review", "attestation", "policy", "land")
-TASK_DAG_AUTHORING_WORKSPACE_RUNTIME_BOOTSTRAP_PATH = "ait-dag.md"
 
 
 def _app_override(name: str, fallback: Any) -> Any:
@@ -67,21 +66,15 @@ def _task_dag_compact_packet_surface_payload(
     )
     if final_remote_disposition_default:
         copyable_turn_text = (
-            "Please compress this DAG into a worker-only compact `ait_dag` packet, then execute it in one fresh worker "
-            "session while keeping execution-only work local-first, then carry the converged reviewable output through "
-            "the final remote review/attestation/policy/land gates without a coordinator handoff. Do not use physical "
-            "fan-out, coordinator+worker end-to-end, or repo-wide replay beyond the packet boundary unless the packet "
-            "explicitly broadens it."
+            "Please execute this DAG using the supplied compact packet, keep execution-only work local-first, and carry "
+            "the converged reviewable output through the final remote review/attestation/policy/land gates."
             + focus_clause
         )
     else:
         copyable_turn_text = (
-            "Please compress this DAG into a worker-only compact `ait_dag` packet, then execute it in one fresh worker "
-            "session while keeping execution-only work local-first, then carry the converged reviewable output through "
-            "one explicit local land on the target line before you stop. After that local land, the final converged output "
-            "may later remote-promote through `ait workflow land --all-completed-local --remote <name>`. Do not use physical "
-            "fan-out, coordinator+worker end-to-end, or repo-wide replay beyond the packet boundary unless the packet "
-            "explicitly broadens it."
+            "Please execute this DAG using the supplied compact packet, keep execution-only work local-first, and carry "
+            "the converged reviewable output through one explicit local land on the target line before you stop. After "
+            "that local land, the final converged output may later remote-promote through `ait workflow land --all-completed-local --remote <name>`."
             + focus_clause
         )
     return {
@@ -194,64 +187,64 @@ def _task_dag_compact_packet_bridge_files(
     return bridge_specs, bridge_hints
 
 
-def _task_dag_compact_packet_bridge_text_artifacts(
+def _task_dag_compact_packet_focus_is_reviewable_output(current_focus: dict[str, Any] | None) -> bool:
+    if not isinstance(current_focus, dict):
+        return False
+    return normalize_optional_text(current_focus.get("workflow_boundary")) == "reviewable_output"
+
+
+def _task_dag_compact_packet_current_focus_excerpt_text(
     *,
-    output_dir_relative: Path,
-    text_artifacts: dict[str, str],
-    seen_hints: set[str] | None = None,
-) -> tuple[list[tuple[str, str]], list[str]]:
-    seen = seen_hints if seen_hints is not None else set()
-    bridge_specs: list[tuple[str, str]] = []
-    bridge_hints: list[str] = []
-    for relative_repo_path, body in text_artifacts.items():
-        relative_value = normalize_optional_text(relative_repo_path)
-        if relative_value is None:
-            continue
-        hint = _task_dag_compact_packet_bridge_relative_path(output_dir_relative, relative_value)
-        if hint in seen:
-            continue
-        seen.add(hint)
-        bridge_specs.append((hint, body))
-        bridge_hints.append(hint)
-    return bridge_specs, bridge_hints
-
-
-def _task_dag_compact_packet_runtime_bootstrap_markdown() -> str:
-    return (
-        "# ait-dag\n\n"
-        "This runtime-only helper applies only to worker-only compact `ait_dag` packets.\n"
-        "Do not treat it as repo-root plan Markdown.\n\n"
-        "## Startup order\n\n"
-        "1. Read `packet_root_manifest.json` first.\n"
-        "2. Use the packet entry files plus the allowed `authoring_workspace_context` inputs before broadening scope.\n"
-        "3. Read `compact_worker_turn.txt` for the current task ids, focus queue, and gate expectations.\n"
-        "4. Stay inside the resolved authoring workspace unless the packet explicitly authorizes something narrower or broader.\n\n"
-        "## Stable command playbook\n\n"
-        "- Start with `cat packet_root_manifest.json`.\n"
-        "- Use targeted file reads such as `sed -n '<start>,<end>p' <file>` or `cat <specific-file>` only for files named by the manifest, turn text, or task-scoped artifacts.\n"
-        "- Reopen `compact_packet.md` only when the current step truly needs the packet prompt/context again.\n"
-        "- Treat `execution_only` as local-first workflow scope, not as permission to skip honest local lineage after mutating scoped files.\n"
-        "- If the active execution-only focus stays a true no-op / pure verification slice with no scoped file edits, finish honestly with `ait task complete <task-id>`.\n"
-        "- If the active execution-only focus needs scoped code/test/file edits and no local change exists yet, create or reuse honest local change lineage first, for example `ait change create --task <task-id> --title \"<focused slice>\" --local`.\n"
-        "- Use `ait task complete <task-id>` only after the scoped local implementation/verification and any needed local change/snapshot lineage honestly reflect the completed outcome.\n"
-        "- When a reviewable change already exists or gets created, inspect gate state with `ait workflow land <change-id>` and advance it with `ait workflow land <change-id> --apply`.\n"
-        "- Only if the turn text says the final reviewable output still needs promotion, use `ait workflow publish --task <task-id> --summary \"final output\" --target-line main` before continuing with `ait workflow land ...`.\n"
-        "- Run only focused verification commands that match the active change, such as `python3 -m pytest <scoped-target>`; the repository default already applies the three-worker xdist loadfile contract unless you intentionally override it.\n\n"
-        "## Anti-exploration rules\n\n"
-        "- Do not browse the repository just to learn general context.\n"
-        "- Do not run broad discovery commands such as repo-wide `find`, `rg`, `fd`, or repeated directory walks unless the packet explicitly requires one precise scoped path.\n"
-        "- Do not reopen the same packet or sprint files repeatedly once the needed fact is already known.\n"
-        "- Prefer the smallest next command that advances the active focus over collecting extra context \"just in case\".\n"
-        "- Prefer direct task/change workflow commands over unrelated repository inspection.\n"
-        "- If a needed path, id, or prerequisite is missing, stop and reply with `missing_context: ...` or report the exact blocking command instead of broadening scope.\n\n"
-        "## Worker rules\n\n"
-        "- Keep exactly one reviewable focus change active at a time.\n"
-        "- Keep execution-only DAG work local-first until the converged output reaches its real review / attestation / policy / land boundary.\n"
-        "- Do not treat `execution_only` as permission to skip local change lineage after scoped code/test/file edits.\n"
-        "- Do not claim a gate passed unless you actually ran that gate.\n"
-        "- If required context is still missing, reply with `missing_context: ...` instead of inventing progress.\n"
-        "- End execution replies with one `task_dag_local_progress={...}` line that reports the current node outcome.\n"
-    )
+    plan_id: str,
+    graph: dict[str, Any],
+    current_focus: dict[str, Any],
+    source_artifact_path: str | None,
+) -> str:
+    source_plan = graph.get("source_plan") if isinstance(graph.get("source_plan"), dict) else {}
+    source_artifact = normalize_optional_text(source_artifact_path) or normalize_optional_text(source_plan.get("artifact_path"))
+    source_plan_ref = normalize_optional_text(source_plan.get("plan_ref"))
+    title = normalize_optional_text(current_focus.get("title")) or "-"
+    node_id = normalize_optional_text(current_focus.get("node_id")) or "-"
+    plan_item_ref = normalize_optional_text(current_focus.get("plan_item_ref")) or "-"
+    workflow_boundary = normalize_optional_text(current_focus.get("workflow_boundary")) or "-"
+    task_id = normalize_optional_text(current_focus.get("task_id"))
+    intent = normalize_optional_text(current_focus.get("intent")) or "-"
+    acceptance = [str(item).strip() for item in (current_focus.get("acceptance") or []) if str(item).strip()]
+    hotspot_keys = [str(item).strip() for item in (current_focus.get("hotspot_keys") or []) if str(item).strip()]
+    depends_on = [str(item).strip() for item in (current_focus.get("depends_on") or []) if str(item).strip()]
+    unlocks = [
+        str(item.get("node_id") or "").strip()
+        for item in (current_focus.get("unlocks") or [])
+        if isinstance(item, dict) and str(item.get("node_id") or "").strip()
+    ]
+    lines = [
+        "# Current Focus Plan Excerpt",
+        "",
+        f"- Plan: `{plan_id}`",
+        f"- Source plan artifact: `{source_artifact or '-'}`",
+        f"- Source plan ref: `{source_plan_ref or '-'}`",
+        f"- Current node: `{node_id}`",
+        f"- Current title: `{title}`",
+        f"- Current plan ref: `{plan_item_ref}`",
+        f"- Workflow boundary: `{workflow_boundary}`",
+    ]
+    if task_id:
+        lines.append(f"- Current task: `{task_id}`")
+    lines.extend(["", "## Intent", "", intent, "", "## Acceptance"])
+    if acceptance:
+        lines.extend([f"- {item}" for item in acceptance])
+    else:
+        lines.append("- No additional acceptance bullets were recorded in the planning IR.")
+    lines.extend(["", "## Hotspots"])
+    if hotspot_keys:
+        lines.extend([f"- {item}" for item in hotspot_keys])
+    else:
+        lines.append("- No explicit hotspot keys recorded.")
+    if depends_on:
+        lines.extend(["", "## Depends On", *[f"- {item}" for item in depends_on]])
+    if unlocks:
+        lines.extend(["", "## Unlocks", *[f"- {item}" for item in unlocks]])
+    return "\n".join(lines) + "\n"
 
 
 def _task_dag_compact_packet_dispatch_artifact_paths(graph: dict[str, Any]) -> list[str]:
@@ -264,6 +257,29 @@ def _task_dag_compact_packet_dispatch_artifact_paths(graph: dict[str, Any]) -> l
         if value is not None:
             paths.append(value)
     return paths
+
+
+def _task_dag_compact_packet_worker_visible_dispatch_artifact_paths(
+    graph: dict[str, Any],
+    *,
+    source_artifact_path: str | None,
+) -> list[str]:
+    source_path = normalize_optional_text(source_artifact_path)
+    hidden_basenames = {
+        "ait_directory_structure_decoupling_plan.md",
+        "ait_module_ownership_map.md",
+    }
+    visible_paths: list[str] = []
+    for raw_path in _task_dag_compact_packet_dispatch_artifact_paths(graph):
+        path = normalize_optional_text(raw_path)
+        if path is None:
+            continue
+        if source_path is not None and path == source_path:
+            continue
+        if Path(path).name in hidden_basenames:
+            continue
+        visible_paths.append(path)
+    return visible_paths
 
 
 def _task_dag_compact_packet_boundary_policy(
@@ -280,7 +296,6 @@ def _task_dag_compact_packet_boundary_policy(
     if execution_mode == "benchmark":
         allowed_file_hints = [
             "packet_root_manifest.json",
-            "compact_packet.md",
             "compact_worker_turn.txt",
         ]
         if comparison_inputs_packaged:
@@ -300,7 +315,6 @@ def _task_dag_compact_packet_boundary_policy(
         }
     allowed_file_hints = [
         packet_root_manifest_path,
-        f"{packet_root_path}/compact_packet.md",
         f"{packet_root_path}/compact_worker_turn.txt",
     ]
     if graph_artifact_path:
@@ -521,6 +535,143 @@ def _task_dag_compact_packet_rewrite_packet_text(
     return rewritten
 
 
+def _task_dag_compact_packet_change_focus_policy(compact_packet_surface: dict[str, Any]) -> dict[str, Any]:
+    return (
+        compact_packet_surface.get("change_focus_policy")
+        if isinstance(compact_packet_surface.get("change_focus_policy"), dict)
+        else {}
+    )
+
+
+def _task_dag_compact_packet_focus_queue(change_focus_policy: dict[str, Any]) -> list[dict[str, Any]]:
+    return [entry for entry in (change_focus_policy.get("focus_queue") or []) if isinstance(entry, dict)]
+
+
+def _task_dag_compact_packet_current_focus(
+    compact_packet_surface: dict[str, Any],
+    compiler_surface: dict[str, Any],
+    *,
+    graph: dict[str, Any],
+) -> dict[str, Any] | None:
+    change_focus_policy = _task_dag_compact_packet_change_focus_policy(compact_packet_surface)
+    focus_queue = _task_dag_compact_packet_focus_queue(change_focus_policy)
+    next_focus = change_focus_policy.get("next_focus") if isinstance(change_focus_policy.get("next_focus"), dict) else {}
+    if not next_focus and focus_queue:
+        next_focus = dict(focus_queue[0])
+    node_id = normalize_optional_text(next_focus.get("node_id")) or normalize_optional_text(compact_packet_surface.get("next_focus_node_id"))
+    if node_id is None:
+        return None
+    planning_ir = compiler_surface.get("planning_ir") if isinstance(compiler_surface.get("planning_ir"), dict) else {}
+    work_item_index = {
+        str(item.get("node_id") or "").strip(): item
+        for item in planning_ir.get("work_items") or []
+        if isinstance(item, dict) and str(item.get("node_id") or "").strip()
+    }
+    work_item = work_item_index.get(node_id, {})
+    title = normalize_optional_text(next_focus.get("title")) or normalize_optional_text(work_item.get("title")) or node_id
+    plan_item_ref = normalize_optional_text(next_focus.get("plan_item_ref")) or normalize_optional_text(work_item.get("plan_item_ref"))
+    task_id = normalize_optional_text(next_focus.get("task_id")) or normalize_optional_text(compact_packet_surface.get("next_focus_task_id"))
+    change_id = normalize_optional_text(next_focus.get("change_id")) or normalize_optional_text(compact_packet_surface.get("next_focus_change_id"))
+    patchset_id = normalize_optional_text(next_focus.get("patchset_id"))
+    state = normalize_optional_text(next_focus.get("state"))
+    workflow_state = normalize_optional_text(next_focus.get("workflow_state")) or state
+    workflow_boundary = normalize_optional_text(work_item.get("workflow_boundary"))
+    intent = normalize_optional_text(work_item.get("intent"))
+    acceptance = [str(item).strip() for item in (work_item.get("acceptance") or []) if str(item).strip()]
+    hotspot_keys = [str(item).strip() for item in (work_item.get("hotspot_keys") or []) if str(item).strip()]
+    depends_on = [str(item).strip() for item in (work_item.get("depends_on") or []) if str(item).strip()]
+    unlocks: list[dict[str, str]] = []
+    for edge in graph.get("edges") or []:
+        if not isinstance(edge, dict):
+            continue
+        from_node = normalize_optional_text(edge.get("from") or edge.get("source"))
+        to_node = normalize_optional_text(edge.get("to") or edge.get("target"))
+        if from_node != node_id or to_node is None:
+            continue
+        target_item = work_item_index.get(to_node, {})
+        unlocks.append(
+            {
+                "node_id": to_node,
+                "title": normalize_optional_text(target_item.get("title")) or to_node,
+            }
+        )
+    current_focus = {
+        "node_id": node_id,
+        "title": title,
+        "plan_item_ref": plan_item_ref,
+        "task_id": task_id,
+        "change_id": change_id,
+        "patchset_id": patchset_id,
+        "state": state,
+        "workflow_state": workflow_state,
+        "workflow_boundary": workflow_boundary,
+        "intent": intent,
+        "acceptance": acceptance,
+        "hotspot_keys": hotspot_keys,
+        "depends_on": depends_on,
+        "unlocks": unlocks,
+    }
+    if len(focus_queue) > 1:
+        current_focus["ignore_non_active_nodes"] = True
+    return current_focus
+
+
+def _task_dag_compact_packet_current_focus_context(
+    current_focus: dict[str, Any] | None,
+    *,
+    fallback_text: str,
+) -> tuple[str, str]:
+    if not isinstance(current_focus, dict):
+        return "Packet context:", fallback_text
+    node_id = normalize_optional_text(current_focus.get("node_id"))
+    if node_id is None:
+        return "Packet context:", fallback_text
+    title = normalize_optional_text(current_focus.get("title"))
+    task_id = normalize_optional_text(current_focus.get("task_id"))
+    change_id = normalize_optional_text(current_focus.get("change_id"))
+    workflow_state = normalize_optional_text(current_focus.get("workflow_state")) or normalize_optional_text(current_focus.get("state"))
+    plan_item_ref = normalize_optional_text(current_focus.get("plan_item_ref"))
+    workflow_boundary = normalize_optional_text(current_focus.get("workflow_boundary"))
+    depends_on = [str(item).strip() for item in (current_focus.get("depends_on") or []) if str(item).strip()]
+    unlocks = [str((item or {}).get("node_id") or "").strip() for item in (current_focus.get("unlocks") or []) if str((item or {}).get("node_id") or "").strip()]
+    acceptance = [str(item).strip() for item in (current_focus.get("acceptance") or []) if str(item).strip()]
+    hotspot_keys = [str(item).strip() for item in (current_focus.get("hotspot_keys") or []) if str(item).strip()]
+    intent = normalize_optional_text(current_focus.get("intent"))
+    lines = ["Current focus:"]
+    lines.append(f"- node {node_id}" + (f" · {title}" if title else ""))
+    identity_fields = []
+    if task_id:
+        identity_fields.append(f"task {task_id}")
+    if change_id:
+        identity_fields.append(f"change {change_id}")
+    if workflow_state:
+        identity_fields.append(f"state {workflow_state}")
+    if identity_fields:
+        lines.append("- " + " · ".join(identity_fields))
+    boundary_fields = []
+    if plan_item_ref:
+        boundary_fields.append(f"plan ref {plan_item_ref}")
+    if workflow_boundary:
+        boundary_fields.append(f"boundary {workflow_boundary}")
+    if boundary_fields:
+        lines.append("- " + " · ".join(boundary_fields))
+    if depends_on:
+        lines.append("- depends on: " + ", ".join(depends_on))
+    if unlocks:
+        lines.append("- unlocks after completion: " + ", ".join(unlocks))
+    if current_focus.get("ignore_non_active_nodes"):
+        lines.append("- ignore non-active nodes until focus advances")
+    if intent:
+        lines.extend(["Intent:", intent])
+    if acceptance:
+        lines.append("Acceptance:")
+        lines.extend(f"- {item}" for item in acceptance)
+    if hotspot_keys:
+        lines.append("Hotspots:")
+        lines.extend(f"- {item}" for item in hotspot_keys)
+    return "Current focus context:", "\n".join(lines)
+
+
 def _task_dag_compact_packet_final_remote_disposition_lines(
     *,
     graph: dict[str, Any],
@@ -537,15 +688,13 @@ def _task_dag_compact_packet_final_remote_disposition_lines(
         if str(value).strip()
     ]
     lines = [
-        "- Full final-remote-disposition mode is enabled for this run. Do not stop at the converged output gate bundle or hand control back for a coordinator unless a real blocker prevents completion.",
+        "- This run ends at remote land; do not stop at the converged output unless a real blocker prevents completion.",
         f"- Graph-run session for lineage updates: `{graph_run_ref}`.",
-        f"- Converged output nodes for this graph: `{', '.join(converged_output_node_ids) or '-'}`.",
-        "- If a node still needs task/change lineage, create or reuse it inside this same worker session; do not hand control back for per-node bootstrap or physical fan-out.",
-        "- For execution-only nodes, keep any task/change/snapshot/local-land lineage local-first. A true no-op / pure verification node may close with `ait task complete <task-id>`, but scoped code/test/file edits must not skip honest local change lineage; if no local change exists yet, create or reuse it first (for example `ait change create --task <task-id> --title \"<focused slice>\" --local`). Close the task only once that local lineage and verification honestly reflect the completed outcome.",
-        "- When a converged reviewable-output node is satisfied, reuse its change lineage or promote the final output with `ait workflow publish --task <task-id> --summary \"final output\" --target-line main`, then use `ait workflow land <change-id>` / `ait workflow land <change-id> --apply` to carry that change through remote gates before you reply.",
+        f"- Converged output nodes: `{', '.join(converged_output_node_ids) or '-'}`.",
+        "- Keep execution-only lineage local-first, and do not skip honest local task/change lineage for real edits.",
+        "- When the converged output is ready, reuse or publish its change lineage and carry it through `ait workflow land` before you reply.",
         f"- Required remote gate bundle for this run: `{', '.join(final_gate_bundle) or 'review,attestation,policy,land'}`.",
-        "- Before replying, prefer `ait workflow land <change-id>` to inspect the current gate state and `ait workflow land <change-id> --apply` to advance the remote-land path. Fall back to explicit low-level commands only for exception or recovery paths such as manual attestation backfill.",
-        "- If any lineage, gate, or land command blocks, stop there and report the exact failing command or missing prerequisite instead of claiming remote land.",
+        "- If any lineage, gate, or land command blocks, stop there and report the exact failing command or missing prerequisite.",
     ]
     return lines
 
@@ -589,60 +738,60 @@ def _task_dag_compact_packet_turn_text(
     max_command_count = int(packet_root_policy.get("max_command_count") or DEFAULT_TASK_DAG_COMPACT_PACKET_MAX_COMMAND_COUNT)
     suggested_first_command = normalize_optional_text(packet_root_policy.get("suggested_first_command")) or "cat packet_root_manifest.json"
     authoring_workspace_root = normalize_optional_text(packet_root_policy.get("authoring_workspace_root"))
-    change_focus_policy = (
-        compact_packet_surface.get("change_focus_policy")
-        if isinstance(compact_packet_surface.get("change_focus_policy"), dict)
-        else {}
+    change_focus_policy = _task_dag_compact_packet_change_focus_policy(compact_packet_surface)
+    focus_queue = _task_dag_compact_packet_focus_queue(change_focus_policy)
+    current_focus = _task_dag_compact_packet_current_focus(
+        compact_packet_surface,
+        compiler_surface,
+        graph=graph,
     )
-    focus_queue = change_focus_policy.get("focus_queue") if isinstance(change_focus_policy.get("focus_queue"), list) else []
-    lines = ["Execute this DAG as a worker-only compact `ait_dag` packet.", "", "Hard constraints:", "- Use one fresh worker session."]
+    reviewable_focus = _task_dag_compact_packet_focus_is_reviewable_output(current_focus)
+    context_heading, worker_context_text = _task_dag_compact_packet_current_focus_context(
+        current_focus,
+        fallback_text=context_text,
+    )
+    lines = ["Start here:"]
     if execution_mode == "benchmark":
         lines.extend(
             [
-                "- Stay inside the current packet-root workspace for every shell or file action.",
-                "- Do not use physical fan-out.",
-                "- Do not use coordinator+worker end-to-end.",
-                "- Treat the inline packet prompt/context below as authoritative; do not reopen packet files just to restate them.",
-                "- Treat the packet as self-contained; do not reopen repository plans, graphs, or benchmark docs by path.",
-                "- Do not replay the whole repository beyond this packet root.",
-                f"- If you inspect packet-root files at all, start with `{suggested_first_command}`; that manifest is the primary entrypoint and is usually enough.",
-                "- Do not inspect `planning_compiler_surface.json` from this worker surface; it is outside the packet-root probe budget.",
-                "- If the packet is insufficient, reply with `missing_context:` instead of silently broadening scope.",
-                "- Stop immediately after the smallest probe set that justifies either a grounded answer or a `missing_context:` reply.",
+                f"- Read `{suggested_first_command}` first.",
+                "- Stay inside the current packet-root workspace and use the packet context below as the authoritative scope.",
+                "- If the packet is insufficient, reply with `missing_context:` instead of broadening scope.",
                 f"- Keep the command footprint tight; target <= {max_command_count} shell/file probes before you answer.",
             ]
         )
         if comparison_inputs_packaged:
             lines.append(
-                "- If benchmark comparison is needed, use the packaged provider-measured totals below instead of broadening scope."
+                "- Use packaged comparison evidence if benchmark comparison is needed."
             )
         else:
             lines.append(
-                f"- If the manifest says comparison inputs are not packaged and the task needs measured comparison, reply exactly with: `{preferred_missing_context_reply}`"
+                f"- If measured comparison evidence is required and not packaged, reply exactly with: `{preferred_missing_context_reply}`"
             )
     else:
         lines.extend(
             [
-                "- Stay inside the resolved authoring workspace for shell and file actions; when implementation-mode focus lineage already has a bound task worktree, that authoring workspace is the bound task worktree rather than repo root.",
-                "- Do not use physical fan-out.",
-                "- Do not use coordinator+worker end-to-end.",
-                "- Treat the inline packet prompt/context below as authoritative planning context; reopen repository files only as needed to implement or verify the scoped DAG work.",
-                "- Keep the worker scoped to this graph and the resolved authoring workspace; do not jump to unrelated plans or repo-wide replay.",
-                f"- If you inspect the packet bundle, start with `{suggested_first_command}`; that manifest is the primary entrypoint.",
-                "- Keep exactly one reviewable focus change active at a time.",
-                "- When the active focus becomes reviewable, cut and publish its patchset before mutating the next reviewable focus change.",
-                "- Do not accumulate one shared dirty diff across multiple reviewable change boundaries.",
-                "- Do not claim review, attestation, policy, or land passed unless you actually run those gates.",
-                "- For the current execution-only focus, finish with explicit local-first status: true no-op / pure verification work may close with `ait task complete <task-id>`, but scoped code/test/file edits must not skip honest local change lineage. If no local change exists yet, create or reuse it before task completion; otherwise stop on the exact blocker that prevented completion.",
-                "- When the packet bundles `authoring_workspace_context/...` copies of the source sprint or task-graph artifacts, prefer those packet-scoped copies over repo-root `docs/sprints/...` lookup.",
-                "- End your reply with one line that starts `task_dag_local_progress=` followed by compact JSON such as `{\"node_id\":\"A\",\"status\":\"running\",\"summary\":\"local edits started\"}` or `{\"node_id\":\"A\",\"status\":\"completed\",\"summary\":\"lane done\",\"tests\":[\"pytest ...\"]}`.",
+                f"- Read `{suggested_first_command}` first.",
+                "- Work in the resolved authoring workspace for implementation and verification; if the active focus already has a bound task worktree, use that instead of repo root.",
+                "- Stay scoped to this graph and current focus; do not spawn additional DAG sessions or broad repo replay.",
+                "- Execution-only focus with file edits: create or reuse the local change, run focused edits/tests, run `ait workspace status --json`, then run `ait snapshot create --message \"<focused slice>\"` before `ait task complete --local <task-id>`.",
+                "- Execution-only focus with no scoped file edits: `ait task complete --local <task-id>` is allowed only for a true no-op / pure verification outcome.",
+                "- End your reply with one `task_dag_local_progress={...}` line.",
                 "- If the packet or workspace is insufficient, reply with `missing_context:` instead of inventing progress.",
                 f"- Keep the command footprint disciplined; target <= {max_command_count} shell/file actions unless a grounded implementation path clearly needs more.",
             ]
         )
+        if reviewable_focus:
+            lines.extend(
+                [
+                    "- Reviewable-output focus: if promotion is still needed, run `ait workflow publish --task <task-id> --summary \"final output\" --target-line main`, then inspect or advance gates with `ait workflow land <change-id>` or `ait workflow land <change-id> --apply`.",
+                    "- Keep one reviewable focus change active at a time, and publish its patchset before moving to the next reviewable focus.",
+                    "- Report review, attestation, policy, and land status only after you actually run those gates.",
+                ]
+            )
         if authoring_workspace_root:
             lines.append(f"- Resolved authoring workspace root: `{authoring_workspace_root}`.")
-        if final_remote_disposition_default:
+        if final_remote_disposition_default and reviewable_focus:
             lines.extend(
                 _task_dag_compact_packet_final_remote_disposition_lines(
                     graph=graph,
@@ -653,31 +802,22 @@ def _task_dag_compact_packet_turn_text(
         heading = "Allowed packet-root files:" if execution_mode == "benchmark" else "Suggested packet / graph entry files:"
         lines.extend(["", heading])
         lines.extend([f"- {name}" for name in allowed_file_hints])
-    if focus_queue and execution_mode != "benchmark":
-        lines.extend(["", "Reviewable focus queue:"])
-        for entry in focus_queue:
-            if not isinstance(entry, dict):
-                continue
-            focus_unit = str(entry.get("focus_unit") or "node").strip()
-            change_id = str(entry.get("change_id") or "").strip() or "-"
-            node_id = str(entry.get("node_id") or "").strip() or "-"
-            task_id = str(entry.get("task_id") or "").strip() or "-"
-            state = str(entry.get("workflow_state") or entry.get("state") or "").strip() or "-"
-            if focus_unit == "change" and change_id != "-":
-                lines.append(f"- change {change_id} · node {node_id} · task {task_id} · state {state}")
-            else:
-                lines.append(f"- node {node_id} (change pending) · task {task_id} · state {state}")
     if forbidden_patterns:
         lines.extend(["", "Do not run commands like:"])
         lines.extend([f"- {pattern}" for pattern in forbidden_patterns])
+    if execution_mode == "benchmark":
+        lines.extend(
+            [
+                "",
+                "Benchmark packet brief:",
+                prompt_text,
+            ]
+        )
     lines.extend(
         [
             "",
-            "Packet prompt:",
-            prompt_text,
-            "",
-            "Packet context:",
-            context_text,
+            context_heading,
+            worker_context_text,
         ]
     )
     comparison_summary_lines = _task_dag_compact_packet_comparison_summary_lines(comparison_evidence)
@@ -759,16 +899,23 @@ def _task_dag_compact_packet_markdown(
         else {}
     )
     change_focus_policy = (
-        compact_packet_surface.get("change_focus_policy")
-        if isinstance(compact_packet_surface.get("change_focus_policy"), dict)
-        else {}
+        _task_dag_compact_packet_change_focus_policy(compact_packet_surface)
     )
-    focus_queue = change_focus_policy.get("focus_queue") if isinstance(change_focus_policy.get("focus_queue"), list) else []
+    focus_queue = _task_dag_compact_packet_focus_queue(change_focus_policy)
     compare_text = normalize_optional_text(compact_packet_surface.get("compare_turn_text"))
     comparison_inputs_packaged = _task_dag_compact_packet_comparison_inputs_packaged(comparison_evidence)
     preferred_missing_context_reply = _task_dag_compact_packet_preferred_missing_context_reply(
         packet_available=bool(compiler_input_bundle.get("available")),
         compare_text=compare_text,
+    )
+    current_focus = _task_dag_compact_packet_current_focus(
+        compact_packet_surface,
+        compiler_surface,
+        graph=graph,
+    )
+    current_focus_heading, current_focus_text = _task_dag_compact_packet_current_focus_context(
+        current_focus,
+        fallback_text=str(selected_packet.get("context_text") or ""),
     )
     lines = [
         "# Task DAG Compact Packet",
@@ -784,12 +931,9 @@ def _task_dag_compact_packet_markdown(
         "",
         "## Execution rules",
         "",
-        "- worker-only compact `ait_dag` packet",
-        "- one fresh worker session",
-        "- no physical fan-out",
-        "- no coordinator+worker end-to-end",
+        "- use the supplied compact packet as the active execution scope",
         (
-            "- no repo-wide replay beyond the packet-root boundary"
+            "- keep work inside the packet-root boundary"
             if execution_mode == "benchmark"
             else "- keep repository work scoped to the current graph and resolved authoring workspace, using the bound task worktree when the active focus already has one"
         ),
@@ -797,9 +941,8 @@ def _task_dag_compact_packet_markdown(
             []
             if execution_mode == "benchmark"
             else [
-                "- keep exactly one reviewable focus change active at a time",
-                "- cut and publish the active focus patchset before mutating the next reviewable focus change",
-                "- do not accumulate one shared dirty diff across multiple reviewable change boundaries",
+                "- keep one reviewable focus change active at a time",
+                "- publish the active focus patchset before mutating the next reviewable focus change",
             ]
         ),
         "",
@@ -818,13 +961,28 @@ def _task_dag_compact_packet_markdown(
         "```text",
         str(selected_packet.get("prompt_text") or ""),
         "```",
+    ]
+    if execution_mode != "benchmark" and current_focus_heading == "Current focus context:":
+        lines.extend(
+            [
+                "",
+                "## Worker current focus context",
+                "",
+                "```text",
+                current_focus_text,
+                "```",
+            ]
+        )
+    lines.extend(
+        [
         "",
         "## Packet context",
         "",
         "```text",
         str(selected_packet.get("context_text") or ""),
         "```",
-    ]
+        ]
+    )
     if final_remote_disposition_default:
         lines.extend(
             [
@@ -919,6 +1077,7 @@ def _task_dag_generate_compact_packet_artifacts(
     turn_artifact_path = output_dir / "compact_worker_turn.txt"
     packet_root_path = output_dir / "packet_root"
     packet_root_path.mkdir(parents=True, exist_ok=True)
+    current_focus_excerpt_path = packet_root_path / "current_focus_plan_excerpt.md"
     packet_root_relative = _task_dag_relative_path(ctx, packet_root_path)
     packet_root_manifest_relative = _task_dag_relative_path(ctx, packet_root_path / "packet_root_manifest.json")
     comparison_inputs_packaged = _task_dag_compact_packet_comparison_inputs_packaged(comparison_evidence)
@@ -930,9 +1089,30 @@ def _task_dag_generate_compact_packet_artifacts(
     source_artifact_path = normalize_optional_text(compiler_input_bundle.get("artifact_path"))
     graph_artifact_hint = _task_dag_relative_path(ctx, graph_path)
     source_artifact_hint = source_artifact_path
+    current_focus_excerpt_hint: str | None = None
     bridge_specs: list[tuple[Path, str]] = []
-    bridge_text_specs: list[tuple[str, str]] = []
     authoring_context_bridge_hints: list[str] = []
+    current_focus = (
+        _task_dag_compact_packet_current_focus(
+            compact_packet_surface,
+            compiler_surface,
+            graph=graph,
+        )
+        if execution_mode == "implementation"
+        else None
+    )
+    if execution_mode == "implementation" and current_focus is not None:
+        current_focus_excerpt_path.write_text(
+            _task_dag_compact_packet_current_focus_excerpt_text(
+                plan_id=plan_id,
+                graph=graph,
+                current_focus=current_focus,
+                source_artifact_path=source_artifact_path,
+            ),
+            encoding="utf-8",
+        )
+        current_focus_excerpt_hint = _task_dag_relative_path(ctx, current_focus_excerpt_path)
+        source_artifact_hint = current_focus_excerpt_hint
     if execution_mode == "implementation" and resolved_authoring_workspace_path != repo_root:
         bridged_hints: set[str] = set()
         graph_bridge_specs, graph_bridge_hints = _task_dag_compact_packet_bridge_files(
@@ -947,25 +1127,23 @@ def _task_dag_generate_compact_packet_artifacts(
         source_bridge_specs, source_bridge_hints = _task_dag_compact_packet_bridge_files(
             ctx,
             output_dir_relative=output_dir_relative,
-            repo_relative_paths=[source_artifact_path] if source_artifact_path else [],
+            repo_relative_paths=(
+                []
+                if current_focus_excerpt_hint is not None
+                else [source_artifact_path] if source_artifact_path else []
+            ),
             seen_hints=bridged_hints,
         )
         if source_bridge_hints:
             source_artifact_hint = source_bridge_hints[0]
             bridge_specs.extend(source_bridge_specs)
-        runtime_bridge_specs, runtime_bridge_hints = _task_dag_compact_packet_bridge_text_artifacts(
-            output_dir_relative=output_dir_relative,
-            text_artifacts={
-                TASK_DAG_AUTHORING_WORKSPACE_RUNTIME_BOOTSTRAP_PATH: _task_dag_compact_packet_runtime_bootstrap_markdown(),
-            },
-            seen_hints=bridged_hints,
-        )
-        bridge_text_specs.extend(runtime_bridge_specs)
-        authoring_context_bridge_hints.extend(runtime_bridge_hints)
         dispatch_bridge_specs, dispatch_bridge_hints = _task_dag_compact_packet_bridge_files(
             ctx,
             output_dir_relative=output_dir_relative,
-            repo_relative_paths=_task_dag_compact_packet_dispatch_artifact_paths(graph),
+            repo_relative_paths=_task_dag_compact_packet_worker_visible_dispatch_artifact_paths(
+                graph,
+                source_artifact_path=source_artifact_path,
+            ),
             seen_hints=bridged_hints,
         )
         bridge_specs.extend(dispatch_bridge_specs)
@@ -986,6 +1164,7 @@ def _task_dag_generate_compact_packet_artifacts(
             if hint not in allowed_file_hints:
                 allowed_file_hints.append(hint)
         packet_root_policy["allowed_file_hints"] = allowed_file_hints
+    worker_context_scope = "current_focus" if current_focus is not None else "packet"
     packet_artifact_relative = _task_dag_relative_path(ctx, packet_artifact_path)
     turn_text = _task_dag_compact_packet_turn_text(
         compact_packet_surface,
@@ -1023,10 +1202,8 @@ def _task_dag_generate_compact_packet_artifacts(
     )
     turn_artifact_path.write_text(turn_text + "\n", encoding="utf-8")
     packet_root_workspace = _task_dag_bootstrap_packet_root_workspace(ctx, packet_root=packet_root_path)
-    packet_root_packet_path = packet_root_path / "compact_packet.md"
     packet_root_turn_path = packet_root_path / "compact_worker_turn.txt"
     packet_root_manifest_path = packet_root_path / "packet_root_manifest.json"
-    packet_root_packet_path.write_text(packet_markdown, encoding="utf-8")
     packet_root_turn_path.write_text(turn_text + "\n", encoding="utf-8")
     selected_packet = _task_dag_compact_packet_payload(compiler_surface, execution_mode=execution_mode)
     compare_text = normalize_optional_text(compact_packet_surface.get("compare_turn_text"))
@@ -1046,47 +1223,28 @@ def _task_dag_generate_compact_packet_artifacts(
         "schema_version": 1,
         "plan_id": plan_id,
         "graph_id": str(graph.get("graph_id") or plan_id),
-        "surface_id": compact_packet_surface.get("surface_id"),
         "execution_mode": execution_mode,
-        "final_remote_disposition_default": final_remote_disposition_default,
-        "packet_available": bool(compiler_input_bundle.get("available")),
-        "packet_root_path": packet_root_relative,
         "workspace_root": packet_root_workspace.get("workspace_root"),
         "authoring_workspace_root": resolved_authoring_workspace_root,
-        "authoring_repo_root": str(ctx.repo_root.resolve()),
         "allowed_path_prefixes": packet_root_policy.get("allowed_path_prefixes") or [],
         "allowed_file_hints": packet_root_policy.get("allowed_file_hints") or [],
-        "forbidden_command_patterns": packet_root_policy.get("forbidden_command_patterns") or [],
         "max_command_count": packet_root_policy.get("max_command_count"),
         "missing_context_policy": packet_root_policy.get("missing_context_policy"),
         "primary_entrypoint_file": "packet_root_manifest.json",
         "secondary_context_files": [
-            "compact_packet.md",
             "compact_worker_turn.txt",
+            *(["current_focus_plan_excerpt.md"] if current_focus_excerpt_hint else []),
             *(["comparison_evidence.json"] if comparison_inputs_packaged else []),
         ],
-        "turn_contains_packet_context": True,
         "suggested_first_command": packet_root_policy.get("suggested_first_command"),
-        "graph_run_session_id": graph_run_session_id,
-        "converged_output_node_ids": _task_dag_converged_output_node_ids(graph),
-        "final_gate_bundle": list(
-            (
-                (graph.get("execution_policy") if isinstance(graph.get("execution_policy"), dict) else {}).get("final_gate_bundle")
-                or DEFAULT_TASK_DAG_FINAL_GATE_BUNDLE
-            )
-        ),
-        "comparison_inputs_packaged": comparison_inputs_packaged,
-        "comparison_instruction": compare_text,
-        "preferred_missing_context_reply": preferred_missing_context_reply,
-        "comparison_evidence_file": "comparison_evidence.json" if comparison_inputs_packaged else None,
-        "comparison_evidence_summary": _task_dag_compact_packet_comparison_summary_lines(comparison_evidence),
-        "packet_prompt_digest": selected_packet.get("prompt_digest"),
-        "packet_context_digest": selected_packet.get("context_digest"),
-        "change_focus_policy": compact_packet_surface.get("change_focus_policy") or {},
-        "source_surface_artifact_path": _task_dag_relative_path(ctx, packet_surface_path),
-        "source_packet_artifact_path": packet_artifact_relative,
-        "source_turn_artifact_path": _task_dag_relative_path(ctx, turn_artifact_path),
     }
+    forbidden_command_patterns = packet_root_policy.get("forbidden_command_patterns") or []
+    if forbidden_command_patterns:
+        packet_root_manifest["forbidden_command_patterns"] = forbidden_command_patterns
+    if current_focus is not None:
+        packet_root_manifest["current_focus"] = current_focus
+    if comparison_inputs_packaged:
+        packet_root_manifest["comparison_evidence_file"] = "comparison_evidence.json"
     packet_root_manifest_path.write_text(
         json.dumps(packet_root_manifest, indent=2, ensure_ascii=False) + "\n",
         encoding="utf-8",
@@ -1095,10 +1253,6 @@ def _task_dag_generate_compact_packet_artifacts(
         bridge_path = repo_root / relative_bridge_path
         bridge_path.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source_path, bridge_path)
-    for relative_bridge_path, body in bridge_text_specs:
-        bridge_path = repo_root / relative_bridge_path
-        bridge_path.parent.mkdir(parents=True, exist_ok=True)
-        bridge_path.write_text(body if body.endswith("\n") else body + "\n", encoding="utf-8")
     if execution_mode == "implementation" and resolved_authoring_workspace_path != repo_root:
         authoring_output_dir = resolved_authoring_workspace_path / output_dir_relative
         authoring_output_dir.parent.mkdir(parents=True, exist_ok=True)
@@ -1109,6 +1263,9 @@ def _task_dag_generate_compact_packet_artifacts(
             same_output_tree = False
         if not same_output_tree:
             shutil.copytree(output_dir, authoring_output_dir, dirs_exist_ok=True)
+            compact_packet_copy = authoring_output_dir / "compact_packet.md"
+            if compact_packet_copy.exists():
+                compact_packet_copy.unlink()
     return {
         "packet_available": bool(compiler_input_bundle.get("available")),
         "packet_artifact_path": packet_artifact_relative,
@@ -1127,6 +1284,8 @@ def _task_dag_generate_compact_packet_artifacts(
         "turn_text": turn_text,
         "packet_prompt_digest": selected_packet.get("prompt_digest"),
         "packet_context_digest": selected_packet.get("context_digest"),
+        "worker_context_scope": worker_context_scope,
+        "current_focus": current_focus,
         "benchmark_packet_mode": selected_packet.get("mode"),
         "compiler_surface": compiler_surface,
     }

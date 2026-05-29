@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Iterable
 
-from . import local_content, local_control
+from . import local_content, local_content_snapshots, local_control
 from .repo_paths import RepoContext
 from .store_repo_config import _set_worktree_materialized_snapshot, load_config
 from .store_worktree_runtime import _set_current_line, current_line
@@ -31,7 +31,7 @@ def restore_workspace(
         target_line_row = local_content.get_line(ctx, target_line_name)
         target_snapshot_id = target_line_row.get("head_snapshot_id")
 
-    result = local_content.restore_workspace(
+    result = local_content_snapshots.restore_workspace(
         ctx,
         target_snapshot_id,
         baseline_snapshot_id=baseline_snapshot_id,
@@ -98,7 +98,7 @@ def restore_workspace_paths(
     if target_snapshot_id is None:
         raise ValueError(f"Line {target_line_name} has no head snapshot to restore selected paths from.")
 
-    result = local_content.restore_workspace_paths(
+    result = local_content_snapshots.restore_workspace_paths(
         ctx,
         target_snapshot_id,
         paths,

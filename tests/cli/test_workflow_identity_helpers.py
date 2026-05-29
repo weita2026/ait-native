@@ -28,6 +28,22 @@ def test_aligned_remote_publish_identity_request_reuses_explicit_non_sequence_id
     )
 
 
+def test_aligned_remote_publish_identity_request_defers_sequence_identity_to_remote() -> None:
+    row = {
+        "task_id": "LT-0042",
+        "task_seq": 42,
+        "identity_source": local_control.LOCAL_IDENTITY_SOURCE_SEQUENCE,
+    }
+
+    assert workflow_identity_helpers._aligned_remote_publish_identity_request(
+        "http://example.test",
+        "repo-alpha",
+        row,
+        entity_type="task",
+        namespace_prefix="AIT",
+    ) is None
+
+
 def test_require_remote_workflow_identity_family_accepts_local_task_origin_ids():
     assert (
         workflow_identity_helpers._require_remote_workflow_identity_family(

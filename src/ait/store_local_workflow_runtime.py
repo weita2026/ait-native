@@ -7,7 +7,12 @@ from .repo_paths import RepoContext
 from .store_local_views import _local_plan_revision_view
 from .store_repo_config import _load_worktree_config, load_config
 
-__all__ = ["current_line", "resolve_local_task_plan_linkage"]
+__all__ = ["_local_actor_identity", "current_line", "resolve_local_task_plan_linkage"]
+
+
+def _local_actor_identity(ctx: RepoContext) -> str | None:
+    config = load_config(ctx)
+    return normalize_optional_text(config.get("user_email")) or normalize_optional_text(config.get("user_name"))
 
 
 def current_line(ctx: RepoContext) -> str:

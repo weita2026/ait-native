@@ -113,13 +113,14 @@ def test_gc_stats_reports_first_wave_schema_cleanup_audit(tmp_path: Path, monkey
     assert stats_out.exit_code == 0, stats_out.stdout
     payload = json.loads(stats_out.stdout)
     audit = payload["schema_cleanup_summary"]
-    assert audit["schema_version"] == 3
+    assert audit["schema_version"] == 4
     assert audit["legacy_local_server_catalog_tables_present"] == [
         "repository_group_memberships",
         "repository_groups",
         "repositories",
     ]
     assert audit["legacy_local_server_catalog_table_count"] == 3
+    assert audit["redundant_blob_storage_kind_present"] is False
     assert audit["legacy_pack_metadata_columns_present"] == []
     assert audit["legacy_pack_metadata_column_count"] == 0
     assert audit["stale_manifest_count"] == 1

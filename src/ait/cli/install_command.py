@@ -13,7 +13,11 @@ from .bootstrap_views import _emit
 from .workflow_mode_config import WORKFLOW_MODE_PRESETS, _effective_workflow_mode
 from ..local_content import workspace_runtime_root_hygiene
 from ..server_runtime_preflight import postgres_preflight_report
-from ..store import RepoContext, add_remote, init_repo, list_remotes, load_config, save_config
+from ..store import RepoContext, init_repo, load_config, save_config
+from ..store_remotes import (
+    add_remote,
+    list_remotes,
+)
 
 _MODE_ALIASES = {
     "local": "solo_local",
@@ -467,21 +471,44 @@ def _configure_server_setup(
     }
 
 
+def _append_unique_step(steps: list[str], step: str) -> None:
+    if step and step not in steps:
+        steps.append(step)
+
+
 def _mode_next_steps(mode: str, *, transport_actions: list[dict[str, Any]], server_setup: dict[str, Any]) -> list[str]:
     if mode == "solo_local":
         steps = [
-            "Shape the work in Markdown first.",
-            "Run `ait plan sync <file-or-dir>` for the relevant Markdown artifact.",
-            'Run `ait task start --title "<title>" --intent "<intent>"` for the first local slice.',
+            "Turn the requirement into the right Markdown artifact first.",
+            "Run `ait plan sync <file-or-dir>` for that Markdown artifact.",
+            'Start the task for that requirement with `ait task start --plan <plan-id> --plan-item-ref <ref> --title "<title>" --intent "<intent>"`.',
+            "Carry the change through `ait workflow land-local <change-id>` when the local slice is ready.",
         ]
     else:
         remote_name = str(server_setup.get("remote_name") or "origin")
-        steps = list(server_setup.get("next_steps") or [])
-        steps.extend(
-            [
-                f"Publish the relevant Markdown lineage with `ait plan sync <file-or-dir> --remote {remote_name}` after a remote is connected.",
-                f'Start the remote-backed slice with `ait task start --title "<title>" --intent "<intent>" --remote {remote_name}` after shared lineage is ready.',
-            ]
+        server_choice = str(server_setup.get("choice") or "")
+        server_classification = str(server_setup.get("classification") or "")
+        server_ready = server_choice == "connect" and server_classification == "healthy"
+        steps = ["Turn the requirement into the right Markdown artifact first."]
+        for step in server_setup.get("next_steps") or []:
+            _append_unique_step(steps, str(step))
+        if server_ready:
+            _append_unique_step(
+                steps,
+                'Start the remote-backed task for that requirement with `ait task start --plan <plan-id> --plan-item-ref <ref> --title "<title>" --intent "<intent>"` after shared lineage is ready.',
+            )
+        else:
+            _append_unique_step(
+                steps,
+                f"After the remote is connected, publish the Markdown lineage with `ait plan sync <file-or-dir> --remote {remote_name}`.",
+            )
+            _append_unique_step(
+                steps,
+                'Then start the remote-backed task for that requirement with `ait task start --plan <plan-id> --plan-item-ref <ref> --title "<title>" --intent "<intent>"`.',
+            )
+        _append_unique_step(
+            steps,
+            "Carry the change through `ait workflow land <change-id> --apply` once the shared slice is ready.",
         )
     for item in transport_actions:
         if item.get("kind") in {"telegram", "discord"}:

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from . import local_content, local_control
+from . import local_content, local_content_snapshots, local_control
 from .repo_paths import RepoContext
 from .store_repo_config import _set_worktree_materialized_snapshot, _worktree_materialized_snapshot_id
 from .store_worktree_runtime import current_line
@@ -12,10 +12,10 @@ def create_stash(ctx: RepoContext, message: Optional[str], *, keep_workspace: bo
     repo_name = local_control.get_meta(ctx, "repo_name") or ctx.root.name
     line_name = current_line(ctx)
     base_snapshot_id = local_content.read_ref(ctx, line_name)
-    dirty = local_content.workspace_delta(ctx, base_snapshot_id)
+    dirty = local_content_snapshots.workspace_delta(ctx, base_snapshot_id)
     if dirty["clean"]:
         raise ValueError("Workspace is already clean; stash save requires local changes to park.")
-    snapshot = local_content.create_snapshot(
+    snapshot = local_content_snapshots.create_snapshot(
         ctx,
         repo_name,
         line_name,
@@ -25,7 +25,7 @@ def create_stash(ctx: RepoContext, message: Optional[str], *, keep_workspace: bo
         snapshot_kind="stash",
         touch_line=False,
     )
-    stash = local_content.create_stash(
+    stash = local_content_snapshots.create_stash(
         ctx,
         snapshot_id=snapshot["snapshot_id"],
         source_line_name=line_name,
@@ -36,7 +36,7 @@ def create_stash(ctx: RepoContext, message: Optional[str], *, keep_workspace: bo
     if keep_workspace:
         _set_worktree_materialized_snapshot(ctx, snapshot["snapshot_id"])
     else:
-        local_content.restore_workspace(
+        local_content_snapshots.restore_workspace(
             ctx,
             base_snapshot_id,
             baseline_snapshot_id=snapshot["snapshot_id"],
@@ -67,18 +67,18 @@ def create_stash(ctx: RepoContext, message: Optional[str], *, keep_workspace: bo
 
 
 def list_stashes(ctx: RepoContext) -> list[dict]:
-    return local_content.list_stashes(ctx)
+    return local_content_snapshots.list_stashes(ctx)
 
 
 def get_stash(ctx: RepoContext, stash_id: str) -> dict:
-    return local_content.get_stash(ctx, stash_id)
+    return local_content_snapshots.get_stash(ctx, stash_id)
 
 
 def apply_stash(ctx: RepoContext, stash_id: str, *, force: bool = False, drop: bool = False) -> dict:
-    stash = local_content.get_stash(ctx, stash_id)
+    stash = local_content_snapshots.get_stash(ctx, stash_id)
     line_name = current_line(ctx)
     line_head_snapshot_id = local_content.read_ref(ctx, line_name)
-    local_content.restore_workspace(
+    local_content_snapshots.restore_workspace(
         ctx,
         stash["snapshot_id"],
         baseline_snapshot_id=line_head_snapshot_id,
@@ -109,7 +109,7 @@ def apply_stash(ctx: RepoContext, stash_id: str, *, force: bool = False, drop: b
     }
     if not drop:
         return payload
-    dropped = local_content.drop_stash(ctx, stash_id)
+    dropped = local_content_snapshots.drop_stash(ctx, stash_id)
     if dropped["snapshot_deleted"]:
         _set_worktree_materialized_snapshot(ctx, None)
     local_control.record_event(
@@ -133,7 +133,7 @@ def apply_stash(ctx: RepoContext, stash_id: str, *, force: bool = False, drop: b
 
 
 def drop_stash(ctx: RepoContext, stash_id: str) -> dict:
-    stash = local_content.drop_stash(ctx, stash_id)
+    stash = local_content_snapshots.drop_stash(ctx, stash_id)
     if stash["snapshot_deleted"] and _worktree_materialized_snapshot_id(ctx) == stash["snapshot_id"]:
         _set_worktree_materialized_snapshot(ctx, None)
     local_control.record_event(

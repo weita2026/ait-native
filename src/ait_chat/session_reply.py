@@ -8,7 +8,7 @@ from urllib.request import urlopen
 
 from ait_chat.codex_reply import generate_codex_session_reply
 from ait_chat.reply_config import ReplyGenerationConfig, load_reply_generation_config
-from ait_chat.reply_attachments import extract_discord_reply_attachments
+from ait_chat.reply_attachments import extract_reply_attachments
 from ait_chat.reply_context import (
     carryforward_turn_analysis,
     checkpoint_context_message,
@@ -52,9 +52,9 @@ def _finalize_ai_reply_result(
     repo_root: Path | None,
 ) -> AiReplyResult:
     normalized_surface = str(surface or "").strip().lower()
-    if normalized_surface != "discord":
+    if normalized_surface not in {"discord", "telegram"}:
         return result
-    cleaned_text, attachments = extract_discord_reply_attachments(result.text, repo_root=repo_root)
+    cleaned_text, attachments = extract_reply_attachments(result.text, repo_root=repo_root, surface=normalized_surface)
     if cleaned_text == result.text and attachments == tuple(result.attachments):
         return result
     return replace(result, text=cleaned_text, attachments=attachments or tuple(result.attachments))

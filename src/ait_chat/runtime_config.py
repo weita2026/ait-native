@@ -3,12 +3,13 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+from ait_protocol.reply_runtime import DEFAULT_REPLY_CODEX_CHILD_REAP_TIMEOUT_SECONDS
+
 
 DEFAULT_REPLY_ENV_PATH = Path(".ait") / "agent-runtime" / "telegram.env"
 DEFAULT_REPLY_OPENAI_TIMEOUT_SECONDS: float | None = None
 DEFAULT_REPLY_CODEX_APP_SERVER_READY_TIMEOUT_SECONDS = 30.0
 DEFAULT_REPLY_CODEX_TURN_TIMEOUT_SECONDS: float | None = None
-DEFAULT_REPLY_CODEX_CHILD_REAP_TIMEOUT_SECONDS = 30.0
 PLACEHOLDER_OPENAI_API_KEYS = {
     "your-openai-api-key",
     "sk-your-openai-api-key",

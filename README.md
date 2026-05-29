@@ -1,5 +1,9 @@
 # ait
 
+Authority: command layer under [docs/plan.md](./docs/plan.md) and the applicable legal-layer governance documents.
+Status: current release-facing repository overview.
+Scope: public overview, workflow narrative, package/link routing, and benchmark claim boundary for `ait`.
+
 ## Why `ait` exists
 
 `ait` grew out of a simple problem in AI-heavy development: once several agent
@@ -50,6 +54,53 @@ Instead of starting with a pile of manual workflow objects, you start by stating
 Official website:
 
 - https://ait-native.dev
+
+## Install `ait`
+
+There are two separate steps to keep clear:
+
+1. `pip install` installs the `ait` CLI and related console scripts.
+2. `ait install` bootstraps the repository/workflow mode you want to use.
+
+If you want the published Python package first:
+
+```bash
+python3 -m pip install --upgrade pip
+python3 -m pip install ait-native
+```
+
+Then run the install helper where you want to start working:
+
+```bash
+ait install
+```
+
+What `ait install` is for:
+
+- choose `solo_local` or `solo_remote`;
+- initialize the current directory as an `ait` repo if needed;
+- optionally connect an existing `ait-server`;
+- optionally attach Telegram or Discord worker config.
+
+What `ait install` does not do by itself:
+
+- it does not replace `pip install`;
+- it does not automatically deploy the full self-hosted stack;
+- it does not pretend the whole workflow is finished after one helper command.
+
+If you are starting from a repository checkout instead of the published package,
+use the editable-install path first and then run `ait install`:
+
+```bash
+python3 -m venv .venv
+. .venv/bin/activate
+python3 -m pip install --upgrade pip
+python3 -m pip install -e .[test]
+ait install
+```
+
+If you prefer the macOS tap path instead of `pip install`, use
+[docs/HOMEBREW_TAP.md](./docs/HOMEBREW_TAP.md).
 
 ## What You Can Do
 
@@ -271,7 +322,7 @@ ait plan sync <file-or-dir>
 ### Small local task
 
 ```bash
-ait task start --local --title "<title>" --intent "<intent>"
+ait task start --title "<title>" --intent "<intent>"
 ait snapshot create --message "<checkpoint>"
 ait workflow land-local <change-id>
 ```
@@ -373,12 +424,3 @@ The expected public contribution posture is:
 3. open an honest task / change boundary;
 4. implement in the bound worktree;
 5. review, attest, and land honestly.
-
-<!-- ait-release-notes:start -->
-## Release Notes
-
-### v0.10.5
-
-Initial published release for this profile. Task-based delta notes start after the first published baseline.
-
-<!-- ait-release-notes:end -->

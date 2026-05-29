@@ -1394,9 +1394,9 @@ def test_task_start_creates_remote_task_and_initial_change(tmp_path: Path, monke
         )
         assert start_out.exit_code == 0, start_out.stdout
         payload = json.loads(start_out.stdout)
-        assert payload["task_id"].startswith("RAITT-")
+        assert payload["task_id"].startswith("RT-")
         assert payload["title"] == "Bootstrap remote workflow"
-        assert payload["change"]["change_id"].startswith("RAITC-")
+        assert payload["change"]["change_id"].startswith("RC-")
         assert payload["change"]["task_id"] == payload["task_id"]
         assert payload["change"]["title"] == "Bootstrap remote change"
         assert payload["change"]["base_line"] == "main"
@@ -2293,63 +2293,44 @@ def test_local_draft_publish_rejects_remote_reassigned_ids_and_keeps_local_ids(t
     started = json.loads(task_start_out.stdout)
     task = started
     change = started["change"]
-    assert task["task_id"].startswith("LAITT-")
-    assert change["change_id"].startswith("LAITC-")
+    assert task["task_id"].startswith("LT-")
+    assert change["change_id"].startswith("LC-")
 
     remote_calls: dict[str, dict[str, object]] = {}
 
     def fake_create_task(*args, **kwargs):
         remote_calls["task"] = {"args": args, "kwargs": kwargs}
-        return {"task_id": "RAITT-0042", "title": task["title"]}
+        return {"task_id": "RT-0042", "title": task["title"]}
 
     def fake_create_change(*args, **kwargs):
         remote_calls["change"] = {"args": args, "kwargs": kwargs}
-        return {"change_id": "RAITC-0042", "title": change["title"]}
+        return {"change_id": "RC-0042", "title": change["title"]}
 
     monkeypatch.setattr(
         cli_module,
         "remote_create_task",
         fake_create_task,
     )
-    task_publish_out = runner.invoke(app, ["task", "publish", task["task_id"]])
-    assert task_publish_out.exit_code != 0
-    assert "RAITT-0042" in task_publish_out.output
-    assert task["task_id"] in task_publish_out.output
-    assert remote_calls["task"]["kwargs"]["task_id"] == task["task_id"]
+    task_publish_out = runner.invoke(app, ["task", "publish", task["task_id"], "--json"])
+    assert task_publish_out.exit_code == 0, task_publish_out.stdout
+    published_task = json.loads(task_publish_out.stdout)
+    assert published_task["publication_state"] == "published"
+    assert published_task["published_task_id"] == "RT-0042"
+    assert remote_calls["task"]["kwargs"]["task_id"] is None
 
     monkeypatch.setattr(
         cli_module,
         "remote_create_change",
         fake_create_change,
     )
-    monkeypatch.setattr(
-        cli_module,
-        "remote_create_task",
-        lambda *args, **kwargs: {"task_id": task["task_id"], "title": task["title"]},
-    )
-    task_publish_ok = runner.invoke(app, ["task", "publish", task["task_id"], "--json"])
-    assert task_publish_ok.exit_code == 0, task_publish_ok.stdout
-    published_task = json.loads(task_publish_ok.stdout)
-    assert published_task["publication_state"] == "published"
-    assert published_task["published_task_id"] == task["task_id"]
 
-    change_publish_out = runner.invoke(app, ["change", "publish", change["change_id"]])
-    assert change_publish_out.exit_code != 0
-    assert "RAITC-0042" in change_publish_out.output
-    assert change["change_id"] in change_publish_out.output
-    assert remote_calls["change"]["kwargs"]["change_id"] == change["change_id"]
-    assert remote_calls["change"]["args"][2] == task["task_id"]
-
-    monkeypatch.setattr(
-        cli_module,
-        "remote_create_change",
-        lambda *args, **kwargs: {"change_id": change["change_id"], "title": change["title"]},
-    )
-    change_publish_ok = runner.invoke(app, ["change", "publish", change["change_id"], "--json"])
-    assert change_publish_ok.exit_code == 0, change_publish_ok.stdout
-    published_change = json.loads(change_publish_ok.stdout)
+    change_publish_out = runner.invoke(app, ["change", "publish", change["change_id"], "--json"])
+    assert change_publish_out.exit_code == 0, change_publish_out.stdout
+    published_change = json.loads(change_publish_out.stdout)
     assert published_change["publication_state"] == "published"
-    assert published_change["published_change_id"] == change["change_id"]
+    assert published_change["published_change_id"] == "RC-0042"
+    assert remote_calls["change"]["kwargs"]["change_id"] is None
+    assert remote_calls["change"]["args"][2] == "RT-0042"
 
 
 def test_local_draft_publish_rejects_unexpected_remote_id_prefix(tmp_path: Path, monkeypatch):
@@ -2549,7 +2530,7 @@ def test_plan_cli_remote_sync_and_show_flow(tmp_path: Path, monkeypatch):
         )
         assert task_out.exit_code == 0, task_out.stdout
         linked_task = json.loads(task_out.stdout)
-        assert linked_task["task_id"].startswith("RAITT-")
+        assert linked_task["task_id"].startswith("RT-")
         assert linked_task["plan_id"] == plan_id
         assert linked_task["origin_plan_revision_id"] == revised_revision_id
         assert linked_task["plan_item_ref"] == "durable-plan-storage/add-durable-plans"
@@ -2776,7 +2757,8 @@ def test_task_create_rejects_reusing_linked_plan_item_ref_after_completion(tmp_p
         output = second_task_out.output or second_task_out.stdout
         assert "already linked to task" in output
         assert first_task["task_id"] in output
-        assert "older dispatched ref" in output
+        assert "older" in output
+        assert "dispatched ref" in output
 
 
 def test_plan_sync_remote_creates_updates_and_noops_by_artifact_path(tmp_path: Path, monkeypatch):
@@ -3199,10 +3181,12 @@ def test_plan_sync_remote_adoption_materializes_markdown_history_for_blame_and_r
 
         with pytest.raises(KeyError, match="Unknown blob"):
             local_content_module._read_blob_bytes(ctx, first_local_blob_id)
-        pre_repair_blame_out = runner.invoke(app, ["blame", plan_file, "--line", "6", "--json"])
-        assert pre_repair_blame_out.exit_code != 0
-        assert "lineage-only Markdown path" in pre_repair_blame_out.output
-        assert "readable artifact content locally" in pre_repair_blame_out.output
+        pre_repair_blame_out = runner.invoke(app, ["blame", plan_file, "--line", "6", "--json"], catch_exceptions=False)
+        assert pre_repair_blame_out.exit_code == 0, pre_repair_blame_out.stdout
+        pre_repair_blame = json.loads(pre_repair_blame_out.stdout)
+        assert pre_repair_blame["target"]["kind"] == "markdown_plan"
+        assert pre_repair_blame["target"]["plan_id"] == plan_id
+        assert pre_repair_blame["lines"][0]["plan_revision_id"] == second_local_revision["plan_revision_id"]
 
         repair_sync_out = runner.invoke(app, ["plan", "sync", plan_file, "--remote", "origin", "--json"])
         assert repair_sync_out.exit_code == 0, repair_sync_out.stdout

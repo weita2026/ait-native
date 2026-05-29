@@ -143,6 +143,7 @@ def build_telegram_assistant_reply_payload(
             channel_title=chat_title,
             channel_kind=chat_type,
             text=assistant_text,
+            attachments=getattr(reply, "attachments", ()),
             reply_to_event_id=(str(transport_envelope.get("event_id") or "").strip() if transport_envelope else None),
             reply_to_message_id=telegram_message_id,
             reply_to_message_ids=telegram_message_ids,

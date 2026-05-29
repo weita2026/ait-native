@@ -15,9 +15,11 @@ from ait_protocol.common import encode_ref_name, utc_now
 from .. import server_content as server_content_module
 from ..server_content import (
     connect as connect_content,
+    read_blob_bytes,
+)
+from ..server_content_repo_lines import (
     get_repository as get_content_repository,
     read_ref,
-    read_blob_bytes,
     set_repository_lifecycle_state,
 )
 from ..server_control import _table_columns, connect as connect_control, record_event

@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import json
+import os
 import sys
+from contextlib import redirect_stdout
+from io import StringIO
 from pathlib import Path
 from typing import Any, Mapping, Optional
 
@@ -17,20 +21,25 @@ from ..remote_client import (
     list_session_events as remote_list_session_events,
     list_tasks as remote_list_tasks,
 )
+from ..store_local_tasks import (
+    list_local_tasks,
+)
+from ..store_local_changes import (
+    list_local_changes,
+)
 from ..store import (
     RepoContext,
     current_line,
     get_local_plan,
-    list_local_changes,
-    list_local_session_events,
-    list_local_sessions,
-    list_local_tasks,
+    get_local_plan_revision,
     load_config,
 )
+from ..store_local_sessions import list_local_session_events, list_local_sessions
 from ..task_dag_readiness import compute_task_graph_readiness, task_dag_final_remote_disposition_default
 from .remote_ci_readiness_helpers import _remote_error_status_code, _remote_read_task_dag_readiness
 from .remote_repository_defaults import _remote_tuple
 from .runtime_defaults import _normalize_text_value
+from .workflow_mode_config import _effective_workflow_mode as _fallback_effective_workflow_mode
 
 
 def _app_override(name: str, fallback: Any) -> Any:
@@ -67,12 +76,159 @@ def _task_dag_target_line_name(
 
 def _task_dag_relative_path(ctx: RepoContext, path: Path) -> str:
     resolved = path.resolve()
-    for base in (ctx.root.resolve(), ctx.repo_root.resolve()):
+    bases = [ctx.root.resolve()]
+    repo_root = getattr(ctx, "repo_root", None)
+    if isinstance(repo_root, Path):
+        bases.append(repo_root.resolve())
+    elif repo_root is not None:
+        bases.append(Path(repo_root).resolve())
+    for base in bases:
         try:
             return str(resolved.relative_to(base))
         except ValueError:
             continue
     return str(path)
+
+
+def _task_dag_published_remote_plan_revision_id(ctx: RepoContext, graph: Mapping[str, Any]) -> str | None:
+    source_plan = graph.get("source_plan") if isinstance(graph.get("source_plan"), Mapping) else {}
+    normalize_text_fn = _app_override("_normalize_text_value", _normalize_text_value)
+    get_local_plan_fn = _app_override("get_local_plan", get_local_plan)
+    get_local_plan_revision_fn = _app_override("get_local_plan_revision", get_local_plan_revision)
+
+    plan_id = normalize_text_fn(source_plan.get("plan_id"))
+    plan_revision_id = normalize_text_fn(source_plan.get("plan_revision_id"))
+    if plan_id is None or plan_revision_id is None:
+        return None
+
+    try:
+        local_plan = get_local_plan_fn(ctx, plan_id)
+    except (KeyError, ValueError):
+        return None
+
+    try:
+        local_revision = get_local_plan_revision_fn(ctx, plan_id, plan_revision_id)
+    except (KeyError, ValueError):
+        local_revision = {}
+    published_revision_id = normalize_text_fn(
+        local_revision.get("published_plan_revision_id") if isinstance(local_revision, Mapping) else None
+    )
+    if published_revision_id is not None:
+        return published_revision_id
+
+    local_head_revision_id = normalize_text_fn(local_plan.get("head_revision_id"))
+    published_head_revision_id = normalize_text_fn(local_plan.get("published_head_revision_id"))
+    if local_head_revision_id == plan_revision_id and published_head_revision_id is not None:
+        return published_head_revision_id
+    return None
+
+
+def _task_dag_auto_sync_source_plan_remote(
+    ctx: RepoContext,
+    graph: Mapping[str, Any],
+    *,
+    remote_name: str,
+) -> dict[str, Any]:
+    import typer
+
+    from .commands.plan import plan_sync as plan_sync_command
+
+    source_plan = graph.get("source_plan") if isinstance(graph.get("source_plan"), Mapping) else {}
+    normalize_text_fn = _app_override("_normalize_text_value", _normalize_text_value)
+    artifact_path = normalize_text_fn(source_plan.get("artifact_path"))
+    if artifact_path is None:
+        raise ValueError(
+            "Compact-DAG reviewable remote bootstrap requires `source_plan.artifact_path` before it can auto-publish the source plan."
+        )
+
+    repo_root = Path(getattr(ctx, "repo_root", ctx.root)).resolve()
+    target_path = Path(artifact_path)
+    if not target_path.is_absolute():
+        target_path = repo_root / target_path
+    target_path = target_path.resolve(strict=False)
+
+    previous_cwd = Path.cwd()
+    stdout_buffer = StringIO()
+    payload: dict[str, Any] | None = None
+    try:
+        os.chdir(repo_root)
+        with redirect_stdout(stdout_buffer):
+            try:
+                plan_sync_command(target=target_path, remote=remote_name, json_output=True)
+            except typer.Exit as exc:
+                raw_output = stdout_buffer.getvalue().strip()
+                if raw_output:
+                    try:
+                        parsed = json.loads(raw_output)
+                        payload = parsed if isinstance(parsed, dict) else None
+                    except json.JSONDecodeError:
+                        payload = None
+                if exc.exit_code not in {0, None}:
+                    error_message = None
+                    if isinstance(payload, dict):
+                        error = payload.get("error") if isinstance(payload.get("error"), Mapping) else {}
+                        error_message = normalize_text_fn(error.get("message")) or normalize_text_fn(payload.get("status"))
+                    if not error_message:
+                        error_message = raw_output or "unknown failure"
+                    raise ValueError(
+                        f"Auto `ait plan sync {_task_dag_relative_path(ctx, target_path)} --remote {remote_name}` failed: {error_message}"
+                    ) from exc
+    finally:
+        os.chdir(previous_cwd)
+
+    if payload is None:
+        raw_output = stdout_buffer.getvalue().strip()
+        if raw_output:
+            try:
+                parsed = json.loads(raw_output)
+                payload = parsed if isinstance(parsed, dict) else None
+            except json.JSONDecodeError:
+                payload = None
+    if not isinstance(payload, dict):
+        raise ValueError(
+            f"Auto `ait plan sync {_task_dag_relative_path(ctx, target_path)} --remote {remote_name}` did not return a JSON payload."
+        )
+    if str(payload.get("status") or "").strip().lower() != "ok":
+        error = payload.get("error") if isinstance(payload.get("error"), Mapping) else {}
+        error_message = normalize_text_fn(error.get("message")) or normalize_text_fn(payload.get("status")) or "unknown failure"
+        raise ValueError(
+            f"Auto `ait plan sync {_task_dag_relative_path(ctx, target_path)} --remote {remote_name}` failed: {error_message}"
+        )
+    return payload
+
+
+def _task_dag_remote_plan_revision_id(
+    ctx: RepoContext,
+    graph: Mapping[str, Any],
+    *,
+    remote_name: str | None = None,
+    auto_publish_if_needed: bool = False,
+) -> str | None:
+    source_plan = graph.get("source_plan") if isinstance(graph.get("source_plan"), Mapping) else {}
+    normalize_text_fn = _app_override("_normalize_text_value", _normalize_text_value)
+    effective_workflow_mode_fn = _app_override("_effective_workflow_mode", _fallback_effective_workflow_mode)
+    plan_revision_id = normalize_text_fn(source_plan.get("plan_revision_id"))
+    published_revision_id = _task_dag_published_remote_plan_revision_id(ctx, graph)
+    if published_revision_id is not None:
+        return published_revision_id
+    if not auto_publish_if_needed:
+        return plan_revision_id
+    workflow_mode = str((effective_workflow_mode_fn(ctx) or {}).get("value") or "custom").strip().lower()
+    if workflow_mode != "solo_remote":
+        return plan_revision_id
+    if plan_revision_id is None:
+        return None
+    if not remote_name:
+        raise ValueError(
+            "Compact-DAG reviewable remote bootstrap requires a remote name before it can auto-publish the source plan."
+        )
+    _task_dag_auto_sync_source_plan_remote(ctx, graph, remote_name=remote_name)
+    published_revision_id = _task_dag_published_remote_plan_revision_id(ctx, graph)
+    if published_revision_id is None:
+        raise ValueError(
+            "Auto-publishing the compact-DAG source plan did not produce a published remote plan revision mapping."
+        )
+    return published_revision_id
 
 
 def _task_dag_graph_run_session_matches(graph: Mapping[str, Any], session: Mapping[str, Any]) -> bool:
@@ -289,5 +445,10 @@ def _task_dag_graph_for_remote(ctx: RepoContext, graph: dict[str, Any], graph_pa
     dispatch_artifacts = dict(graph.get("dispatch_artifacts") or {}) if isinstance(graph.get("dispatch_artifacts"), dict) else {}
     dispatch_artifacts["task_graph_json"] = _task_dag_relative_path(ctx, graph_path)
     payload = dict(graph)
+    source_plan = dict(payload.get("source_plan") or {}) if isinstance(payload.get("source_plan"), dict) else {}
+    remote_plan_revision_id = _task_dag_remote_plan_revision_id(ctx, payload)
+    if source_plan and remote_plan_revision_id is not None:
+        source_plan["plan_revision_id"] = remote_plan_revision_id
+        payload["source_plan"] = source_plan
     payload["dispatch_artifacts"] = dispatch_artifacts
     return payload

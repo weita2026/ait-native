@@ -452,7 +452,7 @@ def codex_base_instructions(repo_root: Path, *, surface: str = "telegram") -> st
         bootstrap_line = (
             "This is a worker-only compact DAG packet session. Do not begin with repo-root governance discovery, "
             "general CLI help, raw git status/diff/log probes, or broad repository exploration. Start from the packet "
-            "manifest path supplied in the session context, then follow the packet turn text and runtime digest before "
+            "manifest path supplied in the session context, then follow the packet turn text before "
             "broadening scope."
         )
     else:
@@ -478,6 +478,38 @@ def codex_base_instructions(repo_root: Path, *, surface: str = "telegram") -> st
     )
 
 
+def _is_checkpoint_context_message(message: dict[str, str]) -> bool:
+    return str(message.get("content") or "").strip().startswith("[durable checkpoint context]")
+
+
+def _compact_messages(messages: list[dict[str, str]]) -> list[dict[str, str]]:
+    compacted: list[dict[str, str]] = []
+    for message in messages:
+        content = str(message.get("content") or "").strip()
+        if not content:
+            continue
+        compacted.append(
+            {
+                "role": str(message.get("role") or "").strip().lower(),
+                "content": content,
+            }
+        )
+    return compacted
+
+
+def _persistent_thread_delta_messages(messages: list[dict[str, str]]) -> list[dict[str, str]]:
+    compacted = _compact_messages(messages)
+    while compacted and _is_checkpoint_context_message(compacted[0]):
+        compacted = compacted[1:]
+    last_assistant_index = -1
+    for index, message in enumerate(compacted):
+        if message["role"] == "assistant":
+            last_assistant_index = index
+    if last_assistant_index >= 0 and compacted[last_assistant_index + 1 :]:
+        return compacted[last_assistant_index + 1 :]
+    return compacted
+
+
 def render_codex_turn_input(
     *,
     session_id: str,
@@ -485,28 +517,51 @@ def render_codex_turn_input(
     chat_title: str | None,
     messages: list[dict[str, str]],
     surface: str = "telegram",
+    context_mode: str = "transcript_replay",
 ) -> str:
+    normalized_surface = str(surface or "").strip() or "session"
+    normalized_context_mode = str(context_mode or "transcript_replay").strip().lower() or "transcript_replay"
+    if normalized_context_mode == "thread_delta":
+        active_messages = _persistent_thread_delta_messages(messages)
+    else:
+        active_messages = _compact_messages(messages)
     rendered_messages: list[str] = []
-    for index, message in enumerate(messages, start=1):
-        role = str(message.get("role") or "").strip().lower()
-        content = str(message.get("content") or "").strip()
-        if not content:
-            continue
+    for index, message in enumerate(active_messages, start=1):
+        role = message["role"]
+        content = message["content"]
         if content.startswith("[durable checkpoint context]"):
             label = "Shared checkpoint context"
         elif role == "assistant":
             label = "Assistant"
         else:
             label = "User"
-        rendered_messages.extend([f"{label} {index}:", content, ""])
+        if normalized_context_mode == "thread_delta" or normalized_surface == "task_dag_compact_packet":
+            rendered_messages.extend([f"{label}:", content, ""])
+        else:
+            rendered_messages.extend([f"{label} {index}:", content, ""])
     transcript = "\n".join(rendered_messages).strip()
-    normalized_surface = str(surface or "").strip() or "session"
-    if normalized_surface == "telegram":
+    if normalized_context_mode == "thread_delta":
+        header_lines = []
+        trailer_lines = [
+            "Continue the existing durable shared-session thread from this delta only.",
+            "Treat the latest user message as the active request and perform repository work directly when practical.",
+        ]
+    elif normalized_surface == "telegram":
         header_lines = [
             "Shared Telegram-linked session transcript (oldest to newest):",
             f"session_id={session_id or '(unknown)'}",
             f"telegram_chat_id={chat_id or '(unknown)'}",
             f"telegram_chat_title={chat_title or '(unknown)'}",
+        ]
+        trailer_lines = [
+            "Use the transcript as shared durable context.",
+            "Treat the latest user message as the active request and perform repository work directly when practical.",
+        ]
+    elif normalized_surface == "task_dag_compact_packet":
+        header_lines = []
+        trailer_lines = [
+            "Use the transcript as shared durable context.",
+            "Treat the latest user message as the active request and perform repository work directly when practical.",
         ]
     else:
         header_lines = [
@@ -517,15 +572,15 @@ def render_codex_turn_input(
         ]
         if chat_id is not None:
             header_lines.append(f"surface_context_id={chat_id}")
-    return "\n".join(
-        [
-            *header_lines,
-            "",
-            transcript or "(no transcript)",
-            "",
+        trailer_lines = [
             "Use the transcript as shared durable context.",
             "Treat the latest user message as the active request and perform repository work directly when practical.",
         ]
+    lines = [transcript or "(no transcript)", "", *trailer_lines]
+    if header_lines:
+        lines = [*header_lines, "", *lines]
+    return "\n".join(
+        lines
     )
 
 
@@ -1252,6 +1307,7 @@ def generate_codex_session_reply(
                             chat_title=chat_title,
                             messages=active_messages,
                             surface=surface,
+                            context_mode="thread_delta" if reused_thread else "transcript_replay",
                         ),
                         trace_context={**trace_context, "thread_id": thread_id, "retry_attempt": retry_attempt},
                     )

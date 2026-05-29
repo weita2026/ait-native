@@ -8,7 +8,7 @@ from typing import Any
 
 from ait_protocol.common import generate_namespaced_workflow_id, utc_now
 
-from .server_content import get_repository
+from .server_content_repo_lines import get_repository
 from .server_control import connect, record_event
 from .server_paths import ServerContext
 

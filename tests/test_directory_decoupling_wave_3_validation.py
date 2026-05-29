@@ -40,13 +40,15 @@ def test_wave_3_hotspot_facades_import_extracted_modules() -> None:
     store_text = _read_text(WORKSPACE_ROOT / "src/ait/store.py")
     store_local_workflow_text = _read_text(WORKSPACE_ROOT / "src/ait/store_local_workflow.py")
     store_worktrees_text = _read_text(WORKSPACE_ROOT / "src/ait/store_worktrees.py")
+    store_worktree_cleanup_text = _read_text(WORKSPACE_ROOT / "src/ait/store_worktree_cleanup.py")
 
     assert "from .workflow_land_sync import (" in cli_app_text
     assert "from .graph_watches import (" in telegram_app_text
     assert "from .session_views import (" in telegram_app_text
     assert "from .store_local_views import (" in store_text
     assert "from .store_local_views import (" in store_local_workflow_text
-    assert "from .store_worktree_metadata import (" in store_worktrees_text
+    assert "from .store_worktree_cleanup import (" in store_worktrees_text
+    assert "from .store_worktree_metadata import (" in store_worktree_cleanup_text
 
 
 def test_wave_3_supporting_modules_exist() -> None:
