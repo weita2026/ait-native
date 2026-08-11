@@ -1,0 +1,145 @@
+{
+  "schema_version": 1,
+  "objective": "external-materialization-workspace-extw00-inventory",
+  "sprint_plan": "docs/sprints/external_materialization_workspace_task_sprints.md",
+  "companion_artifact": "docs/sprints/external_materialization_workspace_extw00_inventory.md",
+  "created_by_task": "RSET-0169",
+  "created_by_change": "RSEC-0168",
+  "observed_at": "2026-07-05",
+  "baseline": {
+    "repo_root": {
+      "path": "/Users/weita/AI_Play_Ground/ait-server",
+      "external_status": {
+        "materialized": 1,
+        "missing": 0,
+        "linked": 0,
+        "dirty": 0,
+        "outdated": 0,
+        "lock_drift": 0,
+        "externals": [
+          {
+            "name": "ait-core",
+            "state": "materialized",
+            "snapshot": "SNP-640CDF7EEAAF",
+            "materialize_to": ".ait-external/ait-core"
+          }
+        ]
+      },
+      "external_doctor": {
+        "release_ready": true,
+        "findings": 0
+      },
+      "workspace_status": {
+        "state": "dirty",
+        "changed_files": 650,
+        "changed_kind": "untracked",
+        "changed_root": ".ait-external/ait-core"
+      },
+      "queue_summary": {
+        "workspace_state": "dirty",
+        "workspace_changed_count": 650
+      }
+    },
+    "task_worktree": {
+      "name": "rset-0169",
+      "path": "/Users/weita/AI_Play_Ground/ait-server/.ait-worktree-links/rset-0169",
+      "workspace_status": {
+        "state": "clean",
+        "changed_files": 0
+      },
+      "external_status": {
+        "materialized": 1,
+        "missing": 0,
+        "linked": 0,
+        "dirty": 0,
+        "outdated": 0,
+        "lock_drift": 0
+      },
+      "external_doctor": {
+        "release_ready": true,
+        "findings": 0
+      }
+    }
+  },
+  "target_behavior_matrix": [
+    {
+      "external_state": "materialized_clean",
+      "authored_workspace_dirty": false,
+      "external_readiness": "ready"
+    },
+    {
+      "external_state": "materialization_missing",
+      "authored_workspace_dirty": false,
+      "external_readiness": "blocking"
+    },
+    {
+      "external_state": "local_link_active",
+      "authored_workspace_dirty": false,
+      "external_readiness": "blocking"
+    },
+    {
+      "external_state": "materialization_dirty",
+      "authored_workspace_dirty": false,
+      "external_readiness": "blocking"
+    },
+    {
+      "external_state": "materialization_outdated",
+      "authored_workspace_dirty": false,
+      "external_readiness": "blocking"
+    },
+    {
+      "external_state": "lock_drift",
+      "authored_workspace_dirty": false,
+      "external_readiness": "blocking"
+    },
+    {
+      "external_state": "undeclared_orphan_external_content",
+      "authored_workspace_dirty": true,
+      "external_readiness": "warning_or_blocking_follow_up"
+    }
+  ],
+  "consumer_inventory": [
+    {
+      "owner": "../ait-core",
+      "layer": "shared_workspace_listing",
+      "paths": [
+        "rust/crates/ait-core/src/plan_filesystem.rs",
+        "rust/crates/ait-core/src/local_snapshot/snapshot.rs"
+      ]
+    },
+    {
+      "owner": "../ait-core",
+      "layer": "workspace_status_and_diff_payloads",
+      "paths": [
+        "rust/crates/ait-cli/src/primitives/status_cache.rs",
+        "rust/crates/ait-cli/src/primitives/workspace.rs"
+      ]
+    },
+    {
+      "owner": "../ait-core",
+      "layer": "external_status_and_readiness",
+      "paths": [
+        "rust/crates/ait-core/src/external/status/fs.rs",
+        "rust/crates/ait-core/src/external/status/model.rs",
+        "rust/crates/ait-core/src/external/materializer/model.rs",
+        "rust/crates/ait-cli/src/external_surface/mod.rs",
+        "rust/crates/ait-cli/src/external_readiness_gate.rs",
+        "rust/crates/ait-cli/src/release_surface.rs"
+      ]
+    },
+    {
+      "owner": "../ait",
+      "layer": "python_rendering_surfaces",
+      "paths": [
+        ".ait/main-seeds/ait/main-seed/src/ait/cli/worktree_views.py",
+        ".ait/main-seeds/ait/main-seed/src/ait/cli/queue_views.py"
+      ]
+    }
+  ],
+  "guardrails": [
+    "do_not_use_aitignore_as_final_solution",
+    "do_not_hide_external_roots_before_exact_dirty_detection",
+    "do_not_filter_entire_ait-external_tree",
+    "do_not_hide_undeclared_orphan_external_content"
+  ]
+}

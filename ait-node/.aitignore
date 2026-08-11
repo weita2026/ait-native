@@ -1,0 +1,6 @@
+# Generated Node.js development artifacts.
+node_modules/
+coverage/
+*.tgz
+.ait-external/
+.ait-native-target/

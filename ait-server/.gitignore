@@ -1,0 +1,12 @@
+# Local ait runtime/state; do not publish repo-local workflow data.
+.ait/
+.ait-server/
+
+# Local environment and developer machine noise.
+.DS_Store
+
+# Build/test artifacts.
+build/
+dist/
+node_modules/
+rust/target/

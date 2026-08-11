@@ -1,0 +1,29 @@
+[workspace]
+members = [
+  "crates/ait-agent-core",
+  "crates/ait-agent-worker",
+  "crates/ait-benchmark",
+  "crates/ait-core",
+  "crates/ait-cli",
+  "crates/ait-py",
+]
+resolver = "2"
+
+[workspace.package]
+version = "1.0.0-rc.1"
+license = "Apache-2.0"
+
+[profile.release]
+opt-level = 3
+debug = 0
+debug-assertions = false
+overflow-checks = false
+incremental = false
+
+[profile.ait-ci]
+inherits = "test"
+opt-level = 0
+debug = 0
+debug-assertions = true
+overflow-checks = true
+incremental = false

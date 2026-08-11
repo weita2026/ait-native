@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "suites": [
+    {
+      "schema_version": 1,
+      "suite_id": "python_unit",
+      "display_name": "Python Unit",
+      "plane": "patchset",
+      "default_blocking": true,
+      "mode": "gate",
+      "purpose": "Validate the Python bridge and ait-agent compatibility surface before remote land.",
+      "runner": {
+        "kind": "command_bundle",
+        "commands": [
+          "./ci/run.sh patchset"
+        ]
+      },
+      "artifacts": {
+        "log_path": ".ait/generated/ci/python_unit.log"
+      }
+    }
+  ]
+}

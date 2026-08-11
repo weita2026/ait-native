@@ -1,0 +1,14 @@
+[[external]]
+name = "ait-server-plugin"
+repo_name = "ait-server-plugin"
+repository_index = 14
+remote = "origin"
+line = "main"
+snapshot = "SNP-SERVER-PLUGIN-AGPL"
+materialize_to = ".ait-external/ait-server-plugin"
+license = "AGPL-3.0-only"
+
+[external.bindings.rust]
+kind = "cargo-path"
+path = "rust/crates/ait-server-plugin"
+package = "ait-server-plugin"

@@ -1,0 +1,5 @@
+.ait/
+.ait-server/
+build/
+dist/
+node_modules/

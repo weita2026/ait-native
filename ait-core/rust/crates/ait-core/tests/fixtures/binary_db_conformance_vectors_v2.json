@@ -1,0 +1,341 @@
+{
+  "version": "ait.binary-db.conformance-vectors.v2",
+  "layout_id": 1,
+  "record_size": 2,
+  "record_vectors": [
+    {
+      "id": "missing_record_file_is_empty",
+      "operation": "record_count",
+      "initial_hex": null,
+      "expected_outcome": "success",
+      "expected_value": 0,
+      "expected_after_hex": null,
+      "mutation": false
+    },
+    {
+      "id": "empty_record_file_is_corrupt",
+      "operation": "record_count",
+      "initial_hex": "",
+      "expected_outcome": "corruption",
+      "expected_value": null,
+      "expected_after_hex": "",
+      "mutation": false
+    },
+    {
+      "id": "truncated_header_is_corrupt",
+      "operation": "record_count",
+      "initial_hex": "0100",
+      "expected_outcome": "corruption",
+      "expected_value": null,
+      "expected_after_hex": "0100",
+      "mutation": false
+    },
+    {
+      "id": "header_only_record_file_has_zero_records",
+      "operation": "record_count",
+      "initial_hex": "01000000",
+      "expected_outcome": "success",
+      "expected_value": 0,
+      "expected_after_hex": "01000000",
+      "mutation": false
+    },
+    {
+      "id": "truncated_record_is_corrupt",
+      "operation": "record_count",
+      "initial_hex": "01000000aa",
+      "expected_outcome": "corruption",
+      "expected_value": null,
+      "expected_after_hex": "01000000aa",
+      "mutation": false
+    },
+    {
+      "id": "misaligned_record_body_is_corrupt",
+      "operation": "record_count",
+      "initial_hex": "01000000010203",
+      "expected_outcome": "corruption",
+      "expected_value": null,
+      "expected_after_hex": "01000000010203",
+      "mutation": false
+    },
+    {
+      "id": "append_assigns_dense_zero_based_index",
+      "operation": "append_record",
+      "initial_hex": "010000000102",
+      "argument_hex": "0304",
+      "expected_outcome": "success",
+      "expected_value": 1,
+      "expected_after_hex": "0100000001020304",
+      "mutation": true
+    },
+    {
+      "id": "record_index_out_of_bounds_is_missing",
+      "operation": "read_record",
+      "initial_hex": "010000000102",
+      "record_index": 1,
+      "expected_outcome": "missing_data",
+      "expected_value": null,
+      "expected_after_hex": "010000000102",
+      "mutation": false
+    },
+    {
+      "id": "payload_range_out_of_bounds_is_missing",
+      "operation": "read_payload",
+      "initial_hex": "01000000aabb",
+      "payload_offset": 4,
+      "payload_len": 3,
+      "expected_outcome": "missing_data",
+      "expected_value": null,
+      "expected_after_hex": "01000000aabb",
+      "mutation": false
+    },
+    {
+      "id": "unsupported_persisted_layout_fails_closed",
+      "operation": "record_count",
+      "initial_hex": "630000000102",
+      "expected_outcome": "layout_mismatch",
+      "expected_value": null,
+      "expected_after_hex": "630000000102",
+      "mutation": false
+    },
+    {
+      "id": "record_header_layout_mismatch_fails_closed",
+      "operation": "read_record",
+      "initial_hex": "020000000102",
+      "record_index": 0,
+      "expected_outcome": "layout_mismatch",
+      "expected_value": null,
+      "expected_after_hex": "020000000102",
+      "mutation": false
+    }
+  ],
+  "transaction_vectors": [
+    {
+      "id": "validation_failure_precedes_mutation",
+      "operation": "append_invalid_record",
+      "initial_hex": "010000000102",
+      "argument_hex": "03",
+      "expected_outcome": "invalid_domain_data",
+      "expected_value": null,
+      "expected_after_hex": "010000000102",
+      "mutation": false
+    },
+    {
+      "id": "injected_write_failure_restores_before_image",
+      "operation": "append_short_write",
+      "initial_hex": "010000000102",
+      "argument_hex": "0304",
+      "expected_outcome": "io",
+      "expected_value": null,
+      "expected_after_hex": "010000000102",
+      "mutation": false
+    },
+    {
+      "id": "injected_sync_failure_restores_before_image",
+      "operation": "commit_sync_failure",
+      "initial_hex": "010000000102",
+      "argument_hex": "0304",
+      "expected_outcome": "io",
+      "expected_value": null,
+      "expected_after_hex": "010000000102",
+      "mutation": false
+    },
+    {
+      "id": "abort_restores_before_image",
+      "operation": "abort",
+      "initial_hex": "010000000102",
+      "argument_hex": "0304",
+      "expected_outcome": "success",
+      "expected_value": 1,
+      "expected_after_hex": "010000000102",
+      "mutation": false
+    },
+    {
+      "id": "commit_publishes_exact_bytes",
+      "operation": "commit",
+      "initial_hex": "010000000102",
+      "argument_hex": "0304",
+      "expected_outcome": "success",
+      "expected_value": 1,
+      "expected_after_hex": "0100000001020304",
+      "mutation": true
+    },
+    {
+      "id": "post_commit_lock_cleanup_failure_is_committed",
+      "operation": "commit_lock_cleanup_failure",
+      "initial_hex": "010000000102",
+      "argument_hex": "0304",
+      "expected_outcome": "success",
+      "expected_value": 1,
+      "expected_after_hex": "0100000001020304",
+      "mutation": true
+    },
+    {
+      "id": "recovery_is_idempotent",
+      "operation": "abort_twice",
+      "initial_hex": "010000000102",
+      "argument_hex": "0304",
+      "expected_outcome": "success",
+      "expected_value": 1,
+      "expected_after_hex": "010000000102",
+      "mutation": false
+    }
+  ],
+  "extended_vectors": [
+    {
+      "id": "variable_index_exact_bytes_and_lookup",
+      "operation": "variable_index_round_trip",
+      "index_path": "variable.idx",
+      "keys_hex": ["616c706861", "62657461", "616c706861"],
+      "candidates": [3, 7, 5],
+      "lookup_key_hex": "616c706861",
+      "expected_values": [3, 5],
+      "expected_outcome": "success",
+      "expected_files": {
+        "variable.idx": "0100000005000000616c7068610300000004000000626574610700000005000000616c70686105000000"
+      }
+    },
+    {
+      "id": "fixed_index_plus_one_exact_bytes_and_lookup",
+      "operation": "fixed_index_plus_one_round_trip",
+      "index_path": "fixed.idx",
+      "fixed_key_size": 2,
+      "stores_record_index_plus_one": true,
+      "keys_hex": ["aabb", "ccdd", "aabb"],
+      "candidates": [0, 7, 2],
+      "lookup_key_hex": "aabb",
+      "expected_values": [0, 2],
+      "expected_outcome": "success",
+      "expected_files": {
+        "fixed.idx": "01000000aabb01000000ccdd08000000aabb03000000"
+      }
+    },
+    {
+      "id": "overwrite_commit_publishes_exact_bytes",
+      "operation": "overwrite_commit",
+      "record_path": "overwrite.bin",
+      "record_index": 0,
+      "argument_hex": "aabb",
+      "expected_outcome": "success",
+      "initial_files": {"overwrite.bin": "0100000001020304"},
+      "expected_files": {"overwrite.bin": "01000000aabb0304"}
+    },
+    {
+      "id": "overwrite_abort_restores_before_image",
+      "operation": "overwrite_abort",
+      "record_path": "overwrite.bin",
+      "record_index": 1,
+      "argument_hex": "aabb",
+      "expected_outcome": "success",
+      "initial_files": {"overwrite.bin": "0100000001020304"},
+      "expected_files": {"overwrite.bin": "0100000001020304"}
+    },
+    {
+      "id": "overwrite_sync_failure_restores_before_image",
+      "operation": "overwrite_sync_failure",
+      "record_path": "overwrite.bin",
+      "record_index": 0,
+      "argument_hex": "aabb",
+      "expected_outcome": "io",
+      "initial_files": {"overwrite.bin": "0100000001020304"},
+      "expected_files": {"overwrite.bin": "0100000001020304"}
+    },
+    {
+      "id": "parent_path_is_rejected_before_mutation",
+      "operation": "parent_path_rejected",
+      "record_path": "../binary-db-parity-escape.bin",
+      "argument_hex": "0102",
+      "expected_outcome": "invalid_domain_data",
+      "expected_files": {}
+    },
+    {
+      "id": "unauthorized_plan_family_is_rejected_before_mutation",
+      "operation": "unauthorized_plan_family_rejected",
+      "record_path": "plan.bin",
+      "argument_hex": "0102",
+      "expected_outcome": "invalid_domain_data",
+      "expected_files": {"plan.bin": null}
+    },
+    {
+      "id": "authorized_plan_family_commits",
+      "operation": "authorized_plan_family_commit",
+      "record_path": "plan.bin",
+      "argument_hex": "0102",
+      "expected_outcome": "success",
+      "expected_files": {"plan.bin": "010000000102"}
+    },
+    {
+      "id": "multi_file_commit_publishes_all_exact_bytes",
+      "operation": "multi_file_commit",
+      "record_path": "record.bin",
+      "payload_path": "payload.bin",
+      "index_path": "index.bin",
+      "record_hex": "0102",
+      "payload_hex": "aabb",
+      "index_key_hex": "6b",
+      "candidate": 0,
+      "expected_outcome": "success",
+      "expected_files": {
+        "index.bin": "01000000010000006b00000000",
+        "payload.bin": "01000000aabb",
+        "record.bin": "010000000102"
+      }
+    },
+    {
+      "id": "multi_file_abort_restores_all_before_images",
+      "operation": "multi_file_abort",
+      "record_path": "record.bin",
+      "payload_path": "payload.bin",
+      "index_path": "index.bin",
+      "record_hex": "0102",
+      "payload_hex": "aabb",
+      "index_key_hex": "6b",
+      "candidate": 0,
+      "expected_outcome": "success",
+      "expected_files": {
+        "index.bin": null,
+        "payload.bin": null,
+        "record.bin": null
+      }
+    },
+    {
+      "id": "multi_file_sync_failure_restores_existing_files",
+      "operation": "multi_file_sync_failure",
+      "record_path": "record.bin",
+      "payload_path": "payload.bin",
+      "index_path": "index.bin",
+      "record_hex": "0102",
+      "payload_hex": "aabb",
+      "index_key_hex": "6b",
+      "candidate": 1,
+      "expected_outcome": "io",
+      "initial_files": {
+        "index.bin": "01000000010000007804000000",
+        "payload.bin": "01000000cc",
+        "record.bin": "010000001112"
+      },
+      "expected_files": {
+        "index.bin": "01000000010000007804000000",
+        "payload.bin": "01000000cc",
+        "record.bin": "010000001112"
+      }
+    },
+    {
+      "id": "multi_file_post_commit_lock_cleanup_failure_is_committed",
+      "operation": "multi_file_lock_cleanup_failure",
+      "record_path": "record.bin",
+      "payload_path": "payload.bin",
+      "index_path": "index.bin",
+      "record_hex": "0102",
+      "payload_hex": "aabb",
+      "index_key_hex": "6b",
+      "candidate": 0,
+      "expected_outcome": "success",
+      "expected_cleanup_warning": true,
+      "expected_files": {
+        "index.bin": "01000000010000006b00000000",
+        "payload.bin": "01000000aabb",
+        "record.bin": "010000000102"
+      }
+    }
+  ]
+}

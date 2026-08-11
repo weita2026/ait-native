@@ -1,0 +1,116 @@
+{
+  "schema": "ait.release.adapter/v1",
+  "package": {
+    "name": "ait-server",
+    "version": "1.0.0-rc.1",
+    "description": "Native ait-server release executable",
+    "license_files": [
+      {
+        "path": "LICENSE",
+        "role": "license"
+      },
+      {
+        "path": "NOTICE",
+        "role": "notice"
+      }
+    ]
+  },
+  "components": [
+    {
+      "id": "ait-server",
+      "ecosystem": "native",
+      "working_directory": ".",
+      "dependency_files": [
+        ".cargo/config.toml",
+        "rust/Cargo.toml",
+        "rust/Cargo.lock",
+        "rust/crates/ait-server/Cargo.toml",
+        "rust/crates/ait-server-core/Cargo.toml"
+      ],
+      "commands": {
+        "test": [
+          [
+            "cargo",
+            "check",
+            "--manifest-path",
+            "rust/Cargo.toml",
+            "--locked",
+            "--release",
+            "--target",
+            "$AIT_RELEASE_TARGET",
+            "-p",
+            "ait-server",
+            "--bin",
+            "ait-server"
+          ]
+        ],
+        "build": [
+          [
+            "cargo",
+            "build",
+            "--manifest-path",
+            "rust/Cargo.toml",
+            "--locked",
+            "--release",
+            "--target",
+            "$AIT_RELEASE_TARGET",
+            "-p",
+            "ait-server",
+            "--bin",
+            "ait-server"
+          ]
+        ],
+        "smoke": [
+          [
+            "cargo",
+            "run",
+            "--manifest-path",
+            "rust/Cargo.toml",
+            "--locked",
+            "--release",
+            "--target",
+            "$AIT_RELEASE_TARGET",
+            "-p",
+            "ait-server",
+            "--bin",
+            "ait-server",
+            "--",
+            "--version"
+          ]
+        ]
+      },
+      "artifacts": [
+        {
+          "path": ".ait/cargo-target/aarch64-apple-darwin/release/ait-server",
+          "kind": "native-executable",
+          "target": "aarch64-apple-darwin"
+        },
+        {
+          "path": ".ait/cargo-target/x86_64-apple-darwin/release/ait-server",
+          "kind": "native-executable",
+          "target": "x86_64-apple-darwin"
+        },
+        {
+          "path": ".ait/cargo-target/aarch64-unknown-linux-gnu/release/ait-server",
+          "kind": "native-executable",
+          "target": "aarch64-unknown-linux-gnu"
+        },
+        {
+          "path": ".ait/cargo-target/x86_64-unknown-linux-gnu/release/ait-server",
+          "kind": "native-executable",
+          "target": "x86_64-unknown-linux-gnu"
+        },
+        {
+          "path": ".ait/cargo-target/aarch64-pc-windows-msvc/release/ait-server.exe",
+          "kind": "native-executable",
+          "target": "aarch64-pc-windows-msvc"
+        },
+        {
+          "path": ".ait/cargo-target/x86_64-pc-windows-msvc/release/ait-server.exe",
+          "kind": "native-executable",
+          "target": "x86_64-pc-windows-msvc"
+        }
+      ]
+    }
+  ]
+}

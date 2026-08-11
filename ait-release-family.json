@@ -1,0 +1,345 @@
+{
+  "schema": "ait.release.family/v3",
+  "family": {
+    "name": "ait-native",
+    "version": "1.0.0-rc.1",
+    "channel": "rc",
+    "tag": "v1.0.0-rc.1"
+  },
+  "targets": [
+    "aarch64-apple-darwin",
+    "x86_64-apple-darwin",
+    "aarch64-unknown-linux-gnu",
+    "x86_64-unknown-linux-gnu",
+    "aarch64-pc-windows-msvc",
+    "x86_64-pc-windows-msvc"
+  ],
+  "public_source": {
+    "model": "release-monorepo",
+    "identity": "weita2026/ait-native",
+    "product_document": "docs/distribution.md",
+    "family_manifest": "ait-release-family.json",
+    "mapping_manifest": "ait-monorepo-source.json",
+    "build_entrypoints": {
+      "unix": "build-release.sh",
+      "windows": "build-release.ps1",
+      "implementation": "build-release.mjs"
+    },
+    "subtrees": [
+      {
+        "source_repository": "ait-core",
+        "path": "ait-core",
+        "transforms": []
+      },
+      {
+        "source_repository": "ait-server",
+        "path": "ait-server",
+        "transforms": []
+      },
+      {
+        "source_repository": "ait-runner",
+        "path": "ait-runner",
+        "transforms": [
+          "runner-core-path/v1"
+        ]
+      },
+      {
+        "source_repository": "ait-python",
+        "path": "ait-python",
+        "transforms": [
+          "python-core-path/v1"
+        ]
+      },
+      {
+        "source_repository": "ait-node",
+        "path": "ait-node",
+        "transforms": []
+      }
+    ],
+    "transforms": [
+      {
+        "id": "runner-core-path/v1",
+        "source_repository": "ait-runner",
+        "path": "Cargo.toml",
+        "from": ".ait-external/ait-core/rust/crates/ait-core",
+        "to": "../ait-core/rust/crates/ait-core"
+      },
+      {
+        "id": "python-core-path/v1",
+        "source_repository": "ait-python",
+        "path": "pyproject.toml",
+        "from": ".ait-external/ait-core/rust/crates/ait-py/Cargo.toml",
+        "to": "../ait-core/rust/crates/ait-py/Cargo.toml"
+      }
+    ]
+  },
+  "components": [
+    {
+      "id": "ait",
+      "source_repository": "ait-core",
+      "source_snapshot": "SNP-8F22130AED0D",
+      "ecosystem": "native",
+      "license": "Apache-2.0",
+      "version_scheme": "family",
+      "version": "1.0.0-rc.1",
+      "artifacts": [
+        {
+          "kind": "native-executable",
+          "targets": [
+            "aarch64-apple-darwin",
+            "x86_64-apple-darwin",
+            "aarch64-unknown-linux-gnu",
+            "x86_64-unknown-linux-gnu",
+            "aarch64-pc-windows-msvc",
+            "x86_64-pc-windows-msvc"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "ait-agent",
+      "source_repository": "ait-core",
+      "source_snapshot": "SNP-8F22130AED0D",
+      "ecosystem": "native",
+      "license": "Apache-2.0",
+      "version_scheme": "family",
+      "version": "1.0.0-rc.1",
+      "artifacts": [
+        {
+          "kind": "native-executable",
+          "targets": [
+            "aarch64-apple-darwin",
+            "x86_64-apple-darwin",
+            "aarch64-unknown-linux-gnu",
+            "x86_64-unknown-linux-gnu",
+            "aarch64-pc-windows-msvc",
+            "x86_64-pc-windows-msvc"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "ait-server",
+      "source_repository": "ait-server",
+      "source_snapshot": "SNP-067518622F5C",
+      "ecosystem": "native",
+      "license": "AGPL-3.0-only",
+      "version_scheme": "family",
+      "version": "1.0.0-rc.1",
+      "artifacts": [
+        {
+          "kind": "native-executable",
+          "targets": [
+            "aarch64-apple-darwin",
+            "x86_64-apple-darwin",
+            "aarch64-unknown-linux-gnu",
+            "x86_64-unknown-linux-gnu",
+            "aarch64-pc-windows-msvc",
+            "x86_64-pc-windows-msvc"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "ait-runner",
+      "source_repository": "ait-runner",
+      "source_snapshot": "SNP-31053B5CB6D6",
+      "ecosystem": "native",
+      "license": "Apache-2.0",
+      "version_scheme": "family",
+      "version": "1.0.0-rc.1",
+      "artifacts": [
+        {
+          "kind": "native-executable",
+          "targets": [
+            "aarch64-apple-darwin",
+            "x86_64-apple-darwin",
+            "aarch64-unknown-linux-gnu",
+            "x86_64-unknown-linux-gnu",
+            "aarch64-pc-windows-msvc",
+            "x86_64-pc-windows-msvc"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "ait-python",
+      "source_repository": "ait-python",
+      "source_snapshot": "SNP-22E653510992",
+      "ecosystem": "python",
+      "license": "Apache-2.0",
+      "version_scheme": "pep440",
+      "version": "1.0.0rc1",
+      "artifacts": [
+        {
+          "kind": "python-wheel",
+          "targets": [
+            "aarch64-apple-darwin",
+            "x86_64-apple-darwin",
+            "aarch64-unknown-linux-gnu",
+            "x86_64-unknown-linux-gnu",
+            "aarch64-pc-windows-msvc",
+            "x86_64-pc-windows-msvc"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "ait-node",
+      "source_repository": "ait-node",
+      "source_snapshot": "SNP-D51020FA5568",
+      "ecosystem": "node",
+      "license": "Apache-2.0",
+      "version_scheme": "family",
+      "version": "1.0.0-rc.1",
+      "artifacts": [
+        {
+          "kind": "npm-cli-envelope",
+          "targets": []
+        }
+      ]
+    }
+  ],
+  "distributions": [
+    {
+      "channel": "github",
+      "role": "product",
+      "identity": "weita2026/ait-native",
+      "components": [
+        "ait",
+        "ait-agent",
+        "ait-server",
+        "ait-runner",
+        "ait-python",
+        "ait-node"
+      ],
+      "targets": [
+        "aarch64-apple-darwin",
+        "x86_64-apple-darwin",
+        "aarch64-unknown-linux-gnu",
+        "x86_64-unknown-linux-gnu",
+        "aarch64-pc-windows-msvc",
+        "x86_64-pc-windows-msvc"
+      ]
+    },
+    {
+      "channel": "pypi",
+      "role": "product",
+      "identity": "ait-native",
+      "components": [
+        "ait",
+        "ait-server",
+        "ait-python"
+      ],
+      "targets": [
+        "aarch64-apple-darwin",
+        "x86_64-apple-darwin",
+        "aarch64-unknown-linux-gnu",
+        "x86_64-unknown-linux-gnu",
+        "aarch64-pc-windows-msvc",
+        "x86_64-pc-windows-msvc"
+      ]
+    },
+    {
+      "channel": "npm",
+      "role": "product",
+      "identity": "ait-native",
+      "components": [
+        "ait",
+        "ait-server",
+        "ait-node"
+      ],
+      "targets": [
+        "aarch64-apple-darwin",
+        "x86_64-apple-darwin",
+        "aarch64-unknown-linux-gnu",
+        "x86_64-unknown-linux-gnu",
+        "aarch64-pc-windows-msvc",
+        "x86_64-pc-windows-msvc"
+      ]
+    },
+    {
+      "channel": "homebrew",
+      "role": "product",
+      "identity": "ait-native",
+      "components": [
+        "ait",
+        "ait-server"
+      ],
+      "targets": [
+        "aarch64-apple-darwin",
+        "x86_64-apple-darwin",
+        "aarch64-unknown-linux-gnu",
+        "x86_64-unknown-linux-gnu"
+      ]
+    },
+    {
+      "channel": "apt",
+      "role": "product",
+      "identity": "ait-native",
+      "components": [
+        "ait",
+        "ait-server"
+      ],
+      "targets": [
+        "aarch64-unknown-linux-gnu",
+        "x86_64-unknown-linux-gnu"
+      ]
+    },
+    {
+      "channel": "apt",
+      "role": "standalone",
+      "identity": "ait-runner",
+      "components": [
+        "ait-runner"
+      ],
+      "targets": [
+        "aarch64-unknown-linux-gnu",
+        "x86_64-unknown-linux-gnu"
+      ]
+    },
+    {
+      "channel": "winget",
+      "role": "product",
+      "identity": "Weita.AitNative",
+      "components": [
+        "ait",
+        "ait-server"
+      ],
+      "targets": [
+        "aarch64-pc-windows-msvc",
+        "x86_64-pc-windows-msvc"
+      ]
+    },
+    {
+      "channel": "oci",
+      "role": "standalone",
+      "identity": "ghcr.io/weita2026/ait-server",
+      "components": [
+        "ait-server"
+      ],
+      "targets": [
+        "aarch64-unknown-linux-gnu",
+        "x86_64-unknown-linux-gnu"
+      ]
+    },
+    {
+      "channel": "oci",
+      "role": "standalone",
+      "identity": "ghcr.io/weita2026/ait-runner",
+      "components": [
+        "ait-runner"
+      ],
+      "targets": [
+        "aarch64-unknown-linux-gnu",
+        "x86_64-unknown-linux-gnu"
+      ]
+    }
+  ],
+  "compatibility": {
+    "native_protocol": "ait-native/v1",
+    "python_abi": "abi3",
+    "npm_surface": "cli",
+    "repository_language": "neutral"
+  }
+}

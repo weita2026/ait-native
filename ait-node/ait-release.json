@@ -1,0 +1,73 @@
+{
+  "schema": "ait.release.adapter/v1",
+  "package": {
+    "name": "ait-native",
+    "version": "1.0.0-rc.1",
+    "description": "Portable command-only npm envelope for the AIT release family",
+    "license_files": [
+      {
+        "path": "LICENSE",
+        "role": "license"
+      },
+      {
+        "path": "NOTICE",
+        "role": "notice"
+      }
+    ]
+  },
+  "components": [
+    {
+      "id": "ait-node",
+      "ecosystem": "node",
+      "working_directory": ".",
+      "dependency_files": [
+        "package.json",
+        "bin/ait.mjs",
+        "bin/ait-server.mjs",
+        "bin/launch.mjs",
+        "lib/npm-payload-contract.json",
+        "scripts/fixture-payloads.mjs",
+        "scripts/installed-smoke.mjs",
+        "release/npm-payload-package.mjs",
+        "release/release-adapter.mjs",
+        "LICENSE",
+        "NOTICE"
+      ],
+      "commands": {
+        "test": [
+          [
+            "node",
+            "release/release-adapter.mjs",
+            "check",
+            "$AIT_RELEASE_TARGET",
+            "$AIT_RELEASE_VERSION"
+          ]
+        ],
+        "build": [
+          [
+            "node",
+            "release/release-adapter.mjs",
+            "build",
+            "$AIT_RELEASE_TARGET",
+            "$AIT_RELEASE_VERSION"
+          ]
+        ],
+        "smoke": [
+          [
+            "node",
+            "release/release-adapter.mjs",
+            "smoke",
+            "$AIT_RELEASE_TARGET",
+            "$AIT_RELEASE_VERSION"
+          ]
+        ]
+      },
+      "artifacts": [
+        {
+          "path": "dist/ait-native-1.0.0-rc.1.tgz",
+          "kind": "npm-cli-envelope"
+        }
+      ]
+    }
+  ]
+}

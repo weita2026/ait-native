@@ -1,0 +1,26 @@
+[package]
+name = "ait-benchmark"
+version = "0.1.0"
+edition = "2021"
+license.workspace = true
+
+[lib]
+name = "ait_benchmark"
+path = "src/lib.rs"
+
+[[bin]]
+name = "ait-benchmark"
+path = "src/main.rs"
+
+[dependencies]
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+clap = { version = "4.5", features = ["derive"] }
+libc = "0.2"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+sha2 = "0.10"
+tempfile = "3.12"
+
+[dev-dependencies]
+assert_cmd = "2.0"
+predicates = "3.1"

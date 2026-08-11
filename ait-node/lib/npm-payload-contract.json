@@ -1,0 +1,151 @@
+{
+  "schema": "ait.node.npm-platform-packages/v1",
+  "family_version": "1.0.0-rc.1",
+  "top_level_package": "ait-native",
+  "payloads": [
+    {
+      "target": "aarch64-apple-darwin",
+      "os": "darwin",
+      "cpu": "arm64",
+      "component": "ait",
+      "command": "ait",
+      "package": "ait-native-ait-darwin-arm64",
+      "version": "1.0.0-rc.1",
+      "source_repository": "ait-core",
+      "license": "Apache-2.0",
+      "executable": "bin/ait"
+    },
+    {
+      "target": "x86_64-apple-darwin",
+      "os": "darwin",
+      "cpu": "x64",
+      "component": "ait",
+      "command": "ait",
+      "package": "ait-native-ait-darwin-x64",
+      "version": "1.0.0-rc.1",
+      "source_repository": "ait-core",
+      "license": "Apache-2.0",
+      "executable": "bin/ait"
+    },
+    {
+      "target": "aarch64-unknown-linux-gnu",
+      "os": "linux",
+      "cpu": "arm64",
+      "component": "ait",
+      "command": "ait",
+      "package": "ait-native-ait-linux-arm64",
+      "version": "1.0.0-rc.1",
+      "source_repository": "ait-core",
+      "license": "Apache-2.0",
+      "executable": "bin/ait"
+    },
+    {
+      "target": "x86_64-unknown-linux-gnu",
+      "os": "linux",
+      "cpu": "x64",
+      "component": "ait",
+      "command": "ait",
+      "package": "ait-native-ait-linux-x64",
+      "version": "1.0.0-rc.1",
+      "source_repository": "ait-core",
+      "license": "Apache-2.0",
+      "executable": "bin/ait"
+    },
+    {
+      "target": "aarch64-pc-windows-msvc",
+      "os": "win32",
+      "cpu": "arm64",
+      "component": "ait",
+      "command": "ait",
+      "package": "ait-native-ait-win32-arm64",
+      "version": "1.0.0-rc.1",
+      "source_repository": "ait-core",
+      "license": "Apache-2.0",
+      "executable": "bin/ait.exe"
+    },
+    {
+      "target": "x86_64-pc-windows-msvc",
+      "os": "win32",
+      "cpu": "x64",
+      "component": "ait",
+      "command": "ait",
+      "package": "ait-native-ait-win32-x64",
+      "version": "1.0.0-rc.1",
+      "source_repository": "ait-core",
+      "license": "Apache-2.0",
+      "executable": "bin/ait.exe"
+    },
+    {
+      "target": "aarch64-apple-darwin",
+      "os": "darwin",
+      "cpu": "arm64",
+      "component": "ait-server",
+      "command": "ait-server",
+      "package": "ait-native-server-darwin-arm64",
+      "version": "1.0.0-rc.1",
+      "source_repository": "ait-server",
+      "license": "AGPL-3.0-only",
+      "executable": "bin/ait-server"
+    },
+    {
+      "target": "x86_64-apple-darwin",
+      "os": "darwin",
+      "cpu": "x64",
+      "component": "ait-server",
+      "command": "ait-server",
+      "package": "ait-native-server-darwin-x64",
+      "version": "1.0.0-rc.1",
+      "source_repository": "ait-server",
+      "license": "AGPL-3.0-only",
+      "executable": "bin/ait-server"
+    },
+    {
+      "target": "aarch64-unknown-linux-gnu",
+      "os": "linux",
+      "cpu": "arm64",
+      "component": "ait-server",
+      "command": "ait-server",
+      "package": "ait-native-server-linux-arm64",
+      "version": "1.0.0-rc.1",
+      "source_repository": "ait-server",
+      "license": "AGPL-3.0-only",
+      "executable": "bin/ait-server"
+    },
+    {
+      "target": "x86_64-unknown-linux-gnu",
+      "os": "linux",
+      "cpu": "x64",
+      "component": "ait-server",
+      "command": "ait-server",
+      "package": "ait-native-server-linux-x64",
+      "version": "1.0.0-rc.1",
+      "source_repository": "ait-server",
+      "license": "AGPL-3.0-only",
+      "executable": "bin/ait-server"
+    },
+    {
+      "target": "aarch64-pc-windows-msvc",
+      "os": "win32",
+      "cpu": "arm64",
+      "component": "ait-server",
+      "command": "ait-server",
+      "package": "ait-native-server-win32-arm64",
+      "version": "1.0.0-rc.1",
+      "source_repository": "ait-server",
+      "license": "AGPL-3.0-only",
+      "executable": "bin/ait-server.exe"
+    },
+    {
+      "target": "x86_64-pc-windows-msvc",
+      "os": "win32",
+      "cpu": "x64",
+      "component": "ait-server",
+      "command": "ait-server",
+      "package": "ait-native-server-win32-x64",
+      "version": "1.0.0-rc.1",
+      "source_repository": "ait-server",
+      "license": "AGPL-3.0-only",
+      "executable": "bin/ait-server.exe"
+    }
+  ]
+}

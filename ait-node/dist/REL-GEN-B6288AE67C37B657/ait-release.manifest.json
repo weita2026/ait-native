@@ -1,0 +1,43 @@
+{
+  "adapter_manifest_path": "ait-release.json",
+  "adapter_manifest_sha256": "d2d9449c0e4f06babf6a7266b5593365b83385496f6e6dacf7358f21bb439e4b",
+  "artifact_selection": "portable",
+  "artifacts": [
+    {
+      "component": "ait-node",
+      "declared_path": "dist/ait-native-1.0.0-rc.1.tgz",
+      "ecosystem": "node",
+      "kind": "npm-cli-envelope",
+      "path": "dist/REL-GEN-B6288AE67C37B657/components/ait-node/dist/ait-native-1.0.0-rc.1.tgz",
+      "role": "component-artifact",
+      "sha256": "736296289c135ac344cd3b6546286d78efe68b0dbe738c00585d6263f4d2f8fd",
+      "size_bytes": 6321
+    }
+  ],
+  "builder": "ait_generic_command_adapter_v1",
+  "built_at": "1785750840",
+  "components": [
+    {
+      "artifact_count": 1,
+      "command_count": 2,
+      "component": "ait-node",
+      "ecosystem": "node",
+      "status": "pass"
+    }
+  ],
+  "contract": "ait.release.adapter/v1",
+  "line": "feature/rnt-0014",
+  "package": {
+    "adapter_contract": "ait.release.adapter/v1",
+    "description": "Portable command-only npm envelope for the AIT release family",
+    "name": "ait-native",
+    "requires_python": null,
+    "version": "1.0.0-rc.1"
+  },
+  "release_id": "REL-GEN-B6288AE67C37B657",
+  "repo_name": "ait-node",
+  "snapshot_id": "SNP-8A73F309D703",
+  "source_date_epoch": 1785750895,
+  "source_manifest_hash": "8a73f309d703e4f50ea358e5129778320cdf029a05831c2e1709761131d8cccd",
+  "version": "1.0.0-rc.1"
+}

@@ -1,0 +1,12 @@
+include!("support.rs");
+include!("status_worktree_remote_tests.rs");
+include!("fake_remote.rs");
+include!("snapshot_worktree_diff_tests.rs");
+include!("line_merge_tests.rs");
+include!("line_lifecycle_tests.rs");
+include!("git_interop_tests.rs");
+include!("tag_tests.rs");
+include!("change_task_tests.rs");
+include!("reconciliation_tests.rs");
+include!("land_recovery_tests.rs");
+include!("push_review_policy_tests.rs");

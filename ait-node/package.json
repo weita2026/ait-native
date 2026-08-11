@@ -1,0 +1,39 @@
+{
+  "name": "ait-native",
+  "version": "1.0.0-rc.1",
+  "description": "The language-neutral native AIT CLI for npm users",
+  "license": "Apache-2.0",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "bin": {
+    "ait": "bin/ait.mjs",
+    "ait-server": "bin/ait-server.mjs"
+  },
+  "exports": {},
+  "files": [
+    "bin",
+    "lib",
+    "LICENSE",
+    "NOTICE"
+  ],
+  "optionalDependencies": {
+    "ait-native-ait-darwin-arm64": "1.0.0-rc.1",
+    "ait-native-ait-darwin-x64": "1.0.0-rc.1",
+    "ait-native-ait-linux-arm64": "1.0.0-rc.1",
+    "ait-native-ait-linux-x64": "1.0.0-rc.1",
+    "ait-native-ait-win32-arm64": "1.0.0-rc.1",
+    "ait-native-ait-win32-x64": "1.0.0-rc.1",
+    "ait-native-server-darwin-arm64": "1.0.0-rc.1",
+    "ait-native-server-darwin-x64": "1.0.0-rc.1",
+    "ait-native-server-linux-arm64": "1.0.0-rc.1",
+    "ait-native-server-linux-x64": "1.0.0-rc.1",
+    "ait-native-server-win32-arm64": "1.0.0-rc.1",
+    "ait-native-server-win32-x64": "1.0.0-rc.1"
+  },
+  "scripts": {
+    "test": "node --test test/cli.test.js test/package.test.js test/payload-package.test.js test/release-adapter.test.js",
+    "check": "node --check bin/ait.mjs && node --check bin/ait-server.mjs && node --check bin/launch.mjs && node --check scripts/fixture-payloads.mjs && node --check scripts/installed-smoke.mjs && node --check release/npm-payload-package.mjs && node --check release/release-adapter.mjs"
+  }
+}

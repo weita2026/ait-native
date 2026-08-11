@@ -1,0 +1,9 @@
+[[external]]
+name = "ait-codec"
+repo_name = "ait-codec"
+repository_index = 15
+remote = "origin"
+line = "main"
+snapshot = "SNP-CODEC-FOR-TOOLS"
+materialize_to = ".ait-external/ait-codec"
+license = "Apache-2.0"

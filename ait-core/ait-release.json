@@ -1,0 +1,210 @@
+{
+  "schema": "ait.release.adapter/v1",
+  "package": {
+    "name": "ait-core",
+    "version": "1.0.0-rc.1",
+    "description": "Native ait and ait-agent component artifacts",
+    "license_files": [
+      {
+        "path": "LICENSE",
+        "role": "license"
+      },
+      {
+        "path": "NOTICE",
+        "role": "notice"
+      }
+    ]
+  },
+  "components": [
+    {
+      "id": "ait",
+      "ecosystem": "native",
+      "working_directory": ".",
+      "dependency_files": [
+        ".cargo/config.toml",
+        "rust/Cargo.toml",
+        "rust/Cargo.lock",
+        "rust/crates/ait-cli/Cargo.toml"
+      ],
+      "commands": {
+        "test": [
+          [
+            "cargo",
+            "check",
+            "--manifest-path",
+            "rust/Cargo.toml",
+            "--locked",
+            "--release",
+            "--target",
+            "$AIT_RELEASE_TARGET",
+            "-p",
+            "ait-cli",
+            "--bin",
+            "ait-cli"
+          ]
+        ],
+        "build": [
+          [
+            "cargo",
+            "build",
+            "--manifest-path",
+            "rust/Cargo.toml",
+            "--locked",
+            "--release",
+            "--target",
+            "$AIT_RELEASE_TARGET",
+            "-p",
+            "ait-cli",
+            "--bin",
+            "ait-cli"
+          ]
+        ],
+        "smoke": [
+          [
+            "cargo",
+            "run",
+            "--manifest-path",
+            "rust/Cargo.toml",
+            "--locked",
+            "--release",
+            "--target",
+            "$AIT_RELEASE_TARGET",
+            "-p",
+            "ait-cli",
+            "--bin",
+            "ait-cli",
+            "--",
+            "--version"
+          ]
+        ]
+      },
+      "artifacts": [
+        {
+          "path": ".ait/cargo-target/aarch64-apple-darwin/release/ait-cli",
+          "kind": "native-executable",
+          "target": "aarch64-apple-darwin"
+        },
+        {
+          "path": ".ait/cargo-target/x86_64-apple-darwin/release/ait-cli",
+          "kind": "native-executable",
+          "target": "x86_64-apple-darwin"
+        },
+        {
+          "path": ".ait/cargo-target/aarch64-unknown-linux-gnu/release/ait-cli",
+          "kind": "native-executable",
+          "target": "aarch64-unknown-linux-gnu"
+        },
+        {
+          "path": ".ait/cargo-target/x86_64-unknown-linux-gnu/release/ait-cli",
+          "kind": "native-executable",
+          "target": "x86_64-unknown-linux-gnu"
+        },
+        {
+          "path": ".ait/cargo-target/aarch64-pc-windows-msvc/release/ait-cli.exe",
+          "kind": "native-executable",
+          "target": "aarch64-pc-windows-msvc"
+        },
+        {
+          "path": ".ait/cargo-target/x86_64-pc-windows-msvc/release/ait-cli.exe",
+          "kind": "native-executable",
+          "target": "x86_64-pc-windows-msvc"
+        }
+      ]
+    },
+    {
+      "id": "ait-agent",
+      "ecosystem": "native",
+      "working_directory": ".",
+      "dependency_files": [
+        ".cargo/config.toml",
+        "rust/Cargo.toml",
+        "rust/Cargo.lock",
+        "rust/crates/ait-cli/Cargo.toml"
+      ],
+      "commands": {
+        "test": [
+          [
+            "cargo",
+            "check",
+            "--manifest-path",
+            "rust/Cargo.toml",
+            "--locked",
+            "--release",
+            "--target",
+            "$AIT_RELEASE_TARGET",
+            "-p",
+            "ait-cli",
+            "--bin",
+            "ait-agent"
+          ]
+        ],
+        "build": [
+          [
+            "cargo",
+            "build",
+            "--manifest-path",
+            "rust/Cargo.toml",
+            "--locked",
+            "--release",
+            "--target",
+            "$AIT_RELEASE_TARGET",
+            "-p",
+            "ait-cli",
+            "--bin",
+            "ait-agent"
+          ]
+        ],
+        "smoke": [
+          [
+            "cargo",
+            "run",
+            "--manifest-path",
+            "rust/Cargo.toml",
+            "--locked",
+            "--release",
+            "--target",
+            "$AIT_RELEASE_TARGET",
+            "-p",
+            "ait-cli",
+            "--bin",
+            "ait-agent",
+            "--",
+            "--version"
+          ]
+        ]
+      },
+      "artifacts": [
+        {
+          "path": ".ait/cargo-target/aarch64-apple-darwin/release/ait-agent",
+          "kind": "native-executable",
+          "target": "aarch64-apple-darwin"
+        },
+        {
+          "path": ".ait/cargo-target/x86_64-apple-darwin/release/ait-agent",
+          "kind": "native-executable",
+          "target": "x86_64-apple-darwin"
+        },
+        {
+          "path": ".ait/cargo-target/aarch64-unknown-linux-gnu/release/ait-agent",
+          "kind": "native-executable",
+          "target": "aarch64-unknown-linux-gnu"
+        },
+        {
+          "path": ".ait/cargo-target/x86_64-unknown-linux-gnu/release/ait-agent",
+          "kind": "native-executable",
+          "target": "x86_64-unknown-linux-gnu"
+        },
+        {
+          "path": ".ait/cargo-target/aarch64-pc-windows-msvc/release/ait-agent.exe",
+          "kind": "native-executable",
+          "target": "aarch64-pc-windows-msvc"
+        },
+        {
+          "path": ".ait/cargo-target/x86_64-pc-windows-msvc/release/ait-agent.exe",
+          "kind": "native-executable",
+          "target": "x86_64-pc-windows-msvc"
+        }
+      ]
+    }
+  ]
+}

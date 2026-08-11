@@ -1,0 +1,214 @@
+name: ait native bootstrap artifacts
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/ait-native-bootstrap.yml"
+      - "ci/native_bootstrap_matrix.json"
+      - "ci/native_bootstrap_matrix.jq"
+      - "rust/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ait-native-bootstrap-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  contract:
+    name: Resolve bootstrap matrix
+    runs-on: ubuntu-22.04
+    outputs:
+      matrix: ${{ steps.contract.outputs.matrix }}
+      version: ${{ steps.contract.outputs.version }}
+      toolchain: ${{ steps.contract.outputs.toolchain }}
+      artifact_prefix: ${{ steps.contract.outputs.artifact_prefix }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+
+      - name: Validate and project the Rust bootstrap contract
+        id: contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          contract=ci/native_bootstrap_matrix.json
+          jq -e -f ci/native_bootstrap_matrix.jq "${contract}" >/dev/null
+          {
+            echo "matrix=$(jq -c '{include: .targets}' "${contract}")"
+            echo "version=$(jq -r '.version' "${contract}")"
+            echo "toolchain=$(jq -r '.rust_toolchain' "${contract}")"
+            echo "artifact_prefix=$(jq -r '.artifact_prefix' "${contract}")"
+          } >>"${GITHUB_OUTPUT}"
+
+  build:
+    name: Build and smoke ${{ matrix.target }}
+    needs: contract
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.contract.outputs.matrix) }}
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+
+      - name: Install the pinned native toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install "${{ needs.contract.outputs.toolchain }}" --profile minimal
+          rustup target add \
+            --toolchain "${{ needs.contract.outputs.toolchain }}" \
+            "${{ matrix.target }}"
+
+      - name: Apply the declared platform floor
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "${{ matrix.architecture }}" in
+            arm64)
+              expected_runner_arch=ARM64
+              ;;
+            x86_64)
+              expected_runner_arch=X64
+              ;;
+            *)
+              echo "Unsupported matrix architecture: ${{ matrix.architecture }}" >&2
+              exit 1
+              ;;
+          esac
+          test "${{ runner.arch }}" = "${expected_runner_arch}"
+          case "${{ matrix.minimum_platform_kind }}" in
+            macos_deployment_target)
+              echo "MACOSX_DEPLOYMENT_TARGET=${{ matrix.minimum_platform }}" >>"${GITHUB_ENV}"
+              ;;
+            glibc)
+              echo "AIT_RELEASE_GLIBC_FLOOR=${{ matrix.minimum_platform }}" >>"${GITHUB_ENV}"
+              ;;
+            windows_build)
+              echo "AIT_RELEASE_WINDOWS_MIN_BUILD=${{ matrix.minimum_platform }}" >>"${GITHUB_ENV}"
+              ;;
+            *)
+              echo "Unsupported platform floor kind: ${{ matrix.minimum_platform_kind }}" >&2
+              exit 1
+              ;;
+          esac
+
+      - name: Build the release bootstrap without PATH selection
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo_target="${RUNNER_TEMP}/ait-bootstrap-cargo"
+          rustup run "${{ needs.contract.outputs.toolchain }}" cargo build \
+            --locked \
+            --release \
+            --target "${{ matrix.target }}" \
+            --target-dir "${cargo_target}" \
+            --manifest-path rust/Cargo.toml \
+            -p ait-cli \
+            --bin ait-cli
+          binary="${cargo_target}/${{ matrix.target }}/release/ait-cli${{ matrix.executable_suffix }}"
+          test -f "${binary}"
+          if [[ "${RUNNER_OS}" != "Windows" ]]; then
+            chmod 0755 "${binary}"
+          fi
+          echo "AIT_BOOTSTRAP_BIN=${binary}" >>"${GITHUB_ENV}"
+
+      - name: Execute the target-native bootstrap smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+          smoke="${RUNNER_TEMP}/ait-bootstrap-smoke"
+          repo="${smoke}/repo"
+          mkdir -p "${repo}"
+          "${AIT_BOOTSTRAP_BIN}" --version >"${smoke}/version.stdout" 2>"${smoke}/version.stderr"
+          "${AIT_BOOTSTRAP_BIN}" --help >"${smoke}/help.stdout" 2>"${smoke}/help.stderr"
+          expected="ait ${{ needs.contract.outputs.version }}"
+          test "$(tr -d '\r\n' <"${smoke}/version.stdout")" = "${expected}"
+          test -s "${smoke}/help.stdout"
+          (
+            cd "${repo}"
+            "${AIT_BOOTSTRAP_BIN}" init --name native-bootstrap-smoke --json \
+              >"${smoke}/init.stdout" 2>"${smoke}/init.stderr"
+            "${AIT_BOOTSTRAP_BIN}" status --json \
+              >"${smoke}/status.stdout" 2>"${smoke}/status.stderr"
+            "${AIT_BOOTSTRAP_BIN}" plan list --json \
+              >"${smoke}/plan-list.stdout" 2>"${smoke}/plan-list.stderr"
+          )
+          jq -e . "${smoke}/init.stdout" >/dev/null
+          jq -e . "${smoke}/status.stdout" >/dev/null
+          jq -e . "${smoke}/plan-list.stdout" >/dev/null
+          for stderr_channel in \
+            version.stderr \
+            help.stderr \
+            init.stderr \
+            status.stderr \
+            plan-list.stderr
+          do
+            test ! -s "${smoke}/${stderr_channel}"
+          done
+          echo "AIT_BOOTSTRAP_SMOKE=${smoke}" >>"${GITHUB_ENV}"
+
+      - name: Stage observed bootstrap evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          output="${RUNNER_TEMP}/ait-bootstrap-artifact"
+          mkdir -p "${output}/smoke"
+          cp "${AIT_BOOTSTRAP_BIN}" "${output}/ait-cli${{ matrix.executable_suffix }}"
+          cp ci/native_bootstrap_matrix.json "${output}/native-bootstrap-matrix.json"
+          cp "${AIT_BOOTSTRAP_SMOKE}"/*.stdout "${output}/smoke/"
+          cp "${AIT_BOOTSTRAP_SMOKE}"/*.stderr "${output}/smoke/"
+          rustc_path="$(rustup which --toolchain "${{ needs.contract.outputs.toolchain }}" rustc)"
+          rustc_version="$("${rustc_path}" --version)"
+          runner_image="${ImageOS:?GitHub ImageOS is required}-${ImageVersion:?GitHub ImageVersion is required}"
+          if command -v sha256sum >/dev/null 2>&1; then
+            binary_sha256="$(sha256sum "${AIT_BOOTSTRAP_BIN}" | awk '{print $1}')"
+          elif command -v shasum >/dev/null 2>&1; then
+            binary_sha256="$(shasum -a 256 "${AIT_BOOTSTRAP_BIN}" | awk '{print $1}')"
+          else
+            echo "No SHA-256 utility is available on the native runner" >&2
+            exit 1
+          fi
+          jq -n \
+            --arg contract "ait-native-bootstrap-evidence/v1" \
+            --arg version "${{ needs.contract.outputs.version }}" \
+            --arg target "${{ matrix.target }}" \
+            --arg runner "${{ matrix.runner }}" \
+            --arg runner_arch "${{ runner.arch }}" \
+            --arg runner_image "${runner_image}" \
+            --arg minimum_platform_kind "${{ matrix.minimum_platform_kind }}" \
+            --arg minimum_platform "${{ matrix.minimum_platform }}" \
+            --arg rustc_path "${rustc_path}" \
+            --arg rustc_version "${rustc_version}" \
+            --arg binary_sha256 "${binary_sha256}" \
+            '{
+              contract: $contract,
+              version: $version,
+              target: $target,
+              runner: {label: $runner, architecture: $runner_arch, image: $runner_image},
+              platform_floor: {kind: $minimum_platform_kind, value: $minimum_platform},
+              rustc: {path: $rustc_path, observed_version: $rustc_version},
+              binary: {name: "ait-cli", sha256: $binary_sha256, cargo_profile: "release"},
+              smoke: {
+                native_execution: true,
+                passed: true,
+                checks: ["version", "help", "init", "status", "plan-list"],
+                stdout_and_stderr_captured_separately: true
+              },
+              public_publish: false
+            }' >"${output}/bootstrap-evidence.json"
+          echo "AIT_BOOTSTRAP_OUTPUT=${output}" >>"${GITHUB_ENV}"
+
+      - name: Upload the run-scoped internal bootstrap
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ needs.contract.outputs.artifact_prefix }}-${{ matrix.target }}
+          path: ${{ env.AIT_BOOTSTRAP_OUTPUT }}
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30

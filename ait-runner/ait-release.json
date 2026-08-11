@@ -1,0 +1,109 @@
+{
+  "schema": "ait.release.adapter/v1",
+  "package": {
+    "name": "ait-runner",
+    "version": "1.0.0-rc.1",
+    "description": "Native ait-runner release executable",
+    "license_files": [
+      {
+        "path": "LICENSE",
+        "role": "license"
+      },
+      {
+        "path": "NOTICE",
+        "role": "notice"
+      }
+    ]
+  },
+  "components": [
+    {
+      "id": "ait-runner",
+      "ecosystem": "native",
+      "working_directory": ".",
+      "dependency_files": [
+        "Cargo.toml",
+        "Cargo.lock",
+        "ait-external.toml",
+        "ait-external.lock"
+      ],
+      "commands": {
+        "test": [
+          [
+            "cargo",
+            "check",
+            "--locked",
+            "--release",
+            "--target",
+            "$AIT_RELEASE_TARGET",
+            "--target-dir",
+            "target",
+            "--bin",
+            "ait-runner"
+          ]
+        ],
+        "build": [
+          [
+            "cargo",
+            "build",
+            "--locked",
+            "--release",
+            "--target",
+            "$AIT_RELEASE_TARGET",
+            "--target-dir",
+            "target",
+            "--bin",
+            "ait-runner"
+          ]
+        ],
+        "smoke": [
+          [
+            "cargo",
+            "run",
+            "--locked",
+            "--release",
+            "--target",
+            "$AIT_RELEASE_TARGET",
+            "--target-dir",
+            "target",
+            "--bin",
+            "ait-runner",
+            "--",
+            "--version"
+          ]
+        ]
+      },
+      "artifacts": [
+        {
+          "path": "target/aarch64-apple-darwin/release/ait-runner",
+          "kind": "native-executable",
+          "target": "aarch64-apple-darwin"
+        },
+        {
+          "path": "target/x86_64-apple-darwin/release/ait-runner",
+          "kind": "native-executable",
+          "target": "x86_64-apple-darwin"
+        },
+        {
+          "path": "target/aarch64-unknown-linux-gnu/release/ait-runner",
+          "kind": "native-executable",
+          "target": "aarch64-unknown-linux-gnu"
+        },
+        {
+          "path": "target/x86_64-unknown-linux-gnu/release/ait-runner",
+          "kind": "native-executable",
+          "target": "x86_64-unknown-linux-gnu"
+        },
+        {
+          "path": "target/aarch64-pc-windows-msvc/release/ait-runner.exe",
+          "kind": "native-executable",
+          "target": "aarch64-pc-windows-msvc"
+        },
+        {
+          "path": "target/x86_64-pc-windows-msvc/release/ait-runner.exe",
+          "kind": "native-executable",
+          "target": "x86_64-pc-windows-msvc"
+        }
+      ]
+    }
+  ]
+}

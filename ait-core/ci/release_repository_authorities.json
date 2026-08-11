@@ -1,0 +1,48 @@
+{
+  "contract": "ait.release.repository-authorities/v1",
+  "schema_version": 1,
+  "family_version": "1.0.0-rc.1",
+  "source_line": "main",
+  "bootstrap_line": "release-bootstrap",
+  "source_cache_artifact_prefix": "ait-release-source",
+  "component_receipt_artifact_prefix": "ait-component-receipt",
+  "source_cache_retention_days": 3,
+  "receipt_retention_days": 30,
+  "public_publish": false,
+  "repositories": [
+    {
+      "repo_name": "ait-core",
+      "repository_index": 0,
+      "namespace": "C"
+    },
+    {
+      "repo_name": "ait-server",
+      "repository_index": 1,
+      "namespace": "SE"
+    },
+    {
+      "repo_name": "ait-python",
+      "repository_index": 2,
+      "namespace": "P"
+    },
+    {
+      "repo_name": "ait-node",
+      "repository_index": 3,
+      "namespace": "N"
+    },
+    {
+      "repo_name": "ait-runner",
+      "repository_index": 4,
+      "namespace": "R"
+    }
+  ],
+  "portable_runner": {
+    "target": "portable",
+    "runner": "macos-15",
+    "os": "macos",
+    "architecture": "arm64",
+    "minimum_platform_kind": "portable_envelope",
+    "minimum_platform": "n/a",
+    "executable_suffix": ""
+  }
+}
