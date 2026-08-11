@@ -82,6 +82,13 @@ for required_workflow_text in \
   'admission_root="${RUNNER_TEMP}/ait-family-admission-repository"' \
   'test ! -e "${admission_root}"' \
   'cd "${admission_root}"' \
+  'release show "${release_id}"' \
+  'release package "${release_id}"' \
+  'release promote "${release_id}"' \
+  'cp "${promotion}" "${dossier}/ait-release.promotion.json"' \
+  'cp -R "dist/${release_id}/packages" "${dossier}/packages"' \
+  '.authorization.granted == false' \
+  '.mutation.registry_write == false' \
   'source_cache_count: 0' \
   'public_publish == false'; do
   if ! grep -F -- "${required_workflow_text}" "${workflow}" >/dev/null; then
@@ -92,8 +99,8 @@ for required_workflow_text in \
 done
 public_source_root_count=$(grep -F -c -- \
   '--public-source-root "${AIT_PUBLIC_SOURCE_ROOT}"' "${workflow}")
-if test "${public_source_root_count}" -ne 3; then
-  printf 'release workflow must retain one explicit public source root across candidate, check, and build\n' >&2
+if test "${public_source_root_count}" -ne 6; then
+  printf 'release workflow must retain one explicit public source root across candidate, check, build, show, package, and promote\n' >&2
   exit 65
 fi
 for forbidden_workflow_text in \

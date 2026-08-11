@@ -595,7 +595,106 @@ The GitHub-hosted runner labels are pinned in
 their current availability in GitHub's hosted-runner reference before an RC or
 GA dispatch.
 
-## Current RC Baseline And Gap
+## Current RC Baseline And Remaining Gates
+
+At the 2026-08-12 checkpoint, the reviewed public RC source is Git commit
+`e24c9794f71416fd255617b49bb64b2acfd6eeaa` on
+[`weita2026/ait-native`](https://github.com/weita2026/ait-native). It is the
+merge commit for
+[PR #6](https://github.com/weita2026/ait-native/pull/6). No RC tag, GitHub
+Release, AIT Release activation, signature, or registry write has been made.
+
+Coordinator Snapshot `SNP-721AA59DDB1C` binds the exact public monorepo to
+these five internal source authorities:
+
+| Public subtree | Internal source Snapshot | Components |
+| --- | --- | --- |
+| `ait-core` | `SNP-BE1CEB71AE14` | `ait`, `ait-agent` |
+| `ait-server` | `SNP-1D1960F54FD0` | `ait-server` |
+| `ait-runner` | `SNP-31053B5CB6D6` | `ait-runner` |
+| `ait-python` | `SNP-8480292492FC` | `ait-python` |
+| `ait-node` | `SNP-D51020FA5568` | `ait-node` |
+
+The coordinator manifest hash is
+`721aa59ddb1ce4da5daab80bf2931635322ad196e12f7db91a0cc5205b9f3388`;
+the family-manifest SHA-256 is
+`680a65c2220493111ea0509cc1ba5d2c1faec107dfbc0a7620e5b980d8f739df`.
+The public mapping SHA-256 is
+`eef15ea30a95e6b8af2a390fbdd16ade04ead5027875f563ab4562d5f590544d`,
+and the mapped public content SHA-256 is
+`ba84b409ab80dd4920ea296da8884c459f4dfd9e4af1187e79972978306903ba`.
+The export contains five mapped subtrees, no hosted source cache, no AIT
+operational roots, and `public_publish: false`.
+
+The source-authority continuity correction passed internal protected CI as
+Worker Job `#2498` and was remotely landed as `RCT-1350/C-01/P-02`. A clean,
+deterministically repeated export and a clean-source build then passed for
+`ait`, `ait-agent`, `ait-server`, `ait-runner`, the host Python wheel, npm
+tests, and npm envelope plus host-payload assembly.
+
+The protected public-Git progression is retained as immutable evidence:
+
+1. [PR #4](https://github.com/weita2026/ait-native/pull/4) and
+   [run 31509784505](https://github.com/weita2026/ait-native/actions/runs/31509784505)
+   exposed the isolated admission-repository initialization failure before a
+   family dossier could be created.
+2. [PR #5](https://github.com/weita2026/ait-native/pull/5) and
+   [run 31514982488](https://github.com/weita2026/ait-native/actions/runs/31514982488)
+   passed the public-source contract, source archive, and all 25 component
+   receipts, then exposed that candidate, check, and build did not share one
+   explicit immutable public-source root.
+3. PR #6 corrected that continuity without making the mutable admission
+   repository the source authority.
+   [Run 31518876201](https://github.com/weita2026/ait-native/actions/runs/31518876201)
+   completed all 29 jobs successfully: the contract, matrix, exact-source
+   archive, 25 component receipt jobs, and final isolated family-dossier job.
+
+The successful run created run-scoped frozen dossier
+`REL-FAM-105686FBD9D39C02`. Its family check passed with 25 exact
+Git-commit-bound receipt bundles and 31 component artifacts across all six
+declared targets. Its checksum list covers the family manifest, all 31
+component artifacts, and ten exact `LICENSE`/`NOTICE` files; every entry was
+read back and verified. Candidate, check, and build all bind coordinator
+Snapshot `SNP-721AA59DDB1C` and public Git commit
+`e24c9794f71416fd255617b49bb64b2acfd6eeaa`.
+
+This dossier remains deliberately non-public. Its promotion state is
+`authorized: false`, `performed: false`, and `registry_write: false`; local
+and remote AIT Release authority are not activated. The GitHub workflow used
+zero live AIT-server connections. A GitHub-hosted runner therefore does not
+need an internet-reachable `AIT_RELEASE_SERVER_URL` to reproduce or validate
+the public-source receipt matrix.
+
+The code and cross-platform receipt matrix are no longer the RC blocker. The
+remaining publication gates are:
+
+- explicitly authorize and run protected promotion for
+  `REL-FAM-105686FBD9D39C02`, then preserve its emitted handoff without
+  substituting artifacts;
+- sign the frozen artifacts and assemble the real GitHub, PyPI, npm,
+  Homebrew, apt, WinGet, and OCI channel packages from that dossier;
+- create `v1.0.0-rc.1` only after the exact commit is selected, then record
+  anonymous tag, source-tree, locked dependency, build-script, and
+  corresponding-source readback;
+- prove package-name ownership, credentials, and endpoint configuration
+  before the first write, keeping PyPI/npm/Homebrew/apt/WinGet/GitHub/OCI
+  publication disabled until all source gates pass; and
+- run clean install, first `ait init`, agent-directed first land, upgrade,
+  uninstall, and endpoint readback on the six declared targets before the RC
+  is called published.
+
+The install-to-first-land corpus may contain representative Python, Node.js,
+.NET, PHP, C, C++, and Java repository files, but every case must run the same
+explicit native AIT commands and repository-authored validation. It must not
+add language detection, manifest inspection, framework profiles, or
+language-specific product paths; the sole behavior authority remains
+[the centralized repository-language neutrality contract](#repository-language-neutrality).
+
+## Superseded RC Checkpoints
+
+The remainder of this section records pre-success checkpoints. Its
+"current" and "remaining" wording describes those historical checkpoints and
+must not override the baseline and gates above.
 
 At the 2026-08-11 Git-source receipt checkpoint, the exact RC component
 versions and source authorities are landed on their five internal main Lines.

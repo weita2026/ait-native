@@ -454,6 +454,8 @@ jobs:
           candidate="${RUNNER_TEMP}/family-candidate.json"
           check="${RUNNER_TEMP}/family-check.json"
           build="${RUNNER_TEMP}/family-build.json"
+          show="${RUNNER_TEMP}/family-show.json"
+          promotion="${RUNNER_TEMP}/family-promotion.json"
           "${AIT_FAMILY_ADMISSION_BIN}" release candidate create \
             --version "${AIT_FAMILY_VERSION}" \
             --channel "${AIT_FAMILY_CHANNEL}" \
@@ -470,6 +472,10 @@ jobs:
             --receipts "${RUNNER_TEMP}/component-receipts" \
             --public-source-root "${AIT_PUBLIC_SOURCE_ROOT}" \
             --json >"${build}"
+          "${AIT_FAMILY_ADMISSION_BIN}" release show "${release_id}" \
+            --public-source-root "${AIT_PUBLIC_SOURCE_ROOT}" \
+            --json >"${show}"
+          cmp -s "${build}" "${show}"
           jq -e \
             --arg release_id "${release_id}" \
             --arg commit "${AIT_SOURCE_GIT_COMMIT}" \
@@ -491,11 +497,56 @@ jobs:
               .promotion.performed == false and
               .promotion.registry_write == false
             ' "${build}" >/dev/null
+          for package_channel in homebrew apt winget pypi npm; do
+            package_receipt="${RUNNER_TEMP}/family-package-${package_channel}.json"
+            "${AIT_FAMILY_ADMISSION_BIN}" release package "${release_id}" \
+              --channel "${package_channel}" \
+              --public-source-root "${AIT_PUBLIC_SOURCE_ROOT}" \
+              --json >"${package_receipt}"
+            jq -e \
+              --arg release_id "${release_id}" \
+              --arg channel "${package_channel}" '
+                .release_id == $release_id and
+                .channel == $channel and
+                .status == "assembled" and
+                .check_summary.decision == "pass" and
+                .mutation.component_rebuild == false and
+                .mutation.credentials_loaded == false and
+                .mutation.signing == false and
+                .mutation.tag_write == false and
+                .mutation.registry_write == false and
+                .mutation.public_publish == false and
+                .mutation.service_start == false and
+                .mutation.service_enable == false and
+                .mutation.service_registration == false and
+                .mutation.server_authority_initialization == false
+              ' "${package_receipt}" >/dev/null
+          done
+          test "$(find "dist/${release_id}/packages" -mindepth 1 -maxdepth 1 \
+            -type d | wc -l | tr -d '[:space:]')" = "5"
+          "${AIT_FAMILY_ADMISSION_BIN}" release promote "${release_id}" \
+            --channel "${AIT_FAMILY_CHANNEL}" \
+            --public-source-root "${AIT_PUBLIC_SOURCE_ROOT}" \
+            --json >"${promotion}"
+          jq -e \
+            --arg release_id "${release_id}" '
+              .release_id == $release_id and
+              .status == "ready_for_protected_ci" and
+              .authorization.required == true and
+              .authorization.granted == false and
+              .authorization.protected_environment_required == true and
+              .source_publication.status == "required_unverified" and
+              .mutation.registry_write == false and
+              .mutation.performed == false and
+              .mutation.credentials_loaded == false and
+              .mutation.rebuild_allowed == false
+            ' "${promotion}" >/dev/null
           dossier="${RUNNER_TEMP}/family-dossier"
           mkdir -p "${dossier}"
           cp "${candidate}" "${dossier}/ait-release.candidate.json"
           cp "${check}" "${dossier}/ait-release.check.json"
           cp "${build}" "${dossier}/ait-release.build.json"
+          cp "${promotion}" "${dossier}/ait-release.promotion.json"
           cp "${RUNNER_TEMP}/monorepo-source/source-tree.tar.gz" \
             "${dossier}/ait-native-source-tree.tar.gz"
           cp "${RUNNER_TEMP}/monorepo-source/ait-monorepo-source.json" \
@@ -503,6 +554,7 @@ jobs:
           cp "${RUNNER_TEMP}/monorepo-source/ait-public-git-source.evidence.json" \
             "${dossier}/ait-public-git-source.evidence.json"
           cp -R "dist/${release_id}/frozen" "${dossier}/frozen"
+          cp -R "dist/${release_id}/packages" "${dossier}/packages"
           {
             echo "release_id=${release_id}"
             echo "dossier=${dossier}"
@@ -532,7 +584,8 @@ jobs:
             printf '%s `%s`\n' '- source Git commit:' "${AIT_SOURCE_GIT_COMMIT}"
             printf '%s `%s`\n' '- component receipts:' "${AIT_RECEIPT_COUNT}"
             echo '- component artifacts: `31`'
+            echo '- staged package channels: `5`'
             echo '- live AIT server connections: `0`'
             echo '- public publication: `false`'
-            echo '- next gate: signing, package assembly, clean-install, and endpoint readback'
+            echo '- next gate: protected approval, signing, clean-install, and endpoint readback'
           } >>"${GITHUB_STEP_SUMMARY}"

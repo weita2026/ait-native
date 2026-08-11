@@ -105,6 +105,20 @@ fn run_json(root: &Path, args: &[&str]) -> Value {
     serde_json::from_slice(&output.stdout).expect("ait-cli JSON output")
 }
 
+fn copy_tree(source: &Path, destination: &Path) {
+    fs::create_dir_all(destination).unwrap();
+    for row in fs::read_dir(source).unwrap() {
+        let row = row.unwrap();
+        let source_path = row.path();
+        let destination_path = destination.join(row.file_name());
+        if row.file_type().unwrap().is_dir() {
+            copy_tree(&source_path, &destination_path);
+        } else {
+            fs::copy(&source_path, &destination_path).unwrap();
+        }
+    }
+}
+
 fn digest(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
 }
@@ -393,7 +407,7 @@ fn fixture_npm_envelope() -> Vec<u8> {
         (
             "package/bin/launch.mjs".to_string(),
             (
-                b"import { createRequire } from 'node:module';\nconst require = createRequire(import.meta.url);\nexport function launch(command) { return [command, process.platform, process.arch, require.resolve(command)]; }\n"
+                b"import { createRequire } from 'node:module';\nconst require = createRequire(import.meta.url);\nconst contractSchema = 'ait.node.npm-platform-packages/v1';\nconst payloadSchema = 'ait.node.npm-platform-payload/v1';\nexport function launch(command) { return [command, process.platform, process.arch, require.resolve(command), contractSchema, payloadSchema]; }\n"
                     .to_vec(),
                 0o755,
             ),
@@ -2082,6 +2096,21 @@ fn family_release_cli_rejects_wrong_channel_and_missing_receipts() {
         assert!(String::from_utf8_lossy(&rejected.stderr)
             .contains("--public-source-root applies only to a family release candidate"));
     }
+
+    let rejected_show = run(
+        root,
+        &[
+            "release",
+            "show",
+            "REL-LEGACY",
+            "--public-source-root",
+            root.to_str().unwrap(),
+            "--json",
+        ],
+    );
+    assert!(!rejected_show.status.success());
+    assert!(String::from_utf8_lossy(&rejected_show.stderr)
+        .contains("--public-source-root applies only to a family release dossier"));
 }
 
 #[test]
@@ -2431,4 +2460,159 @@ fn public_git_family_reconstructs_candidate_and_rejects_receipt_authority_drift(
         built["component_receipts"][0]["contract"],
         "ait.release.public-git.receipt/v1"
     );
+
+    let restored_root = temp.path().join("restored-family-admission");
+    fs::create_dir(&restored_root).unwrap();
+    run_json(
+        &restored_root,
+        &[
+            "init",
+            "--name",
+            "ait-core",
+            "--default-line",
+            "release-bootstrap",
+            "--json",
+        ],
+    );
+    copy_tree(
+        &admission_root.join("dist").join(&release_id),
+        &restored_root.join("dist").join(&release_id),
+    );
+
+    let missing_show_authority = run(&restored_root, &["release", "show", &release_id, "--json"]);
+    assert!(!missing_show_authority.status.success());
+    assert!(String::from_utf8_lossy(&missing_show_authority.stderr).contains("Unknown line: main"));
+
+    let missing_promote_authority = run(
+        &restored_root,
+        &[
+            "release",
+            "promote",
+            &release_id,
+            "--channel",
+            "rc",
+            "--json",
+        ],
+    );
+    assert!(!missing_promote_authority.status.success());
+    assert!(
+        String::from_utf8_lossy(&missing_promote_authority.stderr).contains("Unknown line: main")
+    );
+
+    let missing_package_authority = run(
+        &restored_root,
+        &[
+            "release",
+            "package",
+            &release_id,
+            "--channel",
+            "homebrew",
+            "--json",
+        ],
+    );
+    assert!(!missing_package_authority.status.success());
+    assert!(
+        String::from_utf8_lossy(&missing_package_authority.stderr).contains("Unknown line: main")
+    );
+    assert!(!restored_root
+        .join("dist")
+        .join(&release_id)
+        .join("ait-release.promotion.json")
+        .exists());
+    assert!(!restored_root
+        .join("dist")
+        .join(&release_id)
+        .join("packages")
+        .exists());
+
+    let public_root_arg = public_root.to_str().unwrap();
+    let shown = run_json(
+        &restored_root,
+        &[
+            "release",
+            "show",
+            &release_id,
+            "--public-source-root",
+            public_root_arg,
+            "--json",
+        ],
+    );
+    assert_eq!(shown, built);
+
+    let package_reaches_declared_channel_validation = run(
+        &restored_root,
+        &[
+            "release",
+            "package",
+            &release_id,
+            "--channel",
+            "homebrew",
+            "--public-source-root",
+            public_root_arg,
+            "--json",
+        ],
+    );
+    assert!(!package_reaches_declared_channel_validation.status.success());
+    let package_error =
+        String::from_utf8_lossy(&package_reaches_declared_channel_validation.stderr);
+    assert!(
+        package_error.contains("Frozen family does not declare a homebrew distribution"),
+        "unexpected package error: {package_error}"
+    );
+    assert!(!package_error.contains("Unknown line: main"));
+
+    let promoted = run_json(
+        &restored_root,
+        &[
+            "release",
+            "promote",
+            &release_id,
+            "--channel",
+            "rc",
+            "--public-source-root",
+            public_root_arg,
+            "--json",
+        ],
+    );
+    assert_eq!(promoted["status"], "ready_for_protected_ci");
+    assert_eq!(promoted["authorization"]["granted"], false);
+    assert_eq!(promoted["mutation"]["credentials_loaded"], false);
+    assert_eq!(promoted["mutation"]["registry_write"], false);
+    assert_eq!(
+        run_json(
+            &restored_root,
+            &[
+                "release",
+                "show",
+                &release_id,
+                "--public-source-root",
+                public_root_arg,
+                "--json",
+            ],
+        ),
+        promoted
+    );
+
+    let mut post_build_mapping_drift = mapping.clone();
+    post_build_mapping_drift["coordinator_manifest_hash"] = json!("9".repeat(64));
+    fs::write(
+        &mapping_path,
+        serde_json::to_vec_pretty(&post_build_mapping_drift).unwrap(),
+    )
+    .unwrap();
+    let drifted_show = run(
+        &restored_root,
+        &[
+            "release",
+            "show",
+            &release_id,
+            "--public-source-root",
+            public_root_arg,
+            "--json",
+        ],
+    );
+    assert!(!drifted_show.status.success());
+    assert!(String::from_utf8_lossy(&drifted_show.stderr)
+        .contains("does not match its immutable Snapshot manifest"));
+    fs::write(&mapping_path, serde_json::to_vec_pretty(&mapping).unwrap()).unwrap();
 }

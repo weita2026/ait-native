@@ -297,13 +297,18 @@ fn parse_family_package_input(
     repo: &RepoRuntime,
     release_id: &str,
     channel: &str,
+    public_source_root: Option<&Path>,
 ) -> Result<FamilyPackageInput, String> {
     if !matches!(channel, "homebrew" | "apt" | "winget" | "pypi" | "npm") {
         return Err(format!(
             "Unsupported family package channel {channel:?}; expected homebrew, apt, winget, pypi, or npm."
         ));
     }
-    let build = super::family_release::validate_existing_family_build(repo, release_id)?;
+    let build = super::family_release::validate_existing_family_build(
+        repo,
+        release_id,
+        public_source_root,
+    )?;
     let family = build
         .get("family")
         .and_then(JsonValue::as_object)
@@ -2467,6 +2472,17 @@ fn parse_npm_payload_contract(
     Ok(definitions)
 }
 
+fn contains_native_addon_path(launcher: &str) -> bool {
+    launcher.match_indices(".node").any(|(offset, marker)| {
+        launcher
+            .as_bytes()
+            .get(offset + marker.len())
+            .is_none_or(|next| {
+                !next.is_ascii_alphanumeric() && !matches!(*next, b'.' | b'_' | b'-')
+            })
+    })
+}
+
 fn validate_npm_envelope(
     input: &FamilyPackageInput,
     entries: &PackageEntries,
@@ -2610,12 +2626,24 @@ fn validate_npm_envelope(
     let launcher = std::str::from_utf8(&entries["package/bin/launch.mjs"].0)
         .map_err(|_| "Frozen npm launcher must be UTF-8 JavaScript.".to_string())?
         .to_ascii_lowercase();
+    if entries
+        .keys()
+        .any(|path| path.to_ascii_lowercase().ends_with(".node"))
+        || contains_native_addon_path(&launcher)
+    {
+        return Err("Frozen npm envelope contains a native addon path.".to_string());
+    }
     for forbidden in [
         "http://",
         "https://",
         "fetch(",
         "napi",
-        ".node",
+        "node-gyp",
+        "node-pre-gyp",
+        "node-addon-api",
+        "bindings(",
+        "process.dlopen",
+        "dlopen(",
         "pyproject.toml",
         "composer.json",
         "pom.xml",
@@ -3108,8 +3136,9 @@ pub fn family_release_package(
     repo: &RepoRuntime,
     release_id: &str,
     channel: &str,
+    public_source_root: Option<&Path>,
 ) -> Result<JsonValue, String> {
-    let input = parse_family_package_input(repo, release_id, channel)?;
+    let input = parse_family_package_input(repo, release_id, channel, public_source_root)?;
     let generated = match channel {
         "homebrew" => assemble_homebrew(repo, &input)?,
         "apt" => assemble_apt(repo, &input)?,
@@ -3124,6 +3153,21 @@ pub fn family_release_package(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn npm_addon_path_detection_accepts_node_contract_names_and_rejects_addon_paths() {
+        assert!(!contains_native_addon_path(
+            "ait.node.npm-platform-packages/v1 ait.node.npm-platform-payload/v1"
+        ));
+        for launcher in [
+            "require('./addon.node')",
+            "import addon from \"./addon.node\"",
+            "const addon = `./addon.node`;",
+            "const addon = './addon.node?abi=3';",
+        ] {
+            assert!(contains_native_addon_path(launcher), "{launcher}");
+        }
+    }
 
     #[test]
     fn registry_archive_readers_reject_unsafe_members() {
