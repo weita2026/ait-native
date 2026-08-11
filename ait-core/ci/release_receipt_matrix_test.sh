@@ -90,6 +90,12 @@ for required_workflow_text in \
     exit 65
   fi
 done
+public_source_root_count=$(grep -F -c -- \
+  '--public-source-root "${AIT_PUBLIC_SOURCE_ROOT}"' "${workflow}")
+if test "${public_source_root_count}" -ne 3; then
+  printf 'release workflow must retain one explicit public source root across candidate, check, and build\n' >&2
+  exit 65
+fi
 for forbidden_workflow_text in \
   'AIT_RELEASE_SERVER_URL' \
   'release_source_cache.sh' \

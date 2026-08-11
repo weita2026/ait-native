@@ -893,8 +893,19 @@ fn run_release(repo: RepoRuntime, command: ReleaseCommand) -> Result<(), String>
                         args.release_id
                     )
                 })?;
-                family_release_check(&repo, &args.release_id, receipts)?
+                family_release_check(
+                    &repo,
+                    &args.release_id,
+                    receipts,
+                    args.public_source_root.as_deref(),
+                )?
             } else {
+                if args.public_source_root.is_some() {
+                    return Err(
+                        "--public-source-root applies only to a family release candidate."
+                            .to_string(),
+                    );
+                }
                 if args.receipts.is_some() {
                     return Err(
                         "--receipts applies only to a family release candidate."
@@ -924,8 +935,19 @@ fn run_release(repo: RepoRuntime, command: ReleaseCommand) -> Result<(), String>
                         args.release_id
                     )
                 })?;
-                family_release_build(&repo, &args.release_id, receipts)?
+                family_release_build(
+                    &repo,
+                    &args.release_id,
+                    receipts,
+                    args.public_source_root.as_deref(),
+                )?
             } else {
+                if args.public_source_root.is_some() {
+                    return Err(
+                        "--public-source-root applies only to a family release candidate."
+                            .to_string(),
+                    );
+                }
                 if args.receipts.is_some() {
                     return Err(
                         "--receipts applies only to a family release candidate."

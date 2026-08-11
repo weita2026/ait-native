@@ -1295,6 +1295,8 @@ fn release_family_parser_accepts_public_rc_lifecycle_arguments() {
         "REL-FAM-0123456789ABCDEF",
         "--receipts",
         "/tmp/receipts",
+        "--public-source-root",
+        "/tmp/public-source",
         "--json",
     ])
     .unwrap()
@@ -1302,8 +1304,40 @@ fn release_family_parser_accepts_public_rc_lifecycle_arguments() {
     match checked {
         Commands::Release {
             command: ReleaseCommand::Check(args),
-        } => assert_eq!(args.receipts, Some(PathBuf::from("/tmp/receipts"))),
+        } => {
+            assert_eq!(args.receipts, Some(PathBuf::from("/tmp/receipts")));
+            assert_eq!(
+                args.public_source_root,
+                Some(PathBuf::from("/tmp/public-source"))
+            );
+        }
         _ => panic!("expected family release check command"),
+    }
+
+    let built = Cli::try_parse_from([
+        "ait-cli",
+        "release",
+        "build",
+        "REL-FAM-0123456789ABCDEF",
+        "--receipts",
+        "/tmp/receipts",
+        "--public-source-root",
+        "/tmp/public-source",
+        "--json",
+    ])
+    .unwrap()
+    .command;
+    match built {
+        Commands::Release {
+            command: ReleaseCommand::Build(args),
+        } => {
+            assert_eq!(args.receipts, Some(PathBuf::from("/tmp/receipts")));
+            assert_eq!(
+                args.public_source_root,
+                Some(PathBuf::from("/tmp/public-source"))
+            );
+        }
+        _ => panic!("expected family release build command"),
     }
 
     let promoted = Cli::try_parse_from([

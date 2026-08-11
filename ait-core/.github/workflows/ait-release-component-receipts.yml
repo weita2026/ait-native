@@ -464,9 +464,11 @@ jobs:
           release_id=$(jq -r '.release_id' "${candidate}")
           "${AIT_FAMILY_ADMISSION_BIN}" release check "${release_id}" \
             --receipts "${RUNNER_TEMP}/component-receipts" \
+            --public-source-root "${AIT_PUBLIC_SOURCE_ROOT}" \
             --json >"${check}"
           "${AIT_FAMILY_ADMISSION_BIN}" release build "${release_id}" \
             --receipts "${RUNNER_TEMP}/component-receipts" \
+            --public-source-root "${AIT_PUBLIC_SOURCE_ROOT}" \
             --json >"${build}"
           jq -e \
             --arg release_id "${release_id}" \

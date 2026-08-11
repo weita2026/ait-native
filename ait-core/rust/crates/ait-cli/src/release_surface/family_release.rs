@@ -1433,6 +1433,7 @@ fn public_git_source_authority(
     repo: &RepoRuntime,
     requested_root: Option<&Path>,
 ) -> Result<Option<(PublicGitSourceAuthority, FamilyReleaseManifest)>, String> {
+    let explicit_root = requested_root.is_some();
     let candidate_root = match requested_root {
         Some(root) => root.to_path_buf(),
         None => {
@@ -1461,8 +1462,21 @@ fn public_git_source_authority(
     }
     let root = candidate_root.canonicalize().map_err(io_error)?;
     let workspace = repo.workspace_root().canonicalize().map_err(io_error)?;
-    let expected_workspace = root.join("ait-core");
-    if workspace != expected_workspace {
+    let public_core = root.join("ait-core");
+    let public_core_metadata = fs::symlink_metadata(&public_core).map_err(|error| {
+        format!(
+            "Public Git source root does not contain ait-core at {}: {error}",
+            public_core.display()
+        )
+    })?;
+    if public_core_metadata.file_type().is_symlink() || !public_core_metadata.is_dir() {
+        return Err(format!(
+            "Public Git source ait-core subtree must be a real directory: {}.",
+            public_core.display()
+        ));
+    }
+    let expected_workspace = public_core.canonicalize().map_err(io_error)?;
+    if !explicit_root && workspace != expected_workspace {
         return Err(format!(
             "Public Git source root must contain the active ait-core repository at {}.",
             expected_workspace.display()
@@ -2106,12 +2120,14 @@ fn inspect_family_receipts(
     repo: &RepoRuntime,
     candidate: &JsonValue,
     receipts_root: &Path,
+    public_source_root: Option<&Path>,
 ) -> Result<FamilyAdmission, String> {
     let family_definition = candidate
         .get("family")
         .ok_or_else(|| "Family candidate is missing its manifest definition.".to_string())?;
     let manifest = parse_family_release_manifest(family_definition)?;
-    let public_authority = public_git_source_authority(repo, None)?.map(|(authority, _)| authority);
+    let public_authority =
+        public_git_source_authority(repo, public_source_root)?.map(|(authority, _)| authority);
     let expected_components = manifest
         .components
         .iter()
@@ -2710,9 +2726,10 @@ pub fn family_release_check(
     repo: &RepoRuntime,
     release_id: &str,
     receipts_root: &Path,
+    public_source_root: Option<&Path>,
 ) -> Result<JsonValue, String> {
-    let candidate = load_family_candidate(repo, release_id, None)?;
-    let admission = inspect_family_receipts(repo, &candidate, receipts_root)?;
+    let candidate = load_family_candidate(repo, release_id, public_source_root)?;
+    let admission = inspect_family_receipts(repo, &candidate, receipts_root, public_source_root)?;
     let path = family_release_dir(repo, release_id, false)?.join(FAMILY_CHECK_FILENAME);
     write_json_once(&path, &admission.record, "Family release check receipt")?;
     Ok(admission.record)
@@ -3406,8 +3423,9 @@ fn validate_family_build(
     repo: &RepoRuntime,
     release_id: &str,
     admission: Option<&FamilyAdmission>,
+    public_source_root: Option<&Path>,
 ) -> Result<JsonValue, String> {
-    let candidate = load_family_candidate(repo, release_id, None)?;
+    let candidate = load_family_candidate(repo, release_id, public_source_root)?;
     let release_dir = family_release_dir(repo, release_id, false)?;
     let frozen_root = release_dir.join(FAMILY_FROZEN_DIRNAME);
     let metadata = fs::symlink_metadata(&frozen_root)
@@ -3644,16 +3662,17 @@ pub(super) fn validate_existing_family_build(
     repo: &RepoRuntime,
     release_id: &str,
 ) -> Result<JsonValue, String> {
-    validate_family_build(repo, release_id, None)
+    validate_family_build(repo, release_id, None, None)
 }
 
 pub fn family_release_build(
     repo: &RepoRuntime,
     release_id: &str,
     receipts_root: &Path,
+    public_source_root: Option<&Path>,
 ) -> Result<JsonValue, String> {
-    let candidate = load_family_candidate(repo, release_id, None)?;
-    let admission = inspect_family_receipts(repo, &candidate, receipts_root)?;
+    let candidate = load_family_candidate(repo, release_id, public_source_root)?;
+    let admission = inspect_family_receipts(repo, &candidate, receipts_root, public_source_root)?;
     let release_dir = family_release_dir(repo, release_id, false)?;
     let check_path = release_dir.join(FAMILY_CHECK_FILENAME);
     write_json_once(
@@ -3663,7 +3682,7 @@ pub fn family_release_build(
     )?;
     let frozen_root = release_dir.join(FAMILY_FROZEN_DIRNAME);
     if fs::symlink_metadata(&frozen_root).is_ok() {
-        return validate_family_build(repo, release_id, Some(&admission));
+        return validate_family_build(repo, release_id, Some(&admission), public_source_root);
     }
 
     let staging = TempDirBuilder::new()
@@ -3914,7 +3933,7 @@ pub fn family_release_build(
         format!("Failed to atomically activate frozen family release {release_id}: {error}")
     })?;
     drop(staging);
-    validate_family_build(repo, release_id, Some(&admission))
+    validate_family_build(repo, release_id, Some(&admission), public_source_root)
 }
 
 fn family_promotion_record(
@@ -3986,7 +4005,7 @@ pub fn family_release_show(repo: &RepoRuntime, release_id: &str) -> Result<JsonV
         )?;
         let promotion =
             parse_slice_value(&bytes, "Family promotion handoff must contain valid JSON")?;
-        let build = validate_family_build(repo, release_id, None)?;
+        let build = validate_family_build(repo, release_id, None, None)?;
         if promotion != family_promotion_record(&candidate, &build, release_id)? {
             return Err(
                 "Family promotion handoff does not match its verified frozen build.".to_string(),
@@ -3996,7 +4015,7 @@ pub fn family_release_show(repo: &RepoRuntime, release_id: &str) -> Result<JsonV
     }
     let frozen_root = release_dir.join(FAMILY_FROZEN_DIRNAME);
     if frozen_root.exists() {
-        return validate_family_build(repo, release_id, None);
+        return validate_family_build(repo, release_id, None, None);
     }
     let check_path = release_dir.join(FAMILY_CHECK_FILENAME);
     if check_path.exists() {
@@ -4032,7 +4051,7 @@ pub fn family_release_promote(
             requested_channel.trim()
         ));
     }
-    let build = validate_family_build(repo, release_id, None)?;
+    let build = validate_family_build(repo, release_id, None, None)?;
     let promotion = family_promotion_record(&candidate, &build, release_id)?;
     let path = family_release_dir(repo, release_id, false)?.join(FAMILY_PROMOTION_FILENAME);
     write_json_once(&path, &promotion, "Family promotion handoff")?;

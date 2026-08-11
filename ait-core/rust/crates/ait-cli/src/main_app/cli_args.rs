@@ -938,6 +938,13 @@ struct ReleaseCheckArgs {
         help = "Verify family component receipts and artifact bytes below DIR"
     )]
     receipts: Option<PathBuf>,
+    #[arg(
+        long = "public-source-root",
+        value_name = "DIR",
+        hide = true,
+        help = "Protected CI only: retain exported public Git source authority while verifying family receipts"
+    )]
+    public_source_root: Option<PathBuf>,
     #[arg(long = "tests-command")]
     tests_command: Option<String>,
     #[arg(long = "skip-tests-reason")]
@@ -955,6 +962,13 @@ struct ReleaseBuildArgs {
         help = "Freeze family artifacts admitted from component receipts below DIR"
     )]
     receipts: Option<PathBuf>,
+    #[arg(
+        long = "public-source-root",
+        value_name = "DIR",
+        hide = true,
+        help = "Protected CI only: retain exported public Git source authority while freezing family artifacts"
+    )]
+    public_source_root: Option<PathBuf>,
     #[arg(
         long = "native-matrix-dir",
         value_name = "DIR",
