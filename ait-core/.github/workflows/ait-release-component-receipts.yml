@@ -413,7 +413,8 @@ jobs:
             --git-commit "${AIT_SOURCE_GIT_COMMIT}"
           rustup toolchain install "${AIT_RUST_TOOLCHAIN}" --profile minimal
           target_dir="${RUNNER_TEMP}/ait-family-admission-target"
-          rustup run "${AIT_RUST_TOOLCHAIN}" cargo build \
+          CARGO_BUILD_BUILD_DIR="${RUNNER_TEMP}/ait-family-admission-build" \
+            rustup run "${AIT_RUST_TOOLCHAIN}" cargo build \
             --locked \
             --release \
             --target-dir "${target_dir}" \
@@ -442,6 +443,10 @@ jobs:
           test "$(find "${RUNNER_TEMP}/component-receipts" \
             -type f -name ait-release.receipt.json -exec jq -r \
               '.authority.git_commit' {} \; | sort -u)" = "${AIT_SOURCE_GIT_COMMIT}"
+          admission_root="${RUNNER_TEMP}/ait-family-admission-repository"
+          test ! -e "${admission_root}"
+          mkdir "${admission_root}"
+          cd "${admission_root}"
           "${AIT_FAMILY_ADMISSION_BIN}" init \
             --name ait-core \
             --default-line release-bootstrap \
