@@ -14,6 +14,7 @@ destination=$3
 evidence_output=$4
 template_root=${repo_root}/release/monorepo
 readme_template=${template_root}/README.template
+git_attributes_template=${template_root}/.gitattributes
 transform_tool=${repo_root}/ci/release_monorepo_transform.mjs
 product_document=${repo_root}/docs/distribution.md
 if [[ ! -e ${product_document} && ! -L ${product_document} ]]; then
@@ -67,6 +68,7 @@ for output in "${destination}" "${evidence_output}"; do
 done
 if [[ ! -d ${template_root} || -L ${template_root} ||
   ! -f ${readme_template} || -L ${readme_template} ||
+  ! -f ${git_attributes_template} || -L ${git_attributes_template} ||
   ! -f ${transform_tool} || -L ${transform_tool} ||
   ! -f ${product_document} || -L ${product_document} ||
   ! -f ${protected_workflow} || -L ${protected_workflow} ]]; then
@@ -336,6 +338,7 @@ mkdir -p \
   "${staging}/LICENSES"
 cp "${readme_template}" "${staging}/README.md"
 cp "${template_root}/NOTICE" "${staging}/NOTICE"
+cp "${git_attributes_template}" "${staging}/.gitattributes"
 cp "${template_root}/.gitignore" "${staging}/.gitignore"
 cp "${template_root}/build-release.sh" "${staging}/build-release.sh"
 cp "${template_root}/build-release.ps1" "${staging}/build-release.ps1"
@@ -358,6 +361,7 @@ find "${staging}" -type d -exec chmod 0755 {} +
 chmod 0644 \
   "${staging}/README.md" \
   "${staging}/NOTICE" \
+  "${staging}/.gitattributes" \
   "${staging}/.gitignore" \
   "${staging}/build-release.ps1" \
   "${staging}/ait-release-family.json" \

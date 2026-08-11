@@ -71,6 +71,131 @@ def test_release_commands_are_direct_and_pyproject_enables_abi3() -> None:
     assert "shell=True" not in ADAPTER_PATH.read_text(encoding="utf-8")
 
 
+def test_release_adapter_accepts_only_exact_internal_and_public_core_layouts(
+    tmp_path: Path,
+) -> None:
+    adapter = release_adapter_namespace()
+    error_type = adapter["ReleaseAdapterError"]
+    validate_layout = adapter["validate_core_source_layout"]
+    internal_path = adapter["INTERNAL_AIT_PY_MANIFEST"]
+    public_path = adapter["PUBLIC_AIT_PY_MANIFEST"]
+
+    internal_root = tmp_path / "internal" / "ait-python"
+    internal_manifest = internal_root / internal_path
+    internal_manifest.parent.mkdir(parents=True)
+    internal_manifest.write_text("[package]\nname = 'ait-py'\n", encoding="utf-8")
+    (internal_root / "ait-external.lock").write_text(
+        """format = "ait.external.lock"
+
+[[node]]
+name = "ait-core"
+repo_name = "ait-core"
+repository_index = 0
+snapshot = "SNP-111111111111"
+materialize_to = ".ait-external/ait-core"
+""",
+        encoding="utf-8",
+    )
+    marker_path = (
+        internal_root
+        / ".ait-external"
+        / "ait-core"
+        / ".ait-external-marker.json"
+    )
+    marker_path.write_text(
+        json.dumps(
+            {
+                "name": "ait-core",
+                "repo_name": "ait-core",
+                "repository_index": 0,
+                "snapshot": "SNP-111111111111",
+                "materialize_to": ".ait-external/ait-core",
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert validate_layout(internal_path, internal_root) == internal_manifest
+
+    public_root = tmp_path / "public" / "ait-native"
+    python_root = public_root / "ait-python"
+    python_root.mkdir(parents=True)
+    public_manifest = public_root / "ait-core/rust/crates/ait-py/Cargo.toml"
+    public_manifest.parent.mkdir(parents=True)
+    public_manifest.write_text("[package]\nname = 'ait-py'\n", encoding="utf-8")
+    mapping = {
+        "schema": "ait.release.monorepo-source/v1",
+        "public_source_identity": "weita2026/ait-native",
+        "public_publish": False,
+        "coordinator_snapshot": "SNP-AAAAAAAAAAAA",
+        "subtrees": [
+            {
+                "source_repository": "ait-core",
+                "source_snapshot": "SNP-BBBBBBBBBBBB",
+                "path": "ait-core",
+                "license": "Apache-2.0",
+                "components": ["ait", "ait-agent"],
+                "transforms": [],
+            },
+            {"source_repository": "ait-server"},
+            {"source_repository": "ait-runner"},
+            {
+                "source_repository": "ait-python",
+                "source_snapshot": "SNP-CCCCCCCCCCCC",
+                "path": "ait-python",
+                "license": "Apache-2.0",
+                "components": ["ait-python"],
+                "transforms": ["python-core-path/v1"],
+            },
+            {"source_repository": "ait-node"},
+        ],
+    }
+    family = {
+        "schema": "ait.release.family/v3",
+        "public_source": {
+            "model": "release-monorepo",
+            "identity": "weita2026/ait-native",
+            "transforms": [
+                {
+                    "id": "python-core-path/v1",
+                    "source_repository": "ait-python",
+                    "path": "pyproject.toml",
+                    "from": internal_path,
+                    "to": public_path,
+                }
+            ],
+        },
+        "components": [
+            {
+                "id": "ait",
+                "source_repository": "ait-core",
+                "source_snapshot": "SNP-BBBBBBBBBBBB",
+            },
+            {
+                "id": "ait-agent",
+                "source_repository": "ait-core",
+                "source_snapshot": "SNP-BBBBBBBBBBBB",
+            },
+            {
+                "id": "ait-python",
+                "source_repository": "ait-python",
+                "source_snapshot": "SNP-CCCCCCCCCCCC",
+            },
+        ],
+    }
+    mapping_path = public_root / "ait-monorepo-source.json"
+    family_path = public_root / "ait-release-family.json"
+    mapping_path.write_text(json.dumps(mapping), encoding="utf-8")
+    family_path.write_text(json.dumps(family), encoding="utf-8")
+    assert validate_layout(public_path, python_root).resolve() == public_manifest
+
+    family["components"][2]["source_snapshot"] = "SNP-DDDDDDDDDDDD"
+    family_path.write_text(json.dumps(family), encoding="utf-8")
+    with pytest.raises(error_type, match="Snapshots differ"):
+        validate_layout(public_path, python_root)
+    with pytest.raises(error_type, match="not locked to ait-core"):
+        validate_layout("../../unmapped/Cargo.toml", python_root)
+
+
 def write_fixture_wheel(
     path: Path,
     temporary_root: str,
@@ -79,14 +204,15 @@ def write_fixture_wheel(
     *,
     include_sbom: bool = True,
     notice_bytes: bytes | None = None,
+    core_layout: str = ".ait-external/ait-core",
 ) -> None:
     dist_info = "ait_python-1.0.0rc1.dist-info"
     local_component = (
-        f"path+file://{temporary_root}/.ait-external/ait-core/"
+        f"path+file://{temporary_root}/{core_layout}/"
         "rust/crates/ait-py#0.1.0"
     )
     local_dependency = (
-        f"path+file://{temporary_root}/.ait-external/ait-core/"
+        f"path+file://{temporary_root}/{core_layout}/"
         "rust/crates/ait-core#0.1.0"
     )
     sbom = {
@@ -161,6 +287,7 @@ def test_wheel_normalization_converges_temporary_roots_and_timestamps(
         "/private/tmp/ait-release-adapter-build-beta/source",
         "2026-08-03T13:59:59.000000000Z",
         (2026, 8, 3, 13, 59, 58),
+        core_layout="ait-core",
     )
     _, timestamp = parse_source_date_epoch("1785761092")
 

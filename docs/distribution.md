@@ -35,6 +35,7 @@ tag. The deterministic exported tree has these fixed paths:
 
 ```text
 ait-native/
+├── .gitattributes
 ├── ait-core/
 ├── ait-server/
 ├── ait-runner/
@@ -63,6 +64,13 @@ uses `../ait-core/rust/crates/ait-core`, and `ait-python/pyproject.toml` uses
 `../ait-core/rust/crates/ait-py/Cargo.toml`. The exporter fails if either
 literal is absent, repeated, already transformed, or if any other transform is
 declared.
+
+The root `.gitattributes` is exactly `* -text`. It disables Git's checkout-time
+line-ending conversion for the complete public tree, so the bytes validated by
+`ait-monorepo-source.json` remain identical on Windows, macOS, and Linux even
+when a client enables `core.autocrlf`. The exporter includes this file in the
+content digest, the root validator rejects any other policy, and regression
+coverage validates a fresh `core.autocrlf=true` clone before release use.
 
 A clean tagged checkout validates and builds the current host without an AIT
 server:
@@ -591,10 +599,10 @@ GA dispatch.
 
 At the 2026-08-11 Git-source receipt checkpoint, the exact RC component
 versions and source authorities are landed on their five internal main Lines.
-Coordinator Snapshot `SNP-5E2C7A5FA23F` owns the current v3
+Coordinator Snapshot `SNP-012AAE09336F` owns the current v3
 [`ait-release-family.json`](../ait-release-family.json): it binds `ait` and
-`ait-agent` to `SNP-8F22130AED0D`, `ait-server` to `SNP-067518622F5C`,
-`ait-runner` to `SNP-31053B5CB6D6`, `ait-python` to `SNP-22E653510992`, and
+`ait-agent` to `SNP-30623730029F`, `ait-server` to `SNP-067518622F5C`,
+`ait-runner` to `SNP-31053B5CB6D6`, `ait-python` to `SNP-9EA7C957FB31`, and
 `ait-node` to `SNP-D51020FA5568`, and declares only `weita2026/ait-native` as
 its GitHub product source identity. `ait-python` remains Apache-2.0 at version
 `1.0.0rc1`; the native, server, runner, and npm components remain
@@ -618,7 +626,19 @@ or below a component, but that output cannot enter the public Git commit. The
 repeatable post-build validation correction and final family rebind passed
 protected remote CI as Worker Job `#2493` and were atomically landed as
 `RCT-1343`; ignored AIT operational output may remain after a source build,
-while a tracked operational path or Gitlink fails closed. The
+while a tracked operational path or Gitlink fails closed. The first protected
+public-Git dispatch from commit `35f24fc02fa0914a4bc809905e31f48e5370c4a5`
+([Actions run 31497799228](https://github.com/weita2026/ait-native/actions/runs/31497799228))
+then produced 15 non-public artifacts and exposed two exact cross-platform
+gaps before any candidate or publication: Windows checkout converted mapped
+LF bytes under `core.autocrlf`, and the Python adapter admitted only the
+internal `.ait-external/ait-core` layout instead of the validated exported
+`../ait-core` layout. The Python correction passed repository CI and was
+remote-landed at `SNP-9EA7C957FB31`. The exact Git byte policy, its
+`core.autocrlf=true` clone regression, and the final family rebind passed
+protected remote CI as Worker Job `#2494` and were atomically landed as
+`RCT-1345`; the public export now preserves committed bytes on all declared
+platforms and Python receipts accept only the two mapped core layouts. The
 selected server removes the incident-specific fresh replay
 and Plan-lineage converter implementations; its isolated importer retains only
 `audit-generation`, `stage`, `upgrade-u64-seconds`, and `activate`, plus
@@ -644,7 +664,10 @@ exposed unignored Maturin/Cargo operational output below `ait-python/.ait/`.
 Prior coordinator `SNP-9FD1A37C38E7` also never received a family candidate
 and was superseded before public Git publication when post-build validation
 rejected its own ignored `ait-python/.ait/` operational output. Current
-coordinator `SNP-5E2C7A5FA23F` is not yet bound to a family candidate.
+pre-byte-policy coordinator `SNP-5E2C7A5FA23F` also never received a family
+candidate and was superseded after the protected public-Git run exposed the
+Windows checkout and Python public-layout gaps. Current coordinator
+`SNP-012AAE09336F` is not yet bound to a family candidate.
 It requires a deterministic public Git commit and a new
 `REL-FAM-*` candidate; the protected workflow then builds the complete receipt
 matrix from that commit without source hydration.
