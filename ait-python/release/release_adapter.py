@@ -23,19 +23,10 @@ import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
 PYPROJECT_PATH = ROOT / "pyproject.toml"
-EXTERNAL_LOCK_PATH = ROOT / "ait-external.lock"
-EXTERNAL_MARKER_PATH = (
-    ROOT / ".ait-external" / "ait-core" / ".ait-external-marker.json"
+INTERNAL_AIT_PY_MANIFEST = (
+    ".ait-external/ait-core/rust/crates/ait-py/Cargo.toml"
 )
-AIT_PY_MANIFEST_PATH = (
-    ROOT
-    / ".ait-external"
-    / "ait-core"
-    / "rust"
-    / "crates"
-    / "ait-py"
-    / "Cargo.toml"
-)
+PUBLIC_AIT_PY_MANIFEST = "../ait-core/rust/crates/ait-py/Cargo.toml"
 WHEEL_DIRECTORY = ROOT / "dist" / "wheels"
 ABI3_FEATURE = "pyo3/abi3-py311"
 ABI3_PYTHON_TAG = "cp311"
@@ -45,7 +36,10 @@ WHEEL_NORMALIZATION_CONTRACT = "ait.python.wheel-normalization.v1"
 CANONICAL_SBOM_SOURCE_ROOT = (
     "path+file:///ait-release-source/.ait-external/ait-core"
 )
-SBOM_SOURCE_ROOT_MARKER = "/.ait-external/ait-core"
+SBOM_SOURCE_ROOT_MARKERS = (
+    "/.ait-external/ait-core",
+    "/ait-core",
+)
 ZIP_MIN_YEAR = 1980
 ZIP_MAX_YEAR = 2107
 
@@ -61,6 +55,13 @@ class TargetSpec:
     system: str
     machine: str
     macos_deployment_target: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ReleaseIdentity:
+    target: TargetSpec
+    manifest_path: Path
+    manifest_path_argument: str
 
 
 TARGETS = {
@@ -133,7 +134,209 @@ def read_project() -> dict[str, object]:
     return tomllib.loads(PYPROJECT_PATH.read_text(encoding="utf-8"))
 
 
-def validate_release_identity(target: str, version: str) -> TargetSpec:
+def snapshot_id(value: object) -> str | None:
+    if (
+        isinstance(value, str)
+        and len(value) == 16
+        and value.startswith("SNP-")
+        and all(character in "0123456789ABCDEF" for character in value[4:])
+    ):
+        return value
+    return None
+
+
+def read_json_object(path: Path, label: str) -> dict[str, object]:
+    if not path.is_file() or path.is_symlink():
+        raise ReleaseAdapterError(f"{label} must be a real file")
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ReleaseAdapterError(f"{label} must contain valid UTF-8 JSON") from error
+    if not isinstance(value, dict):
+        raise ReleaseAdapterError(f"{label} must contain a JSON object")
+    return value
+
+
+def rows_by_repository(mapping: dict[str, object]) -> dict[str, dict[str, object]]:
+    subtrees = mapping.get("subtrees")
+    if not isinstance(subtrees, list):
+        raise ReleaseAdapterError("public source mapping subtrees must be an array")
+    rows: dict[str, dict[str, object]] = {}
+    for row in subtrees:
+        if not isinstance(row, dict) or not isinstance(
+            row.get("source_repository"), str
+        ):
+            raise ReleaseAdapterError("public source mapping subtree is invalid")
+        repository = row["source_repository"]
+        if repository in rows:
+            raise ReleaseAdapterError(
+                f"public source mapping repeats repository {repository!r}"
+            )
+        rows[repository] = row
+    return rows
+
+
+def component_snapshot(
+    family: dict[str, object], component_id: str, repository: str
+) -> str:
+    components = family.get("components")
+    if not isinstance(components, list):
+        raise ReleaseAdapterError("public family components must be an array")
+    matches = [
+        row
+        for row in components
+        if isinstance(row, dict) and row.get("id") == component_id
+    ]
+    if len(matches) != 1 or matches[0].get("source_repository") != repository:
+        raise ReleaseAdapterError(
+            f"public family component {component_id!r} has invalid source authority"
+        )
+    selected = snapshot_id(matches[0].get("source_snapshot"))
+    if selected is None:
+        raise ReleaseAdapterError(
+            f"public family component {component_id!r} has invalid Snapshot authority"
+        )
+    return selected
+
+
+def validate_public_monorepo_authority(
+    mapping: dict[str, object], family: dict[str, object]
+) -> None:
+    if (
+        mapping.get("schema") != "ait.release.monorepo-source/v1"
+        or mapping.get("public_source_identity") != "weita2026/ait-native"
+        or mapping.get("public_publish") is not False
+        or snapshot_id(mapping.get("coordinator_snapshot")) is None
+        or family.get("schema") != "ait.release.family/v3"
+    ):
+        raise ReleaseAdapterError("public monorepo source identity is invalid")
+    rows = rows_by_repository(mapping)
+    if set(rows) != {
+        "ait-core",
+        "ait-server",
+        "ait-runner",
+        "ait-python",
+        "ait-node",
+    }:
+        raise ReleaseAdapterError("public source mapping repository set is invalid")
+    core_row = rows["ait-core"]
+    python_row = rows["ait-python"]
+    if (
+        core_row.get("path") != "ait-core"
+        or core_row.get("license") != "Apache-2.0"
+        or core_row.get("components") != ["ait", "ait-agent"]
+        or core_row.get("transforms") != []
+        or python_row.get("path") != "ait-python"
+        or python_row.get("license") != "Apache-2.0"
+        or python_row.get("components") != ["ait-python"]
+        or python_row.get("transforms") != ["python-core-path/v1"]
+    ):
+        raise ReleaseAdapterError("public Python/core source mapping is invalid")
+    core_snapshot = snapshot_id(core_row.get("source_snapshot"))
+    python_snapshot = snapshot_id(python_row.get("source_snapshot"))
+    if core_snapshot is None or python_snapshot is None:
+        raise ReleaseAdapterError("public Python/core Snapshot mapping is invalid")
+    public_source = family.get("public_source")
+    if not isinstance(public_source, dict) or (
+        public_source.get("model") != "release-monorepo"
+        or public_source.get("identity") != "weita2026/ait-native"
+    ):
+        raise ReleaseAdapterError("public family source identity is invalid")
+    transforms = public_source.get("transforms")
+    expected_transform = {
+        "id": "python-core-path/v1",
+        "source_repository": "ait-python",
+        "path": "pyproject.toml",
+        "from": INTERNAL_AIT_PY_MANIFEST,
+        "to": PUBLIC_AIT_PY_MANIFEST,
+    }
+    if not isinstance(transforms, list) or [
+        row
+        for row in transforms
+        if isinstance(row, dict) and row.get("id") == "python-core-path/v1"
+    ] != [expected_transform]:
+        raise ReleaseAdapterError("public Python core-path transform is invalid")
+    if (
+        component_snapshot(family, "ait", "ait-core") != core_snapshot
+        or component_snapshot(family, "ait-agent", "ait-core") != core_snapshot
+        or component_snapshot(family, "ait-python", "ait-python")
+        != python_snapshot
+    ):
+        raise ReleaseAdapterError(
+            "public family component Snapshots differ from the source mapping"
+        )
+
+
+def validate_external_materialization(root: Path, manifest_path: Path) -> None:
+    lock_path = root / "ait-external.lock"
+    marker_path = (
+        root / ".ait-external" / "ait-core" / ".ait-external-marker.json"
+    )
+    lockfile = tomllib.loads(lock_path.read_text(encoding="utf-8"))
+    nodes = lockfile.get("node")
+    if not isinstance(nodes, list) or len(nodes) != 1:
+        raise ReleaseAdapterError("ait-external.lock must contain exactly one node")
+    marker = read_json_object(marker_path, "external materialization marker")
+    node = nodes[0]
+    if not isinstance(node, dict):
+        raise ReleaseAdapterError("external lock node must be an object")
+    for field in (
+        "name",
+        "repo_name",
+        "repository_index",
+        "snapshot",
+        "materialize_to",
+    ):
+        if marker.get(field) != node.get(field):
+            raise ReleaseAdapterError(
+                f"external marker field {field!r} does not match ait-external.lock"
+            )
+    if not manifest_path.is_file() or manifest_path.is_symlink():
+        raise ReleaseAdapterError("locked ait-py Cargo.toml is missing")
+
+
+def validate_public_monorepo_materialization(
+    root: Path, manifest_path: Path
+) -> None:
+    if root.name != "ait-python":
+        raise ReleaseAdapterError("public Python source subtree name is invalid")
+    public_root = root.parent
+    mapping = read_json_object(
+        public_root / "ait-monorepo-source.json", "public source mapping"
+    )
+    family = read_json_object(
+        public_root / "ait-release-family.json", "public family manifest"
+    )
+    validate_public_monorepo_authority(mapping, family)
+    expected_manifest = public_root / "ait-core" / "rust" / "crates" / "ait-py" / "Cargo.toml"
+    if not expected_manifest.is_file() or expected_manifest.is_symlink():
+        raise ReleaseAdapterError("public monorepo ait-py Cargo.toml is missing")
+    try:
+        selected = manifest_path.resolve(strict=True)
+        expected = expected_manifest.resolve(strict=True)
+    except OSError as error:
+        raise ReleaseAdapterError(
+            "public monorepo ait-py Cargo.toml cannot be resolved"
+        ) from error
+    if selected != expected:
+        raise ReleaseAdapterError(
+            "public monorepo manifest path does not select the mapped ait-core"
+        )
+
+
+def validate_core_source_layout(declared_path: object, root: Path) -> Path:
+    if declared_path == INTERNAL_AIT_PY_MANIFEST:
+        manifest_path = root / INTERNAL_AIT_PY_MANIFEST
+        validate_external_materialization(root, manifest_path)
+        return manifest_path
+    if declared_path == PUBLIC_AIT_PY_MANIFEST:
+        manifest_path = root / PUBLIC_AIT_PY_MANIFEST
+        validate_public_monorepo_materialization(root, manifest_path)
+        return manifest_path
+    raise ReleaseAdapterError("tool.maturin.manifest-path is not locked to ait-core")
+
+
+def validate_release_identity(target: str, version: str) -> ReleaseIdentity:
     spec = require_native_target(target)
     pyproject = read_project()
     build_system = pyproject.get("build-system")
@@ -169,36 +372,9 @@ def validate_release_identity(target: str, version: str) -> TargetSpec:
         raise ReleaseAdapterError(
             f"tool.maturin.features must be exactly [{ABI3_FEATURE!r}]"
         )
-    if maturin.get("manifest-path") != (
-        ".ait-external/ait-core/rust/crates/ait-py/Cargo.toml"
-    ):
-        raise ReleaseAdapterError("tool.maturin.manifest-path is not locked to ait-core")
-    validate_external_materialization()
-    return spec
-
-
-def validate_external_materialization() -> None:
-    lockfile = tomllib.loads(EXTERNAL_LOCK_PATH.read_text(encoding="utf-8"))
-    nodes = lockfile.get("node")
-    if not isinstance(nodes, list) or len(nodes) != 1:
-        raise ReleaseAdapterError("ait-external.lock must contain exactly one node")
-    marker = json.loads(EXTERNAL_MARKER_PATH.read_text(encoding="utf-8"))
-    node = nodes[0]
-    if not isinstance(node, dict) or not isinstance(marker, dict):
-        raise ReleaseAdapterError("external lock node and marker must be objects")
-    for field in (
-        "name",
-        "repo_name",
-        "repository_index",
-        "snapshot",
-        "materialize_to",
-    ):
-        if marker.get(field) != node.get(field):
-            raise ReleaseAdapterError(
-                f"external marker field {field!r} does not match ait-external.lock"
-            )
-    if not AIT_PY_MANIFEST_PATH.is_file():
-        raise ReleaseAdapterError("locked ait-py Cargo.toml is missing")
+    declared_manifest = maturin.get("manifest-path")
+    manifest_path = validate_core_source_layout(declared_manifest, ROOT)
+    return ReleaseIdentity(spec, manifest_path, str(declared_manifest))
 
 
 def release_environment(spec: TargetSpec) -> dict[str, str]:
@@ -264,14 +440,24 @@ def canonical_sbom_timestamp(timestamp: datetime) -> str:
     return timestamp.strftime("%Y-%m-%dT%H:%M:%S.000000000Z")
 
 
+def sbom_source_suffix(value: str) -> str | None:
+    normalized = value.replace("\\", "/")
+    for marker in SBOM_SOURCE_ROOT_MARKERS:
+        marker_index = normalized.find(marker)
+        if marker_index < 0:
+            continue
+        suffix_index = marker_index + len(marker)
+        if suffix_index == len(normalized) or normalized[suffix_index] == "/":
+            return normalized[suffix_index:]
+    return None
+
+
 def canonical_sbom_reference(value: str) -> tuple[str, bool]:
     if not value.startswith("path+file://"):
         return value, False
-    normalized = value.replace("\\", "/")
-    marker_index = normalized.find(SBOM_SOURCE_ROOT_MARKER)
-    if marker_index < 0:
+    suffix = sbom_source_suffix(value)
+    if suffix is None:
         return value, False
-    suffix = normalized[marker_index + len(SBOM_SOURCE_ROOT_MARKER) :]
     return f"{CANONICAL_SBOM_SOURCE_ROOT}{suffix}", True
 
 
@@ -321,7 +507,7 @@ def validate_canonical_sbom(sbom: object) -> None:
     for value in iter_json_strings(sbom):
         if not value.startswith("path+file://"):
             continue
-        if SBOM_SOURCE_ROOT_MARKER not in value.replace("\\", "/"):
+        if sbom_source_suffix(value) is None:
             continue
         local_references += 1
         if not value.startswith(CANONICAL_SBOM_SOURCE_ROOT):
@@ -528,7 +714,8 @@ def normalize_wheel(wheel: Path, version: str, timestamp: datetime) -> None:
 
 
 def check_release(target: str, version: str) -> dict[str, object]:
-    spec = validate_release_identity(target, version)
+    identity = validate_release_identity(target, version)
+    spec = identity.target
     require_tool("cargo")
     require_maturin()
     run_command(
@@ -536,7 +723,7 @@ def check_release(target: str, version: str) -> dict[str, object]:
             "cargo",
             "check",
             "--manifest-path",
-            str(AIT_PY_MANIFEST_PATH.relative_to(ROOT)),
+            identity.manifest_path_argument,
             "--locked",
             "--release",
             "--target",
@@ -559,7 +746,8 @@ def check_release(target: str, version: str) -> dict[str, object]:
 
 
 def build_release(target: str, version: str) -> dict[str, object]:
-    spec = validate_release_identity(target, version)
+    identity = validate_release_identity(target, version)
+    spec = identity.target
     source_date_epoch, release_timestamp = require_source_date_epoch()
     require_maturin()
     WHEEL_DIRECTORY.mkdir(parents=True, exist_ok=True)
@@ -699,7 +887,8 @@ def verify_wheel(wheel: Path, target: str, version: str) -> None:
 
 
 def smoke_release(target: str, version: str) -> dict[str, object]:
-    spec = validate_release_identity(target, version)
+    identity = validate_release_identity(target, version)
+    spec = identity.target
     wheel = expected_wheel_path(target, version)
     verify_wheel(wheel, target, version)
     smoke_root = ROOT / ".ait" / "release-smoke" / target

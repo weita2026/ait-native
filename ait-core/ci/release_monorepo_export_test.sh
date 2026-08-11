@@ -204,6 +204,8 @@ bash "${repo_root}/ci/release_monorepo_export.sh" \
 
 diff -r "${output_one}" "${output_two}"
 cmp "${evidence_one}" "${evidence_two}"
+cmp "${repo_root}/release/monorepo/.gitattributes" \
+  "${output_one}/.gitattributes"
 jq -e '
   .schema == "ait.release.monorepo-source/v1" and
   .public_source_identity == "weita2026/ait-native" and
@@ -283,6 +285,10 @@ if [[ -n $(git -C "${output_one}" status --porcelain --untracked-files=all) ]]; 
   exit 65
 fi
 fixture_git_commit=$(git -C "${output_one}" rev-parse HEAD)
+windows_checkout=${temporary_root}/windows-autocrlf-checkout
+git -c core.autocrlf=true clone -q --no-local \
+  "${output_one}" "${windows_checkout}"
+node "${windows_checkout}/build-release.mjs" --validate-only >/dev/null
 fixture_receipt=${temporary_root}/public-git-receipt
 node "${output_one}/build-release.mjs" \
   --component-receipt \
@@ -353,6 +359,11 @@ node "${repo_root}/ci/release_monorepo_transform.mjs" \
   "tries to identify the repository's programming language or project type"
 expect_failure readme-drift node \
   "${readme_drift_output}/build-release.mjs" --validate-only
+byte_policy_drift_output=${temporary_root}/byte-policy-drift-output
+cp -R "${output_one}" "${byte_policy_drift_output}"
+printf '* text=auto\n' >"${byte_policy_drift_output}/.gitattributes"
+expect_failure byte-policy-drift node \
+  "${byte_policy_drift_output}/build-release.mjs" --validate-only
 root_workflow=${output_one}/.github/workflows/ait-release-component-receipts.yml
 test -f "${root_workflow}"
 test "$(find "${output_one}/.github/workflows" -maxdepth 1 -type f | wc -l | tr -d '[:space:]')" = 1

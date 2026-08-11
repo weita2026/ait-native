@@ -164,6 +164,15 @@ async function validateOperationalIgnorePolicy() {
   );
 }
 
+async function validateGitBytePolicy() {
+  const attributesPath = path.join(ROOT, ".gitattributes");
+  await regularFile(attributesPath, "public root .gitattributes");
+  const policy = await readFile(attributesPath, "utf8");
+  if (policy !== "* -text\n") {
+    fail("public root .gitattributes must preserve every committed byte");
+  }
+}
+
 async function validateTrackedSourceTree() {
   const topLevel = spawnSync("git", ["rev-parse", "--show-toplevel"], {
     cwd: ROOT,
@@ -448,6 +457,7 @@ async function validateBuildInputs(expectedGitCommit) {
   }
   for (const required of [
     ".github/workflows/ait-release-component-receipts.yml",
+    ".gitattributes",
     "README.md",
     "ait-core/rust/Cargo.toml",
     "ait-server/rust/Cargo.toml",
@@ -460,6 +470,7 @@ async function validateBuildInputs(expectedGitCommit) {
     await regularFile(path.join(ROOT, required), `required build input ${required}`);
   }
   await validatePublicReadme();
+  await validateGitBytePolicy();
   await validateOperationalIgnorePolicy();
   await validateTrackedSourceTree();
   await validateProtectedWorkflow();
