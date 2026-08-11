@@ -951,7 +951,7 @@ pub(super) fn materialize_bundle(bundle: &ReleaseBundle, destination: &Path) -> 
         }
         fs::write(&target, &entry.data).map_err(io_error)?;
         if let Ok(mode) = u32::from_str_radix(entry.mode.trim_start_matches("0o"), 8) {
-            let _ = fs::set_permissions(&target, fs::Permissions::from_mode(mode));
+            let _ = crate::filesystem_permissions::set_portable_mode(&target, mode);
         }
     }
     Ok(())

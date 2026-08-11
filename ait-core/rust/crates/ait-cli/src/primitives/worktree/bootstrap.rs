@@ -455,10 +455,9 @@ pub(in crate::primitives) fn materialize_worktree_cargo_config_for_workspace(
                     })
             {
                 if upgraded != contents {
-                    let mut permissions = metadata.permissions();
-                    if permissions.mode() & 0o200 == 0 {
-                        permissions.set_mode(permissions.mode() | 0o200);
-                        fs::set_permissions(&config_path, permissions)
+                    let mode = portable_mode(&metadata, 0o644);
+                    if mode & 0o200 == 0 {
+                        set_portable_mode(&config_path, mode | 0o200)
                             .map_err(|err| err.to_string())?;
                     }
                     fs::write(&config_path, upgraded).map_err(|err| err.to_string())?;

@@ -1439,8 +1439,7 @@ pub(super) fn apply_workspace_replay_range(
         let data = read_selected_snapshot_blob_bytes(repo, &blob_id)?;
         fs::write(&abs_path, data).map_err(|err| err.to_string())?;
         let mode = parse_mode_bits(file_map_row_mode(source_row).as_deref())?;
-        fs::set_permissions(&abs_path, fs::Permissions::from_mode(mode))
-            .map_err(|err| err.to_string())?;
+        set_portable_mode(&abs_path, mode).map_err(|err| err.to_string())?;
     }
     result
         .as_object_mut()
@@ -1587,8 +1586,7 @@ pub(super) fn restore_workspace_paths_selected(
             .ok_or_else(|| format!("Snapshot blob payload is missing for `{rel}` ({blob_id})."))?;
         fs::write(&abs_path, data).map_err(|err| err.to_string())?;
         let mode = parse_mode_bits(file_map_row_mode(target).as_deref())?;
-        fs::set_permissions(&abs_path, fs::Permissions::from_mode(mode))
-            .map_err(|err| err.to_string())?;
+        set_portable_mode(&abs_path, mode).map_err(|err| err.to_string())?;
     }
     result
         .as_object_mut()
@@ -1684,8 +1682,7 @@ pub(super) fn restore_workspace_all(
         let data = read_selected_snapshot_blob_bytes(repo, &blob_id)?;
         fs::write(&abs_path, data).map_err(|err| err.to_string())?;
         let mode = parse_mode_bits(file_map_row_mode(&target).as_deref())?;
-        fs::set_permissions(&abs_path, fs::Permissions::from_mode(mode))
-            .map_err(|err| err.to_string())?;
+        set_portable_mode(&abs_path, mode).map_err(|err| err.to_string())?;
     }
     let mut applied = result;
     applied

@@ -33,8 +33,6 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsStr;
 use std::fs::{self, File};
 use std::io::{self, Write};
-#[cfg(unix)]
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use tar::{Builder as TarBuilder, Header};
@@ -105,30 +103,12 @@ struct ReleaseBundle {
 }
 
 fn filesystem_mode(metadata: &fs::Metadata, _non_unix_fallback: u32) -> u32 {
-    #[cfg(unix)]
-    {
-        metadata.permissions().mode() & 0o777
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = metadata;
-        _non_unix_fallback
-    }
+    crate::filesystem_permissions::portable_mode(metadata, _non_unix_fallback)
 }
 
 #[cfg(test)]
 fn set_filesystem_mode(path: &Path, mode: u32) -> Result<(), String> {
-    #[cfg(unix)]
-    {
-        let mut permissions = fs::metadata(path).map_err(io_error)?.permissions();
-        permissions.set_mode(mode);
-        fs::set_permissions(path, permissions).map_err(io_error)
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = (path, mode);
-        Ok(())
-    }
+    crate::filesystem_permissions::set_portable_mode(path, mode).map_err(io_error)
 }
 
 mod artifact_projection;

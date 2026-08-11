@@ -791,8 +791,7 @@ fn write_workspace_bytes(
     fs::write(&abs_path, bytes).map_err(|error| error.to_string())?;
     let mode = snapshot_mode_bits(mode)
         .ok_or_else(|| format!("Invalid Snapshot mode {mode:?} for {path}."))?;
-    fs::set_permissions(&abs_path, fs::Permissions::from_mode(mode & 0o777))
-        .map_err(|error| error.to_string())
+    set_portable_mode(&abs_path, mode & 0o777).map_err(|error| error.to_string())
 }
 
 #[expect(

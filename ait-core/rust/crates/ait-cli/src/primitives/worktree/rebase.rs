@@ -829,8 +829,7 @@ pub(in crate::primitives) fn write_workspace_snapshot_row(
         )
         .map_err(|err| err.to_string())?;
         let mode = parse_mode_bits(file_map_row_mode(row).as_deref())?;
-        fs::set_permissions(&abs_path, fs::Permissions::from_mode(mode))
-            .map_err(|err| err.to_string())?;
+        set_portable_mode(&abs_path, mode).map_err(|err| err.to_string())?;
         return Ok(());
     }
     if abs_path.exists() {
