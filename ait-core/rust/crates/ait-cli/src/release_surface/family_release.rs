@@ -3661,8 +3661,9 @@ fn validate_family_build(
 pub(super) fn validate_existing_family_build(
     repo: &RepoRuntime,
     release_id: &str,
+    public_source_root: Option<&Path>,
 ) -> Result<JsonValue, String> {
-    validate_family_build(repo, release_id, None, None)
+    validate_family_build(repo, release_id, None, public_source_root)
 }
 
 pub fn family_release_build(
@@ -3993,8 +3994,12 @@ fn family_promotion_record(
     }))
 }
 
-pub fn family_release_show(repo: &RepoRuntime, release_id: &str) -> Result<JsonValue, String> {
-    let candidate = load_family_candidate(repo, release_id, None)?;
+pub fn family_release_show(
+    repo: &RepoRuntime,
+    release_id: &str,
+    public_source_root: Option<&Path>,
+) -> Result<JsonValue, String> {
+    let candidate = load_family_candidate(repo, release_id, public_source_root)?;
     let release_dir = family_release_dir(repo, release_id, false)?;
     let promotion_path = release_dir.join(FAMILY_PROMOTION_FILENAME);
     if promotion_path.exists() {
@@ -4005,7 +4010,7 @@ pub fn family_release_show(repo: &RepoRuntime, release_id: &str) -> Result<JsonV
         )?;
         let promotion =
             parse_slice_value(&bytes, "Family promotion handoff must contain valid JSON")?;
-        let build = validate_family_build(repo, release_id, None, None)?;
+        let build = validate_family_build(repo, release_id, None, public_source_root)?;
         if promotion != family_promotion_record(&candidate, &build, release_id)? {
             return Err(
                 "Family promotion handoff does not match its verified frozen build.".to_string(),
@@ -4015,7 +4020,7 @@ pub fn family_release_show(repo: &RepoRuntime, release_id: &str) -> Result<JsonV
     }
     let frozen_root = release_dir.join(FAMILY_FROZEN_DIRNAME);
     if frozen_root.exists() {
-        return validate_family_build(repo, release_id, None, None);
+        return validate_family_build(repo, release_id, None, public_source_root);
     }
     let check_path = release_dir.join(FAMILY_CHECK_FILENAME);
     if check_path.exists() {
@@ -4042,8 +4047,9 @@ pub fn family_release_promote(
     repo: &RepoRuntime,
     release_id: &str,
     requested_channel: &str,
+    public_source_root: Option<&Path>,
 ) -> Result<JsonValue, String> {
-    let candidate = load_family_candidate(repo, release_id, None)?;
+    let candidate = load_family_candidate(repo, release_id, public_source_root)?;
     let channel = required_string_field(&candidate, "channel")?;
     if requested_channel.trim() != channel {
         return Err(format!(
@@ -4051,7 +4057,7 @@ pub fn family_release_promote(
             requested_channel.trim()
         ));
     }
-    let build = validate_family_build(repo, release_id, None, None)?;
+    let build = validate_family_build(repo, release_id, None, public_source_root)?;
     let promotion = family_promotion_record(&candidate, &build, release_id)?;
     let path = family_release_dir(repo, release_id, false)?.join(FAMILY_PROMOTION_FILENAME);
     write_json_once(&path, &promotion, "Family promotion handoff")?;

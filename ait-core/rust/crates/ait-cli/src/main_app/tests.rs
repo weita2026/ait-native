@@ -1347,6 +1347,8 @@ fn release_family_parser_accepts_public_rc_lifecycle_arguments() {
         "REL-FAM-0123456789ABCDEF",
         "--channel",
         "rc",
+        "--public-source-root",
+        "/tmp/public-source",
         "--json",
     ])
     .unwrap()
@@ -1357,9 +1359,67 @@ fn release_family_parser_accepts_public_rc_lifecycle_arguments() {
         } => {
             assert_eq!(args.release_id, "REL-FAM-0123456789ABCDEF");
             assert_eq!(args.channel, "rc");
+            assert_eq!(
+                args.public_source_root,
+                Some(PathBuf::from("/tmp/public-source"))
+            );
             assert!(args.json);
         }
         _ => panic!("expected family release promote command"),
+    }
+
+    let shown = Cli::try_parse_from([
+        "ait-cli",
+        "release",
+        "show",
+        "REL-FAM-0123456789ABCDEF",
+        "--public-source-root",
+        "/tmp/public-source",
+        "--json",
+    ])
+    .unwrap()
+    .command;
+    match shown {
+        Commands::Release {
+            command: ReleaseCommand::Show(args),
+        } => {
+            assert_eq!(args.release_id, "REL-FAM-0123456789ABCDEF");
+            assert_eq!(
+                args.public_source_root,
+                Some(PathBuf::from("/tmp/public-source"))
+            );
+            assert!(args.remote.is_none());
+            assert!(args.json);
+        }
+        _ => panic!("expected family release show command"),
+    }
+
+    let packaged = Cli::try_parse_from([
+        "ait-cli",
+        "release",
+        "package",
+        "REL-FAM-0123456789ABCDEF",
+        "--channel",
+        "npm",
+        "--public-source-root",
+        "/tmp/public-source",
+        "--json",
+    ])
+    .unwrap()
+    .command;
+    match packaged {
+        Commands::Release {
+            command: ReleaseCommand::Package(args),
+        } => {
+            assert_eq!(args.release_id, "REL-FAM-0123456789ABCDEF");
+            assert_eq!(args.channel, "npm");
+            assert_eq!(
+                args.public_source_root,
+                Some(PathBuf::from("/tmp/public-source"))
+            );
+            assert!(args.json);
+        }
+        _ => panic!("expected family release package command"),
     }
 }
 

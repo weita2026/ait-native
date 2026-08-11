@@ -1020,6 +1020,13 @@ struct ReleasePackageArgs {
         help = "Assemble one declared channel from an immutable frozen family build"
     )]
     channel: String,
+    #[arg(
+        long = "public-source-root",
+        value_name = "DIR",
+        hide = true,
+        help = "Protected CI only: retain exported public Git source authority while assembling a frozen family channel"
+    )]
+    public_source_root: Option<PathBuf>,
     #[arg(long)]
     json: bool,
 }
@@ -1038,6 +1045,13 @@ struct ReleaseShowArgs {
     release_id: String,
     #[arg(long)]
     remote: Option<String>,
+    #[arg(
+        long = "public-source-root",
+        value_name = "DIR",
+        hide = true,
+        help = "Protected CI only: retain exported public Git source authority while inspecting a family dossier"
+    )]
+    public_source_root: Option<PathBuf>,
     #[arg(long)]
     json: bool,
 }
@@ -1056,6 +1070,13 @@ struct ReleasePromoteArgs {
     release_id: String,
     #[arg(long, value_parser = ["rc", "stable"])]
     channel: String,
+    #[arg(
+        long = "public-source-root",
+        value_name = "DIR",
+        hide = true,
+        help = "Protected CI only: retain exported public Git source authority while emitting the family promotion handoff"
+    )]
+    public_source_root: Option<PathBuf>,
     #[arg(long)]
     json: bool,
 }

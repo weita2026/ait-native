@@ -982,7 +982,12 @@ fn run_release(repo: RepoRuntime, command: ReleaseCommand) -> Result<(), String>
             args.json,
         ),
         ReleaseCommand::Package(args) => (
-            family_release_package(&repo, &args.release_id, &args.channel)?,
+            family_release_package(
+                &repo,
+                &args.release_id,
+                &args.channel,
+                args.public_source_root.as_deref(),
+            )?,
             args.json,
         ),
         ReleaseCommand::Formula(args) => (
@@ -997,8 +1002,18 @@ fn run_release(repo: RepoRuntime, command: ReleaseCommand) -> Result<(), String>
                             .to_string(),
                     );
                 }
-                family_release_show(&repo, &args.release_id)?
+                family_release_show(
+                    &repo,
+                    &args.release_id,
+                    args.public_source_root.as_deref(),
+                )?
             } else {
+                if args.public_source_root.is_some() {
+                    return Err(
+                        "--public-source-root applies only to a family release dossier."
+                            .to_string(),
+                    );
+                }
                 release_show_cmd(&repo, &args.release_id, args.remote.as_deref())?
             };
             (payload, args.json)
@@ -1013,7 +1028,12 @@ fn run_release(repo: RepoRuntime, command: ReleaseCommand) -> Result<(), String>
             )
         }
         ReleaseCommand::Promote(args) => (
-            family_release_promote(&repo, &args.release_id, &args.channel)?,
+            family_release_promote(
+                &repo,
+                &args.release_id,
+                &args.channel,
+                args.public_source_root.as_deref(),
+            )?,
             args.json,
         ),
     };
