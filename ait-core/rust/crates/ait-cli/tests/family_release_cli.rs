@@ -2065,15 +2065,45 @@ fn family_release_cli_rejects_wrong_channel_and_missing_receipts() {
     let missing = run(root, &["release", "check", release_id, "--json"]);
     assert!(!missing.status.success());
     assert!(String::from_utf8_lossy(&missing.stderr).contains("requires --receipts"));
+
+    for command in ["check", "build"] {
+        let rejected = run(
+            root,
+            &[
+                "release",
+                command,
+                "REL-LEGACY",
+                "--public-source-root",
+                root.to_str().unwrap(),
+                "--json",
+            ],
+        );
+        assert!(!rejected.status.success());
+        assert!(String::from_utf8_lossy(&rejected.stderr)
+            .contains("--public-source-root applies only to a family release candidate"));
+    }
 }
 
 #[test]
 fn public_git_family_reconstructs_candidate_and_rejects_receipt_authority_drift() {
     let temp = TempDir::new().unwrap();
-    let public_root = temp.path();
+    let public_root = temp.path().join("public-source");
     let core_root = public_root.join("ait-core");
-    fs::create_dir(&core_root).unwrap();
+    fs::create_dir_all(&core_root).unwrap();
     run_json(&core_root, &["init", "--name", "ait-core", "--json"]);
+    let admission_root = temp.path().join("family-admission");
+    fs::create_dir(&admission_root).unwrap();
+    run_json(
+        &admission_root,
+        &[
+            "init",
+            "--name",
+            "ait-core",
+            "--default-line",
+            "release-bootstrap",
+            "--json",
+        ],
+    );
 
     let target = "x86_64-unknown-linux-gnu";
     let source_snapshot = "SNP-111111111111";
@@ -2142,7 +2172,7 @@ fn public_git_family_reconstructs_candidate_and_rejects_receipt_authority_drift(
     let mapping_sha256 = digest(&fs::read(&mapping_path).unwrap());
 
     let wrong_profile = run(
-        &core_root,
+        &admission_root,
         &[
             "release",
             "candidate",
@@ -2159,7 +2189,7 @@ fn public_git_family_reconstructs_candidate_and_rejects_receipt_authority_drift(
     assert!(String::from_utf8_lossy(&wrong_profile.stderr).contains("requires --profile family"));
 
     let candidate = run_json(
-        &core_root,
+        &admission_root,
         &[
             "release",
             "candidate",
@@ -2181,7 +2211,26 @@ fn public_git_family_reconstructs_candidate_and_rejects_receipt_authority_drift(
     assert_eq!(candidate["authority"]["source"], "selected_snapshot");
     let release_id = candidate["release_id"].as_str().unwrap().to_string();
 
-    let receipts = core_root.join("component-receipts");
+    let adjacent_candidate = run_json(
+        &core_root,
+        &[
+            "release",
+            "candidate",
+            "create",
+            "--version",
+            "1.0.0-rc.1",
+            "--channel",
+            "rc",
+            "--profile",
+            "family",
+            "--public-source-root",
+            public_root.to_str().unwrap(),
+            "--json",
+        ],
+    );
+    assert_eq!(adjacent_candidate, candidate);
+
+    let receipts = admission_root.join("component-receipts");
     write_component_receipts_for_targets(
         &receipts,
         "ait",
@@ -2226,7 +2275,37 @@ fn public_git_family_reconstructs_candidate_and_rejects_receipt_authority_drift(
     fs::write(&receipt_path, serde_json::to_vec_pretty(&receipt).unwrap()).unwrap();
 
     let receipt_arg = receipts.to_str().unwrap();
+    let missing_explicit_authority = run(
+        &admission_root,
+        &[
+            "release",
+            "check",
+            &release_id,
+            "--receipts",
+            receipt_arg,
+            "--json",
+        ],
+    );
+    assert!(!missing_explicit_authority.status.success());
+
     let checked = run_json(
+        &admission_root,
+        &[
+            "release",
+            "check",
+            &release_id,
+            "--receipts",
+            receipt_arg,
+            "--public-source-root",
+            public_root.to_str().unwrap(),
+            "--json",
+        ],
+    );
+    assert_eq!(checked["check_summary"]["decision"], "pass");
+    assert_eq!(checked["check_summary"]["total"], 7);
+    assert_eq!(checked["component_receipts"][0]["git_commit"], git_commit);
+
+    let adjacent_checked = run_json(
         &core_root,
         &[
             "release",
@@ -2237,21 +2316,21 @@ fn public_git_family_reconstructs_candidate_and_rejects_receipt_authority_drift(
             "--json",
         ],
     );
-    assert_eq!(checked["check_summary"]["decision"], "pass");
-    assert_eq!(checked["check_summary"]["total"], 7);
-    assert_eq!(checked["component_receipts"][0]["git_commit"], git_commit);
+    assert_eq!(adjacent_checked, checked);
 
     let mut tampered = receipt.clone();
     tampered["authority"]["git_commit"] = json!("2".repeat(39));
     fs::write(&receipt_path, serde_json::to_vec_pretty(&tampered).unwrap()).unwrap();
     let rejected = run(
-        &core_root,
+        &admission_root,
         &[
             "release",
             "check",
             &release_id,
             "--receipts",
             receipt_arg,
+            "--public-source-root",
+            public_root.to_str().unwrap(),
             "--json",
         ],
     );
@@ -2268,13 +2347,15 @@ fn public_git_family_reconstructs_candidate_and_rejects_receipt_authority_drift(
     )
     .unwrap();
     let rejected = run(
-        &core_root,
+        &admission_root,
         &[
             "release",
             "check",
             &release_id,
             "--receipts",
             receipt_arg,
+            "--public-source-root",
+            public_root.to_str().unwrap(),
             "--json",
         ],
     );
@@ -2288,13 +2369,15 @@ fn public_git_family_reconstructs_candidate_and_rejects_receipt_authority_drift(
     mixed["metadata"]["build"]["builder"] = json!("ait_generic_command_adapter_v1");
     fs::write(&receipt_path, serde_json::to_vec_pretty(&mixed).unwrap()).unwrap();
     let rejected = run(
-        &core_root,
+        &admission_root,
         &[
             "release",
             "check",
             &release_id,
             "--receipts",
             receipt_arg,
+            "--public-source-root",
+            public_root.to_str().unwrap(),
             "--json",
         ],
     );
@@ -2311,13 +2394,15 @@ fn public_git_family_reconstructs_candidate_and_rejects_receipt_authority_drift(
     .unwrap();
     fs::write(&receipt_path, serde_json::to_vec_pretty(&receipt).unwrap()).unwrap();
     let rejected = run(
-        &core_root,
+        &admission_root,
         &[
             "release",
             "check",
             &release_id,
             "--receipts",
             receipt_arg,
+            "--public-source-root",
+            public_root.to_str().unwrap(),
             "--json",
         ],
     );
@@ -2329,13 +2414,15 @@ fn public_git_family_reconstructs_candidate_and_rejects_receipt_authority_drift(
     fs::write(&mapping_path, serde_json::to_vec_pretty(&mapping).unwrap()).unwrap();
     fs::write(&receipt_path, serde_json::to_vec_pretty(&receipt).unwrap()).unwrap();
     let built = run_json(
-        &core_root,
+        &admission_root,
         &[
             "release",
             "build",
             &release_id,
             "--receipts",
             receipt_arg,
+            "--public-source-root",
+            public_root.to_str().unwrap(),
             "--json",
         ],
     );
