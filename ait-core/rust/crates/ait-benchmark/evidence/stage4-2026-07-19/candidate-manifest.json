@@ -1,0 +1,54 @@
+{
+  "contract": "ait-vcs-benchmark-manifest/v1",
+  "benchmark_id": "ait-stage4-focused-status-candidate-2026-07-19",
+  "protocol_revision": "vcs-performance-2026-07-19.1",
+  "campaign_scope": "focused_slice",
+  "seed": 1151,
+  "sampling": {"warmup_iterations": 5, "measured_local_iterations": 50, "measured_cold_iterations": 30},
+  "environment": {
+    "captured_at": "2026-07-19T04:42:00Z",
+    "os": "macOS 26.5.2 (25F84)",
+    "architecture": "arm64",
+    "filesystem": "APFS",
+    "storage_medium": "internal solid-state Apple Fabric",
+    "cpu": "Apple M4",
+    "memory_bytes": 25769803776,
+    "rust_version": "rustc 1.96.0 (ac68faa20 2026-05-25)",
+    "git_version": "git version 2.50.1 (Apple Git-155)",
+    "ait_version": "SNP-BAF9918B39D4",
+    "repository_snapshot": "SNP-BAF9918B39D4",
+    "server_revision": "not-applicable-local-status",
+    "network_profile": "not-applicable-local-status",
+    "cache_drop_method": "warm process execution; no OS cache drop",
+    "command_options": {"ait": "status --json", "git": "status --porcelain=v2 --untracked-files=all", "fixture": "small-focused-status-v1", "order": "seeded randomized within each block"}
+  },
+  "fixtures": [
+    {"fixture_id": "small-focused-status-synthetic-v1", "revision": "2026-07-19.1", "scale": "small", "kind": "synthetic", "source": "protocol/fixtures/small-focused-status-v1.json", "redistribution": "generated; redistributable", "content_digest": "sha256:0eb36f03f2846d5f10fb588ff694ed8f9549d0439befcaa5733fb3a757bb937d", "file_count": 500, "total_bytes": 4194304, "history_nodes": 1, "features": ["small_text", "large_binary", "deep_directories", "ignored_files", "renames", "branches", "merge_history"]},
+    {"fixture_id": "small-focused-status-real-declaration-v1", "revision": "2026-07-19.1", "scale": "small", "kind": "real", "source": "private-local://stage4-real-small-declaration", "redistribution": "restricted; local measurement only; not executed by this focused slice", "content_digest": "sha256:0eb36f03f2846d5f10fb588ff694ed8f9549d0439befcaa5733fb3a757bb937d", "file_count": 500, "total_bytes": 4194304, "history_nodes": 1, "features": ["small_text", "large_binary", "deep_directories", "ignored_files", "renames", "branches", "merge_history"]}
+  ],
+  "cells": [
+    {
+      "cell_id": "small-status-clean-warm-local",
+      "fixture_id": "small-focused-status-synthetic-v1",
+      "operation": "status_clean",
+      "temperature": "warm",
+      "sample_class": "local",
+      "subjects": [
+        {
+          "subject_id": "ait-candidate-snp-baf9918b39d4", "role": "ait", "workspace_root": "/tmp/ait-stage4-campaign.KbCG1f/candidate-ait", "metadata_excludes": [".ait", ".ait-runtime", ".git", "AGENTS.md", "ait-native.md", "docs"],
+          "command": {"program": "/Users/weita/AI_Play_Ground/ait/.ait/cargo-target/release/ait-cli", "args": ["status", "--json"], "cwd": "{workspace}", "env": {"LC_ALL": "C"}, "expected_exit_codes": [0]}, "reset_commands": [], "prepare_commands": [], "cleanup_commands": [],
+          "history_node_probe": {"program": "/Users/weita/AI_Play_Ground/ait-core/.ait-worktree-links/rct-1151/.ait/cargo-target/release/ait-benchmark", "args": ["probe", "history", "--vcs", "ait", "--program", "/Users/weita/AI_Play_Ground/ait/.ait/cargo-target/release/ait-cli", "--root", "{workspace}"], "cwd": "{workspace}", "env": {}, "expected_exit_codes": [0]},
+          "outcome_probe": {"program": "/Users/weita/AI_Play_Ground/ait-core/.ait-worktree-links/rct-1151/.ait/cargo-target/release/ait-benchmark", "args": ["fixture", "digest", "--plain", "--root", "{workspace}", "--exclude", ".ait", "--exclude", ".ait-runtime", "--exclude", ".git", "--exclude", "AGENTS.md", "--exclude", "ait-native.md", "--exclude", "docs"], "cwd": "{workspace}", "env": {}, "expected_exit_codes": [0]}, "metrics_json_path": null
+        },
+        {
+          "subject_id": "git-candidate-2.50.1", "role": "git", "workspace_root": "/tmp/ait-stage4-campaign.KbCG1f/candidate-git", "metadata_excludes": [".ait", ".ait-runtime", ".git", "AGENTS.md", "ait-native.md", "docs"],
+          "command": {"program": "/usr/bin/git", "args": ["status", "--porcelain=v2", "--untracked-files=all"], "cwd": "{workspace}", "env": {"LC_ALL": "C"}, "expected_exit_codes": [0]}, "reset_commands": [], "prepare_commands": [], "cleanup_commands": [],
+          "history_node_probe": {"program": "/Users/weita/AI_Play_Ground/ait-core/.ait-worktree-links/rct-1151/.ait/cargo-target/release/ait-benchmark", "args": ["probe", "history", "--vcs", "git", "--program", "/usr/bin/git", "--root", "{workspace}"], "cwd": "{workspace}", "env": {}, "expected_exit_codes": [0]},
+          "outcome_probe": {"program": "/Users/weita/AI_Play_Ground/ait-core/.ait-worktree-links/rct-1151/.ait/cargo-target/release/ait-benchmark", "args": ["fixture", "digest", "--plain", "--root", "{workspace}", "--exclude", ".ait", "--exclude", ".ait-runtime", "--exclude", ".git", "--exclude", "AGENTS.md", "--exclude", "ait-native.md", "--exclude", "docs"], "cwd": "{workspace}", "env": {}, "expected_exit_codes": [0]}, "metrics_json_path": null
+        }
+      ]
+    }
+  ],
+  "bootstrap_resamples": 2000,
+  "limitations": ["Focused status-only campaign; it does not satisfy the full 45-cell release matrix.", "Synthetic small fixture only; the declared real fixture was not executed.", "Remote-sync improvements are structurally tested but are not included in this local-status slice."]
+}

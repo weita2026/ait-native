@@ -1,0 +1,6 @@
+AGPL module notice
+
+This package root (`rust/crates/ait-server-core/**`) is licensed as
+AGPL-3.0-only as part of the `ait-server` repository.
+
+See the repository root `LICENSE` and `LICENSES/AGPL-3.0-only.txt`.

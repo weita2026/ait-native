@@ -1,0 +1,236 @@
+use super::*;
+
+#[test]
+fn task_workflow_closeout_remote_helpers_accept_trait_object() {
+    let mut remote = FakeCloseoutRemote::default();
+    let remote_port: &mut dyn TaskWorkflowCloseoutRemote = &mut remote;
+
+    assert_eq!(
+        inspect_client_with_task_workflow_closeout_remote(remote_port).base_url,
+        "https://ait.example"
+    );
+    assert!(close_client_with_task_workflow_closeout_remote(remote_port).closed);
+    assert_eq!(
+        mutation_receipt_with_task_workflow_closeout_remote(
+            remote_port,
+            "publish_patchset",
+            "task land",
+            "remote",
+            Some(&json!({"state": "recovered"})),
+            Some(&json!({"ok": true})),
+        )
+        .unwrap()["source_action"],
+        "task land"
+    );
+    assert_eq!(
+        action_mutation_receipts_with_task_workflow_closeout_remote(
+            remote_port,
+            "close_task",
+            &json!({"status": "completed"}),
+        )
+        .unwrap()["code"],
+        "close_task"
+    );
+    assert_eq!(
+        list_patchsets_with_task_workflow_closeout_remote(remote_port, "C-1", Some("repo"))
+            .unwrap()[0]["patchset_id"],
+        "RCP-1"
+    );
+    assert_eq!(
+        get_patchset_with_task_workflow_closeout_remote(
+            remote_port,
+            "RCP-1",
+            Some("repo"),
+            Some("C-1"),
+        )
+        .unwrap()["change_ref"],
+        "C-1"
+    );
+    assert_eq!(
+        publish_patchset_with_task_workflow_closeout_remote(
+            remote_port,
+            "C-1",
+            "SNP-1",
+            "SNP-2",
+            "summary",
+            "manual",
+            Some("repo"),
+            false,
+        )
+        .unwrap()["revision_snapshot_id"],
+        "SNP-2"
+    );
+    assert_eq!(
+        select_patchset_with_task_workflow_closeout_remote(
+            remote_port,
+            "C-1",
+            "RCP-1",
+            Some("repo"),
+            true,
+        )
+        .unwrap()["patchset_id"],
+        "RCP-1"
+    );
+    assert_eq!(
+        run_patchset_ci_with_task_workflow_closeout_remote(
+            remote_port,
+            "RCP-1",
+            "manual",
+            Some("full"),
+            Some("repo"),
+            true,
+        )
+        .unwrap()["execution_profile"],
+        "full"
+    );
+    assert_eq!(
+        request_review_with_task_workflow_closeout_remote(
+            remote_port,
+            "C-1",
+            "RCP-1",
+            &["reviewers".to_string()],
+            Some("please review"),
+            Some("repo"),
+            true,
+        )
+        .unwrap()["reviewer_groups"][0],
+        "reviewers"
+    );
+    assert_eq!(
+        read_patchset_ci_status_with_task_workflow_closeout_remote(
+            remote_port,
+            "RCP-1",
+            5,
+            Some("repo"),
+            true,
+        )
+        .unwrap()["recent_limit"],
+        5
+    );
+    assert_eq!(
+        list_repo_jobs_with_task_workflow_closeout_remote(
+            remote_port,
+            "repo",
+            Some("queued"),
+            10,
+            true,
+            60,
+        )
+        .unwrap()["stale_after_seconds"],
+        60
+    );
+    assert_eq!(
+        record_review_with_task_workflow_closeout_remote(
+            remote_port,
+            "C-1",
+            "RCP-1",
+            "alice",
+            "approve",
+            Some("ok"),
+            true,
+            Some("repo"),
+            true,
+        )
+        .unwrap()["reviewer"],
+        "alice"
+    );
+    assert_eq!(
+        list_reviews_with_task_workflow_closeout_remote(remote_port, "C-1", Some("repo"), true)
+            .unwrap()["reviews"],
+        json!([])
+    );
+    assert_eq!(
+        put_attestation_with_task_workflow_closeout_remote(
+            remote_port,
+            "RCP-1",
+            "manual",
+            &json!({"state": "pass"}),
+            &json!({"source": "test"}),
+            &json!({"detail": true}),
+            Some("repo"),
+            true,
+        )
+        .unwrap()["author_mode"],
+        "manual"
+    );
+    assert_eq!(
+        get_attestation_with_task_workflow_closeout_remote(
+            remote_port,
+            "RCP-1",
+            Some("repo"),
+            true,
+        )
+        .unwrap()["attestation"],
+        true
+    );
+    assert_eq!(
+        evaluate_policy_with_task_workflow_closeout_remote(
+            remote_port,
+            "RCP-1",
+            Some("repo"),
+            true,
+        )
+        .unwrap()["evaluation_state"],
+        "pass"
+    );
+    assert_eq!(
+        get_policy_with_task_workflow_closeout_remote(remote_port, "RCP-1", Some("repo"), true)
+            .unwrap()["policy"],
+        true
+    );
+    assert_eq!(
+        create_waiver_with_task_workflow_closeout_remote(
+            remote_port,
+            "RCP-1",
+            "ci",
+            "known issue",
+            Some("2026-12-31T00:00:00Z"),
+            Some("repo"),
+            true,
+        )
+        .unwrap()["rule_name"],
+        "ci"
+    );
+    assert_eq!(
+        submit_land_with_task_workflow_closeout_remote(
+            remote_port,
+            "C-1",
+            Some("RCP-1"),
+            "main",
+            "merge",
+            Some("repo"),
+        )
+        .unwrap()["submission_id"],
+        "LAND-1"
+    );
+    assert_eq!(
+        get_land_with_task_workflow_closeout_remote(remote_port, "LAND-1", Some("repo")).unwrap()
+            ["status"],
+        "queued"
+    );
+    assert_eq!(
+        retry_land_with_task_workflow_closeout_remote(
+            remote_port,
+            "LAND-1",
+            Some("retry"),
+            Some("repo"),
+        )
+        .unwrap()["retried"],
+        true
+    );
+    assert_eq!(
+        close_task_with_task_workflow_closeout_remote(
+            remote_port,
+            "T-1",
+            "completed",
+            Some("repo")
+        )
+        .unwrap()["status"],
+        "completed"
+    );
+    assert_eq!(
+        restart_task_with_task_workflow_closeout_remote(remote_port, "T-1", Some("repo")).unwrap()
+            ["status"],
+        "active"
+    );
+}

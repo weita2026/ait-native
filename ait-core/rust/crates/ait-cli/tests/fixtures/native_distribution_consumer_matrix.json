@@ -1,0 +1,46 @@
+{
+  "contract": "ait-native-distribution-consumer-fixture/v1",
+  "public_command": "ait",
+  "runtime_authority": "rust",
+  "adapter_policy": "thin-launcher-only",
+  "targets": [
+    {
+      "target": "aarch64-apple-darwin",
+      "ecosystems": ["homebrew", "npm", "pip"],
+      "native_command_path": "bin/ait"
+    },
+    {
+      "target": "x86_64-apple-darwin",
+      "ecosystems": ["homebrew", "npm", "pip"],
+      "native_command_path": "bin/ait"
+    },
+    {
+      "target": "aarch64-unknown-linux-gnu",
+      "ecosystems": ["apt", "homebrew", "npm", "pip"],
+      "native_command_path": "bin/ait"
+    },
+    {
+      "target": "x86_64-unknown-linux-gnu",
+      "ecosystems": ["apt", "homebrew", "npm", "pip"],
+      "native_command_path": "bin/ait"
+    },
+    {
+      "target": "aarch64-pc-windows-msvc",
+      "ecosystems": ["npm", "pip"],
+      "native_command_path": "bin/ait.exe"
+    },
+    {
+      "target": "x86_64-pc-windows-msvc",
+      "ecosystems": ["npm", "pip"],
+      "native_command_path": "bin/ait.exe"
+    }
+  ],
+  "invariants": [
+    "same_release_version",
+    "same_target_bundle_sha256",
+    "same_target_native_command_sha256",
+    "canonical_target_command_path",
+    "no_runtime_download",
+    "no_command_semantic_rewrite"
+  ]
+}

@@ -1,0 +1,20 @@
+[workspace]
+members = [
+  "crates/ait-server-core",
+  "crates/ait-server",
+  "crates/ait-server-postgres-import",
+]
+resolver = "2"
+
+[profile.release]
+opt-level = 3
+debug = 0
+incremental = false
+
+[profile.ait-ci]
+inherits = "test"
+opt-level = 0
+debug = 0
+debug-assertions = true
+overflow-checks = true
+incremental = false

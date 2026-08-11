@@ -1,0 +1,59 @@
+{
+  "contract": "ait-vcs-benchmark-budget/v1",
+  "budget_id": "ait-stage4-vcs-engineering",
+  "revision": "2026-07-19.1",
+  "rules": [
+    {
+      "rule_id": "small-warm-status",
+      "operation": "status_clean",
+      "fixture_scale": "small",
+      "temperature": "warm",
+      "sample_class": "local",
+      "min_p50_reduction_percent": 40.0,
+      "max_p95_regression_percent": 10.0,
+      "max_candidate_ait_git_p50_ratio": 2.0
+    },
+    {
+      "rule_id": "small-incremental-snapshot",
+      "operation": "snapshot_small_delta",
+      "fixture_scale": "small",
+      "temperature": "warm",
+      "sample_class": "local",
+      "min_p50_reduction_percent": 40.0,
+      "max_p95_regression_percent": 10.0,
+      "max_candidate_ait_git_p50_ratio": 2.0
+    },
+    {
+      "rule_id": "small-first-snapshot",
+      "operation": "snapshot_first",
+      "fixture_scale": "small",
+      "temperature": "cold",
+      "sample_class": "local",
+      "max_p95_regression_percent": 10.0,
+      "max_candidate_ait_git_p50_ratio": 4.0
+    },
+    {
+      "rule_id": "small-first-push",
+      "operation": "push_empty",
+      "fixture_scale": "small",
+      "temperature": "cold",
+      "sample_class": "process_network",
+      "min_p50_reduction_percent": 40.0,
+      "max_p95_regression_percent": 10.0,
+      "max_candidate_ait_git_p50_ratio": 4.0
+    },
+    {
+      "rule_id": "small-incremental-push",
+      "operation": "push_incremental",
+      "fixture_scale": "small",
+      "temperature": "warm",
+      "sample_class": "process_network",
+      "max_p95_regression_percent": 10.0,
+      "max_candidate_ait_git_p50_ratio": 4.0
+    }
+  ],
+  "limitations": [
+    "These are engineering promotion budgets, not a universal claim that AIT is faster than Git.",
+    "Full Stage 4 promotion additionally requires every protocol-v1 matrix cell and all acceptance gates."
+  ]
+}

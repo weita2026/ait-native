@@ -1,0 +1,677 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PATH="/Users/weita/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:${PATH:-}"
+
+resolve_cargo() {
+  if command -v cargo >/dev/null 2>&1; then
+    command -v cargo
+    return 0
+  fi
+  if command -v rustup >/dev/null 2>&1; then
+    rustup which cargo 2>/dev/null || true
+    return 0
+  fi
+  return 1
+}
+
+resolve_rust_tool() {
+  local name="$1"
+  if command -v rustup >/dev/null 2>&1; then
+    rustup which "$name" 2>/dev/null || true
+    return 0
+  fi
+  command -v "$name" 2>/dev/null || true
+}
+
+cargo_target_dir() {
+  if [[ -n "${AIT_SHARED_CARGO_TARGET_DIR:-}" ]]; then
+    printf '%s\n' "${AIT_SHARED_CARGO_TARGET_DIR}"
+    return 0
+  fi
+  printf '%s\n' "${CARGO_TARGET_DIR:-${ROOT_DIR}/.ait/cargo-target}"
+}
+
+cargo_build_dir() {
+  if [[ -n "${AIT_SHARED_CARGO_BUILD_DIR:-}" ]]; then
+    printf '%s\n' "${AIT_SHARED_CARGO_BUILD_DIR}"
+    return 0
+  fi
+  if [[ -n "${CARGO_BUILD_BUILD_DIR:-}" ]]; then
+    printf '%s\n' "${CARGO_BUILD_BUILD_DIR}"
+    return 0
+  fi
+  printf '%s\n' "${ROOT_DIR}/.ait/cargo-build/workspaces/{workspace-path-hash}"
+}
+
+resolved_cargo_dir() {
+  local path="$1"
+  if [[ "$(basename "${path}")" == "{workspace-path-hash}" ]]; then
+    local parent
+    parent="$(dirname "${path}")"
+    mkdir -p "${parent}"
+    printf '%s/{workspace-path-hash}\n' "$(cd "${parent}" && pwd -P)"
+    return 0
+  fi
+  mkdir -p "${path}"
+  (cd "${path}" && pwd -P)
+}
+
+ensure_distinct_cargo_dirs() {
+  local target_dir="$1"
+  local build_dir="$2"
+  local resolved_target
+  local resolved_build
+  resolved_target="$(resolved_cargo_dir "${target_dir}")"
+  resolved_build="$(resolved_cargo_dir "${build_dir}")"
+  if [[ "${resolved_target}" == "${resolved_build}" ]]; then
+    printf 'Cargo target-dir and build-dir must be distinct: %s\n' "${resolved_target}" >&2
+    return 2
+  fi
+}
+
+file_mtime_epoch() {
+  local path="$1"
+  stat -f '%m' "${path}" 2>/dev/null || stat -c '%Y' "${path}" 2>/dev/null
+}
+
+cargo_cache_in_use() {
+  local cache_dir="$1"
+  if ! command -v lsof >/dev/null 2>&1; then
+    return 2
+  fi
+  local owner_pid
+  owner_pid="$(lsof -t +D "${cache_dir}" 2>/dev/null | head -n 1 || true)"
+  [[ -n "${owner_pid}" ]]
+}
+
+clear_cargo_build_contents() {
+  local build_dir="$1"
+  local candidate
+  local candidates=()
+  local failed=0
+  shopt -s dotglob nullglob
+  candidates=("${build_dir}"/*)
+  shopt -u dotglob nullglob
+  for candidate in "${candidates[@]}"; do
+    case "$(basename "${candidate}")" in
+      .ait-gc-lock|.ait-gc-marker)
+        continue
+        ;;
+    esac
+    if ! rm -rf -- "${candidate}"; then
+      failed=1
+    fi
+  done
+  return "${failed}"
+}
+
+release_cargo_gc_lock() {
+  local lock_dir="$1"
+  rm -f -- "${lock_dir}/pid" 2>/dev/null || true
+  rmdir "${lock_dir}" 2>/dev/null || true
+}
+
+acquire_cargo_gc_lock() {
+  local lock_dir="$1"
+  local now="$2"
+  if mkdir "${lock_dir}" 2>/dev/null; then
+    printf '%s\n' "$$" > "${lock_dir}/pid"
+    return 0
+  fi
+
+  local lock_pid=""
+  local lock_mtime=""
+  lock_pid="$(cat "${lock_dir}/pid" 2>/dev/null || true)"
+  case "${lock_pid}" in
+    ''|*[!0-9]*)
+      lock_mtime="$(file_mtime_epoch "${lock_dir}" || true)"
+      if [[ -z "${lock_mtime}" ]] || (( now - lock_mtime < 60 )); then
+        return 1
+      fi
+      ;;
+    *)
+      if kill -0 "${lock_pid}" 2>/dev/null; then
+        return 1
+      fi
+      ;;
+  esac
+  release_cargo_gc_lock "${lock_dir}"
+  if ! mkdir "${lock_dir}" 2>/dev/null; then
+    return 1
+  fi
+  printf '%s\n' "$$" > "${lock_dir}/pid"
+}
+
+auto_reclaim_cargo_build_dir() {
+  local build_dir="$1"
+  local max_bytes="${AIT_CARGO_BUILD_MAX_BYTES:-0}"
+  local interval_seconds="${AIT_CARGO_BUILD_GC_INTERVAL_SECONDS:-3600}"
+  case "${max_bytes}:${interval_seconds}" in
+    *[!0-9:]*|:*)
+      printf 'Skipping Cargo build-dir GC because its numeric configuration is invalid.\n' >&2
+      return 0
+      ;;
+  esac
+  if [[ "${max_bytes}" == "0" ]]; then
+    return 0
+  fi
+  if [[ "$(basename "${build_dir}")" == "{workspace-path-hash}" ]]; then
+    printf 'Skipping Cargo build-dir GC for a workspace template; use explicit cache maintenance after Cargo expands it: %s\n' \
+      "${build_dir}" >&2
+    return 0
+  fi
+
+  mkdir -p "${build_dir}"
+  local marker="${build_dir}/.ait-gc-marker"
+  local lock_dir="${build_dir}/.ait-gc-lock"
+  local now
+  local marker_mtime
+  now="$(date +%s)"
+  # Full-tree sizing is intentionally periodic: it is much slower than a warm
+  # Cargo no-op on large external caches. CI RAM has its own admission reclaimer.
+  if [[ -f "${marker}" && "${interval_seconds}" != "0" ]]; then
+    marker_mtime="$(file_mtime_epoch "${marker}" || true)"
+    if [[ -n "${marker_mtime}" ]] && (( now - marker_mtime < interval_seconds )); then
+      return 0
+    fi
+  fi
+  if ! acquire_cargo_gc_lock "${lock_dir}" "${now}"; then
+    return 0
+  fi
+
+  local size_kib
+  local max_kib
+  size_kib="$(du -sk "${build_dir}" 2>/dev/null | awk '{print $1}')"
+  max_kib=$((max_bytes / 1024))
+  if [[ -z "${size_kib}" ]] || (( size_kib <= max_kib )); then
+    touch "${marker}"
+    release_cargo_gc_lock "${lock_dir}"
+    return 0
+  fi
+  if ! command -v lsof >/dev/null 2>&1; then
+    printf 'Skipping Cargo build-dir GC because active use cannot be verified without lsof: %s\n' \
+      "${build_dir}" >&2
+    release_cargo_gc_lock "${lock_dir}"
+    return 0
+  fi
+  if cargo_cache_in_use "${build_dir}"; then
+    printf 'Skipping active Cargo build-dir GC: %s\n' "${build_dir}" >&2
+    release_cargo_gc_lock "${lock_dir}"
+    return 0
+  fi
+
+  printf 'Cargo build-dir exceeds %s bytes; reclaiming idle intermediates: %s\n' \
+    "${max_bytes}" "${build_dir}"
+  if ! clear_cargo_build_contents "${build_dir}"; then
+    printf 'Cargo build-dir GC could not remove every intermediate: %s\n' "${build_dir}" >&2
+    release_cargo_gc_lock "${lock_dir}"
+    return 0
+  fi
+  touch "${marker}"
+  release_cargo_gc_lock "${lock_dir}"
+}
+
+core_build_profile() {
+  local profile
+  profile="${AIT_CORE_BUILD_PROFILE:-release}"
+  case "${profile}" in
+    release)
+      printf '%s\n' "${profile}"
+      ;;
+    *)
+      printf 'Unsupported AIT_CORE_BUILD_PROFILE: %s\n' "${profile}" >&2
+      printf 'Only release is supported; debug/dev profile is forbidden.\n' >&2
+      return 2
+      ;;
+  esac
+}
+
+cargo_profile_dir() {
+  core_build_profile
+}
+
+run_cargo() {
+  local cargo_bin
+  cargo_bin="$(resolve_cargo)"
+  local rustc_bin
+  rustc_bin="$(resolve_rust_tool rustc)"
+  local rustdoc_bin
+  rustdoc_bin="$(resolve_rust_tool rustdoc)"
+  if [[ -n "${rustc_bin}" ]]; then
+    export RUSTC="${rustc_bin}"
+  fi
+  if [[ -n "${rustdoc_bin}" ]]; then
+    export RUSTDOC="${rustdoc_bin}"
+  fi
+  local existing_rustflags
+  existing_rustflags="${RUSTFLAGS:-}"
+  local pyo3_link_flags="-C link-arg=-undefined -C link-arg=dynamic_lookup"
+  if [[ -n "${existing_rustflags}" ]]; then
+    export RUSTFLAGS="${existing_rustflags} ${pyo3_link_flags}"
+  else
+    export RUSTFLAGS="${pyo3_link_flags}"
+  fi
+  local target_dir
+  local build_dir
+  target_dir="$(cargo_target_dir)"
+  build_dir="$(cargo_build_dir)"
+  ensure_distinct_cargo_dirs "${target_dir}" "${build_dir}"
+  export CARGO_TARGET_DIR="${target_dir}"
+  export CARGO_BUILD_BUILD_DIR="${build_dir}"
+  local cargo_status=0
+  "${cargo_bin}" "$@" || cargo_status=$?
+  auto_reclaim_cargo_build_dir "${build_dir}"
+  return "${cargo_status}"
+}
+
+refresh_build_artifact_mtimes() {
+  local target_dir
+  target_dir="$(cargo_target_dir)"
+  local profile_dir
+  profile_dir="$(cargo_profile_dir)"
+  local artifact
+  for artifact in \
+    "${target_dir}/${profile_dir}/ait-cli" \
+    "${target_dir}/${profile_dir}/ait-cli.exe" \
+    "${target_dir}/${profile_dir}/ait-agent" \
+    "${target_dir}/${profile_dir}/ait-agent.exe" \
+    "${target_dir}/${profile_dir}/ait-agent-worker" \
+    "${target_dir}/${profile_dir}/ait-agent-worker.exe" \
+    "${target_dir}/${profile_dir}/libait_py.dylib" \
+    "${target_dir}/${profile_dir}/libait_py.so" \
+    "${target_dir}/${profile_dir}/ait_py.dll"; do
+    if [[ -e "${artifact}" ]]; then
+      touch "${artifact}"
+    fi
+  done
+}
+
+resolve_native_artifact() {
+  local artifact_dir="$1"
+  local name="$2"
+  if [[ -f "${artifact_dir}/${name}" ]]; then
+    printf '%s\n' "${artifact_dir}/${name}"
+    return 0
+  fi
+  if [[ -f "${artifact_dir}/${name}.exe" ]]; then
+    printf '%s\n' "${artifact_dir}/${name}.exe"
+    return 0
+  fi
+  printf 'Missing native release artifact: %s/%s[.exe]\n' \
+    "${artifact_dir}" "${name}" >&2
+  return 2
+}
+
+install_native_core_commands() {
+  local bin_dir="${AIT_NATIVE_BIN_DIR:-}"
+  local skip_build=0
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --bin-dir)
+        if [[ $# -lt 2 || -z "$2" ]]; then
+          printf 'The --bin-dir option requires a non-empty path.\n' >&2
+          return 2
+        fi
+        bin_dir="$2"
+        shift
+        ;;
+      --skip-build)
+        skip_build=1
+        ;;
+      --help|-h)
+        cat <<'EOF'
+Usage:
+  ./ait.sh core install [--bin-dir <path>] [--skip-build]
+
+Build and install the ait-core-owned native commands:
+
+  ait-cli            -> ait
+  ait-agent          -> ait-agent
+  ait-agent-worker   -> ait-agent-worker
+
+The default destination is AIT_NATIVE_BIN_DIR when set, otherwise
+${XDG_BIN_HOME}/ when set, otherwise ${HOME}/.local/bin. The destination must
+already be on PATH if the commands should be available by name. --skip-build
+uses the existing release artifacts and fails when any artifact is missing.
+EOF
+        return 0
+        ;;
+      *)
+        printf 'Unknown install option: %s\n' "$1" >&2
+        return 2
+        ;;
+    esac
+    shift
+  done
+
+  if [[ -z "${bin_dir}" ]]; then
+    if [[ -n "${XDG_BIN_HOME:-}" ]]; then
+      bin_dir="${XDG_BIN_HOME}"
+    elif [[ -n "${HOME:-}" ]]; then
+      bin_dir="${HOME}/.local/bin"
+    else
+      printf 'Cannot choose an install destination: set --bin-dir or AIT_NATIVE_BIN_DIR.\n' >&2
+      return 2
+    fi
+  fi
+
+  if [[ "${skip_build}" != "1" ]]; then
+    local profile
+    profile="$(core_build_profile)"
+    run_cargo build --profile "${profile}" --manifest-path "${ROOT_DIR}/rust/Cargo.toml" --workspace
+    refresh_build_artifact_mtimes
+  fi
+
+  local target_dir
+  local profile_dir
+  local artifact_dir
+  target_dir="$(cargo_target_dir)"
+  profile_dir="$(cargo_profile_dir)"
+  artifact_dir="${target_dir}/${profile_dir}"
+
+  local cli_artifact
+  local agent_artifact
+  local worker_artifact
+  cli_artifact="$(resolve_native_artifact "${artifact_dir}" ait-cli)"
+  agent_artifact="$(resolve_native_artifact "${artifact_dir}" ait-agent)"
+  worker_artifact="$(resolve_native_artifact "${artifact_dir}" ait-agent-worker)"
+
+  local command_suffix=""
+  local agent_suffix=""
+  local worker_suffix=""
+  if [[ "${cli_artifact}" == *.exe ]]; then
+    command_suffix=".exe"
+  fi
+  if [[ "${agent_artifact}" == *.exe ]]; then
+    agent_suffix=".exe"
+  fi
+  if [[ "${worker_artifact}" == *.exe ]]; then
+    worker_suffix=".exe"
+  fi
+  if [[ "${agent_suffix}" != "${command_suffix}" ||
+    "${worker_suffix}" != "${command_suffix}" ]]; then
+    printf 'Native release artifacts use inconsistent executable suffixes.\n' >&2
+    return 2
+  fi
+
+  mkdir -p "${bin_dir}"
+  bin_dir="$(cd "${bin_dir}" && pwd -P)"
+  local staging_dir
+  staging_dir="$(mktemp -d "${bin_dir}/.ait-native-install.XXXXXX")"
+
+  if ! install -m 0755 "${cli_artifact}" "${staging_dir}/ait${command_suffix}" ||
+    ! install -m 0755 "${agent_artifact}" "${staging_dir}/ait-agent${command_suffix}" ||
+    ! install -m 0755 "${worker_artifact}" "${staging_dir}/ait-agent-worker${command_suffix}"; then
+    rm -rf -- "${staging_dir}"
+    return 2
+  fi
+
+  local command_name
+  for command_name in ait ait-agent ait-agent-worker; do
+    command_name="${command_name}${command_suffix}"
+    if ! mv -f -- "${staging_dir}/${command_name}" "${bin_dir}/${command_name}"; then
+      rm -rf -- "${staging_dir}"
+      return 2
+    fi
+    printf 'Installed %s\n' "${bin_dir}/${command_name}"
+  done
+  rmdir "${staging_dir}"
+}
+
+cargo_target_size() {
+  local target_dir="$1"
+  if [[ -e "${target_dir}" ]]; then
+    du -sh "${target_dir}" 2>/dev/null | awk '{print $1}'
+  else
+    printf '0B\n'
+  fi
+}
+
+compact_one_cargo_target() {
+  local target_dir="$1"
+  local dry_run="$2"
+  local force="$3"
+
+  if [[ ! -d "${target_dir}" ]]; then
+    printf 'Skipping missing Cargo target: %s\n' "${target_dir}"
+    return 0
+  fi
+  if [[ "${force}" != "1" ]] && ! command -v lsof >/dev/null 2>&1; then
+    printf 'Refusing to compact Cargo target without lsof active-use verification: %s\n' \
+      "${target_dir}" >&2
+    return 2
+  fi
+  if [[ "${force}" != "1" ]] && cargo_cache_in_use "${target_dir}"; then
+    printf 'Refusing to compact active Cargo target: %s\n' "${target_dir}" >&2
+    printf 'Stop processes using it, or pass --force if you have verified it is safe.\n' >&2
+    return 2
+  fi
+
+  local before
+  before="$(cargo_target_size "${target_dir}")"
+  printf 'Compacting Cargo target: %s (before: %s)\n' "${target_dir}" "${before}"
+
+  local candidate
+  local candidates=(
+    "${target_dir}/debug"
+    "${target_dir}/release/incremental"
+    "${target_dir}/release/deps"
+    "${target_dir}/release/build"
+    "${target_dir}/release/.fingerprint"
+    "${target_dir}/ait-ci/incremental"
+    "${target_dir}/ait-ci/deps"
+    "${target_dir}/ait-ci/build"
+    "${target_dir}/ait-ci/.fingerprint"
+    "${target_dir}/tmp"
+  )
+  for candidate in "${candidates[@]}"; do
+    if [[ ! -e "${candidate}" ]]; then
+      continue
+    fi
+    if [[ "${dry_run}" == "1" ]]; then
+      printf 'Would remove %s\n' "${candidate}"
+    else
+      rm -rf -- "${candidate}"
+      printf 'Removed %s\n' "${candidate}"
+    fi
+  done
+
+  if [[ "${dry_run}" == "1" ]]; then
+    printf 'Dry run complete for %s\n' "${target_dir}"
+  else
+    local after
+    after="$(cargo_target_size "${target_dir}")"
+    printf 'Cargo target compacted: %s (after: %s)\n' "${target_dir}" "${after}"
+  fi
+}
+
+compact_one_cargo_build_dir() {
+  local build_dir="$1"
+  local dry_run="$2"
+  local force="$3"
+
+  if [[ ! -d "${build_dir}" ]]; then
+    printf 'Skipping missing Cargo build dir: %s\n' "${build_dir}"
+    return 0
+  fi
+  if [[ "${force}" != "1" ]] && ! command -v lsof >/dev/null 2>&1; then
+    printf 'Refusing to compact Cargo build dir without lsof active-use verification: %s\n' \
+      "${build_dir}" >&2
+    return 2
+  fi
+  if [[ "${force}" != "1" ]] && cargo_cache_in_use "${build_dir}"; then
+    printf 'Refusing to compact active Cargo build dir: %s\n' "${build_dir}" >&2
+    printf 'Stop processes using it, or pass --force if you have verified it is safe.\n' >&2
+    return 2
+  fi
+
+  local before
+  before="$(cargo_target_size "${build_dir}")"
+  if [[ "${dry_run}" == "1" ]]; then
+    printf 'Would remove idle Cargo intermediates from %s (current size: %s)\n' \
+      "${build_dir}" "${before}"
+    return 0
+  fi
+  if ! clear_cargo_build_contents "${build_dir}"; then
+    printf 'Failed to compact every Cargo build-dir intermediate: %s\n' "${build_dir}" >&2
+    return 2
+  fi
+  touch "${build_dir}/.ait-gc-marker"
+  printf 'Cargo build dir compacted: %s (before: %s)\n' "${build_dir}" "${before}"
+}
+
+compact_cargo_targets() {
+  local dry_run=0
+  local force=0
+  local include_worktrees=0
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --dry-run)
+        dry_run=1
+        ;;
+      --force)
+        force=1
+        ;;
+      --include-worktrees)
+        include_worktrees=1
+        ;;
+      --help|-h)
+        cat <<'EOF'
+Usage:
+  ./ait.sh core compact [--dry-run] [--force] [--include-worktrees]
+
+Remove Cargo intermediates from the configured build dir and legacy
+intermediate paths from the target dir while leaving final release binaries in
+place. With --include-worktrees it also scans managed task worktree caches.
+
+Target selection follows the build/test path:
+  1. AIT_SHARED_CARGO_TARGET_DIR, when set, explicitly opts into a shared target.
+  2. CARGO_TARGET_DIR, when set, is honored for caller-managed targets.
+  3. Otherwise .ait/cargo-target is used.
+
+Build-dir selection follows:
+  1. AIT_SHARED_CARGO_BUILD_DIR, when set.
+  2. CARGO_BUILD_BUILD_DIR, when set.
+  3. Otherwise a workspace-isolated leaf beneath .ait/cargo-build is used.
+EOF
+        return 0
+        ;;
+      *)
+        printf 'Unknown compact option: %s\n' "$1" >&2
+        return 2
+        ;;
+    esac
+    shift
+  done
+
+  local targets=()
+  targets+=("$(cargo_target_dir)")
+  local build_dirs=()
+  build_dirs+=("$(cargo_build_dir)")
+  if [[ "${include_worktrees}" == "1" ]]; then
+    local worktree_target
+    for worktree_target in "${ROOT_DIR}"/.ait-worktree-links/*/.ait/cargo-target; do
+      [[ -d "${worktree_target}" ]] || continue
+      targets+=("${worktree_target}")
+    done
+    local worktree_build
+    for worktree_build in "${ROOT_DIR}"/.ait-worktree-links/*/rust/target \
+      "${ROOT_DIR}"/.ait-worktree-links/*/.ait/cargo-build/workspaces/*/* \
+      "${ROOT_DIR}"/.ait-worktree-links/*/.ait/cargo-build/task-workspaces/*; do
+      [[ -d "${worktree_build}" ]] || continue
+      build_dirs+=("${worktree_build}")
+    done
+  fi
+
+  local seen="|"
+  local target_dir
+  local resolved
+  local failed=0
+  for target_dir in "${targets[@]}"; do
+    if [[ -d "${target_dir}" ]]; then
+      resolved="$(cd "${target_dir}" && pwd -P)"
+    else
+      resolved="${target_dir}"
+    fi
+    case "${seen}" in
+      *"|${resolved}|"*)
+        continue
+        ;;
+    esac
+    seen="${seen}${resolved}|"
+    if ! compact_one_cargo_target "${resolved}" "${dry_run}" "${force}"; then
+      failed=1
+    fi
+  done
+  local build_dir
+  for build_dir in "${build_dirs[@]}"; do
+    if [[ -d "${build_dir}" ]]; then
+      resolved="$(cd "${build_dir}" && pwd -P)"
+    else
+      resolved="${build_dir}"
+    fi
+    case "${seen}" in
+      *"|${resolved}|"*)
+        continue
+        ;;
+    esac
+    seen="${seen}${resolved}|"
+    if ! compact_one_cargo_build_dir "${resolved}" "${dry_run}" "${force}"; then
+      failed=1
+    fi
+  done
+  return "${failed}"
+}
+
+usage() {
+  cat <<'EOF'
+Usage:
+  ./ait.sh core build    # release profile
+  ./ait.sh core install [--bin-dir <path>] [--skip-build]
+  ./ait.sh core compact [--dry-run] [--force] [--include-worktrees]
+  ./ait.sh core test     # lean ait-ci profile
+
+`ait-core` is Rust-only and owns its native build. Python packaging and
+compatibility glue belong to `../ait-python`; `../ait` is transitional.
+AIT_CORE_BUILD_PROFILE may be set to release; debug/dev profiles are forbidden.
+AIT-owned tests use the non-debug ait-ci profile.
+Set AIT_SHARED_CARGO_TARGET_DIR to opt into a shared Cargo target. Otherwise
+CARGO_TARGET_DIR is honored when set, then .ait/cargo-target is used.
+Set AIT_SHARED_CARGO_BUILD_DIR to opt into shared intermediates. Otherwise
+CARGO_BUILD_BUILD_DIR is honored, then Cargo expands a workspace-isolated leaf
+beneath .ait/cargo-build. Automatic build-dir reclamation is disabled by default; set a nonzero
+AIT_CARGO_BUILD_MAX_BYTES to opt in. Reclamation is rate-limited by
+AIT_CARGO_BUILD_GC_INTERVAL_SECONDS (default 3600).
+EOF
+}
+
+if [[ "${1:-}" != "core" ]]; then
+  usage >&2
+  exit 1
+fi
+
+case "${2:-}" in
+  build)
+    profile="$(core_build_profile)"
+    run_cargo build --profile "${profile}" --manifest-path "${ROOT_DIR}/rust/Cargo.toml" --workspace
+    refresh_build_artifact_mtimes
+    ;;
+  install)
+    shift 2
+    install_native_core_commands "$@"
+    ;;
+  compact)
+    shift 2
+    compact_cargo_targets "$@"
+    ;;
+  test)
+    run_cargo test --manifest-path "${ROOT_DIR}/rust/Cargo.toml" --workspace --profile ait-ci
+    ;;
+  *)
+    usage >&2
+    exit 1
+    ;;
+esac

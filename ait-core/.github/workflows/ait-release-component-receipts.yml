@@ -1,0 +1,523 @@
+name: ait release component receipts
+
+on:
+  workflow_dispatch:
+    inputs:
+      coordinator_snapshot:
+        description: Exact AIT coordinator Snapshot recorded by the public source mapping
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ait-release-component-receipts-${{ github.sha }}-${{ inputs.coordinator_snapshot }}
+  cancel-in-progress: false
+
+jobs:
+  contract:
+    name: Validate the immutable public Git source contract
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    outputs:
+      coordinator_snapshot: ${{ steps.contract.outputs.coordinator_snapshot }}
+      family_version: ${{ steps.contract.outputs.family_version }}
+      rust_toolchain: ${{ steps.contract.outputs.rust_toolchain }}
+      source_git_commit: ${{ steps.contract.outputs.source_git_commit }}
+    steps:
+      - name: Check out the exact public source commit
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Validate static contracts and dispatch identity
+        id: contract
+        shell: bash
+        env:
+          AIT_DISPATCH_COORDINATOR_SNAPSHOT: ${{ inputs.coordinator_snapshot }}
+          AIT_PUBLIC_SOURCE_ROOT: ${{ github.workspace }}
+          AIT_SOURCE_GIT_COMMIT: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          coordinator_snapshot="${AIT_DISPATCH_COORDINATOR_SNAPSHOT}"
+          [[ "${coordinator_snapshot}" =~ ^SNP-[0-9A-F]{12}$ ]]
+          test "$(git -C "${AIT_PUBLIC_SOURCE_ROOT}" rev-parse HEAD)" = \
+            "${AIT_SOURCE_GIT_COMMIT}"
+          node "${AIT_PUBLIC_SOURCE_ROOT}/build-release.mjs" \
+            --validate-only \
+            --git-commit "${AIT_SOURCE_GIT_COMMIT}"
+          jq -e \
+            --arg snapshot "${coordinator_snapshot}" \
+            --arg version "$(jq -r '.family_version' \
+              ci/release_repository_authorities.json)" '
+              .schema == "ait.release.monorepo-source/v1" and
+              .coordinator_snapshot == $snapshot and
+              .family_version == $version and
+              (.coordinator_manifest_hash | test("^[0-9a-f]{64}$")) and
+              (.coordinator_created_at | test("^(0|[1-9][0-9]*)$")) and
+              .public_publish == false
+            ' "${AIT_PUBLIC_SOURCE_ROOT}/ait-monorepo-source.json" >/dev/null
+          ./ci/release_receipt_matrix_test.sh
+          ./ci/release_receipt_bundle_test.sh
+          ./ci/release_monorepo_export_test.sh
+          jq -e -f ci/native_bootstrap_matrix.jq \
+            ci/native_bootstrap_matrix.json >/dev/null
+          {
+            echo "coordinator_snapshot=${coordinator_snapshot}"
+            echo "family_version=$(jq -r '.family_version' \
+              ci/release_repository_authorities.json)"
+            echo "rust_toolchain=$(jq -r '.rust_toolchain' \
+              ci/native_bootstrap_matrix.json)"
+            echo "source_git_commit=${AIT_SOURCE_GIT_COMMIT}"
+          } >>"${GITHUB_OUTPUT}"
+
+  project:
+    name: Project the exact family receipt matrix
+    needs: contract
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    outputs:
+      build_matrix: ${{ steps.project.outputs.build_matrix }}
+      family_channel: ${{ steps.project.outputs.family_channel }}
+      family_version: ${{ steps.project.outputs.family_version }}
+      receipt_count: ${{ steps.project.outputs.receipt_count }}
+      receipt_retention_days: ${{ steps.project.outputs.receipt_retention_days }}
+      source_retention_days: ${{ steps.project.outputs.source_retention_days }}
+    steps:
+      - name: Check out the exact public source commit
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Project the Snapshot-mapped build matrix
+        id: project
+        shell: bash
+        env:
+          AIT_COORDINATOR_SNAPSHOT: ${{ needs.contract.outputs.coordinator_snapshot }}
+          AIT_FAMILY_VERSION: ${{ needs.contract.outputs.family_version }}
+          AIT_PUBLIC_SOURCE_ROOT: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          projection="${RUNNER_TEMP}/release-receipt-matrix.json"
+          jq -n \
+            --slurpfile family "${AIT_PUBLIC_SOURCE_ROOT}/ait-release-family.json" \
+            --slurpfile platforms ci/native_bootstrap_matrix.json \
+            --slurpfile authorities ci/release_repository_authorities.json \
+            -f ci/release_receipt_matrix.jq >"${projection}"
+          jq -e \
+            --arg snapshot "${AIT_COORDINATOR_SNAPSHOT}" \
+            --arg version "${AIT_FAMILY_VERSION}" '
+              .contract == "ait.release.receipt-matrix/v1" and
+              .family.version == $version and
+              .public_publish == false and
+              .expected_source_count == 5 and
+              .expected_receipt_count == 25 and
+              .expected_component_artifact_count == 31
+            ' "${projection}" >/dev/null
+          test "$(jq -r '.coordinator_snapshot' \
+            "${AIT_PUBLIC_SOURCE_ROOT}/ait-monorepo-source.json")" = \
+            "${AIT_COORDINATOR_SNAPSHOT}"
+          {
+            echo "build_matrix=$(jq -c '.builds' "${projection}")"
+            echo "family_channel=$(jq -r '.family.channel' "${projection}")"
+            echo "family_version=$(jq -r '.family.version' "${projection}")"
+            echo "receipt_count=$(jq -r '.expected_receipt_count' "${projection}")"
+            echo "receipt_retention_days=$(jq -r '.receipt_retention_days' "${projection}")"
+            echo "source_retention_days=$(jq -r '.source_cache_retention_days' "${projection}")"
+          } >>"${GITHUB_OUTPUT}"
+          cp "${projection}" ./release-receipt-matrix.json
+
+      - name: Upload the resolved matrix evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ait-release-receipt-matrix
+          path: release-receipt-matrix.json
+          if-no-files-found: error
+          retention-days: 30
+
+  build:
+    name: Receipt ${{ matrix.repo_name }} / ${{ matrix.target }}
+    needs:
+      - contract
+      - project
+    strategy:
+      fail-fast: false
+      max-parallel: 12
+      matrix: ${{ fromJSON(needs.project.outputs.build_matrix) }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 180
+    steps:
+      - name: Check out the exact public source commit
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Verify public source and native runner identity
+        shell: bash
+        env:
+          AIT_MATRIX_ARCHITECTURE: ${{ matrix.architecture }}
+          AIT_MATRIX_RUNNER_OS: ${{ matrix.runner_os }}
+          AIT_PUBLIC_SOURCE_ROOT: ${{ github.workspace }}
+          AIT_RUNNER_ARCH: ${{ runner.arch }}
+          AIT_RUNNER_OS: ${{ runner.os }}
+          AIT_SOURCE_GIT_COMMIT: ${{ needs.contract.outputs.source_git_commit }}
+        run: |
+          set -euo pipefail
+          node "${AIT_PUBLIC_SOURCE_ROOT}/build-release.mjs" \
+            --validate-only \
+            --git-commit "${AIT_SOURCE_GIT_COMMIT}"
+          case "${AIT_MATRIX_ARCHITECTURE}" in
+            arm64) expected_arch=ARM64 ;;
+            x86_64) expected_arch=X64 ;;
+            *) exit 64 ;;
+          esac
+          test "${AIT_RUNNER_ARCH}" = "${expected_arch}"
+          test "${AIT_RUNNER_OS}" = "${AIT_MATRIX_RUNNER_OS}"
+
+      - name: Apply the declared platform floor
+        shell: bash
+        env:
+          AIT_MINIMUM_PLATFORM: ${{ matrix.minimum_platform }}
+          AIT_MINIMUM_PLATFORM_KIND: ${{ matrix.minimum_platform_kind }}
+        run: |
+          set -euo pipefail
+          case "${AIT_MINIMUM_PLATFORM_KIND}" in
+            macos_deployment_target)
+              echo "MACOSX_DEPLOYMENT_TARGET=${AIT_MINIMUM_PLATFORM}" \
+                >>"${GITHUB_ENV}"
+              ;;
+            glibc)
+              echo "AIT_RELEASE_GLIBC_FLOOR=${AIT_MINIMUM_PLATFORM}" \
+                >>"${GITHUB_ENV}"
+              ;;
+            windows_build)
+              echo "AIT_RELEASE_WINDOWS_MIN_BUILD=${AIT_MINIMUM_PLATFORM}" \
+                >>"${GITHUB_ENV}"
+              ;;
+            portable_envelope)
+              ;;
+            *) exit 64 ;;
+          esac
+
+      - name: Install the pinned Rust target toolchain
+        if: matrix.target != 'portable'
+        shell: bash
+        env:
+          AIT_RUST_TOOLCHAIN: ${{ needs.contract.outputs.rust_toolchain }}
+          AIT_TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          rustup toolchain install "${AIT_RUST_TOOLCHAIN}" --profile minimal
+          rustup target add --toolchain "${AIT_RUST_TOOLCHAIN}" "${AIT_TARGET}"
+          rustup default "${AIT_RUST_TOOLCHAIN}"
+
+      - name: Install Python 3.11 for the abi3 wheel
+        if: matrix.repo_name == 'ait-python'
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.11'
+
+      - name: Install the pinned wheel builder
+        if: matrix.repo_name == 'ait-python'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check 'maturin==1.13.3'
+          test "$(maturin --version)" = 'maturin 1.13.3'
+
+      - name: Install Node.js for the public receipt builder
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '22'
+
+      - name: Build the Git-commit-bound component receipt
+        shell: bash
+        env:
+          AIT_COMPONENT_ARTIFACT_COUNT: ${{ matrix.expected_component_artifact_count }}
+          AIT_COMPONENT_REPOSITORY_NAME: ${{ matrix.repo_name }}
+          AIT_COMPONENT_SNAPSHOT: ${{ matrix.source_snapshot }}
+          AIT_COMPONENT_TARGET: ${{ matrix.target }}
+          AIT_COMPONENT_VERSION: ${{ matrix.version }}
+          AIT_PUBLIC_SOURCE_ROOT: ${{ github.workspace }}
+          AIT_RELEASE_PLATFORM_FLOOR: ${{ matrix.minimum_platform }}
+          AIT_RELEASE_PLATFORM_FLOOR_KIND: ${{ matrix.minimum_platform_kind }}
+          AIT_RELEASE_RUNNER_ARCH: ${{ runner.arch }}
+          AIT_RELEASE_RUNNER_LABEL: ${{ matrix.runner }}
+          AIT_RELEASE_RUNNER_OS: ${{ runner.os }}
+          AIT_SOURCE_GIT_COMMIT: ${{ needs.contract.outputs.source_git_commit }}
+        run: |
+          set -euo pipefail
+          export AIT_RELEASE_RUNNER_IMAGE="${ImageOS:-${RUNNER_OS}}-${ImageVersion:-unknown}"
+          node "${AIT_PUBLIC_SOURCE_ROOT}/build-release.mjs" \
+            --component-receipt \
+            --repository "${AIT_COMPONENT_REPOSITORY_NAME}" \
+            --target "${AIT_COMPONENT_TARGET}" \
+            --version "${AIT_COMPONENT_VERSION}" \
+            --git-commit "${AIT_SOURCE_GIT_COMMIT}" \
+            --out-dir "${RUNNER_TEMP}/component-receipt" \
+            >"${RUNNER_TEMP}/component-receipt.stdout.json"
+          jq -e \
+            --arg repo "${AIT_COMPONENT_REPOSITORY_NAME}" \
+            --arg snapshot "${AIT_COMPONENT_SNAPSHOT}" \
+            --arg target "${AIT_COMPONENT_TARGET}" \
+            --arg commit "${AIT_SOURCE_GIT_COMMIT}" \
+            --argjson count "${AIT_COMPONENT_ARTIFACT_COUNT}" '
+              .contract == "ait.release.public-git.receipt/v1" and
+              .repo_name == $repo and
+              .snapshot_id == $snapshot and
+              .authority.git_commit == $commit and
+              .authority.source == "public_git_commit" and
+              .status == "built" and
+              .check_summary.decision == "pass" and
+              ([.artifacts[] | select(.role == "component-artifact")] | length) == $count and
+              (if $target == "portable" then .artifact_selection == "portable"
+               else .target == $target end) and
+              .public_publish == false and
+              .publishable == false
+            ' "${RUNNER_TEMP}/component-receipt/ait-release.receipt.json" >/dev/null
+
+      - name: Upload the immutable component receipt bundle
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ${{ matrix.receipt_artifact }}
+          path: ${{ runner.temp }}/component-receipt
+          if-no-files-found: error
+          include-hidden-files: true
+          compression-level: 0
+          retention-days: ${{ needs.project.outputs.receipt_retention_days }}
+
+  monorepo-source:
+    name: Archive the exact public Git source commit
+    needs:
+      - contract
+      - project
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out the exact public source commit
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Validate and archive the immutable commit
+        shell: bash
+        env:
+          AIT_COORDINATOR_SNAPSHOT: ${{ needs.contract.outputs.coordinator_snapshot }}
+          AIT_PUBLIC_SOURCE_ROOT: ${{ github.workspace }}
+          AIT_SOURCE_GIT_COMMIT: ${{ needs.contract.outputs.source_git_commit }}
+        run: |
+          set -euo pipefail
+          node "${AIT_PUBLIC_SOURCE_ROOT}/build-release.mjs" \
+            --validate-only \
+            --git-commit "${AIT_SOURCE_GIT_COMMIT}"
+          output="${RUNNER_TEMP}/ait-monorepo-source-artifact"
+          mkdir -p "${output}"
+          git -C "${AIT_PUBLIC_SOURCE_ROOT}" archive \
+            --format=tar "${AIT_SOURCE_GIT_COMMIT}" | gzip -n \
+            >"${output}/source-tree.tar.gz"
+          cp "${AIT_PUBLIC_SOURCE_ROOT}/ait-monorepo-source.json" \
+            "${output}/ait-monorepo-source.json"
+          mapping_sha256=$(sha256sum \
+            "${output}/ait-monorepo-source.json" | awk '{print $1}')
+          content_sha256=$(jq -r '.content_sha256' \
+            "${output}/ait-monorepo-source.json")
+          jq -n \
+            --arg contract 'ait.release.public-git-source/v1' \
+            --arg identity 'weita2026/ait-native' \
+            --arg coordinator_snapshot "${AIT_COORDINATOR_SNAPSHOT}" \
+            --arg git_commit "${AIT_SOURCE_GIT_COMMIT}" \
+            --arg mapping_sha256 "${mapping_sha256}" \
+            --arg content_sha256 "${content_sha256}" '
+              {
+                contract: $contract,
+                status: "ready",
+                public_source_identity: $identity,
+                coordinator_snapshot: $coordinator_snapshot,
+                git_commit: $git_commit,
+                mapping_sha256: $mapping_sha256,
+                content_sha256: $content_sha256,
+                subtree_count: 5,
+                source_cache_count: 0,
+                registry_write: false,
+                public_publish: false
+              }
+            ' >"${output}/ait-public-git-source.evidence.json"
+
+      - name: Upload the run-scoped public source evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ait-release-monorepo-source
+          path: ${{ runner.temp }}/ait-monorepo-source-artifact
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: ${{ needs.project.outputs.source_retention_days }}
+
+  family:
+    name: Admit and freeze the internal family dossier
+    needs:
+      - build
+      - contract
+      - monorepo-source
+      - project
+    runs-on: ubuntu-22.04
+    timeout-minutes: 90
+    steps:
+      - name: Check out the exact public source commit
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Download all component receipt bundles
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: ait-component-receipt-*
+          path: ${{ runner.temp }}/component-receipts
+          merge-multiple: false
+
+      - name: Download the exact public monorepo source evidence
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: ait-release-monorepo-source
+          path: ${{ runner.temp }}/monorepo-source
+
+      - name: Build the Linux family-admission CLI
+        shell: bash
+        env:
+          AIT_FAMILY_VERSION: ${{ needs.project.outputs.family_version }}
+          AIT_PUBLIC_SOURCE_ROOT: ${{ github.workspace }}
+          AIT_RUST_TOOLCHAIN: ${{ needs.contract.outputs.rust_toolchain }}
+          AIT_SOURCE_GIT_COMMIT: ${{ needs.contract.outputs.source_git_commit }}
+        run: |
+          set -euo pipefail
+          node "${AIT_PUBLIC_SOURCE_ROOT}/build-release.mjs" \
+            --validate-only \
+            --git-commit "${AIT_SOURCE_GIT_COMMIT}"
+          rustup toolchain install "${AIT_RUST_TOOLCHAIN}" --profile minimal
+          target_dir="${RUNNER_TEMP}/ait-family-admission-target"
+          rustup run "${AIT_RUST_TOOLCHAIN}" cargo build \
+            --locked \
+            --release \
+            --target-dir "${target_dir}" \
+            --manifest-path rust/Cargo.toml \
+            -p ait-cli \
+            --bin ait-cli
+          binary="${target_dir}/release/ait-cli"
+          test -x "${binary}"
+          test "$("${binary}" --version)" = "ait ${AIT_FAMILY_VERSION}"
+          echo "AIT_FAMILY_ADMISSION_BIN=${binary}" >>"${GITHUB_ENV}"
+
+      - name: Verify receipt inventory and freeze the family
+        id: family
+        shell: bash
+        env:
+          AIT_FAMILY_CHANNEL: ${{ needs.project.outputs.family_channel }}
+          AIT_FAMILY_VERSION: ${{ needs.project.outputs.family_version }}
+          AIT_PUBLIC_SOURCE_ROOT: ${{ github.workspace }}
+          AIT_RECEIPT_COUNT: ${{ needs.project.outputs.receipt_count }}
+          AIT_SOURCE_GIT_COMMIT: ${{ needs.contract.outputs.source_git_commit }}
+        run: |
+          set -euo pipefail
+          receipt_count=$(find "${RUNNER_TEMP}/component-receipts" \
+            -type f -name ait-release.receipt.json | wc -l | tr -d '[:space:]')
+          test "${receipt_count}" = "${AIT_RECEIPT_COUNT}"
+          test "$(find "${RUNNER_TEMP}/component-receipts" \
+            -type f -name ait-release.receipt.json -exec jq -r \
+              '.authority.git_commit' {} \; | sort -u)" = "${AIT_SOURCE_GIT_COMMIT}"
+          "${AIT_FAMILY_ADMISSION_BIN}" init \
+            --name ait-core \
+            --default-line release-bootstrap \
+            --json >"${RUNNER_TEMP}/family-init.json"
+          candidate="${RUNNER_TEMP}/family-candidate.json"
+          check="${RUNNER_TEMP}/family-check.json"
+          build="${RUNNER_TEMP}/family-build.json"
+          "${AIT_FAMILY_ADMISSION_BIN}" release candidate create \
+            --version "${AIT_FAMILY_VERSION}" \
+            --channel "${AIT_FAMILY_CHANNEL}" \
+            --profile family \
+            --public-source-root "${AIT_PUBLIC_SOURCE_ROOT}" \
+            --line main \
+            --json >"${candidate}"
+          release_id=$(jq -r '.release_id' "${candidate}")
+          "${AIT_FAMILY_ADMISSION_BIN}" release check "${release_id}" \
+            --receipts "${RUNNER_TEMP}/component-receipts" \
+            --json >"${check}"
+          "${AIT_FAMILY_ADMISSION_BIN}" release build "${release_id}" \
+            --receipts "${RUNNER_TEMP}/component-receipts" \
+            --json >"${build}"
+          jq -e \
+            --arg release_id "${release_id}" \
+            --arg commit "${AIT_SOURCE_GIT_COMMIT}" \
+            --argjson receipt_count "${AIT_RECEIPT_COUNT}" '
+              .release_id == $release_id and
+              .status == "checked" and
+              .check_summary.decision == "pass" and
+              ([.component_receipts[].git_commit] | unique) == [$commit] and
+              (.component_receipts | length) == $receipt_count and
+              (.artifacts | length) == 31
+            ' "${check}" >/dev/null
+          jq -e \
+            --arg release_id "${release_id}" '
+              .release_id == $release_id and
+              .status == "built" and
+              .check_summary.decision == "pass" and
+              ([.artifacts[] | select(.role == "component-artifact")] | length) == 31 and
+              .promotion.authorized == false and
+              .promotion.performed == false and
+              .promotion.registry_write == false
+            ' "${build}" >/dev/null
+          dossier="${RUNNER_TEMP}/family-dossier"
+          mkdir -p "${dossier}"
+          cp "${candidate}" "${dossier}/ait-release.candidate.json"
+          cp "${check}" "${dossier}/ait-release.check.json"
+          cp "${build}" "${dossier}/ait-release.build.json"
+          cp "${RUNNER_TEMP}/monorepo-source/source-tree.tar.gz" \
+            "${dossier}/ait-native-source-tree.tar.gz"
+          cp "${RUNNER_TEMP}/monorepo-source/ait-monorepo-source.json" \
+            "${dossier}/ait-monorepo-source.json"
+          cp "${RUNNER_TEMP}/monorepo-source/ait-public-git-source.evidence.json" \
+            "${dossier}/ait-public-git-source.evidence.json"
+          cp -R "dist/${release_id}/frozen" "${dossier}/frozen"
+          {
+            echo "release_id=${release_id}"
+            echo "dossier=${dossier}"
+          } >>"${GITHUB_OUTPUT}"
+
+      - name: Upload the frozen internal family dossier
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ait-family-dossier-${{ steps.family.outputs.release_id }}
+          path: ${{ steps.family.outputs.dossier }}
+          if-no-files-found: error
+          include-hidden-files: true
+          compression-level: 0
+          retention-days: ${{ needs.project.outputs.receipt_retention_days }}
+
+      - name: Record the non-public closeout
+        shell: bash
+        env:
+          AIT_RECEIPT_COUNT: ${{ needs.project.outputs.receipt_count }}
+          AIT_RELEASE_ID: ${{ steps.family.outputs.release_id }}
+          AIT_SOURCE_GIT_COMMIT: ${{ needs.contract.outputs.source_git_commit }}
+        run: |
+          {
+            echo '### ait-native internal family dossier'
+            echo
+            printf '%s `%s`\n' '- release:' "${AIT_RELEASE_ID}"
+            printf '%s `%s`\n' '- source Git commit:' "${AIT_SOURCE_GIT_COMMIT}"
+            printf '%s `%s`\n' '- component receipts:' "${AIT_RECEIPT_COUNT}"
+            echo '- component artifacts: `31`'
+            echo '- live AIT server connections: `0`'
+            echo '- public publication: `false`'
+            echo '- next gate: signing, package assembly, clean-install, and endpoint readback'
+          } >>"${GITHUB_STEP_SUMMARY}"

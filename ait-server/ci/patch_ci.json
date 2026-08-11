@@ -1,0 +1,52 @@
+{
+  "schema_version": 1,
+  "suites": [
+    {
+      "suite_id": "rust_core",
+      "display_name": "Rust Core",
+      "plane": "patchset",
+      "default_blocking": true,
+      "mode": "gate",
+      "purpose": "Validate the ait-server Rust core crate and boundary rules before remote land.",
+      "runner": {
+        "kind": "test_discovery_sharded",
+        "adapter": "cargo",
+        "manifest_path": "rust/Cargo.toml",
+        "workspace": true,
+        "doc_tests": false,
+        "build_args": [
+          "test",
+          "--profile",
+          "ait-ci",
+          "--no-run",
+          "-p",
+          "ait-server-core",
+          "-p",
+          "ait-server",
+          "--lib",
+          "--test",
+          "seam_contract_direct_tests",
+          "--features",
+          "ait-server-core/patch-ci-harness",
+          "--message-format=json"
+        ],
+        "checks": [
+          {
+            "kind": "forbid_files",
+            "check_id": "no_python_boundary",
+            "file_name_suffix": ".py",
+            "exclude_dirs": [
+              ".git",
+              ".ait",
+              ".cargo",
+              "target"
+            ]
+          }
+        ]
+      },
+      "artifacts": {
+        "log_path": ".ait/generated/ci/rust_core.log"
+      }
+    }
+  ]
+}

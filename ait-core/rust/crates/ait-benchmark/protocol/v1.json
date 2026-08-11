@@ -1,0 +1,125 @@
+{
+  "contract": "ait-vcs-benchmark-protocol/v1",
+  "manifest_contract": "ait-vcs-benchmark-manifest/v1",
+  "raw_contract": "ait-vcs-benchmark-raw/v1",
+  "report_contract": "ait-vcs-benchmark-report/v1",
+  "fixture_contract": "ait-vcs-benchmark-fixture/v1",
+  "protocol_revision": "vcs-performance-2026-07-19.1",
+  "campaign_scopes": {
+    "full_matrix": "All required cells and fixture scales; the only scope eligible for release claims.",
+    "focused_slice": "One or more explicitly selected cells with full sample counts; useful for engineering evidence but never claim eligible."
+  },
+  "sampling": {
+    "minimum_warmup_iterations": 5,
+    "minimum_measured_local_iterations": 50,
+    "minimum_measured_cold_process_network_iterations": 30,
+    "target_measured_cold_process_network_iterations": 50,
+    "subject_order": "deterministic-randomized-within-block",
+    "successful_and_failed_samples_are_separate": true,
+    "cold_and_warm_samples_are_separate": true
+  },
+  "repository_scales": {
+    "small": {
+      "maximum_files": 1000,
+      "maximum_bytes": 104857600,
+      "maximum_history_nodes": 500
+    },
+    "medium": {
+      "minimum_files": 10000,
+      "maximum_files": 50000,
+      "minimum_bytes": 1073741824,
+      "maximum_bytes": 5368709120,
+      "minimum_history_nodes": 10000,
+      "maximum_history_nodes": 50000
+    },
+    "large": {
+      "minimum_files_or_bytes": {
+        "files": 100000,
+        "bytes": 10737418240
+      },
+      "minimum_history_nodes": 100000
+    }
+  },
+  "required_fixture_kinds_per_scale": [
+    "synthetic",
+    "real"
+  ],
+  "required_fixture_features": [
+    "small_text",
+    "large_binary",
+    "deep_directories",
+    "ignored_files",
+    "renames",
+    "branches",
+    "merge_history"
+  ],
+  "required_cells_per_scale": [
+    {"operation": "init_import", "temperature": "cold", "sample_class": "process_network"},
+    {"operation": "status_clean", "temperature": "cold", "sample_class": "local"},
+    {"operation": "status_clean", "temperature": "warm", "sample_class": "local"},
+    {"operation": "status_small_edit", "temperature": "warm", "sample_class": "local"},
+    {"operation": "snapshot_first", "temperature": "cold", "sample_class": "local"},
+    {"operation": "snapshot_noop", "temperature": "warm", "sample_class": "local"},
+    {"operation": "snapshot_small_delta", "temperature": "warm", "sample_class": "local"},
+    {"operation": "snapshot_large_delta", "temperature": "warm", "sample_class": "local"},
+    {"operation": "push_empty", "temperature": "cold", "sample_class": "process_network"},
+    {"operation": "push_incremental", "temperature": "warm", "sample_class": "process_network"},
+    {"operation": "pull_fast_forward", "temperature": "warm", "sample_class": "process_network"},
+    {"operation": "pull_non_fast_forward", "temperature": "warm", "sample_class": "process_network"},
+    {"operation": "ancestry", "temperature": "warm", "sample_class": "local"},
+    {"operation": "merge_base", "temperature": "warm", "sample_class": "local"},
+    {"operation": "git_round_trip", "temperature": "cold", "sample_class": "process_network"}
+  ],
+  "environment_pins": [
+    "captured_at",
+    "os",
+    "architecture",
+    "filesystem",
+    "storage_medium",
+    "cpu",
+    "memory_bytes",
+    "rust_version",
+    "git_version",
+    "ait_version",
+    "repository_snapshot",
+    "server_revision",
+    "network_profile",
+    "cache_drop_method",
+    "command_options"
+  ],
+  "raw_sample_metrics": [
+    "wall_time_ns",
+    "cpu_user_ns",
+    "cpu_system_ns",
+    "peak_rss_bytes",
+    "io_read_bytes",
+    "io_write_bytes",
+    "transferred_bytes",
+    "server_latency_ns",
+    "server_health_ok",
+    "outcome_digest"
+  ],
+  "equivalence_gates": {
+    "workspace": "canonical payload SHA-256, file count, and total bytes must match the fixture declaration after excluding declared VCS metadata",
+    "history": "each subject history_node_probe must equal the declared history node count",
+    "outcome": "each subject outcome_probe must produce the same normalized digest within every randomized block"
+  },
+  "resource_accounting": {
+    "wall_clock": "monotonic process timer",
+    "cpu_and_peak_rss": "wait4 rusage on Unix",
+    "io_bytes": "rusage input/output blocks multiplied by 512; retain raw field names and pinned OS",
+    "transfer_and_server": "subject-produced versioned metrics sidecar"
+  },
+  "statistics": {
+    "quantile_method": "R-7 linear interpolation",
+    "reported": ["sample_count", "failure_count", "min", "p50", "p95", "max", "median_absolute_deviation"],
+    "bootstrap": {
+      "minimum_resamples": 1000,
+      "default_resamples": 2000,
+      "confidence": 0.95,
+      "reported_for": ["p50", "p95"],
+      "seeded": true
+    }
+  },
+  "claim_rule": "Only full_matrix, protocol-conformant reports with complete sample counts and zero failures are claim eligible; focused_slice and smoke evidence are never claim eligible."
+}

@@ -1,0 +1,7 @@
+# GitHub source publish surface exclusions.
+# Consumed by scripts/github_publish.sh when running `add` without explicit paths.
+
+# Governance and planning authority
+AGENTS.md
+docs/plan.md
+docs/sprints/**

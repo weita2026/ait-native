@@ -1,0 +1,24 @@
+[package]
+name = "ait-server-postgres-import"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "AGPL-3.0-only"
+
+[lib]
+name = "ait_server_postgres_import"
+path = "src/lib.rs"
+
+[[bin]]
+name = "ait-server-postgres-import"
+path = "src/main.rs"
+
+[dependencies]
+ait-server-core = { path = "../ait-server-core" }
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+fs2 = "0.4"
+libc = "0.2"
+postgres = { version = "0.19", features = ["with-chrono-0_4"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+sha2 = "0.10"

@@ -1,0 +1,29 @@
+format = "ait.external.lock"
+
+[[node]]
+name = "ait-db"
+repo_name = "ait-db"
+repository_index = 11
+remote = "origin"
+line = "main"
+snapshot = "SNP-DB-RECURSIVE"
+parent_path = ""
+materialize_to = ".ait-external/ait-db"
+license = "Apache-2.0"
+
+[[node]]
+name = "ait-codec"
+repo_name = "ait-codec"
+repository_index = 12
+remote = "origin"
+line = "main"
+snapshot = "SNP-CODEC-RECURSIVE"
+parent_path = ".ait-external/ait-db"
+materialize_to = ".ait-external/ait-db/.ait-external/ait-codec"
+license = "Apache-2.0"
+
+[[node.binding]]
+language = "rust"
+kind = "cargo-path"
+path = "rust/crates/ait-codec"
+package = "ait-codec"

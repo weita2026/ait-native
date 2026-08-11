@@ -1,0 +1,256 @@
+{
+  "contract": "ait-vcs-benchmark-report/v1",
+  "benchmark_id": "ait-stage4-focused-status-baseline-2026-07-19",
+  "protocol_revision": "vcs-performance-2026-07-19.1",
+  "generated_at": "2026-07-19T05:14:51.052048+00:00",
+  "manifest_digest": "sha256:5294fcf000fd04790a89e3ff8636308f52783038a420cb985f5a0384c246540e",
+  "raw_jsonl_path": "rust/crates/ait-benchmark/evidence/stage4-2026-07-19/baseline-raw.jsonl",
+  "environment": {
+    "captured_at": "2026-07-19T04:42:00Z",
+    "os": "macOS 26.5.2 (25F84)",
+    "architecture": "arm64",
+    "filesystem": "APFS",
+    "storage_medium": "internal solid-state Apple Fabric",
+    "cpu": "Apple M4",
+    "memory_bytes": 25769803776,
+    "rust_version": "rustc 1.96.0 (ac68faa20 2026-05-25)",
+    "git_version": "git version 2.50.1 (Apple Git-155)",
+    "ait_version": "SNP-2B2362FA553E",
+    "repository_snapshot": "SNP-2B2362FA553E",
+    "server_revision": "not-applicable-local-status",
+    "network_profile": "not-applicable-local-status",
+    "cache_drop_method": "warm process execution; no OS cache drop",
+    "command_options": {
+      "ait": "status --json",
+      "fixture": "small-focused-status-v1",
+      "git": "status --porcelain=v2 --untracked-files=all",
+      "order": "seeded randomized within each block"
+    }
+  },
+  "evidence_class": "focused_measured",
+  "protocol_conformant": false,
+  "campaign_scope": "focused_slice",
+  "claim_eligible": false,
+  "total_failure_count": 0,
+  "cells": [
+    {
+      "cell_id": "small-status-clean-warm-local",
+      "fixture_id": "small-focused-status-synthetic-v1",
+      "fixture_scale": "small",
+      "operation": "status_clean",
+      "temperature": "warm",
+      "sample_class": "local",
+      "subjects": [
+        {
+          "subject_id": "ait-baseline-snp-2b2362fa553e",
+          "role": "ait",
+          "measured_sample_count": 50,
+          "failure_count": 0,
+          "wall_time_ns": {
+            "sample_count": 50,
+            "min": 64584500.0,
+            "p50": 68172479.0,
+            "p95": 75828045.65,
+            "max": 76158958.0,
+            "median_absolute_deviation": 1115667.0,
+            "p50_bootstrap_ci95": [
+              67680792.0,
+              68907750.0
+            ],
+            "p95_bootstrap_ci95": [
+              74418750.0,
+              76147483.0
+            ],
+            "quantile_method": "R-7 linear interpolation",
+            "bootstrap_resamples": 2000
+          },
+          "cpu_time_ns": {
+            "sample_count": 50,
+            "min": 94433000.0,
+            "p50": 100178500.0,
+            "p95": 106590450.0,
+            "max": 107821000.0,
+            "median_absolute_deviation": 2292000.0,
+            "p50_bootstrap_ci95": [
+              99244000.0,
+              101277000.0
+            ],
+            "p95_bootstrap_ci95": [
+              105727000.0,
+              107411950.0
+            ],
+            "quantile_method": "R-7 linear interpolation",
+            "bootstrap_resamples": 2000
+          },
+          "peak_rss_bytes": {
+            "sample_count": 50,
+            "min": 18546688.0,
+            "p50": 18808832.0,
+            "p95": 18890752.0,
+            "max": 18907136.0,
+            "median_absolute_deviation": 49152.0,
+            "p50_bootstrap_ci95": [
+              18776064.0,
+              18817024.0
+            ],
+            "p95_bootstrap_ci95": [
+              18866995.2,
+              18907136.0
+            ],
+            "quantile_method": "R-7 linear interpolation",
+            "bootstrap_resamples": 2000
+          },
+          "io_read_bytes": {
+            "sample_count": 50,
+            "min": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "max": 0.0,
+            "median_absolute_deviation": 0.0,
+            "p50_bootstrap_ci95": [
+              0.0,
+              0.0
+            ],
+            "p95_bootstrap_ci95": [
+              0.0,
+              0.0
+            ],
+            "quantile_method": "R-7 linear interpolation",
+            "bootstrap_resamples": 2000
+          },
+          "io_write_bytes": {
+            "sample_count": 50,
+            "min": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "max": 0.0,
+            "median_absolute_deviation": 0.0,
+            "p50_bootstrap_ci95": [
+              0.0,
+              0.0
+            ],
+            "p95_bootstrap_ci95": [
+              0.0,
+              0.0
+            ],
+            "quantile_method": "R-7 linear interpolation",
+            "bootstrap_resamples": 2000
+          },
+          "transferred_bytes": null,
+          "server_latency_ns": null,
+          "server_health_failure_count": 0
+        },
+        {
+          "subject_id": "git-baseline-2.50.1",
+          "role": "git",
+          "measured_sample_count": 50,
+          "failure_count": 0,
+          "wall_time_ns": {
+            "sample_count": 50,
+            "min": 41081792.0,
+            "p50": 43931708.5,
+            "p95": 52004302.6,
+            "max": 58968208.0,
+            "median_absolute_deviation": 558750.0,
+            "p50_bootstrap_ci95": [
+              43658166.0,
+              44353833.0
+            ],
+            "p95_bootstrap_ci95": [
+              50788276.6,
+              55945351.89999998
+            ],
+            "quantile_method": "R-7 linear interpolation",
+            "bootstrap_resamples": 2000
+          },
+          "cpu_time_ns": {
+            "sample_count": 50,
+            "min": 39770000.0,
+            "p50": 42631500.0,
+            "p95": 50596700.0,
+            "max": 57666000.0,
+            "median_absolute_deviation": 601500.0,
+            "p50_bootstrap_ci95": [
+              42257500.0,
+              43005500.0
+            ],
+            "p95_bootstrap_ci95": [
+              49201832.49999999,
+              54537599.99999998
+            ],
+            "quantile_method": "R-7 linear interpolation",
+            "bootstrap_resamples": 2000
+          },
+          "peak_rss_bytes": {
+            "sample_count": 50,
+            "min": 6209536.0,
+            "p50": 6225920.0,
+            "p95": 6258688.0,
+            "max": 6258688.0,
+            "median_absolute_deviation": 16384.0,
+            "p50_bootstrap_ci95": [
+              6225920.0,
+              6242304.0
+            ],
+            "p95_bootstrap_ci95": [
+              6242304.0,
+              6258688.0
+            ],
+            "quantile_method": "R-7 linear interpolation",
+            "bootstrap_resamples": 2000
+          },
+          "io_read_bytes": {
+            "sample_count": 50,
+            "min": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "max": 0.0,
+            "median_absolute_deviation": 0.0,
+            "p50_bootstrap_ci95": [
+              0.0,
+              0.0
+            ],
+            "p95_bootstrap_ci95": [
+              0.0,
+              0.0
+            ],
+            "quantile_method": "R-7 linear interpolation",
+            "bootstrap_resamples": 2000
+          },
+          "io_write_bytes": {
+            "sample_count": 50,
+            "min": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "max": 0.0,
+            "median_absolute_deviation": 0.0,
+            "p50_bootstrap_ci95": [
+              0.0,
+              0.0
+            ],
+            "p95_bootstrap_ci95": [
+              0.0,
+              0.0
+            ],
+            "quantile_method": "R-7 linear interpolation",
+            "bootstrap_resamples": 2000
+          },
+          "transferred_bytes": null,
+          "server_latency_ns": null,
+          "server_health_failure_count": 0
+        }
+      ],
+      "ait_vs_git": {
+        "candidate_subject_id": "ait-baseline-snp-2b2362fa553e",
+        "baseline_subject_id": "git-baseline-2.50.1",
+        "p50_wall_time_ratio": 1.5517830134013568,
+        "p95_wall_time_ratio": 1.4581109996464023
+      }
+    }
+  ],
+  "limitations": [
+    "Focused status-only campaign; it does not satisfy the full 45-cell release matrix.",
+    "Synthetic small fixture only; the declared real fixture was not executed.",
+    "The AIT baseline is rebuilt from Snapshot SNP-2B2362FA553E; Git is the pinned system binary."
+  ]
+}

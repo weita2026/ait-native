@@ -1,0 +1,8 @@
+# Generated Python development artifacts.
+__pycache__/
+.pytest_cache/
+.venv/
+build/
+dist/
+*.egg-info/
+.ait-external/

@@ -1,0 +1,23 @@
+# AIT source policy: canonical Cargo settings; task worktrees receive a managed projection.
+[build]
+target-dir = ".ait/cargo-target"
+build-dir = ".ait/cargo-build/workspaces/{workspace-path-hash}"
+
+[alias]
+ait-core-patch-ci-build = [
+  "test",
+  "-p",
+  "ait-agent-core",
+  "-p",
+  "ait-py",
+  "-p",
+  "ait-cli",
+  "--lib",
+  "--bin",
+  "ait-cli",
+  "--test",
+  "patchset_ci_smoke_cli",
+  "--profile",
+  "ait-ci",
+  "--no-run",
+]

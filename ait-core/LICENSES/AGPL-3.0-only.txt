@@ -1,0 +1,14 @@
+GNU Affero General Public License v3.0 reference notice
+
+Identifier used in this repository: AGPL-3.0-only
+Canonical license family: GNU Affero General Public License, Version 3
+Published: 19 November 2007
+Canonical text URLs:
+- https://www.gnu.org/licenses/agpl-3.0.txt
+- https://www.gnu.org/licenses/agpl-3.0.en.html
+
+This repository uses the standard GNU AGPLv3 license text for surfaces marked
+`AGPL-3.0-only`. This file is a release-facing reference pointer so the
+applicable reciprocal license family is explicit even when a release bundle or
+checkout is inspected offline together with the repository's other license
+markers.

@@ -1,0 +1,15 @@
+[[external]]
+name = "ait-core"
+repo_name = "ait-core"
+repository_index = 0
+remote = "origin"
+line = "main"
+snapshot = "SNP-11583168F4A2"
+materialize_to = ".ait-external/ait-core"
+license = "Apache-2.0"
+version = "0.1.0"
+
+[external.bindings.rust]
+kind = "cargo-path"
+path = "rust/crates/ait-core"
+package = "ait-core"

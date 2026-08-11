@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "suites": [
+    {
+      "artifacts": {
+        "log_path": ".ait/generated/ci/patchset_gate.log"
+      },
+      "default_blocking": true,
+      "display_name": "Patchset Gate",
+      "mode": "gate",
+      "plane": "patchset",
+      "purpose": "Validate this repository before remote land.",
+      "runner": {
+        "commands": [
+          "./ci/run.sh patchset"
+        ],
+        "kind": "command_bundle"
+      },
+      "schema_version": 1,
+      "suite_id": "patchset_gate"
+    }
+  ]
+}
