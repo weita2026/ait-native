@@ -78,6 +78,10 @@ for required_workflow_text in \
   "if: matrix.repo_name == 'ait-python' && runner.os == 'Linux'" \
   'ziglang==0.15.2' \
   'python -m ziglang version' \
+  'CARGO_BUILD_BUILD_DIR="${RUNNER_TEMP}/ait-family-admission-build"' \
+  'admission_root="${RUNNER_TEMP}/ait-family-admission-repository"' \
+  'test ! -e "${admission_root}"' \
+  'cd "${admission_root}"' \
   'source_cache_count: 0' \
   'public_publish == false'; do
   if ! grep -F -- "${required_workflow_text}" "${workflow}" >/dev/null; then
@@ -91,6 +95,7 @@ for forbidden_workflow_text in \
   'release_source_cache.sh' \
   'ait_remote_snapshot_boundary' \
   'secrets.AIT_RELEASE_SERVER_URL' \
+  '--repair-existing' \
   'pattern: ait-release-source-ait-*'; do
   if grep -F -- "${forbidden_workflow_text}" "${workflow}" >/dev/null; then
     printf 'release workflow retains live-server source hydration: %s\n' \

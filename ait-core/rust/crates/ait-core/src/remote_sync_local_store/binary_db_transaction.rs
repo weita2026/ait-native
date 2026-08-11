@@ -361,18 +361,15 @@ where
 
     let read = blobs.begin_read_txn();
     for (blob_id, owners) in &owners_by_blob_id {
-        let Some(selected_pack_id) = selected_pack_by_blob_id.get(blob_id) else {
-            return Err(format!(
-                "Remote-head object-pack closure has no selected locator for repeated blob {blob_id}."
-            ));
-        };
-        if owners.len() > 1
-            && !inputs.contains_key(selected_pack_id)
-            && blobs.get_blob_view(&read, blob_id)?.is_none()
-        {
-            return Err(format!(
-                "Remote-head selected object pack {selected_pack_id} for repeated blob {blob_id} is neither pending nor present in the local Binary DB."
-            ));
+        if let Some(selected_pack_id) = selected_pack_by_blob_id.get(blob_id) {
+            if owners.len() > 1
+                && !inputs.contains_key(selected_pack_id)
+                && blobs.get_blob_view(&read, blob_id)?.is_none()
+            {
+                return Err(format!(
+                    "Remote-head selected object pack {selected_pack_id} for repeated blob {blob_id} is neither pending nor present in the local Binary DB."
+                ));
+            }
         }
     }
 
@@ -457,14 +454,13 @@ fn object_pack_dependency_index(
         if owners.len() < 2 {
             continue;
         }
-        let selected_pack_id = selected_pack_by_blob_id.get(blob_id).ok_or_else(|| {
-            format!(
-                "Remote-head object-pack closure has no selected locator for repeated blob {blob_id}."
-            )
-        })?;
-        if !owners.contains(selected_pack_id) {
-            continue;
-        }
+        let selected_pack_id = match selected_pack_by_blob_id.get(blob_id) {
+            Some(selected_pack_id) if owners.contains(selected_pack_id) => selected_pack_id,
+            Some(_) => continue,
+            None => owners.iter().next().ok_or_else(|| {
+                format!("Repeated blob {blob_id} has no physical object-pack owner.")
+            })?,
+        };
         for owner in owners.iter().filter(|owner| *owner != selected_pack_id) {
             dependencies
                 .get_mut(owner)
@@ -517,11 +513,9 @@ where
     }
     let mut owner_by_tree_id = BTreeMap::new();
     for (tree_id, owners) in &owners_by_tree_id {
-        let selected_pack_id = selected_pack_by_tree_id.get(tree_id).ok_or_else(|| {
-            format!(
-                "Remote-head tree-pack closure has no selected locator for physical tree {tree_id}."
-            )
-        })?;
+        let Some(selected_pack_id) = selected_pack_by_tree_id.get(tree_id) else {
+            continue;
+        };
         if !owners.contains(selected_pack_id) {
             return Err(format!(
                 "Remote-head selected tree pack {selected_pack_id} does not contain physical tree {tree_id}."
@@ -598,18 +592,15 @@ where
 
     let read = trees.begin_read_txn();
     for (tree_id, owners) in &owners_by_tree_id {
-        let Some(selected_pack_id) = selected_pack_by_tree_id.get(tree_id) else {
-            return Err(format!(
-                "Remote-head tree-pack closure has no selected locator for repeated tree {tree_id}."
-            ));
-        };
-        if owners.len() > 1
-            && !inputs.contains_key(selected_pack_id)
-            && trees.get_tree_view(&read, tree_id)?.is_none()
-        {
-            return Err(format!(
-                "Remote-head selected tree pack {selected_pack_id} for repeated tree {tree_id} is neither pending nor present in the local Binary DB."
-            ));
+        if let Some(selected_pack_id) = selected_pack_by_tree_id.get(tree_id) {
+            if owners.len() > 1
+                && !inputs.contains_key(selected_pack_id)
+                && trees.get_tree_view(&read, tree_id)?.is_none()
+            {
+                return Err(format!(
+                    "Remote-head selected tree pack {selected_pack_id} for repeated tree {tree_id} is neither pending nor present in the local Binary DB."
+                ));
+            }
         }
     }
     for (pack_id, (_, entries)) in inputs {
@@ -691,14 +682,13 @@ fn tree_pack_dependency_index(
         if owners.len() < 2 {
             continue;
         }
-        let selected_pack_id = selected_pack_by_tree_id.get(tree_id).ok_or_else(|| {
-            format!(
-                "Remote-head tree-pack closure has no selected locator for repeated tree {tree_id}."
-            )
-        })?;
-        if !owners.contains(selected_pack_id) {
-            continue;
-        }
+        let selected_pack_id = match selected_pack_by_tree_id.get(tree_id) {
+            Some(selected_pack_id) if owners.contains(selected_pack_id) => selected_pack_id,
+            Some(_) => continue,
+            None => owners.iter().next().ok_or_else(|| {
+                format!("Repeated tree {tree_id} has no physical tree-pack owner.")
+            })?,
+        };
         for owner in owners.iter().filter(|owner| *owner != selected_pack_id) {
             dependencies
                 .get_mut(owner)
@@ -1055,6 +1045,52 @@ mod tests {
                 selected_pack_id.to_string(),
                 overlapping_pack_id.to_string()
             ]
+        );
+    }
+
+    #[test]
+    fn unselected_pack_collisions_choose_deterministic_physical_precedence() {
+        let blob_id = "BLB-3710db9ee7993ad1420b";
+        let first_object_pack_id = "PCK-A-OVERLAP";
+        let second_object_pack_id = "PCK-Z-OVERLAP";
+        let object_inputs = BTreeMap::from([
+            (
+                first_object_pack_id.to_string(),
+                object_pack_input(first_object_pack_id, vec![object_pack_member(blob_id)]),
+            ),
+            (
+                second_object_pack_id.to_string(),
+                object_pack_input(second_object_pack_id, vec![object_pack_member(blob_id)]),
+            ),
+        ]);
+        let (_, _, object_dependencies) =
+            object_pack_dependency_index(&object_inputs, &BTreeMap::new())
+                .expect("unselected physical Blob overlap should be ordered");
+        assert!(object_dependencies[first_object_pack_id].is_empty());
+        assert_eq!(
+            object_dependencies[second_object_pack_id],
+            BTreeSet::from([first_object_pack_id.to_string()])
+        );
+
+        let tree_id = "TRE-0102030405060708090A";
+        let first_tree_pack_id = "TPK-A-OVERLAP";
+        let second_tree_pack_id = "TPK-Z-OVERLAP";
+        let tree_inputs = BTreeMap::from([
+            (
+                first_tree_pack_id.to_string(),
+                tree_pack_input(first_tree_pack_id, vec![tree_pack_tree(tree_id)]),
+            ),
+            (
+                second_tree_pack_id.to_string(),
+                tree_pack_input(second_tree_pack_id, vec![tree_pack_tree(tree_id)]),
+            ),
+        ]);
+        let (_, _, tree_dependencies) = tree_pack_dependency_index(&tree_inputs, &BTreeMap::new())
+            .expect("unselected physical Tree overlap should be ordered");
+        assert!(tree_dependencies[first_tree_pack_id].is_empty());
+        assert_eq!(
+            tree_dependencies[second_tree_pack_id],
+            BTreeSet::from([first_tree_pack_id.to_string()])
         );
     }
 
