@@ -75,6 +75,9 @@ for required_workflow_text in \
   'public_git_commit' \
   'persist-credentials: false' \
   'name: ait-release-monorepo-source' \
+  "if: matrix.repo_name == 'ait-python' && runner.os == 'Linux'" \
+  'ziglang==0.15.2' \
+  'python -m ziglang version' \
   'source_cache_count: 0' \
   'public_publish == false'; do
   if ! grep -F -- "${required_workflow_text}" "${workflow}" >/dev/null; then

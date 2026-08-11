@@ -7,7 +7,10 @@ import io
 import json
 from pathlib import Path
 import runpy
+import subprocess
+import sys
 import tomllib
+from types import SimpleNamespace
 import zipfile
 
 import pytest
@@ -69,6 +72,70 @@ def test_release_commands_are_direct_and_pyproject_enables_abi3() -> None:
     ]
     assert pyproject["build-system"]["requires"] == ["maturin==1.13.3"]
     assert "shell=True" not in ADAPTER_PATH.read_text(encoding="utf-8")
+
+
+def test_linux_release_build_uses_only_the_pinned_zig_manylinux_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = release_adapter_namespace()
+    release_identity = adapter["ReleaseIdentity"]
+    target_spec = adapter["target_spec"]
+    build_command = adapter["maturin_build_command"]
+    release_environment = adapter["release_environment"]
+    require_ziglang = adapter["require_ziglang"]
+
+    linux_target = "aarch64-unknown-linux-gnu"
+    linux_spec = target_spec(linux_target)
+    identity = release_identity(linux_spec, Path("unused"), "unused")
+    command = build_command(identity, linux_target)
+    assert command.count("--zig") == 1
+    assert command[command.index("--compatibility") + 1] == "manylinux_2_28"
+    monkeypatch.setenv("CARGO_ZIGBUILD_ZIG_PATH", "/ambient/zig")
+    environment = release_environment(linux_spec)
+    assert environment["CARGO_ZIGBUILD_PYTHON_PATH"] == sys.executable
+    assert "CARGO_ZIGBUILD_ZIG_PATH" not in environment
+
+    calls: list[list[str]] = []
+
+    def matching_ziglang(
+        argv: list[str], **_kwargs: object
+    ) -> SimpleNamespace:
+        calls.append(argv)
+        return SimpleNamespace(stdout="0.15.2\n")
+
+    monkeypatch.setattr(subprocess, "run", matching_ziglang)
+    require_ziglang()
+    assert calls == [[sys.executable, "-m", "ziglang", "version"]]
+
+
+def test_non_linux_release_build_does_not_select_zig() -> None:
+    adapter = release_adapter_namespace()
+    release_identity = adapter["ReleaseIdentity"]
+    target_spec = adapter["target_spec"]
+    build_command = adapter["maturin_build_command"]
+    release_environment = adapter["release_environment"]
+
+    target = "aarch64-apple-darwin"
+    spec = target_spec(target)
+    identity = release_identity(spec, Path("unused"), "unused")
+    assert "--zig" not in build_command(identity, target)
+    environment = release_environment(spec)
+    assert "CARGO_ZIGBUILD_PYTHON_PATH" not in environment
+
+
+def test_linux_release_rejects_an_unpinned_ziglang(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = release_adapter_namespace()
+    error_type = adapter["ReleaseAdapterError"]
+
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *_args, **_kwargs: SimpleNamespace(stdout="0.16.0\n"),
+    )
+    with pytest.raises(error_type, match="requires ziglang '0.15.2'"):
+        adapter["require_ziglang"]()
 
 
 def test_release_adapter_accepts_only_exact_internal_and_public_core_layouts(

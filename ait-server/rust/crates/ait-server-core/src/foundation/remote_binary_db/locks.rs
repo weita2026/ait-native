@@ -1,4 +1,5 @@
 use super::*;
+use fs2::FileExt;
 
 const BINARY_DB_RECOVERY_ADMISSION_LOCK: &str = "recovery-admission.lock";
 
@@ -18,15 +19,7 @@ impl ServerBinaryDbLockStore for ServerBinaryDbFilesystemStore {
             .map_err(|err| {
                 BinaryDbError::io(format!("open Binary DB lock file {}", path.display()), err)
             })?;
-        let base = match mode {
-            ServerBinaryDbLockMode::Shared => libc::LOCK_SH,
-            ServerBinaryDbLockMode::Exclusive => libc::LOCK_EX,
-        };
-        let operation = match wait {
-            ServerBinaryDbLockWait::Blocking => base,
-            ServerBinaryDbLockWait::Nonblocking => base | libc::LOCK_NB,
-        };
-        if let Err(err) = try_flock(&file, operation) {
+        if let Err(err) = acquire_file_lock(&file, mode, wait) {
             if is_lock_busy(&err) {
                 return Ok(None);
             }
@@ -70,7 +63,7 @@ impl ServerBinaryDbProcessLockGuard for ServerBinaryDbFilesystemProcessLockGuard
                 err,
             )
         })?;
-        // The kernel flock is the exclusion authority. These bytes are
+        // The OS-backed file lock is the exclusion authority. These bytes are
         // best-effort live diagnostics, not durable state, so forcing the lock
         // inode to stable storage on every acquire/release only lengthens the
         // protected critical section.
@@ -90,7 +83,7 @@ impl ServerBinaryDbProcessLockGuard for ServerBinaryDbFilesystemProcessLockGuard
         if self.released {
             return Ok(());
         }
-        try_flock(&self.file, libc::LOCK_UN).map_err(|err| {
+        FileExt::unlock(&self.file).map_err(|err| {
             BinaryDbError::io(
                 format!("release Binary DB process lock {}", self.path.display()),
                 err,
@@ -552,19 +545,31 @@ impl BinaryDbHeldProcessLock {
     }
 }
 
-fn try_flock(file: &File, operation: libc::c_int) -> std::io::Result<()> {
-    let rc = unsafe { libc::flock(file.as_raw_fd(), operation) };
-    if rc == 0 {
-        Ok(())
-    } else {
-        Err(std::io::Error::last_os_error())
+fn acquire_file_lock(
+    file: &File,
+    mode: ServerBinaryDbLockMode,
+    wait: ServerBinaryDbLockWait,
+) -> std::io::Result<()> {
+    match (mode, wait) {
+        (ServerBinaryDbLockMode::Shared, ServerBinaryDbLockWait::Blocking) => {
+            FileExt::lock_shared(file)
+        }
+        (ServerBinaryDbLockMode::Shared, ServerBinaryDbLockWait::Nonblocking) => {
+            FileExt::try_lock_shared(file)
+        }
+        (ServerBinaryDbLockMode::Exclusive, ServerBinaryDbLockWait::Blocking) => {
+            FileExt::lock_exclusive(file)
+        }
+        (ServerBinaryDbLockMode::Exclusive, ServerBinaryDbLockWait::Nonblocking) => {
+            FileExt::try_lock_exclusive(file)
+        }
     }
 }
 
 fn is_lock_busy(err: &std::io::Error) -> bool {
-    err.kind() == ErrorKind::WouldBlock
-        || err.raw_os_error() == Some(libc::EWOULDBLOCK)
-        || err.raw_os_error() == Some(libc::EAGAIN)
+    let contended = fs2::lock_contended_error();
+    err.kind() == std::io::ErrorKind::WouldBlock
+        || (err.raw_os_error().is_some() && err.raw_os_error() == contended.raw_os_error())
 }
 
 fn unix_time_millis() -> u128 {
