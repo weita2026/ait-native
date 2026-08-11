@@ -32,6 +32,7 @@ ABI3_FEATURE = "pyo3/abi3-py311"
 ABI3_PYTHON_TAG = "cp311"
 ABI3_ABI_TAG = "abi3"
 MATURIN_VERSION = "1.13.3"
+ZIGLANG_VERSION = "0.15.2"
 WHEEL_NORMALIZATION_CONTRACT = "ait.python.wheel-normalization.v1"
 CANONICAL_SBOM_SOURCE_ROOT = (
     "path+file:///ait-release-source/.ait-external/ait-core"
@@ -381,6 +382,9 @@ def release_environment(spec: TargetSpec) -> dict[str, str]:
     environment = os.environ.copy()
     environment["PYTHONDONTWRITEBYTECODE"] = "1"
     environment["PIP_DISABLE_PIP_VERSION_CHECK"] = "1"
+    if uses_zig_manylinux(spec):
+        environment.pop("CARGO_ZIGBUILD_ZIG_PATH", None)
+        environment["CARGO_ZIGBUILD_PYTHON_PATH"] = sys.executable
     if spec.macos_deployment_target is not None:
         environment["MACOSX_DEPLOYMENT_TARGET"] = spec.macos_deployment_target
     return environment
@@ -406,6 +410,50 @@ def require_maturin() -> None:
         raise ReleaseAdapterError(
             f"release requires {expected!r}, got {actual!r}"
         )
+
+
+def uses_zig_manylinux(spec: TargetSpec) -> bool:
+    return spec.system == "linux" and spec.compatibility.startswith("manylinux_")
+
+
+def require_ziglang() -> None:
+    completed = subprocess.run(
+        [sys.executable, "-m", "ziglang", "version"],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    actual = completed.stdout.strip()
+    if actual != ZIGLANG_VERSION:
+        raise ReleaseAdapterError(
+            f"release requires ziglang {ZIGLANG_VERSION!r}, got {actual!r}"
+        )
+
+
+def maturin_build_command(
+    identity: ReleaseIdentity, target: str
+) -> list[str]:
+    command = [
+        "maturin",
+        "build",
+        "--release",
+        "--locked",
+        "--target",
+        target,
+        "--target-dir",
+        ".ait/cargo-target",
+        "--features",
+        ABI3_FEATURE,
+        "--out",
+        str(WHEEL_DIRECTORY.relative_to(ROOT)),
+        "--compatibility",
+        identity.target.compatibility,
+    ]
+    if uses_zig_manylinux(identity.target):
+        command.append("--zig")
+    command.extend(["--interpreter", sys.executable])
+    return command
 
 
 def run_command(argv: list[str], environment: dict[str, str]) -> None:
@@ -750,6 +798,8 @@ def build_release(target: str, version: str) -> dict[str, object]:
     spec = identity.target
     source_date_epoch, release_timestamp = require_source_date_epoch()
     require_maturin()
+    if uses_zig_manylinux(spec):
+        require_ziglang()
     WHEEL_DIRECTORY.mkdir(parents=True, exist_ok=True)
     existing_wheels = sorted(WHEEL_DIRECTORY.glob("*.whl"))
     if existing_wheels:
@@ -759,27 +809,7 @@ def build_release(target: str, version: str) -> dict[str, object]:
         )
     environment = release_environment(spec)
     environment["SOURCE_DATE_EPOCH"] = str(source_date_epoch)
-    run_command(
-        [
-            "maturin",
-            "build",
-            "--release",
-            "--locked",
-            "--target",
-            target,
-            "--target-dir",
-            ".ait/cargo-target",
-            "--features",
-            ABI3_FEATURE,
-            "--out",
-            str(WHEEL_DIRECTORY.relative_to(ROOT)),
-            "--compatibility",
-            spec.compatibility,
-            "--interpreter",
-            sys.executable,
-        ],
-        environment,
-    )
+    run_command(maturin_build_command(identity, target), environment)
     wheel = expected_wheel_path(target, version)
     produced = sorted(WHEEL_DIRECTORY.glob("*.whl"))
     if produced != [wheel]:
@@ -799,6 +829,7 @@ def build_release(target: str, version: str) -> dict[str, object]:
         "target": target,
         "version": version,
         "wheel": str(wheel.relative_to(ROOT)),
+        "ziglang_version": ZIGLANG_VERSION if uses_zig_manylinux(spec) else None,
     }
 
 

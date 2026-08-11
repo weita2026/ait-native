@@ -232,6 +232,14 @@ jobs:
           python -m pip install --disable-pip-version-check 'maturin==1.13.3'
           test "$(maturin --version)" = 'maturin 1.13.3'
 
+      - name: Install the pinned Linux manylinux linker
+        if: matrix.repo_name == 'ait-python' && runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check 'ziglang==0.15.2'
+          test "$(python -m ziglang version)" = '0.15.2'
+
       - name: Install Node.js for the public receipt builder
         uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:

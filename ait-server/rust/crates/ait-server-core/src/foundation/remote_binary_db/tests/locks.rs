@@ -1,6 +1,63 @@
 use super::*;
 
 #[test]
+fn filesystem_process_locks_preserve_contention_and_release() -> StoreResult<()> {
+    let root = make_temporary_root();
+    let path = root.as_path().join("portable-process.lock");
+    let store = ServerBinaryDbFilesystemStore;
+
+    let mut first_shared = store
+        .acquire_process_lock(
+            &path,
+            ServerBinaryDbLockMode::Shared,
+            ServerBinaryDbLockWait::Nonblocking,
+        )?
+        .expect("first shared lock must be available");
+    let mut second_shared = store
+        .acquire_process_lock(
+            &path,
+            ServerBinaryDbLockMode::Shared,
+            ServerBinaryDbLockWait::Nonblocking,
+        )?
+        .expect("second shared lock must be compatible");
+    assert!(store
+        .acquire_process_lock(
+            &path,
+            ServerBinaryDbLockMode::Exclusive,
+            ServerBinaryDbLockWait::Nonblocking,
+        )?
+        .is_none());
+
+    first_shared.release()?;
+    second_shared.release()?;
+    let mut exclusive = store
+        .acquire_process_lock(
+            &path,
+            ServerBinaryDbLockMode::Exclusive,
+            ServerBinaryDbLockWait::Nonblocking,
+        )?
+        .expect("exclusive lock must be available after shared release");
+    assert!(store
+        .acquire_process_lock(
+            &path,
+            ServerBinaryDbLockMode::Shared,
+            ServerBinaryDbLockWait::Nonblocking,
+        )?
+        .is_none());
+
+    exclusive.release()?;
+    let mut shared_after_release = store
+        .acquire_process_lock(
+            &path,
+            ServerBinaryDbLockMode::Shared,
+            ServerBinaryDbLockWait::Nonblocking,
+        )?
+        .expect("shared lock must be available after exclusive release");
+    shared_after_release.release()?;
+    Ok(())
+}
+
+#[test]
 fn composite_scopes_lock_all_member_families_in_stable_order() -> StoreResult<()> {
     let (db, root, _ctx) = make_db();
     fs::create_dir_all(&root).expect("failed to create authority root");

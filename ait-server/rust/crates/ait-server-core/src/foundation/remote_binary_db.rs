@@ -2,7 +2,6 @@ use std::collections::BTreeSet;
 use std::fmt;
 use std::fs::{self, File, OpenOptions};
 use std::io::{ErrorKind, Read, Seek, SeekFrom, Write};
-use std::os::fd::AsRawFd;
 use std::path::{Component, Path, PathBuf};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
