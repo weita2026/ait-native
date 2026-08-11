@@ -364,8 +364,7 @@ fn materialize_main_seed_cargo_projection(
     let mode = readonly_file_mode(parse_mode_bits(
         row.get("mode").and_then(JsonValue::as_str),
     )?);
-    fs::set_permissions(&config_path, fs::Permissions::from_mode(mode))
-        .map_err(|err| err.to_string())
+    set_portable_mode(&config_path, mode).map_err(|err| err.to_string())
 }
 
 fn unique_main_seed_sibling_path(seed_path: &Path, role: &str) -> PathBuf {
@@ -606,9 +605,8 @@ fn write_promoted_seed_marker(
     let marker_path = staging_path.join(WORKTREE_CONFIG_NAME);
     if marker_path.is_file() {
         let metadata = fs::metadata(&marker_path).map_err(|err| err.to_string())?;
-        let mut permissions = metadata.permissions();
-        permissions.set_mode(permissions.mode() | 0o200);
-        fs::set_permissions(&marker_path, permissions).map_err(|err| err.to_string())?;
+        let mode = portable_mode(&metadata, 0o644);
+        set_portable_mode(&marker_path, mode | 0o200).map_err(|err| err.to_string())?;
     }
     let marker = json!({
         "worktree_name": marker.seed_name,
@@ -638,9 +636,8 @@ fn write_promoted_seed_marker(
     });
     write_json_pretty(&marker_path, &marker)?;
     let metadata = fs::metadata(&marker_path).map_err(|err| err.to_string())?;
-    let mut permissions = metadata.permissions();
-    permissions.set_mode(readonly_file_mode(permissions.mode()));
-    fs::set_permissions(&marker_path, permissions).map_err(|err| err.to_string())
+    let mode = readonly_file_mode(portable_mode(&metadata, 0o644));
+    set_portable_mode(&marker_path, mode).map_err(|err| err.to_string())
 }
 
 fn promote_bound_worktree_to_main_seed(
@@ -2398,11 +2395,8 @@ mod selected_binary_main_seed_tests {
             &baseline_id
         ));
 
-        fs::set_permissions(
-            seed_path.join("stable.txt"),
-            fs::Permissions::from_mode(0o644),
-        )
-        .expect("make cached stable file writable");
+        set_portable_mode(&seed_path.join("stable.txt"), 0o644)
+            .expect("make cached stable file writable");
         write_file(&seed_path.join("stable.txt"), "corrupt\n");
         write_file(&seed_path.join("rogue.txt"), "rogue\n");
         assert!(!is_seed_state_aligned(

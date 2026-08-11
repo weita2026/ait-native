@@ -431,7 +431,7 @@ pub(super) fn main_seed_content_fingerprint(seed_path: &Path) -> Result<(String,
         rows.push((
             rel,
             sha256_hex_bytes(&data),
-            format!("{:#o}", metadata.permissions().mode() & 0o777),
+            format!("{:#o}", portable_mode(&metadata, 0o644)),
         ));
     }
     rows.sort_by(|left, right| left.0.cmp(&right.0));
@@ -1131,11 +1131,7 @@ pub(super) fn materialize_main_seed_snapshot(
             .ok_or_else(|| format!("Blob payload missing for `{blob_id}`."))?;
         fs::write(&abs_path, data).map_err(|err| err.to_string())?;
         let mode = parse_mode_bits(Some(target_row.mode.as_str()))?;
-        fs::set_permissions(
-            &abs_path,
-            fs::Permissions::from_mode(readonly_file_mode(mode)),
-        )
-        .map_err(|err| err.to_string())?;
+        set_portable_mode(&abs_path, readonly_file_mode(mode)).map_err(|err| err.to_string())?;
     }
     let write_apply_elapsed = elapsed_ms(write_apply_started);
     let fingerprint_started = Instant::now();
@@ -1265,7 +1261,7 @@ pub(super) fn copy_seed_tree_recursive(
         if let Some(parent) = target_path.parent() {
             fs::create_dir_all(parent).map_err(|err| err.to_string())?;
         }
-        let file_strategy = file_copy(&source_path, &target_path, metadata.permissions().mode())?;
+        let file_strategy = file_copy(&source_path, &target_path, portable_mode(&metadata, 0o644))?;
         strategy.note(file_strategy);
         let permissions = metadata.permissions();
         fs::set_permissions(&target_path, permissions).map_err(|err| err.to_string())?;
@@ -1275,6 +1271,7 @@ pub(super) fn copy_seed_tree_recursive(
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum SeedCopyFileStrategy {
+    #[cfg(any(target_os = "macos", test))]
     Clonefile,
     #[cfg(any(target_os = "linux", test))]
     Reflink,
@@ -1293,6 +1290,7 @@ pub(super) struct SeedCopyStrategy {
 impl SeedCopyStrategy {
     fn note(&mut self, strategy: SeedCopyFileStrategy) {
         match strategy {
+            #[cfg(any(target_os = "macos", test))]
             SeedCopyFileStrategy::Clonefile => self.used_clonefile = true,
             #[cfg(any(target_os = "linux", test))]
             SeedCopyFileStrategy::Reflink => self.used_reflink = true,
@@ -1462,10 +1460,8 @@ pub(super) fn set_tree_directories_writeable(path: &Path) -> Result<(), String> 
         set_tree_directories_writeable(&child)?;
     }
     let metadata = fs::metadata(path).map_err(|err| err.to_string())?;
-    let mut permissions = metadata.permissions();
-    let mode = permissions.mode();
-    permissions.set_mode(mode | 0o700);
-    fs::set_permissions(path, permissions).map_err(|err| err.to_string())
+    let mode = portable_mode(&metadata, 0o755);
+    set_portable_mode(path, mode | 0o700).map_err(|err| err.to_string())
 }
 
 pub(super) fn set_tree_directories_readonly(path: &Path) -> Result<(), String> {
@@ -1482,10 +1478,8 @@ pub(super) fn set_tree_directories_readonly(path: &Path) -> Result<(), String> {
         set_tree_directories_readonly(&child)?;
     }
     let metadata = fs::metadata(path).map_err(|err| err.to_string())?;
-    let mut permissions = metadata.permissions();
-    let mode = permissions.mode();
-    permissions.set_mode((mode | 0o555) & !0o222);
-    fs::set_permissions(path, permissions).map_err(|err| err.to_string())
+    let mode = portable_mode(&metadata, 0o755);
+    set_portable_mode(path, (mode | 0o555) & !0o222).map_err(|err| err.to_string())
 }
 
 pub(super) fn set_tree_readonly(path: &Path) -> Result<(), String> {
@@ -1502,20 +1496,17 @@ pub(super) fn set_tree_readonly(path: &Path) -> Result<(), String> {
         if metadata.is_dir() {
             set_tree_readonly(&child)?;
         }
-        let mut permissions = metadata.permissions();
-        let mode = permissions.mode();
-        permissions.set_mode(if metadata.is_dir() {
+        let mode = portable_mode(&metadata, if metadata.is_dir() { 0o755 } else { 0o644 });
+        let mode = if metadata.is_dir() {
             (mode | 0o555) & !0o222
         } else {
             readonly_file_mode(mode)
-        });
-        fs::set_permissions(&child, permissions).map_err(|err| err.to_string())?;
+        };
+        set_portable_mode(&child, mode).map_err(|err| err.to_string())?;
     }
     let metadata = fs::metadata(path).map_err(|err| err.to_string())?;
-    let mut permissions = metadata.permissions();
-    let mode = permissions.mode();
-    permissions.set_mode((mode | 0o555) & !0o222);
-    fs::set_permissions(path, permissions).map_err(|err| err.to_string())
+    let mode = portable_mode(&metadata, 0o755);
+    set_portable_mode(path, (mode | 0o555) & !0o222).map_err(|err| err.to_string())
 }
 
 pub(super) fn set_tree_writeable(path: &Path) -> Result<(), String> {
@@ -1532,16 +1523,12 @@ pub(super) fn set_tree_writeable(path: &Path) -> Result<(), String> {
         if metadata.is_dir() {
             set_tree_writeable(&child)?;
         }
-        let mut permissions = metadata.permissions();
-        let mode = permissions.mode();
-        permissions.set_mode(mode | 0o200);
-        fs::set_permissions(&child, permissions).map_err(|err| err.to_string())?;
+        let mode = portable_mode(&metadata, if metadata.is_dir() { 0o755 } else { 0o644 });
+        set_portable_mode(&child, mode | 0o200).map_err(|err| err.to_string())?;
     }
     let metadata = fs::metadata(path).map_err(|err| err.to_string())?;
-    let mut permissions = metadata.permissions();
-    let mode = permissions.mode();
-    permissions.set_mode(mode | 0o700);
-    fs::set_permissions(path, permissions).map_err(|err| err.to_string())
+    let mode = portable_mode(&metadata, 0o755);
+    set_portable_mode(path, mode | 0o700).map_err(|err| err.to_string())
 }
 
 pub(super) fn remove_tree_force(path: &Path) -> Result<(), String> {

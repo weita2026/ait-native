@@ -1,3 +1,4 @@
+use crate::filesystem_permissions::{portable_mode, set_portable_mode};
 use crate::remote_repository::read_remote_repository_authority;
 #[cfg(test)]
 use crate::runtime::create_binary_test_snapshot as create_local_snapshot;
@@ -131,7 +132,6 @@ use std::os::raw::{c_char, c_int};
 use std::os::unix::ffi::OsStrExt;
 #[cfg(target_os = "linux")]
 use std::os::unix::fs::OpenOptionsExt;
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Component, Path, PathBuf};
 use std::thread::sleep;
 use std::time::{Duration, Instant};

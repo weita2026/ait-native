@@ -19,6 +19,7 @@ pub mod config_surface;
 pub mod doctor_surface;
 pub(crate) mod external_readiness_gate;
 pub mod external_surface;
+pub(crate) mod filesystem_permissions;
 pub mod init_surface;
 pub mod install_surface;
 pub(crate) mod json_support;

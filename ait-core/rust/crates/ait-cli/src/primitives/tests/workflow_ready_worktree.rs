@@ -1514,11 +1514,7 @@ fn managed_worktree_cargo_config_retargets_copied_main_seed_projection() {
     );
     fs::write(worktree.join(".cargo/config.toml"), &copied).expect("copied seed Cargo config");
     let config_path = worktree.join(".cargo/config.toml");
-    let mut readonly_permissions = fs::metadata(&config_path)
-        .expect("copied config metadata")
-        .permissions();
-    readonly_permissions.set_mode(readonly_permissions.mode() & !0o222);
-    fs::set_permissions(&config_path, readonly_permissions).expect("readonly copied config");
+    set_portable_mode(&config_path, 0o444).expect("readonly copied config");
     assert!(
         !matches_generated_worktree_cargo_config_text(&worktree, &copied),
         "a projection for another worktree must not be hidden before retargeting"
@@ -1538,11 +1534,10 @@ fn managed_worktree_cargo_config_retargets_copied_main_seed_projection() {
     assert!(upgraded.contains("[alias]\nmanaged-test = [\"test\", \"--profile\", \"ait-ci\"]\n"));
     assert!(!upgraded.contains("task-workspaces/main-seed"));
     assert_ne!(
-        fs::metadata(&config_path)
-            .expect("retargeted config metadata")
-            .permissions()
-            .mode()
-            & 0o200,
+        portable_mode(
+            &fs::metadata(&config_path).expect("retargeted config metadata"),
+            0o644,
+        ) & 0o200,
         0,
         "retargeted task-worktree projection must be owner-writable"
     );

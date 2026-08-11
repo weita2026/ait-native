@@ -41,7 +41,7 @@ pub(super) fn workspace_state(
             rel,
             WorkspaceFileState {
                 sha256: sha256_hex_bytes(&data),
-                mode: format!("{:#o}", metadata.permissions().mode() & 0o777),
+                mode: format!("{:#o}", portable_mode(&metadata, 0o644)),
             },
         );
     }
@@ -74,7 +74,7 @@ pub(super) fn workspace_state_for_exact_paths(
             rel.clone(),
             WorkspaceFileState {
                 sha256: sha256_hex_bytes(&data),
-                mode: format!("{:#o}", metadata.permissions().mode() & 0o777),
+                mode: format!("{:#o}", portable_mode(&metadata, 0o644)),
             },
         );
     }
