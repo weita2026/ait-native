@@ -78,8 +78,6 @@ jq -e '
     "ait-native-ait-win32-arm64",
     "ait-native-ait-win32-x64"
   ] and
-  .endpoints.apt.previous_publication_commit ==
-    "65cdc171b60b63521720e05061860095169c3047" and
   .endpoints.winget == {
     identity: "Weita.AitNative",
     route: "validation",
@@ -123,6 +121,8 @@ fi
 grep -F '      - name: Complete independent endpoint readback' \
   "${workflow}" >/dev/null
 grep -F 'SHA256:+DiY3wvvV6TuJJhbpZisF/zLDA0zPMSvHdkr4UvCOqU' \
+  "${remote}" >/dev/null
+grep -F 'previous_publication_commit=65cdc171b60b63521720e05061860095169c3047' \
   "${remote}" >/dev/null
 if grep -F 'SHA256:+DiY3wvvV6TuJJhbpZisF/zLDA0zPtwkmmLoMI' \
   "${remote}" >/dev/null; then
