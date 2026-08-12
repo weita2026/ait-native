@@ -25,7 +25,7 @@ The exact current endpoint state is:
 | GHCR | Public multi-platform `ait-server` and `ait-runner` images exist for Linux `amd64` and `arm64`; anonymous digest, filesystem, version, and provenance readback pass. |
 | Homebrew | `weita2026/homebrew-ait-native` contains the RC formula with exact source URLs and checksums. |
 | apt | The signed testing repository and all four RC packages are public, but the frozen packages are not clean-installable and must not be recommended. |
-| npm | Five of twelve implementation payloads are public. The top-level `ait-native`, `ait-native-ait-win32-x64`, and all six server payloads remain blocked by npm registry name-spam detection; an npm support request is pending. The npm product is therefore unpublished. |
+| npm | Five of twelve implementation payloads are public, and those five currently carry an unintended `latest` tag in addition to `rc`. The top-level `ait-native`, `ait-native-ait-win32-x64`, and all six server payloads remain blocked by npm registry name-spam detection; an npm support request is pending. The npm product is therefore unpublished and must not be installed through its default tag. |
 | WinGet | The frozen validation manifests are attached to the GitHub prerelease. No community repository submission has been made, by the declared RC route. |
 
 The apt failure is exact: RC.1 `data.tar.gz` archives contain regular files but
@@ -36,9 +36,16 @@ root-owned `0755` parent directories and passes clean Debian install/remove
 tests while leaving the server inactive. That source correction cannot alter
 the frozen RC.1 bytes.
 
+The authenticated npm retry correction is implemented in `ait-core` Snapshot
+`SNP-67A0777BFB6A`. After confirming the configured `rc` tag, it
+removes `latest` only when `latest` points to the exact prerelease being
+published; it preserves a stable or otherwise different default version and
+fails final readback if any RC payload remains the default. No npm mutation is
+performed while the support request remains pending.
+
 Consequently RC.1 is useful public prerelease evidence, but it is not a fully
 usable all-endpoint release. Completing the declared platform contract
-requires a new immutable version built from `SNP-564720F850B8` or a later
+requires a new immutable version built from `SNP-67A0777BFB6A` or a later
 admitted Snapshot, plus npm registry clearance and complete endpoint
 readback. Until then, use the working PyPI, GitHub native, GHCR, or Homebrew
 routes for RC evaluation; do not direct users to the RC.1 apt or npm routes.

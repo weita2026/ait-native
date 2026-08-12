@@ -77,7 +77,7 @@
     {
       "id": "ait",
       "source_repository": "ait-core",
-      "source_snapshot": "SNP-564720F850B8",
+      "source_snapshot": "SNP-67A0777BFB6A",
       "ecosystem": "native",
       "license": "Apache-2.0",
       "version_scheme": "family",
@@ -99,7 +99,7 @@
     {
       "id": "ait-agent",
       "source_repository": "ait-core",
-      "source_snapshot": "SNP-564720F850B8",
+      "source_snapshot": "SNP-67A0777BFB6A",
       "ecosystem": "native",
       "license": "Apache-2.0",
       "version_scheme": "family",

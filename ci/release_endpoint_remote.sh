@@ -248,11 +248,60 @@ npm_package_rows() {
     done
 }
 
+remove_matching_npm_prerelease_latest_tag() {
+  local npmrc=$1
+  local package_name=$2
+  local package_version=$3
+  local configured_tag=$4
+  local tags latest_version
+  if [[ ${configured_tag} == latest || ${package_version} != *-* ]]; then
+    return 0
+  fi
+  tags=$(NPM_CONFIG_USERCONFIG="${npmrc}" npm dist-tag ls "${package_name}" \
+    --registry "${npm_registry}")
+  latest_version=$(printf '%s\n' "${tags}" | awk -F ': ' '
+    $1 == "latest" {
+      count += 1
+      value = $2
+    }
+    END {
+      if (count > 1) exit 65
+      if (count == 1) print value
+    }
+  ')
+  if [[ ${latest_version} == "${package_version}" ]]; then
+    NPM_CONFIG_USERCONFIG="${npmrc}" npm dist-tag rm \
+      "${package_name}" latest --registry "${npm_registry}" >/dev/null
+  fi
+}
+
+validate_npm_dist_tags() {
+  local metadata=$1
+  local package_name=$2
+  local package_version=$3
+  local configured_tag=$4
+  if ! jq -e --arg tag "${configured_tag}" --arg version "${package_version}" \
+    '."dist-tags"[$tag] == $version' "${metadata}" >/dev/null; then
+    printf 'npm RC dist-tag readback failed: %s@%s\n' \
+      "${package_name}" "${package_version}" >&2
+    return 65
+  fi
+  if [[ ${configured_tag} != latest ]] &&
+    jq -e --arg version "${package_version}" \
+      '."dist-tags".latest == $version' "${metadata}" >/dev/null; then
+    printf 'npm prerelease remains the default latest tag: %s@%s\n' \
+      "${package_name}" "${package_version}" >&2
+    return 65
+  fi
+}
+
 validate_npm_remote_state() {
   local require_published=${1:-false}
   local expected_names=${temporary_root}/expected-npm-names
   local actual_names=${temporary_root}/actual-npm-names
   local package_name package_version package_archive metadata status remote_integrity remote_shasum
+  local configured_tag
+  configured_tag=$(jq -er '.endpoints.npm.dist_tag' "${endpoint_config}")
   jq -r '.endpoints.npm.packages[]' "${endpoint_config}" | LC_ALL=C sort >"${expected_names}"
   npm_package_rows | awk -F '\t' '{print $1}' | LC_ALL=C sort >"${actual_names}"
   if ! diff -u "${expected_names}" "${actual_names}"; then
@@ -294,14 +343,9 @@ validate_npm_remote_state() {
               "${package_name}" "${release_version}" >&2
             return 65
           fi
-          if [[ ${require_published} == true ]] &&
-            ! jq -e \
-              --arg tag "$(jq -er '.endpoints.npm.dist_tag' "${endpoint_config}")" \
-              --arg version "${release_version}" '."dist-tags"[$tag] == $version' \
-              "${metadata}" >/dev/null; then
-            printf 'npm RC dist-tag readback failed: %s@%s\n' \
-              "${package_name}" "${release_version}" >&2
-            return 65
+          if [[ ${require_published} == true ]]; then
+            validate_npm_dist_tags "${metadata}" "${package_name}" \
+              "${release_version}" "${configured_tag}"
           fi
         fi
         ;;
@@ -1048,6 +1092,9 @@ NOTES
         "${package_name}@${package_version}" \
         "$(jq -er '.endpoints.npm.dist_tag' "${endpoint_config}")" \
         --registry "${npm_registry}" >/dev/null
+      remove_matching_npm_prerelease_latest_tag "${npmrc}" \
+        "${package_name}" "${package_version}" \
+        "$(jq -er '.endpoints.npm.dist_tag' "${endpoint_config}")"
     done <"${npm_rows}"
     validate_npm_remote_state true
     package_count=$(wc -l <"${npm_rows}" | tr -d '[:space:]')

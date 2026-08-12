@@ -152,6 +152,8 @@ extract_remote_function() {
 eval "$(extract_remote_function github_release_asset_name)"
 eval "$(extract_remote_function github_release_asset_map)"
 eval "$(extract_remote_function github_release_local_path)"
+eval "$(extract_remote_function remove_matching_npm_prerelease_latest_tag)"
+eval "$(extract_remote_function validate_npm_dist_tags)"
 github_asset_fixture=${temporary_root}/github-asset-fixture
 mkdir -p "${github_asset_fixture}/assets"
 assets=${github_asset_fixture}/assets
@@ -171,6 +173,73 @@ test "$(github_release_asset_name 'plain~name.zip')" = 'plain~name.zip'
 : >"${assets}/ait-native_1.0.0.rc.1_amd64.deb"
 expect_failure github-asset-name-collision \
   github_release_asset_map "${github_asset_fixture}/colliding-map"
+
+npm_tag_mock=${temporary_root}/npm-tag-mock
+mkdir "${npm_tag_mock}"
+npm_tag_log=${temporary_root}/npm-tag.log
+# shellcheck disable=SC2016 # These are literal lines for the mock executable.
+printf '%s\n' \
+  '#!/usr/bin/env bash' \
+  'set -euo pipefail' \
+  'if [[ $1 == dist-tag && $2 == ls ]]; then' \
+  '  case "$3" in' \
+  '    matching) printf '\''latest: 1.0.0-rc.1\nrc: 1.0.0-rc.1\n'\''' \
+  '      ;;' \
+  '    stable) printf '\''latest: 0.9.0\nrc: 1.0.0-rc.1\n'\''' \
+  '      ;;' \
+  '    no-latest) printf '\''rc: 1.0.0-rc.1\n'\''' \
+  '      ;;' \
+  '    *) exit 64 ;;' \
+  '  esac' \
+  '  exit 0' \
+  'fi' \
+  'if [[ $1 == dist-tag && $2 == rm ]]; then' \
+  '  printf '\''%s\n'\'' "$*" >>"${AIT_NPM_TAG_TEST_LOG}"' \
+  '  exit 0' \
+  'fi' \
+  'exit 64' \
+  >"${npm_tag_mock}/npm"
+chmod 0700 "${npm_tag_mock}/npm"
+: >"${npm_tag_log}"
+export npm_registry=https://registry.npmjs.org
+npmrc=${temporary_root}/npm-tag-test.npmrc
+: >"${npmrc}"
+export AIT_NPM_TAG_TEST_LOG=${npm_tag_log}
+PATH="${npm_tag_mock}:${PATH}" \
+  remove_matching_npm_prerelease_latest_tag \
+  "${npmrc}" matching 1.0.0-rc.1 rc
+PATH="${npm_tag_mock}:${PATH}" \
+  remove_matching_npm_prerelease_latest_tag \
+  "${npmrc}" stable 1.0.0-rc.1 rc
+PATH="${npm_tag_mock}:${PATH}" \
+  remove_matching_npm_prerelease_latest_tag \
+  "${npmrc}" no-latest 1.0.0-rc.1 rc
+PATH="${npm_tag_mock}:${PATH}" \
+  remove_matching_npm_prerelease_latest_tag \
+  "${npmrc}" matching 1.0.0 latest
+PATH="${npm_tag_mock}:${PATH}" \
+  remove_matching_npm_prerelease_latest_tag \
+  "${npmrc}" matching 1.0.0-rc.1 latest
+test "$(wc -l <"${npm_tag_log}" | tr -d '[:space:]')" = 1
+grep -Fx 'dist-tag rm matching latest --registry https://registry.npmjs.org' \
+  "${npm_tag_log}" >/dev/null
+
+jq -n '{"dist-tags": {rc: "1.0.0-rc.1", latest: "0.9.0"}}' \
+  >"${temporary_root}/npm-tags-valid.json"
+validate_npm_dist_tags "${temporary_root}/npm-tags-valid.json" \
+  ait-native 1.0.0-rc.1 rc
+jq -n '{"dist-tags": {rc: "1.0.0-rc.1", latest: "1.0.0-rc.1"}}' \
+  >"${temporary_root}/npm-tags-rc-latest.json"
+expect_failure npm-rc-remains-latest validate_npm_dist_tags \
+  "${temporary_root}/npm-tags-rc-latest.json" ait-native 1.0.0-rc.1 rc
+grep -F 'npm prerelease remains the default latest tag: ait-native@1.0.0-rc.1' \
+  "${temporary_root}/npm-rc-remains-latest.stderr" >/dev/null
+jq -n '{"dist-tags": {rc: "1.0.0-rc.0", latest: "0.9.0"}}' \
+  >"${temporary_root}/npm-tags-wrong-rc.json"
+expect_failure npm-rc-tag-drift validate_npm_dist_tags \
+  "${temporary_root}/npm-tags-wrong-rc.json" ait-native 1.0.0-rc.1 rc
+grep -F 'npm RC dist-tag readback failed: ait-native@1.0.0-rc.1' \
+  "${temporary_root}/npm-rc-tag-drift.stderr" >/dev/null
 
 for component in ait-server ait-runner; do
   dockerfile=${repo_root}/release/oci/${component}.Dockerfile
