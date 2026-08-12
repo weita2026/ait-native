@@ -942,9 +942,9 @@ case "${mode}" in
       "https://api.github.com/repos/${github_repository}/releases/tags/${release_tag}")
     notes=${temporary_root}/release-notes.md
     cat >"${notes}" <<'NOTES'
-# AIT Native 1.0.0 RC 1
+# AIT Native 1.0.0 RC 2
 
-This prerelease promotes the exact protected `v1.0.0-rc.1` family bytes.
+This prerelease promotes the exact protected `v1.0.0-rc.2` family bytes.
 It provides the language-neutral `ait` command and an inactive-by-default
 `ait-server`; Python, Node.js, .NET, PHP, C, C++, Java, mixed-language, and
 non-code repositories use the same explicit workflow.
@@ -967,7 +967,7 @@ NOTES
     if [[ ${status} == 404 ]]; then
       GH_TOKEN="${AIT_GITHUB_TOKEN}" gh release create "${release_tag}" \
         --repo "${github_repository}" \
-        --title 'AIT Native 1.0.0 RC 1' \
+        --title 'AIT Native 1.0.0 RC 2' \
         --notes-file "${notes}" \
         --prerelease \
         --verify-tag
@@ -977,7 +977,7 @@ NOTES
     fi
     GH_TOKEN="${AIT_GITHUB_TOKEN}" gh release edit "${release_tag}" \
       --repo "${github_repository}" \
-      --title 'AIT Native 1.0.0 RC 1' \
+      --title 'AIT Native 1.0.0 RC 2' \
       --notes-file "${notes}" \
       --prerelease
     asset_map=${temporary_root}/github-asset-map
@@ -1141,7 +1141,7 @@ NOTES
       git -C "${clone_root}" \
         -c user.name='AIT Native Release' \
         -c user.email='253238140+weita2026@users.noreply.github.com' \
-        commit -m 'Publish ait-native 1.0.0-rc.1 formula' >/dev/null
+        commit -m 'Publish ait-native 1.0.0-rc.2 formula' >/dev/null
       GIT_SSH_COMMAND="ssh -i ${key_path} -o IdentitiesOnly=yes -o UserKnownHostsFile=${known_hosts}" \
         git -C "${clone_root}" push origin "HEAD:refs/heads/${branch}"
     fi
@@ -1296,7 +1296,7 @@ NOTES
       git -C "${clone_root}" \
         -c user.name='AIT Native Release' \
         -c user.email='253238140+weita2026@users.noreply.github.com' \
-        commit -m 'Publish signed ait-native 1.0.0-rc.1 apt repository' >/dev/null
+        commit -m 'Publish signed ait-native 1.0.0-rc.2 apt repository' >/dev/null
       GIT_SSH_COMMAND="ssh -i ${key_path} -o IdentitiesOnly=yes -o UserKnownHostsFile=${known_hosts}" \
         git -C "${clone_root}" push origin "HEAD:refs/heads/${branch}"
     fi

@@ -501,6 +501,7 @@ test ! -e "${output_one}/.github/workflows/pypi-publish.yml"
 test ! -e "${output_one}/ci/release_endpoint_publication.sh"
 test ! -e "${output_one}/ci/release_endpoint_remote.sh"
 test ! -e "${output_one}/release/endpoint-publication.rc1.json"
+test ! -e "${output_one}/release/endpoint-publication.rc2.json"
 cmp "${repo_root}/release/oci/ait-server.Dockerfile" \
   "${output_one}/release/oci/ait-server.Dockerfile"
 cmp "${repo_root}/release/oci/ait-runner.Dockerfile" \
