@@ -10,7 +10,6 @@ import {
   rm,
   writeFile,
 } from "node:fs/promises";
-import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -20,7 +19,6 @@ import { npmInvocation, spawnNpmSync } from "../scripts/npm-command.mjs";
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const PACKAGER = path.join(ROOT, "release", "npm-payload-package.mjs");
 const LOCAL_ADDON = path.join(ROOT, "native", "ait_napi.node");
-const require = createRequire(import.meta.url);
 
 function sha256(bytes) {
   return createHash("sha256").update(bytes).digest("hex");
@@ -185,8 +183,13 @@ test("ait-node builds and packages one exact direct addon for its native target"
   );
   assert.equal(provenance.source_artifact.sha256, sha256(installedBytes));
 
-  const addon = require(packageRoot);
-  const info = JSON.parse(addon.bindingInfoJson());
+  const smoke = run(process.execPath, [
+    "-e",
+    "const addon = require(process.argv[1]); process.stdout.write(addon.bindingInfoJson());",
+    packageRoot,
+  ]);
+  assert.equal(smoke.status, 0, smoke.stderr);
+  const info = JSON.parse(smoke.stdout);
   assert.equal(info.node_binding, "napi");
   assert.equal(info.process_transport_allowed, false);
 });
