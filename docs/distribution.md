@@ -628,8 +628,8 @@ tag `v1.0.0-rc.1` on
 [`weita2026/ait-native`](https://github.com/weita2026/ait-native). The tag
 peels to Git commit `f9d260a8f7046f82a6c3e271d539dd0bbce7bc14`, the merge
 commit for [PR #7](https://github.com/weita2026/ait-native/pull/7). The tag
-exists, but no GitHub Release, AIT Release activation, signature, or registry
-write has been made.
+exists, but no GitHub Release for this tag, AIT Release activation, signature,
+or registry write has been made.
 
 Tagged coordinator Snapshot `SNP-FFDF9798A111` binds that exact public source
 to these five internal source authorities:
@@ -667,12 +667,26 @@ Every one of its 42 frozen checksum entries and all five assembled package
 channels has been read back locally without publication.
 
 The post-tag release-control source is coordinated by Snapshot
-`SNP-744B42CF2E7D`, with manifest hash
-`744b42cf2e7ddf44417365928b73978faaa792e18bffc6f5b50382fe14518bc1`.
-It advances only the `ait-core` source authority to `SNP-A0433FAAAA77` and
-adds the protected authorization workflow and verifier described above. It
-does not move the tag, replace the frozen dossier, rebuild an artifact, or
+`SNP-6E736EFA6D2F`, with manifest hash
+`6e736efa6d2fb607e4bc5098ff0978d1008d847695f0338bf6d61a0ab38e472c`.
+It advances only the `ait-core` source authority to `SNP-A161A1821FA5` and
+adds the protected authorization workflow, verifier, and exact direct-root
+artifact extraction used by [PR #9](https://github.com/weita2026/ait-native/pull/9).
+It does not move the tag, replace the frozen dossier, rebuild an artifact, or
 grant any publication endpoint authority.
+
+[Protected run 31549673366](https://github.com/weita2026/ait-native/actions/runs/31549673366)
+received the required `rc-promotion` environment approval for the exact
+recorded inputs and passed at release-control Git commit
+`5d6b0e4a16539a8f36be2eb1089359c1ffe2ad7e`. Its evidence artifact is
+`9123775170`, with GitHub artifact digest
+`sha256:cd4b9ab658a7b1242489a6f128f95f79ce24c40582f7f76bf90041a485f297e1`.
+The evidence JSON SHA-256 is
+`ff8f594d7065bb3f1fa326754e38e9cb30bd7fcf1cb7b1d0b98facc934e0e34e`;
+its GitHub SLSA provenance verifies the protected workflow, `main` source
+ref, release-control commit, hosted-runner boundary, and one transparency-log
+timestamp. The evidence authorizes only a future request for explicit
+per-endpoint promotion and records every mutation field as false.
 
 The dossier remains deliberately non-public. Its recorded promotion state
 has `performed: false` and `registry_write: false`; local and remote AIT
@@ -684,11 +698,11 @@ GitHub-hosted runner does not need an internet-reachable
 The code and cross-platform receipt matrix are no longer the RC blocker. The
 remaining publication gates are:
 
-- explicitly authorize and run protected promotion for
-  `REL-FAM-D84070909C7F5CA9`, then preserve its emitted handoff without
-  substituting artifacts;
-- sign the frozen artifacts and assemble the real GitHub, PyPI, npm,
-  Homebrew, apt, WinGet, and OCI channel packages from that dossier;
+- preserve the attested protected handoff without substituting artifacts and
+  obtain separate explicit owner authorization for every publication
+  endpoint;
+- sign the frozen artifacts and complete the real GitHub, PyPI, npm,
+  Homebrew, apt, WinGet, and OCI endpoint metadata from that dossier;
 - prove package-name ownership, credentials, and endpoint configuration
   before the first write, keeping PyPI/npm/Homebrew/apt/WinGet/GitHub/OCI
   publication disabled until all source gates pass; and
