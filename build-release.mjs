@@ -32,12 +32,23 @@ const PROMOTION_WORKFLOW = path.join(
   "workflows",
   "ait-release-protected-promotion.yml",
 );
+const PUBLISHER_WORKFLOW = path.join(
+  ROOT,
+  ".github",
+  "workflows",
+  "pypi-publish.yml",
+);
 const PROMOTION_VERIFIER = path.join(
   ROOT,
   "ait-core",
   "ci",
   "release_protected_promotion.sh",
 );
+const ENDPOINT_PREPARER = path.join(ROOT, "ci", "release_endpoint_publication.sh");
+const ENDPOINT_REMOTE = path.join(ROOT, "ci", "release_endpoint_remote.sh");
+const ENDPOINT_CONFIG = path.join(ROOT, "release", "endpoint-publication.rc1.json");
+const OCI_SERVER_DOCKERFILE = path.join(ROOT, "release", "oci", "ait-server.Dockerfile");
+const OCI_RUNNER_DOCKERFILE = path.join(ROOT, "release", "oci", "ait-runner.Dockerfile");
 const BUILD_ROOT = path.join(ROOT, ".build", "source-release");
 const OUTPUT_ROOT = path.join(ROOT, "dist", "source-build");
 const EXPECTED_REPOSITORIES = [
@@ -154,6 +165,96 @@ async function validateProtectedWorkflows() {
   ]) {
     if (promotion.includes(forbidden)) {
       fail(`root protected promotion workflow contains publication authority ${JSON.stringify(forbidden)}`);
+    }
+  }
+
+  await regularFile(PUBLISHER_WORKFLOW, "root protected endpoint publisher workflow");
+  const publisher = await readFile(PUBLISHER_WORKFLOW, "utf8");
+  for (const required of [
+    "name: ait release endpoint publication",
+    "workflow_dispatch:",
+    "actions: read\n  attestations: write\n  contents: write\n  id-token: write\n  packages: write",
+    "environment:\n      name: pypi",
+    "publish_exact_frozen_bytes:",
+    "control/ci/release_endpoint_publication.sh",
+    "control/ci/release_endpoint_remote.sh preflight",
+    "control/release/endpoint-publication.rc1.json",
+    "secrets.AIT_NPM_TOKEN",
+    "secrets.AIT_HOMEBREW_DEPLOY_KEY",
+    "secrets.AIT_APT_REPO_DEPLOY_KEY",
+    "secrets.AIT_APT_SIGNING_KEY_B64",
+    "vars.AIT_APT_SIGNING_FINGERPRINT",
+    "pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33",
+    "docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8",
+    "actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a",
+    "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02",
+    "docker logout ghcr.io",
+  ]) {
+    if (!publisher.includes(required)) {
+      fail(`root endpoint publisher workflow must contain ${JSON.stringify(required)}`);
+    }
+  }
+  for (const forbidden of [
+    "cargo build",
+    "cargo install",
+    "maturin build",
+    "npm run build",
+    "build-release.sh",
+    "build-release.ps1",
+    "wingetcreate submit",
+    "winget-pkgs",
+    "--overwrite",
+  ]) {
+    if (publisher.includes(forbidden)) {
+      fail(`root endpoint publisher workflow contains forbidden release behavior ${JSON.stringify(forbidden)}`);
+    }
+  }
+
+  for (const [filePath, label] of [
+    [ENDPOINT_PREPARER, "endpoint publication preparer"],
+    [ENDPOINT_REMOTE, "authenticated endpoint publisher"],
+    [ENDPOINT_CONFIG, "exact endpoint configuration"],
+    [OCI_SERVER_DOCKERFILE, "ait-server OCI recipe"],
+    [OCI_RUNNER_DOCKERFILE, "ait-runner OCI recipe"],
+  ]) {
+    await regularFile(filePath, label);
+  }
+  const endpointConfig = await readJson(ENDPOINT_CONFIG, "exact endpoint configuration");
+  if (
+    endpointConfig?.contract !== "ait.release.family.endpoints/v1" ||
+    endpointConfig?.release?.id !== "REL-FAM-D84070909C7F5CA9" ||
+    endpointConfig?.release?.version !== "1.0.0-rc.1" ||
+    endpointConfig?.release?.tag !== "v1.0.0-rc.1" ||
+    endpointConfig?.release?.source_commit !== "f9d260a8f7046f82a6c3e271d539dd0bbce7bc14" ||
+    endpointConfig?.publisher?.workflow !== "pypi-publish.yml" ||
+    endpointConfig?.publisher?.environment !== "pypi" ||
+    endpointConfig?.endpoints?.winget?.community_manifest_submission !== false
+  ) {
+    fail("exact endpoint configuration differs from the protected RC route");
+  }
+  for (const [filePath, component] of [
+    [OCI_SERVER_DOCKERFILE, "ait-server"],
+    [OCI_RUNNER_DOCKERFILE, "ait-runner"],
+  ]) {
+    const dockerfile = await readFile(filePath, "utf8");
+    for (const required of [
+      "# syntax=docker/dockerfile:1.7@sha256:a57df69d0ea827fb7266491f2813635de6f17269be881f696fbfdf2d83dda33e",
+      "FROM docker.io/library/debian:bookworm-slim@sha256:abd67ffcfa541b485a3dff59865ab629aa048a6c613e639d36e7456b0b229241",
+      `COPY --chmod=0755 bin/\${TARGETARCH}/${component} /usr/local/bin/${component}`,
+      "USER 65532:65532",
+      `ENTRYPOINT [\"/usr/local/bin/${component}\"]`,
+    ]) {
+      if (!dockerfile.includes(required)) {
+        fail(`${component} OCI recipe must contain ${JSON.stringify(required)}`);
+      }
+    }
+    if (component === "ait-server" && !dockerfile.includes("AITSERVER_LISTEN=0.0.0.0:8088")) {
+      fail("ait-server OCI recipe must bind the explicit container-network listener");
+    }
+    for (const forbidden of ["apt-get", "cargo", "curl", "wget", "git clone"]) {
+      if (dockerfile.includes(forbidden)) {
+        fail(`${component} OCI recipe contains build or download behavior ${JSON.stringify(forbidden)}`);
+      }
     }
   }
 
@@ -520,8 +621,14 @@ async function validateBuildInputs(expectedGitCommit) {
   for (const required of [
     ".github/workflows/ait-release-component-receipts.yml",
     ".github/workflows/ait-release-protected-promotion.yml",
+    ".github/workflows/pypi-publish.yml",
     ".gitattributes",
     "README.md",
+    "ci/release_endpoint_publication.sh",
+    "ci/release_endpoint_remote.sh",
+    "release/endpoint-publication.rc1.json",
+    "release/oci/ait-server.Dockerfile",
+    "release/oci/ait-runner.Dockerfile",
     "ait-core/rust/Cargo.toml",
     "ait-core/ci/release_protected_promotion.sh",
     "ait-server/rust/Cargo.toml",

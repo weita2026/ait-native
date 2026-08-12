@@ -330,6 +330,62 @@ remaining inactive after install or upgrade:
 | WinGet | In PowerShell, set `$ctl = (Get-Command ait-server-control.ps1).Source`, then run `powershell.exe -NoProfile -ExecutionPolicy Bypass -File $ctl start`; replace `start` with `status` or `stop` as needed | The controller is user-session only, stores PID/log state below `%LOCALAPPDATA%\AIT\runtime`, uses `%LOCALAPPDATA%\AIT\server-data`, verifies PID ownership before stopping, and does not install or claim a Windows SCM service. |
 | PyPI/pip or npm | Run `ait-server run`, or pass the installed executable to the user's own service manager | These registry packages install the same native command and add no install hook or second lifecycle implementation. |
 
+### OCI container deployment
+
+The RC publishes two Linux `amd64`/`arm64` images from the exact frozen native
+binaries, without compiling a component or downloading a component during the
+image build:
+
+```text
+ghcr.io/weita2026/ait-server:1.0.0-rc.1
+ghcr.io/weita2026/ait-runner:1.0.0-rc.1
+```
+
+The immutable version tags are the evidence and deployment boundary. The
+corresponding `:rc` tags are moving RC conveniences and must resolve to the
+same digest before use. Both images run as numeric UID/GID 65532, contain the
+owning component's full legal material and provenance, and use a
+digest-pinned Dockerfile frontend and Debian base image.
+
+After the GHCR endpoint is published, the shortest persistent local server
+deployment is:
+
+```sh
+docker network create ait-native-rc
+docker volume create ait-native-rc-data
+docker run --detach \
+  --name ait-server \
+  --network ait-native-rc \
+  --publish 127.0.0.1:8088:8088 \
+  --restart unless-stopped \
+  --volume ait-native-rc-data:/var/lib/ait \
+  ghcr.io/weita2026/ait-server:1.0.0-rc.1
+curl --fail http://127.0.0.1:8088/healthz
+```
+
+The image sets `AITSERVER_LISTEN=0.0.0.0:8088` only inside the container so
+Docker networking can reach the process. The example still publishes the host
+port only on `127.0.0.1`; omitting `--publish` keeps the server private to the
+named container network. Pulling the image does not start or initialize a
+server. The named volume is initialized only when `docker run` starts the
+container and remains intact after `docker stop ait-server` and
+`docker rm ait-server`.
+
+An explicitly invoked runner can share that network and mount the repository
+whose declared CI command it must execute:
+
+```sh
+docker run --rm \
+  --network ait-native-rc \
+  --volume "$PWD:/workspace" \
+  ghcr.io/weita2026/ait-runner:1.0.0-rc.1 \
+  serve --server http://ait-server:8088 --source-root /workspace --once
+```
+
+The runner image has no implicit public server and does not identify the
+repository language. It executes only typed work admitted by the referenced
+AIT server and the repository-authored validation contract.
+
 The post-publication package names and commands are:
 
 | Channel | RC / stable install command |
