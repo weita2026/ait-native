@@ -161,6 +161,7 @@ extract_remote_function() {
 eval "$(extract_remote_function github_release_asset_name)"
 eval "$(extract_remote_function github_release_asset_map)"
 eval "$(extract_remote_function github_release_local_path)"
+eval "$(extract_remote_function npm_provenance_policy)"
 eval "$(extract_remote_function remove_matching_npm_prerelease_latest_tag)"
 eval "$(extract_remote_function validate_npm_dist_tags)"
 github_asset_fixture=${temporary_root}/github-asset-fixture
@@ -249,6 +250,45 @@ expect_failure npm-rc-tag-drift validate_npm_dist_tags \
   "${temporary_root}/npm-tags-wrong-rc.json" ait-native 1.0.0-rc.2 rc
 grep -F 'npm RC dist-tag readback failed: ait-native@1.0.0-rc.2' \
   "${temporary_root}/npm-rc-tag-drift.stderr" >/dev/null
+
+export github_repository=weita2026/ait-native
+export release_version=1.0.0-rc.2
+export source_commit=3dfd9dde5a9867cfe265352f48540fa8241f8e66
+test "$(npm_provenance_policy \
+  future-package unused https://github.com/weita2026/ait-native)" = \
+  '--provenance'
+test "$(npm_provenance_policy \
+  future-package unused git+https://github.com/weita2026/ait-native.git)" = \
+  '--provenance'
+npm_recovery_rows=${temporary_root}/npm-provenance-recovery-rows
+printf '%s\t%s\n' \
+  ait-native-ait-darwin-arm64 868a6a51d1baf2063652a24f586f1c4c1cefaf544315108928602477534bfb07 \
+  ait-native-ait-darwin-x64 69eed59c88235cef81c35697fd01d89bd4dbe4a1af0fbf01a685b48cf6ca9751 \
+  ait-native-ait-linux-arm64 045b87d3eb9e134801d9f550757fdb6cda3c05bdbbdd93ba0017327fee5321a0 \
+  ait-native-ait-linux-x64 c6a1b2caebb2a8cd04edcc6f2743a162d73b0598f1e3d7fb64db3bdd05360945 \
+  ait-native-ait-win32-arm64 2b586f8b8e39a041793240486af16bbf751be1f1ddb5bf0e7695587f637c85f2 \
+  ait-native-ait-win32-x64 2016e93c9a87cb7a0519afc7d9ca826adcc481fa9c71b558410675f7e2b53dbe \
+  >"${npm_recovery_rows}"
+while IFS=$'\t' read -r recovery_package recovery_sha256; do
+  test "$(npm_provenance_policy \
+    "${recovery_package}" "${recovery_sha256}" '')" = \
+    '--provenance=false'
+done <"${npm_recovery_rows}"
+expect_failure npm-provenance-wrong-digest npm_provenance_policy \
+  ait-native-ait-darwin-arm64 \
+  0000000000000000000000000000000000000000000000000000000000000000 ''
+expect_failure npm-provenance-wrong-repository npm_provenance_policy \
+  ait-native-ait-darwin-arm64 \
+  868a6a51d1baf2063652a24f586f1c4c1cefaf544315108928602477534bfb07 \
+  https://github.com/example/other
+export source_commit=0000000000000000000000000000000000000000
+expect_failure npm-provenance-wrong-source npm_provenance_policy \
+  ait-native-ait-darwin-arm64 \
+  868a6a51d1baf2063652a24f586f1c4c1cefaf544315108928602477534bfb07 ''
+for failure in wrong-digest wrong-repository wrong-source; do
+  grep -F 'npm package repository metadata does not admit provenance:' \
+    "${temporary_root}/npm-provenance-${failure}.stderr" >/dev/null
+done
 
 for component in ait-server ait-runner; do
   dockerfile=${repo_root}/release/oci/${component}.Dockerfile
