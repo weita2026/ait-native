@@ -386,6 +386,7 @@ for required_promotion_text in \
   'name: ait release protected promotion' \
   '      name: rc-promotion' \
   'artifact-ids: ${{ inputs.dossier_artifact_id }}' \
+  '          merge-multiple: true' \
   'bash control/ait-core/ci/release_protected_promotion.sh' \
   'actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a'; do
   grep -F -- "${required_promotion_text}" "${promotion_workflow}" >/dev/null
@@ -423,6 +424,15 @@ node "${repo_root}/ci/release_monorepo_transform.mjs" \
   '      name: unprotected'
 expect_failure promotion-workflow-drift node \
   "${promotion_workflow_drift_output}/build-release.mjs" --validate-only
+
+promotion_download_drift_output=${temporary_root}/promotion-download-drift-output
+cp -R "${output_one}" "${promotion_download_drift_output}"
+node "${repo_root}/ci/release_monorepo_transform.mjs" \
+  "${promotion_download_drift_output}/.github/workflows/ait-release-protected-promotion.yml" \
+  '          merge-multiple: true' \
+  '          merge-multiple: false'
+expect_failure promotion-download-drift node \
+  "${promotion_download_drift_output}/build-release.mjs" --validate-only
 
 wrong_snapshot_bundles=${temporary_root}/wrong-snapshot-bundles
 cp -R "${bundles}" "${wrong_snapshot_bundles}"

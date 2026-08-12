@@ -133,6 +133,7 @@ async function validateProtectedWorkflows() {
     "environment:\n      name: rc-promotion",
     "persist-credentials: false",
     "artifact-ids: ${{ inputs.dossier_artifact_id }}",
+    "merge-multiple: true",
     "bash control/ait-core/ci/release_protected_promotion.sh",
     "actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a",
     "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02",
