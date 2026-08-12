@@ -7,9 +7,9 @@
   "family_version": "1.0.0-rc.1",
   "family_tag": "v1.0.0-rc.1",
   "family_manifest_sha256": "b55c55888898d1ed5c455ce3348b98802c74862520cf0d962d8c7bc8a87f2826",
-  "product_document_sha256": "f5f10f635898cf38f219401fe93de760b51afe5949d6106756f33b6e422b6c0c",
+  "product_document_sha256": "a882a26be0b9437909d52502e5da27f83ee8796cf856fd9c0f30bb4dee144bf0",
   "content_digest_contract": "size-sha256-path/v1; excludes ait-monorepo-source.json",
-  "content_sha256": "d2c7dcec7f9dab04c4b7a3963a815461e82e68d3bdd9f4a31186e037662ab8d9",
+  "content_sha256": "302615243249d0a87a22962f3c7c6783962aaa29be828dde4ff15a8e103e60bf",
   "subtrees": [
     {
       "source_repository": "ait-core",
