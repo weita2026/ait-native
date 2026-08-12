@@ -187,7 +187,7 @@
     {
       "id": "ait-node",
       "source_repository": "ait-node",
-      "source_snapshot": "SNP-603CCCCC25FC",
+      "source_snapshot": "SNP-FE639008B7F7",
       "ecosystem": "node",
       "license": "Apache-2.0",
       "version_scheme": "family",
