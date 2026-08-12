@@ -78,6 +78,8 @@ jq -e '
     "ait-native-ait-win32-arm64",
     "ait-native-ait-win32-x64"
   ] and
+  .endpoints.apt.previous_publication_commit ==
+    "65cdc171b60b63521720e05061860095169c3047" and
   .endpoints.winget == {
     identity: "Weita.AitNative",
     route: "validation",
