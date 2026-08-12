@@ -44,9 +44,9 @@ must not be relabelled as RC.2.
 Consequently RC.1 is useful public prerelease evidence, but it is not a fully
 usable all-endpoint release. Completing the declared platform contract
 requires the new immutable RC.2 family. Its selected component authorities are
-`ait-core` `SNP-AFCEA70F3C0D`, `ait-server` `SNP-46B0CA25412F`, `ait-runner`
+`ait-core` `SNP-4D8A3DA8FE1D`, `ait-server` `SNP-46B0CA25412F`, `ait-runner`
 `SNP-971121B196C4`, `ait-python` `SNP-02A1F51491A8`, and `ait-node`
-`SNP-5D582EC8678F`. RC.2 is not public until the source tag, protected matrix,
+`SNP-603CCCCC25FC`. RC.2 is not public until the source tag, protected matrix,
 frozen dossier, endpoint publication, and readback below complete. Until then,
 use the working RC.1 PyPI, GitHub native, GHCR, or Homebrew routes for RC
 evaluation; do not direct users to the RC.1 apt or npm routes.

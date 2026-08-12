@@ -77,7 +77,7 @@
     {
       "id": "ait",
       "source_repository": "ait-core",
-      "source_snapshot": "SNP-7646BD6FEC84",
+      "source_snapshot": "SNP-AFCEA70F3C0D",
       "ecosystem": "native",
       "license": "Apache-2.0",
       "version_scheme": "family",
@@ -99,7 +99,7 @@
     {
       "id": "ait-agent",
       "source_repository": "ait-core",
-      "source_snapshot": "SNP-7646BD6FEC84",
+      "source_snapshot": "SNP-AFCEA70F3C0D",
       "ecosystem": "native",
       "license": "Apache-2.0",
       "version_scheme": "family",
@@ -187,7 +187,7 @@
     {
       "id": "ait-node",
       "source_repository": "ait-node",
-      "source_snapshot": "SNP-E5031BC2FDE6",
+      "source_snapshot": "SNP-5D582EC8678F",
       "ecosystem": "node",
       "license": "Apache-2.0",
       "version_scheme": "family",

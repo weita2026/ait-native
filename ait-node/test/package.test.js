@@ -7,7 +7,7 @@ import { resolveNativeManifest } from "../scripts/native-build.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const VERSION = "1.0.0-rc.2";
-const CORE_SNAPSHOT = "SNP-AFCEA70F3C0D";
+const CORE_SNAPSHOT = "SNP-4D8A3DA8FE1D";
 const TARGETS = new Map([
   ["aarch64-apple-darwin", ["darwin", "arm64"]],
   ["x86_64-apple-darwin", ["darwin", "x64"]],
@@ -189,7 +189,7 @@ test("published runtime loads an addon directly and has no process relay", async
 test("native build validates the locked external and public monorepo layouts", async () => {
   const build = await readFile(path.join(ROOT, "scripts", "native-build.mjs"), "utf8");
 
-  assert.match(build, /SNP-AFCEA70F3C0D/);
+  assert.match(build, /SNP-4D8A3DA8FE1D/);
   assert.match(build, /\.ait-external-marker\.json/);
   assert.match(build, /ait-monorepo-source\.json/);
   assert.match(build, /ait-release-family\.json/);

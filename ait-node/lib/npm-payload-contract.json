@@ -11,7 +11,7 @@
       "package": "ait-native-ait-darwin-arm64",
       "version": "1.0.0-rc.2",
       "binding_repository": "ait-core",
-      "binding_snapshot": "SNP-AFCEA70F3C0D",
+      "binding_snapshot": "SNP-4D8A3DA8FE1D",
       "license": "Apache-2.0",
       "addon": "native/ait_napi.node"
     },
@@ -23,7 +23,7 @@
       "package": "ait-native-ait-darwin-x64",
       "version": "1.0.0-rc.2",
       "binding_repository": "ait-core",
-      "binding_snapshot": "SNP-AFCEA70F3C0D",
+      "binding_snapshot": "SNP-4D8A3DA8FE1D",
       "license": "Apache-2.0",
       "addon": "native/ait_napi.node"
     },
@@ -35,7 +35,7 @@
       "package": "ait-native-ait-linux-arm64",
       "version": "1.0.0-rc.2",
       "binding_repository": "ait-core",
-      "binding_snapshot": "SNP-AFCEA70F3C0D",
+      "binding_snapshot": "SNP-4D8A3DA8FE1D",
       "license": "Apache-2.0",
       "addon": "native/ait_napi.node"
     },
@@ -47,7 +47,7 @@
       "package": "ait-native-ait-linux-x64",
       "version": "1.0.0-rc.2",
       "binding_repository": "ait-core",
-      "binding_snapshot": "SNP-AFCEA70F3C0D",
+      "binding_snapshot": "SNP-4D8A3DA8FE1D",
       "license": "Apache-2.0",
       "addon": "native/ait_napi.node"
     },
@@ -59,7 +59,7 @@
       "package": "ait-native-ait-win32-arm64",
       "version": "1.0.0-rc.2",
       "binding_repository": "ait-core",
-      "binding_snapshot": "SNP-AFCEA70F3C0D",
+      "binding_snapshot": "SNP-4D8A3DA8FE1D",
       "license": "Apache-2.0",
       "addon": "native/ait_napi.node"
     },
@@ -71,7 +71,7 @@
       "package": "ait-native-ait-win32-x64",
       "version": "1.0.0-rc.2",
       "binding_repository": "ait-core",
-      "binding_snapshot": "SNP-AFCEA70F3C0D",
+      "binding_snapshot": "SNP-4D8A3DA8FE1D",
       "license": "Apache-2.0",
       "addon": "native/ait_napi.node"
     }

@@ -349,6 +349,18 @@ if [[ -x ${output_one}/ait-core/ci/fixture-data.txt ]]; then
 fi
 node --check "${output_one}/build-release.mjs"
 node "${output_one}/build-release.mjs" --validate-only >/dev/null
+for required_local_node_adapter_text in \
+  'const nodeAdapter = path.join(nodeRoot, "release", "release-adapter.mjs");' \
+  '[nodeAdapter, "build", "portable", family.family.version]' \
+  'portable npm adapter artifact differs from its reported digest or size'; do
+  grep -F "${required_local_node_adapter_text}" \
+    "${output_one}/build-release.mjs" >/dev/null
+done
+if grep -F '"pack", "--ignore-scripts", "--pack-destination", npmOutput' \
+  "${output_one}/build-release.mjs" >/dev/null; then
+  printf 'local source build bypasses the protected portable npm adapter\n' >&2
+  exit 65
+fi
 git -C "${output_one}" init -q
 git -C "${output_one}" config user.name 'AIT release fixture'
 git -C "${output_one}" config user.email 'release-fixture@localhost'
