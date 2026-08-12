@@ -42,6 +42,7 @@ family="${repo_root}/ait-release-family.json"
 platforms="${repo_root}/ci/native_bootstrap_matrix.json"
 authorities="${repo_root}/ci/release_repository_authorities.json"
 workflow="${repo_root}/.github/workflows/ait-release-component-receipts.yml"
+protected_verifier="${repo_root}/ci/release_protected_promotion.sh"
 projection="${temporary_root}/projection.json"
 
 if awk '
@@ -140,6 +141,32 @@ jq -e '
   ([.builds.include[] | select(.repo_name == "ait-node")] | length) == 7 and
   ([.builds.include[].expected_component_artifact_count] | add) == 37
 ' "${projection}" >/dev/null
+
+for required_verifier_text in \
+  'release_receipt_matrix.jq' \
+  'expected_receipt_count=$(jq -er' \
+  'expected_component_artifact_count=$(jq -er' \
+  'expected_license_material_count=$((expected_source_count * 2))'; do
+  if ! grep -F -- "${required_verifier_text}" "${protected_verifier}" >/dev/null; then
+    printf 'protected promotion is not tied to the receipt projection: %s\n' \
+      "${required_verifier_text}" >&2
+    exit 65
+  fi
+done
+if [[ $(grep -F -c -- '--argjson expected_receipt_count' \
+    "${protected_verifier}") -ne 2 ||
+  $(grep -F -c -- '--argjson expected_component_artifact_count' \
+    "${protected_verifier}") -ne 2 ||
+  $(grep -F -c -- '--argjson expected_license_material_count' \
+    "${protected_verifier}") -ne 2 ]]; then
+  printf 'protected promotion must apply projected counts to check and build records\n' >&2
+  exit 65
+fi
+if grep -E -- 'component-artifact.*length\) == (31|37)' \
+  "${protected_verifier}" >/dev/null; then
+  printf 'protected promotion retains a numeric component-artifact count\n' >&2
+  exit 65
+fi
 
 jq '.schema = "ait.release.family/v2"' "${family}" \
   >"${temporary_root}/legacy-family.json"

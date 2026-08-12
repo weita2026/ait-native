@@ -185,6 +185,36 @@ mapping_sha256=$(sha256_file "${source_mapping}")
 promotion_sha256=$(sha256_file "${promotion}")
 source_archive_sha256=$(sha256_file "${source_archive}")
 
+receipt_matrix_filter=${public_source_root}/ait-core/ci/release_receipt_matrix.jq
+platform_contract=${public_source_root}/ait-core/ci/native_bootstrap_matrix.json
+repository_contract=${public_source_root}/ait-core/ci/release_repository_authorities.json
+for matrix_input in \
+  "${public_source_root}/ait-release-family.json" \
+  "${receipt_matrix_filter}" \
+  "${platform_contract}" \
+  "${repository_contract}"; do
+  require_regular_file "${matrix_input}" 'tagged receipt-matrix input'
+done
+receipt_matrix=${temporary_root}/receipt-matrix.json
+jq -n \
+  --slurpfile family "${public_source_root}/ait-release-family.json" \
+  --slurpfile platforms "${platform_contract}" \
+  --slurpfile authorities "${repository_contract}" \
+  -f "${receipt_matrix_filter}" >"${receipt_matrix}"
+expected_source_count=$(jq -er '
+  .expected_source_count |
+  select(type == "number" and . > 0 and . == floor)
+' "${receipt_matrix}")
+expected_receipt_count=$(jq -er '
+  .expected_receipt_count |
+  select(type == "number" and . > 0 and . == floor)
+' "${receipt_matrix}")
+expected_component_artifact_count=$(jq -er '
+  .expected_component_artifact_count |
+  select(type == "number" and . > 0 and . == floor)
+' "${receipt_matrix}")
+expected_license_material_count=$((expected_source_count * 2))
+
 if ! jq -e \
   --arg release_id "${AIT_RELEASE_ID}" \
   --arg version "${version}" \
@@ -220,24 +250,39 @@ for record in "${check}" "${build}" "${promotion}"; do
     exit 65
   fi
 done
-if ! jq -e '
+if ! jq -e \
+  --argjson expected_receipt_count "${expected_receipt_count}" \
+  --argjson expected_component_artifact_count \
+    "${expected_component_artifact_count}" \
+  --argjson expected_license_material_count \
+    "${expected_license_material_count}" '
   .contract == "ait.release.family.check/v1" and
   .status == "checked" and .check_summary.decision == "pass" and
   .check_summary.failed == 0 and .check_summary.blocking == 0 and
+  (.component_receipts | length) == $expected_receipt_count and
   ([.component_receipts[].git_commit] | unique | length) == 1 and
-  ([.artifacts[] | select(.role == "component-artifact")] | length) == 31 and
-  (.license_material | length) == 10
+  ([.artifacts[] | select(.role == "component-artifact")] | length) ==
+    $expected_component_artifact_count and
+  (.license_material | length) == $expected_license_material_count
 ' "${check}" >/dev/null; then
   printf 'family check receipt is not a complete passing receipt matrix\n' >&2
   exit 65
 fi
-if ! jq -e '
+if ! jq -e \
+  --argjson expected_receipt_count "${expected_receipt_count}" \
+  --argjson expected_component_artifact_count \
+    "${expected_component_artifact_count}" \
+  --argjson expected_license_material_count \
+    "${expected_license_material_count}" '
   .contract == "ait.release.family.build/v1" and
   .status == "built" and .check_summary.decision == "pass" and
   .promotion.authorized == false and .promotion.performed == false and
   .promotion.registry_write == false and
-  ([.artifacts[] | select(.role == "component-artifact")] | length) == 31 and
-  ([.artifacts[] | select(.role == "license-material")] | length) == 10
+  (.component_receipts | length) == $expected_receipt_count and
+  ([.artifacts[] | select(.role == "component-artifact")] | length) ==
+    $expected_component_artifact_count and
+  ([.artifacts[] | select(.role == "license-material")] | length) ==
+    $expected_license_material_count
 ' "${build}" >/dev/null; then
   printf 'family build receipt is not the exact unpromoted frozen build\n' >&2
   exit 65
