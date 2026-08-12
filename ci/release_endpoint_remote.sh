@@ -394,6 +394,54 @@ validate_public_tag() {
   fi
 }
 
+run_authenticated_preflight_check() {
+  local label=$1
+  shift
+  local exit_code
+  printf 'authenticated endpoint preflight start: %s\n' "${label}"
+  set +e
+  (
+    set -e
+    "$@"
+  )
+  exit_code=$?
+  set -e
+  if ((exit_code != 0)); then
+    printf 'authenticated endpoint preflight failed: %s (exit %s)\n' \
+      "${label}" "${exit_code}" >&2
+    return "${exit_code}"
+  fi
+  printf 'authenticated endpoint preflight pass: %s\n' "${label}"
+}
+
+validate_github_repository_write() {
+  local repository_record=${temporary_root}/repository.json
+  curl --fail --silent --show-error --location \
+    --header "Authorization: Bearer ${AIT_GITHUB_TOKEN}" \
+    --header 'Accept: application/vnd.github+json' \
+    "https://api.github.com/repos/${github_repository}" --output "${repository_record}"
+  jq -e '
+    .full_name == "weita2026/ait-native" and
+    .private == false and
+    .permissions.push == true
+  ' "${repository_record}" >/dev/null
+}
+
+validate_npm_authenticated_publisher() {
+  local npmrc=${temporary_root}/npmrc
+  local npm_user
+  write_npm_config "${npmrc}"
+  if ! npm_user=$(NPM_CONFIG_USERCONFIG="${npmrc}" \
+    npm whoami --registry "${npm_registry}" 2>/dev/null); then
+    printf 'npm credential does not authenticate with the declared registry\n' >&2
+    return 65
+  fi
+  if [[ -z ${npm_user} ]]; then
+    printf 'npm credential does not identify an authenticated publisher\n' >&2
+    return 65
+  fi
+}
+
 require_preflight_receipt() {
   local preflight=${evidence_root}/ait-release.endpoint-preflight.json
   require_regular_file "${preflight}" 'endpoint preflight receipt'
@@ -734,37 +782,30 @@ case "${mode}" in
       printf 'PyPI OIDC or GHCR authenticated preflight did not pass\n' >&2
       exit 65
     fi
-    repository_record=${temporary_root}/repository.json
-    curl --fail --silent --show-error --location \
-      --header "Authorization: Bearer ${AIT_GITHUB_TOKEN}" \
-      --header 'Accept: application/vnd.github+json' \
-      "https://api.github.com/repos/${github_repository}" --output "${repository_record}"
-    jq -e '
-      .full_name == "weita2026/ait-native" and
-      .private == false and
-      .permissions.push == true
-    ' "${repository_record}" >/dev/null
-
-    npmrc=${temporary_root}/npmrc
-    write_npm_config "${npmrc}"
-    npm_user=$(NPM_CONFIG_USERCONFIG="${npmrc}" npm whoami --registry "${npm_registry}" 2>/dev/null)
-    if [[ -z ${npm_user} ]]; then
-      printf 'npm credential does not identify an authenticated publisher\n' >&2
-      exit 65
-    fi
-    validate_npm_remote_state
-    validate_pypi_remote_state
-    validate_public_tag
-    validate_github_release_state
-    validate_deploy_key \
+    run_authenticated_preflight_check \
+      'GitHub repository write capability' validate_github_repository_write
+    run_authenticated_preflight_check \
+      'npm authenticated publisher identity' validate_npm_authenticated_publisher
+    run_authenticated_preflight_check \
+      'npm staged identities and remote state' validate_npm_remote_state
+    run_authenticated_preflight_check \
+      'PyPI project lineage and remote state' validate_pypi_remote_state
+    run_authenticated_preflight_check \
+      'public RC tag identity' validate_public_tag
+    run_authenticated_preflight_check \
+      'GitHub Release restart state' validate_github_release_state
+    run_authenticated_preflight_check \
+      'Homebrew deploy key dry-run' validate_deploy_key \
       "$(jq -er '.endpoints.homebrew.repository' "${endpoint_config}")" \
       "$(jq -er '.endpoints.homebrew.branch' "${endpoint_config}")" \
       "${AIT_HOMEBREW_DEPLOY_KEY}" homebrew
-    validate_deploy_key \
+    run_authenticated_preflight_check \
+      'APT deploy key dry-run' validate_deploy_key \
       "$(jq -er '.endpoints.apt.repository' "${endpoint_config}")" \
       "$(jq -er '.endpoints.apt.branch' "${endpoint_config}")" \
       "${AIT_APT_REPO_DEPLOY_KEY}" apt
-    validate_apt_signing_key
+    run_authenticated_preflight_check \
+      'APT signing key' validate_apt_signing_key
     jq -n \
       --arg contract 'ait.release.family.endpoint-preflight/v1' \
       --arg status 'pass' \
