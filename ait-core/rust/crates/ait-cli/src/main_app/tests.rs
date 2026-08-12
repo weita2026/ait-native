@@ -3,6 +3,15 @@ use ait_core::external::update::ExternalUpdateSelection;
 use std::fs;
 use tempfile::TempDir;
 
+#[test]
+fn embedded_entry_returns_help_and_parse_status_without_exiting() {
+    assert_eq!(entry_with_args(vec!["ait".into(), "--help".into()]), 0);
+    assert_eq!(
+        entry_with_args(vec!["ait".into(), "not-a-command".into()]),
+        2
+    );
+}
+
 fn write_runtime_config(root: &std::path::Path, config_json: &str) {
     fs::create_dir_all(root.join(".ait")).unwrap();
     fs::write(root.join(".ait/config.json"), config_json).unwrap();

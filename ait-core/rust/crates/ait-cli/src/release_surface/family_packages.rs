@@ -2369,15 +2369,16 @@ fn assemble_pypi(
 }
 
 #[derive(Clone, Debug)]
-struct NpmPayloadDefinition {
+struct NpmAddonDefinition {
     target: String,
     os: String,
     cpu: String,
     component: String,
     package: String,
-    source_repository: String,
+    binding_repository: String,
+    binding_snapshot: String,
     license: String,
-    executable: String,
+    addon: String,
 }
 
 fn npm_platform(target: &str) -> Result<(&'static str, &'static str), String> {
@@ -2406,33 +2407,38 @@ fn exact_json_fields(value: &JsonValue, expected: &[&str], context: &str) -> Res
     Ok(())
 }
 
-fn parse_npm_payload_contract(
+fn parse_npm_addon_contract(
     input: &FamilyPackageInput,
     value: &JsonValue,
-) -> Result<Vec<NpmPayloadDefinition>, String> {
+) -> Result<Vec<NpmAddonDefinition>, String> {
     exact_json_fields(
         value,
         &["schema", "family_version", "top_level_package", "payloads"],
-        "Frozen npm payload contract",
+        "Frozen npm addon contract",
     )?;
-    if string_field(value, "schema").as_deref() != Some("ait.node.npm-platform-packages/v1")
+    if string_field(value, "schema").as_deref() != Some("ait.node.napi-platform-packages/v1")
         || string_field(value, "family_version").as_deref() != Some(input.version.as_str())
         || string_field(value, "top_level_package").as_deref() != Some("ait-native")
     {
-        return Err("Frozen npm payload contract identity or version drifted.".to_string());
+        return Err("Frozen npm addon contract identity or version drifted.".to_string());
     }
     let rows = value
         .get("payloads")
         .and_then(JsonValue::as_array)
-        .ok_or_else(|| "Frozen npm payload contract lacks payloads.".to_string())?;
-    if rows.len() != 12 {
-        return Err(
-            "Frozen npm payload contract must declare exactly twelve payloads.".to_string(),
-        );
+        .ok_or_else(|| "Frozen npm addon contract lacks payloads.".to_string())?;
+    if rows.len() != REGISTRY_TARGETS.len() {
+        return Err("Frozen npm addon contract must declare exactly six addons.".to_string());
+    }
+    let node_component = required_component(input, "ait-node", "node")?;
+    let core_component = required_component(input, "ait", "native")?;
+    if node_component.source_repository != "ait-node"
+        || core_component.source_repository != "ait-core"
+    {
+        return Err("Frozen npm addon contract requires the ait-node package and ait-core binding authorities.".to_string());
     }
     let mut definitions = Vec::new();
     let mut packages = BTreeSet::new();
-    let mut selections = BTreeSet::new();
+    let mut targets = BTreeSet::new();
     for (index, row) in rows.iter().enumerate() {
         exact_json_fields(
             row,
@@ -2441,108 +2447,81 @@ fn parse_npm_payload_contract(
                 "os",
                 "cpu",
                 "component",
-                "command",
                 "package",
                 "version",
-                "source_repository",
+                "binding_repository",
+                "binding_snapshot",
                 "license",
-                "executable",
+                "addon",
             ],
-            &format!("Frozen npm payload row {index}"),
+            &format!("Frozen npm addon row {index}"),
         )?;
         let target = required_string_field(row, "target")?;
-        let component = required_string_field(row, "component")?;
         let (os, cpu) = npm_platform(&target)?;
-        let (command, package_prefix) = match component.as_str() {
-            "ait" => ("ait", "ait"),
-            "ait-server" => ("ait-server", "server"),
-            _ => {
-                return Err(format!(
-                    "Frozen npm payload row {index} has invalid component."
-                ))
-            }
-        };
-        let component_definition = required_component(input, &component, "native")?;
-        let executable = if os == "win32" {
-            format!("bin/{command}.exe")
-        } else {
-            format!("bin/{command}")
-        };
-        let package = format!("ait-native-{package_prefix}-{os}-{cpu}");
+        let component = "ait-node".to_string();
+        let package = format!("ait-native-ait-{os}-{cpu}");
+        let addon = "native/ait_napi.node".to_string();
         if required_string_field(row, "os")? != os
             || required_string_field(row, "cpu")? != cpu
-            || required_string_field(row, "command")? != command
+            || required_string_field(row, "component")? != component
             || required_string_field(row, "package")? != package
             || required_string_field(row, "version")? != input.version
-            || required_string_field(row, "source_repository")?
-                != component_definition.source_repository
-            || required_string_field(row, "license")? != component_definition.license
-            || required_string_field(row, "executable")? != executable
+            || required_string_field(row, "binding_repository")? != core_component.source_repository
+            || required_string_field(row, "binding_snapshot")? != core_component.source_snapshot
+            || required_string_field(row, "license")? != node_component.license
+            || required_string_field(row, "addon")? != addon
         {
             return Err(format!(
-                "Frozen npm payload row {index} differs from its family component/target mapping."
+                "Frozen npm addon row {index} differs from its family binding/target mapping."
             ));
         }
-        if !packages.insert(package.clone())
-            || !selections.insert((component.clone(), target.clone()))
-        {
-            return Err("Frozen npm payload contract contains a duplicate selection.".to_string());
+        if !packages.insert(package.clone()) || !targets.insert(target.clone()) {
+            return Err("Frozen npm addon contract contains a duplicate selection.".to_string());
         }
-        definitions.push(NpmPayloadDefinition {
+        definitions.push(NpmAddonDefinition {
             target,
             os: os.to_string(),
             cpu: cpu.to_string(),
             component,
             package,
-            source_repository: component_definition.source_repository.clone(),
-            license: component_definition.license.clone(),
-            executable,
+            binding_repository: core_component.source_repository.clone(),
+            binding_snapshot: core_component.source_snapshot.clone(),
+            license: node_component.license.clone(),
+            addon,
         });
     }
     let expected = REGISTRY_TARGETS
         .iter()
-        .flat_map(|target| {
-            ["ait", "ait-server"]
-                .into_iter()
-                .map(move |component| (component.to_string(), (*target).to_string()))
-        })
+        .map(|target| (*target).to_string())
         .collect::<BTreeSet<_>>();
-    if selections != expected {
-        return Err(
-            "Frozen npm payload contract does not cover the exact twelve selections.".to_string(),
-        );
+    if targets != expected {
+        return Err("Frozen npm addon contract does not cover the exact six targets.".to_string());
     }
     Ok(definitions)
-}
-
-fn contains_native_addon_path(launcher: &str) -> bool {
-    launcher.match_indices(".node").any(|(offset, marker)| {
-        launcher
-            .as_bytes()
-            .get(offset + marker.len())
-            .is_none_or(|next| {
-                !next.is_ascii_alphanumeric() && !matches!(*next, b'.' | b'_' | b'-')
-            })
-    })
 }
 
 fn validate_npm_envelope(
     input: &FamilyPackageInput,
     entries: &PackageEntries,
     node_materials: &[(FrozenLicenseMaterial, Vec<u8>)],
-) -> Result<Vec<NpmPayloadDefinition>, String> {
+) -> Result<Vec<NpmAddonDefinition>, String> {
     let expected_paths = BTreeSet::from([
         "package/LICENSE".to_string(),
         "package/NOTICE".to_string(),
-        "package/bin/ait-server.mjs".to_string(),
+        "package/README.md".to_string(),
         "package/bin/ait.mjs".to_string(),
-        "package/bin/launch.mjs".to_string(),
         "package/lib/npm-payload-contract.json".to_string(),
         "package/package.json".to_string(),
+        "package/src/agent.js".to_string(),
+        "package/src/contract.js".to_string(),
+        "package/src/errors.js".to_string(),
+        "package/src/index.d.ts".to_string(),
+        "package/src/index.js".to_string(),
+        "package/src/runtime.js".to_string(),
     ]);
     if entries.keys().cloned().collect::<BTreeSet<_>>() != expected_paths {
         return Err(
-            "Frozen npm envelope inventory differs from the command-only contract.".to_string(),
+            "Frozen npm envelope inventory differs from the direct Node-API contract.".to_string(),
         );
     }
     for (material, bytes) in node_materials {
@@ -2569,6 +2548,7 @@ fn validate_npm_envelope(
             "engines",
             "bin",
             "exports",
+            "types",
             "files",
             "optionalDependencies",
             "scripts",
@@ -2582,13 +2562,10 @@ fn validate_npm_envelope(
         || string_field(&package_json, "license").as_deref()
             != Some(node_component.license.as_str())
         || string_field(&package_json, "type").as_deref() != Some("module")
-        || !package_json
-            .get("exports")
-            .and_then(JsonValue::as_object)
-            .is_some_and(JsonMap::is_empty)
+        || string_field(&package_json, "types").as_deref() != Some("./src/index.d.ts")
     {
         return Err(
-            "Frozen npm envelope package.json is not one portable command-only product."
+            "Frozen npm envelope package.json is not one portable direct Node-API product."
                 .to_string(),
         );
     }
@@ -2600,35 +2577,54 @@ fn validate_npm_envelope(
         return Err("Frozen npm envelope must require the exact Node.js >=20 runtime.".to_string());
     }
     let files = json_array_strings(package_json.get("files"), "npm package.json.files")?;
-    if files.len() != 4
+    if files.len() != 5
         || files.into_iter().collect::<BTreeSet<_>>()
             != BTreeSet::from([
                 "LICENSE".to_string(),
                 "NOTICE".to_string(),
-                "bin".to_string(),
+                "bin/ait.mjs".to_string(),
                 "lib".to_string(),
+                "src".to_string(),
             ])
     {
         return Err(
-            "Frozen npm envelope files differ from its command-only inventory.".to_string(),
+            "Frozen npm envelope files differ from its direct Node-API inventory.".to_string(),
         );
     }
     let bin = package_json
         .get("bin")
         .and_then(JsonValue::as_object)
         .ok_or_else(|| "Frozen npm envelope package.json lacks command bins.".to_string())?;
-    if bin.len() != 2
-        || bin.get("ait").and_then(JsonValue::as_str) != Some("bin/ait.mjs")
-        || bin.get("ait-server").and_then(JsonValue::as_str) != Some("bin/ait-server.mjs")
+    if bin.len() != 1 || bin.get("ait").and_then(JsonValue::as_str) != Some("bin/ait.mjs") {
+        return Err("Frozen npm envelope must expose only the in-process ait command.".to_string());
+    }
+    let exports = package_json
+        .get("exports")
+        .and_then(JsonValue::as_object)
+        .ok_or_else(|| "Frozen npm envelope package.json lacks its API export.".to_string())?;
+    let root_export = exports
+        .get(".")
+        .ok_or_else(|| "Frozen npm envelope package.json lacks its root API export.".to_string())?;
+    if exports.len() != 1 {
+        return Err("Frozen npm envelope may expose only its root JS/TS API.".to_string());
+    }
+    exact_json_fields(
+        root_export,
+        &["types", "import", "default"],
+        "Frozen npm root export",
+    )?;
+    if string_field(root_export, "types").as_deref() != Some("./src/index.d.ts")
+        || string_field(root_export, "import").as_deref() != Some("./src/index.js")
+        || string_field(root_export, "default").as_deref() != Some("./src/index.js")
     {
-        return Err("Frozen npm envelope must expose only ait and ait-server.".to_string());
+        return Err("Frozen npm envelope root API export drifted.".to_string());
     }
     let scripts = package_json
         .get("scripts")
         .and_then(JsonValue::as_object)
         .ok_or_else(|| "Frozen npm envelope package.json lacks validation scripts.".to_string())?;
     if scripts.keys().map(String::as_str).collect::<BTreeSet<_>>()
-        != BTreeSet::from(["check", "test"])
+        != BTreeSet::from(["check", "native:build", "test"])
         || scripts
             .values()
             .any(|value| value.as_str().is_none_or(str::is_empty))
@@ -2646,60 +2642,299 @@ fn validate_npm_envelope(
     }
     let contract = parse_slice_value(
         &entries["package/lib/npm-payload-contract.json"].0,
-        "Frozen npm payload contract must contain valid JSON",
+        "Frozen npm addon contract must contain valid JSON",
     )?;
-    let payloads = parse_npm_payload_contract(input, &contract)?;
+    let addons = parse_npm_addon_contract(input, &contract)?;
     let optional_dependencies = package_json
         .get("optionalDependencies")
         .and_then(JsonValue::as_object)
-        .ok_or_else(|| "Frozen npm envelope lacks optional payload dependencies.".to_string())?;
-    if optional_dependencies.len() != payloads.len()
-        || payloads.iter().any(|payload| {
+        .ok_or_else(|| "Frozen npm envelope lacks optional addon dependencies.".to_string())?;
+    if optional_dependencies.len() != addons.len()
+        || addons.iter().any(|addon| {
             optional_dependencies
-                .get(&payload.package)
+                .get(&addon.package)
                 .and_then(JsonValue::as_str)
                 != Some(input.version.as_str())
         })
     {
         return Err(
-            "Frozen npm envelope optionalDependencies differ from its payload contract."
-                .to_string(),
+            "Frozen npm envelope optionalDependencies differ from its addon contract.".to_string(),
         );
     }
-    let launcher = std::str::from_utf8(&entries["package/bin/launch.mjs"].0)
-        .map_err(|_| "Frozen npm launcher must be UTF-8 JavaScript.".to_string())?
-        .to_ascii_lowercase();
-    if entries
-        .keys()
-        .any(|path| path.to_ascii_lowercase().ends_with(".node"))
-        || contains_native_addon_path(&launcher)
-    {
-        return Err("Frozen npm envelope contains a native addon path.".to_string());
+
+    let runtime_paths = [
+        "package/bin/ait.mjs",
+        "package/src/agent.js",
+        "package/src/contract.js",
+        "package/src/errors.js",
+        "package/src/index.d.ts",
+        "package/src/index.js",
+        "package/src/runtime.js",
+    ];
+    let mut runtime_text = String::new();
+    for path in runtime_paths {
+        let text = std::str::from_utf8(&entries[path].0)
+            .map_err(|_| format!("Frozen npm runtime member {path:?} must be UTF-8."))?;
+        runtime_text.push_str(text);
+        runtime_text.push('\n');
     }
+    let runtime = runtime_text.to_ascii_lowercase();
     for forbidden in [
         "http://",
         "https://",
         "fetch(",
-        "napi",
+        "node:http",
+        "node:https",
+        "node:child_process",
+        "child_process",
+        "spawnsync(",
+        "spawn(",
+        "execsync(",
+        "execfile(",
+        "fork(",
+        "curl ",
+        "wget ",
         "node-gyp",
         "node-pre-gyp",
         "node-addon-api",
-        "bindings(",
         "process.dlopen",
-        "dlopen(",
         "pyproject.toml",
         "composer.json",
         "pom.xml",
         "cmakelists.txt",
         ".csproj",
     ] {
-        if launcher.contains(forbidden) {
+        if runtime.contains(forbidden) {
             return Err(format!(
-                "Frozen npm launcher contains forbidden download, addon, or project-detection marker {forbidden:?}."
+                "Frozen npm runtime contains forbidden subprocess, download, build, or project-detection marker {forbidden:?}."
             ));
         }
     }
-    Ok(payloads)
+    for required in [
+        "native/ait_napi.node",
+        "require(addonpath)",
+        "new nativeruntime().runcli",
+        "export { nativeruntime",
+        "agentclient",
+        "interface nativeaddon",
+        "runcli(args: string[]): number",
+    ] {
+        if !runtime.contains(required) {
+            return Err(format!(
+                "Frozen npm runtime lacks required direct Node-API marker {required:?}."
+            ));
+        }
+    }
+    Ok(addons)
+}
+
+fn validate_npm_addon_package(
+    input: &FamilyPackageInput,
+    entries: &PackageEntries,
+    addon: &NpmAddonDefinition,
+    node_materials: &[(FrozenLicenseMaterial, Vec<u8>)],
+) -> Result<(), String> {
+    let expected_paths = BTreeSet::from([
+        "package/LICENSE".to_string(),
+        "package/NOTICE".to_string(),
+        format!("package/{}", addon.addon),
+        "package/package.json".to_string(),
+        "package/provenance.json".to_string(),
+    ]);
+    if entries.keys().cloned().collect::<BTreeSet<_>>() != expected_paths {
+        return Err(format!(
+            "Frozen npm addon package {} has an invalid inventory.",
+            addon.package
+        ));
+    }
+    for (material, bytes) in node_materials {
+        let path = format!("package/{}", material.declared_path);
+        if entries.get(&path).map(|entry| entry.0.as_slice()) != Some(bytes.as_slice()) {
+            return Err(format!(
+                "Frozen npm addon package {} does not embed exact ait-node {} bytes.",
+                addon.package, material.material_role
+            ));
+        }
+    }
+    let addon_path = format!("package/{}", addon.addon);
+    let addon_bytes = &entries[&addon_path].0;
+    if addon_bytes.is_empty() {
+        return Err(format!(
+            "Frozen npm addon package {} contains an empty Node-API addon.",
+            addon.package
+        ));
+    }
+
+    let package_json = parse_slice_value(
+        &entries["package/package.json"].0,
+        "Frozen npm addon package.json must contain valid JSON",
+    )?;
+    exact_json_fields(
+        &package_json,
+        &[
+            "name",
+            "version",
+            "description",
+            "license",
+            "os",
+            "cpu",
+            "main",
+            "files",
+            "aitNativeAddon",
+        ],
+        "Frozen npm addon package.json",
+    )?;
+    if string_field(&package_json, "name").as_deref() != Some(addon.package.as_str())
+        || string_field(&package_json, "version").as_deref() != Some(input.version.as_str())
+        || string_field(&package_json, "description").is_none_or(|value| value.is_empty())
+        || string_field(&package_json, "license").as_deref() != Some(addon.license.as_str())
+        || string_field(&package_json, "main").as_deref() != Some(addon.addon.as_str())
+        || json_array_strings(package_json.get("os"), "npm addon package.json.os")?
+            != vec![addon.os.clone()]
+        || json_array_strings(package_json.get("cpu"), "npm addon package.json.cpu")?
+            != vec![addon.cpu.clone()]
+    {
+        return Err(format!(
+            "Frozen npm addon package {} identity or platform drifted.",
+            addon.package
+        ));
+    }
+    let files = json_array_strings(package_json.get("files"), "npm addon package.json.files")?;
+    if files.len() != 4
+        || files.into_iter().collect::<BTreeSet<_>>()
+            != BTreeSet::from([
+                "native".to_string(),
+                "provenance.json".to_string(),
+                "LICENSE".to_string(),
+                "NOTICE".to_string(),
+            ])
+    {
+        return Err(format!(
+            "Frozen npm addon package {} files drifted.",
+            addon.package
+        ));
+    }
+    let metadata = package_json
+        .get("aitNativeAddon")
+        .ok_or_else(|| "Frozen npm addon package lacks binding metadata.".to_string())?;
+    exact_json_fields(
+        metadata,
+        &[
+            "schema",
+            "component",
+            "target",
+            "addon",
+            "binding_repository",
+            "binding_snapshot",
+        ],
+        "Frozen npm addon binding metadata",
+    )?;
+    if string_field(metadata, "schema").as_deref() != Some("ait.node.napi-platform-addon/v1")
+        || string_field(metadata, "component").as_deref() != Some(addon.component.as_str())
+        || string_field(metadata, "target").as_deref() != Some(addon.target.as_str())
+        || string_field(metadata, "addon").as_deref() != Some(addon.addon.as_str())
+        || string_field(metadata, "binding_repository").as_deref()
+            != Some(addon.binding_repository.as_str())
+        || string_field(metadata, "binding_snapshot").as_deref()
+            != Some(addon.binding_snapshot.as_str())
+    {
+        return Err(format!(
+            "Frozen npm addon package {} binding metadata drifted.",
+            addon.package
+        ));
+    }
+
+    let provenance = parse_slice_value(
+        &entries["package/provenance.json"].0,
+        "Frozen npm addon provenance must contain valid JSON",
+    )?;
+    exact_json_fields(
+        &provenance,
+        &[
+            "schema",
+            "family_version",
+            "package",
+            "target",
+            "os",
+            "cpu",
+            "component",
+            "package_source_repository",
+            "binding_repository",
+            "binding_snapshot",
+            "license",
+            "license_file",
+            "notice_file",
+            "source_artifact",
+            "installed_path",
+        ],
+        "Frozen npm addon provenance",
+    )?;
+    if string_field(&provenance, "schema").as_deref()
+        != Some("ait.node.napi-platform-addon-provenance/v1")
+        || string_field(&provenance, "family_version").as_deref() != Some(input.version.as_str())
+        || string_field(&provenance, "package").as_deref() != Some(addon.package.as_str())
+        || string_field(&provenance, "target").as_deref() != Some(addon.target.as_str())
+        || string_field(&provenance, "os").as_deref() != Some(addon.os.as_str())
+        || string_field(&provenance, "cpu").as_deref() != Some(addon.cpu.as_str())
+        || string_field(&provenance, "component").as_deref() != Some(addon.component.as_str())
+        || string_field(&provenance, "package_source_repository").as_deref() != Some("ait-node")
+        || string_field(&provenance, "binding_repository").as_deref()
+            != Some(addon.binding_repository.as_str())
+        || string_field(&provenance, "binding_snapshot").as_deref()
+            != Some(addon.binding_snapshot.as_str())
+        || string_field(&provenance, "license").as_deref() != Some(addon.license.as_str())
+        || string_field(&provenance, "installed_path").as_deref() != Some(addon.addon.as_str())
+    {
+        return Err(format!(
+            "Frozen npm addon package {} provenance identity drifted.",
+            addon.package
+        ));
+    }
+    let material_by_role = node_materials
+        .iter()
+        .map(|(material, bytes)| (material.material_role.as_str(), (material, bytes)))
+        .collect::<BTreeMap<_, _>>();
+    for (field, role) in [("license_file", "license"), ("notice_file", "notice")] {
+        let (material, bytes) = material_by_role
+            .get(role)
+            .ok_or_else(|| format!("Frozen npm addon package lacks {role} material."))?;
+        let evidence = provenance
+            .get(field)
+            .ok_or_else(|| format!("Frozen npm addon provenance lacks {field}."))?;
+        exact_json_fields(
+            evidence,
+            &["path", "sha256", "size_bytes"],
+            &format!("Frozen npm addon provenance {field}"),
+        )?;
+        if string_field(evidence, "path").as_deref() != Some(material.declared_path.as_str())
+            || string_field(evidence, "sha256").as_deref() != Some(sha256_hex(bytes).as_str())
+            || required_u64(evidence, "size_bytes", "Frozen npm addon legal evidence")?
+                != bytes.len() as u64
+        {
+            return Err(format!(
+                "Frozen npm addon package {} {role} provenance drifted.",
+                addon.package
+            ));
+        }
+    }
+    let source = provenance
+        .get("source_artifact")
+        .ok_or_else(|| "Frozen npm addon provenance lacks source_artifact.".to_string())?;
+    exact_json_fields(
+        source,
+        &["sha256", "size_bytes"],
+        "Frozen npm addon source artifact",
+    )?;
+    if string_field(source, "sha256").as_deref() != Some(sha256_hex(addon_bytes).as_str())
+        || required_u64(source, "size_bytes", "Frozen npm addon source artifact")?
+            != addon_bytes.len() as u64
+    {
+        return Err(format!(
+            "Frozen npm addon package {} source digest drifted.",
+            addon.package
+        ));
+    }
+    Ok(())
 }
 
 fn assemble_npm(
@@ -2710,16 +2945,15 @@ fn assemble_npm(
     if distribution.role != "product" || distribution.identity != "ait-native" {
         return Err("npm distribution must be the ait-native product.".to_string());
     }
-    require_distribution_components(distribution, &["ait", "ait-server", "ait-node"])?;
+    require_distribution_components(distribution, &["ait-node"])?;
     require_registry_targets(distribution)?;
     required_component(input, "ait", "native")?;
-    required_component(input, "ait-server", "native")?;
     let node_component = required_component(input, "ait-node", "node")?;
     if node_component.version != input.version {
         return Err("ait-node version must equal the family version.".to_string());
     }
 
-    let envelope = portable_component_artifact(input, "ait-node", "npm-cli-envelope")?;
+    let envelope = portable_component_artifact(input, "ait-node", "npm-napi-envelope")?;
     let envelope_bytes = read_frozen_bytes(
         repo,
         &envelope.path,
@@ -2752,7 +2986,7 @@ fn assemble_npm(
         node_materials.push((material, bytes));
     }
     let envelope_entries = read_npm_envelope_entries(&envelope_bytes)?;
-    let payloads = validate_npm_envelope(input, &envelope_entries, &node_materials)?;
+    let addons = validate_npm_envelope(input, &envelope_entries, &node_materials)?;
     let envelope_content = vec![ContentProjection {
         source: envelope.clone(),
         destination: envelope_filename.to_string(),
@@ -2761,7 +2995,7 @@ fn assemble_npm(
         relative_path: format!("packages/{envelope_filename}"),
         bytes: envelope_bytes,
         evidence: artifact_evidence(
-            "npm-cli-envelope",
+            "npm-napi-envelope",
             distribution,
             None,
             &envelope_content,
@@ -2770,11 +3004,12 @@ fn assemble_npm(
                 "package": "ait-native",
                 "version": input.version,
                 "preserved_frozen_bytes": true,
-                "command_only": true,
-                "commands": ["ait", "ait-server"],
-                "payload_count": 12,
-                "api_surface": false,
-                "native_addon": false,
+                "runtime_transport": "direct-napi",
+                "commands": ["ait"],
+                "addon_count": 6,
+                "api_surface": true,
+                "native_addon": true,
+                "subprocess_transport": false,
                 "install_hook": false,
                 "runtime_download": false,
             }),
@@ -2782,136 +3017,63 @@ fn assemble_npm(
         )?,
     }];
 
-    for payload in payloads {
-        let source = component_artifact(
-            input,
-            &payload.component,
-            &payload.target,
-            "native-executable",
-        )?;
+    for addon in addons {
+        let source = component_artifact(input, "ait-node", &addon.target, "npm-napi-addon")?;
         let source_bytes = read_frozen_bytes(
             repo,
             &source.path,
             source.size_bytes,
             &source.sha256,
-            "Frozen npm payload executable",
+            "Frozen npm Node-API addon package",
         )?;
+        let filename = Path::new(&source.path)
+            .file_name()
+            .and_then(OsStr::to_str)
+            .ok_or_else(|| "Frozen npm addon package has no filename.".to_string())?;
+        let expected_filename = format!("{}-{}.tgz", addon.package, input.version);
+        if filename != expected_filename {
+            return Err(format!(
+                "Frozen npm addon filename for {} differs from the family version.",
+                addon.target
+            ));
+        }
+        let addon_entries = read_npm_envelope_entries(&source_bytes)?;
+        validate_npm_addon_package(input, &addon_entries, &addon, &node_materials)?;
         let content = vec![ContentProjection {
             source: source.clone(),
-            destination: payload.executable.clone(),
+            destination: filename.to_string(),
         }];
-        let material_sources =
-            material_for_components(input, std::slice::from_ref(&payload.component))?;
-        let mut material_projections = Vec::new();
-        let mut entries = PackageEntries::new();
-        entries.insert(
-            format!("package/{}", payload.executable),
-            (source_bytes, 0o755),
-        );
-        for material in material_sources {
-            let destination = material.declared_path.clone();
-            let bytes = read_frozen_bytes(
-                repo,
-                &material.path,
-                material.size_bytes,
-                &material.sha256,
-                "Frozen npm payload legal material",
-            )?;
-            if entries
-                .insert(format!("package/{destination}"), (bytes, 0o644))
-                .is_some()
-            {
-                return Err(format!(
-                    "npm payload legal destination collides at {destination:?}."
-                ));
-            }
-            material_projections.push(MaterialProjection {
-                source: material,
-                destination,
-            });
-        }
-        let package_json = json!({
-            "name": payload.package,
-            "version": input.version,
-            "description": format!("Implementation-only {} payload for {}", payload.component, payload.target),
-            "license": payload.license,
-            "homepage": public_source_subtree_url(input, &payload.source_repository)?,
-            "repository": {
-                "type": "git",
-                "url": format!("git+https://github.com/{}.git", github_source_identity(input)?),
-                "directory": payload.source_repository,
-            },
-            "os": [payload.os],
-            "cpu": [payload.cpu],
-            "files": ["bin", "provenance.json", "LICENSE", "NOTICE"],
-            "aitNativePayload": {
-                "schema": "ait.node.npm-platform-payload/v1",
-                "component": payload.component,
-                "target": payload.target,
-                "executable": payload.executable,
-                "source_repository": payload.source_repository,
-                "source_snapshot": input.components[&payload.component].source_snapshot,
-            },
-        });
-        entries.insert(
-            "package/package.json".to_string(),
-            (
-                encode_value_pretty_with_newline_error_string(&package_json)?.into_bytes(),
-                0o644,
-            ),
-        );
-        let provenance = json!({
-            "schema": "ait.node.npm-platform-payload-provenance/v1",
-            "family_release_id": input.release_id,
-            "family_version": input.version,
-            "family_manifest_sha256": input.family_manifest_sha256,
-            "frozen_manifest_sha256": input.frozen_manifest_sha256,
-            "frozen_checksum_sha256": input.frozen_checksum_sha256,
-            "package": payload.package,
-            "target": payload.target,
-            "os": payload.os,
-            "cpu": payload.cpu,
-            "component": payload.component,
-            "source_repository": payload.source_repository,
-            "source_snapshot": input.components[&payload.component].source_snapshot,
-            "license": payload.license,
-            "source_artifact": {
-                "path": source.path,
-                "sha256": source.sha256,
-                "size_bytes": source.size_bytes,
-            },
-            "installed_path": payload.executable,
-            "license_material": material_evidence(input, &material_projections)?,
-            "component_rebuild": false,
-            "registry_write": false,
-        });
-        entries.insert(
-            "package/provenance.json".to_string(),
-            (
-                encode_value_pretty_with_newline_error_string(&provenance)?.into_bytes(),
-                0o644,
-            ),
-        );
-        let bytes = tar_gz_bytes(&entries, input.epoch)?;
-        let filename = format!("{}-{}.tgz", payload.package, input.version);
+        let material_projections = node_materials
+            .iter()
+            .map(|(material, _)| MaterialProjection {
+                source: material.clone(),
+                destination: format!("package/{}", material.declared_path),
+            })
+            .collect::<Vec<_>>();
         generated.push(GeneratedArtifact {
             relative_path: format!("packages/{filename}"),
-            bytes,
+            bytes: source_bytes,
             evidence: artifact_evidence(
-                "npm-platform-payload",
+                "npm-napi-addon",
                 distribution,
-                Some(&payload.target),
+                Some(&addon.target),
                 &content,
                 &material_projections,
                 json!({
-                    "package": payload.package,
+                    "package": addon.package,
                     "version": input.version,
-                    "os": payload.os,
-                    "cpu": payload.cpu,
+                    "os": addon.os,
+                    "cpu": addon.cpu,
                     "implementation_only": true,
                     "public_command": false,
-                    "api_surface": false,
-                    "native_addon": false,
+                    "runtime_transport": "direct-napi",
+                    "binding_repository": addon.binding_repository,
+                    "binding_snapshot": addon.binding_snapshot,
+                    "installed_addon": addon.addon,
+                    "api_surface": true,
+                    "native_addon": true,
+                    "subprocess_transport": false,
+                    "preserved_frozen_bytes": true,
                     "install_hook": false,
                     "runtime_download": false,
                 }),
@@ -2919,10 +3081,8 @@ fn assemble_npm(
             )?,
         });
     }
-    if generated.len() != 13 {
-        return Err(
-            "npm assembly must produce one envelope and twelve payload tarballs.".to_string(),
-        );
+    if generated.len() != 7 {
+        return Err("npm assembly must produce one envelope and six addon tarballs.".to_string());
     }
     Ok(generated)
 }
@@ -3197,19 +3357,254 @@ pub fn family_release_package(
 mod tests {
     use super::*;
 
-    #[test]
-    fn npm_addon_path_detection_accepts_node_contract_names_and_rejects_addon_paths() {
-        assert!(!contains_native_addon_path(
-            "ait.node.npm-platform-packages/v1 ait.node.npm-platform-payload/v1"
-        ));
-        for launcher in [
-            "require('./addon.node')",
-            "import addon from \"./addon.node\"",
-            "const addon = `./addon.node`;",
-            "const addon = './addon.node?abi=3';",
-        ] {
-            assert!(contains_native_addon_path(launcher), "{launcher}");
+    fn npm_validation_input() -> FamilyPackageInput {
+        let components = BTreeMap::from([
+            (
+                "ait".to_string(),
+                ComponentDefinition {
+                    id: "ait".to_string(),
+                    source_repository: "ait-core".to_string(),
+                    source_snapshot: "SNP-111111111111".to_string(),
+                    ecosystem: "native".to_string(),
+                    license: "Apache-2.0".to_string(),
+                    version: "1.0.0-rc.2".to_string(),
+                },
+            ),
+            (
+                "ait-node".to_string(),
+                ComponentDefinition {
+                    id: "ait-node".to_string(),
+                    source_repository: "ait-node".to_string(),
+                    source_snapshot: "SNP-222222222222".to_string(),
+                    ecosystem: "node".to_string(),
+                    license: "Apache-2.0".to_string(),
+                    version: "1.0.0-rc.2".to_string(),
+                },
+            ),
+        ]);
+        FamilyPackageInput {
+            release_id: "REL-FAM-TEST".to_string(),
+            version: "1.0.0-rc.2".to_string(),
+            release_channel: "rc".to_string(),
+            tag: "v1.0.0-rc.2".to_string(),
+            snapshot_id: "SNP-333333333333".to_string(),
+            epoch: 1,
+            family_manifest_sha256: "a".repeat(64),
+            frozen_manifest_sha256: "b".repeat(64),
+            frozen_checksum_sha256: "c".repeat(64),
+            components,
+            distributions: Vec::new(),
+            artifacts: Vec::new(),
+            license_material: Vec::new(),
         }
+    }
+
+    fn npm_validation_materials() -> Vec<(FrozenLicenseMaterial, Vec<u8>)> {
+        [("license", "LICENSE"), ("notice", "NOTICE")]
+            .into_iter()
+            .map(|(role, path)| {
+                let bytes = format!("ait-node:{role}\n").into_bytes();
+                (
+                    FrozenLicenseMaterial {
+                        source_repository: "ait-node".to_string(),
+                        source_snapshot: "SNP-222222222222".to_string(),
+                        material_role: role.to_string(),
+                        declared_path: path.to_string(),
+                        path: format!("frozen/{path}"),
+                        sha256: sha256_hex(&bytes),
+                        size_bytes: bytes.len() as u64,
+                    },
+                    bytes,
+                )
+            })
+            .collect()
+    }
+
+    fn npm_validation_entries() -> PackageEntries {
+        let mut optional_dependencies = serde_json::Map::new();
+        let mut payloads = Vec::new();
+        for target in REGISTRY_TARGETS {
+            let (os, cpu) = npm_platform(target).unwrap();
+            let package = format!("ait-native-ait-{os}-{cpu}");
+            optional_dependencies.insert(package.clone(), json!("1.0.0-rc.2"));
+            payloads.push(json!({
+                "target": target,
+                "os": os,
+                "cpu": cpu,
+                "component": "ait-node",
+                "package": package,
+                "version": "1.0.0-rc.2",
+                "binding_repository": "ait-core",
+                "binding_snapshot": "SNP-111111111111",
+                "license": "Apache-2.0",
+                "addon": "native/ait_napi.node",
+            }));
+        }
+        let package = json!({
+            "name": "ait-native",
+            "version": "1.0.0-rc.2",
+            "description": "Direct in-process Node-API bindings for AIT",
+            "license": "Apache-2.0",
+            "type": "module",
+            "engines": {"node": ">=20"},
+            "bin": {"ait": "bin/ait.mjs"},
+            "exports": {
+                ".": {
+                    "types": "./src/index.d.ts",
+                    "import": "./src/index.js",
+                    "default": "./src/index.js"
+                }
+            },
+            "types": "./src/index.d.ts",
+            "files": ["bin/ait.mjs", "lib", "src", "LICENSE", "NOTICE"],
+            "optionalDependencies": optional_dependencies,
+            "scripts": {
+                "native:build": "node scripts/native-build.mjs build",
+                "test": "node --test",
+                "check": "node --check src/runtime.js"
+            }
+        });
+        let contract = json!({
+            "schema": "ait.node.napi-platform-packages/v1",
+            "family_version": "1.0.0-rc.2",
+            "top_level_package": "ait-native",
+            "payloads": payloads,
+        });
+        PackageEntries::from([
+            (
+                "package/LICENSE".to_string(),
+                (b"ait-node:license\n".to_vec(), 0o644),
+            ),
+            (
+                "package/NOTICE".to_string(),
+                (b"ait-node:notice\n".to_vec(), 0o644),
+            ),
+            (
+                "package/README.md".to_string(),
+                (b"# ait-native\n".to_vec(), 0o644),
+            ),
+            (
+                "package/bin/ait.mjs".to_string(),
+                (
+                    b"new NativeRuntime().runCli(process.argv.slice(2));\n".to_vec(),
+                    0o755,
+                ),
+            ),
+            (
+                "package/lib/npm-payload-contract.json".to_string(),
+                (serde_json::to_vec(&contract).unwrap(), 0o644),
+            ),
+            (
+                "package/package.json".to_string(),
+                (serde_json::to_vec(&package).unwrap(), 0o644),
+            ),
+            (
+                "package/src/agent.js".to_string(),
+                (b"export class AgentClient {}\n".to_vec(), 0o644),
+            ),
+            (
+                "package/src/contract.js".to_string(),
+                (b"export const contract = 'v1';\n".to_vec(), 0o644),
+            ),
+            (
+                "package/src/errors.js".to_string(),
+                (b"export class NativeError extends Error {}\n".to_vec(), 0o644),
+            ),
+            (
+                "package/src/index.d.ts".to_string(),
+                (
+                    b"export interface NativeAddon { runCli(args: string[]): number; }\n"
+                        .to_vec(),
+                    0o644,
+                ),
+            ),
+            (
+                "package/src/index.js".to_string(),
+                (b"export { NativeRuntime } from './runtime.js';\n".to_vec(), 0o644),
+            ),
+            (
+                "package/src/runtime.js".to_string(),
+                (
+                    b"const addonPath = 'native/ait_napi.node';\nconst addon = require(addonPath);\nexport class NativeRuntime { runCli(args) { return addon.runCli(args); } }\n"
+                        .to_vec(),
+                    0o644,
+                ),
+            ),
+        ])
+    }
+
+    #[test]
+    fn npm_envelope_rejects_subprocess_hooks_and_downloads() {
+        let input = npm_validation_input();
+        let materials = npm_validation_materials();
+        let entries = npm_validation_entries();
+        assert_eq!(
+            validate_npm_envelope(&input, &entries, &materials)
+                .unwrap()
+                .len(),
+            6
+        );
+
+        for marker in ["node:child_process", "https://example.invalid/addon"] {
+            let mut invalid = entries.clone();
+            invalid
+                .get_mut("package/src/runtime.js")
+                .unwrap()
+                .0
+                .extend_from_slice(format!("\n// {marker}\n").as_bytes());
+            assert!(validate_npm_envelope(&input, &invalid, &materials)
+                .unwrap_err()
+                .contains("forbidden subprocess, download, build, or project-detection"));
+        }
+
+        let mut invalid = entries.clone();
+        let mut package: JsonValue =
+            serde_json::from_slice(&invalid["package/package.json"].0).unwrap();
+        package["scripts"]["postinstall"] = json!("node scripts/install.mjs");
+        invalid.get_mut("package/package.json").unwrap().0 = serde_json::to_vec(&package).unwrap();
+        assert!(validate_npm_envelope(&input, &invalid, &materials).is_err());
+    }
+
+    #[test]
+    fn npm_addon_contract_rejects_target_metadata_and_snapshot_drift() {
+        let input = npm_validation_input();
+        let materials = npm_validation_materials();
+        let entries = npm_validation_entries();
+        for (field, value) in [("os", "win32"), ("binding_snapshot", "SNP-FFFFFFFFFFFF")] {
+            let mut invalid = entries.clone();
+            let mut contract: JsonValue =
+                serde_json::from_slice(&invalid["package/lib/npm-payload-contract.json"].0)
+                    .unwrap();
+            contract["payloads"][0][field] = json!(value);
+            invalid
+                .get_mut("package/lib/npm-payload-contract.json")
+                .unwrap()
+                .0 = serde_json::to_vec(&contract).unwrap();
+            assert!(validate_npm_envelope(&input, &invalid, &materials)
+                .unwrap_err()
+                .contains("family binding/target mapping"));
+        }
+    }
+
+    #[test]
+    fn npm_platform_maps_the_exact_node_addon_dimensions() {
+        assert_eq!(
+            npm_platform("aarch64-apple-darwin").unwrap(),
+            ("darwin", "arm64")
+        );
+        assert_eq!(
+            npm_platform("x86_64-apple-darwin").unwrap(),
+            ("darwin", "x64")
+        );
+        assert_eq!(
+            npm_platform("aarch64-unknown-linux-gnu").unwrap(),
+            ("linux", "arm64")
+        );
+        assert_eq!(
+            npm_platform("x86_64-pc-windows-msvc").unwrap(),
+            ("win32", "x64")
+        );
+        assert!(npm_platform("wasm32-unknown-unknown").is_err());
     }
 
     #[test]

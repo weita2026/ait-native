@@ -2,8 +2,8 @@
   "schema": "ait.release.adapter/v1",
   "package": {
     "name": "ait-native",
-    "version": "1.0.0-rc.1",
-    "description": "Portable command-only npm envelope for the AIT release family",
+    "version": "1.0.0-rc.2",
+    "description": "Direct Node-API envelope and native addon packages for the Rust-owned AIT runtime",
     "license_files": [
       {
         "path": "LICENSE",
@@ -22,14 +22,23 @@
       "working_directory": ".",
       "dependency_files": [
         "package.json",
+        "ait-external.toml",
+        "ait-external.lock",
         "bin/ait.mjs",
-        "bin/ait-server.mjs",
-        "bin/launch.mjs",
+        "ci/generate_notice.sh",
         "lib/npm-payload-contract.json",
+        "src/agent.js",
+        "src/contract.js",
+        "src/errors.js",
+        "src/index.d.ts",
+        "src/index.js",
+        "src/runtime.js",
+        "scripts/native-build.mjs",
         "scripts/fixture-payloads.mjs",
         "scripts/installed-smoke.mjs",
         "release/npm-payload-package.mjs",
         "release/release-adapter.mjs",
+        "release/npm-readme.txt",
         "LICENSE",
         "NOTICE"
       ],
@@ -64,8 +73,38 @@
       },
       "artifacts": [
         {
-          "path": "dist/ait-native-1.0.0-rc.1.tgz",
-          "kind": "npm-cli-envelope"
+          "path": "dist/ait-native-1.0.0-rc.2.tgz",
+          "kind": "npm-napi-envelope"
+        },
+        {
+          "path": "dist/npm-addons/ait-native-ait-darwin-arm64-1.0.0-rc.2.tgz",
+          "kind": "npm-napi-addon",
+          "target": "aarch64-apple-darwin"
+        },
+        {
+          "path": "dist/npm-addons/ait-native-ait-darwin-x64-1.0.0-rc.2.tgz",
+          "kind": "npm-napi-addon",
+          "target": "x86_64-apple-darwin"
+        },
+        {
+          "path": "dist/npm-addons/ait-native-ait-linux-arm64-1.0.0-rc.2.tgz",
+          "kind": "npm-napi-addon",
+          "target": "aarch64-unknown-linux-gnu"
+        },
+        {
+          "path": "dist/npm-addons/ait-native-ait-linux-x64-1.0.0-rc.2.tgz",
+          "kind": "npm-napi-addon",
+          "target": "x86_64-unknown-linux-gnu"
+        },
+        {
+          "path": "dist/npm-addons/ait-native-ait-win32-arm64-1.0.0-rc.2.tgz",
+          "kind": "npm-napi-addon",
+          "target": "aarch64-pc-windows-msvc"
+        },
+        {
+          "path": "dist/npm-addons/ait-native-ait-win32-x64-1.0.0-rc.2.tgz",
+          "kind": "npm-napi-addon",
+          "target": "x86_64-pc-windows-msvc"
         }
       ]
     }

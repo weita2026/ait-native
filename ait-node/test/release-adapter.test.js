@@ -6,15 +6,15 @@ import { fileURLToPath } from "node:url";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
-test("release adapter declares one targetless npm CLI envelope", async () => {
+test("release adapter declares the portable envelope and six native addons", async () => {
   const manifest = JSON.parse(
     await readFile(path.join(ROOT, "ait-release.json"), "utf8"),
   );
   assert.equal(manifest.schema, "ait.release.adapter/v1");
   assert.deepEqual(manifest.package, {
     name: "ait-native",
-    version: "1.0.0-rc.1",
-    description: "Portable command-only npm envelope for the AIT release family",
+    version: "1.0.0-rc.2",
+    description: "Direct Node-API envelope and native addon packages for the Rust-owned AIT runtime",
     license_files: [
       { path: "LICENSE", role: "license" },
       { path: "NOTICE", role: "notice" },
@@ -24,19 +24,38 @@ test("release adapter declares one targetless npm CLI envelope", async () => {
   const component = manifest.components[0];
   assert.equal(component.id, "ait-node");
   assert.equal(component.ecosystem, "node");
-  assert.deepEqual(component.artifacts, [
-    {
-      path: "dist/ait-native-1.0.0-rc.1.tgz",
-      kind: "npm-cli-envelope",
-    },
-  ]);
+  assert.equal(component.artifacts.length, 7);
+  assert.deepEqual(component.artifacts[0], {
+    path: "dist/ait-native-1.0.0-rc.2.tgz",
+    kind: "npm-napi-envelope",
+  });
   assert.equal(component.artifacts[0].target, undefined);
+  assert.deepEqual(
+    component.artifacts.slice(1).map((artifact) => artifact.kind),
+    Array(6).fill("npm-napi-addon"),
+  );
+  assert.deepEqual(
+    new Set(component.artifacts.slice(1).map((artifact) => artifact.target)),
+    new Set([
+      "aarch64-apple-darwin",
+      "x86_64-apple-darwin",
+      "aarch64-unknown-linux-gnu",
+      "x86_64-unknown-linux-gnu",
+      "aarch64-pc-windows-msvc",
+      "x86_64-pc-windows-msvc",
+    ]),
+  );
   for (const dependency of [
+    "ait-external.toml",
+    "ait-external.lock",
     "bin/ait.mjs",
-    "bin/ait-server.mjs",
-    "bin/launch.mjs",
+    "ci/generate_notice.sh",
     "lib/npm-payload-contract.json",
+    "src/runtime.js",
+    "src/agent.js",
     "release/npm-payload-package.mjs",
+    "release/npm-readme.txt",
+    "scripts/native-build.mjs",
     "scripts/fixture-payloads.mjs",
   ]) {
     assert.equal(component.dependency_files.includes(dependency), true);
@@ -60,25 +79,41 @@ test("release adapter declares one targetless npm CLI envelope", async () => {
   }
 });
 
-test("release driver stays command-only, portable, and registry-inert", async () => {
-  const source = await readFile(
+test("release tools are registry-inert and package direct addon fixtures", async () => {
+  const adapter = await readFile(
     path.join(ROOT, "release", "release-adapter.mjs"),
     "utf8",
   );
-  assert.doesNotMatch(source, /shell\s*:/);
-  assert.doesNotMatch(source, /https?:\/\//);
-  assert.doesNotMatch(source, /npm\s+publish/i);
-  assert.doesNotMatch(source, /\b(fetch|cargo|cmake|gradle|dotnet)\b/i);
-  assert.match(source, /--ignore-scripts/);
-  assert.match(source, /--offline/);
-  assert.match(source, /PORTABLE_TARGET = "portable"/);
-  assert.match(source, /payload_package_count: 12/);
+  const packager = await readFile(
+    path.join(ROOT, "release", "npm-payload-package.mjs"),
+    "utf8",
+  );
+  assert.doesNotMatch(adapter, /shell\s*:/);
+  assert.doesNotMatch(`${adapter}\n${packager}`, /npm\s+publish/i);
+  assert.doesNotMatch(`${adapter}\n${packager}`, /https?:\/\//);
+  assert.match(adapter, /--ignore-scripts/);
+  assert.match(adapter, /--offline/);
+  assert.match(adapter, /PORTABLE_TARGET = "portable"/);
+  assert.match(adapter, /payload_package_count: 6/);
+  assert.match(adapter, /runtime_transport: "direct-napi"/);
+  assert.match(adapter, /README\.md/);
+  assert.match(adapter, /npm-readme\.txt/);
+  assert.doesNotMatch(packager, /ait-core release receipt/);
+  assert.match(packager, /ait-node built addon/);
+
+  const npmReadme = await readFile(
+    path.join(ROOT, "release", "npm-readme.txt"),
+    "utf8",
+  );
+  assert.match(npmReadme, /direct in-process Node-API binding/);
+  assert.match(npmReadme, /does not launch an `ait` executable/);
+  assert.match(npmReadme, /`ait-server` is distributed separately/);
+  assert.match(npmReadme, /does not use install hooks, downloads/);
+  assert.match(packager, /ait\.node\.napi-platform-addon\/v1/);
+  assert.match(packager, /ait-node built addon/);
 
   const ci = await readFile(path.join(ROOT, "ci", "run.sh"), "utf8");
-  assert.match(ci, /\$repo_root\/ait-release\.json/);
-  assert.match(ci, /\$repo_root\/release/);
-  assert.match(ci, /\$repo_root\/lib/);
-  assert.doesNotMatch(ci, /\$repo_root\/native/);
-  assert.match(ci, /release-adapter\.mjs build portable/);
-  assert.match(ci, /release-adapter\.mjs smoke portable/);
+  assert.match(ci, /npm run native:build/);
+  assert.match(ci, /release-adapter\.mjs build portable 1\.0\.0-rc\.2/);
+  assert.match(ci, /release-adapter\.mjs smoke portable 1\.0\.0-rc\.2/);
 });

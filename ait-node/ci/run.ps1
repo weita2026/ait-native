@@ -60,6 +60,8 @@ try {
     foreach ($fileName in @(
         "package.json",
         "ait-release.json",
+        "ait-external.toml",
+        "ait-external.lock",
         "LICENSE",
         "NOTICE"
     )) {
@@ -71,6 +73,7 @@ try {
         "lib",
         "release",
         "scripts",
+        "src",
         "test",
         "ci"
     )) {
@@ -86,18 +89,35 @@ try {
     $node = $nodeCommand.Source
 
     Set-Location -LiteralPath $projectRoot
+    $externalCore = $env:AIT_EXTERNAL_CORE_REPO_ROOT
+    if ([string]::IsNullOrWhiteSpace($externalCore)) {
+        $externalCore = Join-Path $repoRoot ".ait-external/ait-core"
+    }
+    $externalMarker = Join-Path $externalCore ".ait-external-marker.json"
+    if (-not (Test-Path -LiteralPath $externalMarker -PathType Leaf)) {
+        throw "ait-node CI requires the exact materialized ait-core external"
+    }
+    $marker = Get-Content -LiteralPath $externalMarker -Raw | ConvertFrom-Json
+    if (
+        $marker.name -ne "ait-core" -or
+        $marker.snapshot -ne "SNP-AFCEA70F3C0D"
+    ) {
+        throw "ait-core external marker identity drift"
+    }
+    $externalRoot = Join-Path $projectRoot ".ait-external"
+    [void][System.IO.Directory]::CreateDirectory($externalRoot)
+    Copy-Item -LiteralPath $externalCore `
+        -Destination (Join-Path $externalRoot "ait-core") -Recurse
+    Invoke-NativeCommand -FilePath $npm -ArgumentList @("run", "native:build")
     Invoke-NativeCommand -FilePath $npm -ArgumentList @("test")
     Invoke-NativeCommand -FilePath $npm -ArgumentList @("run", "check")
-    Invoke-NativeCommand -FilePath $npm -ArgumentList @(
-        "pack", "--ignore-scripts", "--dry-run", $projectRoot
-    )
 
     $releaseAdapter = Join-Path $projectRoot "release/release-adapter.mjs"
     Invoke-NativeCommand -FilePath $node -ArgumentList @(
-        $releaseAdapter, "build", "portable", "1.0.0-rc.1"
+        $releaseAdapter, "build", "portable", "1.0.0-rc.2"
     )
     Invoke-NativeCommand -FilePath $node -ArgumentList @(
-        $releaseAdapter, "smoke", "portable", "1.0.0-rc.1"
+        $releaseAdapter, "smoke", "portable", "1.0.0-rc.2"
     )
 }
 finally {

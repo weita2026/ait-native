@@ -116,8 +116,8 @@ jobs:
               .family.version == $version and
               .public_publish == false and
               .expected_source_count == 5 and
-              .expected_receipt_count == 25 and
-              .expected_component_artifact_count == 31
+              .expected_receipt_count == 31 and
+              .expected_component_artifact_count == 37
             ' "${projection}" >/dev/null
           test "$(jq -r '.coordinator_snapshot' \
             "${AIT_PUBLIC_SOURCE_ROOT}/ait-monorepo-source.json")" = \
@@ -485,14 +485,14 @@ jobs:
               .check_summary.decision == "pass" and
               ([.component_receipts[].git_commit] | unique) == [$commit] and
               (.component_receipts | length) == $receipt_count and
-              (.artifacts | length) == 31
+              (.artifacts | length) == 37
             ' "${check}" >/dev/null
           jq -e \
             --arg release_id "${release_id}" '
               .release_id == $release_id and
               .status == "built" and
               .check_summary.decision == "pass" and
-              ([.artifacts[] | select(.role == "component-artifact")] | length) == 31 and
+              ([.artifacts[] | select(.role == "component-artifact")] | length) == 37 and
               .promotion.authorized == false and
               .promotion.performed == false and
               .promotion.registry_write == false
@@ -583,7 +583,7 @@ jobs:
             printf '%s `%s`\n' '- release:' "${AIT_RELEASE_ID}"
             printf '%s `%s`\n' '- source Git commit:' "${AIT_SOURCE_GIT_COMMIT}"
             printf '%s `%s`\n' '- component receipts:' "${AIT_RECEIPT_COUNT}"
-            echo '- component artifacts: `31`'
+            echo '- component artifacts: `37`'
             echo '- staged package channels: `5`'
             echo '- live AIT server connections: `0`'
             echo '- public publication: `false`'

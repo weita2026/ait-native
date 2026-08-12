@@ -22,6 +22,10 @@ include!("render_helpers.rs");
 #[cfg(test)]
 mod tests;
 
-pub(super) fn entry() -> std::process::ExitCode {
-    main()
+pub fn entry() -> std::process::ExitCode {
+    std::process::ExitCode::from(entry_with_args(std::env::args_os().collect()))
+}
+
+pub fn entry_with_args(args: Vec<std::ffi::OsString>) -> u8 {
+    exit_code_value(dispatch_with_args(args))
 }

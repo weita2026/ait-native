@@ -1,65 +1,35 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { cp, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import {
-  currentPayloads,
-  fixtureFailureArgs,
-  fixtureForwardArgs,
-  stageFixturePayloads,
-} from "../scripts/fixture-payloads.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const ENTRYPOINT = path.join(ROOT, "bin", "ait.mjs");
 
-async function fixture(context) {
-  const root = await mkdtemp(path.join(os.tmpdir(), "ait-node-cli-test-"));
-  context.after(async () => {
-    await rm(root, { recursive: true, force: true });
+function run(args, cwd = ROOT) {
+  return spawnSync(process.execPath, [ENTRYPOINT, ...args], {
+    cwd,
+    encoding: "utf8",
   });
-  const nodeModules = path.join(root, "node_modules");
-  const packageRoot = path.join(nodeModules, "ait-native");
-  await mkdir(packageRoot, { recursive: true });
-  await cp(path.join(ROOT, "bin"), path.join(packageRoot, "bin"), {
-    recursive: true,
-  });
-  await cp(path.join(ROOT, "lib"), path.join(packageRoot, "lib"), {
-    recursive: true,
-  });
-  await stageFixturePayloads(nodeModules);
-  return { nodeModules, packageRoot, root };
 }
 
-function run(packageRoot, command, args, cwd = packageRoot) {
-  return spawnSync(
-    process.execPath,
-    [path.join(packageRoot, "bin", `${command}.mjs`), ...args],
-    { cwd, encoding: "utf8" },
-  );
-}
+test("npm ait command enters the embedded Rust CLI and preserves status", () => {
+  const version = run(["--version"]);
+  assert.equal(version.status, 0, version.stderr);
+  assert.equal(version.stdout, "ait 1.0.0-rc.2\n");
+  assert.equal(version.stderr, "");
 
-test("both npm commands forward argv and native failure status", async (context) => {
-  const { packageRoot } = await fixture(context);
-  for (const command of ["ait", "ait-server"]) {
-    const forwarded = run(packageRoot, command, fixtureForwardArgs(
-      `${command}-one`,
-      `${command}-two`,
-    ));
-    assert.equal(forwarded.status, 0, forwarded.stderr);
-    assert.deepEqual(JSON.parse(forwarded.stdout), [
-      `${command}-one`,
-      `${command}-two`,
-    ]);
-
-    const failed = run(packageRoot, command, fixtureFailureArgs(29));
-    assert.equal(failed.status, 29, failed.stderr);
-  }
+  const invalid = run(["definitely-not-an-ait-command"]);
+  assert.equal(invalid.status, 2);
+  assert.match(invalid.stderr, /unrecognized subcommand/);
 });
 
-test("repository language and build manifests do not change either command", async (context) => {
-  const { packageRoot, root } = await fixture(context);
+test("repository language and build manifests do not change the command", async (context) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "ait-node-cli-shapes-"));
+  context.after(() => rm(root, { recursive: true, force: true }));
   const repositoryShapes = [
     ["python", "pyproject.toml", "[project]\nname = \"fixture\"\n"],
     ["node", "package.json", "{\"name\":\"fixture\"}\n"],
@@ -73,44 +43,20 @@ test("repository language and build manifests do not change either command", asy
     const repository = path.join(root, name);
     await mkdir(repository);
     await writeFile(path.join(repository, manifest), contents);
-    for (const command of ["ait", "ait-server"]) {
-      const result = run(packageRoot, command, fixtureForwardArgs(
-        `${command}-ok`,
-        `${command}-stable`,
-      ), repository);
-      assert.equal(result.status, 0, `${name}/${command}: ${result.stderr}`);
-      assert.deepEqual(JSON.parse(result.stdout), [
-        `${command}-ok`,
-        `${command}-stable`,
-      ]);
-    }
+    const result = run(["--version"], repository);
+    assert.equal(result.status, 0, `${name}: ${result.stderr}`);
+    assert.equal(result.stdout, "ait 1.0.0-rc.2\n");
   }
 });
 
-test("missing and malformed implementation payloads fail closed", async (context) => {
-  const { nodeModules, packageRoot } = await fixture(context);
-  const payloads = await currentPayloads();
-  const aitPayload = payloads.find((payload) => payload.component === "ait");
-  const serverPayload = payloads.find(
-    (payload) => payload.component === "ait-server",
-  );
-  await rm(path.join(nodeModules, aitPayload.package), {
-    recursive: true,
-    force: true,
-  });
-  const missing = run(packageRoot, "ait", ["--version"]);
-  assert.equal(missing.status, 1);
-  assert.match(missing.stderr, new RegExp(aitPayload.package));
-  assert.match(missing.stderr, /optional dependencies enabled/);
+test("installed runtime has no subprocess or executable resolver", async () => {
+  const runtime = await readFile(path.join(ROOT, "src", "runtime.js"), "utf8");
+  const command = await readFile(ENTRYPOINT, "utf8");
+  const source = `${runtime}\n${command}`;
 
-  const serverExecutable = path.join(
-    nodeModules,
-    serverPayload.package,
-    ...serverPayload.executable.split("/"),
-  );
-  await rm(serverExecutable, { force: true });
-  await mkdir(serverExecutable);
-  const malformed = run(packageRoot, "ait-server", ["--version"]);
-  assert.equal(malformed.status, 1);
-  assert.match(malformed.stderr, /must be a regular file/);
+  assert.doesNotMatch(source, /node:child_process/);
+  assert.doesNotMatch(source, /\bspawn(?:Sync)?\s*\(/);
+  assert.doesNotMatch(source, /\bexec(?:File|Sync)?\s*\(/);
+  assert.doesNotMatch(source, /ait-server|\.exe\b|ambient.*PATH/i);
+  assert.match(command, /\.runCli\(process\.argv\.slice\(2\)\)/);
 });

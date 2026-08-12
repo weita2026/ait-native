@@ -1,5 +1,11 @@
 #![recursion_limit = "256"]
 
+extern crate self as ait_cli;
+
+mod main_app;
+
+pub use main_app::{entry, entry_with_args};
+
 #[cfg(test)]
 #[path = "../../../test_support.rs"]
 mod workspace_test_support;

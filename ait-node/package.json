@@ -1,39 +1,41 @@
 {
   "name": "ait-native",
-  "version": "1.0.0-rc.1",
-  "description": "The language-neutral native AIT CLI for npm users",
+  "version": "1.0.0-rc.2",
+  "description": "Direct in-process Node-API bindings for the Rust-owned AIT runtime",
   "license": "Apache-2.0",
   "type": "module",
   "engines": {
     "node": ">=20"
   },
   "bin": {
-    "ait": "bin/ait.mjs",
-    "ait-server": "bin/ait-server.mjs"
+    "ait": "bin/ait.mjs"
   },
-  "exports": {},
+  "exports": {
+    ".": {
+      "types": "./src/index.d.ts",
+      "import": "./src/index.js",
+      "default": "./src/index.js"
+    }
+  },
+  "types": "./src/index.d.ts",
   "files": [
-    "bin",
+    "bin/ait.mjs",
     "lib",
+    "src",
     "LICENSE",
     "NOTICE"
   ],
   "optionalDependencies": {
-    "ait-native-ait-darwin-arm64": "1.0.0-rc.1",
-    "ait-native-ait-darwin-x64": "1.0.0-rc.1",
-    "ait-native-ait-linux-arm64": "1.0.0-rc.1",
-    "ait-native-ait-linux-x64": "1.0.0-rc.1",
-    "ait-native-ait-win32-arm64": "1.0.0-rc.1",
-    "ait-native-ait-win32-x64": "1.0.0-rc.1",
-    "ait-native-server-darwin-arm64": "1.0.0-rc.1",
-    "ait-native-server-darwin-x64": "1.0.0-rc.1",
-    "ait-native-server-linux-arm64": "1.0.0-rc.1",
-    "ait-native-server-linux-x64": "1.0.0-rc.1",
-    "ait-native-server-win32-arm64": "1.0.0-rc.1",
-    "ait-native-server-win32-x64": "1.0.0-rc.1"
+    "ait-native-ait-darwin-arm64": "1.0.0-rc.2",
+    "ait-native-ait-darwin-x64": "1.0.0-rc.2",
+    "ait-native-ait-linux-arm64": "1.0.0-rc.2",
+    "ait-native-ait-linux-x64": "1.0.0-rc.2",
+    "ait-native-ait-win32-arm64": "1.0.0-rc.2",
+    "ait-native-ait-win32-x64": "1.0.0-rc.2"
   },
   "scripts": {
-    "test": "node --test test/cli.test.js test/package.test.js test/payload-package.test.js test/release-adapter.test.js",
-    "check": "node --check bin/ait.mjs && node --check bin/ait-server.mjs && node --check bin/launch.mjs && node --check scripts/fixture-payloads.mjs && node --check scripts/installed-smoke.mjs && node --check release/npm-payload-package.mjs && node --check release/release-adapter.mjs"
+    "native:build": "node scripts/native-build.mjs build",
+    "test": "node --test test/runtime.test.js test/agent.test.js test/cli.test.js test/package.test.js test/payload-package.test.js test/release-adapter.test.js",
+    "check": "node --check bin/ait.mjs && node --check src/runtime.js && node --check src/agent.js && node --check src/index.js && node --check scripts/native-build.mjs && node --check scripts/fixture-payloads.mjs && node --check scripts/installed-smoke.mjs && node --check release/npm-payload-package.mjs && node --check release/release-adapter.mjs"
   }
 }

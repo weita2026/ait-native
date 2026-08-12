@@ -257,15 +257,16 @@ null
   )
 | ensure(
     ($sources | length) == 5
-      and ($builds | length) == 25
-      and ($artifact_rows | length) == 31
-      and ([ $builds[].expected_component_artifact_count ] | add) == 31;
-    "release matrix must resolve to five sources, 25 receipts, and 31 component artifacts"
+      and ($builds | length) == 31
+      and ($artifact_rows | length) == 37
+      and ([ $builds[].expected_component_artifact_count ] | add) == 37;
+    "release matrix must resolve to five sources, 31 receipts, and 37 component artifacts"
   )
 | ensure(
     ([ $builds[] | select(.target == "portable") ] | length) == 1
-      and ($builds[] | select(.target == "portable") | .repo_name) == "ait-node";
-    "exactly one portable ait-node receipt must be selected"
+      and ($builds[] | select(.target == "portable") | .repo_name) == "ait-node"
+      and ([ $builds[] | select(.repo_name == "ait-node") ] | length) == 7;
+    "ait-node must select one portable envelope and six target addon receipts"
   )
 | {
     contract: "ait.release.receipt-matrix/v1",

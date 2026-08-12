@@ -1,5 +1,5 @@
-fn main() -> ExitCode {
-    match run() {
+fn dispatch_with_args(args: Vec<OsString>) -> ExitCode {
+    match run(args) {
         Ok(code) => code,
         Err(err) => {
             eprintln!("Error: {err}");
@@ -8,15 +8,26 @@ fn main() -> ExitCode {
     }
 }
 
-fn run() -> Result<ExitCode, String> {
+fn run(mut argv: Vec<OsString>) -> Result<ExitCode, String> {
     let _run_range = perfetto_range!("ait.cli.run");
-    let mut argv = env::args_os().collect::<Vec<_>>();
+    if argv.is_empty() {
+        argv.push(OsString::from("ait"));
+    }
     #[cfg(feature = "perfetto-tracing")]
     let mut forwarded_current_source_cli = false;
     let command = loop {
-        let cli = {
+        let cli = match {
             let _range = perfetto_range!("ait.cli.parse_args");
             parse_cli_from(&argv)
+        } {
+            Ok(cli) => cli,
+            Err(error) => {
+                let exit_code = u8::try_from(error.exit_code()).unwrap_or(2);
+                error
+                    .print()
+                    .map_err(|print_error| format!("Failed to render command help: {print_error}"))?;
+                return Ok(ExitCode::from(exit_code));
+            }
         };
         match cli.command {
             Commands::CurrentSourceCache {
@@ -189,7 +200,7 @@ fn run() -> Result<ExitCode, String> {
     }
 }
 
-fn parse_cli_from(args: &[OsString]) -> Cli {
+fn parse_cli_from(args: &[OsString]) -> Result<Cli, clap::Error> {
     let mut public_args = args.to_vec();
     if let Some(binary_name) = public_args.first_mut() {
         *binary_name = OsString::from("ait");
@@ -197,7 +208,7 @@ fn parse_cli_from(args: &[OsString]) -> Cli {
         public_args.push(OsString::from("ait"));
     }
     match Cli::try_parse_from(&public_args) {
-        Ok(cli) => cli,
+        Ok(cli) => Ok(cli),
         Err(mut error) => {
             if is_retired_workflow_json_invocation(&public_args) {
                 for context in [
@@ -209,9 +220,15 @@ fn parse_cli_from(args: &[OsString]) -> Cli {
                     error.remove(context);
                 }
             }
-            error.exit()
+            Err(error)
         }
     }
+}
+
+fn exit_code_value(code: ExitCode) -> u8 {
+    (0..=u8::MAX)
+        .find(|value| code == ExitCode::from(*value))
+        .unwrap_or(1)
 }
 
 fn validated_forwarded_cli_argv(args: CurrentSourceRunCliArgs) -> Result<Vec<OsString>, String> {

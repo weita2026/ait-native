@@ -1,5 +1,10 @@
 #!/usr/bin/env node
 
-import { launch } from "./launch.mjs";
+import { NativeRuntime } from "../src/index.js";
 
-launch("ait");
+try {
+  process.exitCode = new NativeRuntime().runCli(process.argv.slice(2));
+} catch (error) {
+  process.stderr.write(`ait: ${error?.message ?? String(error)}\n`);
+  process.exitCode = 1;
+}

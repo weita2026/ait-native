@@ -3,40 +3,24 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
-  chmod,
   copyFile,
   lstat,
   mkdir,
   mkdtemp,
   readFile,
-  realpath,
   rm,
   writeFile,
 } from "node:fs/promises";
+import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const NPM = process.platform === "win32" ? "npm.cmd" : "npm";
 const CONTRACT_PATH = path.join(ROOT, "lib", "npm-payload-contract.json");
-const CONTRACT_KEYS = [
-  "family_version",
-  "payloads",
-  "schema",
-  "top_level_package",
-];
-const PAYLOAD_KEYS = [
-  "command",
-  "component",
-  "cpu",
-  "executable",
-  "license",
-  "os",
-  "package",
-  "source_repository",
-  "target",
-  "version",
-];
+const LICENSE_PATH = path.join(ROOT, "LICENSE");
+const NOTICE_PATH = path.join(ROOT, "NOTICE");
+const require = createRequire(import.meta.url);
 const TARGETS = new Map([
   ["aarch64-apple-darwin", ["darwin", "arm64"]],
   ["x86_64-apple-darwin", ["darwin", "x64"]],
@@ -45,10 +29,24 @@ const TARGETS = new Map([
   ["aarch64-pc-windows-msvc", ["win32", "arm64"]],
   ["x86_64-pc-windows-msvc", ["win32", "x64"]],
 ]);
-const COMPONENTS = new Map([
-  ["ait", ["ait", "ait-core", "Apache-2.0"]],
-  ["ait-server", ["ait-server", "ait-server", "AGPL-3.0-only"]],
-]);
+const CONTRACT_KEYS = [
+  "family_version",
+  "payloads",
+  "schema",
+  "top_level_package",
+];
+const PAYLOAD_KEYS = [
+  "addon",
+  "binding_repository",
+  "binding_snapshot",
+  "component",
+  "cpu",
+  "license",
+  "os",
+  "package",
+  "target",
+  "version",
+];
 
 function fail(message) {
   throw new Error(message);
@@ -70,13 +68,11 @@ function assertExactKeys(value, keys, label) {
 }
 
 async function readJson(filePath, label) {
-  let value;
   try {
-    value = JSON.parse(await readFile(filePath, "utf8"));
+    return JSON.parse(await readFile(filePath, "utf8"));
   } catch (error) {
     fail(`${label} is not valid JSON: ${error.message}`);
   }
-  return value;
 }
 
 async function regularFile(filePath, label) {
@@ -90,69 +86,51 @@ async function regularFile(filePath, label) {
     throw error;
   }
   if (!entry.isFile() || entry.isSymbolicLink()) {
-    fail(`${label} must be a regular file: ${filePath}`);
+    fail(`${label} must be a regular non-symlink file: ${filePath}`);
   }
   return entry;
 }
 
-function validateContract(contract) {
-  assertExactKeys(contract, CONTRACT_KEYS, "npm payload contract");
-  if (contract.schema !== "ait.node.npm-platform-packages/v1") {
-    fail("unsupported npm payload contract schema");
+export function validateContract(contract) {
+  assertExactKeys(contract, CONTRACT_KEYS, "npm addon contract");
+  if (
+    contract.schema !== "ait.node.napi-platform-packages/v1" ||
+    contract.top_level_package !== "ait-native" ||
+    contract.family_version !== "1.0.0-rc.2" ||
+    !Array.isArray(contract.payloads) ||
+    contract.payloads.length !== 6
+  ) {
+    fail("npm addon contract identity is invalid");
   }
-  if (contract.top_level_package !== "ait-native") {
-    fail("npm payload contract top-level package drift");
-  }
-  if (contract.family_version !== "1.0.0-rc.1") {
-    fail("npm payload contract family version drift");
-  }
-  if (!Array.isArray(contract.payloads) || contract.payloads.length !== 12) {
-    fail("npm payload contract must declare exactly twelve payload packages");
-  }
-
   const packages = new Set();
-  const selections = new Set();
+  const targets = new Set();
   for (const [index, payload] of contract.payloads.entries()) {
-    const label = `npm payload contract row ${index}`;
+    const label = `npm addon contract row ${index}`;
     assertExactKeys(payload, PAYLOAD_KEYS, label);
     const platform = TARGETS.get(payload.target);
-    const component = COMPONENTS.get(payload.component);
-    if (platform === undefined || component === undefined) {
-      fail(`${label} has an unsupported target or component`);
+    if (platform === undefined) {
+      fail(`${label} has an unsupported target`);
     }
     const [expectedOs, expectedCpu] = platform;
-    const [expectedCommand, expectedRepository, expectedLicense] = component;
-    const packagePrefix = payload.component === "ait" ? "ait" : "server";
-    const expectedPackage = `ait-native-${packagePrefix}-${expectedOs}-${expectedCpu}`;
-    const expectedExecutable =
-      expectedOs === "win32"
-        ? `bin/${expectedCommand}.exe`
-        : `bin/${expectedCommand}`;
+    const expectedPackage = `ait-native-ait-${expectedOs}-${expectedCpu}`;
     if (
       payload.os !== expectedOs ||
       payload.cpu !== expectedCpu ||
-      payload.command !== expectedCommand ||
-      payload.source_repository !== expectedRepository ||
-      payload.license !== expectedLicense ||
+      payload.component !== "ait-node" ||
       payload.package !== expectedPackage ||
-      payload.executable !== expectedExecutable ||
-      payload.version !== contract.family_version
+      payload.version !== contract.family_version ||
+      payload.binding_repository !== "ait-core" ||
+      payload.binding_snapshot !== "SNP-AFCEA70F3C0D" ||
+      payload.license !== "Apache-2.0" ||
+      payload.addon !== "native/ait_napi.node"
     ) {
-      fail(`${label} does not match its exact platform/component mapping`);
+      fail(`${label} does not match its direct Node-API mapping`);
     }
-    const selection = `${payload.component}\0${payload.target}`;
-    if (packages.has(payload.package) || selections.has(selection)) {
-      fail(`${label} duplicates a package or component/target selection`);
+    if (packages.has(payload.package) || targets.has(payload.target)) {
+      fail(`${label} duplicates a package or target`);
     }
     packages.add(payload.package);
-    selections.add(selection);
-  }
-  for (const target of TARGETS.keys()) {
-    for (const component of COMPONENTS.keys()) {
-      if (!selections.has(`${component}\0${target}`)) {
-        fail(`npm payload contract is missing ${component} for ${target}`);
-      }
-    }
+    targets.add(payload.target);
   }
 }
 
@@ -160,165 +138,127 @@ function parseOptions(argv) {
   const [action, ...tokens] = argv;
   if (action !== "check" && action !== "build") {
     fail(
-      "usage: npm-payload-package.mjs {check|build} --component <id> --target <triple> --version <version> --receipt <path> --license <path> --notice <path> [--out-dir <path>]",
+      "usage: npm-payload-package.mjs {check|build} --target <triple> --version <version> --addon <path> [--out-dir <path>]",
     );
   }
   if (tokens.length % 2 !== 0) {
-    fail("every npm payload package option requires one value");
+    fail("every npm addon package option requires one value");
   }
-  const allowed = new Set([
-    "--component",
-    "--target",
-    "--version",
-    "--receipt",
-    "--license",
-    "--notice",
-    "--out-dir",
-  ]);
+  const allowed = new Set(["--target", "--version", "--addon", "--out-dir"]);
   const options = {};
   for (let index = 0; index < tokens.length; index += 2) {
     const name = tokens[index];
     const value = tokens[index + 1];
     if (!allowed.has(name)) {
-      fail(`unknown npm payload package option ${name}`);
+      fail(`unknown npm addon package option ${name}`);
     }
     if (Object.hasOwn(options, name)) {
-      fail(`duplicate npm payload package option ${name}`);
+      fail(`duplicate npm addon package option ${name}`);
     }
     if (value.length === 0) {
-      fail(`npm payload package option ${name} cannot be empty`);
+      fail(`npm addon package option ${name} cannot be empty`);
     }
     options[name] = value;
   }
-  for (const required of [
-    "--component",
-    "--target",
-    "--version",
-    "--receipt",
-    "--license",
-    "--notice",
-  ]) {
+  for (const required of ["--target", "--version", "--addon"]) {
     if (!Object.hasOwn(options, required)) {
-      fail(`missing required npm payload package option ${required}`);
+      fail(`missing required npm addon package option ${required}`);
     }
   }
   return { action, options };
 }
 
-function safeReceiptPath(receiptRoot, artifactPath) {
+function selectedPayload(contract, target, version) {
+  const matches = contract.payloads.filter((payload) => payload.target === target);
+  if (matches.length !== 1) {
+    fail(`npm addon contract does not select exactly one ${target} package`);
+  }
+  const payload = matches[0];
+  if (version !== contract.family_version || version !== payload.version) {
+    fail(`npm addon version ${version} does not match ${contract.family_version}`);
+  }
+  if (payload.os !== process.platform || payload.cpu !== process.arch) {
+    fail(
+      `target ${target} requires native host ${payload.os}/${payload.cpu}, got ${process.platform}/${process.arch}`,
+    );
+  }
+  return payload;
+}
+
+function validateLoadedAddon(addonPath, payload) {
+  let addon;
+  try {
+    addon = require(addonPath);
+  } catch (error) {
+    fail(`built addon cannot be loaded in the current Node.js process: ${error.message}`);
+  }
+  for (const name of [
+    "bindingInfoJson",
+    "agentWorkerCapabilitiesJson",
+    "agentManagementJson",
+    "agentWorkerTransactionJson",
+    "runCli",
+  ]) {
+    if (typeof addon[name] !== "function") {
+      fail(`built addon is missing required export ${name}`);
+    }
+  }
+  let info;
+  try {
+    info = JSON.parse(addon.bindingInfoJson());
+  } catch (error) {
+    fail(`built addon bindingInfoJson is invalid: ${error.message}`);
+  }
   if (
-    typeof artifactPath !== "string" ||
-    artifactPath.length === 0 ||
-    artifactPath.includes("\\") ||
-    path.posix.isAbsolute(artifactPath) ||
-    path.posix.normalize(artifactPath) !== artifactPath ||
-    artifactPath.split("/").some((part) => part === "" || part === "." || part === "..")
+    info.contract !== "ait.language.binding.v1" ||
+    info.version !== payload.version ||
+    info.runtime_authority !== "rust" ||
+    info.node_binding !== "napi" ||
+    info.process_transport_allowed !== false
   ) {
-    fail(`receipt artifact path is unsafe: ${String(artifactPath)}`);
+    fail("built addon does not expose the exact direct Node-API contract");
   }
-  const resolved = path.resolve(receiptRoot, ...artifactPath.split("/"));
-  if (!resolved.startsWith(`${receiptRoot}${path.sep}`)) {
-    fail(`receipt artifact path escapes its bundle: ${artifactPath}`);
-  }
-  return resolved;
+  return info;
 }
 
 async function validateInputs(contract, options) {
-  const component = options["--component"];
-  const target = options["--target"];
-  const version = options["--version"];
-  const selection = contract.payloads.filter(
-    (payload) => payload.component === component && payload.target === target,
+  const payload = selectedPayload(
+    contract,
+    options["--target"],
+    options["--version"],
   );
-  if (selection.length !== 1) {
-    fail(`npm payload contract does not select exactly one ${component}/${target} package`);
+  const addonPath = path.resolve(options["--addon"]);
+  const addonEntry = await regularFile(addonPath, "ait-node built addon");
+  if (addonEntry.size === 0) {
+    fail("ait-node built addon is empty");
   }
-  const payload = selection[0];
-  if (version !== contract.family_version || version !== payload.version) {
-    fail(`npm payload version ${version} does not match ${contract.family_version}`);
-  }
-
-  const receiptPath = path.resolve(options["--receipt"]);
-  await regularFile(receiptPath, "component receipt");
-  const receiptBytes = await readFile(receiptPath);
-  const receipt = JSON.parse(receiptBytes.toString("utf8"));
+  const addonBytes = await readFile(addonPath);
+  const bindingInfo = validateLoadedAddon(addonPath, payload);
+  const licenseEntry = await regularFile(LICENSE_PATH, "ait-node license");
+  const noticeEntry = await regularFile(NOTICE_PATH, "ait-node NOTICE");
+  const licenseBytes = await readFile(LICENSE_PATH);
+  const noticeBytes = await readFile(NOTICE_PATH);
   if (
-    receipt.contract !== "ait.release.adapter.receipt/v1" ||
-    receipt.repo_name !== payload.source_repository ||
-    !/^SNP-[0-9A-F]{12}$/.test(receipt.snapshot_id ?? "") ||
-    receipt.version !== version ||
-    receipt.metadata?.package?.version !== version ||
-    receipt.target !== target ||
-    !Array.isArray(receipt.artifacts)
+    licenseEntry.size === 0 ||
+    noticeEntry.size === 0 ||
+    licenseBytes.length === 0 ||
+    noticeBytes.length === 0
   ) {
-    fail("component receipt identity, version, target, or contract is invalid");
+    fail("ait-node license and NOTICE must be non-empty");
   }
-  const componentArtifacts = receipt.artifacts.filter(
-    (artifact) =>
-      artifact?.component === component &&
-      artifact.role === "component-artifact",
-  );
-  if (
-    componentArtifacts.length !== 1 ||
-    componentArtifacts[0].ecosystem !== "native" ||
-    componentArtifacts[0].kind !== "native-executable" ||
-    componentArtifacts[0].target !== target
-  ) {
-    fail("component receipt must select exactly one matching native executable");
-  }
-  const artifact = componentArtifacts[0];
-  if (
-    !/^[0-9a-f]{64}$/.test(artifact.sha256 ?? "") ||
-    !Number.isSafeInteger(artifact.size_bytes) ||
-    artifact.size_bytes <= 0
-  ) {
-    fail("component receipt artifact digest or size is invalid");
-  }
-  const receiptRoot = path.dirname(receiptPath);
-  const sourcePath = safeReceiptPath(receiptRoot, artifact.path);
-  const sourceEntry = await regularFile(sourcePath, "receipt-owned executable");
-  const realReceiptRoot = await realpath(receiptRoot);
-  const realSourcePath = await realpath(sourcePath);
-  if (!realSourcePath.startsWith(`${realReceiptRoot}${path.sep}`)) {
-    fail("receipt-owned executable escapes its bundle through a symlink");
-  }
-  const sourceBytes = await readFile(sourcePath);
-  if (
-    sourceEntry.size !== artifact.size_bytes ||
-    sourceBytes.length !== artifact.size_bytes ||
-    sha256(sourceBytes) !== artifact.sha256
-  ) {
-    fail("receipt-owned executable size or SHA-256 drift");
-  }
-
-  const licensePath = path.resolve(options["--license"]);
-  await regularFile(licensePath, "component license");
-  const licenseBytes = await readFile(licensePath);
-  if (licenseBytes.length === 0) {
-    fail("component license cannot be empty");
-  }
-  const noticePath = path.resolve(options["--notice"]);
-  await regularFile(noticePath, "component NOTICE");
-  const noticeBytes = await readFile(noticePath);
-  if (noticeBytes.length === 0) {
-    fail("component NOTICE cannot be empty");
-  }
-
   return {
-    artifact,
+    addonBytes,
+    addonPath,
+    bindingInfo,
     licenseBytes,
     noticeBytes,
     payload,
-    receipt,
-    receiptSha256: sha256(receiptBytes),
-    sourceBytes,
-    sourcePath,
   };
 }
 
-function run(command, args, cwd) {
-  const result = spawnSync(command, args, {
-    cwd,
+function runNpm(args) {
+  const result = spawnSync(NPM, args, {
+    cwd: ROOT,
     encoding: "utf8",
     env: {
       ...process.env,
@@ -333,45 +273,36 @@ function run(command, args, cwd) {
   }
   if (result.status !== 0) {
     fail(
-      `${command} ${args.join(" ")} failed with status ${result.status}\n${result.stdout}${result.stderr}`,
+      `${NPM} ${args.join(" ")} failed with status ${result.status}\n${result.stdout}${result.stderr}`,
     );
   }
   return result;
 }
 
 async function buildPackage(inputs, outDir) {
-  const { artifact, licenseBytes, noticeBytes, payload, receipt, receiptSha256, sourcePath } = inputs;
+  const { addonBytes, addonPath, licenseBytes, noticeBytes, payload } = inputs;
   const outputRoot = path.resolve(outDir);
   await mkdir(outputRoot, { recursive: true });
   const tarballName = `${payload.package}-${payload.version}.tgz`;
   const tarballPath = path.join(outputRoot, tarballName);
   try {
     await lstat(tarballPath);
-    fail(`refusing to overwrite existing npm payload tarball: ${tarballPath}`);
+    fail(`refusing to overwrite existing npm addon tarball: ${tarballPath}`);
   } catch (error) {
     if (error?.code !== "ENOENT") {
       throw error;
     }
   }
 
-  const temporaryRoot = await mkdtemp(path.join(outputRoot, ".ait-npm-payload-"));
+  const temporaryRoot = await mkdtemp(path.join(outputRoot, ".ait-npm-addon-"));
   try {
     const packageRoot = path.join(temporaryRoot, "package");
-    const executablePath = path.join(
-      packageRoot,
-      ...payload.executable.split("/"),
-    );
-    await mkdir(path.dirname(executablePath), { recursive: true });
-    await copyFile(sourcePath, executablePath);
-    if (payload.os !== "win32") {
-      await chmod(executablePath, 0o755);
-    }
-    const copiedBytes = await readFile(executablePath);
-    if (
-      copiedBytes.length !== artifact.size_bytes ||
-      sha256(copiedBytes) !== artifact.sha256
-    ) {
-      fail("copied npm payload executable drifted from its component receipt");
+    const installedAddon = path.join(packageRoot, ...payload.addon.split("/"));
+    await mkdir(path.dirname(installedAddon), { recursive: true });
+    await copyFile(addonPath, installedAddon);
+    const copiedBytes = await readFile(installedAddon);
+    if (sha256(copiedBytes) !== sha256(addonBytes)) {
+      fail("copied npm Node addon drifted from the ait-node build output");
     }
 
     await writeFile(path.join(packageRoot, "LICENSE"), licenseBytes);
@@ -379,23 +310,19 @@ async function buildPackage(inputs, outDir) {
     const packageJson = {
       name: payload.package,
       version: payload.version,
-      description: `Implementation-only ${payload.component} payload for ${payload.target}`,
+      description: `Implementation-only AIT Node-API addon for ${payload.target}`,
       license: payload.license,
       os: [payload.os],
       cpu: [payload.cpu],
-      files: [
-        "bin",
-        "provenance.json",
-        "LICENSE",
-        "NOTICE",
-      ],
-      aitNativePayload: {
-        schema: "ait.node.npm-platform-payload/v1",
+      main: payload.addon,
+      files: ["native", "provenance.json", "LICENSE", "NOTICE"],
+      aitNativeAddon: {
+        schema: "ait.node.napi-platform-addon/v1",
         component: payload.component,
         target: payload.target,
-        executable: payload.executable,
-        source_repository: payload.source_repository,
-        source_snapshot: receipt.snapshot_id,
+        addon: payload.addon,
+        binding_repository: payload.binding_repository,
+        binding_snapshot: payload.binding_snapshot,
       },
     };
     await writeFile(
@@ -403,15 +330,16 @@ async function buildPackage(inputs, outDir) {
       `${JSON.stringify(packageJson, null, 2)}\n`,
     );
     const provenance = {
-      schema: "ait.node.npm-platform-payload-provenance/v1",
+      schema: "ait.node.napi-platform-addon-provenance/v1",
       family_version: payload.version,
       package: payload.package,
       target: payload.target,
       os: payload.os,
       cpu: payload.cpu,
       component: payload.component,
-      source_repository: payload.source_repository,
-      source_snapshot: receipt.snapshot_id,
+      package_source_repository: "ait-node",
+      binding_repository: payload.binding_repository,
+      binding_snapshot: payload.binding_snapshot,
       license: payload.license,
       license_file: {
         path: "LICENSE",
@@ -423,16 +351,11 @@ async function buildPackage(inputs, outDir) {
         sha256: sha256(noticeBytes),
         size_bytes: noticeBytes.length,
       },
-      source_receipt: {
-        contract: receipt.contract,
-        sha256: receiptSha256,
-      },
       source_artifact: {
-        path: artifact.path,
-        sha256: artifact.sha256,
-        size_bytes: artifact.size_bytes,
+        sha256: sha256(addonBytes),
+        size_bytes: addonBytes.length,
       },
-      installed_path: payload.executable,
+      installed_path: payload.addon,
     };
     await writeFile(
       path.join(packageRoot, "provenance.json"),
@@ -441,48 +364,43 @@ async function buildPackage(inputs, outDir) {
 
     const expectedFiles = new Set([
       "LICENSE",
-      payload.executable,
+      "NOTICE",
+      payload.addon,
       "package.json",
       "provenance.json",
-      "NOTICE",
     ]);
-    const dryRun = run(
-      NPM,
-      ["pack", "--ignore-scripts", "--dry-run", "--json", packageRoot],
-      ROOT,
-    );
+    const dryRun = runNpm([
+      "pack",
+      "--ignore-scripts",
+      "--dry-run",
+      "--json",
+      packageRoot,
+    ]);
     const inventory = JSON.parse(dryRun.stdout);
-    if (inventory.length !== 1) {
-      fail("npm payload dry-run must return exactly one package");
-    }
-    const packedFiles = new Set(inventory[0].files.map((entry) => entry.path));
+    const packedFiles = new Set(
+      inventory[0]?.files?.map((entry) => entry.path) ?? [],
+    );
     if (
+      inventory.length !== 1 ||
       packedFiles.size !== expectedFiles.size ||
       [...expectedFiles].some((entry) => !packedFiles.has(entry))
     ) {
-      fail("npm payload tarball inventory does not match the exact contract");
+      fail("npm addon tarball inventory does not match the exact contract");
     }
 
-    const packed = run(
-      NPM,
-      [
-        "pack",
-        "--ignore-scripts",
-        "--json",
-        "--pack-destination",
-        outputRoot,
-        packageRoot,
-      ],
-      ROOT,
-    );
+    const packed = runNpm([
+      "pack",
+      "--ignore-scripts",
+      "--json",
+      "--pack-destination",
+      outputRoot,
+      packageRoot,
+    ]);
     const packedResult = JSON.parse(packed.stdout);
-    if (
-      packedResult.length !== 1 ||
-      packedResult[0].filename !== tarballName
-    ) {
-      fail("npm payload tarball filename drift");
+    if (packedResult.length !== 1 || packedResult[0].filename !== tarballName) {
+      fail("npm addon tarball filename drift");
     }
-    const tarballEntry = await regularFile(tarballPath, "npm payload tarball");
+    const tarballEntry = await regularFile(tarballPath, "npm addon tarball");
     const tarballBytes = await readFile(tarballPath);
     return {
       action: "build",
@@ -492,8 +410,9 @@ async function buildPackage(inputs, outDir) {
       artifact: tarballPath,
       sha256: sha256(tarballBytes),
       size_bytes: tarballEntry.size,
-      source_snapshot: receipt.snapshot_id,
-      source_sha256: artifact.sha256,
+      binding_repository: payload.binding_repository,
+      binding_snapshot: payload.binding_snapshot,
+      source_sha256: sha256(addonBytes),
       status: "pass",
     };
   } finally {
@@ -503,7 +422,7 @@ async function buildPackage(inputs, outDir) {
 
 async function main() {
   const { action, options } = parseOptions(process.argv.slice(2));
-  const contract = await readJson(CONTRACT_PATH, "npm payload contract");
+  const contract = await readJson(CONTRACT_PATH, "npm addon contract");
   validateContract(contract);
   const inputs = await validateInputs(contract, options);
   if (action === "check") {
@@ -513,8 +432,9 @@ async function main() {
         package: `${inputs.payload.package}@${inputs.payload.version}`,
         component: inputs.payload.component,
         target: inputs.payload.target,
-        source_snapshot: inputs.receipt.snapshot_id,
-        source_sha256: inputs.artifact.sha256,
+        binding_repository: inputs.payload.binding_repository,
+        binding_snapshot: inputs.payload.binding_snapshot,
+        source_sha256: sha256(inputs.addonBytes),
         status: "pass",
       })}\n`,
     );
@@ -522,7 +442,7 @@ async function main() {
   }
   const result = await buildPackage(
     inputs,
-    options["--out-dir"] ?? path.join(ROOT, "dist", "npm-payloads"),
+    options["--out-dir"] ?? path.join(ROOT, "dist", "npm-addons"),
   );
   process.stdout.write(`${JSON.stringify(result)}\n`);
 }
