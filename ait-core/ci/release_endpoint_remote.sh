@@ -248,6 +248,61 @@ npm_package_rows() {
     done
 }
 
+npm_provenance_policy() {
+  local package_name=$1
+  local archive_sha256=$2
+  local repository_url=$3
+  local expected_repository=https://github.com/${github_repository}
+
+  case "${repository_url}" in
+    "${expected_repository}" | "git+${expected_repository}.git")
+      printf '%s\n' '--provenance'
+      return 0
+      ;;
+  esac
+
+  if [[ ${repository_url} == '' &&
+    ${release_version} == 1.0.0-rc.2 &&
+    ${source_commit} == 3dfd9dde5a9867cfe265352f48540fa8241f8e66 ]]; then
+    case "${package_name}:${archive_sha256}" in
+      ait-native-ait-darwin-arm64:868a6a51d1baf2063652a24f586f1c4c1cefaf544315108928602477534bfb07|\
+        ait-native-ait-darwin-x64:69eed59c88235cef81c35697fd01d89bd4dbe4a1af0fbf01a685b48cf6ca9751|\
+        ait-native-ait-linux-arm64:045b87d3eb9e134801d9f550757fdb6cda3c05bdbbdd93ba0017327fee5321a0|\
+        ait-native-ait-linux-x64:c6a1b2caebb2a8cd04edcc6f2743a162d73b0598f1e3d7fb64db3bdd05360945|\
+        ait-native-ait-win32-arm64:2b586f8b8e39a041793240486af16bbf751be1f1ddb5bf0e7695587f637c85f2|\
+        ait-native-ait-win32-x64:2016e93c9a87cb7a0519afc7d9ca826adcc481fa9c71b558410675f7e2b53dbe)
+        printf '%s\n' '--provenance=false'
+        return 0
+        ;;
+    esac
+  fi
+
+  printf 'npm package repository metadata does not admit provenance: %s\n' \
+    "${package_name}" >&2
+  return 65
+}
+
+npm_publish_provenance_flag() {
+  local package_name=$1
+  local package_archive=$2
+  local package_metadata repository_url archive_sha256
+  package_metadata=$(tar -xOf "${package_archive}" package/package.json)
+  repository_url=$(jq -r '
+    if .repository == null then
+      ""
+    elif (.repository | type) == "string" then
+      .repository
+    elif (.repository | type) == "object" and
+      ((.repository.url // "") | type) == "string" then
+      (.repository.url // "")
+    else
+      error("package repository metadata has an unsupported shape")
+    end
+  ' <<<"${package_metadata}")
+  archive_sha256=$(sha256_file "${package_archive}")
+  npm_provenance_policy "${package_name}" "${archive_sha256}" "${repository_url}"
+}
+
 remove_matching_npm_prerelease_latest_tag() {
   local npmrc=$1
   local package_name=$2
@@ -1073,8 +1128,15 @@ NOTES
       fi
       if ! curl --fail --silent --show-error \
         "${npm_registry}/${package_name}/${release_version}" >/dev/null 2>&1; then
+        npm_provenance_flag=$(npm_publish_provenance_flag \
+          "${package_name}" "${package_archive}")
+        if [[ ${npm_provenance_flag} == --provenance=false ]]; then
+          printf 'using exact RC.2 npm provenance recovery: %s@%s\n' \
+            "${package_name}" "${package_version}" >&2
+        fi
         NPM_CONFIG_USERCONFIG="${npmrc}" npm publish "${package_archive}" \
-          --registry "${npm_registry}" --tag rc --access public --provenance
+          --registry "${npm_registry}" --tag rc --access public \
+          "${npm_provenance_flag}"
       fi
     done <"${npm_rows}"
     while IFS=$'\t' read -r package_name package_version package_archive; do
