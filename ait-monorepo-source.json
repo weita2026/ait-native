@@ -1,21 +1,21 @@
 {
   "schema": "ait.release.monorepo-source/v1",
   "public_source_identity": "weita2026/ait-native",
-  "coordinator_snapshot": "SNP-FFDF9798A111",
-  "coordinator_manifest_hash": "ffdf9798a11115389183ef4a8edeb68e26b553a267e752c39f1d104c731cbd8e",
-  "coordinator_created_at": "1786487619",
+  "coordinator_snapshot": "SNP-744B42CF2E7D",
+  "coordinator_manifest_hash": "744b42cf2e7ddf44417365928b73978faaa792e18bffc6f5b50382fe14518bc1",
+  "coordinator_created_at": "1786491761",
   "family_version": "1.0.0-rc.1",
   "family_tag": "v1.0.0-rc.1",
-  "family_manifest_sha256": "a17aa3ae9349793bed383be16cf055ee52f4d0a9b1e0cf1eaf2d1eeba5ce29f1",
-  "product_document_sha256": "84abf56bfc78855e1236f6a13a1c6b95a550166e3fb50dd16a58150b3e0aef00",
+  "family_manifest_sha256": "d75a147dfcba348625907f624cdc4b8a363c7b84557fe6129f76ceb0b8df82be",
+  "product_document_sha256": "f5f10f635898cf38f219401fe93de760b51afe5949d6106756f33b6e422b6c0c",
   "content_digest_contract": "size-sha256-path/v1; excludes ait-monorepo-source.json",
-  "content_sha256": "bcd0ca26487ba9b56bbd737ad93aefc98e09b0371ae83826c571f79005863c4d",
+  "content_sha256": "8d99f6eed28cec37902e7ea4bfe781af53a30966084a1e9a93f54f4fdfcfecdf",
   "subtrees": [
     {
       "source_repository": "ait-core",
-      "source_snapshot": "SNP-BBAFC78C7AB9",
-      "source_manifest_hash": "bbafc78c7ab97453145e85a07c1663de661f40a0e5a8674d020880bd637972c1",
-      "source_snapshot_created_at": "1786487603",
+      "source_snapshot": "SNP-A0433FAAAA77",
+      "source_manifest_hash": "a0433faaaa77fe046b78bb266187c897ed8403cfdbd9cc0943c46bb7d70a5f5b",
+      "source_snapshot_created_at": "1786491738",
       "path": "ait-core",
       "license": "Apache-2.0",
       "components": [
@@ -23,9 +23,9 @@
         "ait-agent"
       ],
       "transforms": [],
-      "source_cache_evidence_sha256": "fcfc5279d66a710e30c6b8eac3a830b9a6bc01dab5de256e0265df1b8a0dfc43",
-      "source_content_sha256": "7ceb141d59c98a66aa8da744ca3f1cce87c53b7ad78068fc6ad447afc4e9c18b",
-      "exported_content_sha256": "7ceb141d59c98a66aa8da744ca3f1cce87c53b7ad78068fc6ad447afc4e9c18b"
+      "source_cache_evidence_sha256": "7cf2821adf15eca548c58005629eaca62f4cbc34789242ad75fb495e77ae474d",
+      "source_content_sha256": "defb2289a38b81df9fca1cc196ee0a7de423b365d8e71627a11fe79143d1850f",
+      "exported_content_sha256": "defb2289a38b81df9fca1cc196ee0a7de423b365d8e71627a11fe79143d1850f"
     },
     {
       "source_repository": "ait-node",

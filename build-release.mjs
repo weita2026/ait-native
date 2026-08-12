@@ -20,11 +20,23 @@ import { fileURLToPath } from "node:url";
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const FAMILY_MANIFEST = path.join(ROOT, "ait-release-family.json");
 const SOURCE_MAPPING = path.join(ROOT, "ait-monorepo-source.json");
-const PROTECTED_WORKFLOW = path.join(
+const RECEIPT_WORKFLOW = path.join(
   ROOT,
   ".github",
   "workflows",
   "ait-release-component-receipts.yml",
+);
+const PROMOTION_WORKFLOW = path.join(
+  ROOT,
+  ".github",
+  "workflows",
+  "ait-release-protected-promotion.yml",
+);
+const PROMOTION_VERIFIER = path.join(
+  ROOT,
+  "ait-core",
+  "ci",
+  "release_protected_promotion.sh",
 );
 const BUILD_ROOT = path.join(ROOT, ".build", "source-release");
 const OUTPUT_ROOT = path.join(ROOT, "dist", "source-build");
@@ -88,9 +100,9 @@ function exactSet(actual, expected, label) {
   }
 }
 
-async function validateProtectedWorkflow() {
-  await regularFile(PROTECTED_WORKFLOW, "root protected component-receipt workflow");
-  const workflow = await readFile(PROTECTED_WORKFLOW, "utf8");
+async function validateProtectedWorkflows() {
+  await regularFile(RECEIPT_WORKFLOW, "root protected component-receipt workflow");
+  const workflow = await readFile(RECEIPT_WORKFLOW, "utf8");
   const exactWorkingDirectory =
     "defaults:\n  run:\n    working-directory: ait-core";
   const exactArtifactPath = "          path: ait-core/release-receipt-matrix.json";
@@ -110,6 +122,55 @@ async function validateProtectedWorkflow() {
     workflow.includes("          path: release-receipt-matrix.json")
   ) {
     fail("root protected workflow contains write authority or an unadapted artifact path");
+  }
+
+  await regularFile(PROMOTION_WORKFLOW, "root protected promotion workflow");
+  const promotion = await readFile(PROMOTION_WORKFLOW, "utf8");
+  for (const required of [
+    "name: ait release protected promotion",
+    "workflow_dispatch:",
+    "permissions:\n  actions: read\n  attestations: write\n  contents: read\n  id-token: write",
+    "environment:\n      name: rc-promotion",
+    "persist-credentials: false",
+    "artifact-ids: ${{ inputs.dossier_artifact_id }}",
+    "bash control/ait-core/ci/release_protected_promotion.sh",
+    "actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a",
+    "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02",
+  ]) {
+    if (promotion.split(required).length !== 2) {
+      fail(`root protected promotion workflow must contain exactly one ${JSON.stringify(required)}`);
+    }
+  }
+  for (const forbidden of [
+    "contents: write",
+    "packages: write",
+    "secrets.",
+    "gh release create",
+    "npm publish",
+    "twine upload",
+    "docker push",
+    "oras push",
+  ]) {
+    if (promotion.includes(forbidden)) {
+      fail(`root protected promotion workflow contains publication authority ${JSON.stringify(forbidden)}`);
+    }
+  }
+
+  await regularFile(PROMOTION_VERIFIER, "protected promotion verifier");
+  const verifier = await readFile(PROMOTION_VERIFIER, "utf8");
+  for (const required of [
+    "ait.release.family.protected-promotion/v1",
+    "authorized_for_explicit_endpoint_promotion",
+    "github_protected_environment",
+    "request_explicit_registry_authorization",
+    "registry_credentials_loaded: false",
+    "registry_write: false",
+    "github_release_write: false",
+    "artifact_rebuild: false",
+  ]) {
+    if (!verifier.includes(required)) {
+      fail(`protected promotion verifier must contain ${JSON.stringify(required)}`);
+    }
   }
 }
 
@@ -457,9 +518,11 @@ async function validateBuildInputs(expectedGitCommit) {
   }
   for (const required of [
     ".github/workflows/ait-release-component-receipts.yml",
+    ".github/workflows/ait-release-protected-promotion.yml",
     ".gitattributes",
     "README.md",
     "ait-core/rust/Cargo.toml",
+    "ait-core/ci/release_protected_promotion.sh",
     "ait-server/rust/Cargo.toml",
     "ait-runner/Cargo.toml",
     "ait-python/pyproject.toml",
@@ -473,7 +536,7 @@ async function validateBuildInputs(expectedGitCommit) {
   await validateGitBytePolicy();
   await validateOperationalIgnorePolicy();
   await validateTrackedSourceTree();
-  await validateProtectedWorkflow();
+  await validateProtectedWorkflows();
   const runnerManifest = await readFile(path.join(ROOT, "ait-runner", "Cargo.toml"), "utf8");
   const pythonManifest = await readFile(path.join(ROOT, "ait-python", "pyproject.toml"), "utf8");
   if (
