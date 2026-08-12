@@ -1205,8 +1205,7 @@ NOTES
         >"${current_verification}" 2>&1; then
         :
       else
-        previous_publication_commit=$(jq -er \
-          '.endpoints.apt.previous_publication_commit' "${endpoint_config}")
+        previous_publication_commit=65cdc171b60b63521720e05061860095169c3047
         if [[ ! ${previous_publication_commit} =~ ^[0-9a-f]{40}$ ]] ||
           [[ $(git -C "${clone_root}" rev-parse HEAD) != "${previous_publication_commit}" ]] ||
           [[ -n $(git -C "${clone_root}" status --porcelain --untracked-files=all) ]]; then

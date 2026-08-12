@@ -66,7 +66,6 @@
     "apt": {
       "repository": "weita2026/apt-ait-native",
       "branch": "main",
-      "previous_publication_commit": "65cdc171b60b63521720e05061860095169c3047",
       "base_url": "https://raw.githubusercontent.com/weita2026/apt-ait-native/main",
       "suite": "testing",
       "component": "main",
