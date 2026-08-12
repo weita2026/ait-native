@@ -12,7 +12,6 @@ import {
   rm,
   writeFile,
 } from "node:fs/promises";
-import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -27,7 +26,6 @@ const PORTABLE_TARGET = "portable";
 const TARBALL_NAME = `${PACKAGE_NAME}-${PACKAGE_VERSION}.tgz`;
 const TARBALL_PATH = path.join(ROOT, "dist", TARBALL_NAME);
 const ADDON_OUTPUT_ROOT = path.join(ROOT, "dist", "npm-addons");
-const require = createRequire(import.meta.url);
 
 function run(command, args, cwd = ROOT) {
   const result = spawnSync(command, args, {
@@ -377,14 +375,24 @@ async function smokeAddon(target, payload) {
       tarball,
     ]);
     const packageRoot = path.join(temporaryRoot, "node_modules", payload.package);
-    const addon = require(packageRoot);
-    const info = JSON.parse(addon.bindingInfoJson());
+    const addonSmoke = run(process.execPath, [
+      "-e",
+      [
+        "const addon = require(process.argv[1]);",
+        "process.stdout.write(JSON.stringify({",
+        "  info: JSON.parse(addon.bindingInfoJson()),",
+        "  run_cli_type: typeof addon.runCli,",
+        "}));",
+      ].join("\n"),
+      packageRoot,
+    ]);
+    const { info, run_cli_type: runCliType } = JSON.parse(addonSmoke.stdout);
     assert.equal(info.contract, "ait.language.binding.v1");
     assert.equal(info.version, PACKAGE_VERSION);
     assert.equal(info.runtime_authority, "rust");
     assert.equal(info.node_binding, "napi");
     assert.equal(info.process_transport_allowed, false);
-    assert.equal(typeof addon.runCli, "function");
+    assert.equal(runCliType, "function");
     return {
       action: "smoke",
       installed: `${payload.package}@${payload.version}`,
