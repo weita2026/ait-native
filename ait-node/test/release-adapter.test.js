@@ -90,6 +90,10 @@ test("release tools are registry-inert and package direct addon fixtures", async
     "utf8",
   );
   assert.doesNotMatch(adapter, /npm\.cmd/);
+  assert.doesNotMatch(adapter, /createRequire/);
+  assert.doesNotMatch(adapter, /const addon = require\(packageRoot\)/);
+  assert.match(adapter, /const addon = require\(process\.argv\[1\]\)/);
+  assert.match(adapter, /run\(process\.execPath/);
   assert.doesNotMatch(`${adapter}\n${packager}`, /npm\s+publish/i);
   assert.doesNotMatch(`${adapter}\n${packager}`, /https?:\/\//);
   assert.match(adapter, /--ignore-scripts/);

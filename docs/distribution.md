@@ -7,7 +7,7 @@ Status: target contract plus the current public RC record. Contract sections
 define the admitted family; only the dated status section below records what
 has actually reached an external endpoint.
 
-## Current Public RC Status (2026-08-12)
+## Current Public RC Status (2026-08-13)
 
 `v1.0.0-rc.1` is an immutable public prerelease at Git commit
 `f9d260a8f7046f82a6c3e271d539dd0bbce7bc14`. Its tag and frozen artifacts must
@@ -46,7 +46,7 @@ usable all-endpoint release. Completing the declared platform contract
 requires the new immutable RC.2 family. Its selected component authorities are
 `ait-core` `SNP-4D8A3DA8FE1D`, `ait-server` `SNP-46B0CA25412F`, `ait-runner`
 `SNP-971121B196C4`, `ait-python` `SNP-02A1F51491A8`, and `ait-node`
-`SNP-CC2B81094188`. RC.2 is not public until the source tag, protected matrix,
+`SNP-372A38EF81BA`. RC.2 is not public until the source tag, protected matrix,
 frozen dossier, endpoint publication, and readback below complete. Until then,
 use the working RC.1 PyPI, GitHub native, GHCR, or Homebrew routes for RC
 evaluation; do not direct users to the RC.1 apt or npm routes.
@@ -468,6 +468,13 @@ The four executables must have native artifacts for all six targets.
 envelope and six target-specific Node-API addon packages, without a separate
 user-facing npm product, install-time build, subprocess relay, or custom binary
 download.
+
+The no-subprocess requirement applies to the installed Node.js API and `ait`
+command: both enter the selected Rust Node-API addon in-process. Build,
+packaging, and validation tools may launch bounded tool processes. In
+particular, the Windows release smoke loads the installed addon in a bounded
+Node process that exits before its temporary npm tree is removed; that process
+is validation isolation for DLL cleanup, not a runtime transport.
 
 The RC npm implementation identities are exactly
 `ait-native-ait-{darwin,linux,win32}-{arm64,x64}`. The top-level `ait-native`
