@@ -3,8 +3,45 @@
 Authority: this centralized product distribution contract. Internal planning
 lineage remains governed by AIT Plan revisions and is not duplicated here.
 
-Status: target contract. It defines the admitted public release family; it is
-not evidence that publication has already completed.
+Status: target contract plus the current public RC record. Contract sections
+define the admitted family; only the dated status section below records what
+has actually reached an external endpoint.
+
+## Current Public RC Status (2026-08-12)
+
+`v1.0.0-rc.1` is an immutable public prerelease at Git commit
+`f9d260a8f7046f82a6c3e271d539dd0bbce7bc14`. Its tag and frozen artifacts must
+not be moved, rebuilt, replaced, or silently repaired. The public release is
+[`weita2026/ait-native v1.0.0-rc.1`](https://github.com/weita2026/ait-native/releases/tag/v1.0.0-rc.1),
+and the latest endpoint attempt is
+[`31594748800`](https://github.com/weita2026/ait-native/actions/runs/31594748800).
+
+The exact current endpoint state is:
+
+| Endpoint | RC.1 state |
+| --- | --- |
+| GitHub Release | Public prerelease with the frozen source, native artifacts, package artifacts, checksums, and endpoint receipt. |
+| PyPI | `ait-native==1.0.0rc1` is public with six admitted wheels; clean installation, both native commands, and the `ait_py`/`ait_python` imports pass. |
+| GHCR | Public multi-platform `ait-server` and `ait-runner` images exist for Linux `amd64` and `arm64`; anonymous digest, filesystem, version, and provenance readback pass. |
+| Homebrew | `weita2026/homebrew-ait-native` contains the RC formula with exact source URLs and checksums. |
+| apt | The signed testing repository and all four RC packages are public, but the frozen packages are not clean-installable and must not be recommended. |
+| npm | Five of twelve implementation payloads are public. The top-level `ait-native`, `ait-native-ait-win32-x64`, and all six server payloads remain blocked by npm registry name-spam detection; an npm support request is pending. The npm product is therefore unpublished. |
+| WinGet | The frozen validation manifests are attached to the GitHub prerelease. No community repository submission has been made, by the declared RC route. |
+
+The apt failure is exact: RC.1 `data.tar.gz` archives contain regular files but
+no parent-directory entries, so clean `dpkg` unpack fails when it reaches the
+package documentation directory. The package-builder correction is locally
+landed at `ait-core` Snapshot `SNP-564720F850B8`; it emits deterministic,
+root-owned `0755` parent directories and passes clean Debian install/remove
+tests while leaving the server inactive. That source correction cannot alter
+the frozen RC.1 bytes.
+
+Consequently RC.1 is useful public prerelease evidence, but it is not a fully
+usable all-endpoint release. Completing the declared platform contract
+requires a new immutable version built from `SNP-564720F850B8` or a later
+admitted Snapshot, plus npm registry clearance and complete endpoint
+readback. Until then, use the working PyPI, GitHub native, GHCR, or Homebrew
+routes for RC evaluation; do not direct users to the RC.1 apt or npm routes.
 
 ## Release Family
 

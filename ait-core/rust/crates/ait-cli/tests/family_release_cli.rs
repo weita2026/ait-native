@@ -142,6 +142,62 @@ fn tar_gz_members(bytes: &[u8]) -> BTreeMap<String, Vec<u8>> {
         .collect()
 }
 
+fn tar_gz_directory_entries(bytes: &[u8]) -> BTreeMap<String, bool> {
+    let mut archive = Archive::new(GzDecoder::new(bytes));
+    archive
+        .entries()
+        .expect("read tar entries")
+        .map(|entry| {
+            let entry = entry.expect("valid tar entry");
+            let path = entry
+                .path()
+                .expect("valid tar path")
+                .to_string_lossy()
+                .into_owned();
+            (path, entry.header().entry_type().is_dir())
+        })
+        .collect()
+}
+
+fn assert_regular_file_parents_are_directories(bytes: &[u8]) {
+    let entries = tar_gz_directory_entries(bytes);
+    for (path, is_directory) in &entries {
+        if *is_directory {
+            continue;
+        }
+        let mut parent = Path::new(path).parent().map(Path::to_path_buf);
+        while let Some(directory) = parent {
+            if directory.as_os_str().is_empty() {
+                break;
+            }
+            let directory = directory.to_string_lossy();
+            assert_eq!(
+                entries.get(directory.as_ref()),
+                Some(&true),
+                "missing directory entry {directory:?} required by {path:?}"
+            );
+            parent = Path::new(directory.as_ref())
+                .parent()
+                .map(Path::to_path_buf);
+        }
+    }
+
+    let mut archive = Archive::new(GzDecoder::new(bytes));
+    let mut archive_mtime = None;
+    for entry in archive.entries().expect("read tar entries") {
+        let entry = entry.expect("valid tar entry");
+        let header = entry.header();
+        let mtime = header.mtime().expect("valid tar mtime");
+        assert_eq!(*archive_mtime.get_or_insert(mtime), mtime);
+        if header.entry_type().is_dir() {
+            assert_eq!(header.mode().expect("valid directory mode"), 0o755);
+            assert_eq!(header.uid().expect("valid directory uid"), 0);
+            assert_eq!(header.gid().expect("valid directory gid"), 0);
+            assert_eq!(header.size().expect("valid directory size"), 0);
+        }
+    }
+}
+
 fn zip_members(bytes: &[u8]) -> BTreeMap<String, Vec<u8>> {
     let mut archive = ZipArchive::new(Cursor::new(bytes)).expect("valid ZIP archive");
     let mut members = BTreeMap::new();
@@ -1428,7 +1484,30 @@ fn family_package_assembles_native_channels_without_endpoint_mutation() {
     assert!(control.contains("Version: 1.0.0~rc.1\n"));
     assert!(control.contains("Architecture: amd64\n"));
     assert_eq!(control_members.len(), 1);
+    assert_eq!(
+        tar_gz_directory_entries(&debian_members["control.tar.gz"]),
+        BTreeMap::from([("control".to_string(), false)])
+    );
     let data_members = tar_gz_members(&debian_members["data.tar.gz"]);
+    assert_regular_file_parents_are_directories(&debian_members["data.tar.gz"]);
+    let data_directories = tar_gz_directory_entries(&debian_members["data.tar.gz"]);
+    for directory in [
+        "usr",
+        "usr/bin",
+        "usr/lib",
+        "usr/lib/systemd",
+        "usr/lib/systemd/system",
+        "usr/share",
+        "usr/share/doc",
+        "usr/share/doc/ait-native",
+        "usr/share/doc/ait-native/licenses",
+    ] {
+        assert_eq!(
+            data_directories.get(directory),
+            Some(&true),
+            "missing directory entry {directory:?}"
+        );
+    }
     for path in [
         "usr/bin/ait",
         "usr/bin/ait-server",
@@ -1476,6 +1555,7 @@ fn family_package_assembles_native_channels_without_endpoint_mutation() {
     let runner_control_members = tar_gz_members(&runner_debian_members["control.tar.gz"]);
     assert_eq!(runner_control_members.len(), 1);
     let runner_data_members = tar_gz_members(&runner_debian_members["data.tar.gz"]);
+    assert_regular_file_parents_are_directories(&runner_debian_members["data.tar.gz"]);
     assert!(!runner_data_members.contains_key("usr/lib/systemd/system/ait-server.service"));
     let apt_product_evidence = apt["artifacts"]
         .as_array()
