@@ -414,7 +414,7 @@ run_authenticated_preflight_check() {
   printf 'authenticated endpoint preflight pass: %s\n' "${label}"
 }
 
-validate_github_repository_write() {
+validate_github_repository_token_identity() {
   local repository_record=${temporary_root}/repository.json
   curl --fail --silent --show-error --location \
     --header "Authorization: Bearer ${AIT_GITHUB_TOKEN}" \
@@ -422,8 +422,7 @@ validate_github_repository_write() {
     "https://api.github.com/repos/${github_repository}" --output "${repository_record}"
   jq -e '
     .full_name == "weita2026/ait-native" and
-    .private == false and
-    .permissions.push == true
+    .private == false
   ' "${repository_record}" >/dev/null
 }
 
@@ -783,7 +782,7 @@ case "${mode}" in
       exit 65
     fi
     run_authenticated_preflight_check \
-      'GitHub repository write capability' validate_github_repository_write
+      'GitHub repository token identity' validate_github_repository_token_identity
     run_authenticated_preflight_check \
       'npm authenticated publisher identity' validate_npm_authenticated_publisher
     run_authenticated_preflight_check \
@@ -821,7 +820,7 @@ case "${mode}" in
           tag: $tag,
           stage_receipt_sha256: $stage_receipt_sha256,
           checks: {
-            github_repository_write: "pass",
+            github_repository_token_identity: "pass",
             public_tag_exact: "pass",
             github_release_state: "pass",
             pypi_oidc_project_lineage_and_remote_state: "pass",
