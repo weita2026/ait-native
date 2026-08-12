@@ -180,6 +180,8 @@ async function validateProtectedWorkflows() {
     "control/ci/release_endpoint_remote.sh preflight",
     "control/release/endpoint-publication.rc1.json",
     "secrets.AIT_NPM_TOKEN",
+    "      - name: Publish npm implementation payloads and command envelope\n        continue-on-error: true",
+    "      - name: Complete independent endpoint readback",
     "secrets.AIT_HOMEBREW_DEPLOY_KEY",
     "secrets.AIT_APT_REPO_DEPLOY_KEY",
     "secrets.AIT_APT_SIGNING_KEY_B64",
@@ -193,6 +195,9 @@ async function validateProtectedWorkflows() {
     if (!publisher.includes(required)) {
       fail(`root endpoint publisher workflow must contain ${JSON.stringify(required)}`);
     }
+  }
+  if ((publisher.match(/^        continue-on-error: true$/gm) ?? []).length !== 1) {
+    fail("only the npm publication step may yield to independent endpoints");
   }
   for (const forbidden of [
     "cargo build",
