@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+repo_root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 product_document=${repo_root}/docs/distribution.md
 if [[ ! -e ${product_document} && ! -L ${product_document} ]]; then
   product_document=${repo_root}/../docs/distribution.md
@@ -40,23 +40,36 @@ if [[ ${AIT_RELEASE_MONOREPO_PUBLIC_LAYOUT_SELFTEST:-0} == 0 ]]; then
   mkdir -p \
     "${public_core}/ci" \
     "${public_core}/release" \
+    "${public_core}/release/oci" \
     "${public_core}/.github/workflows" \
     "${public_layout}/docs"
   cp "${repo_root}/ait-release-family.json" "${public_core}/ait-release-family.json"
   cp "${repo_root}/ci/release_monorepo_export.sh" \
     "${repo_root}/ci/release_monorepo_export_test.sh" \
     "${repo_root}/ci/release_protected_promotion.sh" \
+    "${repo_root}/ci/release_endpoint_publication.sh" \
+    "${repo_root}/ci/release_endpoint_publication_test.sh" \
+    "${repo_root}/ci/release_endpoint_remote.sh" \
     "${repo_root}/ci/release_monorepo_transform.mjs" \
     "${public_core}/ci/"
   cp -R "${repo_root}/release/monorepo" "${public_core}/release/monorepo"
+  cp "${repo_root}/release/endpoint-publication.rc1.json" \
+    "${public_core}/release/endpoint-publication.rc1.json"
+  cp "${repo_root}/release/oci/ait-server.Dockerfile" \
+    "${repo_root}/release/oci/ait-runner.Dockerfile" \
+    "${public_core}/release/oci/"
   cp "${repo_root}/.github/workflows/ait-release-component-receipts.yml" \
     "${public_core}/.github/workflows/ait-release-component-receipts.yml"
   cp "${repo_root}/.github/workflows/ait-release-protected-promotion.yml" \
     "${public_core}/.github/workflows/ait-release-protected-promotion.yml"
+  cp "${repo_root}/.github/workflows/pypi-publish.yml" \
+    "${public_core}/.github/workflows/pypi-publish.yml"
   cp "${product_document}" "${public_layout}/docs/distribution.md"
   AIT_RELEASE_MONOREPO_PUBLIC_LAYOUT_SELFTEST=1 \
     bash "${public_core}/ci/release_monorepo_export_test.sh" >/dev/null
 fi
+
+bash "${repo_root}/ci/release_endpoint_publication_test.sh" >/dev/null
 
 write_common_source() {
   local root=$1
@@ -370,9 +383,11 @@ expect_failure byte-policy-drift node \
   "${byte_policy_drift_output}/build-release.mjs" --validate-only
 root_workflow=${output_one}/.github/workflows/ait-release-component-receipts.yml
 promotion_workflow=${output_one}/.github/workflows/ait-release-protected-promotion.yml
+publisher_workflow=${output_one}/.github/workflows/pypi-publish.yml
 test -f "${root_workflow}"
 test -f "${promotion_workflow}"
-test "$(find "${output_one}/.github/workflows" -maxdepth 1 -type f | wc -l | tr -d '[:space:]')" = 2
+test -f "${publisher_workflow}"
+test "$(find "${output_one}/.github/workflows" -maxdepth 1 -type f | wc -l | tr -d '[:space:]')" = 3
 grep -F '    working-directory: ait-core' "${root_workflow}" >/dev/null
 grep -F '          path: ait-core/release-receipt-matrix.json' \
   "${root_workflow}" >/dev/null
@@ -382,6 +397,7 @@ if grep -F 'contents: write' "${root_workflow}" >/dev/null ||
   printf 'root protected workflow retained unsafe monorepo execution paths\n' >&2
   exit 65
 fi
+# shellcheck disable=SC2016
 for required_promotion_text in \
   'name: ait release protected promotion' \
   '      name: rc-promotion' \
@@ -391,6 +407,42 @@ for required_promotion_text in \
   'actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a'; do
   grep -F -- "${required_promotion_text}" "${promotion_workflow}" >/dev/null
 done
+
+for required_publisher_text in \
+  'name: ait release endpoint publication' \
+  '      name: pypi' \
+  'control/ci/release_endpoint_publication.sh' \
+  'control/ci/release_endpoint_remote.sh preflight' \
+  'control/release/endpoint-publication.rc1.json' \
+  'secrets.AIT_NPM_TOKEN' \
+  '        continue-on-error: true' \
+  '      - name: Complete independent endpoint readback' \
+  'pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33' \
+  'docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8' \
+  'docker logout ghcr.io'; do
+  grep -F -- "${required_publisher_text}" "${publisher_workflow}" >/dev/null
+done
+test "$(grep -c '^        continue-on-error: true$' "${publisher_workflow}")" = 1
+for forbidden_publisher_text in \
+  'cargo build' \
+  'maturin build' \
+  'npm run build' \
+  'wingetcreate submit' \
+  'winget-pkgs'; do
+  if grep -F -- "${forbidden_publisher_text}" "${publisher_workflow}" >/dev/null; then
+    printf 'endpoint publisher gained forbidden build or catalog behavior: %s\n' \
+      "${forbidden_publisher_text}" >&2
+    exit 65
+  fi
+done
+test -x "${output_one}/ci/release_endpoint_publication.sh"
+test -x "${output_one}/ci/release_endpoint_remote.sh"
+cmp "${repo_root}/release/endpoint-publication.rc1.json" \
+  "${output_one}/release/endpoint-publication.rc1.json"
+cmp "${repo_root}/release/oci/ait-server.Dockerfile" \
+  "${output_one}/release/oci/ait-server.Dockerfile"
+cmp "${repo_root}/release/oci/ait-runner.Dockerfile" \
+  "${output_one}/release/oci/ait-runner.Dockerfile"
 for forbidden_promotion_text in \
   'contents: write' \
   'packages: write' \

@@ -747,6 +747,49 @@ fn tar_gz_bytes(entries: &PackageEntries, epoch: u64) -> Result<Vec<u8>, String>
     encoder.finish().map_err(io_error)
 }
 
+fn tar_gz_bytes_with_parent_directories(
+    entries: &PackageEntries,
+    epoch: u64,
+) -> Result<Vec<u8>, String> {
+    let mut directories = BTreeSet::new();
+    for path in entries.keys() {
+        let path = safe_relative_path(path, "Archive member")?;
+        let components = path
+            .components()
+            .map(|component| component.as_os_str().to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        for end in 1..components.len() {
+            directories.insert(components[..end].join("/"));
+        }
+    }
+
+    let encoder = GzBuilder::new()
+        .mtime(epoch as u32)
+        .operating_system(255)
+        .write(Vec::new(), Compression::default());
+    let mut tar = TarBuilder::new(encoder);
+    for directory in directories {
+        if entries.contains_key(&directory) {
+            return Err(format!(
+                "Archive member {directory:?} cannot be both a regular file and a parent directory."
+            ));
+        }
+        let mut header = tar::Header::new_gnu();
+        header.set_entry_type(tar::EntryType::Directory);
+        header.set_size(0);
+        header.set_mode(0o755);
+        header.set_mtime(epoch);
+        header.set_uid(0);
+        header.set_gid(0);
+        header.set_cksum();
+        tar.append_data(&mut header, directory, Cursor::new([]))
+            .map_err(io_error)?;
+    }
+    append_tar_entries(&mut tar, entries, epoch)?;
+    let encoder = tar.into_inner().map_err(io_error)?;
+    encoder.finish().map_err(io_error)
+}
+
 fn zip_bytes(entries: &PackageEntries) -> Result<Vec<u8>, String> {
     let cursor = Cursor::new(Vec::new());
     let mut archive = ZipWriter::new(cursor);
@@ -1581,7 +1624,7 @@ fn assemble_apt(
             let control_entries =
                 BTreeMap::from([("control".to_string(), (control.into_bytes(), 0o644))]);
             let control_tar = tar_gz_bytes(&control_entries, input.epoch)?;
-            let data_tar = tar_gz_bytes(&data_entries, input.epoch)?;
+            let data_tar = tar_gz_bytes_with_parent_directories(&data_entries, input.epoch)?;
             let bytes = debian_archive_bytes(&control_tar, &data_tar, input.epoch)?;
             let filename = format!("{package_name}_{version}_{architecture}.deb");
             generated.push(GeneratedArtifact {
@@ -3198,6 +3241,22 @@ mod tests {
         assert!(read_npm_envelope_entries(&npm)
             .unwrap_err()
             .contains("regular files only"));
+    }
+
+    #[test]
+    fn debian_data_archive_rejects_unsafe_paths_and_file_directory_collisions() {
+        let unsafe_entries = BTreeMap::from([("../escape".to_string(), (Vec::new(), 0o644))]);
+        assert!(tar_gz_bytes_with_parent_directories(&unsafe_entries, 1)
+            .unwrap_err()
+            .contains("unsafe path"));
+
+        let colliding_entries = BTreeMap::from([
+            ("usr".to_string(), (Vec::new(), 0o644)),
+            ("usr/bin/ait".to_string(), (Vec::new(), 0o755)),
+        ]);
+        assert!(tar_gz_bytes_with_parent_directories(&colliding_entries, 1)
+            .unwrap_err()
+            .contains("both a regular file and a parent directory"));
     }
 
     #[test]
