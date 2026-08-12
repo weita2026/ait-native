@@ -287,6 +287,7 @@ jobs:
         run: echo 'AIT_STAGE_ATTESTATION_VERIFIED=true' >> "${GITHUB_ENV}"
 
       - name: Publish npm implementation payloads and command envelope
+        continue-on-error: true
         shell: bash
         env:
           AIT_NPM_TOKEN: ${{ secrets.AIT_NPM_TOKEN }}
