@@ -1,6 +1,5 @@
 #!/usr/bin/env node
 
-import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   copyFile,
@@ -14,9 +13,9 @@ import {
 import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { spawnNpmSync } from "../scripts/npm-command.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const NPM = process.platform === "win32" ? "npm.cmd" : "npm";
 const CONTRACT_PATH = path.join(ROOT, "lib", "npm-payload-contract.json");
 const LICENSE_PATH = path.join(ROOT, "LICENSE");
 const NOTICE_PATH = path.join(ROOT, "NOTICE");
@@ -257,7 +256,7 @@ async function validateInputs(contract, options) {
 }
 
 function runNpm(args) {
-  const result = spawnSync(NPM, args, {
+  const result = spawnNpmSync(args, {
     cwd: ROOT,
     encoding: "utf8",
     env: {
@@ -273,7 +272,7 @@ function runNpm(args) {
   }
   if (result.status !== 0) {
     fail(
-      `${NPM} ${args.join(" ")} failed with status ${result.status}\n${result.stdout}${result.stderr}`,
+      `npm ${args.join(" ")} failed with status ${result.status}\n${result.stdout}${result.stderr}`,
     );
   }
   return result;

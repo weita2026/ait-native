@@ -34,6 +34,7 @@
         "src/index.js",
         "src/runtime.js",
         "scripts/native-build.mjs",
+        "scripts/npm-command.mjs",
         "scripts/fixture-payloads.mjs",
         "scripts/installed-smoke.mjs",
         "release/npm-payload-package.mjs",

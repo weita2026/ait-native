@@ -15,11 +15,11 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import { npmInvocation, spawnNpmSync } from "../scripts/npm-command.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const PACKAGER = path.join(ROOT, "release", "npm-payload-package.mjs");
 const LOCAL_ADDON = path.join(ROOT, "native", "ait_napi.node");
-const NPM = process.platform === "win32" ? "npm.cmd" : "npm";
 const require = createRequire(import.meta.url);
 
 function sha256(bytes) {
@@ -39,6 +39,38 @@ function run(command, args, cwd = ROOT) {
     windowsHide: true,
   });
 }
+
+function runNpm(args, cwd = ROOT) {
+  return spawnNpmSync(args, {
+    cwd,
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      npm_config_audit: "false",
+      npm_config_fund: "false",
+      npm_config_update_notifier: "false",
+    },
+    windowsHide: true,
+  });
+}
+
+test("npm tooling invokes the JavaScript CLI instead of npm.cmd on Windows", () => {
+  const windows = npmInvocation(["test"], {
+    platform: "win32",
+    execPath: "C:\\node\\node.exe",
+    npmExecPath: "C:\\node\\node_modules\\npm\\bin\\npm-cli.js",
+  });
+  assert.deepEqual(windows, {
+    command: "C:\\node\\node.exe",
+    args: ["C:\\node\\node_modules\\npm\\bin\\npm-cli.js", "test"],
+  });
+  assert.doesNotMatch(windows.command, /npm\.cmd$/i);
+
+  assert.deepEqual(npmInvocation(["test"], { platform: "linux" }), {
+    command: "npm",
+    args: ["test"],
+  });
+});
 
 async function hostPayload() {
   const contract = JSON.parse(
@@ -96,7 +128,7 @@ test("ait-node builds and packages one exact direct addon for its native target"
   assert.equal(tarballEntry.isSymbolicLink(), false);
 
   const installRoot = path.join(root, "install");
-  const installed = run(NPM, [
+  const installed = runNpm([
     "install",
     "--ignore-scripts",
     "--offline",

@@ -18,6 +18,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createFixturePayloadTarballs } from "../scripts/fixture-payloads.mjs";
 import { hostTarget, nativeBuild, TARGETS } from "../scripts/native-build.mjs";
+import { spawnNpmSync } from "../scripts/npm-command.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const PACKAGE_NAME = "ait-native";
@@ -26,7 +27,6 @@ const PORTABLE_TARGET = "portable";
 const TARBALL_NAME = `${PACKAGE_NAME}-${PACKAGE_VERSION}.tgz`;
 const TARBALL_PATH = path.join(ROOT, "dist", TARBALL_NAME);
 const ADDON_OUTPUT_ROOT = path.join(ROOT, "dist", "npm-addons");
-const NPM = process.platform === "win32" ? "npm.cmd" : "npm";
 const require = createRequire(import.meta.url);
 
 function run(command, args, cwd = ROOT) {
@@ -47,6 +47,29 @@ function run(command, args, cwd = ROOT) {
   if (result.status !== 0) {
     throw new Error(
       `${command} ${args.join(" ")} failed with status ${result.status}\n${result.stdout}${result.stderr}`,
+    );
+  }
+  return result;
+}
+
+function runNpm(args, cwd = ROOT) {
+  const result = spawnNpmSync(args, {
+    cwd,
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      npm_config_audit: "false",
+      npm_config_fund: "false",
+      npm_config_update_notifier: "false",
+    },
+    windowsHide: true,
+  });
+  if (result.error !== undefined) {
+    throw result.error;
+  }
+  if (result.status !== 0) {
+    throw new Error(
+      `npm ${args.join(" ")} failed with status ${result.status}\n${result.stdout}${result.stderr}`,
     );
   }
   return result;
@@ -141,8 +164,8 @@ async function check(target, version) {
   await validateContract(target, version);
   const nativeTarget = target === PORTABLE_TARGET ? hostTarget() : target;
   await nativeBuild("build", nativeTarget);
-  run(NPM, ["test"]);
-  run(NPM, ["run", "check"]);
+  runNpm(["test"]);
+  runNpm(["run", "check"]);
   return {
     action: "check",
     package: `${PACKAGE_NAME}@${PACKAGE_VERSION}`,
@@ -170,7 +193,7 @@ async function buildPortable() {
     const readme = await readFile(path.join(ROOT, "release", "npm-readme.txt"));
     await writeFile(path.join(packageRoot, "README.md"), readme, { mode: 0o644 });
 
-    const dryRun = run(NPM, [
+    const dryRun = runNpm([
       "pack",
       "--ignore-scripts",
       "--dry-run",
@@ -211,7 +234,7 @@ async function buildPortable() {
       "portable npm envelope contains an implementation or release file",
     );
 
-    const packed = run(NPM, [
+    const packed = runNpm([
       "pack",
       "--ignore-scripts",
       "--json",
@@ -280,7 +303,7 @@ async function smokePortable(payloadContract) {
     const fixtureRoot = path.join(temporaryRoot, "addon");
     const [fixture] = await createFixturePayloadTarballs(fixtureRoot);
     await mkdir(installRoot, { recursive: true });
-    run(NPM, [
+    runNpm([
       "install",
       "--ignore-scripts",
       "--offline",
@@ -342,7 +365,7 @@ async function smokeAddon(target, payload) {
     path.join(os.tmpdir(), "ait-node-addon-smoke-"),
   );
   try {
-    run(NPM, [
+    runNpm([
       "install",
       "--ignore-scripts",
       "--offline",

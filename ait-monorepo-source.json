@@ -1,15 +1,15 @@
 {
   "schema": "ait.release.monorepo-source/v1",
   "public_source_identity": "weita2026/ait-native",
-  "coordinator_snapshot": "SNP-1A6FBF991DD2",
-  "coordinator_manifest_hash": "1a6fbf991dd2960153914a358cdb1043f74f4a635d9d8bd558136fa580fea25a",
-  "coordinator_created_at": "1786553714",
+  "coordinator_snapshot": "SNP-BD95FA270CA4",
+  "coordinator_manifest_hash": "bd95fa270ca4b5c5215ec1af4db1e3222124afcc958c4cde88c3d5d82da82d61",
+  "coordinator_created_at": "1786556063",
   "family_version": "1.0.0-rc.2",
   "family_tag": "v1.0.0-rc.2",
-  "family_manifest_sha256": "9eb9b44015b7012afb8c63eb2a6a9488fda48ce7f0f2cb2ce06281764fdab047",
-  "product_document_sha256": "aacddf92a2dae291ac9e45a820d2afed1ce1b016c7f43284b62a714752bfd619",
+  "family_manifest_sha256": "267d19c4bed7e7f12e560582edfbd34feb36bd2b6b1bd6f10b4e80e9f483dc6e",
+  "product_document_sha256": "a55580d22f6b6ce46a0a279492b69cb1d89b812e12fea564e1d45c29dbc72f3d",
   "content_digest_contract": "size-sha256-path/v1; excludes ait-monorepo-source.json",
-  "content_sha256": "4b35de5419c4b960da32ed47dd8ee1ef8e587219d1595dc215ae1f3fa7f401b6",
+  "content_sha256": "a5c1a1b062e51f048ece01366a63e51c232d29c2201a6a3a4098e11fbe008f45",
   "subtrees": [
     {
       "source_repository": "ait-core",
@@ -29,18 +29,18 @@
     },
     {
       "source_repository": "ait-node",
-      "source_snapshot": "SNP-603CCCCC25FC",
-      "source_manifest_hash": "603ccccc25fcb950839de7234002495f8ca0b877710d182551c646838df66a30",
-      "source_snapshot_created_at": "1786553466",
+      "source_snapshot": "SNP-FE639008B7F7",
+      "source_manifest_hash": "fe639008b7f75773c40d554f9455933ec43783e93a4d2532769344a288cfa276",
+      "source_snapshot_created_at": "1786555815",
       "path": "ait-node",
       "license": "Apache-2.0",
       "components": [
         "ait-node"
       ],
       "transforms": [],
-      "source_cache_evidence_sha256": "00771004875155510aa38a9d3d6a3af8daa71dc01c36cdd308edd6e74c6504b6",
-      "source_content_sha256": "d5ae3bfde1b9ea97f66caa005724b848cc48bc091e2b0e6f7a3c2c7ceb338096",
-      "exported_content_sha256": "d5ae3bfde1b9ea97f66caa005724b848cc48bc091e2b0e6f7a3c2c7ceb338096"
+      "source_cache_evidence_sha256": "93472b51201fd4eedf6f9ab4c126dc748f70d6cb9e412456e47b24062f4981d7",
+      "source_content_sha256": "a072fa66d86077faa0a82a8b6c2bbe568a0393a83fead7dabbebff2a602c9416",
+      "exported_content_sha256": "a072fa66d86077faa0a82a8b6c2bbe568a0393a83fead7dabbebff2a602c9416"
     },
     {
       "source_repository": "ait-python",

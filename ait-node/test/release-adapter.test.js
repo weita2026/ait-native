@@ -56,6 +56,7 @@ test("release adapter declares the portable envelope and six native addons", asy
     "release/npm-payload-package.mjs",
     "release/npm-readme.txt",
     "scripts/native-build.mjs",
+    "scripts/npm-command.mjs",
     "scripts/fixture-payloads.mjs",
   ]) {
     assert.equal(component.dependency_files.includes(dependency), true);
@@ -88,7 +89,7 @@ test("release tools are registry-inert and package direct addon fixtures", async
     path.join(ROOT, "release", "npm-payload-package.mjs"),
     "utf8",
   );
-  assert.doesNotMatch(adapter, /shell\s*:/);
+  assert.doesNotMatch(adapter, /npm\.cmd/);
   assert.doesNotMatch(`${adapter}\n${packager}`, /npm\s+publish/i);
   assert.doesNotMatch(`${adapter}\n${packager}`, /https?:\/\//);
   assert.match(adapter, /--ignore-scripts/);
