@@ -660,6 +660,30 @@ function run(command, args, cwd = ROOT, extraEnv = {}) {
   }
 }
 
+function runCaptured(command, args, cwd = ROOT, extraEnv = {}) {
+  const result = spawnSync(command, args, {
+    cwd,
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      CARGO_INCREMENTAL: "0",
+      npm_config_audit: "false",
+      npm_config_fund: "false",
+      npm_config_update_notifier: "false",
+      ...extraEnv,
+    },
+    stdio: ["ignore", "pipe", "inherit"],
+    windowsHide: true,
+  });
+  if (result.error !== undefined) {
+    throw result.error;
+  }
+  if (result.status !== 0) {
+    fail(`${command} ${args.join(" ")} failed with status ${result.status}`);
+  }
+  return result.stdout;
+}
+
 function hostTarget() {
   const key = `${process.platform}/${process.arch}`;
   const targets = new Map([
@@ -1347,10 +1371,47 @@ async function build({ family, mapping }, skipTests) {
   }
   const npmOutput = path.join(OUTPUT_ROOT, target, "npm");
   await mkdir(npmOutput, { recursive: true });
-  run("npm", [
-    "pack", "--ignore-scripts", "--pack-destination", npmOutput,
+  const nodeAdapter = path.join(nodeRoot, "release", "release-adapter.mjs");
+  const portableArtifactRelative = `dist/ait-native-${family.family.version}.tgz`;
+  let portableArtifact;
+  try {
+    portableArtifact = JSON.parse(
+      runCaptured(
+        "node",
+        [nodeAdapter, "build", "portable", family.family.version],
+        nodeRoot,
+      ),
+    );
+  } catch (error) {
+    fail(`portable npm adapter returned invalid evidence: ${error.message}`);
+  }
+  if (
+    portableArtifact?.action !== "build" ||
+    portableArtifact?.artifact !== portableArtifactRelative ||
+    portableArtifact?.status !== "pass" ||
+    portableArtifact?.target !== "portable" ||
+    typeof portableArtifact?.sha256 !== "string" ||
+    !/^[0-9a-f]{64}$/u.test(portableArtifact.sha256) ||
+    !Number.isSafeInteger(portableArtifact?.size_bytes) ||
+    portableArtifact.size_bytes <= 0
+  ) {
+    fail("portable npm adapter evidence does not match the exact local source-build artifact");
+  }
+  const portableArtifactSource = path.join(
     nodeRoot,
-  ]);
+    ...portableArtifactRelative.split("/"),
+  );
+  const portableArtifactBytes = await readFile(portableArtifactSource);
+  if (
+    portableArtifactBytes.length !== portableArtifact.size_bytes ||
+    sha256(portableArtifactBytes) !== portableArtifact.sha256
+  ) {
+    fail("portable npm adapter artifact differs from its reported digest or size");
+  }
+  await copyFile(
+    portableArtifactSource,
+    path.join(npmOutput, path.basename(portableArtifactRelative)),
+  );
 
   const payloadTool = path.join(ROOT, "ait-node", "release", "npm-payload-package.mjs");
   run("node", [

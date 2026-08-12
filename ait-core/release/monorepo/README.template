@@ -81,9 +81,10 @@ artifacts.
 
 For Node.js, `import { NativeRuntime, AgentClient } from "ait-native"` loads the
 package-owned `native/ait_napi.node` in the current process. The npm `ait`
-command calls the same Rust binding through `NativeRuntime.runCli()`; it does
-not locate or launch a child executable. `ait-server` is intentionally not an
-npm command and remains available through the declared native/server channels.
+command calls the same Rust binding through `NativeRuntime.runCli()`. It
+does not locate or launch a child executable. `ait-server` is intentionally
+not an npm command and remains available through the declared native/server
+channels.
 
 The detailed package, source, build, and mixed-license contract is centralized
 in [`docs/distribution.md`](docs/distribution.md). Each component subtree also

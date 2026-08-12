@@ -1,21 +1,21 @@
 {
   "schema": "ait.release.monorepo-source/v1",
   "public_source_identity": "weita2026/ait-native",
-  "coordinator_snapshot": "SNP-4D8A3DA8FE1D",
-  "coordinator_manifest_hash": "4d8a3da8fe1d3495452b431e1351e748727881a5e5d8534d0138b17f2e30f63a",
-  "coordinator_created_at": "1786552098",
+  "coordinator_snapshot": "SNP-1A6FBF991DD2",
+  "coordinator_manifest_hash": "1a6fbf991dd2960153914a358cdb1043f74f4a635d9d8bd558136fa580fea25a",
+  "coordinator_created_at": "1786553714",
   "family_version": "1.0.0-rc.2",
   "family_tag": "v1.0.0-rc.2",
-  "family_manifest_sha256": "9c0af64b38b4aa183e2c1a9dadc784239d5c250ce7eec3eae541dff6360ddb01",
-  "product_document_sha256": "b540f3dadb144dbaa6149fdc10bbc4fa0920f72462af0d4958ddaef9e7208377",
+  "family_manifest_sha256": "9eb9b44015b7012afb8c63eb2a6a9488fda48ce7f0f2cb2ce06281764fdab047",
+  "product_document_sha256": "aacddf92a2dae291ac9e45a820d2afed1ce1b016c7f43284b62a714752bfd619",
   "content_digest_contract": "size-sha256-path/v1; excludes ait-monorepo-source.json",
-  "content_sha256": "c328618b903f1669bf267d56d6964c37da80c9e9b59665c07f20c04cc2a1d9d0",
+  "content_sha256": "4b35de5419c4b960da32ed47dd8ee1ef8e587219d1595dc215ae1f3fa7f401b6",
   "subtrees": [
     {
       "source_repository": "ait-core",
-      "source_snapshot": "SNP-AFCEA70F3C0D",
-      "source_manifest_hash": "afcea70f3c0d9760081349a5965fbe432236d6932d4284d56a30996194478886",
-      "source_snapshot_created_at": "1786547980",
+      "source_snapshot": "SNP-4D8A3DA8FE1D",
+      "source_manifest_hash": "4d8a3da8fe1d3495452b431e1351e748727881a5e5d8534d0138b17f2e30f63a",
+      "source_snapshot_created_at": "1786552098",
       "path": "ait-core",
       "license": "Apache-2.0",
       "components": [
@@ -23,24 +23,24 @@
         "ait-agent"
       ],
       "transforms": [],
-      "source_cache_evidence_sha256": "8b68db285212c7302826e19bda5575a66143725609bc0e1c473b779f101d210a",
-      "source_content_sha256": "75e2e9b379948d7479b325a1ed586c4f780eea9c5f664fd39f3f1bb95db7b777",
-      "exported_content_sha256": "75e2e9b379948d7479b325a1ed586c4f780eea9c5f664fd39f3f1bb95db7b777"
+      "source_cache_evidence_sha256": "c3730cf7ea024626a71d205313392f5568d77d7a1ade6a2f642c843dcc62323e",
+      "source_content_sha256": "8f33d4eeae11194f721c041b24f7ab317e6aa6b28c87e53261e6f20ba7696f99",
+      "exported_content_sha256": "8f33d4eeae11194f721c041b24f7ab317e6aa6b28c87e53261e6f20ba7696f99"
     },
     {
       "source_repository": "ait-node",
-      "source_snapshot": "SNP-5D582EC8678F",
-      "source_manifest_hash": "5d582ec8678f95974519282d394286588481ff1d72d553e656d3ebfce0bfde18",
-      "source_snapshot_created_at": "1786551020",
+      "source_snapshot": "SNP-603CCCCC25FC",
+      "source_manifest_hash": "603ccccc25fcb950839de7234002495f8ca0b877710d182551c646838df66a30",
+      "source_snapshot_created_at": "1786553466",
       "path": "ait-node",
       "license": "Apache-2.0",
       "components": [
         "ait-node"
       ],
       "transforms": [],
-      "source_cache_evidence_sha256": "e1d9a3f2573aec449706b05bbd9ac9962413021682c28c3260ece5e917ea8c3f",
-      "source_content_sha256": "25164424f0a998d7f37d8283f6125c807d1f0ed00ec61aaa4914b96e41ef43a8",
-      "exported_content_sha256": "25164424f0a998d7f37d8283f6125c807d1f0ed00ec61aaa4914b96e41ef43a8"
+      "source_cache_evidence_sha256": "00771004875155510aa38a9d3d6a3af8daa71dc01c36cdd308edd6e74c6504b6",
+      "source_content_sha256": "d5ae3bfde1b9ea97f66caa005724b848cc48bc091e2b0e6f7a3c2c7ceb338096",
+      "exported_content_sha256": "d5ae3bfde1b9ea97f66caa005724b848cc48bc091e2b0e6f7a3c2c7ceb338096"
     },
     {
       "source_repository": "ait-python",
