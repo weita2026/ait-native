@@ -45,11 +45,14 @@ if [[ ${AIT_RELEASE_MONOREPO_PUBLIC_LAYOUT_SELFTEST:-0} == 0 ]]; then
   cp "${repo_root}/ait-release-family.json" "${public_core}/ait-release-family.json"
   cp "${repo_root}/ci/release_monorepo_export.sh" \
     "${repo_root}/ci/release_monorepo_export_test.sh" \
+    "${repo_root}/ci/release_protected_promotion.sh" \
     "${repo_root}/ci/release_monorepo_transform.mjs" \
     "${public_core}/ci/"
   cp -R "${repo_root}/release/monorepo" "${public_core}/release/monorepo"
   cp "${repo_root}/.github/workflows/ait-release-component-receipts.yml" \
     "${public_core}/.github/workflows/ait-release-component-receipts.yml"
+  cp "${repo_root}/.github/workflows/ait-release-protected-promotion.yml" \
+    "${public_core}/.github/workflows/ait-release-protected-promotion.yml"
   cp "${product_document}" "${public_layout}/docs/distribution.md"
   AIT_RELEASE_MONOREPO_PUBLIC_LAYOUT_SELFTEST=1 \
     bash "${public_core}/ci/release_monorepo_export_test.sh" >/dev/null
@@ -127,6 +130,7 @@ for repository in ait-core ait-server ait-runner ait-python ait-node; do
   case "${repository}" in
     ait-core)
       mkdir -p "${source}/rust/crates/ait-py" "${source}/docs"
+      cp "${repo_root}/ci/release_protected_promotion.sh" "${source}/ci/"
       printf '[workspace]\nmembers = ["crates/ait-py"]\n' >"${source}/rust/Cargo.toml"
       printf '[package]\nname = "ait-py"\nversion = "1.0.0-rc.1"\n' \
         >"${source}/rust/crates/ait-py/Cargo.toml"
@@ -365,8 +369,10 @@ printf '* text=auto\n' >"${byte_policy_drift_output}/.gitattributes"
 expect_failure byte-policy-drift node \
   "${byte_policy_drift_output}/build-release.mjs" --validate-only
 root_workflow=${output_one}/.github/workflows/ait-release-component-receipts.yml
+promotion_workflow=${output_one}/.github/workflows/ait-release-protected-promotion.yml
 test -f "${root_workflow}"
-test "$(find "${output_one}/.github/workflows" -maxdepth 1 -type f | wc -l | tr -d '[:space:]')" = 1
+test -f "${promotion_workflow}"
+test "$(find "${output_one}/.github/workflows" -maxdepth 1 -type f | wc -l | tr -d '[:space:]')" = 2
 grep -F '    working-directory: ait-core' "${root_workflow}" >/dev/null
 grep -F '          path: ait-core/release-receipt-matrix.json' \
   "${root_workflow}" >/dev/null
@@ -376,6 +382,29 @@ if grep -F 'contents: write' "${root_workflow}" >/dev/null ||
   printf 'root protected workflow retained unsafe monorepo execution paths\n' >&2
   exit 65
 fi
+for required_promotion_text in \
+  'name: ait release protected promotion' \
+  '      name: rc-promotion' \
+  'artifact-ids: ${{ inputs.dossier_artifact_id }}' \
+  'bash control/ait-core/ci/release_protected_promotion.sh' \
+  'actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a'; do
+  grep -F -- "${required_promotion_text}" "${promotion_workflow}" >/dev/null
+done
+for forbidden_promotion_text in \
+  'contents: write' \
+  'packages: write' \
+  'secrets.' \
+  'gh release create' \
+  'npm publish' \
+  'twine upload' \
+  'docker push' \
+  'oras push'; do
+  if grep -F -- "${forbidden_promotion_text}" "${promotion_workflow}" >/dev/null; then
+    printf 'protected promotion workflow gained publication authority: %s\n' \
+      "${forbidden_promotion_text}" >&2
+    exit 65
+  fi
+done
 
 workflow_drift_output=${temporary_root}/workflow-drift-output
 cp -R "${output_one}" "${workflow_drift_output}"
@@ -385,6 +414,15 @@ node "${repo_root}/ci/release_monorepo_transform.mjs" \
   '    working-directory: .'
 expect_failure workflow-drift node \
   "${workflow_drift_output}/build-release.mjs" --validate-only
+
+promotion_workflow_drift_output=${temporary_root}/promotion-workflow-drift-output
+cp -R "${output_one}" "${promotion_workflow_drift_output}"
+node "${repo_root}/ci/release_monorepo_transform.mjs" \
+  "${promotion_workflow_drift_output}/.github/workflows/ait-release-protected-promotion.yml" \
+  '      name: rc-promotion' \
+  '      name: unprotected'
+expect_failure promotion-workflow-drift node \
+  "${promotion_workflow_drift_output}/build-release.mjs" --validate-only
 
 wrong_snapshot_bundles=${temporary_root}/wrong-snapshot-bundles
 cp -R "${bundles}" "${wrong_snapshot_bundles}"

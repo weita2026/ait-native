@@ -1,0 +1,214 @@
+name: ait release protected promotion
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_run_id:
+        description: Exact successful component-receipt workflow run ID
+        required: true
+        type: string
+      source_run_attempt:
+        description: Exact component-receipt workflow run attempt
+        required: true
+        type: string
+      dossier_artifact_id:
+        description: Exact frozen family dossier artifact ID from the source run
+        required: true
+        type: string
+      dossier_artifact_digest:
+        description: Exact sha256-prefixed GitHub dossier artifact digest
+        required: true
+        type: string
+      release_id:
+        description: Exact REL-FAM identity
+        required: true
+        type: string
+      tag:
+        description: Exact public family tag
+        required: true
+        type: string
+      source_commit:
+        description: Exact public Git commit selected by the frozen dossier
+        required: true
+        type: string
+      coordinator_snapshot:
+        description: Exact coordinator Snapshot selected by the frozen dossier
+        required: true
+        type: string
+      frozen_manifest_sha256:
+        description: Approved exact frozen family manifest SHA-256
+        required: true
+        type: string
+      checksum_sha256:
+        description: Approved exact frozen SHA256SUMS SHA-256
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  attestations: write
+  contents: read
+  id-token: write
+
+concurrency:
+  group: ait-release-protected-promotion-${{ inputs.release_id }}-${{ inputs.frozen_manifest_sha256 }}
+  cancel-in-progress: false
+
+jobs:
+  authorize:
+    name: Authorize exact frozen bytes without publishing
+    environment:
+      name: rc-promotion
+    runs-on: ubuntu-22.04
+    timeout-minutes: 25
+    steps:
+      - name: Check out the reviewed release-control source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          path: control
+          persist-credentials: false
+
+      - name: Validate immutable dispatch and source-run authority
+        shell: bash
+        env:
+          AIT_GITHUB_TOKEN: ${{ github.token }}
+          AIT_RELEASE_CHECKSUM_SHA256: ${{ inputs.checksum_sha256 }}
+          AIT_RELEASE_COORDINATOR_SNAPSHOT: ${{ inputs.coordinator_snapshot }}
+          AIT_RELEASE_DOSSIER_ARTIFACT_DIGEST: ${{ inputs.dossier_artifact_digest }}
+          AIT_RELEASE_DOSSIER_ARTIFACT_ID: ${{ inputs.dossier_artifact_id }}
+          AIT_RELEASE_FROZEN_MANIFEST_SHA256: ${{ inputs.frozen_manifest_sha256 }}
+          AIT_RELEASE_GIT_COMMIT: ${{ inputs.source_commit }}
+          AIT_RELEASE_ID: ${{ inputs.release_id }}
+          AIT_RELEASE_REPOSITORY: ${{ github.repository }}
+          AIT_RELEASE_SOURCE_RUN_ATTEMPT: ${{ inputs.source_run_attempt }}
+          AIT_RELEASE_SOURCE_RUN_ID: ${{ inputs.source_run_id }}
+          AIT_RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          [[ "${AIT_RELEASE_REPOSITORY}" == "weita2026/ait-native" ]]
+          [[ "${AIT_RELEASE_ID}" =~ ^REL-FAM-[0-9A-F]{16}$ ]]
+          [[ "${AIT_RELEASE_TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-rc\.[0-9]+$ ]]
+          [[ "${AIT_RELEASE_GIT_COMMIT}" =~ ^[0-9a-f]{40}$ ]]
+          [[ "${AIT_RELEASE_COORDINATOR_SNAPSHOT}" =~ ^SNP-[0-9A-F]{12}$ ]]
+          [[ "${AIT_RELEASE_FROZEN_MANIFEST_SHA256}" =~ ^[0-9a-f]{64}$ ]]
+          [[ "${AIT_RELEASE_CHECKSUM_SHA256}" =~ ^[0-9a-f]{64}$ ]]
+          [[ "${AIT_RELEASE_SOURCE_RUN_ID}" =~ ^[1-9][0-9]*$ ]]
+          [[ "${AIT_RELEASE_SOURCE_RUN_ATTEMPT}" =~ ^[1-9][0-9]*$ ]]
+          [[ "${AIT_RELEASE_DOSSIER_ARTIFACT_ID}" =~ ^[1-9][0-9]*$ ]]
+          [[ "${AIT_RELEASE_DOSSIER_ARTIFACT_DIGEST}" =~ ^sha256:[0-9a-f]{64}$ ]]
+
+          run_record="${RUNNER_TEMP}/source-run.json"
+          artifact_record="${RUNNER_TEMP}/dossier-artifact.json"
+          curl --fail --silent --show-error \
+            --header "Authorization: Bearer ${AIT_GITHUB_TOKEN}" \
+            --header 'Accept: application/vnd.github+json' \
+            --header 'X-GitHub-Api-Version: 2022-11-28' \
+            "https://api.github.com/repos/${AIT_RELEASE_REPOSITORY}/actions/runs/${AIT_RELEASE_SOURCE_RUN_ID}" \
+            --output "${run_record}"
+          jq -e \
+            --argjson run_id "${AIT_RELEASE_SOURCE_RUN_ID}" \
+            --argjson run_attempt "${AIT_RELEASE_SOURCE_RUN_ATTEMPT}" \
+            --arg commit "${AIT_RELEASE_GIT_COMMIT}" '
+              .id == $run_id and
+              .run_attempt == $run_attempt and
+              .name == "ait release component receipts" and
+              .path == ".github/workflows/ait-release-component-receipts.yml" and
+              .event == "workflow_dispatch" and
+              .status == "completed" and
+              .conclusion == "success" and
+              .head_sha == $commit
+            ' "${run_record}" >/dev/null
+
+          curl --fail --silent --show-error \
+            --header "Authorization: Bearer ${AIT_GITHUB_TOKEN}" \
+            --header 'Accept: application/vnd.github+json' \
+            --header 'X-GitHub-Api-Version: 2022-11-28' \
+            "https://api.github.com/repos/${AIT_RELEASE_REPOSITORY}/actions/artifacts/${AIT_RELEASE_DOSSIER_ARTIFACT_ID}" \
+            --output "${artifact_record}"
+          jq -e \
+            --arg name "ait-family-dossier-${AIT_RELEASE_ID}" \
+            --arg digest "${AIT_RELEASE_DOSSIER_ARTIFACT_DIGEST}" \
+            --argjson artifact_id "${AIT_RELEASE_DOSSIER_ARTIFACT_ID}" \
+            --argjson run_id "${AIT_RELEASE_SOURCE_RUN_ID}" '
+              .id == $artifact_id and
+              .name == $name and
+              .digest == $digest and
+              .expired == false and
+              .workflow_run.id == $run_id
+            ' "${artifact_record}" >/dev/null
+
+      - name: Download the exact frozen family dossier
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          artifact-ids: ${{ inputs.dossier_artifact_id }}
+          github-token: ${{ github.token }}
+          path: dossier
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.source_run_id }}
+
+      - name: Read the selected public tag anonymously
+        shell: bash
+        env:
+          AIT_RELEASE_GIT_COMMIT: ${{ inputs.source_commit }}
+          AIT_RELEASE_REPOSITORY: ${{ github.repository }}
+          AIT_RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          public_url="https://github.com/${AIT_RELEASE_REPOSITORY}.git"
+          tag_rows="${RUNNER_TEMP}/tag-rows"
+          GIT_ASKPASS=/usr/bin/false GIT_TERMINAL_PROMPT=0 \
+            git -c credential.helper= ls-remote --tags "${public_url}" \
+              "${AIT_RELEASE_TAG}" "${AIT_RELEASE_TAG}^{}" >"${tag_rows}"
+          test "$(wc -l <"${tag_rows}" | tr -d '[:space:]')" = 2
+          test "$(awk -v ref="refs/tags/${AIT_RELEASE_TAG}^{}" '$2 == ref {print $1}' "${tag_rows}")" = \
+            "${AIT_RELEASE_GIT_COMMIT}"
+          GIT_ASKPASS=/usr/bin/false GIT_TERMINAL_PROMPT=0 \
+            git -c credential.helper= clone --quiet --depth 1 \
+              --branch "${AIT_RELEASE_TAG}" "${public_url}" tagged-source
+          test "$(git -C tagged-source rev-parse HEAD)" = "${AIT_RELEASE_GIT_COMMIT}"
+          test "$(git -C tagged-source rev-list -n 1 "refs/tags/${AIT_RELEASE_TAG}")" = \
+            "${AIT_RELEASE_GIT_COMMIT}"
+          test -z "$(git -C tagged-source status --porcelain --untracked-files=all)"
+
+      - name: Verify and authorize the exact recorded bytes
+        shell: bash
+        env:
+          AIT_RELEASE_AUTHORIZATION_REF: ${{ github.workflow_ref }}
+          AIT_RELEASE_AUTHORIZATION_RUN_ATTEMPT: ${{ github.run_attempt }}
+          AIT_RELEASE_AUTHORIZATION_RUN_ID: ${{ github.run_id }}
+          AIT_RELEASE_AUTHORIZATION_SHA: ${{ github.sha }}
+          AIT_RELEASE_CHECKSUM_SHA256: ${{ inputs.checksum_sha256 }}
+          AIT_RELEASE_COORDINATOR_SNAPSHOT: ${{ inputs.coordinator_snapshot }}
+          AIT_RELEASE_DOSSIER_ARTIFACT_DIGEST: ${{ inputs.dossier_artifact_digest }}
+          AIT_RELEASE_DOSSIER_ARTIFACT_ID: ${{ inputs.dossier_artifact_id }}
+          AIT_RELEASE_FROZEN_MANIFEST_SHA256: ${{ inputs.frozen_manifest_sha256 }}
+          AIT_RELEASE_GIT_COMMIT: ${{ inputs.source_commit }}
+          AIT_RELEASE_ID: ${{ inputs.release_id }}
+          AIT_RELEASE_PROTECTED_ENVIRONMENT: rc-promotion
+          AIT_RELEASE_REPOSITORY: ${{ github.repository }}
+          AIT_RELEASE_SOURCE_RUN_ATTEMPT: ${{ inputs.source_run_attempt }}
+          AIT_RELEASE_SOURCE_RUN_ID: ${{ inputs.source_run_id }}
+          AIT_RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          mkdir protected-promotion
+          bash control/ait-core/ci/release_protected_promotion.sh \
+            "${GITHUB_WORKSPACE}/dossier" \
+            "${GITHUB_WORKSPACE}/tagged-source" \
+            "${GITHUB_WORKSPACE}/protected-promotion/ait-release.protected-promotion.json"
+
+      - name: Attest the protected authorization evidence
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
+        with:
+          subject-path: protected-promotion/ait-release.protected-promotion.json
+
+      - name: Upload the protected authorization evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ait-protected-promotion-${{ inputs.release_id }}
+          path: protected-promotion/ait-release.protected-promotion.json
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 90

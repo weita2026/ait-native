@@ -20,7 +20,8 @@ product_document=${repo_root}/docs/distribution.md
 if [[ ! -e ${product_document} && ! -L ${product_document} ]]; then
   product_document=${repo_root}/../docs/distribution.md
 fi
-protected_workflow=${repo_root}/.github/workflows/ait-release-component-receipts.yml
+receipt_workflow=${repo_root}/.github/workflows/ait-release-component-receipts.yml
+promotion_workflow=${repo_root}/.github/workflows/ait-release-protected-promotion.yml
 coordinator_snapshot=${AIT_RELEASE_COORDINATOR_SNAPSHOT:?AIT_RELEASE_COORDINATOR_SNAPSHOT is required}
 coordinator_manifest_hash=${AIT_RELEASE_COORDINATOR_MANIFEST_HASH:?AIT_RELEASE_COORDINATOR_MANIFEST_HASH is required}
 coordinator_created_at=${AIT_RELEASE_COORDINATOR_CREATED_AT:?AIT_RELEASE_COORDINATOR_CREATED_AT is required}
@@ -71,7 +72,8 @@ if [[ ! -d ${template_root} || -L ${template_root} ||
   ! -f ${git_attributes_template} || -L ${git_attributes_template} ||
   ! -f ${transform_tool} || -L ${transform_tool} ||
   ! -f ${product_document} || -L ${product_document} ||
-  ! -f ${protected_workflow} || -L ${protected_workflow} ]]; then
+  ! -f ${receipt_workflow} || -L ${receipt_workflow} ||
+  ! -f ${promotion_workflow} || -L ${promotion_workflow} ]]; then
   printf 'monorepo release templates or transform tool are unavailable\n' >&2
   exit 66
 fi
@@ -347,14 +349,16 @@ cp "${family_manifest}" "${staging}/ait-release-family.json"
 cp "${product_document}" "${staging}/docs/distribution.md"
 cp "${staging}/ait-core/LICENSE" "${staging}/LICENSES/Apache-2.0.txt"
 cp "${staging}/ait-server/LICENSE" "${staging}/LICENSES/AGPL-3.0-only.txt"
-root_workflow=${staging}/.github/workflows/ait-release-component-receipts.yml
-cp "${protected_workflow}" "${root_workflow}"
+root_receipt_workflow=${staging}/.github/workflows/ait-release-component-receipts.yml
+root_promotion_workflow=${staging}/.github/workflows/ait-release-protected-promotion.yml
+cp "${receipt_workflow}" "${root_receipt_workflow}"
+cp "${promotion_workflow}" "${root_promotion_workflow}"
 node "${transform_tool}" \
-  "${root_workflow}" \
+  "${root_receipt_workflow}" \
   $'permissions:\n  contents: read\n\nconcurrency:' \
   $'permissions:\n  contents: read\n\ndefaults:\n  run:\n    working-directory: ait-core\n\nconcurrency:'
 node "${transform_tool}" \
-  "${root_workflow}" \
+  "${root_receipt_workflow}" \
   '          path: release-receipt-matrix.json' \
   '          path: ait-core/release-receipt-matrix.json'
 find "${staging}" -type d -exec chmod 0755 {} +
@@ -368,7 +372,8 @@ chmod 0644 \
   "${staging}/docs/distribution.md" \
   "${staging}/LICENSES/Apache-2.0.txt" \
   "${staging}/LICENSES/AGPL-3.0-only.txt" \
-  "${root_workflow}"
+  "${root_receipt_workflow}" \
+  "${root_promotion_workflow}"
 chmod 0755 "${staging}/build-release.sh" "${staging}/build-release.mjs"
 
 content_sha256=$(tree_digest "${staging}" monorepo-content)
