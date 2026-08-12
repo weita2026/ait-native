@@ -40,19 +40,31 @@ project_root="$ci_root/project"
 cp -R \
   "$repo_root/package.json" \
   "$repo_root/ait-release.json" \
+  "$repo_root/ait-external.toml" \
+  "$repo_root/ait-external.lock" \
   "$repo_root/LICENSE" \
   "$repo_root/NOTICE" \
   "$repo_root/bin" \
   "$repo_root/lib" \
   "$repo_root/release" \
   "$repo_root/scripts" \
+  "$repo_root/src" \
   "$repo_root/test" \
   "$repo_root/ci" \
   "$project_root/"
 
 cd "$project_root"
+external_core=${AIT_EXTERNAL_CORE_REPO_ROOT:-$repo_root/.ait-external/ait-core}
+if [ ! -f "$external_core/.ait-external-marker.json" ]; then
+  printf '%s\n' "ait-node CI requires the exact materialized ait-core external" >&2
+  exit 1
+fi
+node -e 'const fs=require("node:fs");const marker=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));if(marker.name!=="ait-core"||marker.snapshot!=="SNP-AFCEA70F3C0D"){throw new Error("ait-core external marker identity drift")}' "$external_core/.ait-external-marker.json"
+mkdir -p .ait-external
+ln -s "$external_core" .ait-external/ait-core
+bash ci/generate_notice.sh --check
+npm run native:build
 npm test
 npm run check
-npm pack --ignore-scripts --dry-run "$project_root"
-node release/release-adapter.mjs build portable 1.0.0-rc.1
-node release/release-adapter.mjs smoke portable 1.0.0-rc.1
+node release/release-adapter.mjs build portable 1.0.0-rc.2
+node release/release-adapter.mjs smoke portable 1.0.0-rc.2

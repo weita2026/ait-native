@@ -8,11 +8,11 @@
       "plane": "patchset",
       "default_blocking": true,
       "mode": "gate",
-      "purpose": "Validate the language-neutral npm CLI package, clean installation, and native command behavior before remote land.",
+      "purpose": "Build and validate the direct Node-API package, clean installation, Rust API calls, and embedded ait command before remote land.",
       "runner": {
         "kind": "command_bundle",
         "commands": [
-          "./ci/run.sh patchset"
+          "./ci/run"
         ]
       },
       "artifacts": {

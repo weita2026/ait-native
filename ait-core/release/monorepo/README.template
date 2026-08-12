@@ -4,7 +4,7 @@ AIT is a language-neutral, agent-first workflow for repository changes.
 Initialize AIT once, then tell your coding agent what outcome you want. AIT
 does not identify the repository's programming language or project type.
 
-This is the public `v1.0.0-rc.1` source tree. One tag contains the exact
+This is the public `v1.0.0-rc.2` source tree. One tag contains the exact
 exported source of `ait-core`, `ait-server`, `ait-runner`, `ait-python`, and
 `ait-node`; their AIT Snapshot mapping is recorded in
 `ait-monorepo-source.json`.
@@ -73,11 +73,17 @@ On Windows PowerShell:
 .\build-release.ps1
 ```
 
-The build produces local native commands, a Python wheel, the npm command
-envelope, and the current host's two npm native payloads under
+The build produces local native commands, a direct PyO3 Python wheel, the
+portable JS/TS package, and the current host's direct Node-API addon under
 `dist/source-build/`. These source-build outputs and receipts are explicitly
 non-publishable; protected release CI promotes only separately admitted family
 artifacts.
+
+For Node.js, `import { NativeRuntime, AgentClient } from "ait-native"` loads the
+package-owned `native/ait_napi.node` in the current process. The npm `ait`
+command calls the same Rust binding through `NativeRuntime.runCli()`; it does
+not locate or launch a child executable. `ait-server` is intentionally not an
+npm command and remains available through the declared native/server channels.
 
 The detailed package, source, build, and mixed-license contract is centralized
 in [`docs/distribution.md`](docs/distribution.md). Each component subtree also

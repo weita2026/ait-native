@@ -1,0 +1,19 @@
+format = "ait.external.lock"
+
+[[node]]
+name = "ait-core"
+repo_name = "ait-core"
+repository_index = 0
+remote = "origin"
+line = "main"
+snapshot = "SNP-AFCEA70F3C0D"
+parent_path = ""
+materialize_to = ".ait-external/ait-core"
+license = "Apache-2.0"
+version = "1.0.0-rc.2"
+
+[[node.binding]]
+language = "rust"
+kind = "cargo-path"
+path = "rust/crates/ait-napi"
+package = "ait-napi"

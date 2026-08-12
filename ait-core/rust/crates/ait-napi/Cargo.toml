@@ -1,0 +1,21 @@
+[package]
+name = "ait-napi"
+version.workspace = true
+edition = "2021"
+build = "build.rs"
+
+[lib]
+name = "ait_napi"
+crate-type = ["cdylib"]
+path = "src/lib.rs"
+
+[dependencies]
+ait-agent-core = { path = "../ait-agent-core" }
+ait-agent-worker = { path = "../ait-agent-worker" }
+ait-cli = { path = "../ait-cli", default-features = false }
+ait-core = { path = "../ait-core", default-features = false }
+napi = { version = "3.12.0", features = ["napi8"] }
+napi-derive = "3.6.1"
+
+[build-dependencies]
+napi-build = "2.4.0"

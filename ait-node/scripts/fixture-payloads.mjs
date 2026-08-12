@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
 import {
-  chmod,
   copyFile,
+  lstat,
   mkdir,
   mkdtemp,
   readFile,
@@ -14,6 +14,7 @@ import { fileURLToPath } from "node:url";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const NPM = process.platform === "win32" ? "npm.cmd" : "npm";
+const LOCAL_ADDON = path.join(ROOT, "native", "ait_napi.node");
 
 async function contract() {
   return JSON.parse(
@@ -30,92 +31,79 @@ export async function currentPayloads() {
     (payload) =>
       payload.os === process.platform && payload.cpu === process.arch,
   );
-  if (payloads.length !== 2) {
+  if (payloads.length !== 1) {
     throw new Error(
-      `fixture payloads do not support ${process.platform}/${process.arch}`,
+      `fixture addon does not support ${process.platform}/${process.arch}`,
     );
   }
   return payloads;
 }
 
-export function fixtureForwardArgs(first, second) {
-  if (process.platform === "win32") {
-    return [
-      "-e",
-      "process.stdout.write(JSON.stringify(process.argv.slice(1)))",
-      first,
-      second,
-    ];
+async function regularAddon(addonPath) {
+  const entry = await lstat(addonPath);
+  if (!entry.isFile() || entry.isSymbolicLink() || entry.size === 0) {
+    throw new Error(`fixture addon must be a non-empty regular file: ${addonPath}`);
   }
-  return ["--fixture-argv", first, second];
 }
 
-export function fixtureFailureArgs(status) {
-  if (process.platform === "win32") {
-    return ["-e", `process.exit(${status})`];
-  }
-  return ["--fixture-exit", String(status)];
-}
-
-export async function stageFixturePayloads(nodeModulesRoot) {
-  const payloads = await currentPayloads();
+export async function stageFixturePayloads(
+  nodeModulesRoot,
+  addonPath = LOCAL_ADDON,
+) {
+  await regularAddon(addonPath);
+  const [payload] = await currentPayloads();
   await mkdir(nodeModulesRoot, { recursive: true });
-  for (const payload of payloads) {
-    const packageRoot = path.join(nodeModulesRoot, payload.package);
-    const executable = path.join(
-      packageRoot,
-      ...payload.executable.split("/"),
-    );
-    await mkdir(path.dirname(executable), { recursive: true });
-    if (payload.os === "win32") {
-      await copyFile(process.execPath, executable);
-    } else {
-      await writeFile(
-        executable,
-        '#!/bin/sh\nif [ "$1" = "--fixture-argv" ]; then\n  printf \'["%s","%s"]\' "$2" "$3"\n  exit 0\nfi\nif [ "$1" = "--fixture-exit" ]; then\n  exit "$2"\nfi\nexit 64\n',
-      );
-      await chmod(executable, 0o755);
-    }
-    const packageJson = {
-      name: payload.package,
-      version: payload.version,
-      description: "Local executable-resolution fixture; never publish",
-      license: payload.license,
-      os: [payload.os],
-      cpu: [payload.cpu],
-      files: ["bin", "provenance.json", "LICENSE", "NOTICE"],
-      aitNativePayload: {
-        schema: "ait.node.npm-platform-payload/v1",
-        component: payload.component,
-        target: payload.target,
-        executable: payload.executable,
-        source_repository: payload.source_repository,
-        source_snapshot: "SNP-000000000000",
-      },
-    };
-    await writeFile(
-      path.join(packageRoot, "package.json"),
-      `${JSON.stringify(packageJson, null, 2)}\n`,
-    );
-    await writeFile(
-      path.join(packageRoot, "provenance.json"),
-      `${JSON.stringify({
-        schema: "ait.node.fixture-platform-payload/v1",
+  const packageRoot = path.join(nodeModulesRoot, payload.package);
+  const installedAddon = path.join(
+    packageRoot,
+    ...payload.addon.split("/"),
+  );
+  await mkdir(path.dirname(installedAddon), { recursive: true });
+  await copyFile(addonPath, installedAddon);
+  const packageJson = {
+    name: payload.package,
+    version: payload.version,
+    description: "Local direct Node-API fixture; never publish",
+    license: payload.license,
+    os: [payload.os],
+    cpu: [payload.cpu],
+    main: payload.addon,
+    files: ["native", "provenance.json", "LICENSE", "NOTICE"],
+    aitNativeAddon: {
+      schema: "ait.node.napi-platform-addon/v1",
+      component: payload.component,
+      target: payload.target,
+      addon: payload.addon,
+      binding_repository: payload.binding_repository,
+      binding_snapshot: payload.binding_snapshot,
+    },
+  };
+  await writeFile(
+    path.join(packageRoot, "package.json"),
+    `${JSON.stringify(packageJson, null, 2)}\n`,
+  );
+  await writeFile(
+    path.join(packageRoot, "provenance.json"),
+    `${JSON.stringify(
+      {
+        schema: "ait.node.fixture-napi-platform-addon/v1",
         publishable: false,
         component: payload.component,
         target: payload.target,
-      }, null, 2)}\n`,
-    );
-    await writeFile(
-      path.join(packageRoot, "LICENSE"),
-      `Fixture metadata only: ${payload.license}\n`,
-    );
-    await writeFile(
-      path.join(packageRoot, "NOTICE"),
-      `Non-publishable ${payload.component} fixture NOTICE\n`,
-    );
-  }
-  return payloads;
+      },
+      null,
+      2,
+    )}\n`,
+  );
+  await writeFile(
+    path.join(packageRoot, "LICENSE"),
+    `Fixture metadata only: ${payload.license}\n`,
+  );
+  await writeFile(
+    path.join(packageRoot, "NOTICE"),
+    "Non-publishable direct Node-API fixture NOTICE\n",
+  );
+  return [payload];
 }
 
 function runNpm(args) {
@@ -141,34 +129,35 @@ function runNpm(args) {
   return result;
 }
 
-export async function createFixturePayloadTarballs(outputRoot) {
+export async function createFixturePayloadTarballs(
+  outputRoot,
+  addonPath = LOCAL_ADDON,
+) {
   const temporaryRoot = await mkdtemp(
-    path.join(os.tmpdir(), "ait-node-payload-fixtures-"),
+    path.join(os.tmpdir(), "ait-node-addon-fixture-"),
   );
   try {
     const nodeModulesRoot = path.join(temporaryRoot, "node_modules");
-    const payloads = await stageFixturePayloads(nodeModulesRoot);
+    const [payload] = await stageFixturePayloads(nodeModulesRoot, addonPath);
     await mkdir(outputRoot, { recursive: true });
-    const tarballs = [];
-    for (const payload of payloads) {
-      const result = runNpm([
-        "pack",
-        "--ignore-scripts",
-        "--json",
-        "--pack-destination",
-        outputRoot,
-        path.join(nodeModulesRoot, payload.package),
-      ]);
-      const packed = JSON.parse(result.stdout);
-      if (packed.length !== 1) {
-        throw new Error(`fixture pack failed for ${payload.package}`);
-      }
-      tarballs.push({
+    const result = runNpm([
+      "pack",
+      "--ignore-scripts",
+      "--json",
+      "--pack-destination",
+      outputRoot,
+      path.join(nodeModulesRoot, payload.package),
+    ]);
+    const packed = JSON.parse(result.stdout);
+    if (packed.length !== 1) {
+      throw new Error(`fixture pack failed for ${payload.package}`);
+    }
+    return [
+      {
         ...payload,
         tarball: path.join(outputRoot, packed[0].filename),
-      });
-    }
-    return tarballs;
+      },
+    ];
   } finally {
     await rm(temporaryRoot, { recursive: true, force: true });
   }

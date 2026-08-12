@@ -126,18 +126,19 @@ jq -e '
   .contract == "ait.release.receipt-matrix/v1" and
   .public_publish == false and
   .expected_source_count == 5 and
-  .expected_receipt_count == 25 and
-  .expected_component_artifact_count == 31 and
+  .expected_receipt_count == 31 and
+  .expected_component_artifact_count == 37 and
   .source_line == "main" and
   .bootstrap_line == "release-bootstrap" and
   (.bootstrap.include | length) == 6 and
   (.sources.include | length) == 5 and
-  (.builds.include | length) == 25 and
-  ([.builds.include[].receipt_artifact] | unique | length) == 25 and
+  (.builds.include | length) == 31 and
+  ([.builds.include[].receipt_artifact] | unique | length) == 31 and
   ([.builds.include[] | select(.repo_name == "ait-core") |
     .expected_component_artifact_count] | all(. == 2)) and
   ([.builds.include[] | select(.target == "portable")] | length) == 1 and
-  ([.builds.include[].expected_component_artifact_count] | add) == 31
+  ([.builds.include[] | select(.repo_name == "ait-node")] | length) == 7 and
+  ([.builds.include[].expected_component_artifact_count] | add) == 37
 ' "${projection}" >/dev/null
 
 jq '.schema = "ait.release.family/v2"' "${family}" \

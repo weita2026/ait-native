@@ -4,3 +4,4 @@ coverage/
 *.tgz
 .ait-external/
 .ait-native-target/
+native/

@@ -22,10 +22,6 @@ if [[ ! -e ${product_document} && ! -L ${product_document} ]]; then
 fi
 receipt_workflow=${repo_root}/.github/workflows/ait-release-component-receipts.yml
 promotion_workflow=${repo_root}/.github/workflows/ait-release-protected-promotion.yml
-publisher_workflow=${repo_root}/.github/workflows/pypi-publish.yml
-endpoint_preparer=${repo_root}/ci/release_endpoint_publication.sh
-endpoint_remote=${repo_root}/ci/release_endpoint_remote.sh
-endpoint_config=${repo_root}/release/endpoint-publication.rc1.json
 server_dockerfile=${repo_root}/release/oci/ait-server.Dockerfile
 runner_dockerfile=${repo_root}/release/oci/ait-runner.Dockerfile
 coordinator_snapshot=${AIT_RELEASE_COORDINATOR_SNAPSHOT:?AIT_RELEASE_COORDINATOR_SNAPSHOT is required}
@@ -80,10 +76,6 @@ if [[ ! -d ${template_root} || -L ${template_root} ||
   ! -f ${product_document} || -L ${product_document} ||
   ! -f ${receipt_workflow} || -L ${receipt_workflow} ||
   ! -f ${promotion_workflow} || -L ${promotion_workflow} ||
-  ! -f ${publisher_workflow} || -L ${publisher_workflow} ||
-  ! -f ${endpoint_preparer} || -L ${endpoint_preparer} ||
-  ! -f ${endpoint_remote} || -L ${endpoint_remote} ||
-  ! -f ${endpoint_config} || -L ${endpoint_config} ||
   ! -f ${server_dockerfile} || -L ${server_dockerfile} ||
   ! -f ${runner_dockerfile} || -L ${runner_dockerfile} ]]; then
   printf 'monorepo release templates or transform tool are unavailable\n' >&2
@@ -94,8 +86,8 @@ if ! jq -e '
   . as $root |
   .schema == "ait.release.family/v3" and
   .family.name == "ait-native" and
-  .family.version == "1.0.0-rc.1" and
-  .family.tag == "v1.0.0-rc.1" and
+  .family.version == "1.0.0-rc.2" and
+  .family.tag == "v1.0.0-rc.2" and
   .public_source.model == "release-monorepo" and
   .public_source.identity == "weita2026/ait-native" and
   .public_source.product_document == "docs/distribution.md" and
@@ -365,13 +357,8 @@ cp "${staging}/ait-core/LICENSE" "${staging}/LICENSES/Apache-2.0.txt"
 cp "${staging}/ait-server/LICENSE" "${staging}/LICENSES/AGPL-3.0-only.txt"
 root_receipt_workflow=${staging}/.github/workflows/ait-release-component-receipts.yml
 root_promotion_workflow=${staging}/.github/workflows/ait-release-protected-promotion.yml
-root_publisher_workflow=${staging}/.github/workflows/pypi-publish.yml
 cp "${receipt_workflow}" "${root_receipt_workflow}"
 cp "${promotion_workflow}" "${root_promotion_workflow}"
-cp "${publisher_workflow}" "${root_publisher_workflow}"
-cp "${endpoint_preparer}" "${staging}/ci/release_endpoint_publication.sh"
-cp "${endpoint_remote}" "${staging}/ci/release_endpoint_remote.sh"
-cp "${endpoint_config}" "${staging}/release/endpoint-publication.rc1.json"
 cp "${server_dockerfile}" "${staging}/release/oci/ait-server.Dockerfile"
 cp "${runner_dockerfile}" "${staging}/release/oci/ait-runner.Dockerfile"
 node "${transform_tool}" \
@@ -395,15 +382,11 @@ chmod 0644 \
   "${staging}/LICENSES/AGPL-3.0-only.txt" \
   "${root_receipt_workflow}" \
   "${root_promotion_workflow}" \
-  "${root_publisher_workflow}" \
-  "${staging}/release/endpoint-publication.rc1.json" \
   "${staging}/release/oci/ait-server.Dockerfile" \
   "${staging}/release/oci/ait-runner.Dockerfile"
 chmod 0755 \
   "${staging}/build-release.sh" \
-  "${staging}/build-release.mjs" \
-  "${staging}/ci/release_endpoint_publication.sh" \
-  "${staging}/ci/release_endpoint_remote.sh"
+  "${staging}/build-release.mjs"
 
 content_sha256=$(tree_digest "${staging}" monorepo-content)
 family_manifest_sha256=$(sha256_file "${staging}/ait-release-family.json")
@@ -416,8 +399,8 @@ jq -n \
   --arg coordinator_snapshot "${coordinator_snapshot}" \
   --arg coordinator_manifest_hash "${coordinator_manifest_hash}" \
   --arg coordinator_created_at "${coordinator_created_at}" \
-  --arg family_version '1.0.0-rc.1' \
-  --arg family_tag 'v1.0.0-rc.1' \
+  --arg family_version '1.0.0-rc.2' \
+  --arg family_tag 'v1.0.0-rc.2' \
   --arg family_manifest_sha256 "${family_manifest_sha256}" \
   --arg product_document_sha256 "${product_document_sha256}" \
   --arg content_sha256 "${content_sha256}" \
@@ -459,8 +442,8 @@ jq -n \
   --arg coordinator_snapshot "${coordinator_snapshot}" \
   --arg coordinator_manifest_hash "${coordinator_manifest_hash}" \
   --arg coordinator_created_at "${coordinator_created_at}" \
-  --arg family_version '1.0.0-rc.1' \
-  --arg family_tag 'v1.0.0-rc.1' \
+  --arg family_version '1.0.0-rc.2' \
+  --arg family_tag 'v1.0.0-rc.2' \
   --arg mapping_sha256 "${mapping_sha256}" \
   --arg content_sha256 "${content_sha256}" \
   --argjson subtrees "${subtrees}" '

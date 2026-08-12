@@ -32,21 +32,12 @@ const PROMOTION_WORKFLOW = path.join(
   "workflows",
   "ait-release-protected-promotion.yml",
 );
-const PUBLISHER_WORKFLOW = path.join(
-  ROOT,
-  ".github",
-  "workflows",
-  "pypi-publish.yml",
-);
 const PROMOTION_VERIFIER = path.join(
   ROOT,
   "ait-core",
   "ci",
   "release_protected_promotion.sh",
 );
-const ENDPOINT_PREPARER = path.join(ROOT, "ci", "release_endpoint_publication.sh");
-const ENDPOINT_REMOTE = path.join(ROOT, "ci", "release_endpoint_remote.sh");
-const ENDPOINT_CONFIG = path.join(ROOT, "release", "endpoint-publication.rc1.json");
 const OCI_SERVER_DOCKERFILE = path.join(ROOT, "release", "oci", "ait-server.Dockerfile");
 const OCI_RUNNER_DOCKERFILE = path.join(ROOT, "release", "oci", "ait-runner.Dockerfile");
 const BUILD_ROOT = path.join(ROOT, ".build", "source-release");
@@ -168,74 +159,11 @@ async function validateProtectedWorkflows() {
     }
   }
 
-  await regularFile(PUBLISHER_WORKFLOW, "root protected endpoint publisher workflow");
-  const publisher = await readFile(PUBLISHER_WORKFLOW, "utf8");
-  for (const required of [
-    "name: ait release endpoint publication",
-    "workflow_dispatch:",
-    "actions: read\n  attestations: write\n  contents: write\n  id-token: write\n  packages: write",
-    "environment:\n      name: pypi",
-    "publish_exact_frozen_bytes:",
-    "control/ci/release_endpoint_publication.sh",
-    "control/ci/release_endpoint_remote.sh preflight",
-    "control/release/endpoint-publication.rc1.json",
-    "secrets.AIT_NPM_TOKEN",
-    "      - name: Publish npm implementation payloads and command envelope\n        continue-on-error: true",
-    "      - name: Complete independent endpoint readback",
-    "secrets.AIT_HOMEBREW_DEPLOY_KEY",
-    "secrets.AIT_APT_REPO_DEPLOY_KEY",
-    "secrets.AIT_APT_SIGNING_KEY_B64",
-    "vars.AIT_APT_SIGNING_FINGERPRINT",
-    "pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33",
-    "docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8",
-    "actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a",
-    "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02",
-    "docker logout ghcr.io",
-  ]) {
-    if (!publisher.includes(required)) {
-      fail(`root endpoint publisher workflow must contain ${JSON.stringify(required)}`);
-    }
-  }
-  if ((publisher.match(/^        continue-on-error: true$/gm) ?? []).length !== 1) {
-    fail("only the npm publication step may yield to independent endpoints");
-  }
-  for (const forbidden of [
-    "cargo build",
-    "cargo install",
-    "maturin build",
-    "npm run build",
-    "build-release.sh",
-    "build-release.ps1",
-    "wingetcreate submit",
-    "winget-pkgs",
-    "--overwrite",
-  ]) {
-    if (publisher.includes(forbidden)) {
-      fail(`root endpoint publisher workflow contains forbidden release behavior ${JSON.stringify(forbidden)}`);
-    }
-  }
-
   for (const [filePath, label] of [
-    [ENDPOINT_PREPARER, "endpoint publication preparer"],
-    [ENDPOINT_REMOTE, "authenticated endpoint publisher"],
-    [ENDPOINT_CONFIG, "exact endpoint configuration"],
     [OCI_SERVER_DOCKERFILE, "ait-server OCI recipe"],
     [OCI_RUNNER_DOCKERFILE, "ait-runner OCI recipe"],
   ]) {
     await regularFile(filePath, label);
-  }
-  const endpointConfig = await readJson(ENDPOINT_CONFIG, "exact endpoint configuration");
-  if (
-    endpointConfig?.contract !== "ait.release.family.endpoints/v1" ||
-    endpointConfig?.release?.id !== "REL-FAM-D84070909C7F5CA9" ||
-    endpointConfig?.release?.version !== "1.0.0-rc.1" ||
-    endpointConfig?.release?.tag !== "v1.0.0-rc.1" ||
-    endpointConfig?.release?.source_commit !== "f9d260a8f7046f82a6c3e271d539dd0bbce7bc14" ||
-    endpointConfig?.publisher?.workflow !== "pypi-publish.yml" ||
-    endpointConfig?.publisher?.environment !== "pypi" ||
-    endpointConfig?.endpoints?.winget?.community_manifest_submission !== false
-  ) {
-    fail("exact endpoint configuration differs from the protected RC route");
   }
   for (const [filePath, component] of [
     [OCI_SERVER_DOCKERFILE, "ait-server"],
@@ -296,6 +224,8 @@ async function validatePublicReadme() {
     "ait task land",
     "does not identify the repository's programming language or project type",
     "does not require a running\n`ait-server`",
+    "package-owned `native/ait_napi.node`",
+    "does not locate or launch a child executable",
     "explicitly\nnon-publishable",
   ]) {
     if (!readme.includes(required)) {
@@ -626,12 +556,8 @@ async function validateBuildInputs(expectedGitCommit) {
   for (const required of [
     ".github/workflows/ait-release-component-receipts.yml",
     ".github/workflows/ait-release-protected-promotion.yml",
-    ".github/workflows/pypi-publish.yml",
     ".gitattributes",
     "README.md",
-    "ci/release_endpoint_publication.sh",
-    "ci/release_endpoint_remote.sh",
-    "release/endpoint-publication.rc1.json",
     "release/oci/ait-server.Dockerfile",
     "release/oci/ait-runner.Dockerfile",
     "ait-core/rust/Cargo.toml",
@@ -641,6 +567,8 @@ async function validateBuildInputs(expectedGitCommit) {
     "ait-python/pyproject.toml",
     "ait-node/package.json",
     "ait-node/release/npm-payload-package.mjs",
+    "ait-node/scripts/native-build.mjs",
+    "ait-node/src/runtime.js",
     "docs/distribution.md",
   ]) {
     await regularFile(path.join(ROOT, required), `required build input ${required}`);
@@ -665,12 +593,32 @@ async function validateBuildInputs(expectedGitCommit) {
     fail("ait-python does not use the exported sibling ait-core path");
   }
   const nodePackage = await readJson(path.join(ROOT, "ait-node", "package.json"), "npm envelope");
+  const nodeContract = await readJson(
+    path.join(ROOT, "ait-node", "lib", "npm-payload-contract.json"),
+    "npm addon contract",
+  );
+  const nodeRuntime = await readFile(path.join(ROOT, "ait-node", "src", "runtime.js"), "utf8");
   if (
     nodePackage?.name !== "ait-native" ||
-    JSON.stringify(nodePackage?.exports) !== "{}" ||
+    nodePackage?.version !== family.family.version ||
+    nodePackage?.bin?.ait !== "bin/ait.mjs" ||
+    Object.keys(nodePackage?.bin ?? {}).length !== 1 ||
+    nodePackage?.exports?.["."]?.types !== "./src/index.d.ts" ||
+    nodePackage?.exports?.["."]?.import !== "./src/index.js" ||
+    nodePackage?.types !== "./src/index.d.ts" ||
+    Object.keys(nodePackage?.optionalDependencies ?? {}).length !== 6 ||
+    Object.values(nodePackage?.optionalDependencies ?? {}).some(
+      (version) => version !== family.family.version,
+    ) ||
+    nodeContract?.schema !== "ait.node.napi-platform-packages/v1" ||
+    nodeContract?.family_version !== family.family.version ||
+    nodeContract?.payloads?.length !== 6 ||
+    !nodeRuntime.includes("native/ait_napi.node") ||
+    !nodeRuntime.includes("require(addonPath)") ||
+    nodeRuntime.includes("child_process") ||
     ["preinstall", "install", "postinstall"].some((name) => nodePackage?.scripts?.[name] !== undefined)
   ) {
-    fail("npm envelope must remain command-only and free of install hooks");
+    fail("npm envelope must expose the exact direct Node-API surface without install hooks or subprocess transport");
   }
   await validateTree();
   if (mapping.content_sha256 !== (await sourceContentDigest())) {
@@ -740,49 +688,6 @@ async function copyExecutable(source, destination) {
   if (process.platform !== "win32") {
     await chmod(destination, 0o755);
   }
-}
-
-async function artifactRow(component, target, receiptRoot, artifactPath) {
-  const bytes = await readFile(artifactPath);
-  const relative = path.relative(receiptRoot, artifactPath).split(path.sep).join("/");
-  return {
-    role: "component-artifact",
-    component,
-    ecosystem: "native",
-    kind: "native-executable",
-    target,
-    path: relative,
-    sha256: sha256(bytes),
-    size_bytes: bytes.length,
-  };
-}
-
-async function localReceipt({ component, repository, snapshot, target, version, executable }) {
-  const receiptRoot = path.join(BUILD_ROOT, "receipts", component);
-  const artifactPath = path.join(receiptRoot, "artifacts", path.basename(executable));
-  await mkdir(path.dirname(artifactPath), { recursive: true });
-  await copyFile(executable, artifactPath);
-  if (process.platform !== "win32") {
-    await chmod(artifactPath, 0o755);
-  }
-  const receipt = {
-    contract: "ait.release.adapter.receipt/v1",
-    repo_name: repository,
-    snapshot_id: snapshot,
-    version,
-    target,
-    metadata: {
-      package: { version },
-      source_build: true,
-      publishable: false,
-    },
-    artifacts: [await artifactRow(component, target, receiptRoot, artifactPath)],
-    public_publish: false,
-    publishable: false,
-  };
-  const receiptPath = path.join(receiptRoot, "ait-release.receipt.json");
-  await writeFile(receiptPath, `${JSON.stringify(receipt, null, 2)}\n`);
-  return receiptPath;
 }
 
 function portableRelativePath(value, label, allowDot = false) {
@@ -1433,51 +1338,28 @@ async function build({ family, mapping }, skipTests) {
     "--wheel-dir", pythonOutput, path.join(ROOT, "ait-python"),
   ]);
 
+  const nodeRoot = path.join(ROOT, "ait-node");
+  run("node", [path.join(nodeRoot, "scripts", "native-build.mjs"), "build", target], nodeRoot);
+  const nodeAddon = path.join(nodeRoot, "native", "ait_napi.node");
+  await regularFile(nodeAddon, "built direct Node-API addon");
   if (!skipTests) {
-    run("npm", ["test", "--ignore-scripts"], path.join(ROOT, "ait-node"));
+    run("npm", ["test", "--ignore-scripts"], nodeRoot);
   }
   const npmOutput = path.join(OUTPUT_ROOT, target, "npm");
   await mkdir(npmOutput, { recursive: true });
   run("npm", [
     "pack", "--ignore-scripts", "--pack-destination", npmOutput,
-    path.join(ROOT, "ait-node"),
+    nodeRoot,
   ]);
 
-  const snapshots = new Map(
-    mapping.subtrees.map((row) => [row.source_repository, row.source_snapshot]),
-  );
-  const coreReceipt = await localReceipt({
-    component: "ait",
-    repository: "ait-core",
-    snapshot: snapshots.get("ait-core"),
-    target,
-    version: family.family.version,
-    executable: built.ait,
-  });
-  const serverReceipt = await localReceipt({
-    component: "ait-server",
-    repository: "ait-server",
-    snapshot: snapshots.get("ait-server"),
-    target,
-    version: family.family.version,
-    executable: built["ait-server"],
-  });
   const payloadTool = path.join(ROOT, "ait-node", "release", "npm-payload-package.mjs");
-  for (const [component, repository, receipt] of [
-    ["ait", "ait-core", coreReceipt],
-    ["ait-server", "ait-server", serverReceipt],
-  ]) {
-    run("node", [
-      payloadTool, "build",
-      "--component", component,
-      "--target", target,
-      "--version", family.family.version,
-      "--receipt", receipt,
-      "--license", path.join(ROOT, repository, "LICENSE"),
-      "--notice", path.join(ROOT, repository, "NOTICE"),
-      "--out-dir", npmOutput,
-    ]);
-  }
+  run("node", [
+    payloadTool, "build",
+    "--target", target,
+    "--version", family.family.version,
+    "--addon", nodeAddon,
+    "--out-dir", npmOutput,
+  ], nodeRoot);
 
   const files = await inventory(OUTPUT_ROOT);
   const manifest = {

@@ -8,9 +8,9 @@ import {
   mkdtemp,
   readFile,
   rm,
-  symlink,
   writeFile,
 } from "node:fs/promises";
+import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -18,7 +18,9 @@ import { fileURLToPath } from "node:url";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const PACKAGER = path.join(ROOT, "release", "npm-payload-package.mjs");
+const LOCAL_ADDON = path.join(ROOT, "native", "ait_napi.node");
 const NPM = process.platform === "win32" ? "npm.cmd" : "npm";
+const require = createRequire(import.meta.url);
 
 function sha256(bytes) {
   return createHash("sha256").update(bytes).digest("hex");
@@ -38,274 +40,185 @@ function run(command, args, cwd = ROOT) {
   });
 }
 
-async function hostPayloads() {
+async function hostPayload() {
   const contract = JSON.parse(
-    await readFile(
-      path.join(ROOT, "lib", "npm-payload-contract.json"),
-      "utf8",
-    ),
+    await readFile(path.join(ROOT, "lib", "npm-payload-contract.json"), "utf8"),
   );
   const payloads = contract.payloads.filter(
-    (payload) =>
-      payload.os === process.platform && payload.cpu === process.arch,
+    (payload) => payload.os === process.platform && payload.cpu === process.arch,
   );
-  assert.equal(payloads.length, 2);
-  return payloads;
+  assert.equal(payloads.length, 1);
+  return payloads[0];
 }
 
-async function receiptFixture(root, payload) {
-  const bundle = path.join(root, `${payload.component}-bundle`);
-  const artifactPath = `dist/REL-TEST/components/${payload.component}/native/${path.basename(payload.executable)}`;
-  const artifact = path.join(bundle, ...artifactPath.split("/"));
-  await mkdir(path.dirname(artifact), { recursive: true });
-  await copyFile(process.execPath, artifact);
-  const artifactBytes = await readFile(artifact);
-  const receipt = {
-    contract: "ait.release.adapter.receipt/v1",
-    repo_name: payload.source_repository,
-    snapshot_id: "SNP-123456789ABC",
-    version: payload.version,
-    target: payload.target,
-    metadata: { package: { version: payload.version } },
-    artifacts: [
-      {
-        component: payload.component,
-        ecosystem: "native",
-        kind: "native-executable",
-        role: "component-artifact",
-        target: payload.target,
-        path: artifactPath,
-        sha256: sha256(artifactBytes),
-        size_bytes: artifactBytes.length,
-      },
-    ],
-  };
-  const receiptPath = path.join(bundle, "ait-release.receipt.json");
-  const licensePath = path.join(bundle, "SOURCE-LICENSE");
-  const noticePath = path.join(bundle, "SOURCE-NOTICE");
-  await writeFile(receiptPath, `${JSON.stringify(receipt, null, 2)}\n`);
-  await writeFile(licensePath, `${payload.license} fixture license material\n`);
-  await writeFile(noticePath, `${payload.component} fixture notice\n`);
-  return { artifact, artifactPath, bundle, licensePath, noticePath, receipt, receiptPath };
-}
-
-function packagerArgs(action, payload, fixture, outputRoot) {
+function packagerArgs(action, payload, addon, outputRoot) {
   return [
     PACKAGER,
     action,
-    "--component",
-    payload.component,
     "--target",
     payload.target,
     "--version",
     payload.version,
-    "--receipt",
-    fixture.receiptPath,
-    "--license",
-    fixture.licensePath,
-    "--notice",
-    fixture.noticePath,
+    "--addon",
+    addon,
     "--out-dir",
     outputRoot,
   ];
 }
 
-test("receipt-owned packager builds independently licensed exact payload packages", async (context) => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "ait-node-packager-test-"));
-  context.after(async () => {
-    await rm(root, { recursive: true, force: true });
-  });
-  const payloads = await hostPayloads();
-  for (const payload of payloads) {
-    const fixture = await receiptFixture(root, payload);
-    const outputRoot = path.join(root, "output");
-    const checked = run(
-      process.execPath,
-      packagerArgs("check", payload, fixture, outputRoot),
-    );
-    assert.equal(checked.status, 0, checked.stderr);
-    const checkResult = JSON.parse(checked.stdout);
-    assert.equal(checkResult.package, `${payload.package}@${payload.version}`);
-    assert.equal(checkResult.source_snapshot, "SNP-123456789ABC");
-
-    const built = run(
-      process.execPath,
-      packagerArgs("build", payload, fixture, outputRoot),
-    );
-    assert.equal(built.status, 0, built.stderr);
-    const buildResult = JSON.parse(built.stdout);
-    assert.equal(buildResult.component, payload.component);
-    assert.equal(buildResult.target, payload.target);
-    assert.equal(buildResult.source_sha256, fixture.receipt.artifacts[0].sha256);
-    const tarballEntry = await lstat(buildResult.artifact);
-    assert.equal(tarballEntry.isFile(), true);
-    assert.equal(tarballEntry.isSymbolicLink(), false);
-
-    const installRoot = path.join(root, `install-${payload.component}`);
-    const installed = run(NPM, [
-      "install",
-      "--ignore-scripts",
-      "--offline",
-      "--no-audit",
-      "--no-fund",
-      "--no-save",
-      "--prefix",
-      installRoot,
-      buildResult.artifact,
-    ]);
-    assert.equal(installed.status, 0, installed.stderr);
-    const packageRoot = path.join(
-      installRoot,
-      "node_modules",
-      payload.package,
-    );
-    const packageJson = JSON.parse(
-      await readFile(path.join(packageRoot, "package.json"), "utf8"),
-    );
-    assert.equal(packageJson.name, payload.package);
-    assert.equal(packageJson.version, payload.version);
-    assert.equal(packageJson.license, payload.license);
-    assert.deepEqual(packageJson.os, [payload.os]);
-    assert.deepEqual(packageJson.cpu, [payload.cpu]);
-    assert.equal(packageJson.bin, undefined);
-    assert.equal(packageJson.main, undefined);
-    assert.equal(packageJson.exports, undefined);
-    assert.deepEqual(packageJson.files, [
-      "bin",
-      "provenance.json",
-      "LICENSE",
-      "NOTICE",
-    ]);
-    assert.equal(packageJson.aitNativePayload.source_repository, payload.source_repository);
-
-    const provenance = JSON.parse(
-      await readFile(path.join(packageRoot, "provenance.json"), "utf8"),
-    );
-    assert.equal(
-      provenance.schema,
-      "ait.node.npm-platform-payload-provenance/v1",
-    );
-    assert.equal(provenance.source_snapshot, "SNP-123456789ABC");
-    assert.equal(provenance.source_artifact.path, fixture.artifactPath);
-    assert.equal(provenance.source_artifact.sha256, fixture.receipt.artifacts[0].sha256);
-    assert.equal(provenance.installed_path, payload.executable);
-    assert.equal(provenance.license, payload.license);
-    assert.equal(provenance.license_file.path, "LICENSE");
-    assert.equal(
-      provenance.license_file.sha256,
-      sha256(await readFile(fixture.licensePath)),
-    );
-    assert.equal(provenance.notice_file.path, "NOTICE");
-    assert.equal(
-      provenance.notice_file.sha256,
-      sha256(await readFile(fixture.noticePath)),
-    );
-    assert.equal(
-      provenance.source_receipt.sha256,
-      sha256(await readFile(fixture.receiptPath)),
-    );
-    assert.deepEqual(
-      await readFile(path.join(packageRoot, "LICENSE")),
-      await readFile(fixture.licensePath),
-    );
-    assert.deepEqual(
-      await readFile(path.join(packageRoot, "NOTICE")),
-      await readFile(fixture.noticePath),
-    );
-    const installedBytes = await readFile(
-      path.join(packageRoot, ...payload.executable.split("/")),
-    );
-    assert.equal(sha256(installedBytes), fixture.receipt.artifacts[0].sha256);
-  }
-});
-
-test("packager rejects missing NOTICE, digest drift, ambiguous artifacts, and traversal", async (context) => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "ait-node-packager-reject-"));
-  context.after(async () => {
-    await rm(root, { recursive: true, force: true });
-  });
-  const payload = (await hostPayloads()).find(
-    (entry) => entry.component === "ait",
-  );
-  const fixture = await receiptFixture(root, payload);
+test("ait-node builds and packages one exact direct addon for its native target", async (context) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "ait-node-addon-pack-"));
+  context.after(() => rm(root, { recursive: true, force: true }));
+  const payload = await hostPayload();
   const outputRoot = path.join(root, "output");
 
-  const missingNoticeArgs = packagerArgs(
-    "check",
-    payload,
-    fixture,
-    outputRoot,
+  const checked = run(
+    process.execPath,
+    packagerArgs("check", payload, LOCAL_ADDON, outputRoot),
   );
-  missingNoticeArgs.splice(missingNoticeArgs.indexOf("--notice"), 2);
-  const missingNotice = run(process.execPath, missingNoticeArgs);
-  assert.notEqual(missingNotice.status, 0);
-  assert.match(
-    missingNotice.stderr,
-    /missing required npm payload package option --notice/,
+  assert.equal(checked.status, 0, checked.stderr);
+  const checkResult = JSON.parse(checked.stdout);
+  assert.equal(checkResult.package, `${payload.package}@${payload.version}`);
+  assert.equal(checkResult.binding_repository, "ait-core");
+  assert.equal(checkResult.binding_snapshot, payload.binding_snapshot);
+
+  const built = run(
+    process.execPath,
+    packagerArgs("build", payload, LOCAL_ADDON, outputRoot),
+  );
+  assert.equal(built.status, 0, built.stderr);
+  const buildResult = JSON.parse(built.stdout);
+  assert.equal(buildResult.component, "ait-node");
+  assert.equal(buildResult.target, payload.target);
+  assert.equal(buildResult.source_sha256, sha256(await readFile(LOCAL_ADDON)));
+  const tarballEntry = await lstat(buildResult.artifact);
+  assert.equal(tarballEntry.isFile(), true);
+  assert.equal(tarballEntry.isSymbolicLink(), false);
+
+  const installRoot = path.join(root, "install");
+  const installed = run(NPM, [
+    "install",
+    "--ignore-scripts",
+    "--offline",
+    "--no-audit",
+    "--no-fund",
+    "--no-save",
+    "--prefix",
+    installRoot,
+    buildResult.artifact,
+  ]);
+  assert.equal(installed.status, 0, installed.stderr);
+  const packageRoot = path.join(installRoot, "node_modules", payload.package);
+  const packageJson = JSON.parse(
+    await readFile(path.join(packageRoot, "package.json"), "utf8"),
+  );
+  assert.equal(packageJson.name, payload.package);
+  assert.equal(packageJson.version, payload.version);
+  assert.equal(packageJson.license, payload.license);
+  assert.deepEqual(packageJson.os, [payload.os]);
+  assert.deepEqual(packageJson.cpu, [payload.cpu]);
+  assert.equal(packageJson.main, payload.addon);
+  assert.equal(packageJson.bin, undefined);
+  assert.equal(packageJson.dependencies, undefined);
+  assert.deepEqual(packageJson.files, [
+    "native",
+    "provenance.json",
+    "LICENSE",
+    "NOTICE",
+  ]);
+  assert.equal(
+    packageJson.aitNativeAddon.schema,
+    "ait.node.napi-platform-addon/v1",
+  );
+  assert.equal(
+    packageJson.aitNativeAddon.binding_snapshot,
+    payload.binding_snapshot,
   );
 
-  fixture.receipt.artifacts[0].sha256 = "0".repeat(64);
-  await writeFile(
-    fixture.receiptPath,
-    `${JSON.stringify(fixture.receipt, null, 2)}\n`,
+  const provenance = JSON.parse(
+    await readFile(path.join(packageRoot, "provenance.json"), "utf8"),
   );
-  const digestDrift = run(
-    process.execPath,
-    packagerArgs("check", payload, fixture, outputRoot),
+  assert.equal(
+    provenance.schema,
+    "ait.node.napi-platform-addon-provenance/v1",
   );
-  assert.notEqual(digestDrift.status, 0);
-  assert.match(digestDrift.stderr, /SHA-256 drift/);
+  assert.equal(provenance.package_source_repository, "ait-node");
+  assert.equal(provenance.binding_repository, "ait-core");
+  assert.equal(provenance.binding_snapshot, payload.binding_snapshot);
+  assert.equal(provenance.installed_path, payload.addon);
+  assert.equal(provenance.license_file.path, "LICENSE");
+  assert.equal(provenance.notice_file.path, "NOTICE");
+  const installedBytes = await readFile(
+    path.join(packageRoot, ...payload.addon.split("/")),
+  );
+  assert.equal(provenance.source_artifact.sha256, sha256(installedBytes));
 
-  fixture.receipt.artifacts.push({ ...fixture.receipt.artifacts[0] });
-  await writeFile(
-    fixture.receiptPath,
-    `${JSON.stringify(fixture.receipt, null, 2)}\n`,
-  );
-  const ambiguous = run(
-    process.execPath,
-    packagerArgs("check", payload, fixture, outputRoot),
-  );
-  assert.notEqual(ambiguous.status, 0);
-  assert.match(ambiguous.stderr, /exactly one matching native executable/);
-
-  fixture.receipt.artifacts = [
-    {
-      ...fixture.receipt.artifacts[0],
-      path: "../outside",
-      sha256: "1".repeat(64),
-    },
-  ];
-  await writeFile(
-    fixture.receiptPath,
-    `${JSON.stringify(fixture.receipt, null, 2)}\n`,
-  );
-  const traversal = run(
-    process.execPath,
-    packagerArgs("check", payload, fixture, outputRoot),
-  );
-  assert.notEqual(traversal.status, 0);
-  assert.match(traversal.stderr, /path is unsafe/);
+  const addon = require(packageRoot);
+  const info = JSON.parse(addon.bindingInfoJson());
+  assert.equal(info.node_binding, "napi");
+  assert.equal(info.process_transport_allowed, false);
 });
 
-test(
-  "packager rejects a symlinked receipt artifact",
-  { skip: process.platform === "win32" },
-  async (context) => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "ait-node-packager-link-"));
-    context.after(async () => {
-      await rm(root, { recursive: true, force: true });
-    });
-    const payload = (await hostPayloads()).find(
-      (entry) => entry.component === "ait-server",
-    );
-    const fixture = await receiptFixture(root, payload);
-    await rm(fixture.artifact);
-    await symlink(process.execPath, fixture.artifact);
-    const linked = run(
-      process.execPath,
-      packagerArgs("check", payload, fixture, path.join(root, "output")),
-    );
-    assert.notEqual(linked.status, 0);
-    assert.match(linked.stderr, /must be a regular file/);
-  },
-);
+test("packager rejects missing addon, drift, wrong target, and a non-addon", async (context) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "ait-node-addon-reject-"));
+  context.after(() => rm(root, { recursive: true, force: true }));
+  const payload = await hostPayload();
+  const outputRoot = path.join(root, "output");
+
+  const missingAddonArgs = packagerArgs(
+    "check",
+    payload,
+    LOCAL_ADDON,
+    outputRoot,
+  );
+  missingAddonArgs.splice(missingAddonArgs.indexOf("--addon"), 2);
+  const missingAddon = run(process.execPath, missingAddonArgs);
+  assert.notEqual(missingAddon.status, 0);
+  assert.match(missingAddon.stderr, /missing required npm addon package option --addon/);
+
+  const wrongVersion = packagerArgs("check", payload, LOCAL_ADDON, outputRoot);
+  wrongVersion[wrongVersion.indexOf("--version") + 1] = "1.0.0-rc.99";
+  const drift = run(process.execPath, wrongVersion);
+  assert.notEqual(drift.status, 0);
+  assert.match(drift.stderr, /version .* does not match/);
+
+  const foreignPayload = (
+    await hostPayload()
+  );
+  const contract = JSON.parse(
+    await readFile(path.join(ROOT, "lib", "npm-payload-contract.json"), "utf8"),
+  );
+  const other = contract.payloads.find(
+    (entry) => entry.target !== foreignPayload.target,
+  );
+  const wrongTarget = run(
+    process.execPath,
+    packagerArgs("check", other, LOCAL_ADDON, outputRoot),
+  );
+  assert.notEqual(wrongTarget.status, 0);
+  assert.match(wrongTarget.stderr, /requires native host/);
+
+  const textPath = path.join(root, "not-an-addon.node");
+  await writeFile(textPath, "not a native addon\n");
+  const nonAddon = run(
+    process.execPath,
+    packagerArgs("check", payload, textPath, outputRoot),
+  );
+  assert.notEqual(nonAddon.status, 0);
+  assert.match(nonAddon.stderr, /cannot be loaded/);
+});
+
+test("packager rejects a symlinked built addon", { skip: process.platform === "win32" }, async (context) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "ait-node-addon-link-"));
+  context.after(() => rm(root, { recursive: true, force: true }));
+  const payload = await hostPayload();
+  const linkedAddon = path.join(root, "linked.node");
+  await mkdir(root, { recursive: true });
+  await import("node:fs/promises").then(({ symlink }) => symlink(LOCAL_ADDON, linkedAddon));
+  const linked = run(
+    process.execPath,
+    packagerArgs("check", payload, linkedAddon, path.join(root, "output")),
+  );
+  assert.notEqual(linked.status, 0);
+  assert.match(linked.stderr, /regular non-symlink file/);
+});
