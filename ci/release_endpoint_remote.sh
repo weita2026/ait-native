@@ -322,7 +322,7 @@ prepare_github_ssh() {
   ssh-keyscan -t ed25519 github.com >"${known_hosts}" 2>/dev/null
   local fingerprint
   fingerprint=$(ssh-keygen -lf "${known_hosts}" -E sha256 | awk '{print $2}')
-  if [[ ${fingerprint} != 'SHA256:+DiY3wvvV6TuJJhbpZisF/zLDA0zPtwkmmLoMI' ]]; then
+  if [[ ${fingerprint} != 'SHA256:+DiY3wvvV6TuJJhbpZisF/zLDA0zPMSvHdkr4UvCOqU' ]]; then
     printf 'GitHub SSH host fingerprint is not exact\n' >&2
     return 65
   fi
