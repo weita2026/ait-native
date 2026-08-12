@@ -94,27 +94,27 @@ mkdir -p "${assets}" "${staging}/oci/ait-server" "${staging}/oci/ait-runner"
 if ! jq -e '
   .contract == "ait.release.family.endpoints/v1" and
   .release == {
-    id: "REL-FAM-D84070909C7F5CA9",
-    version: "1.0.0-rc.1",
-    python_version: "1.0.0rc1",
-    tag: "v1.0.0-rc.1",
-    source_commit: "f9d260a8f7046f82a6c3e271d539dd0bbce7bc14",
-    coordinator_snapshot: "SNP-FFDF9798A111",
-    frozen_manifest_sha256: "e0abcd0047e4b13117d3b6517006ce3315b9b2a1d1722c919ed0642ddc87dca9",
-    frozen_checksums_sha256: "dfffdd7f9cd64297f6d498f5b328e79acf12dfb4f4d61bac2a3f0cd5475f7bc7"
+    id: "REL-FAM-0B6EDBCCA2EFE26B",
+    version: "1.0.0-rc.2",
+    python_version: "1.0.0rc2",
+    tag: "v1.0.0-rc.2",
+    source_commit: "3dfd9dde5a9867cfe265352f48540fa8241f8e66",
+    coordinator_snapshot: "SNP-152CBCB22EAC",
+    frozen_manifest_sha256: "38cf7635d398294e2a433caf4d54444fdf97ffdfaa8307a0782247939841ac56",
+    frozen_checksums_sha256: "51cadec032ca6bcab2a27fc60538886a90288e1c9eff97a82e7a15be13fd3896"
   } and
   .source_dossier == {
-    workflow_run_id: 31543619357,
+    workflow_run_id: 31629973956,
     workflow_run_attempt: 1,
-    artifact_id: 9122098178,
-    artifact_digest: "sha256:196ec5404c1ca01196ac9d348a7a106f329f3bb410bda4ef6815b27ea40fca1b"
+    artifact_id: 9155572246,
+    artifact_digest: "sha256:c474158c8d1c60ea31b7c32f179cf870154ca66ff0584aec936996bc76d13f1c"
   } and
   .protected_authorization == {
-    workflow_run_id: 31549673366,
+    workflow_run_id: 31633959182,
     workflow_run_attempt: 1,
-    artifact_id: 9123775170,
-    artifact_digest: "sha256:cd4b9ab658a7b1242489a6f128f95f79ce24c40582f7f76bf90041a485f297e1",
-    evidence_sha256: "ff8f594d7065bb3f1fa326754e38e9cb30bd7fcf1cb7b1d0b98facc934e0e34e"
+    artifact_id: 9156215006,
+    artifact_digest: "sha256:facc6cc34d3543840b2f66952368d8e1f9b15e2b6e60e219138a22106e64a9ae",
+    evidence_sha256: "bf39d37aec86cbb83d58cdd218fb179668cabc08ca0c3b0049b9c6722245414d"
   } and
   .publisher == {
     repository: "weita2026/ait-native",
@@ -131,8 +131,15 @@ if ! jq -e '
   .endpoints.npm.registry == "https://registry.npmjs.org" and
   .endpoints.npm.dist_tag == "rc" and
   .endpoints.npm.credential_secret == "AIT_NPM_TOKEN" and
-  (.endpoints.npm.packages | length) == 13 and
-  (.endpoints.npm.packages | unique | length) == 13 and
+  .endpoints.npm.packages == [
+    "ait-native",
+    "ait-native-ait-darwin-arm64",
+    "ait-native-ait-darwin-x64",
+    "ait-native-ait-linux-arm64",
+    "ait-native-ait-linux-x64",
+    "ait-native-ait-win32-arm64",
+    "ait-native-ait-win32-x64"
+  ] and
   .endpoints.homebrew == {
     repository: "weita2026/homebrew-ait-native",
     branch: "main",
@@ -154,7 +161,7 @@ if ! jq -e '
   .endpoints.oci.dockerfile_frontend == "docker/dockerfile:1.7@sha256:a57df69d0ea827fb7266491f2813635de6f17269be881f696fbfdf2d83dda33e" and
   .endpoints.oci.base_image == "docker.io/library/debian:bookworm-slim@sha256:abd67ffcfa541b485a3dff59865ab629aa048a6c613e639d36e7456b0b229241" and
   .endpoints.oci.images == ["ghcr.io/weita2026/ait-server", "ghcr.io/weita2026/ait-runner"] and
-  .endpoints.oci.immutable_tag == "1.0.0-rc.1" and
+  .endpoints.oci.immutable_tag == "1.0.0-rc.2" and
   .endpoints.oci.moving_tag == "rc"
 ' "${endpoint_config}" >/dev/null; then
   printf 'endpoint configuration does not match the exact admitted RC route\n' >&2
@@ -185,7 +192,7 @@ if ! jq -e --slurpfile config "${endpoint_config}" '
   .dossier.artifact_digest == $config[0].source_dossier.artifact_digest and
   .dossier.frozen_manifest_sha256 == $config[0].release.frozen_manifest_sha256 and
   .dossier.checksum_sha256 == $config[0].release.frozen_checksums_sha256 and
-  .dossier.frozen_checksum_count == 42 and
+  .dossier.frozen_checksum_count == 48 and
   .authorization.required == true and
   .authorization.granted == true and
   .authorization.exact_digest_approval == true and
@@ -267,8 +274,8 @@ verify_checksum_inventory() {
   printf '%s\n' "${count}"
 }
 
-if [[ $(verify_checksum_inventory "${frozen_checksums}" "${frozen_root}" 'frozen inventory') != 42 ]]; then
-  printf 'frozen checksum inventory must contain exactly 42 entries\n' >&2
+if [[ $(verify_checksum_inventory "${frozen_checksums}" "${frozen_root}" 'frozen inventory') != 48 ]]; then
+  printf 'frozen checksum inventory must contain exactly 48 entries\n' >&2
   exit 65
 fi
 
@@ -321,8 +328,8 @@ for channel in apt homebrew npm pypi winget; do
     .contract == "ait.release.family.package/v1" and
     .status == "assembled" and
     .release_id == $release_id and
-    .version == "1.0.0-rc.1" and
-    .tag == "v1.0.0-rc.1" and
+    .version == "1.0.0-rc.2" and
+    .tag == "v1.0.0-rc.2" and
     .channel == $channel and
     .check_summary.decision == "pass" and
     .check_summary.blocking == 0 and

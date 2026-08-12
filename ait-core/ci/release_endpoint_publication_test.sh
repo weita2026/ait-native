@@ -3,7 +3,7 @@ set -euo pipefail
 
 repo_root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 workflow=${repo_root}/.github/workflows/pypi-publish.yml
-endpoint_config=${repo_root}/release/endpoint-publication.rc1.json
+endpoint_config=${repo_root}/release/endpoint-publication.rc2.json
 preparer=${repo_root}/ci/release_endpoint_publication.sh
 remote=${repo_root}/ci/release_endpoint_remote.sh
 temporary_root=$(mktemp -d "${TMPDIR:-/tmp}/ait-endpoint-publication-test.XXXXXX")
@@ -55,22 +55,29 @@ bash -n "${remote}"
 jq -e '
   .contract == "ait.release.family.endpoints/v1" and
   .release == {
-    id: "REL-FAM-D84070909C7F5CA9",
-    version: "1.0.0-rc.1",
-    python_version: "1.0.0rc1",
-    tag: "v1.0.0-rc.1",
-    source_commit: "f9d260a8f7046f82a6c3e271d539dd0bbce7bc14",
-    coordinator_snapshot: "SNP-FFDF9798A111",
-    frozen_manifest_sha256: "e0abcd0047e4b13117d3b6517006ce3315b9b2a1d1722c919ed0642ddc87dca9",
-    frozen_checksums_sha256: "dfffdd7f9cd64297f6d498f5b328e79acf12dfb4f4d61bac2a3f0cd5475f7bc7"
+    id: "REL-FAM-0B6EDBCCA2EFE26B",
+    version: "1.0.0-rc.2",
+    python_version: "1.0.0rc2",
+    tag: "v1.0.0-rc.2",
+    source_commit: "3dfd9dde5a9867cfe265352f48540fa8241f8e66",
+    coordinator_snapshot: "SNP-152CBCB22EAC",
+    frozen_manifest_sha256: "38cf7635d398294e2a433caf4d54444fdf97ffdfaa8307a0782247939841ac56",
+    frozen_checksums_sha256: "51cadec032ca6bcab2a27fc60538886a90288e1c9eff97a82e7a15be13fd3896"
   } and
   .publisher == {
     repository: "weita2026/ait-native",
     workflow: "pypi-publish.yml",
     environment: "pypi"
   } and
-  (.endpoints.npm.packages | length) == 13 and
-  (.endpoints.npm.packages | unique | length) == 13 and
+  .endpoints.npm.packages == [
+    "ait-native",
+    "ait-native-ait-darwin-arm64",
+    "ait-native-ait-darwin-x64",
+    "ait-native-ait-linux-arm64",
+    "ait-native-ait-linux-x64",
+    "ait-native-ait-win32-arm64",
+    "ait-native-ait-win32-x64"
+  ] and
   .endpoints.winget == {
     identity: "Weita.AitNative",
     route: "validation",
@@ -158,19 +165,19 @@ github_asset_fixture=${temporary_root}/github-asset-fixture
 mkdir -p "${github_asset_fixture}/assets"
 assets=${github_asset_fixture}/assets
 stage_receipt=${github_asset_fixture}/ait-release.endpoint-publication.json
-: >"${assets}/ait-native_1.0.0~rc.1_amd64.deb"
+: >"${assets}/ait-native_1.0.0~rc.2_amd64.deb"
 : >"${assets}/plain.zip"
 : >"${stage_receipt}"
 github_asset_map=${github_asset_fixture}/asset-map
 github_release_asset_map "${github_asset_map}"
 test "$(wc -l <"${github_asset_map}" | tr -d '[:space:]')" = 3
-grep -F $'ait-native_1.0.0.rc.1_amd64.deb\t'"${assets}/ait-native_1.0.0~rc.1_amd64.deb" \
+grep -F $'ait-native_1.0.0.rc.2_amd64.deb\t'"${assets}/ait-native_1.0.0~rc.2_amd64.deb" \
   "${github_asset_map}" >/dev/null
 test "$(github_release_local_path \
-  "${github_asset_map}" 'ait-native_1.0.0.rc.1_amd64.deb')" = \
-  "${assets}/ait-native_1.0.0~rc.1_amd64.deb"
+  "${github_asset_map}" 'ait-native_1.0.0.rc.2_amd64.deb')" = \
+  "${assets}/ait-native_1.0.0~rc.2_amd64.deb"
 test "$(github_release_asset_name 'plain~name.zip')" = 'plain~name.zip'
-: >"${assets}/ait-native_1.0.0.rc.1_amd64.deb"
+: >"${assets}/ait-native_1.0.0.rc.2_amd64.deb"
 expect_failure github-asset-name-collision \
   github_release_asset_map "${github_asset_fixture}/colliding-map"
 
@@ -183,11 +190,11 @@ printf '%s\n' \
   'set -euo pipefail' \
   'if [[ $1 == dist-tag && $2 == ls ]]; then' \
   '  case "$3" in' \
-  '    matching) printf '\''latest: 1.0.0-rc.1\nrc: 1.0.0-rc.1\n'\''' \
+  '    matching) printf '\''latest: 1.0.0-rc.2\nrc: 1.0.0-rc.2\n'\''' \
   '      ;;' \
-  '    stable) printf '\''latest: 0.9.0\nrc: 1.0.0-rc.1\n'\''' \
+  '    stable) printf '\''latest: 0.9.0\nrc: 1.0.0-rc.2\n'\''' \
   '      ;;' \
-  '    no-latest) printf '\''rc: 1.0.0-rc.1\n'\''' \
+  '    no-latest) printf '\''rc: 1.0.0-rc.2\n'\''' \
   '      ;;' \
   '    *) exit 64 ;;' \
   '  esac' \
@@ -207,38 +214,38 @@ npmrc=${temporary_root}/npm-tag-test.npmrc
 export AIT_NPM_TAG_TEST_LOG=${npm_tag_log}
 PATH="${npm_tag_mock}:${PATH}" \
   remove_matching_npm_prerelease_latest_tag \
-  "${npmrc}" matching 1.0.0-rc.1 rc
+  "${npmrc}" matching 1.0.0-rc.2 rc
 PATH="${npm_tag_mock}:${PATH}" \
   remove_matching_npm_prerelease_latest_tag \
-  "${npmrc}" stable 1.0.0-rc.1 rc
+  "${npmrc}" stable 1.0.0-rc.2 rc
 PATH="${npm_tag_mock}:${PATH}" \
   remove_matching_npm_prerelease_latest_tag \
-  "${npmrc}" no-latest 1.0.0-rc.1 rc
+  "${npmrc}" no-latest 1.0.0-rc.2 rc
 PATH="${npm_tag_mock}:${PATH}" \
   remove_matching_npm_prerelease_latest_tag \
   "${npmrc}" matching 1.0.0 latest
 PATH="${npm_tag_mock}:${PATH}" \
   remove_matching_npm_prerelease_latest_tag \
-  "${npmrc}" matching 1.0.0-rc.1 latest
+  "${npmrc}" matching 1.0.0-rc.2 latest
 test "$(wc -l <"${npm_tag_log}" | tr -d '[:space:]')" = 1
 grep -Fx 'dist-tag rm matching latest --registry https://registry.npmjs.org' \
   "${npm_tag_log}" >/dev/null
 
-jq -n '{"dist-tags": {rc: "1.0.0-rc.1", latest: "0.9.0"}}' \
+jq -n '{"dist-tags": {rc: "1.0.0-rc.2", latest: "0.9.0"}}' \
   >"${temporary_root}/npm-tags-valid.json"
 validate_npm_dist_tags "${temporary_root}/npm-tags-valid.json" \
-  ait-native 1.0.0-rc.1 rc
-jq -n '{"dist-tags": {rc: "1.0.0-rc.1", latest: "1.0.0-rc.1"}}' \
+  ait-native 1.0.0-rc.2 rc
+jq -n '{"dist-tags": {rc: "1.0.0-rc.2", latest: "1.0.0-rc.2"}}' \
   >"${temporary_root}/npm-tags-rc-latest.json"
 expect_failure npm-rc-remains-latest validate_npm_dist_tags \
-  "${temporary_root}/npm-tags-rc-latest.json" ait-native 1.0.0-rc.1 rc
-grep -F 'npm prerelease remains the default latest tag: ait-native@1.0.0-rc.1' \
+  "${temporary_root}/npm-tags-rc-latest.json" ait-native 1.0.0-rc.2 rc
+grep -F 'npm prerelease remains the default latest tag: ait-native@1.0.0-rc.2' \
   "${temporary_root}/npm-rc-remains-latest.stderr" >/dev/null
 jq -n '{"dist-tags": {rc: "1.0.0-rc.0", latest: "0.9.0"}}' \
   >"${temporary_root}/npm-tags-wrong-rc.json"
 expect_failure npm-rc-tag-drift validate_npm_dist_tags \
-  "${temporary_root}/npm-tags-wrong-rc.json" ait-native 1.0.0-rc.1 rc
-grep -F 'npm RC dist-tag readback failed: ait-native@1.0.0-rc.1' \
+  "${temporary_root}/npm-tags-wrong-rc.json" ait-native 1.0.0-rc.2 rc
+grep -F 'npm RC dist-tag readback failed: ait-native@1.0.0-rc.2' \
   "${temporary_root}/npm-rc-tag-drift.stderr" >/dev/null
 
 for component in ait-server ait-runner; do
@@ -381,11 +388,11 @@ if [[ -n ${AIT_RELEASE_ENDPOINT_DOSSIER:-} ||
     "${real_stage}" >/dev/null
   jq -e '
     .status == "ready_for_authenticated_endpoint_preflight" and
-    .release_asset_count == 88 and
+    .release_asset_count == 82 and
     .mutation.registry_write == false and
     .mutation.github_release_write == false
   ' "${real_stage}/ait-release.endpoint-publication.json" >/dev/null
-  test "$(find "${real_stage}/assets" -mindepth 1 -maxdepth 1 -type f | wc -l | tr -d '[:space:]')" = 89
+  test "$(find "${real_stage}/assets" -mindepth 1 -maxdepth 1 -type f | wc -l | tr -d '[:space:]')" = 83
 fi
 
 printf 'release endpoint publication contract: pass\n'
