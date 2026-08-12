@@ -186,6 +186,50 @@ cleanup() {
 }
 trap cleanup EXIT HUP INT TERM
 
+github_release_asset_name() {
+  local local_name=$1
+  case "${local_name}" in
+    *.deb) printf '%s\n' "${local_name//\~/.}" ;;
+    *) printf '%s\n' "${local_name}" ;;
+  esac
+}
+
+github_release_asset_map() {
+  local output=$1
+  local raw=${temporary_root}/github-asset-map-raw
+  local local_asset local_name remote_name
+  : >"${raw}"
+  while IFS= read -r local_asset; do
+    local_name=$(basename -- "${local_asset}")
+    remote_name=$(github_release_asset_name "${local_name}")
+    printf '%s\t%s\n' "${remote_name}" "${local_asset}" >>"${raw}"
+  done < <(find "${assets}" -mindepth 1 -maxdepth 1 -type f -print | LC_ALL=C sort)
+  printf '%s\t%s\n' 'ait-release.endpoint-publication.json' "${stage_receipt}" >>"${raw}"
+  LC_ALL=C sort "${raw}" >"${output}"
+  if ! awk -F '\t' '
+    seen[$1]++ { print $1; bad = 1 }
+    END { exit bad }
+  ' "${output}"; then
+    printf 'GitHub Release filename normalization creates an asset collision\n' >&2
+    return 65
+  fi
+}
+
+github_release_local_path() {
+  local asset_map=$1
+  local remote_name=$2
+  awk -F '\t' -v name="${remote_name}" '
+    $1 == name {
+      found += 1
+      path = substr($0, index($0, "\t") + 1)
+    }
+    END {
+      if (found != 1) exit 1
+      print path
+    }
+  ' "${asset_map}"
+}
+
 write_npm_config() {
   local npmrc=$1
   require_environment AIT_NPM_TOKEN
@@ -475,13 +519,12 @@ require_preflight_receipt() {
 validate_github_release_state() {
   local require_complete=${1:-false}
   local release_record=${temporary_root}/github-release.json
+  local asset_map=${temporary_root}/github-asset-map
   local expected_names=${temporary_root}/github-expected-names
   local remote_names=${temporary_root}/github-existing-names
   local status name digest local_path
-  find "${assets}" -mindepth 1 -maxdepth 1 -type f -exec basename {} \; |
-    LC_ALL=C sort >"${expected_names}"
-  printf '%s\n' 'ait-release.endpoint-publication.json' >>"${expected_names}"
-  LC_ALL=C sort -u "${expected_names}" -o "${expected_names}"
+  github_release_asset_map "${asset_map}"
+  awk -F '\t' '{print $1}' "${asset_map}" >"${expected_names}"
   status=$(curl --silent --show-error --location --output "${release_record}" --write-out '%{http_code}' \
     --header "Authorization: Bearer ${AIT_GITHUB_TOKEN}" \
     --header 'Accept: application/vnd.github+json' \
@@ -507,9 +550,9 @@ validate_github_release_state() {
         return 65
       fi
       while IFS=$'\t' read -r name digest; do
-        local_path=${assets}/${name}
-        if [[ ${name} == ait-release.endpoint-publication.json ]]; then
-          local_path=${stage_receipt}
+        if ! local_path=$(github_release_local_path "${asset_map}" "${name}"); then
+          printf 'existing GitHub Release asset has no staged source: %s\n' "${name}" >&2
+          return 65
         fi
         require_regular_file "${local_path}" 'existing GitHub Release asset source'
         if [[ ! ${digest} =~ ^sha256:[0-9a-f]{64}$ ||
@@ -893,20 +936,18 @@ NOTES
       --title 'AIT Native 1.0.0 RC 1' \
       --notes-file "${notes}" \
       --prerelease
+    asset_map=${temporary_root}/github-asset-map
+    github_release_asset_map "${asset_map}"
     remote_names=${temporary_root}/github-remote-names
     GH_TOKEN="${AIT_GITHUB_TOKEN}" gh api \
       "repos/${github_repository}/releases/tags/${release_tag}" \
       --jq '.assets[].name' | LC_ALL=C sort >"${remote_names}"
     missing_assets=()
-    while IFS= read -r local_asset; do
-      name=$(basename -- "${local_asset}")
+    while IFS=$'\t' read -r name local_asset; do
       if ! grep -Fx "${name}" "${remote_names}" >/dev/null; then
         missing_assets+=("${local_asset}")
       fi
-    done < <(find "${assets}" -mindepth 1 -maxdepth 1 -type f -print | LC_ALL=C sort)
-    if ! grep -Fx 'ait-release.endpoint-publication.json' "${remote_names}" >/dev/null; then
-      missing_assets+=("${stage_receipt}#ait-release.endpoint-publication.json")
-    fi
+    done <"${asset_map}"
     if (( ${#missing_assets[@]} > 0 )); then
       GH_TOKEN="${AIT_GITHUB_TOKEN}" gh release upload "${release_tag}" \
         --repo "${github_repository}" "${missing_assets[@]}"
@@ -914,15 +955,15 @@ NOTES
     release_record=${temporary_root}/github-release-published.json
     GH_TOKEN="${AIT_GITHUB_TOKEN}" gh api \
       "repos/${github_repository}/releases/tags/${release_tag}" >"${release_record}"
-    expected_count=$(($(find "${assets}" -mindepth 1 -maxdepth 1 -type f | wc -l) + 1))
+    expected_count=$(wc -l <"${asset_map}" | tr -d '[:space:]')
     if [[ $(jq -r '.assets | length' "${release_record}") != "${expected_count}" ]]; then
       printf 'GitHub Release asset count is incomplete after upload\n' >&2
       exit 65
     fi
     while IFS=$'\t' read -r name digest; do
-      local_path=${assets}/${name}
-      if [[ ${name} == ait-release.endpoint-publication.json ]]; then
-        local_path=${stage_receipt}
+      if ! local_path=$(github_release_local_path "${asset_map}" "${name}"); then
+        printf 'GitHub Release asset has no staged source after upload: %s\n' "${name}" >&2
+        exit 65
       fi
       if [[ ${digest} != "sha256:$(sha256_file "${local_path}")" ]]; then
         printf 'GitHub Release digest readback failed: %s\n' "${name}" >&2
