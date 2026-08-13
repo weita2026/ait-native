@@ -9,55 +9,42 @@ has actually reached an external endpoint.
 
 ## Current Public RC Status (2026-08-13)
 
-`v1.0.0-rc.2` is an immutable public prerelease at Git commit
-`3dfd9dde5a9867cfe265352f48540fa8241f8e66`. Its tag and frozen artifacts must
-not be moved, rebuilt, replaced, or silently repaired. The public release is
-[`weita2026/ait-native v1.0.0-rc.2`](https://github.com/weita2026/ait-native/releases/tag/v1.0.0-rc.2),
-and the latest endpoint attempt is
-[`31652315795`](https://github.com/weita2026/ait-native/actions/runs/31652315795).
+`v1.0.0-rc.3` is the current immutable public prerelease. Annotated tag object
+`810265c705ffececba3d74924f60ed2d0453ef7d` peels to source commit
+`ba368cf4d0750035345f14a8a91c22fb9e450260`; neither identity was moved by
+endpoint publication. The public release is
+[`weita2026/ait-native v1.0.0-rc.3`](https://github.com/weita2026/ait-native/releases/tag/v1.0.0-rc.3).
+
+Corrected component-receipt run
+[`31664713921`](https://github.com/weita2026/ait-native/actions/runs/31664713921)
+completed all 35 jobs and froze `REL-FAM-600EFDC327FE7860`: 31 receipts and 37
+component artifacts bound to the tagged source above. Protected-environment
+run
+[`31666479359`](https://github.com/weita2026/ait-native/actions/runs/31666479359)
+authorized only that exact dossier. Reviewed endpoint-publisher control commit
+`30672445b7321226f81db280f3e2531ad6fc2a5d` then ran endpoint attempt
+[`31668411148`](https://github.com/weita2026/ait-native/actions/runs/31668411148).
 
 The exact current endpoint state is:
 
-| Endpoint | RC.2 state |
+| Endpoint | RC.3 state |
 | --- | --- |
 | GitHub Release | Public prerelease with 84 frozen source, native, package, checksum, validation, and receipt assets. |
-| PyPI | `ait-native==1.0.0rc2` is public with six admitted `cp311-abi3` wheels. |
-| GHCR | Public multi-platform `ait-server` and `ait-runner` images exist for Linux `amd64` and `arm64`; anonymous digest, filesystem, version, and provenance readback pass. |
-| Homebrew | `weita2026/homebrew-ait-native` contains the RC.2 formula with exact source URLs and checksums. |
-| apt | The signed `testing` repository contains both `ait-native` packages and both `ait-runner` packages. On a clean Ubuntu 22.04 client, signed update, exact-name `apt-cache search`, install, and both native version commands pass. |
-| npm | Five of six RC.2 implementation-only Node-API addon packages are public. The top-level `ait-native` envelope and `ait-native-ait-win32-x64` remain unpublished after npm name-spam rejection, so the Node.js product is not installable. |
+| PyPI | `ait-native==1.0.0rc3` is public with all six admitted `cp311-abi3` wheels; every registry SHA-256 matches the frozen dossier. |
+| GHCR | `ait-server:1.0.0-rc.3` and `ait-runner:1.0.0-rc.3` are public OCI indexes for Linux `amd64` and `arm64`; immutable index digests are `sha256:1494fb3ff9ea05e876d5894e70b599f0718d85e8e1bddf369eab7f89caaed0b4` and `sha256:a2b759b02240acb14440df99ea71012cf2f39c21d368f6da1381abbf235e9957`. |
+| Homebrew | `weita2026/homebrew-ait-native` contains `Formula/ait-native-rc.rb` for RC.3 with the four exact GitHub asset URLs and checksums. |
+| apt | The signed `testing` repository retains RC.2 and publishes RC.3 for both `ait-native` and `ait-runner` on `amd64` and `arm64`. A new Debian client finds both exact names with `apt-cache search --names-only`; RC.3 is the candidate version. |
+| npm | Five RC.3 implementation-only Node-API addon packages are public with exact frozen shasums and `rc` tags. npm still rejects the new `ait-native-ait-win32-x64` identity with `E403 Package name triggered spam detection`. The top-level `ait-native` envelope is deliberately withheld until all six exact addon identities exist, so the RC.3 Node.js product is not yet installable. |
 | WinGet | The frozen validation manifests are attached to the GitHub prerelease. No community repository submission has been made, by the declared RC route. |
 
-The endpoint workflow completed GitHub, PyPI, GHCR, Homebrew, apt, and WinGet
-validation publication, then failed final aggregate readback because the npm
-top-level package was still absent. RC.2 therefore remains useful immutable
-evidence but is not a complete all-endpoint release.
-
-RC.3 is the selected successor. It binds `ait-core` `SNP-158C9C5BB3D7`,
-`ait-server` `SNP-48F2D989D9BE`, `ait-runner` `SNP-CECFDF4170B9`, `ait-python`
-`SNP-B27811D3CE9E`, and `ait-node` `SNP-9DC1BB50ED8E`; coordinator Snapshot
-`SNP-B0271928FD9B` freezes the family, makes successful exact-name
-`apt-cache search` part of signed APT endpoint readback, and preserves the
-public source identity after a complete local source build. Immutable annotated
-tag `v1.0.0-rc.3` now peels to public source commit
-`ba368cf4d0750035345f14a8a91c22fb9e450260`; the tag ruleset permits no update,
-deletion, or bypass. Initial component-receipt run
-[`31663031294`](https://github.com/weita2026/ait-native/actions/runs/31663031294)
-failed before any build because the root workflow read historical RC.2
-coordination files from the selected `ait-core` subtree. Release-control
-Snapshot `SNP-D121B248E5E1` corrects that boundary without moving the tag:
-reviewed control is read from a later `main` commit while all builds, receipts,
-and archives remain bound to the tagged source commit. Corrected run
-[`31664713921`](https://github.com/weita2026/ait-native/actions/runs/31664713921)
-completed all 35 jobs and froze `REL-FAM-600EFDC327FE7860`: 31 receipts and 37
-component artifacts all name source commit
-`ba368cf4d0750035345f14a8a91c22fb9e450260`, while source-run evidence names
-reviewed control commit `93f2589d8eb7404400617169598427aaef3ff8af`.
-Protected-environment run
-[`31666479359`](https://github.com/weita2026/ait-native/actions/runs/31666479359)
-anonymously read back the immutable tag and authorized only that exact dossier
-for explicit endpoint promotion. No RC.3 GitHub Release or registry write has
-occurred at this checkpoint. RC.1 and RC.2 bytes remain immutable and are
+The endpoint attempt completed GitHub, PyPI, GHCR, Homebrew, signed apt, and
+WinGet-validation publication before failing visibly at the npm name-policy
+boundary. Final aggregate endpoint evidence was therefore not emitted. RC.3 is
+not an all-endpoint release until npm support admits the exact Windows x64
+identity, the unchanged workflow publishes that addon and the top-level
+envelope, and final public readback succeeds. This external npm block does not
+authorize a package rename, artifact rebuild, moved tag, hidden failure, or
+partial top-level package. RC.1 and RC.2 bytes also remain immutable and are
 never relabelled as RC.3.
 
 ## Release Family
@@ -797,13 +784,14 @@ does not move the tag or become part of the tagged source tree. This ordering
 prevents older endpoint authority from leaking into RC.3 and prevents guessed
 future identities from being treated as publication evidence.
 
-## Current RC.3 Gate And Historical RC Evidence
+## Current RC.3 Record And Historical RC Evidence
 
-RC.3 retains the direct Node-API architecture. Its public Git commit and tag
-now exist; it must still receive a successful protected
-31-receipt/37-artifact matrix, frozen `REL-FAM-*` dossier, protected
-authorization, and endpoint evidence. Nothing from RC.1 or RC.2 can be
-promoted or relabelled into RC.3.
+RC.3 retains the direct Node-API architecture. Its public Git commit and tag,
+successful protected 31-receipt/37-artifact matrix, frozen
+`REL-FAM-600EFDC327FE7860` dossier, and protected authorization now exist.
+Endpoint publication is complete except for the npm Windows x64 addon,
+dependent top-level envelope, and final all-endpoint evidence. Nothing from
+RC.1 or RC.2 can be promoted or relabelled into RC.3.
 
 The immutable RC.3 source tag object is
 `810265c705ffececba3d74924f60ed2d0453ef7d`; it peels to commit
@@ -825,10 +813,11 @@ failed in its contract job before a matrix build or dossier. It proved that the
 tagged root RC.3 family was being combined with historical RC.2 control files
 inside `ait-core`. Release-control correction `SNP-D121B248E5E1` passed the
 complete local patchset, remote CI, attestation, review, and policy, then
-landed atomically as `RCT-1384/C-01/P-02`. The next control export and dispatch
-must use that reviewed control while selecting the unchanged tagged source
-commit above. No RC.3 `REL-FAM-*` dossier or endpoint write exists at this
-checkpoint.
+landed atomically as `RCT-1384/C-01/P-02`. Corrected run `31664713921` used
+that reviewed control while selecting the unchanged tagged source commit and
+produced the frozen dossier. Protected run `31666479359` admitted it, and
+endpoint run `31668411148` produced the exact partial-publication state listed
+at the start of this document.
 
 The records below preserve immutable RC.1 evidence for comparison; they do not
 authorize an RC.3 endpoint write.
