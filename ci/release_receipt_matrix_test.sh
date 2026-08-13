@@ -94,10 +94,11 @@ for required_workflow_text in \
   'CARGO_BUILD_BUILD_DIR="${RUNNER_TEMP}/ait-family-admission-build"' \
   'input_sha256=ad5212e194db9a52b049d3334a157959102f115aeeb64f43ff0974328af2e4b3' \
   'output_sha256=6eaa298d8dacef5302d2b01bc3e204b73578f66ea69ec892901f9e2d3aa2ed72' \
-  'cp -R "${AIT_PUBLIC_SOURCE_ROOT}/ait-core/rust" "${admission_source}"' \
+  'cp -R "${AIT_PUBLIC_SOURCE_ROOT}/ait-core" "${admission_root}"' \
+  'admission_rust="${admission_root}/rust"' \
   'patch --batch --forward --strip=0' \
   '<"${AIT_CONTROL_ROOT}/ci/release_family_scoped_npm.patch"' \
-  '--manifest-path "${admission_source}/Cargo.toml"' \
+  '--manifest-path "${admission_rust}/Cargo.toml"' \
   'admission_root="${RUNNER_TEMP}/ait-family-admission-repository"' \
   'test ! -e "${admission_root}"' \
   'cd "${admission_root}"' \
@@ -129,6 +130,7 @@ for forbidden_workflow_text in \
   'secrets.AIT_RELEASE_SERVER_URL' \
   './ci/release_monorepo_export_test.sh' \
   './ci/release_receipt_bundle_test.sh' \
+  'cp -R "${AIT_PUBLIC_SOURCE_ROOT}/ait-core/rust"' \
   '--repair-existing' \
   'pattern: ait-release-source-ait-*'; do
   if grep -F -- "${forbidden_workflow_text}" "${workflow}" >/dev/null; then
