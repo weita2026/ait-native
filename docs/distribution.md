@@ -38,10 +38,18 @@ RC.3 is the selected successor. It binds `ait-core` `SNP-158C9C5BB3D7`,
 `SNP-B27811D3CE9E`, and `ait-node` `SNP-9DC1BB50ED8E`; coordinator Snapshot
 `SNP-B0271928FD9B` freezes the family, makes successful exact-name
 `apt-cache search` part of signed APT endpoint readback, and preserves the
-public source identity after a complete local source build. At this source
-freeze, RC.3 is not public until its source tag, protected matrix, frozen
-dossier, endpoint publication, and final readback complete. RC.1 and RC.2
-bytes remain immutable and are never relabelled as RC.3.
+public source identity after a complete local source build. Immutable annotated
+tag `v1.0.0-rc.3` now peels to public source commit
+`ba368cf4d0750035345f14a8a91c22fb9e450260`; the tag ruleset permits no update,
+deletion, or bypass. Initial component-receipt run
+[`31663031294`](https://github.com/weita2026/ait-native/actions/runs/31663031294)
+failed before any build because the root workflow read historical RC.2
+coordination files from the selected `ait-core` subtree. Release-control
+Snapshot `SNP-D121B248E5E1` corrects that boundary without moving the tag:
+reviewed control is read from a later `main` commit while all builds, receipts,
+and archives remain bound to the tagged source commit. No RC.3 GitHub Release,
+frozen dossier, endpoint publication, or registry write exists yet. RC.1 and
+RC.2 bytes remain immutable and are never relabelled as RC.3.
 
 ## Release Family
 
@@ -73,6 +81,7 @@ tag. The deterministic exported tree has these fixed paths:
 ```text
 ait-native/
 ├── .gitattributes
+├── .github/workflows/
 ├── ait-core/
 ├── ait-server/
 ├── ait-runner/
@@ -83,6 +92,7 @@ ait-native/
 ├── build-release.mjs
 ├── build-release.sh
 ├── build-release.ps1
+├── ci/
 └── docs/distribution.md
 ```
 
@@ -93,6 +103,11 @@ content digest. It also records the coordinator Snapshot, manifest hash, and
 creation time that deterministically identify the v3 family candidate. This is
 an export boundary, not an AIT repository merge: `source_repository` and
 `source_snapshot` in receipts continue to name the five internal authorities.
+Root `ci/` contains only the reviewed receipt-matrix, native-platform,
+Repository-authority, and protected-verifier release controls projected from
+the coordinator. These files are not overlaid into `ait-core/`; historical
+coordination files inside an admitted component subtree remain immutable source
+history and have no current release-control authority.
 
 The export contains no Git submodule, `.git`, `.ait`, `.ait-external`,
 `.ait-runtime`, or task worktree. It permits only two declared source rewrites:
@@ -653,32 +668,37 @@ or create a complete publishable v3 family.
 ### Protected component-receipt matrix
 
 The manually dispatched
-[`ait-release-component-receipts.yml`](https://github.com/weita2026/ait-native/blob/v1.0.0-rc.3/.github/workflows/ait-release-component-receipts.yml)
+[`ait-release-component-receipts.yml`](https://github.com/weita2026/ait-native/blob/main/.github/workflows/ait-release-component-receipts.yml)
 workflow is the sole cross-repository component-matrix entrypoint. Its required
-`coordinator_snapshot` input is the exact landed AIT Snapshot containing the
-family manifest to admit. The dispatched `github.sha` is the immutable public
-source authority used by every runner. `ait-monorepo-source.json` proves how
-that one Git tree was exported from the coordinator Snapshot and the five
-component Snapshots; a Git checkout is never represented as a selected local
-AIT Snapshot checkout.
+`coordinator_snapshot` input is the exact landed AIT Snapshot named by the
+selected source mapping, and `source_commit` is the exact immutable public Git
+commit to build. The dispatched `github.sha` is a separate reviewed
+release-control commit. Every runner checks out the selected source commit
+under `source/`; only contract and matrix-projection jobs also check out
+`github.sha` under `control/`. `ait-monorepo-source.json` proves how the source
+tree was exported from the coordinator Snapshot and five component Snapshots;
+a Git checkout is never represented as a selected local AIT Snapshot checkout.
 
-The deterministic monorepo exporter projects that reviewed coordinator
-workflow to the public repository root because GitHub Actions discovers
-workflows only under root `.github/workflows/`. Its shell steps execute from
-the exported `ait-core/` subtree, while GitHub action paths remain rooted at
-the monorepo checkout. The nested component copy is source history, not a
-second dispatch entrypoint. This projection does not create another GitHub
-repository or change any component Snapshot authority.
+The deterministic monorepo exporter projects the reviewed workflows and exact
+release-control files to the public repository root because GitHub Actions
+discovers workflows only under root `.github/workflows/`. Component build and
+family-admission shell steps execute from `source/ait-core/`; release-control
+steps execute from `control/` and consume the source checkout's root family
+manifest explicitly. The nested component copy is source history, not a second
+dispatch entrypoint or current control directory. This projection does not
+create another GitHub repository or change any component Snapshot authority.
 
-Before dispatch, deterministically export the landed authorities, review and
-commit that complete tree to `weita2026/ait-native`, and confirm that the
-committed `ait-monorepo-source.json` names the requested coordinator. Protect
-the source branch, workflow, and manual dispatch through normal GitHub
-repository controls. This workflow has no environment secret and specifically
-must not receive `AIT_RELEASE_SERVER_URL`: GitHub-hosted runners neither connect
-to an AIT server nor download private AIT repository state. PyPI, npm, GitHub
-Release, Homebrew, apt, WinGet, OCI, signing, and publication credentials also
-remain absent.
+Before dispatch, deterministically export the landed controls, review and
+commit that complete tree to `weita2026/ait-native`, confirm that the selected
+tag still resolves to `source_commit`, and confirm that the selected source's
+`ait-monorepo-source.json` names `coordinator_snapshot`. Protect the default
+branch, immutable tag, workflow, and manual dispatch through normal GitHub
+repository controls. A post-tag control correction may change `github.sha` but
+must never rewrite the selected source commit or tag. This workflow has no
+environment secret and specifically must not receive `AIT_RELEASE_SERVER_URL`:
+GitHub-hosted runners neither connect to an AIT server nor download private AIT
+repository state. PyPI, npm, GitHub Release, Homebrew, apt, WinGet, OCI,
+signing, and publication credentials also remain absent.
 
 The pre-commit export is a maintainer-side authority operation, separate from
 the hosted build. It may read already-landed Snapshots from the maintainer's
@@ -689,9 +709,10 @@ they need shared remote authority.
 
 The workflow performs these bounded operations:
 
-1. check out exact `github.sha` with persisted credentials disabled and verify
-   its complete content digest, family manifest, mapping, and requested
-   coordinator Snapshot before any build command runs;
+1. check out exact reviewed control and selected source commits with persisted
+   credentials disabled; validate both public export contracts, then verify the
+   source content digest, family manifest, mapping, and requested coordinator
+   Snapshot before any build command runs;
 2. project 31 target/portable receipt jobs and 37 component artifacts from the
    mapped family manifest;
 3. run each repository-owned generic adapter directly in its fixed public
@@ -706,10 +727,12 @@ The workflow performs these bounded operations:
    receipts, and upload one frozen internal dossier.
 
 `public_git_commit` is only the receipt's source-authority label. The actual
-`authority.git_commit` value is the full immutable commit SHA checked out from
-`weita2026/ait-native`; it is not a server, repository, command, upload target,
-or replacement for an AIT Snapshot. The mapping keeps internal Snapshot
-provenance, while this Git SHA proves which public source bytes a runner built.
+`authority.git_commit` value is the full immutable `source_commit` checked out
+from `weita2026/ait-native`; it is not the release-control `github.sha`, a
+server, command, upload target, or replacement for an AIT Snapshot. The mapping
+keeps internal Snapshot provenance, while this Git SHA proves which public
+source bytes a runner built. Run-scoped source evidence separately records the
+workflow-control commit so protected authorization can prove both identities.
 
 All artifacts are run-scoped and `public_publish` remains false. The workflow
 does not create a tag, call `release promote`, sign an artifact, activate AIT
@@ -717,8 +740,8 @@ remote Release authority, create a GitHub Release, or write to any registry.
 The additional monorepo source artifact does not change the five internal
 Snapshot authorities, 31 receipt, or 37 component-artifact counts. Hosted
 release source-cache count and live AIT server connection count are both zero.
-The GitHub-hosted runner labels are pinned in
-[`native_bootstrap_matrix.json`](https://github.com/weita2026/ait-native/blob/v1.0.0-rc.3/ait-core/ci/native_bootstrap_matrix.json); confirm
+The GitHub-hosted runner labels are pinned in the root release-control
+[`native_bootstrap_matrix.json`](https://github.com/weita2026/ait-native/blob/main/ci/native_bootstrap_matrix.json); confirm
 their current availability in GitHub's hosted-runner reference before an RC or
 GA dispatch.
 
@@ -729,17 +752,22 @@ The public monorepo root owns
 authorization boundary after the immutable handoff. Its job runs only behind
 the `rc-promotion` GitHub environment and accepts exact values for the source
 workflow run and attempt, dossier artifact ID and GitHub artifact digest,
-family Release, tag, public Git commit, coordinator Snapshot, frozen-manifest
-SHA-256, and frozen `SHA256SUMS` SHA-256. Approval therefore applies to one
-already-built byte set rather than a version label or moving branch.
+family Release, tag, public Git commit, source-workflow control commit,
+coordinator Snapshot, frozen-manifest SHA-256, and frozen `SHA256SUMS` SHA-256.
+The source-run API record must identify that exact control commit, while the
+dossier and anonymous tag readback must identify the exact source commit.
+Approval therefore applies to one already-built byte set rather than a version
+label or moving branch.
 
 The protected job reads the selected tag anonymously, downloads only the
 exact dossier artifact from the successful component-receipt run, revalidates
 every frozen and assembled-package checksum, proves the tagged checkout is
 byte- and executable-mode-equal to the archived corresponding source, runs the
-tagged public-source contract, and asks the frozen host-native `ait` binary to
-reproduce the credential-free promotion handoff. It then emits and attests one
-`ait.release.family.protected-promotion/v1` evidence record.
+tagged public-source contract, projects expected counts only from the reviewed
+root control files plus the tagged root family, and asks the frozen host-native
+`ait` binary to reproduce the credential-free promotion handoff. It then emits
+and attests one `ait.release.family.protected-promotion/v1` evidence record
+containing both source and source-workflow commit identities.
 
 That evidence may set protected authorization and source readback to verified,
 but it still records every artifact rebuild, registry credential load,
@@ -749,8 +777,9 @@ explicit authorization for each exact publication endpoint. The protected
 workflow consequently cannot be used as an implicit registry-publish command.
 
 RC source export deliberately contains only the component-receipt and
-protected-promotion workflows. It must not copy a publisher or endpoint
-configuration from an older release. After protected promotion has produced
+protected-promotion workflows plus their bounded root matrix/verifier control
+files. It must not copy a publisher or endpoint configuration from an older
+release. After protected promotion has produced
 the real RC.3 Release ID, source commit, run and artifact identities, and
 digests, a separate reviewed change installs one exact RC.3 endpoint
 configuration and publisher workflow on the public repository's default
@@ -761,11 +790,39 @@ future identities from being treated as publication evidence.
 
 ## Current RC.3 Gate And Historical RC Evidence
 
-RC.3 retains the direct Node-API architecture and must receive its own public
-Git commit, tag, protected 31-receipt/37-artifact matrix, frozen `REL-FAM-*`
-dossier, and endpoint evidence. Nothing from RC.1 or RC.2 can be promoted or
-relabelled into RC.3. The records below preserve immutable earlier evidence for
-comparison; they do not authorize an RC.3 endpoint write.
+RC.3 retains the direct Node-API architecture. Its public Git commit and tag
+now exist; it must still receive a successful protected
+31-receipt/37-artifact matrix, frozen `REL-FAM-*` dossier, protected
+authorization, and endpoint evidence. Nothing from RC.1 or RC.2 can be
+promoted or relabelled into RC.3.
+
+The immutable RC.3 source tag object is
+`810265c705ffececba3d74924f60ed2d0453ef7d`; it peels to commit
+`ba368cf4d0750035345f14a8a91c22fb9e450260`. Tagged coordinator Snapshot
+`SNP-B0271928FD9B` has manifest hash
+`b0271928fd9b290e9eb8fafdeeb8f70c1547dbe8a2b56710b1186c821ad9b125`.
+The tagged family-manifest SHA-256 is
+`7c20810f16676b8e10f74b8fe576bb41e29eac2d1a4898fe495258279b03b9a8`,
+the public mapping SHA-256 is
+`4bc3ce9dac8da6c6f0b7adb3a9d55ab49e45bef3b7684f4e7c4cc1982c9961f0`,
+and its mapped content SHA-256 is
+`98be79d828fd06ece7313efa185145abb893798cb56dfba7f41361c7cd7f5a48`.
+Anonymous exact-tag checkout preserves 1,599 tracked files and 28 executable
+modes and passes the commit-bound public-source validator.
+
+Initial run
+[`31663031294`](https://github.com/weita2026/ait-native/actions/runs/31663031294)
+failed in its contract job before a matrix build or dossier. It proved that the
+tagged root RC.3 family was being combined with historical RC.2 control files
+inside `ait-core`. Release-control correction `SNP-D121B248E5E1` passed the
+complete local patchset, remote CI, attestation, review, and policy, then
+landed atomically as `RCT-1384/C-01/P-02`. The next control export and dispatch
+must use that reviewed control while selecting the unchanged tagged source
+commit above. No RC.3 `REL-FAM-*` dossier or endpoint write exists at this
+checkpoint.
+
+The records below preserve immutable RC.1 evidence for comparison; they do not
+authorize an RC.3 endpoint write.
 
 At the 2026-08-12 checkpoint, the immutable reviewed RC source is annotated
 tag `v1.0.0-rc.1` on
@@ -839,8 +896,8 @@ authorization use frozen GitHub artifacts and an anonymous tag checkout, so a
 GitHub-hosted runner does not need an internet-reachable
 `AIT_RELEASE_SERVER_URL`.
 
-The code and cross-platform receipt matrix are no longer the RC blocker. The
-remaining publication gates are:
+For the historical RC.1 dossier, code and its cross-platform receipt matrix
+were no longer the blocker. Its remaining publication gates were:
 
 - preserve the attested protected handoff without substituting artifacts and
   obtain separate explicit owner authorization for every publication

@@ -1,0 +1,69 @@
+{
+  "contract": "ait-native-bootstrap-matrix/v1",
+  "schema_version": 1,
+  "matrix_revision": "six-target-2026-07-19.1",
+  "version": "1.0.0-rc.3",
+  "rust_toolchain": "1.96.0",
+  "cargo_profile": "release",
+  "package": "ait-cli",
+  "binary": "ait-cli",
+  "public_identity": "ait",
+  "artifact_prefix": "ait-core-native-cli",
+  "public_publish": false,
+  "targets": [
+    {
+      "target": "aarch64-apple-darwin",
+      "runner": "macos-15",
+      "os": "macos",
+      "architecture": "arm64",
+      "minimum_platform_kind": "macos_deployment_target",
+      "minimum_platform": "13.0",
+      "executable_suffix": ""
+    },
+    {
+      "target": "x86_64-apple-darwin",
+      "runner": "macos-15-intel",
+      "os": "macos",
+      "architecture": "x86_64",
+      "minimum_platform_kind": "macos_deployment_target",
+      "minimum_platform": "13.0",
+      "executable_suffix": ""
+    },
+    {
+      "target": "aarch64-unknown-linux-gnu",
+      "runner": "ubuntu-22.04-arm",
+      "os": "linux",
+      "architecture": "arm64",
+      "minimum_platform_kind": "glibc",
+      "minimum_platform": "2.35",
+      "executable_suffix": ""
+    },
+    {
+      "target": "x86_64-unknown-linux-gnu",
+      "runner": "ubuntu-22.04",
+      "os": "linux",
+      "architecture": "x86_64",
+      "minimum_platform_kind": "glibc",
+      "minimum_platform": "2.35",
+      "executable_suffix": ""
+    },
+    {
+      "target": "aarch64-pc-windows-msvc",
+      "runner": "windows-11-arm",
+      "os": "windows",
+      "architecture": "arm64",
+      "minimum_platform_kind": "windows_build",
+      "minimum_platform": "26100",
+      "executable_suffix": ".exe"
+    },
+    {
+      "target": "x86_64-pc-windows-msvc",
+      "runner": "windows-2025",
+      "os": "windows",
+      "architecture": "x86_64",
+      "minimum_platform_kind": "windows_build",
+      "minimum_platform": "17763",
+      "executable_suffix": ".exe"
+    }
+  ]
+}
