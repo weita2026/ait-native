@@ -47,9 +47,18 @@ failed before any build because the root workflow read historical RC.2
 coordination files from the selected `ait-core` subtree. Release-control
 Snapshot `SNP-D121B248E5E1` corrects that boundary without moving the tag:
 reviewed control is read from a later `main` commit while all builds, receipts,
-and archives remain bound to the tagged source commit. No RC.3 GitHub Release,
-frozen dossier, endpoint publication, or registry write exists yet. RC.1 and
-RC.2 bytes remain immutable and are never relabelled as RC.3.
+and archives remain bound to the tagged source commit. Corrected run
+[`31664713921`](https://github.com/weita2026/ait-native/actions/runs/31664713921)
+completed all 35 jobs and froze `REL-FAM-600EFDC327FE7860`: 31 receipts and 37
+component artifacts all name source commit
+`ba368cf4d0750035345f14a8a91c22fb9e450260`, while source-run evidence names
+reviewed control commit `93f2589d8eb7404400617169598427aaef3ff8af`.
+Protected-environment run
+[`31666479359`](https://github.com/weita2026/ait-native/actions/runs/31666479359)
+anonymously read back the immutable tag and authorized only that exact dossier
+for explicit endpoint promotion. No RC.3 GitHub Release or registry write has
+occurred at this checkpoint. RC.1 and RC.2 bytes remain immutable and are
+never relabelled as RC.3.
 
 ## Release Family
 
