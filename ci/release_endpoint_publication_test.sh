@@ -154,6 +154,17 @@ if grep -F 'continue-on-error:' "${workflow}" >/dev/null; then
   printf 'endpoint publication must not hide a failed endpoint\n' >&2
   exit 65
 fi
+for required_pypi_readback_contract in \
+  'wait_for_pypi_remote_state() {' \
+  'local max_attempts=12' \
+  'if [[ ${readback_status} != 75 ]]; then' \
+  'wait_for_pypi_remote_state'; do
+  if ! grep -F -- "${required_pypi_readback_contract}" "${remote}" >/dev/null; then
+    printf 'PyPI publisher is missing bounded readback behavior: %s\n' \
+      "${required_pypi_readback_contract}" >&2
+    exit 65
+  fi
+done
 if ! awk '
   /- name: Publish the signed apt testing repository/ { apt_step = NR }
   /- name: Publish npm implementation payloads and command envelope/ { npm_step = NR }
@@ -206,6 +217,53 @@ eval "$(extract_remote_function github_release_local_path)"
 eval "$(extract_remote_function npm_provenance_policy)"
 eval "$(extract_remote_function remove_matching_npm_prerelease_latest_tag)"
 eval "$(extract_remote_function validate_npm_dist_tags)"
+eval "$(extract_remote_function wait_for_pypi_remote_state)"
+
+pypi_readback_attempts=0
+validate_pypi_remote_state() {
+  pypi_readback_attempts=$((pypi_readback_attempts + 1))
+  if ((pypi_readback_attempts < 3)); then
+    return 75
+  fi
+  return 0
+}
+sleep() {
+  :
+}
+wait_for_pypi_remote_state \
+  >"${temporary_root}/pypi-eventual-success.stdout" \
+  2>"${temporary_root}/pypi-eventual-success.stderr"
+test "${pypi_readback_attempts}" = 3
+
+pypi_readback_attempts=0
+validate_pypi_remote_state() {
+  pypi_readback_attempts=$((pypi_readback_attempts + 1))
+  return 65
+}
+if wait_for_pypi_remote_state \
+  >"${temporary_root}/pypi-hard-failure.stdout" \
+  2>"${temporary_root}/pypi-hard-failure.stderr"; then
+  printf 'expected hard PyPI readback failure\n' >&2
+  exit 1
+fi
+test "${pypi_readback_attempts}" = 1
+
+pypi_readback_attempts=0
+validate_pypi_remote_state() {
+  pypi_readback_attempts=$((pypi_readback_attempts + 1))
+  return 75
+}
+if wait_for_pypi_remote_state \
+  >"${temporary_root}/pypi-eventual-timeout.stdout" \
+  2>"${temporary_root}/pypi-eventual-timeout.stderr"; then
+  printf 'expected bounded PyPI readback timeout\n' >&2
+  exit 1
+fi
+test "${pypi_readback_attempts}" = 12
+grep -F 'PyPI RC wheel set did not become fully visible after 12 attempts' \
+  "${temporary_root}/pypi-eventual-timeout.stderr" >/dev/null
+unset -f validate_pypi_remote_state sleep wait_for_pypi_remote_state
+
 github_asset_fixture=${temporary_root}/github-asset-fixture
 mkdir -p "${github_asset_fixture}/assets"
 assets=${github_asset_fixture}/assets

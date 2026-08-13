@@ -417,7 +417,8 @@ validate_pypi_remote_state() {
   local require_published=${1:-false}
   local metadata=${temporary_root}/pypi.json
   local status remote_files expected_files filename remote_sha wheel
-  status=$(curl --silent --show-error --location --output "${metadata}" --write-out '%{http_code}' \
+  status=$(curl --silent --show-error --location \
+    --header 'Cache-Control: no-cache' --output "${metadata}" --write-out '%{http_code}' \
     "https://pypi.org/pypi/ait-native/json")
   if [[ ${status} != 200 ]] ||
     ! jq -e '.info.name == "ait-native" and (.releases["0.10.6"] | length) == 2' \
@@ -431,8 +432,8 @@ validate_pypi_remote_state() {
   case "${remote_files}" in
     0)
       if [[ ${require_published} == true ]]; then
-        printf 'PyPI RC wheel set is still unpublished\n' >&2
-        return 65
+        printf 'PyPI RC wheel set is not visible yet\n' >&2
+        return 75
       fi
       ;;
     "${expected_files}")
@@ -449,10 +450,40 @@ validate_pypi_remote_state() {
         LC_ALL=C sort)
       ;;
     *)
+      if [[ ${require_published} == true &&
+        ${remote_files} =~ ^[0-9]+$ && ${remote_files} -lt ${expected_files} ]]; then
+        printf 'PyPI RC wheel set is only partially visible\n' >&2
+        return 75
+      fi
       printf 'PyPI contains a partial RC wheel set\n' >&2
       return 65
       ;;
   esac
+}
+
+wait_for_pypi_remote_state() {
+  local attempt=1
+  local max_attempts=12
+  local readback_status
+  while ((attempt <= max_attempts)); do
+    if validate_pypi_remote_state true; then
+      return 0
+    else
+      readback_status=$?
+    fi
+    if [[ ${readback_status} != 75 ]]; then
+      return "${readback_status}"
+    fi
+    if ((attempt == max_attempts)); then
+      printf 'PyPI RC wheel set did not become fully visible after %s attempts\n' \
+        "${max_attempts}" >&2
+      return 65
+    fi
+    printf 'waiting for PyPI RC wheel-set visibility (%s/%s)\n' \
+      "${attempt}" "${max_attempts}" >&2
+    sleep 5
+    attempt=$((attempt + 1))
+  done
 }
 
 prepare_github_ssh() {
@@ -1128,7 +1159,7 @@ NOTES
 
   publish-pypi)
     require_preflight_receipt
-    validate_pypi_remote_state true
+    wait_for_pypi_remote_state
     wheel_count=$(find "${assets}" -mindepth 1 -maxdepth 1 -type f \
       -name 'ait_native-*.whl' | wc -l | tr -d '[:space:]')
     jq -n \
@@ -1504,7 +1535,7 @@ NOTES
     validate_public_tag
     validate_github_release_state true
     validate_npm_remote_state true
-    validate_pypi_remote_state true
+    wait_for_pypi_remote_state
     for receipt_name in github pypi npm homebrew apt; do
       require_regular_file "${evidence_root}/${receipt_name}.json" \
         "${receipt_name} endpoint receipt"
