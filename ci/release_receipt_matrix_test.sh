@@ -93,7 +93,7 @@ for required_workflow_text in \
   'python -m ziglang version' \
   'CARGO_BUILD_BUILD_DIR="${RUNNER_TEMP}/ait-family-admission-build"' \
   'input_sha256=ad5212e194db9a52b049d3334a157959102f115aeeb64f43ff0974328af2e4b3' \
-  'output_sha256=6eaa298d8dacef5302d2b01bc3e204b73578f66ea69ec892901f9e2d3aa2ed72' \
+  'output_sha256=0e7f95bb81dca170343b4b8d2b48949756be76b30956aec6080eee87b2b027d6' \
   'cp -R "${AIT_PUBLIC_SOURCE_ROOT}/ait-core" "${admission_root}"' \
   'admission_rust="${admission_root}/rust"' \
   'patch --batch --forward --strip=0' \

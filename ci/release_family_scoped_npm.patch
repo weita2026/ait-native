@@ -10,7 +10,42 @@
  const AIT_SERVER_SYSTEMD_UNIT_PATH: &str = "usr/lib/systemd/system/ait-server.service";
  const AIT_SERVER_SYSTEMD_UNIT: &str = "[Unit]\nDescription=AIT native server\nDocumentation=https://github.com/weita2026/ait-native\nAfter=network.target\n\n[Service]\nType=simple\nDynamicUser=yes\nStateDirectory=ait-native\nRuntimeDirectory=ait-native\nUMask=0077\nExecStart=/usr/bin/ait-server run --data /var/lib/ait-native/server-data --init-if-missing --defer-ci-admission\nRestart=on-failure\nRestartSec=2s\nNoNewPrivileges=yes\nPrivateTmp=yes\nProtectSystem=strict\nProtectHome=yes\nProtectControlGroups=yes\nProtectKernelModules=yes\nProtectKernelTunables=yes\nRestrictAddressFamilies=AF_UNIX AF_INET AF_INET6\nRestrictSUIDSGID=yes\nLockPersonality=yes\nCapabilityBoundingSet=\nAmbientCapabilities=\n\n[Install]\nWantedBy=multi-user.target\n";
  const WINGET_SERVER_CONTROLLER_PATH: &str = "ait-server-control.ps1";
-@@ -2420,7 +2423,7 @@
+@@ -2409,6 +2412,34 @@
+     Ok(())
+ }
+ 
++fn validate_npm_repository(
++    input: &FamilyPackageInput,
++    package_json: &JsonValue,
++    context: &str,
++) -> Result<(), String> {
++    let repository = package_json
++        .get("repository")
++        .ok_or_else(|| format!("{context} lacks repository metadata."))?;
++    exact_json_fields(
++        repository,
++        &["type", "url", "directory"],
++        &format!("{context} repository"),
++    )?;
++    let expected_url = format!(
++        "git+https://github.com/{}.git",
++        github_source_identity(input)?
++    );
++    if string_field(repository, "type").as_deref() != Some("git")
++        || string_field(repository, "url").as_deref() != Some(expected_url.as_str())
++        || string_field(repository, "directory").as_deref() != Some("ait-node")
++    {
++        return Err(format!(
++            "{context} repository metadata differs from the frozen public ait-node source."
++        ));
++    }
++    Ok(())
++}
++
+ fn parse_npm_addon_contract(
+     input: &FamilyPackageInput,
+     value: &JsonValue,
+@@ -2420,7 +2451,7 @@
      )?;
      if string_field(value, "schema").as_deref() != Some("ait.node.napi-platform-packages/v1")
          || string_field(value, "family_version").as_deref() != Some(input.version.as_str())
@@ -19,7 +54,7 @@
      {
          return Err("Frozen npm addon contract identity or version drifted.".to_string());
      }
-@@ -2461,7 +2464,7 @@
+@@ -2461,7 +2492,7 @@
          let target = required_string_field(row, "target")?;
          let (os, cpu) = npm_platform(&target)?;
          let component = "ait-node".to_string();
@@ -28,7 +63,15 @@
          let addon = "native/ait_napi.node".to_string();
          if required_string_field(row, "os")? != os
              || required_string_field(row, "cpu")? != cpu
-@@ -2558,7 +2561,7 @@
+@@ -2546,6 +2577,7 @@
+             "version",
+             "description",
+             "license",
++            "repository",
+             "type",
+             "engines",
+             "bin",
+@@ -2558,7 +2590,7 @@
          "Frozen npm envelope package.json",
      )?;
      let node_component = required_component(input, "ait-node", "node")?;
@@ -37,7 +80,35 @@
          || string_field(&package_json, "version").as_deref() != Some(input.version.as_str())
          || string_field(&package_json, "description").is_none_or(|value| value.is_empty())
          || string_field(&package_json, "license").as_deref()
-@@ -2944,8 +2947,10 @@
+@@ -2571,6 +2603,7 @@
+                 .to_string(),
+         );
+     }
++    validate_npm_repository(input, &package_json, "Frozen npm envelope package.json")?;
+     let engines = package_json
+         .get("engines")
+         .and_then(JsonValue::as_object)
+@@ -2778,6 +2811,7 @@
+             "version",
+             "description",
+             "license",
++            "repository",
+             "os",
+             "cpu",
+             "main",
+@@ -2801,6 +2835,11 @@
+             addon.package
+         ));
+     }
++    validate_npm_repository(
++        input,
++        &package_json,
++        &format!("Frozen npm addon package {}", addon.package),
++    )?;
+     let files = json_array_strings(package_json.get("files"), "npm addon package.json.files")?;
+     if files.len() != 4
+         || files.into_iter().collect::<BTreeSet<_>>()
+@@ -2944,8 +2983,10 @@
      input: &FamilyPackageInput,
  ) -> Result<Vec<GeneratedArtifact>, String> {
      let distribution = single_channel_distribution(input, "npm")?;
@@ -50,7 +121,7 @@
      }
      require_distribution_components(distribution, &["ait-node"])?;
      require_registry_targets(distribution)?;
-@@ -2967,7 +2972,7 @@
+@@ -2967,7 +3008,7 @@
          .file_name()
          .and_then(OsStr::to_str)
          .ok_or_else(|| "Frozen npm envelope has no portable filename.".to_string())?;
@@ -59,7 +130,7 @@
          return Err("Frozen npm envelope filename differs from the family version.".to_string());
      }
      let node_material_sources = material_for_components(input, &["ait-node".to_string()])?;
-@@ -3003,7 +3008,7 @@
+@@ -3003,7 +3044,7 @@
              &envelope_content,
              &envelope_material_projections,
              json!({
@@ -68,7 +139,7 @@
                  "version": input.version,
                  "preserved_frozen_bytes": true,
                  "runtime_transport": "direct-napi",
-@@ -3032,7 +3037,16 @@
+@@ -3032,7 +3073,16 @@
              .file_name()
              .and_then(OsStr::to_str)
              .ok_or_else(|| "Frozen npm addon package has no filename.".to_string())?;
@@ -86,7 +157,22 @@
          if filename != expected_filename {
              return Err(format!(
                  "Frozen npm addon filename for {} differs from the family version.",
-@@ -3427,7 +3441,7 @@
+@@ -3395,7 +3445,13 @@
+             frozen_manifest_sha256: "b".repeat(64),
+             frozen_checksum_sha256: "c".repeat(64),
+             components,
+-            distributions: Vec::new(),
++            distributions: vec![DistributionDefinition {
++                channel: "github".to_string(),
++                role: "product".to_string(),
++                identity: "weita2026/ait-native".to_string(),
++                components: vec!["ait".to_string(), "ait-node".to_string()],
++                targets: Vec::new(),
++            }],
+             artifacts: Vec::new(),
+             license_material: Vec::new(),
+         }
+@@ -3427,7 +3483,7 @@
          let mut payloads = Vec::new();
          for target in REGISTRY_TARGETS {
              let (os, cpu) = npm_platform(target).unwrap();
@@ -95,7 +181,7 @@
              optional_dependencies.insert(package.clone(), json!("1.0.0-rc.2"));
              payloads.push(json!({
                  "target": target,
-@@ -3443,7 +3457,7 @@
+@@ -3443,10 +3499,15 @@
              }));
          }
          let package = json!({
@@ -104,7 +190,15 @@
              "version": "1.0.0-rc.2",
              "description": "Direct in-process Node-API bindings for AIT",
              "license": "Apache-2.0",
-@@ -3469,7 +3483,7 @@
++            "repository": {
++                "type": "git",
++                "url": "git+https://github.com/weita2026/ait-native.git",
++                "directory": "ait-node"
++            },
+             "type": "module",
+             "engines": {"node": ">=20"},
+             "bin": {"ait": "bin/ait.mjs"},
+@@ -3469,7 +3530,7 @@
          let contract = json!({
              "schema": "ait.node.napi-platform-packages/v1",
              "family_version": "1.0.0-rc.2",
@@ -113,3 +207,19 @@
              "payloads": payloads,
          });
          PackageEntries::from([
+@@ -3565,6 +3626,15 @@
+         package["scripts"]["postinstall"] = json!("node scripts/install.mjs");
+         invalid.get_mut("package/package.json").unwrap().0 = serde_json::to_vec(&package).unwrap();
+         assert!(validate_npm_envelope(&input, &invalid, &materials).is_err());
++
++        let mut invalid = entries.clone();
++        let mut package: JsonValue =
++            serde_json::from_slice(&invalid["package/package.json"].0).unwrap();
++        package["repository"]["directory"] = json!("packages/ait-node");
++        invalid.get_mut("package/package.json").unwrap().0 = serde_json::to_vec(&package).unwrap();
++        assert!(validate_npm_envelope(&input, &invalid, &materials)
++            .unwrap_err()
++            .contains("differs from the frozen public ait-node source"));
+     }
+ 
+     #[test]
