@@ -10,6 +10,8 @@ fi
 mode=$1
 config=$2
 stage=$3
+script_root=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+dist_tags_filter=${script_root}/release_npm_namespace_dist_tags.jq
 case "${mode}" in
   preflight | publish | readback) ;;
   *)
@@ -81,6 +83,7 @@ require_environment() {
 }
 
 require_regular_file "${config}" 'npm namespace supplement configuration'
+require_regular_file "${dist_tags_filter}" 'npm namespace supplement dist-tag filter'
 require_real_directory "${stage}" 'npm namespace supplement stage'
 config=$(cd "$(dirname -- "${config}")" && pwd -P)/$(basename -- "${config}")
 stage=$(cd "${stage}" && pwd -P)
@@ -353,14 +356,9 @@ validate_dist_tags() {
   local metadata=$1
   local package_name=$2
   if ! jq -e --arg tag "${dist_tag}" --arg version "${version}" \
-    '."dist-tags"[$tag] == $version' "${metadata}" >/dev/null; then
-    printf 'npm rc dist-tag readback failed: %s@%s\n' \
-      "${package_name}" "${version}" >&2
-    return 75
-  fi
-  if jq -e --arg version "${version}" \
-    '."dist-tags".latest == $version' "${metadata}" >/dev/null; then
-    printf 'npm prerelease remains the default latest tag: %s@%s\n' \
+    -f "${dist_tags_filter}" \
+    "${metadata}" >/dev/null; then
+    printf 'npm RC-only dist-tag readback failed: %s@%s\n' \
       "${package_name}" "${version}" >&2
     return 75
   fi
@@ -368,7 +366,7 @@ validate_dist_tags() {
 
 wait_for_exact_registry() {
   local authenticated=$1
-  local attempts=${2:-12}
+  local attempts=${2:-120}
   local index package_name metadata status state_rows
   for ((index = 1; index <= attempts; index += 1)); do
     state_rows=${temporary_root}/readback-rows-${index}.jsonl
@@ -431,22 +429,6 @@ write_evidence() {
         mutation: $mutation
       }
     ' "${rows}" >"${output}"
-}
-
-remove_prerelease_latest() {
-  local npmrc=$1
-  local package_name=$2
-  local tags latest
-  tags=$(NPM_CONFIG_USERCONFIG="${npmrc}" npm dist-tag ls "${package_name}" \
-    --registry "${registry}")
-  latest=$(printf '%s\n' "${tags}" | awk -F ': ' '
-    $1 == "latest" { count += 1; value = $2 }
-    END { if (count > 1) exit 65; if (count == 1) print value }
-  ')
-  if [[ ${latest} == "${version}" ]]; then
-    NPM_CONFIG_USERCONFIG="${npmrc}" npm dist-tag rm \
-      "${package_name}" latest --registry "${registry}" >/dev/null
-  fi
 }
 
 case "${mode}" in
@@ -526,7 +508,6 @@ case "${mode}" in
       NPM_CONFIG_USERCONFIG="${npmrc}" npm dist-tag add \
         "${package_name}@${version}" "${dist_tag}" \
         --registry "${registry}" >/dev/null
-      remove_prerelease_latest "${npmrc}" "${package_name}"
       index=$((index + 1))
     done < <(jq -r '.packages[] | [.package, .filename, .sha1, .integrity] | @tsv' "${stage_receipt}")
     wait_for_exact_registry true
