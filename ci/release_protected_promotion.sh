@@ -58,7 +58,7 @@ if [[ ${AIT_RELEASE_REPOSITORY} != weita2026/ait-native ||
   exit 64
 fi
 
-for command in diff find git jq node tar; do
+for command in cargo diff find git jq node patch rustup tar; do
   if ! command -v "${command}" >/dev/null 2>&1; then
     printf 'required protected-promotion command is unavailable: %s\n' "${command}" >&2
     exit 69
@@ -191,13 +191,20 @@ source_archive_sha256=$(sha256_file "${source_archive}")
 receipt_matrix_filter=${control_root}/ci/release_receipt_matrix.jq
 platform_contract=${control_root}/ci/native_bootstrap_matrix.json
 repository_contract=${control_root}/ci/release_repository_authorities.json
+admission_patch=${control_root}/ci/release_family_rc4_admission.patch
+admission_patch_sha256=28d17fa83806498479fee233c8e0ea0defdc337893ed96a667d599e6baaadf0f
 for matrix_input in \
   "${public_source_root}/ait-release-family.json" \
   "${receipt_matrix_filter}" \
   "${platform_contract}" \
-  "${repository_contract}"; do
+  "${repository_contract}" \
+  "${admission_patch}"; do
   require_regular_file "${matrix_input}" 'tagged receipt-matrix input'
 done
+if [[ $(sha256_file "${admission_patch}") != ${admission_patch_sha256} ]]; then
+  printf 'RC.4 family admission patch differs from the approved control byte stream\n' >&2
+  exit 65
+fi
 receipt_matrix=${temporary_root}/receipt-matrix.json
 jq -n \
   --slurpfile family "${public_source_root}/ait-release-family.json" \
@@ -293,7 +300,9 @@ if ! jq -e \
   printf 'family build receipt is not the exact unpromoted frozen build\n' >&2
   exit 65
 fi
-if ! jq -e '
+if ! jq -e \
+  --arg tag "${AIT_RELEASE_TAG}" \
+  --arg version "${version}" '
   .contract == "ait.release.family.promotion/v1" and
   .status == "ready_for_protected_ci" and
   .authorization.required == true and .authorization.granted == false and
@@ -304,6 +313,16 @@ if ! jq -e '
   .source_publication.binary_publication_allowed == false and
   .mutation.credentials_loaded == false and .mutation.performed == false and
   .mutation.rebuild_allowed == false and .mutation.registry_write == false and
+  .routes.github == {draft: false, prerelease: false, tag: $tag} and
+  .routes.npm == {dist_tag: "rc", version: $version} and
+  .routes.pypi == {prerelease: true, repository: "pypi"} and
+  .routes.oci == {moving_tag: "rc", version_tag: $version} and
+  .routes.homebrew == {channel: "rc", stable_formula_mutation: false} and
+  .routes.apt == {suite: "testing"} and
+  .routes.winget == {
+    community_manifest_submission: false,
+    route: "validation"
+  } and
   .next_action.code == "approve_exact_frozen_digest"
 ' "${promotion}" >/dev/null; then
   printf 'family promotion handoff is not awaiting protected exact-digest approval\n' >&2
@@ -320,7 +339,20 @@ if ! jq -e \
     .channel == "rc" and .tag == $tag and .snapshot_id == $snapshot and
     .family_manifest_sha256 == $family_sha and
     .promotion.authorized == false and .promotion.performed == false and
-    .promotion.registry_write == false
+    .promotion.registry_write == false and
+    .promotion.routes.github == {draft: false, prerelease: false, tag: $tag} and
+    .promotion.routes.npm == {dist_tag: "rc", version: $version} and
+    .promotion.routes.pypi == {prerelease: true, repository: "pypi"} and
+    .promotion.routes.oci == {moving_tag: "rc", version_tag: $version} and
+    .promotion.routes.apt == {suite: "testing"} and
+    .promotion.routes.homebrew == {
+      channel: "rc",
+      stable_formula_mutation: false
+    } and
+    .promotion.routes.winget == {
+      community_manifest_submission: false,
+      route: "validation"
+    }
   ' "${frozen_manifest}" >/dev/null; then
   printf 'frozen family manifest identity or mutation state is invalid\n' >&2
   exit 65
@@ -572,9 +604,53 @@ case "$(uname -s):$(uname -m)" in
 esac
 frozen_ait=${frozen_root}/artifacts/ait/native-executable/${native_target}/ait-cli
 require_regular_file "${frozen_ait}" 'frozen native AIT verifier'
-ait_bin=${temporary_root}/ait
-cp "${frozen_ait}" "${ait_bin}"
-chmod 0755 "${ait_bin}"
+frozen_ait_bin=${temporary_root}/frozen-ait
+cp "${frozen_ait}" "${frozen_ait_bin}"
+chmod 0755 "${frozen_ait_bin}"
+if [[ $("${frozen_ait_bin}" --version) != "ait ${version}" ]]; then
+  printf 'frozen native AIT version differs from the approved family\n' >&2
+  exit 65
+fi
+
+family_packages_input_sha256=ad5212e194db9a52b049d3334a157959102f115aeeb64f43ff0974328af2e4b3
+family_packages_output_sha256=0e7f95bb81dca170343b4b8d2b48949756be76b30956aec6080eee87b2b027d6
+family_release_input_sha256=771dd056d3b21c86a63f060bdc44c80bc48717bde3075efd5b2173eb02d68b0f
+family_release_output_sha256=ac3d39e4c588aeb500900150dfa51097088d8524264b504f4ee4306de5af7a32
+admission_source=${temporary_root}/family-admission-source
+cp -R "${public_source_root}/ait-core" "${admission_source}"
+admission_rust=${admission_source}/rust
+family_packages=${admission_rust}/crates/ait-cli/src/release_surface/family_packages.rs
+family_release=${admission_rust}/crates/ait-cli/src/release_surface/family_release.rs
+if [[ $(sha256_file "${family_packages}") != ${family_packages_input_sha256} ||
+  $(sha256_file "${family_release}") != ${family_release_input_sha256} ]]; then
+  printf 'tagged family admission input differs from the approved RC.4 source\n' >&2
+  exit 65
+fi
+patch --batch --forward --strip=0 \
+  --directory="${admission_rust}" <"${admission_patch}"
+if [[ $(sha256_file "${family_packages}") != ${family_packages_output_sha256} ||
+  $(sha256_file "${family_release}") != ${family_release_output_sha256} ]]; then
+  printf 'patched family admission output differs from the approved RC.4 surface\n' >&2
+  exit 65
+fi
+rust_toolchain=$(jq -er '
+  .rust_toolchain | select(type == "string" and test("^[0-9]+\\.[0-9]+\\.[0-9]+$"))
+' "${platform_contract}")
+rustup toolchain install "${rust_toolchain}" --profile minimal >/dev/null
+admission_target=${temporary_root}/family-admission-target
+CARGO_BUILD_BUILD_DIR=${temporary_root}/family-admission-build \
+  rustup run "${rust_toolchain}" cargo build \
+    --locked \
+    --release \
+    --target-dir "${admission_target}" \
+    --manifest-path "${admission_rust}/Cargo.toml" \
+    -p ait-cli \
+    --bin ait-cli
+ait_bin=${admission_target}/release/ait-cli
+if [[ ! -x ${ait_bin} || $("${ait_bin}" --version) != "ait ${version}" ]]; then
+  printf 'protected family admission CLI is unavailable or has the wrong version\n' >&2
+  exit 65
+fi
 admission_root=${temporary_root}/admission
 mkdir "${admission_root}"
 (
@@ -636,6 +712,12 @@ jq -n \
   --arg source_evidence_sha256 "${source_evidence_sha256}" \
   --arg source_archive_sha256 "${source_archive_sha256}" \
   --arg source_content_sha256 "${source_content_sha256}" \
+  --arg admission_patch_sha256 "${admission_patch_sha256}" \
+  --arg admission_rust_toolchain "${rust_toolchain}" \
+  --arg family_packages_input_sha256 "${family_packages_input_sha256}" \
+  --arg family_packages_output_sha256 "${family_packages_output_sha256}" \
+  --arg family_release_input_sha256 "${family_release_input_sha256}" \
+  --arg family_release_output_sha256 "${family_release_output_sha256}" \
   --argjson source_file_count "${source_file_count}" \
   --argjson executable_mode_count "${executable_mode_count}" \
   --argjson frozen_checksum_count "${frozen_checksum_count}" \
@@ -678,6 +760,16 @@ jq -n \
         checksum_sha256: $checksum_sha256,
         frozen_checksum_count: $frozen_checksum_count,
         native_promotion_readback_equal: true,
+        admission_replay: {
+          model: "immutable-tag-plus-hash-pinned-control-patch/v1",
+          patch: "ci/release_family_rc4_admission.patch",
+          patch_sha256: $admission_patch_sha256,
+          rust_toolchain: $admission_rust_toolchain,
+          family_packages_input_sha256: $family_packages_input_sha256,
+          family_packages_output_sha256: $family_packages_output_sha256,
+          family_release_input_sha256: $family_release_input_sha256,
+          family_release_output_sha256: $family_release_output_sha256
+        },
         packages: $packages
       },
       authorization: {
@@ -719,6 +811,9 @@ if ! jq -e \
     .dossier.source_workflow_sha == $source_control_sha and
     .dossier.frozen_manifest_sha256 == $frozen_manifest_sha256 and
     .dossier.checksum_sha256 == $checksum_sha256 and
+    .dossier.native_promotion_readback_equal == true and
+    .dossier.admission_replay.model ==
+      "immutable-tag-plus-hash-pinned-control-patch/v1" and
     .public_source.status == "verified" and
     ([.mutation[]] | all(. == false)) and
     .next_action.code == "request_explicit_registry_authorization"

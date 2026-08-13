@@ -172,7 +172,16 @@ for required_verifier_text in \
   'release_receipt_matrix.jq' \
   'expected_receipt_count=$(jq -er' \
   'expected_component_artifact_count=$(jq -er' \
-  'expected_license_material_count=$((expected_source_count * 2))'; do
+  'expected_license_material_count=$((expected_source_count * 2))' \
+  'admission_patch=${control_root}/ci/release_family_rc4_admission.patch' \
+  'admission_patch_sha256=28d17fa83806498479fee233c8e0ea0defdc337893ed96a667d599e6baaadf0f' \
+  'RC.4 family admission patch differs from the approved control byte stream' \
+  'family_packages_input_sha256=ad5212e194db9a52b049d3334a157959102f115aeeb64f43ff0974328af2e4b3' \
+  'family_packages_output_sha256=0e7f95bb81dca170343b4b8d2b48949756be76b30956aec6080eee87b2b027d6' \
+  'family_release_input_sha256=771dd056d3b21c86a63f060bdc44c80bc48717bde3075efd5b2173eb02d68b0f' \
+  'family_release_output_sha256=ac3d39e4c588aeb500900150dfa51097088d8524264b504f4ee4306de5af7a32' \
+  '.routes.github == {draft: false, prerelease: false, tag: $tag}' \
+  'immutable-tag-plus-hash-pinned-control-patch/v1'; do
   if ! grep -F -- "${required_verifier_text}" "${protected_verifier}" >/dev/null; then
     printf 'protected promotion is not tied to the receipt projection: %s\n' \
       "${required_verifier_text}" >&2
