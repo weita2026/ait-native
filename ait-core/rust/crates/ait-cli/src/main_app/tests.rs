@@ -440,6 +440,27 @@ fn task_start_parser_rejects_retired_explicit_plan_binding_flags() {
 }
 
 #[test]
+fn task_parser_freezes_the_supported_command_surface() {
+    let help = match Cli::try_parse_from(["ait-cli", "task", "--help"]) {
+        Ok(_) => panic!("task help should exit through clap"),
+        Err(error) => error,
+    };
+    let rendered = help.to_string();
+    for command in [
+        "start", "list", "show", "tokens", "audit", "land", "canceled", "restart",
+    ] {
+        assert!(rendered.contains(command), "missing task command {command}");
+    }
+    assert!(!rendered.contains("publish"));
+
+    let removed = match Cli::try_parse_from(["ait-cli", "task", "publish", "LCT-1"]) {
+        Ok(_) => panic!("removed task command must not parse"),
+        Err(error) => error,
+    };
+    assert!(removed.to_string().contains("unrecognized subcommand"));
+}
+
+#[test]
 fn task_start_progress_renderer_covers_plan_source_phases() {
     assert_eq!(
         task_start_progress_line(&json!({

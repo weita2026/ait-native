@@ -1772,7 +1772,7 @@ fn assemble_winget(
         let digest = sha256_hex(&bytes);
         let url = format!("{asset_base}/{filename}");
         installer_yaml.push_str(&format!(
-            "  - Architecture: {architecture}\n    InstallerUrl: {}\n    InstallerSha256: {}\n    NestedInstallerType: portable\n    Scope: user\n    NestedInstallerFiles:\n    - RelativeFilePath: ait.exe\n      PortableCommandAlias: ait\n    - RelativeFilePath: ait-server.exe\n      PortableCommandAlias: ait-server\n    - RelativeFilePath: ait-server-control.ps1\n      PortableCommandAlias: ait-server-control.ps1\n    ArchiveBinariesDependOnPath: false\n",
+            "  - Architecture: {architecture}\n    InstallerUrl: {}\n    InstallerSha256: {}\n    NestedInstallerType: portable\n    NestedInstallerFiles:\n    - RelativeFilePath: ait.exe\n      PortableCommandAlias: ait\n    - RelativeFilePath: ait-server.exe\n      PortableCommandAlias: ait-server\n    - RelativeFilePath: ait-server-control.ps1\n      PortableCommandAlias: ait-server-control.ps1\n    ArchiveBinariesDependOnPath: false\n",
             json_quoted(&url),
             digest.to_ascii_uppercase(),
         ));
@@ -1797,7 +1797,6 @@ fn assemble_winget(
                     "architecture": architecture,
                     "installer_type": "zip",
                     "nested_installer_type": "portable",
-                    "scope": "user",
                     "portable_commands": ["ait", "ait-server", "ait-server-control.ps1"],
                     "asset_url": url,
                     "server_activation": "inactive",

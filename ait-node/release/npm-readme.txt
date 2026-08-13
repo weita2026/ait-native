@@ -18,4 +18,4 @@ does not use install hooks, downloads, project-language detection, or
 `child_process` transport.
 
 The complete product, platform, source, and licensing contract is published
-at <https://github.com/weita2026/ait-native/blob/v1.0.0-rc.2/docs/distribution.md>.
+at <https://github.com/weita2026/ait-native/blob/v1.0.0-rc.3/docs/distribution.md>.

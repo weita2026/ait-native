@@ -7,7 +7,7 @@ mod patchset;
 mod policy;
 mod review;
 mod shared;
-mod task_publish;
+mod task_lifecycle;
 
 pub use attestation::{attest_put, attest_show};
 pub use change::change_create;
@@ -24,7 +24,7 @@ pub use review::{
     review_code_submit, review_code_template, review_record, review_request, review_show,
     review_task_approve, review_team_approve,
 };
-pub use task_publish::{task_close, task_complete, task_publish, task_restart};
+pub use task_lifecycle::{task_close, task_complete, task_restart};
 
 #[allow(unused_imports)]
 pub(super) use attestation::{
@@ -80,13 +80,11 @@ pub(super) use shared::{
     resolve_patchset_argument_with_task_and_closeout_remotes, resolve_patchset_id,
 };
 #[allow(unused_imports)]
-pub(super) use task_publish::{
-    published_local_task_plan_linkage, restart_local_change_read_with_change_store,
-    restart_local_change_reopen_with_change_store, restart_local_change_rows_with_change_store,
-    restart_local_task_reactivate_with_task_store, restart_local_task_read_with_task_store,
-    task_close_with_closeout_remote, task_complete_with_closeout_remote,
-    task_publish_remote_create_with_task_remote, task_publish_with_local_stores_and_task_remote,
-    task_restart_with_closeout_remote,
+pub(super) use task_lifecycle::{
+    restart_local_change_read_with_change_store, restart_local_change_reopen_with_change_store,
+    restart_local_change_rows_with_change_store, restart_local_task_reactivate_with_task_store,
+    restart_local_task_read_with_task_store, task_close_with_closeout_remote,
+    task_complete_with_closeout_remote, task_restart_with_closeout_remote,
 };
 
 #[cfg(test)]

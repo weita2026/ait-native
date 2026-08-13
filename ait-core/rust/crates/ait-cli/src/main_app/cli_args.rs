@@ -1605,7 +1605,6 @@ enum TaskCommand {
     Land(TaskLandArgs),
     Canceled(TaskCanceledArgs),
     Restart(TaskRestartArgs),
-    Publish(TaskPublishArgs),
 }
 
 #[derive(Subcommand)]
@@ -2034,15 +2033,6 @@ struct TaskRestartArgs {
     task_id: String,
     #[arg(long)]
     local: bool,
-    #[arg(long)]
-    remote: Option<String>,
-    #[arg(long)]
-    json: bool,
-}
-
-#[derive(Args, Clone)]
-struct TaskPublishArgs {
-    task_id: String,
     #[arg(long)]
     remote: Option<String>,
     #[arg(long)]

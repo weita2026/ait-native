@@ -11,6 +11,8 @@ export AIT_RELEASE_COORDINATOR_SNAPSHOT=SNP-AAAAAAAAAAAA
 export AIT_RELEASE_COORDINATOR_MANIFEST_HASH=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 export AIT_RELEASE_COORDINATOR_CREATED_AT=1700000000
 
+node --test "${repo_root}/release/monorepo/build-release.test.mjs"
+
 cleanup() {
   case "${temporary_root}" in
     "${TMPDIR:-/tmp}"/ait-monorepo-export-test.*)

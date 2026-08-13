@@ -9,47 +9,39 @@ has actually reached an external endpoint.
 
 ## Current Public RC Status (2026-08-13)
 
-`v1.0.0-rc.1` is an immutable public prerelease at Git commit
-`f9d260a8f7046f82a6c3e271d539dd0bbce7bc14`. Its tag and frozen artifacts must
+`v1.0.0-rc.2` is an immutable public prerelease at Git commit
+`3dfd9dde5a9867cfe265352f48540fa8241f8e66`. Its tag and frozen artifacts must
 not be moved, rebuilt, replaced, or silently repaired. The public release is
-[`weita2026/ait-native v1.0.0-rc.1`](https://github.com/weita2026/ait-native/releases/tag/v1.0.0-rc.1),
+[`weita2026/ait-native v1.0.0-rc.2`](https://github.com/weita2026/ait-native/releases/tag/v1.0.0-rc.2),
 and the latest endpoint attempt is
-[`31594748800`](https://github.com/weita2026/ait-native/actions/runs/31594748800).
+[`31652315795`](https://github.com/weita2026/ait-native/actions/runs/31652315795).
 
 The exact current endpoint state is:
 
-| Endpoint | RC.1 state |
+| Endpoint | RC.2 state |
 | --- | --- |
-| GitHub Release | Public prerelease with the frozen source, native artifacts, package artifacts, checksums, and endpoint receipt. |
-| PyPI | `ait-native==1.0.0rc1` is public with six admitted wheels; clean installation, both native commands, and the `ait_py`/`ait_python` imports pass. |
+| GitHub Release | Public prerelease with 84 frozen source, native, package, checksum, validation, and receipt assets. |
+| PyPI | `ait-native==1.0.0rc2` is public with six admitted `cp311-abi3` wheels. |
 | GHCR | Public multi-platform `ait-server` and `ait-runner` images exist for Linux `amd64` and `arm64`; anonymous digest, filesystem, version, and provenance readback pass. |
-| Homebrew | `weita2026/homebrew-ait-native` contains the RC formula with exact source URLs and checksums. |
-| apt | The signed testing repository and all four RC packages are public, but the frozen packages are not clean-installable and must not be recommended. |
-| npm | Five of twelve implementation payloads are public, and those five currently carry an unintended `latest` tag in addition to `rc`. The top-level `ait-native`, `ait-native-ait-win32-x64`, and all six server payloads remain blocked by npm registry name-spam detection; an npm support request is pending. The npm product is therefore unpublished and must not be installed through its default tag. |
+| Homebrew | `weita2026/homebrew-ait-native` contains the RC.2 formula with exact source URLs and checksums. |
+| apt | The signed `testing` repository contains both `ait-native` packages and both `ait-runner` packages. On a clean Ubuntu 22.04 client, signed update, exact-name `apt-cache search`, install, and both native version commands pass. |
+| npm | Five of six RC.2 implementation-only Node-API addon packages are public. The top-level `ait-native` envelope and `ait-native-ait-win32-x64` remain unpublished after npm name-spam rejection, so the Node.js product is not installable. |
 | WinGet | The frozen validation manifests are attached to the GitHub prerelease. No community repository submission has been made, by the declared RC route. |
 
-The apt failure is exact: RC.1 `data.tar.gz` archives contain regular files but
-no parent-directory entries, so clean `dpkg` unpack fails when it reaches the
-package documentation directory. The package-builder correction is locally
-landed at `ait-core` Snapshot `SNP-564720F850B8`; it emits deterministic,
-root-owned `0755` parent directories and passes clean Debian install/remove
-tests while leaving the server inactive. That source correction cannot alter
-the frozen RC.1 bytes.
+The endpoint workflow completed GitHub, PyPI, GHCR, Homebrew, apt, and WinGet
+validation publication, then failed final aggregate readback because the npm
+top-level package was still absent. RC.2 therefore remains useful immutable
+evidence but is not a complete all-endpoint release.
 
-The RC.1 npm executable-payload architecture is retired and is not reused for
-RC.2. Any RC.1 implementation packages already visible on npm remain
-historical immutable bytes; they are not the corrected Node.js product and
-must not be relabelled as RC.2.
-
-Consequently RC.1 is useful public prerelease evidence, but it is not a fully
-usable all-endpoint release. Completing the declared platform contract
-requires the new immutable RC.2 family. Its selected component authorities are
-`ait-core` `SNP-4D8A3DA8FE1D`, `ait-server` `SNP-46B0CA25412F`, `ait-runner`
-`SNP-971121B196C4`, `ait-python` `SNP-02A1F51491A8`, and `ait-node`
-`SNP-372A38EF81BA`. RC.2 is not public until the source tag, protected matrix,
-frozen dossier, endpoint publication, and readback below complete. Until then,
-use the working RC.1 PyPI, GitHub native, GHCR, or Homebrew routes for RC
-evaluation; do not direct users to the RC.1 apt or npm routes.
+RC.3 is the selected successor. It binds `ait-core` `SNP-158C9C5BB3D7`,
+`ait-server` `SNP-48F2D989D9BE`, `ait-runner` `SNP-CECFDF4170B9`, `ait-python`
+`SNP-B27811D3CE9E`, and `ait-node` `SNP-9DC1BB50ED8E`; coordinator Snapshot
+`SNP-B0271928FD9B` freezes the family, makes successful exact-name
+`apt-cache search` part of signed APT endpoint readback, and preserves the
+public source identity after a complete local source build. At this source
+freeze, RC.3 is not public until its source tag, protected matrix, frozen
+dossier, endpoint publication, and final readback complete. RC.1 and RC.2
+bytes remain immutable and are never relabelled as RC.3.
 
 ## Release Family
 
@@ -121,7 +113,7 @@ A clean tagged checkout validates and builds the current host without an AIT
 server:
 
 ```text
-git clone --branch v1.0.0-rc.2 https://github.com/weita2026/ait-native.git
+git clone --branch v1.0.0-rc.3 https://github.com/weita2026/ait-native.git
 cd ait-native
 ./build-release.sh
 ```
@@ -385,8 +377,8 @@ binaries, without compiling a component or downloading a component during the
 image build:
 
 ```text
-ghcr.io/weita2026/ait-server:1.0.0-rc.2
-ghcr.io/weita2026/ait-runner:1.0.0-rc.2
+ghcr.io/weita2026/ait-server:1.0.0-rc.3
+ghcr.io/weita2026/ait-runner:1.0.0-rc.3
 ```
 
 The immutable version tags are the evidence and deployment boundary. The
@@ -407,7 +399,7 @@ docker run --detach \
   --publish 127.0.0.1:8088:8088 \
   --restart unless-stopped \
   --volume ait-native-rc-data:/var/lib/ait \
-  ghcr.io/weita2026/ait-server:1.0.0-rc.2
+  ghcr.io/weita2026/ait-server:1.0.0-rc.3
 curl --fail http://127.0.0.1:8088/healthz
 ```
 
@@ -426,7 +418,7 @@ whose declared CI command it must execute:
 docker run --rm \
   --network ait-native-rc \
   --volume "$PWD:/workspace" \
-  ghcr.io/weita2026/ait-runner:1.0.0-rc.2 \
+  ghcr.io/weita2026/ait-runner:1.0.0-rc.3 \
   serve --server http://ait-server:8088 --source-root /workspace --once
 ```
 
@@ -441,13 +433,27 @@ The post-publication package names and commands are:
 | Homebrew | after adding the release tap, `brew install ait-native-rc`; stable uses `brew install ait-native` |
 | apt | after adding the signed AIT repository, `sudo apt install ait-native` |
 | WinGet | RC validation uses `winget install --manifest <generated-manifest-directory>`; stable uses `winget install --id Weita.AitNative --exact` |
-| PyPI | `python -m pip install ait-native==1.0.0rc2`; stable uses `ait-native==1.0.0` |
-| npm | `npm install --global ait-native@1.0.0-rc.2`; stable uses `ait-native@1.0.0` |
+| PyPI | `python -m pip install ait-native==1.0.0rc3`; stable uses `ait-native==1.0.0` |
+| npm | `npm install --global ait-native@1.0.0-rc.3`; stable uses `ait-native@1.0.0` |
 
-These identifiers are the release contract, not a claim that the currently
-blocked RC endpoints are already live. Endpoint publication still requires the
-frozen family, signatures, clean-host evidence, and public readback described
-below.
+The signed APT route must be added and searched before installation:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/weita2026/apt-ait-native/main/ait-native-archive-keyring.gpg \
+  | sudo tee /usr/share/keyrings/ait-native-archive-keyring.gpg >/dev/null
+echo "deb [signed-by=/usr/share/keyrings/ait-native-archive-keyring.gpg] https://raw.githubusercontent.com/weita2026/apt-ait-native/main testing main" \
+  | sudo tee /etc/apt/sources.list.d/ait-native.list
+sudo apt update
+apt-cache search --names-only '^ait-native$'
+apt-cache search --names-only '^ait-runner$'
+sudo apt install ait-native
+```
+
+The RC.3 publisher performs the same signed update and both exact-name searches
+in an isolated APT client root. It writes successful `apt_cache_search`
+evidence only after both names are found. These identifiers are the release
+contract, not a claim that RC.3 is already live; publication still requires
+the frozen family, signatures, clean-host evidence, and public readback below.
 
 ## Platform Matrix
 
@@ -461,6 +467,14 @@ The public 1.0.0 target set is:
 | `x86_64-unknown-linux-gnu` | Linux/glibc | x86_64 |
 | `aarch64-pc-windows-msvc` | Windows | arm64 |
 | `x86_64-pc-windows-msvc` | Windows | x86_64 |
+
+Every Windows receipt build uses the exact target-scoped
+`-Ctarget-feature=+crt-static` Rust flag. Receipt admission opens the native PE
+payload in executables, Python wheels, and Node addon archives and rejects any
+dynamic `VCRUNTIME140`, `MSVCP140`, or `CONCRT140` import. WinGet nested
+portable manifests do not declare the unsupported `Scope` field. Together
+these checks keep the portable Windows acquisition paths independent of a
+separately preinstalled Visual C++ Redistributable.
 
 The four executables must have native artifacts for all six targets.
 `ait-python` must produce binding payloads for the matching six PyPI
@@ -562,8 +576,8 @@ every source repository, rejects target-receipt disagreement, and freezes one
 deduplicated repository/Snapshot copy for downstream package assemblers. These
 legal files do not increase or weaken the 37 product-artifact requirements.
 
-For RC.2, use family version `1.0.0-rc.2`, Python version `1.0.0rc2`, tag
-`v1.0.0-rc.2`, and channel `rc`. Promotion first creates a
+For RC.3, use family version `1.0.0-rc.3`, Python version `1.0.0rc3`, tag
+`v1.0.0-rc.3`, and channel `rc`. Promotion first creates a
 credential-free protected-CI handoff; publisher jobs then promote the frozen
 bytes without rebuilding. Stable `1.0.0` is a separate admitted family build,
 not an RC tag rename.
@@ -639,7 +653,7 @@ or create a complete publishable v3 family.
 ### Protected component-receipt matrix
 
 The manually dispatched
-[`ait-release-component-receipts.yml`](https://github.com/weita2026/ait-native/blob/v1.0.0-rc.2/.github/workflows/ait-release-component-receipts.yml)
+[`ait-release-component-receipts.yml`](https://github.com/weita2026/ait-native/blob/v1.0.0-rc.3/.github/workflows/ait-release-component-receipts.yml)
 workflow is the sole cross-repository component-matrix entrypoint. Its required
 `coordinator_snapshot` input is the exact landed AIT Snapshot containing the
 family manifest to admit. The dispatched `github.sha` is the immutable public
@@ -704,7 +718,7 @@ The additional monorepo source artifact does not change the five internal
 Snapshot authorities, 31 receipt, or 37 component-artifact counts. Hosted
 release source-cache count and live AIT server connection count are both zero.
 The GitHub-hosted runner labels are pinned in
-[`native_bootstrap_matrix.json`](https://github.com/weita2026/ait-native/blob/v1.0.0-rc.2/ait-core/ci/native_bootstrap_matrix.json); confirm
+[`native_bootstrap_matrix.json`](https://github.com/weita2026/ait-native/blob/v1.0.0-rc.3/ait-core/ci/native_bootstrap_matrix.json); confirm
 their current availability in GitHub's hosted-runner reference before an RC or
 GA dispatch.
 
@@ -737,22 +751,21 @@ workflow consequently cannot be used as an implicit registry-publish command.
 RC source export deliberately contains only the component-receipt and
 protected-promotion workflows. It must not copy a publisher or endpoint
 configuration from an older release. After protected promotion has produced
-the real RC.2 Release ID, source commit, run and artifact identities, and
-digests, a separate reviewed change installs one exact RC.2 endpoint
+the real RC.3 Release ID, source commit, run and artifact identities, and
+digests, a separate reviewed change installs one exact RC.3 endpoint
 configuration and publisher workflow on the public repository's default
-branch. That workflow consumes the immutable RC.2 tag and frozen dossier; it
+branch. That workflow consumes the immutable RC.3 tag and frozen dossier; it
 does not move the tag or become part of the tagged source tree. This ordering
-prevents RC.1 endpoint authority from leaking into RC.2 and prevents guessed
+prevents older endpoint authority from leaking into RC.3 and prevents guessed
 future identities from being treated as publication evidence.
 
-## Current RC.2 Gate And Historical RC.1 Evidence
+## Current RC.3 Gate And Historical RC Evidence
 
-RC.2 corrects the Node.js architecture and must receive a new public Git commit,
-tag, protected 31-receipt/37-artifact matrix, frozen `REL-FAM-*` dossier, and
-endpoint evidence. Nothing from the RC.1 npm executable-payload set can be
-promoted or relabelled into RC.2. The records below identify the immutable
-RC.1 evidence that remains useful for comparison; they do not describe the
-RC.2 Node-API product or authorize an RC.2 endpoint write.
+RC.3 retains the direct Node-API architecture and must receive its own public
+Git commit, tag, protected 31-receipt/37-artifact matrix, frozen `REL-FAM-*`
+dossier, and endpoint evidence. Nothing from RC.1 or RC.2 can be promoted or
+relabelled into RC.3. The records below preserve immutable earlier evidence for
+comparison; they do not authorize an RC.3 endpoint write.
 
 At the 2026-08-12 checkpoint, the immutable reviewed RC source is annotated
 tag `v1.0.0-rc.1` on

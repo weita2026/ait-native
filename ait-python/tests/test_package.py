@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 import tomllib
 
+import ait_py
 import ait_python
 
 
@@ -52,7 +53,7 @@ def test_package_declares_the_apache_rc_identity() -> None:
     )
     project = pyproject["project"]
 
-    assert project["version"] == ait_python.__version__ == "1.0.0rc2"
+    assert project["version"] == ait_python.__version__ == "1.0.0rc3"
     assert project["license"] == "Apache-2.0"
     assert project["license-files"] == ["LICENSE", "NOTICE"]
     assert "Apache License" in (ROOT / "LICENSE").read_text(encoding="utf-8")
@@ -87,7 +88,7 @@ def test_package_declares_the_apache_rc_identity() -> None:
     assert ".ait-external/ait-core/rust/Cargo.toml" in generator
 
     installed = metadata("ait-python")
-    assert installed["Version"] == "1.0.0rc2"
+    assert installed["Version"] == "1.0.0rc3"
     assert installed["License-Expression"] == "Apache-2.0"
     assert installed.get_all("License-File") == ["LICENSE", "NOTICE"]
 
@@ -107,7 +108,7 @@ def test_materialized_core_matches_the_external_lock() -> None:
     node = lock["node"][0]
 
     assert node["repository_index"] == 0
-    assert node["snapshot"] == "SNP-7646BD6FEC84"
+    assert node["snapshot"] == "SNP-158C9C5BB3D7"
     assert marker["format"] == "ait.external.materialized"
     assert marker["name"] == node["name"] == "ait-core"
     assert marker["repo_name"] == node["repo_name"] == "ait-core"
@@ -169,3 +170,8 @@ def test_runtime_source_has_no_process_api_relay() -> None:
     assert "os.exec" not in source
     assert not (ROOT / "src" / "ait_python" / "cli.py").exists()
     assert not (ROOT / "src" / "ait_python" / "bundle.py").exists()
+
+
+def test_removed_task_publish_operation_is_not_exported() -> None:
+    assert hasattr(ait_py, "task_workflow_task_land_apply_direct")
+    assert not hasattr(ait_py, "task_workflow_task_publish")

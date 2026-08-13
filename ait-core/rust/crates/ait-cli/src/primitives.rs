@@ -165,8 +165,7 @@ pub use change_flow::{
     patchset_ci_status, patchset_list, patchset_publish, patchset_publish_explicit,
     patchset_rerun_ci, patchset_select, patchset_show, policy_eval, policy_show, policy_waive,
     review_code_submit, review_code_template, review_record, review_request, review_show,
-    review_task_approve, review_team_approve, task_close, task_complete, task_publish,
-    task_restart,
+    review_task_approve, review_team_approve, task_close, task_complete, task_restart,
 };
 pub use foundation::{ensure_status_manifest, TaskStartBootstrapRequest};
 pub use git_interop::{git_export, git_import, git_mirror};
@@ -217,7 +216,6 @@ pub use worktree::{
     worktree_status, worktree_sync, worktree_sync_all, worktree_touch_usage,
 };
 
-use change_flow::published_local_task_plan_linkage;
 use change_identity::*;
 use foundation::*;
 use line::list_remote_names;

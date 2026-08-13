@@ -2,7 +2,7 @@
   "schema": "ait.release.adapter/v1",
   "package": {
     "name": "ait-python",
-    "version": "1.0.0rc2",
+    "version": "1.0.0rc3",
     "description": "Apache-2.0 abi3 wheels for the Rust-owned AIT Python binding",
     "license_files": [
       {
@@ -58,32 +58,32 @@
       },
       "artifacts": [
         {
-          "path": "dist/wheels/ait_python-1.0.0rc2-cp311-abi3-macosx_11_0_arm64.whl",
+          "path": "dist/wheels/ait_python-1.0.0rc3-cp311-abi3-macosx_11_0_arm64.whl",
           "kind": "python-wheel",
           "target": "aarch64-apple-darwin"
         },
         {
-          "path": "dist/wheels/ait_python-1.0.0rc2-cp311-abi3-macosx_10_12_x86_64.whl",
+          "path": "dist/wheels/ait_python-1.0.0rc3-cp311-abi3-macosx_10_12_x86_64.whl",
           "kind": "python-wheel",
           "target": "x86_64-apple-darwin"
         },
         {
-          "path": "dist/wheels/ait_python-1.0.0rc2-cp311-abi3-manylinux_2_28_aarch64.whl",
+          "path": "dist/wheels/ait_python-1.0.0rc3-cp311-abi3-manylinux_2_28_aarch64.whl",
           "kind": "python-wheel",
           "target": "aarch64-unknown-linux-gnu"
         },
         {
-          "path": "dist/wheels/ait_python-1.0.0rc2-cp311-abi3-manylinux_2_28_x86_64.whl",
+          "path": "dist/wheels/ait_python-1.0.0rc3-cp311-abi3-manylinux_2_28_x86_64.whl",
           "kind": "python-wheel",
           "target": "x86_64-unknown-linux-gnu"
         },
         {
-          "path": "dist/wheels/ait_python-1.0.0rc2-cp311-abi3-win_arm64.whl",
+          "path": "dist/wheels/ait_python-1.0.0rc3-cp311-abi3-win_arm64.whl",
           "kind": "python-wheel",
           "target": "aarch64-pc-windows-msvc"
         },
         {
-          "path": "dist/wheels/ait_python-1.0.0rc2-cp311-abi3-win_amd64.whl",
+          "path": "dist/wheels/ait_python-1.0.0rc3-cp311-abi3-win_amd64.whl",
           "kind": "python-wheel",
           "target": "x86_64-pc-windows-msvc"
         }

@@ -2,7 +2,7 @@
   "schema": "ait.release.adapter/v1",
   "package": {
     "name": "ait-native",
-    "version": "1.0.0-rc.2",
+    "version": "1.0.0-rc.3",
     "description": "Direct Node-API envelope and native addon packages for the Rust-owned AIT runtime",
     "license_files": [
       {
@@ -74,36 +74,36 @@
       },
       "artifacts": [
         {
-          "path": "dist/ait-native-1.0.0-rc.2.tgz",
+          "path": "dist/ait-native-1.0.0-rc.3.tgz",
           "kind": "npm-napi-envelope"
         },
         {
-          "path": "dist/npm-addons/ait-native-ait-darwin-arm64-1.0.0-rc.2.tgz",
+          "path": "dist/npm-addons/ait-native-ait-darwin-arm64-1.0.0-rc.3.tgz",
           "kind": "npm-napi-addon",
           "target": "aarch64-apple-darwin"
         },
         {
-          "path": "dist/npm-addons/ait-native-ait-darwin-x64-1.0.0-rc.2.tgz",
+          "path": "dist/npm-addons/ait-native-ait-darwin-x64-1.0.0-rc.3.tgz",
           "kind": "npm-napi-addon",
           "target": "x86_64-apple-darwin"
         },
         {
-          "path": "dist/npm-addons/ait-native-ait-linux-arm64-1.0.0-rc.2.tgz",
+          "path": "dist/npm-addons/ait-native-ait-linux-arm64-1.0.0-rc.3.tgz",
           "kind": "npm-napi-addon",
           "target": "aarch64-unknown-linux-gnu"
         },
         {
-          "path": "dist/npm-addons/ait-native-ait-linux-x64-1.0.0-rc.2.tgz",
+          "path": "dist/npm-addons/ait-native-ait-linux-x64-1.0.0-rc.3.tgz",
           "kind": "npm-napi-addon",
           "target": "x86_64-unknown-linux-gnu"
         },
         {
-          "path": "dist/npm-addons/ait-native-ait-win32-arm64-1.0.0-rc.2.tgz",
+          "path": "dist/npm-addons/ait-native-ait-win32-arm64-1.0.0-rc.3.tgz",
           "kind": "npm-napi-addon",
           "target": "aarch64-pc-windows-msvc"
         },
         {
-          "path": "dist/npm-addons/ait-native-ait-win32-x64-1.0.0-rc.2.tgz",
+          "path": "dist/npm-addons/ait-native-ait-win32-x64-1.0.0-rc.3.tgz",
           "kind": "npm-napi-addon",
           "target": "x86_64-pc-windows-msvc"
         }

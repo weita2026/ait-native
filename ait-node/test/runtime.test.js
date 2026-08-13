@@ -17,7 +17,7 @@ test("binding info and version come from the real in-process addon", () => {
   assert.equal(payload.runtime_authority, "rust");
   assert.equal(payload.node_binding, "napi");
   assert.equal(payload.process_transport_allowed, false);
-  assert.equal(payload.version, "1.0.0-rc.2");
+  assert.equal(payload.version, "1.0.0-rc.3");
   assert.deepEqual(payload.supported_surfaces, [
     "ait-core",
     "ait-agent",
@@ -38,6 +38,21 @@ test("generic call resolves the installed N-API exports directly", () => {
   );
   assert.equal(requiredAddonExports().includes("runCli"), true);
   assert.throws(() => runtime.runCli(["ok", 1]), /array of NUL-free strings/);
+});
+
+test("removed task publish operation is not exported", () => {
+  const runtime = new NativeRuntime();
+  const addon = runtime.loadAddon();
+
+  for (const name of [
+    "taskWorkflowTaskPublish",
+    "task_workflow_task_publish",
+    "taskPublish",
+    "task_publish",
+  ]) {
+    assert.equal(name in addon, false);
+    assert.throws(() => runtime.resolveCallable(name), NativeResolutionError);
+  }
 });
 
 test("missing addon and missing export fail closed", () => {

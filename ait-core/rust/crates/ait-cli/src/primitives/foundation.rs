@@ -18,7 +18,7 @@ pub(super) const CODE_REVIEW_SUMMARY_TEMPLATE_HINT_COMMAND: &str =
     "ait review code template --style numbered";
 pub(super) const DEFAULT_WORKFLOW_SCOPE: &str = "local";
 pub(super) const COMPLETED_LOCAL_FINAL_SNAPSHOT_PROMOTION_GUIDANCE: &str =
-    "To promote completed `solo_local` work, select the latest landed local change and run `ait workflow ready <local-change-id> --apply --remote <name>` once, then `ait task land <local-change-id> --remote <name>`. This publishes the consecutive local Task/Change/Snapshot/Land history while gating only one aggregate Patchset; do not replay earlier local rows with `task publish`, `change publish`, or `--all-completed-local`.";
+    "To promote completed `solo_local` work, select the latest landed local change and run `ait workflow ready <local-change-id> --apply --remote <name>` once, then `ait task land <local-change-id> --remote <name>`. This publishes the consecutive local Task/Change/Snapshot/Land history while gating only one aggregate Patchset; do not replay earlier local rows with `change publish` or `--all-completed-local`.";
 pub(super) const COMPLETED_LOCAL_BATCH_RETIRED_ERROR: &str =
     "`--all-completed-local` is retired because completed local rows must not be replayed as separate remote patchsets. Select the latest landed local change, run `ait workflow ready <local-change-id> --apply --remote <name>`, then run `ait task land <local-change-id> --remote <name>`.";
 pub(super) const APP_DIR: &str = ".ait";

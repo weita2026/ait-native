@@ -11,8 +11,7 @@ use super::change_flow::{
     restart_local_change_read_with_change_store, restart_local_change_reopen_with_change_store,
     restart_local_change_rows_with_change_store, restart_local_task_reactivate_with_task_store,
     restart_local_task_read_with_task_store, review_record_flow_with_task_and_closeout_remotes,
-    review_request_flow_with_task_and_closeout_remotes,
-    task_publish_with_local_stores_and_task_remote, validate_short_remote_change_id,
+    review_request_flow_with_task_and_closeout_remotes, validate_short_remote_change_id,
 };
 use super::line::{
     line_show_with_line_store, remote_line_archive_with_task_remote,
@@ -217,6 +216,7 @@ struct FakeTaskRecordRemote {
     tasks: BTreeMap<String, JsonValue>,
     task_audit: Option<JsonValue>,
     created_task_id_override: Option<String>,
+    task_create_requested_ids: Vec<Option<String>>,
     repository: Option<JsonValue>,
     ensured_repositories: Vec<JsonValue>,
     task_create_repository_present: Vec<bool>,
@@ -1725,6 +1725,8 @@ impl TaskWorkflowRemoteTaskCreator for FakeTaskRecordRemote {
     ) -> TaskWorkflowHttpClientResult<JsonValue> {
         self.task_create_repository_present
             .push(self.repository.is_some());
+        self.task_create_requested_ids
+            .push(task_id.map(str::to_string));
         let resolved_task_id = task_id
             .map(str::to_string)
             .unwrap_or_else(|| format!("RCT-{}", self.tasks.len() + 1));

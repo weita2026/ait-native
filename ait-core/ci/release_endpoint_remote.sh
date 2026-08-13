@@ -1260,26 +1260,8 @@ NOTES
     GIT_SSH_COMMAND="ssh -i ${key_path} -o IdentitiesOnly=yes -o UserKnownHostsFile=${known_hosts}" \
       git clone --quiet --depth 1 --branch "${branch}" \
         "git@github.com:${repository}.git" "${clone_root}"
-    rebuild_apt_repository=false
     if [[ -f ${clone_root}/dists/${suite}/InRelease ]]; then
-      current_verification=${temporary_root}/apt-current-verification
-      if verify_apt_repository_clone "${clone_root}" "${suite}" "${component}" \
-        >"${current_verification}" 2>&1; then
-        :
-      else
-        previous_publication_commit=65cdc171b60b63521720e05061860095169c3047
-        if [[ ! ${previous_publication_commit} =~ ^[0-9a-f]{40}$ ]] ||
-          [[ $(git -C "${clone_root}" rev-parse HEAD) != "${previous_publication_commit}" ]] ||
-          [[ -n $(git -C "${clone_root}" status --porcelain --untracked-files=all) ]]; then
-          printf 'apt repository is neither the exact RC nor its pinned prior publication\n' >&2
-          exit 65
-        fi
-        git -C "${clone_root}" rm -r --ignore-unmatch -- pool dists >/dev/null
-        git -C "${clone_root}" rm -f --ignore-unmatch -- \
-          README.md ait-native-archive-keyring.gpg \
-          ait-native-archive-keyring.asc >/dev/null
-        rebuild_apt_repository=true
-      fi
+      verify_apt_repository_clone "${clone_root}" "${suite}" "${component}"
     else
       if [[ -e ${clone_root}/pool || -e ${clone_root}/dists ||
         -e ${clone_root}/ait-native-archive-keyring.gpg ||
@@ -1287,9 +1269,6 @@ NOTES
         printf 'apt repository contains an incomplete prior publication\n' >&2
         exit 65
       fi
-      rebuild_apt_repository=true
-    fi
-    if [[ ${rebuild_apt_repository} == true ]]; then
       mkdir -p "${clone_root}/pool/main/a/ait-native" \
         "${clone_root}/pool/main/a/ait-runner" \
         "${clone_root}/dists/${suite}/${component}/binary-amd64" \

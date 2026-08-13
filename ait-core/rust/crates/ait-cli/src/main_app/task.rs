@@ -258,20 +258,5 @@ fn run_task(repo: RepoRuntime, command: TaskCommand) -> Result<ExitCode, String>
             )?;
             Ok(ExitCode::SUCCESS)
         }
-        TaskCommand::Publish(args) => {
-            let payload = task_publish(&repo, &args.task_id, args.remote.as_deref())?;
-            emit_result(
-                "ait-cli task publish",
-                &payload,
-                args.json,
-                &[
-                    "task_id",
-                    "publication_state",
-                    "published_remote_name",
-                    "published_task_id",
-                ],
-            )?;
-            Ok(ExitCode::SUCCESS)
-        }
     }
 }

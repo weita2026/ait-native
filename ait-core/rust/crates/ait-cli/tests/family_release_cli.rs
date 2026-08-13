@@ -1468,6 +1468,12 @@ fn family_package_assembles_native_channels_without_endpoint_mutation() {
     assert_eq!(apt["route"]["suite"], "testing");
     assert_eq!(winget["route"]["route"], "validation");
     assert_eq!(winget["route"]["community_manifest_submission"], false);
+    assert!(winget["artifacts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|artifact| artifact["kind"] == "winget-portable-zip")
+        .all(|artifact| artifact["metadata"].get("scope").is_none()));
     assert_eq!(
         run_json(
             root,
@@ -1669,7 +1675,7 @@ fn family_package_assembles_native_channels_without_endpoint_mutation() {
     assert!(installer_manifest.contains("NestedInstallerType: portable"));
     assert!(installer_manifest.contains("PortableCommandAlias: ait\n"));
     assert!(installer_manifest.contains("PortableCommandAlias: ait-server\n"));
-    assert!(installer_manifest.contains("Scope: user\n"));
+    assert!(!installer_manifest.contains("\n    Scope:"));
     assert!(installer_manifest.contains(
         "RelativeFilePath: ait-server-control.ps1\n      PortableCommandAlias: ait-server-control.ps1\n"
     ));

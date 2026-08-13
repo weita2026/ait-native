@@ -4,10 +4,10 @@ repo_name = "ait-core"
 repository_index = 0
 remote = "origin"
 line = "main"
-snapshot = "SNP-4D8A3DA8FE1D"
+snapshot = "SNP-158C9C5BB3D7"
 materialize_to = ".ait-external/ait-core"
 license = "Apache-2.0"
-version = "1.0.0-rc.2"
+version = "1.0.0-rc.3"
 
 [external.bindings.rust]
 kind = "cargo-path"

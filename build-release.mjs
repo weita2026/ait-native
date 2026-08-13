@@ -2,6 +2,7 @@
 
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
+import { realpathSync } from "node:fs";
 import {
   chmod,
   copyFile,
@@ -16,6 +17,7 @@ import {
 } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { gunzipSync, inflateRawSync } from "node:zlib";
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const FAMILY_MANIFEST = path.join(ROOT, "ait-release-family.json");
@@ -50,6 +52,13 @@ const EXPECTED_REPOSITORIES = [
   "ait-node",
 ];
 const PUBLIC_SOURCE_IDENTITY = "weita2026/ait-native";
+const WINDOWS_MSVC_TARGETS = new Set([
+  "aarch64-pc-windows-msvc",
+  "x86_64-pc-windows-msvc",
+]);
+const STATIC_CRT_RUSTFLAG = "-Ctarget-feature=+crt-static";
+const DYNAMIC_MSVC_RUNTIME_PATTERN =
+  /(?:vcruntime|msvcp|concrt)14\d(?:_[a-z0-9]+)*\.dll/giu;
 const AIT_OPERATIONAL_DIRECTORIES = new Set([
   ".ait",
   ".ait-external",
@@ -63,6 +72,210 @@ function fail(message) {
 
 function sha256(bytes) {
   return createHash("sha256").update(bytes).digest("hex");
+}
+
+export async function cleanLocalNodeBuildTransients(version, sourceRoot = ROOT) {
+  if (!/^[0-9A-Za-z.+-]+$/u.test(version)) {
+    fail("local Node.js build cleanup version is invalid");
+  }
+  const nodeRoot = path.join(sourceRoot, "ait-node");
+  await rm(path.join(nodeRoot, ".ait-native-target"), { recursive: true, force: true });
+  await rm(path.join(nodeRoot, "native", "ait_napi.node"), { force: true });
+  await rm(path.join(nodeRoot, "dist", `ait-native-${version}.tgz`), { force: true });
+}
+
+function cargoTargetRustflagsKey(target) {
+  return `CARGO_TARGET_${target.toUpperCase().replaceAll("-", "_")}_RUSTFLAGS`;
+}
+
+export function releaseCommandEnvironment(extraEnv = {}, inheritedEnv = process.env) {
+  const environment = {
+    ...inheritedEnv,
+    CARGO_INCREMENTAL: "0",
+    npm_config_audit: "false",
+    npm_config_fund: "false",
+    npm_config_update_notifier: "false",
+    ...extraEnv,
+  };
+  const target = extraEnv.AIT_RELEASE_TARGET;
+  if (WINDOWS_MSVC_TARGETS.has(target)) {
+    delete environment.RUSTFLAGS;
+    delete environment.CARGO_ENCODED_RUSTFLAGS;
+    environment[cargoTargetRustflagsKey(target)] = STATIC_CRT_RUSTFLAG;
+  }
+  return environment;
+}
+
+function boundedSlice(bytes, start, length, label) {
+  if (
+    !Number.isSafeInteger(start) ||
+    !Number.isSafeInteger(length) ||
+    start < 0 ||
+    length < 0 ||
+    start + length > bytes.length
+  ) {
+    fail(`${label} is outside the artifact boundary`);
+  }
+  return bytes.subarray(start, start + length);
+}
+
+function nativeArtifactName(name) {
+  return /\.(?:dll|exe|node|pyd)$/iu.test(name);
+}
+
+function zipNativeMembers(bytes, label) {
+  const minimumEocdSize = 22;
+  if (bytes.length < minimumEocdSize) {
+    fail(`${label} is too small to be a ZIP archive`);
+  }
+  const searchStart = Math.max(0, bytes.length - minimumEocdSize - 0xffff);
+  let eocd = -1;
+  for (let offset = bytes.length - minimumEocdSize; offset >= searchStart; offset -= 1) {
+    if (bytes.readUInt32LE(offset) === 0x06054b50) {
+      eocd = offset;
+      break;
+    }
+  }
+  if (eocd < 0) {
+    fail(`${label} is missing the ZIP end-of-central-directory record`);
+  }
+  const disk = bytes.readUInt16LE(eocd + 4);
+  const centralDisk = bytes.readUInt16LE(eocd + 6);
+  const diskEntries = bytes.readUInt16LE(eocd + 8);
+  const entryCount = bytes.readUInt16LE(eocd + 10);
+  const centralSize = bytes.readUInt32LE(eocd + 12);
+  const centralOffset = bytes.readUInt32LE(eocd + 16);
+  if (
+    disk !== 0 ||
+    centralDisk !== 0 ||
+    diskEntries !== entryCount ||
+    entryCount === 0xffff ||
+    centralOffset + centralSize > eocd
+  ) {
+    fail(`${label} uses an unsupported multi-disk or ZIP64 layout`);
+  }
+  const members = [];
+  let cursor = centralOffset;
+  for (let index = 0; index < entryCount; index += 1) {
+    if (cursor + 46 > bytes.length || bytes.readUInt32LE(cursor) !== 0x02014b50) {
+      fail(`${label} has an invalid ZIP central-directory entry`);
+    }
+    const flags = bytes.readUInt16LE(cursor + 8);
+    const method = bytes.readUInt16LE(cursor + 10);
+    const compressedSize = bytes.readUInt32LE(cursor + 20);
+    const uncompressedSize = bytes.readUInt32LE(cursor + 24);
+    const nameLength = bytes.readUInt16LE(cursor + 28);
+    const extraLength = bytes.readUInt16LE(cursor + 30);
+    const commentLength = bytes.readUInt16LE(cursor + 32);
+    const localOffset = bytes.readUInt32LE(cursor + 42);
+    const name = boundedSlice(bytes, cursor + 46, nameLength, `${label} ZIP member name`)
+      .toString("utf8");
+    cursor += 46 + nameLength + extraLength + commentLength;
+    if (!nativeArtifactName(name)) {
+      continue;
+    }
+    if ((flags & 0x1) !== 0) {
+      fail(`${label} native member ${name} must not be encrypted`);
+    }
+    if (localOffset + 30 > bytes.length || bytes.readUInt32LE(localOffset) !== 0x04034b50) {
+      fail(`${label} native member ${name} has an invalid local header`);
+    }
+    const localNameLength = bytes.readUInt16LE(localOffset + 26);
+    const localExtraLength = bytes.readUInt16LE(localOffset + 28);
+    const dataOffset = localOffset + 30 + localNameLength + localExtraLength;
+    const compressed = boundedSlice(
+      bytes,
+      dataOffset,
+      compressedSize,
+      `${label} native member ${name}`,
+    );
+    let memberBytes;
+    if (method === 0) {
+      memberBytes = Buffer.from(compressed);
+    } else if (method === 8) {
+      memberBytes = inflateRawSync(compressed);
+    } else {
+      fail(`${label} native member ${name} uses unsupported ZIP method ${method}`);
+    }
+    if (memberBytes.length !== uncompressedSize) {
+      fail(`${label} native member ${name} has an invalid uncompressed size`);
+    }
+    members.push({ name, bytes: memberBytes });
+  }
+  if (cursor !== centralOffset + centralSize) {
+    fail(`${label} ZIP central-directory size is inconsistent`);
+  }
+  return members;
+}
+
+function tarNativeMembers(bytes, label) {
+  let tar;
+  try {
+    tar = gunzipSync(bytes);
+  } catch (error) {
+    fail(`${label} is not a valid gzip-compressed tar archive: ${error.message}`);
+  }
+  const members = [];
+  for (let offset = 0; offset + 512 <= tar.length; ) {
+    const header = tar.subarray(offset, offset + 512);
+    if (header.every((value) => value === 0)) {
+      break;
+    }
+    const text = (start, length) =>
+      header.subarray(start, start + length).toString("utf8").replace(/\0.*$/u, "");
+    const name = text(0, 100);
+    const prefix = text(345, 155);
+    const memberName = prefix === "" ? name : `${prefix}/${name}`;
+    const sizeText = text(124, 12).trim();
+    if (!/^[0-7]+$/u.test(sizeText)) {
+      fail(`${label} tar member ${memberName} has an invalid size`);
+    }
+    const size = Number.parseInt(sizeText, 8);
+    const dataOffset = offset + 512;
+    const memberBytes = boundedSlice(tar, dataOffset, size, `${label} tar member ${memberName}`);
+    const type = header[156];
+    if ((type === 0 || type === 0x30) && nativeArtifactName(memberName)) {
+      members.push({ name: memberName, bytes: memberBytes });
+    }
+    offset = dataOffset + Math.ceil(size / 512) * 512;
+  }
+  return members;
+}
+
+function assertStaticWindowsPe(bytes, label) {
+  if (bytes.length < 2 || bytes[0] !== 0x4d || bytes[1] !== 0x5a) {
+    fail(`${label} is not a Windows PE artifact`);
+  }
+  const imports = [
+    ...new Set(bytes.toString("latin1").match(DYNAMIC_MSVC_RUNTIME_PATTERN) ?? []),
+  ].sort((left, right) => left.localeCompare(right, "en", { sensitivity: "base" }));
+  if (imports.length > 0) {
+    fail(
+      `${label} dynamically imports ${imports.join(", ")}; Windows release artifacts must statically link the MSVC runtime`,
+    );
+  }
+}
+
+export function validateWindowsReceiptArtifact(bytes, row, label) {
+  if (!WINDOWS_MSVC_TARGETS.has(row.target)) {
+    return;
+  }
+  let members;
+  if (row.kind === "native-executable") {
+    members = [{ name: row.declared_path, bytes }];
+  } else if (row.kind === "python-wheel") {
+    members = zipNativeMembers(bytes, label);
+  } else if (row.kind === "npm-napi-addon") {
+    members = tarNativeMembers(bytes, label);
+  } else {
+    fail(`${label} has unsupported Windows artifact kind ${row.kind}`);
+  }
+  if (members.length === 0) {
+    fail(`${label} contains no Windows native artifact`);
+  }
+  for (const member of members) {
+    assertStaticWindowsPe(member.bytes, `${label}:${member.name}`);
+  }
 }
 
 async function readJson(filePath, label) {
@@ -641,14 +854,7 @@ function run(command, args, cwd = ROOT, extraEnv = {}) {
   const result = spawnSync(command, args, {
     cwd,
     encoding: "utf8",
-    env: {
-      ...process.env,
-      CARGO_INCREMENTAL: "0",
-      npm_config_audit: "false",
-      npm_config_fund: "false",
-      npm_config_update_notifier: "false",
-      ...extraEnv,
-    },
+    env: releaseCommandEnvironment(extraEnv),
     stdio: "inherit",
     windowsHide: true,
   });
@@ -664,14 +870,7 @@ function runCaptured(command, args, cwd = ROOT, extraEnv = {}) {
   const result = spawnSync(command, args, {
     cwd,
     encoding: "utf8",
-    env: {
-      ...process.env,
-      CARGO_INCREMENTAL: "0",
-      npm_config_audit: "false",
-      npm_config_fund: "false",
-      npm_config_update_notifier: "false",
-      ...extraEnv,
-    },
+    env: releaseCommandEnvironment(extraEnv),
     stdio: ["ignore", "pipe", "inherit"],
     windowsHide: true,
   });
@@ -891,6 +1090,7 @@ async function receiptArtifact(source, destination, relative, row) {
   await mkdir(path.dirname(destination), { recursive: true });
   await copyFile(source, destination);
   const bytes = await readFile(destination);
+  validateWindowsReceiptArtifact(bytes, row, relative);
   return {
     ...row,
     path: relative,
@@ -1422,6 +1622,11 @@ async function build({ family, mapping }, skipTests) {
     "--out-dir", npmOutput,
   ], nodeRoot);
 
+  await cleanLocalNodeBuildTransients(family.family.version);
+  if (mapping.content_sha256 !== (await sourceContentDigest())) {
+    fail("local source build changed the public source content");
+  }
+
   const files = await inventory(OUTPUT_ROOT);
   const manifest = {
     contract: "ait.release.local-source-build/v1",
@@ -1513,7 +1718,12 @@ async function main() {
   await build(validated, selectedFlags.has("--skip-tests"));
 }
 
-main().catch((error) => {
-  process.stderr.write(`ait-native source build failed: ${error.message}\n`);
-  process.exitCode = 1;
-});
+if (
+  process.argv[1] !== undefined &&
+  realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url))
+) {
+  main().catch((error) => {
+    process.stderr.write(`ait-native source build failed: ${error.message}\n`);
+    process.exitCode = 1;
+  });
+}

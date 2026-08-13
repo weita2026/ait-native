@@ -796,6 +796,76 @@ fn workflow_sync_history_plan_artifacts(
         .collect()
 }
 
+type WorkflowRemotePlanLinkage = (Option<String>, Option<String>, Option<String>);
+
+fn workflow_remote_plan_linkage_for_local_task(
+    repo: &RepoRuntime,
+    task: &JsonValue,
+) -> Result<WorkflowRemotePlanLinkage, String> {
+    let resolved_plan_id = string_field(task, "plan_id");
+    let resolved_revision_id = string_field(task, "origin_plan_revision_id");
+    let resolved_plan_item_ref = string_field(task, "plan_item_ref");
+    let mode = repo
+        .config
+        .get("plan_task_binding_mode")
+        .and_then(JsonValue::as_str)
+        .and_then(|value| normalized_text(Some(value)))
+        .unwrap_or_default();
+    if resolved_plan_id.is_none() && resolved_revision_id.is_none() {
+        if mode == "required" {
+            return Err(
+                "Required plan/task binding requires local draft tasks to carry durable plan linkage before remote promotion.".to_string(),
+            );
+        }
+        if resolved_plan_item_ref.is_some() {
+            return Err(
+                "Local task plan metadata is incomplete: `plan_item_ref` requires plan linkage."
+                    .to_string(),
+            );
+        }
+        return Ok((None, None, None));
+    }
+    if matches!(mode.as_str(), "strict" | "required") && resolved_plan_item_ref.is_none() {
+        return Err(
+            "Strict or required plan/task binding requires `plan_item_ref` for remote promotion."
+                .to_string(),
+        );
+    }
+    let plan_store = repo
+        .binary_db_stores::<SNAPSHOT_BINARY_DB_WRITE_LAYOUT>()
+        .plans();
+    let linkage = resolve_reconciled_plan_publish_linkage_with_plan_store(
+        &plan_store,
+        resolved_plan_id.as_deref(),
+        resolved_revision_id.as_deref(),
+    )
+    .map_err(|err| err.to_string())?;
+    let resolved_plan_id = linkage.plan_id;
+    let published_plan_id = linkage.published_plan_id.ok_or_else(|| {
+        format!(
+            "Local task {} is linked to unpublished local plan {resolved_plan_id}. Publish the plan first.",
+            required_string_field(task, "task_id").unwrap_or_else(|_| "unknown task".to_string())
+        )
+    })?;
+    let resolved_revision_id = linkage.plan_revision_id.ok_or_else(|| {
+        format!(
+            "Local task {} is linked to local plan {resolved_plan_id} without a stored revision id.",
+            required_string_field(task, "task_id").unwrap_or_else(|_| "unknown task".to_string())
+        )
+    })?;
+    let published_revision_id = linkage.published_plan_revision_id.ok_or_else(|| {
+        format!(
+            "Local task {} is linked to unpublished local plan revision {resolved_revision_id}. Publish the plan revision first.",
+            required_string_field(task, "task_id").unwrap_or_else(|_| "unknown task".to_string())
+        )
+    })?;
+    Ok((
+        Some(published_plan_id),
+        Some(published_revision_id),
+        resolved_plan_item_ref,
+    ))
+}
+
 fn workflow_history_prepare_entries(
     repo: &RepoRuntime,
     candidate: &JsonValue,
@@ -813,7 +883,7 @@ fn workflow_history_prepare_entries(
                 "History promotion entry is missing local Change projection.".to_string()
             })?;
             let (published_plan_id, published_revision_id, published_plan_item_ref) =
-                published_local_task_plan_linkage(repo, task)?;
+                workflow_remote_plan_linkage_for_local_task(repo, task)?;
             Ok(json!({
                 "local_task_id": required_string_field(entry, "local_task_id")?,
                 "local_change_id": required_string_field(entry, "local_change_id")?,

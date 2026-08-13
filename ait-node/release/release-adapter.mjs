@@ -21,7 +21,7 @@ import { spawnNpmSync } from "../scripts/npm-command.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const PACKAGE_NAME = "ait-native";
-const PACKAGE_VERSION = "1.0.0-rc.2";
+const PACKAGE_VERSION = "1.0.0-rc.3";
 const PORTABLE_TARGET = "portable";
 const TARBALL_NAME = `${PACKAGE_NAME}-${PACKAGE_VERSION}.tgz`;
 const TARBALL_PATH = path.join(ROOT, "dist", TARBALL_NAME);
@@ -113,7 +113,7 @@ async function validateContract(target, version) {
         payload.version === version &&
         payload.component === "ait-node" &&
         payload.binding_repository === "ait-core" &&
-        payload.binding_snapshot === "SNP-4D8A3DA8FE1D" &&
+        payload.binding_snapshot === "SNP-158C9C5BB3D7" &&
         payload.addon === "native/ait_napi.node",
     ),
     true,
@@ -420,7 +420,7 @@ async function main() {
   const [action, target, version] = process.argv.slice(2);
   if (process.argv.length !== 5) {
     throw new Error(
-      "usage: node release/release-adapter.mjs {check|build|smoke} <target|portable> 1.0.0-rc.2",
+      "usage: node release/release-adapter.mjs {check|build|smoke} <target|portable> 1.0.0-rc.3",
     );
   }
   const handlers = { build, check, smoke };

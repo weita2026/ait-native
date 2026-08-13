@@ -17,7 +17,7 @@ assert.equal(info.contract, "ait.language.binding.v1");
 assert.equal(info.runtime_authority, "rust");
 assert.equal(info.node_binding, "napi");
 assert.equal(info.process_transport_allowed, false);
-assert.equal(info.version, "1.0.0-rc.2");
+assert.equal(info.version, "1.0.0-rc.3");
 assert.match(runtime.resolveAddonPath(), /ait_napi\.node$/);
 
 const capabilities = new AgentClient(runtime).capabilities();
