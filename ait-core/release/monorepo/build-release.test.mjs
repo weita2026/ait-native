@@ -1,8 +1,19 @@
 import assert from "node:assert/strict";
+import {
+  lstat,
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  writeFile,
+} from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { gzipSync } from "node:zlib";
 import test from "node:test";
 
 import {
+  cleanLocalNodeBuildTransients,
   releaseCommandEnvironment,
   validateWindowsReceiptArtifact,
 } from "./build-release.mjs";
@@ -11,6 +22,41 @@ const WINDOWS_TARGETS = [
   "aarch64-pc-windows-msvc",
   "x86_64-pc-windows-msvc",
 ];
+
+test("local source builds remove exact outputs without deleting admitted Node.js dist", async () => {
+  const sourceRoot = await mkdtemp(path.join(os.tmpdir(), "ait-source-cleanup-test-"));
+  try {
+    const nodeRoot = path.join(sourceRoot, "ait-node");
+    const retained = path.join(nodeRoot, "src", "index.js");
+    await mkdir(path.dirname(retained), { recursive: true });
+    await writeFile(retained, "export const retained = true;\n");
+    for (const [directory, file] of [
+      [".ait-native-target", "release/libait_napi.dylib"],
+      ["native", "ait_napi.node"],
+      ["dist", "ait-native-1.0.0-rc.3.tgz"],
+    ]) {
+      const generated = path.join(nodeRoot, directory, file);
+      await mkdir(path.dirname(generated), { recursive: true });
+      await writeFile(generated, "generated\n");
+    }
+    const admittedDist = path.join(nodeRoot, "dist", "REL-ADMITTED", "ait-release.manifest.json");
+    await mkdir(path.dirname(admittedDist), { recursive: true });
+    await writeFile(admittedDist, "admitted\n");
+
+    await cleanLocalNodeBuildTransients("1.0.0-rc.3", sourceRoot);
+
+    assert.equal(await readFile(retained, "utf8"), "export const retained = true;\n");
+    await assert.rejects(lstat(path.join(nodeRoot, ".ait-native-target")), { code: "ENOENT" });
+    await assert.rejects(lstat(path.join(nodeRoot, "native", "ait_napi.node")), { code: "ENOENT" });
+    await assert.rejects(
+      lstat(path.join(nodeRoot, "dist", "ait-native-1.0.0-rc.3.tgz")),
+      { code: "ENOENT" },
+    );
+    assert.equal(await readFile(admittedDist, "utf8"), "admitted\n");
+  } finally {
+    await rm(sourceRoot, { recursive: true, force: true });
+  }
+});
 
 function fakePe(...imports) {
   return Buffer.concat([

@@ -10,6 +10,7 @@ fi
 dossier_root=$1
 public_source_root=$2
 evidence_output=$3
+control_root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 
 required_environment=(
   AIT_RELEASE_AUTHORIZATION_REF
@@ -25,6 +26,7 @@ required_environment=(
   AIT_RELEASE_ID
   AIT_RELEASE_PROTECTED_ENVIRONMENT
   AIT_RELEASE_REPOSITORY
+  AIT_RELEASE_SOURCE_CONTROL_SHA
   AIT_RELEASE_SOURCE_RUN_ATTEMPT
   AIT_RELEASE_SOURCE_RUN_ID
   AIT_RELEASE_TAG
@@ -46,6 +48,7 @@ if [[ ${AIT_RELEASE_REPOSITORY} != weita2026/ait-native ||
   ! ${AIT_RELEASE_CHECKSUM_SHA256} =~ ^[0-9a-f]{64}$ ||
   ! ${AIT_RELEASE_DOSSIER_ARTIFACT_DIGEST} =~ ^sha256:[0-9a-f]{64}$ ||
   ! ${AIT_RELEASE_AUTHORIZATION_SHA} =~ ^[0-9a-f]{40}$ ||
+  ! ${AIT_RELEASE_SOURCE_CONTROL_SHA} =~ ^[0-9a-f]{40}$ ||
   ! ${AIT_RELEASE_SOURCE_RUN_ID} =~ ^[1-9][0-9]*$ ||
   ! ${AIT_RELEASE_SOURCE_RUN_ATTEMPT} =~ ^[1-9][0-9]*$ ||
   ! ${AIT_RELEASE_DOSSIER_ARTIFACT_ID} =~ ^[1-9][0-9]*$ ||
@@ -185,9 +188,9 @@ mapping_sha256=$(sha256_file "${source_mapping}")
 promotion_sha256=$(sha256_file "${promotion}")
 source_archive_sha256=$(sha256_file "${source_archive}")
 
-receipt_matrix_filter=${public_source_root}/ait-core/ci/release_receipt_matrix.jq
-platform_contract=${public_source_root}/ait-core/ci/native_bootstrap_matrix.json
-repository_contract=${public_source_root}/ait-core/ci/release_repository_authorities.json
+receipt_matrix_filter=${control_root}/ci/release_receipt_matrix.jq
+platform_contract=${control_root}/ci/native_bootstrap_matrix.json
+repository_contract=${control_root}/ci/release_repository_authorities.json
 for matrix_input in \
   "${public_source_root}/ait-release-family.json" \
   "${receipt_matrix_filter}" \
@@ -251,6 +254,7 @@ for record in "${check}" "${build}" "${promotion}"; do
   fi
 done
 if ! jq -e \
+  --arg source_commit "${AIT_RELEASE_GIT_COMMIT}" \
   --argjson expected_receipt_count "${expected_receipt_count}" \
   --argjson expected_component_artifact_count \
     "${expected_component_artifact_count}" \
@@ -260,7 +264,7 @@ if ! jq -e \
   .status == "checked" and .check_summary.decision == "pass" and
   .check_summary.failed == 0 and .check_summary.blocking == 0 and
   (.component_receipts | length) == $expected_receipt_count and
-  ([.component_receipts[].git_commit] | unique | length) == 1 and
+  ([.component_receipts[].git_commit] | unique) == [$source_commit] and
   ([.artifacts[] | select(.role == "component-artifact")] | length) ==
     $expected_component_artifact_count and
   (.license_material | length) == $expected_license_material_count
@@ -269,6 +273,7 @@ if ! jq -e \
   exit 65
 fi
 if ! jq -e \
+  --arg source_commit "${AIT_RELEASE_GIT_COMMIT}" \
   --argjson expected_receipt_count "${expected_receipt_count}" \
   --argjson expected_component_artifact_count \
     "${expected_component_artifact_count}" \
@@ -279,6 +284,7 @@ if ! jq -e \
   .promotion.authorized == false and .promotion.performed == false and
   .promotion.registry_write == false and
   (.component_receipts | length) == $expected_receipt_count and
+  ([.component_receipts[].git_commit] | unique) == [$source_commit] and
   ([.artifacts[] | select(.role == "component-artifact")] | length) ==
     $expected_component_artifact_count and
   ([.artifacts[] | select(.role == "license-material")] | length) ==
@@ -322,10 +328,12 @@ fi
 if ! jq -e \
   --arg repository "${AIT_RELEASE_REPOSITORY}" \
   --arg commit "${AIT_RELEASE_GIT_COMMIT}" \
+  --arg control_commit "${AIT_RELEASE_SOURCE_CONTROL_SHA}" \
   --arg snapshot "${AIT_RELEASE_COORDINATOR_SNAPSHOT}" \
   --arg mapping_sha "${mapping_sha256}" '
     .contract == "ait.release.public-git-source/v1" and .status == "ready" and
     .public_source_identity == $repository and .git_commit == $commit and
+    .workflow_control_commit == $control_commit and
     .coordinator_snapshot == $snapshot and .mapping_sha256 == $mapping_sha and
     .source_cache_count == 0 and .registry_write == false and
     .public_publish == false
@@ -610,6 +618,7 @@ jq -n \
   --arg snapshot "${AIT_RELEASE_COORDINATOR_SNAPSHOT}" \
   --arg source_run_id "${AIT_RELEASE_SOURCE_RUN_ID}" \
   --arg source_run_attempt "${AIT_RELEASE_SOURCE_RUN_ATTEMPT}" \
+  --arg source_control_sha "${AIT_RELEASE_SOURCE_CONTROL_SHA}" \
   --arg dossier_artifact_id "${AIT_RELEASE_DOSSIER_ARTIFACT_ID}" \
   --arg dossier_artifact_digest "${AIT_RELEASE_DOSSIER_ARTIFACT_DIGEST}" \
   --arg environment "${AIT_RELEASE_PROTECTED_ENVIRONMENT}" \
@@ -658,6 +667,7 @@ jq -n \
       dossier: {
         source_run_id: $source_run_id,
         source_run_attempt: $source_run_attempt,
+        source_workflow_sha: $source_control_sha,
         artifact_id: $dossier_artifact_id,
         artifact_digest: $dossier_artifact_digest,
         candidate_sha256: $candidate_sha256,
@@ -700,11 +710,13 @@ jq -n \
 
 if ! jq -e \
   --arg release_id "${AIT_RELEASE_ID}" \
+  --arg source_control_sha "${AIT_RELEASE_SOURCE_CONTROL_SHA}" \
   --arg frozen_manifest_sha256 "${AIT_RELEASE_FROZEN_MANIFEST_SHA256}" \
   --arg checksum_sha256 "${AIT_RELEASE_CHECKSUM_SHA256}" '
     .contract == "ait.release.family.protected-promotion/v1" and
     .status == "authorized_for_explicit_endpoint_promotion" and
     .release_id == $release_id and .authorization.granted == true and
+    .dossier.source_workflow_sha == $source_control_sha and
     .dossier.frozen_manifest_sha256 == $frozen_manifest_sha256 and
     .dossier.checksum_sha256 == $checksum_sha256 and
     .public_source.status == "verified" and

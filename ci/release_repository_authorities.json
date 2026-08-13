@@ -1,7 +1,7 @@
 {
   "contract": "ait.release.repository-authorities/v1",
   "schema_version": 1,
-  "family_version": "1.0.0-rc.3",
+  "family_version": "1.0.0-rc.4",
   "source_line": "main",
   "bootstrap_line": "release-bootstrap",
   "source_cache_artifact_prefix": "ait-release-source",

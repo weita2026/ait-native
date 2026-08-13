@@ -7,12 +7,16 @@ on:
         description: Exact AIT coordinator Snapshot recorded by the public source mapping
         required: true
         type: string
+      source_commit:
+        description: Exact immutable public source commit to build and archive
+        required: true
+        type: string
 
 permissions:
   contents: read
 
 concurrency:
-  group: ait-release-component-receipts-${{ github.sha }}-${{ inputs.coordinator_snapshot }}
+  group: ait-release-component-receipts-${{ github.sha }}-${{ inputs.source_commit }}-${{ inputs.coordinator_snapshot }}
   cancel-in-progress: false
 
 jobs:
@@ -26,26 +30,46 @@ jobs:
       rust_toolchain: ${{ steps.contract.outputs.rust_toolchain }}
       source_git_commit: ${{ steps.contract.outputs.source_git_commit }}
     steps:
-      - name: Check out the exact public source commit
+      - name: Check out the reviewed release-control commit
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           ref: ${{ github.sha }}
           fetch-depth: 1
+          path: control
+          persist-credentials: false
+
+      - name: Check out the exact public source commit
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ inputs.source_commit }}
+          fetch-depth: 1
+          path: source
           persist-credentials: false
 
       - name: Validate static contracts and dispatch identity
         id: contract
         shell: bash
+        working-directory: control
         env:
+          AIT_CONTROL_GIT_COMMIT: ${{ github.sha }}
+          AIT_CONTROL_ROOT: ${{ github.workspace }}/control
           AIT_DISPATCH_COORDINATOR_SNAPSHOT: ${{ inputs.coordinator_snapshot }}
-          AIT_PUBLIC_SOURCE_ROOT: ${{ github.workspace }}
-          AIT_SOURCE_GIT_COMMIT: ${{ github.sha }}
+          AIT_PUBLIC_SOURCE_ROOT: ${{ github.workspace }}/source
+          AIT_RELEASE_FAMILY_MANIFEST: ${{ github.workspace }}/source/ait-release-family.json
+          AIT_SOURCE_GIT_COMMIT: ${{ inputs.source_commit }}
         run: |
           set -euo pipefail
           coordinator_snapshot="${AIT_DISPATCH_COORDINATOR_SNAPSHOT}"
           [[ "${coordinator_snapshot}" =~ ^SNP-[0-9A-F]{12}$ ]]
+          [[ "${AIT_CONTROL_GIT_COMMIT}" =~ ^[0-9a-f]{40}$ ]]
+          [[ "${AIT_SOURCE_GIT_COMMIT}" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git -C "${AIT_CONTROL_ROOT}" rev-parse HEAD)" = \
+            "${AIT_CONTROL_GIT_COMMIT}"
           test "$(git -C "${AIT_PUBLIC_SOURCE_ROOT}" rev-parse HEAD)" = \
             "${AIT_SOURCE_GIT_COMMIT}"
+          node "${AIT_CONTROL_ROOT}/build-release.mjs" \
+            --validate-only \
+            --git-commit "${AIT_CONTROL_GIT_COMMIT}"
           node "${AIT_PUBLIC_SOURCE_ROOT}/build-release.mjs" \
             --validate-only \
             --git-commit "${AIT_SOURCE_GIT_COMMIT}"
@@ -61,8 +85,6 @@ jobs:
               .public_publish == false
             ' "${AIT_PUBLIC_SOURCE_ROOT}/ait-monorepo-source.json" >/dev/null
           ./ci/release_receipt_matrix_test.sh
-          ./ci/release_receipt_bundle_test.sh
-          ./ci/release_monorepo_export_test.sh
           jq -e -f ci/native_bootstrap_matrix.jq \
             ci/native_bootstrap_matrix.json >/dev/null
           {
@@ -87,23 +109,33 @@ jobs:
       receipt_retention_days: ${{ steps.project.outputs.receipt_retention_days }}
       source_retention_days: ${{ steps.project.outputs.source_retention_days }}
     steps:
-      - name: Check out the exact public source commit
+      - name: Check out the reviewed release-control commit
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           ref: ${{ github.sha }}
           fetch-depth: 1
+          path: control
+          persist-credentials: false
+
+      - name: Check out the exact public source commit
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ inputs.source_commit }}
+          fetch-depth: 1
+          path: source
           persist-credentials: false
 
       - name: Project the Snapshot-mapped build matrix
         id: project
         shell: bash
+        working-directory: control
         env:
           AIT_COORDINATOR_SNAPSHOT: ${{ needs.contract.outputs.coordinator_snapshot }}
           AIT_FAMILY_VERSION: ${{ needs.contract.outputs.family_version }}
-          AIT_PUBLIC_SOURCE_ROOT: ${{ github.workspace }}
+          AIT_PUBLIC_SOURCE_ROOT: ${{ github.workspace }}/source
         run: |
           set -euo pipefail
-          projection="${RUNNER_TEMP}/release-receipt-matrix.json"
+          projection="${GITHUB_WORKSPACE}/release-receipt-matrix.json"
           jq -n \
             --slurpfile family "${AIT_PUBLIC_SOURCE_ROOT}/ait-release-family.json" \
             --slurpfile platforms ci/native_bootstrap_matrix.json \
@@ -130,7 +162,6 @@ jobs:
             echo "receipt_retention_days=$(jq -r '.receipt_retention_days' "${projection}")"
             echo "source_retention_days=$(jq -r '.source_cache_retention_days' "${projection}")"
           } >>"${GITHUB_OUTPUT}"
-          cp "${projection}" ./release-receipt-matrix.json
 
       - name: Upload the resolved matrix evidence
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -155,8 +186,9 @@ jobs:
       - name: Check out the exact public source commit
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
-          ref: ${{ github.sha }}
+          ref: ${{ inputs.source_commit }}
           fetch-depth: 1
+          path: source
           persist-credentials: false
 
       - name: Verify public source and native runner identity
@@ -164,7 +196,7 @@ jobs:
         env:
           AIT_MATRIX_ARCHITECTURE: ${{ matrix.architecture }}
           AIT_MATRIX_RUNNER_OS: ${{ matrix.runner_os }}
-          AIT_PUBLIC_SOURCE_ROOT: ${{ github.workspace }}
+          AIT_PUBLIC_SOURCE_ROOT: ${{ github.workspace }}/source
           AIT_RUNNER_ARCH: ${{ runner.arch }}
           AIT_RUNNER_OS: ${{ runner.os }}
           AIT_SOURCE_GIT_COMMIT: ${{ needs.contract.outputs.source_git_commit }}
@@ -253,7 +285,7 @@ jobs:
           AIT_COMPONENT_SNAPSHOT: ${{ matrix.source_snapshot }}
           AIT_COMPONENT_TARGET: ${{ matrix.target }}
           AIT_COMPONENT_VERSION: ${{ matrix.version }}
-          AIT_PUBLIC_SOURCE_ROOT: ${{ github.workspace }}
+          AIT_PUBLIC_SOURCE_ROOT: ${{ github.workspace }}/source
           AIT_RELEASE_PLATFORM_FLOOR: ${{ matrix.minimum_platform }}
           AIT_RELEASE_PLATFORM_FLOOR_KIND: ${{ matrix.minimum_platform_kind }}
           AIT_RELEASE_RUNNER_ARCH: ${{ runner.arch }}
@@ -312,18 +344,21 @@ jobs:
       - name: Check out the exact public source commit
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
-          ref: ${{ github.sha }}
+          ref: ${{ inputs.source_commit }}
           fetch-depth: 1
+          path: source
           persist-credentials: false
 
       - name: Validate and archive the immutable commit
         shell: bash
         env:
+          AIT_CONTROL_GIT_COMMIT: ${{ github.sha }}
           AIT_COORDINATOR_SNAPSHOT: ${{ needs.contract.outputs.coordinator_snapshot }}
-          AIT_PUBLIC_SOURCE_ROOT: ${{ github.workspace }}
+          AIT_PUBLIC_SOURCE_ROOT: ${{ github.workspace }}/source
           AIT_SOURCE_GIT_COMMIT: ${{ needs.contract.outputs.source_git_commit }}
         run: |
           set -euo pipefail
+          [[ "${AIT_CONTROL_GIT_COMMIT}" =~ ^[0-9a-f]{40}$ ]]
           node "${AIT_PUBLIC_SOURCE_ROOT}/build-release.mjs" \
             --validate-only \
             --git-commit "${AIT_SOURCE_GIT_COMMIT}"
@@ -341,6 +376,7 @@ jobs:
           jq -n \
             --arg contract 'ait.release.public-git-source/v1' \
             --arg identity 'weita2026/ait-native' \
+            --arg control_commit "${AIT_CONTROL_GIT_COMMIT}" \
             --arg coordinator_snapshot "${AIT_COORDINATOR_SNAPSHOT}" \
             --arg git_commit "${AIT_SOURCE_GIT_COMMIT}" \
             --arg mapping_sha256 "${mapping_sha256}" \
@@ -349,6 +385,7 @@ jobs:
                 contract: $contract,
                 status: "ready",
                 public_source_identity: $identity,
+                workflow_control_commit: $control_commit,
                 coordinator_snapshot: $coordinator_snapshot,
                 git_commit: $git_commit,
                 mapping_sha256: $mapping_sha256,
@@ -382,8 +419,9 @@ jobs:
       - name: Check out the exact public source commit
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
-          ref: ${{ github.sha }}
+          ref: ${{ inputs.source_commit }}
           fetch-depth: 1
+          path: source
           persist-credentials: false
 
       - name: Download all component receipt bundles
@@ -403,7 +441,7 @@ jobs:
         shell: bash
         env:
           AIT_FAMILY_VERSION: ${{ needs.project.outputs.family_version }}
-          AIT_PUBLIC_SOURCE_ROOT: ${{ github.workspace }}
+          AIT_PUBLIC_SOURCE_ROOT: ${{ github.workspace }}/source
           AIT_RUST_TOOLCHAIN: ${{ needs.contract.outputs.rust_toolchain }}
           AIT_SOURCE_GIT_COMMIT: ${{ needs.contract.outputs.source_git_commit }}
         run: |
@@ -432,7 +470,7 @@ jobs:
         env:
           AIT_FAMILY_CHANNEL: ${{ needs.project.outputs.family_channel }}
           AIT_FAMILY_VERSION: ${{ needs.project.outputs.family_version }}
-          AIT_PUBLIC_SOURCE_ROOT: ${{ github.workspace }}
+          AIT_PUBLIC_SOURCE_ROOT: ${{ github.workspace }}/source
           AIT_RECEIPT_COUNT: ${{ needs.project.outputs.receipt_count }}
           AIT_SOURCE_GIT_COMMIT: ${{ needs.contract.outputs.source_git_commit }}
         run: |

@@ -5,6 +5,8 @@ use tempfile::TempDir;
 
 #[test]
 fn embedded_entry_returns_help_and_parse_status_without_exiting() {
+    assert_eq!(entry_with_args(Vec::new()), 0);
+    assert_eq!(entry_with_args(vec!["ait".into()]), 0);
     assert_eq!(entry_with_args(vec!["ait".into(), "--help".into()]), 0);
     assert_eq!(
         entry_with_args(vec!["ait".into(), "not-a-command".into()]),

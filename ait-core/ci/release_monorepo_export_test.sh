@@ -48,7 +48,12 @@ if [[ ${AIT_RELEASE_MONOREPO_PUBLIC_LAYOUT_SELFTEST:-0} == 0 ]]; then
   cp "${repo_root}/ait-release-family.json" "${public_core}/ait-release-family.json"
   cp "${repo_root}/ci/release_monorepo_export.sh" \
     "${repo_root}/ci/release_monorepo_export_test.sh" \
+    "${repo_root}/ci/native_bootstrap_matrix.jq" \
+    "${repo_root}/ci/native_bootstrap_matrix.json" \
     "${repo_root}/ci/release_protected_promotion.sh" \
+    "${repo_root}/ci/release_receipt_matrix.jq" \
+    "${repo_root}/ci/release_receipt_matrix_test.sh" \
+    "${repo_root}/ci/release_repository_authorities.json" \
     "${repo_root}/ci/release_monorepo_transform.mjs" \
     "${public_core}/ci/"
   cp -R "${repo_root}/release/monorepo" "${public_core}/release/monorepo"
@@ -137,8 +142,14 @@ for repository in ait-core ait-server ait-runner ait-python ait-node; do
     ait-core)
       mkdir -p "${source}/rust/crates/ait-py" "${source}/docs"
       cp "${repo_root}/ci/release_protected_promotion.sh" "${source}/ci/"
+      jq '.family.version = "1.0.0-rc.2"' \
+        "${repo_root}/ait-release-family.json" \
+        >"${source}/ait-release-family.json"
+      jq '.family_version = "1.0.0-rc.2"' \
+        "${repo_root}/ci/release_repository_authorities.json" \
+        >"${source}/ci/release_repository_authorities.json"
       printf '[workspace]\nmembers = ["crates/ait-py"]\n' >"${source}/rust/Cargo.toml"
-      printf '[package]\nname = "ait-py"\nversion = "1.0.0-rc.2"\n' \
+      printf '[package]\nname = "ait-py"\nversion = "1.0.0-rc.3"\n' \
         >"${source}/rust/crates/ait-py/Cargo.toml"
       cp "${product_document}" "${source}/docs/distribution.md"
       ;;
@@ -147,7 +158,7 @@ for repository in ait-core ait-server ait-runner ait-python ait-node; do
       printf '[workspace]\nmembers = []\n' >"${source}/rust/Cargo.toml"
       ;;
     ait-runner)
-      printf '[package]\nname = "ait-runner"\nversion = "1.0.0-rc.2"\n\n[dependencies]\nait-core = { path = ".ait-external/ait-core/rust/crates/ait-core" }\n' \
+      printf '[package]\nname = "ait-runner"\nversion = "1.0.0-rc.3"\n\n[dependencies]\nait-core = { path = ".ait-external/ait-core/rust/crates/ait-core" }\n' \
         >"${source}/Cargo.toml"
       ;;
     ait-python)
@@ -160,7 +171,7 @@ for repository in ait-core ait-server ait-runner ait-python ait-node; do
       jq -n '
         {
           name: "ait-native",
-          version: "1.0.0-rc.2",
+          version: "1.0.0-rc.3",
           type: "module",
           bin: {ait: "bin/ait.mjs"},
           exports: {
@@ -172,12 +183,12 @@ for repository in ait-core ait-server ait-runner ait-python ait-node; do
           },
           types: "./src/index.d.ts",
           optionalDependencies: {
-            "ait-native-ait-darwin-arm64": "1.0.0-rc.2",
-            "ait-native-ait-darwin-x64": "1.0.0-rc.2",
-            "ait-native-ait-linux-arm64": "1.0.0-rc.2",
-            "ait-native-ait-linux-x64": "1.0.0-rc.2",
-            "ait-native-ait-win32-arm64": "1.0.0-rc.2",
-            "ait-native-ait-win32-x64": "1.0.0-rc.2"
+            "ait-native-ait-darwin-arm64": "1.0.0-rc.3",
+            "ait-native-ait-darwin-x64": "1.0.0-rc.3",
+            "ait-native-ait-linux-arm64": "1.0.0-rc.3",
+            "ait-native-ait-linux-x64": "1.0.0-rc.3",
+            "ait-native-ait-win32-arm64": "1.0.0-rc.3",
+            "ait-native-ait-win32-x64": "1.0.0-rc.3"
           },
           scripts: {}
         }
@@ -203,7 +214,7 @@ for repository in ait-core ait-server ait-runner ait-python ait-node; do
           ["x86_64-pc-windows-msvc", "win32", "x64"]
         ] | {
           schema: "ait.node.napi-platform-packages/v1",
-          family_version: "1.0.0-rc.2",
+          family_version: "1.0.0-rc.3",
           top_level_package: "ait-native",
           payloads: map({
             target: .[0],
@@ -211,7 +222,7 @@ for repository in ait-core ait-server ait-runner ait-python ait-node; do
             cpu: .[2],
             component: "ait-node",
             package: ("ait-native-ait-" + .[1] + "-" + .[2]),
-            version: "1.0.0-rc.2",
+            version: "1.0.0-rc.3",
             binding_repository: "ait-core",
             binding_snapshot: $snapshot,
             license: "Apache-2.0",
@@ -231,10 +242,10 @@ for repository in ait-core ait-server ait-runner ait-python ait-node; do
         '  ["aarch64-pc-windows-msvc", "ait-native-ait-win32-arm64"],' \
         '  ["x86_64-pc-windows-msvc", "ait-native-ait-win32-x64"],' \
         ']);' \
-        'if ((target !== "portable" && !targets.has(target)) || version !== "1.0.0-rc.2") process.exit(64);' \
+        'if ((target !== "portable" && !targets.has(target)) || version !== "1.0.0-rc.3") process.exit(64);' \
         'const artifact = target === "portable"' \
-        '  ? "dist/ait-native-1.0.0-rc.2.tgz"' \
-        '  : `dist/npm-addons/${targets.get(target)}-1.0.0-rc.2.tgz`;' \
+        '  ? "dist/ait-native-1.0.0-rc.3.tgz"' \
+        '  : `dist/npm-addons/${targets.get(target)}-1.0.0-rc.3.tgz`;' \
         'if (phase === "build") {' \
         '  mkdirSync(dirname(artifact), { recursive: true });' \
         '  writeFileSync(artifact, `fixture direct Node-API ${target}\n`);' \
@@ -248,7 +259,7 @@ for repository in ait-core ait-server ait-runner ait-python ait-node; do
           schema: "ait.release.adapter/v1",
           package: {
             name: "ait-native",
-            version: "1.0.0-rc.2",
+            version: "1.0.0-rc.3",
             description: "fixture",
             license_files: [
               {path: "LICENSE", role: "license"},
@@ -273,13 +284,13 @@ for repository in ait-core ait-server ait-runner ait-python ait-node; do
               smoke: [["node", "release/fixture-receipt.mjs", "smoke", "$AIT_RELEASE_TARGET", "$AIT_RELEASE_VERSION"]]
             },
             artifacts: [
-              {path: "dist/ait-native-1.0.0-rc.2.tgz", kind: "npm-napi-envelope"},
-              {path: "dist/npm-addons/ait-native-ait-darwin-arm64-1.0.0-rc.2.tgz", kind: "npm-napi-addon", target: "aarch64-apple-darwin"},
-              {path: "dist/npm-addons/ait-native-ait-darwin-x64-1.0.0-rc.2.tgz", kind: "npm-napi-addon", target: "x86_64-apple-darwin"},
-              {path: "dist/npm-addons/ait-native-ait-linux-arm64-1.0.0-rc.2.tgz", kind: "npm-napi-addon", target: "aarch64-unknown-linux-gnu"},
-              {path: "dist/npm-addons/ait-native-ait-linux-x64-1.0.0-rc.2.tgz", kind: "npm-napi-addon", target: "x86_64-unknown-linux-gnu"},
-              {path: "dist/npm-addons/ait-native-ait-win32-arm64-1.0.0-rc.2.tgz", kind: "npm-napi-addon", target: "aarch64-pc-windows-msvc"},
-              {path: "dist/npm-addons/ait-native-ait-win32-x64-1.0.0-rc.2.tgz", kind: "npm-napi-addon", target: "x86_64-pc-windows-msvc"}
+              {path: "dist/ait-native-1.0.0-rc.3.tgz", kind: "npm-napi-envelope"},
+              {path: "dist/npm-addons/ait-native-ait-darwin-arm64-1.0.0-rc.3.tgz", kind: "npm-napi-addon", target: "aarch64-apple-darwin"},
+              {path: "dist/npm-addons/ait-native-ait-darwin-x64-1.0.0-rc.3.tgz", kind: "npm-napi-addon", target: "x86_64-apple-darwin"},
+              {path: "dist/npm-addons/ait-native-ait-linux-arm64-1.0.0-rc.3.tgz", kind: "npm-napi-addon", target: "aarch64-unknown-linux-gnu"},
+              {path: "dist/npm-addons/ait-native-ait-linux-x64-1.0.0-rc.3.tgz", kind: "npm-napi-addon", target: "x86_64-unknown-linux-gnu"},
+              {path: "dist/npm-addons/ait-native-ait-win32-arm64-1.0.0-rc.3.tgz", kind: "npm-napi-addon", target: "aarch64-pc-windows-msvc"},
+              {path: "dist/npm-addons/ait-native-ait-win32-x64-1.0.0-rc.3.tgz", kind: "npm-napi-addon", target: "x86_64-pc-windows-msvc"}
             ]
           }]
         }
@@ -351,6 +362,31 @@ if [[ -x ${output_one}/ait-core/ci/fixture-data.txt ]]; then
 fi
 node --check "${output_one}/build-release.mjs"
 node "${output_one}/build-release.mjs" --validate-only >/dev/null
+test "$(jq -r '.family.version' \
+  "${output_one}/ait-core/ait-release-family.json")" = "1.0.0-rc.2"
+test "$(jq -r '.family_version' \
+  "${output_one}/ait-core/ci/release_repository_authorities.json")" = \
+  "1.0.0-rc.2"
+test "$(jq -r '.family_version' \
+  "${output_one}/ci/release_repository_authorities.json")" = "1.0.0-rc.3"
+for release_control_path in \
+  ci/native_bootstrap_matrix.jq \
+  ci/native_bootstrap_matrix.json \
+  ci/release_protected_promotion.sh \
+  ci/release_receipt_matrix.jq \
+  ci/release_receipt_matrix_test.sh \
+  ci/release_repository_authorities.json; do
+  cmp "${repo_root}/${release_control_path}" \
+    "${output_one}/${release_control_path}"
+done
+AIT_RELEASE_FAMILY_MANIFEST="${output_one}/ait-release-family.json" \
+  bash "${output_one}/ci/release_receipt_matrix_test.sh" >/dev/null
+expect_failure historical-component-family env \
+  AIT_RELEASE_FAMILY_MANIFEST="${output_one}/ait-core/ait-release-family.json" \
+  bash "${output_one}/ci/release_receipt_matrix_test.sh"
+expect_failure relative-public-family env \
+  AIT_RELEASE_FAMILY_MANIFEST=../ait-release-family.json bash \
+  "${output_one}/ci/release_receipt_matrix_test.sh"
 for required_local_node_adapter_text in \
   'const nodeAdapter = path.join(nodeRoot, "release", "release-adapter.mjs");' \
   '[nodeAdapter, "build", "portable", family.family.version]' \
@@ -402,7 +438,7 @@ node "${output_one}/build-release.mjs" \
   --component-receipt \
   --repository ait-node \
   --target portable \
-  --version 1.0.0-rc.2 \
+  --version 1.0.0-rc.3 \
   --git-commit "${fixture_git_commit}" \
   --out-dir "${fixture_receipt}" >/dev/null
 jq -e \
@@ -440,7 +476,7 @@ expect_failure receipt-parent-symlink node "${output_one}/build-release.mjs" \
   --component-receipt \
   --repository ait-node \
   --target portable \
-  --version 1.0.0-rc.2 \
+  --version 1.0.0-rc.3 \
   --git-commit "${fixture_git_commit}" \
   --out-dir "${temporary_root}/receipt-parent-link/escaped-receipt"
 public_readme=${output_one}/README.md
@@ -479,11 +515,11 @@ promotion_workflow=${output_one}/.github/workflows/ait-release-protected-promoti
 test -f "${root_workflow}"
 test -f "${promotion_workflow}"
 test "$(find "${output_one}/.github/workflows" -maxdepth 1 -type f | wc -l | tr -d '[:space:]')" = 2
-grep -F '    working-directory: ait-core' "${root_workflow}" >/dev/null
-grep -F '          path: ait-core/release-receipt-matrix.json' \
+grep -F '    working-directory: source/ait-core' "${root_workflow}" >/dev/null
+grep -F '          path: release-receipt-matrix.json' \
   "${root_workflow}" >/dev/null
 if grep -F 'contents: write' "${root_workflow}" >/dev/null ||
-  grep -F '          path: release-receipt-matrix.json' \
+  grep -F '          path: ait-core/release-receipt-matrix.json' \
     "${root_workflow}" >/dev/null; then
   printf 'root protected workflow retained unsafe monorepo execution paths\n' >&2
   exit 65
@@ -494,7 +530,8 @@ for required_promotion_text in \
   '      name: rc-promotion' \
   'artifact-ids: ${{ inputs.dossier_artifact_id }}' \
   '          merge-multiple: true' \
-  'bash control/ait-core/ci/release_protected_promotion.sh' \
+  'source_control_commit:' \
+  'bash control/ci/release_protected_promotion.sh' \
   'actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a'; do
   grep -F -- "${required_promotion_text}" "${promotion_workflow}" >/dev/null
 done
@@ -528,7 +565,7 @@ workflow_drift_output=${temporary_root}/workflow-drift-output
 cp -R "${output_one}" "${workflow_drift_output}"
 node "${repo_root}/ci/release_monorepo_transform.mjs" \
   "${workflow_drift_output}/.github/workflows/ait-release-component-receipts.yml" \
-  '    working-directory: ait-core' \
+  '    working-directory: source/ait-core' \
   '    working-directory: .'
 expect_failure workflow-drift node \
   "${workflow_drift_output}/build-release.mjs" --validate-only

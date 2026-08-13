@@ -3,13 +3,40 @@
 Authority: this centralized product distribution contract. Internal planning
 lineage remains governed by AIT Plan revisions and is not duplicated here.
 
-Status: target contract plus the current public RC record. Contract sections
-define the admitted family; only the dated status section below records what
-has actually reached an external endpoint.
+Status: target contract plus the current and prior RC records. Contract
+sections define the admitted family; dated status sections distinguish the
+frozen RC.4 release identity from historical endpoint evidence.
 
-## Current Public RC Status (2026-08-13)
+## RC.4 Release Identity (2026-08-13)
 
-`v1.0.0-rc.3` is the current immutable public prerelease. Annotated tag object
+`v1.0.0-rc.4` is the release represented by this source tree. Its five source
+authorities are frozen at these AIT Snapshots:
+
+| Authority | Snapshot |
+| --- | --- |
+| `ait-core` | `SNP-D4390C77FBEE` |
+| `ait-server` | `SNP-AF4552C13AD8` |
+| `ait-runner` | `SNP-B2FC6696499A` |
+| `ait-python` | `SNP-F4658969CCC1` |
+| `ait-node` | `SNP-C729FDD83900` |
+
+GitHub publishes this RC tag as a non-draft regular Release with
+`prerelease=false`. The version remains `1.0.0-rc.4`; this GitHub presentation
+choice does not promote package-registry routes to stable. npm uses the `rc`
+dist-tag, PyPI uses `1.0.0rc4`, OCI uses the moving `rc` tag, Homebrew retains
+the RC formula, APT uses `testing`, and WinGet remains on its validation route.
+The top-level npm product is `@wa120/ait-native`, backed by six exact-version
+scoped Node-API implementation packages; RC.4 does not use the historical npm
+namespace supplement.
+
+The exact Git commit, tag object, protected workflow runs, release ID, asset
+digests, endpoint receipts, and external readback results are recorded by the
+RC.4 protected release dossier as publication proceeds. They are not guessed
+or copied from an earlier candidate in this source document.
+
+## Previous Public RC.3 Record (2026-08-13)
+
+`v1.0.0-rc.3` is the previous immutable public prerelease. Annotated tag object
 `810265c705ffececba3d74924f60ed2d0453ef7d` peels to source commit
 `ba368cf4d0750035345f14a8a91c22fb9e450260`; neither identity was moved by
 endpoint publication. The public release is
@@ -32,10 +59,10 @@ The exact current endpoint state is:
 | GitHub Release | Public prerelease with 84 frozen source, native, package, checksum, validation, and receipt assets. |
 | PyPI | `ait-native==1.0.0rc3` is public with all six admitted `cp311-abi3` wheels; every registry SHA-256 matches the frozen dossier. |
 | GHCR | `ait-server:1.0.0-rc.3` and `ait-runner:1.0.0-rc.3` are public OCI indexes for Linux `amd64` and `arm64`; immutable index digests are `sha256:1494fb3ff9ea05e876d5894e70b599f0718d85e8e1bddf369eab7f89caaed0b4` and `sha256:a2b759b02240acb14440df99ea71012cf2f39c21d368f6da1381abbf235e9957`. |
-| Homebrew | `weita2026/homebrew-ait-native` contains `Formula/ait-native-rc.rb` for RC.3 with the four exact GitHub asset URLs and checksums. |
+| Homebrew | `weita2026/homebrew-ait-native` contains `Formula/ait-native-rc.rb` for RC.3 with the four exact GitHub asset URLs and checksums; strict formula audit, clean install, and formula test pass. |
 | apt | The signed `testing` repository retains RC.2 and publishes RC.3 for both `ait-native` and `ait-runner` on `amd64` and `arm64`. A new Debian client finds both exact names with `apt-cache search --names-only`; RC.3 is the candidate version. |
 | npm | The supported `@wa120/ait-native@1.0.0-rc.3` envelope and all six `@wa120/ait-native-<os>-<cpu>` Node-API implementation packages are public, provenance-attested, and anonymously read back with exact shasum/integrity. A clean registry install selects only the matching platform addon and passes the direct in-process Node-API smoke. Five original unscoped implementation packages remain only as historical endpoint state; their rejected sixth identity and withheld top-level envelope are not supported install routes. |
-| WinGet | The frozen validation manifests are attached to the GitHub prerelease. No community repository submission has been made, by the declared RC route. |
+| WinGet | Community PR `microsoft/winget-pkgs#416596` carries the frozen RC.3 manifests. Checks 01–07, 09, 10, and CLA pass and the PR has `Azure-Pipeline-Passed`; installation verification discovers both executables and aliases on `x64` and `arm64`, then requests manual review because its executable probe invokes the CLI and inactive local server without arguments. Microsoft review and merge are still pending, so the package is not yet available through `winget search`. |
 
 The endpoint attempt completed GitHub, PyPI, GHCR, Homebrew, signed apt, and
 WinGet-validation publication before failing visibly at the npm name-policy
@@ -140,7 +167,7 @@ A clean tagged checkout validates and builds the current host without an AIT
 server:
 
 ```text
-git clone --branch v1.0.0-rc.3 https://github.com/weita2026/ait-native.git
+git clone --branch v1.0.0-rc.4 https://github.com/weita2026/ait-native.git
 cd ait-native
 ./build-release.sh
 ```
@@ -393,8 +420,28 @@ remaining inactive after install or upgrade:
 | --- | --- | --- |
 | Homebrew | `brew services start ait-native-rc` for the RC formula, or `brew services start ait-native` for stable; stop with the matching `brew services stop` command | The formula service runs the installed binary and uses `$HOMEBREW_PREFIX/var/ait-native/server-data`; the formula installation itself neither initializes nor starts it. |
 | apt | `sudo systemctl daemon-reload && sudo systemctl enable --now ait-server`; stop with `sudo systemctl disable --now ait-server` | The shipped, initially disabled unit uses `DynamicUser`, `StateDirectory=ait-native`, and `/var/lib/ait-native/server-data`. The Debian package has zero maintainer scripts. |
-| WinGet | In PowerShell, set `$ctl = (Get-Command ait-server-control.ps1).Source`, then run `powershell.exe -NoProfile -ExecutionPolicy Bypass -File $ctl start`; replace `start` with `status` or `stop` as needed | The controller is user-session only, stores PID/log state below `%LOCALAPPDATA%\AIT\runtime`, uses `%LOCALAPPDATA%\AIT\server-data`, verifies PID ownership before stopping, and does not install or claim a Windows SCM service. |
+| WinGet | Resolve `$ctl` from the installed `ait-server.exe` link with the PowerShell snippet below, then run `powershell.exe -NoProfile -ExecutionPolicy Bypass -File $ctl start`; replace `start` with `status` or `stop` as needed | WinGet exposes only the two supported executable portable aliases. The adjacent controller remains supporting archive content; it is user-session only, stores PID/log state below `%LOCALAPPDATA%\AIT\runtime`, uses `%LOCALAPPDATA%\AIT\server-data`, verifies PID ownership before stopping, and does not install or claim a Windows SCM service. |
 | PyPI/pip | Run `ait-server run`, or pass the installed executable to the user's own service manager | The wheel installs the same native command and adds no install hook or second lifecycle implementation. |
+
+WinGet accepts executable portable command aliases, not the packaged
+PowerShell controller itself. Resolve that supporting file beside the actual
+installed server executable rather than treating the `.ps1` file as a WinGet
+alias. Each architecture's installer manifest also identifies `ait.exe` and
+`ait-server.exe` as launch files with `InvocationParameter: --help`. This gives
+WinGet's executable validation a non-mutating invocation that exits without
+initializing a repository or starting the server; it does not alter either
+command's normal user-facing behavior:
+
+```powershell
+$link = Get-Item (Get-Command ait-server.exe).Source
+$serverPath = @($link.Target)[0]
+if (-not $serverPath) {
+    $serverPath = $link.FullName
+} elseif (-not [System.IO.Path]::IsPathRooted($serverPath)) {
+    $serverPath = Join-Path $link.DirectoryName $serverPath
+}
+$ctl = Join-Path (Split-Path -Parent $serverPath) 'ait-server-control.ps1'
+```
 
 npm has no server-lifecycle row because it does not install `ait-server`.
 
@@ -405,8 +452,8 @@ binaries, without compiling a component or downloading a component during the
 image build:
 
 ```text
-ghcr.io/weita2026/ait-server:1.0.0-rc.3
-ghcr.io/weita2026/ait-runner:1.0.0-rc.3
+ghcr.io/weita2026/ait-server:1.0.0-rc.4
+ghcr.io/weita2026/ait-runner:1.0.0-rc.4
 ```
 
 The immutable version tags are the evidence and deployment boundary. The
@@ -427,7 +474,7 @@ docker run --detach \
   --publish 127.0.0.1:8088:8088 \
   --restart unless-stopped \
   --volume ait-native-rc-data:/var/lib/ait \
-  ghcr.io/weita2026/ait-server:1.0.0-rc.3
+  ghcr.io/weita2026/ait-server:1.0.0-rc.4
 curl --fail http://127.0.0.1:8088/healthz
 ```
 
@@ -446,7 +493,7 @@ whose declared CI command it must execute:
 docker run --rm \
   --network ait-native-rc \
   --volume "$PWD:/workspace" \
-  ghcr.io/weita2026/ait-runner:1.0.0-rc.3 \
+  ghcr.io/weita2026/ait-runner:1.0.0-rc.4 \
   serve --server http://ait-server:8088 --source-root /workspace --once
 ```
 
@@ -461,8 +508,8 @@ The post-publication package names and commands are:
 | Homebrew | after adding the release tap, `brew install ait-native-rc`; stable uses `brew install ait-native` |
 | apt | after adding the signed AIT repository, `sudo apt install ait-native` |
 | WinGet | RC validation uses `winget install --manifest <generated-manifest-directory>`; stable uses `winget install --id Weita.AitNative --exact` |
-| PyPI | `python -m pip install ait-native==1.0.0rc3`; stable uses `ait-native==1.0.0` |
-| npm | `npm install --global @wa120/ait-native@1.0.0-rc.3`; stable uses `@wa120/ait-native@1.0.0` |
+| PyPI | `python -m pip install ait-native==1.0.0rc4`; stable uses `ait-native==1.0.0` |
+| npm | `npm install --global @wa120/ait-native@1.0.0-rc.4`; stable uses `@wa120/ait-native@1.0.0` |
 
 The signed APT route must be added and searched before installation:
 
@@ -477,10 +524,10 @@ apt-cache search --names-only '^ait-runner$'
 sudo apt install ait-native
 ```
 
-The RC.3 publisher performs the same signed update and both exact-name searches
+The RC.4 publisher performs the same signed update and both exact-name searches
 in an isolated APT client root. It writes successful `apt_cache_search`
 evidence only after both names are found. These identifiers are the release
-contract, not a claim that RC.3 is already live; publication still requires
+contract, not a claim that RC.4 is already live; publication still requires
 the frozen family, signatures, clean-host evidence, and public readback below.
 
 ## Platform Matrix
@@ -608,8 +655,8 @@ every source repository, rejects target-receipt disagreement, and freezes one
 deduplicated repository/Snapshot copy for downstream package assemblers. These
 legal files do not increase or weaken the 37 product-artifact requirements.
 
-For RC.3, use family version `1.0.0-rc.3`, Python version `1.0.0rc3`, tag
-`v1.0.0-rc.3`, and channel `rc`. Promotion first creates a
+For RC.4, use family version `1.0.0-rc.4`, Python version `1.0.0rc4`, tag
+`v1.0.0-rc.4`, and channel `rc`. Promotion first creates a
 credential-free protected-CI handoff; publisher jobs then promote the frozen
 bytes without rebuilding. Stable `1.0.0` is a separate admitted family build,
 not an RC tag rename.
@@ -805,15 +852,15 @@ RC source export deliberately contains only the component-receipt and
 protected-promotion workflows plus their bounded root matrix/verifier control
 files. It must not copy a publisher or endpoint configuration from an older
 release. After protected promotion has produced
-the real RC.3 Release ID, source commit, run and artifact identities, and
-digests, a separate reviewed change installs one exact RC.3 endpoint
+the real RC.4 Release ID, source commit, run and artifact identities, and
+digests, a separate reviewed change installs one exact RC.4 endpoint
 configuration and publisher workflow on the public repository's default
-branch. That workflow consumes the immutable RC.3 tag and frozen dossier; it
+branch. That workflow consumes the immutable RC.4 tag and frozen dossier; it
 does not move the tag or become part of the tagged source tree. This ordering
-prevents older endpoint authority from leaking into RC.3 and prevents guessed
+prevents older endpoint authority from leaking into RC.4 and prevents guessed
 future identities from being treated as publication evidence.
 
-## Current RC.3 Record And Historical RC Evidence
+## Previous RC.3 Record And Historical RC Evidence
 
 RC.3 retains the direct Node-API architecture. Its public Git commit and tag,
 successful protected 31-receipt/37-artifact matrix, frozen

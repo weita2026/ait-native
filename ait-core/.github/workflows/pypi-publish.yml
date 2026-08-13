@@ -21,7 +21,7 @@ permissions:
   packages: write
 
 concurrency:
-  group: ait-release-endpoint-publication-REL-FAM-0B6EDBCCA2EFE26B
+  group: ait-release-endpoint-publication-REL-FAM-600EFDC327FE7860
   cancel-in-progress: false
 
 jobs:
@@ -58,7 +58,7 @@ jobs:
         run: |
           set -euo pipefail
           missing=()
-          for command in dpkg-scanpackages gpg; do
+          for command in apt-cache apt-get dpkg-scanpackages gpg; do
             if ! command -v "${command}" >/dev/null 2>&1; then missing+=("${command}"); fi
           done
           if (( ${#missing[@]} > 0 )); then
@@ -67,6 +67,8 @@ jobs:
           fi
           command -v dpkg-scanpackages >/dev/null
           command -v gpg >/dev/null
+          command -v apt-get >/dev/null
+          command -v apt-cache >/dev/null
 
       - name: Validate the immutable publication request
         shell: bash
@@ -80,22 +82,24 @@ jobs:
           set -euo pipefail
           test "${AIT_RELEASE_REPOSITORY}" = 'weita2026/ait-native'
           test "${AIT_RELEASE_SOURCE_REF}" = 'refs/heads/main'
-          test "${AIT_RELEASE_ID}" = 'REL-FAM-0B6EDBCCA2EFE26B'
+          test "${AIT_RELEASE_ID}" = 'REL-FAM-600EFDC327FE7860'
           test "${AIT_RELEASE_CONFIRM}" = 'true'
           test "$(git -C control rev-parse HEAD)" = "${GITHUB_SHA}"
           test -z "$(git -C control status --porcelain --untracked-files=all)"
 
-          endpoint_config=control/release/endpoint-publication.rc2.json
+          endpoint_config=control/release/endpoint-publication.rc3.json
           jq -e '
             .contract == "ait.release.family.endpoints/v1" and
-            .release.id == "REL-FAM-0B6EDBCCA2EFE26B" and
-            .release.version == "1.0.0-rc.2" and
-            .release.tag == "v1.0.0-rc.2" and
-            .release.source_commit == "3dfd9dde5a9867cfe265352f48540fa8241f8e66" and
-            .source_dossier.workflow_run_id == 31629973956 and
-            .source_dossier.artifact_id == 9155572246 and
-            .protected_authorization.workflow_run_id == 31633959182 and
-            .protected_authorization.artifact_id == 9156215006 and
+            .release.id == "REL-FAM-600EFDC327FE7860" and
+            .release.version == "1.0.0-rc.3" and
+            .release.tag == "v1.0.0-rc.3" and
+            .release.source_commit == "ba368cf4d0750035345f14a8a91c22fb9e450260" and
+            .source_dossier.workflow_run_id == 31664713921 and
+            .source_dossier.workflow_control_commit == "93f2589d8eb7404400617169598427aaef3ff8af" and
+            .source_dossier.artifact_id == 9167933771 and
+            .protected_authorization.workflow_run_id == 31666479359 and
+            .protected_authorization.workflow_control_commit == "93f2589d8eb7404400617169598427aaef3ff8af" and
+            .protected_authorization.artifact_id == 9168120753 and
             .publisher == {
               repository: "weita2026/ait-native",
               workflow: "pypi-publish.yml",
@@ -109,10 +113,10 @@ jobs:
           protected_artifact="${RUNNER_TEMP}/protected-artifact.json"
           api=https://api.github.com/repos/weita2026/ait-native
           for request in \
-            "actions/runs/31629973956:${source_run}" \
-            "actions/artifacts/9155572246:${source_artifact}" \
-            "actions/runs/31633959182:${protected_run}" \
-            "actions/artifacts/9156215006:${protected_artifact}"; do
+            "actions/runs/31664713921:${source_run}" \
+            "actions/artifacts/9167933771:${source_artifact}" \
+            "actions/runs/31666479359:${protected_run}" \
+            "actions/artifacts/9168120753:${protected_artifact}"; do
             route=${request%%:*}
             output=${request#*:}
             curl --fail --silent --show-error --location \
@@ -122,59 +126,59 @@ jobs:
               "${api}/${route}" --output "${output}"
           done
           jq -e '
-            .id == 31629973956 and
+            .id == 31664713921 and
             .run_attempt == 1 and
             .name == "ait release component receipts" and
             .path == ".github/workflows/ait-release-component-receipts.yml" and
             .event == "workflow_dispatch" and
             .status == "completed" and
             .conclusion == "success" and
-            .head_sha == "3dfd9dde5a9867cfe265352f48540fa8241f8e66"
+            .head_sha == "93f2589d8eb7404400617169598427aaef3ff8af"
           ' "${source_run}" >/dev/null
           jq -e '
-            .id == 9155572246 and
-            .name == "ait-family-dossier-REL-FAM-0B6EDBCCA2EFE26B" and
-            .digest == "sha256:c474158c8d1c60ea31b7c32f179cf870154ca66ff0584aec936996bc76d13f1c" and
+            .id == 9167933771 and
+            .name == "ait-family-dossier-REL-FAM-600EFDC327FE7860" and
+            .digest == "sha256:08afc391688c902f3c2259392286b51612e6b6eb0aa51c388e8e513329705823" and
             .expired == false and
-            .workflow_run.id == 31629973956
+            .workflow_run.id == 31664713921
           ' "${source_artifact}" >/dev/null
           jq -e '
-            .id == 31633959182 and
+            .id == 31666479359 and
             .run_attempt == 1 and
             .name == "ait release protected promotion" and
             .path == ".github/workflows/ait-release-protected-promotion.yml" and
             .event == "workflow_dispatch" and
             .status == "completed" and
             .conclusion == "success" and
-            .head_sha == "13718ab043f023aca838e3d8b80ffe9dbae289b6"
+            .head_sha == "93f2589d8eb7404400617169598427aaef3ff8af"
           ' "${protected_run}" >/dev/null
           jq -e '
-            .id == 9156215006 and
-            .name == "ait-protected-promotion-REL-FAM-0B6EDBCCA2EFE26B" and
-            .digest == "sha256:facc6cc34d3543840b2f66952368d8e1f9b15e2b6e60e219138a22106e64a9ae" and
+            .id == 9168120753 and
+            .name == "ait-protected-promotion-REL-FAM-600EFDC327FE7860" and
+            .digest == "sha256:54079d53bc3e115f314d99591228cc80dbab4c56c5ae361530f9c490c0764be9" and
             .expired == false and
-            .workflow_run.id == 31633959182
+            .workflow_run.id == 31666479359
           ' "${protected_artifact}" >/dev/null
 
       - name: Download the exact frozen family dossier
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          artifact-ids: '9155572246'
+          artifact-ids: '9167933771'
           merge-multiple: true
           github-token: ${{ github.token }}
           path: dossier
           repository: weita2026/ait-native
-          run-id: '31629973956'
+          run-id: '31664713921'
 
       - name: Download the exact protected authorization
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          artifact-ids: '9156215006'
+          artifact-ids: '9168120753'
           merge-multiple: true
           github-token: ${{ github.token }}
           path: protected
           repository: weita2026/ait-native
-          run-id: '31633959182'
+          run-id: '31666479359'
 
       - name: Verify protected authorization provenance
         shell: bash
@@ -184,19 +188,19 @@ jobs:
           set -euo pipefail
           evidence=protected/ait-release.protected-promotion.json
           test "$(sha256sum "${evidence}" | awk '{print $1}')" = \
-            'bf39d37aec86cbb83d58cdd218fb179668cabc08ca0c3b0049b9c6722245414d'
+            'cc18cf39db59147d5ee94359f0c00813be6841bf317686451eafd1152f870b32'
           gh attestation verify "${evidence}" \
             --repo weita2026/ait-native \
             --signer-workflow weita2026/ait-native/.github/workflows/ait-release-protected-promotion.yml \
             --source-ref refs/heads/main \
-            --source-digest 13718ab043f023aca838e3d8b80ffe9dbae289b6 \
+            --source-digest 93f2589d8eb7404400617169598427aaef3ff8af \
             --deny-self-hosted-runners \
             --format json > protected-attestation.json
           jq -e '
             length >= 1 and
             any(.[].verificationResult.statement.subject[];
               .name == "ait-release.protected-promotion.json" and
-              .digest.sha256 == "bf39d37aec86cbb83d58cdd218fb179668cabc08ca0c3b0049b9c6722245414d")
+              .digest.sha256 == "cc18cf39db59147d5ee94359f0c00813be6841bf317686451eafd1152f870b32")
           ' protected-attestation.json >/dev/null
 
       - name: Prepare only the exact frozen publication bytes
@@ -204,7 +208,7 @@ jobs:
         run: |
           set -euo pipefail
           bash control/ci/release_endpoint_publication.sh \
-            control/release/endpoint-publication.rc2.json \
+            control/release/endpoint-publication.rc3.json \
             "${GITHUB_WORKSPACE}/dossier" \
             "${GITHUB_WORKSPACE}/protected/ait-release.protected-promotion.json" \
             "${GITHUB_WORKSPACE}/publication-stage"
@@ -224,7 +228,7 @@ jobs:
         run: |
           set -euo pipefail
           bash control/ci/release_endpoint_remote.sh preflight-oci \
-            control/release/endpoint-publication.rc2.json \
+            control/release/endpoint-publication.rc3.json \
             "${GITHUB_WORKSPACE}/publication-stage"
           receipt=publication-stage/evidence/oci-state.json
           {
@@ -272,7 +276,7 @@ jobs:
         run: |
           set -euo pipefail
           bash control/ci/release_endpoint_remote.sh preflight \
-            control/release/endpoint-publication.rc2.json \
+            control/release/endpoint-publication.rc3.json \
             "${GITHUB_WORKSPACE}/publication-stage"
 
       - name: Attest every staged file before publication
@@ -285,17 +289,6 @@ jobs:
       - name: Admit the attested publication stage
         shell: bash
         run: echo 'AIT_STAGE_ATTESTATION_VERIFIED=true' >> "${GITHUB_ENV}"
-
-      - name: Publish npm implementation payloads and command envelope
-        continue-on-error: true
-        shell: bash
-        env:
-          AIT_NPM_TOKEN: ${{ secrets.AIT_NPM_TOKEN }}
-        run: |
-          set -euo pipefail
-          bash control/ci/release_endpoint_remote.sh publish-npm \
-            control/release/endpoint-publication.rc2.json \
-            "${GITHUB_WORKSPACE}/publication-stage"
 
       - name: Publish the six exact wheels through PyPI Trusted Publishing
         uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # release/v1
@@ -312,7 +305,7 @@ jobs:
         run: |
           set -euo pipefail
           bash control/ci/release_endpoint_remote.sh publish-pypi \
-            control/release/endpoint-publication.rc2.json \
+            control/release/endpoint-publication.rc3.json \
             "${GITHUB_WORKSPACE}/publication-stage"
 
       - name: Publish the GitHub prerelease and exact assets
@@ -322,7 +315,7 @@ jobs:
         run: |
           set -euo pipefail
           bash control/ci/release_endpoint_remote.sh publish-github \
-            control/release/endpoint-publication.rc2.json \
+            control/release/endpoint-publication.rc3.json \
             "${GITHUB_WORKSPACE}/publication-stage"
 
       - name: Publish the immutable multi-platform server image
@@ -338,10 +331,10 @@ jobs:
           provenance: false
           sbom: false
           build-args: |
-            AIT_RELEASE_SOURCE_COMMIT=3dfd9dde5a9867cfe265352f48540fa8241f8e66
-            AIT_RELEASE_VERSION=1.0.0-rc.2
+            AIT_RELEASE_SOURCE_COMMIT=ba368cf4d0750035345f14a8a91c22fb9e450260
+            AIT_RELEASE_VERSION=1.0.0-rc.3
           tags: |
-            ghcr.io/weita2026/ait-server:1.0.0-rc.2
+            ghcr.io/weita2026/ait-server:1.0.0-rc.3
             ghcr.io/weita2026/ait-server:rc
 
       - name: Select and route the exact server image digest
@@ -358,7 +351,7 @@ jobs:
           [[ ${digest} =~ ^sha256:[0-9a-f]{64}$ ]]
           image=ghcr.io/weita2026/ait-server
           immutable=$(docker buildx imagetools inspect \
-            --format '{{json .Manifest}}' "${image}:1.0.0-rc.2" | jq -er .digest)
+            --format '{{json .Manifest}}' "${image}:1.0.0-rc.3" | jq -er .digest)
           test "${immutable}" = "${digest}"
           moving=$(docker buildx imagetools inspect \
             --format '{{json .Manifest}}' "${image}:rc" 2>/dev/null | jq -r .digest || true)
@@ -387,10 +380,10 @@ jobs:
           provenance: false
           sbom: false
           build-args: |
-            AIT_RELEASE_SOURCE_COMMIT=3dfd9dde5a9867cfe265352f48540fa8241f8e66
-            AIT_RELEASE_VERSION=1.0.0-rc.2
+            AIT_RELEASE_SOURCE_COMMIT=ba368cf4d0750035345f14a8a91c22fb9e450260
+            AIT_RELEASE_VERSION=1.0.0-rc.3
           tags: |
-            ghcr.io/weita2026/ait-runner:1.0.0-rc.2
+            ghcr.io/weita2026/ait-runner:1.0.0-rc.3
             ghcr.io/weita2026/ait-runner:rc
 
       - name: Select and route the exact runner image digest
@@ -407,7 +400,7 @@ jobs:
           [[ ${digest} =~ ^sha256:[0-9a-f]{64}$ ]]
           image=ghcr.io/weita2026/ait-runner
           immutable=$(docker buildx imagetools inspect \
-            --format '{{json .Manifest}}' "${image}:1.0.0-rc.2" | jq -er .digest)
+            --format '{{json .Manifest}}' "${image}:1.0.0-rc.3" | jq -er .digest)
           test "${immutable}" = "${digest}"
           moving=$(docker buildx imagetools inspect \
             --format '{{json .Manifest}}' "${image}:rc" 2>/dev/null | jq -r .digest || true)
@@ -430,7 +423,7 @@ jobs:
         run: |
           set -euo pipefail
           bash control/ci/release_endpoint_remote.sh publish-homebrew \
-            control/release/endpoint-publication.rc2.json \
+            control/release/endpoint-publication.rc3.json \
             "${GITHUB_WORKSPACE}/publication-stage"
 
       - name: Publish the signed apt testing repository
@@ -443,7 +436,17 @@ jobs:
         run: |
           set -euo pipefail
           bash control/ci/release_endpoint_remote.sh publish-apt \
-            control/release/endpoint-publication.rc2.json \
+            control/release/endpoint-publication.rc3.json \
+            "${GITHUB_WORKSPACE}/publication-stage"
+
+      - name: Publish npm implementation payloads and command envelope
+        shell: bash
+        env:
+          AIT_NPM_TOKEN: ${{ secrets.AIT_NPM_TOKEN }}
+        run: |
+          set -euo pipefail
+          bash control/ci/release_endpoint_remote.sh publish-npm \
+            control/release/endpoint-publication.rc3.json \
             "${GITHUB_WORKSPACE}/publication-stage"
 
       - name: Require anonymous OCI availability and exact filesystem readback
@@ -452,7 +455,7 @@ jobs:
           set -euo pipefail
           docker logout ghcr.io >/dev/null
           bash control/ci/release_endpoint_remote.sh readback-oci \
-            control/release/endpoint-publication.rc2.json \
+            control/release/endpoint-publication.rc3.json \
             "${GITHUB_WORKSPACE}/publication-stage"
 
       - name: Verify public OCI provenance
@@ -486,7 +489,7 @@ jobs:
         run: |
           set -euo pipefail
           bash control/ci/release_endpoint_remote.sh readback \
-            control/release/endpoint-publication.rc2.json \
+            control/release/endpoint-publication.rc3.json \
             "${GITHUB_WORKSPACE}/publication-stage"
 
       - name: Attest the endpoint publication evidence
@@ -497,7 +500,7 @@ jobs:
       - name: Upload the endpoint publication evidence
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: ait-endpoint-publication-REL-FAM-0B6EDBCCA2EFE26B
+          name: ait-endpoint-publication-REL-FAM-600EFDC327FE7860
           path: publication-stage/evidence/*.json
           if-no-files-found: error
           compression-level: 0

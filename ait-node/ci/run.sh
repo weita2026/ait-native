@@ -59,12 +59,12 @@ if [ ! -f "$external_core/.ait-external-marker.json" ]; then
   printf '%s\n' "ait-node CI requires the exact materialized ait-core external" >&2
   exit 1
 fi
-node -e 'const fs=require("node:fs");const marker=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));if(marker.name!=="ait-core"||marker.snapshot!=="SNP-158C9C5BB3D7"){throw new Error("ait-core external marker identity drift")}' "$external_core/.ait-external-marker.json"
+node -e 'const fs=require("node:fs");const marker=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));if(marker.name!=="ait-core"||marker.snapshot!=="SNP-D4390C77FBEE"){throw new Error("ait-core external marker identity drift")}' "$external_core/.ait-external-marker.json"
 mkdir -p .ait-external
 ln -s "$external_core" .ait-external/ait-core
 bash ci/generate_notice.sh --check
 npm run native:build
 npm test
 npm run check
-node release/release-adapter.mjs build portable 1.0.0-rc.3
-node release/release-adapter.mjs smoke portable 1.0.0-rc.3
+node release/release-adapter.mjs build portable 1.0.0-rc.4
+node release/release-adapter.mjs smoke portable 1.0.0-rc.4

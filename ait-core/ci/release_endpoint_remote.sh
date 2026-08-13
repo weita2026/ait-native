@@ -253,6 +253,7 @@ npm_provenance_policy() {
   local archive_sha256=$2
   local repository_url=$3
   local expected_repository=https://github.com/${github_repository}
+  local admitted_frozen_sha256
 
   case "${repository_url}" in
     "${expected_repository}" | "git+${expected_repository}.git")
@@ -261,20 +262,19 @@ npm_provenance_policy() {
       ;;
   esac
 
+  admitted_frozen_sha256=$(jq -er --arg package_name "${package_name}" '
+    if .endpoints.npm.frozen_missing_repository_metadata.external_github_attestation_required == true then
+      .endpoints.npm.frozen_missing_repository_metadata.archives[$package_name] // ""
+    else
+      ""
+    end
+  ' "${endpoint_config}")
   if [[ ${repository_url} == '' &&
-    ${release_version} == 1.0.0-rc.2 &&
-    ${source_commit} == 3dfd9dde5a9867cfe265352f48540fa8241f8e66 ]]; then
-    case "${package_name}:${archive_sha256}" in
-      ait-native-ait-darwin-arm64:868a6a51d1baf2063652a24f586f1c4c1cefaf544315108928602477534bfb07|\
-        ait-native-ait-darwin-x64:69eed59c88235cef81c35697fd01d89bd4dbe4a1af0fbf01a685b48cf6ca9751|\
-        ait-native-ait-linux-arm64:045b87d3eb9e134801d9f550757fdb6cda3c05bdbbdd93ba0017327fee5321a0|\
-        ait-native-ait-linux-x64:c6a1b2caebb2a8cd04edcc6f2743a162d73b0598f1e3d7fb64db3bdd05360945|\
-        ait-native-ait-win32-arm64:2b586f8b8e39a041793240486af16bbf751be1f1ddb5bf0e7695587f637c85f2|\
-        ait-native-ait-win32-x64:2016e93c9a87cb7a0519afc7d9ca826adcc481fa9c71b558410675f7e2b53dbe)
-        printf '%s\n' '--provenance=false'
-        return 0
-        ;;
-    esac
+    ${release_version} == 1.0.0-rc.3 &&
+    ${source_commit} == ba368cf4d0750035345f14a8a91c22fb9e450260 &&
+    ${admitted_frozen_sha256} == "${archive_sha256}" ]]; then
+    printf '%s\n' '--provenance=false'
+    return 0
   fi
 
   printf 'npm package repository metadata does not admit provenance: %s\n' \
@@ -417,7 +417,8 @@ validate_pypi_remote_state() {
   local require_published=${1:-false}
   local metadata=${temporary_root}/pypi.json
   local status remote_files expected_files filename remote_sha wheel
-  status=$(curl --silent --show-error --location --output "${metadata}" --write-out '%{http_code}' \
+  status=$(curl --silent --show-error --location \
+    --header 'Cache-Control: no-cache' --output "${metadata}" --write-out '%{http_code}' \
     "https://pypi.org/pypi/ait-native/json")
   if [[ ${status} != 200 ]] ||
     ! jq -e '.info.name == "ait-native" and (.releases["0.10.6"] | length) == 2' \
@@ -431,8 +432,8 @@ validate_pypi_remote_state() {
   case "${remote_files}" in
     0)
       if [[ ${require_published} == true ]]; then
-        printf 'PyPI RC wheel set is still unpublished\n' >&2
-        return 65
+        printf 'PyPI RC wheel set is not visible yet\n' >&2
+        return 75
       fi
       ;;
     "${expected_files}")
@@ -449,10 +450,40 @@ validate_pypi_remote_state() {
         LC_ALL=C sort)
       ;;
     *)
+      if [[ ${require_published} == true &&
+        ${remote_files} =~ ^[0-9]+$ && ${remote_files} -lt ${expected_files} ]]; then
+        printf 'PyPI RC wheel set is only partially visible\n' >&2
+        return 75
+      fi
       printf 'PyPI contains a partial RC wheel set\n' >&2
       return 65
       ;;
   esac
+}
+
+wait_for_pypi_remote_state() {
+  local attempt=1
+  local max_attempts=12
+  local readback_status
+  while ((attempt <= max_attempts)); do
+    if validate_pypi_remote_state true; then
+      return 0
+    else
+      readback_status=$?
+    fi
+    if [[ ${readback_status} != 75 ]]; then
+      return "${readback_status}"
+    fi
+    if ((attempt == max_attempts)); then
+      printf 'PyPI RC wheel set did not become fully visible after %s attempts\n' \
+        "${max_attempts}" >&2
+      return 65
+    fi
+    printf 'waiting for PyPI RC wheel-set visibility (%s/%s)\n' \
+      "${attempt}" "${max_attempts}" >&2
+    sleep 5
+    attempt=$((attempt + 1))
+  done
 }
 
 prepare_github_ssh() {
@@ -672,65 +703,60 @@ verify_apt_repository_clone() {
   local clone_root=$1
   local suite=$2
   local component=$3
-  local expected_debs=${temporary_root}/apt-expected-debs
-  local actual_debs=${temporary_root}/apt-actual-debs
+  local require_candidate_assets=${4:-true}
   local verify_root
+  local apt_root apt_log search_output
   local asset name relative packages_path expected_sha matched_count
-  find "${assets}" -mindepth 1 -maxdepth 1 -type f -name '*.deb' -exec basename {} \; |
-    LC_ALL=C sort >"${expected_debs}"
-  if [[ -d ${clone_root}/pool ]]; then
-    find "${clone_root}/pool" -type f -name '*.deb' -exec basename {} \; |
-      LC_ALL=C sort >"${actual_debs}"
-  else
-    : >"${actual_debs}"
+  local -a apt_options
+  if [[ ${require_candidate_assets} != true && ${require_candidate_assets} != false ]]; then
+    printf 'apt candidate verification selector is invalid\n' >&2
+    return 64
   fi
-  if ! diff -u "${expected_debs}" "${actual_debs}"; then
-    printf 'apt repository package inventory is not exact\n' >&2
-    return 65
-  fi
-  while IFS= read -r asset; do
-    name=$(basename -- "${asset}")
-    case "${name}" in
-      ait-native_*) relative=pool/main/a/ait-native/${name} ;;
-      ait-runner_*) relative=pool/main/a/ait-runner/${name} ;;
-      *)
-        printf 'unexpected apt package identity: %s\n' "${name}" >&2
+  if [[ ${require_candidate_assets} == true ]]; then
+    while IFS= read -r asset; do
+      name=$(basename -- "${asset}")
+      case "${name}" in
+        ait-native_*) relative=pool/main/a/ait-native/${name} ;;
+        ait-runner_*) relative=pool/main/a/ait-runner/${name} ;;
+        *)
+          printf 'unexpected apt package identity: %s\n' "${name}" >&2
+          return 65
+          ;;
+      esac
+      require_regular_file "${clone_root}/${relative}" 'apt repository package'
+      expected_sha=$(sha256_file "${asset}")
+      if [[ $(sha256_file "${clone_root}/${relative}") != "${expected_sha}" ]]; then
+        printf 'apt repository package digest drifted: %s\n' "${name}" >&2
         return 65
-        ;;
-    esac
-    require_regular_file "${clone_root}/${relative}" 'apt repository package'
-    expected_sha=$(sha256_file "${asset}")
-    if [[ $(sha256_file "${clone_root}/${relative}") != "${expected_sha}" ]]; then
-      printf 'apt repository package digest drifted: %s\n' "${name}" >&2
-      return 65
-    fi
-    matched_count=0
-    for packages_path in \
-      "${clone_root}/dists/${suite}/${component}/binary-amd64/Packages" \
-      "${clone_root}/dists/${suite}/${component}/binary-arm64/Packages"; do
-      require_regular_file "${packages_path}" 'apt Packages index'
-      if awk -v filename="${relative}" -v sha="${expected_sha}" '
-        BEGIN {RS=""; FS="\n"}
-        {
-          found_filename = 0
-          found_sha = 0
-          for (i = 1; i <= NF; i++) {
-            if ($i == "Filename: " filename) found_filename = 1
-            if ($i == "SHA256: " sha) found_sha = 1
-          }
-          if (found_filename && found_sha) matched = 1
-        }
-        END {exit !matched}
-      ' "${packages_path}"; then
-        matched_count=$((matched_count + 1))
       fi
-    done
-    if [[ ${matched_count} != 1 ]]; then
-      printf 'apt Packages indexes do not select exactly one copy of %s\n' "${name}" >&2
-      return 65
-    fi
-  done < <(find "${assets}" -mindepth 1 -maxdepth 1 -type f -name '*.deb' |
-    LC_ALL=C sort)
+      matched_count=0
+      for packages_path in \
+        "${clone_root}/dists/${suite}/${component}/binary-amd64/Packages" \
+        "${clone_root}/dists/${suite}/${component}/binary-arm64/Packages"; do
+        require_regular_file "${packages_path}" 'apt Packages index'
+        if awk -v filename="${relative}" -v sha="${expected_sha}" '
+          BEGIN {RS=""; FS="\n"}
+          {
+            found_filename = 0
+            found_sha = 0
+            for (i = 1; i <= NF; i++) {
+              if ($i == "Filename: " filename) found_filename = 1
+              if ($i == "SHA256: " sha) found_sha = 1
+            }
+            if (found_filename && found_sha) matched = 1
+          }
+          END {exit !matched}
+        ' "${packages_path}"; then
+          matched_count=$((matched_count + 1))
+        fi
+      done
+      if [[ ${matched_count} != 1 ]]; then
+        printf 'apt Packages indexes do not select exactly one copy of %s\n' "${name}" >&2
+        return 65
+      fi
+    done < <(find "${assets}" -mindepth 1 -maxdepth 1 -type f -name '*.deb' |
+      LC_ALL=C sort)
+  fi
 
   require_regular_file "${clone_root}/dists/${suite}/Release" 'apt Release metadata'
   require_regular_file "${clone_root}/dists/${suite}/InRelease" 'apt InRelease signature'
@@ -766,6 +792,47 @@ verify_apt_repository_clone() {
     printf 'apt Release checksum readback failed\n' >&2
     return 65
   fi
+
+  for name in apt-get apt-cache; do
+    if ! command -v "${name}" >/dev/null 2>&1; then
+      printf 'required apt searchability command is unavailable: %s\n' "${name}" >&2
+      return 69
+    fi
+  done
+  apt_root=$(mktemp -d "${temporary_root}/apt-client.XXXXXX")
+  mkdir -p "${apt_root}/lists/partial" "${apt_root}/cache/archives/partial"
+  : >"${apt_root}/status"
+  cp "${clone_root}/ait-native-archive-keyring.gpg" "${apt_root}/archive-keyring.gpg"
+  chmod 0644 "${apt_root}/status" "${apt_root}/archive-keyring.gpg"
+  printf 'deb [signed-by=%s] file:%s %s %s\n' \
+    "${apt_root}/archive-keyring.gpg" "${clone_root}" "${suite}" "${component}" \
+    >"${apt_root}/sources.list"
+  apt_options=(
+    -o "Dir::Etc::sourcelist=${apt_root}/sources.list"
+    -o 'Dir::Etc::sourceparts=-'
+    -o "Dir::State::status=${apt_root}/status"
+    -o "Dir::State::lists=${apt_root}/lists"
+    -o "Dir::Cache=${apt_root}/cache"
+    -o 'APT::Get::List-Cleanup=0'
+    -o 'Acquire::Languages=none'
+    -o 'Debug::NoLocking=1'
+  )
+  apt_log=${apt_root}/update.log
+  if ! apt-get "${apt_options[@]}" update >"${apt_log}" 2>&1; then
+    printf 'apt client could not update from the signed repository\n' >&2
+    sed -n '1,160p' "${apt_log}" >&2
+    return 65
+  fi
+  for name in ait-native ait-runner; do
+    search_output=$(apt-cache "${apt_options[@]}" search --names-only "^${name}$")
+    if ! awk -v package="${name}" '
+      $1 == package && $2 == "-" {found = 1}
+      END {exit !found}
+    ' <<<"${search_output}"; then
+      printf 'apt-cache search did not discover %s\n' "${name}" >&2
+      return 65
+    fi
+  done
 }
 
 inspect_oci_image() {
@@ -997,9 +1064,9 @@ case "${mode}" in
       "https://api.github.com/repos/${github_repository}/releases/tags/${release_tag}")
     notes=${temporary_root}/release-notes.md
     cat >"${notes}" <<'NOTES'
-# AIT Native 1.0.0 RC 2
+# AIT Native 1.0.0 RC 3
 
-This prerelease promotes the exact protected `v1.0.0-rc.2` family bytes.
+This prerelease promotes the exact protected `v1.0.0-rc.3` family bytes.
 It provides the language-neutral `ait` command and an inactive-by-default
 `ait-server`; Python, Node.js, .NET, PHP, C, C++, Java, mixed-language, and
 non-code repositories use the same explicit workflow.
@@ -1022,7 +1089,7 @@ NOTES
     if [[ ${status} == 404 ]]; then
       GH_TOKEN="${AIT_GITHUB_TOKEN}" gh release create "${release_tag}" \
         --repo "${github_repository}" \
-        --title 'AIT Native 1.0.0 RC 2' \
+        --title 'AIT Native 1.0.0 RC 3' \
         --notes-file "${notes}" \
         --prerelease \
         --verify-tag
@@ -1032,7 +1099,7 @@ NOTES
     fi
     GH_TOKEN="${AIT_GITHUB_TOKEN}" gh release edit "${release_tag}" \
       --repo "${github_repository}" \
-      --title 'AIT Native 1.0.0 RC 2' \
+      --title 'AIT Native 1.0.0 RC 3' \
       --notes-file "${notes}" \
       --prerelease
     asset_map=${temporary_root}/github-asset-map
@@ -1092,7 +1159,7 @@ NOTES
 
   publish-pypi)
     require_preflight_receipt
-    validate_pypi_remote_state true
+    wait_for_pypi_remote_state
     wheel_count=$(find "${assets}" -mindepth 1 -maxdepth 1 -type f \
       -name 'ait_native-*.whl' | wc -l | tr -d '[:space:]')
     jq -n \
@@ -1131,7 +1198,7 @@ NOTES
         npm_provenance_flag=$(npm_publish_provenance_flag \
           "${package_name}" "${package_archive}")
         if [[ ${npm_provenance_flag} == --provenance=false ]]; then
-          printf 'using exact RC.2 npm provenance recovery: %s@%s\n' \
+          printf 'using exact frozen npm metadata exception: %s@%s\n' \
             "${package_name}" "${package_version}" >&2
         fi
         NPM_CONFIG_USERCONFIG="${npmrc}" npm publish "${package_archive}" \
@@ -1145,8 +1212,15 @@ NOTES
       fi
       if ! curl --fail --silent --show-error \
         "${npm_registry}/${package_name}/${release_version}" >/dev/null 2>&1; then
+        npm_provenance_flag=$(npm_publish_provenance_flag \
+          "${package_name}" "${package_archive}")
+        if [[ ${npm_provenance_flag} == --provenance=false ]]; then
+          printf 'using exact frozen npm metadata exception: %s@%s\n' \
+            "${package_name}" "${package_version}" >&2
+        fi
         NPM_CONFIG_USERCONFIG="${npmrc}" npm publish "${package_archive}" \
-          --registry "${npm_registry}" --tag rc --access public
+          --registry "${npm_registry}" --tag rc --access public \
+          "${npm_provenance_flag}"
       fi
     done <"${npm_rows}"
     while IFS=$'\t' read -r package_name package_version package_archive; do
@@ -1176,6 +1250,7 @@ NOTES
           package_count: $package_count,
           digest_readback: true,
           external_github_attestation: true,
+          npm_registry_provenance: false,
           component_rebuild: false
         }
       ' >"${evidence_root}/npm.json"
@@ -1203,7 +1278,7 @@ NOTES
       git -C "${clone_root}" \
         -c user.name='AIT Native Release' \
         -c user.email='253238140+weita2026@users.noreply.github.com' \
-        commit -m 'Publish ait-native 1.0.0-rc.2 formula' >/dev/null
+        commit -m "Publish ait-native ${release_version} formula" >/dev/null
       GIT_SSH_COMMAND="ssh -i ${key_path} -o IdentitiesOnly=yes -o UserKnownHostsFile=${known_hosts}" \
         git -C "${clone_root}" push origin "HEAD:refs/heads/${branch}"
     fi
@@ -1242,7 +1317,7 @@ NOTES
       AIT_APT_SIGNING_PASSPHRASE AIT_APT_SIGNING_FINGERPRINT
     require_preflight_receipt
     require_regular_file "${evidence_root}/github.json" 'GitHub endpoint receipt'
-    for command in dpkg-scanpackages gpg gzip md5sum sha1sum sha256sum; do
+    for command in apt-cache apt-get dpkg-scanpackages gpg gzip md5sum sha1sum sha256sum; do
       if ! command -v "${command}" >/dev/null 2>&1; then
         printf 'required apt publisher command is unavailable: %s\n' "${command}" >&2
         exit 69
@@ -1260,8 +1335,38 @@ NOTES
     GIT_SSH_COMMAND="ssh -i ${key_path} -o IdentitiesOnly=yes -o UserKnownHostsFile=${known_hosts}" \
       git clone --quiet --depth 1 --branch "${branch}" \
         "git@github.com:${repository}.git" "${clone_root}"
+    apt_update_required=true
     if [[ -f ${clone_root}/dists/${suite}/InRelease ]]; then
-      verify_apt_repository_clone "${clone_root}" "${suite}" "${component}"
+      verify_apt_repository_clone "${clone_root}" "${suite}" "${component}" false
+      candidate_complete=true
+      while IFS= read -r asset; do
+        name=$(basename -- "${asset}")
+        case "${name}" in
+          ait-native_*) relative=pool/main/a/ait-native/${name} ;;
+          ait-runner_*) relative=pool/main/a/ait-runner/${name} ;;
+          *)
+            printf 'unexpected apt package identity: %s\n' "${name}" >&2
+            exit 65
+            ;;
+        esac
+        candidate_path=${clone_root}/${relative}
+        if [[ -e ${candidate_path} || -L ${candidate_path} ]]; then
+          require_regular_file "${candidate_path}" 'existing apt candidate package'
+          if [[ $(sha256_file "${candidate_path}") != $(sha256_file "${asset}") ]]; then
+            printf 'existing apt candidate package conflicts: %s\n' "${name}" >&2
+            exit 65
+          fi
+        else
+          candidate_complete=false
+        fi
+      done < <(find "${assets}" -mindepth 1 -maxdepth 1 -type f -name '*.deb' |
+        LC_ALL=C sort)
+      candidate_check=${temporary_root}/apt-candidate-check.log
+      if [[ ${candidate_complete} == true ]] &&
+        verify_apt_repository_clone "${clone_root}" "${suite}" "${component}" true \
+          >"${candidate_check}" 2>&1; then
+        apt_update_required=false
+      fi
     else
       if [[ -e ${clone_root}/pool || -e ${clone_root}/dists ||
         -e ${clone_root}/ait-native-archive-keyring.gpg ||
@@ -1269,12 +1374,34 @@ NOTES
         printf 'apt repository contains an incomplete prior publication\n' >&2
         exit 65
       fi
+    fi
+    if [[ ${apt_update_required} == true ]]; then
       mkdir -p "${clone_root}/pool/main/a/ait-native" \
         "${clone_root}/pool/main/a/ait-runner" \
         "${clone_root}/dists/${suite}/${component}/binary-amd64" \
         "${clone_root}/dists/${suite}/${component}/binary-arm64"
-      cp "${assets}"/ait-native_*.deb "${clone_root}/pool/main/a/ait-native/"
-      cp "${assets}"/ait-runner_*.deb "${clone_root}/pool/main/a/ait-runner/"
+      while IFS= read -r asset; do
+        name=$(basename -- "${asset}")
+        case "${name}" in
+          ait-native_*) relative=pool/main/a/ait-native/${name} ;;
+          ait-runner_*) relative=pool/main/a/ait-runner/${name} ;;
+          *)
+            printf 'unexpected apt package identity: %s\n' "${name}" >&2
+            exit 65
+            ;;
+        esac
+        candidate_path=${clone_root}/${relative}
+        if [[ -e ${candidate_path} || -L ${candidate_path} ]]; then
+          require_regular_file "${candidate_path}" 'existing apt candidate package'
+          if [[ $(sha256_file "${candidate_path}") != $(sha256_file "${asset}") ]]; then
+            printf 'existing apt candidate package conflicts: %s\n' "${name}" >&2
+            exit 65
+          fi
+        else
+          cp "${asset}" "${candidate_path}"
+        fi
+      done < <(find "${assets}" -mindepth 1 -maxdepth 1 -type f -name '*.deb' |
+        LC_ALL=C sort)
       for architecture in amd64 arm64; do
         packages_path="${clone_root}/dists/${suite}/${component}/binary-${architecture}/Packages"
         (
@@ -1348,17 +1475,19 @@ NOTES
           "${repository}" "${branch}" "${suite}" "${component}"
         printf '  | sudo tee /etc/apt/sources.list.d/ait-native.list\n'
         printf 'sudo apt update\n'
+        printf 'apt-cache search --names-only "^ait-native$"\n'
+        printf 'apt-cache search --names-only "^ait-runner$"\n'
         printf 'sudo apt install ait-native\n'
         printf '```\n'
       } >"${clone_root}/README.md"
-      verify_apt_repository_clone "${clone_root}" "${suite}" "${component}"
+      verify_apt_repository_clone "${clone_root}" "${suite}" "${component}" true
     fi
     if [[ -n $(git -C "${clone_root}" status --porcelain --untracked-files=all) ]]; then
       git -C "${clone_root}" add --all
       git -C "${clone_root}" \
         -c user.name='AIT Native Release' \
         -c user.email='253238140+weita2026@users.noreply.github.com' \
-        commit -m 'Publish signed ait-native 1.0.0-rc.2 apt repository' >/dev/null
+        commit -m "Publish signed ait-native ${release_version} apt repository" >/dev/null
       GIT_SSH_COMMAND="ssh -i ${key_path} -o IdentitiesOnly=yes -o UserKnownHostsFile=${known_hosts}" \
         git -C "${clone_root}" push origin "HEAD:refs/heads/${branch}"
     fi
@@ -1367,7 +1496,7 @@ NOTES
     GIT_ASKPASS=/usr/bin/false GIT_TERMINAL_PROMPT=0 \
       git -c credential.helper= clone --quiet --depth 1 --branch "${branch}" \
         "https://github.com/${repository}.git" "${readback_root}"
-    verify_apt_repository_clone "${readback_root}" "${suite}" "${component}"
+    verify_apt_repository_clone "${readback_root}" "${suite}" "${component}" true
     jq -n \
       --arg contract 'ait.release.endpoint.apt/v1' \
       --arg status 'published_signed_and_read_back' \
@@ -1384,6 +1513,7 @@ NOTES
           signing_fingerprint: $fingerprint,
           signature_readback: true,
           package_digest_readback: true,
+          apt_cache_search: true,
           component_rebuild: false
         }
       ' >"${evidence_root}/apt.json"
@@ -1405,7 +1535,7 @@ NOTES
     validate_public_tag
     validate_github_release_state true
     validate_npm_remote_state true
-    validate_pypi_remote_state true
+    wait_for_pypi_remote_state
     for receipt_name in github pypi npm homebrew apt; do
       require_regular_file "${evidence_root}/${receipt_name}.json" \
         "${receipt_name} endpoint receipt"
@@ -1445,7 +1575,17 @@ NOTES
     GIT_ASKPASS=/usr/bin/false GIT_TERMINAL_PROMPT=0 \
       git -c credential.helper= clone --quiet --depth 1 --branch "${apt_branch}" \
         "https://github.com/${apt_repository}.git" "${apt_readback}"
-    verify_apt_repository_clone "${apt_readback}" "${apt_suite}" "${apt_component}"
+    verify_apt_repository_clone "${apt_readback}" "${apt_suite}" "${apt_component}" true
+    if ! jq -e '
+      .contract == "ait.release.endpoint.apt/v1" and
+      .status == "published_signed_and_read_back" and
+      .signature_readback == true and
+      .package_digest_readback == true and
+      .apt_cache_search == true
+    ' "${evidence_root}/apt.json" >/dev/null; then
+      printf 'APT endpoint receipt does not prove apt-cache searchability\n' >&2
+      exit 65
+    fi
     if [[ ! ${AIT_OCI_SERVER_DIGEST} =~ ^sha256:[0-9a-f]{64}$ ||
       ! ${AIT_OCI_RUNNER_DIGEST} =~ ^sha256:[0-9a-f]{64}$ ]]; then
       printf 'OCI image digest output is invalid\n' >&2

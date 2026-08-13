@@ -94,27 +94,29 @@ mkdir -p "${assets}" "${staging}/oci/ait-server" "${staging}/oci/ait-runner"
 if ! jq -e '
   .contract == "ait.release.family.endpoints/v1" and
   .release == {
-    id: "REL-FAM-0B6EDBCCA2EFE26B",
-    version: "1.0.0-rc.2",
-    python_version: "1.0.0rc2",
-    tag: "v1.0.0-rc.2",
-    source_commit: "3dfd9dde5a9867cfe265352f48540fa8241f8e66",
-    coordinator_snapshot: "SNP-152CBCB22EAC",
-    frozen_manifest_sha256: "38cf7635d398294e2a433caf4d54444fdf97ffdfaa8307a0782247939841ac56",
-    frozen_checksums_sha256: "51cadec032ca6bcab2a27fc60538886a90288e1c9eff97a82e7a15be13fd3896"
+    id: "REL-FAM-600EFDC327FE7860",
+    version: "1.0.0-rc.3",
+    python_version: "1.0.0rc3",
+    tag: "v1.0.0-rc.3",
+    source_commit: "ba368cf4d0750035345f14a8a91c22fb9e450260",
+    coordinator_snapshot: "SNP-B0271928FD9B",
+    frozen_manifest_sha256: "2a228253ceea6f793df050e9bf2fc14f240c8d9db5ebdcbcbc6133e61e6238fe",
+    frozen_checksums_sha256: "9fd126c61d716a3e8056e598ba6d3ecee992b0bbc7e073470887e49d11877747"
   } and
   .source_dossier == {
-    workflow_run_id: 31629973956,
+    workflow_run_id: 31664713921,
     workflow_run_attempt: 1,
-    artifact_id: 9155572246,
-    artifact_digest: "sha256:c474158c8d1c60ea31b7c32f179cf870154ca66ff0584aec936996bc76d13f1c"
+    workflow_control_commit: "93f2589d8eb7404400617169598427aaef3ff8af",
+    artifact_id: 9167933771,
+    artifact_digest: "sha256:08afc391688c902f3c2259392286b51612e6b6eb0aa51c388e8e513329705823"
   } and
   .protected_authorization == {
-    workflow_run_id: 31633959182,
+    workflow_run_id: 31666479359,
     workflow_run_attempt: 1,
-    artifact_id: 9156215006,
-    artifact_digest: "sha256:facc6cc34d3543840b2f66952368d8e1f9b15e2b6e60e219138a22106e64a9ae",
-    evidence_sha256: "bf39d37aec86cbb83d58cdd218fb179668cabc08ca0c3b0049b9c6722245414d"
+    workflow_control_commit: "93f2589d8eb7404400617169598427aaef3ff8af",
+    artifact_id: 9168120753,
+    artifact_digest: "sha256:54079d53bc3e115f314d99591228cc80dbab4c56c5ae361530f9c490c0764be9",
+    evidence_sha256: "cc18cf39db59147d5ee94359f0c00813be6841bf317686451eafd1152f870b32"
   } and
   .publisher == {
     repository: "weita2026/ait-native",
@@ -140,6 +142,18 @@ if ! jq -e '
     "ait-native-ait-win32-arm64",
     "ait-native-ait-win32-x64"
   ] and
+  .endpoints.npm.frozen_missing_repository_metadata == {
+    external_github_attestation_required: true,
+    archives: {
+      "ait-native": "8862dc3621320fda30e6923c85eee872751bfc92d95f319382b5b690540392f8",
+      "ait-native-ait-darwin-arm64": "262b2860df61c64dd8c358d0e36c5ae136ae0f98ee1bbc04511ba0608313abd2",
+      "ait-native-ait-darwin-x64": "42cb08e1651e8d96cd4dfc56cabf63ce0c50629b9c122ce065351cf67747e870",
+      "ait-native-ait-linux-arm64": "e59c1d29819454d20943dad038e7e3273d114c29033ff22d2430ae427778b221",
+      "ait-native-ait-linux-x64": "b594c192d921aa2e9c0fd6868d477b76fb431bac6ef0b89c8c0f011ac5cc1843",
+      "ait-native-ait-win32-arm64": "510ad5a977948c9a71c5434f721370fd2265b7665d3198bac597e563d2d4a8be",
+      "ait-native-ait-win32-x64": "7e09475a008b9a36993c9efe89ee99fd493da0457d06ca349143449e95b3298b"
+    }
+  } and
   .endpoints.homebrew == {
     repository: "weita2026/homebrew-ait-native",
     branch: "main",
@@ -161,7 +175,7 @@ if ! jq -e '
   .endpoints.oci.dockerfile_frontend == "docker/dockerfile:1.7@sha256:a57df69d0ea827fb7266491f2813635de6f17269be881f696fbfdf2d83dda33e" and
   .endpoints.oci.base_image == "docker.io/library/debian:bookworm-slim@sha256:abd67ffcfa541b485a3dff59865ab629aa048a6c613e639d36e7456b0b229241" and
   .endpoints.oci.images == ["ghcr.io/weita2026/ait-server", "ghcr.io/weita2026/ait-runner"] and
-  .endpoints.oci.immutable_tag == "1.0.0-rc.2" and
+  .endpoints.oci.immutable_tag == "1.0.0-rc.3" and
   .endpoints.oci.moving_tag == "rc"
 ' "${endpoint_config}" >/dev/null; then
   printf 'endpoint configuration does not match the exact admitted RC route\n' >&2
@@ -188,6 +202,7 @@ if ! jq -e --slurpfile config "${endpoint_config}" '
   .public_source.archived_source_equal == true and
   .dossier.source_run_id == ($config[0].source_dossier.workflow_run_id | tostring) and
   .dossier.source_run_attempt == ($config[0].source_dossier.workflow_run_attempt | tostring) and
+  .dossier.source_workflow_sha == $config[0].source_dossier.workflow_control_commit and
   .dossier.artifact_id == ($config[0].source_dossier.artifact_id | tostring) and
   .dossier.artifact_digest == $config[0].source_dossier.artifact_digest and
   .dossier.frozen_manifest_sha256 == $config[0].release.frozen_manifest_sha256 and
@@ -198,6 +213,7 @@ if ! jq -e --slurpfile config "${endpoint_config}" '
   .authorization.exact_digest_approval == true and
   .authorization.workflow_run_id == ($config[0].protected_authorization.workflow_run_id | tostring) and
   .authorization.workflow_run_attempt == ($config[0].protected_authorization.workflow_run_attempt | tostring) and
+  .authorization.workflow_sha == $config[0].protected_authorization.workflow_control_commit and
   .mutation == {
     artifact_rebuild: false,
     component_rebuild: false,
@@ -328,8 +344,8 @@ for channel in apt homebrew npm pypi winget; do
     .contract == "ait.release.family.package/v1" and
     .status == "assembled" and
     .release_id == $release_id and
-    .version == "1.0.0-rc.2" and
-    .tag == "v1.0.0-rc.2" and
+    .version == "1.0.0-rc.3" and
+    .tag == "v1.0.0-rc.3" and
     .channel == $channel and
     .check_summary.decision == "pass" and
     .check_summary.blocking == 0 and

@@ -38,7 +38,11 @@ expect_failure() {
   test -s "${temporary_root}/${label}.stderr"
 }
 
-family="${repo_root}/ait-release-family.json"
+family=${AIT_RELEASE_FAMILY_MANIFEST:-${repo_root}/ait-release-family.json}
+if [[ ${family} != /* || ! -f ${family} || -L ${family} ]]; then
+  printf 'release family manifest must be an absolute regular file\n' >&2
+  exit 66
+fi
 platforms="${repo_root}/ci/native_bootstrap_matrix.json"
 authorities="${repo_root}/ci/release_repository_authorities.json"
 workflow="${repo_root}/.github/workflows/ait-release-component-receipts.yml"
@@ -70,7 +74,14 @@ if awk '
 fi
 
 for required_workflow_text in \
-  './ci/release_monorepo_export_test.sh' \
+  'source_commit:' \
+  'ref: ${{ inputs.source_commit }}' \
+  'AIT_CONTROL_GIT_COMMIT: ${{ github.sha }}' \
+  'workflow_control_commit: $control_commit' \
+  'AIT_RELEASE_FAMILY_MANIFEST: ${{ github.workspace }}/source/ait-release-family.json' \
+  'working-directory: control' \
+  'path: control' \
+  'path: source' \
   'monorepo-source:' \
   '--component-receipt' \
   'public_git_commit' \
@@ -109,6 +120,8 @@ for forbidden_workflow_text in \
   'release_source_cache.sh' \
   'ait_remote_snapshot_boundary' \
   'secrets.AIT_RELEASE_SERVER_URL' \
+  './ci/release_monorepo_export_test.sh' \
+  './ci/release_receipt_bundle_test.sh' \
   '--repair-existing' \
   'pattern: ait-release-source-ait-*'; do
   if grep -F -- "${forbidden_workflow_text}" "${workflow}" >/dev/null; then
@@ -143,6 +156,8 @@ jq -e '
 ' "${projection}" >/dev/null
 
 for required_verifier_text in \
+  'control_root=' \
+  'AIT_RELEASE_SOURCE_CONTROL_SHA' \
   'release_receipt_matrix.jq' \
   'expected_receipt_count=$(jq -er' \
   'expected_component_artifact_count=$(jq -er' \

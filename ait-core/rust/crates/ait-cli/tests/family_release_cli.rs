@@ -1473,7 +1473,10 @@ fn family_package_assembles_native_channels_without_endpoint_mutation() {
         .unwrap()
         .iter()
         .filter(|artifact| artifact["kind"] == "winget-portable-zip")
-        .all(|artifact| artifact["metadata"].get("scope").is_none()));
+        .all(|artifact| artifact["metadata"].get("scope").is_none()
+            && artifact["metadata"]["portable_commands"] == json!(["ait", "ait-server"])
+            && artifact["metadata"]["portable_invocation_parameters"]
+                == json!({"ait": "--help", "ait-server": "--help"})));
     assert_eq!(
         run_json(
             root,
@@ -1496,11 +1499,12 @@ fn family_package_assembles_native_channels_without_endpoint_mutation() {
         .join("ait-native-rc.rb");
     let formula = fs::read_to_string(&formula_path).unwrap();
     assert!(formula.contains("class AitNativeRc < Formula"));
+    assert!(!formula.contains("\n  version \""));
     assert!(formula.contains("bin.install \"bin/ait\""));
     assert!(formula.contains("bin.install \"bin/ait-server\""));
     assert!(formula.contains("service do"));
     assert!(formula.contains(
-        "run [opt_bin/\"ait-server\", \"run\", \"--data\", var/\"ait-native/server-data\", \"--init-if-missing\", \"--defer-ci-admission\"]"
+        "run [\n      opt_bin/\"ait-server\",\n      \"run\",\n      \"--data\",\n      var/\"ait-native/server-data\",\n      \"--init-if-missing\",\n      \"--defer-ci-admission\",\n    ]"
     ));
     assert!(formula.contains("keep_alive true"));
     assert!(formula.contains("brew services start ait-native-rc"));
@@ -1676,9 +1680,20 @@ fn family_package_assembles_native_channels_without_endpoint_mutation() {
     assert!(installer_manifest.contains("PortableCommandAlias: ait\n"));
     assert!(installer_manifest.contains("PortableCommandAlias: ait-server\n"));
     assert!(!installer_manifest.contains("\n    Scope:"));
-    assert!(installer_manifest.contains(
-        "RelativeFilePath: ait-server-control.ps1\n      PortableCommandAlias: ait-server-control.ps1\n"
-    ));
+    assert!(!installer_manifest.contains("RelativeFilePath: ait-server-control.ps1"));
+    assert!(!installer_manifest.contains("PortableCommandAlias: ait-server-control.ps1"));
+    assert_eq!(
+        installer_manifest.matches("InstallationMetadata:").count(),
+        2
+    );
+    assert_eq!(installer_manifest.matches("FileType: launch").count(), 4);
+    assert_eq!(
+        installer_manifest
+            .matches("InvocationParameter: --help")
+            .count(),
+        4
+    );
+    assert_eq!(installer_manifest.matches("RelativeFilePath:").count(), 8);
     assert!(installer_manifest.contains("ManifestVersion: 1.12.0"));
     let locale_manifest = fs::read_to_string(
         package_root

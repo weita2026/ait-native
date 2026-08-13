@@ -4,7 +4,7 @@ AIT is a language-neutral, agent-first workflow for repository changes.
 Initialize AIT once, then tell your coding agent what outcome you want. AIT
 does not identify the repository's programming language or project type.
 
-This is the public `v1.0.0-rc.3` source tree. One tag contains the exact
+This is the public `v1.0.0-rc.4` source tree. One tag contains the exact
 exported source of `ait-core`, `ait-server`, `ait-runner`, `ait-python`, and
 `ait-node`; their AIT Snapshot mapping is recorded in
 `ait-monorepo-source.json`.

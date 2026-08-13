@@ -59,6 +59,31 @@ fn clean_server_command() -> Command {
     command
 }
 
+#[test]
+fn no_arguments_print_help_without_storage_or_listener_side_effects() {
+    let directory = TestDirectory::new("no-arguments");
+    let root = directory.path().join("server-data");
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    drop(listener);
+
+    let output = clean_server_command()
+        .env("AIT_NATIVE_SERVER_DATA", &root)
+        .env("AITSERVER_LISTEN", address.to_string())
+        .output()
+        .expect("execute no-argument ait-server");
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("ait-server run"));
+    assert!(output.stderr.is_empty());
+    assert!(!root.exists());
+    assert!(TcpListener::bind(address).is_ok());
+}
+
 struct ChildGuard(Child);
 
 impl Drop for ChildGuard {

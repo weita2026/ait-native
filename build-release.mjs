@@ -89,7 +89,7 @@ export async function cleanLocalNodeBuildTransients(version, sourceRoot = ROOT) 
   const nodeRoot = path.join(sourceRoot, "ait-node");
   await rm(path.join(nodeRoot, ".ait-native-target"), { recursive: true, force: true });
   await rm(path.join(nodeRoot, "native", "ait_napi.node"), { force: true });
-  await rm(path.join(nodeRoot, "dist", `ait-native-${version}.tgz`), { force: true });
+  await rm(path.join(nodeRoot, "dist", `wa120-ait-native-${version}.tgz`), { force: true });
 }
 
 function cargoTargetRustflagsKey(target) {
@@ -923,7 +923,7 @@ async function validateBuildInputs(expectedGitCommit) {
   );
   const nodeRuntime = await readFile(path.join(ROOT, "ait-node", "src", "runtime.js"), "utf8");
   if (
-    nodePackage?.name !== "ait-native" ||
+    nodePackage?.name !== "@wa120/ait-native" ||
     nodePackage?.version !== family.family.version ||
     nodePackage?.bin?.ait !== "bin/ait.mjs" ||
     Object.keys(nodePackage?.bin ?? {}).length !== 1 ||
@@ -1683,7 +1683,7 @@ async function build({ family, mapping }, skipTests) {
   const npmOutput = path.join(OUTPUT_ROOT, target, "npm");
   await mkdir(npmOutput, { recursive: true });
   const nodeAdapter = path.join(nodeRoot, "release", "release-adapter.mjs");
-  const portableArtifactRelative = `dist/ait-native-${family.family.version}.tgz`;
+  const portableArtifactRelative = `dist/wa120-ait-native-${family.family.version}.tgz`;
   let portableArtifact;
   try {
     portableArtifact = JSON.parse(

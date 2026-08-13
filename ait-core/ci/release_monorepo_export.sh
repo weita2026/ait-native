@@ -24,6 +24,14 @@ receipt_workflow=${repo_root}/.github/workflows/ait-release-component-receipts.y
 promotion_workflow=${repo_root}/.github/workflows/ait-release-protected-promotion.yml
 server_dockerfile=${repo_root}/release/oci/ait-server.Dockerfile
 runner_dockerfile=${repo_root}/release/oci/ait-runner.Dockerfile
+release_control_paths=(
+  ci/native_bootstrap_matrix.jq
+  ci/native_bootstrap_matrix.json
+  ci/release_protected_promotion.sh
+  ci/release_receipt_matrix.jq
+  ci/release_receipt_matrix_test.sh
+  ci/release_repository_authorities.json
+)
 coordinator_snapshot=${AIT_RELEASE_COORDINATOR_SNAPSHOT:?AIT_RELEASE_COORDINATOR_SNAPSHOT is required}
 coordinator_manifest_hash=${AIT_RELEASE_COORDINATOR_MANIFEST_HASH:?AIT_RELEASE_COORDINATOR_MANIFEST_HASH is required}
 coordinator_created_at=${AIT_RELEASE_COORDINATOR_CREATED_AT:?AIT_RELEASE_COORDINATOR_CREATED_AT is required}
@@ -81,13 +89,21 @@ if [[ ! -d ${template_root} || -L ${template_root} ||
   printf 'monorepo release templates or transform tool are unavailable\n' >&2
   exit 66
 fi
+for release_control_path in "${release_control_paths[@]}"; do
+  if [[ ! -f ${repo_root}/${release_control_path} ||
+    -L ${repo_root}/${release_control_path} ]]; then
+    printf 'monorepo release-control input is unavailable: %s\n' \
+      "${release_control_path}" >&2
+    exit 66
+  fi
+done
 
 if ! jq -e '
   . as $root |
   .schema == "ait.release.family/v3" and
   .family.name == "ait-native" and
-  .family.version == "1.0.0-rc.2" and
-  .family.tag == "v1.0.0-rc.2" and
+  .family.version == "1.0.0-rc.3" and
+  .family.tag == "v1.0.0-rc.3" and
   .public_source.model == "release-monorepo" and
   .public_source.identity == "weita2026/ait-native" and
   .public_source.product_document == "docs/distribution.md" and
@@ -353,6 +369,10 @@ cp "${template_root}/build-release.ps1" "${staging}/build-release.ps1"
 cp "${template_root}/build-release.mjs" "${staging}/build-release.mjs"
 cp "${family_manifest}" "${staging}/ait-release-family.json"
 cp "${product_document}" "${staging}/docs/distribution.md"
+for release_control_path in "${release_control_paths[@]}"; do
+  cp "${repo_root}/${release_control_path}" \
+    "${staging}/${release_control_path}"
+done
 cp "${staging}/ait-core/LICENSE" "${staging}/LICENSES/Apache-2.0.txt"
 cp "${staging}/ait-server/LICENSE" "${staging}/LICENSES/AGPL-3.0-only.txt"
 root_receipt_workflow=${staging}/.github/workflows/ait-release-component-receipts.yml
@@ -364,11 +384,7 @@ cp "${runner_dockerfile}" "${staging}/release/oci/ait-runner.Dockerfile"
 node "${transform_tool}" \
   "${root_receipt_workflow}" \
   $'permissions:\n  contents: read\n\nconcurrency:' \
-  $'permissions:\n  contents: read\n\ndefaults:\n  run:\n    working-directory: ait-core\n\nconcurrency:'
-node "${transform_tool}" \
-  "${root_receipt_workflow}" \
-  '          path: release-receipt-matrix.json' \
-  '          path: ait-core/release-receipt-matrix.json'
+  $'permissions:\n  contents: read\n\ndefaults:\n  run:\n    working-directory: source/ait-core\n\nconcurrency:'
 find "${staging}" -type d -exec chmod 0755 {} +
 chmod 0644 \
   "${staging}/README.md" \
@@ -399,8 +415,8 @@ jq -n \
   --arg coordinator_snapshot "${coordinator_snapshot}" \
   --arg coordinator_manifest_hash "${coordinator_manifest_hash}" \
   --arg coordinator_created_at "${coordinator_created_at}" \
-  --arg family_version '1.0.0-rc.2' \
-  --arg family_tag 'v1.0.0-rc.2' \
+  --arg family_version '1.0.0-rc.3' \
+  --arg family_tag 'v1.0.0-rc.3' \
   --arg family_manifest_sha256 "${family_manifest_sha256}" \
   --arg product_document_sha256 "${product_document_sha256}" \
   --arg content_sha256 "${content_sha256}" \
@@ -442,8 +458,8 @@ jq -n \
   --arg coordinator_snapshot "${coordinator_snapshot}" \
   --arg coordinator_manifest_hash "${coordinator_manifest_hash}" \
   --arg coordinator_created_at "${coordinator_created_at}" \
-  --arg family_version '1.0.0-rc.2' \
-  --arg family_tag 'v1.0.0-rc.2' \
+  --arg family_version '1.0.0-rc.3' \
+  --arg family_tag 'v1.0.0-rc.3' \
   --arg mapping_sha256 "${mapping_sha256}" \
   --arg content_sha256 "${content_sha256}" \
   --argjson subtrees "${subtrees}" '

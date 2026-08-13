@@ -34,7 +34,7 @@ pub struct PreparedLifecycle {
 }
 
 pub fn lifecycle_usage() -> &'static str {
-    "Usage:\n  ait-server [run] [--data <absolute-path>] [--init-if-missing] [--defer-ci-admission]\n  ait-server init [--data <absolute-path>]\n  ait-server probe [--data <absolute-path>] [--defer-ci-admission]\n  ait-server --startup-probe\n  ait-server --version\n\nWith no --data flag or AIT_NATIVE_SERVER_DATA/AIT_RUNTIME_DATA environment,\nAIT uses the platform user-data root and safely initializes it on first run.\n--defer-ci-admission skips only the startup RAM-workspace probe; managed CI\nallocation still fails closed until a memory-backed root is configured."
+    "Usage:\n  ait-server run [--data <absolute-path>] [--init-if-missing] [--defer-ci-admission]\n  ait-server init [--data <absolute-path>]\n  ait-server probe [--data <absolute-path>] [--defer-ci-admission]\n  ait-server --startup-probe\n  ait-server --version\n\nWith no arguments, ait-server prints this help without starting the server.\nWith no --data flag or AIT_NATIVE_SERVER_DATA/AIT_RUNTIME_DATA environment,\nAIT uses the platform user-data root and safely initializes it on first run.\n--defer-ci-admission skips only the startup RAM-workspace probe; managed CI\nallocation still fails closed until a memory-backed root is configured."
 }
 
 pub fn parse_lifecycle_args<I, S>(args: I) -> Result<LifecycleOptions, String>
@@ -46,6 +46,14 @@ where
         .into_iter()
         .map(|value| value.as_ref().to_os_string())
         .collect::<Vec<_>>();
+    if values.is_empty() {
+        return Ok(LifecycleOptions {
+            command: LifecycleCommand::Help,
+            data_root: None,
+            defer_ci_admission: false,
+            init_if_missing: false,
+        });
+    }
     if values.len() == 1 && matches!(values[0].to_str(), Some("--version") | Some("-V")) {
         return Ok(LifecycleOptions {
             command: LifecycleCommand::Version,
@@ -236,6 +244,16 @@ mod tests {
     fn parser_preserves_legacy_forms_and_adds_native_commands() {
         assert_eq!(
             parse_lifecycle_args(Vec::<OsString>::new())
+                .unwrap()
+                .command,
+            LifecycleCommand::Help
+        );
+        assert_eq!(
+            parse_lifecycle_args(["run"]).unwrap().command,
+            LifecycleCommand::Run
+        );
+        assert_eq!(
+            parse_lifecycle_args(["--data", "/tmp/ait-server"])
                 .unwrap()
                 .command,
             LifecycleCommand::Run

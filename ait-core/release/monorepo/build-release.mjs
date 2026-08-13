@@ -36,10 +36,18 @@ const PROMOTION_WORKFLOW = path.join(
 );
 const PROMOTION_VERIFIER = path.join(
   ROOT,
-  "ait-core",
   "ci",
   "release_protected_promotion.sh",
 );
+const RECEIPT_MATRIX_FILTER = path.join(ROOT, "ci", "release_receipt_matrix.jq");
+const RECEIPT_MATRIX_TEST = path.join(ROOT, "ci", "release_receipt_matrix_test.sh");
+const REPOSITORY_AUTHORITIES = path.join(
+  ROOT,
+  "ci",
+  "release_repository_authorities.json",
+);
+const NATIVE_BOOTSTRAP_MATRIX = path.join(ROOT, "ci", "native_bootstrap_matrix.json");
+const NATIVE_BOOTSTRAP_VALIDATOR = path.join(ROOT, "ci", "native_bootstrap_matrix.jq");
 const OCI_SERVER_DOCKERFILE = path.join(ROOT, "release", "oci", "ait-server.Dockerfile");
 const OCI_RUNNER_DOCKERFILE = path.join(ROOT, "release", "oci", "ait-runner.Dockerfile");
 const BUILD_ROOT = path.join(ROOT, ".build", "source-release");
@@ -72,6 +80,16 @@ function fail(message) {
 
 function sha256(bytes) {
   return createHash("sha256").update(bytes).digest("hex");
+}
+
+export async function cleanLocalNodeBuildTransients(version, sourceRoot = ROOT) {
+  if (!/^[0-9A-Za-z.+-]+$/u.test(version)) {
+    fail("local Node.js build cleanup version is invalid");
+  }
+  const nodeRoot = path.join(sourceRoot, "ait-node");
+  await rm(path.join(nodeRoot, ".ait-native-target"), { recursive: true, force: true });
+  await rm(path.join(nodeRoot, "native", "ait_napi.node"), { force: true });
+  await rm(path.join(nodeRoot, "dist", `ait-native-${version}.tgz`), { force: true });
 }
 
 function cargoTargetRustflagsKey(target) {
@@ -305,28 +323,117 @@ function exactSet(actual, expected, label) {
   }
 }
 
+async function validateReleaseControl(family) {
+  for (const [filePath, label] of [
+    [RECEIPT_MATRIX_FILTER, "root receipt-matrix filter"],
+    [RECEIPT_MATRIX_TEST, "root receipt-matrix regression"],
+    [REPOSITORY_AUTHORITIES, "root Repository-authority contract"],
+    [NATIVE_BOOTSTRAP_MATRIX, "root native bootstrap matrix"],
+    [NATIVE_BOOTSTRAP_VALIDATOR, "root native bootstrap validator"],
+    [PROMOTION_VERIFIER, "root protected promotion verifier"],
+  ]) {
+    await regularFile(filePath, label);
+  }
+
+  const authorities = await readJson(
+    REPOSITORY_AUTHORITIES,
+    "root Repository-authority contract",
+  );
+  const platforms = await readJson(
+    NATIVE_BOOTSTRAP_MATRIX,
+    "root native bootstrap matrix",
+  );
+  if (
+    authorities?.contract !== "ait.release.repository-authorities/v1" ||
+    authorities?.schema_version !== 1 ||
+    authorities?.family_version !== family.family.version ||
+    authorities?.source_line !== "main" ||
+    authorities?.public_publish !== false ||
+    !Array.isArray(authorities?.repositories) ||
+    authorities.repositories.length !== 5
+  ) {
+    fail("root Repository-authority contract differs from the selected family");
+  }
+  exactSet(
+    authorities.repositories.map((row) => row.repo_name),
+    EXPECTED_REPOSITORIES,
+    "root Repository-authority repositories",
+  );
+  if (
+    platforms?.contract !== "ait-native-bootstrap-matrix/v1" ||
+    platforms?.schema_version !== 1 ||
+    platforms?.version !== family.family.version ||
+    platforms?.public_publish !== false ||
+    !Array.isArray(platforms?.targets) ||
+    platforms.targets.length !== 6
+  ) {
+    fail("root native bootstrap matrix differs from the selected family");
+  }
+  exactSet(
+    platforms.targets.map((row) => row.target),
+    family.targets,
+    "root native bootstrap targets",
+  );
+
+  const matrixTest = await readFile(RECEIPT_MATRIX_TEST, "utf8");
+  const verifier = await readFile(PROMOTION_VERIFIER, "utf8");
+  for (const required of [
+    "AIT_RELEASE_FAMILY_MANIFEST",
+    "release_receipt_matrix.jq",
+    "release_repository_authorities.json",
+    "native_bootstrap_matrix.json",
+  ]) {
+    if (!matrixTest.includes(required)) {
+      fail(`root receipt-matrix regression is missing ${JSON.stringify(required)}`);
+    }
+  }
+  for (const required of [
+    "control_root=",
+    "${control_root}/ci/release_receipt_matrix.jq",
+    "${control_root}/ci/native_bootstrap_matrix.json",
+    "${control_root}/ci/release_repository_authorities.json",
+    "AIT_RELEASE_SOURCE_CONTROL_SHA",
+  ]) {
+    if (!verifier.includes(required)) {
+      fail(`root protected promotion verifier is missing ${JSON.stringify(required)}`);
+    }
+  }
+  if (verifier.includes("${public_source_root}/ait-core/ci/")) {
+    fail("protected promotion reads historical component coordination files");
+  }
+}
+
 async function validateProtectedWorkflows() {
   await regularFile(RECEIPT_WORKFLOW, "root protected component-receipt workflow");
   const workflow = await readFile(RECEIPT_WORKFLOW, "utf8");
   const exactWorkingDirectory =
-    "defaults:\n  run:\n    working-directory: ait-core";
-  const exactArtifactPath = "          path: ait-core/release-receipt-matrix.json";
+    "defaults:\n  run:\n    working-directory: source/ait-core";
+  const exactArtifactPath = "          path: release-receipt-matrix.json";
   for (const required of [
     "name: ait release component receipts",
     "workflow_dispatch:",
     "permissions:\n  contents: read",
     exactWorkingDirectory,
     exactArtifactPath,
+    "source_commit:",
+    "ref: ${{ inputs.source_commit }}",
+    "path: control",
+    "path: source",
+    "working-directory: control",
+    "AIT_RELEASE_FAMILY_MANIFEST: ${{ github.workspace }}/source/ait-release-family.json",
+    "workflow_control_commit: $control_commit",
   ]) {
-    if (workflow.split(required).length !== 2) {
-      fail(`root protected workflow must contain exactly one ${JSON.stringify(required)}`);
+    if (!workflow.includes(required)) {
+      fail(`root protected workflow must contain ${JSON.stringify(required)}`);
     }
   }
   if (
     workflow.includes("contents: write") ||
-    workflow.includes("          path: release-receipt-matrix.json")
+    workflow.includes("          path: ait-core/release-receipt-matrix.json") ||
+    workflow.includes("./ci/release_monorepo_export_test.sh") ||
+    workflow.includes("./ci/release_receipt_bundle_test.sh")
   ) {
-    fail("root protected workflow contains write authority or an unadapted artifact path");
+    fail("root protected workflow contains write authority or component-local control tests");
   }
 
   await regularFile(PROMOTION_WORKFLOW, "root protected promotion workflow");
@@ -339,13 +446,21 @@ async function validateProtectedWorkflows() {
     "persist-credentials: false",
     "artifact-ids: ${{ inputs.dossier_artifact_id }}",
     "merge-multiple: true",
-    "bash control/ait-core/ci/release_protected_promotion.sh",
+    "source_control_commit:",
+    "bash control/ci/release_protected_promotion.sh",
     "actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a",
     "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02",
   ]) {
     if (promotion.split(required).length !== 2) {
       fail(`root protected promotion workflow must contain exactly one ${JSON.stringify(required)}`);
     }
+  }
+  if (
+    promotion.split(
+      "AIT_RELEASE_SOURCE_CONTROL_SHA: ${{ inputs.source_control_commit }}",
+    ).length !== 3
+  ) {
+    fail("root protected promotion workflow must bind the source-control commit twice");
   }
   for (const forbidden of [
     "contents: write",
@@ -761,10 +876,15 @@ async function validateBuildInputs(expectedGitCommit) {
     ".github/workflows/ait-release-protected-promotion.yml",
     ".gitattributes",
     "README.md",
+    "ci/native_bootstrap_matrix.jq",
+    "ci/native_bootstrap_matrix.json",
+    "ci/release_protected_promotion.sh",
+    "ci/release_receipt_matrix.jq",
+    "ci/release_receipt_matrix_test.sh",
+    "ci/release_repository_authorities.json",
     "release/oci/ait-server.Dockerfile",
     "release/oci/ait-runner.Dockerfile",
     "ait-core/rust/Cargo.toml",
-    "ait-core/ci/release_protected_promotion.sh",
     "ait-server/rust/Cargo.toml",
     "ait-runner/Cargo.toml",
     "ait-python/pyproject.toml",
@@ -780,6 +900,7 @@ async function validateBuildInputs(expectedGitCommit) {
   await validateGitBytePolicy();
   await validateOperationalIgnorePolicy();
   await validateTrackedSourceTree();
+  await validateReleaseControl(family);
   await validateProtectedWorkflows();
   const runnerManifest = await readFile(path.join(ROOT, "ait-runner", "Cargo.toml"), "utf8");
   const pythonManifest = await readFile(path.join(ROOT, "ait-python", "pyproject.toml"), "utf8");
@@ -1611,6 +1732,11 @@ async function build({ family, mapping }, skipTests) {
     "--addon", nodeAddon,
     "--out-dir", npmOutput,
   ], nodeRoot);
+
+  await cleanLocalNodeBuildTransients(family.family.version);
+  if (mapping.content_sha256 !== (await sourceContentDigest())) {
+    fail("local source build changed the public source content");
+  }
 
   const files = await inventory(OUTPUT_ROOT);
   const manifest = {

@@ -1340,8 +1340,7 @@ fn assemble_homebrew(
     }
     let homepage = format!("https://github.com/{}", github_source_identity(input)?);
     let formula = format!(
-        "class {class_name} < Formula\n  desc \"Language-neutral native AIT CLI and inactive self-hosted server\"\n  homepage \"{homepage}\"\n  version {}\n  license {}\n\n{}  def install\n    bin.install \"bin/ait\"\n    bin.install \"bin/ait-server\"\n    pkgshare.install \"share/licenses\"\n    pkgshare.install \"share/ait-native/ait-family-provenance.json\"\n  end\n\n  service do\n    run [opt_bin/\"ait-server\", \"run\", \"--data\", var/\"ait-native/server-data\", \"--init-if-missing\", \"--defer-ci-admission\"]\n    keep_alive true\n    log_path var/\"log/ait-server.log\"\n    error_log_path var/\"log/ait-server.error.log\"\n  end\n\n  def caveats\n    <<~EOS\n      ait-server is installed but remains inactive until explicitly started.\n      Foreground: #{{bin}}/ait-server run\n      Managed user service: brew services start {route_name}\n      Service data: #{{var}}/ait-native/server-data\n      Managed CI still requires an admitted memory-backed runtime root.\n    EOS\n  end\n\n  test do\n    assert_match version.to_s, shell_output(\"#{{bin}}/ait --version\")\n    assert_match version.to_s, shell_output(\"#{{bin}}/ait-server --version\")\n  end\nend\n",
-        json_quoted(&input.version),
+        "class {class_name} < Formula\n  desc \"Language-neutral native AIT CLI and inactive self-hosted server\"\n  homepage \"{homepage}\"\n  license {}\n\n{}  def install\n    bin.install \"bin/ait\"\n    bin.install \"bin/ait-server\"\n    pkgshare.install \"share/licenses\"\n    pkgshare.install \"share/ait-native/ait-family-provenance.json\"\n  end\n\n  service do\n    run [\n      opt_bin/\"ait-server\",\n      \"run\",\n      \"--data\",\n      var/\"ait-native/server-data\",\n      \"--init-if-missing\",\n      \"--defer-ci-admission\",\n    ]\n    keep_alive true\n    log_path var/\"log/ait-server.log\"\n    error_log_path var/\"log/ait-server.error.log\"\n  end\n\n  def caveats\n    <<~EOS\n      ait-server is installed but remains inactive until explicitly started.\n      Foreground: #{{bin}}/ait-server run\n      Managed user service: brew services start {route_name}\n      Service data: #{{var}}/ait-native/server-data\n      Managed CI still requires an admitted memory-backed runtime root.\n    EOS\n  end\n\n  test do\n    assert_match version.to_s, shell_output(\"#{{bin}}/ait --version\")\n    assert_match version.to_s, shell_output(\"#{{bin}}/ait-server --version\")\n  end\nend\n",
         homebrew_license_expression(input, distribution)?,
         platform_blocks,
     );
@@ -1772,7 +1771,7 @@ fn assemble_winget(
         let digest = sha256_hex(&bytes);
         let url = format!("{asset_base}/{filename}");
         installer_yaml.push_str(&format!(
-            "  - Architecture: {architecture}\n    InstallerUrl: {}\n    InstallerSha256: {}\n    NestedInstallerType: portable\n    NestedInstallerFiles:\n    - RelativeFilePath: ait.exe\n      PortableCommandAlias: ait\n    - RelativeFilePath: ait-server.exe\n      PortableCommandAlias: ait-server\n    - RelativeFilePath: ait-server-control.ps1\n      PortableCommandAlias: ait-server-control.ps1\n    ArchiveBinariesDependOnPath: false\n",
+            "  - Architecture: {architecture}\n    InstallerUrl: {}\n    InstallerSha256: {}\n    NestedInstallerType: portable\n    NestedInstallerFiles:\n    - RelativeFilePath: ait.exe\n      PortableCommandAlias: ait\n    - RelativeFilePath: ait-server.exe\n      PortableCommandAlias: ait-server\n    InstallationMetadata:\n      Files:\n      - RelativeFilePath: ait.exe\n        FileType: launch\n        InvocationParameter: --help\n      - RelativeFilePath: ait-server.exe\n        FileType: launch\n        InvocationParameter: --help\n    ArchiveBinariesDependOnPath: false\n",
             json_quoted(&url),
             digest.to_ascii_uppercase(),
         ));
@@ -1797,7 +1796,11 @@ fn assemble_winget(
                     "architecture": architecture,
                     "installer_type": "zip",
                     "nested_installer_type": "portable",
-                    "portable_commands": ["ait", "ait-server", "ait-server-control.ps1"],
+                    "portable_commands": ["ait", "ait-server"],
+                    "portable_invocation_parameters": {
+                        "ait": "--help",
+                        "ait-server": "--help",
+                    },
                     "asset_url": url,
                     "server_activation": "inactive",
                     "server_controller": "user_session_powershell",

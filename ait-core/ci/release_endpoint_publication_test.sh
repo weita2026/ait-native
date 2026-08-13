@@ -3,7 +3,7 @@ set -euo pipefail
 
 repo_root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 workflow=${repo_root}/.github/workflows/pypi-publish.yml
-endpoint_config=${repo_root}/release/endpoint-publication.rc2.json
+endpoint_config=${repo_root}/release/endpoint-publication.rc3.json
 preparer=${repo_root}/ci/release_endpoint_publication.sh
 remote=${repo_root}/ci/release_endpoint_remote.sh
 temporary_root=$(mktemp -d "${TMPDIR:-/tmp}/ait-endpoint-publication-test.XXXXXX")
@@ -52,17 +52,50 @@ done
 
 bash -n "${preparer}"
 bash -n "${remote}"
+# shellcheck disable=SC2016 # These are literal source-contract fragments.
+for required_apt_contract in \
+  'local require_candidate_assets=${4:-true}' \
+  'verify_apt_repository_clone "${clone_root}" "${suite}" "${component}" false' \
+  'dpkg-scanpackages --arch "${architecture}" --multiversion pool /dev/null' \
+  'for name in ait-native ait-runner; do' \
+  'search --names-only "^${name}$"' \
+  'apt_cache_search: true'; do
+  if ! grep -F -- "${required_apt_contract}" "${remote}" >/dev/null; then
+    printf 'APT publisher is missing searchable multiversion behavior: %s\n' \
+      "${required_apt_contract}" >&2
+    exit 65
+  fi
+done
+if grep -F 'apt repository package inventory is not exact' "${remote}" >/dev/null; then
+  printf 'APT publisher still rejects a repository that retains older versions\n' >&2
+  exit 65
+fi
 jq -e '
   .contract == "ait.release.family.endpoints/v1" and
   .release == {
-    id: "REL-FAM-0B6EDBCCA2EFE26B",
-    version: "1.0.0-rc.2",
-    python_version: "1.0.0rc2",
-    tag: "v1.0.0-rc.2",
-    source_commit: "3dfd9dde5a9867cfe265352f48540fa8241f8e66",
-    coordinator_snapshot: "SNP-152CBCB22EAC",
-    frozen_manifest_sha256: "38cf7635d398294e2a433caf4d54444fdf97ffdfaa8307a0782247939841ac56",
-    frozen_checksums_sha256: "51cadec032ca6bcab2a27fc60538886a90288e1c9eff97a82e7a15be13fd3896"
+    id: "REL-FAM-600EFDC327FE7860",
+    version: "1.0.0-rc.3",
+    python_version: "1.0.0rc3",
+    tag: "v1.0.0-rc.3",
+    source_commit: "ba368cf4d0750035345f14a8a91c22fb9e450260",
+    coordinator_snapshot: "SNP-B0271928FD9B",
+    frozen_manifest_sha256: "2a228253ceea6f793df050e9bf2fc14f240c8d9db5ebdcbcbc6133e61e6238fe",
+    frozen_checksums_sha256: "9fd126c61d716a3e8056e598ba6d3ecee992b0bbc7e073470887e49d11877747"
+  } and
+  .source_dossier == {
+    workflow_run_id: 31664713921,
+    workflow_run_attempt: 1,
+    workflow_control_commit: "93f2589d8eb7404400617169598427aaef3ff8af",
+    artifact_id: 9167933771,
+    artifact_digest: "sha256:08afc391688c902f3c2259392286b51612e6b6eb0aa51c388e8e513329705823"
+  } and
+  .protected_authorization == {
+    workflow_run_id: 31666479359,
+    workflow_run_attempt: 1,
+    workflow_control_commit: "93f2589d8eb7404400617169598427aaef3ff8af",
+    artifact_id: 9168120753,
+    artifact_digest: "sha256:54079d53bc3e115f314d99591228cc80dbab4c56c5ae361530f9c490c0764be9",
+    evidence_sha256: "cc18cf39db59147d5ee94359f0c00813be6841bf317686451eafd1152f870b32"
   } and
   .publisher == {
     repository: "weita2026/ait-native",
@@ -78,6 +111,18 @@ jq -e '
     "ait-native-ait-win32-arm64",
     "ait-native-ait-win32-x64"
   ] and
+  .endpoints.npm.frozen_missing_repository_metadata == {
+    external_github_attestation_required: true,
+    archives: {
+      "ait-native": "8862dc3621320fda30e6923c85eee872751bfc92d95f319382b5b690540392f8",
+      "ait-native-ait-darwin-arm64": "262b2860df61c64dd8c358d0e36c5ae136ae0f98ee1bbc04511ba0608313abd2",
+      "ait-native-ait-darwin-x64": "42cb08e1651e8d96cd4dfc56cabf63ce0c50629b9c122ce065351cf67747e870",
+      "ait-native-ait-linux-arm64": "e59c1d29819454d20943dad038e7e3273d114c29033ff22d2430ae427778b221",
+      "ait-native-ait-linux-x64": "b594c192d921aa2e9c0fd6868d477b76fb431bac6ef0b89c8c0f011ac5cc1843",
+      "ait-native-ait-win32-arm64": "510ad5a977948c9a71c5434f721370fd2265b7665d3198bac597e563d2d4a8be",
+      "ait-native-ait-win32-x64": "7e09475a008b9a36993c9efe89ee99fd493da0457d06ca349143449e95b3298b"
+    }
+  } and
   .endpoints.winget == {
     identity: "Weita.AitNative",
     route: "validation",
@@ -105,17 +150,27 @@ for required in \
   'docker logout ghcr.io'; do
   grep -F -- "${required}" "${workflow}" >/dev/null
 done
-if [[ $(grep -c '^        continue-on-error: true$' "${workflow}") != 1 ]] ||
-  ! awk '
-    /- name: Publish npm implementation payloads and command envelope/ {
-      npm_step = 1
-      next
-    }
-    npm_step && /- name: / { exit }
-    npm_step && /continue-on-error: true/ { isolated = 1 }
-    END { exit isolated ? 0 : 1 }
-  ' "${workflow}"; then
-  printf 'only the npm publication step may yield to independent endpoints\n' >&2
+if grep -F 'continue-on-error:' "${workflow}" >/dev/null; then
+  printf 'endpoint publication must not hide a failed endpoint\n' >&2
+  exit 65
+fi
+for required_pypi_readback_contract in \
+  'wait_for_pypi_remote_state() {' \
+  'local max_attempts=12' \
+  'if [[ ${readback_status} != 75 ]]; then' \
+  'wait_for_pypi_remote_state'; do
+  if ! grep -F -- "${required_pypi_readback_contract}" "${remote}" >/dev/null; then
+    printf 'PyPI publisher is missing bounded readback behavior: %s\n' \
+      "${required_pypi_readback_contract}" >&2
+    exit 65
+  fi
+done
+if ! awk '
+  /- name: Publish the signed apt testing repository/ { apt_step = NR }
+  /- name: Publish npm implementation payloads and command envelope/ { npm_step = NR }
+  END { exit !(apt_step > 0 && npm_step > apt_step) }
+' "${workflow}"; then
+  printf 'npm must remain visible and run after independent endpoint writes\n' >&2
   exit 65
 fi
 grep -F '      - name: Complete independent endpoint readback' \
@@ -162,23 +217,70 @@ eval "$(extract_remote_function github_release_local_path)"
 eval "$(extract_remote_function npm_provenance_policy)"
 eval "$(extract_remote_function remove_matching_npm_prerelease_latest_tag)"
 eval "$(extract_remote_function validate_npm_dist_tags)"
+eval "$(extract_remote_function wait_for_pypi_remote_state)"
+
+pypi_readback_attempts=0
+validate_pypi_remote_state() {
+  pypi_readback_attempts=$((pypi_readback_attempts + 1))
+  if ((pypi_readback_attempts < 3)); then
+    return 75
+  fi
+  return 0
+}
+sleep() {
+  :
+}
+wait_for_pypi_remote_state \
+  >"${temporary_root}/pypi-eventual-success.stdout" \
+  2>"${temporary_root}/pypi-eventual-success.stderr"
+test "${pypi_readback_attempts}" = 3
+
+pypi_readback_attempts=0
+validate_pypi_remote_state() {
+  pypi_readback_attempts=$((pypi_readback_attempts + 1))
+  return 65
+}
+if wait_for_pypi_remote_state \
+  >"${temporary_root}/pypi-hard-failure.stdout" \
+  2>"${temporary_root}/pypi-hard-failure.stderr"; then
+  printf 'expected hard PyPI readback failure\n' >&2
+  exit 1
+fi
+test "${pypi_readback_attempts}" = 1
+
+pypi_readback_attempts=0
+validate_pypi_remote_state() {
+  pypi_readback_attempts=$((pypi_readback_attempts + 1))
+  return 75
+}
+if wait_for_pypi_remote_state \
+  >"${temporary_root}/pypi-eventual-timeout.stdout" \
+  2>"${temporary_root}/pypi-eventual-timeout.stderr"; then
+  printf 'expected bounded PyPI readback timeout\n' >&2
+  exit 1
+fi
+test "${pypi_readback_attempts}" = 12
+grep -F 'PyPI RC wheel set did not become fully visible after 12 attempts' \
+  "${temporary_root}/pypi-eventual-timeout.stderr" >/dev/null
+unset -f validate_pypi_remote_state sleep wait_for_pypi_remote_state
+
 github_asset_fixture=${temporary_root}/github-asset-fixture
 mkdir -p "${github_asset_fixture}/assets"
 assets=${github_asset_fixture}/assets
 stage_receipt=${github_asset_fixture}/ait-release.endpoint-publication.json
-: >"${assets}/ait-native_1.0.0~rc.2_amd64.deb"
+: >"${assets}/ait-native_1.0.0~rc.3_amd64.deb"
 : >"${assets}/plain.zip"
 : >"${stage_receipt}"
 github_asset_map=${github_asset_fixture}/asset-map
 github_release_asset_map "${github_asset_map}"
 test "$(wc -l <"${github_asset_map}" | tr -d '[:space:]')" = 3
-grep -F $'ait-native_1.0.0.rc.2_amd64.deb\t'"${assets}/ait-native_1.0.0~rc.2_amd64.deb" \
+grep -F $'ait-native_1.0.0.rc.3_amd64.deb\t'"${assets}/ait-native_1.0.0~rc.3_amd64.deb" \
   "${github_asset_map}" >/dev/null
 test "$(github_release_local_path \
-  "${github_asset_map}" 'ait-native_1.0.0.rc.2_amd64.deb')" = \
-  "${assets}/ait-native_1.0.0~rc.2_amd64.deb"
+  "${github_asset_map}" 'ait-native_1.0.0.rc.3_amd64.deb')" = \
+  "${assets}/ait-native_1.0.0~rc.3_amd64.deb"
 test "$(github_release_asset_name 'plain~name.zip')" = 'plain~name.zip'
-: >"${assets}/ait-native_1.0.0.rc.2_amd64.deb"
+: >"${assets}/ait-native_1.0.0.rc.3_amd64.deb"
 expect_failure github-asset-name-collision \
   github_release_asset_map "${github_asset_fixture}/colliding-map"
 
@@ -191,11 +293,11 @@ printf '%s\n' \
   'set -euo pipefail' \
   'if [[ $1 == dist-tag && $2 == ls ]]; then' \
   '  case "$3" in' \
-  '    matching) printf '\''latest: 1.0.0-rc.2\nrc: 1.0.0-rc.2\n'\''' \
+  '    matching) printf '\''latest: 1.0.0-rc.3\nrc: 1.0.0-rc.3\n'\''' \
   '      ;;' \
-  '    stable) printf '\''latest: 0.9.0\nrc: 1.0.0-rc.2\n'\''' \
+  '    stable) printf '\''latest: 0.9.0\nrc: 1.0.0-rc.3\n'\''' \
   '      ;;' \
-  '    no-latest) printf '\''rc: 1.0.0-rc.2\n'\''' \
+  '    no-latest) printf '\''rc: 1.0.0-rc.3\n'\''' \
   '      ;;' \
   '    *) exit 64 ;;' \
   '  esac' \
@@ -215,43 +317,43 @@ npmrc=${temporary_root}/npm-tag-test.npmrc
 export AIT_NPM_TAG_TEST_LOG=${npm_tag_log}
 PATH="${npm_tag_mock}:${PATH}" \
   remove_matching_npm_prerelease_latest_tag \
-  "${npmrc}" matching 1.0.0-rc.2 rc
+  "${npmrc}" matching 1.0.0-rc.3 rc
 PATH="${npm_tag_mock}:${PATH}" \
   remove_matching_npm_prerelease_latest_tag \
-  "${npmrc}" stable 1.0.0-rc.2 rc
+  "${npmrc}" stable 1.0.0-rc.3 rc
 PATH="${npm_tag_mock}:${PATH}" \
   remove_matching_npm_prerelease_latest_tag \
-  "${npmrc}" no-latest 1.0.0-rc.2 rc
+  "${npmrc}" no-latest 1.0.0-rc.3 rc
 PATH="${npm_tag_mock}:${PATH}" \
   remove_matching_npm_prerelease_latest_tag \
   "${npmrc}" matching 1.0.0 latest
 PATH="${npm_tag_mock}:${PATH}" \
   remove_matching_npm_prerelease_latest_tag \
-  "${npmrc}" matching 1.0.0-rc.2 latest
+  "${npmrc}" matching 1.0.0-rc.3 latest
 test "$(wc -l <"${npm_tag_log}" | tr -d '[:space:]')" = 1
 grep -Fx 'dist-tag rm matching latest --registry https://registry.npmjs.org' \
   "${npm_tag_log}" >/dev/null
 
-jq -n '{"dist-tags": {rc: "1.0.0-rc.2", latest: "0.9.0"}}' \
+jq -n '{"dist-tags": {rc: "1.0.0-rc.3", latest: "0.9.0"}}' \
   >"${temporary_root}/npm-tags-valid.json"
 validate_npm_dist_tags "${temporary_root}/npm-tags-valid.json" \
-  ait-native 1.0.0-rc.2 rc
-jq -n '{"dist-tags": {rc: "1.0.0-rc.2", latest: "1.0.0-rc.2"}}' \
+  ait-native 1.0.0-rc.3 rc
+jq -n '{"dist-tags": {rc: "1.0.0-rc.3", latest: "1.0.0-rc.3"}}' \
   >"${temporary_root}/npm-tags-rc-latest.json"
 expect_failure npm-rc-remains-latest validate_npm_dist_tags \
-  "${temporary_root}/npm-tags-rc-latest.json" ait-native 1.0.0-rc.2 rc
-grep -F 'npm prerelease remains the default latest tag: ait-native@1.0.0-rc.2' \
+  "${temporary_root}/npm-tags-rc-latest.json" ait-native 1.0.0-rc.3 rc
+grep -F 'npm prerelease remains the default latest tag: ait-native@1.0.0-rc.3' \
   "${temporary_root}/npm-rc-remains-latest.stderr" >/dev/null
 jq -n '{"dist-tags": {rc: "1.0.0-rc.0", latest: "0.9.0"}}' \
   >"${temporary_root}/npm-tags-wrong-rc.json"
 expect_failure npm-rc-tag-drift validate_npm_dist_tags \
-  "${temporary_root}/npm-tags-wrong-rc.json" ait-native 1.0.0-rc.2 rc
-grep -F 'npm RC dist-tag readback failed: ait-native@1.0.0-rc.2' \
+  "${temporary_root}/npm-tags-wrong-rc.json" ait-native 1.0.0-rc.3 rc
+grep -F 'npm RC dist-tag readback failed: ait-native@1.0.0-rc.3' \
   "${temporary_root}/npm-rc-tag-drift.stderr" >/dev/null
 
 export github_repository=weita2026/ait-native
-export release_version=1.0.0-rc.2
-export source_commit=3dfd9dde5a9867cfe265352f48540fa8241f8e66
+export release_version=1.0.0-rc.3
+export source_commit=ba368cf4d0750035345f14a8a91c22fb9e450260
 test "$(npm_provenance_policy \
   future-package unused https://github.com/weita2026/ait-native)" = \
   '--provenance'
@@ -260,12 +362,13 @@ test "$(npm_provenance_policy \
   '--provenance'
 npm_recovery_rows=${temporary_root}/npm-provenance-recovery-rows
 printf '%s\t%s\n' \
-  ait-native-ait-darwin-arm64 868a6a51d1baf2063652a24f586f1c4c1cefaf544315108928602477534bfb07 \
-  ait-native-ait-darwin-x64 69eed59c88235cef81c35697fd01d89bd4dbe4a1af0fbf01a685b48cf6ca9751 \
-  ait-native-ait-linux-arm64 045b87d3eb9e134801d9f550757fdb6cda3c05bdbbdd93ba0017327fee5321a0 \
-  ait-native-ait-linux-x64 c6a1b2caebb2a8cd04edcc6f2743a162d73b0598f1e3d7fb64db3bdd05360945 \
-  ait-native-ait-win32-arm64 2b586f8b8e39a041793240486af16bbf751be1f1ddb5bf0e7695587f637c85f2 \
-  ait-native-ait-win32-x64 2016e93c9a87cb7a0519afc7d9ca826adcc481fa9c71b558410675f7e2b53dbe \
+  ait-native 8862dc3621320fda30e6923c85eee872751bfc92d95f319382b5b690540392f8 \
+  ait-native-ait-darwin-arm64 262b2860df61c64dd8c358d0e36c5ae136ae0f98ee1bbc04511ba0608313abd2 \
+  ait-native-ait-darwin-x64 42cb08e1651e8d96cd4dfc56cabf63ce0c50629b9c122ce065351cf67747e870 \
+  ait-native-ait-linux-arm64 e59c1d29819454d20943dad038e7e3273d114c29033ff22d2430ae427778b221 \
+  ait-native-ait-linux-x64 b594c192d921aa2e9c0fd6868d477b76fb431bac6ef0b89c8c0f011ac5cc1843 \
+  ait-native-ait-win32-arm64 510ad5a977948c9a71c5434f721370fd2265b7665d3198bac597e563d2d4a8be \
+  ait-native-ait-win32-x64 7e09475a008b9a36993c9efe89ee99fd493da0457d06ca349143449e95b3298b \
   >"${npm_recovery_rows}"
 while IFS=$'\t' read -r recovery_package recovery_sha256; do
   test "$(npm_provenance_policy \
@@ -277,12 +380,12 @@ expect_failure npm-provenance-wrong-digest npm_provenance_policy \
   0000000000000000000000000000000000000000000000000000000000000000 ''
 expect_failure npm-provenance-wrong-repository npm_provenance_policy \
   ait-native-ait-darwin-arm64 \
-  868a6a51d1baf2063652a24f586f1c4c1cefaf544315108928602477534bfb07 \
+  262b2860df61c64dd8c358d0e36c5ae136ae0f98ee1bbc04511ba0608313abd2 \
   https://github.com/example/other
 export source_commit=0000000000000000000000000000000000000000
 expect_failure npm-provenance-wrong-source npm_provenance_policy \
   ait-native-ait-darwin-arm64 \
-  868a6a51d1baf2063652a24f586f1c4c1cefaf544315108928602477534bfb07 ''
+  262b2860df61c64dd8c358d0e36c5ae136ae0f98ee1bbc04511ba0608313abd2 ''
 for failure in wrong-digest wrong-repository wrong-source; do
   grep -F 'npm package repository metadata does not admit provenance:' \
     "${temporary_root}/npm-provenance-${failure}.stderr" >/dev/null

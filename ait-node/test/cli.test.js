@@ -19,7 +19,7 @@ function run(args, cwd = ROOT) {
 test("npm ait command enters the embedded Rust CLI and preserves status", () => {
   const version = run(["--version"]);
   assert.equal(version.status, 0, version.stderr);
-  assert.equal(version.stdout, "ait 1.0.0-rc.3\n");
+  assert.equal(version.stdout, "ait 1.0.0-rc.4\n");
   assert.equal(version.stderr, "");
 
   const invalid = run(["definitely-not-an-ait-command"]);
@@ -45,7 +45,7 @@ test("repository language and build manifests do not change the command", async 
     await writeFile(path.join(repository, manifest), contents);
     const result = run(["--version"], repository);
     assert.equal(result.status, 0, `${name}: ${result.stderr}`);
-    assert.equal(result.stdout, "ait 1.0.0-rc.3\n");
+    assert.equal(result.stdout, "ait 1.0.0-rc.4\n");
   }
 });
 

@@ -13,6 +13,9 @@ fn run(mut argv: Vec<OsString>) -> Result<ExitCode, String> {
     if argv.is_empty() {
         argv.push(OsString::from("ait"));
     }
+    if argv.len() == 1 {
+        argv.push(OsString::from("--help"));
+    }
     #[cfg(feature = "perfetto-tracing")]
     let mut forwarded_current_source_cli = false;
     let command = loop {
