@@ -20,10 +20,22 @@ import { hostTarget, nativeBuild, TARGETS } from "../scripts/native-build.mjs";
 import { spawnNpmSync } from "../scripts/npm-command.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const PACKAGE_NAME = "ait-native";
+const PACKAGE_NAME = "@wa120/ait-native";
 const PACKAGE_VERSION = "1.0.0-rc.3";
 const PORTABLE_TARGET = "portable";
-const TARBALL_NAME = `${PACKAGE_NAME}-${PACKAGE_VERSION}.tgz`;
+const PACKAGE_REPOSITORY = Object.freeze({
+  type: "git",
+  url: "git+https://github.com/weita2026/ait-native.git",
+  directory: "ait-node",
+});
+
+function npmTarballName(packageName, version) {
+  const match = /^@([^/]+)\/([^/]+)$/.exec(packageName);
+  assert.notEqual(match, null, `invalid scoped npm package ${packageName}`);
+  return `${match[1]}-${match[2]}-${version}.tgz`;
+}
+
+const TARBALL_NAME = npmTarballName(PACKAGE_NAME, PACKAGE_VERSION);
 const TARBALL_PATH = path.join(ROOT, "dist", TARBALL_NAME);
 const ADDON_OUTPUT_ROOT = path.join(ROOT, "dist", "npm-addons");
 
@@ -80,7 +92,7 @@ async function readJson(filePath) {
 function targetArtifact(payload) {
   return path.join(
     ADDON_OUTPUT_ROOT,
-    `${payload.package}-${payload.version}.tgz`,
+    npmTarballName(payload.package, payload.version),
   );
 }
 
@@ -122,6 +134,7 @@ async function validateContract(target, version) {
   assert.equal(packageJson.name, PACKAGE_NAME);
   assert.equal(packageJson.version, version);
   assert.equal(packageJson.license, "Apache-2.0");
+  assert.deepEqual(packageJson.repository, PACKAGE_REPOSITORY);
   assert.deepEqual(packageJson.bin, { ait: "bin/ait.mjs" });
   assert.deepEqual(packageJson.exports, {
     ".": {

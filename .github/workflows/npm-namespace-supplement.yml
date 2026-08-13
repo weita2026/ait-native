@@ -1,0 +1,327 @@
+name: ait RC3 scoped npm namespace supplement
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_id:
+        description: Exact unchanged RC3 release-family identity
+        required: true
+        type: string
+      publish_scoped_rc3_name_supplement:
+        description: Publish only the seven new @wa120 npm identities
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  actions: read
+  attestations: write
+  contents: read
+  id-token: write
+
+concurrency:
+  group: ait-rc3-scoped-npm-namespace-supplement
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Rename npm envelopes without rebuilding RC3 native bytes
+    environment:
+      name: pypi
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    steps:
+      - name: Check out reviewed public main
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          path: control
+          persist-credentials: false
+
+      - name: Select the exact Node.js publishing toolchain
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '22.17.1'
+          registry-url: https://registry.npmjs.org
+
+      - name: Validate the name-only RC3 supplement request
+        shell: bash
+        env:
+          AIT_CONFIRM: ${{ inputs.publish_scoped_rc3_name_supplement }}
+          AIT_RELEASE_ID: ${{ inputs.release_id }}
+        run: |
+          set -euo pipefail
+          test "${GITHUB_REPOSITORY}" = 'weita2026/ait-native'
+          test "${GITHUB_REF}" = 'refs/heads/main'
+          test "${AIT_RELEASE_ID}" = 'REL-FAM-600EFDC327FE7860'
+          test "${AIT_CONFIRM}" = 'true'
+          test "$(git -C control rev-parse HEAD)" = "${GITHUB_SHA}"
+          test -z "$(git -C control status --porcelain --untracked-files=all)"
+          test "$(node --version)" = 'v22.17.1'
+          test "$(npm --version)" = '10.9.2'
+
+          config=control/release/npm-namespace-supplement.rc3.json
+          jq -e '
+            .contract == "ait.release.npm-namespace-supplement/v1" and
+            .release.id == "REL-FAM-600EFDC327FE7860" and
+            .release.version == "1.0.0-rc.3" and
+            .release.tag == "v1.0.0-rc.3" and
+            .release.tag_object == "810265c705ffececba3d74924f60ed2d0453ef7d" and
+            .release.source_commit == "ba368cf4d0750035345f14a8a91c22fb9e450260" and
+            .release.github_release_id == 369674917 and
+            .release.source_dossier_run_id == 31664713921 and
+            .release.source_dossier_artifact_id == 9167933771 and
+            .release.source_dossier_artifact_digest == "sha256:08afc391688c902f3c2259392286b51612e6b6eb0aa51c388e8e513329705823" and
+            .release.protected_authorization_run_id == 31666479359 and
+            .release.protected_authorization_artifact_id == 9168120753 and
+            .release.protected_authorization_artifact_digest == "sha256:54079d53bc3e115f314d99591228cc80dbab4c56c5ae361530f9c490c0764be9" and
+            .release.protected_authorization_evidence_sha256 == "cc18cf39db59147d5ee94359f0c00813be6841bf317686451eafd1152f870b32" and
+            .release.failed_endpoint_run_id == 31668411148 and
+            .release.failed_endpoint_workflow_commit == "30672445b7321226f81db280f3e2531ad6fc2a5d" and
+            .node_source.snapshot == "SNP-22993C1FEF52" and
+            .node_source.binding_snapshot == "SNP-158C9C5BB3D7" and
+            .publisher == {
+              repository: "weita2026/ait-native",
+              workflow: "npm-namespace-supplement.yml",
+              environment: "pypi",
+              npm_username: "wa120",
+              credential_secret: "AIT_NPM_TOKEN"
+            } and
+            .build_toolchain == {node: "22.17.1", npm: "10.9.2"} and
+            .registry.packages == [
+              "@wa120/ait-native",
+              "@wa120/ait-native-darwin-arm64",
+              "@wa120/ait-native-darwin-x64",
+              "@wa120/ait-native-linux-arm64",
+              "@wa120/ait-native-linux-x64",
+              "@wa120/ait-native-win32-arm64",
+              "@wa120/ait-native-win32-x64"
+            ] and
+            .mutation == {
+              npm_tarball_rebuild: true,
+              javascript_envelope_rebuild: true,
+              package_metadata_rebuild: true,
+              native_addon_rebuild: false,
+              release_family_rebuild: false,
+              tag_write: false,
+              github_release_write: false,
+              existing_unscoped_package_write: false
+            }
+          ' "${config}" >/dev/null
+
+      - name: Verify the immutable RC3 GitHub evidence and source assets
+        shell: bash
+        env:
+          AIT_GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          config=control/release/npm-namespace-supplement.rc3.json
+          api=https://api.github.com/repos/weita2026/ait-native
+          request() {
+            curl --fail --silent --show-error --location \
+              --header "Authorization: Bearer ${AIT_GITHUB_TOKEN}" \
+              --header 'Accept: application/vnd.github+json' \
+              --header 'X-GitHub-Api-Version: 2022-11-28' \
+              "${api}/$1" --output "$2"
+          }
+          request git/ref/tags/v1.0.0-rc.3 "${RUNNER_TEMP}/tag-ref.json"
+          request git/tags/810265c705ffececba3d74924f60ed2d0453ef7d \
+            "${RUNNER_TEMP}/tag-object.json"
+          request releases/tags/v1.0.0-rc.3 "${RUNNER_TEMP}/release.json"
+          request actions/runs/31664713921 "${RUNNER_TEMP}/dossier-run.json"
+          request actions/artifacts/9167933771 "${RUNNER_TEMP}/dossier-artifact.json"
+          request actions/runs/31666479359 "${RUNNER_TEMP}/protected-run.json"
+          request actions/artifacts/9168120753 "${RUNNER_TEMP}/protected-artifact.json"
+          request actions/runs/31668411148 "${RUNNER_TEMP}/failed-endpoint-run.json"
+
+          jq -e '
+            .ref == "refs/tags/v1.0.0-rc.3" and
+            .object.type == "tag" and
+            .object.sha == "810265c705ffececba3d74924f60ed2d0453ef7d"
+          ' "${RUNNER_TEMP}/tag-ref.json" >/dev/null
+          jq -e '
+            .sha == "810265c705ffececba3d74924f60ed2d0453ef7d" and
+            .tag == "v1.0.0-rc.3" and
+            .object.type == "commit" and
+            .object.sha == "ba368cf4d0750035345f14a8a91c22fb9e450260"
+          ' "${RUNNER_TEMP}/tag-object.json" >/dev/null
+          jq -e --slurpfile config "${config}" '
+            .id == $config[0].release.github_release_id and
+            .tag_name == $config[0].release.tag and
+            .draft == false and .prerelease == true and
+            all($config[0].addons[] as $addon;
+              any(.assets[];
+                .id == $addon.source_github_release_asset_id and
+                .name == $addon.source_filename and
+                .size == $addon.source_size_bytes and
+                .digest == ("sha256:" + $addon.source_sha256)))
+          ' "${RUNNER_TEMP}/release.json" >/dev/null
+          jq -e '
+            .id == 31664713921 and .run_attempt == 1 and
+            .name == "ait release component receipts" and
+            .path == ".github/workflows/ait-release-component-receipts.yml" and
+            .event == "workflow_dispatch" and .status == "completed" and
+            .conclusion == "success" and
+            .head_sha == "93f2589d8eb7404400617169598427aaef3ff8af"
+          ' "${RUNNER_TEMP}/dossier-run.json" >/dev/null
+          jq -e '
+            .id == 9167933771 and
+            .name == "ait-family-dossier-REL-FAM-600EFDC327FE7860" and
+            .digest == "sha256:08afc391688c902f3c2259392286b51612e6b6eb0aa51c388e8e513329705823" and
+            .expired == false and .workflow_run.id == 31664713921
+          ' "${RUNNER_TEMP}/dossier-artifact.json" >/dev/null
+          jq -e '
+            .id == 31666479359 and .run_attempt == 1 and
+            .name == "ait release protected promotion" and
+            .path == ".github/workflows/ait-release-protected-promotion.yml" and
+            .event == "workflow_dispatch" and .status == "completed" and
+            .conclusion == "success" and
+            .head_sha == "93f2589d8eb7404400617169598427aaef3ff8af"
+          ' "${RUNNER_TEMP}/protected-run.json" >/dev/null
+          jq -e '
+            .id == 9168120753 and
+            .name == "ait-protected-promotion-REL-FAM-600EFDC327FE7860" and
+            .digest == "sha256:54079d53bc3e115f314d99591228cc80dbab4c56c5ae361530f9c490c0764be9" and
+            .expired == false and .workflow_run.id == 31666479359
+          ' "${RUNNER_TEMP}/protected-artifact.json" >/dev/null
+          jq -e '
+            .id == 31668411148 and .run_attempt == 1 and
+            .name == "ait release endpoint publication" and
+            .path == ".github/workflows/pypi-publish.yml" and
+            .event == "workflow_dispatch" and .status == "completed" and
+            .conclusion == "failure" and
+            .head_sha == "30672445b7321226f81db280f3e2531ad6fc2a5d"
+          ' "${RUNNER_TEMP}/failed-endpoint-run.json" >/dev/null
+
+          mkdir original-assets
+          while IFS=$'\t' read -r asset_id filename size digest; do
+            curl --fail --silent --show-error --location \
+              --header "Authorization: Bearer ${AIT_GITHUB_TOKEN}" \
+              --header 'Accept: application/octet-stream' \
+              --header 'X-GitHub-Api-Version: 2022-11-28' \
+              "${api}/releases/assets/${asset_id}" \
+              --output "original-assets/${filename}"
+            test "$(wc -c <"original-assets/${filename}" | tr -d '[:space:]')" = "${size}"
+            test "$(sha256sum "original-assets/${filename}" | awk '{print $1}')" = "${digest}"
+          done < <(jq -r '.addons[] | [(.source_github_release_asset_id | tostring), .source_filename, (.source_size_bytes | tostring), .source_sha256] | @tsv' "${config}")
+          test "$(find original-assets -mindepth 1 -maxdepth 1 -type f | wc -l | tr -d '[:space:]')" = 6
+
+      - name: Download the exact prior protected authorization
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          artifact-ids: '9168120753'
+          merge-multiple: true
+          github-token: ${{ github.token }}
+          path: protected
+          repository: weita2026/ait-native
+          run-id: '31666479359'
+
+      - name: Bind the prior protected authorization attestation
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          evidence=protected/ait-release.protected-promotion.json
+          test "$(sha256sum "${evidence}" | awk '{print $1}')" = \
+            'cc18cf39db59147d5ee94359f0c00813be6841bf317686451eafd1152f870b32'
+          gh attestation verify "${evidence}" \
+            --repo weita2026/ait-native \
+            --signer-workflow weita2026/ait-native/.github/workflows/ait-release-protected-promotion.yml \
+            --source-ref refs/heads/main \
+            --source-digest 93f2589d8eb7404400617169598427aaef3ff8af \
+            --deny-self-hosted-runners \
+            --format json > protected-attestation.json
+          jq -e '
+            length >= 1 and
+            any(.[].verificationResult.statement.subject[];
+              .name == "ait-release.protected-promotion.json" and
+              .digest.sha256 == "cc18cf39db59147d5ee94359f0c00813be6841bf317686451eafd1152f870b32")
+          ' protected-attestation.json >/dev/null
+
+      - name: Repack only npm names and metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          node control/ci/release_npm_namespace_supplement.mjs prepare \
+            control/release/npm-namespace-supplement.rc3.json \
+            "${GITHUB_WORKSPACE}/control/ait-node" \
+            "${GITHUB_WORKSPACE}/original-assets" \
+            "${GITHUB_WORKSPACE}/npm-supplement-stage"
+
+      - name: Prove the Linux x64 package uses direct in-process Node-API
+        shell: bash
+        run: |
+          set -euo pipefail
+          install_root="${RUNNER_TEMP}/scoped-install"
+          mkdir "${install_root}"
+          npm install \
+            --ignore-scripts \
+            --offline \
+            --no-audit \
+            --no-fund \
+            --no-save \
+            --prefix "${install_root}" \
+            npm-supplement-stage/packages/wa120-ait-native-1.0.0-rc.3.tgz \
+            npm-supplement-stage/packages/wa120-ait-native-linux-x64-1.0.0-rc.3.tgz
+          node control/ait-node/scripts/installed-smoke.mjs "${install_root}"
+          test "$(node "${install_root}/node_modules/@wa120/ait-native/bin/ait.mjs" --version)" = \
+            'ait 1.0.0-rc.3'
+
+      - name: Prove authenticated all-or-exact npm restart state
+        shell: bash
+        env:
+          AIT_NPM_TOKEN: ${{ secrets.AIT_NPM_TOKEN }}
+        run: |
+          set -euo pipefail
+          bash control/ci/release_npm_namespace_remote.sh preflight \
+            control/release/npm-namespace-supplement.rc3.json \
+            "${GITHUB_WORKSPACE}/npm-supplement-stage"
+
+      - name: Attest every renamed npm archive before publication
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
+        with:
+          subject-path: |
+            npm-supplement-stage/packages/*
+            npm-supplement-stage/SHA256SUMS
+            npm-supplement-stage/ait-release.npm-namespace-supplement.json
+
+      - name: Admit the attested name-only stage
+        shell: bash
+        run: echo 'AIT_STAGE_ATTESTATION_VERIFIED=true' >> "${GITHUB_ENV}"
+
+      - name: Publish six implementations before the scoped envelope
+        shell: bash
+        env:
+          AIT_NPM_TOKEN: ${{ secrets.AIT_NPM_TOKEN }}
+        run: |
+          set -euo pipefail
+          bash control/ci/release_npm_namespace_remote.sh publish \
+            control/release/npm-namespace-supplement.rc3.json \
+            "${GITHUB_WORKSPACE}/npm-supplement-stage"
+
+      - name: Read back all seven packages anonymously
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash control/ci/release_npm_namespace_remote.sh readback \
+            control/release/npm-namespace-supplement.rc3.json \
+            "${GITHUB_WORKSPACE}/npm-supplement-stage"
+
+      - name: Attest the scoped publication evidence
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
+        with:
+          subject-path: npm-supplement-stage/evidence/*
+
+      - name: Upload the immutable supplement evidence bundle
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ait-npm-namespace-supplement-REL-FAM-600EFDC327FE7860
+          path: |
+            npm-supplement-stage/packages/*
+            npm-supplement-stage/SHA256SUMS
+            npm-supplement-stage/ait-release.npm-namespace-supplement.json
+            npm-supplement-stage/evidence/*
+          if-no-files-found: error
+          retention-days: 90

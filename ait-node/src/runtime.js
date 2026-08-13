@@ -49,6 +49,14 @@ const ADDON_METADATA_KEYS = Object.freeze([
   "schema",
   "target",
 ]);
+const TARGETS = new Map([
+  ["aarch64-apple-darwin", ["darwin", "arm64"]],
+  ["x86_64-apple-darwin", ["darwin", "x64"]],
+  ["aarch64-unknown-linux-gnu", ["linux", "arm64"]],
+  ["x86_64-unknown-linux-gnu", ["linux", "x64"]],
+  ["aarch64-pc-windows-msvc", ["win32", "arm64"]],
+  ["x86_64-pc-windows-msvc", ["win32", "x64"]],
+]);
 
 let validatedContract = null;
 
@@ -254,16 +262,27 @@ function loadContract() {
   assertExactKeys(contract, CONTRACT_KEYS, "npm addon contract");
   if (
     contract.schema !== "ait.node.napi-platform-packages/v1" ||
-    contract.top_level_package !== "ait-native" ||
+    contract.top_level_package !== "@wa120/ait-native" ||
     contract.family_version !== "1.0.0-rc.3" ||
     !Array.isArray(contract.payloads) ||
     contract.payloads.length !== 6
   ) {
     throw new NativeResolutionError("npm addon contract identity is invalid");
   }
+  const packages = new Set();
+  const targets = new Set();
   for (const [index, payload] of contract.payloads.entries()) {
     assertExactKeys(payload, PAYLOAD_KEYS, `npm addon contract row ${index}`);
+    const platform = TARGETS.get(payload.target);
+    const expectedPackage =
+      platform === undefined
+        ? null
+        : `@wa120/ait-native-${platform[0]}-${platform[1]}`;
     if (
+      platform === undefined ||
+      payload.os !== platform[0] ||
+      payload.cpu !== platform[1] ||
+      payload.package !== expectedPackage ||
       payload.component !== "ait-node" ||
       payload.binding_repository !== "ait-core" ||
       payload.binding_snapshot !== "SNP-158C9C5BB3D7" ||
@@ -275,6 +294,13 @@ function loadContract() {
         `npm addon contract row ${index} has invalid authority`,
       );
     }
+    if (packages.has(payload.package) || targets.has(payload.target)) {
+      throw new NativeResolutionError(
+        `npm addon contract row ${index} duplicates a package or target`,
+      );
+    }
+    packages.add(payload.package);
+    targets.add(payload.target);
   }
   validatedContract = contract;
   return contract;
