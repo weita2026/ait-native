@@ -34,18 +34,20 @@ The exact current endpoint state is:
 | GHCR | `ait-server:1.0.0-rc.3` and `ait-runner:1.0.0-rc.3` are public OCI indexes for Linux `amd64` and `arm64`; immutable index digests are `sha256:1494fb3ff9ea05e876d5894e70b599f0718d85e8e1bddf369eab7f89caaed0b4` and `sha256:a2b759b02240acb14440df99ea71012cf2f39c21d368f6da1381abbf235e9957`. |
 | Homebrew | `weita2026/homebrew-ait-native` contains `Formula/ait-native-rc.rb` for RC.3 with the four exact GitHub asset URLs and checksums. |
 | apt | The signed `testing` repository retains RC.2 and publishes RC.3 for both `ait-native` and `ait-runner` on `amd64` and `arm64`. A new Debian client finds both exact names with `apt-cache search --names-only`; RC.3 is the candidate version. |
-| npm | Five RC.3 implementation-only Node-API addon packages are public with exact frozen shasums and `rc` tags. npm still rejects the new `ait-native-ait-win32-x64` identity with `E403 Package name triggered spam detection`. The top-level `ait-native` envelope is deliberately withheld until all six exact addon identities exist, so the RC.3 Node.js product is not yet installable. |
+| npm | Five original unscoped RC.3 implementation packages remain public as historical endpoint state. npm rejected the sixth unscoped identity with `E403 Package name triggered spam detection`, so the unscoped top-level envelope was never published. The owner-approved scoped mapping uses `@wa120/ait-native` plus six `@wa120/ait-native-<os>-<cpu>` implementation packages; its protected publication and public readback are pending. |
 | WinGet | The frozen validation manifests are attached to the GitHub prerelease. No community repository submission has been made, by the declared RC route. |
 
 The endpoint attempt completed GitHub, PyPI, GHCR, Homebrew, signed apt, and
 WinGet-validation publication before failing visibly at the npm name-policy
-boundary. Final aggregate endpoint evidence was therefore not emitted. RC.3 is
-not an all-endpoint release until npm support admits the exact Windows x64
-identity, the unchanged workflow publishes that addon and the top-level
-envelope, and final public readback succeeds. This external npm block does not
-authorize a package rename, artifact rebuild, moved tag, hidden failure, or
-partial top-level package. RC.1 and RC.2 bytes also remain immutable and are
-never relabelled as RC.3.
+boundary. Final aggregate endpoint evidence was therefore not emitted. The
+repository owner subsequently approved the exact `@wa120` namespace mapping.
+That supplement rebuilds only the npm JavaScript/package envelopes required by
+the new registry identities and copies each previously admitted RC.3 native
+Node-API addon byte for byte. It does not rebuild the native addon, release
+family, source tag, or GitHub Release, and it does not write the rejected
+unscoped identities. RC.3 is not an all-endpoint release until all seven scoped
+packages and their `rc` tags pass public readback. RC.1 and RC.2 bytes also
+remain immutable and are never relabelled as RC.3.
 
 ## Release Family
 
@@ -296,19 +298,20 @@ Channel metadata must preserve the aggregate boundary:
 | apt | The signed `ait-native` package installs `ait` and `ait-server` together on Debian/Ubuntu for `amd64` and `arm64`; `ait-runner` retains a separate package identity |
 | WinGet | The `ait-native` product package installs `ait` and `ait-server` together on Windows `x64` and `arm64` |
 | PyPI/pip | The sole `ait-native` project publishes platform wheels containing `ait`, `ait-server`, and the direct Python binding; no separate `ait-python` project is published |
-| npm | The sole supported top-level `ait-native` package exposes the JS/TS API and an in-process `ait` command, selecting one exact-version implementation-only Node-API addon package; it does not install `ait-server` |
+| npm | The sole supported top-level `@wa120/ait-native` package exposes the JS/TS API and an in-process `ait` command, selecting one exact-version implementation-only Node-API addon package; it does not install `ait-server` |
 | OCI | Immutable `ait-server` and `ait-runner` images |
 
 The shared product-facing identity for all five acquisition channels is
-`ait-native`. The Homebrew formula, apt package, PyPI project, and supported
-top-level npm package use that exact identity; WinGet uses the required
-registry-qualified identifier while presenting the same product identity.
+`ait-native`. The Homebrew formula, apt package, and PyPI project use that
+exact registry identity. npm uses the owner namespace in
+`@wa120/ait-native`, and WinGet uses its required registry-qualified
+identifier; both still present the same `ait-native` product identity.
 PyPI must not publish a separate `ait-python` project, and npm must not publish
 or document `ait-node` as a separate installable product. Every exact registry
 package, implementation scope, formula, apt, and WinGet identifier must be
-reserved, recorded in the family manifest, and smoke-tested before GA. A name
-that cannot be secured requires an explicit owner-approved mapping rather than
-an ad hoc per-channel alias.
+reserved, recorded in the frozen family or an owner-approved immutable
+supplement, and smoke-tested before GA. A name that cannot be secured requires
+an explicit owner-approved mapping rather than an ad hoc per-channel alias.
 
 ## Bundled Server Contract
 
@@ -445,7 +448,7 @@ The post-publication package names and commands are:
 | apt | after adding the signed AIT repository, `sudo apt install ait-native` |
 | WinGet | RC validation uses `winget install --manifest <generated-manifest-directory>`; stable uses `winget install --id Weita.AitNative --exact` |
 | PyPI | `python -m pip install ait-native==1.0.0rc3`; stable uses `ait-native==1.0.0` |
-| npm | `npm install --global ait-native@1.0.0-rc.3`; stable uses `ait-native@1.0.0` |
+| npm | `npm install --global @wa120/ait-native@1.0.0-rc.3`; stable uses `@wa120/ait-native@1.0.0` |
 
 The signed APT route must be added and searched before installation:
 
@@ -501,15 +504,17 @@ particular, the Windows release smoke loads the installed addon in a bounded
 Node process that exits before its temporary npm tree is removed; that process
 is validation isolation for DLL cleanup, not a runtime transport.
 
-The RC npm implementation identities are exactly
-`ait-native-ait-{darwin,linux,win32}-{arm64,x64}`. The top-level `ait-native`
-package declares all six as exact-family-version optional dependencies and
-selects the one matching package by OS and architecture. Each addon package is
-Apache-2.0, has no npm `bin`, scripts, dependencies, independent version line,
-or supported direct-install surface, and contains only the addon, package
-metadata, provenance, `LICENSE`, and `NOTICE`. All seven npm identities must be
-reserved before publication; a registry availability check is not a
-reservation.
+The supported npm implementation identities are exactly
+`@wa120/ait-native-{darwin,linux,win32}-{arm64,x64}`. The top-level
+`@wa120/ait-native` package declares all six as exact-family-version optional
+dependencies and selects the one matching package by OS and architecture.
+Each addon package is Apache-2.0, has no npm `bin`, scripts, dependencies,
+independent version line, or supported direct-install surface, and contains
+only the addon, package metadata, provenance, `LICENSE`, and `NOTICE`. All
+seven scoped npm identities must be controlled by the owner before
+publication; a registry availability check is not a reservation. The five
+previously published unscoped implementation identities are historical RC.3
+endpoint artifacts, not supported install identities.
 
 The PyPI `ait-native` wheels must pair `ait` and `ait-server` on all six
 targets. Homebrew must pair them on the four admitted macOS/Linux targets, apt
@@ -538,8 +543,10 @@ governed solely by [the centralized requirements above](#repository-language-neu
 - The npm facade selects only the adjacent package-owned `.node` addon by
   declared OS/architecture, exposes the typed import API, and sends `ait` argv
   to `runCli` in-process without `child_process`.
-- PyPI and npm use only their sole supported `ait-native` registry identity;
-  component repository names are not alternate install names.
+- PyPI uses `ait-native` and npm uses `@wa120/ait-native` as their sole
+  supported registry install identities; the npm scope is a registry namespace,
+  not a second product, and component repository names are not alternate
+  install names.
 - The `ait` entry in the npm and PyPI distributions exposes the same native
   command semantics as the operating-system packages; a binding may locate
   adjacent package bytes but must not become a workflow-policy implementation.
@@ -616,7 +623,7 @@ Each command writes below
 | apt | two `ait-native` and two standalone `ait-runner` Debian packages for `arm64`/`amd64` |
 | WinGet | two Windows portable ZIPs and the three-file WinGet 1.12 manifest set |
 | PyPI | six platform-specific `ait_native` `cp311-abi3` wheels |
-| npm | the byte-identical portable `ait-native` JS/TS envelope plus six exact-version, OS/CPU-restricted Node-API addon packages |
+| npm | the portable `@wa120/ait-native` JS/TS envelope plus six exact-version, OS/CPU-restricted scoped Node-API addon packages |
 
 Every channel directory also contains `ait-release.package.json` and
 `SHA256SUMS`. Their evidence maps every installed command or binding back to
@@ -640,14 +647,22 @@ all three repositories' legal material, and regenerates an exact final
 `RECORD`. The filename, `WHEEL` tag, family target, and `cp311-abi3` contract
 must agree.
 
-The npm assembler preserves all seven frozen tarballs byte for byte: one
-portable envelope and six target addons. It validates the envelope's JS/TS
-exports, sole in-process `ait` bin, exact optional-dependency map, and absence
-of lifecycle hooks, downloads, subprocess transport, and project detection.
-Each addon package must contain exactly `native/ait_napi.node`, package
-metadata, provenance, `LICENSE`, and `NOTICE`; its binding Snapshot must match
-the family `ait-core` authority. No addon has a `bin`, scripts, dependencies,
-independent version, runtime download, or supported direct-install surface.
+The original RC.3 npm assembler preserves its seven frozen unscoped tarballs
+byte for byte. The owner-approved namespace supplement does not alter those
+tarballs or the GitHub Release. It validates each original target archive and
+native digest, copies `native/ait_napi.node` byte for byte, and deterministically
+rebuilds only the scoped npm package envelopes and metadata. The portable
+`@wa120/ait-native` envelope is generated from admitted `ait-node` Snapshot
+`SNP-22993C1FEF52`; its native binding remains the frozen RC.3 `ait-core`
+Snapshot `SNP-158C9C5BB3D7`.
+
+Both paths validate the envelope's JS/TS exports, sole in-process `ait` bin,
+exact optional-dependency map, and absence of lifecycle hooks, downloads,
+subprocess transport, and project detection. Each addon package must contain
+exactly `native/ait_napi.node`, package metadata, provenance, `LICENSE`, and
+`NOTICE`; its binding Snapshot must match the family `ait-core` authority. No
+addon has a `bin`, scripts, dependencies, independent version, runtime
+download, or supported direct-install surface.
 
 The original assembler implementation was locally landed at
 `SNP-316B01F59913` for Homebrew/apt/WinGet and `SNP-6EC8DB2D50A6` for
@@ -789,9 +804,11 @@ future identities from being treated as publication evidence.
 RC.3 retains the direct Node-API architecture. Its public Git commit and tag,
 successful protected 31-receipt/37-artifact matrix, frozen
 `REL-FAM-600EFDC327FE7860` dossier, and protected authorization now exist.
-Endpoint publication is complete except for the npm Windows x64 addon,
-dependent top-level envelope, and final all-endpoint evidence. Nothing from
-RC.1 or RC.2 can be promoted or relabelled into RC.3.
+Endpoint publication is complete except for the owner-approved scoped npm
+supplement and final all-endpoint evidence. That supplement changes npm
+registry names and package envelopes only; it does not change RC.3 native
+bytes, the release family, the annotated tag, or GitHub Release assets. Nothing
+from RC.1 or RC.2 can be promoted or relabelled into RC.3.
 
 The immutable RC.3 source tag object is
 `810265c705ffececba3d74924f60ed2d0453ef7d`; it peels to commit

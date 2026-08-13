@@ -17,6 +17,7 @@ import { spawnNpmSync } from "../scripts/npm-command.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const CONTRACT_PATH = path.join(ROOT, "lib", "npm-payload-contract.json");
+const PACKAGE_PATH = path.join(ROOT, "package.json");
 const LICENSE_PATH = path.join(ROOT, "LICENSE");
 const NOTICE_PATH = path.join(ROOT, "NOTICE");
 const require = createRequire(import.meta.url);
@@ -94,7 +95,7 @@ export function validateContract(contract) {
   assertExactKeys(contract, CONTRACT_KEYS, "npm addon contract");
   if (
     contract.schema !== "ait.node.napi-platform-packages/v1" ||
-    contract.top_level_package !== "ait-native" ||
+    contract.top_level_package !== "@wa120/ait-native" ||
     contract.family_version !== "1.0.0-rc.3" ||
     !Array.isArray(contract.payloads) ||
     contract.payloads.length !== 6
@@ -111,7 +112,7 @@ export function validateContract(contract) {
       fail(`${label} has an unsupported target`);
     }
     const [expectedOs, expectedCpu] = platform;
-    const expectedPackage = `ait-native-ait-${expectedOs}-${expectedCpu}`;
+    const expectedPackage = `@wa120/ait-native-${expectedOs}-${expectedCpu}`;
     if (
       payload.os !== expectedOs ||
       payload.cpu !== expectedCpu ||
@@ -131,6 +132,32 @@ export function validateContract(contract) {
     packages.add(payload.package);
     targets.add(payload.target);
   }
+}
+
+function validateSourcePackage(packageJson, contract) {
+  assertExactKeys(
+    packageJson.repository,
+    ["directory", "type", "url"],
+    "npm source repository",
+  );
+  if (
+    packageJson.name !== contract.top_level_package ||
+    packageJson.version !== contract.family_version ||
+    packageJson.repository.type !== "git" ||
+    packageJson.repository.url !==
+      "git+https://github.com/weita2026/ait-native.git" ||
+    packageJson.repository.directory !== "ait-node"
+  ) {
+    fail("npm source package identity is invalid");
+  }
+}
+
+function npmTarballName(packageName, version) {
+  const match = /^@([^/]+)\/([^/]+)$/.exec(packageName);
+  if (match === null) {
+    fail(`npm package name must be an exact scoped identity: ${packageName}`);
+  }
+  return `${match[1]}-${match[2]}-${version}.tgz`;
 }
 
 function parseOptions(argv) {
@@ -220,7 +247,7 @@ function validateLoadedAddon(addonPath, payload) {
   return info;
 }
 
-async function validateInputs(contract, options) {
+async function validateInputs(contract, packageJson, options) {
   const payload = selectedPayload(
     contract,
     options["--target"],
@@ -252,6 +279,7 @@ async function validateInputs(contract, options) {
     licenseBytes,
     noticeBytes,
     payload,
+    repository: packageJson.repository,
   };
 }
 
@@ -279,10 +307,17 @@ function runNpm(args) {
 }
 
 async function buildPackage(inputs, outDir) {
-  const { addonBytes, addonPath, licenseBytes, noticeBytes, payload } = inputs;
+  const {
+    addonBytes,
+    addonPath,
+    licenseBytes,
+    noticeBytes,
+    payload,
+    repository,
+  } = inputs;
   const outputRoot = path.resolve(outDir);
   await mkdir(outputRoot, { recursive: true });
-  const tarballName = `${payload.package}-${payload.version}.tgz`;
+  const tarballName = npmTarballName(payload.package, payload.version);
   const tarballPath = path.join(outputRoot, tarballName);
   try {
     await lstat(tarballPath);
@@ -311,6 +346,7 @@ async function buildPackage(inputs, outDir) {
       version: payload.version,
       description: `Implementation-only AIT Node-API addon for ${payload.target}`,
       license: payload.license,
+      repository,
       os: [payload.os],
       cpu: [payload.cpu],
       main: payload.addon,
@@ -423,7 +459,9 @@ async function main() {
   const { action, options } = parseOptions(process.argv.slice(2));
   const contract = await readJson(CONTRACT_PATH, "npm addon contract");
   validateContract(contract);
-  const inputs = await validateInputs(contract, options);
+  const packageJson = await readJson(PACKAGE_PATH, "npm source package");
+  validateSourcePackage(packageJson, contract);
+  const inputs = await validateInputs(contract, packageJson, options);
   if (action === "check") {
     process.stdout.write(
       `${JSON.stringify({

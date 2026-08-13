@@ -12,7 +12,7 @@ test("release adapter declares the portable envelope and six native addons", asy
   );
   assert.equal(manifest.schema, "ait.release.adapter/v1");
   assert.deepEqual(manifest.package, {
-    name: "ait-native",
+    name: "@wa120/ait-native",
     version: "1.0.0-rc.3",
     description: "Direct Node-API envelope and native addon packages for the Rust-owned AIT runtime",
     license_files: [
@@ -26,13 +26,25 @@ test("release adapter declares the portable envelope and six native addons", asy
   assert.equal(component.ecosystem, "node");
   assert.equal(component.artifacts.length, 7);
   assert.deepEqual(component.artifacts[0], {
-    path: "dist/ait-native-1.0.0-rc.3.tgz",
+    path: "dist/wa120-ait-native-1.0.0-rc.3.tgz",
     kind: "npm-napi-envelope",
   });
   assert.equal(component.artifacts[0].target, undefined);
   assert.deepEqual(
     component.artifacts.slice(1).map((artifact) => artifact.kind),
     Array(6).fill("npm-napi-addon"),
+  );
+  assert.deepEqual(
+    component.artifacts.map((artifact) => artifact.path),
+    [
+      "dist/wa120-ait-native-1.0.0-rc.3.tgz",
+      "dist/npm-addons/wa120-ait-native-darwin-arm64-1.0.0-rc.3.tgz",
+      "dist/npm-addons/wa120-ait-native-darwin-x64-1.0.0-rc.3.tgz",
+      "dist/npm-addons/wa120-ait-native-linux-arm64-1.0.0-rc.3.tgz",
+      "dist/npm-addons/wa120-ait-native-linux-x64-1.0.0-rc.3.tgz",
+      "dist/npm-addons/wa120-ait-native-win32-arm64-1.0.0-rc.3.tgz",
+      "dist/npm-addons/wa120-ait-native-win32-x64-1.0.0-rc.3.tgz",
+    ],
   );
   assert.deepEqual(
     new Set(component.artifacts.slice(1).map((artifact) => artifact.target)),
@@ -95,7 +107,11 @@ test("release tools are registry-inert and package direct addon fixtures", async
   assert.match(adapter, /const addon = require\(process\.argv\[1\]\)/);
   assert.match(adapter, /run\(process\.execPath/);
   assert.doesNotMatch(`${adapter}\n${packager}`, /npm\s+publish/i);
-  assert.doesNotMatch(`${adapter}\n${packager}`, /https?:\/\//);
+  const releaseSources = `${adapter}\n${packager}`.replaceAll(
+    "git+https://github.com/weita2026/ait-native.git",
+    "",
+  );
+  assert.doesNotMatch(releaseSources, /https?:\/\//);
   assert.match(adapter, /--ignore-scripts/);
   assert.match(adapter, /--offline/);
   assert.match(adapter, /PORTABLE_TARGET = "portable"/);

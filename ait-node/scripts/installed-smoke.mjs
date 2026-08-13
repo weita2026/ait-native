@@ -7,7 +7,14 @@ if (process.argv[2] === undefined) {
   throw new Error("installed smoke requires an npm --prefix root");
 }
 const entrypoint = pathToFileURL(
-  path.join(installRoot, "node_modules", "ait-native", "src", "index.js"),
+  path.join(
+    installRoot,
+    "node_modules",
+    "@wa120",
+    "ait-native",
+    "src",
+    "index.js",
+  ),
 );
 const { AgentClient, NativeRuntime } = await import(entrypoint.href);
 

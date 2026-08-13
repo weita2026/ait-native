@@ -8,6 +8,12 @@ import { resolveNativeManifest } from "../scripts/native-build.mjs";
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const VERSION = "1.0.0-rc.3";
 const CORE_SNAPSHOT = "SNP-158C9C5BB3D7";
+const PACKAGE_NAME = "@wa120/ait-native";
+const REPOSITORY = {
+  type: "git",
+  url: "git+https://github.com/weita2026/ait-native.git",
+  directory: "ait-node",
+};
 const TARGETS = new Map([
   ["aarch64-apple-darwin", ["darwin", "arm64"]],
   ["x86_64-apple-darwin", ["darwin", "x64"]],
@@ -37,10 +43,11 @@ async function resolvedCoreSource() {
 test("top-level package is one portable direct Node-API envelope", async () => {
   const packageJson = await json("package.json");
 
-  assert.equal(packageJson.name, "ait-native");
+  assert.equal(packageJson.name, PACKAGE_NAME);
   assert.equal(packageJson.private, undefined);
   assert.equal(packageJson.version, VERSION);
   assert.equal(packageJson.license, "Apache-2.0");
+  assert.deepEqual(packageJson.repository, REPOSITORY);
   assert.deepEqual(packageJson.bin, { ait: "bin/ait.mjs" });
   assert.deepEqual(packageJson.exports, {
     ".": {
@@ -112,7 +119,7 @@ test("platform contract declares one exact addon per target", async () => {
   ]);
   assert.equal(contract.schema, "ait.node.napi-platform-packages/v1");
   assert.equal(contract.family_version, VERSION);
-  assert.equal(contract.top_level_package, "ait-native");
+  assert.equal(contract.top_level_package, PACKAGE_NAME);
   assert.equal(contract.payloads.length, 6);
 
   const packages = new Set();
@@ -137,7 +144,10 @@ test("platform contract declares one exact addon per target", async () => {
     assert.equal(payload.binding_snapshot, CORE_SNAPSHOT);
     assert.equal(payload.license, "Apache-2.0");
     assert.equal(payload.addon, "native/ait_napi.node");
-    assert.equal(payload.package, `ait-native-ait-${payload.os}-${payload.cpu}`);
+    assert.equal(
+      payload.package,
+      `@wa120/ait-native-${payload.os}-${payload.cpu}`,
+    );
     assert.equal(packageJson.optionalDependencies[payload.package], VERSION);
     assert.equal(packages.has(payload.package), false);
     packages.add(payload.package);

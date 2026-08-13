@@ -120,6 +120,10 @@ test("ait-node builds and packages one exact direct addon for its native target"
   const buildResult = JSON.parse(built.stdout);
   assert.equal(buildResult.component, "ait-node");
   assert.equal(buildResult.target, payload.target);
+  assert.equal(
+    path.basename(buildResult.artifact),
+    `${payload.package.slice(1).replace("/", "-")}-${payload.version}.tgz`,
+  );
   assert.equal(buildResult.source_sha256, sha256(await readFile(LOCAL_ADDON)));
   const tarballEntry = await lstat(buildResult.artifact);
   assert.equal(tarballEntry.isFile(), true);
@@ -145,6 +149,11 @@ test("ait-node builds and packages one exact direct addon for its native target"
   assert.equal(packageJson.name, payload.package);
   assert.equal(packageJson.version, payload.version);
   assert.equal(packageJson.license, payload.license);
+  assert.deepEqual(packageJson.repository, {
+    type: "git",
+    url: "git+https://github.com/weita2026/ait-native.git",
+    directory: "ait-node",
+  });
   assert.deepEqual(packageJson.os, [payload.os]);
   assert.deepEqual(packageJson.cpu, [payload.cpu]);
   assert.equal(packageJson.main, payload.addon);
