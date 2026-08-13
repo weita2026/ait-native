@@ -223,3 +223,75 @@
      }
  
      #[test]
+--- crates/ait-cli/src/release_surface/family_release.rs
++++ crates/ait-cli/src/release_surface/family_release.rs
+@@ -2794,36 +2794,36 @@
+     tag: &str,
+     distributions: &JsonValue,
+ ) -> JsonValue {
+-    let prerelease = channel == "rc";
++    let registry_prerelease = channel == "rc";
+     json!({
+         "distributions": distributions,
+         "github": {
+             "tag": tag,
+-            "prerelease": prerelease,
++            "prerelease": false,
+             "draft": false,
+         },
+         "npm": {
+             "version": version,
+-            "dist_tag": if prerelease { "rc" } else { "latest" },
++            "dist_tag": if registry_prerelease { "rc" } else { "latest" },
+         },
+         "pypi": {
+             "repository": "pypi",
+-            "prerelease": prerelease,
++            "prerelease": registry_prerelease,
+         },
+         "oci": {
+             "version_tag": version,
+-            "moving_tag": if prerelease { "rc" } else { "latest" },
++            "moving_tag": if registry_prerelease { "rc" } else { "latest" },
+         },
+         "homebrew": {
+-            "channel": if prerelease { "rc" } else { "stable" },
+-            "stable_formula_mutation": !prerelease,
++            "channel": if registry_prerelease { "rc" } else { "stable" },
++            "stable_formula_mutation": !registry_prerelease,
+         },
+         "apt": {
+-            "suite": if prerelease { "testing" } else { "stable" },
++            "suite": if registry_prerelease { "testing" } else { "stable" },
+         },
+         "winget": {
+-            "route": if prerelease { "validation" } else { "community" },
+-            "community_manifest_submission": !prerelease,
++            "route": if registry_prerelease { "validation" } else { "community" },
++            "community_manifest_submission": !registry_prerelease,
+         },
+     })
+ }
+@@ -4373,7 +4373,7 @@
+     }
+ 
+     #[test]
+-    fn rc_promotion_routes_never_select_stable_channels() {
++    fn rc_promotion_routes_keep_registry_rc_channels_but_make_github_regular() {
+         let definition = parse_family_release_manifest(&manifest("1.0.0-rc.1", "rc", "1.0.0rc1"))
+             .unwrap()
+             .to_json();
+@@ -4383,9 +4383,12 @@
+             "v1.0.0-rc.1",
+             &definition["distributions"],
+         );
+-        assert_eq!(routes["github"]["prerelease"], json!(true));
++        assert_eq!(routes["github"]["prerelease"], json!(false));
++        assert_eq!(routes["github"]["draft"], json!(false));
+         assert_eq!(routes["npm"]["dist_tag"], json!("rc"));
++        assert_eq!(routes["pypi"]["prerelease"], json!(true));
+         assert_eq!(routes["oci"]["moving_tag"], json!("rc"));
++        assert_eq!(routes["homebrew"]["channel"], json!("rc"));
+         assert_eq!(routes["homebrew"]["stable_formula_mutation"], json!(false));
+         assert_eq!(routes["apt"]["suite"], json!("testing"));
+         assert_eq!(routes["winget"]["route"], json!("validation"));

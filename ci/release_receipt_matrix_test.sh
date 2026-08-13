@@ -92,12 +92,14 @@ for required_workflow_text in \
   'ziglang==0.15.2' \
   'python -m ziglang version' \
   'CARGO_BUILD_BUILD_DIR="${RUNNER_TEMP}/ait-family-admission-build"' \
-  'input_sha256=ad5212e194db9a52b049d3334a157959102f115aeeb64f43ff0974328af2e4b3' \
-  'output_sha256=0e7f95bb81dca170343b4b8d2b48949756be76b30956aec6080eee87b2b027d6' \
+  'family_packages_input_sha256=ad5212e194db9a52b049d3334a157959102f115aeeb64f43ff0974328af2e4b3' \
+  'family_packages_output_sha256=0e7f95bb81dca170343b4b8d2b48949756be76b30956aec6080eee87b2b027d6' \
+  'family_release_input_sha256=771dd056d3b21c86a63f060bdc44c80bc48717bde3075efd5b2173eb02d68b0f' \
+  'family_release_output_sha256=ac3d39e4c588aeb500900150dfa51097088d8524264b504f4ee4306de5af7a32' \
   'cp -R "${AIT_PUBLIC_SOURCE_ROOT}/ait-core" "${admission_root}"' \
   'admission_rust="${admission_root}/rust"' \
   'patch --batch --forward --strip=0' \
-  '<"${AIT_CONTROL_ROOT}/ci/release_family_scoped_npm.patch"' \
+  '<"${AIT_CONTROL_ROOT}/ci/release_family_rc4_admission.patch"' \
   '--manifest-path "${admission_rust}/Cargo.toml"' \
   'admission_root="${RUNNER_TEMP}/ait-family-admission-repository"' \
   'test ! -e "${admission_root}"' \

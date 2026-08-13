@@ -462,20 +462,27 @@ jobs:
           node "${AIT_PUBLIC_SOURCE_ROOT}/build-release.mjs" \
             --validate-only \
             --git-commit "${AIT_SOURCE_GIT_COMMIT}"
-          input_sha256=ad5212e194db9a52b049d3334a157959102f115aeeb64f43ff0974328af2e4b3
-          output_sha256=0e7f95bb81dca170343b4b8d2b48949756be76b30956aec6080eee87b2b027d6
+          family_packages_input_sha256=ad5212e194db9a52b049d3334a157959102f115aeeb64f43ff0974328af2e4b3
+          family_packages_output_sha256=0e7f95bb81dca170343b4b8d2b48949756be76b30956aec6080eee87b2b027d6
+          family_release_input_sha256=771dd056d3b21c86a63f060bdc44c80bc48717bde3075efd5b2173eb02d68b0f
+          family_release_output_sha256=ac3d39e4c588aeb500900150dfa51097088d8524264b504f4ee4306de5af7a32
           admission_root="${RUNNER_TEMP}/ait-family-admission-source"
           test ! -e "${admission_root}"
           cp -R "${AIT_PUBLIC_SOURCE_ROOT}/ait-core" "${admission_root}"
           admission_rust="${admission_root}/rust"
-          family_assembler="${admission_rust}/crates/ait-cli/src/release_surface/family_packages.rs"
-          test "$(sha256sum "${family_assembler}" | awk '{print $1}')" = \
-            "${input_sha256}"
+          family_packages="${admission_rust}/crates/ait-cli/src/release_surface/family_packages.rs"
+          family_release="${admission_rust}/crates/ait-cli/src/release_surface/family_release.rs"
+          test "$(sha256sum "${family_packages}" | awk '{print $1}')" = \
+            "${family_packages_input_sha256}"
+          test "$(sha256sum "${family_release}" | awk '{print $1}')" = \
+            "${family_release_input_sha256}"
           patch --batch --forward --strip=0 \
             --directory="${admission_rust}" \
-            <"${AIT_CONTROL_ROOT}/ci/release_family_scoped_npm.patch"
-          test "$(sha256sum "${family_assembler}" | awk '{print $1}')" = \
-            "${output_sha256}"
+            <"${AIT_CONTROL_ROOT}/ci/release_family_rc4_admission.patch"
+          test "$(sha256sum "${family_packages}" | awk '{print $1}')" = \
+            "${family_packages_output_sha256}"
+          test "$(sha256sum "${family_release}" | awk '{print $1}')" = \
+            "${family_release_output_sha256}"
           rustup toolchain install "${AIT_RUST_TOOLCHAIN}" --profile minimal
           target_dir="${RUNNER_TEMP}/ait-family-admission-target"
           CARGO_BUILD_BUILD_DIR="${RUNNER_TEMP}/ait-family-admission-build" \
