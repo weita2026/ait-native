@@ -31,6 +31,10 @@ on:
         description: Exact public Git commit selected by the frozen dossier
         required: true
         type: string
+      source_control_commit:
+        description: Exact reviewed workflow commit that produced the source run
+        required: true
+        type: string
       coordinator_snapshot:
         description: Exact coordinator Snapshot selected by the frozen dossier
         required: true
@@ -82,6 +86,7 @@ jobs:
           AIT_RELEASE_GIT_COMMIT: ${{ inputs.source_commit }}
           AIT_RELEASE_ID: ${{ inputs.release_id }}
           AIT_RELEASE_REPOSITORY: ${{ github.repository }}
+          AIT_RELEASE_SOURCE_CONTROL_SHA: ${{ inputs.source_control_commit }}
           AIT_RELEASE_SOURCE_RUN_ATTEMPT: ${{ inputs.source_run_attempt }}
           AIT_RELEASE_SOURCE_RUN_ID: ${{ inputs.source_run_id }}
           AIT_RELEASE_TAG: ${{ inputs.tag }}
@@ -91,6 +96,7 @@ jobs:
           [[ "${AIT_RELEASE_ID}" =~ ^REL-FAM-[0-9A-F]{16}$ ]]
           [[ "${AIT_RELEASE_TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-rc\.[0-9]+$ ]]
           [[ "${AIT_RELEASE_GIT_COMMIT}" =~ ^[0-9a-f]{40}$ ]]
+          [[ "${AIT_RELEASE_SOURCE_CONTROL_SHA}" =~ ^[0-9a-f]{40}$ ]]
           [[ "${AIT_RELEASE_COORDINATOR_SNAPSHOT}" =~ ^SNP-[0-9A-F]{12}$ ]]
           [[ "${AIT_RELEASE_FROZEN_MANIFEST_SHA256}" =~ ^[0-9a-f]{64}$ ]]
           [[ "${AIT_RELEASE_CHECKSUM_SHA256}" =~ ^[0-9a-f]{64}$ ]]
@@ -110,7 +116,7 @@ jobs:
           jq -e \
             --argjson run_id "${AIT_RELEASE_SOURCE_RUN_ID}" \
             --argjson run_attempt "${AIT_RELEASE_SOURCE_RUN_ATTEMPT}" \
-            --arg commit "${AIT_RELEASE_GIT_COMMIT}" '
+            --arg control_commit "${AIT_RELEASE_SOURCE_CONTROL_SHA}" '
               .id == $run_id and
               .run_attempt == $run_attempt and
               .name == "ait release component receipts" and
@@ -118,7 +124,7 @@ jobs:
               .event == "workflow_dispatch" and
               .status == "completed" and
               .conclusion == "success" and
-              .head_sha == $commit
+              .head_sha == $control_commit
             ' "${run_record}" >/dev/null
 
           curl --fail --silent --show-error \
@@ -189,13 +195,14 @@ jobs:
           AIT_RELEASE_ID: ${{ inputs.release_id }}
           AIT_RELEASE_PROTECTED_ENVIRONMENT: rc-promotion
           AIT_RELEASE_REPOSITORY: ${{ github.repository }}
+          AIT_RELEASE_SOURCE_CONTROL_SHA: ${{ inputs.source_control_commit }}
           AIT_RELEASE_SOURCE_RUN_ATTEMPT: ${{ inputs.source_run_attempt }}
           AIT_RELEASE_SOURCE_RUN_ID: ${{ inputs.source_run_id }}
           AIT_RELEASE_TAG: ${{ inputs.tag }}
         run: |
           set -euo pipefail
           mkdir protected-promotion
-          bash control/ait-core/ci/release_protected_promotion.sh \
+          bash control/ci/release_protected_promotion.sh \
             "${GITHUB_WORKSPACE}/dossier" \
             "${GITHUB_WORKSPACE}/tagged-source" \
             "${GITHUB_WORKSPACE}/protected-promotion/ait-release.protected-promotion.json"
