@@ -5,6 +5,7 @@ repo_root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 config=${repo_root}/release/npm-namespace-supplement.rc3.json
 preparer=${repo_root}/ci/release_npm_namespace_supplement.mjs
 remote=${repo_root}/ci/release_npm_namespace_remote.sh
+release_assets_filter=${repo_root}/ci/release_npm_namespace_release_assets.jq
 workflow=${repo_root}/.github/workflows/npm-namespace-supplement.yml
 node_root=${AIT_NODE_ROOT:-${repo_root}/../ait-node}
 temporary_root=$(mktemp -d "${TMPDIR:-/tmp}/ait-npm-supplement-test.XXXXXX")
@@ -42,7 +43,8 @@ expect_failure() {
   test -s "${temporary_root}/${label}.stderr"
 }
 
-for file in "${config}" "${preparer}" "${remote}" "${workflow}"; do
+for file in "${config}" "${preparer}" "${remote}" \
+  "${release_assets_filter}" "${workflow}"; do
   if [[ ! -f ${file} || -L ${file} ]]; then
     printf 'npm namespace supplement input is unavailable: %s\n' "${file}" >&2
     exit 66
@@ -56,6 +58,8 @@ fi
 node --check "${preparer}"
 bash -n "${remote}"
 jq empty "${config}"
+jq -n --slurpfile config "${config}" \
+  -f "${release_assets_filter}" >/dev/null
 
 jq -e '
   .contract == "ait.release.npm-namespace-supplement/v1" and
@@ -96,6 +100,46 @@ jq -e '
   .mutation.existing_unscoped_package_write == false
 ' "${config}" >/dev/null
 
+release_fixture=${temporary_root}/release.json
+jq -n --slurpfile config "${config}" '
+  $config[0] as $config
+  | {
+      id: $config.release.github_release_id,
+      tag_name: $config.release.tag,
+      draft: false,
+      prerelease: true,
+      assets: [
+        $config.addons[]
+        | {
+            id: .source_github_release_asset_id,
+            name: .source_filename,
+            size: .source_size_bytes,
+            digest: ("sha256:" + .source_sha256)
+          }
+      ]
+    }
+' >"${release_fixture}"
+jq -e --slurpfile config "${config}" \
+  -f "${release_assets_filter}" "${release_fixture}" >/dev/null
+
+jq '.assets[0].digest = "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"' \
+  "${release_fixture}" >"${temporary_root}/release-drifted.json"
+if jq -e --slurpfile config "${config}" \
+  -f "${release_assets_filter}" "${temporary_root}/release-drifted.json" \
+  >/dev/null 2>&1; then
+  printf 'npm supplement Release filter accepted a drifted asset\n' >&2
+  exit 65
+fi
+
+jq 'del(.assets[0])' "${release_fixture}" \
+  >"${temporary_root}/release-missing.json"
+if jq -e --slurpfile config "${config}" \
+  -f "${release_assets_filter}" "${temporary_root}/release-missing.json" \
+  >/dev/null 2>&1; then
+  printf 'npm supplement Release filter accepted a missing asset\n' >&2
+  exit 65
+fi
+
 # shellcheck disable=SC2016 # These are literal workflow-contract fragments.
 for required in \
   'name: ait RC3 scoped npm namespace supplement' \
@@ -106,6 +150,7 @@ for required in \
   '      name: pypi' \
   "node-version: '22.17.1'" \
   'test "$(npm --version)" = '\''10.9.2'\''' \
+  'release_npm_namespace_release_assets.jq' \
   'release_npm_namespace_supplement.mjs prepare' \
   'release_npm_namespace_remote.sh preflight' \
   'release_npm_namespace_remote.sh publish' \

@@ -146,17 +146,9 @@ jobs:
             .object.type == "commit" and
             .object.sha == "ba368cf4d0750035345f14a8a91c22fb9e450260"
           ' "${RUNNER_TEMP}/tag-object.json" >/dev/null
-          jq -e --slurpfile config "${config}" '
-            .id == $config[0].release.github_release_id and
-            .tag_name == $config[0].release.tag and
-            .draft == false and .prerelease == true and
-            all($config[0].addons[] as $addon;
-              any(.assets[];
-                .id == $addon.source_github_release_asset_id and
-                .name == $addon.source_filename and
-                .size == $addon.source_size_bytes and
-                .digest == ("sha256:" + $addon.source_sha256)))
-          ' "${RUNNER_TEMP}/release.json" >/dev/null
+          jq -e --slurpfile config "${config}" \
+            -f control/ci/release_npm_namespace_release_assets.jq \
+            "${RUNNER_TEMP}/release.json" >/dev/null
           jq -e '
             .id == 31664713921 and .run_attempt == 1 and
             .name == "ait release component receipts" and
