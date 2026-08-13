@@ -34,20 +34,34 @@ The exact current endpoint state is:
 | GHCR | `ait-server:1.0.0-rc.3` and `ait-runner:1.0.0-rc.3` are public OCI indexes for Linux `amd64` and `arm64`; immutable index digests are `sha256:1494fb3ff9ea05e876d5894e70b599f0718d85e8e1bddf369eab7f89caaed0b4` and `sha256:a2b759b02240acb14440df99ea71012cf2f39c21d368f6da1381abbf235e9957`. |
 | Homebrew | `weita2026/homebrew-ait-native` contains `Formula/ait-native-rc.rb` for RC.3 with the four exact GitHub asset URLs and checksums. |
 | apt | The signed `testing` repository retains RC.2 and publishes RC.3 for both `ait-native` and `ait-runner` on `amd64` and `arm64`. A new Debian client finds both exact names with `apt-cache search --names-only`; RC.3 is the candidate version. |
-| npm | Five original unscoped RC.3 implementation packages remain public as historical endpoint state. npm rejected the sixth unscoped identity with `E403 Package name triggered spam detection`, so the unscoped top-level envelope was never published. The owner-approved scoped mapping uses `@wa120/ait-native` plus six `@wa120/ait-native-<os>-<cpu>` implementation packages; its protected publication and public readback are pending. |
+| npm | The supported `@wa120/ait-native@1.0.0-rc.3` envelope and all six `@wa120/ait-native-<os>-<cpu>` Node-API implementation packages are public, provenance-attested, and anonymously read back with exact shasum/integrity. A clean registry install selects only the matching platform addon and passes the direct in-process Node-API smoke. Five original unscoped implementation packages remain only as historical endpoint state; their rejected sixth identity and withheld top-level envelope are not supported install routes. |
 | WinGet | The frozen validation manifests are attached to the GitHub prerelease. No community repository submission has been made, by the declared RC route. |
 
 The endpoint attempt completed GitHub, PyPI, GHCR, Homebrew, signed apt, and
 WinGet-validation publication before failing visibly at the npm name-policy
-boundary. Final aggregate endpoint evidence was therefore not emitted. The
+boundary. Its final aggregate endpoint evidence was therefore not emitted. The
 repository owner subsequently approved the exact `@wa120` namespace mapping.
-That supplement rebuilds only the npm JavaScript/package envelopes required by
+Protected supplement run
+[`31674704785`](https://github.com/weita2026/ait-native/actions/runs/31674704785)
+on reviewed control commit `8ad0faa8f5bbf7c5ddcf8bb5a32ac0cfdff9403b`
+published and anonymously read back all seven scoped identities. Evidence
+artifact `9171186837` has digest
+`sha256:736f2d3e12d634d73e4504e79877a8f4e409154ca297cde03dab0e49718702f1`;
+its publication and anonymous-readback evidence SHA-256 values are
+`d3d33773fc881b106ea6dfdf1ed62d3dc6dee20844273ac06dedb104e3d038ae`
+and `a627a33291ddef6f94f990332711140163929a52e652a571a45869ac5a24da2d`.
+
+The supplement rebuilds only the npm JavaScript/package envelopes required by
 the new registry identities and copies each previously admitted RC.3 native
 Node-API addon byte for byte. It does not rebuild the native addon, release
 family, source tag, or GitHub Release, and it does not write the rejected
-unscoped identities. RC.3 is not an all-endpoint release until all seven scoped
-packages and their `rc` tags pass public readback. RC.1 and RC.2 bytes also
-remain immutable and are never relabelled as RC.3.
+unscoped identities. Because these new npm identities currently contain only
+RC.3, npm exposes both `rc` and its required initial `latest` tag as
+`1.0.0-rc.3`; stable 1.0.0 publication must move `latest` to `1.0.0`. The
+declared RC endpoint set is complete through the original endpoint evidence
+plus this immutable supplement; no replacement aggregate was synthesized for
+the earlier failed run. RC.1 and RC.2 bytes remain immutable and are never
+relabelled as RC.3.
 
 ## Release Family
 
@@ -804,11 +818,13 @@ future identities from being treated as publication evidence.
 RC.3 retains the direct Node-API architecture. Its public Git commit and tag,
 successful protected 31-receipt/37-artifact matrix, frozen
 `REL-FAM-600EFDC327FE7860` dossier, and protected authorization now exist.
-Endpoint publication is complete except for the owner-approved scoped npm
-supplement and final all-endpoint evidence. That supplement changes npm
-registry names and package envelopes only; it does not change RC.3 native
-bytes, the release family, the annotated tag, or GitHub Release assets. Nothing
-from RC.1 or RC.2 can be promoted or relabelled into RC.3.
+The declared RC endpoint publication is complete. The owner-approved scoped
+npm supplement changes npm registry names and package envelopes only; it does
+not change RC.3 native bytes, the release family, the annotated tag, or GitHub
+Release assets. Its protected run and immutable evidence artifact complete the
+npm record without rewriting the failed original endpoint attempt or inventing
+a replacement aggregate. Nothing from RC.1 or RC.2 can be promoted or
+relabelled into RC.3.
 
 The immutable RC.3 source tag object is
 `810265c705ffececba3d74924f60ed2d0453ef7d`; it peels to commit
