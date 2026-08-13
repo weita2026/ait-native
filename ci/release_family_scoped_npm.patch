@@ -1,0 +1,115 @@
+--- crates/ait-cli/src/release_surface/family_packages.rs
++++ crates/ait-cli/src/release_surface/family_packages.rs
+@@ -9,6 +9,9 @@
+ const PACKAGE_RECEIPT_FILENAME: &str = "ait-release.package.json";
+ const PACKAGE_CHECKSUM_FILENAME: &str = "SHA256SUMS";
+ const WINGET_MANIFEST_VERSION: &str = "1.12.0";
++const NPM_TOP_LEVEL_PACKAGE: &str = "@wa120/ait-native";
++const NPM_ADDON_PACKAGE_PREFIX: &str = "@wa120/ait-native-";
++const NPM_ARCHIVE_PREFIX: &str = "wa120-ait-native";
+ const AIT_SERVER_SYSTEMD_UNIT_PATH: &str = "usr/lib/systemd/system/ait-server.service";
+ const AIT_SERVER_SYSTEMD_UNIT: &str = "[Unit]\nDescription=AIT native server\nDocumentation=https://github.com/weita2026/ait-native\nAfter=network.target\n\n[Service]\nType=simple\nDynamicUser=yes\nStateDirectory=ait-native\nRuntimeDirectory=ait-native\nUMask=0077\nExecStart=/usr/bin/ait-server run --data /var/lib/ait-native/server-data --init-if-missing --defer-ci-admission\nRestart=on-failure\nRestartSec=2s\nNoNewPrivileges=yes\nPrivateTmp=yes\nProtectSystem=strict\nProtectHome=yes\nProtectControlGroups=yes\nProtectKernelModules=yes\nProtectKernelTunables=yes\nRestrictAddressFamilies=AF_UNIX AF_INET AF_INET6\nRestrictSUIDSGID=yes\nLockPersonality=yes\nCapabilityBoundingSet=\nAmbientCapabilities=\n\n[Install]\nWantedBy=multi-user.target\n";
+ const WINGET_SERVER_CONTROLLER_PATH: &str = "ait-server-control.ps1";
+@@ -2420,7 +2423,7 @@
+     )?;
+     if string_field(value, "schema").as_deref() != Some("ait.node.napi-platform-packages/v1")
+         || string_field(value, "family_version").as_deref() != Some(input.version.as_str())
+-        || string_field(value, "top_level_package").as_deref() != Some("ait-native")
++        || string_field(value, "top_level_package").as_deref() != Some(NPM_TOP_LEVEL_PACKAGE)
+     {
+         return Err("Frozen npm addon contract identity or version drifted.".to_string());
+     }
+@@ -2461,7 +2464,7 @@
+         let target = required_string_field(row, "target")?;
+         let (os, cpu) = npm_platform(&target)?;
+         let component = "ait-node".to_string();
+-        let package = format!("ait-native-ait-{os}-{cpu}");
++        let package = format!("{NPM_ADDON_PACKAGE_PREFIX}{os}-{cpu}");
+         let addon = "native/ait_napi.node".to_string();
+         if required_string_field(row, "os")? != os
+             || required_string_field(row, "cpu")? != cpu
+@@ -2558,7 +2561,7 @@
+         "Frozen npm envelope package.json",
+     )?;
+     let node_component = required_component(input, "ait-node", "node")?;
+-    if string_field(&package_json, "name").as_deref() != Some("ait-native")
++    if string_field(&package_json, "name").as_deref() != Some(NPM_TOP_LEVEL_PACKAGE)
+         || string_field(&package_json, "version").as_deref() != Some(input.version.as_str())
+         || string_field(&package_json, "description").is_none_or(|value| value.is_empty())
+         || string_field(&package_json, "license").as_deref()
+@@ -2944,8 +2947,10 @@
+     input: &FamilyPackageInput,
+ ) -> Result<Vec<GeneratedArtifact>, String> {
+     let distribution = single_channel_distribution(input, "npm")?;
+-    if distribution.role != "product" || distribution.identity != "ait-native" {
+-        return Err("npm distribution must be the ait-native product.".to_string());
++    if distribution.role != "product" || distribution.identity != NPM_TOP_LEVEL_PACKAGE {
++        return Err(format!(
++            "npm distribution must be the {NPM_TOP_LEVEL_PACKAGE} product."
++        ));
+     }
+     require_distribution_components(distribution, &["ait-node"])?;
+     require_registry_targets(distribution)?;
+@@ -2967,7 +2972,7 @@
+         .file_name()
+         .and_then(OsStr::to_str)
+         .ok_or_else(|| "Frozen npm envelope has no portable filename.".to_string())?;
+-    if envelope_filename != format!("ait-native-{}.tgz", input.version) {
++    if envelope_filename != format!("{NPM_ARCHIVE_PREFIX}-{}.tgz", input.version) {
+         return Err("Frozen npm envelope filename differs from the family version.".to_string());
+     }
+     let node_material_sources = material_for_components(input, &["ait-node".to_string()])?;
+@@ -3003,7 +3008,7 @@
+             &envelope_content,
+             &envelope_material_projections,
+             json!({
+-                "package": "ait-native",
++                "package": NPM_TOP_LEVEL_PACKAGE,
+                 "version": input.version,
+                 "preserved_frozen_bytes": true,
+                 "runtime_transport": "direct-napi",
+@@ -3032,7 +3037,16 @@
+             .file_name()
+             .and_then(OsStr::to_str)
+             .ok_or_else(|| "Frozen npm addon package has no filename.".to_string())?;
+-        let expected_filename = format!("{}-{}.tgz", addon.package, input.version);
++        let package_suffix = addon
++            .package
++            .strip_prefix(NPM_ADDON_PACKAGE_PREFIX)
++            .ok_or_else(|| {
++                "Frozen npm addon package is outside the supported scope.".to_string()
++            })?;
++        let expected_filename = format!(
++            "{NPM_ARCHIVE_PREFIX}-{package_suffix}-{}.tgz",
++            input.version
++        );
+         if filename != expected_filename {
+             return Err(format!(
+                 "Frozen npm addon filename for {} differs from the family version.",
+@@ -3427,7 +3441,7 @@
+         let mut payloads = Vec::new();
+         for target in REGISTRY_TARGETS {
+             let (os, cpu) = npm_platform(target).unwrap();
+-            let package = format!("ait-native-ait-{os}-{cpu}");
++            let package = format!("{NPM_ADDON_PACKAGE_PREFIX}{os}-{cpu}");
+             optional_dependencies.insert(package.clone(), json!("1.0.0-rc.2"));
+             payloads.push(json!({
+                 "target": target,
+@@ -3443,7 +3457,7 @@
+             }));
+         }
+         let package = json!({
+-            "name": "ait-native",
++            "name": NPM_TOP_LEVEL_PACKAGE,
+             "version": "1.0.0-rc.2",
+             "description": "Direct in-process Node-API bindings for AIT",
+             "license": "Apache-2.0",
+@@ -3469,7 +3483,7 @@
+         let contract = json!({
+             "schema": "ait.node.napi-platform-packages/v1",
+             "family_version": "1.0.0-rc.2",
+-            "top_level_package": "ait-native",
++            "top_level_package": NPM_TOP_LEVEL_PACKAGE,
+             "payloads": payloads,
+         });
+         PackageEntries::from([

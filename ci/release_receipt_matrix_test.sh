@@ -79,6 +79,7 @@ for required_workflow_text in \
   'AIT_CONTROL_GIT_COMMIT: ${{ github.sha }}' \
   'workflow_control_commit: $control_commit' \
   'AIT_RELEASE_FAMILY_MANIFEST: ${{ github.workspace }}/source/ait-release-family.json' \
+  'AIT_CONTROL_ROOT: ${{ github.workspace }}/control' \
   'working-directory: control' \
   'path: control' \
   'path: source' \
@@ -91,6 +92,12 @@ for required_workflow_text in \
   'ziglang==0.15.2' \
   'python -m ziglang version' \
   'CARGO_BUILD_BUILD_DIR="${RUNNER_TEMP}/ait-family-admission-build"' \
+  'input_sha256=ad5212e194db9a52b049d3334a157959102f115aeeb64f43ff0974328af2e4b3' \
+  'output_sha256=6eaa298d8dacef5302d2b01bc3e204b73578f66ea69ec892901f9e2d3aa2ed72' \
+  'cp -R "${AIT_PUBLIC_SOURCE_ROOT}/ait-core/rust" "${admission_source}"' \
+  'patch --batch --forward --strip=0' \
+  '<"${AIT_CONTROL_ROOT}/ci/release_family_scoped_npm.patch"' \
+  '--manifest-path "${admission_source}/Cargo.toml"' \
   'admission_root="${RUNNER_TEMP}/ait-family-admission-repository"' \
   'test ! -e "${admission_root}"' \
   'cd "${admission_root}"' \
