@@ -5,6 +5,7 @@ repo_root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 config=${repo_root}/release/npm-namespace-supplement.rc3.json
 preparer=${repo_root}/ci/release_npm_namespace_supplement.mjs
 remote=${repo_root}/ci/release_npm_namespace_remote.sh
+dist_tags_filter=${repo_root}/ci/release_npm_namespace_dist_tags.jq
 release_assets_filter=${repo_root}/ci/release_npm_namespace_release_assets.jq
 workflow=${repo_root}/.github/workflows/npm-namespace-supplement.yml
 node_root=${AIT_NODE_ROOT:-${repo_root}/../ait-node}
@@ -43,7 +44,7 @@ expect_failure() {
   test -s "${temporary_root}/${label}.stderr"
 }
 
-for file in "${config}" "${preparer}" "${remote}" \
+for file in "${config}" "${preparer}" "${remote}" "${dist_tags_filter}" \
   "${release_assets_filter}" "${workflow}"; do
   if [[ ! -f ${file} || -L ${file} ]]; then
     printf 'npm namespace supplement input is unavailable: %s\n' "${file}" >&2
@@ -60,6 +61,25 @@ bash -n "${remote}"
 jq empty "${config}"
 jq -n --slurpfile config "${config}" \
   -f "${release_assets_filter}" >/dev/null
+
+dist_tags_fixture=${temporary_root}/dist-tags.json
+jq -n '{"dist-tags": {rc: "1.0.0-rc.3", latest: "1.0.0-rc.3"}}' \
+  >"${dist_tags_fixture}"
+jq -e --arg tag rc --arg version '1.0.0-rc.3' \
+  -f "${dist_tags_filter}" "${dist_tags_fixture}" >/dev/null
+for mutation in \
+  '."dist-tags".rc = "1.0.0-rc.2"' \
+  'del(."dist-tags".latest)' \
+  '."dist-tags".latest = "1.0.0"'; do
+  jq "${mutation}" "${dist_tags_fixture}" \
+    >"${temporary_root}/dist-tags-invalid.json"
+  if jq -e --arg tag rc --arg version '1.0.0-rc.3' \
+    -f "${dist_tags_filter}" "${temporary_root}/dist-tags-invalid.json" \
+    >/dev/null 2>&1; then
+    printf 'npm supplement dist-tag filter accepted invalid metadata\n' >&2
+    exit 65
+  fi
+done
 
 jq -e '
   .contract == "ait.release.npm-namespace-supplement/v1" and
@@ -204,6 +224,7 @@ for forbidden in \
   'gh release' \
   'git tag' \
   'task publish' \
+  'npm dist-tag rm' \
   'AIT_RELEASE_SERVER_URL'; do
   if grep -F -- "${forbidden}" "${remote}" "${preparer}" >/dev/null; then
     printf 'npm supplement implementation contains forbidden behavior: %s\n' \
@@ -220,7 +241,8 @@ for required_remote in \
   '--ignore-scripts' \
   '--provenance' \
   '--tag "${dist_tag}"' \
-  'npm dist-tag rm' \
+  'release_npm_namespace_dist_tags.jq' \
+  'local attempts=${2:-120}' \
   'wait_for_exact_registry false'; do
   if ! grep -F -- "${required_remote}" "${remote}" >/dev/null; then
     printf 'npm supplement remote contract is missing: %s\n' \
