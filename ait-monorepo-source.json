@@ -1,15 +1,15 @@
 {
   "schema": "ait.release.monorepo-source/v1",
   "public_source_identity": "weita2026/ait-native",
-  "coordinator_snapshot": "SNP-D5757B4A8EB5",
-  "coordinator_manifest_hash": "d5757b4a8eb547ac29e7f3e163389d231805c889f62f118aba7b636de36e74ba",
-  "coordinator_created_at": "1786672456",
+  "coordinator_snapshot": "SNP-5D8B4C61F56E",
+  "coordinator_manifest_hash": "5d8b4c61f56ee2826508837efa789ab005362d506a01d4fe4f4c924f835ddef1",
+  "coordinator_created_at": "1786677460",
   "family_version": "1.0.0-rc.5",
   "family_tag": "v1.0.0-rc.5",
   "family_manifest_sha256": "84d646844b7422cc9d52c48d84841ab73171b19ffec1891765cb165f428ae3fb",
   "product_document_sha256": "911d18a04826ce25d2cf1bddeb296ccda2e044f53cd5e90c7016564ce8d4972c",
   "content_digest_contract": "size-sha256-path/v1; excludes ait-monorepo-source.json",
-  "content_sha256": "d9af4aa8f1081669402403f8bf3179347914b1439b03afd95e94f6e9445718a4",
+  "content_sha256": "764ef8a434b2458e7c004f4190d61c291a66a3a9684cfe32860e21b00b94c09a",
   "subtrees": [
     {
       "source_repository": "ait-core",
