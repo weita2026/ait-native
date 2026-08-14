@@ -79,8 +79,8 @@ jobs:
             --git-commit "${AIT_SOURCE_GIT_COMMIT}"
           jq -e \
             --arg snapshot "${coordinator_snapshot}" \
-            --arg version "$(jq -r '.family_version' \
-              ci/release_repository_authorities.json)" '
+            --arg version "$(jq -r '.family.version' \
+              "${AIT_RELEASE_FAMILY_MANIFEST}")" '
               .schema == "ait.release.monorepo-source/v1" and
               .coordinator_snapshot == $snapshot and
               .family_version == $version and
@@ -93,8 +93,8 @@ jobs:
             ci/native_bootstrap_matrix.json >/dev/null
           {
             echo "coordinator_snapshot=${coordinator_snapshot}"
-            echo "family_version=$(jq -r '.family_version' \
-              ci/release_repository_authorities.json)"
+            echo "family_version=$(jq -r '.family.version' \
+              "${AIT_RELEASE_FAMILY_MANIFEST}")"
             echo "rust_toolchain=$(jq -r '.rust_toolchain' \
               ci/native_bootstrap_matrix.json)"
             echo "source_git_commit=${AIT_SOURCE_GIT_COMMIT}"
@@ -452,7 +452,6 @@ jobs:
       - name: Build the Linux family-admission CLI
         shell: bash
         env:
-          AIT_CONTROL_ROOT: ${{ github.workspace }}/control
           AIT_FAMILY_VERSION: ${{ needs.project.outputs.family_version }}
           AIT_PUBLIC_SOURCE_ROOT: ${{ github.workspace }}/source
           AIT_RUST_TOOLCHAIN: ${{ needs.contract.outputs.rust_toolchain }}
@@ -462,27 +461,10 @@ jobs:
           node "${AIT_PUBLIC_SOURCE_ROOT}/build-release.mjs" \
             --validate-only \
             --git-commit "${AIT_SOURCE_GIT_COMMIT}"
-          family_packages_input_sha256=ad5212e194db9a52b049d3334a157959102f115aeeb64f43ff0974328af2e4b3
-          family_packages_output_sha256=0e7f95bb81dca170343b4b8d2b48949756be76b30956aec6080eee87b2b027d6
-          family_release_input_sha256=771dd056d3b21c86a63f060bdc44c80bc48717bde3075efd5b2173eb02d68b0f
-          family_release_output_sha256=ac3d39e4c588aeb500900150dfa51097088d8524264b504f4ee4306de5af7a32
-          admission_root="${RUNNER_TEMP}/ait-family-admission-source"
-          test ! -e "${admission_root}"
-          cp -R "${AIT_PUBLIC_SOURCE_ROOT}/ait-core" "${admission_root}"
-          admission_rust="${admission_root}/rust"
-          family_packages="${admission_rust}/crates/ait-cli/src/release_surface/family_packages.rs"
-          family_release="${admission_rust}/crates/ait-cli/src/release_surface/family_release.rs"
-          test "$(sha256sum "${family_packages}" | awk '{print $1}')" = \
-            "${family_packages_input_sha256}"
-          test "$(sha256sum "${family_release}" | awk '{print $1}')" = \
-            "${family_release_input_sha256}"
-          patch --batch --forward --strip=0 \
-            --directory="${admission_rust}" \
-            <"${AIT_CONTROL_ROOT}/ci/release_family_rc4_admission.patch"
-          test "$(sha256sum "${family_packages}" | awk '{print $1}')" = \
-            "${family_packages_output_sha256}"
-          test "$(sha256sum "${family_release}" | awk '{print $1}')" = \
-            "${family_release_output_sha256}"
+          admission_rust="${AIT_PUBLIC_SOURCE_ROOT}/ait-core/rust"
+          test -f "${admission_rust}/Cargo.lock"
+          test -f "${admission_rust}/crates/ait-cli/src/release_surface/family_packages.rs"
+          test -f "${admission_rust}/crates/ait-cli/src/release_surface/family_release.rs"
           rustup toolchain install "${AIT_RUST_TOOLCHAIN}" --profile minimal
           target_dir="${RUNNER_TEMP}/ait-family-admission-target"
           CARGO_BUILD_BUILD_DIR="${RUNNER_TEMP}/ait-family-admission-build" \
@@ -496,6 +478,8 @@ jobs:
           binary="${target_dir}/release/ait-cli"
           test -x "${binary}"
           test "$("${binary}" --version)" = "ait ${AIT_FAMILY_VERSION}"
+          test -z "$(git -C "${AIT_PUBLIC_SOURCE_ROOT}" status \
+            --porcelain --untracked-files=all)"
           echo "AIT_FAMILY_ADMISSION_BIN=${binary}" >>"${GITHUB_ENV}"
 
       - name: Verify receipt inventory and freeze the family

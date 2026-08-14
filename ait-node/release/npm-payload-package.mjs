@@ -14,6 +14,7 @@ import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnNpmSync } from "../scripts/npm-command.mjs";
+import { detectRuntimeLibc } from "../src/runtime.js";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const CONTRACT_PATH = path.join(ROOT, "lib", "npm-payload-contract.json");
@@ -22,12 +23,12 @@ const LICENSE_PATH = path.join(ROOT, "LICENSE");
 const NOTICE_PATH = path.join(ROOT, "NOTICE");
 const require = createRequire(import.meta.url);
 const TARGETS = new Map([
-  ["aarch64-apple-darwin", ["darwin", "arm64"]],
-  ["x86_64-apple-darwin", ["darwin", "x64"]],
-  ["aarch64-unknown-linux-gnu", ["linux", "arm64"]],
-  ["x86_64-unknown-linux-gnu", ["linux", "x64"]],
-  ["aarch64-pc-windows-msvc", ["win32", "arm64"]],
-  ["x86_64-pc-windows-msvc", ["win32", "x64"]],
+  ["aarch64-apple-darwin", { os: "darwin", cpu: "arm64", libc: null }],
+  ["x86_64-apple-darwin", { os: "darwin", cpu: "x64", libc: null }],
+  ["aarch64-unknown-linux-gnu", { os: "linux", cpu: "arm64", libc: "glibc" }],
+  ["x86_64-unknown-linux-gnu", { os: "linux", cpu: "x64", libc: "glibc" }],
+  ["aarch64-pc-windows-msvc", { os: "win32", cpu: "arm64", libc: null }],
+  ["x86_64-pc-windows-msvc", { os: "win32", cpu: "x64", libc: null }],
 ]);
 const CONTRACT_KEYS = [
   "family_version",
@@ -41,6 +42,7 @@ const PAYLOAD_KEYS = [
   "binding_snapshot",
   "component",
   "cpu",
+  "libc",
   "license",
   "os",
   "package",
@@ -94,9 +96,9 @@ async function regularFile(filePath, label) {
 export function validateContract(contract) {
   assertExactKeys(contract, CONTRACT_KEYS, "npm addon contract");
   if (
-    contract.schema !== "ait.node.napi-platform-packages/v1" ||
+    contract.schema !== "ait.node.napi-platform-packages/v2" ||
     contract.top_level_package !== "@wa120/ait-native" ||
-    contract.family_version !== "1.0.0-rc.4" ||
+    contract.family_version !== "1.0.0-rc.5" ||
     !Array.isArray(contract.payloads) ||
     contract.payloads.length !== 6
   ) {
@@ -111,16 +113,16 @@ export function validateContract(contract) {
     if (platform === undefined) {
       fail(`${label} has an unsupported target`);
     }
-    const [expectedOs, expectedCpu] = platform;
-    const expectedPackage = `@wa120/ait-native-${expectedOs}-${expectedCpu}`;
+    const expectedPackage = `@wa120/ait-native-${platform.os}-${platform.cpu}`;
     if (
-      payload.os !== expectedOs ||
-      payload.cpu !== expectedCpu ||
+      payload.os !== platform.os ||
+      payload.cpu !== platform.cpu ||
+      payload.libc !== platform.libc ||
       payload.component !== "ait-node" ||
       payload.package !== expectedPackage ||
       payload.version !== contract.family_version ||
       payload.binding_repository !== "ait-core" ||
-      payload.binding_snapshot !== "SNP-D4390C77FBEE" ||
+      payload.binding_snapshot !== "SNP-64B101AAE684" ||
       payload.license !== "Apache-2.0" ||
       payload.addon !== "native/ait_napi.node"
     ) {
@@ -203,9 +205,14 @@ function selectedPayload(contract, target, version) {
   if (version !== contract.family_version || version !== payload.version) {
     fail(`npm addon version ${version} does not match ${contract.family_version}`);
   }
-  if (payload.os !== process.platform || payload.cpu !== process.arch) {
+  const hostLibc = detectRuntimeLibc();
+  if (
+    payload.os !== process.platform ||
+    payload.cpu !== process.arch ||
+    payload.libc !== hostLibc
+  ) {
     fail(
-      `target ${target} requires native host ${payload.os}/${payload.cpu}, got ${process.platform}/${process.arch}`,
+      `target ${target} requires native host ${payload.os}/${payload.cpu}/${payload.libc ?? "none"}, got ${process.platform}/${process.arch}/${hostLibc ?? "none"}`,
     );
   }
   return payload;
@@ -349,12 +356,14 @@ async function buildPackage(inputs, outDir) {
       repository,
       os: [payload.os],
       cpu: [payload.cpu],
+      ...(payload.libc === null ? {} : { libc: [payload.libc] }),
       main: payload.addon,
       files: ["native", "provenance.json", "LICENSE", "NOTICE"],
       aitNativeAddon: {
-        schema: "ait.node.napi-platform-addon/v1",
+        schema: "ait.node.napi-platform-addon/v2",
         component: payload.component,
         target: payload.target,
+        libc: payload.libc,
         addon: payload.addon,
         binding_repository: payload.binding_repository,
         binding_snapshot: payload.binding_snapshot,
@@ -365,12 +374,13 @@ async function buildPackage(inputs, outDir) {
       `${JSON.stringify(packageJson, null, 2)}\n`,
     );
     const provenance = {
-      schema: "ait.node.napi-platform-addon-provenance/v1",
+      schema: "ait.node.napi-platform-addon-provenance/v2",
       family_version: payload.version,
       package: payload.package,
       target: payload.target,
       os: payload.os,
       cpu: payload.cpu,
+      libc: payload.libc,
       component: payload.component,
       package_source_repository: "ait-node",
       binding_repository: payload.binding_repository,

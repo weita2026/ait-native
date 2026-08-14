@@ -1866,6 +1866,15 @@ fn enable_bulk_pull_manifest(
     snapshot_ids: &[String],
     head_snapshot_id: &str,
 ) {
+    enable_bulk_pull_manifest_with_boundaries(remote, snapshot_ids, head_snapshot_id, Vec::new());
+}
+
+fn enable_bulk_pull_manifest_with_boundaries(
+    remote: &mut FakeLineSnapshotRemote,
+    snapshot_ids: &[String],
+    head_snapshot_id: &str,
+    boundary_snapshot_ids: Vec<String>,
+) {
     let manifests = snapshot_ids
         .iter()
         .map(|snapshot_id| {
@@ -1912,7 +1921,7 @@ fn enable_bulk_pull_manifest(
         contract: ZSTD_PULL_MANIFEST_CONTRACT_NAME.to_string(),
         repo_name: "fixture-ait".to_string(),
         head_snapshot_id: head_snapshot_id.to_string(),
-        boundary_snapshot_ids: Vec::new(),
+        boundary_snapshot_ids,
         snapshots,
         object_packs,
         tree_packs,
@@ -2114,6 +2123,113 @@ fn zstd_pull_uses_one_deduplicated_manifest_and_stages_pack_batches() {
     );
     assert!(snapshot_exists_in_repo(&target_repo, &fixture.parent_id));
     assert!(snapshot_exists_in_repo(&target_repo, &fixture.child_id));
+}
+
+#[test]
+fn zstd_pull_retries_without_an_incomplete_advertised_boundary() {
+    let fixture = create_two_snapshot_zstd_source();
+    let (target_tmp, target_repo) = create_empty_fixture_repo();
+
+    let mut parent_remote =
+        remote_with_zstd_manifests(&fixture.repo, std::slice::from_ref(&fixture.parent_id));
+    remote_sync::hydrate_remote_snapshot_chain_with_task_remote_and_capabilities(
+        &target_repo,
+        &mut parent_remote,
+        "origin",
+        "fixture-ait",
+        &fixture.parent_id,
+        &zstd_only_download_capabilities(),
+    )
+    .expect("seed complete local parent Snapshot");
+    target_repo
+        .binary_db_stores::<SNAPSHOT_BINARY_DB_WRITE_LAYOUT>()
+        .lines()
+        .set_line_head("main", Some(&fixture.parent_id), "2026-08-13T00:00:00Z")
+        .expect("make the parent a local advertised Snapshot");
+    let parent_local_plan = remote_sync::build_zstd_bulk_local_plan(
+        &target_repo,
+        std::slice::from_ref(&fixture.parent_id),
+        &BTreeSet::new(),
+    )
+    .expect("local parent pack plan");
+    let parent_object_pack_path = parent_local_plan
+        .object_packs
+        .values()
+        .next()
+        .and_then(|pack| pack.metadata["pack_path"].as_str())
+        .expect("parent object-pack path")
+        .to_string();
+    fs::remove_file(target_tmp.path().join(&parent_object_pack_path))
+        .expect("remove one reachable parent object pack");
+
+    assert!(snapshot_exists_in_repo(&target_repo, &fixture.parent_id));
+    assert!(
+        !remote_sync::remote_sync_snapshot_content_complete_for_repo(
+            &target_repo,
+            &fixture.parent_id,
+        )
+        .expect("inspect incomplete parent closure"),
+        "Snapshot/root metadata must not hide a missing reachable object pack"
+    );
+
+    let snapshot_ids = vec![fixture.parent_id.clone(), fixture.child_id.clone()];
+    let mut remote = remote_with_zstd_manifests(&fixture.repo, &snapshot_ids);
+    enable_bulk_pull_manifest_with_boundaries(
+        &mut remote,
+        std::slice::from_ref(&fixture.child_id),
+        &fixture.child_id,
+        vec![fixture.parent_id.clone()],
+    );
+    let bounded_manifest = remote
+        .zstd_pull_manifest
+        .take()
+        .expect("child manifest bounded by the advertised parent");
+
+    enable_bulk_pull_manifest(&mut remote, &snapshot_ids, &fixture.child_id);
+    let complete_manifest = remote
+        .zstd_pull_manifest
+        .take()
+        .expect("complete retry manifest");
+    remote.zstd_pull_manifests = VecDeque::from([bounded_manifest, complete_manifest]);
+    remote.lines = vec![json!({
+        "repo_name": "fixture-ait",
+        "line_name": "main",
+        "status": "active",
+        "head_snapshot_id": fixture.child_id,
+    })];
+
+    let pulled = remote_sync::pull_line_with_task_remote_and_capabilities(
+        &target_repo,
+        &mut remote,
+        "origin",
+        "fixture-ait",
+        "main",
+        false,
+        false,
+        false,
+        &zstd_only_download_capabilities().with_zstd_pull_manifest(),
+    )
+    .expect("bulk pull must retry and restore the incomplete boundary closure");
+
+    assert_eq!(remote.zstd_pull_manifest_requests.len(), 2);
+    assert!(remote.zstd_pull_manifest_requests[0]
+        .have_snapshot_ids
+        .contains(&fixture.parent_id));
+    assert!(!remote.zstd_pull_manifest_requests[1]
+        .have_snapshot_ids
+        .contains(&fixture.parent_id));
+    assert_eq!(pulled["imported_snapshot_ids"], json!([fixture.child_id]));
+    assert!(target_tmp.path().join(parent_object_pack_path).is_file());
+    assert!(remote_sync::remote_sync_snapshot_content_complete_for_repo(
+        &target_repo,
+        &fixture.parent_id,
+    )
+    .expect("restored parent closure"));
+    assert!(remote_sync::remote_sync_snapshot_content_complete_for_repo(
+        &target_repo,
+        &fixture.child_id,
+    )
+    .expect("imported child closure"));
 }
 
 #[test]

@@ -194,6 +194,7 @@ struct FakeLineSnapshotRemote {
     remote_snapshots: BTreeMap<String, JsonValue>,
     zstd_import_manifests: BTreeMap<String, ZstdImportManifestPayload>,
     zstd_pull_manifest: Option<ZstdPullManifestPayload>,
+    zstd_pull_manifests: VecDeque<ZstdPullManifestPayload>,
     zstd_pull_manifest_requests: Vec<ZstdPullManifestRequest>,
     zstd_object_packs: BTreeMap<String, Vec<u8>>,
     zstd_tree_packs: BTreeMap<String, Vec<u8>>,
@@ -1627,6 +1628,9 @@ impl TaskWorkflowZstdPackReader for FakeLineSnapshotRemote {
         request: &ZstdPullManifestRequest,
     ) -> TaskWorkflowHttpClientResult<ZstdPullManifestPayload> {
         self.zstd_pull_manifest_requests.push(request.clone());
+        if let Some(manifest) = self.zstd_pull_manifests.pop_front() {
+            return Ok(manifest);
+        }
         self.zstd_pull_manifest.clone().ok_or_else(|| {
             TaskWorkflowHttpClientError::Remote("missing zstd pull manifest".to_string())
         })

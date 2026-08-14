@@ -371,21 +371,22 @@ fn fixture_npm_envelope() -> Vec<u8> {
     let mut optional_dependencies = serde_json::Map::new();
     let mut payloads = Vec::new();
     for target in TARGETS {
-        let (os, cpu) = match *target {
-            "aarch64-apple-darwin" => ("darwin", "arm64"),
-            "x86_64-apple-darwin" => ("darwin", "x64"),
-            "aarch64-unknown-linux-gnu" => ("linux", "arm64"),
-            "x86_64-unknown-linux-gnu" => ("linux", "x64"),
-            "aarch64-pc-windows-msvc" => ("win32", "arm64"),
-            "x86_64-pc-windows-msvc" => ("win32", "x64"),
+        let (os, cpu, libc) = match *target {
+            "aarch64-apple-darwin" => ("darwin", "arm64", None),
+            "x86_64-apple-darwin" => ("darwin", "x64", None),
+            "aarch64-unknown-linux-gnu" => ("linux", "arm64", Some("glibc")),
+            "x86_64-unknown-linux-gnu" => ("linux", "x64", Some("glibc")),
+            "aarch64-pc-windows-msvc" => ("win32", "arm64", None),
+            "x86_64-pc-windows-msvc" => ("win32", "x64", None),
             _ => unreachable!(),
         };
-        let package = format!("ait-native-ait-{os}-{cpu}");
+        let package = format!("@wa120/ait-native-{os}-{cpu}");
         optional_dependencies.insert(package.clone(), json!("1.0.0-rc.2"));
         payloads.push(json!({
             "target": target,
             "os": os,
             "cpu": cpu,
+            "libc": libc,
             "component": "ait-node",
             "package": package,
             "version": "1.0.0-rc.2",
@@ -396,10 +397,15 @@ fn fixture_npm_envelope() -> Vec<u8> {
         }));
     }
     let package_json = json!({
-        "name": "ait-native",
+        "name": "@wa120/ait-native",
         "version": "1.0.0-rc.2",
         "description": "Direct in-process Node-API bindings for AIT",
         "license": "Apache-2.0",
+        "repository": {
+            "type": "git",
+            "url": "git+https://github.com/weita2026/ait-native.git",
+            "directory": "ait-node"
+        },
         "type": "module",
         "engines": {"node": ">=20"},
         "bin": {"ait": "bin/ait.mjs"},
@@ -420,9 +426,9 @@ fn fixture_npm_envelope() -> Vec<u8> {
         }
     });
     let payload_contract = json!({
-        "schema": "ait.node.napi-platform-packages/v1",
+        "schema": "ait.node.napi-platform-packages/v2",
         "family_version": "1.0.0-rc.2",
-        "top_level_package": "ait-native",
+        "top_level_package": "@wa120/ait-native",
         "payloads": payloads
     });
     let entries = BTreeMap::from([
@@ -485,45 +491,55 @@ fn fixture_npm_envelope() -> Vec<u8> {
 }
 
 fn fixture_npm_addon(target: &str) -> (String, Vec<u8>, Vec<u8>) {
-    let (os, cpu) = match target {
-        "aarch64-apple-darwin" => ("darwin", "arm64"),
-        "x86_64-apple-darwin" => ("darwin", "x64"),
-        "aarch64-unknown-linux-gnu" => ("linux", "arm64"),
-        "x86_64-unknown-linux-gnu" => ("linux", "x64"),
-        "aarch64-pc-windows-msvc" => ("win32", "arm64"),
-        "x86_64-pc-windows-msvc" => ("win32", "x64"),
+    let (os, cpu, libc) = match target {
+        "aarch64-apple-darwin" => ("darwin", "arm64", None),
+        "x86_64-apple-darwin" => ("darwin", "x64", None),
+        "aarch64-unknown-linux-gnu" => ("linux", "arm64", Some("glibc")),
+        "x86_64-unknown-linux-gnu" => ("linux", "x64", Some("glibc")),
+        "aarch64-pc-windows-msvc" => ("win32", "arm64", None),
+        "x86_64-pc-windows-msvc" => ("win32", "x64", None),
         _ => panic!("unexpected target {target}"),
     };
-    let package = format!("ait-native-ait-{os}-{cpu}");
+    let package = format!("@wa120/ait-native-{os}-{cpu}");
     let addon = "native/ait_napi.node";
     let addon_bytes = format!("direct-node-api-addon:{target}\n").into_bytes();
     let license_bytes = b"ait-node:license\n".to_vec();
     let notice_bytes = b"ait-node:notice\n".to_vec();
-    let package_json = json!({
+    let mut package_json = json!({
         "name": package,
         "version": "1.0.0-rc.2",
         "description": format!("Implementation-only AIT Node-API addon for {target}"),
         "license": "Apache-2.0",
+        "repository": {
+            "type": "git",
+            "url": "git+https://github.com/weita2026/ait-native.git",
+            "directory": "ait-node"
+        },
         "os": [os],
         "cpu": [cpu],
         "main": addon,
         "files": ["native", "provenance.json", "LICENSE", "NOTICE"],
         "aitNativeAddon": {
-            "schema": "ait.node.napi-platform-addon/v1",
+            "schema": "ait.node.napi-platform-addon/v2",
             "component": "ait-node",
             "target": target,
+            "libc": libc,
             "addon": addon,
             "binding_repository": "ait-core",
             "binding_snapshot": "SNP-111111111111"
         }
     });
+    if let Some(libc) = libc {
+        package_json["libc"] = json!([libc]);
+    }
     let provenance = json!({
-        "schema": "ait.node.napi-platform-addon-provenance/v1",
+        "schema": "ait.node.napi-platform-addon-provenance/v2",
         "family_version": "1.0.0-rc.2",
         "package": package,
         "target": target,
         "os": os,
         "cpu": cpu,
+        "libc": libc,
         "component": "ait-node",
         "package_source_repository": "ait-node",
         "binding_repository": "ait-core",
@@ -559,7 +575,7 @@ fn fixture_npm_addon(target: &str) -> (String, Vec<u8>, Vec<u8>) {
         ),
     ]);
     (
-        format!("{package}-1.0.0-rc.2.tgz"),
+        format!("wa120-ait-native-{os}-{cpu}-1.0.0-rc.2.tgz"),
         fixture_tar_gz(&entries),
         addon_bytes,
     )
@@ -1156,9 +1172,12 @@ fn public_family_release_freezes_six_targets_and_emits_rc_handoff_without_releas
         ],
     );
     assert_eq!(promoted["status"], "ready_for_protected_ci");
-    assert_eq!(promoted["routes"]["github"]["prerelease"], true);
+    assert_eq!(promoted["routes"]["github"]["prerelease"], false);
+    assert_eq!(promoted["routes"]["github"]["draft"], false);
     assert_eq!(promoted["routes"]["npm"]["dist_tag"], "rc");
+    assert_eq!(promoted["routes"]["pypi"]["prerelease"], true);
     assert_eq!(promoted["routes"]["oci"]["moving_tag"], "rc");
+    assert_eq!(promoted["routes"]["homebrew"]["channel"], "rc");
     assert_eq!(promoted["routes"]["apt"]["suite"], "testing");
     assert_eq!(promoted["routes"]["winget"]["route"], "validation");
     assert_eq!(
@@ -1839,7 +1858,7 @@ fn family_package_assembles_registry_channels_without_endpoint_mutation() {
             {
                 "channel": "npm",
                 "role": "product",
-                "identity": "ait-native",
+                "identity": "@wa120/ait-native",
                 "components": ["ait-node"],
                 "targets": TARGETS
             },
@@ -1932,7 +1951,7 @@ fn family_package_assembles_registry_channels_without_endpoint_mutation() {
         "npm-napi-envelope",
         &[ReceiptArtifactFixture {
             target: None,
-            declared_path: "ait-native-1.0.0-rc.2.tgz".to_string(),
+            declared_path: "wa120-ait-native-1.0.0-rc.2.tgz".to_string(),
             bytes: envelope_bytes.clone(),
         }],
     );
@@ -2010,6 +2029,21 @@ fn family_package_assembles_registry_channels_without_endpoint_mutation() {
     assert_eq!(pypi["route"]["repository"], "pypi");
     assert_eq!(pypi["route"]["prerelease"], true);
     assert_eq!(npm["route"]["dist_tag"], "rc");
+    let npm_artifacts = npm["artifacts"].as_array().unwrap();
+    let npm_linux = npm_artifacts
+        .iter()
+        .find(|artifact| {
+            artifact["kind"] == "npm-napi-addon" && artifact["target"] == "x86_64-unknown-linux-gnu"
+        })
+        .unwrap();
+    assert_eq!(npm_linux["metadata"]["libc"], "glibc");
+    let npm_darwin = npm_artifacts
+        .iter()
+        .find(|artifact| {
+            artifact["kind"] == "npm-napi-addon" && artifact["target"] == "aarch64-apple-darwin"
+        })
+        .unwrap();
+    assert_eq!(npm_darwin["metadata"]["libc"], Value::Null);
     for receipt in [&pypi, &npm] {
         assert_eq!(receipt["status"], "assembled");
         assert_eq!(receipt["check_summary"]["decision"], "pass");
@@ -2140,10 +2174,10 @@ fn family_package_assembles_registry_channels_without_endpoint_mutation() {
 
     let npm_root = package_root.join("npm").join("packages");
     assert_eq!(
-        fs::read(npm_root.join("ait-native-1.0.0-rc.2.tgz")).unwrap(),
+        fs::read(npm_root.join("wa120-ait-native-1.0.0-rc.2.tgz")).unwrap(),
         envelope_bytes
     );
-    let addon_path = npm_root.join("ait-native-ait-linux-x64-1.0.0-rc.2.tgz");
+    let addon_path = npm_root.join("wa120-ait-native-linux-x64-1.0.0-rc.2.tgz");
     let addon_package_bytes = fs::read(&addon_path).unwrap();
     let addon_members = tar_gz_members(&addon_package_bytes);
     assert_eq!(addon_members.len(), 5);
@@ -2155,17 +2189,19 @@ fn family_package_assembles_registry_channels_without_endpoint_mutation() {
     assert_eq!(addon_members["package/NOTICE"], b"ait-node:notice\n");
     let addon_package: Value =
         serde_json::from_slice(&addon_members["package/package.json"]).unwrap();
-    assert_eq!(addon_package["name"], "ait-native-ait-linux-x64");
+    assert_eq!(addon_package["name"], "@wa120/ait-native-linux-x64");
     assert_eq!(addon_package["version"], "1.0.0-rc.2");
     assert_eq!(addon_package["os"], json!(["linux"]));
     assert_eq!(addon_package["cpu"], json!(["x64"]));
+    assert_eq!(addon_package["libc"], json!(["glibc"]));
     assert_eq!(addon_package["main"], "native/ait_napi.node");
     assert_eq!(
         addon_package["aitNativeAddon"],
         json!({
-            "schema": "ait.node.napi-platform-addon/v1",
+            "schema": "ait.node.napi-platform-addon/v2",
             "component": "ait-node",
             "target": "x86_64-unknown-linux-gnu",
+            "libc": "glibc",
             "addon": "native/ait_napi.node",
             "binding_repository": "ait-core",
             "binding_snapshot": "SNP-111111111111"
@@ -2177,8 +2213,19 @@ fn family_package_assembles_registry_channels_without_endpoint_mutation() {
     let addon_provenance: Value =
         serde_json::from_slice(&addon_members["package/provenance.json"]).unwrap();
     assert_eq!(addon_provenance["binding_snapshot"], "SNP-111111111111");
+    assert_eq!(addon_provenance["libc"], "glibc");
     assert_eq!(addon_provenance["package_source_repository"], "ait-node");
     assert_eq!(addon_provenance["installed_path"], "native/ait_napi.node");
+
+    let darwin_addon_path = npm_root.join("wa120-ait-native-darwin-arm64-1.0.0-rc.2.tgz");
+    let darwin_members = tar_gz_members(&fs::read(darwin_addon_path).unwrap());
+    let darwin_package: Value =
+        serde_json::from_slice(&darwin_members["package/package.json"]).unwrap();
+    assert!(darwin_package.get("libc").is_none());
+    assert_eq!(darwin_package["aitNativeAddon"]["libc"], Value::Null);
+    let darwin_provenance: Value =
+        serde_json::from_slice(&darwin_members["package/provenance.json"]).unwrap();
+    assert_eq!(darwin_provenance["libc"], Value::Null);
 
     let frozen_addon = built["artifacts"]
         .as_array()

@@ -15,6 +15,7 @@ import test from "node:test";
 import {
   cleanLocalNodeBuildTransients,
   releaseCommandEnvironment,
+  validateNpmAddonContract,
   validateWindowsReceiptArtifact,
 } from "./build-release.mjs";
 
@@ -22,6 +23,59 @@ const WINDOWS_TARGETS = [
   "aarch64-pc-windows-msvc",
   "x86_64-pc-windows-msvc",
 ];
+
+function npmAddonContract() {
+  return {
+    schema: "ait.node.napi-platform-packages/v2",
+    family_version: "1.0.0",
+    top_level_package: "@wa120/ait-native",
+    payloads: [
+      ["aarch64-apple-darwin", "darwin", "arm64", null],
+      ["x86_64-apple-darwin", "darwin", "x64", null],
+      ["aarch64-unknown-linux-gnu", "linux", "arm64", "glibc"],
+      ["x86_64-unknown-linux-gnu", "linux", "x64", "glibc"],
+      ["aarch64-pc-windows-msvc", "win32", "arm64", null],
+      ["x86_64-pc-windows-msvc", "win32", "x64", null],
+    ].map(([target, osName, cpu, libc]) => ({
+      target,
+      os: osName,
+      cpu,
+      libc,
+      component: "ait-node",
+      package: `@wa120/ait-native-${osName}-${cpu}`,
+      version: "1.0.0",
+      binding_repository: "ait-core",
+      binding_snapshot: "SNP-AAAAAAAAAAAA",
+      license: "Apache-2.0",
+      addon: "native/ait_napi.node",
+    })),
+  };
+}
+
+test("public source contract requires exact GNU libc admission", () => {
+  const contract = npmAddonContract();
+  assert.doesNotThrow(() => validateNpmAddonContract(contract, "1.0.0"));
+
+  for (const mutate of [
+    (value) => delete value.payloads[2].libc,
+    (value) => {
+      value.payloads[2].libc = null;
+    },
+    (value) => {
+      value.payloads[2].libc = "musl";
+    },
+    (value) => {
+      value.payloads[0].libc = "glibc";
+    },
+  ]) {
+    const invalid = structuredClone(contract);
+    mutate(invalid);
+    assert.throws(
+      () => validateNpmAddonContract(invalid, "1.0.0"),
+      /target, libc, or binding metadata is not exact/u,
+    );
+  }
+});
 
 test("local source builds remove exact outputs without deleting admitted Node.js dist", async () => {
   const sourceRoot = await mkdtemp(path.join(os.tmpdir(), "ait-source-cleanup-test-"));
@@ -33,7 +87,7 @@ test("local source builds remove exact outputs without deleting admitted Node.js
     for (const [directory, file] of [
       [".ait-native-target", "release/libait_napi.dylib"],
       ["native", "ait_napi.node"],
-      ["dist", "ait-native-1.0.0-rc.3.tgz"],
+      ["dist", "wa120-ait-native-1.0.0-rc.4.tgz"],
     ]) {
       const generated = path.join(nodeRoot, directory, file);
       await mkdir(path.dirname(generated), { recursive: true });
@@ -43,13 +97,13 @@ test("local source builds remove exact outputs without deleting admitted Node.js
     await mkdir(path.dirname(admittedDist), { recursive: true });
     await writeFile(admittedDist, "admitted\n");
 
-    await cleanLocalNodeBuildTransients("1.0.0-rc.3", sourceRoot);
+    await cleanLocalNodeBuildTransients("1.0.0-rc.4", sourceRoot);
 
     assert.equal(await readFile(retained, "utf8"), "export const retained = true;\n");
     await assert.rejects(lstat(path.join(nodeRoot, ".ait-native-target")), { code: "ENOENT" });
     await assert.rejects(lstat(path.join(nodeRoot, "native", "ait_napi.node")), { code: "ENOENT" });
     await assert.rejects(
-      lstat(path.join(nodeRoot, "dist", "ait-native-1.0.0-rc.3.tgz")),
+      lstat(path.join(nodeRoot, "dist", "wa120-ait-native-1.0.0-rc.4.tgz")),
       { code: "ENOENT" },
     );
     assert.equal(await readFile(admittedDist, "utf8"), "admitted\n");
@@ -184,14 +238,14 @@ test("Windows npm addon archives inspect their packaged node binary", () => {
   const row = {
     target: "x86_64-pc-windows-msvc",
     kind: "npm-napi-addon",
-    declared_path: "ait-native-ait-win32-x64.tgz",
+    declared_path: "wa120-ait-native-win32-x64.tgz",
   };
   assert.throws(
     () =>
       validateWindowsReceiptArtifact(
         tarGzip("package/native/ait_napi.node", fakePe("MSVCP140_ATOMIC_WAIT.dll")),
         row,
-        "ait-native-ait-win32-x64.tgz",
+        "wa120-ait-native-win32-x64.tgz",
       ),
     /dynamically imports MSVCP140_ATOMIC_WAIT\.dll/u,
   );
@@ -199,7 +253,7 @@ test("Windows npm addon archives inspect their packaged node binary", () => {
     validateWindowsReceiptArtifact(
       tarGzip("package/native/ait_napi.node", fakePe("KERNEL32.dll")),
       row,
-      "ait-native-ait-win32-x64.tgz",
+      "wa120-ait-native-win32-x64.tgz",
     ),
   );
 });

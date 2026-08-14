@@ -35,6 +35,7 @@ const PAYLOAD_KEYS = Object.freeze([
   "binding_snapshot",
   "component",
   "cpu",
+  "libc",
   "license",
   "os",
   "package",
@@ -46,16 +47,17 @@ const ADDON_METADATA_KEYS = Object.freeze([
   "binding_repository",
   "binding_snapshot",
   "component",
+  "libc",
   "schema",
   "target",
 ]);
 const TARGETS = new Map([
-  ["aarch64-apple-darwin", ["darwin", "arm64"]],
-  ["x86_64-apple-darwin", ["darwin", "x64"]],
-  ["aarch64-unknown-linux-gnu", ["linux", "arm64"]],
-  ["x86_64-unknown-linux-gnu", ["linux", "x64"]],
-  ["aarch64-pc-windows-msvc", ["win32", "arm64"]],
-  ["x86_64-pc-windows-msvc", ["win32", "x64"]],
+  ["aarch64-apple-darwin", { os: "darwin", cpu: "arm64", libc: null }],
+  ["x86_64-apple-darwin", { os: "darwin", cpu: "x64", libc: null }],
+  ["aarch64-unknown-linux-gnu", { os: "linux", cpu: "arm64", libc: "glibc" }],
+  ["x86_64-unknown-linux-gnu", { os: "linux", cpu: "x64", libc: "glibc" }],
+  ["aarch64-pc-windows-msvc", { os: "win32", cpu: "arm64", libc: null }],
+  ["x86_64-pc-windows-msvc", { os: "win32", cpu: "x64", libc: null }],
 ]);
 
 let validatedContract = null;
@@ -261,9 +263,9 @@ function loadContract() {
   const contract = readJson(CONTRACT_PATH, "npm addon contract");
   assertExactKeys(contract, CONTRACT_KEYS, "npm addon contract");
   if (
-    contract.schema !== "ait.node.napi-platform-packages/v1" ||
+    contract.schema !== "ait.node.napi-platform-packages/v2" ||
     contract.top_level_package !== "@wa120/ait-native" ||
-    contract.family_version !== "1.0.0-rc.4" ||
+    contract.family_version !== "1.0.0-rc.5" ||
     !Array.isArray(contract.payloads) ||
     contract.payloads.length !== 6
   ) {
@@ -277,15 +279,16 @@ function loadContract() {
     const expectedPackage =
       platform === undefined
         ? null
-        : `@wa120/ait-native-${platform[0]}-${platform[1]}`;
+        : `@wa120/ait-native-${platform.os}-${platform.cpu}`;
     if (
       platform === undefined ||
-      payload.os !== platform[0] ||
-      payload.cpu !== platform[1] ||
+      payload.os !== platform.os ||
+      payload.cpu !== platform.cpu ||
+      payload.libc !== platform.libc ||
       payload.package !== expectedPackage ||
       payload.component !== "ait-node" ||
       payload.binding_repository !== "ait-core" ||
-      payload.binding_snapshot !== "SNP-D4390C77FBEE" ||
+      payload.binding_snapshot !== "SNP-64B101AAE684" ||
       payload.license !== "Apache-2.0" ||
       payload.version !== contract.family_version ||
       payload.addon !== "native/ait_napi.node"
@@ -306,21 +309,73 @@ function loadContract() {
   return contract;
 }
 
-function selectPlatformPayload(contract) {
+export function detectRuntimeLibc(
+  platform = process.platform,
+  report = runtimeReport(),
+) {
+  if (platform !== "linux") {
+    return null;
+  }
+  const glibcVersion = report?.header?.glibcVersionRuntime;
+  if (typeof glibcVersion === "string" && glibcVersion.length > 0) {
+    return "glibc";
+  }
+  const sharedObjects = report?.sharedObjects;
+  if (
+    Array.isArray(sharedObjects) &&
+    sharedObjects.some(
+      (entry) =>
+        typeof entry === "string" &&
+        /(?:^|[\\/])(?:ld-musl-[^\\/]+|libc\.musl-[^\\/]+)\.so(?:\.\d+)*$/.test(
+          entry,
+        ),
+    )
+  ) {
+    return "musl";
+  }
+  return "unknown";
+}
+
+export function selectPlatformPayload(
+  contract,
+  platform = {
+    os: process.platform,
+    cpu: process.arch,
+    libc: detectRuntimeLibc(),
+  },
+) {
   const matches = contract.payloads.filter(
-    (payload) => payload.os === process.platform && payload.cpu === process.arch,
+    (payload) =>
+      payload.os === platform.os &&
+      payload.cpu === platform.cpu &&
+      payload.libc === platform.libc,
   );
   if (matches.length !== 1) {
+    const libc = platform.os === "linux" ? `/${platform.libc}` : "";
     throw new NativeResolutionError(
-      `ait-native does not support Node-API on ${process.platform}/${process.arch}`,
+      `ait-native does not support Node-API on ${platform.os}/${platform.cpu}${libc}`,
     );
   }
   return matches[0];
 }
 
+function runtimeReport() {
+  try {
+    return process.report?.getReport?.() ?? null;
+  } catch {
+    return null;
+  }
+}
+
 function validatePlatformPackage(packageJson, payload) {
   const metadata = packageJson.aitNativeAddon;
   assertExactKeys(metadata, ADDON_METADATA_KEYS, payload.package);
+  const libcMatches =
+    payload.libc === null
+      ? packageJson.libc === undefined
+      : Array.isArray(packageJson.libc) &&
+        packageJson.libc.length === 1 &&
+        packageJson.libc[0] === payload.libc;
   if (
     packageJson.name !== payload.package ||
     packageJson.version !== payload.version ||
@@ -332,9 +387,11 @@ function validatePlatformPackage(packageJson, payload) {
     !Array.isArray(packageJson.cpu) ||
     packageJson.cpu.length !== 1 ||
     packageJson.cpu[0] !== payload.cpu ||
-    metadata.schema !== "ait.node.napi-platform-addon/v1" ||
+    !libcMatches ||
+    metadata.schema !== "ait.node.napi-platform-addon/v2" ||
     metadata.component !== payload.component ||
     metadata.target !== payload.target ||
+    metadata.libc !== payload.libc ||
     metadata.addon !== payload.addon ||
     metadata.binding_repository !== payload.binding_repository ||
     metadata.binding_snapshot !== payload.binding_snapshot ||

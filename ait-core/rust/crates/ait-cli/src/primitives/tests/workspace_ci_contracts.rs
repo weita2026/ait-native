@@ -72,6 +72,14 @@ fn init_repo_with_tracked_markdown(
     artifact_path: &str,
     text: &str,
 ) -> (tempfile::TempDir, RepoRuntime) {
+    init_repo_with_markdown_revision(artifact_path, text, Some(markdown_guard_blob_id(text)))
+}
+
+fn init_repo_with_markdown_revision(
+    artifact_path: &str,
+    text: &str,
+    artifact_blob_id: Option<String>,
+) -> (tempfile::TempDir, RepoRuntime) {
     let repo_tmp = tempdir().expect("repo tempdir");
     let repo_root = repo_tmp.path();
     init_repo(&InitRequest {
@@ -150,7 +158,7 @@ fn init_repo_with_tracked_markdown(
             artifact_path_bytes: artifact_path.as_bytes().to_vec(),
             artifact_selector_bytes: Vec::new(),
             artifact_heading_bytes: b"Guard Markdown".to_vec(),
-            artifact_blob_id_bytes: markdown_guard_blob_id(text).into_bytes(),
+            artifact_blob_id_bytes: artifact_blob_id.unwrap_or_default().into_bytes(),
         },
     )
     .expect("append plan revision fixture");
@@ -192,6 +200,29 @@ fn planning_only_guard_rejects_tracked_markdown_drift() {
     let err = guard_no_planning_only_artifact_drift(&repo, "ait snapshot create")
         .expect_err("dirty tracked markdown should block workflow authoring");
     assert_markdown_guard_error("shared guard", err);
+}
+
+#[test]
+fn planning_only_guard_rejects_missing_blob_backed_markdown() {
+    let (repo_tmp, repo) = init_repo_with_tracked_markdown("docs/guard.md", "# Guard\n");
+    fs::remove_file(repo_tmp.path().join("docs/guard.md")).expect("remove tracked markdown");
+
+    let err = guard_no_planning_only_artifact_drift(&repo, "ait snapshot create")
+        .expect_err("missing blob-backed markdown should block workflow authoring");
+    assert_markdown_guard_error("shared guard", err);
+}
+
+#[test]
+fn planning_only_guard_ignores_legacy_revision_without_blob_evidence() {
+    let (repo_tmp, repo) = init_repo_with_markdown_revision("docs/guard.md", "# Guard\n", None);
+    fs::write(
+        repo_tmp.path().join("docs/guard.md"),
+        "# Guard\n\nchanged\n",
+    )
+    .expect("change legacy markdown");
+
+    guard_no_planning_only_artifact_drift(&repo, "ait snapshot create")
+        .expect("legacy revision without Blob evidence should not block workflow authoring");
 }
 
 #[test]

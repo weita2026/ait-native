@@ -6,8 +6,8 @@ import { fileURLToPath } from "node:url";
 import { resolveNativeManifest } from "../scripts/native-build.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const VERSION = "1.0.0-rc.4";
-const CORE_SNAPSHOT = "SNP-D4390C77FBEE";
+const VERSION = "1.0.0-rc.5";
+const CORE_SNAPSHOT = "SNP-64B101AAE684";
 const PACKAGE_NAME = "@wa120/ait-native";
 const REPOSITORY = {
   type: "git",
@@ -15,12 +15,12 @@ const REPOSITORY = {
   directory: "ait-node",
 };
 const TARGETS = new Map([
-  ["aarch64-apple-darwin", ["darwin", "arm64"]],
-  ["x86_64-apple-darwin", ["darwin", "x64"]],
-  ["aarch64-unknown-linux-gnu", ["linux", "arm64"]],
-  ["x86_64-unknown-linux-gnu", ["linux", "x64"]],
-  ["aarch64-pc-windows-msvc", ["win32", "arm64"]],
-  ["x86_64-pc-windows-msvc", ["win32", "x64"]],
+  ["aarch64-apple-darwin", { os: "darwin", cpu: "arm64", libc: null }],
+  ["x86_64-apple-darwin", { os: "darwin", cpu: "x64", libc: null }],
+  ["aarch64-unknown-linux-gnu", { os: "linux", cpu: "arm64", libc: "glibc" }],
+  ["x86_64-unknown-linux-gnu", { os: "linux", cpu: "x64", libc: "glibc" }],
+  ["aarch64-pc-windows-msvc", { os: "win32", cpu: "arm64", libc: null }],
+  ["x86_64-pc-windows-msvc", { os: "win32", cpu: "x64", libc: null }],
 ]);
 
 async function json(relativePath) {
@@ -61,6 +61,7 @@ test("top-level package is one portable direct Node-API envelope", async () => {
   assert.equal(packageJson.dependencies, undefined);
   assert.equal(packageJson.os, undefined);
   assert.equal(packageJson.cpu, undefined);
+  assert.equal(packageJson.libc, undefined);
   assert.deepEqual(packageJson.files, [
     "bin/ait.mjs",
     "lib",
@@ -117,7 +118,7 @@ test("platform contract declares one exact addon per target", async () => {
     "schema",
     "top_level_package",
   ]);
-  assert.equal(contract.schema, "ait.node.napi-platform-packages/v1");
+  assert.equal(contract.schema, "ait.node.napi-platform-packages/v2");
   assert.equal(contract.family_version, VERSION);
   assert.equal(contract.top_level_package, PACKAGE_NAME);
   assert.equal(contract.payloads.length, 6);
@@ -131,13 +132,17 @@ test("platform contract declares one exact addon per target", async () => {
       "binding_snapshot",
       "component",
       "cpu",
+      "libc",
       "license",
       "os",
       "package",
       "target",
       "version",
     ]);
-    assert.deepEqual([payload.os, payload.cpu], TARGETS.get(payload.target));
+    assert.deepEqual(
+      { os: payload.os, cpu: payload.cpu, libc: payload.libc },
+      TARGETS.get(payload.target),
+    );
     assert.equal(payload.component, "ait-node");
     assert.equal(payload.version, VERSION);
     assert.equal(payload.binding_repository, "ait-core");
@@ -199,7 +204,7 @@ test("published runtime loads an addon directly and has no process relay", async
 test("native build validates the locked external and public monorepo layouts", async () => {
   const build = await readFile(path.join(ROOT, "scripts", "native-build.mjs"), "utf8");
 
-  assert.match(build, /SNP-D4390C77FBEE/);
+  assert.match(build, /SNP-64B101AAE684/);
   assert.match(build, /\.ait-external-marker\.json/);
   assert.match(build, /ait-monorepo-source\.json/);
   assert.match(build, /ait-release-family\.json/);
@@ -217,7 +222,7 @@ test("cross-platform CI uses one logical runner and builds the addon first", asy
   const windows = await readFile(path.join(ROOT, "ci", "run.ps1"), "utf8");
   for (const source of [unix, windows]) {
     assert.match(source, /native:build/);
-    assert.match(source, /1\.0\.0-rc\.4/);
+    assert.match(source, /1\.0\.0-rc\.5/);
     assert.match(source, /ait-external/);
     assert.doesNotMatch(source, /1\.0\.0-rc\.1/);
   }

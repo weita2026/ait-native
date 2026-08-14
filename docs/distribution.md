@@ -5,34 +5,55 @@ lineage remains governed by AIT Plan revisions and is not duplicated here.
 
 Status: target contract plus the current and prior RC records. Contract
 sections define the admitted family; dated status sections distinguish the
-frozen RC.4 release identity from historical endpoint evidence.
+frozen RC.5 release identity from historical endpoint evidence.
 
-## RC.4 Release Identity (2026-08-13)
+## RC.5 Release Identity (2026-08-14)
 
-`v1.0.0-rc.4` is the release represented by this source tree. Its five source
+`v1.0.0-rc.5` is the release represented by this source tree. Its five source
 authorities are frozen at these AIT Snapshots:
 
 | Authority | Snapshot |
 | --- | --- |
-| `ait-core` | `SNP-D4390C77FBEE` |
-| `ait-server` | `SNP-AF4552C13AD8` |
-| `ait-runner` | `SNP-B2FC6696499A` |
-| `ait-python` | `SNP-F4658969CCC1` |
-| `ait-node` | `SNP-C729FDD83900` |
+| `ait-core` | `SNP-64B101AAE684` |
+| `ait-server` | `SNP-0445E16F63EB` |
+| `ait-runner` | `SNP-2458874F5737` |
+| `ait-python` | `SNP-9EE8E9FFF1D1` |
+| `ait-node` | `SNP-261F4DA754BE` |
 
 GitHub publishes this RC tag as a non-draft regular Release with
-`prerelease=false`. The version remains `1.0.0-rc.4`; this GitHub presentation
+`prerelease=false`. The version remains `1.0.0-rc.5`; this GitHub presentation
 choice does not promote package-registry routes to stable. npm uses the `rc`
-dist-tag, PyPI uses `1.0.0rc4`, OCI uses the moving `rc` tag, Homebrew retains
+dist-tag, PyPI uses `1.0.0rc5`, OCI uses the moving `rc` tag, Homebrew retains
 the RC formula, APT uses `testing`, and WinGet remains on its validation route.
 The top-level npm product is `@wa120/ait-native`, backed by six exact-version
-scoped Node-API implementation packages; RC.4 does not use the historical npm
+scoped Node-API implementation packages; RC.5 does not use the historical npm
 namespace supplement.
 
 The exact Git commit, tag object, protected workflow runs, release ID, asset
 digests, endpoint receipts, and external readback results are recorded by the
-RC.4 protected release dossier as publication proceeds. They are not guessed
+RC.5 protected release dossier as publication proceeds. They are not guessed
 or copied from an earlier candidate in this source document.
+
+## Previous Public RC.4 Record (2026-08-13)
+
+`v1.0.0-rc.4` remains an immutable public release. Annotated tag object
+`a23c61fed8b75e6c8881ceea0a043bd82331f98f` peels to source commit
+`ea2d347010d3ead2cdfb304e6df448cbf9fe0c4e`; the public Release is
+[`weita2026/ait-native v1.0.0-rc.4`](https://github.com/weita2026/ait-native/releases/tag/v1.0.0-rc.4)
+and is presented as a non-draft regular Release with `prerelease=false`.
+
+Component-receipt run
+[`31716406486`](https://github.com/weita2026/ait-native/actions/runs/31716406486),
+protected-promotion run
+[`31721469565`](https://github.com/weita2026/ait-native/actions/runs/31721469565),
+and endpoint-publication run
+[`31723274386`](https://github.com/weita2026/ait-native/actions/runs/31723274386)
+all completed successfully. The endpoint run published and read back GitHub,
+PyPI `1.0.0rc4`, all seven scoped npm `1.0.0-rc.4` identities, Homebrew, the
+signed APT repository, and both GHCR images. Its WinGet result is the RC
+validation artifact route, not a claim that a community manifest has merged
+or is searchable. RC.4 bytes and endpoint evidence are never rewritten as
+RC.5.
 
 ## Previous Public RC.3 Record (2026-08-13)
 
@@ -167,7 +188,7 @@ A clean tagged checkout validates and builds the current host without an AIT
 server:
 
 ```text
-git clone --branch v1.0.0-rc.4 https://github.com/weita2026/ait-native.git
+git clone --branch v1.0.0-rc.5 https://github.com/weita2026/ait-native.git
 cd ait-native
 ./build-release.sh
 ```
@@ -452,8 +473,8 @@ binaries, without compiling a component or downloading a component during the
 image build:
 
 ```text
-ghcr.io/weita2026/ait-server:1.0.0-rc.4
-ghcr.io/weita2026/ait-runner:1.0.0-rc.4
+ghcr.io/weita2026/ait-server:1.0.0-rc.5
+ghcr.io/weita2026/ait-runner:1.0.0-rc.5
 ```
 
 The immutable version tags are the evidence and deployment boundary. The
@@ -474,7 +495,7 @@ docker run --detach \
   --publish 127.0.0.1:8088:8088 \
   --restart unless-stopped \
   --volume ait-native-rc-data:/var/lib/ait \
-  ghcr.io/weita2026/ait-server:1.0.0-rc.4
+  ghcr.io/weita2026/ait-server:1.0.0-rc.5
 curl --fail http://127.0.0.1:8088/healthz
 ```
 
@@ -493,7 +514,7 @@ whose declared CI command it must execute:
 docker run --rm \
   --network ait-native-rc \
   --volume "$PWD:/workspace" \
-  ghcr.io/weita2026/ait-runner:1.0.0-rc.4 \
+  ghcr.io/weita2026/ait-runner:1.0.0-rc.5 \
   serve --server http://ait-server:8088 --source-root /workspace --once
 ```
 
@@ -508,8 +529,8 @@ The post-publication package names and commands are:
 | Homebrew | after adding the release tap, `brew install ait-native-rc`; stable uses `brew install ait-native` |
 | apt | after adding the signed AIT repository, `sudo apt install ait-native` |
 | WinGet | RC validation uses `winget install --manifest <generated-manifest-directory>`; stable uses `winget install --id Weita.AitNative --exact` |
-| PyPI | `python -m pip install ait-native==1.0.0rc4`; stable uses `ait-native==1.0.0` |
-| npm | `npm install --global @wa120/ait-native@1.0.0-rc.4`; stable uses `@wa120/ait-native@1.0.0` |
+| PyPI | `python -m pip install ait-native==1.0.0rc5`; stable uses `ait-native==1.0.0` |
+| npm | `npm install --global @wa120/ait-native@1.0.0-rc.5`; stable uses `@wa120/ait-native@1.0.0` |
 
 The signed APT route must be added and searched before installation:
 
@@ -524,10 +545,10 @@ apt-cache search --names-only '^ait-runner$'
 sudo apt install ait-native
 ```
 
-The RC.4 publisher performs the same signed update and both exact-name searches
+The RC.5 publisher performs the same signed update and both exact-name searches
 in an isolated APT client root. It writes successful `apt_cache_search`
 evidence only after both names are found. These identifiers are the release
-contract, not a claim that RC.4 is already live; publication still requires
+contract, not a claim that RC.5 is already live; publication still requires
 the frozen family, signatures, clean-host evidence, and public readback below.
 
 ## Platform Matrix
@@ -568,7 +589,13 @@ is validation isolation for DLL cleanup, not a runtime transport.
 The supported npm implementation identities are exactly
 `@wa120/ait-native-{darwin,linux,win32}-{arm64,x64}`. The top-level
 `@wa120/ait-native` package declares all six as exact-family-version optional
-dependencies and selects the one matching package by OS and architecture.
+dependencies and selects the one matching package by OS, architecture, and,
+for Linux, C library. Both `*-unknown-linux-gnu` implementation packages must
+declare the npm selector `libc: ["glibc"]`; Darwin and Windows implementation
+packages must omit the npm `libc` selector. The v2 payload contract, addon
+metadata, and provenance still carry an exact `libc` field for every row:
+`"glibc"` for GNU Linux and explicit `null` for non-Linux targets. This keeps
+npm from admitting a GNU addon on musl before Node attempts to load it.
 Each addon package is Apache-2.0, has no npm `bin`, scripts, dependencies,
 independent version line, or supported direct-install surface, and contains
 only the addon, package metadata, provenance, `LICENSE`, and `NOTICE`. All
@@ -576,6 +603,13 @@ seven scoped npm identities must be controlled by the owner before
 publication; a registry availability check is not a reservation. The five
 previously published unscoped implementation identities are historical RC.3
 endpoint artifacts, not supported install identities.
+
+The immutable `1.0.0-rc.4` npm artifacts predate this v2 libc selector and are
+not rewritten or republished. They do not constitute a musl support claim.
+RC.5 binds corrected `ait-node` Snapshot `SNP-261F4DA754BE`; its Linux addon
+packages must publish and read back `libc: ["glibc"]`, while Darwin and Windows
+must omit the selector. Passing that gate establishes GNU Linux support for
+RC.5 and still does not claim musl support.
 
 The PyPI `ait-native` wheels must pair `ait` and `ait-server` on all six
 targets. Homebrew must pair them on the four admitted macOS/Linux targets, apt
@@ -602,8 +636,8 @@ governed solely by [the centralized requirements above](#repository-language-neu
   invoke the CLI, inspect ambient `PATH`, or download a runtime after
   installation.
 - The npm facade selects only the adjacent package-owned `.node` addon by
-  declared OS/architecture, exposes the typed import API, and sends `ait` argv
-  to `runCli` in-process without `child_process`.
+  declared OS/architecture/libc, exposes the typed import API, and sends `ait`
+  argv to `runCli` in-process without `child_process`.
 - PyPI uses `ait-native` and npm uses `@wa120/ait-native` as their sole
   supported registry install identities; the npm scope is a registry namespace,
   not a second product, and component repository names are not alternate
@@ -635,7 +669,10 @@ For each component, package, and target:
    package, including the embedded Python or Node.js binding where
    applicable;
 9. coherent upgrade, reinstall, offline, and uninstall proof;
-10. exact release-manifest membership.
+10. for npm, exact staged and registry-readback presence/value equality for
+    `os`, `cpu`, `libc`, addon metadata, and optional dependencies, including a
+    glibc-admitted/musl-omitted install-selection regression;
+11. exact release-manifest membership.
 
 The family may be announced only after every required row passes or an
 explicitly owner-approved target is removed from this contract before
@@ -655,11 +692,120 @@ every source repository, rejects target-receipt disagreement, and freezes one
 deduplicated repository/Snapshot copy for downstream package assemblers. These
 legal files do not increase or weaken the 37 product-artifact requirements.
 
-For RC.4, use family version `1.0.0-rc.4`, Python version `1.0.0rc4`, tag
-`v1.0.0-rc.4`, and channel `rc`. Promotion first creates a
-credential-free protected-CI handoff; publisher jobs then promote the frozen
-bytes without rebuilding. Stable `1.0.0` is a separate admitted family build,
-not an RC tag rename.
+The v3 family manifest is the sole release-identity input. An RC uses version
+`X.Y.Z-rc.N`, Python version `X.Y.ZrcN`, tag `vX.Y.Z-rc.N`, and channel `rc`;
+a stable release uses `X.Y.Z` for both family and Python versions, tag
+`vX.Y.Z`, and channel `stable`. The scripts reject every disagreement among
+those values. Promotion first creates a credential-free protected-CI handoff;
+publisher jobs then promote the frozen bytes without rebuilding. Stable
+`1.0.0` is a separate admitted family build, not an RC tag rename.
+
+### Script-only next-release operator SOP
+
+This is the complete maintainer operator path for a later RC or stable release.
+It uses repository scripts and existing GitHub Actions only; it does not add or
+invoke a new AIT product command, change `ait release publish`, require a
+runner-reachable `ait-server`, or publish from the maintainer machine.
+Preparation and evidence binding are non-publishing unless `--dispatch` is
+explicitly present, and even `--dispatch` only starts the next reviewed
+workflow. All package and endpoint writes remain inside the `pypi` protected
+GitHub environment.
+
+Prerequisites are `bash`, Git, `jq`, Node.js, `base64`, a SHA-256 utility, and
+an authenticated `gh` CLI for live workflow binding or dispatch. The public
+repository must already contain one reviewed, clean deterministic export with
+an immutable family tag resolving to its current commit. Produce that export
+with the existing script after selecting and landing the five source
+Snapshots:
+
+```bash
+AIT_RELEASE_COORDINATOR_SNAPSHOT=SNP-XXXXXXXXXXXX \
+AIT_RELEASE_COORDINATOR_MANIFEST_HASH=<64-lowercase-hex> \
+AIT_RELEASE_COORDINATOR_CREATED_AT=<unix-seconds> \
+./ci/release_monorepo_export.sh \
+  /absolute/path/to/ait-release-family.json \
+  /absolute/path/to/source-bundles \
+  /absolute/path/to/ait-native-export \
+  /absolute/path/to/export-evidence.json
+```
+
+Review the export, commit it to `weita2026/ait-native`, create its declared
+annotated tag exactly once, push the commit and tag, and validate a clean clone
+before dispatch. The operator refuses a dirty checkout, a moved or mismatched
+tag, an invalid source mapping, or inconsistent RC/stable/Python versions:
+
+```bash
+export AIT_PUBLIC_SOURCE=/absolute/path/to/clean/ait-native
+export AIT_RELEASE_RECORDS=/absolute/path/to/new/release-records
+mkdir -p "${AIT_RELEASE_RECORDS}"
+
+cd "${AIT_PUBLIC_SOURCE}"
+./build-release.sh --validate-only --git-commit "$(git rev-parse HEAD)"
+./ci/release_operator.sh prepare \
+  --source-root "${AIT_PUBLIC_SOURCE}" \
+  --output "${AIT_RELEASE_RECORDS}/01-prepare.json" \
+  --dispatch
+```
+
+After the component-receipt workflow succeeds, copy only its numeric run ID.
+The script queries the exact successful run, finds the unique frozen dossier,
+downloads it, and derives its Release ID, artifact ID, digest, control commit,
+Snapshot, and frozen hashes before optionally starting protected promotion:
+
+```bash
+cd "${AIT_PUBLIC_SOURCE}"
+./ci/release_operator.sh bind-receipts \
+  --prepare "${AIT_RELEASE_RECORDS}/01-prepare.json" \
+  --run-id <component-receipt-run-id> \
+  --output "${AIT_RELEASE_RECORDS}/02-receipts.json" \
+  --dispatch
+```
+
+Approve that exact run in `rc-promotion` or `stable-promotion`, according to
+the manifest channel. After it succeeds, copy only its numeric run ID. The
+next command verifies the protected artifact and evidence against the frozen
+dossier, generates the canonical endpoint configuration from reviewed static
+defaults, binds its SHA-256, and optionally dispatches endpoint publication:
+
+```bash
+./ci/release_operator.sh bind-authorization \
+  --receipts "${AIT_RELEASE_RECORDS}/02-receipts.json" \
+  --run-id <protected-promotion-run-id> \
+  --output "${AIT_RELEASE_RECORDS}/03-endpoints.json" \
+  --dispatch
+```
+
+To inspect before dispatch, first omit `--dispatch` and use a distinct output
+filename; outputs are intentionally create-once and are never overwritten.
+Then repeat the same evidence binding with `--dispatch` and a new output file.
+The generated route is `rc`/RC formula/`testing`/WinGet validation for an RC,
+or `latest`/stable formula/`stable`/WinGet community submission for a stable
+release. Endpoint identities, credential *names*, and immutable OCI bases live
+only in `release/endpoint-publication.defaults.json`; secret values never
+enter source or operator records.
+
+After the endpoint workflow succeeds, copy its numeric run ID and generate the
+final machine-readable status:
+
+```bash
+./ci/release_operator.sh status \
+  --config "${AIT_RELEASE_RECORDS}/03-endpoints.json" \
+  --run-id <endpoint-publication-run-id> \
+  --output "${AIT_RELEASE_RECORDS}/04-status.json"
+```
+
+Success proves exact readback for GitHub, PyPI, npm, Homebrew, signed apt, and
+both OCI images. npm success includes equality between each staged package and
+the registry version for the presence and value of `os`, `cpu`, `libc`, addon
+metadata, and optional dependencies; Linux must read back `libc: ["glibc"]`
+while Darwin and Windows must read back no `libc` selector. Success also
+includes `apt-cache search` visibility for `ait-native` and `ait-runner`. RC
+WinGet output stops at validated release assets by contract;
+stable WinGet still requires the generated community manifest to be submitted,
+reviewed, merged, and independently found with `winget search`. Keep the four
+JSON records with the release dossier. Any rerun must use a new output path and
+bind a new successful workflow run; scripts never relabel or overwrite earlier
+evidence.
 
 ### Implemented package-assembly boundary
 
@@ -684,7 +830,7 @@ Each command writes below
 | apt | two `ait-native` and two standalone `ait-runner` Debian packages for `arm64`/`amd64` |
 | WinGet | two Windows portable ZIPs and the three-file WinGet 1.12 manifest set |
 | PyPI | six platform-specific `ait_native` `cp311-abi3` wheels |
-| npm | the portable `@wa120/ait-native` JS/TS envelope plus six exact-version, OS/CPU-restricted scoped Node-API addon packages |
+| npm | the portable `@wa120/ait-native` JS/TS envelope plus six exact-version, OS/CPU/libc-restricted scoped Node-API addon packages |
 
 Every channel directory also contains `ait-release.package.json` and
 `SHA256SUMS`. Their evidence maps every installed command or binding back to
@@ -820,9 +966,10 @@ GA dispatch.
 ### Protected authorization without publication
 
 The public monorepo root owns
-`.github/workflows/ait-release-protected-promotion.yml` as the sole RC
+`.github/workflows/ait-release-protected-promotion.yml` as the sole
 authorization boundary after the immutable handoff. Its job runs only behind
-the `rc-promotion` GitHub environment and accepts exact values for the source
+the channel-selected `rc-promotion` or `stable-promotion` GitHub environment
+and accepts exact values for the source
 workflow run and attempt, dossier artifact ID and GitHub artifact digest,
 family Release, tag, public Git commit, source-workflow control commit,
 coordinator Snapshot, frozen-manifest SHA-256, and frozen `SHA256SUMS` SHA-256.
@@ -848,17 +995,17 @@ and service mutation as false. Its only next action is to request separate
 explicit authorization for each exact publication endpoint. The protected
 workflow consequently cannot be used as an implicit registry-publish command.
 
-RC source export deliberately contains only the component-receipt and
-protected-promotion workflows plus their bounded root matrix/verifier control
-files. It must not copy a publisher or endpoint configuration from an older
-release. After protected promotion has produced
-the real RC.4 Release ID, source commit, run and artifact identities, and
-digests, a separate reviewed change installs one exact RC.4 endpoint
-configuration and publisher workflow on the public repository's default
-branch. That workflow consumes the immutable RC.4 tag and frozen dossier; it
-does not move the tag or become part of the tagged source tree. This ordering
-prevents older endpoint authority from leaking into RC.4 and prevents guessed
-future identities from being treated as publication evidence.
+The deterministic public source export contains the component-receipt,
+protected-promotion, and generic endpoint-publication workflows, the
+script-only operator, publisher scripts, and reviewed static endpoint defaults.
+It contains no per-release endpoint configuration, workflow-run ID, artifact
+ID, artifact digest, or credential. After protected promotion succeeds,
+`release_operator.sh bind-authorization` verifies those exact live identities
+and generates the SHA-256-bound configuration consumed by the generic endpoint
+workflow from the default branch. That workflow consumes the immutable tag and
+frozen dossier and cannot move the tag. This ordering prevents older endpoint
+authority or guessed future identities from becoming publication evidence,
+without requiring a release-specific workflow or source patch.
 
 ## Previous RC.3 Record And Historical RC Evidence
 

@@ -19,7 +19,7 @@ dependencies = [
 
 [[package]]
 name = "ait-server"
-version = "1.0.0-rc.4"
+version = "1.0.0-rc.5"
 dependencies = [
  "ait-server-core",
  "axum",

@@ -9,6 +9,9 @@ const FAMILY_PACKAGE_CONTENT_CONTRACT: &str = "ait.release.family.package-conten
 const PACKAGE_RECEIPT_FILENAME: &str = "ait-release.package.json";
 const PACKAGE_CHECKSUM_FILENAME: &str = "SHA256SUMS";
 const WINGET_MANIFEST_VERSION: &str = "1.12.0";
+const NPM_TOP_LEVEL_PACKAGE: &str = "@wa120/ait-native";
+const NPM_ADDON_PACKAGE_PREFIX: &str = "@wa120/ait-native-";
+const NPM_ARCHIVE_PREFIX: &str = "wa120-ait-native";
 const AIT_SERVER_SYSTEMD_UNIT_PATH: &str = "usr/lib/systemd/system/ait-server.service";
 const AIT_SERVER_SYSTEMD_UNIT: &str = "[Unit]\nDescription=AIT native server\nDocumentation=https://github.com/weita2026/ait-native\nAfter=network.target\n\n[Service]\nType=simple\nDynamicUser=yes\nStateDirectory=ait-native\nRuntimeDirectory=ait-native\nUMask=0077\nExecStart=/usr/bin/ait-server run --data /var/lib/ait-native/server-data --init-if-missing --defer-ci-admission\nRestart=on-failure\nRestartSec=2s\nNoNewPrivileges=yes\nPrivateTmp=yes\nProtectSystem=strict\nProtectHome=yes\nProtectControlGroups=yes\nProtectKernelModules=yes\nProtectKernelTunables=yes\nRestrictAddressFamilies=AF_UNIX AF_INET AF_INET6\nRestrictSUIDSGID=yes\nLockPersonality=yes\nCapabilityBoundingSet=\nAmbientCapabilities=\n\n[Install]\nWantedBy=multi-user.target\n";
 const WINGET_SERVER_CONTROLLER_PATH: &str = "ait-server-control.ps1";
@@ -2375,6 +2378,7 @@ struct NpmAddonDefinition {
     target: String,
     os: String,
     cpu: String,
+    libc: Option<String>,
     component: String,
     package: String,
     binding_repository: String,
@@ -2383,15 +2387,25 @@ struct NpmAddonDefinition {
     addon: String,
 }
 
-fn npm_platform(target: &str) -> Result<(&'static str, &'static str), String> {
+fn npm_platform(
+    target: &str,
+) -> Result<(&'static str, &'static str, Option<&'static str>), String> {
     match target {
-        "aarch64-apple-darwin" => Ok(("darwin", "arm64")),
-        "x86_64-apple-darwin" => Ok(("darwin", "x64")),
-        "aarch64-unknown-linux-gnu" => Ok(("linux", "arm64")),
-        "x86_64-unknown-linux-gnu" => Ok(("linux", "x64")),
-        "aarch64-pc-windows-msvc" => Ok(("win32", "arm64")),
-        "x86_64-pc-windows-msvc" => Ok(("win32", "x64")),
+        "aarch64-apple-darwin" => Ok(("darwin", "arm64", None)),
+        "x86_64-apple-darwin" => Ok(("darwin", "x64", None)),
+        "aarch64-unknown-linux-gnu" => Ok(("linux", "arm64", Some("glibc"))),
+        "x86_64-unknown-linux-gnu" => Ok(("linux", "x64", Some("glibc"))),
+        "aarch64-pc-windows-msvc" => Ok(("win32", "arm64", None)),
+        "x86_64-pc-windows-msvc" => Ok(("win32", "x64", None)),
         _ => Err(format!("npm does not support family target {target:?}.")),
+    }
+}
+
+fn npm_libc_matches(value: Option<&JsonValue>, expected: Option<&str>) -> bool {
+    match (value, expected) {
+        (Some(JsonValue::Null), None) => true,
+        (Some(JsonValue::String(actual)), Some(expected)) => actual == expected,
+        _ => false,
     }
 }
 
@@ -2409,6 +2423,34 @@ fn exact_json_fields(value: &JsonValue, expected: &[&str], context: &str) -> Res
     Ok(())
 }
 
+fn validate_npm_repository(
+    input: &FamilyPackageInput,
+    package_json: &JsonValue,
+    context: &str,
+) -> Result<(), String> {
+    let repository = package_json
+        .get("repository")
+        .ok_or_else(|| format!("{context} lacks repository metadata."))?;
+    exact_json_fields(
+        repository,
+        &["type", "url", "directory"],
+        &format!("{context} repository"),
+    )?;
+    let expected_url = format!(
+        "git+https://github.com/{}.git",
+        github_source_identity(input)?
+    );
+    if string_field(repository, "type").as_deref() != Some("git")
+        || string_field(repository, "url").as_deref() != Some(expected_url.as_str())
+        || string_field(repository, "directory").as_deref() != Some("ait-node")
+    {
+        return Err(format!(
+            "{context} repository metadata differs from the frozen public ait-node source."
+        ));
+    }
+    Ok(())
+}
+
 fn parse_npm_addon_contract(
     input: &FamilyPackageInput,
     value: &JsonValue,
@@ -2418,9 +2460,9 @@ fn parse_npm_addon_contract(
         &["schema", "family_version", "top_level_package", "payloads"],
         "Frozen npm addon contract",
     )?;
-    if string_field(value, "schema").as_deref() != Some("ait.node.napi-platform-packages/v1")
+    if string_field(value, "schema").as_deref() != Some("ait.node.napi-platform-packages/v2")
         || string_field(value, "family_version").as_deref() != Some(input.version.as_str())
-        || string_field(value, "top_level_package").as_deref() != Some("ait-native")
+        || string_field(value, "top_level_package").as_deref() != Some(NPM_TOP_LEVEL_PACKAGE)
     {
         return Err("Frozen npm addon contract identity or version drifted.".to_string());
     }
@@ -2448,6 +2490,7 @@ fn parse_npm_addon_contract(
                 "target",
                 "os",
                 "cpu",
+                "libc",
                 "component",
                 "package",
                 "version",
@@ -2459,12 +2502,13 @@ fn parse_npm_addon_contract(
             &format!("Frozen npm addon row {index}"),
         )?;
         let target = required_string_field(row, "target")?;
-        let (os, cpu) = npm_platform(&target)?;
+        let (os, cpu, libc) = npm_platform(&target)?;
         let component = "ait-node".to_string();
-        let package = format!("ait-native-ait-{os}-{cpu}");
+        let package = format!("{NPM_ADDON_PACKAGE_PREFIX}{os}-{cpu}");
         let addon = "native/ait_napi.node".to_string();
         if required_string_field(row, "os")? != os
             || required_string_field(row, "cpu")? != cpu
+            || !npm_libc_matches(row.get("libc"), libc)
             || required_string_field(row, "component")? != component
             || required_string_field(row, "package")? != package
             || required_string_field(row, "version")? != input.version
@@ -2484,6 +2528,7 @@ fn parse_npm_addon_contract(
             target,
             os: os.to_string(),
             cpu: cpu.to_string(),
+            libc: libc.map(str::to_string),
             component,
             package,
             binding_repository: core_component.source_repository.clone(),
@@ -2546,6 +2591,7 @@ fn validate_npm_envelope(
             "version",
             "description",
             "license",
+            "repository",
             "type",
             "engines",
             "bin",
@@ -2558,7 +2604,7 @@ fn validate_npm_envelope(
         "Frozen npm envelope package.json",
     )?;
     let node_component = required_component(input, "ait-node", "node")?;
-    if string_field(&package_json, "name").as_deref() != Some("ait-native")
+    if string_field(&package_json, "name").as_deref() != Some(NPM_TOP_LEVEL_PACKAGE)
         || string_field(&package_json, "version").as_deref() != Some(input.version.as_str())
         || string_field(&package_json, "description").is_none_or(|value| value.is_empty())
         || string_field(&package_json, "license").as_deref()
@@ -2571,6 +2617,7 @@ fn validate_npm_envelope(
                 .to_string(),
         );
     }
+    validate_npm_repository(input, &package_json, "Frozen npm envelope package.json")?;
     let engines = package_json
         .get("engines")
         .and_then(JsonValue::as_object)
@@ -2771,21 +2818,33 @@ fn validate_npm_addon_package(
         &entries["package/package.json"].0,
         "Frozen npm addon package.json must contain valid JSON",
     )?;
+    let mut package_fields = vec![
+        "name",
+        "version",
+        "description",
+        "license",
+        "repository",
+        "os",
+        "cpu",
+        "main",
+        "files",
+        "aitNativeAddon",
+    ];
+    if addon.libc.is_some() {
+        package_fields.push("libc");
+    }
     exact_json_fields(
         &package_json,
-        &[
-            "name",
-            "version",
-            "description",
-            "license",
-            "os",
-            "cpu",
-            "main",
-            "files",
-            "aitNativeAddon",
-        ],
+        &package_fields,
         "Frozen npm addon package.json",
     )?;
+    let package_libc_matches = match addon.libc.as_deref() {
+        Some(libc) => {
+            json_array_strings(package_json.get("libc"), "npm addon package.json.libc")?
+                == vec![libc.to_string()]
+        }
+        None => package_json.get("libc").is_none(),
+    };
     if string_field(&package_json, "name").as_deref() != Some(addon.package.as_str())
         || string_field(&package_json, "version").as_deref() != Some(input.version.as_str())
         || string_field(&package_json, "description").is_none_or(|value| value.is_empty())
@@ -2795,12 +2854,18 @@ fn validate_npm_addon_package(
             != vec![addon.os.clone()]
         || json_array_strings(package_json.get("cpu"), "npm addon package.json.cpu")?
             != vec![addon.cpu.clone()]
+        || !package_libc_matches
     {
         return Err(format!(
             "Frozen npm addon package {} identity or platform drifted.",
             addon.package
         ));
     }
+    validate_npm_repository(
+        input,
+        &package_json,
+        &format!("Frozen npm addon package {}", addon.package),
+    )?;
     let files = json_array_strings(package_json.get("files"), "npm addon package.json.files")?;
     if files.len() != 4
         || files.into_iter().collect::<BTreeSet<_>>()
@@ -2825,15 +2890,17 @@ fn validate_npm_addon_package(
             "schema",
             "component",
             "target",
+            "libc",
             "addon",
             "binding_repository",
             "binding_snapshot",
         ],
         "Frozen npm addon binding metadata",
     )?;
-    if string_field(metadata, "schema").as_deref() != Some("ait.node.napi-platform-addon/v1")
+    if string_field(metadata, "schema").as_deref() != Some("ait.node.napi-platform-addon/v2")
         || string_field(metadata, "component").as_deref() != Some(addon.component.as_str())
         || string_field(metadata, "target").as_deref() != Some(addon.target.as_str())
+        || !npm_libc_matches(metadata.get("libc"), addon.libc.as_deref())
         || string_field(metadata, "addon").as_deref() != Some(addon.addon.as_str())
         || string_field(metadata, "binding_repository").as_deref()
             != Some(addon.binding_repository.as_str())
@@ -2859,6 +2926,7 @@ fn validate_npm_addon_package(
             "target",
             "os",
             "cpu",
+            "libc",
             "component",
             "package_source_repository",
             "binding_repository",
@@ -2872,12 +2940,13 @@ fn validate_npm_addon_package(
         "Frozen npm addon provenance",
     )?;
     if string_field(&provenance, "schema").as_deref()
-        != Some("ait.node.napi-platform-addon-provenance/v1")
+        != Some("ait.node.napi-platform-addon-provenance/v2")
         || string_field(&provenance, "family_version").as_deref() != Some(input.version.as_str())
         || string_field(&provenance, "package").as_deref() != Some(addon.package.as_str())
         || string_field(&provenance, "target").as_deref() != Some(addon.target.as_str())
         || string_field(&provenance, "os").as_deref() != Some(addon.os.as_str())
         || string_field(&provenance, "cpu").as_deref() != Some(addon.cpu.as_str())
+        || !npm_libc_matches(provenance.get("libc"), addon.libc.as_deref())
         || string_field(&provenance, "component").as_deref() != Some(addon.component.as_str())
         || string_field(&provenance, "package_source_repository").as_deref() != Some("ait-node")
         || string_field(&provenance, "binding_repository").as_deref()
@@ -2944,8 +3013,10 @@ fn assemble_npm(
     input: &FamilyPackageInput,
 ) -> Result<Vec<GeneratedArtifact>, String> {
     let distribution = single_channel_distribution(input, "npm")?;
-    if distribution.role != "product" || distribution.identity != "ait-native" {
-        return Err("npm distribution must be the ait-native product.".to_string());
+    if distribution.role != "product" || distribution.identity != NPM_TOP_LEVEL_PACKAGE {
+        return Err(format!(
+            "npm distribution must be the {NPM_TOP_LEVEL_PACKAGE} product."
+        ));
     }
     require_distribution_components(distribution, &["ait-node"])?;
     require_registry_targets(distribution)?;
@@ -2967,7 +3038,7 @@ fn assemble_npm(
         .file_name()
         .and_then(OsStr::to_str)
         .ok_or_else(|| "Frozen npm envelope has no portable filename.".to_string())?;
-    if envelope_filename != format!("ait-native-{}.tgz", input.version) {
+    if envelope_filename != format!("{NPM_ARCHIVE_PREFIX}-{}.tgz", input.version) {
         return Err("Frozen npm envelope filename differs from the family version.".to_string());
     }
     let node_material_sources = material_for_components(input, &["ait-node".to_string()])?;
@@ -3003,7 +3074,7 @@ fn assemble_npm(
             &envelope_content,
             &envelope_material_projections,
             json!({
-                "package": "ait-native",
+                "package": NPM_TOP_LEVEL_PACKAGE,
                 "version": input.version,
                 "preserved_frozen_bytes": true,
                 "runtime_transport": "direct-napi",
@@ -3032,7 +3103,16 @@ fn assemble_npm(
             .file_name()
             .and_then(OsStr::to_str)
             .ok_or_else(|| "Frozen npm addon package has no filename.".to_string())?;
-        let expected_filename = format!("{}-{}.tgz", addon.package, input.version);
+        let package_suffix = addon
+            .package
+            .strip_prefix(NPM_ADDON_PACKAGE_PREFIX)
+            .ok_or_else(|| {
+                "Frozen npm addon package is outside the supported scope.".to_string()
+            })?;
+        let expected_filename = format!(
+            "{NPM_ARCHIVE_PREFIX}-{package_suffix}-{}.tgz",
+            input.version
+        );
         if filename != expected_filename {
             return Err(format!(
                 "Frozen npm addon filename for {} differs from the family version.",
@@ -3066,6 +3146,7 @@ fn assemble_npm(
                     "version": input.version,
                     "os": addon.os,
                     "cpu": addon.cpu,
+                    "libc": addon.libc,
                     "implementation_only": true,
                     "public_command": false,
                     "runtime_transport": "direct-napi",
@@ -3395,7 +3476,13 @@ mod tests {
             frozen_manifest_sha256: "b".repeat(64),
             frozen_checksum_sha256: "c".repeat(64),
             components,
-            distributions: Vec::new(),
+            distributions: vec![DistributionDefinition {
+                channel: "github".to_string(),
+                role: "product".to_string(),
+                identity: "weita2026/ait-native".to_string(),
+                components: vec!["ait".to_string(), "ait-node".to_string()],
+                targets: Vec::new(),
+            }],
             artifacts: Vec::new(),
             license_material: Vec::new(),
         }
@@ -3426,13 +3513,14 @@ mod tests {
         let mut optional_dependencies = serde_json::Map::new();
         let mut payloads = Vec::new();
         for target in REGISTRY_TARGETS {
-            let (os, cpu) = npm_platform(target).unwrap();
-            let package = format!("ait-native-ait-{os}-{cpu}");
+            let (os, cpu, libc) = npm_platform(target).unwrap();
+            let package = format!("{NPM_ADDON_PACKAGE_PREFIX}{os}-{cpu}");
             optional_dependencies.insert(package.clone(), json!("1.0.0-rc.2"));
             payloads.push(json!({
                 "target": target,
                 "os": os,
                 "cpu": cpu,
+                "libc": libc,
                 "component": "ait-node",
                 "package": package,
                 "version": "1.0.0-rc.2",
@@ -3443,10 +3531,15 @@ mod tests {
             }));
         }
         let package = json!({
-            "name": "ait-native",
+            "name": NPM_TOP_LEVEL_PACKAGE,
             "version": "1.0.0-rc.2",
             "description": "Direct in-process Node-API bindings for AIT",
             "license": "Apache-2.0",
+            "repository": {
+                "type": "git",
+                "url": "git+https://github.com/weita2026/ait-native.git",
+                "directory": "ait-node"
+            },
             "type": "module",
             "engines": {"node": ">=20"},
             "bin": {"ait": "bin/ait.mjs"},
@@ -3467,9 +3560,9 @@ mod tests {
             }
         });
         let contract = json!({
-            "schema": "ait.node.napi-platform-packages/v1",
+            "schema": "ait.node.napi-platform-packages/v2",
             "family_version": "1.0.0-rc.2",
-            "top_level_package": "ait-native",
+            "top_level_package": NPM_TOP_LEVEL_PACKAGE,
             "payloads": payloads,
         });
         PackageEntries::from([
@@ -3565,6 +3658,15 @@ mod tests {
         package["scripts"]["postinstall"] = json!("node scripts/install.mjs");
         invalid.get_mut("package/package.json").unwrap().0 = serde_json::to_vec(&package).unwrap();
         assert!(validate_npm_envelope(&input, &invalid, &materials).is_err());
+
+        let mut invalid = entries.clone();
+        let mut package: JsonValue =
+            serde_json::from_slice(&invalid["package/package.json"].0).unwrap();
+        package["repository"]["directory"] = json!("packages/ait-node");
+        invalid.get_mut("package/package.json").unwrap().0 = serde_json::to_vec(&package).unwrap();
+        assert!(validate_npm_envelope(&input, &invalid, &materials)
+            .unwrap_err()
+            .contains("differs from the frozen public ait-node source"));
     }
 
     #[test]
@@ -3586,25 +3688,59 @@ mod tests {
                 .unwrap_err()
                 .contains("family binding/target mapping"));
         }
+
+        for (index, value) in [
+            (0, json!("glibc")),
+            (2, JsonValue::Null),
+            (2, json!("musl")),
+        ] {
+            let mut invalid = entries.clone();
+            let mut contract: JsonValue =
+                serde_json::from_slice(&invalid["package/lib/npm-payload-contract.json"].0)
+                    .unwrap();
+            contract["payloads"][index]["libc"] = value;
+            invalid
+                .get_mut("package/lib/npm-payload-contract.json")
+                .unwrap()
+                .0 = serde_json::to_vec(&contract).unwrap();
+            assert!(validate_npm_envelope(&input, &invalid, &materials)
+                .unwrap_err()
+                .contains("family binding/target mapping"));
+        }
+
+        let mut invalid = entries.clone();
+        let mut contract: JsonValue =
+            serde_json::from_slice(&invalid["package/lib/npm-payload-contract.json"].0).unwrap();
+        contract["payloads"][2]
+            .as_object_mut()
+            .unwrap()
+            .remove("libc");
+        invalid
+            .get_mut("package/lib/npm-payload-contract.json")
+            .unwrap()
+            .0 = serde_json::to_vec(&contract).unwrap();
+        assert!(validate_npm_envelope(&input, &invalid, &materials)
+            .unwrap_err()
+            .contains("fields do not match"));
     }
 
     #[test]
     fn npm_platform_maps_the_exact_node_addon_dimensions() {
         assert_eq!(
             npm_platform("aarch64-apple-darwin").unwrap(),
-            ("darwin", "arm64")
+            ("darwin", "arm64", None)
         );
         assert_eq!(
             npm_platform("x86_64-apple-darwin").unwrap(),
-            ("darwin", "x64")
+            ("darwin", "x64", None)
         );
         assert_eq!(
             npm_platform("aarch64-unknown-linux-gnu").unwrap(),
-            ("linux", "arm64")
+            ("linux", "arm64", Some("glibc"))
         );
         assert_eq!(
             npm_platform("x86_64-pc-windows-msvc").unwrap(),
-            ("win32", "x64")
+            ("win32", "x64", None)
         );
         assert!(npm_platform("wasm32-unknown-unknown").is_err());
     }

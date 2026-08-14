@@ -75,8 +75,8 @@ jobs:
             --git-commit "${AIT_SOURCE_GIT_COMMIT}"
           jq -e \
             --arg snapshot "${coordinator_snapshot}" \
-            --arg version "$(jq -r '.family_version' \
-              ci/release_repository_authorities.json)" '
+            --arg version "$(jq -r '.family.version' \
+              "${AIT_RELEASE_FAMILY_MANIFEST}")" '
               .schema == "ait.release.monorepo-source/v1" and
               .coordinator_snapshot == $snapshot and
               .family_version == $version and
@@ -89,8 +89,8 @@ jobs:
             ci/native_bootstrap_matrix.json >/dev/null
           {
             echo "coordinator_snapshot=${coordinator_snapshot}"
-            echo "family_version=$(jq -r '.family_version' \
-              ci/release_repository_authorities.json)"
+            echo "family_version=$(jq -r '.family.version' \
+              "${AIT_RELEASE_FAMILY_MANIFEST}")"
             echo "rust_toolchain=$(jq -r '.rust_toolchain' \
               ci/native_bootstrap_matrix.json)"
             echo "source_git_commit=${AIT_SOURCE_GIT_COMMIT}"
@@ -416,6 +416,14 @@ jobs:
     runs-on: ubuntu-22.04
     timeout-minutes: 90
     steps:
+      - name: Check out the reviewed release-control commit
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          path: control
+          persist-credentials: false
+
       - name: Check out the exact public source commit
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
@@ -449,6 +457,10 @@ jobs:
           node "${AIT_PUBLIC_SOURCE_ROOT}/build-release.mjs" \
             --validate-only \
             --git-commit "${AIT_SOURCE_GIT_COMMIT}"
+          admission_rust="${AIT_PUBLIC_SOURCE_ROOT}/ait-core/rust"
+          test -f "${admission_rust}/Cargo.lock"
+          test -f "${admission_rust}/crates/ait-cli/src/release_surface/family_packages.rs"
+          test -f "${admission_rust}/crates/ait-cli/src/release_surface/family_release.rs"
           rustup toolchain install "${AIT_RUST_TOOLCHAIN}" --profile minimal
           target_dir="${RUNNER_TEMP}/ait-family-admission-target"
           CARGO_BUILD_BUILD_DIR="${RUNNER_TEMP}/ait-family-admission-build" \
@@ -456,12 +468,14 @@ jobs:
             --locked \
             --release \
             --target-dir "${target_dir}" \
-            --manifest-path rust/Cargo.toml \
+            --manifest-path "${admission_rust}/Cargo.toml" \
             -p ait-cli \
             --bin ait-cli
           binary="${target_dir}/release/ait-cli"
           test -x "${binary}"
           test "$("${binary}" --version)" = "ait ${AIT_FAMILY_VERSION}"
+          test -z "$(git -C "${AIT_PUBLIC_SOURCE_ROOT}" status \
+            --porcelain --untracked-files=all)"
           echo "AIT_FAMILY_ADMISSION_BIN=${binary}" >>"${GITHUB_ENV}"
 
       - name: Verify receipt inventory and freeze the family
@@ -618,12 +632,12 @@ jobs:
           {
             echo '### ait-native internal family dossier'
             echo
-            printf '%s `%s`\n' '- release:' "${AIT_RELEASE_ID}"
-            printf '%s `%s`\n' '- source Git commit:' "${AIT_SOURCE_GIT_COMMIT}"
-            printf '%s `%s`\n' '- component receipts:' "${AIT_RECEIPT_COUNT}"
-            echo '- component artifacts: `37`'
-            echo '- staged package channels: `5`'
-            echo '- live AIT server connections: `0`'
-            echo '- public publication: `false`'
+            printf "%s \`%s\`\n" '- release:' "${AIT_RELEASE_ID}"
+            printf "%s \`%s\`\n" '- source Git commit:' "${AIT_SOURCE_GIT_COMMIT}"
+            printf "%s \`%s\`\n" '- component receipts:' "${AIT_RECEIPT_COUNT}"
+            echo "- component artifacts: \`37\`"
+            echo "- staged package channels: \`5\`"
+            echo "- live AIT server connections: \`0\`"
+            echo "- public publication: \`false\`"
             echo '- next gate: protected approval, signing, clean-install, and endpoint readback'
           } >>"${GITHUB_STEP_SUMMARY}"

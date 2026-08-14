@@ -1,0 +1,80 @@
+{
+  "contract": "ait.release.endpoint-defaults/v1",
+  "publisher": {
+    "repository": "weita2026/ait-native",
+    "workflow": "pypi-publish.yml",
+    "environment": "pypi"
+  },
+  "endpoints": {
+    "github": {
+      "repository": "weita2026/ait-native"
+    },
+    "pypi": {
+      "base_url": "https://pypi.org",
+      "identity": "ait-native",
+      "trusted_publisher": {
+        "repository": "weita2026/ait-native",
+        "workflow": "pypi-publish.yml",
+        "environment": "pypi"
+      }
+    },
+    "npm": {
+      "registry": "https://registry.npmjs.org",
+      "credential_secret": "AIT_NPM_TOKEN",
+      "packages": [
+        "@wa120/ait-native",
+        "@wa120/ait-native-darwin-arm64",
+        "@wa120/ait-native-darwin-x64",
+        "@wa120/ait-native-linux-arm64",
+        "@wa120/ait-native-linux-x64",
+        "@wa120/ait-native-win32-arm64",
+        "@wa120/ait-native-win32-x64"
+      ]
+    },
+    "homebrew": {
+      "repository": "weita2026/homebrew-ait-native",
+      "branch": "main",
+      "tap": "weita2026/ait-native",
+      "deploy_key_secret": "AIT_HOMEBREW_DEPLOY_KEY",
+      "formula_paths": {
+        "rc": "Formula/ait-native-rc.rb",
+        "stable": "Formula/ait-native.rb"
+      }
+    },
+    "apt": {
+      "repository": "weita2026/apt-ait-native",
+      "branch": "main",
+      "base_url": "https://raw.githubusercontent.com/weita2026/apt-ait-native/main",
+      "component": "main",
+      "signing_fingerprint": "F3A43E51AB73AD580ADE43634D84B16BA88BC9BD",
+      "signing_key_secret": "AIT_APT_SIGNING_KEY_B64",
+      "signing_passphrase_secret": "AIT_APT_SIGNING_PASSPHRASE",
+      "deploy_key_secret": "AIT_APT_REPO_DEPLOY_KEY",
+      "suites": {
+        "rc": "testing",
+        "stable": "stable"
+      }
+    },
+    "winget": {
+      "identity": "Weita.AitNative",
+      "routes": {
+        "rc": {
+          "route": "validation",
+          "community_manifest_submission": false
+        },
+        "stable": {
+          "route": "community",
+          "community_manifest_submission": true
+        }
+      }
+    },
+    "oci": {
+      "dockerfile_frontend": "docker/dockerfile:1.7@sha256:a57df69d0ea827fb7266491f2813635de6f17269be881f696fbfdf2d83dda33e",
+      "base_image": "docker.io/library/debian:bookworm-slim@sha256:abd67ffcfa541b485a3dff59865ab629aa048a6c613e639d36e7456b0b229241",
+      "images": [
+        "ghcr.io/weita2026/ait-server",
+        "ghcr.io/weita2026/ait-runner"
+      ]
+    }
+  }
+}

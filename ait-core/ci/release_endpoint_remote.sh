@@ -121,10 +121,16 @@ fi
 
 release_id=$(jq -er '.release.id' "${endpoint_config}")
 release_version=$(jq -er '.release.version' "${endpoint_config}")
+release_channel=$(jq -er '.release.channel' "${endpoint_config}")
 python_version=$(jq -er '.release.python_version' "${endpoint_config}")
 release_tag=$(jq -er '.release.tag' "${endpoint_config}")
 source_commit=$(jq -er '.release.source_commit' "${endpoint_config}")
 github_repository=$(jq -er '.endpoints.github.repository' "${endpoint_config}")
+github_prerelease=$(jq -r '.endpoints.github.prerelease' "${endpoint_config}")
+if [[ ${github_prerelease} != true && ${github_prerelease} != false ]]; then
+  printf 'GitHub Release prerelease selector is invalid\n' >&2
+  exit 65
+fi
 npm_registry=$(jq -er '.endpoints.npm.registry' "${endpoint_config}")
 npm_registry_host=${npm_registry#https://}
 npm_registry_host=${npm_registry_host%/}
@@ -248,12 +254,15 @@ npm_package_rows() {
     done
 }
 
+npm_registry_package_path() {
+  local package_name=$1
+  printf '%s\n' "${package_name//\//%2F}"
+}
+
 npm_provenance_policy() {
   local package_name=$1
-  local archive_sha256=$2
-  local repository_url=$3
+  local repository_url=$2
   local expected_repository=https://github.com/${github_repository}
-  local admitted_frozen_sha256
 
   case "${repository_url}" in
     "${expected_repository}" | "git+${expected_repository}.git")
@@ -261,21 +270,6 @@ npm_provenance_policy() {
       return 0
       ;;
   esac
-
-  admitted_frozen_sha256=$(jq -er --arg package_name "${package_name}" '
-    if .endpoints.npm.frozen_missing_repository_metadata.external_github_attestation_required == true then
-      .endpoints.npm.frozen_missing_repository_metadata.archives[$package_name] // ""
-    else
-      ""
-    end
-  ' "${endpoint_config}")
-  if [[ ${repository_url} == '' &&
-    ${release_version} == 1.0.0-rc.3 &&
-    ${source_commit} == ba368cf4d0750035345f14a8a91c22fb9e450260 &&
-    ${admitted_frozen_sha256} == "${archive_sha256}" ]]; then
-    printf '%s\n' '--provenance=false'
-    return 0
-  fi
 
   printf 'npm package repository metadata does not admit provenance: %s\n' \
     "${package_name}" >&2
@@ -285,7 +279,7 @@ npm_provenance_policy() {
 npm_publish_provenance_flag() {
   local package_name=$1
   local package_archive=$2
-  local package_metadata repository_url archive_sha256
+  local package_metadata repository_url
   package_metadata=$(tar -xOf "${package_archive}" package/package.json)
   repository_url=$(jq -r '
     if .repository == null then
@@ -299,8 +293,7 @@ npm_publish_provenance_flag() {
       error("package repository metadata has an unsupported shape")
     end
   ' <<<"${package_metadata}")
-  archive_sha256=$(sha256_file "${package_archive}")
-  npm_provenance_policy "${package_name}" "${archive_sha256}" "${repository_url}"
+  npm_provenance_policy "${package_name}" "${repository_url}"
 }
 
 remove_matching_npm_prerelease_latest_tag() {
@@ -337,7 +330,7 @@ validate_npm_dist_tags() {
   local configured_tag=$4
   if ! jq -e --arg tag "${configured_tag}" --arg version "${package_version}" \
     '."dist-tags"[$tag] == $version' "${metadata}" >/dev/null; then
-    printf 'npm RC dist-tag readback failed: %s@%s\n' \
+    printf 'npm configured dist-tag readback failed: %s@%s\n' \
       "${package_name}" "${package_version}" >&2
     return 65
   fi
@@ -350,11 +343,40 @@ validate_npm_dist_tags() {
   fi
 }
 
+validate_npm_registry_platform_readback() {
+  local metadata=$1
+  local package_version=$2
+  local package_archive=$3
+  local staged_manifest=${temporary_root}/npm-staged-$(basename -- "${package_archive}").json
+  tar -xOf "${package_archive}" package/package.json >"${staged_manifest}"
+  jq -e \
+    --arg version "${package_version}" \
+    --slurpfile staged "${staged_manifest}" '
+      def selected_metadata:
+        {
+          has_os: has("os"),
+          os: (.os // null),
+          has_cpu: has("cpu"),
+          cpu: (.cpu // null),
+          has_libc: has("libc"),
+          libc: (.libc // null),
+          has_addon_metadata: has("aitNativeAddon"),
+          addon_metadata: (.aitNativeAddon // null),
+          has_optional_dependencies: has("optionalDependencies"),
+          optional_dependencies: (.optionalDependencies // null)
+        };
+      .versions[$version] as $remote |
+      $remote != null and
+      ($remote | selected_metadata) == ($staged[0] | selected_metadata)
+    ' "${metadata}" >/dev/null
+}
+
 validate_npm_remote_state() {
   local require_published=${1:-false}
   local expected_names=${temporary_root}/expected-npm-names
   local actual_names=${temporary_root}/actual-npm-names
-  local package_name package_version package_archive metadata status remote_integrity remote_shasum
+  local package_name package_version package_archive package_file_key metadata status
+  local remote_integrity remote_shasum registry_package_path
   local configured_tag
   configured_tag=$(jq -er '.endpoints.npm.dist_tag' "${endpoint_config}")
   jq -r '.endpoints.npm.packages[]' "${endpoint_config}" | LC_ALL=C sort >"${expected_names}"
@@ -368,9 +390,11 @@ validate_npm_remote_state() {
       printf 'npm staged package version drifted: %s\n' "${package_name}" >&2
       return 65
     fi
-    metadata=${temporary_root}/npm-${package_name}.json
+    package_file_key=${package_name//\//_}
+    registry_package_path=$(npm_registry_package_path "${package_name}")
+    metadata=${temporary_root}/npm-${package_file_key}.json
     status=$(curl --silent --show-error --location --output "${metadata}" --write-out '%{http_code}' \
-      "${npm_registry}/${package_name}")
+      "${npm_registry}/${registry_package_path}")
     case "${status}" in
       404)
         if [[ ${require_published} == true ]]; then
@@ -395,6 +419,12 @@ validate_npm_remote_state() {
           if [[ ${remote_integrity} != "$(sha512_integrity "${package_archive}")" ||
             ${remote_shasum} != "$(sha1_file "${package_archive}")" ]]; then
             printf 'npm already contains conflicting bytes: %s@%s\n' \
+              "${package_name}" "${release_version}" >&2
+            return 65
+          fi
+          if ! validate_npm_registry_platform_readback "${metadata}" \
+            "${release_version}" "${package_archive}"; then
+            printf 'npm registry platform metadata differs from staged bytes: %s@%s\n' \
               "${package_name}" "${release_version}" >&2
             return 65
           fi
@@ -432,7 +462,7 @@ validate_pypi_remote_state() {
   case "${remote_files}" in
     0)
       if [[ ${require_published} == true ]]; then
-        printf 'PyPI RC wheel set is not visible yet\n' >&2
+        printf 'PyPI release wheel set is not visible yet\n' >&2
         return 75
       fi
       ;;
@@ -452,10 +482,10 @@ validate_pypi_remote_state() {
     *)
       if [[ ${require_published} == true &&
         ${remote_files} =~ ^[0-9]+$ && ${remote_files} -lt ${expected_files} ]]; then
-        printf 'PyPI RC wheel set is only partially visible\n' >&2
+        printf 'PyPI release wheel set is only partially visible\n' >&2
         return 75
       fi
-      printf 'PyPI contains a partial RC wheel set\n' >&2
+      printf 'PyPI contains a partial release wheel set\n' >&2
       return 65
       ;;
   esac
@@ -475,11 +505,11 @@ wait_for_pypi_remote_state() {
       return "${readback_status}"
     fi
     if ((attempt == max_attempts)); then
-      printf 'PyPI RC wheel set did not become fully visible after %s attempts\n' \
+      printf 'PyPI release wheel set did not become fully visible after %s attempts\n' \
         "${max_attempts}" >&2
       return 65
     fi
-    printf 'waiting for PyPI RC wheel-set visibility (%s/%s)\n' \
+    printf 'waiting for PyPI release wheel-set visibility (%s/%s)\n' \
       "${attempt}" "${max_attempts}" >&2
     sleep 5
     attempt=$((attempt + 1))
@@ -563,7 +593,7 @@ validate_public_tag() {
   if [[ $(wc -l <"${tag_rows}" | tr -d '[:space:]') != 2 ||
     $(awk -v ref="refs/tags/${release_tag}^{}" '$2 == ref {print $1}' "${tag_rows}") != \
       "${source_commit}" ]]; then
-    printf 'public RC tag does not resolve to the exact frozen source commit\n' >&2
+    printf 'public release tag does not resolve to the exact frozen source commit\n' >&2
     return 65
   fi
 }
@@ -662,10 +692,11 @@ validate_github_release_state() {
   case "${status}" in
     404) ;;
     200)
-      if ! jq -e --arg tag "${release_tag}" '
-        .tag_name == $tag and .draft == false and .prerelease == true
+      if ! jq -e --arg tag "${release_tag}" \
+        --argjson prerelease "${github_prerelease}" '
+        .tag_name == $tag and .draft == false and .prerelease == $prerelease
       ' "${release_record}" >/dev/null; then
-        printf 'existing GitHub Release route conflicts with the RC contract\n' >&2
+        printf 'existing GitHub Release route conflicts with the configured contract\n' >&2
         return 65
       fi
       jq -r '.assets[].name' "${release_record}" | LC_ALL=C sort >"${remote_names}"
@@ -999,7 +1030,7 @@ case "${mode}" in
     run_authenticated_preflight_check \
       'PyPI project lineage and remote state' validate_pypi_remote_state
     run_authenticated_preflight_check \
-      'public RC tag identity' validate_public_tag
+      'public release tag identity' validate_public_tag
     run_authenticated_preflight_check \
       'GitHub Release restart state' validate_github_release_state
     run_authenticated_preflight_check \
@@ -1063,35 +1094,33 @@ case "${mode}" in
       --header 'Accept: application/vnd.github+json' \
       "https://api.github.com/repos/${github_repository}/releases/tags/${release_tag}")
     notes=${temporary_root}/release-notes.md
-    cat >"${notes}" <<'NOTES'
-# AIT Native 1.0.0 RC 3
-
-This prerelease promotes the exact protected `v1.0.0-rc.3` family bytes.
-It provides the language-neutral `ait` command and an inactive-by-default
-`ait-server`; Python, Node.js, .NET, PHP, C, C++, Java, mixed-language, and
-non-code repositories use the same explicit workflow.
-
-Shortest workflow after installation:
-
-```text
-cd <repository>
-ait init
-```
-
-Then ask an AIT-aware coding agent to make the change. The generated
-`AGENTS.md` block directs Plan binding, Task worktree use, Snapshot creation,
-validation, and local land.
-
-The attached `SHA256SUMS`, package receipts, protected-promotion evidence, and
-GitHub attestations bind every downloadable byte. WinGet remains on the RC
-validation-manifest route and is not submitted to the stable community catalog.
-NOTES
+    release_title="AIT Native ${release_version}"
+    {
+      printf '# %s\n\n' "${release_title}"
+      printf 'This regular GitHub Release promotes the exact protected `%s` %s family bytes.\n' \
+        "${release_tag}" "${release_channel}"
+      printf 'It provides the language-neutral `ait` command and an inactive-by-default\n'
+      printf '`ait-server`; Python, Node.js, .NET, PHP, C, C++, Java, mixed-language, and\n'
+      printf 'non-code repositories use the same explicit workflow.\n\n'
+      printf 'Shortest workflow after installation:\n\n'
+      printf '```text\ncd <repository>\nait init\n```\n\n'
+      printf 'Then ask an AIT-aware coding agent to make the change. The generated\n'
+      printf '`AGENTS.md` block directs Plan binding, Task worktree use, Snapshot creation,\n'
+      printf 'validation, and local land.\n\n'
+      printf 'The attached `SHA256SUMS`, package receipts, protected-promotion evidence, and\n'
+      printf 'GitHub attestations bind every downloadable byte. '
+      if [[ ${release_channel} == rc ]]; then
+        printf 'WinGet remains on the validation-manifest route without community submission.\n'
+      else
+        printf 'The attached WinGet manifests are the exact community-submission inputs.\n'
+      fi
+    } >"${notes}"
     if [[ ${status} == 404 ]]; then
       GH_TOKEN="${AIT_GITHUB_TOKEN}" gh release create "${release_tag}" \
         --repo "${github_repository}" \
-        --title 'AIT Native 1.0.0 RC 3' \
+        --title "${release_title}" \
         --notes-file "${notes}" \
-        --prerelease \
+        --prerelease=false \
         --verify-tag
     elif [[ ${status} != 200 ]]; then
       printf 'GitHub Release creation preflight returned HTTP %s\n' "${status}" >&2
@@ -1099,9 +1128,9 @@ NOTES
     fi
     GH_TOKEN="${AIT_GITHUB_TOKEN}" gh release edit "${release_tag}" \
       --repo "${github_repository}" \
-      --title 'AIT Native 1.0.0 RC 3' \
+      --title "${release_title}" \
       --notes-file "${notes}" \
-      --prerelease
+      --prerelease=false
     asset_map=${temporary_root}/github-asset-map
     github_release_asset_map "${asset_map}"
     remote_names=${temporary_root}/github-remote-names
@@ -1142,6 +1171,7 @@ NOTES
       --arg release_id "${release_id}" \
       --arg tag "${release_tag}" \
       --arg url "$(jq -er .html_url "${release_record}")" \
+      --argjson prerelease "${github_prerelease}" \
       --argjson asset_count "${expected_count}" '
         {
           contract: $contract,
@@ -1149,7 +1179,7 @@ NOTES
           release_id: $release_id,
           tag: $tag,
           url: $url,
-          prerelease: true,
+          prerelease: $prerelease,
           asset_count: $asset_count,
           digest_readback: true,
           component_rebuild: false
@@ -1189,12 +1219,14 @@ NOTES
     validate_npm_remote_state
     npm_rows=${temporary_root}/npm-rows
     npm_package_rows >"${npm_rows}"
+    publish_dist_tag=$(jq -er '.endpoints.npm.dist_tag' "${endpoint_config}")
     while IFS=$'\t' read -r package_name package_version package_archive; do
-      if [[ ${package_name} == ait-native ]]; then
+      if [[ ${package_name} == @wa120/ait-native ]]; then
         continue
       fi
       if ! curl --fail --silent --show-error \
-        "${npm_registry}/${package_name}/${release_version}" >/dev/null 2>&1; then
+        "${npm_registry}/$(npm_registry_package_path "${package_name}")/${release_version}" \
+        >/dev/null 2>&1; then
         npm_provenance_flag=$(npm_publish_provenance_flag \
           "${package_name}" "${package_archive}")
         if [[ ${npm_provenance_flag} == --provenance=false ]]; then
@@ -1202,16 +1234,17 @@ NOTES
             "${package_name}" "${package_version}" >&2
         fi
         NPM_CONFIG_USERCONFIG="${npmrc}" npm publish "${package_archive}" \
-          --registry "${npm_registry}" --tag rc --access public \
+          --registry "${npm_registry}" --tag "${publish_dist_tag}" --access public \
           "${npm_provenance_flag}"
       fi
     done <"${npm_rows}"
     while IFS=$'\t' read -r package_name package_version package_archive; do
-      if [[ ${package_name} != ait-native ]]; then
+      if [[ ${package_name} != @wa120/ait-native ]]; then
         continue
       fi
       if ! curl --fail --silent --show-error \
-        "${npm_registry}/${package_name}/${release_version}" >/dev/null 2>&1; then
+        "${npm_registry}/$(npm_registry_package_path "${package_name}")/${release_version}" \
+        >/dev/null 2>&1; then
         npm_provenance_flag=$(npm_publish_provenance_flag \
           "${package_name}" "${package_archive}")
         if [[ ${npm_provenance_flag} == --provenance=false ]]; then
@@ -1219,18 +1252,18 @@ NOTES
             "${package_name}" "${package_version}" >&2
         fi
         NPM_CONFIG_USERCONFIG="${npmrc}" npm publish "${package_archive}" \
-          --registry "${npm_registry}" --tag rc --access public \
+          --registry "${npm_registry}" --tag "${publish_dist_tag}" --access public \
           "${npm_provenance_flag}"
       fi
     done <"${npm_rows}"
     while IFS=$'\t' read -r package_name package_version package_archive; do
       NPM_CONFIG_USERCONFIG="${npmrc}" npm dist-tag add \
         "${package_name}@${package_version}" \
-        "$(jq -er '.endpoints.npm.dist_tag' "${endpoint_config}")" \
+        "${publish_dist_tag}" \
         --registry "${npm_registry}" >/dev/null
       remove_matching_npm_prerelease_latest_tag "${npmrc}" \
         "${package_name}" "${package_version}" \
-        "$(jq -er '.endpoints.npm.dist_tag' "${endpoint_config}")"
+        "${publish_dist_tag}"
     done <"${npm_rows}"
     validate_npm_remote_state true
     package_count=$(wc -l <"${npm_rows}" | tr -d '[:space:]')
@@ -1239,7 +1272,7 @@ NOTES
       --arg status 'published_and_read_back' \
       --arg release_id "${release_id}" \
       --arg version "${release_version}" \
-      --arg dist_tag "$(jq -er '.endpoints.npm.dist_tag' "${endpoint_config}")" \
+      --arg dist_tag "${publish_dist_tag}" \
       --argjson package_count "${package_count}" '
         {
           contract: $contract,
@@ -1249,6 +1282,7 @@ NOTES
           dist_tag: $dist_tag,
           package_count: $package_count,
           digest_readback: true,
+          platform_metadata_readback: true,
           external_github_attestation: true,
           npm_registry_provenance: false,
           component_rebuild: false
@@ -1263,6 +1297,14 @@ NOTES
     repository=$(jq -er '.endpoints.homebrew.repository' "${endpoint_config}")
     branch=$(jq -er '.endpoints.homebrew.branch' "${endpoint_config}")
     formula_path=$(jq -er '.endpoints.homebrew.formula_path' "${endpoint_config}")
+    formula_name=${formula_path##*/}
+    formula_asset=${assets}/${formula_name}
+    require_regular_file "${formula_asset}" 'frozen Homebrew formula'
+    if [[ ${release_channel} == stable ]]; then
+      stable_formula_mutation=true
+    else
+      stable_formula_mutation=false
+    fi
     key_path=${temporary_root}/homebrew.key
     known_hosts=${temporary_root}/homebrew.known-hosts
     clone_root=${temporary_root}/homebrew-repository
@@ -1271,7 +1313,7 @@ NOTES
       git clone --quiet --depth 1 --branch "${branch}" \
         "git@github.com:${repository}.git" "${clone_root}"
     mkdir -p "${clone_root}/$(dirname -- "${formula_path}")"
-    cp "${assets}/ait-native-rc.rb" "${clone_root}/${formula_path}"
+    cp "${formula_asset}" "${clone_root}/${formula_path}"
     if ! git -C "${clone_root}" diff --quiet -- "${formula_path}" ||
       [[ -n $(git -C "${clone_root}" status --porcelain --untracked-files=all) ]]; then
       git -C "${clone_root}" add -- "${formula_path}"
@@ -1288,7 +1330,7 @@ NOTES
       git -c credential.helper= clone --quiet --depth 1 --branch "${branch}" \
         "https://github.com/${repository}.git" "${readback_root}"
     if [[ $(git -C "${readback_root}" rev-parse HEAD) != "${published_commit}" ]] ||
-      ! cmp "${assets}/ait-native-rc.rb" "${readback_root}/${formula_path}"; then
+      ! cmp "${formula_asset}" "${readback_root}/${formula_path}"; then
       printf 'Homebrew formula readback differs from the frozen formula\n' >&2
       exit 65
     fi
@@ -1297,15 +1339,16 @@ NOTES
       --arg contract 'ait.release.endpoint.homebrew/v1' \
       --arg status 'published_and_read_back' \
       --arg release_id "${release_id}" \
-      --arg formula_sha256 "$(sha256_file "${assets}/ait-native-rc.rb")" \
-      --arg url "${remote_url}" '
+      --arg formula_sha256 "$(sha256_file "${formula_asset}")" \
+      --arg url "${remote_url}" \
+      --argjson stable_formula_mutation "${stable_formula_mutation}" '
         {
           contract: $contract,
           status: $status,
           release_id: $release_id,
           formula_sha256: $formula_sha256,
           url: $url,
-          stable_formula_mutation: false,
+          stable_formula_mutation: $stable_formula_mutation,
           digest_readback: true,
           component_rebuild: false
         }
@@ -1464,7 +1507,8 @@ NOTES
       {
         printf '# AIT Native apt repository\n\n'
         # shellcheck disable=SC2016
-        printf 'Exact RC route: `%s`; signing fingerprint:\n' "${suite}"
+        printf 'Exact %s route: `%s`; signing fingerprint:\n' \
+          "${release_channel}" "${suite}"
         # shellcheck disable=SC2016
         printf '`%s`.\n\n' "${AIT_APT_SIGNING_FINGERPRINT}"
         printf '```sh\n'
@@ -1540,6 +1584,35 @@ NOTES
       require_regular_file "${evidence_root}/${receipt_name}.json" \
         "${receipt_name} endpoint receipt"
     done
+    if ! jq -e \
+      --arg release_id "${release_id}" \
+      --arg tag "${release_tag}" \
+      --argjson prerelease "${github_prerelease}" '
+        .contract == "ait.release.endpoint.github/v1" and
+        .status == "published_and_read_back" and
+        .release_id == $release_id and
+        .tag == $tag and
+        .prerelease == $prerelease and
+        .digest_readback == true and
+        .component_rebuild == false
+      ' "${evidence_root}/github.json" >/dev/null; then
+      printf 'GitHub endpoint receipt does not preserve the configured Release route\n' >&2
+      exit 65
+    fi
+    if ! jq -e \
+      --arg release_id "${release_id}" \
+      --arg version "${release_version}" '
+        .contract == "ait.release.endpoint.npm/v1" and
+        .status == "published_and_read_back" and
+        .release_id == $release_id and
+        .version == $version and
+        .digest_readback == true and
+        .platform_metadata_readback == true and
+        .component_rebuild == false
+      ' "${evidence_root}/npm.json" >/dev/null; then
+      printf 'npm endpoint receipt does not prove platform metadata readback\n' >&2
+      exit 65
+    fi
     require_regular_file "${evidence_root}/oci-state.json" 'OCI endpoint receipt'
     if ! jq -e \
       --arg server_digest "${AIT_OCI_SERVER_DIGEST}" \
@@ -1558,11 +1631,12 @@ NOTES
     homebrew_repository=$(jq -er '.endpoints.homebrew.repository' "${endpoint_config}")
     homebrew_branch=$(jq -er '.endpoints.homebrew.branch' "${endpoint_config}")
     homebrew_formula_path=$(jq -er '.endpoints.homebrew.formula_path' "${endpoint_config}")
+    homebrew_formula_name=${homebrew_formula_path##*/}
     homebrew_readback=${temporary_root}/homebrew-final-readback
     GIT_ASKPASS=/usr/bin/false GIT_TERMINAL_PROMPT=0 \
       git -c credential.helper= clone --quiet --depth 1 --branch "${homebrew_branch}" \
         "https://github.com/${homebrew_repository}.git" "${homebrew_readback}"
-    if ! cmp "${assets}/ait-native-rc.rb" \
+    if ! cmp "${assets}/${homebrew_formula_name}" \
       "${homebrew_readback}/${homebrew_formula_path}"; then
       printf 'final Homebrew formula readback failed\n' >&2
       exit 65
@@ -1591,6 +1665,13 @@ NOTES
       printf 'OCI image digest output is invalid\n' >&2
       exit 65
     fi
+    if [[ ${release_channel} == rc ]]; then
+      winget_status=validation_assets_published_no_community_submission
+      next_action=run_all_declared_clean_host_install_upgrade_uninstall_smoke
+    else
+      winget_status=community_manifest_assets_published_submission_required
+      next_action=submit_winget_community_manifest_then_run_clean_host_smoke
+    fi
     jq -n \
       --arg contract 'ait.release.family.endpoint-readback/v1' \
       --arg status 'published_pending_clean_host_smoke' \
@@ -1599,6 +1680,8 @@ NOTES
       --arg tag "${release_tag}" \
       --arg server_digest "${AIT_OCI_SERVER_DIGEST}" \
       --arg runner_digest "${AIT_OCI_RUNNER_DIGEST}" \
+      --arg winget_status "${winget_status}" \
+      --arg next_action "${next_action}" \
       --slurpfile config "${endpoint_config}" '
         {
           contract: $contract,
@@ -1612,7 +1695,7 @@ NOTES
             npm: "published_and_read_back",
             homebrew: "published_and_read_back",
             apt: "published_signed_and_read_back",
-            winget: "validation_assets_published_no_community_submission",
+            winget: $winget_status,
             oci: {
               server: $server_digest,
               runner: $runner_digest,
@@ -1630,7 +1713,7 @@ NOTES
             ait_remote_release_activation: false,
             service_mutation: false
           },
-          next_action: "run_all_declared_clean_host_install_upgrade_uninstall_smoke"
+          next_action: $next_action
         }
       ' >"${evidence_root}/ait-release.endpoint-readback.json"
     ;;

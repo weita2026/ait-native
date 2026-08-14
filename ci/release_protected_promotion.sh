@@ -18,6 +18,7 @@ required_environment=(
   AIT_RELEASE_AUTHORIZATION_RUN_ID
   AIT_RELEASE_AUTHORIZATION_SHA
   AIT_RELEASE_CHECKSUM_SHA256
+  AIT_RELEASE_CHANNEL
   AIT_RELEASE_COORDINATOR_SNAPSHOT
   AIT_RELEASE_DOSSIER_ARTIFACT_DIGEST
   AIT_RELEASE_DOSSIER_ARTIFACT_ID
@@ -38,10 +39,14 @@ for variable in "${required_environment[@]}"; do
   fi
 done
 
+if [[ ${AIT_RELEASE_CHANNEL} != rc && ${AIT_RELEASE_CHANNEL} != stable ]]; then
+  printf 'protected-promotion channel must be rc or stable\n' >&2
+  exit 64
+fi
+expected_environment=${AIT_RELEASE_CHANNEL}-promotion
 if [[ ${AIT_RELEASE_REPOSITORY} != weita2026/ait-native ||
-  ${AIT_RELEASE_PROTECTED_ENVIRONMENT} != rc-promotion ||
+  ${AIT_RELEASE_PROTECTED_ENVIRONMENT} != "${expected_environment}" ||
   ! ${AIT_RELEASE_ID} =~ ^REL-FAM-[0-9A-F]{16}$ ||
-  ! ${AIT_RELEASE_TAG} =~ ^v[0-9]+\.[0-9]+\.[0-9]+-rc\.[0-9]+$ ||
   ! ${AIT_RELEASE_GIT_COMMIT} =~ ^[0-9a-f]{40}$ ||
   ! ${AIT_RELEASE_COORDINATOR_SNAPSHOT} =~ ^SNP-[0-9A-F]{12}$ ||
   ! ${AIT_RELEASE_FROZEN_MANIFEST_SHA256} =~ ^[0-9a-f]{64}$ ||
@@ -57,8 +62,22 @@ if [[ ${AIT_RELEASE_REPOSITORY} != weita2026/ait-native ||
   printf 'protected-promotion identity input is invalid\n' >&2
   exit 64
 fi
+case "${AIT_RELEASE_CHANNEL}" in
+  rc)
+    [[ ${AIT_RELEASE_TAG} =~ ^v[0-9]+\.[0-9]+\.[0-9]+-rc\.[1-9][0-9]*$ ]] || {
+      printf 'protected-promotion RC tag is invalid\n' >&2
+      exit 64
+    }
+    ;;
+  stable)
+    [[ ${AIT_RELEASE_TAG} =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+      printf 'protected-promotion stable tag is invalid\n' >&2
+      exit 64
+    }
+    ;;
+esac
 
-for command in cargo diff find git jq node patch rustup tar; do
+for command in cargo diff find git jq node rustup tar; do
   if ! command -v "${command}" >/dev/null 2>&1; then
     printf 'required protected-promotion command is unavailable: %s\n' "${command}" >&2
     exit 69
@@ -172,8 +191,8 @@ require_real_directory "${packages_root}" 'assembled package root'
 
 actual_frozen_manifest_sha256=$(sha256_file "${frozen_manifest}")
 actual_checksum_sha256=$(sha256_file "${frozen_checksums}")
-if [[ ${actual_frozen_manifest_sha256} != ${AIT_RELEASE_FROZEN_MANIFEST_SHA256} ||
-  ${actual_checksum_sha256} != ${AIT_RELEASE_CHECKSUM_SHA256} ]]; then
+if [[ ${actual_frozen_manifest_sha256} != "${AIT_RELEASE_FROZEN_MANIFEST_SHA256}" ||
+  ${actual_checksum_sha256} != "${AIT_RELEASE_CHECKSUM_SHA256}" ]]; then
   printf 'approved frozen family digest does not match the downloaded dossier\n' >&2
   exit 65
 fi
@@ -183,6 +202,25 @@ if ! cmp "${build}" "${frozen_root}/ait-release.build.json"; then
 fi
 
 version=${AIT_RELEASE_TAG#v}
+if [[ ${AIT_RELEASE_CHANNEL} == rc ]]; then
+  npm_dist_tag=rc
+  pypi_prerelease=true
+  oci_moving_tag=rc
+  homebrew_channel=rc
+  stable_formula_mutation=false
+  apt_suite=testing
+  winget_route=validation
+  winget_community_submission=false
+else
+  npm_dist_tag=latest
+  pypi_prerelease=false
+  oci_moving_tag=latest
+  homebrew_channel=stable
+  stable_formula_mutation=true
+  apt_suite=stable
+  winget_route=community
+  winget_community_submission=true
+fi
 family_manifest_sha256=$(sha256_file "${public_source_root}/ait-release-family.json")
 mapping_sha256=$(sha256_file "${source_mapping}")
 promotion_sha256=$(sha256_file "${promotion}")
@@ -191,20 +229,13 @@ source_archive_sha256=$(sha256_file "${source_archive}")
 receipt_matrix_filter=${control_root}/ci/release_receipt_matrix.jq
 platform_contract=${control_root}/ci/native_bootstrap_matrix.json
 repository_contract=${control_root}/ci/release_repository_authorities.json
-admission_patch=${control_root}/ci/release_family_rc4_admission.patch
-admission_patch_sha256=28d17fa83806498479fee233c8e0ea0defdc337893ed96a667d599e6baaadf0f
 for matrix_input in \
   "${public_source_root}/ait-release-family.json" \
   "${receipt_matrix_filter}" \
   "${platform_contract}" \
-  "${repository_contract}" \
-  "${admission_patch}"; do
+  "${repository_contract}"; do
   require_regular_file "${matrix_input}" 'tagged receipt-matrix input'
 done
-if [[ $(sha256_file "${admission_patch}") != ${admission_patch_sha256} ]]; then
-  printf 'RC.4 family admission patch differs from the approved control byte stream\n' >&2
-  exit 65
-fi
 receipt_matrix=${temporary_root}/receipt-matrix.json
 jq -n \
   --slurpfile family "${public_source_root}/ait-release-family.json" \
@@ -228,13 +259,14 @@ expected_license_material_count=$((expected_source_count * 2))
 if ! jq -e \
   --arg release_id "${AIT_RELEASE_ID}" \
   --arg version "${version}" \
+  --arg channel "${AIT_RELEASE_CHANNEL}" \
   --arg tag "${AIT_RELEASE_TAG}" \
   --arg snapshot "${AIT_RELEASE_COORDINATOR_SNAPSHOT}" \
   --arg family_sha "${family_manifest_sha256}" \
   --arg repository "${AIT_RELEASE_REPOSITORY}" '
     .contract == "ait.release.family.candidate/v1" and
     .release_id == $release_id and .version == $version and
-    .channel == "rc" and .tag == $tag and .snapshot_id == $snapshot and
+    .channel == $channel and .tag == $tag and .snapshot_id == $snapshot and
     .profile == "family" and .family_manifest_sha256 == $family_sha and
     .family.public_source.identity == $repository and
     .authority.local_release_authority == "not_activated" and
@@ -248,11 +280,12 @@ for record in "${check}" "${build}" "${promotion}"; do
   if ! jq -e \
     --arg release_id "${AIT_RELEASE_ID}" \
     --arg version "${version}" \
+    --arg channel "${AIT_RELEASE_CHANNEL}" \
     --arg tag "${AIT_RELEASE_TAG}" \
     --arg snapshot "${AIT_RELEASE_COORDINATOR_SNAPSHOT}" \
     --arg family_sha "${family_manifest_sha256}" '
       .release_id == $release_id and .version == $version and
-      .channel == "rc" and .tag == $tag and .snapshot_id == $snapshot and
+      .channel == $channel and .tag == $tag and .snapshot_id == $snapshot and
       .profile == "family" and .family_manifest_sha256 == $family_sha
     ' "${record}" >/dev/null; then
     printf 'family record identity differs from the approved candidate: %s\n' \
@@ -302,7 +335,15 @@ if ! jq -e \
 fi
 if ! jq -e \
   --arg tag "${AIT_RELEASE_TAG}" \
-  --arg version "${version}" '
+  --arg version "${version}" \
+  --arg npm_dist_tag "${npm_dist_tag}" \
+  --arg oci_moving_tag "${oci_moving_tag}" \
+  --arg homebrew_channel "${homebrew_channel}" \
+  --arg apt_suite "${apt_suite}" \
+  --arg winget_route "${winget_route}" \
+  --argjson pypi_prerelease "${pypi_prerelease}" \
+  --argjson stable_formula_mutation "${stable_formula_mutation}" \
+  --argjson winget_community_submission "${winget_community_submission}" '
   .contract == "ait.release.family.promotion/v1" and
   .status == "ready_for_protected_ci" and
   .authorization.required == true and .authorization.granted == false and
@@ -314,14 +355,17 @@ if ! jq -e \
   .mutation.credentials_loaded == false and .mutation.performed == false and
   .mutation.rebuild_allowed == false and .mutation.registry_write == false and
   .routes.github == {draft: false, prerelease: false, tag: $tag} and
-  .routes.npm == {dist_tag: "rc", version: $version} and
-  .routes.pypi == {prerelease: true, repository: "pypi"} and
-  .routes.oci == {moving_tag: "rc", version_tag: $version} and
-  .routes.homebrew == {channel: "rc", stable_formula_mutation: false} and
-  .routes.apt == {suite: "testing"} and
+  .routes.npm == {dist_tag: $npm_dist_tag, version: $version} and
+  .routes.pypi == {prerelease: $pypi_prerelease, repository: "pypi"} and
+  .routes.oci == {moving_tag: $oci_moving_tag, version_tag: $version} and
+  .routes.homebrew == {
+    channel: $homebrew_channel,
+    stable_formula_mutation: $stable_formula_mutation
+  } and
+  .routes.apt == {suite: $apt_suite} and
   .routes.winget == {
-    community_manifest_submission: false,
-    route: "validation"
+    community_manifest_submission: $winget_community_submission,
+    route: $winget_route
   } and
   .next_action.code == "approve_exact_frozen_digest"
 ' "${promotion}" >/dev/null; then
@@ -331,27 +375,42 @@ fi
 if ! jq -e \
   --arg release_id "${AIT_RELEASE_ID}" \
   --arg version "${version}" \
+  --arg channel "${AIT_RELEASE_CHANNEL}" \
   --arg tag "${AIT_RELEASE_TAG}" \
   --arg snapshot "${AIT_RELEASE_COORDINATOR_SNAPSHOT}" \
-  --arg family_sha "${family_manifest_sha256}" '
+  --arg family_sha "${family_manifest_sha256}" \
+  --arg npm_dist_tag "${npm_dist_tag}" \
+  --arg oci_moving_tag "${oci_moving_tag}" \
+  --arg homebrew_channel "${homebrew_channel}" \
+  --arg apt_suite "${apt_suite}" \
+  --arg winget_route "${winget_route}" \
+  --argjson pypi_prerelease "${pypi_prerelease}" \
+  --argjson stable_formula_mutation "${stable_formula_mutation}" \
+  --argjson winget_community_submission "${winget_community_submission}" '
     .contract == "ait.release.family.frozen/v1" and
     .release_id == $release_id and .version == $version and
-    .channel == "rc" and .tag == $tag and .snapshot_id == $snapshot and
+    .channel == $channel and .tag == $tag and .snapshot_id == $snapshot and
     .family_manifest_sha256 == $family_sha and
     .promotion.authorized == false and .promotion.performed == false and
     .promotion.registry_write == false and
     .promotion.routes.github == {draft: false, prerelease: false, tag: $tag} and
-    .promotion.routes.npm == {dist_tag: "rc", version: $version} and
-    .promotion.routes.pypi == {prerelease: true, repository: "pypi"} and
-    .promotion.routes.oci == {moving_tag: "rc", version_tag: $version} and
-    .promotion.routes.apt == {suite: "testing"} and
+    .promotion.routes.npm == {dist_tag: $npm_dist_tag, version: $version} and
+    .promotion.routes.pypi == {
+      prerelease: $pypi_prerelease,
+      repository: "pypi"
+    } and
+    .promotion.routes.oci == {
+      moving_tag: $oci_moving_tag,
+      version_tag: $version
+    } and
+    .promotion.routes.apt == {suite: $apt_suite} and
     .promotion.routes.homebrew == {
-      channel: "rc",
-      stable_formula_mutation: false
+      channel: $homebrew_channel,
+      stable_formula_mutation: $stable_formula_mutation
     } and
     .promotion.routes.winget == {
-      community_manifest_submission: false,
-      route: "validation"
+      community_manifest_submission: $winget_community_submission,
+      route: $winget_route
     }
   ' "${frozen_manifest}" >/dev/null; then
   printf 'frozen family manifest identity or mutation state is invalid\n' >&2
@@ -420,7 +479,7 @@ verify_checksum_manifest() {
     fi
     require_regular_file "${root}/${relative}" "${label} checksum member"
     actual=$(sha256_file "${root}/${relative}")
-    if [[ ${actual} != ${digest} ]]; then
+    if [[ ${actual} != "${digest}" ]]; then
       printf '%s checksum member differs: %s\n' "${label}" "${relative}" >&2
       return 65
     fi
@@ -473,6 +532,7 @@ for channel in apt homebrew npm pypi winget; do
   if ! jq -e \
     --arg release_id "${AIT_RELEASE_ID}" \
     --arg version "${version}" \
+    --arg release_channel "${AIT_RELEASE_CHANNEL}" \
     --arg tag "${AIT_RELEASE_TAG}" \
     --arg snapshot "${AIT_RELEASE_COORDINATOR_SNAPSHOT}" \
     --arg channel "${channel}" \
@@ -480,7 +540,8 @@ for channel in apt homebrew npm pypi winget; do
     --arg frozen_checksum_sha "${AIT_RELEASE_CHECKSUM_SHA256}" '
       .contract == "ait.release.family.package/v1" and
       .release_id == $release_id and .version == $version and
-      .release_channel == "rc" and .tag == $tag and .snapshot_id == $snapshot and
+      .release_channel == $release_channel and .tag == $tag and
+      .snapshot_id == $snapshot and
       .channel == $channel and .status == "assembled" and
       .frozen_manifest_sha256 == $frozen_manifest_sha and
       .frozen_checksum_sha256 == $frozen_checksum_sha and
@@ -568,8 +629,8 @@ public_head=$(git -C "${public_source_root}" rev-parse HEAD)
 public_tag_head=$(git -C "${public_source_root}" \
   rev-list -n 1 "refs/tags/${AIT_RELEASE_TAG}")
 public_status=$(git -C "${public_source_root}" status --porcelain --untracked-files=all)
-if [[ ${public_head} != ${AIT_RELEASE_GIT_COMMIT} ||
-  ${public_tag_head} != ${AIT_RELEASE_GIT_COMMIT} || -n ${public_status} ]]; then
+if [[ ${public_head} != "${AIT_RELEASE_GIT_COMMIT}" ||
+  ${public_tag_head} != "${AIT_RELEASE_GIT_COMMIT}" || -n ${public_status} ]]; then
   printf 'public tag checkout does not match the approved Git commit\n' >&2
   exit 65
 fi
@@ -612,27 +673,16 @@ if [[ $("${frozen_ait_bin}" --version) != "ait ${version}" ]]; then
   exit 65
 fi
 
-family_packages_input_sha256=ad5212e194db9a52b049d3334a157959102f115aeeb64f43ff0974328af2e4b3
-family_packages_output_sha256=0e7f95bb81dca170343b4b8d2b48949756be76b30956aec6080eee87b2b027d6
-family_release_input_sha256=771dd056d3b21c86a63f060bdc44c80bc48717bde3075efd5b2173eb02d68b0f
-family_release_output_sha256=ac3d39e4c588aeb500900150dfa51097088d8524264b504f4ee4306de5af7a32
-admission_source=${temporary_root}/family-admission-source
-cp -R "${public_source_root}/ait-core" "${admission_source}"
-admission_rust=${admission_source}/rust
+admission_rust=${public_source_root}/ait-core/rust
 family_packages=${admission_rust}/crates/ait-cli/src/release_surface/family_packages.rs
 family_release=${admission_rust}/crates/ait-cli/src/release_surface/family_release.rs
-if [[ $(sha256_file "${family_packages}") != ${family_packages_input_sha256} ||
-  $(sha256_file "${family_release}") != ${family_release_input_sha256} ]]; then
-  printf 'tagged family admission input differs from the approved RC.4 source\n' >&2
-  exit 65
-fi
-patch --batch --forward --strip=0 \
-  --directory="${admission_rust}" <"${admission_patch}"
-if [[ $(sha256_file "${family_packages}") != ${family_packages_output_sha256} ||
-  $(sha256_file "${family_release}") != ${family_release_output_sha256} ]]; then
-  printf 'patched family admission output differs from the approved RC.4 surface\n' >&2
-  exit 65
-fi
+admission_cargo_lock=${admission_rust}/Cargo.lock
+require_regular_file "${family_packages}" 'tagged family package admission source'
+require_regular_file "${family_release}" 'tagged family release admission source'
+require_regular_file "${admission_cargo_lock}" 'tagged family admission Cargo lock'
+family_packages_sha256=$(sha256_file "${family_packages}")
+family_release_sha256=$(sha256_file "${family_release}")
+cargo_lock_sha256=$(sha256_file "${admission_cargo_lock}")
 rust_toolchain=$(jq -er '
   .rust_toolchain | select(type == "string" and test("^[0-9]+\\.[0-9]+\\.[0-9]+$"))
 ' "${platform_contract}")
@@ -651,6 +701,13 @@ if [[ ! -x ${ait_bin} || $("${ait_bin}" --version) != "ait ${version}" ]]; then
   printf 'protected family admission CLI is unavailable or has the wrong version\n' >&2
   exit 65
 fi
+if [[ -n $(git -C "${public_source_root}" status --porcelain --untracked-files=all) ||
+  $(sha256_file "${family_packages}") != "${family_packages_sha256}" ||
+  $(sha256_file "${family_release}") != "${family_release_sha256}" ||
+  $(sha256_file "${admission_cargo_lock}") != "${cargo_lock_sha256}" ]]; then
+  printf 'native admission build mutated the immutable tagged source\n' >&2
+  exit 65
+fi
 admission_root=${temporary_root}/admission
 mkdir "${admission_root}"
 (
@@ -664,7 +721,8 @@ mkdir "${admission_root}"
   cp "${promotion}" "${release_root}/ait-release.promotion.json"
   cp -R "${frozen_root}" "${release_root}/frozen"
   "${ait_bin}" release promote "${AIT_RELEASE_ID}" \
-    --channel rc --public-source-root "${public_source_root}" --json \
+    --channel "${AIT_RELEASE_CHANNEL}" \
+    --public-source-root "${public_source_root}" --json \
     >"${temporary_root}/promotion-readback.json"
 )
 jq -S . "${promotion}" >"${temporary_root}/promotion-expected.sorted.json"
@@ -688,6 +746,7 @@ source_file_count=$(find "${archive_root}" -type f | wc -l | tr -d '[:space:]')
 jq -n \
   --arg release_id "${AIT_RELEASE_ID}" \
   --arg version "${version}" \
+  --arg channel "${AIT_RELEASE_CHANNEL}" \
   --arg tag "${AIT_RELEASE_TAG}" \
   --arg repository "${AIT_RELEASE_REPOSITORY}" \
   --arg commit "${AIT_RELEASE_GIT_COMMIT}" \
@@ -712,12 +771,10 @@ jq -n \
   --arg source_evidence_sha256 "${source_evidence_sha256}" \
   --arg source_archive_sha256 "${source_archive_sha256}" \
   --arg source_content_sha256 "${source_content_sha256}" \
-  --arg admission_patch_sha256 "${admission_patch_sha256}" \
   --arg admission_rust_toolchain "${rust_toolchain}" \
-  --arg family_packages_input_sha256 "${family_packages_input_sha256}" \
-  --arg family_packages_output_sha256 "${family_packages_output_sha256}" \
-  --arg family_release_input_sha256 "${family_release_input_sha256}" \
-  --arg family_release_output_sha256 "${family_release_output_sha256}" \
+  --arg cargo_lock_sha256 "${cargo_lock_sha256}" \
+  --arg family_packages_sha256 "${family_packages_sha256}" \
+  --arg family_release_sha256 "${family_release_sha256}" \
   --argjson source_file_count "${source_file_count}" \
   --argjson executable_mode_count "${executable_mode_count}" \
   --argjson frozen_checksum_count "${frozen_checksum_count}" \
@@ -727,7 +784,7 @@ jq -n \
       status: "authorized_for_explicit_endpoint_promotion",
       release_id: $release_id,
       version: $version,
-      channel: "rc",
+      channel: $channel,
       tag: $tag,
       snapshot_id: $snapshot,
       public_source: {
@@ -761,14 +818,11 @@ jq -n \
         frozen_checksum_count: $frozen_checksum_count,
         native_promotion_readback_equal: true,
         admission_replay: {
-          model: "immutable-tag-plus-hash-pinned-control-patch/v1",
-          patch: "ci/release_family_rc4_admission.patch",
-          patch_sha256: $admission_patch_sha256,
+          model: "immutable-tag-native-admission/v1",
           rust_toolchain: $admission_rust_toolchain,
-          family_packages_input_sha256: $family_packages_input_sha256,
-          family_packages_output_sha256: $family_packages_output_sha256,
-          family_release_input_sha256: $family_release_input_sha256,
-          family_release_output_sha256: $family_release_output_sha256
+          cargo_lock_sha256: $cargo_lock_sha256,
+          family_packages_sha256: $family_packages_sha256,
+          family_release_sha256: $family_release_sha256
         },
         packages: $packages
       },
@@ -802,18 +856,20 @@ jq -n \
 
 if ! jq -e \
   --arg release_id "${AIT_RELEASE_ID}" \
+  --arg channel "${AIT_RELEASE_CHANNEL}" \
   --arg source_control_sha "${AIT_RELEASE_SOURCE_CONTROL_SHA}" \
   --arg frozen_manifest_sha256 "${AIT_RELEASE_FROZEN_MANIFEST_SHA256}" \
   --arg checksum_sha256 "${AIT_RELEASE_CHECKSUM_SHA256}" '
     .contract == "ait.release.family.protected-promotion/v1" and
     .status == "authorized_for_explicit_endpoint_promotion" and
-    .release_id == $release_id and .authorization.granted == true and
+    .release_id == $release_id and .channel == $channel and
+    .authorization.granted == true and
     .dossier.source_workflow_sha == $source_control_sha and
     .dossier.frozen_manifest_sha256 == $frozen_manifest_sha256 and
     .dossier.checksum_sha256 == $checksum_sha256 and
     .dossier.native_promotion_readback_equal == true and
     .dossier.admission_replay.model ==
-      "immutable-tag-plus-hash-pinned-control-patch/v1" and
+      "immutable-tag-native-admission/v1" and
     .public_source.status == "verified" and
     ([.mutation[]] | all(. == false)) and
     .next_action.code == "request_explicit_registry_authorization"

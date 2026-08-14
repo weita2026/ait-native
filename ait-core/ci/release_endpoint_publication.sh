@@ -13,7 +13,7 @@ dossier_root=$2
 protected_evidence=$3
 output_root=$4
 
-for command in awk basename cmp cp diff find jq mv node sed sort tar; do
+for command in awk bash basename cmp cp diff find jq mv node sed sort tar; do
   if ! command -v "${command}" >/dev/null 2>&1; then
     printf 'required endpoint-publication command is unavailable: %s\n' "${command}" >&2
     exit 69
@@ -91,96 +91,12 @@ staging=${temporary_root}/staging
 assets=${staging}/assets
 mkdir -p "${assets}" "${staging}/oci/ait-server" "${staging}/oci/ait-runner"
 
-if ! jq -e '
-  .contract == "ait.release.family.endpoints/v1" and
-  .release == {
-    id: "REL-FAM-600EFDC327FE7860",
-    version: "1.0.0-rc.3",
-    python_version: "1.0.0rc3",
-    tag: "v1.0.0-rc.3",
-    source_commit: "ba368cf4d0750035345f14a8a91c22fb9e450260",
-    coordinator_snapshot: "SNP-B0271928FD9B",
-    frozen_manifest_sha256: "2a228253ceea6f793df050e9bf2fc14f240c8d9db5ebdcbcbc6133e61e6238fe",
-    frozen_checksums_sha256: "9fd126c61d716a3e8056e598ba6d3ecee992b0bbc7e073470887e49d11877747"
-  } and
-  .source_dossier == {
-    workflow_run_id: 31664713921,
-    workflow_run_attempt: 1,
-    workflow_control_commit: "93f2589d8eb7404400617169598427aaef3ff8af",
-    artifact_id: 9167933771,
-    artifact_digest: "sha256:08afc391688c902f3c2259392286b51612e6b6eb0aa51c388e8e513329705823"
-  } and
-  .protected_authorization == {
-    workflow_run_id: 31666479359,
-    workflow_run_attempt: 1,
-    workflow_control_commit: "93f2589d8eb7404400617169598427aaef3ff8af",
-    artifact_id: 9168120753,
-    artifact_digest: "sha256:54079d53bc3e115f314d99591228cc80dbab4c56c5ae361530f9c490c0764be9",
-    evidence_sha256: "cc18cf39db59147d5ee94359f0c00813be6841bf317686451eafd1152f870b32"
-  } and
-  .publisher == {
-    repository: "weita2026/ait-native",
-    workflow: "pypi-publish.yml",
-    environment: "pypi"
-  } and
-  .endpoints.github == {repository: "weita2026/ait-native", prerelease: true} and
-  .endpoints.pypi.identity == "ait-native" and
-  .endpoints.pypi.trusted_publisher == {
-    repository: "weita2026/ait-native",
-    workflow: "pypi-publish.yml",
-    environment: "pypi"
-  } and
-  .endpoints.npm.registry == "https://registry.npmjs.org" and
-  .endpoints.npm.dist_tag == "rc" and
-  .endpoints.npm.credential_secret == "AIT_NPM_TOKEN" and
-  .endpoints.npm.packages == [
-    "ait-native",
-    "ait-native-ait-darwin-arm64",
-    "ait-native-ait-darwin-x64",
-    "ait-native-ait-linux-arm64",
-    "ait-native-ait-linux-x64",
-    "ait-native-ait-win32-arm64",
-    "ait-native-ait-win32-x64"
-  ] and
-  .endpoints.npm.frozen_missing_repository_metadata == {
-    external_github_attestation_required: true,
-    archives: {
-      "ait-native": "8862dc3621320fda30e6923c85eee872751bfc92d95f319382b5b690540392f8",
-      "ait-native-ait-darwin-arm64": "262b2860df61c64dd8c358d0e36c5ae136ae0f98ee1bbc04511ba0608313abd2",
-      "ait-native-ait-darwin-x64": "42cb08e1651e8d96cd4dfc56cabf63ce0c50629b9c122ce065351cf67747e870",
-      "ait-native-ait-linux-arm64": "e59c1d29819454d20943dad038e7e3273d114c29033ff22d2430ae427778b221",
-      "ait-native-ait-linux-x64": "b594c192d921aa2e9c0fd6868d477b76fb431bac6ef0b89c8c0f011ac5cc1843",
-      "ait-native-ait-win32-arm64": "510ad5a977948c9a71c5434f721370fd2265b7665d3198bac597e563d2d4a8be",
-      "ait-native-ait-win32-x64": "7e09475a008b9a36993c9efe89ee99fd493da0457d06ca349143449e95b3298b"
-    }
-  } and
-  .endpoints.homebrew == {
-    repository: "weita2026/homebrew-ait-native",
-    branch: "main",
-    formula_path: "Formula/ait-native-rc.rb",
-    tap: "weita2026/ait-native",
-    deploy_key_secret: "AIT_HOMEBREW_DEPLOY_KEY"
-  } and
-  .endpoints.apt.repository == "weita2026/apt-ait-native" and
-  .endpoints.apt.branch == "main" and
-  .endpoints.apt.base_url == "https://raw.githubusercontent.com/weita2026/apt-ait-native/main" and
-  .endpoints.apt.suite == "testing" and
-  .endpoints.apt.component == "main" and
-  (.endpoints.apt.signing_fingerprint | test("^[0-9A-F]{40}$")) and
-  .endpoints.winget == {
-    identity: "Weita.AitNative",
-    route: "validation",
-    community_manifest_submission: false
-  } and
-  .endpoints.oci.dockerfile_frontend == "docker/dockerfile:1.7@sha256:a57df69d0ea827fb7266491f2813635de6f17269be881f696fbfdf2d83dda33e" and
-  .endpoints.oci.base_image == "docker.io/library/debian:bookworm-slim@sha256:abd67ffcfa541b485a3dff59865ab629aa048a6c613e639d36e7456b0b229241" and
-  .endpoints.oci.images == ["ghcr.io/weita2026/ait-server", "ghcr.io/weita2026/ait-runner"] and
-  .endpoints.oci.immutable_tag == "1.0.0-rc.3" and
-  .endpoints.oci.moving_tag == "rc"
-' "${endpoint_config}" >/dev/null; then
-  printf 'endpoint configuration does not match the exact admitted RC route\n' >&2
-  exit 65
-fi
+bash "${repo_root}/ci/release_operator.sh" validate-config \
+  --config "${endpoint_config}" >/dev/null
+release_channel=$(jq -er '.release.channel' "${endpoint_config}")
+release_version=$(jq -er '.release.version' "${endpoint_config}")
+release_tag=$(jq -er '.release.tag' "${endpoint_config}")
+release_id=$(jq -er '.release.id' "${endpoint_config}")
 
 expected_protected_sha=$(jq -er '.protected_authorization.evidence_sha256' "${endpoint_config}")
 if [[ $(sha256_file "${protected_evidence}") != "${expected_protected_sha}" ]]; then
@@ -192,6 +108,7 @@ if ! jq -e --slurpfile config "${endpoint_config}" '
   .status == "authorized_for_explicit_endpoint_promotion" and
   .release_id == $config[0].release.id and
   .version == $config[0].release.version and
+  .channel == $config[0].release.channel and
   .tag == $config[0].release.tag and
   .snapshot_id == $config[0].release.coordinator_snapshot and
   .public_source.repository == $config[0].publisher.repository and
@@ -207,10 +124,24 @@ if ! jq -e --slurpfile config "${endpoint_config}" '
   .dossier.artifact_digest == $config[0].source_dossier.artifact_digest and
   .dossier.frozen_manifest_sha256 == $config[0].release.frozen_manifest_sha256 and
   .dossier.checksum_sha256 == $config[0].release.frozen_checksums_sha256 and
-  .dossier.frozen_checksum_count == 48 and
+  (.dossier.frozen_checksum_count | type == "number" and . > 0 and floor == .) and
+  .dossier.native_promotion_readback_equal == true and
+  .dossier.admission_replay == {
+    model: "immutable-tag-native-admission/v1",
+    rust_toolchain: .dossier.admission_replay.rust_toolchain,
+    cargo_lock_sha256: .dossier.admission_replay.cargo_lock_sha256,
+    family_packages_sha256: .dossier.admission_replay.family_packages_sha256,
+    family_release_sha256: .dossier.admission_replay.family_release_sha256
+  } and
+  (.dossier.admission_replay.rust_toolchain | test("^[0-9]+\\.[0-9]+\\.[0-9]+$")) and
+  (.dossier.admission_replay.cargo_lock_sha256 | test("^[0-9a-f]{64}$")) and
+  (.dossier.admission_replay.family_packages_sha256 | test("^[0-9a-f]{64}$")) and
+  (.dossier.admission_replay.family_release_sha256 | test("^[0-9a-f]{64}$")) and
   .authorization.required == true and
   .authorization.granted == true and
   .authorization.exact_digest_approval == true and
+  .authorization.boundary == "github_protected_environment" and
+  .authorization.protected_environment == ($config[0].release.channel + "-promotion") and
   .authorization.workflow_run_id == ($config[0].protected_authorization.workflow_run_id | tostring) and
   .authorization.workflow_run_attempt == ($config[0].protected_authorization.workflow_run_attempt | tostring) and
   .authorization.workflow_sha == $config[0].protected_authorization.workflow_control_commit and
@@ -225,7 +156,7 @@ if ! jq -e --slurpfile config "${endpoint_config}" '
     service_mutation: false
   }
 ' "${protected_evidence}" >/dev/null; then
-  printf 'protected authorization evidence does not authorize this exact RC\n' >&2
+  printf 'protected authorization evidence does not authorize this exact release\n' >&2
   exit 65
 fi
 
@@ -290,8 +221,10 @@ verify_checksum_inventory() {
   printf '%s\n' "${count}"
 }
 
-if [[ $(verify_checksum_inventory "${frozen_checksums}" "${frozen_root}" 'frozen inventory') != 48 ]]; then
-  printf 'frozen checksum inventory must contain exactly 48 entries\n' >&2
+expected_frozen_count=$(jq -er '.dossier.frozen_checksum_count' "${protected_evidence}")
+if [[ $(verify_checksum_inventory "${frozen_checksums}" "${frozen_root}" 'frozen inventory') != \
+  "${expected_frozen_count}" ]]; then
+  printf 'frozen checksum inventory count differs from protected evidence\n' >&2
   exit 65
 fi
 
@@ -316,8 +249,147 @@ copy_asset() {
   cp -p "${source}" "${assets}/${destination_name}"
 }
 
-release_id=$(jq -er '.release.id' "${endpoint_config}")
-release_version=$(jq -er '.release.version' "${endpoint_config}")
+npm_addon_platform() {
+  case "$1" in
+    @wa120/ait-native-darwin-arm64)
+      printf '%s\t%s\t%s\t%s\n' aarch64-apple-darwin darwin arm64 none
+      ;;
+    @wa120/ait-native-darwin-x64)
+      printf '%s\t%s\t%s\t%s\n' x86_64-apple-darwin darwin x64 none
+      ;;
+    @wa120/ait-native-linux-arm64)
+      printf '%s\t%s\t%s\t%s\n' aarch64-unknown-linux-gnu linux arm64 glibc
+      ;;
+    @wa120/ait-native-linux-x64)
+      printf '%s\t%s\t%s\t%s\n' x86_64-unknown-linux-gnu linux x64 glibc
+      ;;
+    @wa120/ait-native-win32-arm64)
+      printf '%s\t%s\t%s\t%s\n' aarch64-pc-windows-msvc win32 arm64 none
+      ;;
+    @wa120/ait-native-win32-x64)
+      printf '%s\t%s\t%s\t%s\n' x86_64-pc-windows-msvc win32 x64 none
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+validate_npm_payload_contract() {
+  local contract=$1
+  jq -e --arg version "${release_version}" '
+    def expected_platforms: [
+      {target: "aarch64-apple-darwin", os: "darwin", cpu: "arm64", libc: null},
+      {target: "x86_64-apple-darwin", os: "darwin", cpu: "x64", libc: null},
+      {target: "aarch64-unknown-linux-gnu", os: "linux", cpu: "arm64", libc: "glibc"},
+      {target: "x86_64-unknown-linux-gnu", os: "linux", cpu: "x64", libc: "glibc"},
+      {target: "aarch64-pc-windows-msvc", os: "win32", cpu: "arm64", libc: null},
+      {target: "x86_64-pc-windows-msvc", os: "win32", cpu: "x64", libc: null}
+    ];
+    .schema == "ait.node.napi-platform-packages/v2" and
+    .family_version == $version and
+    .top_level_package == "@wa120/ait-native" and
+    (.payloads | type) == "array" and
+    (.payloads | length) == 6 and
+    ([.payloads[] | {target, os, cpu, libc}] | sort_by(.target)) ==
+      (expected_platforms | sort_by(.target)) and
+    all(.payloads[];
+      (keys | sort) == ([
+        "addon", "binding_repository", "binding_snapshot", "component",
+        "cpu", "libc", "license", "os", "package", "target", "version"
+      ] | sort) and
+      .component == "ait-node" and
+      .package == ("@wa120/ait-native-" + .os + "-" + .cpu) and
+      .version == $version and
+      .binding_repository == "ait-core" and
+      (.binding_snapshot | test("^SNP-[0-9A-F]{12}$")) and
+      .license == "Apache-2.0" and
+      .addon == "native/ait_napi.node")
+  ' "${contract}" >/dev/null
+}
+
+validate_npm_package_archive() {
+  local archive=$1
+  local package_manifest=$2
+  local package_name target os cpu libc provenance contract
+  package_name=$(jq -er '.name' "${package_manifest}")
+  if ! jq -e --arg version "${release_version}" '
+    .version == $version and
+    .repository == {
+      type: "git",
+      url: "git+https://github.com/weita2026/ait-native.git",
+      directory: "ait-node"
+    }
+  ' "${package_manifest}" >/dev/null; then
+    return 1
+  fi
+  if [[ ${package_name} == @wa120/ait-native ]]; then
+    if ! jq -e --arg version "${release_version}" \
+      --slurpfile config "${endpoint_config}" '
+        ((has("os") or has("cpu") or has("libc") or has("aitNativeAddon")) | not) and
+        (.optionalDependencies | keys | sort) ==
+          ([$config[0].endpoints.npm.packages[] |
+            select(. != "@wa120/ait-native")] | sort) and
+        all(.optionalDependencies[]; . == $version)
+      ' "${package_manifest}" >/dev/null; then
+      return 1
+    fi
+    contract=${temporary_root}/npm-payload-contract.json
+    tar -xOf "${archive}" package/lib/npm-payload-contract.json >"${contract}"
+    validate_npm_payload_contract "${contract}"
+    return
+  fi
+
+  if ! IFS=$'\t' read -r target os cpu libc < <(npm_addon_platform "${package_name}"); then
+    return 1
+  fi
+  if ! jq -e \
+    --arg version "${release_version}" \
+    --arg target "${target}" \
+    --arg os "${os}" \
+    --arg cpu "${cpu}" \
+    --arg libc "${libc}" '
+      .version == $version and
+      .os == [$os] and
+      .cpu == [$cpu] and
+      (if $libc == "none" then has("libc") | not
+       else .libc == [$libc] end) and
+      .aitNativeAddon.schema == "ait.node.napi-platform-addon/v2" and
+      .aitNativeAddon.component == "ait-node" and
+      .aitNativeAddon.target == $target and
+      .aitNativeAddon.libc == (if $libc == "none" then null else $libc end) and
+      .aitNativeAddon.addon == "native/ait_napi.node" and
+      .aitNativeAddon.binding_repository == "ait-core" and
+      (.aitNativeAddon.binding_snapshot | test("^SNP-[0-9A-F]{12}$"))
+    ' "${package_manifest}" >/dev/null; then
+    return 1
+  fi
+  provenance=${temporary_root}/npm-provenance-${package_name//\//_}.json
+  tar -xOf "${archive}" package/provenance.json >"${provenance}"
+  jq -e \
+    --arg version "${release_version}" \
+    --arg package "${package_name}" \
+    --arg target "${target}" \
+    --arg os "${os}" \
+    --arg cpu "${cpu}" \
+    --arg libc "${libc}" '
+      .schema == "ait.node.napi-platform-addon-provenance/v2" and
+      .family_version == $version and
+      .package == $package and
+      .target == $target and
+      .os == $os and
+      .cpu == $cpu and
+      .libc == (if $libc == "none" then null else $libc end) and
+      .component == "ait-node" and
+      .package_source_repository == "ait-node" and
+      .binding_repository == "ait-core" and
+      (.binding_snapshot | test("^SNP-[0-9A-F]{12}$")) and
+      .installed_path == "native/ait_napi.node"
+    ' "${provenance}" >/dev/null
+}
+
+npm_package_names=${temporary_root}/npm-package-names
+: >"${npm_package_names}"
 for channel in apt homebrew npm pypi winget; do
   channel_root=${dossier_root}/packages/${channel}
   receipt=${channel_root}/ait-release.package.json
@@ -340,12 +412,19 @@ for channel in apt homebrew npm pypi winget; do
     printf '%s package receipt or checksum evidence drifted\n' "${channel}" >&2
     exit 65
   fi
-  if ! jq -e --arg channel "${channel}" --arg release_id "${release_id}" '
+  if ! jq -e \
+    --arg channel "${channel}" \
+    --arg release_id "${release_id}" \
+    --arg version "${release_version}" \
+    --arg release_channel "${release_channel}" \
+    --arg tag "${release_tag}" \
+    --slurpfile config "${endpoint_config}" '
     .contract == "ait.release.family.package/v1" and
     .status == "assembled" and
     .release_id == $release_id and
-    .version == "1.0.0-rc.3" and
-    .tag == "v1.0.0-rc.3" and
+    .version == $version and
+    .release_channel == $release_channel and
+    .tag == $tag and
     .channel == $channel and
     .check_summary.decision == "pass" and
     .check_summary.blocking == 0 and
@@ -362,10 +441,15 @@ for channel in apt homebrew npm pypi winget; do
       tag_write: false
     } and
     if $channel == "winget" then
-      .route == {community_manifest_submission: false, route: "validation"} and
+      .route == {
+        community_manifest_submission:
+          $config[0].endpoints.winget.community_manifest_submission,
+        route: $config[0].endpoints.winget.route
+      } and
       all(.artifacts[];
         if .kind == "winget-portable-zip" then true
-        else .metadata.community_manifest_submission == false end)
+        else .metadata.community_manifest_submission ==
+          $config[0].endpoints.winget.community_manifest_submission end)
     else true end
   ' "${receipt}" >/dev/null; then
     printf '%s package receipt is not an unmodified staging receipt\n' "${channel}" >&2
@@ -385,8 +469,32 @@ for channel in apt homebrew npm pypi winget; do
       printf '%s package artifact drifted: %s\n' "${channel}" "${artifact_path}" >&2
       exit 65
     fi
+    if [[ ${channel} == npm ]]; then
+      npm_package_manifest=${temporary_root}/npm-package-${expected_sha}.json
+      if ! tar -xOf "${source}" package/package.json >"${npm_package_manifest}" ||
+        ! jq -e --slurpfile config "${endpoint_config}" '
+          .name as $name |
+          any($config[0].endpoints.npm.packages[]; . == $name)
+        ' "${npm_package_manifest}" >/dev/null ||
+        ! validate_npm_package_archive "${source}" "${npm_package_manifest}"; then
+        printf 'frozen npm package platform or repository metadata is not exact: %s\n' \
+          "${artifact_path}" >&2
+        exit 65
+      fi
+      jq -er '.name' "${npm_package_manifest}" >>"${npm_package_names}"
+    fi
     copy_asset "${source}" "$(basename -- "${source}")"
   done < <(jq -r '.artifacts[] | [.path, .sha256, (.size_bytes | tostring)] | @tsv' "${receipt}")
+  if [[ ${channel} == npm ]]; then
+    expected_npm_package_names=${temporary_root}/expected-npm-package-names
+    jq -r '.endpoints.npm.packages[]' "${endpoint_config}" |
+      LC_ALL=C sort >"${expected_npm_package_names}"
+    LC_ALL=C sort "${npm_package_names}" -o "${npm_package_names}"
+    if ! diff -u "${expected_npm_package_names}" "${npm_package_names}"; then
+      printf 'frozen npm package identity inventory is not exact\n' >&2
+      exit 65
+    fi
+  fi
   copy_asset "${receipt}" "ait-release-${channel}.package.json"
   copy_asset "${checksums}" "ait-release-${channel}.SHA256SUMS"
 done
@@ -511,6 +619,11 @@ find "${assets}" -mindepth 1 -maxdepth 1 -type f ! -name SHA256SUMS -print |
 asset_count=$(wc -l <"${release_checksums}" | tr -d '[:space:]')
 
 endpoint_receipt=${staging}/ait-release.endpoint-publication.json
+if [[ ${release_channel} == rc ]]; then
+  winget_stage_status=forbidden_for_rc
+else
+  winget_stage_status=requires_external_community_submission
+fi
 jq -n \
   --arg contract 'ait.release.family.endpoint-publication/v1' \
   --arg status 'ready_for_authenticated_endpoint_preflight' \
@@ -520,6 +633,7 @@ jq -n \
   --arg endpoint_config_sha256 "$(sha256_file "${endpoint_config}")" \
   --arg protected_evidence_sha256 "$(sha256_file "${protected_evidence}")" \
   --arg release_checksums_sha256 "$(sha256_file "${release_checksums}")" \
+  --arg winget_stage_status "${winget_stage_status}" \
   --argjson asset_count "${asset_count}" \
   --slurpfile config "${endpoint_config}" '
     {
@@ -540,7 +654,7 @@ jq -n \
         package_checksums: "pass",
         github_asset_staging: "pass",
         oci_context_staging: "pass",
-        winget_community_submission: "forbidden_for_rc"
+        winget_community_submission: $winget_stage_status
       },
       mutation: {
         artifact_rebuild: false,

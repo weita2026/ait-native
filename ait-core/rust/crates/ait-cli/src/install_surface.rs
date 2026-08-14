@@ -1,6 +1,6 @@
 use crate::agent_harness::converge_agent_workflow_harness;
 use crate::config_surface::{config_set, ConfigSetRequest};
-use crate::doctor_surface::{doctor_postgres, doctor_runtime_root};
+use crate::doctor_surface::doctor_runtime_root;
 use crate::init_surface::{init_repo_for_install, InitRequest};
 use crate::json_support::{encode_value_pretty_with_newline_error_string, parse_value};
 use crate::remote_surface::{remote_add, remote_list, set_default_remote, RemoteAddRequest};
@@ -250,14 +250,6 @@ pub fn install(request: &InstallRequest) -> Result<JsonValue, String> {
             .collect(),
         ),
     )?;
-    if payload
-        .get("mode")
-        .and_then(|value| value.get("requested_mode"))
-        .and_then(JsonValue::as_str)
-        == Some("solo_remote")
-    {
-        replace_object_field(&mut payload, "postgres", classify_postgres())?;
-    }
     if !resolved_request.json_output {
         let rendered_text = render_install_text(&payload);
         replace_object_field(
@@ -319,13 +311,6 @@ pub fn render_install_text(payload: &JsonValue) -> String {
         "- runtime-root classification: {}",
         object_string(runtime_root, "classification").unwrap_or_else(|| "unknown".to_string())
     ));
-    if let Some(postgres) = payload.get("postgres").and_then(JsonValue::as_object) {
-        lines.push(format!(
-            "- postgres classification: {}",
-            object_string(Some(postgres), "classification")
-                .unwrap_or_else(|| "unknown".to_string())
-        ));
-    }
     if let Some(server) = payload.get("server").and_then(JsonValue::as_object) {
         lines.push(format!(
             "- ait-server setup: {} ({}, {})",
@@ -872,8 +857,8 @@ fn configure_server_setup(
             "server_url": JsonValue::Null,
             "next_steps": [
                 "Run `ait doctor runtime-root --json` before placing local ait-server data.",
-                "Run `ait doctor postgres --json` and configure PostgreSQL before starting shared workflow services.",
-                "Deploy or start ait-server through the dedicated self-hosted/operator path, then rerun `ait install --mode remote --server-setup connect --server-url <url>`.",
+                "Initialize Binary v0 server authority with `ait-server init`, then verify it with `ait-server probe --defer-ci-admission`.",
+                "Start the PostgreSQL-free server with `ait-server run --init-if-missing --defer-ci-admission`, then rerun `ait install --mode remote --server-setup connect --server-url <url>`.",
             ],
         }));
     }
@@ -1201,41 +1186,6 @@ fn classify_runtime_root(repo_root: &Path) -> JsonValue {
             "report": {
                 "state": "fail",
                 "issues": [err],
-            },
-        }),
-    }
-}
-
-fn classify_postgres() -> JsonValue {
-    match doctor_postgres(None, None, Some("postgres"), None, None, None, false) {
-        Ok(report) => {
-            let classification = if report
-                .get("postgres_driver_available")
-                .and_then(JsonValue::as_bool)
-                != Some(true)
-            {
-                "missing"
-            } else if report
-                .get("postgres_dsn_configured")
-                .and_then(JsonValue::as_bool)
-                != Some(true)
-            {
-                "installed_but_not_configured"
-            } else if report.get("ready").and_then(JsonValue::as_bool) == Some(true) {
-                "healthy"
-            } else {
-                "configured_but_unhealthy"
-            };
-            json!({"classification": classification, "report": report})
-        }
-        Err(err) => json!({
-            "classification": "installed_but_not_configured",
-            "report": {
-                "ready": false,
-                "issues": [err],
-                "next_actions": [
-                    "Set AIT_RUNTIME_DATA before running local ait-server or PostgreSQL preflight checks.",
-                ],
             },
         }),
     }
@@ -1950,6 +1900,33 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("Verify the configured ait-server"));
+    }
+
+    #[test]
+    fn install_remote_deploy_guidance_uses_postgresql_free_binary_server_lifecycle() {
+        let temp = temp_dir_outside_repo();
+        let payload = install_from_payload(&json!({
+            "cwd": temp.path().to_string_lossy().to_string(),
+            "mode": "remote",
+            "server_setup": "deploy",
+            "json_output": true,
+        }))
+        .expect("remote deploy guidance");
+
+        assert_eq!(payload["server"]["action"], "guidance_only");
+        assert!(payload.get("postgres").is_none());
+        let steps = payload["server"]["next_steps"]
+            .as_array()
+            .expect("server next steps")
+            .iter()
+            .filter_map(JsonValue::as_str)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(steps.contains("ait-server init"));
+        assert!(steps.contains("ait-server probe --defer-ci-admission"));
+        assert!(steps.contains("ait-server run --init-if-missing --defer-ci-admission"));
+        assert!(!steps.contains("doctor postgres"));
+        assert!(!steps.contains("configure PostgreSQL"));
     }
 
     #[test]

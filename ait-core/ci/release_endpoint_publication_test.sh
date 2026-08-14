@@ -3,7 +3,9 @@ set -euo pipefail
 
 repo_root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 workflow=${repo_root}/.github/workflows/pypi-publish.yml
-endpoint_config=${repo_root}/release/endpoint-publication.rc3.json
+endpoint_config_source=${repo_root}/release/endpoint-publication.rc4.json
+endpoint_defaults=${repo_root}/release/endpoint-publication.defaults.json
+operator=${repo_root}/ci/release_operator.sh
 preparer=${repo_root}/ci/release_endpoint_publication.sh
 remote=${repo_root}/ci/release_endpoint_remote.sh
 temporary_root=$(mktemp -d "${TMPDIR:-/tmp}/ait-endpoint-publication-test.XXXXXX")
@@ -21,6 +23,9 @@ cleanup() {
   esac
 }
 trap cleanup EXIT HUP INT TERM
+
+endpoint_config=${temporary_root}/endpoint-config.json
+jq '.release.channel = "rc"' "${endpoint_config_source}" >"${endpoint_config}"
 
 sha256_file() {
   if command -v sha256sum >/dev/null 2>&1; then
@@ -41,7 +46,18 @@ expect_failure() {
   test -s "${temporary_root}/${label}.stderr"
 }
 
-for path in "${workflow}" "${endpoint_config}" "${preparer}" "${remote}" \
+expect_rejection() {
+  local label=$1
+  shift
+  if "$@" >"${temporary_root}/${label}.stdout" \
+    2>"${temporary_root}/${label}.stderr"; then
+    printf 'expected endpoint contract rejection: %s\n' "${label}" >&2
+    return 1
+  fi
+}
+
+for path in "${workflow}" "${endpoint_config}" "${endpoint_defaults}" \
+  "${operator}" "${preparer}" "${remote}" \
   "${repo_root}/release/oci/ait-server.Dockerfile" \
   "${repo_root}/release/oci/ait-runner.Dockerfile"; do
   if [[ ! -f ${path} || -L ${path} ]]; then
@@ -52,6 +68,7 @@ done
 
 bash -n "${preparer}"
 bash -n "${remote}"
+bash "${operator}" validate-config --config "${endpoint_config}" >/dev/null
 # shellcheck disable=SC2016 # These are literal source-contract fragments.
 for required_apt_contract in \
   'local require_candidate_assets=${4:-true}' \
@@ -73,56 +90,50 @@ fi
 jq -e '
   .contract == "ait.release.family.endpoints/v1" and
   .release == {
-    id: "REL-FAM-600EFDC327FE7860",
-    version: "1.0.0-rc.3",
-    python_version: "1.0.0rc3",
-    tag: "v1.0.0-rc.3",
-    source_commit: "ba368cf4d0750035345f14a8a91c22fb9e450260",
-    coordinator_snapshot: "SNP-B0271928FD9B",
-    frozen_manifest_sha256: "2a228253ceea6f793df050e9bf2fc14f240c8d9db5ebdcbcbc6133e61e6238fe",
-    frozen_checksums_sha256: "9fd126c61d716a3e8056e598ba6d3ecee992b0bbc7e073470887e49d11877747"
+    id: "REL-FAM-701E789EBD8B6848",
+    version: "1.0.0-rc.4",
+    channel: "rc",
+    python_version: "1.0.0rc4",
+    tag: "v1.0.0-rc.4",
+    source_commit: "ea2d347010d3ead2cdfb304e6df448cbf9fe0c4e",
+    coordinator_snapshot: "SNP-2989EE2B6137",
+    frozen_manifest_sha256: "6b299059c078445b24cbe4a6db00d23a74d100816f4dfe107b204d4e3c8aceb0",
+    frozen_checksums_sha256: "6b67be7893ff536e04c03c4514f92eb7cddd6503953b3c4da7356058e615b9ad"
   } and
   .source_dossier == {
-    workflow_run_id: 31664713921,
+    workflow_run_id: 31716406486,
     workflow_run_attempt: 1,
-    workflow_control_commit: "93f2589d8eb7404400617169598427aaef3ff8af",
-    artifact_id: 9167933771,
-    artifact_digest: "sha256:08afc391688c902f3c2259392286b51612e6b6eb0aa51c388e8e513329705823"
+    workflow_control_commit: "e8925452d487665ea6fd67503278f48baa3eca68",
+    artifact_id: 9188270344,
+    artifact_digest: "sha256:35c3fc115bda047ca9b9998f4e23941edb3b95c94e08ef98896fd559b1b146b9"
   } and
   .protected_authorization == {
-    workflow_run_id: 31666479359,
+    workflow_run_id: 31721469565,
     workflow_run_attempt: 1,
-    workflow_control_commit: "93f2589d8eb7404400617169598427aaef3ff8af",
-    artifact_id: 9168120753,
-    artifact_digest: "sha256:54079d53bc3e115f314d99591228cc80dbab4c56c5ae361530f9c490c0764be9",
-    evidence_sha256: "cc18cf39db59147d5ee94359f0c00813be6841bf317686451eafd1152f870b32"
+    workflow_control_commit: "99191fe336d76e5ebba06333ac8a9338f4381763",
+    artifact_id: 9189654794,
+    artifact_digest: "sha256:aec6ebb7269dcb2333fba915acd3bdc64d379df798a585b422ba0177719752ab",
+    evidence_sha256: "4a5c025cdcb8626fe93c71cb4f2780eda1057f979eaa114e4e3e0e3a5dd17e09"
   } and
   .publisher == {
     repository: "weita2026/ait-native",
     workflow: "pypi-publish.yml",
     environment: "pypi"
   } and
-  .endpoints.npm.packages == [
-    "ait-native",
-    "ait-native-ait-darwin-arm64",
-    "ait-native-ait-darwin-x64",
-    "ait-native-ait-linux-arm64",
-    "ait-native-ait-linux-x64",
-    "ait-native-ait-win32-arm64",
-    "ait-native-ait-win32-x64"
-  ] and
-  .endpoints.npm.frozen_missing_repository_metadata == {
-    external_github_attestation_required: true,
-    archives: {
-      "ait-native": "8862dc3621320fda30e6923c85eee872751bfc92d95f319382b5b690540392f8",
-      "ait-native-ait-darwin-arm64": "262b2860df61c64dd8c358d0e36c5ae136ae0f98ee1bbc04511ba0608313abd2",
-      "ait-native-ait-darwin-x64": "42cb08e1651e8d96cd4dfc56cabf63ce0c50629b9c122ce065351cf67747e870",
-      "ait-native-ait-linux-arm64": "e59c1d29819454d20943dad038e7e3273d114c29033ff22d2430ae427778b221",
-      "ait-native-ait-linux-x64": "b594c192d921aa2e9c0fd6868d477b76fb431bac6ef0b89c8c0f011ac5cc1843",
-      "ait-native-ait-win32-arm64": "510ad5a977948c9a71c5434f721370fd2265b7665d3198bac597e563d2d4a8be",
-      "ait-native-ait-win32-x64": "7e09475a008b9a36993c9efe89ee99fd493da0457d06ca349143449e95b3298b"
-    }
+  .endpoints.github == {
+    repository: "weita2026/ait-native",
+    prerelease: false
   } and
+  .endpoints.npm.packages == [
+    "@wa120/ait-native",
+    "@wa120/ait-native-darwin-arm64",
+    "@wa120/ait-native-darwin-x64",
+    "@wa120/ait-native-linux-arm64",
+    "@wa120/ait-native-linux-x64",
+    "@wa120/ait-native-win32-arm64",
+    "@wa120/ait-native-win32-x64"
+  ] and
+  (.endpoints.npm | has("frozen_missing_repository_metadata") | not) and
   .endpoints.winget == {
     identity: "Weita.AitNative",
     route: "validation",
@@ -144,12 +155,55 @@ for required in \
   'id-token: write' \
   'packages: write' \
   '      name: pypi' \
+  'protected_run_id:' \
+  'endpoint_config_sha256:' \
+  'endpoint_config_b64:' \
+  'control/ci/release_operator.sh validate-config' \
   'control/ci/release_endpoint_publication.sh' \
   'control/ci/release_endpoint_remote.sh preflight' \
   'secrets.AIT_NPM_TOKEN' \
-  'docker logout ghcr.io'; do
+  'docker logout ghcr.io' \
+  'steps.request.outputs.source_artifact_id' \
+  'steps.request.outputs.protected_artifact_id' \
+  'steps.request.outputs.release_version' \
+  'name: ait-endpoint-publication-${{ inputs.release_id }}'; do
   grep -F -- "${required}" "${workflow}" >/dev/null
 done
+for required_preparer_contract in \
+  'immutable-tag-native-admission/v1' \
+  'frozen npm package platform or repository metadata is not exact' \
+  'ait.node.napi-platform-packages/v2' \
+  'ait.node.napi-platform-addon/v2' \
+  'git+https://github.com/weita2026/ait-native.git' \
+  'frozen npm package identity inventory is not exact'; do
+  grep -F -- "${required_preparer_contract}" "${preparer}" >/dev/null
+done
+for required_npm_readback_contract in \
+  'validate_npm_registry_platform_readback() {' \
+  'npm registry platform metadata differs from staged bytes' \
+  'platform_metadata_readback: true' \
+  'npm endpoint receipt does not prove platform metadata readback'; do
+  if ! grep -F -- "${required_npm_readback_contract}" "${remote}" >/dev/null; then
+    printf 'npm publisher is missing exact platform readback: %s\n' \
+      "${required_npm_readback_contract}" >&2
+    exit 65
+  fi
+done
+for retired_workflow_constant in \
+  31716406486 9188270344 31721469565 9189654794 \
+  e8925452d487665ea6fd67503278f48baa3eca68 \
+  99191fe336d76e5ebba06333ac8a9338f4381763 \
+  4a5c025cdcb8626fe93c71cb4f2780eda1057f979eaa114e4e3e0e3a5dd17e09 \
+  endpoint-publication.rc4.json; do
+  if grep -F -- "${retired_workflow_constant}" "${workflow}" >/dev/null; then
+    printf 'endpoint workflow retains a release-specific constant: %s\n' \
+      "${retired_workflow_constant}" >&2
+    exit 65
+  fi
+done
+grep -F -- '--prerelease=false' "${remote}" >/dev/null
+grep -F -- '--argjson prerelease "${github_prerelease}"' "${remote}" >/dev/null
+grep -F '.prerelease == $prerelease' "${remote}" >/dev/null
 if grep -F 'continue-on-error:' "${workflow}" >/dev/null; then
   printf 'endpoint publication must not hide a failed endpoint\n' >&2
   exit 65
@@ -166,7 +220,7 @@ for required_pypi_readback_contract in \
   fi
 done
 if ! awk '
-  /- name: Publish the signed apt testing repository/ { apt_step = NR }
+  /- name: Publish the signed apt repository/ { apt_step = NR }
   /- name: Publish npm implementation payloads and command envelope/ { npm_step = NR }
   END { exit !(apt_step > 0 && npm_step > apt_step) }
 ' "${workflow}"; then
@@ -211,13 +265,32 @@ extract_remote_function() {
     capture && $0 == "}" { exit }
   ' "${remote}"
 }
+extract_preparer_function() {
+  local function_name=$1
+  awk -v signature="${function_name}() {" '
+    $0 == signature { capture = 1 }
+    capture { print }
+    capture && $0 == "}" { exit }
+  ' "${preparer}"
+}
 eval "$(extract_remote_function github_release_asset_name)"
 eval "$(extract_remote_function github_release_asset_map)"
 eval "$(extract_remote_function github_release_local_path)"
+eval "$(extract_remote_function npm_registry_package_path)"
 eval "$(extract_remote_function npm_provenance_policy)"
 eval "$(extract_remote_function remove_matching_npm_prerelease_latest_tag)"
 eval "$(extract_remote_function validate_npm_dist_tags)"
+eval "$(extract_remote_function validate_npm_registry_platform_readback)"
 eval "$(extract_remote_function wait_for_pypi_remote_state)"
+eval "$(extract_preparer_function npm_addon_platform)"
+eval "$(extract_preparer_function validate_npm_payload_contract)"
+eval "$(extract_preparer_function validate_npm_package_archive)"
+
+test "$(npm_registry_package_path '@wa120/ait-native')" = \
+  '@wa120%2Fait-native'
+test "$(npm_registry_package_path 'ait-native')" = 'ait-native'
+grep -F 'if [[ ${package_name} == @wa120/ait-native ]]' "${remote}" >/dev/null
+grep -F 'if [[ ${package_name} != @wa120/ait-native ]]' "${remote}" >/dev/null
 
 pypi_readback_attempts=0
 validate_pypi_remote_state() {
@@ -260,7 +333,7 @@ if wait_for_pypi_remote_state \
   exit 1
 fi
 test "${pypi_readback_attempts}" = 12
-grep -F 'PyPI RC wheel set did not become fully visible after 12 attempts' \
+grep -F 'PyPI release wheel set did not become fully visible after 12 attempts' \
   "${temporary_root}/pypi-eventual-timeout.stderr" >/dev/null
 unset -f validate_pypi_remote_state sleep wait_for_pypi_remote_state
 
@@ -268,19 +341,19 @@ github_asset_fixture=${temporary_root}/github-asset-fixture
 mkdir -p "${github_asset_fixture}/assets"
 assets=${github_asset_fixture}/assets
 stage_receipt=${github_asset_fixture}/ait-release.endpoint-publication.json
-: >"${assets}/ait-native_1.0.0~rc.3_amd64.deb"
+: >"${assets}/ait-native_1.0.0~rc.4_amd64.deb"
 : >"${assets}/plain.zip"
 : >"${stage_receipt}"
 github_asset_map=${github_asset_fixture}/asset-map
 github_release_asset_map "${github_asset_map}"
 test "$(wc -l <"${github_asset_map}" | tr -d '[:space:]')" = 3
-grep -F $'ait-native_1.0.0.rc.3_amd64.deb\t'"${assets}/ait-native_1.0.0~rc.3_amd64.deb" \
+grep -F $'ait-native_1.0.0.rc.4_amd64.deb\t'"${assets}/ait-native_1.0.0~rc.4_amd64.deb" \
   "${github_asset_map}" >/dev/null
 test "$(github_release_local_path \
-  "${github_asset_map}" 'ait-native_1.0.0.rc.3_amd64.deb')" = \
-  "${assets}/ait-native_1.0.0~rc.3_amd64.deb"
+  "${github_asset_map}" 'ait-native_1.0.0.rc.4_amd64.deb')" = \
+  "${assets}/ait-native_1.0.0~rc.4_amd64.deb"
 test "$(github_release_asset_name 'plain~name.zip')" = 'plain~name.zip'
-: >"${assets}/ait-native_1.0.0.rc.3_amd64.deb"
+: >"${assets}/ait-native_1.0.0.rc.4_amd64.deb"
 expect_failure github-asset-name-collision \
   github_release_asset_map "${github_asset_fixture}/colliding-map"
 
@@ -293,11 +366,11 @@ printf '%s\n' \
   'set -euo pipefail' \
   'if [[ $1 == dist-tag && $2 == ls ]]; then' \
   '  case "$3" in' \
-  '    matching) printf '\''latest: 1.0.0-rc.3\nrc: 1.0.0-rc.3\n'\''' \
+  '    matching) printf '\''latest: 1.0.0-rc.4\nrc: 1.0.0-rc.4\n'\''' \
   '      ;;' \
-  '    stable) printf '\''latest: 0.9.0\nrc: 1.0.0-rc.3\n'\''' \
+  '    stable) printf '\''latest: 0.9.0\nrc: 1.0.0-rc.4\n'\''' \
   '      ;;' \
-  '    no-latest) printf '\''rc: 1.0.0-rc.3\n'\''' \
+  '    no-latest) printf '\''rc: 1.0.0-rc.4\n'\''' \
   '      ;;' \
   '    *) exit 64 ;;' \
   '  esac' \
@@ -317,76 +390,271 @@ npmrc=${temporary_root}/npm-tag-test.npmrc
 export AIT_NPM_TAG_TEST_LOG=${npm_tag_log}
 PATH="${npm_tag_mock}:${PATH}" \
   remove_matching_npm_prerelease_latest_tag \
-  "${npmrc}" matching 1.0.0-rc.3 rc
+  "${npmrc}" matching 1.0.0-rc.4 rc
 PATH="${npm_tag_mock}:${PATH}" \
   remove_matching_npm_prerelease_latest_tag \
-  "${npmrc}" stable 1.0.0-rc.3 rc
+  "${npmrc}" stable 1.0.0-rc.4 rc
 PATH="${npm_tag_mock}:${PATH}" \
   remove_matching_npm_prerelease_latest_tag \
-  "${npmrc}" no-latest 1.0.0-rc.3 rc
+  "${npmrc}" no-latest 1.0.0-rc.4 rc
 PATH="${npm_tag_mock}:${PATH}" \
   remove_matching_npm_prerelease_latest_tag \
   "${npmrc}" matching 1.0.0 latest
 PATH="${npm_tag_mock}:${PATH}" \
   remove_matching_npm_prerelease_latest_tag \
-  "${npmrc}" matching 1.0.0-rc.3 latest
+  "${npmrc}" matching 1.0.0-rc.4 latest
 test "$(wc -l <"${npm_tag_log}" | tr -d '[:space:]')" = 1
 grep -Fx 'dist-tag rm matching latest --registry https://registry.npmjs.org' \
   "${npm_tag_log}" >/dev/null
 
-jq -n '{"dist-tags": {rc: "1.0.0-rc.3", latest: "0.9.0"}}' \
+jq -n '{"dist-tags": {rc: "1.0.0-rc.4", latest: "0.9.0"}}' \
   >"${temporary_root}/npm-tags-valid.json"
 validate_npm_dist_tags "${temporary_root}/npm-tags-valid.json" \
-  ait-native 1.0.0-rc.3 rc
-jq -n '{"dist-tags": {rc: "1.0.0-rc.3", latest: "1.0.0-rc.3"}}' \
+  @wa120/ait-native 1.0.0-rc.4 rc
+jq -n '{"dist-tags": {rc: "1.0.0-rc.4", latest: "1.0.0-rc.4"}}' \
   >"${temporary_root}/npm-tags-rc-latest.json"
 expect_failure npm-rc-remains-latest validate_npm_dist_tags \
-  "${temporary_root}/npm-tags-rc-latest.json" ait-native 1.0.0-rc.3 rc
-grep -F 'npm prerelease remains the default latest tag: ait-native@1.0.0-rc.3' \
+  "${temporary_root}/npm-tags-rc-latest.json" @wa120/ait-native 1.0.0-rc.4 rc
+grep -F 'npm prerelease remains the default latest tag: @wa120/ait-native@1.0.0-rc.4' \
   "${temporary_root}/npm-rc-remains-latest.stderr" >/dev/null
 jq -n '{"dist-tags": {rc: "1.0.0-rc.0", latest: "0.9.0"}}' \
   >"${temporary_root}/npm-tags-wrong-rc.json"
 expect_failure npm-rc-tag-drift validate_npm_dist_tags \
-  "${temporary_root}/npm-tags-wrong-rc.json" ait-native 1.0.0-rc.3 rc
-grep -F 'npm RC dist-tag readback failed: ait-native@1.0.0-rc.3' \
+  "${temporary_root}/npm-tags-wrong-rc.json" @wa120/ait-native 1.0.0-rc.4 rc
+grep -F 'npm configured dist-tag readback failed: @wa120/ait-native@1.0.0-rc.4' \
   "${temporary_root}/npm-rc-tag-drift.stderr" >/dev/null
 
 export github_repository=weita2026/ait-native
-export release_version=1.0.0-rc.3
-export source_commit=ba368cf4d0750035345f14a8a91c22fb9e450260
+export release_version=1.0.0-rc.4
+export source_commit=ea2d347010d3ead2cdfb304e6df448cbf9fe0c4e
+
+npm_contract_fixture=${temporary_root}/npm-contract-v2.json
+jq -n --arg version "${release_version}" '
+  [
+    ["aarch64-apple-darwin", "darwin", "arm64", null],
+    ["x86_64-apple-darwin", "darwin", "x64", null],
+    ["aarch64-unknown-linux-gnu", "linux", "arm64", "glibc"],
+    ["x86_64-unknown-linux-gnu", "linux", "x64", "glibc"],
+    ["aarch64-pc-windows-msvc", "win32", "arm64", null],
+    ["x86_64-pc-windows-msvc", "win32", "x64", null]
+  ] | {
+    schema: "ait.node.napi-platform-packages/v2",
+    family_version: $version,
+    top_level_package: "@wa120/ait-native",
+    payloads: map({
+      target: .[0],
+      os: .[1],
+      cpu: .[2],
+      libc: .[3],
+      component: "ait-node",
+      package: ("@wa120/ait-native-" + .[1] + "-" + .[2]),
+      version: $version,
+      binding_repository: "ait-core",
+      binding_snapshot: "SNP-AAAAAAAAAAAA",
+      license: "Apache-2.0",
+      addon: "native/ait_napi.node"
+    })
+  }
+' >"${npm_contract_fixture}"
+validate_npm_payload_contract "${npm_contract_fixture}"
+for mutation in linux-null linux-musl darwin-glibc linux-missing; do
+  case "${mutation}" in
+    linux-null)
+      jq '.payloads[2].libc = null' "${npm_contract_fixture}"
+      ;;
+    linux-musl)
+      jq '.payloads[2].libc = "musl"' "${npm_contract_fixture}"
+      ;;
+    darwin-glibc)
+      jq '.payloads[0].libc = "glibc"' "${npm_contract_fixture}"
+      ;;
+    linux-missing)
+      jq 'del(.payloads[2].libc)' "${npm_contract_fixture}"
+      ;;
+  esac >"${temporary_root}/npm-contract-${mutation}.json"
+  expect_rejection "npm-contract-${mutation}" validate_npm_payload_contract \
+    "${temporary_root}/npm-contract-${mutation}.json"
+done
+
+npm_envelope=${temporary_root}/npm-envelope
+mkdir -p "${npm_envelope}/package/lib"
+cp "${npm_contract_fixture}" \
+  "${npm_envelope}/package/lib/npm-payload-contract.json"
+jq -n --arg version "${release_version}" '
+  {
+    name: "@wa120/ait-native",
+    version: $version,
+    repository: {
+      type: "git",
+      url: "git+https://github.com/weita2026/ait-native.git",
+      directory: "ait-node"
+    },
+    optionalDependencies: {
+      "@wa120/ait-native-darwin-arm64": $version,
+      "@wa120/ait-native-darwin-x64": $version,
+      "@wa120/ait-native-linux-arm64": $version,
+      "@wa120/ait-native-linux-x64": $version,
+      "@wa120/ait-native-win32-arm64": $version,
+      "@wa120/ait-native-win32-x64": $version
+    }
+  }
+' >"${npm_envelope}/package/package.json"
+tar -czf "${npm_envelope}.tgz" -C "${npm_envelope}" package
+validate_npm_package_archive "${npm_envelope}.tgz" \
+  "${npm_envelope}/package/package.json"
+jq '.libc = ["glibc"]' "${npm_envelope}/package/package.json" \
+  >"${temporary_root}/npm-envelope-platform-drift.json"
+expect_rejection npm-envelope-platform-drift validate_npm_package_archive \
+  "${npm_envelope}.tgz" "${temporary_root}/npm-envelope-platform-drift.json"
+
+write_npm_addon_fixture() {
+  local root=$1
+  local package_name=$2
+  local target=$3
+  local os=$4
+  local cpu=$5
+  local libc_mode=$6
+  local selected_libc=${libc_mode}
+  local has_manifest_libc=true
+  if [[ ${libc_mode} == none ]]; then
+    selected_libc=none
+    has_manifest_libc=false
+  elif [[ ${libc_mode} == missing ]]; then
+    selected_libc=glibc
+    has_manifest_libc=false
+  fi
+  mkdir -p "${root}/package/native"
+  jq -n \
+    --arg package "${package_name}" \
+    --arg version "${release_version}" \
+    --arg target "${target}" \
+    --arg os "${os}" \
+    --arg cpu "${cpu}" \
+    --arg libc "${selected_libc}" \
+    --argjson has_manifest_libc "${has_manifest_libc}" '
+      ({
+        name: $package,
+        version: $version,
+        repository: {
+          type: "git",
+          url: "git+https://github.com/weita2026/ait-native.git",
+          directory: "ait-node"
+        },
+        os: [$os],
+        cpu: [$cpu],
+        aitNativeAddon: {
+          schema: "ait.node.napi-platform-addon/v2",
+          component: "ait-node",
+          target: $target,
+          libc: (if $libc == "none" then null else $libc end),
+          addon: "native/ait_napi.node",
+          binding_repository: "ait-core",
+          binding_snapshot: "SNP-AAAAAAAAAAAA"
+        }
+      } + if $has_manifest_libc then {libc: [$libc]} else {} end)
+    ' >"${root}/package/package.json"
+  jq -n \
+    --arg package "${package_name}" \
+    --arg version "${release_version}" \
+    --arg target "${target}" \
+    --arg os "${os}" \
+    --arg cpu "${cpu}" \
+    --arg libc "${selected_libc}" '
+      {
+        schema: "ait.node.napi-platform-addon-provenance/v2",
+        family_version: $version,
+        package: $package,
+        target: $target,
+        os: $os,
+        cpu: $cpu,
+        libc: (if $libc == "none" then null else $libc end),
+        component: "ait-node",
+        package_source_repository: "ait-node",
+        binding_repository: "ait-core",
+        binding_snapshot: "SNP-AAAAAAAAAAAA",
+        installed_path: "native/ait_napi.node"
+      }
+    ' >"${root}/package/provenance.json"
+  printf 'fixture addon\n' >"${root}/package/native/ait_napi.node"
+  tar -czf "${root}.tgz" -C "${root}" package
+}
+
+linux_addon=${temporary_root}/npm-linux-glibc
+write_npm_addon_fixture "${linux_addon}" \
+  @wa120/ait-native-linux-x64 x86_64-unknown-linux-gnu linux x64 glibc
+validate_npm_package_archive "${linux_addon}.tgz" \
+  "${linux_addon}/package/package.json"
+
+darwin_addon=${temporary_root}/npm-darwin
+write_npm_addon_fixture "${darwin_addon}" \
+  @wa120/ait-native-darwin-arm64 aarch64-apple-darwin darwin arm64 none
+validate_npm_package_archive "${darwin_addon}.tgz" \
+  "${darwin_addon}/package/package.json"
+
+for mutation in linux-missing linux-musl darwin-glibc; do
+  invalid_addon=${temporary_root}/npm-${mutation}
+  case "${mutation}" in
+    linux-missing)
+      write_npm_addon_fixture "${invalid_addon}" \
+        @wa120/ait-native-linux-x64 x86_64-unknown-linux-gnu linux x64 missing
+      ;;
+    linux-musl)
+      write_npm_addon_fixture "${invalid_addon}" \
+        @wa120/ait-native-linux-x64 x86_64-unknown-linux-gnu linux x64 musl
+      ;;
+    darwin-glibc)
+      write_npm_addon_fixture "${invalid_addon}" \
+        @wa120/ait-native-darwin-arm64 aarch64-apple-darwin darwin arm64 glibc
+      ;;
+  esac
+  expect_rejection "npm-addon-${mutation}" validate_npm_package_archive \
+    "${invalid_addon}.tgz" "${invalid_addon}/package/package.json"
+done
+
+npm_registry_fixture=${temporary_root}/npm-registry-platform.json
+jq -n \
+  --arg version "${release_version}" \
+  --slurpfile staged "${linux_addon}/package/package.json" \
+  '{versions: {($version): $staged[0]}}' >"${npm_registry_fixture}"
+validate_npm_registry_platform_readback "${npm_registry_fixture}" \
+  "${release_version}" "${linux_addon}.tgz"
+jq --arg version "${release_version}" \
+  '.versions[$version].libc = ["musl"]' "${npm_registry_fixture}" \
+  >"${temporary_root}/npm-registry-platform-drift.json"
+expect_rejection npm-registry-platform-drift \
+  validate_npm_registry_platform_readback \
+  "${temporary_root}/npm-registry-platform-drift.json" \
+  "${release_version}" "${linux_addon}.tgz"
+
+jq -n \
+  --arg version "${release_version}" \
+  --slurpfile staged "${darwin_addon}/package/package.json" \
+  '{versions: {($version): $staged[0]}}' \
+  >"${temporary_root}/npm-registry-darwin.json"
+validate_npm_registry_platform_readback \
+  "${temporary_root}/npm-registry-darwin.json" \
+  "${release_version}" "${darwin_addon}.tgz"
+jq --arg version "${release_version}" \
+  '.versions[$version].libc = ["glibc"]' \
+  "${temporary_root}/npm-registry-darwin.json" \
+  >"${temporary_root}/npm-registry-darwin-drift.json"
+expect_rejection npm-registry-darwin-drift \
+  validate_npm_registry_platform_readback \
+  "${temporary_root}/npm-registry-darwin-drift.json" \
+  "${release_version}" "${darwin_addon}.tgz"
+
 test "$(npm_provenance_policy \
-  future-package unused https://github.com/weita2026/ait-native)" = \
+  future-package https://github.com/weita2026/ait-native)" = \
   '--provenance'
 test "$(npm_provenance_policy \
-  future-package unused git+https://github.com/weita2026/ait-native.git)" = \
+  future-package git+https://github.com/weita2026/ait-native.git)" = \
   '--provenance'
-npm_recovery_rows=${temporary_root}/npm-provenance-recovery-rows
-printf '%s\t%s\n' \
-  ait-native 8862dc3621320fda30e6923c85eee872751bfc92d95f319382b5b690540392f8 \
-  ait-native-ait-darwin-arm64 262b2860df61c64dd8c358d0e36c5ae136ae0f98ee1bbc04511ba0608313abd2 \
-  ait-native-ait-darwin-x64 42cb08e1651e8d96cd4dfc56cabf63ce0c50629b9c122ce065351cf67747e870 \
-  ait-native-ait-linux-arm64 e59c1d29819454d20943dad038e7e3273d114c29033ff22d2430ae427778b221 \
-  ait-native-ait-linux-x64 b594c192d921aa2e9c0fd6868d477b76fb431bac6ef0b89c8c0f011ac5cc1843 \
-  ait-native-ait-win32-arm64 510ad5a977948c9a71c5434f721370fd2265b7665d3198bac597e563d2d4a8be \
-  ait-native-ait-win32-x64 7e09475a008b9a36993c9efe89ee99fd493da0457d06ca349143449e95b3298b \
-  >"${npm_recovery_rows}"
-while IFS=$'\t' read -r recovery_package recovery_sha256; do
-  test "$(npm_provenance_policy \
-    "${recovery_package}" "${recovery_sha256}" '')" = \
-    '--provenance=false'
-done <"${npm_recovery_rows}"
-expect_failure npm-provenance-wrong-digest npm_provenance_policy \
-  ait-native-ait-darwin-arm64 \
-  0000000000000000000000000000000000000000000000000000000000000000 ''
 expect_failure npm-provenance-wrong-repository npm_provenance_policy \
-  ait-native-ait-darwin-arm64 \
-  262b2860df61c64dd8c358d0e36c5ae136ae0f98ee1bbc04511ba0608313abd2 \
+  @wa120/ait-native-darwin-arm64 \
   https://github.com/example/other
-export source_commit=0000000000000000000000000000000000000000
-expect_failure npm-provenance-wrong-source npm_provenance_policy \
-  ait-native-ait-darwin-arm64 \
-  262b2860df61c64dd8c358d0e36c5ae136ae0f98ee1bbc04511ba0608313abd2 ''
-for failure in wrong-digest wrong-repository wrong-source; do
+expect_failure npm-provenance-missing-repository npm_provenance_policy \
+  @wa120/ait-native-darwin-arm64 ''
+for failure in wrong-repository missing-repository; do
   grep -F 'npm package repository metadata does not admit provenance:' \
     "${temporary_root}/npm-provenance-${failure}.stderr" >/dev/null
 done

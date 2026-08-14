@@ -13,7 +13,7 @@ test("release adapter declares the portable envelope and six native addons", asy
   assert.equal(manifest.schema, "ait.release.adapter/v1");
   assert.deepEqual(manifest.package, {
     name: "@wa120/ait-native",
-    version: "1.0.0-rc.4",
+    version: "1.0.0-rc.5",
     description: "Direct Node-API envelope and native addon packages for the Rust-owned AIT runtime",
     license_files: [
       { path: "LICENSE", role: "license" },
@@ -26,7 +26,7 @@ test("release adapter declares the portable envelope and six native addons", asy
   assert.equal(component.ecosystem, "node");
   assert.equal(component.artifacts.length, 7);
   assert.deepEqual(component.artifacts[0], {
-    path: "dist/wa120-ait-native-1.0.0-rc.4.tgz",
+    path: "dist/wa120-ait-native-1.0.0-rc.5.tgz",
     kind: "npm-napi-envelope",
   });
   assert.equal(component.artifacts[0].target, undefined);
@@ -37,13 +37,13 @@ test("release adapter declares the portable envelope and six native addons", asy
   assert.deepEqual(
     component.artifacts.map((artifact) => artifact.path),
     [
-      "dist/wa120-ait-native-1.0.0-rc.4.tgz",
-      "dist/npm-addons/wa120-ait-native-darwin-arm64-1.0.0-rc.4.tgz",
-      "dist/npm-addons/wa120-ait-native-darwin-x64-1.0.0-rc.4.tgz",
-      "dist/npm-addons/wa120-ait-native-linux-arm64-1.0.0-rc.4.tgz",
-      "dist/npm-addons/wa120-ait-native-linux-x64-1.0.0-rc.4.tgz",
-      "dist/npm-addons/wa120-ait-native-win32-arm64-1.0.0-rc.4.tgz",
-      "dist/npm-addons/wa120-ait-native-win32-x64-1.0.0-rc.4.tgz",
+      "dist/wa120-ait-native-1.0.0-rc.5.tgz",
+      "dist/npm-addons/wa120-ait-native-darwin-arm64-1.0.0-rc.5.tgz",
+      "dist/npm-addons/wa120-ait-native-darwin-x64-1.0.0-rc.5.tgz",
+      "dist/npm-addons/wa120-ait-native-linux-arm64-1.0.0-rc.5.tgz",
+      "dist/npm-addons/wa120-ait-native-linux-x64-1.0.0-rc.5.tgz",
+      "dist/npm-addons/wa120-ait-native-win32-arm64-1.0.0-rc.5.tgz",
+      "dist/npm-addons/wa120-ait-native-win32-x64-1.0.0-rc.5.tgz",
     ],
   );
   assert.deepEqual(
@@ -130,11 +130,13 @@ test("release tools are registry-inert and package direct addon fixtures", async
   assert.match(npmReadme, /does not launch an `ait` executable/);
   assert.match(npmReadme, /`ait-server` is distributed separately/);
   assert.match(npmReadme, /does not use install hooks, downloads/);
-  assert.match(packager, /ait\.node\.napi-platform-addon\/v1/);
+  assert.match(packager, /ait\.node\.napi-platform-addon\/v2/);
   assert.match(packager, /ait-node built addon/);
+  assert.match(packager, /libc: \[payload\.libc\]/);
+  assert.match(packager, /libc: payload\.libc/);
 
   const ci = await readFile(path.join(ROOT, "ci", "run.sh"), "utf8");
   assert.match(ci, /npm run native:build/);
-  assert.match(ci, /release-adapter\.mjs build portable 1\.0\.0-rc\.4/);
-  assert.match(ci, /release-adapter\.mjs smoke portable 1\.0\.0-rc\.4/);
+  assert.match(ci, /release-adapter\.mjs build portable 1\.0\.0-rc\.5/);
+  assert.match(ci, /release-adapter\.mjs smoke portable 1\.0\.0-rc\.5/);
 });

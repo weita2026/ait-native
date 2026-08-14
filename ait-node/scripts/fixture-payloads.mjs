@@ -11,6 +11,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnNpmSync } from "./npm-command.mjs";
+import { detectRuntimeLibc } from "../src/runtime.js";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const LOCAL_ADDON = path.join(ROOT, "native", "ait_napi.node");
@@ -26,9 +27,12 @@ async function contract() {
 
 export async function currentPayloads() {
   const value = await contract();
+  const libc = detectRuntimeLibc();
   const payloads = value.payloads.filter(
     (payload) =>
-      payload.os === process.platform && payload.cpu === process.arch,
+      payload.os === process.platform &&
+      payload.cpu === process.arch &&
+      payload.libc === libc,
   );
   if (payloads.length !== 1) {
     throw new Error(
@@ -66,12 +70,14 @@ export async function stageFixturePayloads(
     license: payload.license,
     os: [payload.os],
     cpu: [payload.cpu],
+    ...(payload.libc === null ? {} : { libc: [payload.libc] }),
     main: payload.addon,
     files: ["native", "provenance.json", "LICENSE", "NOTICE"],
     aitNativeAddon: {
-      schema: "ait.node.napi-platform-addon/v1",
+      schema: "ait.node.napi-platform-addon/v2",
       component: payload.component,
       target: payload.target,
+      libc: payload.libc,
       addon: payload.addon,
       binding_repository: payload.binding_repository,
       binding_snapshot: payload.binding_snapshot,

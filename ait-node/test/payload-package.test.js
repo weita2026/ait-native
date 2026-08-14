@@ -15,6 +15,7 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { npmInvocation, spawnNpmSync } from "../scripts/npm-command.mjs";
+import { detectRuntimeLibc } from "../src/runtime.js";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const PACKAGER = path.join(ROOT, "release", "npm-payload-package.mjs");
@@ -75,7 +76,10 @@ async function hostPayload() {
     await readFile(path.join(ROOT, "lib", "npm-payload-contract.json"), "utf8"),
   );
   const payloads = contract.payloads.filter(
-    (payload) => payload.os === process.platform && payload.cpu === process.arch,
+    (payload) =>
+      payload.os === process.platform &&
+      payload.cpu === process.arch &&
+      payload.libc === detectRuntimeLibc(),
   );
   assert.equal(payloads.length, 1);
   return payloads[0];
@@ -156,6 +160,10 @@ test("ait-node builds and packages one exact direct addon for its native target"
   });
   assert.deepEqual(packageJson.os, [payload.os]);
   assert.deepEqual(packageJson.cpu, [payload.cpu]);
+  assert.deepEqual(
+    packageJson.libc,
+    payload.libc === null ? undefined : [payload.libc],
+  );
   assert.equal(packageJson.main, payload.addon);
   assert.equal(packageJson.bin, undefined);
   assert.equal(packageJson.dependencies, undefined);
@@ -167,8 +175,9 @@ test("ait-node builds and packages one exact direct addon for its native target"
   ]);
   assert.equal(
     packageJson.aitNativeAddon.schema,
-    "ait.node.napi-platform-addon/v1",
+    "ait.node.napi-platform-addon/v2",
   );
+  assert.equal(packageJson.aitNativeAddon.libc, payload.libc);
   assert.equal(
     packageJson.aitNativeAddon.binding_snapshot,
     payload.binding_snapshot,
@@ -179,11 +188,12 @@ test("ait-node builds and packages one exact direct addon for its native target"
   );
   assert.equal(
     provenance.schema,
-    "ait.node.napi-platform-addon-provenance/v1",
+    "ait.node.napi-platform-addon-provenance/v2",
   );
   assert.equal(provenance.package_source_repository, "ait-node");
   assert.equal(provenance.binding_repository, "ait-core");
   assert.equal(provenance.binding_snapshot, payload.binding_snapshot);
+  assert.equal(provenance.libc, payload.libc);
   assert.equal(provenance.installed_path, payload.addon);
   assert.equal(provenance.license_file.path, "LICENSE");
   assert.equal(provenance.notice_file.path, "NOTICE");
@@ -201,6 +211,104 @@ test("ait-node builds and packages one exact direct addon for its native target"
   const info = JSON.parse(smoke.stdout);
   assert.equal(info.node_binding, "napi");
   assert.equal(info.process_transport_allowed, false);
+});
+
+test("npm admits a glibc optional package and omits it for musl", async (context) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "ait-node-libc-select-"));
+  context.after(() => rm(root, { recursive: true, force: true }));
+  const fixtureRoot = path.join(root, "fixture");
+  const archiveRoot = path.join(root, "archive");
+  await mkdir(fixtureRoot, { recursive: true });
+  await mkdir(archiveRoot, { recursive: true });
+  await writeFile(
+    path.join(fixtureRoot, "package.json"),
+    `${JSON.stringify(
+      {
+        name: "@ait-native-test/glibc-addon",
+        version: "1.0.0",
+        os: ["linux"],
+        cpu: ["x64"],
+        libc: ["glibc"],
+        files: ["index.js"],
+        main: "index.js",
+      },
+      null,
+      2,
+    )}\n`,
+  );
+  await writeFile(path.join(fixtureRoot, "index.js"), "module.exports = {};\n");
+  const packed = runNpm(
+    [
+      "pack",
+      "--ignore-scripts",
+      "--json",
+      "--pack-destination",
+      archiveRoot,
+      fixtureRoot,
+    ],
+    root,
+  );
+  assert.equal(packed.status, 0, packed.stderr);
+  const packedResult = JSON.parse(packed.stdout);
+  assert.equal(packedResult.length, 1);
+  const archive = path.join(archiveRoot, packedResult[0].filename);
+
+  for (const [libc, expectedInstalled] of [
+    ["glibc", true],
+    ["musl", false],
+  ]) {
+    const consumer = path.join(root, `consumer-${libc}`);
+    await mkdir(consumer, { recursive: true });
+    const relativeArchive = path
+      .relative(consumer, archive)
+      .split(path.sep)
+      .join("/");
+    await writeFile(
+      path.join(consumer, "package.json"),
+      `${JSON.stringify(
+        {
+          name: `ait-native-libc-${libc}-consumer`,
+          version: "1.0.0",
+          private: true,
+          optionalDependencies: {
+            "@ait-native-test/glibc-addon": `file:${relativeArchive}`,
+          },
+        },
+        null,
+        2,
+      )}\n`,
+    );
+    const installed = runNpm(
+      [
+        "install",
+        "--ignore-scripts",
+        "--offline",
+        "--no-audit",
+        "--no-fund",
+        "--package-lock=false",
+        "--os=linux",
+        "--cpu=x64",
+        `--libc=${libc}`,
+      ],
+      consumer,
+    );
+    assert.equal(installed.status, 0, installed.stderr);
+    const installedPath = path.join(
+      consumer,
+      "node_modules",
+      "@ait-native-test",
+      "glibc-addon",
+    );
+    let isInstalled = false;
+    try {
+      isInstalled = (await lstat(installedPath)).isDirectory();
+    } catch (error) {
+      if (error?.code !== "ENOENT") {
+        throw error;
+      }
+    }
+    assert.equal(isInstalled, expectedInstalled, `${libc} selection drifted`);
+  }
 });
 
 test("packager rejects missing addon, drift, wrong target, and a non-addon", async (context) => {

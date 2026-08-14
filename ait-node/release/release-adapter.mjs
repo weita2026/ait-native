@@ -21,7 +21,7 @@ import { spawnNpmSync } from "../scripts/npm-command.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const PACKAGE_NAME = "@wa120/ait-native";
-const PACKAGE_VERSION = "1.0.0-rc.4";
+const PACKAGE_VERSION = "1.0.0-rc.5";
 const PORTABLE_TARGET = "portable";
 const PACKAGE_REPOSITORY = Object.freeze({
   type: "git",
@@ -108,7 +108,7 @@ async function validateContract(target, version) {
   const payloadContract = await readJson(
     path.join(ROOT, "lib", "npm-payload-contract.json"),
   );
-  assert.equal(payloadContract.schema, "ait.node.napi-platform-packages/v1");
+  assert.equal(payloadContract.schema, "ait.node.napi-platform-packages/v2");
   assert.equal(payloadContract.family_version, version);
   assert.equal(payloadContract.top_level_package, PACKAGE_NAME);
   assert.equal(payloadContract.payloads.length, 6);
@@ -121,12 +121,21 @@ async function validateContract(target, version) {
   assert.equal(Object.keys(optionalDependencies).length, 6);
   assert.equal(
     payloadContract.payloads.every(
-      (payload) =>
-        payload.version === version &&
-        payload.component === "ait-node" &&
-        payload.binding_repository === "ait-core" &&
-        payload.binding_snapshot === "SNP-D4390C77FBEE" &&
-        payload.addon === "native/ait_napi.node",
+      (payload) => {
+        const platform = TARGETS.get(payload.target);
+        const expectedLibc = platform?.platform === "linux" ? "glibc" : null;
+        return (
+          platform !== undefined &&
+          payload.os === platform.platform &&
+          payload.cpu === platform.arch &&
+          payload.libc === expectedLibc &&
+          payload.version === version &&
+          payload.component === "ait-node" &&
+          payload.binding_repository === "ait-core" &&
+          payload.binding_snapshot === "SNP-64B101AAE684" &&
+          payload.addon === "native/ait_napi.node"
+        );
+      },
     ),
     true,
   );
@@ -148,6 +157,7 @@ async function validateContract(target, version) {
   assert.equal(packageJson.dependencies, undefined);
   assert.equal(packageJson.os, undefined);
   assert.equal(packageJson.cpu, undefined);
+  assert.equal(packageJson.libc, undefined);
   assert.deepEqual(packageJson.optionalDependencies, optionalDependencies);
   assert.deepEqual(packageJson.files, [
     "bin/ait.mjs",
@@ -341,6 +351,11 @@ async function smokePortable(payloadContract) {
     );
     assert.equal(installedPayload.version, PACKAGE_VERSION);
     assert.equal(installedPayload.main, contractPayload.addon);
+    assert.deepEqual(
+      installedPayload.libc,
+      contractPayload.libc === null ? undefined : [contractPayload.libc],
+    );
+    assert.equal(installedPayload.aitNativeAddon.libc, contractPayload.libc);
 
     const installedSmoke = run(process.execPath, [
       path.join(ROOT, "scripts", "installed-smoke.mjs"),
@@ -388,6 +403,12 @@ async function smokeAddon(target, payload) {
       tarball,
     ]);
     const packageRoot = path.join(temporaryRoot, "node_modules", payload.package);
+    const packageJson = await readJson(path.join(packageRoot, "package.json"));
+    assert.deepEqual(
+      packageJson.libc,
+      payload.libc === null ? undefined : [payload.libc],
+    );
+    assert.equal(packageJson.aitNativeAddon.libc, payload.libc);
     const addonSmoke = run(process.execPath, [
       "-e",
       [
@@ -410,6 +431,7 @@ async function smokeAddon(target, payload) {
       action: "smoke",
       installed: `${payload.package}@${payload.version}`,
       binding_contract: info.contract,
+      libc: payload.libc,
       runtime_transport: "direct-napi",
       status: "pass",
       target,
@@ -433,7 +455,7 @@ async function main() {
   const [action, target, version] = process.argv.slice(2);
   if (process.argv.length !== 5) {
     throw new Error(
-      "usage: node release/release-adapter.mjs {check|build|smoke} <target|portable> 1.0.0-rc.4",
+      "usage: node release/release-adapter.mjs {check|build|smoke} <target|portable> 1.0.0-rc.5",
     );
   }
   const handlers = { build, check, smoke };

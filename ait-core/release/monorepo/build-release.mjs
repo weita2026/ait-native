@@ -34,6 +34,15 @@ const PROMOTION_WORKFLOW = path.join(
   "workflows",
   "ait-release-protected-promotion.yml",
 );
+const ENDPOINT_WORKFLOW = path.join(ROOT, ".github", "workflows", "pypi-publish.yml");
+const ENDPOINT_DEFAULTS = path.join(
+  ROOT,
+  "release",
+  "endpoint-publication.defaults.json",
+);
+const ENDPOINT_PREPARER = path.join(ROOT, "ci", "release_endpoint_publication.sh");
+const ENDPOINT_REMOTE = path.join(ROOT, "ci", "release_endpoint_remote.sh");
+const RELEASE_OPERATOR = path.join(ROOT, "ci", "release_operator.sh");
 const PROMOTION_VERIFIER = path.join(
   ROOT,
   "ci",
@@ -59,6 +68,14 @@ const EXPECTED_REPOSITORIES = [
   "ait-python",
   "ait-node",
 ];
+const NPM_ADDON_PLATFORMS = new Map([
+  ["aarch64-apple-darwin", { os: "darwin", cpu: "arm64", libc: null }],
+  ["x86_64-apple-darwin", { os: "darwin", cpu: "x64", libc: null }],
+  ["aarch64-unknown-linux-gnu", { os: "linux", cpu: "arm64", libc: "glibc" }],
+  ["x86_64-unknown-linux-gnu", { os: "linux", cpu: "x64", libc: "glibc" }],
+  ["aarch64-pc-windows-msvc", { os: "win32", cpu: "arm64", libc: null }],
+  ["x86_64-pc-windows-msvc", { os: "win32", cpu: "x64", libc: null }],
+]);
 const PUBLIC_SOURCE_IDENTITY = "weita2026/ait-native";
 const WINDOWS_MSVC_TARGETS = new Set([
   "aarch64-pc-windows-msvc",
@@ -82,6 +99,62 @@ function sha256(bytes) {
   return createHash("sha256").update(bytes).digest("hex");
 }
 
+export function validateNpmAddonContract(contract, version) {
+  const exactPayloadKeys = [
+    "addon",
+    "binding_repository",
+    "binding_snapshot",
+    "component",
+    "cpu",
+    "libc",
+    "license",
+    "os",
+    "package",
+    "target",
+    "version",
+  ];
+  if (
+    contract?.schema !== "ait.node.napi-platform-packages/v2" ||
+    contract?.family_version !== version ||
+    contract?.top_level_package !== "@wa120/ait-native" ||
+    !Array.isArray(contract?.payloads) ||
+    contract.payloads.length !== NPM_ADDON_PLATFORMS.size
+  ) {
+    fail("npm addon contract identity or target count is not exact");
+  }
+  const seenTargets = new Set();
+  const seenPackages = new Set();
+  for (const payload of contract.payloads) {
+    const platform = NPM_ADDON_PLATFORMS.get(payload?.target);
+    const actualKeys = Object.keys(payload ?? {}).sort();
+    const expectedPackage =
+      platform === undefined
+        ? undefined
+        : `@wa120/ait-native-${platform.os}-${platform.cpu}`;
+    if (
+      platform === undefined ||
+      JSON.stringify(actualKeys) !== JSON.stringify(exactPayloadKeys) ||
+      payload.os !== platform.os ||
+      payload.cpu !== platform.cpu ||
+      payload.libc !== platform.libc ||
+      payload.component !== "ait-node" ||
+      payload.package !== expectedPackage ||
+      payload.version !== version ||
+      payload.binding_repository !== "ait-core" ||
+      typeof payload.binding_snapshot !== "string" ||
+      !/^SNP-[0-9A-F]{12}$/u.test(payload.binding_snapshot) ||
+      payload.license !== "Apache-2.0" ||
+      payload.addon !== "native/ait_napi.node" ||
+      seenTargets.has(payload.target) ||
+      seenPackages.has(payload.package)
+    ) {
+      fail("npm addon contract target, libc, or binding metadata is not exact");
+    }
+    seenTargets.add(payload.target);
+    seenPackages.add(payload.package);
+  }
+}
+
 export async function cleanLocalNodeBuildTransients(version, sourceRoot = ROOT) {
   if (!/^[0-9A-Za-z.+-]+$/u.test(version)) {
     fail("local Node.js build cleanup version is invalid");
@@ -89,7 +162,7 @@ export async function cleanLocalNodeBuildTransients(version, sourceRoot = ROOT) 
   const nodeRoot = path.join(sourceRoot, "ait-node");
   await rm(path.join(nodeRoot, ".ait-native-target"), { recursive: true, force: true });
   await rm(path.join(nodeRoot, "native", "ait_napi.node"), { force: true });
-  await rm(path.join(nodeRoot, "dist", `ait-native-${version}.tgz`), { force: true });
+  await rm(path.join(nodeRoot, "dist", `wa120-ait-native-${version}.tgz`), { force: true });
 }
 
 function cargoTargetRustflagsKey(target) {
@@ -331,6 +404,10 @@ async function validateReleaseControl(family) {
     [NATIVE_BOOTSTRAP_MATRIX, "root native bootstrap matrix"],
     [NATIVE_BOOTSTRAP_VALIDATOR, "root native bootstrap validator"],
     [PROMOTION_VERIFIER, "root protected promotion verifier"],
+    [ENDPOINT_DEFAULTS, "root endpoint defaults"],
+    [ENDPOINT_PREPARER, "root endpoint publication preparer"],
+    [ENDPOINT_REMOTE, "root endpoint publisher"],
+    [RELEASE_OPERATOR, "root release operator"],
   ]) {
     await regularFile(filePath, label);
   }
@@ -401,6 +478,12 @@ async function validateReleaseControl(family) {
   if (verifier.includes("${public_source_root}/ait-core/ci/")) {
     fail("protected promotion reads historical component coordination files");
   }
+  if (
+    verifier.includes("release_family_rc4_admission.patch") ||
+    verifier.includes("immutable-tag-plus-hash-pinned-control-patch/v1")
+  ) {
+    fail("protected promotion retains release-specific source rewriting");
+  }
 }
 
 async function validateProtectedWorkflows() {
@@ -442,7 +525,7 @@ async function validateProtectedWorkflows() {
     "name: ait release protected promotion",
     "workflow_dispatch:",
     "permissions:\n  actions: read\n  attestations: write\n  contents: read\n  id-token: write",
-    "environment:\n      name: rc-promotion",
+    "environment:\n      name: ${{ format('{0}-promotion', inputs.channel) }}",
     "persist-credentials: false",
     "artifact-ids: ${{ inputs.dossier_artifact_id }}",
     "merge-multiple: true",
@@ -523,6 +606,32 @@ async function validateProtectedWorkflows() {
   ]) {
     if (!verifier.includes(required)) {
       fail(`protected promotion verifier must contain ${JSON.stringify(required)}`);
+    }
+  }
+
+  await regularFile(ENDPOINT_WORKFLOW, "root protected endpoint workflow");
+  const endpoint = await readFile(ENDPOINT_WORKFLOW, "utf8");
+  for (const required of [
+    "name: ait release endpoint publication",
+    "endpoint_config_sha256:",
+    "endpoint_config_b64:",
+    "protected_run_id:",
+    "control/ci/release_operator.sh validate-config",
+    "environment:\n      name: pypi",
+    "name: ait-endpoint-publication-${{ inputs.release_id }}",
+  ]) {
+    if (!endpoint.includes(required)) {
+      fail(`root endpoint workflow must contain ${JSON.stringify(required)}`);
+    }
+  }
+  for (const forbidden of [
+    "continue-on-error:",
+    "endpoint-publication.rc4.json",
+    "31716406486",
+    "9188270344",
+  ]) {
+    if (endpoint.includes(forbidden)) {
+      fail(`root endpoint workflow retains ${JSON.stringify(forbidden)}`);
     }
   }
 }
@@ -874,14 +983,19 @@ async function validateBuildInputs(expectedGitCommit) {
   for (const required of [
     ".github/workflows/ait-release-component-receipts.yml",
     ".github/workflows/ait-release-protected-promotion.yml",
+    ".github/workflows/pypi-publish.yml",
     ".gitattributes",
     "README.md",
     "ci/native_bootstrap_matrix.jq",
     "ci/native_bootstrap_matrix.json",
+    "ci/release_endpoint_publication.sh",
+    "ci/release_endpoint_remote.sh",
+    "ci/release_operator.sh",
     "ci/release_protected_promotion.sh",
     "ci/release_receipt_matrix.jq",
     "ci/release_receipt_matrix_test.sh",
     "ci/release_repository_authorities.json",
+    "release/endpoint-publication.defaults.json",
     "release/oci/ait-server.Dockerfile",
     "release/oci/ait-runner.Dockerfile",
     "ait-core/rust/Cargo.toml",
@@ -922,8 +1036,9 @@ async function validateBuildInputs(expectedGitCommit) {
     "npm addon contract",
   );
   const nodeRuntime = await readFile(path.join(ROOT, "ait-node", "src", "runtime.js"), "utf8");
+  validateNpmAddonContract(nodeContract, family.family.version);
   if (
-    nodePackage?.name !== "ait-native" ||
+    nodePackage?.name !== "@wa120/ait-native" ||
     nodePackage?.version !== family.family.version ||
     nodePackage?.bin?.ait !== "bin/ait.mjs" ||
     Object.keys(nodePackage?.bin ?? {}).length !== 1 ||
@@ -931,12 +1046,14 @@ async function validateBuildInputs(expectedGitCommit) {
     nodePackage?.exports?.["."]?.import !== "./src/index.js" ||
     nodePackage?.types !== "./src/index.d.ts" ||
     Object.keys(nodePackage?.optionalDependencies ?? {}).length !== 6 ||
+    JSON.stringify(Object.keys(nodePackage?.optionalDependencies ?? {}).sort()) !==
+      JSON.stringify(nodeContract.payloads.map((payload) => payload.package).sort()) ||
     Object.values(nodePackage?.optionalDependencies ?? {}).some(
       (version) => version !== family.family.version,
     ) ||
-    nodeContract?.schema !== "ait.node.napi-platform-packages/v1" ||
-    nodeContract?.family_version !== family.family.version ||
-    nodeContract?.payloads?.length !== 6 ||
+    ["os", "cpu", "libc", "aitNativeAddon"].some((key) =>
+      Object.hasOwn(nodePackage ?? {}, key),
+    ) ||
     !nodeRuntime.includes("native/ait_napi.node") ||
     !nodeRuntime.includes("require(addonPath)") ||
     nodeRuntime.includes("child_process") ||
@@ -1683,7 +1800,7 @@ async function build({ family, mapping }, skipTests) {
   const npmOutput = path.join(OUTPUT_ROOT, target, "npm");
   await mkdir(npmOutput, { recursive: true });
   const nodeAdapter = path.join(nodeRoot, "release", "release-adapter.mjs");
-  const portableArtifactRelative = `dist/ait-native-${family.family.version}.tgz`;
+  const portableArtifactRelative = `dist/wa120-ait-native-${family.family.version}.tgz`;
   let portableArtifact;
   try {
     portableArtifact = JSON.parse(

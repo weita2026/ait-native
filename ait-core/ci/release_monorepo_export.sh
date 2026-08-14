@@ -22,11 +22,16 @@ if [[ ! -e ${product_document} && ! -L ${product_document} ]]; then
 fi
 receipt_workflow=${repo_root}/.github/workflows/ait-release-component-receipts.yml
 promotion_workflow=${repo_root}/.github/workflows/ait-release-protected-promotion.yml
+endpoint_workflow=${repo_root}/.github/workflows/pypi-publish.yml
+endpoint_defaults=${repo_root}/release/endpoint-publication.defaults.json
 server_dockerfile=${repo_root}/release/oci/ait-server.Dockerfile
 runner_dockerfile=${repo_root}/release/oci/ait-runner.Dockerfile
 release_control_paths=(
   ci/native_bootstrap_matrix.jq
   ci/native_bootstrap_matrix.json
+  ci/release_endpoint_publication.sh
+  ci/release_endpoint_remote.sh
+  ci/release_operator.sh
   ci/release_protected_promotion.sh
   ci/release_receipt_matrix.jq
   ci/release_receipt_matrix_test.sh
@@ -84,6 +89,8 @@ if [[ ! -d ${template_root} || -L ${template_root} ||
   ! -f ${product_document} || -L ${product_document} ||
   ! -f ${receipt_workflow} || -L ${receipt_workflow} ||
   ! -f ${promotion_workflow} || -L ${promotion_workflow} ||
+  ! -f ${endpoint_workflow} || -L ${endpoint_workflow} ||
+  ! -f ${endpoint_defaults} || -L ${endpoint_defaults} ||
   ! -f ${server_dockerfile} || -L ${server_dockerfile} ||
   ! -f ${runner_dockerfile} || -L ${runner_dockerfile} ]]; then
   printf 'monorepo release templates or transform tool are unavailable\n' >&2
@@ -102,8 +109,13 @@ if ! jq -e '
   . as $root |
   .schema == "ait.release.family/v3" and
   .family.name == "ait-native" and
-  .family.version == "1.0.0-rc.3" and
-  .family.tag == "v1.0.0-rc.3" and
+  (.family.channel == "rc" or .family.channel == "stable") and
+  .family.tag == ("v" + .family.version) and
+  (if .family.channel == "rc" then
+    (.family.version | test("^[0-9]+\\.[0-9]+\\.[0-9]+-rc\\.[1-9][0-9]*$"))
+  else
+    (.family.version | test("^[0-9]+\\.[0-9]+\\.[0-9]+$"))
+  end) and
   .public_source.model == "release-monorepo" and
   .public_source.identity == "weita2026/ait-native" and
   .public_source.product_document == "docs/distribution.md" and
@@ -152,6 +164,9 @@ if ! jq -e '
   printf 'family manifest does not match the exact public monorepo export contract\n' >&2
   exit 65
 fi
+
+family_version=$(jq -er '.family.version' "${family_manifest}")
+family_tag=$(jq -er '.family.tag' "${family_manifest}")
 
 sha256_file() {
   local path=$1
@@ -361,6 +376,8 @@ mkdir -p \
   "${staging}/LICENSES" \
   "${staging}/release/oci"
 cp "${readme_template}" "${staging}/README.md"
+node "${transform_tool}" "${staging}/README.md" \
+  '@AIT_RELEASE_TAG@' "${family_tag}"
 cp "${template_root}/NOTICE" "${staging}/NOTICE"
 cp "${git_attributes_template}" "${staging}/.gitattributes"
 cp "${template_root}/.gitignore" "${staging}/.gitignore"
@@ -373,12 +390,23 @@ for release_control_path in "${release_control_paths[@]}"; do
   cp "${repo_root}/${release_control_path}" \
     "${staging}/${release_control_path}"
 done
+authority_contract=${staging}/ci/release_repository_authorities.json
+platform_contract=${staging}/ci/native_bootstrap_matrix.json
+jq --arg version "${family_version}" '.family_version = $version' \
+  "${authority_contract}" >"${temporary_root}/release-authorities.json"
+mv "${temporary_root}/release-authorities.json" "${authority_contract}"
+jq --arg version "${family_version}" '.version = $version' \
+  "${platform_contract}" >"${temporary_root}/native-platforms.json"
+mv "${temporary_root}/native-platforms.json" "${platform_contract}"
+cp "${endpoint_defaults}" "${staging}/release/endpoint-publication.defaults.json"
 cp "${staging}/ait-core/LICENSE" "${staging}/LICENSES/Apache-2.0.txt"
 cp "${staging}/ait-server/LICENSE" "${staging}/LICENSES/AGPL-3.0-only.txt"
 root_receipt_workflow=${staging}/.github/workflows/ait-release-component-receipts.yml
 root_promotion_workflow=${staging}/.github/workflows/ait-release-protected-promotion.yml
+root_endpoint_workflow=${staging}/.github/workflows/pypi-publish.yml
 cp "${receipt_workflow}" "${root_receipt_workflow}"
 cp "${promotion_workflow}" "${root_promotion_workflow}"
+cp "${endpoint_workflow}" "${root_endpoint_workflow}"
 cp "${server_dockerfile}" "${staging}/release/oci/ait-server.Dockerfile"
 cp "${runner_dockerfile}" "${staging}/release/oci/ait-runner.Dockerfile"
 node "${transform_tool}" \
@@ -398,11 +426,17 @@ chmod 0644 \
   "${staging}/LICENSES/AGPL-3.0-only.txt" \
   "${root_receipt_workflow}" \
   "${root_promotion_workflow}" \
+  "${root_endpoint_workflow}" \
+  "${staging}/release/endpoint-publication.defaults.json" \
   "${staging}/release/oci/ait-server.Dockerfile" \
   "${staging}/release/oci/ait-runner.Dockerfile"
 chmod 0755 \
   "${staging}/build-release.sh" \
-  "${staging}/build-release.mjs"
+  "${staging}/build-release.mjs" \
+  "${staging}/ci/release_endpoint_publication.sh" \
+  "${staging}/ci/release_endpoint_remote.sh" \
+  "${staging}/ci/release_operator.sh" \
+  "${staging}/ci/release_protected_promotion.sh"
 
 content_sha256=$(tree_digest "${staging}" monorepo-content)
 family_manifest_sha256=$(sha256_file "${staging}/ait-release-family.json")
@@ -415,8 +449,8 @@ jq -n \
   --arg coordinator_snapshot "${coordinator_snapshot}" \
   --arg coordinator_manifest_hash "${coordinator_manifest_hash}" \
   --arg coordinator_created_at "${coordinator_created_at}" \
-  --arg family_version '1.0.0-rc.3' \
-  --arg family_tag 'v1.0.0-rc.3' \
+  --arg family_version "${family_version}" \
+  --arg family_tag "${family_tag}" \
   --arg family_manifest_sha256 "${family_manifest_sha256}" \
   --arg product_document_sha256 "${product_document_sha256}" \
   --arg content_sha256 "${content_sha256}" \
@@ -458,8 +492,8 @@ jq -n \
   --arg coordinator_snapshot "${coordinator_snapshot}" \
   --arg coordinator_manifest_hash "${coordinator_manifest_hash}" \
   --arg coordinator_created_at "${coordinator_created_at}" \
-  --arg family_version '1.0.0-rc.3' \
-  --arg family_tag 'v1.0.0-rc.3' \
+  --arg family_version "${family_version}" \
+  --arg family_tag "${family_tag}" \
   --arg mapping_sha256 "${mapping_sha256}" \
   --arg content_sha256 "${content_sha256}" \
   --argjson subtrees "${subtrees}" '

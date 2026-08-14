@@ -23,6 +23,10 @@ on:
         description: Exact REL-FAM identity
         required: true
         type: string
+      channel:
+        description: Exact family channel, rc or stable
+        required: true
+        type: string
       tag:
         description: Exact public family tag
         required: true
@@ -62,7 +66,7 @@ jobs:
   authorize:
     name: Authorize exact frozen bytes without publishing
     environment:
-      name: rc-promotion
+      name: ${{ format('{0}-promotion', inputs.channel) }}
     runs-on: ubuntu-22.04
     timeout-minutes: 25
     steps:
@@ -79,6 +83,7 @@ jobs:
         env:
           AIT_GITHUB_TOKEN: ${{ github.token }}
           AIT_RELEASE_CHECKSUM_SHA256: ${{ inputs.checksum_sha256 }}
+          AIT_RELEASE_CHANNEL: ${{ inputs.channel }}
           AIT_RELEASE_COORDINATOR_SNAPSHOT: ${{ inputs.coordinator_snapshot }}
           AIT_RELEASE_DOSSIER_ARTIFACT_DIGEST: ${{ inputs.dossier_artifact_digest }}
           AIT_RELEASE_DOSSIER_ARTIFACT_ID: ${{ inputs.dossier_artifact_id }}
@@ -94,7 +99,11 @@ jobs:
           set -euo pipefail
           [[ "${AIT_RELEASE_REPOSITORY}" == "weita2026/ait-native" ]]
           [[ "${AIT_RELEASE_ID}" =~ ^REL-FAM-[0-9A-F]{16}$ ]]
-          [[ "${AIT_RELEASE_TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-rc\.[0-9]+$ ]]
+          case "${AIT_RELEASE_CHANNEL}" in
+            rc) [[ "${AIT_RELEASE_TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-rc\.[1-9][0-9]*$ ]] ;;
+            stable) [[ "${AIT_RELEASE_TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] ;;
+            *) exit 64 ;;
+          esac
           [[ "${AIT_RELEASE_GIT_COMMIT}" =~ ^[0-9a-f]{40}$ ]]
           [[ "${AIT_RELEASE_SOURCE_CONTROL_SHA}" =~ ^[0-9a-f]{40}$ ]]
           [[ "${AIT_RELEASE_COORDINATOR_SNAPSHOT}" =~ ^SNP-[0-9A-F]{12}$ ]]
@@ -187,13 +196,14 @@ jobs:
           AIT_RELEASE_AUTHORIZATION_RUN_ID: ${{ github.run_id }}
           AIT_RELEASE_AUTHORIZATION_SHA: ${{ github.sha }}
           AIT_RELEASE_CHECKSUM_SHA256: ${{ inputs.checksum_sha256 }}
+          AIT_RELEASE_CHANNEL: ${{ inputs.channel }}
           AIT_RELEASE_COORDINATOR_SNAPSHOT: ${{ inputs.coordinator_snapshot }}
           AIT_RELEASE_DOSSIER_ARTIFACT_DIGEST: ${{ inputs.dossier_artifact_digest }}
           AIT_RELEASE_DOSSIER_ARTIFACT_ID: ${{ inputs.dossier_artifact_id }}
           AIT_RELEASE_FROZEN_MANIFEST_SHA256: ${{ inputs.frozen_manifest_sha256 }}
           AIT_RELEASE_GIT_COMMIT: ${{ inputs.source_commit }}
           AIT_RELEASE_ID: ${{ inputs.release_id }}
-          AIT_RELEASE_PROTECTED_ENVIRONMENT: rc-promotion
+          AIT_RELEASE_PROTECTED_ENVIRONMENT: ${{ format('{0}-promotion', inputs.channel) }}
           AIT_RELEASE_REPOSITORY: ${{ github.repository }}
           AIT_RELEASE_SOURCE_CONTROL_SHA: ${{ inputs.source_control_commit }}
           AIT_RELEASE_SOURCE_RUN_ATTEMPT: ${{ inputs.source_run_attempt }}

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+repo_root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 temporary_root=$(mktemp -d "${TMPDIR:-/tmp}/ait-release-matrix-test.XXXXXX")
 
 cleanup() {
@@ -92,14 +92,10 @@ for required_workflow_text in \
   'ziglang==0.15.2' \
   'python -m ziglang version' \
   'CARGO_BUILD_BUILD_DIR="${RUNNER_TEMP}/ait-family-admission-build"' \
-  'family_packages_input_sha256=ad5212e194db9a52b049d3334a157959102f115aeeb64f43ff0974328af2e4b3' \
-  'family_packages_output_sha256=0e7f95bb81dca170343b4b8d2b48949756be76b30956aec6080eee87b2b027d6' \
-  'family_release_input_sha256=771dd056d3b21c86a63f060bdc44c80bc48717bde3075efd5b2173eb02d68b0f' \
-  'family_release_output_sha256=ac3d39e4c588aeb500900150dfa51097088d8524264b504f4ee4306de5af7a32' \
-  'cp -R "${AIT_PUBLIC_SOURCE_ROOT}/ait-core" "${admission_root}"' \
-  'admission_rust="${admission_root}/rust"' \
-  'patch --batch --forward --strip=0' \
-  '<"${AIT_CONTROL_ROOT}/ci/release_family_rc4_admission.patch"' \
+  'admission_rust="${AIT_PUBLIC_SOURCE_ROOT}/ait-core/rust"' \
+  'test -f "${admission_rust}/Cargo.lock"' \
+  'test -f "${admission_rust}/crates/ait-cli/src/release_surface/family_packages.rs"' \
+  'test -f "${admission_rust}/crates/ait-cli/src/release_surface/family_release.rs"' \
   '--manifest-path "${admission_rust}/Cargo.toml"' \
   'admission_root="${RUNNER_TEMP}/ait-family-admission-repository"' \
   'test ! -e "${admission_root}"' \
@@ -133,6 +129,9 @@ for forbidden_workflow_text in \
   './ci/release_monorepo_export_test.sh' \
   './ci/release_receipt_bundle_test.sh' \
   'cp -R "${AIT_PUBLIC_SOURCE_ROOT}/ait-core/rust"' \
+  'cp -R "${AIT_PUBLIC_SOURCE_ROOT}/ait-core"' \
+  'release_family_rc4_admission.patch' \
+  'patch --batch --forward' \
   '--repair-existing' \
   'pattern: ait-release-source-ait-*'; do
   if grep -F -- "${forbidden_workflow_text}" "${workflow}" >/dev/null; then
@@ -173,18 +172,28 @@ for required_verifier_text in \
   'expected_receipt_count=$(jq -er' \
   'expected_component_artifact_count=$(jq -er' \
   'expected_license_material_count=$((expected_source_count * 2))' \
-  'admission_patch=${control_root}/ci/release_family_rc4_admission.patch' \
-  'admission_patch_sha256=28d17fa83806498479fee233c8e0ea0defdc337893ed96a667d599e6baaadf0f' \
-  'RC.4 family admission patch differs from the approved control byte stream' \
-  'family_packages_input_sha256=ad5212e194db9a52b049d3334a157959102f115aeeb64f43ff0974328af2e4b3' \
-  'family_packages_output_sha256=0e7f95bb81dca170343b4b8d2b48949756be76b30956aec6080eee87b2b027d6' \
-  'family_release_input_sha256=771dd056d3b21c86a63f060bdc44c80bc48717bde3075efd5b2173eb02d68b0f' \
-  'family_release_output_sha256=ac3d39e4c588aeb500900150dfa51097088d8524264b504f4ee4306de5af7a32' \
+  'admission_rust=${public_source_root}/ait-core/rust' \
+  'cargo_lock_sha256=$(sha256_file "${admission_cargo_lock}")' \
+  'family_packages_sha256=$(sha256_file "${family_packages}")' \
+  'family_release_sha256=$(sha256_file "${family_release}")' \
+  'native admission build mutated the immutable tagged source' \
   '.routes.github == {draft: false, prerelease: false, tag: $tag}' \
-  'immutable-tag-plus-hash-pinned-control-patch/v1'; do
+  'immutable-tag-native-admission/v1'; do
   if ! grep -F -- "${required_verifier_text}" "${protected_verifier}" >/dev/null; then
     printf 'protected promotion is not tied to the receipt projection: %s\n' \
       "${required_verifier_text}" >&2
+    exit 65
+  fi
+done
+for retired_verifier_text in \
+  release_family_rc4_admission.patch \
+  immutable-tag-plus-hash-pinned-control-patch/v1 \
+  'patch --batch --forward' \
+  family_packages_input_sha256 \
+  family_packages_output_sha256; do
+  if grep -F -- "${retired_verifier_text}" "${protected_verifier}" >/dev/null; then
+    printf 'protected promotion retains RC.4 source rewriting: %s\n' \
+      "${retired_verifier_text}" >&2
     exit 65
   fi
 done
