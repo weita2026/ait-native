@@ -8,10 +8,7 @@ use crate::runtime::{
 use crate::task_worktree_layout;
 use crate::workspace_lock::run_locked_workspace_command;
 use ait_core::change_json::ChangeJson;
-use ait_core::change_store::{
-    list_changes_for_task_with_change_store, list_changes_with_change_store,
-    reopen_change_as_draft_with_change_store, ChangeStore,
-};
+use ait_core::change_store::{list_changes_with_change_store, ChangeStore};
 use ait_core::content_store::TreePackStore;
 use ait_core::json_support::{json, JsonMap, JsonValue};
 use ait_core::line_store::LineStore;
@@ -69,7 +66,8 @@ use ait_core::tag_store::{FilesystemTagStore, TagStore};
 use ait_core::task_lifecycle::build_task_audit_verdict_payload;
 #[cfg(test)]
 use ait_core::task_store::has_tasks_with_task_store;
-use ait_core::task_store::{restart_task_with_task_store, TaskStore};
+#[cfg(test)]
+use ait_core::task_store::TaskStore;
 use ait_core::task_workflow_http_adapter::TaskWorkflowSnapshotMetadataReader;
 use ait_core::task_workflow_http_adapter::{
     HttpTaskRemote, HttpWorkflowCloseoutRemote, TaskWorkflowAttestationReader,
@@ -89,7 +87,6 @@ use ait_core::task_workflow_http_adapter::{
 use ait_core::task_workflow_remote_traits::{
     TaskWorkflowLandReader, TaskWorkflowLandRetryer, TaskWorkflowLandSubmitter,
     TaskWorkflowPatchsetCiStatusReader, TaskWorkflowRemoteTaskCloser,
-    TaskWorkflowRemoteTaskRestarter,
 };
 use ait_core::task_workflow_store::{
     TaskWorkflowChangeCloser, TaskWorkflowChangeCreator, TaskWorkflowChangeLander,
@@ -165,7 +162,7 @@ pub use change_flow::{
     patchset_ci_status, patchset_list, patchset_publish, patchset_publish_explicit,
     patchset_rerun_ci, patchset_select, patchset_show, policy_eval, policy_show, policy_waive,
     review_code_submit, review_code_template, review_record, review_request, review_show,
-    review_task_approve, review_team_approve, task_close, task_complete, task_restart,
+    review_task_approve, review_team_approve, task_close, task_complete,
 };
 pub use foundation::{ensure_status_manifest, TaskStartBootstrapRequest};
 pub use git_interop::{git_export, git_import, git_mirror};

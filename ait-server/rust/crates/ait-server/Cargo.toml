@@ -1,6 +1,6 @@
 [package]
 name = "ait-server"
-version = "1.0.0-rc.5"
+version = "1.0.0-rc.6"
 edition = "2021"
 publish = false
 license = "AGPL-3.0-only"

@@ -1,4 +1,5 @@
 use super::*;
+use crate::primitives::change_flow::change_create_with_task_remote;
 
 pub(in crate::primitives) fn task_start_change_bootstrap_lineage(
     change: Option<&JsonValue>,
@@ -1317,14 +1318,49 @@ where
     let line_row = task_remote
         .get_line(repo_name, base_line)
         .map_err(|err| err.to_string())?;
+    let remote_head = string_field(&line_row, "head_snapshot_id");
+    if let Some(remote_snapshot_id) = remote_head.as_deref() {
+        if !local_snapshot_exists(repo, remote_snapshot_id)? {
+            return Err(format!(
+                "Cannot start a remote task: remote `{}` line `{base_line}` points at `{remote_snapshot_id}`, which is not present in local storage. Run `ait pull --line {base_line} --remote {}` before creating shared work.",
+                remote_row.name, remote_row.name,
+            ));
+        }
+        return Ok(line_row);
+    }
+
     guard_remote_base_line_converged(
         repo,
         &remote_row.name,
         base_line,
         Some(&line_row),
-        "starting a remote task",
+        "start a remote task",
     )?;
     Ok(line_row)
+}
+
+fn task_start_remote_initial_change_with_task_remote<R>(
+    task_remote: &mut R,
+    repo_name: &str,
+    task_id: &str,
+    title: &str,
+    base_line: &str,
+    preflight_line_row: &JsonValue,
+) -> Result<JsonValue, String>
+where
+    R: TaskWorkflowRemoteChangeCreator + TaskWorkflowLineagePayloadBuilder + ?Sized,
+{
+    let lineage_payload =
+        task_remote.change_lineage_payload(base_line, Some(preflight_line_row))?;
+    change_create_with_task_remote(
+        task_remote,
+        repo_name,
+        task_id,
+        title,
+        base_line,
+        None,
+        &lineage_payload,
+    )
 }
 
 pub(in crate::primitives) fn task_start_root_preflight(repo: &RepoRuntime) -> Result<(), String> {
@@ -1457,17 +1493,20 @@ pub fn task_start_with_progress(
     let context_preflight_elapsed = elapsed_ms(context_preflight_started);
     let use_local = repo.task_uses_local_scope(local, remote_name);
     let remote_base_line_preflight_started = Instant::now();
-    if !use_local && resolved_change_title.is_some() {
+    let remote_base_line_context = if !use_local && resolved_change_title.is_some() {
         let (remote_row, repo_name) = remote_context(repo, remote_name, None)?;
         let mut task_remote = http_task_remote(repo, &remote_row)?;
-        task_start_remote_base_line_preflight_with_task_remote(
+        let line_row = task_start_remote_base_line_preflight_with_task_remote(
             repo,
             &remote_row,
             &mut task_remote,
             &repo_name,
             &resolved_base_line,
         )?;
-    }
+        Some((remote_row, repo_name, line_row))
+    } else {
+        None
+    };
     let remote_base_line_preflight_elapsed = elapsed_ms(remote_base_line_preflight_started);
 
     let task_create_started = Instant::now();
@@ -1507,15 +1546,32 @@ pub fn task_start_with_progress(
                 shell_escape(Path::new(&resolved_base_line)),
                 recovery_scope,
             );
-            Some(change_create(
-                repo,
-                &task_id,
-                &change_title,
-                Some(&resolved_base_line),
-                local,
-                remote_name,
-            )
-            .map_err(|err| {
+            let created = if use_local {
+                change_create(
+                    repo,
+                    &task_id,
+                    &change_title,
+                    Some(&resolved_base_line),
+                    local,
+                    remote_name,
+                )
+            } else {
+                let (remote_row, repo_name, line_row) =
+                    remote_base_line_context.as_ref().ok_or_else(|| {
+                        "Remote Task initial Change is missing its validated base-Line context."
+                            .to_string()
+                    })?;
+                let mut task_remote = http_task_remote(repo, remote_row)?;
+                task_start_remote_initial_change_with_task_remote(
+                    &mut task_remote,
+                    repo_name,
+                    &task_id,
+                    &change_title,
+                    &resolved_base_line,
+                    line_row,
+                )
+            };
+            Some(created.map_err(|err| {
                 format!(
                     "Task {task_id} was created, but the initial change could not be created: {err}. Recover without creating another task by running `{recovery_command}`."
                 )

@@ -731,6 +731,7 @@ pub(in crate::primitives) fn workflow_hydrate_land_state(
             &root_repo,
             &current_line_name,
             revision_snapshot_id.as_deref(),
+            remote_base_snapshot_id.as_deref(),
         )?;
         let patchset_refresh = workflow_patchset_refresh_context(
             patchset.as_ref(),

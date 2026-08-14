@@ -388,6 +388,41 @@ async function directory(filePath, label) {
   }
 }
 
+async function absent(filePath, label) {
+  try {
+    await lstat(filePath);
+  } catch (error) {
+    if (error?.code === "ENOENT") {
+      return;
+    }
+    fail(`${label} could not be inspected: ${error.message}`);
+  }
+  fail(`${label} must not exist: ${filePath}`);
+}
+
+async function firstFileNamed(root, pattern, relative = "") {
+  const rows = await readdir(root, { withFileTypes: true });
+  rows.sort((left, right) => left.name.localeCompare(right.name, "en"));
+  for (const row of rows) {
+    const childRelative = relative === "" ? row.name : `${relative}/${row.name}`;
+    const child = path.join(root, row.name);
+    if (row.isSymbolicLink()) {
+      fail(`license topology contains a symlink: ${childRelative}`);
+    }
+    if (row.isDirectory()) {
+      const nested = await firstFileNamed(child, pattern, childRelative);
+      if (nested !== null) {
+        return nested;
+      }
+    } else if (!row.isFile()) {
+      fail(`license topology contains a special file: ${childRelative}`);
+    } else if (pattern.test(row.name)) {
+      return childRelative;
+    }
+  }
+  return null;
+}
+
 function exactSet(actual, expected, label) {
   const left = [...actual].sort();
   const right = [...expected].sort();
@@ -654,6 +689,10 @@ async function validatePublicReadme() {
     "package-owned `native/ait_napi.node`",
     "does not locate or launch a child executable",
     "explicitly\nnon-publishable",
+    "## License map",
+    "`ait-core/**`, `ait-runner/**`, `ait-python/**`, and\n`ait-node/**` are Apache-2.0",
+    "`ait-server/**`, which is AGPL-3.0-only",
+    "No commercial or proprietary license applies to a public 1.0 source path",
   ]) {
     if (!readme.includes(required)) {
       fail(`public README is missing the agent-first contract: ${JSON.stringify(required)}`);
@@ -666,6 +705,157 @@ async function validatePublicReadme() {
     if (readme.includes(forbidden)) {
       fail(`public README teaches a manual workflow step: ${JSON.stringify(forbidden)}`);
     }
+  }
+}
+
+async function validatePublicPolicies() {
+  const contributingPath = path.join(ROOT, "CONTRIBUTING.md");
+  const securityPath = path.join(ROOT, "SECURITY.md");
+  await regularFile(contributingPath, "public contribution policy");
+  await regularFile(securityPath, "public security policy");
+  const contributing = await readFile(contributingPath, "utf8");
+  const security = await readFile(securityPath, "utf8");
+
+  for (const required of [
+    "deterministic release monorepo",
+    "`ait-monorepo-source.json` records",
+    "[SECURITY.md](SECURITY.md)",
+    "ait init",
+    "`AGENTS.md`",
+    "`ait blame`",
+    "`ait plan sync`",
+    "`ait task start`",
+    "`ait snapshot create`",
+    "`ait task land`",
+    "material AI assistance",
+    "`ait-server/` | `ait-server` | AGPL-3.0-only",
+  ]) {
+    if (!contributing.includes(required)) {
+      fail(`public contribution policy is missing ${JSON.stringify(required)}`);
+    }
+  }
+
+  for (const required of [
+    "Latest `1.0.0-rc.x` release candidate",
+    "https://github.com/weita2026/ait-native/security/advisories/new",
+    "Do not open a public issue",
+    "Published tags and registry",
+    "direct PyO3 Python and Node-API Node.js bindings",
+    "Binary DB integrity boundaries",
+    "`ait-server/**` is AGPL-3.0-only",
+    "[docs/distribution.md](docs/distribution.md)",
+  ]) {
+    if (!security.includes(required)) {
+      fail(`public security policy is missing ${JSON.stringify(required)}`);
+    }
+  }
+}
+
+async function validateLicenseTopology(family) {
+  const expected = new Map([
+    ["ait-core", "Apache-2.0"],
+    ["ait-runner", "Apache-2.0"],
+    ["ait-python", "Apache-2.0"],
+    ["ait-node", "Apache-2.0"],
+    ["ait-server", "AGPL-3.0-only"],
+  ]);
+  for (const component of family.components) {
+    if (expected.get(component.source_repository) !== component.license) {
+      fail(
+        `${component.source_repository} component ${component.id} has license ${component.license} instead of ${expected.get(component.source_repository)}`,
+      );
+    }
+  }
+
+  const rootLicensePath = path.join(ROOT, "LICENSE");
+  const rootNoticePath = path.join(ROOT, "NOTICE");
+  const apacheReferencePath = path.join(ROOT, "LICENSES", "Apache-2.0.txt");
+  const agplReferencePath = path.join(ROOT, "LICENSES", "AGPL-3.0-only.txt");
+  await regularFile(rootLicensePath, "public root LICENSE");
+  await regularFile(rootNoticePath, "public root NOTICE");
+  await regularFile(apacheReferencePath, "public Apache-2.0 reference");
+  await regularFile(agplReferencePath, "public AGPL-3.0-only reference");
+  await absent(
+    path.join(ROOT, "LICENSES", "LicenseRef-AIT-Commercial.txt"),
+    "public commercial-license reference",
+  );
+  const rootLicense = await readFile(rootLicensePath, "utf8");
+  const rootNotice = await readFile(rootNoticePath, "utf8");
+  for (const required of [
+    "ait-native public source license scope",
+    "default license for this public monorepo is the Apache License, Version\n2.0 (`Apache-2.0`)",
+    "complete `ait-core/**`, `ait-runner/**`, `ait-python/**`, and\n`ait-node/**` subtrees",
+    "sole component exception is `ait-server/**`",
+    "(`AGPL-3.0-only`)",
+    "No commercial or proprietary license applies to a public 1.0 source path",
+    "Apache License",
+    "Version 2.0, January 2004",
+  ]) {
+    if (!rootLicense.includes(required)) {
+      fail(`public root LICENSE is missing ${JSON.stringify(required)}`);
+    }
+  }
+  if (rootLicense.includes("LicenseRef-") || rootLicense.includes("AGPL-3.0-only OR")) {
+    fail("public root LICENSE contains an unauthorized alternative license grant");
+  }
+  for (const required of [
+    "- `ait-core/**`: Apache-2.0",
+    "- `ait-runner/**`: Apache-2.0",
+    "- `ait-python/**`: Apache-2.0",
+    "- `ait-node/**`: Apache-2.0",
+    "- `ait-server/**`: AGPL-3.0-only",
+  ]) {
+    if (!rootNotice.includes(required)) {
+      fail(`public root NOTICE is missing ${JSON.stringify(required)}`);
+    }
+  }
+
+  const apacheReference = await readFile(apacheReferencePath);
+  const agplReference = await readFile(agplReferencePath);
+  for (const [repository, license] of expected) {
+    const subtree = path.join(ROOT, repository);
+    const licensePath = path.join(subtree, "LICENSE");
+    const noticePath = path.join(subtree, "NOTICE");
+    await regularFile(licensePath, `${repository} LICENSE`);
+    await regularFile(noticePath, `${repository} NOTICE`);
+    const text = await readFile(licensePath, "utf8");
+    const commercialMarker = await firstFileNamed(
+      subtree,
+      /(?:commercial|proprietary|license-?ref)/iu,
+    );
+    if (commercialMarker !== null) {
+      fail(
+        `${repository} contains an unauthorized commercial license marker: ${commercialMarker}`,
+      );
+    }
+    if (license === "Apache-2.0") {
+      const agplMarker = await firstFileNamed(subtree, /agpl/iu);
+      if (agplMarker !== null) {
+        fail(`${repository} contains a foreign AGPL license marker: ${agplMarker}`);
+      }
+      if (
+        !text.includes("Apache License") ||
+        !text.includes("Version 2.0") ||
+        text.includes("GNU AFFERO GENERAL PUBLIC LICENSE") ||
+        text.includes("LicenseRef-")
+      ) {
+        fail(`${repository} does not carry an Apache-2.0-only root LICENSE`);
+      }
+    } else if (
+      repository !== "ait-server" ||
+      !text.includes("GNU AFFERO GENERAL PUBLIC LICENSE") ||
+      !text.includes("Version 3, 19 November 2007") ||
+      !text.includes("END OF TERMS AND CONDITIONS") ||
+      text.includes("LicenseRef-")
+    ) {
+      fail("ait-server does not carry a complete AGPL-3.0-only root LICENSE");
+    }
+  }
+  if (!apacheReference.equals(await readFile(path.join(ROOT, "ait-core", "LICENSE")))) {
+    fail("public Apache-2.0 reference differs from ait-core/LICENSE");
+  }
+  if (!agplReference.equals(await readFile(path.join(ROOT, "ait-server", "LICENSE")))) {
+    fail("public AGPL-3.0-only reference differs from ait-server/LICENSE");
   }
 }
 
@@ -985,7 +1175,13 @@ async function validateBuildInputs(expectedGitCommit) {
     ".github/workflows/ait-release-protected-promotion.yml",
     ".github/workflows/pypi-publish.yml",
     ".gitattributes",
+    "LICENSE",
+    "NOTICE",
     "README.md",
+    "CONTRIBUTING.md",
+    "SECURITY.md",
+    "LICENSES/Apache-2.0.txt",
+    "LICENSES/AGPL-3.0-only.txt",
     "ci/native_bootstrap_matrix.jq",
     "ci/native_bootstrap_matrix.json",
     "ci/release_endpoint_publication.sh",
@@ -1010,7 +1206,9 @@ async function validateBuildInputs(expectedGitCommit) {
   ]) {
     await regularFile(path.join(ROOT, required), `required build input ${required}`);
   }
+  await validateLicenseTopology(family);
   await validatePublicReadme();
+  await validatePublicPolicies();
   await validateGitBytePolicy();
   await validateOperationalIgnorePolicy();
   await validateTrackedSourceTree();

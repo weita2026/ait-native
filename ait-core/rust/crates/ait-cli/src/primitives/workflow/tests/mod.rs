@@ -12,8 +12,8 @@ use ait_core::task_workflow_http_adapter::{
     TaskWorkflowPolicyEvaluator, TaskWorkflowPolicyReader, TaskWorkflowPolicyWaiverCreator,
     TaskWorkflowRemoteChangeDetailReader, TaskWorkflowRemoteChangeLister,
     TaskWorkflowRemoteChangeReader, TaskWorkflowRemoteTaskCloser, TaskWorkflowRemoteTaskReader,
-    TaskWorkflowRemoteTaskRestarter, TaskWorkflowRepoJobLister, TaskWorkflowReviewLister,
-    TaskWorkflowReviewRecorder, TaskWorkflowReviewRequester,
+    TaskWorkflowRepoJobLister, TaskWorkflowReviewLister, TaskWorkflowReviewRecorder,
+    TaskWorkflowReviewRequester,
 };
 use tempfile::tempdir;
 
@@ -439,16 +439,6 @@ impl TaskWorkflowRemoteTaskCloser for FakeWorkflowCloseoutRemote {
         &mut self,
         _task_id: &str,
         _status: &str,
-        _repo_name: Option<&str>,
-    ) -> TaskWorkflowHttpClientResult<JsonValue> {
-        unimplemented!("unused by workflow closeout helper tests")
-    }
-}
-
-impl TaskWorkflowRemoteTaskRestarter for FakeWorkflowCloseoutRemote {
-    fn restart_task(
-        &mut self,
-        _task_id: &str,
         _repo_name: Option<&str>,
     ) -> TaskWorkflowHttpClientResult<JsonValue> {
         unimplemented!("unused by workflow closeout helper tests")

@@ -6,10 +6,8 @@ Copyright (c) 2026 Weita and contributors.
 `https://ait-native.dev`.
 
 Except for separately identified third-party material, this `ait-core`
-repository is licensed under Apache-2.0. The separately distributed
-`ait-server` repository and executable are AGPL-3.0-only. Combined
-`ait-native` packages preserve both components' exact license and notice
-material rather than relicensing either component.
+repository is licensed under Apache-2.0. This NOTICE describes `ait-core`
+only; separately licensed components retain their own LICENSE and NOTICE.
 
 Use `TRADEMARK_POLICY.md` for trademark, wordmark, logo, and official-domain
 rules. Source-code and content licenses do not by themselves grant trademark

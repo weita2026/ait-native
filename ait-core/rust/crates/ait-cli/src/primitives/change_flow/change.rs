@@ -13,7 +13,13 @@ pub fn change_create(
     guard_current_worktree_task_bound_authoring(repo, "change create")?;
     guard_current_worktree_task_scope(repo, task_id, "ait change create")?;
     let resolved_base_line = normalized_text(base_line).unwrap_or_else(|| repo.default_line_name());
-    guard_current_worktree_retarget(repo, &resolved_base_line, None, "creating a new change")?;
+    guard_current_worktree_retarget(
+        repo,
+        &resolved_base_line,
+        None,
+        None,
+        "creating a new change",
+    )?;
     guard_no_planning_only_artifact_drift(repo, "ait change create")?;
     let use_local = change_uses_local_scope(repo, local, remote_name)?;
     if use_local {

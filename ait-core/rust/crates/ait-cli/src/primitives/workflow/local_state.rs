@@ -232,6 +232,7 @@ fn workflow_projected_land_state_with_workspace_mode(
         let command_hints = workflow_land_command_hints(
             repo,
             resolved_change_ref.as_str(),
+            remote_name,
             task_id.as_str(),
             state.get("patchset"),
             base_line_name.as_str(),
@@ -255,6 +256,7 @@ fn workflow_projected_land_state_with_workspace_mode(
     let command_hints = workflow_land_command_hints(
         repo,
         resolved_change_ref.as_str(),
+        remote_name,
         task_id.as_str(),
         state.get("patchset"),
         base_line_name.as_str(),

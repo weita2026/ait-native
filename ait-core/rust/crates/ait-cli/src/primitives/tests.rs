@@ -8,9 +8,7 @@ use super::change_flow::{
     patchset_publish_payload_with_closeout_remote,
     patchset_publish_remote_context_with_task_remote,
     resolve_patchset_argument_with_task_and_closeout_remotes,
-    restart_local_change_read_with_change_store, restart_local_change_reopen_with_change_store,
-    restart_local_change_rows_with_change_store, restart_local_task_reactivate_with_task_store,
-    restart_local_task_read_with_task_store, review_record_flow_with_task_and_closeout_remotes,
+    review_record_flow_with_task_and_closeout_remotes,
     review_request_flow_with_task_and_closeout_remotes, validate_short_remote_change_id,
 };
 use super::line::{
@@ -35,7 +33,7 @@ use super::workflow::{
     task_land_local_change_id_with_change_store, task_land_remote_task_read_with_task_remote,
     workflow_apply_phase_payload_json, workflow_coerce_wait_hint_seconds, workflow_current_ids,
     workflow_find_bound_task_worktree, workflow_json_text, workflow_land_apply_action,
-    workflow_land_evaluate_policy_with_closeout_remote,
+    workflow_land_command_hints, workflow_land_evaluate_policy_with_closeout_remote,
     workflow_land_record_attestation_with_closeout_remote,
     workflow_land_record_code_review_summary_with_closeout_remote,
     workflow_land_record_task_review_with_closeout_remote,
@@ -59,8 +57,8 @@ use super::workspace::{
 };
 use super::worktree::{
     archive_local_line_with_line_store, create_local_line_with_line_store,
-    line_change_usage_index_with_change_store, set_local_line_head_with_line_store,
-    snapshot_distance_if_ancestor_with_snapshot_store,
+    ensure_task_feature_line, line_change_usage_index_with_change_store,
+    set_local_line_head_with_line_store, snapshot_distance_if_ancestor_with_snapshot_store,
     snapshot_distance_if_ancestor_with_snapshot_store_and_cache,
     task_start_remote_base_line_preflight_with_task_remote, worktree_doctor_from_rows,
     worktree_local_change_for_worktree_with_change_store,
@@ -95,9 +93,9 @@ use ait_core::task_workflow_http_adapter::{
     TaskWorkflowRemoteChangeDetailReader, TaskWorkflowRemoteChangeLister,
     TaskWorkflowRemoteChangeReader, TaskWorkflowRemoteTaskAuditReader,
     TaskWorkflowRemoteTaskCloser, TaskWorkflowRemoteTaskCreator, TaskWorkflowRemoteTaskLister,
-    TaskWorkflowRemoteTaskReader, TaskWorkflowRemoteTaskRestarter, TaskWorkflowRepoJobLister,
-    TaskWorkflowRepositoryEnsurer, TaskWorkflowRepositoryReader, TaskWorkflowReviewLister,
-    TaskWorkflowReviewRecorder, TaskWorkflowReviewRequester, TaskWorkflowReviewerInboxReader,
+    TaskWorkflowRemoteTaskReader, TaskWorkflowRepoJobLister, TaskWorkflowRepositoryEnsurer,
+    TaskWorkflowRepositoryReader, TaskWorkflowReviewLister, TaskWorkflowReviewRecorder,
+    TaskWorkflowReviewRequester, TaskWorkflowReviewerInboxReader,
     TaskWorkflowSnapshotExistenceReader, TaskWorkflowSnapshotMetadataReader,
     TaskWorkflowTaskQueueReader, TaskWorkflowTaskRecordRemote, TaskWorkflowZstdPackReader,
     TaskWorkflowZstdPackUploader,
@@ -2171,15 +2169,6 @@ impl ait_core::task_store::TaskStore for FakeTaskStore {
         TaskWorkflowTaskCloser::close_task(self, task_id, status)
     }
 
-    fn restart_task(&self, task_id: &str) -> PlanStoreResult<JsonValue> {
-        let mut tasks = self.tasks.borrow_mut();
-        let task = tasks
-            .get_mut(task_id)
-            .ok_or_else(|| PlanStoreError::NotFound(format!("Unknown task: {task_id}")))?;
-        task["status"] = JsonValue::String("active".to_string());
-        Ok(task.clone())
-    }
-
     fn mark_task_published(
         &self,
         task_id: &str,
@@ -2261,15 +2250,6 @@ impl ait_core::change_store::ChangeStore for FakeChangeStore {
 
     fn close_change(&self, change_id: &str, status: &str) -> PlanStoreResult<JsonValue> {
         TaskWorkflowChangeCloser::close_change(self, change_id, status)
-    }
-
-    fn reopen_change_as_draft(&self, change_id: &str) -> PlanStoreResult<JsonValue> {
-        let mut changes = self.changes.borrow_mut();
-        let change = changes
-            .get_mut(change_id)
-            .ok_or_else(|| PlanStoreError::NotFound(format!("Unknown change: {change_id}")))?;
-        change["status"] = JsonValue::String("draft".to_string());
-        Ok(change.clone())
     }
 
     fn land_change(
@@ -2769,16 +2749,6 @@ impl TaskWorkflowRemoteTaskCloser for FakeWorkspaceCloseoutRemote {
         &mut self,
         _task_id: &str,
         _status: &str,
-        _repo_name: Option<&str>,
-    ) -> TaskWorkflowHttpClientResult<JsonValue> {
-        unimplemented!("unused by workspace closeout helper tests")
-    }
-}
-
-impl TaskWorkflowRemoteTaskRestarter for FakeWorkspaceCloseoutRemote {
-    fn restart_task(
-        &mut self,
-        _task_id: &str,
         _repo_name: Option<&str>,
     ) -> TaskWorkflowHttpClientResult<JsonValue> {
         unimplemented!("unused by workspace closeout helper tests")

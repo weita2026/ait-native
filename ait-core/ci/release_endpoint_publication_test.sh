@@ -180,6 +180,8 @@ for required_preparer_contract in \
 done
 for required_npm_readback_contract in \
   'validate_npm_registry_platform_readback() {' \
+  'wait_for_npm_remote_state() {' \
+  'npm package set did not become fully visible after %s attempts' \
   'npm registry platform metadata differs from staged bytes' \
   'platform_metadata_readback: true' \
   'npm endpoint receipt does not prove platform metadata readback'; do
@@ -281,6 +283,8 @@ eval "$(extract_remote_function npm_provenance_policy)"
 eval "$(extract_remote_function remove_matching_npm_prerelease_latest_tag)"
 eval "$(extract_remote_function validate_npm_dist_tags)"
 eval "$(extract_remote_function validate_npm_registry_platform_readback)"
+eval "$(extract_remote_function validate_npm_remote_state)"
+eval "$(extract_remote_function wait_for_npm_remote_state)"
 eval "$(extract_remote_function wait_for_pypi_remote_state)"
 eval "$(extract_preparer_function npm_addon_platform)"
 eval "$(extract_preparer_function validate_npm_payload_contract)"
@@ -291,6 +295,62 @@ test "$(npm_registry_package_path '@wa120/ait-native')" = \
 test "$(npm_registry_package_path 'ait-native')" = 'ait-native'
 grep -F 'if [[ ${package_name} == @wa120/ait-native ]]' "${remote}" >/dev/null
 grep -F 'if [[ ${package_name} != @wa120/ait-native ]]' "${remote}" >/dev/null
+
+export release_version=1.0.0-rc.4
+export npm_registry=https://registry.npmjs.org
+npm_package_rows() {
+  jq -r '.endpoints.npm.packages[]' "${endpoint_config}" |
+    while IFS= read -r package_name; do
+      printf '%s\t%s\t%s\n' \
+        "${package_name}" "${release_version}" "${temporary_root}/unused.tgz"
+    done
+}
+npm_visibility_mode=package-missing
+curl() {
+  local output=
+  while (($# > 0)); do
+    case "$1" in
+      --output) output=$2; shift 2 ;;
+      *) shift ;;
+    esac
+  done
+  [[ -n ${output} ]]
+  case "${npm_visibility_mode}" in
+    package-missing)
+      printf '{}\n' >"${output}"
+      printf '404'
+      ;;
+    version-missing)
+      printf '{"versions": {}}\n' >"${output}"
+      printf '200'
+      ;;
+    *) return 64 ;;
+  esac
+}
+validate_npm_remote_state
+if validate_npm_remote_state true \
+  >"${temporary_root}/npm-package-missing.stdout" \
+  2>"${temporary_root}/npm-package-missing.stderr"; then
+  printf 'expected retryable missing npm package state\n' >&2
+  exit 1
+else
+  test "$?" = 75
+fi
+grep -F 'npm package is still unpublished:' \
+  "${temporary_root}/npm-package-missing.stderr" >/dev/null
+npm_visibility_mode=version-missing
+validate_npm_remote_state
+if validate_npm_remote_state true \
+  >"${temporary_root}/npm-version-missing.stdout" \
+  2>"${temporary_root}/npm-version-missing.stderr"; then
+  printf 'expected retryable missing npm version state\n' >&2
+  exit 1
+else
+  test "$?" = 75
+fi
+grep -F 'npm package version is still unpublished:' \
+  "${temporary_root}/npm-version-missing.stderr" >/dev/null
+unset -f curl npm_package_rows
 
 pypi_readback_attempts=0
 validate_pypi_remote_state() {
@@ -335,7 +395,49 @@ fi
 test "${pypi_readback_attempts}" = 12
 grep -F 'PyPI release wheel set did not become fully visible after 12 attempts' \
   "${temporary_root}/pypi-eventual-timeout.stderr" >/dev/null
-unset -f validate_pypi_remote_state sleep wait_for_pypi_remote_state
+
+npm_readback_attempts=0
+validate_npm_remote_state() {
+  npm_readback_attempts=$((npm_readback_attempts + 1))
+  if ((npm_readback_attempts < 3)); then
+    return 75
+  fi
+  return 0
+}
+wait_for_npm_remote_state \
+  >"${temporary_root}/npm-eventual-success.stdout" \
+  2>"${temporary_root}/npm-eventual-success.stderr"
+test "${npm_readback_attempts}" = 3
+
+npm_readback_attempts=0
+validate_npm_remote_state() {
+  npm_readback_attempts=$((npm_readback_attempts + 1))
+  return 65
+}
+if wait_for_npm_remote_state \
+  >"${temporary_root}/npm-hard-failure.stdout" \
+  2>"${temporary_root}/npm-hard-failure.stderr"; then
+  printf 'expected hard npm readback failure\n' >&2
+  exit 1
+fi
+test "${npm_readback_attempts}" = 1
+
+npm_readback_attempts=0
+validate_npm_remote_state() {
+  npm_readback_attempts=$((npm_readback_attempts + 1))
+  return 75
+}
+if wait_for_npm_remote_state \
+  >"${temporary_root}/npm-eventual-timeout.stdout" \
+  2>"${temporary_root}/npm-eventual-timeout.stderr"; then
+  printf 'expected bounded npm readback timeout\n' >&2
+  exit 1
+fi
+test "${npm_readback_attempts}" = 12
+grep -F 'npm package set did not become fully visible after 12 attempts' \
+  "${temporary_root}/npm-eventual-timeout.stderr" >/dev/null
+unset -f validate_npm_remote_state validate_pypi_remote_state sleep \
+  wait_for_npm_remote_state wait_for_pypi_remote_state
 
 github_asset_fixture=${temporary_root}/github-asset-fixture
 mkdir -p "${github_asset_fixture}/assets"

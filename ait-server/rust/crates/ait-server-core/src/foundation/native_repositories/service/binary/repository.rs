@@ -525,7 +525,7 @@ where
     ) -> Result<JsonValue, NativeRepositoryError> {
         self.ensure_repository(repo_name)?;
         let request = RemoteSyncPlanJson::stateless().zstd_pull_manifest_request(&request)?;
-        let (snapshots, boundary_snapshot_ids) = self.binary_zstd_pull_manifest_snapshots(
+        let (snapshots, boundary_snapshot_ids, content) = self.binary_zstd_pull_manifest_parts(
             repo_name,
             &request.head_snapshot_id,
             &request.have_snapshot_ids,
@@ -534,8 +534,6 @@ where
             .iter()
             .map(binary_zstd_import_manifest_snapshot_row)
             .collect::<Result<Vec<_>, _>>()?;
-        let content =
-            self.binary_zstd_import_manifest_content_for_snapshots(repo_name, &snapshots)?;
         Ok(
             RemoteSyncZstdImportManifestJson::stateless().zstd_pull_manifest_response(
                 repo_name,

@@ -36,7 +36,7 @@ use super::{
     record_review_with_task_workflow_closeout_remote,
     rename_remote_line_with_task_workflow_task_remote,
     request_review_with_task_workflow_closeout_remote,
-    restart_task_with_task_workflow_closeout_remote, retry_land_with_task_workflow_closeout_remote,
+    retry_land_with_task_workflow_closeout_remote,
     run_patchset_ci_with_task_workflow_closeout_remote,
     select_patchset_with_task_workflow_closeout_remote,
     submit_land_with_task_workflow_closeout_remote,
@@ -59,14 +59,13 @@ use super::{
     TaskWorkflowRemoteChangeCreator, TaskWorkflowRemoteChangeDetailReader,
     TaskWorkflowRemoteChangeLister, TaskWorkflowRemoteChangeReader,
     TaskWorkflowRemoteTaskAuditReader, TaskWorkflowRemoteTaskCloser, TaskWorkflowRemoteTaskCreator,
-    TaskWorkflowRemoteTaskLister, TaskWorkflowRemoteTaskReader, TaskWorkflowRemoteTaskRestarter,
-    TaskWorkflowRepoJobLister, TaskWorkflowRepositoryEnsurer, TaskWorkflowRepositoryReader,
-    TaskWorkflowRepositoryRemote, TaskWorkflowReviewLister, TaskWorkflowReviewRecorder,
-    TaskWorkflowReviewRemote, TaskWorkflowReviewRequester, TaskWorkflowReviewerInboxReader,
+    TaskWorkflowRemoteTaskLister, TaskWorkflowRemoteTaskReader, TaskWorkflowRepoJobLister,
+    TaskWorkflowRepositoryEnsurer, TaskWorkflowRepositoryReader, TaskWorkflowRepositoryRemote,
+    TaskWorkflowReviewLister, TaskWorkflowReviewRecorder, TaskWorkflowReviewRemote,
+    TaskWorkflowReviewRequester, TaskWorkflowReviewerInboxReader,
     TaskWorkflowSnapshotExistenceReader, TaskWorkflowSnapshotMetadataReader,
-    TaskWorkflowSnapshotRemote, TaskWorkflowTaskLifecycleRemote, TaskWorkflowTaskQueueReader,
-    TaskWorkflowTaskRecordRemote, TaskWorkflowTaskRemote, TaskWorkflowZstdPackReader,
-    TaskWorkflowZstdPackUploader,
+    TaskWorkflowSnapshotRemote, TaskWorkflowTaskQueueReader, TaskWorkflowTaskRecordRemote,
+    TaskWorkflowTaskRemote, TaskWorkflowZstdPackReader, TaskWorkflowZstdPackUploader,
 };
 use crate::json_support::{json, JsonCodec, JsonValue};
 use crate::plan_http_client::PlanHttpClientError;
@@ -1252,13 +1251,7 @@ struct FakeAttestationRemote;
 struct FakeLandRemote;
 
 #[derive(Debug, Default)]
-struct FakeTaskLifecycleRemote;
-
-#[derive(Debug, Default)]
 struct FakeRemoteTaskCloserPort;
-
-#[derive(Debug, Default)]
-struct FakeRemoteTaskRestarterPort;
 
 #[derive(Debug, Default)]
 struct FakeReviewRemote;
@@ -1644,20 +1637,6 @@ impl TaskWorkflowRemoteTaskCloser for FakeCloseoutRemote {
             "task_id": task_id,
             "status": status,
             "repo_name": repo_name,
-        }))
-    }
-}
-
-impl TaskWorkflowRemoteTaskRestarter for FakeCloseoutRemote {
-    fn restart_task(
-        &mut self,
-        task_id: &str,
-        repo_name: Option<&str>,
-    ) -> TaskWorkflowHttpClientResult<JsonValue> {
-        Ok(json!({
-            "task_id": task_id,
-            "repo_name": repo_name,
-            "status": "active",
         }))
     }
 }
@@ -2321,35 +2300,6 @@ impl TaskWorkflowLandRetryer for FakeLandRetryerPort {
     }
 }
 
-impl TaskWorkflowRemoteTaskCloser for FakeTaskLifecycleRemote {
-    fn close_task(
-        &mut self,
-        task_id: &str,
-        status: &str,
-        repo_name: Option<&str>,
-    ) -> TaskWorkflowHttpClientResult<JsonValue> {
-        Ok(json!({
-            "task_id": task_id,
-            "status": status,
-            "repo_name": repo_name,
-        }))
-    }
-}
-
-impl TaskWorkflowRemoteTaskRestarter for FakeTaskLifecycleRemote {
-    fn restart_task(
-        &mut self,
-        task_id: &str,
-        repo_name: Option<&str>,
-    ) -> TaskWorkflowHttpClientResult<JsonValue> {
-        Ok(json!({
-            "task_id": task_id,
-            "repo_name": repo_name,
-            "status": "active",
-        }))
-    }
-}
-
 impl TaskWorkflowRemoteTaskCloser for FakeRemoteTaskCloserPort {
     fn close_task(
         &mut self,
@@ -2361,20 +2311,6 @@ impl TaskWorkflowRemoteTaskCloser for FakeRemoteTaskCloserPort {
             "task_id": task_id,
             "status": status,
             "repo_name": repo_name,
-        }))
-    }
-}
-
-impl TaskWorkflowRemoteTaskRestarter for FakeRemoteTaskRestarterPort {
-    fn restart_task(
-        &mut self,
-        task_id: &str,
-        repo_name: Option<&str>,
-    ) -> TaskWorkflowHttpClientResult<JsonValue> {
-        Ok(json!({
-            "task_id": task_id,
-            "repo_name": repo_name,
-            "status": "active",
         }))
     }
 }

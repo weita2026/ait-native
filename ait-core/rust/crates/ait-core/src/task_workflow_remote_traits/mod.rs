@@ -74,9 +74,7 @@ pub use snapshot_remote_ports::{
     TaskWorkflowSnapshotExistenceReader, TaskWorkflowSnapshotMetadataReader,
     TaskWorkflowSnapshotRemote, TaskWorkflowZstdPackReader, TaskWorkflowZstdPackUploader,
 };
-pub use task_lifecycle_remote_ports::{
-    TaskWorkflowRemoteTaskCloser, TaskWorkflowRemoteTaskRestarter, TaskWorkflowTaskLifecycleRemote,
-};
+pub use task_lifecycle_remote_ports::TaskWorkflowRemoteTaskCloser;
 pub use task_record_remote_ports::{
     TaskWorkflowRemoteTaskAuditReader, TaskWorkflowRemoteTaskCreator, TaskWorkflowRemoteTaskLister,
     TaskWorkflowRemoteTaskReader, TaskWorkflowTaskRecordRemote,

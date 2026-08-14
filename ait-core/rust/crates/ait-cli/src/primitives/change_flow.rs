@@ -24,7 +24,7 @@ pub use review::{
     review_code_submit, review_code_template, review_record, review_request, review_show,
     review_task_approve, review_team_approve,
 };
-pub use task_lifecycle::{task_close, task_complete, task_restart};
+pub use task_lifecycle::{task_close, task_complete};
 
 #[allow(unused_imports)]
 pub(super) use attestation::{
@@ -81,10 +81,7 @@ pub(super) use shared::{
 };
 #[allow(unused_imports)]
 pub(super) use task_lifecycle::{
-    restart_local_change_read_with_change_store, restart_local_change_reopen_with_change_store,
-    restart_local_change_rows_with_change_store, restart_local_task_reactivate_with_task_store,
-    restart_local_task_read_with_task_store, task_close_with_closeout_remote,
-    task_complete_with_closeout_remote, task_restart_with_closeout_remote,
+    task_close_with_closeout_remote, task_complete_with_closeout_remote,
 };
 
 #[cfg(test)]

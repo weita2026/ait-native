@@ -215,31 +215,8 @@ fn task_start_http_adapter_fixture_roundtrips_task_and_change_requests() {
 }
 
 #[test]
-fn task_workflow_task_lifecycle_helpers_accept_task_lifecycle_remote_trait() {
-    let mut remote = FakeTaskLifecycleRemote;
-    let remote_port: &mut dyn TaskWorkflowTaskLifecycleRemote = &mut remote;
-
-    assert_eq!(
-        close_task_with_task_workflow_closeout_remote(
-            remote_port,
-            "T-1",
-            "completed",
-            Some("repo"),
-        )
-        .unwrap()["status"],
-        "completed"
-    );
-    assert_eq!(
-        restart_task_with_task_workflow_closeout_remote(remote_port, "T-1", Some("repo")).unwrap()
-            ["status"],
-        "active"
-    );
-}
-
-#[test]
-fn task_workflow_task_lifecycle_helpers_accept_single_capability_ports() {
+fn task_workflow_task_close_helper_accepts_single_capability_port() {
     let mut closer = FakeRemoteTaskCloserPort;
-    let mut restarter = FakeRemoteTaskRestarterPort;
 
     assert_eq!(
         close_task_with_task_workflow_closeout_remote(
@@ -250,11 +227,6 @@ fn task_workflow_task_lifecycle_helpers_accept_single_capability_ports() {
         )
         .unwrap()["status"],
         "completed"
-    );
-    assert_eq!(
-        restart_task_with_task_workflow_closeout_remote(&mut restarter, "T-1", Some("repo"))
-            .unwrap()["status"],
-        "active"
     );
 }
 

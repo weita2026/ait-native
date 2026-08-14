@@ -242,21 +242,5 @@ fn run_task(repo: RepoRuntime, command: TaskCommand) -> Result<ExitCode, String>
             )?;
             Ok(ExitCode::SUCCESS)
         }
-        TaskCommand::Restart(args) => {
-            let payload = task_restart(
-                &repo,
-                &args.task_id,
-                args.local,
-                args.remote.as_deref(),
-                None,
-            )?;
-            emit_result(
-                "ait-cli task restart",
-                &payload,
-                args.json,
-                &["task_id", "status", "published_task_id"],
-            )?;
-            Ok(ExitCode::SUCCESS)
-        }
     }
 }

@@ -1,5 +1,8 @@
 use super::*;
 use crate::primitives::change_flow::change_local_create_with_change_store;
+use crate::primitives::workflow::local_completion::{
+    workflow_history_prepare_entries, workflow_validate_history_publication_response,
+};
 use crate::primitives::worktree::create_local_line_with_line_store;
 
 #[test]
@@ -832,6 +835,21 @@ fn history_promotion_retry_heals_task_first_publication_interruption() {
         retry_entries[3]["publication_recovery_required"],
         json!(true)
     );
+    let retry_request_entries =
+        workflow_history_prepare_entries(&repo, &json!({"history_entries": retry_entries.clone()}))
+            .expect("build task-first retry admission entries");
+    assert_eq!(
+        retry_request_entries[3]["expected_remote_task_id"],
+        json!("RT-0004")
+    );
+    assert_eq!(
+        retry_request_entries[3]["expected_remote_change_ref"],
+        JsonValue::Null
+    );
+    assert_eq!(
+        retry_request_entries[0]["expected_remote_task_id"],
+        JsonValue::Null
+    );
     let response_entries = retry_entries
         .iter()
         .enumerate()
@@ -857,6 +875,159 @@ fn history_promotion_retry_heals_task_first_publication_interruption() {
     .expect("healed change");
     assert_eq!(healed_change["publication_state"], json!("published"));
     assert_eq!(healed_change["published_change_id"], json!("RT-0004/C-01"));
+
+    let (published_entries, _) = workflow_local_history_entries(
+        &repo,
+        &final_change_ref,
+        "main",
+        &base_snapshot_id,
+        &final_snapshot_id,
+    )
+    .expect("published history remains collectable");
+    let published_request_entries =
+        workflow_history_prepare_entries(&repo, &json!({"history_entries": published_entries}))
+            .expect("build fully published admission entries");
+    assert_eq!(
+        published_request_entries[3]["expected_remote_task_id"],
+        json!("RT-0004")
+    );
+    assert_eq!(
+        published_request_entries[3]["expected_remote_change_ref"],
+        json!("RT-0004/C-01")
+    );
+}
+
+#[test]
+fn history_promotion_mapping_mismatch_fails_before_any_local_publication_write() {
+    let (_temp, repo, base_snapshot_id, final_snapshot_id, final_change_ref) =
+        ten_local_land_fixture();
+    let (initial_entries, _) = workflow_local_history_entries(
+        &repo,
+        &final_change_ref,
+        "main",
+        &base_snapshot_id,
+        &final_snapshot_id,
+    )
+    .expect("initial ten-entry history");
+    let interrupted_task_id = required_string_field(&initial_entries[3], "local_task_id").unwrap();
+    task_local_mark_published_with_task_store(
+        &repo.task_store().unwrap(),
+        &interrupted_task_id,
+        Some("origin"),
+        Some("RT-0004"),
+    )
+    .expect("simulate task-first publication write");
+    let (retry_entries, _) = workflow_local_history_entries(
+        &repo,
+        &final_change_ref,
+        "main",
+        &base_snapshot_id,
+        &final_snapshot_id,
+    )
+    .expect("collect retry history");
+    let mut response_entries = retry_entries
+        .iter()
+        .enumerate()
+        .map(|(ordinal, entry)| {
+            let remote_task_id = format!("RT-{:04}", ordinal + 1);
+            json!({
+                "local_task_id": entry["local_task_id"],
+                "local_change_id": entry["local_change_id"],
+                "local_change_ref": entry["local_change_ref"],
+                "task_id": remote_task_id,
+                "change_ref": format!("{remote_task_id}/C-01"),
+                "receipt_patchset_id": format!("{remote_task_id}/C-01/P-01"),
+            })
+        })
+        .collect::<Vec<_>>();
+    response_entries[3]["task_id"] = json!("RT-9999");
+    response_entries[3]["change_ref"] = json!("RT-9999/C-01");
+
+    let error = workflow_mark_history_published(&repo, "origin", &retry_entries, &response_entries)
+        .expect_err("immutable mapping replacement must fail before local writes");
+    assert!(error.contains("immutable publication mapping"), "{error}");
+
+    let first_task_id = required_string_field(&retry_entries[0], "local_task_id").unwrap();
+    let first_change_ref = required_string_field(&retry_entries[0], "local_change_ref").unwrap();
+    let first_task =
+        workflow_local_task_read_with_task_store(&repo.task_store().unwrap(), &first_task_id)
+            .unwrap();
+    let first_change = workflow_local_change_read_with_change_store(
+        &repo.change_store().unwrap(),
+        &first_change_ref,
+    )
+    .unwrap();
+    assert_eq!(first_task["publication_state"], json!("local_draft"));
+    assert_eq!(first_change["publication_state"], json!("local_draft"));
+    let interrupted_task =
+        workflow_local_task_read_with_task_store(&repo.task_store().unwrap(), &interrupted_task_id)
+            .unwrap();
+    let interrupted_change = workflow_local_change_read_with_change_store(
+        &repo.change_store().unwrap(),
+        &required_string_field(&retry_entries[3], "local_change_ref").unwrap(),
+    )
+    .unwrap();
+    assert_eq!(interrupted_task["published_task_id"], json!("RT-0004"));
+    assert_eq!(
+        interrupted_change["publication_state"],
+        json!("local_draft")
+    );
+}
+
+#[test]
+fn history_promotion_response_validation_rejects_echo_owner_and_duplicate_conflicts() {
+    let candidates = vec![
+        json!({
+            "local_task_id": "LCT-0001",
+            "local_change_id": "C-01",
+            "local_change_ref": "LCT-0001/C-01",
+            "task": {"publication_state": "local_draft"},
+            "change": {"publication_state": "local_draft"},
+        }),
+        json!({
+            "local_task_id": "LCT-0002",
+            "local_change_id": "C-01",
+            "local_change_ref": "LCT-0002/C-01",
+            "task": {"publication_state": "local_draft"},
+            "change": {"publication_state": "local_draft"},
+        }),
+    ];
+    let responses = vec![
+        json!({
+            "local_task_id": "LCT-0001",
+            "local_change_id": "C-01",
+            "local_change_ref": "LCT-0001/C-01",
+            "task_id": "RCT-1001",
+            "change_ref": "RCT-1001/C-01",
+        }),
+        json!({
+            "local_task_id": "LCT-0002",
+            "local_change_id": "C-01",
+            "local_change_ref": "LCT-0002/C-01",
+            "task_id": "RCT-1002",
+            "change_ref": "RCT-1002/C-01",
+        }),
+    ];
+
+    let mut wrong_echo = responses.clone();
+    wrong_echo[0]["local_task_id"] = json!("LCT-OTHER");
+    let echo_error = workflow_validate_history_publication_response(&candidates, &wrong_echo)
+        .expect_err("wrong echoed Local identity must fail");
+    assert!(echo_error.contains("does not match requested identity"));
+
+    let mut wrong_owner = responses.clone();
+    wrong_owner[0]["change_ref"] = json!("RCT-OTHER/C-01");
+    let owner_error = workflow_validate_history_publication_response(&candidates, &wrong_owner)
+        .expect_err("wrong Remote Change owner must fail");
+    assert!(owner_error.contains("is not owned by Remote Task"));
+
+    let mut duplicate_owner = responses;
+    duplicate_owner[1]["task_id"] = json!("RCT-1001");
+    duplicate_owner[1]["change_ref"] = json!("RCT-1001/C-02");
+    let duplicate_error =
+        workflow_validate_history_publication_response(&candidates, &duplicate_owner)
+            .expect_err("duplicate Remote Task owner must fail");
+    assert!(duplicate_error.contains("repeats Remote Task"));
 }
 
 #[test]

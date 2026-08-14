@@ -1,14 +1,15 @@
 use super::common::*;
 use super::*;
 use crate::foundation::remote_binary_db::test_support::{
-    BinaryDbTestStorageOperation, FaultInjectingServerBinaryDbStore,
+    BinaryDbTestFaultTiming, BinaryDbTestStorageOperation, FaultInjectingServerBinaryDbStore,
 };
 use crate::foundation::remote_binary_db::{
     ServerBinaryDbAuthorityMode, ServerBinaryDbFilesystemStore,
 };
 use crate::foundation::server_content_binary_db::{
     validate_server_tree_authority_v0, validate_server_tree_serving_authority_v0,
-    ServerBinaryTreeReadCache,
+    ServerBinaryTreeReadCache, SERVER_SNAPSHOT_BIN, SERVER_SNAPSHOT_ID_IDX,
+    SERVER_SNAPSHOT_PARENT_EDGE_BIN,
 };
 
 #[test]
@@ -864,6 +865,169 @@ fn binary_zstd_import_manifest_expands_every_selected_tree_pack_member() {
     );
 
     fs::remove_dir_all(fixture_root).expect("manifest fixture should remove");
+}
+
+#[test]
+fn binary_zstd_pull_manifest_reads_snapshot_authority_once_for_a_long_chain() {
+    let root = env::temp_dir().join(format!(
+        "ait-server-core-zstd-pull-snapshot-catalog-{}",
+        std::process::id()
+    ));
+    if root.exists() {
+        fs::remove_dir_all(&root).expect("stale pull catalog root should remove");
+    }
+    fs::create_dir_all(&root).expect("pull catalog root should create");
+    for path in SERVER_BINARY_DB_BIN_SCHEMAS
+        .iter()
+        .map(|schema| schema.path)
+        .chain(
+            SERVER_BINARY_DB_INDEX_SCHEMAS
+                .iter()
+                .map(|schema| schema.path),
+        )
+    {
+        fs::write(root.join(path), SERVER_BINARY_DB_LAYOUT_ID.to_le_bytes())
+            .expect("pull catalog Binary DB file should initialize");
+    }
+    let files = FaultInjectingServerBinaryDbStore::new(ServerBinaryDbFilesystemStore);
+    let db = FilesystemServerRemoteBinaryDb::with_file_store(
+        files,
+        RepoId::new("REPO-ZSTD-PULL-CATALOG"),
+        RepoName::new("repo-bin"),
+        StorePath::from(root.clone()),
+        StoreGeneration::new(1),
+        ServerBinaryDbAuthorityMode::TestFixture,
+    );
+    let service = BinaryDbNativeRepositoryService::new(db.clone());
+    create_native_binary_repository(&service);
+    let content = seed_native_binary_content(&service, "zstd-pull-snapshot-catalog");
+    let created_at = "2026-08-14T00:00:00Z";
+    let first_snapshot_id = "SNP-000000000001";
+    service
+        .commit_zstd_bulk(
+            "repo-bin",
+            json!({
+                "contract": "ait.remote_sync.zstd_bulk.commit.v1",
+                "object_packs": [],
+                "tree_packs": [],
+                "blob_locators": [],
+                "tree_locators": [],
+                "snapshots": [{
+                    "snapshot_id": first_snapshot_id,
+                    "repo_name": "repo-bin",
+                    "line_name": "main",
+                    "message": "catalog chain root",
+                    "root_tree_pack_id": content.tree_pack_id,
+                    "root_entry_ordinal": 0,
+                    "file_count": 1,
+                    "total_bytes": content.bytes.len(),
+                    "created_at": created_at,
+                    "files": [{
+                        "path": "README.md",
+                        "blob_id": content.blob_id,
+                        "size_bytes": content.bytes.len(),
+                        "mode": "100644",
+                        "sha256": sha256_hex(&content.bytes),
+                    }],
+                }],
+            }),
+        )
+        .expect("pull catalog root snapshot should commit");
+
+    let snapshots =
+        ServerBinaryDbSnapshotStore::<_, SERVER_CONTENT_BINARY_LAYOUT_ID>::new(db.clone());
+    let read = BinaryDbReadTxn::new_bounded_for_scope(&db, BinaryDbReadScope::CONTENT);
+    let (_, template) = snapshots
+        .snapshot_by_id(&read, first_snapshot_id)
+        .expect("root snapshot lookup should succeed")
+        .expect("root snapshot should exist");
+    drop(read);
+    let mut previous_index = 0_u32;
+    let mut head_snapshot_id = first_snapshot_id.to_string();
+    for ordinal in 2_u32..=96 {
+        head_snapshot_id = format!("SNP-{ordinal:012X}");
+        let mut record = template.clone();
+        record.snapshot_hash48 = server_snapshot_hash48_from_id(&head_snapshot_id)
+            .expect("chain snapshot ID should be canonical");
+        record.parent_snapshot_index_plus1 = previous_index + 1;
+        record.created_at_s += u64::from(ordinal);
+        previous_index = snapshots
+            .append_snapshot(
+                &head_snapshot_id,
+                record,
+                &ServerBinarySnapshotPayload {
+                    line_name: "main".to_string(),
+                    message: Some(format!("catalog chain {ordinal}")),
+                },
+            )
+            .expect("chain snapshot should append");
+    }
+
+    let event_offset = db.file_store().events().len();
+    let manifest = service
+        .get_zstd_pull_manifest(
+            "repo-bin",
+            json!({
+                "contract": REMOTE_SYNC_ZSTD_PULL_MANIFEST_REQUEST_CONTRACT_V1,
+                "head_snapshot_id": head_snapshot_id,
+                "have_snapshot_ids": [],
+            }),
+        )
+        .expect("long-chain pull manifest should build");
+    let snapshot_rows = manifest["snapshots"]
+        .as_array()
+        .expect("pull manifest snapshots should be an array");
+    assert_eq!(snapshot_rows.len(), 96);
+    assert_eq!(snapshot_rows[0]["snapshot_id"], first_snapshot_id);
+    assert_eq!(snapshot_rows[95]["snapshot_id"], head_snapshot_id);
+
+    let events = db.file_store().events();
+    let events = &events[event_offset..];
+    let operation_count = |operation, file_name: &str| {
+        events
+            .iter()
+            .filter(|event| {
+                event.operation == operation
+                    && event.timing == BinaryDbTestFaultTiming::Before
+                    && event.path.file_name().and_then(|name| name.to_str()) == Some(file_name)
+            })
+            .count()
+    };
+    assert_eq!(
+        operation_count(
+            BinaryDbTestStorageOperation::ReadBytes,
+            SERVER_SNAPSHOT_ID_IDX
+        ),
+        0,
+        "pull ancestry must not perform one full Snapshot ID index read per Snapshot"
+    );
+    let maximum_linear_reads = snapshot_rows.len() * 2 + 12;
+    let snapshot_reads =
+        operation_count(BinaryDbTestStorageOperation::ReadRange, SERVER_SNAPSHOT_BIN);
+    let parent_edge_reads = operation_count(
+        BinaryDbTestStorageOperation::ReadRange,
+        SERVER_SNAPSHOT_PARENT_EDGE_BIN,
+    );
+    assert!(
+        snapshot_reads <= maximum_linear_reads,
+        "Snapshot fixed-authority reads must remain linear, got {snapshot_reads} for {} Snapshots",
+        snapshot_rows.len()
+    );
+    assert!(
+        parent_edge_reads <= maximum_linear_reads,
+        "Snapshot parent-edge reads must remain linear, got {parent_edge_reads} for {} Snapshots",
+        snapshot_rows.len()
+    );
+    for file_name in ["tree_pack.bin", "tree.bin"] {
+        let reads = operation_count(BinaryDbTestStorageOperation::ReadRange, file_name);
+        assert!(
+            reads <= 8,
+            "pull manifest must project {file_name} once per request, got {reads} fixed-authority reads for {} Snapshots",
+            snapshot_rows.len()
+        );
+    }
+
+    fs::remove_dir_all(root).expect("pull catalog fixture should remove");
 }
 
 #[test]

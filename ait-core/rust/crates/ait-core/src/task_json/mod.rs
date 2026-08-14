@@ -486,25 +486,6 @@ impl<S> TaskJson<S> {
         )
     }
 
-    pub fn build_restart_task_request_spec(
-        &self,
-        config: &PlanHttpClientConfig,
-        task_id: &str,
-    ) -> PlanHttpClientResult<PlanHttpRequestSpec> {
-        let _ = &self.store;
-        let task_id = encode_path_segment(&require_plan_http_non_empty_text(task_id, "task_id")?);
-        let repository_index = configured_repository_authority_path_segment(config)?;
-        build_plan_http_request_spec(
-            config,
-            Method::POST,
-            &format!(
-                "/v1/native/repository-authorities/{repository_index}/tasks/{task_id}:restart"
-            ),
-            Vec::new(),
-            Some(self.build_restart_task_body()),
-        )
-    }
-
     #[allow(clippy::too_many_arguments)]
     fn build_create_task_body(
         &self,
@@ -534,10 +515,6 @@ impl<S> TaskJson<S> {
     fn build_close_task_body(&self, status: &str) -> PlanHttpClientResult<JsonValue> {
         let status = require_plan_http_non_empty_text(status, "status")?;
         Ok(json!({ "status": status }))
-    }
-
-    fn build_restart_task_body(&self) -> JsonValue {
-        JsonValue::Object(JsonMap::new())
     }
 
     fn parse_object_payload(

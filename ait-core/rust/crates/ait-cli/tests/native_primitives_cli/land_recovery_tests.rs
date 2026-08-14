@@ -502,6 +502,31 @@ fn native_task_land_current_worktree_skips_unrelated_backlog_refresh() {
         Some("completed")
     );
     assert!(state.lock().unwrap().task_completed);
+    assert!(
+        payload["automatic_reconciliation"]["findings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|finding| finding["code"].as_str() != Some("remote.inventory_unavailable")),
+        "{}",
+        encode_json_pretty(&payload["automatic_reconciliation"])
+    );
+    assert_eq!(
+        payload["automatic_reconciliation"]["lease"]["path"].as_str(),
+        Some(
+            root.canonicalize()
+                .unwrap()
+                .join(".ait/reconciliation/v1/reconcile.lock")
+                .to_string_lossy()
+                .as_ref()
+        )
+    );
+    assert_eq!(
+        payload["automatic_reconciliation"]["sources"]["workspace_lock"]["metadata"]
+            ["repo_root"]
+            .as_str(),
+        Some(root.canonicalize().unwrap().to_string_lossy().as_ref())
+    );
 
     let after: JsonValue =
         parse_json_file(&extra_metadata_path);

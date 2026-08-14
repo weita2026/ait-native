@@ -19,4 +19,4 @@ __all__ = [
     "NativeRuntime",
 ]
 
-__version__ = "1.0.0rc5"
+__version__ = "1.0.0rc6"

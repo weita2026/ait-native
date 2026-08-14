@@ -1040,7 +1040,7 @@ fn native_task_start_ignores_disjoint_server_seed_root() {
 }
 
 #[test]
-fn native_task_start_rejects_remote_base_when_local_line_is_ahead() {
+fn native_task_start_uses_remote_base_when_local_line_is_ahead() {
     let (base_url, log, state, handle) = spawn_fake_remote();
     let temp = init_repo(&base_url);
     let root = temp.path();
@@ -1051,33 +1051,37 @@ fn native_task_start_rejects_remote_base_when_local_line_is_ahead() {
     );
     let local_snapshot_id = seed_snapshot(root, "local ahead");
 
-    let output = cargo_bin()
-        .current_dir(root)
-        .args([
+    let payload = json_output(
+        root,
+        &[
             "task",
             "start",
             "--title",
-            "Reject stale remote base",
+            "Use authoritative remote base",
             "--intent",
-            "fail before creating remote task",
+            "start shared work without pushing the local-only head",
             "--base-line",
             "main",
             "--json",
-        ])
-        .output()
-        .unwrap();
-
-    assert!(
-        !output.status.success(),
-        "stdout:\n{}\n\nstderr:\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
+        ],
     );
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("local `main` is ahead of remote `origin`"));
-    assert!(stderr.contains(local_snapshot_id.as_str()));
-    assert!(stderr.contains(FIXTURE_BASE_SNAPSHOT_ID));
-    assert!(stderr.contains("ait push --line main --remote origin"));
+
+    assert_eq!(payload["task_id"].as_str(), Some("RT-REMOTE"));
+    assert_eq!(
+        payload["change"]["fork_snapshot_id"].as_str(),
+        Some(FIXTURE_BASE_SNAPSHOT_ID)
+    );
+    assert_eq!(
+        local_line_head(root, "main").as_deref(),
+        Some(local_snapshot_id.as_str()),
+        "Remote Task start must not move the local Line"
+    );
+    let worktree = PathBuf::from(payload["worktree"]["open_path"].as_str().unwrap());
+    assert_eq!(
+        fs::read_to_string(worktree.join("src/lib.rs")).unwrap(),
+        "pub fn example() -> &'static str { \"ok\" }\n",
+        "the worktree must materialize the Remote head, not the local-only head"
+    );
 
     handle.join().unwrap();
     let logged = log.lock().unwrap().clone();
@@ -1085,16 +1089,23 @@ fn native_task_start_rejects_remote_base_when_local_line_is_ahead() {
         .iter()
         .any(|row| row.method == "GET"
             && row.url == "/v1/native/repository-authorities/7/lines/main"));
-    assert!(!logged
+    assert!(logged
         .iter()
         .any(|row| row.method == "POST" && row.url == "/v1/native/repository-authorities/7/tasks"));
-    assert!(!logged.iter().any(
-        |row| row.method == "POST" && row.url == "/v1/native/repository-authorities/7/changes"
-    ));
+    let change_create = logged
+        .iter()
+        .find(|row| {
+            row.method == "POST" && row.url == "/v1/native/repository-authorities/7/changes"
+        })
+        .unwrap();
+    assert_eq!(
+        parse_json(&change_create.body)["fork_snapshot_id"].as_str(),
+        Some(FIXTURE_BASE_SNAPSHOT_ID)
+    );
 }
 
 #[test]
-fn native_task_start_rejects_remote_base_when_remote_line_is_ahead() {
+fn native_task_start_uses_remote_base_when_remote_line_is_ahead() {
     let (base_url, log, state, handle) = spawn_fake_remote();
     let temp = init_repo(&base_url);
     let root = temp.path();
@@ -1106,33 +1117,37 @@ fn native_task_start_rejects_remote_base_when_remote_line_is_ahead() {
     seed_binary_line(root, "main", FIXTURE_BASE_SNAPSHOT_ID);
     state.lock().unwrap().remote_head_snapshot_id = Some(remote_snapshot_id.clone());
 
-    let output = cargo_bin()
-        .current_dir(root)
-        .args([
+    let payload = json_output(
+        root,
+        &[
             "task",
             "start",
             "--title",
-            "Reject stale local base",
+            "Use imported remote base",
             "--intent",
-            "fail before creating remote task",
+            "start shared work from the imported Remote head",
             "--base-line",
             "main",
             "--json",
-        ])
-        .output()
-        .unwrap();
-
-    assert!(
-        !output.status.success(),
-        "stdout:\n{}\n\nstderr:\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
+        ],
     );
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("remote `origin` is ahead of local `main`"));
-    assert!(stderr.contains(remote_snapshot_id.as_str()));
-    assert!(stderr.contains(FIXTURE_BASE_SNAPSHOT_ID));
-    assert!(stderr.contains("ait pull --line main --remote origin"));
+
+    assert_eq!(payload["task_id"].as_str(), Some("RT-REMOTE"));
+    assert_eq!(
+        payload["change"]["fork_snapshot_id"].as_str(),
+        Some(remote_snapshot_id.as_str())
+    );
+    assert_eq!(
+        local_line_head(root, "main").as_deref(),
+        Some(FIXTURE_BASE_SNAPSHOT_ID),
+        "Remote Task start must not fast-forward the local Line"
+    );
+    let worktree = PathBuf::from(payload["worktree"]["open_path"].as_str().unwrap());
+    assert_eq!(
+        fs::read_to_string(worktree.join("src/lib.rs")).unwrap(),
+        "pub fn example() -> &'static str { \"remote ahead\" }\n",
+        "the worktree must materialize the imported Remote head"
+    );
 
     handle.join().unwrap();
     let logged = log.lock().unwrap().clone();
@@ -1140,12 +1155,19 @@ fn native_task_start_rejects_remote_base_when_remote_line_is_ahead() {
         .iter()
         .any(|row| row.method == "GET"
             && row.url == "/v1/native/repository-authorities/7/lines/main"));
-    assert!(!logged
+    assert!(logged
         .iter()
         .any(|row| row.method == "POST" && row.url == "/v1/native/repository-authorities/7/tasks"));
-    assert!(!logged.iter().any(
-        |row| row.method == "POST" && row.url == "/v1/native/repository-authorities/7/changes"
-    ));
+    let change_create = logged
+        .iter()
+        .find(|row| {
+            row.method == "POST" && row.url == "/v1/native/repository-authorities/7/changes"
+        })
+        .unwrap();
+    assert_eq!(
+        parse_json(&change_create.body)["fork_snapshot_id"].as_str(),
+        Some(remote_snapshot_id.as_str())
+    );
 }
 
 #[test]

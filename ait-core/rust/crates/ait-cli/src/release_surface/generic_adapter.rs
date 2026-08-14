@@ -2339,7 +2339,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn core_release_license_and_locked_dependency_notice_stay_complete() {
+    fn core_release_license_is_apache_only_and_locked_dependency_notice_stays_complete() {
         let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../..")
             .canonicalize()
@@ -2348,8 +2348,13 @@ mod tests {
             .expect("root Apache license should be readable");
         assert!(license.contains("complete `ait-core`\nrepository"));
         assert!(license.contains("rust/**"));
-        assert!(license.contains("AGPL-3.0-only"));
+        assert!(!license.contains("AGPL-3.0-only"));
+        assert!(!license.contains("LicenseRef-"));
         assert!(license.contains("Apache License\n                           Version 2.0"));
+        assert!(!repo_root.join("LICENSES/AGPL-3.0-only.txt").exists());
+        assert!(!repo_root
+            .join("LICENSES/LicenseRef-AIT-Commercial.txt")
+            .exists());
 
         let workspace = fs::read_to_string(repo_root.join("rust/Cargo.toml"))
             .expect("workspace manifest should be readable");

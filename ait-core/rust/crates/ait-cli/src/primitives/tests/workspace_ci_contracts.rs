@@ -797,6 +797,7 @@ fn workflow_patchset_ci_contract_uses_single_catalog_path() {
     let hints = workflow_ready_command_hints(
         &repo,
         "RC-1",
+        None,
         Some(&json!({"patchset_id":"RP-1"})),
         "main",
         None,
@@ -828,6 +829,7 @@ fn workflow_patchset_ci_contract_ignores_legacy_suite_dir_without_catalog() {
     let hints = workflow_ready_command_hints(
         &repo,
         "RC-1",
+        None,
         Some(&json!({"patchset_id":"RP-1"})),
         "main",
         None,
@@ -837,4 +839,85 @@ fn workflow_patchset_ci_contract_ignores_legacy_suite_dir_without_catalog() {
         hints["attestation_command"],
         json!("ait attest put RP-1 --tests pass")
     );
+}
+
+#[test]
+fn workflow_command_hints_preserve_explicit_remote_scope() {
+    let repo_tmp = tempdir().expect("repo tempdir");
+    let repo_root = repo_tmp.path();
+    write_runtime_config(repo_root, r#"{"repo_name":"fixture-ait"}"#);
+    fs::create_dir_all(repo_root.join("ci")).expect("ci dir");
+    fs::write(
+        repo_root.join("ci").join("patch_ci.json"),
+        r#"{"suites":[]}"#,
+    )
+    .expect("catalog");
+    let repo = RepoRuntime::discover_from_path(repo_root).expect("repo runtime");
+    let patchset = json!({"patchset_id":"RCT-9/C-01/P-02"});
+
+    let ready = workflow_ready_command_hints(
+        &repo,
+        "RCT-9/C-01",
+        Some("mirror"),
+        Some(&patchset),
+        "main",
+        None,
+    );
+    assert_eq!(
+        ready["apply_command"],
+        json!("ait workflow ready RCT-9/C-01 --apply --remote mirror")
+    );
+    assert_eq!(
+        ready["patchset_ci_command"],
+        json!("ait patchset rerun-ci RCT-9/C-01/P-02 --remote mirror")
+    );
+    assert_eq!(
+        ready["review_command"],
+        json!("ait review task approve RCT-9/C-01 --patchset RCT-9/C-01/P-02 --remote mirror")
+    );
+    assert_eq!(
+        ready["policy_command"],
+        json!("ait policy eval RCT-9/C-01/P-02 --remote mirror")
+    );
+    assert_eq!(
+        ready["land_command"],
+        json!("ait task land RCT-9/C-01 --remote mirror")
+    );
+
+    let land = workflow_land_command_hints(
+        &repo,
+        "RCT-9/C-01",
+        Some("mirror"),
+        "RCT-9",
+        Some(&patchset),
+        "main",
+        "main",
+        None,
+        1,
+        true,
+    );
+    assert_eq!(
+        land["apply_command"],
+        json!("ait task land RCT-9/C-01 --remote mirror")
+    );
+    assert_eq!(
+        land["ready_command"],
+        json!("ait workflow ready RCT-9/C-01 --apply --remote mirror")
+    );
+    assert_eq!(
+        land["review_command"],
+        json!("ait review show RCT-9/C-01 --remote mirror")
+    );
+    assert_eq!(
+        land["task_complete_command"],
+        json!("ait task land RCT-9/C-01 --remote mirror")
+    );
+
+    let local =
+        workflow_ready_command_hints(&repo, "LCT-9/C-01", None, Some(&patchset), "main", None);
+    assert_eq!(local["land_command"], json!("ait task land LCT-9/C-01"));
+    assert!(!local["apply_command"]
+        .as_str()
+        .expect("local apply command")
+        .contains("--remote"));
 }

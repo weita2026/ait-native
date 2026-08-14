@@ -369,6 +369,32 @@ impl ServerBinaryTreeReadCache {
             .cloned())
     }
 
+    pub(crate) fn projected_tree_pack_at(
+        &self,
+        pack_index: u32,
+    ) -> StoreResult<ServerBinaryTreePackView> {
+        if !self.manifest_tree_projection_complete {
+            return Err(BinaryDbError::corruption(
+                "manifest Tree authority projection is incomplete",
+            ));
+        }
+        let pack = self
+            .tree_packs_by_index
+            .get(&pack_index)
+            .cloned()
+            .ok_or_else(|| {
+                BinaryDbError::corruption(format!(
+                    "snapshot references missing tree pack index {pack_index}"
+                ))
+            })?;
+        if pack.record.pack_meta & META_TOMBSTONE != 0 {
+            return Err(BinaryDbError::corruption(format!(
+                "snapshot references tombstoned tree pack index {pack_index}"
+            )));
+        }
+        Ok(pack)
+    }
+
     pub(crate) fn projected_blob(
         &self,
         blob_id: &str,

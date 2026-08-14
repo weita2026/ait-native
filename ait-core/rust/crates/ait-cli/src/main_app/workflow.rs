@@ -13,9 +13,26 @@ fn run_automatic_reconciliation_locked(
 ) -> JsonValue {
     let scope_label = reconciliation_scope_label(&scope);
     let command = format!("ait-cli automatic reconciliation {}", trigger.label());
-    match run_locked_workspace_command(repo, &command, || {
+    let root_repo = match RepoRuntime::discover_from_path(&repo.authoritative_repo_root()) {
+        Ok(root_repo) => root_repo,
+        Err(error) => {
+            return json!({
+                "contract": "workflow-automatic-reconciliation/v1",
+                "automatic": true,
+                "status": "failed_non_blocking",
+                "trigger": trigger.label(),
+                "scope": scope_label,
+                "task_filter": task_filter,
+                "safe_only": true,
+                "mutated": false,
+                "error": format!("Failed to bind automatic reconciliation to the authoritative repository root: {error}"),
+                "next_command": "ait workflow reconcile --dry-run",
+            });
+        }
+    };
+    match run_locked_workspace_command(&root_repo, &command, || {
         Ok(workflow_reconcile_automatic_best_effort(
-            repo,
+            &root_repo,
             scope,
             task_filter,
             trigger,

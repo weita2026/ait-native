@@ -63,14 +63,6 @@ impl HttpWorkflowCloseoutRemote {
         close_task_with_task_workflow_closeout_remote(self, task_id, status, repo_name)
     }
 
-    pub fn restart_task(
-        &mut self,
-        task_id: &str,
-        repo_name: Option<&str>,
-    ) -> TaskWorkflowHttpClientResult<Value> {
-        restart_task_with_task_workflow_closeout_remote(self, task_id, repo_name)
-    }
-
     pub(super) fn resolve_change_row(
         &mut self,
         change_id: &str,
@@ -729,21 +721,5 @@ impl TaskWorkflowRemoteTaskCloser for HttpWorkflowCloseoutRemote {
             }
             Err(err) => Err(err),
         }
-    }
-}
-
-impl TaskWorkflowRemoteTaskRestarter for HttpWorkflowCloseoutRemote {
-    fn restart_task(
-        &mut self,
-        task_id: &str,
-        repo_name: Option<&str>,
-    ) -> TaskWorkflowHttpClientResult<Value> {
-        let resolved_task_id = if repo_name.is_some() {
-            let task = self.manager.get_task(task_id, repo_name)?;
-            TaskJson::stateless().resolved_task_id_from_task_payload(&task, task_id)
-        } else {
-            task_id.to_string()
-        };
-        self.manager.restart_task(&resolved_task_id)
     }
 }

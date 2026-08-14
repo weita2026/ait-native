@@ -15,6 +15,7 @@ pub use apply::{
 struct JoinedRow {
     local: Option<JsonValue>,
     remote: Option<JsonValue>,
+    publication_mapping_blocked: bool,
 }
 
 impl JoinedRow {
@@ -25,6 +26,58 @@ impl JoinedRow {
     fn status(&self) -> Option<String> {
         self.authoritative()
             .and_then(|row| string_field(row, "status"))
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+struct JoinedInventory {
+    rows: BTreeMap<String, JoinedRow>,
+    aliases: BTreeMap<String, String>,
+    findings: Vec<JsonValue>,
+}
+
+impl JoinedInventory {
+    fn canonical_id(&self, identity: &str) -> Option<String> {
+        self.aliases.get(identity).cloned().or_else(|| {
+            self.rows
+                .contains_key(identity)
+                .then(|| identity.to_string())
+        })
+    }
+
+    fn get(&self, identity: &str) -> Option<&JoinedRow> {
+        let canonical = self
+            .aliases
+            .get(identity)
+            .map(String::as_str)
+            .unwrap_or(identity);
+        self.rows.get(canonical)
+    }
+
+    fn matches_filter(&self, task_filter: Option<&str>, identity: Option<&str>) -> bool {
+        let Some(filter) = normalized_text(task_filter) else {
+            return true;
+        };
+        let Some(identity) = normalized_text(identity) else {
+            return false;
+        };
+        let filter = self.canonical_id(&filter).unwrap_or(filter);
+        let identity = self.canonical_id(&identity).unwrap_or(identity);
+        filter == identity
+    }
+
+    fn insert_alias(&mut self, identity: &str, canonical: &str, kind: &str) -> Result<(), String> {
+        if let Some(existing) = self.aliases.get(identity) {
+            if existing != canonical {
+                return Err(format!(
+                    "Reconciliation {kind} identity {identity} resolves to both {existing} and {canonical}; refusing ambiguous publication mapping."
+                ));
+            }
+            return Ok(());
+        }
+        self.aliases
+            .insert(identity.to_string(), canonical.to_string());
+        Ok(())
     }
 }
 
@@ -354,19 +407,122 @@ fn read_reconciliation_inventory(
     })
 }
 
-fn joined_task_rows(input: &ReconciliationInventoryInput) -> BTreeMap<String, JoinedRow> {
-    let mut joined = BTreeMap::<String, JoinedRow>::new();
-    for row in &input.local_tasks {
-        if let Some(task_id) = string_field(row, "task_id") {
-            joined.entry(task_id).or_default().local = Some(row.clone());
-        }
+fn selected_publication_target(
+    row: &JsonValue,
+    selected_remote: Option<&str>,
+    target_field: &str,
+    kind: &str,
+    local_identity: &str,
+) -> Result<Option<String>, String> {
+    if string_field(row, "publication_state").as_deref() != Some("published") {
+        return Ok(None);
     }
+    let Some(selected_remote) = normalized_text(selected_remote) else {
+        return Ok(None);
+    };
+    let published_remote = string_field(row, "published_remote_name").ok_or_else(|| {
+        format!(
+            "Published Local {kind} {local_identity} is missing published_remote_name; refusing reconciliation publication inference."
+        )
+    })?;
+    if published_remote != selected_remote {
+        return Ok(None);
+    }
+    string_field(row, target_field).map(Some).ok_or_else(|| {
+        format!(
+            "Published Local {kind} {local_identity} is missing {target_field}; refusing reconciliation publication inference."
+        )
+    })
+}
+
+fn joined_task_rows(input: &ReconciliationInventoryInput) -> Result<JoinedInventory, String> {
+    let remote_inventory_complete = !remote_source_failed(input, "tasks");
+    let mut remote_by_id = BTreeMap::<String, JsonValue>::new();
     for row in &input.remote_tasks {
-        if let Some(task_id) = string_field(row, "task_id") {
-            joined.entry(task_id).or_default().remote = Some(row.clone());
+        let Some(task_id) = string_field(row, "task_id") else {
+            continue;
+        };
+        if remote_by_id.insert(task_id.clone(), row.clone()).is_some() {
+            return Err(format!(
+                "Remote Task inventory contains duplicate identity {task_id}; refusing reconciliation."
+            ));
         }
     }
-    joined
+
+    let mut joined = JoinedInventory::default();
+    for row in &input.local_tasks {
+        let Some(local_task_id) = string_field(row, "task_id") else {
+            continue;
+        };
+        let published_task_id = selected_publication_target(
+            row,
+            input.remote_name.as_deref(),
+            "published_task_id",
+            "Task",
+            &local_task_id,
+        )?;
+        let missing_remote_target = remote_inventory_complete
+            && published_task_id
+                .as_ref()
+                .is_some_and(|remote_task_id| !remote_by_id.contains_key(remote_task_id));
+        let publication_mapping_unverified =
+            published_task_id.is_some() && !remote_inventory_complete;
+        let canonical = published_task_id
+            .clone()
+            .unwrap_or_else(|| local_task_id.clone());
+        if joined
+            .rows
+            .get(&canonical)
+            .is_some_and(|entry| entry.local.is_some())
+        {
+            return Err(format!(
+                "Multiple Local Tasks resolve to Remote Task {canonical}; refusing ambiguous publication mapping."
+            ));
+        }
+        joined.insert_alias(&local_task_id, &canonical, "Task")?;
+        joined.insert_alias(&canonical, &canonical, "Task")?;
+        let entry = joined.rows.entry(canonical).or_default();
+        entry.local = Some(row.clone());
+        entry.publication_mapping_blocked = missing_remote_target || publication_mapping_unverified;
+        if missing_remote_target {
+            let remote_task_id = published_task_id.unwrap_or_default();
+            push_finding(
+                &mut joined.findings,
+                "publication.task_target_missing",
+                "protected",
+                "error",
+                identity_map([
+                    ("task_id", Some(local_task_id.clone())),
+                    ("local_task_id", Some(local_task_id.clone())),
+                    ("remote_task_id", Some(remote_task_id.clone())),
+                ]),
+                json!({
+                    "publication_state": "published",
+                    "published_remote_name": string_field(row, "published_remote_name"),
+                    "published_task_id": remote_task_id,
+                    "remote_inventory_complete": true,
+                }),
+                "repair_or_explain_missing_published_task",
+                format!("ait task audit {local_task_id}"),
+                "The exact published Remote Task target is absent from a complete selected-Remote inventory; no lifecycle inference is safe for this mapping.",
+            );
+        }
+    }
+    for (remote_task_id, row) in remote_by_id {
+        let canonical = remote_task_id.clone();
+        if joined
+            .rows
+            .get(&canonical)
+            .is_some_and(|entry| entry.remote.is_some())
+        {
+            return Err(format!(
+                "Multiple Remote Tasks resolve to reconciliation identity {canonical}; refusing ambiguous inventory."
+            ));
+        }
+        joined.insert_alias(&remote_task_id, &canonical, "Task")?;
+        joined.rows.entry(canonical).or_default().remote = Some(row);
+    }
+    Ok(joined)
 }
 
 fn change_reference(row: &JsonValue) -> Option<String> {
@@ -377,23 +533,144 @@ fn change_reference(row: &JsonValue) -> Option<String> {
     })
 }
 
-fn joined_change_rows(input: &ReconciliationInventoryInput) -> BTreeMap<String, JoinedRow> {
-    let mut joined = BTreeMap::<String, JoinedRow>::new();
-    for row in &input.local_changes {
-        if let Some(change_ref) = change_reference(row) {
-            joined.entry(change_ref).or_default().local = Some(row.clone());
-        }
-    }
+fn joined_change_rows(
+    input: &ReconciliationInventoryInput,
+    tasks: &JoinedInventory,
+) -> Result<JoinedInventory, String> {
+    let remote_inventory_complete = !remote_source_failed(input, "changes");
+    let mut remote_by_ref = BTreeMap::<String, JsonValue>::new();
     for row in &input.remote_changes {
-        if let Some(change_ref) = change_reference(row) {
-            joined.entry(change_ref).or_default().remote = Some(row.clone());
+        let Some(change_ref) = change_reference(row) else {
+            continue;
+        };
+        if remote_by_ref
+            .insert(change_ref.clone(), row.clone())
+            .is_some()
+        {
+            return Err(format!(
+                "Remote Change inventory contains duplicate identity {change_ref}; refusing reconciliation."
+            ));
         }
     }
-    joined
+
+    let mut joined = JoinedInventory::default();
+    for row in &input.local_changes {
+        let Some(local_change_ref) = change_reference(row) else {
+            continue;
+        };
+        let published_change_ref = selected_publication_target(
+            row,
+            input.remote_name.as_deref(),
+            "published_change_id",
+            "Change",
+            &local_change_ref,
+        )?;
+        let missing_remote_target = remote_inventory_complete
+            && published_change_ref
+                .as_ref()
+                .is_some_and(|remote_change_ref| !remote_by_ref.contains_key(remote_change_ref));
+        let publication_mapping_unverified =
+            published_change_ref.is_some() && !remote_inventory_complete;
+        let canonical = published_change_ref
+            .clone()
+            .unwrap_or_else(|| local_change_ref.clone());
+        if joined
+            .rows
+            .get(&canonical)
+            .is_some_and(|entry| entry.local.is_some())
+        {
+            return Err(format!(
+                "Multiple Local Changes resolve to Remote Change {canonical}; refusing ambiguous publication mapping."
+            ));
+        }
+        joined.insert_alias(&local_change_ref, &canonical, "Change")?;
+        joined.insert_alias(&canonical, &canonical, "Change")?;
+        let entry = joined.rows.entry(canonical).or_default();
+        entry.local = Some(row.clone());
+        entry.publication_mapping_blocked = missing_remote_target || publication_mapping_unverified;
+        if missing_remote_target {
+            let remote_change_ref = published_change_ref.unwrap_or_default();
+            let local_task_id = string_field(row, "task_id");
+            let remote_task_id = local_task_id
+                .as_ref()
+                .and_then(|task_id| tasks.canonical_id(task_id))
+                .filter(|task_id| task_id != local_task_id.as_deref().unwrap_or_default());
+            push_finding(
+                &mut joined.findings,
+                "publication.change_target_missing",
+                "protected",
+                "error",
+                identity_map([
+                    ("task_id", local_task_id.clone()),
+                    ("local_task_id", local_task_id.clone()),
+                    ("remote_task_id", remote_task_id),
+                    ("change_ref", Some(local_change_ref.clone())),
+                    ("remote_change_ref", Some(remote_change_ref.clone())),
+                ]),
+                json!({
+                    "publication_state": "published",
+                    "published_remote_name": string_field(row, "published_remote_name"),
+                    "published_change_id": remote_change_ref,
+                    "remote_inventory_complete": true,
+                }),
+                "repair_or_explain_missing_published_change",
+                format!(
+                    "ait task audit {}",
+                    local_task_id.as_deref().unwrap_or("<task-id>")
+                ),
+                "The exact published Remote Change target is absent from a complete selected-Remote inventory; no lifecycle inference is safe for this mapping.",
+            );
+        }
+    }
+    for (remote_change_ref, row) in remote_by_ref {
+        let canonical = remote_change_ref.clone();
+        if joined
+            .rows
+            .get(&canonical)
+            .is_some_and(|entry| entry.remote.is_some())
+        {
+            return Err(format!(
+                "Multiple Remote Changes resolve to reconciliation identity {canonical}; refusing ambiguous inventory."
+            ));
+        }
+        joined.insert_alias(&remote_change_ref, &canonical, "Change")?;
+        joined.rows.entry(canonical).or_default().remote = Some(row);
+    }
+
+    for (change_ref, change) in &mut joined.rows {
+        let (Some(local), Some(remote)) = (change.local.as_ref(), change.remote.as_ref()) else {
+            continue;
+        };
+        let local_task_id = string_field(local, "task_id").ok_or_else(|| {
+            format!("Local Change {change_ref} is missing its owning Task identity.")
+        })?;
+        let remote_task_id = string_field(remote, "task_id").ok_or_else(|| {
+            format!("Remote Change {change_ref} is missing its owning Task identity.")
+        })?;
+        if tasks
+            .get(&local_task_id)
+            .is_some_and(|task| task.publication_mapping_blocked)
+        {
+            change.publication_mapping_blocked = true;
+            continue;
+        }
+        let local_owner = tasks
+            .canonical_id(&local_task_id)
+            .unwrap_or(local_task_id.clone());
+        let remote_owner = tasks
+            .canonical_id(&remote_task_id)
+            .unwrap_or(remote_task_id.clone());
+        if local_owner != remote_owner {
+            return Err(format!(
+                "Published Change mapping {change_ref} disagrees on Task ownership: Local {local_task_id} resolves to {local_owner}, Remote owner is {remote_task_id}; refusing reconciliation."
+            ));
+        }
+    }
+    Ok(joined)
 }
 
 fn joined_change_for_binding<'a>(
-    changes: &'a BTreeMap<String, JoinedRow>,
+    changes: &'a JoinedInventory,
     bound_change_ref: &str,
     task_id: Option<&str>,
 ) -> Option<&'a JoinedRow> {
@@ -404,15 +681,17 @@ fn joined_change_for_binding<'a>(
         .rsplit_once('/')
         .map(|(_, suffix)| suffix)
         .unwrap_or(bound_change_ref);
-    changes.values().find(|change| {
-        let Some(row) = change.authoritative() else {
-            return false;
-        };
-        let row_task_id = string_field(row, "task_id");
-        let task_matches = task_id.is_none() || row_task_id.as_deref() == task_id;
-        let id_matches = string_field(row, "change_id").as_deref() == Some(short_id)
-            || string_field(row, "change_ref").as_deref() == Some(bound_change_ref);
-        task_matches && id_matches
+    changes.rows.values().find(|change| {
+        [change.local.as_ref(), change.remote.as_ref()]
+            .into_iter()
+            .flatten()
+            .any(|row| {
+                let row_task_id = string_field(row, "task_id");
+                let task_matches = task_id.is_none() || row_task_id.as_deref() == task_id;
+                let id_matches = string_field(row, "change_id").as_deref() == Some(short_id)
+                    || string_field(row, "change_ref").as_deref() == Some(bound_change_ref);
+                task_matches && id_matches
+            })
     })
 }
 
@@ -457,8 +736,11 @@ fn task_id_from_feature_line(line_name: &str) -> Option<String> {
     let suffix = line_name.strip_prefix("feature/")?;
     let token = suffix.split('/').next()?.trim();
     let uppercase = token.to_ascii_uppercase();
-    (uppercase.starts_with("RCT-") || uppercase.starts_with("RT-") || uppercase.starts_with("LT-"))
-        .then_some(uppercase)
+    (uppercase.starts_with("RCT-")
+        || uppercase.starts_with("LCT-")
+        || uppercase.starts_with("RT-")
+        || uppercase.starts_with("LT-"))
+    .then_some(uppercase)
 }
 
 fn identity_map(
@@ -534,28 +816,24 @@ fn push_finding(
     }));
 }
 
-fn task_matches_filter(task_filter: Option<&str>, task_id: Option<&str>) -> bool {
-    let Some(filter) = normalized_text(task_filter) else {
-        return true;
-    };
-    normalized_text(task_id).as_deref() == Some(filter.as_str())
-}
-
 fn worktree_operation_in_progress(worktree: &JsonValue) -> bool {
     string_field(worktree, "merge_state").is_some_and(|state| state != "idle")
         || string_field(worktree, "rebase_state").is_some_and(|state| state != "idle")
 }
 
-fn finding_matches_task_filter(finding: &JsonValue, task_filter: Option<&str>) -> bool {
+fn finding_matches_task_filter(
+    finding: &JsonValue,
+    task_filter: Option<&str>,
+    tasks: &JoinedInventory,
+) -> bool {
     let Some(filter) = normalized_text(task_filter) else {
         return true;
     };
-    string_field(
-        finding.get("identities").unwrap_or(&JsonValue::Null),
-        "task_id",
-    )
-    .as_deref()
-        == Some(filter.as_str())
+    let identities = finding.get("identities").unwrap_or(&JsonValue::Null);
+    ["task_id", "local_task_id", "remote_task_id"]
+        .into_iter()
+        .filter_map(|field| string_field(identities, field))
+        .any(|identity| tasks.matches_filter(Some(&filter), Some(&identity)))
 }
 
 fn line_rows_by_name(rows: &[JsonValue]) -> BTreeMap<String, JsonValue> {
@@ -588,19 +866,20 @@ fn build_reconciliation_inventory(
             "--limit must be between 1 and {MAX_RECONCILIATION_LIMIT}."
         ));
     }
-    let tasks = joined_task_rows(&input);
-    let changes = joined_change_rows(&input);
+    let tasks = joined_task_rows(&input)?;
+    let changes = joined_change_rows(&input, &tasks)?;
     let local_lines = line_rows_by_name(&input.local_lines);
     let remote_lines = line_rows_by_name(&input.remote_lines);
     let remote_task_inventory_complete = !remote_source_failed(&input, "tasks");
     let remote_change_inventory_complete = !remote_source_failed(&input, "changes");
     let remote_line_inventory_complete = !remote_source_failed(&input, "lines");
     let mut changes_by_task = BTreeMap::<String, Vec<(String, JoinedRow)>>::new();
-    for (change_ref, joined) in &changes {
+    for (change_ref, joined) in &changes.rows {
         if let Some(task_id) = joined
             .authoritative()
             .and_then(|row| string_field(row, "task_id"))
         {
+            let task_id = tasks.canonical_id(&task_id).unwrap_or(task_id);
             changes_by_task
                 .entry(task_id)
                 .or_default()
@@ -610,7 +889,12 @@ fn build_reconciliation_inventory(
     let worktrees_by_task = input
         .worktrees
         .iter()
-        .filter_map(|row| string_field(row, "bound_task_id").map(|task| (task, row)))
+        .filter_map(|row| {
+            string_field(row, "bound_task_id").map(|task| {
+                let task = tasks.canonical_id(&task).unwrap_or(task);
+                (task, row)
+            })
+        })
         .fold(
             BTreeMap::<String, Vec<&JsonValue>>::new(),
             |mut map, (task, row)| {
@@ -629,7 +913,12 @@ fn build_reconciliation_inventory(
         })
         .flatten()
         .collect::<BTreeSet<_>>();
-    let mut findings = Vec::<JsonValue>::new();
+    let mut findings = tasks
+        .findings
+        .iter()
+        .chain(changes.findings.iter())
+        .cloned()
+        .collect::<Vec<JsonValue>>();
 
     for error in &input.remote_errors {
         push_finding(
@@ -681,12 +970,32 @@ fn build_reconciliation_inventory(
         );
     }
 
-    for (task_id, task) in &tasks {
-        if !task_matches_filter(input.task_filter.as_deref(), Some(task_id)) {
+    for (task_id, task) in &tasks.rows {
+        if !tasks.matches_filter(input.task_filter.as_deref(), Some(task_id)) {
             continue;
         }
+        let local_task_id = task
+            .local
+            .as_ref()
+            .and_then(|row| string_field(row, "task_id"));
+        let remote_task_id = task
+            .remote
+            .as_ref()
+            .and_then(|row| string_field(row, "task_id"));
+        let authoritative_task_id = remote_task_id
+            .clone()
+            .or_else(|| local_task_id.clone())
+            .unwrap_or_else(|| task_id.clone());
+        let operational_task_id = local_task_id
+            .clone()
+            .or_else(|| remote_task_id.clone())
+            .unwrap_or_else(|| task_id.clone());
         let task_status = task.status();
         let task_changes = changes_by_task.get(task_id).cloned().unwrap_or_default();
+        let lifecycle_mapping_blocked = task.publication_mapping_blocked
+            || task_changes
+                .iter()
+                .any(|(_, change)| change.publication_mapping_blocked);
         let has_open_change = task_changes
             .iter()
             .any(|(_, change)| change_status_is_open(change.status().as_deref()));
@@ -705,30 +1014,39 @@ fn build_reconciliation_inventory(
                 "task.terminal_with_open_change",
                 "manual_resolution",
                 "error",
-                identity_map([("task_id", Some(task_id.clone()))]),
+                identity_map([
+                    ("task_id", Some(authoritative_task_id.clone())),
+                    ("local_task_id", local_task_id.clone()),
+                    ("remote_task_id", remote_task_id.clone()),
+                ]),
                 json!({"task_status": task_status, "open_change_refs": open_refs}),
                 "resolve_terminal_task_open_change",
-                format!("ait task audit {task_id}"),
+                format!("ait task audit {authoritative_task_id}"),
                 "A terminal Task still has an open Change. Reconciliation will not infer a Change outcome.",
             );
         }
         if task_status_is_active(task_status.as_deref())
             && all_changes_landed
             && remote_change_inventory_complete
+            && !lifecycle_mapping_blocked
         {
             push_finding(
                 &mut findings,
                 "task.active_after_all_changes_landed",
                 "safe_metadata_repair",
                 "warning",
-                identity_map([("task_id", Some(task_id.clone()))]),
+                identity_map([
+                    ("task_id", Some(authoritative_task_id.clone())),
+                    ("local_task_id", local_task_id.clone()),
+                    ("remote_task_id", remote_task_id.clone()),
+                ]),
                 json!({
                     "task_status": task_status,
                     "authoritative_scope": if task.remote.is_some() { "remote" } else { "local" },
                     "landed_change_refs": task_changes.iter().map(|(change_ref, _)| JsonValue::String(change_ref.clone())).collect::<Vec<_>>(),
                 }),
                 "close_task_from_immutable_land_evidence",
-                reconcile_command(input.remote_name.as_deref(), Some(task_id)),
+                reconcile_command(input.remote_name.as_deref(), Some(&authoritative_task_id)),
                 "Every linked Change is authoritatively landed while the Task remains active.",
             );
         }
@@ -737,16 +1055,23 @@ fn build_reconciliation_inventory(
             let remote_status = string_field(remote, "status");
             if task_status_is_active(local_status.as_deref())
                 && task_status_is_terminal(remote_status.as_deref())
+                && !task.publication_mapping_blocked
             {
+                let local_task_id =
+                    string_field(local, "task_id").unwrap_or_else(|| operational_task_id.clone());
                 push_finding(
                     &mut findings,
                     "task.local_status_stale",
                     "safe_metadata_repair",
                     "warning",
-                    identity_map([("task_id", Some(task_id.clone()))]),
+                    identity_map([
+                        ("task_id", Some(local_task_id.clone())),
+                        ("local_task_id", Some(local_task_id.clone())),
+                        ("remote_task_id", string_field(remote, "task_id")),
+                    ]),
                     json!({"local_status": local_status, "remote_status": remote_status}),
                     "refresh_local_task_status",
-                    reconcile_command(input.remote_name.as_deref(), Some(task_id)),
+                    reconcile_command(input.remote_name.as_deref(), Some(&local_task_id)),
                     "The authoritative remote Task is terminal but its local projection remains active.",
                 );
             }
@@ -759,7 +1084,9 @@ fn build_reconciliation_inventory(
                 "manual_resolution",
                 "warning",
                 identity_map([
-                    ("task_id", Some(task_id.clone())),
+                    ("task_id", Some(authoritative_task_id.clone())),
+                    ("local_task_id", local_task_id.clone()),
+                    ("remote_task_id", remote_task_id.clone()),
                     ("plan_id", string_field(task_row, "plan_id")),
                     ("plan_item_ref", string_field(task_row, "plan_item_ref")),
                 ]),
@@ -785,7 +1112,7 @@ fn build_reconciliation_inventory(
                 .any(|(_, change)| change_status_is_open(change.status().as_deref()))
             && !worktrees_by_task.contains_key(task_id)
         {
-            let expected_line = format!("feature/{}", task_id.to_ascii_lowercase());
+            let expected_line = format!("feature/{}", operational_task_id.to_ascii_lowercase());
             let line_present = local_lines
                 .get(&expected_line)
                 .or_else(|| remote_lines.get(&expected_line))
@@ -796,7 +1123,9 @@ fn build_reconciliation_inventory(
                 "manual_resolution",
                 "warning",
                 identity_map([
-                    ("task_id", Some(task_id.clone())),
+                    ("task_id", Some(operational_task_id.clone())),
+                    ("local_task_id", local_task_id.clone()),
+                    ("remote_task_id", remote_task_id.clone()),
                     ("line_name", line_present.then_some(expected_line)),
                 ]),
                 json!({
@@ -805,7 +1134,9 @@ fn build_reconciliation_inventory(
                     "expected_feature_line_present": line_present,
                 }),
                 "recover_or_recreate_task_worktree",
-                format!("ait worktree recover-task {task_id} --dry-run"),
+                format!(
+                    "ait worktree recover-task {operational_task_id} --dry-run"
+                ),
                 "An active Task with open work has no bound worktree registration; completion is not inferred from the missing registration.",
             );
         }
@@ -813,9 +1144,16 @@ fn build_reconciliation_inventory(
 
     for worktree in &input.worktrees {
         let task_id = string_field(worktree, "bound_task_id");
-        if !task_matches_filter(input.task_filter.as_deref(), task_id.as_deref()) {
+        if !tasks.matches_filter(input.task_filter.as_deref(), task_id.as_deref()) {
             continue;
         }
+        let paired_task = task_id.as_ref().and_then(|task_id| tasks.get(task_id));
+        let local_task_id = paired_task
+            .and_then(|task| task.local.as_ref())
+            .and_then(|row| string_field(row, "task_id"));
+        let remote_task_id = paired_task
+            .and_then(|task| task.remote.as_ref())
+            .and_then(|row| string_field(row, "task_id"));
         let task_status = task_id
             .as_ref()
             .and_then(|task_id| tasks.get(task_id))
@@ -833,6 +1171,12 @@ fn build_reconciliation_inventory(
                 joined_change_for_binding(&changes, change_ref, task_id.as_deref())
             })
             .and_then(JoinedRow::status);
+        let owner_mapping_blocked = paired_task
+            .is_some_and(|task| task.publication_mapping_blocked)
+            || bound_change_ref
+                .as_ref()
+                .and_then(|change_ref| changes.get(change_ref))
+                .is_some_and(|change| change.publication_mapping_blocked);
         let name = string_field(worktree, "name");
         let line_name = string_field(worktree, "registered_line_name")
             .or_else(|| string_field(worktree, "current_line"));
@@ -859,6 +1203,8 @@ fn build_reconciliation_inventory(
         let identities = || {
             identity_map([
                 ("task_id", task_id.clone()),
+                ("local_task_id", local_task_id.clone()),
+                ("remote_task_id", remote_task_id.clone()),
                 ("change_ref", bound_change_ref.clone()),
                 ("worktree_name", name.clone()),
                 ("line_name", line_name.clone()),
@@ -870,6 +1216,7 @@ fn build_reconciliation_inventory(
                 remote_task_inventory_complete && remote_change_inventory_complete;
             let safe = owner_inventory_complete
                 && !worktree_is_protected
+                && !owner_mapping_blocked
                 && (task_status_is_terminal(task_status.as_deref())
                     || (task_id.is_none() && bound_change_ref.is_none()));
             push_finding(
@@ -907,6 +1254,7 @@ fn build_reconciliation_inventory(
         if status == "detached" {
             let safe = remote_task_inventory_complete
                 && !worktree_is_protected
+                && !owner_mapping_blocked
                 && task_status_is_terminal(task_status.as_deref())
                 && clean != Some(false);
             push_finding(
@@ -944,6 +1292,7 @@ fn build_reconciliation_inventory(
             let cleanup_safe = remote_task_inventory_complete
                 && remote_change_inventory_complete
                 && !worktree_is_protected;
+            let cleanup_safe = cleanup_safe && !owner_mapping_blocked;
             push_finding(
                 &mut findings,
                 "worktree.terminal_owner_clean",
@@ -1040,24 +1389,37 @@ fn build_reconciliation_inventory(
             match joined_change_for_binding(&changes, change_ref, task_id.as_deref())
                 .and_then(JoinedRow::authoritative)
             {
-                Some(change) if string_field(change, "task_id") != task_id => {
-                    push_finding(
-                        &mut findings,
-                        "binding.task_change_disagreement",
-                        "manual_resolution",
-                        "error",
-                        identities(),
-                        json!({
-                            "worktree_task_id": task_id,
-                            "change_task_id": string_field(change, "task_id"),
-                        }),
-                        "repair_task_change_binding",
-                        format!(
-                            "ait worktree show {} --json",
-                            name.clone().unwrap_or_else(|| "<worktree>".to_string())
-                        ),
-                        "The worktree Task binding disagrees with the authoritative Change owner.",
-                    );
+                Some(change) => {
+                    let change_task_id = string_field(change, "task_id");
+                    let bound_owner = task_id.as_ref().map(|task_id| {
+                        tasks
+                            .canonical_id(task_id)
+                            .unwrap_or_else(|| task_id.clone())
+                    });
+                    let change_owner = change_task_id.as_ref().map(|task_id| {
+                        tasks
+                            .canonical_id(task_id)
+                            .unwrap_or_else(|| task_id.clone())
+                    });
+                    if bound_owner != change_owner {
+                        push_finding(
+                            &mut findings,
+                            "binding.task_change_disagreement",
+                            "manual_resolution",
+                            "error",
+                            identities(),
+                            json!({
+                                "worktree_task_id": task_id,
+                                "change_task_id": change_task_id,
+                            }),
+                            "repair_task_change_binding",
+                            format!(
+                                "ait worktree show {} --json",
+                                name.clone().unwrap_or_else(|| "<worktree>".to_string())
+                            ),
+                            "The worktree Task binding disagrees with the authoritative Change owner.",
+                        );
+                    }
                 }
                 None if remote_change_inventory_complete => {
                     push_finding(
@@ -1129,7 +1491,7 @@ fn build_reconciliation_inventory(
         let Some(task_id) = task_id_from_feature_line(line_name) else {
             continue;
         };
-        if !task_matches_filter(input.task_filter.as_deref(), Some(&task_id)) {
+        if !tasks.matches_filter(input.task_filter.as_deref(), Some(&task_id)) {
             continue;
         }
         if line_name == &input.current_line
@@ -1160,8 +1522,22 @@ fn build_reconciliation_inventory(
             );
             continue;
         };
+        let local_task_id = task
+            .local
+            .as_ref()
+            .and_then(|row| string_field(row, "task_id"));
+        let remote_task_id = task
+            .remote
+            .as_ref()
+            .and_then(|row| string_field(row, "task_id"));
         let task_status = task.status();
-        let task_changes = changes_by_task.get(&task_id).cloned().unwrap_or_default();
+        let canonical_task_id = tasks
+            .canonical_id(&task_id)
+            .unwrap_or_else(|| task_id.clone());
+        let task_changes = changes_by_task
+            .get(&canonical_task_id)
+            .cloned()
+            .unwrap_or_default();
         let every_change_terminal = task_changes
             .iter()
             .all(|(_, change)| change_status_is_terminal(change.status().as_deref()));
@@ -1169,6 +1545,10 @@ fn build_reconciliation_inventory(
             && every_change_terminal
             && remote_change_inventory_complete
             && remote_line_inventory_complete
+            && !task.publication_mapping_blocked
+            && task_changes
+                .iter()
+                .all(|(_, change)| !change.publication_mapping_blocked)
         {
             push_finding(
                 &mut findings,
@@ -1177,6 +1557,8 @@ fn build_reconciliation_inventory(
                 "warning",
                 identity_map([
                     ("task_id", Some(task_id.clone())),
+                    ("local_task_id", local_task_id),
+                    ("remote_task_id", remote_task_id),
                     ("line_id", string_field(line, "line_id")),
                     ("line_name", Some(line_name.clone())),
                 ]),
@@ -1193,37 +1575,59 @@ fn build_reconciliation_inventory(
         }
     }
 
-    for (change_ref, change) in &changes {
+    for (change_ref, change) in &changes.rows {
         let Some(authoritative) = change.authoritative() else {
             continue;
         };
-        let task_id = string_field(authoritative, "task_id");
-        if !task_matches_filter(input.task_filter.as_deref(), task_id.as_deref()) {
+        let authoritative_task_id = string_field(authoritative, "task_id");
+        if !tasks.matches_filter(
+            input.task_filter.as_deref(),
+            authoritative_task_id.as_deref(),
+        ) {
             continue;
         }
+        let local_task_id = change
+            .local
+            .as_ref()
+            .and_then(|row| string_field(row, "task_id"));
+        let remote_task_id = change
+            .remote
+            .as_ref()
+            .and_then(|row| string_field(row, "task_id"));
+        let local_change_ref = change.local.as_ref().and_then(change_reference);
+        let remote_change_ref = change.remote.as_ref().and_then(change_reference);
         if let (Some(local), Some(remote)) = (change.local.as_ref(), change.remote.as_ref()) {
             let local_status = string_field(local, "status");
             let remote_status = string_field(remote, "status");
             if remote_status.as_deref() == Some("landed")
                 && local_status.as_deref() != Some("landed")
+                && !change.publication_mapping_blocked
             {
                 push_finding(
                     &mut findings,
                     "land.local_closeout_interrupted",
-                    "safe_metadata_repair",
+                    "manual_resolution",
                     "error",
                     identity_map([
-                        ("task_id", task_id.clone()),
-                        ("change_ref", Some(change_ref.clone())),
+                        ("task_id", local_task_id.clone()),
+                        ("local_task_id", local_task_id.clone()),
+                        ("remote_task_id", remote_task_id.clone()),
+                        ("change_ref", local_change_ref.clone()),
+                        ("remote_change_ref", remote_change_ref.clone()),
                     ]),
                     json!({
                         "local_change_status": local_status,
                         "remote_change_status": remote_status,
                         "remote_landed_at": remote.get("landed_at").cloned().unwrap_or(JsonValue::Null),
+                        "remote_target_line": string_field(remote, "target_line"),
+                        "remote_landed_snapshot_id": landed_snapshot_id(remote),
                     }),
-                    "resume_local_closeout_from_remote_land_receipt",
-                    reconcile_command(input.remote_name.as_deref(), task_id.as_deref()),
-                    "Remote land is authoritative but the local Change projection did not finish closeout.",
+                    "audit_local_closeout_without_complete_land_payload",
+                    format!(
+                        "ait task audit {}",
+                        local_task_id.as_deref().unwrap_or("<task-id>")
+                    ),
+                    "Remote land is authoritative but the Local Change projection did not finish closeout. The current inventory does not carry the complete Local Land payload needed to reconstruct that fixed authority safely, so reconciliation will not synthesize it.",
                 );
             }
         }
@@ -1234,6 +1638,7 @@ fn build_reconciliation_inventory(
             let landed_snapshot = landed_snapshot_id(remote);
             if remote_status.as_deref() == Some("landed")
                 && remote_line_inventory_complete
+                && !change.publication_mapping_blocked
                 && target_line.is_some()
                 && landed_snapshot.is_some()
             {
@@ -1261,8 +1666,11 @@ fn build_reconciliation_inventory(
                         },
                         "error",
                         identity_map([
-                            ("task_id", task_id.clone()),
-                            ("change_ref", Some(change_ref.clone())),
+                            ("task_id", remote_task_id.clone().or(authoritative_task_id.clone())),
+                            ("local_task_id", local_task_id.clone()),
+                            ("remote_task_id", remote_task_id.clone()),
+                            ("change_ref", remote_change_ref.clone().or_else(|| Some(change_ref.clone()))),
+                            ("local_change_ref", local_change_ref.clone()),
                             ("line_name", Some(target_line.clone())),
                             ("snapshot_id", Some(landed_snapshot.clone())),
                         ]),
@@ -1279,7 +1687,12 @@ fn build_reconciliation_inventory(
                             "resolve_diverged_target_line"
                         },
                         if cas_precondition_holds {
-                            reconcile_command(input.remote_name.as_deref(), task_id.as_deref())
+                            reconcile_command(
+                                input.remote_name.as_deref(),
+                                remote_task_id
+                                    .as_deref()
+                                    .or(authoritative_task_id.as_deref()),
+                            )
                         } else {
                             format!(
                                 "ait pull --line {target_line}{} --dry-run",
@@ -1298,7 +1711,7 @@ fn build_reconciliation_inventory(
     }
 
     findings.retain(|finding| {
-        finding_matches_task_filter(finding, input.task_filter.as_deref())
+        finding_matches_task_filter(finding, input.task_filter.as_deref(), &tasks)
             || string_field(finding, "code").as_deref() == Some("remote.inventory_unavailable")
     });
     findings.sort_by(|left, right| {
@@ -1359,13 +1772,15 @@ fn build_reconciliation_inventory(
         .collect::<String>();
 
     let task_selected_count = tasks
+        .rows
         .keys()
-        .filter(|task_id| task_matches_filter(input.task_filter.as_deref(), Some(task_id)))
+        .filter(|task_id| tasks.matches_filter(input.task_filter.as_deref(), Some(task_id)))
         .count();
     let change_selected_count = changes
+        .rows
         .values()
         .filter(|change| {
-            task_matches_filter(
+            tasks.matches_filter(
                 input.task_filter.as_deref(),
                 change
                     .authoritative()
@@ -1378,7 +1793,7 @@ fn build_reconciliation_inventory(
         .worktrees
         .iter()
         .filter(|row| {
-            task_matches_filter(
+            tasks.matches_filter(
                 input.task_filter.as_deref(),
                 string_field(row, "bound_task_id").as_deref(),
             )
@@ -1431,8 +1846,8 @@ fn build_reconciliation_inventory(
             "workspace_lock": input.workspace_lock,
         },
         "inventory": {
-            "joined_task_count": tasks.len(),
-            "joined_change_count": changes.len(),
+            "joined_task_count": tasks.rows.len(),
+            "joined_change_count": changes.rows.len(),
             "local_line_count": local_lines.len(),
             "remote_line_count": remote_lines.len(),
             "worktree_count": input.worktrees.len(),
@@ -1453,7 +1868,8 @@ fn build_reconciliation_inventory(
             "disposition_counts": disposition_counts,
             "healthy": disposition_counts.get("safe_metadata_repair").and_then(JsonValue::as_u64).unwrap_or(0) == 0
                 && disposition_counts.get("safe_auto_cleanup").and_then(JsonValue::as_u64).unwrap_or(0) == 0
-                && disposition_counts.get("manual_resolution").and_then(JsonValue::as_u64).unwrap_or(0) == 0,
+                && disposition_counts.get("manual_resolution").and_then(JsonValue::as_u64).unwrap_or(0) == 0
+                && disposition_counts.get("protected").and_then(JsonValue::as_u64).unwrap_or(0) == 0,
         },
         "findings": returned_findings,
         "apply_available": true,
@@ -1612,6 +2028,60 @@ mod tests {
             .collect()
     }
 
+    fn published_pair_input() -> ReconciliationInventoryInput {
+        ReconciliationInventoryInput {
+            repo_name: "fixture".to_string(),
+            captured_at: "2026-08-14T00:00:00Z".to_string(),
+            remote_name: Some("origin".to_string()),
+            task_filter: None,
+            current_line: "main".to_string(),
+            default_line: "main".to_string(),
+            local_tasks: vec![json!({
+                "task_id": "LCT-100",
+                "status": "active",
+                "publication_state": "published",
+                "published_remote_name": "origin",
+                "published_task_id": "RCT-900"
+            })],
+            remote_tasks: vec![json!({
+                "task_id": "RCT-900",
+                "status": "completed"
+            })],
+            local_changes: vec![json!({
+                "task_id": "LCT-100",
+                "change_id": "C-01",
+                "change_ref": "LCT-100/C-01",
+                "status": "draft",
+                "publication_state": "published",
+                "published_remote_name": "origin",
+                "published_change_id": "RCT-900/C-01"
+            })],
+            remote_changes: vec![json!({
+                "task_id": "RCT-900",
+                "change_id": "C-01",
+                "change_ref": "RCT-900/C-01",
+                "status": "landed",
+                "landed_at": "2026-08-14T00:00:00Z"
+            })],
+            local_lines: vec![
+                json!({"line_id": "LNE-MAIN", "line_name": "main", "status": "active"}),
+                json!({"line_id": "LNE-LOCAL", "line_name": "feature/lct-100", "status": "active"}),
+            ],
+            remote_lines: vec![
+                json!({"line_id": "LNE-REMOTE-MAIN", "line_name": "main", "status": "active"}),
+            ],
+            worktrees: Vec::new(),
+            mutation_receipts: Vec::new(),
+            workspace_lock: json!({
+                "path": "/tmp/reconcile.lock",
+                "state": "idle",
+                "active": false,
+                "metadata": JsonValue::Null,
+            }),
+            remote_errors: Vec::new(),
+        }
+    }
+
     #[test]
     fn inventory_classifies_cross_object_findings_without_mutation() {
         let payload = build_reconciliation_inventory(fixture_input(), false, 100).unwrap();
@@ -1643,6 +2113,194 @@ mod tests {
             payload["sources"]["plan"]["mutation_owned_by_reconcile"],
             json!(false)
         );
+    }
+
+    #[test]
+    fn published_local_and_remote_identities_share_one_lifecycle() {
+        let payload = build_reconciliation_inventory(published_pair_input(), false, 100).unwrap();
+        let findings = payload["findings"].as_array().unwrap();
+        let codes = finding_codes(&payload);
+        for expected in [
+            "land.local_closeout_interrupted",
+            "line.terminal_owner_orphaned",
+            "task.local_status_stale",
+        ] {
+            assert!(codes.contains(expected), "missing {expected}: {codes:?}");
+        }
+        assert!(!codes.contains("worktree.registration_missing"));
+        assert_eq!(payload["inventory"]["joined_task_count"], json!(1));
+        assert_eq!(payload["inventory"]["joined_change_count"], json!(1));
+
+        let task_finding = findings
+            .iter()
+            .find(|finding| {
+                string_field(finding, "code").as_deref() == Some("task.local_status_stale")
+            })
+            .unwrap();
+        assert_eq!(task_finding["identities"]["task_id"], json!("LCT-100"));
+        assert_eq!(
+            task_finding["identities"]["remote_task_id"],
+            json!("RCT-900")
+        );
+
+        let change_finding = findings
+            .iter()
+            .find(|finding| {
+                string_field(finding, "code").as_deref() == Some("land.local_closeout_interrupted")
+            })
+            .unwrap();
+        assert_eq!(
+            change_finding["identities"]["change_ref"],
+            json!("LCT-100/C-01")
+        );
+        assert_eq!(
+            change_finding["identities"]["remote_change_ref"],
+            json!("RCT-900/C-01")
+        );
+        assert_eq!(change_finding["disposition"], json!("manual_resolution"));
+        assert_eq!(
+            change_finding["recommended_action"]["automatic"],
+            json!(false)
+        );
+    }
+
+    #[test]
+    fn either_publication_identity_filters_the_same_lifecycle() {
+        let mut local_filter = published_pair_input();
+        local_filter.task_filter = Some("LCT-100".to_string());
+        let local = build_reconciliation_inventory(local_filter, false, 100).unwrap();
+
+        let mut remote_filter = published_pair_input();
+        remote_filter.task_filter = Some("RCT-900".to_string());
+        let remote = build_reconciliation_inventory(remote_filter, false, 100).unwrap();
+
+        let ids = |payload: &JsonValue| {
+            payload["findings"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|finding| string_field(finding, "finding_id").unwrap())
+                .collect::<BTreeSet<_>>()
+        };
+        assert_eq!(ids(&local), ids(&remote));
+        assert_eq!(local["inventory"]["selected_task_count"], json!(1));
+        assert_eq!(remote["inventory"]["selected_task_count"], json!(1));
+    }
+
+    #[test]
+    fn active_remote_publication_is_not_duplicated() {
+        let mut input = published_pair_input();
+        input.remote_tasks[0]["status"] = json!("active");
+        input.remote_changes[0]["status"] = json!("draft");
+        input.remote_changes[0]
+            .as_object_mut()
+            .unwrap()
+            .remove("landed_at");
+        let payload = build_reconciliation_inventory(input, false, 100).unwrap();
+        let missing = payload["findings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|finding| {
+                string_field(finding, "code").as_deref() == Some("worktree.registration_missing")
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(missing.len(), 1);
+        assert_eq!(missing[0]["identities"]["task_id"], json!("LCT-100"));
+        assert_eq!(missing[0]["identities"]["remote_task_id"], json!("RCT-900"));
+    }
+
+    #[test]
+    fn invalid_or_unavailable_publication_mapping_fails_closed() {
+        let mut missing = published_pair_input();
+        missing.remote_tasks.clear();
+        let payload = build_reconciliation_inventory(missing, false, 100).unwrap();
+        let missing_task = payload["findings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|finding| {
+                string_field(finding, "code").as_deref() == Some("publication.task_target_missing")
+            })
+            .unwrap();
+        assert_eq!(missing_task["disposition"], json!("protected"));
+
+        let mut missing_change = published_pair_input();
+        missing_change.remote_changes.clear();
+        let payload = build_reconciliation_inventory(missing_change, false, 100).unwrap();
+        let missing_change = payload["findings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|finding| {
+                string_field(finding, "code").as_deref()
+                    == Some("publication.change_target_missing")
+            })
+            .unwrap();
+        assert_eq!(missing_change["disposition"], json!("protected"));
+        assert_eq!(payload["summary"]["healthy"], json!(false));
+
+        let mut duplicate = published_pair_input();
+        duplicate.local_tasks.push(json!({
+            "task_id": "LCT-101",
+            "status": "active",
+            "publication_state": "published",
+            "published_remote_name": "origin",
+            "published_task_id": "RCT-900"
+        }));
+        let error = build_reconciliation_inventory(duplicate, false, 100).unwrap_err();
+        assert!(error.contains("Multiple Local Tasks resolve to Remote Task RCT-900"));
+
+        let mut alias_collision = published_pair_input();
+        alias_collision.remote_tasks = vec![json!({
+            "task_id": "LCT-100",
+            "status": "completed"
+        })];
+        let error = build_reconciliation_inventory(alias_collision, false, 100).unwrap_err();
+        assert!(error
+            .contains("Reconciliation Task identity LCT-100 resolves to both RCT-900 and LCT-100"));
+
+        let mut partial = published_pair_input();
+        partial.remote_errors = vec![RemoteReadError {
+            source: "tasks",
+            message: "partial task inventory".to_string(),
+        }];
+        let payload = build_reconciliation_inventory(partial, false, 100).unwrap();
+        assert!(payload["findings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|finding| {
+                !matches!(
+                    string_field(finding, "disposition").as_deref(),
+                    Some("safe_metadata_repair" | "safe_auto_cleanup")
+                )
+            }));
+
+        let mut unavailable = published_pair_input();
+        unavailable.remote_tasks.clear();
+        unavailable.remote_changes.clear();
+        unavailable.remote_errors = vec![
+            RemoteReadError {
+                source: "tasks",
+                message: "task inventory unavailable".to_string(),
+            },
+            RemoteReadError {
+                source: "changes",
+                message: "change inventory unavailable".to_string(),
+            },
+        ];
+        let payload = build_reconciliation_inventory(unavailable, false, 100).unwrap();
+        assert!(payload["findings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|finding| {
+                !matches!(
+                    string_field(finding, "disposition").as_deref(),
+                    Some("safe_metadata_repair" | "safe_auto_cleanup")
+                )
+            }));
     }
 
     #[test]
@@ -1743,6 +2401,10 @@ mod tests {
         assert_eq!(
             task_id_from_feature_line("feature/rct-42/extra").as_deref(),
             Some("RCT-42")
+        );
+        assert_eq!(
+            task_id_from_feature_line("feature/lct-100").as_deref(),
+            Some("LCT-100")
         );
         assert_eq!(
             task_id_from_feature_line("feature/rt-7").as_deref(),

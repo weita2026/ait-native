@@ -8,9 +8,9 @@ binding implementation, release and CI tooling, tests, and documentation.
 
 Material incorporated from another source retains its own license and
 attribution notices. In particular, generated external source projections
-under `.ait-external/**` are not relicensed by this file. The separately
-distributed `ait-server` repository and executable remain
-AGPL-3.0-only; this Apache-2.0 grant does not apply to them.
+under `.ait-external/**` are not relicensed by this file. Separately licensed
+component repositories and their executables are outside this repository
+grant and retain their own root LICENSE files.
 
 ---
 

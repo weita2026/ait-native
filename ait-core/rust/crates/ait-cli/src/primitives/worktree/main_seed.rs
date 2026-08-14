@@ -360,6 +360,26 @@ fn materialize_main_seed_cargo_projection(
     if let Some(parent) = config_path.parent() {
         fs::create_dir_all(parent).map_err(|err| err.to_string())?;
     }
+    if path_exists_or_directory_link(&config_path) {
+        let metadata = fs::symlink_metadata(&config_path).map_err(|err| {
+            format!(
+                "Failed to inspect staged managed Cargo projection {}: {err}",
+                config_path.display()
+            )
+        })?;
+        if metadata.file_type().is_symlink() || !metadata.is_file() {
+            return Err(format!(
+                "Staged managed Cargo projection must be a physical file at {}.",
+                config_path.display()
+            ));
+        }
+        fs::remove_file(&config_path).map_err(|err| {
+            format!(
+                "Failed to replace staged managed Cargo projection {}: {err}",
+                config_path.display()
+            )
+        })?;
+    }
     fs::write(&config_path, projected).map_err(|err| err.to_string())?;
     let mode = readonly_file_mode(parse_mode_bits(
         row.get("mode").and_then(JsonValue::as_str),
@@ -2168,6 +2188,85 @@ mod selected_binary_main_seed_tests {
             ),
             "fallback payload: {refreshed:#?}; seed path: {}",
             seed_path.display()
+        );
+    }
+
+    #[test]
+    fn delta_refresh_replaces_copied_readonly_cargo_projection() {
+        let (temp, repo) = binary_snapshot_repo();
+        let root = repo.workspace_root();
+        let cargo_source = "# AIT source policy: canonical Cargo settings; task worktrees receive a managed projection.\n[build]\ntarget-dir = \".ait/cargo-target\"\nbuild-dir = \".ait/cargo-build/workspaces/{workspace-path-hash}\"\n";
+        write_file(&root.join("plain.txt"), "first seed\n");
+        write_file(
+            &root.join(WORKTREE_CARGO_CONFIG_RELATIVE_PATH),
+            cargo_source,
+        );
+        let snapshot_store = repo
+            .local_snapshot_operation_store::<SNAPSHOT_BINARY_DB_WRITE_LAYOUT>(&root)
+            .expect("selected snapshot store");
+        let first = snapshot_store
+            .create_snapshot("fixture-ait", "main", Some("first seed"), false)
+            .expect("create first seed snapshot");
+        let first_snapshot_id =
+            required_string_field(&first, "snapshot_id").expect("first snapshot id");
+        let seed_path = temp.path().join("main-seed");
+
+        let first_refresh = refresh_main_seed_mirror(
+            &repo,
+            "main",
+            &first_snapshot_id,
+            "main-seed",
+            &seed_path,
+            Some("test"),
+        );
+        assert_eq!(
+            first_refresh.status, "refreshed",
+            "first seed refresh failed: {:?}",
+            first_refresh.error
+        );
+        let first_projection_mode = portable_mode(
+            &fs::metadata(seed_path.join(WORKTREE_CARGO_CONFIG_RELATIVE_PATH))
+                .expect("first projected Cargo metadata"),
+            0o644,
+        );
+        assert_eq!(first_projection_mode & 0o222, 0);
+
+        write_file(&root.join("plain.txt"), "second seed\n");
+        let second = snapshot_store
+            .create_snapshot("fixture-ait", "main", Some("second seed"), false)
+            .expect("create second seed snapshot");
+        let second_snapshot_id =
+            required_string_field(&second, "snapshot_id").expect("second snapshot id");
+        let second_refresh = refresh_main_seed_mirror(
+            &repo,
+            "main",
+            &second_snapshot_id,
+            "main-seed",
+            &seed_path,
+            Some("test"),
+        );
+
+        assert_eq!(
+            second_refresh.status, "refreshed",
+            "delta seed refresh failed: {:?}",
+            second_refresh.error
+        );
+        assert_eq!(second_refresh.refresh_strategy, "delta_from_existing_seed");
+        let installed_projection = seed_path.join(WORKTREE_CARGO_CONFIG_RELATIVE_PATH);
+        let installed_projection_mode = portable_mode(
+            &fs::metadata(&installed_projection).expect("installed projected Cargo metadata"),
+            0o644,
+        );
+        assert_eq!(installed_projection_mode & 0o222, 0);
+        assert!(
+            is_seed_state_aligned(
+                &repo,
+                &main_seed_state(&seed_path),
+                &seed_path,
+                "main",
+                &second_snapshot_id
+            ),
+            "delta refresh must install an aligned read-only seed"
         );
     }
 

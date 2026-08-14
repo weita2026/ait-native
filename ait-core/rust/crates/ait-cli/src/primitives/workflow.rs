@@ -122,6 +122,7 @@ pub(super) fn workflow_current_worktree_retarget(
     root_repo: &RepoRuntime,
     current_line_name: &str,
     head_snapshot_id: Option<&str>,
+    authoritative_target_base_snapshot_id: Option<&str>,
 ) -> Result<Option<JsonValue>, String> {
     if !repo.is_worktree() {
         return Ok(None);
@@ -136,11 +137,13 @@ pub(super) fn workflow_current_worktree_retarget(
     };
     let worktree_name = normalize_worktree_name(&worktree_name)?;
     let metadata = load_worktree_metadata(root_repo, &worktree_name)?;
-    let retarget = worktree_retarget_summary(
+    let retarget = worktree_retarget_summary_with_authority(
         root_repo,
         &metadata,
         Some(current_line_name),
         head_snapshot_id,
+        None,
+        authoritative_target_base_snapshot_id,
     )?;
     Ok(Some(JsonValue::Object(retarget)))
 }
@@ -160,9 +163,12 @@ pub fn workflow_ready_payload(
             .unwrap_or(JsonValue::Null);
         if string_field(&local_change, "publication_state").as_deref() == Some("published") {
             let remote_change_id = workflow_final_snapshot_promotion_remote_change_id(&candidate)?;
-            if let Ok(remote_state) =
-                workflow_ready_remote_payload(repo, &remote_change_id, remote_name)
-            {
+            if let Ok(remote_state) = workflow_ready_remote_payload_with_patchset_authority(
+                repo,
+                &remote_change_id,
+                remote_name,
+                true,
+            ) {
                 let has_patchset =
                     workflow_nested_text(&remote_state, "patchset", "patchset_id").is_some();
                 let landed = workflow_nested_text(&remote_state, "change", "status").as_deref()
@@ -182,15 +188,44 @@ pub(super) fn workflow_ready_remote_payload(
     change_id: &str,
     remote_name: Option<&str>,
 ) -> Result<JsonValue, String> {
+    workflow_ready_remote_payload_with_patchset_authority(repo, change_id, remote_name, false)
+}
+
+pub(super) fn workflow_ready_remote_payload_with_patchset_authority(
+    repo: &RepoRuntime,
+    change_id: &str,
+    remote_name: Option<&str>,
+    ready_patchset_is_authoritative: bool,
+) -> Result<JsonValue, String> {
     let _payload_range = perfetto_range!("ait.workflow_ready.payload");
     let mut full_state = {
         let _range = perfetto_range!("ait.workflow_ready.payload.land_state");
-        workflow_projected_ready_state(repo, change_id, remote_name)?
+        if ready_patchset_is_authoritative {
+            workflow_projected_ready_task_land_state(repo, change_id, remote_name)?
+        } else {
+            workflow_projected_ready_state(repo, change_id, remote_name)?
+        }
     };
     {
         let _range = perfetto_range!("ait.workflow_ready.payload.external_readiness");
         workflow_insert_external_readiness(repo, &mut full_state)?;
     }
+    workflow_project_ready_payload(
+        repo,
+        &full_state,
+        change_id,
+        remote_name,
+        ready_patchset_is_authoritative,
+    )
+}
+
+fn workflow_project_ready_payload(
+    repo: &RepoRuntime,
+    full_state: &JsonValue,
+    change_id: &str,
+    remote_name: Option<&str>,
+    ready_patchset_is_authoritative: bool,
+) -> Result<JsonValue, String> {
     let change = full_state.get("change").cloned().unwrap_or(JsonValue::Null);
     let resolved_change_ref = change_reference_from_payload(&change, Some(change_id))
         .unwrap_or_else(|_| change_id.into());
@@ -208,12 +243,37 @@ pub(super) fn workflow_ready_remote_payload(
     let command_hints = workflow_ready_command_hints(
         repo,
         resolved_change_ref.as_str(),
+        remote_name,
         full_state.get("patchset"),
         base_line_name.as_str(),
         full_state.get("worktree_retarget"),
     );
     let _range = perfetto_range!("ait.workflow_ready.payload.project");
-    project_workflow_ready_read_model(&facts, &command_hints, false, false, false)
+    project_workflow_ready_read_model(
+        &facts,
+        &command_hints,
+        ready_patchset_is_authoritative,
+        ready_patchset_is_authoritative,
+        false,
+    )
+}
+
+fn workflow_ready_patchset_authority_from_state(state: &JsonValue) -> Result<bool, String> {
+    let ignore_workspace_authoring = state
+        .get("ignore_workspace_authoring")
+        .and_then(JsonValue::as_bool)
+        .unwrap_or(false);
+    let patchset_is_authoritative = state
+        .get("patchset_is_authoritative")
+        .and_then(JsonValue::as_bool)
+        .unwrap_or(false);
+    if ignore_workspace_authoring != patchset_is_authoritative {
+        return Err(
+            "Workflow ready authority state has inconsistent workspace and Patchset authority flags."
+                .to_string(),
+        );
+    }
+    Ok(patchset_is_authoritative)
 }
 
 pub(in crate::primitives) fn workflow_ready_ci_poll_payload_with_closeout_remote<R>(
@@ -222,6 +282,7 @@ pub(in crate::primitives) fn workflow_ready_ci_poll_payload_with_closeout_remote
     repo_name: &str,
     state: &JsonValue,
     change_id: &str,
+    remote_name: Option<&str>,
 ) -> Result<JsonValue, String>
 where
     R: TaskWorkflowPatchsetReader + TaskWorkflowPatchsetCiStatusReader + ?Sized,
@@ -244,26 +305,14 @@ where
         .ok_or_else(|| "Workflow ready CI poll state must be an object.".to_string())?;
     refreshed.insert("patchset_ci_status".to_string(), patchset_ci_status);
     let refreshed = JsonValue::Object(refreshed);
-    let change = refreshed.get("change").cloned().unwrap_or(JsonValue::Null);
-    let resolved_change_ref = change_reference_from_payload(&change, Some(change_id))
-        .unwrap_or_else(|_| change_id.to_string());
-    let base_line = refreshed
-        .get("base_line")
-        .cloned()
-        .unwrap_or(JsonValue::Null);
-    let base_line_name = string_field(&base_line, "line_name")
-        .or_else(|| string_field(&change, "base_line"))
-        .unwrap_or_else(|| "main".to_string());
-    let facts = workflow_ready_facts(&refreshed)?;
-    let command_hints = workflow_ready_command_hints(
+    let ready_patchset_is_authoritative = workflow_ready_patchset_authority_from_state(&refreshed)?;
+    workflow_project_ready_payload(
         repo,
-        &resolved_change_ref,
-        refreshed.get("patchset"),
-        &base_line_name,
-        refreshed.get("worktree_retarget"),
-    );
-    let _range = perfetto_range!("ait.workflow_ready.ci.poll_project");
-    project_workflow_ready_read_model(&facts, &command_hints, false, false, false)
+        &refreshed,
+        change_id,
+        remote_name,
+        ready_patchset_is_authoritative,
+    )
 }
 
 pub fn workflow_land_payload(
@@ -312,6 +361,7 @@ fn workflow_land_payload_with_workspace_mode(
         &workflow_ready_command_hints(
             repo,
             resolved_change_ref.as_str(),
+            remote_name,
             full_state.get("patchset"),
             base_line_name.as_str(),
             full_state.get("worktree_retarget"),

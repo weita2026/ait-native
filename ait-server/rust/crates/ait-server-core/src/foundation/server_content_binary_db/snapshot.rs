@@ -57,6 +57,14 @@ pub struct ServerBinarySnapshotPayload {
     pub message: Option<String>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ServerBinarySnapshotCatalogEntry {
+    pub snapshot_index: u32,
+    pub snapshot_id: String,
+    pub record: ServerBinarySnapshotRecord,
+    pub parent_snapshot_ids: Vec<String>,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ServerBinarySnapshotParentEdgeRecord {
     pub child_snapshot_index: u32,
@@ -328,14 +336,85 @@ where
         let file = snapshot_record_file_for_layout(layout)?;
         let count = read.record_count(file.clone())?;
         let mut snapshots = Vec::with_capacity(count as usize);
-        for index in 0..count {
-            let record =
-                decode_snapshot_record_for_layout(layout, &read.read_record(file.clone(), index)?)?;
+        for (index, raw) in read.read_records(file, 0, count)?.into_iter().enumerate() {
+            let index = u32::try_from(index)
+                .map_err(|_| BinaryDbError::corruption("snapshot index exceeds u32"))?;
+            let record = decode_snapshot_record_for_layout(layout, &raw)?;
             if !record.is_tombstone() {
                 snapshots.push((index, record));
             }
         }
         Ok(snapshots)
+    }
+
+    pub fn snapshot_catalog(
+        &self,
+        read: &BinaryDbReadTxn<'_, B>,
+    ) -> StoreResult<Vec<ServerBinarySnapshotCatalogEntry>> {
+        let snapshots = self.all_snapshots(read)?;
+        let mut snapshot_ids_by_index = std::collections::BTreeMap::new();
+        let mut snapshot_indexes_by_id = std::collections::BTreeMap::new();
+        for (snapshot_index, record) in &snapshots {
+            let snapshot_id = server_snapshot_id_from_hash48(record.snapshot_hash48);
+            if let Some(existing_index) =
+                snapshot_indexes_by_id.insert(snapshot_id.to_ascii_uppercase(), *snapshot_index)
+            {
+                return Err(BinaryDbError::corruption(format!(
+                    "live snapshots {existing_index} and {snapshot_index} have duplicate ID {snapshot_id}"
+                )));
+            }
+            snapshot_ids_by_index.insert(*snapshot_index, snapshot_id);
+        }
+
+        let edge_file =
+            ServerBinarySnapshotParentEdgeCodec::<SERVER_CONTENT_BINARY_LAYOUT_ID>::record_file();
+        let edge_count = read.record_count(edge_file.clone())?;
+        let mut edges_by_child =
+            std::collections::BTreeMap::<u32, Vec<ServerBinarySnapshotParentEdgeRecord>>::new();
+        for raw in read.read_records(edge_file, 0, edge_count)? {
+            let edge = ServerBinarySnapshotParentEdgeCodec::<
+                SERVER_CONTENT_BINARY_LAYOUT_ID,
+            >::decode_record(&raw)?;
+            edges_by_child
+                .entry(edge.child_snapshot_index)
+                .or_default()
+                .push(edge);
+        }
+
+        snapshots
+            .into_iter()
+            .map(|(snapshot_index, record)| {
+                let parent_indexes = validated_snapshot_parent_indexes(
+                    snapshot_index,
+                    &record,
+                    edges_by_child.remove(&snapshot_index).unwrap_or_default(),
+                )?;
+                let parent_snapshot_ids = parent_indexes
+                    .into_iter()
+                    .map(|parent_index| {
+                        snapshot_ids_by_index.get(&parent_index).cloned().ok_or_else(|| {
+                            BinaryDbError::corruption(format!(
+                                "snapshot {snapshot_index} parent references missing or tombstoned snapshot index {parent_index}"
+                            ))
+                        })
+                    })
+                    .collect::<StoreResult<Vec<_>>>()?;
+                let snapshot_id = snapshot_ids_by_index
+                    .get(&snapshot_index)
+                    .cloned()
+                    .ok_or_else(|| {
+                        BinaryDbError::corruption(format!(
+                            "snapshot catalog lost live snapshot index {snapshot_index}"
+                        ))
+                    })?;
+                Ok(ServerBinarySnapshotCatalogEntry {
+                    snapshot_index,
+                    snapshot_id,
+                    record,
+                    parent_snapshot_ids,
+                })
+            })
+            .collect()
     }
 
     pub fn snapshot_id_at(
@@ -387,31 +466,54 @@ where
                 edges.push(edge);
             }
         }
-        edges.sort_by_key(|edge| edge.parent_ordinal);
-        for (expected, edge) in edges.iter().enumerate() {
-            if usize::from(edge.parent_ordinal) != expected {
-                return Err(BinaryDbError::corruption(format!(
-                    "snapshot {snapshot_index} parent ordinals are not contiguous at {expected}"
-                )));
-            }
-        }
-        let parents = edges
-            .into_iter()
-            .map(|edge| edge.parent_snapshot_index)
-            .collect::<Vec<_>>();
-        let cached = record.parent_snapshot_index_plus1.checked_sub(1);
-        if parents.first().copied() != cached {
-            return Err(BinaryDbError::corruption(format!(
-                "snapshot {snapshot_index} first-parent cache disagrees with ordered edges"
-            )));
-        }
-        if record.is_remote_head_history_boundary() && !parents.is_empty() {
-            return Err(BinaryDbError::corruption(format!(
-                "remote-head history boundary snapshot {snapshot_index} has local parents"
-            )));
-        }
-        Ok(parents)
+        validated_snapshot_parent_indexes(snapshot_index, record, edges)
     }
+}
+
+fn validated_snapshot_parent_indexes(
+    snapshot_index: u32,
+    record: &ServerBinarySnapshotRecord,
+    mut edges: Vec<ServerBinarySnapshotParentEdgeRecord>,
+) -> StoreResult<Vec<u32>> {
+    if !record.has_parent_edges_authority() {
+        return Ok(record
+            .parent_snapshot_index_plus1
+            .checked_sub(1)
+            .into_iter()
+            .collect());
+    }
+    edges.sort_by_key(|edge| edge.parent_ordinal);
+    for (expected, edge) in edges.iter().enumerate() {
+        if usize::from(edge.parent_ordinal) != expected {
+            return Err(BinaryDbError::corruption(format!(
+                "snapshot {snapshot_index} parent ordinals are not contiguous at {expected}"
+            )));
+        }
+    }
+    let parents = edges
+        .into_iter()
+        .map(|edge| edge.parent_snapshot_index)
+        .collect::<Vec<_>>();
+    let mut unique_parents = std::collections::BTreeSet::new();
+    for parent_index in &parents {
+        if !unique_parents.insert(*parent_index) {
+            return Err(BinaryDbError::corruption(format!(
+                "snapshot {snapshot_index} contains duplicate parent index {parent_index}"
+            )));
+        }
+    }
+    let cached = record.parent_snapshot_index_plus1.checked_sub(1);
+    if parents.first().copied() != cached {
+        return Err(BinaryDbError::corruption(format!(
+            "snapshot {snapshot_index} first-parent cache disagrees with ordered edges"
+        )));
+    }
+    if record.is_remote_head_history_boundary() && !parents.is_empty() {
+        return Err(BinaryDbError::corruption(format!(
+            "remote-head history boundary snapshot {snapshot_index} has local parents"
+        )));
+    }
+    Ok(parents)
 }
 
 pub fn validate_server_snapshot_dag_v0<B>(db: &B) -> StoreResult<()>

@@ -54,6 +54,54 @@ fn workflow_ready_blocks_external_readiness_before_ci() {
 }
 
 #[test]
+fn completed_local_ready_keeps_selected_patchset_authoritative_over_dirty_workspace() {
+    let facts = json!({
+        "change": {"change_id": "RCC-1", "base_line": "main", "status": "active"},
+        "task": {"task_id": "RCT-1", "status": "active"},
+        "patchset": {
+            "patchset_id": "RCP-1",
+            "base_snapshot_id": "SNP-BASE",
+            "revision_snapshot_id": "SNP-LANDED"
+        },
+        "workspace": {
+            "clean": false,
+            "changed_count": 1,
+            "changed_paths": ["unrelated.log"],
+            "workspace_matches_patchset": false
+        },
+        "freshness": {"base_is_fresh": true},
+        "attestation": null,
+        "policy": null,
+        "external_readiness": null,
+        "payload_seed": {
+            "ignore_workspace_authoring": true,
+            "patchset_is_authoritative": true
+        }
+    });
+    let commands = json!({
+        "apply_command": "ait workflow ready RCC-1 --apply",
+        "publish_command": "ait patchset publish --change RCC-1",
+        "patchset_ci_command": "ait patchset rerun-ci RCP-1",
+        "attestation_command": "ait attest put RCP-1",
+    });
+
+    let model = project_workflow_ready_read_model(&facts, &commands, true, true, false).unwrap();
+
+    assert_ne!(model["next_action"]["code"], json!("snapshot_create"));
+    assert_ne!(model["next_action"]["code"], json!("refresh_patchset"));
+    assert_eq!(model["ignore_workspace_authoring"], json!(true));
+    assert_eq!(model["patchset_is_authoritative"], json!(true));
+    let snapshot_step = model["steps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|step| step["code"] == "snapshot")
+        .expect("snapshot step");
+    assert_eq!(snapshot_step["status"], json!("done"));
+    assert!(snapshot_step["command"].is_null());
+}
+
+#[test]
 fn workflow_land_full_read_model_preserves_patchset_ci_status() {
     let facts = json!({
         "change": {"change_id": "RCC-1", "base_line": "main"},

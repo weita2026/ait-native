@@ -98,7 +98,12 @@ where
             Some(&publish_context.resolved_change_id),
             "ait patchset publish",
         )?;
-        guard_patchset_worktree_retarget(repo, &publish_context.base_line, &revision_snapshot_id)?;
+        guard_patchset_worktree_retarget(
+            repo,
+            &publish_context.base_line,
+            &publish_context.base_snapshot_id,
+            &revision_snapshot_id,
+        )?;
         guard_patchset_revision_scope(
             repo,
             &publish_context.base_snapshot_id,

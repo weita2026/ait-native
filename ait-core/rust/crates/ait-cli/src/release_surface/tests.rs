@@ -5,6 +5,23 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 #[test]
+fn core_release_profiles_reject_the_retired_mixed_license_surface() {
+    let profile = require_profile("local-cli").expect("Apache-only local profile remains valid");
+    assert_eq!(profile.id, "local-cli");
+    assert_eq!(profile.license, "Apache-2.0");
+    assert!(!profile
+        .license_files
+        .iter()
+        .any(|path| path.contains("AGPL") || path.contains("Commercial")));
+
+    let error = require_profile("public-self-hosted-core")
+        .expect_err("combined public releases must use the family path");
+    assert!(
+        error.contains("Combined public packages use the separately licensed family release path")
+    );
+}
+
+#[test]
 fn native_release_artifact_smoke_has_no_subprocess_escape_hatch() {
     let source = include_str!("build_orchestration.rs");
     let start = source

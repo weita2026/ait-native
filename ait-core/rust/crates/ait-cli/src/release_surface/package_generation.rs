@@ -165,8 +165,6 @@ pub(super) fn require_profile(profile: &str) -> Result<ReleaseProfile, String> {
             contributor_files: &["docs/CONTRIBUTING.md"],
             quickstart_files: &["release/guides/LOCAL_QUICKSTART.md"],
             excluded_paths: &[
-                "LICENSES/AGPL-3.0-only.txt",
-                "LICENSES/LicenseRef-AIT-Commercial.txt",
                 "src/ait_server/**",
                 "src/ait_web/**",
                 "src/ait_native/server*.py",
@@ -193,73 +191,8 @@ pub(super) fn require_profile(profile: &str) -> Result<ReleaseProfile, String> {
             required_package_urls: &["Homepage", "Documentation", "Source", "Issues", "Releases"],
             publish_support: false,
         }),
-        "public-self-hosted-core" => Ok(ReleaseProfile {
-            id: "public-self-hosted-core",
-            required_scripts: &["ait", "ait-agent", "ait-agent-worker", "ait-server", "aitk"],
-            forbidden_scripts: &["ait-worker", "ait-web"],
-            release_docs: &[
-                "README.md",
-                "README.pypi.md",
-                "release/guides/LOCAL_QUICKSTART.md",
-                "release/HOMEBREW_TAP.md",
-                "release/GITHUB_RELEASE_PUBLISHING.md",
-                "release/guides/SELF_HOSTED_TEAM_DEPLOYMENT.md",
-                "release/PYPI_PUBLISHING.md",
-                "release/guides/PACKAGE_TARGETS.md",
-                "release/guides/FUTURE_REPOSITORY_PREP.md",
-                "release/guides/FUTURE_REPOSITORY_SPLIT_DRY_RUN.md",
-                "release/guides/COMPATIBILITY_MATRIX.md",
-                PUBLIC_PACKAGE_TARGETS_CONTRACT_PATH,
-                PUBLIC_FUTURE_REPO_PREP_CONTRACT_PATH,
-                PUBLIC_FUTURE_REPO_SPLIT_DRY_RUN_CONTRACT_PATH,
-                "release/contracts/public_compatibility_matrix.json",
-                "release/contracts/public_self_hosted_deployment_contract.json",
-                "docs/legal/public_release_license_summary.md",
-            ],
-            license_files: &[
-                "LICENSE",
-                "NOTICE",
-                "docs/THIRD_PARTY_NOTICES.md",
-                "LICENSES/AGPL-3.0-only.txt",
-                "LICENSES/LicenseRef-AIT-Commercial.txt",
-                "docs/TRADEMARK_POLICY.md",
-            ],
-            contributor_files: &["docs/CONTRIBUTING.md", "docs/LOCAL_DEVELOPMENT.md"],
-            quickstart_files: &[
-                "release/guides/LOCAL_QUICKSTART.md",
-                "release/HOMEBREW_TAP.md",
-                "release/guides/SELF_HOSTED_TEAM_DEPLOYMENT.md",
-            ],
-            excluded_paths: &[
-                "benchmark/**",
-                "docs/sprints/**",
-                "site/**",
-                "deploy/site/**",
-                "src/ait_web/**",
-                "tests/ait_web/**",
-                "src/ait_native/web.py",
-            ],
-            setuptools_package_excludes: &["ait_web*"],
-            description:
-                "Agent-first Markdown workflow CLI with optional self-hosted server and worker surfaces",
-            license: "Apache-2.0 AND AGPL-3.0-only",
-            readme_file: Some("README.pypi.md"),
-            keywords: &["ai", "agent", "workflow", "markdown", "cli"],
-            classifiers: &[
-                "Development Status :: 3 - Alpha",
-                "Environment :: Console",
-                "Intended Audience :: Developers",
-                "Operating System :: OS Independent",
-                "Programming Language :: Python :: 3",
-                "Programming Language :: Python :: 3.11",
-                "Topic :: Software Development :: Build Tools",
-                "Topic :: Software Development :: Version Control",
-            ],
-            required_package_urls: &["Homepage", "Documentation", "Source", "Issues", "Releases"],
-            publish_support: true,
-        }),
         other => Err(format!(
-            "Unsupported release profile {other:?}. Supported profiles: local-cli, public-self-hosted-core."
+            "Unsupported release profile {other:?}. Supported profile: local-cli. Combined public packages use the separately licensed family release path."
         )),
     }
 }
@@ -407,51 +340,6 @@ pub(super) fn package_metadata_from_bundle(
         classifiers: toml_string_list(project.get("classifiers")),
         keywords: toml_string_list(project.get("keywords")),
     })
-}
-
-pub(super) fn public_pypi_readme() -> &'static str {
-    r#"# ait-native
-
-`ait-native` is the first public Python distribution for the `ait` workflow family.
-
-It packages these command surfaces today:
-
-- `ait` for the local trust-layer CLI
-- `ait-agent` for transport/runtime helper flows
-- `ait-agent-worker` for the Python-free transport worker host
-- `ait-server` for the shared workflow control plane
-- `aitk` for the local read-only history companion
-
-## Install
-
-```bash
-pip install ait-native
-```
-
-If you plan to run the shared self-hosted control plane, install the PostgreSQL extra:
-
-```bash
-pip install "ait-native[postgres]"
-```
-
-## Quick start
-
-- Local-first path: https://ait-native.dev
-- Self-hosted guide: https://ait-native.dev
-- Source: https://github.com/weita2026/ait-native
-
-## Important license boundary
-
-`ait-native` is a combined public distribution with multiple release-facing license surfaces.
-
-- Local CLI and local companion surfaces remain Apache-2.0.
-- Public self-hosted `ait-server` surfaces follow AGPL-3.0-only.
-
-Read the release-facing summary before relying on a broader grant:
-
-- https://ait-native.dev
-- https://github.com/weita2026/ait-native
-"#
 }
 
 pub(super) fn apply_release_notes(

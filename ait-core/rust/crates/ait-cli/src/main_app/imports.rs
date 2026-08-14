@@ -44,7 +44,7 @@ use ait_cli::primitives::{
     snapshot_is_ancestor_query, snapshot_list, snapshot_merge_base_query, snapshot_replay,
     snapshot_revert, snapshot_show, stash_apply, stash_drop, stash_list, stash_pop, stash_save,
     stash_show, task_audit, task_close, task_land_apply_scoped,
-    task_land_payload_scoped, task_list, task_restart, task_show,
+    task_land_payload_scoped, task_list, task_show,
     task_start_from_with_progress, task_start_with_progress, task_tokens,
     workflow_completed_local_batch_retired_error, workflow_reconcile_apply,
     workflow_reconcile_automatic, workflow_reconcile_automatic_best_effort,

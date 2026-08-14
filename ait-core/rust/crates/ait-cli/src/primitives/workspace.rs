@@ -122,14 +122,22 @@ pub(super) fn guard_repo_root_pinned_bound_worktree(
 pub(super) fn guard_patchset_worktree_retarget(
     repo: &RepoRuntime,
     base_line: &str,
+    target_base_snapshot_id: &str,
     revision_snapshot_id: &str,
 ) -> Result<(), String> {
-    guard_current_worktree_retarget(repo, base_line, Some(revision_snapshot_id), "publishing")
+    guard_current_worktree_retarget(
+        repo,
+        base_line,
+        Some(target_base_snapshot_id),
+        Some(revision_snapshot_id),
+        "publishing",
+    )
 }
 
 pub(super) fn guard_current_worktree_retarget(
     repo: &RepoRuntime,
     base_line: &str,
+    authoritative_target_base_snapshot_id: Option<&str>,
     revision_snapshot_id: Option<&str>,
     action_phrase: &str,
 ) -> Result<(), String> {
@@ -158,7 +166,10 @@ pub(super) fn guard_current_worktree_retarget(
         .target_base_line
         .clone()
         .unwrap_or_else(|| base_line.to_string());
-    let target_base_snapshot_id = local_line_head_snapshot_id(repo, &target_base_line)?;
+    let target_base_snapshot_id = match normalized_text(authoritative_target_base_snapshot_id) {
+        Some(snapshot_id) => Some(snapshot_id),
+        None => local_line_head_snapshot_id(repo, &target_base_line)?,
+    };
     let fork_snapshot_id = match metadata.fork_snapshot_id.clone() {
         Some(value) => Some(value),
         None => {

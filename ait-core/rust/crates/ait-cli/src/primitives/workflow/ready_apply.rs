@@ -52,6 +52,7 @@ where
 {
     let _apply_range = perfetto_range!("ait.workflow_ready.apply");
     let mut final_snapshot_promotion = None;
+    let mut ready_patchset_is_authoritative = false;
     let mut effective_change_id = change_id.to_string();
     let mut applied_actions = Vec::new();
     let mut mutation_receipts = Vec::new();
@@ -74,6 +75,7 @@ where
     if let Some(candidate) =
         workflow_final_snapshot_promotion_candidate(repo, change_id, remote_name)?
     {
+        ready_patchset_is_authoritative = true;
         let remote_change_id = workflow_final_snapshot_promotion_remote_change_id(&candidate)?;
         let local_change_published = candidate
             .get("state")
@@ -82,15 +84,21 @@ where
             .and_then(JsonValue::as_str)
             == Some("published");
         let remote_is_prepared = local_change_published
-            && workflow_ready_remote_payload(repo, &remote_change_id, remote_name)
-                .ok()
-                .is_some_and(|state| {
-                    workflow_nested_text(&state, "patchset", "patchset_id").is_some()
-                        || workflow_nested_text(&state, "change", "status").as_deref()
-                            == Some("landed")
-                });
+            && workflow_ready_remote_payload_with_patchset_authority(
+                repo,
+                &remote_change_id,
+                remote_name,
+                true,
+            )
+            .ok()
+            .is_some_and(|state| {
+                workflow_nested_text(&state, "patchset", "patchset_id").is_some()
+                    || workflow_nested_text(&state, "change", "status").as_deref() == Some("landed")
+            });
         effective_change_id = remote_change_id;
-        if !remote_is_prepared {
+        if remote_is_prepared {
+            final_snapshot_promotion = Some(candidate);
+        } else {
             workflow_progress_emit(
                 &mut progress,
                 "starting",
@@ -131,7 +139,12 @@ where
     loop {
         let mut state = {
             let _range = perfetto_range!("ait.workflow_ready.authoritative_state");
-            workflow_ready_remote_payload(repo, &effective_change_id, remote_name)?
+            workflow_ready_remote_payload_with_patchset_authority(
+                repo,
+                &effective_change_id,
+                remote_name,
+                ready_patchset_is_authoritative,
+            )?
         };
         let mut code = workflow_nested_text(&state, "next_action", "code").unwrap_or_default();
         if code == "waiting_for_ci" && !attempted_pending_waits.contains("waiting_for_ci") {
@@ -148,6 +161,7 @@ where
                         &repo_name,
                         &pending_state,
                         &effective_change_id,
+                        remote_name,
                     )
                 })?
             };

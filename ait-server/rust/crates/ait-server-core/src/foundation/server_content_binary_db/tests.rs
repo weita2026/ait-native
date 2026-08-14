@@ -112,6 +112,73 @@ fn fixed_v0_indexes_insert_in_key_then_target_order() -> StoreResult<()> {
 }
 
 #[test]
+fn snapshot_catalog_preserves_ordered_multi_parent_authority() -> StoreResult<()> {
+    let root = temporary_root();
+    let db = test_db(&root);
+    let snapshots = TestSnapshotStore::new(db.clone());
+    let payload = ServerBinarySnapshotPayload {
+        line_name: "main".to_string(),
+        message: None,
+    };
+    snapshots.append_snapshot("SNP-000000000001", snapshot_record(1), &payload)?;
+    snapshots.append_snapshot("SNP-000000000002", snapshot_record(2), &payload)?;
+    let mut child = snapshot_record(3);
+    child.parent_snapshot_index_plus1 = 1;
+    snapshots.append_snapshot("SNP-000000000003", child, &payload)?;
+
+    let second_parent = ServerBinarySnapshotParentEdgeRecord {
+        child_snapshot_index: 2,
+        parent_snapshot_index: 1,
+        parent_ordinal: 1,
+        flags: 0,
+    };
+    let mut write = crate::foundation::remote_binary_db::BinaryWriteContext::test_fixture(
+        crate::foundation::remote_binary_db::BinaryDbCommandScope::ServerContent,
+    );
+    db.append_record(
+        ServerBinarySnapshotParentEdgeCodec::<SERVER_CONTENT_BINARY_LAYOUT_ID>::record_file(),
+        &ServerBinarySnapshotParentEdgeCodec::<SERVER_CONTENT_BINARY_LAYOUT_ID>::encode_record(
+            second_parent,
+        )?,
+        &mut write,
+    )?;
+
+    let read = BinaryDbReadTxn::new(&db);
+    let catalog = snapshots.snapshot_catalog(&read)?;
+    let child = catalog
+        .iter()
+        .find(|entry| entry.snapshot_id == "SNP-000000000003")
+        .expect("child snapshot should be cataloged");
+    assert_eq!(
+        child.parent_snapshot_ids,
+        vec!["SNP-000000000001", "SNP-000000000002"]
+    );
+    drop(read);
+
+    let duplicate_parent = ServerBinarySnapshotParentEdgeRecord {
+        child_snapshot_index: 2,
+        parent_snapshot_index: 1,
+        parent_ordinal: 2,
+        flags: 0,
+    };
+    db.append_record(
+        ServerBinarySnapshotParentEdgeCodec::<SERVER_CONTENT_BINARY_LAYOUT_ID>::record_file(),
+        &ServerBinarySnapshotParentEdgeCodec::<SERVER_CONTENT_BINARY_LAYOUT_ID>::encode_record(
+            duplicate_parent,
+        )?,
+        &mut write,
+    )?;
+    let read = BinaryDbReadTxn::new(&db);
+    let error = snapshots
+        .snapshot_catalog(&read)
+        .expect_err("duplicate ordered parent authority must fail closed");
+    assert!(error.contains("duplicate parent index 1"));
+    drop(read);
+    fs::remove_dir_all(root).expect("snapshot catalog fixture should remove");
+    Ok(())
+}
+
+#[test]
 fn remote_sync_write_set_is_journaled_in_one_durable_batch() -> StoreResult<()> {
     let root = temporary_root();
     let db = test_db(&root);

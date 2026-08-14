@@ -877,16 +877,6 @@ pub(super) fn shape_bundle_files(
             },
         );
     }
-    if profile.readme_file == Some("README.pypi.md") && !files.contains_key("README.pypi.md") {
-        files.insert(
-            "README.pypi.md".to_string(),
-            BundleEntry {
-                path: "README.pypi.md".to_string(),
-                data: public_pypi_readme().as_bytes().to_vec(),
-                mode: "0644".to_string(),
-            },
-        );
-    }
     Ok(())
 }
 

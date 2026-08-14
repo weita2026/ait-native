@@ -866,7 +866,7 @@ fn workflow_remote_plan_linkage_for_local_task(
     ))
 }
 
-fn workflow_history_prepare_entries(
+pub(super) fn workflow_history_prepare_entries(
     repo: &RepoRuntime,
     candidate: &JsonValue,
 ) -> Result<Vec<JsonValue>, String> {
@@ -882,12 +882,16 @@ fn workflow_history_prepare_entries(
             let change = entry.get("change").ok_or_else(|| {
                 "History promotion entry is missing local Change projection.".to_string()
             })?;
+            let (expected_remote_task_id, expected_remote_change_ref) =
+                workflow_expected_history_publication_ids(entry)?;
             let (published_plan_id, published_revision_id, published_plan_item_ref) =
                 workflow_remote_plan_linkage_for_local_task(repo, task)?;
             Ok(json!({
                 "local_task_id": required_string_field(entry, "local_task_id")?,
                 "local_change_id": required_string_field(entry, "local_change_id")?,
                 "local_change_ref": required_string_field(entry, "local_change_ref")?,
+                "expected_remote_task_id": expected_remote_task_id,
+                "expected_remote_change_ref": expected_remote_change_ref,
                 "task": {
                     "title": required_string_field(task, "title")?,
                     "intent": required_string_field(task, "intent")?,
@@ -911,6 +915,62 @@ fn workflow_history_prepare_entries(
             }))
         })
         .collect()
+}
+
+fn workflow_expected_history_publication_ids(
+    entry: &JsonValue,
+) -> Result<(Option<String>, Option<String>), String> {
+    let task = entry
+        .get("task")
+        .ok_or_else(|| "History promotion entry is missing local Task projection.".to_string())?;
+    let change = entry
+        .get("change")
+        .ok_or_else(|| "History promotion entry is missing local Change projection.".to_string())?;
+    let local_task_id = required_string_field(entry, "local_task_id")?;
+    let local_change_ref = required_string_field(entry, "local_change_ref")?;
+    let task_is_published = string_field(task, "publication_state").as_deref() == Some("published");
+    let change_is_published =
+        string_field(change, "publication_state").as_deref() == Some("published");
+    if change_is_published && !task_is_published {
+        return Err(format!(
+            "Local history Change {local_change_ref} is published while Task {local_task_id} is not."
+        ));
+    }
+    let expected_remote_task_id = task_is_published
+        .then(|| {
+            string_field(task, "published_task_id").ok_or_else(|| {
+                format!(
+                    "Published local history Task {local_task_id} has no exact Remote Task identity."
+                )
+            })
+        })
+        .transpose()?;
+    let expected_remote_change_ref = change_is_published
+        .then(|| {
+            string_field(change, "published_change_id").ok_or_else(|| {
+                format!(
+                    "Published local history Change {local_change_ref} has no exact Remote Change identity."
+                )
+            })
+        })
+        .transpose()?;
+    if let (Some(remote_task_id), Some(remote_change_ref)) = (
+        expected_remote_task_id.as_deref(),
+        expected_remote_change_ref.as_deref(),
+    ) {
+        let remote_owner = remote_change_ref
+            .rsplit_once('/')
+            .map(|(owner, _)| owner)
+            .ok_or_else(|| {
+                format!("Published Remote Change identity {remote_change_ref} has no Task owner.")
+            })?;
+        if remote_owner != remote_task_id {
+            return Err(format!(
+                "Published history mapping disagrees on Remote ownership: Task {remote_task_id}, Change {remote_change_ref}."
+            ));
+        }
+    }
+    Ok((expected_remote_task_id, expected_remote_change_ref))
 }
 
 fn workflow_history_idempotency_key(
@@ -952,13 +1012,59 @@ pub(in crate::primitives) fn workflow_mark_history_published(
     candidate_entries: &[JsonValue],
     response_entries: &[JsonValue],
 ) -> Result<Vec<JsonValue>, String> {
+    let validated =
+        workflow_validate_history_publication_response(candidate_entries, response_entries)?;
+    let task_store = repo.task_store()?;
+    let change_store = repo.change_store()?;
+    validated
+        .into_iter()
+        .map(|mapping| {
+            let task = task_local_mark_published_with_task_store(
+                &task_store,
+                &mapping.local_task_id,
+                Some(remote_name),
+                Some(&mapping.remote_task_id),
+            )?;
+            let change = change_local_mark_published_with_change_store(
+                &change_store,
+                &mapping.local_change_ref,
+                Some(remote_name),
+                Some(&mapping.remote_change_ref),
+                true,
+            )?;
+            Ok(json!({
+                "local_task_id": mapping.local_task_id,
+                "local_change_id": mapping.local_change_id,
+                "local_change_ref": mapping.local_change_ref,
+                "remote_task_id": mapping.remote_task_id,
+                "remote_change_ref": mapping.remote_change_ref,
+                "task": task,
+                "change": change,
+            }))
+        })
+        .collect()
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub(super) struct ValidatedHistoryPublicationMapping {
+    local_task_id: String,
+    local_change_id: String,
+    local_change_ref: String,
+    remote_task_id: String,
+    remote_change_ref: String,
+}
+
+pub(super) fn workflow_validate_history_publication_response(
+    candidate_entries: &[JsonValue],
+    response_entries: &[JsonValue],
+) -> Result<Vec<ValidatedHistoryPublicationMapping>, String> {
     if candidate_entries.len() != response_entries.len() {
         return Err(
             "History promotion response mapping count changed after validation.".to_string(),
         );
     }
-    let task_store = repo.task_store()?;
-    let change_store = repo.change_store()?;
+    let mut remote_task_ids = std::collections::BTreeSet::new();
+    let mut remote_change_refs = std::collections::BTreeSet::new();
     candidate_entries
         .iter()
         .zip(response_entries.iter())
@@ -966,30 +1072,60 @@ pub(in crate::primitives) fn workflow_mark_history_published(
             let local_task_id = required_string_field(local, "local_task_id")?;
             let local_change_id = required_string_field(local, "local_change_id")?;
             let local_change_ref = required_string_field(local, "local_change_ref")?;
+            for (field, expected) in [
+                ("local_task_id", local_task_id.as_str()),
+                ("local_change_id", local_change_id.as_str()),
+                ("local_change_ref", local_change_ref.as_str()),
+            ] {
+                let actual = required_string_field(remote, field)?;
+                if actual != expected {
+                    return Err(format!(
+                        "History promotion response {field} {actual} does not match requested identity {expected}."
+                    ));
+                }
+            }
             let remote_task_id = required_string_field(remote, "task_id")?;
             let remote_change_ref = required_string_field(remote, "change_ref")?;
-            let task = task_local_mark_published_with_task_store(
-                &task_store,
-                &local_task_id,
-                Some(remote_name),
-                Some(&remote_task_id),
-            )?;
-            let change = change_local_mark_published_with_change_store(
-                &change_store,
-                &local_change_ref,
-                Some(remote_name),
-                Some(&remote_change_ref),
-                true,
-            )?;
-            Ok(json!({
-                "local_task_id": local_task_id,
-                "local_change_id": local_change_id,
-                "local_change_ref": local_change_ref,
-                "remote_task_id": remote_task_id,
-                "remote_change_ref": remote_change_ref,
-                "task": task,
-                "change": change,
-            }))
+            let (remote_owner, remote_child) = remote_change_ref.rsplit_once('/').ok_or_else(|| {
+                format!(
+                    "History promotion response Change {remote_change_ref} has no Remote Task owner."
+                )
+            })?;
+            if remote_owner != remote_task_id || remote_child.is_empty() {
+                return Err(format!(
+                    "History promotion response Change {remote_change_ref} is not owned by Remote Task {remote_task_id}."
+                ));
+            }
+            let (expected_remote_task_id, expected_remote_change_ref) =
+                workflow_expected_history_publication_ids(local)?;
+            if expected_remote_task_id
+                .as_deref()
+                .is_some_and(|expected| expected != remote_task_id)
+                || expected_remote_change_ref
+                    .as_deref()
+                    .is_some_and(|expected| expected != remote_change_ref)
+            {
+                return Err(format!(
+                    "History promotion response attempts to replace the immutable publication mapping for {local_change_ref}."
+                ));
+            }
+            if !remote_task_ids.insert(remote_task_id.clone()) {
+                return Err(format!(
+                    "History promotion response repeats Remote Task {remote_task_id}."
+                ));
+            }
+            if !remote_change_refs.insert(remote_change_ref.clone()) {
+                return Err(format!(
+                    "History promotion response repeats Remote Change {remote_change_ref}."
+                ));
+            }
+            Ok(ValidatedHistoryPublicationMapping {
+                local_task_id,
+                local_change_id,
+                local_change_ref,
+                remote_task_id,
+                remote_change_ref,
+            })
         })
         .collect()
 }

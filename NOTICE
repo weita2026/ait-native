@@ -1,5 +1,17 @@
 ait-native public release source aggregate
 
 This root assembles five independently versioned AIT authority Snapshots into
-one public release source tree. It does not relicense any component. Consult
-each component subtree's LICENSE and NOTICE files and docs/distribution.md.
+one public release source tree. It does not relicense any component.
+
+Public source license map:
+
+- root release controls and documentation: Apache-2.0
+- `ait-core/**`: Apache-2.0
+- `ait-runner/**`: Apache-2.0
+- `ait-python/**`: Apache-2.0
+- `ait-node/**`: Apache-2.0
+- `ait-server/**`: AGPL-3.0-only
+
+The root LICENSE states the default grant and the sole path exception. Each
+component subtree retains its exact LICENSE and NOTICE. Root `LICENSES/`
+contains complete reference copies of the two public license texts only.

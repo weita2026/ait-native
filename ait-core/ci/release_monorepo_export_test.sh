@@ -46,6 +46,7 @@ if [[ ${AIT_RELEASE_MONOREPO_PUBLIC_LAYOUT_SELFTEST:-0} == 0 ]]; then
     "${public_core}/.github/workflows" \
     "${public_layout}/docs"
   cp "${repo_root}/ait-release-family.json" "${public_core}/ait-release-family.json"
+  cp "${repo_root}/LICENSE" "${repo_root}/NOTICE" "${public_core}/"
   cp "${repo_root}/ci/release_monorepo_export.sh" \
     "${repo_root}/ci/release_monorepo_export_test.sh" \
     "${repo_root}/ci/native_bootstrap_matrix.jq" \
@@ -86,7 +87,15 @@ write_common_source() {
     "${root}/.ait-runtime" \
     "${root}/.ait-worktree-links/task" \
     "${root}/.git"
-  printf '%s license\n' "${repository}" >"${root}/LICENSE"
+  if [[ ${repository} == ait-server ]]; then
+    printf '%s\n' \
+      'GNU AFFERO GENERAL PUBLIC LICENSE' \
+      'Version 3, 19 November 2007' \
+      'Fixture terms for release topology validation.' \
+      'END OF TERMS AND CONDITIONS' >"${root}/LICENSE"
+  else
+    cp "${repo_root}/LICENSE" "${root}/LICENSE"
+  fi
   printf '%s notice\n' "${repository}" >"${root}/NOTICE"
   printf '#!/usr/bin/env bash\nprintf "fixture entrypoint\\n"\n' \
     >"${root}/ci/fixture-entrypoint.sh"
@@ -156,7 +165,7 @@ for repository in ait-core ait-server ait-runner ait-python ait-node; do
         "${repo_root}/ci/release_repository_authorities.json" \
         >"${source}/ci/release_repository_authorities.json"
       printf '[workspace]\nmembers = ["crates/ait-py"]\n' >"${source}/rust/Cargo.toml"
-      printf '[package]\nname = "ait-py"\nversion = "1.0.0-rc.4"\n' \
+      printf '[package]\nname = "ait-py"\nversion = "1.0.0-rc.5"\n' \
         >"${source}/rust/crates/ait-py/Cargo.toml"
       cp "${product_document}" "${source}/docs/distribution.md"
       ;;
@@ -165,7 +174,7 @@ for repository in ait-core ait-server ait-runner ait-python ait-node; do
       printf '[workspace]\nmembers = []\n' >"${source}/rust/Cargo.toml"
       ;;
     ait-runner)
-      printf '[package]\nname = "ait-runner"\nversion = "1.0.0-rc.4"\n\n[dependencies]\nait-core = { path = ".ait-external/ait-core/rust/crates/ait-core" }\n' \
+      printf '[package]\nname = "ait-runner"\nversion = "1.0.0-rc.5"\n\n[dependencies]\nait-core = { path = ".ait-external/ait-core/rust/crates/ait-core" }\n' \
         >"${source}/Cargo.toml"
       ;;
     ait-python)
@@ -178,7 +187,7 @@ for repository in ait-core ait-server ait-runner ait-python ait-node; do
       jq -n '
         {
           name: "@wa120/ait-native",
-          version: "1.0.0-rc.4",
+          version: "1.0.0-rc.5",
           type: "module",
           bin: {ait: "bin/ait.mjs"},
           exports: {
@@ -190,12 +199,12 @@ for repository in ait-core ait-server ait-runner ait-python ait-node; do
           },
           types: "./src/index.d.ts",
           optionalDependencies: {
-            "@wa120/ait-native-darwin-arm64": "1.0.0-rc.4",
-            "@wa120/ait-native-darwin-x64": "1.0.0-rc.4",
-            "@wa120/ait-native-linux-arm64": "1.0.0-rc.4",
-            "@wa120/ait-native-linux-x64": "1.0.0-rc.4",
-            "@wa120/ait-native-win32-arm64": "1.0.0-rc.4",
-            "@wa120/ait-native-win32-x64": "1.0.0-rc.4"
+            "@wa120/ait-native-darwin-arm64": "1.0.0-rc.5",
+            "@wa120/ait-native-darwin-x64": "1.0.0-rc.5",
+            "@wa120/ait-native-linux-arm64": "1.0.0-rc.5",
+            "@wa120/ait-native-linux-x64": "1.0.0-rc.5",
+            "@wa120/ait-native-win32-arm64": "1.0.0-rc.5",
+            "@wa120/ait-native-win32-x64": "1.0.0-rc.5"
           },
           scripts: {}
         }
@@ -221,7 +230,7 @@ for repository in ait-core ait-server ait-runner ait-python ait-node; do
           ["x86_64-pc-windows-msvc", "win32", "x64", null]
         ] | {
           schema: "ait.node.napi-platform-packages/v2",
-          family_version: "1.0.0-rc.4",
+          family_version: "1.0.0-rc.5",
           top_level_package: "@wa120/ait-native",
           payloads: map({
             target: .[0],
@@ -230,7 +239,7 @@ for repository in ait-core ait-server ait-runner ait-python ait-node; do
             libc: .[3],
             component: "ait-node",
             package: ("@wa120/ait-native-" + .[1] + "-" + .[2]),
-            version: "1.0.0-rc.4",
+            version: "1.0.0-rc.5",
             binding_repository: "ait-core",
             binding_snapshot: $snapshot,
             license: "Apache-2.0",
@@ -250,10 +259,10 @@ for repository in ait-core ait-server ait-runner ait-python ait-node; do
         '  ["aarch64-pc-windows-msvc", "wa120-ait-native-win32-arm64"],' \
         '  ["x86_64-pc-windows-msvc", "wa120-ait-native-win32-x64"],' \
         ']);' \
-        'if ((target !== "portable" && !targets.has(target)) || version !== "1.0.0-rc.4") process.exit(64);' \
+        'if ((target !== "portable" && !targets.has(target)) || version !== "1.0.0-rc.5") process.exit(64);' \
         'const artifact = target === "portable"' \
-        '  ? "dist/wa120-ait-native-1.0.0-rc.4.tgz"' \
-        '  : `dist/npm-addons/${targets.get(target)}-1.0.0-rc.4.tgz`;' \
+        '  ? "dist/wa120-ait-native-1.0.0-rc.5.tgz"' \
+        '  : `dist/npm-addons/${targets.get(target)}-1.0.0-rc.5.tgz`;' \
         'if (phase === "build") {' \
         '  mkdirSync(dirname(artifact), { recursive: true });' \
         '  writeFileSync(artifact, `fixture direct Node-API ${target}\n`);' \
@@ -267,7 +276,7 @@ for repository in ait-core ait-server ait-runner ait-python ait-node; do
           schema: "ait.release.adapter/v1",
           package: {
             name: "@wa120/ait-native",
-            version: "1.0.0-rc.4",
+            version: "1.0.0-rc.5",
             description: "fixture",
             license_files: [
               {path: "LICENSE", role: "license"},
@@ -292,13 +301,13 @@ for repository in ait-core ait-server ait-runner ait-python ait-node; do
               smoke: [["node", "release/fixture-receipt.mjs", "smoke", "$AIT_RELEASE_TARGET", "$AIT_RELEASE_VERSION"]]
             },
             artifacts: [
-              {path: "dist/wa120-ait-native-1.0.0-rc.4.tgz", kind: "npm-napi-envelope"},
-              {path: "dist/npm-addons/wa120-ait-native-darwin-arm64-1.0.0-rc.4.tgz", kind: "npm-napi-addon", target: "aarch64-apple-darwin"},
-              {path: "dist/npm-addons/wa120-ait-native-darwin-x64-1.0.0-rc.4.tgz", kind: "npm-napi-addon", target: "x86_64-apple-darwin"},
-              {path: "dist/npm-addons/wa120-ait-native-linux-arm64-1.0.0-rc.4.tgz", kind: "npm-napi-addon", target: "aarch64-unknown-linux-gnu"},
-              {path: "dist/npm-addons/wa120-ait-native-linux-x64-1.0.0-rc.4.tgz", kind: "npm-napi-addon", target: "x86_64-unknown-linux-gnu"},
-              {path: "dist/npm-addons/wa120-ait-native-win32-arm64-1.0.0-rc.4.tgz", kind: "npm-napi-addon", target: "aarch64-pc-windows-msvc"},
-              {path: "dist/npm-addons/wa120-ait-native-win32-x64-1.0.0-rc.4.tgz", kind: "npm-napi-addon", target: "x86_64-pc-windows-msvc"}
+              {path: "dist/wa120-ait-native-1.0.0-rc.5.tgz", kind: "npm-napi-envelope"},
+              {path: "dist/npm-addons/wa120-ait-native-darwin-arm64-1.0.0-rc.5.tgz", kind: "npm-napi-addon", target: "aarch64-apple-darwin"},
+              {path: "dist/npm-addons/wa120-ait-native-darwin-x64-1.0.0-rc.5.tgz", kind: "npm-napi-addon", target: "x86_64-apple-darwin"},
+              {path: "dist/npm-addons/wa120-ait-native-linux-arm64-1.0.0-rc.5.tgz", kind: "npm-napi-addon", target: "aarch64-unknown-linux-gnu"},
+              {path: "dist/npm-addons/wa120-ait-native-linux-x64-1.0.0-rc.5.tgz", kind: "npm-napi-addon", target: "x86_64-unknown-linux-gnu"},
+              {path: "dist/npm-addons/wa120-ait-native-win32-arm64-1.0.0-rc.5.tgz", kind: "npm-napi-addon", target: "aarch64-pc-windows-msvc"},
+              {path: "dist/npm-addons/wa120-ait-native-win32-x64-1.0.0-rc.5.tgz", kind: "npm-napi-addon", target: "x86_64-pc-windows-msvc"}
             ]
           }]
         }
@@ -321,6 +330,28 @@ diff -r "${output_one}" "${output_two}"
 cmp "${evidence_one}" "${evidence_two}"
 cmp "${repo_root}/release/monorepo/.gitattributes" \
   "${output_one}/.gitattributes"
+cmp "${repo_root}/release/monorepo/CONTRIBUTING.template" \
+  "${output_one}/CONTRIBUTING.md"
+cmp "${repo_root}/release/monorepo/SECURITY.template" \
+  "${output_one}/SECURITY.md"
+grep -F 'ait-native public source license scope' "${output_one}/LICENSE" >/dev/null
+grep -F 'sole component exception is `ait-server/**`' \
+  "${output_one}/LICENSE" >/dev/null
+grep -F 'No commercial or proprietary license applies to a public 1.0 source path' \
+  "${output_one}/LICENSE" >/dev/null
+cmp "${output_one}/ait-core/LICENSE" \
+  "${output_one}/LICENSES/Apache-2.0.txt"
+cmp "${output_one}/ait-server/LICENSE" \
+  "${output_one}/LICENSES/AGPL-3.0-only.txt"
+for apache_repository in ait-core ait-runner ait-python ait-node; do
+  test ! -e "${output_one}/${apache_repository}/LICENSES/AGPL-3.0-only.txt"
+  test ! -e "${output_one}/${apache_repository}/LICENSES/LicenseRef-AIT-Commercial.txt"
+done
+if find "${output_one}" -type f -name 'LicenseRef-AIT-Commercial.txt' \
+  -print -quit | grep -q .; then
+  printf 'commercial license reference survived the public export\n' >&2
+  exit 65
+fi
 jq -e '
   .schema == "ait.release.monorepo-source/v1" and
   .public_source_identity == "weita2026/ait-native" and
@@ -376,7 +407,7 @@ test "$(jq -r '.family_version' \
   "${output_one}/ait-core/ci/release_repository_authorities.json")" = \
   "1.0.0-rc.2"
 test "$(jq -r '.family_version' \
-  "${output_one}/ci/release_repository_authorities.json")" = "1.0.0-rc.4"
+  "${output_one}/ci/release_repository_authorities.json")" = "1.0.0-rc.5"
 for release_control_path in \
   ci/native_bootstrap_matrix.jq \
   ci/release_endpoint_publication.sh \
@@ -389,7 +420,7 @@ for release_control_path in \
     "${output_one}/${release_control_path}"
 done
 test "$(jq -r '.version' "${output_one}/ci/native_bootstrap_matrix.json")" = \
-  '1.0.0-rc.4'
+  '1.0.0-rc.5'
 AIT_RELEASE_FAMILY_MANIFEST="${output_one}/ait-release-family.json" \
   bash "${output_one}/ci/release_receipt_matrix_test.sh" >/dev/null
 expect_failure historical-component-family env \
@@ -449,7 +480,7 @@ node "${output_one}/build-release.mjs" \
   --component-receipt \
   --repository ait-node \
   --target portable \
-  --version 1.0.0-rc.4 \
+  --version 1.0.0-rc.5 \
   --git-commit "${fixture_git_commit}" \
   --out-dir "${fixture_receipt}" >/dev/null
 jq -e \
@@ -487,7 +518,7 @@ expect_failure receipt-parent-symlink node "${output_one}/build-release.mjs" \
   --component-receipt \
   --repository ait-node \
   --target portable \
-  --version 1.0.0-rc.4 \
+  --version 1.0.0-rc.5 \
   --git-commit "${fixture_git_commit}" \
   --out-dir "${temporary_root}/receipt-parent-link/escaped-receipt"
 public_readme=${output_one}/README.md
@@ -500,13 +531,53 @@ for required_readme_text in \
   'ait snapshot create' \
   'ait task land' \
   'package-owned `native/ait_napi.node`' \
-  'does not locate or launch a child executable'; do
+  'does not locate or launch a child executable' \
+  '## License map' \
+  '`ait-core/**`, `ait-runner/**`, `ait-python/**`, and' \
+  '`ait-server/**`, which is AGPL-3.0-only' \
+  'No commercial or proprietary license applies to a public 1.0 source path'; do
   grep -F "${required_readme_text}" "${public_readme}" >/dev/null
 done
 if grep -F 'mkdir -p docs/sprints' "${public_readme}" >/dev/null; then
   printf 'public README teaches the user a manual sprint bootstrap\n' >&2
   exit 65
 fi
+
+grep -F 'deterministic release monorepo' \
+  "${output_one}/CONTRIBUTING.md" >/dev/null
+grep -F 'material AI assistance' "${output_one}/CONTRIBUTING.md" >/dev/null
+grep -F 'security/advisories/new' "${output_one}/SECURITY.md" >/dev/null
+grep -F 'Do not open a public issue' "${output_one}/SECURITY.md" >/dev/null
+
+missing_contributing_output=${temporary_root}/missing-contributing-output
+cp -R "${output_one}" "${missing_contributing_output}"
+rm -- "${missing_contributing_output}/CONTRIBUTING.md"
+expect_failure missing-contributing node \
+  "${missing_contributing_output}/build-release.mjs" --validate-only
+
+contributing_drift_output=${temporary_root}/contributing-drift-output
+cp -R "${output_one}" "${contributing_drift_output}"
+node "${repo_root}/ci/release_monorepo_transform.mjs" \
+  "${contributing_drift_output}/CONTRIBUTING.md" \
+  'deterministic release monorepo' \
+  'mutable release monorepo'
+expect_failure contributing-drift node \
+  "${contributing_drift_output}/build-release.mjs" --validate-only
+
+missing_security_output=${temporary_root}/missing-security-output
+cp -R "${output_one}" "${missing_security_output}"
+rm -- "${missing_security_output}/SECURITY.md"
+expect_failure missing-security node \
+  "${missing_security_output}/build-release.mjs" --validate-only
+
+security_drift_output=${temporary_root}/security-drift-output
+cp -R "${output_one}" "${security_drift_output}"
+node "${repo_root}/ci/release_monorepo_transform.mjs" \
+  "${security_drift_output}/SECURITY.md" \
+  'Do not open a public issue' \
+  'Open a public issue'
+expect_failure security-drift node \
+  "${security_drift_output}/build-release.mjs" --validate-only
 
 readme_drift_output=${temporary_root}/readme-drift-output
 cp -R "${output_one}" "${readme_drift_output}"
@@ -610,6 +681,41 @@ node "${repo_root}/ci/release_monorepo_transform.mjs" \
 expect_failure promotion-download-drift node \
   "${promotion_download_drift_output}/build-release.mjs" --validate-only
 
+missing_root_license=${temporary_root}/missing-root-license
+cp -R "${output_one}" "${missing_root_license}"
+rm "${missing_root_license}/LICENSE"
+expect_failure missing-root-license node \
+  "${missing_root_license}/build-release.mjs" --validate-only
+
+license_mapping_drift=${temporary_root}/license-mapping-drift
+cp -R "${output_one}" "${license_mapping_drift}"
+node "${repo_root}/ci/release_monorepo_transform.mjs" \
+  "${license_mapping_drift}/LICENSE" \
+  'The sole component exception is `ait-server/**`.' \
+  'Every component uses the root default license.'
+expect_failure license-mapping-drift node \
+  "${license_mapping_drift}/build-release.mjs" --validate-only
+
+validator_apache_agpl=${temporary_root}/validator-apache-agpl
+cp -R "${output_one}" "${validator_apache_agpl}"
+mkdir -p "${validator_apache_agpl}/ait-node/legal"
+printf 'foreign AGPL marker\n' \
+  >"${validator_apache_agpl}/ait-node/legal/AGPL-LICENSE.txt"
+expect_failure validator-apache-agpl node \
+  "${validator_apache_agpl}/build-release.mjs" --validate-only
+grep -F 'ait-node contains a foreign AGPL license marker: legal/AGPL-LICENSE.txt' \
+  "${temporary_root}/validator-apache-agpl.stderr" >/dev/null
+
+validator_commercial=${temporary_root}/validator-commercial
+cp -R "${output_one}" "${validator_commercial}"
+mkdir -p "${validator_commercial}/ait-server/legal"
+printf 'unauthorized proprietary marker\n' \
+  >"${validator_commercial}/ait-server/legal/Proprietary-LICENSE.txt"
+expect_failure validator-commercial node \
+  "${validator_commercial}/build-release.mjs" --validate-only
+grep -F 'ait-server contains an unauthorized commercial license marker: legal/Proprietary-LICENSE.txt' \
+  "${temporary_root}/validator-commercial.stderr" >/dev/null
+
 wrong_snapshot_bundles=${temporary_root}/wrong-snapshot-bundles
 cp -R "${bundles}" "${wrong_snapshot_bundles}"
 jq '.source_snapshot = "SNP-000000000000"' \
@@ -631,6 +737,52 @@ tar -czf "${symlink_bundles}/ait-release-source-ait-node/source-cache.tar.gz" \
 expect_failure symlink bash "${repo_root}/ci/release_monorepo_export.sh" \
   "${repo_root}/ait-release-family.json" "${symlink_bundles}" \
   "${temporary_root}/symlink-output" "${temporary_root}/symlink-evidence.json"
+
+apache_agpl_bundles=${temporary_root}/apache-agpl-bundles
+cp -R "${bundles}" "${apache_agpl_bundles}"
+apache_agpl_source=${temporary_root}/apache-agpl-source
+cp -R "${sources}/ait-core" "${apache_agpl_source}"
+mkdir -p "${apache_agpl_source}/docs/legal"
+printf 'foreign AGPL marker\n' \
+  >"${apache_agpl_source}/docs/legal/AGPL-LICENSE.txt"
+tar -czf "${apache_agpl_bundles}/ait-release-source-ait-core/source-cache.tar.gz" \
+  -C "${apache_agpl_source}" .
+expect_failure apache-agpl bash "${repo_root}/ci/release_monorepo_export.sh" \
+  "${repo_root}/ait-release-family.json" "${apache_agpl_bundles}" \
+  "${temporary_root}/apache-agpl-output" "${temporary_root}/apache-agpl-evidence.json"
+grep -F 'Apache source subtree ait-core contains a foreign license marker' \
+  "${temporary_root}/apache-agpl.stderr" >/dev/null
+
+apache_commercial_bundles=${temporary_root}/apache-commercial-bundles
+cp -R "${bundles}" "${apache_commercial_bundles}"
+apache_commercial_source=${temporary_root}/apache-commercial-source
+cp -R "${sources}/ait-python" "${apache_commercial_source}"
+mkdir -p "${apache_commercial_source}/legal/private"
+printf 'unauthorized commercial marker\n' \
+  >"${apache_commercial_source}/legal/private/Commercial-LICENSE.txt"
+tar -czf "${apache_commercial_bundles}/ait-release-source-ait-python/source-cache.tar.gz" \
+  -C "${apache_commercial_source}" .
+expect_failure apache-commercial bash "${repo_root}/ci/release_monorepo_export.sh" \
+  "${repo_root}/ait-release-family.json" "${apache_commercial_bundles}" \
+  "${temporary_root}/apache-commercial-output" \
+  "${temporary_root}/apache-commercial-evidence.json"
+grep -F 'public source subtree ait-python contains an unauthorized commercial license marker' \
+  "${temporary_root}/apache-commercial.stderr" >/dev/null
+
+incomplete_server_bundles=${temporary_root}/incomplete-server-bundles
+cp -R "${bundles}" "${incomplete_server_bundles}"
+incomplete_server_source=${temporary_root}/incomplete-server-source
+cp -R "${sources}/ait-server" "${incomplete_server_source}"
+printf 'GNU AFFERO GENERAL PUBLIC LICENSE reference only\n' \
+  >"${incomplete_server_source}/LICENSE"
+tar -czf "${incomplete_server_bundles}/ait-release-source-ait-server/source-cache.tar.gz" \
+  -C "${incomplete_server_source}" .
+expect_failure incomplete-server bash "${repo_root}/ci/release_monorepo_export.sh" \
+  "${repo_root}/ait-release-family.json" "${incomplete_server_bundles}" \
+  "${temporary_root}/incomplete-server-output" \
+  "${temporary_root}/incomplete-server-evidence.json"
+grep -F 'AGPL source subtree ait-server has an invalid or incomplete root LICENSE' \
+  "${temporary_root}/incomplete-server.stderr" >/dev/null
 
 jq '.public_source.transforms[0].to = "../../ait-core"' \
   "${repo_root}/ait-release-family.json" >"${temporary_root}/undeclared-transform-family.json"

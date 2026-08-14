@@ -43,7 +43,6 @@ pub trait TaskStore {
         publication_state: Option<&str>,
     ) -> PlanStoreResult<Value>;
     fn close_task(&self, task_id: &str, status: &str) -> PlanStoreResult<Value>;
-    fn restart_task(&self, task_id: &str) -> PlanStoreResult<Value>;
     fn mark_task_published(
         &self,
         task_id: &str,
@@ -175,13 +174,6 @@ where
     S: TaskStore + ?Sized,
 {
     store.close_task(task_id, status)
-}
-
-pub fn restart_task_with_task_store<S>(store: &S, task_id: &str) -> PlanStoreResult<Value>
-where
-    S: TaskStore + ?Sized,
-{
-    store.restart_task(task_id)
 }
 
 pub fn mark_task_published_with_task_store<S>(

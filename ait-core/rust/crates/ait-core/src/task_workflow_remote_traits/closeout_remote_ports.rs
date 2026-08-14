@@ -6,7 +6,7 @@ use super::patchset_ci_remote_ports::TaskWorkflowPatchsetCiRemote;
 use super::patchset_remote_ports::TaskWorkflowPatchsetRemote;
 use super::policy_remote_ports::TaskWorkflowPolicyRemote;
 use super::review_remote_ports::TaskWorkflowReviewRemote;
-use super::task_lifecycle_remote_ports::TaskWorkflowTaskLifecycleRemote;
+use super::task_lifecycle_remote_ports::TaskWorkflowRemoteTaskCloser;
 
 pub trait TaskWorkflowCloseoutRemote:
     TaskWorkflowHttpClientRemote
@@ -17,7 +17,7 @@ pub trait TaskWorkflowCloseoutRemote:
     + TaskWorkflowAttestationRemote
     + TaskWorkflowPolicyRemote
     + TaskWorkflowLandRemote
-    + TaskWorkflowTaskLifecycleRemote
+    + TaskWorkflowRemoteTaskCloser
 {
 }
 
@@ -30,7 +30,7 @@ impl<R> TaskWorkflowCloseoutRemote for R where
         + TaskWorkflowAttestationRemote
         + TaskWorkflowPolicyRemote
         + TaskWorkflowLandRemote
-        + TaskWorkflowTaskLifecycleRemote
+        + TaskWorkflowRemoteTaskCloser
         + ?Sized
 {
 }

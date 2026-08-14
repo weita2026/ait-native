@@ -384,14 +384,50 @@ where
         )
     }
 
-    pub(in super::super) fn binary_zstd_pull_manifest_snapshots(
+    pub(in super::super) fn binary_zstd_pull_manifest_parts(
         &self,
         repo_name: &str,
         head_snapshot_id: &str,
         have_snapshot_ids: &BTreeSet<String>,
-    ) -> Result<(Vec<JsonValue>, Vec<String>), NativeRepositoryError> {
+    ) -> Result<(Vec<JsonValue>, Vec<String>, BinaryZstdImportManifestContent), NativeRepositoryError>
+    {
         self.ensure_repository(repo_name)?;
         let read = BinaryDbReadTxn::new_bounded_for_scope(&self.db, BinaryDbReadScope::CONTENT);
+        let mut manifest_cache = self
+            .repository_content()
+            .manifest_tree_read_cache_with_read(&read)
+            .map_err(binary_native_repository_store_error)?;
+        let (snapshots, boundary_snapshot_ids) = self
+            .binary_zstd_pull_manifest_snapshots_with_read(
+                &read,
+                &manifest_cache,
+                repo_name,
+                head_snapshot_id,
+                have_snapshot_ids,
+            )?;
+        let content = self.binary_zstd_import_manifest_content_for_snapshots_with_read(
+            &read,
+            &mut manifest_cache,
+            &snapshots,
+        )?;
+        Ok((snapshots, boundary_snapshot_ids, content))
+    }
+
+    fn binary_zstd_pull_manifest_snapshots_with_read(
+        &self,
+        read: &BinaryDbReadTxn<'_, D>,
+        manifest_cache: &ServerBinaryTreeReadCache,
+        repo_name: &str,
+        head_snapshot_id: &str,
+        have_snapshot_ids: &BTreeSet<String>,
+    ) -> Result<(Vec<JsonValue>, Vec<String>), NativeRepositoryError> {
+        let snapshot_catalog = self
+            .content_snapshots()
+            .snapshot_catalog(read)
+            .map_err(binary_native_repository_store_error)?
+            .into_iter()
+            .map(|entry| (entry.snapshot_id.to_ascii_uppercase(), entry))
+            .collect::<BTreeMap<_, _>>();
         let mut pending = VecDeque::from([head_snapshot_id.to_string()]);
         let mut queued = BTreeSet::from([head_snapshot_id.to_string()]);
         let mut boundary_snapshot_ids = BTreeSet::new();
@@ -402,14 +438,23 @@ where
                 boundary_snapshot_ids.insert(snapshot_id);
                 continue;
             }
-            let snapshot = self
-                .latest_snapshot_value_optional_with_read(&read, repo_name, &snapshot_id)?
+            let entry = snapshot_catalog
+                .get(&snapshot_id.to_ascii_uppercase())
                 .ok_or_else(|| {
                     NativeRepositoryError::not_found(format!(
                         "Unknown snapshot {snapshot_id} for repository {repo_name}"
                     ))
                 })?;
-            let parents = binary_zstd_snapshot_parent_ids(&snapshot)?;
+            let parents = entry.parent_snapshot_ids.clone();
+            let snapshot = self
+                .canonical_snapshot_value_with_parent_snapshot_ids_and_manifest_cache(
+                    read,
+                    manifest_cache,
+                    repo_name,
+                    entry.snapshot_index,
+                    &entry.record,
+                    &parents,
+                )?;
             for parent in &parents {
                 if queued.insert(parent.clone()) {
                     if queued.len() > ZSTD_PULL_MANIFEST_MAX_SNAPSHOTS {
@@ -420,7 +465,7 @@ where
                     pending.push_back(parent.clone());
                 }
             }
-            snapshots.insert(snapshot_id, (snapshot, parents));
+            snapshots.insert(entry.snapshot_id.clone(), (snapshot, parents));
         }
 
         let missing_ids = snapshots.keys().cloned().collect::<BTreeSet<_>>();
@@ -497,6 +542,20 @@ where
         let mut manifest_cache = content
             .manifest_tree_read_cache_with_read(&read)
             .map_err(binary_native_repository_store_error)?;
+        self.binary_zstd_import_manifest_content_for_snapshots_with_read(
+            &read,
+            &mut manifest_cache,
+            snapshots,
+        )
+    }
+
+    fn binary_zstd_import_manifest_content_for_snapshots_with_read(
+        &self,
+        read: &BinaryDbReadTxn<'_, D>,
+        manifest_cache: &mut ServerBinaryTreeReadCache,
+        snapshots: &[JsonValue],
+    ) -> Result<BinaryZstdImportManifestContent, NativeRepositoryError> {
+        let content = self.repository_content();
         let mut pending_trees = BTreeMap::new();
         for snapshot in snapshots {
             let snapshot_id =
@@ -557,8 +616,8 @@ where
                                 "canonical Binary DB tree pack {pack_id} is missing"
                             ))
                         })?;
-                    let pack = self
-                        .committed_tree_pack_metadata_with_cache(&pack_view, &mut manifest_cache)?;
+                    let pack =
+                        self.committed_tree_pack_metadata_with_cache(&pack_view, manifest_cache)?;
                     if binary_json_text(&pack, "status").as_deref() != Some("ready") {
                         return Err(NativeRepositoryError::internal(format!(
                             "canonical Binary DB tree pack {pack_id} is not committed"
@@ -583,7 +642,7 @@ where
                             binary_zstd_import_manifest_tree_locator_row(
                                 self.typed_tree_locator_with_manifest_cache(
                                     &pack_tree,
-                                    &mut manifest_cache,
+                                    manifest_cache,
                                 )?,
                             )?,
                         );
@@ -594,11 +653,7 @@ where
                 }
 
                 for entry in content
-                    .projected_tree_entries_for_tree_with_read_cache(
-                        &read,
-                        &tree,
-                        &mut manifest_cache,
-                    )
+                    .projected_tree_entries_for_tree_with_read_cache(read, &tree, manifest_cache)
                     .map_err(binary_native_repository_store_error)?
                 {
                     match entry.entry_type.as_str() {
@@ -679,7 +734,7 @@ where
         let mut selected_object_pack_ids = BTreeSet::new();
         let mut selected_blob_ids = BTreeSet::new();
         let object_content = self.binary_zstd_import_manifest_object_content_with_read(
-            &manifest_cache,
+            manifest_cache,
             referenced_blob_ids,
             "tree closure",
             &mut selected_object_pack_ids,
@@ -687,8 +742,8 @@ where
         )?;
         content
             .validate_manifest_identity_indexes_with_read(
-                &read,
-                &manifest_cache,
+                read,
+                manifest_cache,
                 &selected_object_pack_ids,
                 &selected_tree_pack_ids,
                 &selected_blob_ids,
@@ -1963,58 +2018,6 @@ fn dependency_ordered_pack_rows(
         }
     }
     Ok(ordered)
-}
-
-fn binary_zstd_snapshot_parent_ids(
-    snapshot: &JsonValue,
-) -> Result<Vec<String>, NativeRepositoryError> {
-    let snapshot_id = binary_snapshot_id(snapshot).ok_or_else(|| {
-        NativeRepositoryError::internal("Snapshot payload is missing snapshot_id")
-    })?;
-    let mut parents = match snapshot.get("parent_snapshot_ids") {
-        Some(JsonValue::Array(values)) => values
-            .iter()
-            .map(|value| {
-                value
-                    .as_str()
-                    .map(str::trim)
-                    .filter(|value| !value.is_empty())
-                    .map(ToString::to_string)
-                    .ok_or_else(|| {
-                        NativeRepositoryError::internal(format!(
-                            "Snapshot {snapshot_id} has an invalid parent_snapshot_ids entry"
-                        ))
-                    })
-            })
-            .collect::<Result<Vec<_>, _>>()?,
-        Some(JsonValue::Null) | None => binary_json_text(snapshot, "parent_snapshot_id")
-            .into_iter()
-            .collect(),
-        Some(_) => {
-            return Err(NativeRepositoryError::internal(format!(
-                "Snapshot {snapshot_id} has invalid parent_snapshot_ids"
-            )))
-        }
-    };
-    if parents.is_empty() {
-        if let Some(parent) = binary_json_text(snapshot, "parent_snapshot_id") {
-            parents.push(parent);
-        }
-    }
-    let mut unique = BTreeSet::new();
-    for parent in &parents {
-        if parent == &snapshot_id {
-            return Err(NativeRepositoryError::internal(format!(
-                "Snapshot {snapshot_id} cannot be its own parent"
-            )));
-        }
-        if !unique.insert(parent.clone()) {
-            return Err(NativeRepositoryError::internal(format!(
-                "Snapshot {snapshot_id} contains duplicate parent {parent}"
-            )));
-        }
-    }
-    Ok(parents)
 }
 
 fn hex_bytes(bytes: &[u8]) -> String {

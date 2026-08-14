@@ -44,6 +44,10 @@ struct HistoryPromotionEntry {
     local_task_id: String,
     local_change_id: String,
     local_change_ref: String,
+    #[serde(default)]
+    expected_remote_task_id: Option<String>,
+    #[serde(default)]
+    expected_remote_change_ref: Option<String>,
     task: HistoryPromotionTask,
     change: HistoryPromotionChange,
     pre_land_target_snapshot_id: String,
@@ -145,9 +149,120 @@ fn nonempty(value: &str, label: &str) -> Result<String, String> {
 }
 
 fn request_sha256(payload: &JsonValue) -> Result<String, String> {
-    let encoded = serde_json::to_vec(payload)
+    let mut fingerprint_payload = payload.clone();
+    if let Some(entries) = fingerprint_payload
+        .get_mut("entries")
+        .and_then(JsonValue::as_array_mut)
+    {
+        for entry in entries {
+            if let Some(entry) = entry.as_object_mut() {
+                entry.remove("expected_remote_task_id");
+                entry.remove("expected_remote_change_ref");
+            }
+        }
+    }
+    let encoded = serde_json::to_vec(&fingerprint_payload)
         .map_err(|error| format!("History promotion request encoding failed: {error}"))?;
     Ok(format!("{:x}", Sha256::digest(encoded)))
+}
+
+fn validate_expected_publication_identity(entry: &HistoryPromotionEntry) -> Result<(), String> {
+    for (label, value) in [
+        (
+            "expected_remote_task_id",
+            entry.expected_remote_task_id.as_deref(),
+        ),
+        (
+            "expected_remote_change_ref",
+            entry.expected_remote_change_ref.as_deref(),
+        ),
+    ] {
+        if let Some(value) = value {
+            if value.is_empty() || value.trim() != value {
+                return Err(format!(
+                    "History promotion {label} must be a non-empty exact identity."
+                ));
+            }
+        }
+    }
+    if entry.expected_remote_task_id.is_none() && entry.expected_remote_change_ref.is_some() {
+        return Err(
+            "History promotion expected_remote_change_ref requires expected_remote_task_id."
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
+fn validate_expected_publication_owner(
+    entry: &HistoryPromotionEntry,
+    task_id: &str,
+    change_ref: &str,
+) -> Result<(), String> {
+    if entry
+        .expected_remote_task_id
+        .as_deref()
+        .is_some_and(|expected| expected != task_id)
+        || entry
+            .expected_remote_change_ref
+            .as_deref()
+            .is_some_and(|expected| expected != change_ref)
+    {
+        return Err(format!(
+            "HISTORY_PROMOTION_RECEIPT_CONFLICT: expected publication owner for {} does not match {task_id}/{change_ref}.",
+            entry.local_change_ref
+        ));
+    }
+    Ok(())
+}
+
+fn validate_replayed_publication_owners(
+    request: &HistoryPromotionRequest,
+    manifest: &JsonValue,
+) -> Result<(), String> {
+    let manifest_entries = manifest
+        .get("entries")
+        .and_then(JsonValue::as_array)
+        .ok_or_else(|| "History promotion replay manifest has no entries.".to_string())?;
+    if manifest_entries.len() != request.entries.len() {
+        return Err(
+            "History promotion replay manifest entry count differs from the request.".to_string(),
+        );
+    }
+    for (entry, persisted) in request.entries.iter().zip(manifest_entries) {
+        let persisted_local_task_id = persisted
+            .get("local_task_id")
+            .and_then(JsonValue::as_str)
+            .ok_or_else(|| {
+                "History promotion replay manifest entry has no local_task_id.".to_string()
+            })?;
+        let persisted_local_change_ref = persisted
+            .get("local_change_ref")
+            .and_then(JsonValue::as_str)
+            .ok_or_else(|| {
+                "History promotion replay manifest entry has no local_change_ref.".to_string()
+            })?;
+        if persisted_local_task_id != entry.local_task_id
+            || persisted_local_change_ref != entry.local_change_ref
+        {
+            return Err(format!(
+                "HISTORY_PROMOTION_RECEIPT_CONFLICT: replayed local identity does not match {}.",
+                entry.local_change_ref
+            ));
+        }
+        let task_id = persisted
+            .get("task_id")
+            .and_then(JsonValue::as_str)
+            .ok_or_else(|| "History promotion replay manifest entry has no task_id.".to_string())?;
+        let change_ref = persisted
+            .get("change_ref")
+            .and_then(JsonValue::as_str)
+            .ok_or_else(|| {
+                "History promotion replay manifest entry has no change_ref.".to_string()
+            })?;
+        validate_expected_publication_owner(entry, task_id, change_ref)?;
+    }
+    Ok(())
 }
 
 fn parse_summary(summary: &str, prefix: &str) -> Result<Option<JsonValue>, String> {
@@ -648,6 +763,7 @@ where
                     entry.local_change_ref
                 ));
             }
+            validate_expected_publication_owner(entry, &task_id, &change_ref)?;
             let (revision_plus1, item_plus1, _) = plan_binding;
             if task.origin_plan_revision_index_plus1 != revision_plus1
                 || task.plan_item_index_plus1 != item_plus1
@@ -1440,6 +1556,13 @@ where
                 pre_land_index,
                 landed_index,
             )?;
+            if existing.is_none() && entry.expected_remote_task_id.is_some() {
+                return Err(format!(
+                    "HISTORY_PROMOTION_RECEIPT_CONFLICT: expected publication owner {} for {} has no exact reusable receipt.",
+                    entry.expected_remote_task_id.as_deref().unwrap_or_default(),
+                    entry.local_change_ref
+                ));
+            }
             let (
                 task_index,
                 task_id,
@@ -1698,6 +1821,9 @@ where
                     "History promotion requires 1..={MAX_HISTORY_PROMOTION_ENTRIES} entries."
                 ));
             }
+            for entry in &request.entries {
+                validate_expected_publication_identity(entry)?;
+            }
             let fingerprint = request_sha256(payload)?;
             let now = Self::now_s()?;
             (request, fingerprint, now)
@@ -1749,6 +1875,7 @@ where
                     request.idempotency_key
                 ));
             }
+            validate_replayed_publication_owners(&request, &existing)?;
             drop(tx);
             #[cfg(feature = "perfetto-tracing")]
             drop(writer_trace);

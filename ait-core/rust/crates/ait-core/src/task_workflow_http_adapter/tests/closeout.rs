@@ -228,9 +228,4 @@ fn task_workflow_closeout_remote_helpers_accept_trait_object() {
         .unwrap()["status"],
         "completed"
     );
-    assert_eq!(
-        restart_task_with_task_workflow_closeout_remote(remote_port, "T-1", Some("repo")).unwrap()
-            ["status"],
-        "active"
-    );
 }

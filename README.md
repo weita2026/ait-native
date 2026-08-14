@@ -4,7 +4,7 @@ AIT is a language-neutral, agent-first workflow for repository changes.
 Initialize AIT once, then tell your coding agent what outcome you want. AIT
 does not identify the repository's programming language or project type.
 
-This is the public `v1.0.0-rc.5` source tree. One tag contains the exact
+This is the public `v1.0.0-rc.6` source tree. One tag contains the exact
 exported source of `ait-core`, `ait-server`, `ait-runner`, `ait-python`, and
 `ait-node`; their AIT Snapshot mapping is recorded in
 `ait-monorepo-source.json`.
@@ -86,6 +86,14 @@ does not locate or launch a child executable. `ait-server` is intentionally
 not an npm command and remains available through the declared native/server
 channels.
 
-The detailed package, source, build, and mixed-license contract is centralized
-in [`docs/distribution.md`](docs/distribution.md). Each component subtree also
-retains its exact `LICENSE` and `NOTICE` files.
+## License map
+
+The root [`LICENSE`](LICENSE) is explicit: root release controls,
+documentation, `ait-core/**`, `ait-runner/**`, `ait-python/**`, and
+`ait-node/**` are Apache-2.0. The sole component exception is
+`ait-server/**`, which is AGPL-3.0-only. Each component subtree retains its
+exact `LICENSE` and `NOTICE`; bundling does not relicense either component.
+No commercial or proprietary license applies to a public 1.0 source path.
+
+The detailed package, source, build, and license contract is centralized in
+[`docs/distribution.md`](docs/distribution.md).

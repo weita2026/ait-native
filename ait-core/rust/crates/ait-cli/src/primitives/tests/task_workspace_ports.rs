@@ -82,12 +82,6 @@ impl ait_core::task_store::TaskStore for FakeWorkflowContextTaskStore {
         ))
     }
 
-    fn restart_task(&self, _task_id: &str) -> PlanStoreResult<JsonValue> {
-        Err(PlanStoreError::Invalid(
-            "workflow context fake does not restart tasks".to_string(),
-        ))
-    }
-
     fn mark_task_published(
         &self,
         _task_id: &str,
@@ -885,66 +879,6 @@ fn task_audit_decisions_accept_local_stores_and_task_record_line_snapshot_remote
         json!("Fallback audit change")
     );
     assert_eq!(missing_remote.task_audit_requests, vec!["RCT-2"]);
-}
-
-#[test]
-fn restart_local_reads_accept_task_and_change_store_traits() {
-    let task_store = FakeTaskStore::default();
-    let change_store = FakeChangeStore::default();
-    task_local_create_with_task_store(
-        &task_store,
-        "fixture-ait",
-        "Restart task",
-        "Exercise restart read helper",
-        Some("LCT"),
-        None,
-        None,
-        None,
-    )
-    .expect("create local task");
-    change_local_create_with_change_store(
-        &change_store,
-        "fixture-ait",
-        "LCT-1",
-        "Restart change",
-        "main",
-        Some("LCC"),
-        Some("SNP-BASE"),
-    )
-    .expect("create local change");
-
-    let task = restart_local_task_read_with_task_store(&task_store, "LCT-1")
-        .expect("read restart local task");
-    assert_eq!(string_field(&task, "task_id").as_deref(), Some("LCT-1"));
-    let change = restart_local_change_read_with_change_store(&change_store, "LCC-1")
-        .expect("read restart local change");
-    assert_eq!(string_field(&change, "change_id").as_deref(), Some("LCC-1"));
-    let change_rows = restart_local_change_rows_with_change_store(&change_store, "LCT-1")
-        .expect("read restart local change rows");
-    assert_eq!(change_rows.len(), 1);
-    assert_eq!(
-        string_field(&change_rows[0], "change_id").as_deref(),
-        Some("LCC-1")
-    );
-    TaskWorkflowTaskCloser::close_task(&task_store, "LCT-1", "canceled")
-        .expect("close restart task");
-    TaskWorkflowChangeCloser::close_change(&change_store, "LCC-1", "archived")
-        .expect("archive restart change");
-    let restarted_task = restart_local_task_reactivate_with_task_store(&task_store, "LCT-1")
-        .expect("reactivate restart task");
-    assert_eq!(
-        string_field(&restarted_task, "status").as_deref(),
-        Some("active")
-    );
-    let reopened_change = restart_local_change_reopen_with_change_store(&change_store, "LCC-1")
-        .expect("reopen restart change");
-    assert_eq!(
-        string_field(&reopened_change, "status").as_deref(),
-        Some("draft")
-    );
-    let err = restart_local_task_read_with_task_store(&task_store, "LCT-MISSING")
-        .expect_err("missing restart task should fail");
-    assert!(err.contains("Unknown task: LCT-MISSING"));
 }
 
 #[test]

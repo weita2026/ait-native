@@ -76,6 +76,64 @@ fn native_patchset_publish_rejects_bound_worktree_retarget_requirement() {
 }
 
 #[test]
+fn native_patchset_publish_uses_unchanged_remote_base_when_local_main_is_ahead() {
+    let (base_url, log, state, handle) = spawn_fake_remote();
+    let (temp, worktree) = init_worktree_repo(&base_url);
+    let root = temp.path();
+    state.lock().unwrap().remote_head_snapshot_id = Some(FIXTURE_BASE_SNAPSHOT_ID.to_string());
+
+    let feature_snapshot = json_output(
+        &worktree,
+        &[
+            "snapshot",
+            "create",
+            "--message",
+            "direct remote candidate",
+            "--json",
+        ],
+    );
+    let feature_snapshot_id = feature_snapshot["snapshot_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    write_file(
+        &root.join("src/lib.rs"),
+        "pub fn repo_root_version() -> &'static str { \"local only\" }\n",
+    );
+    let local_main_snapshot_id = seed_snapshot(root, "advance local main only");
+    assert_ne!(local_main_snapshot_id, feature_snapshot_id);
+
+    let patchset = json_output(
+        &worktree,
+        &[
+            "patchset",
+            "publish",
+            "--change",
+            "RC-1",
+            "--summary",
+            "Keep direct Remote ancestry",
+            "--json",
+        ],
+    );
+    assert_eq!(
+        patchset["base_snapshot_id"].as_str(),
+        Some(FIXTURE_BASE_SNAPSHOT_ID)
+    );
+    assert_eq!(
+        patchset["revision_snapshot_id"].as_str(),
+        Some(feature_snapshot_id.as_str())
+    );
+
+    handle.join().unwrap();
+    let logged = log.lock().unwrap().clone();
+    assert!(logged
+        .iter()
+        .any(|row| row.method == "POST"
+            && row.url == "/v1/native/repository-authorities/7/changes/RC-1/patchsets"));
+}
+
+#[test]
 fn native_workflow_ready_retarget_uses_executing_worktree_not_root_binding() {
     let (base_url, _log, state, handle) = spawn_fake_remote();
     let (temp, worktree) = init_worktree_repo(&base_url);
@@ -134,6 +192,40 @@ fn native_workflow_ready_retarget_uses_executing_worktree_not_root_binding() {
         Some(advanced_main_snapshot_id.as_str())
     );
     assert_eq!(retarget["needs_retarget"].as_bool(), Some(true));
+
+    handle.join().unwrap();
+}
+
+#[test]
+fn native_workflow_ready_uses_remote_base_when_only_local_main_advanced() {
+    let (base_url, _log, state, handle) = spawn_fake_remote();
+    let (temp, worktree) = init_worktree_repo(&base_url);
+    let root = temp.path();
+    state.lock().unwrap().remote_head_snapshot_id = Some(FIXTURE_BASE_SNAPSHOT_ID.to_string());
+
+    write_file(
+        &root.join("src/lib.rs"),
+        "pub fn repo_root_version() -> &'static str { \"local only\" }\n",
+    );
+    let advanced_local_main_snapshot_id = seed_snapshot(root, "advance local main only");
+
+    let repo = RepoRuntime::discover_from_path(&worktree).unwrap();
+    let payload = workflow_ready_payload(&repo, "RC-1", None).unwrap();
+    let retarget = &payload["worktree_retarget"];
+
+    assert_ne!(
+        retarget["target_base_snapshot_id"].as_str(),
+        Some(advanced_local_main_snapshot_id.as_str())
+    );
+    assert_eq!(
+        retarget["target_base_snapshot_id"].as_str(),
+        Some(FIXTURE_BASE_SNAPSHOT_ID)
+    );
+    assert_eq!(
+        retarget["fork_snapshot_id"].as_str(),
+        Some(FIXTURE_BASE_SNAPSHOT_ID)
+    );
+    assert_eq!(retarget["needs_retarget"].as_bool(), Some(false));
 
     handle.join().unwrap();
 }

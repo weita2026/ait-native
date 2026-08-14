@@ -1,4 +1,7 @@
 use super::*;
+use crate::foundation::server_content_binary_db::{
+    ServerBinaryTreePackView, ServerBinaryTreeReadCache,
+};
 
 impl<D> BinaryDbNativeRepositoryService<D>
 where
@@ -149,11 +152,6 @@ where
         snapshot_index: u32,
         record: &ServerBinarySnapshotRecord,
     ) -> Result<JsonValue, NativeRepositoryError> {
-        let snapshot_id = server_snapshot_id_from_hash48(record.snapshot_hash48);
-        let payload = self
-            .content_snapshots()
-            .snapshot_payload(read, record)
-            .map_err(binary_native_repository_store_error)?;
         let parent_indexes = self
             .content_snapshots()
             .snapshot_parent_indexes(read, snapshot_index, record)
@@ -175,15 +173,24 @@ where
                 Ok(server_snapshot_id_from_hash48(parent.snapshot_hash48))
             })
             .collect::<Result<Vec<_>, NativeRepositoryError>>()?;
-        let parent_snapshot_id = parent_snapshot_ids.first().cloned();
-        let root_tree_pack_index = record
-            .root_tree_pack_index_plus1
-            .checked_sub(1)
-            .ok_or_else(|| {
-                NativeRepositoryError::internal(format!(
-                    "Canonical snapshot {snapshot_index} has no root tree pack"
-                ))
-            })?;
+        self.canonical_snapshot_value_with_parent_snapshot_ids(
+            read,
+            repo_name,
+            snapshot_index,
+            record,
+            &parent_snapshot_ids,
+        )
+    }
+
+    pub(super) fn canonical_snapshot_value_with_parent_snapshot_ids(
+        &self,
+        read: &BinaryDbReadTxn<'_, D>,
+        repo_name: &str,
+        snapshot_index: u32,
+        record: &ServerBinarySnapshotRecord,
+        parent_snapshot_ids: &[String],
+    ) -> Result<JsonValue, NativeRepositoryError> {
+        let root_tree_pack_index = canonical_snapshot_root_tree_pack_index(snapshot_index, record)?;
         let root_tree_pack = self
             .repository_content()
             .tree_pack_at_with_read(read, root_tree_pack_index)
@@ -191,6 +198,57 @@ where
         self.repository_content()
             .tree_for_pack_entry_ordinal_with_read(read, &root_tree_pack, record.root_entry_ordinal)
             .map_err(binary_native_repository_store_error)?;
+        self.canonical_snapshot_value_with_root_tree_pack(
+            read,
+            repo_name,
+            snapshot_index,
+            record,
+            parent_snapshot_ids,
+            root_tree_pack,
+        )
+    }
+
+    pub(super) fn canonical_snapshot_value_with_parent_snapshot_ids_and_manifest_cache(
+        &self,
+        read: &BinaryDbReadTxn<'_, D>,
+        manifest_cache: &ServerBinaryTreeReadCache,
+        repo_name: &str,
+        snapshot_index: u32,
+        record: &ServerBinarySnapshotRecord,
+        parent_snapshot_ids: &[String],
+    ) -> Result<JsonValue, NativeRepositoryError> {
+        let root_tree_pack_index = canonical_snapshot_root_tree_pack_index(snapshot_index, record)?;
+        let root_tree_pack = manifest_cache
+            .projected_tree_pack_at(root_tree_pack_index)
+            .map_err(binary_native_repository_store_error)?;
+        manifest_cache
+            .projected_tree_for_pack_entry_ordinal(&root_tree_pack, record.root_entry_ordinal)
+            .map_err(binary_native_repository_store_error)?;
+        self.canonical_snapshot_value_with_root_tree_pack(
+            read,
+            repo_name,
+            snapshot_index,
+            record,
+            parent_snapshot_ids,
+            root_tree_pack,
+        )
+    }
+
+    fn canonical_snapshot_value_with_root_tree_pack(
+        &self,
+        read: &BinaryDbReadTxn<'_, D>,
+        repo_name: &str,
+        snapshot_index: u32,
+        record: &ServerBinarySnapshotRecord,
+        parent_snapshot_ids: &[String],
+        root_tree_pack: ServerBinaryTreePackView,
+    ) -> Result<JsonValue, NativeRepositoryError> {
+        let snapshot_id = server_snapshot_id_from_hash48(record.snapshot_hash48);
+        let payload = self
+            .content_snapshots()
+            .snapshot_payload(read, record)
+            .map_err(binary_native_repository_store_error)?;
+        let parent_snapshot_id = parent_snapshot_ids.first().cloned();
         let snapshot_kind = match record.snapshot_meta & ServerBinarySnapshotRecord::META_KIND_MASK
         {
             0 => "line",
@@ -221,6 +279,20 @@ where
             "capabilities": remote_sync_capabilities(),
         }))
     }
+}
+
+fn canonical_snapshot_root_tree_pack_index(
+    snapshot_index: u32,
+    record: &ServerBinarySnapshotRecord,
+) -> Result<u32, NativeRepositoryError> {
+    record
+        .root_tree_pack_index_plus1
+        .checked_sub(1)
+        .ok_or_else(|| {
+            NativeRepositoryError::internal(format!(
+                "Canonical snapshot {snapshot_index} has no root tree pack"
+            ))
+        })
 }
 
 fn snapshot_meta_from_value(value: &JsonValue) -> Result<u8, NativeRepositoryError> {

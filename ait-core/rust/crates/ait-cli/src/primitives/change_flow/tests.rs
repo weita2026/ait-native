@@ -8,13 +8,10 @@ use ait_core::task_workflow_http_adapter::{
     TaskWorkflowMutationReceiptBuilder, TaskWorkflowPatchsetCiRunner,
     TaskWorkflowPatchsetCiStatusReader, TaskWorkflowPatchsetLister, TaskWorkflowPatchsetPublisher,
     TaskWorkflowPatchsetSelector, TaskWorkflowPolicyEvaluator, TaskWorkflowPolicyReader,
-    TaskWorkflowPolicyWaiverCreator, TaskWorkflowRemoteTaskCloser, TaskWorkflowRemoteTaskRestarter,
-    TaskWorkflowRepoJobLister, TaskWorkflowReviewLister, TaskWorkflowReviewRecorder,
-    TaskWorkflowReviewRequester,
+    TaskWorkflowPolicyWaiverCreator, TaskWorkflowRemoteTaskCloser, TaskWorkflowRepoJobLister,
+    TaskWorkflowReviewLister, TaskWorkflowReviewRecorder, TaskWorkflowReviewRequester,
 };
-use ait_core::task_workflow_remote_traits::{
-    TaskWorkflowPatchsetCiRemote, TaskWorkflowTaskLifecycleRemote,
-};
+use ait_core::task_workflow_remote_traits::TaskWorkflowPatchsetCiRemote;
 
 #[derive(Debug, Default)]
 struct FakeCloseoutRemote {
@@ -76,13 +73,7 @@ struct FakeLandReader;
 struct FakeLandRetryer;
 
 #[derive(Debug, Default)]
-struct FakeTaskLifecycleRemote;
-
-#[derive(Debug, Default)]
 struct FakeRemoteTaskCloser;
-
-#[derive(Debug, Default)]
-struct FakeRemoteTaskRestarter;
 
 fn fake_closeout_remote_stats(closed: bool) -> TaskWorkflowHttpClientStats {
     TaskWorkflowHttpClientStats {
@@ -97,35 +88,6 @@ fn fake_closeout_remote_stats(closed: bool) -> TaskWorkflowHttpClientStats {
     }
 }
 
-impl TaskWorkflowRemoteTaskCloser for FakeTaskLifecycleRemote {
-    fn close_task(
-        &mut self,
-        task_id: &str,
-        status: &str,
-        repo_name: Option<&str>,
-    ) -> TaskWorkflowHttpClientResult<JsonValue> {
-        Ok(json!({
-            "task_id": task_id,
-            "status": status,
-            "repo_name": repo_name,
-        }))
-    }
-}
-
-impl TaskWorkflowRemoteTaskRestarter for FakeTaskLifecycleRemote {
-    fn restart_task(
-        &mut self,
-        task_id: &str,
-        repo_name: Option<&str>,
-    ) -> TaskWorkflowHttpClientResult<JsonValue> {
-        Ok(json!({
-            "task_id": task_id,
-            "repo_name": repo_name,
-            "restarted": true,
-        }))
-    }
-}
-
 impl TaskWorkflowRemoteTaskCloser for FakeRemoteTaskCloser {
     fn close_task(
         &mut self,
@@ -137,20 +99,6 @@ impl TaskWorkflowRemoteTaskCloser for FakeRemoteTaskCloser {
             "task_id": task_id,
             "status": status,
             "repo_name": repo_name,
-        }))
-    }
-}
-
-impl TaskWorkflowRemoteTaskRestarter for FakeRemoteTaskRestarter {
-    fn restart_task(
-        &mut self,
-        task_id: &str,
-        repo_name: Option<&str>,
-    ) -> TaskWorkflowHttpClientResult<JsonValue> {
-        Ok(json!({
-            "task_id": task_id,
-            "repo_name": repo_name,
-            "restarted": true,
         }))
     }
 }
@@ -775,20 +723,6 @@ impl TaskWorkflowRemoteTaskCloser for FakeCloseoutRemote {
             "status": status,
             "repo_name": repo_name,
             "closed": true
-        }))
-    }
-}
-
-impl TaskWorkflowRemoteTaskRestarter for FakeCloseoutRemote {
-    fn restart_task(
-        &mut self,
-        task_id: &str,
-        repo_name: Option<&str>,
-    ) -> TaskWorkflowHttpClientResult<JsonValue> {
-        Ok(json!({
-            "task_id": task_id,
-            "repo_name": repo_name,
-            "restarted": true
         }))
     }
 }
@@ -1480,38 +1414,11 @@ fn task_closeout_helpers_accept_closeout_remote_trait() {
     let completed = task_complete_with_closeout_remote(&mut remote, "RT-0083", "fixture-ait")
         .expect("complete task");
     assert_eq!(completed["status"], json!("completed"));
-
-    let restarted = task_restart_with_closeout_remote(&mut remote, "RT-0083", "fixture-ait")
-        .expect("restart task");
-    assert_eq!(restarted["task_id"], json!("RT-0083"));
-    assert_eq!(restarted["restarted"], json!(true));
 }
 
 #[test]
-fn task_lifecycle_helpers_accept_task_lifecycle_remote_trait() {
-    let mut remote = FakeTaskLifecycleRemote;
-    let remote_port: &mut dyn TaskWorkflowTaskLifecycleRemote = &mut remote;
-
-    let closed =
-        task_close_with_closeout_remote(remote_port, "RT-0083", "abandoned", "fixture-ait")
-            .expect("close task");
-    assert_eq!(closed["task_id"], json!("RT-0083"));
-    assert_eq!(closed["status"], json!("abandoned"));
-
-    let completed = task_complete_with_closeout_remote(remote_port, "RT-0083", "fixture-ait")
-        .expect("complete task");
-    assert_eq!(completed["status"], json!("completed"));
-
-    let restarted = task_restart_with_closeout_remote(remote_port, "RT-0083", "fixture-ait")
-        .expect("restart task");
-    assert_eq!(restarted["task_id"], json!("RT-0083"));
-    assert_eq!(restarted["restarted"], json!(true));
-}
-
-#[test]
-fn task_lifecycle_helpers_accept_single_capability_ports() {
+fn task_close_helpers_accept_single_capability_port() {
     let mut closer = FakeRemoteTaskCloser;
-    let mut restarter = FakeRemoteTaskRestarter;
 
     let closed =
         task_close_with_closeout_remote(&mut closer, "RT-0083", "abandoned", "fixture-ait")
@@ -1522,11 +1429,6 @@ fn task_lifecycle_helpers_accept_single_capability_ports() {
     let completed = task_complete_with_closeout_remote(&mut closer, "RT-0083", "fixture-ait")
         .expect("complete task");
     assert_eq!(completed["status"], json!("completed"));
-
-    let restarted = task_restart_with_closeout_remote(&mut restarter, "RT-0083", "fixture-ait")
-        .expect("restart task");
-    assert_eq!(restarted["task_id"], json!("RT-0083"));
-    assert_eq!(restarted["restarted"], json!(true));
 }
 
 #[test]

@@ -27,14 +27,13 @@ pub use crate::task_workflow_remote_traits::{
     TaskWorkflowRemoteChangeCreator, TaskWorkflowRemoteChangeDetailReader,
     TaskWorkflowRemoteChangeLister, TaskWorkflowRemoteChangeReader,
     TaskWorkflowRemoteTaskAuditReader, TaskWorkflowRemoteTaskCloser, TaskWorkflowRemoteTaskCreator,
-    TaskWorkflowRemoteTaskLister, TaskWorkflowRemoteTaskReader, TaskWorkflowRemoteTaskRestarter,
-    TaskWorkflowRepoJobLister, TaskWorkflowRepositoryEnsurer, TaskWorkflowRepositoryReader,
-    TaskWorkflowRepositoryRemote, TaskWorkflowReviewLister, TaskWorkflowReviewRecorder,
-    TaskWorkflowReviewRemote, TaskWorkflowReviewRequester, TaskWorkflowReviewerInboxReader,
+    TaskWorkflowRemoteTaskLister, TaskWorkflowRemoteTaskReader, TaskWorkflowRepoJobLister,
+    TaskWorkflowRepositoryEnsurer, TaskWorkflowRepositoryReader, TaskWorkflowRepositoryRemote,
+    TaskWorkflowReviewLister, TaskWorkflowReviewRecorder, TaskWorkflowReviewRemote,
+    TaskWorkflowReviewRequester, TaskWorkflowReviewerInboxReader,
     TaskWorkflowSnapshotExistenceReader, TaskWorkflowSnapshotMetadataReader,
-    TaskWorkflowSnapshotRemote, TaskWorkflowTaskLifecycleRemote, TaskWorkflowTaskQueueReader,
-    TaskWorkflowTaskRecordRemote, TaskWorkflowTaskRemote, TaskWorkflowZstdPackReader,
-    TaskWorkflowZstdPackUploader,
+    TaskWorkflowSnapshotRemote, TaskWorkflowTaskQueueReader, TaskWorkflowTaskRecordRemote,
+    TaskWorkflowTaskRemote, TaskWorkflowZstdPackReader, TaskWorkflowZstdPackUploader,
 };
 
 mod closeout_remote;
@@ -902,17 +901,6 @@ where
     R: TaskWorkflowRemoteTaskCloser + ?Sized,
 {
     remote.close_task(task_id, status, repo_name)
-}
-
-pub fn restart_task_with_task_workflow_closeout_remote<R>(
-    remote: &mut R,
-    task_id: &str,
-    repo_name: Option<&str>,
-) -> TaskWorkflowHttpClientResult<Value>
-where
-    R: TaskWorkflowRemoteTaskRestarter + ?Sized,
-{
-    remote.restart_task(task_id, repo_name)
 }
 
 #[cfg(test)]

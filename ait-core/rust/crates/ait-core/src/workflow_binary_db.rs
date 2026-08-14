@@ -1403,34 +1403,6 @@ impl<B: BinaryDb, const WRITE_LAYOUT: u32> TaskStore for BinaryDbWorkflowStore<B
         TaskStore::get_task(self, task_id)
     }
 
-    fn restart_task(&self, task_id: &str) -> PlanStoreResult<JsonValue> {
-        let mut write = BinaryDbWriteTxn::begin(&self.db, BinaryDbCommandScope::General)
-            .map_err(storage_error)?;
-        let rows = self.read_rows_with_access(&write).map_err(storage_error)?;
-        let task_index = self.task_index_for_id(&rows, task_id)?;
-        let mut record = self
-            .read_task_record(&write, task_index)
-            .map_err(storage_error)?;
-        if !record.is_terminal() {
-            return Err(PlanStoreError::Invalid(format!(
-                "Task {task_id} is not terminal and cannot be restarted"
-            )));
-        }
-        record.task_meta &= !(0b0100_0000 | 0b1000_0000);
-        record.local_meta &= !0b10;
-        record.closed_at_s = 0;
-        record.updated_at_s = now_s()?;
-        write
-            .overwrite_record(
-                Self::task_record_file(),
-                task_index,
-                &record.encode().map_err(storage_error)?,
-            )
-            .map_err(storage_error)?;
-        write.commit().map_err(storage_error)?;
-        TaskStore::get_task(self, task_id)
-    }
-
     fn mark_task_published(
         &self,
         task_id: &str,
@@ -1670,37 +1642,6 @@ impl<B: BinaryDb, const WRITE_LAYOUT: u32> ChangeStore for BinaryDbWorkflowStore
         }
         record.updated_at_s = now;
         record.archived_at_s = now;
-        write
-            .overwrite_record(
-                Self::change_record_file(),
-                change_index,
-                &record.encode().map_err(storage_error)?,
-            )
-            .map_err(storage_error)?;
-        write.commit().map_err(storage_error)?;
-        ChangeStore::get_change(self, change_id)
-    }
-
-    fn reopen_change_as_draft(&self, change_id: &str) -> PlanStoreResult<JsonValue> {
-        let mut write = BinaryDbWriteTxn::begin(&self.db, BinaryDbCommandScope::General)
-            .map_err(storage_error)?;
-        let rows = self.read_rows_with_access(&write).map_err(storage_error)?;
-        let change_index = self.change_index_for_id(&rows, change_id)?;
-        let mut record = LocalChangeRecord::decode(
-            &write
-                .read_record(Self::change_record_file(), change_index)
-                .map_err(storage_error)?,
-        )
-        .map_err(storage_error)?;
-        if record.change_meta & CHANGE_META_LIFECYCLE_MASK != 3 {
-            return Err(PlanStoreError::Invalid(format!(
-                "Change {change_id} is not archived"
-            )));
-        }
-        record.archived_at_s = 0;
-        record.change_meta = 0;
-        record.change_state = 0;
-        record.updated_at_s = now_s()?;
         write
             .overwrite_record(
                 Self::change_record_file(),

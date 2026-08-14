@@ -14,7 +14,10 @@ destination=$3
 evidence_output=$4
 template_root=${repo_root}/release/monorepo
 readme_template=${template_root}/README.template
+contributing_template=${template_root}/CONTRIBUTING.template
+security_template=${template_root}/SECURITY.template
 git_attributes_template=${template_root}/.gitattributes
+root_license_scope=${template_root}/LICENSE.scope
 transform_tool=${repo_root}/ci/release_monorepo_transform.mjs
 product_document=${repo_root}/docs/distribution.md
 if [[ ! -e ${product_document} && ! -L ${product_document} ]]; then
@@ -51,7 +54,7 @@ if [[ ! ${coordinator_manifest_hash} =~ ^[0-9a-f]{64}$ ||
   exit 64
 fi
 
-for command in jq node tar; do
+for command in awk grep jq node tar; do
   if ! command -v "${command}" >/dev/null 2>&1; then
     printf 'required command is unavailable: %s\n' "${command}" >&2
     exit 69
@@ -84,7 +87,10 @@ for output in "${destination}" "${evidence_output}"; do
 done
 if [[ ! -d ${template_root} || -L ${template_root} ||
   ! -f ${readme_template} || -L ${readme_template} ||
+  ! -f ${contributing_template} || -L ${contributing_template} ||
+  ! -f ${security_template} || -L ${security_template} ||
   ! -f ${git_attributes_template} || -L ${git_attributes_template} ||
+  ! -f ${root_license_scope} || -L ${root_license_scope} ||
   ! -f ${transform_tool} || -L ${transform_tool} ||
   ! -f ${product_document} || -L ${product_document} ||
   ! -f ${receipt_workflow} || -L ${receipt_workflow} ||
@@ -154,6 +160,12 @@ if ! jq -e '
       to: "../ait-core/rust/crates/ait-py/Cargo.toml"
     }
   ] and
+  all(.components[];
+    if .source_repository == "ait-server" then
+      .license == "AGPL-3.0-only"
+    else
+      .license == "Apache-2.0"
+    end) and
   ([.distributions[] | select(.channel == "github")] | length) == 1 and
   (.distributions[] | select(.channel == "github") |
     .role == "product" and
@@ -240,6 +252,63 @@ validate_archive() {
   done <"${verbose}"
 }
 
+validate_subtree_license() {
+  local subtree=$1
+  local repository=$2
+  local license=$3
+  local license_file=${subtree}/LICENSE
+  local notice_file=${subtree}/NOTICE
+  local agpl_marker commercial_marker
+  if [[ ! -f ${license_file} || -L ${license_file} ||
+    ! -f ${notice_file} || -L ${notice_file} ]]; then
+    printf '%s must export regular root LICENSE and NOTICE files\n' \
+      "${repository}" >&2
+    return 65
+  fi
+  commercial_marker=$(find "${subtree}" -type f \
+    \( -iname '*commercial*' -o -iname '*proprietary*' \
+    -o -iname '*licenseref*' -o -iname '*license-ref*' \) -print -quit)
+  if [[ -n ${commercial_marker} ]]; then
+    printf 'public source subtree %s contains an unauthorized commercial license marker: %s\n' \
+      "${repository}" "${commercial_marker}" >&2
+    return 65
+  fi
+  agpl_marker=$(find "${subtree}" -type f -iname '*agpl*' -print -quit)
+  if [[ -n ${agpl_marker} && ${license} == Apache-2.0 ]]; then
+    printf 'Apache source subtree %s contains a foreign license marker: %s\n' \
+      "${repository}" "${agpl_marker}" >&2
+    return 65
+  fi
+  case "${license}" in
+    Apache-2.0)
+      if ! grep -Fq 'Apache License' "${license_file}" ||
+        ! grep -Fq 'Version 2.0' "${license_file}" ||
+        grep -Fq 'GNU AFFERO GENERAL PUBLIC LICENSE' "${license_file}" ||
+        grep -Fq 'LicenseRef-' "${license_file}"; then
+        printf 'Apache source subtree %s has an invalid root LICENSE\n' \
+          "${repository}" >&2
+        return 65
+      fi
+      ;;
+    AGPL-3.0-only)
+      if [[ ${repository} != ait-server ]] ||
+        ! grep -Fq 'GNU AFFERO GENERAL PUBLIC LICENSE' "${license_file}" ||
+        ! grep -Fq 'Version 3, 19 November 2007' "${license_file}" ||
+        ! grep -Fq 'END OF TERMS AND CONDITIONS' "${license_file}" ||
+        grep -Fq 'LicenseRef-' "${license_file}"; then
+        printf 'AGPL source subtree %s has an invalid or incomplete root LICENSE\n' \
+          "${repository}" >&2
+        return 65
+      fi
+      ;;
+    *)
+      printf 'unsupported public source license for %s: %s\n' \
+        "${repository}" "${license}" >&2
+      return 65
+      ;;
+  esac
+}
+
 temporary_root=$(mktemp -d "${TMPDIR:-/tmp}/ait-monorepo-export.XXXXXX")
 cleanup() {
   case "${temporary_root}" in
@@ -323,6 +392,7 @@ for repository in "${repositories[@]}"; do
   while IFS= read -r -d '' file; do
     if [[ -x ${file} ]]; then chmod 0755 "${file}"; else chmod 0644 "${file}"; fi
   done < <(find "${subtree}" -type f -print0)
+  validate_subtree_license "${subtree}" "${repository}" "${license}"
   source_content_sha256=$(tree_digest "${subtree}" "${repository}-source")
   source_manifest_hash=$(jq -r '.source_manifest_hash' "${evidence}")
   source_snapshot_created_at=$(jq -r '.source_snapshot_created_at' "${evidence}")
@@ -378,7 +448,26 @@ mkdir -p \
 cp "${readme_template}" "${staging}/README.md"
 node "${transform_tool}" "${staging}/README.md" \
   '@AIT_RELEASE_TAG@' "${family_tag}"
+cp "${contributing_template}" "${staging}/CONTRIBUTING.md"
+cp "${security_template}" "${staging}/SECURITY.md"
 cp "${template_root}/NOTICE" "${staging}/NOTICE"
+if [[ $(grep -c '^---$' "${staging}/ait-core/LICENSE") -ne 1 ]]; then
+  printf 'ait-core LICENSE must contain one scope/body delimiter\n' >&2
+  exit 65
+fi
+apache_terms=${temporary_root}/Apache-2.0.terms
+awk 'body { print } /^---$/ { body = 1 }' \
+  "${staging}/ait-core/LICENSE" >"${apache_terms}"
+if ! grep -Fq 'Apache License' "${apache_terms}" ||
+  ! grep -Fq 'Version 2.0' "${apache_terms}"; then
+  printf 'ait-core LICENSE does not contain the complete Apache-2.0 terms\n' >&2
+  exit 65
+fi
+{
+  awk '1' "${root_license_scope}"
+  printf '\n---\n'
+  awk '1' "${apache_terms}"
+} >"${staging}/LICENSE"
 cp "${git_attributes_template}" "${staging}/.gitattributes"
 cp "${template_root}/.gitignore" "${staging}/.gitignore"
 cp "${template_root}/build-release.sh" "${staging}/build-release.sh"
@@ -401,6 +490,11 @@ mv "${temporary_root}/native-platforms.json" "${platform_contract}"
 cp "${endpoint_defaults}" "${staging}/release/endpoint-publication.defaults.json"
 cp "${staging}/ait-core/LICENSE" "${staging}/LICENSES/Apache-2.0.txt"
 cp "${staging}/ait-server/LICENSE" "${staging}/LICENSES/AGPL-3.0-only.txt"
+if find "${staging}" -type f -name 'LicenseRef-AIT-Commercial.txt' \
+  -print -quit | grep -q .; then
+  printf 'public monorepo contains an unauthorized commercial license file\n' >&2
+  exit 65
+fi
 root_receipt_workflow=${staging}/.github/workflows/ait-release-component-receipts.yml
 root_promotion_workflow=${staging}/.github/workflows/ait-release-protected-promotion.yml
 root_endpoint_workflow=${staging}/.github/workflows/pypi-publish.yml
@@ -416,6 +510,9 @@ node "${transform_tool}" \
 find "${staging}" -type d -exec chmod 0755 {} +
 chmod 0644 \
   "${staging}/README.md" \
+  "${staging}/CONTRIBUTING.md" \
+  "${staging}/SECURITY.md" \
+  "${staging}/LICENSE" \
   "${staging}/NOTICE" \
   "${staging}/.gitattributes" \
   "${staging}/.gitignore" \

@@ -636,6 +636,7 @@ if [[ ${public_head} != "${AIT_RELEASE_GIT_COMMIT}" ||
 fi
 for required_build_input in \
   build-release.sh build-release.ps1 build-release.mjs \
+  CONTRIBUTING.md SECURITY.md \
   ait-core/rust/Cargo.lock ait-server/rust/Cargo.lock ait-runner/Cargo.lock \
   ait-python/pyproject.toml ait-node/package.json \
   docs/distribution.md ait-release-family.json ait-monorepo-source.json; do

@@ -400,7 +400,7 @@ validate_npm_remote_state() {
         if [[ ${require_published} == true ]]; then
           printf 'npm package is still unpublished: %s@%s\n' \
             "${package_name}" "${release_version}" >&2
-          return 65
+          return 75
         fi
         ;;
       200)
@@ -409,7 +409,7 @@ validate_npm_remote_state() {
           if [[ ${require_published} == true ]]; then
             printf 'npm package version is still unpublished: %s@%s\n' \
               "${package_name}" "${release_version}" >&2
-            return 65
+            return 75
           fi
         else
           remote_integrity=$(jq -er --arg version "${release_version}" \
@@ -441,6 +441,31 @@ validate_npm_remote_state() {
         ;;
     esac
   done < <(npm_package_rows)
+}
+
+wait_for_npm_remote_state() {
+  local attempt=1
+  local max_attempts=12
+  local readback_status
+  while ((attempt <= max_attempts)); do
+    if validate_npm_remote_state true; then
+      return 0
+    else
+      readback_status=$?
+    fi
+    if [[ ${readback_status} != 75 ]]; then
+      return "${readback_status}"
+    fi
+    if ((attempt == max_attempts)); then
+      printf 'npm package set did not become fully visible after %s attempts\n' \
+        "${max_attempts}" >&2
+      return 65
+    fi
+    printf 'waiting for npm package-set visibility (%s/%s)\n' \
+      "${attempt}" "${max_attempts}" >&2
+    sleep 5
+    attempt=$((attempt + 1))
+  done
 }
 
 validate_pypi_remote_state() {
@@ -1265,7 +1290,7 @@ case "${mode}" in
         "${package_name}" "${package_version}" \
         "${publish_dist_tag}"
     done <"${npm_rows}"
-    validate_npm_remote_state true
+    wait_for_npm_remote_state
     package_count=$(wc -l <"${npm_rows}" | tr -d '[:space:]')
     jq -n \
       --arg contract 'ait.release.endpoint.npm/v1' \
@@ -1578,7 +1603,7 @@ case "${mode}" in
     require_preflight_receipt
     validate_public_tag
     validate_github_release_state true
-    validate_npm_remote_state true
+    wait_for_npm_remote_state
     wait_for_pypi_remote_state
     for receipt_name in github pypi npm homebrew apt; do
       require_regular_file "${evidence_root}/${receipt_name}.json" \

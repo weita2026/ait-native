@@ -436,13 +436,6 @@ fn finding_identity(finding: &JsonValue, key: &str) -> Result<String, String> {
         })
 }
 
-fn short_change_id(change_ref: &str) -> &str {
-    change_ref
-        .rsplit_once('/')
-        .map(|(_, suffix)| suffix)
-        .unwrap_or(change_ref)
-}
-
 fn apply_safe_finding(
     repo: &RepoRuntime,
     finding: &JsonValue,
@@ -513,16 +506,6 @@ fn apply_safe_finding(
             let line_name = finding_identity(finding, "line_name")?;
             let result = line_archive(repo, &line_name, None)?;
             Ok(json!({"mutated": true, "operation": "archive_feature_line", "result": result}))
-        }
-        "land.local_closeout_interrupted" => {
-            let change_ref = finding_identity(finding, "change_ref")?;
-            let change_id = short_change_id(&change_ref);
-            let store = repo.change_store()?;
-            let result =
-                change_flow::change_local_close_with_change_store(&store, change_id, "landed")?;
-            Ok(
-                json!({"mutated": true, "operation": "refresh_local_change_status", "result": result}),
-            )
         }
         "land.target_sync_interrupted" => {
             let line_name = finding_identity(finding, "line_name")?;

@@ -449,17 +449,20 @@ fn task_parser_freezes_the_supported_command_surface() {
     };
     let rendered = help.to_string();
     for command in [
-        "start", "list", "show", "tokens", "audit", "land", "canceled", "restart",
+        "start", "list", "show", "tokens", "audit", "land", "canceled",
     ] {
         assert!(rendered.contains(command), "missing task command {command}");
     }
+    assert!(!rendered.contains("restart"));
     assert!(!rendered.contains("publish"));
 
-    let removed = match Cli::try_parse_from(["ait-cli", "task", "publish", "LCT-1"]) {
-        Ok(_) => panic!("removed task command must not parse"),
-        Err(error) => error,
-    };
-    assert!(removed.to_string().contains("unrecognized subcommand"));
+    for command in ["publish", "restart"] {
+        let removed = match Cli::try_parse_from(["ait-cli", "task", command, "LCT-1"]) {
+            Ok(_) => panic!("removed task command must not parse"),
+            Err(error) => error,
+        };
+        assert!(removed.to_string().contains("unrecognized subcommand"));
+    }
 }
 
 #[test]

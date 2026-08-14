@@ -737,11 +737,6 @@ impl PlanHttpClientManager {
         parse_object_payload(self.execute_json(spec)?)
     }
 
-    pub fn restart_task(&mut self, task_id: &str) -> PlanHttpClientResult<Value> {
-        let spec = build_restart_task_request_spec(&self.config, task_id)?;
-        parse_object_payload(self.execute_json(spec)?)
-    }
-
     pub fn start_plan_bound_task(
         &mut self,
         repo_name: &str,

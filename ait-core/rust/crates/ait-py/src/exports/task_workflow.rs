@@ -2612,23 +2612,6 @@ fn task_workflow_task_land_apply_direct_py(
     render_task_workflow_primitive_result(py, payload)
 }
 
-#[pyfunction(name = "task_workflow_task_restart")]
-#[pyo3(signature = (repo_root, task_id, *, local=false, remote_name=None, repo_name=None))]
-fn task_workflow_task_restart_py(
-    py: Python<'_>,
-    repo_root: &str,
-    task_id: &str,
-    local: bool,
-    remote_name: Option<&str>,
-    repo_name: Option<&str>,
-) -> PyResult<Py<PyDict>> {
-    let repo = discover_task_workflow_repo(repo_root)?;
-    let payload = py.detach(|| {
-        task_workflow_primitives::task_restart(&repo, task_id, local, remote_name, repo_name)
-    });
-    render_task_workflow_primitive_result(py, payload)
-}
-
 #[pyfunction(name = "task_remote_change_lineage_payload")]
 fn task_remote_change_lineage_payload_py(
     py: Python<'_>,
@@ -3490,7 +3473,6 @@ fn register_task_workflow(_py: Python<'_>, module: &Bound<'_, PyModule>) -> PyRe
         task_workflow_task_land_apply_direct_py,
         module
     )?)?;
-    module.add_function(wrap_pyfunction!(task_workflow_task_restart_py, module)?)?;
     module.add_function(wrap_pyfunction!(
         task_remote_change_lineage_payload_py,
         module

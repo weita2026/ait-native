@@ -226,10 +226,3 @@ pub fn build_close_task_request_spec(
 ) -> PlanHttpClientResult<PlanHttpRequestSpec> {
     TaskJson::stateless().build_close_task_request_spec(config, task_id, status)
 }
-
-pub fn build_restart_task_request_spec(
-    config: &PlanHttpClientConfig,
-    task_id: &str,
-) -> PlanHttpClientResult<PlanHttpRequestSpec> {
-    TaskJson::stateless().build_restart_task_request_spec(config, task_id)
-}

@@ -1604,7 +1604,6 @@ enum TaskCommand {
     )]
     Land(TaskLandArgs),
     Canceled(TaskCanceledArgs),
-    Restart(TaskRestartArgs),
 }
 
 #[derive(Subcommand)]
@@ -2020,17 +2019,6 @@ struct TaskCanceledArgs {
     abandoned: bool,
     #[arg(long = "exclude-later-promotion")]
     exclude_later_promotion: bool,
-    #[arg(long)]
-    local: bool,
-    #[arg(long)]
-    remote: Option<String>,
-    #[arg(long)]
-    json: bool,
-}
-
-#[derive(Args, Clone)]
-struct TaskRestartArgs {
-    task_id: String,
     #[arg(long)]
     local: bool,
     #[arg(long)]

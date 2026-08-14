@@ -134,6 +134,24 @@ pub(in crate::primitives) fn worktree_retarget_summary_with_change(
     head_snapshot_id: Option<&str>,
     authoritative_change: Option<&JsonValue>,
 ) -> Result<JsonMap<String, JsonValue>, String> {
+    worktree_retarget_summary_with_authority(
+        repo,
+        metadata,
+        current_line_name,
+        head_snapshot_id,
+        authoritative_change,
+        None,
+    )
+}
+
+pub(in crate::primitives) fn worktree_retarget_summary_with_authority(
+    repo: &RepoRuntime,
+    metadata: &JsonMap<String, JsonValue>,
+    current_line_name: Option<&str>,
+    head_snapshot_id: Option<&str>,
+    authoritative_change: Option<&JsonValue>,
+    authoritative_target_base_snapshot_id: Option<&str>,
+) -> Result<JsonMap<String, JsonValue>, String> {
     let snapshot_store = snapshot_store(repo)?;
     let mut distance_cache = SnapshotAncestorDistanceCache::default();
     let mut snapshot_distance = |ancestor_snapshot_id: Option<&str>, snapshot_id: Option<&str>| {
@@ -145,9 +163,12 @@ pub(in crate::primitives) fn worktree_retarget_summary_with_change(
         )
     };
     let target_base_line = effective_worktree_target_base_line(metadata, authoritative_change);
-    let target_base_snapshot_id = match target_base_line.as_deref() {
-        Some(line_name) => local_line_head_snapshot_id(repo, line_name)?,
-        None => None,
+    let target_base_snapshot_id = match normalized_text(authoritative_target_base_snapshot_id) {
+        Some(snapshot_id) => Some(snapshot_id),
+        None => match target_base_line.as_deref() {
+            Some(line_name) => local_line_head_snapshot_id(repo, line_name)?,
+            None => None,
+        },
     };
     let mut fork_snapshot_id = metadata_string(metadata, "fork_snapshot_id")
         .or_else(|| authoritative_change.and_then(|value| string_field(value, "fork_snapshot_id")));

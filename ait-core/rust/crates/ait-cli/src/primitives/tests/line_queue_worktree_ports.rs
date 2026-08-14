@@ -75,12 +75,6 @@ impl ait_core::change_store::ChangeStore for FakeLineChangeUsageStore {
         ))
     }
 
-    fn reopen_change_as_draft(&self, _change_id: &str) -> PlanStoreResult<JsonValue> {
-        Err(PlanStoreError::Invalid(
-            "line usage fake store does not reopen changes".to_string(),
-        ))
-    }
-
     fn land_change(
         &self,
         _change_id: &str,
@@ -421,6 +415,123 @@ fn task_start_remote_preflight_accepts_task_remote_trait() {
     .expect("remote preflight");
 
     assert_eq!(line_row["head_snapshot_id"], json!(snapshot_id));
+}
+
+#[test]
+fn task_start_remote_preflight_uses_an_available_remote_head_independently_of_local_main() {
+    let repo_tmp = tempdir().expect("repo tempdir");
+    let repo_root = repo_tmp.path();
+    init_repo(&InitRequest {
+        root: repo_root.to_path_buf(),
+        name: Some("fixture-ait".to_string()),
+        default_line: "main".to_string(),
+        policy_profile: "prototype".to_string(),
+        default_author_mode: "ai_with_human_review".to_string(),
+        default_model: None,
+        repair_existing: false,
+    })
+    .expect("init repo");
+    fs::write(repo_root.join("src.txt"), "remote base\n").expect("base fixture");
+    let base = create_local_snapshot(
+        repo_root.to_string_lossy().as_ref(),
+        "fixture-ait",
+        "main",
+        Some("remote base fixture"),
+        false,
+    )
+    .expect("create base snapshot");
+    let base_id = required_string_field(&base, "snapshot_id").expect("base snapshot id");
+    fs::write(repo_root.join("src.txt"), "local ahead\n").expect("local fixture");
+    let local = create_local_snapshot(
+        repo_root.to_string_lossy().as_ref(),
+        "fixture-ait",
+        "main",
+        Some("local ahead fixture"),
+        false,
+    )
+    .expect("create local head snapshot");
+    let local_id = required_string_field(&local, "snapshot_id").expect("local snapshot id");
+    let repo = RepoRuntime::discover_from_path(repo_root).expect("repo runtime");
+    let remote_row = RemoteRow {
+        name: "origin".to_string(),
+        url: "https://ait.example".to_string(),
+        repo_name: Some("fixture-ait".to_string()),
+    };
+    let mut remote = FakeWorkspaceTaskRemote {
+        lines: vec![json!({
+            "line_name": "main",
+            "status": "active",
+            "head_snapshot_id": base_id,
+        })],
+        ..Default::default()
+    };
+
+    let line_row = task_start_remote_base_line_preflight_with_task_remote(
+        &repo,
+        &remote_row,
+        &mut remote,
+        "fixture-ait",
+        "main",
+    )
+    .expect("local-ahead authority should accept its imported Remote head");
+    assert_eq!(line_row["head_snapshot_id"], json!(base_id));
+
+    let feature = ensure_task_feature_line(&repo, "RCT-0099", "main", Some(&base_id))
+        .expect("feature Line should use the Remote Change fork");
+    assert_eq!(feature["head_snapshot_id"], json!(base_id));
+    assert_ne!(feature["head_snapshot_id"], json!(local_id));
+
+    repo.binary_db_stores::<SNAPSHOT_BINARY_DB_WRITE_LAYOUT>()
+        .lines()
+        .set_line_head("main", Some(&base_id), "2026-08-14T00:00:01Z")
+        .expect("move local main behind the imported Remote head");
+    remote.lines[0]["head_snapshot_id"] = json!(local_id);
+    let remote_ahead = task_start_remote_base_line_preflight_with_task_remote(
+        &repo,
+        &remote_row,
+        &mut remote,
+        "fixture-ait",
+        "main",
+    )
+    .expect("remote-ahead authority should accept its imported Remote head");
+    assert_eq!(remote_ahead["head_snapshot_id"], json!(local_id));
+
+    fs::write(repo_root.join("src.txt"), "local divergent\n").expect("divergent fixture");
+    let divergent = create_local_snapshot(
+        repo_root.to_string_lossy().as_ref(),
+        "fixture-ait",
+        "main",
+        Some("local divergent fixture"),
+        false,
+    )
+    .expect("create divergent local head");
+    let divergent_id =
+        required_string_field(&divergent, "snapshot_id").expect("divergent snapshot id");
+    assert_ne!(divergent_id, local_id);
+    let remote_diverged = task_start_remote_base_line_preflight_with_task_remote(
+        &repo,
+        &remote_row,
+        &mut remote,
+        "fixture-ait",
+        "main",
+    )
+    .expect("divergent local Line should accept its imported Remote head");
+    assert_eq!(remote_diverged["head_snapshot_id"], json!(local_id));
+
+    remote.lines[0]["head_snapshot_id"] = json!("SNP-FFFFFFFFFFFF");
+    let error = task_start_remote_base_line_preflight_with_task_remote(
+        &repo,
+        &remote_row,
+        &mut remote,
+        "fixture-ait",
+        "main",
+    )
+    .expect_err("missing Remote head must fail before Task allocation");
+    assert!(error.contains("not present in local storage"), "{error}");
+    assert!(
+        error.contains("ait pull --line main --remote origin"),
+        "{error}"
+    );
 }
 
 #[test]

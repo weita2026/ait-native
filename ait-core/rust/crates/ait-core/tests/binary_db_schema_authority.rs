@@ -2,7 +2,7 @@ use sha2::{Digest, Sha256};
 use std::path::PathBuf;
 
 const BINARY_DB_V0_SHA256: &str =
-    "41989f27330ed4d2a8b9fefc2cdd332812ea00c09d4540f023a1cc5f59fd66be";
+    "668ee2276e51d962223c18a418b6591aa8f813b95d5a526547d2f277d08e4817";
 const BINARY_DB_V0_BYTES: &[u8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../../docs/binary_db_v0.md"
@@ -1173,8 +1173,9 @@ fn task_close_time_is_one_task_record_field_and_never_a_side_file() {
     }
     for invariant in [
         "Zero means\neither that the effective Task state is not terminal or that an offline legacy\nconversion had no source close time for a terminal Task.",
-        "Native v0 writers must never create a\nterminal Task with zero close time.",
-        "readers, validators, and recovery accept terminal plus zero as\nan unknown historical close time",
+        "Native writers never clear terminal status to reopen a Task.",
+        "Native v0 writers must never create a terminal\nTask with zero close time.",
+        "readers, validators, and recovery accept terminal plus zero as an unknown\nhistorical close time",
         "For a terminal Task whose legacy source\nformat demonstrably did not record close time, it writes `closed_at_s = 0`",
         "must not substitute creation time, update time, conversion time, or any other\ninferred timestamp.",
     ] {

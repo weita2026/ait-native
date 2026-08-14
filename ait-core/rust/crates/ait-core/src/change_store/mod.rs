@@ -47,7 +47,6 @@ pub trait ChangeStore {
         publication_state: Option<&str>,
     ) -> PlanStoreResult<Value>;
     fn close_change(&self, change_id: &str, status: &str) -> PlanStoreResult<Value>;
-    fn reopen_change_as_draft(&self, change_id: &str) -> PlanStoreResult<Value>;
     fn land_change(
         &self,
         change_id: &str,
@@ -163,16 +162,6 @@ where
     S: ChangeStore + ?Sized,
 {
     store.close_change(change_id, status)
-}
-
-pub fn reopen_change_as_draft_with_change_store<S>(
-    store: &S,
-    change_id: &str,
-) -> PlanStoreResult<Value>
-where
-    S: ChangeStore + ?Sized,
-{
-    store.reopen_change_as_draft(change_id)
 }
 
 pub fn land_change_with_change_store<S>(

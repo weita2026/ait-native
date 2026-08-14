@@ -2198,6 +2198,228 @@ fn history_promotion_rejects_active_or_completed_plan_bindings_without_a_receipt
 }
 
 #[test]
+fn history_promotion_replay_validates_expected_publication_identity_without_fingerprint_drift() {
+    let db = initialized_db("history-promotion-expected-publication-replay");
+    let snapshot_ids = seed_history_content(&db, 1);
+    let store = BinaryDbServerWorkflowV0Store::new(db.clone());
+    let mut request = history_promotion_request(&snapshot_ids);
+    request["idempotency_key"] = json!("history-promotion:expected-publication-replay");
+
+    let first = store
+        .prepare_history_promotion("repo", &request)
+        .expect("prepare initial publication receipt");
+    let task_id = first["entries"][0]["task_id"]
+        .as_str()
+        .expect("remote Task id")
+        .to_string();
+    let change_ref = first["entries"][0]["change_ref"]
+        .as_str()
+        .expect("remote Change ref")
+        .to_string();
+
+    let mut exact_retry = request.clone();
+    exact_retry["entries"][0]["expected_remote_task_id"] = json!(task_id);
+    exact_retry["entries"][0]["expected_remote_change_ref"] = json!(change_ref);
+    let replayed = store
+        .prepare_history_promotion("repo", &exact_retry)
+        .expect("expected identities must preserve idempotent replay");
+    assert_eq!(replayed["replayed"], true);
+    assert_eq!(replayed["entries"][0]["task_id"], task_id);
+    assert_eq!(replayed["entries"][0]["change_ref"], change_ref);
+
+    let mut task_first_retry = exact_retry.clone();
+    task_first_retry["entries"][0]["expected_remote_change_ref"] = JsonValue::Null;
+    let task_first = store
+        .prepare_history_promotion("repo", &task_first_retry)
+        .expect("task-first publication interruption must remain replayable");
+    assert_eq!(task_first["replayed"], true);
+    assert_eq!(task_first["entries"][0]["task_id"], task_id);
+
+    let mut mismatched_retry = exact_retry.clone();
+    mismatched_retry["entries"][0]["expected_remote_task_id"] = json!("RCT-9999");
+    let mismatch = store
+        .prepare_history_promotion("repo", &mismatched_retry)
+        .expect_err("replayed mapping mismatch must fail closed");
+    assert!(
+        mismatch.contains("HISTORY_PROMOTION_RECEIPT_CONFLICT"),
+        "{mismatch}"
+    );
+
+    let mut orphan_change = exact_retry;
+    orphan_change["entries"][0]["expected_remote_task_id"] = JsonValue::Null;
+    let orphan_error = store
+        .prepare_history_promotion("repo", &orphan_change)
+        .expect_err("expected Change without its Task must fail");
+    assert!(
+        orphan_error.contains("expected_remote_change_ref requires expected_remote_task_id"),
+        "{orphan_error}"
+    );
+
+    let read = BinaryDbReadTxn::new(&db);
+    assert_eq!(
+        read.record_count(WorkflowBinaryV0Codec::task_file())
+            .expect("Task count after replay validation"),
+        1
+    );
+    assert_eq!(
+        read.record_count(WorkflowBinaryV0Codec::change_file())
+            .expect("Change count after replay validation"),
+        1
+    );
+    assert_eq!(
+        read.record_count(WorkflowBinaryV0Codec::patchset_file())
+            .expect("Patchset count after replay validation"),
+        2
+    );
+}
+
+#[test]
+fn history_promotion_rejects_a_fully_retired_exact_receipt_without_replacement() {
+    let db = initialized_db("history-promotion-retired-receipt-owner");
+    let snapshot_ids = seed_history_content(&db, 1);
+    let item_ref = "HISTORY-RETIRED-RECEIPT-01";
+    let plan = BinaryDbServerPlanService::new(db.clone())
+        .create_plan(
+            "repo",
+            &atomic_plan_payload("Retired receipt rejection", item_ref),
+        )
+        .expect("create retired receipt Plan");
+    let store = BinaryDbServerWorkflowV0Store::new(db.clone());
+    let mut request = history_promotion_request(&snapshot_ids);
+    request["idempotency_key"] = json!("history-promotion:retired-receipt-first");
+    request["entries"][0]["task"]["plan_id"] = plan["plan_id"].clone();
+    request["entries"][0]["task"]["origin_plan_revision_id"] = plan["head_revision_id"].clone();
+    request["entries"][0]["task"]["plan_item_ref"] = json!(item_ref);
+
+    let first = store
+        .prepare_history_promotion("repo", &request)
+        .expect("prepare first receipt owner");
+    let old_task_id = first["entries"][0]["task_id"]
+        .as_str()
+        .expect("old Task id")
+        .to_string();
+    let old_change_ref = first["entries"][0]["change_ref"]
+        .as_str()
+        .expect("old Change ref")
+        .to_string();
+    let old_receipt_patchset_id = first["entries"][0]["receipt_patchset_id"]
+        .as_str()
+        .expect("old receipt Patchset id")
+        .to_string();
+    store
+        .close_task(&old_task_id, &json!({"status": "abandoned"}))
+        .expect("cancel old receipt Task");
+
+    let mut incomplete_retirement = request.clone();
+    incomplete_retirement["idempotency_key"] =
+        json!("history-promotion:retired-receipt-incomplete");
+    let incomplete_error = store
+        .prepare_history_promotion("repo", &incomplete_retirement)
+        .expect_err("active Change under canceled Task must not be replaced");
+    assert!(
+        incomplete_error.contains("no longer has reusable Task/Change ownership"),
+        "{incomplete_error}"
+    );
+
+    store
+        .close_change(&old_change_ref, &json!({"status": "archived"}))
+        .expect("archive old receipt Change");
+    let mut expected_retry = request.clone();
+    expected_retry["idempotency_key"] = json!("history-promotion:retired-receipt-expected");
+    expected_retry["entries"][0]["expected_remote_task_id"] = json!(old_task_id);
+    expected_retry["entries"][0]["expected_remote_change_ref"] = json!(old_change_ref);
+    let expected_error = store
+        .prepare_history_promotion("repo", &expected_retry)
+        .expect_err("retired expected owner must never be replaced");
+    assert!(
+        expected_error.contains("no longer has reusable Task/Change ownership"),
+        "{expected_error}"
+    );
+
+    let mut unbound_retry = request;
+    unbound_retry["idempotency_key"] = json!("history-promotion:retired-receipt-unbound");
+    let unbound_error = store
+        .prepare_history_promotion("repo", &unbound_retry)
+        .expect_err("retired receipt must block even an unbound replacement request");
+    assert!(
+        unbound_error.contains("no longer has reusable Task/Change ownership"),
+        "{unbound_error}"
+    );
+
+    assert_eq!(
+        store
+            .get_task(None, &old_task_id)
+            .expect("read retired receipt Task")["status"],
+        "abandoned"
+    );
+    assert_eq!(
+        store
+            .get_change(None, &old_change_ref)
+            .expect("read retired receipt Change")["status"],
+        "archived"
+    );
+    assert_eq!(
+        store
+            .get_patchset(None, &old_receipt_patchset_id)
+            .expect("read immutable retired receipt Patchset")["source_kind"],
+        "imported_local_land_receipt"
+    );
+    let read = BinaryDbReadTxn::new(&db);
+    assert_eq!(
+        read.record_count(WorkflowBinaryV0Codec::task_file())
+            .expect("Task count after rejected replacement"),
+        1
+    );
+    assert_eq!(
+        read.record_count(WorkflowBinaryV0Codec::change_file())
+            .expect("Change count after rejected replacement"),
+        1
+    );
+    assert_eq!(
+        read.record_count(WorkflowBinaryV0Codec::patchset_file())
+            .expect("Patchset count after rejected replacement"),
+        2
+    );
+    assert_eq!(
+        read.record_count(WorkflowBinaryV0Codec::snapshot_link_file())
+            .expect("Snapshot Link count after rejected replacement"),
+        1
+    );
+}
+
+#[test]
+fn history_promotion_rejects_a_missing_expected_publication_owner_before_append() {
+    let db = initialized_db("history-promotion-missing-expected-owner");
+    let snapshot_ids = seed_history_content(&db, 1);
+    let store = BinaryDbServerWorkflowV0Store::new(db.clone());
+    let mut request = history_promotion_request(&snapshot_ids);
+    request["idempotency_key"] = json!("history-promotion:missing-expected-owner");
+    request["entries"][0]["expected_remote_task_id"] = json!("RCT-1412");
+
+    let error = store
+        .prepare_history_promotion("repo", &request)
+        .expect_err("missing expected receipt owner must fail before allocation");
+    assert!(error.contains("has no exact reusable receipt"), "{error}");
+
+    let read = BinaryDbReadTxn::new(&db);
+    assert_eq!(
+        read.record_count(WorkflowBinaryV0Codec::task_file())
+            .expect("Task count after missing expected owner"),
+        0
+    );
+    assert_eq!(
+        read.record_count(WorkflowBinaryV0Codec::change_file())
+            .expect("Change count after missing expected owner"),
+        0
+    );
+    assert_eq!(
+        read.record_count(WorkflowBinaryV0Codec::patchset_file())
+            .expect("Patchset count after missing expected owner"),
+        0
+    );
+}
+
+#[test]
 fn history_promotion_reuses_receipts_when_an_unlanded_chain_is_extended() {
     let db = initialized_db("history-promotion-extended-retry");
     let snapshot_ids = seed_history_content(&db, 2);

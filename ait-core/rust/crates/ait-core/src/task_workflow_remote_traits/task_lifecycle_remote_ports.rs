@@ -10,21 +10,3 @@ pub trait TaskWorkflowRemoteTaskCloser {
         repo_name: Option<&str>,
     ) -> TaskWorkflowHttpClientResult<Value>;
 }
-
-pub trait TaskWorkflowRemoteTaskRestarter {
-    fn restart_task(
-        &mut self,
-        task_id: &str,
-        repo_name: Option<&str>,
-    ) -> TaskWorkflowHttpClientResult<Value>;
-}
-
-pub trait TaskWorkflowTaskLifecycleRemote:
-    TaskWorkflowRemoteTaskCloser + TaskWorkflowRemoteTaskRestarter
-{
-}
-
-impl<R> TaskWorkflowTaskLifecycleRemote for R where
-    R: TaskWorkflowRemoteTaskCloser + TaskWorkflowRemoteTaskRestarter + ?Sized
-{
-}

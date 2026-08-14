@@ -1257,18 +1257,6 @@ impl HttpWorkflowCloseoutRemotePy {
         render_json_dict(py, payload)
     }
 
-    #[pyo3(signature = (task_id, *, repo_name=None))]
-    fn restart_task(
-        &mut self,
-        py: Python<'_>,
-        task_id: &str,
-        repo_name: Option<&str>,
-    ) -> PyResult<Py<PyDict>> {
-        let payload = py
-            .detach(|| self.adapter.restart_task(task_id, repo_name))
-            .map_err(plan_http_py_error)?;
-        render_json_dict(py, payload)
-    }
 }
 
 #[pyfunction(name = "normalize_remote_text")]
