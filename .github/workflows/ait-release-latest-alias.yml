@@ -1,0 +1,162 @@
+name: ait release latest alias
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_id:
+        description: Exact published release-family identity
+        required: true
+        type: string
+      endpoint_config_sha256:
+        description: SHA-256 of the canonical endpoint configuration
+        required: true
+        type: string
+      endpoint_config_b64:
+        description: Base64 of the canonical endpoint configuration
+        required: true
+        type: string
+      operator_status_sha256:
+        description: SHA-256 of the successful endpoint operator status
+        required: true
+        type: string
+      operator_status_b64:
+        description: Base64 of the successful endpoint operator status
+        required: true
+        type: string
+      promote_exact_release:
+        description: Move only supported mutable aliases to the exact release
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  attestations: write
+  contents: write
+  id-token: write
+  packages: write
+
+concurrency:
+  group: ait-release-latest-alias-${{ inputs.release_id }}
+  cancel-in-progress: false
+
+jobs:
+  promote:
+    name: Promote and read back exact mutable aliases
+    environment:
+      name: pypi
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out the reviewed release-control source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          path: control
+          persist-credentials: false
+
+      - name: Select fixed Node.js and npm registry
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '22'
+          registry-url: https://registry.npmjs.org
+
+      - name: Set up the OCI manifest client
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - name: Log in to the declared OCI registry
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Decode and bind the exact approved evidence
+        shell: bash
+        env:
+          AIT_ENDPOINT_CONFIG_B64: ${{ inputs.endpoint_config_b64 }}
+          AIT_ENDPOINT_CONFIG_SHA256: ${{ inputs.endpoint_config_sha256 }}
+          AIT_OPERATOR_STATUS_B64: ${{ inputs.operator_status_b64 }}
+          AIT_OPERATOR_STATUS_SHA256: ${{ inputs.operator_status_sha256 }}
+          AIT_RELEASE_CONFIRM: ${{ inputs.promote_exact_release }}
+          AIT_RELEASE_ID: ${{ inputs.release_id }}
+          AIT_RELEASE_REPOSITORY: ${{ github.repository }}
+          AIT_RELEASE_SOURCE_REF: ${{ github.ref }}
+        run: |
+          set -euo pipefail
+          test "${AIT_RELEASE_REPOSITORY}" = 'weita2026/ait-native'
+          test "${AIT_RELEASE_SOURCE_REF}" = 'refs/heads/main'
+          test "${AIT_RELEASE_CONFIRM}" = 'true'
+          [[ "${AIT_RELEASE_ID}" =~ ^REL-FAM-[0-9A-F]{16}$ ]]
+          [[ "${AIT_ENDPOINT_CONFIG_SHA256}" =~ ^[0-9a-f]{64}$ ]]
+          [[ "${AIT_OPERATOR_STATUS_SHA256}" =~ ^[0-9a-f]{64}$ ]]
+          test "$(git -C control rev-parse HEAD)" = "${GITHUB_SHA}"
+          test -z "$(git -C control status --porcelain --untracked-files=all)"
+
+          endpoint_config="${GITHUB_WORKSPACE}/endpoint-config.json"
+          operator_status="${GITHUB_WORKSPACE}/operator-status.json"
+          printf '%s' "${AIT_ENDPOINT_CONFIG_B64}" | base64 --decode >"${endpoint_config}"
+          printf '%s' "${AIT_OPERATOR_STATUS_B64}" | base64 --decode >"${operator_status}"
+          test "$(sha256sum "${endpoint_config}" | awk '{print $1}')" = \
+            "${AIT_ENDPOINT_CONFIG_SHA256}"
+          test "$(sha256sum "${operator_status}" | awk '{print $1}')" = \
+            "${AIT_OPERATOR_STATUS_SHA256}"
+          bash control/ci/release_operator.sh validate-config \
+            --config "${endpoint_config}" \
+            --expected-release-id "${AIT_RELEASE_ID}" >/dev/null
+          jq -e --arg release_id "${AIT_RELEASE_ID}" \
+            --slurpfile config "${endpoint_config}" '
+            ($config[0]) as $c |
+            .contract == "ait.release.operator.status/v1" and
+            .status == "published_pending_clean_host_smoke" and
+            .release.id == $release_id and
+            .release == {id: $c.release.id, tag: $c.release.tag, version: $c.release.version}
+          ' "${operator_status}" >/dev/null
+          test -x control/ci/release_latest_alias.sh
+          mkdir "${GITHUB_WORKSPACE}/latest-alias-evidence"
+
+      - name: Promote only the exact mutable aliases
+        shell: bash
+        env:
+          AIT_NPM_TOKEN: ${{ secrets.AIT_NPM_TOKEN }}
+          AIT_RELEASE_LATEST_RELEASE_ID: ${{ inputs.release_id }}
+          GH_TOKEN: ${{ github.token }}
+          NODE_AUTH_TOKEN: ${{ secrets.AIT_NPM_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "${AIT_NPM_TOKEN}"
+          test -n "$(npm whoami --registry https://registry.npmjs.org)"
+          bash control/ci/release_latest_alias.sh apply \
+            "${GITHUB_WORKSPACE}/endpoint-config.json" \
+            "${GITHUB_WORKSPACE}/operator-status.json" \
+            "${GITHUB_WORKSPACE}/latest-alias-evidence/apply.json"
+
+      - name: Independently read back every alias
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NODE_AUTH_TOKEN: ${{ secrets.AIT_NPM_TOKEN }}
+        run: |
+          set -euo pipefail
+          bash control/ci/release_latest_alias.sh verify \
+            "${GITHUB_WORKSPACE}/endpoint-config.json" \
+            "${GITHUB_WORKSPACE}/operator-status.json" \
+            "${GITHUB_WORKSPACE}/latest-alias-evidence/readback.json"
+
+      - name: Attest the latest-alias evidence
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
+        with:
+          subject-path: latest-alias-evidence/*.json
+
+      - name: Upload the latest-alias evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ait-release-latest-alias-${{ inputs.release_id }}
+          path: latest-alias-evidence
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Remove registry credentials from the runner
+        if: ${{ always() }}
+        shell: bash
+        run: docker logout ghcr.io >/dev/null 2>&1 || true

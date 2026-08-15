@@ -9,8 +9,8 @@ frozen RC.6 release identity from historical endpoint evidence.
 
 ## RC.6 Release Identity (2026-08-15)
 
-`v1.0.0-rc.6` is the current immutable release identity. Its five source
-authorities are frozen at these AIT Snapshots:
+`v1.0.0-rc.6` is the current immutable release identity and the latest public
+AIT release. Its five source authorities are frozen at these AIT Snapshots:
 
 | Authority | Snapshot |
 | --- | --- |
@@ -27,18 +27,29 @@ is AGPL-3.0-only. Root `LICENSE`, `NOTICE`, `CONTRIBUTING.md`, and
 deterministic exporter and protected validation reject missing, altered, or
 misplaced legal and policy material.
 
-GitHub presents the RC tag as a non-draft regular Release with
-`prerelease=false`. This presentation choice does not promote registry routes
-to stable: npm uses the `rc` dist-tag, PyPI uses `1.0.0rc6`, OCI publishes the
-immutable `1.0.0-rc.6` and moving `rc` tags, Homebrew retains the RC formula,
-APT uses `testing`, and WinGet uses the validated RC artifact route. npm ships
-the direct in-process Node-API envelope and six exact-version implementation
-packages; PyPI ships the direct PyO3 binding with `ait` and `ait-server`.
+Public source commit `5427892c62cf6042632abb2f369ea5ae39824548` is bound by
+the annotated `v1.0.0-rc.6` tag and GitHub Release `370800356`. Component
+receipt run `31833306553`, protected-promotion run `31836098106`, and endpoint
+publication run `31836538473` succeeded for
+`REL-FAM-7B0B9D945B74D95D`; the Release exposes 84 checksum-bound assets and
+is a non-draft regular Release with `prerelease=false`.
 
-The exact public Git commit and annotated tag, protected workflow runs,
-Release ID, asset digests, endpoint receipts, and external readback results
-are bound by the RC.6 protected release dossier. They are derived by the
-script-only operator and are never guessed or copied from an earlier RC.
+RC.6 is the approved default/latest candidate without being renamed to
+`1.0.0`. GitHub `latest`, every npm package's `latest` dist-tag, and both
+GHCR images' `latest` tag resolve to the already-published RC.6 identities;
+their `rc` aliases remain in place. PyPI has no mutable dist-tag and pip
+excludes prereleases by default, so its selectors remain
+`ait-native==1.0.0rc6` or `pip install --pre ait-native`. Homebrew exposes the
+latest RC through `ait-native-rc`, APT exposes it through `testing`, and the
+WinGet files remain validation assets until a community manifest is reviewed
+and merged. None of these native RC routes authorizes a synthetic stable
+`1.0.0` artifact.
+
+The RC.6 protected release dossier binds the exact public Git commit and tag,
+workflow runs, Release ID, asset digests, endpoint receipts, and external
+readback. Mutable latest aliases are a separate, idempotent routing operation:
+they never rebuild a component, replace an immutable version, move the Git
+tag, or change the five source Snapshot authorities.
 
 ## Previous Public RC.5 Record (2026-08-14)
 
@@ -603,8 +614,8 @@ The post-publication package names and commands are:
 | Homebrew | after adding the release tap, `brew install ait-native-rc`; stable uses `brew install ait-native` |
 | apt | after adding the signed AIT repository, `sudo apt install ait-native` |
 | WinGet | RC validation uses `winget install --manifest <generated-manifest-directory>`; stable uses `winget install --id Weita.AitNative --exact` |
-| PyPI | `python -m pip install ait-native==1.0.0rc6`; stable uses `ait-native==1.0.0` |
-| npm | `npm install --global @wa120/ait-native@1.0.0-rc.6`; stable uses `@wa120/ait-native@1.0.0` |
+| PyPI | `python -m pip install ait-native==1.0.0rc6` or `python -m pip install --pre ait-native`; PyPI has no mutable `latest` alias |
+| npm | `npm install --global @wa120/ait-native` resolves `latest` to `1.0.0-rc.6`; exact and `@rc` selectors remain supported |
 
 The signed APT route must be added and searched before installation:
 
@@ -619,10 +630,10 @@ apt-cache search --names-only '^ait-runner$'
 sudo apt install ait-native
 ```
 
-The RC.5 publisher performs the same signed update and both exact-name searches
+The RC.6 publisher performs the same signed update and both exact-name searches
 in an isolated APT client root. It writes successful `apt_cache_search`
 evidence only after both names are found. These identifiers are the release
-contract, not a claim that RC.5 is already live; publication still requires
+contract, not a claim that RC.6 is already live; publication still requires
 the frozen family, signatures, clean-host evidence, and public readback below.
 
 ## Platform Matrix
@@ -791,11 +802,48 @@ workflow. All package and endpoint writes remain inside the `pypi` protected
 GitHub environment.
 
 Prerequisites are `bash`, Git, `jq`, Node.js, `base64`, a SHA-256 utility, and
-an authenticated `gh` CLI for live workflow binding or dispatch. The public
-repository must already contain one reviewed, clean deterministic export with
-an immutable family tag resolving to its current commit. Produce that export
-with the existing script after selecting and landing the five source
-Snapshots:
+an authenticated `gh` CLI for live workflow binding or dispatch. Start only
+from the five canonical sibling repository roots. In particular, do not run a
+release from a recovery copy, a task worktree, or a directory whose private
+`.ait` authority is not the retained canonical Binary DB. `remote land` stores
+the landed Snapshot in the local Binary DB that executes the command; using a
+second recovery root therefore produces a second local authority even when
+both roots point at the same Remote.
+
+First create a new, empty release-record directory. The authority preflight
+checks all five repository indexes, identities, clean workspaces, selected
+Snapshots, canonical `main` ancestry, and Remote URLs. The source-bundle
+coordinator then materializes the exact five Snapshot authorities without
+copying a recovery `.ait` directory:
+
+```bash
+export AIT_CANONICAL_CORE=/absolute/path/to/canonical/ait-core
+export AIT_RELEASE_RECORDS=/absolute/path/to/new/release-records
+mkdir -p "${AIT_RELEASE_RECORDS}"
+
+./ci/release_authority_preflight.sh \
+  "${AIT_CANONICAL_CORE}" \
+  "${AIT_RELEASE_RECORDS}/00-authority.json"
+./ci/release_source_bundles.sh \
+  "${AIT_CANONICAL_CORE}" \
+  "${AIT_RELEASE_RECORDS}/source-bundles"
+```
+
+The public repository settings are part of the release boundary, not an
+informal one-time setup. Before every dispatch, verify that the default branch
+is `main`, the active `refs/tags/v*` ruleset blocks update, deletion, and
+non-fast-forward operations without bypass, and both `pypi` plus the selected
+`rc-promotion` or `stable-promotion` environment have required reviewers. The
+repository-level GitHub immutable-release switch is recorded separately: it
+protects only future Releases and must not be enabled until the endpoint
+publisher has been migrated to upload every asset to a draft before publishing
+it. The current exact tag ruleset, checksum readback, and protected-environment
+evidence remain authoritative for already-published RCs.
+
+The public repository must then contain one reviewed, clean deterministic
+export with an immutable family tag resolving to its current commit. Produce
+that export with the existing script after selecting and landing the five
+source Snapshots:
 
 ```bash
 AIT_RELEASE_COORDINATOR_SNAPSHOT=SNP-XXXXXXXXXXXX \
@@ -803,7 +851,7 @@ AIT_RELEASE_COORDINATOR_MANIFEST_HASH=<64-lowercase-hex> \
 AIT_RELEASE_COORDINATOR_CREATED_AT=<unix-seconds> \
 ./ci/release_monorepo_export.sh \
   /absolute/path/to/ait-release-family.json \
-  /absolute/path/to/source-bundles \
+  "${AIT_RELEASE_RECORDS}/source-bundles" \
   /absolute/path/to/ait-native-export \
   /absolute/path/to/export-evidence.json
 ```
@@ -815,8 +863,6 @@ tag, an invalid source mapping, or inconsistent RC/stable/Python versions:
 
 ```bash
 export AIT_PUBLIC_SOURCE=/absolute/path/to/clean/ait-native
-export AIT_RELEASE_RECORDS=/absolute/path/to/new/release-records
-mkdir -p "${AIT_RELEASE_RECORDS}"
 
 cd "${AIT_PUBLIC_SOURCE}"
 ./build-release.sh --validate-only --git-commit "$(git rev-parse HEAD)"
@@ -881,10 +927,62 @@ while Darwin and Windows must read back no `libc` selector. Success also
 includes `apt-cache search` visibility for `ait-native` and `ait-runner`. RC
 WinGet output stops at validated release assets by contract;
 stable WinGet still requires the generated community manifest to be submitted,
-reviewed, merged, and independently found with `winget search`. Keep the four
-JSON records with the release dossier. Any rerun must use a new output path and
-bind a new successful workflow run; scripts never relabel or overwrite earlier
-evidence.
+reviewed, merged, and independently found with `winget search`.
+
+For a release that the repository owner explicitly chooses as the default,
+promote only mutable aliases after the exact endpoint status above succeeds.
+The approval value is the exact `REL-FAM-*` ID from `03-endpoints.json`, not a
+version wildcard. Production promotion runs only through the protected `pypi`
+GitHub environment so the maintainer machine never needs the npm or GHCR
+credential. Dispatch the reviewed workflow from public `main` with the exact,
+checksum-bound operator records:
+
+```bash
+sha256_file() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" | awk '{print $1}'
+  else
+    shasum -a 256 "$1" | awk '{print $1}'
+  fi
+}
+
+endpoint_config="${AIT_RELEASE_RECORDS}/03-endpoints.json"
+operator_status="${AIT_RELEASE_RECORDS}/04-status.json"
+gh workflow run ait-release-latest-alias.yml \
+  --repo weita2026/ait-native \
+  --ref main \
+  -f release_id="$(jq -r '.release.id' "${endpoint_config}")" \
+  -f endpoint_config_sha256="$(sha256_file "${endpoint_config}")" \
+  -f endpoint_config_b64="$(base64 <"${endpoint_config}" | tr -d '\r\n')" \
+  -f operator_status_sha256="$(sha256_file "${operator_status}")" \
+  -f operator_status_b64="$(base64 <"${operator_status}" | tr -d '\r\n')" \
+  -f promote_exact_release=true
+```
+
+Approve that exact pending deployment. The workflow verifies the annotated Git
+tag and public commit, all seven npm versions, both immutable OCI digests, and
+the retained `rc` tags before any write; it then invokes
+`release_latest_alias.sh` in `apply` and independent `verify` modes, attests
+both JSON records, and uploads them as
+`ait-release-latest-alias-<REL-FAM-ID>`. Direct local `apply` is only an
+equivalent break-glass route for a machine that already has the same bounded
+npm, GHCR, and GitHub credentials; it is not the normal release SOP.
+
+For an RC this changes only GitHub's latest presentation, npm's `latest`
+dist-tag, and GHCR's `latest` tag; npm/GHCR `rc` remains on the same bytes.
+PyPI, Homebrew, APT, and WinGet retain their native prerelease selectors and
+no stable `1.0.0` artifact or route is synthesized. Alias rollback uses the
+same script and an older, still-valid endpoint dossier with a new explicit
+approval and evidence path; immutable package versions, tags, and assets are
+never deleted or overwritten.
+
+Run the documented clean-host install, upgrade, command-smoke, and uninstall
+matrix from fresh macOS, Linux, and Windows hosts after publication. Preserve
+`00-authority.json`, source-bundle evidence, export evidence, the four operator
+records, both latest-alias records, workflow artifacts, endpoint receipts,
+clean-host logs, and their SHA-256 inventory together as the permanent release
+dossier. Any rerun must use a new output path and bind a new successful
+workflow run; scripts never relabel or overwrite earlier evidence.
 
 ### Implemented package-assembly boundary
 

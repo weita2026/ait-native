@@ -35,6 +35,12 @@ const PROMOTION_WORKFLOW = path.join(
   "ait-release-protected-promotion.yml",
 );
 const ENDPOINT_WORKFLOW = path.join(ROOT, ".github", "workflows", "pypi-publish.yml");
+const LATEST_ALIAS_WORKFLOW = path.join(
+  ROOT,
+  ".github",
+  "workflows",
+  "ait-release-latest-alias.yml",
+);
 const ENDPOINT_DEFAULTS = path.join(
   ROOT,
   "release",
@@ -42,6 +48,7 @@ const ENDPOINT_DEFAULTS = path.join(
 );
 const ENDPOINT_PREPARER = path.join(ROOT, "ci", "release_endpoint_publication.sh");
 const ENDPOINT_REMOTE = path.join(ROOT, "ci", "release_endpoint_remote.sh");
+const LATEST_ALIAS = path.join(ROOT, "ci", "release_latest_alias.sh");
 const RELEASE_OPERATOR = path.join(ROOT, "ci", "release_operator.sh");
 const PROMOTION_VERIFIER = path.join(
   ROOT,
@@ -442,6 +449,7 @@ async function validateReleaseControl(family) {
     [ENDPOINT_DEFAULTS, "root endpoint defaults"],
     [ENDPOINT_PREPARER, "root endpoint publication preparer"],
     [ENDPOINT_REMOTE, "root endpoint publisher"],
+    [LATEST_ALIAS, "root latest-alias promoter"],
     [RELEASE_OPERATOR, "root release operator"],
   ]) {
     await regularFile(filePath, label);
@@ -489,6 +497,7 @@ async function validateReleaseControl(family) {
 
   const matrixTest = await readFile(RECEIPT_MATRIX_TEST, "utf8");
   const verifier = await readFile(PROMOTION_VERIFIER, "utf8");
+  const latestAlias = await readFile(LATEST_ALIAS, "utf8");
   for (const required of [
     "AIT_RELEASE_FAMILY_MANIFEST",
     "release_receipt_matrix.jq",
@@ -518,6 +527,18 @@ async function validateReleaseControl(family) {
     verifier.includes("immutable-tag-plus-hash-pinned-control-patch/v1")
   ) {
     fail("protected promotion retains release-specific source rewriting");
+  }
+  for (const required of [
+    "ait.release.latest-alias/v1",
+    "AIT_RELEASE_LATEST_RELEASE_ID",
+    "make_latest=true",
+    "npm dist-tag add",
+    "docker buildx imagetools create",
+    "immutable_version_write: false",
+  ]) {
+    if (!latestAlias.includes(required)) {
+      fail(`root latest-alias promoter is missing ${JSON.stringify(required)}`);
+    }
   }
 }
 
@@ -667,6 +688,45 @@ async function validateProtectedWorkflows() {
   ]) {
     if (endpoint.includes(forbidden)) {
       fail(`root endpoint workflow retains ${JSON.stringify(forbidden)}`);
+    }
+  }
+
+  await regularFile(LATEST_ALIAS_WORKFLOW, "root protected latest-alias workflow");
+  const latestAliasWorkflow = await readFile(LATEST_ALIAS_WORKFLOW, "utf8");
+  for (const required of [
+    "name: ait release latest alias",
+    "workflow_dispatch:",
+    "promote_exact_release:",
+    "permissions:\n  attestations: write\n  contents: write\n  id-token: write\n  packages: write",
+    "environment:\n      name: pypi",
+    "test \"${AIT_RELEASE_SOURCE_REF}\" = 'refs/heads/main'",
+    "AIT_NPM_TOKEN: ${{ secrets.AIT_NPM_TOKEN }}",
+    "NODE_AUTH_TOKEN: ${{ secrets.AIT_NPM_TOKEN }}",
+    "AIT_RELEASE_LATEST_RELEASE_ID: ${{ inputs.release_id }}",
+    "control/ci/release_latest_alias.sh apply",
+    "control/ci/release_latest_alias.sh verify",
+    "actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a",
+    "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02",
+  ]) {
+    if (!latestAliasWorkflow.includes(required)) {
+      fail(`root latest-alias workflow must contain ${JSON.stringify(required)}`);
+    }
+  }
+  for (const forbidden of [
+    "release_endpoint_publication.sh",
+    "release_endpoint_remote.sh",
+    "npm publish",
+    "twine upload",
+    "docker build ",
+    "git push",
+    "gh release create",
+    "gh release upload",
+    "ait release build",
+    "ait release package",
+    "ait release publish",
+  ]) {
+    if (latestAliasWorkflow.includes(forbidden)) {
+      fail(`root latest-alias workflow contains publication or build behavior ${JSON.stringify(forbidden)}`);
     }
   }
 }
@@ -1172,6 +1232,7 @@ async function validateBuildInputs(expectedGitCommit) {
   }
   for (const required of [
     ".github/workflows/ait-release-component-receipts.yml",
+    ".github/workflows/ait-release-latest-alias.yml",
     ".github/workflows/ait-release-protected-promotion.yml",
     ".github/workflows/pypi-publish.yml",
     ".gitattributes",
@@ -1186,6 +1247,7 @@ async function validateBuildInputs(expectedGitCommit) {
     "ci/native_bootstrap_matrix.json",
     "ci/release_endpoint_publication.sh",
     "ci/release_endpoint_remote.sh",
+    "ci/release_latest_alias.sh",
     "ci/release_operator.sh",
     "ci/release_protected_promotion.sh",
     "ci/release_receipt_matrix.jq",
