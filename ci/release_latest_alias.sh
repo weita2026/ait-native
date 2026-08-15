@@ -47,6 +47,75 @@ oci_digest() {
     jq -er 'select(type == "string" and test("^sha256:[0-9a-f]{64}$"))'
 }
 
+readonly readback_attempts=12
+readonly readback_delay_seconds=5
+
+wait_for_github_latest() {
+  local expected=$1
+  local attempt=1
+  local actual
+  while ((attempt <= readback_attempts)); do
+    actual=$(gh api "repos/${repository}/releases/latest" --jq '.tag_name' 2>/dev/null || true)
+    if [[ ${actual} == "${expected}" ]]; then
+      printf '%s\n' "${actual}"
+      return 0
+    fi
+    if ((attempt < readback_attempts)); then
+      printf 'waiting for GitHub latest visibility (%s/%s)\n' \
+        "${attempt}" "${readback_attempts}" >&2
+      sleep "${readback_delay_seconds}"
+    fi
+    attempt=$((attempt + 1))
+  done
+  return 1
+}
+
+wait_for_npm_dist_tags() {
+  local package_name=$1
+  local expected_version=$2
+  local channel=$3
+  local attempt=1
+  local tags
+  while ((attempt <= readback_attempts)); do
+    tags=$(npm view "${package_name}" dist-tags --json --registry "${npm_registry}" \
+      2>/dev/null || true)
+    if jq -e --arg version "${expected_version}" --arg channel "${channel}" '
+      .latest == $version and (if $channel == "rc" then .rc == $version else true end)
+    ' <<<"${tags}" >/dev/null 2>&1; then
+      printf '%s\n' "${tags}"
+      return 0
+    fi
+    if ((attempt < readback_attempts)); then
+      printf 'waiting for npm dist-tag visibility: %s (%s/%s)\n' \
+        "${package_name}" "${attempt}" "${readback_attempts}" >&2
+      sleep "${readback_delay_seconds}"
+    fi
+    attempt=$((attempt + 1))
+  done
+  return 1
+}
+
+wait_for_oci_digest() {
+  local reference=$1
+  local expected=$2
+  local attempt=1
+  local actual
+  while ((attempt <= readback_attempts)); do
+    actual=$(oci_digest "${reference}" 2>/dev/null || true)
+    if [[ ${actual} == "${expected}" ]]; then
+      printf '%s\n' "${actual}"
+      return 0
+    fi
+    if ((attempt < readback_attempts)); then
+      printf 'waiting for OCI tag visibility: %s (%s/%s)\n' \
+        "${reference}" "${attempt}" "${readback_attempts}" >&2
+      sleep "${readback_delay_seconds}"
+    fi
+    attempt=$((attempt + 1))
+  done
+  return 1
+}
+
 [[ $# -eq 4 ]] || usage
 mode=$1
 endpoint_config=$2
@@ -54,7 +123,7 @@ operator_status=$3
 evidence_output=$4
 [[ ${mode} == apply || ${mode} == verify ]] || usage
 
-for command in docker gh jq npm; do
+for command in docker gh jq npm sleep; do
   command -v "${command}" >/dev/null 2>&1 ||
     fail 69 "required latest-alias command is unavailable: ${command}"
 done
@@ -162,9 +231,8 @@ if [[ ${mode} == apply && ${github_before} != "${release_tag}" ]]; then
     -f make_latest=true >/dev/null
   github_write=true
 fi
-github_after=$(gh api "repos/${repository}/releases/latest" --jq '.tag_name')
-[[ ${github_after} == "${release_tag}" ]] ||
-  fail 65 'GitHub latest Release readback differs from the approved tag'
+github_after=$(wait_for_github_latest "${release_tag}") ||
+  fail 65 'GitHub latest Release did not converge to the approved tag'
 
 npm_rows=${temporary_root}/npm-rows.jsonl
 : >"${npm_rows}"
@@ -187,12 +255,9 @@ while IFS= read -r package_name; do
     package_write=true
     npm_write_count=$((npm_write_count + 1))
   fi
-  tags_after=$(npm view "${package_name}" dist-tags --json --registry "${npm_registry}")
-  if ! jq -e --arg version "${release_version}" --arg channel "${release_channel}" '
-    .latest == $version and (if $channel == "rc" then .rc == $version else true end)
-  ' <<<"${tags_after}" >/dev/null; then
-    fail 65 "npm latest/rc tag readback failed: ${package_name}"
-  fi
+  wait_for_npm_dist_tags \
+    "${package_name}" "${release_version}" "${release_channel}" >/dev/null ||
+    fail 65 "npm latest/rc tag did not converge: ${package_name}"
   jq -cn --arg package "${package_name}" --arg before "${before_latest}" \
     --arg after "${release_version}" --argjson mutated "${package_write}" \
     '{package: $package, before: (if $before == "" then null else $before end), after: $after, rc_retained: true, mutated: $mutated}' \
@@ -229,9 +294,8 @@ while IFS= read -r image; do
     image_write=true
     oci_write_count=$((oci_write_count + 1))
   fi
-  after_latest=$(oci_digest "${image}:latest")
-  [[ ${after_latest} == "${expected_digest}" ]] ||
-    fail 65 "OCI latest tag readback failed: ${image}"
+  after_latest=$(wait_for_oci_digest "${image}:latest" "${expected_digest}") ||
+    fail 65 "OCI latest tag did not converge: ${image}"
   jq -cn --arg image "${image}" --arg before "${before_latest}" \
     --arg after "${after_latest}" --argjson mutated "${image_write}" \
     '{image: $image, before: (if $before == "" then null else $before end), after: $after, rc_retained: true, mutated: $mutated}' \
