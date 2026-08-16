@@ -1,0 +1,9 @@
+cff-version: 1.2.0
+message: "If you use AIT Native in research or published software, please cite it using this metadata."
+type: software
+title: "AIT Native"
+abstract: "A language-neutral, agent-first workflow for verified repository changes."
+authors:
+  - family-names: "weita"
+repository-code: "https://github.com/weita2026/ait-native"
+url: "https://ait-native.dev/"
