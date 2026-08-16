@@ -1,0 +1,38 @@
+title: "[Idea] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Share an outcome or workflow that could make AIT more useful. Keep concrete bugs in the [issue tracker](https://github.com/weita2026/ait-native/issues/new/choose).
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or opportunity
+      description: Who experiences this, and what outcome is difficult today?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed direction
+      description: Describe the smallest useful behavior rather than prescribing an internal implementation.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Describe current workarounds or related tools when relevant.
+
+  - type: checkboxes
+    id: scope
+    attributes:
+      label: Scope check
+      options:
+        - label: This idea preserves AIT's language-neutral repository workflow.
+          required: true
+        - label: I searched existing Discussions and issues for the same idea.
+          required: true

@@ -23,7 +23,7 @@ body:
     attributes:
       label: Version context
       description: If the correction is version-specific, provide the relevant Ait version or release tag.
-      placeholder: v1.0.0-rc.5
+      placeholder: v1.0.0-rc.6
 
   - type: textarea
     id: problem
