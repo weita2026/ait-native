@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Questions and ideas
+    url: https://github.com/weita2026/ait-native/discussions
+    about: Ask usage questions, share use cases, and discuss ideas.
+  - name: Technical Documentation
+    url: https://ait-native.dev/technical/
+    about: Search the current versioned technical documentation.

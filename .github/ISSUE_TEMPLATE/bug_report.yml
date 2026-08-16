@@ -1,0 +1,72 @@
+name: Bug report
+description: Report a reproducible problem with Ait Native.
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping improve Ait Native. For usage questions and ideas, use [Discussions](https://github.com/weita2026/ait-native/discussions).
+
+  - type: input
+    id: version
+    attributes:
+      label: Ait version
+      description: Paste the output of `ait --version`.
+      placeholder: ait x.y.z
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Include your operating system, architecture, and installation channel.
+      placeholder: macOS 15, arm64, release archive
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction
+      description: List the smallest set of commands or actions that reproduces the problem.
+      placeholder: |
+        1. Run ...
+        2. Ask the agent to ...
+        3. Observe ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: What happened?
+      description: Include the exact error message or unexpected behavior.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect?
+    validations:
+      required: true
+
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Relevant diagnostics
+      description: When repository state matters, include relevant `ait status --json` output. Remove secrets, tokens, and private paths first.
+      render: shell
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched existing issues and Discussions for this problem.
+          required: true
+        - label: I removed credentials, tokens, and other sensitive data.
+          required: true
