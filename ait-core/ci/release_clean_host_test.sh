@@ -4,7 +4,7 @@ set -euo pipefail
 repo_root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 tool=${repo_root}/ci/release_clean_host.mjs
 phase_runner=${repo_root}/ci/release_clean_host_phase.mjs
-workflow=${repo_root}/.github/workflows/ait-release-clean-host.yml
+workflow=${repo_root}/.github/workflows/ait-release-prepublish-clean-host.yml
 temporary_root=$(mktemp -d "${TMPDIR:-/tmp}/ait-release-clean-host-test.XXXXXX")
 
 cleanup() {
@@ -39,14 +39,17 @@ node --check "${tool}"
 node --check "${phase_runner}"
 test "$(grep -c 'name: Activate preinstalled Linux Homebrew' "${workflow}")" = 3
 test "$(grep -c 'name: Register inbox Windows Package Manager' "${workflow}")" = 3
-grep -F 'brew_bin=/home/linuxbrew/.linuxbrew/bin' "${workflow}" >/dev/null
+grep -F 'test -x /home/linuxbrew/.linuxbrew/bin/brew' "${workflow}" >/dev/null
 grep -F 'Add-AppxPackage -RegisterByFamilyName -MainPackage Microsoft.DesktopAppInstaller_8wekyb3d8bbwe' \
   "${workflow}" >/dev/null
-test "$(grep -Fc "\$gitBash = 'C:\Program Files\Git\bin\bash.exe'" \
-  "${workflow}")" = 3
-test "$(grep -Fc 'Split-Path -Parent $gitBash | Out-File -FilePath $env:GITHUB_PATH' \
-  "${workflow}")" = 3
+grep -F 'ait-prepublish-candidate-${{ inputs.release_id }}' "${workflow}" >/dev/null
+grep -F 'ait-prepublish-clean-host-${{ inputs.release_id }}' "${workflow}" >/dev/null
+grep -F 'release_prepublish_verify.mjs qualify' "${workflow}" >/dev/null
 test "$(grep -c 'mark(checks, "immutable_image_digest")' "${phase_runner}")" = 2
+grep -F 'platformPackageName = `@wa120/ait-native-${npmTargetSuffix(row)}`' \
+  "${phase_runner}" >/dev/null
+grep -F 'fail("npm uninstall retained the target platform package")' \
+  "${phase_runner}" >/dev/null
 
 matrix=${temporary_root}/matrix.json
 node "${tool}" matrix \
@@ -55,7 +58,7 @@ node "${tool}" matrix \
   --output "${matrix}" >/dev/null
 jq -e '
   .contract == "ait.release.clean-host.matrix/v1" and
-  .matrix_revision == "distribution-target-32-2026-08-17.1" and
+  .matrix_revision == "distribution-target-32-2026-08-17.2" and
   .row_count == 32 and (.rows | length) == 32 and
   ([.rows[].id] | unique | length) == 32 and
   .counts == {
@@ -100,15 +103,22 @@ jq -n \
   --arg version "${version}" \
   --arg tag "${tag}" '
   {
-    contract: "ait.release.operator.status/v1",
-    status: "published_pending_clean_host_smoke",
+    contract: "ait.release.prepublish.candidate/v1",
+    status: "frozen_candidate_pending_clean_host",
     release: {
       id: "REL-FAM-0123456789ABCDEF",
       version: $version,
-      tag: $tag
-    }
+      tag: $tag,
+      source_commit: "1111111111111111111111111111111111111111"
+    },
+    candidate: {
+      stage_receipt_sha256: "3333333333333333333333333333333333333333333333333333333333333333"
+    },
+    public_endpoint_writes: false
   }
 ' >"${status}"
+
+export AIT_CLEAN_HOST_CANDIDATE_ARTIFACT_DIGEST=sha256:4444444444444444444444444444444444444444444444444444444444444444
 
 config_sha=$(sha256_file "${config}")
 status_sha=$(sha256_file "${status}")
@@ -127,7 +137,10 @@ jq -n \
     tag: $tag,
     source_commit: "1111111111111111111111111111111111111111",
     endpoint_config_sha256: $config_sha,
-    operator_status_sha256: $status_sha
+    operator_status_sha256: $status_sha,
+    verification_stage: "prepublication",
+    candidate_stage_receipt_sha256: "3333333333333333333333333333333333333333333333333333333333333333",
+    candidate_artifact_digest: "sha256:4444444444444444444444444444444444444444444444444444444444444444"
   }
 ' >"${release_binding}"
 
@@ -201,11 +214,11 @@ node "${tool}" aggregate \
   --output-root "${aggregate}" >/dev/null
 jq -e '
   .contract == "ait.release.clean-host.aggregate/v1" and
-  .status == "published" and
+  .status == "qualified" and
   .matrix == {admitted_rows: 32, evidence_files: 32, expected_rows: 32,
-    revision: "distribution-target-32-2026-08-17.1"} and
+    revision: "distribution-target-32-2026-08-17.2"} and
   .failures == [] and
-  .promotion == {allowed: true, terminal_for_release: false}
+  .promotion == {allowed: true, retry_same_candidate: false, terminal_for_release: false}
 ' "${aggregate}/ait-release.clean-host-status.json" >/dev/null
 test "$(wc -l <"${aggregate}/SHA256SUMS" | tr -d '[:space:]')" = 33
 test "$(find "${aggregate}/rows" -type f -name '*.json' | wc -l | tr -d '[:space:]')" = 32
@@ -223,7 +236,7 @@ expect_failure missing-row node "${tool}" aggregate \
   --output-root "${missing_aggregate}"
 jq -e --arg row_id "${missing_id}" '
   .status == "blocked" and
-  .promotion == {allowed: false, terminal_for_release: true} and
+  .promotion == {allowed: false, retry_same_candidate: true, terminal_for_release: false} and
   any(.failures[]; .row_id == $row_id and .reason == "missing_row")
 ' "${missing_aggregate}/ait-release.clean-host-status.json" >/dev/null
 
@@ -239,8 +252,28 @@ expect_failure duplicate-row node "${tool}" aggregate \
   --output-root "${duplicate_aggregate}"
 jq -e --arg row_id "${missing_id}" '
   .status == "blocked" and
-  any(.failures[]; .row_id == $row_id and .reason == "filename_mismatch")
+  any(.failures[]; .row_id == $row_id and .reason == "filename_mismatch") and
+  any(.failures[]; .row_id == $row_id and .reason == "duplicate_row") and
+  (any(.failures[]; .row_id == $row_id and .reason == "missing_row") | not)
 ' "${duplicate_aggregate}/ait-release.clean-host-status.json" >/dev/null
+
+invalid_root=${temporary_root}/invalid-rows
+cp -R "${evidence_root}" "${invalid_root}"
+jq '.status = "fail"' "${invalid_root}/${missing_id}.json" \
+  >"${invalid_root}/${missing_id}.json.new"
+mv "${invalid_root}/${missing_id}.json.new" "${invalid_root}/${missing_id}.json"
+invalid_aggregate=${temporary_root}/invalid-aggregate
+expect_failure invalid-row node "${tool}" aggregate \
+  --matrix "${matrix}" \
+  --config "${config}" \
+  --status "${status}" \
+  --evidence-root "${invalid_root}" \
+  --output-root "${invalid_aggregate}"
+jq -e --arg row_id "${missing_id}" '
+  .status == "blocked" and
+  any(.failures[]; .row_id == $row_id and .reason == "invalid_or_failed_row") and
+  (any(.failures[]; .row_id == $row_id and .reason == "missing_row") | not)
+' "${invalid_aggregate}/ait-release.clean-host-status.json" >/dev/null
 
 first_install=${temporary_root}/first.install.json
 first_upgrade=${temporary_root}/first.upgrade.json

@@ -9,8 +9,10 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  readdirSync,
   realpathSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import net from "node:net";
@@ -88,6 +90,24 @@ function requireRegularFile(file, label) {
   }
 }
 
+function requireExecutableFile(file, label) {
+  let target;
+  let stat;
+  try {
+    target = realpathSync(file);
+    stat = statSync(target);
+  } catch {
+    fail(`${label} is unavailable: ${file}`, 66);
+  }
+  if (!stat.isFile()) {
+    fail(`${label} must resolve to a regular file: ${file}`, 66);
+  }
+  if (process.platform !== "win32" && (stat.mode & 0o111) === 0) {
+    fail(`${label} is not executable: ${file}`, 66);
+  }
+  return target;
+}
+
 function readJson(file, label) {
   requireRegularFile(file, label);
   try {
@@ -138,6 +158,72 @@ function sha256File(file) {
   return sha256Bytes(readFileSync(file));
 }
 
+const candidateAssetIndexes = new Map();
+
+function candidateRoot(status) {
+  if (status.status !== "frozen_candidate_pending_clean_host") {
+    return null;
+  }
+  const root = process.env.AIT_CLEAN_HOST_CANDIDATE_ROOT ?? "";
+  if (!path.isAbsolute(root)) {
+    fail("prepublish clean-host phase requires an absolute candidate root", 64);
+  }
+  let stat;
+  try {
+    stat = lstatSync(root);
+  } catch {
+    fail(`prepublish candidate root is unavailable: ${root}`, 66);
+  }
+  if (!stat.isDirectory() || stat.isSymbolicLink()) {
+    fail("prepublish candidate root must be a real directory", 66);
+  }
+  const canonical = realpathSync(root);
+  const receipt = path.join(canonical, "ait-release.prepublish-stage.json");
+  requireRegularFile(receipt, "prepublish candidate stage receipt");
+  if (sha256File(receipt) !== status.candidate?.stage_receipt_sha256) {
+    fail("prepublish candidate stage receipt digest differs from its status");
+  }
+  return canonical;
+}
+
+function candidateAssetIndex(root) {
+  const assets = path.join(root, "assets");
+  if (candidateAssetIndexes.has(assets)) {
+    return candidateAssetIndexes.get(assets);
+  }
+  const checksumFile = path.join(assets, "SHA256SUMS");
+  requireRegularFile(checksumFile, "prepublish candidate asset checksums");
+  const index = new Map();
+  for (const line of readFileSync(checksumFile, "utf8").split(/\r?\n/)) {
+    if (!line) {
+      continue;
+    }
+    const match = line.match(/^([0-9a-f]{64})  ([A-Za-z0-9][A-Za-z0-9._@+-]*)$/);
+    if (!match || index.has(match[2])) {
+      fail(`prepublish candidate checksums contain an invalid or duplicate row: ${line}`);
+    }
+    index.set(match[2], match[1]);
+  }
+  candidateAssetIndexes.set(assets, index);
+  return index;
+}
+
+function localCandidateAsset(root, name) {
+  if (path.basename(name) !== name) {
+    fail(`prepublish candidate asset name is unsafe: ${name}`);
+  }
+  const expected = candidateAssetIndex(root).get(name);
+  if (!expected) {
+    fail(`prepublish candidate asset is not checksummed: ${name}`);
+  }
+  const file = path.join(root, "assets", name);
+  requireRegularFile(file, `prepublish candidate asset ${name}`);
+  if (sha256File(file) !== expected) {
+    fail(`prepublish candidate asset digest drifted: ${name}`);
+  }
+  return file;
+}
+
 function tail(value, size = 4096) {
   const text = String(value ?? "");
   return text.length <= size ? text : text.slice(text.length - size);
@@ -178,7 +264,7 @@ class Recorder {
       stderr_tail: tail(stderr),
     });
     const allowed = options.allowed ?? [0];
-    if (!allowed.includes(status)) {
+    if (options.recordOnly !== true && !allowed.includes(status)) {
       fail(
         `${options.label ?? command} failed with ${status}: ${tail(stderr || stdout, 1200)}`,
       );
@@ -248,7 +334,7 @@ function githubRunner(row) {
 function validateInputs(options, matrix, config, status) {
   if (
     matrix.contract !== MATRIX_CONTRACT ||
-    matrix.matrix_revision !== "distribution-target-32-2026-08-17.1" ||
+    matrix.matrix_revision !== "distribution-target-32-2026-08-17.2" ||
     matrix.row_count !== 32 ||
     !Array.isArray(matrix.rows)
   ) {
@@ -258,18 +344,23 @@ function validateInputs(options, matrix, config, status) {
   if (!row) {
     fail("phase row is absent from the clean-host matrix");
   }
+  const frozenCandidate =
+    status.contract === "ait.release.prepublish.candidate/v1" &&
+    status.status === "frozen_candidate_pending_clean_host" &&
+    status.release?.source_commit === config.release?.source_commit &&
+    /^([0-9a-f]{64})$/.test(status.candidate?.stage_receipt_sha256 ?? "");
   if (
     config.contract !== "ait.release.family.endpoints/v1" ||
-    status.contract !== "ait.release.operator.status/v1" ||
-    status.status !== "published_pending_clean_host_smoke" ||
+    !frozenCandidate ||
     status.release?.id !== config.release?.id ||
     status.release?.version !== config.release?.version ||
     status.release?.tag !== config.release?.tag ||
     matrix.release?.version !== config.release?.version ||
     matrix.release?.tag !== config.release?.tag
   ) {
-    fail("phase config, status, and matrix do not bind one pending release");
+    fail("phase config, status, and matrix do not bind one pending candidate");
   }
+  candidateRoot(status);
   const candidateVersion = config.release.version;
   const candidatePython = config.release.python_version;
   const priorVersion = options["prior-version"];
@@ -287,8 +378,8 @@ function validateInputs(options, matrix, config, status) {
   return row;
 }
 
-function releaseBinding(config, options) {
-  return {
+function releaseBinding(config, status, options) {
+  const binding = {
     id: config.release.id,
     version: config.release.version,
     python_version: config.release.python_version,
@@ -298,6 +389,14 @@ function releaseBinding(config, options) {
     endpoint_config_sha256: sha256File(options.config),
     operator_status_sha256: sha256File(options.status),
   };
+  const artifactDigest = process.env.AIT_CLEAN_HOST_CANDIDATE_ARTIFACT_DIGEST ?? "";
+  if (!/^sha256:[0-9a-f]{64}$/.test(artifactDigest)) {
+    fail("prepublish phase lacks the immutable candidate artifact digest", 64);
+  }
+  binding.verification_stage = "prepublication";
+  binding.candidate_stage_receipt_sha256 = status.candidate.stage_receipt_sha256;
+  binding.candidate_artifact_digest = artifactDigest;
+  return binding;
 }
 
 async function fetchBytes(url, label) {
@@ -311,59 +410,86 @@ async function fetchBytes(url, label) {
   return Buffer.from(await response.arrayBuffer());
 }
 
-async function fetchJson(url, label) {
-  const bytes = await fetchBytes(url, label);
-  try {
-    return JSON.parse(bytes.toString("utf8"));
-  } catch {
-    fail(`${label} is not JSON: ${url}`, 69);
+function releaseDownloadUrl(repository, tag, name) {
+  return `https://github.com/${repository}/releases/download/${encodeURIComponent(tag)}/${encodeURIComponent(name)}`;
+}
+
+const releaseAssetIndexes = new Map();
+
+async function releaseAssetIndex(repository, tag) {
+  const key = `${repository}@${tag}`;
+  if (releaseAssetIndexes.has(key)) {
+    return releaseAssetIndexes.get(key);
   }
-}
-
-async function releaseRecord(repository, tag) {
-  return fetchJson(
-    `https://api.github.com/repos/${repository}/releases/tags/${encodeURIComponent(tag)}`,
-    `GitHub Release ${tag}`,
+  const bytes = await fetchBytes(
+    releaseDownloadUrl(repository, tag, "SHA256SUMS"),
+    `release checksum inventory ${tag}`,
   );
+  const index = new Map();
+  for (const line of bytes.toString("utf8").split(/\r?\n/)) {
+    if (!line) {
+      continue;
+    }
+    const match = line.match(/^([0-9a-f]{64})  ([A-Za-z0-9][A-Za-z0-9._@+-]*)$/);
+    if (!match || index.has(match[2])) {
+      fail(`release checksum inventory contains an invalid or duplicate row: ${line}`);
+    }
+    index.set(match[2], match[1]);
+  }
+  if (index.size === 0) {
+    fail(`release checksum inventory is empty: ${tag}`);
+  }
+  releaseAssetIndexes.set(key, index);
+  return index;
 }
 
-async function verifyCandidateTag(config) {
+function verifyCandidateTag(config, recorder) {
   const repository = config.endpoints.github.repository;
   const tag = config.release.tag;
-  const ref = await fetchJson(
-    `https://api.github.com/repos/${repository}/git/ref/tags/${encodeURIComponent(tag)}`,
-    "candidate Git tag",
+  const remote = `https://github.com/${repository}.git`;
+  const result = recorder.run(
+    requireCommand("git"),
+    ["-c", "credential.helper=", "ls-remote", "--tags", remote, tag, `${tag}^{}`],
+    {
+      label: "candidate anonymous Git tag readback",
+      env: { ...process.env, GIT_ASKPASS: process.platform === "win32" ? "" : "/usr/bin/false", GIT_TERMINAL_PROMPT: "0" },
+    },
   );
-  let commit = ref.object?.sha;
-  if (ref.object?.type === "tag") {
-    const tagObject = await fetchJson(
-      `https://api.github.com/repos/${repository}/git/tags/${ref.object.sha}`,
-      "candidate annotated Git tag",
-    );
-    if (tagObject.object?.type !== "commit") {
-      fail("candidate annotated tag does not resolve directly to a commit");
-    }
-    commit = tagObject.object.sha;
+  const rows = result.stdout
+    .trim()
+    .split(/\r?\n/)
+    .filter(Boolean)
+    .map((line) => line.split(/\s+/));
+  const peeled = rows.filter((row) => row[1] === `refs/tags/${tag}^{}`);
+  const direct = rows.filter((row) => row[1] === `refs/tags/${tag}`);
+  if (peeled.length !== 1 || direct.length !== 1) {
+    fail("candidate public tag is missing, ambiguous, or not annotated");
   }
+  const commit = peeled[0][0];
   if (commit !== config.release.source_commit) {
     fail("candidate public tag does not resolve to the configured source commit");
   }
 }
 
-async function downloadReleaseAsset(record, name, destination) {
-  const matches = (record.assets ?? []).filter((asset) => asset.name === name);
-  if (matches.length !== 1 || !/^sha256:[0-9a-f]{64}$/.test(matches[0].digest ?? "")) {
-    fail(`GitHub Release asset is absent, duplicate, or lacks digest: ${name}`);
+async function downloadReleaseAsset(repository, tag, name, destination) {
+  const index = await releaseAssetIndex(repository, tag);
+  const expected = index.get(name);
+  if (!expected) {
+    fail(`GitHub Release checksum inventory does not declare asset: ${name}`);
   }
-  const bytes = await fetchBytes(matches[0].browser_download_url, `release asset ${name}`);
-  if (`sha256:${sha256Bytes(bytes)}` !== matches[0].digest) {
+  const bytes = await fetchBytes(
+    releaseDownloadUrl(repository, tag, name),
+    `release asset ${name}`,
+  );
+  const actual = sha256Bytes(bytes);
+  if (actual !== expected) {
     fail(`GitHub Release asset digest differs after download: ${name}`);
   }
   writeFileSync(destination, bytes, { mode: 0o755 });
   if (process.platform !== "win32") {
     chmodSync(destination, 0o755);
   }
-  return { name, digest: matches[0].digest, size_bytes: bytes.length };
+  return { name, digest: `sha256:${actual}`, size_bytes: bytes.length };
 }
 
 function commandSpec(command, argsPrefix = [], environment = process.env) {
@@ -409,28 +535,58 @@ function generatedWorkflowCurrent(agents) {
   }
 }
 
-function initializePriorState(recorder, aitSpec, root) {
+function knownRc10WindowsInitRegression(error, priorVersion) {
+  if (process.platform !== "win32" || priorVersion !== "1.0.0-rc.10") {
+    return false;
+  }
+  return /^prior ait init failed with 1: Error: sync Binary DB file .*[/\\]\.ait-init-[^/\\]+[/\\]binary-db[/\\]line_name_payload\.bin: Failed to sync file .*[/\\]\.ait-init-[^/\\]+[/\\]binary-db[/\\]line_name_payload\.bin: Access is denied\. \(os error 5\)\s*$/s.test(
+    error.message,
+  );
+}
+
+function initializePriorState(recorder, aitSpec, root, priorVersion) {
   mkdirSync(root, { recursive: false, mode: 0o755 });
-  jsonSpec(recorder, aitSpec, ["init", "--json"], {
-    cwd: root,
-    label: "prior ait init",
-  });
+  try {
+    jsonSpec(recorder, aitSpec, ["init", "--json"], {
+      cwd: root,
+      label: "prior ait init",
+    });
+  } catch (error) {
+    if (!knownRc10WindowsInitRegression(error, priorVersion)) {
+      throw error;
+    }
+    if (
+      existsSync(path.join(root, ".ait")) ||
+      readdirSync(root).some((entry) => entry.startsWith(".ait-init-"))
+    ) {
+      fail("known RC10 Windows init regression left partial repository authority behind");
+    }
+    return {
+      available: false,
+      expected_regression: "rc10_windows_read_only_fsync",
+    };
+  }
   const configPath = path.join(root, ".ait", "config.json");
   requireRegularFile(configPath, "prior repository config");
-  return { config_sha256: sha256File(configPath) };
+  return { available: true, config_sha256: sha256File(configPath) };
 }
 
 function firstLand(recorder, aitSpec, root, expectedText, priorState = null) {
   if (!existsSync(root)) {
     mkdirSync(root, { recursive: false, mode: 0o755 });
+  }
+  const configPath = path.join(root, ".ait", "config.json");
+  if (!existsSync(configPath)) {
     jsonSpec(recorder, aitSpec, ["init", "--json"], {
       cwd: root,
       label: "candidate ait init",
     });
   }
-  const configPath = path.join(root, ".ait", "config.json");
   requireRegularFile(configPath, "candidate repository config");
-  if (priorState && sha256File(configPath) !== priorState.config_sha256) {
+  if (
+    priorState?.available === true &&
+    sha256File(configPath) !== priorState.config_sha256
+  ) {
     fail("candidate upgrade replaced the prior repository configuration");
   }
   const sprintDirectory = path.join(root, "docs", "sprints");
@@ -559,8 +715,11 @@ async function foregroundServer(recorder, serverSpec, root) {
   child.stderr.on("data", (chunk) => {
     stderr += chunk;
   });
+  let lifecycleError = null;
   try {
     await pollHealth(`http://127.0.0.1:${port}/healthz`, child);
+  } catch (error) {
+    lifecycleError = error;
   } finally {
     child.kill("SIGTERM");
     await new Promise((resolve) => {
@@ -573,17 +732,20 @@ async function foregroundServer(recorder, serverSpec, root) {
         resolve();
       });
     });
+    recorder.commands.push({
+      label: "explicit foreground server lifecycle",
+      command: shellCommandText(serverSpec.command, args),
+      cwd: null,
+      exit_status: child.exitCode,
+      stdout_sha256: sha256Bytes(stdout),
+      stderr_sha256: sha256Bytes(stderr),
+      stdout_tail: tail(stdout),
+      stderr_tail: tail(stderr),
+    });
   }
-  recorder.commands.push({
-    label: "explicit foreground server lifecycle",
-    command: shellCommandText(serverSpec.command, args),
-    cwd: null,
-    exit_status: child.exitCode,
-    stdout_sha256: sha256Bytes(stdout),
-    stderr_sha256: sha256Bytes(stderr),
-    stdout_tail: tail(stdout),
-    stderr_tail: tail(stderr),
-  });
+  if (lifecycleError) {
+    throw lifecycleError;
+  }
   requireRegularFile(
     path.join(dataRoot, "binary-v0", "active.json"),
     "server active-generation marker",
@@ -611,10 +773,9 @@ function assertNoServerProcess(recorder) {
   return true;
 }
 
-async function githubContext(config, row, version, root, recorder) {
+async function githubContext(config, row, version, root, recorder, candidateStage = null) {
   const repository = config.endpoints.github.repository;
   const tag = `v${version}`;
-  const release = await releaseRecord(repository, tag);
   const bin = path.join(root, "github-bin");
   mkdirSync(bin, { recursive: true, mode: 0o755 });
   const assets = [];
@@ -622,7 +783,22 @@ async function githubContext(config, row, version, root, recorder) {
     const suffix = row.executable_suffix;
     const name = `${component}-${version}-${row.target}${suffix}`;
     const destination = path.join(bin, `${component}${suffix}`);
-    assets.push(await downloadReleaseAsset(release, name, destination));
+    if (candidateStage) {
+      const source = localCandidateAsset(candidateStage, name);
+      const bytes = readFileSync(source);
+      writeFileSync(destination, bytes, { mode: 0o755 });
+      if (process.platform !== "win32") {
+        chmodSync(destination, 0o755);
+      }
+      assets.push({
+        name,
+        digest: `sha256:${sha256Bytes(bytes)}`,
+        size_bytes: bytes.length,
+        source: "frozen_candidate_stage",
+      });
+    } else {
+      assets.push(await downloadReleaseAsset(repository, tag, name, destination));
+    }
   }
   const ait = commandSpec(path.join(bin, `ait${row.executable_suffix}`));
   const server = commandSpec(path.join(bin, `ait-server${row.executable_suffix}`));
@@ -658,11 +834,11 @@ function venvPaths(root) {
 function createVenv(recorder, root) {
   recorder.run(pythonCommand(), ["-m", "venv", root], { label: "create isolated Python venv" });
   const paths = venvPaths(root);
-  requireRegularFile(paths.python, "venv Python");
+  requireExecutableFile(paths.python, "venv Python");
   return paths;
 }
 
-function pipInstall(recorder, python, pythonVersion, upgrade = false) {
+function pipInstall(recorder, python, pythonVersion, upgrade = false, candidateStage = null) {
   const args = [
     "-m",
     "pip",
@@ -673,13 +849,16 @@ function pipInstall(recorder, python, pythonVersion, upgrade = false) {
   if (upgrade) {
     args.push("--upgrade");
   }
+  if (candidateStage) {
+    args.push("--no-index", "--find-links", path.join(candidateStage, "assets"));
+  }
   args.push(`ait-native==${pythonVersion}`);
   recorder.run(python, args, { label: upgrade ? "PyPI exact upgrade" : "PyPI exact install" });
 }
 
-function pythonContext(recorder, root, pythonVersion, upgrade = false) {
+function pythonContext(recorder, root, pythonVersion, upgrade = false, candidateStage = null) {
   const paths = existsSync(root) ? venvPaths(root) : createVenv(recorder, root);
-  pipInstall(recorder, paths.python, pythonVersion, upgrade);
+  pipInstall(recorder, paths.python, pythonVersion, upgrade, candidateStage);
   const suffix = process.platform === "win32" ? ".exe" : "";
   const aitPath = path.join(paths.scripts, `ait${suffix}`);
   const serverPath = path.join(paths.scripts, `ait-server${suffix}`);
@@ -721,33 +900,77 @@ function pythonContext(recorder, root, pythonVersion, upgrade = false) {
   };
 }
 
-function npmPackageRoot(prefix) {
-  return process.platform === "win32"
-    ? path.join(prefix, "node_modules", "@wa120", "ait-native")
-    : path.join(prefix, "lib", "node_modules", "@wa120", "ait-native");
+function npmPackageRoot(prefix, packageName) {
+  const match = packageName.match(/^(@[A-Za-z0-9._-]+)\/([A-Za-z0-9._-]+)$/);
+  if (!match) {
+    fail(`npm clean-host package name is unsupported: ${packageName}`);
+  }
+  const modules =
+    process.platform === "win32"
+      ? path.join(prefix, "node_modules")
+      : path.join(prefix, "lib", "node_modules");
+  return path.join(modules, match[1], match[2]);
 }
 
-function npmInstall(recorder, prefix, version) {
+function npmCommandSpec() {
+  const npm = requireCommand(process.platform === "win32" ? "npm.cmd" : "npm");
+  if (process.platform !== "win32") {
+    return commandSpec(npm);
+  }
+  const node = requireCommand("node");
+  const npmCli = path.join(path.dirname(realpathSync(npm)), "node_modules", "npm", "bin", "npm-cli.js");
+  requireRegularFile(npmCli, "Windows npm CLI entrypoint");
+  return commandSpec(node, [npmCli]);
+}
+
+function npmTargetSuffix(row) {
+  const suffix = {
+    "aarch64-apple-darwin": "darwin-arm64",
+    "x86_64-apple-darwin": "darwin-x64",
+    "aarch64-unknown-linux-gnu": "linux-arm64",
+    "x86_64-unknown-linux-gnu": "linux-x64",
+    "aarch64-pc-windows-msvc": "win32-arm64",
+    "x86_64-pc-windows-msvc": "win32-x64",
+  }[row.target];
+  if (!suffix) {
+    fail(`npm candidate target is unsupported: ${row.target}`);
+  }
+  return suffix;
+}
+
+function npmInstall(recorder, prefix, version, row, candidateStage = null) {
   mkdirSync(prefix, { recursive: true, mode: 0o755 });
-  recorder.run(
-    requireCommand(process.platform === "win32" ? "npm.cmd" : "npm"),
+  const packages = candidateStage
+    ? [
+        localCandidateAsset(candidateStage, `wa120-ait-native-${npmTargetSuffix(row)}-${version}.tgz`),
+        localCandidateAsset(candidateStage, `wa120-ait-native-${version}.tgz`),
+      ]
+    : [`@wa120/ait-native@${version}`];
+  const candidateArgs = candidateStage ? ["--offline"] : [];
+  runSpec(
+    recorder,
+    npmCommandSpec(),
     [
       "install",
       "--global",
       "--ignore-scripts",
       "--no-audit",
       "--no-fund",
+      ...candidateArgs,
       "--prefix",
       prefix,
-      `@wa120/ait-native@${version}`,
+      ...packages,
     ],
     { label: "npm exact install or upgrade" },
   );
 }
 
-function nodeContext(recorder, prefix, version) {
-  npmInstall(recorder, prefix, version);
-  const packageRoot = npmPackageRoot(prefix);
+function nodeContext(recorder, prefix, version, row, candidateStage = null) {
+  npmInstall(recorder, prefix, version, row, candidateStage);
+  const packageName = "@wa120/ait-native";
+  const platformPackageName = `@wa120/ait-native-${npmTargetSuffix(row)}`;
+  const packageRoot = npmPackageRoot(prefix, packageName);
+  const platformPackageRoot = npmPackageRoot(prefix, platformPackageName);
   const entry = path.join(packageRoot, "bin", "ait.mjs");
   const index = path.join(packageRoot, "src", "index.js");
   requireRegularFile(entry, "npm in-process ait entrypoint");
@@ -789,20 +1012,25 @@ function nodeContext(recorder, prefix, version) {
       }
     },
     uninstall() {
-      recorder.run(
-        requireCommand(process.platform === "win32" ? "npm.cmd" : "npm"),
+      runSpec(
+        recorder,
+        npmCommandSpec(),
         [
           "uninstall",
           "--global",
           "--ignore-scripts",
           "--prefix",
           prefix,
-          "@wa120/ait-native",
+          packageName,
+          platformPackageName,
         ],
         { label: "npm uninstall" },
       );
       if (existsSync(packageRoot)) {
         fail("npm uninstall retained the top-level package");
+      }
+      if (existsSync(platformPackageRoot)) {
+        fail("npm uninstall retained the target platform package");
       }
     },
   };
@@ -816,11 +1044,21 @@ function brewEnvironment() {
   };
 }
 
-async function homebrewFormula(config, version, root) {
-  const release = await releaseRecord(config.endpoints.github.repository, `v${version}`);
+async function homebrewFormula(config, version, root, candidateStage = null) {
   const formulaName = path.basename(config.endpoints.homebrew.formula_path);
   const destination = path.join(root, `${version}-${formulaName}`);
-  await downloadReleaseAsset(release, formulaName, destination);
+  if (candidateStage) {
+    writeFileSync(destination, readFileSync(localCandidateAsset(candidateStage, formulaName)), {
+      mode: 0o644,
+    });
+  } else {
+    await downloadReleaseAsset(
+      config.endpoints.github.repository,
+      `v${version}`,
+      formulaName,
+      destination,
+    );
+  }
   chmodSync(destination, 0o644);
   return destination;
 }
@@ -833,15 +1071,86 @@ function brewCommand(recorder, args, label, allowed = [0]) {
   });
 }
 
-async function homebrewContext(config, version, root, recorder, upgrade = false) {
-  const formulaPath = await homebrewFormula(config, version, root);
-  const formula = path.basename(config.endpoints.homebrew.formula_path, ".rb");
-  if (upgrade) {
-    brewCommand(recorder, ["upgrade", "--formula", formulaPath], "Homebrew exact upgrade");
-  } else {
-    brewCommand(recorder, ["install", "--formula", formulaPath], "Homebrew exact install");
+function seedHomebrewCandidateCache(recorder, formulaPath, candidateStage) {
+  const formula = readFileSync(formulaPath, "utf8");
+  const cacheRoot = brewCommand(recorder, ["--cache"], "Homebrew cache origin").stdout.trim();
+  if (!path.isAbsolute(cacheRoot)) {
+    fail("Homebrew cache origin is not absolute");
   }
-  const prefix = brewCommand(recorder, ["--prefix", formula], "Homebrew formula origin").stdout.trim();
+  const downloads = path.join(cacheRoot, "downloads");
+  mkdirSync(downloads, { recursive: true, mode: 0o755 });
+  const resources = [];
+  const pattern = /url "([^"]+)"\s+sha256 "([0-9a-f]{64})"/g;
+  for (const match of formula.matchAll(pattern)) {
+    const url = match[1];
+    const expected = match[2];
+    const name = path.basename(new URL(url).pathname);
+    const source = localCandidateAsset(candidateStage, name);
+    if (sha256File(source) !== expected) {
+      fail(`Homebrew formula archive digest differs from candidate asset: ${name}`);
+    }
+    const cached = path.join(downloads, `${sha256Bytes(url)}--${name}`);
+    writeFileSync(cached, readFileSync(source), { mode: 0o644 });
+    resources.push({ name, url, sha256: expected, cache_path: cached });
+  }
+  if (resources.length === 0) {
+    fail("Homebrew candidate formula contains no cacheable archive resource");
+  }
+  recorder.observations.homebrew_candidate_cache = resources;
+}
+
+async function homebrewContext(
+  config,
+  version,
+  root,
+  recorder,
+  upgrade = false,
+  candidateStage = null,
+) {
+  const formulaPath = await homebrewFormula(config, version, root, candidateStage);
+  const formula = path.basename(config.endpoints.homebrew.formula_path, ".rb");
+  const tap = config.endpoints.homebrew.tap;
+  if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(tap ?? "")) {
+    fail("Homebrew endpoint configuration has no canonical tap identity");
+  }
+  brewCommand(recorder, ["tap", tap], "Homebrew exact tap registration");
+  const tapRoot = brewCommand(
+    recorder,
+    ["--repository", tap],
+    "Homebrew tap repository origin",
+  ).stdout.trim();
+  if (!path.isAbsolute(tapRoot)) {
+    fail("Homebrew tap repository origin is not absolute");
+  }
+  const installedFormulaPath = path.join(tapRoot, config.endpoints.homebrew.formula_path);
+  const formulaParent = path.dirname(installedFormulaPath);
+  mkdirSync(formulaParent, { recursive: true, mode: 0o755 });
+  writeFileSync(installedFormulaPath, readFileSync(formulaPath), { mode: 0o644 });
+  if (sha256File(installedFormulaPath) !== sha256File(formulaPath)) {
+    fail("Homebrew tap formula differs from the exact downloaded formula");
+  }
+  if (candidateStage) {
+    seedHomebrewCandidateCache(recorder, installedFormulaPath, candidateStage);
+  }
+  const qualifiedFormula = `${tap}/${formula}`;
+  if (upgrade) {
+    brewCommand(
+      recorder,
+      ["upgrade", "--formula", qualifiedFormula],
+      "Homebrew exact upgrade",
+    );
+  } else {
+    brewCommand(
+      recorder,
+      ["install", "--formula", qualifiedFormula],
+      "Homebrew exact install",
+    );
+  }
+  const prefix = brewCommand(
+    recorder,
+    ["--prefix", qualifiedFormula],
+    "Homebrew formula origin",
+  ).stdout.trim();
   if (!path.isAbsolute(prefix)) {
     fail("Homebrew formula prefix is not absolute");
   }
@@ -853,7 +1162,7 @@ async function homebrewContext(config, version, root, recorder, upgrade = false)
     ait: commandSpec(aitPath),
     server: commandSpec(serverPath),
     origin: prefix,
-    formula,
+    formula: qualifiedFormula,
     inactive() {
       const result = brewCommand(
         recorder,
@@ -921,15 +1230,22 @@ async function configureApt(config, root, recorder) {
   }
 }
 
-function aptContext(row, version, recorder, upgrade = false) {
+function aptContext(row, version, recorder, upgrade = false, candidateStage = null) {
   const packageName = row.lifecycle === "standalone-runner" ? "ait-runner" : "ait-native";
   const expectedVersion = debianVersion(version);
+  const architecture = row.architecture === "arm64" ? "arm64" : "amd64";
+  const selector = candidateStage
+    ? localCandidateAsset(
+        candidateStage,
+        `${packageName}_${expectedVersion}_${architecture}.deb`,
+      )
+    : `${packageName}=${expectedVersion}`;
   const args = [
     "apt-get",
     "install",
     "--yes",
     "--no-install-recommends",
-    `${packageName}=${expectedVersion}`,
+    selector,
   ];
   if (upgrade) {
     args.splice(2, 0, "--only-upgrade");
@@ -997,8 +1313,47 @@ function aptContext(row, version, recorder, upgrade = false) {
   return context;
 }
 
-async function wingetManifests(config, version, root) {
-  const release = await releaseRecord(config.endpoints.github.repository, `v${version}`);
+async function startCandidateAssetServer(candidateStage) {
+  const port = await reservePort();
+  const node = requireCommand("node");
+  const code =
+    "const http=require('http'),fs=require('fs'),path=require('path');" +
+    "const root=path.resolve(process.argv[1]),port=Number(process.argv[2]);" +
+    "http.createServer((req,res)=>{" +
+    "let name;try{name=decodeURIComponent(new URL(req.url,'http://localhost').pathname.slice(1));}catch{res.writeHead(400).end();return;}" +
+    "if(!name||path.basename(name)!==name){res.writeHead(404).end();return;}" +
+    "const file=path.join(root,name);let stat;try{stat=fs.lstatSync(file);}catch{res.writeHead(404).end();return;}" +
+    "if(!stat.isFile()||stat.isSymbolicLink()){res.writeHead(404).end();return;}" +
+    "res.writeHead(200,{'Content-Length':stat.size});fs.createReadStream(file).pipe(res);" +
+    `}).listen(${port},'127.0.0.1');`;
+  const child = spawn(node, ["-e", code, path.join(candidateStage, "assets"), String(port)], {
+    stdio: ["ignore", "pipe", "pipe"],
+    windowsHide: true,
+  });
+  let stdout = "";
+  let stderr = "";
+  child.stdout.on("data", (chunk) => {
+    stdout += chunk;
+  });
+  child.stderr.on("data", (chunk) => {
+    stderr += chunk;
+  });
+  try {
+    await pollHealth(`http://127.0.0.1:${port}/SHA256SUMS`, child);
+  } catch (error) {
+    child.kill();
+    fail(`candidate asset transport failed: ${error.message}; ${tail(stderr || stdout)}`);
+  }
+  return {
+    baseUrl: `http://127.0.0.1:${port}`,
+    child,
+    stop() {
+      child.kill("SIGTERM");
+    },
+  };
+}
+
+async function wingetManifests(config, version, root, candidateStage = null, baseUrl = null) {
   const manifestRoot = path.join(root, `winget-${version}`);
   mkdirSync(manifestRoot, { recursive: true, mode: 0o755 });
   for (const name of [
@@ -1007,32 +1362,114 @@ async function wingetManifests(config, version, root) {
     "Weita.AitNative.installer.yaml",
   ]) {
     const destination = path.join(manifestRoot, name);
-    await downloadReleaseAsset(release, name, destination);
+    if (candidateStage) {
+      writeFileSync(destination, readFileSync(localCandidateAsset(candidateStage, name)), {
+        mode: 0o644,
+      });
+    } else {
+      await downloadReleaseAsset(
+        config.endpoints.github.repository,
+        `v${version}`,
+        name,
+        destination,
+      );
+    }
     chmodSync(destination, 0o644);
   }
-  return manifestRoot;
+  if (!candidateStage) {
+    return { validationRoot: manifestRoot, installRoot: manifestRoot, overlay: null };
+  }
+  if (!baseUrl) {
+    fail("WinGet prepublish transport URL is unavailable");
+  }
+  const overlayRoot = path.join(root, `winget-${version}-transport`);
+  mkdirSync(overlayRoot, { recursive: true, mode: 0o755 });
+  const overlay = [];
+  for (const name of [
+    "Weita.AitNative.yaml",
+    "Weita.AitNative.locale.en-US.yaml",
+    "Weita.AitNative.installer.yaml",
+  ]) {
+    const original = path.join(manifestRoot, name);
+    const destination = path.join(overlayRoot, name);
+    let text = readFileSync(original, "utf8");
+    if (name.endsWith(".installer.yaml")) {
+      let replacements = 0;
+      text = text.replace(/^(\s*InstallerUrl:\s*)(\S+)\s*$/gm, (_line, prefix, url) => {
+        const assetName = path.basename(new URL(url).pathname);
+        localCandidateAsset(candidateStage, assetName);
+        replacements += 1;
+        return `${prefix}${baseUrl}/${encodeURIComponent(assetName)}`;
+      });
+      if (replacements !== 2) {
+        fail("WinGet candidate manifest did not expose exactly two installer URLs");
+      }
+    }
+    writeFileSync(destination, text, { encoding: "utf8", mode: 0o644 });
+    overlay.push({
+      name,
+      original_sha256: sha256File(original),
+      transport_sha256: sha256File(destination),
+      installer_url_overlay: name.endsWith(".installer.yaml"),
+    });
+  }
+  return { validationRoot: manifestRoot, installRoot: overlayRoot, overlay };
 }
 
 function wingetArgs(action, manifestRoot) {
-  return [
-    action,
-    "--manifest",
-    manifestRoot,
-    "--accept-package-agreements",
-    "--accept-source-agreements",
-    "--disable-interactivity",
-  ];
+  return [action, "--manifest", manifestRoot, "--disable-interactivity"];
 }
 
-async function wingetContext(config, version, root, recorder, upgrade = false) {
+async function wingetContext(
+  config,
+  version,
+  root,
+  recorder,
+  upgrade = false,
+  candidateStage = null,
+) {
   const winget = requireCommand("winget.exe");
-  const manifestRoot = await wingetManifests(config, version, root);
-  recorder.run(winget, ["validate", "--manifest", manifestRoot], {
-    label: "WinGet manifest validation",
-  });
-  recorder.run(winget, wingetArgs(upgrade ? "upgrade" : "install", manifestRoot), {
-    label: upgrade ? "WinGet exact manifest upgrade" : "WinGet exact manifest install",
-  });
+  const transport = candidateStage ? await startCandidateAssetServer(candidateStage) : null;
+  let manifests;
+  try {
+    manifests = await wingetManifests(
+      config,
+      version,
+      root,
+      candidateStage,
+      transport?.baseUrl,
+    );
+    const validation = recorder.run(
+      winget,
+      ["validate", "--manifest", manifests.validationRoot],
+      {
+        label: "WinGet manifest validation",
+        allowed: [0, 0x8a150028],
+      },
+    );
+    if (
+      validation.status === 0x8a150028 &&
+      !validation.stdout.startsWith("Manifest validation succeeded with warnings.\r\n")
+    ) {
+      fail("WinGet warning exit did not report exact successful validation-with-warnings");
+    }
+    recorder.run(
+      winget,
+      wingetArgs(upgrade ? "upgrade" : "install", manifests.installRoot),
+      {
+        label: upgrade ? "WinGet exact manifest upgrade" : "WinGet exact manifest install",
+      },
+    );
+  } finally {
+    transport?.stop();
+  }
+  if (manifests.overlay) {
+    recorder.observations.winget_candidate_transport_overlay = {
+      payload_bytes_unchanged: true,
+      original_manifests_validated: true,
+      files: manifests.overlay,
+    };
+  }
   const list = recorder.run(
     winget,
     ["list", "--id", config.endpoints.winget.identity, "--exact", "--disable-interactivity"],
@@ -1110,6 +1547,27 @@ function candidateOciDigest(status, row) {
   return digest;
 }
 
+function candidateOciArchive(status, row, candidateStage) {
+  const component = row.lifecycle === "standalone-server" ? "ait-server" : "ait-runner";
+  const architecture = row.architecture === "arm64" ? "arm64" : "amd64";
+  const descriptor = status.candidate?.oci?.[component]?.[architecture];
+  if (
+    !descriptor ||
+    !/^[A-Za-z0-9][A-Za-z0-9._-]*\.docker\.tar$/.test(descriptor.archive ?? "") ||
+    !/^[0-9a-f]{64}$/.test(descriptor.sha256 ?? "") ||
+    typeof descriptor.reference !== "string" ||
+    !descriptor.reference
+  ) {
+    fail(`prepublish status lacks exact ${component}/${architecture} OCI archive authority`);
+  }
+  const archive = path.join(candidateStage, "oci-archives", descriptor.archive);
+  requireRegularFile(archive, "prepublish OCI archive");
+  if (sha256File(archive) !== descriptor.sha256) {
+    fail(`prepublish ${component}/${architecture} OCI archive digest drifted`);
+  }
+  return { ...descriptor, archive, component, architecture };
+}
+
 function dockerImageDigest(recorder, reference) {
   const result = recorder.run(
     "docker",
@@ -1120,18 +1578,53 @@ function dockerImageDigest(recorder, reference) {
   return Array.isArray(digests) ? digests : [];
 }
 
-function ociContext(config, status, row, version, recorder, candidate) {
+function ociContext(
+  config,
+  status,
+  row,
+  version,
+  recorder,
+  candidate,
+  candidateStage = null,
+) {
   requireCommand("docker");
   const platform = dockerPlatform(row);
-  const reference = candidate
-    ? `${row.identity}@${candidateOciDigest(status, row)}`
-    : `${row.identity}:${version}`;
-  recorder.run("docker", ["pull", "--platform", platform, reference], {
-    label: candidate ? "OCI candidate digest pull" : "OCI exact prior version pull",
-  });
-  const digests = dockerImageDigest(recorder, reference);
-  if (candidate && !digests.some((value) => value.endsWith(`@${candidateOciDigest(status, row)}`))) {
-    fail("OCI candidate pull did not resolve to the dossier digest");
+  let reference;
+  if (candidateStage) {
+    const descriptor = candidateOciArchive(status, row, candidateStage);
+    recorder.run("docker", ["load", "--input", descriptor.archive], {
+      label: "OCI frozen candidate archive load",
+    });
+    reference = descriptor.reference;
+    const imageId = recorder
+      .run("docker", ["image", "inspect", "--format", "{{.Id}}", reference], {
+        label: "OCI frozen candidate image identity",
+      })
+      .stdout.trim();
+    if (descriptor.image_id && imageId !== descriptor.image_id) {
+      fail("OCI loaded candidate image identity differs from the staged archive");
+    }
+    recorder.observations.oci_candidate_archive = {
+      component: descriptor.component,
+      architecture: descriptor.architecture,
+      sha256: descriptor.sha256,
+      image_id: imageId,
+      reference,
+    };
+  } else {
+    reference = candidate
+      ? `${row.identity}@${candidateOciDigest(status, row)}`
+      : `${row.identity}:${version}`;
+    recorder.run("docker", ["pull", "--platform", platform, reference], {
+      label: candidate ? "OCI candidate digest pull" : "OCI exact prior version pull",
+    });
+    const digests = dockerImageDigest(recorder, reference);
+    if (
+      candidate &&
+      !digests.some((value) => value.endsWith(`@${candidateOciDigest(status, row)}`))
+    ) {
+      fail("OCI candidate pull did not resolve to the dossier digest");
+    }
   }
   const component = row.lifecycle === "standalone-server" ? "ait-server" : "ait-runner";
   return {
@@ -1187,6 +1680,7 @@ function ociContext(config, status, row, version, recorder, candidate) {
         ],
         { label: "OCI explicit server start" },
       );
+      let lifecycleError = null;
       try {
         const portText = recorder
           .run("docker", ["port", name, "8088/tcp"], { label: "OCI server port readback" })
@@ -1196,11 +1690,24 @@ function ociContext(config, status, row, version, recorder, candidate) {
           fail("OCI server published port is invalid");
         }
         await pollHealth(`http://127.0.0.1:${match[1]}/healthz`);
+      } catch (error) {
+        lifecycleError = error;
       } finally {
+        recorder.run("docker", ["logs", name], {
+          label: "OCI server logs before removal",
+          recordOnly: true,
+        });
+        recorder.run("docker", ["inspect", name], {
+          label: "OCI server inspect before removal",
+          recordOnly: true,
+        });
         recorder.run("docker", ["rm", "--force", name], {
           label: "OCI explicit server stop",
           allowed: [0, 1],
         });
+      }
+      if (lifecycleError) {
+        throw lifecycleError;
       }
       const volumeReadback = recorder.run("docker", ["volume", "inspect", volume], {
         label: "OCI retained user-data volume",
@@ -1324,21 +1831,42 @@ async function installChannel({
   upgrade,
   candidate,
 }) {
+  const candidateStage = candidate ? candidateRoot(status) : null;
   switch (row.channel) {
     case "github":
-      return githubContext(config, row, version, root, recorder);
+      return githubContext(config, row, version, root, recorder, candidateStage);
     case "pypi":
-      return pythonContext(recorder, path.join(root, "pypi-venv"), pythonVersion, upgrade);
+      return pythonContext(
+        recorder,
+        path.join(root, "pypi-venv"),
+        pythonVersion,
+        upgrade,
+        candidateStage,
+      );
     case "npm":
-      return nodeContext(recorder, path.join(root, "npm-prefix"), version);
+      return nodeContext(
+        recorder,
+        path.join(root, "npm-prefix"),
+        version,
+        row,
+        candidateStage,
+      );
     case "homebrew":
-      return homebrewContext(config, version, root, recorder, upgrade);
+      return homebrewContext(config, version, root, recorder, upgrade, candidateStage);
     case "apt":
-      return aptContext(row, version, recorder, upgrade);
+      return aptContext(row, version, recorder, upgrade, candidateStage);
     case "winget":
-      return wingetContext(config, version, root, recorder, upgrade);
+      return wingetContext(config, version, root, recorder, upgrade, candidateStage);
     case "oci":
-      return ociContext(config, status, row, version, recorder, candidate);
+      return ociContext(
+        config,
+        status,
+        row,
+        version,
+        recorder,
+        candidate,
+        candidateStage,
+      );
     default:
       fail(`unsupported clean-host channel: ${row.channel}`);
   }
@@ -1361,11 +1889,11 @@ function markBindingChecks(checks, row) {
 }
 
 async function executeInstall({ config, status, row, checks, recorder, root }) {
-  await verifyCandidateTag(config);
+  verifyCandidateTag(config, recorder);
   probePackageManager(row, recorder);
   mark(checks, "runner_target");
   mark(checks, "package_manager");
-  if (row.channel === "apt") {
+  if (row.channel === "apt" && !candidateRoot(status)) {
     await configureApt(config, root, recorder);
   }
   const context = await installChannel({
@@ -1425,7 +1953,7 @@ async function executeInstall({ config, status, row, checks, recorder, root }) {
 }
 
 async function executeUpgrade({ options, config, status, row, checks, recorder, root }) {
-  await verifyCandidateTag(config);
+  verifyCandidateTag(config, recorder);
   probePackageManager(row, recorder);
   mark(checks, "runner_target");
   mark(checks, "package_manager");
@@ -1455,8 +1983,14 @@ async function executeUpgrade({ options, config, status, row, checks, recorder, 
       fail("prior product did not expose ait for state creation");
     }
     repositoryRoot = path.join(root, "upgrade-repository");
-    priorState = initializePriorState(recorder, prior.ait, repositoryRoot);
-    mark(checks, "prior_state");
+    priorState = initializePriorState(
+      recorder,
+      prior.ait,
+      repositoryRoot,
+      options["prior-version"],
+    );
+    recorder.observations.prior_repository_baseline = priorState;
+    mark(checks, "prior_baseline");
   }
   const candidateRoot = row.channel === "github" ? path.join(root, "candidate-github") : root;
   mkdirSync(candidateRoot, { recursive: true, mode: 0o755 });
@@ -1532,7 +2066,7 @@ async function runPhase(options) {
     contract: PHASE_CONTRACT,
     status: phaseError ? "fail" : "pass",
     phase: options.phase,
-    release: releaseBinding(config, options),
+    release: releaseBinding(config, status, options),
     row,
     runner,
     prior: {

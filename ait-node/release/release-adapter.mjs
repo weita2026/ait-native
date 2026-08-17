@@ -21,7 +21,7 @@ import { spawnNpmSync } from "../scripts/npm-command.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const PACKAGE_NAME = "@wa120/ait-native";
-const PACKAGE_VERSION = "1.0.0-rc.10";
+const PACKAGE_VERSION = "1.0.0-rc.11";
 const PORTABLE_TARGET = "portable";
 const PRODUCT_DESCRIPTION =
   "Agent-first, language-neutral workflow for verified repository changes";
@@ -55,11 +55,13 @@ function renderStorefrontReadme(template, version) {
     "individual developers and maintainers",
     `npm install --global ${PACKAGE_NAME}@${version}`,
     "ait init",
-    "## What you have after 90 seconds",
+    "## What initialization provides",
     "`AGENTS.md`",
     OFFICIAL_WEBSITE,
-    "## Moving from 0.x",
-    "The 0.x requirement to run `ait install` and its task-DAG positioning are",
+    "## Upgrading from 0.x",
+    "There is no `ait install` command in 1.0.",
+    "ait workflow ready <change-id> --apply",
+    "ait workflow land <change-id> --apply",
   ]) {
     assert.equal(
       readme.includes(required),
@@ -69,6 +71,8 @@ function renderStorefrontReadme(template, version) {
   }
   assert.doesNotMatch(readme, /@AIT_[A-Z0-9_]+@/);
   for (const legacyClaim of [
+    "90 seconds",
+    "task-DAG positioning",
     "Jira-like",
     "parallel AI execution",
     "compact task DAG",
@@ -175,7 +179,7 @@ async function validateContract(target, version) {
           payload.version === version &&
           payload.component === "ait-node" &&
           payload.binding_repository === "ait-core" &&
-          payload.binding_snapshot === "SNP-51B6FD63DF93" &&
+          payload.binding_snapshot === "SNP-3E68163E83B7" &&
           payload.addon === "native/ait_napi.node"
         );
       },
@@ -504,7 +508,7 @@ async function main() {
   const [action, target, version] = process.argv.slice(2);
   if (process.argv.length !== 5) {
     throw new Error(
-      "usage: node release/release-adapter.mjs {check|build|smoke} <target|portable> 1.0.0-rc.10",
+      "usage: node release/release-adapter.mjs {check|build|smoke} <target|portable> 1.0.0-rc.11",
     );
   }
   const handlers = { build, check, smoke };

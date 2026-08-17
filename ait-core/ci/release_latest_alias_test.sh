@@ -44,8 +44,7 @@ source_commit=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 server_digest=sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 runner_digest=sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
 config=${temporary_root}/endpoints.json
-status=${temporary_root}/status.json
-clean_status=${temporary_root}/clean-host-status.json
+clean_status=${temporary_root}/publication-readback-status.json
 
 jq -S -n --slurpfile defaults "${defaults}" \
   --arg version "${version}" --arg python_version "${python_version}" \
@@ -81,7 +80,7 @@ jq -S -n --slurpfile defaults "${defaults}" \
     },
     publisher: $d.publisher,
     endpoints: {
-      github: ($d.endpoints.github + {prerelease: false}),
+      github: ($d.endpoints.github + {prerelease: true}),
       pypi: $d.endpoints.pypi,
       npm: ($d.endpoints.npm + {dist_tag: "rc"}),
       homebrew: (($d.endpoints.homebrew | del(.formula_paths)) + {
@@ -96,45 +95,15 @@ jq -S -n --slurpfile defaults "${defaults}" \
   }
 ' >"${config}"
 
-jq -S -n --arg release_id "${release_id}" --arg version "${version}" \
-  --arg server "${server_digest}" --arg runner "${runner_digest}" '
-  {
-    contract: "ait.release.operator.status/v1",
-    status: "published_pending_clean_host_smoke",
-    next_action: "run_all_declared_clean_host_install_upgrade_uninstall_smoke",
-    release: {id: $release_id, tag: ("v" + $version), version: $version},
-    publication_workflow: {
-      run_id: 103,
-      artifact_id: 203,
-      artifact_digest: "sha256:5555555555555555555555555555555555555555555555555555555555555555",
-      conclusion: "success"
-    },
-    platforms: {
-      github: "published_and_read_back",
-      pypi: "published_and_read_back",
-      npm: "published_and_read_back",
-      homebrew: "published_and_read_back",
-      apt: "published_signed_and_read_back",
-      winget: "validation_assets_published_no_community_submission",
-      oci: {
-        server: $server,
-        runner: $runner,
-        immutable_tag: $version,
-        moving_tag: "rc"
-      }
-    }
-  }
-' >"${status}"
-
 config_sha=$(sha256_file "${config}")
-endpoint_status_sha=$(sha256_file "${status}")
-jq -S -n --slurpfile endpoint_status "${status}" \
+jq -S -n \
   --arg release_id "${release_id}" --arg version "${version}" \
   --arg python_version "${python_version}" --arg source_commit "${source_commit}" \
-  --arg config_sha "${config_sha}" --arg endpoint_status_sha "${endpoint_status_sha}" '
+  --arg config_sha "${config_sha}" \
+  --arg server "${server_digest}" --arg runner "${runner_digest}" '
   {
-    contract: "ait.release.operator.clean-host-status/v1",
-    status: "published",
+    contract: "ait.release.operator.status/v2",
+    status: "published_readback_complete",
     release: {
       id: $release_id,
       version: $version,
@@ -142,18 +111,44 @@ jq -S -n --slurpfile endpoint_status "${status}" \
       channel: "rc",
       tag: ("v" + $version),
       source_commit: $source_commit,
-      endpoint_config_sha256: $config_sha,
-      operator_status_sha256: $endpoint_status_sha
+      endpoint_config_sha256: $config_sha
     },
-    clean_host_request_sha256: "6666666666666666666666666666666666666666666666666666666666666666",
+    prepublication: {
+      status: "qualified",
+      candidate_artifact_digest: "sha256:6666666666666666666666666666666666666666666666666666666666666666",
+      aggregate_artifact_digest: "sha256:7777777777777777777777777777777777777777777777777777777777777777",
+      aggregate_status_sha256: "8888888888888888888888888888888888888888888888888888888888888888",
+      clean_host_rows: 32
+    },
+    publication_workflow: {
+      run_id: 103,
+      run_attempt: 1,
+      control_commit: "9999999999999999999999999999999999999999",
+      artifact_id: 203,
+      artifact_digest: "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+      conclusion: "success"
+    },
     endpoint_publication: {
-      operator_status_sha256: $endpoint_status_sha,
-      workflow: $endpoint_status[0].publication_workflow,
-      platforms: $endpoint_status[0].platforms
+      readback_sha256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      platforms: {
+        github: "published_and_read_back",
+        pypi: "published_and_read_back",
+        npm: "published_and_read_back",
+        homebrew: "published_and_read_back",
+        apt: "published_signed_and_read_back",
+        winget: "validation_assets_published_no_community_submission",
+        oci: {
+          server: $server,
+          runner: $runner,
+          immutable_tag: $version,
+          moving_tag: "rc"
+        }
+      },
+      mutation: {artifact_rebuild: false, component_rebuild: false}
     },
     promotion_allowed: true,
     terminal_for_release: false,
-    next_action: "release_complete"
+    next_action: "promote_mutable_aliases"
   }
 ' >"${clean_status}"
 
@@ -161,6 +156,7 @@ state=${temporary_root}/state
 bin=${temporary_root}/bin
 mkdir "${state}" "${bin}"
 printf '%s\n' v0.9.0 >"${state}/github-latest"
+printf '%s\n' true >"${state}/github-prerelease"
 jq -n --slurpfile config "${config}" --arg version "${version}" '
   reduce $config[0].endpoints.npm.packages[] as $package ({};
     .[$package] = {rc: $version, latest: "1.0.0-rc.3"})
@@ -182,8 +178,10 @@ state=${AIT_TEST_LATEST_STATE:?}
 shift
 if [[ ${1:-} == --method ]]; then
   [[ $2 == PATCH && $3 == repos/weita2026/ait-native/releases/777 &&
-    $4 == -f && $5 == make_latest=true ]] || exit 64
+    $4 == -F && $5 == prerelease=false &&
+    $6 == -f && $7 == make_latest=true ]] || exit 64
   printf '%s\n' v1.2.3-rc.6 >"${state}/github-latest"
+  printf '%s\n' false >"${state}/github-prerelease"
   printf '{}\n'
   exit 0
 fi
@@ -191,7 +189,13 @@ path=$1
 shift
 case "${path}" in
   repos/weita2026/ait-native/releases/tags/v1.2.3-rc.6)
-    printf '{"id":777,"tag_name":"v1.2.3-rc.6","draft":false,"prerelease":false}\n'
+    prerelease=$(sed -n '1p' "${state}/github-prerelease")
+    if [[ ${1:-} == --jq ]]; then
+      if [[ ${prerelease} == false ]]; then printf '%s\n' v1.2.3-rc.6; fi
+    else
+      printf '{"id":777,"tag_name":"v1.2.3-rc.6","draft":false,"prerelease":%s}\n' \
+        "${prerelease}"
+    fi
     ;;
   repos/weita2026/ait-native/git/ref/tags/v1.2.3-rc.6)
     printf '{"object":{"type":"tag","sha":"9999999999999999999999999999999999999999"}}\n'
@@ -325,6 +329,8 @@ jq -e --arg version "${version}" --arg server "${server_digest}" \
   .status == "promoted_and_read_back" and
   .release.version == $version and .release.channel == "rc" and
   .aliases.github.after == ("v" + $version) and
+  .aliases.github.prerelease_before == true and
+  .aliases.github.prerelease_after == false and
   (.aliases.npm.packages | length) == 7 and
   ([.aliases.npm.packages[].after] | unique) == [$version] and
   .aliases.npm.rc_alias_retained == true and

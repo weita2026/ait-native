@@ -2,7 +2,7 @@
   "schema": "ait.release.adapter/v1",
   "package": {
     "name": "ait-server",
-    "version": "1.0.0-rc.10",
+    "version": "1.0.0-rc.11",
     "description": "Native ait-server release executable",
     "license_files": [
       {

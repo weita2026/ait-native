@@ -3,11 +3,15 @@ set -euo pipefail
 
 repo_root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 workflow=${repo_root}/.github/workflows/pypi-publish.yml
+prepublish_workflow=${repo_root}/.github/workflows/ait-release-prepublish-clean-host.yml
 endpoint_config_source=${repo_root}/release/endpoint-publication.rc4.json
 endpoint_defaults=${repo_root}/release/endpoint-publication.defaults.json
 operator=${repo_root}/ci/release_operator.sh
 preparer=${repo_root}/ci/release_endpoint_publication.sh
 remote=${repo_root}/ci/release_endpoint_remote.sh
+prepublish_stage=${repo_root}/ci/release_prepublish_stage.sh
+prepublish_oci=${repo_root}/ci/release_prepublish_oci.sh
+prepublish_verify=${repo_root}/ci/release_prepublish_verify.mjs
 temporary_root=$(mktemp -d "${TMPDIR:-/tmp}/ait-endpoint-publication-test.XXXXXX")
 
 cleanup() {
@@ -25,7 +29,8 @@ cleanup() {
 trap cleanup EXIT HUP INT TERM
 
 endpoint_config=${temporary_root}/endpoint-config.json
-jq '.release.channel = "rc"' "${endpoint_config_source}" >"${endpoint_config}"
+jq '.release.channel = "rc" | .endpoints.github.prerelease = true' \
+  "${endpoint_config_source}" >"${endpoint_config}"
 
 sha256_file() {
   if command -v sha256sum >/dev/null 2>&1; then
@@ -56,8 +61,9 @@ expect_rejection() {
   fi
 }
 
-for path in "${workflow}" "${endpoint_config}" "${endpoint_defaults}" \
-  "${operator}" "${preparer}" "${remote}" \
+for path in "${workflow}" "${prepublish_workflow}" "${endpoint_config}" \
+  "${endpoint_defaults}" "${operator}" "${preparer}" "${remote}" \
+  "${prepublish_stage}" "${prepublish_oci}" "${prepublish_verify}" \
   "${repo_root}/release/oci/ait-server.Dockerfile" \
   "${repo_root}/release/oci/ait-runner.Dockerfile"; do
   if [[ ! -f ${path} || -L ${path} ]]; then
@@ -68,6 +74,9 @@ done
 
 bash -n "${preparer}"
 bash -n "${remote}"
+bash -n "${prepublish_stage}"
+bash -n "${prepublish_oci}"
+node --check "${prepublish_verify}"
 bash "${operator}" validate-config --config "${endpoint_config}" >/dev/null
 # shellcheck disable=SC2016 # These are literal source-contract fragments.
 for required_apt_contract in \
@@ -122,7 +131,7 @@ jq -e '
   } and
   .endpoints.github == {
     repository: "weita2026/ait-native",
-    prerelease: false
+    prerelease: true
   } and
   .endpoints.npm.packages == [
     "@wa120/ait-native",
@@ -158,17 +167,43 @@ for required in \
   'protected_run_id:' \
   'endpoint_config_sha256:' \
   'endpoint_config_b64:' \
+  'reuse_frozen_candidate:' \
+  'candidate_run_id:' \
+  'candidate_artifact_id:' \
+  'candidate_artifact_digest:' \
+  'candidate_status_sha256:' \
+  'uses: ./.github/workflows/ait-release-prepublish-clean-host.yml' \
+  'needs: prepublish' \
   'control/ci/release_operator.sh validate-config' \
-  'control/ci/release_endpoint_publication.sh' \
+  'control/ci/release_prepublish_verify.mjs qualify' \
+  'control/ci/release_prepublish_oci.sh publish' \
   'control/ci/release_endpoint_remote.sh preflight' \
   'secrets.AIT_NPM_TOKEN' \
   'docker logout ghcr.io' \
-  'steps.request.outputs.source_artifact_id' \
-  'steps.request.outputs.protected_artifact_id' \
-  'steps.request.outputs.release_version' \
   'name: ait-endpoint-publication-${{ inputs.release_id }}'; do
   grep -F -- "${required}" "${workflow}" >/dev/null
 done
+for required_prepublish_contract in \
+  'name: ait release prepublish clean host' \
+  'permissions:' \
+  'actions: read' \
+  'contents: read' \
+  'control/ci/release_prepublish_stage.sh' \
+  'control/ci/release_prepublish_verify.mjs stage' \
+  'control/ci/release_clean_host.mjs aggregate' \
+  'Download the previously frozen candidate for control-only retry' \
+  'cmp "${comparison_root}/ait-release.clean-host-matrix.json" "${matrix}"' \
+  'run-id: ${{ needs.stage.outputs.candidate_run_id }}' \
+  'ait-prepublish-candidate-${{ inputs.release_id }}' \
+  'ait-prepublish-clean-host-${{ inputs.release_id }}'; do
+  grep -F -- "${required_prepublish_contract}" "${prepublish_workflow}" >/dev/null
+done
+grep -F 'release_endpoint_publication.sh' "${prepublish_stage}" >/dev/null
+if grep -E '(^|[[:space:]])(gh release|npm publish|twine upload|docker push)([[:space:]]|$)' \
+  "${prepublish_workflow}" "${prepublish_stage}" >/dev/null; then
+  printf 'prepublish gate contains a public endpoint write\n' >&2
+  exit 65
+fi
 for required_preparer_contract in \
   'immutable-tag-native-admission/v1' \
   'frozen npm package platform or repository metadata is not exact' \
@@ -203,7 +238,8 @@ for retired_workflow_constant in \
     exit 65
   fi
 done
-grep -F -- '--prerelease=false' "${remote}" >/dev/null
+grep -F -- '--prerelease="${github_prerelease}"' "${remote}" >/dev/null
+grep -F -- '--latest=false' "${remote}" >/dev/null
 grep -F -- '--argjson prerelease "${github_prerelease}"' "${remote}" >/dev/null
 grep -F '.prerelease == $prerelease' "${remote}" >/dev/null
 if grep -F 'continue-on-error:' "${workflow}" >/dev/null; then
@@ -238,7 +274,12 @@ if grep -F 'SHA256:+DiY3wvvV6TuJJhbpZisF/zLDA0zPtwkmmLoMI' \
   printf 'endpoint publisher retains the retired GitHub Ed25519 host fingerprint\n' >&2
   exit 65
 fi
-if awk '/^[[:space:]]*uses:/ && $0 !~ /@[0-9a-f]{40}([[:space:]]|$)/ {print; bad=1} END {exit bad}' \
+if awk '
+  /^[[:space:]]*uses:/ &&
+  $0 !~ /^[[:space:]]*uses:[[:space:]]+\.\// &&
+  $0 !~ /@[0-9a-f]{40}([[:space:]]|$)/ { print; bad = 1 }
+  END { exit bad }
+' \
   "${workflow}"; then
   :
 else
@@ -285,6 +326,7 @@ eval "$(extract_remote_function validate_npm_dist_tags)"
 eval "$(extract_remote_function validate_npm_registry_platform_readback)"
 eval "$(extract_remote_function validate_npm_remote_state)"
 eval "$(extract_remote_function wait_for_npm_remote_state)"
+eval "$(extract_remote_function validate_pypi_remote_state)"
 eval "$(extract_remote_function wait_for_pypi_remote_state)"
 eval "$(extract_preparer_function npm_addon_platform)"
 eval "$(extract_preparer_function validate_npm_payload_contract)"
@@ -351,6 +393,54 @@ fi
 grep -F 'npm package version is still unpublished:' \
   "${temporary_root}/npm-version-missing.stderr" >/dev/null
 unset -f curl npm_package_rows
+
+pypi_assets=${temporary_root}/pypi-restart-assets
+mkdir "${pypi_assets}"
+printf 'wheel-one\n' >"${pypi_assets}/ait_native-1.0.0rc4-one.whl"
+printf 'wheel-two\n' >"${pypi_assets}/ait_native-1.0.0rc4-two.whl"
+assets=${pypi_assets}
+python_version=1.0.0rc4
+pypi_response=${temporary_root}/pypi-response.json
+jq -n \
+  --arg filename 'ait_native-1.0.0rc4-one.whl' \
+  --arg digest "$(sha256_file "${pypi_assets}/ait_native-1.0.0rc4-one.whl")" '
+  {
+    info: {name: "ait-native"},
+    releases: {
+      "0.10.6": [{}, {}],
+      "1.0.0rc4": [{filename: $filename, digests: {sha256: $digest}}]
+    }
+  }
+' >"${pypi_response}"
+curl() {
+  local output=
+  while (($# > 0)); do
+    case "$1" in
+      --output) output=$2; shift 2 ;;
+      *) shift ;;
+    esac
+  done
+  cp "${pypi_response}" "${output}"
+  printf '200'
+}
+validate_pypi_remote_state
+if validate_pypi_remote_state true \
+  >"${temporary_root}/pypi-partial.stdout" \
+  2>"${temporary_root}/pypi-partial.stderr"; then
+  printf 'expected retryable exact partial PyPI state\n' >&2
+  exit 1
+else
+  test "$?" = 75
+fi
+grep -F 'PyPI release wheel set is only partially visible' \
+  "${temporary_root}/pypi-partial.stderr" >/dev/null
+jq '.releases["1.0.0rc4"][0].digests.sha256 = ("f" * 64)' \
+  "${pypi_response}" >"${pypi_response}.new"
+mv "${pypi_response}.new" "${pypi_response}"
+expect_failure pypi-partial-digest-drift validate_pypi_remote_state
+grep -F 'PyPI already contains conflicting bytes:' \
+  "${temporary_root}/pypi-partial-digest-drift.stderr" >/dev/null
+unset -f curl
 
 pypi_readback_attempts=0
 validate_pypi_remote_state() {
@@ -770,8 +860,14 @@ for component in ait-server ait-runner; do
   grep -F "COPY --chmod=0755 bin/\${TARGETARCH}/${component} /usr/local/bin/${component}" \
     "${dockerfile}" >/dev/null
   if [[ ${component} == ait-server ]]; then
-    grep -F 'AITSERVER_LISTEN=0.0.0.0:8088' "${dockerfile}" >/dev/null
-    grep -F 'AITSERVER_LISTEN=0.0.0.0:8088' "${remote}" >/dev/null
+    grep -F 'CMD ["run", "--listen", "0.0.0.0:8088", "--init-if-missing", "--defer-ci-admission"]' \
+      "${dockerfile}" >/dev/null
+    grep -F 'Config.Cmd == ["run", "--listen", "0.0.0.0:8088", "--init-if-missing", "--defer-ci-admission"]' \
+      "${remote}" >/dev/null
+    if grep -F 'AITSERVER_LISTEN=' "${dockerfile}" >/dev/null; then
+      printf 'ait-server OCI recipe restored the retired listener environment control\n' >&2
+      exit 65
+    fi
   fi
   if grep -E '(apt-get|cargo|curl|wget|git clone)' "${dockerfile}" >/dev/null; then
     printf '%s OCI recipe contains a build or download command\n' "${component}" >&2

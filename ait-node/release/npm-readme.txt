@@ -21,18 +21,22 @@ Run `ait init` once inside the repository your coding agent will change. Then
 ask for the outcome normally; for example, “Update the login flow, preserve
 public behavior, and add the relevant tests.”
 
-## What you have after 90 seconds
+## What initialization provides
 
-For a normal registry install, the practical 90-second result is an initialized
-repository: local AIT authority exists, `AGENTS.md` contains the effective
-repository-specific workflow, and the next coding-agent request can use an
-isolated Task, validation, Snapshot, and safe land or recovery path. The server
-remains off. The 90 seconds covers installation and initialization, not the
-completion time of an arbitrary code change.
+- Repository-local AIT authority and a generated `AGENTS.md` workflow router.
+- Sprint-backed Task creation and a dedicated worktree for each code change.
+- Snapshots, validation evidence, regression attribution through `ait blame`,
+  and recoverable Task Land closeout.
+- An inactive server boundary: local work does not require a running
+  `ait-server`.
 
-You describe the result. The coding agent follows the generated contract and
-owns the workflow details; you do not manually drive Task, Snapshot, or Land
-commands.
+The generated `AGENTS.md` block is authoritative for the repository. Describe
+the result to your coding agent normally; it reads that contract and follows
+the configured local or reviewed closeout path.
+
+For a reviewed remote flow, the author prepares the exact Patchset with
+`ait workflow ready <change-id> --apply`; the reviewer records the decision
+and lands it with `ait workflow land <change-id> --apply`.
 
 ## Node.js API
 
@@ -48,15 +52,15 @@ console.log(ait.bindingInfo());
 const status = ait.runCli(["status"]);
 ```
 
-## Moving from 0.x
+## Upgrading from 0.x
 
-The 0.x requirement to run `ait install` and its task-DAG positioning are
-retired. The 1.0 release line starts with `ait init` and a sprint-bound Local
-workflow. Keep the existing Git
-repository and history, but do not treat this release candidate as proof that
-legacy 0.x `.ait` data can be migrated in place. Use a clean clone or a new
-repository authority unless the selected release notes explicitly admit that
-migration.
+There is no `ait install` command in 1.0. Install or upgrade
+`@wa120/ait-native` through npm, verify it with `ait --version`, then run `ait
+init` only when creating a new 1.0 repository authority. Keep the Git
+repository and its history, but do not assume that a release candidate can
+migrate an existing 0.x `.ait` authority in place. Preserve the old authority
+for recovery and use a clean clone or a new repository authority unless the
+selected release notes explicitly admit that migration.
 
 ## Package boundary
 

@@ -70,6 +70,27 @@ wait_for_github_latest() {
   return 1
 }
 
+wait_for_github_admitted_release() {
+  local attempt=1
+  local admitted
+  while ((attempt <= readback_attempts)); do
+    admitted=$(gh api "repos/${repository}/releases/tags/${release_tag}" \
+      --jq 'select(.draft == false and .prerelease == false) | .tag_name' \
+      2>/dev/null || true)
+    if [[ ${admitted} == "${release_tag}" ]]; then
+      printf '%s\n' "${admitted}"
+      return 0
+    fi
+    if ((attempt < readback_attempts)); then
+      printf 'waiting for GitHub admitted Release visibility (%s/%s)\n' \
+        "${attempt}" "${readback_attempts}" >&2
+      sleep "${readback_delay_seconds}"
+    fi
+    attempt=$((attempt + 1))
+  done
+  return 1
+}
+
 wait_for_npm_dist_tags() {
   local package_name=$1
   local expected_version=$2
@@ -143,11 +164,11 @@ bash "${operator}" validate-config --config "${endpoint_config}" >/dev/null
 
 if ! jq -e --slurpfile config "${endpoint_config}" '
   ($config[0]) as $c |
-  .contract == "ait.release.operator.clean-host-status/v1" and
-  .status == "published" and
+  .contract == "ait.release.operator.status/v2" and
+  .status == "published_readback_complete" and
   .promotion_allowed == true and
   .terminal_for_release == false and
-  .next_action == "release_complete" and
+  .next_action == "promote_mutable_aliases" and
   .release.id == $c.release.id and
   .release.tag == $c.release.tag and
   .release.version == $c.release.version and
@@ -155,9 +176,13 @@ if ! jq -e --slurpfile config "${endpoint_config}" '
   .release.channel == $c.release.channel and
   .release.source_commit == $c.release.source_commit and
   (.release.endpoint_config_sha256 | test("^[0-9a-f]{64}$")) and
-  (.release.operator_status_sha256 | test("^[0-9a-f]{64}$")) and
-  .endpoint_publication.operator_status_sha256 == .release.operator_status_sha256 and
-  .endpoint_publication.workflow.conclusion == "success" and
+  .prepublication.status == "qualified" and
+  .prepublication.clean_host_rows == 32 and
+  (.prepublication.candidate_artifact_digest | test("^sha256:[0-9a-f]{64}$")) and
+  (.prepublication.aggregate_artifact_digest | test("^sha256:[0-9a-f]{64}$")) and
+  (.prepublication.aggregate_status_sha256 | test("^[0-9a-f]{64}$")) and
+  .publication_workflow.conclusion == "success" and
+  (.endpoint_publication.readback_sha256 | test("^[0-9a-f]{64}$")) and
   .endpoint_publication.platforms.github == "published_and_read_back" and
   .endpoint_publication.platforms.pypi == "published_and_read_back" and
   .endpoint_publication.platforms.npm == "published_and_read_back" and
@@ -166,14 +191,16 @@ if ! jq -e --slurpfile config "${endpoint_config}" '
   .endpoint_publication.platforms.oci.immutable_tag == $c.endpoints.oci.immutable_tag and
   .endpoint_publication.platforms.oci.moving_tag == $c.endpoints.oci.moving_tag and
   (.endpoint_publication.platforms.oci.server | test("^sha256:[0-9a-f]{64}$")) and
-  (.endpoint_publication.platforms.oci.runner | test("^sha256:[0-9a-f]{64}$"))
+  (.endpoint_publication.platforms.oci.runner | test("^sha256:[0-9a-f]{64}$")) and
+  .endpoint_publication.mutation.artifact_rebuild == false and
+  .endpoint_publication.mutation.component_rebuild == false
 ' "${operator_status}" >/dev/null; then
-  fail 65 'clean-host status is incomplete, blocked, or belongs to another release'
+  fail 65 'publication readback is incomplete, unqualified, or belongs to another release'
 fi
 
 [[ $(jq -er '.release.endpoint_config_sha256' "${operator_status}") == \
   "$(sha256_file "${endpoint_config}")" ]] ||
-  fail 65 'clean-host status does not bind the exact endpoint configuration'
+  fail 65 'publication readback does not bind the exact endpoint configuration'
 
 IFS=$'\t' read -r release_id release_version release_channel release_tag \
   release_commit python_version repository npm_registry npm_route oci_immutable_tag \
@@ -221,13 +248,20 @@ release_record=${temporary_root}/github-release.json
 tag_ref=${temporary_root}/github-tag-ref.json
 tag_record=${temporary_root}/github-tag.json
 gh api "repos/${repository}/releases/tags/${release_tag}" >"${release_record}"
-if ! jq -e --arg tag "${release_tag}" '
-  .tag_name == $tag and .draft == false and .prerelease == false and
-  (.id | type == "number" and . > 0)
+if ! jq -e --arg tag "${release_tag}" --arg mode "${mode}" \
+  --arg channel "${release_channel}" '
+  .tag_name == $tag and .draft == false and
+  (.id | type == "number" and . > 0) and
+  if $channel == "rc" and $mode == "apply" then
+    (.prerelease == true or .prerelease == false)
+  else
+    .prerelease == false
+  end
 ' "${release_record}" >/dev/null; then
-  fail 65 'GitHub Release is not an eligible non-draft latest release'
+  fail 65 'GitHub Release is not an eligible candidate or admitted latest release'
 fi
 github_release_id=$(jq -er '.id' "${release_record}")
+github_prerelease_before=$(jq -r '.prerelease' "${release_record}")
 gh api "repos/${repository}/git/ref/tags/${release_tag}" >"${tag_ref}"
 if ! jq -e '.object.type == "tag" and (.object.sha | test("^[0-9a-f]{40}$"))' \
   "${tag_ref}" >/dev/null; then
@@ -242,13 +276,17 @@ fi
 
 github_before=$(gh api "repos/${repository}/releases/latest" --jq '.tag_name' 2>/dev/null || true)
 github_write=false
-if [[ ${mode} == apply && ${github_before} != "${release_tag}" ]]; then
+if [[ ${mode} == apply &&
+  ( ${github_before} != "${release_tag}" || ${github_prerelease_before} != false ) ]]; then
   gh api --method PATCH "repos/${repository}/releases/${github_release_id}" \
+    -F prerelease=false \
     -f make_latest=true >/dev/null
   github_write=true
 fi
 github_after=$(wait_for_github_latest "${release_tag}") ||
   fail 65 'GitHub latest Release did not converge to the approved tag'
+wait_for_github_admitted_release >/dev/null ||
+  fail 65 'GitHub Release did not converge from candidate prerelease to admitted release'
 
 npm_rows=${temporary_root}/npm-rows.jsonl
 : >"${npm_rows}"
@@ -333,6 +371,7 @@ jq -S -n \
   --arg status_sha256 "${status_sha256}" \
   --arg github_before "${github_before}" \
   --arg github_after "${github_after}" \
+  --argjson github_prerelease_before "${github_prerelease_before}" \
   --arg homebrew_formula "${homebrew_formula}" \
   --arg apt_suite "${apt_suite}" \
   --arg winget_route "${winget_route}" \
@@ -358,7 +397,13 @@ jq -S -n \
       operator_status_sha256: $status_sha256
     },
     aliases: {
-      github: {alias: "latest", before: (if $github_before == "" then null else $github_before end), after: $github_after},
+      github: {
+        alias: "latest",
+        before: (if $github_before == "" then null else $github_before end),
+        after: $github_after,
+        prerelease_before: $github_prerelease_before,
+        prerelease_after: false
+      },
       npm: {alias: "latest", packages: $npm_packages, rc_alias_retained: true},
       oci: {alias: "latest", images: $oci_images, rc_alias_retained: true}
     },

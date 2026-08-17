@@ -1,0 +1,684 @@
+name: ait release prepublish clean host
+
+on:
+  workflow_call:
+    inputs:
+      release_id:
+        required: true
+        type: string
+      protected_run_id:
+        required: true
+        type: string
+      endpoint_config_sha256:
+        required: true
+        type: string
+      endpoint_config_b64:
+        required: true
+        type: string
+      prior_version:
+        required: true
+        type: string
+      prior_python_version:
+        required: true
+        type: string
+      reuse_frozen_candidate:
+        required: false
+        default: false
+        type: boolean
+      candidate_run_id:
+        required: false
+        default: ""
+        type: string
+      candidate_artifact_id:
+        required: false
+        default: ""
+        type: string
+      candidate_artifact_digest:
+        required: false
+        default: ""
+        type: string
+      candidate_status_sha256:
+        required: false
+        default: ""
+        type: string
+    outputs:
+      candidate_run_id:
+        value: ${{ jobs.stage.outputs.candidate_run_id }}
+      candidate_artifact_id:
+        value: ${{ jobs.stage.outputs.candidate_artifact_id }}
+      candidate_artifact_digest:
+        value: ${{ jobs.stage.outputs.candidate_artifact_digest }}
+      candidate_status_sha256:
+        value: ${{ jobs.stage.outputs.candidate_status_sha256 }}
+      aggregate_artifact_id:
+        value: ${{ jobs.aggregate.outputs.aggregate_artifact_id }}
+      aggregate_artifact_digest:
+        value: ${{ jobs.aggregate.outputs.aggregate_artifact_digest }}
+      aggregate_status_sha256:
+        value: ${{ jobs.aggregate.outputs.aggregate_status_sha256 }}
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  stage:
+    name: Freeze the exact non-public installation stage
+    runs-on: ubuntu-22.04
+    timeout-minutes: 90
+    outputs:
+      rows: ${{ steps.matrix.outputs.rows }}
+      platforms: ${{ steps.matrix.outputs.platforms }}
+      matrix_sha256: ${{ steps.matrix.outputs.matrix_sha256 }}
+      candidate_run_id: ${{ steps.select.outputs.candidate_run_id }}
+      candidate_artifact_id: ${{ steps.select.outputs.candidate_artifact_id }}
+      candidate_artifact_digest: ${{ steps.select.outputs.candidate_artifact_digest }}
+      candidate_status_sha256: ${{ steps.select.outputs.candidate_status_sha256 }}
+    steps:
+      - name: Check out the reviewed release-control source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          path: control
+          persist-credentials: false
+
+      - name: Select the fixed staging runtime
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: "24.5.0"
+          check-latest: false
+
+      - name: Set up the OCI archive builder
+        if: ${{ !inputs.reuse_frozen_candidate }}
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - name: Decode and bind the protected frozen candidate
+        id: request
+        shell: bash
+        env:
+          AIT_CONFIG_B64: ${{ inputs.endpoint_config_b64 }}
+          AIT_CONFIG_SHA: ${{ inputs.endpoint_config_sha256 }}
+          AIT_PROTECTED_RUN_ID: ${{ inputs.protected_run_id }}
+          AIT_RELEASE_ID: ${{ inputs.release_id }}
+          AIT_REUSE_CANDIDATE: ${{ inputs.reuse_frozen_candidate }}
+          AIT_CANDIDATE_RUN_ID: ${{ inputs.candidate_run_id }}
+          AIT_CANDIDATE_ARTIFACT_ID: ${{ inputs.candidate_artifact_id }}
+          AIT_CANDIDATE_ARTIFACT_DIGEST: ${{ inputs.candidate_artifact_digest }}
+          AIT_CANDIDATE_STATUS_SHA256: ${{ inputs.candidate_status_sha256 }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          [[ "${AIT_RELEASE_ID}" =~ ^REL-FAM-[0-9A-F]{16}$ ]]
+          [[ "${AIT_PROTECTED_RUN_ID}" =~ ^[1-9][0-9]*$ ]]
+          [[ "${AIT_CONFIG_SHA}" =~ ^[0-9a-f]{64}$ ]]
+          printf '%s' "${AIT_CONFIG_B64}" | base64 --decode >endpoint-config.json
+          test "$(sha256sum endpoint-config.json | awk '{print $1}')" = "${AIT_CONFIG_SHA}"
+          bash control/ci/release_operator.sh validate-config \
+            --config "${GITHUB_WORKSPACE}/endpoint-config.json" \
+            --expected-release-id "${AIT_RELEASE_ID}" >/dev/null
+          test "$(jq -r '.protected_authorization.workflow_run_id' endpoint-config.json)" = \
+            "${AIT_PROTECTED_RUN_ID}"
+          if [[ ${AIT_REUSE_CANDIDATE} == true ]]; then
+            [[ "${AIT_CANDIDATE_RUN_ID}" =~ ^[1-9][0-9]*$ ]]
+            [[ "${AIT_CANDIDATE_ARTIFACT_ID}" =~ ^[1-9][0-9]*$ ]]
+            [[ "${AIT_CANDIDATE_ARTIFACT_DIGEST}" =~ ^sha256:[0-9a-f]{64}$ ]]
+            [[ "${AIT_CANDIDATE_STATUS_SHA256}" =~ ^[0-9a-f]{64}$ ]]
+            api="https://api.github.com/repos/${GITHUB_REPOSITORY}"
+            curl --fail --silent --show-error --location \
+              --header "Authorization: Bearer ${GITHUB_TOKEN}" \
+              --header 'Accept: application/vnd.github+json' \
+              --header 'X-GitHub-Api-Version: 2022-11-28' \
+              "${api}/actions/artifacts/${AIT_CANDIDATE_ARTIFACT_ID}" \
+              --output candidate-artifact.json
+            curl --fail --silent --show-error --location \
+              --header "Authorization: Bearer ${GITHUB_TOKEN}" \
+              --header 'Accept: application/vnd.github+json' \
+              --header 'X-GitHub-Api-Version: 2022-11-28' \
+              "${api}/actions/runs/${AIT_CANDIDATE_RUN_ID}" \
+              --output candidate-run.json
+            jq -e \
+              --argjson artifact_id "${AIT_CANDIDATE_ARTIFACT_ID}" \
+              --argjson run_id "${AIT_CANDIDATE_RUN_ID}" \
+              --arg name "ait-prepublish-candidate-${AIT_RELEASE_ID}" \
+              --arg digest "${AIT_CANDIDATE_ARTIFACT_DIGEST}" '
+                .id == $artifact_id and .name == $name and .digest == $digest and
+                .expired == false and .workflow_run.id == $run_id
+              ' candidate-artifact.json >/dev/null
+            jq -e \
+              --argjson run_id "${AIT_CANDIDATE_RUN_ID}" '
+                .id == $run_id and
+                .name == "ait release endpoint publication" and
+                .path == ".github/workflows/pypi-publish.yml" and
+                .event == "workflow_dispatch" and
+                .status == "completed" and
+                (.conclusion | IN(
+                  "failure", "cancelled", "timed_out", "startup_failure",
+                  "stale", "action_required"
+                )) and
+                .head_branch == "main"
+              ' candidate-run.json >/dev/null
+          else
+            test -z "${AIT_CANDIDATE_RUN_ID}${AIT_CANDIDATE_ARTIFACT_ID}"
+            test -z "${AIT_CANDIDATE_ARTIFACT_DIGEST}${AIT_CANDIDATE_STATUS_SHA256}"
+          fi
+          {
+            echo "reuse_candidate=${AIT_REUSE_CANDIDATE}"
+            echo "source_run_id=$(jq -r '.source_dossier.workflow_run_id' endpoint-config.json)"
+            echo "source_artifact_id=$(jq -r '.source_dossier.artifact_id' endpoint-config.json)"
+            echo "protected_artifact_id=$(jq -r '.protected_authorization.artifact_id' endpoint-config.json)"
+            echo "source_commit=$(jq -r '.release.source_commit' endpoint-config.json)"
+          } >>"${GITHUB_OUTPUT}"
+
+      - name: Download the exact frozen family dossier
+        if: ${{ !inputs.reuse_frozen_candidate }}
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          artifact-ids: ${{ steps.request.outputs.source_artifact_id }}
+          merge-multiple: true
+          github-token: ${{ github.token }}
+          path: dossier
+          repository: ${{ github.repository }}
+          run-id: ${{ steps.request.outputs.source_run_id }}
+
+      - name: Download the exact protected authorization
+        if: ${{ !inputs.reuse_frozen_candidate }}
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          artifact-ids: ${{ steps.request.outputs.protected_artifact_id }}
+          merge-multiple: true
+          github-token: ${{ github.token }}
+          path: protected
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.protected_run_id }}
+
+      - name: Download the previously frozen candidate for control-only retry
+        if: ${{ inputs.reuse_frozen_candidate }}
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          artifact-ids: ${{ inputs.candidate_artifact_id }}
+          github-token: ${{ github.token }}
+          path: candidate
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.candidate_run_id }}
+
+      - name: Materialize packages and OCI archives without endpoint writes
+        if: ${{ !inputs.reuse_frozen_candidate }}
+        id: stage
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash control/ci/release_prepublish_stage.sh \
+            "${GITHUB_WORKSPACE}/endpoint-config.json" \
+            "${GITHUB_WORKSPACE}/dossier" \
+            "${GITHUB_WORKSPACE}/protected/ait-release.protected-promotion.json" \
+            "${GITHUB_WORKSPACE}/candidate"
+          status=candidate/ait-release.prepublish-candidate.json
+          jq -e \
+            --arg release_id '${{ inputs.release_id }}' \
+            --arg commit '${{ steps.request.outputs.source_commit }}' '
+              .contract == "ait.release.prepublish.candidate/v1" and
+              .status == "frozen_candidate_pending_clean_host" and
+              .release.id == $release_id and
+              .release.source_commit == $commit and
+              .public_endpoint_writes == false
+            ' "${status}" >/dev/null
+          echo "candidate_status_sha256=$(sha256sum "${status}" | awk '{print $1}')" \
+            >>"${GITHUB_OUTPUT}"
+
+      - name: Generate the exact clean-host matrices
+        id: matrix
+        shell: bash
+        env:
+          AIT_CANDIDATE_STATUS_SHA256: ${{ inputs.candidate_status_sha256 }}
+          AIT_NEW_CANDIDATE_STATUS_SHA256: ${{ steps.stage.outputs.candidate_status_sha256 }}
+          AIT_REUSE_CANDIDATE: ${{ inputs.reuse_frozen_candidate }}
+        run: |
+          set -euo pipefail
+          matrix=candidate/ait-release.clean-host-matrix.json
+          if [[ ${AIT_REUSE_CANDIDATE} == true ]]; then
+            comparison_root=$(mktemp -d)
+            node control/ci/release_clean_host.mjs matrix \
+              --family control/ait-release-family.json \
+              --platforms control/ci/native_bootstrap_matrix.json \
+              --output "${comparison_root}/ait-release.clean-host-matrix.json" >/dev/null
+            cmp "${comparison_root}/ait-release.clean-host-matrix.json" "${matrix}"
+            cmp endpoint-config.json candidate/ait-release.endpoints.authority.json
+            status_sha256=${AIT_CANDIDATE_STATUS_SHA256}
+          else
+            node control/ci/release_clean_host.mjs matrix \
+              --family control/ait-release-family.json \
+              --platforms control/ci/native_bootstrap_matrix.json \
+              --output "${GITHUB_WORKSPACE}/${matrix}" >/dev/null
+            cp endpoint-config.json candidate/ait-release.endpoints.authority.json
+            find candidate -type f ! -name PREPUBLISH_SHA256SUMS -print | LC_ALL=C sort |
+              while IFS= read -r file; do
+                printf '%s  %s\n' "$(sha256sum "${file}" | awk '{print $1}')" \
+                  "${file#candidate/}"
+              done >candidate/PREPUBLISH_SHA256SUMS
+            status_sha256=${AIT_NEW_CANDIDATE_STATUS_SHA256}
+          fi
+          test "$(jq -r '.release.version' "${matrix}")" = \
+            "$(jq -r '.release.version' endpoint-config.json)"
+          {
+            printf 'rows=%s\n' "$(jq -c '{include: .rows}' "${matrix}")"
+            printf 'platforms=%s\n' \
+              "$(jq -c '{include: .targets}' control/ci/native_bootstrap_matrix.json)"
+            echo "matrix_sha256=$(sha256sum "${matrix}" | awk '{print $1}')"
+          } >>"${GITHUB_OUTPUT}"
+          node control/ci/release_prepublish_verify.mjs stage \
+            --root "${GITHUB_WORKSPACE}/candidate" \
+            --config-sha256 '${{ inputs.endpoint_config_sha256 }}' \
+            --status-sha256 "${status_sha256}" >/dev/null
+
+      - name: Upload the immutable prepublish candidate
+        id: upload
+        if: ${{ !inputs.reuse_frozen_candidate }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ait-prepublish-candidate-${{ inputs.release_id }}
+          path: candidate
+          if-no-files-found: error
+          include-hidden-files: true
+          compression-level: 0
+          retention-days: 90
+
+      - name: Select the one immutable candidate identity
+        id: select
+        shell: bash
+        env:
+          AIT_EXISTING_ARTIFACT_DIGEST: ${{ inputs.candidate_artifact_digest }}
+          AIT_EXISTING_ARTIFACT_ID: ${{ inputs.candidate_artifact_id }}
+          AIT_EXISTING_RUN_ID: ${{ inputs.candidate_run_id }}
+          AIT_EXISTING_STATUS_SHA256: ${{ inputs.candidate_status_sha256 }}
+          AIT_NEW_ARTIFACT_DIGEST: ${{ steps.upload.outputs.artifact-digest }}
+          AIT_NEW_ARTIFACT_ID: ${{ steps.upload.outputs.artifact-id }}
+          AIT_NEW_STATUS_SHA256: ${{ steps.stage.outputs.candidate_status_sha256 }}
+          AIT_REUSE_CANDIDATE: ${{ inputs.reuse_frozen_candidate }}
+        run: |
+          set -euo pipefail
+          if [[ ${AIT_REUSE_CANDIDATE} == true ]]; then
+            candidate_run_id=${AIT_EXISTING_RUN_ID}
+            candidate_artifact_id=${AIT_EXISTING_ARTIFACT_ID}
+            candidate_artifact_digest=${AIT_EXISTING_ARTIFACT_DIGEST}
+            candidate_status_sha256=${AIT_EXISTING_STATUS_SHA256}
+          else
+            candidate_run_id=${GITHUB_RUN_ID}
+            candidate_artifact_id=${AIT_NEW_ARTIFACT_ID}
+            candidate_artifact_digest=${AIT_NEW_ARTIFACT_DIGEST}
+            candidate_status_sha256=${AIT_NEW_STATUS_SHA256}
+          fi
+          [[ "${candidate_run_id}" =~ ^[1-9][0-9]*$ ]]
+          [[ "${candidate_artifact_id}" =~ ^[1-9][0-9]*$ ]]
+          [[ "${candidate_artifact_digest}" =~ ^sha256:[0-9a-f]{64}$ ]]
+          [[ "${candidate_status_sha256}" =~ ^[0-9a-f]{64}$ ]]
+          {
+            echo "candidate_run_id=${candidate_run_id}"
+            echo "candidate_artifact_id=${candidate_artifact_id}"
+            echo "candidate_artifact_digest=${candidate_artifact_digest}"
+            echo "candidate_status_sha256=${candidate_status_sha256}"
+          } >>"${GITHUB_OUTPUT}"
+
+  probe:
+    needs: stage
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.stage.outputs.platforms) }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    steps:
+      - name: Check out the exact release-control source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.sha }}
+          path: control
+          persist-credentials: false
+
+      - name: Select the probe Node runtime
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: "24.5.0"
+          check-latest: false
+
+      - name: Activate preinstalled Linux Homebrew
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          test -x /home/linuxbrew/.linuxbrew/bin/brew
+          echo /home/linuxbrew/.linuxbrew/bin >>"${GITHUB_PATH}"
+
+      - name: Register inbox Windows Package Manager
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          if (-not (Get-Command winget.exe -ErrorAction SilentlyContinue)) {
+            Add-AppxPackage -RegisterByFamilyName -MainPackage Microsoft.DesktopAppInstaller_8wekyb3d8bbwe
+          }
+          $winget = Get-Command winget.exe -ErrorAction Stop
+          Split-Path -Parent $winget.Source | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Probe exact runner capabilities
+        shell: bash
+        env:
+          AIT_CLEAN_HOST_RUNNER_LABEL: ${{ matrix.runner }}
+        run: |
+          mkdir evidence
+          node control/ci/release_clean_host_probe.mjs \
+            --platforms control/ci/native_bootstrap_matrix.json \
+            --target '${{ matrix.target }}' \
+            --output "${PWD}/evidence/${{ matrix.target }}.json"
+
+  install:
+    needs: [stage, probe]
+    strategy:
+      fail-fast: false
+      max-parallel: 12
+      matrix: ${{ fromJSON(needs.stage.outputs.rows) }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    steps:
+      - name: Check out the exact release-control source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.sha }}
+          path: control
+          persist-credentials: false
+
+      - name: Select the lifecycle Node runtime
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: "24.5.0"
+          check-latest: false
+
+      - name: Select Python for the PyPI row
+        if: matrix.channel == 'pypi'
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.11"
+          check-latest: false
+
+      - name: Activate preinstalled Linux Homebrew
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          test -x /home/linuxbrew/.linuxbrew/bin/brew
+          echo /home/linuxbrew/.linuxbrew/bin >>"${GITHUB_PATH}"
+
+      - name: Register inbox Windows Package Manager
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          if (-not (Get-Command winget.exe -ErrorAction SilentlyContinue)) {
+            Add-AppxPackage -RegisterByFamilyName -MainPackage Microsoft.DesktopAppInstaller_8wekyb3d8bbwe
+          }
+          $winget = Get-Command winget.exe -ErrorAction Stop
+          Split-Path -Parent $winget.Source | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Download the immutable prepublish candidate
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          artifact-ids: ${{ needs.stage.outputs.candidate_artifact_id }}
+          github-token: ${{ github.token }}
+          path: candidate
+          repository: ${{ github.repository }}
+          run-id: ${{ needs.stage.outputs.candidate_run_id }}
+
+      - name: Verify candidate inventory and execute clean install
+        id: phase
+        continue-on-error: true
+        shell: bash
+        env:
+          AIT_CLEAN_HOST_CANDIDATE_ARTIFACT_DIGEST: ${{ needs.stage.outputs.candidate_artifact_digest }}
+          AIT_CLEAN_HOST_CANDIDATE_ROOT: ${{ github.workspace }}/candidate
+          AIT_CLEAN_HOST_RUNNER_LABEL: ${{ matrix.runner }}
+        run: |
+          set -euo pipefail
+          node control/ci/release_prepublish_verify.mjs stage \
+            --root "${PWD}/candidate" \
+            --config-sha256 '${{ inputs.endpoint_config_sha256 }}' \
+            --status-sha256 '${{ needs.stage.outputs.candidate_status_sha256 }}' >/dev/null
+          mkdir evidence
+          node control/ci/release_clean_host_phase.mjs run \
+            --matrix "${PWD}/candidate/ait-release.clean-host-matrix.json" \
+            --row-id '${{ matrix.id }}' \
+            --config "${PWD}/candidate/ait-release.endpoints.authority.json" \
+            --status "${PWD}/candidate/ait-release.prepublish-candidate.json" \
+            --phase install \
+            --prior-version '${{ inputs.prior_version }}' \
+            --prior-python-version '${{ inputs.prior_python_version }}' \
+            --output "${PWD}/evidence/install.json"
+
+      - name: Upload install-phase evidence
+        id: upload
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ait-prepublish-install-${{ inputs.release_id }}-${{ matrix.id }}
+          path: evidence/install.json
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 90
+
+      - name: Enforce clean-install success
+        if: always()
+        shell: bash
+        run: |
+          test '${{ steps.phase.outcome }}' = success
+          test '${{ steps.upload.outcome }}' = success
+
+  upgrade:
+    needs: [stage, install]
+    if: ${{ always() && needs.stage.result == 'success' }}
+    strategy:
+      fail-fast: false
+      max-parallel: 12
+      matrix: ${{ fromJSON(needs.stage.outputs.rows) }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    steps:
+      - name: Check out the exact release-control source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.sha }}
+          path: control
+          persist-credentials: false
+
+      - name: Select the lifecycle Node runtime
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: "24.5.0"
+          check-latest: false
+
+      - name: Select Python for the PyPI row
+        if: matrix.channel == 'pypi'
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.11"
+          check-latest: false
+
+      - name: Activate preinstalled Linux Homebrew
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          test -x /home/linuxbrew/.linuxbrew/bin/brew
+          echo /home/linuxbrew/.linuxbrew/bin >>"${GITHUB_PATH}"
+
+      - name: Register inbox Windows Package Manager
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          if (-not (Get-Command winget.exe -ErrorAction SilentlyContinue)) {
+            Add-AppxPackage -RegisterByFamilyName -MainPackage Microsoft.DesktopAppInstaller_8wekyb3d8bbwe
+          }
+          $winget = Get-Command winget.exe -ErrorAction Stop
+          Split-Path -Parent $winget.Source | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Download the immutable prepublish candidate
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          artifact-ids: ${{ needs.stage.outputs.candidate_artifact_id }}
+          github-token: ${{ github.token }}
+          path: candidate
+          repository: ${{ github.repository }}
+          run-id: ${{ needs.stage.outputs.candidate_run_id }}
+
+      - name: Download matching install evidence
+        id: download_install
+        continue-on-error: true
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: ait-prepublish-install-${{ inputs.release_id }}-${{ matrix.id }}
+          path: evidence/install
+
+      - name: Verify candidate inventory and execute exact upgrade
+        id: phase
+        continue-on-error: true
+        shell: bash
+        env:
+          AIT_CLEAN_HOST_CANDIDATE_ARTIFACT_DIGEST: ${{ needs.stage.outputs.candidate_artifact_digest }}
+          AIT_CLEAN_HOST_CANDIDATE_ROOT: ${{ github.workspace }}/candidate
+          AIT_CLEAN_HOST_RUNNER_LABEL: ${{ matrix.runner }}
+        run: |
+          set -euo pipefail
+          node control/ci/release_prepublish_verify.mjs stage \
+            --root "${PWD}/candidate" \
+            --config-sha256 '${{ inputs.endpoint_config_sha256 }}' \
+            --status-sha256 '${{ needs.stage.outputs.candidate_status_sha256 }}' >/dev/null
+          mkdir -p evidence/row
+          node control/ci/release_clean_host_phase.mjs run \
+            --matrix "${PWD}/candidate/ait-release.clean-host-matrix.json" \
+            --row-id '${{ matrix.id }}' \
+            --config "${PWD}/candidate/ait-release.endpoints.authority.json" \
+            --status "${PWD}/candidate/ait-release.prepublish-candidate.json" \
+            --phase upgrade \
+            --prior-version '${{ inputs.prior_version }}' \
+            --prior-python-version '${{ inputs.prior_python_version }}' \
+            --output "${PWD}/evidence/upgrade.json"
+
+      - name: Bind both fresh-host phases into one row
+        id: combine
+        if: always()
+        continue-on-error: true
+        shell: bash
+        env:
+          AIT_CLEAN_HOST_CANDIDATE_ARTIFACT_DIGEST: ${{ needs.stage.outputs.candidate_artifact_digest }}
+        run: |
+          node control/ci/release_clean_host.mjs combine \
+            --matrix "${PWD}/candidate/ait-release.clean-host-matrix.json" \
+            --config "${PWD}/candidate/ait-release.endpoints.authority.json" \
+            --status "${PWD}/candidate/ait-release.prepublish-candidate.json" \
+            --install "${PWD}/evidence/install/install.json" \
+            --upgrade "${PWD}/evidence/upgrade.json" \
+            --output "${PWD}/evidence/row/${{ matrix.id }}.json"
+
+      - name: Upload immutable row evidence
+        id: upload
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ait-prepublish-row-${{ inputs.release_id }}-${{ matrix.id }}
+          path: evidence/row/${{ matrix.id }}.json
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 90
+
+      - name: Enforce upgrade and row success
+        if: always()
+        shell: bash
+        run: |
+          test '${{ steps.download_install.outcome }}' = success
+          test '${{ steps.phase.outcome }}' = success
+          test '${{ steps.combine.outcome }}' = success
+          test '${{ steps.upload.outcome }}' = success
+
+  aggregate:
+    needs: [stage, probe, install, upgrade]
+    if: ${{ always() && needs.stage.result == 'success' }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    outputs:
+      aggregate_artifact_id: ${{ steps.upload.outputs.artifact-id }}
+      aggregate_artifact_digest: ${{ steps.upload.outputs.artifact-digest }}
+      aggregate_status_sha256: ${{ steps.aggregate.outputs.aggregate_status_sha256 }}
+    steps:
+      - name: Check out the exact release-control source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.sha }}
+          path: control
+          persist-credentials: false
+
+      - name: Select the aggregation Node runtime
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: "24.5.0"
+          check-latest: false
+
+      - name: Download every available immutable row
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: ait-prepublish-row-${{ inputs.release_id }}-*
+          path: rows
+          merge-multiple: true
+
+      - name: Download the immutable candidate authority
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          artifact-ids: ${{ needs.stage.outputs.candidate_artifact_id }}
+          github-token: ${{ github.token }}
+          path: candidate
+          repository: ${{ github.repository }}
+          run-id: ${{ needs.stage.outputs.candidate_run_id }}
+
+      - name: Aggregate the complete prepublish row inventory
+        id: aggregate
+        continue-on-error: true
+        shell: bash
+        env:
+          AIT_CLEAN_HOST_CANDIDATE_ARTIFACT_DIGEST: ${{ needs.stage.outputs.candidate_artifact_digest }}
+        run: |
+          set -euo pipefail
+          mkdir -p rows
+          node control/ci/release_clean_host.mjs aggregate \
+            --matrix "${PWD}/candidate/ait-release.clean-host-matrix.json" \
+            --config "${PWD}/candidate/ait-release.endpoints.authority.json" \
+            --status "${PWD}/candidate/ait-release.prepublish-candidate.json" \
+            --evidence-root "${PWD}/rows" \
+            --output-root "${RUNNER_TEMP}/prepublish-aggregate"
+          cp candidate/ait-release.prepublish-candidate.json \
+            "${RUNNER_TEMP}/prepublish-aggregate/"
+          find "${RUNNER_TEMP}/prepublish-aggregate" -type f ! -name SHA256SUMS \
+            -print | LC_ALL=C sort |
+            while IFS= read -r file; do
+              printf '%s  %s\n' "$(sha256sum "${file}" | awk '{print $1}')" \
+                "${file#"${RUNNER_TEMP}/prepublish-aggregate/"}"
+            done >"${RUNNER_TEMP}/prepublish-aggregate/SHA256SUMS"
+          status="${RUNNER_TEMP}/prepublish-aggregate/ait-release.clean-host-status.json"
+          test "$(jq -r '.status' "${status}")" = qualified
+          aggregate_sha=$(sha256sum "${status}" | awk '{print $1}')
+          node control/ci/release_prepublish_verify.mjs qualify \
+            --root "${RUNNER_TEMP}/prepublish-aggregate" \
+            --candidate-root "${PWD}/candidate" \
+            --candidate-artifact-digest \
+              '${{ needs.stage.outputs.candidate_artifact_digest }}' \
+            --aggregate-sha256 "${aggregate_sha}" >/dev/null
+          echo "aggregate_status_sha256=${aggregate_sha}" >>"${GITHUB_OUTPUT}"
+
+      - name: Upload the prepublish qualification evidence
+        id: upload
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ait-prepublish-clean-host-${{ inputs.release_id }}
+          path: ${{ runner.temp }}/prepublish-aggregate
+          if-no-files-found: error
+          include-hidden-files: true
+          compression-level: 0
+          retention-days: 90
+
+      - name: Enforce qualification before returning to publication
+        if: always()
+        shell: bash
+        run: |
+          test '${{ steps.aggregate.outcome }}' = success
+          test '${{ steps.upload.outcome }}' = success

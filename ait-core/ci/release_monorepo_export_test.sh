@@ -73,6 +73,10 @@ if (( selftest_mode == 0 )); then
     "${repo_root}/ci/release_endpoint_remote.sh" \
     "${repo_root}/ci/release_latest_alias.sh" \
     "${repo_root}/ci/release_operator.sh" \
+    "${repo_root}/ci/release_prepublish_oci.sh" \
+    "${repo_root}/ci/release_prepublish_stage.sh" \
+    "${repo_root}/ci/release_prepublish_test.sh" \
+    "${repo_root}/ci/release_prepublish_verify.mjs" \
     "${repo_root}/ci/release_protected_promotion.sh" \
     "${repo_root}/ci/release_receipt_matrix.jq" \
     "${repo_root}/ci/release_receipt_matrix_test.sh" \
@@ -87,8 +91,8 @@ if (( selftest_mode == 0 )); then
     "${public_core}/release/oci/"
   cp "${repo_root}/.github/workflows/ait-release-component-receipts.yml" \
     "${public_core}/.github/workflows/ait-release-component-receipts.yml"
-  cp "${repo_root}/.github/workflows/ait-release-clean-host.yml" \
-    "${public_core}/.github/workflows/ait-release-clean-host.yml"
+  cp "${repo_root}/.github/workflows/ait-release-prepublish-clean-host.yml" \
+    "${public_core}/.github/workflows/ait-release-prepublish-clean-host.yml"
   cp "${repo_root}/.github/workflows/ait-release-latest-alias.yml" \
     "${public_core}/.github/workflows/ait-release-latest-alias.yml"
   cp "${repo_root}/.github/workflows/ait-release-protected-promotion.yml" \
@@ -252,11 +256,14 @@ for repository in ait-core ait-server ait-runner ait-python ait-node; do
         'npm install --global @wa120/ait-native@@AIT_NPM_VERSION@' \
         'ait init' \
         '' \
-        '## What you have after 90 seconds' \
-        'Installation and initialization are complete; arbitrary coding work is not promised.' \
+        '## What initialization provides' \
+        'Repository-local authority, a generated AGENTS.md workflow, and an inactive server boundary.' \
         '' \
-        '## Moving from 0.x' \
-        'The 0.x requirement to run `ait install` and its task-DAG positioning are retired.' \
+        '## Local and reviewed closeout' \
+        'Authors run `ait workflow ready <change-id> --apply`; reviewers run `ait workflow land <change-id> --apply`.' \
+        '' \
+        '## Upgrading from 0.x' \
+        'There is no `ait install` command in 1.0. Install or upgrade `ait-native` through your selected package manager, then run `ait init` only for a new 1.0 repository authority.' \
         >"${source}/release/npm-readme.txt"
       core_snapshot=$(jq -er '
         [.components[] | select(.source_repository == "ait-core") | .source_snapshot]
@@ -484,6 +491,10 @@ for release_control_path in \
   ci/release_endpoint_remote.sh \
   ci/release_latest_alias.sh \
   ci/release_operator.sh \
+  ci/release_prepublish_oci.sh \
+  ci/release_prepublish_stage.sh \
+  ci/release_prepublish_test.sh \
+  ci/release_prepublish_verify.mjs \
   ci/release_protected_promotion.sh \
   ci/release_receipt_matrix.jq \
   ci/release_receipt_matrix_test.sh; do
@@ -495,6 +506,7 @@ test "$(jq -r '.version' "${output_one}/ci/native_bootstrap_matrix.json")" = \
 AIT_RELEASE_FAMILY_MANIFEST="${output_one}/ait-release-family.json" \
   bash "${output_one}/ci/release_receipt_matrix_test.sh" >/dev/null
 bash "${output_one}/ci/release_clean_host_test.sh" >/dev/null
+bash "${output_one}/ci/release_prepublish_test.sh" >/dev/null
 expect_failure historical-component-family env \
   AIT_RELEASE_FAMILY_MANIFEST="${output_one}/ait-core/ait-release-family.json" \
   bash "${output_one}/ci/release_receipt_matrix_test.sh"
@@ -603,10 +615,14 @@ for required_readme_text in \
   'https://github.com/weita2026/ait-native/issues/new/choose' \
   'ait init' \
   'ait --version' \
-  '## What you have after 90 seconds' \
+  '## What initialization provides' \
   'https://ait-native.dev/' \
-  '## Moving from 0.x' \
-  'The 0.x requirement to run `ait install` and its task-DAG positioning are' \
+  '## Upgrading from 0.x' \
+  'There is no `ait install` command in 1.0.' \
+  'AIT has three workflow presets' \
+  'ait workflow ready <change-id> --apply' \
+  'ait workflow land <change-id> --apply' \
+  '## Installed component boundaries' \
   'AGENTS.md' \
   'ait task start' \
   'ait plan sync' \
@@ -620,7 +636,7 @@ for required_readme_text in \
   'No commercial or proprietary license applies to a public 1.0 source path'; do
   grep -F "${required_readme_text}" "${public_readme}" >/dev/null
 done
-if grep -E '@AIT_[A-Z0-9_]+@|Jira-like|parallel AI execution|compact task DAG|mkdir -p docs/sprints' \
+if grep -E '@AIT_[A-Z0-9_]+@|Jira-like|parallel AI execution|compact task DAG|mkdir -p docs/sprints|90 seconds|task-DAG positioning' \
   "${public_readme}" >/dev/null; then
   printf 'public README contains an unresolved token, stale positioning, or manual sprint bootstrap\n' >&2
   exit 65
@@ -728,12 +744,12 @@ printf '* text=auto\n' >"${byte_policy_drift_output}/.gitattributes"
 expect_failure byte-policy-drift node \
   "${byte_policy_drift_output}/build-release.mjs" --validate-only
 root_workflow=${output_one}/.github/workflows/ait-release-component-receipts.yml
-clean_host_workflow=${output_one}/.github/workflows/ait-release-clean-host.yml
+prepublish_workflow=${output_one}/.github/workflows/ait-release-prepublish-clean-host.yml
 latest_alias_workflow=${output_one}/.github/workflows/ait-release-latest-alias.yml
 promotion_workflow=${output_one}/.github/workflows/ait-release-protected-promotion.yml
 endpoint_workflow=${output_one}/.github/workflows/pypi-publish.yml
 test -f "${root_workflow}"
-test -f "${clean_host_workflow}"
+test -f "${prepublish_workflow}"
 test -f "${latest_alias_workflow}"
 test -f "${promotion_workflow}"
 test -f "${endpoint_workflow}"
@@ -747,15 +763,21 @@ if grep -F 'contents: write' "${root_workflow}" >/dev/null ||
   printf 'root protected workflow retained unsafe monorepo execution paths\n' >&2
   exit 65
 fi
-for required_clean_host_text in \
-  'name: ait release clean host' \
-  'matrix_sha256:' \
+for required_prepublish_text in \
+  'name: ait release prepublish clean host' \
+  'workflow_call:' \
+  'release_prepublish_stage.sh' \
+  'release_prepublish_verify.mjs qualify' \
   'release_clean_host_probe.mjs' \
   'release_clean_host_phase.mjs run' \
   'release_clean_host.mjs combine' \
   'release_clean_host.mjs aggregate' \
-  'ait-clean-host-${{ inputs.release_id }}'; do
-  grep -F -- "${required_clean_host_text}" "${clean_host_workflow}" >/dev/null
+  'reuse_frozen_candidate:' \
+  'Download the previously frozen candidate for control-only retry' \
+  'cmp "${comparison_root}/ait-release.clean-host-matrix.json" "${matrix}"' \
+  'run-id: ${{ needs.stage.outputs.candidate_run_id }}' \
+  'ait-prepublish-clean-host-${{ inputs.release_id }}'; do
+  grep -F -- "${required_prepublish_text}" "${prepublish_workflow}" >/dev/null
 done
 # shellcheck disable=SC2016
 for required_promotion_text in \
@@ -778,6 +800,9 @@ for endpoint_control in \
   test -f "${endpoint_control}"
 done
 grep -F 'endpoint_config_sha256:' "${endpoint_workflow}" >/dev/null
+grep -F 'reuse_frozen_candidate:' "${endpoint_workflow}" >/dev/null
+grep -F 'run-id: ${{ needs.prepublish.outputs.candidate_run_id }}' \
+  "${endpoint_workflow}" >/dev/null
 grep -F 'control/ci/release_operator.sh validate-config' \
   "${endpoint_workflow}" >/dev/null
 # shellcheck disable=SC2016
@@ -824,14 +849,14 @@ node "${repo_root}/ci/release_monorepo_transform.mjs" \
 expect_failure workflow-drift node \
   "${workflow_drift_output}/build-release.mjs" --validate-only
 
-clean_host_workflow_drift_output=${temporary_root}/clean-host-workflow-drift-output
-cp -R "${output_one}" "${clean_host_workflow_drift_output}"
+prepublish_workflow_drift_output=${temporary_root}/prepublish-workflow-drift-output
+cp -R "${output_one}" "${prepublish_workflow_drift_output}"
 node "${repo_root}/ci/release_monorepo_transform.mjs" \
-  "${clean_host_workflow_drift_output}/.github/workflows/ait-release-clean-host.yml" \
-  'name: ait release clean host' \
-  'name: mutable clean host'
-expect_failure clean-host-workflow-drift node \
-  "${clean_host_workflow_drift_output}/build-release.mjs" --validate-only
+  "${prepublish_workflow_drift_output}/.github/workflows/ait-release-prepublish-clean-host.yml" \
+  'name: ait release prepublish clean host' \
+  'name: mutable prepublish gate'
+expect_failure prepublish-workflow-drift node \
+  "${prepublish_workflow_drift_output}/build-release.mjs" --validate-only
 
 promotion_workflow_drift_output=${temporary_root}/promotion-workflow-drift-output
 cp -R "${output_one}" "${promotion_workflow_drift_output}"

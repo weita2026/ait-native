@@ -41,11 +41,11 @@ const LATEST_ALIAS_WORKFLOW = path.join(
   "workflows",
   "ait-release-latest-alias.yml",
 );
-const CLEAN_HOST_WORKFLOW = path.join(
+const PREPUBLISH_WORKFLOW = path.join(
   ROOT,
   ".github",
   "workflows",
-  "ait-release-clean-host.yml",
+  "ait-release-prepublish-clean-host.yml",
 );
 const ENDPOINT_DEFAULTS = path.join(
   ROOT,
@@ -60,6 +60,10 @@ const CLEAN_HOST_CONTROL = path.join(ROOT, "ci", "release_clean_host.mjs");
 const CLEAN_HOST_PHASE = path.join(ROOT, "ci", "release_clean_host_phase.mjs");
 const CLEAN_HOST_PROBE = path.join(ROOT, "ci", "release_clean_host_probe.mjs");
 const CLEAN_HOST_TEST = path.join(ROOT, "ci", "release_clean_host_test.sh");
+const PREPUBLISH_STAGE = path.join(ROOT, "ci", "release_prepublish_stage.sh");
+const PREPUBLISH_OCI = path.join(ROOT, "ci", "release_prepublish_oci.sh");
+const PREPUBLISH_VERIFY = path.join(ROOT, "ci", "release_prepublish_verify.mjs");
+const PREPUBLISH_TEST = path.join(ROOT, "ci", "release_prepublish_test.sh");
 const PROMOTION_VERIFIER = path.join(
   ROOT,
   "ci",
@@ -468,6 +472,10 @@ async function validateReleaseControl(family) {
     [CLEAN_HOST_PHASE, "root clean-host lifecycle runner"],
     [CLEAN_HOST_PROBE, "root clean-host runner probe"],
     [CLEAN_HOST_TEST, "root clean-host regression"],
+    [PREPUBLISH_STAGE, "root frozen-candidate staging control"],
+    [PREPUBLISH_OCI, "root frozen OCI publication control"],
+    [PREPUBLISH_VERIFY, "root prepublish evidence verifier"],
+    [PREPUBLISH_TEST, "root prepublish regression"],
   ]) {
     await regularFile(filePath, label);
   }
@@ -519,6 +527,10 @@ async function validateReleaseControl(family) {
   const cleanHostPhase = await readFile(CLEAN_HOST_PHASE, "utf8");
   const cleanHostProbe = await readFile(CLEAN_HOST_PROBE, "utf8");
   const cleanHostTest = await readFile(CLEAN_HOST_TEST, "utf8");
+  const prepublishStage = await readFile(PREPUBLISH_STAGE, "utf8");
+  const prepublishOci = await readFile(PREPUBLISH_OCI, "utf8");
+  const prepublishVerify = await readFile(PREPUBLISH_VERIFY, "utf8");
+  const prepublishTest = await readFile(PREPUBLISH_TEST, "utf8");
   for (const required of [
     "AIT_RELEASE_FAMILY_MANIFEST",
     "release_receipt_matrix.jq",
@@ -551,7 +563,7 @@ async function validateReleaseControl(family) {
   }
   for (const required of [
     "ait.release.latest-alias/v1",
-    "ait.release.operator.clean-host-status/v1",
+    "ait.release.operator.status/v2",
     "AIT_RELEASE_LATEST_RELEASE_ID",
     "make_latest=true",
     "npm dist-tag add",
@@ -564,13 +576,46 @@ async function validateReleaseControl(family) {
   }
   for (const [contents, label, requiredValues] of [
     [
+      prepublishStage,
+      "frozen-candidate staging control",
+      [
+        "ait.release.prepublish.stage/v1",
+        "ait.release.prepublish.candidate/v1",
+        "PREPUBLISH_SHA256SUMS",
+        "public_endpoint_writes: false",
+      ],
+    ],
+    [
+      prepublishOci,
+      "frozen OCI publication control",
+      ["docker load --input", "verify_index", "candidate.oci"],
+    ],
+    [
+      prepublishVerify,
+      "prepublish evidence verifier",
+      ["verifyStage", "verifyQualification", 'aggregate.status !== "qualified"'],
+    ],
+    [
+      prepublishTest,
+      "prepublish regression",
+      ["release prepublish contract: pass", "incomplete-qualification"],
+    ],
+  ]) {
+    for (const required of requiredValues) {
+      if (!contents.includes(required)) {
+        fail(`root ${label} is missing ${JSON.stringify(required)}`);
+      }
+    }
+  }
+  for (const [contents, label, requiredValues] of [
+    [
       cleanHost,
       "clean-host evidence control",
       [
         "ait.release.clean-host.matrix/v1",
         "ait.release.clean-host.row/v1",
         "ait.release.clean-host.aggregate/v1",
-        "distribution-target-32-2026-08-17.1",
+        "distribution-target-32-2026-08-17.2",
         "row_count: rows.length",
       ],
     ],
@@ -678,50 +723,60 @@ async function validateProtectedWorkflows() {
     }
   }
 
-  await regularFile(CLEAN_HOST_WORKFLOW, "root clean-host workflow");
-  const cleanHostWorkflow = await readFile(CLEAN_HOST_WORKFLOW, "utf8");
+  await regularFile(PREPUBLISH_WORKFLOW, "root prepublish clean-host workflow");
+  const prepublishWorkflow = await readFile(PREPUBLISH_WORKFLOW, "utf8");
   for (const required of [
-    "name: ait release clean host",
-    "workflow_dispatch:",
-    "permissions:\n  contents: read",
-    "matrix_sha256:",
+    "name: ait release prepublish clean host",
+    "workflow_call:",
+    "permissions:\n  actions: read\n  contents: read",
     "prior_version:",
     "prior_python_version:",
-    "ait-clean-host-authority-${{ inputs.release_id }}",
-    "ait-clean-host-probe-${{ inputs.release_id }}-${{ matrix.target }}",
-    "ait-clean-host-install-${{ inputs.release_id }}-${{ matrix.id }}",
-    "ait-clean-host-row-${{ inputs.release_id }}-${{ matrix.id }}",
-    "ait-clean-host-${{ inputs.release_id }}",
+    "reuse_frozen_candidate:",
+    "candidate_run_id:",
+    "candidate_artifact_digest:",
+    "candidate_status_sha256:",
+    "aggregate_artifact_digest:",
+    "ait-prepublish-candidate-${{ inputs.release_id }}",
+    "ait-prepublish-install-${{ inputs.release_id }}-${{ matrix.id }}",
+    "ait-prepublish-row-${{ inputs.release_id }}-${{ matrix.id }}",
+    "ait-prepublish-clean-host-${{ inputs.release_id }}",
     "name: Activate preinstalled Linux Homebrew",
-    "brew_bin=/home/linuxbrew/.linuxbrew/bin",
+    "test -x /home/linuxbrew/.linuxbrew/bin/brew",
     "name: Register inbox Windows Package Manager",
     "Add-AppxPackage -RegisterByFamilyName -MainPackage Microsoft.DesktopAppInstaller_8wekyb3d8bbwe",
-    "C:\\Program Files\\Git\\bin\\bash.exe",
-    "Split-Path -Parent $gitBash | Out-File -FilePath $env:GITHUB_PATH",
+    "release_prepublish_stage.sh",
+    "release_prepublish_verify.mjs stage",
+    "release_prepublish_verify.mjs qualify",
     "release_clean_host_probe.mjs",
     "release_clean_host_phase.mjs run",
     "release_clean_host.mjs combine",
     "release_clean_host.mjs aggregate",
-    "test \"$(jq -r '.row_count' \"${RUNNER_TEMP}/clean-host-matrix.json\")\" = 32",
+    "Download the previously frozen candidate for control-only retry",
+    'cmp "${comparison_root}/ait-release.clean-host-matrix.json" "${matrix}"',
+    "run-id: ${{ needs.stage.outputs.candidate_run_id }}",
   ]) {
-    if (!cleanHostWorkflow.includes(required)) {
-      fail(`root clean-host workflow must contain ${JSON.stringify(required)}`);
+    if (!prepublishWorkflow.includes(required)) {
+      fail(`root prepublish workflow must contain ${JSON.stringify(required)}`);
     }
   }
   for (const forbidden of [
     "contents: write",
     "packages: write",
-    "continue-on-error: false",
+    "secrets.",
+    "environment:",
+    "gh release create",
+    "npm publish",
+    "docker push",
     "--profile quick",
     "workflow local-land",
     "workflow tier",
   ]) {
-    if (cleanHostWorkflow.includes(forbidden)) {
-      fail(`root clean-host workflow contains ${JSON.stringify(forbidden)}`);
+    if (prepublishWorkflow.includes(forbidden)) {
+      fail(`root prepublish workflow contains ${JSON.stringify(forbidden)}`);
     }
   }
-  if (cleanHostWorkflow.split("retention-days: 90").length !== 6) {
-    fail("root clean-host workflow must retain five 90-day evidence artifacts");
+  if (prepublishWorkflow.split("retention-days: 90").length !== 5) {
+    fail("root prepublish workflow must retain four 90-day evidence artifacts");
   }
 
   for (const [filePath, label] of [
@@ -746,8 +801,16 @@ async function validateProtectedWorkflows() {
         fail(`${component} OCI recipe must contain ${JSON.stringify(required)}`);
       }
     }
-    if (component === "ait-server" && !dockerfile.includes("AITSERVER_LISTEN=0.0.0.0:8088")) {
-      fail("ait-server OCI recipe must bind the explicit container-network listener");
+    if (
+      component === "ait-server" &&
+      !dockerfile.includes(
+        'CMD ["run", "--listen", "0.0.0.0:8088", "--init-if-missing", "--defer-ci-admission"]',
+      )
+    ) {
+      fail("ait-server OCI recipe must pass the explicit container-network listener to the CLI");
+    }
+    if (component === "ait-server" && dockerfile.includes("AITSERVER_LISTEN")) {
+      fail("ait-server OCI recipe restored a retired listener environment control");
     }
     for (const forbidden of ["apt-get", "cargo", "curl", "wget", "git clone"]) {
       if (dockerfile.includes(forbidden)) {
@@ -780,7 +843,19 @@ async function validateProtectedWorkflows() {
     "endpoint_config_sha256:",
     "endpoint_config_b64:",
     "protected_run_id:",
+    "prior_version:",
+    "prior_python_version:",
+    "reuse_frozen_candidate:",
+    "candidate_run_id:",
+    "candidate_artifact_id:",
+    "candidate_artifact_digest:",
+    "candidate_status_sha256:",
+    "uses: ./.github/workflows/ait-release-prepublish-clean-host.yml",
+    "needs: prepublish",
     "control/ci/release_operator.sh validate-config",
+    "control/ci/release_prepublish_verify.mjs qualify",
+    "control/ci/release_prepublish_oci.sh publish",
+    "run-id: ${{ needs.prepublish.outputs.candidate_run_id }}",
     "environment:\n      name: pypi",
     "name: ait-endpoint-publication-${{ inputs.release_id }}",
   ]) {
@@ -811,7 +886,9 @@ async function validateProtectedWorkflows() {
     "AIT_NPM_TOKEN: ${{ secrets.AIT_NPM_TOKEN }}",
     "NODE_AUTH_TOKEN: ${{ secrets.AIT_NPM_TOKEN }}",
     "AIT_RELEASE_LATEST_RELEASE_ID: ${{ inputs.release_id }}",
-    "ait.release.operator.clean-host-status/v1",
+    "ait.release.operator.status/v2",
+    'status == "published_readback_complete"',
+    '.prepublication.status == "qualified"',
     "promotion_allowed == true",
     "control/ci/release_latest_alias.sh apply",
     "control/ci/release_latest_alias.sh verify",
@@ -855,10 +932,17 @@ async function validatePublicReadme() {
     "python -m pip install ait-native==",
     "ait init",
     "ait --version",
-    "## What you have after 90 seconds",
+    "## What initialization provides",
     OFFICIAL_WEBSITE,
-    "## Moving from 0.x",
-    "The 0.x requirement to run `ait install` and its task-DAG positioning are",
+    "## Upgrading from 0.x",
+    "There is no `ait install` command in 1.0.",
+    "AIT has three workflow presets",
+    "`solo_local`",
+    "`solo_remote`",
+    "`team_remote`",
+    "ait workflow ready <change-id> --apply",
+    "ait workflow land <change-id> --apply",
+    "## Installed component boundaries",
     "AGENTS.md",
     "ait task start",
     "ait task start --from",
@@ -867,7 +951,7 @@ async function validatePublicReadme() {
     "ait snapshot create",
     "ait task land",
     "does not identify the repository's programming language or project type",
-    "does not require a running\n`ait-server`",
+    "does not require a running\n  `ait-server`",
     "package-owned `native/ait_napi.node`",
     "does not locate or launch a child executable",
     "explicitly\nnon-publishable",
@@ -889,6 +973,8 @@ async function validatePublicReadme() {
     "Jira-like",
     "parallel AI execution",
     "compact task DAG",
+    "90 seconds",
+    "task-DAG positioning",
   ]) {
     if (readme.includes(forbidden)) {
       fail(`public README teaches a manual workflow step: ${JSON.stringify(forbidden)}`);
@@ -1453,7 +1539,7 @@ async function validateBuildInputs(expectedGitCommit) {
   }
   for (const required of [
     ".github/workflows/ait-release-component-receipts.yml",
-    ".github/workflows/ait-release-clean-host.yml",
+    ".github/workflows/ait-release-prepublish-clean-host.yml",
     ".github/workflows/ait-release-latest-alias.yml",
     ".github/workflows/ait-release-protected-promotion.yml",
     ".github/workflows/pypi-publish.yml",
@@ -1487,6 +1573,10 @@ async function validateBuildInputs(expectedGitCommit) {
     "ci/release_endpoint_remote.sh",
     "ci/release_latest_alias.sh",
     "ci/release_operator.sh",
+    "ci/release_prepublish_oci.sh",
+    "ci/release_prepublish_stage.sh",
+    "ci/release_prepublish_test.sh",
+    "ci/release_prepublish_verify.mjs",
     "ci/release_protected_promotion.sh",
     "ci/release_receipt_matrix.jq",
     "ci/release_receipt_matrix_test.sh",
@@ -1571,13 +1661,20 @@ async function validateBuildInputs(expectedGitCommit) {
     "individual developers and maintainers",
     "npm install --global @wa120/ait-native@@AIT_NPM_VERSION@",
     "ait init",
-    "## What you have after 90 seconds",
+    "## What initialization provides",
     OFFICIAL_WEBSITE,
-    "## Moving from 0.x",
-    "The 0.x requirement to run `ait install` and its task-DAG positioning are",
+    "## Upgrading from 0.x",
+    "There is no `ait install` command in 1.0.",
+    "ait workflow ready <change-id> --apply",
+    "ait workflow land <change-id> --apply",
   ]) {
     if (!nodeReadme.includes(required)) {
       fail(`npm storefront README is missing ${JSON.stringify(required)}`);
+    }
+  }
+  for (const forbidden of ["90 seconds", "task-DAG positioning"]) {
+    if (nodeReadme.includes(forbidden)) {
+      fail(`npm storefront copy contains stale wording ${JSON.stringify(forbidden)}`);
     }
   }
   if ((nodeReadme.match(/@AIT_NPM_VERSION@/gu) ?? []).length !== 1) {

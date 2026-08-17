@@ -224,6 +224,21 @@ fn filesystem_append_bytes_returns_pre_append_offsets_and_range_reads() {
 }
 
 #[test]
+fn filesystem_file_durability_syncs_an_existing_file_with_write_authority() {
+    let temp = tempdir().expect("tempdir");
+    let store = FilesystemFileIoStore;
+    let path = temp.path().join("durable.bin");
+    fs::write(&path, b"durable").expect("write durability fixture");
+
+    store.sync_file(&path).expect("sync existing file");
+
+    assert_eq!(
+        fs::read(&path).expect("read durability fixture"),
+        b"durable"
+    );
+}
+
+#[test]
 fn filesystem_process_lock_guard_clears_metadata_and_releases_on_drop() {
     let temp = tempdir().expect("tempdir");
     let store = FilesystemFileIoStore;

@@ -12,13 +12,14 @@
 [Report a bug](https://github.com/weita2026/ait-native/issues/new/choose)
 
 AIT turns an ordinary coding request into an isolated, sprint-bound repository
-change with validation evidence and a recoverable land path. It is for
-individual developers and maintainers who use coding agents and want the work
-to remain reviewable without inventing a workflow for every repository.
+change with explicit validation, review, and landing evidence. It is for
+individual developers and maintainers who want coding-agent work to remain
+inspectable and recoverable.
 
-AIT does not identify the repository's programming language or project type.
-The same workflow applies to Python, Node.js, Rust, Java, mixed-language, and
-non-code repositories.
+AIT is language-neutral.
+It does not identify the repository's programming language or project type.
+It applies the same repository workflow to Python, Node.js, Rust, Java,
+mixed-language, and non-code projects.
 
 Official website: <https://ait-native.dev/>
 
@@ -27,82 +28,101 @@ Official website: <https://ait-native.dev/>
 ```sh
 python -m pip install ait-native==@AIT_PYPI_VERSION@
 cd path/to/your-repository
+ait --version
 ait init
 ```
 
-Run `ait init` once inside the repository your coding agent will change. For
-Homebrew, npm, apt, and verified native archive routes, use the
-[official install guide](https://ait-native.dev/local-quickstart/).
+`ait init` creates the local `.ait` authority, defaults the repository to
+`solo_local` with sprint mode on, creates `docs/sprints/`, and generates the
+effective repository-specific workflow block in `AGENTS.md`. It does not
+start `ait-server`.
 
-Confirm the selected release before initializing a repository:
+Use `ait config show --json` to inspect the effective mode and scope. Homebrew,
+npm, APT, WinGet, OCI, and native-archive installation routes are documented in
+the [install guide](https://ait-native.dev/local-quickstart/).
+
+This is the public `@AIT_RELEASE_TAG@` source tree. The tag binds the exported
+source of `ait-core`, `ait-server`, `ait-runner`, `ait-python`, and `ait-node`;
+`ait-monorepo-source.json` records their exact AIT Snapshot mapping.
+
+## What initialization provides
+
+- Repository-local AIT authority and a generated `AGENTS.md` workflow router.
+- Sprint-backed Task creation and a dedicated worktree for each code change.
+- Snapshots, validation evidence, regression attribution through `ait blame`,
+  and recoverable Task Land closeout.
+- An inactive server boundary: local work does not require a running
+  `ait-server`.
+
+The generated `AGENTS.md` block is authoritative for the repository. It
+contains the current commands for the configured workflow and sprint modes;
+generic examples in this README do not override it.
+
+## Local and reviewed workflows
+
+AIT has three workflow presets:
+
+| Mode | Authoring and closeout |
+| --- | --- |
+| `solo_local` | Task, Change, Snapshot, and `ait task land` remain local unless remote promotion is explicitly requested. No reviewer or server is required. |
+| `solo_remote` | The author prepares one exact Patchset with `ait workflow ready <change-id> --apply`; a reviewer runs `ait workflow land <change-id> --apply`. |
+| `team_remote` | Uses the same author-ready and reviewer-land boundary, with remote-backed reviewable Changes for team work. |
+
+With sprint mode on, start from one exact sprint item:
 
 ```sh
-ait --version
+ait task start --from docs/sprints/<card>.md#<item-ref> --intent "<intent>"
 ```
 
-This is the public `@AIT_RELEASE_TAG@` source tree. One tag contains the exact
-exported source of `ait-core`, `ait-server`, `ait-runner`, `ait-python`, and
-`ait-node`; their AIT Snapshot mapping is recorded in
-`ait-monorepo-source.json`.
+With sprint mode off, use `ait task start --title "<title>" --intent
+"<intent>"` instead. In both modes, the command creates the Task's bound
+worktree; code is authored there and recorded with `ait snapshot create`.
+Authored Markdown follows the generated `ait plan sync` scope instead of being
+hidden inside a code Snapshot.
 
-## What you have after 90 seconds
+For a reviewed remote flow, `workflow ready` is the author-side preparation
+boundary: it owns Snapshot freshness, exact Patchset publication, CI, and
+attestation. `workflow land` is the reviewer-side decision boundary: it owns
+Review and Policy gates, then delegates the already-ready final mutation to
+atomic Task Land. It does not redo the author-side build or CI preparation.
 
-For a normal package install, the practical 90-second result is an initialized
-repository: local AIT authority exists, `AGENTS.md` contains the effective
-repository-specific workflow, and the next coding-agent request can use an
-isolated Task, validation, Snapshot, and safe land or recovery path. The server
-remains off. The 90 seconds covers installation and initialization, not the
-completion time of an arbitrary code change.
+For `solo_local`, finish with `ait task land <task-or-change-id>`. The final
+local Task Land updates the target Line, completes the Task, removes its bound
+worktree, and closes its exact sprint item when one is bound.
 
 ## Ask for a change
 
 Open your coding agent in the initialized repository and describe the result:
 
-> Update the login flow, preserve the public behavior, and add the relevant
-> tests.
+> Update the login flow, preserve public behavior, and add the relevant tests.
 
-You do not need to manually drive Task, Snapshot, or Land commands. `ait init`
-creates or updates the generated AIT workflow block in `AGENTS.md`. That block
-records the effective repository-specific mode, sprint setting, mutation
-scope, commands, and closeout policy that the agent must follow.
+The agent reads `AGENTS.md`, starts the appropriate Task, works in the emitted
+worktree, validates the change, creates a Snapshot, and follows the configured
+local or reviewed closeout path. You can inspect current work with `ait queue
+summary`, `ait task audit <task-id>`, and the other commands named by the
+generated block.
 
-## Moving from 0.x
+## Installed component boundaries
 
-The 0.x requirement to run `ait install` and its task-DAG positioning are
-retired. The 1.0 release line starts with `ait init` and a sprint-bound Local
-workflow. Keep the existing Git repository and history, but do not treat a
-release candidate as proof that legacy 0.x `.ait` data can be migrated in
-place. Use a clean clone or a new repository authority unless the selected
-release notes explicitly admit that migration. See the
+| Route | Installed surface |
+| --- | --- |
+| PyPI `ait-native` | `ait`, inactive-by-default `ait-server`, and the direct `ait-python` binding. |
+| npm `@wa120/ait-native` | `ait` and the direct in-process Node-API binding; it does not install `ait-server`. |
+| Homebrew and WinGet | Native `ait` and `ait-server` commands. |
+| APT | `ait-native` (`ait` plus `ait-server`) and the separately installable `ait-runner` package. |
+| OCI | Separate `ait-server` and `ait-runner` images. |
+| GitHub Release | Checksum-bound native archives and the package assets used by the declared routes. |
+
+## Upgrading from 0.x
+
+There is no `ait install` command in 1.0. Install or upgrade the `ait-native`
+package through your selected package manager, verify it with `ait --version`,
+then run `ait init` only when creating a new 1.0 repository authority. Keep the
+Git repository and its history, but do not assume that a release candidate can
+migrate an existing 0.x `.ait` authority in place. Preserve the old authority
+for recovery and use a clean clone or a new repository authority unless the
+selected release notes explicitly admit that migration. See the
 [public transition contract](ait-core/docs/distribution.md#public-0x-to-10-transition).
-
-## What the agent follows from `AGENTS.md`
-
-For a repository mutation, the agent:
-
-1. reads the generated AIT workflow block, the repository plan when present,
-   and current AIT configuration before changing files;
-2. keeps the requested scope, preserves unrelated user work, and uses
-   `ait blame` before repairing an identified regression;
-3. writes one exact sprint item, runs `ait task start --from`, and performs
-   every code change in the bound isolated worktree;
-4. implements the requested code and runs proportionate tests, while routing
-   authored Markdown through `ait plan sync` instead of hiding it in a code
-   Snapshot;
-5. records the completed code with `ait snapshot create`, then uses
-   `ait task land` in the configured local or remote scope;
-6. verifies closeout of the exact Plan item, Task, worktree, and feature Line;
-   and
-7. fails closed when required evidence, policy, review, CI, authority, or user
-   direction is missing instead of bypassing the repository contract.
-
-The generated block supplies the exact commands. The user supplies the desired
-outcome; the agent owns these workflow details.
-
-The same interaction works in Python, Node.js, .NET, PHP, C, C++, Java, shell,
-IDE, and CI repositories. The default Local loop does not require a running
-`ait-server`; the server remains inactive until explicitly configured and
-started.
 
 ## Build this source tree
 
@@ -124,13 +144,10 @@ portable JS/TS package, and the current host's direct Node-API addon under
 non-publishable; protected release CI promotes only separately admitted family
 artifacts.
 
-For Node.js,
-`import { NativeRuntime, AgentClient } from "@wa120/ait-native"` loads the
-package-owned `native/ait_napi.node` in the current process. The npm `ait`
-command calls the same Rust binding through `NativeRuntime.runCli()`.
-It does not locate or launch a child executable. `ait-server` is intentionally
-not an npm command and remains available through the declared native/server
-channels.
+For Node.js, `import { NativeRuntime, AgentClient } from
+"@wa120/ait-native"` loads the package-owned `native/ait_napi.node` in the
+current process. The npm `ait` command calls the same Rust binding through
+`NativeRuntime.runCli()`; it does not locate or launch a child executable.
 
 ## License map
 

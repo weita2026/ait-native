@@ -55,7 +55,6 @@ $ControllerLockPath = Join-Path $RuntimeRoot 'ait-server-control.lock'
 $StdoutPath = Join-Path $RuntimeRoot 'ait-server.stdout.log'
 $StderrPath = Join-Path $RuntimeRoot 'ait-server.stderr.log'
 $env:AIT_NATIVE_SERVER_DATA = $DataRoot
-$env:AITSERVER_LISTEN = $Listen
 
 function Invoke-AitServer {
     param([string[]]$Arguments)
@@ -112,21 +111,21 @@ if ($Command -in @('start', 'status', 'stop')) {
 try {
 switch ($Command) {
     'init' {
-        Invoke-AitServer @('init')
+        Invoke-AitServer @('init', '--data', $DataRoot)
     }
     'probe' {
-        Invoke-AitServer @('probe', '--defer-ci-admission')
+        Invoke-AitServer @('probe', '--data', $DataRoot, '--defer-ci-admission')
     }
     'run' {
-        Invoke-AitServer @('run', '--init-if-missing', '--defer-ci-admission')
+        Invoke-AitServer @('run', '--data', $DataRoot, '--listen', $Listen, '--init-if-missing', '--defer-ci-admission')
     }
     'start' {
         if ($null -ne (Get-ManagedAitServer)) {
             throw "ait-server is already active; state: $StatePath"
         }
-        Invoke-AitServer @('init')
+        Invoke-AitServer @('init', '--data', $DataRoot)
         $Started = Start-Process -FilePath $Server `
-            -ArgumentList @('run', '--init-if-missing', '--defer-ci-admission') `
+            -ArgumentList @('run', '--data', $DataRoot, '--listen', $Listen, '--init-if-missing', '--defer-ci-admission') `
             -RedirectStandardOutput $StdoutPath `
             -RedirectStandardError $StderrPath `
             -WindowStyle Hidden `
@@ -1968,10 +1967,12 @@ fn validate_storefront_readme(
         "individual developers and maintainers",
         exact_install,
         "ait init",
-        "## What you have after 90 seconds",
+        "## What initialization provides",
         OFFICIAL_WEBSITE,
-        "## Moving from 0.x",
-        "The 0.x requirement to run `ait install` and its task-DAG positioning are",
+        "## Upgrading from 0.x",
+        "There is no `ait install` command in 1.0.",
+        "ait workflow ready <change-id> --apply",
+        "ait workflow land <change-id> --apply",
     ] {
         if !readme.contains(required) {
             return Err(format!(
@@ -1984,7 +1985,13 @@ fn validate_storefront_readme(
             "{surface} storefront copy contains an unresolved release token."
         ));
     }
-    for legacy_claim in ["Jira-like", "parallel AI execution", "compact task DAG"] {
+    for legacy_claim in [
+        "Jira-like",
+        "parallel AI execution",
+        "compact task DAG",
+        "90 seconds",
+        "task-DAG positioning",
+    ] {
         if readme.contains(legacy_claim) {
             return Err(format!(
                 "{surface} storefront copy preserves legacy claim {legacy_claim:?}."
@@ -2104,14 +2111,12 @@ ait init
 Run `ait init` once inside the repository your coding agent will change. For
 other verified installation routes, use the [official quickstart]({OFFICIAL_QUICKSTART}).
 
-## What you have after 90 seconds
+## What initialization provides
 
-For a normal package install, the practical 90-second result is an initialized
-repository: local AIT authority exists, `AGENTS.md` contains the effective
-repository-specific workflow, and the next coding-agent request can use an
-isolated Task, validation, Snapshot, and safe land or recovery path. The server
-remains off. The 90 seconds covers installation and initialization, not the
-completion time of an arbitrary code change.
+`ait init` creates repository-local authority, defaults to `solo_local` with
+sprint mode on, creates the sprint directory, and writes the effective workflow
+router to `AGENTS.md`. Local work uses bound Task worktrees, Snapshots, and
+atomic Task Land. The server remains off.
 
 ## Package boundary
 
@@ -2119,15 +2124,23 @@ This wheel installs the language-neutral `ait` CLI, the inactive-by-default
 `ait-server` command, and the admitted `ait-python` binding. The server starts
 only when explicitly requested.
 
-## Moving from 0.x
+## Local and reviewed closeout
 
-The 0.x requirement to run `ait install` and its task-DAG positioning are
-retired. The 1.0 release line starts with `ait init` and a sprint-bound Local
-workflow. Keep the existing Git repository and history, but do not treat a
-release candidate as proof that legacy 0.x `.ait` data can be migrated in
-place. Use a clean clone or a new repository authority unless the selected
-release notes explicitly admit that migration. Read the [public transition
-contract]({documentation_url}#public-0x-to-10-transition).
+The default local flow finishes with `ait task land <task-or-change-id>`. For a
+reviewed remote flow, the author prepares the exact Patchset and CI evidence
+with `ait workflow ready <change-id> --apply`; a reviewer then runs
+`ait workflow land <change-id> --apply` for Review, Policy, and atomic Task Land.
+
+## Upgrading from 0.x
+
+There is no `ait install` command in 1.0. Install or upgrade `ait-native`
+through your selected package manager, verify it with `ait --version`, then run
+`ait init` only when creating a new 1.0 repository authority. Keep the existing
+Git repository and history, but do not treat a release candidate as proof that
+legacy 0.x `.ait` data can be migrated in place. Preserve the old authority for
+recovery and use a clean clone or a new repository authority unless the
+selected release notes explicitly admit that migration.
+Read the [public transition contract]({documentation_url}#public-0x-to-10-transition).
 "#
     );
     validate_storefront_readme(
@@ -3685,7 +3698,7 @@ mod tests {
             (
                 "package/README.md".to_string(),
                 (
-                    b"# ait-native\n\nAIT turns an ordinary coding request into an isolated, sprint-bound repository change with validation evidence. It is for individual developers and maintainers who use coding agents.\n\nOfficial website: <https://ait-native.dev/>\n\n## Install and initialize\n\n```sh\nnpm install --global @wa120/ait-native@1.0.0-rc.2\nait init\n```\n\n## What you have after 90 seconds\n\nInstallation and initialization are complete; arbitrary coding work is not promised.\n\n## Moving from 0.x\n\nThe 0.x requirement to run `ait install` and its task-DAG positioning are retired.\n"
+                    b"# ait-native\n\nAIT turns an ordinary coding request into an isolated, sprint-bound repository change with validation evidence. It is for individual developers and maintainers who use coding agents.\n\nOfficial website: <https://ait-native.dev/>\n\n## Install and initialize\n\n```sh\nnpm install --global @wa120/ait-native@1.0.0-rc.2\nait init\n```\n\n## What initialization provides\n\nRepository-local authority, a generated AGENTS.md workflow, and an inactive server boundary.\n\n## Local and reviewed closeout\n\nAuthors run `ait workflow ready <change-id> --apply`; reviewers run `ait workflow land <change-id> --apply`.\n\n## Upgrading from 0.x\n\nThere is no `ait install` command in 1.0. Install or upgrade `ait-native` through your selected package manager, then run `ait init` only for a new 1.0 repository authority.\n"
                         .to_vec(),
                     0o644,
                 ),

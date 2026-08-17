@@ -186,7 +186,9 @@ for required_verifier_text in \
   'family_packages_sha256=$(sha256_file "${family_packages}")' \
   'family_release_sha256=$(sha256_file "${family_release}")' \
   'native admission build mutated the immutable tagged source' \
-  '.routes.github == {draft: false, prerelease: false, tag: $tag}' \
+  'github_prerelease=true' \
+  'github_prerelease=false' \
+  '.routes.github == {draft: false, prerelease: $github_prerelease, tag: $tag}' \
   'immutable-tag-native-admission/v1'; do
   if ! grep -F -- "${required_verifier_text}" "${protected_verifier}" >/dev/null; then
     printf 'protected promotion is not tied to the receipt projection: %s\n' \

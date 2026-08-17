@@ -533,7 +533,10 @@ impl FileIoByteStore for FilesystemFileIoStore {
 
 impl FileIoDurabilityStore for FilesystemFileIoStore {
     fn sync_file(&self, path: &Path) -> FileIoResult<()> {
-        File::open(path)
+        OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(path)
             .and_then(|file| file.sync_all())
             .map_err(|err| {
                 FileIoError::new(

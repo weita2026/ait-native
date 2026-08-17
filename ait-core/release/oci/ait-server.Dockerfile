@@ -17,10 +17,9 @@ COPY licenses/ /usr/share/licenses/ait-server/
 COPY --chmod=0644 provenance.json /usr/share/ait-native/provenance.json
 COPY --chown=65532:65532 runtime/ /var/lib/ait/
 
-ENV AITSERVER_LISTEN=0.0.0.0:8088 \
-    AIT_NATIVE_SERVER_DATA=/var/lib/ait/server-data \
+ENV AIT_NATIVE_SERVER_DATA=/var/lib/ait/server-data \
     HOME=/var/lib/ait
 USER 65532:65532
 EXPOSE 8088
 ENTRYPOINT ["/usr/local/bin/ait-server"]
-CMD ["run", "--init-if-missing", "--defer-ci-admission"]
+CMD ["run", "--listen", "0.0.0.0:8088", "--init-if-missing", "--defer-ci-admission"]

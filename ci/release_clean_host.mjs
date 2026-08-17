@@ -407,7 +407,7 @@ function requiredChecks(row, phase) {
       );
     } else {
       checks.push(
-        "prior_state",
+        "prior_baseline",
         "candidate_upgrade",
         "candidate_land",
         "generated_workflow_current",
@@ -494,7 +494,7 @@ function buildMatrix(family, platforms) {
   return {
     contract: MATRIX_CONTRACT,
     schema_version: 1,
-    matrix_revision: "distribution-target-32-2026-08-17.1",
+    matrix_revision: "distribution-target-32-2026-08-17.2",
     release: {
       version,
       channel: family.family.channel,
@@ -516,22 +516,26 @@ function validateConfigAndStatus(config, status) {
   ) {
     fail("endpoint configuration is not canonical");
   }
-  if (
-    status.contract !== "ait.release.operator.status/v1" ||
-    status.status !== "published_pending_clean_host_smoke" ||
-    status.release?.id !== config.release.id ||
-    status.release?.version !== config.release.version ||
-    status.release?.tag !== config.release.tag
-  ) {
-    fail("operator status is not the exact pending clean-host release");
+  const common =
+    status.release?.id === config.release.id &&
+    status.release?.version === config.release.version &&
+    status.release?.tag === config.release.tag;
+  const prepublish =
+    status.contract === "ait.release.prepublish.candidate/v1" &&
+    status.status === "frozen_candidate_pending_clean_host" &&
+    status.release?.source_commit === config.release.source_commit &&
+    /^[0-9a-f]{64}$/.test(status.candidate?.stage_receipt_sha256 ?? "");
+  if (!common || !prepublish) {
+    fail("status is not the exact frozen prepublish candidate");
   }
+  return "prepublication";
 }
 
 function validateMatrix(matrix, config) {
   if (
     matrix.contract !== MATRIX_CONTRACT ||
     matrix.schema_version !== 1 ||
-    matrix.matrix_revision !== "distribution-target-32-2026-08-17.1" ||
+    matrix.matrix_revision !== "distribution-target-32-2026-08-17.2" ||
     matrix.release?.version !== config.release.version ||
     matrix.release?.channel !== config.release.channel ||
     matrix.release?.tag !== config.release.tag ||
@@ -545,7 +549,8 @@ function validateMatrix(matrix, config) {
 }
 
 function releaseBinding(config, configFile, statusFile) {
-  return {
+  const status = readJson(statusFile, "clean-host status binding");
+  const binding = {
     id: config.release.id,
     version: config.release.version,
     python_version: config.release.python_version,
@@ -555,6 +560,14 @@ function releaseBinding(config, configFile, statusFile) {
     endpoint_config_sha256: sha256File(configFile),
     operator_status_sha256: sha256File(statusFile),
   };
+  const artifactDigest = process.env.AIT_CLEAN_HOST_CANDIDATE_ARTIFACT_DIGEST ?? "";
+  if (!/^sha256:[0-9a-f]{64}$/.test(artifactDigest)) {
+    fail("prepublish aggregate lacks the immutable candidate artifact digest", 64);
+  }
+  binding.verification_stage = "prepublication";
+  binding.candidate_stage_receipt_sha256 = status.candidate.stage_receipt_sha256;
+  binding.candidate_artifact_digest = artifactDigest;
+  return binding;
 }
 
 function validatePhase(phase, expectedPhase, row, release) {
@@ -670,6 +683,7 @@ function aggregateEvidence(matrix, config, status, configFile, statusFile, evide
   validateMatrix(matrix, config);
   const expectedRelease = releaseBinding(config, configFile, statusFile);
   const expected = new Map(matrix.rows.map((row) => [row.id, row]));
+  const observed = new Set();
   const admitted = new Map();
   const failures = [];
   const inventory = [];
@@ -682,12 +696,13 @@ function aggregateEvidence(matrix, config, status, configFile, statusFile, evide
       failures.push({ path: path.basename(file), reason: "unexpected_row" });
       continue;
     }
-    if (path.basename(file) !== `${id}.json`) {
-      failures.push({ row_id: id, reason: "filename_mismatch" });
+    if (observed.has(id)) {
+      failures.push({ row_id: id, reason: "duplicate_row" });
       continue;
     }
-    if (admitted.has(id)) {
-      failures.push({ row_id: id, reason: "duplicate_row" });
+    observed.add(id);
+    if (path.basename(file) !== `${id}.json`) {
+      failures.push({ row_id: id, reason: "filename_mismatch" });
       continue;
     }
     const row = expected.get(id);
@@ -713,7 +728,7 @@ function aggregateEvidence(matrix, config, status, configFile, statusFile, evide
     }
   }
   for (const id of expected.keys()) {
-    if (!admitted.has(id)) {
+    if (!observed.has(id)) {
       failures.push({ row_id: id, reason: "missing_row" });
     }
   }
@@ -721,10 +736,15 @@ function aggregateEvidence(matrix, config, status, configFile, statusFile, evide
   failures.sort((left, right) =>
     JSON.stringify(left).localeCompare(JSON.stringify(right), "en"),
   );
-  const published = failures.length === 0 && admitted.size === 32 && inventory.length === 32;
+  const passed = failures.length === 0 && admitted.size === 32 && inventory.length === 32;
+  const promotion = {
+    allowed: passed,
+    retry_same_candidate: !passed,
+    terminal_for_release: false,
+  };
   return {
     contract: AGGREGATE_CONTRACT,
-    status: published ? "published" : "blocked",
+    status: passed ? "qualified" : "blocked",
     release: expectedRelease,
     matrix: {
       revision: matrix.matrix_revision,
@@ -734,10 +754,7 @@ function aggregateEvidence(matrix, config, status, configFile, statusFile, evide
     },
     evidence_inventory: inventory,
     failures,
-    promotion: {
-      allowed: published,
-      terminal_for_release: !published,
-    },
+    promotion,
   };
 }
 
@@ -827,7 +844,7 @@ function main() {
     );
     writeAggregate(options["output-root"], aggregate, options["evidence-root"]);
     process.stdout.write(`${path.join(options["output-root"], "ait-release.clean-host-status.json")}\n`);
-    if (aggregate.status !== "published") {
+    if (aggregate.status !== "qualified") {
       process.stderr.write(
         `clean-host aggregate is blocked by ${aggregate.failures.length} evidence failure(s)\n`,
       );

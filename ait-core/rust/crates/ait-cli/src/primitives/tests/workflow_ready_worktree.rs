@@ -1562,6 +1562,83 @@ fn managed_worktree_cargo_config_retargets_copied_main_seed_projection() {
 }
 
 #[test]
+fn managed_worktree_cargo_config_retargets_copied_previous_task_projection() {
+    let repo_tmp = tempdir().expect("repo tempdir");
+    let repo_root = repo_tmp.path();
+    write_runtime_config(repo_root, r#"{"repo_name":"fixture"}"#);
+    let previous = repo_root.join("managed/task-previous");
+    let current = repo_root.join("managed/task-current");
+    for (path, name) in [(&previous, "task-previous"), (&current, "task-current")] {
+        fs::create_dir_all(path.join(".cargo")).expect("Cargo config parent");
+        std::os::unix::fs::symlink(repo_root.join(".ait"), path.join(".ait"))
+            .expect("shared .ait link");
+        fs::write(
+            path.join(WORKTREE_CONFIG_NAME),
+            json!({"worktree_name": name}).to_string(),
+        )
+        .expect("worktree marker");
+    }
+    let copied = format!(
+        "{}\n[alias]\nmanaged-test = [\"test\", \"--profile\", \"ait-ci\"]\n",
+        generated_worktree_cargo_config_text(&previous).trim_end()
+    );
+    fs::write(current.join(".cargo/config.toml"), &copied)
+        .expect("copied previous Task projection");
+    assert!(!matches_generated_worktree_cargo_config_text(
+        &current, &copied
+    ));
+
+    materialize_worktree_cargo_config(repo_root, &current)
+        .expect("retarget copied previous Task projection");
+
+    let upgraded =
+        fs::read_to_string(current.join(".cargo/config.toml")).expect("retargeted config");
+    assert_eq!(
+        upgraded,
+        format!(
+            "{}\n\n[alias]\nmanaged-test = [\"test\", \"--profile\", \"ait-ci\"]\n",
+            generated_worktree_cargo_config_text(&current).trim_end()
+        )
+    );
+    assert!(!upgraded.contains("task-workspaces/task-previous"));
+    assert!(upgraded.contains("task-workspaces/task-current"));
+}
+
+#[test]
+fn managed_worktree_cargo_config_rejects_mismatched_previous_task_projection() {
+    let repo_tmp = tempdir().expect("repo tempdir");
+    let repo_root = repo_tmp.path();
+    write_runtime_config(repo_root, r#"{"repo_name":"fixture"}"#);
+    let previous = repo_root.join("managed/task-previous");
+    let current = repo_root.join("managed/task-current");
+    for (path, name) in [(&previous, "task-previous"), (&current, "task-current")] {
+        fs::create_dir_all(path.join(".cargo")).expect("Cargo config parent");
+        std::os::unix::fs::symlink(repo_root.join(".ait"), path.join(".ait"))
+            .expect("shared .ait link");
+        fs::write(
+            path.join(WORKTREE_CONFIG_NAME),
+            json!({"worktree_name": name}).to_string(),
+        )
+        .expect("worktree marker");
+    }
+    let mut copied = generated_worktree_cargo_config_text(&previous);
+    copied = copied.replace(
+        "cargo-build/task-workspaces/task-previous",
+        "cargo-build/task-workspaces/another-task",
+    );
+    fs::write(current.join(".cargo/config.toml"), &copied)
+        .expect("mismatched previous Task projection");
+
+    materialize_worktree_cargo_config(repo_root, &current).expect("preserve rejected projection");
+
+    assert_eq!(
+        fs::read_to_string(current.join(".cargo/config.toml"))
+            .expect("preserved mismatched config"),
+        copied
+    );
+}
+
+#[test]
 fn managed_worktree_cargo_config_retargets_legacy_shared_final_main_seed_projection() {
     let repo_tmp = tempdir().expect("repo tempdir");
     let repo_root = repo_tmp.path();

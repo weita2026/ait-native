@@ -471,7 +471,9 @@ wait_for_npm_remote_state() {
 validate_pypi_remote_state() {
   local require_published=${1:-false}
   local metadata=${temporary_root}/pypi.json
-  local status remote_files expected_files filename remote_sha wheel
+  local expected_names=${temporary_root}/pypi-expected-names
+  local remote_names=${temporary_root}/pypi-remote-names
+  local status remote_files expected_files filename remote_count remote_sha wheel
   status=$(curl --silent --show-error --location \
     --header 'Cache-Control: no-cache' --output "${metadata}" --write-out '%{http_code}' \
     "https://pypi.org/pypi/ait-native/json")
@@ -481,39 +483,57 @@ validate_pypi_remote_state() {
     printf 'PyPI project identity or prior ownership lineage is unavailable\n' >&2
     return 65
   fi
-  remote_files=$(jq -r --arg version "${python_version}" '.releases[$version] | length' "${metadata}")
-  expected_files=$(find "${assets}" -mindepth 1 -maxdepth 1 -type f -name 'ait_native-*.whl' |
-    wc -l | tr -d '[:space:]')
-  case "${remote_files}" in
-    0)
-      if [[ ${require_published} == true ]]; then
-        printf 'PyPI release wheel set is not visible yet\n' >&2
-        return 75
-      fi
-      ;;
-    "${expected_files}")
-      while IFS= read -r wheel; do
-        filename=$(basename -- "${wheel}")
-        remote_sha=$(jq -er --arg version "${python_version}" --arg filename "${filename}" '
-          .releases[$version][] | select(.filename == $filename) | .digests.sha256
-        ' "${metadata}")
-        if [[ ${remote_sha} != "$(sha256_file "${wheel}")" ]]; then
-          printf 'PyPI already contains conflicting bytes: %s\n' "${filename}" >&2
-          return 65
-        fi
-      done < <(find "${assets}" -mindepth 1 -maxdepth 1 -type f -name 'ait_native-*.whl' |
-        LC_ALL=C sort)
-      ;;
-    *)
-      if [[ ${require_published} == true &&
-        ${remote_files} =~ ^[0-9]+$ && ${remote_files} -lt ${expected_files} ]]; then
-        printf 'PyPI release wheel set is only partially visible\n' >&2
-        return 75
-      fi
-      printf 'PyPI contains a partial release wheel set\n' >&2
+  find "${assets}" -mindepth 1 -maxdepth 1 -type f -name 'ait_native-*.whl' \
+    -exec basename {} \; | LC_ALL=C sort >"${expected_names}"
+  jq -r --arg version "${python_version}" \
+    '(.releases[$version] // [])[].filename' "${metadata}" |
+    LC_ALL=C sort >"${remote_names}"
+  expected_files=$(wc -l <"${expected_names}" | tr -d '[:space:]')
+  remote_files=$(jq -r --arg version "${python_version}" \
+    '(.releases[$version] // []) | length' "${metadata}")
+  if [[ ${expected_files} -eq 0 ||
+    $(LC_ALL=C sort -u "${remote_names}" | wc -l | tr -d '[:space:]') != "${remote_files}" ]]; then
+    printf 'PyPI release wheel inventory is empty or contains duplicate filenames\n' >&2
+    return 65
+  fi
+  if ! awk '
+    NR == FNR { expected[$0] = 1; next }
+    !($0 in expected) { print; bad = 1 }
+    END { exit bad }
+  ' "${expected_names}" "${remote_names}"; then
+    printf 'PyPI contains a file outside the frozen candidate wheel set\n' >&2
+    return 65
+  fi
+  while IFS= read -r wheel; do
+    filename=$(basename -- "${wheel}")
+    remote_count=$(jq -r --arg version "${python_version}" --arg filename "${filename}" '
+      [(.releases[$version] // [])[] | select(.filename == $filename)] | length
+    ' "${metadata}")
+    if [[ ${remote_count} == 0 ]]; then
+      continue
+    fi
+    if [[ ${remote_count} != 1 ]]; then
+      printf 'PyPI contains a duplicate candidate wheel: %s\n' "${filename}" >&2
       return 65
-      ;;
-  esac
+    fi
+    remote_sha=$(jq -er --arg version "${python_version}" --arg filename "${filename}" '
+      (.releases[$version] // [])[] |
+      select(.filename == $filename) | .digests.sha256
+    ' "${metadata}")
+    if [[ ${remote_sha} != "$(sha256_file "${wheel}")" ]]; then
+      printf 'PyPI already contains conflicting bytes: %s\n' "${filename}" >&2
+      return 65
+    fi
+  done < <(find "${assets}" -mindepth 1 -maxdepth 1 -type f -name 'ait_native-*.whl' |
+    LC_ALL=C sort)
+  if [[ ${remote_files} -lt ${expected_files} && ${require_published} == true ]]; then
+    if [[ ${remote_files} == 0 ]]; then
+      printf 'PyPI release wheel set is not visible yet\n' >&2
+    else
+      printf 'PyPI release wheel set is only partially visible\n' >&2
+    fi
+    return 75
+  fi
 }
 
 wait_for_pypi_remote_state() {
@@ -978,8 +998,8 @@ inspect_oci_image() {
         .[0].Config.Labels["org.opencontainers.image.version"] == $version and
         .[0].Config.Entrypoint == ["/usr/local/bin/" + $component] and
         if $component == "ait-server" then
-          .[0].Config.Cmd == ["run", "--init-if-missing", "--defer-ci-admission"] and
-          any(.[0].Config.Env[]; . == "AITSERVER_LISTEN=0.0.0.0:8088") and
+          .[0].Config.Cmd == ["run", "--listen", "0.0.0.0:8088", "--init-if-missing", "--defer-ci-admission"] and
+          (all(.[0].Config.Env[]; startswith("AITSERVER_LISTEN=") | not)) and
           any(.[0].Config.Env[]; . == "AIT_NATIVE_SERVER_DATA=/var/lib/ait/server-data")
         else
           ((.[0].Config.Cmd == null) or (.[0].Config.Cmd == [])) and
@@ -1122,7 +1142,7 @@ case "${mode}" in
     release_title="AIT Native ${release_version}"
     {
       printf '# %s\n\n' "${release_title}"
-      printf 'This regular GitHub Release promotes the exact protected `%s` %s family bytes.\n' \
+      printf 'This GitHub Release publishes the exact protected `%s` %s family bytes.\n' \
         "${release_tag}" "${release_channel}"
       printf 'It provides the language-neutral `ait` command and an inactive-by-default\n'
       printf '`ait-server`; Python, Node.js, .NET, PHP, C, C++, Java, mixed-language, and\n'
@@ -1145,7 +1165,8 @@ case "${mode}" in
         --repo "${github_repository}" \
         --title "${release_title}" \
         --notes-file "${notes}" \
-        --prerelease=false \
+        --prerelease="${github_prerelease}" \
+        --latest=false \
         --verify-tag
     elif [[ ${status} != 200 ]]; then
       printf 'GitHub Release creation preflight returned HTTP %s\n' "${status}" >&2
@@ -1155,7 +1176,8 @@ case "${mode}" in
       --repo "${github_repository}" \
       --title "${release_title}" \
       --notes-file "${notes}" \
-      --prerelease=false
+      --prerelease="${github_prerelease}" \
+      --latest=false
     asset_map=${temporary_root}/github-asset-map
     github_release_asset_map "${asset_map}"
     remote_names=${temporary_root}/github-remote-names
@@ -1599,7 +1621,8 @@ case "${mode}" in
 
   readback)
     require_environment AIT_GITHUB_TOKEN AIT_OCI_SERVER_DIGEST AIT_OCI_RUNNER_DIGEST \
-      AIT_APT_SIGNING_FINGERPRINT
+      AIT_APT_SIGNING_FINGERPRINT AIT_PREPUBLISH_CANDIDATE_ARTIFACT_DIGEST \
+      AIT_PREPUBLISH_AGGREGATE_ARTIFACT_DIGEST AIT_PREPUBLISH_AGGREGATE_STATUS_SHA256
     require_preflight_receipt
     validate_public_tag
     validate_github_release_state true
@@ -1692,28 +1715,41 @@ case "${mode}" in
     fi
     if [[ ${release_channel} == rc ]]; then
       winget_status=validation_assets_published_no_community_submission
-      next_action=run_all_declared_clean_host_install_upgrade_uninstall_smoke
     else
       winget_status=community_manifest_assets_published_submission_required
-      next_action=submit_winget_community_manifest_then_run_clean_host_smoke
     fi
+    [[ ${AIT_PREPUBLISH_CANDIDATE_ARTIFACT_DIGEST} =~ ^sha256:[0-9a-f]{64}$ ]]
+    [[ ${AIT_PREPUBLISH_AGGREGATE_ARTIFACT_DIGEST} =~ ^sha256:[0-9a-f]{64}$ ]]
+    [[ ${AIT_PREPUBLISH_AGGREGATE_STATUS_SHA256} =~ ^[0-9a-f]{64}$ ]]
     jq -n \
-      --arg contract 'ait.release.family.endpoint-readback/v1' \
-      --arg status 'published_pending_clean_host_smoke' \
+      --arg contract 'ait.release.family.endpoint-readback/v2' \
+      --arg status 'published_after_prepublish_qualification' \
       --arg release_id "${release_id}" \
       --arg version "${release_version}" \
+      --arg python_version "$(jq -er '.release.python_version' "${endpoint_config}")" \
+      --arg channel "${release_channel}" \
       --arg tag "${release_tag}" \
+      --arg source_commit "$(jq -er '.release.source_commit' "${endpoint_config}")" \
+      --arg endpoint_config_sha256 "$(sha256_file "${endpoint_config}")" \
       --arg server_digest "${AIT_OCI_SERVER_DIGEST}" \
       --arg runner_digest "${AIT_OCI_RUNNER_DIGEST}" \
       --arg winget_status "${winget_status}" \
-      --arg next_action "${next_action}" \
+      --arg candidate_artifact_digest "${AIT_PREPUBLISH_CANDIDATE_ARTIFACT_DIGEST}" \
+      --arg aggregate_artifact_digest "${AIT_PREPUBLISH_AGGREGATE_ARTIFACT_DIGEST}" \
+      --arg aggregate_status_sha256 "${AIT_PREPUBLISH_AGGREGATE_STATUS_SHA256}" \
       --slurpfile config "${endpoint_config}" '
         {
           contract: $contract,
           status: $status,
-          release_id: $release_id,
-          version: $version,
-          tag: $tag,
+          release: {
+            id: $release_id,
+            version: $version,
+            python_version: $python_version,
+            channel: $channel,
+            tag: $tag,
+            source_commit: $source_commit,
+            endpoint_config_sha256: $endpoint_config_sha256
+          },
           endpoints: {
             github: "published_and_read_back",
             pypi: "published_and_read_back",
@@ -1728,6 +1764,13 @@ case "${mode}" in
               moving_tag: $config[0].endpoints.oci.moving_tag
             }
           },
+          prepublication: {
+            status: "qualified",
+            candidate_artifact_digest: $candidate_artifact_digest,
+            aggregate_artifact_digest: $aggregate_artifact_digest,
+            aggregate_status_sha256: $aggregate_status_sha256,
+            clean_host_rows: 32
+          },
           mutation: {
             artifact_rebuild: false,
             component_rebuild: false,
@@ -1738,7 +1781,7 @@ case "${mode}" in
             ait_remote_release_activation: false,
             service_mutation: false
           },
-          next_action: $next_action
+          next_action: "promote_mutable_aliases"
         }
       ' >"${evidence_root}/ait-release.endpoint-readback.json"
     ;;

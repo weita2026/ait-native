@@ -435,6 +435,12 @@ pub(in crate::primitives) fn materialize_worktree_cargo_config_for_workspace(
             if let Some(upgraded) =
                 upgrade_generated_worktree_cargo_config_text(projected_workspace_root, &contents)
                     .or_else(|| {
+                        upgrade_copied_task_worktree_cargo_config_text(
+                            projected_workspace_root,
+                            &contents,
+                        )
+                    })
+                    .or_else(|| {
                         upgrade_copied_main_seed_cargo_config_text(
                             projected_workspace_root,
                             &contents,

@@ -203,6 +203,7 @@ fi
 
 version=${AIT_RELEASE_TAG#v}
 if [[ ${AIT_RELEASE_CHANNEL} == rc ]]; then
+  github_prerelease=true
   npm_dist_tag=rc
   pypi_prerelease=true
   oci_moving_tag=rc
@@ -212,6 +213,7 @@ if [[ ${AIT_RELEASE_CHANNEL} == rc ]]; then
   winget_route=validation
   winget_community_submission=false
 else
+  github_prerelease=false
   npm_dist_tag=latest
   pypi_prerelease=false
   oci_moving_tag=latest
@@ -341,6 +343,7 @@ if ! jq -e \
   --arg homebrew_channel "${homebrew_channel}" \
   --arg apt_suite "${apt_suite}" \
   --arg winget_route "${winget_route}" \
+  --argjson github_prerelease "${github_prerelease}" \
   --argjson pypi_prerelease "${pypi_prerelease}" \
   --argjson stable_formula_mutation "${stable_formula_mutation}" \
   --argjson winget_community_submission "${winget_community_submission}" '
@@ -354,7 +357,7 @@ if ! jq -e \
   .source_publication.binary_publication_allowed == false and
   .mutation.credentials_loaded == false and .mutation.performed == false and
   .mutation.rebuild_allowed == false and .mutation.registry_write == false and
-  .routes.github == {draft: false, prerelease: false, tag: $tag} and
+  .routes.github == {draft: false, prerelease: $github_prerelease, tag: $tag} and
   .routes.npm == {dist_tag: $npm_dist_tag, version: $version} and
   .routes.pypi == {prerelease: $pypi_prerelease, repository: "pypi"} and
   .routes.oci == {moving_tag: $oci_moving_tag, version_tag: $version} and
@@ -384,6 +387,7 @@ if ! jq -e \
   --arg homebrew_channel "${homebrew_channel}" \
   --arg apt_suite "${apt_suite}" \
   --arg winget_route "${winget_route}" \
+  --argjson github_prerelease "${github_prerelease}" \
   --argjson pypi_prerelease "${pypi_prerelease}" \
   --argjson stable_formula_mutation "${stable_formula_mutation}" \
   --argjson winget_community_submission "${winget_community_submission}" '
@@ -393,7 +397,11 @@ if ! jq -e \
     .family_manifest_sha256 == $family_sha and
     .promotion.authorized == false and .promotion.performed == false and
     .promotion.registry_write == false and
-    .promotion.routes.github == {draft: false, prerelease: false, tag: $tag} and
+    .promotion.routes.github == {
+      draft: false,
+      prerelease: $github_prerelease,
+      tag: $tag
+    } and
     .promotion.routes.npm == {dist_tag: $npm_dist_tag, version: $version} and
     .promotion.routes.pypi == {
       prerelease: $pypi_prerelease,

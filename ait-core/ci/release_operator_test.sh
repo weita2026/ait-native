@@ -351,7 +351,7 @@ jq -e '
   .release.channel == "rc" and .release.python_version == "1.2.3rc5" and
   .protected_authorization.workflow_run_id == 102 and
   .protected_authorization.artifact_id == 202 and
-  .endpoints.github.prerelease == false and
+  .endpoints.github.prerelease == true and
   .endpoints.npm.dist_tag == "rc" and
   .endpoints.homebrew.formula_path == "Formula/ait-native-rc.rb" and
   .endpoints.apt.suite == "testing" and
@@ -413,13 +413,21 @@ evidence_root=${temporary_root}/endpoint-evidence
 mkdir "${evidence_root}"
 server_digest=sha256:4444444444444444444444444444444444444444444444444444444444444444
 runner_digest=sha256:5555555555555555555555555555555555555555555555555555555555555555
-jq -n --arg server "${server_digest}" --arg runner "${runner_digest}" '
+jq -n --arg server "${server_digest}" --arg runner "${runner_digest}" \
+  --arg config_sha "$(sha256_file "${endpoint_config}")" \
+  --arg source_commit "$(jq -er '.release.source_commit' "${endpoint_config}")" '
   {
-    contract: "ait.release.family.endpoint-readback/v1",
-    status: "published_pending_clean_host_smoke",
-    release_id: "REL-FAM-0123456789ABCDEF",
-    version: "1.2.3-rc.5",
-    tag: "v1.2.3-rc.5",
+    contract: "ait.release.family.endpoint-readback/v2",
+    status: "published_after_prepublish_qualification",
+    release: {
+      id: "REL-FAM-0123456789ABCDEF",
+      version: "1.2.3-rc.5",
+      python_version: "1.2.3rc5",
+      channel: "rc",
+      tag: "v1.2.3-rc.5",
+      source_commit: $source_commit,
+      endpoint_config_sha256: $config_sha
+    },
     endpoints: {
       github: "published_and_read_back",
       pypi: "published_and_read_back",
@@ -434,7 +442,22 @@ jq -n --arg server "${server_digest}" --arg runner "${runner_digest}" '
         moving_tag: "rc"
       }
     },
-    next_action: "run_all_declared_clean_host_install_upgrade_uninstall_smoke"
+    prepublication: {
+      status: "qualified",
+      candidate_artifact_digest: "sha256:6666666666666666666666666666666666666666666666666666666666666666",
+      aggregate_artifact_digest: "sha256:7777777777777777777777777777777777777777777777777777777777777777",
+      aggregate_status_sha256: "8888888888888888888888888888888888888888888888888888888888888888",
+      clean_host_rows: 32
+    },
+    mutation: {
+      artifact_rebuild: false,
+      component_rebuild: false,
+      registry_write: true,
+      github_release_write: true,
+      endpoint_repository_write: true,
+      tag_write: false
+    },
+    next_action: "promote_mutable_aliases"
   }
 ' >"${evidence_root}/ait-release.endpoint-readback.json"
 for name in github pypi npm homebrew; do
@@ -490,185 +513,18 @@ status_output=${temporary_root}/status.json
   --evidence-root "${evidence_root}" \
   --output "${status_output}" >/dev/null
 jq -e '
-  .contract == "ait.release.operator.status/v1" and
-  .status == "published_pending_clean_host_smoke" and
+  .contract == "ait.release.operator.status/v2" and
+  .status == "published_readback_complete" and
   .release.id == "REL-FAM-0123456789ABCDEF" and
   .publication_workflow.run_id == 103 and
-  .platforms.apt == "published_signed_and_read_back" and
-  .platforms.winget == "validation_assets_published_no_community_submission"
+  .publication_workflow.run_attempt == 1 and
+  .prepublication.status == "qualified" and
+  .prepublication.clean_host_rows == 32 and
+  .endpoint_publication.platforms.apt == "published_signed_and_read_back" and
+  .endpoint_publication.platforms.winget == "validation_assets_published_no_community_submission" and
+  .promotion_allowed == true and
+  .terminal_for_release == false and
+  .next_action == "promote_mutable_aliases"
 ' "${status_output}" >/dev/null
-
-rc8_config=${temporary_root}/rc8-config.json
-jq '
-  .release.version = "1.0.0-rc.8" |
-  .release.python_version = "1.0.0rc8" |
-  .release.tag = "v1.0.0-rc.8" |
-  .endpoints.oci.immutable_tag = "1.0.0-rc.8"
-' "${endpoint_config}" >"${rc8_config}"
-"${operator}" validate-config --config "${rc8_config}" >/dev/null
-current_version=$(jq -er '.family.version' \
-  "${repo_root}/ait-release-family.json")
-current_python_version=$(jq -er \
-  '.components[] | select(.id == "ait-python") | .version' \
-  "${repo_root}/ait-release-family.json")
-current_tag=v${current_version}
-current_config=${temporary_root}/current-config.json
-jq --arg version "${current_version}" \
-  --arg python_version "${current_python_version}" \
-  --arg tag "${current_tag}" '
-  .release.version = $version |
-  .release.python_version = $python_version |
-  .release.tag = $tag |
-  .endpoints.oci.immutable_tag = $version
-' "${endpoint_config}" >"${current_config}"
-"${operator}" validate-config --config "${current_config}" >/dev/null
-current_status=${temporary_root}/current-status.json
-jq --arg version "${current_version}" --arg tag "${current_tag}" '
-  .release.version = $version |
-  .release.tag = $tag |
-  .platforms.oci.immutable_tag = $version
-' "${status_output}" >"${current_status}"
-clean_host_request=${temporary_root}/clean-host-request.json
-"${operator}" clean-host \
-  --config "${current_config}" \
-  --status "${current_status}" \
-  --prior-version 1.0.0-rc.8 \
-  --prior-python-version 1.0.0rc8 \
-  --output "${clean_host_request}" >/dev/null
-"${operator}" validate-clean-host-request \
-  --request "${clean_host_request}" \
-  --config "${current_config}" \
-  --status "${current_status}" >/dev/null
-jq -e --arg version "${current_version}" '
-  .contract == "ait.release.operator.clean-host-request/v1" and
-  .status == "ready_for_clean_host_matrix" and
-  .release.version == $version and
-  .prior == {
-    python_version: "1.0.0rc8",
-    selector: "exact_immutable_version",
-    tag: "v1.0.0-rc.8",
-    version: "1.0.0-rc.8"
-  } and
-  .matrix.revision == "distribution-target-32-2026-08-17.1" and
-  .matrix.row_count == 32 and
-  .workflow.requested == false and
-  ([.mutation[]] | all(. == false))
-' "${clean_host_request}" >/dev/null
-
-expect_failure non-prior "${operator}" clean-host \
-  --config "${current_config}" \
-  --status "${current_status}" \
-  --prior-version "${current_version}" \
-  --prior-python-version "${current_python_version}" \
-  --output "${temporary_root}/non-prior.json"
-
-clean_host_matrix=${temporary_root}/clean-host-matrix.json
-node "${repo_root}/ci/release_clean_host.mjs" matrix \
-  --family "${repo_root}/ait-release-family.json" \
-  --platforms "${repo_root}/ci/native_bootstrap_matrix.json" \
-  --output "${clean_host_matrix}" >/dev/null
-blocked_rows=${temporary_root}/blocked-rows
-mkdir "${blocked_rows}"
-blocked_evidence=${temporary_root}/blocked-evidence
-expect_failure blocked-aggregate node "${repo_root}/ci/release_clean_host.mjs" aggregate \
-  --matrix "${clean_host_matrix}" \
-  --config "${current_config}" \
-  --status "${current_status}" \
-  --evidence-root "${blocked_rows}" \
-  --output-root "${blocked_evidence}"
-blocked_transport=${temporary_root}/blocked-transport
-mkdir "${blocked_transport}"
-cp "${blocked_evidence}/ait-release.clean-host-status.json" \
-  "${blocked_evidence}/SHA256SUMS" "${blocked_transport}/"
-test ! -e "${blocked_transport}/rows"
-
-clean_host_run=${temporary_root}/clean-host-run.json
-clean_host_artifact=${temporary_root}/clean-host-artifact.json
-jq -n '
-  {
-    id: 104,
-    run_attempt: 1,
-    name: "ait release clean host",
-    path: ".github/workflows/ait-release-clean-host.yml",
-    event: "workflow_dispatch",
-    status: "completed",
-    conclusion: "failure",
-    head_sha: "abababababababababababababababababababab"
-  }
-' >"${clean_host_run}"
-jq -n '
-  {
-    id: 204,
-    name: "ait-clean-host-REL-FAM-0123456789ABCDEF",
-    digest: "sha256:cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
-    expired: false,
-    workflow_run: {id: 104}
-  }
-' >"${clean_host_artifact}"
-clean_host_status=${temporary_root}/clean-host-status.json
-"${operator}" clean-host-status \
-  --request "${clean_host_request}" \
-  --config "${current_config}" \
-  --status "${current_status}" \
-  --run-record "${clean_host_run}" \
-  --artifact-record "${clean_host_artifact}" \
-  --evidence-root "${blocked_transport}" \
-  --output "${clean_host_status}" >/dev/null
-jq -e '
-  .contract == "ait.release.operator.clean-host-status/v1" and
-  .status == "blocked" and
-  .release.id == "REL-FAM-0123456789ABCDEF" and
-  .endpoint_publication.operator_status_sha256 == .release.operator_status_sha256 and
-  .endpoint_publication.workflow == {
-    run_id: 103,
-    artifact_id: 203,
-    artifact_digest: "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
-    conclusion: "success"
-  } and
-  .endpoint_publication.platforms.github == "published_and_read_back" and
-  (.endpoint_publication.platforms.oci.server |
-    test("^sha256:[0-9a-f]{64}$")) and
-  .clean_host_workflow.run_id == 104 and
-  .clean_host_workflow.conclusion == "failure" and
-  .evidence.rows.expected_rows == 32 and
-  .evidence.rows.admitted_rows == 0 and
-  (.failures | length) == 32 and
-  .promotion_allowed == false and
-  .terminal_for_release == true and
-  .next_action == "freeze_new_release_after_repair"
-' "${clean_host_status}" >/dev/null
-
-nonempty_missing_rows=${temporary_root}/nonempty-missing-rows
-cp -R "${blocked_transport}" "${nonempty_missing_rows}"
-jq '.evidence_inventory = [{path: "rows/missing.json", sha256: ("a" * 64)}]' \
-  "${nonempty_missing_rows}/ait-release.clean-host-status.json" \
-  >"${temporary_root}/nonempty-missing-rows.json"
-mv "${temporary_root}/nonempty-missing-rows.json" \
-  "${nonempty_missing_rows}/ait-release.clean-host-status.json"
-expect_failure nonempty-missing-rows "${operator}" clean-host-status \
-  --request "${clean_host_request}" \
-  --config "${current_config}" \
-  --status "${current_status}" \
-  --run-record "${clean_host_run}" \
-  --artifact-record "${clean_host_artifact}" \
-  --evidence-root "${nonempty_missing_rows}" \
-  --output "${temporary_root}/nonempty-missing-rows-status.json"
-grep -F 'clean-host row evidence directory is missing for a non-empty inventory' \
-  "${temporary_root}/nonempty-missing-rows.stderr" >/dev/null
-
-tampered_evidence=${temporary_root}/tampered-evidence
-cp -R "${blocked_transport}" "${tampered_evidence}"
-jq '.failures = []' "${tampered_evidence}/ait-release.clean-host-status.json" \
-  >"${temporary_root}/tampered-aggregate.json"
-mv "${temporary_root}/tampered-aggregate.json" \
-  "${tampered_evidence}/ait-release.clean-host-status.json"
-expect_failure tampered-clean-host "${operator}" clean-host-status \
-  --request "${clean_host_request}" \
-  --config "${current_config}" \
-  --status "${current_status}" \
-  --run-record "${clean_host_run}" \
-  --artifact-record "${clean_host_artifact}" \
-  --evidence-root "${tampered_evidence}" \
-  --output "${temporary_root}/tampered-clean-host-status.json"
 
 printf 'release operator contract: pass\n'

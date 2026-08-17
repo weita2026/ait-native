@@ -8,6 +8,7 @@ DEFAULT_REPOSITORY_CARGO_BUILD_MAX_BYTES=4294967296
 DEFAULT_CANONICAL_CARGO_BUILD_MAX_BYTES=1073741824
 CANONICAL_CARGO_BUILD_DIRNAME="canonical"
 MANAGED_WORKTREE_CARGO_TARGET_DIRNAME="task-workspaces"
+CANONICAL_CARGO_SOURCE_POLICY_HEADER="# AIT source policy: canonical Cargo settings; task worktrees receive a managed projection."
 
 resolve_cargo() {
   if command -v cargo >/dev/null 2>&1; then
@@ -58,6 +59,43 @@ managed_worktree_name() {
       ;;
   esac
   printf '%s\n' "${name}"
+}
+
+canonical_cargo_source_policy_is_exact() {
+  local repository_root="$1"
+  local config_path="${repository_root}/.cargo/config.toml"
+  [[ -f "${config_path}" && ! -L "${config_path}" ]] || return 1
+  awk -v expected_header="${CANONICAL_CARGO_SOURCE_POLICY_HEADER}" '
+    NR == 1 { header_ok = ($0 == expected_header) }
+    NR == 2 { build_header_ok = ($0 == "[build]") }
+    /^[[:space:]]*target-dir[[:space:]]*=/ {
+      target_count += 1
+      if ($0 != "target-dir = \".ait/cargo-target\"") bad = 1
+    }
+    /^[[:space:]]*build-dir[[:space:]]*=/ {
+      build_count += 1
+      if ($0 != "build-dir = \".ait/cargo-build/canonical\"") bad = 1
+    }
+    /task-workspaces/ { bad = 1 }
+    END {
+      exit !(header_ok && build_header_ok && target_count == 1 &&
+        build_count == 1 && !bad)
+    }
+  ' "${config_path}"
+}
+
+require_canonical_cargo_source_policy() {
+  if [[ -n "$(managed_worktree_name || true)" ]]; then
+    return 0
+  fi
+  if canonical_cargo_source_policy_is_exact "${ROOT_DIR}"; then
+    return 0
+  fi
+  printf '%s\n' \
+    'Canonical ait-core Cargo source policy is invalid.' \
+    'Expected .cargo/config.toml to use .ait/cargo-target and .ait/cargo-build/canonical.' \
+    'A Task-worktree projection must never be stored on canonical main.' >&2
+  return 2
 }
 
 cargo_target_dir() {
@@ -643,6 +681,7 @@ EOF
   fi
 
   if [[ "${skip_build}" != "1" ]]; then
+    require_canonical_cargo_source_policy
     local profile
     profile="$(core_build_profile)"
     run_cargo build --profile "${profile}" --manifest-path "${ROOT_DIR}/rust/Cargo.toml" --workspace
@@ -999,6 +1038,7 @@ main() {
 
   case "${2:-}" in
     build)
+      require_canonical_cargo_source_policy
       local profile
       profile="$(core_build_profile)"
       run_cargo build --profile "${profile}" --manifest-path "${ROOT_DIR}/rust/Cargo.toml" --workspace
@@ -1013,8 +1053,10 @@ main() {
       compact_cargo_targets "$@"
       ;;
     test)
+      require_canonical_cargo_source_policy
       run_cargo test --manifest-path "${ROOT_DIR}/rust/Cargo.toml" --workspace --profile ait-ci
       "${ROOT_DIR}/tests/test_ait_sh_core_compact.sh"
+      "${ROOT_DIR}/tests/test_ait_sh_core_cargo_policy.sh"
       ;;
     *)
       usage >&2

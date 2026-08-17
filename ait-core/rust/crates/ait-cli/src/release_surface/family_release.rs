@@ -2799,7 +2799,7 @@ fn family_promotion_routes(
         "distributions": distributions,
         "github": {
             "tag": tag,
-            "prerelease": false,
+            "prerelease": registry_prerelease,
             "draft": false,
         },
         "npm": {
@@ -4373,7 +4373,7 @@ mod tests {
     }
 
     #[test]
-    fn rc_promotion_routes_keep_registry_rc_channels_but_make_github_regular() {
+    fn rc_promotion_routes_keep_every_mutable_default_out_of_latest() {
         let definition = parse_family_release_manifest(&manifest("1.0.0-rc.1", "rc", "1.0.0rc1"))
             .unwrap()
             .to_json();
@@ -4383,7 +4383,7 @@ mod tests {
             "v1.0.0-rc.1",
             &definition["distributions"],
         );
-        assert_eq!(routes["github"]["prerelease"], json!(false));
+        assert_eq!(routes["github"]["prerelease"], json!(true));
         assert_eq!(routes["github"]["draft"], json!(false));
         assert_eq!(routes["npm"]["dist_tag"], json!("rc"));
         assert_eq!(routes["pypi"]["prerelease"], json!(true));

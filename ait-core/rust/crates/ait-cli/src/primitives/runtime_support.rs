@@ -137,6 +137,87 @@ pub(super) fn upgrade_copied_main_seed_cargo_config_text(
     )
 }
 
+fn managed_task_projection_name(
+    line: &str,
+    key: &str,
+    shared_root: &Path,
+    task_directory: &str,
+) -> Option<String> {
+    let (actual_key, encoded_path) = line.split_once('=')?;
+    if actual_key.trim() != key {
+        return None;
+    }
+    let decoded = parse_value_or(encoded_path.trim(), JsonValue::Null);
+    let path = PathBuf::from(decoded.as_str()?);
+    if !path.is_absolute() {
+        return None;
+    }
+    let task_root = lexical_normalize(&shared_root.join(task_directory));
+    let normalized = lexical_normalize(&path);
+    if normalized.parent()? != task_root {
+        return None;
+    }
+    let name = normalized.file_name()?.to_str()?;
+    let normalized_name = normalize_worktree_name(name).ok()?;
+    (normalized_name == name).then_some(normalized_name)
+}
+
+pub(super) fn upgrade_copied_task_worktree_cargo_config_text(
+    workspace_root: &Path,
+    contents: &str,
+) -> Option<String> {
+    if contents.lines().next() != Some(GENERATED_CARGO_CONFIG_HEADER) {
+        return None;
+    }
+    let target_root = shared_cargo_target_root(workspace_root);
+    let build_root = shared_cargo_build_root(workspace_root);
+    let target_name = contents.lines().find_map(|line| {
+        managed_task_projection_name(
+            line,
+            "target-dir",
+            &target_root,
+            MANAGED_WORKTREE_CARGO_TARGET_DIRNAME,
+        )
+    })?;
+    let build_name = contents.lines().find_map(|line| {
+        managed_task_projection_name(
+            line,
+            "build-dir",
+            &build_root,
+            MANAGED_WORKTREE_CARGO_BUILD_DIRNAME,
+        )
+    })?;
+    if target_name != build_name {
+        return None;
+    }
+    let previous_target = target_root
+        .join(MANAGED_WORKTREE_CARGO_TARGET_DIRNAME)
+        .join(&target_name);
+    let previous_build = build_root
+        .join(MANAGED_WORKTREE_CARGO_BUILD_DIRNAME)
+        .join(target_name);
+    let previous_target_line = format!(
+        "target-dir = {}",
+        encode_string_or(
+            &previous_target.to_string_lossy(),
+            &format!("\"{}\"", previous_target.display()),
+        )
+    );
+    let previous_build_line = format!(
+        "build-dir = {}",
+        encode_string_or(
+            &previous_build.to_string_lossy(),
+            &format!("\"{}\"", previous_build.display()),
+        )
+    );
+    upgrade_generated_worktree_cargo_config_text_with_additional_build_lines(
+        workspace_root,
+        contents,
+        &[previous_target_line],
+        &[previous_build_line],
+    )
+}
+
 fn upgrade_generated_worktree_cargo_config_text_with_additional_build_lines(
     workspace_root: &Path,
     contents: &str,

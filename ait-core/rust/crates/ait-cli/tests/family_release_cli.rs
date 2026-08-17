@@ -458,7 +458,7 @@ fn fixture_npm_envelope() -> Vec<u8> {
         (
             "package/README.md".to_string(),
             (
-                b"# ait-native\n\nAIT turns an ordinary coding request into an isolated, sprint-bound repository change with validation evidence. It is for individual developers and maintainers who use coding agents.\n\nOfficial website: <https://ait-native.dev/>\n\n## Install and initialize\n\n```sh\nnpm install --global @wa120/ait-native@1.0.0-rc.2\nait init\n```\n\n## What you have after 90 seconds\n\nInstallation and initialization are complete; arbitrary coding work is not promised.\n\n## Moving from 0.x\n\nThe 0.x requirement to run `ait install` and its task-DAG positioning are retired.\n"
+                b"# ait-native\n\nAIT turns an ordinary coding request into an isolated, sprint-bound repository change with validation evidence. It is for individual developers and maintainers who use coding agents.\n\nOfficial website: <https://ait-native.dev/>\n\n## Install and initialize\n\n```sh\nnpm install --global @wa120/ait-native@1.0.0-rc.2\nait init\n```\n\n## What initialization provides\n\nRepository-local authority, a generated AGENTS.md workflow, and an inactive server boundary.\n\n## Local and reviewed closeout\n\nAuthors run `ait workflow ready <change-id> --apply`; reviewers run `ait workflow land <change-id> --apply`.\n\n## Upgrading from 0.x\n\nThere is no `ait install` command in 1.0. Install or upgrade `ait-native` through your selected package manager, then run `ait init` only for a new 1.0 repository authority.\n"
                     .to_vec(),
                 0o644,
             ),
@@ -1188,7 +1188,7 @@ fn public_family_release_freezes_six_targets_and_emits_rc_handoff_without_releas
         ],
     );
     assert_eq!(promoted["status"], "ready_for_protected_ci");
-    assert_eq!(promoted["routes"]["github"]["prerelease"], false);
+    assert_eq!(promoted["routes"]["github"]["prerelease"], true);
     assert_eq!(promoted["routes"]["github"]["draft"], false);
     assert_eq!(promoted["routes"]["npm"]["dist_tag"], "rc");
     assert_eq!(promoted["routes"]["pypi"]["prerelease"], true);
@@ -1765,7 +1765,9 @@ fn family_package_assembles_native_channels_without_endpoint_mutation() {
     assert!(controller.contains("ValidateSet('init', 'probe', 'run', 'start', 'status', 'stop')"));
     assert!(controller.contains("Join-Path $env:LOCALAPPDATA 'AIT\\server-data'"));
     assert!(controller.contains("PID $ManagedProcessId belongs to another executable"));
-    assert!(controller.contains("@('run', '--init-if-missing', '--defer-ci-admission')"));
+    assert!(controller.contains(
+        "@('run', '--data', $DataRoot, '--listen', $Listen, '--init-if-missing', '--defer-ci-admission')"
+    ));
     assert!(controller.contains("Stop-Process -Id $Managed.Id"));
     assert!(!controller.contains("sc.exe"));
     assert!(!controller.contains("New-Service"));
@@ -2154,10 +2156,12 @@ fn family_package_assembles_registry_channels_without_endpoint_mutation() {
         "individual developers and maintainers",
         "python -m pip install ait-native==1.0.0rc2",
         "ait init",
-        "## What you have after 90 seconds",
+        "## What initialization provides",
         "Official website: <https://ait-native.dev/>",
-        "## Moving from 0.x",
-        "The 0.x requirement to run `ait install` and its task-DAG positioning are",
+        "## Upgrading from 0.x",
+        "There is no `ait install` command in 1.0.",
+        "ait workflow ready <change-id> --apply",
+        "ait workflow land <change-id> --apply",
     ] {
         assert!(
             metadata.contains(storefront_marker),
@@ -2231,10 +2235,12 @@ fn family_package_assembles_registry_channels_without_endpoint_mutation() {
         "individual developers and maintainers",
         "npm install --global @wa120/ait-native@1.0.0-rc.2",
         "ait init",
-        "## What you have after 90 seconds",
+        "## What initialization provides",
         "https://ait-native.dev/",
-        "## Moving from 0.x",
-        "The 0.x requirement to run `ait install` and its task-DAG positioning are",
+        "## Upgrading from 0.x",
+        "There is no `ait install` command in 1.0.",
+        "ait workflow ready <change-id> --apply",
+        "ait workflow land <change-id> --apply",
     ] {
         assert!(
             envelope_readme.contains(storefront_marker),
