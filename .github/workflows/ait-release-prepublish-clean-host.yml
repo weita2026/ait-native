@@ -360,6 +360,11 @@ jobs:
           }
           $winget = Get-Command winget.exe -ErrorAction Stop
           Split-Path -Parent $winget.Source | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          $gitBash = 'C:\Program Files\Git\bin\bash.exe'
+          if (-not (Test-Path -LiteralPath $gitBash -PathType Leaf)) {
+            throw "Hosted runner Git Bash is missing: $gitBash"
+          }
+          Split-Path -Parent $gitBash | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
       - name: Probe exact runner capabilities
         shell: bash
@@ -417,6 +422,11 @@ jobs:
           }
           $winget = Get-Command winget.exe -ErrorAction Stop
           Split-Path -Parent $winget.Source | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          $gitBash = 'C:\Program Files\Git\bin\bash.exe'
+          if (-not (Test-Path -LiteralPath $gitBash -PathType Leaf)) {
+            throw "Hosted runner Git Bash is missing: $gitBash"
+          }
+          Split-Path -Parent $gitBash | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
       - name: Download the immutable prepublish candidate
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
@@ -517,6 +527,11 @@ jobs:
           }
           $winget = Get-Command winget.exe -ErrorAction Stop
           Split-Path -Parent $winget.Source | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          $gitBash = 'C:\Program Files\Git\bin\bash.exe'
+          if (-not (Test-Path -LiteralPath $gitBash -PathType Leaf)) {
+            throw "Hosted runner Git Bash is missing: $gitBash"
+          }
+          Split-Path -Parent $gitBash | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
       - name: Download the immutable prepublish candidate
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4

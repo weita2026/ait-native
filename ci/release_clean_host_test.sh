@@ -69,6 +69,10 @@ test "$(grep -c 'name: Register inbox Windows Package Manager' "${workflow}")" =
 grep -F 'test -x /home/linuxbrew/.linuxbrew/bin/brew' "${workflow}" >/dev/null
 grep -F 'Add-AppxPackage -RegisterByFamilyName -MainPackage Microsoft.DesktopAppInstaller_8wekyb3d8bbwe' \
   "${workflow}" >/dev/null
+test "$(grep -Fc "\$gitBash = 'C:\Program Files\Git\bin\bash.exe'" \
+  "${workflow}")" = 3
+test "$(grep -Fc 'Split-Path -Parent $gitBash | Out-File -FilePath $env:GITHUB_PATH' \
+  "${workflow}")" = 3
 grep -F 'ait-prepublish-candidate-${{ inputs.release_id }}' "${workflow}" >/dev/null
 grep -F 'ait-prepublish-clean-host-${{ inputs.release_id }}' "${workflow}" >/dev/null
 grep -F 'release_prepublish_verify.mjs qualify' "${workflow}" >/dev/null
