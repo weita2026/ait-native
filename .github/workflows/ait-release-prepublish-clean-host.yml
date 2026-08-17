@@ -306,6 +306,9 @@ jobs:
             candidate_run_id=${GITHUB_RUN_ID}
             candidate_artifact_id=${AIT_NEW_ARTIFACT_ID}
             candidate_artifact_digest=${AIT_NEW_ARTIFACT_DIGEST}
+            if [[ ${candidate_artifact_digest} =~ ^[0-9a-f]{64}$ ]]; then
+              candidate_artifact_digest=sha256:${candidate_artifact_digest}
+            fi
             candidate_status_sha256=${AIT_NEW_STATUS_SHA256}
           fi
           [[ "${candidate_run_id}" =~ ^[1-9][0-9]*$ ]]

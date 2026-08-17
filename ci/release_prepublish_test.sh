@@ -58,6 +58,10 @@ for required in \
   'cmp "${comparison_root}/ait-release.clean-host-matrix.json" "${matrix}"' \
   '"failure", "cancelled", "timed_out", "startup_failure",' \
   '"stale", "action_required"' \
+  'AIT_NEW_ARTIFACT_DIGEST: ${{ steps.upload.outputs.artifact-digest }}' \
+  'if [[ ${candidate_artifact_digest} =~ ^[0-9a-f]{64}$ ]]; then' \
+  'candidate_artifact_digest=sha256:${candidate_artifact_digest}' \
+  '[[ "${candidate_artifact_digest}" =~ ^sha256:[0-9a-f]{64}$ ]]' \
   'candidate_run_id: ${{ steps.select.outputs.candidate_run_id }}' \
   'run-id: ${{ needs.stage.outputs.candidate_run_id }}' \
   'release_prepublish_verify.mjs qualify' \
