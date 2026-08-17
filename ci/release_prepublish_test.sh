@@ -46,6 +46,20 @@ expect_failure() {
   test -s "${temporary_root}/${label}.stderr"
 }
 
+require_direct_exact_artifact_downloads() {
+  local workflow=$1
+  local line
+  local block
+  while IFS=: read -r line _; do
+    block=$(sed -n "${line},$((line + 5))p" "${workflow}")
+    if ! grep -F 'merge-multiple: true' <<<"${block}" >/dev/null; then
+      printf 'exact artifact download does not extract into its consumer root: %s:%s\n' \
+        "${workflow}" "${line}" >&2
+      return 1
+    fi
+  done < <(grep -n '^[[:space:]]*artifact-ids:' "${workflow}")
+}
+
 node --check "${verifier}"
 bash -n "${stage_control}"
 bash -n "${oci_control}"
@@ -79,6 +93,8 @@ for required in \
   'run-id: ${{ needs.prepublish.outputs.candidate_run_id }}'; do
   grep -F -- "${required}" "${publication_workflow}" >/dev/null
 done
+require_direct_exact_artifact_downloads "${prepublish_workflow}"
+require_direct_exact_artifact_downloads "${publication_workflow}"
 if grep -E '(^|[[:space:]])(gh release|npm publish|docker push)([[:space:]]|$)' \
   "${prepublish_workflow}" "${stage_control}" >/dev/null; then
   printf 'prepublish controls contain a public endpoint write\n' >&2
