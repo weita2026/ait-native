@@ -15,7 +15,7 @@ ait-agent-worker = { path = "../ait-agent-worker" }
 ait-cli = { path = "../ait-cli", default-features = false }
 ait-core = { path = "../ait-core", default-features = false }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
-pyo3 = { version = "0.26", features = ["extension-module"] }
+pyo3 = { version = "0.29", features = ["extension-module"] }
 sha2 = "0.10"
 
 [dev-dependencies]
