@@ -1,7 +1,7 @@
 use std::fs;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -20,7 +20,7 @@ fn agent_worker_binary() -> std::path::PathBuf {
     )
 }
 
-fn fixture_repo() -> tempfile::TempDir {
+fn fixture_repo(port: u16) -> tempfile::TempDir {
     let temp = tempdir().expect("tempdir");
     fs::create_dir_all(temp.path().join(".ait/agent-runtime")).expect("runtime dir");
     fs::write(
@@ -31,7 +31,7 @@ fn fixture_repo() -> tempfile::TempDir {
     fs::write(
         temp.path().join(".ait/agent-workers.json"),
         format!(
-            r#"{{"version":1,"workers":{{"telegram/main":{{"kind":"telegram","name":"main","token":"{TELEGRAM_TOKEN}","username":"ait_bot"}}}}}}"#
+            r#"{{"version":1,"workers":{{"telegram/main":{{"kind":"telegram","name":"main","token":"{TELEGRAM_TOKEN}","username":"ait_bot","mode":"webhook","bind_host":"127.0.0.1","bind_port":{port},"webhook_path":"/telegram","background_sync_enabled":false}}}}}}"#
         ),
     )
     .expect("worker manifest");
@@ -48,20 +48,15 @@ fn assert_status(response: &[u8], status: u16) {
 
 #[test]
 fn compiled_telegram_webhook_runner_processes_loopback_update_and_stops_cross_platform() {
-    let repo = fixture_repo();
     let reserved = TcpListener::bind(("127.0.0.1", 0)).expect("reserve port");
     let port = reserved.local_addr().expect("reserved address").port();
     drop(reserved);
+    let repo = fixture_repo(port);
 
-    let mut child = Command::new(agent_worker_binary())
+    let mut child = workspace_test_support::worker_command(agent_worker_binary())
         .current_dir(repo.path())
         .env("AIT_REPO_ROOT", repo.path())
-        .env("AIT_TELEGRAM_MODE", "webhook")
-        .env("AIT_TELEGRAM_BIND_HOST", "127.0.0.1")
-        .env("AIT_TELEGRAM_BIND_PORT", port.to_string())
-        .env("AIT_TELEGRAM_WEBHOOK_PATH", "/telegram")
         .env("AIT_TELEGRAM_WEBHOOK_SECRET", WEBHOOK_SECRET)
-        .env("AIT_TELEGRAM_BACKGROUND_SYNC_ENABLED", "false")
         .args([
             "run",
             "--transport",
@@ -113,7 +108,7 @@ fn compiled_telegram_webhook_runner_processes_loopback_update_and_stops_cross_pl
     assert_status(&response, 200);
     assert!(response.ends_with(br#"{"ok":true,"processed_updates":1}"#));
 
-    workspace_test_support::request_worker_shutdown(repo.path(), "telegram", "main", child.id());
+    workspace_test_support::request_worker_shutdown(child.id());
     let status = workspace_test_support::wait_for_child_exit(
         &mut child,
         "Telegram worker",

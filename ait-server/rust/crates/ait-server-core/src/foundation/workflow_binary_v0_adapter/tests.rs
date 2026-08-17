@@ -317,6 +317,41 @@ fn history_promotion_request(snapshot_ids: &[String]) -> JsonValue {
     })
 }
 
+fn staged_history_promotion_request(
+    snapshot_ids: &[String],
+    stage_ordinal: usize,
+    previous_stage_patchset_id: Option<&str>,
+) -> JsonValue {
+    let all_entries = history_promotion_request(snapshot_ids)["entries"]
+        .as_array()
+        .expect("history promotion entries")
+        .clone();
+    let stage_start = stage_ordinal * 64;
+    let stage_end = (stage_start + 64).min(all_entries.len());
+    let final_stage = stage_end == all_entries.len();
+    json!({
+        "contract": "history-promotion-prepare/v2",
+        "promotion_id": format!(
+            "history-promotion:{}:{}",
+            snapshot_ids.first().unwrap(),
+            snapshot_ids.last().unwrap()
+        ),
+        "idempotency_key": format!("history-promotion:65-local-lands:stage-{stage_ordinal}"),
+        "target_line": "main",
+        "base_snapshot_id": snapshot_ids.first().unwrap(),
+        "revision_snapshot_id": snapshot_ids.last().unwrap(),
+        "stage_ordinal": stage_ordinal,
+        "stage_base_snapshot_id": snapshot_ids[stage_start],
+        "stage_revision_snapshot_id": snapshot_ids[stage_end],
+        "previous_stage_patchset_id": previous_stage_patchset_id,
+        "total_entry_count": all_entries.len(),
+        "final_stage": final_stage,
+        "author_mode": "ai_with_human_review",
+        "summary": "Promote 65 local lands without a public count limit",
+        "entries": all_entries[stage_start..stage_end].to_vec()
+    })
+}
+
 fn atomic_plan_payload(title: &str, item_ref: &str) -> JsonValue {
     json!({
         "title": title,
@@ -1054,86 +1089,6 @@ fn change_list_projects_greatest_successful_land_from_one_inventory() {
     assert_eq!(changes[1]["change_ref"], json!("T-0001/C-01"));
     assert_eq!(changes[1]["target_line"], json!("main"));
     assert_eq!(changes[1]["landed_at"], json!("1970-01-01T00:00:30+00:00"));
-}
-
-#[test]
-#[ignore = "requires AIT_SERVER_V0_QUEUE_PERF_AUTHORITY pointing at a published immutable v0 authority"]
-fn published_v0_change_list_perfetto_remains_bounded() {
-    let authority = std::env::var_os("AIT_SERVER_V0_QUEUE_PERF_AUTHORITY")
-        .map(StorePath::new)
-        .expect("AIT_SERVER_V0_QUEUE_PERF_AUTHORITY is required");
-    let repo_id = std::env::var("AIT_SERVER_V0_QUEUE_PERF_REPO_ID")
-        .expect("AIT_SERVER_V0_QUEUE_PERF_REPO_ID is required");
-    let repo_name = std::env::var("AIT_SERVER_V0_QUEUE_PERF_REPO_NAME")
-        .expect("AIT_SERVER_V0_QUEUE_PERF_REPO_NAME is required");
-    let namespace = std::env::var("AIT_SERVER_V0_QUEUE_PERF_NAMESPACE")
-        .expect("AIT_SERVER_V0_QUEUE_PERF_NAMESPACE is required");
-    let db = FilesystemServerRemoteBinaryDb::serving_authority(
-        RepoId::new(repo_id),
-        RepoName::new(&repo_name),
-        authority,
-        StoreGeneration::new(1),
-    );
-    let store = BinaryDbServerWorkflowV0Store::new_remote(db, &namespace)
-        .expect("published v0 workflow store");
-
-    let started = Instant::now();
-    let changes = store
-        .list_changes(&repo_name)
-        .expect("published Change list");
-    let elapsed = started.elapsed();
-    let change_count = changes
-        .as_array()
-        .map(Vec::len)
-        .expect("published Change list array");
-    assert!(change_count > 0);
-    eprintln!(
-        "published Change list projected {change_count} rows in {:.3} seconds",
-        elapsed.as_secs_f64()
-    );
-}
-
-#[test]
-#[ignore = "requires AIT_SERVER_V0_QUEUE_PERF_AUTHORITY pointing at a published immutable v0 authority"]
-fn published_v0_queue_projection_perfetto_remains_bounded() {
-    let authority = std::env::var_os("AIT_SERVER_V0_QUEUE_PERF_AUTHORITY")
-        .map(StorePath::new)
-        .expect("AIT_SERVER_V0_QUEUE_PERF_AUTHORITY is required");
-    let repo_id = std::env::var("AIT_SERVER_V0_QUEUE_PERF_REPO_ID")
-        .expect("AIT_SERVER_V0_QUEUE_PERF_REPO_ID is required");
-    let repo_name = std::env::var("AIT_SERVER_V0_QUEUE_PERF_REPO_NAME")
-        .expect("AIT_SERVER_V0_QUEUE_PERF_REPO_NAME is required");
-    let namespace = std::env::var("AIT_SERVER_V0_QUEUE_PERF_NAMESPACE")
-        .expect("AIT_SERVER_V0_QUEUE_PERF_NAMESPACE is required");
-    let db = FilesystemServerRemoteBinaryDb::serving_authority(
-        RepoId::new(repo_id),
-        RepoName::new(&repo_name),
-        authority,
-        StoreGeneration::new(1),
-    );
-    let store = BinaryDbServerWorkflowV0Store::new_remote(db, &namespace)
-        .expect("published v0 workflow store");
-
-    let started = Instant::now();
-    let projection = store
-        .queue_projection_values_nonblocking()
-        .expect("published v0 queue projection");
-    let elapsed = started.elapsed();
-    eprintln!(
-        "published Binary DB v0 queue projection loaded tasks={} changes={} patchsets={} reviews={} attestations={} policies={} in {:.3}s",
-        projection["tasks"].as_array().map_or(0, Vec::len),
-        projection["changes"].as_array().map_or(0, Vec::len),
-        projection["patchsets"].as_array().map_or(0, Vec::len),
-        projection["reviews"].as_array().map_or(0, Vec::len),
-        projection["attestations"].as_array().map_or(0, Vec::len),
-        projection["policy_decisions"].as_array().map_or(0, Vec::len),
-        elapsed.as_secs_f64(),
-    );
-    assert!(
-        elapsed < Duration::from_secs(20),
-        "published v0 queue projection held the workflow read scope for {:.3}s",
-        elapsed.as_secs_f64(),
-    );
 }
 
 #[test]
@@ -1894,14 +1849,222 @@ fn history_promotion_preserves_ten_local_receipts_and_lands_one_aggregate() {
     validate_frozen_server_workflow_v0(&db).expect("validate promoted frozen v0 workflow");
 }
 
+#[test]
+fn staged_history_promotion_preserves_sixty_five_receipts_with_recoverable_closeout() {
+    let db = initialized_db("history-promotion-sixty-five-local-lands");
+    let snapshot_ids = seed_history_content(&db, 65);
+    let store = BinaryDbServerWorkflowV0Store::new_frozen(db.clone());
+
+    let stage_zero_request = staged_history_promotion_request(&snapshot_ids, 0, None);
+    let stage_zero = store
+        .prepare_history_promotion("repo", &stage_zero_request)
+        .expect("prepare first bounded history stage");
+    assert_eq!(stage_zero["contract"], "history-promotion-prepare/v2");
+    assert_eq!(stage_zero["stage_ordinal"], 0);
+    assert_eq!(stage_zero["final_stage"], false);
+    assert_eq!(stage_zero["entries"].as_array().unwrap().len(), 64);
+    assert!(stage_zero["aggregate"].is_null());
+    assert_eq!(
+        stage_zero["stage"]["patchset"]["source_kind"],
+        "history_promotion_stage"
+    );
+    assert_eq!(
+        stage_zero["stage"]["patchset"]["governance_authority"],
+        false
+    );
+    let stage_zero_patchset_id = stage_zero["stage"]["patchset_id"]
+        .as_str()
+        .expect("stage zero Patchset identity");
+    let governance_error = store
+        .evaluate_policy(stage_zero_patchset_id)
+        .expect_err("intermediate stage must not have governance authority");
+    assert!(
+        governance_error.contains("provenance-only"),
+        "{governance_error}"
+    );
+
+    let stage_zero_replay = store
+        .prepare_history_promotion("repo", &stage_zero_request)
+        .expect("replay first bounded history stage");
+    assert_eq!(stage_zero_replay["replayed"], true);
+    assert_eq!(
+        stage_zero_replay["stage"]["patchset_id"],
+        stage_zero["stage"]["patchset_id"]
+    );
+
+    let missing_predecessor = staged_history_promotion_request(&snapshot_ids, 1, None);
+    let missing_error = store
+        .prepare_history_promotion("repo", &missing_predecessor)
+        .expect_err("continuation without predecessor must fail");
+    assert!(
+        missing_error.contains("requires a previous stage"),
+        "{missing_error}"
+    );
+
+    let final_request =
+        staged_history_promotion_request(&snapshot_ids, 1, Some(stage_zero_patchset_id));
+    let prepared = store
+        .prepare_history_promotion("repo", &final_request)
+        .expect("prepare final bounded history stage");
+    assert_eq!(prepared["stage_ordinal"], 1);
+    assert_eq!(prepared["final_stage"], true);
+    assert_eq!(prepared["entries"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        prepared["aggregate"]["patchset"]["source_kind"],
+        "history_promotion_aggregate"
+    );
+    assert_eq!(
+        prepared["aggregate"]["patchset"]["governance_authority"],
+        true
+    );
+
+    let mut conflicting_successor = final_request.clone();
+    conflicting_successor["idempotency_key"] =
+        json!("history-promotion:65-local-lands:conflicting-stage-1");
+    let conflict = store
+        .prepare_history_promotion("repo", &conflicting_successor)
+        .expect_err("promotion ordinal must have one canonical successor");
+    assert!(
+        conflict.contains("HISTORY_PROMOTION_STAGE_CONFLICT"),
+        "{conflict}"
+    );
+
+    let aggregate_change_ref = prepared["aggregate"]["change_ref"]
+        .as_str()
+        .expect("aggregate Change identity");
+    let aggregate_patchset_id = prepared["aggregate"]["patchset_id"]
+        .as_str()
+        .expect("aggregate Patchset identity");
+    store
+        .record_review(
+            aggregate_change_ref,
+            &json!({
+                "patchset_id": aggregate_patchset_id,
+                "reviewer": "owner",
+                "action": "approve"
+            }),
+        )
+        .expect("approve staged history aggregate");
+    store
+        .put_attestation(
+            aggregate_patchset_id,
+            &json!({
+                "verification_state": "pass",
+                "require_tests_pass": false
+            }),
+        )
+        .expect("attest staged history aggregate");
+    assert_eq!(
+        store
+            .evaluate_policy(aggregate_patchset_id)
+            .expect("evaluate staged history aggregate Policy")["decision"],
+        "pass"
+    );
+
+    store
+        .apply_staged_history_receipts_before_atomic_land_for_test(
+            aggregate_change_ref,
+            aggregate_change_ref,
+            "main",
+            None,
+            None,
+        )
+        .expect("close preceding receipt stage");
+    assert_eq!(
+        BinaryDbReadTxn::new(&db)
+            .record_count(WorkflowBinaryV0Codec::land_file())
+            .expect("partial receipt Land count"),
+        64
+    );
+    store
+        .apply_staged_history_receipts_before_atomic_land_for_test(
+            aggregate_change_ref,
+            aggregate_change_ref,
+            "main",
+            None,
+            None,
+        )
+        .expect("replay preceding receipt closeout");
+    assert_eq!(
+        BinaryDbReadTxn::new(&db)
+            .record_count(WorkflowBinaryV0Codec::land_file())
+            .expect("replayed partial receipt Land count"),
+        64
+    );
+    let read = BinaryDbReadTxn::new(&db);
+    let lines = ServerBinaryDbLineStore::<_, SERVER_CONTENT_BINARY_LAYOUT_ID>::new(db.clone());
+    let (_, line) = lines
+        .line_by_name(&read, "main")
+        .expect("read main Line during partial closeout")
+        .expect("main Line during partial closeout");
+    assert_eq!(line.head_snapshot_index_plus1, 1);
+    drop(read);
+
+    let land_request = json!({
+        "contract": "task-land-atomic/v1",
+        "idempotency_key": "atomic-land:history-promotion-sixty-five",
+        "task_or_change_ref": aggregate_change_ref,
+        "target_line": "main",
+        "mode": "direct"
+    });
+    let landed = store
+        .submit_task_land(aggregate_change_ref, &land_request)
+        .expect("land all staged receipts and the sole aggregate");
+    assert_eq!(landed["status"], "succeeded");
+    assert_eq!(
+        landed["landed_snapshot_id"],
+        snapshot_ids.last().unwrap().as_str()
+    );
+    assert_eq!(landed["history_promotion"]["total_entry_count"], 65);
+
+    let read = BinaryDbReadTxn::new(&db);
+    assert_eq!(
+        read.record_count(WorkflowBinaryV0Codec::task_file())
+            .expect("staged Task count"),
+        65
+    );
+    assert_eq!(
+        read.record_count(WorkflowBinaryV0Codec::change_file())
+            .expect("staged Change count"),
+        65
+    );
+    assert_eq!(
+        read.record_count(WorkflowBinaryV0Codec::patchset_file())
+            .expect("staged Patchset count"),
+        67
+    );
+    assert_eq!(
+        read.record_count(WorkflowBinaryV0Codec::land_file())
+            .expect("staged Land count"),
+        66
+    );
+    let (_, line) = lines
+        .line_by_name(&read, "main")
+        .expect("read final staged main Line")
+        .expect("final staged main Line");
+    assert_eq!(line.head_snapshot_index_plus1, 66);
+    drop(read);
+
+    let replayed = store
+        .submit_task_land(aggregate_change_ref, &land_request)
+        .expect("replay final staged aggregate Land");
+    assert_eq!(replayed["replayed"], true);
+    assert_eq!(
+        BinaryDbReadTxn::new(&db)
+            .record_count(WorkflowBinaryV0Codec::land_file())
+            .expect("staged Land count after replay"),
+        66
+    );
+    validate_frozen_server_workflow_v0(&db).expect("validate staged frozen v0 workflow");
+}
+
 #[cfg(feature = "perfetto-tracing")]
 #[test]
 #[ignore = "release-profile Perfetto evidence harness"]
 fn perfetto_history_promotion_and_atomic_land_ten_by_thirty() {
-    let trace_path = std::env::var_os("AIT_PERFETTO_TRACE")
-        .map(std::path::PathBuf::from)
-        .filter(|path| !path.as_os_str().is_empty())
-        .expect("AIT_PERFETTO_TRACE is required for the Perfetto evidence harness");
+    let trace_path = temporary_root("perfetto-history-promotion")
+        .as_path()
+        .with_extension("json");
 
     for sample in 0..30 {
         let label = format!("perfetto-history-promotion-{sample}");
@@ -1912,8 +2075,9 @@ fn perfetto_history_promotion_and_atomic_land_ten_by_thirty() {
         request["idempotency_key"] = json!(format!("history-promotion:perfetto-sample-{sample}"));
 
         let prepared = {
-            let _trace = crate::perfetto_trace::PerfettoRange::new(
+            let _trace = crate::perfetto_trace::PerfettoRange::for_test(
                 "ait.server.history_promotion.perf.prepare_10",
+                trace_path.clone(),
             );
             store
                 .prepare_history_promotion("repo", &request)
@@ -1961,8 +2125,9 @@ fn perfetto_history_promotion_and_atomic_land_ten_by_thirty() {
             "mode": "direct"
         });
         let landed = {
-            let _trace = crate::perfetto_trace::PerfettoRange::new(
+            let _trace = crate::perfetto_trace::PerfettoRange::for_test(
                 "ait.server.task_land.perf.receipts_plus_aggregate_10",
+                trace_path.clone(),
             );
             store
                 .submit_task_land(aggregate_change_ref, &land_request)
@@ -1978,7 +2143,7 @@ fn perfetto_history_promotion_and_atomic_land_ten_by_thirty() {
     }
 
     let trace: JsonValue =
-        serde_json::from_slice(&fs::read(trace_path).expect("read Perfetto evidence trace"))
+        serde_json::from_slice(&fs::read(&trace_path).expect("read Perfetto evidence trace"))
             .expect("decode Perfetto evidence trace");
     let events = trace["traceEvents"]
         .as_array()
@@ -2010,6 +2175,7 @@ fn perfetto_history_promotion_and_atomic_land_ten_by_thirty() {
             .count();
         assert_eq!(count, 30, "expected thirty Perfetto samples for {expected}");
     }
+    let _ = fs::remove_file(trace_path);
 }
 
 #[test]

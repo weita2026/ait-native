@@ -11,16 +11,15 @@ pub(super) const AI_RELATED_AUTHOR_MODES: &[&str] = &[
     "human_with_ai_assist",
 ];
 pub(super) const CODE_REVIEW_SUMMARY_TEMPLATE: &str =
-    "Reviewed files: <paths reviewed>; Findings: <blocking/non-blocking findings>; Risks: <residual risks>; Tests: <checks run>; Recommendation: <land/defer/request changes>";
+    "Reviewed files: <paths reviewed>; Findings: <findings resolved before submission>; Risks: <residual risks>; Tests: <checks run>; Recommendation: <pass when this exact Patchset is ready>";
 pub(super) const CODE_REVIEW_SUMMARY_NUMBERED_TEMPLATE: &str =
-    "1. Reviewed files\n<paths reviewed>\n2. Findings\n<blocking/non-blocking findings>\n3. Risks\n<residual risks>\n4. Tests\n<checks run>\n5. Recommendation\n<land/defer/request changes>";
+    "1. Reviewed files\n<paths reviewed>\n2. Findings\n<findings resolved before submission>\n3. Risks\n<residual risks>\n4. Tests\n<checks run>\n5. Recommendation\n<pass when this exact Patchset is ready>";
 pub(super) const CODE_REVIEW_SUMMARY_TEMPLATE_HINT_COMMAND: &str =
     "ait review code template --style numbered";
-pub(super) const DEFAULT_WORKFLOW_SCOPE: &str = "local";
+pub(super) const AUTOMATIC_TASK_APPROVAL_COMMENT: &str =
+    "Automatic Task approval authorized by repository `task_review=automatic` policy.";
 pub(super) const COMPLETED_LOCAL_FINAL_SNAPSHOT_PROMOTION_GUIDANCE: &str =
-    "To promote completed `solo_local` work, select the latest landed local change and run `ait workflow ready <local-change-id> --apply --remote <name>` once, then `ait task land <local-change-id> --remote <name>`. This publishes the consecutive local Task/Change/Snapshot/Land history while gating only one aggregate Patchset; do not replay earlier local rows with `change publish` or `--all-completed-local`.";
-pub(super) const COMPLETED_LOCAL_BATCH_RETIRED_ERROR: &str =
-    "`--all-completed-local` is retired because completed local rows must not be replayed as separate remote patchsets. Select the latest landed local change, run `ait workflow ready <local-change-id> --apply --remote <name>`, then run `ait task land <local-change-id> --remote <name>`.";
+    "To promote completed `solo_local` work, select the latest landed local change and run `ait workflow ready <local-change-id> --apply --remote <name>` once, then hand that exact Patchset to a reviewer running `ait workflow land <local-change-id> --apply --remote <name>`. This publishes the consecutive local Task/Change/Snapshot/Land history while gating only one aggregate Patchset; do not replay earlier local rows with `change publish` or `--all-completed-local`.";
 pub(super) const APP_DIR: &str = ".ait";
 pub(super) const WORKTREE_CONFIG_NAME: &str = ".ait-worktree.json";
 pub(super) const WORKFLOW_READY_POLL_SECONDS_KEY: &str = "workflow_ready_poll_seconds";
@@ -80,14 +79,11 @@ pub(super) const REVIEW_SECTION_LABELS: &[(&str, &[&str])] = &[
 ];
 
 #[derive(Clone, Debug)]
-pub struct TaskStartBootstrapRequest<'a> {
+pub(in crate::primitives) struct TaskStartBootstrapRequest<'a> {
     pub task: &'a JsonValue,
     pub change: Option<&'a JsonValue>,
-    pub title_hint: &'a str,
-    pub intent_hint: &'a str,
     pub base_line_name: &'a str,
     pub local: bool,
-    pub remote_name: Option<&'a str>,
     pub worktree_name: &'a str,
     pub worktree_path: &'a str,
     pub worktree_alias_path: Option<&'a str>,

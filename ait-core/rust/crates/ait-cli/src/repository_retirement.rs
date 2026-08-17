@@ -33,7 +33,6 @@ const ACTIVE_REPOSITORY_LIFECYCLE_KIND: u32 = 1;
 pub struct RepoRetireRequest {
     pub remote_name: Option<String>,
     pub abort: bool,
-    pub replace_export: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -88,48 +87,65 @@ pub fn restore_repository(
     })
 }
 
-pub(crate) fn enforce_fresh_registration_archive_policy(
+pub(crate) fn ensure_fresh_registration_has_no_archive(
     repo: &RepoRuntime,
     remote_name: &str,
-    discard_export: bool,
-) -> Result<bool, String> {
+) -> Result<(), String> {
     if repo.repository_index().is_some() {
-        return Ok(false);
+        return Ok(());
     }
     let Some(paths) = archive_paths(repo, remote_name, false)? else {
-        return Ok(false);
+        return Ok(());
     };
-    recover_archive_publication(&paths)?;
-    if !path_exists(&paths.slot)? {
-        return Ok(false);
+    let Some(archive_path) = complete_archive_publication_path(&paths)? else {
+        return Ok(());
+    };
+    require_real_directory(&archive_path, "local retirement archive")?;
+    Err(format!(
+        "Fresh registration through remote {remote_name:?} would ignore the existing complete \
+         retirement archive at {}. Restore it with `ait repo restore --remote {}` before fresh registration.",
+        archive_path.display(),
+        shell_word(remote_name),
+    ))
+}
+
+fn complete_archive_publication_path(paths: &ArchivePaths) -> Result<Option<PathBuf>, String> {
+    if path_exists(&paths.slot)? {
+        return Ok(Some(paths.slot.clone()));
     }
-    require_real_directory(&paths.slot, "local retirement archive")?;
-    if !discard_export {
-        return Err(format!(
-            "Fresh registration through remote {remote_name:?} would ignore the existing complete \
-             retirement archive at {}. Restore it with `ait repo restore --remote {}` or explicitly \
-             discard it with `ait remote add {} <url> --discard-export`.",
-            paths.slot.display(),
-            shell_word(remote_name),
-            shell_word(remote_name),
-        ));
-    }
-    remove_directory_tree(&paths.slot, "local retirement archive")?;
-    remove_restore_session_artifacts(&paths)?;
-    sync_directory(&paths.parent)?;
-    Ok(true)
+    let backup_prefix = format!(".{}.backup-", paths.remote_name);
+    let mut backups = fs::read_dir(&paths.parent)
+        .map_err(|error| {
+            format!(
+                "Failed to scan local retirement archive root {}: {error}",
+                paths.parent.display()
+            )
+        })?
+        .map(|entry| {
+            let entry = entry.map_err(|error| {
+                format!(
+                    "Failed to read local retirement archive entry in {}: {error}",
+                    paths.parent.display()
+                )
+            })?;
+            let name = entry
+                .file_name()
+                .into_string()
+                .map_err(|_| "Local retirement archive entry name must be UTF-8.".to_string())?;
+            Ok((name, entry.path()))
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    backups.sort_by(|left, right| left.0.cmp(&right.0));
+    Ok(backups
+        .into_iter()
+        .find(|(name, _)| name.starts_with(&backup_prefix))
+        .map(|(_, path)| path))
 }
 
 fn retire_repository_unlocked(
     repo: &RepoRuntime,
     request: &RepoRetireRequest,
 ) -> Result<JsonValue, String> {
-    if request.abort && request.replace_export {
-        return Err(
-            "`abort` and `replace_export` are mutually exclusive Repository retirement options."
-                .to_string(),
-        );
-    }
     let remote = repo.remote_row(request.remote_name.as_deref())?;
     let repository_index = repo.require_repository_index()?;
     let mut client = PlanHttpClientManager::new(http_config(repo, &remote))
@@ -189,17 +205,11 @@ fn retire_repository_unlocked(
         .ok_or_else(|| "Failed to create local retirement archive root.".to_string())?;
     recover_archive_publication(&paths)?;
 
-    let reused = prepare_complete_archive(
-        &paths,
-        &manifest,
-        repository_index.get(),
-        request.replace_export,
-        |file| {
-            client
-                .get_repository_retirement_file(repository_index, &file.path)
-                .map_err(|error| error.to_string())
-        },
-    )?;
+    let reused = prepare_complete_archive(&paths, &manifest, repository_index.get(), |file| {
+        client
+            .get_repository_retirement_file(repository_index, &file.path)
+            .map_err(|error| error.to_string())
+    })?;
     clear_restore_receipt(&paths)?;
     remove_restore_session_artifacts(&paths)?;
     let complete = load_complete_archive(&paths)?;
@@ -513,7 +523,6 @@ fn prepare_complete_archive<F>(
     paths: &ArchivePaths,
     manifest: &RemoteExportManifest,
     repository_index: u32,
-    replace_export: bool,
     mut download: F,
 ) -> Result<bool, String>
 where
@@ -534,12 +543,13 @@ where
         if complete_exact {
             return Ok(true);
         }
-        if !exact_manifest && !receipt_matches_current && !replace_export {
+        if !exact_manifest && !receipt_matches_current {
             return Err(format!(
                 "Remote {:?} already has an unrelated local retirement archive at {}. \
-                 Pass `--replace-export` to replace it explicitly.",
+                 Restore it with `ait repo restore --remote {}` before retiring another Repository.",
                 paths.remote_name,
-                paths.slot.display()
+                paths.slot.display(),
+                shell_word(&paths.remote_name),
             ));
         }
     }
@@ -1977,7 +1987,6 @@ mod tests {
             &RepoRetireRequest {
                 remote_name: Some("origin".to_string()),
                 abort: false,
-                replace_export: false,
             },
         )
         .expect("retire Repository");
@@ -2123,7 +2132,6 @@ mod tests {
             &RepoRetireRequest {
                 remote_name: Some("origin".to_string()),
                 abort: false,
-                replace_export: false,
             },
         )
         .expect("report retirement blockers");
@@ -2186,7 +2194,6 @@ mod tests {
             &RepoRetireRequest {
                 remote_name: Some("origin".to_string()),
                 abort: true,
-                replace_export: false,
             },
         )
         .expect("abort Repository retirement");
@@ -2270,7 +2277,6 @@ mod tests {
             &RepoRetireRequest {
                 remote_name: Some("origin".to_string()),
                 abort: true,
-                replace_export: false,
             },
         )
         .expect_err("invalid abort response must fail");
@@ -2336,7 +2342,7 @@ mod tests {
         let paths = archive_paths(&repo, "origin", true)
             .expect("archive paths")
             .expect("archive root");
-        prepare_complete_archive(&paths, &manifest, 7, false, |_| Ok(bytes.clone()))
+        prepare_complete_archive(&paths, &manifest, 7, |_| Ok(bytes.clone()))
             .expect("publish archive");
         write_restore_session(
             &paths,
@@ -2376,30 +2382,37 @@ mod tests {
     }
 
     #[test]
-    fn fresh_registration_requires_explicit_archive_discard() {
+    fn fresh_registration_preserves_archive_and_requires_restore() {
         let temp = tempfile::tempdir().expect("temp repository");
         let repo = write_repo_fixture(temp.path(), "https://example.invalid", None);
         let slot = temp.path().join(".ait/remote/origin");
         fs::create_dir_all(slot.join("data")).expect("create archive fixture");
         fs::write(slot.join("remote.json"), "{}\n").expect("write archive fixture");
+        let before = fs::read(slot.join("remote.json")).unwrap();
 
-        let error = enforce_fresh_registration_archive_policy(&repo, "origin", false).unwrap_err();
+        let error = ensure_fresh_registration_has_no_archive(&repo, "origin").unwrap_err();
         assert!(
             error.contains("ait repo restore --remote origin"),
             "{error}"
         );
-        assert!(error.contains("--discard-export"), "{error}");
+        assert!(!error.contains("--discard-export"), "{error}");
+        assert!(!error.contains("ait remote add"), "{error}");
         assert!(slot.exists());
+        assert_eq!(fs::read(slot.join("remote.json")).unwrap(), before);
 
+        let backup = temp.path().join(".ait/remote/.origin.backup-interrupted");
+        fs::rename(&slot, &backup).expect("simulate interrupted archive publication");
+        let error = ensure_fresh_registration_has_no_archive(&repo, "origin").unwrap_err();
         assert!(
-            enforce_fresh_registration_archive_policy(&repo, "origin", true)
-                .expect("explicit discard")
+            error.contains("ait repo restore --remote origin"),
+            "{error}"
         );
-        assert!(!slot.exists());
+        assert!(backup.exists());
+        assert_eq!(fs::read(backup.join("remote.json")).unwrap(), before);
     }
 
     #[test]
-    fn unrelated_archive_requires_replace_but_current_restore_receipt_allows_next_cycle() {
+    fn unrelated_archive_requires_restore_but_current_restore_receipt_allows_next_cycle() {
         let temp = tempfile::tempdir().expect("temp repository");
         let repo = write_repo_fixture(temp.path(), "https://example.invalid", Some(7));
         let paths = archive_paths(&repo, "origin", true)
@@ -2418,8 +2431,12 @@ mod tests {
                 sha256: sha256_bytes(old_bytes),
             }],
         };
-        prepare_complete_archive(&paths, &old_manifest, 7, false, |_| Ok(old_bytes.to_vec()))
+        prepare_complete_archive(&paths, &old_manifest, 7, |_| Ok(old_bytes.to_vec()))
             .expect("publish old archive");
+        let remote_json_before =
+            fs::read(paths.slot.join("remote.json")).expect("read old manifest bytes");
+        let authority_before =
+            fs::read(paths.slot.join("data/repository.bin")).expect("read old authority bytes");
         let new_bytes = b"new";
         let new_manifest = RemoteExportManifest {
             exported_at_s: 1_786_000_100,
@@ -2430,10 +2447,31 @@ mod tests {
             }],
             ..old_manifest.clone()
         };
-        let error =
-            prepare_complete_archive(&paths, &new_manifest, 7, false, |_| Ok(new_bytes.to_vec()))
-                .unwrap_err();
-        assert!(error.contains("--replace-export"), "{error}");
+        let error = prepare_complete_archive(&paths, &new_manifest, 7, |_| Ok(new_bytes.to_vec()))
+            .unwrap_err();
+        assert!(
+            error.contains("ait repo restore --remote origin"),
+            "{error}"
+        );
+        assert!(!error.contains("replace"), "{error}");
+        assert_eq!(
+            fs::read(paths.slot.join("remote.json")).expect("reread old manifest bytes"),
+            remote_json_before
+        );
+        assert_eq!(
+            fs::read(paths.slot.join("data/repository.bin")).expect("reread old authority bytes"),
+            authority_before
+        );
+        assert!(
+            fs::read_dir(&paths.parent)
+                .expect("read archive root")
+                .all(|entry| {
+                    let name = entry.expect("archive entry").file_name();
+                    let name = name.to_string_lossy();
+                    !name.starts_with(".origin.staging-") && !name.starts_with(".origin.backup-")
+                }),
+            "blocked retirement must not create publication transients"
+        );
 
         write_restore_receipt(
             &paths,
@@ -2443,7 +2481,7 @@ mod tests {
             },
         )
         .expect("write current restore receipt");
-        prepare_complete_archive(&paths, &new_manifest, 7, false, |_| Ok(new_bytes.to_vec()))
+        prepare_complete_archive(&paths, &new_manifest, 7, |_| Ok(new_bytes.to_vec()))
             .expect("current restore receipt authorizes next retirement cycle");
         clear_restore_receipt(&paths).expect("clear stale restore receipt");
         let loaded = load_complete_archive(&paths).expect("load replacement archive");

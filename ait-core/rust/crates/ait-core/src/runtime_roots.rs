@@ -1,8 +1,8 @@
 use std::env;
 use std::path::PathBuf;
 
-pub const RUNTIME_DATA_ENV: &str = "AIT_RUNTIME_DATA";
-pub const LEGACY_SERVER_DATA_ENV: &str = "AIT_NATIVE_SERVER_DATA";
+pub const RUNTIME_DATA_ENV: &str = crate::environment_contract::names::AIT_RUNTIME_DATA;
+pub const LEGACY_SERVER_DATA_ENV: &str = crate::environment_contract::names::AIT_NATIVE_SERVER_DATA;
 
 fn configured_runtime_data_env() -> Option<(&'static str, String)> {
     let runtime_value = env::var(RUNTIME_DATA_ENV).unwrap_or_default();
@@ -35,10 +35,9 @@ pub fn resolve_runtime_data_root_with_source(
     if let Some(value) = runtime_data_env_value() {
         return Ok((expand_user(&value), "env"));
     }
-    Err(
-        "AIT_NATIVE_SERVER_DATA is required for server runtime access; platform default runtime roots are no longer supported."
-            .to_string(),
-    )
+    Err(format!(
+        "{LEGACY_SERVER_DATA_ENV} is required for server runtime access; platform default runtime roots are no longer supported."
+    ))
 }
 
 pub fn resolve_runtime_data_root(path: Option<&str>) -> Result<PathBuf, String> {

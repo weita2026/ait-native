@@ -6,6 +6,7 @@ use crate::json_support::{
     parse_slice_value, parse_value, parse_value_or,
 };
 use crate::runtime::{RemoteRow, RepoRuntime, SNAPSHOT_BINARY_DB_WRITE_LAYOUT};
+use ait_core::environment_contract::names;
 use ait_core::external::readiness::ExternalReadinessReport;
 use ait_core::external::release::{
     external_release_closure_metadata_from_lockfile_bytes, EXTERNAL_RELEASE_LOCKFILE_PATH,
@@ -52,7 +53,7 @@ const PUBLIC_FUTURE_REPO_SPLIT_DRY_RUN_GUIDE_PATH: &str =
 const EXTERNAL_LOCKFILE_PATH: &str = EXTERNAL_RELEASE_LOCKFILE_PATH;
 const NATIVE_RELEASE_SMOKE_COMPILEALL_SKIP_REASON: &str =
     "The Rust-only release artifact smoke does not execute Python; syntax and test coverage belong to the repository test suites.";
-const REQUIRED_NATIVE_AGENT_COMMANDS: &[&str] = &["ait-agent", "ait-agent-worker"];
+const REQUIRED_NATIVE_WORKER_COMMANDS: &[&str] = &["ait-agent-worker"];
 
 #[derive(Clone, Debug)]
 struct ReleaseProfile {

@@ -13,7 +13,6 @@ pub struct TagCreateRequest {
     pub name: String,
     pub snapshot_id: Option<String>,
     pub message: String,
-    pub force: bool,
 }
 
 pub fn tag_create(repo: &RepoRuntime, request: TagCreateRequest) -> Result<JsonValue, String> {
@@ -31,7 +30,7 @@ pub fn tag_create(repo: &RepoRuntime, request: TagCreateRequest) -> Result<JsonV
     let created_at = current_timestamp();
     let record = new_tag_record(&request.name, &snapshot_id, &request.message, &created_at)?;
     let tag_store = tag_store(repo)?;
-    let persisted = create_tag_with_store(&tag_store, &record, request.force)?;
+    let persisted = create_tag_with_store(&tag_store, &record)?;
     let mut payload = tag_record_payload(&persisted);
     if let Some(line_name) = source_line {
         payload["source_line"] = JsonValue::String(line_name);

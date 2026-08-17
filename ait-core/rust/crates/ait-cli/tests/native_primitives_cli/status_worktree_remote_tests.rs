@@ -132,13 +132,6 @@ fn native_status_and_worktree_text_default_to_agent_decision_facts() {
     assert!(!compact.contains("operational roots:"));
     assert!(!compact.contains("ait-cli"));
 
-    let verbose = command_output_with_env(root, &["status", "--verbose"], &[]);
-    assert!(verbose.status.success());
-    let verbose = String::from_utf8_lossy(&verbose.stdout);
-    assert!(verbose.starts_with("ait status\n"));
-    assert!(verbose.contains("snapshots:"));
-    assert!(verbose.contains("packed blobs:"));
-
     let worktree = command_output_with_env(root, &["worktree", "status"], &[]);
     assert!(worktree.status.success());
     let worktree = String::from_utf8_lossy(&worktree.stdout);
@@ -193,17 +186,19 @@ fn native_status_reports_line_hygiene_without_cleanup_scan() {
     let line_hygiene = &payload["line_hygiene"];
 
     assert_eq!(line_hygiene["mode"].as_str(), Some("metadata_only"));
+    assert_eq!(line_hygiene["idle_for"], JsonValue::Null);
+    assert!(line_hygiene.get("older_than").is_none());
     assert_eq!(line_hygiene["candidate_count"], JsonValue::Null);
     assert_eq!(line_hygiene["protected_count"], JsonValue::Null);
     assert_eq!(line_hygiene["inspected_count"].as_i64(), Some(2));
     assert_eq!(
         line_hygiene["detail_command"].as_str(),
-        Some("ait line cleanup-candidates --include-protected")
+        Some("ait line cleanup --include-protected")
     );
 }
 
 #[test]
-fn native_line_cleanup_candidates_project_line_usage_contract() {
+fn native_line_cleanup_preview_projects_line_usage_contract() {
     let (temp, _worktree) = init_worktree_repo("http://127.0.0.1:1");
     let root = temp.path();
 
@@ -211,7 +206,7 @@ fn native_line_cleanup_candidates_project_line_usage_contract() {
         root,
         &[
             "line",
-            "cleanup-candidates",
+            "cleanup",
             "--include-protected",
             "--json",
         ],
@@ -282,6 +277,153 @@ fn native_worktree_cleanup_candidates_project_binding_contract() {
             "task_status",
         ]
     );
+}
+
+#[test]
+fn native_worktree_removal_surfaces_share_yes_and_dry_run_contract() {
+    let temp = init_repo("http://127.0.0.1:1");
+    let root = temp.path();
+    let confirmation_error =
+        "Pass --yes to apply this destructive worktree operation, or use --dry-run to preview it.";
+    let failed = |args: &[&str]| {
+        let output = command_output_with_env(root, args, &[]);
+        assert!(
+            !output.status.success(),
+            "command unexpectedly succeeded: {args:?}\nstdout:\n{}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+        format!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        )
+    };
+
+    let cleanup_error = failed(&["worktree", "cleanup", "--json"]);
+    assert!(cleanup_error.contains(confirmation_error), "{cleanup_error}");
+    let cleanup_preview = json_output(root, &["worktree", "cleanup", "--dry-run", "--json"]);
+    assert_eq!(cleanup_preview["dry_run"].as_bool(), Some(true));
+
+    let prune_path = init_registered_worktree(
+        root,
+        "rt-prune-confirm",
+        "feature/rt-prune-confirm",
+        None,
+        None,
+        false,
+        Some("manual_only"),
+    );
+    fs::remove_dir_all(&prune_path).unwrap();
+    let prune_registry = root.join(".ait/worktrees/rt-prune-confirm.json");
+    let prune_error = failed(&["worktree", "prune-stale", "--json"]);
+    assert!(prune_error.contains(confirmation_error), "{prune_error}");
+    assert!(prune_registry.is_file());
+    let prune_preview = json_output(
+        root,
+        &["worktree", "prune-stale", "--dry-run", "--json"],
+    );
+    assert_eq!(prune_preview["dry_run"].as_bool(), Some(true));
+    assert!(prune_registry.is_file());
+    let pruned = json_output(
+        root,
+        &["worktree", "prune-stale", "--yes", "--json"],
+    );
+    assert_eq!(pruned["pruned_count"].as_i64(), Some(1));
+    assert!(!prune_registry.exists());
+
+    let remove_path = init_registered_worktree(
+        root,
+        "rt-remove-confirm",
+        "feature/rt-remove-confirm",
+        None,
+        None,
+        false,
+        Some("manual_only"),
+    );
+    let remove_registry = root.join(".ait/worktrees/rt-remove-confirm.json");
+    let remove_error = failed(&[
+        "worktree",
+        "remove",
+        "rt-remove-confirm",
+        "--delete-path",
+        "--force",
+        "--json",
+    ]);
+    assert!(remove_error.contains(confirmation_error), "{remove_error}");
+    assert!(remove_path.is_dir());
+    assert!(remove_registry.is_file());
+    let remove_preview = json_output(
+        root,
+        &[
+            "worktree",
+            "remove",
+            "rt-remove-confirm",
+            "--delete-path",
+            "--force",
+            "--dry-run",
+            "--json",
+        ],
+    );
+    assert_eq!(remove_preview["dry_run"].as_bool(), Some(true));
+    assert!(remove_path.is_dir());
+    assert!(remove_registry.is_file());
+    let removed = json_output(
+        root,
+        &[
+            "worktree",
+            "remove",
+            "rt-remove-confirm",
+            "--delete-path",
+            "--force",
+            "--yes",
+            "--json",
+        ],
+    );
+    assert_eq!(removed["removed_count"].as_i64(), Some(1));
+    assert!(!remove_path.exists());
+    assert!(!remove_registry.exists());
+
+    let all_stale_path = init_registered_worktree(
+        root,
+        "rt-all-stale-confirm",
+        "feature/rt-all-stale-confirm",
+        None,
+        None,
+        false,
+        Some("manual_only"),
+    );
+    fs::remove_dir_all(&all_stale_path).unwrap();
+    let all_stale_registry = root.join(".ait/worktrees/rt-all-stale-confirm.json");
+    let all_stale_error = failed(&["worktree", "remove", "--all-stale", "--json"]);
+    assert!(
+        all_stale_error.contains(confirmation_error),
+        "{all_stale_error}"
+    );
+    assert!(all_stale_registry.is_file());
+    let all_stale_preview = json_output(
+        root,
+        &[
+            "worktree",
+            "remove",
+            "--all-stale",
+            "--dry-run",
+            "--json",
+        ],
+    );
+    assert_eq!(all_stale_preview["dry_run"].as_bool(), Some(true));
+    assert!(all_stale_registry.is_file());
+    let all_stale_removed = json_output(
+        root,
+        &[
+            "worktree",
+            "remove",
+            "--all-stale",
+            "--yes",
+            "--json",
+        ],
+    );
+    assert_eq!(all_stale_removed["pruned_count"].as_i64(), Some(1));
+    assert!(!all_stale_registry.exists());
 }
 
 #[test]
@@ -478,32 +620,40 @@ fn native_worktree_recreate_accepts_dangling_alias_for_registered_target() {
 }
 
 #[test]
-fn native_status_debug_json_includes_storage_and_ignore_details() {
+fn native_status_json_ignores_the_retired_debug_environment() {
     let temp = init_repo("https://example.test");
     let root = temp.path();
     write_file(&root.join(".aitignore"), "local-secrets/.env\n");
     fs::create_dir_all(root.join("local-secrets")).unwrap();
     write_file(&root.join("local-secrets/.env"), "secret\n");
 
-    let status = json_output_with_env(root, &["status", "--json"], &[("AIT_JSON_MODE", "debug")]);
+    let normal = command_output_with_env(root, &["status", "--json"], &[]);
+    let retired = command_output_with_env(
+        root,
+        &["status", "--json"],
+        &[(concat!("AIT_JSON_", "MODE"), "debug")],
+    );
+    assert!(normal.status.success());
+    assert!(retired.status.success());
+    assert_eq!(normal.stdout, retired.stdout);
+    let status = parse_json_bytes(&retired.stdout);
 
     assert_eq!(status["workspace_dirty"].as_bool(), Some(true));
     assert_eq!(
         status["workspace_changed_paths_sample"],
         json!([".aitignore"])
     );
-    assert!(status["pack_count"].as_u64().unwrap_or(0) >= 1);
-    assert!(status["packed_blob_count"].as_u64().unwrap_or(0) >= 1);
-    assert_eq!(status["ignore_policy"]["rule_files"], json!([".aitignore"]));
-    assert_eq!(
-        status["ignore_policy"]["custom_patterns"],
-        json!(["local-secrets/.env"])
-    );
-    assert!(status["phase_timings_ms"].is_object());
-    assert!(status["binary_db_authority_root"]
-        .as_str()
-        .unwrap_or("")
-        .ends_with(".ait/binary-db"));
+    for internal in [
+        "pack_count",
+        "packed_blob_count",
+        "ignore_policy",
+        "phase_timings_ms",
+        "binary_db_authority_root",
+        "objects_path",
+        "refs_path",
+    ] {
+        assert!(status.get(internal).is_none(), "unexpected {internal}");
+    }
 }
 
 #[cfg(feature = "perfetto-tracing")]
@@ -518,15 +668,9 @@ fn native_status_perfetto_trace_names_cover_cache_walk_and_compare() {
     let status = json_output_with_env(
         root,
         &["status", "--json"],
-        &[
-            ("AIT_JSON_MODE", "debug"),
-            ("AIT_PERFETTO_TRACE", trace_text.as_str()),
-        ],
+        &[("AIT_PERFETTO_TRACE", trace_text.as_str())],
     );
-    assert_eq!(
-        status["phase_timings_ms"]["hashing_cache"]["state_read"],
-        json!("hit")
-    );
+    assert!(status.get("phase_timings_ms").is_none());
     let trace = parse_json_bytes(&fs::read(&trace_path).expect("status Perfetto trace"));
     let names = trace["traceEvents"]
         .as_array()
@@ -550,7 +694,7 @@ fn native_status_perfetto_trace_names_cover_cache_walk_and_compare() {
 fn native_status_treats_exact_generated_worktree_cargo_projection_as_parent_source() {
     let (base_url, _log, _state, handle) = spawn_fake_remote();
     let (temp, worktree) = init_worktree_repo(&base_url);
-    let source_config = "# AIT source policy: canonical Cargo settings; task worktrees receive a managed projection.\n[build]\ntarget-dir = \".ait/cargo-target\"\nbuild-dir = \".ait/cargo-build/workspaces/{workspace-path-hash}\"\n\n[alias]\nmanaged-test = [\"test\", \"--profile\", \"ait-ci\"]\n";
+    let source_config = "# AIT source policy: canonical Cargo settings; task worktrees receive a managed projection.\n[build]\ntarget-dir = \".ait/cargo-target\"\nbuild-dir = \".ait/cargo-build/canonical\"\n\n[alias]\nmanaged-test = [\"test\", \"--profile\", \"ait-ci\"]\n";
     write_file(
         &worktree.join(".cargo/config.toml"),
         source_config,
@@ -572,8 +716,10 @@ fn native_status_treats_exact_generated_worktree_cargo_projection_as_parent_sour
     let cargo_config_path = worktree.join(".cargo/config.toml");
     let generated_config = fs::read_to_string(&cargo_config_path).unwrap();
     assert!(generated_config.starts_with(
-        "# Managed by ait: stable final artifacts, workspace-isolated intermediates.\n"
+        "# Managed by ait: workspace-isolated final artifacts and intermediates.\n"
     ));
+    assert!(generated_config.contains("cargo-target/task-workspaces/rt-1"));
+    assert!(generated_config.contains("cargo-build/task-workspaces/rt-1"));
     assert!(generated_config.contains("task-workspaces/rt-1"));
     assert!(generated_config.contains(
         "[alias]\nmanaged-test = [\"test\", \"--profile\", \"ait-ci\"]\n"
@@ -684,6 +830,14 @@ fn native_remote_add_default_persists_remote_config_and_validates_fixed_server_a
     let (base_url, log, _state, handle) = spawn_fake_remote();
     let temp = init_repo(&base_url);
     let root = temp.path();
+    let repo_directory_name = root
+        .canonicalize()
+        .unwrap()
+        .file_name()
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string();
     let config_path = root.join(".ait/config.json");
     let mut config: JsonValue = parse_json_file(&config_path);
     config["workflow_mode"] = json!("solo_local");
@@ -695,21 +849,12 @@ fn native_remote_add_default_persists_remote_config_and_validates_fixed_server_a
 
     let added = json_output(
         root,
-        &[
-            "remote",
-            "add",
-            "mirror",
-            &base_url,
-            "--repo-name",
-            "fixture-mirror",
-            "--default",
-            "--json",
-        ],
+        &["remote", "add", "mirror", &base_url, "--default", "--json"],
     );
 
     assert_eq!(added["name"].as_str(), Some("mirror"));
     assert_eq!(added["url"].as_str(), Some(base_url.as_str()));
-    assert_eq!(added["repo_name"].as_str(), Some("fixture-mirror"));
+    assert_eq!(added["repo_name"].as_str(), Some(repo_directory_name.as_str()));
     assert_eq!(added["is_default_push"].as_i64(), Some(1));
     assert_eq!(added["is_default_pull"].as_i64(), Some(1));
     assert_eq!(added["patch_ci"]["status"], json!("ready"));
@@ -760,6 +905,14 @@ fn native_remote_add_skips_patch_ci_bootstrap_when_tests_are_disabled() {
     let (base_url, log, _state, handle) = spawn_fake_remote();
     let temp = init_repo(&base_url);
     let root = temp.path();
+    let repo_directory_name = root
+        .canonicalize()
+        .unwrap()
+        .file_name()
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string();
     write_file(
         &root.join(".ait/policy.yaml"),
         "version: 1\npolicy_id: prototype\ndefaults:\n  require_tests: false\n",
@@ -767,19 +920,12 @@ fn native_remote_add_skips_patch_ci_bootstrap_when_tests_are_disabled() {
 
     let added = json_output(
         root,
-        &[
-            "remote",
-            "add",
-            "mirror",
-            &base_url,
-            "--repo-name",
-            "fixture-no-tests",
-            "--json",
-        ],
+        &["remote", "add", "mirror", &base_url, "--json"],
     );
 
     assert_eq!(added["patch_ci"]["status"], json!("not_required"));
     assert_eq!(added["patch_ci"]["required"], json!(false));
+    assert_eq!(added["repo_name"], json!(repo_directory_name));
     assert!(!root.join("ci/patch_ci.json").exists());
     let logged = log.lock().unwrap();
     assert!(logged.iter().any(|row| {
@@ -807,12 +953,9 @@ fn native_remote_add_generates_language_neutral_patch_ci_before_any_remote_conta
             "add",
             "mirror",
             "http://127.0.0.1:1",
-            "--repo-name",
-            "fixture-mirror",
             "--default",
             "--json",
         ])
-        .env_remove("AIT_JSON_MODE")
         .output()
         .unwrap();
     assert!(!output.status.success());
@@ -833,11 +976,11 @@ fn native_remote_add_generates_language_neutral_patch_ci_before_any_remote_conta
     assert!(!stderr.contains("python3 -m pytest"), "{stderr}");
     assert!(stderr.contains("ait snapshot create"), "{stderr}");
     assert!(
-        stderr.contains(
-            "ait remote add mirror http://127.0.0.1:1 --repo-name fixture-mirror --default"
-        ),
+        stderr.contains("ait remote add mirror http://127.0.0.1:1 --default"),
         "{stderr}"
     );
+    assert!(!stderr.contains("--repo-name"), "{stderr}");
+    assert!(!stderr.contains("--discard-export"), "{stderr}");
 
     let generated = parse_json_file(root.join("ci/patch_ci.json"));
     assert_eq!(
@@ -853,12 +996,9 @@ fn native_remote_add_generates_language_neutral_patch_ci_before_any_remote_conta
             "add",
             "mirror",
             "http://127.0.0.1:1",
-            "--repo-name",
-            "fixture-mirror",
             "--default",
             "--json",
         ])
-        .env_remove("AIT_JSON_MODE")
         .output()
         .unwrap();
     assert!(!retry.status.success());
@@ -888,6 +1028,14 @@ fn native_remote_add_generates_language_neutral_patch_ci_before_any_remote_conta
 fn native_remote_add_does_not_persist_when_server_ensure_fails() {
     let temp = init_repo("https://example.test");
     let root = temp.path();
+    let repo_directory_name = root
+        .canonicalize()
+        .unwrap()
+        .file_name()
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string();
     configure_remote_patch_ci_snapshot(root);
 
     let mut command = cargo_bin();
@@ -898,17 +1046,19 @@ fn native_remote_add_does_not_persist_when_server_ensure_fails() {
             "add",
             "mirror",
             "http://127.0.0.1:1",
-            "--repo-name",
-            "fixture-mirror",
             "--default",
             "--json",
         ])
-        .env_remove("AIT_JSON_MODE")
         .output()
         .unwrap();
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("Remote repository fixture-mirror could not be ensured"));
+    assert!(
+        stderr.contains(&format!(
+            "Remote repository {repo_directory_name} could not be ensured"
+        )),
+        "{stderr}"
+    );
 
     let remotes = json_output(root, &["remote", "list", "--json"]);
     let rows = remotes.as_array().unwrap();
@@ -951,152 +1101,7 @@ fn native_repo_show_uses_fixed_authority() {
 }
 
 #[test]
-fn native_repo_ci_capabilities_and_run_ci_route_through_rust() {
-    let (base_url, log, _state, handle) = spawn_fake_remote();
-    let temp = init_repo(&base_url);
-    let root = temp.path();
-
-    let capabilities = json_output(root, &["repo", "ci-capabilities", "--json"]);
-    assert_eq!(capabilities["repo_name"].as_str(), Some("fixture-ait"));
-    assert_eq!(
-        capabilities["ci_capabilities"]["repo_run_ci_route"].as_bool(),
-        Some(true)
-    );
-
-    let run = json_output(
-        root,
-        &[
-            "repo",
-            "run-ci",
-            "--suite",
-            "smoke",
-            "--task-id",
-            "RT-1",
-            "--json",
-        ],
-    );
-    assert_eq!(run["job"]["worker_job_index"].as_u64(), Some(77));
-    assert_eq!(run["job"]["job_type"].as_str(), Some("repo.ci"));
-    assert!(run.get("job_id").is_none());
-
-    let logged = log.lock().unwrap().clone();
-    assert!(logged
-        .iter()
-        .any(|row| row.method == "GET" && row.url == "/v1/handshake"));
-    let run_ci = logged
-        .iter()
-        .find(|row| {
-            row.method == "POST" && row.url == "/v1/native/repository-authorities/7:runCi"
-        })
-        .unwrap();
-    let body: JsonValue = parse_json(&run_ci.body);
-    assert_eq!(body["suite_ids"], json!(["smoke"]));
-    assert_eq!(body["task_ids"], json!(["RT-1"]));
-    assert_eq!(body["target_line"], json!("main"));
-    handle.join().unwrap();
-}
-
-#[test]
-fn native_test_run_full_routes_catalog_backed_full_repo_ci_through_rust() {
-    let (base_url, log, _state, handle) = spawn_fake_remote();
-    let temp = init_repo(&base_url);
-    let root = temp.path();
-
-    let run = json_output(root, &["test", "run", "--full", "--json"]);
-    assert_eq!(run["job"]["worker_job_index"].as_u64(), Some(77));
-    assert_eq!(run["job"]["job_type"].as_str(), Some("repo.ci"));
-
-    let logged = log.lock().unwrap().clone();
-    let run_ci = logged
-        .iter()
-        .find(|row| {
-            row.method == "POST" && row.url == "/v1/native/repository-authorities/7:runCi"
-        })
-        .unwrap();
-    let body: JsonValue = parse_json(&run_ci.body);
-    assert_eq!(body["suite_ids"], json!(["full_repo"]));
-    assert_eq!(body["plane"], json!("nightly"));
-    assert_eq!(body["target_line"], json!("main"));
-    assert_eq!(body["trigger"], json!("manual_full_test"));
-    assert_eq!(body["task_ids"], json!([]));
-    handle.join().unwrap();
-}
-
-#[test]
-fn native_test_run_full_zstd_only_routes_catalog_backed_suite() {
-    let (base_url, log, _state, handle) = spawn_fake_remote();
-    let temp = init_repo(&base_url);
-    let root = temp.path();
-
-    let run = json_output(
-        root,
-        &["test", "run", "--full", "--variant", "zstd_only", "--json"],
-    );
-    assert_eq!(run["job"]["worker_job_index"].as_u64(), Some(77));
-    assert_eq!(run["job"]["job_type"].as_str(), Some("repo.ci"));
-    let logged = log.lock().unwrap().clone();
-    let run_ci = logged
-        .iter()
-        .find(|row| {
-            row.method == "POST" && row.url == "/v1/native/repository-authorities/7:runCi"
-        })
-        .unwrap();
-    let body: JsonValue = parse_json(&run_ci.body);
-    assert_eq!(body["suite_ids"], json!(["full_repo_zstd_only"]));
-    assert_eq!(body["plane"], json!("nightly"));
-    assert_eq!(body["target_line"], json!("main"));
-    assert_eq!(body["trigger"], json!("manual_full_test"));
-    assert_eq!(body["task_ids"], json!([]));
-    handle.join().unwrap();
-}
-
-#[test]
-fn native_test_run_full_rejects_unknown_variant() {
-    let temp = init_repo("https://example.test");
-    let root = temp.path();
-
-    let output = cargo_bin()
-        .current_dir(root)
-        .args(["test", "run", "--full", "--variant", "zip_only", "--json"])
-        .env_remove("AIT_JSON_MODE")
-        .output()
-        .unwrap();
-
-    assert!(
-        !output.status.success(),
-        "stdout:\n{}\n\nstderr:\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("does not support variant"));
-    assert!(stderr.contains("zstd_only"));
-}
-
-#[test]
-fn native_test_status_reads_catalog_backed_full_repo_ci_runs_through_rust() {
-    let (base_url, log, _state, handle) = spawn_fake_remote();
-    let temp = init_repo(&base_url);
-    let root = temp.path();
-
-    let status = json_output(root, &["test", "status", "--json"]);
-    assert_eq!(status["surface"].as_str(), Some("ait.test.status"));
-    assert_eq!(status["suite_id"].as_str(), Some("full_repo"));
-    assert_eq!(status["plane"].as_str(), Some("nightly"));
-    assert_eq!(status["status"].as_str(), Some("succeeded"));
-    assert_eq!(status["latest"]["worker_job_index"].as_u64(), Some(77));
-    assert_eq!(status["latest"]["job_type"].as_str(), Some("repo.ci"));
-
-    let logged = log.lock().unwrap().clone();
-    assert!(logged.iter().any(|row| {
-        row.method == "GET"
-            && row.url == "/v1/native/repository-authorities/7/worker-jobs?limit=20"
-    }));
-    handle.join().unwrap();
-}
-
-#[test]
-fn native_repository_and_test_text_are_decision_complete_without_inline_json() {
+fn native_repository_text_is_decision_complete_without_inline_json() {
     let (base_url, _log, _state, handle) = spawn_fake_remote();
     let temp = init_repo(&base_url);
     let root = temp.path();
@@ -1115,7 +1120,7 @@ fn native_repository_and_test_text_are_decision_complete_without_inline_json() {
     let capabilities = String::from_utf8_lossy(&capabilities.stdout);
     assert!(capabilities.contains("remote sync: 2/2 required ready"));
     assert!(capabilities.contains("pull manifest unavailable (optional)"));
-    assert!(capabilities.contains("decision: native CI submission and zstd remote sync are ready"));
+    assert!(capabilities.contains("decision: Patchset CI submission and zstd remote sync are ready"));
     assert!(capabilities.contains("details: ait repo ci-capabilities --json"));
     assert!(!capabilities.contains("{\""));
 
@@ -1123,52 +1128,31 @@ fn native_repository_and_test_text_are_decision_complete_without_inline_json() {
     assert!(jobs.status.success());
     let jobs = String::from_utf8_lossy(&jobs.stdout);
     assert!(jobs.contains("state: all returned jobs succeeded"));
-    assert!(jobs.contains("#77\trepo.ci\tsucceeded"));
+    assert!(jobs.contains("#77\tpatchset.ci\tsucceeded"));
     assert!(jobs.contains("details: ait repo jobs --limit 50 --json"));
     assert!(!jobs.contains("{\""));
-
-    let status = command_output_with_env(root, &["test", "status"], &[]);
-    assert!(status.status.success());
-    let status = String::from_utf8_lossy(&status.stdout);
-    assert!(status.contains("status: succeeded"));
-    assert!(status.contains(
-        "decision: latest available repository CI job passed (suite/plane unverified)"
-    ));
-    assert!(status.contains("does not persist plane/suite selectors"));
-    assert!(status.contains("details: ait test status"));
-    assert!(!status.contains("{\""));
 
     handle.join().unwrap();
 }
 
 #[test]
-fn native_auth_whoami_uses_local_identity_when_remote_is_unavailable() {
+fn native_auth_whoami_local_fallback_exposes_identity_only() {
     let temp = init_repo("http://127.0.0.1:1");
     let root = temp.path();
 
-    let whoami = json_output_with_env(
+    let whoami = json_output(
         root,
         &["auth", "whoami", "--repo", "fixture-auth", "--json"],
-        &[
-            ("AIT_NATIVE_ACTOR_TYPE", "service"),
-            ("AIT_NATIVE_ROLES", "repo_owner,repo_reader,repo_owner"),
-            ("AIT_NATIVE_REPOS", "fixture-auth,*"),
-        ],
     );
 
     assert_eq!(whoami["identity"].as_str(), Some("fixture@example.com"));
-    assert_eq!(whoami["actor_type"].as_str(), Some("service"));
     assert_eq!(whoami["mode"].as_str(), Some("open"));
     assert_eq!(whoami["repo_name"].as_str(), Some("fixture-auth"));
-    assert_eq!(
-        whoami["claimed_roles"],
-        json!(["repo_owner", "repo_reader"])
-    );
-    assert_eq!(whoami["claimed_repos"], json!(["*", "fixture-auth"]));
-    assert_eq!(
-        whoami["effective_roles"],
-        json!(["repo_owner", "repo_reader"])
-    );
+    assert!(whoami.get("actor_type").is_none());
+    assert!(whoami.get("claimed_roles").is_none());
+    assert!(whoami.get("claimed_repos").is_none());
+    assert!(whoami.get("effective_roles").is_none());
+    assert!(whoami.get("effective_repos").is_none());
 }
 
 #[test]
@@ -1180,8 +1164,7 @@ fn native_queue_summary_json_covers_empty_local_inventory() {
     let payload = json_output(root, &["queue", "summary", "--json"]);
 
     assert_eq!(payload["repo_name"].as_str(), Some("fixture-ait"));
-    assert_eq!(payload["query"]["status"].as_str(), Some("active"));
-    assert_eq!(payload["query"]["all_changes"].as_bool(), Some(false));
+    assert!(payload.get("query").is_none());
     assert_eq!(payload["remote"]["configured"].as_bool(), Some(false));
     assert_eq!(payload["remote"]["remote_name"], JsonValue::Null);
     assert_eq!(payload["remote"]["available_remotes"], json!(["origin"]));
@@ -1193,8 +1176,8 @@ fn native_queue_summary_json_covers_empty_local_inventory() {
     );
     assert_eq!(payload["local"]["tasks"], json!([]));
     assert_eq!(payload["local"]["changes"], json!([]));
-    assert_eq!(payload["local"]["all_tasks"], json!([]));
-    assert_eq!(payload["local"]["all_changes"], json!([]));
+    assert!(payload["local"].get("all_tasks").is_none());
+    assert!(payload["local"].get("all_changes").is_none());
     assert_eq!(payload["local"]["summary"]["task_record_count"], json!(0));
     assert_eq!(payload["local"]["summary"]["change_record_count"], json!(0));
     assert_eq!(payload["summary"]["local_draft_task_count"], json!(0));
@@ -1244,7 +1227,7 @@ fn native_queue_summary_json_falls_back_when_remote_bundle_is_missing() {
     let temp = init_repo(&base_url);
     let root = temp.path();
 
-    let payload = json_output(root, &["queue", "summary", "--all-changes", "--json"]);
+    let payload = json_output(root, &["queue", "summary", "--json"]);
 
     assert_eq!(payload["remote"]["configured"].as_bool(), Some(true));
     assert_eq!(payload["remote"]["remote_name"].as_str(), Some("origin"));
@@ -1255,27 +1238,8 @@ fn native_queue_summary_json_falls_back_when_remote_bundle_is_missing() {
     assert_eq!(payload["summary"]["attention_required_count"], json!(1));
     assert_eq!(payload["summary"]["ready_to_land_count"], json!(1));
     assert_eq!(payload["summary"]["reviewer_inbox_count"], json!(1));
-    assert_eq!(payload["summary"]["open_shared_change_count"], json!(2));
-    assert_eq!(payload["remote"]["changes"].as_array().unwrap().len(), 2);
-    let ready = payload["remote"]["changes"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|row| row["change_id"].as_str() == Some("RC-REMOTE-READY"))
-        .unwrap();
-    assert_eq!(ready["ready_to_land"].as_bool(), Some(true));
-    assert_eq!(ready["reason"].as_str(), Some("Ready to land."));
-    let stale = payload["remote"]["changes"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|row| row["change_id"].as_str() == Some("RC-REMOTE-STALE"))
-        .unwrap();
-    assert_eq!(stale["ready_to_land"].as_bool(), Some(false));
-    assert_eq!(
-        stale["reason"].as_str(),
-        Some("Remote task queue focus reason.")
-    );
+    assert!(payload["summary"].get("open_shared_change_count").is_none());
+    assert!(payload["remote"].get("changes").is_none());
 
     handle.join().unwrap();
     let urls = log
@@ -1284,7 +1248,7 @@ fn native_queue_summary_json_falls_back_when_remote_bundle_is_missing() {
         .iter()
         .map(|row| row.url.clone())
         .collect::<Vec<_>>();
-    assert_eq!(urls.len(), 4);
+    assert_eq!(urls.len(), 3);
     assert!(urls[0].starts_with(
         "/v1/native/repository-authorities/7/read/queue-summary?"
     ));
@@ -1295,7 +1259,6 @@ fn native_queue_summary_json_falls_back_when_remote_bundle_is_missing() {
         urls[2],
         "/v1/native/repository-authorities/7/read/reviewer-inbox"
     );
-    assert_eq!(urls[3], "/v1/native/repository-authorities/7/changes");
 }
 
 #[test]
@@ -1364,7 +1327,7 @@ fn native_pull_line_imports_remote_snapshot_and_moves_local_line_head() {
 }
 
 #[test]
-fn native_pull_phase_timings_and_transfer_metrics_are_opt_in_debug_json() {
+fn native_pull_json_ignores_the_retired_debug_environment() {
     let remote_temp = init_repo("https://example.test");
     let remote_root = remote_temp.path();
     json_output(
@@ -1377,40 +1340,17 @@ fn native_pull_phase_timings_and_transfer_metrics_are_opt_in_debug_json() {
     );
     let remote_snapshot_id = seed_snapshot(remote_root, "remote debug pull");
     let remote_zstd = zstd_remote_import_fixture_from_repo(remote_root, &remote_snapshot_id);
-    let (base_url, log, handle) =
+    let (base_url, _log, handle) =
         spawn_remote_import_server("pulled", &remote_snapshot_id, remote_zstd);
     let temp = init_repo(&base_url);
-    let debug = json_output_with_env(
+    let output = json_output_with_env(
         temp.path(),
         &["pull", "--line", "pulled", "--json"],
-        &[("AIT_JSON_MODE", "debug")],
+        &[(concat!("AIT_JSON_", "MODE"), "debug")],
     );
-    for phase in [
-        "manifest_ancestry",
-        "pack_download_pipeline",
-        "metadata_import",
-        "total_import",
-    ] {
-        assert!(
-            debug["phase_timings_ms"][phase].as_f64().is_some(),
-            "missing pull phase timing {phase}"
-        );
-    }
-    assert_eq!(
-        debug["remote_sync_metrics"]["remote_round_trips"].as_u64(),
-        Some(log.lock().unwrap().len() as u64)
-    );
-    assert_eq!(
-        debug["remote_sync_metrics"]["http_retry_count"].as_u64(),
-        Some(0)
-    );
-    assert!(debug["remote_sync_metrics"]["transferred_pack_bytes"]
-        .as_u64()
-        .is_some_and(|bytes| bytes > 0));
-    assert_eq!(
-        debug["remote_sync_metrics"]["pack_parallelism"].as_u64(),
-        Some(4)
-    );
+    assert_eq!(output["line"].as_str(), Some("pulled"));
+    assert!(output.get("phase_timings_ms").is_none());
+    assert!(output.get("remote_sync_metrics").is_none());
     handle.join().unwrap();
 }
 
@@ -1439,10 +1379,7 @@ fn native_pull_perfetto_trace_names_cover_import_download_and_head_movement() {
     let _ = json_output_with_env(
         root,
         &["pull", "--line", "pulled", "--json"],
-        &[
-            ("AIT_JSON_MODE", "debug"),
-            ("AIT_PERFETTO_TRACE", trace_text.as_str()),
-        ],
+        &[("AIT_PERFETTO_TRACE", trace_text.as_str())],
     );
     handle.join().unwrap();
     let trace = parse_json_bytes(&fs::read(&trace_path).expect("pull Perfetto trace"));
@@ -1548,7 +1485,6 @@ fn native_pull_restore_rejects_dirty_workspace_without_moving_line_head() {
     let output = cargo_bin()
         .current_dir(root)
         .args(["pull", "--line", "main", "--restore", "--json"])
-        .env_remove("AIT_JSON_MODE")
         .output()
         .unwrap();
 

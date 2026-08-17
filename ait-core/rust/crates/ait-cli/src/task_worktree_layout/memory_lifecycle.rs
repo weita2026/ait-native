@@ -1,23 +1,16 @@
 use super::*;
-use fs2::FileExt;
-use std::fs::{File, OpenOptions};
+use std::fs::OpenOptions;
 use std::io::Write;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-const CONTRACT_VERSION: &str = "memory-root-v1";
+const CONTRACT_VERSION: &str = "memory-root-v2";
 const RAM_SECTOR_BYTES: u64 = 512;
-const DEFAULT_RUNTIME_DIRNAME: &str = "ait-runtime";
 const DEFAULT_MIN_AVAILABLE_BYTES: u64 = 0;
-const MOUNT_LOCK_BOUNDARY: &str = "missing_mount_recheck_attach_format_validate_cleanup";
-
-const RAM_MOUNT_POINT_ENV: &str = "AIT_RAM_MOUNT_POINT";
-const LEGACY_RAM_MOUNT_POINT_ENV: &str = "AIT_RAM";
-const RAM_VOLUME_NAME_ENV: &str = "AIT_RAM_VOLUME_NAME";
-const RAM_CAPACITY_BYTES_ENV: &str = "AIT_RAM_CAPACITY_BYTES";
-const RAM_MIN_AVAILABLE_BYTES_ENV: &str = "AIT_RAM_MIN_AVAILABLE_BYTES";
-const RUNTIME_RAM_ROOT_ENV: &str = "AIT_RUNTIME_RAM_ROOT";
-const RAM_AUTO_MOUNT_ENV: &str = "AIT_RAM_AUTO_MOUNT";
-const RAM_MOUNT_LOCK_PATH_ENV: &str = "AIT_RAM_MOUNT_LOCK_PATH";
+const MEMORY_ROOT_CONFIG_PATH: &str = "task_worktree.memory_root";
+const MEMORY_ROOT_PATH_CONFIG_PATH: &str = "task_worktree.memory_root.root";
+const MEMORY_ROOT_VOLUME_CONFIG_PATH: &str = "task_worktree.memory_root.volume_name";
+const MEMORY_ROOT_CAPACITY_CONFIG_PATH: &str = "task_worktree.memory_root.sector_count";
+const TASK_RUNTIME_ROOT_LABEL: &str = "derived Task runtime root";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct MemoryRootConfig {
@@ -32,10 +25,6 @@ struct MemoryRootConfig {
     minimum_available_source: String,
     runtime_root: PathBuf,
     runtime_root_source: String,
-    auto_mount_allowed: bool,
-    auto_mount_source: String,
-    mount_lock_path: PathBuf,
-    mount_lock_source: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -70,8 +59,6 @@ impl ValidationFailure {
     }
 }
 
-trait MemoryRootLock {}
-
 trait MemoryRootOps {
     fn platform(&self) -> TaskWorktreePlatform;
     fn linux_detected_memory_roots(&self) -> Vec<PathBuf>;
@@ -84,24 +71,10 @@ trait MemoryRootOps {
     fn path_is_dir(&self, path: &Path) -> bool;
     fn canonicalize(&self, path: &Path) -> Result<PathBuf, String>;
     fn filesystem_space(&self, path: &Path) -> Result<(u64, u64), String>;
-    fn create_dir_all(&self, path: &Path) -> Result<(), String>;
     fn writable_probe(&self, path: &Path) -> Result<(), String>;
-    fn acquire_mount_lock(&self, path: &Path) -> Result<Box<dyn MemoryRootLock>, String>;
-    fn provision_macos(&self, spec: &TaskWorktreeMemoryRoot) -> Result<(), String>;
-    fn detach_macos(&self, root: &Path) -> Result<(), String>;
 }
 
 struct SystemMemoryRootOps;
-
-struct SystemMemoryRootLock(File);
-
-impl MemoryRootLock for SystemMemoryRootLock {}
-
-impl Drop for SystemMemoryRootLock {
-    fn drop(&mut self) {
-        let _ = FileExt::unlock(&self.0);
-    }
-}
 
 impl MemoryRootOps for SystemMemoryRootOps {
     fn platform(&self) -> TaskWorktreePlatform {
@@ -161,171 +134,100 @@ impl MemoryRootOps for SystemMemoryRootOps {
         Ok((total, available))
     }
 
-    fn create_dir_all(&self, path: &Path) -> Result<(), String> {
-        fs::create_dir_all(path)
-            .map_err(|error| format!("Failed to create '{}': {error}", path.display()))
-    }
-
     fn writable_probe(&self, path: &Path) -> Result<(), String> {
         writable_probe_system(path)
     }
-
-    fn acquire_mount_lock(&self, path: &Path) -> Result<Box<dyn MemoryRootLock>, String> {
-        let parent = path.parent().ok_or_else(|| {
-            format!(
-                "{RAM_MOUNT_LOCK_PATH_ENV} must have a parent directory: {}",
-                path.display()
-            )
-        })?;
-        fs::create_dir_all(parent).map_err(|error| {
-            format!(
-                "Failed to create RAM mount lock directory '{}': {error}",
-                parent.display()
-            )
-        })?;
-        let file = OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .read(true)
-            .write(true)
-            .open(path)
-            .map_err(|error| {
-                format!(
-                    "Failed to open RAM mount lock '{}': {error}",
-                    path.display()
-                )
-            })?;
-        file.lock_exclusive().map_err(|error| {
-            format!(
-                "Failed to acquire RAM mount lock '{}': {error}",
-                path.display()
-            )
-        })?;
-        Ok(Box::new(SystemMemoryRootLock(file)))
-    }
-
-    fn provision_macos(&self, spec: &TaskWorktreeMemoryRoot) -> Result<(), String> {
-        if super::provision_macos_ram_volume(spec) {
-            Ok(())
-        } else {
-            Err(format!(
-                "Failed to attach and format the requested macOS RAM volume at '{}'.",
-                spec.root.display()
-            ))
-        }
-    }
-
-    fn detach_macos(&self, root: &Path) -> Result<(), String> {
-        let status = Command::new("hdiutil")
-            .arg("detach")
-            .arg(root)
-            .arg("-force")
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .map_err(|error| {
-                format!(
-                    "Failed to invoke hdiutil cleanup for '{}': {error}",
-                    root.display()
-                )
-            })?;
-        if status.success() {
-            Ok(())
-        } else {
-            Err(format!(
-                "hdiutil could not detach newly provisioned invalid RAM volume '{}'.",
-                root.display()
-            ))
-        }
-    }
 }
 
-pub(crate) fn doctor_memory_root_payload(ensure: bool) -> Result<JsonValue, String> {
+pub(crate) fn doctor_memory_root_payload(repo: &RepoRuntime) -> Result<JsonValue, String> {
     let ops = SystemMemoryRootOps;
-    let config = MemoryRootConfig::from_process_environment(ensure, &ops)?;
-    ensure_memory_root_with_ops(&config, &ops)
+    let config = MemoryRootConfig::from_repo(repo, &ops)?;
+    inspect_memory_root_with_ops(&config, &ops)
 }
 
 impl MemoryRootConfig {
-    fn from_process_environment(ensure: bool, ops: &impl MemoryRootOps) -> Result<Self, String> {
-        Self::from_lookup(ensure, ops, |name| {
-            let Some(value) = std::env::var_os(name) else {
-                return Ok(None);
-            };
-            value.into_string().map(Some).map_err(|_| {
-                format!("{name} must contain valid Unicode text so it can be validated.")
-            })
-        })
-    }
-
-    fn from_lookup<F>(ensure: bool, ops: &impl MemoryRootOps, lookup: F) -> Result<Self, String>
-    where
-        F: Fn(&str) -> Result<Option<String>, String>,
-    {
-        let get = |name: &str| -> Result<Option<String>, String> {
-            Ok(lookup(name)?.and_then(|value| {
-                let trimmed = value.trim();
-                if trimmed.is_empty() {
-                    None
-                } else {
-                    Some(trimmed.to_string())
-                }
-            }))
-        };
+    fn from_repo(repo: &RepoRuntime, ops: &impl MemoryRootOps) -> Result<Self, String> {
         let platform = ops.platform();
-        let (mount_point_text, mount_point_source) = if let Some(value) = get(RAM_MOUNT_POINT_ENV)?
-        {
-            (value, RAM_MOUNT_POINT_ENV.to_string())
-        } else if let Some(value) = get(LEGACY_RAM_MOUNT_POINT_ENV)? {
-            (value, LEGACY_RAM_MOUNT_POINT_ENV.to_string())
-        } else {
-            match platform {
-                TaskWorktreePlatform::Macos => (
-                    format!("/Volumes/{DEFAULT_MACOS_RAM_VOLUME_NAME}"),
-                    "platform_default".to_string(),
-                ),
-                TaskWorktreePlatform::Linux => {
-                    let root = ops
-                            .linux_detected_memory_roots()
+        let configured = match task_worktree_config_value(repo, "memory_root") {
+            Some(value) => {
+                let raw_root = value
+                    .get("root")
+                    .and_then(JsonValue::as_str)
+                    .ok_or_else(|| {
+                        format!("{MEMORY_ROOT_PATH_CONFIG_PATH} must be a non-empty string.")
+                    })?;
+                let _ = parse_clean_absolute_path(MEMORY_ROOT_PATH_CONFIG_PATH, raw_root)?;
+                Some(normalize_task_worktree_memory_root(value).ok_or_else(|| {
+                    format!("{MEMORY_ROOT_CONFIG_PATH} is malformed or unsupported.")
+                })?)
+            }
+            None => None,
+        };
+        let (spec, mount_point_source, detected_macos_metadata) = match configured {
+            Some(spec) => {
+                let detected = (platform == TaskWorktreePlatform::Macos)
+                    .then(|| {
+                        ops.macos_ram_volume_specs()
                             .into_iter()
-                            .next()
-                            .ok_or_else(|| {
-                                "No verified Linux tmpfs/ramfs root was detected; set AIT_RAM_MOUNT_POINT to an existing memory-backed mount."
-                                    .to_string()
-                            })?;
-                    (
-                        root.to_string_lossy().to_string(),
-                        "detected_linux_memory_root".to_string(),
-                    )
-                }
-                TaskWorktreePlatform::Windows => {
-                    let root = ops
-                            .windows_ramdisk_roots()
-                            .into_iter()
-                            .next()
-                            .ok_or_else(|| {
-                                "No Windows DRIVE_RAMDISK root was detected; set AIT_RAM_MOUNT_POINT to an existing RAM disk."
-                                    .to_string()
-                            })?;
-                    (
-                        root.to_string_lossy().to_string(),
-                        "detected_windows_ramdisk".to_string(),
-                    )
-                }
-                TaskWorktreePlatform::Other => {
-                    return Err(
-                        "RAM-root lifecycle is unsupported on this operating system.".to_string(),
-                    );
+                            .find(|candidate| candidate.root == spec.root)
+                    })
+                    .flatten();
+                match detected {
+                    Some(detected) => (detected, "repo_config".to_string(), true),
+                    None => (spec, "repo_config".to_string(), false),
                 }
             }
+            None => {
+                let (spec, source) = detected_memory_root_spec(platform, ops)?;
+                let detected = source == "detected_macos_ram_volume";
+                (spec, source, detected)
+            }
         };
-        let mount_point = parse_clean_absolute_path(RAM_MOUNT_POINT_ENV, &mount_point_text)?;
+        let configured_ephemeral_root =
+            task_worktree_config_value(repo, "ephemeral_root").is_some();
+        let runtime_base = effective_task_worktree_ephemeral_root_base(repo, Some(&spec))
+            .ok_or_else(|| {
+                "Could not derive the Task runtime root from repository configuration.".to_string()
+            })?;
+        let (runtime_root, runtime_root_source) = if configured_ephemeral_root {
+            (
+                configured_repository_worktree_root(repo, &runtime_base),
+                "repo_config.task_worktree.ephemeral_root".to_string(),
+            )
+        } else {
+            (
+                runtime_base.join(repo_path_segment(repo)),
+                "derived_from_task_worktree.memory_root".to_string(),
+            )
+        };
+        let mut config = Self::from_resolved_spec(
+            platform,
+            spec,
+            mount_point_source,
+            runtime_root,
+            runtime_root_source,
+        )?;
+        if detected_macos_metadata {
+            config.capacity_source = "detected_macos_ram_volume".to_string();
+            config.volume_name_source = "detected_macos_ram_volume".to_string();
+        }
+        Ok(config)
+    }
 
+    fn from_resolved_spec(
+        platform: TaskWorktreePlatform,
+        spec: TaskWorktreeMemoryRoot,
+        mount_point_source: String,
+        runtime_root: PathBuf,
+        runtime_root_source: String,
+    ) -> Result<Self, String> {
+        validate_memory_root_kind(platform, &spec.kind)?;
+        let mount_point =
+            parse_clean_absolute_path(MEMORY_ROOT_PATH_CONFIG_PATH, &spec.root.to_string_lossy())?;
         let (volume_name, volume_name_source) = if platform == TaskWorktreePlatform::Macos {
-            let (value, source) = if let Some(value) = get(RAM_VOLUME_NAME_ENV)? {
-                (value, RAM_VOLUME_NAME_ENV.to_string())
-            } else {
-                (
+            let (value, source) = match spec.volume_name {
+                Some(value) => (value, format!("{MEMORY_ROOT_CONFIG_PATH}.volume_name")),
+                None => (
                     mount_point
                         .file_name()
                         .and_then(|value| value.to_str())
@@ -337,7 +239,7 @@ impl MemoryRootConfig {
                         })?
                         .to_string(),
                     "mount_point_basename".to_string(),
-                )
+                ),
             };
             validate_volume_name(&value)?;
             validate_macos_mount_contract(&mount_point, &value)?;
@@ -345,96 +247,32 @@ impl MemoryRootConfig {
         } else {
             (None, "not_applicable".to_string())
         };
-
-        let default_capacity = if platform == TaskWorktreePlatform::Macos {
-            u64::try_from(DEFAULT_MACOS_RAM_VOLUME_SECTOR_COUNT)
+        let (requested_capacity_bytes, capacity_source) = if platform == TaskWorktreePlatform::Macos
+        {
+            let (sector_count, source) = match spec.sector_count {
+                Some(value) if value > 0 => (value, MEMORY_ROOT_CAPACITY_CONFIG_PATH.to_string()),
+                Some(_) => {
+                    return Err(format!(
+                        "{MEMORY_ROOT_CAPACITY_CONFIG_PATH} must be a positive integer."
+                    ));
+                }
+                None => (
+                    DEFAULT_MACOS_RAM_VOLUME_SECTOR_COUNT,
+                    "built_in_default".to_string(),
+                ),
+            };
+            let capacity = u64::try_from(sector_count)
                 .ok()
                 .and_then(|value| value.checked_mul(RAM_SECTOR_BYTES))
-                .ok_or_else(|| "Built-in macOS RAM capacity overflowed u64.".to_string())?
-        } else {
-            0
-        };
-        let (requested_capacity_bytes, capacity_source) =
-            if let Some(raw) = get(RAM_CAPACITY_BYTES_ENV)? {
-                (
-                    parse_byte_count(RAM_CAPACITY_BYTES_ENV, &raw, false)?,
-                    RAM_CAPACITY_BYTES_ENV.to_string(),
-                )
-            } else {
-                (default_capacity, "platform_default".to_string())
-            };
-        if platform == TaskWorktreePlatform::Macos {
-            let _ = capacity_sector_count(requested_capacity_bytes)?;
-        }
-
-        let (minimum_available_bytes, minimum_available_source) =
-            if let Some(raw) = get(RAM_MIN_AVAILABLE_BYTES_ENV)? {
-                (
-                    parse_byte_count(RAM_MIN_AVAILABLE_BYTES_ENV, &raw, true)?,
-                    RAM_MIN_AVAILABLE_BYTES_ENV.to_string(),
-                )
-            } else {
-                (DEFAULT_MIN_AVAILABLE_BYTES, "built_in".to_string())
-            };
-
-        let (runtime_root, runtime_root_source) = if let Some(raw) = get(RUNTIME_RAM_ROOT_ENV)? {
-            (
-                parse_clean_absolute_path(RUNTIME_RAM_ROOT_ENV, &raw)?,
-                RUNTIME_RAM_ROOT_ENV.to_string(),
-            )
-        } else {
-            (
-                mount_point.join(DEFAULT_RUNTIME_DIRNAME),
-                "mount_point/ait-runtime".to_string(),
-            )
-        };
-        validate_strict_descendant(RUNTIME_RAM_ROOT_ENV, &runtime_root, &mount_point)?;
-
-        let env_auto_mount = if let Some(raw) = get(RAM_AUTO_MOUNT_ENV)? {
-            Some(parse_bool(RAM_AUTO_MOUNT_ENV, &raw)?)
-        } else {
-            None
-        };
-        let (auto_mount_allowed, auto_mount_source) = if ensure {
-            (true, "cli_ensure".to_string())
-        } else if let Some(value) = env_auto_mount {
-            (value, RAM_AUTO_MOUNT_ENV.to_string())
-        } else {
-            (false, "built_in_false".to_string())
-        };
-
-        let (mount_lock_path, mount_lock_source) = if let Some(raw) = get(RAM_MOUNT_LOCK_PATH_ENV)?
-        {
-            (
-                parse_clean_absolute_path(RAM_MOUNT_LOCK_PATH_ENV, &raw)?,
-                RAM_MOUNT_LOCK_PATH_ENV.to_string(),
-            )
-        } else {
-            let cache_root = if let Some(raw) = get("XDG_CACHE_HOME")? {
-                parse_clean_absolute_path("XDG_CACHE_HOME", &raw)?
-            } else {
-                let home = match get("HOME")? {
-                    Some(value) => Some(value),
-                    None => get("USERPROFILE")?,
-                }
                 .ok_or_else(|| {
-                        format!(
-                            "{RAM_MOUNT_LOCK_PATH_ENV} is required when HOME, USERPROFILE, and XDG_CACHE_HOME are unavailable."
-                        )
-                    })?;
-                parse_clean_absolute_path("HOME", &home)?.join(".cache")
-            };
-            (
-                cache_root.join("ait/locks/ram-mount.lock"),
-                "host_cache_default".to_string(),
-            )
+                    format!("{MEMORY_ROOT_CAPACITY_CONFIG_PATH} overflows byte capacity.")
+                })?;
+            let _ = capacity_sector_count(capacity)?;
+            (capacity, source)
+        } else {
+            (0, "not_applicable".to_string())
         };
-        if mount_lock_path == mount_point || mount_lock_path.starts_with(&mount_point) {
-            return Err(format!(
-                "{RAM_MOUNT_LOCK_PATH_ENV} must remain outside the RAM mount so it exists before provisioning: {}",
-                mount_lock_path.display()
-            ));
-        }
+        validate_strict_descendant(TASK_RUNTIME_ROOT_LABEL, &runtime_root, &mount_point)?;
 
         Ok(Self {
             platform,
@@ -444,89 +282,116 @@ impl MemoryRootConfig {
             volume_name_source,
             requested_capacity_bytes,
             capacity_source,
-            minimum_available_bytes,
-            minimum_available_source,
+            minimum_available_bytes: DEFAULT_MIN_AVAILABLE_BYTES,
+            minimum_available_source: "built_in".to_string(),
             runtime_root,
             runtime_root_source,
-            auto_mount_allowed,
-            auto_mount_source,
-            mount_lock_path,
-            mount_lock_source,
-        })
-    }
-
-    fn macos_spec(&self) -> Result<TaskWorktreeMemoryRoot, String> {
-        let volume_name = self
-            .volume_name
-            .clone()
-            .ok_or_else(|| "macOS RAM volume name is unavailable.".to_string())?;
-        Ok(TaskWorktreeMemoryRoot {
-            kind: TaskWorktreeMemoryRootKind::MacosRamVolume,
-            root: self.mount_point.clone(),
-            volume_name: Some(volume_name),
-            sector_count: Some(capacity_sector_count(self.requested_capacity_bytes)?),
         })
     }
 }
 
-fn ensure_memory_root_with_ops(
+fn detected_memory_root_spec(
+    platform: TaskWorktreePlatform,
+    ops: &impl MemoryRootOps,
+) -> Result<(TaskWorktreeMemoryRoot, String), String> {
+    match platform {
+        TaskWorktreePlatform::Macos => Ok(ops
+            .macos_ram_volume_specs()
+            .into_iter()
+            .next()
+            .map(|spec| (spec, "detected_macos_ram_volume".to_string()))
+            .unwrap_or_else(|| {
+                (
+                    TaskWorktreeMemoryRoot {
+                        kind: TaskWorktreeMemoryRootKind::MacosRamVolume,
+                        root: PathBuf::from("/Volumes").join(DEFAULT_MACOS_RAM_VOLUME_NAME),
+                        volume_name: Some(DEFAULT_MACOS_RAM_VOLUME_NAME.to_string()),
+                        sector_count: Some(DEFAULT_MACOS_RAM_VOLUME_SECTOR_COUNT),
+                    },
+                    "platform_default".to_string(),
+                )
+            })),
+        TaskWorktreePlatform::Linux => ops
+            .linux_detected_memory_roots()
+            .into_iter()
+            .next()
+            .map(|root| {
+                (
+                    TaskWorktreeMemoryRoot {
+                        kind: TaskWorktreeMemoryRootKind::LinuxMemoryRoot,
+                        root,
+                        volume_name: None,
+                        sector_count: None,
+                    },
+                    "detected_linux_memory_root".to_string(),
+                )
+            })
+            .ok_or_else(|| {
+                "No verified Linux tmpfs/ramfs root was detected; mount one and rerun `ait init` to record it."
+                    .to_string()
+            }),
+        TaskWorktreePlatform::Windows => ops
+            .windows_ramdisk_roots()
+            .into_iter()
+            .next()
+            .map(|root| {
+                (
+                    TaskWorktreeMemoryRoot {
+                        kind: TaskWorktreeMemoryRootKind::WindowsRamdisk,
+                        root,
+                        volume_name: None,
+                        sector_count: None,
+                    },
+                    "detected_windows_ramdisk".to_string(),
+                )
+            })
+            .ok_or_else(|| {
+                "No Windows DRIVE_RAMDISK root was detected; provision one and rerun `ait init` to record it."
+                    .to_string()
+            }),
+        TaskWorktreePlatform::Other => {
+            Err("RAM-root lifecycle is unsupported on this operating system.".to_string())
+        }
+    }
+}
+
+fn validate_memory_root_kind(
+    platform: TaskWorktreePlatform,
+    kind: &TaskWorktreeMemoryRootKind,
+) -> Result<(), String> {
+    let matches_platform = matches!(
+        (platform, kind),
+        (
+            TaskWorktreePlatform::Macos,
+            TaskWorktreeMemoryRootKind::MacosRamVolume
+        ) | (
+            TaskWorktreePlatform::Linux,
+            TaskWorktreeMemoryRootKind::LinuxMemoryRoot
+        ) | (
+            TaskWorktreePlatform::Windows,
+            TaskWorktreeMemoryRootKind::WindowsRamdisk
+        )
+    );
+    if matches_platform {
+        Ok(())
+    } else {
+        Err(format!(
+            "{MEMORY_ROOT_CONFIG_PATH} kind does not match the current platform."
+        ))
+    }
+}
+
+fn inspect_memory_root_with_ops(
     config: &MemoryRootConfig,
     ops: &impl MemoryRootOps,
 ) -> Result<JsonValue, String> {
-    let create_runtime = config.auto_mount_allowed;
-    match validate_memory_root(config, ops, create_runtime) {
-        Ok(validated) => return Ok(success_payload(config, &validated, false, false)),
-        Err(ValidationFailure::Invalid(message)) => return Err(message),
-        Err(ValidationFailure::Missing(message)) if !config.auto_mount_allowed => {
-            return Err(format!(
-                "{message} Set {RAM_AUTO_MOUNT_ENV}=true or pass --ensure to provision a missing supported RAM root."
-            ));
-        }
-        Err(ValidationFailure::Missing(_)) => {}
-    }
-
-    if config.platform != TaskWorktreePlatform::Macos {
-        return Err(format!(
-            "Automatic RAM-root provisioning is supported only on macOS; '{}' must already be a verified memory-backed mount on {}.",
-            config.mount_point.display(),
-            platform_name(config.platform)
-        ));
-    }
-
-    let _mount_lock = ops.acquire_mount_lock(&config.mount_lock_path)?;
-    match validate_memory_root(config, ops, true) {
-        Ok(validated) => return Ok(success_payload(config, &validated, false, true)),
-        Err(ValidationFailure::Invalid(message)) => return Err(message),
-        Err(ValidationFailure::Missing(_)) => {}
-    }
-
-    let spec = config.macos_spec()?;
-    if let Err(provision_error) = ops.provision_macos(&spec) {
-        if let Ok(validated) = validate_memory_root(config, ops, true) {
-            return Ok(success_payload(config, &validated, false, true));
-        }
-        return Err(provision_error);
-    }
-    match validate_memory_root(config, ops, true) {
-        Ok(validated) => Ok(success_payload(config, &validated, true, true)),
-        Err(error) => {
-            let validation_message = error.message();
-            match ops.detach_macos(&config.mount_point) {
-                Ok(()) => Err(format!(
-                    "Newly provisioned RAM volume failed validation and was detached: {validation_message}"
-                )),
-                Err(cleanup_error) => Err(format!(
-                    "Newly provisioned RAM volume failed validation: {validation_message} Cleanup also failed: {cleanup_error}"
-                )),
-            }
-        }
-    }
+    let validated = validate_memory_root(config, ops).map_err(ValidationFailure::message)?;
+    Ok(success_payload(config, &validated))
 }
 
 fn validate_memory_root(
     config: &MemoryRootConfig,
     ops: &impl MemoryRootOps,
-    create_runtime: bool,
 ) -> Result<ValidatedMemoryRoot, ValidationFailure> {
     let (platform_proof, actual_image_sector_count, actual_image_capacity_bytes) =
         match config.platform {
@@ -580,24 +445,20 @@ fn validate_memory_root(
         .map_err(ValidationFailure::Invalid)?;
     if filesystem_total_bytes < config.requested_capacity_bytes {
         return Err(ValidationFailure::Invalid(format!(
-            "RAM root '{}' has {filesystem_total_bytes} total bytes, below {RAM_CAPACITY_BYTES_ENV}={}.",
+            "RAM root '{}' has {filesystem_total_bytes} total bytes, below the configured capacity {}.",
             canonical_mount.display(),
             config.requested_capacity_bytes
         )));
     }
     if available_bytes < config.minimum_available_bytes {
         return Err(ValidationFailure::Invalid(format!(
-            "RAM root '{}' has {available_bytes} available bytes, below {RAM_MIN_AVAILABLE_BYTES_ENV}={}.",
+            "RAM root '{}' has {available_bytes} available bytes, below the required minimum {}.",
             canonical_mount.display(),
             config.minimum_available_bytes
         )));
     }
 
     validate_runtime_ancestor(config, ops, &canonical_mount)?;
-    if create_runtime {
-        ops.create_dir_all(&config.runtime_root)
-            .map_err(ValidationFailure::Invalid)?;
-    }
     let runtime_root = if ops.path_exists(&config.runtime_root) {
         let canonical_runtime = ops
             .canonicalize(&config.runtime_root)
@@ -605,13 +466,13 @@ fn validate_memory_root(
         if canonical_runtime == canonical_mount || !canonical_runtime.starts_with(&canonical_mount)
         {
             return Err(ValidationFailure::Invalid(format!(
-                "{RUNTIME_RAM_ROOT_ENV} escapes the validated RAM mount after canonicalization: {}",
+                "The {TASK_RUNTIME_ROOT_LABEL} escapes the validated RAM mount after canonicalization: {}",
                 canonical_runtime.display()
             )));
         }
         if !ops.path_is_dir(&canonical_runtime) {
             return Err(ValidationFailure::Invalid(format!(
-                "{RUNTIME_RAM_ROOT_ENV} is not a directory: {}",
+                "The {TASK_RUNTIME_ROOT_LABEL} is not a directory: {}",
                 canonical_runtime.display()
             )));
         }
@@ -703,7 +564,7 @@ fn validate_macos_platform(
     let expected_volume = config.volume_name.as_deref().unwrap_or_default();
     if info.volume_name != expected_volume {
         return Err(ValidationFailure::Invalid(format!(
-            "diskutil reports volume label '{}' instead of {RAM_VOLUME_NAME_ENV}='{expected_volume}'.",
+            "diskutil reports volume label '{}' instead of {MEMORY_ROOT_VOLUME_CONFIG_PATH}='{expected_volume}'.",
             info.volume_name
         )));
     }
@@ -751,7 +612,7 @@ fn validate_runtime_ancestor(
         .find(|candidate| ops.path_exists(candidate))
         .ok_or_else(|| {
             ValidationFailure::Invalid(format!(
-                "No existing ancestor could be found for {RUNTIME_RAM_ROOT_ENV}='{}'.",
+                "No existing ancestor could be found for the {TASK_RUNTIME_ROOT_LABEL} '{}'.",
                 config.runtime_root.display()
             ))
         })?;
@@ -760,19 +621,14 @@ fn validate_runtime_ancestor(
         .map_err(ValidationFailure::Invalid)?;
     if canonical_ancestor != canonical_mount && !canonical_ancestor.starts_with(canonical_mount) {
         return Err(ValidationFailure::Invalid(format!(
-            "{RUNTIME_RAM_ROOT_ENV} escapes the validated RAM mount through existing ancestor '{}'.",
+            "The {TASK_RUNTIME_ROOT_LABEL} escapes the validated RAM mount through existing ancestor '{}'.",
             canonical_ancestor.display()
         )));
     }
     Ok(())
 }
 
-fn success_payload(
-    config: &MemoryRootConfig,
-    validated: &ValidatedMemoryRoot,
-    auto_mounted: bool,
-    lock_acquired: bool,
-) -> JsonValue {
+fn success_payload(config: &MemoryRootConfig, validated: &ValidatedMemoryRoot) -> JsonValue {
     json!({
         "contract": CONTRACT_VERSION,
         "state": "pass",
@@ -792,15 +648,6 @@ fn success_payload(
         "minimum_available_bytes": config.minimum_available_bytes,
         "minimum_available_source": config.minimum_available_source,
         "platform_proof": validated.platform_proof,
-        "auto_mount_allowed": config.auto_mount_allowed,
-        "auto_mount_source": config.auto_mount_source,
-        "auto_mounted": auto_mounted,
-        "mount_lock": {
-            "path": config.mount_lock_path.to_string_lossy().to_string(),
-            "source": config.mount_lock_source,
-            "acquired": lock_acquired,
-            "boundary": MOUNT_LOCK_BOUNDARY,
-        },
     })
 }
 
@@ -863,7 +710,7 @@ fn writable_probe_system(root: &Path) -> Result<(), String> {
         .write(true)
         .open(&path)
         .map_err(|error| format!("RAM root '{}' is not writable: {error}", root.display()))?;
-    if let Err(error) = file.write_all(b"ait-memory-root-v1\n") {
+    if let Err(error) = file.write_all(b"ait-memory-root-v2\n") {
         let _ = fs::remove_file(&path);
         return Err(format!(
             "Failed to write RAM-root probe '{}': {error}",
@@ -922,7 +769,7 @@ fn validate_volume_name(value: &str) -> Result<(), String> {
         || Path::new(value).components().count() != 1
     {
         return Err(format!(
-            "{RAM_VOLUME_NAME_ENV} must be one non-traversing path component; got '{value}'."
+            "{MEMORY_ROOT_VOLUME_CONFIG_PATH} must be one non-traversing path component; got '{value}'."
         ));
     }
     Ok(())
@@ -932,7 +779,7 @@ fn validate_macos_mount_contract(mount_point: &Path, volume_name: &str) -> Resul
     let expected = Path::new("/Volumes").join(volume_name);
     if mount_point != expected {
         return Err(format!(
-            "On macOS, {RAM_MOUNT_POINT_ENV} must exactly equal /Volumes/{RAM_VOLUME_NAME_ENV}; expected '{}', got '{}'.",
+            "On macOS, {MEMORY_ROOT_PATH_CONFIG_PATH} must exactly match /Volumes/{MEMORY_ROOT_VOLUME_CONFIG_PATH}; expected '{}', got '{}'.",
             expected.display(),
             mount_point.display()
         ));
@@ -940,33 +787,15 @@ fn validate_macos_mount_contract(mount_point: &Path, volume_name: &str) -> Resul
     Ok(())
 }
 
-fn parse_byte_count(name: &str, raw: &str, allow_zero: bool) -> Result<u64, String> {
-    let value = raw.parse::<u64>().map_err(|_| {
-        format!("{name} must be a base-10 non-negative integer byte count; got '{raw}'.")
-    })?;
-    if !allow_zero && value == 0 {
-        return Err(format!("{name} must be greater than zero."));
-    }
-    Ok(value)
-}
-
-fn parse_bool(name: &str, raw: &str) -> Result<bool, String> {
-    match raw.to_ascii_lowercase().as_str() {
-        "1" | "true" | "yes" | "on" => Ok(true),
-        "0" | "false" | "no" | "off" => Ok(false),
-        _ => Err(format!(
-            "{name} must be one of true, false, 1, 0, yes, no, on, or off; got '{raw}'."
-        )),
-    }
-}
-
 fn capacity_sector_count(capacity_bytes: u64) -> Result<i64, String> {
     let sectors = capacity_bytes
         .checked_add(RAM_SECTOR_BYTES - 1)
-        .ok_or_else(|| format!("{RAM_CAPACITY_BYTES_ENV} overflows sector rounding."))?
+        .ok_or_else(|| format!("{MEMORY_ROOT_CAPACITY_CONFIG_PATH} overflows sector rounding."))?
         / RAM_SECTOR_BYTES;
     i64::try_from(sectors).map_err(|_| {
-        format!("{RAM_CAPACITY_BYTES_ENV} is too large for hdiutil's ram:// sector count.")
+        format!(
+            "{MEMORY_ROOT_CAPACITY_CONFIG_PATH} is too large for hdiutil's ram:// sector count."
+        )
     })
 }
 
@@ -982,11 +811,9 @@ fn platform_name(platform: TaskWorktreePlatform) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::cell::{Cell, RefCell};
-    use std::collections::BTreeMap;
+    use std::cell::Cell;
 
-    struct NoopLock;
-    impl MemoryRootLock for NoopLock {}
+    const TEST_RUNTIME_DIRNAME: &str = "task-runtime";
 
     struct FakeOps {
         platform: TaskWorktreePlatform,
@@ -995,14 +822,6 @@ mod tests {
         mounted: Cell<bool>,
         existing_non_ram: bool,
         runtime_exists: Cell<bool>,
-        mount_on_specs_call: Option<usize>,
-        specs_calls: Cell<usize>,
-        lock_count: Cell<usize>,
-        provision_count: Cell<usize>,
-        detach_count: Cell<usize>,
-        provision_error: Option<String>,
-        mount_on_provision_error: bool,
-        detach_error: Option<String>,
         image_sector_count: i64,
         volume_name: String,
         volume_mount_point: PathBuf,
@@ -1014,13 +833,12 @@ mod tests {
         writable_error: Option<String>,
         linux_fstype: Option<String>,
         windows_drive_type: Option<u32>,
-        events: RefCell<Vec<String>>,
     }
 
     impl FakeOps {
         fn macos(mounted: bool) -> Self {
             let root = PathBuf::from("/Volumes/AIT_RAM");
-            let runtime_root = root.join(DEFAULT_RUNTIME_DIRNAME);
+            let runtime_root = root.join(TEST_RUNTIME_DIRNAME);
             Self {
                 platform: TaskWorktreePlatform::Macos,
                 root: root.clone(),
@@ -1028,14 +846,6 @@ mod tests {
                 mounted: Cell::new(mounted),
                 existing_non_ram: false,
                 runtime_exists: Cell::new(mounted),
-                mount_on_specs_call: None,
-                specs_calls: Cell::new(0),
-                lock_count: Cell::new(0),
-                provision_count: Cell::new(0),
-                detach_count: Cell::new(0),
-                provision_error: None,
-                mount_on_provision_error: false,
-                detach_error: None,
                 image_sector_count: DEFAULT_MACOS_RAM_VOLUME_SECTOR_COUNT,
                 volume_name: DEFAULT_MACOS_RAM_VOLUME_NAME.to_string(),
                 volume_mount_point: root.clone(),
@@ -1047,12 +857,11 @@ mod tests {
                 writable_error: None,
                 linux_fstype: None,
                 windows_drive_type: None,
-                events: RefCell::new(Vec::new()),
             }
         }
 
         fn rebase(&mut self, platform: TaskWorktreePlatform, root: PathBuf) {
-            let runtime_root = root.join(DEFAULT_RUNTIME_DIRNAME);
+            let runtime_root = root.join(TEST_RUNTIME_DIRNAME);
             self.platform = platform;
             self.root = root.clone();
             self.runtime_root = runtime_root.clone();
@@ -1084,13 +893,6 @@ mod tests {
         }
 
         fn macos_ram_volume_specs(&self) -> Vec<TaskWorktreeMemoryRoot> {
-            let call = self.specs_calls.get() + 1;
-            self.specs_calls.set(call);
-            if self.mount_on_specs_call == Some(call) {
-                self.mounted.set(true);
-                self.runtime_exists.set(true);
-            }
-            self.events.borrow_mut().push(format!("specs:{call}"));
             if !self.mounted.get() {
                 return Vec::new();
             }
@@ -1146,60 +948,32 @@ mod tests {
             Ok((self.filesystem_total, self.filesystem_available))
         }
 
-        fn create_dir_all(&self, path: &Path) -> Result<(), String> {
-            if path == self.runtime_root {
-                self.runtime_exists.set(true);
-            }
-            Ok(())
-        }
-
         fn writable_probe(&self, _path: &Path) -> Result<(), String> {
             self.writable_error.clone().map_or(Ok(()), Err)
         }
-
-        fn acquire_mount_lock(&self, _path: &Path) -> Result<Box<dyn MemoryRootLock>, String> {
-            self.lock_count.set(self.lock_count.get() + 1);
-            self.events.borrow_mut().push("lock".to_string());
-            Ok(Box::new(NoopLock))
-        }
-
-        fn provision_macos(&self, _spec: &TaskWorktreeMemoryRoot) -> Result<(), String> {
-            self.provision_count.set(self.provision_count.get() + 1);
-            self.events.borrow_mut().push("provision".to_string());
-            if let Some(error) = &self.provision_error {
-                if self.mount_on_provision_error {
-                    self.mounted.set(true);
-                    self.runtime_exists.set(true);
-                }
-                return Err(error.clone());
-            }
-            self.mounted.set(true);
-            Ok(())
-        }
-
-        fn detach_macos(&self, _root: &Path) -> Result<(), String> {
-            self.detach_count.set(self.detach_count.get() + 1);
-            self.events.borrow_mut().push("detach".to_string());
-            self.detach_error.clone().map_or(Ok(()), Err)
-        }
     }
 
-    fn lookup_from<'a>(
-        values: &'a BTreeMap<&'a str, &'a str>,
-    ) -> impl Fn(&str) -> Result<Option<String>, String> + 'a {
-        move |name| Ok(values.get(name).map(|value| (*value).to_string()))
-    }
-
-    fn macos_config(ensure: bool, ops: &FakeOps) -> MemoryRootConfig {
-        let values = BTreeMap::from([("HOME", "/Users/test")]);
-        MemoryRootConfig::from_lookup(ensure, ops, lookup_from(&values)).unwrap()
+    fn macos_config(ops: &FakeOps) -> MemoryRootConfig {
+        MemoryRootConfig::from_resolved_spec(
+            TaskWorktreePlatform::Macos,
+            TaskWorktreeMemoryRoot {
+                kind: TaskWorktreeMemoryRootKind::MacosRamVolume,
+                root: ops.root.clone(),
+                volume_name: Some(ops.volume_name.clone()),
+                sector_count: Some(ops.image_sector_count),
+            },
+            "test_memory_root".to_string(),
+            ops.runtime_root.clone(),
+            "test_runtime_root".to_string(),
+        )
+        .unwrap()
     }
 
     fn config_for_existing_platform_root(ops: &FakeOps) -> MemoryRootConfig {
         MemoryRootConfig {
             platform: ops.platform,
             mount_point: ops.root.clone(),
-            mount_point_source: RAM_MOUNT_POINT_ENV.to_string(),
+            mount_point_source: "test_memory_root".to_string(),
             volume_name: None,
             volume_name_source: "not_applicable".to_string(),
             requested_capacity_bytes: 0,
@@ -1207,195 +981,137 @@ mod tests {
             minimum_available_bytes: 0,
             minimum_available_source: "built_in".to_string(),
             runtime_root: ops.runtime_root.clone(),
-            runtime_root_source: "mount_point/ait-runtime".to_string(),
-            auto_mount_allowed: false,
-            auto_mount_source: "built_in_false".to_string(),
-            mount_lock_path: PathBuf::from("/host/ait/ram.lock"),
-            mount_lock_source: "test".to_string(),
+            runtime_root_source: "test_runtime_root".to_string(),
         }
     }
 
     #[test]
-    fn environment_precedence_and_defaults_are_bounded() {
-        let ops = FakeOps::macos(true);
-        let values = BTreeMap::from([
-            ("HOME", "/Users/test"),
-            (LEGACY_RAM_MOUNT_POINT_ENV, "/Volumes/LEGACY"),
-            (RAM_MOUNT_POINT_ENV, "/Volumes/FAST_RAM"),
-            (RAM_VOLUME_NAME_ENV, "FAST_RAM"),
-            (RAM_CAPACITY_BYTES_ENV, "4294967296"),
-            (RAM_MIN_AVAILABLE_BYTES_ENV, "1073741824"),
-            (RUNTIME_RAM_ROOT_ENV, "/Volumes/FAST_RAM/runtime"),
-            (RAM_AUTO_MOUNT_ENV, "yes"),
-            (
-                RAM_MOUNT_LOCK_PATH_ENV,
-                "/Users/test/.cache/ait/custom-ram.lock",
-            ),
-        ]);
-
-        let config = MemoryRootConfig::from_lookup(false, &ops, lookup_from(&values)).unwrap();
+    fn typed_memory_root_config_and_derived_runtime_are_bounded() {
+        let config = MemoryRootConfig::from_resolved_spec(
+            TaskWorktreePlatform::Macos,
+            TaskWorktreeMemoryRoot {
+                kind: TaskWorktreeMemoryRootKind::MacosRamVolume,
+                root: PathBuf::from("/Volumes/FAST_RAM"),
+                volume_name: Some("FAST_RAM".to_string()),
+                sector_count: Some(8_388_608),
+            },
+            "repo_config".to_string(),
+            PathBuf::from("/Volumes/FAST_RAM/.ait-repos/demo"),
+            "derived_from_task_worktree.memory_root".to_string(),
+        )
+        .unwrap();
 
         assert_eq!(config.mount_point, PathBuf::from("/Volumes/FAST_RAM"));
-        assert_eq!(config.mount_point_source, RAM_MOUNT_POINT_ENV);
+        assert_eq!(config.mount_point_source, "repo_config");
         assert_eq!(config.volume_name.as_deref(), Some("FAST_RAM"));
         assert_eq!(config.requested_capacity_bytes, 4_294_967_296);
-        assert_eq!(config.minimum_available_bytes, 1_073_741_824);
+        assert_eq!(config.minimum_available_bytes, 0);
         assert_eq!(
             config.runtime_root,
-            PathBuf::from("/Volumes/FAST_RAM/runtime")
+            PathBuf::from("/Volumes/FAST_RAM/.ait-repos/demo")
         );
-        assert!(config.auto_mount_allowed);
     }
 
     #[test]
-    fn malformed_values_and_overflow_fail_closed() {
-        let ops = FakeOps::macos(false);
-        for (name, value, expected) in [
-            (RAM_CAPACITY_BYTES_ENV, "nope", "integer byte count"),
-            (RAM_CAPACITY_BYTES_ENV, "0", "greater than zero"),
-            (RAM_MIN_AVAILABLE_BYTES_ENV, "-1", "integer byte count"),
-            (RAM_AUTO_MOUNT_ENV, "maybe", "must be one of"),
-            (
-                RAM_CAPACITY_BYTES_ENV,
-                "18446744073709551615",
-                "overflows sector rounding",
-            ),
-        ] {
-            let values = BTreeMap::from([("HOME", "/Users/test"), (name, value)]);
-            let error =
-                MemoryRootConfig::from_lookup(false, &ops, lookup_from(&values)).unwrap_err();
-            assert!(error.contains(expected), "{error}");
+    fn malformed_typed_values_and_overflow_fail_closed() {
+        for sector_count in [0, -1] {
+            let error = MemoryRootConfig::from_resolved_spec(
+                TaskWorktreePlatform::Macos,
+                TaskWorktreeMemoryRoot {
+                    kind: TaskWorktreeMemoryRootKind::MacosRamVolume,
+                    root: PathBuf::from("/Volumes/AIT_RAM"),
+                    volume_name: Some("AIT_RAM".to_string()),
+                    sector_count: Some(sector_count),
+                },
+                "repo_config".to_string(),
+                PathBuf::from("/Volumes/AIT_RAM/task-runtime"),
+                "derived".to_string(),
+            )
+            .unwrap_err();
+            assert!(error.contains("positive integer"), "{error}");
         }
+        let overflow = MemoryRootConfig::from_resolved_spec(
+            TaskWorktreePlatform::Macos,
+            TaskWorktreeMemoryRoot {
+                kind: TaskWorktreeMemoryRootKind::MacosRamVolume,
+                root: PathBuf::from("/Volumes/AIT_RAM"),
+                volume_name: Some("AIT_RAM".to_string()),
+                sector_count: Some(i64::MAX),
+            },
+            "repo_config".to_string(),
+            PathBuf::from("/Volumes/AIT_RAM/task-runtime"),
+            "derived".to_string(),
+        )
+        .unwrap_err();
+        assert!(overflow.contains("overflows byte capacity"), "{overflow}");
     }
 
     #[test]
     fn mount_label_and_runtime_boundaries_fail_closed() {
-        let ops = FakeOps::macos(false);
-        let label_mismatch = BTreeMap::from([
-            ("HOME", "/Users/test"),
-            (RAM_MOUNT_POINT_ENV, "/Volumes/AIT_RAM"),
-            (RAM_VOLUME_NAME_ENV, "OTHER"),
-        ]);
-        assert!(
-            MemoryRootConfig::from_lookup(false, &ops, lookup_from(&label_mismatch))
-                .unwrap_err()
-                .contains("must exactly equal")
-        );
+        let mismatch = MemoryRootConfig::from_resolved_spec(
+            TaskWorktreePlatform::Macos,
+            TaskWorktreeMemoryRoot {
+                kind: TaskWorktreeMemoryRootKind::MacosRamVolume,
+                root: PathBuf::from("/Volumes/AIT_RAM"),
+                volume_name: Some("OTHER".to_string()),
+                sector_count: Some(DEFAULT_MACOS_RAM_VOLUME_SECTOR_COUNT),
+            },
+            "repo_config".to_string(),
+            PathBuf::from("/Volumes/AIT_RAM/task-runtime"),
+            "derived".to_string(),
+        )
+        .unwrap_err();
+        assert!(mismatch.contains("must exactly match"), "{mismatch}");
 
-        let runtime_escape = BTreeMap::from([
-            ("HOME", "/Users/test"),
-            (RUNTIME_RAM_ROOT_ENV, "/tmp/ait-runtime"),
-        ]);
+        let runtime_escape = MemoryRootConfig::from_resolved_spec(
+            TaskWorktreePlatform::Macos,
+            TaskWorktreeMemoryRoot {
+                kind: TaskWorktreeMemoryRootKind::MacosRamVolume,
+                root: PathBuf::from("/Volumes/AIT_RAM"),
+                volume_name: Some("AIT_RAM".to_string()),
+                sector_count: Some(DEFAULT_MACOS_RAM_VOLUME_SECTOR_COUNT),
+            },
+            "repo_config".to_string(),
+            PathBuf::from("/tmp/task-runtime"),
+            "repo_config.task_worktree.ephemeral_root".to_string(),
+        )
+        .unwrap_err();
         assert!(
-            MemoryRootConfig::from_lookup(false, &ops, lookup_from(&runtime_escape))
-                .unwrap_err()
-                .contains("strict descendant")
+            runtime_escape.contains("strict descendant"),
+            "{runtime_escape}"
         );
     }
 
     #[test]
-    fn already_mounted_root_never_takes_mount_lock() {
+    fn mounted_root_is_inspected_without_provisioning_fields() {
         let ops = FakeOps::macos(true);
-        let payload = ensure_memory_root_with_ops(&macos_config(true, &ops), &ops).unwrap();
+        let payload = inspect_memory_root_with_ops(&macos_config(&ops), &ops).unwrap();
 
+        assert_eq!(payload["contract"], "memory-root-v2");
         assert_eq!(payload["state"], "pass");
-        assert_eq!(payload["auto_mounted"], false);
-        assert_eq!(payload["mount_lock"]["acquired"], false);
-        assert_eq!(ops.lock_count.get(), 0);
-        assert_eq!(ops.provision_count.get(), 0);
+        assert!(payload.get("auto_mount_allowed").is_none());
+        assert!(payload.get("auto_mounted").is_none());
+        assert!(payload.get("mount_lock").is_none());
     }
 
     #[test]
-    fn missing_root_requires_explicit_auto_mount_permission() {
+    fn missing_root_remains_missing_without_creating_runtime_state() {
         let ops = FakeOps::macos(false);
-        let error = ensure_memory_root_with_ops(&macos_config(false, &ops), &ops).unwrap_err();
+        let error = inspect_memory_root_with_ops(&macos_config(&ops), &ops).unwrap_err();
 
-        assert!(error.contains(RAM_AUTO_MOUNT_ENV));
-        assert_eq!(ops.lock_count.get(), 0);
-        assert_eq!(ops.provision_count.get(), 0);
+        assert!(error.contains("is not mounted"));
+        assert!(!ops.mounted.get());
+        assert!(!ops.runtime_exists.get());
     }
 
     #[test]
     fn existing_non_ram_path_is_never_reformatted() {
         let mut ops = FakeOps::macos(false);
         ops.existing_non_ram = true;
-        let error = ensure_memory_root_with_ops(&macos_config(true, &ops), &ops).unwrap_err();
+        let error = inspect_memory_root_with_ops(&macos_config(&ops), &ops).unwrap_err();
 
         assert!(error.contains("Existing path"));
-        assert_eq!(ops.lock_count.get(), 0);
-        assert_eq!(ops.provision_count.get(), 0);
-    }
-
-    #[test]
-    fn concurrent_mount_is_rechecked_under_short_lock() {
-        let mut ops = FakeOps::macos(false);
-        ops.mount_on_specs_call = Some(2);
-        let payload = ensure_memory_root_with_ops(&macos_config(true, &ops), &ops).unwrap();
-
-        assert_eq!(payload["auto_mounted"], false);
-        assert_eq!(payload["mount_lock"]["acquired"], true);
-        assert_eq!(ops.lock_count.get(), 1);
-        assert_eq!(ops.provision_count.get(), 0);
-        assert_eq!(
-            ops.events.borrow().as_slice(),
-            ["specs:1", "lock", "specs:2"]
-        );
-    }
-
-    #[test]
-    fn missing_root_is_provisioned_and_validated_under_lock() {
-        let ops = FakeOps::macos(false);
-        let payload = ensure_memory_root_with_ops(&macos_config(true, &ops), &ops).unwrap();
-
-        assert_eq!(payload["auto_mounted"], true);
-        assert_eq!(payload["actual_image_capacity_bytes"], 8_589_934_592u64);
-        assert_eq!(ops.lock_count.get(), 1);
-        assert_eq!(ops.provision_count.get(), 1);
-        assert_eq!(ops.detach_count.get(), 0);
-        assert_eq!(
-            ops.events.borrow().as_slice(),
-            ["specs:1", "lock", "specs:2", "provision", "specs:3"]
-        );
-    }
-
-    #[test]
-    fn attach_or_format_failure_is_reported_without_false_success() {
-        for failure in ["attach failed", "format failed"] {
-            let mut ops = FakeOps::macos(false);
-            ops.provision_error = Some(failure.to_string());
-            let error = ensure_memory_root_with_ops(&macos_config(true, &ops), &ops).unwrap_err();
-            assert_eq!(error, failure);
-            assert_eq!(ops.provision_count.get(), 1);
-        }
-    }
-
-    #[test]
-    fn concurrent_mount_after_provision_race_is_revalidated() {
-        let mut ops = FakeOps::macos(false);
-        ops.provision_error = Some("mount appeared before attach".to_string());
-        ops.mount_on_provision_error = true;
-
-        let payload = ensure_memory_root_with_ops(&macos_config(true, &ops), &ops).unwrap();
-
-        assert_eq!(payload["auto_mounted"], false);
-        assert_eq!(payload["mount_lock"]["acquired"], true);
-        assert_eq!(ops.provision_count.get(), 1);
-        assert_eq!(ops.detach_count.get(), 0);
-    }
-
-    #[test]
-    fn invalid_new_mount_is_detached_and_cleanup_failure_is_fatal() {
-        let mut ops = FakeOps::macos(false);
-        ops.filesystem_available = 1;
-        ops.detach_error = Some("detach failed".to_string());
-        let mut config = macos_config(true, &ops);
-        config.minimum_available_bytes = 2;
-
-        let error = ensure_memory_root_with_ops(&config, &ops).unwrap_err();
-
-        assert!(error.contains("below AIT_RAM_MIN_AVAILABLE_BYTES=2"));
-        assert!(error.contains("Cleanup also failed: detach failed"));
-        assert_eq!(ops.detach_count.get(), 1);
+        assert!(!ops.mounted.get());
     }
 
     #[test]
@@ -1403,31 +1119,30 @@ mod tests {
         let mut wrong_mount = FakeOps::macos(true);
         wrong_mount.volume_mount_point = PathBuf::from("/Volumes/OTHER");
         assert!(
-            ensure_memory_root_with_ops(&macos_config(false, &wrong_mount), &wrong_mount)
+            inspect_memory_root_with_ops(&macos_config(&wrong_mount), &wrong_mount)
                 .unwrap_err()
                 .contains("diskutil reports mount point")
         );
 
         let mut undersized = FakeOps::macos(true);
+        let config = macos_config(&undersized);
         undersized.image_sector_count = DEFAULT_MACOS_RAM_VOLUME_SECTOR_COUNT - 1;
-        assert!(
-            ensure_memory_root_with_ops(&macos_config(false, &undersized), &undersized)
-                .unwrap_err()
-                .contains("below the requested")
-        );
+        assert!(inspect_memory_root_with_ops(&config, &undersized)
+            .unwrap_err()
+            .contains("below the requested"));
 
         let mut low_free = FakeOps::macos(true);
         low_free.filesystem_available = 1;
-        let mut config = macos_config(false, &low_free);
+        let mut config = macos_config(&low_free);
         config.minimum_available_bytes = 2;
-        assert!(ensure_memory_root_with_ops(&config, &low_free)
+        assert!(inspect_memory_root_with_ops(&config, &low_free)
             .unwrap_err()
             .contains("available bytes"));
 
         let mut escaped = FakeOps::macos(true);
         escaped.canonical_runtime = PathBuf::from("/tmp/escaped");
         assert!(
-            ensure_memory_root_with_ops(&macos_config(false, &escaped), &escaped)
+            inspect_memory_root_with_ops(&macos_config(&escaped), &escaped)
                 .unwrap_err()
                 .contains("escapes")
         );
@@ -1439,14 +1154,13 @@ mod tests {
         ops.rebase(TaskWorktreePlatform::Linux, PathBuf::from("/dev/shm"));
         ops.linux_fstype = Some("apfs".to_string());
         let config = config_for_existing_platform_root(&ops);
-        assert!(ensure_memory_root_with_ops(&config, &ops)
+        assert!(inspect_memory_root_with_ops(&config, &ops)
             .unwrap_err()
             .contains("not tmpfs or ramfs"));
 
         ops.linux_fstype = Some("tmpfs".to_string());
-        let payload = ensure_memory_root_with_ops(&config, &ops).unwrap();
+        let payload = inspect_memory_root_with_ops(&config, &ops).unwrap();
         assert_eq!(payload["platform_proof"], "linux_mountinfo:tmpfs");
-        assert_eq!(payload["mount_lock"]["acquired"], false);
     }
 
     #[test]
@@ -1455,17 +1169,16 @@ mod tests {
         ops.rebase(TaskWorktreePlatform::Windows, PathBuf::from("R:\\"));
         ops.windows_drive_type = Some(3);
         let config = config_for_existing_platform_root(&ops);
-        assert!(ensure_memory_root_with_ops(&config, &ops)
+        assert!(inspect_memory_root_with_ops(&config, &ops)
             .unwrap_err()
             .contains("not a DRIVE_RAMDISK"));
 
         ops.windows_drive_type = Some(WINDOWS_DRIVE_RAMDISK);
-        let payload = ensure_memory_root_with_ops(&config, &ops).unwrap();
+        let payload = inspect_memory_root_with_ops(&config, &ops).unwrap();
         assert_eq!(
             payload["platform_proof"],
             "windows_drive_type:DRIVE_RAMDISK"
         );
-        assert_eq!(payload["mount_lock"]["acquired"], false);
     }
 
     #[test]

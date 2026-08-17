@@ -1,7 +1,4 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
-import os from "node:os";
-import path from "node:path";
 import test from "node:test";
 
 import {
@@ -52,21 +49,6 @@ for (const [field, value, message] of [
   });
 }
 
-test("management lists an empty manifest through the real binding", async (context) => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "ait-node-agent-"));
-  context.after(() => rm(root, { recursive: true, force: true }));
-  await mkdir(path.join(root, ".ait"));
-  const manifestPath = path.join(root, ".ait", "agent-workers.json");
-
-  assert.deepEqual(
-    new AgentClient().listWorkers("telegram", {
-      repoRoot: root,
-      manifestPath,
-    }),
-    [],
-  );
-});
-
 test("reply provider uses the real worker transaction binding", () => {
   const result = new AgentClient().replyProvider({
     contract: "unsupported",
@@ -79,21 +61,25 @@ test("reply provider uses the real worker transaction binding", () => {
   assert.equal(result.error.kind, "provider_request_contract");
 });
 
-test("agent input validation happens before a native call", () => {
+test("retired management surface is absent and worker input fails closed", () => {
   const client = new AgentClient();
 
-  assert.throws(
-    () => client.listWorkers("email"),
-    /unsupported agent transport/,
-  );
-  assert.throws(() => client.start("telegram", " "), /worker name/);
+  for (const name of [
+    "manage",
+    "add",
+    "listWorkers",
+    "status",
+    "start",
+    "stop",
+    "restart",
+    "remove",
+    "logs",
+  ]) {
+    assert.equal(name in client, false);
+  }
   assert.throws(
     () => client.workerTransaction("run-command", {}),
     /unsupported worker operation/,
-  );
-  assert.throws(
-    () => client.listWorkers("telegram", { commandArgs: [] }),
-    /unsupported agent options fields/,
   );
   assert.throws(
     () => client.replyProvider(undefined),

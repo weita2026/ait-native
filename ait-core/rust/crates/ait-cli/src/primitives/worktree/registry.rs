@@ -139,28 +139,42 @@ pub(in crate::primitives) fn normalize_worktree_cleanup_policy(
     }
 }
 
+fn normalize_idle_duration(
+    value: Option<&str>,
+    option_name: &str,
+    require_positive: bool,
+) -> Result<(ChronoDuration, String), String> {
+    let text = normalized_text(value).unwrap_or_else(|| "7d".to_string());
+    let syntax_error = || format!("`{option_name}` must look like `7d`, `12h`, or `30m`.");
+    let (unit_offset, unit) = text.char_indices().last().ok_or_else(&syntax_error)?;
+    let unit = unit.to_ascii_lowercase();
+    let count_text = &text[..unit_offset];
+    let count = count_text.parse::<i64>().map_err(|_| syntax_error())?;
+    if require_positive && count <= 0 {
+        return Err(format!(
+            "`{option_name}` must be greater than zero, such as `7d`, `12h`, or `30m`."
+        ));
+    }
+    let delta = match unit {
+        'd' => ChronoDuration::try_days(count),
+        'h' => ChronoDuration::try_hours(count),
+        'm' => ChronoDuration::try_minutes(count),
+        _ => return Err(syntax_error()),
+    }
+    .ok_or_else(|| format!("`{option_name}` is outside the supported duration range."))?;
+    Ok((delta, format!("{count}{unit}")))
+}
+
 pub(in crate::primitives) fn normalize_worktree_older_than(
     value: Option<&str>,
 ) -> Result<(ChronoDuration, String), String> {
-    let text = normalized_text(value).unwrap_or_else(|| "7d".to_string());
-    let unit = text
-        .chars()
-        .last()
-        .ok_or_else(|| "`--older-than` must look like `7d`, `12h`, or `30m`.".to_string())?
-        .to_ascii_lowercase();
-    let count_text = &text[..text.len().saturating_sub(1)];
-    let count = count_text
-        .parse::<i64>()
-        .map_err(|_| "`--older-than` must look like `7d`, `12h`, or `30m`.".to_string())?;
-    let delta = match unit {
-        'd' => ChronoDuration::days(count),
-        'h' => ChronoDuration::hours(count),
-        'm' => ChronoDuration::minutes(count),
-        _ => {
-            return Err("`--older-than` must look like `7d`, `12h`, or `30m`.".to_string());
-        }
-    };
-    Ok((delta, format!("{count}{unit}")))
+    normalize_idle_duration(value, "--older-than", false)
+}
+
+pub(in crate::primitives) fn normalize_line_idle_for(
+    value: Option<&str>,
+) -> Result<(ChronoDuration, String), String> {
+    normalize_idle_duration(value, "--idle-for", true)
 }
 
 pub(in crate::primitives) fn load_worktree_metadata(

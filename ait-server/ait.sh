@@ -245,19 +245,16 @@ server_usage() {
   cat <<'EOF'
 Usage:
   ./ait.sh server init
-  ./ait.sh server probe
-  ./ait.sh server run
-  ./ait.sh server start
-  ./ait.sh server status
+  ./ait.sh server probe [--defer-ci-admission]
+  ./ait.sh server run [--listen <ip:port>] [--defer-ci-admission]
+  ./ait.sh server start [--listen <ip:port>] [--defer-ci-admission]
+  ./ait.sh server status [--listen <ip:port>]
 
 Required:
   AIT_NATIVE_SERVER_DATA=/durable/path/to/server-data
 
 Optional:
-  AITSERVER_LISTEN=127.0.0.1:8088
-  AIT_NATIVE_SERVER_CI_TMP_ROOT=/fast/tmp/root
-  AIT_NATIVE_SERVER_RAM_SHARD_ROOT=/fast/shard/root
-  AIT_SERVER_FULL_TEST_JOB_CPU_TOKENS=8
+  AIT_NATIVE_SERVER_CI_RAM_ROOT=/memory-backed/runtime/root
   AIT_SERVER_LAUNCHER=foreground|screen
   AIT_SERVER_BIN=/path/to/release/ait-server
   AIT_SERVER_BUILD=0
@@ -296,10 +293,6 @@ EOF
 prepare_server_runtime_env() {
   require_server_runtime_root
   export AIT_LOG_DIR="${AIT_LOG_DIR:-${AIT_NATIVE_SERVER_DATA}/logs}"
-  export AIT_NATIVE_SERVER_CI_TMP_ROOT="${AIT_NATIVE_SERVER_CI_TMP_ROOT:-${AIT_NATIVE_SERVER_DATA}/tmp}"
-  export AIT_PATCHSET_CI_TMPDIR="${AIT_PATCHSET_CI_TMPDIR:-${AIT_NATIVE_SERVER_CI_TMP_ROOT}/patchset-ci}"
-  export AIT_REPO_CI_TMPDIR="${AIT_REPO_CI_TMPDIR:-${AIT_NATIVE_SERVER_CI_TMP_ROOT}/repo-ci}"
-  export AIT_LAND_MAIN_SEED_TMPDIR="${AIT_LAND_MAIN_SEED_TMPDIR:-${AIT_NATIVE_SERVER_CI_TMP_ROOT}/land-main-seed}"
 }
 
 server_binary_path() {
@@ -341,13 +334,8 @@ server_init() {
   local server_bin
   server_bin="$(server_binary_path)"
   reject_debug_server_binary "${server_bin}"
-  "${server_bin}" init
-  mkdir -p \
-    "${AIT_LOG_DIR}" \
-    "${AIT_NATIVE_SERVER_CI_TMP_ROOT}" \
-    "${AIT_PATCHSET_CI_TMPDIR}" \
-    "${AIT_REPO_CI_TMPDIR}" \
-    "${AIT_LAND_MAIN_SEED_TMPDIR}"
+  "${server_bin}" init --data "${AIT_NATIVE_SERVER_DATA}"
+  mkdir -p "${AIT_LOG_DIR}"
 }
 
 server_probe() {
@@ -356,7 +344,7 @@ server_probe() {
   local server_bin
   server_bin="$(server_binary_path)"
   reject_debug_server_binary "${server_bin}"
-  "${server_bin}" probe
+  "${server_bin}" probe --data "${AIT_NATIVE_SERVER_DATA}" "$@"
 }
 
 server_run() {
@@ -364,7 +352,7 @@ server_run() {
   local server_bin
   server_bin="$(server_binary_path)"
   reject_debug_server_binary "${server_bin}"
-  exec "${server_bin}" run
+  exec "${server_bin}" run --data "${AIT_NATIVE_SERVER_DATA}" "$@"
 }
 
 server_start() {
@@ -373,11 +361,46 @@ server_start() {
   server_bin="$(server_binary_path)"
   reject_debug_server_binary "${server_bin}"
 
+  local listen
+  local listen_set
+  local defer_ci_admission
+  listen="127.0.0.1:8088"
+  listen_set=0
+  defer_ci_admission=0
+  while (( $# > 0 )); do
+    case "$1" in
+      --listen)
+        if [[ -z "${2:-}" ]]; then
+          printf '%s\n' '--listen requires an IP address and port.' >&2
+          return 2
+        fi
+        if [[ "${listen_set}" == "1" ]]; then
+          printf '%s\n' '--listen may be supplied only once.' >&2
+          return 2
+        fi
+        listen="$2"
+        listen_set=1
+        shift 2
+        ;;
+      --defer-ci-admission)
+        defer_ci_admission=1
+        shift
+        ;;
+      *)
+        printf 'Unknown server start argument: %s\n' "$1" >&2
+        return 2
+        ;;
+    esac
+  done
+
   local launcher
   launcher="${AIT_SERVER_LAUNCHER:-foreground}"
   case "${launcher}" in
     foreground)
-      exec "${server_bin}" run
+      if [[ "${defer_ci_admission}" == "1" ]]; then
+        exec "${server_bin}" run --data "${AIT_NATIVE_SERVER_DATA}" --listen "${listen}" --defer-ci-admission
+      fi
+      exec "${server_bin}" run --data "${AIT_NATIVE_SERVER_DATA}" --listen "${listen}"
       ;;
     screen)
       if ! command -v screen >/dev/null 2>&1; then
@@ -388,7 +411,7 @@ server_start() {
       local log_file
       session_name="${AIT_SERVER_SCREEN_NAME:-ait-server}"
       log_file="${AIT_SERVER_LOG_FILE:-${AIT_LOG_DIR}/ait-server.log}"
-      screen -dmS "${session_name}" /bin/sh -c 'exec "$1" run >> "$2" 2>&1' sh "${server_bin}" "${log_file}"
+      screen -dmS "${session_name}" /bin/sh -c 'if [ "$4" = "1" ]; then exec "$1" run --data "$2" --listen "$3" --defer-ci-admission >> "$5" 2>&1; fi; exec "$1" run --data "$2" --listen "$3" >> "$5" 2>&1' sh "${server_bin}" "${AIT_NATIVE_SERVER_DATA}" "${listen}" "${defer_ci_admission}" "${log_file}"
       printf 'ait-server started with screen session %s\n' "${session_name}"
       printf 'binary: %s\n' "${server_bin}"
       printf 'log: %s\n' "${log_file}"
@@ -403,8 +426,18 @@ server_start() {
 
 server_status() {
   local listen
-  listen="${AITSERVER_LISTEN:-127.0.0.1:8088}"
-  printf 'AITSERVER_LISTEN=%s\n' "${listen}"
+  listen="127.0.0.1:8088"
+  if [[ "${1:-}" == "--listen" ]]; then
+    if [[ -z "${2:-}" ]]; then
+      printf '%s\n' '--listen requires an IP address and port.' >&2
+      return 2
+    fi
+    listen="$2"
+  elif [[ -n "${1:-}" ]]; then
+    printf 'Unknown server status argument: %s\n' "$1" >&2
+    return 2
+  fi
+  printf 'listen=%s\n' "${listen}"
   if command -v lsof >/dev/null 2>&1; then
     local port
     port="${listen##*:}"
@@ -422,16 +455,20 @@ server_command() {
       server_init "$@"
       ;;
     probe)
-      server_probe
+      shift
+      server_probe "$@"
       ;;
     run)
-      server_run
+      shift
+      server_run "$@"
       ;;
     start)
-      server_start
+      shift
+      server_start "$@"
       ;;
     status)
-      server_status
+      shift
+      server_status "$@"
       ;;
     --help|-h|"")
       server_usage

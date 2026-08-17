@@ -168,6 +168,8 @@ pub fn build_list_worker_jobs_request_spec(
     state_kind: Option<u8>,
     limit: u32,
 ) -> PlanHttpClientResult<PlanHttpRequestSpec> {
+    crate::server_operational::validate_worker_job_list_limit(limit)
+        .map_err(PlanHttpClientError::Invalid)?;
     let mut query_pairs = vec![("limit".to_string(), limit.to_string())];
     if let Some(state_kind) = state_kind {
         query_pairs.push(("state_kind".to_string(), state_kind.to_string()));

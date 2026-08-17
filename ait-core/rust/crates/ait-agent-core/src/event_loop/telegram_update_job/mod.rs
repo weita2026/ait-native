@@ -186,7 +186,7 @@ impl TelegramUpdateInputErrorKind {
     pub fn user_message(self) -> &'static str {
         match self {
             Self::SpeechToTextNotEnabled => {
-                "Local STT is not enabled for this Telegram worker. Set `AIT_TELEGRAM_STT_MODE=local-stt` and retry."
+                "Local STT is not enabled for this Telegram worker. Set `stt_mode` to `local-stt` in `.ait/agent-workers.json` and retry."
             }
             Self::SpeechAttachmentMissing => {
                 "No local-STT attachment was found in this Telegram message."

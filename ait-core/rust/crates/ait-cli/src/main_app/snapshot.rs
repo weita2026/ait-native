@@ -5,21 +5,13 @@ fn run_snapshot(repo: RepoRuntime, command: SnapshotCommand) -> Result<ExitCode,
             let payload = {
                 let _range = perfetto_range!("ait.cli.snapshot_create.lock_and_author");
                 run_locked_workspace_command(&repo, "ait-cli snapshot create", || {
-                    match args.profile {
-                        Some(SnapshotProfile::Quick) => snapshot_create_quick(
-                            &repo,
-                            args.message.as_deref(),
-                            args.intent.as_deref(),
-                            args.validation.as_deref(),
-                        ),
-                        None => snapshot_create(&repo, args.message.as_deref()),
-                    }
+                    snapshot_create(&repo, args.message.as_deref())
                 })?
             };
             {
                 let _range = perfetto_range!("ait.cli.snapshot_create.render");
                 let mut output = payload.clone();
-                if args.json && !json_mode_debug_enabled() {
+                if args.json {
                     if let Some(object) = output.as_object_mut() {
                         object.remove("phase_timings_ms");
                     }
@@ -32,9 +24,6 @@ fn run_snapshot(repo: RepoRuntime, command: SnapshotCommand) -> Result<ExitCode,
                         "snapshot_id",
                         "line_name",
                         "parent_snapshot_id",
-                        "profile",
-                        "intent",
-                        "validation",
                         "message",
                     ],
                 )?;
@@ -50,18 +39,18 @@ fn run_snapshot(repo: RepoRuntime, command: SnapshotCommand) -> Result<ExitCode,
             {
                 let _range = perfetto_range!("ait.cli.snapshot_list.render");
                 if args.json {
+                    let payload = bounded_ordered_json_payload(
+                        &payload,
+                        args.all,
+                        DEFAULT_AGENT_TEXT_LIST_LIMIT,
+                    );
                     print_json(&payload)?;
                 } else if let Some(rows) = payload.as_array() {
-                    print_agent_list(
+                    print_bounded_evidence(
                         rows,
-                        &[
-                            "snapshot_id",
-                            "line_name",
-                            "message",
-                        ],
+                        &["snapshot_id", "line_name", "message"],
                         args.all,
-                        &[],
-                        None,
+                        DEFAULT_AGENT_TEXT_LIST_LIMIT,
                         "ait snapshot list --all",
                     );
                 }
@@ -114,6 +103,40 @@ fn run_snapshot(repo: RepoRuntime, command: SnapshotCommand) -> Result<ExitCode,
             }
             Ok(ExitCode::SUCCESS)
         }
+        SnapshotCommand::RestoreLines(args) => {
+            let payload = snapshot_restore_lines(
+                &repo,
+                &SnapshotRestoreLinesRequest {
+                    snapshot_id: args.snapshot_id,
+                    path: args.path,
+                    line: args.line,
+                    start_line: args.start_line,
+                    end_line: args.end_line,
+                    apply: args.yes,
+                },
+            )?;
+            emit_result(
+                "ait-cli snapshot restore-lines",
+                &payload,
+                args.json,
+                &[
+                    "mode",
+                    "snapshot_id",
+                    "path",
+                    "blob_id",
+                    "selected_range",
+                    "selected_line_count",
+                    "source_line_count",
+                    "workspace_line_count",
+                    "changed_line_count",
+                    "would_overwrite_selected_local_edits",
+                    "unchanged_outside_selected_range",
+                    "creates_snapshot",
+                    "applied",
+                ],
+            )?;
+            Ok(ExitCode::SUCCESS)
+        }
         SnapshotCommand::Revert(args) => {
             let snapshot_id = resolve_snapshot_ref_cmd(&repo, &args.snapshot_id)?;
             let payload = run_locked_workspace_command(&repo, "ait-cli snapshot revert", || {
@@ -136,7 +159,11 @@ fn run_snapshot(repo: RepoRuntime, command: SnapshotCommand) -> Result<ExitCode,
         SnapshotCommand::Replay(args) => {
             let snapshot_id = resolve_snapshot_ref_cmd(&repo, &args.snapshot_id)?;
             let payload = run_locked_workspace_command(&repo, "ait-cli snapshot replay", || {
-                snapshot_replay(&repo, &snapshot_id, &args.onto, args.force, args.dry_run)
+                let onto_line = match args.onto.as_deref() {
+                    Some(onto_line) => onto_line.to_string(),
+                    None => repo.current_line_name()?,
+                };
+                snapshot_replay(&repo, &snapshot_id, &onto_line, args.force, args.dry_run)
             })?;
             emit_result(
                 "ait-cli snapshot replay",

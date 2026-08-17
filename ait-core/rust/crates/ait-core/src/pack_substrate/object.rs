@@ -352,7 +352,7 @@ fn write_zstd_chunked_pack_inputs(
         pack_id,
         created_at,
         inputs,
-        zstd_chunked_chunk_bytes_from_env("AIT_OBJECT_PACK_CHUNK_MIB"),
+        ZSTD_CHUNKED_DEFAULT_CHUNK_BYTES,
     )?;
     let pack_index_json = ObjectPackIndexJson::stateless().zstd_chunked_index_json(&pack_index)?;
     let index_bytes = encode_zstd_chunked_index(&pack_index, ZSTD_CHUNKED_INDEX_KIND_OBJECT)?;

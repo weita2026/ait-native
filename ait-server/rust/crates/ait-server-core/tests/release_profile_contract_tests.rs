@@ -310,6 +310,9 @@ fn ait_server_launcher_uses_release_binary_only() {
     assert!(!script.contains("debug/ait-server"));
     assert!(!script.contains("AIT_NATIVE_SERVER_DB_BACKEND"));
     assert!(!script.contains("AIT_NATIVE_SERVER_POSTGRES_DSN"));
+    assert!(script.contains("Unknown server start argument"));
+    assert!(script.contains(r#"exec "$1" run --data "$2" --listen "$3""#));
+    assert!(!script.contains("shift 3"));
 }
 
 #[test]

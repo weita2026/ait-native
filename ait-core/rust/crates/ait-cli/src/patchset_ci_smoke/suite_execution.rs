@@ -16,13 +16,12 @@ trait PatchsetSmokeSuite {
 struct PreflightSmokeSuite;
 
 #[derive(Clone, Copy)]
-struct PackageSmokeSuite;
+struct PackageSmokeSuite<'a> {
+    source_root: Option<&'a Path>,
+}
 
 #[derive(Clone, Copy)]
 struct StableSmokeSuite;
-
-#[derive(Clone, Copy)]
-struct ReleaseArtifactSmokeSuite;
 
 fn run_smoke_suite(
     suite: &impl PatchsetSmokeSuite,
@@ -64,7 +63,7 @@ impl PatchsetSmokeSuite for PreflightSmokeSuite {
     }
 }
 
-impl PatchsetSmokeSuite for PackageSmokeSuite {
+impl PatchsetSmokeSuite for PackageSmokeSuite<'_> {
     fn suite_id(&self) -> &'static str {
         "package-smoke"
     }
@@ -79,7 +78,7 @@ impl PatchsetSmokeSuite for PackageSmokeSuite {
         assert_release_python_authority_retired(&repo_root)?;
         assert_plan_sync_stays_lineage_only()?;
         assert_plan_sync_bypasses_root_worktree_guard()?;
-        assert_plan_source_files_omit_legacy_line_alignment_contract(&repo_root)?;
+        assert_plan_source_files_omit_legacy_line_alignment_contract(&repo_root, self.source_root)?;
         assert_init_establishes_agent_contract()?;
         assert_sprint_readme_contract(&repo_root)?;
         Ok(json!({
@@ -96,20 +95,6 @@ impl PatchsetSmokeSuite for PackageSmokeSuite {
                 "sprint_readme_contract"
             ]
         }))
-    }
-}
-
-impl PatchsetSmokeSuite for ReleaseArtifactSmokeSuite {
-    fn suite_id(&self) -> &'static str {
-        "release-artifact-smoke"
-    }
-
-    fn contract(&self) -> &'static str {
-        "AT.patchset_ci.release_artifact_smoke.v1"
-    }
-
-    fn run(&self, repo: &RepoRuntime) -> Result<JsonValue, String> {
-        crate::release_surface::release_artifact_smoke(repo)
     }
 }
 
@@ -154,7 +139,6 @@ impl PatchsetSmokeSuite for StableSmokeSuite {
             &[
                 "patchset",
                 "publish",
-                "--change",
                 "RC-1",
                 "--summary",
                 "Native Rust patchset",
@@ -236,12 +220,7 @@ impl PatchsetSmokeSuite for StableSmokeSuite {
             return Err("policy eval smoke did not pass".to_string());
         }
 
-        let task_land = json_output(
-            root,
-            &[
-                "task", "land", "RT-1", "--target", "main", "--mode", "direct", "--json",
-            ],
-        )?;
+        let task_land = json_output(root, &["task", "land", "RT-1", "--json"])?;
         if string_field(&task_land, "apply_status").as_deref() != Some("done") {
             return Err("task land smoke did not finish land and task completion".to_string());
         }
@@ -315,50 +294,60 @@ pub fn run_preflight(repo: &RepoRuntime) -> Result<JsonValue, String> {
     run_smoke_suite(&PreflightSmokeSuite, repo)
 }
 
-pub fn run_package_smoke(repo: &RepoRuntime) -> Result<JsonValue, String> {
-    run_smoke_suite(&PackageSmokeSuite, repo)
+pub fn run_package_smoke(
+    repo: &RepoRuntime,
+    source_root: Option<&Path>,
+    cli_executable: &Path,
+) -> Result<JsonValue, String> {
+    with_internal_cli_executable(cli_executable, || {
+        run_smoke_suite(&PackageSmokeSuite { source_root }, repo)
+    })
 }
 
-pub fn run_stable_smoke(repo: &RepoRuntime) -> Result<JsonValue, String> {
+pub(super) fn run_stable_smoke_inner(repo: &RepoRuntime) -> Result<JsonValue, String> {
     run_smoke_suite(&StableSmokeSuite, repo)
 }
 
-pub fn run_release_artifact_smoke(repo: &RepoRuntime) -> Result<JsonValue, String> {
-    run_smoke_suite(&ReleaseArtifactSmokeSuite, repo)
+pub fn run_stable_smoke(repo: &RepoRuntime, cli_executable: &Path) -> Result<JsonValue, String> {
+    with_internal_cli_executable(cli_executable, || run_stable_smoke_inner(repo))
 }
 
 pub fn run_tg1_required(
     repo: &RepoRuntime,
     requested_case_ids: &[String],
+    source_root: Option<&Path>,
+    cli_executable: &Path,
 ) -> Result<JsonValue, String> {
-    let root = repo.workspace_root();
-    let cases = resolve_tg1_cases(requested_case_ids)?;
-    let mut check_ids = BTreeSet::new();
-    for case in &cases {
-        check_ids.insert(case.check_id);
-    }
+    with_internal_cli_executable(cli_executable, || {
+        let root = repo.workspace_root();
+        let cases = resolve_tg1_cases(requested_case_ids)?;
+        let mut check_ids = BTreeSet::new();
+        for case in &cases {
+            check_ids.insert(case.check_id);
+        }
 
-    let mut checks = Vec::new();
-    for check_id in check_ids {
-        run_tg1_check(check_id, repo, &root)?;
-        checks.push(json!({
-            "check_id": check_id,
+        let mut checks = Vec::new();
+        for check_id in check_ids {
+            run_tg1_check(check_id, repo, &root, source_root)?;
+            checks.push(json!({
+                "check_id": check_id,
+                "status": "pass",
+            }));
+        }
+
+        Ok(json!({
+            "contract": "AT.tg1_required.native_runner.v1",
             "status": "pass",
-        }));
-    }
-
-    Ok(json!({
-        "contract": "AT.tg1_required.native_runner.v1",
-        "status": "pass",
-        "runner": "ait-cli",
-        "rust_only": true,
-        "requested_case_count": requested_case_ids.len(),
-        "executed_case_count": cases.len(),
-        "formal_member_count": TG1_CASES.len(),
-        "case_indices": cases.iter().map(|case| case.index).collect::<Vec<_>>(),
-        "case_ids": cases.iter().map(|case| case.local_node_id).collect::<Vec<_>>(),
-        "checks": checks,
-    }))
+            "runner": "ait-cli",
+            "rust_only": true,
+            "requested_case_count": requested_case_ids.len(),
+            "executed_case_count": cases.len(),
+            "formal_member_count": TG1_CASES.len(),
+            "case_indices": cases.iter().map(|case| case.index).collect::<Vec<_>>(),
+            "case_ids": cases.iter().map(|case| case.local_node_id).collect::<Vec<_>>(),
+            "checks": checks,
+        }))
+    })
 }
 
 fn resolve_tg1_cases(requested_case_ids: &[String]) -> Result<Vec<Tg1Case>, String> {

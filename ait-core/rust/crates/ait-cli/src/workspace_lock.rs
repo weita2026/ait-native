@@ -10,10 +10,7 @@ use std::path::{Path, PathBuf};
 use std::process;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-const LOCK_ROOT_ENV: &str = "AIT_WORKSPACE_LOCK_ROOT";
-const LOCK_PATH_ENV: &str = "AIT_WORKSPACE_LOCK_PATH";
-const LOCK_TOKEN_ENV: &str = "AIT_WORKSPACE_LOCK_OWNER_TOKEN";
-const LOCK_PID_ENV: &str = "AIT_WORKSPACE_LOCK_OWNER_PID";
+const LOCK_TOKEN_ENV: &str = ait_core::environment_contract::names::AIT_WORKSPACE_LOCK_OWNER_TOKEN;
 
 pub fn run_locked_workspace_command<T, F>(
     repo: &RepoRuntime,
@@ -105,7 +102,7 @@ impl WorkspaceCommandLock {
         })?;
         file.write_all(b"\n").map_err(|err| err.to_string())?;
         file.flush().map_err(|err| err.to_string())?;
-        let env_guard = WorkspaceLockEnvGuard::set(&workspace_root, &lock_path, &owner_token);
+        let env_guard = WorkspaceLockEnvGuard::set(&owner_token);
         Ok(Self {
             state: WorkspaceCommandLockState::Owned {
                 file,
@@ -139,35 +136,22 @@ impl Drop for WorkspaceCommandLock {
 }
 
 struct WorkspaceLockEnvGuard {
-    previous: Vec<(&'static str, Option<String>)>,
+    previous: Option<String>,
 }
 
 impl WorkspaceLockEnvGuard {
-    fn set(workspace_root: &Path, lock_path: &Path, owner_token: &str) -> Self {
-        let replacements = [
-            (LOCK_ROOT_ENV, workspace_root.to_string_lossy().to_string()),
-            (LOCK_PATH_ENV, lock_path.to_string_lossy().to_string()),
-            (LOCK_TOKEN_ENV, owner_token.to_string()),
-            (LOCK_PID_ENV, process::id().to_string()),
-        ];
-        let previous = replacements
-            .iter()
-            .map(|(key, _)| (*key, env::var(key).ok()))
-            .collect::<Vec<_>>();
-        for (key, value) in replacements {
-            env::set_var(key, value);
-        }
+    fn set(owner_token: &str) -> Self {
+        let previous = env::var(LOCK_TOKEN_ENV).ok();
+        env::set_var(LOCK_TOKEN_ENV, owner_token);
         Self { previous }
     }
 }
 
 impl Drop for WorkspaceLockEnvGuard {
     fn drop(&mut self) {
-        for (key, value) in self.previous.iter().rev() {
-            match value {
-                Some(value) => env::set_var(key, value),
-                None => env::remove_var(key),
-            }
+        match self.previous.as_deref() {
+            Some(value) => env::set_var(LOCK_TOKEN_ENV, value),
+            None => env::remove_var(LOCK_TOKEN_ENV),
         }
     }
 }
@@ -195,32 +179,20 @@ fn read_lock_metadata(lock_path: &Path) -> Option<JsonValue> {
 }
 
 fn can_borrow_token_lock(metadata: &JsonValue, lock_path: &Path, workspace_root: &Path) -> bool {
-    let Ok(env_root) = env::var(LOCK_ROOT_ENV) else {
-        return false;
-    };
-    let Ok(env_lock_path) = env::var(LOCK_PATH_ENV) else {
-        return false;
-    };
     let Ok(env_token) = env::var(LOCK_TOKEN_ENV) else {
         return false;
     };
-    let Ok(env_pid_text) = env::var(LOCK_PID_ENV) else {
+    let Some(owner_pid) = metadata_u32(metadata, "pid") else {
         return false;
     };
-    let Some(env_pid) = env_pid_text.parse::<u32>().ok() else {
-        return false;
-    };
-    path_string_eq(&env_root, workspace_root)
-        && path_string_eq(&env_lock_path, lock_path)
-        && metadata_string(metadata, "workspace_root")
-            .map(|root| path_string_eq(root, workspace_root))
-            .unwrap_or(false)
+    metadata_string(metadata, "workspace_root")
+        .map(|root| path_string_eq(root, workspace_root))
+        .unwrap_or(false)
         && metadata_string(metadata, "lock_path")
             .map(|path| path_string_eq(path, lock_path))
             .unwrap_or(false)
         && metadata_string(metadata, "owner_token") == Some(env_token.as_str())
-        && metadata_u32(metadata, "pid") == Some(env_pid)
-        && process_is_alive(env_pid)
+        && process_is_alive(owner_pid)
 }
 
 fn can_borrow_legacy_process_lock(

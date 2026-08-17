@@ -13,7 +13,6 @@ pub fn workspace_diff_from_entries(
     let mut files = Vec::new();
     let mut total_insertions = 0usize;
     let mut total_deletions = 0usize;
-    let mut changed_bytes = 0_u64;
 
     for entry in entries {
         match entry.status.as_str() {
@@ -35,17 +34,10 @@ pub fn workspace_diff_from_entries(
         };
         total_insertions += diff.insertions;
         total_deletions += diff.deletions;
-        let old_size_bytes = entry.old_bytes.as_ref().map(Vec::len).unwrap_or(0);
-        let new_size_bytes = entry.new_bytes.as_ref().map(Vec::len).unwrap_or(0);
-        changed_bytes = changed_bytes
-            .saturating_add(u64::try_from(old_size_bytes).unwrap_or(u64::MAX))
-            .saturating_add(u64::try_from(new_size_bytes).unwrap_or(u64::MAX));
 
         files.push(json!({
             "path": entry.path.clone(),
             "status": entry.status.clone(),
-            "old_size_bytes": old_size_bytes,
-            "new_size_bytes": new_size_bytes,
             "old_mode": entry.old_mode.clone(),
             "new_mode": entry.new_mode.clone(),
             "diff": text_diff_json(&diff),
@@ -60,7 +52,6 @@ pub fn workspace_diff_from_entries(
         "files": files,
         "summary": {
             "files_changed": entries.len(),
-            "changed_bytes": changed_bytes,
             "insertions": total_insertions,
             "deletions": total_deletions,
         },

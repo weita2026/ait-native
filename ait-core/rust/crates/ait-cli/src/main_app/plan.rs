@@ -109,34 +109,76 @@ fn run_plan(repo: RepoRuntime, command: PlanCommand) -> Result<(), String> {
                 execute_plan_sync_command_request_json(&build_sync_request(&repo, &args)?)
             })?;
             if args.json {
-                return print_json(&payload);
+                print_json(&payload)?;
+                return match plan_sync_terminal_error(&payload) {
+                    Some(error) => Err(error),
+                    None => Ok(()),
+                };
             }
             render_sync_like(&payload)
         }
     }
 }
 
-fn build_query_request(repo: &RepoRuntime, args: &QueryScopeArgs) -> Result<String, String> {
-    validate_scope(args.local, args.remote.as_deref())?;
-    if let Some(remote_name) = args.remote.as_deref() {
-        let remote = repo.remote_row(Some(remote_name))?;
-        return Ok(json!({
-            "scope": "remote",
-            "base_url": remote.url,
-            "repository_index": repo.repository_index(),
-            "repo_name": remote.repo_name.unwrap_or_else(|| repo.repo_name()),
-            "remote": remote.name,
-            "plan_storage": repo.plan_binary_db_storage_request::<PLAN_BINARY_DB_WRITE_LAYOUT>()?,
-        })
-        .to_string());
+#[derive(Clone, Debug)]
+enum ResolvedPlanScope {
+    Local,
+    Remote {
+        name: String,
+        url: String,
+        repo_name: String,
+    },
+}
+
+fn resolve_plan_scope(
+    repo: &RepoRuntime,
+    local_requested: bool,
+    remote_requested: Option<&str>,
+) -> Result<ResolvedPlanScope, String> {
+    validate_scope(local_requested, remote_requested)?;
+    if repo.workflow_uses_local_scope(local_requested, remote_requested) {
+        return Ok(ResolvedPlanScope::Local);
     }
-    Ok(json!({
-        "scope": "local",
-        "repository_index": repo.repository_index(),
-        "repo_name": repo.repo_name(),
-        "plan_storage": repo.plan_binary_db_storage_request::<PLAN_BINARY_DB_WRITE_LAYOUT>()?,
+    let remote = repo.remote_row(remote_requested)?;
+    Ok(ResolvedPlanScope::Remote {
+        name: remote.name,
+        url: remote.url,
+        repo_name: remote.repo_name.unwrap_or_else(|| repo.repo_name()),
     })
-    .to_string())
+}
+
+fn plan_scope_payload(repo: &RepoRuntime, scope: ResolvedPlanScope) -> JsonValue {
+    match scope {
+        ResolvedPlanScope::Local => json!({
+            "scope": "local",
+            "repository_index": repo.repository_index(),
+            "repo_name": repo.repo_name(),
+        }),
+        ResolvedPlanScope::Remote {
+            name,
+            url,
+            repo_name,
+        } => json!({
+            "scope": "remote",
+            "base_url": url,
+            "repository_index": repo.repository_index(),
+            "repo_name": repo_name,
+            "remote": name,
+        }),
+    }
+}
+
+fn build_query_request(repo: &RepoRuntime, args: &QueryScopeArgs) -> Result<String, String> {
+    let scope = resolve_plan_scope(repo, args.local, args.remote.as_deref())?;
+    let mut payload = plan_scope_payload(repo, scope);
+    let obj = payload
+        .as_object_mut()
+        .ok_or("Plan query request payload must be an object.")?;
+    obj.insert(
+        "plan_storage".to_string(),
+        repo.plan_binary_db_storage_request::<PLAN_BINARY_DB_WRITE_LAYOUT>()?,
+    );
+    Ok(payload.to_string())
 }
 
 use crate::json_support::parse_value_error_string;
@@ -173,29 +215,14 @@ fn build_show_request(repo: &RepoRuntime, args: &ShowArgs) -> Result<String, Str
 }
 
 fn build_candidates_request(repo: &RepoRuntime, args: &CandidatesArgs) -> Result<String, String> {
-    validate_scope(args.local, args.remote.as_deref())?;
     let contains_terms = args
         .contains
         .as_deref()
         .map(parse_contains_terms)
         .transpose()?
         .unwrap_or_default();
-    let mut payload = if let Some(remote_name) = args.remote.as_deref() {
-        let remote = repo.remote_row(Some(remote_name))?;
-        json!({
-            "scope": "remote",
-            "base_url": remote.url,
-            "repository_index": repo.repository_index(),
-            "repo_name": remote.repo_name.unwrap_or_else(|| repo.repo_name()),
-            "remote": remote.name,
-        })
-    } else {
-        json!({
-            "scope": "local",
-            "repository_index": repo.repository_index(),
-            "repo_name": repo.repo_name(),
-        })
-    };
+    let scope = resolve_plan_scope(repo, args.local, args.remote.as_deref())?;
+    let mut payload = plan_scope_payload(repo, scope);
     let obj = payload
         .as_object_mut()
         .ok_or("Candidates request payload must be an object.")?;
@@ -212,10 +239,11 @@ fn build_candidates_request(repo: &RepoRuntime, args: &CandidatesArgs) -> Result
 }
 
 fn build_sync_request(repo: &RepoRuntime, args: &SyncArgs) -> Result<String, String> {
-    validate_scope(args.local, args.remote.as_deref())?;
     if args.rebase && args.reconcile {
         return Err("--rebase cannot be combined with --reconcile".to_string());
     }
+    let scope = resolve_plan_scope(repo, args.local, args.remote.as_deref())?;
+    let use_local_scope = matches!(scope, ResolvedPlanScope::Local);
     let mut payload = json!({
         "root_path": repo.root,
         "repo_name": repo.repo_name(),
@@ -225,7 +253,7 @@ fn build_sync_request(repo: &RepoRuntime, args: &SyncArgs) -> Result<String, Str
         "target": args.target,
         "plan_ref": args.plan_ref,
         "prune": args.prune,
-        "local": args.local,
+        "local": use_local_scope,
         "remote_name": JsonValue::Null,
         "remote_repo_name": JsonValue::Null,
         "base_url": JsonValue::Null,
@@ -233,20 +261,21 @@ fn build_sync_request(repo: &RepoRuntime, args: &SyncArgs) -> Result<String, Str
         "reconcile": args.reconcile,
         "plan_storage": repo.plan_binary_db_storage_request::<PLAN_BINARY_DB_WRITE_LAYOUT>()?,
     });
-    if let Some(remote_name) = args.remote.as_deref() {
-        let remote = repo.remote_row(Some(remote_name))?;
+    if let ResolvedPlanScope::Remote {
+        name,
+        url,
+        repo_name,
+    } = scope
+    {
         let obj = payload
             .as_object_mut()
             .ok_or("Sync request payload must be an object.")?;
-        obj.insert("remote_name".to_string(), JsonValue::String(remote.name));
+        obj.insert("remote_name".to_string(), JsonValue::String(name));
         obj.insert(
             "remote_repo_name".to_string(),
-            remote
-                .repo_name
-                .map(JsonValue::String)
-                .unwrap_or_else(|| JsonValue::String(repo.repo_name())),
+            JsonValue::String(repo_name),
         );
-        obj.insert("base_url".to_string(), JsonValue::String(remote.url));
+        obj.insert("base_url".to_string(), JsonValue::String(url));
     }
     Ok(payload.to_string())
 }
@@ -254,6 +283,9 @@ fn build_sync_request(repo: &RepoRuntime, args: &SyncArgs) -> Result<String, Str
 fn validate_scope(local: bool, remote_name: Option<&str>) -> Result<(), String> {
     if local && remote_name.is_some() {
         return Err("--local cannot be combined with --remote".to_string());
+    }
+    if remote_name.is_some_and(|name| name.trim().is_empty()) {
+        return Err("--remote requires a non-empty remote name".to_string());
     }
     Ok(())
 }
@@ -264,7 +296,7 @@ fn resolve_task_land_scope(
     remote_name: Option<&str>,
 ) -> Result<(bool, Option<String>), String> {
     validate_scope(local, remote_name)?;
-    let use_local_scope = repo.task_uses_local_scope(local, remote_name);
+    let use_local_scope = repo.task_uses_local_scope(local, remote_name)?;
     if use_local_scope {
         return Ok((true, None));
     }
@@ -480,14 +512,8 @@ fn render_inspect_like(payload: &JsonValue) -> Result<(), String> {
 }
 
 fn render_sync_like(payload: &JsonValue) -> Result<(), String> {
-    if payload.get("status").and_then(JsonValue::as_str) == Some("failed") {
-        let message = payload
-            .get("error")
-            .and_then(JsonValue::as_object)
-            .and_then(|error| error.get("message"))
-            .and_then(JsonValue::as_str)
-            .unwrap_or("unknown plan sync failure");
-        return Err(format!("Plan sync failed: {message}"));
+    if let Some(error) = plan_sync_terminal_error(payload) {
+        return Err(error);
     }
     let summary = payload
         .get("summary")
@@ -542,4 +568,34 @@ fn render_sync_like(payload: &JsonValue) -> Result<(), String> {
         ],
     );
     Ok(())
+}
+
+fn plan_sync_terminal_error(payload: &JsonValue) -> Option<String> {
+    let status = payload.get("status").and_then(JsonValue::as_str)?;
+    if !matches!(status, "failed" | "partial_success") {
+        return None;
+    }
+    let message = payload
+        .get("error")
+        .and_then(JsonValue::as_object)
+        .and_then(|error| error.get("message"))
+        .and_then(JsonValue::as_str)
+        .unwrap_or("unknown plan sync failure");
+    let has_rows = |field: &str| {
+        payload
+            .get(field)
+            .and_then(JsonValue::as_array)
+            .is_some_and(|rows| !rows.is_empty())
+    };
+    if status == "partial_success" {
+        return Some(format!(
+            "Plan sync partially succeeded: {message}. Local Plan lineage and completed remote publications were retained; retry the same `ait plan sync` command."
+        ));
+    }
+    if has_rows("results") || has_rows("adoptions") {
+        return Some(format!(
+            "Plan sync failed after retaining local Plan lineage: {message}. Local results were not rolled back; retry the same `ait plan sync` command."
+        ));
+    }
+    Some(format!("Plan sync failed: {message}"))
 }

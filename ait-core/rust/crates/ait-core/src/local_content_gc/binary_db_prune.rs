@@ -30,24 +30,53 @@ struct BinaryDbBaseBlobPointerRewrite {
     fallback_blob_index: u32,
 }
 
-pub(super) fn binary_db_prune_orphan_packs<const WRITE_LAYOUT: u32>(
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct BinaryDbOrphanPackPrunePlan {
+    candidates: Vec<BinaryDbOrphanObjectPack>,
+    base_pointer_rewrites: Vec<BinaryDbBaseBlobPointerRewrite>,
+}
+
+pub(super) fn binary_db_preview_orphan_pack_prune<const WRITE_LAYOUT: u32>(
     content: &LocalContentBinaryDb<WRITE_LAYOUT>,
 ) -> Result<JsonValue, String> {
-    // Phase one takes a stable catalog plan under content.write.lock, then
-    // releases it before reading fallback bytes through the normal Blob API.
-    let mut planning_write = content
+    let plan = binary_db_verified_orphan_pack_prune_plan(content)?;
+    let mut revalidation_write = content
         .object_packs()
         .begin_write_txn(BinaryDbCommandScope::ContentWrite)
         .map_err(|error| error.to_string())?;
-    let candidates = binary_db_orphan_object_pack_candidates::<WRITE_LAYOUT, _>(&planning_write)?;
-    let base_pointer_rewrites =
-        binary_db_base_blob_pointer_rewrites::<WRITE_LAYOUT, _>(&planning_write, &candidates)?;
-    planning_write.abort().map_err(|error| error.to_string())?;
-    if candidates.is_empty() && base_pointer_rewrites.is_empty() {
-        return Ok(binary_db_prune_summary(
-            Vec::new(),
-            0,
-            0,
+    let validation = binary_db_require_unchanged_orphan_pack_prune_plan::<WRITE_LAYOUT, _>(
+        &revalidation_write,
+        &plan,
+    );
+    let abort = revalidation_write
+        .abort()
+        .map_err(|error| error.to_string());
+    validation?;
+    abort?;
+    Ok(binary_db_prune_candidate_summary(&plan, "preview", false))
+}
+
+pub(super) fn binary_db_prune_orphan_packs<const WRITE_LAYOUT: u32>(
+    content: &LocalContentBinaryDb<WRITE_LAYOUT>,
+) -> Result<JsonValue, String> {
+    let plan = binary_db_verified_orphan_pack_prune_plan(content)?;
+
+    // Apply reacquires only content.write.lock and recomputes the plan. Any
+    // concurrent catalog change makes the command fail before mutation.
+    let mut write = content
+        .object_packs()
+        .begin_write_txn(BinaryDbCommandScope::ContentWrite)
+        .map_err(|error| error.to_string())?;
+    if let Err(error) =
+        binary_db_require_unchanged_orphan_pack_prune_plan::<WRITE_LAYOUT, _>(&write, &plan)
+    {
+        write.abort().map_err(|error| error.to_string())?;
+        return Err(error);
+    }
+    if plan.candidates.is_empty() && plan.base_pointer_rewrites.is_empty() {
+        write.abort().map_err(|error| error.to_string())?;
+        return Ok(binary_db_prune_apply_summary(
+            &plan,
             0,
             0,
             Vec::new(),
@@ -56,29 +85,10 @@ pub(super) fn binary_db_prune_orphan_packs<const WRITE_LAYOUT: u32>(
         ));
     }
 
-    binary_db_verify_fallback_blob_content(content, &candidates, &base_pointer_rewrites)?;
-
-    // Phase three reacquires only content.write.lock and recomputes the plan.
-    // Any concurrent catalog change makes the command fail before mutation.
-    let mut write = content
-        .object_packs()
-        .begin_write_txn(BinaryDbCommandScope::ContentWrite)
-        .map_err(|error| error.to_string())?;
-    let revalidated = binary_db_orphan_object_pack_candidates::<WRITE_LAYOUT, _>(&write)?;
-    let revalidated_base_pointer_rewrites =
-        binary_db_base_blob_pointer_rewrites::<WRITE_LAYOUT, _>(&write, &revalidated)?;
-    if candidates != revalidated || base_pointer_rewrites != revalidated_base_pointer_rewrites {
-        write.abort().map_err(|error| error.to_string())?;
-        return Err(
-            "Binary DB content catalog changed while orphan-pack fallbacks were being verified; rerun gc prune."
-                .to_string(),
-        );
-    }
-
     let mut removed_member_count = 0_usize;
     let mut removed_duplicate_blob_count = 0_usize;
     let mut tombstoned_blob_indices = BTreeSet::new();
-    for rewrite in &base_pointer_rewrites {
+    for rewrite in &plan.base_pointer_rewrites {
         let mut record = rewrite.record.clone();
         record.base_blob_index_plus1 =
             rewrite.fallback_blob_index.checked_add(1).ok_or_else(|| {
@@ -97,7 +107,7 @@ pub(super) fn binary_db_prune_orphan_packs<const WRITE_LAYOUT: u32>(
             )
             .map_err(|error| error.to_string())?;
     }
-    for candidate in &candidates {
+    for candidate in &plan.candidates {
         for (blob_index, blob, _) in &candidate.blob_tombstones {
             if !tombstoned_blob_indices.insert(*blob_index) {
                 return Err(format!(
@@ -160,7 +170,7 @@ pub(super) fn binary_db_prune_orphan_packs<const WRITE_LAYOUT: u32>(
     // failure.
     let mut removed_pack_paths = Vec::new();
     let mut already_missing_pack_paths = Vec::new();
-    for candidate in &candidates {
+    for candidate in &plan.candidates {
         let absolute = absolute_repo_path(content.pack_root(), &candidate.pack_path)
             .map_err(|error| error.to_string())?;
         match fs::remove_file(&absolute) {
@@ -176,28 +186,63 @@ pub(super) fn binary_db_prune_orphan_packs<const WRITE_LAYOUT: u32>(
         }
     }
 
-    Ok(binary_db_prune_summary(
-        candidates
-            .iter()
-            .map(|candidate| candidate.pack_id.clone())
-            .collect(),
+    Ok(binary_db_prune_apply_summary(
+        &plan,
         removed_member_count,
         removed_duplicate_blob_count,
-        candidates
-            .iter()
-            .flat_map(|candidate| candidate.verified_fallback_blob_indices.iter().copied())
-            .chain(
-                base_pointer_rewrites
-                    .iter()
-                    .map(|rewrite| rewrite.fallback_blob_index),
-            )
-            .collect::<BTreeSet<_>>()
-            .len(),
-        base_pointer_rewrites.len(),
         removed_pack_paths,
         already_missing_pack_paths,
         cleanup_warnings,
     ))
+}
+
+pub(super) fn binary_db_verified_orphan_pack_prune_plan<const WRITE_LAYOUT: u32>(
+    content: &LocalContentBinaryDb<WRITE_LAYOUT>,
+) -> Result<BinaryDbOrphanPackPrunePlan, String> {
+    // Take a stable catalog plan under content.write.lock, then release it
+    // before reading fallback bytes through the normal Blob API.
+    let mut planning_write = content
+        .object_packs()
+        .begin_write_txn(BinaryDbCommandScope::ContentWrite)
+        .map_err(|error| error.to_string())?;
+    let plan = binary_db_orphan_pack_prune_plan_from_write::<WRITE_LAYOUT, _>(&planning_write);
+    let abort = planning_write.abort().map_err(|error| error.to_string());
+    let plan = plan?;
+    abort?;
+    binary_db_verify_fallback_blob_content(content, &plan.candidates, &plan.base_pointer_rewrites)?;
+    Ok(plan)
+}
+
+fn binary_db_orphan_pack_prune_plan_from_write<const WRITE_LAYOUT: u32, F>(
+    write: &BinaryDbWriteTxn<'_, LocalBinaryDbFs, F>,
+) -> Result<BinaryDbOrphanPackPrunePlan, String>
+where
+    F: BinaryDbFsyncPolicy,
+{
+    let candidates = binary_db_orphan_object_pack_candidates::<WRITE_LAYOUT, _>(write)?;
+    let base_pointer_rewrites =
+        binary_db_base_blob_pointer_rewrites::<WRITE_LAYOUT, _>(write, &candidates)?;
+    Ok(BinaryDbOrphanPackPrunePlan {
+        candidates,
+        base_pointer_rewrites,
+    })
+}
+
+pub(super) fn binary_db_require_unchanged_orphan_pack_prune_plan<const WRITE_LAYOUT: u32, F>(
+    write: &BinaryDbWriteTxn<'_, LocalBinaryDbFs, F>,
+    expected: &BinaryDbOrphanPackPrunePlan,
+) -> Result<(), String>
+where
+    F: BinaryDbFsyncPolicy,
+{
+    let revalidated = binary_db_orphan_pack_prune_plan_from_write::<WRITE_LAYOUT, _>(write)?;
+    if &revalidated != expected {
+        return Err(
+            "Binary DB content catalog changed while orphan-pack fallbacks were being verified; rerun gc prune."
+                .to_string(),
+        );
+    }
+    Ok(())
 }
 
 fn binary_db_orphan_object_pack_candidates<const WRITE_LAYOUT: u32, F>(
@@ -728,30 +773,111 @@ fn binary_db_verify_fallback_blob_content<const WRITE_LAYOUT: u32>(
     Ok(())
 }
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "summary inputs map one-to-one to the stable public JSON fields"
-)]
-fn binary_db_prune_summary(
-    removed_pack_ids: Vec<String>,
+fn binary_db_prune_candidate_summary(
+    plan: &BinaryDbOrphanPackPrunePlan,
+    mode: &str,
+    applied: bool,
+) -> JsonValue {
+    let fallback_blob_indices = plan
+        .candidates
+        .iter()
+        .flat_map(|candidate| candidate.verified_fallback_blob_indices.iter().copied())
+        .chain(
+            plan.base_pointer_rewrites
+                .iter()
+                .map(|rewrite| rewrite.fallback_blob_index),
+        )
+        .collect::<BTreeSet<_>>();
+    json!({
+        "storage_backend": "binary_db",
+        "mode": mode,
+        "applied": applied,
+        "candidate_orphan_pack_count": plan.candidates.len(),
+        "candidate_orphan_pack_member_count": plan
+            .candidates
+            .iter()
+            .map(|candidate| candidate.members.len())
+            .sum::<usize>(),
+        "candidate_duplicate_blob_count": plan
+            .candidates
+            .iter()
+            .map(|candidate| candidate.blob_tombstones.len())
+            .sum::<usize>(),
+        "candidate_verified_fallback_blob_count": fallback_blob_indices.len(),
+        "candidate_base_blob_pointer_rewrite_count": plan.base_pointer_rewrites.len(),
+        "candidate_orphan_pack_ids": plan
+            .candidates
+            .iter()
+            .map(|candidate| candidate.pack_id.clone())
+            .collect::<Vec<_>>(),
+        "candidate_orphan_pack_paths": plan
+            .candidates
+            .iter()
+            .map(|candidate| candidate.pack_path.clone())
+            .collect::<Vec<_>>(),
+    })
+}
+
+fn binary_db_prune_apply_summary(
+    plan: &BinaryDbOrphanPackPrunePlan,
     removed_member_count: usize,
     removed_duplicate_blob_count: usize,
-    verified_fallback_blob_count: usize,
-    rewritten_base_blob_pointer_count: usize,
     removed_pack_paths: Vec<String>,
     already_missing_pack_paths: Vec<String>,
     cleanup_warnings: Vec<String>,
 ) -> JsonValue {
-    json!({
-        "storage_backend": "binary_db",
-        "removed_orphan_pack_count": removed_pack_ids.len(),
-        "removed_orphan_pack_member_count": removed_member_count,
-        "removed_duplicate_blob_count": removed_duplicate_blob_count,
-        "verified_fallback_blob_count": verified_fallback_blob_count,
-        "rewritten_base_blob_pointer_count": rewritten_base_blob_pointer_count,
-        "removed_orphan_pack_ids": removed_pack_ids,
-        "removed_orphan_pack_paths": removed_pack_paths,
-        "already_missing_orphan_pack_paths": already_missing_pack_paths,
-        "cleanup_warnings": cleanup_warnings,
-    })
+    let mut result = binary_db_prune_candidate_summary(plan, "apply", true);
+    {
+        let payload = result
+            .as_object_mut()
+            .expect("orphan-pack prune candidate summary must be an object");
+        payload.insert(
+            "removed_orphan_pack_count".to_string(),
+            json!(plan.candidates.len()),
+        );
+        payload.insert(
+            "removed_orphan_pack_member_count".to_string(),
+            json!(removed_member_count),
+        );
+        payload.insert(
+            "removed_duplicate_blob_count".to_string(),
+            json!(removed_duplicate_blob_count),
+        );
+        payload.insert(
+            "verified_fallback_blob_count".to_string(),
+            json!(plan
+                .candidates
+                .iter()
+                .flat_map(|candidate| candidate.verified_fallback_blob_indices.iter().copied())
+                .chain(
+                    plan.base_pointer_rewrites
+                        .iter()
+                        .map(|rewrite| rewrite.fallback_blob_index),
+                )
+                .collect::<BTreeSet<_>>()
+                .len()),
+        );
+        payload.insert(
+            "rewritten_base_blob_pointer_count".to_string(),
+            json!(plan.base_pointer_rewrites.len()),
+        );
+        payload.insert(
+            "removed_orphan_pack_ids".to_string(),
+            json!(plan
+                .candidates
+                .iter()
+                .map(|candidate| candidate.pack_id.clone())
+                .collect::<Vec<_>>()),
+        );
+        payload.insert(
+            "removed_orphan_pack_paths".to_string(),
+            json!(removed_pack_paths),
+        );
+        payload.insert(
+            "already_missing_orphan_pack_paths".to_string(),
+            json!(already_missing_pack_paths),
+        );
+        payload.insert("cleanup_warnings".to_string(), json!(cleanup_warnings));
+    }
+    result
 }

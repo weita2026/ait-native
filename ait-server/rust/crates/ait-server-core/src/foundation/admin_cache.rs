@@ -4,7 +4,6 @@ use std::sync::{Mutex, OnceLock};
 use serde_json::{json, Map as JsonMap, Value as JsonValue};
 
 pub const ADMIN_CACHE_CONTRACT_VERSION: &str = "ait.server.admin_cache.v1";
-pub const ADMIN_CACHE_TTL_ENV: &str = "AIT_SERVER_PRESSURE_METRICS_CACHE_TTL_SECONDS";
 pub const DEFAULT_ADMIN_CACHE_TTL_SECONDS: f64 = 5.0;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -88,9 +87,6 @@ pub fn admin_cache_contract() -> JsonValue {
         "contract": ADMIN_CACHE_CONTRACT_VERSION,
         "reference_modules": [],
         "migration_status": "python_wrapper_removed_rust_owned",
-        "environment_inputs": {
-            "ttl_seconds": ADMIN_CACHE_TTL_ENV,
-        },
         "defaults": {
             "ttl_seconds": DEFAULT_ADMIN_CACHE_TTL_SECONDS,
             "ttl_invalid_fallback_seconds": DEFAULT_ADMIN_CACHE_TTL_SECONDS,
@@ -115,7 +111,6 @@ pub fn admin_cache_contract() -> JsonValue {
         "compatibility_notes": {
             "python_reference": "The former Python admin-cache wrapper has been removed; this Rust contract owns TTL parsing, annotation, hit/miss, and clear behavior.",
             "durability": "Admin response cache is in-memory runtime optimization, not durable database authority.",
-            "task_dag": "Task DAG is retired and is not an admin cache surface.",
         },
     })
 }

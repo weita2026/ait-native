@@ -1,3 +1,5 @@
+#[path = "environment_contract.rs"]
+mod environment_contract;
 #[path = "foundation_admin_cache_direct_tests.rs"]
 mod foundation_admin_cache_direct_tests;
 #[path = "foundation_auth_admin_runtime_inventory_direct_tests.rs"]

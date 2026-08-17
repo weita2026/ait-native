@@ -383,68 +383,6 @@ pub(super) fn local_line_row(repo: &RepoRuntime, line_name: &str) -> Result<Json
     store.get_line(line_name)
 }
 
-pub(super) fn guard_remote_base_line_converged(
-    repo: &RepoRuntime,
-    remote_name: &str,
-    line_name: &str,
-    remote_line_row: Option<&JsonValue>,
-    operation: &str,
-) -> Result<(), String> {
-    let local_head = local_line_head_snapshot_id(repo, line_name)?;
-    let remote_head = remote_line_row.and_then(|row| string_field(row, "head_snapshot_id"));
-    match (local_head.as_deref(), remote_head.as_deref()) {
-        (None, None) => return Ok(()),
-        (Some(local_snapshot_id), Some(remote_snapshot_id))
-            if local_snapshot_id == remote_snapshot_id =>
-        {
-            return Ok(());
-        }
-        (Some(local_snapshot_id), None) => {
-            return Err(format!(
-                "Cannot {operation}: remote `{remote_name}` line `{line_name}` has no head while local `{line_name}` is at `{local_snapshot_id}`. Run `ait push --line {line_name} --remote {remote_name}` before creating shared work, or use `--local`."
-            ));
-        }
-        (None, Some(remote_snapshot_id)) => {
-            return Err(format!(
-                "Cannot {operation}: remote `{remote_name}` line `{line_name}` is at `{remote_snapshot_id}` while local `{line_name}` has no head. Run `ait pull --line {line_name} --remote {remote_name}` before creating shared work."
-            ));
-        }
-        (Some(_), Some(_)) => {}
-    }
-
-    let local_snapshot_id = local_head.as_deref().unwrap_or_default();
-    let remote_snapshot_id = remote_head.as_deref().unwrap_or_default();
-    if !local_snapshot_exists(repo, local_snapshot_id)? {
-        return Err(format!(
-            "Cannot {operation}: local line `{line_name}` points at `{local_snapshot_id}`, but that snapshot is not present in local storage. Repair the local line or pull `{line_name}` from remote `{remote_name}` before creating shared work."
-        ));
-    }
-    if !local_snapshot_exists(repo, remote_snapshot_id)? {
-        return Err(format!(
-            "Cannot {operation}: remote `{remote_name}` line `{line_name}` points at `{remote_snapshot_id}`, which is not present locally. Run `ait pull --line {line_name} --remote {remote_name}` before creating shared work."
-        ));
-    }
-
-    if snapshot_distance_if_ancestor(repo, Some(remote_snapshot_id), Some(local_snapshot_id))?
-        .is_some()
-    {
-        return Err(format!(
-            "Cannot {operation}: local `{line_name}` is ahead of remote `{remote_name}` (`{local_snapshot_id}` vs `{remote_snapshot_id}`). Run `ait push --line {line_name} --remote {remote_name}` before creating shared work, or use `--local`."
-        ));
-    }
-    if snapshot_distance_if_ancestor(repo, Some(local_snapshot_id), Some(remote_snapshot_id))?
-        .is_some()
-    {
-        return Err(format!(
-            "Cannot {operation}: remote `{remote_name}` is ahead of local `{line_name}` (`{remote_snapshot_id}` vs `{local_snapshot_id}`). Run `ait pull --line {line_name} --remote {remote_name}` before creating shared work."
-        ));
-    }
-
-    Err(format!(
-        "Cannot {operation}: local `{line_name}` at `{local_snapshot_id}` and remote `{remote_name}` at `{remote_snapshot_id}` have diverged. Reconcile the line explicitly with `ait pull --line {line_name} --remote {remote_name}` and `ait push --line {line_name} --remote {remote_name}` before creating shared work."
-    ))
-}
-
 pub(super) fn local_line_updated_at(
     repo: &RepoRuntime,
     line_name: &str,

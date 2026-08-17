@@ -30,14 +30,10 @@ pub struct BlameRequest {
     pub line: Option<usize>,
     pub start_line: Option<usize>,
     pub end_line: Option<usize>,
-    pub restore: bool,
-    pub dry_run: bool,
     pub snapshot_id: Option<String>,
-    pub parent_snapshot_id: Option<String>,
+    pub via_parent_snapshot_id: Option<String>,
     pub patchset_id: Option<String>,
     pub remote_name: Option<String>,
-    pub repo_name: Option<String>,
-    pub change_ref: Option<String>,
     pub plan_id: Option<String>,
     pub plan_ref: Option<String>,
 }
@@ -59,8 +55,6 @@ struct BlameTarget {
 #[derive(Clone, Debug, Default)]
 struct BlameComputation {
     public: JsonMap<String, JsonValue>,
-    target_file_lines: Vec<String>,
-    selected_owner_snapshot_ids: Vec<String>,
 }
 
 struct SnapshotBlameLineage<B: LocalSnapshotBlobReadStore> {
@@ -246,20 +240,15 @@ pub fn blame(repo: &RepoRuntime, request: &BlameRequest) -> Result<JsonValue, St
         normalize_blame_path(repo, &request.path)?
     };
     let markdown_lineage = is_lineage_only_markdown_artifact_path(&rel_path);
-    let mut computation = if markdown_lineage {
+    let computation = if markdown_lineage {
         if request.snapshot_id.is_some() || request.patchset_id.is_some() {
             return Err(format!(
                 "Path {rel_path} is lineage-only Markdown. `--snapshot` and `--patchset` are not valid for plan-lineage blame."
             ));
         }
-        if request.parent_snapshot_id.is_some() {
+        if request.via_parent_snapshot_id.is_some() {
             return Err(format!(
-                "Path {rel_path} is lineage-only Markdown. `--parent` is only valid for Snapshot blame."
-            ));
-        }
-        if request.restore {
-            return Err(format!(
-                "Path {rel_path} is lineage-only Markdown. `--restore` is not supported for plan-lineage blame."
+                "Path {rel_path} is lineage-only Markdown. `--via-parent` is only valid for Snapshot blame."
             ));
         }
         compute_markdown_plan_blame(
@@ -284,8 +273,6 @@ pub fn blame(repo: &RepoRuntime, request: &BlameRequest) -> Result<JsonValue, St
                 request.snapshot_id.as_deref(),
                 request.patchset_id.as_deref(),
                 request.remote_name.as_deref(),
-                request.repo_name.as_deref(),
-                request.change_ref.as_deref(),
             )?
         };
         {
@@ -297,20 +284,10 @@ pub fn blame(repo: &RepoRuntime, request: &BlameRequest) -> Result<JsonValue, St
                 request.line,
                 request.start_line,
                 request.end_line,
-                request.parent_snapshot_id.as_deref(),
+                request.via_parent_snapshot_id.as_deref(),
             )?
         }
     };
-    if request.restore {
-        let restore_payload = if request.dry_run {
-            preview_scoped_restore(repo, &rel_path, &computation)?
-        } else {
-            apply_scoped_restore(repo, &rel_path, &computation)?
-        };
-        computation
-            .public
-            .insert("restore".to_string(), JsonValue::Object(restore_payload));
-    }
     Ok(JsonValue::Object(computation.public))
 }
 
@@ -436,73 +413,64 @@ pub fn render_human_blame(payload: &JsonValue) {
             }
         }
     }
-    if let Some(restore) = payload.get("restore").and_then(JsonValue::as_object) {
-        println!();
-        let selected_range = restore
-            .get("selected_range")
-            .and_then(JsonValue::as_object)
-            .cloned()
-            .unwrap_or_default();
-        let mut lines = vec![
-            format!(
-                "selected range: {}-{}",
-                json_u64_field_obj(&selected_range, "start").unwrap_or(0),
-                json_u64_field_obj(&selected_range, "end").unwrap_or(0)
-            ),
-            format!(
-                "restore mode: {}",
-                string_field_obj(restore, "restore_mode").unwrap_or_default()
-            ),
-            format!(
-                "source snapshot: {}",
-                string_field_obj(restore, "source_snapshot_id").unwrap_or_default()
-            ),
-            format!(
-                "unchanged outside selected range: {}",
-                if bool_field_obj(restore, "unchanged_outside_selected_range") {
-                    "yes"
-                } else {
-                    "no"
-                }
-            ),
-            format!(
-                "would overwrite selected local edits: {}",
-                if bool_field_obj(restore, "would_overwrite_selected_local_edits") {
-                    "yes"
-                } else {
-                    "no"
-                }
-            ),
-        ];
-        if restore.contains_key("applied") {
-            lines.push(format!(
-                "applied: {}",
-                if bool_field_obj(restore, "applied") {
-                    "yes"
-                } else {
-                    "no"
-                }
-            ));
-        }
-        println!("{}", lines.join("\n"));
-    }
 }
 
 fn validate_request(request: &BlameRequest) -> Result<(), String> {
-    if request.dry_run && !request.restore {
-        return Err("`--dry-run` is only valid together with `--restore`.".to_string());
+    if request.line.is_some() && (request.start_line.is_some() || request.end_line.is_some()) {
+        return Err("Choose either --line or --start/--end.".to_string());
     }
-    if request.restore
-        && request.line.is_none()
-        && request.start_line.is_none()
-        && request.end_line.is_none()
-    {
-        return Err("`--restore` requires `--line` or `--start/--end`.".to_string());
+    if request.start_line.is_some() != request.end_line.is_some() {
+        return Err("Provide both --start and --end.".to_string());
     }
-    if (request.repo_name.is_some() || request.change_ref.is_some())
-        && request.patchset_id.is_none()
+    if [request.line, request.start_line, request.end_line]
+        .into_iter()
+        .flatten()
+        .any(|line| line == 0)
     {
-        return Err("`--repo` and `--change` are only valid with `--patchset`.".to_string());
+        return Err("Line selections are 1-based and must be positive.".to_string());
+    }
+    if let (Some(start_line), Some(end_line)) = (request.start_line, request.end_line) {
+        if end_line < start_line {
+            return Err("The selected range must have end >= start.".to_string());
+        }
+    }
+    if request.snapshot_id.is_some() && request.patchset_id.is_some() {
+        return Err("Choose either --snapshot or --patchset.".to_string());
+    }
+    if request.via_parent_snapshot_id.is_some() && request.snapshot_id.is_none() {
+        return Err("`--via-parent` requires `--snapshot`.".to_string());
+    }
+    if request.remote_name.is_some() && request.patchset_id.is_none() {
+        return Err("`--remote` is only valid with `--patchset`.".to_string());
+    }
+    if request.plan_id.is_some() && request.plan_ref.is_some() {
+        return Err("Choose either --plan-id or --plan-ref.".to_string());
+    }
+    if (request.plan_id.is_some() || request.plan_ref.is_some())
+        && (request.snapshot_id.is_some() || request.patchset_id.is_some())
+    {
+        return Err("Plan selectors cannot be combined with --snapshot or --patchset.".to_string());
+    }
+    for (value, label) in [
+        (request.snapshot_id.as_deref(), "--snapshot"),
+        (request.via_parent_snapshot_id.as_deref(), "--via-parent"),
+        (request.patchset_id.as_deref(), "--patchset"),
+        (request.remote_name.as_deref(), "--remote"),
+        (request.plan_id.as_deref(), "--plan-id"),
+        (request.plan_ref.as_deref(), "--plan-ref"),
+    ] {
+        if value.is_some_and(|value| value.trim().is_empty()) {
+            return Err(format!("{label} requires a non-empty value."));
+        }
+    }
+    if request.patchset_id.as_deref().is_some_and(|patchset_id| {
+        let patchset_id = patchset_id.trim();
+        !patchset_id.is_empty() && patchset_id.chars().all(|ch| ch.is_ascii_digit())
+    }) {
+        return Err(
+            "`--patchset` requires an exact published Patchset ID; numeric repo-scoped refs are ambiguous."
+                .to_string(),
+        );
     }
     Ok(())
 }
@@ -512,27 +480,12 @@ fn resolve_blame_target(
     snapshot_id: Option<&str>,
     patchset_id: Option<&str>,
     remote_name: Option<&str>,
-    repo_name: Option<&str>,
-    change_ref: Option<&str>,
 ) -> Result<BlameTarget, String> {
-    if snapshot_id.is_some() && patchset_id.is_some() {
-        return Err("Choose either --snapshot or --patchset.".to_string());
-    }
     if let Some(patchset_id) = normalized_text(patchset_id) {
-        let (remote_row, resolved_repo_name) = remote_context(repo, remote_name, repo_name)?;
-        if repo_name.is_some()
-            && patchset_id.chars().all(|ch| ch.is_ascii_digit())
-            && normalized_text(change_ref).is_none()
-        {
-            return Err("Repo-scoped numeric patchset refs require --change.".to_string());
-        }
+        let (remote_row, resolved_repo_name) = remote_context(repo, remote_name)?;
         let mut closeout_remote = http_closeout_remote(repo, &remote_row)?;
         let patchset = closeout_remote
-            .get_patchset(
-                &patchset_id,
-                Some(&resolved_repo_name),
-                normalized_text(change_ref).as_deref(),
-            )
+            .get_patchset(&patchset_id, Some(&resolved_repo_name), None)
             .map_err(|err| err.to_string())?;
         let mut task_remote = http_task_remote(repo, &remote_row)?;
         let resolved_snapshot_id = string_field(&patchset, "revision_snapshot_id")
@@ -636,7 +589,6 @@ fn compute_snapshot_blame(
                 rel_path,
                 target,
                 target_snapshot_id,
-                lineage.target_lines,
                 selected_start,
                 selected_end,
                 selected_owners,
@@ -662,7 +614,6 @@ fn compute_snapshot_blame(
         rel_path,
         target,
         target_snapshot_id,
-        target_lines,
         selected_start,
         selected_end,
         selected_owners,
@@ -679,7 +630,6 @@ fn build_snapshot_blame_computation(
     rel_path: &str,
     target: &BlameTarget,
     target_snapshot_id: String,
-    target_lines: Vec<String>,
     selected_start: usize,
     selected_end: usize,
     selected_owners: Vec<String>,
@@ -798,11 +748,7 @@ fn build_snapshot_blame_computation(
         JsonValue::Array(collapse_line_rows(&line_rows)),
     );
     public.insert("lines".to_string(), JsonValue::Array(line_rows));
-    Ok(BlameComputation {
-        public,
-        target_file_lines: target_lines,
-        selected_owner_snapshot_ids,
-    })
+    Ok(BlameComputation { public })
 }
 
 fn compute_markdown_plan_blame(
@@ -896,11 +842,7 @@ fn compute_markdown_plan_blame(
         JsonValue::Array(collapse_line_rows(&line_rows)),
     );
     public.insert("lines".to_string(), JsonValue::Array(line_rows));
-    Ok(BlameComputation {
-        public,
-        target_file_lines: target_lines,
-        selected_owner_snapshot_ids: Vec::new(),
-    })
+    Ok(BlameComputation { public })
 }
 
 fn compute_snapshot_line_owners(
@@ -1450,129 +1392,6 @@ fn remote_change_overlay(
     Ok(overlay)
 }
 
-fn preview_scoped_restore(
-    repo: &RepoRuntime,
-    rel_path: &str,
-    computation: &BlameComputation,
-) -> Result<JsonMap<String, JsonValue>, String> {
-    let current_lines = current_workspace_lines(repo, rel_path)?;
-    restore_preview_payload(rel_path, computation, &current_lines)
-}
-
-fn apply_scoped_restore(
-    repo: &RepoRuntime,
-    rel_path: &str,
-    computation: &BlameComputation,
-) -> Result<JsonMap<String, JsonValue>, String> {
-    let current_lines = current_workspace_lines(repo, rel_path)?;
-    let mut preview = restore_preview_payload(rel_path, computation, &current_lines)?;
-    let restored_lines = preview
-        .remove("_internal")
-        .and_then(|value| value.as_object().cloned())
-        .and_then(|value| {
-            value
-                .get("restored_lines")
-                .and_then(JsonValue::as_array)
-                .cloned()
-        })
-        .ok_or_else(|| "Scoped restore preview was missing restored line content.".to_string())?
-        .into_iter()
-        .map(|value| {
-            value
-                .as_str()
-                .map(str::to_string)
-                .ok_or_else(|| "Scoped restore internal lines must decode to strings.".to_string())
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    let abs_path = repo.workspace_root().join(rel_path);
-    fs::write(&abs_path, restored_lines.concat()).map_err(|err| err.to_string())?;
-    preview.insert("applied".to_string(), JsonValue::Bool(true));
-    Ok(preview)
-}
-
-fn restore_preview_payload(
-    rel_path: &str,
-    computation: &BlameComputation,
-    current_lines: &[String],
-) -> Result<JsonMap<String, JsonValue>, String> {
-    let selected_range = computation
-        .public
-        .get("range")
-        .and_then(JsonValue::as_object)
-        .cloned()
-        .unwrap_or_default();
-    let start_line = json_u64_field_obj(&selected_range, "start").unwrap_or(0) as usize;
-    let end_line = json_u64_field_obj(&selected_range, "end").unwrap_or(0) as usize;
-    if start_line == 0 || end_line == 0 {
-        return Err("Scoped restore requires one selected line or range.".to_string());
-    }
-    if end_line > computation.target_file_lines.len() {
-        return Err(format!(
-            "Selected range {start_line}-{end_line} exceeds target file length {}.",
-            computation.target_file_lines.len()
-        ));
-    }
-    if end_line > current_lines.len() {
-        return Err(format!(
-            "Workspace file {rel_path} has only {} lines, so range {start_line}-{end_line} cannot be restored safely.",
-            current_lines.len()
-        ));
-    }
-    if computation.selected_owner_snapshot_ids.len() != 1 {
-        let owner_list = if computation.selected_owner_snapshot_ids.is_empty() {
-            "none".to_string()
-        } else {
-            computation.selected_owner_snapshot_ids.join(", ")
-        };
-        return Err(format!(
-            "Selected range {start_line}-{end_line} spans multiple owning snapshots ({owner_list}). Narrow the selection before using --restore."
-        ));
-    }
-    let target_selection = &computation.target_file_lines[start_line - 1..end_line];
-    let current_selection = &current_lines[start_line - 1..end_line];
-    let restored_lines = current_lines[..start_line - 1]
-        .iter()
-        .cloned()
-        .chain(target_selection.iter().cloned())
-        .chain(current_lines[end_line..].iter().cloned())
-        .collect::<Vec<_>>();
-    let mut payload = JsonMap::new();
-    payload.insert("path".to_string(), JsonValue::String(rel_path.to_string()));
-    payload.insert(
-        "selected_range".to_string(),
-        json!({"start": start_line, "end": end_line}),
-    );
-    payload.insert(
-        "restore_mode".to_string(),
-        JsonValue::String("scoped_lines_only".to_string()),
-    );
-    payload.insert(
-        "source_snapshot_id".to_string(),
-        JsonValue::String(computation.selected_owner_snapshot_ids[0].clone()),
-    );
-    insert_optional_string(
-        &mut payload,
-        "resolved_snapshot_id",
-        string_field_obj(&computation.public, "resolved_snapshot_id"),
-    );
-    payload.insert(
-        "unchanged_outside_selected_range".to_string(),
-        JsonValue::Bool(true),
-    );
-    payload.insert(
-        "would_overwrite_selected_local_edits".to_string(),
-        JsonValue::Bool(current_selection != target_selection),
-    );
-    payload.insert("applied".to_string(), JsonValue::Bool(false));
-    payload.insert(
-        "_internal".to_string(),
-        json!({
-            "restored_lines": restored_lines,
-        }),
-    );
-    Ok(payload)
-}
-
 fn line_row_payload(
     rel_path: &str,
     line_number: usize,
@@ -2030,18 +1849,6 @@ where
     )
 }
 
-fn current_workspace_lines(repo: &RepoRuntime, rel_path: &str) -> Result<Vec<String>, String> {
-    let abs_path = repo.workspace_root().join(rel_path);
-    if !abs_path.exists() {
-        return Err(format!("Workspace file {rel_path} does not exist."));
-    }
-    if abs_path.is_dir() {
-        return Err(format!("Path {rel_path} is a directory, not a file."));
-    }
-    let bytes = fs::read(&abs_path).map_err(|err| err.to_string())?;
-    decode_text_lines(&bytes, &format!("Workspace file {rel_path}"))
-}
-
 fn current_repo_root_bytes(repo: &RepoRuntime, rel_path: &str) -> Result<Vec<u8>, String> {
     for root in [repo.workspace_root(), repo.authoritative_repo_root()] {
         let abs_path = root.join(rel_path);
@@ -2403,11 +2210,11 @@ fn format_hunk(row: &JsonValue) -> Result<String, String> {
 fn remote_context(
     repo: &RepoRuntime,
     remote_name: Option<&str>,
-    repo_name_override: Option<&str>,
 ) -> Result<(RemoteRow, String), String> {
     let remote_row = repo.remote_row(remote_name)?;
-    let repo_name = normalized_text(repo_name_override)
-        .or(remote_row.repo_name.clone())
+    let repo_name = remote_row
+        .repo_name
+        .clone()
         .unwrap_or_else(|| repo.repo_name());
     Ok((remote_row, repo_name))
 }
@@ -2474,10 +2281,6 @@ fn apply_overlay_defaults(
             target.insert(key.clone(), value.clone());
         }
     }
-}
-
-fn bool_field_obj(value: &JsonMap<String, JsonValue>, key: &str) -> bool {
-    value.get(key).and_then(JsonValue::as_bool).unwrap_or(false)
 }
 
 fn json_u64_field(value: &JsonValue, key: &str) -> Option<u64> {

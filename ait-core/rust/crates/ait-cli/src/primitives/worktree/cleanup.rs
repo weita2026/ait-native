@@ -820,7 +820,7 @@ fn copy_worktree_removal_workspace_evaluation(source: &JsonValue, target: &mut J
     }
 }
 
-fn worktree_cargo_build_lock_paths(cache_path: &Path) -> Result<Vec<PathBuf>, String> {
+fn worktree_cargo_lock_paths(cache_path: &Path) -> Result<Vec<PathBuf>, String> {
     let mut paths = Vec::new();
     let root_lease = cache_path.join(".ait-ci-build-lease");
     if root_lease.is_file() {
@@ -856,26 +856,54 @@ pub(in crate::primitives) fn cleanup_registered_worktree_cargo_build_dir(
             "status": "not_managed",
             "removed": false,
             "path": JsonValue::Null,
+            "target_path": JsonValue::Null,
+            "target_removed": false,
         }));
     };
+    let target_path = registered_worktree_cargo_target_dir(worktree_path, worktree_name)
+        .ok_or_else(|| {
+            format!("Task Cargo target directory is not bound to worktree {worktree_name}.")
+        })?;
     let cache_path_text = cache_path.to_string_lossy().to_string();
-    if !path_exists_or_directory_link(&cache_path) {
+    let target_path_text = target_path.to_string_lossy().to_string();
+    let cache_exists = path_exists_or_directory_link(&cache_path);
+    let target_exists = path_exists_or_directory_link(&target_path);
+    if !cache_exists && !target_exists {
         return Ok(json!({
             "status": "absent",
             "removed": false,
             "path": cache_path_text,
+            "target_path": target_path_text,
+            "target_removed": false,
         }));
     }
-    let metadata = fs::symlink_metadata(&cache_path).map_err(|err| err.to_string())?;
-    if metadata.file_type().is_symlink() || !metadata.is_dir() {
-        return Err(format!(
-            "Refusing to remove a Task Cargo build cache that is not a physical directory: {}",
-            cache_path.display()
-        ));
+    for (path, label, exists) in [
+        (&cache_path, "build cache", cache_exists),
+        (&target_path, "target artifact directory", target_exists),
+    ] {
+        if !exists {
+            continue;
+        }
+        let metadata = fs::symlink_metadata(path).map_err(|err| err.to_string())?;
+        if metadata.file_type().is_symlink() || !metadata.is_dir() {
+            return Err(format!(
+                "Refusing to remove a Task Cargo {label} that is not a physical directory: {}",
+                path.display()
+            ));
+        }
     }
 
     let mut locks = Vec::new();
-    for lock_path in worktree_cargo_build_lock_paths(&cache_path)? {
+    let mut lock_paths = Vec::new();
+    if cache_exists {
+        lock_paths.extend(worktree_cargo_lock_paths(&cache_path)?);
+    }
+    if target_exists {
+        lock_paths.extend(worktree_cargo_lock_paths(&target_path)?);
+    }
+    lock_paths.sort();
+    lock_paths.dedup();
+    for lock_path in lock_paths {
         let file = match OpenOptions::new().read(true).write(true).open(&lock_path) {
             Ok(file) => file,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
@@ -889,28 +917,33 @@ pub(in crate::primitives) fn cleanup_registered_worktree_cargo_build_dir(
         match FileExt::try_lock_exclusive(&file) {
             Ok(()) => locks.push(file),
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                return Ok(json!({
-                    "status": "retained_active",
-                    "removed": false,
-                    "path": cache_path_text,
-                    "active_lock_path": lock_path.to_string_lossy().to_string(),
-                }));
+                return Err(format!(
+                    "Refusing to close Task worktree {worktree_name} while its Cargo target/build state is active through {}.",
+                    lock_path.display()
+                ));
             }
             Err(error) => {
                 return Err(format!(
-                    "Failed to lock Task Cargo build cache {} through {}: {error}",
-                    cache_path.display(),
+                    "Failed to lock Task Cargo target/build state for {} through {}: {error}",
+                    worktree_name,
                     lock_path.display()
                 ));
             }
         }
     }
-    remove_tree_force(&cache_path)?;
+    if target_exists {
+        remove_tree_force(&target_path)?;
+    }
+    if cache_exists {
+        remove_tree_force(&cache_path)?;
+    }
     drop(locks);
     Ok(json!({
         "status": "removed",
         "removed": true,
         "path": cache_path_text,
+        "target_path": target_path_text,
+        "target_removed": target_exists,
     }))
 }
 
@@ -1226,10 +1259,17 @@ mod tests {
         write_removable_task_worktree(&repo, worktree_name, &worktree_path);
         let cache_path = registered_worktree_cargo_build_dir(&worktree_path, worktree_name)
             .expect("registered cache path");
+        let target_path = registered_worktree_cargo_target_dir(&worktree_path, worktree_name)
+            .expect("registered target path");
         let profile_path = cache_path.join("release");
         fs::create_dir_all(&profile_path).expect("cache profile");
         fs::write(profile_path.join(".cargo-build-lock"), "").expect("Cargo build lock");
         fs::write(profile_path.join("intermediate"), "bytes").expect("cache artifact");
+        let target_profile_path = target_path.join("release");
+        fs::create_dir_all(&target_profile_path).expect("target profile");
+        fs::write(target_profile_path.join(".cargo-artifact-lock"), "")
+            .expect("Cargo artifact lock");
+        fs::write(target_profile_path.join("ait-cli"), "binary").expect("Task final artifact");
 
         let removal = remove_one_worktree_after_authoritative_task_land(&repo, worktree_name)
             .expect("terminal worktree removal");
@@ -1239,12 +1279,17 @@ mod tests {
             json!("removed")
         );
         assert_eq!(removal["cargo_build_cache_cleanup"]["removed"], json!(true));
+        assert_eq!(
+            removal["cargo_build_cache_cleanup"]["target_removed"],
+            json!(true)
+        );
         assert!(!cache_path.exists());
+        assert!(!target_path.exists());
         assert!(!worktree_path.exists());
     }
 
     #[test]
-    fn terminal_worktree_removal_retains_cargo_cache_with_active_profile_lock() {
+    fn terminal_worktree_removal_fails_closed_with_active_profile_lock_and_retries() {
         let temp = tempdir().expect("repo tempdir");
         init_repo(&InitRequest {
             root: temp.path().to_path_buf(),
@@ -1273,19 +1318,73 @@ mod tests {
             .expect("open active lock");
         FileExt::lock_exclusive(&active_lock).expect("hold active Cargo lock");
 
-        let removal = remove_one_worktree_after_authoritative_task_land(&repo, worktree_name)
-            .expect("terminal worktree removal");
+        let error = remove_one_worktree_after_authoritative_task_land(&repo, worktree_name)
+            .expect_err("active Cargo cache must block terminal worktree removal");
 
+        assert!(error.contains("while its Cargo target/build state is active"));
+        assert!(cache_path.exists());
+        assert!(worktree_path.exists());
+        assert!(worktree_registry_path(&repo, worktree_name).is_file());
+        FileExt::unlock(&active_lock).expect("release active Cargo lock");
+
+        let removal = remove_one_worktree_after_authoritative_task_land(&repo, worktree_name)
+            .expect("retry terminal worktree removal");
         assert_eq!(
             removal["cargo_build_cache_cleanup"]["status"],
-            json!("retained_active")
+            json!("removed")
         );
-        assert_eq!(
-            removal["cargo_build_cache_cleanup"]["removed"],
-            json!(false)
-        );
-        assert!(cache_path.exists());
+        assert!(!cache_path.exists());
         assert!(!worktree_path.exists());
-        FileExt::unlock(&active_lock).expect("release active Cargo lock");
+        assert!(!worktree_registry_path(&repo, worktree_name).exists());
+    }
+
+    #[test]
+    fn terminal_worktree_removal_fails_closed_with_active_target_lock_and_retries() {
+        let temp = tempdir().expect("repo tempdir");
+        init_repo(&InitRequest {
+            root: temp.path().to_path_buf(),
+            name: Some("fixture-ait".to_string()),
+            default_line: "main".to_string(),
+            policy_profile: "prototype".to_string(),
+            default_author_mode: "ai_with_human_review".to_string(),
+            default_model: None,
+            repair_existing: false,
+        })
+        .expect("init repo");
+        let repo = RepoRuntime::discover_from_path(temp.path()).expect("repo runtime");
+        let worktree_name = "rt-active-target";
+        let worktree_path = temp.path().join(worktree_name);
+        write_removable_task_worktree(&repo, worktree_name, &worktree_path);
+        let target_path = registered_worktree_cargo_target_dir(&worktree_path, worktree_name)
+            .expect("registered target path");
+        let profile_path = target_path.join("release");
+        fs::create_dir_all(&profile_path).expect("target profile");
+        let lock_path = profile_path.join(".cargo-artifact-lock");
+        fs::write(&lock_path, "").expect("Cargo artifact lock");
+        let active_lock = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&lock_path)
+            .expect("open active lock");
+        FileExt::lock_exclusive(&active_lock).expect("hold active Cargo artifact lock");
+
+        let error = remove_one_worktree_after_authoritative_task_land(&repo, worktree_name)
+            .expect_err("active Cargo target must block terminal worktree removal");
+
+        assert!(error.contains("while its Cargo target/build state is active"));
+        assert!(target_path.exists());
+        assert!(worktree_path.exists());
+        assert!(worktree_registry_path(&repo, worktree_name).is_file());
+        FileExt::unlock(&active_lock).expect("release active Cargo artifact lock");
+
+        let removal = remove_one_worktree_after_authoritative_task_land(&repo, worktree_name)
+            .expect("retry terminal worktree removal");
+        assert_eq!(
+            removal["cargo_build_cache_cleanup"]["target_removed"],
+            json!(true)
+        );
+        assert!(!target_path.exists());
+        assert!(!worktree_path.exists());
+        assert!(!worktree_registry_path(&repo, worktree_name).exists());
     }
 }

@@ -8,7 +8,11 @@ remote=${repo_root}/ci/release_npm_namespace_remote.sh
 dist_tags_filter=${repo_root}/ci/release_npm_namespace_dist_tags.jq
 release_assets_filter=${repo_root}/ci/release_npm_namespace_release_assets.jq
 workflow=${repo_root}/.github/workflows/npm-namespace-supplement.yml
-node_root=${AIT_NODE_ROOT:-${repo_root}/../ait-node}
+node_root=${1:-${repo_root}/../ait-node}
+if (( $# > 1 )); then
+  printf 'usage: %s [ait-node-root]\n' "$0" >&2
+  exit 64
+fi
 temporary_root=$(mktemp -d "${TMPDIR:-/tmp}/ait-npm-supplement-test.XXXXXX")
 
 cleanup() {

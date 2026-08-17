@@ -114,7 +114,7 @@ fn external_hydration_repository_authority_fails_closed_on_index_drift() {
 }
 
 #[test]
-fn remote_sync_public_dispatch_validates_pull_force_before_backend() {
+fn remote_sync_pull_defensively_validates_workspace_options_before_remote_access() {
     let repo_tmp = tempdir().expect("repo tempdir");
     let repo_root = repo_tmp.path();
     init_repo(&InitRequest {
@@ -133,6 +133,31 @@ fn remote_sync_public_dispatch_validates_pull_force_before_backend() {
         .expect_err("force without restore should fail before remote lookup");
 
     assert_eq!(err, "--force only applies together with --restore");
+
+    let err = remote_sync::pull(&repo, None, Some("main"), true, false, false)
+        .expect_err("merge without restore should fail before remote lookup");
+    assert_eq!(
+        err,
+        "--merge requires --restore because a divergent merge materializes the workspace."
+    );
+
+    let mut remote = FakeLineSnapshotRemote::default();
+    let err = remote_sync::pull_line_with_task_remote_and_capabilities(
+        &repo,
+        &mut remote,
+        "origin",
+        "fixture-ait",
+        "main",
+        true,
+        false,
+        false,
+        &zstd_only_download_capabilities(),
+    )
+    .expect_err("direct pull primitive must require restore for merge");
+    assert_eq!(
+        err,
+        "--merge requires --restore because a divergent merge materializes the workspace."
+    );
 }
 
 struct FakeRemoteSyncLocalSnapshotSource {
@@ -4191,14 +4216,6 @@ fn snapshot_read_helpers_accept_single_capability_ports() {
     )
     .expect("remote sync metadata read through single-capability port");
     assert_eq!(metadata["parent_snapshot_id"], json!("SNP-PARENT"));
-
-    let ancestry =
-        task::remote_snapshot_ancestry(&mut metadata_reader, "fixture-ait", Some("SNP-CHILD"))
-            .expect("task audit ancestry read through metadata-only port");
-    assert_eq!(
-        ancestry,
-        vec!["SNP-PARENT".to_string(), "SNP-CHILD".to_string()]
-    );
 
     let snapshot_ids = vec!["SNP-CHILD".to_string(), "SNP-MISSING".to_string()];
     let present = remote_sync::remote_sync_present_snapshot_ids_with_task_remote(

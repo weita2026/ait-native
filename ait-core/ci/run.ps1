@@ -33,10 +33,9 @@ if ([string]::IsNullOrWhiteSpace($env:AIT_RUNNER_ATTEMPT_ROOT)) {
 
 try {
     $tmpRoot = Join-Path $ownedRoot "tmp"
-    $testOutsideRoot = Join-Path $ownedRoot "test-outside"
     $cargoTargetRoot = Join-Path $ownedRoot "cargo-target"
     $cargoBuildRoot = Join-Path $ownedRoot "cargo-build"
-    foreach ($path in @($tmpRoot, $testOutsideRoot, $cargoTargetRoot, $cargoBuildRoot)) {
+    foreach ($path in @($tmpRoot, $cargoTargetRoot, $cargoBuildRoot)) {
         New-Item -ItemType Directory -Force -Path $path | Out-Null
     }
 
@@ -46,8 +45,6 @@ try {
     $env:CARGO_TARGET_DIR = $cargoTargetRoot
     $env:CARGO_BUILD_BUILD_DIR = Join-Path $cargoBuildRoot "{workspace-path-hash}"
     $env:CARGO_INCREMENTAL = "0"
-    $env:AIT_TEST_DISABLE_GLOBAL_HOST_RAM_ROOT_CLEANUP = "1"
-    $env:AIT_TEST_OUTSIDE_REPO_TMP = $testOutsideRoot
 
     Set-Location -LiteralPath $repoRoot
     Invoke-Checked "cargo" @("fmt", "--manifest-path", "rust/Cargo.toml", "--all", "--", "--check")
@@ -68,8 +65,31 @@ try {
 
     Invoke-Checked "cargo" @(
         "test", "--manifest-path", "rust/Cargo.toml", "--profile", "ait-ci",
-        "-p", "ait-agent-core", "-p", "ait-py", "-p", "ait-cli",
-        "--lib", "--bin", "ait-cli", "--test", "patchset_ci_smoke_cli", "--no-run"
+        "-p", "ait-core", "-p", "ait-cli", "-p", "ait-agent-core", "-p", "ait-py",
+        "--lib",
+        "--test", "server_source_ownership",
+        "--test", "patchset_ci_runner", "--no-run"
+    )
+    Invoke-Checked "cargo" @(
+        "test", "--manifest-path", "rust/Cargo.toml", "--profile", "ait-ci",
+        "-p", "ait-core", "--lib",
+        "--test", "server_source_ownership"
+    )
+
+    # Markdown is Plan lineage and is intentionally absent from remote Snapshot
+    # materialization. Canonical source still carries the sole protected authority.
+    if (Test-Path -LiteralPath (Join-Path $repoRoot "docs/binary_db_v0.md") -PathType Leaf) {
+        Invoke-Checked "cargo" @(
+            "test", "--manifest-path", "rust/Cargo.toml", "--profile", "ait-ci",
+            "-p", "ait-core", "--test", "binary_db_schema_authority"
+        )
+    } else {
+        Write-Output "skipping binary_db_schema_authority: lineage-only Markdown is unavailable in this Snapshot"
+    }
+
+    Invoke-Checked "cargo" @(
+        "test", "--manifest-path", "rust/Cargo.toml", "--profile", "ait-ci",
+        "-p", "ait-cli", "--lib"
     )
     Invoke-Checked "cargo" @(
         "test", "--manifest-path", "rust/Cargo.toml", "--profile", "ait-ci",
@@ -81,7 +101,7 @@ try {
     )
     Invoke-Checked "cargo" @(
         "test", "--manifest-path", "rust/Cargo.toml", "--profile", "ait-ci",
-        "-p", "ait-cli", "--test", "patchset_ci_smoke_cli"
+        "-p", "ait-cli", "--test", "patchset_ci_runner"
     )
 } finally {
     if ($cleanupOwnedRoot -and (Test-Path -LiteralPath $ownedRoot)) {

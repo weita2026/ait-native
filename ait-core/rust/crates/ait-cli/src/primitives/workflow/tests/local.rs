@@ -1,7 +1,8 @@
 use super::*;
 use crate::primitives::change_flow::change_local_create_with_change_store;
 use crate::primitives::workflow::local_completion::{
-    workflow_history_prepare_entries, workflow_validate_history_publication_response,
+    workflow_history_prepare_entries, workflow_staged_history_prepare_request,
+    workflow_validate_history_publication_response,
 };
 use crate::primitives::worktree::create_local_line_with_line_store;
 
@@ -341,7 +342,7 @@ fn final_snapshot_promotion_preview_uses_an_exact_local_change_reference() {
     assert!(preview["next_action"]["detail"]
         .as_str()
         .unwrap()
-        .contains("ait task land LCT-FINAL/C-01 --remote origin"));
+        .contains("ait workflow land LCT-FINAL/C-01 --apply --remote origin"));
 }
 
 #[test]
@@ -439,6 +440,12 @@ fn same_head_promotion_accepts_exact_remote_landed_change_authority() {
 }
 
 fn ten_local_land_fixture() -> (tempfile::TempDir, RepoRuntime, String, String, String) {
+    local_land_fixture(10)
+}
+
+fn local_land_fixture(
+    local_land_count: usize,
+) -> (tempfile::TempDir, RepoRuntime, String, String, String) {
     let temp = tempdir().expect("history repo tempdir");
     init_repo(&InitRequest {
         root: temp.path().to_path_buf(),
@@ -467,7 +474,7 @@ fn ten_local_land_fixture() -> (tempfile::TempDir, RepoRuntime, String, String, 
     let mut final_change_ref = String::new();
     let mut final_snapshot_id = String::new();
 
-    for ordinal in 1..=10 {
+    for ordinal in 1..=local_land_count {
         let task = task_local_create_with_task_store(
             &task_store,
             "fixture-ait",
@@ -558,6 +565,119 @@ fn history_promotion_collects_ten_consecutive_local_lands() {
             .as_array()
             .is_some_and(|snapshots| snapshots.len() == 1)
     }));
+}
+
+#[test]
+fn history_promotion_collects_sixty_five_consecutive_local_lands_without_a_ceiling() {
+    let (_temp, repo, base_snapshot_id, final_snapshot_id, final_change_ref) =
+        local_land_fixture(65);
+
+    let (entries, plan_artifacts) = workflow_local_history_entries(
+        &repo,
+        &final_change_ref,
+        "main",
+        &base_snapshot_id,
+        &final_snapshot_id,
+    )
+    .expect("sixty-five-entry history");
+
+    assert_eq!(entries.len(), 65);
+    assert!(plan_artifacts.is_empty());
+    assert_eq!(
+        entries.first().unwrap()["pre_land_target_snapshot_id"],
+        base_snapshot_id
+    );
+    assert_eq!(
+        entries.last().unwrap()["landed_snapshot_id"],
+        final_snapshot_id
+    );
+    assert!(entries
+        .windows(2)
+        .all(|pair| { pair[0]["landed_snapshot_id"] == pair[1]["pre_land_target_snapshot_id"] }));
+}
+
+#[test]
+fn history_promotion_stages_sixty_five_entries_as_exact_sixty_four_plus_one() {
+    let entries = (0..65)
+        .map(|ordinal| {
+            json!({
+                "local_task_id": format!("LCT-{ordinal:04}"),
+                "local_change_ref": format!("LCT-{ordinal:04}/C-01"),
+                "pre_land_target_snapshot_id": format!("SNP-{ordinal}"),
+                "landed_snapshot_id": format!("SNP-{}", ordinal + 1),
+            })
+        })
+        .collect::<Vec<_>>();
+    let first = workflow_staged_history_prepare_request(
+        "history-promotion-v2:stable",
+        "main",
+        "SNP-0",
+        "SNP-65",
+        0,
+        65,
+        None,
+        "ai_with_human_review",
+        "staged history",
+        &entries[..64],
+    )
+    .expect("first bounded stage");
+    let second = workflow_staged_history_prepare_request(
+        "history-promotion-v2:stable",
+        "main",
+        "SNP-0",
+        "SNP-65",
+        1,
+        65,
+        Some("RCT-64/C-01/P-02"),
+        "ai_with_human_review",
+        "staged history",
+        &entries[64..],
+    )
+    .expect("final bounded stage");
+
+    assert_eq!(first["entries"].as_array().unwrap().len(), 64);
+    assert_eq!(first["stage_ordinal"], 0);
+    assert_eq!(first["final_stage"], false);
+    assert_eq!(first["stage_base_snapshot_id"], "SNP-0");
+    assert_eq!(first["stage_revision_snapshot_id"], "SNP-64");
+    assert!(first["previous_stage_patchset_id"].is_null());
+    assert_eq!(second["entries"].as_array().unwrap().len(), 1);
+    assert_eq!(second["stage_ordinal"], 1);
+    assert_eq!(second["final_stage"], true);
+    assert_eq!(second["stage_base_snapshot_id"], "SNP-64");
+    assert_eq!(second["stage_revision_snapshot_id"], "SNP-65");
+    assert_eq!(second["previous_stage_patchset_id"], "RCT-64/C-01/P-02");
+    assert_ne!(first["idempotency_key"], second["idempotency_key"]);
+    assert_eq!(
+        first,
+        workflow_staged_history_prepare_request(
+            "history-promotion-v2:stable",
+            "main",
+            "SNP-0",
+            "SNP-65",
+            0,
+            65,
+            None,
+            "ai_with_human_review",
+            "staged history",
+            &entries[..64],
+        )
+        .expect("deterministic stage replay")
+    );
+    assert!(workflow_staged_history_prepare_request(
+        "history-promotion-v2:stable",
+        "main",
+        "SNP-0",
+        "SNP-65",
+        1,
+        65,
+        None,
+        "ai_with_human_review",
+        "staged history",
+        &entries[64..],
+    )
+    .expect_err("continuation without predecessor must fail")
+    .contains("predecessor"));
 }
 
 #[test]
@@ -1049,6 +1169,31 @@ fn history_promotion_deduplicates_plan_artifacts_before_remote_sync() {
 }
 
 #[test]
+fn history_promotion_deduplicates_exact_plan_publications_in_plan_id_order() {
+    let publications = workflow_unique_history_plan_publications([
+        ("PR-700".to_string(), "docs/sprints/b.md".to_string()),
+        ("PR-649".to_string(), "docs/sprints/a.md".to_string()),
+        ("PR-700".to_string(), "docs/sprints/b.md".to_string()),
+    ])
+    .expect("exact Plan publications should deduplicate");
+
+    assert_eq!(
+        publications,
+        vec![
+            ("PR-649".to_string(), "docs/sprints/a.md".to_string()),
+            ("PR-700".to_string(), "docs/sprints/b.md".to_string()),
+        ]
+    );
+
+    let error = workflow_unique_history_plan_publications([
+        ("PR-649".to_string(), "docs/sprints/a.md".to_string()),
+        ("PR-649".to_string(), "docs/sprints/other.md".to_string()),
+    ])
+    .expect_err("one exact Plan cannot resolve to two head paths");
+    assert!(error.contains("conflicting head artifact paths"));
+}
+
+#[test]
 fn history_promotion_rejects_a_local_land_gap() {
     let (_temp, repo, _base_snapshot_id, final_snapshot_id, final_change_ref) =
         ten_local_land_fixture();
@@ -1117,13 +1262,4 @@ fn same_head_atomic_sync_skips_line_write_and_main_seed_refresh() {
         output["main_seed_sync"]["reason"],
         "already_at_trusted_local_landed_snapshot"
     );
-}
-
-#[test]
-fn all_completed_local_batch_mode_is_retired_in_favor_of_final_snapshot_ci() {
-    let error = workflow_completed_local_batch_retired_error();
-
-    assert!(error.contains("--all-completed-local"));
-    assert!(error.contains("latest landed local change"));
-    assert!(error.contains("workflow ready"));
 }

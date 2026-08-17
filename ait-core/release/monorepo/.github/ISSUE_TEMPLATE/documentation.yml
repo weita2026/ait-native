@@ -1,0 +1,50 @@
+name: Documentation correction
+description: Report an inaccurate, unclear, or missing part of the documentation.
+title: "[Docs]: "
+labels:
+  - documentation
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this form for a specific documentation correction. For broader ideas or usage questions, use [Discussions](https://github.com/weita2026/ait-native/discussions).
+
+  - type: input
+    id: page_url
+    attributes:
+      label: Page or file
+      description: Link to the documentation page or repository file that needs correction.
+      placeholder: https://ait-native.dev/technical/...
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Version context
+      description: If the correction is version-specific, provide the relevant Ait version or release tag.
+      placeholder: v1.0.0-rc.6
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What is inaccurate, unclear, or missing?
+      description: Quote only the short section needed to locate the problem.
+    validations:
+      required: true
+
+  - type: textarea
+    id: correction
+    attributes:
+      label: Suggested correction
+      description: Describe the wording or information you think should replace it.
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I checked the documentation for the version I am using.
+          required: true
+        - label: I removed credentials, tokens, and other sensitive data.
+          required: true

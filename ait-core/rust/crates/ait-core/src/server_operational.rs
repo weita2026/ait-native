@@ -12,8 +12,21 @@ pub const NATIVE_JOB_REPOSITORY_CI_ARGV0: &str = "./ci/run";
 pub const NATIVE_JOB_REPOSITORY_CI_UNIX_PATH: &str = "ci/run.sh";
 pub const NATIVE_JOB_REPOSITORY_CI_WINDOWS_PATH: &str = "ci/run.ps1";
 pub const REPOSITORY_INDEX_CONFIG_KEY: &str = "repository_index";
+pub const WORKER_JOB_LIST_LIMIT_DEFAULT: u32 = 50;
+pub const WORKER_JOB_LIST_LIMIT_MIN: u32 = 1;
+pub const WORKER_JOB_LIST_LIMIT_MAX: u32 = 1_000;
 
 const MAX_LEASE_TOKEN_BYTES: usize = 128;
+
+pub fn validate_worker_job_list_limit(limit: u32) -> Result<(), String> {
+    if (WORKER_JOB_LIST_LIMIT_MIN..=WORKER_JOB_LIST_LIMIT_MAX).contains(&limit) {
+        Ok(())
+    } else {
+        Err(format!(
+            "Worker Job list limit must be between {WORKER_JOB_LIST_LIMIT_MIN} and {WORKER_JOB_LIST_LIMIT_MAX}"
+        ))
+    }
+}
 
 #[derive(
     Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize,

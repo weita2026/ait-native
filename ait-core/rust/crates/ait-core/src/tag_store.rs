@@ -1,8 +1,10 @@
 use crate::json_support::{JsonCodec, JsonEncodeOptions};
 use crate::ref_names::encode_ref_name;
 use serde::{Deserialize, Serialize};
-use std::fs;
+use std::fs::{self, OpenOptions};
+use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 pub const TAG_RECORD_SCHEMA: u32 = 1;
 
@@ -18,21 +20,17 @@ pub struct TagRecord {
 }
 
 pub trait TagStore {
-    fn create_tag(&self, record: &TagRecord, force: bool) -> TagStoreResult<TagRecord>;
+    fn create_tag(&self, record: &TagRecord) -> TagStoreResult<TagRecord>;
     fn list_tags(&self) -> TagStoreResult<Vec<TagRecord>>;
     fn tag_by_name(&self, name: &str) -> TagStoreResult<Option<TagRecord>>;
     fn delete_tag(&self, name: &str) -> TagStoreResult<Option<TagRecord>>;
 }
 
-pub fn create_tag_with_store<S>(
-    store: &S,
-    record: &TagRecord,
-    force: bool,
-) -> TagStoreResult<TagRecord>
+pub fn create_tag_with_store<S>(store: &S, record: &TagRecord) -> TagStoreResult<TagRecord>
 where
     S: TagStore + ?Sized,
 {
-    store.create_tag(record, force)
+    store.create_tag(record)
 }
 
 pub fn list_tags_with_store<S>(store: &S) -> TagStoreResult<Vec<TagRecord>>
@@ -76,15 +74,9 @@ impl FilesystemTagStore {
 }
 
 impl TagStore for FilesystemTagStore {
-    fn create_tag(&self, record: &TagRecord, force: bool) -> TagStoreResult<TagRecord> {
+    fn create_tag(&self, record: &TagRecord) -> TagStoreResult<TagRecord> {
         let record = validate_record(record)?;
         let path = tag_record_path(&self.repo_root, &record.name)?;
-        if path.exists() && !force {
-            return Err(format!(
-                "Tag {} already exists. Use --force to replace it.",
-                record.name
-            ));
-        }
         write_tag_record(&path, &record)?;
         read_tag_record(&path)
     }
@@ -178,9 +170,30 @@ fn write_tag_record(path: &Path, record: &TagRecord) -> TagStoreResult<()> {
         "JSON tag store operation failed",
     )
     .map_err(String::from)?;
-    let temp_path = path.with_extension("json.tmp");
-    fs::write(&temp_path, format!("{encoded}\n")).map_err(io_error)?;
-    fs::rename(temp_path, path).map_err(io_error)
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|error| format!("Filesystem tag store clock operation failed: {error}"))?
+        .as_nanos();
+    let temp_path = path.with_extension(format!("json.tmp-{}-{timestamp}", std::process::id()));
+    let staged = (|| -> TagStoreResult<()> {
+        let mut file = OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&temp_path)
+            .map_err(io_error)?;
+        file.write_all(format!("{encoded}\n").as_bytes())
+            .map_err(io_error)?;
+        file.sync_all().map_err(io_error)?;
+        match fs::hard_link(&temp_path, path) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                Err(format!("Tag {} already exists.", record.name))
+            }
+            Err(error) => Err(io_error(error)),
+        }
+    })();
+    let _ = fs::remove_file(&temp_path);
+    staged
 }
 
 fn read_tag_record(path: &Path) -> TagStoreResult<TagRecord> {

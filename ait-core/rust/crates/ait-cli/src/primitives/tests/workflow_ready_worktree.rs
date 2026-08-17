@@ -42,7 +42,7 @@ fn remote_worktree_retarget_uses_authoritative_change_without_local_change_recor
 }
 
 #[test]
-fn workflow_land_action_rejects_publish_sync_and_ci_ownership() {
+fn workflow_land_action_rejects_every_ready_preparation_action() {
     let repo_tmp = tempdir().expect("repo tempdir");
     init_repo(&InitRequest {
         root: repo_tmp.path().to_path_buf(),
@@ -57,69 +57,18 @@ fn workflow_land_action_rejects_publish_sync_and_ci_ownership() {
     let repo = RepoRuntime::discover_from_path(repo_tmp.path()).expect("repo runtime");
     let state = json!({});
 
-    for code in ["publish_patchset", "refresh_patchset", "run_patchset_ci"] {
-        let result = workflow_land_apply_action(
-            &repo, code, &state, "RC-1", None, None, None, None, None, None, None, None, None,
-            None, None, "direct", None,
-        )
-        .expect("land preparation action should stop without mutation");
+    for code in [
+        "snapshot_create",
+        "publish_patchset",
+        "refresh_patchset",
+        "record_attestation",
+        "run_patchset_ci",
+    ] {
+        let result = workflow_land_apply_action(&repo, code, &state, "RC-1", None, None)
+            .expect("land preparation action should stop without mutation");
         let reason = result["stopped_reason"].as_str().expect("stopped reason");
         assert!(reason.contains("does not"), "{code}: {reason}");
     }
-}
-
-#[test]
-fn task_tokens_report_uses_runtime_summary_contract() {
-    let task = json!({
-        "task_id": "RT-1",
-        "repo_name": "fixture-ait",
-    });
-    let report =
-        empty_task_tokens_report(&task, json!({"mode": "local", "repo_name": "fixture-ait"}));
-
-    let mut report_keys = report
-        .as_object()
-        .expect("report object")
-        .keys()
-        .cloned()
-        .collect::<Vec<_>>();
-    report_keys.sort();
-    assert_eq!(
-        report_keys,
-        vec!["changes", "models", "scope", "summary", "task", "worktrees"]
-    );
-
-    let mut summary_keys = report["summary"]
-        .as_object()
-        .expect("summary object")
-        .keys()
-        .cloned()
-        .collect::<Vec<_>>();
-    summary_keys.sort();
-    assert_eq!(
-        summary_keys,
-        vec![
-            "assistant_reply_count",
-            "cached_input_tokens",
-            "completion_tokens",
-            "direct_usage_reply_count",
-            "metered_reply_count",
-            "missing_usage_reply_count",
-            "models",
-            "payload_usage_reply_count",
-            "prompt_tokens",
-            "reasoning_output_tokens",
-            "runtime_count",
-            "runtimes_with_usage_count",
-            "total_tokens",
-            "usage_last_reply_count",
-        ]
-    );
-    assert_eq!(report["summary"]["runtime_count"], json!(0));
-    assert_eq!(report["summary"]["runtimes_with_usage_count"], json!(0));
-    assert_eq!(report["summary"]["total_tokens"], json!(0));
-    assert_eq!(report["changes"], json!([]));
-    assert_eq!(report["worktrees"], json!([]));
 }
 
 #[test]
@@ -1062,12 +1011,9 @@ fn write_worktree_registration(
 fn task_worktree_shell_command_is_language_neutral_without_source_policy() {
     let repo_root = Path::new("/tmp/language-neutral-repo");
     let open_path = Path::new("/tmp/rct-0002");
-    let shell_command =
-        task_worktree_shell_command(repo_root, open_path, "rct-0002", "feature/rct-0002");
+    let shell_command = task_worktree_shell_command(repo_root, open_path);
 
-    assert!(shell_command.starts_with("cd /tmp/rct-0002 &&"));
-    assert!(shell_command.contains("export AIT_WORKTREE_NAME=rct-0002"));
-    assert!(shell_command.contains("export AIT_WORKTREE_LINE=feature/rct-0002"));
+    assert_eq!(shell_command, "cd /tmp/rct-0002");
     assert!(!shell_command.contains("CARGO_TARGET_DIR"));
     assert!(!shell_command.contains("CARGO_BUILD_BUILD_DIR"));
     assert!(!shell_command.contains("PYTHONPATH"));
@@ -1081,13 +1027,12 @@ fn task_worktree_shell_command_preserves_explicit_cargo_source_policy() {
     fs::create_dir_all(repo_root.join(".cargo")).expect("Cargo config parent");
     fs::write(
         repo_root.join(".cargo/config.toml"),
-        "# AIT source policy: canonical Cargo settings; task worktrees receive a managed projection.\n[build]\ntarget-dir = \".ait/cargo-target\"\nbuild-dir = \".ait/cargo-build/workspaces/{workspace-path-hash}\"\n",
+        "# AIT source policy: canonical Cargo settings; task worktrees receive a managed projection.\n[build]\ntarget-dir = \".ait/cargo-target\"\nbuild-dir = \".ait/cargo-build/canonical\"\n",
     )
     .expect("Cargo source policy");
     let open_path = repo_root.join("managed/rct-0002");
 
-    let shell_command =
-        task_worktree_shell_command(repo_root, &open_path, "rct-0002", "feature/rct-0002");
+    let shell_command = task_worktree_shell_command(repo_root, &open_path);
 
     assert!(shell_command.contains("export CARGO_TARGET_DIR="));
     assert!(shell_command.contains("export CARGO_BUILD_BUILD_DIR="));
@@ -1216,8 +1161,7 @@ fn worktree_summary_is_language_neutral_without_build_policy() {
             shell_escape(&repo_root.join(".ait-worktree-links").join("rct-0002"))
         )
     );
-    assert!(shell_command.contains("export AIT_WORKTREE_NAME=rct-0002"));
-    assert!(shell_command.contains("export AIT_WORKTREE_LINE=feature/rct-0002"));
+    assert_eq!(shell_command, cd_command);
     assert!(!shell_command.contains("CARGO_TARGET_DIR"));
     assert!(!shell_command.contains("CARGO_BUILD_BUILD_DIR"));
     assert!(!shell_command.contains("PYTHONPATH"));
@@ -1262,10 +1206,8 @@ fn repository_worktrees_share_ram_root_with_cargo_workspace_isolation() {
     let expected_root = fs::canonicalize(&expected)
         .expect("canonical expected build root")
         .to_path_buf();
-    let expected_template = expected_root
-        .join("workspaces")
-        .join("{workspace-path-hash}");
-    assert_eq!(worktree_cargo_build_dir(repo_root), expected_template);
+    let expected_canonical = expected_root.join(CANONICAL_CARGO_BUILD_DIRNAME);
+    assert_eq!(worktree_cargo_build_dir(repo_root), expected_canonical);
     for name in ["task-one", "task-two"] {
         let worktree = repo_root.join("managed").join(name);
         fs::create_dir_all(&worktree).expect("worktree");
@@ -1413,9 +1355,8 @@ fn managed_worktree_cargo_config_upgrades_legacy_build_path() {
 
     let upgraded =
         fs::read_to_string(repo_root.join(".cargo/config.toml")).expect("upgraded config");
-    assert!(upgraded.starts_with(
-        "# Managed by ait: stable final artifacts, workspace-isolated intermediates.\n"
-    ));
+    assert!(upgraded
+        .starts_with("# Managed by ait: workspace-isolated final artifacts and intermediates.\n"));
     assert!(upgraded.contains("jobs = 8\n"));
     assert!(upgraded.contains(&format!(
         "build-dir = \"{}\"\n",
@@ -1448,11 +1389,11 @@ fn managed_worktree_cargo_config_upgrades_repository_shared_build_path() {
     let upgraded =
         fs::read_to_string(repo_root.join(".cargo/config.toml")).expect("upgraded config");
     assert_eq!(upgraded, generated_worktree_cargo_config_text(repo_root));
-    assert!(upgraded.contains("{workspace-path-hash}"));
+    assert!(upgraded.contains("cargo-build/canonical"));
 }
 
 #[test]
-fn managed_worktree_cargo_config_preserves_aliases_and_uses_exact_task_cache() {
+fn managed_worktree_cargo_config_upgrades_hash_template_and_uses_exact_task_cache() {
     let repo_tmp = tempdir().expect("repo tempdir");
     let repo_root = repo_tmp.path();
     write_runtime_config(repo_root, r#"{"repo_name":"fixture"}"#);
@@ -1481,11 +1422,84 @@ fn managed_worktree_cargo_config_preserves_aliases_and_uses_exact_task_cache() {
         &worktree, &upgraded
     ));
     assert!(upgraded.contains(&format!(
+        "target-dir = \"{}\"\n",
+        worktree_cargo_target_dir(&worktree).display()
+    )));
+    assert!(upgraded.contains(&format!(
         "build-dir = \"{}\"\n",
         worktree_cargo_build_dir(&worktree).display()
     )));
     assert!(upgraded.contains("[alias]\nmanaged-test = [\"test\", \"--profile\", \"ait-ci\"]\n"));
     assert!(!upgraded.contains("{workspace-path-hash}"));
+}
+
+#[test]
+fn managed_worktree_cargo_config_upgrades_shared_final_artifact_projection() {
+    let repo_tmp = tempdir().expect("repo tempdir");
+    let repo_root = repo_tmp.path();
+    write_runtime_config(repo_root, r#"{"repo_name":"fixture"}"#);
+    let worktree = repo_root.join("managed/task-one");
+    fs::create_dir_all(worktree.join(".cargo")).expect("Cargo config parent");
+    std::os::unix::fs::symlink(repo_root.join(".ait"), worktree.join(".ait"))
+        .expect("shared .ait link");
+    fs::write(
+        worktree.join(WORKTREE_CONFIG_NAME),
+        json!({"worktree_name": "task-one"}).to_string(),
+    )
+    .expect("worktree marker");
+    fs::write(
+        worktree.join(".cargo/config.toml"),
+        format!(
+            "# Managed by ait: stable final artifacts, workspace-isolated intermediates.\n[build]\ntarget-dir = \".ait/cargo-target\"\nbuild-dir = \"{}\"\n",
+            worktree_cargo_build_dir(&worktree).display()
+        ),
+    )
+    .expect("shared final-artifact projection");
+
+    materialize_worktree_cargo_config(repo_root, &worktree)
+        .expect("upgrade shared final-artifact projection");
+
+    let upgraded =
+        fs::read_to_string(worktree.join(".cargo/config.toml")).expect("upgraded config");
+    assert_eq!(upgraded, generated_worktree_cargo_config_text(&worktree));
+    assert!(upgraded
+        .starts_with("# Managed by ait: workspace-isolated final artifacts and intermediates."));
+    assert!(upgraded.contains("cargo-target/task-workspaces/task-one"));
+}
+
+#[test]
+fn managed_worktrees_use_distinct_final_artifact_and_intermediate_directories() {
+    let repo_tmp = tempdir().expect("repo tempdir");
+    let repo_root = repo_tmp.path();
+    write_runtime_config(repo_root, r#"{"repo_name":"fixture"}"#);
+    let first = repo_root.join("managed/task-one");
+    let second = repo_root.join("managed/task-two");
+    for (path, name) in [(&first, "task-one"), (&second, "task-two")] {
+        fs::create_dir_all(path.join(".cargo")).expect("Cargo config parent");
+        std::os::unix::fs::symlink(repo_root.join(".ait"), path.join(".ait"))
+            .expect("shared .ait link");
+        fs::write(
+            path.join(WORKTREE_CONFIG_NAME),
+            json!({"worktree_name": name}).to_string(),
+        )
+        .expect("worktree marker");
+    }
+
+    let first_target = worktree_cargo_target_dir(&first);
+    let second_target = worktree_cargo_target_dir(&second);
+    let first_build = worktree_cargo_build_dir(&first);
+    let second_build = worktree_cargo_build_dir(&second);
+
+    assert_ne!(first_target, second_target);
+    assert_ne!(first_build, second_build);
+    assert!(first_target.ends_with("cargo-target/task-workspaces/task-one"));
+    assert!(second_target.ends_with("cargo-target/task-workspaces/task-two"));
+    assert!(first_build.ends_with("cargo-build/task-workspaces/task-one"));
+    assert!(second_build.ends_with("cargo-build/task-workspaces/task-two"));
+    assert!(generated_worktree_cargo_config_text(&first)
+        .contains(&format!("target-dir = \"{}\"", first_target.display())));
+    assert!(generated_worktree_cargo_config_text(&second)
+        .contains(&format!("target-dir = \"{}\"", second_target.display())));
 }
 
 #[test]
@@ -1528,6 +1542,10 @@ fn managed_worktree_cargo_config_retargets_copied_main_seed_projection() {
         &worktree, &upgraded
     ));
     assert!(upgraded.contains(&format!(
+        "target-dir = \"{}\"\n",
+        worktree_cargo_target_dir(&worktree).display()
+    )));
+    assert!(upgraded.contains(&format!(
         "build-dir = \"{}\"\n",
         worktree_cargo_build_dir(&worktree).display()
     )));
@@ -1541,6 +1559,53 @@ fn managed_worktree_cargo_config_retargets_copied_main_seed_projection() {
         0,
         "retargeted task-worktree projection must be owner-writable"
     );
+}
+
+#[test]
+fn managed_worktree_cargo_config_retargets_legacy_shared_final_main_seed_projection() {
+    let repo_tmp = tempdir().expect("repo tempdir");
+    let repo_root = repo_tmp.path();
+    write_runtime_config(
+        repo_root,
+        r#"{"repo_name":"fixture","default_line":"main"}"#,
+    );
+    let worktree = repo_root.join("managed/task-one");
+    fs::create_dir_all(worktree.join(".cargo")).expect("Cargo config parent");
+    std::os::unix::fs::symlink(repo_root.join(".ait"), worktree.join(".ait"))
+        .expect("shared .ait link");
+    fs::write(
+        worktree.join(WORKTREE_CONFIG_NAME),
+        json!({"worktree_name": "task-one"}).to_string(),
+    )
+    .expect("worktree marker");
+    let copied_seed_build_dir = fs::canonicalize(repo_root.join(".ait"))
+        .expect("canonical shared .ait")
+        .join("cargo-build/task-workspaces/main-seed");
+    let copied = format!(
+        "# Managed by ait: stable final artifacts, workspace-isolated intermediates.\n[build]\ntarget-dir = \".ait/cargo-target\"\nbuild-dir = \"{}\"\n\n[alias]\nmanaged-test = [\"test\", \"--profile\", \"ait-ci\"]\n",
+        copied_seed_build_dir.display()
+    );
+    fs::write(worktree.join(".cargo/config.toml"), &copied)
+        .expect("copied legacy seed Cargo config");
+
+    materialize_worktree_cargo_config(repo_root, &worktree)
+        .expect("retarget copied legacy seed config");
+
+    let upgraded =
+        fs::read_to_string(worktree.join(".cargo/config.toml")).expect("retargeted config");
+    assert!(matches_generated_worktree_cargo_config_text(
+        &worktree, &upgraded
+    ));
+    assert!(upgraded.contains(&format!(
+        "target-dir = \"{}\"\n",
+        worktree_cargo_target_dir(&worktree).display()
+    )));
+    assert!(upgraded.contains(&format!(
+        "build-dir = \"{}\"\n",
+        worktree_cargo_build_dir(&worktree).display()
+    )));
+    assert!(upgraded.contains("[alias]\nmanaged-test = [\"test\", \"--profile\", \"ait-ci\"]\n"));
+    assert!(!upgraded.contains("task-workspaces/main-seed"));
 }
 
 #[test]

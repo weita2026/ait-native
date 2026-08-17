@@ -6,7 +6,7 @@ fn run_change(repo: RepoRuntime, command: ChangeCommand) -> Result<(), String> {
                     &repo,
                     &args.task_id,
                     &args.title,
-                    Some(&args.base_line),
+                    args.base_line.as_deref(),
                     args.local,
                     args.remote.as_deref(),
                 )
@@ -29,6 +29,11 @@ fn run_change(repo: RepoRuntime, command: ChangeCommand) -> Result<(), String> {
         ChangeCommand::List(args) => {
             let payload = change_list_cmd(&repo, args.local, args.remote.as_deref())?;
             if args.json {
+                let payload = agent_list_json_payload(
+                    &payload,
+                    args.all,
+                    &["landed", "archived", "abandoned", "canceled"],
+                );
                 print_json(&payload)?;
             } else if let Some(rows) = payload.as_array() {
                 let rows = project_change_text_rows(rows);
@@ -70,7 +75,7 @@ fn run_change(repo: RepoRuntime, command: ChangeCommand) -> Result<(), String> {
                 &args.change_id,
                 args.local,
                 args.remote.as_deref(),
-                args.repo.as_deref(),
+                None,
             )?;
             emit_result(
                 "ait-cli change show",
@@ -98,7 +103,7 @@ fn run_change(repo: RepoRuntime, command: ChangeCommand) -> Result<(), String> {
                     args.dry_run,
                     args.local,
                     args.remote.as_deref(),
-                    args.repo.as_deref(),
+                    None,
                 )
             })?;
             emit_result(
@@ -118,15 +123,19 @@ fn run_change(repo: RepoRuntime, command: ChangeCommand) -> Result<(), String> {
         }
         ChangeCommand::Replay(args) => {
             let payload = run_locked_workspace_command(&repo, "ait-cli change replay", || {
+                let onto_line = match args.onto.as_deref() {
+                    Some(onto_line) => onto_line.to_string(),
+                    None => repo.current_line_name()?,
+                };
                 change_replay_cmd(
                     &repo,
                     &args.change_id,
-                    &args.onto,
+                    &onto_line,
                     args.force,
                     args.dry_run,
                     args.local,
                     args.remote.as_deref(),
-                    args.repo.as_deref(),
+                    None,
                 )
             })?;
             emit_result(
@@ -145,7 +154,7 @@ fn run_change(repo: RepoRuntime, command: ChangeCommand) -> Result<(), String> {
             Ok(())
         }
         ChangeCommand::Close(args) => {
-            let automatic_scope = if repo.task_uses_local_scope(args.local, args.remote.as_deref()) {
+            let automatic_scope = if repo.change_uses_local_scope(args.local, args.remote.as_deref()) {
                 AutomaticReconciliationScope::Local
             } else {
                 AutomaticReconciliationScope::Remote(args.remote.clone())

@@ -35,16 +35,25 @@ def test_package_builds_the_pinned_pyo3_extension() -> None:
     assert "config" not in pyproject["tool"]["maturin"]
 
     cargo_config_path = ROOT / ".cargo" / "config.toml"
-    cargo_config = tomllib.loads(cargo_config_path.read_text(encoding="utf-8"))
+    cargo_config_text = cargo_config_path.read_text(encoding="utf-8")
+    cargo_config = tomllib.loads(cargo_config_text)
     target_dir = Path(cargo_config["build"]["target-dir"])
     build_dir = Path(cargo_config["build"]["build-dir"])
 
-    assert target_dir.parts[-2:] == (".ait", "cargo-target")
-    assert "cargo-build" in build_dir.parts
-    assert (
-        "{workspace-path-hash}" in build_dir.parts
-        or "task-workspaces" in build_dir.parts
-    )
+    if cargo_config_text.startswith("# AIT source policy:"):
+        assert target_dir.parts[-2:] == (".ait", "cargo-target")
+        assert "cargo-build" in build_dir.parts
+        assert "{workspace-path-hash}" in build_dir.parts
+    else:
+        assert cargo_config_text.startswith(
+            "# Managed by ait: workspace-isolated final artifacts and intermediates."
+        )
+        assert "cargo-target" in target_dir.parts
+        assert "cargo-build" in build_dir.parts
+        assert target_dir.parts[-2] == "task-workspaces"
+        assert build_dir.parts[-2] == "task-workspaces"
+        assert target_dir.name == build_dir.name
+        assert target_dir.name != "main-seed"
 
 
 def test_package_declares_the_apache_rc_identity() -> None:
@@ -53,7 +62,7 @@ def test_package_declares_the_apache_rc_identity() -> None:
     )
     project = pyproject["project"]
 
-    assert project["version"] == ait_python.__version__ == "1.0.0rc6"
+    assert project["version"] == ait_python.__version__ == "1.0.0rc7"
     assert project["license"] == "Apache-2.0"
     assert project["license-files"] == ["LICENSE", "NOTICE"]
     assert "Apache License" in (ROOT / "LICENSE").read_text(encoding="utf-8")
@@ -88,7 +97,7 @@ def test_package_declares_the_apache_rc_identity() -> None:
     assert ".ait-external/ait-core/rust/Cargo.toml" in generator
 
     installed = metadata("ait-python")
-    assert installed["Version"] == "1.0.0rc6"
+    assert installed["Version"] == "1.0.0rc7"
     assert installed["License-Expression"] == "Apache-2.0"
     assert installed.get_all("License-File") == ["LICENSE", "NOTICE"]
 
@@ -108,7 +117,7 @@ def test_materialized_core_matches_the_external_lock() -> None:
     node = lock["node"][0]
 
     assert node["repository_index"] == 0
-    assert node["snapshot"] == "SNP-1372CA70FB06"
+    assert node["snapshot"] == "SNP-E164008CF117"
     assert marker["format"] == "ait.external.materialized"
     assert marker["name"] == node["name"] == "ait-core"
     assert marker["repo_name"] == node["repo_name"] == "ait-core"
@@ -173,5 +182,6 @@ def test_runtime_source_has_no_process_api_relay() -> None:
 
 
 def test_removed_task_publish_operation_is_not_exported() -> None:
-    assert hasattr(ait_py, "task_workflow_task_land_apply_direct")
+    assert hasattr(ait_py, "task_workflow_task_land")
+    assert not hasattr(ait_py, "task_workflow_task_land_apply_direct")
     assert not hasattr(ait_py, "task_workflow_task_publish")

@@ -623,14 +623,14 @@ fn ensure_bare_repository(path: &Path, object_format: &str) -> Result<(), String
 fn selected_import_refs(
     source: &SourceInfo,
     retained_refs: &[ImportedRef],
-    all_refs: bool,
+    all_branches_and_tags: bool,
 ) -> Result<(Vec<ImportedRef>, Vec<ImportedRef>), String> {
     let heads = retained_refs
         .iter()
         .filter(|row| row.source_name.starts_with("refs/heads/"))
         .cloned()
         .collect::<Vec<_>>();
-    let selected_heads = if all_refs {
+    let selected_heads = if all_branches_and_tags {
         heads
     } else if let Some(symbolic) = source.head_symbolic_ref.as_deref() {
         heads
@@ -647,7 +647,7 @@ fn selected_import_refs(
     } else {
         Vec::new()
     };
-    if !all_refs && selected_heads.is_empty() && source.head_object_id.is_some() {
+    if !all_branches_and_tags && selected_heads.is_empty() && source.head_object_id.is_some() {
         let detached = retained_refs
             .iter()
             .find(|row| row.source_name == "HEAD")
@@ -658,7 +658,7 @@ fn selected_import_refs(
             return Ok((detached, Vec::new()));
         }
     }
-    let selected_tags = if all_refs {
+    let selected_tags = if all_branches_and_tags {
         retained_refs
             .iter()
             .filter(|row| row.source_name.starts_with("refs/tags/"))
@@ -1082,14 +1082,8 @@ fn existing_operation_result(
     store: &InteropStore,
     operation_id: &str,
     plan_hash: &str,
-    resume: bool,
 ) -> Result<(Option<JsonValue>, usize, usize), String> {
     let Some(checkpoint) = store.read_operation(operation_id)? else {
-        if resume {
-            return Err(format!(
-                "No interrupted Git interop operation {operation_id} exists to resume."
-            ));
-        }
         return Ok((None, 0, 0));
     };
     if json_text(&checkpoint, "contract") != Some(CHECKPOINT_CONTRACT)
@@ -1109,11 +1103,6 @@ fn existing_operation_result(
                 format!("Completed Git interop checkpoint {operation_id} is missing its result.")
             });
     }
-    if !resume {
-        return Err(format!(
-            "Git interop operation {operation_id} is incomplete; rerun with --resume."
-        ));
-    }
     Ok((
         None,
         json_usize(&checkpoint, "next_commit_index").unwrap_or(0),
@@ -1124,13 +1113,9 @@ fn existing_operation_result(
 pub fn git_import(
     repo: &RepoRuntime,
     source: &str,
-    all_refs: bool,
+    all_branches_and_tags: bool,
     dry_run: bool,
-    resume: bool,
 ) -> Result<JsonValue, String> {
-    if dry_run && resume {
-        return Err("--dry-run cannot be combined with --resume.".to_string());
-    }
     let source_info = inspect_source(source)?;
     let format_blocked = source_info.object_format != OBJECT_FORMAT_SHA1;
     if format_blocked {
@@ -1190,7 +1175,7 @@ pub fn git_import(
     };
     let retained_refs = prepare_retained_repository(&git_dir, &source_info)?;
     let (selected_heads, selected_tags) =
-        selected_import_refs(&source_info, &retained_refs, all_refs)?;
+        selected_import_refs(&source_info, &retained_refs, all_branches_and_tags)?;
     let (commits, tags) = load_import_commit_plan(&git_dir, &selected_heads, &selected_tags)?;
     let _dry_temp_guard = dry_temp;
 
@@ -1282,7 +1267,7 @@ pub fn git_import(
     let plan_material = format!(
         "{}\n{}\n{}\n{}\n{}",
         source_info.generation_id,
-        all_refs,
+        all_branches_and_tags,
         commits
             .iter()
             .map(|commit| commit.object_id.as_str())
@@ -1336,7 +1321,7 @@ pub fn git_import(
     }
 
     let (completed, mut next_commit_index, mut next_ref_index) =
-        existing_operation_result(&interop, &operation_id, &plan_hash, resume)?;
+        existing_operation_result(&interop, &operation_id, &plan_hash)?;
     if let Some(mut result) = completed {
         if let Some(object) = result.as_object_mut() {
             object.insert("status".to_string(), JsonValue::String("no_op".to_string()));
@@ -1587,39 +1572,20 @@ pub fn git_import(
             .map(str::to_string)
             .unwrap_or_else(|| format!("Imported Git tag {}", tag.name));
         let existing = tag_store.tag_by_name(&tag.name)?;
-        let force = match existing.as_ref() {
-            None => false,
-            Some(existing) if existing.snapshot_id == *snapshot_id => false,
+        let record = match existing {
+            Some(existing) if existing.snapshot_id == *snapshot_id => existing,
             Some(existing) => {
-                let previous = latest_mapping(mappings.iter().filter(|row| {
-                    json_text(row, "kind") == Some("tag")
-                        && json_text(row, "direction") == Some("import")
-                        && json_text(row, "source_repository_fingerprint")
-                            == Some(source_info.fingerprint.as_str())
-                        && json_text(row, "git_ref_name") == Some(tag.source_ref.as_str())
-                        && json_text(row, "ait_tag_name") == Some(tag.name.as_str())
-                }));
-                if previous.and_then(|row| json_text(row, "snapshot_id"))
-                    != Some(existing.snapshot_id.as_str())
-                {
-                    return Err(format!(
-                        "Git import refuses to replace AIT tag {} because it is not at the last imported Snapshot.",
-                        tag.name
-                    ));
-                }
-                true
+                return Err(format!(
+                    "Git import refuses to replace AIT tag {} because Tag bindings are immutable: it points to {}, but {} points to {}.",
+                    tag.name, existing.snapshot_id, tag.source_ref, snapshot_id
+                ));
             }
-        };
-        let record = if existing
-            .as_ref()
-            .is_some_and(|existing| existing.snapshot_id == *snapshot_id)
-        {
-            existing.unwrap()
-        } else {
-            tag_store.create_tag(
-                &new_tag_record(&tag.name, snapshot_id, &message, &timestamp)?,
-                force,
-            )?
+            None => tag_store.create_tag(&new_tag_record(
+                &tag.name,
+                snapshot_id,
+                &message,
+                &timestamp,
+            )?)?,
         };
         let mapping = json!({
             "kind": "tag",
@@ -1743,13 +1709,9 @@ pub fn git_import(
 pub fn git_export(
     repo: &RepoRuntime,
     target: &str,
-    all_refs: bool,
+    all_lines_and_tags: bool,
     dry_run: bool,
-    resume: bool,
 ) -> Result<JsonValue, String> {
-    if dry_run && resume {
-        return Err("--dry-run cannot be combined with --resume.".to_string());
-    }
     let target_info = inspect_target(target)?;
     if target_info.object_format != OBJECT_FORMAT_SHA1 {
         let report = json!({
@@ -1776,7 +1738,7 @@ pub fn git_export(
             target_info.object_format
         ));
     }
-    let export_refs = selected_export_refs(repo, all_refs)?;
+    let export_refs = selected_export_refs(repo, all_lines_and_tags)?;
     if export_refs.is_empty() {
         return Err("Git export selected no AIT lines or tags with Snapshot heads.".to_string());
     }
@@ -1867,7 +1829,7 @@ pub fn git_export(
         format!(
             "{}\n{}\n{}\nHEAD symbolic={}\n{}",
             target_info.fingerprint,
-            all_refs,
+            all_lines_and_tags,
             traversal.topological_snapshot_ids.join("\n"),
             preferred_head_ref.as_deref().unwrap_or("none"),
             refs_material
@@ -1912,7 +1874,7 @@ pub fn git_export(
     }
 
     let (completed, mut next_commit_index, mut next_ref_index) =
-        existing_operation_result(&interop, &operation_id, &plan_hash, resume)?;
+        existing_operation_result(&interop, &operation_id, &plan_hash)?;
     if let Some(mut result) = completed {
         if let Some(object) = result.as_object_mut() {
             object.insert("status".to_string(), JsonValue::String("no_op".to_string()));
@@ -2311,12 +2273,15 @@ fn prepare_export_target(target: &TargetInfo) -> Result<PathBuf, String> {
     Ok(target.git_dir.clone())
 }
 
-fn selected_export_refs(repo: &RepoRuntime, all_refs: bool) -> Result<Vec<ExportRef>, String> {
+fn selected_export_refs(
+    repo: &RepoRuntime,
+    all_lines_and_tags: bool,
+) -> Result<Vec<ExportRef>, String> {
     let line_store = repo
         .binary_db_stores::<SNAPSHOT_BINARY_DB_WRITE_LAYOUT>()
         .lines();
     let mut refs = Vec::new();
-    if all_refs {
+    if all_lines_and_tags {
         for line in line_store.list_lines()? {
             let Some(snapshot_id) = line.head_snapshot_id else {
                 continue;

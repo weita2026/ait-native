@@ -18,7 +18,6 @@ macro_rules! perfetto_range {
 }
 
 pub mod agent_harness;
-pub mod agent_surface;
 pub mod auth_surface;
 pub mod blame_surface;
 pub mod config_surface;
@@ -27,7 +26,6 @@ pub(crate) mod external_readiness_gate;
 pub mod external_surface;
 pub(crate) mod filesystem_permissions;
 pub mod init_surface;
-pub mod install_surface;
 pub(crate) mod json_support;
 pub mod patchset_ci_smoke;
 pub mod primitives;
@@ -39,10 +37,10 @@ pub mod render;
 pub mod repo_surface;
 pub mod repository_retirement;
 pub mod runtime;
+pub mod snapshot_restore_surface;
 pub mod tag_surface;
 pub mod task_land_contract;
 pub(crate) mod task_worktree_layout;
-pub mod test_surface;
 pub mod workspace_lock;
 
 #[cfg(test)]

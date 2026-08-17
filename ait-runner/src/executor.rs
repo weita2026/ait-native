@@ -16,6 +16,7 @@ use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use sha2::{Digest, Sha256};
 
 use crate::RunnerError;
+use crate::environment_contract::names::{AIT_RUNNER_ATTEMPT_ROOT, AIT_RUNNER_WORKSPACE};
 use crate::materialize::{
     MaterializationStats, RemoteSnapshotProvider, RemoteSnapshotReference,
     materialize_remote_snapshot,
@@ -45,6 +46,12 @@ pub struct NativeExecutor {
 #[derive(Debug)]
 pub(crate) struct AttemptRootLease {
     _lock: File,
+}
+
+impl Drop for AttemptRootLease {
+    fn drop(&mut self) {
+        let _ = self._lock.unlock();
+    }
 }
 
 #[derive(Debug)]
@@ -410,37 +417,16 @@ impl AttemptGuard {
         if self.cleaned {
             return Ok(());
         }
-        match fs::remove_dir_all(&self.path) {
-            Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => {
-                return Err(RunnerError::Cleanup(format!(
-                    "could not remove `{}`: {error}",
-                    self.path.display()
-                )));
-            }
-        }
-        match fs::symlink_metadata(&self.path) {
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                self.cleaned = true;
-                Ok(())
-            }
-            Ok(_) => Err(RunnerError::Cleanup(format!(
-                "`{}` still exists after recursive cleanup",
-                self.path.display()
-            ))),
-            Err(error) => Err(RunnerError::Cleanup(format!(
-                "could not verify removal of `{}`: {error}",
-                self.path.display()
-            ))),
-        }
+        remove_runner_owned_attempt(&self.path)?;
+        self.cleaned = true;
+        Ok(())
     }
 }
 
 impl Drop for AttemptGuard {
     fn drop(&mut self) {
         if !self.cleaned {
-            let _ = fs::remove_dir_all(&self.path);
+            let _ = remove_runner_owned_attempt(&self.path);
         }
     }
 }
@@ -486,10 +472,97 @@ fn reclaim_stale_attempts(attempt_parent: &Path) -> Result<(), RunnerError> {
                 path.display()
             )));
         }
-        fs::remove_dir_all(&path)
-            .map_err(|error| RunnerError::fs("remove stale runner attempt", &path, error))?;
+        remove_runner_owned_attempt(&path)?;
     }
     Ok(())
+}
+
+fn remove_runner_owned_attempt(path: &Path) -> Result<(), RunnerError> {
+    let name = path.file_name().and_then(|value| value.to_str());
+    if !name.is_some_and(is_runner_attempt_name) {
+        return Err(RunnerError::Cleanup(format!(
+            "refusing to remove non-runner attempt path `{}`",
+            path.display()
+        )));
+    }
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => {
+            return Err(RunnerError::fs("inspect runner-owned attempt", path, error));
+        }
+    };
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Err(RunnerError::Cleanup(format!(
+            "runner-owned attempt `{}` is not a regular directory",
+            path.display()
+        )));
+    }
+    make_runner_owned_tree_removable(path)?;
+    match fs::remove_dir_all(path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(RunnerError::Cleanup(format!(
+                "could not remove `{}`: {error}",
+                path.display()
+            )));
+        }
+    }
+    match fs::symlink_metadata(path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Ok(_) => Err(RunnerError::Cleanup(format!(
+            "`{}` still exists after recursive cleanup",
+            path.display()
+        ))),
+        Err(error) => Err(RunnerError::Cleanup(format!(
+            "could not verify removal of `{}`: {error}",
+            path.display()
+        ))),
+    }
+}
+
+fn make_runner_owned_tree_removable(path: &Path) -> Result<(), RunnerError> {
+    let metadata = fs::symlink_metadata(path)
+        .map_err(|error| RunnerError::fs("inspect runner-owned cleanup entry", path, error))?;
+    if metadata.file_type().is_symlink() {
+        return Ok(());
+    }
+    make_runner_owned_entry_removable(path, &metadata)?;
+    if !metadata.is_dir() {
+        return Ok(());
+    }
+    for entry in fs::read_dir(path)
+        .map_err(|error| RunnerError::fs("read runner-owned cleanup directory", path, error))?
+    {
+        let entry = entry
+            .map_err(|error| RunnerError::fs("read runner-owned cleanup entry", path, error))?;
+        make_runner_owned_tree_removable(&entry.path())?;
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn make_runner_owned_entry_removable(
+    path: &Path,
+    metadata: &fs::Metadata,
+) -> Result<(), RunnerError> {
+    use std::os::unix::fs::PermissionsExt;
+    let required = if metadata.is_dir() { 0o700 } else { 0o200 };
+    let mode = metadata.permissions().mode() | required;
+    fs::set_permissions(path, fs::Permissions::from_mode(mode))
+        .map_err(|error| RunnerError::fs("make runner-owned cleanup entry removable", path, error))
+}
+
+#[cfg(not(unix))]
+fn make_runner_owned_entry_removable(
+    path: &Path,
+    metadata: &fs::Metadata,
+) -> Result<(), RunnerError> {
+    let mut permissions = metadata.permissions();
+    permissions.set_readonly(false);
+    fs::set_permissions(path, permissions)
+        .map_err(|error| RunnerError::fs("make runner-owned cleanup entry removable", path, error))
 }
 
 fn is_runner_attempt_name(name: &str) -> bool {
@@ -752,8 +825,8 @@ fn attempt_environment(
     let mut environment = requested.clone();
     environment.extend(external.clone());
     for (key, path) in [
-        ("AIT_RUNNER_ATTEMPT_ROOT", attempt_root.to_path_buf()),
-        ("AIT_RUNNER_WORKSPACE", workspace.to_path_buf()),
+        (AIT_RUNNER_ATTEMPT_ROOT, attempt_root.to_path_buf()),
+        (AIT_RUNNER_WORKSPACE, workspace.to_path_buf()),
         ("TMPDIR", tmp.clone()),
         ("TMP", tmp.clone()),
         ("TEMP", tmp),
@@ -1069,13 +1142,39 @@ mod tests {
         })
     }
 
+    fn make_test_path_readonly(path: &Path, directory: bool) {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = if directory { 0o500 } else { 0o400 };
+            fs::set_permissions(path, fs::Permissions::from_mode(mode))
+                .expect("make test path read-only");
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = directory;
+            let mut permissions = fs::metadata(path)
+                .expect("inspect test path permissions")
+                .permissions();
+            permissions.set_readonly(true);
+            fs::set_permissions(path, permissions).expect("make test path read-only");
+        }
+    }
+
     #[test]
     fn serve_attempt_root_lease_reclaims_only_exact_runner_orphans() {
         let source = tempfile::tempdir().expect("source");
         let attempts = tempfile::tempdir().expect("attempts");
         let stale = attempts.path().join("attempt-123-456-7");
-        fs::create_dir(&stale).expect("stale attempt");
-        fs::write(stale.join("owned"), b"owned").expect("owned file");
+        let readonly = stale.join("tmp/main-seed/main-seed");
+        fs::create_dir_all(&readonly).expect("stale read-only tree");
+        let owned = readonly.join("owned");
+        fs::write(&owned, b"owned").expect("owned file");
+        make_test_path_readonly(&owned, false);
+        make_test_path_readonly(&readonly, true);
+        make_test_path_readonly(&stale.join("tmp/main-seed"), true);
+        make_test_path_readonly(&stale.join("tmp"), true);
+        make_test_path_readonly(&stale, true);
         let unrelated = attempts.path().join("attempt-company-cache");
         fs::create_dir(&unrelated).expect("unrelated directory");
         fs::write(unrelated.join("keep"), b"keep").expect("unrelated file");
@@ -1092,6 +1191,57 @@ mod tests {
         executor
             .acquire_attempt_root_lease()
             .expect("lease after prior owner exits");
+    }
+
+    #[test]
+    fn active_attempt_cleanup_reclaims_readonly_tree_without_following_symlinks() {
+        let attempts = tempfile::tempdir().expect("attempts");
+        let outside = tempfile::tempdir().expect("outside");
+        let sentinel = outside.path().join("sentinel");
+        fs::write(&sentinel, b"keep").expect("outside sentinel");
+        let mut attempt = AttemptGuard::create(attempts.path()).expect("attempt");
+        let attempt_path = attempt.path.clone();
+        let readonly = attempt_path.join("tmp/main-seed/main-seed");
+        fs::create_dir_all(&readonly).expect("read-only tree");
+        let owned = readonly.join("owned");
+        fs::write(&owned, b"owned").expect("owned file");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(outside.path(), readonly.join("outside-link"))
+            .expect("outside symlink");
+        make_test_path_readonly(&owned, false);
+        make_test_path_readonly(&readonly, true);
+        make_test_path_readonly(&attempt_path.join("tmp/main-seed"), true);
+        make_test_path_readonly(&attempt_path.join("tmp"), true);
+        make_test_path_readonly(&attempt_path, true);
+
+        attempt.cleanup().expect("cleanup read-only attempt");
+
+        assert!(!attempt_path.exists());
+        assert_eq!(
+            fs::read(&sentinel).expect("outside sentinel retained"),
+            b"keep"
+        );
+    }
+
+    #[test]
+    fn attempt_drop_fallback_reclaims_readonly_tree() {
+        let attempts = tempfile::tempdir().expect("attempts");
+        let attempt_path;
+        {
+            let attempt = AttemptGuard::create(attempts.path()).expect("attempt");
+            attempt_path = attempt.path.clone();
+            let readonly = attempt_path.join("tmp/main-seed");
+            fs::create_dir_all(&readonly).expect("read-only tree");
+            let owned = readonly.join("owned");
+            fs::write(&owned, b"owned").expect("owned file");
+            make_test_path_readonly(&owned, false);
+            make_test_path_readonly(&readonly, true);
+            make_test_path_readonly(&attempt_path.join("tmp"), true);
+            make_test_path_readonly(&attempt_path, true);
+        }
+
+        assert!(!attempt_path.exists());
+        assert_attempts_empty(&attempts);
     }
 
     #[test]
@@ -1190,6 +1340,24 @@ mod tests {
             .expect("command failure is a terminal result");
         assert_eq!(result.status, TerminalStatus::CommandFailed);
         assert_eq!(result.suite_results[0].execution.exit_code, Some(7));
+        assert_attempts_empty(&attempts);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn successful_command_with_readonly_attempt_output_is_terminal_and_clean() {
+        let source = make_source(
+            "#!/bin/sh\nset -eu\nreadonly_tree=\"$TMPDIR/.tmp-fixture/main-seed/main-seed\"\nmkdir -p \"$readonly_tree\"\nprintf 'owned' >\"$readonly_tree/plain.txt\"\nchmod -R a-w \"$TMPDIR/.tmp-fixture\"\n",
+        );
+        let attempts = tempfile::tempdir().expect("attempts");
+
+        let result = executor(&source, &attempts)
+            .execute(&request(BTreeMap::new(), 5_000))
+            .expect("read-only output must not block terminal success");
+
+        assert_eq!(result.status, TerminalStatus::Succeeded);
+        assert_eq!(result.tests_status, TestStatus::Pass);
+        assert!(result.cleanup.attempt_root_removed);
         assert_attempts_empty(&attempts);
     }
 

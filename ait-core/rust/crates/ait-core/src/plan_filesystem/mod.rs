@@ -31,8 +31,12 @@ const WORKTREE_CARGO_CONFIG_RELATIVE_PATH: &str = ".cargo/config.toml";
 const SHARED_CARGO_TARGET_DIRNAME: &str = "cargo-target";
 const SHARED_CARGO_BUILD_DIRNAME: &str = "cargo-build";
 const CARGO_WORKSPACE_PATH_HASH_TEMPLATE: &str = "{workspace-path-hash}";
+const CANONICAL_CARGO_BUILD_DIRNAME: &str = "canonical";
+const MANAGED_WORKTREE_CARGO_TARGET_DIRNAME: &str = "task-workspaces";
 const MANAGED_WORKTREE_CARGO_BUILD_DIRNAME: &str = "task-workspaces";
 const GENERATED_CARGO_CONFIG_HEADER: &str =
+    "# Managed by ait: workspace-isolated final artifacts and intermediates.";
+const SHARED_FINAL_ARTIFACT_GENERATED_CARGO_CONFIG_HEADER: &str =
     "# Managed by ait: stable final artifacts, workspace-isolated intermediates.";
 const REPOSITORY_SHARED_GENERATED_CARGO_CONFIG_HEADER: &str =
     "# Managed by ait: stable final artifacts, repository-shared intermediates.";

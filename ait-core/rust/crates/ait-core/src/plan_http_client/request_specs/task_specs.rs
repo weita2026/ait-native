@@ -110,10 +110,12 @@ pub fn build_prepare_history_promotion_request_spec(
             "Plan HTTP history promotion payload must be an object.".to_string(),
         )
     })?;
-    if body.get("contract").and_then(Value::as_str) != Some("history-promotion-prepare/v1") {
+    if !matches!(
+        body.get("contract").and_then(Value::as_str),
+        Some("history-promotion-prepare/v1" | "history-promotion-prepare/v2")
+    ) {
         return Err(PlanHttpClientError::Invalid(
-            "Plan HTTP history promotion contract must be `history-promotion-prepare/v1`."
-                .to_string(),
+            "Plan HTTP history promotion contract must be `history-promotion-prepare/v1` or `history-promotion-prepare/v2`.".to_string(),
         ));
     }
     let idempotency_key = body

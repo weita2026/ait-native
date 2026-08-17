@@ -41,7 +41,7 @@ pub(in crate::primitives) fn workflow_land_patchset_command(
     worktree_retarget: Option<&JsonValue>,
 ) -> String {
     let publish_command = workflow_command_with_remote_scope(
-        format!("ait patchset publish --change {change_id} --summary \"review summary\""),
+        format!("ait patchset publish {change_id} --summary \"review summary\""),
         remote_name,
     );
     let Some(worktree_retarget) = worktree_retarget.and_then(JsonValue::as_object) else {
@@ -99,28 +99,21 @@ pub(in crate::primitives) fn workflow_ready_command_hints(
             ))
         })
         .unwrap_or(JsonValue::Null);
-    let task_review_enabled = workflow_task_review_enabled(repo);
-    let auto_review_reviewer = if task_review_enabled {
-        None
-    } else {
-        repo.task_review_auto_approval_reviewer_identity(None)
-    };
-    let review_command = if let Some(value) = patchset_id.as_ref() {
-        format!("ait review task approve {change_id} --patchset {value}")
-    } else {
-        format!("ait review task approve {change_id}")
-    };
-    let review_command = workflow_command_with_remote_scope(review_command, remote_name);
+    let apply_command = workflow_command_with_remote_scope(
+        format!("ait workflow ready {change_id} --apply"),
+        remote_name,
+    );
+    let workflow_land_apply_command = workflow_command_with_remote_scope(
+        format!("ait workflow land {change_id} --apply"),
+        remote_name,
+    );
     json!({
-        "apply_command": workflow_command_with_remote_scope(format!("ait workflow ready {change_id} --apply"), remote_name),
+        "apply_command": apply_command,
         "publish_command": publish_command,
         "patchset_ci_command": patchset_ci_command,
         "attest_command": attest_command,
         "attestation_command": if !patchset_ci_command.is_null() { patchset_ci_command.clone() } else { attest_command.clone() },
-        "review_command": review_command,
-        "auto_review_reviewer": auto_review_reviewer,
-        "policy_command": patchset_id.as_ref().map(|value| JsonValue::String(workflow_command_with_remote_scope(format!("ait policy eval {value}"), remote_name))).unwrap_or(JsonValue::Null),
-        "land_command": workflow_command_with_remote_scope(format!("ait task land {change_id}"), remote_name),
+        "land_command": workflow_land_apply_command,
     })
 }
 
@@ -142,8 +135,14 @@ pub(in crate::primitives) fn workflow_land_command_hints(
 ) -> JsonValue {
     let team_review_enabled = repo.team_review_enabled();
     let patchset_id = patchset.and_then(|value| string_field(value, "patchset_id"));
-    let apply_command =
-        workflow_command_with_remote_scope(format!("ait task land {change_id}"), remote_name);
+    let apply_command = workflow_command_with_remote_scope(
+        format!("ait workflow land {change_id} --apply"),
+        remote_name,
+    );
+    let ready_command = workflow_command_with_remote_scope(
+        format!("ait workflow ready {change_id} --apply"),
+        remote_name,
+    );
     let publish_command =
         workflow_land_patchset_command(change_id, remote_name, base_line_name, worktree_retarget);
     let patchset_ci_command = if patchset_id.is_some() && workflow_patchset_ci_contract_exists(repo)
@@ -171,28 +170,36 @@ pub(in crate::primitives) fn workflow_land_command_hints(
         .unwrap_or(JsonValue::Null);
     let code_review_summary_command = patchset_id
         .as_ref()
-        .map(|value| {
+        .map(|_| {
             JsonValue::String(workflow_command_with_remote_scope(
                 format!(
-                    "ait review code submit {change_id} --patchset {value} --verdict pass --message \"{CODE_REVIEW_SUMMARY_TEMPLATE}\""
+                    "ait workflow land {change_id} --apply --review-message \"{CODE_REVIEW_SUMMARY_TEMPLATE}\""
                 ),
                 remote_name,
             ))
         })
         .unwrap_or(JsonValue::Null);
-    let task_review_enabled = workflow_task_review_enabled(repo);
-    let auto_review_reviewer = if task_review_enabled {
+    let task_review_required = workflow_task_review_required(repo);
+    let auto_review_reviewer = if task_review_required {
         None
     } else {
-        repo.task_review_auto_approval_reviewer_identity(None)
+        repo.task_review_reviewer_identity()
     };
-    let manual_review_command = if let Some(value) = patchset_id.as_ref() {
-        format!("ait review task approve {change_id} --patchset {value}")
+    let manual_review_command = if task_review_required {
+        patchset_id
+            .as_ref()
+            .map(|value| {
+                JsonValue::String(workflow_command_with_remote_scope(
+                    format!(
+                        "ait review task approve {change_id} --patchset {value} --message \"<functional validation>\""
+                    ),
+                    remote_name,
+                ))
+            })
+            .unwrap_or(JsonValue::Null)
     } else {
-        format!("ait review task approve {change_id}")
+        JsonValue::Null
     };
-    let manual_review_command =
-        workflow_command_with_remote_scope(manual_review_command, remote_name);
     let team_review_command = if let Some(value) = patchset_id.as_ref() {
         if team_review_enabled {
             JsonValue::String(workflow_command_with_remote_scope(
@@ -211,17 +218,23 @@ pub(in crate::primitives) fn workflow_land_command_hints(
         JsonValue::Null
     };
     let review_command = if review_blocking > 0 {
-        workflow_command_with_remote_scope(format!("ait review show {change_id}"), remote_name)
-    } else if auto_review_reviewer.is_some() {
-        apply_command.clone()
-    } else {
+        JsonValue::String(workflow_command_with_remote_scope(
+            format!("ait review show {change_id}"),
+            remote_name,
+        ))
+    } else if task_review_required {
         manual_review_command.clone()
+    } else if auto_review_reviewer.is_some() {
+        JsonValue::String(apply_command.clone())
+    } else {
+        JsonValue::String("ait config set --user-name \"<name>\"".to_string())
     };
-    let land_command = apply_command.clone();
+    let land_command =
+        workflow_command_with_remote_scope(format!("ait task land {change_id}"), remote_name);
     json!({
         "publish_command": publish_command,
         "apply_command": apply_command,
-        "ready_command": workflow_command_with_remote_scope(format!("ait workflow ready {change_id} --apply"), remote_name),
+        "ready_command": ready_command,
         "patchset_ci_command": patchset_ci_command,
         "attest_command": attest_command,
         "attestation_command": if !patchset_ci_command.is_null() { patchset_ci_command.clone() } else { attest_command.clone() },
@@ -237,6 +250,6 @@ pub(in crate::primitives) fn workflow_land_command_hints(
         "auto_review_reviewer": auto_review_reviewer,
         "policy_command": patchset_id.as_ref().map(|value| JsonValue::String(workflow_command_with_remote_scope(format!("ait policy eval {value}"), remote_name))).unwrap_or(JsonValue::Null),
         "land_command": land_command,
-        "task_complete_command": workflow_command_with_remote_scope(format!("ait task land {change_id}"), remote_name),
+        "task_land_command": workflow_command_with_remote_scope(format!("ait task land {change_id}"), remote_name),
     })
 }

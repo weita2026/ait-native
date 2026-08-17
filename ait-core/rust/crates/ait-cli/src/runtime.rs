@@ -19,8 +19,7 @@ use ait_core::line_binary_db::BinaryDbLineStore;
 use ait_core::line_store::{LineRecord, LineStore};
 #[cfg(test)]
 use ait_core::local_content_gc::{
-    LocalContentOrphanPackPruneStore, LocalContentStatsOptions, LocalContentStatsStore,
-    LocalContentValidationStore,
+    LocalContentOrphanPackPruneStore, LocalContentStatsStore, LocalContentValidationStore,
 };
 use ait_core::local_snapshot::{
     LocalSnapshotBlobReadStore, LocalSnapshotReadStore, LocalSnapshotTreeReadStore,
@@ -67,16 +66,30 @@ const APP_DIR: &str = ".ait";
 const BINARY_DB_DIR: &str = "binary-db";
 const WORKTREE_CONFIG_NAME: &str = ".ait-worktree.json";
 const CONFIG_NAME: &str = "config.json";
-const REPO_DISCOVERY_ENV_VARS: &[&str] = &[
-    "AIT_REPO_ROOT",
-    "AIT_NATIVE_WORKSPACE_ROOT",
-    "AIT_WORKSPACE_ROOT",
-];
+const REPO_DISCOVERY_ENV_VARS: &[&str] = &[ait_core::environment_contract::names::AIT_REPO_ROOT];
 const DEFAULT_AUTHOR_MODE: &str = "ai_with_human_review";
 const DEFAULT_WORKFLOW_SCOPE: &str = "local";
 const DEFAULT_PLAN_TASK_BINDING_MODE: &str = "required";
 pub const SNAPSHOT_BINARY_DB_WRITE_LAYOUT: u32 = 1;
 pub const REMOTE_SYNC_BINARY_DB_WRITE_LAYOUT: u32 = 1;
+
+pub(crate) fn canonical_repository_directory_name(root: &Path) -> Result<String, String> {
+    let name = root
+        .file_name()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| {
+            format!(
+                "Canonical Repository root {} must have a UTF-8 directory name.",
+                root.display()
+            )
+        })?;
+    if name.is_empty() || name.trim() != name {
+        return Err(format!(
+            "Canonical Repository root directory name {name:?} must be non-empty and have no surrounding whitespace."
+        ));
+    }
+    Ok(name.to_string())
+}
 
 #[cfg(test)]
 pub(crate) fn create_binary_test_snapshot(

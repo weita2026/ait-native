@@ -13,17 +13,16 @@ pub(super) use local_store::{
 pub(crate) use sync::{
     hydrate_remote_snapshot_boundary_for_repo, remote_sync_snapshot_content_complete_for_repo,
 };
-pub use sync::{pull, push, upload_snapshot_chain};
 pub(super) use sync::{
-    set_or_create_local_line_head, sync_patchset_revision_snapshot,
-    sync_patchset_revision_snapshot_with_task_remote,
+    hydrate_remote_snapshot_chain_with_task_remote_and_capabilities, set_or_create_local_line_head,
+    sync_patchset_revision_snapshot, sync_patchset_revision_snapshot_with_task_remote,
 };
+pub use sync::{pull, push, upload_snapshot_chain};
 
 #[cfg(test)]
 pub(super) use sync::{
     build_zstd_bulk_local_plan, build_zstd_bulk_local_plan_with_source,
     hydrate_remote_snapshot_boundary_with_task_remote_and_capabilities,
-    hydrate_remote_snapshot_chain_with_task_remote_and_capabilities,
     local_remote_sync_inventory_for_snapshots,
     local_remote_sync_inventory_for_snapshots_with_source,
     local_repo_snapshot_ids_topological_with_source, ordered_object_pack_metadata,

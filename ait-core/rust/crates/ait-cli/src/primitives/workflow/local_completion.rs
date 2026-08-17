@@ -77,7 +77,7 @@ fn workflow_completed_local_entry_if_present(
     workflow_completed_local_entry_from_rows(task, change, remote_name).map(Some)
 }
 
-const MAX_HISTORY_PROMOTION_ENTRIES: usize = 64;
+const HISTORY_PROMOTION_STAGE_ENTRY_COUNT: usize = 64;
 const MAX_HISTORY_PROMOTION_SNAPSHOTS_PER_ENTRY: usize = 64;
 
 pub(in crate::primitives) fn workflow_unique_history_plan_artifact_paths(
@@ -88,6 +88,79 @@ pub(in crate::primitives) fn workflow_unique_history_plan_artifact_paths(
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect()
+}
+
+pub(in crate::primitives) fn workflow_unique_history_plan_publications(
+    publications: impl IntoIterator<Item = (String, String)>,
+) -> Result<Vec<(String, String)>, String> {
+    let mut unique = BTreeMap::new();
+    for (plan_id, artifact_path) in publications {
+        if let Some(existing_path) = unique.get(&plan_id) {
+            if existing_path != &artifact_path {
+                return Err(format!(
+                    "History promotion Plan {plan_id} resolves to conflicting head artifact paths {existing_path} and {artifact_path}."
+                ));
+            }
+            continue;
+        }
+        unique.insert(plan_id, artifact_path);
+    }
+    Ok(unique.into_iter().collect())
+}
+
+fn workflow_history_plan_publications(
+    repo: &RepoRuntime,
+    candidate: &JsonValue,
+) -> Result<Vec<(String, String)>, String> {
+    let entries = candidate
+        .get("history_entries")
+        .and_then(JsonValue::as_array)
+        .ok_or_else(|| "History promotion candidate is missing history_entries.".to_string())?;
+    let plan_store = repo
+        .binary_db_stores::<SNAPSHOT_BINARY_DB_WRITE_LAYOUT>()
+        .plans();
+    let mut publications = Vec::new();
+    for entry in entries {
+        let task = entry.get("task").ok_or_else(|| {
+            "History promotion entry is missing local Task projection.".to_string()
+        })?;
+        let plan_id = string_field(task, "plan_id");
+        let revision_id = string_field(task, "origin_plan_revision_id");
+        match (plan_id.as_deref(), revision_id.as_deref()) {
+            (None, None) => continue,
+            (Some(_), None) | (None, Some(_)) => {
+                return Err(format!(
+                    "Local task {} has incomplete Plan linkage.",
+                    required_string_field(task, "task_id")?
+                ))
+            }
+            (Some(plan_id), Some(revision_id)) => {
+                let revision = get_plan_revision_by_id_with_plan_store(&plan_store, revision_id)
+                    .map_err(|error| error.to_string())?;
+                if revision.plan_id != plan_id {
+                    return Err(format!(
+                        "Local task {} Plan revision {} belongs to {}, not {}.",
+                        required_string_field(task, "task_id")?,
+                        revision_id,
+                        revision.plan_id,
+                        plan_id
+                    ));
+                }
+                let plan = get_plan_with_plan_store(&plan_store, plan_id)
+                    .map_err(|error| error.to_string())?;
+                let artifact_path = plan
+                    .head_revision
+                    .as_ref()
+                    .map(|head| head.artifact_path.clone())
+                    .filter(|path| !path.trim().is_empty())
+                    .ok_or_else(|| {
+                        format!("Local history Plan {plan_id} has no head artifact path.")
+                    })?;
+                publications.push((plan_id.to_string(), artifact_path));
+            }
+        }
+    }
+    workflow_unique_history_plan_publications(publications)
 }
 
 fn workflow_history_epoch_seconds(value: Option<&JsonValue>, label: &str) -> Result<u64, String> {
@@ -310,6 +383,23 @@ pub(in crate::primitives) fn workflow_local_history_entries(
     let change_store = repo.change_store()?;
     let task_store = repo.task_store()?;
     let change_rows = workflow_local_change_rows_with_change_store(&change_store)?;
+    let mut landed_changes_by_snapshot = BTreeMap::<String, Vec<&JsonValue>>::new();
+    for row in &change_rows {
+        if string_field(row, "status").as_deref() != Some("landed")
+            || string_field(row, "target_line")
+                .or_else(|| string_field(row, "base_line"))
+                .as_deref()
+                != Some(target_line)
+        {
+            continue;
+        }
+        if let Some(landed_snapshot_id) = string_field(row, "landed_snapshot_id") {
+            landed_changes_by_snapshot
+                .entry(landed_snapshot_id)
+                .or_default()
+                .push(row);
+        }
+    }
     let mut current_snapshot_id = revision_snapshot_id.to_string();
     let mut reversed = Vec::new();
     let mut seen_tasks = BTreeSet::new();
@@ -317,24 +407,11 @@ pub(in crate::primitives) fn workflow_local_history_entries(
     let mut plan_artifact_paths = Vec::new();
 
     while current_snapshot_id != base_snapshot_id {
-        if reversed.len() >= MAX_HISTORY_PROMOTION_ENTRIES {
-            return Err(format!(
-                "History promotion exceeds the bounded maximum of {MAX_HISTORY_PROMOTION_ENTRIES} local Lands."
-            ));
-        }
-        let matching = change_rows
-            .iter()
-            .filter(|row| {
-                string_field(row, "status").as_deref() == Some("landed")
-                    && string_field(row, "landed_snapshot_id").as_deref()
-                        == Some(current_snapshot_id.as_str())
-                    && string_field(row, "target_line")
-                        .or_else(|| string_field(row, "base_line"))
-                        .as_deref()
-                        == Some(target_line)
-            })
-            .collect::<Vec<_>>();
-        let change = match matching.as_slice() {
+        let change = match landed_changes_by_snapshot
+            .get(&current_snapshot_id)
+            .map(Vec::as_slice)
+            .unwrap_or_default()
+        {
             [] => {
                 return Err(format!(
                     "Local Land history has a gap before Snapshot `{current_snapshot_id}`; no landed Change on `{target_line}` owns that target head."
@@ -755,7 +832,7 @@ pub(in crate::primitives) fn workflow_final_snapshot_promotion_preview(
         "next_action": {
             "code": "prepare_final_snapshot_promotion",
             "summary": "Promote the consecutive local Task/Change/Snapshot/Land history and run shared CI once on its aggregate Patchset.",
-            "detail": format!("Run `ait workflow ready {local_change_ref} --apply --remote {remote_name}`. After it is ready, run `ait task land {local_change_ref} --remote {remote_name}`."),
+            "detail": format!("Run `ait workflow ready {local_change_ref} --apply --remote {remote_name}`. After it is ready, hand the exact Patchset to a reviewer running `ait workflow land {local_change_ref} --apply --remote {remote_name}`."),
             "command": format!("ait workflow ready {local_change_ref} --apply --remote {remote_name}"),
         },
     }))
@@ -766,29 +843,29 @@ fn workflow_sync_history_plan_artifacts(
     remote_name: &str,
     candidate: &JsonValue,
 ) -> Result<Vec<JsonValue>, String> {
-    candidate
-        .get("plan_artifact_paths")
-        .and_then(JsonValue::as_array)
-        .cloned()
-        .unwrap_or_default()
+    workflow_history_plan_publications(repo, candidate)?
         .into_iter()
-        .map(|value| {
-            let artifact_path = value
-                .as_str()
-                .and_then(|value| normalized_text(Some(value)))
-                .ok_or_else(|| {
-                    "History promotion Plan artifact path must be a non-empty string.".to_string()
-                })?;
-            let request = plan_sync_request(repo, &artifact_path, None, Some(remote_name), false)?;
+        .map(|(plan_id, artifact_path)| {
+            let mut request =
+                plan_sync_request(repo, &artifact_path, None, Some(remote_name), false)?;
+            let request_object = request.as_object_mut().ok_or_else(|| {
+                "History promotion Plan publication request must be an object.".to_string()
+            })?;
+            request_object.insert("rebase".to_string(), JsonValue::Bool(false));
+            request_object.insert(
+                "history_publish_plan_id".to_string(),
+                JsonValue::String(plan_id.clone()),
+            );
             let sync = execute_plan_sync_command_request_json(&request.to_string())?;
             if sync.get("status").and_then(JsonValue::as_str) != Some("ok") {
                 return Err(format!(
-                    "History promotion Plan sync for {artifact_path} did not succeed: {}",
+                    "History promotion exact Plan publication for {plan_id} ({artifact_path}) did not succeed: {}",
                     string_field(&sync, "error")
                         .unwrap_or_else(|| "non-ok Plan sync result".to_string())
                 ));
             }
             Ok(json!({
+                "plan_id": plan_id,
                 "artifact_path": artifact_path,
                 "result": sync,
             }))
@@ -1006,6 +1083,148 @@ fn workflow_history_idempotency_key(
     Ok(format!("history-promotion:{}", sha256_hex_bytes(&bytes)))
 }
 
+fn workflow_staged_history_promotion_id(
+    repo: &RepoRuntime,
+    target_line: &str,
+    base_snapshot_id: &str,
+    revision_snapshot_id: &str,
+    entries: &[JsonValue],
+) -> Result<String, String> {
+    let mut bytes = Vec::new();
+    let repository_index = repo.require_repository_index()?.to_string();
+    for part in [
+        "history-promotion-prepare/v2",
+        repository_index.as_str(),
+        target_line,
+        base_snapshot_id,
+        revision_snapshot_id,
+    ] {
+        bytes.extend_from_slice(part.as_bytes());
+        bytes.push(0);
+    }
+    for entry in entries {
+        for field in [
+            "local_task_id",
+            "local_change_ref",
+            "pre_land_target_snapshot_id",
+            "landed_snapshot_id",
+        ] {
+            bytes.extend_from_slice(required_string_field(entry, field)?.as_bytes());
+            bytes.push(0);
+        }
+    }
+    Ok(format!("history-promotion-v2:{}", sha256_hex_bytes(&bytes)))
+}
+
+fn workflow_history_stage_idempotency_key(
+    promotion_id: &str,
+    stage_ordinal: u64,
+    stage_base_snapshot_id: &str,
+    stage_revision_snapshot_id: &str,
+    entries: &[JsonValue],
+) -> Result<String, String> {
+    let mut bytes = Vec::new();
+    for part in [
+        "history-promotion-stage/v1",
+        promotion_id,
+        stage_base_snapshot_id,
+        stage_revision_snapshot_id,
+    ] {
+        bytes.extend_from_slice(part.as_bytes());
+        bytes.push(0);
+    }
+    bytes.extend_from_slice(&stage_ordinal.to_le_bytes());
+    for entry in entries {
+        for field in [
+            "local_task_id",
+            "local_change_ref",
+            "pre_land_target_snapshot_id",
+            "landed_snapshot_id",
+        ] {
+            bytes.extend_from_slice(required_string_field(entry, field)?.as_bytes());
+            bytes.push(0);
+        }
+    }
+    Ok(format!(
+        "history-promotion-stage:{}",
+        sha256_hex_bytes(&bytes)
+    ))
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn workflow_staged_history_prepare_request(
+    promotion_id: &str,
+    target_line: &str,
+    base_snapshot_id: &str,
+    revision_snapshot_id: &str,
+    stage_ordinal: u64,
+    total_entry_count: u64,
+    previous_stage_patchset_id: Option<&str>,
+    author_mode: &str,
+    summary: &str,
+    entries: &[JsonValue],
+) -> Result<JsonValue, String> {
+    let stage_start = stage_ordinal
+        .checked_mul(HISTORY_PROMOTION_STAGE_ENTRY_COUNT as u64)
+        .ok_or_else(|| "History promotion stage ordinal overflow.".to_string())?;
+    if total_entry_count == 0 || stage_start >= total_entry_count {
+        return Err("History promotion stage starts beyond its entry inventory.".to_string());
+    }
+    let expected_entry_count =
+        (total_entry_count - stage_start).min(HISTORY_PROMOTION_STAGE_ENTRY_COUNT as u64);
+    if entries.len() as u64 != expected_entry_count {
+        return Err(format!(
+            "History promotion stage {stage_ordinal} requires {expected_entry_count} entries, got {}.",
+            entries.len()
+        ));
+    }
+    let final_stage = stage_start + expected_entry_count == total_entry_count;
+    if (stage_ordinal == 0) != previous_stage_patchset_id.is_none() {
+        return Err(
+            "History promotion predecessor authority does not match the stage ordinal.".to_string(),
+        );
+    }
+    let stage_base_snapshot_id = entries
+        .first()
+        .and_then(|entry| string_field(entry, "pre_land_target_snapshot_id"))
+        .ok_or_else(|| "History promotion stage has no base Snapshot boundary.".to_string())?;
+    let stage_revision_snapshot_id = entries
+        .last()
+        .and_then(|entry| string_field(entry, "landed_snapshot_id"))
+        .ok_or_else(|| "History promotion stage has no revision Snapshot boundary.".to_string())?;
+    if (stage_ordinal == 0 && stage_base_snapshot_id != base_snapshot_id)
+        || (final_stage && stage_revision_snapshot_id != revision_snapshot_id)
+    {
+        return Err(
+            "History promotion stage does not match its global Snapshot boundary.".to_string(),
+        );
+    }
+    let idempotency_key = workflow_history_stage_idempotency_key(
+        promotion_id,
+        stage_ordinal,
+        &stage_base_snapshot_id,
+        &stage_revision_snapshot_id,
+        entries,
+    )?;
+    Ok(json!({
+        "contract": "history-promotion-prepare/v2",
+        "promotion_id": promotion_id,
+        "idempotency_key": idempotency_key,
+        "target_line": target_line,
+        "base_snapshot_id": base_snapshot_id,
+        "revision_snapshot_id": revision_snapshot_id,
+        "stage_ordinal": stage_ordinal,
+        "stage_base_snapshot_id": stage_base_snapshot_id,
+        "stage_revision_snapshot_id": stage_revision_snapshot_id,
+        "previous_stage_patchset_id": previous_stage_patchset_id,
+        "total_entry_count": total_entry_count,
+        "final_stage": final_stage,
+        "author_mode": author_mode,
+        "summary": summary,
+        "entries": entries,
+    }))
+}
+
 pub(in crate::primitives) fn workflow_mark_history_published(
     repo: &RepoRuntime,
     remote_name: &str,
@@ -1189,46 +1408,153 @@ pub(in crate::primitives) fn workflow_prepare_final_snapshot_promotion(
             &base_line,
         )?
     };
-    let idempotency_key = workflow_history_idempotency_key(
-        &root_repo,
-        &base_line,
-        &base_snapshot_id,
-        &revision_snapshot_id,
-        &request_entries,
-    )?;
-    let request = json!({
-        "contract": "history-promotion-prepare/v1",
-        "idempotency_key": idempotency_key,
-        "target_line": base_line,
-        "base_snapshot_id": base_snapshot_id,
-        "revision_snapshot_id": revision_snapshot_id,
-        "author_mode": root_repo.effective_author_mode(author_mode),
-        "summary": summary.unwrap_or("solo-local workflow history promotion"),
-        "entries": request_entries,
-    });
     let mut closeout_remote = http_closeout_remote(&root_repo, &remote_row)?;
-    let prepared = {
-        let _range = perfetto_range!("ait.workflow_ready.history_promotion.http");
-        TaskWorkflowHistoryPromotionPreparer::prepare_history_promotion(
-            &mut closeout_remote,
-            &repo_name,
-            &request,
-        )
-        .map_err(|error| error.to_string())?
-    };
-    let response_entries = prepared
-        .get("entries")
-        .and_then(JsonValue::as_array)
-        .cloned()
-        .ok_or_else(|| "History promotion response has no mappings.".to_string())?;
-    let publication_mappings = {
-        let _range = perfetto_range!("ait.workflow_ready.history_promotion.local_mapping");
-        workflow_mark_history_published(
+    let effective_author_mode = root_repo.effective_author_mode(author_mode);
+    let display_summary = summary.unwrap_or("solo-local workflow history promotion");
+    let (prepared, publication_mappings) = if request_entries.len()
+        <= HISTORY_PROMOTION_STAGE_ENTRY_COUNT
+    {
+        let idempotency_key = workflow_history_idempotency_key(
             &root_repo,
-            remote_row.name.as_str(),
-            &candidate_entries,
-            &response_entries,
-        )?
+            &base_line,
+            &base_snapshot_id,
+            &revision_snapshot_id,
+            &request_entries,
+        )?;
+        let request = json!({
+            "contract": "history-promotion-prepare/v1",
+            "idempotency_key": idempotency_key,
+            "target_line": base_line,
+            "base_snapshot_id": base_snapshot_id,
+            "revision_snapshot_id": revision_snapshot_id,
+            "author_mode": effective_author_mode,
+            "summary": display_summary,
+            "entries": request_entries,
+        });
+        let prepared = {
+            let _range = perfetto_range!("ait.workflow_ready.history_promotion.http");
+            TaskWorkflowHistoryPromotionPreparer::prepare_history_promotion(
+                &mut closeout_remote,
+                &repo_name,
+                &request,
+            )
+            .map_err(|error| error.to_string())?
+        };
+        let response_entries = prepared
+            .get("entries")
+            .and_then(JsonValue::as_array)
+            .cloned()
+            .ok_or_else(|| "History promotion response has no mappings.".to_string())?;
+        let publication_mappings = {
+            let _range = perfetto_range!("ait.workflow_ready.history_promotion.local_mapping");
+            workflow_mark_history_published(
+                &root_repo,
+                remote_row.name.as_str(),
+                &candidate_entries,
+                &response_entries,
+            )?
+        };
+        (prepared, publication_mappings)
+    } else {
+        let promotion_id = workflow_staged_history_promotion_id(
+            &root_repo,
+            &base_line,
+            &base_snapshot_id,
+            &revision_snapshot_id,
+            &request_entries,
+        )?;
+        let total_entry_count = u64::try_from(request_entries.len())
+            .map_err(|_| "History promotion entry count exceeds u64.".to_string())?;
+        let mut previous_stage_patchset_id = None;
+        let mut final_prepared = None;
+        let mut publication_mappings = Vec::with_capacity(request_entries.len());
+        let mut remote_task_ids = BTreeSet::new();
+        let mut remote_change_refs = BTreeSet::new();
+        let mut receipt_patchset_ids = BTreeSet::new();
+
+        for (stage_ordinal, stage_entries) in request_entries
+            .chunks(HISTORY_PROMOTION_STAGE_ENTRY_COUNT)
+            .enumerate()
+        {
+            let stage_start = stage_ordinal
+                .checked_mul(HISTORY_PROMOTION_STAGE_ENTRY_COUNT)
+                .ok_or_else(|| "History promotion stage offset overflow.".to_string())?;
+            let stage_end = stage_start
+                .checked_add(stage_entries.len())
+                .ok_or_else(|| "History promotion stage boundary overflow.".to_string())?;
+            let final_stage = stage_end == request_entries.len();
+            let stage_ordinal = u64::try_from(stage_ordinal)
+                .map_err(|_| "History promotion stage ordinal exceeds u64.".to_string())?;
+            let request = workflow_staged_history_prepare_request(
+                &promotion_id,
+                &base_line,
+                &base_snapshot_id,
+                &revision_snapshot_id,
+                stage_ordinal,
+                total_entry_count,
+                previous_stage_patchset_id.as_deref(),
+                &effective_author_mode,
+                display_summary,
+                stage_entries,
+            )?;
+            let stage_prepared = {
+                let _range = perfetto_range!("ait.workflow_ready.history_promotion.http");
+                TaskWorkflowHistoryPromotionPreparer::prepare_history_promotion(
+                    &mut closeout_remote,
+                    &repo_name,
+                    &request,
+                )
+                .map_err(|error| error.to_string())?
+            };
+            let response_entries = stage_prepared
+                .get("entries")
+                .and_then(JsonValue::as_array)
+                .cloned()
+                .ok_or_else(|| "Staged history promotion response has no mappings.".to_string())?;
+            for mapping in &response_entries {
+                for (field, seen) in [
+                    ("task_id", &mut remote_task_ids),
+                    ("change_ref", &mut remote_change_refs),
+                    ("receipt_patchset_id", &mut receipt_patchset_ids),
+                ] {
+                    let identity = required_string_field(mapping, field)?;
+                    if !seen.insert(identity.clone()) {
+                        return Err(format!(
+                                "Staged history promotion repeats Remote {field} `{identity}` across stages."
+                            ));
+                    }
+                }
+            }
+            let marked = {
+                let _range = perfetto_range!("ait.workflow_ready.history_promotion.local_mapping");
+                workflow_mark_history_published(
+                    &root_repo,
+                    remote_row.name.as_str(),
+                    &candidate_entries[stage_start..stage_end],
+                    &response_entries,
+                )?
+            };
+            publication_mappings.extend(marked);
+            let stage_patchset_id = stage_prepared
+                .get("stage")
+                .and_then(|stage| stage.get("patchset_id"))
+                .and_then(JsonValue::as_str)
+                .ok_or_else(|| {
+                    "Staged history promotion response is missing stage Patchset identity."
+                        .to_string()
+                })?
+                .to_string();
+            previous_stage_patchset_id = Some(stage_patchset_id);
+            if final_stage {
+                final_prepared = Some(stage_prepared);
+            }
+        }
+        (
+            final_prepared.ok_or_else(|| {
+                "Staged history promotion completed without final aggregate authority.".to_string()
+            })?,
+            publication_mappings,
+        )
     };
     let aggregate = prepared
         .get("aggregate")
@@ -1273,47 +1599,4 @@ pub(in crate::primitives) fn workflow_prepare_final_snapshot_promotion(
         "publication_mappings": publication_mappings,
         "history_promotion": prepared,
     }))
-}
-
-pub fn workflow_land_completed_local_payload(
-    repo: &RepoRuntime,
-    change_id: &str,
-    remote_name: Option<&str>,
-) -> Result<JsonValue, String> {
-    let candidate = workflow_final_snapshot_promotion_candidate(repo, change_id, remote_name)?
-        .ok_or_else(|| {
-            format!("Local change {change_id} is not a completed history-promotion candidate.")
-        })?;
-    workflow_final_snapshot_promotion_preview(&candidate)
-}
-
-#[allow(clippy::too_many_arguments)]
-pub fn workflow_land_completed_local_apply<F>(
-    _repo: &RepoRuntime,
-    change_id: &str,
-    _summary: Option<&str>,
-    _tests: Option<&str>,
-    _lint: Option<&str>,
-    _security: Option<&str>,
-    _license: Option<&str>,
-    _author_mode: Option<&str>,
-    _model: Option<&str>,
-    _reviewer: Option<&str>,
-    _review_message: Option<&str>,
-    _target: Option<&str>,
-    _mode: &str,
-    remote_name: Option<&str>,
-    _progress: Option<F>,
-) -> Result<JsonValue, String>
-where
-    F: FnMut(&JsonValue) -> Result<(), String>,
-{
-    let remote_name = normalized_text(remote_name).unwrap_or_else(|| "origin".to_string());
-    Err(format!(
-        "Completed local change {change_id} must pass the explicit ready phase before remote land. Run `ait workflow ready {change_id} --apply --remote {remote_name}`, then `ait task land {change_id} --remote {remote_name}`."
-    ))
-}
-
-pub fn workflow_completed_local_batch_retired_error() -> String {
-    COMPLETED_LOCAL_BATCH_RETIRED_ERROR.to_string()
 }

@@ -13,7 +13,7 @@ pub(in crate::primitives) fn workflow_json_bool_toggle(value: Option<&JsonValue>
     }
 }
 
-pub(in crate::primitives) fn workflow_task_review_enabled(repo: &RepoRuntime) -> bool {
+pub(in crate::primitives) fn workflow_task_review_required(repo: &RepoRuntime) -> bool {
     workflow_json_bool_toggle(repo.config.get("task_review")).unwrap_or(false)
 }
 

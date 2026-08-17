@@ -325,17 +325,7 @@ fn build_git_golden_history_matrix_fixture() -> TempDir {
 
 fn init_empty_ait_git_interop_repo() -> TempDir {
     let temp = TempDir::new().expect("AIT Git interop fixture");
-    json_output(
-        temp.path(),
-        &[
-            "init",
-            "--name",
-            "git-interop-fixture",
-            "--default-line",
-            "main",
-            "--json",
-        ],
-    );
+    json_output(temp.path(), &["init", "--json"]);
     temp
 }
 
@@ -397,7 +387,7 @@ fn native_git_import_export_roundtrip_reuses_objects_and_preserves_git_semantics
             "git",
             "import",
             source.path().to_string_lossy().as_ref(),
-            "--all-refs",
+            "--all-branches-and-tags",
             "--dry-run",
             "--json",
         ],
@@ -415,7 +405,7 @@ fn native_git_import_export_roundtrip_reuses_objects_and_preserves_git_semantics
             "git",
             "import",
             source.path().to_string_lossy().as_ref(),
-            "--all-refs",
+            "--all-branches-and-tags",
             "--json",
         ],
     );
@@ -453,7 +443,7 @@ fn native_git_import_export_roundtrip_reuses_objects_and_preserves_git_semantics
             "git",
             "export",
             target.to_string_lossy().as_ref(),
-            "--all-refs",
+            "--all-lines-and-tags",
             "--json",
         ],
     );
@@ -517,7 +507,7 @@ fn native_git_import_export_roundtrip_reuses_objects_and_preserves_git_semantics
             "git",
             "import",
             source.path().to_string_lossy().as_ref(),
-            "--all-refs",
+            "--all-branches-and-tags",
             "--json",
         ],
     );
@@ -529,7 +519,7 @@ fn native_git_import_export_roundtrip_reuses_objects_and_preserves_git_semantics
             "git",
             "export",
             target.to_string_lossy().as_ref(),
-            "--all-refs",
+            "--all-lines-and-tags",
             "--json",
         ],
     );
@@ -546,7 +536,7 @@ fn native_git_import_export_roundtrip_reuses_objects_and_preserves_git_semantics
             "git",
             "import",
             source.path().to_string_lossy().as_ref(),
-            "--all-refs",
+            "--all-branches-and-tags",
             "--json",
         ],
     );
@@ -568,7 +558,7 @@ fn native_git_import_export_roundtrip_reuses_objects_and_preserves_git_semantics
             "git",
             "export",
             target.to_string_lossy().as_ref(),
-            "--all-refs",
+            "--all-lines-and-tags",
             "--json",
         ],
         &[],
@@ -590,19 +580,18 @@ fn native_git_import_export_roundtrip_reuses_objects_and_preserves_git_semantics
             feature_head.as_str(),
         ],
     );
-    let resumed_export = json_output(
+    let automatically_resumed_export = json_output(
         ait.path(),
         &[
             "git",
             "export",
             target.to_string_lossy().as_ref(),
-            "--all-refs",
-            "--resume",
+            "--all-lines-and-tags",
             "--json",
         ],
     );
-    assert_eq!(resumed_export["status"], json!("completed"));
-    assert_eq!(resumed_export["fsck"], json!("passed"));
+    assert_eq!(automatically_resumed_export["status"], json!("completed"));
+    assert_eq!(automatically_resumed_export["fsck"], json!("passed"));
     assert_eq!(git_ref_map(&target), refreshed_source_refs);
     fixture_git(&target, &["fsck", "--full", "--no-dangling"]);
 
@@ -610,6 +599,119 @@ fn native_git_import_export_roundtrip_reuses_objects_and_preserves_git_semantics
         .unwrap()
         .count();
     assert!(mapping_count >= source_commit_count + source_refs.len());
+}
+
+#[test]
+fn native_git_import_automatically_resumes_the_same_immutable_plan() {
+    let source = build_git_interop_fixture();
+    fixture_git(source.path(), &["branch", "-m", "main", "git-main"]);
+
+    let ait = init_empty_ait_git_interop_repo();
+    write_file(&ait.path().join("local-only.txt"), "local history\n");
+    let local_snapshot = seed_snapshot(ait.path(), "local history");
+    json_output(
+        ait.path(),
+        &[
+            "tag",
+            "create",
+            "lightweight",
+            "--snapshot",
+            local_snapshot.as_str(),
+            "--message",
+            "local conflicting tag",
+            "--json",
+        ],
+    );
+
+    let interrupted = command_output_with_env(
+        ait.path(),
+        &[
+            "git",
+            "import",
+            source.path().to_string_lossy().as_ref(),
+            "--all-branches-and-tags",
+            "--json",
+        ],
+        &[],
+    );
+    assert!(!interrupted.status.success());
+    let stderr = String::from_utf8_lossy(&interrupted.stderr);
+    assert!(
+        stderr.contains("refuses to replace AIT tag lightweight"),
+        "{stderr}"
+    );
+
+    let operations_root = ait.path().join(".ait/git-interop/v1/operations");
+    let operation_paths = fs::read_dir(&operations_root)
+        .expect("interrupted import operations")
+        .map(|entry| entry.expect("interrupted import operation").path())
+        .collect::<Vec<_>>();
+    assert_eq!(operation_paths.len(), 1);
+    let interrupted_checkpoint = parse_json_file(&operation_paths[0]);
+    assert_eq!(interrupted_checkpoint["state"], json!("running"));
+    assert_eq!(interrupted_checkpoint["next_ref_index"], json!(2));
+    let operation_id = interrupted_checkpoint["operation_id"]
+        .as_str()
+        .expect("interrupted operation ID")
+        .to_string();
+
+    let mut mismatched_checkpoint = interrupted_checkpoint.clone();
+    mismatched_checkpoint
+        .as_object_mut()
+        .expect("checkpoint object")
+        .insert("plan_hash".to_string(), json!("GIP-MISMATCH"));
+    write_file(
+        &operation_paths[0],
+        &(encode_json_pretty(&mismatched_checkpoint) + "\n"),
+    );
+    let mismatched = command_output_with_env(
+        ait.path(),
+        &[
+            "git",
+            "import",
+            source.path().to_string_lossy().as_ref(),
+            "--all-branches-and-tags",
+            "--json",
+        ],
+        &[],
+    );
+    assert!(!mismatched.status.success());
+    let stderr = String::from_utf8_lossy(&mismatched.stderr);
+    assert!(stderr.contains("does not match the current immutable plan"));
+    write_file(
+        &operation_paths[0],
+        &(encode_json_pretty(&interrupted_checkpoint) + "\n"),
+    );
+
+    json_output(
+        ait.path(),
+        &["tag", "delete", "lightweight", "--json"],
+    );
+    let resumed = json_output(
+        ait.path(),
+        &[
+            "git",
+            "import",
+            source.path().to_string_lossy().as_ref(),
+            "--all-branches-and-tags",
+            "--json",
+        ],
+    );
+    assert_eq!(resumed["status"], json!("completed"));
+    assert_eq!(resumed["operation_id"], json!(operation_id));
+    assert_eq!(resumed["tag_count"], json!(2));
+    assert!(
+        json_output(ait.path(), &["line", "show", "git-main", "--json"])
+            ["head_snapshot_id"]
+            .is_string()
+    );
+    assert_eq!(
+        json_output(ait.path(), &["tag", "list", "--json"])
+            .as_array()
+            .expect("imported tags")
+            .len(),
+        2
+    );
 }
 
 #[test]
@@ -689,7 +791,7 @@ fn native_git_roundtrip_preserves_an_imported_nondefault_symbolic_head() {
             "git",
             "import",
             source.path().to_string_lossy().as_ref(),
-            "--all-refs",
+            "--all-branches-and-tags",
             "--json",
         ],
     );
@@ -706,7 +808,7 @@ fn native_git_roundtrip_preserves_an_imported_nondefault_symbolic_head() {
             "git",
             "export",
             target.to_string_lossy().as_ref(),
-            "--all-refs",
+            "--all-lines-and-tags",
             "--json",
         ],
     );
@@ -740,7 +842,7 @@ fn native_git_import_fails_closed_for_replace_refs_and_submodules() {
             "git",
             "import",
             replace_source.path().to_string_lossy().as_ref(),
-            "--all-refs",
+            "--all-branches-and-tags",
             "--dry-run",
             "--json",
         ],
@@ -758,7 +860,7 @@ fn native_git_import_fails_closed_for_replace_refs_and_submodules() {
             "git",
             "import",
             replace_source.path().to_string_lossy().as_ref(),
-            "--all-refs",
+            "--all-branches-and-tags",
             "--json",
         ],
         &[],
@@ -788,7 +890,7 @@ fn native_git_import_fails_closed_for_replace_refs_and_submodules() {
             "git",
             "import",
             submodule_source.path().to_string_lossy().as_ref(),
-            "--all-refs",
+            "--all-branches-and-tags",
             "--dry-run",
             "--json",
         ],
@@ -808,7 +910,7 @@ fn native_git_import_fails_closed_for_replace_refs_and_submodules() {
             "git",
             "import",
             submodule_source.path().to_string_lossy().as_ref(),
-            "--all-refs",
+            "--all-branches-and-tags",
             "--json",
         ],
         &[],
@@ -873,7 +975,7 @@ fn native_ait_snapshots_export_deterministically_and_roundtrip_back_through_ait(
             "git",
             "export",
             dry_target.to_string_lossy().as_ref(),
-            "--all-refs",
+            "--all-lines-and-tags",
             "--dry-run",
             "--json",
         ],
@@ -890,7 +992,7 @@ fn native_ait_snapshots_export_deterministically_and_roundtrip_back_through_ait(
             "git",
             "export",
             first.to_string_lossy().as_ref(),
-            "--all-refs",
+            "--all-lines-and-tags",
             "--json",
         ],
     );
@@ -905,7 +1007,7 @@ fn native_ait_snapshots_export_deterministically_and_roundtrip_back_through_ait(
             "git",
             "export",
             second.to_string_lossy().as_ref(),
-            "--all-refs",
+            "--all-lines-and-tags",
             "--json",
         ],
     );
@@ -929,7 +1031,7 @@ fn native_ait_snapshots_export_deterministically_and_roundtrip_back_through_ait(
             "git",
             "import",
             first.to_string_lossy().as_ref(),
-            "--all-refs",
+            "--all-branches-and-tags",
             "--json",
         ],
     );
@@ -943,7 +1045,7 @@ fn native_ait_snapshots_export_deterministically_and_roundtrip_back_through_ait(
             "git",
             "export",
             third.to_string_lossy().as_ref(),
-            "--all-refs",
+            "--all-lines-and-tags",
             "--json",
         ],
     );
@@ -1016,7 +1118,7 @@ fn native_git_roundtrip_golden_history_matrix_preserves_supported_semantics() {
             "git",
             "import",
             source.path().to_string_lossy().as_ref(),
-            "--all-refs",
+            "--all-branches-and-tags",
             "--dry-run",
             "--json",
         ],
@@ -1044,7 +1146,7 @@ fn native_git_roundtrip_golden_history_matrix_preserves_supported_semantics() {
             "git",
             "import",
             source.path().to_string_lossy().as_ref(),
-            "--all-refs",
+            "--all-branches-and-tags",
             "--json",
         ],
     );
@@ -1090,7 +1192,7 @@ fn native_git_roundtrip_golden_history_matrix_preserves_supported_semantics() {
             "git",
             "export",
             target.to_string_lossy().as_ref(),
-            "--all-refs",
+            "--all-lines-and-tags",
             "--json",
         ],
     );
@@ -1199,7 +1301,7 @@ fn native_git_roundtrip_golden_history_matrix_preserves_supported_semantics() {
             "git",
             "import",
             target.to_string_lossy().as_ref(),
-            "--all-refs",
+            "--all-branches-and-tags",
             "--json",
         ],
     );
@@ -1229,7 +1331,7 @@ fn native_git_roundtrip_golden_history_matrix_preserves_supported_semantics() {
             "git",
             "export",
             second_target.to_string_lossy().as_ref(),
-            "--all-refs",
+            "--all-lines-and-tags",
             "--json",
         ],
     );
@@ -1254,7 +1356,6 @@ fn native_git_mirror_reconciles_one_sided_changes_and_stops_divergence() {
             "--direction",
             "inbound",
             "--dry-run",
-            "--once",
             "--json",
         ],
     );
@@ -1272,7 +1373,6 @@ fn native_git_mirror_reconciles_one_sided_changes_and_stops_divergence() {
             source.path().to_string_lossy().as_ref(),
             "--direction",
             "inbound",
-            "--once",
             "--json",
         ],
     );
@@ -1289,7 +1389,6 @@ fn native_git_mirror_reconciles_one_sided_changes_and_stops_divergence() {
             source.path().to_string_lossy().as_ref(),
             "--direction",
             "inbound",
-            "--once",
             "--json",
         ],
     );
@@ -1310,7 +1409,6 @@ fn native_git_mirror_reconciles_one_sided_changes_and_stops_divergence() {
             source.path().to_string_lossy().as_ref(),
             "--direction",
             "inbound",
-            "--once",
             "--json",
         ],
     );
@@ -1342,7 +1440,6 @@ fn native_git_mirror_reconciles_one_sided_changes_and_stops_divergence() {
             "--direction",
             "bidirectional",
             "--dry-run",
-            "--once",
             "--json",
         ],
     );
@@ -1356,7 +1453,6 @@ fn native_git_mirror_reconciles_one_sided_changes_and_stops_divergence() {
             source.path().to_string_lossy().as_ref(),
             "--direction",
             "bidirectional",
-            "--once",
             "--json",
         ],
     );
@@ -1374,7 +1470,6 @@ fn native_git_mirror_reconciles_one_sided_changes_and_stops_divergence() {
             "--direction",
             "bidirectional",
             "--dry-run",
-            "--once",
             "--json",
         ],
     );
@@ -1388,7 +1483,6 @@ fn native_git_mirror_reconciles_one_sided_changes_and_stops_divergence() {
             source.path().to_string_lossy().as_ref(),
             "--direction",
             "bidirectional",
-            "--once",
             "--json",
         ],
     );
@@ -1417,7 +1511,6 @@ fn native_git_mirror_reconciles_one_sided_changes_and_stops_divergence() {
             source.path().to_string_lossy().as_ref(),
             "--direction",
             "bidirectional",
-            "--once",
             "--json",
         ],
     );
@@ -1433,92 +1526,5 @@ fn native_git_mirror_reconciles_one_sided_changes_and_stops_divergence() {
     assert_eq!(
         json_output(ait.path(), &["line", "show", "main", "--json"])["head_snapshot_id"],
         json!(divergent_ait_snapshot)
-    );
-}
-
-#[test]
-fn native_git_mirror_resumes_after_object_transfer_before_atomic_ref_movement() {
-    let ait = init_empty_ait_git_interop_repo();
-    write_file(&ait.path().join("native.txt"), "mirror root\n");
-    let snapshot = seed_snapshot(ait.path(), "mirror root");
-    let parent = TempDir::new().expect("mirror target parent");
-    let target = parent.path().join("mirror.git");
-
-    let interrupted = command_output_with_env(
-        ait.path(),
-        &[
-            "git",
-            "mirror",
-            target.to_string_lossy().as_ref(),
-            "--direction",
-            "outbound",
-            "--once",
-            "--json",
-        ],
-        &[("AIT_GIT_MIRROR_TEST_FAIL_AFTER_TRANSFER", "1")],
-    );
-    assert!(!interrupted.status.success());
-    let stderr = String::from_utf8_lossy(&interrupted.stderr);
-    assert!(stderr.contains("after object transfer"), "{stderr}");
-    assert!(target.exists());
-    assert!(git_ref_map(&target).is_empty());
-
-    let resumed = json_output(
-        ait.path(),
-        &[
-            "git",
-            "mirror",
-            target.to_string_lossy().as_ref(),
-            "--direction",
-            "outbound",
-            "--once",
-            "--json",
-        ],
-    );
-    assert_eq!(resumed["status"], json!("completed"));
-    assert_eq!(resumed["state"], json!("equal"));
-    assert_eq!(resumed["resumed"], json!(true));
-    assert_eq!(resumed["compare_and_swap"], json!(true));
-    assert_eq!(resumed["force_updated"], json!(false));
-    assert_eq!(
-        fixture_git(&target, &["symbolic-ref", "HEAD"]),
-        "refs/heads/main"
-    );
-    assert_eq!(
-        fixture_git(&target, &["rev-list", "--all", "--count"]),
-        "1"
-    );
-    assert_eq!(
-        resumed["last_mirrored_heads"][0]["snapshot_id"],
-        json!(snapshot)
-    );
-    assert!(fixture_git(
-        &target,
-        &[
-            "for-each-ref",
-            "--format=%(refname)",
-            "refs/ait/mirror-transfer"
-        ]
-    )
-    .is_empty());
-    fixture_git(&target, &["fsck", "--full", "--no-dangling"]);
-
-    let replay = json_output(
-        ait.path(),
-        &[
-            "git",
-            "mirror",
-            target.to_string_lossy().as_ref(),
-            "--direction",
-            "outbound",
-            "--once",
-            "--json",
-        ],
-    );
-    assert_eq!(replay["status"], json!("no_op"));
-    assert_eq!(replay["mutated"], json!(false));
-    assert_eq!(
-        fixture_git(&target, &["rev-list", "--all", "--count"]),
-        "1"
     );
 }

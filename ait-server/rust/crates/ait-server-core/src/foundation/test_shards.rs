@@ -1,4 +1,5 @@
 use crate::foundation::ci_runtime_json::TestShardPlanJson;
+use crate::foundation::ci_runtime_temp::ci_ram_runtime_root_with_source;
 use crate::foundation::scheduler::{SchedulerDeploymentPosture, SchedulerPolicy};
 use serde_json::{json, Map as JsonMap, Value as JsonValue};
 use std::env;
@@ -205,28 +206,17 @@ pub(crate) fn ci_test_shard_plan_json_impl(request: &JsonValue) -> Result<JsonVa
 }
 
 fn default_main_seed_root() -> PathBuf {
-    env_path("AIT_NATIVE_SERVER_MAIN_SEED_ROOT")
-        .or_else(|| env_path("AIT_MAIN_SEED_ROOT"))
-        .or_else(|| env_path("AIT_NATIVE_SERVER_DATA").map(|root| root.join("main-seeds")))
+    ci_ram_runtime_root_with_source()
+        .ok()
+        .map(|(root, _)| root.join("main-seeds"))
         .unwrap_or_else(|| env::temp_dir().join("ait-server").join("main-seeds"))
 }
 
 fn default_ram_shard_root() -> PathBuf {
-    env_path("AIT_NATIVE_SERVER_RAM_SHARD_ROOT")
-        .or_else(|| env_path("AIT_RAM_SHARD_ROOT"))
-        .or_else(|| env_path("AIT_NATIVE_SERVER_CI_TMP_ROOT").map(|root| root.join("test-shards")))
-        .or_else(|| {
-            env_path("AIT_NATIVE_SERVER_DATA").map(|root| root.join("tmp").join("test-shards"))
-        })
-        .unwrap_or_else(|| env::temp_dir().join("ait-server").join("test-shards"))
-}
-
-fn env_path(name: &str) -> Option<PathBuf> {
-    env::var(name)
+    ci_ram_runtime_root_with_source()
         .ok()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
+        .map(|(root, _)| root.join("test-shards"))
+        .unwrap_or_else(|| env::temp_dir().join("ait-server").join("test-shards"))
 }
 
 fn target_json(job_type: &str, payload: &JsonMap<String, JsonValue>) -> JsonValue {
@@ -287,7 +277,7 @@ fn default_admitted_cpu_tokens(request: &JsonMap<String, JsonValue>, suite_ids: 
 fn scheduler_policy_from_request(request: &JsonMap<String, JsonValue>) -> SchedulerPolicy {
     let posture = optional_text(request, "scheduler_posture")
         .and_then(|value| SchedulerDeploymentPosture::parse(&value))
-        .unwrap_or_else(SchedulerDeploymentPosture::from_environment);
+        .unwrap_or(SchedulerDeploymentPosture::LocalCoResident);
     match positive_i64(request, "host_cpu_cores") {
         Ok(Some(value)) => SchedulerPolicy::for_host_cpu_cores(value as usize, posture),
         _ => SchedulerPolicy::for_detected_host(posture),

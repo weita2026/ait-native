@@ -117,7 +117,9 @@ pub(super) fn write_zstd_chunked_tree_pack_archive(
         pack_id,
         created_at,
         &inputs,
-        zstd_chunked_chunk_bytes_from_env("AIT_TREE_PACK_CHUNK_MIB"),
+        zstd_chunked_chunk_bytes_from_env(
+            crate::environment_contract::names::AIT_TREE_PACK_CHUNK_MIB,
+        ),
     )?;
     let pack_index_json = TreePackIndexJson::stateless().zstd_chunked_index_json(&pack_index)?;
     let index_bytes = encode_zstd_chunked_index(&pack_index, ZSTD_CHUNKED_INDEX_KIND_TREE)?;

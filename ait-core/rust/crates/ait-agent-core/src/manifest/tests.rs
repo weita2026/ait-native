@@ -29,7 +29,7 @@ fn counts_workers_by_transport_after_rust_normalization() {
 }
 
 #[test]
-fn lists_individual_workers_for_launch_planning() {
+fn lists_individual_workers_for_runtime_selection() {
     let payload = json!({
         "version": 1,
         "workers": {
@@ -93,42 +93,4 @@ fn agent_worker_manifest_boundary_preserves_core_schema_and_fixture_shape() {
         agent_select_telegram_worker_json(&payload, Some("main")),
         ait_core::worker_manifest::select_telegram_worker_json(&payload, Some("main"))
     );
-}
-
-#[test]
-fn agent_worker_manifest_boundary_lists_workers_for_launch_sharding() {
-    let payload = json!({
-        "version": 1,
-        "workers": {
-            "telegram/main": {"token": "t"},
-            "discord/ops": {"kind": "discord", "application_id": "app", "bot_token": "bot"},
-            "slack/team": {"kind": "slack", "app_token": "x"}
-        }
-    });
-
-    assert_eq!(
-        agent_list_manifest_workers_json(&payload),
-        json!([
-            {"key": "discord/ops", "transport": "discord", "name": "ops"},
-            {"key": "slack/team", "transport": "slack", "name": "team"},
-            {"key": "telegram/main", "transport": "telegram", "name": "main"}
-        ])
-    );
-}
-
-#[test]
-fn agent_worker_manifest_boundary_upserts_worker_config() {
-    let payload = agent_upsert_worker_manifest_worker_json(&json!({
-        "config": {"version": 1, "workers": {}},
-        "worker": {"kind": "slack", "name": "main", "app_token": "x"},
-        "updated_at": "2026-07-04T06:40:00Z"
-    }))
-    .expect("upsert worker");
-
-    assert_eq!(payload["worker_key"], "slack/main");
-    assert_eq!(
-        payload["config"]["workers"]["slack/main"]["created_at"],
-        "2026-07-04T06:40:00Z"
-    );
-    assert_eq!(payload["python_worker_execution_allowed"], false);
 }

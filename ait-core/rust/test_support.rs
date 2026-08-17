@@ -2,25 +2,13 @@
 
 use std::collections::BTreeSet;
 use std::env;
-use std::fs;
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
-use std::process::{Child, ExitStatus};
+use std::process::{Child, Command, ExitStatus};
 use std::thread;
 use std::time::{Duration, Instant};
 
-const RUST_WORKSPACE_ROOT_OVERRIDE: &str = "AIT_TEST_RUST_WORKSPACE_ROOT";
-
 pub fn rust_workspace_root() -> PathBuf {
-    if let Some(override_root) = env::var_os(RUST_WORKSPACE_ROOT_OVERRIDE) {
-        let candidate = PathBuf::from(override_root);
-        return validated_rust_workspace_root(&candidate).unwrap_or_else(|| {
-            panic!(
-                "{RUST_WORKSPACE_ROOT_OVERRIDE} points at `{}`, which is not an AIT Rust workspace",
-                candidate.display()
-            )
-        });
-    }
-
     let mut starts = Vec::new();
     if let Ok(current_dir) = env::current_dir() {
         starts.push(("current_dir", current_dir));
@@ -49,7 +37,7 @@ pub fn rust_workspace_root() -> PathBuf {
     }
 
     panic!(
-        "could not locate the active AIT Rust workspace at runtime; set {RUST_WORKSPACE_ROOT_OVERRIDE} explicitly; starts: {}; checked: {}",
+        "could not locate the active AIT Rust workspace at runtime; starts: {}; checked: {}",
         start_descriptions.join(", "),
         checked
             .iter()
@@ -113,28 +101,50 @@ pub fn cargo_binary(binary_name: &str, compiled_candidate: Option<&str>) -> Path
     )
 }
 
-pub fn request_worker_shutdown(
-    repository_root: &Path,
-    transport: &str,
-    worker_name: &str,
-    pid: u32,
-) {
-    let runtime_root = repository_root.join(".ait/agent-runtime");
-    fs::create_dir_all(&runtime_root).expect("create worker runtime directory");
-    let path = runtime_root.join(format!(
-        "{}-{}-termination.json",
-        transport.trim().to_ascii_lowercase(),
-        worker_name.trim().to_ascii_lowercase()
-    ));
-    let temporary = path.with_extension(format!("json.{}.tmp", std::process::id()));
-    fs::write(
-        &temporary,
-        format!(
-            "{{\"pid\":{pid},\"reason\":\"integration_test_stop\",\"worker_name\":\"{worker_name}\"}}\n"
-        ),
-    )
-    .expect("write worker termination context");
-    fs::rename(&temporary, &path).expect("publish worker termination context");
+pub fn worker_command(program: impl AsRef<OsStr>) -> Command {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+
+        const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+        let mut command = Command::new(program);
+        command.creation_flags(CREATE_NEW_PROCESS_GROUP);
+        command
+    }
+    #[cfg(not(windows))]
+    {
+        Command::new(program)
+    }
+}
+
+#[cfg(unix)]
+pub fn request_worker_shutdown(pid: u32) {
+    let pid = i32::try_from(pid).expect("worker PID fits pid_t");
+    let result = unsafe { libc::kill(pid, libc::SIGTERM) };
+    assert_eq!(
+        result,
+        0,
+        "send SIGTERM to worker: {}",
+        std::io::Error::last_os_error()
+    );
+}
+
+#[cfg(windows)]
+pub fn request_worker_shutdown(pid: u32) {
+    const CTRL_BREAK_EVENT: u32 = 1;
+
+    #[link(name = "Kernel32")]
+    extern "system" {
+        fn GenerateConsoleCtrlEvent(control_event: u32, process_group_id: u32) -> i32;
+    }
+
+    let result = unsafe { GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, pid) };
+    assert_ne!(
+        result,
+        0,
+        "send CTRL_BREAK_EVENT to worker: {}",
+        std::io::Error::last_os_error()
+    );
 }
 
 pub fn wait_for_child_exit(child: &mut Child, label: &str, timeout: Duration) -> ExitStatus {
@@ -146,7 +156,7 @@ pub fn wait_for_child_exit(child: &mut Child, label: &str, timeout: Duration) ->
         if Instant::now() >= deadline {
             let _ = child.kill();
             let _ = child.wait();
-            panic!("{label} did not stop after receiving its termination context");
+            panic!("{label} did not stop after receiving its shutdown signal");
         }
         thread::sleep(Duration::from_millis(10));
     }

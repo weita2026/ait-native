@@ -10,7 +10,9 @@ use ait_core::external::manifest::{ExternalBindingSet, ExternalDeclaration, Exte
 use ait_core::external::resolver::{
     resolve_external_lockfile, ExternalResolutionOptions, ExternalSnapshotResolver,
 };
-use ait_core::external::update::{ExternalUpdateOptions, ExternalUpdateSelection};
+use ait_core::external::update::{
+    ExternalUpdateOptions, ExternalUpdateSelection, FilesystemExternalUpdateStore,
+};
 use ait_core::external::ExternalResult;
 use ait_core::line_store::LineStore;
 use ait_core::local_snapshot::LocalSnapshotWriteStore;
@@ -20,11 +22,12 @@ use crate::runtime::RepoRuntime;
 
 use super::{
     external_doctor, external_link, external_status, external_unlink, external_update,
-    hydrate_external_update_selection_with_ports, line_head_from_remote_rows,
-    materialize_locked_external_release_sources, render_external_doctor_text,
-    render_external_link_text, render_external_status_text, render_external_text,
-    render_external_unlink_text, render_external_update_text, ExternalRemoteLineHeadSource,
-    ExternalUpdateHydrationPorts, RemoteAwareExternalSnapshotResolver,
+    freeze_staged_external_update_selection, hydrate_external_update_selection_with_ports,
+    line_head_from_remote_rows, materialize_locked_external_release_sources,
+    render_external_doctor_text, render_external_link_text, render_external_status_text,
+    render_external_text, render_external_unlink_text, render_external_update_text,
+    ExternalRemoteLineHeadSource, ExternalUpdateHydrationPorts,
+    RemoteAwareExternalSnapshotResolver,
 };
 
 #[test]
@@ -127,10 +130,11 @@ fn external_doctor_text_separates_release_blocking_and_warnings() {
 }
 
 #[test]
-fn external_link_and_unlink_update_local_metadata_only() {
+fn external_link_and_unlink_update_declared_local_override_without_a_lockfile() {
     let repo_root = tempfile::tempdir().unwrap();
     let linked_external = tempfile::tempdir().unwrap();
     let repo = test_repo(repo_root.path());
+    write_external_manifest(repo_root.path(), "fixture-consumer", "SNP-LINK-ONLY");
     let link_path = linked_external.path().to_string_lossy().to_string();
 
     let linked = external_link(&repo, "ait-db", &link_path).unwrap();
@@ -142,7 +146,7 @@ fn external_link_and_unlink_update_local_metadata_only() {
         .unwrap()
         .contains("linked: ait-db ->"));
     assert!(repo_root.path().join(EXTERNAL_LINKS_FILE).exists());
-    assert!(!repo_root.path().join("ait-external.toml").exists());
+    assert!(repo_root.path().join("ait-external.toml").exists());
     assert!(!repo_root.path().join("ait-external.lock").exists());
 
     let unlinked = external_unlink(&repo, "ait-db").unwrap();
@@ -157,8 +161,55 @@ fn external_link_and_unlink_update_local_metadata_only() {
         render_external_unlink_text(&unlinked).unwrap()
     );
     assert!(!repo_root.path().join(EXTERNAL_LINKS_FILE).exists());
-    assert!(!repo_root.path().join("ait-external.toml").exists());
+    assert!(repo_root.path().join("ait-external.toml").exists());
     assert!(!repo_root.path().join("ait-external.lock").exists());
+    assert_eq!(unlinked["restore_state"], "skipped_no_lockfile");
+}
+
+#[test]
+fn external_link_rejects_a_name_missing_from_the_root_manifest() {
+    let repo_root = tempfile::tempdir().unwrap();
+    let linked_external = tempfile::tempdir().unwrap();
+    let repo = test_repo(repo_root.path());
+    write_external_manifest(repo_root.path(), "fixture-consumer", "SNP-LINK-ONLY");
+
+    let err = external_link(
+        &repo,
+        "unknown-db",
+        &linked_external.path().to_string_lossy(),
+    )
+    .unwrap_err();
+
+    assert!(err.contains("is not declared in the root ait-external.toml"));
+    assert!(!repo_root.path().join(EXTERNAL_LINKS_FILE).exists());
+}
+
+#[test]
+fn external_link_rejects_an_ambiguous_root_manifest_name() {
+    let repo_root = tempfile::tempdir().unwrap();
+    let linked_external = tempfile::tempdir().unwrap();
+    let repo = test_repo(repo_root.path());
+    let declaration = r#"[[external]]
+name = "ait-db"
+repo_name = "ait-db"
+repository_index = 1
+remote = "origin"
+line = "main"
+snapshot = "SNP-LINK-ONLY"
+materialize_to = ".ait-external/ait-db"
+license = "Apache-2.0"
+"#;
+    std::fs::write(
+        repo_root.path().join("ait-external.toml"),
+        format!("{declaration}\n{declaration}"),
+    )
+    .unwrap();
+
+    let err =
+        external_link(&repo, "ait-db", &linked_external.path().to_string_lossy()).unwrap_err();
+
+    assert!(err.contains("appears more than once in the root ait-external.toml"));
+    assert!(!repo_root.path().join(EXTERNAL_LINKS_FILE).exists());
 }
 
 #[cfg(unix)]
@@ -183,6 +234,7 @@ fn external_link_accepts_explicit_parent_relative_sibling_target() {
     std::fs::create_dir_all(&repo_root).unwrap();
     std::fs::create_dir_all(&linked_external).unwrap();
     let repo = test_repo(&repo_root);
+    write_external_manifest(&repo_root, "fixture-consumer", "SNP-LINK-ONLY");
 
     let linked = external_link(&repo, "ait-db", "../ait-db").unwrap();
 
@@ -388,6 +440,54 @@ fn external_update_validate_reports_binding_validation_findings() {
     let text = render_external_update_text(&validated).unwrap();
     assert!(text.contains("validation: passed=true errors=0 warnings=1"));
     assert!(text.contains("validation findings:"));
+}
+
+#[test]
+fn external_update_validate_failure_leaves_visible_authority_and_materialization_unchanged() {
+    let repo_root = tempfile::tempdir().unwrap();
+    init_repo(&InitRequest {
+        root: repo_root.path().to_path_buf(),
+        name: Some("fixture-consumer".to_string()),
+        default_line: "main".to_string(),
+        policy_profile: "prototype".to_string(),
+        default_author_mode: "ai_with_human_review".to_string(),
+        default_model: None,
+        repair_existing: false,
+    })
+    .unwrap();
+    let repo = RepoRuntime::discover_from_path(repo_root.path()).unwrap();
+    let binding_root = repo_root.path().join("rust/crates/ait-db");
+    std::fs::create_dir_all(&binding_root).unwrap();
+    std::fs::write(binding_root.join("Cargo.toml"), "[package\nname = broken\n").unwrap();
+    let snapshot = create_local_snapshot(
+        &repo.workspace_root().to_string_lossy(),
+        &repo.repo_name(),
+        "main",
+        Some("broken external binding"),
+        false,
+    )
+    .unwrap();
+    let snapshot_id = snapshot["snapshot_id"].as_str().unwrap().to_string();
+    write_external_manifest_with_rust_binding(repo_root.path(), &repo.repo_name(), &snapshot_id);
+    let manifest_before = std::fs::read(repo_root.path().join("ait-external.toml")).unwrap();
+    let links_path = repo_root.path().join(EXTERNAL_LINKS_FILE);
+    std::fs::write(&links_path, "# preserve local-link authority bytes\n").unwrap();
+    let links_before = std::fs::read(&links_path).unwrap();
+
+    let err = external_update(
+        &repo,
+        ExternalUpdateOptions::manifest_pins().with_validate(true),
+    )
+    .unwrap_err();
+
+    assert!(err.contains("external binding validation failed"), "{err}");
+    assert_eq!(
+        std::fs::read(repo_root.path().join("ait-external.toml")).unwrap(),
+        manifest_before
+    );
+    assert_eq!(std::fs::read(links_path).unwrap(), links_before);
+    assert!(!repo_root.path().join("ait-external.lock").exists());
+    assert!(!repo_root.path().join(".ait-external").exists());
 }
 
 #[test]
@@ -631,6 +731,24 @@ fn external_update_latest_remote_resolver_uses_declared_remote_line_head() {
 }
 
 #[test]
+fn staged_latest_validation_freezes_the_resolved_snapshot_for_the_visible_update() {
+    let root = tempfile::tempdir().unwrap();
+    write_external_manifest(root.path(), "ait-db", "SNP-DB-NEW");
+    let store = FilesystemExternalUpdateStore::for_repo_root(root.path()).unwrap();
+
+    let selection = freeze_staged_external_update_selection(
+        &ExternalUpdateOptions::latest("ait-db").with_validate(true),
+        &store,
+    )
+    .unwrap();
+
+    assert_eq!(
+        selection,
+        ExternalUpdateSelection::exact("ait-db", "SNP-DB-NEW")
+    );
+}
+
+#[test]
 fn external_update_latest_remote_row_reader_accepts_line_name_or_name() {
     assert_eq!(
         line_head_from_remote_rows(
@@ -701,6 +819,29 @@ fn external_unlink_restores_pinned_snapshot_materialization() {
     let text = render_external_unlink_text(&unlinked).unwrap();
     assert!(text.contains("restored: true (restored)"));
     assert!(text.contains(&format!("ait-db [materialized] {snapshot_id}")));
+}
+
+#[test]
+fn external_unlink_restore_failure_preserves_the_local_override() {
+    let repo_root = tempfile::tempdir().unwrap();
+    let link_target = tempfile::tempdir().unwrap();
+    let repo = test_repo(repo_root.path());
+    write_external_manifest(repo_root.path(), "fixture-consumer", "SNP-LINK-ONLY");
+    external_link(&repo, "ait-db", &link_target.path().to_string_lossy()).unwrap();
+    let links_before = std::fs::read(repo_root.path().join(EXTERNAL_LINKS_FILE)).unwrap();
+    std::fs::write(
+        repo_root.path().join("ait-external.lock"),
+        "[[node]\nname = invalid\n",
+    )
+    .unwrap();
+
+    let err = external_unlink(&repo, "ait-db").unwrap_err();
+
+    assert!(err.contains("ait-external.lock"), "{err}");
+    assert_eq!(
+        std::fs::read(repo_root.path().join(EXTERNAL_LINKS_FILE)).unwrap(),
+        links_before
+    );
 }
 
 fn test_repo(root: &std::path::Path) -> RepoRuntime {
@@ -794,6 +935,34 @@ license = "Apache-2.0"
 kind = "python-path"
 path = "python"
 module = "ait_db"
+"#
+        ),
+    )
+    .unwrap();
+}
+
+fn write_external_manifest_with_rust_binding(
+    root: &std::path::Path,
+    repo_name: &str,
+    snapshot_id: &str,
+) {
+    std::fs::write(
+        root.join("ait-external.toml"),
+        format!(
+            r#"[[external]]
+name = "ait-db"
+repo_name = "{repo_name}"
+repository_index = 0
+remote = "origin"
+line = "main"
+snapshot = "{snapshot_id}"
+materialize_to = ".ait-external/ait-db"
+license = "Apache-2.0"
+
+[external.bindings.rust]
+kind = "cargo-path"
+path = "rust/crates/ait-db"
+package = "ait-db"
 "#
         ),
     )

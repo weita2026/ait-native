@@ -42,59 +42,27 @@ pub(super) const PLAN_AUTHORITY_REQUIRED_EXPORTS: &[&str] = &[
     "normalize_plan_items",
 ];
 
-pub(super) const SUPPORTED_WHEEL_MATRIX: &[(&str, &str, &str)] = &[
-    ("macos-x86_64", "macOS", "x86_64"),
-    ("macos-arm64", "macOS", "arm64"),
-    ("linux-x86_64", "Linux", "x86_64"),
-    ("linux-aarch64", "Linux", "aarch64"),
-    ("windows-x86_64", "Windows", "x86_64"),
-    ("windows-arm64", "Windows", "arm64"),
-];
-
 pub fn normalize_plan_diagnostics_request_payload_json(
     payload_json: &str,
 ) -> Result<JsonValue, String> {
-    DiagnosticsJson::filesystem().normalize_diagnostics_request_payload_json(payload_json)
+    DiagnosticsJson::stateless().normalize_diagnostics_request_payload_json(payload_json)
 }
 
 pub(super) fn normalize_plan_diagnostics_request_payload_map(
     payload: JsonMap<String, JsonValue>,
 ) -> Result<JsonValue, String> {
-    let overrides_value = payload.get("overrides");
-    let overrides = if let Some(value) = overrides_value {
-        let overrides_object = require_object(Some(value), "plan diagnostics overrides")?;
-        normalize_selection_overrides(overrides_object)?
-    } else {
-        JsonMap::new()
-    };
-    let wheel_path = optional_text(payload.get("wheel_path"))?;
-    let repack_installed =
-        optional_bool_with_default(payload.get("repack_installed"), false, "repack_installed")?;
-    let smoke = optional_bool_with_default(payload.get("smoke"), false, "smoke")?;
-    if smoke && wheel_path.is_none() && !repack_installed {
-        return Err(
-            "Plan diagnostics request with smoke enabled must provide wheel_path or repack_installed."
-                .to_string(),
-        );
+    if let Some(field) = payload.keys().next() {
+        return Err(format!(
+            "Unsupported plan diagnostics request field `{field}`; diagnostics read effective configuration and accept no overrides."
+        ));
     }
-    Ok(JsonValue::Object(JsonMap::from_iter([
-        ("overrides".to_string(), JsonValue::Object(overrides)),
-        (
-            "wheel_path".to_string(),
-            wheel_path.map(JsonValue::String).unwrap_or(JsonValue::Null),
-        ),
-        (
-            "repack_installed".to_string(),
-            JsonValue::Bool(repack_installed),
-        ),
-        ("smoke".to_string(), JsonValue::Bool(smoke)),
-    ])))
+    Ok(JsonValue::Object(JsonMap::new()))
 }
 
 pub fn normalize_plan_backend_identity_payload_json(
     payload_json: &str,
 ) -> Result<JsonValue, String> {
-    DiagnosticsJson::filesystem().normalize_backend_identity_payload_json(payload_json)
+    DiagnosticsJson::stateless().normalize_backend_identity_payload_json(payload_json)
 }
 
 pub(super) fn normalize_plan_backend_identity_payload_map(
@@ -103,20 +71,10 @@ pub(super) fn normalize_plan_backend_identity_payload_map(
     Ok(JsonValue::Object(normalize_backend_identity_map(&payload)?))
 }
 
-pub fn normalize_plan_wheel_status_payload_json(payload_json: &str) -> Result<JsonValue, String> {
-    DiagnosticsJson::filesystem().normalize_wheel_status_payload_json(payload_json)
-}
-
-pub(super) fn normalize_plan_wheel_status_payload_map(
-    payload: JsonMap<String, JsonValue>,
-) -> Result<JsonValue, String> {
-    Ok(JsonValue::Object(normalize_wheel_status_map(&payload)?))
-}
-
 pub fn normalize_plan_diagnostics_compatibility_payload_json(
     payload_json: &str,
 ) -> Result<JsonValue, String> {
-    DiagnosticsJson::filesystem().normalize_diagnostics_compatibility_payload_json(payload_json)
+    DiagnosticsJson::stateless().normalize_diagnostics_compatibility_payload_json(payload_json)
 }
 
 pub(super) fn normalize_plan_diagnostics_compatibility_payload_map(
@@ -130,10 +88,6 @@ pub(super) fn normalize_plan_diagnostics_compatibility_payload_map(
         payload.get("backend_identity"),
         "plan diagnostics compatibility backend_identity",
     )?)?;
-    let wheel_status = normalize_wheel_status_map(require_object(
-        payload.get("wheel_status"),
-        "plan diagnostics compatibility wheel_status",
-    )?)?;
     let compatible = require_bool(payload.get("compatible"), "compatible")?;
     let issues = normalize_string_list(payload.get("issues"), "issues")?;
     let surface_commands = normalize_command_surface(payload.get("surface_commands"))?;
@@ -143,7 +97,6 @@ pub(super) fn normalize_plan_diagnostics_compatibility_payload_map(
             "backend_identity".to_string(),
             JsonValue::Object(backend_identity),
         ),
-        ("wheel_status".to_string(), JsonValue::Object(wheel_status)),
         ("compatible".to_string(), JsonValue::Bool(compatible)),
         ("issues".to_string(), JsonValue::Array(issues)),
         (
@@ -156,7 +109,7 @@ pub(super) fn normalize_plan_diagnostics_compatibility_payload_map(
 pub fn normalize_plan_diagnostics_readiness_payload_json(
     payload_json: &str,
 ) -> Result<JsonValue, String> {
-    DiagnosticsJson::filesystem().normalize_diagnostics_readiness_payload_json(payload_json)
+    DiagnosticsJson::stateless().normalize_diagnostics_readiness_payload_json(payload_json)
 }
 
 pub(super) fn normalize_plan_diagnostics_readiness_payload_map(
@@ -200,7 +153,7 @@ pub(super) fn normalize_plan_diagnostics_readiness_payload_map(
 pub fn normalize_plan_diagnostics_doctor_payload_json(
     payload_json: &str,
 ) -> Result<JsonValue, String> {
-    DiagnosticsJson::filesystem().normalize_diagnostics_doctor_payload_json(payload_json)
+    DiagnosticsJson::stateless().normalize_diagnostics_doctor_payload_json(payload_json)
 }
 
 pub(super) fn normalize_plan_diagnostics_doctor_payload_map(
@@ -213,10 +166,6 @@ pub(super) fn normalize_plan_diagnostics_doctor_payload_map(
     let backend_identity = normalize_backend_identity_map(require_object(
         payload.get("backend_identity"),
         "plan diagnostics doctor backend_identity",
-    )?)?;
-    let wheel_status = normalize_wheel_status_map(require_object(
-        payload.get("wheel_status"),
-        "plan diagnostics doctor wheel_status",
     )?)?;
     let compatibility = match normalize_plan_diagnostics_compatibility_payload_map(
         require_object(
@@ -263,7 +212,6 @@ pub(super) fn normalize_plan_diagnostics_doctor_payload_map(
             "backend_identity".to_string(),
             JsonValue::Object(backend_identity),
         ),
-        ("wheel_status".to_string(), JsonValue::Object(wheel_status)),
         (
             "compatibility".to_string(),
             JsonValue::Object(compatibility),
@@ -279,25 +227,6 @@ pub(super) fn normalize_plan_diagnostics_doctor_payload_map(
             JsonValue::Array(surface_commands),
         ),
     ])))
-}
-
-fn normalize_selection_overrides(
-    payload: &JsonMap<String, JsonValue>,
-) -> Result<JsonMap<String, JsonValue>, String> {
-    let mut normalized = JsonMap::new();
-    for (key, value) in payload {
-        if !PLAN_CONFIG_RUNTIME_SELECTION_KEYS.contains(&key.as_str()) {
-            return Err(format!(
-                "Unsupported plan diagnostics selector override `{key}`."
-            ));
-        }
-        if value.is_null() {
-            continue;
-        }
-        let text = require_string(value, &format!("override `{key}`"))?;
-        normalized.insert(key.clone(), JsonValue::String(text.trim().to_string()));
-    }
-    Ok(normalized)
 }
 
 pub(super) fn normalize_selection_facts_map(
@@ -470,176 +399,6 @@ fn normalize_backend_identity_map(
     Ok(normalized)
 }
 
-fn normalize_wheel_status_map(
-    payload: &JsonMap<String, JsonValue>,
-) -> Result<JsonMap<String, JsonValue>, String> {
-    let mut normalized = payload.clone();
-    let supported_matrix = normalize_supported_matrix(payload.get("supported_matrix"))?;
-    let current_target = optional_text(payload.get("current_target"))?;
-    let current_supported = require_bool(
-        payload.get("current_supported"),
-        "wheel_status.current_supported",
-    )?;
-    let installed_wheel_tag = optional_text(payload.get("installed_wheel_tag"))?;
-    let wheel_path = optional_text(payload.get("wheel_path"))?;
-    let wheel_filename = optional_text(payload.get("wheel_filename"))?;
-    let wheel_source = optional_text(payload.get("wheel_source"))?;
-    let wheel_tag = optional_text(payload.get("wheel_tag"))?;
-    let wheel_target = optional_text(payload.get("wheel_target"))?;
-    let wheel_target_supported = optional_bool_value(
-        payload.get("wheel_target_supported"),
-        "wheel_target_supported",
-    )?;
-    let wheel_matches_current_target = optional_bool_value(
-        payload.get("wheel_matches_current_target"),
-        "wheel_matches_current_target",
-    )?;
-    let smoke = match payload.get("smoke") {
-        None | Some(JsonValue::Null) => JsonValue::Null,
-        Some(value) => JsonValue::Object(normalize_smoke_map(require_object(
-            Some(value),
-            "wheel_status.smoke",
-        )?)?),
-    };
-    let issues = normalize_string_list(payload.get("issues"), "wheel_status.issues")?;
-    normalized.insert(
-        "supported_matrix".to_string(),
-        JsonValue::Array(supported_matrix),
-    );
-    normalized.insert(
-        "current_target".to_string(),
-        current_target
-            .map(JsonValue::String)
-            .unwrap_or(JsonValue::Null),
-    );
-    normalized.insert(
-        "current_supported".to_string(),
-        JsonValue::Bool(current_supported),
-    );
-    normalized.insert(
-        "installed_wheel_tag".to_string(),
-        installed_wheel_tag
-            .map(JsonValue::String)
-            .unwrap_or(JsonValue::Null),
-    );
-    normalized.insert(
-        "wheel_path".to_string(),
-        wheel_path.map(JsonValue::String).unwrap_or(JsonValue::Null),
-    );
-    normalized.insert(
-        "wheel_filename".to_string(),
-        wheel_filename
-            .map(JsonValue::String)
-            .unwrap_or(JsonValue::Null),
-    );
-    normalized.insert(
-        "wheel_source".to_string(),
-        wheel_source
-            .map(JsonValue::String)
-            .unwrap_or(JsonValue::Null),
-    );
-    normalized.insert(
-        "wheel_tag".to_string(),
-        wheel_tag.map(JsonValue::String).unwrap_or(JsonValue::Null),
-    );
-    normalized.insert(
-        "wheel_target".to_string(),
-        wheel_target
-            .map(JsonValue::String)
-            .unwrap_or(JsonValue::Null),
-    );
-    normalized.insert(
-        "wheel_target_supported".to_string(),
-        wheel_target_supported
-            .map(JsonValue::Bool)
-            .unwrap_or(JsonValue::Null),
-    );
-    normalized.insert(
-        "wheel_matches_current_target".to_string(),
-        wheel_matches_current_target
-            .map(JsonValue::Bool)
-            .unwrap_or(JsonValue::Null),
-    );
-    normalized.insert("smoke".to_string(), smoke);
-    normalized.insert("issues".to_string(), JsonValue::Array(issues));
-    Ok(normalized)
-}
-
-fn normalize_supported_matrix(value: Option<&JsonValue>) -> Result<Vec<JsonValue>, String> {
-    match value {
-        Some(JsonValue::Array(rows)) => rows
-            .iter()
-            .enumerate()
-            .map(|(index, row)| {
-                let object = require_object(Some(row), &format!("supported_matrix[{index}]"))?;
-                Ok(JsonValue::Object(JsonMap::from_iter([
-                    (
-                        "target".to_string(),
-                        JsonValue::String(require_nonempty_text(
-                            object.get("target"),
-                            &format!("supported_matrix[{index}].target"),
-                        )?),
-                    ),
-                    (
-                        "os".to_string(),
-                        JsonValue::String(require_nonempty_text(
-                            object.get("os"),
-                            &format!("supported_matrix[{index}].os"),
-                        )?),
-                    ),
-                    (
-                        "arch".to_string(),
-                        JsonValue::String(require_nonempty_text(
-                            object.get("arch"),
-                            &format!("supported_matrix[{index}].arch"),
-                        )?),
-                    ),
-                ])))
-            })
-            .collect(),
-        _ => Err(
-            "Plan diagnostics wheel status payload must include supported_matrix as a list."
-                .to_string(),
-        ),
-    }
-}
-
-fn normalize_smoke_map(
-    payload: &JsonMap<String, JsonValue>,
-) -> Result<JsonMap<String, JsonValue>, String> {
-    let mut normalized = payload.clone();
-    normalized.insert(
-        "status".to_string(),
-        JsonValue::String(require_nonempty_text(
-            payload.get("status"),
-            "smoke.status",
-        )?),
-    );
-    normalized.insert(
-        "issues".to_string(),
-        JsonValue::Array(normalize_string_list_with_default(payload.get("issues"))?),
-    );
-    normalized.insert(
-        "failure_stage".to_string(),
-        optional_text(payload.get("failure_stage"))?
-            .map(JsonValue::String)
-            .unwrap_or(JsonValue::Null),
-    );
-    normalized.insert(
-        "wheel_path".to_string(),
-        optional_text(payload.get("wheel_path"))?
-            .map(JsonValue::String)
-            .unwrap_or(JsonValue::Null),
-    );
-    normalized.insert(
-        "expected_plan_contract_version".to_string(),
-        optional_text(payload.get("expected_plan_contract_version"))?
-            .map(JsonValue::String)
-            .unwrap_or(JsonValue::Null),
-    );
-    Ok(normalized)
-}
-
 fn normalize_env_snapshot_map(
     payload: &JsonMap<String, JsonValue>,
 ) -> Result<JsonMap<String, JsonValue>, String> {
@@ -715,22 +474,6 @@ fn normalize_string_list(
     }
 }
 
-fn normalize_string_list_with_default(value: Option<&JsonValue>) -> Result<Vec<JsonValue>, String> {
-    match value {
-        None => Ok(Vec::new()),
-        Some(JsonValue::Array(values)) => values
-            .iter()
-            .map(|item| {
-                Ok(JsonValue::String(require_nonempty_text(
-                    Some(item),
-                    "issues entry",
-                )?))
-            })
-            .collect(),
-        _ => Err("Plan diagnostics payload field `issues` must be a list.".to_string()),
-    }
-}
-
 pub(super) fn require_object<'a>(
     value: Option<&'a JsonValue>,
     field_name: &str,
@@ -772,33 +515,6 @@ pub(super) fn require_nonempty_text(
 
 pub(super) fn require_bool(value: Option<&JsonValue>, field_name: &str) -> Result<bool, String> {
     match value {
-        Some(JsonValue::Bool(flag)) => Ok(*flag),
-        _ => Err(format!(
-            "Plan diagnostics payload field `{field_name}` must be a boolean."
-        )),
-    }
-}
-
-fn optional_bool_value(
-    value: Option<&JsonValue>,
-    field_name: &str,
-) -> Result<Option<bool>, String> {
-    match value {
-        None | Some(JsonValue::Null) => Ok(None),
-        Some(JsonValue::Bool(flag)) => Ok(Some(*flag)),
-        _ => Err(format!(
-            "Plan diagnostics payload field `{field_name}` must be a boolean or null."
-        )),
-    }
-}
-
-fn optional_bool_with_default(
-    value: Option<&JsonValue>,
-    default: bool,
-    field_name: &str,
-) -> Result<bool, String> {
-    match value {
-        None | Some(JsonValue::Null) => Ok(default),
         Some(JsonValue::Bool(flag)) => Ok(*flag),
         _ => Err(format!(
             "Plan diagnostics payload field `{field_name}` must be a boolean."

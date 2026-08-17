@@ -1,6 +1,7 @@
 use std::fmt;
 use std::path::{Path, PathBuf};
 
+use ait_core::environment_contract::names;
 use ait_core::json_support::{json, JsonMap as Map, JsonValue};
 
 use super::super::telegram_command_trigger::TelegramCommandTriggerOperationExecutor;
@@ -802,7 +803,8 @@ fn validate_handler_operation(
         .and_then(JsonValue::as_object)
         .ok_or(kind)?;
     if env.len() != 1
-        || env.get("AIT_REPO_ROOT").and_then(JsonValue::as_str) != Some(config.repo_root.as_str())
+        || env.get(names::AIT_REPO_ROOT).and_then(JsonValue::as_str)
+            != Some(config.repo_root.as_str())
     {
         return Err(kind);
     }

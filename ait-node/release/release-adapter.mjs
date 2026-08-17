@@ -21,8 +21,12 @@ import { spawnNpmSync } from "../scripts/npm-command.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const PACKAGE_NAME = "@wa120/ait-native";
-const PACKAGE_VERSION = "1.0.0-rc.6";
+const PACKAGE_VERSION = "1.0.0-rc.7";
 const PORTABLE_TARGET = "portable";
+const PRODUCT_DESCRIPTION =
+  "Agent-first, language-neutral workflow for verified repository changes";
+const OFFICIAL_WEBSITE = "https://ait-native.dev/";
+const README_VERSION_TOKEN = "@AIT_NPM_VERSION@";
 const PACKAGE_REPOSITORY = Object.freeze({
   type: "git",
   url: "git+https://github.com/weita2026/ait-native.git",
@@ -38,6 +42,45 @@ function npmTarballName(packageName, version) {
 const TARBALL_NAME = npmTarballName(PACKAGE_NAME, PACKAGE_VERSION);
 const TARBALL_PATH = path.join(ROOT, "dist", TARBALL_NAME);
 const ADDON_OUTPUT_ROOT = path.join(ROOT, "dist", "npm-addons");
+
+function renderStorefrontReadme(template, version) {
+  assert.equal(
+    template.split(README_VERSION_TOKEN).length - 1,
+    1,
+    "npm storefront README must contain one version token",
+  );
+  const readme = template.replace(README_VERSION_TOKEN, version);
+  for (const required of [
+    "AIT turns an ordinary coding request into an isolated, sprint-bound repository",
+    "individual developers and maintainers",
+    `npm install --global ${PACKAGE_NAME}@${version}`,
+    "ait init",
+    "## What you have after 90 seconds",
+    "`AGENTS.md`",
+    OFFICIAL_WEBSITE,
+    "## Moving from 0.x",
+    "The 0.x requirement to run `ait install` and its task-DAG positioning are",
+  ]) {
+    assert.equal(
+      readme.includes(required),
+      true,
+      `npm storefront README is missing ${JSON.stringify(required)}`,
+    );
+  }
+  assert.doesNotMatch(readme, /@AIT_[A-Z0-9_]+@/);
+  for (const legacyClaim of [
+    "Jira-like",
+    "parallel AI execution",
+    "compact task DAG",
+  ]) {
+    assert.equal(
+      readme.includes(legacyClaim),
+      false,
+      `npm storefront README preserves legacy claim ${JSON.stringify(legacyClaim)}`,
+    );
+  }
+  return readme;
+}
 
 function run(command, args, cwd = ROOT) {
   const result = spawnSync(command, args, {
@@ -132,7 +175,7 @@ async function validateContract(target, version) {
           payload.version === version &&
           payload.component === "ait-node" &&
           payload.binding_repository === "ait-core" &&
-          payload.binding_snapshot === "SNP-1372CA70FB06" &&
+          payload.binding_snapshot === "SNP-E164008CF117" &&
           payload.addon === "native/ait_napi.node"
         );
       },
@@ -142,6 +185,8 @@ async function validateContract(target, version) {
 
   assert.equal(packageJson.name, PACKAGE_NAME);
   assert.equal(packageJson.version, version);
+  assert.equal(packageJson.description, PRODUCT_DESCRIPTION);
+  assert.equal(packageJson.homepage, OFFICIAL_WEBSITE);
   assert.equal(packageJson.license, "Apache-2.0");
   assert.deepEqual(packageJson.repository, PACKAGE_REPOSITORY);
   assert.deepEqual(packageJson.bin, { ait: "bin/ait.mjs" });
@@ -211,7 +256,11 @@ async function buildPortable() {
         recursive: true,
       });
     }
-    const readme = await readFile(path.join(ROOT, "release", "npm-readme.txt"));
+    const readmeTemplate = await readFile(
+      path.join(ROOT, "release", "npm-readme.txt"),
+      "utf8",
+    );
+    const readme = renderStorefrontReadme(readmeTemplate, PACKAGE_VERSION);
     await writeFile(path.join(packageRoot, "README.md"), readme, { mode: 0o644 });
 
     const dryRun = runNpm([
@@ -455,7 +504,7 @@ async function main() {
   const [action, target, version] = process.argv.slice(2);
   if (process.argv.length !== 5) {
     throw new Error(
-      "usage: node release/release-adapter.mjs {check|build|smoke} <target|portable> 1.0.0-rc.6",
+      "usage: node release/release-adapter.mjs {check|build|smoke} <target|portable> 1.0.0-rc.7",
     );
   }
   const handlers = { build, check, smoke };

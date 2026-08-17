@@ -69,6 +69,31 @@ fn init_creates_authority_agent_contract_and_configured_sprint_directory() {
 }
 
 #[test]
+fn built_in_policy_profiles_materialize_their_exact_gate_defaults() {
+    for (profile, lint, security, license) in [
+        ("prototype", false, false, false),
+        ("team", true, false, false),
+        ("release", true, true, true),
+    ] {
+        let temp = TempDir::new().unwrap();
+        let mut init_request = request(temp.path());
+        init_request.policy_profile = profile.to_string();
+
+        let payload = init_repo(&init_request).unwrap();
+        let policy_text = fs::read_to_string(temp.path().join(".ait/policy.yaml")).unwrap();
+        let policy = parse_policy_yaml(&policy_text, DEFAULT_POLICY_PROFILE).unwrap();
+
+        assert_eq!(payload["policy_profile"], profile);
+        assert_eq!(policy["policy_id"], profile);
+        assert_eq!(policy["defaults"]["require_attestation"], true);
+        assert_eq!(policy["defaults"]["require_tests"], true);
+        assert_eq!(policy["defaults"]["require_lint"], lint);
+        assert_eq!(policy["defaults"]["require_security_scan"], security);
+        assert_eq!(policy["defaults"]["require_license_scan"], license);
+    }
+}
+
+#[test]
 fn recovery_init_is_minimal_and_creates_no_plan_lineage() {
     let temp = TempDir::new().unwrap();
     let mut init_request = request(temp.path());
@@ -148,20 +173,6 @@ fn valid_repository_reinitializes_without_repair_and_preserves_authority_bytes()
             .count(),
         1
     );
-}
-
-#[test]
-fn install_initialization_honors_sprint_off_without_placeholder_artifacts() {
-    let temp = TempDir::new().unwrap();
-
-    let payload = init_repo_for_install(&request(temp.path()), false).unwrap();
-
-    assert_eq!(payload["action"], "initialized");
-    assert!(temp.path().join("AGENTS.md").is_file());
-    assert!(!temp.path().join("docs").exists());
-    assert!(!temp.path().join("ait-native.md").exists());
-    assert_eq!(read_config(temp.path())["sprint"], "off");
-    assert_eq!(read_config(temp.path())["plan_task_binding"]["mode"], "off");
 }
 
 #[test]

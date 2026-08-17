@@ -1445,14 +1445,12 @@ mod tests {
             "kind": "discord",
             "name": "main",
             "application_id": APPLICATION_ID,
+            "local_reply": {"model": "fixture-model"},
         });
         if let Some(public_key) = public_key {
             worker["public_key"] = JsonValue::String(public_key.to_string());
         }
-        let mut process_env = BTreeMap::from([(
-            "AIT_DISCORD_INTERACTION_PATH".to_string(),
-            "/interactions".to_string(),
-        )]);
+        let mut process_env = BTreeMap::new();
         process_env.extend(
             environment
                 .into_iter()
@@ -1672,6 +1670,7 @@ mod tests {
         assert_eq!(calls[0]["interaction_payload"]["data"]["name"], "ask");
         assert_eq!(calls[0]["runtime_target"]["mode"], "remote");
         assert_eq!(calls[0]["runtime_target"]["repo_name"], "fixture");
+        assert_eq!(calls[0]["local_reply"]["model"], "fixture-model");
         assert!(calls[0]["state_path"].as_str().is_some());
         assert!(!calls[0].to_string().contains(PUBLIC_KEY));
         let delivery_calls = delivery_calls.lock().expect("delivery calls");
@@ -2257,10 +2256,11 @@ mod tests {
             .expect("missing public key");
         assert_eq!(error.code, "discord_public_key_missing");
 
-        let invalid_port = discord_config(Some(PUBLIC_KEY), [("AIT_DISCORD_BIND_PORT", "70000")]);
-        let AgentWorkerRuntimeConfig::Discord(invalid_port) = invalid_port else {
+        let invalid_port = discord_config(Some(PUBLIC_KEY), []);
+        let AgentWorkerRuntimeConfig::Discord(mut invalid_port) = invalid_port else {
             panic!("Discord config");
         };
+        invalid_port.bind_port = 70000;
         let error = resolve_discord_bind_addr(&invalid_port).expect_err("invalid port");
         assert_eq!(error.code, "discord_worker_bind_port_invalid");
         assert!(!error.render_json().contains(PUBLIC_KEY));

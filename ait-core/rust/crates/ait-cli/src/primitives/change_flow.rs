@@ -22,9 +22,10 @@ pub use patchset::{
 pub use policy::{policy_eval, policy_show, policy_waive};
 pub use review::{
     review_code_submit, review_code_template, review_record, review_request, review_show,
-    review_task_approve, review_team_approve,
+    review_task_approve, review_task_record, review_team_approve,
 };
-pub use task_lifecycle::{task_close, task_complete};
+pub use task_lifecycle::task_abandon;
+pub(in crate::primitives) use task_lifecycle::task_close;
 
 #[allow(unused_imports)]
 pub(super) use attestation::{
@@ -60,8 +61,8 @@ pub(super) use patchset::{
     patchset_list_with_closeout_remote, patchset_publish_flow_with_task_and_closeout_remotes,
     patchset_publish_payload_with_closeout_remote,
     patchset_publish_remote_context_with_task_remote, patchset_publish_with_closeout_remote,
-    patchset_run_ci_with_closeout_remote, patchset_select_with_closeout_remote,
-    patchset_show_with_closeout_remote,
+    patchset_run_ci_with_closeout_remote, patchset_select_by_id_with_closeout_remote,
+    patchset_select_with_closeout_remote, patchset_show_with_closeout_remote,
 };
 #[allow(unused_imports)]
 pub(super) use policy::{
@@ -70,9 +71,9 @@ pub(super) use policy::{
 };
 #[allow(unused_imports)]
 pub(super) use review::{
-    review_record_flow_with_task_and_closeout_remotes, review_record_with_closeout_remote,
-    review_request_flow_with_task_and_closeout_remotes, review_request_with_closeout_remote,
-    review_show_with_closeout_remote,
+    review_code_submit_with_closeout_remote, review_record_flow_with_task_and_closeout_remotes,
+    review_record_with_closeout_remote, review_request_flow_with_task_and_closeout_remotes,
+    review_request_with_closeout_remote, review_show_with_closeout_remote,
 };
 #[allow(unused_imports)]
 pub(super) use shared::{
@@ -80,9 +81,9 @@ pub(super) use shared::{
     resolve_patchset_argument_with_task_and_closeout_remotes, resolve_patchset_id,
 };
 #[allow(unused_imports)]
-pub(super) use task_lifecycle::{
-    task_close_with_closeout_remote, task_complete_with_closeout_remote,
-};
+pub(super) use task_lifecycle::task_close_with_closeout_remote;
+#[cfg(test)]
+pub(super) use task_lifecycle::task_complete_with_closeout_remote;
 
 #[cfg(test)]
 mod tests;

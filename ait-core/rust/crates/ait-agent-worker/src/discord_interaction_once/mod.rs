@@ -189,6 +189,7 @@ fn event_job_request(
             .turn_timeout_seconds
             .map(JsonValue::from)
             .unwrap_or(JsonValue::Null),
+        "local_reply": config.shared.local_reply,
     });
     request[payload_key] = payload;
     request

@@ -346,36 +346,17 @@ fn markdown_drift_blocks_ready_but_not_remote_land_actions() {
         )
         .expect_err("workflow ready attestation should block"),
     );
-    for (code, target) in [("evaluate_policy", None), ("submit_land", Some("main"))] {
-        let error = workflow_land_apply_action(
-            &repo,
-            code,
-            &state,
-            "RCC-GUARD",
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            Some("ai_with_human_review"),
-            Some("gpt-5"),
-            None,
-            None,
-            target,
-            "merge",
-            None,
-        )
-        .expect_err("fixture has no remote, but land must pass the Markdown boundary first");
-        assert!(
-            !error.contains("authored Markdown drift"),
-            "remote land action {code} must not read local Plan state: {error}"
-        );
-        assert!(
-            error.to_ascii_lowercase().contains("remote"),
-            "remote land action {code} should proceed to remote resolution: {error}"
-        );
-    }
+    let error =
+        workflow_land_apply_action(&repo, "evaluate_policy", &state, "RCC-GUARD", None, None)
+            .expect_err("fixture has no remote, but land must pass the Markdown boundary first");
+    assert!(
+        !error.contains("authored Markdown drift"),
+        "remote land policy evaluation must not read local Plan state: {error}"
+    );
+    assert!(
+        error.to_ascii_lowercase().contains("remote"),
+        "remote land policy evaluation should proceed to remote resolution: {error}"
+    );
 }
 
 #[test]
@@ -396,25 +377,8 @@ fn remote_land_action_does_not_wait_for_plan_writer_lock() {
     });
     let (sender, receiver) = mpsc::channel();
     let handle = std::thread::spawn(move || {
-        let result = workflow_land_apply_action(
-            &repo,
-            "evaluate_policy",
-            &state,
-            "RCC-GUARD",
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            Some("ai_with_human_review"),
-            Some("gpt-5"),
-            None,
-            None,
-            None,
-            "merge",
-            None,
-        );
+        let result =
+            workflow_land_apply_action(&repo, "evaluate_policy", &state, "RCC-GUARD", None, None);
         sender.send(result).expect("send land result");
     });
 
@@ -871,17 +835,13 @@ fn workflow_command_hints_preserve_explicit_remote_scope() {
         ready["patchset_ci_command"],
         json!("ait patchset rerun-ci RCT-9/C-01/P-02 --remote mirror")
     );
-    assert_eq!(
-        ready["review_command"],
-        json!("ait review task approve RCT-9/C-01 --patchset RCT-9/C-01/P-02 --remote mirror")
-    );
-    assert_eq!(
-        ready["policy_command"],
-        json!("ait policy eval RCT-9/C-01/P-02 --remote mirror")
-    );
+    assert_eq!(ready["review_command"], JsonValue::Null);
+    assert_eq!(ready["manual_review_command"], JsonValue::Null);
+    assert_eq!(ready["code_review_summary_command"], JsonValue::Null);
+    assert_eq!(ready["policy_command"], JsonValue::Null);
     assert_eq!(
         ready["land_command"],
-        json!("ait task land RCT-9/C-01 --remote mirror")
+        json!("ait workflow land RCT-9/C-01 --apply --remote mirror")
     );
 
     let land = workflow_land_command_hints(
@@ -898,7 +858,7 @@ fn workflow_command_hints_preserve_explicit_remote_scope() {
     );
     assert_eq!(
         land["apply_command"],
-        json!("ait task land RCT-9/C-01 --remote mirror")
+        json!("ait workflow land RCT-9/C-01 --apply --remote mirror")
     );
     assert_eq!(
         land["ready_command"],
@@ -909,15 +869,77 @@ fn workflow_command_hints_preserve_explicit_remote_scope() {
         json!("ait review show RCT-9/C-01 --remote mirror")
     );
     assert_eq!(
-        land["task_complete_command"],
+        land["task_land_command"],
         json!("ait task land RCT-9/C-01 --remote mirror")
     );
 
     let local =
         workflow_ready_command_hints(&repo, "LCT-9/C-01", None, Some(&patchset), "main", None);
-    assert_eq!(local["land_command"], json!("ait task land LCT-9/C-01"));
+    assert_eq!(
+        local["land_command"],
+        json!("ait workflow land LCT-9/C-01 --apply")
+    );
     assert!(!local["apply_command"]
         .as_str()
         .expect("local apply command")
         .contains("--remote"));
+}
+
+#[test]
+fn workflow_review_hints_distinguish_required_and_automatic_task_review_owners() {
+    let required_tmp = tempdir().expect("required repo tempdir");
+    write_runtime_config(
+        required_tmp.path(),
+        r#"{"repo_name":"fixture-ait","task_review":true,"user_name":"Alice Example"}"#,
+    );
+    let required_repo =
+        RepoRuntime::discover_from_path(required_tmp.path()).expect("required repo runtime");
+    let patchset = json!({"patchset_id":"RCT-9/C-01/P-02"});
+    let required = workflow_land_command_hints(
+        &required_repo,
+        "RCT-9/C-01",
+        Some("mirror"),
+        "RCT-9",
+        Some(&patchset),
+        "main",
+        "main",
+        None,
+        0,
+        false,
+    );
+    assert_eq!(
+        required["review_command"],
+        json!("ait review task approve RCT-9/C-01 --patchset RCT-9/C-01/P-02 --message \"<functional validation>\" --remote mirror")
+    );
+    assert_eq!(required["auto_review_reviewer"], JsonValue::Null);
+
+    let automatic_tmp = tempdir().expect("automatic repo tempdir");
+    write_runtime_config(
+        automatic_tmp.path(),
+        r#"{"repo_name":"fixture-ait","task_review":false,"user_name":"Alice Example"}"#,
+    );
+    let automatic_repo =
+        RepoRuntime::discover_from_path(automatic_tmp.path()).expect("automatic repo runtime");
+    let automatic = workflow_land_command_hints(
+        &automatic_repo,
+        "RCT-9/C-01",
+        Some("mirror"),
+        "RCT-9",
+        Some(&patchset),
+        "main",
+        "main",
+        None,
+        0,
+        true,
+    );
+    assert_eq!(automatic["auto_review_reviewer"], json!("Alice Example"));
+    assert_eq!(automatic["manual_review_command"], JsonValue::Null);
+    assert_eq!(
+        automatic["review_command"],
+        json!("ait workflow land RCT-9/C-01 --apply --remote mirror")
+    );
+    assert_ne!(
+        automatic["review_command"],
+        json!("ait task land RCT-9/C-01 --remote mirror")
+    );
 }

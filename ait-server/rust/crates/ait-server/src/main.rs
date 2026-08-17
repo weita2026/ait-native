@@ -6,20 +6,18 @@ use ait_server::installed_lifecycle::{
     PreparedLifecycle,
 };
 use ait_server::{
-    build_router, build_startup_router, create_server_address, ensure_durable_runtime_access,
+    build_router, build_startup_router, ensure_durable_runtime_access,
     ensure_startup_runtime_access, initialize_installed_runtime,
 };
+use ait_server_core::foundation::server_binary_lifecycle::ServerBinaryLifecycleConfig;
 use axum::Server;
 
 #[tokio::main]
 async fn main() {
-    let mut options = parse_lifecycle_args(std::env::args_os().skip(1)).unwrap_or_else(|message| {
+    let options = parse_lifecycle_args(std::env::args_os().skip(1)).unwrap_or_else(|message| {
         eprintln!("ait-server: {message}\n\n{}", lifecycle_usage());
         process::exit(64);
     });
-    if options.command == LifecycleCommand::Run && legacy_probe_environment_requested() {
-        options.command = LifecycleCommand::Probe;
-    }
     if options.command == LifecycleCommand::Version {
         println!("ait-server {}", env!("CARGO_PKG_VERSION"));
         return;
@@ -32,10 +30,16 @@ async fn main() {
         eprintln!("ait-server configuration failed:\n{message}");
         process::exit(78);
     });
+    let runtime_config =
+        ServerBinaryLifecycleConfig::from_server_data_root(prepared.data_root.clone())
+            .unwrap_or_else(|message| {
+                eprintln!("ait-server runtime configuration failed:\n{message}");
+                process::exit(78);
+            });
 
     match prepared.command {
         LifecycleCommand::Init => {
-            initialize(&prepared);
+            initialize(&prepared, &runtime_config);
             return;
         }
         LifecycleCommand::Probe => {
@@ -46,32 +50,24 @@ async fn main() {
         LifecycleCommand::Help | LifecycleCommand::Version => unreachable!(),
     }
     if prepared.init_if_missing {
-        initialize(&prepared);
+        initialize(&prepared, &runtime_config);
     }
 
-    ensure_startup_runtime_access().unwrap_or_else(|message| {
-        eprintln!("ait-server startup probe failed:\n{message}");
-        process::exit(78);
-    });
-    serve().await;
+    ensure_startup_runtime_access(&prepared.data_root, prepared.defer_ci_admission).unwrap_or_else(
+        |message| {
+            eprintln!("ait-server startup probe failed:\n{message}");
+            process::exit(78);
+        },
+    );
+    serve(prepared.listen_address, runtime_config).await;
 }
 
-fn legacy_probe_environment_requested() -> bool {
-    std::env::var("AIT_SERVER_STARTUP_PROBE_ONLY")
-        .ok()
-        .map(|value| {
-            let normalized = value.trim().to_ascii_lowercase();
-            matches!(normalized.as_str(), "1" | "true" | "yes" | "on")
-        })
-        .unwrap_or(false)
-}
-
-fn initialize(prepared: &PreparedLifecycle) {
-    ensure_durable_runtime_access().unwrap_or_else(|message| {
+fn initialize(prepared: &PreparedLifecycle, config: &ServerBinaryLifecycleConfig) {
+    ensure_durable_runtime_access(&prepared.data_root).unwrap_or_else(|message| {
         eprintln!("ait-server durable runtime probe failed:\n{message}");
         process::exit(78);
     });
-    let report = initialize_installed_runtime().unwrap_or_else(|message| {
+    let report = initialize_installed_runtime(config).unwrap_or_else(|message| {
         eprintln!("ait-server initialization failed:\n{message}");
         process::exit(78);
     });
@@ -86,10 +82,11 @@ fn initialize(prepared: &PreparedLifecycle) {
 }
 
 fn print_startup_probe(prepared: &PreparedLifecycle) {
-    let report = ensure_startup_runtime_access().unwrap_or_else(|message| {
-        eprintln!("ait-server startup probe failed:\n{message}");
-        process::exit(78);
-    });
+    let report = ensure_startup_runtime_access(&prepared.data_root, prepared.defer_ci_admission)
+        .unwrap_or_else(|message| {
+            eprintln!("ait-server startup probe failed:\n{message}");
+            process::exit(78);
+        });
     let ci_root = if report.ci_startup_admission_deferred {
         "deferred".to_string()
     } else {
@@ -109,18 +106,13 @@ fn print_startup_probe(prepared: &PreparedLifecycle) {
     }
 }
 
-async fn serve() {
-    let address_text = create_server_address();
-    let address = address_text
-        .parse::<SocketAddr>()
-        .unwrap_or_else(|exc| panic!("failed to parse AITSERVER_LISTEN `{address_text}`: {exc}"));
-
+async fn serve(address: SocketAddr, runtime_config: ServerBinaryLifecycleConfig) {
     let server = Server::try_bind(&address)
         .unwrap_or_else(|exc| panic!("ait-server failed to bind {address}: {exc}"));
     println!("ait-server bound on {address}; validating Binary DB registry");
     let (startup_app, startup_handle) = build_startup_router();
     let mut serving = Box::pin(server.serve(startup_app.into_make_service()));
-    let mut loading = tokio::task::spawn_blocking(build_router);
+    let mut loading = tokio::task::spawn_blocking(move || build_router(runtime_config));
     let app = tokio::select! {
         loaded = &mut loading => match loaded {
             Ok(app) => app,

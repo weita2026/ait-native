@@ -1,7 +1,7 @@
-use std::env;
 use std::io::{self, Read, Write};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
+use std::sync::OnceLock;
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
@@ -18,7 +18,6 @@ pub const AGENT_GATEWAY_TURN_TELEMETRY_CONTRACT: &str = "ait.agent.gateway_turn_
 
 const MAX_CONVERSATION_KEY_BYTES: usize = 4_096;
 const DEFAULT_PROVIDER_TIMEOUT_SECONDS: f64 = 120.0;
-const PRACTICALLY_UNLIMITED_PROVIDER_TIMEOUT_SECONDS: f64 = 365.0 * 24.0 * 60.0 * 60.0;
 const MAX_PROVIDER_OUTPUT_BYTES: usize = 4 * 1024 * 1024;
 const MAX_PROVIDER_STDERR_BYTES: usize = 64 * 1024;
 
@@ -72,11 +71,7 @@ impl AgentLocalReplyRuntimeSettings {
         let config = optional_provider_config(request)?;
         let append_turn_analysis = match config.and_then(|value| value.get("append_turn_analysis"))
         {
-            None | Some(JsonValue::Null) => env_bool(&[
-                "AIT_CHAT_APPEND_TURN_ANALYSIS",
-                "AIT_TELEGRAM_APPEND_TURN_ANALYSIS",
-            ])
-            .unwrap_or(false),
+            None | Some(JsonValue::Null) => false,
             Some(value) => value
                 .as_bool()
                 .ok_or_else(|| "local_reply.append_turn_analysis must be a boolean".to_string())?,
@@ -94,12 +89,54 @@ pub struct AgentLocalReplyProcessConfig {
     pub timeout: Duration,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AgentLocalReplyProcessDefaults {
+    pub program: String,
+    pub args: Vec<String>,
+}
+
+static AGENT_LOCAL_REPLY_PROCESS_DEFAULTS: OnceLock<AgentLocalReplyProcessDefaults> =
+    OnceLock::new();
+
+pub fn configure_agent_local_reply_process_defaults(
+    program: impl Into<String>,
+    args: Vec<String>,
+) -> Result<(), String> {
+    let program = program.into().trim().to_string();
+    if program.is_empty() {
+        return Err("Local reply provider program must be non-empty.".to_string());
+    }
+    if provider_program_is_forbidden(&program) {
+        return Err(format!(
+            "Local reply provider program `{program}` is forbidden; shell and Python execution are not supported."
+        ));
+    }
+    if args
+        .iter()
+        .any(|value| value.trim().to_ascii_lowercase().ends_with(".py"))
+    {
+        return Err(
+            "Local reply provider arguments must not reference Python scripts.".to_string(),
+        );
+    }
+    let defaults = AgentLocalReplyProcessDefaults { program, args };
+    match AGENT_LOCAL_REPLY_PROCESS_DEFAULTS.set(defaults.clone()) {
+        Ok(()) => Ok(()),
+        Err(_) if AGENT_LOCAL_REPLY_PROCESS_DEFAULTS.get() == Some(&defaults) => Ok(()),
+        Err(_) => Err(
+            "Local reply provider process defaults were already configured differently."
+                .to_string(),
+        ),
+    }
+}
+
 impl AgentLocalReplyProcessConfig {
     pub fn from_request(request: &JsonValue) -> Result<Self, AgentLocalReplyProviderError> {
         let config =
             optional_provider_config(request).map_err(AgentLocalReplyProviderError::config)?;
+        let defaults = AGENT_LOCAL_REPLY_PROCESS_DEFAULTS.get();
         let program = match config.and_then(|value| value.get("program")) {
-            None | Some(JsonValue::Null) => env_nonempty(&["AIT_AGENT_LOCAL_REPLY_PROGRAM"]),
+            None | Some(JsonValue::Null) => defaults.map(|value| value.program.clone()),
             Some(value) => Some(
                 value
                     .as_str()
@@ -115,7 +152,7 @@ impl AgentLocalReplyProcessConfig {
         }
         .ok_or_else(|| {
             AgentLocalReplyProviderError::config(
-                "Local reply provider program is required; set local_reply.program or AIT_AGENT_LOCAL_REPLY_PROGRAM.",
+                "Local reply provider program is required in local_reply configuration.",
             )
         })?;
         if provider_program_is_forbidden(&program) {
@@ -124,9 +161,9 @@ impl AgentLocalReplyProcessConfig {
             )));
         }
         let args = match config.and_then(|value| value.get("args")) {
-            Some(value) => string_array(value, "local_reply.args")
+            Some(value) if !value.is_null() => string_array(value, "local_reply.args")
                 .map_err(AgentLocalReplyProviderError::config)?,
-            None => env_args()?,
+            None | Some(_) => defaults.map(|value| value.args.clone()).unwrap_or_default(),
         };
         if args
             .iter()
@@ -137,10 +174,7 @@ impl AgentLocalReplyProcessConfig {
             ));
         }
         let timeout_seconds = match config.and_then(|value| value.get("timeout_seconds")) {
-            None | Some(JsonValue::Null) => {
-                env_provider_timeout_seconds(&["AIT_AGENT_LOCAL_REPLY_TIMEOUT_SECONDS"])
-                    .unwrap_or(DEFAULT_PROVIDER_TIMEOUT_SECONDS)
-            }
+            None | Some(JsonValue::Null) => DEFAULT_PROVIDER_TIMEOUT_SECONDS,
             Some(value) => value
                 .as_f64()
                 .filter(|value| value.is_finite() && *value > 0.0)
@@ -362,6 +396,7 @@ where
                     .to_string(),
             ),
         };
+    let provider_settings = gateway_provider_settings(request.get("local_reply"));
     let provider_request = json!({
         "contract": AGENT_GATEWAY_REPLY_PROVIDER_REQUEST_CONTRACT,
         "operation": operation,
@@ -386,6 +421,7 @@ where
         },
         "actor": {"identity": actor_identity, "type": actor_type},
         "input": JsonValue::Object(payload.clone()),
+        "settings": provider_settings,
     });
 
     let response = match provider.generate(&provider_request) {
@@ -447,6 +483,29 @@ where
             "surface": surface,
         }),
     ))
+}
+
+fn gateway_provider_settings(local_reply: Option<&JsonValue>) -> JsonValue {
+    let Some(local_reply) = local_reply.and_then(JsonValue::as_object) else {
+        return JsonValue::Null;
+    };
+    let mut settings = Map::new();
+    for field in [
+        "codex_program",
+        "model",
+        "reasoning_effort",
+        "sandbox",
+        "turn_timeout_seconds",
+    ] {
+        if let Some(value) = local_reply.get(field) {
+            settings.insert(field.to_string(), value.clone());
+        }
+    }
+    if settings.is_empty() {
+        JsonValue::Null
+    } else {
+        JsonValue::Object(settings)
+    }
 }
 
 fn normalized_gateway_reply(
@@ -675,54 +734,6 @@ fn optional_provider_config(
     }
 }
 
-fn env_nonempty(names: &[&str]) -> Option<String> {
-    names.iter().find_map(|name| {
-        env::var(name)
-            .ok()
-            .map(|value| value.trim().to_string())
-            .filter(|value| !value.is_empty())
-    })
-}
-
-fn env_provider_timeout_seconds(names: &[&str]) -> Option<f64> {
-    parse_provider_timeout_seconds(&env_nonempty(names)?)
-}
-
-fn parse_provider_timeout_seconds(value: &str) -> Option<f64> {
-    if matches!(
-        value.trim().to_ascii_lowercase().as_str(),
-        "inf" | "infinite" | "unlimited" | "none"
-    ) {
-        return Some(PRACTICALLY_UNLIMITED_PROVIDER_TIMEOUT_SECONDS);
-    }
-    value
-        .trim()
-        .parse::<f64>()
-        .ok()
-        .filter(|value| value.is_finite() && *value > 0.0)
-}
-
-fn env_bool(names: &[&str]) -> Option<bool> {
-    match env_nonempty(names)?.to_ascii_lowercase().as_str() {
-        "1" | "true" | "yes" | "on" => Some(true),
-        "0" | "false" | "no" | "off" => Some(false),
-        _ => None,
-    }
-}
-
-fn env_args() -> Result<Vec<String>, AgentLocalReplyProviderError> {
-    let Some(value) = env_nonempty(&["AIT_AGENT_LOCAL_REPLY_ARGS_JSON"]) else {
-        return Ok(Vec::new());
-    };
-    let parsed = value.parse::<JsonValue>().map_err(|error| {
-        AgentLocalReplyProviderError::config(format!(
-            "AIT_AGENT_LOCAL_REPLY_ARGS_JSON must be a JSON string array: {error}"
-        ))
-    })?;
-    string_array(&parsed, "AIT_AGENT_LOCAL_REPLY_ARGS_JSON")
-        .map_err(AgentLocalReplyProviderError::config)
-}
-
 fn string_array(value: &JsonValue, field: &str) -> Result<Vec<String>, String> {
     let values = value
         .as_array()
@@ -907,7 +918,17 @@ mod tests {
                     "title": "general",
                 },
             },
-            "local_reply": {"append_turn_analysis": false},
+            "local_reply": {
+                "program": "/usr/bin/ait-agent-worker",
+                "args": ["reply-provider"],
+                "timeout_seconds": 45,
+                "append_turn_analysis": false,
+                "codex_program": "/usr/bin/codex",
+                "model": "gpt-5.6",
+                "reasoning_effort": "high",
+                "sandbox": "workspace-write",
+                "turn_timeout_seconds": 30,
+            },
         })
     }
 
@@ -926,6 +947,12 @@ mod tests {
             AGENT_GATEWAY_REPLY_PROVIDER_REQUEST_CONTRACT
         );
         assert_eq!(provider_request["conversation"]["key"], "discord:channel-1");
+        assert_eq!(provider_request["settings"]["model"], "gpt-5.6");
+        assert_eq!(provider_request["settings"]["turn_timeout_seconds"], 30);
+        assert!(provider_request["settings"].get("program").is_none());
+        assert!(provider_request["settings"]
+            .get("append_turn_analysis")
+            .is_none());
         for forbidden in ["session", "events", "checkpoint"] {
             assert!(provider_request.get(forbidden).is_none());
         }

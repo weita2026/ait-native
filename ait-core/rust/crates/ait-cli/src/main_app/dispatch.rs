@@ -53,16 +53,9 @@ fn run(mut argv: Vec<OsString>) -> Result<ExitCode, String> {
             run_init(args)?;
             return Ok(ExitCode::SUCCESS);
         }
-        Commands::Install(args) => {
-            run_install(args)?;
-            return Ok(ExitCode::SUCCESS);
-        }
         Commands::BinaryDb { command } => {
             run_binary_db_command(command)?;
             return Ok(ExitCode::SUCCESS);
-        }
-        Commands::Agent { command } => {
-            return ait_cli::agent_surface::run_command(command);
         }
         Commands::Doctor { command } => return run_doctor(command),
         Commands::CurrentSourceCache { command } => {
@@ -79,24 +72,13 @@ fn run(mut argv: Vec<OsString>) -> Result<ExitCode, String> {
     };
     let repo = {
         let _range = perfetto_range!("ait.cli.repo_discover");
-        if matches!(
-            &command,
-            Commands::Test {
-                command: TestCommand::PatchsetCi { .. }
-            }
-        ) {
-            RepoRuntime::discover_for_patchset_ci()?
-        } else {
-            RepoRuntime::discover()?
-        }
+        RepoRuntime::discover()?
     };
     match command {
         Commands::Init(_) => unreachable!("init is handled before repo discovery"),
-        Commands::Install(_) => unreachable!("install is handled before repo discovery"),
         Commands::BinaryDb { .. } => {
             unreachable!("binary-db is handled before repo discovery")
         }
-        Commands::Agent { .. } => unreachable!("agent is handled before repo discovery"),
         Commands::Doctor { .. } => unreachable!("doctor is handled before repo discovery"),
         Commands::CurrentSourceCache { .. } => {
             unreachable!("current-source-cache is handled before repo discovery")
@@ -126,10 +108,6 @@ fn run(mut argv: Vec<OsString>) -> Result<ExitCode, String> {
             run_repo(repo, command)?;
             Ok(ExitCode::SUCCESS)
         }
-        Commands::Test { command } => {
-            run_test(repo, command)?;
-            Ok(ExitCode::SUCCESS)
-        }
         Commands::Auth { command } => {
             run_auth(repo, command)?;
             Ok(ExitCode::SUCCESS)
@@ -138,10 +116,7 @@ fn run(mut argv: Vec<OsString>) -> Result<ExitCode, String> {
             run_config(repo, command)?;
             Ok(ExitCode::SUCCESS)
         }
-        Commands::External { command } => {
-            run_external(repo, command)?;
-            Ok(ExitCode::SUCCESS)
-        }
+        Commands::External { command } => run_external(repo, command),
         Commands::Status(args) => {
             run_status(repo, args)?;
             Ok(ExitCode::SUCCESS)
@@ -158,10 +133,7 @@ fn run(mut argv: Vec<OsString>) -> Result<ExitCode, String> {
             run_push(repo, args)?;
             Ok(ExitCode::SUCCESS)
         }
-        Commands::Gc { command } => {
-            run_gc(repo, command)?;
-            Ok(ExitCode::SUCCESS)
-        }
+        Commands::Gc { command } => run_gc(repo, command),
         Commands::Stash { command } => {
             run_stash(repo, command)?;
             Ok(ExitCode::SUCCESS)

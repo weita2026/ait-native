@@ -1,5 +1,5 @@
 #[test]
-fn native_snapshot_phase_timings_are_opt_in_debug_json() {
+fn native_snapshot_json_ignores_the_retired_debug_environment() {
     let temp = init_repo("https://example.test");
     let root = temp.path();
     write_file(
@@ -22,7 +22,7 @@ fn native_snapshot_phase_timings_are_opt_in_debug_json() {
         &root.join("src/lib.rs"),
         "pub fn example() -> &'static str { \"debug-json\" }\n",
     );
-    let debug = json_output_with_env(
+    let retired = json_output_with_env(
         root,
         &[
             "snapshot",
@@ -31,12 +31,20 @@ fn native_snapshot_phase_timings_are_opt_in_debug_json() {
             "debug Snapshot JSON",
             "--json",
         ],
-        &[("AIT_JSON_MODE", "debug")],
+        &[(concat!("AIT_JSON_", "MODE"), "debug")],
     );
-    assert!(debug["phase_timings_ms"].is_object());
+    assert!(retired.get("phase_timings_ms").is_none());
     assert_eq!(
-        debug["phase_timings_ms"]["hashing_cache"]["state_read"],
-        json!("hit")
+        normal
+            .as_object()
+            .expect("normal Snapshot payload")
+            .keys()
+            .collect::<Vec<_>>(),
+        retired
+            .as_object()
+            .expect("retired-environment Snapshot payload")
+            .keys()
+            .collect::<Vec<_>>()
     );
 }
 
@@ -60,10 +68,7 @@ fn native_snapshot_perfetto_trace_names_cover_stable_hot_phases() {
             "Perfetto Snapshot",
             "--json",
         ],
-        &[
-            ("AIT_JSON_MODE", "debug"),
-            ("AIT_PERFETTO_TRACE", trace_text.as_str()),
-        ],
+        &[("AIT_PERFETTO_TRACE", trace_text.as_str())],
     );
     let trace = parse_json_bytes(&fs::read(&trace_path).expect("Perfetto trace"));
     let names = trace["traceEvents"]
@@ -127,7 +132,6 @@ fn native_snapshot_and_remote_primitives_work_end_to_end() {
         &[
             "patchset",
             "publish",
-            "--change",
             "RC-1",
             "--summary",
             "Native Rust patchset",
@@ -162,6 +166,7 @@ fn native_snapshot_and_remote_primitives_work_end_to_end() {
 
     let rerun = json_output(root, &["patchset", "rerun-ci", &patchset_id, "--json"]);
     assert_eq!(rerun["queued"].as_bool(), Some(true));
+    assert_eq!(rerun["trigger"].as_str(), Some("manual_rerun"));
 
     let approve = json_output(
         root,
@@ -209,9 +214,7 @@ fn native_snapshot_and_remote_primitives_work_end_to_end() {
 
     let task_land = json_output(
         root,
-        &[
-            "task", "land", "RT-1", "--target", "main", "--mode", "direct", "--json",
-        ],
+        &["task", "land", "RT-1", "--json"],
     );
     assert_eq!(
         task_land["apply_status"].as_str(),
@@ -233,6 +236,21 @@ fn native_snapshot_and_remote_primitives_work_end_to_end() {
     assert!(logged
         .iter()
         .any(|row| row.method == "POST" && row.url == "/v1/native/repository-authorities/7/changes/RC-1/patchsets"));
+    assert!(logged.iter().any(|row| {
+        row.method == "GET"
+            && row.url
+                == format!(
+                    "/v1/native/repository-authorities/7/read/patchsets/{patchset_id}/ci-status?recent_limit=10"
+                )
+    }));
+    assert!(logged.iter().any(|row| {
+        row.method == "POST"
+            && row.url
+                == format!(
+                    "/v1/native/repository-authorities/7/patchsets/{patchset_id}:runCi"
+                )
+            && row.body == "{\"trigger\":\"manual_rerun\"}"
+    }));
     assert!(logged.iter().any(|row| row.method == "PUT"
         && row.url == format!("/v1/native/repository-authorities/7/patchsets/{patchset_id}/attestation")
         && row.body.contains("\"tests\":\"pass\"")));
@@ -345,9 +363,7 @@ fn native_task_land_closes_when_base_stale_submit_already_moved_target_to_revisi
 
     let task_land = json_output(
         root,
-        &[
-            "task", "land", "RT-1", "--target", "main", "--mode", "direct", "--json",
-        ],
+        &["task", "land", "RT-1", "--json"],
     );
 
     assert_eq!(
@@ -418,9 +434,7 @@ fn native_task_land_submits_when_target_line_already_points_at_revision() {
 
     let task_land = json_output(
         root,
-        &[
-            "task", "land", "RT-1", "--target", "main", "--mode", "direct", "--json",
-        ],
+        &["task", "land", "RT-1", "--json"],
     );
 
     assert_eq!(
@@ -480,9 +494,7 @@ fn native_task_land_submits_when_target_line_already_contains_revision() {
 
     let task_land = json_output(
         root,
-        &[
-            "task", "land", "RT-1", "--target", "main", "--mode", "direct", "--json",
-        ],
+        &["task", "land", "RT-1", "--json"],
     );
 
     assert_eq!(
@@ -567,14 +579,7 @@ fn native_snapshot_revert_and_replay_work_without_snapshot_files_view() {
     seed_binary_line(root, "main", &base_snapshot_id);
     let replay = json_output(
         root,
-        &[
-            "snapshot",
-            "replay",
-            &changed_snapshot_id,
-            "--onto",
-            "main",
-            "--json",
-        ],
+        &["snapshot", "replay", &changed_snapshot_id, "--json"],
     );
     assert_eq!(replay["affected_path_count"].as_u64(), Some(2));
     assert_eq!(
@@ -868,6 +873,38 @@ fn native_snapshot_namespace_supports_list_show_and_diff() {
 }
 
 #[test]
+fn native_snapshot_list_json_is_bounded_until_all_is_explicit() {
+    let temp = init_repo("https://example.test");
+    let root = temp.path();
+    let mut latest_snapshot_id = String::new();
+    for index in 0..25 {
+        write_file(
+            &root.join("src/lib.rs"),
+            &format!("pub fn fixture() -> usize {{ {index} }}\n"),
+        );
+        latest_snapshot_id = seed_snapshot(root, &format!("snapshot list {index}"));
+    }
+
+    let text = command_output_with_env(root, &["snapshot", "list"], &[]);
+    assert!(text.status.success());
+    let text = String::from_utf8_lossy(&text.stdout);
+    assert!(text.lines().nth(1).is_some_and(|line| line.starts_with(&latest_snapshot_id)));
+    assert!(text.contains("shown: 20/26"));
+    assert!(text.contains("more: ait snapshot list --all"));
+
+    let bounded = json_output(root, &["snapshot", "list", "--json"]);
+    let bounded = bounded.as_array().unwrap();
+    assert_eq!(bounded.len(), 20);
+    assert_eq!(
+        bounded[0]["snapshot_id"].as_str(),
+        Some(latest_snapshot_id.as_str())
+    );
+
+    let complete = json_output(root, &["snapshot", "list", "--all", "--json"]);
+    assert_eq!(complete.as_array().unwrap().len(), 26);
+}
+
+#[test]
 fn native_top_level_diff_reports_repo_root_dirty_text() {
     let (base_url, _log, _state, handle) = spawn_fake_remote();
     let temp = init_repo(&base_url);
@@ -897,11 +934,23 @@ fn native_top_level_diff_reports_repo_root_dirty_text() {
         .unwrap()
         .contains("+pub fn example() -> &'static str { \"updated\" }"));
 
+    let text = command_output_with_env(root, &["diff"], &[]);
+    assert!(text.status.success());
+    assert!(String::from_utf8_lossy(&text.stdout)
+        .contains("+pub fn example() -> &'static str { \"updated\" }"));
+
+    let stat = command_output_with_env(root, &["diff", "--stat"], &[]);
+    assert!(stat.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&stat.stdout),
+        "src/lib.rs\t+1\t-1\tmodified\n"
+    );
+
     handle.join().unwrap();
 }
 
 #[test]
-fn native_top_level_diff_accepts_trailing_path_filters() {
+fn native_top_level_diff_accepts_positional_path_filters() {
     let (base_url, _log, _state, handle) = spawn_fake_remote();
     let temp = init_repo(&base_url);
     let root = temp.path();
@@ -912,7 +961,7 @@ fn native_top_level_diff_accepts_trailing_path_filters() {
     );
     write_file(&root.join("src/new.rs"), "pub fn added() {}\n");
 
-    let diff = json_output(root, &["diff", "--json", "--", "src/lib.rs"]);
+    let diff = json_output(root, &["diff", "--json", "src/lib.rs"]);
     assert_eq!(diff["path_filters"], json!(["src/lib.rs"]));
     assert_eq!(diff["changed_paths"], json!(["src/lib.rs"]));
     assert_eq!(
@@ -920,10 +969,7 @@ fn native_top_level_diff_accepts_trailing_path_filters() {
         Some("src/lib.rs")
     );
 
-    let combined = json_output(
-        root,
-        &["diff", "--json", "--path", "src/lib.rs", "--", "src/new.rs"],
-    );
+    let combined = json_output(root, &["diff", "--json", "src/lib.rs", "src/new.rs"]);
     assert_eq!(
         combined["path_filters"],
         json!(["src/lib.rs", "src/new.rs"])
@@ -943,7 +989,7 @@ fn native_top_level_diff_reports_worktree_dirty_paths_and_name_only() {
 
     write_file(&worktree.join("src/new.rs"), "pub fn added() {}\n");
 
-    let diff = json_output(&worktree, &["diff", "--json", "--path", "src"]);
+    let diff = json_output(&worktree, &["diff", "--json", "src"]);
     assert_eq!(diff["is_worktree"].as_bool(), Some(true));
     assert_eq!(diff["worktree_name"].as_str(), Some("rt-1"));
     assert_eq!(diff["baseline_line_name"].as_str(), Some("feature/rt-1"));
@@ -961,7 +1007,7 @@ fn native_top_level_diff_reports_worktree_dirty_paths_and_name_only() {
     let mut command = cargo_bin();
     let output = command
         .current_dir(&worktree)
-        .args(["diff", "--name-only", "--path", "src/new.rs"])
+        .args(["diff", "--name-only", "src/new.rs"])
         .output()
         .unwrap();
     assert!(
@@ -1087,4 +1133,334 @@ fn native_snapshot_ancestry_bounds_text_and_prints_exact_full_command() {
     assert!(output.contains(&format!(
         "more: ait snapshot ancestry {latest} --ancestors --max-depth 100 --limit 100 --all"
     )));
+}
+
+#[test]
+fn native_blame_is_read_only_and_snapshot_restore_lines_is_preview_first() {
+    let temp = init_repo("https://example.test");
+    let root = temp.path();
+    let source_text = "source one\nsource two\nsource three\nsource four";
+    write_file(&root.join("src/lib.rs"), source_text);
+    let source_snapshot_id = seed_snapshot(root, "line restore source");
+    let initial_snapshot_count = json_output(root, &["snapshot", "list", "--json"])
+        .as_array()
+        .unwrap()
+        .len();
+
+    let dirty_text = "outside one dirty\nworkspace two\nworkspace three\noutside four dirty";
+    write_file(&root.join("src/lib.rs"), dirty_text);
+    let blame = json_output(
+        root,
+        &[
+            "blame",
+            "src/lib.rs",
+            "--snapshot",
+            &source_snapshot_id,
+            "--line",
+            "2",
+            "--json",
+        ],
+    );
+    assert_eq!(blame["resolved_snapshot_id"], source_snapshot_id);
+    assert_eq!(fs::read_to_string(root.join("src/lib.rs")).unwrap(), dirty_text);
+
+    let preview = json_output(
+        root,
+        &[
+            "snapshot",
+            "restore-lines",
+            &source_snapshot_id,
+            "src/lib.rs",
+            "--start",
+            "2",
+            "--end",
+            "3",
+            "--json",
+        ],
+    );
+    assert_eq!(
+        preview["contract"].as_str(),
+        Some("ait.snapshot-restore-lines/v1")
+    );
+    assert_eq!(preview["mode"].as_str(), Some("preview"));
+    assert_eq!(preview["selected_range"], json!({"start": 2, "end": 3}));
+    assert_eq!(preview["selected_line_count"].as_u64(), Some(2));
+    assert_eq!(preview["changed_line_count"].as_u64(), Some(2));
+    assert_eq!(
+        preview["would_overwrite_selected_local_edits"].as_bool(),
+        Some(true)
+    );
+    assert_eq!(preview["unchanged_outside_selected_range"], true);
+    assert_eq!(preview["creates_snapshot"], false);
+    assert_eq!(preview["applied"], false);
+    assert_eq!(fs::read_to_string(root.join("src/lib.rs")).unwrap(), dirty_text);
+
+    let human = command_output_with_env(
+        root,
+        &[
+            "snapshot",
+            "restore-lines",
+            &source_snapshot_id,
+            "src/lib.rs",
+            "--line",
+            "2",
+        ],
+        &[],
+    );
+    assert!(human.status.success());
+    let human = String::from_utf8_lossy(&human.stdout);
+    for evidence in [
+        "ait snapshot restore-lines",
+        "mode: preview",
+        "selected_range:",
+        "changed_line_count: 1",
+        "creates_snapshot: false",
+        "applied: false",
+    ] {
+        assert!(human.contains(evidence), "missing {evidence:?} in:\n{human}");
+    }
+
+    let applied = json_output(
+        root,
+        &[
+            "snapshot",
+            "restore-lines",
+            &source_snapshot_id,
+            "src/lib.rs",
+            "--start",
+            "2",
+            "--end",
+            "3",
+            "--yes",
+            "--json",
+        ],
+    );
+    assert_eq!(applied["mode"].as_str(), Some("applied"));
+    assert_eq!(applied["applied"], true);
+    assert_eq!(
+        fs::read_to_string(root.join("src/lib.rs")).unwrap(),
+        "outside one dirty\nsource two\nsource three\noutside four dirty"
+    );
+    assert_eq!(
+        local_line_head(root, "main").as_deref(),
+        Some(source_snapshot_id.as_str())
+    );
+    assert_eq!(
+        json_output(root, &["snapshot", "list", "--json"])
+            .as_array()
+            .unwrap()
+            .len(),
+        initial_snapshot_count
+    );
+}
+
+#[test]
+fn native_snapshot_restore_lines_rejects_unsafe_paths_and_content() {
+    let temp = init_repo("https://example.test");
+    let root = temp.path();
+    write_file(&root.join("src/lines.txt"), "one\ntwo\nthree\n");
+    write_file(&root.join("docs/guide.md"), "# Guide\n");
+    fs::write(root.join("src/binary.dat"), b"one\0two\n").unwrap();
+    let source_snapshot_id = seed_snapshot(root, "unsafe restore fixtures");
+
+    let original_lines = fs::read(root.join("src/lines.txt")).unwrap();
+    for (args, expected) in [
+        (
+            vec![
+                "snapshot",
+                "restore-lines",
+                "SNP-DOES-NOT-EXIST",
+                "src/lines.txt",
+                "--line",
+                "1",
+                "--yes",
+            ],
+            "Unknown snapshot",
+        ),
+        (
+            vec![
+                "snapshot",
+                "restore-lines",
+                &source_snapshot_id,
+                "docs/guide.md",
+                "--line",
+                "1",
+                "--yes",
+            ],
+            "lineage-only Markdown",
+        ),
+        (
+            vec![
+                "snapshot",
+                "restore-lines",
+                &source_snapshot_id,
+                "src/binary.dat",
+                "--line",
+                "1",
+                "--yes",
+            ],
+            "is binary",
+        ),
+        (
+            vec![
+                "snapshot",
+                "restore-lines",
+                &source_snapshot_id,
+                "../outside.txt",
+                "--line",
+                "1",
+                "--yes",
+            ],
+            "outside the current workspace root",
+        ),
+    ] {
+        let output = command_output_with_env(root, &args, &[]);
+        assert!(!output.status.success(), "unsafe restore parsed/applied: {args:?}");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains(expected), "{args:?}: {stderr}");
+        assert_eq!(fs::read(root.join("src/lines.txt")).unwrap(), original_lines);
+    }
+
+    write_file(&root.join("src/lines.txt"), "one\n");
+    let short = command_output_with_env(
+        root,
+        &[
+            "snapshot",
+            "restore-lines",
+            &source_snapshot_id,
+            "src/lines.txt",
+            "--line",
+            "2",
+            "--yes",
+        ],
+        &[],
+    );
+    assert!(!short.status.success());
+    assert!(String::from_utf8_lossy(&short.stderr).contains("has only 1 lines"));
+    assert_eq!(fs::read(root.join("src/lines.txt")).unwrap(), b"one\n");
+
+    fs::write(root.join("src/lines.txt"), [0xff, b'\n']).unwrap();
+    let non_utf8 = command_output_with_env(
+        root,
+        &[
+            "snapshot",
+            "restore-lines",
+            &source_snapshot_id,
+            "src/lines.txt",
+            "--line",
+            "1",
+            "--yes",
+        ],
+        &[],
+    );
+    assert!(!non_utf8.status.success());
+    assert!(String::from_utf8_lossy(&non_utf8.stderr).contains("not valid UTF-8"));
+    assert_eq!(fs::read(root.join("src/lines.txt")).unwrap(), [0xff, b'\n']);
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::symlink;
+
+        fs::remove_file(root.join("src/lines.txt")).unwrap();
+        symlink("binary.dat", root.join("src/lines.txt")).unwrap();
+        let symlink_output = command_output_with_env(
+            root,
+            &[
+                "snapshot",
+                "restore-lines",
+                &source_snapshot_id,
+                "src/lines.txt",
+                "--line",
+                "1",
+                "--yes",
+            ],
+            &[],
+        );
+        assert!(!symlink_output.status.success());
+        assert!(String::from_utf8_lossy(&symlink_output.stderr).contains("symbolic link"));
+        assert!(fs::symlink_metadata(root.join("src/lines.txt"))
+            .unwrap()
+            .file_type()
+            .is_symlink());
+    }
+}
+
+#[test]
+fn native_removed_blame_options_fail_before_any_mutation() {
+    let temp = init_repo("https://example.test");
+    let root = temp.path();
+    let workspace_before = fs::read(root.join("src/lib.rs")).unwrap();
+    let head_before = local_line_head(root, "main");
+    let snapshots_before = json_output(root, &["snapshot", "list", "--json"]);
+
+    for args in [
+        vec!["blame", "src/lib.rs", "--restore"],
+        vec!["blame", "src/lib.rs", "--dry-run"],
+        vec!["blame", "src/lib.rs", "--parent", "SNP-PARENT"],
+        vec!["blame", "src/lib.rs", "--repo", "fixture-ait"],
+        vec!["blame", "src/lib.rs", "--change", "C-01"],
+    ] {
+        let output = command_output_with_env(root, &args, &[]);
+        assert!(!output.status.success(), "removed option parsed: {args:?}");
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("unexpected argument"),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    let numeric_patchset = command_output_with_env(
+        root,
+        &["blame", "src/lib.rs", "--patchset", "7"],
+        &[],
+    );
+    assert!(!numeric_patchset.status.success());
+    assert!(String::from_utf8_lossy(&numeric_patchset.stderr).contains("numeric repo-scoped refs are ambiguous"));
+
+    assert_eq!(fs::read(root.join("src/lib.rs")).unwrap(), workspace_before);
+    assert_eq!(local_line_head(root, "main"), head_before);
+    assert_eq!(
+        json_output(root, &["snapshot", "list", "--json"]),
+        snapshots_before
+    );
+}
+
+#[test]
+fn native_blame_resolves_one_exact_patchset_without_repo_or_change_options() {
+    let (base_url, log, state, handle) = spawn_fake_remote();
+    let temp = init_repo(&base_url);
+    let root = temp.path();
+    state.lock().unwrap().selected_patchset_revision_snapshot_id =
+        Some(FIXTURE_BASE_SNAPSHOT_ID.to_string());
+    let workspace_before = fs::read(root.join("src/lib.rs")).unwrap();
+
+    let payload = json_output(
+        root,
+        &[
+            "blame",
+            "src/lib.rs",
+            "--patchset",
+            "RP-1",
+            "--remote",
+            "origin",
+            "--line",
+            "1",
+            "--json",
+        ],
+    );
+    assert_eq!(payload["target"]["kind"], "patchset");
+    assert_eq!(payload["target"]["patchset_id"], "RP-1");
+    assert_eq!(
+        payload["resolved_snapshot_id"],
+        FIXTURE_BASE_SNAPSHOT_ID
+    );
+    assert_eq!(fs::read(root.join("src/lib.rs")).unwrap(), workspace_before);
+
+    handle.join().unwrap();
+    let logged = log.lock().unwrap();
+    assert!(logged.iter().any(|row| {
+        row.method == "GET"
+            && row.url == "/v1/native/repository-authorities/7/patchsets/RP-1"
+    }));
+    assert!(!logged.iter().any(|row| row.url.contains("change_ref=")));
 }

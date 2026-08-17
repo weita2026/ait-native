@@ -1,5 +1,4 @@
 use serde_json::{json, Map as JsonMap, Value as JsonValue};
-use std::env;
 
 const PATCHSET_CI_PROFILE_FULL: &str = "full";
 const PATCHSET_CI_PROFILE_WORKFLOW_READY_FOREGROUND: &str = "workflow_ready_foreground";
@@ -44,9 +43,7 @@ pub fn workflow_async_runtime_json(
 }
 
 fn queue_mode(payload: &JsonMap<String, JsonValue>) -> String {
-    let candidate = optional_text(payload, "queue_mode")
-        .or_else(|| optional_text(payload, "mode"))
-        .or_else(|| env::var("AIT_NATIVE_QUEUE_MODE").ok());
+    let candidate = optional_text(payload, "queue_mode").or_else(|| optional_text(payload, "mode"));
     match candidate
         .as_deref()
         .map(str::trim)

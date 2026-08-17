@@ -37,7 +37,6 @@ struct LineMergeTreePlan {
 pub fn line_merge(
     repo: &RepoRuntime,
     source_line_name: Option<&str>,
-    target_line_name: Option<&str>,
     message: Option<&str>,
     continue_merge: bool,
     abort_merge: bool,
@@ -56,7 +55,7 @@ pub fn line_merge(
                 let source_line_name = normalized_text(source_line_name).ok_or_else(|| {
                     "A source line is required unless --continue or --abort is used.".to_string()
                 })?;
-                start_line_merge_unlocked(repo, &source_line_name, target_line_name, message)
+                start_line_merge_unlocked(repo, &source_line_name, message)
             }
         }
     })
@@ -65,7 +64,6 @@ pub fn line_merge(
 fn start_line_merge_unlocked(
     repo: &RepoRuntime,
     source_line_name: &str,
-    target_line_name: Option<&str>,
     message: Option<&str>,
 ) -> Result<JsonValue, String> {
     if source_line_name == repo.current_line_name()? {
@@ -79,7 +77,7 @@ fn start_line_merge_unlocked(
         source_line_name,
         &source_snapshot_id,
         Some(source_line_name),
-        target_line_name,
+        None,
         message,
     )
 }

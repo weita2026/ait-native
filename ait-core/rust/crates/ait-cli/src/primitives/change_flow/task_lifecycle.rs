@@ -1,6 +1,15 @@
 use super::*;
 
-pub fn task_close(
+pub fn task_abandon(
+    repo: &RepoRuntime,
+    task_id: &str,
+    local: bool,
+    remote_name: Option<&str>,
+) -> Result<JsonValue, String> {
+    task_close(repo, task_id, "abandoned", local, remote_name, None)
+}
+
+pub(in crate::primitives) fn task_close(
     repo: &RepoRuntime,
     task_id: &str,
     status: &str,
@@ -8,7 +17,7 @@ pub fn task_close(
     remote_name: Option<&str>,
     repo_name_override: Option<&str>,
 ) -> Result<JsonValue, String> {
-    if repo.task_uses_local_scope(local, remote_name) {
+    if repo.task_uses_local_scope(local, remote_name)? {
         let store = repo.task_store()?;
         return task_local_close_with_task_store(&store, task_id, status);
     }
@@ -31,22 +40,7 @@ where
         .map_err(|err| err.to_string())
 }
 
-pub fn task_complete(
-    repo: &RepoRuntime,
-    task_id: &str,
-    local: bool,
-    remote_name: Option<&str>,
-    repo_name_override: Option<&str>,
-) -> Result<JsonValue, String> {
-    if repo.task_uses_local_scope(local, remote_name) {
-        let store = repo.task_store()?;
-        return task_local_close_with_task_store(&store, task_id, "completed");
-    }
-    let (remote_row, repo_name) = remote_context(repo, remote_name, repo_name_override)?;
-    let mut closeout_remote = http_closeout_remote(repo, &remote_row)?;
-    task_complete_with_closeout_remote(&mut closeout_remote, task_id, &repo_name)
-}
-
+#[cfg(test)]
 pub(in crate::primitives) fn task_complete_with_closeout_remote<R>(
     closeout_remote: &mut R,
     task_id: &str,

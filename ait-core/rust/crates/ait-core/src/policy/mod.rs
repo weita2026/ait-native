@@ -14,8 +14,8 @@ pub const POLICY_REQUIREMENT_FLAGS: &[&str] = &[
 ];
 pub const POLICY_CONTENT_CLASSES: &[&str] = &["docs_only", "code_change"];
 pub const POLICY_AUTHOR_CLASSES: &[&str] = &["human_only", "ai_related"];
-pub const CODE_REVIEW_SUMMARY_TEMPLATE: &str = "Reviewed files: <paths reviewed>; Findings: <blocking/non-blocking findings>; Risks: <residual risks>; Tests: <checks run>; Recommendation: <land/defer/request changes>";
-pub const CODE_REVIEW_SUMMARY_NUMBERED_TEMPLATE: &str = "1. Reviewed files\n<paths reviewed>\n2. Findings\n<blocking/non-blocking findings>\n3. Risks\n<residual risks>\n4. Tests\n<checks run>\n5. Recommendation\n<land/defer/request changes>";
+pub const CODE_REVIEW_SUMMARY_TEMPLATE: &str = "Reviewed files: <paths reviewed>; Findings: <findings resolved before submission>; Risks: <residual risks>; Tests: <checks run>; Recommendation: <pass when this exact Patchset is ready>";
+pub const CODE_REVIEW_SUMMARY_NUMBERED_TEMPLATE: &str = "1. Reviewed files\n<paths reviewed>\n2. Findings\n<findings resolved before submission>\n3. Risks\n<residual risks>\n4. Tests\n<checks run>\n5. Recommendation\n<pass when this exact Patchset is ready>";
 pub const CODE_REVIEW_SUMMARY_TEMPLATE_HINT_COMMAND: &str =
     "ait review code template --style numbered";
 

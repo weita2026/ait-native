@@ -84,6 +84,9 @@ const NPM_ADDON_PLATFORMS = new Map([
   ["x86_64-pc-windows-msvc", { os: "win32", cpu: "x64", libc: null }],
 ]);
 const PUBLIC_SOURCE_IDENTITY = "weita2026/ait-native";
+const PRODUCT_DESCRIPTION =
+  "Agent-first, language-neutral workflow for verified repository changes";
+const OFFICIAL_WEBSITE = "https://ait-native.dev/";
 const WINDOWS_MSVC_TARGETS = new Set([
   "aarch64-pc-windows-msvc",
   "x86_64-pc-windows-msvc",
@@ -736,7 +739,18 @@ async function validatePublicReadme() {
   await regularFile(readmePath, "public agent-first README");
   const readme = await readFile(readmePath, "utf8");
   for (const required of [
+    "AIT turns an ordinary coding request into an isolated, sprint-bound repository",
+    "individual developers and maintainers",
+    "img.shields.io/github/v/release/weita2026/ait-native",
+    "https://github.com/weita2026/ait-native/discussions",
+    "https://github.com/weita2026/ait-native/issues/new/choose",
+    "python -m pip install ait-native==",
     "ait init",
+    "ait --version",
+    "## What you have after 90 seconds",
+    OFFICIAL_WEBSITE,
+    "## Moving from 0.x",
+    "The 0.x requirement to run `ait install` and its task-DAG positioning are",
     "AGENTS.md",
     "ait workflow tier --json",
     "ait task start",
@@ -761,20 +775,35 @@ async function validatePublicReadme() {
   for (const forbidden of [
     "mkdir -p docs/sprints",
     "Follow the printed `cd` hint",
+    "Jira-like",
+    "parallel AI execution",
+    "compact task DAG",
   ]) {
     if (readme.includes(forbidden)) {
       fail(`public README teaches a manual workflow step: ${JSON.stringify(forbidden)}`);
     }
+  }
+  if (/@AIT_[A-Z0-9_]+@/u.test(readme)) {
+    fail("public README contains an unresolved release token");
   }
 }
 
 async function validatePublicPolicies() {
   const contributingPath = path.join(ROOT, "CONTRIBUTING.md");
   const securityPath = path.join(ROOT, "SECURITY.md");
+  const codeOfConductPath = path.join(ROOT, "CODE_OF_CONDUCT.md");
+  const supportPath = path.join(ROOT, "SUPPORT.md");
+  const citationPath = path.join(ROOT, "CITATION.cff");
   await regularFile(contributingPath, "public contribution policy");
   await regularFile(securityPath, "public security policy");
+  await regularFile(codeOfConductPath, "public code of conduct");
+  await regularFile(supportPath, "public support routing");
+  await regularFile(citationPath, "public citation metadata");
   const contributing = await readFile(contributingPath, "utf8");
   const security = await readFile(securityPath, "utf8");
+  const codeOfConduct = await readFile(codeOfConductPath, "utf8");
+  const support = await readFile(supportPath, "utf8");
+  const citation = await readFile(citationPath, "utf8");
 
   for (const required of [
     "deterministic release monorepo",
@@ -808,6 +837,87 @@ async function validatePublicPolicies() {
     if (!security.includes(required)) {
       fail(`public security policy is missing ${JSON.stringify(required)}`);
     }
+  }
+
+  for (const required of [
+    "Contributor Covenant Code of Conduct",
+    "Our Pledge",
+    "Enforcement Guidelines",
+    "maintainer's GitHub profile",
+    "version 2.0",
+  ]) {
+    if (!codeOfConduct.includes(required)) {
+      fail(`public code of conduct is missing ${JSON.stringify(required)}`);
+    }
+  }
+  if (codeOfConduct.includes("[INSERT CONTACT METHOD]")) {
+    fail("public code of conduct retains an unresolved enforcement contact");
+  }
+
+  for (const required of [
+    "Q&A Discussions",
+    "Ideas",
+    "Show and tell",
+    "structured issue forms",
+    "private vulnerability reporting",
+    "ait --version",
+    "no guaranteed response time",
+  ]) {
+    if (!support.includes(required)) {
+      fail(`public support routing is missing ${JSON.stringify(required)}`);
+    }
+  }
+
+  for (const required of [
+    "cff-version: 1.2.0",
+    'title: "AIT Native"',
+    'family-names: "weita"',
+    'repository-code: "https://github.com/weita2026/ait-native"',
+    'url: "https://ait-native.dev/"',
+  ]) {
+    if (!citation.includes(required)) {
+      fail(`public citation metadata is missing ${JSON.stringify(required)}`);
+    }
+  }
+
+  const githubTextFiles = new Map([
+    [".github/ISSUE_TEMPLATE/bug_report.yml", ["name: Bug report", "id: reproduction", "ait --version"]],
+    [".github/ISSUE_TEMPLATE/documentation.yml", ["name: Documentation correction", "id: page_url", "id: correction"]],
+    [".github/ISSUE_TEMPLATE/config.yml", ["blank_issues_enabled: false", "Questions and ideas", OFFICIAL_WEBSITE + "technical/"]],
+    [".github/DISCUSSION_TEMPLATE/q-a.yml", ['title: "[Q&A] "', "id: question", "private vulnerability reporting"]],
+    [".github/DISCUSSION_TEMPLATE/ideas.yml", ['title: "[Idea] "', "id: problem", "language-neutral repository workflow"]],
+    [".github/DISCUSSION_TEMPLATE/show-and-tell.yml", ['title: "[Show and tell] "', "id: project", "permission to publish"]],
+    [".github/PULL_REQUEST_TEMPLATE.md", ["## Validation", "## Provenance checklist", "material AI assistance"]],
+    [".github/release.yml", ["changelog:", "New features and improvements", '        - "*"']],
+  ]);
+  const githubTexts = [];
+  for (const [relative, requiredTexts] of githubTextFiles) {
+    const absolute = path.join(ROOT, relative);
+    await regularFile(absolute, `public GitHub community file ${relative}`);
+    const contents = await readFile(absolute, "utf8");
+    githubTexts.push(contents);
+    for (const required of requiredTexts) {
+      if (!contents.includes(required)) {
+        fail(`${relative} is missing ${JSON.stringify(required)}`);
+      }
+    }
+  }
+  if (githubTexts.some((contents) => /good first issue|help wanted/iu.test(contents))) {
+    fail("public GitHub community templates create an unapproved beginner-contribution route");
+  }
+
+  const socialPreviewPath = path.join(ROOT, ".github", "social-preview.png");
+  await regularFile(socialPreviewPath, "public GitHub social preview image");
+  const socialPreview = await readFile(socialPreviewPath);
+  const pngSignature = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
+  if (
+    socialPreview.length >= 1_000_000 ||
+    socialPreview.length < 24 ||
+    !socialPreview.subarray(0, 8).equals(pngSignature) ||
+    socialPreview.readUInt32BE(16) !== 1280 ||
+    socialPreview.readUInt32BE(20) !== 640
+  ) {
+    fail("public GitHub social preview must be a sub-1MB 1280x640 PNG");
   }
 }
 
@@ -1241,6 +1351,18 @@ async function validateBuildInputs(expectedGitCommit) {
     "README.md",
     "CONTRIBUTING.md",
     "SECURITY.md",
+    "CODE_OF_CONDUCT.md",
+    "SUPPORT.md",
+    "CITATION.cff",
+    ".github/ISSUE_TEMPLATE/bug_report.yml",
+    ".github/ISSUE_TEMPLATE/documentation.yml",
+    ".github/ISSUE_TEMPLATE/config.yml",
+    ".github/DISCUSSION_TEMPLATE/q-a.yml",
+    ".github/DISCUSSION_TEMPLATE/ideas.yml",
+    ".github/DISCUSSION_TEMPLATE/show-and-tell.yml",
+    ".github/PULL_REQUEST_TEMPLATE.md",
+    ".github/release.yml",
+    ".github/social-preview.png",
     "LICENSES/Apache-2.0.txt",
     "LICENSES/AGPL-3.0-only.txt",
     "ci/native_bootstrap_matrix.jq",
@@ -1261,6 +1383,7 @@ async function validateBuildInputs(expectedGitCommit) {
     "ait-runner/Cargo.toml",
     "ait-python/pyproject.toml",
     "ait-node/package.json",
+    "ait-node/release/npm-readme.txt",
     "ait-node/release/npm-payload-package.mjs",
     "ait-node/scripts/native-build.mjs",
     "ait-node/src/runtime.js",
@@ -1291,6 +1414,10 @@ async function validateBuildInputs(expectedGitCommit) {
     fail("ait-python does not use the exported sibling ait-core path");
   }
   const nodePackage = await readJson(path.join(ROOT, "ait-node", "package.json"), "npm envelope");
+  const nodeReadme = await readFile(
+    path.join(ROOT, "ait-node", "release", "npm-readme.txt"),
+    "utf8",
+  );
   const nodeContract = await readJson(
     path.join(ROOT, "ait-node", "lib", "npm-payload-contract.json"),
     "npm addon contract",
@@ -1300,6 +1427,8 @@ async function validateBuildInputs(expectedGitCommit) {
   if (
     nodePackage?.name !== "@wa120/ait-native" ||
     nodePackage?.version !== family.family.version ||
+    nodePackage?.description !== PRODUCT_DESCRIPTION ||
+    nodePackage?.homepage !== OFFICIAL_WEBSITE ||
     nodePackage?.bin?.ait !== "bin/ait.mjs" ||
     Object.keys(nodePackage?.bin ?? {}).length !== 1 ||
     nodePackage?.exports?.["."]?.types !== "./src/index.d.ts" ||
@@ -1320,6 +1449,28 @@ async function validateBuildInputs(expectedGitCommit) {
     ["preinstall", "install", "postinstall"].some((name) => nodePackage?.scripts?.[name] !== undefined)
   ) {
     fail("npm envelope must expose the exact direct Node-API surface without install hooks or subprocess transport");
+  }
+  for (const required of [
+    "AIT turns an ordinary coding request into an isolated, sprint-bound repository",
+    "individual developers and maintainers",
+    "npm install --global @wa120/ait-native@@AIT_NPM_VERSION@",
+    "ait init",
+    "## What you have after 90 seconds",
+    OFFICIAL_WEBSITE,
+    "## Moving from 0.x",
+    "The 0.x requirement to run `ait install` and its task-DAG positioning are",
+  ]) {
+    if (!nodeReadme.includes(required)) {
+      fail(`npm storefront README is missing ${JSON.stringify(required)}`);
+    }
+  }
+  if ((nodeReadme.match(/@AIT_NPM_VERSION@/gu) ?? []).length !== 1) {
+    fail("npm storefront README must contain exactly one version token");
+  }
+  for (const legacyClaim of ["Jira-like", "parallel AI execution", "compact task DAG"]) {
+    if (nodeReadme.includes(legacyClaim)) {
+      fail(`npm storefront README preserves legacy claim ${JSON.stringify(legacyClaim)}`);
+    }
   }
   await validateTree();
   if (mapping.content_sha256 !== (await sourceContentDigest())) {
@@ -2015,7 +2166,8 @@ async function build({ family, mapping }, skipTests) {
     "build", "--locked", "--release",
     "--manifest-path", path.join(ROOT, "ait-core", "rust", "Cargo.toml"),
     "--target-dir", coreTarget,
-    "-p", "ait-cli", "--bin", "ait-cli", "--bin", "ait-agent",
+    "-p", "ait-cli", "--bin", "ait-cli",
+    "-p", "ait-agent-worker", "--bin", "ait-agent-worker",
   ]);
   run("cargo", [
     "build", "--locked", "--release",
@@ -2033,12 +2185,15 @@ async function build({ family, mapping }, skipTests) {
   const binOutput = path.join(OUTPUT_ROOT, target, "bin");
   const built = {
     ait: path.join(binOutput, executableName("ait")),
-    "ait-agent": path.join(binOutput, executableName("ait-agent")),
+    "ait-agent-worker": path.join(binOutput, executableName("ait-agent-worker")),
     "ait-server": path.join(binOutput, executableName("ait-server")),
     "ait-runner": path.join(binOutput, executableName("ait-runner")),
   };
   await copyExecutable(path.join(coreTarget, "release", `ait-cli${suffix}`), built.ait);
-  await copyExecutable(path.join(coreTarget, "release", `ait-agent${suffix}`), built["ait-agent"]);
+  await copyExecutable(
+    path.join(coreTarget, "release", `ait-agent-worker${suffix}`),
+    built["ait-agent-worker"],
+  );
   await copyExecutable(path.join(serverTarget, "release", `ait-server${suffix}`), built["ait-server"]);
   await copyExecutable(path.join(runnerTarget, "release", `ait-runner${suffix}`), built["ait-runner"]);
 

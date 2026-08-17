@@ -623,7 +623,7 @@ pub(super) fn parse_ignore_rule_sources(text: &str) -> Vec<String> {
 }
 
 pub(super) fn active_workspace_runtime_root(workspace_root: &Path) -> Option<String> {
-    let raw = std::env::var("AIT_RUNTIME_DATA").ok()?;
+    let raw = std::env::var(ait_core::environment_contract::names::AIT_RUNTIME_DATA).ok()?;
     let trimmed = raw.trim();
     if trimmed.is_empty() {
         return None;
@@ -859,7 +859,7 @@ mod tests {
     #[test]
     fn minimal_managed_cargo_projection_matches_alias_bearing_source_baseline() {
         let temp = tempfile::TempDir::new().unwrap();
-        let baseline = "# AIT source policy: canonical Cargo settings; task worktrees receive a managed projection.\n[build]\ntarget-dir = \".ait/cargo-target\"\nbuild-dir = \".ait/cargo-build/workspaces/{workspace-path-hash}\"\n\n[alias]\npatch-ci-build = [\"test\", \"--profile\", \"ait-ci\"]\n";
+        let baseline = "# AIT source policy: canonical Cargo settings; task worktrees receive a managed projection.\n[build]\ntarget-dir = \".ait/cargo-target\"\nbuild-dir = \".ait/cargo-build/canonical\"\n\n[alias]\npatch-ci-build = [\"test\", \"--profile\", \"ait-ci\"]\n";
         let minimal = generated_worktree_cargo_config_text(temp.path());
         let alias_bearing =
             upgrade_generated_worktree_cargo_config_text(temp.path(), baseline).unwrap();

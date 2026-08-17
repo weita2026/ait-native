@@ -441,15 +441,15 @@ mod tests {
     }
 
     #[test]
-    fn prepares_typed_worker_config_from_rust_env_loading() {
+    fn prepares_manifest_config_with_credentials_from_rust_env_loading() {
         let (temp, inputs, request) = fixture(
-            r#"{"version":1,"workers":{"telegram/main":{"kind":"telegram","name":"main"}}}"#,
+            r#"{"version":1,"workers":{"telegram/main":{"kind":"telegram","name":"main","poll_timeout_seconds":12}}}"#,
             telegram_request(),
         );
         fs::create_dir_all(temp.path().join(".ait/agent-runtime")).expect("runtime dir");
         fs::write(
             temp.path().join(".ait/agent-runtime/telegram.env"),
-            "AIT_TELEGRAM_BOT_TOKEN=env-only-secret\nAIT_TELEGRAM_POLL_TIMEOUT_SECONDS=12\n",
+            "AIT_TELEGRAM_BOT_TOKEN=env-only-secret\nAIT_TELEGRAM_POLL_TIMEOUT_SECONDS=99\n",
         )
         .expect("env config");
 
@@ -493,19 +493,12 @@ mod tests {
     #[test]
     fn rejects_telegram_backend_configuration_that_differs_from_launch_assignment() {
         let (_temp, inputs, request) = fixture(
-            r#"{"version":1,"workers":{"telegram/main":{"kind":"telegram","name":"main","token":"secret"}}}"#,
+            r#"{"version":1,"workers":{"telegram/main":{"kind":"telegram","name":"main","token":"secret","event_loop_backend":"linux_epoll"}}}"#,
             telegram_request(),
         );
 
-        let error = prepare_worker_run_with_env(
-            &request,
-            &inputs,
-            BTreeMap::from([(
-                "AIT_AGENT_EVENT_LOOP_BACKEND".to_string(),
-                "linux_epoll".to_string(),
-            )]),
-        )
-        .expect_err("configured backend mismatch");
+        let error = prepare_worker_run_with_env(&request, &inputs, BTreeMap::new())
+            .expect_err("configured backend mismatch");
 
         assert_eq!(error.code, "telegram_event_loop_backend_mismatch");
         assert_eq!(error.details["configured_backend"], "linux_epoll");
@@ -516,22 +509,12 @@ mod tests {
     #[test]
     fn rejects_high_concurrency_telegram_admission_on_portable_poll() {
         let (_temp, inputs, request) = fixture(
-            r#"{"version":1,"workers":{"telegram/main":{"kind":"telegram","name":"main","token":"secret"}}}"#,
+            r#"{"version":1,"workers":{"telegram/main":{"kind":"telegram","name":"main","token":"secret","expected_concurrent_workers":64,"workers_per_shard":32}}}"#,
             telegram_request(),
         );
 
-        let error = prepare_worker_run_with_env(
-            &request,
-            &inputs,
-            BTreeMap::from([
-                (
-                    "AIT_AGENT_EXPECTED_CONCURRENT_WORKERS".to_string(),
-                    "64".to_string(),
-                ),
-                ("AIT_AGENT_WORKERS_PER_SHARD".to_string(), "32".to_string()),
-            ]),
-        )
-        .expect_err("portable poll cannot admit high concurrency");
+        let error = prepare_worker_run_with_env(&request, &inputs, BTreeMap::new())
+            .expect_err("portable poll cannot admit high concurrency");
 
         assert_eq!(error.code, "event_loop_capacity_unavailable");
         assert_eq!(error.details["event_loop_backend"], "portable_poll");

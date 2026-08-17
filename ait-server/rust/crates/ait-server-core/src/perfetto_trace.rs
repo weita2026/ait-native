@@ -12,8 +12,7 @@ use std::sync::{Mutex, OnceLock};
 use std::thread;
 use std::time::Instant;
 
-const PERFETTO_TRACE_PATH_ENV: &str = "AIT_PERFETTO_TRACE";
-const PERFETTO_TRACE_MAX_EVENTS_ENV: &str = "AIT_PERFETTO_TRACE_MAX_EVENTS";
+const PERFETTO_TRACE_PATH_ENV: &str = crate::environment_contract::names::AIT_PERFETTO_TRACE;
 const DEFAULT_TRACE_MAX_EVENTS: usize = 100_000;
 
 #[derive(Debug)]
@@ -60,6 +59,11 @@ impl PerfettoRange {
         // does not have to reinterpret it as malformed thread-stack nesting.
         range.thread_id = named_lane_id(name);
         range
+    }
+
+    #[cfg(test)]
+    pub(crate) fn for_test(name: &'static str, path: PathBuf) -> Self {
+        Self::with_path(name, Some(path))
     }
 
     fn with_path(name: &'static str, path: Option<PathBuf>) -> Self {
@@ -179,11 +183,7 @@ fn push_event(session: &mut TraceSession, event: TraceEvent) {
 }
 
 fn trace_event_capacity() -> usize {
-    env::var(PERFETTO_TRACE_MAX_EVENTS_ENV)
-        .ok()
-        .and_then(|value| value.trim().parse::<usize>().ok())
-        .filter(|value| *value > 0)
-        .unwrap_or(DEFAULT_TRACE_MAX_EVENTS)
+    DEFAULT_TRACE_MAX_EVENTS
 }
 
 fn current_thread_id() -> u64 {

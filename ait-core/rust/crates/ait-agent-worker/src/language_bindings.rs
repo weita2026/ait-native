@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 use std::env;
 use std::path::PathBuf;
 
+use ait_core::environment_contract::names;
 use ait_core::json_support::{JsonCodec, JsonEncodeOptions, JsonMap, JsonValue};
 
 use crate::{
@@ -39,20 +40,10 @@ pub fn agent_worker_transaction_binding_json(request: &JsonValue) -> Result<Json
             worker_name,
             process_env: process_env.clone(),
             raw_payload: payload_text(&payload)?,
-            signature: request_or_env_text(
-                object,
-                "signature",
-                &process_env,
-                &["AIT_SLACK_SIGNATURE", "X_SLACK_SIGNATURE"],
-            )?,
-            signature_timestamp: request_or_env_text(
-                object,
+            signature: optional_text(object.get("signature"), "signature")?,
+            signature_timestamp: optional_text(
+                object.get("signature_timestamp"),
                 "signature_timestamp",
-                &process_env,
-                &[
-                    "AIT_SLACK_SIGNATURE_TIMESTAMP",
-                    "X_SLACK_REQUEST_TIMESTAMP",
-                ],
             )?,
             now_unix_seconds: optional_i64(object.get("now_unix_seconds"), "now_unix_seconds")?,
         })
@@ -63,23 +54,10 @@ pub fn agent_worker_transaction_binding_json(request: &JsonValue) -> Result<Json
                 worker_name,
                 process_env: process_env.clone(),
                 raw_payload: payload_text(&payload)?,
-                signature: request_or_env_text(
-                    object,
-                    "signature",
-                    &process_env,
-                    &[
-                        "AIT_DISCORD_SIGNATURE",
-                        "AIT_DISCORD_INTERACTION_SIGNATURE",
-                    ],
-                )?,
-                signature_timestamp: request_or_env_text(
-                    object,
+                signature: optional_text(object.get("signature"), "signature")?,
+                signature_timestamp: optional_text(
+                    object.get("signature_timestamp"),
                     "signature_timestamp",
-                    &process_env,
-                    &[
-                        "AIT_DISCORD_SIGNATURE_TIMESTAMP",
-                        "AIT_DISCORD_INTERACTION_TIMESTAMP",
-                    ],
                 )?,
             })
             .map_err(|diagnostic| diagnostic.render_json())
@@ -103,7 +81,7 @@ fn binding_path_inputs(object: &JsonMap<String, JsonValue>) -> Result<WorkerPath
         .or_else(process_repo_root);
     let manifest_path_override = optional_text(object.get("manifest_path"), "manifest_path")?
         .map(PathBuf::from)
-        .or_else(|| env::var_os("AIT_AGENT_CONFIG_PATH").map(PathBuf::from));
+        .or_else(|| env::var_os(names::AIT_AGENT_CONFIG_PATH).map(PathBuf::from));
     Ok(WorkerPathInputs {
         current_dir,
         repo_root_override,
@@ -112,15 +90,11 @@ fn binding_path_inputs(object: &JsonMap<String, JsonValue>) -> Result<WorkerPath
 }
 
 fn process_repo_root() -> Option<PathBuf> {
-    [
-        "AIT_REPO_ROOT",
-        "AIT_NATIVE_WORKSPACE_ROOT",
-        "AIT_WORKSPACE_ROOT",
-    ]
-    .iter()
-    .filter_map(env::var_os)
-    .map(PathBuf::from)
-    .find(|path| !path.as_os_str().is_empty())
+    [names::AIT_REPO_ROOT]
+        .iter()
+        .filter_map(env::var_os)
+        .map(PathBuf::from)
+        .find(|path| !path.as_os_str().is_empty())
 }
 
 fn binding_environment(value: Option<&JsonValue>) -> Result<BTreeMap<String, String>, String> {
@@ -153,25 +127,6 @@ fn binding_environment(value: Option<&JsonValue>) -> Result<BTreeMap<String, Str
         }
     }
     Ok(environment)
-}
-
-fn request_or_env_text(
-    object: &JsonMap<String, JsonValue>,
-    field: &str,
-    environment: &BTreeMap<String, String>,
-    names: &[&str],
-) -> Result<Option<String>, String> {
-    if let Some(value) = optional_text(object.get(field), field)? {
-        return Ok(Some(value));
-    }
-    Ok(names.iter().find_map(|name| {
-        environment
-            .get(*name)
-            .map(String::as_str)
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(ToString::to_string)
-    }))
 }
 
 fn payload_text(payload: &JsonValue) -> Result<String, String> {

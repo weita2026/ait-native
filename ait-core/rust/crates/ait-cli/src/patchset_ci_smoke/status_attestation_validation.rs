@@ -1,15 +1,22 @@
 use super::*;
 
-pub(super) fn run_tg1_check(check_id: &str, repo: &RepoRuntime, root: &Path) -> Result<(), String> {
+pub(super) fn run_tg1_check(
+    check_id: &str,
+    repo: &RepoRuntime,
+    root: &Path,
+    source_root: Option<&Path>,
+) -> Result<(), String> {
     match check_id {
         "plan_public_surface" => assert_public_plan_contract(root),
-        "plan_source_guard" => assert_plan_source_files_omit_legacy_line_alignment_contract(root),
+        "plan_source_guard" => {
+            assert_plan_source_files_omit_legacy_line_alignment_contract(root, source_root)
+        }
         "plan_sync_lineage_only" => assert_plan_sync_stays_lineage_only(),
         "root_worktree_plan_sync_guard" => assert_plan_sync_bypasses_root_worktree_guard(),
         "init_sprint_readme_guard" => assert_init_establishes_agent_contract(),
         "sprint_readme_contract" => assert_sprint_readme_contract(root),
         "stable_remote_land_flow" => {
-            run_stable_smoke(repo)?;
+            super::suite_execution::run_stable_smoke_inner(repo)?;
             Ok(())
         }
         "final_snapshot_remote_promotion_contract" => {
@@ -532,11 +539,33 @@ pub(super) fn assert_release_python_authority_retired(repo_root: &Path) -> Resul
     let manifest_path = repo_root.join("ci/patch_ci.json");
     let manifest = fs::read_to_string(&manifest_path)
         .map_err(|err| format!("failed to read {}: {err}", manifest_path.display()))?;
-    if !manifest.contains("test patchset-ci release-artifact-smoke --json")
-        || !manifest.contains("AIT_SHARED_CARGO_TARGET_DIR")
-    {
+    if manifest.contains("patchset ci-smoke") {
         return Err(
-            "release_artifact_smoke does not call the native Rust smoke command directly"
+            "patch CI still routes through the retired public `ait patchset ci-smoke` command"
+                .to_string(),
+        );
+    }
+    let manifest_payload = parse_value_error_string(&manifest)
+        .map_err(|error| format!("Invalid {}: {error}", manifest_path.display()))?;
+    let uses_internal_runner = manifest_payload
+        .get("suites")
+        .and_then(JsonValue::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|suite| suite.get("runner"))
+        .any(|runner| {
+            runner.get("kind").and_then(JsonValue::as_str) == Some("test_discovery_sharded")
+                && runner
+                    .get("build_args")
+                    .and_then(JsonValue::as_array)
+                    .is_some_and(|args| {
+                        args.iter()
+                            .any(|arg| arg.as_str() == Some("patchset_ci_runner"))
+                    })
+        });
+    if !uses_internal_runner {
+        return Err(
+            "patch CI does not include the internal Rust patchset_ci_runner test target"
                 .to_string(),
         );
     }
@@ -566,7 +595,7 @@ pub(super) fn assert_plan_sync_stays_lineage_only() -> Result<(), String> {
     )
     .map_err(|err| err.to_string())?;
 
-    json_output(&repo, &["init", "--name", "contract", "--json"])?;
+    json_output(&repo, &["init", "--json"])?;
     json_output(
         &repo,
         &["snapshot", "create", "--message", "seed", "--json"],
@@ -613,21 +642,12 @@ pub(super) fn assert_plan_sync_bypasses_root_worktree_guard() -> Result<(), Stri
     )
     .map_err(|err| err.to_string())?;
 
-    json_output(&repo, &["init", "--name", "contract-root-guard", "--json"])?;
+    json_output(&repo, &["init", "--json"])?;
     json_output(
         &repo,
         &["snapshot", "create", "--message", "seed", "--json"],
     )?;
-    json_output(
-        &repo,
-        &[
-            "config",
-            "set",
-            "--plan-task-binding-mode",
-            "advisory",
-            "--json",
-        ],
-    )?;
+    json_output(&repo, &["config", "set", "--sprint", "off", "--json"])?;
     let task_id = "RT-ROOT-GUARD";
     let worktree_name = "rt-root-guard";
     let worktree_path = repo.join("task-worktrees").join(worktree_name);
@@ -693,9 +713,10 @@ pub(super) fn assert_plan_sync_bypasses_root_worktree_guard() -> Result<(), Stri
 
 pub(super) fn assert_plan_source_files_omit_legacy_line_alignment_contract(
     repo_root: &Path,
+    source_root: Option<&Path>,
 ) -> Result<(), String> {
     for (path, forbidden_tokens) in PLAN_SOURCE_TOKEN_FORBIDDEN {
-        let text = read_tg1_source_guard_file(repo_root, path)?;
+        let text = read_tg1_source_guard_file(repo_root, path, source_root)?;
         for forbidden in *forbidden_tokens {
             if text.contains(forbidden) {
                 return Err(format!(
@@ -705,7 +726,7 @@ pub(super) fn assert_plan_source_files_omit_legacy_line_alignment_contract(
         }
     }
     for (path, patterns) in PLAN_SOURCE_REGEX_FORBIDDEN {
-        let text = read_tg1_source_guard_file(repo_root, path)?;
+        let text = read_tg1_source_guard_file(repo_root, path, source_root)?;
         for pattern in *patterns {
             let Some((left, right)) = pattern.split_once("::{0,400}") else {
                 continue;
@@ -723,9 +744,9 @@ pub(super) fn assert_plan_source_files_omit_legacy_line_alignment_contract(
 pub(super) fn read_tg1_source_guard_file(
     repo_root: &Path,
     relative_path: &str,
+    source_root: Option<&Path>,
 ) -> Result<String, String> {
-    let target_root = env::var_os("AIT_TG1_TARGET_ROOT").map(PathBuf::from);
-    read_tg1_source_guard_file_with_fallback(repo_root, relative_path, target_root.as_deref())
+    read_tg1_source_guard_file_with_fallback(repo_root, relative_path, source_root)
 }
 
 pub(super) fn read_tg1_source_guard_file_with_fallback(
@@ -778,7 +799,19 @@ pub(super) fn assert_init_establishes_agent_contract() -> Result<(), String> {
     let temp = TempDir::new().map_err(|err| err.to_string())?;
     let repo = temp.path().join("repo");
     fs::create_dir_all(&repo).map_err(|err| err.to_string())?;
-    let init_payload = json_output(&repo, &["init", "--name", "contract-bootstrap", "--json"])?;
+    let init_help = command_output(&repo, &["init", "--help"])?;
+    let (init_options, _) = help_inventory(&init_help.stdout);
+    let expected_options = ["--policy-profile", "--repair-existing", "--json", "--help"]
+        .into_iter()
+        .map(str::to_string)
+        .collect::<HashSet<_>>();
+    if init_options != expected_options {
+        return Err(format!(
+            "init option inventory differs from the deterministic bootstrap contract: {:?}",
+            init_options
+        ));
+    }
+    let init_payload = json_output(&repo, &["init", "--json"])?;
     if init_payload["action"].as_str() != Some("initialized") {
         return Err("init did not report the initialized action".to_string());
     }
@@ -878,7 +911,7 @@ pub(super) fn assert_sprint_readme_contract(repo_root: &Path) -> Result<(), Stri
 }
 
 pub(super) fn command_output(repo_root: &Path, args: &[&str]) -> Result<CommandOutput, String> {
-    let exe = std::env::current_exe().map_err(|err| err.to_string())?;
+    let exe = internal_cli_executable()?;
     let output = Command::new(exe)
         .current_dir(repo_root)
         .args(args)

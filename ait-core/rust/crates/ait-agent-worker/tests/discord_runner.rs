@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::io::{self, Read, Write};
 use std::net::{TcpListener, TcpStream};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -44,7 +44,7 @@ fn fixture_context() -> (tempfile::TempDir, WorkerRunContext) {
     fs::write(
         temp.path().join(".ait/agent-workers.json"),
         format!(
-            r#"{{"version":1,"workers":{{"discord/main":{{"kind":"discord","name":"main","application_id":"{APPLICATION_ID}","public_key":"{PUBLIC_KEY}"}}}}}}"#
+            r#"{{"version":1,"workers":{{"discord/main":{{"kind":"discord","name":"main","application_id":"{APPLICATION_ID}","public_key":"{PUBLIC_KEY}","interaction_path":"/interactions"}}}}}}"#
         ),
     )
     .expect("manifest");
@@ -60,10 +60,7 @@ fn fixture_context() -> (tempfile::TempDir, WorkerRunContext) {
             repo_root_override: Some(temp.path().to_path_buf()),
             manifest_path_override: None,
         },
-        BTreeMap::from([(
-            "AIT_DISCORD_INTERACTION_PATH".to_string(),
-            "/interactions".to_string(),
-        )]),
+        BTreeMap::new(),
     )
     .expect("worker context");
     (temp, context)
@@ -375,11 +372,17 @@ fn compiled_discord_runner_reaches_ready_and_stops_cleanly_cross_platform() {
     let reserved = TcpListener::bind(("127.0.0.1", 0)).expect("reserve port");
     let port = reserved.local_addr().expect("reserved address").port();
     drop(reserved);
-    let mut child = Command::new(agent_worker_binary())
+    fs::write(
+        repo.path().join(".ait/agent-workers.json"),
+        r#"{"version":1,"workers":{"discord/main":{"kind":"discord","name":"main","application_id":"$APPLICATION_ID","public_key":"$PUBLIC_KEY","interaction_path":"/interactions","bind_host":"127.0.0.1","bind_port":$PORT}}}"#
+            .replace("$APPLICATION_ID", APPLICATION_ID)
+            .replace("$PUBLIC_KEY", PUBLIC_KEY)
+            .replace("$PORT", &port.to_string()),
+    )
+    .expect("manifest with listener address");
+    let mut child = workspace_test_support::worker_command(agent_worker_binary())
         .current_dir(repo.path())
         .env("AIT_REPO_ROOT", repo.path())
-        .env("AIT_DISCORD_BIND_HOST", "127.0.0.1")
-        .env("AIT_DISCORD_BIND_PORT", port.to_string())
         .args([
             "run",
             "--transport",
@@ -419,7 +422,7 @@ fn compiled_discord_runner_reaches_ready_and_stops_cleanly_cross_platform() {
     let mut response = Vec::new();
     probe.read_to_end(&mut response).expect("probe response");
     assert_status(&response, 404);
-    workspace_test_support::request_worker_shutdown(repo.path(), "discord", "main", child.id());
+    workspace_test_support::request_worker_shutdown(child.id());
     let status = workspace_test_support::wait_for_child_exit(
         &mut child,
         "Discord worker",
@@ -567,17 +570,14 @@ fn compiled_bot_token_runner_owns_gateway_and_stops_without_python_fallback() {
     fs::write(
         repo.path().join(".ait/agent-workers.json"),
         format!(
-            r#"{{"version":1,"workers":{{"discord/main":{{"kind":"discord","name":"main","application_id":"{APPLICATION_ID}","bot_token":"{BOT_TOKEN}"}}}}}}"#
+            r#"{{"version":1,"workers":{{"discord/main":{{"kind":"discord","name":"main","application_id":"{APPLICATION_ID}","bot_token":"{BOT_TOKEN}","api_base_url":"http://127.0.0.1:{}"}}}}}}"#,
+            api_address.port()
         ),
     )
     .expect("manifest");
-    let mut child = Command::new(agent_worker_binary())
+    let mut child = workspace_test_support::worker_command(agent_worker_binary())
         .current_dir(repo.path())
         .env("AIT_REPO_ROOT", repo.path())
-        .env(
-            "AIT_DISCORD_API_BASE_URL",
-            format!("http://127.0.0.1:{}", api_address.port()),
-        )
         .args([
             "run",
             "--transport",
@@ -600,7 +600,7 @@ fn compiled_bot_token_runner_owns_gateway_and_stops_without_python_fallback() {
         child.try_wait().expect("poll child").is_none(),
         "Discord Gateway worker exited before termination request"
     );
-    workspace_test_support::request_worker_shutdown(repo.path(), "discord", "main", child.id());
+    workspace_test_support::request_worker_shutdown(child.id());
     let status = workspace_test_support::wait_for_child_exit(
         &mut child,
         "Discord Gateway worker",

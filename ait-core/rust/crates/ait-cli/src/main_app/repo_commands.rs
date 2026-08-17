@@ -12,16 +12,7 @@ fn run_auth(repo: RepoRuntime, command: AuthCommand) -> Result<(), String> {
                 "ait-cli auth whoami",
                 &payload,
                 args.json,
-                &[
-                    "identity",
-                    "actor_type",
-                    "mode",
-                    "repo_name",
-                    "claimed_roles",
-                    "claimed_repos",
-                    "effective_roles",
-                    "effective_repos",
-                ],
+                &["identity", "mode", "repo_name"],
             )?;
         }
         AuthCommand::Grant(args) => {
@@ -59,75 +50,144 @@ fn run_config(repo: RepoRuntime, command: ConfigCommand) -> Result<(), String> {
     match command {
         ConfigCommand::Show(args) => {
             let payload = config_show_cmd(&repo)?;
-            emit_result(
-                "ait-cli config show",
-                &payload,
-                args.json,
-                &[
-                    "repo_name",
-                    "workspace_root",
-                    "current_line",
-                    "default_remote",
-                    "effective_actor",
-                    "effective_reviewer",
-                ],
-            )?;
+            emit_config_show_result(&payload, args.json)?;
         }
         ConfigCommand::Set(args) => {
-            let payload = config_set_cmd(
-                &repo,
-                &ConfigSetRequest {
-                    repository_index: args.repository_index,
-                    clear_repository_index: args.clear_repository_index,
-                    default_author_mode: args.default_author_mode,
-                    clear_default_author_mode: args.clear_default_author_mode,
-                    default_model: args.default_model,
-                    clear_default_model: args.clear_default_model,
-                    task_tracking: args.task_tracking,
-                    task_review: args.task_review,
-                    command_profiling: args.command_profiling,
-                    task_worktree_alias_root: args.task_worktree_alias_root,
-                    clear_task_worktree_alias_root: args.clear_task_worktree_alias_root,
-                    task_worktree_main_seed_ram_max_bytes: args
-                        .task_worktree_main_seed_ram_max_bytes,
-                    clear_task_worktree_main_seed_ram_max_bytes: args
-                        .clear_task_worktree_main_seed_ram_max_bytes,
-                    legacy_task_auto_worktree: args.legacy_task_auto_worktree,
-                    legacy_clear_task_auto_worktree: args.legacy_clear_task_auto_worktree,
-                    workflow_mode: args.workflow_mode,
-                    workflow_default_scope: args.workflow_default_scope,
-                    clear_workflow_default_scope: args.clear_workflow_default_scope,
-                    task_default_scope: args.task_default_scope,
-                    clear_task_default_scope: args.clear_task_default_scope,
-                    change_default_scope: args.change_default_scope,
-                    clear_change_default_scope: args.clear_change_default_scope,
-                    id_namespace_prefix: args.id_namespace_prefix,
-                    clear_id_namespace_prefix: args.clear_id_namespace_prefix,
-                    sprint: args.sprint,
-                    plan_task_binding_mode: args.plan_task_binding_mode,
-                    clear_plan_task_binding: args.clear_plan_task_binding,
-                    user_name: args.user_name,
-                    clear_user_name: args.clear_user_name,
-                    user_email: args.user_email,
-                    clear_user_email: args.clear_user_email,
-                },
-            )?;
-            emit_result(
-                "ait-cli config set",
+            let request = ConfigSetRequest {
+                default_author_mode: args
+                    .default_author_mode
+                    .map(|value| value.as_str().to_string()),
+                default_model: args.default_model,
+                task_review: args.task_review.map(|value| value.as_str().to_string()),
+                task_worktree_alias_root: args.task_worktree_alias_root,
+                task_worktree_main_seed_ram_max_bytes: args
+                    .task_worktree_main_seed_ram_max_bytes,
+                workflow_mode: args.workflow_mode.map(|value| value.as_str().to_string()),
+                id_namespace_prefix: args.id_namespace_prefix,
+                sprint: args.sprint.map(|value| value.as_str().to_string()),
+                user_name: args.user_name,
+                user_email: args.user_email,
+            };
+            let keys = request.updated_keys();
+            let payload = config_set_cmd(&repo, &request)?;
+            emit_config_mutation_result("ait-cli config set", &payload, args.json, &keys)?;
+        }
+        ConfigCommand::Unset(args) => {
+            let key = args.key.into_config_key();
+            let payload = config_unset_cmd(&repo, key)?;
+            emit_config_mutation_result(
+                "ait-cli config unset",
                 &payload,
                 args.json,
-                &[
-                    "repo_name",
-                    "workspace_root",
-                    "current_line",
-                    "default_remote",
-                    "effective_actor",
-                    "effective_reviewer",
-                ],
+                &[key.as_str()],
             )?;
         }
     }
     Ok(())
+}
+
+fn emit_config_show_result(payload: &JsonValue, json_output: bool) -> Result<(), String> {
+    if json_output {
+        return print_json(payload);
+    }
+    let task_review = payload
+        .get("task_review")
+        .and_then(JsonValue::as_object)
+        .ok_or_else(|| "ait-cli config show payload is missing task_review.".to_string())?;
+    let task_review_mode = string_field(task_review.get("value"));
+    let automatic_task_reviewer = if task_review_mode == "automatic" {
+        string_field_or_default(task_review.get("automatic_reviewer"), "<unset>")
+    } else {
+        "not_applicable".to_string()
+    };
+    print_key_values(
+        "ait-cli config show",
+        &[
+            ("repo_name", string_field(payload.get("repo_name"))),
+            (
+                "workspace_root",
+                string_field(payload.get("workspace_root")),
+            ),
+            ("current_line", string_field(payload.get("current_line"))),
+            (
+                "default_remote",
+                string_field(payload.get("default_remote")),
+            ),
+            (
+                "effective_actor",
+                string_field(payload.get("effective_actor")),
+            ),
+            (
+                "effective_reviewer",
+                string_field(payload.get("effective_reviewer")),
+            ),
+            ("task_review", task_review_mode),
+            (
+                "task_review_source",
+                string_field(task_review.get("source")),
+            ),
+            (
+                "automatic_task_reviewer",
+                automatic_task_reviewer,
+            ),
+        ],
+    );
+    Ok(())
+}
+
+fn emit_config_mutation_result(
+    title: &str,
+    payload: &JsonValue,
+    json_output: bool,
+    keys: &[&str],
+) -> Result<(), String> {
+    if json_output {
+        return print_json(payload);
+    }
+    let owned_rows = keys
+        .iter()
+        .map(|key| {
+            (
+                (*key).to_string(),
+                config_effective_value(payload, key),
+            )
+        })
+        .collect::<Vec<_>>();
+    let rows = owned_rows
+        .iter()
+        .map(|(key, value)| (key.as_str(), value.clone()))
+        .collect::<Vec<_>>();
+    print_key_values(title, &rows);
+    Ok(())
+}
+
+fn config_effective_value(payload: &JsonValue, key: &str) -> String {
+    let value = match key {
+        "workflow-mode" => payload.get("workflow_mode").and_then(|value| value.get("value")),
+        "sprint" => payload.get("sprint").and_then(|value| value.get("value")),
+        "default-author-mode" => payload.get("effective_author_mode"),
+        "default-model" => payload.get("effective_model"),
+        "task-review" => payload.get("task_review").and_then(|value| value.get("value")),
+        "task-worktree-alias-root" => payload
+            .get("task_worktree")
+            .and_then(|value| value.get("alias_root"))
+            .and_then(|value| value.get("value")),
+        "task-worktree-main-seed-ram-max-bytes" => payload
+            .get("task_worktree")
+            .and_then(|value| value.get("main_seed_ram_max_bytes"))
+            .and_then(|value| value.get("value")),
+        "id-namespace-prefix" => payload
+            .get("id_namespace_prefix")
+            .and_then(|value| value.get("value")),
+        "user-name" => payload.get("user_name"),
+        "user-email" => payload.get("user_email"),
+        _ => None,
+    };
+    match value {
+        None | Some(JsonValue::Null) => "<unset>".to_string(),
+        Some(JsonValue::String(text)) if text.is_empty() => "<empty>".to_string(),
+        Some(value) => string_field(Some(value)),
+    }
 }
 
 fn run_status(repo: RepoRuntime, args: StatusArgs) -> Result<(), String> {
@@ -137,16 +197,14 @@ fn run_status(repo: RepoRuntime, args: StatusArgs) -> Result<(), String> {
         repo_status_cmd(&repo)?
     };
     let _range = perfetto_range!("ait.cli.status.render");
-    emit_status_result(&payload, args.json, args.verbose)
+    emit_status_result(&payload, args.json)
 }
 
 fn run_diff(repo: RepoRuntime, args: DiffArgs) -> Result<(), String> {
     let _command_range = perfetto_range!("ait.cli.diff.command");
-    let mut paths = args.paths.clone();
-    paths.extend(args.trailing_paths.clone());
     let payload = {
         let _range = perfetto_range!("ait.cli.diff.compute");
-        workspace_dirty_diff(&repo, &paths, args.max_bytes)?
+        workspace_dirty_diff(&repo, &args.paths, DEFAULT_SNAPSHOT_DIFF_MAX_BYTES)?
     };
     let _range = perfetto_range!("ait.cli.diff.render");
     if args.json {
@@ -241,7 +299,7 @@ fn run_pull(repo: RepoRuntime, args: PullArgs) -> Result<(), String> {
         )
     })?;
     let mut output = payload.clone();
-    if args.json && !json_mode_debug_enabled() {
+    if args.json {
         if let Some(object) = output.as_object_mut() {
             object.remove("phase_timings_ms");
             object.remove("remote_sync_metrics");
@@ -274,7 +332,7 @@ fn run_push(repo: RepoRuntime, args: PushArgs) -> Result<(), String> {
         push_cmd(&repo, args.remote.as_deref(), args.line.as_deref())
     })?;
     let mut output = payload.clone();
-    if args.json && !json_mode_debug_enabled() {
+    if args.json {
         if let Some(object) = output.as_object_mut() {
             object.remove("phase_timings_ms");
             object.remove("remote_sync_metrics");

@@ -1,25 +1,45 @@
-fn run_external(repo: RepoRuntime, command: ExternalCommand) -> Result<(), String> {
+fn run_external(repo: RepoRuntime, command: ExternalCommand) -> Result<ExitCode, String> {
     match command {
         ExternalCommand::Status(args) => {
-            emit_external_payload("status", args.json, external_status_cmd(&repo)?)
+            emit_external_payload("status", args.json, external_status_cmd(&repo)?)?;
+            Ok(ExitCode::SUCCESS)
         }
         ExternalCommand::Doctor(args) => {
-            emit_external_payload("doctor", args.json, external_doctor_cmd(&repo)?)
+            let payload = external_doctor_cmd(&repo)?;
+            let release_ready = payload
+                .get("release_ready")
+                .and_then(JsonValue::as_bool)
+                .ok_or_else(|| {
+                    "external doctor payload is missing Boolean `release_ready`".to_string()
+                })?;
+            emit_external_payload("doctor", args.json, payload)?;
+            Ok(if args.fail_on_blocking && !release_ready {
+                ExitCode::from(2)
+            } else {
+                ExitCode::SUCCESS
+            })
         }
         ExternalCommand::Update(args) => {
             let options = external_update_options_from_args(&args)?;
-            emit_external_payload("update", args.json, external_update_cmd(&repo, options)?)
+            emit_external_payload("update", args.json, external_update_cmd(&repo, options)?)?;
+            Ok(ExitCode::SUCCESS)
         }
-        ExternalCommand::Link(args) => emit_external_payload(
-            "link",
-            args.json,
-            external_link_cmd(&repo, &args.name, &args.path)?,
-        ),
-        ExternalCommand::Unlink(args) => emit_external_payload(
-            "unlink",
-            args.json,
-            external_unlink_cmd(&repo, &args.name)?,
-        ),
+        ExternalCommand::Link(args) => {
+            emit_external_payload(
+                "link",
+                args.json,
+                external_link_cmd(&repo, &args.name, &args.path)?,
+            )?;
+            Ok(ExitCode::SUCCESS)
+        }
+        ExternalCommand::Unlink(args) => {
+            emit_external_payload(
+                "unlink",
+                args.json,
+                external_unlink_cmd(&repo, &args.name)?,
+            )?;
+            Ok(ExitCode::SUCCESS)
+        }
     }
 }
 

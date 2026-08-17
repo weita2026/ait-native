@@ -13,20 +13,12 @@ struct FakeTagStore {
 }
 
 impl TagStore for FakeTagStore {
-    fn create_tag(
-        &self,
-        record: &super::TagRecord,
-        force: bool,
-    ) -> super::TagStoreResult<super::TagRecord> {
+    fn create_tag(&self, record: &super::TagRecord) -> super::TagStoreResult<super::TagRecord> {
         let mut records = self.records.borrow_mut();
-        if let Some(existing) = records.iter_mut().find(|row| row.name == record.name) {
-            if !force {
-                return Err("exists".to_string());
-            }
-            *existing = record.clone();
-        } else {
-            records.push(record.clone());
+        if records.iter().any(|row| row.name == record.name) {
+            return Err("exists".to_string());
         }
+        records.push(record.clone());
         Ok(record.clone())
     }
 
@@ -71,7 +63,7 @@ fn tag_store_helper_accepts_trait_object() {
     )
     .unwrap();
 
-    create_tag_with_store(tag_store, &record, false).unwrap();
+    create_tag_with_store(tag_store, &record).unwrap();
     assert_eq!(
         tag_by_name_with_store(tag_store, "stable/baseline")
             .unwrap()
@@ -104,7 +96,7 @@ fn filesystem_tag_store_writes_json_record_with_encoded_name() {
     )
     .unwrap();
 
-    let persisted = store.create_tag(&record, false).unwrap();
+    let persisted = store.create_tag(&record).unwrap();
 
     assert_eq!(persisted, record);
     let path = temp.path().join(".ait/refs/tags").join(format!(
@@ -117,7 +109,7 @@ fn filesystem_tag_store_writes_json_record_with_encoded_name() {
 }
 
 #[test]
-fn filesystem_tag_store_lists_shows_force_replaces_and_deletes() {
+fn filesystem_tag_store_lists_shows_rejects_duplicates_and_deletes() {
     let (_temp, store) = tag_store_fixture();
     let first = new_tag_record(
         "stable/parser",
@@ -141,20 +133,11 @@ fn filesystem_tag_store_lists_shows_force_replaces_and_deletes() {
     )
     .unwrap();
 
-    store.create_tag(&first, false).unwrap();
-    store.create_tag(&other, false).unwrap();
-    let duplicate = store.create_tag(&second, false).unwrap_err();
+    store.create_tag(&first).unwrap();
+    store.create_tag(&other).unwrap();
+    let duplicate = store.create_tag(&second).unwrap_err();
     assert!(duplicate.contains("already exists"));
-
-    store.create_tag(&second, true).unwrap();
-    assert_eq!(
-        store
-            .tag_by_name("stable/parser")
-            .unwrap()
-            .unwrap()
-            .snapshot_id,
-        "SNP-2"
-    );
+    assert_eq!(store.tag_by_name("stable/parser").unwrap().unwrap(), first);
     assert_eq!(
         store
             .list_tags()
@@ -165,14 +148,7 @@ fn filesystem_tag_store_lists_shows_force_replaces_and_deletes() {
         vec!["stable/api".to_string(), "stable/parser".to_string()]
     );
 
-    assert_eq!(
-        store
-            .delete_tag("stable/parser")
-            .unwrap()
-            .unwrap()
-            .snapshot_id,
-        "SNP-2"
-    );
+    assert_eq!(store.delete_tag("stable/parser").unwrap().unwrap(), first);
     assert_eq!(store.tag_by_name("stable/parser").unwrap(), None);
     assert_eq!(store.delete_tag("stable/parser").unwrap(), None);
 }

@@ -24,11 +24,6 @@ fn task_workflow_queue_and_change_remote_helpers_accept_narrow_trait_objects() {
         .unwrap()["summary"],
         true
     );
-    assert_eq!(
-        remote_port.list_changes("repo").unwrap()[0]["change_id"],
-        "C-1"
-    );
-
     let mut change_remote = FakeChangeRemote;
     let change_remote_port: &mut dyn TaskWorkflowChangeRemote = &mut change_remote;
 

@@ -107,3 +107,23 @@ fn stash_helpers_accept_stash_store_trait() {
         "Unknown stash: STH-0001"
     );
 }
+
+#[test]
+fn stash_source_line_guard_rejects_cross_line_restore_for_every_operation() {
+    guard_stash_source_line("STH-0001", "feature/source", "feature/source", "apply")
+        .expect("same-Line stash restore should remain valid");
+
+    for operation in ["apply", "pop"] {
+        let error =
+            guard_stash_source_line("STH-0001", "feature/source", "feature/current", operation)
+                .expect_err("cross-Line stash restore must fail closed");
+        assert!(
+            error.contains(&format!("Cannot {operation} stash STH-0001")),
+            "{error}"
+        );
+        assert!(error.contains("saved from Line feature/source"), "{error}");
+        assert!(error.contains("current Line is feature/current"), "{error}");
+        assert!(error.contains("--force only overwrites"), "{error}");
+        assert!(error.contains("cannot bypass this Line check"), "{error}");
+    }
+}

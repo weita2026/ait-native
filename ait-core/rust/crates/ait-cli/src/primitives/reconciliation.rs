@@ -187,6 +187,51 @@ fn collect_mutation_receipts<'a>(
     receipts
 }
 
+fn local_land_closeout_evidence(
+    input: &ReconciliationInventoryInput,
+    local_change_ref: &str,
+    local_change: &JsonValue,
+) -> Vec<JsonValue> {
+    let mut evidence = input
+        .mutation_receipts
+        .iter()
+        .filter(|receipt| {
+            string_field(receipt, "scope").as_deref() == Some("local")
+                && string_field(receipt, "object_kind").as_deref() == Some("change")
+                && string_field(receipt, "object_id").as_deref() == Some(local_change_ref)
+                && (matches!(
+                    string_field(receipt, "receipt_kind").as_deref(),
+                    Some("land_receipt" | "land_submission")
+                ) || matches!(
+                    receipt
+                        .get("receipt")
+                        .and_then(|payload| string_field(payload, "action"))
+                        .as_deref(),
+                    Some("submit_land" | "local_land")
+                ))
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    let landed_snapshot_id = landed_snapshot_id(local_change);
+    let pre_land_target_snapshot_id = string_field(local_change, "pre_land_target_snapshot_id");
+    let landed_at = string_field(local_change, "landed_at");
+    if landed_snapshot_id.is_some() || pre_land_target_snapshot_id.is_some() || landed_at.is_some()
+    {
+        evidence.push(json!({
+            "scope": "local",
+            "object_kind": "change",
+            "object_id": local_change_ref,
+            "receipt_kind": "local_land_payload",
+            "receipt": {
+                "landed_snapshot_id": landed_snapshot_id,
+                "pre_land_target_snapshot_id": pre_land_target_snapshot_id,
+                "landed_at": landed_at,
+            },
+        }));
+    }
+    evidence
+}
+
 fn read_workspace_lock_evidence(repo: &RepoRuntime) -> JsonValue {
     let path = crate::workspace_lock::workspace_command_lock_path(repo);
     if !path.is_file() {
@@ -1050,32 +1095,9 @@ fn build_reconciliation_inventory(
                 "Every linked Change is authoritatively landed while the Task remains active.",
             );
         }
-        if let (Some(local), Some(remote)) = (task.local.as_ref(), task.remote.as_ref()) {
-            let local_status = string_field(local, "status");
-            let remote_status = string_field(remote, "status");
-            if task_status_is_active(local_status.as_deref())
-                && task_status_is_terminal(remote_status.as_deref())
-                && !task.publication_mapping_blocked
-            {
-                let local_task_id =
-                    string_field(local, "task_id").unwrap_or_else(|| operational_task_id.clone());
-                push_finding(
-                    &mut findings,
-                    "task.local_status_stale",
-                    "safe_metadata_repair",
-                    "warning",
-                    identity_map([
-                        ("task_id", Some(local_task_id.clone())),
-                        ("local_task_id", Some(local_task_id.clone())),
-                        ("remote_task_id", string_field(remote, "task_id")),
-                    ]),
-                    json!({"local_status": local_status, "remote_status": remote_status}),
-                    "refresh_local_task_status",
-                    reconcile_command(input.remote_name.as_deref(), Some(&local_task_id)),
-                    "The authoritative remote Task is terminal but its local projection remains active.",
-                );
-            }
-        }
+        // Local and Remote Task lifecycle records are independent authorities. In
+        // particular, a published Local Task is immutable source lineage rather
+        // than a mutable projection whose status should mirror its Remote target.
         if task.authoritative().is_some_and(plan_drift_is_present) {
             let task_row = task.authoritative().unwrap_or(&JsonValue::Null);
             push_finding(
@@ -1517,7 +1539,7 @@ fn build_reconciliation_inventory(
                 ]),
                 json!({"line_status": string_field(line, "status")}),
                 "identify_or_archive_orphan_feature_line",
-                "ait line cleanup-candidates --include-protected".to_string(),
+                "ait line cleanup --include-protected".to_string(),
                 "An active feature line has no Task in local or selected-remote inventory.",
             );
             continue;
@@ -1599,8 +1621,19 @@ fn build_reconciliation_inventory(
         if let (Some(local), Some(remote)) = (change.local.as_ref(), change.remote.as_ref()) {
             let local_status = string_field(local, "status");
             let remote_status = string_field(remote, "status");
+            let local_is_published =
+                string_field(local, "publication_state").as_deref() == Some("published");
+            let local_land_evidence = local_change_ref
+                .as_deref()
+                .map(|change_ref| local_land_closeout_evidence(&input, change_ref, local))
+                .unwrap_or_default();
+            // A Remote Land proves only the Remote lifecycle. It cannot prove that
+            // Local Land closeout started, and published Local rows are immutable
+            // publication lineage rather than incomplete Local Land records.
             if remote_status.as_deref() == Some("landed")
                 && local_status.as_deref() != Some("landed")
+                && !local_is_published
+                && !local_land_evidence.is_empty()
                 && !change.publication_mapping_blocked
             {
                 push_finding(
@@ -1621,13 +1654,14 @@ fn build_reconciliation_inventory(
                         "remote_landed_at": remote.get("landed_at").cloned().unwrap_or(JsonValue::Null),
                         "remote_target_line": string_field(remote, "target_line"),
                         "remote_landed_snapshot_id": landed_snapshot_id(remote),
+                        "local_land_evidence": local_land_evidence,
                     }),
                     "audit_local_closeout_without_complete_land_payload",
                     format!(
                         "ait task audit {}",
                         local_task_id.as_deref().unwrap_or("<task-id>")
                     ),
-                    "Remote land is authoritative but the Local Change projection did not finish closeout. The current inventory does not carry the complete Local Land payload needed to reconstruct that fixed authority safely, so reconciliation will not synthesize it.",
+                    "Independent Local Land evidence exists, but the Local Change did not finish closeout. The current inventory does not carry the complete Local Land payload needed to reconstruct that fixed authority safely, so reconciliation will not synthesize it.",
                 );
             }
         }
@@ -2000,7 +2034,7 @@ mod tests {
                 }),
             ],
             mutation_receipts: vec![json!({
-                "scope": "remote",
+                "scope": "local",
                 "object_kind": "change",
                 "object_id": "RCT-1/C-01",
                 "receipt_kind": "land_submission",
@@ -2116,51 +2150,77 @@ mod tests {
     }
 
     #[test]
-    fn published_local_and_remote_identities_share_one_lifecycle() {
+    fn published_local_and_remote_lifecycles_remain_independent() {
         let payload = build_reconciliation_inventory(published_pair_input(), false, 100).unwrap();
-        let findings = payload["findings"].as_array().unwrap();
         let codes = finding_codes(&payload);
-        for expected in [
-            "land.local_closeout_interrupted",
-            "line.terminal_owner_orphaned",
-            "task.local_status_stale",
-        ] {
-            assert!(codes.contains(expected), "missing {expected}: {codes:?}");
-        }
+        assert!(codes.contains("line.terminal_owner_orphaned"));
+        assert!(!codes.contains("land.local_closeout_interrupted"));
+        assert!(!codes.contains("task.local_status_stale"));
         assert!(!codes.contains("worktree.registration_missing"));
         assert_eq!(payload["inventory"]["joined_task_count"], json!(1));
         assert_eq!(payload["inventory"]["joined_change_count"], json!(1));
+    }
 
-        let task_finding = findings
+    #[test]
+    fn remote_land_receipt_does_not_prove_local_closeout_interruption() {
+        let mut input = fixture_input();
+        input.mutation_receipts[0]["scope"] = json!("remote");
+        let payload = build_reconciliation_inventory(input, false, 100).unwrap();
+        assert!(!finding_codes(&payload).contains("land.local_closeout_interrupted"));
+    }
+
+    #[test]
+    fn terminal_remote_task_never_authorizes_local_task_status_repair() {
+        let mut input = fixture_input();
+        input.remote_tasks[0]["status"] = json!("completed");
+        let payload = build_reconciliation_inventory(input, false, 100).unwrap();
+        assert!(!finding_codes(&payload).contains("task.local_status_stale"));
+        assert!(payload["findings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|finding| {
+                string_field(&finding["recommended_action"], "code").as_deref()
+                    != Some("refresh_local_task_status")
+            }));
+    }
+
+    #[test]
+    fn explicit_local_land_receipt_reports_interrupted_closeout() {
+        let payload = build_reconciliation_inventory(fixture_input(), false, 100).unwrap();
+        let finding = payload["findings"]
+            .as_array()
+            .unwrap()
             .iter()
             .find(|finding| {
-                string_field(finding, "code").as_deref() == Some("task.local_status_stale")
+                string_field(finding, "code").as_deref() == Some("land.local_closeout_interrupted")
             })
             .unwrap();
-        assert_eq!(task_finding["identities"]["task_id"], json!("LCT-100"));
+        assert_eq!(finding["disposition"], json!("manual_resolution"));
+        assert_eq!(finding["recommended_action"]["automatic"], json!(false));
         assert_eq!(
-            task_finding["identities"]["remote_task_id"],
-            json!("RCT-900")
+            finding["evidence"]["local_land_evidence"][0]["scope"],
+            json!("local")
         );
+    }
 
-        let change_finding = findings
+    #[test]
+    fn explicit_local_land_payload_reports_interrupted_closeout() {
+        let mut input = fixture_input();
+        input.mutation_receipts.clear();
+        input.local_changes[0]["landed_snapshot_id"] = json!("SNP-LOCAL-LAND");
+        let payload = build_reconciliation_inventory(input, false, 100).unwrap();
+        let finding = payload["findings"]
+            .as_array()
+            .unwrap()
             .iter()
             .find(|finding| {
                 string_field(finding, "code").as_deref() == Some("land.local_closeout_interrupted")
             })
             .unwrap();
         assert_eq!(
-            change_finding["identities"]["change_ref"],
-            json!("LCT-100/C-01")
-        );
-        assert_eq!(
-            change_finding["identities"]["remote_change_ref"],
-            json!("RCT-900/C-01")
-        );
-        assert_eq!(change_finding["disposition"], json!("manual_resolution"));
-        assert_eq!(
-            change_finding["recommended_action"]["automatic"],
-            json!(false)
+            finding["evidence"]["local_land_evidence"][0]["receipt_kind"],
+            json!("local_land_payload")
         );
     }
 

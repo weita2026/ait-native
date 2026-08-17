@@ -6,8 +6,12 @@ pub(super) const WORKTREE_CARGO_CONFIG_RELATIVE_PATH: &str = ".cargo/config.toml
 pub(super) const SHARED_CARGO_TARGET_DIRNAME: &str = "cargo-target";
 pub(super) const SHARED_CARGO_BUILD_DIRNAME: &str = "cargo-build";
 const CARGO_WORKSPACE_PATH_HASH_TEMPLATE: &str = "{workspace-path-hash}";
+pub(super) const CANONICAL_CARGO_BUILD_DIRNAME: &str = "canonical";
+pub(super) const MANAGED_WORKTREE_CARGO_TARGET_DIRNAME: &str = "task-workspaces";
 pub(super) const MANAGED_WORKTREE_CARGO_BUILD_DIRNAME: &str = "task-workspaces";
 const GENERATED_CARGO_CONFIG_HEADER: &str =
+    "# Managed by ait: workspace-isolated final artifacts and intermediates.";
+const SHARED_FINAL_ARTIFACT_GENERATED_CARGO_CONFIG_HEADER: &str =
     "# Managed by ait: stable final artifacts, workspace-isolated intermediates.";
 const SOURCE_CARGO_CONFIG_HEADER: &str =
     "# AIT source policy: canonical Cargo settings; task worktrees receive a managed projection.";
@@ -37,6 +41,7 @@ fn matches_ait_managed_cargo_config_header(contents: &str) -> bool {
         contents.lines().next(),
         Some(
             GENERATED_CARGO_CONFIG_HEADER
+                | SHARED_FINAL_ARTIFACT_GENERATED_CARGO_CONFIG_HEADER
                 | SOURCE_CARGO_CONFIG_HEADER
                 | REPOSITORY_SHARED_GENERATED_CARGO_CONFIG_HEADER
                 | WORKTREE_LOCAL_GENERATED_CARGO_CONFIG_HEADER
@@ -62,9 +67,7 @@ pub(super) fn cargo_worktree_integration_enabled(
 }
 
 pub(super) fn generated_worktree_cargo_config_text(workspace_root: &Path) -> String {
-    let ait_dir = workspace_root.join(".ait");
-    let shared_ait_dir = fs::canonicalize(&ait_dir).unwrap_or(ait_dir);
-    let target_dir = lexical_normalize(&shared_ait_dir.join(SHARED_CARGO_TARGET_DIRNAME));
+    let target_dir = worktree_cargo_target_dir(workspace_root);
     let build_dir = worktree_cargo_build_dir(workspace_root);
     let encoded_target_dir = encode_string_or(
         &target_dir.to_string_lossy(),
@@ -87,6 +90,7 @@ pub(super) fn upgrade_generated_worktree_cargo_config_text(
         workspace_root,
         contents,
         &[],
+        &[],
     )
 }
 
@@ -94,7 +98,10 @@ pub(super) fn upgrade_copied_main_seed_cargo_config_text(
     workspace_root: &Path,
     contents: &str,
 ) -> Option<String> {
-    if contents.lines().next() != Some(GENERATED_CARGO_CONFIG_HEADER) {
+    if !matches!(
+        contents.lines().next(),
+        Some(GENERATED_CARGO_CONFIG_HEADER | SHARED_FINAL_ARTIFACT_GENERATED_CARGO_CONFIG_HEADER)
+    ) {
         return None;
     }
     let default_line = read_json_value(&workspace_root.join(".ait/config.json"))
@@ -105,6 +112,16 @@ pub(super) fn upgrade_copied_main_seed_cargo_config_text(
     let copied_seed_build_dir = shared_cargo_build_root(workspace_root)
         .join(MANAGED_WORKTREE_CARGO_BUILD_DIRNAME)
         .join(format!("{default_line}-seed"));
+    let copied_seed_target_dir = shared_cargo_target_root(workspace_root)
+        .join(MANAGED_WORKTREE_CARGO_TARGET_DIRNAME)
+        .join(format!("{default_line}-seed"));
+    let copied_seed_target_line = format!(
+        "target-dir = {}",
+        encode_string_or(
+            &copied_seed_target_dir.to_string_lossy(),
+            &format!("\"{}\"", copied_seed_target_dir.display()),
+        )
+    );
     let copied_seed_build_line = format!(
         "build-dir = {}",
         encode_string_or(
@@ -115,6 +132,7 @@ pub(super) fn upgrade_copied_main_seed_cargo_config_text(
     upgrade_generated_worktree_cargo_config_text_with_additional_build_lines(
         workspace_root,
         contents,
+        &[copied_seed_target_line],
         &[copied_seed_build_line],
     )
 }
@@ -122,6 +140,7 @@ pub(super) fn upgrade_copied_main_seed_cargo_config_text(
 fn upgrade_generated_worktree_cargo_config_text_with_additional_build_lines(
     workspace_root: &Path,
     contents: &str,
+    additional_target_lines: &[String],
     additional_build_lines: &[String],
 ) -> Option<String> {
     let current = generated_worktree_cargo_config_text(workspace_root);
@@ -133,6 +152,7 @@ fn upgrade_generated_worktree_cargo_config_text_with_additional_build_lines(
     if lines.len() < 3
         || ![
             GENERATED_CARGO_CONFIG_HEADER,
+            SHARED_FINAL_ARTIFACT_GENERATED_CARGO_CONFIG_HEADER,
             SOURCE_CARGO_CONFIG_HEADER,
             REPOSITORY_SHARED_GENERATED_CARGO_CONFIG_HEADER,
             WORKTREE_LOCAL_GENERATED_CARGO_CONFIG_HEADER,
@@ -157,14 +177,17 @@ fn upgrade_generated_worktree_cargo_config_text_with_additional_build_lines(
         build_section_end -= 1;
     }
 
+    let target_dir = worktree_cargo_target_dir(workspace_root);
+    let repository_shared_target_dir = shared_cargo_target_root(workspace_root);
+    let build_dir = worktree_cargo_build_dir(workspace_root);
     let ait_dir = workspace_root.join(".ait");
     let shared_ait_dir = fs::canonicalize(&ait_dir).unwrap_or(ait_dir);
-    let target_dir = lexical_normalize(&shared_ait_dir.join(SHARED_CARGO_TARGET_DIRNAME));
-    let build_dir = worktree_cargo_build_dir(workspace_root);
     let repository_shared_build_dir = {
         let candidate = shared_ait_dir.join(SHARED_CARGO_BUILD_DIRNAME);
         fs::canonicalize(&candidate).unwrap_or(candidate)
     };
+    let repository_canonical_build_dir =
+        repository_shared_build_dir.join(CANONICAL_CARGO_BUILD_DIRNAME);
     let target_line = format!(
         "target-dir = {}",
         encode_string_or(
@@ -173,6 +196,20 @@ fn upgrade_generated_worktree_cargo_config_text_with_additional_build_lines(
         )
     );
     let relative_target_line = format!("target-dir = \".ait/{SHARED_CARGO_TARGET_DIRNAME}\"");
+    let mut target_lines = vec![
+        target_line.clone(),
+        format!(
+            "target-dir = {}",
+            encode_string_or(
+                &repository_shared_target_dir.to_string_lossy(),
+                &format!("\"{}\"", repository_shared_target_dir.display()),
+            )
+        ),
+        relative_target_line,
+    ];
+    target_lines.extend(additional_target_lines.iter().cloned());
+    target_lines.sort();
+    target_lines.dedup();
     let build_line = format!(
         "build-dir = {}",
         encode_string_or(
@@ -207,6 +244,16 @@ fn upgrade_generated_worktree_cargo_config_text_with_additional_build_lines(
         ),
         format!("build-dir = \".ait/{SHARED_CARGO_BUILD_DIRNAME}\""),
         format!(
+            "build-dir = \".ait/{SHARED_CARGO_BUILD_DIRNAME}/{CANONICAL_CARGO_BUILD_DIRNAME}\""
+        ),
+        format!(
+            "build-dir = {}",
+            encode_string_or(
+                &repository_canonical_build_dir.to_string_lossy(),
+                &format!("\"{}\"", repository_canonical_build_dir.display()),
+            )
+        ),
+        format!(
             "build-dir = \".ait/{SHARED_CARGO_BUILD_DIRNAME}/workspaces/{CARGO_WORKSPACE_PATH_HASH_TEMPLATE}\""
         ),
         "build-dir = \"rust/target\"".to_string(),
@@ -216,7 +263,7 @@ fn upgrade_generated_worktree_cargo_config_text_with_additional_build_lines(
     let body = &lines[2..build_section_end];
     if body
         .iter()
-        .filter(|line| **line == target_line || **line == relative_target_line)
+        .filter(|line| target_lines.iter().any(|candidate| candidate == **line))
         .count()
         != 1
         || body
@@ -230,8 +277,7 @@ fn upgrade_generated_worktree_cargo_config_text_with_additional_build_lines(
     let non_paths = body
         .iter()
         .filter(|line| {
-            **line != target_line
-                && **line != relative_target_line
+            !target_lines.iter().any(|candidate| candidate == **line)
                 && !build_lines.iter().any(|candidate| candidate == **line)
         })
         .copied()
@@ -254,11 +300,13 @@ fn upgrade_generated_worktree_cargo_config_text_with_additional_build_lines(
         "[build]".to_string(),
     ];
     for line in body {
+        if target_lines.iter().any(|candidate| candidate == *line) {
+            upgraded.push(target_line.clone());
+            upgraded.push(build_line.clone());
+            continue;
+        }
         if !build_lines.iter().any(|candidate| candidate == *line) {
             upgraded.push((*line).to_string());
-        }
-        if **line == target_line || **line == relative_target_line {
-            upgraded.push(build_line.clone());
         }
     }
     if trailing_section_start < lines.len() {
@@ -272,6 +320,12 @@ fn upgrade_generated_worktree_cargo_config_text_with_additional_build_lines(
     Some(format!("{}\n", upgraded.join("\n")))
 }
 
+fn shared_cargo_target_root(workspace_root: &Path) -> PathBuf {
+    let ait_dir = workspace_root.join(".ait");
+    let shared_ait_dir = fs::canonicalize(&ait_dir).unwrap_or(ait_dir);
+    lexical_normalize(&shared_ait_dir.join(SHARED_CARGO_TARGET_DIRNAME))
+}
+
 fn shared_cargo_build_root(workspace_root: &Path) -> PathBuf {
     let ait_dir = workspace_root.join(".ait");
     let shared_ait_dir = fs::canonicalize(&ait_dir).unwrap_or(ait_dir);
@@ -283,6 +337,27 @@ fn managed_worktree_name(workspace_root: &Path) -> Option<String> {
     let marker = read_json_value(&workspace_root.join(WORKTREE_CONFIG_NAME));
     let name = marker.get("worktree_name")?.as_str()?;
     normalize_worktree_name(name).ok()
+}
+
+pub(super) fn registered_worktree_cargo_target_dir(
+    workspace_root: &Path,
+    expected_name: &str,
+) -> Option<PathBuf> {
+    let name = managed_worktree_name(workspace_root)?;
+    (name == expected_name).then(|| {
+        shared_cargo_target_root(workspace_root)
+            .join(MANAGED_WORKTREE_CARGO_TARGET_DIRNAME)
+            .join(name)
+    })
+}
+
+pub(super) fn worktree_cargo_target_dir(workspace_root: &Path) -> PathBuf {
+    if let Some(name) = managed_worktree_name(workspace_root) {
+        return shared_cargo_target_root(workspace_root)
+            .join(MANAGED_WORKTREE_CARGO_TARGET_DIRNAME)
+            .join(name);
+    }
+    shared_cargo_target_root(workspace_root)
 }
 
 pub(super) fn registered_worktree_cargo_build_dir(
@@ -303,9 +378,7 @@ pub(super) fn worktree_cargo_build_dir(workspace_root: &Path) -> PathBuf {
             .join(MANAGED_WORKTREE_CARGO_BUILD_DIRNAME)
             .join(name);
     }
-    shared_cargo_build_root(workspace_root)
-        .join("workspaces")
-        .join(CARGO_WORKSPACE_PATH_HASH_TEMPLATE)
+    shared_cargo_build_root(workspace_root).join(CANONICAL_CARGO_BUILD_DIRNAME)
 }
 
 pub(super) fn cargo_build_repo_segment(repo_name: &str) -> String {
@@ -366,19 +439,7 @@ pub(super) fn change_uses_local_scope(
     if normalized_text(remote_requested).is_some() {
         return Ok(false);
     }
-    let workflow_scope = repo
-        .config
-        .get("workflow_default_scope")
-        .and_then(JsonValue::as_str)
-        .and_then(|value| normalized_text(Some(value)))
-        .unwrap_or_else(|| DEFAULT_WORKFLOW_SCOPE.to_string());
-    let change_scope = repo
-        .config
-        .get("change_default_scope")
-        .and_then(JsonValue::as_str)
-        .and_then(|value| normalized_text(Some(value)))
-        .unwrap_or(workflow_scope);
-    Ok(change_scope == "local")
+    Ok(repo.change_uses_local_scope(false, None))
 }
 
 pub(super) fn local_snapshot_exists(repo: &RepoRuntime, snapshot_id: &str) -> Result<bool, String> {

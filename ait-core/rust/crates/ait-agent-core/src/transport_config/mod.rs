@@ -8,8 +8,8 @@ pub use resolve::{
 };
 pub use types::{
     AgentRuntimeMode, AgentRuntimeTarget, AgentSecret, AgentSharedWorkerConfig,
-    AgentWorkerRuntimeConfig, AgentWorkflowMode, DiscordWorkerConfig, LineWorkerConfig,
-    SlackWorkerConfig, TelegramSttMode, TelegramWorkerConfig, TelegramWorkerMode,
+    AgentWorkerRuntimeConfig, AgentWorkerRuntimePaths, AgentWorkflowMode, DiscordWorkerConfig,
+    LineWorkerConfig, SlackWorkerConfig, TelegramSttMode, TelegramWorkerConfig, TelegramWorkerMode,
 };
 
 #[cfg(test)]

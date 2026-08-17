@@ -533,7 +533,7 @@ mod tests {
                 "item": {
                     "id": "command-1",
                     "type": "command_execution",
-                    "command": "/bin/zsh -lc 'ait task audit RCT-1 && /opt/bin/ait queue summary --all-changes'",
+                    "command": "/bin/zsh -lc 'ait task audit RCT-1 && /opt/bin/ait queue summary'",
                     "status": "in_progress",
                 },
             }),
@@ -542,7 +542,7 @@ mod tests {
                 "item": {
                     "id": "command-1",
                     "type": "command_execution",
-                    "command": "/bin/zsh -lc 'ait task audit RCT-1 && /opt/bin/ait queue summary --all-changes'",
+                    "command": "/bin/zsh -lc 'ait task audit RCT-1 && /opt/bin/ait queue summary'",
                     "exit_code": 0,
                     "status": "completed",
                 },

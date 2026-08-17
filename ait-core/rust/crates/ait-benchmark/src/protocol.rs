@@ -650,7 +650,7 @@ mod tests {
                 memory_bytes: 16 * 1024 * 1024 * 1024,
                 rust_version: "rustc test".to_string(),
                 git_version: "git test".to_string(),
-                ait_version: "ait test".to_string(),
+                ait_version: "ait fixture".to_string(),
                 repository_snapshot: "SNP-TEST".to_string(),
                 server_revision: "server-test".to_string(),
                 network_profile: "loopback".to_string(),

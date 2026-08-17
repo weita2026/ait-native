@@ -14,7 +14,23 @@
         "manifest_path": "rust/Cargo.toml",
         "workspace": false,
         "build_args": [
-          "ait-core-patch-ci-build",
+          "test",
+          "--profile",
+          "ait-ci",
+          "-p",
+          "ait-core",
+          "-p",
+          "ait-cli",
+          "-p",
+          "ait-agent-core",
+          "-p",
+          "ait-py",
+          "--lib",
+          "--test",
+          "server_source_ownership",
+          "--test",
+          "patchset_ci_runner",
+          "--no-run",
           "--message-format=json"
         ],
         "doc_tests": false,
@@ -38,138 +54,6 @@
       },
       "artifacts": {
         "log_path": ".ait/generated/ci/rust_core.log"
-      }
-    },
-    {
-      "schema_version": 1,
-      "suite_id": "full_repo",
-      "display_name": "Full Repository",
-      "plane": "nightly",
-      "default_blocking": false,
-      "mode": "diagnostic",
-      "purpose": "Run the external ait-test full-repository contract through server-owned collection and Rust test shards.",
-      "operator_command": "ait test run --full",
-      "repo_ci_route": "repo run-ci --suite full_repo",
-      "runner": {
-        "kind": "test_shard",
-        "contract": "ait.full_repo.test_shard.v1",
-        "template": "native_test_shard.v1",
-        "component": "ait-server-core",
-        "capability": "server.ci_test_shard.run",
-        "requires_runner_program": true,
-        "requires_test_items": true,
-        "append_test_items": true,
-        "program_source": "ait_test_full_repo_rust_shard_runner",
-        "program": "$AIT_EXTERNAL_AIT_TEST_REPO_ROOT/ait.sh",
-        "args": [
-          "full-repo-shard-runner"
-        ],
-        "program_resolution_policy": "expand_runner_env_then_process_env",
-        "env_policy": "clean_base_env_plus_runner_env",
-        "wire_kind": "command",
-        "test_items_source": "server_collect_once_artifact",
-        "test_items_argument_policy": "append_after_runner_args",
-        "allow_fail_fast": false,
-        "collect_complete_failure_set": true,
-        "aggregate_all_shard_results": true,
-        "empty_shard_policy": "skip_pass_when_no_assigned_test_items"
-      },
-      "collection": {
-        "policy_id": "ait.default_full_repo_collection.v1",
-        "test_items_source": "server_collect_once_artifact",
-        "collect_once_before_sharding": true,
-        "program": "$AIT_EXTERNAL_AIT_TEST_REPO_ROOT/ait.sh",
-        "args": [
-          "full-repo-test-items"
-        ],
-        "output_format": "json_array",
-        "excludes_out_of_scope_surfaces": true
-      },
-      "main_seed_prewarm": {
-        "policy": "once_per_run",
-        "required": true,
-        "reused_by_shards": true,
-        "required_paths": [
-          "rust/Cargo.toml",
-          "ci/patch_ci.json"
-        ]
-      },
-      "artifacts": {
-        "artifact_schema": "artifact_status.v1",
-        "summary_json": ".ait/generated/ci/full_repo_shards.json",
-        "log_path": ".ait/generated/ci/full_repo_shards.log",
-        "shard_log_file": "runner.log"
-      }
-    },
-    {
-      "schema_version": 1,
-      "suite_id": "full_repo_zstd_only",
-      "display_name": "Full Repository Zstd Only",
-      "plane": "nightly",
-      "default_blocking": false,
-      "mode": "diagnostic",
-      "purpose": "Run the external ait-test full-repository contract with zstd-only pack storage.",
-      "operator_command": "ait test run --full --variant zstd_only",
-      "repo_ci_route": "repo run-ci --suite full_repo_zstd_only",
-      "runner": {
-        "kind": "test_shard",
-        "contract": "ait.full_repo.test_shard.v1",
-        "template": "native_test_shard.v1",
-        "component": "ait-server-core",
-        "capability": "server.ci_test_shard.run",
-        "requires_runner_program": true,
-        "requires_test_items": true,
-        "append_test_items": true,
-        "program_source": "ait_test_full_repo_rust_shard_runner",
-        "program": "$AIT_EXTERNAL_AIT_TEST_REPO_ROOT/ait.sh",
-        "args": [
-          "full-repo-shard-runner"
-        ],
-        "program_resolution_policy": "expand_runner_env_then_process_env",
-        "env_policy": "clean_base_env_plus_runner_env",
-        "wire_kind": "command",
-        "test_items_source": "server_collect_once_artifact",
-        "test_items_argument_policy": "append_after_runner_args",
-        "allow_fail_fast": false,
-        "collect_complete_failure_set": true,
-        "aggregate_all_shard_results": true,
-        "empty_shard_policy": "skip_pass_when_no_assigned_test_items",
-        "env": {
-          "AIT_TEST_PACK_STORAGE_POLICY": "zstd_only",
-          "AIT_TEST_REMOTE_SYNC_TRANSPORT": "zstd_bulk",
-          "AIT_TEST_DISABLE_SNAPSHOT_ZIP_TRANSPORT": "1"
-        }
-      },
-      "collection": {
-        "policy_id": "ait.default_full_repo_zstd_only_collection.v1",
-        "test_items_source": "server_collect_once_artifact",
-        "collect_once_before_sharding": true,
-        "program": "$AIT_EXTERNAL_AIT_TEST_REPO_ROOT/ait.sh",
-        "args": [
-          "full-repo-test-items"
-        ],
-        "output_format": "json_array",
-        "excludes_out_of_scope_surfaces": true,
-        "env": {
-          "AIT_TEST_PACK_STORAGE_POLICY": "zstd_only",
-          "AIT_TEST_REMOTE_SYNC_TRANSPORT": "zstd_bulk",
-          "AIT_TEST_DISABLE_SNAPSHOT_ZIP_TRANSPORT": "1"
-        }
-      },
-      "main_seed_prewarm": {
-        "policy": "once_per_run",
-        "required": true,
-        "reused_by_shards": true,
-        "required_paths": [
-          "rust/Cargo.toml",
-          "ci/patch_ci.json"
-        ]
-      },
-      "artifacts": {
-        "artifact_schema": "artifact_status.v1",
-        "summary_json": ".ait/generated/ci/full_repo_zstd_only_shards.json",
-        "log_path": ".ait/generated/ci/full_repo_zstd_only_shards.log",
-        "shard_log_file": "runner.log"
       }
     }
   ]

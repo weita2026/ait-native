@@ -1,8 +1,7 @@
 use std::env;
 use std::path::PathBuf;
 
-pub const RUNTIME_DATA_ENV: &str = "AIT_RUNTIME_DATA";
-pub const LEGACY_SERVER_DATA_ENV: &str = "AIT_NATIVE_SERVER_DATA";
+pub use crate::foundation::server_binary_lifecycle::SERVER_DATA_ENV;
 
 pub const STORAGE_INGEST_MODE_DEFAULT: &str = "default";
 pub const STORAGE_INGEST_MODE_PACK_FULL: &str = "pack_full";
@@ -87,21 +86,13 @@ pub fn normalize_storage_ingest_mode(
     }
 }
 
-pub fn runtime_data_env_name() -> Option<&'static str> {
-    configured_runtime_data_env().map(|(name, _)| name)
-}
-
-pub fn runtime_data_env_value() -> Option<String> {
-    configured_runtime_data_env().map(|(_, value)| value)
-}
-
 pub fn resolve_server_runtime_root_with_source(
     path: Option<&str>,
 ) -> Result<(PathBuf, &'static str), String> {
     if let Some(raw) = path {
         return Ok((expand_user(raw), "explicit"));
     }
-    if let Some(value) = runtime_data_env_value() {
+    if let Some(value) = configured_server_data_env() {
         return Ok((expand_user(&value), "env"));
     }
     Err(
@@ -131,18 +122,11 @@ pub fn task_close_allowed_statuses(scope: &str) -> Result<Vec<&'static str>, Str
     }
 }
 
-fn configured_runtime_data_env() -> Option<(&'static str, String)> {
-    let runtime_value = env::var(RUNTIME_DATA_ENV).unwrap_or_default();
-    let runtime_value = runtime_value.trim();
-    if !runtime_value.is_empty() {
-        return Some((RUNTIME_DATA_ENV, runtime_value.to_string()));
-    }
-    let legacy_value = env::var(LEGACY_SERVER_DATA_ENV).unwrap_or_default();
-    let legacy_value = legacy_value.trim();
-    if !legacy_value.is_empty() {
-        return Some((LEGACY_SERVER_DATA_ENV, legacy_value.to_string()));
-    }
-    None
+fn configured_server_data_env() -> Option<String> {
+    env::var(SERVER_DATA_ENV)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
 }
 
 fn expand_user(raw: &str) -> PathBuf {

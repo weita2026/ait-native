@@ -1,5 +1,6 @@
 use super::{
-    config_set, config_show, normalize_id_namespace_prefix_value, ConfigSetRequest,
+    config_set, config_set_from_payload, config_show, config_unset,
+    normalize_id_namespace_prefix_value, ConfigSetRequest, ConfigUnsetKey,
     DEFAULT_ID_NAMESPACE_PREFIX,
 };
 use crate::init_surface::{init_repo, InitRequest};
@@ -16,51 +17,59 @@ fn default_id_namespace_prefix_is_blank() {
 }
 
 #[test]
-fn repository_index_config_is_numeric_exclusive_and_clearable() {
+fn repository_index_is_read_only_and_removed_payload_fields_fail_before_mutation() {
     let (_temp, repo) = initialized_repo();
-
-    let set = config_set(
-        &repo,
-        &ConfigSetRequest {
-            repository_index: Some(7),
-            ..ConfigSetRequest::default()
-        },
+    let config_path = repo.root.join(".ait/config.json");
+    let mut raw_config = parse_object_or_empty(&std::fs::read_to_string(&config_path).unwrap());
+    raw_config.insert("repository_index".to_string(), json!(7));
+    raw_config.insert("task_tracking".to_string(), json!("on"));
+    raw_config.insert("command_profiling".to_string(), json!("on"));
+    std::fs::write(
+        &config_path,
+        encode_value_pretty_with_newline_error_string(&JsonValue::Object(raw_config)).unwrap(),
     )
-    .expect("set numeric repository index");
-    assert_eq!(set["repository_index"], 7);
+    .unwrap();
+    let repo = RepoRuntime::discover_from_path(&repo.root).unwrap();
 
-    let refreshed = RepoRuntime::discover_from_path(&repo.root).expect("refreshed runtime");
-    assert_eq!(
-        refreshed
-            .require_repository_index()
-            .expect("configured repository index")
-            .get(),
-        7
-    );
+    let shown = config_show(&repo).unwrap();
+    assert_eq!(shown["repository_index"], 7);
+    assert!(shown.get("task_tracking").is_none());
+    assert!(shown.get("command_profiling").is_none());
 
-    let conflict = config_set(
-        &refreshed,
-        &ConfigSetRequest {
-            repository_index: Some(8),
-            clear_repository_index: true,
-            ..ConfigSetRequest::default()
-        },
-    )
-    .expect_err("set and clear must be mutually exclusive");
-    assert!(conflict.contains("--repository-index"));
-
-    let cleared = config_set(
-        &refreshed,
-        &ConfigSetRequest {
-            clear_repository_index: true,
-            ..ConfigSetRequest::default()
-        },
-    )
-    .expect("clear repository index");
-    assert!(cleared["repository_index"].is_null());
-    let cleared_runtime =
-        RepoRuntime::discover_from_path(&repo.root).expect("cleared repository runtime");
-    assert!(cleared_runtime.require_repository_index().is_err());
+    let removed_fields = [
+        ("repository_index", json!(8)),
+        ("clear_repository_index", json!(true)),
+        ("clear_default_author_mode", json!(true)),
+        ("clear_default_model", json!(true)),
+        ("task_tracking", json!("off")),
+        ("clear_task_review", json!(true)),
+        ("command_profiling", json!("off")),
+        ("clear_task_worktree_alias_root", json!(true)),
+        ("clear_task_worktree_main_seed_ram_max_bytes", json!(true)),
+        ("legacy_task_auto_worktree", json!("off")),
+        ("legacy_clear_task_auto_worktree", json!(true)),
+        ("workflow_default_scope", json!("remote")),
+        ("clear_workflow_default_scope", json!(true)),
+        ("task_default_scope", json!("remote")),
+        ("clear_task_default_scope", json!(true)),
+        ("change_default_scope", json!("remote")),
+        ("clear_change_default_scope", json!(true)),
+        ("clear_id_namespace_prefix", json!(true)),
+        ("plan_task_binding_mode", json!("advisory")),
+        ("clear_plan_task_binding", json!(true)),
+        ("clear_user_name", json!(true)),
+        ("clear_user_email", json!(true)),
+        ("unknown_field", json!(true)),
+    ];
+    for (field, value) in removed_fields {
+        let before = std::fs::read(&config_path).unwrap();
+        let mut payload = ait_core::json_support::JsonMap::new();
+        payload.insert(field.to_string(), value);
+        let error = config_set_from_payload(&repo, &JsonValue::Object(payload))
+            .expect_err("removed config payload field must fail");
+        assert!(error.contains("retired or unknown"), "{field}: {error}");
+        assert_eq!(std::fs::read(&config_path).unwrap(), before, "{field}");
+    }
 }
 
 #[test]
@@ -94,6 +103,208 @@ fn retired_task_dag_config_is_inert_and_preserved() {
     assert!(updated.get("task_dag").is_none());
     let preserved = parse_object_or_empty(&std::fs::read_to_string(&config_path).unwrap());
     assert_eq!(preserved.get("task_dag"), Some(&legacy_task_dag));
+}
+
+#[test]
+fn admitted_overrides_set_and_unset_without_erasing_inert_legacy_data() {
+    let (_temp, repo) = initialized_repo();
+    let config_path = repo.root.join(".ait/config.json");
+    let mut raw_config = parse_object_or_empty(&std::fs::read_to_string(&config_path).unwrap());
+    raw_config.insert("legacy_config_marker".to_string(), json!({"keep": true}));
+    let mut task_worktree = raw_config
+        .get("task_worktree")
+        .and_then(JsonValue::as_object)
+        .cloned()
+        .unwrap_or_default();
+    task_worktree.insert("legacy_nested_marker".to_string(), json!([1, 2, 3]));
+    raw_config.insert(
+        "task_worktree".to_string(),
+        JsonValue::Object(task_worktree),
+    );
+    std::fs::write(
+        &config_path,
+        encode_value_pretty_with_newline_error_string(&JsonValue::Object(raw_config)).unwrap(),
+    )
+    .unwrap();
+    let repo = RepoRuntime::discover_from_path(&repo.root).unwrap();
+
+    let payload = config_set(
+        &repo,
+        &ConfigSetRequest {
+            default_author_mode: Some("human_only".to_string()),
+            default_model: Some("model-a".to_string()),
+            task_review: Some("required".to_string()),
+            task_worktree_alias_root: Some("managed-links".to_string()),
+            task_worktree_main_seed_ram_max_bytes: Some(4096),
+            id_namespace_prefix: Some("zx".to_string()),
+            user_name: Some("Reviewer".to_string()),
+            user_email: Some("reviewer@example.test".to_string()),
+            ..ConfigSetRequest::default()
+        },
+    )
+    .expect("set every admitted optional override");
+    assert_eq!(payload["effective_author_mode"], "human_only");
+    assert_eq!(payload["default_model"], "model-a");
+    assert_eq!(payload["task_review"]["value"], "required");
+    assert_eq!(
+        payload["task_worktree"]["alias_root"]["value"],
+        "managed-links"
+    );
+    assert_eq!(
+        payload["task_worktree"]["main_seed_ram_max_bytes"]["value"],
+        4096
+    );
+    assert_eq!(payload["id_namespace_prefix"]["value"], "ZX");
+
+    let stored = parse_object_or_empty(&std::fs::read_to_string(&config_path).unwrap());
+    assert_eq!(stored["task_review"], true);
+    assert_eq!(stored["legacy_config_marker"], json!({"keep": true}));
+    assert_eq!(
+        stored["task_worktree"]["legacy_nested_marker"],
+        json!([1, 2, 3])
+    );
+
+    for key in [
+        ConfigUnsetKey::DefaultAuthorMode,
+        ConfigUnsetKey::DefaultModel,
+        ConfigUnsetKey::TaskReview,
+        ConfigUnsetKey::TaskWorktreeAliasRoot,
+        ConfigUnsetKey::TaskWorktreeMainSeedRamMaxBytes,
+        ConfigUnsetKey::IdNamespacePrefix,
+        ConfigUnsetKey::UserName,
+        ConfigUnsetKey::UserEmail,
+    ] {
+        config_unset(&repo, key).unwrap_or_else(|error| panic!("{}: {error}", key.as_str()));
+    }
+
+    let shown = config_show(&RepoRuntime::discover_from_path(&repo.root).unwrap()).unwrap();
+    assert_eq!(shown["effective_author_mode"], "ai_with_human_review");
+    assert!(shown["default_model"].is_null());
+    assert!(shown["effective_model"].is_null());
+    assert_eq!(shown["task_review"]["value"], "automatic");
+    assert_eq!(
+        shown["task_worktree"]["alias_root"]["value"],
+        ".ait-worktree-links"
+    );
+    assert!(shown["task_worktree"]["main_seed_ram_max_bytes"]["value"].is_null());
+    assert_eq!(shown["id_namespace_prefix"]["value"], "");
+    assert!(shown["user_name"].is_null());
+    assert!(shown["user_email"].is_null());
+
+    let stored = parse_object_or_empty(&std::fs::read_to_string(&config_path).unwrap());
+    assert_eq!(stored["legacy_config_marker"], json!({"keep": true}));
+    assert_eq!(
+        stored["task_worktree"]["legacy_nested_marker"],
+        json!([1, 2, 3])
+    );
+    for key in [
+        "default_author_mode",
+        "default_model",
+        "task_review",
+        "id_namespace_prefix",
+        "user_name",
+        "user_email",
+    ] {
+        assert!(!stored.contains_key(key), "{key}");
+    }
+    assert!(stored["task_worktree"].get("alias_root").is_none());
+    assert!(stored["task_worktree"]
+        .get("main_seed_ram_max_bytes")
+        .is_none());
+}
+
+#[test]
+fn config_set_rejects_empty_legacy_alias_and_mistyped_payloads_before_writing() {
+    let (_temp, repo) = initialized_repo();
+    let config_path = repo.root.join(".ait/config.json");
+    let invalid_requests = [
+        ConfigSetRequest {
+            default_model: Some("   ".to_string()),
+            ..ConfigSetRequest::default()
+        },
+        ConfigSetRequest {
+            task_review: Some("on".to_string()),
+            ..ConfigSetRequest::default()
+        },
+        ConfigSetRequest {
+            sprint: Some("yes".to_string()),
+            ..ConfigSetRequest::default()
+        },
+        ConfigSetRequest {
+            workflow_mode: Some("SOLO_LOCAL".to_string()),
+            ..ConfigSetRequest::default()
+        },
+        ConfigSetRequest {
+            task_worktree_main_seed_ram_max_bytes: Some(-1),
+            ..ConfigSetRequest::default()
+        },
+        ConfigSetRequest {
+            id_namespace_prefix: Some(String::new()),
+            ..ConfigSetRequest::default()
+        },
+    ];
+    for request in invalid_requests {
+        let before = std::fs::read(&config_path).unwrap();
+        config_set(&repo, &request).expect_err("invalid set request must fail");
+        assert_eq!(std::fs::read(&config_path).unwrap(), before);
+    }
+
+    for payload in [
+        json!({}),
+        json!({"default_model": null}),
+        json!({"default_model": 7}),
+        json!({"task_review": true}),
+        json!({"task_review": "off"}),
+        json!({"task_worktree_main_seed_ram_max_bytes": "4096"}),
+    ] {
+        let before = std::fs::read(&config_path).unwrap();
+        config_set_from_payload(&repo, &payload).expect_err("mistyped payload must fail");
+        assert_eq!(std::fs::read(&config_path).unwrap(), before);
+    }
+
+    let mut malformed = parse_object_or_empty(&std::fs::read_to_string(&config_path).unwrap());
+    malformed.insert("task_worktree".to_string(), json!("not-an-object"));
+    std::fs::write(
+        &config_path,
+        encode_value_pretty_with_newline_error_string(&JsonValue::Object(malformed)).unwrap(),
+    )
+    .unwrap();
+    let before = std::fs::read(&config_path).unwrap();
+    config_unset(&repo, ConfigUnsetKey::TaskWorktreeAliasRoot)
+        .expect_err("malformed nested config must fail before unset writes");
+    assert_eq!(std::fs::read(&config_path).unwrap(), before);
+}
+
+#[test]
+fn task_review_uses_required_and_automatic_while_reading_existing_booleans() {
+    let (_temp, repo) = initialized_repo();
+    let required = config_set(
+        &repo,
+        &ConfigSetRequest {
+            task_review: Some("required".to_string()),
+            ..ConfigSetRequest::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(required["task_review"]["value"], "required");
+    let stored = parse_object_or_empty(
+        &std::fs::read_to_string(repo.root.join(".ait/config.json")).unwrap(),
+    );
+    assert_eq!(stored["task_review"], true);
+
+    let automatic = config_set(
+        &repo,
+        &ConfigSetRequest {
+            task_review: Some("automatic".to_string()),
+            ..ConfigSetRequest::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(automatic["task_review"]["value"], "automatic");
+    let stored = parse_object_or_empty(
+        &std::fs::read_to_string(repo.root.join(".ait/config.json")).unwrap(),
+    );
+    assert_eq!(stored["task_review"], false);
 }
 
 fn initialized_repo() -> (TempDir, RepoRuntime) {

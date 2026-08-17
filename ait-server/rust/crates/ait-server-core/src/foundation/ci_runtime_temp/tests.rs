@@ -10,11 +10,11 @@ fn persistent_runtime_path_cannot_be_admitted_as_ci_ram() {
     let candidate = persistent.join("ci-tmp");
     let error = validate_ci_ram_root_path_boundary(
         &candidate,
-        "AIT_NATIVE_SERVER_RAM_SHARD_ROOT/parent",
-        &[("AIT_RUNTIME_ROOT".to_string(), persistent)],
+        "AIT_NATIVE_SERVER_CI_RAM_ROOT",
+        &[("AIT_NATIVE_SERVER_DATA".to_string(), persistent)],
     )
     .expect_err("persistent runtime descendants must fail closed");
-    assert!(error.contains("inside persistent authority AIT_RUNTIME_ROOT"));
+    assert!(error.contains("inside persistent authority AIT_NATIVE_SERVER_DATA"));
 }
 
 #[cfg(unix)]

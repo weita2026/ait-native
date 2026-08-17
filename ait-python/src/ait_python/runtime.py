@@ -82,9 +82,6 @@ class NativeRuntime:
             "ait-agent-worker capabilities",
         )
 
-    def agent_management(self, request: Mapping[str, Any]) -> Any:
-        return self.call("ait_agent_management", dict(request))
-
     def agent_worker_transaction(self, request: Mapping[str, Any]) -> Any:
         return self.call("ait_agent_worker_transaction", dict(request))
 

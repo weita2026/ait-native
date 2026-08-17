@@ -4,8 +4,6 @@ use ait_core::plan_http_client::{
     auth_whoami as http_auth_whoami, grant_role_bindings as http_grant_role_bindings,
     list_role_bindings as http_list_role_bindings, PlanHttpClientConfig,
 };
-use std::collections::BTreeSet;
-use std::env;
 
 #[derive(Clone, Debug, Default)]
 pub struct AuthRemoteRequest {
@@ -96,19 +94,9 @@ fn local_auth_snapshot(repo: &RepoRuntime, requested_repo: Option<&str>) -> Json
     let actor = repo
         .actor_identity()
         .unwrap_or_else(|| "anonymous".to_string());
-    let actor_type = env_nonempty("AIT_NATIVE_ACTOR_TYPE")
-        .or_else(|| env_nonempty("AIT_ACTOR_TYPE"))
-        .unwrap_or_else(|| "human".to_string());
-    let claimed_roles = csv_env_values(&["AIT_NATIVE_ROLES", "AIT_ROLES"]);
-    let claimed_repos = csv_env_values(&["AIT_NATIVE_REPOS", "AIT_REPOS"]);
     let mut payload = json!({
         "identity": actor,
-        "actor_type": actor_type,
         "mode": "open",
-        "claimed_roles": claimed_roles.clone(),
-        "claimed_repos": claimed_repos.clone(),
-        "effective_roles": claimed_roles,
-        "effective_repos": claimed_repos,
     });
     if let Some(repo_name) = normalize_optional_text(requested_repo) {
         if let Some(obj) = payload.as_object_mut() {
@@ -116,25 +104,6 @@ fn local_auth_snapshot(repo: &RepoRuntime, requested_repo: Option<&str>) -> Json
         }
     }
     payload
-}
-
-fn csv_env_values(names: &[&str]) -> Vec<JsonValue> {
-    let raw = names.iter().find_map(|name| env_nonempty(name));
-    let mut values = BTreeSet::new();
-    if let Some(raw) = raw {
-        for item in raw.split(',') {
-            if let Some(value) = normalize_optional_text(Some(item)) {
-                values.insert(value);
-            }
-        }
-    }
-    values.into_iter().map(JsonValue::String).collect()
-}
-
-fn env_nonempty(name: &str) -> Option<String> {
-    env::var(name)
-        .ok()
-        .and_then(|value| normalize_optional_text(Some(value.as_str())))
 }
 
 fn normalize_required_text(value: &str, field: &str) -> Result<String, String> {

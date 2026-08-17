@@ -17,11 +17,9 @@ use tempfile::tempdir;
 
 use ait_agent_worker::{WorkerDiagnostic, EXIT_RUNTIME_UNAVAILABLE};
 
-const CHILD_ENV: &str = "AIT_AGENT_WORKER_HOST_SIGNAL_CHILD";
-const READY_MARKER_ENV: &str = "AIT_AGENT_WORKER_HOST_SIGNAL_READY_MARKER";
-
 #[derive(Default)]
 struct ProbeRuntime {
+    ready_marker: Option<std::path::PathBuf>,
     stopped: bool,
 }
 
@@ -31,7 +29,7 @@ impl WorkerHostRuntime for ProbeRuntime {
         _context: &WorkerRunContext,
         _event_loop: &mut dyn WorkerHostEventLoop,
     ) -> Result<(), WorkerDiagnostic> {
-        let marker = std::env::var_os(READY_MARKER_ENV).ok_or_else(|| {
+        let marker = self.ready_marker.as_ref().ok_or_else(|| {
             WorkerDiagnostic::new(
                 "signal_probe_marker_missing",
                 "signal probe marker is missing",
@@ -120,15 +118,20 @@ fn fixture_context() -> (tempfile::TempDir, WorkerRunContext) {
 }
 
 #[test]
+#[ignore = "subprocess helper selected explicitly by the signal lifecycle test"]
 fn process_signal_child_helper() {
-    if std::env::var_os(CHILD_ENV).is_none() {
-        return;
-    }
     let (_temp, context) = fixture_context();
     let signals = ProcessShutdownSource::install().expect("install process signals");
     let mut wait = AgentEventLoopHostWait::new(&context).expect("event loop wait");
     let clock = SystemWorkerHostClock::new();
-    let mut runtime = ProbeRuntime::default();
+    let mut runtime = ProbeRuntime {
+        ready_marker: Some(
+            std::env::current_dir()
+                .expect("signal helper current directory")
+                .join("ready"),
+        ),
+        stopped: false,
+    };
     let mut stdout = std::io::stdout().lock();
 
     run_worker_host_with_ports(
@@ -152,9 +155,13 @@ fn real_sigterm_stops_child_host_with_structured_health_events() {
     let temp = tempdir().expect("tempdir");
     let marker = temp.path().join("ready");
     let mut child = Command::new(std::env::current_exe().expect("current test executable"))
-        .args(["--exact", "process_signal_child_helper", "--nocapture"])
-        .env(CHILD_ENV, "1")
-        .env(READY_MARKER_ENV, &marker)
+        .current_dir(temp.path())
+        .args([
+            "--ignored",
+            "--exact",
+            "process_signal_child_helper",
+            "--nocapture",
+        ])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()

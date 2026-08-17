@@ -14,7 +14,6 @@ use std::time::Duration;
 #[cfg(unix)]
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use ait_agent_core::{plan_agent_cli_launch, AgentCliPlanInput, TransportKind};
 use ait_core::json_support::{json, JsonCodec, JsonValue};
 use assert_cmd::Command;
 #[cfg(unix)]
@@ -33,27 +32,13 @@ fn worker_command() -> Command {
     let mut command = Command::cargo_bin("ait-agent-worker").expect("worker binary");
     for name in [
         "AIT_REPO_ROOT",
-        "AIT_NATIVE_WORKSPACE_ROOT",
-        "AIT_WORKSPACE_ROOT",
         "AIT_AGENT_CONFIG_PATH",
-        "AIT_SLACK_SIGNATURE",
-        "X_SLACK_SIGNATURE",
-        "AIT_SLACK_SIGNATURE_TIMESTAMP",
-        "X_SLACK_REQUEST_TIMESTAMP",
         "AIT_SLACK_SIGNING_SECRET",
         "SLACK_SIGNING_SECRET",
-        "AIT_DISCORD_SIGNATURE",
-        "AIT_DISCORD_INTERACTION_SIGNATURE",
-        "AIT_DISCORD_SIGNATURE_TIMESTAMP",
-        "AIT_DISCORD_INTERACTION_TIMESTAMP",
         "AIT_DISCORD_PUBLIC_KEY",
         "DISCORD_PUBLIC_KEY",
-        "AIT_AGENT_LOCAL_REPLY_PROGRAM",
-        "AIT_AGENT_LOCAL_REPLY_ARGS_JSON",
-        "AIT_AGENT_LOCAL_REPLY_TIMEOUT_SECONDS",
         "AIT_AGENT_CODEX_BIN",
         "AIT_CHAT_CODEX_BIN",
-        "CODEX_BIN",
         "AIT_TELEGRAM_MODE",
         "AIT_TELEGRAM_BIND_HOST",
         "AIT_TELEGRAM_BIND_PORT",
@@ -85,7 +70,7 @@ fn fixture_repo() -> tempfile::TempDir {
     temp
 }
 
-fn slack_fixture_repo() -> tempfile::TempDir {
+fn slack_fixture_repo(local_reply: Option<&JsonValue>) -> tempfile::TempDir {
     let temp = tempdir().expect("tempdir");
     fs::create_dir_all(temp.path().join(".ait/agent-runtime")).expect("runtime dir");
     fs::write(
@@ -93,6 +78,9 @@ fn slack_fixture_repo() -> tempfile::TempDir {
         r#"{"repo_name":"fixture","workflow_mode":"solo_local"}"#,
     )
     .expect("repo config");
+    let local_reply = local_reply
+        .map(|value| format!(",\n      \"local_reply\": {value}"))
+        .unwrap_or_default();
     fs::write(
         temp.path().join(".ait/agent-workers.json"),
         format!(
@@ -102,7 +90,8 @@ fn slack_fixture_repo() -> tempfile::TempDir {
     "slack/main": {{
       "kind": "slack",
       "name": "main",
-      "signing_secret": "{SLACK_SIGNING_SECRET}"
+      "signing_secret": "{SLACK_SIGNING_SECRET}",
+      "ack_text": "queued by native worker"{local_reply}
     }}
   }}
 }}
@@ -110,11 +99,6 @@ fn slack_fixture_repo() -> tempfile::TempDir {
         ),
     )
     .expect("manifest");
-    fs::write(
-        temp.path().join(".ait/agent-runtime/slack.env"),
-        "AIT_SLACK_ACK_TEXT=queued by native worker\n",
-    )
-    .expect("Slack env");
     temp
 }
 
@@ -272,11 +256,11 @@ fn reply_provider_executes_a_sessionless_gateway_turn_with_command_telemetry() {
         "conversation": {"key": "telegram:fixture-chat"},
         "provider_thread": null,
         "input": {"text": "hello"},
+        "settings": {"codex_program": codex.to_string_lossy()},
     });
 
     let output = worker_command()
         .current_dir(repo.path())
-        .env("CODEX_BIN", &codex)
         .arg("reply-provider")
         .write_stdin(request.to_string())
         .output()
@@ -318,9 +302,15 @@ fn discord_interaction_outputs_raw_signed_ping_response_without_python_wrapper()
     let (timestamp, signature) = discord_signature(DISCORD_RAW_PING);
     let output = worker_command()
         .current_dir(repo.path())
-        .env("AIT_DISCORD_SIGNATURE", signature)
-        .env("AIT_DISCORD_SIGNATURE_TIMESTAMP", timestamp)
-        .args(["discord-interaction", "--worker", "main"])
+        .args([
+            "discord-interaction",
+            "--worker",
+            "main",
+            "--signature",
+            &signature,
+            "--signature-timestamp",
+            &timestamp,
+        ])
         .write_stdin(DISCORD_RAW_PING)
         .output()
         .expect("Discord interaction output");
@@ -340,9 +330,15 @@ fn discord_interaction_rejects_invalid_signature_without_stdout_or_secret_leak()
     let repo = discord_fixture_repo();
     let output = worker_command()
         .current_dir(repo.path())
-        .env("AIT_DISCORD_SIGNATURE", "invalid")
-        .env("AIT_DISCORD_SIGNATURE_TIMESTAMP", "1714990000")
-        .args(["discord-interaction", "--worker", "main"])
+        .args([
+            "discord-interaction",
+            "--worker",
+            "main",
+            "--signature",
+            "invalid",
+            "--signature-timestamp",
+            "1714990000",
+        ])
         .write_stdin(DISCORD_RAW_PING)
         .output()
         .expect("Discord interaction rejection");
@@ -360,7 +356,6 @@ fn discord_interaction_rejects_invalid_signature_without_stdout_or_secret_leak()
 #[test]
 #[cfg(unix)]
 fn slack_command_executes_a_native_local_turn_through_the_external_provider_seam() {
-    let repo = slack_fixture_repo();
     let (response_url, request_rx, server) = serve_slack_response_once();
     let encoded_response_url = response_url.replace(':', "%3A").replace('/', "%2F");
     let raw_command = format!(
@@ -376,17 +371,23 @@ fn slack_command_executes_a_native_local_turn_through_the_external_provider_seam
             "usage": {"input_tokens": 2, "output_tokens": 3},
         },
     });
+    let local_reply = json!({
+        "program": "/bin/echo",
+        "args": [provider_response.to_string()],
+        "timeout_seconds": 2,
+    });
+    let repo = slack_fixture_repo(Some(&local_reply));
     let output = worker_command()
         .current_dir(repo.path())
-        .env("AIT_SLACK_SIGNATURE", signature)
-        .env("AIT_SLACK_SIGNATURE_TIMESTAMP", timestamp)
-        .env("AIT_AGENT_LOCAL_REPLY_PROGRAM", "/bin/echo")
-        .env(
-            "AIT_AGENT_LOCAL_REPLY_ARGS_JSON",
-            json!([provider_response.to_string()]).to_string(),
-        )
-        .env("AIT_AGENT_LOCAL_REPLY_TIMEOUT_SECONDS", "2")
-        .args(["slack-command", "--worker", "main"])
+        .args([
+            "slack-command",
+            "--worker",
+            "main",
+            "--signature",
+            &signature,
+            "--signature-timestamp",
+            &timestamp,
+        ])
         .write_stdin(raw_command.clone())
         .output()
         .expect("Slack command output");
@@ -483,12 +484,18 @@ fn http_request_complete(buffer: &[u8]) -> bool {
 
 #[test]
 fn slack_command_rejects_invalid_signature_without_stdout_or_secret_leak() {
-    let repo = slack_fixture_repo();
+    let repo = slack_fixture_repo(None);
     let output = worker_command()
         .current_dir(repo.path())
-        .env("AIT_SLACK_SIGNATURE", "v0=invalid")
-        .env("AIT_SLACK_SIGNATURE_TIMESTAMP", "1714990000")
-        .args(["slack-command", "--worker", "main"])
+        .args([
+            "slack-command",
+            "--worker",
+            "main",
+            "--signature",
+            "v0=invalid",
+            "--signature-timestamp",
+            "1714990000",
+        ])
         .write_stdin(SLACK_RAW_COMMAND)
         .output()
         .expect("Slack command rejection");
@@ -507,7 +514,6 @@ fn slack_command_rejects_invalid_signature_without_stdout_or_secret_leak() {
 #[test]
 fn capabilities_are_reported_by_the_binary_without_environment_allowlist() {
     let output = worker_command()
-        .env("AIT_AGENT_RUST_TRANSPORTS", "telegram,discord,slack,line")
         .args(["capabilities", "--json"])
         .output()
         .expect("capability output");
@@ -533,36 +539,31 @@ fn capabilities_are_reported_by_the_binary_without_environment_allowlist() {
 }
 
 #[test]
-fn existing_rust_launch_plan_argv_is_accepted_by_the_worker_binary() {
+fn direct_worker_run_argv_loads_the_manifest_backed_worker() {
     let repo = fixture_repo();
     fs::write(
         repo.path().join(".ait/config.json"),
         r#"{"repo_name":"fixture","workflow_mode":"solo_local"}"#,
     )
     .expect("repo config");
-    let plan = plan_agent_cli_launch(AgentCliPlanInput {
-        worker_manifest: json!({
-            "version": 1,
-            "workers": {
-                "telegram/main": {
-                    "kind": "telegram",
-                    "name": "main",
-                    "token": "must-not-leak"
-                }
-            }
-        }),
-        expected_concurrent_workers: None,
-        rust_worker_binary: None,
-        available_rust_transports: vec![TransportKind::Telegram],
-    });
-    let argv = &plan.workers[0].argv;
-
-    assert_eq!(argv[0], "ait-agent-worker");
+    fs::write(
+        repo.path().join(".ait/agent-workers.json"),
+        r#"{"version":1,"workers":{"telegram/main":{"kind":"telegram","name":"main","token":"must-not-leak","mode":"webhook","bind_port":70000}}}"#,
+    )
+    .expect("worker manifest");
     let output = worker_command()
         .current_dir(repo.path())
-        .env("AIT_TELEGRAM_MODE", "webhook")
-        .env("AIT_TELEGRAM_BIND_PORT", "70000")
-        .args(&argv[1..])
+        .args([
+            "run",
+            "--transport",
+            "telegram",
+            "--worker",
+            "main",
+            "--event-loop-backend",
+            "portable_poll",
+            "--shard",
+            "0",
+        ])
         .output()
         .expect("worker output");
 
@@ -575,34 +576,28 @@ fn existing_rust_launch_plan_argv_is_accepted_by_the_worker_binary() {
 }
 
 #[test]
-fn telegram_stdin_webhook_executes_from_planned_worker_argv() {
+fn telegram_stdin_webhook_executes_from_manifest_backed_worker_argv() {
     let repo = fixture_repo();
     fs::write(
         repo.path().join(".ait/config.json"),
         r#"{"repo_name":"fixture","workflow_mode":"solo_local"}"#,
     )
     .expect("repo config");
-    let plan = plan_agent_cli_launch(AgentCliPlanInput {
-        worker_manifest: json!({
-            "version": 1,
-            "workers": {
-                "telegram/main": {
-                    "kind": "telegram",
-                    "name": "main",
-                    "token": "must-not-leak"
-                }
-            }
-        }),
-        expected_concurrent_workers: None,
-        rust_worker_binary: None,
-        available_rust_transports: vec![TransportKind::Telegram],
-    });
-    let mut args = plan.workers[0].argv[1..].to_vec();
-    args.extend(["--console-mode".to_string(), "webhook".to_string()]);
-
     let output = worker_command()
         .current_dir(repo.path())
-        .args(args)
+        .args([
+            "run",
+            "--transport",
+            "telegram",
+            "--worker",
+            "main",
+            "--event-loop-backend",
+            "portable_poll",
+            "--shard",
+            "0",
+            "--console-mode",
+            "webhook",
+        ])
         .write_stdin(r#"{"update_id":42}"#)
         .output()
         .expect("worker output");

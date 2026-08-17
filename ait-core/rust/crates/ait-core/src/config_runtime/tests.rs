@@ -1,24 +1,8 @@
-use super::env_ports::RuntimeConfigEnvironmentSource;
 use super::*;
 use crate::json_support::json;
 use crate::shared_foundation::ConfigProvider;
-use std::cell::RefCell;
-use std::collections::BTreeMap;
 
 fn assert_config_provider<T: ConfigProvider>() {}
-
-#[derive(Default)]
-struct SubstituteRuntimeConfigEnvironmentSource {
-    values: BTreeMap<String, String>,
-    calls: RefCell<Vec<String>>,
-}
-
-impl RuntimeConfigEnvironmentSource for SubstituteRuntimeConfigEnvironmentSource {
-    fn env_value(&self, name: &str) -> Option<String> {
-        self.calls.borrow_mut().push(name.to_string());
-        self.values.get(name).cloned()
-    }
-}
 
 struct SubstituteConfigProvider;
 
@@ -166,18 +150,7 @@ fn plan_runtime_config_foundation_delegates_core_normalizer() {
 }
 
 #[test]
-fn selection_facts_read_environment_through_runtime_env_source_trait_object() {
-    let env_source = SubstituteRuntimeConfigEnvironmentSource {
-        values: BTreeMap::from_iter([
-            ("AIT_PLAN_BACKEND".to_string(), "rust".to_string()),
-            (
-                "AIT_PLAN_FILESYSTEM_BACKEND".to_string(),
-                " rust ".to_string(),
-            ),
-        ]),
-        ..Default::default()
-    };
-    let env_port: &dyn RuntimeConfigEnvironmentSource = &env_source;
+fn selection_facts_use_typed_overrides_or_the_fixed_rust_default() {
     let request_json = json!({
         "overrides": {
             "plan_http_backend": "rust"
@@ -185,70 +158,23 @@ fn selection_facts_read_environment_through_runtime_env_source_trait_object() {
     })
     .to_string();
 
-    let facts = build_plan_runtime_selection_facts_with_environment_source(env_port, &request_json)
-        .expect("selection facts");
+    let facts = build_plan_runtime_selection_facts_json(&request_json).expect("selection facts");
 
     assert_eq!(facts["plan_core_backend"]["value"], "rust");
-    assert_eq!(facts["plan_core_backend"]["source"], "env");
+    assert_eq!(facts["plan_core_backend"]["source"], "default");
     assert_eq!(facts["plan_http_backend"]["value"], "rust");
     assert_eq!(facts["plan_http_backend"]["source"], "explicit");
     assert_eq!(facts["plan_filesystem_backend"]["value"], "rust");
-    assert_eq!(facts["plan_filesystem_backend"]["source"], "env");
-    let calls = env_source.calls.borrow();
-    assert!(calls.iter().any(|name| name == "AIT_PLAN_CORE_BACKEND"));
-    assert!(calls.iter().any(|name| name == "AIT_PLAN_BACKEND"));
-    assert!(calls
-        .iter()
-        .any(|name| name == "AIT_PLAN_FILESYSTEM_BACKEND"));
+    assert_eq!(facts["plan_filesystem_backend"]["source"], "default");
 }
 
 #[test]
-fn backend_gate_reads_experiment_flags_through_runtime_env_source_trait_object() {
-    let blocked = SubstituteRuntimeConfigEnvironmentSource::default();
-    let blocked_port: &dyn RuntimeConfigEnvironmentSource = &blocked;
-    assert!(resolve_runtime_backend_selection_with_environment_source(
-        blocked_port,
-        Some("rust"),
-        "experimental backend activation",
-        "default",
-    )
-    .is_err());
-
-    let allowed_by_env = SubstituteRuntimeConfigEnvironmentSource {
-        values: BTreeMap::from_iter([(
-            "AIT_ALLOW_RUST_BACKEND_EXPERIMENTS".to_string(),
-            "on".to_string(),
-        )]),
-        ..Default::default()
-    };
-    let allowed_by_env_port: &dyn RuntimeConfigEnvironmentSource = &allowed_by_env;
+fn backend_gate_is_fixed_to_rust_without_process_environment() {
     assert_eq!(
-        resolve_runtime_backend_selection_with_environment_source(
-            allowed_by_env_port,
-            Some("rust"),
-            "experimental backend activation",
-            "default",
-        )
-        .expect("env enabled rust"),
+        resolve_runtime_backend_selection("rust", "plan core backend activation")
+            .expect("Rust authority"),
         "rust"
     );
-
-    let allowed_by_pytest = SubstituteRuntimeConfigEnvironmentSource {
-        values: BTreeMap::from_iter([(
-            "PYTEST_CURRENT_TEST".to_string(),
-            "test_config_runtime".to_string(),
-        )]),
-        ..Default::default()
-    };
-    let allowed_by_pytest_port: &dyn RuntimeConfigEnvironmentSource = &allowed_by_pytest;
-    assert_eq!(
-        resolve_runtime_backend_selection_with_environment_source(
-            allowed_by_pytest_port,
-            Some("rust"),
-            "experimental backend activation",
-            "explicit",
-        )
-        .expect("pytest explicit rust"),
-        "rust"
-    );
+    assert!(resolve_runtime_backend_selection("python", "plan core backend activation").is_err());
+    assert!(resolve_runtime_backend_selection("other", "plan core backend activation").is_err());
 }

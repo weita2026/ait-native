@@ -4,9 +4,9 @@ use crate::workflow_closeout_model_support::{
     bool_field, command_hint, command_hint_json, external_readiness_blocker_detail,
     external_readiness_is_ready, field_obj, int_field, optional_bool_field, optional_obj_field,
     optional_string_field, string_field, workflow_land_change_effectively_landed,
-    workflow_land_policy_blocker_detail, workflow_land_policy_has_checks, workflow_land_result,
-    workflow_land_result_blocker_class, workflow_land_stale_policy_blocker_cleared,
-    workflow_land_submission_id, workflow_land_submission_status,
+    workflow_land_policy_blocker_detail, workflow_land_result, workflow_land_result_blocker_class,
+    workflow_land_stale_policy_blocker_cleared, workflow_land_submission_id,
+    workflow_land_submission_status,
 };
 
 pub(crate) const WORKFLOW_LAND_PENDING_STATUSES: &[&str] = &["queued", "running"];
@@ -16,8 +16,6 @@ pub(crate) const WORKFLOW_READY_APPLY_OWNED_CODES: &[&str] = &[
     "refresh_patchset",
     "run_patchset_ci",
     "record_attestation",
-    "record_review",
-    "evaluate_policy",
     "waiting_for_ci",
 ];
 pub(crate) const WORKFLOW_LAND_APPLY_OWNED_CODES: &[&str] = &[
@@ -25,6 +23,7 @@ pub(crate) const WORKFLOW_LAND_APPLY_OWNED_CODES: &[&str] = &[
     "record_review",
     "evaluate_policy",
     "submit_land",
+    "complete_task",
     "waiting_for_land",
 ];
 
@@ -193,7 +192,7 @@ pub(crate) fn workflow_ready_next_action(
             "code": "snapshot_create",
             "summary": "Capture a fresh snapshot before publishing or refreshing the patchset.",
             "detail": "The workspace still has unsaved changes.",
-            "command": workflow_land_owned_command(
+            "command": workflow_ready_owned_command(
                 "snapshot_create",
                 command_hint(commands, "apply_command"),
                 apply_owned_continuation,
@@ -212,7 +211,7 @@ pub(crate) fn workflow_ready_next_action(
                     "code": "refresh_patchset",
                     "summary": optional_string_field(&refresh_context, "summary").unwrap_or_else(|| "Refresh the selected patchset from the current line.".to_string()),
                     "detail": optional_string_field(&refresh_context, "detail").unwrap_or_else(|| "The selected patchset is stale and needs a fresh publish from the current line.".to_string()),
-                    "command": workflow_land_owned_command(
+                    "command": workflow_ready_owned_command(
                         "refresh_patchset",
                         command_hint(commands, "apply_command"),
                         apply_owned_continuation,
@@ -232,7 +231,7 @@ pub(crate) fn workflow_ready_next_action(
             "code": publish_code,
             "summary": "Publish the current line as the reviewable patchset.",
             "detail": "The ready workflow still needs a fresh published patchset from the current line.",
-            "command": workflow_land_owned_command(
+            "command": workflow_ready_owned_command(
                 publish_code,
                 command_hint(commands, "apply_command"),
                 apply_owned_continuation,
@@ -281,7 +280,7 @@ pub(crate) fn workflow_ready_next_action(
                     } else {
                         "Routine patchsets must rely on completed remote CI state embedded in the selected Patchset; local or manual tests pass is not enough for this repository.".to_string()
                     },
-                    "command": workflow_land_owned_command(
+                    "command": workflow_ready_owned_command(
                         "run_patchset_ci",
                         command_hint(commands, "apply_command"),
                         apply_owned_continuation,
@@ -302,7 +301,7 @@ pub(crate) fn workflow_ready_next_action(
             "command": if patchset_ci_required {
                 JsonValue::String(apply_command.clone())
             } else {
-                workflow_land_owned_command(
+                workflow_ready_owned_command(
                     "record_attestation",
                     command_hint(commands, "apply_command"),
                     apply_owned_continuation,
@@ -313,60 +312,6 @@ pub(crate) fn workflow_ready_next_action(
             },
         });
     }
-    if int_field(facts, "review_blocking") > 0 {
-        return json!({
-            "code": "address_blocking_review",
-            "summary": "Resolve blocking review feedback before marking the Patchset ready.",
-            "detail": "A blocking review is recorded on the selected Patchset.",
-            "command": command_hint_json(commands, "review_command"),
-        });
-    }
-    if int_field(facts, "task_review_approvals") <= 0 {
-        let task_review_enabled = bool_field(facts, "task_review_enabled");
-        let auto_review_reviewer = command_hint(commands, "auto_review_reviewer");
-        return json!({
-            "code": "record_review",
-            "summary": if task_review_enabled {
-                "Record the required task review before marking the Patchset ready."
-            } else if auto_review_reviewer.is_some() {
-                "Auto-record the configured task approval before marking the Patchset ready."
-            } else {
-                "Record the required task approval before marking the Patchset ready."
-            },
-            "detail": if task_review_enabled {
-                "Task/outcome review is enabled and requires an explicit approval.".to_string()
-            } else if let Some(reviewer) = auto_review_reviewer {
-                format!("Workflow ready will record `task_approve` as `{reviewer}` and refresh policy so Task Land can consume an already-ready Patchset.")
-            } else {
-                "Task review auto approval is enabled, but `ait config` `user_name` is not set.".to_string()
-            },
-            "command": workflow_land_owned_command(
-                "record_review",
-                command_hint(commands, "apply_command"),
-                apply_owned_continuation,
-                Some(apply_command.clone()),
-                command_hint(commands, "review_command"),
-            ),
-        });
-    }
-    let policy_decision = optional_obj_field(facts, "policy")
-        .as_ref()
-        .and_then(|policy| optional_string_field(policy, "decision"))
-        .unwrap_or_else(|| "pending".to_string());
-    if policy_decision != "pass" {
-        return json!({
-            "code": "evaluate_policy",
-            "summary": "Evaluate policy after CI, attestation, and review are complete.",
-            "detail": "The final policy evaluation marks the selected Patchset ready for atomic Task Land.",
-            "command": workflow_land_owned_command(
-                "evaluate_policy",
-                command_hint(commands, "apply_command"),
-                apply_owned_continuation,
-                Some(apply_command.clone()),
-                command_hint(commands, "policy_command"),
-            ),
-        });
-    }
     let patchset_id = if patchset_id.is_empty() {
         "unknown".to_string()
     } else {
@@ -375,7 +320,7 @@ pub(crate) fn workflow_ready_next_action(
     json!({
         "code": "done",
         "summary": "Ready phase is complete.",
-        "detail": format!("Patchset `{patchset_id}` has CI, attestation, review, and policy evidence ready for atomic `task land`."),
+        "detail": format!("Patchset `{patchset_id}` and its CI/Attestation evidence are ready for reviewer-owned `workflow land`."),
         "command": land_command,
     })
 }
@@ -391,7 +336,7 @@ pub(crate) fn workflow_land_next_action(
     policy_override: Option<Map<String, JsonValue>>,
     policy_decision_override: &str,
     landing_summary_override: Option<Map<String, JsonValue>>,
-    task_review_enabled: bool,
+    task_review_required: bool,
 ) -> JsonValue {
     let change = field_obj(facts, "change");
     let task = field_obj(facts, "task");
@@ -434,7 +379,7 @@ pub(crate) fn workflow_land_next_action(
             "code": "complete_task",
             "summary": "Complete the task now that the change is landed.",
             "detail": "The workflow record should match the landed reality.",
-            "command": command_hint_json(commands, "task_complete_command"),
+            "command": command_hint_json(commands, "task_land_command"),
         });
     }
     if landed_fast_path || change_is_landed {
@@ -518,23 +463,33 @@ pub(crate) fn workflow_land_next_action(
             "command": command_hint_json(commands, "review_command"),
         });
     }
+    if bool_field(facts, "requires_code_review_summary")
+        && int_field(facts, "code_review_summary_count") <= 0
+    {
+        return json!({
+            "code": "record_code_review_summary",
+            "summary": "Record AI code review before Task approval or Land.",
+            "detail": "An AI agent must inspect this exact Patchset and submit the structured pass-ready summary. Task Land only consumes already-ready review state.",
+            "command": command_hint_json(commands, "code_review_summary_command"),
+        });
+    }
     if int_field(facts, "task_review_approvals") <= 0 {
         let auto_review_reviewer = command_hint(commands, "auto_review_reviewer");
         let team_review_available = command_hint(commands, "team_review_command").is_some();
         return json!({
             "code": "record_review",
-            "summary": if task_review_enabled {
+            "summary": if task_review_required {
                 "Record the required task review for this change."
             } else if auto_review_reviewer.is_some() {
                 "Auto-record the required task approval for this change."
             } else {
                 "Record the required task approval for this change."
             },
-            "detail": if task_review_enabled {
+            "detail": if task_review_required {
                 "Land still needs task/outcome approval.".to_string()
             } else if let Some(reviewer) = auto_review_reviewer.clone() {
                 let mut detail = format!(
-                    "Task/outcome review auto approval is configured. `task land` can auto-record `task_approve` as `{reviewer}`."
+                    "Task/outcome review auto approval is configured. Reviewer-owned Workflow Land or a successful direct AI code review can record `task_approve` as `{reviewer}` before atomic Task Land."
                 );
                 if team_review_available {
                     detail.push_str(" Preserved team review remains available separately in `team_remote`.");
@@ -558,7 +513,26 @@ pub(crate) fn workflow_land_next_action(
             ),
         });
     }
-    if policy_decision != "pass" && workflow_land_policy_has_checks(policy.as_ref()) {
+    if policy_decision != "pass"
+        && matches!(
+            policy_decision.trim().to_ascii_lowercase().as_str(),
+            "" | "pending" | "not_evaluated" | "stale" | "unknown"
+        )
+    {
+        return json!({
+            "code": "evaluate_policy",
+            "summary": "Evaluate policy after reviewer approval.",
+            "detail": "Workflow Land owns the final Policy evaluation before it delegates atomic closeout to Task Land.",
+            "command": workflow_land_owned_command(
+                "evaluate_policy",
+                command_hint(commands, "apply_command"),
+                apply_owned_continuation,
+                Some(apply_command.clone()),
+                command_hint(commands, "policy_command"),
+            ),
+        });
+    }
+    if policy_decision != "pass" {
         return json!({
             "code": "land_blocked",
             "summary": "Clear the current land preflight blocker before retrying remote land.",
@@ -624,9 +598,44 @@ pub(crate) fn workflow_land_owned_command(
     resolved_apply_command: Option<String>,
     fallback_command: Option<String>,
 ) -> JsonValue {
+    workflow_owned_command(
+        WORKFLOW_LAND_APPLY_OWNED_CODES,
+        code,
+        apply_command,
+        apply_owned_continuation,
+        resolved_apply_command,
+        fallback_command,
+    )
+}
+
+pub(crate) fn workflow_ready_owned_command(
+    code: &str,
+    apply_command: Option<String>,
+    apply_owned_continuation: bool,
+    resolved_apply_command: Option<String>,
+    fallback_command: Option<String>,
+) -> JsonValue {
+    workflow_owned_command(
+        WORKFLOW_READY_APPLY_OWNED_CODES,
+        code,
+        apply_command,
+        apply_owned_continuation,
+        resolved_apply_command,
+        fallback_command,
+    )
+}
+
+fn workflow_owned_command(
+    apply_owned_codes: &[&str],
+    code: &str,
+    apply_command: Option<String>,
+    apply_owned_continuation: bool,
+    resolved_apply_command: Option<String>,
+    fallback_command: Option<String>,
+) -> JsonValue {
     let owned_command = apply_command.or(resolved_apply_command);
     match (
-        apply_owned_continuation && WORKFLOW_LAND_APPLY_OWNED_CODES.contains(&code),
+        apply_owned_continuation && apply_owned_codes.contains(&code),
         owned_command,
     ) {
         (true, Some(command)) => JsonValue::String(command),

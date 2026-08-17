@@ -467,15 +467,6 @@ fn apply_safe_finding(
             )?;
             Ok(json!({"mutated": true, "operation": "task_close", "result": result}))
         }
-        "task.local_status_stale" => {
-            let task_id = finding_identity(finding, "task_id")?;
-            let status = finding
-                .get("evidence")
-                .and_then(|evidence| string_field(evidence, "remote_status"))
-                .ok_or_else(|| format!("Finding for {task_id} is missing remote status."))?;
-            let result = task_close(repo, &task_id, &status, true, None, None)?;
-            Ok(json!({"mutated": true, "operation": "refresh_local_task_status", "result": result}))
-        }
         "worktree.materialization_missing" | "worktree.overlay_detached" => {
             let worktree_name = finding_identity(finding, "worktree_name")?;
             let worktree_name = worktree::normalize_worktree_name(&worktree_name)?;

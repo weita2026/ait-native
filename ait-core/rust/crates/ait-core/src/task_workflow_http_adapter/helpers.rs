@@ -19,7 +19,7 @@ pub(super) fn change_read_error_allows_listing_recovery(
 
 pub(super) fn remote_mutation_response_deadline_timeout_ms() -> Option<u64> {
     duration_from_env(
-        "AIT_REMOTE_MUTATION_RESPONSE_DEADLINE_SECONDS",
+        crate::environment_contract::names::AIT_REMOTE_MUTATION_RESPONSE_DEADLINE_SECONDS,
         Duration::from_secs(10),
     )
     .and_then(duration_to_timeout_ms)
@@ -27,7 +27,7 @@ pub(super) fn remote_mutation_response_deadline_timeout_ms() -> Option<u64> {
 
 pub(super) fn remote_task_land_response_deadline_timeout_ms() -> Option<u64> {
     duration_from_env(
-        "AIT_REMOTE_MUTATION_RESPONSE_DEADLINE_SECONDS",
+        crate::environment_contract::names::AIT_REMOTE_MUTATION_RESPONSE_DEADLINE_SECONDS,
         Duration::from_secs(30),
     )
     .and_then(duration_to_timeout_ms)
@@ -35,7 +35,7 @@ pub(super) fn remote_task_land_response_deadline_timeout_ms() -> Option<u64> {
 
 pub(super) fn remote_mutation_settle_window() -> Duration {
     duration_from_env(
-        "AIT_REMOTE_MUTATION_SETTLE_WINDOW_SECONDS",
+        crate::environment_contract::names::AIT_REMOTE_MUTATION_SETTLE_WINDOW_SECONDS,
         Duration::from_secs(5),
     )
     .unwrap_or_else(|| Duration::from_secs(5))
@@ -43,7 +43,7 @@ pub(super) fn remote_mutation_settle_window() -> Duration {
 
 pub(super) fn remote_mutation_settle_poll() -> Duration {
     duration_from_env(
-        "AIT_REMOTE_MUTATION_SETTLE_POLL_SECONDS",
+        crate::environment_contract::names::AIT_REMOTE_MUTATION_SETTLE_POLL_SECONDS,
         Duration::from_millis(250),
     )
     .unwrap_or_else(|| Duration::from_millis(250))

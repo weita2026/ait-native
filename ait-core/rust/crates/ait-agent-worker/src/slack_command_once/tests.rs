@@ -77,12 +77,6 @@ fn fixture(remote: bool, signing_secret: Option<&str>) -> TempDir {
         .to_string(),
     )
     .expect("worker manifest");
-    fs::create_dir_all(temp.path().join(".ait/agent-runtime")).expect("runtime dir");
-    fs::write(
-        temp.path().join(".ait/agent-runtime/slack.env"),
-        "AIT_SLACK_ACK_TEXT=queued by rust\nAIT_SLACK_RESPONSE_TYPE=in_channel\n",
-    )
-    .expect("Slack env");
     temp
 }
 

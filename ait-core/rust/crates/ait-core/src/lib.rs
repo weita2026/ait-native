@@ -38,6 +38,7 @@ pub mod content_binary_db;
 pub mod content_store;
 pub mod current_source_cache;
 pub mod diagnostics;
+pub mod environment_contract;
 pub mod external;
 pub mod file_io;
 pub mod json_support;
@@ -82,7 +83,6 @@ pub mod snapshot_store;
 pub mod stash_binary_db;
 pub mod stash_store;
 pub mod tag_store;
-pub mod task_close;
 pub mod task_json;
 pub mod task_lifecycle;
 pub mod task_remote;
@@ -114,8 +114,6 @@ pub mod workflow_closeout_views;
 pub mod workflow_event_store;
 pub mod workflow_primitives;
 pub mod workflow_release_store;
-pub mod workflow_tier;
-
 // Compatibility wrapper modules that preserve the existing `plan_*` symbol
 // surface while shared-foundation ownership moves to the generic modules above.
 pub mod plan_config_runtime;

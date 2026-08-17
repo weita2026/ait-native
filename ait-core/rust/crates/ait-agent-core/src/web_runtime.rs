@@ -3,6 +3,7 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use ait_core::environment_contract::names;
 use ait_core::json_support::{json, JsonMap, JsonValue};
 
 use crate::manifest::{
@@ -73,7 +74,7 @@ fn telegram_config_load(request: &JsonMap<String, JsonValue>) -> Result<JsonValu
     let repo_root = PathBuf::from(required_text(request.get("repo_root"), "repo_root")?);
     let process_env = request_process_env(request)?;
     let default_manifest_path = repo_root.join(".ait").join("agent-workers.json");
-    let manifest_path = clean_map_text(process_env.get("AIT_AGENT_CONFIG_PATH"))
+    let manifest_path = clean_map_text(process_env.get(names::AIT_AGENT_CONFIG_PATH))
         .map(|value| {
             select_safe_repo_override(&repo_root, &default_manifest_path, &value, &process_env)
         })
@@ -85,9 +86,7 @@ fn telegram_config_load(request: &JsonMap<String, JsonValue>) -> Result<JsonValu
             document.issues.join("; ")
         ));
     }
-    let requested_name = optional_text(request.get("name"))
-        .or_else(|| clean_map_text(process_env.get("AIT_TELEGRAM_GRAPH_TRIGGER_WORKER")))
-        .unwrap_or_else(|| "main".to_string());
+    let requested_name = optional_text(request.get("name")).unwrap_or_else(|| "main".to_string());
     let selected = agent_select_telegram_worker_json(&document.config, Some(&requested_name));
     let worker = if selected.as_object().is_some() {
         selected
@@ -288,7 +287,7 @@ mod tests {
         fs::create_dir_all(repo.path().join(".ait")).expect("create ait dir");
         fs::write(
             repo.path().join(".ait/agent-workers.json"),
-            r#"{"version":1,"workers":{"telegram/main":{"token":"secret","username":"@ait","env_path":".ait/agent-runtime/telegram.env"}}}"#,
+            r#"{"version":1,"workers":{"telegram/main":{"token":"secret","username":"@ait","env_path":".ait/agent-runtime/telegram.env","background_sync_enabled":true,"background_sync_interval_seconds":12.5}}}"#,
         )
         .expect("write manifest");
 
@@ -297,10 +296,7 @@ mod tests {
                 "operation": "telegram_config_load",
                 "repo_root": repo.path().to_string_lossy(),
                 "name": "main",
-                "process_env": {
-                    "AIT_TELEGRAM_BACKGROUND_SYNC_ENABLED": "true",
-                    "AIT_TELEGRAM_BACKGROUND_SYNC_INTERVAL_SECONDS": "12.5"
-                }
+                "process_env": {}
             }))
             .expect("load Telegram config"),
         );

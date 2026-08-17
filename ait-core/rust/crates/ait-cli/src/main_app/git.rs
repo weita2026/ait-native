@@ -5,9 +5,8 @@ fn run_git_command(repo: RepoRuntime, command: GitCommand) -> Result<(), String>
                 git_import_cmd(
                     &repo,
                     &args.source,
-                    args.all_refs,
+                    args.all_branches_and_tags,
                     args.dry_run,
-                    args.resume,
                 )
             })?;
             emit_result(
@@ -34,9 +33,8 @@ fn run_git_command(repo: RepoRuntime, command: GitCommand) -> Result<(), String>
                 git_export_cmd(
                     &repo,
                     &args.target,
-                    args.all_refs,
+                    args.all_lines_and_tags,
                     args.dry_run,
-                    args.resume,
                 )
             })?;
             emit_result(
@@ -67,7 +65,6 @@ fn run_git_command(repo: RepoRuntime, command: GitCommand) -> Result<(), String>
                     &args.endpoint,
                     &args.direction,
                     args.dry_run,
-                    args.once,
                 )
             })?;
             emit_result(

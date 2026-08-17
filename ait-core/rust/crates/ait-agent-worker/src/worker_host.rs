@@ -1,14 +1,13 @@
 use std::io::{self, Write};
-use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicI32, Ordering};
 use std::time::{Duration, Instant};
 
 use ait_agent_core::{
-    consume_worker_termination_context_json, AgentEvent, AgentEventLoopDriver,
-    AgentEventLoopPollPort, AgentEventLoopReadWriteRegistrationPort,
-    AgentEventLoopReadableRegistrationPort, AgentEventLoopUnregistrationPort, NativeSocket,
+    AgentEvent, AgentEventLoopDriver, AgentEventLoopPollPort,
+    AgentEventLoopReadWriteRegistrationPort, AgentEventLoopReadableRegistrationPort,
+    AgentEventLoopUnregistrationPort, NativeSocket,
 };
-use ait_core::json_support::{json, JsonCodec, JsonEncodeOptions, JsonValue};
+use ait_core::json_support::{JsonCodec, JsonEncodeOptions};
 use serde::Serialize;
 
 use crate::diagnostic::{WorkerDiagnostic, EXIT_RUNTIME_UNAVAILABLE};
@@ -19,6 +18,7 @@ const DEFAULT_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const DEFAULT_SHUTDOWN_GRACE: Duration = Duration::from_secs(10);
 #[cfg(windows)]
 const WORKER_SHUTDOWN_INTERRUPT: i32 = 2;
+#[cfg(windows)]
 const WORKER_SHUTDOWN_TERMINATE: i32 = 15;
 
 static PROCESS_SHUTDOWN_SIGNAL: AtomicI32 = AtomicI32::new(0);
@@ -59,8 +59,6 @@ pub struct WorkerHostHealthSnapshot {
     pub reconnect_attempt: Option<usize>,
     pub runtime_diagnostic_code: Option<String>,
     pub shutdown_signal: Option<i32>,
-    pub termination_context_status: Option<String>,
-    pub termination_context_suffix: Option<String>,
     pub failure_code: Option<String>,
     pub python_worker_execution_allowed: bool,
 }
@@ -245,34 +243,6 @@ impl WorkerShutdownSource for ProcessShutdownSource {
     }
 }
 
-struct ProcessAndContextShutdownSource {
-    process: ProcessShutdownSource,
-    termination_context_path: PathBuf,
-}
-
-impl ProcessAndContextShutdownSource {
-    fn new(process: ProcessShutdownSource, context: &WorkerRunContext) -> Self {
-        Self {
-            process,
-            termination_context_path: PathBuf::from(
-                &context.config.shared().paths.termination_context_path,
-            ),
-        }
-    }
-}
-
-impl WorkerShutdownSource for ProcessAndContextShutdownSource {
-    fn shutdown_signal(&self) -> Option<i32> {
-        self.process.shutdown_signal().or_else(|| {
-            termination_context_requests_shutdown(
-                &self.termination_context_path,
-                i64::from(std::process::id()),
-            )
-            .then_some(WORKER_SHUTDOWN_TERMINATE)
-        })
-    }
-}
-
 pub fn run_worker_host<R>(
     context: &WorkerRunContext,
     runtime: &mut R,
@@ -281,33 +251,18 @@ where
     R: WorkerHostRuntime,
 {
     let signals = ProcessShutdownSource::install()?;
-    let shutdown = ProcessAndContextShutdownSource::new(signals, context);
     let mut wait = AgentEventLoopHostWait::new(context)?;
     let clock = SystemWorkerHostClock::new();
     let mut stderr = io::stderr().lock();
     run_worker_host_with_ports(
         context,
         runtime,
-        &shutdown,
+        &signals,
         &mut wait,
         &clock,
         WorkerHostSettings::default(),
         &mut stderr,
     )
-}
-
-fn termination_context_requests_shutdown(path: &Path, expected_pid: i64) -> bool {
-    let Ok(text) = std::fs::read_to_string(path) else {
-        return false;
-    };
-    let Ok(payload) = JsonCodec::parse_value(&text, "worker termination context") else {
-        return false;
-    };
-    payload.get("pid").and_then(|value| {
-        value
-            .as_i64()
-            .or_else(|| value.as_u64().and_then(|value| i64::try_from(value).ok()))
-    }) == Some(expected_pid)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -335,7 +290,6 @@ where
             WorkerHostHealthState::Starting,
             None,
             None,
-            None,
         ),
     )?;
     if let Err(error) = runtime.start(context, event_loop) {
@@ -345,14 +299,7 @@ where
     }
     emit_health(
         output,
-        health_snapshot(
-            context,
-            runtime,
-            WorkerHostHealthState::Ready,
-            None,
-            None,
-            None,
-        ),
+        health_snapshot(context, runtime, WorkerHostHealthState::Ready, None, None),
     )?;
     let mut runtime_health_generation = runtime.runtime_health_generation();
 
@@ -362,12 +309,10 @@ where
     loop {
         if shutdown.is_none() {
             if let Some(signal) = shutdown_source.shutdown_signal() {
-                let termination = consume_termination_context(context, signal);
                 if let Err(error) = runtime.request_shutdown(context, event_loop, signal) {
                     let state = ShutdownState {
                         signal,
                         started_at: clock.now(),
-                        termination,
                     };
                     emit_failure(output, context, runtime, Some(&state), None, &error)?;
                     let _ = runtime.force_shutdown(context, event_loop);
@@ -376,7 +321,6 @@ where
                 let state = ShutdownState {
                     signal,
                     started_at: clock.now(),
-                    termination,
                 };
                 emit_health(
                     output,
@@ -385,7 +329,6 @@ where
                         runtime,
                         WorkerHostHealthState::Stopping,
                         Some(&state),
-                        None,
                         None,
                     ),
                 )?;
@@ -408,7 +351,6 @@ where
                         runtime,
                         WorkerHostHealthState::Stopped,
                         Some(state),
-                        None,
                         None,
                     ),
                 )?;
@@ -455,7 +397,6 @@ where
                     },
                     shutdown.as_ref(),
                     None,
-                    None,
                 ),
             )?;
             runtime_health_generation = next_health_generation;
@@ -483,46 +424,9 @@ where
 }
 
 #[derive(Debug, Clone)]
-struct TerminationContextSummary {
-    status: String,
-    suffix: String,
-}
-
-#[derive(Debug, Clone)]
 struct ShutdownState {
     signal: i32,
     started_at: Duration,
-    termination: TerminationContextSummary,
-}
-
-fn consume_termination_context(
-    context: &WorkerRunContext,
-    signal: i32,
-) -> TerminationContextSummary {
-    let request = json!({
-        "path": context.config.shared().paths.termination_context_path,
-        "expected_pid": std::process::id(),
-        "signal": signal,
-        "include_issuer_details": false,
-    });
-    match consume_worker_termination_context_json(&request) {
-        Ok(result) => TerminationContextSummary {
-            status: result
-                .get("status")
-                .and_then(JsonValue::as_str)
-                .unwrap_or("unknown")
-                .to_string(),
-            suffix: result
-                .get("suffix")
-                .and_then(JsonValue::as_str)
-                .unwrap_or_default()
-                .to_string(),
-        },
-        Err(_) => TerminationContextSummary {
-            status: "consume_failed".to_string(),
-            suffix: String::new(),
-        },
-    }
 }
 
 fn health_snapshot<R>(
@@ -531,12 +435,10 @@ fn health_snapshot<R>(
     state: WorkerHostHealthState,
     shutdown: Option<&ShutdownState>,
     failure_code: Option<&str>,
-    termination_override: Option<&TerminationContextSummary>,
 ) -> WorkerHostHealthSnapshot
 where
     R: WorkerHostRuntime + ?Sized,
 {
-    let termination = termination_override.or_else(|| shutdown.map(|value| &value.termination));
     WorkerHostHealthSnapshot {
         contract: WORKER_HOST_HEALTH_CONTRACT,
         kind: "worker_host_health",
@@ -550,10 +452,6 @@ where
         reconnect_attempt: runtime.runtime_reconnect_attempt(),
         runtime_diagnostic_code: runtime.runtime_diagnostic_code().map(str::to_string),
         shutdown_signal: shutdown.map(|value| value.signal),
-        termination_context_status: termination.map(|value| value.status.clone()),
-        termination_context_suffix: termination
-            .map(|value| value.suffix.clone())
-            .filter(|value| !value.is_empty()),
         failure_code: failure_code.map(str::to_string),
         python_worker_execution_allowed: false,
     }
@@ -580,7 +478,6 @@ where
             WorkerHostHealthState::Failed,
             shutdown,
             Some(failure_code),
-            None,
         ),
     )
 }
@@ -688,7 +585,6 @@ mod tests {
     use std::cell::Cell;
     use std::collections::BTreeMap;
     use std::fs;
-    use std::path::PathBuf;
     use std::rc::Rc;
 
     use ait_agent_core::{
@@ -927,18 +823,8 @@ mod tests {
     }
 
     #[test]
-    fn host_transitions_ready_drains_inflight_and_consumes_termination_context() {
+    fn host_transitions_ready_and_drains_inflight_after_shutdown_signal() {
         let (_temp, context) = fixture_context();
-        let termination_path =
-            PathBuf::from(&context.config.shared().paths.termination_context_path);
-        fs::write(
-            &termination_path,
-            format!(
-                "{{\"pid\":{},\"reason\":\"operator stop\",\"secret\":\"must-not-log\"}}",
-                std::process::id()
-            ),
-        )
-        .expect("termination context");
         let mut runtime = FakeRuntime {
             inflight: 2,
             drain_per_tick: 1,
@@ -954,10 +840,6 @@ mod tests {
         assert!(!runtime.forced);
         assert!(wait.calls >= 2);
         assert_eq!(states(&logs), ["starting", "ready", "stopping", "stopped"]);
-        assert!(logs.contains("\"termination_context_status\":\"consumed\""));
-        assert!(logs.contains("operator stop"));
-        assert!(!logs.contains("must-not-log"));
-        assert!(!termination_path.exists());
     }
 
     #[test]
@@ -1036,14 +918,8 @@ mod tests {
     fn health_logs_are_versioned_and_disallow_python_execution() {
         let (_temp, context) = fixture_context();
         let runtime = FakeRuntime::default();
-        let snapshot = health_snapshot(
-            &context,
-            &runtime,
-            WorkerHostHealthState::Ready,
-            None,
-            None,
-            None,
-        );
+        let snapshot =
+            health_snapshot(&context, &runtime, WorkerHostHealthState::Ready, None, None);
 
         assert_eq!(snapshot.contract, WORKER_HOST_HEALTH_CONTRACT);
         assert_eq!(snapshot.state.as_str(), "ready");

@@ -84,14 +84,10 @@ struct ExistingInitPlan {
 }
 
 pub fn init_repo(request: &InitRequest) -> Result<JsonValue, String> {
-    init_repo_with_agent_contract(request, true)
-}
-
-pub(crate) fn init_repo_for_install(
-    request: &InitRequest,
-    sprint_enabled: bool,
-) -> Result<JsonValue, String> {
-    init_repo_with_agent_contract(request, sprint_enabled)
+    let payload = init_repo_impl(request)?;
+    let repo = RepoRuntime::discover_from_path(&request.root)?;
+    converge_agent_workflow_harness(&repo)?;
+    Ok(payload)
 }
 
 /// Initializes an isolated recovery staging repository with only the
@@ -100,20 +96,10 @@ pub(crate) fn init_repo_for_install(
 pub(crate) fn init_repo_for_remote_head_recovery(
     request: &InitRequest,
 ) -> Result<JsonValue, String> {
-    init_repo_impl(request, true)
+    init_repo_impl(request)
 }
 
-fn init_repo_with_agent_contract(
-    request: &InitRequest,
-    sprint_enabled: bool,
-) -> Result<JsonValue, String> {
-    let payload = init_repo_impl(request, sprint_enabled)?;
-    let repo = RepoRuntime::discover_from_path(&request.root)?;
-    converge_agent_workflow_harness(&repo)?;
-    Ok(payload)
-}
-
-fn init_repo_impl(request: &InitRequest, sprint_enabled: bool) -> Result<JsonValue, String> {
+fn init_repo_impl(request: &InitRequest) -> Result<JsonValue, String> {
     let root = request.root.canonicalize().map_err(|error| {
         format!(
             "Failed to resolve repository root {}: {error}",
@@ -121,7 +107,7 @@ fn init_repo_impl(request: &InitRequest, sprint_enabled: bool) -> Result<JsonVal
         )
     })?;
     require_real_directory(&root, "Repository root")?;
-    let validated = validate_init_request(request, sprint_enabled)?;
+    let validated = validate_init_request(request)?;
     let ait_dir = root.join(APP_DIR);
     let (action, repairs) = match classify_ait_directory(&ait_dir)? {
         None => {
@@ -171,6 +157,17 @@ pub fn render_human_init(payload: &JsonValue) {
         "{verb} AIT repository in {}",
         display_value(payload.get("authority_path"))
     );
+    if action == "repaired" {
+        for repair in payload
+            .get("repairs")
+            .and_then(JsonValue::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(JsonValue::as_str)
+        {
+            println!("- {repair}");
+        }
+    }
 }
 
 fn ensure_repo_dirs(ait_dir: &Path) -> Result<(), String> {
@@ -203,10 +200,7 @@ fn initialize_binary_db(
     Ok(())
 }
 
-fn validate_init_request(
-    request: &InitRequest,
-    sprint_enabled: bool,
-) -> Result<ValidatedInitRequest, String> {
+fn validate_init_request(request: &InitRequest) -> Result<ValidatedInitRequest, String> {
     let name = match request.name.as_deref() {
         Some(value) => Some(required_normalized_text(value, "Repository name")?),
         None => None,
@@ -226,7 +220,7 @@ fn validate_init_request(
         policy_yaml,
         default_author_mode,
         default_model,
-        sprint_enabled,
+        sprint_enabled: true,
     })
 }
 

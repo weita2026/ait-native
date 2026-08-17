@@ -1,7 +1,8 @@
 {
   "name": "@wa120/ait-native",
-  "version": "1.0.0-rc.6",
-  "description": "Direct in-process Node-API bindings for the Rust-owned AIT runtime",
+  "version": "1.0.0-rc.7",
+  "description": "Agent-first, language-neutral workflow for verified repository changes",
+  "homepage": "https://ait-native.dev/",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
@@ -31,12 +32,12 @@
     "NOTICE"
   ],
   "optionalDependencies": {
-    "@wa120/ait-native-darwin-arm64": "1.0.0-rc.6",
-    "@wa120/ait-native-darwin-x64": "1.0.0-rc.6",
-    "@wa120/ait-native-linux-arm64": "1.0.0-rc.6",
-    "@wa120/ait-native-linux-x64": "1.0.0-rc.6",
-    "@wa120/ait-native-win32-arm64": "1.0.0-rc.6",
-    "@wa120/ait-native-win32-x64": "1.0.0-rc.6"
+    "@wa120/ait-native-darwin-arm64": "1.0.0-rc.7",
+    "@wa120/ait-native-darwin-x64": "1.0.0-rc.7",
+    "@wa120/ait-native-linux-arm64": "1.0.0-rc.7",
+    "@wa120/ait-native-linux-x64": "1.0.0-rc.7",
+    "@wa120/ait-native-win32-arm64": "1.0.0-rc.7",
+    "@wa120/ait-native-win32-x64": "1.0.0-rc.7"
   },
   "scripts": {
     "native:build": "node scripts/native-build.mjs build",

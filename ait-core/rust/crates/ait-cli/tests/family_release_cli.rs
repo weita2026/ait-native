@@ -1,3 +1,4 @@
+use ait_cli::init_surface::{init_repo, InitRequest};
 use assert_cmd::Command;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
@@ -103,6 +104,19 @@ fn run_json(root: &Path, args: &[&str]) -> Value {
         String::from_utf8_lossy(&output.stderr)
     );
     serde_json::from_slice(&output.stdout).expect("ait-cli JSON output")
+}
+
+fn initialize_internal_repo(root: &Path, name: &str, default_line: &str) {
+    init_repo(&InitRequest {
+        root: root.to_path_buf(),
+        name: Some(name.to_string()),
+        default_line: default_line.to_string(),
+        policy_profile: "prototype".to_string(),
+        default_author_mode: "ai_with_human_review".to_string(),
+        default_model: None,
+        repair_existing: false,
+    })
+    .unwrap();
 }
 
 fn copy_tree(source: &Path, destination: &Path) {
@@ -399,7 +413,8 @@ fn fixture_npm_envelope() -> Vec<u8> {
     let package_json = json!({
         "name": "@wa120/ait-native",
         "version": "1.0.0-rc.2",
-        "description": "Direct in-process Node-API bindings for AIT",
+        "description": "Agent-first, language-neutral workflow for verified repository changes",
+        "homepage": "https://ait-native.dev/",
         "license": "Apache-2.0",
         "repository": {
             "type": "git",
@@ -443,7 +458,8 @@ fn fixture_npm_envelope() -> Vec<u8> {
         (
             "package/README.md".to_string(),
             (
-                b"# ait-native\n\nDirect in-process Node-API binding fixture.\n".to_vec(),
+                b"# ait-native\n\nAIT turns an ordinary coding request into an isolated, sprint-bound repository change with validation evidence. It is for individual developers and maintainers who use coding agents.\n\nOfficial website: <https://ait-native.dev/>\n\n## Install and initialize\n\n```sh\nnpm install --global @wa120/ait-native@1.0.0-rc.2\nait init\n```\n\n## What you have after 90 seconds\n\nInstallation and initialization are complete; arbitrary coding work is not promised.\n\n## Moving from 0.x\n\nThe 0.x requirement to run `ait install` and its task-DAG positioning are retired.\n"
+                    .to_vec(),
                 0o644,
             ),
         ),
@@ -921,7 +937,7 @@ fn write_component_receipts_for_targets(
 fn public_family_release_freezes_six_targets_and_emits_rc_handoff_without_release_store() {
     let temp = TempDir::new().unwrap();
     let root = temp.path();
-    run_json(root, &["init", "--name", "ait-native-release", "--json"]);
+    run_json(root, &["init", "--json"]);
 
     let manifest = json!({
         "schema": "ait.release.family/v3",
@@ -1263,7 +1279,7 @@ fn public_family_release_freezes_six_targets_and_emits_rc_handoff_without_releas
 fn family_package_assembles_native_channels_without_endpoint_mutation() {
     let temp = TempDir::new().unwrap();
     let root = temp.path();
-    run_json(root, &["init", "--name", "family-packages", "--json"]);
+    run_json(root, &["init", "--json"]);
 
     let linux_targets = ["aarch64-unknown-linux-gnu", "x86_64-unknown-linux-gnu"];
     let manifest = json!({
@@ -1787,10 +1803,7 @@ fn family_package_assembles_native_channels_without_endpoint_mutation() {
 fn family_package_assembles_registry_channels_without_endpoint_mutation() {
     let temp = TempDir::new().unwrap();
     let root = temp.path();
-    run_json(
-        root,
-        &["init", "--name", "family-registry-packages", "--json"],
-    );
+    run_json(root, &["init", "--json"]);
 
     let manifest = json!({
         "schema": "ait.release.family/v3",
@@ -2118,13 +2131,40 @@ fn family_package_assembles_registry_channels_without_endpoint_mutation() {
         String::from_utf8(wheel_members[&format!("{output_dist_info}/METADATA")].clone()).unwrap();
     assert!(metadata.contains("Name: ait-native\n"));
     assert!(metadata.contains("Version: 1.0.0rc2\n"));
+    assert!(metadata.contains(
+        "Summary: Agent-first, language-neutral workflow for verified repository changes\n"
+    ));
+    assert!(metadata.contains("Description-Content-Type: text/markdown\n"));
     assert!(metadata.contains("License-Expression: AGPL-3.0-only AND Apache-2.0\n"));
+    assert!(metadata.contains("Project-URL: Homepage, https://ait-native.dev/\n"));
+    assert!(
+        metadata.contains("Project-URL: Quickstart, https://ait-native.dev/local-quickstart/\n")
+    );
     assert!(metadata.contains(
         "Project-URL: Source, https://github.com/weita2026/ait-native/tree/v1.0.0-rc.2\n"
     ));
     assert!(metadata.contains(
         "Project-URL: Documentation, https://github.com/weita2026/ait-native/blob/v1.0.0-rc.2/docs/distribution.md\n"
     ));
+    assert!(metadata.contains(
+        "Project-URL: Migration, https://github.com/weita2026/ait-native/blob/v1.0.0-rc.2/docs/distribution.md#public-0x-to-10-transition\n"
+    ));
+    for storefront_marker in [
+        "AIT turns an ordinary coding request into an isolated, sprint-bound repository",
+        "individual developers and maintainers",
+        "python -m pip install ait-native==1.0.0rc2",
+        "ait init",
+        "## What you have after 90 seconds",
+        "Official website: <https://ait-native.dev/>",
+        "## Moving from 0.x",
+        "The 0.x requirement to run `ait install` and its task-DAG positioning are",
+    ] {
+        assert!(
+            metadata.contains(storefront_marker),
+            "missing {storefront_marker}"
+        );
+    }
+    assert!(!metadata.contains("@AIT_"));
     let provenance: Value = serde_json::from_slice(
         &wheel_members[&format!("{output_dist_info}/ait-family-provenance.json")],
     )
@@ -2177,6 +2217,30 @@ fn family_package_assembles_registry_channels_without_endpoint_mutation() {
         fs::read(npm_root.join("wa120-ait-native-1.0.0-rc.2.tgz")).unwrap(),
         envelope_bytes
     );
+    let envelope_members = tar_gz_members(&envelope_bytes);
+    let envelope_package: Value =
+        serde_json::from_slice(&envelope_members["package/package.json"]).unwrap();
+    assert_eq!(
+        envelope_package["description"],
+        "Agent-first, language-neutral workflow for verified repository changes"
+    );
+    assert_eq!(envelope_package["homepage"], "https://ait-native.dev/");
+    let envelope_readme = std::str::from_utf8(&envelope_members["package/README.md"]).unwrap();
+    for storefront_marker in [
+        "AIT turns an ordinary coding request into an isolated, sprint-bound repository",
+        "individual developers and maintainers",
+        "npm install --global @wa120/ait-native@1.0.0-rc.2",
+        "ait init",
+        "## What you have after 90 seconds",
+        "https://ait-native.dev/",
+        "## Moving from 0.x",
+        "The 0.x requirement to run `ait install` and its task-DAG positioning are",
+    ] {
+        assert!(
+            envelope_readme.contains(storefront_marker),
+            "missing {storefront_marker}"
+        );
+    }
     let addon_path = npm_root.join("wa120-ait-native-linux-x64-1.0.0-rc.2.tgz");
     let addon_package_bytes = fs::read(&addon_path).unwrap();
     let addon_members = tar_gz_members(&addon_package_bytes);
@@ -2296,7 +2360,7 @@ fn release_help_exposes_product_lifecycle_and_hides_internal_adapter() {
 fn family_release_cli_rejects_wrong_channel_and_missing_receipts() {
     let temp = TempDir::new().unwrap();
     let root = temp.path();
-    run_json(root, &["init", "--name", "family-errors", "--json"]);
+    run_json(root, &["init", "--json"]);
     let manifest = json!({
         "schema": "ait.release.family/v3",
         "family": {
@@ -2409,20 +2473,10 @@ fn public_git_family_reconstructs_candidate_and_rejects_receipt_authority_drift(
     let public_root = temp.path().join("public-source");
     let core_root = public_root.join("ait-core");
     fs::create_dir_all(&core_root).unwrap();
-    run_json(&core_root, &["init", "--name", "ait-core", "--json"]);
+    run_json(&core_root, &["init", "--json"]);
     let admission_root = temp.path().join("family-admission");
     fs::create_dir(&admission_root).unwrap();
-    run_json(
-        &admission_root,
-        &[
-            "init",
-            "--name",
-            "ait-core",
-            "--default-line",
-            "release-bootstrap",
-            "--json",
-        ],
-    );
+    initialize_internal_repo(&admission_root, "ait-core", "release-bootstrap");
 
     let target = "x86_64-unknown-linux-gnu";
     let source_snapshot = "SNP-111111111111";
@@ -2753,17 +2807,7 @@ fn public_git_family_reconstructs_candidate_and_rejects_receipt_authority_drift(
 
     let restored_root = temp.path().join("restored-family-admission");
     fs::create_dir(&restored_root).unwrap();
-    run_json(
-        &restored_root,
-        &[
-            "init",
-            "--name",
-            "ait-core",
-            "--default-line",
-            "release-bootstrap",
-            "--json",
-        ],
-    );
+    initialize_internal_repo(&restored_root, "ait-core", "release-bootstrap");
     copy_tree(
         &admission_root.join("dist").join(&release_id),
         &restored_root.join("dist").join(&release_id),

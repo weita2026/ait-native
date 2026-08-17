@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::io::{self, Read, Write};
 use std::net::{TcpListener, TcpStream};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -187,11 +187,15 @@ fn compiled_line_runner_reaches_ready_and_stops_cleanly_cross_platform() {
     let reserved = TcpListener::bind(("127.0.0.1", 0)).expect("reserve port");
     let port = reserved.local_addr().expect("reserved address").port();
     drop(reserved);
-    let mut child = Command::new(agent_worker_binary())
+    fs::write(
+        repo.path().join(".ait/agent-workers.json"),
+        r#"{"version":1,"workers":{"line/main":{"kind":"line","name":"main","secret":"manifest-line-secret","token":"manifest-line-token","bind_host":"127.0.0.1","bind_port":$PORT}}}"#
+            .replace("$PORT", &port.to_string()),
+    )
+    .expect("manifest with listener address");
+    let mut child = workspace_test_support::worker_command(agent_worker_binary())
         .current_dir(repo.path())
         .env("AIT_REPO_ROOT", repo.path())
-        .env("AIT_LINE_BIND_HOST", "127.0.0.1")
-        .env("AIT_LINE_BIND_PORT", port.to_string())
         .args([
             "run",
             "--transport",
@@ -231,7 +235,7 @@ fn compiled_line_runner_reaches_ready_and_stops_cleanly_cross_platform() {
     let mut response = Vec::new();
     probe.read_to_end(&mut response).expect("probe response");
     assert_status(&response, 404);
-    workspace_test_support::request_worker_shutdown(repo.path(), "line", "main", child.id());
+    workspace_test_support::request_worker_shutdown(child.id());
     let status = workspace_test_support::wait_for_child_exit(
         &mut child,
         "LINE worker",

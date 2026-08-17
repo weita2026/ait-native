@@ -29,7 +29,7 @@ fn native_stash_cli_preserves_the_complete_binary_db_lifecycle() {
     let work = root.join("work.txt");
     fs::write(&work, "base\n").unwrap();
 
-    run_json(root, &["init", "--name", "stash-cli", "--json"]);
+    run_json(root, &["init", "--json"]);
     let base = run_json(root, &["snapshot", "create", "--message", "base", "--json"]);
     let base_snapshot_id = base["snapshot_id"].as_str().unwrap().to_string();
 
@@ -112,6 +112,71 @@ fn native_stash_cli_preserves_the_complete_binary_db_lifecycle() {
 }
 
 #[test]
+fn native_stash_cli_rejects_cross_line_restore_without_mutation() {
+    let temp = TempDir::new().unwrap();
+    let root = temp.path();
+    let work = root.join("work.txt");
+    fs::write(&work, "base\n").unwrap();
+
+    run_json(root, &["init", "--json"]);
+    let base = run_json(root, &["snapshot", "create", "--message", "base", "--json"]);
+    let base_snapshot_id = base["snapshot_id"].as_str().unwrap().to_string();
+
+    fs::write(&work, "parked on main\n").unwrap();
+    let saved = run_json(root, &["stash", "save", "--message", "main WIP", "--json"]);
+    let stash_id = saved["stash_id"].as_str().unwrap().to_string();
+
+    run_json(
+        root,
+        &["line", "create", "feature/other", "--switch", "--json"],
+    );
+    fs::write(&work, "dirty on feature/other\n").unwrap();
+
+    for (operation, force) in [
+        ("apply", false),
+        ("apply", true),
+        ("pop", false),
+        ("pop", true),
+    ] {
+        let mut args = vec!["stash", operation, stash_id.as_str()];
+        if force {
+            args.push("--force");
+        }
+        args.push("--json");
+        let output = ait_cli()
+            .current_dir(root)
+            .args(&args)
+            .assert()
+            .failure()
+            .get_output()
+            .stderr
+            .clone();
+        let error = String::from_utf8(output).unwrap();
+        assert!(
+            error.contains(&format!("Cannot {operation} stash {stash_id}")),
+            "{error}"
+        );
+        assert!(error.contains("saved from Line main"), "{error}");
+        assert!(error.contains("current Line is feature/other"), "{error}");
+        assert!(error.contains("--force only overwrites"), "{error}");
+
+        assert_eq!(
+            fs::read_to_string(&work).unwrap(),
+            "dirty on feature/other\n"
+        );
+        let status = run_json(root, &["status", "--json"]);
+        assert_eq!(status["current_line"], "feature/other");
+        let current_line = run_json(root, &["line", "show", "feature/other", "--json"]);
+        assert_eq!(current_line["head_snapshot_id"], base_snapshot_id);
+        let source_line = run_json(root, &["line", "show", "main", "--json"]);
+        assert_eq!(source_line["head_snapshot_id"], base_snapshot_id);
+        let stashes = run_json(root, &["stash", "list", "--json"]);
+        assert_eq!(stashes.as_array().unwrap().len(), 1);
+        assert_eq!(stashes[0]["stash_id"], stash_id);
+    }
+}
+
+#[test]
 fn native_stash_cli_help_and_missing_errors_are_self_owned() {
     ait_cli()
         .args(["stash", "--help"])
@@ -125,7 +190,7 @@ fn native_stash_cli_help_and_missing_errors_are_self_owned() {
         .stdout(predicate::str::contains("drop"));
 
     let temp = TempDir::new().unwrap();
-    run_json(temp.path(), &["init", "--name", "stash-errors", "--json"]);
+    run_json(temp.path(), &["init", "--json"]);
     ait_cli()
         .current_dir(temp.path())
         .args(["stash", "show", "STH-MISSING", "--json"])

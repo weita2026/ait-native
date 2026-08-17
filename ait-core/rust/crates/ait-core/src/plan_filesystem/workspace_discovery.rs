@@ -307,7 +307,13 @@ fn unix_time_parts_ns(seconds: i64, nanos: i64) -> u64 {
 pub(super) fn worktree_cargo_target_dir(root: &Path) -> PathBuf {
     let ait_dir = root.join(".ait");
     let shared_ait_dir = fs::canonicalize(&ait_dir).unwrap_or(ait_dir);
-    lexical_normalize(&shared_ait_dir.join(SHARED_CARGO_TARGET_DIRNAME))
+    let target_root = lexical_normalize(&shared_ait_dir.join(SHARED_CARGO_TARGET_DIRNAME));
+    if let Some(name) = managed_worktree_name(root) {
+        return target_root
+            .join(MANAGED_WORKTREE_CARGO_TARGET_DIRNAME)
+            .join(name);
+    }
+    target_root
 }
 
 pub(super) fn worktree_cargo_build_dir(root: &Path) -> PathBuf {
@@ -320,9 +326,7 @@ pub(super) fn worktree_cargo_build_dir(root: &Path) -> PathBuf {
             .join(MANAGED_WORKTREE_CARGO_BUILD_DIRNAME)
             .join(name);
     }
-    build_root
-        .join("workspaces")
-        .join(CARGO_WORKSPACE_PATH_HASH_TEMPLATE)
+    build_root.join(CANONICAL_CARGO_BUILD_DIRNAME)
 }
 
 fn managed_worktree_name(root: &Path) -> Option<String> {
@@ -361,6 +365,7 @@ fn matches_generated_worktree_cargo_config_text(root: &Path, contents: &str) -> 
     if lines.len() < 3
         || ![
             GENERATED_CARGO_CONFIG_HEADER,
+            SHARED_FINAL_ARTIFACT_GENERATED_CARGO_CONFIG_HEADER,
             REPOSITORY_SHARED_GENERATED_CARGO_CONFIG_HEADER,
             WORKTREE_LOCAL_GENERATED_CARGO_CONFIG_HEADER,
             LEGACY_GENERATED_CARGO_CONFIG_HEADER,
@@ -385,16 +390,24 @@ fn matches_generated_worktree_cargo_config_text(root: &Path, contents: &str) -> 
     }
 
     let target_dir = worktree_cargo_target_dir(root);
-    let target_lines = [
-        format!("target-dir = {}", encoded_cargo_path(&target_dir)),
-        format!("target-dir = \".ait/{SHARED_CARGO_TARGET_DIRNAME}\""),
-    ];
     let ait_dir = root.join(".ait");
     let shared_ait_dir = fs::canonicalize(&ait_dir).unwrap_or(ait_dir);
+    let repository_shared_target_dir =
+        lexical_normalize(&shared_ait_dir.join(SHARED_CARGO_TARGET_DIRNAME));
+    let target_lines = [
+        format!("target-dir = {}", encoded_cargo_path(&target_dir)),
+        format!(
+            "target-dir = {}",
+            encoded_cargo_path(&repository_shared_target_dir)
+        ),
+        format!("target-dir = \".ait/{SHARED_CARGO_TARGET_DIRNAME}\""),
+    ];
     let repository_shared_build_dir = {
         let candidate = shared_ait_dir.join(SHARED_CARGO_BUILD_DIRNAME);
         fs::canonicalize(&candidate).unwrap_or(candidate)
     };
+    let repository_canonical_build_dir =
+        repository_shared_build_dir.join(CANONICAL_CARGO_BUILD_DIRNAME);
     let build_lines = [
         format!(
             "build-dir = {}",
@@ -413,6 +426,13 @@ fn matches_generated_worktree_cargo_config_text(root: &Path, contents: &str) -> 
             encoded_cargo_path(&lexical_normalize(&root.join("target")))
         ),
         format!("build-dir = \".ait/{SHARED_CARGO_BUILD_DIRNAME}\""),
+        format!(
+            "build-dir = \".ait/{SHARED_CARGO_BUILD_DIRNAME}/{CANONICAL_CARGO_BUILD_DIRNAME}\""
+        ),
+        format!(
+            "build-dir = {}",
+            encoded_cargo_path(&repository_canonical_build_dir)
+        ),
         format!(
             "build-dir = \".ait/{SHARED_CARGO_BUILD_DIRNAME}/workspaces/{CARGO_WORKSPACE_PATH_HASH_TEMPLATE}\""
         ),

@@ -261,13 +261,3 @@ pub(in crate::pack_substrate) fn read_file_range(
         .map_err(|err| format!("failed to read pack archive range: {err}"))?;
     Ok(out)
 }
-
-pub(in crate::pack_substrate) fn zstd_chunked_chunk_bytes_from_env(env_name: &str) -> usize {
-    std::env::var(env_name)
-        .ok()
-        .and_then(|value| value.trim().parse::<usize>().ok())
-        .filter(|value| *value > 0)
-        .map(|mib| mib.saturating_mul(1024 * 1024))
-        .filter(|bytes| *bytes > 0)
-        .unwrap_or(ZSTD_CHUNKED_DEFAULT_CHUNK_BYTES)
-}

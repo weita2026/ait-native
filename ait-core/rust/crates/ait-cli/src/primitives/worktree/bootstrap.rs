@@ -32,13 +32,18 @@ pub(in crate::primitives) fn ensure_task_feature_line(
     task_id: &str,
     base_line_name: &str,
     base_snapshot_id: Option<&str>,
+    fallback_to_local_base_line: bool,
 ) -> Result<JsonValue, String> {
     let line_name = match task_feature_line_bootstrap_target(repo, task_id)? {
         TaskFeatureLineBootstrapTarget::Existing(line) => return Ok(line),
         TaskFeatureLineBootstrapTarget::Create(line_name) => line_name,
     };
-    let resolved_base_snapshot_id =
-        resolve_task_feature_base_snapshot_id(repo, base_line_name, base_snapshot_id)?;
+    let resolved_base_snapshot_id = resolve_task_feature_base_snapshot_id(
+        repo,
+        base_line_name,
+        base_snapshot_id,
+        fallback_to_local_base_line,
+    )?;
     create_local_line(repo, &line_name, resolved_base_snapshot_id.as_deref()).map_err(|err| {
         format!(
             "failed to create the task feature line in Binary DB authority {}: {err}",
@@ -56,15 +61,17 @@ fn resolve_task_feature_base_snapshot_id(
     repo: &RepoRuntime,
     base_line_name: &str,
     base_snapshot_id: Option<&str>,
+    fallback_to_local_base_line: bool,
 ) -> Result<Option<String>, String> {
     match normalized_text(base_snapshot_id) {
         Some(snapshot_id) => Ok(Some(snapshot_id)),
-        None => Ok(string_field(
+        None if fallback_to_local_base_line => Ok(string_field(
             &local_line_row(repo, base_line_name).map_err(|err| {
                 format!("failed to read the base line `{base_line_name}` from selected local snapshot store: {err}")
             })?,
             "head_snapshot_id",
         )),
+        None => Ok(None),
     }
 }
 
@@ -173,7 +180,7 @@ pub(in crate::primitives) fn worktree_summary_payload(
             .to_string_lossy()
             .to_string()
     });
-    let shell_command = task_worktree_shell_command(repo_root, open_path, worktree_name, line_name);
+    let shell_command = task_worktree_shell_command(repo_root, open_path);
     Ok(json!({
         "name": worktree_name,
         "path": worktree_path.to_string_lossy().to_string(),
@@ -225,23 +232,8 @@ pub(in crate::primitives) fn worktree_summary_payload(
 pub(in crate::primitives) fn task_worktree_shell_command(
     repo_root: &Path,
     open_path: &Path,
-    worktree_name: &str,
-    line_name: &str,
 ) -> String {
-    let open_path_text = open_path.to_string_lossy().to_string();
     let mut commands = vec![format!("cd {}", shell_escape(open_path))];
-    commands.push(format!(
-        "export AIT_WORKTREE_NAME={}",
-        shell_escape(Path::new(worktree_name))
-    ));
-    commands.push(format!(
-        "export AIT_WORKTREE_PATH={}",
-        shell_escape(Path::new(&open_path_text))
-    ));
-    commands.push(format!(
-        "export AIT_WORKTREE_LINE={}",
-        shell_escape(Path::new(line_name))
-    ));
     if cargo_worktree_integration_enabled(repo_root, open_path) {
         let cargo_target_dir = worktree_cargo_target_dir(open_path);
         commands.push(format!(
@@ -292,12 +284,6 @@ pub(in crate::primitives) fn ensure_worktree_runtime_layout(
             .map_err(|err| err.to_string())?;
     }
     Ok(())
-}
-
-pub(in crate::primitives) fn worktree_cargo_target_dir(workspace_root: &Path) -> PathBuf {
-    workspace_root
-        .join(".ait")
-        .join(SHARED_CARGO_TARGET_DIRNAME)
 }
 
 pub(in crate::primitives) fn ensure_repository_shared_cargo_build_dir(
@@ -635,7 +621,7 @@ pub(in crate::primitives) fn set_active_root_worktree_binding(
     })
 }
 
-pub fn task_start_bootstrap(
+pub(in crate::primitives) fn task_start_bootstrap(
     repo: &RepoRuntime,
     request: TaskStartBootstrapRequest<'_>,
 ) -> Result<JsonValue, String> {
@@ -849,18 +835,13 @@ where
         }));
     }
 
-    let title = required_string_field(&task, "title")?;
-    let intent = required_string_field(&task, "intent")?;
     let bootstrap_result = task_start_bootstrap(
         repo,
         TaskStartBootstrapRequest {
             task: &task,
             change: Some(&change),
-            title_hint: &title,
-            intent_hint: &intent,
             base_line_name: &base_line,
             local: false,
-            remote_name: Some(remote_name),
             worktree_name: &worktree_name,
             worktree_path: &path,
             worktree_alias_path: alias_path.as_deref(),
@@ -1013,6 +994,7 @@ pub(in crate::primitives) fn task_start_bootstrap_with_progress(
     let task_id = required_string_field(request.task, "task_id")?;
     let (resolved_base_line_name, resolved_fork_snapshot_id) =
         task_start_change_bootstrap_lineage(request.change, request.base_line_name)?;
+    let fallback_to_local_base_line = request.local || request.change.is_none();
     let worktree_name = normalized_text(Some(request.worktree_name))
         .ok_or_else(|| "Task worktree name is required.".to_string())?;
     let worktree_path = PathBuf::from(request.worktree_path);
@@ -1023,20 +1005,26 @@ pub(in crate::primitives) fn task_start_bootstrap_with_progress(
         &task_id,
         &resolved_base_line_name,
         resolved_fork_snapshot_id.as_deref(),
+        fallback_to_local_base_line,
     )
     .map_err(|err| format!("failed to ensure the task feature line: {err}"))?;
     let feature_line_name = required_string_field(&feature_line, "line_name")?;
     let feature_line_head_snapshot_id = string_field(&feature_line, "head_snapshot_id");
     let created_at = system_event_timestamp();
 
-    let base_line_row = local_line_row(repo, &resolved_base_line_name)
-        .map_err(|err| format!("failed to read the base line from local snapshots: {err}"))?;
+    let local_base_line_head_snapshot_id = if fallback_to_local_base_line {
+        let line = local_line_row(repo, &resolved_base_line_name)
+            .map_err(|err| format!("failed to read the base line from local snapshots: {err}"))?;
+        string_field(&line, "head_snapshot_id")
+    } else {
+        None
+    };
     let change_id = request
         .change
         .and_then(|change| string_field(change, "change_id"));
     let bootstrap_fork_snapshot_id = resolved_fork_snapshot_id
         .clone()
-        .or_else(|| string_field(&base_line_row, "head_snapshot_id"));
+        .or(local_base_line_head_snapshot_id);
     let default_line_name = repo.default_line_name();
     let default_line_row = local_line_row(repo, &default_line_name).ok();
     let default_line_snapshot_id = default_line_row
@@ -1273,38 +1261,6 @@ pub(in crate::primitives) fn task_start_bootstrap_with_progress(
     Ok(JsonValue::Object(bootstrap))
 }
 
-#[allow(clippy::too_many_arguments)]
-pub fn task_start(
-    repo: &RepoRuntime,
-    title: &str,
-    intent: &str,
-    task_only: bool,
-    change_title: Option<&str>,
-    base_line: Option<&str>,
-    local: bool,
-    remote_name: Option<&str>,
-    plan_id: Option<&str>,
-    plan_revision_id: Option<&str>,
-    plan_item_ref: Option<&str>,
-    debug_probe_override: Option<&JsonValue>,
-) -> Result<JsonValue, String> {
-    task_start_with_progress(
-        repo,
-        title,
-        intent,
-        task_only,
-        change_title,
-        base_line,
-        local,
-        remote_name,
-        plan_id,
-        plan_revision_id,
-        plan_item_ref,
-        debug_probe_override,
-        None,
-    )
-}
-
 pub(in crate::primitives) fn task_start_remote_base_line_preflight_with_task_remote<R>(
     repo: &RepoRuntime,
     remote_row: &RemoteRow,
@@ -1313,29 +1269,39 @@ pub(in crate::primitives) fn task_start_remote_base_line_preflight_with_task_rem
     base_line: &str,
 ) -> Result<JsonValue, String>
 where
-    R: TaskWorkflowLineReader + ?Sized,
+    R: TaskWorkflowLineReader + TaskWorkflowRepositoryReader + TaskWorkflowZstdPackReader + ?Sized,
 {
     let line_row = task_remote
         .get_line(repo_name, base_line)
         .map_err(|err| err.to_string())?;
     let remote_head = string_field(&line_row, "head_snapshot_id");
     if let Some(remote_snapshot_id) = remote_head.as_deref() {
-        if !local_snapshot_exists(repo, remote_snapshot_id)? {
-            return Err(format!(
-                "Cannot start a remote task: remote `{}` line `{base_line}` points at `{remote_snapshot_id}`, which is not present in local storage. Run `ait pull --line {base_line} --remote {}` before creating shared work.",
-                remote_row.name, remote_row.name,
-            ));
+        if !remote_sync_snapshot_content_complete_for_repo(repo, remote_snapshot_id)? {
+            let remote_repository = read_remote_repository_authority(repo, task_remote, repo_name)?;
+            let remote_sync_capabilities =
+                RemoteSyncCapabilities::from_server_payload(Some(&remote_repository));
+            hydrate_remote_snapshot_chain_with_task_remote_and_capabilities(
+                repo,
+                task_remote,
+                &remote_row.name,
+                repo_name,
+                remote_snapshot_id,
+                &remote_sync_capabilities,
+            )
+            .map_err(|err| {
+                format!(
+                    "Cannot start a remote task: failed to import Remote `{}` line `{base_line}` head `{remote_snapshot_id}` without moving the local Line: {err}",
+                    remote_row.name,
+                )
+            })?;
+            if !remote_sync_snapshot_content_complete_for_repo(repo, remote_snapshot_id)? {
+                return Err(format!(
+                    "Cannot start a remote task: Remote `{}` line `{base_line}` head `{remote_snapshot_id}` remained incomplete after import.",
+                    remote_row.name,
+                ));
+            }
         }
-        return Ok(line_row);
     }
-
-    guard_remote_base_line_converged(
-        repo,
-        &remote_row.name,
-        base_line,
-        Some(&line_row),
-        "start a remote task",
-    )?;
     Ok(line_row)
 }
 
@@ -1447,14 +1413,32 @@ where
     })))
 }
 
-#[allow(clippy::too_many_arguments)]
-pub fn task_start_with_progress(
+pub fn task_start(
     repo: &RepoRuntime,
     title: &str,
     intent: &str,
-    task_only: bool,
-    change_title: Option<&str>,
-    base_line: Option<&str>,
+    local: bool,
+    remote_name: Option<&str>,
+) -> Result<JsonValue, String> {
+    task_start_with_progress(
+        repo,
+        title,
+        intent,
+        local,
+        remote_name,
+        None,
+        None,
+        None,
+        None,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn task_start_with_progress(
+    repo: &RepoRuntime,
+    title: &str,
+    intent: &str,
     local: bool,
     remote_name: Option<&str>,
     plan_id: Option<&str>,
@@ -1466,34 +1450,18 @@ pub fn task_start_with_progress(
     let total_started = Instant::now();
     let context_preflight_started = Instant::now();
     validate_task_start_plan_binding_mode(repo, plan_id, plan_revision_id, plan_item_ref)?;
-    if task_only {
-        if normalized_text(change_title).is_some() {
-            return Err("`--change-title` cannot be used together with `--task-only`.".to_string());
-        }
-        if normalized_text(base_line).is_some() {
-            return Err("`--base-line` cannot be used together with `--task-only`.".to_string());
-        }
-    }
 
     let resolved_title =
         normalized_text(Some(title)).ok_or_else(|| "Task title must not be empty.".to_string())?;
     let resolved_intent = normalized_text(Some(intent))
         .ok_or_else(|| "Task intent must not be empty.".to_string())?;
-    let resolved_base_line = normalized_text(base_line).unwrap_or_else(|| repo.default_line_name());
-    let resolved_change_title = if task_only {
-        None
-    } else {
-        Some(
-            normalized_text(change_title)
-                .or_else(|| Some(resolved_title.clone()))
-                .ok_or_else(|| "The initial change title cannot be empty.".to_string())?,
-        )
-    };
+    let resolved_base_line = "main".to_string();
+    let resolved_change_title = resolved_title.clone();
     task_start_context_preflight(repo)?;
     let context_preflight_elapsed = elapsed_ms(context_preflight_started);
-    let use_local = repo.task_uses_local_scope(local, remote_name);
+    let use_local = repo.task_uses_local_scope(local, remote_name)?;
     let remote_base_line_preflight_started = Instant::now();
-    let remote_base_line_context = if !use_local && resolved_change_title.is_some() {
+    let remote_base_line_context = if !use_local {
         let (remote_row, repo_name) = remote_context(repo, remote_name, None)?;
         let mut task_remote = http_task_remote(repo, &remote_row)?;
         let line_row = task_start_remote_base_line_preflight_with_task_remote(
@@ -1530,75 +1498,65 @@ pub fn task_start_with_progress(
         }),
     )?;
     let change_create_started = Instant::now();
-    let change = match resolved_change_title {
-        Some(change_title) => {
-            let recovery_scope = if local {
-                " --local".to_string()
-            } else if let Some(remote_name) = normalized_text(remote_name) {
-                format!(" --remote {}", shell_escape(Path::new(&remote_name)))
-            } else {
-                String::new()
-            };
-            let recovery_command = format!(
-                "ait change create {} --title {} --base-line {}{}",
-                shell_escape(Path::new(&task_id)),
-                shell_escape(Path::new(&change_title)),
-                shell_escape(Path::new(&resolved_base_line)),
-                recovery_scope,
-            );
-            let created = if use_local {
-                change_create(
-                    repo,
-                    &task_id,
-                    &change_title,
-                    Some(&resolved_base_line),
-                    local,
-                    remote_name,
-                )
-            } else {
-                let (remote_row, repo_name, line_row) =
-                    remote_base_line_context.as_ref().ok_or_else(|| {
-                        "Remote Task initial Change is missing its validated base-Line context."
-                            .to_string()
-                    })?;
-                let mut task_remote = http_task_remote(repo, remote_row)?;
-                task_start_remote_initial_change_with_task_remote(
-                    &mut task_remote,
-                    repo_name,
-                    &task_id,
-                    &change_title,
-                    &resolved_base_line,
-                    line_row,
-                )
-            };
-            Some(created.map_err(|err| {
-                format!(
-                    "Task {task_id} was created, but the initial change could not be created: {err}. Recover without creating another task by running `{recovery_command}`."
-                )
-            })?)
-        }
-        None => None,
+    let recovery_scope = if local {
+        " --local".to_string()
+    } else if let Some(remote_name) = normalized_text(remote_name) {
+        format!(" --remote {}", shell_escape(Path::new(&remote_name)))
+    } else {
+        String::new()
     };
-    let change_create_elapsed = elapsed_ms(change_create_started);
-    if let Some(change_row) = change.as_ref() {
-        emit_task_start_progress(
-            progress.as_deref_mut(),
-            json!({
-                "phase": "change_created",
-                "change_id": string_field(change_row, "change_id"),
-            }),
-        )?;
+    let recovery_command = format!(
+        "ait change create {} --title {} --base-line {}{}",
+        shell_escape(Path::new(&task_id)),
+        shell_escape(Path::new(&resolved_change_title)),
+        shell_escape(Path::new(&resolved_base_line)),
+        recovery_scope,
+    );
+    let change = if use_local {
+        change_create(
+            repo,
+            &task_id,
+            &resolved_change_title,
+            Some(&resolved_base_line),
+            local,
+            remote_name,
+        )
+    } else {
+        let (remote_row, repo_name, line_row) =
+            remote_base_line_context.as_ref().ok_or_else(|| {
+                "Remote Task initial Change is missing its validated main-Line context."
+                    .to_string()
+            })?;
+        let mut task_remote = http_task_remote(repo, remote_row)?;
+        task_start_remote_initial_change_with_task_remote(
+            &mut task_remote,
+            repo_name,
+            &task_id,
+            &resolved_change_title,
+            &resolved_base_line,
+            line_row,
+        )
     }
+    .map_err(|err| {
+        format!(
+            "Task {task_id} was created, but the initial change could not be created: {err}. Recover without creating another task by running `{recovery_command}`."
+        )
+    })?;
+    let change_create_elapsed = elapsed_ms(change_create_started);
+    emit_task_start_progress(
+        progress.as_deref_mut(),
+        json!({
+            "phase": "change_created",
+            "change_id": string_field(&change, "change_id"),
+        }),
+    )?;
 
     let mut payload = task_start_bootstrap_created_records_with_progress(
         repo,
         task,
-        change,
-        &resolved_title,
-        &resolved_intent,
+        Some(change),
         &resolved_base_line,
         use_local,
-        remote_name,
         debug_probe_override,
         progress,
     )?;
@@ -1628,11 +1586,8 @@ pub(in crate::primitives) fn task_start_bootstrap_created_records_with_progress(
     repo: &RepoRuntime,
     task: JsonValue,
     change: Option<JsonValue>,
-    resolved_title: &str,
-    resolved_intent: &str,
     resolved_base_line: &str,
     use_local: bool,
-    remote_name: Option<&str>,
     debug_probe_override: Option<&JsonValue>,
     mut progress: Option<&mut TaskStartProgressEmitter<'_>>,
 ) -> Result<JsonValue, String> {
@@ -1705,11 +1660,8 @@ pub(in crate::primitives) fn task_start_bootstrap_created_records_with_progress(
         TaskStartBootstrapRequest {
             task: &task,
             change: change.as_ref(),
-            title_hint: resolved_title,
-            intent_hint: resolved_intent,
             base_line_name: resolved_base_line,
             local: use_local,
-            remote_name,
             worktree_name: &worktree_name,
             worktree_path: &worktree_path_text,
             worktree_alias_path: worktree_alias_path_text.as_deref(),

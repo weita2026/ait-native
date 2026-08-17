@@ -1,4 +1,5 @@
 use crate::json_support::encode_value;
+use ait_core::environment_contract::names;
 use ait_core::json_support::{json, JsonMap as Map, JsonValue};
 use std::io::Write;
 use std::process::{Command, Stdio};
@@ -158,7 +159,7 @@ fn apply_operation_env(
     let mut has_repo_root = false;
     if let Some(env_overrides) = env_overrides {
         for (key, value) in env_overrides {
-            if key == "AIT_REPO_ROOT" {
+            if key == names::AIT_REPO_ROOT {
                 has_repo_root = true;
             }
             command.env(key, pythonish_text(value));
@@ -166,7 +167,7 @@ fn apply_operation_env(
     }
     if !has_repo_root {
         if let Some(repo_root) = repo_root.filter(|value| !value.is_empty()) {
-            command.env("AIT_REPO_ROOT", repo_root);
+            command.env(names::AIT_REPO_ROOT, repo_root);
         }
     }
     if let Some(pythonpath_repo_src) = clean_text(operation.get("pythonpath_repo_src"))

@@ -236,7 +236,7 @@ pub(super) fn scheduler_policy_from_payload(
         .as_object()
         .ok_or_else(|| "`policy` must be a JSON object.".to_string())?;
     let posture = match policy.get("posture") {
-        None | Some(JsonValue::Null) => SchedulerDeploymentPosture::from_environment(),
+        None | Some(JsonValue::Null) => SchedulerDeploymentPosture::LocalCoResident,
         Some(JsonValue::String(value)) => SchedulerDeploymentPosture::parse(value)
             .ok_or_else(|| format!("Field `policy.posture` is not supported: {value}."))?,
         Some(_) => return Err("Field `policy.posture` must be a string.".to_string()),

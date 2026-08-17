@@ -106,14 +106,14 @@ pub(super) fn binary_db_local_content_storage_stats<const WRITE_LAYOUT: u32>(
         json!({
             "state": "reachability_not_computed",
             "needs_attention": null,
-            "recommended_action": "run_deep_validation",
+            "recommended_action": "run_gc_validate",
             "reasons": ["Default stats skip retained tree-payload traversal."],
-            "next_actions": ["ait gc validate", "ait gc stats --deep"],
+            "next_actions": ["ait gc validate"],
         })
     };
 
     let _range = crate::perfetto_range!("ait.core.gc.stats.payload");
-    let mut payload = json!({
+    let payload = json!({
         "storage_backend": "binary_db",
         "snapshot_count": snapshot_count,
         "reachable_blob_count": reachability_computed.then_some(reachable),
@@ -143,7 +143,7 @@ pub(super) fn binary_db_local_content_storage_stats<const WRITE_LAYOUT: u32>(
             "detail": if reachability_computed {
                 "Exact retained-snapshot reachability was computed."
             } else {
-                "Skipped retained tree-payload traversal; use `ait gc stats --deep` or `ait gc validate` for exact reachability."
+                "Skipped retained tree-payload traversal; use `ait gc validate` for exact reachability."
             },
         },
         "schema_cleanup_summary": {
@@ -195,15 +195,7 @@ pub(super) fn binary_db_local_content_storage_stats<const WRITE_LAYOUT: u32>(
             "tree_reachability_error": tree_reachability_error,
         },
         "validation_summary": validation_summary,
-        "inventory_included": options.include_inventory,
     });
-    if options.include_inventory {
-        let payload_obj = payload
-            .as_object_mut()
-            .ok_or_else(|| "GC stats payload must be an object".to_string())?;
-        payload_obj.insert("packs".to_string(), pack_inventory);
-        payload_obj.insert("tree_packs".to_string(), tree_pack_inventory);
-    }
     Ok(payload)
 }
 

@@ -410,6 +410,7 @@ struct SyncRequest {
     base_url: Option<String>,
     rebase: bool,
     reconcile: bool,
+    history_publish_plan_id: Option<String>,
     plan_storage: PlanSyncStorageRequest,
     task_start: Option<PlanSyncTaskStartRequest>,
 }
@@ -566,6 +567,7 @@ where
         None
     };
     validate_runtime_flags(&request)?;
+    let history_publish = request.history_publish_plan_id.is_some();
 
     let sync_target = match resolve_sync_target(&request, request.prune || publish_remote) {
         Ok(target) => target,
@@ -582,24 +584,28 @@ where
             ));
         }
     };
-    let artifacts = match sync_target
-        .files
-        .iter()
-        .map(|path| resolve_plan_artifact(&request, path, request.plan_ref.as_deref(), true))
-        .collect::<Result<Vec<_>, _>>()
-    {
-        Ok(artifacts) => artifacts,
-        Err(err) => {
-            return Ok(plan_sync_payload(
-                "failed",
-                &request,
-                Some(&sync_target),
-                Vec::new(),
-                Vec::new(),
-                Vec::new(),
-                Vec::new(),
-                Some(err),
-            ));
+    let artifacts = if history_publish {
+        Vec::new()
+    } else {
+        match sync_target
+            .files
+            .iter()
+            .map(|path| resolve_plan_artifact(&request, path, request.plan_ref.as_deref(), true))
+            .collect::<Result<Vec<_>, _>>()
+        {
+            Ok(artifacts) => artifacts,
+            Err(err) => {
+                return Ok(plan_sync_payload(
+                    "failed",
+                    &request,
+                    Some(&sync_target),
+                    Vec::new(),
+                    Vec::new(),
+                    Vec::new(),
+                    Vec::new(),
+                    Some(err),
+                ));
+            }
         }
     };
     if request.task_start.is_some()
@@ -663,7 +669,15 @@ where
         .as_deref()
         .map(|base_url| build_http_client_manager(&request, base_url))
         .transpose()?;
-    let mut remote_inventory = if let Some(client_ref) = client.as_mut() {
+    let mut remote_inventory = if history_publish {
+        RemoteInventory {
+            plans: Vec::new(),
+            indexed_plans: BTreeMap::new(),
+            indexed_by_identity: BTreeMap::new(),
+            scoped_artifact_path: None,
+            full_loaded: false,
+        }
+    } else if let Some(client_ref) = client.as_mut() {
         load_remote_inventory(client_ref, &request, &sync_target)?
     } else {
         RemoteInventory {
@@ -674,7 +688,7 @@ where
             full_loaded: false,
         }
     };
-    let paired_artifacts = if publish_remote {
+    let paired_artifacts = if publish_remote && !history_publish {
         match resolve_paired_artifacts(&request, &sync_target, &artifacts) {
             Ok(paired) => paired,
             Err(err) => {
@@ -709,7 +723,25 @@ where
         ));
     }
 
-    let mut results = Vec::new();
+    let mut results = if let Some(plan_id) = request.history_publish_plan_id.as_deref() {
+        match history_publish_result_row(&request, local_plan_store, plan_id) {
+            Ok(row) => vec![row],
+            Err(err) => {
+                return Ok(plan_sync_payload(
+                    "failed",
+                    &request,
+                    Some(&sync_target),
+                    Vec::new(),
+                    Vec::new(),
+                    Vec::new(),
+                    Vec::new(),
+                    Some(err),
+                ));
+            }
+        }
+    } else {
+        Vec::new()
+    };
     let mut adoptions = Vec::new();
     let mut synced_artifact_paths = BTreeSet::new();
     let mut remote_revisions_cache: BTreeMap<String, Vec<JsonValue>> = BTreeMap::new();
@@ -812,7 +844,7 @@ where
         }
     }
 
-    if request.prune || publish_remote {
+    if !history_publish && (request.prune || publish_remote) {
         let (pruned_results, prune_adoptions) = match run_prune_phase(
             local_plan_store,
             local_content_store,

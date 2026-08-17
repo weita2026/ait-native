@@ -242,7 +242,7 @@ jq '.public_publish = true' "${authorities}" \
 expect_failure public-publish project \
   "${family}" "${platforms}" "${temporary_root}/public-publish.json"
 
-jq '(.components[] | select(.id == "ait-agent") | .source_snapshot) =
+jq '(.components[] | select(.id == "ait-agent-worker") | .source_snapshot) =
   "SNP-000000000000"' "${family}" >"${temporary_root}/snapshot-drift.json"
 expect_failure snapshot-drift project \
   "${temporary_root}/snapshot-drift.json" "${platforms}" "${authorities}"

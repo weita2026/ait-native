@@ -59,15 +59,16 @@ mod tests {
     #[test]
     #[ignore = "release-profile Perfetto evidence harness"]
     fn perfetto_enqueue_and_semantic_dedupe_500_by_30() {
-        assert!(
-            std::env::var_os("AIT_PERFETTO_TRACE").is_some(),
-            "AIT_PERFETTO_TRACE is required for the Perfetto evidence harness"
-        );
+        let trace_path = std::env::temp_dir().join(format!(
+            "ait-server-worker-queue-perfetto-{}.json",
+            std::process::id()
+        ));
         for _sample in 0..30 {
             let pool = InMemoryWorkerQueuePool::new(Vec::new());
             let kernel = WorkerQueueKernel::new(pool.clone(), Default::default());
-            let range = crate::perfetto_trace::PerfettoRange::new(
+            let range = crate::perfetto_trace::PerfettoRange::for_test(
                 "ait.server.worker_queue.perf.normal_enqueue_500",
+                trace_path.clone(),
             );
             for _ in 0..500 {
                 std::hint::black_box(
@@ -109,8 +110,9 @@ mod tests {
                     "2026-07-18T08:00:00Z",
                 )
                 .expect("semantic dedupe benchmark seed");
-            let range = crate::perfetto_trace::PerfettoRange::new(
+            let range = crate::perfetto_trace::PerfettoRange::for_test(
                 "ait.server.worker_queue.perf.semantic_dedupe_500",
+                trace_path.clone(),
             );
             for index in 0..500 {
                 let duplicate = kernel
@@ -138,6 +140,7 @@ mod tests {
             drop(range);
             assert_eq!(pool.rows().len(), 1);
         }
+        let _ = std::fs::remove_file(trace_path);
     }
 
     #[test]

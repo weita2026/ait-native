@@ -1746,8 +1746,8 @@ mod selected_binary_main_seed_tests {
         fs::write(path, content).expect("write file");
     }
 
-    fn binary_snapshot_repo() -> (TempDir, RepoRuntime) {
-        let temp = TempDir::new().expect("repo tempdir");
+    fn binary_snapshot_repo() -> (WritableTempDir, RepoRuntime) {
+        let temp = WritableTempDir::new();
         let root = temp.path();
         fs::create_dir_all(root.join(".ait")).expect("create .ait");
         write_file(
@@ -1797,7 +1797,7 @@ mod selected_binary_main_seed_tests {
         write_file(&repo_root.join("plain.txt"), "landed content\n");
         write_file(
             &repo_root.join(WORKTREE_CARGO_CONFIG_RELATIVE_PATH),
-            "# AIT source policy: canonical Cargo settings; task worktrees receive a managed projection.\n[build]\ntarget-dir = \".ait/cargo-target\"\nbuild-dir = \".ait/cargo-build/workspaces/{workspace-path-hash}\"\n",
+            "# AIT source policy: canonical Cargo settings; task worktrees receive a managed projection.\n[build]\ntarget-dir = \".ait/cargo-target\"\nbuild-dir = \".ait/cargo-build/canonical\"\n",
         );
         for index in 0..generated_file_count {
             write_file(
@@ -1892,7 +1892,7 @@ mod selected_binary_main_seed_tests {
     fn exact_workspace_snapshot_validation_verifies_hidden_cargo_projection_content() {
         let (_temp, repo) = binary_snapshot_repo();
         let root = repo.workspace_root();
-        let source = "# AIT source policy: canonical Cargo settings; task worktrees receive a managed projection.\n[build]\ntarget-dir = \".ait/cargo-target\"\nbuild-dir = \".ait/cargo-build/workspaces/{workspace-path-hash}\"\n\n[alias]\nmanaged-test = [\"test\", \"--profile\", \"ait-ci\"]\n";
+        let source = "# AIT source policy: canonical Cargo settings; task worktrees receive a managed projection.\n[build]\ntarget-dir = \".ait/cargo-target\"\nbuild-dir = \".ait/cargo-build/canonical\"\n\n[alias]\nmanaged-test = [\"test\", \"--profile\", \"ait-ci\"]\n";
         write_file(&root.join("plain.txt"), "plain seed\n");
         write_file(&root.join(WORKTREE_CARGO_CONFIG_RELATIVE_PATH), source);
         let snapshot_store = repo
@@ -2079,14 +2079,11 @@ mod selected_binary_main_seed_tests {
     #[test]
     #[ignore = "manual same-filesystem approximately-1,000-file p95 benchmark"]
     fn completed_task_promotion_stays_below_two_second_p95_for_one_thousand_files() {
-        let benchmark_parent = std::env::var_os("AIT_MAIN_SEED_BENCH_ROOT")
-            .map(PathBuf::from)
-            .filter(|path| path.is_dir());
         let mut samples_ms = Vec::with_capacity(20);
         for iteration in 0..20 {
             let task_id = format!("RCT-BENCH-{iteration:02}");
             let (_temp, repo, snapshot_id, worktree_path, seed_path) =
-                binary_promotion_fixture_with_files(&task_id, 998, benchmark_parent.as_deref());
+                binary_promotion_fixture_with_files(&task_id, 998, None);
             let promoted = sync_main_seed_after_task_land(
                 &repo,
                 Some(&task_id),
@@ -2121,15 +2118,8 @@ mod selected_binary_main_seed_tests {
     #[test]
     #[ignore = "manual approximately-1,000-file Snapshot refresh fallback benchmark"]
     fn dirty_task_worktree_reports_one_thousand_file_fallback_refresh_timing() {
-        let benchmark_parent = std::env::var_os("AIT_MAIN_SEED_BENCH_ROOT")
-            .map(PathBuf::from)
-            .filter(|path| path.is_dir());
         let (_temp, repo, snapshot_id, worktree_path, seed_path) =
-            binary_promotion_fixture_with_files(
-                "RCT-BENCH-FALLBACK",
-                998,
-                benchmark_parent.as_deref(),
-            );
+            binary_promotion_fixture_with_files("RCT-BENCH-FALLBACK", 998, None);
         write_file(&worktree_path.join("plain.txt"), "dirty after ready\n");
 
         let refreshed = sync_main_seed_after_task_land(
@@ -2194,8 +2184,9 @@ mod selected_binary_main_seed_tests {
     #[test]
     fn delta_refresh_replaces_copied_readonly_cargo_projection() {
         let (temp, repo) = binary_snapshot_repo();
+        let temp_path = temp.path().to_path_buf();
         let root = repo.workspace_root();
-        let cargo_source = "# AIT source policy: canonical Cargo settings; task worktrees receive a managed projection.\n[build]\ntarget-dir = \".ait/cargo-target\"\nbuild-dir = \".ait/cargo-build/workspaces/{workspace-path-hash}\"\n";
+        let cargo_source = "# AIT source policy: canonical Cargo settings; task worktrees receive a managed projection.\n[build]\ntarget-dir = \".ait/cargo-target\"\nbuild-dir = \".ait/cargo-build/canonical\"\n";
         write_file(&root.join("plain.txt"), "first seed\n");
         write_file(
             &root.join(WORKTREE_CARGO_CONFIG_RELATIVE_PATH),
@@ -2267,6 +2258,14 @@ mod selected_binary_main_seed_tests {
                 &second_snapshot_id
             ),
             "delta refresh must install an aligned read-only seed"
+        );
+        drop(snapshot_store);
+        drop(repo);
+        drop(temp);
+        assert!(
+            !temp_path.exists(),
+            "read-only main-seed fixture leaked after test cleanup: {}",
+            temp_path.display()
         );
     }
 

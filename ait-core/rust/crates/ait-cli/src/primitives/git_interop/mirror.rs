@@ -2,7 +2,11 @@ use super::*;
 
 const MIRROR_CONTRACT: &str = "git-mirror-operation/v1";
 const MIRROR_MAPPING_KIND: &str = "mirror_ref";
-const MIRROR_FAILURE_INJECTION_ENV: &str = "AIT_GIT_MIRROR_TEST_FAIL_AFTER_TRANSFER";
+
+#[derive(Clone, Copy, Debug, Default)]
+struct MirrorExecutionControl {
+    interrupt_after_object_transfer: bool,
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum MirrorDirection {
@@ -131,7 +135,22 @@ pub fn git_mirror(
     endpoint: &str,
     direction: &str,
     dry_run: bool,
-    once: bool,
+) -> Result<JsonValue, String> {
+    git_mirror_with_control(
+        repo,
+        endpoint,
+        direction,
+        dry_run,
+        MirrorExecutionControl::default(),
+    )
+}
+
+fn git_mirror_with_control(
+    repo: &RepoRuntime,
+    endpoint: &str,
+    direction: &str,
+    dry_run: bool,
+    control: MirrorExecutionControl,
 ) -> Result<JsonValue, String> {
     let direction = MirrorDirection::parse(direction)?;
     let endpoint = inspect_mirror_endpoint(endpoint, direction)?;
@@ -152,7 +171,6 @@ pub fn git_mirror(
                 "disposition": "fail_closed",
             }],
             "dry_run": dry_run,
-            "once": once,
             "mutated": false,
         }));
     }
@@ -234,7 +252,7 @@ pub fn git_mirror(
 
     if blockers.is_empty() && counts.inbound_only > 0 {
         if let Some(source) = endpoint.source.as_ref() {
-            let validation = git_import(repo, &source.source, true, true, false)?;
+            let validation = git_import(repo, &source.source, true, true)?;
             if json_text(&validation, "status") == Some("blocked") {
                 blockers.extend(
                     validation
@@ -251,7 +269,7 @@ pub fn git_mirror(
             .target
             .as_ref()
             .ok_or_else(|| "Outbound Git mirror requires a local Git target path.".to_string())?;
-        let validation = git_export(repo, &target.requested, true, true, false)?;
+        let validation = git_export(repo, &target.requested, true, true)?;
         if json_text(&validation, "status") == Some("blocked") {
             blockers.extend(
                 validation
@@ -271,7 +289,6 @@ pub fn git_mirror(
         &plan_hash,
         &states,
         &counts,
-        once,
     );
     if !blockers.is_empty() {
         return Ok(with_report_fields(
@@ -339,7 +356,7 @@ pub fn git_mirror(
         "objects_transferred",
         None,
     )?;
-    if env::var_os(MIRROR_FAILURE_INJECTION_ENV).is_some() {
+    if control.interrupt_after_object_transfer {
         return Err(format!(
             "Injected Git mirror interruption after object transfer for {operation_id}; rerun the same mirror command to resume before public ref movement."
         ));
@@ -348,7 +365,7 @@ pub fn git_mirror(
     let mut child_results = Vec::new();
     if apply_inbound {
         let source = endpoint.source.as_ref().unwrap();
-        child_results.push(run_resumable_import(repo, &interop, &source.source)?);
+        child_results.push(run_resumable_import(repo, &source.source)?);
         apply_inbound_deletions(repo, &states)?;
     }
     if let Some(transfer) = outbound_transfer.as_ref() {
@@ -643,10 +660,6 @@ fn state_names(states: &[MirrorRefState], classification: &str) -> JsonValue {
     )
 }
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "report inputs map directly to the stable mirror result payload"
-)]
 fn mirror_report(
     endpoint: &MirrorEndpoint,
     direction: MirrorDirection,
@@ -655,7 +668,6 @@ fn mirror_report(
     plan_hash: &str,
     states: &[MirrorRefState],
     counts: &MirrorCounts,
-    once: bool,
 ) -> JsonValue {
     json!({
         "contract": MIRROR_CONTRACT,
@@ -675,9 +687,7 @@ fn mirror_report(
         "outbound_only_count": counts.outbound_only,
         "divergent_count": counts.divergent,
         "refs": JsonValue::Array(states.iter().map(MirrorRefState::payload).collect()),
-        "once": once,
         "execution_mode": "single_ref_set_transaction",
-        "continuous_scheduler": false,
         "resume_supported": true,
     })
 }
@@ -758,33 +768,13 @@ fn existing_mirror_checkpoint(
     Ok((None, true))
 }
 
-fn run_resumable_import(
-    repo: &RepoRuntime,
-    interop: &InteropStore,
-    source: &str,
-) -> Result<JsonValue, String> {
-    let plan = git_import(repo, source, true, true, false)?;
-    let operation_id = json_text(&plan, "operation_id")
-        .ok_or_else(|| "Git import dry-run did not return operation_id.".to_string())?;
-    let resume = interop
-        .read_operation(operation_id)?
-        .is_some_and(|checkpoint| json_text(&checkpoint, "state") != Some("completed"));
-    git_import(repo, source, true, false, resume)
+fn run_resumable_import(repo: &RepoRuntime, source: &str) -> Result<JsonValue, String> {
+    git_import(repo, source, true, false)
 }
 
-fn run_resumable_export(
-    repo: &RepoRuntime,
-    interop: &InteropStore,
-    target: &Path,
-) -> Result<JsonValue, String> {
+fn run_resumable_export(repo: &RepoRuntime, target: &Path) -> Result<JsonValue, String> {
     let target = target.to_string_lossy();
-    let plan = git_export(repo, &target, true, true, false)?;
-    let operation_id = json_text(&plan, "operation_id")
-        .ok_or_else(|| "Git export dry-run did not return operation_id.".to_string())?;
-    let resume = interop
-        .read_operation(operation_id)?
-        .is_some_and(|checkpoint| json_text(&checkpoint, "state") != Some("completed"));
-    git_export(repo, &target, true, false, resume)
+    git_export(repo, &target, true, false)
 }
 
 #[derive(Clone, Debug)]
@@ -814,7 +804,7 @@ fn stage_outbound_ref_set(
             )
         })?;
     }
-    let export_result = run_resumable_export(repo, interop, &staging_git_dir)?;
+    let export_result = run_resumable_export(repo, &staging_git_dir)?;
     let target_git_dir = prepare_export_target(target)?;
     let target_was_empty = git_repo_text(
         &target_git_dir,
@@ -1056,4 +1046,103 @@ fn record_final_mirror_state(
         }));
     }
     Ok(heads)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::init_surface::{init_repo, InitRequest};
+    use crate::primitives::snapshot_create;
+    use std::process::Command;
+    use tempfile::TempDir;
+
+    fn git_output(root: &Path, args: &[&str]) -> String {
+        let output = Command::new("git")
+            .current_dir(root)
+            .args(args)
+            .output()
+            .expect("execute fixture Git");
+        assert!(
+            output.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8(output.stdout)
+            .expect("Git output is UTF-8")
+            .trim()
+            .to_string()
+    }
+
+    #[test]
+    fn mirror_resumes_after_typed_object_transfer_interruption() {
+        let source = TempDir::new().expect("AIT mirror source");
+        init_repo(&InitRequest {
+            root: source.path().to_path_buf(),
+            name: Some("mirror-source".to_string()),
+            default_line: "main".to_string(),
+            policy_profile: "prototype".to_string(),
+            default_author_mode: "ai_with_human_review".to_string(),
+            default_model: None,
+            repair_existing: false,
+        })
+        .expect("initialize AIT mirror source");
+        fs::write(source.path().join("native.txt"), "mirror root\n").expect("write mirror content");
+        let repo = RepoRuntime::discover_from_path(source.path()).expect("discover source");
+        let snapshot = snapshot_create(&repo, Some("mirror root")).expect("create source Snapshot")
+            ["snapshot_id"]
+            .as_str()
+            .expect("snapshot id")
+            .to_string();
+        let target_parent = TempDir::new().expect("mirror target parent");
+        let target = target_parent.path().join("mirror.git");
+        let target_text = target.to_string_lossy().to_string();
+
+        let interrupted = git_mirror_with_control(
+            &repo,
+            &target_text,
+            "outbound",
+            false,
+            MirrorExecutionControl {
+                interrupt_after_object_transfer: true,
+            },
+        )
+        .expect_err("typed interruption must stop before public ref movement");
+        assert!(interrupted.contains("after object transfer"));
+        assert!(target.is_dir());
+        assert!(git_output(
+            &target,
+            &[
+                "for-each-ref",
+                "--format=%(refname)",
+                "refs/heads",
+                "refs/tags",
+            ],
+        )
+        .is_empty());
+
+        let resumed =
+            git_mirror(&repo, &target_text, "outbound", false).expect("resume mirror operation");
+        assert_eq!(resumed["status"], json!("completed"));
+        assert_eq!(resumed["resumed"], json!(true));
+        assert_eq!(resumed["compare_and_swap"], json!(true));
+        assert_eq!(
+            resumed["last_mirrored_heads"][0]["snapshot_id"],
+            json!(snapshot)
+        );
+        assert_eq!(
+            git_output(&target, &["symbolic-ref", "HEAD"]),
+            "refs/heads/main"
+        );
+        assert_eq!(git_output(&target, &["rev-list", "--all", "--count"]), "1");
+        assert!(git_output(
+            &target,
+            &[
+                "for-each-ref",
+                "--format=%(refname)",
+                "refs/ait/mirror-transfer",
+            ],
+        )
+        .is_empty());
+        git_output(&target, &["fsck", "--full", "--no-dangling"]);
+    }
 }

@@ -16,6 +16,8 @@ struct LocalLandHistory {
     local_task_land_ms: Vec<f64>,
 }
 
+const LOCAL_HISTORY_LAND_COUNT: usize = 65;
+
 pub(super) fn assert_final_snapshot_remote_promotion_contract() -> Result<(), String> {
     let mut remote = spawn_fake_remote();
     let temp = init_solo_local_fixture_repo_unactivated(&remote.base_url)?;
@@ -29,7 +31,7 @@ pub(super) fn assert_final_snapshot_remote_promotion_contract() -> Result<(), St
         .ci_run_required_patchset_ids
         .insert("RP-2".to_string());
     drop(remote_state);
-    let history = create_ten_local_lands(root)?;
+    let history = create_local_lands(root, LOCAL_HISTORY_LAND_COUNT)?;
     let final_change_ref = history
         .change_refs
         .last()
@@ -80,14 +82,20 @@ pub(super) fn assert_final_snapshot_remote_promotion_contract() -> Result<(), St
                 encode_value_or(&landed, "{}")
             )
         })?;
-    if landed_history
-        .get("entries")
-        .and_then(JsonValue::as_array)
-        .map(Vec::len)
-        != Some(10)
+    if string_field(landed_history, "contract").as_deref() != Some("ait-history-promotion/v2")
+        || landed_history
+            .get("total_entry_count")
+            .and_then(JsonValue::as_u64)
+            != Some(LOCAL_HISTORY_LAND_COUNT as u64)
+        || landed_history
+            .get("entries")
+            .and_then(JsonValue::as_array)
+            .map(Vec::len)
+            != Some(1)
     {
         return Err(format!(
-            "remote Task Land did not return all ten history entries: {}",
+            "remote Task Land did not return the bounded final stage for all {} history entries: {}",
+            LOCAL_HISTORY_LAND_COUNT,
             encode_value_or(landed_history, "{}")
         ));
     }
@@ -112,30 +120,66 @@ pub(super) fn assert_final_snapshot_remote_promotion_contract() -> Result<(), St
         .iter()
         .filter(|row| row.method == "POST" && row.url.ends_with("/history-promotion:prepare"))
         .collect::<Vec<_>>();
-    if history_posts.len() != 1 {
+    if history_posts.len() != 2 {
         return Err(format!(
-            "local history promotion issued {} prepare requests instead of one",
+            "local history promotion issued {} prepare requests instead of two bounded stages",
             history_posts.len()
         ));
     }
-    let history_body = parse_value_error_string(&history_posts[0].body)?;
-    let history_entries = history_body
-        .get("entries")
-        .and_then(JsonValue::as_array)
-        .ok_or_else(|| "history prepare request omitted entries".to_string())?;
-    if history_entries.len() != 10 {
-        return Err(format!(
-            "history prepare request carried {} entries instead of ten",
-            history_entries.len()
-        ));
-    }
-    if string_field(&history_body, "base_snapshot_id").as_deref() != Some(FIXTURE_BASE_SNAPSHOT_ID)
-        || string_field(&history_body, "revision_snapshot_id").as_deref()
-            != Some(history.final_snapshot_id.as_str())
+    let history_bodies = history_posts
+        .iter()
+        .map(|post| parse_value_error_string(&post.body))
+        .collect::<Result<Vec<_>, _>>()?;
+    let promotion_id = string_field(&history_bodies[0], "promotion_id")
+        .ok_or_else(|| "first history stage omitted promotion_id".to_string())?;
+    for (stage_ordinal, (body, expected_entry_count)) in
+        history_bodies.iter().zip([64_usize, 1]).enumerate()
     {
+        let entries = body
+            .get("entries")
+            .and_then(JsonValue::as_array)
+            .ok_or_else(|| format!("history stage {stage_ordinal} omitted entries"))?;
+        if string_field(body, "contract").as_deref() != Some("history-promotion-prepare/v2")
+            || body.get("stage_ordinal").and_then(JsonValue::as_u64) != Some(stage_ordinal as u64)
+            || body.get("total_entry_count").and_then(JsonValue::as_u64)
+                != Some(LOCAL_HISTORY_LAND_COUNT as u64)
+            || body.get("final_stage").and_then(JsonValue::as_bool) != Some(stage_ordinal == 1)
+            || entries.len() != expected_entry_count
+            || string_field(body, "promotion_id").as_deref() != Some(promotion_id.as_str())
+            || string_field(body, "base_snapshot_id").as_deref() != Some(FIXTURE_BASE_SNAPSHOT_ID)
+            || string_field(body, "revision_snapshot_id").as_deref()
+                != Some(history.final_snapshot_id.as_str())
+        {
+            return Err(format!(
+                "history prepare stage {stage_ordinal} has invalid bounded authority: {}",
+                history_posts[stage_ordinal].body
+            ));
+        }
+    }
+    if !history_bodies[0]
+        .get("previous_stage_patchset_id")
+        .is_some_and(JsonValue::is_null)
+        || string_field(&history_bodies[1], "previous_stage_patchset_id").as_deref()
+            != Some("RHP-STAGE-0")
+        || string_field(&history_bodies[0], "stage_revision_snapshot_id")
+            != string_field(&history_bodies[1], "stage_base_snapshot_id")
+    {
+        return Err("history prepare stages do not form one exact predecessor chain".to_string());
+    }
+    let history_entries = history_bodies
+        .iter()
+        .flat_map(|body| {
+            body.get("entries")
+                .and_then(JsonValue::as_array)
+                .into_iter()
+                .flatten()
+        })
+        .collect::<Vec<_>>();
+    if history_entries.len() != LOCAL_HISTORY_LAND_COUNT {
         return Err(format!(
-            "history prepare did not span remote S0 to final local SN: {}",
-            history_posts[0].body
+            "history prepare stages carried {} entries instead of {}",
+            history_entries.len(),
+            LOCAL_HISTORY_LAND_COUNT
         ));
     }
     let mut previous_snapshot_id = FIXTURE_BASE_SNAPSHOT_ID.to_string();
@@ -255,7 +299,10 @@ pub(super) fn assert_final_snapshot_remote_promotion_contract() -> Result<(), St
             .closed_task_ids
             .contains(&format!("RT-{:04}", ordinal + 1))
     }) {
-        return Err("atomic remote Land did not complete all ten promoted Tasks".to_string());
+        return Err(format!(
+            "atomic remote Land did not complete all {} promoted Tasks",
+            LOCAL_HISTORY_LAND_COUNT
+        ));
     }
     drop(remote_state);
     for forbidden in ["workflow_record.bin", "workflow_record_payload.bin"] {
@@ -300,30 +347,21 @@ pub(super) fn assert_final_snapshot_remote_promotion_contract() -> Result<(), St
     Ok(())
 }
 
-fn create_ten_local_lands(root: &Path) -> Result<LocalLandHistory, String> {
+fn create_local_lands(root: &Path, local_land_count: usize) -> Result<LocalLandHistory, String> {
     activate_fixture_binary_db_generation(root)?;
     let mut task_ids = Vec::new();
     let mut change_refs = Vec::new();
     let mut final_snapshot_id = None;
     let mut task_start_ms = Vec::new();
     let mut local_task_land_ms = Vec::new();
-    for ordinal in 1..=10 {
+    for ordinal in 1..=local_land_count {
         let title = format!("Local history task {ordinal}");
         let intent = format!("Preserve local workflow history {ordinal}");
         let task_start_started = Instant::now();
         let started = json_output(
             root,
             &[
-                "task",
-                "start",
-                "--title",
-                &title,
-                "--intent",
-                &intent,
-                "--base-line",
-                "main",
-                "--local",
-                "--json",
+                "task", "start", "--title", &title, "--intent", &intent, "--local", "--json",
             ],
         )?;
         task_start_ms.push(task_start_started.elapsed().as_secs_f64() * 1_000.0);
@@ -434,7 +472,7 @@ fn init_fixture_repo_unactivated(base_url: &str) -> Result<TempDir, String> {
     )?;
     write_file(
         &root.join("ci/patch_ci.json"),
-        "AIT_SHARED_CARGO_TARGET_DIR/debug/ait-cli test patchset-ci stable-smoke --json\n",
+        r#"{"schema_version":1,"suites":[{"runner":{"kind":"test_discovery_sharded","build_args":["test","--test","patchset_ci_runner","--no-run"]}}]}"#,
     )?;
     binary_stores(root)
         .lines()

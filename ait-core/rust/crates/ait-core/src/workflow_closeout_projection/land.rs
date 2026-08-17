@@ -64,7 +64,7 @@ pub(crate) fn workflow_landed_steps_and_suggested_commands(
 pub(crate) fn workflow_land_full_steps(
     facts: &JsonValue,
     command_hints: &JsonValue,
-    task_review_enabled: bool,
+    task_review_required: bool,
     auto_review_reviewer: Option<&str>,
     _apply_owned_continuation: bool,
 ) -> Vec<JsonValue> {
@@ -347,7 +347,7 @@ pub(crate) fn workflow_land_full_steps(
     let code_review_state = if int_field(facts, "code_review_summary_count") > 0 {
         "recorded".to_string()
     } else if bool_field(facts, "requires_code_review_summary") {
-        "recommended, not recorded".to_string()
+        "required, not recorded".to_string()
     } else {
         "not required".to_string()
     };
@@ -382,15 +382,15 @@ pub(crate) fn workflow_land_full_steps(
         } else {
             "unavailable outside team_remote".to_string()
         };
-        let detail = if task_review_enabled {
+        let detail = if task_review_required {
             format!(
                 "Code review: {code_review_state}; Task review: pending; Team review: {team_review_state}."
             )
         } else if let Some(reviewer) = auto_review_reviewer {
-            format!("Code review: {code_review_state}; Task review: pending; Team review: {team_review_state}. `task land` can auto-record `task_approve` as `{reviewer}`.")
+            format!("Code review: {code_review_state}; Task review: pending; Team review: {team_review_state}. Reviewer-owned `ait workflow land --apply` or a successful direct `ait review code submit` can record `task_approve` as `{reviewer}` before atomic Task Land.")
         } else {
             format!(
-                "Code review: {code_review_state}; Task review: pending; Team review: {team_review_state}. `task_review=off` auto approval requires `ait config` `user_name`."
+                "Code review: {code_review_state}; Task review: pending; Team review: {team_review_state}. `task_review=automatic` requires `ait config` `user_name` before approval can be recorded."
             )
         };
         steps.push(workflow_land_step(
@@ -746,7 +746,7 @@ pub(crate) fn workflow_land_suggested_commands(
                 None
             },
             if string_field(&change, "status") == "landed" {
-                command_hint(commands, "task_complete_command")
+                command_hint(commands, "task_land_command")
             } else {
                 None
             },

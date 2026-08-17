@@ -727,9 +727,6 @@ fn worktree_summary_from_metadata_with_retarget(
             .as_ref()
             .map(|value| value.to_string_lossy().to_string())
     });
-    let effective_line_name = current_line_name
-        .clone()
-        .or_else(|| metadata_string(&metadata, "line_name"));
     let cargo_enabled = open_path.as_deref().is_some_and(|path| {
         cargo_worktree_integration_enabled(&repo.authoritative_repo_root(), Path::new(path))
     });
@@ -743,14 +740,12 @@ fn worktree_summary_from_metadata_with_retarget(
     );
     summary.insert(
         "shell_command".to_string(),
-        match (open_path.as_deref(), effective_line_name.as_deref()) {
-            (Some(path), Some(line_name)) => JsonValue::String(task_worktree_shell_command(
+        match open_path.as_deref() {
+            Some(path) => JsonValue::String(task_worktree_shell_command(
                 &repo.authoritative_repo_root(),
                 Path::new(path),
-                &worktree_name,
-                line_name,
             )),
-            _ => JsonValue::Null,
+            None => JsonValue::Null,
         },
     );
     summary.insert(

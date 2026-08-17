@@ -158,25 +158,17 @@ mod tests {
     }
 
     #[test]
-    fn default_main_seed_root_uses_ci_ram_root_and_ignores_persistent_roots() {
+    fn default_main_seed_root_uses_the_current_ci_ram_root() {
         let _guard = env_lock();
-        let previous_ci_ram_root = env::var("AIT_NATIVE_SERVER_CI_RAM_ROOT").ok();
-        let previous_main_seed_root = env::var("AIT_NATIVE_SERVER_MAIN_SEED_ROOT").ok();
-        let previous_fast_data_root = env::var("AIT_NATIVE_SERVER_FAST_DATA_ROOT").ok();
-        let previous_server_data = env::var("AIT_NATIVE_SERVER_DATA").ok();
+        let ci_ram_root_env = crate::environment_contract::names::AIT_NATIVE_SERVER_CI_RAM_ROOT;
+        let previous_ci_ram_root = env::var(ci_ram_root_env).ok();
         let ram_root = PathBuf::from("/tmp/ait-server-ram-runtime-test");
 
-        env::set_var("AIT_NATIVE_SERVER_CI_RAM_ROOT", &ram_root);
-        env::set_var("AIT_NATIVE_SERVER_MAIN_SEED_ROOT", "/tmp/legacy-main-seeds");
-        env::set_var("AIT_NATIVE_SERVER_FAST_DATA_ROOT", "/tmp/legacy-fast-data");
-        env::set_var("AIT_NATIVE_SERVER_DATA", "/tmp/ait-server-data-test");
+        env::set_var(ci_ram_root_env, &ram_root);
 
         let root = default_main_seed_root().expect("CI RAM main-seed root should resolve");
 
-        restore_env_var("AIT_NATIVE_SERVER_CI_RAM_ROOT", previous_ci_ram_root);
-        restore_env_var("AIT_NATIVE_SERVER_MAIN_SEED_ROOT", previous_main_seed_root);
-        restore_env_var("AIT_NATIVE_SERVER_FAST_DATA_ROOT", previous_fast_data_root);
-        restore_env_var("AIT_NATIVE_SERVER_DATA", previous_server_data);
+        restore_env_var(ci_ram_root_env, previous_ci_ram_root);
 
         assert_eq!(root, ram_root.join("main-seeds"));
     }

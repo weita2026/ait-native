@@ -32,7 +32,7 @@ def test_release_adapter_maps_all_six_targets_to_exact_abi3_wheels() -> None:
     component = manifest["components"][0]
 
     assert manifest["package"]["name"] == component["id"] == "ait-python"
-    assert manifest["package"]["version"] == "1.0.0rc6"
+    assert manifest["package"]["version"] == "1.0.0rc7"
     assert manifest["package"]["license_files"] == [
         {"path": "LICENSE", "role": "license"},
         {"path": "NOTICE", "role": "notice"},
@@ -43,7 +43,7 @@ def test_release_adapter_maps_all_six_targets_to_exact_abi3_wheels() -> None:
         artifact["target"]: artifact["path"]
         for artifact in component["artifacts"]
     } == {
-        target: f"dist/wheels/{expected_wheel_name(target, '1.0.0rc6')}"
+        target: f"dist/wheels/{expected_wheel_name(target, '1.0.0rc7')}"
         for target in targets
     }
     assert {artifact["kind"] for artifact in component["artifacts"]} == {
@@ -273,7 +273,7 @@ def write_fixture_wheel(
     notice_bytes: bytes | None = None,
     core_layout: str = ".ait-external/ait-core",
 ) -> None:
-    dist_info = "ait_python-1.0.0rc6.dist-info"
+    dist_info = "ait_python-1.0.0rc7.dist-info"
     local_component = (
         f"path+file://{temporary_root}/{core_layout}/"
         "rust/crates/ait-py#0.1.0"
@@ -301,7 +301,7 @@ def write_fixture_wheel(
         f"{dist_info}/METADATA": (
             b"Metadata-Version: 2.4\n"
             b"Name: ait-python\n"
-            b"Version: 1.0.0rc6\n"
+            b"Version: 1.0.0rc7\n"
             b"License-Expression: Apache-2.0\n"
             b"License-File: LICENSE\n"
             b"License-File: NOTICE\n"
@@ -358,15 +358,15 @@ def test_wheel_normalization_converges_temporary_roots_and_timestamps(
     )
     _, timestamp = parse_source_date_epoch("1785761092")
 
-    normalize_wheel(wheel_a, "1.0.0rc6", timestamp)
-    normalize_wheel(wheel_b, "1.0.0rc6", timestamp)
+    normalize_wheel(wheel_a, "1.0.0rc7", timestamp)
+    normalize_wheel(wheel_b, "1.0.0rc7", timestamp)
 
     assert wheel_a.read_bytes() == wheel_b.read_bytes()
     first_normalized = wheel_a.read_bytes()
-    normalize_wheel(wheel_a, "1.0.0rc6", timestamp)
+    normalize_wheel(wheel_a, "1.0.0rc7", timestamp)
     assert wheel_a.read_bytes() == first_normalized
 
-    dist_info = "ait_python-1.0.0rc6.dist-info"
+    dist_info = "ait_python-1.0.0rc7.dist-info"
     record_path = f"{dist_info}/RECORD"
     sbom_path = f"{dist_info}/sboms/ait-py.cyclonedx.json"
     with zipfile.ZipFile(wheel_a) as archive:
@@ -415,7 +415,7 @@ def test_wheel_verification_requires_exact_repository_legal_material(
     parse_source_date_epoch = adapter["parse_source_date_epoch"]
     verify_wheel = adapter["verify_wheel"]
     target = "aarch64-apple-darwin"
-    wheel_name = expected_wheel_name(target, "1.0.0rc6")
+    wheel_name = expected_wheel_name(target, "1.0.0rc7")
     _, timestamp = parse_source_date_epoch("1785761092")
 
     valid_dir = tmp_path / "valid"
@@ -427,8 +427,8 @@ def test_wheel_verification_requires_exact_repository_legal_material(
         "2026-08-03T12:00:00.000000000Z",
         (2026, 8, 3, 12, 0, 0),
     )
-    normalize_wheel(valid_wheel, "1.0.0rc6", timestamp)
-    verify_wheel(valid_wheel, target, "1.0.0rc6")
+    normalize_wheel(valid_wheel, "1.0.0rc7", timestamp)
+    verify_wheel(valid_wheel, target, "1.0.0rc7")
 
     altered_dir = tmp_path / "altered"
     altered_dir.mkdir()
@@ -440,9 +440,9 @@ def test_wheel_verification_requires_exact_repository_legal_material(
         (2026, 8, 3, 12, 0, 0),
         notice_bytes=b"altered notice\n",
     )
-    normalize_wheel(altered_wheel, "1.0.0rc6", timestamp)
+    normalize_wheel(altered_wheel, "1.0.0rc7", timestamp)
     with pytest.raises(error_type, match="NOTICE differs"):
-        verify_wheel(altered_wheel, target, "1.0.0rc6")
+        verify_wheel(altered_wheel, target, "1.0.0rc7")
 
 
 def test_release_epoch_and_wheel_controls_fail_closed(
@@ -467,4 +467,4 @@ def test_release_epoch_and_wheel_controls_fail_closed(
     )
     _, timestamp = parse_source_date_epoch("1785761092")
     with pytest.raises(error_type, match="RECORD or CycloneDX SBOM"):
-        normalize_wheel(missing_sbom, "1.0.0rc6", timestamp)
+        normalize_wheel(missing_sbom, "1.0.0rc7", timestamp)

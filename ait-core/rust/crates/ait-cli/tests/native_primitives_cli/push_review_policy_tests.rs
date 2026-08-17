@@ -1,3 +1,219 @@
+fn set_active_root_worktree(root: &Path, worktree_name: &str) {
+    let config_path = root.join(".ait/config.json");
+    let mut config = parse_json_file(&config_path);
+    config["worktree_name"] = JsonValue::String(worktree_name.to_string());
+    write_file(&config_path, &(encode_json_pretty(&config) + "\n"));
+}
+
+fn prepare_root_publication_candidate(root: &Path, message: &str) -> String {
+    write_file(
+        &root.join("src/lib.rs"),
+        "pub fn example() -> &'static str { \"publication candidate\" }\n",
+    );
+    seed_snapshot(root, message)
+}
+
+fn register_publication_bound_worktree(
+    root: &Path,
+    name: &str,
+    line_name: &str,
+    task_id: &str,
+    change_id: &str,
+) {
+    let external_path = root
+        .parent()
+        .expect("fixture repo parent")
+        .join(format!("{name}-external"));
+    write_file(
+        &root.join(".ait/worktrees").join(format!("{name}.json")),
+        &(encode_json_pretty(&json!({
+            "name": name,
+            "path": external_path.display().to_string(),
+            "repo_root": root.display().to_string(),
+            "line_name": line_name,
+            "bound_task_id": task_id,
+            "bound_change_id": change_id,
+            "auto_created_for_task": true,
+            "fork_snapshot_id": FIXTURE_BASE_SNAPSHOT_ID,
+            "forked_from_line": "main",
+            "target_base_line": "main",
+            "rebase_state": "idle",
+            "rebase_conflict_paths": [],
+            "created_at": "2026-06-08T00:00:00Z",
+            "cleanup_policy": "after_remote_land",
+        })) + "\n"),
+    );
+}
+
+fn register_unrelated_active_worktree(root: &Path) {
+    register_publication_bound_worktree(
+        root,
+        "rt-other",
+        "feature/rt-other",
+        "RT-OTHER",
+        "RC-OTHER",
+    );
+    set_active_root_worktree(root, "rt-other");
+}
+
+fn register_matching_target_worktree(root: &Path) {
+    register_publication_bound_worktree(
+        root,
+        "rt-1",
+        "feature/rt-1",
+        "RT-1",
+        "RC-1",
+    );
+}
+
+#[test]
+fn native_patchset_publish_ignores_unrelated_active_root_worktree() {
+    let (base_url, log, state, handle) = spawn_fake_remote();
+    let temp = init_repo(&base_url);
+    let root = temp.path();
+    state.lock().unwrap().remote_head_snapshot_id = Some(FIXTURE_BASE_SNAPSHOT_ID.to_string());
+    let revision_snapshot_id =
+        prepare_root_publication_candidate(root, "unrelated direct publication pin");
+    register_unrelated_active_worktree(root);
+
+    let patchset = json_output(
+        root,
+        &[
+            "patchset",
+            "publish",
+            "RC-1",
+            "--summary",
+            "Ignore unrelated active worktree",
+            "--json",
+        ],
+    );
+
+    assert_eq!(
+        patchset["revision_snapshot_id"].as_str(),
+        Some(revision_snapshot_id.as_str())
+    );
+    handle.join().unwrap();
+    let logged = log.lock().unwrap().clone();
+    assert!(logged.iter().any(|row| {
+        row.method == "POST"
+            && row.url == "/v1/native/repository-authorities/7/changes/RC-1/patchsets"
+    }));
+}
+
+#[test]
+fn native_patchset_publish_from_root_reports_matching_not_active_unrelated_worktree() {
+    let (base_url, log, state, handle) = spawn_fake_remote();
+    let temp = init_repo(&base_url);
+    let root = temp.path();
+    state.lock().unwrap().remote_head_snapshot_id = Some(FIXTURE_BASE_SNAPSHOT_ID.to_string());
+    prepare_root_publication_candidate(root, "matching direct publication pin");
+    register_matching_target_worktree(root);
+    register_unrelated_active_worktree(root);
+
+    let output = cargo_bin()
+        .current_dir(root)
+        .args([
+            "patchset",
+            "publish",
+            "RC-1",
+            "--summary",
+            "Require matching worktree",
+            "--json",
+        ])
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("Repo root has bound worktree `rt-1` for task `RT-1`"));
+    assert!(!stderr.contains("pinned to bound worktree `rt-other`"));
+    handle.join().unwrap();
+    let logged = log.lock().unwrap().clone();
+    assert!(!logged.iter().any(|row| {
+        row.method == "POST"
+            && row.url == "/v1/native/repository-authorities/7/changes/RC-1/patchsets"
+    }));
+}
+
+#[test]
+fn native_workflow_ready_apply_ignores_unrelated_active_root_worktree() {
+    let (base_url, log, state, handle) = spawn_fake_remote();
+    let temp = init_repo(&base_url);
+    let root = temp.path();
+    {
+        let mut guard = state.lock().unwrap();
+        guard.remote_head_snapshot_id = Some(FIXTURE_BASE_SNAPSHOT_ID.to_string());
+        guard.force_no_selected_patchset = true;
+    }
+    prepare_root_publication_candidate(root, "unrelated workflow publication pin");
+    register_unrelated_active_worktree(root);
+
+    let output = cargo_bin()
+        .current_dir(root)
+        .args([
+            "workflow",
+            "ready",
+            "RC-1",
+            "--apply",
+            "--summary",
+            "Ignore unrelated workflow worktree",
+        ])
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "stdout:\n{}\n\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    handle.join().unwrap();
+    let logged = log.lock().unwrap().clone();
+    assert!(logged.iter().any(|row| {
+        row.method == "POST"
+            && row.url == "/v1/native/repository-authorities/7/changes/RC-1/patchsets"
+    }));
+}
+
+#[test]
+fn native_workflow_ready_apply_from_root_reports_matching_not_active_unrelated_worktree() {
+    let (base_url, log, state, handle) = spawn_fake_remote();
+    let temp = init_repo(&base_url);
+    let root = temp.path();
+    {
+        let mut guard = state.lock().unwrap();
+        guard.remote_head_snapshot_id = Some(FIXTURE_BASE_SNAPSHOT_ID.to_string());
+        guard.force_no_selected_patchset = true;
+    }
+    prepare_root_publication_candidate(root, "matching workflow publication pin");
+    register_matching_target_worktree(root);
+    register_unrelated_active_worktree(root);
+
+    let output = cargo_bin()
+        .current_dir(root)
+        .args([
+            "workflow",
+            "ready",
+            "RC-1",
+            "--apply",
+            "--summary",
+            "Require matching workflow worktree",
+        ])
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("Repo root has bound worktree `rt-1` for task `RT-1`"));
+    assert!(!stderr.contains("pinned to bound worktree `rt-other`"));
+    handle.join().unwrap();
+    let logged = log.lock().unwrap().clone();
+    assert!(!logged.iter().any(|row| {
+        row.method == "POST"
+            && row.url == "/v1/native/repository-authorities/7/changes/RC-1/patchsets"
+    }));
+}
+
 #[test]
 fn native_patchset_publish_rejects_bound_worktree_retarget_requirement() {
     let (base_url, log, state, handle) = spawn_fake_remote();
@@ -48,7 +264,6 @@ fn native_patchset_publish_rejects_bound_worktree_retarget_requirement() {
         .args([
             "patchset",
             "publish",
-            "--change",
             "RC-1",
             "--summary",
             "retarget check",
@@ -109,7 +324,6 @@ fn native_patchset_publish_uses_unchanged_remote_base_when_local_main_is_ahead()
         &[
             "patchset",
             "publish",
-            "--change",
             "RC-1",
             "--summary",
             "Keep direct Remote ancestry",
@@ -341,7 +555,6 @@ fn native_patchset_publish_uses_one_zstd_plan_for_suffix_above_remote_head() {
         &[
             "patchset",
             "publish",
-            "--change",
             "RC-1",
             "--summary",
             "Bounded suffix publish",
@@ -530,7 +743,7 @@ fn native_push_uploads_missing_suffix_and_updates_remote_line() {
 }
 
 #[test]
-fn native_push_phase_timings_and_transfer_metrics_are_opt_in_debug_json() {
+fn native_push_json_ignores_the_retired_debug_environment() {
     let (base_url, _log, state, handle) = spawn_fake_remote();
     let temp = init_repo(&base_url);
     let root = temp.path();
@@ -540,60 +753,13 @@ fn native_push_phase_timings_and_transfer_metrics_are_opt_in_debug_json() {
         "pub fn example() -> &'static str { \"normal-timing\" }\n",
     );
     seed_snapshot(root, "normal timing push");
-    let normal = json_output(root, &["push", "--line", "main", "--json"]);
-    assert!(normal.get("phase_timings_ms").is_none());
-    assert!(normal.get("remote_sync_metrics").is_none());
-    handle.join().unwrap();
-
-    let (base_url, log, state, handle) = spawn_fake_remote();
-    let temp = init_repo(&base_url);
-    let root = temp.path();
-    state.lock().unwrap().remote_head_snapshot_id = Some(FIXTURE_BASE_SNAPSHOT_ID.to_string());
-    write_file(
-        &root.join("src/lib.rs"),
-        "pub fn example() -> &'static str { \"debug-timing\" }\n",
-    );
-    seed_snapshot(root, "debug timing push");
-    let debug = json_output_with_env(
+    let normal = json_output_with_env(
         root,
         &["push", "--line", "main", "--json"],
-        &[
-            ("AIT_JSON_MODE", "debug"),
-            ("AIT_REMOTE_SYNC_PACK_PARALLELISM", "99"),
-        ],
+        &[(concat!("AIT_JSON_", "MODE"), "debug")],
     );
-    assert!(debug["phase_timings_ms"]["zstd_bulk"].is_object());
-    for phase in [
-        "local_plan",
-        "plan_http",
-        "pack_prepare",
-        "pack_upload_pipeline",
-        "commit_assembly",
-        "commit_http",
-        "total",
-    ] {
-        assert!(
-            debug["phase_timings_ms"]["zstd_bulk"][phase]
-                .as_f64()
-                .is_some(),
-            "missing push phase timing {phase}"
-        );
-    }
-    assert_eq!(
-        debug["remote_sync_metrics"]["remote_round_trips"].as_u64(),
-        Some(log.lock().unwrap().len() as u64)
-    );
-    assert_eq!(
-        debug["remote_sync_metrics"]["http_retry_count"].as_u64(),
-        Some(0)
-    );
-    assert!(debug["remote_sync_metrics"]["transferred_pack_bytes"]
-        .as_u64()
-        .is_some_and(|bytes| bytes > 0));
-    assert_eq!(
-        debug["remote_sync_metrics"]["pack_parallelism"].as_u64(),
-        Some(16)
-    );
+    assert!(normal.get("phase_timings_ms").is_none());
+    assert!(normal.get("remote_sync_metrics").is_none());
     handle.join().unwrap();
 }
 
@@ -615,10 +781,7 @@ fn native_push_perfetto_trace_names_cover_frontier_pack_pipeline_and_commit() {
     let _ = json_output_with_env(
         root,
         &["push", "--line", "main", "--json"],
-        &[
-            ("AIT_JSON_MODE", "debug"),
-            ("AIT_PERFETTO_TRACE", trace_text.as_str()),
-        ],
+        &[("AIT_PERFETTO_TRACE", trace_text.as_str())],
     );
     handle.join().unwrap();
     let trace = parse_json_bytes(&fs::read(&trace_path).expect("push Perfetto trace"));
@@ -885,7 +1048,7 @@ fn native_review_team_approve_recovers_change_lookup_via_repo_listing() {
 }
 
 #[test]
-fn native_review_namespace_supports_show_request_task_comment_and_template() {
+fn native_review_namespace_supports_distinct_code_task_team_and_template_lanes() {
     let (base_url, log, _state, handle) = spawn_fake_remote();
     let temp = init_repo(&base_url);
     let root = temp.path();
@@ -923,6 +1086,32 @@ fn native_review_namespace_supports_show_request_task_comment_and_template() {
     );
     assert_eq!(comment["action"].as_str(), Some("task_comment"));
 
+    let code_review = json_output(
+        root,
+        &[
+            "review",
+            "code",
+            "submit",
+            "RC-1",
+            "--patchset",
+            "RP-1",
+            "--message",
+            "Reviewed files: src/lib.rs; Findings: none after inspection; Risks: low; Tests: cargo test; Recommendation: pass",
+            "--json",
+        ],
+    );
+    assert_eq!(code_review["action"].as_str(), Some("code_review_summary"));
+    assert_eq!(code_review["reviewer"].as_str(), Some("ait-cli"));
+    assert_eq!(code_review["task_review"]["mode"].as_str(), Some("automatic"));
+    assert_eq!(
+        code_review["task_review"]["reviewer"].as_str(),
+        Some("Fixture User")
+    );
+    assert_eq!(
+        code_review["task_review"]["policy_refresh"]["decision"].as_str(),
+        Some("pass")
+    );
+
     let show = json_output(root, &["review", "show", "RC-1", "--json"]);
     assert_eq!(show["current_patchset_id"].as_str(), Some("RP-1"));
     assert_eq!(show["approvals"].as_i64(), Some(1));
@@ -932,21 +1121,13 @@ fn native_review_namespace_supports_show_request_task_comment_and_template() {
     );
     assert!(show.get("reviews").is_none());
 
-    let show_debug = json_output_with_env(
+    let show_with_retired_environment = json_output_with_env(
         root,
         &["review", "show", "RC-1", "--json"],
-        &[("AIT_JSON_MODE", "debug")],
+        &[(concat!("AIT_JSON_", "MODE"), "debug")],
     );
-    assert_eq!(
-        show_debug["reviews"],
-        json!([{
-            "reviewer": "Fixture User <fixture@example.com>",
-            "patchset_id": "RP-1",
-            "action": "task_comment",
-            "blocking": false,
-            "comment": "looks fine"
-        }])
-    );
+    assert_eq!(show_with_retired_environment, show);
+    assert!(show_with_retired_environment.get("reviews").is_none());
 
     let template = json_output(
         root,
@@ -968,6 +1149,24 @@ fn native_review_namespace_supports_show_request_task_comment_and_template() {
     assert!(logged
         .iter()
         .any(|row| row.method == "POST" && row.url == "/v1/native/repository-authorities/7/changes/RC-1/reviews"));
+    let recorded_reviews = logged
+        .iter()
+        .filter(|row| {
+            row.method == "POST"
+                && row.url == "/v1/native/repository-authorities/7/changes/RC-1/reviews"
+        })
+        .map(|row| parse_json(&row.body))
+        .collect::<Vec<_>>();
+    assert!(recorded_reviews.iter().any(|review| {
+        review["action"] == json!("code_review_summary")
+            && review["reviewer"] == json!("ait-cli")
+    }));
+    assert!(recorded_reviews.iter().any(|review| {
+        review["action"] == json!("task_approve")
+            && review["reviewer"] == json!("Fixture User")
+            && review["comment"]
+                == json!("Automatic Task approval authorized by repository `task_review=automatic` policy.")
+    }));
     assert!(logged
         .iter()
         .any(|row| row.method == "GET" && row.url == "/v1/native/repository-authorities/7/changes/RC-1/reviews"));
@@ -987,16 +1186,15 @@ fn native_policy_namespace_supports_show_and_waive() {
     );
     assert!(show.get("input_fingerprint").is_none());
 
-    let show_debug = json_output_with_env(
+    let show_with_retired_environment = json_output_with_env(
         root,
         &["policy", "show", "RP-1", "--json"],
-        &[("AIT_JSON_MODE", "debug")],
+        &[(concat!("AIT_JSON_", "MODE"), "debug")],
     );
-    assert_eq!(show_debug["input_fingerprint"].as_str(), Some("abc"));
-    assert_eq!(
-        show_debug["checks"],
-        json!([{"name": "require_tests", "status": "pass", "message": "ok"}])
-    );
+    assert_eq!(show_with_retired_environment, show);
+    assert!(show_with_retired_environment
+        .get("input_fingerprint")
+        .is_none());
 
     let waive = json_output(
         root,
@@ -1032,7 +1230,6 @@ fn native_land_namespace_is_removed_from_cli_surface() {
     let output = cargo_bin()
         .current_dir(root)
         .args(["land", "show", "LAND-1", "--json"])
-        .env_remove("AIT_JSON_MODE")
         .output()
         .unwrap();
 

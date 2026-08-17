@@ -1,3 +1,4 @@
+#[cfg(test)]
 use std::env;
 use std::fs::{self, File};
 use std::io::{self, Read, Seek, SeekFrom, Write};
@@ -9,7 +10,6 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 const DEFAULT_CI_PROCESS_NICE: i32 = 10;
-const CI_PROCESS_NICE_ENV_NAMES: [&str; 2] = ["AIT_NATIVE_SERVER_CI_NICE", "AIT_SERVER_CI_NICE"];
 pub(crate) const DEFAULT_CI_PROCESS_TIMEOUT_SECONDS: u64 = 3_600;
 pub(crate) const MAX_CI_PROCESS_TIMEOUT_SECONDS: u64 = 86_400;
 const DEFAULT_CI_PROCESS_TERMINATION_GRACE_SECONDS: u64 = 2;
@@ -281,33 +281,8 @@ fn configure_ci_process_group(command: &mut Command) {
 }
 
 pub(crate) fn configure_ci_process_priority(command: &mut Command) -> Result<(), String> {
-    let nice_value = configured_ci_process_nice()?;
-    configure_ci_process_priority_with_value(command, nice_value);
+    configure_ci_process_priority_with_value(command, DEFAULT_CI_PROCESS_NICE);
     Ok(())
-}
-
-fn configured_ci_process_nice() -> Result<i32, String> {
-    let configured = CI_PROCESS_NICE_ENV_NAMES.into_iter().find_map(|name| {
-        env::var(name)
-            .ok()
-            .map(|value| (name, value))
-            .filter(|(_, value)| !value.trim().is_empty())
-    });
-    let Some((name, raw_value)) = configured else {
-        return Ok(DEFAULT_CI_PROCESS_NICE);
-    };
-    parse_ci_process_nice(&raw_value).map_err(|error| format!("{name} {error}; got `{raw_value}`"))
-}
-
-fn parse_ci_process_nice(raw_value: &str) -> Result<i32, String> {
-    let nice_value = raw_value
-        .trim()
-        .parse::<i32>()
-        .map_err(|_| "must be an integer from 0 through 19".to_string())?;
-    if !(0..=19).contains(&nice_value) {
-        return Err("must be an integer from 0 through 19".to_string());
-    }
-    Ok(nice_value)
 }
 
 fn configure_ci_process_priority_with_value(command: &mut Command, nice_value: i32) {
@@ -541,15 +516,6 @@ mod tests {
             std::process::id(),
             TEST_SEQUENCE.fetch_add(1, Ordering::Relaxed)
         ))
-    }
-
-    #[test]
-    fn ci_nice_override_is_bounded() {
-        assert_eq!(parse_ci_process_nice("0"), Ok(0));
-        assert_eq!(parse_ci_process_nice("19"), Ok(19));
-        assert!(parse_ci_process_nice("-1").is_err());
-        assert!(parse_ci_process_nice("20").is_err());
-        assert!(parse_ci_process_nice("not-a-number").is_err());
     }
 
     #[cfg(unix)]

@@ -146,6 +146,8 @@ pub fn workflow_ready_facts(state: &JsonValue) -> Result<JsonValue, String> {
         "policy": policy.clone(),
         "review_blocking": review.get("blocking").and_then(JsonValue::as_i64).unwrap_or(0),
         "task_review_approvals": review.get("task_approvals").and_then(JsonValue::as_i64).unwrap_or(0),
+        "code_review_summary_count": state.get("code_review_summary_count").and_then(JsonValue::as_i64).unwrap_or(0),
+        "requires_code_review_summary": state.get("requires_code_review_summary").and_then(JsonValue::as_bool).unwrap_or(false),
         "task_review_enabled": task_review.get("value").and_then(JsonValue::as_bool).unwrap_or(false),
         "external_readiness": clone_if_object(state.get("external_readiness")),
         "worktree_retarget": clone_if_object(state.get("worktree_retarget")),

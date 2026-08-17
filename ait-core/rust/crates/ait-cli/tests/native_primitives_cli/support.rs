@@ -1,3 +1,4 @@
+use ait_cli::init_surface::{init_repo as initialize_repo, InitRequest};
 use ait_cli::primitives::{
     task_land_apply, task_land_payload, workflow_land_apply, workflow_ready_payload,
 };
@@ -123,6 +124,10 @@ enum CloseoutMutationBoundary {
 struct CloseoutRecoveryRemoteState {
     land_submitted: bool,
     task_completed: bool,
+    enforce_reviewer_workflow: bool,
+    code_review_recorded: bool,
+    task_review_recorded: bool,
+    policy_evaluated: bool,
     patchset_revision_snapshot_id: Option<String>,
     land_boundary: CloseoutMutationBoundary,
     task_boundary: CloseoutMutationBoundary,
@@ -142,6 +147,10 @@ impl Default for CloseoutRecoveryRemoteState {
         Self {
             land_submitted: false,
             task_completed: false,
+            enforce_reviewer_workflow: false,
+            code_review_recorded: true,
+            task_review_recorded: true,
+            policy_evaluated: true,
             patchset_revision_snapshot_id: None,
             land_boundary: CloseoutMutationBoundary::MutateBeforeResponse,
             task_boundary: CloseoutMutationBoundary::MutateBeforeResponse,
@@ -169,6 +178,10 @@ impl CloseoutRecoveryRemoteState {
     ) {
         self.land_submitted = false;
         self.task_completed = false;
+        self.enforce_reviewer_workflow = false;
+        self.code_review_recorded = true;
+        self.task_review_recorded = true;
+        self.policy_evaluated = true;
         self.patchset_revision_snapshot_id = None;
         self.land_boundary = land_boundary;
         self.task_boundary = task_boundary;
@@ -217,6 +230,7 @@ struct FakeRemoteState {
     atomic_plan: Option<JsonValue>,
     atomic_task_start: Option<JsonValue>,
     fail_atomic_task_start: bool,
+    zstd_import_fixture: Option<ZstdRemoteImportFixture>,
 }
 
 #[derive(Clone)]
@@ -287,17 +301,16 @@ fn init_repo_with_fixture_workflow(base_url: &str) -> TempDir {
         &root.join("src/lib.rs"),
         "pub fn example() -> &'static str { \"ok\" }\n",
     );
-    json_output(
-        root,
-        &[
-            "init",
-            "--name",
-            "fixture-ait",
-            "--default-line",
-            "main",
-            "--json",
-        ],
-    );
+    initialize_repo(&InitRequest {
+        root: root.to_path_buf(),
+        name: Some("fixture-ait".to_string()),
+        default_line: "main".to_string(),
+        policy_profile: "prototype".to_string(),
+        default_author_mode: "ai_with_human_review".to_string(),
+        default_model: None,
+        repair_existing: false,
+    })
+    .unwrap();
     write_file(
         &root.join(".ait/config.json"),
         r#"{
@@ -657,8 +670,6 @@ fn init_cli_local_draft_worktree_repo(base_url: &str) -> (TempDir, PathBuf, Json
             "Native local task",
             "--intent",
             "exercise authoritative local workflow state",
-            "--base-line",
-            "main",
             "--json",
         ],
     );
@@ -762,10 +773,7 @@ fn cargo_bin() -> Command {
 
 fn command_output_with_env(root: &Path, args: &[&str], envs: &[(&str, &str)]) -> Output {
     let mut command = cargo_bin();
-    command
-        .current_dir(root)
-        .args(args)
-        .env_remove("AIT_JSON_MODE");
+    command.current_dir(root).args(args);
     for (key, value) in envs {
         command.env(key, value);
     }

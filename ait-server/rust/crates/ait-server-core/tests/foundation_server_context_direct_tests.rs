@@ -202,8 +202,7 @@ fn server_context_from_env_uses_runtime_root_and_schema_defaults() {
         "from-env",
         &json!({
             "env": {
-                "AIT_RUNTIME_DATA": "/tmp/runtime-data",
-                "AIT_NATIVE_SERVER_DATA": "/tmp/legacy-data",
+                "AIT_NATIVE_SERVER_DATA": "/tmp/runtime-data",
                 "AIT_NATIVE_SERVER_DB_BACKEND": "postgres",
                 "AIT_NATIVE_SERVER_POSTGRES_DSN": "postgres://example"
             }

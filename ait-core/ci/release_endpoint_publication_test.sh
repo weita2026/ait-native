@@ -462,6 +462,7 @@ expect_failure github-asset-name-collision \
 npm_tag_mock=${temporary_root}/npm-tag-mock
 mkdir "${npm_tag_mock}"
 npm_tag_log=${temporary_root}/npm-tag.log
+npm_tag_log_q=$(printf '%q' "${npm_tag_log}")
 # shellcheck disable=SC2016 # These are literal lines for the mock executable.
 printf '%s\n' \
   '#!/usr/bin/env bash' \
@@ -479,7 +480,7 @@ printf '%s\n' \
   '  exit 0' \
   'fi' \
   'if [[ $1 == dist-tag && $2 == rm ]]; then' \
-  '  printf '\''%s\n'\'' "$*" >>"${AIT_NPM_TAG_TEST_LOG}"' \
+  "  printf '%s\\n' \"\$*\" >>${npm_tag_log_q}" \
   '  exit 0' \
   'fi' \
   'exit 64' \
@@ -489,7 +490,6 @@ chmod 0700 "${npm_tag_mock}/npm"
 export npm_registry=https://registry.npmjs.org
 npmrc=${temporary_root}/npm-tag-test.npmrc
 : >"${npmrc}"
-export AIT_NPM_TAG_TEST_LOG=${npm_tag_log}
 PATH="${npm_tag_mock}:${PATH}" \
   remove_matching_npm_prerelease_latest_tag \
   "${npmrc}" matching 1.0.0-rc.4 rc

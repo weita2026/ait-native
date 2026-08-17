@@ -261,6 +261,7 @@ fn boundary_request(rebase: bool) -> SyncRequest {
         base_url: Some("http://example.test".to_string()),
         rebase,
         reconcile: false,
+        history_publish_plan_id: None,
         plan_storage: PlanSyncStorageRequest::default(),
         task_start: None,
     }
@@ -797,6 +798,37 @@ fn duplicate_current_plan_reconcile_rejects_plan_items_before_mutation() {
     assert!(error.contains("has Plan items"));
     assert!(local.calls.borrow().is_empty());
     assert_eq!(identity.timestamps.get(), 0);
+}
+
+#[test]
+fn exact_history_publication_selects_the_archived_bound_plan_without_markdown_access() {
+    let store = BoundaryLocalStore::default();
+    store.existing_plans.borrow_mut().insert(
+        "PR-649".to_string(),
+        json!({
+            "plan_id": "PR-649",
+            "repo_name": "ait_test",
+            "status": "archived",
+            "publication_state": "local_draft",
+            "head_revision_id": "plan-revision:2887",
+            "head_revision": {
+                "plan_revision_id": "plan-revision:2887",
+                "artifact_path": "docs/sprints/missing.md",
+                "artifact_selector": "missing/root",
+                "artifact_blob_id": "BLB-exact"
+            }
+        }),
+    );
+    let mut request = boundary_request(false);
+    request.history_publish_plan_id = Some("PR-649".to_string());
+
+    let row = history_publish_result_row(&request, &store, "PR-649")
+        .expect("archived Plan selection should use durable local authority");
+
+    assert_eq!(row["action"], json!("history_publish"));
+    assert_eq!(row["plan_id"], json!("PR-649"));
+    assert_eq!(row["artifact_path"], json!("docs/sprints/missing.md"));
+    assert_eq!(row["artifact_selector"], json!("missing/root"));
 }
 
 #[test]

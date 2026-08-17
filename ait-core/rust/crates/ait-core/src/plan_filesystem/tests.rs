@@ -284,8 +284,20 @@ fn exact_task_cargo_config_with_aliases_stays_out_of_visible_workspace_paths() {
     fs::write(root.join(WORKTREE_CARGO_CONFIG_RELATIVE_PATH), generated).unwrap();
 
     assert!(worktree_cargo_build_dir(&root).ends_with("task-workspaces/task-one"));
+    assert!(worktree_cargo_target_dir(&root).ends_with("task-workspaces/task-one"));
     let visible = list_visible_workspace_paths(root.to_str().unwrap(), None, None).unwrap();
     assert_eq!(visible, vec!["README.md"]);
+
+    fs::write(
+        root.join(WORKTREE_CARGO_CONFIG_RELATIVE_PATH),
+        format!(
+            "{SHARED_FINAL_ARTIFACT_GENERATED_CARGO_CONFIG_HEADER}\n[build]\ntarget-dir = \".ait/cargo-target\"\nbuild-dir = {}\n",
+            encoded_cargo_path(&worktree_cargo_build_dir(&root))
+        ),
+    )
+    .unwrap();
+    let legacy_visible = list_visible_workspace_paths(root.to_str().unwrap(), None, None).unwrap();
+    assert_eq!(legacy_visible, vec!["README.md"]);
     fs::remove_dir_all(root).unwrap();
 }
 
@@ -301,7 +313,7 @@ fn canonical_source_cargo_config_remains_visible_in_a_worktree() {
     .unwrap();
     fs::write(
         root.join(WORKTREE_CARGO_CONFIG_RELATIVE_PATH),
-        "# AIT source policy: canonical Cargo settings; task worktrees receive a managed projection.\n[build]\ntarget-dir = \".ait/cargo-target\"\nbuild-dir = \".ait/cargo-build/workspaces/{workspace-path-hash}\"\n",
+        "# AIT source policy: canonical Cargo settings; task worktrees receive a managed projection.\n[build]\ntarget-dir = \".ait/cargo-target\"\nbuild-dir = \".ait/cargo-build/canonical\"\n",
     )
     .unwrap();
 

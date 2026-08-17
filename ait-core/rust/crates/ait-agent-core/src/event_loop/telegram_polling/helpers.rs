@@ -1,4 +1,5 @@
 use crate::json_support::parse_value;
+use ait_core::environment_contract::names;
 use ait_core::json_support::{json, JsonMap as Map, JsonValue};
 
 pub(super) fn plan_background_sync(
@@ -301,7 +302,7 @@ pub(super) fn text_array_field_from(
 pub(super) fn command_trigger_env_overrides(repo_root: Option<&str>) -> JsonValue {
     match repo_root {
         Some(repo_root) if !repo_root.is_empty() => json!({
-            "AIT_REPO_ROOT": repo_root,
+            (names::AIT_REPO_ROOT): repo_root,
         }),
         _ => json!({}),
     }

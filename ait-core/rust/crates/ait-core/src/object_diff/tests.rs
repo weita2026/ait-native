@@ -39,34 +39,6 @@ struct MemorySnapshotReader {
     snapshots: BTreeMap<String, JsonValue>,
 }
 
-#[test]
-fn workspace_diff_reports_conservative_changed_content_bytes() {
-    let entries = vec![
-        WorkspaceDiffEntry {
-            path: "modified.txt".to_string(),
-            status: "modified".to_string(),
-            old_bytes: Some(b"old".to_vec()),
-            new_bytes: Some(b"newer".to_vec()),
-            old_mode: Some("0o644".to_string()),
-            new_mode: Some("0o644".to_string()),
-        },
-        WorkspaceDiffEntry {
-            path: "deleted.txt".to_string(),
-            status: "missing".to_string(),
-            old_bytes: Some(b"gone".to_vec()),
-            new_bytes: None,
-            old_mode: Some("0o644".to_string()),
-            new_mode: None,
-        },
-    ];
-    let payload = workspace_diff_from_entries(&entries, "base", "workspace", false, 0);
-    assert_eq!(payload["summary"]["changed_bytes"], json!(12));
-    assert_eq!(payload["files"][0]["old_size_bytes"], json!(3));
-    assert_eq!(payload["files"][0]["new_size_bytes"], json!(5));
-    assert_eq!(payload["files"][1]["old_size_bytes"], json!(4));
-    assert_eq!(payload["files"][1]["new_size_bytes"], json!(0));
-}
-
 impl SnapshotReader for MemorySnapshotReader {
     fn read_snapshot_manifest(&self, snapshot_id: &str) -> Result<JsonValue, String> {
         self.snapshots

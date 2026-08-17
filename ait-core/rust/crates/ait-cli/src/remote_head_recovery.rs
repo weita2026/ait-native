@@ -1,6 +1,8 @@
 use crate::init_surface::{init_repo_for_remote_head_recovery, InitRequest};
 use crate::json_support::parse_value;
-use crate::runtime::{RepoRuntime, REMOTE_SYNC_BINARY_DB_WRITE_LAYOUT};
+use crate::runtime::{
+    canonical_repository_directory_name, RepoRuntime, REMOTE_SYNC_BINARY_DB_WRITE_LAYOUT,
+};
 use ait_core::binary_db_generation::{
     activate_binary_db_generation, capture_binary_db_generation,
     snapshot_binary_db_authority_fingerprint, BinaryDbGenerationActivationOptions,
@@ -26,14 +28,12 @@ use std::sync::mpsc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const RECOVERY_ROOT_NAME: &str = "remote-head-recovery";
+const RECOVERY_LINE_NAME: &str = "main";
 const MAX_RECOVERY_JOBS: usize = 64;
 const REPOSITORY_CONFIG_PATH: &str = ".ait/config.json";
 const WORKTREE_CONFIG_NAME: &str = ".ait-worktree.json";
-const RECOVERY_DISCOVERY_ENV_VARS: &[&str] = &[
-    "AIT_REPO_ROOT",
-    "AIT_NATIVE_WORKSPACE_ROOT",
-    "AIT_WORKSPACE_ROOT",
-];
+const RECOVERY_DISCOVERY_ENV_VARS: &[&str] =
+    &[ait_core::environment_contract::names::AIT_REPO_ROOT];
 
 /// The deliberately narrow bootstrap available when local Binary DB authority
 /// cannot pass normal runtime admission. It reads repository identity, remote
@@ -112,25 +112,14 @@ impl RemoteHeadRecoveryContext {
             .ok_or_else(|| format!("Unknown remote: {name}"))
     }
 
-    fn repo_name(&self) -> String {
-        self.config_text("repo_name").unwrap_or_else(|| {
-            self.authority_root()
-                .file_name()
-                .and_then(|value| value.to_str())
-                .unwrap_or("repo")
-                .to_string()
-        })
+    fn repo_name(&self) -> Result<String, String> {
+        canonical_repository_directory_name(&self.authority_root())
     }
 
     fn repository_index(&self) -> Option<RepositoryIndex> {
         self.config
             .get("repository_index")
             .and_then(|value| RepositoryIndex::parse_config_value(value).ok())
-    }
-
-    fn default_line_name(&self) -> String {
-        self.config_text("default_line")
-            .unwrap_or_else(|| "main".to_string())
     }
 
     fn authority_root(&self) -> PathBuf {
@@ -147,25 +136,11 @@ impl RemoteHeadRecoveryContext {
 
     fn auth_headers(&self) -> BTreeMap<String, String> {
         let mut headers = BTreeMap::new();
-        if let Some(actor) = recovery_env("AIT_NATIVE_ACTOR")
-            .or_else(|| recovery_env("AIT_ACTOR"))
+        if let Some(actor) = recovery_env(ait_core::environment_contract::names::AIT_NATIVE_ACTOR)
             .or_else(|| self.config_text("user_email"))
             .or_else(|| self.config_text("user_name"))
         {
             headers.insert("X-AIT-Actor".to_string(), actor);
-        }
-        for (header, native_variable, variable) in [
-            (
-                "X-AIT-Actor-Type",
-                "AIT_NATIVE_ACTOR_TYPE",
-                "AIT_ACTOR_TYPE",
-            ),
-            ("X-AIT-Roles", "AIT_NATIVE_ROLES", "AIT_ROLES"),
-            ("X-AIT-Repos", "AIT_NATIVE_REPOS", "AIT_REPOS"),
-        ] {
-            if let Some(value) = recovery_env(native_variable).or_else(|| recovery_env(variable)) {
-                headers.insert(header.to_string(), value);
-            }
         }
         headers
     }
@@ -181,8 +156,6 @@ impl RemoteHeadRecoveryContext {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RemoteHeadRecoveryRequest {
     pub remote_name: Option<String>,
-    pub line_name: Option<String>,
-    pub include_line_names: Vec<String>,
     pub jobs: usize,
     pub apply: bool,
 }
@@ -191,8 +164,6 @@ impl Default for RemoteHeadRecoveryRequest {
     fn default() -> Self {
         Self {
             remote_name: None,
-            line_name: None,
-            include_line_names: Vec::new(),
             jobs: 8,
             apply: false,
         }
@@ -212,151 +183,69 @@ struct RecoveryPackRequest {
 }
 
 #[derive(Clone, Debug)]
-struct RecoveryLineHead {
-    line_name: String,
+struct RecoveryHead {
     snapshot_id: String,
     manifest: ZstdImportManifestPayload,
 }
 
 #[derive(Clone, Debug)]
 struct RecoveryAncestry {
-    intermediate_manifests_topological: Vec<ZstdImportManifestPayload>,
-    anchor_snapshot_ids: Vec<String>,
-    primary_is_boundary: bool,
+    manifests_topological: Vec<ZstdImportManifestPayload>,
 }
 
 impl RecoveryAncestry {
     fn history_mode(&self) -> &'static str {
-        if self.primary_is_boundary {
-            "remote_head_boundary"
-        } else {
-            "remote_head_anchored_ancestry"
-        }
+        "complete_ancestry"
     }
 
-    fn complete_ancestry_snapshot_count(&self) -> usize {
-        if self.primary_is_boundary {
-            0
-        } else {
-            self.intermediate_manifests_topological
-                .len()
-                .saturating_add(1)
-        }
-    }
-
-    fn compatibility_anchor_snapshot_id(&self) -> Option<String> {
-        self.anchor_snapshot_ids.first().cloned()
+    fn reachable_snapshot_count(&self) -> usize {
+        self.manifests_topological.len()
     }
 }
 
-fn recovery_line_names(primary: &str, included: &[String]) -> Vec<String> {
-    let mut seen = BTreeSet::new();
-    let mut lines = Vec::with_capacity(included.len().saturating_add(1));
-    for line_name in std::iter::once(primary.to_string()).chain(
-        included
-            .iter()
-            .filter_map(|line_name| normalized_text(Some(line_name))),
-    ) {
-        if seen.insert(line_name.clone()) {
-            lines.push(line_name);
-        }
-    }
-    lines
-}
-
-fn recovery_lines_payload(line_heads: &[RecoveryLineHead]) -> Vec<JsonValue> {
-    line_heads
+fn unique_recovery_pack_counts(ancestry: &RecoveryAncestry) -> (usize, usize) {
+    let object_packs = ancestry
+        .manifests_topological
         .iter()
-        .map(|line_head| {
-            json!({
-                "line_name": line_head.line_name,
-                "snapshot_id": line_head.snapshot_id,
-                "source_parent_snapshot_ids": line_head.manifest.snapshots.first().map(|row| row.parent_snapshot_ids.clone()).unwrap_or_default(),
-                "source_primary_parent_snapshot_id": line_head.manifest.snapshots.first().and_then(|row| row.primary_parent_snapshot_id.clone()),
-                "source_parent_snapshot_id": line_head.manifest.snapshots.first().and_then(|row| row.parent_snapshot_id.clone()),
-                "object_pack_count": line_head.manifest.object_packs.len(),
-                "tree_pack_count": line_head.manifest.tree_packs.len(),
-            })
-        })
-        .collect()
-}
-
-fn unique_recovery_pack_counts(
-    line_heads: &[RecoveryLineHead],
-    ancestry: &RecoveryAncestry,
-) -> (usize, usize) {
-    let object_packs = line_heads
-        .iter()
-        .map(|line_head| &line_head.manifest)
-        .chain(ancestry.intermediate_manifests_topological.iter())
         .flat_map(|manifest| manifest.object_packs.iter())
         .map(|row| row.pack_id.as_str())
         .collect::<BTreeSet<_>>();
-    let tree_packs = line_heads
+    let tree_packs = ancestry
+        .manifests_topological
         .iter()
-        .map(|line_head| &line_head.manifest)
-        .chain(ancestry.intermediate_manifests_topological.iter())
         .flat_map(|manifest| manifest.tree_packs.iter())
         .map(|row| row.pack_id.as_str())
         .collect::<BTreeSet<_>>();
     (object_packs.len(), tree_packs.len())
 }
 
-fn collect_primary_ancestry_with<F>(
+fn collect_reachable_ancestry_with<F>(
     repo_name: &str,
-    line_heads: &[RecoveryLineHead],
+    head: &RecoveryHead,
     mut fetch_manifest: F,
 ) -> Result<RecoveryAncestry, String>
 where
     F: FnMut(&str, &str) -> Result<ZstdImportManifestPayload, String>,
 {
-    let primary = line_heads
-        .first()
-        .ok_or_else(|| "remote-head recovery resolved no lines".to_string())?;
-    if line_heads.len() == 1 {
-        return Ok(RecoveryAncestry {
-            intermediate_manifests_topological: Vec::new(),
-            anchor_snapshot_ids: Vec::new(),
-            primary_is_boundary: true,
-        });
-    }
-
-    let anchor_snapshot_ids = line_heads
-        .iter()
-        .skip(1)
-        .map(|line_head| line_head.snapshot_id.clone())
-        .collect::<BTreeSet<_>>();
-    if anchor_snapshot_ids.contains(&primary.snapshot_id) {
-        return Ok(RecoveryAncestry {
-            intermediate_manifests_topological: Vec::new(),
-            anchor_snapshot_ids: vec![primary.snapshot_id.clone()],
-            primary_is_boundary: true,
-        });
-    }
-
     let limits = ait_core::snapshot_dag::SnapshotDagLimits::default();
-    let primary_parents = recovery_manifest_parent_snapshot_ids(&primary.manifest)?;
-    if primary_parents.is_empty() {
-        return Err(disconnected_recovery_ancestry_error(
-            &primary.snapshot_id,
-            &anchor_snapshot_ids,
-            &primary.snapshot_id,
-        ));
-    }
+    let head_parents = recovery_manifest_parent_snapshot_ids(&head.manifest)?;
     let mut pending = VecDeque::new();
-    let mut queued = BTreeSet::from([primary.snapshot_id.clone()]);
-    let mut reached_anchors = BTreeSet::new();
-    let mut parent_map = BTreeMap::from([(primary.snapshot_id.clone(), primary_parents.clone())]);
-    let mut manifests = BTreeMap::new();
-    for parent in primary_parents {
-        if anchor_snapshot_ids.contains(&parent) {
-            reached_anchors.insert(parent);
-        } else if queued.insert(parent.clone()) {
-            pending.push_back(parent);
+    let mut discovered = BTreeSet::from([head.snapshot_id.clone()]);
+    let mut parent_map = BTreeMap::from([(head.snapshot_id.clone(), head_parents.clone())]);
+    let mut manifests = BTreeMap::from([(head.snapshot_id.clone(), head.manifest.clone())]);
+    for parent in head_parents {
+        if discovered.insert(parent.clone()) {
+            pending.push_back((parent, 1usize));
         }
     }
-    while let Some(snapshot_id) = pending.pop_front() {
-        if queued.len() > limits.max_results {
+    while let Some((snapshot_id, depth)) = pending.pop_front() {
+        if depth > limits.max_depth {
+            return Err(format!(
+                "remote recovery Snapshot DAG exceeded max_depth {} at {snapshot_id}",
+                limits.max_depth
+            ));
+        }
+        if manifests.len() >= limits.max_results {
             return Err(format!(
                 "remote recovery Snapshot DAG exceeded max_results {} at {snapshot_id}",
                 limits.max_results
@@ -365,40 +254,23 @@ where
         let manifest = fetch_manifest(repo_name, &snapshot_id)?;
         verify_remote_manifest(&manifest, repo_name, &snapshot_id)?;
         let parents = recovery_manifest_parent_snapshot_ids(&manifest)?;
-        if parents.is_empty() {
-            return Err(disconnected_recovery_ancestry_error(
-                &primary.snapshot_id,
-                &anchor_snapshot_ids,
-                &snapshot_id,
-            ));
-        }
         for parent in &parents {
-            if anchor_snapshot_ids.contains(parent) {
-                reached_anchors.insert(parent.clone());
-            } else if queued.insert(parent.clone()) {
-                pending.push_back(parent.clone());
+            if discovered.insert(parent.clone()) {
+                pending.push_back((parent.clone(), depth.saturating_add(1)));
             }
         }
         parent_map.insert(snapshot_id.clone(), parents);
         manifests.insert(snapshot_id, manifest);
     }
-    let order = topological_snapshot_order(&parent_map, &anchor_snapshot_ids).map_err(|error| {
+    let order = topological_snapshot_order(&parent_map, &BTreeSet::new()).map_err(|error| {
         if error.contains("Cycle detected") {
             format!("remote snapshot ancestry contains a cycle: {error}")
         } else {
             error
         }
     })?;
-    if reached_anchors.is_empty() {
-        return Err(disconnected_recovery_ancestry_error(
-            &primary.snapshot_id,
-            &anchor_snapshot_ids,
-            &primary.snapshot_id,
-        ));
-    }
-    let intermediate_manifests_topological = order
+    let manifests_topological = order
         .into_iter()
-        .filter(|snapshot_id| snapshot_id != &primary.snapshot_id)
         .map(|snapshot_id| {
             manifests
                 .remove(&snapshot_id)
@@ -406,9 +278,7 @@ where
         })
         .collect::<Result<Vec<_>, _>>()?;
     Ok(RecoveryAncestry {
-        intermediate_manifests_topological,
-        anchor_snapshot_ids: reached_anchors.into_iter().collect(),
-        primary_is_boundary: false,
+        manifests_topological,
     })
 }
 
@@ -430,93 +300,59 @@ fn recovery_manifest_parent_snapshot_ids(
     .map(|(parents, _, _)| parents)
 }
 
-fn disconnected_recovery_ancestry_error(
-    primary_snapshot_id: &str,
-    anchor_snapshot_ids: &BTreeSet<String>,
-    unanchored_snapshot_id: &str,
-) -> String {
-    format!(
-        "remote primary line head {primary_snapshot_id} has unanchored parent branch ending at {unanchored_snapshot_id}; it did not reach any included-line anchor ({})",
-        anchor_snapshot_ids.iter().cloned().collect::<Vec<_>>().join(", ")
-    )
-}
-
 pub fn recover_remote_head(
     context: &RemoteHeadRecoveryContext,
     request: &RemoteHeadRecoveryRequest,
 ) -> Result<JsonValue, String> {
     validate_jobs(request.jobs)?;
     let remote = context.remote_row(request.remote_name.as_deref())?;
-    let repo_name = remote
-        .repo_name
-        .clone()
-        .unwrap_or_else(|| context.repo_name());
-    let line_name = normalized_text(request.line_name.as_deref())
-        .unwrap_or_else(|| context.default_line_name());
-    let line_names = recovery_line_names(&line_name, &request.include_line_names);
+    let repo_name = context.repo_name()?;
     let http_config = recovery_http_config(context, &remote.url, request.jobs);
     let mut client = PlanHttpClientManager::new(http_config.clone())
         .map_err(|error| format!("remote-head recovery transport setup failed: {error}"))?;
-    let mut line_heads = Vec::with_capacity(line_names.len());
-    for requested_line_name in line_names {
-        let remote_line = client
-            .get_line(&repo_name, &requested_line_name)
-            .map_err(|error| {
-                format!("failed to read remote line {requested_line_name:?}: {error}")
-            })?;
-        verify_remote_line(&remote_line, &repo_name, &requested_line_name)?;
-        let snapshot_id = required_text(&remote_line, "head_snapshot_id")?;
-        let manifest = client
-            .get_remote_zstd_import_manifest(&repo_name, &snapshot_id)
-            .map_err(|error| {
-                format!("failed to read remote head manifest for {snapshot_id}: {error}")
-            })?;
-        verify_remote_manifest(&manifest, &repo_name, &snapshot_id)?;
-        line_heads.push(RecoveryLineHead {
-            line_name: requested_line_name,
-            snapshot_id,
-            manifest,
-        });
-    }
-    let ancestry = collect_primary_ancestry_with(
-        &repo_name,
-        &line_heads,
-        |requested_repo_name, snapshot_id| {
+    let remote_line = client
+        .get_line(&repo_name, RECOVERY_LINE_NAME)
+        .map_err(|error| format!("failed to read remote line {RECOVERY_LINE_NAME:?}: {error}"))?;
+    verify_remote_line(&remote_line, &repo_name, RECOVERY_LINE_NAME)?;
+    let snapshot_id = required_text(&remote_line, "head_snapshot_id")?;
+    let manifest = client
+        .get_remote_zstd_import_manifest(&repo_name, &snapshot_id)
+        .map_err(|error| {
+            format!("failed to read remote head manifest for {snapshot_id}: {error}")
+        })?;
+    verify_remote_manifest(&manifest, &repo_name, &snapshot_id)?;
+    let head = RecoveryHead {
+        snapshot_id,
+        manifest,
+    };
+    let ancestry =
+        collect_reachable_ancestry_with(&repo_name, &head, |requested_repo_name, snapshot_id| {
             client
                 .get_remote_zstd_import_manifest(requested_repo_name, snapshot_id)
                 .map_err(|error| {
                     format!("failed to read remote ancestry manifest for {snapshot_id}: {error}")
                 })
-        },
-    )?;
-    let primary = line_heads
-        .first()
-        .ok_or_else(|| "remote-head recovery resolved no lines".to_string())?;
-    let snapshot = primary
+        })?;
+    let snapshot = head
         .manifest
         .snapshots
         .first()
         .ok_or_else(|| "remote head manifest contains no snapshot row".to_string())?;
     let source_parent_snapshot_id = snapshot.parent_snapshot_id.clone();
     let source_parent_snapshot_ids = snapshot.parent_snapshot_ids.clone();
-    let recovered_lines = recovery_lines_payload(&line_heads);
-    let (object_pack_count, tree_pack_count) = unique_recovery_pack_counts(&line_heads, &ancestry);
+    let (object_pack_count, tree_pack_count) = unique_recovery_pack_counts(&ancestry);
     let preview = json!({
         "action": "recover_remote_head",
         "apply": request.apply,
         "remote": remote.name,
         "repo_name": repo_name,
-        "line_name": line_name,
-        "snapshot_id": primary.snapshot_id,
+        "line_name": RECOVERY_LINE_NAME,
+        "snapshot_id": head.snapshot_id,
         "source_parent_snapshot_ids": source_parent_snapshot_ids,
         "source_primary_parent_snapshot_id": snapshot.primary_parent_snapshot_id,
         "source_parent_snapshot_id": source_parent_snapshot_id,
         "history_mode": ancestry.history_mode(),
-        "ancestry_anchor_snapshot_id": ancestry.compatibility_anchor_snapshot_id(),
-        "ancestry_anchor_snapshot_ids": ancestry.anchor_snapshot_ids,
-        "complete_ancestry_snapshot_count": ancestry.complete_ancestry_snapshot_count(),
-        "recovered_line_count": line_heads.len(),
-        "recovered_lines": recovered_lines,
+        "reachable_snapshot_count": ancestry.reachable_snapshot_count(),
         "object_pack_count": object_pack_count,
         "tree_pack_count": tree_pack_count,
         "lock_boundary": {
@@ -532,14 +368,13 @@ pub fn recover_remote_head(
     let original_root = context.authority_root();
     let expected_current_authority_fingerprint =
         snapshot_binary_db_authority_fingerprint(&original_root)?;
-    let recovery_root = fresh_recovery_root(&original_root, &primary.snapshot_id)?;
+    let recovery_root = fresh_recovery_root(&original_root, &head.snapshot_id)?;
     match apply_remote_head_recovery(
         &original_root,
         &http_config,
-        &line_heads,
+        &head,
         &ancestry,
         &repo_name,
-        &line_name,
         request.jobs,
         &recovery_root,
         &expected_current_authority_fingerprint,
@@ -568,17 +403,13 @@ pub fn recover_remote_head(
 fn apply_remote_head_recovery(
     original_repo_root: &Path,
     http_config: &PlanHttpClientConfig,
-    line_heads: &[RecoveryLineHead],
+    head: &RecoveryHead,
     ancestry: &RecoveryAncestry,
     repo_name: &str,
-    primary_line_name: &str,
     jobs: usize,
     recovery_root: &Path,
     expected_current_authority_fingerprint: &str,
 ) -> Result<JsonValue, String> {
-    let primary = line_heads
-        .first()
-        .ok_or_else(|| "remote-head recovery resolved no lines".to_string())?;
     let staging_repo_root = recovery_root.join("repository");
     fs::create_dir(&staging_repo_root).map_err(|error| {
         format!(
@@ -589,7 +420,7 @@ fn apply_remote_head_recovery(
     init_repo_for_remote_head_recovery(&InitRequest {
         root: staging_repo_root.clone(),
         name: Some(repo_name.to_string()),
-        default_line: primary_line_name.to_string(),
+        default_line: RECOVERY_LINE_NAME.to_string(),
         policy_profile: "prototype".to_string(),
         default_author_mode: "ai_with_human_review".to_string(),
         default_model: None,
@@ -604,16 +435,14 @@ fn apply_remote_head_recovery(
     let mut reused_object_packs = 0_i64;
     let mut reused_tree_packs = 0_i64;
     {
-        let mut import_manifest = |manifest: &ZstdImportManifestPayload,
-                                   history_mode: ZstdImportHistoryMode|
-         -> Result<(), String> {
+        let mut import_manifest = |manifest: &ZstdImportManifestPayload| -> Result<(), String> {
             let plan = import_store.zstd_import_download_plan(&import_context, manifest)?;
             let (object_pack_bytes, tree_pack_bytes) =
                 download_recovery_packs(http_config, repo_name, &plan, jobs)?;
             let imported = import_store.import_zstd_manifest(
                 &import_context,
                 manifest,
-                history_mode,
+                ZstdImportHistoryMode::CompleteAncestry,
                 &plan,
                 &object_pack_bytes,
                 &tree_pack_bytes,
@@ -624,12 +453,7 @@ fn apply_remote_head_recovery(
                     imported.snapshot_id, manifest.snapshot_id
                 ));
             }
-            verify_staged_snapshot_history(
-                &staging_repo,
-                &manifest.snapshot_id,
-                manifest,
-                history_mode,
-            )?;
+            verify_staged_snapshot_history(&staging_repo, &manifest.snapshot_id, manifest)?;
             downloaded_object_packs =
                 downloaded_object_packs.saturating_add(imported.downloaded_object_packs);
             downloaded_tree_packs =
@@ -639,61 +463,23 @@ fn apply_remote_head_recovery(
             Ok(())
         };
 
-        let mut imported_snapshot_ids = BTreeSet::new();
-        if ancestry.primary_is_boundary {
-            import_manifest(&primary.manifest, ZstdImportHistoryMode::RemoteHeadBoundary)?;
-            imported_snapshot_ids.insert(primary.snapshot_id.clone());
-        }
-        for line_head in line_heads.iter().skip(1) {
-            if imported_snapshot_ids.insert(line_head.snapshot_id.clone()) {
-                import_manifest(
-                    &line_head.manifest,
-                    ZstdImportHistoryMode::RemoteHeadBoundary,
-                )?;
-            }
-        }
-        if !ancestry.primary_is_boundary {
-            for manifest in &ancestry.intermediate_manifests_topological {
-                if !imported_snapshot_ids.insert(manifest.snapshot_id.clone()) {
-                    return Err(format!(
-                        "remote ancestry manifest {} overlaps an imported history boundary",
-                        manifest.snapshot_id
-                    ));
-                }
-                import_manifest(manifest, ZstdImportHistoryMode::CompleteAncestry)?;
-            }
-            if !imported_snapshot_ids.insert(primary.snapshot_id.clone()) {
-                return Err(format!(
-                    "remote primary snapshot {} overlaps an imported history boundary",
-                    primary.snapshot_id
-                ));
-            }
-            import_manifest(&primary.manifest, ZstdImportHistoryMode::CompleteAncestry)?;
+        for manifest in &ancestry.manifests_topological {
+            import_manifest(manifest)?;
         }
     }
 
-    for line_head in line_heads {
-        let updated_at = line_head
-            .manifest
-            .snapshots
-            .first()
-            .and_then(|row| row.created_at.as_deref())
-            .filter(|value| !value.trim().is_empty())
-            .unwrap_or("1970-01-01T00:00:00Z");
-        let line_store = staging_repo.line_store()?;
-        if line_store.line_by_name(&line_head.line_name)?.is_some() {
-            line_store.set_line_head(
-                &line_head.line_name,
-                Some(&line_head.snapshot_id),
-                updated_at,
-            )?;
-        } else {
-            line_store.create_line(
-                &line_head.line_name,
-                Some(&line_head.snapshot_id),
-                updated_at,
-            )?;
-        }
+    let updated_at = head
+        .manifest
+        .snapshots
+        .first()
+        .and_then(|row| row.created_at.as_deref())
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or("1970-01-01T00:00:00Z");
+    let line_store = staging_repo.line_store()?;
+    if line_store.line_by_name(RECOVERY_LINE_NAME)?.is_some() {
+        line_store.set_line_head(RECOVERY_LINE_NAME, Some(&head.snapshot_id), updated_at)?;
+    } else {
+        line_store.create_line(RECOVERY_LINE_NAME, Some(&head.snapshot_id), updated_at)?;
     }
 
     let generation_root = recovery_root.join("generation");
@@ -713,17 +499,13 @@ fn apply_remote_head_recovery(
         "action": "recover_remote_head",
         "apply": true,
         "repo_name": repo_name,
-        "line_name": primary.line_name,
-        "snapshot_id": primary.snapshot_id,
-        "source_parent_snapshot_ids": primary.manifest.snapshots.first().map(|row| row.parent_snapshot_ids.clone()).unwrap_or_default(),
-        "source_primary_parent_snapshot_id": primary.manifest.snapshots.first().and_then(|row| row.primary_parent_snapshot_id.clone()),
-        "source_parent_snapshot_id": primary.manifest.snapshots.first().and_then(|row| row.parent_snapshot_id.clone()),
+        "line_name": RECOVERY_LINE_NAME,
+        "snapshot_id": head.snapshot_id,
+        "source_parent_snapshot_ids": head.manifest.snapshots.first().map(|row| row.parent_snapshot_ids.clone()).unwrap_or_default(),
+        "source_primary_parent_snapshot_id": head.manifest.snapshots.first().and_then(|row| row.primary_parent_snapshot_id.clone()),
+        "source_parent_snapshot_id": head.manifest.snapshots.first().and_then(|row| row.parent_snapshot_id.clone()),
         "history_mode": ancestry.history_mode(),
-        "ancestry_anchor_snapshot_id": ancestry.compatibility_anchor_snapshot_id(),
-        "ancestry_anchor_snapshot_ids": ancestry.anchor_snapshot_ids,
-        "complete_ancestry_snapshot_count": ancestry.complete_ancestry_snapshot_count(),
-        "recovered_line_count": line_heads.len(),
-        "recovered_lines": recovery_lines_payload(line_heads),
+        "reachable_snapshot_count": ancestry.reachable_snapshot_count(),
         "downloaded_object_packs": downloaded_object_packs,
         "downloaded_tree_packs": downloaded_tree_packs,
         "reused_object_packs": reused_object_packs,
@@ -742,7 +524,6 @@ fn verify_staged_snapshot_history(
     repo: &RepoRuntime,
     snapshot_id: &str,
     manifest: &ZstdImportManifestPayload,
-    history_mode: ZstdImportHistoryMode,
 ) -> Result<(), String> {
     let content = repo
         .binary_db_stores::<REMOTE_SYNC_BINARY_DB_WRITE_LAYOUT>()
@@ -754,32 +535,16 @@ fn verify_staged_snapshot_history(
         .map_err(|error| error.to_string())?
         .ok_or_else(|| format!("staging snapshot {snapshot_id} is missing after import"))?;
     let source_parents = recovery_manifest_parent_snapshot_ids(manifest)?;
-    match history_mode {
-        ZstdImportHistoryMode::RemoteHeadBoundary => {
-            if !snapshot.parent_snapshot_ids.is_empty() {
-                return Err(format!(
-                    "staging snapshot {snapshot_id} unexpectedly retained a local parent"
-                ));
-            }
-            if !source_parents.is_empty() && !snapshot.record.is_remote_head_history_boundary() {
-                return Err(format!(
-                    "staging snapshot {snapshot_id} did not record the remote-head history boundary"
-                ));
-            }
-        }
-        ZstdImportHistoryMode::CompleteAncestry => {
-            if snapshot.parent_snapshot_ids != source_parents {
-                return Err(format!(
-                    "staging snapshot {snapshot_id} retained parents {:?}, expected {:?}",
-                    snapshot.parent_snapshot_ids, source_parents
-                ));
-            }
-            if snapshot.record.is_remote_head_history_boundary() {
-                return Err(format!(
-                    "staging snapshot {snapshot_id} unexpectedly recorded a history boundary"
-                ));
-            }
-        }
+    if snapshot.parent_snapshot_ids != source_parents {
+        return Err(format!(
+            "staging snapshot {snapshot_id} retained parents {:?}, expected {:?}",
+            snapshot.parent_snapshot_ids, source_parents
+        ));
+    }
+    if snapshot.record.is_remote_head_history_boundary() {
+        return Err(format!(
+            "staging snapshot {snapshot_id} unexpectedly recorded a history boundary"
+        ));
     }
     Ok(())
 }
@@ -1081,15 +846,10 @@ mod tests {
         }
     }
 
-    fn recovery_line_head(
-        line_name: &str,
-        snapshot_id: &str,
-        parent_snapshot_id: Option<&str>,
-    ) -> RecoveryLineHead {
-        RecoveryLineHead {
-            line_name: line_name.to_string(),
+    fn recovery_head(snapshot_id: &str, parent_snapshot_ids: Vec<String>) -> RecoveryHead {
+        RecoveryHead {
             snapshot_id: snapshot_id.to_string(),
-            manifest: recovery_manifest(snapshot_id, parent_snapshot_id),
+            manifest: recovery_manifest_with_parents(snapshot_id, parent_snapshot_ids),
         }
     }
 
@@ -1123,88 +883,47 @@ mod tests {
     }
 
     #[test]
-    fn recovery_lines_keep_primary_first_and_deduplicate_includes() {
-        assert_eq!(
-            recovery_line_names(
-                "feature/task",
-                &[
-                    "main".to_string(),
-                    " feature/task ".to_string(),
-                    "".to_string(),
-                    "release".to_string(),
-                    "main".to_string(),
-                ],
-            ),
-            vec![
-                "feature/task".to_string(),
-                "main".to_string(),
-                "release".to_string(),
-            ]
-        );
-    }
-
-    #[test]
-    fn included_line_anchors_primary_remote_ancestry() {
-        let line_heads = vec![
-            recovery_line_head("feature/task", "SNP-HEAD", Some("SNP-MID")),
-            recovery_line_head("main", "SNP-FORK", Some("SNP-OLDER")),
-        ];
-        let remote_manifests = BTreeMap::from([(
-            "SNP-MID".to_string(),
-            recovery_manifest("SNP-MID", Some("SNP-FORK")),
-        )]);
+    fn parentless_main_head_is_a_complete_reachable_closure() {
+        let head = recovery_head("SNP-ROOT", Vec::new());
         let mut fetched = Vec::new();
 
-        let ancestry = collect_primary_ancestry_with("fixture", &line_heads, |_, snapshot_id| {
+        let ancestry = collect_reachable_ancestry_with("fixture", &head, |_, snapshot_id| {
             fetched.push(snapshot_id.to_string());
-            remote_manifests
-                .get(snapshot_id)
-                .cloned()
-                .ok_or_else(|| format!("missing fixture manifest {snapshot_id}"))
+            Err(format!("unexpected fetch for {snapshot_id}"))
         })
-        .unwrap();
+        .expect("parentless head is already a complete closure");
 
-        assert!(!ancestry.primary_is_boundary);
-        assert_eq!(ancestry.anchor_snapshot_ids, vec!["SNP-FORK"]);
-        assert_eq!(fetched, vec!["SNP-MID".to_string()]);
+        assert!(fetched.is_empty());
+        assert_eq!(ancestry.history_mode(), "complete_ancestry");
+        assert_eq!(ancestry.reachable_snapshot_count(), 1);
         assert_eq!(
             ancestry
-                .intermediate_manifests_topological
+                .manifests_topological
                 .iter()
                 .map(|manifest| manifest.snapshot_id.as_str())
                 .collect::<Vec<_>>(),
-            vec!["SNP-MID"]
+            vec!["SNP-ROOT"]
         );
-        assert_eq!(ancestry.complete_ancestry_snapshot_count(), 2);
     }
 
     #[test]
-    fn included_lines_anchor_every_parent_of_a_remote_merge() {
-        let line_heads = vec![
-            RecoveryLineHead {
-                line_name: "feature/task".to_string(),
-                snapshot_id: "SNP-MERGE".to_string(),
-                manifest: recovery_manifest_with_parents(
-                    "SNP-MERGE",
-                    vec!["SNP-LEFT-MID".to_string(), "SNP-RIGHT-MID".to_string()],
-                ),
-            },
-            recovery_line_head("left", "SNP-LEFT", None),
-            recovery_line_head("right", "SNP-RIGHT", None),
-        ];
+    fn main_head_recovers_every_reachable_merge_parent_to_roots() {
+        let head = recovery_head("SNP-H", vec!["SNP-A1".to_string(), "SNP-B1".to_string()]);
         let remote_manifests = BTreeMap::from([
             (
-                "SNP-LEFT-MID".to_string(),
-                recovery_manifest("SNP-LEFT-MID", Some("SNP-LEFT")),
+                "SNP-A1".to_string(),
+                recovery_manifest("SNP-A1", Some("SNP-A0")),
             ),
             (
-                "SNP-RIGHT-MID".to_string(),
-                recovery_manifest("SNP-RIGHT-MID", Some("SNP-RIGHT")),
+                "SNP-B1".to_string(),
+                recovery_manifest("SNP-B1", Some("SNP-B0")),
             ),
+            ("SNP-A0".to_string(), recovery_manifest("SNP-A0", None)),
+            ("SNP-B0".to_string(), recovery_manifest("SNP-B0", None)),
         ]);
         let mut fetched = Vec::new();
 
-        let ancestry = collect_primary_ancestry_with("fixture", &line_heads, |_, snapshot_id| {
+        let ancestry = collect_reachable_ancestry_with("fixture", &head, |_, snapshot_id| {
             fetched.push(snapshot_id.to_string());
             remote_manifests
                 .get(snapshot_id)
@@ -1213,34 +932,28 @@ mod tests {
         })
         .expect("complete merge ancestry");
 
-        fetched.sort();
-        assert_eq!(fetched, vec!["SNP-LEFT-MID", "SNP-RIGHT-MID"]);
-        assert_eq!(ancestry.anchor_snapshot_ids, vec!["SNP-LEFT", "SNP-RIGHT"]);
+        assert_eq!(fetched, vec!["SNP-A1", "SNP-B1", "SNP-A0", "SNP-B0"]);
         assert_eq!(
             ancestry
-                .intermediate_manifests_topological
+                .manifests_topological
                 .iter()
                 .map(|manifest| manifest.snapshot_id.as_str())
-                .collect::<BTreeSet<_>>(),
-            BTreeSet::from(["SNP-LEFT-MID", "SNP-RIGHT-MID"])
+                .collect::<Vec<_>>(),
+            vec!["SNP-A0", "SNP-A1", "SNP-B0", "SNP-B1", "SNP-H"]
         );
-        assert_eq!(ancestry.complete_ancestry_snapshot_count(), 3);
+        assert_eq!(ancestry.reachable_snapshot_count(), 5);
     }
 
     #[test]
-    fn included_line_ancestry_fails_closed_when_disconnected_or_cyclic() {
-        let line_heads = vec![
-            recovery_line_head("feature/task", "SNP-HEAD", Some("SNP-MID")),
-            recovery_line_head("main", "SNP-FORK", None),
-        ];
-        let disconnected =
-            collect_primary_ancestry_with("fixture", &line_heads, |_, snapshot_id| {
-                Ok(recovery_manifest(snapshot_id, None))
-            })
-            .unwrap_err();
-        assert!(disconnected.contains("did not reach any included-line anchor"));
+    fn main_head_ancestry_fails_closed_when_missing_or_cyclic() {
+        let head = recovery_head("SNP-HEAD", vec!["SNP-PARENT".to_string()]);
+        let missing = collect_reachable_ancestry_with("fixture", &head, |_, snapshot_id| {
+            Err(format!("missing fixture manifest {snapshot_id}"))
+        })
+        .unwrap_err();
+        assert!(missing.contains("missing fixture manifest SNP-PARENT"));
 
-        let cyclic = collect_primary_ancestry_with("fixture", &line_heads, |_, snapshot_id| {
+        let cyclic = collect_reachable_ancestry_with("fixture", &head, |_, snapshot_id| {
             Ok(recovery_manifest(snapshot_id, Some("SNP-HEAD")))
         })
         .unwrap_err();
@@ -1269,9 +982,18 @@ mod tests {
 
         let context = RemoteHeadRecoveryContext::discover_from_path(temp.path()).unwrap();
 
-        assert_eq!(context.repo_name(), "fixture");
+        let directory_name = temp
+            .path()
+            .canonicalize()
+            .unwrap()
+            .file_name()
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
+        assert_eq!(context.repo_name().unwrap(), directory_name);
+        assert_ne!(context.repo_name().unwrap(), "fixture");
         assert_eq!(context.repository_index(), Some(RepositoryIndex::new(7)));
-        assert_eq!(context.default_line_name(), "main");
         assert_eq!(context.remote_row(None).unwrap().name, "origin");
         assert_eq!(
             context.authority_root(),
@@ -1285,6 +1007,7 @@ mod tests {
         let worktree = temp.path().join("worktree");
         let authority = temp.path().join("canonical");
         fs::create_dir_all(&worktree).unwrap();
+        fs::create_dir_all(&authority).unwrap();
         write_recovery_config(&worktree);
         fs::write(
             worktree.join(WORKTREE_CONFIG_NAME),
@@ -1302,5 +1025,6 @@ mod tests {
         let context = RemoteHeadRecoveryContext::discover_from_path(&worktree).unwrap();
 
         assert_eq!(context.authority_root(), authority);
+        assert_eq!(context.repo_name().unwrap(), "canonical");
     }
 }

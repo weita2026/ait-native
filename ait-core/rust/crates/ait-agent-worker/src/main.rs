@@ -76,6 +76,12 @@ struct SlackCommandArgs {
     /// Named Slack worker from .ait/agent-workers.json.
     #[arg(long, default_value = "main")]
     worker: String,
+    /// Slack request signature paired with the exact stdin payload.
+    #[arg(long)]
+    signature: String,
+    /// Slack request Unix timestamp used by signature verification.
+    #[arg(long)]
+    signature_timestamp: String,
 }
 
 #[derive(Debug, Args)]
@@ -83,6 +89,12 @@ struct DiscordInteractionArgs {
     /// Named Discord worker from .ait/agent-workers.json.
     #[arg(long, default_value = "main")]
     worker: String,
+    /// Discord Ed25519 signature paired with the exact stdin payload.
+    #[arg(long)]
+    signature: String,
+    /// Discord interaction timestamp used by signature verification.
+    #[arg(long)]
+    signature_timestamp: String,
 }
 
 fn main() -> ExitCode {
@@ -164,19 +176,13 @@ fn entry(cli: Cli) -> Result<(), WorkerDiagnostic> {
                 )
             })?;
             let process_env = env::vars().collect::<BTreeMap<_, _>>();
-            let signature =
-                first_env_text(&process_env, &["AIT_SLACK_SIGNATURE", "X_SLACK_SIGNATURE"]);
-            let signature_timestamp = first_env_text(
-                &process_env,
-                &["AIT_SLACK_SIGNATURE_TIMESTAMP", "X_SLACK_REQUEST_TIMESTAMP"],
-            );
             let result = execute_slack_command_once(&SlackCommandOnceRequest {
                 path_inputs: process_worker_path_inputs()?,
                 worker_name: args.worker,
                 process_env,
                 raw_payload,
-                signature,
-                signature_timestamp,
+                signature: Some(args.signature),
+                signature_timestamp: Some(args.signature_timestamp),
                 now_unix_seconds: None,
             })?;
             let output = JsonCodec::encode_value(
@@ -210,24 +216,13 @@ fn entry(cli: Cli) -> Result<(), WorkerDiagnostic> {
                 )
             })?;
             let process_env = env::vars().collect::<BTreeMap<_, _>>();
-            let signature = first_env_text(
-                &process_env,
-                &["AIT_DISCORD_SIGNATURE", "AIT_DISCORD_INTERACTION_SIGNATURE"],
-            );
-            let signature_timestamp = first_env_text(
-                &process_env,
-                &[
-                    "AIT_DISCORD_SIGNATURE_TIMESTAMP",
-                    "AIT_DISCORD_INTERACTION_TIMESTAMP",
-                ],
-            );
             let result = execute_discord_interaction_once(&DiscordInteractionOnceRequest {
                 path_inputs: process_worker_path_inputs()?,
                 worker_name: args.worker,
                 process_env,
                 raw_payload,
-                signature,
-                signature_timestamp,
+                signature: Some(args.signature),
+                signature_timestamp: Some(args.signature_timestamp),
             })?;
             if result.get("ok").and_then(JsonValue::as_bool) != Some(true) {
                 return Err(WorkerDiagnostic::new(
@@ -332,15 +327,5 @@ fn write_json_result(
             format!("Failed to write the {result_name}."),
             EXIT_RUNTIME_UNAVAILABLE,
         )
-    })
-}
-
-fn first_env_text(environment: &BTreeMap<String, String>, names: &[&str]) -> Option<String> {
-    names.iter().find_map(|name| {
-        environment
-            .get(*name)
-            .map(|value| value.trim())
-            .filter(|value| !value.is_empty())
-            .map(str::to_string)
     })
 }

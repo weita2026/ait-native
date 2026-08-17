@@ -9,10 +9,6 @@ use ait_server_core::foundation::ci_runtime_temp::validated_ci_ram_runtime_root_
 use ait_server_core::foundation::ci_workspace_cleanup::{
     prune_runtime_temp_namespace_json, RuntimeTempPruneRequest,
 };
-use ait_server_core::foundation::server_protocol::runtime_data_env_value;
-
-use crate::installed_lifecycle::{CI_STARTUP_ADMISSION_DEFERRED, CI_STARTUP_ADMISSION_ENV};
-
 const PROBE_DIR_NAME: &str = ".startup-probe";
 const PROBE_FILE_PREFIX: &str = "ait-server-runtime-probe";
 const PROBE_PAYLOAD: &[u8] = b"ait-server startup runtime probe\n";
@@ -28,21 +24,17 @@ pub struct StartupProbeReport {
     pub object_probe: String,
 }
 
-pub fn ensure_durable_runtime_access() -> Result<StartupProbeReport, String> {
-    let Some(root_text) = runtime_data_env_value() else {
-        return Err(
-            "AIT_NATIVE_SERVER_DATA is required before ait-server starts serving requests."
-                .to_string(),
-        );
-    };
-    let root = PathBuf::from(root_text);
-    probe_runtime_root(&root)
+pub fn ensure_durable_runtime_access(root: &Path) -> Result<StartupProbeReport, String> {
+    probe_runtime_root(root)
 }
 
-pub fn ensure_startup_runtime_access() -> Result<StartupProbeReport, String> {
-    let mut report = ensure_durable_runtime_access()?;
-    if ci_startup_admission_deferred()? {
-        report.ci_ram_runtime_root_source = CI_STARTUP_ADMISSION_DEFERRED.to_string();
+pub fn ensure_startup_runtime_access(
+    root: &Path,
+    defer_ci_admission: bool,
+) -> Result<StartupProbeReport, String> {
+    let mut report = ensure_durable_runtime_access(root)?;
+    if defer_ci_admission {
+        report.ci_ram_runtime_root_source = "deferred".to_string();
         report.ci_startup_admission_deferred = true;
         return Ok(report);
     }
@@ -62,26 +54,6 @@ pub fn ensure_startup_runtime_access() -> Result<StartupProbeReport, String> {
     Ok(report)
 }
 
-fn ci_startup_admission_deferred() -> Result<bool, String> {
-    match env::var(CI_STARTUP_ADMISSION_ENV) {
-        Err(env::VarError::NotPresent) => Ok(false),
-        Err(env::VarError::NotUnicode(_)) => Err(format!(
-            "{CI_STARTUP_ADMISSION_ENV} must be exact `required` or `deferred`"
-        )),
-        Ok(value) if value == "required" => Ok(false),
-        Ok(value) if value == CI_STARTUP_ADMISSION_DEFERRED => Ok(true),
-        Ok(_) => Err(format!(
-            "{CI_STARTUP_ADMISSION_ENV} must be exact `required` or `deferred`"
-        )),
-    }
-}
-
-fn nonempty_env_path(name: &str) -> Option<PathBuf> {
-    env::var_os(name)
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
-}
-
 fn prune_ci_runtime_namespaces(
     ci_ram_root: &Path,
     server_data_root: &Path,
@@ -98,26 +70,6 @@ fn prune_ci_runtime_namespaces(
         roots.insert(server_data_root.join("tmp").join(namespace));
         roots.insert(env::temp_dir().join("ait-server").join(namespace));
     }
-    if let Some(root) = nonempty_env_path("AIT_NATIVE_SERVER_CI_TMP_ROOT") {
-        for namespace in NAMESPACES {
-            roots.insert(root.join(namespace));
-        }
-    }
-    if let Some(root) = nonempty_env_path("AIT_NATIVE_SERVER_FAST_DATA_ROOT") {
-        for namespace in NAMESPACES {
-            roots.insert(root.join("tmp").join(namespace));
-        }
-    }
-    for name in [
-        "AIT_PATCHSET_CI_TMPDIR",
-        "AIT_REPO_CI_TMPDIR",
-        "AIT_LAND_MAIN_SEED_TMPDIR",
-    ] {
-        if let Some(root) = nonempty_env_path(name) {
-            roots.insert(root);
-        }
-    }
-
     let mut removed = 0usize;
     for namespace_root in roots {
         let value = prune_runtime_temp_namespace_json(

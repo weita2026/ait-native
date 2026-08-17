@@ -22,48 +22,8 @@ impl RepoRuntime {
         }
     }
 
-    pub fn discover_for_patchset_ci() -> Result<Self, String> {
-        for var_name in REPO_DISCOVERY_ENV_VARS {
-            let Some(raw) = env::var_os(var_name) else {
-                continue;
-            };
-            let candidate = PathBuf::from(raw);
-            if candidate.as_os_str().is_empty() {
-                continue;
-            }
-            let workspace_root = candidate.canonicalize().map_err(|error| {
-                format!(
-                    "Patchset CI workspace authority `{var_name}` could not resolve {}: {error}",
-                    candidate.display()
-                )
-            })?;
-            if !workspace_root.is_dir() {
-                return Err(format!(
-                    "Patchset CI workspace authority `{var_name}` is not a directory: {}",
-                    workspace_root.display()
-                ));
-            }
-            if workspace_root.join(APP_DIR).is_dir() {
-                return Self::discover_from(&workspace_root);
-            }
-            return Ok(Self::workspace_only(workspace_root));
-        }
-        Self::discover()
-    }
-
     pub fn discover_from_path(start: &Path) -> Result<Self, String> {
         Self::discover_from(start)
-    }
-
-    fn workspace_only(root: PathBuf) -> Self {
-        let root = root.canonicalize().unwrap_or(root);
-        let ait_dir = root.join(APP_DIR);
-        Self {
-            root,
-            ait_dir,
-            config: JsonMap::new(),
-            worktree_config_path: None,
-        }
     }
 
     pub(super) fn discover_from(start: &Path) -> Result<Self, String> {

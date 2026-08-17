@@ -289,10 +289,6 @@ pub(in crate::primitives) fn workflow_ready_apply_action(
                 let _range = perfetto_range!("ait.workflow_ready.publish.auto_rebase");
                 workflow_auto_rebase_current_worktree_before_publish(repo, state, None)?
             };
-            {
-                let _range = perfetto_range!("ait.workflow_ready.publish.worktree_guard");
-                guard_repo_root_pinned_bound_worktree(repo, None, "ait patchset publish")?;
-            }
             let (remote_row, repo_name) = remote_context(repo, remote_name, None)?;
             let mut task_remote = http_task_remote(repo, &remote_row)?;
             let mut closeout_remote = http_closeout_remote(repo, &remote_row)?;
@@ -342,41 +338,8 @@ pub(in crate::primitives) fn workflow_ready_apply_action(
                 &repo_name,
             )
         }
-        "record_review" => {
-            let _range = perfetto_range!("ait.workflow_ready.action.record_review");
-            if workflow_task_review_enabled(repo) {
-                return Ok(json!({
-                    "stopped_reason": "Task/outcome review is enabled. Record the explicit task approval shown by `ait workflow ready`, then rerun `ait workflow ready <change-id> --apply`."
-                }));
-            }
-            let reviewer = repo
-                .task_review_auto_approval_reviewer_identity(None)
-                .ok_or_else(|| {
-                    "Workflow ready needs `ait config` `user_name` before it can auto-record task approval."
-                        .to_string()
-                })?;
-            let (remote_row, repo_name) = remote_context(repo, remote_name, None)?;
-            let mut closeout_remote = http_closeout_remote(repo, &remote_row)?;
-            workflow_land_record_task_review_with_closeout_remote(
-                &mut closeout_remote,
-                &patchset,
-                change_id,
-                &reviewer,
-                &repo_name,
-            )
-        }
-        "evaluate_policy" => {
-            let _range = perfetto_range!("ait.workflow_ready.action.evaluate_policy");
-            let (remote_row, repo_name) = remote_context(repo, remote_name, None)?;
-            let mut closeout_remote = http_closeout_remote(repo, &remote_row)?;
-            workflow_land_evaluate_policy_with_closeout_remote(
-                &mut closeout_remote,
-                &patchset,
-                &repo_name,
-            )
-        }
         _ => Ok(json!({
-            "stopped_reason": format!("Workflow ready apply does not support automatic `{code}`."),
+            "stopped_reason": format!("Workflow ready apply does not own `{code}`; reviewer actions continue through `ait workflow land`."),
         })),
     }
 }
@@ -386,6 +349,7 @@ fn workflow_land_patchset_id(patchset: &JsonValue, message: &str) -> Result<Stri
 }
 
 #[allow(clippy::too_many_arguments)]
+#[cfg(test)]
 pub(in crate::primitives) fn workflow_land_record_attestation_with_closeout_remote<R>(
     closeout_remote: &mut R,
     patchset: &JsonValue,
@@ -435,13 +399,13 @@ where
             change_id,
             reviewer,
             "task_approve",
-            None,
+            Some(AUTOMATIC_TASK_APPROVAL_COMMENT),
             false,
             repo_name,
             "Workflow land apply could not resolve the patchset for task approval.",
         )?;
     let policy_refresh = {
-        let _range = perfetto_range!("ait.task_land.remote.review_policy_refresh");
+        let _range = perfetto_range!("ait.workflow.review_policy_refresh");
         super::change_flow::policy_eval_with_closeout_remote(
             closeout_remote,
             &resolved_patchset_id,
@@ -572,6 +536,7 @@ where
 }
 
 #[allow(clippy::too_many_arguments)]
+#[cfg(test)]
 pub(in crate::primitives) fn workflow_land_submit_action_with_task_and_closeout_remotes<T, C, G>(
     repo: &RepoRuntime,
     task_remote: &mut T,
@@ -628,76 +593,36 @@ where
     Ok(json!({"result": synced_result}))
 }
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "land action dispatcher keeps workflow facts and remote ports explicit"
-)]
 pub(in crate::primitives) fn workflow_land_apply_action(
     repo: &RepoRuntime,
     code: &str,
     state: &JsonValue,
     change_id: &str,
-    snapshot_message: Option<&str>,
-    _summary: Option<&str>,
-    tests: Option<&str>,
-    lint: Option<&str>,
-    security: Option<&str>,
-    license: Option<&str>,
-    author_mode: Option<&str>,
-    model: Option<&str>,
-    reviewer: Option<&str>,
     review_message: Option<&str>,
-    target: Option<&str>,
-    mode: &str,
     remote_name: Option<&str>,
 ) -> Result<JsonValue, String> {
-    let _action_range = perfetto_range!("ait.task_land.workflow_action");
+    let _action_range = perfetto_range!("ait.workflow_land.workflow_action");
     let patchset = state.get("patchset").cloned().unwrap_or(JsonValue::Null);
-    let task = state.get("task").cloned().unwrap_or(JsonValue::Null);
     match code {
-        "snapshot_create" => Ok(json!({
-            "result": snapshot_create(
-                repo,
-                Some(snapshot_message.unwrap_or("reviewable snapshot")),
-            )?,
-        })),
-        "publish_patchset" | "refresh_patchset" => Ok(json!({
-            "stopped_reason": "Workflow land does not publish or synchronize patchset content. Run `ait workflow ready <change-id> --apply` explicitly before land.",
-        })),
-        "record_attestation" => {
-            let _range = perfetto_range!("ait.task_land.action.record_attestation");
-            let (remote_row, repo_name) = remote_context(repo, remote_name, None)?;
-            let mut closeout_remote = http_closeout_remote(repo, &remote_row)?;
-            let resolved_author_mode = repo.effective_author_mode(author_mode);
-            let resolved_model_name = repo.effective_model_name(model);
-            workflow_land_record_attestation_with_closeout_remote(
-                &mut closeout_remote,
-                &patchset,
-                tests,
-                lint,
-                security,
-                license,
-                &resolved_author_mode,
-                resolved_model_name,
-                &repo_name,
-            )
-        }
-        "run_patchset_ci" => Ok(json!({
-            "stopped_reason": "Workflow land does not start or wait for CI. Run `ait workflow ready <change-id> --apply` explicitly before land.",
+        "snapshot_create" | "publish_patchset" | "refresh_patchset" | "record_attestation"
+        | "run_patchset_ci" => Ok(json!({
+            "stopped_reason": format!(
+                "Workflow land does not own `{code}`. Run `ait workflow ready <change-id> --apply` explicitly before land."
+            ),
         })),
         "record_review" => {
-            let _range = perfetto_range!("ait.task_land.action.record_review");
+            let _range = perfetto_range!("ait.workflow_land.action.record_review");
+            if workflow_task_review_required(repo) {
+                return Ok(json!({
+                    "stopped_reason": "Task review is required. Record the explicit `ait review task approve` action shown by the workflow decision, then rerun workflow land."
+                }));
+            }
             workflow_land_patchset_id(
                 &patchset,
                 "Workflow land apply could not resolve the patchset for task approval.",
             )?;
-            let resolved_reviewer = if workflow_task_review_enabled(repo) {
-                repo.reviewer_identity(reviewer)
-            } else {
-                repo.task_review_auto_approval_reviewer_identity(reviewer)
-            }
-            .ok_or_else(|| {
-                "Workflow land apply needs a reviewer identity before it can record task approval."
+            let resolved_reviewer = repo.task_review_reviewer_identity().ok_or_else(|| {
+                "Workflow land apply needs `ait config` `user_name` before it can auto-record task approval."
                     .to_string()
             })?;
             let (remote_row, repo_name) = remote_context(repo, remote_name, None)?;
@@ -711,12 +636,12 @@ pub(in crate::primitives) fn workflow_land_apply_action(
             )
         }
         "record_code_review_summary" => {
-            let _range = perfetto_range!("ait.task_land.action.record_code_review_summary");
+            let _range = perfetto_range!("ait.workflow_land.action.record_code_review_summary");
             workflow_land_patchset_id(
                 &patchset,
                 "Workflow land apply could not resolve the patchset for code review summary.",
             )?;
-            let resolved_reviewer = repo.ai_code_review_reviewer_identity(reviewer).ok_or_else(|| {
+            let resolved_reviewer = repo.ai_code_review_reviewer_identity().ok_or_else(|| {
                 "Workflow land apply needs a reviewer identity before it can record code review evidence.".to_string()
             })?;
             let review_message = normalized_text(review_message).ok_or_else(|| {
@@ -743,63 +668,9 @@ pub(in crate::primitives) fn workflow_land_apply_action(
                 &repo_name,
             )
         }
-        "submit_land" => {
-            let _range = perfetto_range!("ait.task_land.action.submit_land");
-            let patchset_revision_snapshot_id = string_field(&patchset, "revision_snapshot_id")
-                .or_else(|| {
-                    workflow_nested_text(state, "freshness", "patchset_revision_snapshot_id")
-                })
-                .or_else(|| {
-                    workflow_nested_text(state, "patchset_refresh", "patchset_revision_snapshot_id")
-                });
-            guard_repo_root_pinned_bound_worktree(repo, None, "ait task land")?;
-            let (remote_row, repo_name) = remote_context(repo, remote_name, None)?;
-            let mut task_remote = http_task_remote(repo, &remote_row)?;
-            let mut closeout_remote = http_closeout_remote(repo, &remote_row)?;
-            let resolve_change_task_id = repo_root_has_bound_worktree_metadata(repo)?;
-            workflow_land_submit_action_with_task_and_closeout_remotes(
-                repo,
-                &mut task_remote,
-                &mut closeout_remote,
-                &repo_name,
-                change_id,
-                &patchset,
-                target,
-                mode,
-                patchset_revision_snapshot_id.as_deref(),
-                resolve_change_task_id,
-                |change_task_id, resolved_change_id| {
-                    guard_repo_root_bound_task_worktree(
-                        repo,
-                        change_task_id,
-                        Some(resolved_change_id),
-                        "ait task land",
-                    )
-                },
-            )
-        }
-        "complete_task" => {
-            let _range = perfetto_range!("ait.task_land.action.complete_task");
-            let task_id = string_field(&task, "task_id").ok_or_else(|| {
-                "Workflow land apply could not resolve a task to complete.".to_string()
-            })?;
-            let mut result = task_complete(repo, &task_id, false, remote_name, None)?;
-            let task_land_owns_cleanup = workflow_nested_text(state, "workspace", "reason")
-                .as_deref()
-                == Some("ready_patchset_is_authoritative");
-            if !task_land_owns_cleanup {
-                if let Some(cleanup) = workflow_bound_worktree_cleanup_after_task_complete(
-                    repo,
-                    &task_id,
-                    "completed",
-                )? {
-                    if let Some(result_obj) = result.as_object_mut() {
-                        result_obj.insert("bound_worktree_cleanup".to_string(), cleanup);
-                    }
-                }
-            }
-            Ok(json!({ "result": result }))
-        }
+        "submit_land" | "complete_task" => Ok(json!({
+            "stopped_reason": "Workflow land final closeout must be executed by its atomic Task Land boundary.",
+        })),
         "workflow_ready" => Ok(json!({
             "stopped_reason": workflow_nested_text(state, "next_action", "detail")
                 .or_else(|| workflow_nested_text(state, "next_action", "summary"))

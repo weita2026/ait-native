@@ -48,8 +48,6 @@ use serde::Deserialize;
 use serde_json::{json, Value as JsonValue};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
-use std::env;
-use std::ffi::OsString;
 use std::fs;
 use std::io::ErrorKind;
 #[cfg(unix)]
@@ -57,15 +55,6 @@ use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
-
-pub(crate) const SERVER_BINARY_V0_ACTIVATION_ENV: &str = "AIT_NATIVE_SERVER_BINARY_ACTIVATION";
-pub(crate) const SERVER_BINARY_V0_LEASE_REPLICA_ENV: &str =
-    "AIT_NATIVE_SERVER_RUNTIME_LEASE_REPLICA";
-pub(crate) const SERVER_BINARY_V0_LEASE_DURATION_ENV: &str =
-    "AIT_NATIVE_SERVER_WORKER_LEASE_SECONDS";
-pub(crate) const SERVER_BINARY_V0_RETRY_DELAY_ENV: &str = "AIT_NATIVE_SERVER_WORKER_RETRY_SECONDS";
-pub(crate) const SERVER_BINARY_V0_FRESH_BOOTSTRAP_ENV: &str = "AIT_NATIVE_SERVER_FRESH_BOOTSTRAP";
-const LEGACY_SERVER_BINARY_REGISTRY_ENV: &str = "AIT_NATIVE_SERVER_BINARY_REGISTRY";
 
 const ACTIVATION_SCHEMA: &str = "ait.server.binary_v0.activation.v1";
 const GENERATION_SCHEMA: &str = "ait.server.binary_v0.operational_generation.v1";
@@ -103,48 +92,18 @@ const MAX_FAILURE_DETAIL_CHARS: usize = 4_096;
 pub(crate) type OperationalDb = FilesystemServerRemoteBinaryDb;
 type FrozenAuthority = FrozenBinaryV0WorkerJobAuthority<OperationalDb>;
 
-fn fresh_bootstrap_admission_from_environment<F>(mut value: F) -> Result<(bool, bool), String>
-where
-    F: FnMut(&str) -> Option<OsString>,
-{
-    let fresh_bootstrap = match value(SERVER_BINARY_V0_FRESH_BOOTSTRAP_ENV) {
-        None => false,
-        Some(raw) if raw == "1" => true,
-        Some(_) => {
-            return Err(format!(
-                "{SERVER_BINARY_V0_FRESH_BOOTSTRAP_ENV} must be exact 1 when explicitly bootstrapping a new Binary installation"
-            ))
-        }
-    };
-    Ok((
-        fresh_bootstrap,
-        value(LEGACY_SERVER_BINARY_REGISTRY_ENV).is_some(),
-    ))
-}
-
 fn ensure_runtime_activation(
     config: &ServerBinaryLifecycleConfig,
-    fresh_bootstrap: bool,
-    legacy_registry_configured: bool,
 ) -> Result<ServerBinaryActivation, String> {
     if let Some(activation) = config.activation()? {
         return Ok(activation);
     }
-    if !fresh_bootstrap {
-        return Err(format!(
-            "Binary server activation is missing at {}. Refusing to create an empty generation. Run the offline conversion and activation flow, or set {SERVER_BINARY_V0_FRESH_BOOTSTRAP_ENV}=1 only for an intentional new installation.",
-            config.activation_pointer.display()
-        ));
-    }
-    if legacy_registry_configured {
-        return Err(format!(
-            "{SERVER_BINARY_V0_FRESH_BOOTSTRAP_ENV}=1 is forbidden while {LEGACY_SERVER_BINARY_REGISTRY_ENV} is configured; convert and activate the legacy authority instead"
-        ));
-    }
-    let created_at_s = now_s()?;
-    config.ensure_fresh_activation(|generation_root| {
-        initialize_fresh_generation(generation_root, created_at_s)
-    })
+    Err(format!(
+        "Binary server activation is missing at {}. Refusing to create an empty generation during startup. Run `ait-server init --data {}` or use `ait-server run --data {} --init-if-missing` for an intentional new installation.",
+        config.activation_pointer.display(),
+        config.server_data_root.display(),
+        config.server_data_root.display(),
+    ))
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -155,21 +114,18 @@ pub struct InstalledRuntimeInitialization {
     pub created: bool,
 }
 
-pub fn initialize_installed_runtime() -> Result<InstalledRuntimeInitialization, String> {
-    let config = ServerBinaryLifecycleConfig::from_process_env()?;
+pub fn initialize_installed_runtime(
+    config: &ServerBinaryLifecycleConfig,
+) -> Result<InstalledRuntimeInitialization, String> {
     if let Some(activation) = config.activation()? {
-        return Ok(installed_initialization_report(&config, activation, false));
-    }
-    let (_, legacy_registry_configured) =
-        fresh_bootstrap_admission_from_environment(|name| env::var_os(name))?;
-    if legacy_registry_configured {
-        return Err(format!(
-            "installed first-use initialization is forbidden while {LEGACY_SERVER_BINARY_REGISTRY_ENV} is configured; use the offline conversion and activation flow"
-        ));
+        return Ok(installed_initialization_report(config, activation, false));
     }
     require_empty_fresh_runtime_root(&config.server_data_root)?;
-    let activation = ensure_runtime_activation(&config, true, false)?;
-    Ok(installed_initialization_report(&config, activation, true))
+    let created_at_s = now_s()?;
+    let activation = config.ensure_fresh_activation(|generation_root| {
+        initialize_fresh_generation(generation_root, created_at_s)
+    })?;
+    Ok(installed_initialization_report(config, activation, true))
 }
 
 fn installed_initialization_report(
@@ -354,54 +310,14 @@ pub(crate) struct OperationalBinaryRuntime {
 }
 
 impl OperationalBinaryRuntime {
-    pub(crate) fn ensure_from_process_env() -> Result<Self, String> {
-        let config = ServerBinaryLifecycleConfig::from_process_env()?;
-        let (fresh_bootstrap, legacy_registry_configured) =
-            fresh_bootstrap_admission_from_environment(|name| env::var_os(name))?;
-        let activation =
-            ensure_runtime_activation(&config, fresh_bootstrap, legacy_registry_configured)?;
-        let lease_duration_s = parse_positive_u32_env(
-            SERVER_BINARY_V0_LEASE_DURATION_ENV,
-            DEFAULT_LEASE_DURATION_S,
-        )?;
-        let retry_delay_s =
-            parse_positive_u32_env(SERVER_BINARY_V0_RETRY_DELAY_ENV, DEFAULT_RETRY_DELAY_S)?;
+    pub(crate) fn ensure_from_config(config: &ServerBinaryLifecycleConfig) -> Result<Self, String> {
+        let activation = ensure_runtime_activation(config)?;
         Self::from_activation(
             &activation,
-            config.runtime_lease_replica,
-            lease_duration_s,
-            retry_delay_s,
-        )
-    }
-
-    pub(crate) fn from_process_env() -> Result<Option<Self>, String> {
-        let Some(pointer) = env::var_os(SERVER_BINARY_V0_ACTIVATION_ENV) else {
-            return Ok(None);
-        };
-        if pointer.is_empty() {
-            return Err(format!("{SERVER_BINARY_V0_ACTIVATION_ENV} cannot be empty"));
-        }
-        let pointer = PathBuf::from(pointer);
-        let lease_replica = match env::var_os(SERVER_BINARY_V0_LEASE_REPLICA_ENV) {
-            Some(path) if !path.is_empty() => PathBuf::from(path),
-            Some(_) => {
-                return Err(format!(
-                    "{SERVER_BINARY_V0_LEASE_REPLICA_ENV} cannot be empty"
-                ))
-            }
-            None => pointer
-                .parent()
-                .ok_or_else(|| format!("activation pointer has no parent: {}", pointer.display()))?
-                .join("runtime-worker-leases.bin"),
-        };
-        let lease_duration_s = parse_positive_u32_env(
-            SERVER_BINARY_V0_LEASE_DURATION_ENV,
+            config.runtime_lease_replica.clone(),
             DEFAULT_LEASE_DURATION_S,
-        )?;
-        let retry_delay_s =
-            parse_positive_u32_env(SERVER_BINARY_V0_RETRY_DELAY_ENV, DEFAULT_RETRY_DELAY_S)?;
-        Self::from_activation_pointer(&pointer, lease_replica, lease_duration_s, retry_delay_s)
-            .map(Some)
+            DEFAULT_RETRY_DELAY_S,
+        )
     }
 
     pub(crate) fn from_activation_pointer(
@@ -2142,22 +2058,6 @@ fn require_positive_runtime_durations(
     Ok(())
 }
 
-fn parse_positive_u32_env(name: &str, default: u32) -> Result<u32, String> {
-    let Some(raw) = env::var_os(name) else {
-        return Ok(default);
-    };
-    let raw = raw
-        .to_str()
-        .ok_or_else(|| format!("{name} must contain UTF-8"))?;
-    let value = raw
-        .parse::<u32>()
-        .map_err(|_| format!("{name} must be an unsigned 32-bit integer"))?;
-    if value == 0 {
-        return Err(format!("{name} must be non-zero"));
-    }
-    Ok(value)
-}
-
 fn now_s() -> Result<u64, String> {
     let seconds = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -2432,7 +2332,7 @@ mod tests {
 
     impl TestDirectory {
         fn new(label: &str) -> Self {
-            let path = env::temp_dir().join(format!(
+            let path = std::env::temp_dir().join(format!(
                 "ait-server-{label}-{}-{}",
                 std::process::id(),
                 TEST_DIRECTORY_SEQUENCE.fetch_add(1, Ordering::Relaxed)
@@ -2450,37 +2350,8 @@ mod tests {
 
     fn lifecycle_config(directory: &TestDirectory) -> ServerBinaryLifecycleConfig {
         let server_data = directory.0.join("server-data");
-        ServerBinaryLifecycleConfig::from_environment(|name| {
-            (name == ait_server_core::foundation::server_binary_lifecycle::SERVER_DATA_ENV)
-                .then(|| server_data.as_os_str().to_os_string())
-        })
-        .expect("construct isolated lifecycle config")
-    }
-
-    #[test]
-    fn fresh_bootstrap_opt_in_is_exact_and_tracks_legacy_registry_presence() {
-        assert_eq!(
-            fresh_bootstrap_admission_from_environment(|_| None).unwrap(),
-            (false, false)
-        );
-        assert_eq!(
-            fresh_bootstrap_admission_from_environment(|name| match name {
-                SERVER_BINARY_V0_FRESH_BOOTSTRAP_ENV => Some(OsString::from("1")),
-                LEGACY_SERVER_BINARY_REGISTRY_ENV => {
-                    Some(OsString::from("/legacy/registry.json"))
-                }
-                _ => None,
-            })
-            .unwrap(),
-            (true, true)
-        );
-        for invalid in ["", "0", "true", "yes", " 1"] {
-            let error = fresh_bootstrap_admission_from_environment(|name| {
-                (name == SERVER_BINARY_V0_FRESH_BOOTSTRAP_ENV).then(|| OsString::from(invalid))
-            })
-            .unwrap_err();
-            assert!(error.contains("must be exact 1"), "{error}");
-        }
+        ServerBinaryLifecycleConfig::from_server_data_root(server_data)
+            .expect("construct isolated lifecycle config")
     }
 
     #[test]
@@ -2488,7 +2359,7 @@ mod tests {
         let directory = TestDirectory::new("missing-activation-upgrade");
         let config = lifecycle_config(&directory);
 
-        let error = ensure_runtime_activation(&config, false, true).unwrap_err();
+        let error = ensure_runtime_activation(&config).unwrap_err();
 
         assert!(error.contains("Refusing to create an empty generation"));
         assert!(!config.server_data_root.exists());
@@ -2498,24 +2369,18 @@ mod tests {
     }
 
     #[test]
-    fn explicit_fresh_bootstrap_rejects_legacy_upgrade_but_opens_existing_activation() {
-        let rejected_directory = TestDirectory::new("legacy-fresh-bootstrap");
-        let rejected = lifecycle_config(&rejected_directory);
-        let error = ensure_runtime_activation(&rejected, true, true).unwrap_err();
-        assert!(error.contains(LEGACY_SERVER_BINARY_REGISTRY_ENV));
-        assert!(!rejected.server_data_root.exists());
-        assert!(!rejected.activation_pointer.exists());
-
+    fn explicit_installed_initialization_creates_then_reopens_activation() {
         let fresh_directory = TestDirectory::new("explicit-fresh-bootstrap");
         let fresh = lifecycle_config(&fresh_directory);
-        let activated = ensure_runtime_activation(&fresh, true, false)
+        let initialized = initialize_installed_runtime(&fresh)
             .expect("explicitly initialize a fresh installation");
-        assert!(activated.generation_root.exists());
+        assert!(initialized.created);
+        assert!(initialized.generation_root.exists());
         assert!(fresh.activation_pointer.exists());
 
-        let reopened = ensure_runtime_activation(&fresh, false, true)
+        let reopened = ensure_runtime_activation(&fresh)
             .expect("existing activation does not require bootstrap admission");
-        assert_eq!(reopened, activated);
+        assert_eq!(reopened.generation_root, initialized.generation_root);
     }
 
     #[test]

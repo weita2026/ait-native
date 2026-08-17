@@ -43,7 +43,7 @@ fn native_release_artifact_smoke_has_no_subprocess_escape_hatch() {
 }
 
 #[test]
-fn native_bundle_only_orchestration_does_not_build_foreign_packages_or_agent_pair() {
+fn native_bundle_only_orchestration_does_not_build_foreign_packages_or_direct_worker_artifacts() {
     let source = include_str!("build_orchestration.rs");
     let start = source
         .find("pub fn release_native_bundle")
@@ -60,12 +60,11 @@ fn native_bundle_only_orchestration_does_not_build_foreign_packages_or_agent_pai
     assert!(orchestration.contains("update_release"));
     assert!(orchestration.contains("ait_rust_native_bundle_only"));
     assert!(orchestration.contains("python_distribution_built\": false"));
-    assert!(orchestration.contains("native_agent_pair_required\": false"));
     assert!(orchestration.contains("public_publish\": false"));
     assert!(!orchestration.contains("build_sdist"));
     assert!(!orchestration.contains("build_wheel"));
-    assert!(!orchestration.contains("resolve_native_agent_command_source_dir"));
-    assert!(!orchestration.contains("copy_native_agent_command_artifacts_from_dir"));
+    assert!(!orchestration.contains("resolve_native_worker_command_source_dir"));
+    assert!(!orchestration.contains("copy_native_worker_command_artifacts_from_dir"));
     assert!(!orchestration.contains("Command::new"));
 }
 
@@ -672,11 +671,11 @@ fn native_command_row(command: &str) -> JsonValue {
 }
 
 #[test]
-fn native_agent_artifact_names_include_version_and_target() {
+fn native_worker_artifact_names_include_version_and_target() {
     assert_eq!(
-        native_agent_artifact_filename("ait-agent", "1.2.3"),
+        native_worker_artifact_filename("ait-agent-worker", "1.2.3"),
         format!(
-            "ait-agent-1.2.3-{}-{}{}",
+            "ait-agent-worker-1.2.3-{}-{}{}",
             std::env::consts::OS,
             std::env::consts::ARCH,
             std::env::consts::EXE_SUFFIX
@@ -685,13 +684,13 @@ fn native_agent_artifact_names_include_version_and_target() {
 }
 
 #[test]
-fn native_agent_artifact_pair_is_copied_and_projected_as_rust_commands() {
+fn native_worker_artifact_is_copied_and_projected_as_a_rust_command() {
     let temp = tempfile::TempDir::new().unwrap();
     let source = temp.path().join("release");
     let dist = temp.path().join("dist");
     fs::create_dir_all(&source).unwrap();
     fs::create_dir_all(&dist).unwrap();
-    for command in REQUIRED_NATIVE_AGENT_COMMANDS {
+    for command in REQUIRED_NATIVE_WORKER_COMMANDS {
         let path = source.join(format!("{command}{}", std::env::consts::EXE_SUFFIX));
         fs::write(&path, format!("native-{command}")).unwrap();
         set_filesystem_mode(&path, 0o755).unwrap();
@@ -699,10 +698,10 @@ fn native_agent_artifact_pair_is_copied_and_projected_as_rust_commands() {
     let repo = release_test_repo(temp.path());
 
     let artifacts =
-        copy_native_agent_command_artifacts_from_dir(&repo, &source, &dist, "1.2.3").unwrap();
+        copy_native_worker_command_artifacts_from_dir(&repo, &source, &dist, "1.2.3").unwrap();
 
-    assert_native_agent_artifact_pair(&artifacts).unwrap();
-    assert_eq!(artifacts.len(), 2);
+    assert_native_worker_artifact(&artifacts).unwrap();
+    assert_eq!(artifacts.len(), 1);
     for artifact in &artifacts {
         assert_eq!(artifact["kind"], json!("native-command"));
         assert_eq!(artifact["runtime_authority"], json!("rust"));
@@ -718,44 +717,38 @@ fn native_agent_artifact_pair_is_copied_and_projected_as_rust_commands() {
 }
 
 #[test]
-fn native_agent_artifact_pair_rejects_missing_duplicate_and_python_fallback() {
-    let missing = vec![native_command_row("ait-agent")];
-    assert!(assert_native_agent_artifact_pair(&missing)
+fn native_worker_artifact_rejects_missing_duplicate_and_python_fallback() {
+    let missing = Vec::new();
+    assert!(assert_native_worker_artifact(&missing)
         .unwrap_err()
         .contains("missing: ait-agent-worker"));
 
     let duplicate = vec![
-        native_command_row("ait-agent"),
-        native_command_row("ait-agent"),
+        native_command_row("ait-agent-worker"),
         native_command_row("ait-agent-worker"),
     ];
-    assert!(assert_native_agent_artifact_pair(&duplicate)
+    assert!(assert_native_worker_artifact(&duplicate)
         .unwrap_err()
-        .contains("duplicate `ait-agent`"));
+        .contains("duplicate `ait-agent-worker`"));
 
     let mut fallback = native_command_row("ait-agent-worker");
     fallback["python_fallback"] = json!(true);
-    let fallback = vec![native_command_row("ait-agent"), fallback];
-    assert!(assert_native_agent_artifact_pair(&fallback)
+    let fallback = vec![fallback];
+    assert!(assert_native_worker_artifact(&fallback)
         .unwrap_err()
         .contains("Python fallback disabled"));
 }
 
 #[test]
-fn native_agent_artifact_copy_rejects_incomplete_or_debug_pairs() {
+fn native_worker_artifact_copy_rejects_missing_or_debug_artifacts() {
     let temp = tempfile::TempDir::new().unwrap();
     let source = temp.path().join("release");
     let dist = temp.path().join("dist");
     fs::create_dir_all(&source).unwrap();
     fs::create_dir_all(&dist).unwrap();
-    fs::write(
-        source.join(format!("ait-agent{}", std::env::consts::EXE_SUFFIX)),
-        "agent",
-    )
-    .unwrap();
     let repo = release_test_repo(temp.path());
     assert!(
-        copy_native_agent_command_artifacts_from_dir(&repo, &source, &dist, "1.0.0")
+        copy_native_worker_command_artifacts_from_dir(&repo, &source, &dist, "1.0.0")
             .unwrap_err()
             .contains("ait-agent-worker")
     );
@@ -763,7 +756,7 @@ fn native_agent_artifact_copy_rejects_incomplete_or_debug_pairs() {
     let debug_source = temp.path().join("target/debug");
     fs::create_dir_all(&debug_source).unwrap();
     assert!(
-        copy_native_agent_command_artifacts_from_dir(&repo, &debug_source, &dist, "1.0.0")
+        copy_native_worker_command_artifacts_from_dir(&repo, &debug_source, &dist, "1.0.0")
             .unwrap_err()
             .contains("Refusing debug-profile")
     );
@@ -827,7 +820,7 @@ fn publish_ready_rejects_debug_cargo_target_artifact_paths() {
 }
 
 #[test]
-fn publish_ready_requires_both_native_agent_commands() {
+fn publish_ready_requires_the_native_worker_command() {
     let record = json!({
         "release_id": "REL-test",
         "checks": [{"id": "fixture", "blocking": false}],
@@ -835,8 +828,7 @@ fn publish_ready_requires_both_native_agent_commands() {
             {"kind": "sdist", "path": "dist/ait-1.0.0.tar.gz"},
             {"kind": "wheel", "path": "dist/ait-1.0.0-py3-none-any.whl"},
             {"kind": "manifest", "path": "dist/ait-release-1.0.0.manifest.json"},
-            {"kind": "checksum", "path": "dist/ait-release-1.0.0.sha256"},
-            native_command_row("ait-agent")
+            {"kind": "checksum", "path": "dist/ait-release-1.0.0.sha256"}
         ],
         "metadata": {"build": {
             "rust_release_profile": rust_release_profile_contract(),

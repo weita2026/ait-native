@@ -13,9 +13,9 @@ use ait_core::task_workflow_store::{
 
 #[expect(
     clippy::too_many_arguments,
-    reason = "arguments mirror the public task creation contract"
+    reason = "internal Task record creation keeps canonical Plan linkage explicit"
 )]
-pub fn task_create(
+pub(in crate::primitives) fn task_create(
     repo: &RepoRuntime,
     title: &str,
     intent: &str,
@@ -25,7 +25,7 @@ pub fn task_create(
     origin_plan_revision_id: Option<&str>,
     plan_item_ref: Option<&str>,
 ) -> Result<JsonValue, String> {
-    if repo.task_uses_local_scope(local, remote_name) {
+    if repo.task_uses_local_scope(local, remote_name)? {
         let store = repo.task_store()?;
         return task_local_create_with_task_store(
             &store,
@@ -195,7 +195,7 @@ pub fn task_list(
     local: bool,
     remote_name: Option<&str>,
 ) -> Result<JsonValue, String> {
-    if repo.task_uses_local_scope(local, remote_name) {
+    if repo.task_uses_local_scope(local, remote_name)? {
         let store = repo.task_store()?;
         return task_local_list_with_task_store(&store).map(JsonValue::Array);
     }
@@ -228,13 +228,12 @@ pub fn task_show(
     task_id: &str,
     local: bool,
     remote_name: Option<&str>,
-    repo_name_override: Option<&str>,
 ) -> Result<JsonValue, String> {
-    if repo.task_uses_local_scope(local, remote_name) {
+    if repo.task_uses_local_scope(local, remote_name)? {
         let store = repo.task_store()?;
         return task_local_read_with_task_store(&store, task_id);
     }
-    let (remote_row, repo_name) = remote_context(repo, remote_name, repo_name_override)?;
+    let (remote_row, repo_name) = remote_context(repo, remote_name, None)?;
     let mut task_remote = http_task_remote(repo, &remote_row)?;
     task_remote_read_with_task_remote(&mut task_remote, &repo_name, task_id)
 }
@@ -292,59 +291,29 @@ where
         .map_err(|err| err.to_string())
 }
 
-pub fn task_tokens(
+pub fn task_audit(
     repo: &RepoRuntime,
     task_id: &str,
     local: bool,
     remote_name: Option<&str>,
-    repo_name_override: Option<&str>,
 ) -> Result<JsonValue, String> {
-    if repo.task_uses_local_scope(local, remote_name) {
-        let task_store = repo.task_store()?;
-        let task = task_local_read_with_task_store(&task_store, task_id)?;
-        let repo_name =
-            required_string_field(&task, "repo_name").unwrap_or_else(|_| repo.repo_name());
-        return Ok(empty_task_tokens_report(
-            &task,
-            json!({"mode": "local", "repo_name": repo_name}),
-        ));
-    }
-    let (remote_row, repo_name) = remote_context(repo, remote_name, repo_name_override)?;
-    let mut task_remote = http_task_remote(repo, &remote_row)?;
-    let task = task_remote_read_with_task_remote(&mut task_remote, &repo_name, task_id)?;
-    Ok(empty_task_tokens_report(
-        &task,
-        json!({"mode": "remote", "repo_name": repo_name}),
-    ))
-}
+    const TARGET_LINE: &str = "main";
 
-pub fn task_audit(
-    repo: &RepoRuntime,
-    task_id: &str,
-    target_line: &str,
-    remote_name: Option<&str>,
-) -> Result<JsonValue, String> {
     let task_store = repo.task_store()?;
     let change_store = repo.change_store()?;
     let local_task = task_local_read_with_task_store(&task_store, task_id).ok();
-    if remote_name.is_none()
-        && local_task
-            .as_ref()
-            .is_some_and(task_audit_is_unpublished_local)
-    {
+    if repo.task_uses_local_scope(local, remote_name)? {
         let task = local_task
             .as_ref()
             .ok_or_else(|| format!("Unknown local task: {task_id}"))?;
-        let target = local_task_audit_target_info(repo, target_line)?;
+        let target = local_task_audit_target_info(repo, TARGET_LINE)?;
         return infer_local_task_audit_with_change_store(
             repo,
             &change_store,
             task,
             task_id,
-            target_line,
+            TARGET_LINE,
             &target,
-            "local_draft",
-            "Local draft task audit used local workflow records directly because this task has not been published to the remote workflow yet.",
         );
     }
     let effective_remote_name = normalized_text(remote_name).or_else(|| {
@@ -355,28 +324,20 @@ pub fn task_audit(
     let (remote_row, repo_name) = remote_context(repo, effective_remote_name.as_deref(), None)?;
     let resolved_remote_name = remote_row.name.clone();
     let mut task_remote = http_task_remote(repo, &remote_row)?;
-    let output = if remote_name.is_some() {
-        let remote_task_id = local_task
-            .as_ref()
-            .and_then(|task| string_field(task, "published_task_id"))
-            .unwrap_or_else(|| task_id.to_string());
-        task_remote_audit_read_with_task_remote(
-            &mut task_remote,
-            &repo_name,
-            &remote_task_id,
-            target_line,
-        )?
-    } else {
-        task_audit_with_local_stores_and_task_remote(
-            repo,
-            &task_store,
-            &change_store,
-            &mut task_remote,
-            &repo_name,
-            task_id,
-            target_line,
-        )?
-    };
+    let remote_task_id = local_task
+        .as_ref()
+        .filter(|task| {
+            string_field(task, "published_remote_name").as_deref()
+                == Some(resolved_remote_name.as_str())
+        })
+        .and_then(|task| string_field(task, "published_task_id"))
+        .unwrap_or_else(|| task_id.to_string());
+    let output = task_remote_audit_read_with_task_remote(
+        &mut task_remote,
+        &repo_name,
+        &remote_task_id,
+        TARGET_LINE,
+    )?;
     Ok(attach_remote_task_plan_closeout_evidence(
         repo,
         output,
@@ -415,80 +376,6 @@ fn attach_remote_task_plan_closeout_evidence(
     }
     attach_task_audit_land_contract(&mut output, false);
     output
-}
-
-pub(super) fn task_audit_with_local_stores_and_task_remote<T, C, R>(
-    repo: &RepoRuntime,
-    task_store: &T,
-    change_store: &C,
-    task_remote: &mut R,
-    repo_name: &str,
-    task_id: &str,
-    target_line: &str,
-) -> Result<JsonValue, String>
-where
-    T: TaskWorkflowTaskReader + ?Sized,
-    C: TaskWorkflowChangeLister + ?Sized,
-    R: TaskWorkflowLineReader
-        + TaskWorkflowSnapshotMetadataReader
-        + TaskWorkflowRemoteTaskAuditReader
-        + TaskWorkflowRemoteTaskReader
-        + ?Sized,
-{
-    let local_task = task_local_read_with_task_store(task_store, task_id).ok();
-    let local_draft_only = local_task
-        .as_ref()
-        .is_some_and(task_audit_is_unpublished_local);
-    if local_draft_only {
-        let target = local_task_audit_target_info(repo, target_line)?;
-        return infer_local_task_audit_with_change_store(
-            repo,
-            change_store,
-            local_task
-                .as_ref()
-                .ok_or_else(|| format!("Unknown local task: {task_id}"))?,
-            task_id,
-            target_line,
-            &target,
-            "local_draft",
-            "Local draft task audit used local workflow records directly because this task has not been published to the remote workflow yet.",
-        );
-    }
-    let remote_task_id = local_task
-        .as_ref()
-        .and_then(|task| string_field(task, "published_task_id"))
-        .unwrap_or_else(|| task_id.to_string());
-    match task_remote_audit_read_with_task_remote(
-        task_remote,
-        repo_name,
-        &remote_task_id,
-        target_line,
-    ) {
-        Ok(payload) => Ok(payload),
-        Err(err) => {
-            if !remote_task_missing(task_remote, repo_name, &remote_task_id) {
-                return Err(err);
-            }
-            let local_task = local_task.ok_or(err)?;
-            let target = remote_task_audit_target_info(task_remote, repo, repo_name, target_line)?;
-            infer_local_task_audit_with_change_store(
-                repo,
-                change_store,
-                &local_task,
-                task_id,
-                target_line,
-                &target,
-                "local_fallback",
-                "Remote task audit could not load the task, so local workflow records and line ancestry were used as read-only evidence.",
-            )
-        }
-    }
-}
-
-fn task_audit_is_unpublished_local(task: &JsonValue) -> bool {
-    string_field(task, "publication_state").as_deref() == Some("local_draft")
-        && string_field(task, "published_remote_name").is_none()
-        && string_field(task, "published_task_id").is_none()
 }
 
 pub(super) fn task_remote_audit_read_with_task_remote<R>(
@@ -636,36 +523,6 @@ pub(super) fn remote_context(
     Ok((remote_row, repo_name))
 }
 
-pub(super) fn empty_task_tokens_report(task: &JsonValue, scope: JsonValue) -> JsonValue {
-    json!({
-        "scope": scope,
-        "task": task.clone(),
-        "summary": {
-            "runtime_count": 0,
-            "runtimes_with_usage_count": 0,
-            "assistant_reply_count": 0,
-            "metered_reply_count": 0,
-            "usage_last_reply_count": 0,
-            "direct_usage_reply_count": 0,
-            "payload_usage_reply_count": 0,
-            "missing_usage_reply_count": 0,
-            "prompt_tokens": 0,
-            "completion_tokens": 0,
-            "total_tokens": 0,
-            "cached_input_tokens": 0,
-            "reasoning_output_tokens": 0,
-            "models": [],
-        },
-        "changes": [],
-        "worktrees": [],
-        "models": [],
-    })
-}
-
-#[expect(
-    clippy::too_many_arguments,
-    reason = "local audit projection keeps exact Task, target, and evidence inputs explicit"
-)]
 pub(super) fn infer_local_task_audit_with_change_store<C>(
     repo: &RepoRuntime,
     change_store: &C,
@@ -673,28 +530,17 @@ pub(super) fn infer_local_task_audit_with_change_store<C>(
     task_id: &str,
     target_line: &str,
     target: &JsonValue,
-    audit_mode: &str,
-    audit_detail: &str,
 ) -> Result<JsonValue, String>
 where
     C: TaskWorkflowChangeLister + ?Sized,
 {
-    let local_draft_mode = audit_mode == "local_draft";
-    let target_ancestry = target
-        .get("ancestry")
-        .and_then(JsonValue::as_array)
-        .cloned()
-        .unwrap_or_default()
-        .into_iter()
-        .filter_map(|value| value.as_str().map(|text| text.to_string()))
-        .collect::<BTreeSet<_>>();
     let mut changes = task_audit_local_change_rows_with_change_store(change_store)?
         .into_iter()
         .filter(|row| string_field(row, "task_id").as_deref() == Some(task_id))
         .collect::<Vec<_>>();
     changes.sort_by_key(|row| string_field(row, "created_at").unwrap_or_default());
     let all_lines = local_task_audit_lines(repo)?;
-    let task_tokens = task_audit_id_tokens(task_id);
+    let task_match_terms = task_audit_id_tokens(task_id);
     let mut change_rows = Vec::new();
 
     for change in changes {
@@ -702,30 +548,13 @@ where
         let candidates = task_audit_candidate_lines(
             &all_lines,
             target_line,
-            &task_tokens,
+            &task_match_terms,
             &task_audit_id_tokens(&change_id),
         );
         let preferred_line = candidates.first().cloned();
         let preferred_snapshot_id = preferred_line
             .as_ref()
             .and_then(|row| string_field(row, "head_snapshot_id"));
-        let on_target_candidate_count = candidates
-            .iter()
-            .filter(|row| {
-                string_field(row, "head_snapshot_id")
-                    .is_some_and(|snapshot_id| target_ancestry.contains(&snapshot_id))
-            })
-            .count();
-        let inferred_on_target = preferred_snapshot_id
-            .as_ref()
-            .is_some_and(|snapshot_id| target_ancestry.contains(snapshot_id));
-        let effective_on_target = !local_draft_mode && inferred_on_target;
-        let stale_workflow_record = !local_draft_mode
-            && effective_on_target
-            && !matches!(
-                string_field(&change, "status").as_deref(),
-                Some("landed" | "archived")
-            );
         let (target_state, target_reason) = if string_field(&change, "status").as_deref()
             == Some("archived")
         {
@@ -733,46 +562,17 @@ where
                 "archived".to_string(),
                 "This change is archived and no longer blocks task completion.".to_string(),
             )
-        } else if local_draft_mode && string_field(&change, "status").as_deref() == Some("landed") {
+        } else if string_field(&change, "status").as_deref() == Some("landed") {
             (
                 "local_change_landed".to_string(),
                 format!(
                     "This local Change is landed; Task closeout should be resumed against {target_line}."
                 ),
             )
-        } else if local_draft_mode {
+        } else {
             (
                 "local_change_not_landed".to_string(),
                 format!("This local Change has not been landed onto {target_line}."),
-            )
-        } else if effective_on_target {
-            (
-                "merged_on_target_missing_remote".to_string(),
-                format!(
-                    "The preferred inferred line head is already reachable from {target_line}, but the remote workflow record is missing."
-                ),
-            )
-        } else if on_target_candidate_count > 0 {
-            (
-                "ambiguous_line_candidates".to_string(),
-                format!(
-                    "{on_target_candidate_count} lower-confidence candidate line(s) appear on {target_line}, but the preferred inferred line does not."
-                ),
-            )
-        } else if preferred_line.is_none() {
-            (
-                "no_line_evidence".to_string(),
-                "No local line could be linked to this change strongly enough to infer target-line reachability.".to_string(),
-            )
-        } else if preferred_snapshot_id.is_none() {
-            (
-                "line_missing_head".to_string(),
-                "The preferred inferred line does not currently have a head snapshot.".to_string(),
-            )
-        } else {
-            (
-                "not_on_target".to_string(),
-                format!("The preferred inferred line head is not reachable from {target_line}."),
             )
         };
         change_rows.push(json!({
@@ -786,9 +586,9 @@ where
                 })
             }).unwrap_or(JsonValue::Null),
             "landing_summary": JsonValue::Null,
-            "effective_on_target": effective_on_target,
-            "stale_workflow_record": stale_workflow_record,
-            "missing_remote_record": !local_draft_mode,
+            "effective_on_target": false,
+            "stale_workflow_record": false,
+            "missing_remote_record": false,
             "target_state": target_state,
             "target_reason": target_reason,
             "preferred_line": preferred_line.unwrap_or(JsonValue::Null),
@@ -815,9 +615,9 @@ where
         "next_action": verdict_obj.get("recommended_action").cloned().unwrap_or(JsonValue::Null),
         "recommended_action": verdict_obj.get("recommended_action").cloned().unwrap_or(JsonValue::Null),
         "audit_source": {
-            "mode": audit_mode,
-            "detail": audit_detail,
-            "remote_task_missing": !local_draft_mode,
+            "mode": "local",
+            "detail": "Task audit used only local Task, Change, Line, and Snapshot authority.",
+            "remote_task_missing": false,
         },
         "target": {
             "line_name": target.get("line_name").cloned().unwrap_or(JsonValue::Null),
@@ -925,167 +725,6 @@ fn task_audit_snapshot_store(repo: &RepoRuntime) -> Result<impl SnapshotStore, S
     repo.local_snapshot_operation_store::<SNAPSHOT_BINARY_DB_WRITE_LAYOUT>(&workspace_root)
 }
 
-pub(super) fn remote_task_audit_target_info<R>(
-    task_remote: &mut R,
-    repo: &RepoRuntime,
-    repo_name: &str,
-    target_line: &str,
-) -> Result<JsonValue, String>
-where
-    R: TaskWorkflowLineReader + TaskWorkflowSnapshotMetadataReader + ?Sized,
-{
-    match task_audit_remote_target_line_read_with_task_remote(task_remote, repo_name, target_line) {
-        Ok(line) => {
-            let head_snapshot_id = string_field(&line, "head_snapshot_id");
-            let ancestry =
-                remote_snapshot_ancestry(task_remote, repo_name, head_snapshot_id.as_deref())?;
-            Ok(json!({
-                "line_name": target_line,
-                "head_snapshot_id": head_snapshot_id,
-                "ancestor_snapshot_count": ancestry.len(),
-                "source": "remote",
-                "ancestry": ancestry,
-            }))
-        }
-        Err(_) => local_task_audit_target_info(repo, target_line),
-    }
-}
-
-pub(super) fn task_audit_remote_target_line_read_with_task_remote<R>(
-    task_remote: &mut R,
-    repo_name: &str,
-    target_line: &str,
-) -> Result<JsonValue, String>
-where
-    R: TaskWorkflowLineReader + ?Sized,
-{
-    task_remote
-        .get_line(repo_name, target_line)
-        .map_err(|err| err.to_string())
-}
-
-pub(super) fn remote_snapshot_ancestry<R>(
-    task_remote: &mut R,
-    repo_name: &str,
-    snapshot_id: Option<&str>,
-) -> Result<Vec<String>, String>
-where
-    R: TaskWorkflowSnapshotMetadataReader + ?Sized,
-{
-    let Some(head_snapshot_id) = snapshot_id.map(|value| value.to_string()) else {
-        return Ok(Vec::new());
-    };
-    let limits = SnapshotDagLimits::default();
-    let mut pending = VecDeque::from([head_snapshot_id.clone()]);
-    let mut queued = BTreeSet::from([head_snapshot_id.clone()]);
-    let mut parent_map = BTreeMap::new();
-    while let Some(current) = pending.pop_front() {
-        let bundle = task_audit_remote_snapshot_metadata_read_with_task_remote(
-            task_remote,
-            repo_name,
-            &current,
-        )?;
-        let parents = task_audit_remote_parent_snapshot_ids(&bundle, &current)?;
-        for parent in &parents {
-            if queued.insert(parent.clone()) {
-                if queued.len() > limits.max_results {
-                    return Err(format!(
-                        "Remote task-audit Snapshot DAG exceeded max_results {} at parent {parent} of {current}.",
-                        limits.max_results
-                    ));
-                }
-                pending.push_back(parent.clone());
-            }
-        }
-        parent_map.insert(current, parents);
-    }
-    Ok(snapshot_ancestor_closure_from_parent_map(
-        &parent_map,
-        &[head_snapshot_id],
-        &BTreeSet::new(),
-        SnapshotParentMode::AllParents,
-        limits,
-    )?
-    .topological_snapshot_ids)
-}
-
-fn task_audit_remote_parent_snapshot_ids(
-    snapshot: &JsonValue,
-    snapshot_id: &str,
-) -> Result<Vec<String>, String> {
-    let parent_snapshot_ids = match snapshot.get("parent_snapshot_ids") {
-        None => None,
-        Some(JsonValue::Array(values)) => Some(
-            values
-                .iter()
-                .enumerate()
-                .map(|(ordinal, value)| {
-                    value.as_str().map(str::to_string).ok_or_else(|| {
-                        format!(
-                            "Remote snapshot {snapshot_id} parent ordinal {ordinal} must be text."
-                        )
-                    })
-                })
-                .collect::<Result<Vec<_>, _>>()?,
-        ),
-        Some(_) => {
-            return Err(format!(
-                "Remote snapshot {snapshot_id} parent_snapshot_ids must be an array."
-            ))
-        }
-    };
-    normalize_snapshot_parent_set(
-        Some(snapshot_id),
-        parent_snapshot_ids,
-        string_field(snapshot, "primary_parent_snapshot_id"),
-        string_field(snapshot, "parent_snapshot_id"),
-    )
-    .map(|(parents, _, _)| parents)
-}
-
-pub(super) fn task_audit_remote_snapshot_metadata_read_with_task_remote<R>(
-    task_remote: &mut R,
-    repo_name: &str,
-    snapshot_id: &str,
-) -> Result<JsonValue, String>
-where
-    R: TaskWorkflowSnapshotMetadataReader + ?Sized,
-{
-    let remote_snapshot = task_remote
-        .get_remote_snapshot(repo_name, snapshot_id, false, None)
-        .map_err(|err| err.to_string())?;
-    let remote_snapshot_id = string_field(&remote_snapshot, "snapshot_id")
-        .ok_or_else(|| "Remote snapshot response is missing snapshot_id.".to_string())?;
-    if remote_snapshot_id != snapshot_id {
-        return Err(format!(
-            "Remote snapshot verification returned unexpected snapshot {remote_snapshot_id:?} (expected {snapshot_id:?})"
-        ));
-    }
-    let remote_repo_name = string_field(&remote_snapshot, "repo_name")
-        .ok_or_else(|| "Remote snapshot response is missing repo_name.".to_string())?;
-    if remote_repo_name != repo_name {
-        return Err(format!(
-            "Remote snapshot verification returned unexpected repository {remote_repo_name:?} (expected {repo_name:?})"
-        ));
-    }
-    Ok(remote_snapshot)
-}
-
-pub(super) fn remote_task_missing<R>(task_remote: &mut R, repo_name: &str, task_id: &str) -> bool
-where
-    R: TaskWorkflowRemoteTaskReader + ?Sized,
-{
-    match task_remote_read_with_task_remote(task_remote, repo_name, task_id) {
-        Ok(_) => false,
-        Err(message) => {
-            message.contains(" failed: 404")
-                || message.contains("failed: 404 ")
-                || message.contains("Unknown task")
-                || message.contains("is not a Task in this repository namespace")
-        }
-    }
-}
-
 pub(super) fn task_audit_id_tokens(workflow_id: &str) -> Vec<String> {
     let text = workflow_id.trim().to_ascii_lowercase();
     if text.is_empty() {
@@ -1114,7 +753,7 @@ pub(super) fn task_audit_reason_rank(reason: &str) -> i32 {
 pub(super) fn task_audit_candidate_lines(
     lines: &[JsonValue],
     target_line: &str,
-    task_tokens: &[String],
+    task_match_terms: &[String],
     change_tokens: &[String],
 ) -> Vec<JsonValue> {
     let mut candidates = lines
@@ -1130,7 +769,7 @@ pub(super) fn task_audit_candidate_lines(
             if change_tokens.iter().any(|token| lowered.contains(token)) {
                 reasons.push("change_id".to_string());
             }
-            if task_tokens.iter().any(|token| lowered.contains(token)) {
+            if task_match_terms.iter().any(|token| lowered.contains(token)) {
                 reasons.push("task_id".to_string());
             }
             if reasons.is_empty() {

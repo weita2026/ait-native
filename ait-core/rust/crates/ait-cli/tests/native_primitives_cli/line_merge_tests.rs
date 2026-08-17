@@ -441,6 +441,22 @@ fn native_pull_local_ahead_imports_without_moving_the_line_or_workspace() {
     let local_head = seed_snapshot(root, "local ahead");
     let workspace_before = fs::read(root.join("local-only.txt")).unwrap();
 
+    let rejected_restore = command_output_with_env(
+        root,
+        &["pull", "--line", "main", "--restore", "--json"],
+        &[],
+    );
+    assert!(!rejected_restore.status.success());
+    let stderr = String::from_utf8_lossy(&rejected_restore.stderr);
+    assert!(stderr.contains("local Line main"), "{stderr}");
+    assert!(stderr.contains("is ahead of remote origin/main"), "{stderr}");
+    assert!(stderr.contains("no Line head or workspace was moved"), "{stderr}");
+    assert_eq!(
+        local_line_head(root, "main").as_deref(),
+        Some(local_head.as_str())
+    );
+    assert_eq!(fs::read(root.join("local-only.txt")).unwrap(), workspace_before);
+
     let pulled = json_output(root, &["pull", "--line", "main", "--json"]);
 
     assert_eq!(pulled["relationship"], json!("local_ahead"));
@@ -453,6 +469,28 @@ fn native_pull_local_ahead_imports_without_moving_the_line_or_workspace() {
     );
     assert_eq!(fs::read(root.join("local-only.txt")).unwrap(), workspace_before);
     handle.join().unwrap();
+}
+
+#[test]
+fn native_pull_invalid_workspace_option_combinations_exit_during_parsing() {
+    let temp = TempDir::new().expect("parser fixture directory");
+    for (args, expected) in [
+        (vec!["pull", "--merge"], "--restore"),
+        (vec!["pull", "--force"], "--restore"),
+        (
+            vec!["pull", "--merge", "--restore", "--force"],
+            "cannot be used with",
+        ),
+    ] {
+        let output = cargo_bin()
+            .current_dir(temp.path())
+            .args(&args)
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(2), "{args:?}");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains(expected), "{args:?}: {stderr}");
+    }
 }
 
 #[test]
@@ -494,14 +532,11 @@ fn native_pull_divergence_without_strategy_imports_then_fails_closed() {
     let remote_root = remote_temp.path();
     json_output(
         remote_root,
-        &[
-            "line",
-            "create",
-            "feature/rt-1",
-            "--switch",
-            "--restore",
-            "--json",
-        ],
+        &["line", "create", "feature/rt-1", "--json"],
+    );
+    json_output(
+        remote_root,
+        &["line", "switch", "feature/rt-1", "--restore", "--json"],
     );
     write_file(&remote_root.join("remote-only.txt"), "remote side\n");
     let remote_head = seed_snapshot(remote_root, "remote divergent side");
@@ -557,14 +592,11 @@ fn native_pull_merge_creates_ordered_two_parent_snapshot_for_divergence() {
     let remote_root = remote_temp.path();
     json_output(
         remote_root,
-        &[
-            "line",
-            "create",
-            "feature/rt-1",
-            "--switch",
-            "--restore",
-            "--json",
-        ],
+        &["line", "create", "feature/rt-1", "--json"],
+    );
+    json_output(
+        remote_root,
+        &["line", "switch", "feature/rt-1", "--restore", "--json"],
     );
     write_file(&remote_root.join("remote-only.txt"), "remote side\n");
     let remote_head = seed_snapshot(remote_root, "remote clean side");
@@ -595,7 +627,14 @@ fn native_pull_merge_creates_ordered_two_parent_snapshot_for_divergence() {
 
     let pulled = json_output(
         &worktree,
-        &["pull", "--line", "feature/rt-1", "--merge", "--json"],
+        &[
+            "pull",
+            "--line",
+            "feature/rt-1",
+            "--merge",
+            "--restore",
+            "--json",
+        ],
     );
 
     assert_eq!(pulled["relationship"], json!("divergent"));
@@ -621,14 +660,11 @@ fn native_pull_merge_conflict_is_resumable_without_a_synthetic_source_line() {
     let remote_root = remote_temp.path();
     json_output(
         remote_root,
-        &[
-            "line",
-            "create",
-            "feature/rt-1",
-            "--switch",
-            "--restore",
-            "--json",
-        ],
+        &["line", "create", "feature/rt-1", "--json"],
+    );
+    json_output(
+        remote_root,
+        &["line", "switch", "feature/rt-1", "--restore", "--json"],
     );
     write_file(
         &remote_root.join("src/lib.rs"),
@@ -665,7 +701,14 @@ fn native_pull_merge_conflict_is_resumable_without_a_synthetic_source_line() {
 
     let pulled = json_output(
         &worktree,
-        &["pull", "--line", "feature/rt-1", "--merge", "--json"],
+        &[
+            "pull",
+            "--line",
+            "feature/rt-1",
+            "--merge",
+            "--restore",
+            "--json",
+        ],
     );
     assert_eq!(pulled["action"], json!("merge_conflicted"));
     assert_eq!(pulled["status"], json!("conflicted"));

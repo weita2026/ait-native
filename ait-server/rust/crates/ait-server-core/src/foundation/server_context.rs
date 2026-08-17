@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use serde_json::{json, Map as JsonMap, Value as JsonValue};
 
 use crate::foundation::server_protocol::{
-    resolve_server_runtime_root_with_source, LEGACY_SERVER_DATA_ENV, RUNTIME_DATA_ENV,
+    resolve_server_runtime_root_with_source, SERVER_DATA_ENV,
 };
 
 pub const SERVER_CONTEXT_CONTRACT_VERSION: &str = "ait.server.server_context.v1";
@@ -57,8 +57,7 @@ pub fn server_context_contract() -> JsonValue {
             SERVER_RUNTIME_PREFLIGHT_REFERENCE_MODULE,
         ],
         "environment_inputs": {
-            "runtime_data": RUNTIME_DATA_ENV,
-            "legacy_runtime_data": LEGACY_SERVER_DATA_ENV,
+            "server_data": SERVER_DATA_ENV,
             "db_backend": SERVER_DB_BACKEND_ENV,
             "postgres_dsn": SERVER_POSTGRES_DSN_ENV,
             "content_schema": SERVER_POSTGRES_CONTENT_SCHEMA_ENV,
@@ -247,14 +246,9 @@ pub fn resolve_root_from_inputs(
     if let Some(root) = explicit_root {
         return Ok((absolutize_path(Path::new(root)), "explicit".to_string()));
     }
-    let runtime_data =
-        env.and_then(|env| normalize_optional_text(value_text(env.get(RUNTIME_DATA_ENV))));
-    if let Some(root) = runtime_data {
-        return Ok((absolutize_path(Path::new(&root)), "env".to_string()));
-    }
-    let legacy_runtime_data =
-        env.and_then(|env| normalize_optional_text(value_text(env.get(LEGACY_SERVER_DATA_ENV))));
-    if let Some(root) = legacy_runtime_data {
+    let server_data =
+        env.and_then(|env| normalize_optional_text(value_text(env.get(SERVER_DATA_ENV))));
+    if let Some(root) = server_data {
         return Ok((absolutize_path(Path::new(&root)), "env".to_string()));
     }
     // Fall back to the process environment only for non-test callers that want

@@ -97,9 +97,19 @@ fn native_tag_namespace_stores_message_and_resolves_snapshot_refs() {
     );
     assert!(String::from_utf8_lossy(&duplicate.stderr).contains("already exists"));
 
-    let replaced = json_output(
-        &worktree,
-        &[
+    let preserved = json_output(&worktree, &["tag", "show", "stable/baseline", "--json"]);
+    assert_eq!(
+        preserved["snapshot_id"].as_str(),
+        Some(FIXTURE_BASE_SNAPSHOT_ID)
+    );
+    assert_eq!(
+        preserved["message"].as_str(),
+        Some("known good regression baseline")
+    );
+
+    let retired_force = cargo_bin()
+        .current_dir(&worktree)
+        .args([
             "tag",
             "create",
             "stable/baseline",
@@ -109,17 +119,21 @@ fn native_tag_namespace_stores_message_and_resolves_snapshot_refs() {
             "updated regression baseline",
             "--force",
             "--json",
-        ],
-    );
-    assert_eq!(replaced["snapshot_id"].as_str(), Some(next_snapshot_id));
-    assert_eq!(
-        replaced["message"].as_str(),
-        Some("updated regression baseline")
+        ])
+        .output()
+        .unwrap();
+    assert!(!retired_force.status.success());
+    assert!(
+        String::from_utf8_lossy(&retired_force.stderr)
+            .contains("unexpected argument '--force'")
     );
 
     let deleted = json_output(&worktree, &["tag", "delete", "stable/baseline", "--json"]);
     assert_eq!(deleted["deleted"].as_bool(), Some(true));
-    assert_eq!(deleted["snapshot_id"].as_str(), Some(next_snapshot_id));
+    assert_eq!(
+        deleted["snapshot_id"].as_str(),
+        Some(FIXTURE_BASE_SNAPSHOT_ID)
+    );
 
     let missing = cargo_bin()
         .current_dir(&worktree)

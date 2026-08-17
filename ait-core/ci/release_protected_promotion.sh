@@ -709,11 +709,12 @@ if [[ -n $(git -C "${public_source_root}" status --porcelain --untracked-files=a
   printf 'native admission build mutated the immutable tagged source\n' >&2
   exit 65
 fi
-admission_root=${temporary_root}/admission
+admission_root=${temporary_root}/ait-core
 mkdir "${admission_root}"
 (
   cd "${admission_root}"
-  "${ait_bin}" init --name ait-core --default-line release-bootstrap --json >/dev/null
+  "${ait_bin}" init --json >/dev/null
+  "${ait_bin}" line rename main release-bootstrap --json >/dev/null
   release_root=${admission_root}/dist/${AIT_RELEASE_ID}
   mkdir -p "${release_root}"
   cp "${candidate}" "${release_root}/ait-release.candidate.json"

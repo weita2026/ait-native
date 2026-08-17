@@ -54,18 +54,18 @@ use super::{
     TaskWorkflowPatchsetCiStatusReader, TaskWorkflowPatchsetLister, TaskWorkflowPatchsetPublisher,
     TaskWorkflowPatchsetReader, TaskWorkflowPatchsetRemote, TaskWorkflowPatchsetSelector,
     TaskWorkflowPolicyEvaluator, TaskWorkflowPolicyReader, TaskWorkflowPolicyRemote,
-    TaskWorkflowPolicyWaiverCreator, TaskWorkflowQueueChangeLister, TaskWorkflowQueueRemote,
-    TaskWorkflowQueueSummaryBundleReader, TaskWorkflowRemoteChangeCloser,
-    TaskWorkflowRemoteChangeCreator, TaskWorkflowRemoteChangeDetailReader,
-    TaskWorkflowRemoteChangeLister, TaskWorkflowRemoteChangeReader,
-    TaskWorkflowRemoteTaskAuditReader, TaskWorkflowRemoteTaskCloser, TaskWorkflowRemoteTaskCreator,
-    TaskWorkflowRemoteTaskLister, TaskWorkflowRemoteTaskReader, TaskWorkflowRepoJobLister,
-    TaskWorkflowRepositoryEnsurer, TaskWorkflowRepositoryReader, TaskWorkflowRepositoryRemote,
-    TaskWorkflowReviewLister, TaskWorkflowReviewRecorder, TaskWorkflowReviewRemote,
-    TaskWorkflowReviewRequester, TaskWorkflowReviewerInboxReader,
-    TaskWorkflowSnapshotExistenceReader, TaskWorkflowSnapshotMetadataReader,
-    TaskWorkflowSnapshotRemote, TaskWorkflowTaskQueueReader, TaskWorkflowTaskRecordRemote,
-    TaskWorkflowTaskRemote, TaskWorkflowZstdPackReader, TaskWorkflowZstdPackUploader,
+    TaskWorkflowPolicyWaiverCreator, TaskWorkflowQueueRemote, TaskWorkflowQueueSummaryBundleReader,
+    TaskWorkflowRemoteChangeCloser, TaskWorkflowRemoteChangeCreator,
+    TaskWorkflowRemoteChangeDetailReader, TaskWorkflowRemoteChangeLister,
+    TaskWorkflowRemoteChangeReader, TaskWorkflowRemoteTaskAuditReader,
+    TaskWorkflowRemoteTaskCloser, TaskWorkflowRemoteTaskCreator, TaskWorkflowRemoteTaskLister,
+    TaskWorkflowRemoteTaskReader, TaskWorkflowRepoJobLister, TaskWorkflowRepositoryEnsurer,
+    TaskWorkflowRepositoryReader, TaskWorkflowRepositoryRemote, TaskWorkflowReviewLister,
+    TaskWorkflowReviewRecorder, TaskWorkflowReviewRemote, TaskWorkflowReviewRequester,
+    TaskWorkflowReviewerInboxReader, TaskWorkflowSnapshotExistenceReader,
+    TaskWorkflowSnapshotMetadataReader, TaskWorkflowSnapshotRemote, TaskWorkflowTaskQueueReader,
+    TaskWorkflowTaskRecordRemote, TaskWorkflowTaskRemote, TaskWorkflowZstdPackReader,
+    TaskWorkflowZstdPackUploader,
 };
 use crate::json_support::{json, JsonCodec, JsonValue};
 use crate::plan_http_client::PlanHttpClientError;
@@ -525,12 +525,6 @@ impl TaskWorkflowRemoteChangeCreator for FakeTaskRemote {
 }
 
 impl TaskWorkflowRemoteChangeLister for FakeTaskRemote {
-    fn list_changes(&mut self, repo_name: &str) -> TaskWorkflowHttpClientResult<Vec<JsonValue>> {
-        Ok(vec![json!({"repo_name": repo_name, "change_id": "C-1"})])
-    }
-}
-
-impl TaskWorkflowQueueChangeLister for FakeTaskRemote {
     fn list_changes(&mut self, repo_name: &str) -> TaskWorkflowHttpClientResult<Vec<JsonValue>> {
         Ok(vec![json!({"repo_name": repo_name, "change_id": "C-1"})])
     }
@@ -1043,15 +1037,6 @@ impl TaskWorkflowQueueSummaryBundleReader for FakeQueueRemote {
             "status": status,
             "summary": true,
         }))
-    }
-}
-
-impl TaskWorkflowQueueChangeLister for FakeQueueRemote {
-    fn list_changes(&mut self, repo_name: &str) -> TaskWorkflowHttpClientResult<Vec<JsonValue>> {
-        Ok(vec![json!({
-            "repo_name": repo_name,
-            "change_id": "C-1",
-        })])
     }
 }
 

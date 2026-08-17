@@ -211,7 +211,7 @@ pub(super) fn release_check_with_compileall_policy(
     get_release_candidate(repo, release_id)
 }
 
-pub(super) fn native_agent_artifact_filename(command: &str, version: &str) -> String {
+pub(super) fn native_worker_artifact_filename(command: &str, version: &str) -> String {
     format!(
         "{command}-{version}-{}-{}{}",
         std::env::consts::OS,
@@ -220,13 +220,13 @@ pub(super) fn native_agent_artifact_filename(command: &str, version: &str) -> St
     )
 }
 
-pub(super) fn native_agent_command_source_dirs(repo: &RepoRuntime) -> Vec<PathBuf> {
+pub(super) fn native_worker_command_source_dirs(
+    repo: &RepoRuntime,
+    explicit_source_dir: Option<&Path>,
+) -> Vec<PathBuf> {
     let mut candidates = Vec::new();
-    if let Some(path) = std::env::var_os("AIT_RELEASE_NATIVE_COMMAND_DIR") {
-        let path = PathBuf::from(path);
-        if !path.as_os_str().is_empty() {
-            candidates.push(path);
-        }
+    if let Some(path) = explicit_source_dir.filter(|path| !path.as_os_str().is_empty()) {
+        candidates.push(path.to_path_buf());
     }
     if let Ok(current_executable) = std::env::current_exe() {
         if let Some(parent) = current_executable.parent() {
@@ -248,10 +248,11 @@ pub(super) fn native_agent_command_source_dirs(repo: &RepoRuntime) -> Vec<PathBu
     candidates
 }
 
-pub(super) fn resolve_native_agent_command_source_dir(
+pub(super) fn resolve_native_worker_command_source_dir(
     repo: &RepoRuntime,
+    explicit_source_dir: Option<&Path>,
 ) -> Result<PathBuf, String> {
-    let candidates = native_agent_command_source_dirs(repo);
+    let candidates = native_worker_command_source_dirs(repo, explicit_source_dir);
     for directory in &candidates {
         let normalized = directory.to_string_lossy().replace('\\', "/");
         if normalized.ends_with("/debug")
@@ -260,7 +261,7 @@ pub(super) fn resolve_native_agent_command_source_dir(
         {
             continue;
         }
-        if REQUIRED_NATIVE_AGENT_COMMANDS.iter().all(|command| {
+        if REQUIRED_NATIVE_WORKER_COMMANDS.iter().all(|command| {
             directory
                 .join(format!("{command}{}", std::env::consts::EXE_SUFFIX))
                 .is_file()
@@ -274,11 +275,11 @@ pub(super) fn resolve_native_agent_command_source_dir(
         .collect::<Vec<_>>()
         .join(", ");
     Err(format!(
-        "Rust release generation requires the paired ait-agent and ait-agent-worker release artifacts, but no complete release-profile pair was found in: {attempted}. Run `../ait-core/ait.sh core build` from the stable ait repository root (or `./ait.sh core build` inside ait-core) and retry."
+        "Rust release generation requires the ait-agent-worker release artifact, but it was not found in: {attempted}. Run `../ait-core/ait.sh core build` from the stable ait repository root (or `./ait.sh core build` inside ait-core) and retry."
     ))
 }
 
-pub(super) fn copy_native_agent_command_artifacts_from_dir(
+pub(super) fn copy_native_worker_command_artifacts_from_dir(
     repo: &RepoRuntime,
     source_dir: &Path,
     dist_dir: &Path,
@@ -290,12 +291,12 @@ pub(super) fn copy_native_agent_command_artifacts_from_dir(
         || normalized_source.contains("/cargo-target/debug/")
     {
         return Err(format!(
-            "Refusing debug-profile native agent release artifacts from {}. Build the canonical release profile first.",
+            "Refusing debug-profile native worker release artifacts from {}. Build the canonical release profile first.",
             source_dir.display()
         ));
     }
     let mut artifacts = Vec::new();
-    for command in REQUIRED_NATIVE_AGENT_COMMANDS {
+    for command in REQUIRED_NATIVE_WORKER_COMMANDS {
         let source = source_dir.join(format!("{command}{}", std::env::consts::EXE_SUFFIX));
         if !source.is_file() {
             return Err(format!(
@@ -303,7 +304,7 @@ pub(super) fn copy_native_agent_command_artifacts_from_dir(
                 source.display()
             ));
         }
-        let destination = dist_dir.join(native_agent_artifact_filename(command, version));
+        let destination = dist_dir.join(native_worker_artifact_filename(command, version));
         fs::copy(&source, &destination).map_err(io_error)?;
         let source_permissions = fs::metadata(&source).map_err(io_error)?.permissions();
         fs::set_permissions(&destination, source_permissions).map_err(io_error)?;
@@ -341,7 +342,7 @@ pub(super) fn copy_native_agent_command_artifacts_from_dir(
     Ok(artifacts)
 }
 
-pub(super) fn assert_native_agent_artifact_pair(artifacts: &[JsonValue]) -> Result<(), String> {
+pub(super) fn assert_native_worker_artifact(artifacts: &[JsonValue]) -> Result<(), String> {
     let native_rows = artifacts
         .iter()
         .filter(|row| string_field(row, "kind").as_deref() == Some("native-command"))
@@ -367,19 +368,19 @@ pub(super) fn assert_native_agent_artifact_pair(artifacts: &[JsonValue]) -> Resu
             ));
         }
     }
-    let missing = REQUIRED_NATIVE_AGENT_COMMANDS
+    let missing = REQUIRED_NATIVE_WORKER_COMMANDS
         .iter()
         .filter(|command| !commands.contains(**command))
         .copied()
         .collect::<Vec<_>>();
     let unexpected = commands
         .iter()
-        .filter(|command| !REQUIRED_NATIVE_AGENT_COMMANDS.contains(&command.as_str()))
+        .filter(|command| !REQUIRED_NATIVE_WORKER_COMMANDS.contains(&command.as_str()))
         .cloned()
         .collect::<Vec<_>>();
     if !missing.is_empty() || !unexpected.is_empty() {
         return Err(format!(
-            "Release native agent artifact pair is invalid (missing: {}; unexpected: {}).",
+            "Release native worker artifact set is invalid (missing: {}; unexpected: {}).",
             if missing.is_empty() {
                 "none".to_string()
             } else {
@@ -396,13 +397,22 @@ pub(super) fn assert_native_agent_artifact_pair(artifacts: &[JsonValue]) -> Resu
 }
 
 pub fn release_build(repo: &RepoRuntime, release_id: &str) -> Result<JsonValue, String> {
-    release_build_with_native_matrix(repo, release_id, None)
+    release_build_with_native_inputs(repo, release_id, None, None)
 }
 
 pub fn release_build_with_native_matrix(
     repo: &RepoRuntime,
     release_id: &str,
     native_matrix_dir: Option<&Path>,
+) -> Result<JsonValue, String> {
+    release_build_with_native_inputs(repo, release_id, native_matrix_dir, None)
+}
+
+pub fn release_build_with_native_inputs(
+    repo: &RepoRuntime,
+    release_id: &str,
+    native_matrix_dir: Option<&Path>,
+    native_command_dir: Option<&Path>,
 ) -> Result<JsonValue, String> {
     let record = get_release_candidate(repo, release_id)?;
     let profile = require_profile(&required_string_field(&record, "profile")?)?;
@@ -421,14 +431,14 @@ pub fn release_build_with_native_matrix(
         artifact_info(repo, &sdist_path)?,
         artifact_info(repo, &wheel_path)?,
     ];
-    let native_source_dir = resolve_native_agent_command_source_dir(repo)?;
-    let native_commands = copy_native_agent_command_artifacts_from_dir(
+    let native_source_dir = resolve_native_worker_command_source_dir(repo, native_command_dir)?;
+    let native_commands = copy_native_worker_command_artifacts_from_dir(
         repo,
         &native_source_dir,
         &dist_dir,
         &required_string_field(&record, "version")?,
     )?;
-    assert_native_agent_artifact_pair(&native_commands)?;
+    assert_native_worker_artifact(&native_commands)?;
     artifacts.extend(native_commands.clone());
     let (native_bundles, native_distribution) = build_native_distribution(
         repo,
@@ -438,6 +448,7 @@ pub fn release_build_with_native_matrix(
         &dist_dir,
         epoch,
         native_matrix_dir,
+        native_command_dir,
     )?;
     artifacts.extend(native_bundles);
     let manifest_path = dist_dir.join(format!(
@@ -488,7 +499,7 @@ pub fn release_build_with_native_matrix(
     fs::write(&checksum_path, checksum_text).map_err(io_error)?;
     artifacts.push(artifact_info(repo, &checksum_path)?);
     artifacts.sort_by_key(|row| required_string_field(row, "kind").unwrap_or_default());
-    assert_native_agent_artifact_pair(&artifacts)?;
+    assert_native_worker_artifact(&artifacts)?;
     assert_release_artifact_paths_are_publishable(release_id, &artifacts)?;
 
     let mut metadata = record
@@ -511,7 +522,7 @@ pub fn release_build_with_native_matrix(
             "source_date_epoch": epoch,
             "builder": "ait_rust_internal_sdist_and_wheel",
             "native_command_source_dir": native_source_dir.to_string_lossy(),
-            "native_commands": REQUIRED_NATIVE_AGENT_COMMANDS,
+            "native_commands": REQUIRED_NATIVE_WORKER_COMMANDS,
             "rust_release_profile": rust_release_profile_contract(),
             "rust_ci_profile": rust_ci_profile_contract(),
         }),
@@ -576,6 +587,7 @@ pub fn release_native_bundle(
         &dist_dir,
         epoch,
         Some(native_matrix_dir),
+        None,
     )?;
     assert_release_artifact_paths_are_publishable(release_id, &native_bundles)?;
     let artifacts = replace_native_bundle_artifacts(&record, native_bundles);
@@ -601,7 +613,6 @@ pub fn release_native_bundle(
             "missing_targets": native_distribution.get("missing_targets").cloned().unwrap_or(json!([])),
             "rejected_targets": native_distribution.get("rejected_targets").cloned().unwrap_or(json!([])),
             "python_distribution_built": false,
-            "native_agent_pair_required": false,
             "public_publish": false,
         }),
     );

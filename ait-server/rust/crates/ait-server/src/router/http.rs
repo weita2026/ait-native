@@ -1,5 +1,4 @@
 use std::collections::{BTreeMap, BTreeSet};
-use std::env;
 use std::sync::Arc;
 
 use crate::binary_runtime::BinaryServingServices;
@@ -18,6 +17,7 @@ use ait_server_core::foundation::native_repositories::{
 use ait_server_core::foundation::remote_binary_db::{
     binary_db_runtime_error_kind, BinaryDbErrorKind,
 };
+use ait_server_core::foundation::server_binary_lifecycle::ServerBinaryLifecycleConfig;
 use ait_server_core::foundation::server_operational_job_domain::WorkerJobKind;
 use ait_server_core::foundation::server_workflow_store::ServerWorkflowStore;
 use ait_server_core::foundation::workflow_artifacts::review_summary_from_rows;
@@ -57,7 +57,6 @@ use native_repository_authority_routes::*;
 use operational_routes::*;
 use state::*;
 
-const DEFAULT_BIND: &str = "127.0.0.1:8088";
 const NATIVE_ZSTD_BULK_BODY_LIMIT_BYTES: usize = 2 * 1024 * 1024 * 1024;
 const SERVICE_ENDPOINTS: &[&str] = &[
     "/healthz",
@@ -77,10 +76,6 @@ const SERVICE_ENDPOINTS: &[&str] = &[
     "/v1/native/repository-authorities/:repository_index/read/reviewer-inbox",
     "/v1/native/worker-jobs:claim",
 ];
-
-pub fn create_server_address() -> String {
-    env::var("AITSERVER_LISTEN").unwrap_or_else(|_| DEFAULT_BIND.to_string())
-}
 
 fn service_endpoints() -> Vec<String> {
     SERVICE_ENDPOINTS
@@ -102,9 +97,9 @@ fn parse_suffixed_tail(tail: &str, suffix: &str, context: &str) -> Result<String
     Ok(value.to_string())
 }
 
-fn release_server_state() -> ServerState {
+fn release_server_state(config: &ServerBinaryLifecycleConfig) -> ServerState {
     let operational_binary = Arc::new(
-        OperationalBinaryRuntime::ensure_from_process_env().unwrap_or_else(|error| {
+        OperationalBinaryRuntime::ensure_from_config(config).unwrap_or_else(|error| {
             panic!("ait-server Binary DB lifecycle validation failed: {error}")
         }),
     );
@@ -119,8 +114,8 @@ fn release_server_state() -> ServerState {
     }
 }
 
-pub fn build_router() -> Router {
-    build_router_with_state(release_server_state())
+pub fn build_router(config: ServerBinaryLifecycleConfig) -> Router {
+    build_router_with_state(release_server_state(&config))
 }
 
 fn build_router_with_state(state: ServerState) -> Router {

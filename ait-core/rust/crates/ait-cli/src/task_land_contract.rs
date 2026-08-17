@@ -2,9 +2,9 @@ use ait_core::json_support::{json, JsonValue};
 
 pub const TASK_LAND_CONTRACT_VERSION: &str = "task-land-plan-closeout/v1";
 
-pub const TASK_LAND_COMMAND_ABOUT: &str = "Land one task or change using workflow-mode scope defaults. solo_local lands only local draft state and, when the final Change finishes a bound Task, closes and locally syncs its exact Plan item. Final-Task closeout removes the worktree and archives the exact accepted-head feature Line. Remote closeout consumes an already-ready Patchset and leaves Plan state untouched; it archives the matching local and remote feature Line. --local or --remote overrides the configured scope.";
+pub const TASK_LAND_COMMAND_ABOUT: &str = "Land one Task or Change onto logical main with fixed direct mode. The configured workflow mode selects local or remote authority unless mutually exclusive --local or --remote explicitly chooses the compatibility scope. Local land consumes an existing Snapshot; remote land consumes an already-ready selected Patchset. Final Task closeout removes the bound worktree and archives its accepted-head feature Line.";
 
-pub const PLAN_SYNC_COMMAND_ABOUT: &str = "Reconcile file-backed Markdown into Plan revision lineage. --local writes only local Plan state; --remote publishes the touched local heads. Plan sync never creates a Snapshot or advances a Line.";
+pub const PLAN_SYNC_COMMAND_ABOUT: &str = "Reconcile file-backed Markdown into Plan revision lineage using workflow-mode scope defaults. solo_local writes local Plan state; solo_remote reconciles local Plan lineage and publishes the touched heads to the configured default remote. --local or --remote overrides the configured scope. Plan sync never creates a Snapshot or advances a Line.";
 
 pub const LOCAL_PLAN_CLOSEOUT_POLICY: &str = "automatic_exact_local_when_final_task_completed";
 pub const REMOTE_PLAN_CLOSEOUT_POLICY: &str = "separate_after_land";

@@ -3,13 +3,10 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
+use ait_core::environment_contract::names;
 use ait_core::json_support::{json, JsonValue};
 
 use crate::json_support::parse_value;
-use crate::supervisor::{
-    plan_worker_supervisor_lifecycle, AgentWorkerLifecycleOperation, AgentWorkerLifecyclePlanInput,
-    AgentWorkerLifecycleSpec, AgentWorkerRuntimePaths,
-};
 use crate::transport::{
     agent_transport_config_clean_optional_text, agent_transport_config_normalize_base_url,
     TransportKind,
@@ -17,8 +14,8 @@ use crate::transport::{
 
 use super::types::{
     AgentRuntimeMode, AgentRuntimeTarget, AgentSecret, AgentSharedWorkerConfig,
-    AgentWorkerRuntimeConfig, AgentWorkflowMode, DiscordWorkerConfig, LineWorkerConfig,
-    SlackWorkerConfig, TelegramSttMode, TelegramWorkerConfig, TelegramWorkerMode,
+    AgentWorkerRuntimeConfig, AgentWorkerRuntimePaths, AgentWorkflowMode, DiscordWorkerConfig,
+    LineWorkerConfig, SlackWorkerConfig, TelegramSttMode, TelegramWorkerConfig, TelegramWorkerMode,
 };
 
 const DEFAULT_OPENAI_BASE_URL: &str = "https://api.openai.com/v1";
@@ -32,6 +29,7 @@ const DEFAULT_SLACK_HTTP_USER_AGENT: &str = "ait-agent-worker/0.1";
 const DEFAULT_SLACK_ACK_TEXT: &str = "ait is thinking...";
 const DEFAULT_SLACK_RESPONSE_TYPE: &str = "in_channel";
 const DEFAULT_TIMEOUT_DISABLE_TOKENS: &[&str] = &["inf", "infinite", "none"];
+const LOCAL_REPLY_TIMEOUT_DISABLE_TOKENS: &[&str] = &["inf", "infinite", "none", "unlimited"];
 const TELEGRAM_TIMEOUT_DISABLE_TOKENS: &[&str] = &["inf", "infinite", "none", "null", "unlimited"];
 const PLACEHOLDER_OPENAI_API_KEYS: &[&str] = &[
     "your-openai-api-key",
@@ -145,48 +143,19 @@ pub fn resolve_agent_worker_config(
     if !input.worker_key.starts_with(&expected_key_prefix) {
         return Err("ait-agent worker key does not match its transport".to_string());
     }
-    let lifecycle = plan_worker_supervisor_lifecycle(AgentWorkerLifecyclePlanInput {
-        repo_root: input.repo_root.to_string_lossy().into_owned(),
-        operation: AgentWorkerLifecycleOperation::Status,
-        worker: AgentWorkerLifecycleSpec {
-            transport,
-            name: worker_name.clone(),
-            sync_state_path: clean_json_text(worker.get("sync_state_path")),
-            pid_file: clean_json_text(worker.get("pid_file")),
-            log_file: clean_json_text(worker.get("log_file")),
-            env_path: clean_json_text(worker.get("env_path")),
-            termination_context_path: clean_json_text(worker.get("termination_context_path")),
-        },
-        runtime_root: clean_json_text(worker.get("runtime_root")),
-        stop_timeout_seconds: None,
-        kill_grace_seconds: None,
-    })?;
-    let mut paths = lifecycle.paths;
-    let env_path_name = transport_env_path_name(transport);
-    if let Some(value) = clean_map_text(input.process_env.get(env_path_name)) {
-        paths.env_path = select_env_path(
-            &input.repo_root,
-            Path::new(&paths.env_path),
-            &value,
-            &input.process_env,
-        )
-        .to_string_lossy()
-        .into_owned();
-    }
+    let paths = resolve_agent_worker_runtime_paths(
+        &input.repo_root,
+        transport,
+        &worker_name,
+        worker,
+        &input.process_env,
+    )?;
     let env_file = parse_agent_env_file(Path::new(&paths.env_path))?;
-    let mut process_env = input.process_env;
-    overlay_manifest_credentials(transport, worker, &mut process_env);
     let sources = ConfigSources {
-        process_env: &process_env,
+        worker,
+        process_env: &input.process_env,
         env_file: &env_file,
     };
-    apply_runtime_path_overrides(
-        transport,
-        &input.repo_root,
-        &sources,
-        &process_env,
-        &mut paths,
-    );
     let repo_settings = resolve_repo_settings(&input.repo_root)?;
     let shared_seed = SharedConfigSeed {
         worker_key: input.worker_key,
@@ -194,9 +163,8 @@ pub fn resolve_agent_worker_config(
         transport,
         runtime_target: repo_settings.runtime_target,
         paths,
-        ait_web_url: optional_normalized_url(
-            sources.value(web_url_names(transport), None).as_deref(),
-        ),
+        ait_web_url: optional_normalized_url(worker_text(worker, "web_url").as_deref()),
+        local_reply: resolve_local_reply(worker.get("local_reply"))?,
     };
 
     match transport {
@@ -211,13 +179,79 @@ pub fn resolve_agent_worker_config(
     }
 }
 
+fn resolve_agent_worker_runtime_paths(
+    repo_root: &Path,
+    transport: TransportKind,
+    worker_name: &str,
+    worker: &ait_core::json_support::JsonMap<String, JsonValue>,
+    process_env: &BTreeMap<String, String>,
+) -> Result<AgentWorkerRuntimePaths, String> {
+    if !repo_root.is_absolute() {
+        return Err(format!(
+            "repo_root must be an absolute path, got `{}`",
+            repo_root.display()
+        ));
+    }
+    if worker_name.contains('/') {
+        return Err("ait-agent worker name must not contain `/`".to_string());
+    }
+    let runtime_root = clean_json_text(worker.get("runtime_root"))
+        .map(|value| resolve_path(repo_root, &value, process_env))
+        .unwrap_or_else(|| repo_root.join(".ait").join("agent-runtime"));
+    let label = safe_worker_file_label(worker_name);
+    let transport_label = transport.as_str();
+    let configured_path = |field: &str, default_name: String| {
+        clean_json_text(worker.get(field))
+            .map(|value| resolve_path(repo_root, &value, process_env))
+            .unwrap_or_else(|| runtime_root.join(default_name))
+            .to_string_lossy()
+            .into_owned()
+    };
+
+    Ok(AgentWorkerRuntimePaths {
+        sync_state_path: configured_path(
+            "sync_state_path",
+            format!("{transport_label}-{label}-sync.json"),
+        ),
+        env_path: configured_path("env_path", format!("{transport_label}.env")),
+    })
+}
+
+fn safe_worker_file_label(value: &str) -> String {
+    let label = value
+        .trim()
+        .chars()
+        .map(|character| {
+            if character.is_alphanumeric() || character == '-' || character == '_' {
+                character
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>();
+    let label = label.trim_matches('-');
+    if label.is_empty() {
+        "worker".to_string()
+    } else {
+        label.to_string()
+    }
+}
+
 struct ConfigSources<'a> {
+    worker: &'a ait_core::json_support::JsonMap<String, JsonValue>,
     process_env: &'a BTreeMap<String, String>,
     env_file: &'a BTreeMap<String, String>,
 }
 
 impl ConfigSources<'_> {
-    fn value(&self, names: &[&str], default: Option<&str>) -> Option<String> {
+    fn config(&self, field: &str, default: Option<&str>) -> Option<String> {
+        worker_scalar(self.worker, field).or_else(|| default.map(str::to_string))
+    }
+
+    fn credential(&self, field: &str, names: &[&str]) -> Option<String> {
+        if let Some(value) = worker_text(self.worker, field) {
+            return Some(value);
+        }
         for name in names {
             if let Some(value) = clean_map_text(self.process_env.get(*name)) {
                 return Some(value);
@@ -226,7 +260,7 @@ impl ConfigSources<'_> {
                 return Some(value);
             }
         }
-        default.map(str::to_string)
+        None
     }
 }
 
@@ -242,6 +276,7 @@ struct SharedConfigSeed {
     runtime_target: AgentRuntimeTarget,
     paths: AgentWorkerRuntimePaths,
     ait_web_url: Option<String>,
+    local_reply: Option<JsonValue>,
 }
 
 impl SharedConfigSeed {
@@ -254,6 +289,7 @@ impl SharedConfigSeed {
             paths: self.paths,
             ait_web_url: self.ait_web_url,
             request_timeout_seconds,
+            local_reply: self.local_reply,
         }
     }
 }
@@ -265,53 +301,37 @@ fn resolve_telegram_config(
 ) -> Result<AgentWorkerRuntimeConfig, String> {
     let token = required_secret(
         sources,
-        &["AIT_TELEGRAM_BOT_TOKEN", "BOT_TOKEN"],
+        "token",
+        &[names::AIT_TELEGRAM_BOT_TOKEN, "BOT_TOKEN"],
         "Telegram bot token",
     )?;
     let username = sources
-        .value(&["AIT_TELEGRAM_BOT_USERNAME", "BOT_USERNAME"], Some(""))
+        .config("username", Some(""))
         .unwrap_or_default()
         .trim_start_matches('@')
         .to_string();
     let request_timeout_seconds = parse_telegram_timeout_seconds(
-        sources
-            .value(
-                &[
-                    "AIT_TELEGRAM_REQUEST_TIMEOUT_SECONDS",
-                    "AIT_TELEGRAM_TIMEOUT_SECONDS",
-                ],
-                None,
-            )
-            .as_deref(),
+        sources.config("request_timeout_seconds", None).as_deref(),
         None,
         5.0,
     );
     let openai_api_key = sources
-        .value(
+        .credential(
+            "openai_api_key",
             &[
-                "AIT_TELEGRAM_OPENAI_API_KEY",
-                "AIT_OPENAI_API_KEY",
+                names::AIT_TELEGRAM_OPENAI_API_KEY,
+                names::AIT_OPENAI_API_KEY,
                 "OPENAI_API_KEY",
             ],
-            None,
         )
         .and_then(normalize_openai_api_key)
         .map(AgentSecret::new);
     let model_fallback = repo_default_model.unwrap_or(DEFAULT_OPENAI_MODEL);
     let openai_model = sources
-        .value(
-            &[
-                "AIT_TELEGRAM_MODEL",
-                "AIT_TELEGRAM_OPENAI_MODEL",
-                "AIT_MODEL",
-                "CODEX_MODEL",
-                "OPENAI_MODEL",
-            ],
-            Some(model_fallback),
-        )
+        .config("openai_model", Some(model_fallback))
         .unwrap_or_else(|| model_fallback.to_string());
     let stt_mode = match sources
-        .value(&["AIT_TELEGRAM_STT_MODE"], Some("off"))
+        .config("stt_mode", Some("off"))
         .unwrap_or_else(|| "off".to_string())
         .to_ascii_lowercase()
         .as_str()
@@ -325,10 +345,7 @@ fn resolve_telegram_config(
         }
     };
     let service_mode = match sources
-        .value(
-            &["AIT_TELEGRAM_MODE", "AIT_TELEGRAM_SERVICE_MODE"],
-            Some("poll"),
-        )
+        .config("mode", Some("poll"))
         .unwrap_or_else(|| "poll".to_string())
         .to_ascii_lowercase()
         .as_str()
@@ -347,164 +364,101 @@ fn resolve_telegram_config(
         username,
         service_mode,
         bind_host: sources
-            .value(&["AIT_TELEGRAM_BIND_HOST"], Some("127.0.0.1"))
+            .config("bind_host", Some("127.0.0.1"))
             .unwrap_or_else(|| "127.0.0.1".to_string()),
-        bind_port: parse_port(
-            sources.value(&["AIT_TELEGRAM_BIND_PORT"], None).as_deref(),
-            8090,
-        ),
+        bind_port: parse_port(sources.config("bind_port", None).as_deref(), 8090),
         webhook_path: normalize_http_path(
-            sources
-                .value(&["AIT_TELEGRAM_WEBHOOK_PATH"], None)
-                .as_deref(),
+            sources.config("webhook_path", None).as_deref(),
             "/webhook",
         ),
-        webhook_secret: optional_secret(sources, &["AIT_TELEGRAM_WEBHOOK_SECRET"]),
+        webhook_secret: optional_secret(
+            sources,
+            "webhook_secret",
+            &[names::AIT_TELEGRAM_WEBHOOK_SECRET],
+        ),
         poll_timeout_seconds: parse_positive_int(
-            sources
-                .value(&["AIT_TELEGRAM_POLL_TIMEOUT_SECONDS"], None)
-                .as_deref(),
+            sources.config("poll_timeout_seconds", None).as_deref(),
             45,
             5,
         ) as u64,
         background_sync_enabled: parse_bool(
-            sources
-                .value(&["AIT_TELEGRAM_BACKGROUND_SYNC_ENABLED"], None)
-                .as_deref(),
+            sources.config("background_sync_enabled", None).as_deref(),
             false,
         ),
         background_sync_interval_seconds: parse_positive_float(
             sources
-                .value(&["AIT_TELEGRAM_BACKGROUND_SYNC_INTERVAL_SECONDS"], None)
+                .config("background_sync_interval_seconds", None)
                 .as_deref(),
             30.0,
             5.0,
         ),
         openai_api_key,
         openai_base_url: normalized_url(
-            sources
-                .value(
-                    &[
-                        "AIT_TELEGRAM_OPENAI_BASE_URL",
-                        "AIT_OPENAI_BASE_URL",
-                        "OPENAI_BASE_URL",
-                    ],
-                    None,
-                )
-                .as_deref(),
+            sources.config("openai_base_url", None).as_deref(),
             DEFAULT_OPENAI_BASE_URL,
         ),
         openai_model,
-        openai_reasoning_effort: sources.value(&["AIT_TELEGRAM_REASONING_EFFORT"], Some("low")),
+        openai_reasoning_effort: sources.config("openai_reasoning_effort", Some("low")),
         openai_timeout_seconds: parse_telegram_timeout_seconds(
-            sources
-                .value(&["AIT_TELEGRAM_OPENAI_TIMEOUT_SECONDS"], None)
-                .as_deref(),
+            sources.config("openai_timeout_seconds", None).as_deref(),
             request_timeout_seconds,
             10.0,
         ),
         openai_max_output_tokens: parse_positive_int(
-            sources
-                .value(&["AIT_TELEGRAM_MAX_OUTPUT_TOKENS"], None)
-                .as_deref(),
+            sources.config("openai_max_output_tokens", None).as_deref(),
             700,
             64,
         ) as u64,
         turn_merge_window_seconds: parse_non_negative_float(
-            sources
-                .value(&["AIT_TELEGRAM_TURN_MERGE_WINDOW_SECONDS"], None)
-                .as_deref(),
+            sources.config("turn_merge_window_seconds", None).as_deref(),
             0.35,
         ),
         turn_merge_max_messages: parse_positive_int(
-            sources
-                .value(&["AIT_TELEGRAM_TURN_MERGE_MAX_MESSAGES"], None)
-                .as_deref(),
+            sources.config("turn_merge_max_messages", None).as_deref(),
             4,
             1,
         ) as u64,
         decoupled_reply_enabled: parse_bool(
-            sources
-                .value(&["AIT_TELEGRAM_DECOUPLED_REPLY_ENABLED"], None)
-                .as_deref(),
+            sources.config("decoupled_reply_enabled", None).as_deref(),
             true,
         ),
         reply_markdown_enabled: parse_bool(
-            sources
-                .value(
-                    &[
-                        "AIT_TELEGRAM_REPLY_MARKDOWN_ENABLED",
-                        "AIT_TELEGRAM_MARKDOWN_ENABLED",
-                    ],
-                    None,
-                )
-                .as_deref(),
+            sources.config("reply_markdown_enabled", None).as_deref(),
             true,
         ),
         owner_bootstrap_enabled: parse_bool(
-            sources
-                .value(&["AIT_TELEGRAM_OWNER_BOOTSTRAP_ENABLED"], None)
-                .as_deref(),
+            sources.config("owner_bootstrap_enabled", None).as_deref(),
             true,
         ),
         stt_mode,
         stt_model: sources
-            .value(
-                &["AIT_TELEGRAM_STT_MODEL"],
-                Some(DEFAULT_TELEGRAM_STT_MODEL),
-            )
+            .config("stt_model", Some(DEFAULT_TELEGRAM_STT_MODEL))
             .unwrap_or_else(|| DEFAULT_TELEGRAM_STT_MODEL.to_string()),
         stt_device: sources
-            .value(&["AIT_TELEGRAM_STT_DEVICE"], Some("auto"))
+            .config("stt_device", Some("auto"))
             .unwrap_or_else(|| "auto".to_string())
             .to_ascii_lowercase(),
-        stt_compute_type: sources.value(&["AIT_TELEGRAM_STT_COMPUTE_TYPE"], None),
-        stt_language: sources.value(&["AIT_TELEGRAM_STT_LANGUAGE"], None),
+        stt_compute_type: sources.config("stt_compute_type", None),
+        stt_language: sources.config("stt_language", None),
         stt_include_audio_uploads: parse_bool(
-            sources
-                .value(&["AIT_TELEGRAM_STT_INCLUDE_AUDIO_UPLOADS"], None)
-                .as_deref(),
+            sources.config("stt_include_audio_uploads", None).as_deref(),
             false,
         ),
-        stt_program: sources
-            .value(&["AIT_TELEGRAM_STT_PROGRAM"], None)
-            .map(PathBuf::from),
+        stt_program: sources.config("stt_program", None).map(PathBuf::from),
         stt_timeout_seconds: parse_positive_float(
-            sources
-                .value(&["AIT_TELEGRAM_STT_TIMEOUT_SECONDS"], None)
-                .as_deref(),
+            sources.config("stt_timeout_seconds", None).as_deref(),
             120.0,
             0.1,
         )
         .min(3_600.0),
         expected_concurrent_workers: parse_optional_positive_int(
             sources
-                .value(
-                    &[
-                        "AIT_AGENT_EXPECTED_CONCURRENT_WORKERS",
-                        "AIT_TELEGRAM_AGENT_EXPECTED_CONCURRENT_WORKERS",
-                    ],
-                    None,
-                )
+                .config("expected_concurrent_workers", None)
                 .as_deref(),
         ),
-        event_loop_backend: sources.value(
-            &[
-                "AIT_AGENT_EVENT_LOOP_BACKEND",
-                "AIT_TELEGRAM_AGENT_EVENT_LOOP_BACKEND",
-            ],
-            None,
-        ),
+        event_loop_backend: sources.config("event_loop_backend", None),
         workers_per_shard: parse_optional_positive_int(
-            sources
-                .value(
-                    &[
-                        "AIT_AGENT_WORKERS_PER_SHARD",
-                        "AIT_TELEGRAM_AGENT_WORKERS_PER_SHARD",
-                    ],
-                    None,
-                )
-                .as_deref(),
+            sources.config("workers_per_shard", None).as_deref(),
         ),
     };
     Ok(AgentWorkerRuntimeConfig::Telegram(config))
@@ -516,24 +470,21 @@ fn resolve_line_config(
 ) -> Result<AgentWorkerRuntimeConfig, String> {
     let channel_access_token = required_secret(
         sources,
-        &["AIT_LINE_CHANNEL_ACCESS_TOKEN", "LINE_CHANNEL_ACCESS_TOKEN"],
+        "token",
+        &[
+            names::AIT_LINE_CHANNEL_ACCESS_TOKEN,
+            "LINE_CHANNEL_ACCESS_TOKEN",
+        ],
         "LINE channel access token",
     )?;
     let channel_secret = required_secret(
         sources,
-        &["AIT_LINE_CHANNEL_SECRET", "LINE_CHANNEL_SECRET"],
+        "secret",
+        &[names::AIT_LINE_CHANNEL_SECRET, "LINE_CHANNEL_SECRET"],
         "LINE channel secret",
     )?;
     let request_timeout_seconds = parse_timeout_seconds(
-        sources
-            .value(
-                &[
-                    "AIT_LINE_REQUEST_TIMEOUT_SECONDS",
-                    "AIT_LINE_TIMEOUT_SECONDS",
-                ],
-                None,
-            )
-            .as_deref(),
+        sources.config("request_timeout_seconds", None).as_deref(),
         Some(20.0),
         5.0,
     );
@@ -542,18 +493,15 @@ fn resolve_line_config(
         channel_access_token,
         channel_secret,
         api_base_url: normalized_url(
-            sources.value(&["AIT_LINE_API_BASE_URL"], None).as_deref(),
+            sources.config("api_base_url", None).as_deref(),
             DEFAULT_LINE_API_BASE_URL,
         ),
         bind_host: sources
-            .value(&["AIT_LINE_BIND_HOST"], Some("127.0.0.1"))
+            .config("bind_host", Some("127.0.0.1"))
             .unwrap_or_else(|| "127.0.0.1".to_string()),
-        bind_port: parse_port(
-            sources.value(&["AIT_LINE_BIND_PORT"], None).as_deref(),
-            8091,
-        ),
+        bind_port: parse_port(sources.config("bind_port", None).as_deref(), 8091),
         webhook_path: normalize_http_path(
-            sources.value(&["AIT_LINE_WEBHOOK_PATH"], None).as_deref(),
+            sources.config("webhook_path", None).as_deref(),
             "/callback",
         ),
     }))
@@ -565,19 +513,12 @@ fn resolve_discord_config(
 ) -> Result<AgentWorkerRuntimeConfig, String> {
     let application_id = required_secret(
         sources,
-        &["AIT_DISCORD_APPLICATION_ID", "DISCORD_APPLICATION_ID"],
+        "application_id",
+        &[names::AIT_DISCORD_APPLICATION_ID, "DISCORD_APPLICATION_ID"],
         "Discord application id",
     )?;
     let request_timeout_seconds = parse_timeout_seconds(
-        sources
-            .value(
-                &[
-                    "AIT_DISCORD_REQUEST_TIMEOUT_SECONDS",
-                    "AIT_DISCORD_TIMEOUT_SECONDS",
-                ],
-                None,
-            )
-            .as_deref(),
+        sources.config("request_timeout_seconds", None).as_deref(),
         Some(20.0),
         5.0,
     );
@@ -585,45 +526,34 @@ fn resolve_discord_config(
     Ok(AgentWorkerRuntimeConfig::Discord(DiscordWorkerConfig {
         shared: shared_seed.finish(request_timeout_seconds),
         application_id,
-        public_key: optional_secret(sources, &["AIT_DISCORD_PUBLIC_KEY", "DISCORD_PUBLIC_KEY"]),
-        bot_token: optional_secret(sources, &["AIT_DISCORD_BOT_TOKEN", "DISCORD_BOT_TOKEN"]),
+        public_key: optional_secret(
+            sources,
+            "public_key",
+            &[names::AIT_DISCORD_PUBLIC_KEY, "DISCORD_PUBLIC_KEY"],
+        ),
+        bot_token: optional_secret(
+            sources,
+            "bot_token",
+            &[names::AIT_DISCORD_BOT_TOKEN, "DISCORD_BOT_TOKEN"],
+        ),
         turn_timeout_seconds: parse_timeout_seconds(
-            sources
-                .value(
-                    &[
-                        "AIT_DISCORD_TURN_TIMEOUT_SECONDS",
-                        "AIT_DISCORD_CODEX_TURN_TIMEOUT_SECONDS",
-                        "AIT_CHAT_CODEX_TURN_TIMEOUT_SECONDS",
-                    ],
-                    None,
-                )
-                .as_deref(),
+            sources.config("turn_timeout_seconds", None).as_deref(),
             default_turn_timeout,
             5.0,
         ),
         api_base_url: normalized_url(
-            sources
-                .value(&["AIT_DISCORD_API_BASE_URL"], None)
-                .as_deref(),
+            sources.config("api_base_url", None).as_deref(),
             DEFAULT_DISCORD_API_BASE_URL,
         ),
         http_user_agent: sources
-            .value(
-                &["AIT_DISCORD_HTTP_USER_AGENT", "DISCORD_HTTP_USER_AGENT"],
-                Some(DEFAULT_DISCORD_HTTP_USER_AGENT),
-            )
+            .config("http_user_agent", Some(DEFAULT_DISCORD_HTTP_USER_AGENT))
             .unwrap_or_else(|| DEFAULT_DISCORD_HTTP_USER_AGENT.to_string()),
         bind_host: sources
-            .value(&["AIT_DISCORD_BIND_HOST"], Some("127.0.0.1"))
+            .config("bind_host", Some("127.0.0.1"))
             .unwrap_or_else(|| "127.0.0.1".to_string()),
-        bind_port: parse_port(
-            sources.value(&["AIT_DISCORD_BIND_PORT"], None).as_deref(),
-            8092,
-        ),
+        bind_port: parse_port(sources.config("bind_port", None).as_deref(), 8092),
         interaction_path: normalize_http_path(
-            sources
-                .value(&["AIT_DISCORD_INTERACTION_PATH"], None)
-                .as_deref(),
+            sources.config("interaction_path", None).as_deref(),
             "/interactions",
         ),
     }))
@@ -634,54 +564,42 @@ fn resolve_slack_config(
     sources: &ConfigSources<'_>,
 ) -> Result<AgentWorkerRuntimeConfig, String> {
     let request_timeout_seconds = parse_timeout_seconds(
-        sources
-            .value(
-                &[
-                    "AIT_SLACK_REQUEST_TIMEOUT_SECONDS",
-                    "AIT_SLACK_TIMEOUT_SECONDS",
-                ],
-                None,
-            )
-            .as_deref(),
+        sources.config("request_timeout_seconds", None).as_deref(),
         Some(20.0),
         5.0,
     );
     Ok(AgentWorkerRuntimeConfig::Slack(SlackWorkerConfig {
         shared: shared_seed.finish(request_timeout_seconds),
-        app_token: optional_secret(sources, &["AIT_SLACK_APP_TOKEN", "SLACK_APP_TOKEN"]),
+        app_token: optional_secret(
+            sources,
+            "app_token",
+            &[names::AIT_SLACK_APP_TOKEN, "SLACK_APP_TOKEN"],
+        ),
         signing_secret: optional_secret(
             sources,
-            &["AIT_SLACK_SIGNING_SECRET", "SLACK_SIGNING_SECRET"],
+            "signing_secret",
+            &[names::AIT_SLACK_SIGNING_SECRET, "SLACK_SIGNING_SECRET"],
         ),
         api_base_url: normalized_url(
-            sources.value(&["AIT_SLACK_API_BASE_URL"], None).as_deref(),
+            sources.config("api_base_url", None).as_deref(),
             DEFAULT_SLACK_API_BASE_URL,
         ),
         http_user_agent: sources
-            .value(
-                &["AIT_SLACK_HTTP_USER_AGENT", "SLACK_HTTP_USER_AGENT"],
-                Some(DEFAULT_SLACK_HTTP_USER_AGENT),
-            )
+            .config("http_user_agent", Some(DEFAULT_SLACK_HTTP_USER_AGENT))
             .unwrap_or_else(|| DEFAULT_SLACK_HTTP_USER_AGENT.to_string()),
         bind_host: sources
-            .value(&["AIT_SLACK_BIND_HOST"], Some("127.0.0.1"))
+            .config("bind_host", Some("127.0.0.1"))
             .unwrap_or_else(|| "127.0.0.1".to_string()),
-        bind_port: parse_port(
-            sources.value(&["AIT_SLACK_BIND_PORT"], None).as_deref(),
-            8093,
-        ),
+        bind_port: parse_port(sources.config("bind_port", None).as_deref(), 8093),
         command_path: normalize_http_path(
-            sources.value(&["AIT_SLACK_COMMAND_PATH"], None).as_deref(),
+            sources.config("command_path", None).as_deref(),
             "/command",
         ),
         ack_text: sources
-            .value(&["AIT_SLACK_ACK_TEXT"], Some(DEFAULT_SLACK_ACK_TEXT))
+            .config("ack_text", Some(DEFAULT_SLACK_ACK_TEXT))
             .unwrap_or_else(|| DEFAULT_SLACK_ACK_TEXT.to_string()),
         response_type: sources
-            .value(
-                &["AIT_SLACK_RESPONSE_TYPE"],
-                Some(DEFAULT_SLACK_RESPONSE_TYPE),
-            )
+            .config("response_type", Some(DEFAULT_SLACK_RESPONSE_TYPE))
             .unwrap_or_else(|| DEFAULT_SLACK_RESPONSE_TYPE.to_string()),
     }))
 }
@@ -827,207 +745,179 @@ fn valid_scope(value: Option<&JsonValue>) -> Option<&str> {
     }
 }
 
-fn overlay_manifest_credentials(
-    transport: TransportKind,
-    worker: &ait_core::json_support::JsonMap<String, JsonValue>,
-    process_env: &mut BTreeMap<String, String>,
-) {
-    match transport {
-        TransportKind::Telegram => {
-            overlay_aliases(
-                worker,
-                "token",
-                &["AIT_TELEGRAM_BOT_TOKEN", "BOT_TOKEN"],
-                process_env,
-            );
-            overlay_aliases(
-                worker,
-                "username",
-                &["AIT_TELEGRAM_BOT_USERNAME", "BOT_USERNAME"],
-                process_env,
-            );
-            for (field, aliases) in [
-                ("mode", &["AIT_TELEGRAM_MODE"][..]),
-                ("bind_host", &["AIT_TELEGRAM_BIND_HOST"][..]),
-                ("webhook_path", &["AIT_TELEGRAM_WEBHOOK_PATH"][..]),
-                ("webhook_secret", &["AIT_TELEGRAM_WEBHOOK_SECRET"][..]),
-            ] {
-                overlay_aliases(worker, field, aliases, process_env);
-            }
-            overlay_scalar_aliases(
-                worker,
-                "bind_port",
-                &["AIT_TELEGRAM_BIND_PORT"],
-                process_env,
-            );
-        }
-        TransportKind::Line => {
-            overlay_aliases(
-                worker,
-                "token",
-                &["AIT_LINE_CHANNEL_ACCESS_TOKEN", "LINE_CHANNEL_ACCESS_TOKEN"],
-                process_env,
-            );
-            overlay_aliases(
-                worker,
-                "secret",
-                &["AIT_LINE_CHANNEL_SECRET", "LINE_CHANNEL_SECRET"],
-                process_env,
-            );
-        }
-        TransportKind::Discord => {
-            overlay_aliases(
-                worker,
-                "application_id",
-                &["AIT_DISCORD_APPLICATION_ID", "DISCORD_APPLICATION_ID"],
-                process_env,
-            );
-            overlay_aliases(
-                worker,
-                "public_key",
-                &["AIT_DISCORD_PUBLIC_KEY", "DISCORD_PUBLIC_KEY"],
-                process_env,
-            );
-            overlay_aliases(
-                worker,
-                "bot_token",
-                &["AIT_DISCORD_BOT_TOKEN", "DISCORD_BOT_TOKEN"],
-                process_env,
-            );
-        }
-        TransportKind::Slack => {
-            overlay_aliases(
-                worker,
-                "app_token",
-                &["AIT_SLACK_APP_TOKEN", "SLACK_APP_TOKEN"],
-                process_env,
-            );
-            overlay_aliases(
-                worker,
-                "signing_secret",
-                &["AIT_SLACK_SIGNING_SECRET", "SLACK_SIGNING_SECRET"],
-                process_env,
-            );
-            overlay_aliases(
-                worker,
-                "api_base_url",
-                &["AIT_SLACK_API_BASE_URL"],
-                process_env,
-            );
-            overlay_aliases(
-                worker,
-                "http_user_agent",
-                &["AIT_SLACK_HTTP_USER_AGENT"],
-                process_env,
-            );
-        }
-    }
-}
-
-fn overlay_aliases(
-    worker: &ait_core::json_support::JsonMap<String, JsonValue>,
-    field: &str,
-    aliases: &[&str],
-    process_env: &mut BTreeMap<String, String>,
-) {
-    let Some(value) = clean_json_text(worker.get(field)) else {
-        return;
-    };
-    for alias in aliases {
-        process_env.insert((*alias).to_string(), value.clone());
-    }
-}
-
-fn overlay_scalar_aliases(
-    worker: &ait_core::json_support::JsonMap<String, JsonValue>,
-    field: &str,
-    aliases: &[&str],
-    process_env: &mut BTreeMap<String, String>,
-) {
-    let Some(value) = worker_scalar_text(worker.get(field)) else {
-        return;
-    };
-    for alias in aliases {
-        process_env.insert((*alias).to_string(), value.clone());
-    }
-}
-
 fn worker_scalar_text(value: Option<&JsonValue>) -> Option<String> {
     match value? {
         JsonValue::String(value) => agent_transport_config_clean_optional_text(Some(value)),
         JsonValue::Number(value) => Some(value.to_string()),
+        JsonValue::Bool(value) => Some(value.to_string()),
         _ => None,
     }
 }
 
-fn apply_runtime_path_overrides(
-    transport: TransportKind,
-    repo_root: &Path,
-    sources: &ConfigSources<'_>,
-    process_env: &BTreeMap<String, String>,
-    paths: &mut AgentWorkerRuntimePaths,
-) {
-    if let Some(value) = sources.value(&[transport_state_path_name(transport)], None) {
-        paths.sync_state_path = resolve_path(repo_root, &value, process_env)
-            .to_string_lossy()
-            .into_owned();
-    }
-    if let Some(value) = sources.value(&[transport_termination_path_name(transport)], None) {
-        paths.termination_context_path = resolve_path(repo_root, &value, process_env)
-            .to_string_lossy()
-            .into_owned();
-    }
+fn worker_text(
+    worker: &ait_core::json_support::JsonMap<String, JsonValue>,
+    field: &str,
+) -> Option<String> {
+    clean_json_text(worker.get(field))
 }
 
-fn transport_env_path_name(transport: TransportKind) -> &'static str {
-    match transport {
-        TransportKind::Telegram => "AIT_TELEGRAM_ENV_PATH",
-        TransportKind::Line => "AIT_LINE_ENV_PATH",
-        TransportKind::Discord => "AIT_DISCORD_ENV_PATH",
-        TransportKind::Slack => "AIT_SLACK_ENV_PATH",
-    }
+fn worker_scalar(
+    worker: &ait_core::json_support::JsonMap<String, JsonValue>,
+    field: &str,
+) -> Option<String> {
+    worker_scalar_text(worker.get(field))
 }
 
-fn transport_state_path_name(transport: TransportKind) -> &'static str {
-    match transport {
-        TransportKind::Telegram => "AIT_TELEGRAM_STATE_PATH",
-        TransportKind::Line => "AIT_LINE_STATE_PATH",
-        TransportKind::Discord => "AIT_DISCORD_STATE_PATH",
-        TransportKind::Slack => "AIT_SLACK_STATE_PATH",
+fn resolve_local_reply(value: Option<&JsonValue>) -> Result<Option<JsonValue>, String> {
+    let Some(value) = value.filter(|value| !value.is_null()) else {
+        return Ok(None);
+    };
+    let object = value
+        .as_object()
+        .ok_or_else(|| "ait-agent worker local_reply must be an object".to_string())?;
+    let allowed = [
+        "program",
+        "args",
+        "timeout_seconds",
+        "append_turn_analysis",
+        "codex_program",
+        "model",
+        "reasoning_effort",
+        "sandbox",
+        "turn_timeout_seconds",
+    ];
+    if let Some(field) = object
+        .keys()
+        .find(|field| !allowed.contains(&field.as_str()))
+    {
+        return Err(format!(
+            "ait-agent worker local_reply contains unsupported field `{field}`"
+        ));
     }
+    for field in [
+        "program",
+        "codex_program",
+        "model",
+        "reasoning_effort",
+        "sandbox",
+    ] {
+        if object
+            .get(field)
+            .filter(|value| !value.is_null())
+            .is_some_and(|value| {
+                value
+                    .as_str()
+                    .map(str::trim)
+                    .is_none_or(|value| value.is_empty())
+            })
+        {
+            return Err(format!(
+                "ait-agent worker local_reply.{field} must be a non-empty string"
+            ));
+        }
+    }
+    if let Some(args) = object.get("args").filter(|value| !value.is_null()) {
+        let valid = args.as_array().is_some_and(|values| {
+            values
+                .iter()
+                .all(|value| value.as_str().is_some_and(|value| !value.contains('\0')))
+        });
+        if !valid {
+            return Err(
+                "ait-agent worker local_reply.args must be an array of strings".to_string(),
+            );
+        }
+    }
+    if object
+        .get("timeout_seconds")
+        .filter(|value| !value.is_null())
+        .is_some_and(|value| !positive_finite_json_number(value))
+    {
+        return Err(
+            "ait-agent worker local_reply.timeout_seconds must be a finite positive number"
+                .to_string(),
+        );
+    }
+    if object
+        .get("turn_timeout_seconds")
+        .filter(|value| !value.is_null())
+        .is_some_and(|value| {
+            !positive_finite_json_number(value)
+                && !value.as_str().is_some_and(|value| {
+                    LOCAL_REPLY_TIMEOUT_DISABLE_TOKENS
+                        .contains(&value.trim().to_ascii_lowercase().as_str())
+                        || value
+                            .trim()
+                            .parse::<f64>()
+                            .is_ok_and(|value| value.is_finite() && value > 0.0)
+                })
+        })
+    {
+        return Err(
+            "ait-agent worker local_reply.turn_timeout_seconds must be positive or one of: inf, infinite, none, unlimited"
+                .to_string(),
+        );
+    }
+    if object
+        .get("append_turn_analysis")
+        .filter(|value| !value.is_null())
+        .is_some_and(|value| !value.is_boolean())
+    {
+        return Err(
+            "ait-agent worker local_reply.append_turn_analysis must be a boolean".to_string(),
+        );
+    }
+    if object
+        .get("reasoning_effort")
+        .and_then(JsonValue::as_str)
+        .is_some_and(|value| {
+            !matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "ultra"
+            )
+        })
+    {
+        return Err("ait-agent worker local_reply.reasoning_effort is invalid".to_string());
+    }
+    if object
+        .get("sandbox")
+        .and_then(JsonValue::as_str)
+        .is_some_and(|value| {
+            !matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "read-only" | "workspace-write" | "danger-full-access"
+            )
+        })
+    {
+        return Err("ait-agent worker local_reply.sandbox is invalid".to_string());
+    }
+    Ok(Some(value.clone()))
 }
 
-fn transport_termination_path_name(transport: TransportKind) -> &'static str {
-    match transport {
-        TransportKind::Telegram => "AIT_TELEGRAM_TERMINATION_CONTEXT_PATH",
-        TransportKind::Line => "AIT_LINE_TERMINATION_CONTEXT_PATH",
-        TransportKind::Discord => "AIT_DISCORD_TERMINATION_CONTEXT_PATH",
-        TransportKind::Slack => "AIT_SLACK_TERMINATION_CONTEXT_PATH",
-    }
-}
-
-fn web_url_names(transport: TransportKind) -> &'static [&'static str] {
-    match transport {
-        TransportKind::Telegram => &["AIT_TELEGRAM_WEB_URL", "AIT_WEB_URL"],
-        TransportKind::Line => &["AIT_LINE_WEB_URL", "AIT_WEB_URL"],
-        TransportKind::Discord => &["AIT_DISCORD_WEB_URL", "AIT_WEB_URL"],
-        TransportKind::Slack => &["AIT_SLACK_WEB_URL", "AIT_WEB_URL"],
-    }
+fn positive_finite_json_number(value: &JsonValue) -> bool {
+    value
+        .as_f64()
+        .is_some_and(|value| value.is_finite() && value > 0.0)
 }
 
 fn required_secret(
     sources: &ConfigSources<'_>,
+    field: &str,
     names: &[&str],
     label: &str,
 ) -> Result<AgentSecret, String> {
     sources
-        .value(names, None)
+        .credential(field, names)
         .map(AgentSecret::new)
         .ok_or_else(|| format!("ait-agent worker configuration is missing {label}"))
 }
 
-fn optional_secret(sources: &ConfigSources<'_>, names: &[&str]) -> Option<AgentSecret> {
-    sources.value(names, None).map(AgentSecret::new)
+fn optional_secret(
+    sources: &ConfigSources<'_>,
+    field: &str,
+    names: &[&str],
+) -> Option<AgentSecret> {
+    sources.credential(field, names).map(AgentSecret::new)
 }
 
 fn clean_json_text(value: Option<&JsonValue>) -> Option<String> {
@@ -1202,29 +1092,6 @@ fn resolve_path(repo_root: &Path, value: &str, process_env: &BTreeMap<String, St
         path
     } else {
         repo_root.join(path)
-    }
-}
-
-fn select_env_path(
-    repo_root: &Path,
-    default_path: &Path,
-    value: &str,
-    process_env: &BTreeMap<String, String>,
-) -> PathBuf {
-    let candidate = resolve_path(repo_root, value, process_env);
-    if !default_path.exists() {
-        return candidate;
-    }
-    let resolved_root = fs::canonicalize(repo_root).unwrap_or_else(|_| repo_root.to_path_buf());
-    let resolved_default =
-        fs::canonicalize(default_path).unwrap_or_else(|_| default_path.to_path_buf());
-    let resolved_candidate = fs::canonicalize(&candidate).unwrap_or_else(|_| candidate.clone());
-    let candidate_is_repo_local =
-        resolved_candidate != resolved_root && resolved_candidate.starts_with(&resolved_root);
-    if resolved_candidate != resolved_default && !candidate_is_repo_local {
-        default_path.to_path_buf()
-    } else {
-        candidate
     }
 }
 

@@ -1,6 +1,5 @@
 use serde_json::{json, Map as JsonMap, Value as JsonValue};
 use std::collections::{BTreeMap, BTreeSet};
-use std::env;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::time::Instant;
@@ -145,7 +144,6 @@ impl DiscoveryShardedConfig {
             adapter,
             command_adapter,
             cargo_binary: optional_text(runner, "cargo_binary")
-                .or_else(|| env::var("AIT_NATIVE_SERVER_CARGO_BIN").ok())
                 .filter(|value| !value.trim().is_empty())
                 .unwrap_or_else(|| "cargo".to_string()),
             manifest_path,

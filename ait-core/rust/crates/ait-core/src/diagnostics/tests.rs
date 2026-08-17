@@ -1,50 +1,10 @@
 use super::*;
-use crate::file_io::{FileIoError, FileIoResult, FileIoStore};
-use crate::json_support::json;
+use crate::json_support::{json, JsonValue};
 use crate::shared_foundation::DiagnosticsProbe;
-use std::cell::RefCell;
-use std::path::{Path, PathBuf};
 
 fn assert_diagnostics_probe<T: DiagnosticsProbe>() {}
 
 struct SubstituteDiagnosticsProbe;
-
-#[derive(Default)]
-struct FakeDiagnosticsFileIoStore {
-    reads: RefCell<Vec<PathBuf>>,
-}
-
-impl FileIoStore for FakeDiagnosticsFileIoStore {
-    fn home_dir(&self) -> Option<PathBuf> {
-        None
-    }
-
-    fn path_exists(&self, _path: &Path) -> bool {
-        true
-    }
-
-    fn read_bytes(&self, path: &Path) -> FileIoResult<Vec<u8>> {
-        self.reads.borrow_mut().push(path.to_path_buf());
-        Ok(b"not a zip".to_vec())
-    }
-
-    fn read_to_string(&self, _path: &Path) -> FileIoResult<String> {
-        Err(FileIoError::other("unexpected string read"))
-    }
-
-    fn write_string(&self, _path: &Path, _text: &str) -> FileIoResult<()> {
-        Err(FileIoError::other("unexpected write"))
-    }
-
-    fn write_string_atomically(
-        &self,
-        _path: &Path,
-        _text: &str,
-        _publish_label: &str,
-    ) -> FileIoResult<()> {
-        Err(FileIoError::other("unexpected atomic write"))
-    }
-}
 
 impl SubstituteDiagnosticsProbe {
     fn payload(operation: &str, payload_json: &str) -> JsonValue {
@@ -73,13 +33,6 @@ impl DiagnosticsProbe for SubstituteDiagnosticsProbe {
     ) -> Result<JsonValue, String> {
         Ok(Self::payload(
             "normalize_backend_identity_payload_json",
-            payload_json,
-        ))
-    }
-
-    fn normalize_wheel_status_payload_json(&self, payload_json: &str) -> Result<JsonValue, String> {
-        Ok(Self::payload(
-            "normalize_wheel_status_payload_json",
             payload_json,
         ))
     }
@@ -137,11 +90,6 @@ fn diagnostics_bound_helpers_accept_substitute_probe() {
                 .expect("backend identity"),
         ),
         (
-            "normalize_wheel_status_payload_json",
-            normalize_plan_wheel_status_with_diagnostics_probe(&probe, &request)
-                .expect("wheel status"),
-        ),
-        (
             "normalize_diagnostics_compatibility_payload_json",
             normalize_plan_diagnostics_compatibility_with_diagnostics_probe(&probe, &request)
                 .expect("diagnostics compatibility"),
@@ -184,26 +132,29 @@ fn plan_diagnostics_foundation_delegates_backend_identity_normalizer() {
 }
 
 #[test]
-fn wheel_status_reads_wheel_through_file_io_store() {
-    let store = FakeDiagnosticsFileIoStore::default();
-    let payload = build_wheel_status_payload_with_file_io_store(
-        &store,
-        Some("/tmp/example.whl"),
-        false,
-        false,
-    )
-    .expect("wheel status");
-
+fn diagnostics_request_rejects_retired_overrides_and_package_inputs() {
     assert_eq!(
-        store.reads.borrow().as_slice(),
-        &[PathBuf::from("/tmp/example.whl")]
+        normalize_plan_diagnostics_request_payload_json("{}").unwrap(),
+        json!({})
     );
-    assert!(payload["issues"]
-        .as_array()
-        .expect("issues")
-        .iter()
-        .any(|issue| issue
-            .as_str()
-            .unwrap_or_default()
-            .contains("Could not read wheel /tmp/example.whl")));
+
+    for payload in [
+        r#"{"overrides":{}}"#,
+        r#"{"wheel_path":"/tmp/example.whl"}"#,
+        r#"{"repack_installed":true}"#,
+        r#"{"smoke":true}"#,
+    ] {
+        let error = normalize_plan_diagnostics_request_payload_json(payload).unwrap_err();
+        assert!(error.contains("accept no overrides"), "{error}");
+    }
+}
+
+#[test]
+fn doctor_and_compatibility_facts_are_package_format_neutral() {
+    let doctor = build_plan_diagnostics_doctor_facts_json("{}").unwrap();
+    assert!(doctor.get("wheel_status").is_none());
+    assert!(doctor["compatibility"].get("wheel_status").is_none());
+
+    let compatibility = build_plan_diagnostics_compatibility_status_json("{}").unwrap();
+    assert!(compatibility.get("wheel_status").is_none());
 }

@@ -119,28 +119,28 @@ fn config(local_stt: bool) -> (TempDir, TelegramWorkerConfig) {
         json!({"repo_name": "input-fixture", "workflow_mode": "solo_local"}).to_string(),
     )
     .expect("repo config");
-    let mut process_env = BTreeMap::new();
+    let mut worker = json!({
+        "kind": "telegram",
+        "name": "main",
+        "token": "123:private-telegram-token",
+        "sync_state_path": temp.path().join("private-state/telegram.json"),
+    });
     if local_stt {
-        for (key, value) in [
-            ("AIT_TELEGRAM_STT_MODE", "local-stt"),
-            ("AIT_TELEGRAM_STT_MODEL", "fixture-model"),
-            ("AIT_TELEGRAM_STT_DEVICE", "cpu"),
-            ("AIT_TELEGRAM_STT_COMPUTE_TYPE", "float32"),
-            ("AIT_TELEGRAM_STT_LANGUAGE", "zh"),
+        for (field, value) in [
+            ("stt_mode", "local-stt"),
+            ("stt_model", "fixture-model"),
+            ("stt_device", "cpu"),
+            ("stt_compute_type", "float32"),
+            ("stt_language", "zh"),
         ] {
-            process_env.insert(key.to_string(), value.to_string());
+            worker[field] = JsonValue::String(value.to_string());
         }
     }
     let runtime = resolve_agent_worker_config(AgentWorkerConfigInput {
         repo_root: temp.path().to_path_buf(),
         worker_key: "telegram/main".to_string(),
-        worker: json!({
-            "kind": "telegram",
-            "name": "main",
-            "token": "123:private-telegram-token",
-            "sync_state_path": temp.path().join("private-state/telegram.json"),
-        }),
-        process_env,
+        worker,
+        process_env: BTreeMap::new(),
     })
     .expect("Telegram config");
     let AgentWorkerRuntimeConfig::Telegram(config) = runtime else {

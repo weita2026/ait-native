@@ -27,7 +27,7 @@ use ait_core::plan_filesystem::{
 };
 use ait_core::plan_http_client::PlanHttpClientConfig;
 use ait_core::plan_store::{
-    get_plan_revision_by_id_with_plan_store,
+    get_plan_revision_by_id_with_plan_store, get_plan_with_plan_store,
     resolve_reconciled_plan_publish_linkage_with_plan_store,
 };
 use ait_core::plan_sync_execution::execute_plan_sync_command_request_json;
@@ -68,6 +68,7 @@ use ait_core::task_lifecycle::build_task_audit_verdict_payload;
 use ait_core::task_store::has_tasks_with_task_store;
 #[cfg(test)]
 use ait_core::task_store::TaskStore;
+#[cfg(test)]
 use ait_core::task_workflow_http_adapter::TaskWorkflowSnapshotMetadataReader;
 use ait_core::task_workflow_http_adapter::{
     HttpTaskRemote, HttpWorkflowCloseoutRemote, TaskWorkflowAttestationReader,
@@ -152,23 +153,24 @@ mod status_cache;
 mod task;
 mod task_start_from;
 mod workflow;
-mod workflow_tier;
 mod workspace;
 mod worktree;
 
+pub(in crate::primitives) use change_flow::task_close;
 pub use change_flow::{
     attest_put, attest_show, change_close, change_create, change_list, change_publish,
     change_replay, change_revert, change_show, land_retry, land_show, land_submit,
     patchset_ci_status, patchset_list, patchset_publish, patchset_publish_explicit,
     patchset_rerun_ci, patchset_select, patchset_show, policy_eval, policy_show, policy_waive,
     review_code_submit, review_code_template, review_record, review_request, review_show,
-    review_task_approve, review_team_approve, task_close, task_complete,
+    review_task_approve, review_task_record, review_team_approve, task_abandon,
 };
-pub use foundation::{ensure_status_manifest, TaskStartBootstrapRequest};
+pub use foundation::ensure_status_manifest;
+pub(in crate::primitives) use foundation::TaskStartBootstrapRequest;
 pub use git_interop::{git_export, git_import, git_mirror};
 pub use line::{
-    line_archive, line_cleanup, line_cleanup_candidates, line_create, line_delete, line_list,
-    line_rename, line_set_head, line_show, line_switch, repo_status,
+    line_archive, line_cleanup, line_create, line_delete, line_list, line_rename, line_set_head,
+    line_show, line_switch, repo_status,
 };
 pub(in crate::primitives) use line_merge::guard_no_active_line_merge;
 pub use line_merge::line_merge;
@@ -190,33 +192,35 @@ pub use snapshot::{
     DEFAULT_PUBLIC_SNAPSHOT_ANCESTRY_LIMIT, DEFAULT_PUBLIC_SNAPSHOT_ANCESTRY_MAX_DEPTH,
 };
 pub use stash::{stash_apply, stash_drop, stash_list, stash_pop, stash_save, stash_show};
-pub use task::{task_audit, task_create, task_list, task_show, task_tokens};
+pub(in crate::primitives) use task::task_create;
+pub use task::{task_audit, task_list, task_show};
 pub use task_start_from::task_start_from_with_progress;
 pub use workflow::{
     task_land_apply, task_land_apply_scoped, task_land_payload, task_land_payload_scoped,
-    workflow_completed_local_batch_retired_error, workflow_land_apply,
-    workflow_land_completed_local_apply, workflow_land_completed_local_payload,
-    workflow_land_local, workflow_land_payload, workflow_ready_apply, workflow_ready_payload,
+    workflow_land_apply, workflow_land_payload, workflow_ready_apply, workflow_ready_payload,
 };
-pub use workflow_tier::{snapshot_create_quick, workflow_tier_payload};
 pub use workspace::{
     snapshot_create, snapshot_create_explicit, workflow_workspace_status, workspace_delta,
     workspace_dirty_diff, workspace_restore, workspace_restore_paths,
 };
+pub(crate) use worktree::task_start_with_progress;
 pub use worktree::{
     task_ensure_main_seed_mirror, task_resolve_main_seed_mirror_location,
-    task_resolve_worktree_location, task_start, task_start_bootstrap, task_start_with_progress,
-    worktree_abort_rebase, worktree_bind_existing, worktree_cleanup, worktree_cleanup_candidates,
-    worktree_continue_rebase, worktree_doctor, worktree_get, worktree_list,
-    worktree_preview_rebase, worktree_prune_stale, worktree_rebase, worktree_recover_task,
-    worktree_recreate, worktree_remove, worktree_restore, worktree_restore_owned_head,
-    worktree_status, worktree_sync, worktree_sync_all, worktree_touch_usage,
+    task_resolve_worktree_location, task_start, worktree_abort_rebase, worktree_bind_existing,
+    worktree_cleanup, worktree_cleanup_candidates, worktree_continue_rebase, worktree_doctor,
+    worktree_get, worktree_list, worktree_preview_rebase, worktree_prune_stale, worktree_rebase,
+    worktree_recover_task, worktree_recreate, worktree_remove, worktree_restore,
+    worktree_restore_owned_head, worktree_status, worktree_sync, worktree_sync_all,
+    worktree_touch_usage,
 };
 
 use change_identity::*;
 use foundation::*;
 use line::list_remote_names;
-use remote_sync::{set_or_create_local_line_head, sync_patchset_revision_snapshot};
+use remote_sync::{
+    hydrate_remote_snapshot_chain_with_task_remote_and_capabilities, set_or_create_local_line_head,
+    sync_patchset_revision_snapshot,
+};
 use review_support::*;
 use runtime_support::*;
 use status_cache::*;

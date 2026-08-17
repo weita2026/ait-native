@@ -123,27 +123,6 @@ fn spawn_queue_summary_fallback_remote() -> (
                     }
                 ]
             })
-        } else if method == "GET" && url == "/v1/native/repository-authorities/7/changes" {
-            json!([
-                {
-                    "change_id": "RC-REMOTE-READY",
-                    "title": "Ready remote change",
-                    "status": "active",
-                    "current_patchset_number": 1
-                },
-                {
-                    "change_id": "RC-REMOTE-STALE",
-                    "title": "Stale remote change",
-                    "status": "active",
-                    "current_patchset_number": 1
-                },
-                {
-                    "change_id": "RC-REMOTE-LANDED",
-                    "title": "Landed remote change",
-                    "status": "landed",
-                    "current_patchset_number": 1
-                }
-            ])
         } else {
             json!({"error": format!("unexpected {method} {url}")})
         };
@@ -434,11 +413,9 @@ fn handshake_payload() -> JsonValue {
         "ready": true,
         "authority_backend": "binary_v0",
         "contract_version": "ait.agent_server_protocol.v2",
-        "supported_async_job_types": ["patchset.ci", "repo.ci"],
+        "supported_async_job_types": ["patchset.ci"],
         "ci_capabilities": {
             "patchset_run_ci_route": true,
-            "repo_run_ci_route": true,
-            "repo_ci_runs_route": true,
             "native_runner": {
                 "contract": "ait.runner.native-job.v3",
                 "repository_entrypoint": "ci/run"
@@ -752,6 +729,7 @@ fn fake_atomic_task_start_response(
         .get("change")
         .and_then(JsonValue::as_object)
         .expect("atomic task-start Change payload");
+    let remote_head_snapshot_id = state.lock().unwrap().remote_head_snapshot_id.clone();
     let change = json!({
         "repo_name": "fixture-ait",
         "task_id": "RT-ATOMIC",
@@ -759,6 +737,8 @@ fn fake_atomic_task_start_response(
         "change_ref": "RT-ATOMIC/C-01",
         "title": change_request.get("title").cloned().unwrap_or(JsonValue::Null),
         "base_line": change_request.get("base_line").cloned().unwrap_or(JsonValue::Null),
+        "fork_snapshot_id": remote_head_snapshot_id,
+        "forked_from_line": change_request.get("base_line").cloned().unwrap_or(JsonValue::Null),
         "status": "draft",
         "current_patchset_number": 0,
     });
@@ -783,12 +763,70 @@ fn fake_atomic_task_start_response(
     response
 }
 
+fn maybe_zstd_download_response(
+    method: &str,
+    url: &str,
+    state: &Arc<Mutex<FakeRemoteState>>,
+) -> Option<Response<std::io::Cursor<Vec<u8>>>> {
+    if method != "GET" {
+        return None;
+    }
+    const ZSTD_IMPORT_PREFIX: &str =
+        "/v1/native/repository-authorities/7/remote-sync/zstd-bulk/";
+    let guard = state.lock().unwrap();
+    let fixture = guard.zstd_import_fixture.as_ref()?;
+    if let Some(snapshot_id) = url.strip_prefix(&format!("{ZSTD_IMPORT_PREFIX}import-manifests/")) {
+        return Some(match fixture.manifests.get(snapshot_id) {
+            Some(manifest) => Response::from_string(
+                ZstdImportManifestJson::stateless()
+                    .encode_string(manifest)
+                    .unwrap(),
+            )
+            .with_header(
+                tiny_http::Header::from_bytes(b"Content-Type", b"application/json").unwrap(),
+            ),
+            None => Response::from_string(format!("unknown snapshot {snapshot_id}"))
+                .with_status_code(404),
+        });
+    }
+    if let Some(pack_id) = url.strip_prefix(&format!("{ZSTD_IMPORT_PREFIX}object-packs/")) {
+        return Some(match fixture.object_packs.get(pack_id) {
+            Some(bytes) => Response::from_data(bytes.clone()).with_header(
+                tiny_http::Header::from_bytes(
+                    b"Content-Type",
+                    b"application/vnd.ait.zstd-object-pack",
+                )
+                .unwrap(),
+            ),
+            None => Response::from_string(format!("unknown object pack {pack_id}"))
+                .with_status_code(404),
+        });
+    }
+    if let Some(pack_id) = url.strip_prefix(&format!("{ZSTD_IMPORT_PREFIX}tree-packs/")) {
+        return Some(match fixture.tree_packs.get(pack_id) {
+            Some(bytes) => Response::from_data(bytes.clone()).with_header(
+                tiny_http::Header::from_bytes(
+                    b"Content-Type",
+                    b"application/vnd.ait.zstd-tree-pack",
+                )
+                .unwrap(),
+            ),
+            None => Response::from_string(format!("unknown tree pack {pack_id}"))
+                .with_status_code(404),
+        });
+    }
+    None
+}
+
 fn response_for(
     method: &str,
     url: &str,
     body: &str,
     state: &Arc<Mutex<FakeRemoteState>>,
 ) -> Response<std::io::Cursor<Vec<u8>>> {
+    if let Some(response) = maybe_zstd_download_response(method, url, state) {
+        return response;
+    }
     let present_snapshot_id = state.lock().unwrap().remote_head_snapshot_id.clone();
     if let Some(response) = maybe_zstd_bulk_response(method, url, body, present_snapshot_id, Some(state)) {
         return response;
@@ -844,24 +882,6 @@ fn response_for(
         ("GET", "/v1/native/repository-authorities/7") => {
             repository_payload("fixture-ait")
         }
-        ("POST", "/v1/native/repository-authorities/7:runCi") => {
-            json!({
-                "repository_index": 7,
-                "snapshot_id": "SNP-C95DCC8C7848",
-                "snapshot_index": 0,
-                "queued": true,
-                "job": {
-                    "repository_index": 7,
-                    "worker_job_index": 77,
-                    "job_kind": 11,
-                    "job_type": "repo.ci",
-                    "state_kind": 1,
-                    "state": "queued",
-                    "diagnostic_status": "queued"
-                },
-                "delivery": "binary_worker_job"
-            })
-        }
         _ if method == "GET"
             && url.starts_with("/v1/native/repository-authorities/7/worker-jobs") =>
         {
@@ -871,8 +891,8 @@ fn response_for(
                 "jobs": [{
                     "repository_index": 7,
                     "worker_job_index": 77,
-                    "job_kind": 11,
-                    "job_type": "repo.ci",
+                    "job_kind": 7,
+                    "job_type": "patchset.ci",
                     "state_kind": 3,
                     "state": "succeeded",
                     "diagnostic_status": "succeeded"
@@ -1770,10 +1790,23 @@ fn response_for_closeout_recovery(
                 request.get("contract").and_then(JsonValue::as_str),
                 Some("task-land-atomic/v1")
             );
-            assert_eq!(
+            assert!(matches!(
                 request.get("task_or_change_ref").and_then(JsonValue::as_str),
-                Some("RT-1")
-            );
+                Some("RT-1" | "RC-1" | "RT-1/C-01")
+            ));
+            {
+                let guard = state.lock().unwrap();
+                if guard.enforce_reviewer_workflow
+                    && (!guard.code_review_recorded
+                        || !guard.task_review_recorded
+                        || !guard.policy_evaluated)
+                {
+                    return json_response(
+                        409,
+                        &json!({"detail":"reviewer Workflow Land gates are incomplete"}),
+                    );
+                }
+            }
             let (
                 timeout_before_mutation,
                 retryable_busy_after_mutation,
@@ -2224,6 +2257,15 @@ fn response_for_closeout_recovery(
         }
         ("POST", "/v1/native/repository-authorities/7/changes/RC-1/reviews") => {
             let parsed: JsonValue = parse_json(body);
+            match parsed.get("action").and_then(JsonValue::as_str) {
+                Some("code_review_summary") => {
+                    state.lock().unwrap().code_review_recorded = true;
+                }
+                Some("task_approve") => {
+                    state.lock().unwrap().task_review_recorded = true;
+                }
+                _ => {}
+            }
             json_response(
                 200,
                 &json!({
@@ -2245,24 +2287,40 @@ fn response_for_closeout_recovery(
             )
         }
         ("GET", "/v1/native/repository-authorities/7/changes/RC-1/reviews") => {
+            let guard = state.lock().unwrap();
+            let task_reviews = if guard.task_review_recorded {
+                vec![json!({"reviewer":"Fixture User","patchset_id":"RP-1","action":"task_approve","blocking":false,"comment":"looks fine"})]
+            } else {
+                Vec::new()
+            };
+            let mut reviews = task_reviews.clone();
+            if guard.code_review_recorded {
+                reviews.push(json!({
+                    "reviewer":"ait-cli",
+                    "patchset_id":"RP-1",
+                    "action":"code_review_summary",
+                    "blocking":false,
+                    "comment":"Reviewed files: src/lib.rs; Findings: no blocking findings; Risks: low; Tests: cargo test passed; Recommendation: land."
+                }));
+            }
             json_response(
                 200,
                 &json!({
                     "change_id":"RC-1",
                     "current_patchset_id":"RP-1",
-                    "approvals":1,
+                    "approvals":task_reviews.len(),
                     "blocking":0,
-                    "comments":1,
-                    "task_approvals":1,
+                    "comments":0,
+                    "task_approvals":task_reviews.len(),
                     "team_approvals":0,
-                    "human_approvals":1,
-                    "human_task_approvals":1,
-                    "independent_human_approvals":1,
-                    "independent_task_approvals":1,
-                    "code_review_summaries":1,
-                    "code_review_summary_reviewers":["codex"],
+                    "human_approvals":task_reviews.len(),
+                    "human_task_approvals":task_reviews.len(),
+                    "independent_human_approvals":task_reviews.len(),
+                    "independent_task_approvals":task_reviews.len(),
+                    "code_review_summaries":if guard.code_review_recorded { 1 } else { 0 },
+                    "code_review_summary_reviewers":if guard.code_review_recorded { json!(["ait-cli"]) } else { json!([]) },
                     "review_requests":[],
-                    "reviews":[{"reviewer":"Fixture User <fixture@example.com>","patchset_id":"RP-1","action":"task_approve","blocking":false,"comment":"looks fine"}]
+                    "reviews":reviews
                 }),
             )
         }
@@ -2279,18 +2337,31 @@ fn response_for_closeout_recovery(
             )
         }
         ("GET", "/v1/native/repository-authorities/7/patchsets/RP-1/policy") => {
+            let policy_evaluated = state.lock().unwrap().policy_evaluated;
+            json_response(
+                200,
+                &json!({
+                    "policy_id":"PO-1",
+                    "patchset_id":"RP-1",
+                    "decision":if policy_evaluated { "pass" } else { "pending" },
+                    "content_class":"code",
+                    "author_class":"hybrid",
+                    "effective_requirements":{"require_tests":true,"require_code_review_summary":true},
+                    "evaluated_at":"2026-06-08T00:00:00Z",
+                    "checks":[{"name":"require_tests","status":"pass","message":"ok"}],
+                    "input_fingerprint":"abc"
+                }),
+            )
+        }
+        ("POST", "/v1/native/repository-authorities/7/patchsets/RP-1:evaluatePolicy") => {
+            state.lock().unwrap().policy_evaluated = true;
             json_response(
                 200,
                 &json!({
                     "policy_id":"PO-1",
                     "patchset_id":"RP-1",
                     "decision":"pass",
-                    "content_class":"code",
-                    "author_class":"hybrid",
-                    "effective_requirements":{"require_tests":true},
-                    "evaluated_at":"2026-06-08T00:00:00Z",
-                    "checks":[{"name":"require_tests","status":"pass","message":"ok"}],
-                    "input_fingerprint":"abc"
+                    "checks":[{"name":"require_tests","status":"pass","message":"ok"}]
                 }),
             )
         }
@@ -2305,6 +2376,36 @@ fn response_for_closeout_recovery(
                     "has_runnable_evidence":true,
                     "selected_suite_ids":["preflight"],
                     "latest_job":{"job_id":"JOB-1","job_type":"patchset.ci","state":"succeeded"}
+                }),
+            )
+        }
+        _ if method == "GET"
+            && url.starts_with(
+                "/v1/native/repository-authorities/7/read/tasks/RT-1/audit?target_line=main",
+            ) =>
+        {
+            json_response(
+                200,
+                &json!({
+                    "task": {
+                        "task_id": "RT-1",
+                        "repo_name": "fixture-ait",
+                        "status": "active",
+                    },
+                    "target_line": "main",
+                    "target_line_head": FIXTURE_BASE_SNAPSHOT_ID,
+                    "summary": {
+                        "verdict": "in_progress",
+                        "open_changes": 1,
+                    },
+                    "changes": [{
+                        "change": {
+                            "change_id": "RC-1",
+                            "task_id": "RT-1",
+                            "status": "draft",
+                        },
+                        "target_state": "not_landed",
+                    }],
                 }),
             )
         }

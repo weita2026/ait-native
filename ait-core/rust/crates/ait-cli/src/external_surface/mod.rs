@@ -27,8 +27,8 @@ use ait_core::external::materializer::{
 use ait_core::external::resolver::ExternalSnapshotResolver;
 use ait_core::external::status::inspect_external_filesystem_status_report;
 use ait_core::external::update::{
-    run_external_update, ExternalUpdateOptions, ExternalUpdateSelection, ExternalUpdateStore,
-    FilesystemExternalUpdateStore,
+    run_external_update, ExternalUpdateOptions, ExternalUpdateReport, ExternalUpdateSelection,
+    ExternalUpdateStore, FilesystemExternalUpdateStore,
 };
 use ait_core::external::{ExternalError, ExternalResult};
 use ait_core::json_support::{json, JsonValue};
@@ -72,9 +72,30 @@ pub fn external_update(
         options = options.with_local_link_override(link.name, link.path);
     }
     hydrate_external_update_snapshots(repo, &options)?;
-    let repo_root = repo.workspace_root();
+    let validation = if options.validate {
+        let preflight = stage_external_update_validation(repo, &options)?;
+        options.selection = preflight.selection;
+        Some(preflight.validation)
+    } else {
+        None
+    };
+    let report = execute_external_update_at_root(repo, &repo.workspace_root(), &options)?;
+    let mut payload = report.to_json_value();
+    if let Some(validation) = validation {
+        if let Some(object) = payload.as_object_mut() {
+            object.insert("validation".to_string(), validation);
+        }
+    }
+    Ok(payload)
+}
+
+fn execute_external_update_at_root(
+    repo: &RepoRuntime,
+    root: &Path,
+    options: &ExternalUpdateOptions,
+) -> Result<ExternalUpdateReport, String> {
     let store =
-        FilesystemExternalUpdateStore::for_repo_root(&repo_root).map_err(|err| err.to_string())?;
+        FilesystemExternalUpdateStore::for_repo_root(root).map_err(|err| err.to_string())?;
     let resolver = SelectedExternalSnapshotResolver::<SNAPSHOT_BINARY_DB_WRITE_LAYOUT>::new(repo)?;
     let resolver = RemoteAwareExternalSnapshotResolver::new(
         resolver,
@@ -82,25 +103,92 @@ pub fn external_update(
     );
     let content_source =
         SelectedExternalContentSource::<SNAPSHOT_BINARY_DB_WRITE_LAYOUT>::new(repo)?;
-    let materializer = FilesystemExternalMaterializer::new(&repo_root, content_source)
+    let materializer =
+        FilesystemExternalMaterializer::new(root, content_source).map_err(|err| err.to_string())?;
+    run_external_update(&store, &resolver, &materializer, options).map_err(|err| err.to_string())
+}
+
+struct ExternalUpdateValidationPreflight {
+    selection: ExternalUpdateSelection,
+    validation: JsonValue,
+}
+
+fn stage_external_update_validation(
+    repo: &RepoRuntime,
+    options: &ExternalUpdateOptions,
+) -> Result<ExternalUpdateValidationPreflight, String> {
+    let staging = tempfile::Builder::new()
+        .prefix("ait-external-validation-")
+        .tempdir()
+        .map_err(|err| format!("failed to create external validation staging root: {err}"))?;
+    copy_optional_external_authority_file(
+        &repo.workspace_root(),
+        staging.path(),
+        "ait-external.toml",
+    )?;
+    copy_optional_external_authority_file(
+        &repo.workspace_root(),
+        staging.path(),
+        "ait-external.lock",
+    )?;
+
+    execute_external_update_at_root(repo, staging.path(), options)?;
+    let staging_store = FilesystemExternalUpdateStore::for_repo_root(staging.path())
         .map_err(|err| err.to_string())?;
-    let report = run_external_update(&store, &resolver, &materializer, &options)
-        .map_err(|err| err.to_string())?;
-    let mut payload = report.to_json_value();
-    if options.validate {
-        let lockfile = store
-            .read_lockfile()
-            .map_err(|err| err.to_string())?
-            .ok_or_else(|| {
-                "`ait external update --validate` requires ait-external.lock after update"
-                    .to_string()
-            })?;
-        let validation = validate_external_update_bindings(repo, &lockfile)?;
-        if let Some(object) = payload.as_object_mut() {
-            object.insert("validation".to_string(), validation);
+    let lockfile = staging_store
+        .read_lockfile()
+        .map_err(|err| err.to_string())?
+        .ok_or_else(|| {
+            "`ait external update --validate` staging did not produce ait-external.lock".to_string()
+        })?;
+    let validation = validate_external_update_bindings_at_root(staging.path(), &lockfile)?;
+    let selection = freeze_staged_external_update_selection(options, &staging_store)?;
+    Ok(ExternalUpdateValidationPreflight {
+        selection,
+        validation,
+    })
+}
+
+fn copy_optional_external_authority_file(
+    source_root: &Path,
+    destination_root: &Path,
+    file_name: &str,
+) -> Result<(), String> {
+    let source = source_root.join(file_name);
+    let bytes = match fs::read(&source) {
+        Ok(bytes) => bytes,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(err) => {
+            return Err(format!(
+                "failed to read external authority {} for validation staging: {err}",
+                source.display()
+            ));
         }
-    }
-    Ok(payload)
+    };
+    let destination = destination_root.join(file_name);
+    fs::write(&destination, bytes).map_err(|err| {
+        format!(
+            "failed to stage external authority {}: {err}",
+            destination.display()
+        )
+    })
+}
+
+fn freeze_staged_external_update_selection(
+    options: &ExternalUpdateOptions,
+    staging_store: &FilesystemExternalUpdateStore,
+) -> Result<ExternalUpdateSelection, String> {
+    let ExternalUpdateSelection::Latest { name } = &options.selection else {
+        return Ok(options.selection.clone());
+    };
+    let manifest = staging_store
+        .read_manifest()
+        .map_err(|err| err.to_string())?;
+    let external = unique_direct_external(&manifest, name)?;
+    Ok(ExternalUpdateSelection::exact(
+        name.clone(),
+        external.snapshot.clone(),
+    ))
 }
 
 pub(crate) fn materialize_locked_external_release_sources(
@@ -758,16 +846,15 @@ fn line_head_from_remote_rows(rows: &[JsonValue], line: &str) -> Option<String> 
     })
 }
 
-fn validate_external_update_bindings(
-    repo: &RepoRuntime,
+fn validate_external_update_bindings_at_root(
+    repo_root: &Path,
     lockfile: &ExternalLockfile,
 ) -> Result<JsonValue, String> {
-    let repo_root = repo.workspace_root();
     let validator =
         FilesystemExternalBindingValidator::new(CommandExternalBindingToolProbe::default());
     let findings = validator
         .validate_bindings(ExternalBindingValidationRequest::toolchain_probes(
-            &repo_root,
+            repo_root,
             &lockfile.nodes,
         ))
         .map_err(|err| err.to_string())?;
@@ -804,6 +891,7 @@ fn validate_external_update_bindings(
 
 pub fn external_link(repo: &RepoRuntime, name: &str, path: &str) -> Result<JsonValue, String> {
     validate_external_link_target(repo, path)?;
+    validate_external_link_name(repo, name)?;
     let store = FsExternalLinkStore::for_repo_root(repo.authoritative_repo_root());
     let links = store.load_links().map_err(|err| err.to_string())?;
     let mutation =
@@ -827,14 +915,14 @@ pub fn external_unlink(repo: &RepoRuntime, name: &str) -> Result<JsonValue, Stri
     let links = store.load_links().map_err(|err| err.to_string())?;
     let mutation =
         remove_external_local_link_override(&links, name).map_err(|err| err.to_string())?;
-    store
-        .save_links(&mutation.links)
-        .map_err(|err| err.to_string())?;
     let restore = if mutation.changed {
         restore_unlinked_external(repo, name.trim())?
     } else {
         ExternalUnlinkRestore::unchanged()
     };
+    store
+        .save_links(&mutation.links)
+        .map_err(|err| err.to_string())?;
     Ok(json!({
         "command": "external unlink",
         "repo_name": repo.repo_name(),
@@ -937,6 +1025,37 @@ fn read_external_local_links(
     FsExternalLinkStore::for_repo_root(repo.authoritative_repo_root())
         .load_links()
         .map_err(|err| err.to_string())
+}
+
+fn validate_external_link_name(repo: &RepoRuntime, name: &str) -> Result<(), String> {
+    let store = FilesystemExternalUpdateStore::for_repo_root(repo.workspace_root())
+        .map_err(|err| err.to_string())?;
+    let manifest = store.read_manifest().map_err(|err| err.to_string())?;
+    unique_direct_external(&manifest, name).map(|_| ())
+}
+
+fn unique_direct_external<'a>(
+    manifest: &'a ExternalManifest,
+    name: &str,
+) -> Result<&'a ExternalDeclaration, String> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err("external name must not be empty".to_string());
+    }
+    let matches = manifest
+        .externals
+        .iter()
+        .filter(|external| external.name == name)
+        .collect::<Vec<_>>();
+    match matches.as_slice() {
+        [] => Err(format!(
+            "external {name:?} is not declared in the root ait-external.toml"
+        )),
+        [external] => Ok(*external),
+        _ => Err(format!(
+            "external {name:?} appears more than once in the root ait-external.toml"
+        )),
+    }
 }
 
 fn json_string_field(value: Option<&JsonValue>) -> Option<String> {

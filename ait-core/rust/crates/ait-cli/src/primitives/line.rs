@@ -3,9 +3,7 @@ use crate::json_support::encode_value_pretty_with_newline_error_string;
 #[cfg(test)]
 use ait_core::line_store::{line_by_name_with_line_store, LineStore};
 use ait_core::remote_store::{list_remotes_with_remote_store, RemoteStore};
-use ait_core::repo_status_store::{
-    storage_counts_with_repo_status_store, RepoStatusStorageCounts, RepoStatusStore,
-};
+use ait_core::repo_status_store::{storage_counts_with_repo_status_store, RepoStatusStore};
 
 pub fn line_list(
     repo: &RepoRuntime,
@@ -61,15 +59,7 @@ fn line_create_unlocked(
     name: &str,
     from_snapshot: Option<&str>,
     switch: bool,
-    restore: bool,
-    force: bool,
 ) -> Result<JsonValue, String> {
-    if restore && !switch {
-        return Err("--restore requires --switch on `ait line create`.".to_string());
-    }
-    if force && !restore {
-        return Err("--force only applies together with --restore".to_string());
-    }
     if switch {
         guard_no_active_line_merge(repo, None, "switching lines")?;
     }
@@ -81,16 +71,6 @@ fn line_create_unlocked(
     let created = create_local_line(repo, name, resolved_snapshot_id.as_deref())?;
     if !switch {
         return Ok(created);
-    }
-    if restore {
-        let mut restored = worktree_restore(repo, None, None, Some(name), &[], force, false)?;
-        let obj = restored
-            .as_object_mut()
-            .ok_or_else(|| "line create restore payload must decode to an object".to_string())?;
-        obj.insert("created_line".to_string(), created);
-        obj.insert("switched".to_string(), JsonValue::Bool(true));
-        obj.insert("restored".to_string(), JsonValue::Bool(true));
-        return Ok(restored);
     }
     set_runtime_current_line(repo, name)?;
     let mut payload = created
@@ -106,7 +86,6 @@ fn line_create_unlocked(
         JsonValue::String(name.to_string()),
     );
     payload.insert("switched".to_string(), JsonValue::Bool(true));
-    payload.insert("restored".to_string(), JsonValue::Bool(false));
     Ok(JsonValue::Object(payload))
 }
 
@@ -115,11 +94,9 @@ pub fn line_create(
     name: &str,
     from_snapshot: Option<&str>,
     switch: bool,
-    restore: bool,
-    force: bool,
 ) -> Result<JsonValue, String> {
     run_locked_workspace_command(repo, "ait-cli line create", || {
-        line_create_unlocked(repo, name, from_snapshot, switch, restore, force)
+        line_create_unlocked(repo, name, from_snapshot, switch)
     })
 }
 
@@ -854,9 +831,9 @@ pub fn repo_status(repo: &RepoRuntime) -> Result<JsonValue, String> {
         let head_snapshot_id = local_line_head_snapshot_id(repo, &current_line)?;
         (current_line, head_snapshot_id)
     };
-    let storage_counts = {
+    let snapshot_count = {
         let _range = perfetto_range!("ait.cli.status.storage_counts");
-        repo_status_storage_counts(repo)?
+        repo_status_snapshot_count(repo)?
     };
     let remote_count = {
         let _range = perfetto_range!("ait.cli.status.remote_list");
@@ -897,9 +874,7 @@ pub fn repo_status(repo: &RepoRuntime) -> Result<JsonValue, String> {
         "workspace_root": repo.workspace_root().to_string_lossy().to_string(),
         "current_line": current_line,
         "head_snapshot_id": head_snapshot_id,
-        "snapshot_count": storage_counts.get("snapshot_count").cloned().unwrap_or(JsonValue::from(0)),
-        "pack_count": storage_counts.get("pack_count").cloned().unwrap_or(JsonValue::from(0)),
-        "packed_blob_count": storage_counts.get("packed_blob_count").cloned().unwrap_or(JsonValue::from(0)),
+        "snapshot_count": snapshot_count,
         "remote_count": remote_count,
         "default_remote": repo.default_remote_name(),
         "workspace_status": if workspace_clean { "clean" } else { "dirty" },
@@ -909,11 +884,6 @@ pub fn repo_status(repo: &RepoRuntime) -> Result<JsonValue, String> {
         "workspace_missing_count": workspace.get("missing_paths").and_then(JsonValue::as_array).map(|rows| rows.len()).unwrap_or(0),
         "workspace_untracked_count": workspace.get("untracked_paths").and_then(JsonValue::as_array).map(|rows| rows.len()).unwrap_or(0),
         "workspace_changed_paths_sample": json_string_list(workspace.get("changed_paths")).into_iter().take(10).collect::<Vec<_>>(),
-        "ignore_policy": workspace.get("ignore_policy").cloned().unwrap_or(JsonValue::Null),
-        "phase_timings_ms": workspace.get("phase_timings_ms").cloned().unwrap_or(JsonValue::Null),
-        "binary_db_authority_root": repo.ait_dir.join("binary-db").to_string_lossy().to_string(),
-        "refs_path": repo.authoritative_repo_root().join(".ait").join("refs").join("lines").to_string_lossy().to_string(),
-        "objects_path": repo.authoritative_repo_root().join(".ait").join("objects").to_string_lossy().to_string(),
         "is_worktree": repo.is_worktree(),
         "worktree_name": worktree_name,
         "worktree_hygiene": {
@@ -926,19 +896,19 @@ pub fn repo_status(repo: &RepoRuntime) -> Result<JsonValue, String> {
         },
         "line_hygiene": {
             "mode": "metadata_only",
-            "older_than": JsonValue::Null,
+            "idle_for": JsonValue::Null,
             "candidate_count": JsonValue::Null,
             "protected_count": JsonValue::Null,
             "inspected_count": line_count,
-            "detail_command": "ait line cleanup-candidates --include-protected",
+            "detail_command": "ait line cleanup --include-protected",
         },
         "reconciliation": reconciliation,
     }))
 }
 
-fn repo_status_storage_counts(repo: &RepoRuntime) -> Result<JsonValue, String> {
+fn repo_status_snapshot_count(repo: &RepoRuntime) -> Result<i64, String> {
     let store = repo.repo_status_store()?;
-    repo_status_storage_counts_with_store(&store)
+    repo_status_snapshot_count_with_store(&store)
 }
 
 pub(super) fn configured_remote_names_with_store<S>(store: &S) -> Result<Vec<String>, String>
@@ -953,25 +923,17 @@ where
     Ok(names)
 }
 
-pub(super) fn repo_status_storage_counts_with_store<S>(store: &S) -> Result<JsonValue, String>
+pub(super) fn repo_status_snapshot_count_with_store<S>(store: &S) -> Result<i64, String>
 where
     S: RepoStatusStore + ?Sized,
 {
     let counts = storage_counts_with_repo_status_store(store).map_err(|err| err.to_string())?;
-    Ok(repo_status_storage_counts_json(&counts))
+    Ok(counts.snapshot_count)
 }
 
-fn repo_status_storage_counts_json(counts: &RepoStatusStorageCounts) -> JsonValue {
-    json!({
-        "snapshot_count": counts.snapshot_count,
-        "pack_count": counts.pack_count,
-        "packed_blob_count": counts.packed_blob_count,
-    })
-}
-
-pub fn line_cleanup_candidates(
+fn line_cleanup_inventory(
     repo: &RepoRuntime,
-    older_than: Option<&str>,
+    idle_for: Option<&str>,
     cleanup_kind: Option<&str>,
     include_protected: bool,
 ) -> Result<JsonValue, String> {
@@ -980,7 +942,7 @@ pub fn line_cleanup_candidates(
     let indexes = collect_line_usage_indexes(repo)?;
     let current_line_name = repo.current_line_name()?;
     let default_line_name = repo.default_line_name();
-    let (older_than_delta, older_than_label) = normalize_worktree_older_than(older_than)?;
+    let (idle_for_delta, idle_for_label) = normalize_line_idle_for(idle_for)?;
     let reference_now = Utc::now();
     let mut candidates = Vec::new();
     let mut protected = Vec::new();
@@ -991,8 +953,8 @@ pub fn line_cleanup_candidates(
         let decision = line_cleanup_decision(
             repo,
             &row,
-            older_than_delta,
-            &older_than_label,
+            idle_for_delta,
+            &idle_for_label,
             normalized_kind.as_deref(),
             &indexes,
             &current_line_name,
@@ -1044,7 +1006,7 @@ pub fn line_cleanup_candidates(
     });
 
     Ok(json!({
-        "older_than": older_than_label,
+        "idle_for": idle_for_label,
         "cleanup_kind": normalized_kind,
         "include_protected": include_protected,
         "inspected_count": inspected_count,
@@ -1057,18 +1019,16 @@ pub fn line_cleanup_candidates(
 
 fn line_cleanup_unlocked(
     repo: &RepoRuntime,
-    older_than: Option<&str>,
+    idle_for: Option<&str>,
     cleanup_kind: Option<&str>,
     limit: Option<usize>,
-    dry_run: bool,
-    confirm: bool,
+    include_protected: bool,
+    apply: bool,
 ) -> Result<JsonValue, String> {
-    if !dry_run && !confirm {
-        return Err(
-            "Pass --yes to apply line cleanup, or use --dry-run to preview it.".to_string(),
-        );
+    if limit == Some(0) {
+        return Err("`--limit` must be greater than zero.".to_string());
     }
-    let payload = line_cleanup_candidates(repo, older_than, cleanup_kind, false)?;
+    let payload = line_cleanup_inventory(repo, idle_for, cleanup_kind, include_protected)?;
     let candidates = payload
         .get("candidates")
         .and_then(JsonValue::as_array)
@@ -1082,50 +1042,67 @@ fn line_cleanup_unlocked(
         .iter()
         .map(|row| {
             json!({
+                "line_id": string_field(row, "line_id"),
                 "line_name": string_field(row, "line_name"),
+                "lifecycle_kind": string_field(row, "lifecycle_kind"),
                 "cleanup_policy": string_field(row, "cleanup_policy"),
+                "last_activity_at": string_field(row, "last_activity_at"),
                 "cleanup_reason": string_field(row, "cleanup_reason"),
             })
         })
         .collect::<Vec<_>>();
-    if dry_run {
-        return Ok(json!({
-            "dry_run": true,
-            "older_than": payload.get("older_than").cloned().unwrap_or(JsonValue::Null),
-            "cleanup_kind": payload.get("cleanup_kind").cloned().unwrap_or(JsonValue::Null),
-            "candidate_count": payload.get("candidate_count").and_then(JsonValue::as_i64).unwrap_or(0),
-            "planned_count": planned_rows.len(),
-            "planned_rows": planned_rows,
-            "archived_count": 0,
-            "archived_rows": [],
-        }));
-    }
     let mut archived_rows = Vec::new();
-    for row in selected {
-        let line_name = required_string_field(&row, "line_name")?;
-        archived_rows.push(line_archive_unlocked(repo, &line_name, None)?);
+    if apply {
+        for row in selected {
+            let line_name = required_string_field(&row, "line_name")?;
+            archived_rows.push(line_archive_unlocked(repo, &line_name, None)?);
+        }
     }
-    Ok(json!({
-        "dry_run": false,
-        "older_than": payload.get("older_than").cloned().unwrap_or(JsonValue::Null),
-        "cleanup_kind": payload.get("cleanup_kind").cloned().unwrap_or(JsonValue::Null),
-        "candidate_count": payload.get("candidate_count").and_then(JsonValue::as_i64).unwrap_or(0),
-        "planned_count": planned_rows.len(),
-        "planned_rows": planned_rows,
-        "archived_count": archived_rows.len(),
-        "archived_rows": archived_rows,
-    }))
+    let mut result = payload
+        .as_object()
+        .cloned()
+        .ok_or_else(|| "line cleanup inventory must decode to an object".to_string())?;
+    result.insert(
+        "mode".to_string(),
+        JsonValue::String(if apply { "applied" } else { "preview" }.to_string()),
+    );
+    result.insert("applied".to_string(), JsonValue::Bool(apply));
+    result.insert(
+        "limit".to_string(),
+        limit.map(JsonValue::from).unwrap_or(JsonValue::Null),
+    );
+    result.insert(
+        "planned_count".to_string(),
+        JsonValue::from(planned_rows.len()),
+    );
+    result.insert("planned_rows".to_string(), JsonValue::Array(planned_rows));
+    result.insert(
+        "archived_count".to_string(),
+        JsonValue::from(archived_rows.len()),
+    );
+    result.insert("archived_rows".to_string(), JsonValue::Array(archived_rows));
+    Ok(JsonValue::Object(result))
 }
 
 pub fn line_cleanup(
     repo: &RepoRuntime,
-    older_than: Option<&str>,
+    idle_for: Option<&str>,
     cleanup_kind: Option<&str>,
     limit: Option<usize>,
-    dry_run: bool,
-    confirm: bool,
+    include_protected: bool,
+    apply: bool,
 ) -> Result<JsonValue, String> {
+    if !apply {
+        return line_cleanup_unlocked(
+            repo,
+            idle_for,
+            cleanup_kind,
+            limit,
+            include_protected,
+            false,
+        );
+    }
     run_locked_workspace_command(repo, "ait-cli line cleanup", || {
-        line_cleanup_unlocked(repo, older_than, cleanup_kind, limit, dry_run, confirm)
+        line_cleanup_unlocked(repo, idle_for, cleanup_kind, limit, include_protected, true)
     })
 }

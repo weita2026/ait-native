@@ -7,7 +7,7 @@ generator="$repo_root/.ait-external/ait-core/ci/generate_rust_notice.sh"
 
 if [[ ! -f "$generator" ]]; then
   echo "materialized ait-core notice generator is missing: $generator" >&2
-  echo "run 'ait external update ait-core --locked --validate' first" >&2
+  echo "run 'ait external update --locked --validate' first" >&2
   exit 1
 fi
 

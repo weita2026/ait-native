@@ -194,12 +194,21 @@ tag. The deterministic exported tree has these fixed paths:
 ```text
 ait-native/
 ├── .gitattributes
-├── .github/workflows/
+├── .github/
+│   ├── DISCUSSION_TEMPLATE/
+│   ├── ISSUE_TEMPLATE/
+│   ├── PULL_REQUEST_TEMPLATE.md
+│   ├── release.yml
+│   ├── social-preview.png
+│   └── workflows/
+├── CITATION.cff
+├── CODE_OF_CONDUCT.md
 ├── CONTRIBUTING.md
 ├── LICENSE
 ├── LICENSES/
 ├── NOTICE
 ├── SECURITY.md
+├── SUPPORT.md
 ├── ait-core/
 ├── ait-server/
 ├── ait-runner/
@@ -213,6 +222,14 @@ ait-native/
 ├── ci/
 └── docs/distribution.md
 ```
+
+The root GitHub community surface is a deterministic release input. Issue and
+Discussion forms route public support without admitting a beginner-task
+inventory; the pull-request template records validation and provenance; the
+code of conduct, support policy, citation metadata, release-note categories,
+and 1280-by-640 social preview remain byte-stable across repeated exports.
+Security reports continue to use private vulnerability reporting rather than
+public issues or Discussions.
 
 `ait-monorepo-source.json` maps each subtree to its exact internal AIT
 Snapshot, Snapshot manifest hash and creation time, license, components,
@@ -252,7 +269,7 @@ cd ait-native
 ```
 
 Windows uses `build-release.ps1`. The shared Node implementation builds the
-native `ait`, `ait-agent`, `ait-server`, and `ait-runner` executables, the
+native `ait`, `ait-agent-worker`, `ait-server`, and `ait-runner` executables, the
 Python wheel, the portable npm JS/TS envelope, and the current host's direct
 Node-API addon. Its locally synthesized receipts and all resulting files are
 marked `publishable: false`; they prove clean source usability but cannot
@@ -264,6 +281,22 @@ with a pointer to `ait-native`; they are not declared distribution identities
 and therefore cannot enter the v3 family. Deletion is reserved for a separate
 security or legal requirement because it would break existing links, tags,
 forks, and source traceability.
+
+## Public 0.x To 1.0 Transition
+
+The public 0.x package page is historical. Its requirement to run `ait install`
+as a second installation step and its Task-DAG, parallel-agent, chat-dispatch,
+and server-first positioning do not describe the 1.0 product. The 1.0 start
+command is `ait init`; `ait install` is absent rather than retained as a
+compatibility or onboarding path.
+
+Keep the existing Git repository and history when evaluating 1.0. A release
+candidate does not by itself admit in-place reuse of legacy 0.x `.ait` data.
+Until the selected release's migration evidence explicitly passes, use a clean
+clone or a new repository authority, retain the old authority for recovery,
+and do not delete or overwrite it. GA remains blocked until migration from the
+last admitted public format and the non-destructive Git exit path satisfy the
+product admission contract.
 
 ## Distribution Objective
 
@@ -337,7 +370,7 @@ reinterpret the native runtime.
 | Component | Public surface | Source authority | License | 1.0.0 role |
 | --- | --- | --- | --- | --- |
 | `ait` | native executable | `ait-core` | Apache-2.0 | repository and workflow CLI |
-| `ait-agent` | native executable | `ait-core` | Apache-2.0 | agent runtime and transports |
+| `ait-agent-worker` | native executable | `ait-core` | Apache-2.0 | configuration-backed agent runtime and transports |
 | `ait-server` | native executable | `ait-server` | AGPL-3.0-only | remote protocol and durable authority |
 | `ait-runner` | native executable | `ait-runner` | Apache-2.0 | remote native execution plane |
 | `ait-python` | PyO3 binding payload embedded in PyPI `ait-native` | `ait-python` + pinned `ait-core` | Apache-2.0 | direct in-process integration without a separate PyPI project |
@@ -348,7 +381,7 @@ reinterpret the native runtime.
 ## License And Source Publication Gate
 
 The family is an aggregate of separately licensed components; bundling does
-not relicense them. `ait`, `ait-agent`, `ait-runner`, `ait-python`, and
+not relicense them. `ait`, `ait-agent-worker`, `ait-runner`, `ait-python`, and
 the `ait-node` envelope and addons are Apache-2.0. `ait-server` is
 AGPL-3.0-only. The public source tree has this exact license topology:
 

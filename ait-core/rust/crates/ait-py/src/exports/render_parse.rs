@@ -909,43 +909,6 @@ fn normalize_namespace_prefix_from_any(value: Bound<'_, PyAny>) -> Option<String
     Some(value.str().ok()?.to_string_lossy().trim().to_string())
 }
 
-fn optional_text(payload: &Bound<'_, PyDict>, key: &str) -> PyResult<Option<String>> {
-    match payload.get_item(key)? {
-        Some(value) => {
-            if value.is_none() {
-                return Ok(None);
-            }
-            let text = value.extract::<String>().map_err(|_| {
-                PyValueError::new_err("Task close payload text fields must be strings.")
-            })?;
-            let normalized = text.trim().to_string();
-            if normalized.is_empty() {
-                Ok(None)
-            } else {
-                Ok(Some(normalized))
-            }
-        }
-        None => Ok(None),
-    }
-}
-
-fn optional_bool(payload: &Bound<'_, PyDict>, key: &str) -> PyResult<bool> {
-    match payload.get_item(key)? {
-        Some(value) => {
-            if value.is_none() {
-                return Ok(false);
-            }
-            value.extract::<bool>().map_err(|_| {
-                PyValueError::new_err(format!(
-                    "Task close payload field `{}` must be a boolean.",
-                    key
-                ))
-            })
-        }
-        None => Ok(false),
-    }
-}
-
 fn render_json_dict(py: Python<'_>, value: JsonValue) -> PyResult<Py<PyDict>> {
     match value {
         JsonValue::Object(values) => {
@@ -1173,16 +1136,6 @@ fn plan_diagnostics_normalize_backend_identity_py(
     render_json_dict(py, payload)
 }
 
-#[pyfunction(name = "plan_diagnostics_normalize_wheel_status")]
-fn plan_diagnostics_normalize_wheel_status_py(
-    py: Python<'_>,
-    payload_json: &str,
-) -> PyResult<Py<PyDict>> {
-    let payload =
-        normalize_plan_wheel_status_payload_json(payload_json).map_err(PyValueError::new_err)?;
-    render_json_dict(py, payload)
-}
-
 #[pyfunction(name = "plan_diagnostics_normalize_compatibility")]
 fn plan_diagnostics_normalize_compatibility_py(
     py: Python<'_>,
@@ -1220,16 +1173,6 @@ fn plan_diagnostics_build_backend_identity_facts_py(
 ) -> PyResult<Py<PyDict>> {
     let payload =
         build_plan_backend_identity_facts_json(payload_json).map_err(PyValueError::new_err)?;
-    render_json_dict(py, payload)
-}
-
-#[pyfunction(name = "plan_diagnostics_build_wheel_status_facts")]
-fn plan_diagnostics_build_wheel_status_facts_py(
-    py: Python<'_>,
-    payload_json: &str,
-) -> PyResult<Py<PyDict>> {
-    let payload =
-        build_plan_wheel_status_facts_json(payload_json).map_err(PyValueError::new_err)?;
     render_json_dict(py, payload)
 }
 
@@ -1866,10 +1809,6 @@ fn register_render_parse(_py: Python<'_>, module: &Bound<'_, PyModule>) -> PyRes
         module
     )?)?;
     module.add_function(wrap_pyfunction!(
-        plan_diagnostics_normalize_wheel_status_py,
-        module
-    )?)?;
-    module.add_function(wrap_pyfunction!(
         plan_diagnostics_normalize_compatibility_py,
         module
     )?)?;
@@ -1883,10 +1822,6 @@ fn register_render_parse(_py: Python<'_>, module: &Bound<'_, PyModule>) -> PyRes
     )?)?;
     module.add_function(wrap_pyfunction!(
         plan_diagnostics_build_backend_identity_facts_py,
-        module
-    )?)?;
-    module.add_function(wrap_pyfunction!(
-        plan_diagnostics_build_wheel_status_facts_py,
         module
     )?)?;
     module.add_function(wrap_pyfunction!(

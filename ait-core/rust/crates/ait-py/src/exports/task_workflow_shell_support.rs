@@ -4,6 +4,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::json_support::{encode_json_value_pretty, parse_json_object_or_empty};
+use ait_core::environment_contract::names;
 use ait_core::json_support::{json, JsonMap as Map, JsonValue};
 use ait_core::plan_http_client::{PlanHttpClientConfig, PlanHttpClientManager};
 use ait_core::remote_store::{remote_by_name_with_remote_store, ConfigRemoteStore};
@@ -23,7 +24,7 @@ const WORKFLOW_WAIT_HINT_MAX_SECONDS: i64 = 900;
 const WORKFLOW_WAIT_HINT_HISTORY_LIMIT: usize = 40;
 const WORKFLOW_WAIT_HINT_SAMPLE_LIMIT: usize = 12;
 const CODE_REVIEW_SUMMARY_TEMPLATE: &str =
-    "Reviewed files: <paths reviewed>; Findings: <blocking/non-blocking findings>; Risks: <residual risks>; Tests: <checks run>; Recommendation: <land/defer/request changes>";
+    "Reviewed files: <paths reviewed>; Findings: <findings resolved before submission>; Risks: <residual risks>; Tests: <checks run>; Recommendation: <pass when this exact Patchset is ready>";
 const CODE_REVIEW_SUMMARY_TEMPLATE_HINT_COMMAND: &str = "ait review code template --style numbered";
 
 fn normalize_text(value: Option<&str>) -> Option<String> {
@@ -35,23 +36,6 @@ fn normalize_text(value: Option<&str>) -> Option<String> {
 
 fn normalize_json_text(value: Option<&JsonValue>) -> Option<String> {
     normalize_text(value.and_then(JsonValue::as_str))
-}
-
-fn ctx_text(ctx: &Bound<'_, PyAny>, attr_name: &str) -> PyResult<Option<String>> {
-    let value = match ctx.getattr(attr_name) {
-        Ok(value) => value,
-        Err(err) if err.is_instance_of::<PyKeyError>(ctx.py()) => return Ok(None),
-        Err(err) if err.is_instance_of::<pyo3::exceptions::PyAttributeError>(ctx.py()) => {
-            return Ok(None)
-        }
-        Err(err) => return Err(err),
-    };
-    if value.is_none() {
-        return Ok(None);
-    }
-    Ok(normalize_text(Some(
-        value.str()?.to_string_lossy().as_ref(),
-    )))
 }
 
 fn json_bool_toggle(value: Option<&JsonValue>) -> Option<bool> {
@@ -300,7 +284,7 @@ fn remote_tuple(
     Ok((remote, repo_name))
 }
 
-fn task_review_auto_approval_reviewer_identity(config: &Map<String, JsonValue>) -> Option<String> {
+fn task_review_reviewer_identity(config: &Map<String, JsonValue>) -> Option<String> {
     normalize_json_text(config.get("user_name"))
 }
 
@@ -330,8 +314,7 @@ fn workflow_land_patchset_command(
     base_line_name: &str,
     worktree_retarget: Option<&JsonValue>,
 ) -> String {
-    let publish_command =
-        format!("ait patchset publish --change {change_id} --summary \"review summary\"");
+    let publish_command = format!("ait patchset publish {change_id} --summary \"review summary\"");
     let Some(worktree_retarget) = worktree_retarget.and_then(JsonValue::as_object) else {
         return publish_command;
     };
@@ -355,6 +338,7 @@ pub fn workflow_ready_command_hints(
     base_line_name: &str,
     worktree_retarget: Option<&JsonValue>,
 ) -> PyResult<JsonValue> {
+    let config = merged_config(ctx)?;
     let root = ctx_path(ctx, "root")?;
     let patchset_id = patchset
         .and_then(JsonValue::as_object)
@@ -384,12 +368,55 @@ pub fn workflow_ready_command_hints(
     } else {
         attest_command.clone()
     };
+    let apply_command = format!("ait workflow ready {change_id} --apply");
+    let code_review_summary_command = patchset_id
+        .as_ref()
+        .map(|patchset_id| {
+            JsonValue::String(format!(
+                "ait review code submit {change_id} --patchset {patchset_id} --message \"{CODE_REVIEW_SUMMARY_TEMPLATE}\""
+            ))
+        })
+        .unwrap_or(JsonValue::Null);
+    let task_review_required = task_review_enabled(ctx)?;
+    let auto_review_reviewer = if task_review_required {
+        None
+    } else {
+        task_review_reviewer_identity(&config)
+    };
+    let manual_review_command = if task_review_required {
+        patchset_id
+            .as_ref()
+            .map(|patchset_id| {
+                JsonValue::String(format!(
+                    "ait review task approve {change_id} --patchset {patchset_id} --message \"<functional validation>\""
+                ))
+            })
+            .unwrap_or(JsonValue::Null)
+    } else {
+        JsonValue::Null
+    };
+    let review_command = if task_review_required {
+        manual_review_command.clone()
+    } else if auto_review_reviewer.is_some() {
+        JsonValue::String(apply_command.clone())
+    } else {
+        JsonValue::String("ait config set --user-name \"<name>\"".to_string())
+    };
     Ok(json!({
-        "apply_command": format!("ait workflow ready {change_id} --apply"),
+        "apply_command": apply_command,
         "publish_command": publish_command,
         "patchset_ci_command": patchset_ci_command,
         "attest_command": attest_command,
         "attestation_command": attestation_command,
+        "code_review_summary_command": code_review_summary_command,
+        "code_review_template_command": if patchset_id.is_some() {
+            JsonValue::String(CODE_REVIEW_SUMMARY_TEMPLATE_HINT_COMMAND.to_string())
+        } else {
+            JsonValue::Null
+        },
+        "review_command": review_command,
+        "manual_review_command": manual_review_command,
+        "auto_review_reviewer": auto_review_reviewer,
         "land_command": format!("ait task land {change_id}"),
     }))
 }
@@ -405,7 +432,7 @@ pub fn workflow_land_command_hints(
     worktree_retarget: Option<&JsonValue>,
     review_blocking: i64,
     requires_code_review_summary: bool,
-    task_review_enabled: bool,
+    task_review_required: bool,
 ) -> PyResult<JsonValue> {
     let config = merged_config(ctx)?;
     let root = ctx_path(ctx, "root")?;
@@ -441,19 +468,25 @@ pub fn workflow_land_command_hints(
     };
     let code_review_summary_command = patchset_id.as_ref().map(|patchset_id| {
         JsonValue::String(format!(
-            "ait review code submit {change_id} --patchset {patchset_id} --verdict pass --message \"{CODE_REVIEW_SUMMARY_TEMPLATE}\""
+            "ait review code submit {change_id} --patchset {patchset_id} --message \"{CODE_REVIEW_SUMMARY_TEMPLATE}\""
         ))
     }).unwrap_or(JsonValue::Null);
-    let auto_review_reviewer = if task_review_enabled {
+    let auto_review_reviewer = if task_review_required {
         None
     } else {
-        task_review_auto_approval_reviewer_identity(&config)
-            .or_else(|| ctx_text(ctx, "user_name").ok().flatten())
+        task_review_reviewer_identity(&config)
     };
-    let manual_review_command = if let Some(patchset_id) = patchset_id.as_ref() {
-        format!("ait review task approve {change_id} --patchset {patchset_id}")
+    let manual_review_command = if task_review_required {
+        patchset_id
+            .as_ref()
+            .map(|patchset_id| {
+                JsonValue::String(format!(
+                    "ait review task approve {change_id} --patchset {patchset_id} --message \"<functional validation>\""
+                ))
+            })
+            .unwrap_or(JsonValue::Null)
     } else {
-        format!("ait review task approve {change_id}")
+        JsonValue::Null
     };
     let team_review_command = if let Some(patchset_id) = patchset_id.as_ref() {
         if team_review_enabled {
@@ -468,18 +501,21 @@ pub fn workflow_land_command_hints(
     } else {
         JsonValue::Null
     };
+    let ready_command = format!("ait workflow ready {change_id} --apply");
     let review_command = if review_blocking > 0 {
-        format!("ait review show {change_id}")
-    } else if auto_review_reviewer.is_some() {
-        apply_command.clone()
-    } else {
+        JsonValue::String(format!("ait review show {change_id}"))
+    } else if task_review_required {
         manual_review_command.clone()
+    } else if auto_review_reviewer.is_some() {
+        JsonValue::String(ready_command.clone())
+    } else {
+        JsonValue::String("ait config set --user-name \"<name>\"".to_string())
     };
     let land_command = apply_command.clone();
     Ok(json!({
         "publish_command": publish_command,
         "apply_command": apply_command,
-        "ready_command": format!("ait workflow ready {change_id} --apply"),
+        "ready_command": ready_command,
         "patchset_ci_command": patchset_ci_command,
         "attest_command": attest_command,
         "attestation_command": attestation_command,
@@ -495,7 +531,7 @@ pub fn workflow_land_command_hints(
         "auto_review_reviewer": auto_review_reviewer,
         "policy_command": patchset_id.as_ref().map(|patchset_id| JsonValue::String(format!("ait policy eval {patchset_id}"))).unwrap_or(JsonValue::Null),
         "land_command": land_command,
-        "task_complete_command": format!("ait task land {change_id}"),
+        "task_land_command": format!("ait task land {change_id}"),
     }))
 }
 
@@ -618,29 +654,12 @@ fn history_wait_hint_sample(detail: &JsonValue, kind: &str) -> PyResult<Option<i
 
 fn http_auth_headers(config: &Map<String, JsonValue>) -> BTreeMap<String, String> {
     let mut headers = BTreeMap::new();
-    let actor = normalize_text(env::var("AIT_NATIVE_ACTOR").ok().as_deref())
-        .or_else(|| normalize_text(env::var("AIT_ACTOR").ok().as_deref()))
-        .or_else(|| {
-            normalize_json_text(config.get("user_email"))
-                .or_else(|| normalize_json_text(config.get("user_name")))
-        });
-    let actor_type = normalize_text(env::var("AIT_NATIVE_ACTOR_TYPE").ok().as_deref())
-        .or_else(|| normalize_text(env::var("AIT_ACTOR_TYPE").ok().as_deref()));
-    let roles = normalize_text(env::var("AIT_NATIVE_ROLES").ok().as_deref())
-        .or_else(|| normalize_text(env::var("AIT_ROLES").ok().as_deref()));
-    let repos = normalize_text(env::var("AIT_NATIVE_REPOS").ok().as_deref())
-        .or_else(|| normalize_text(env::var("AIT_REPOS").ok().as_deref()));
+    let actor = normalize_text(env::var(names::AIT_NATIVE_ACTOR).ok().as_deref()).or_else(|| {
+        normalize_json_text(config.get("user_email"))
+            .or_else(|| normalize_json_text(config.get("user_name")))
+    });
     if let Some(actor) = actor {
         headers.insert("X-AIT-Actor".to_string(), actor);
-    }
-    if let Some(actor_type) = actor_type {
-        headers.insert("X-AIT-Actor-Type".to_string(), actor_type);
-    }
-    if let Some(roles) = roles {
-        headers.insert("X-AIT-Roles".to_string(), roles);
-    }
-    if let Some(repos) = repos {
-        headers.insert("X-AIT-Repos".to_string(), repos);
     }
     headers
 }

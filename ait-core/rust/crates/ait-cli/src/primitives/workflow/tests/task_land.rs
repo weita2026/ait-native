@@ -5,6 +5,48 @@ use crate::primitives::workflow::task_land::task_land_apply_local;
 use crate::task_land_contract::{attach_task_land_contract, task_land_exit_code};
 
 #[test]
+fn workflow_land_preserves_reviewer_actions_before_atomic_task_land_history() {
+    let output = json!({
+        "applied_actions": [{"code": "submit_land", "delivery": "atomic_task_land"}],
+        "mutation_receipts": [{"action": "submit_land", "delivery": "atomic_response"}],
+    });
+    let merged = workflow_land_attach_atomic_task_land_history(
+        output,
+        vec![
+            json!({"code": "record_code_review_summary"}),
+            json!({"code": "record_review"}),
+            json!({"code": "evaluate_policy"}),
+        ],
+        vec![json!({"action": "record_review"})],
+    )
+    .expect("merge reviewer and atomic history");
+
+    let action_codes = merged["applied_actions"]
+        .as_array()
+        .expect("applied actions")
+        .iter()
+        .map(|row| row["code"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        action_codes,
+        vec![
+            "record_code_review_summary",
+            "record_review",
+            "evaluate_policy",
+            "submit_land"
+        ]
+    );
+    assert_eq!(
+        merged["reviewer_workflow"]["reviewer_action_count"].as_u64(),
+        Some(3)
+    );
+    assert_eq!(
+        merged["reviewer_workflow"]["finalizer"].as_str(),
+        Some("task-land-atomic/v1")
+    );
+}
+
+#[test]
 fn task_land_remote_change_id_accepts_change_and_task_record_remote_traits() {
     let mut remote = FakeWorkflowReadRemote {
         tasks: BTreeMap::from([(
@@ -262,7 +304,7 @@ fn archived_primary_task_line_uses_the_active_legacy_candidate() {
     create_local_line(&repo, &primary, None).unwrap();
     archive_local_line(&repo, &primary).unwrap();
 
-    let ensured = ensure_task_feature_line(&repo, task_id, "main", None)
+    let ensured = ensure_task_feature_line(&repo, task_id, "main", None, true)
         .expect("archived primary Line uses the unused exact legacy candidate");
     assert_eq!(ensured["line_name"], legacy);
     assert_eq!(ensured["status"], "active");
@@ -279,7 +321,7 @@ fn archived_primary_task_line_uses_the_active_legacy_candidate() {
     assert_eq!(captured["binding_source"], "task_identity_fallback");
 
     archive_local_line(&repo, &legacy).unwrap();
-    let error = ensure_task_feature_line(&repo, task_id, "main", None)
+    let error = ensure_task_feature_line(&repo, task_id, "main", None, true)
         .expect_err("two archived exact candidates must never be reused");
     assert!(
         error.contains("All exact feature Line candidates"),

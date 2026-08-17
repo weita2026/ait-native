@@ -44,7 +44,6 @@ fn configure_local_reconciliation_repo(root: &Path) {
   "task_default_scope": "local",
   "sprint": "off",
   "plan_task_binding": {"mode": "off"},
-  "task_tracking": "on",
   "user_name": "Fixture User",
   "user_email": "fixture@example.com"
 }"#,
@@ -89,7 +88,6 @@ fn native_workflow_reconcile_inventory_is_read_only_and_stable() {
   "task_default_scope": "local",
   "sprint": "off",
   "plan_task_binding": {"mode": "off"},
-  "task_tracking": "on",
   "user_name": "Fixture User",
   "user_email": "fixture@example.com"
 }"#,
@@ -104,8 +102,6 @@ fn native_workflow_reconcile_inventory_is_read_only_and_stable() {
             "Reconciliation fixture",
             "--intent",
             "prove inventory does not mutate repository state",
-            "--base-line",
-            "main",
             "--json",
         ],
     );
@@ -197,7 +193,6 @@ fn native_workflow_reconcile_apply_is_receipted_idempotent_and_protects_dirty_wo
   "task_default_scope": "local",
   "sprint": "off",
   "plan_task_binding": {"mode": "off"},
-  "task_tracking": "on",
   "user_name": "Fixture User",
   "user_email": "fixture@example.com"
 }"#,
@@ -340,17 +335,17 @@ fn native_task_terminal_hook_reconciles_clean_bound_worktree() {
     assert!(registry.exists());
     assert!(worktree.exists());
 
-    let canceled = json_output(
+    let abandoned = json_output(
         root,
-        &["task", "canceled", task_id, "--local", "--json"],
+        &["task", "abandon", task_id, "--local", "--json"],
     );
-    assert_eq!(canceled["status"], json!("abandoned"));
+    assert_eq!(abandoned["status"], json!("abandoned"));
     assert_eq!(
-        canceled["automatic_reconciliation"]["automatic_trigger"]["trigger"],
+        abandoned["automatic_reconciliation"]["automatic_trigger"]["trigger"],
         json!("task_terminal")
     );
-    assert_eq!(canceled["automatic_reconciliation"]["safe_only"], json!(true));
-    assert_eq!(canceled["automatic_reconciliation"]["mutated"], json!(true));
+    assert_eq!(abandoned["automatic_reconciliation"]["safe_only"], json!(true));
+    assert_eq!(abandoned["automatic_reconciliation"]["mutated"], json!(true));
     assert!(!registry.exists());
     assert!(!worktree.exists());
 }
@@ -584,8 +579,6 @@ fn native_task_change_worktree_line_cleanup_converges_across_bounded_passes() {
             "Terminal owner cascade",
             "--intent",
             "prove worktree cleanup exposes a subsequent orphan line action",
-            "--base-line",
-            "main",
             "--json",
         ],
     );
@@ -597,13 +590,13 @@ fn native_task_change_worktree_line_cleanup_converges_across_bounded_passes() {
         &["change", "close", change_id, "--local", "--json"],
     );
     assert_eq!(closed_change["status"], json!("archived"));
-    let canceled = json_output(
+    let abandoned = json_output(
         root,
-        &["task", "canceled", task_id, "--local", "--json"],
+        &["task", "abandon", task_id, "--local", "--json"],
     );
-    assert_eq!(canceled["automatic_reconciliation"]["mutated"], json!(true));
+    assert_eq!(abandoned["automatic_reconciliation"]["mutated"], json!(true));
     assert_eq!(
-        canceled["automatic_reconciliation"]["apply_summary"]["remaining_safe_count"],
+        abandoned["automatic_reconciliation"]["apply_summary"]["remaining_safe_count"],
         json!(1)
     );
 

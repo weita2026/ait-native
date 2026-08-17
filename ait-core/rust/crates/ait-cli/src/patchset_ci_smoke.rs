@@ -4,8 +4,8 @@ use crate::json_support::{
 };
 use crate::runtime::RepoRuntime;
 use ait_core::json_support::{json, JsonValue};
+use std::cell::RefCell;
 use std::collections::{BTreeSet, HashSet};
-use std::env;
 use std::fs;
 use std::net::TcpListener;
 use std::path::{Component, Path, PathBuf};
@@ -56,6 +56,42 @@ const IGNORED_DIRS: &[&str] = &[
 
 const FIXTURE_BASE_SNAPSHOT_ID: &str = "SNP-000000000001";
 const FIXTURE_FINAL_LOCAL_SNAPSHOT_ID: &str = "SNP-000000000003";
+
+thread_local! {
+    static INTERNAL_CLI_EXECUTABLE: RefCell<Option<PathBuf>> = const { RefCell::new(None) };
+}
+
+fn with_internal_cli_executable<T>(
+    executable: &Path,
+    run: impl FnOnce() -> Result<T, String>,
+) -> Result<T, String> {
+    let executable = executable.canonicalize().map_err(|error| {
+        format!(
+            "internal Patchset CI runner could not resolve native CLI {}: {error}",
+            executable.display()
+        )
+    })?;
+    if !executable.is_file() {
+        return Err(format!(
+            "internal Patchset CI runner native CLI is not a file: {}",
+            executable.display()
+        ));
+    }
+    INTERNAL_CLI_EXECUTABLE.with(|slot| {
+        let previous = slot.replace(Some(executable));
+        let result = run();
+        slot.replace(previous);
+        result
+    })
+}
+
+fn internal_cli_executable() -> Result<PathBuf, String> {
+    INTERNAL_CLI_EXECUTABLE
+        .with(|slot| slot.borrow().clone())
+        .ok_or_else(|| {
+            "internal Patchset CI runner requires an explicit native ait-cli executable".to_string()
+        })
+}
 
 #[derive(Clone, Copy, Debug)]
 struct Tg1Case {
@@ -140,6 +176,7 @@ struct FakeRemoteState {
     last_submitted_patchset_id: Option<String>,
     closed_task_ids: BTreeSet<String>,
     history_promotion: Option<JsonValue>,
+    history_promotion_receipt_task_ids: BTreeSet<String>,
 }
 
 struct FakeRemote {

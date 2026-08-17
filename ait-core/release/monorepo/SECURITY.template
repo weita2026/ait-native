@@ -43,7 +43,7 @@ the report private until a maintainer confirms that disclosure is safe.
 
 Security reports may cover:
 
-- the `ait`, `ait-agent`, `ait-server`, and `ait-runner` native executables;
+- the `ait`, `ait-agent-worker`, `ait-server`, and `ait-runner` native executables;
 - the direct PyO3 Python and Node-API Node.js bindings;
 - release packages, installers, OCI images, signatures, checksums, provenance,
   and protected publication workflows;

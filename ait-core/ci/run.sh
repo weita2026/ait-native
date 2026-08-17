@@ -30,7 +30,6 @@ trap cleanup 0 1 2 15
 
 mkdir -p \
   "$owned_root/tmp" \
-  "$owned_root/test-outside" \
   "$owned_root/cargo-target" \
   "$owned_root/cargo-build"
 
@@ -38,8 +37,6 @@ export TMPDIR="$owned_root/tmp"
 export CARGO_TARGET_DIR="$owned_root/cargo-target"
 export CARGO_BUILD_BUILD_DIR="$owned_root/cargo-build/{workspace-path-hash}"
 export CARGO_INCREMENTAL=0
-export AIT_TEST_DISABLE_GLOBAL_HOST_RAM_ROOT_CLEANUP=1
-export AIT_TEST_OUTSIDE_REPO_TMP="$owned_root/test-outside"
 
 cd "$repo_root"
 
@@ -60,18 +57,39 @@ fi
 cargo test \
   --manifest-path rust/Cargo.toml \
   --profile ait-ci \
+  -p ait-core \
+  -p ait-cli \
   -p ait-agent-core \
   -p ait-py \
-  -p ait-cli \
   --lib \
-  --bin ait-cli \
-  --test patchset_ci_smoke_cli \
+  --test server_source_ownership \
+  --test patchset_ci_runner \
   --no-run
 
+cargo test \
+  --manifest-path rust/Cargo.toml \
+  --profile ait-ci \
+  -p ait-core \
+  --lib \
+  --test server_source_ownership
+
+# Markdown is Plan lineage and is intentionally absent from remote Snapshot
+# materialization. Canonical source still carries the sole protected authority.
+if [ -f "$repo_root/docs/binary_db_v0.md" ]; then
+  cargo test \
+    --manifest-path rust/Cargo.toml \
+    --profile ait-ci \
+    -p ait-core \
+    --test binary_db_schema_authority
+else
+  printf '%s\n' "skipping binary_db_schema_authority: lineage-only Markdown is unavailable in this Snapshot"
+fi
+
+cargo test --manifest-path rust/Cargo.toml --profile ait-ci -p ait-cli --lib
 cargo test --manifest-path rust/Cargo.toml --profile ait-ci -p ait-agent-core --lib
 cargo test --manifest-path rust/Cargo.toml --profile ait-ci -p ait-py --lib
 cargo test \
   --manifest-path rust/Cargo.toml \
   --profile ait-ci \
   -p ait-cli \
-  --test patchset_ci_smoke_cli
+  --test patchset_ci_runner

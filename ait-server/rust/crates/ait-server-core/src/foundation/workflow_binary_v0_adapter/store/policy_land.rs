@@ -1023,6 +1023,16 @@ where
         let explicit_submission = Self::optional_text(payload, "submission_id");
         let expected_head = Self::optional_text(payload, "expected_head_snapshot_id")
             .or_else(|| Self::optional_text(payload, "expected_target_line_head"));
+        if atomic_task_land {
+            let requested_ref = Self::required_text(payload, "task_or_change_ref")?;
+            self.apply_staged_history_receipts_before_atomic_land(
+                change_id,
+                &requested_ref,
+                &target_line,
+                requested_patchset.as_deref(),
+                expected_head.as_deref(),
+            )?;
+        }
         let now = Self::now_s()?;
         #[cfg(feature = "perfetto-tracing")]
         let writer_trace = atomic_task_land.then(|| {

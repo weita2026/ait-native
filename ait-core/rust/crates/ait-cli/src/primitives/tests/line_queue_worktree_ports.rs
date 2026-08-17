@@ -157,7 +157,7 @@ fn remote_line_helpers_accept_single_capability_ports() {
 }
 
 #[test]
-fn repo_status_helpers_accept_repo_status_store_trait() {
+fn repo_status_snapshot_count_accepts_repo_status_store_trait() {
     let store = FakeRepoStatusStore {
         storage_counts: RepoStatusStorageCounts {
             snapshot_count: 13,
@@ -166,10 +166,10 @@ fn repo_status_helpers_accept_repo_status_store_trait() {
         },
     };
 
-    let counts = repo_status_storage_counts_with_store(&store).expect("storage counts");
-    assert_eq!(counts["snapshot_count"], json!(13));
-    assert_eq!(counts["pack_count"], json!(5));
-    assert_eq!(counts["packed_blob_count"], json!(21));
+    assert_eq!(
+        repo_status_snapshot_count_with_store(&store).expect("snapshot count"),
+        13
+    );
 }
 
 #[test]
@@ -290,58 +290,40 @@ fn queue_remote_reads_accept_queue_remote_trait() {
             ],
             "count": 1
         })),
-        changes: vec![json!({
-            "change_id": "RCC-1",
-            "status": "active",
-            "current_patchset_number": 1
-        })],
         ..Default::default()
     };
     let section = json!({
         "task_queue": JsonValue::Null,
         "reviewer_inbox": JsonValue::Null,
-        "changes": JsonValue::Null,
         "error": JsonValue::Null,
     });
 
-    let result =
-        queue_remote_reads_with_task_remote(&mut remote, section, "fixture-ait", "active", true)
-            .expect("queue remote reads");
+    let result = queue_remote_reads_with_task_remote(&mut remote, section, "fixture-ait")
+        .expect("queue remote reads");
 
     assert_eq!(result["error"], JsonValue::Null);
     assert_eq!(result["task_queue"]["items"][0]["task_id"], json!("RCT-1"));
     assert_eq!(result["reviewer_inbox"]["count"], json!(1));
-    assert_eq!(result["changes"][0]["change_id"], json!("RCC-1"));
-    assert_eq!(result["changes"][0]["ready_to_land"], json!(true));
-    assert_eq!(
-        result["changes"][0]["reason"],
-        json!("Focus from task queue.")
-    );
+    assert!(result.get("changes").is_none());
 
-    let bundle_err =
-        queue_remote_summary_bundle_with_task_remote(&mut remote, "fixture-ait", "active")
-            .expect_err("queue summary bundle is configured as missing");
+    let bundle_err = queue_remote_summary_bundle_with_task_remote(&mut remote, "fixture-ait")
+        .expect_err("queue summary bundle is configured as missing");
     assert!(bundle_err.contains("/v1/native/repository-authorities/7/read/queue-summary"));
 
-    let task_queue = queue_remote_task_queue_with_task_remote(&mut remote, "fixture-ait", "active")
+    let task_queue = queue_remote_task_queue_with_task_remote(&mut remote, "fixture-ait")
         .expect("read fallback task queue");
     assert_eq!(task_queue["items"][0]["task_id"], json!("RCT-1"));
 
     let reviewer_inbox = queue_remote_reviewer_inbox_with_task_remote(&mut remote, "fixture-ait")
         .expect("read fallback reviewer inbox");
     assert_eq!(reviewer_inbox["count"], json!(1));
-
-    let changes = queue_remote_change_rows_with_task_remote(&mut remote, "fixture-ait")
-        .expect("read queue change rows");
-    assert_eq!(changes.len(), 1);
-    assert_eq!(changes[0]["change_id"], json!("RCC-1"));
 }
 
 #[test]
 fn queue_remote_helpers_accept_single_capability_ports() {
     let mut task_queue_reader = FakeTaskQueueReader;
     let task_queue =
-        queue_remote_task_queue_with_task_remote(&mut task_queue_reader, "fixture-ait", "active")
+        queue_remote_task_queue_with_task_remote(&mut task_queue_reader, "fixture-ait")
             .expect("read task queue through single-capability port");
     assert_eq!(task_queue["status"], json!("active"));
 
@@ -352,18 +334,10 @@ fn queue_remote_helpers_accept_single_capability_ports() {
     assert_eq!(reviewer_inbox["reviewer_inbox"], json!(true));
 
     let mut queue_summary_reader = FakeQueueSummaryBundleReader;
-    let queue_summary = queue_remote_summary_bundle_with_task_remote(
-        &mut queue_summary_reader,
-        "fixture-ait",
-        "active",
-    )
-    .expect("read queue summary through single-capability port");
+    let queue_summary =
+        queue_remote_summary_bundle_with_task_remote(&mut queue_summary_reader, "fixture-ait")
+            .expect("read queue summary through single-capability port");
     assert_eq!(queue_summary["summary"], json!(true));
-
-    let mut change_lister = FakeQueueChangeLister;
-    let changes = queue_remote_change_rows_with_task_remote(&mut change_lister, "fixture-ait")
-        .expect("read queue change rows through single-capability port");
-    assert_eq!(changes[0]["change_id"], json!("RCC-1"));
 }
 
 #[test]
@@ -476,10 +450,13 @@ fn task_start_remote_preflight_uses_an_available_remote_head_independently_of_lo
     .expect("local-ahead authority should accept its imported Remote head");
     assert_eq!(line_row["head_snapshot_id"], json!(base_id));
 
-    let feature = ensure_task_feature_line(&repo, "RCT-0099", "main", Some(&base_id))
-        .expect("feature Line should use the Remote Change fork");
+    let feature = ensure_task_feature_line(&repo, "RCT-0099", "remote-only", Some(&base_id), false)
+        .expect("feature Line should use the Remote Change fork without a local base Line");
     assert_eq!(feature["head_snapshot_id"], json!(base_id));
     assert_ne!(feature["head_snapshot_id"], json!(local_id));
+    let empty_feature = ensure_task_feature_line(&repo, "RCT-0100", "remote-empty", None, false)
+        .expect("an empty Remote base should not require a local Line");
+    assert!(empty_feature["head_snapshot_id"].is_null());
 
     repo.binary_db_stores::<SNAPSHOT_BINARY_DB_WRITE_LAYOUT>()
         .lines()
@@ -518,20 +495,16 @@ fn task_start_remote_preflight_uses_an_available_remote_head_independently_of_lo
     .expect("divergent local Line should accept its imported Remote head");
     assert_eq!(remote_diverged["head_snapshot_id"], json!(local_id));
 
-    remote.lines[0]["head_snapshot_id"] = json!("SNP-FFFFFFFFFFFF");
-    let error = task_start_remote_base_line_preflight_with_task_remote(
+    remote.lines[0]["head_snapshot_id"] = JsonValue::Null;
+    let empty_remote = task_start_remote_base_line_preflight_with_task_remote(
         &repo,
         &remote_row,
         &mut remote,
         "fixture-ait",
         "main",
     )
-    .expect_err("missing Remote head must fail before Task allocation");
-    assert!(error.contains("not present in local storage"), "{error}");
-    assert!(
-        error.contains("ait pull --line main --remote origin"),
-        "{error}"
-    );
+    .expect("an empty Remote head must remain authoritative");
+    assert!(empty_remote["head_snapshot_id"].is_null());
 }
 
 #[test]
@@ -981,7 +954,6 @@ fn remote_zstd_snapshot_upload_includes_both_parents_before_merge_child() {
     .expect("record merge");
     let deep_stats = content
         .storage_stats_with_options(LocalContentStatsOptions {
-            include_inventory: false,
             compute_reachability: true,
         })
         .expect("deep GC reachability across merge DAG");

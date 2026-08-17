@@ -1,18 +1,14 @@
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::env;
-use std::ffi::{OsStr, OsString};
+use std::ffi::OsStr;
 use std::fs::{self, File, OpenOptions};
 use std::io::{ErrorKind, Read, Write};
 use std::path::{Component, Path, PathBuf};
 
 pub const SERVER_BINARY_LIFECYCLE_CONTRACT: &str = "ait.server.binary-lifecycle.v1";
 pub const SERVER_BINARY_LAYOUT_ID: u32 = 1;
-pub const SERVER_DATA_ENV: &str = "AIT_NATIVE_SERVER_DATA";
-pub const RUNTIME_DATA_ENV: &str = "AIT_RUNTIME_DATA";
-pub const SERVER_BINARY_ACTIVATION_ENV: &str = "AIT_NATIVE_SERVER_BINARY_ACTIVATION";
-pub const SERVER_RUNTIME_LEASE_REPLICA_ENV: &str = "AIT_NATIVE_SERVER_RUNTIME_LEASE_REPLICA";
+pub const SERVER_DATA_ENV: &str = crate::environment_contract::names::AIT_NATIVE_SERVER_DATA;
 pub const SERVER_BINARY_ACTIVATION_SCHEMA: &str = "ait.server.binary_v0.activation.v1";
 pub const SERVER_FRESH_COMPLETION_FILE: &str = "generation-complete.json";
 pub const SERVER_LEGACY_CONVERSION_COMPLETION_FILE: &str = "conversion-complete.json";
@@ -26,25 +22,9 @@ const SERVER_RUNTIME_LEASE_FILE: &str = "worker-leases.bin";
 const MAX_ACTIVATION_BYTES: u64 = 64 * 1024;
 const MAX_COMPLETION_BYTES: u64 = 1024 * 1024;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ServerDataSource {
-    ServerDataEnvironment,
-    RuntimeDataEnvironment,
-}
-
-impl ServerDataSource {
-    pub const fn label(self) -> &'static str {
-        match self {
-            Self::ServerDataEnvironment => SERVER_DATA_ENV,
-            Self::RuntimeDataEnvironment => RUNTIME_DATA_ENV,
-        }
-    }
-}
-
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ServerBinaryLifecycleConfig {
     pub server_data_root: PathBuf,
-    pub server_data_source: ServerDataSource,
     pub binary_root: PathBuf,
     pub generations_root: PathBuf,
     pub activation_pointer: PathBuf,
@@ -70,78 +50,39 @@ struct ActivationPointer {
 }
 
 impl ServerBinaryLifecycleConfig {
-    pub fn from_process_env() -> Result<Self, String> {
-        Self::from_environment(|name| env::var_os(name))
-    }
-
-    pub fn from_environment<F>(mut value: F) -> Result<Self, String>
-    where
-        F: FnMut(&str) -> Option<OsString>,
-    {
-        let (server_data_root, server_data_source) =
-            match required_path_env(&mut value, SERVER_DATA_ENV)? {
-                Some(root) => (root, ServerDataSource::ServerDataEnvironment),
-                None => match required_path_env(&mut value, RUNTIME_DATA_ENV)? {
-                    Some(root) => (root, ServerDataSource::RuntimeDataEnvironment),
-                    None => {
-                        return Err(format!(
-                            "{SERVER_DATA_ENV} or {RUNTIME_DATA_ENV} is required for the Binary server runtime"
-                        ))
-                    }
-                },
-            };
-        validate_absolute_path(SERVER_DATA_ENV, &server_data_root)?;
+    pub fn from_server_data_root(server_data_root: PathBuf) -> Result<Self, String> {
+        validate_absolute_path("server data root", &server_data_root)?;
 
         let binary_root = server_data_root.join(SERVER_BINARY_DIR);
         let generations_root = binary_root.join(SERVER_GENERATIONS_DIR);
-        let activation_pointer = match required_path_env(&mut value, SERVER_BINARY_ACTIVATION_ENV)?
-        {
-            Some(path) => path,
-            None => binary_root.join(SERVER_ACTIVATION_FILE),
-        };
-        let runtime_lease_replica =
-            match required_path_env(&mut value, SERVER_RUNTIME_LEASE_REPLICA_ENV)? {
-                Some(path) => path,
-                None => server_data_root
-                    .join(SERVER_RUNTIME_DIR)
-                    .join(SERVER_RUNTIME_LEASE_FILE),
-            };
+        let activation_pointer = binary_root.join(SERVER_ACTIVATION_FILE);
+        let runtime_lease_replica = server_data_root
+            .join(SERVER_RUNTIME_DIR)
+            .join(SERVER_RUNTIME_LEASE_FILE);
 
-        validate_absolute_path(SERVER_BINARY_ACTIVATION_ENV, &activation_pointer)?;
-        validate_absolute_path(SERVER_RUNTIME_LEASE_REPLICA_ENV, &runtime_lease_replica)?;
+        validate_absolute_path("Binary activation pointer", &activation_pointer)?;
+        validate_absolute_path("runtime lease replica", &runtime_lease_replica)?;
         if activation_pointer.starts_with(&generations_root) {
-            return Err(format!(
-                "{SERVER_BINARY_ACTIVATION_ENV} must stay outside activated generation roots"
-            ));
+            return Err(
+                "Binary activation pointer must stay outside activated generation roots"
+                    .to_string(),
+            );
         }
         if runtime_lease_replica.starts_with(&generations_root) {
-            return Err(format!(
-                "{SERVER_RUNTIME_LEASE_REPLICA_ENV} must stay outside every activated generation root"
-            ));
+            return Err(
+                "runtime lease replica must stay outside every activated generation root"
+                    .to_string(),
+            );
         }
 
         Ok(Self {
             server_data_root,
-            server_data_source,
             lifecycle_lock: binary_root.join(SERVER_LIFECYCLE_LOCK_FILE),
             binary_root,
             generations_root,
             activation_pointer,
             runtime_lease_replica,
         })
-    }
-
-    pub fn process_environment(&self) -> [(String, OsString); 2] {
-        [
-            (
-                SERVER_BINARY_ACTIVATION_ENV.to_string(),
-                self.activation_pointer.as_os_str().to_os_string(),
-            ),
-            (
-                SERVER_RUNTIME_LEASE_REPLICA_ENV.to_string(),
-                self.runtime_lease_replica.as_os_str().to_os_string(),
-            ),
-        ]
     }
 
     pub fn ensure_layout(&self) -> Result<(), String> {
@@ -324,19 +265,6 @@ impl ServerBinaryLifecycleConfig {
         bytes.push(b'\n');
         atomic_create(&self.activation_pointer, &bytes)
     }
-}
-
-fn required_path_env<F>(value: &mut F, name: &str) -> Result<Option<PathBuf>, String>
-where
-    F: FnMut(&str) -> Option<OsString>,
-{
-    let Some(raw) = value(name) else {
-        return Ok(None);
-    };
-    if raw.is_empty() {
-        return Err(format!("{name} cannot be empty"));
-    }
-    Ok(Some(PathBuf::from(raw)))
 }
 
 fn validate_absolute_path(label: &str, path: &Path) -> Result<(), String> {
@@ -538,17 +466,12 @@ fn hex(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::{BTreeMap, BTreeSet};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use tempfile::TempDir;
 
     fn config(temp: &TempDir) -> ServerBinaryLifecycleConfig {
         let data = temp.path().join("server-data");
-        ServerBinaryLifecycleConfig::from_environment(|name| match name {
-            SERVER_DATA_ENV => Some(data.as_os_str().to_os_string()),
-            _ => None,
-        })
-        .unwrap()
+        ServerBinaryLifecycleConfig::from_server_data_root(data).unwrap()
     }
 
     fn write_fresh_generation(path: &Path) -> Result<(), String> {
@@ -562,29 +485,12 @@ mod tests {
     }
 
     #[test]
-    fn config_derives_binary_paths_without_reading_postgres_environment() {
+    fn config_derives_every_binary_path_from_the_typed_data_root() {
         let temp = TempDir::new().unwrap();
         let data = temp.path().join("server-data");
-        let values = BTreeMap::from([
-            (SERVER_DATA_ENV.to_string(), data.as_os_str().to_os_string()),
-            (
-                "AIT_NATIVE_SERVER_DB_BACKEND".to_string(),
-                OsString::from("postgres"),
-            ),
-            (
-                "AIT_NATIVE_SERVER_POSTGRES_DSN".to_string(),
-                OsString::from("postgresql://must-not-be-read.invalid/db"),
-            ),
-        ]);
-        let mut reads = BTreeSet::new();
-        let config = ServerBinaryLifecycleConfig::from_environment(|name| {
-            reads.insert(name.to_string());
-            values.get(name).cloned()
-        })
-        .unwrap();
+        let config = ServerBinaryLifecycleConfig::from_server_data_root(data.clone()).unwrap();
 
         assert_eq!(config.server_data_root, data);
-        assert_eq!(config.server_data_source.label(), SERVER_DATA_ENV);
         assert_eq!(
             config.activation_pointer,
             data.join("binary-v0/active.json")
@@ -594,62 +500,21 @@ mod tests {
             config.runtime_lease_replica,
             data.join("runtime/worker-leases.bin")
         );
-        assert_eq!(
-            reads,
-            BTreeSet::from([
-                SERVER_DATA_ENV.to_string(),
-                SERVER_BINARY_ACTIVATION_ENV.to_string(),
-                SERVER_RUNTIME_LEASE_REPLICA_ENV.to_string(),
-            ])
-        );
-        assert!(!reads.contains("AIT_NATIVE_SERVER_DB_BACKEND"));
-        assert!(!reads.contains("AIT_NATIVE_SERVER_POSTGRES_DSN"));
     }
 
     #[test]
-    fn runtime_data_is_the_bounded_fallback_and_empty_values_fail_closed() {
+    fn data_root_must_be_absolute_and_normalized() {
         let temp = TempDir::new().unwrap();
-        let runtime = temp.path().join("runtime");
-        let config = ServerBinaryLifecycleConfig::from_environment(|name| match name {
-            RUNTIME_DATA_ENV => Some(runtime.as_os_str().to_os_string()),
-            _ => None,
-        })
-        .unwrap();
-        assert_eq!(config.server_data_root, runtime);
-        assert_eq!(
-            config.server_data_source,
-            ServerDataSource::RuntimeDataEnvironment
+        assert!(
+            ServerBinaryLifecycleConfig::from_server_data_root(PathBuf::from("relative"))
+                .unwrap_err()
+                .contains("absolute")
         );
-
-        let error = ServerBinaryLifecycleConfig::from_environment(|name| {
-            (name == SERVER_DATA_ENV).then(OsString::new)
-        })
-        .unwrap_err();
-        assert!(error.contains("cannot be empty"));
-    }
-
-    #[test]
-    fn lease_replica_and_activation_must_stay_outside_generation_roots() {
-        let temp = TempDir::new().unwrap();
-        let data = temp.path().join("server-data");
-        for (name, path) in [
-            (
-                SERVER_BINARY_ACTIVATION_ENV,
-                data.join("binary-v0/generations/active.json"),
-            ),
-            (
-                SERVER_RUNTIME_LEASE_REPLICA_ENV,
-                data.join("binary-v0/generations/leases.bin"),
-            ),
-        ] {
-            let error = ServerBinaryLifecycleConfig::from_environment(|key| match key {
-                SERVER_DATA_ENV => Some(data.as_os_str().to_os_string()),
-                key if key == name => Some(path.as_os_str().to_os_string()),
-                _ => None,
-            })
-            .unwrap_err();
-            assert!(error.contains("outside"));
-        }
+        assert!(ServerBinaryLifecycleConfig::from_server_data_root(
+            temp.path().join("server-data").join("..")
+        )
+        .unwrap_err()
+        .contains("dot path segments"));
     }
 
     #[test]
@@ -742,18 +607,5 @@ mod tests {
             .activation()
             .unwrap_err()
             .contains("evidence is ambiguous"));
-    }
-
-    #[test]
-    fn process_environment_contains_only_non_secret_binary_paths() {
-        let temp = TempDir::new().unwrap();
-        let config = config(&temp);
-        let bindings = config.process_environment();
-        assert_eq!(bindings.len(), 2);
-        assert_eq!(bindings[0].0, SERVER_BINARY_ACTIVATION_ENV);
-        assert_eq!(bindings[1].0, SERVER_RUNTIME_LEASE_REPLICA_ENV);
-        assert!(bindings
-            .iter()
-            .all(|(name, _)| !name.contains("POSTGRES") && !name.contains("DSN")));
     }
 }

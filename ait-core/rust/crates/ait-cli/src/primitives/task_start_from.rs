@@ -31,14 +31,10 @@ struct TaskStartPlanBinding {
     sync_action: String,
 }
 
-#[allow(clippy::too_many_arguments)]
 pub fn task_start_from_with_progress(
     repo: &RepoRuntime,
     source: &str,
     intent: &str,
-    title_override: Option<&str>,
-    change_title: Option<&str>,
-    base_line: Option<&str>,
     local: bool,
     remote_name: Option<&str>,
     debug_probe_override: Option<&JsonValue>,
@@ -53,11 +49,8 @@ pub fn task_start_from_with_progress(
         );
     }
     task_start_root_preflight(repo)?;
-    if local && normalized_text(remote_name).is_some() {
-        return Err("`--local` cannot be combined with `--remote`.".to_string());
-    }
     let source = resolve_task_start_plan_source(repo, source)?;
-    let use_local = repo.task_uses_local_scope(local, remote_name);
+    let use_local = repo.task_uses_local_scope(local, remote_name)?;
     let remote = if use_local {
         None
     } else {
@@ -81,9 +74,6 @@ pub fn task_start_from_with_progress(
             repo,
             &source,
             intent,
-            title_override,
-            change_title,
-            base_line,
             remote
                 .as_ref()
                 .ok_or_else(|| "Remote task-start context is missing.".to_string())?,
@@ -146,10 +136,8 @@ pub fn task_start_from_with_progress(
                     source.plan_item_ref
                 )
             })?;
-        let (title, title_source) = match normalized_text(title_override) {
-            Some(title) => (validate_overridden_task_title(&title)?, "title_override"),
-            None => (derive_plan_item_task_title(item_text)?, "plan_item"),
-        };
+        let title = derive_plan_item_task_title(item_text)?;
+        let title_source = "plan_item";
         emit_task_start_progress(
             progress.as_deref_mut(),
             json!({
@@ -166,9 +154,6 @@ pub fn task_start_from_with_progress(
             repo,
             &title,
             intent,
-            false,
-            change_title,
-            base_line,
             local,
             remote_name,
             Some(&binding.plan_id),
@@ -234,14 +219,10 @@ pub fn task_start_from_with_progress(
     })
 }
 
-#[allow(clippy::too_many_arguments)]
 fn task_start_from_remote_atomic_with_progress(
     repo: &RepoRuntime,
     source: &TaskStartPlanSource,
     intent: &str,
-    title_override: Option<&str>,
-    change_title: Option<&str>,
-    base_line: Option<&str>,
     remote: &RemoteRow,
     debug_probe_override: Option<&JsonValue>,
     mut progress: Option<&mut TaskStartProgressEmitter<'_>>,
@@ -252,14 +233,11 @@ fn task_start_from_remote_atomic_with_progress(
     task_start_from_atomic_context_preflight(repo, source)?;
     let resolved_intent = normalized_text(Some(intent))
         .ok_or_else(|| "Task intent must not be empty.".to_string())?;
-    let resolved_base_line = normalized_text(base_line).unwrap_or_else(|| repo.default_line_name());
+    let resolved_base_line = "main".to_string();
     let title_started = Instant::now();
-    let (resolved_title, title_source) = match normalized_text(title_override) {
-        Some(title) => (validate_overridden_task_title(&title)?, "title_override"),
-        None => (derive_plan_item_task_title(&source.item_text)?, "plan_item"),
-    };
-    let resolved_change_title =
-        normalized_text(change_title).unwrap_or_else(|| resolved_title.clone());
+    let resolved_title = derive_plan_item_task_title(&source.item_text)?;
+    let title_source = "plan_item";
+    let resolved_change_title = resolved_title.clone();
     let context_preflight_elapsed = elapsed_ms(context_preflight_started);
     let title_elapsed = elapsed_ms(title_started);
 
@@ -416,11 +394,8 @@ fn task_start_from_remote_atomic_with_progress(
         repo,
         task,
         Some(change),
-        &resolved_title,
-        &resolved_intent,
         &resolved_base_line,
         false,
-        Some(&remote.name),
         debug_probe_override,
         progress,
     )?;
@@ -1039,31 +1014,25 @@ fn derive_plan_item_task_title(item_text: &str) -> Result<String, String> {
         .trim_end_matches('.')
         .trim()
         .to_string();
-    validate_task_title(&normalized, true)
+    validate_task_title(&normalized)
 }
 
-fn validate_overridden_task_title(title: &str) -> Result<String, String> {
-    validate_task_title(&normalize_title_whitespace(title), false)
-}
-
-fn validate_task_title(title: &str, derived: bool) -> Result<String, String> {
+fn validate_task_title(title: &str) -> Result<String, String> {
     if title.is_empty() {
-        return Err(if derived {
-            "Plan item text cannot produce an empty Task title. Rewrite the checklist summary or pass `--title-override`.".to_string()
-        } else {
-            "`--title-override` must not be empty.".to_string()
-        });
+        return Err(
+            "Plan item text cannot produce an empty Task title. Rewrite the checklist summary."
+                .to_string(),
+        );
     }
     let char_count = title.chars().count();
     if char_count > MAX_TASK_START_FROM_TITLE_CHARS {
         return Err(format!(
-            "Task title has {char_count} characters; the limit is {MAX_TASK_START_FROM_TITLE_CHARS}. Rewrite the checklist as a concise outcome with nested acceptance criteria{}.",
-            if derived { " or pass `--title-override`" } else { "" }
+            "Task title has {char_count} characters; the limit is {MAX_TASK_START_FROM_TITLE_CHARS}. Rewrite the checklist as a concise outcome with nested acceptance criteria."
         ));
     }
-    if derived && is_generic_task_title(title) {
+    if is_generic_task_title(title) {
         return Err(format!(
-            "Plan item text `{title}` is too generic for a Task title. Rewrite the checklist summary or pass `--title-override`."
+            "Plan item text `{title}` is too generic for a Task title. Rewrite the checklist summary."
         ));
     }
     Ok(title.to_string())
@@ -1186,10 +1155,6 @@ mod tests {
             "Add Plan-derived task start"
         );
         assert!(derive_plan_item_task_title("TODO").is_err());
-        assert_eq!(
-            validate_overridden_task_title("  Repair   typed probes  ").unwrap(),
-            "Repair typed probes"
-        );
     }
 
     #[test]
@@ -1208,19 +1173,10 @@ mod tests {
             derive_plan_item_task_title(&maximum_title).unwrap(),
             maximum_title
         );
-        assert_eq!(
-            validate_overridden_task_title(&maximum_title).unwrap(),
-            maximum_title
-        );
-
         let oversized_title = "界".repeat(501);
-        for error in [
-            derive_plan_item_task_title(&oversized_title).unwrap_err(),
-            validate_overridden_task_title(&oversized_title).unwrap_err(),
-        ] {
-            assert!(error.contains("501 characters"), "{error}");
-            assert!(error.contains("limit is 500"), "{error}");
-        }
+        let error = derive_plan_item_task_title(&oversized_title).unwrap_err();
+        assert!(error.contains("501 characters"), "{error}");
+        assert!(error.contains("limit is 500"), "{error}");
     }
 
     #[test]
@@ -1407,9 +1363,6 @@ mod tests {
             &repo,
             "docs/sprints/card.md#card/start",
             "Exercise the complete local Plan-derived task bootstrap",
-            None,
-            None,
-            Some("main"),
             true,
             None,
             Some(&debug_probe),

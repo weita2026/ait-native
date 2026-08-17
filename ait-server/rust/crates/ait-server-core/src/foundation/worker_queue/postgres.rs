@@ -878,7 +878,6 @@ fn superseded_patchset_ci_result(job_id: i64, successor_job_id: i64) -> JsonValu
 mod tests {
     use super::*;
     use ::postgres::types::{ToSql, Type};
-    use ::postgres::{Client, NoTls};
     use bytes::BytesMut;
 
     fn patchset_payload() -> JsonMap<String, JsonValue> {
@@ -925,92 +924,5 @@ mod tests {
         assert!(!WORKER_QUEUE_READINESS_ROW_COLUMNS.contains("runtime_payload"));
         assert!(!WORKER_QUEUE_READINESS_ROW_COLUMNS.contains("attestation_update"));
         assert!(!WORKER_QUEUE_READINESS_ROW_COLUMNS.contains("materialization"));
-    }
-
-    #[test]
-    fn live_postgres_accepts_worker_queue_jsonb_bind_contracts_when_configured() {
-        let Some(dsn) = std::env::var("AIT_WORKER_QUEUE_TEST_POSTGRES_DSN")
-            .ok()
-            .or_else(|| std::env::var("AIT_NATIVE_SERVER_POSTGRES_DSN").ok())
-        else {
-            eprintln!(
-                "skipping live PostgreSQL bind contract; no worker-queue test DSN is configured"
-            );
-            return;
-        };
-        let mut client = Client::connect(&dsn, NoTls).expect("test PostgreSQL should connect");
-        client
-            .batch_execute(
-                "begin;
-                 create temporary table jobs (
-                     job_id bigint,
-                     repo_name text,
-                     repo_id text,
-                     job_type text,
-                     state text,
-                     payload_json text,
-                     result_json text,
-                     attempt_count int4,
-                     max_attempts int4,
-                     available_at timestamptz,
-                     locked_at timestamptz,
-                     locked_by text,
-                     last_error text,
-                     created_at timestamptz,
-                     updated_at timestamptz
-                 ) on commit drop;
-                 set local search_path = pg_temp;",
-            )
-            .expect("temporary worker queue table should be created");
-
-        let repo_name = format!("ait-server-jsonb-bind-test-{}", std::process::id());
-        let repo_id = format!("REPO-JSONB-BIND-{}", std::process::id());
-        let job_type = "patchset.ci";
-        let payload = patchset_payload();
-        let dedupe_payload = PostgresJson(&payload);
-
-        let scoped_sql = active_duplicate_job_sql(true, true);
-        let scoped_statement = client
-            .prepare(&scoped_sql)
-            .expect("scoped semantic dedupe SQL should prepare");
-        assert_eq!(scoped_statement.params()[3], Type::JSONB);
-        client
-            .query_opt(
-                &scoped_statement,
-                &[&repo_id, &repo_name, &job_type, &dedupe_payload],
-            )
-            .expect("scoped semantic dedupe payload should bind as jsonb");
-
-        let unscoped_sql = active_duplicate_job_sql(false, true);
-        let unscoped_statement = client
-            .prepare(&unscoped_sql)
-            .expect("unscoped semantic dedupe SQL should prepare");
-        assert_eq!(unscoped_statement.params()[2], Type::JSONB);
-        client
-            .query_opt(
-                &unscoped_statement,
-                &[&repo_name, &job_type, &dedupe_payload],
-            )
-            .expect("unscoped semantic dedupe payload should bind as jsonb");
-
-        let raw_payload = JsonValue::Object(payload).to_string();
-        let semantic_payload = encoded_patchset_semantic_payload(&raw_payload)
-            .expect("patchset payload should produce a semantic PostgreSQL value");
-        let stale_statement = client
-            .prepare(STALE_PATCHSET_SUCCESSOR_SQL)
-            .expect("stale successor SQL should prepare");
-        assert_eq!(stale_statement.params()[3], Type::JSONB);
-        let job_id = i64::MAX - i64::from(std::process::id());
-        let row_repo_id = Some(repo_id);
-        client
-            .query_opt(
-                &stale_statement,
-                &[&job_id, &repo_name, &row_repo_id, &semantic_payload],
-            )
-            .expect("stale successor semantic payload should bind as jsonb");
-
-        client
-            .batch_execute("rollback")
-            .expect("temporary worker queue transaction should roll back");
     }
 }

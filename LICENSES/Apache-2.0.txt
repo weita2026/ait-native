@@ -3,7 +3,7 @@ Repository license scope notice
 Unless a file or directory carries different license terms, the Apache
 License, Version 2.0 text below applies to the complete `ait-core`
 repository. This includes the Rust workspace under `rust/**`, the native
-`ait` and `ait-agent` commands, the `ait-core` libraries and Python
+`ait` command and `ait-agent-worker` runtime, the `ait-core` libraries and Python
 binding implementation, release and CI tooling, tests, and documentation.
 
 Material incorporated from another source retains its own license and

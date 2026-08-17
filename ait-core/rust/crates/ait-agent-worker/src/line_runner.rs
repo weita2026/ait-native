@@ -40,6 +40,7 @@ struct LineTransactionRequestConfig {
     state_path: String,
     runtime_target: JsonValue,
     timeout_seconds: Option<f64>,
+    local_reply: Option<JsonValue>,
 }
 
 pub struct LineWorkerHttpHandler<E = DefaultLineHttpTransactionExecutor> {
@@ -74,6 +75,7 @@ where
                 "server_url": target.server_url,
             }),
             timeout_seconds: shared.request_timeout_seconds,
+            local_reply: shared.local_reply.clone(),
         };
         let jobs = BoundedWorkerJobExecutor::new(WorkerJobExecutorConfig {
             max_inflight: max_inflight_jobs,
@@ -103,6 +105,7 @@ where
             "channel_access_token": self.request_config.channel_access_token,
             "api_base_url": self.request_config.api_base_url,
             "timeout_seconds": self.request_config.timeout_seconds,
+            "local_reply": self.request_config.local_reply,
         }))
     }
 }
@@ -379,18 +382,12 @@ mod tests {
                 "name": "main",
                 "token": "line-access-secret",
                 "secret": "line-channel-secret",
+                "webhook_path": "/callback",
+                "api_base_url": "https://api.line.example",
+                "request_timeout_seconds": 15,
+                "local_reply": {"model": "fixture-model"},
             }),
-            process_env: BTreeMap::from([
-                ("AIT_LINE_WEBHOOK_PATH".to_string(), "/callback".to_string()),
-                (
-                    "AIT_LINE_API_BASE_URL".to_string(),
-                    "https://api.line.example".to_string(),
-                ),
-                (
-                    "AIT_LINE_REQUEST_TIMEOUT_SECONDS".to_string(),
-                    "15".to_string(),
-                ),
-            ]),
+            process_env: BTreeMap::new(),
         })
         .expect("line config")
     }
@@ -469,6 +466,7 @@ mod tests {
         assert_eq!(calls[0]["runtime_target"]["mode"], "remote");
         assert_eq!(calls[0]["runtime_target"]["repo_name"], "fixture");
         assert_eq!(calls[0]["timeout_seconds"], 15.0);
+        assert_eq!(calls[0]["local_reply"]["model"], "fixture-model");
         assert!(calls[0].get("peer_addr").is_none());
     }
 

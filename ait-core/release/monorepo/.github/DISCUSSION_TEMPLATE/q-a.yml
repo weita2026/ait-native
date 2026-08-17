@@ -1,0 +1,51 @@
+title: "[Q&A] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Ask a focused usage question. Search the [documentation](https://ait-native.dev/technical/) and existing Discussions first. Report undisclosed vulnerabilities through [private vulnerability reporting](https://github.com/weita2026/ait-native/security/advisories/new), not here.
+
+  - type: input
+    id: version
+    attributes:
+      label: Ait version
+      description: Paste the output of `ait --version` when the question is version-specific.
+      placeholder: ait x.y.z
+
+  - type: dropdown
+    id: install_channel
+    attributes:
+      label: Installation channel
+      options:
+        - PyPI / pip
+        - npm
+        - Homebrew
+        - apt
+        - WinGet
+        - GitHub Release archive
+        - Source build
+        - Other or not applicable
+
+  - type: textarea
+    id: question
+    attributes:
+      label: Question
+      description: Describe the result you want and where you are blocked.
+    validations:
+      required: true
+
+  - type: textarea
+    id: attempted
+    attributes:
+      label: What have you tried?
+      description: Include only the commands, output, or documentation needed to understand the question. Remove secrets and private paths.
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before posting
+      options:
+        - label: I searched the documentation and existing Discussions.
+          required: true
+        - label: I removed credentials, tokens, and other sensitive data.
+          required: true

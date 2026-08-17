@@ -202,8 +202,10 @@ pub fn render_agent_workflow_block(repo: &RepoRuntime) -> String {
     };
     let sprint_finish = if scope_label == "remote" {
         format!(
-            r#"Finish code closeout with `ait task land <task-or-change-id>`.
-   After successful land, mark the exact bound checklist item complete, then
+            r#"Prepare the exact Patchset with `ait workflow ready <change-id>
+   --apply`, then hand it to the reviewer. The reviewer finishes with `ait
+   workflow land <change-id> --apply` (adding `--review-message` when asked).
+   After successful land, mark the exact bound checklist item complete and
    sync its card separately:
    `ait plan sync <sprint-card-path> --remote {remote_name}`."#
         )
@@ -212,6 +214,19 @@ pub fn render_agent_workflow_block(repo: &RepoRuntime) -> String {
    local task land closes and syncs the exact bound sprint checklist item
    locally."#
             .to_string()
+    };
+    let non_sprint_finish = if scope_label == "remote" {
+        r#"Prepare the exact Patchset with `ait workflow ready <change-id>
+   --apply`, then hand it to the reviewer. The reviewer finishes with `ait
+   workflow land <change-id> --apply` (adding `--review-message` when asked)."#
+            .to_string()
+    } else {
+        "Finish with `ait task land <task-or-change-id>`.".to_string()
+    };
+    let code_closeout = if scope_label == "remote" {
+        "reviewer-owned `ait workflow land <change-id> --apply`, which delegates final closeout to atomic Task Land"
+    } else {
+        "`ait task land <task-or-change-id>`"
     };
 
     let sprint_path = if sprint_enabled {
@@ -224,7 +239,7 @@ For changes classified as `normal_task` or `fully_governed`:
    `[plan-ref: ...]` root and an unchecked checklist item carrying an exact
    `[ref: ...]`.
 2. Start the task and first change with `ait task start --from
-   <sprint-card-path>#<exact-ref> --intent "<intent>" --base-line <line>`.
+   <sprint-card-path>#<exact-ref> --intent "<intent>"`.
    `task start --from` owns exact-file Plan sync in the configured scope,
    post-sync item taskability validation, canonical Plan binding, Task/Change
    creation, bound-worktree bootstrap, and the printed `cd` hint. The task is
@@ -243,12 +258,12 @@ continuing."#
 For changes classified as `normal_task` or `fully_governed`:
 
 1. Start a task and first change with `ait task start --title "<title>"
-   --intent "<intent>" --base-line <line>`. The task scope is {task_scope}; a
+   --intent "<intent>"`. The task scope is {task_scope}; a
    sprint card is not required and `--from` is unavailable while sprint mode
    is off.
 2. Enter the emitted task worktree, author the code there, and create a snapshot
    with `ait snapshot create --message "<message>"`.
-3. Finish with `ait task land <task-or-change-id>`."#
+3. {non_sprint_finish}"#
         )
     };
 
@@ -258,14 +273,16 @@ For changes classified as `normal_task` or `fully_governed`:
 - `task start` opens the remote task/change lineage. `snapshot create` records
   the reviewable code state.
 - Prepare snapshot freshness, patchset publication/content synchronization, CI,
-  attestation, policy, and review state explicitly with `ait workflow ready
-  <change-id> --apply`.
-- `ait task land <task-or-change-id>` consumes an already-ready patchset and
-  fails immediately on a missing prerequisite. It does not publish/synchronize
-  content, start/wait for CI, or sync Plan state. Success owns remote land, task
-  completion, target-line sync, and bound-worktree cleanup.
-- Use `ait workflow land <change-id> --apply` when inspecting or resuming the
-  guided land phase separately."#
+  and attestation explicitly with `ait workflow ready <change-id> --apply`.
+- Hand the exact Patchset to the reviewer. `ait workflow land <change-id>
+  --apply` owns code Review, Task approval, final Policy, and then delegates the
+  already-ready final mutation to atomic Task Land. Supply `--review-message`
+  when the decision requests structured code-review evidence; required human
+  Review and blocking feedback remain manual stop points.
+- Direct `ait task land <task-or-change-id>` is the already-ready finalizer and
+  recovery entry. It creates no Review evidence, does not publish/synchronize
+  content, start/wait for CI, or sync Plan state. Success owns remote land, Task
+  completion, target-Line sync, and bound-worktree cleanup."#
             .to_string()
     } else if scope_label == "local" {
         r#"### Local land
@@ -289,8 +306,8 @@ For changes classified as `normal_task` or `fully_governed`:
         r#"{MANAGED_START}
 ## Effective Ait Workflow (Generated)
 
-`ait init`, `ait install`, relevant `ait config set` changes, and default-remote
-setup regenerate this block from `.ait/config.json` and sync it when the
+`ait init`, relevant `ait config set` / `ait config unset` changes, and default-remote setup
+regenerate this block from `.ait/config.json` and sync it when the
 configured target is available. The current values and commands are
 authoritative; they replace stale context and generic examples.
 
@@ -314,18 +331,12 @@ variants.
 {markdown_sync_rule}
 - `ait workflow ready` and `ait workflow land` are text-only decision surfaces;
   never append or recommend `--json` for either command.
-- Use `ait workflow tier --json` to evaluate an already bounded local edit
-  before choosing its closeout path. `quick_modification` is an explicit local-
-  only opt-in on a known non-default line and must finish with `ait snapshot
-  create --profile quick --intent "<intent>" --validation "<evidence>"
-  --message "<message>"`. If runtime risk escalates, leave the workspace on its
-  current line and follow the reported Task command; never publish quick work
-  directly to a governed remote.
-- Every `normal_task` or `fully_governed` code change must start with a new `ait
-  task start`, be authored in its bound worktree, and finish with `ait task land
-  <task-or-change-id>`.
-- Prefer `ait queue summary --all-changes` for inventory and `ait task audit
-  <task-id>` for one task's readiness.
+- Every code change must start with a new `ait task start`, be authored in its
+  bound worktree, and finish through {code_closeout}.
+  There is no direct Snapshot-only closeout path.
+- Prefer `ait queue summary` for current actionable inventory, `ait task list
+  --all` and `ait change list --all` for history, and `ait task audit <task-id>`
+  for one task's readiness.
 
 {sprint_path}
 
@@ -575,18 +586,23 @@ mod tests {
                     task_land_scope_contract(mode == "solo_local").plan_closeout_policy
                 )));
                 assert_eq!(rendered.matches(MANAGED_START).count(), 1);
-                assert!(rendered.contains("`ait init`, `ait install`, relevant `ait config set`"));
-                assert!(rendered.contains("relevant `ait config set` changes"));
-                assert!(rendered.contains("default-remote\nsetup regenerate this block"));
+                assert!(rendered.contains(
+                    "`ait init`, relevant `ait config set` / `ait config unset` changes"
+                ));
+                assert!(!rendered.contains("ait install"));
+                assert!(rendered.contains("relevant `ait config set` / `ait config unset` changes"));
+                assert!(rendered.contains("default-remote setup\nregenerate this block"));
                 assert!(rendered.contains("Read `docs/plan.md` when it exists"));
                 assert!(rendered.contains("ait blame <path>"));
                 assert!(rendered.contains(
                     "`ait workflow ready` and `ait workflow land` are text-only decision surfaces"
                 ));
                 assert!(rendered.contains("never append or recommend `--json`"));
-                assert!(rendered.contains("ait workflow tier --json"));
-                assert!(rendered.contains("snapshot\n  create --profile quick"));
-                assert!(rendered.contains("Every `normal_task` or `fully_governed`"));
+                assert!(!rendered.contains("workflow tier"));
+                assert!(!rendered.contains("--profile quick"));
+                assert!(rendered.contains("Every code change must start"));
+                assert!(rendered.contains("no direct Snapshot-only closeout path"));
+                assert!(!rendered.contains("--base-line"));
                 assert!(
                     rendered.split_whitespace().count() < 1_024,
                     "{mode}/{sprint} guidance exceeded the 1,024-token ceiling"
@@ -594,6 +610,13 @@ mod tests {
                 if matches!(mode, "solo_remote" | "team_remote") {
                     assert!(rendered.contains("plan sync <markdown-file-or-dir> --remote upstream"));
                     assert!(rendered.contains("does not publish/synchronize\n  content"));
+                    assert!(rendered.contains("Hand the exact Patchset to the reviewer"));
+                    assert!(rendered.contains("owns code Review, Task approval, final Policy"));
+                    assert!(rendered.contains(
+                        "delegates the\n  already-ready final mutation to atomic Task Land"
+                    ));
+                    assert!(rendered.contains("It creates no Review evidence"));
+                    assert!(!rendered.contains("attestation, policy, and review state"));
                     assert!(!rendered.contains("### Local land"));
                 } else {
                     assert!(rendered.contains("plan sync <markdown-file-or-dir> --local"));

@@ -28,7 +28,7 @@ fn workflow_ready_blocks_external_readiness_before_ci() {
     });
     let commands = json!({
         "apply_command": "ait workflow ready LCC-1 --apply",
-        "publish_command": "ait patchset publish --change LCC-1",
+        "publish_command": "ait patchset publish LCC-1",
         "patchset_ci_command": "ait patchset rerun-ci LCP-1",
         "attestation_command": "ait attest put LCP-1",
     });
@@ -80,7 +80,7 @@ fn completed_local_ready_keeps_selected_patchset_authoritative_over_dirty_worksp
     });
     let commands = json!({
         "apply_command": "ait workflow ready RCC-1 --apply",
-        "publish_command": "ait patchset publish --change RCC-1",
+        "publish_command": "ait patchset publish RCC-1",
         "patchset_ci_command": "ait patchset rerun-ci RCP-1",
         "attestation_command": "ait attest put RCP-1",
     });

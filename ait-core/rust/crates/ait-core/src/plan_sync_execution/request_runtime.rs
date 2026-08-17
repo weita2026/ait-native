@@ -18,6 +18,7 @@ pub(super) fn parse_request_map(
         base_url: optional_text(request.get("base_url"))?,
         rebase: optional_bool(request.get("rebase"), false)?,
         reconcile: optional_bool(request.get("reconcile"), false)?,
+        history_publish_plan_id: optional_text(request.get("history_publish_plan_id"))?,
         plan_storage: parse_plan_storage_request(request.get("plan_storage"))?,
         task_start: parse_task_start_request(request.get("task_start"))?,
     })
@@ -40,6 +41,26 @@ pub(super) fn validate_runtime_flags(request: &SyncRequest) -> Result<(), String
         return Err(
             "`--reconcile` without `--remote <name>` requires explicit `--local`.".to_string(),
         );
+    }
+    if let Some(plan_id) = request.history_publish_plan_id.as_deref() {
+        LocalPlanId::from_raw(plan_id.to_string())?;
+        if request.local || request.base_url.is_none() {
+            return Err(
+                "Internal history Plan publication requires remote publish mode and cannot run with `--local`."
+                    .to_string(),
+            );
+        }
+        if request.prune
+            || request.rebase
+            || request.reconcile
+            || request.task_start.is_some()
+            || request.plan_ref.is_some()
+        {
+            return Err(
+                "Internal history Plan publication cannot be combined with prune, rebase, reconcile, task_start, or plan_ref."
+                    .to_string(),
+            );
+        }
     }
     if request.task_start.is_some() {
         if request.local || request.base_url.is_none() {
@@ -318,6 +339,58 @@ mod tests {
         assert!(validate_runtime_flags(&parsed)
             .unwrap_err()
             .contains("Choose either `--rebase` or `--reconcile`"));
+    }
+
+    #[test]
+    fn internal_history_plan_publication_is_remote_only_and_mutually_exclusive() {
+        let mut payload = request_payload();
+        payload["task_start"] = JsonValue::Null;
+        payload["plan_ref"] = JsonValue::Null;
+        payload.insert(
+            "history_publish_plan_id".to_string(),
+            JsonValue::String("PR-649".to_string()),
+        );
+        let parsed = parse_request_map(payload.clone()).unwrap();
+        validate_runtime_flags(&parsed).expect("exact history publication should be admitted");
+        assert_eq!(parsed.history_publish_plan_id.as_deref(), Some("PR-649"));
+
+        for (field, value, expected) in [
+            ("local", JsonValue::Bool(true), "cannot be combined"),
+            ("prune", JsonValue::Bool(true), "cannot be combined"),
+            ("rebase", JsonValue::Bool(true), "cannot be combined"),
+            ("reconcile", JsonValue::Bool(true), "cannot be combined"),
+            (
+                "plan_ref",
+                JsonValue::String("card".to_string()),
+                "cannot be combined",
+            ),
+        ] {
+            let mut invalid = payload.clone();
+            invalid.insert(field.to_string(), value);
+            let parsed = parse_request_map(invalid).unwrap();
+            assert!(
+                validate_runtime_flags(&parsed)
+                    .unwrap_err()
+                    .contains(expected),
+                "{field}"
+            );
+        }
+
+        let mut without_remote = payload.clone();
+        without_remote["base_url"] = JsonValue::Null;
+        without_remote["remote_name"] = JsonValue::Null;
+        without_remote["remote_repo_name"] = JsonValue::Null;
+        let parsed = parse_request_map(without_remote).unwrap();
+        assert!(validate_runtime_flags(&parsed)
+            .unwrap_err()
+            .contains("remote publish mode"));
+
+        let mut with_task_start = payload;
+        with_task_start["task_start"] = request_payload()["task_start"].clone();
+        let parsed = parse_request_map(with_task_start).unwrap();
+        assert!(validate_runtime_flags(&parsed)
+            .unwrap_err()
+            .contains("cannot be combined"));
     }
 
     #[test]

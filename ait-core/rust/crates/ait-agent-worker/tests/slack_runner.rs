@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::io::{self, Read, Write};
 use std::net::{TcpListener, TcpStream};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -71,7 +71,7 @@ fn fixture_context() -> (tempfile::TempDir, WorkerRunContext) {
     fs::write(
         temp.path().join(".ait/agent-workers.json"),
         format!(
-            r#"{{"version":1,"workers":{{"slack/main":{{"kind":"slack","name":"main","signing_secret":"{SIGNING_SECRET}"}}}}}}"#
+            r#"{{"version":1,"workers":{{"slack/main":{{"kind":"slack","name":"main","signing_secret":"{SIGNING_SECRET}","command_path":"/command","ack_text":"queued by rust"}}}}}}"#
         ),
     )
     .expect("manifest");
@@ -87,13 +87,7 @@ fn fixture_context() -> (tempfile::TempDir, WorkerRunContext) {
             repo_root_override: Some(temp.path().to_path_buf()),
             manifest_path_override: None,
         },
-        BTreeMap::from([
-            ("AIT_SLACK_COMMAND_PATH".to_string(), "/command".to_string()),
-            (
-                "AIT_SLACK_ACK_TEXT".to_string(),
-                "queued by rust".to_string(),
-            ),
-        ]),
+        BTreeMap::new(),
     )
     .expect("worker context");
     (temp, context)
@@ -259,11 +253,16 @@ fn compiled_slack_runner_reaches_ready_and_stops_cleanly_cross_platform() {
     let reserved = TcpListener::bind(("127.0.0.1", 0)).expect("reserve port");
     let port = reserved.local_addr().expect("reserved address").port();
     drop(reserved);
-    let mut child = Command::new(agent_worker_binary())
+    fs::write(
+        repo.path().join(".ait/agent-workers.json"),
+        r#"{"version":1,"workers":{"slack/main":{"kind":"slack","name":"main","signing_secret":"$SIGNING_SECRET","command_path":"/command","ack_text":"queued by rust","bind_host":"127.0.0.1","bind_port":$PORT}}}"#
+            .replace("$SIGNING_SECRET", SIGNING_SECRET)
+            .replace("$PORT", &port.to_string()),
+    )
+    .expect("manifest with listener address");
+    let mut child = workspace_test_support::worker_command(agent_worker_binary())
         .current_dir(repo.path())
         .env("AIT_REPO_ROOT", repo.path())
-        .env("AIT_SLACK_BIND_HOST", "127.0.0.1")
-        .env("AIT_SLACK_BIND_PORT", port.to_string())
         .args([
             "run",
             "--transport",
@@ -303,7 +302,7 @@ fn compiled_slack_runner_reaches_ready_and_stops_cleanly_cross_platform() {
     let mut response = Vec::new();
     probe.read_to_end(&mut response).expect("probe response");
     assert_status(&response, 404);
-    workspace_test_support::request_worker_shutdown(repo.path(), "slack", "main", child.id());
+    workspace_test_support::request_worker_shutdown(child.id());
     let status = workspace_test_support::wait_for_child_exit(
         &mut child,
         "Slack worker",
@@ -388,17 +387,14 @@ fn compiled_app_token_runner_owns_socket_mode_and_stops_without_python_fallback(
     fs::write(
         repo.path().join(".ait/agent-workers.json"),
         format!(
-            r#"{{"version":1,"workers":{{"slack/main":{{"kind":"slack","name":"main","app_token":"{APP_TOKEN}"}}}}}}"#
+            r#"{{"version":1,"workers":{{"slack/main":{{"kind":"slack","name":"main","app_token":"{APP_TOKEN}","api_base_url":"http://127.0.0.1:{}"}}}}}}"#,
+            api_address.port()
         ),
     )
     .expect("manifest");
-    let mut child = Command::new(agent_worker_binary())
+    let mut child = workspace_test_support::worker_command(agent_worker_binary())
         .current_dir(repo.path())
         .env("AIT_REPO_ROOT", repo.path())
-        .env(
-            "AIT_SLACK_API_BASE_URL",
-            format!("http://127.0.0.1:{}", api_address.port()),
-        )
         .args([
             "run",
             "--transport",
@@ -421,7 +417,7 @@ fn compiled_app_token_runner_owns_socket_mode_and_stops_without_python_fallback(
         child.try_wait().expect("poll child").is_none(),
         "Socket Mode worker exited before termination request"
     );
-    workspace_test_support::request_worker_shutdown(repo.path(), "slack", "main", child.id());
+    workspace_test_support::request_worker_shutdown(child.id());
     let status = workspace_test_support::wait_for_child_exit(
         &mut child,
         "Socket Mode worker",

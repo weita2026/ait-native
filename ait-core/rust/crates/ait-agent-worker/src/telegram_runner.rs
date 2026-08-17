@@ -548,6 +548,7 @@ impl NativeTelegramProductComposition {
                     state_path.clone(),
                     runtime_target,
                     request_timeout,
+                    config.shared.local_reply.clone(),
                     token,
                     ait_web_url,
                     config.reply_markdown_enabled,

@@ -7,6 +7,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use ait_server_core::environment_contract::REMOVED_ENVIRONMENT_NAMES;
+
 static TEST_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
 struct TestDirectory(PathBuf);
@@ -43,18 +45,11 @@ fn run_server(arguments: &[&str]) -> Output {
 
 fn clean_server_command() -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_ait-server"));
-    for name in [
-        "AIT_NATIVE_SERVER_DATA",
-        "AIT_RUNTIME_DATA",
-        "AIT_NATIVE_SERVER_BINARY_ACTIVATION",
-        "AIT_NATIVE_SERVER_BINARY_REGISTRY",
-        "AIT_NATIVE_SERVER_FRESH_BOOTSTRAP",
-        "AIT_NATIVE_SERVER_CI_RAM_ROOT",
-        "AIT_CI_RAM_ROOT",
-        "AIT_NATIVE_SERVER_CI_STARTUP_ADMISSION",
-        "AIT_SERVER_STARTUP_PROBE_ONLY",
-    ] {
+    for name in ["AIT_NATIVE_SERVER_DATA", "AIT_NATIVE_SERVER_CI_RAM_ROOT"] {
         command.env_remove(name);
+    }
+    for name in REMOVED_ENVIRONMENT_NAMES {
+        command.env(name, "removed-environment-name-must-be-ignored");
     }
     command
 }
@@ -69,7 +64,6 @@ fn no_arguments_print_help_without_storage_or_listener_side_effects() {
 
     let output = clean_server_command()
         .env("AIT_NATIVE_SERVER_DATA", &root)
-        .env("AITSERVER_LISTEN", address.to_string())
         .output()
         .expect("execute no-argument ait-server");
 
@@ -160,6 +154,7 @@ fn installed_run_initializes_then_serves_from_an_explicit_root() {
     let root_text = root.to_str().unwrap();
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let address = listener.local_addr().unwrap();
+    let address_text = address.to_string();
     drop(listener);
 
     let child = clean_server_command()
@@ -167,10 +162,11 @@ fn installed_run_initializes_then_serves_from_an_explicit_root() {
             "run",
             "--data",
             root_text,
+            "--listen",
+            &address_text,
             "--init-if-missing",
             "--defer-ci-admission",
         ])
-        .env("AITSERVER_LISTEN", address.to_string())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()

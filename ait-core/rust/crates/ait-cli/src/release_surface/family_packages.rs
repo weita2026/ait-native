@@ -12,6 +12,10 @@ const WINGET_MANIFEST_VERSION: &str = "1.12.0";
 const NPM_TOP_LEVEL_PACKAGE: &str = "@wa120/ait-native";
 const NPM_ADDON_PACKAGE_PREFIX: &str = "@wa120/ait-native-";
 const NPM_ARCHIVE_PREFIX: &str = "wa120-ait-native";
+const PRODUCT_DESCRIPTION: &str =
+    "Agent-first, language-neutral workflow for verified repository changes";
+const OFFICIAL_WEBSITE: &str = "https://ait-native.dev/";
+const OFFICIAL_QUICKSTART: &str = "https://ait-native.dev/local-quickstart/";
 const AIT_SERVER_SYSTEMD_UNIT_PATH: &str = "usr/lib/systemd/system/ait-server.service";
 const AIT_SERVER_SYSTEMD_UNIT: &str = "[Unit]\nDescription=AIT native server\nDocumentation=https://github.com/weita2026/ait-native\nAfter=network.target\n\n[Service]\nType=simple\nDynamicUser=yes\nStateDirectory=ait-native\nRuntimeDirectory=ait-native\nUMask=0077\nExecStart=/usr/bin/ait-server run --data /var/lib/ait-native/server-data --init-if-missing --defer-ci-admission\nRestart=on-failure\nRestartSec=2s\nNoNewPrivileges=yes\nPrivateTmp=yes\nProtectSystem=strict\nProtectHome=yes\nProtectControlGroups=yes\nProtectKernelModules=yes\nProtectKernelTunables=yes\nRestrictAddressFamilies=AF_UNIX AF_INET AF_INET6\nRestrictSUIDSGID=yes\nLockPersonality=yes\nCapabilityBoundingSet=\nAmbientCapabilities=\n\n[Install]\nWantedBy=multi-user.target\n";
 const WINGET_SERVER_CONTROLLER_PATH: &str = "ait-server-control.ps1";
@@ -1954,6 +1958,42 @@ fn single_line_metadata_value<'a>(block: &'a str, field: &str) -> Result<&'a str
         .ok_or_else(|| format!("Frozen Python wheel METADATA field {field} is malformed."))
 }
 
+fn validate_storefront_readme(
+    readme: &str,
+    exact_install: &str,
+    surface: &str,
+) -> Result<(), String> {
+    for required in [
+        "AIT turns an ordinary coding request into an isolated, sprint-bound repository",
+        "individual developers and maintainers",
+        exact_install,
+        "ait init",
+        "## What you have after 90 seconds",
+        OFFICIAL_WEBSITE,
+        "## Moving from 0.x",
+        "The 0.x requirement to run `ait install` and its task-DAG positioning are",
+    ] {
+        if !readme.contains(required) {
+            return Err(format!(
+                "{surface} storefront copy is missing {required:?}."
+            ));
+        }
+    }
+    if readme.contains("@AIT_") {
+        return Err(format!(
+            "{surface} storefront copy contains an unresolved release token."
+        ));
+    }
+    for legacy_claim in ["Jira-like", "parallel AI execution", "compact task DAG"] {
+        if readme.contains(legacy_claim) {
+            return Err(format!(
+                "{surface} storefront copy preserves legacy claim {legacy_claim:?}."
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn rewrite_python_metadata(
     source: &[u8],
     python_version: &str,
@@ -1997,10 +2037,7 @@ fn rewrite_python_metadata(
             output.push(block);
         } else if name.eq_ignore_ascii_case("Summary") {
             summary_count += 1;
-            output.push(
-                "Summary: Language-neutral native AIT CLI, inactive server, and Python binding"
-                    .to_string(),
-            );
+            output.push(format!("Summary: {PRODUCT_DESCRIPTION}"));
         } else if name.eq_ignore_ascii_case("License-Expression") {
             license_expression_count += 1;
             output.push(format!("License-Expression: {license_expression}"));
@@ -2011,6 +2048,8 @@ fn rewrite_python_metadata(
             );
         } else if !name.eq_ignore_ascii_case("License-File")
             && !name.eq_ignore_ascii_case("Project-URL")
+            && !name.eq_ignore_ascii_case("Description-Content-Type")
+            && !name.eq_ignore_ascii_case("Home-page")
         {
             output.push(block);
         }
@@ -2034,13 +2073,69 @@ fn rewrite_python_metadata(
     {
         return Err("Repacked Python wheel requires exact tagged monorepo URLs.".to_string());
     }
+    output.push("Description-Content-Type: text/markdown".to_string());
+    output.push(format!("Project-URL: Homepage, {OFFICIAL_WEBSITE}"));
+    output.push(format!("Project-URL: Quickstart, {OFFICIAL_QUICKSTART}"));
     output.push(format!("Project-URL: Source, {source_url}"));
     output.push(format!("Project-URL: Documentation, {documentation_url}"));
-    Ok(format!(
-        "{}\n\nInstalls the language-neutral ait and ait-server commands plus the admitted ait-python binding. The server remains inactive until explicitly started.\n",
-        output.join("\n")
-    )
-    .into_bytes())
+    output.push(format!(
+        "Project-URL: Migration, {documentation_url}#public-0x-to-10-transition"
+    ));
+    let description = format!(
+        r#"# ait-native
+
+AIT turns an ordinary coding request into an isolated, sprint-bound repository
+change with validation evidence and a recoverable land path. It is for
+individual developers and maintainers who use coding agents and want the work
+to remain reviewable without inventing a workflow for every repository.
+
+AIT is repository-language-neutral. It does not identify or change behavior
+for Python, Node.js, Rust, Java, or any other project type.
+
+Official website: <{OFFICIAL_WEBSITE}>
+
+## Install and initialize
+
+```sh
+python -m pip install ait-native=={python_version}
+ait init
+```
+
+Run `ait init` once inside the repository your coding agent will change. For
+other verified installation routes, use the [official quickstart]({OFFICIAL_QUICKSTART}).
+
+## What you have after 90 seconds
+
+For a normal package install, the practical 90-second result is an initialized
+repository: local AIT authority exists, `AGENTS.md` contains the effective
+repository-specific workflow, and the next coding-agent request can use an
+isolated Task, validation, Snapshot, and safe land or recovery path. The server
+remains off. The 90 seconds covers installation and initialization, not the
+completion time of an arbitrary code change.
+
+## Package boundary
+
+This wheel installs the language-neutral `ait` CLI, the inactive-by-default
+`ait-server` command, and the admitted `ait-python` binding. The server starts
+only when explicitly requested.
+
+## Moving from 0.x
+
+The 0.x requirement to run `ait install` and its task-DAG positioning are
+retired. The 1.0 release line starts with `ait init` and a sprint-bound Local
+workflow. Keep the existing Git repository and history, but do not treat a
+release candidate as proof that legacy 0.x `.ait` data can be migrated in
+place. Use a clean clone or a new repository authority unless the selected
+release notes explicitly admit that migration. Read the [public transition
+contract]({documentation_url}#public-0x-to-10-transition).
+"#
+    );
+    validate_storefront_readme(
+        &description,
+        &format!("python -m pip install ait-native=={python_version}"),
+        "PyPI",
+    )?;
+    Ok(format!("{}\n\n{description}", output.join("\n")).into_bytes())
 }
 
 fn rewrite_wheel_metadata(source: &[u8], tags: &str) -> Result<Vec<u8>, String> {
@@ -2590,6 +2685,7 @@ fn validate_npm_envelope(
             "name",
             "version",
             "description",
+            "homepage",
             "license",
             "repository",
             "type",
@@ -2606,7 +2702,8 @@ fn validate_npm_envelope(
     let node_component = required_component(input, "ait-node", "node")?;
     if string_field(&package_json, "name").as_deref() != Some(NPM_TOP_LEVEL_PACKAGE)
         || string_field(&package_json, "version").as_deref() != Some(input.version.as_str())
-        || string_field(&package_json, "description").is_none_or(|value| value.is_empty())
+        || string_field(&package_json, "description").as_deref() != Some(PRODUCT_DESCRIPTION)
+        || string_field(&package_json, "homepage").as_deref() != Some(OFFICIAL_WEBSITE)
         || string_field(&package_json, "license").as_deref()
             != Some(node_component.license.as_str())
         || string_field(&package_json, "type").as_deref() != Some("module")
@@ -2617,6 +2714,16 @@ fn validate_npm_envelope(
                 .to_string(),
         );
     }
+    let npm_readme = std::str::from_utf8(&entries["package/README.md"].0)
+        .map_err(|_| "Frozen npm envelope README must be UTF-8.".to_string())?;
+    validate_storefront_readme(
+        npm_readme,
+        &format!(
+            "npm install --global {NPM_TOP_LEVEL_PACKAGE}@{}",
+            input.version
+        ),
+        "npm",
+    )?;
     validate_npm_repository(input, &package_json, "Frozen npm envelope package.json")?;
     let engines = package_json
         .get("engines")
@@ -3533,7 +3640,8 @@ mod tests {
         let package = json!({
             "name": NPM_TOP_LEVEL_PACKAGE,
             "version": "1.0.0-rc.2",
-            "description": "Direct in-process Node-API bindings for AIT",
+            "description": PRODUCT_DESCRIPTION,
+            "homepage": OFFICIAL_WEBSITE,
             "license": "Apache-2.0",
             "repository": {
                 "type": "git",
@@ -3576,7 +3684,11 @@ mod tests {
             ),
             (
                 "package/README.md".to_string(),
-                (b"# ait-native\n".to_vec(), 0o644),
+                (
+                    b"# ait-native\n\nAIT turns an ordinary coding request into an isolated, sprint-bound repository change with validation evidence. It is for individual developers and maintainers who use coding agents.\n\nOfficial website: <https://ait-native.dev/>\n\n## Install and initialize\n\n```sh\nnpm install --global @wa120/ait-native@1.0.0-rc.2\nait init\n```\n\n## What you have after 90 seconds\n\nInstallation and initialization are complete; arbitrary coding work is not promised.\n\n## Moving from 0.x\n\nThe 0.x requirement to run `ait install` and its task-DAG positioning are retired.\n"
+                        .to_vec(),
+                    0o644,
+                ),
             ),
             (
                 "package/bin/ait.mjs".to_string(),
@@ -3667,6 +3779,27 @@ mod tests {
         assert!(validate_npm_envelope(&input, &invalid, &materials)
             .unwrap_err()
             .contains("differs from the frozen public ait-node source"));
+
+        let mut invalid = entries.clone();
+        invalid.get_mut("package/README.md").unwrap().0 = b"# ait-native\n".to_vec();
+        assert!(validate_npm_envelope(&input, &invalid, &materials)
+            .unwrap_err()
+            .contains("npm storefront copy is missing"));
+
+        for (forbidden, expected_error) in [
+            ("@AIT_NPM_VERSION@", "contains an unresolved release token"),
+            ("Jira-like", "preserves legacy claim"),
+        ] {
+            let mut invalid = entries.clone();
+            invalid
+                .get_mut("package/README.md")
+                .unwrap()
+                .0
+                .extend_from_slice(format!("\n{forbidden}\n").as_bytes());
+            assert!(validate_npm_envelope(&input, &invalid, &materials)
+                .unwrap_err()
+                .contains(expected_error));
+        }
     }
 
     #[test]

@@ -102,14 +102,15 @@ fn spawn_repository_authority_server(
 #[test]
 fn remote_add_registers_and_persists_an_unconfigured_numeric_authority() {
     let temp = tempfile::tempdir().unwrap();
-    let repo = write_remote_add_fixture(temp.path(), None);
+    let root = temp.path().join("ait-core");
+    let repo = write_remote_add_fixture(&root, None);
     let (url, handle) = spawn_repository_authority_server(
         json!({
             "contract": "ait.server.repository-registration.v1",
             "created": true,
             "repository": {
                 "repository_index": 4,
-                "repository_name": "duplicate-name",
+                "repository_name": "ait-core",
                 "namespace": "R",
                 "policy_flags": 0b1000_0001,
                 "tombstoned": false,
@@ -123,9 +124,7 @@ fn remote_add_registers_and_persists_an_unconfigured_numeric_authority() {
         &RemoteAddRequest {
             name: "origin".to_string(),
             url,
-            repo_name: Some("duplicate-name".to_string()),
             make_default: false,
-            discard_export: false,
         },
     )
     .expect("remote add registers and persists the allocated Repository PK");
@@ -137,15 +136,16 @@ fn remote_add_registers_and_persists_an_unconfigured_numeric_authority() {
     assert_eq!(
         parse_value(&body, "registration body").unwrap(),
         json!({
-            "repository_name": "duplicate-name",
+            "repository_name": "ait-core",
             "namespace": "R",
             "policy_flags": 0b1000_0001,
         })
     );
     assert_eq!(added["name"], json!("origin"));
+    assert_eq!(added["repo_name"], json!("ait-core"));
     assert_eq!(added["patch_ci"]["required"], json!(false));
     assert_eq!(
-        read_json_object(&temp.path().join(".ait/config.json")).unwrap()["repository_index"],
+        read_json_object(&root.join(".ait/config.json")).unwrap()["repository_index"],
         json!(4)
     );
 }
@@ -153,7 +153,8 @@ fn remote_add_registers_and_persists_an_unconfigured_numeric_authority() {
 #[test]
 fn remote_add_with_a_configured_index_only_reads_that_numeric_authority() {
     let temp = tempfile::tempdir().unwrap();
-    let repo = write_remote_add_fixture(temp.path(), Some(7));
+    let root = temp.path().join("ait-core");
+    let repo = write_remote_add_fixture(&root, Some(7));
     let (url, handle) = spawn_repository_authority_server(
         json!({
             "contract": "ait.server.repository-authority.v1",
@@ -168,14 +169,12 @@ fn remote_add_with_a_configured_index_only_reads_that_numeric_authority() {
         2,
     );
 
-    remote_add(
+    let added = remote_add(
         &repo,
         &RemoteAddRequest {
             name: "origin".to_string(),
             url,
-            repo_name: Some("different-local-display-name".to_string()),
             make_default: false,
-            discard_export: false,
         },
     )
     .expect("configured Repository PK is verified without registration");
@@ -191,10 +190,88 @@ fn remote_add_with_a_configured_index_only_reads_that_numeric_authority() {
         ]
     );
     assert!(requests.iter().all(|(_, _, body)| body.is_empty()));
+    assert_eq!(added["repo_name"], json!("ait-core"));
     assert_eq!(
-        read_json_object(&temp.path().join(".ait/config.json")).unwrap()["repository_index"],
+        read_json_object(&root.join(".ait/config.json")).unwrap()["repository_index"],
         json!(7)
     );
+}
+
+#[test]
+#[cfg(unix)]
+fn remote_add_from_a_task_worktree_uses_the_authoritative_root_directory_name() {
+    let temp = tempfile::tempdir().unwrap();
+    let authority_root = temp.path().join("ait-core");
+    write_remote_add_fixture(&authority_root, Some(7));
+    let worktree_root = temp.path().join("lct-0650");
+    fs::create_dir(&worktree_root).unwrap();
+    std::os::unix::fs::symlink(authority_root.join(".ait"), worktree_root.join(".ait")).unwrap();
+    fs::write(
+        worktree_root.join(".ait-worktree.json"),
+        encode_value_pretty_with_newline_error_string(&json!({
+            "current_line": "feature/lct-0650",
+            "repo_root": authority_root.to_string_lossy().to_string(),
+            "workspace_root": worktree_root.to_string_lossy().to_string(),
+            "worktree_name": "lct-0650"
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let repo = RepoRuntime::discover_from_path(&worktree_root).unwrap();
+    let (url, handle) = spawn_repository_authority_server(
+        json!({
+            "contract": "ait.server.repository-authority.v1",
+            "repository": {
+                "repository_index": 7,
+                "repository_name": "legacy-display-name",
+                "namespace": "R",
+                "policy_flags": 0b1000_0001,
+                "tombstoned": false,
+            }
+        }),
+        2,
+    );
+
+    let added = remote_add(
+        &repo,
+        &RemoteAddRequest {
+            name: "origin".to_string(),
+            url,
+            make_default: false,
+        },
+    )
+    .expect("task-worktree registration uses canonical Repository root identity");
+    handle.join().unwrap();
+
+    assert_eq!(repo.workspace_root(), worktree_root);
+    assert_eq!(repo.authoritative_repo_root(), authority_root);
+    assert_eq!(added["repo_name"], json!("ait-core"));
+    assert_ne!(added["repo_name"], json!("lct-0650"));
+}
+
+#[test]
+fn remote_add_payload_rejects_retired_and_unknown_fields_before_mutation() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("ait-core");
+    let repo = write_remote_add_fixture(&root, Some(7));
+
+    for retired in [
+        json!({
+            "name": "mirror",
+            "url": "http://127.0.0.1:1",
+            "repo_name": "invented-name"
+        }),
+        json!({
+            "name": "mirror",
+            "url": "http://127.0.0.1:1",
+            "discard_export": true
+        }),
+    ] {
+        let error = remote_add_from_payload(&repo, &retired).unwrap_err();
+        assert!(error.contains("retired or unknown field"), "{error}");
+    }
+
+    assert!(remote_list(&repo).unwrap().as_array().unwrap().is_empty());
 }
 
 #[test]
@@ -457,9 +534,7 @@ fn patch_ci_bootstrap_create_is_non_overwriting_and_guidance_is_actionable() {
         &RemoteAddRequest {
             name: "origin".to_string(),
             url: "https://example.test/repo path".to_string(),
-            repo_name: Some("demo".to_string()),
             make_default: true,
-            discard_export: false,
         },
         &template,
     );
@@ -469,7 +544,7 @@ fn patch_ci_bootstrap_create_is_non_overwriting_and_guidance_is_actionable() {
     assert!(message.contains("Remote registration was not attempted."));
     assert!(message.contains("suites[].runner.commands"));
     assert!(message.contains("ait snapshot create"));
-    assert!(message.contains(
-        "ait remote add origin 'https://example.test/repo path' --repo-name demo --default"
-    ));
+    assert!(message.contains("ait remote add origin 'https://example.test/repo path' --default"));
+    assert!(!message.contains("--repo-name"));
+    assert!(!message.contains("--discard-export"));
 }

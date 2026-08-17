@@ -25,7 +25,7 @@ fn run_json(root: &Path, args: &[&str]) -> Value {
 fn generic_release_adapter_check_and_build_are_snapshot_derived_without_release_store() {
     let temp = TempDir::new().unwrap();
     let root = temp.path();
-    run_json(root, &["init", "--name", "adapter-fixture", "--json"]);
+    run_json(root, &["init", "--json"]);
 
     let output_name = if cfg!(windows) {
         "component-bin.exe"
@@ -159,7 +159,7 @@ fn generic_release_adapter_check_and_build_are_snapshot_derived_without_release_
 fn generic_release_adapter_emits_independent_target_receipts_for_matrix_ci() {
     let temp = TempDir::new().unwrap();
     let root = temp.path();
-    run_json(root, &["init", "--name", "adapter-matrix", "--json"]);
+    run_json(root, &["init", "--json"]);
 
     let first_output = "x86_64-unknown-linux-gnu";
     let second_output = "aarch64-apple-darwin";

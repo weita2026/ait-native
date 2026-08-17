@@ -1,27 +1,20 @@
-//! Rust foundation for the future Python-free `ait-agent` runtime.
+//! Rust foundation for configuration-backed native agent workers.
 //!
 //! This crate intentionally starts with transport-neutral runtime planning and
 //! event-loop ownership. Transport protocol loops move behind these modules in
 //! later slices.
 
-pub mod cli;
 pub mod event_loop;
 pub mod file_store;
 mod json_support;
 pub mod language_bindings;
-pub mod management;
 pub mod manifest;
 pub mod platform;
 pub mod runtime;
-pub mod supervisor;
 pub mod transport;
 pub mod transport_config;
 pub mod web_runtime;
 
-pub use cli::{
-    plan_agent_cli_launch, plan_agent_cli_launch_json, AgentCliLaunchPlan, AgentCliPlanInput,
-    AgentWorkerCommandPlan, AgentWorkerLaunchState,
-};
 pub use event_loop::{
     agent_discord_gateway_runtime_plan_json, agent_discord_ingress_runtime_plan_json,
     agent_discord_interaction_job_execute_json, agent_discord_reply_delivery_callback_plan_json,
@@ -210,21 +203,12 @@ pub use file_store::{
     agent_file_store_read_bytes_json, agent_file_store_read_bytes_with_store,
     AGENT_FILE_STORE_CONTRACT,
 };
-pub use language_bindings::{
-    agent_management_binding_json, language_binding_info_json, LANGUAGE_BINDING_CONTRACT,
-};
-pub use management::{
-    parse_capability_report, AgentManagementRuntime, AgentSupervisorAction,
-    AgentWorkerCapabilityProbe, AgentWorkerCapabilityReport, NativeAgentWorkerCapabilityProbe,
-    AGENT_WORKER_CAPABILITY_CONTRACT,
-};
+pub use language_bindings::{language_binding_info_json, LANGUAGE_BINDING_CONTRACT};
 pub use manifest::{
-    agent_default_worker_manifest_config_json, agent_list_manifest_workers_json,
-    agent_normalize_worker_manifest_document_json, agent_select_telegram_worker_json,
-    agent_upsert_worker_manifest_worker_json, agent_worker_manifest_ir_version,
-    agent_worker_manifest_schema_json, agent_worker_manifest_store_execute_json,
-    count_manifest_workers, list_manifest_workers, normalize_agent_worker_manifest,
-    AgentWorkerCount, AgentWorkerSpec, AGENT_WORKER_MANIFEST_STORE_CONTRACT,
+    agent_default_worker_manifest_config_json, agent_normalize_worker_manifest_document_json,
+    agent_select_telegram_worker_json, agent_worker_manifest_ir_version,
+    agent_worker_manifest_schema_json, count_manifest_workers, list_manifest_workers,
+    normalize_agent_worker_manifest, AgentWorkerCount, AgentWorkerSpec,
 };
 pub use platform::{
     close_native_socket, native_socket_from_i64, native_socket_from_u64, native_socket_is_valid,
@@ -237,30 +221,18 @@ pub use runtime::{
     agent_normalize_runtime_binding_state_document_json, agent_remote_runtime_backend_execute_json,
     agent_runtime_backend_execute_json, agent_runtime_binding_projection_json,
     agent_runtime_binding_state_ir_version, agent_runtime_binding_state_schema_json,
-    agent_runtime_binding_store_execute_json, execute_with_agent_gateway_reply_provider,
-    plan_agent_runtime, AgentLocalReplyProcessConfig, AgentLocalReplyProvider,
-    AgentLocalReplyProviderError, AgentLocalReplyRuntimeSettings, AgentLocalRuntimeBackend,
-    AgentRuntimeBackend, AgentRuntimeBindingStore, AgentRuntimeHttpExecutor, AgentRuntimePlan,
-    AgentRuntimePlanInput, AgentRuntimeRetrySleeper, ExternalProcessAgentLocalReplyProvider,
-    NativeAgentLocalRuntimeBackend, NativeAgentRuntimeHttpExecutor, RemoteAitRuntimeBackend,
-    SelectedAitRuntimeBackend, ThreadAgentRuntimeRetrySleeper,
-    AGENT_GATEWAY_CODEX_THREAD_BINDING_CONTRACT, AGENT_GATEWAY_REPLY_PROVIDER_REQUEST_CONTRACT,
-    AGENT_GATEWAY_REPLY_PROVIDER_RESPONSE_CONTRACT, AGENT_GATEWAY_REPLY_RUNTIME_CONTRACT,
-    AGENT_GATEWAY_TURN_TELEMETRY_CONTRACT, AGENT_REMOTE_RUNTIME_BACKEND_CONTRACT,
-    AGENT_RUNTIME_BACKEND_CONTRACT, AGENT_RUNTIME_BINDING_STORE_CONTRACT,
-};
-pub use supervisor::{
-    agent_supervisor_public_worker_payload_json, consume_worker_termination_context_json,
-    inspect_worker_process_status, inspect_worker_process_status_json, plan_worker_launches,
-    plan_worker_supervisor_lifecycle, plan_worker_supervisor_lifecycle_json, read_worker_log_tail,
-    read_worker_log_tail_json, start_worker_process, start_worker_process_json,
-    stop_worker_process, stop_worker_process_json, AgentWorkerLifecycleOperation,
-    AgentWorkerLifecyclePlan, AgentWorkerLifecyclePlanInput, AgentWorkerLifecycleSpec,
-    AgentWorkerLogTail, AgentWorkerLogTailInput, AgentWorkerPidFileInspection,
-    AgentWorkerProcessPaths, AgentWorkerProcessStatus, AgentWorkerProcessStatusInput,
-    AgentWorkerRuntimeHealth, AgentWorkerRuntimePaths, AgentWorkerStartInput,
-    AgentWorkerStartResult, AgentWorkerStartSpec, AgentWorkerStopInput, AgentWorkerStopResult,
-    WorkerLaunchPlan, AGENT_SUPERVISOR_TERMINATION_CONTEXT_CONTRACT,
+    agent_runtime_binding_store_execute_json, configure_agent_local_reply_process_defaults,
+    execute_with_agent_gateway_reply_provider, AgentLocalReplyProcessConfig,
+    AgentLocalReplyProcessDefaults, AgentLocalReplyProvider, AgentLocalReplyProviderError,
+    AgentLocalReplyRuntimeSettings, AgentLocalRuntimeBackend, AgentRuntimeBackend,
+    AgentRuntimeBindingStore, AgentRuntimeHttpExecutor, AgentRuntimeRetrySleeper,
+    ExternalProcessAgentLocalReplyProvider, NativeAgentLocalRuntimeBackend,
+    NativeAgentRuntimeHttpExecutor, RemoteAitRuntimeBackend, SelectedAitRuntimeBackend,
+    ThreadAgentRuntimeRetrySleeper, AGENT_GATEWAY_CODEX_THREAD_BINDING_CONTRACT,
+    AGENT_GATEWAY_REPLY_PROVIDER_REQUEST_CONTRACT, AGENT_GATEWAY_REPLY_PROVIDER_RESPONSE_CONTRACT,
+    AGENT_GATEWAY_REPLY_RUNTIME_CONTRACT, AGENT_GATEWAY_TURN_TELEMETRY_CONTRACT,
+    AGENT_REMOTE_RUNTIME_BACKEND_CONTRACT, AGENT_RUNTIME_BACKEND_CONTRACT,
+    AGENT_RUNTIME_BINDING_STORE_CONTRACT,
 };
 pub use transport::{
     agent_compact_transport_event_envelope_json, agent_compact_transport_reply_envelope_json,
@@ -287,9 +259,9 @@ pub use transport::{
 pub use transport_config::{
     agent_env_file_load_json, agent_repo_default_model_load_json, parse_agent_env_file,
     resolve_agent_worker_config, AgentRuntimeMode, AgentRuntimeTarget, AgentSecret,
-    AgentSharedWorkerConfig, AgentWorkerConfigInput, AgentWorkerRuntimeConfig, AgentWorkflowMode,
-    DiscordWorkerConfig, LineWorkerConfig, SlackWorkerConfig, TelegramSttMode,
-    TelegramWorkerConfig, TelegramWorkerMode, AGENT_ENV_FILE_LOAD_CONTRACT,
-    AGENT_REPO_DEFAULT_MODEL_LOAD_CONTRACT,
+    AgentSharedWorkerConfig, AgentWorkerConfigInput, AgentWorkerRuntimeConfig,
+    AgentWorkerRuntimePaths, AgentWorkflowMode, DiscordWorkerConfig, LineWorkerConfig,
+    SlackWorkerConfig, TelegramSttMode, TelegramWorkerConfig, TelegramWorkerMode,
+    AGENT_ENV_FILE_LOAD_CONTRACT, AGENT_REPO_DEFAULT_MODEL_LOAD_CONTRACT,
 };
 pub use web_runtime::{agent_web_runtime_execute_json, AGENT_WEB_RUNTIME_CONTRACT};

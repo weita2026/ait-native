@@ -64,6 +64,10 @@ if [[ -e ${destination} || -L ${destination} ]]; then
   printf 'source-cache destination must not already exist\n' >&2
   exit 73
 fi
+if [[ ${destination##*/} != "${repo_name}" ]]; then
+  printf 'source-cache destination basename must equal the repository name\n' >&2
+  exit 64
+fi
 if [[ -e ${evidence_path} || -L ${evidence_path} ]]; then
   printf 'source-cache evidence path must not already exist\n' >&2
   exit 73
@@ -100,10 +104,11 @@ trap cleanup EXIT HUP INT TERM
 
 (
   cd "${destination}"
-  "${ait_bin}" init \
-    --name "${repo_name}" \
-    --default-line "${bootstrap_line}" \
-    --json >"${evidence_root}/init.json"
+  "${ait_bin}" init --json >"${evidence_root}/init.json"
+  if [[ ${bootstrap_line} != main ]]; then
+    "${ait_bin}" line rename main "${bootstrap_line}" \
+      --json >"${evidence_root}/bootstrap-line.json"
+  fi
   "${ait_bin}" snapshot create \
     --message "Release source-cache bootstrap policy" \
     --json >"${evidence_root}/bootstrap-snapshot.json"
@@ -112,7 +117,6 @@ trap cleanup EXIT HUP INT TERM
     --id-namespace-prefix "${namespace}" \
     --json >"${evidence_root}/config.json"
   "${ait_bin}" remote add origin "${server_url}" \
-    --repo-name "${repo_name}" \
     --default \
     --json >"${evidence_root}/remote.json"
   "${ait_bin}" external update release-source \

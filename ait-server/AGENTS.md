@@ -3,8 +3,8 @@
 <!-- ait:workflow:start -->
 ## Effective Ait Workflow (Generated)
 
-`ait init`, `ait install`, relevant `ait config set` changes, and default-remote
-setup regenerate this block from `.ait/config.json` and sync it when the
+`ait init`, relevant `ait config set` / `ait config unset` changes, and default-remote setup
+regenerate this block from `.ait/config.json` and sync it when the
 configured target is available. The current values and commands are
 authoritative; they replace stale context and generic examples.
 
@@ -31,18 +31,12 @@ variants.
   inside a code snapshot.
 - `ait workflow ready` and `ait workflow land` are text-only decision surfaces;
   never append or recommend `--json` for either command.
-- Use `ait workflow tier --json` to evaluate an already bounded local edit
-  before choosing its closeout path. `quick_modification` is an explicit local-
-  only opt-in on a known non-default line and must finish with `ait snapshot
-  create --profile quick --intent "<intent>" --validation "<evidence>"
-  --message "<message>"`. If runtime risk escalates, leave the workspace on its
-  current line and follow the reported Task command; never publish quick work
-  directly to a governed remote.
-- Every `normal_task` or `fully_governed` code change must start with a new `ait
-  task start`, be authored in its bound worktree, and finish with `ait task land
-  <task-or-change-id>`.
-- Prefer `ait queue summary --all-changes` for inventory and `ait task audit
-  <task-id>` for one task's readiness.
+- Every code change must start with a new `ait task start`, be authored in its
+  bound worktree, and finish through `ait task land <task-or-change-id>`.
+  There is no direct Snapshot-only closeout path.
+- Prefer `ait queue summary` for current actionable inventory, `ait task list
+  --all` and `ait change list --all` for history, and `ait task audit <task-id>`
+  for one task's readiness.
 
 ### Task path: sprint mode is on
 
@@ -52,7 +46,7 @@ For changes classified as `normal_task` or `fully_governed`:
    `[plan-ref: ...]` root and an unchecked checklist item carrying an exact
    `[ref: ...]`.
 2. Start the task and first change with `ait task start --from
-   <sprint-card-path>#<exact-ref> --intent "<intent>" --base-line <line>`.
+   <sprint-card-path>#<exact-ref> --intent "<intent>"`.
    `task start --from` owns exact-file Plan sync in the configured scope,
    post-sync item taskability validation, canonical Plan binding, Task/Change
    creation, bound-worktree bootstrap, and the printed `cd` hint. The task is

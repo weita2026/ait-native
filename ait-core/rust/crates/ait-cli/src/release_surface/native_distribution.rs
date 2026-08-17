@@ -5,7 +5,6 @@ pub(super) const NATIVE_BUNDLE_CONTRACT: &str = "ait-native-bundle/v1";
 pub(super) const NATIVE_SOURCE_CONTRACT: &str = "ait-native-source/v1";
 pub(super) const NATIVE_MATRIX_REVISION: &str = "six-target-2026-07-19.1";
 pub(super) const NATIVE_BUNDLE_MANIFEST_PATH: &str = "ait-native-bundle.json";
-pub(super) const NATIVE_MATRIX_ENV: &str = "AIT_RELEASE_NATIVE_MATRIX_DIR";
 const NATIVE_SMOKE_CONTRACT: &str = "ait-native-smoke-evidence/v1";
 
 const REQUIRED_TARGET_TRIPLES: &[&str] = &[
@@ -120,16 +119,16 @@ impl NativeTarget {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum NativeCommandProfile {
     Cli,
-    CliWithAgent,
+    CliWithWorker,
 }
 
 impl NativeCommandProfile {
     fn parse(value: &str) -> Result<Self, String> {
         match value.trim() {
             "cli" => Ok(Self::Cli),
-            "cli-with-agent" => Ok(Self::CliWithAgent),
+            "cli-with-worker" => Ok(Self::CliWithWorker),
             other => Err(format!(
-                "Unsupported native command profile {other:?}; expected cli or cli-with-agent."
+                "Unsupported native command profile {other:?}; expected cli or cli-with-worker."
             )),
         }
     }
@@ -137,18 +136,14 @@ impl NativeCommandProfile {
     fn id(self) -> &'static str {
         match self {
             Self::Cli => "cli",
-            Self::CliWithAgent => "cli-with-agent",
+            Self::CliWithWorker => "cli-with-worker",
         }
     }
 
     fn commands(self) -> &'static [(&'static str, &'static str)] {
         match self {
             Self::Cli => &[("ait", "ait-cli")],
-            Self::CliWithAgent => &[
-                ("ait", "ait-cli"),
-                ("ait-agent", "ait-agent"),
-                ("ait-agent-worker", "ait-agent-worker"),
-            ],
+            Self::CliWithWorker => &[("ait", "ait-cli"), ("ait-agent-worker", "ait-agent-worker")],
         }
     }
 }
@@ -164,11 +159,6 @@ struct NativeCommandInput {
 
 impl NativeCommandInput {
     fn to_manifest_json(&self) -> JsonValue {
-        let paired_with = match self.public_identity.as_str() {
-            "ait-agent" => json!(["ait-agent-worker"]),
-            "ait-agent-worker" => json!(["ait-agent"]),
-            _ => json!([]),
-        };
         json!({
             "public_identity": self.public_identity,
             "source_binary_identity": self.source_binary_identity,
@@ -177,7 +167,6 @@ impl NativeCommandInput {
             "sha256": sha256_hex(&self.data),
             "size_bytes": self.data.len(),
             "executable_mode": format!("{:04o}", self.mode),
-            "paired_with": paired_with,
         })
     }
 }
@@ -265,17 +254,15 @@ fn native_matrix_root(explicit: Option<&Path>) -> Option<PathBuf> {
     explicit
         .filter(|path| !path.as_os_str().is_empty())
         .map(Path::to_path_buf)
-        .or_else(|| {
-            std::env::var_os(NATIVE_MATRIX_ENV)
-                .map(PathBuf::from)
-                .filter(|path| !path.as_os_str().is_empty())
-        })
 }
 
-fn host_release_source_dirs(repo: &RepoRuntime) -> Vec<PathBuf> {
+fn host_release_source_dirs(
+    repo: &RepoRuntime,
+    explicit_source_dir: Option<&Path>,
+) -> Vec<PathBuf> {
     let mut candidates = Vec::new();
-    if let Some(path) = std::env::var_os("AIT_RELEASE_NATIVE_COMMAND_DIR") {
-        candidates.push(PathBuf::from(path));
+    if let Some(path) = explicit_source_dir.filter(|path| !path.as_os_str().is_empty()) {
+        candidates.push(path.to_path_buf());
     }
     if let Ok(current_executable) = std::env::current_exe() {
         if let Some(parent) = current_executable.parent() {
@@ -296,6 +283,7 @@ fn target_source_dir(
     repo: &RepoRuntime,
     target: &NativeTarget,
     matrix_root: Option<&Path>,
+    host_source_dir: Option<&Path>,
 ) -> Option<(PathBuf, bool)> {
     if let Some(root) = matrix_root {
         return Some((root.join(&target.triple).join("release"), true));
@@ -303,7 +291,7 @@ fn target_source_dir(
     if current_host_target().as_ref() != Some(target) {
         return None;
     }
-    host_release_source_dirs(repo)
+    host_release_source_dirs(repo, host_source_dir)
         .into_iter()
         .find(|directory| {
             is_release_source_path(directory)
@@ -419,16 +407,9 @@ fn run_native_smoke_command(
 ) -> Result<JsonValue, String> {
     let mut command = Command::new(executable);
     command.current_dir(cwd).args(args);
-    for name in [
-        "AIT_REPO_ROOT",
-        "AIT_WORKTREE_NAME",
-        "AIT_WORKTREE_PATH",
-        "AIT_WORKTREE_LINE",
-        "PYTHONPATH",
-    ] {
+    for name in [names::AIT_REPO_ROOT, "PYTHONPATH"] {
         command.env_remove(name);
     }
-    command.env("AIT_RELEASE_NATIVE_SMOKE", "1");
     let output = command.output().map_err(|err| {
         format!(
             "Native smoke {check_id} could not execute {} ({err}).",
@@ -510,7 +491,7 @@ fn run_native_source_smoke(
         &ait,
         smoke_root.path(),
         "ait.init",
-        &["init", "--name", "native-release-smoke", "--json"],
+        &["init", "--json"],
         None,
         true,
     )?);
@@ -1033,14 +1014,6 @@ fn validate_command_membership(
             profile.id()
         ));
     }
-    let has_agent = identities.contains("ait-agent");
-    let has_worker = identities.contains("ait-agent-worker");
-    if has_agent != has_worker {
-        return Err(
-            "Native bundle must include ait-agent and ait-agent-worker as an inseparable pair."
-                .to_string(),
-        );
-    }
     Ok(())
 }
 
@@ -1120,10 +1093,6 @@ fn build_native_bundle_archive(
         "profile": profile.id(),
         "target": target.to_json(),
         "commands": command_rows,
-        "agent_pair": {
-            "members": ["ait-agent", "ait-agent-worker"],
-            "policy": "both_or_neither"
-        },
         "bundle": {
             "filename": filename,
             "digest_algorithm": "sha256",
@@ -1233,6 +1202,7 @@ pub(super) fn build_native_distribution(
     dist_dir: &Path,
     epoch: i64,
     explicit_matrix_root: Option<&Path>,
+    explicit_host_source_dir: Option<&Path>,
 ) -> Result<(Vec<JsonValue>, JsonValue), String> {
     let version = required_string_field(record, "version")?;
     let profile = record
@@ -1250,9 +1220,12 @@ pub(super) fn build_native_distribution(
     let mut rejected = Vec::new();
 
     for target in supported_native_targets() {
-        let Some((source_dir, descriptor_required)) =
-            target_source_dir(repo, &target, matrix_root.as_deref())
-        else {
+        let Some((source_dir, descriptor_required)) = target_source_dir(
+            repo,
+            &target,
+            matrix_root.as_deref(),
+            explicit_host_source_dir,
+        ) else {
             missing.push(target.triple.clone());
             continue;
         };
@@ -1507,9 +1480,6 @@ fn validate_native_bundle_artifact(
             target.triple,
             profile.id()
         ));
-    }
-    if identities.contains("ait-agent") != identities.contains("ait-agent-worker") {
-        return Err(format!("{} bundle has a partial agent pair", target.triple));
     }
     let ait_sha256 =
         ait_sha256.ok_or_else(|| format!("{} bundle is missing ait", target.triple))?;
@@ -1931,6 +1901,7 @@ mod tests {
             &dist,
             1_784_438_400,
             Some(&matrix_root),
+            None,
         )
         .unwrap();
         record["artifacts"] = JsonValue::Array(artifacts.clone());
@@ -2004,6 +1975,7 @@ mod tests {
             &dist,
             1_784_438_400,
             Some(&matrix_root),
+            None,
         )
         .unwrap();
         assert_eq!(artifacts.len(), 1);
@@ -2173,14 +2145,6 @@ mod tests {
             json!({"kind": "checksum", "path": "dist/ait-release-1.2.3.sha256"}),
             json!({
                 "kind": "native-command",
-                "command": "ait-agent",
-                "runtime_authority": "rust",
-                "python_fallback": false,
-                "cargo_profile": "release",
-                "path": "dist/ait-agent-1.2.3"
-            }),
-            json!({
-                "kind": "native-command",
                 "command": "ait-agent-worker",
                 "runtime_authority": "rust",
                 "python_fallback": false,
@@ -2230,6 +2194,7 @@ mod tests {
             &dist,
             1_784_438_400,
             Some(&matrix_root),
+            None,
         )
         .unwrap();
 
@@ -2279,6 +2244,7 @@ mod tests {
             &dist,
             1_784_438_400,
             Some(&matrix_root),
+            None,
         )
         .unwrap();
         record["artifacts"] = JsonValue::Array(artifacts);
@@ -2313,6 +2279,7 @@ mod tests {
             &dist,
             1_784_438_400,
             Some(&matrix_root),
+            None,
         )
         .unwrap();
         let rejected = projection["rejected_targets"].as_array().unwrap();
@@ -2324,7 +2291,7 @@ mod tests {
     }
 
     #[test]
-    fn malformed_paths_partial_agent_pairs_and_manifest_modes_fail_closed() {
+    fn malformed_paths_partial_worker_profiles_and_manifest_modes_fail_closed() {
         assert!(validate_archive_path("../bin/ait").is_err());
         assert!(validate_archive_path("/bin/ait").is_err());
         assert!(validate_archive_path("bin\\ait").is_err());
@@ -2338,15 +2305,15 @@ mod tests {
                 mode: 0o755,
             },
             NativeCommandInput {
-                public_identity: "ait-agent".to_string(),
-                source_binary_identity: "ait-agent".to_string(),
-                archive_path: "bin/ait-agent".to_string(),
-                data: b"agent".to_vec(),
+                public_identity: "unexpected".to_string(),
+                source_binary_identity: "unexpected".to_string(),
+                archive_path: "bin/unexpected".to_string(),
+                data: b"unexpected".to_vec(),
                 mode: 0o755,
             },
         ];
         assert!(
-            validate_command_membership(&partial, NativeCommandProfile::CliWithAgent)
+            validate_command_membership(&partial, NativeCommandProfile::CliWithWorker)
                 .unwrap_err()
                 .contains("command membership")
         );

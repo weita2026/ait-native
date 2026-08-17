@@ -40,6 +40,16 @@ fn print_bounded_evidence(
     }
 }
 
+fn bounded_ordered_json_payload(payload: &JsonValue, show_all: bool, limit: usize) -> JsonValue {
+    let Some(rows) = payload.as_array() else {
+        return payload.clone();
+    };
+    if show_all || rows.len() <= limit {
+        return payload.clone();
+    }
+    JsonValue::Array(rows.iter().take(limit).cloned().collect())
+}
+
 fn row_recency_key(row: &JsonValue) -> String {
     for field in [
         "updated_at",
@@ -145,6 +155,18 @@ fn select_agent_list_rows(
     (matching, matching_count, total_count)
 }
 
+fn agent_list_json_payload(
+    payload: &JsonValue,
+    show_all: bool,
+    terminal_statuses: &[&str],
+) -> JsonValue {
+    let Some(rows) = payload.as_array() else {
+        return payload.clone();
+    };
+    let (selected, _, _) = select_agent_list_rows(rows, show_all, terminal_statuses);
+    JsonValue::Array(selected)
+}
+
 fn scoped_all_command(base: &str, local: bool, remote: Option<&str>) -> String {
     let mut command = format!("{base} --all");
     if local {
@@ -183,45 +205,6 @@ fn project_change_text_rows(rows: &[JsonValue]) -> Vec<JsonValue> {
             projected
         })
         .collect()
-}
-
-fn json_mode_debug_enabled() -> bool {
-    env::var("AIT_JSON_MODE")
-        .map(|value| value.eq_ignore_ascii_case("debug"))
-        .unwrap_or(false)
-}
-
-fn status_contract_payload(payload: &JsonValue) -> JsonValue {
-    let Some(obj) = payload.as_object() else {
-        return payload.clone();
-    };
-    let mut compact = ait_core::json_support::JsonMap::new();
-    for field in [
-        "repo_name",
-        "workspace_root",
-        "workspace_status",
-        "workspace_dirty",
-        "workspace_changed_count",
-        "workspace_modified_count",
-        "workspace_missing_count",
-        "workspace_untracked_count",
-        "workspace_changed_paths_sample",
-        "current_line",
-        "head_snapshot_id",
-        "snapshot_count",
-        "remote_count",
-        "default_remote",
-        "is_worktree",
-        "worktree_name",
-        "line_hygiene",
-        "worktree_hygiene",
-        "reconciliation",
-    ] {
-        if let Some(value) = obj.get(field) {
-            compact.insert(field.to_string(), value.clone());
-        }
-    }
-    JsonValue::Object(compact)
 }
 
 fn compact_review_show_payload(payload: &JsonValue) -> JsonValue {
@@ -344,292 +327,119 @@ fn emit_auth_bindings_result(payload: &JsonValue, json_output: bool) -> Result<(
     Ok(())
 }
 
-fn emit_status_result(
-    payload: &JsonValue,
-    json_output: bool,
-    verbose: bool,
-) -> Result<(), String> {
+fn emit_status_result(payload: &JsonValue, json_output: bool) -> Result<(), String> {
     if json_output {
-        let output = if json_mode_debug_enabled() {
-            payload.clone()
-        } else {
-            status_contract_payload(payload)
-        };
-        return print_json(&output);
+        return print_json(payload);
     }
     let obj = payload
         .as_object()
         .ok_or_else(|| "status payload must decode to an object.".to_string())?;
-    if !verbose {
-        let current_line = string_field(obj.get("current_line"));
-        let head_snapshot = string_field(obj.get("head_snapshot_id"));
-        let line = if current_line.is_empty() {
-            head_snapshot
-        } else if head_snapshot.is_empty() {
-            current_line
-        } else {
-            format!("{current_line} @ {head_snapshot}")
-        };
-        let workspace_status = string_field_or_default(obj.get("workspace_status"), "unknown");
-        let changed_count = obj
-            .get("workspace_changed_count")
-            .and_then(JsonValue::as_i64)
-            .unwrap_or(0);
-        let workspace = if changed_count > 0 {
-            format!("{workspace_status} ({changed_count} changed)")
-        } else {
-            workspace_status
-        };
-        let mut rows = vec![
-            ("repo", string_field(obj.get("repo_name"))),
-            ("worktree", string_field(obj.get("worktree_name"))),
-            ("line", line),
-            ("workspace", workspace),
-        ];
-
-        if let Some(worktree_hygiene) = obj.get("worktree_hygiene") {
-            let cleanup = worktree_hygiene
-                .get("cleanup_candidate_count")
-                .and_then(JsonValue::as_i64)
-                .unwrap_or(0);
-            let manual = worktree_hygiene
-                .get("manual_review_candidate_count")
-                .and_then(JsonValue::as_i64)
-                .unwrap_or(0);
-            let stale = worktree_hygiene
-                .get("stale_count")
-                .and_then(JsonValue::as_i64)
-                .unwrap_or(0);
-            if cleanup + manual + stale > 0 {
-                rows.push((
-                    "worktrees",
-                    format!("{cleanup} cleanup, {manual} manual, {stale} stale"),
-                ));
-            }
-        }
-        if let Some(line_hygiene) = obj.get("line_hygiene") {
-            let cleanup = line_hygiene
-                .get("candidate_count")
-                .and_then(JsonValue::as_i64)
-                .unwrap_or(0);
-            let protected = line_hygiene
-                .get("protected_count")
-                .and_then(JsonValue::as_i64)
-                .unwrap_or(0);
-            if cleanup + protected > 0 {
-                rows.push((
-                    "lines",
-                    format!("{cleanup} cleanup, {protected} protected"),
-                ));
-            }
-        }
-        let mut reconciliation_next = String::new();
-        if let Some(reconciliation) = obj.get("reconciliation") {
-            let safe = reconciliation
-                .get("safe_finding_count")
-                .and_then(JsonValue::as_i64)
-                .unwrap_or(0);
-            let manual = reconciliation
-                .get("manual_resolution_count")
-                .and_then(JsonValue::as_i64)
-                .unwrap_or(0);
-            let protected = reconciliation
-                .get("protected_count")
-                .and_then(JsonValue::as_i64)
-                .unwrap_or(0);
-            let mut findings = Vec::new();
-            if safe > 0 {
-                findings.push(format!("{safe} safe"));
-            }
-            if manual > 0 {
-                findings.push(format!("{manual} manual"));
-            }
-            if protected > 0 {
-                findings.push(format!("{protected} protected"));
-            }
-            reconciliation_next =
-                status_reconciliation_next(reconciliation, safe, manual, protected);
-            if !findings.is_empty() {
-                rows.push(("reconciliation", findings.join(", ")));
-            }
-        }
-        print_key_values("ait status", &rows);
-        if changed_count > 0 {
-            let sample = json_string_array(obj.get("workspace_changed_paths_sample"));
-            if !sample.is_empty() {
-                println!("changed: {}", sample.join(", "));
-            }
-            if sample.len() < changed_count as usize {
-                println!("shown: {}/{} changed paths", sample.len(), changed_count);
-            }
-            println!("next: ait diff");
-        } else if !reconciliation_next.is_empty() {
-            println!("next: {reconciliation_next}");
-        }
-        return Ok(());
-    }
+    let current_line = string_field(obj.get("current_line"));
+    let head_snapshot = string_field(obj.get("head_snapshot_id"));
+    let line = if current_line.is_empty() {
+        head_snapshot
+    } else if head_snapshot.is_empty() {
+        current_line
+    } else {
+        format!("{current_line} @ {head_snapshot}")
+    };
+    let workspace_status = string_field_or_default(obj.get("workspace_status"), "unknown");
+    let changed_count = obj
+        .get("workspace_changed_count")
+        .and_then(JsonValue::as_i64)
+        .unwrap_or(0);
+    let workspace = if changed_count > 0 {
+        format!("{workspace_status} ({changed_count} changed)")
+    } else {
+        workspace_status
+    };
     let mut rows = vec![
         ("repo", string_field(obj.get("repo_name"))),
-        ("current line", string_field(obj.get("current_line"))),
-        ("head snapshot", string_field(obj.get("head_snapshot_id"))),
-        (
-            "default remote",
-            string_field_or_default(obj.get("default_remote"), "none"),
-        ),
-        (
-            "workspace",
-            format!(
-                "{} ({} changed)",
-                string_field_or_default(obj.get("workspace_status"), "unknown"),
-                string_field_or_default(obj.get("workspace_changed_count"), "0")
-            ),
-        ),
-        (
-            "snapshots",
-            string_field_or_default(obj.get("snapshot_count"), "0"),
-        ),
-        ("packs", string_field_or_default(obj.get("pack_count"), "0")),
-        (
-            "packed blobs",
-            string_field_or_default(obj.get("packed_blob_count"), "0"),
-        ),
-        (
-            "remotes",
-            string_field_or_default(obj.get("remote_count"), "0"),
-        ),
+        ("worktree", string_field(obj.get("worktree_name"))),
+        ("line", line),
+        ("workspace", workspace),
     ];
-    if obj
-        .get("is_worktree")
-        .and_then(JsonValue::as_bool)
-        .unwrap_or(false)
-    {
-        rows.insert(1, ("worktree", string_field(obj.get("worktree_name"))));
-    }
+
     if let Some(worktree_hygiene) = obj.get("worktree_hygiene") {
-        rows.push((
-            "worktree hygiene",
-            format!(
-                "{} cleanup, {} manual-review, {} stale",
-                string_field_or_default(worktree_hygiene.get("cleanup_candidate_count"), "0"),
-                string_field_or_default(worktree_hygiene.get("manual_review_candidate_count"), "0"),
-                string_field_or_default(worktree_hygiene.get("stale_count"), "0")
-            ),
-        ));
+        let cleanup = worktree_hygiene
+            .get("cleanup_candidate_count")
+            .and_then(JsonValue::as_i64)
+            .unwrap_or(0);
+        let manual = worktree_hygiene
+            .get("manual_review_candidate_count")
+            .and_then(JsonValue::as_i64)
+            .unwrap_or(0);
+        let stale = worktree_hygiene
+            .get("stale_count")
+            .and_then(JsonValue::as_i64)
+            .unwrap_or(0);
+        if cleanup + manual + stale > 0 {
+            rows.push((
+                "worktrees",
+                format!("{cleanup} cleanup, {manual} manual, {stale} stale"),
+            ));
+        }
     }
     if let Some(line_hygiene) = obj.get("line_hygiene") {
-        if line_hygiene
-            .get("mode")
-            .and_then(JsonValue::as_str)
-            .is_some_and(|value| value == "metadata_only")
-        {
+        let cleanup = line_hygiene
+            .get("candidate_count")
+            .and_then(JsonValue::as_i64)
+            .unwrap_or(0);
+        let protected = line_hygiene
+            .get("protected_count")
+            .and_then(JsonValue::as_i64)
+            .unwrap_or(0);
+        if cleanup + protected > 0 {
             rows.push((
-                "line hygiene",
-                format!(
-                    "{} registered lines (cleanup scan skipped)",
-                    string_field_or_default(line_hygiene.get("inspected_count"), "0")
-                ),
-            ));
-        } else {
-            rows.push((
-                "line hygiene",
-                format!(
-                    "{} cleanup, {} protected (older_than {})",
-                    string_field_or_default(line_hygiene.get("candidate_count"), "0"),
-                    string_field_or_default(line_hygiene.get("protected_count"), "0"),
-                    string_field_or_default(line_hygiene.get("older_than"), "7d")
-                ),
+                "lines",
+                format!("{cleanup} cleanup, {protected} protected"),
             ));
         }
     }
+    let mut reconciliation_next = String::new();
     if let Some(reconciliation) = obj.get("reconciliation") {
-        rows.push((
-            "reconciliation",
-            match reconciliation.get("state").and_then(JsonValue::as_str) {
-                Some("available") => format!(
-                    "{} safe, {} manual, {} protected; {}",
-                    string_field_or_default(reconciliation.get("safe_finding_count"), "0"),
-                    string_field_or_default(
-                        reconciliation.get("manual_resolution_count"),
-                        "0"
-                    ),
-                    string_field_or_default(reconciliation.get("protected_count"), "0"),
-                    string_field_or_default(
-                        reconciliation.get("next_command"),
-                        "ait workflow reconcile --dry-run"
-                    )
-                ),
-                Some(state) => format!(
-                    "{state}; {}",
-                    string_field_or_default(
-                        reconciliation.get("next_command"),
-                        "ait workflow reconcile --dry-run"
-                    )
-                ),
-                None => "unknown; ait workflow reconcile --dry-run".to_string(),
-            },
-        ));
-    }
-    if let Some(ignore_policy) = obj.get("ignore_policy") {
-        let external_roots = json_string_array(ignore_policy.get("external_materialization_roots"));
-        let operational_roots = json_string_array(ignore_policy.get("operational_roots"))
-            .into_iter()
-            .filter(|root| !external_roots.iter().any(|external| external == root))
-            .collect::<Vec<_>>();
-        if !operational_roots.is_empty() {
-            rows.push(("operational roots", operational_roots.join(", ")));
+        let safe = reconciliation
+            .get("safe_finding_count")
+            .and_then(JsonValue::as_i64)
+            .unwrap_or(0);
+        let manual = reconciliation
+            .get("manual_resolution_count")
+            .and_then(JsonValue::as_i64)
+            .unwrap_or(0);
+        let protected = reconciliation
+            .get("protected_count")
+            .and_then(JsonValue::as_i64)
+            .unwrap_or(0);
+        let mut findings = Vec::new();
+        if safe > 0 {
+            findings.push(format!("{safe} safe"));
         }
-        if !external_roots.is_empty() {
-            rows.push(("external roots", external_roots.join(", ")));
+        if manual > 0 {
+            findings.push(format!("{manual} manual"));
         }
-        let rule_files = json_string_array(ignore_policy.get("rule_files"));
-        if !rule_files.is_empty() {
-            rows.push(("ignore files", rule_files.join(", ")));
+        if protected > 0 {
+            findings.push(format!("{protected} protected"));
+        }
+        reconciliation_next =
+            status_reconciliation_next(reconciliation, safe, manual, protected);
+        if !findings.is_empty() {
+            rows.push(("reconciliation", findings.join(", ")));
         }
     }
     print_key_values("ait status", &rows);
-
-    if obj
-        .get("workspace_dirty")
-        .and_then(JsonValue::as_bool)
-        .unwrap_or(false)
-    {
-        let sample = json_string_array(obj.get("workspace_changed_paths_sample")).join(", ");
-        if sample.is_empty() {
-            println!("Workspace dirty.");
-        } else {
-            println!("Workspace dirty: {sample}");
+    if changed_count > 0 {
+        let sample = json_string_array(obj.get("workspace_changed_paths_sample"));
+        if !sample.is_empty() {
+            println!("changed: {}", sample.join(", "));
         }
-        println!("Run `ait worktree status` for path-level details.");
+        if sample.len() < changed_count as usize {
+            println!("shown: {}/{} changed paths", sample.len(), changed_count);
+        }
+        println!("next: ait diff");
+    } else if !reconciliation_next.is_empty() {
+        println!("next: {reconciliation_next}");
     }
-    if obj
-        .get("worktree_hygiene")
-        .and_then(|value| value.get("manual_review_candidate_count"))
-        .and_then(JsonValue::as_i64)
-        .unwrap_or(0)
-        > 0
-    {
-        println!("Manual worktree backlog detected. Review with `ait worktree cleanup-candidates --allow-manual-only --include-protected`.");
-    }
-    if obj
-        .get("line_hygiene")
-        .and_then(|value| value.get("candidate_count"))
-        .and_then(JsonValue::as_i64)
-        .unwrap_or(0)
-        > 0
-    {
-        println!(
-            "Line cleanup candidates detected. Review with `ait line cleanup-candidates --include-protected`."
-        );
-    } else if obj
-        .get("line_hygiene")
-        .and_then(|value| value.get("mode"))
-        .and_then(JsonValue::as_str)
-        .is_some_and(|value| value == "metadata_only")
-    {
-        println!(
-            "Run `ait line cleanup-candidates --include-protected` for a full line cleanup scan."
-        );
-    }
+
     Ok(())
 }
 
@@ -699,10 +509,6 @@ fn render_remote_add_text(payload: &JsonValue) -> Result<String, String> {
             string_field(obj.get("is_default_pull"))
         ),
         format!("created_at: {}", string_field(obj.get("created_at"))),
-        format!(
-            "discarded_export: {}",
-            string_field(obj.get("discarded_export"))
-        ),
     ];
     if let Some(patch_ci) = obj.get("patch_ci").and_then(JsonValue::as_object) {
         let suites = patch_ci
@@ -835,115 +641,6 @@ fn emit_queue_summary_result(payload: &JsonValue, json_output: bool) -> Result<(
             println!("remote summary unavailable");
             println!("- {error}");
         }
-    }
-    Ok(())
-}
-
-fn emit_task_tokens_result(
-    task_id: &str,
-    payload: &JsonValue,
-    breakdown: Option<&str>,
-    json_output: bool,
-) -> Result<(), String> {
-    if let Some(value) = breakdown {
-        if !matches!(value, "change" | "worktree" | "model") {
-            return Err(format!(
-                "Unsupported task tokens breakdown `{value}`. Use one of: change, worktree, model."
-            ));
-        }
-    }
-    if json_output {
-        return print_json(payload);
-    }
-    let obj = payload
-        .as_object()
-        .ok_or_else(|| "task tokens payload must decode to an object.".to_string())?;
-    let summary = obj
-        .get("summary")
-        .and_then(JsonValue::as_object)
-        .ok_or_else(|| "task tokens summary must decode to an object.".to_string())?;
-    print_key_values(
-        &format!("task tokens {task_id}"),
-        &[
-            (
-                "prompt tokens",
-                string_field_or_default(summary.get("prompt_tokens"), "0"),
-            ),
-            (
-                "completion tokens",
-                string_field_or_default(summary.get("completion_tokens"), "0"),
-            ),
-            (
-                "total tokens",
-                string_field_or_default(summary.get("total_tokens"), "0"),
-            ),
-            (
-                "cached input tokens",
-                string_field_or_default(summary.get("cached_input_tokens"), "0"),
-            ),
-            (
-                "reasoning output tokens",
-                string_field_or_default(summary.get("reasoning_output_tokens"), "0"),
-            ),
-            (
-                "assistant replies",
-                string_field_or_default(summary.get("assistant_reply_count"), "0"),
-            ),
-        ],
-    );
-    match breakdown.unwrap_or("") {
-        "change" => {
-            if let Some(rows) = obj.get("changes").and_then(JsonValue::as_array) {
-                if !rows.is_empty() {
-                    println!();
-                    println!("change breakdown");
-                    print_list(
-                        rows,
-                        &[
-                            "change_id",
-                            "runtime_count",
-                            "assistant_reply_count",
-                            "total_tokens",
-                        ],
-                    );
-                }
-            }
-        }
-        "worktree" => {
-            if let Some(rows) = obj.get("worktrees").and_then(JsonValue::as_array) {
-                if !rows.is_empty() {
-                    println!();
-                    println!("worktree breakdown");
-                    print_list(
-                        rows,
-                        &[
-                            "worktree_name",
-                            "runtime_count",
-                            "assistant_reply_count",
-                            "total_tokens",
-                        ],
-                    );
-                }
-            }
-        }
-        "model" => {
-            if let Some(rows) = obj.get("models").and_then(JsonValue::as_array) {
-                if !rows.is_empty() {
-                    println!();
-                    println!("model breakdown");
-                    print_list(
-                        rows,
-                        &[
-                            "model_name",
-                            "assistant_reply_count",
-                            "metered_reply_count",
-                            "total_tokens",
-                        ],
-                    );
-                }
-            }
-        }
-        _ => {}
     }
     Ok(())
 }
@@ -1093,6 +790,41 @@ fn emit_review_record_result(
     )
 }
 
+fn emit_review_code_submit_result(
+    payload: &JsonValue,
+    json_output: bool,
+) -> Result<(), String> {
+    if json_output {
+        return print_json(payload);
+    }
+    let task_review = payload
+        .get("task_review")
+        .and_then(JsonValue::as_object)
+        .ok_or_else(|| "review code submit payload is missing task_review.".to_string())?;
+    print_key_values(
+        "ait-cli review code submit",
+        &[
+            ("change_id", string_field(payload.get("change_id"))),
+            ("patchset_id", string_field(payload.get("patchset_id"))),
+            ("code_reviewer", string_field(payload.get("reviewer"))),
+            ("code_action", string_field(payload.get("action"))),
+            (
+                "task_review_mode",
+                string_field(task_review.get("mode")),
+            ),
+            (
+                "task_review_status",
+                string_field(task_review.get("status")),
+            ),
+            (
+                "task_reviewer",
+                string_field(task_review.get("reviewer")),
+            ),
+        ],
+    );
+    Ok(())
+}
+
 fn emit_review_code_template_result(payload: &JsonValue, json_output: bool) -> Result<(), String> {
     if json_output {
         return print_json(payload);
@@ -1106,9 +838,6 @@ fn emit_review_code_template_result(payload: &JsonValue, json_output: bool) -> R
 
 fn emit_review_show_result(payload: &JsonValue, json_output: bool) -> Result<(), String> {
     if json_output {
-        if json_mode_debug_enabled() {
-            return print_json(payload);
-        }
         let compact = compact_review_show_payload(payload);
         return print_json(&compact);
     }
@@ -1157,9 +886,6 @@ fn emit_review_show_result(payload: &JsonValue, json_output: bool) -> Result<(),
 
 fn emit_policy_show_result(payload: &JsonValue, json_output: bool) -> Result<(), String> {
     if json_output {
-        if json_mode_debug_enabled() {
-            return print_json(payload);
-        }
         let compact = compact_policy_show_payload(payload);
         return print_json(&compact);
     }
@@ -1482,52 +1208,79 @@ fn emit_line_list_result(
     Ok(())
 }
 
-fn emit_line_cleanup_candidates_result(
+fn emit_line_cleanup_result(
     payload: &JsonValue,
     json_output: bool,
     show_all: bool,
     include_protected: bool,
-    older_than: &str,
+    idle_for: &str,
     cleanup_kind: Option<&str>,
+    limit: Option<usize>,
 ) -> Result<(), String> {
     if json_output {
         return print_json(payload);
     }
     let obj = payload
         .as_object()
-        .ok_or_else(|| "line cleanup-candidates payload must decode to an object.".to_string())?;
+        .ok_or_else(|| "line cleanup payload must decode to an object.".to_string())?;
     print_key_values(
-        "ait-cli line cleanup-candidates",
+        "ait-cli line cleanup",
         &[
-            ("older_than", string_field(obj.get("older_than"))),
+            ("mode", string_field(obj.get("mode"))),
+            ("idle_for", string_field(obj.get("idle_for"))),
             ("cleanup_kind", string_field(obj.get("cleanup_kind"))),
             ("inspected_count", string_field(obj.get("inspected_count"))),
             ("candidate_count", string_field(obj.get("candidate_count"))),
             ("protected_count", string_field(obj.get("protected_count"))),
+            ("planned_count", string_field(obj.get("planned_count"))),
+            ("archived_count", string_field(obj.get("archived_count"))),
         ],
     );
-    let mut all_command = format!("ait line cleanup-candidates --older-than {older_than}");
+    let mut all_command = format!("ait line cleanup --idle-for {idle_for}");
     if let Some(kind) = cleanup_kind.filter(|value| !value.trim().is_empty()) {
         all_command.push_str(&format!(" --kind {kind}"));
+    }
+    if let Some(limit) = limit {
+        all_command.push_str(&format!(" --limit {limit}"));
     }
     if include_protected {
         all_command.push_str(" --include-protected");
     }
     all_command.push_str(" --all");
 
-    if let Some(rows) = obj.get("candidates").and_then(JsonValue::as_array) {
+    let applied = obj
+        .get("applied")
+        .and_then(JsonValue::as_bool)
+        .unwrap_or(false);
+    let rows_key = if applied {
+        "archived_rows"
+    } else {
+        "planned_rows"
+    };
+    if let Some(rows) = obj.get(rows_key).and_then(JsonValue::as_array) {
         if !rows.is_empty() {
             println!();
-            println!("cleanup candidates");
+            println!(
+                "{}",
+                if applied {
+                    "archived lines"
+                } else {
+                    "cleanup candidates"
+                }
+            );
             print_bounded_evidence(
                 rows,
-                &[
-                    "line_name",
-                    "lifecycle_kind",
-                    "cleanup_policy",
-                    "last_activity_at",
-                    "cleanup_reason",
-                ],
+                if applied {
+                    &["line_name", "status", "head_snapshot_id", "archived_at"]
+                } else {
+                    &[
+                        "line_name",
+                        "lifecycle_kind",
+                        "cleanup_policy",
+                        "last_activity_at",
+                        "cleanup_reason",
+                    ]
+                },
                 show_all,
                 DEFAULT_AGENT_TEXT_LIST_LIMIT,
                 &all_command,
@@ -1611,11 +1364,13 @@ fn emit_line_cleanup_candidates_result(
         .and_then(JsonValue::as_u64)
         .unwrap_or(0);
     if protected_count > 0 && !include_protected {
-        let mut inspect_command = format!(
-            "ait line cleanup-candidates --older-than {older_than} --include-protected"
-        );
+        let mut inspect_command =
+            format!("ait line cleanup --idle-for {idle_for} --include-protected");
         if let Some(kind) = cleanup_kind.filter(|value| !value.trim().is_empty()) {
             inspect_command.push_str(&format!(" --kind {kind}"));
+        }
+        if let Some(limit) = limit {
+            inspect_command.push_str(&format!(" --limit {limit}"));
         }
         inspect_command.push_str(" --all");
         println!("protected detail: {inspect_command}");
@@ -1637,45 +1392,6 @@ fn cleanup_protected_priority(row: &JsonValue) -> u8 {
         "line lifecycle is manual_only" => 5,
         _ => 6,
     }
-}
-
-fn emit_line_cleanup_report_result(payload: &JsonValue, json_output: bool) -> Result<(), String> {
-    if json_output {
-        return print_json(payload);
-    }
-    let obj = payload
-        .as_object()
-        .ok_or_else(|| "line cleanup payload must decode to an object.".to_string())?;
-    print_key_values(
-        "ait-cli line cleanup",
-        &[
-            ("older_than", string_field(obj.get("older_than"))),
-            ("cleanup_kind", string_field(obj.get("cleanup_kind"))),
-            ("candidate_count", string_field(obj.get("candidate_count"))),
-            ("planned_count", string_field(obj.get("planned_count"))),
-            ("dry_run", string_field(obj.get("dry_run"))),
-            ("archived_count", string_field(obj.get("archived_count"))),
-        ],
-    );
-    let rows_key = if obj
-        .get("dry_run")
-        .and_then(JsonValue::as_bool)
-        .unwrap_or(false)
-    {
-        "planned_rows"
-    } else {
-        "archived_rows"
-    };
-    if let Some(rows) = obj.get(rows_key).and_then(JsonValue::as_array) {
-        if !rows.is_empty() {
-            println!();
-            print_list(
-                rows,
-                &["line_name", "cleanup_reason", "status", "archived_at"],
-            );
-        }
-    }
-    Ok(())
 }
 
 fn emit_worktree_list_result(payload: &JsonValue, json_output: bool) -> Result<(), String> {

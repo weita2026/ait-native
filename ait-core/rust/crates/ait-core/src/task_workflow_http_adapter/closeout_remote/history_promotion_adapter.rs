@@ -47,10 +47,21 @@ impl HttpWorkflowCloseoutRemote {
                 "History promotion response requires boolean replayed.".to_string(),
             ));
         }
-        for (field, expected) in [
-            ("contract", "history-promotion-prepare/v1"),
-            ("repo_name", repo_name),
-        ] {
+        let request_contract = request
+            .get("contract")
+            .and_then(Value::as_str)
+            .filter(|contract| {
+                matches!(
+                    *contract,
+                    "history-promotion-prepare/v1" | "history-promotion-prepare/v2"
+                )
+            })
+            .ok_or_else(|| {
+                PlanHttpClientError::Invalid(
+                    "History promotion request has an unsupported contract.".to_string(),
+                )
+            })?;
+        for (field, expected) in [("contract", request_contract), ("repo_name", repo_name)] {
             let actual = response_object
                 .get(field)
                 .and_then(Value::as_str)
@@ -90,6 +101,66 @@ impl HttpWorkflowCloseoutRemote {
                 return Err(PlanHttpClientError::Invalid(format!(
                     "History promotion response {field} `{actual}` does not match request `{expected}`."
                 )));
+            }
+        }
+        let staged = request_contract == "history-promotion-prepare/v2";
+        if staged {
+            for field in [
+                "promotion_id",
+                "stage_base_snapshot_id",
+                "stage_revision_snapshot_id",
+            ] {
+                let expected = request.get(field).and_then(Value::as_str).ok_or_else(|| {
+                    PlanHttpClientError::Invalid(format!(
+                        "Staged history promotion request requires string {field}."
+                    ))
+                })?;
+                if response_object.get(field).and_then(Value::as_str) != Some(expected) {
+                    return Err(PlanHttpClientError::Invalid(format!(
+                        "Staged history promotion response {field} does not match the request."
+                    )));
+                }
+            }
+            for field in ["stage_ordinal", "total_entry_count"] {
+                let expected = request.get(field).and_then(Value::as_u64).ok_or_else(|| {
+                    PlanHttpClientError::Invalid(format!(
+                        "Staged history promotion request requires unsigned {field}."
+                    ))
+                })?;
+                if response_object.get(field).and_then(Value::as_u64) != Some(expected) {
+                    return Err(PlanHttpClientError::Invalid(format!(
+                        "Staged history promotion response {field} does not match the request."
+                    )));
+                }
+            }
+            let expected_final = request
+                .get("final_stage")
+                .and_then(Value::as_bool)
+                .ok_or_else(|| {
+                    PlanHttpClientError::Invalid(
+                        "Staged history promotion request requires boolean final_stage."
+                            .to_string(),
+                    )
+                })?;
+            if response_object.get("final_stage").and_then(Value::as_bool) != Some(expected_final) {
+                return Err(PlanHttpClientError::Invalid(
+                    "Staged history promotion response final_stage does not match the request."
+                        .to_string(),
+                ));
+            }
+            let expected_previous = request
+                .get("previous_stage_patchset_id")
+                .cloned()
+                .unwrap_or(Value::Null);
+            let actual_previous = response_object
+                .get("previous_stage_patchset_id")
+                .cloned()
+                .unwrap_or(Value::Null);
+            if actual_previous != expected_previous {
+                return Err(PlanHttpClientError::Invalid(
+                    "Staged history promotion response predecessor does not match the request."
+                        .to_string(),
+                ));
             }
         }
         let request_entries = request
@@ -165,23 +236,29 @@ impl HttpWorkflowCloseoutRemote {
                 }
             }
         }
-        let aggregate = response_object
-            .get("aggregate")
+        let final_stage = !staged
+            || request
+                .get("final_stage")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+        let authority_field = if staged { "stage" } else { "aggregate" };
+        let authority = response_object
+            .get(authority_field)
             .and_then(Value::as_object)
             .ok_or_else(|| {
-                PlanHttpClientError::Invalid(
-                    "History promotion response requires aggregate object.".to_string(),
-                )
+                PlanHttpClientError::Invalid(format!(
+                    "History promotion response requires {authority_field} object."
+                ))
             })?;
         for field in ["task_id", "change_ref", "patchset_id"] {
-            if aggregate
+            if authority
                 .get(field)
                 .and_then(Value::as_str)
                 .map(str::trim)
                 .is_none_or(str::is_empty)
             {
                 return Err(PlanHttpClientError::Invalid(format!(
-                    "History promotion aggregate requires non-empty {field}."
+                    "History promotion {authority_field} requires non-empty {field}."
                 )));
             }
         }
@@ -191,60 +268,99 @@ impl HttpWorkflowCloseoutRemote {
             )
         })?;
         for field in ["task_id", "change_ref"] {
-            if aggregate.get(field).and_then(Value::as_str)
+            if authority.get(field).and_then(Value::as_str)
                 != final_mapping.get(field).and_then(Value::as_str)
             {
                 return Err(PlanHttpClientError::Invalid(format!(
-                    "History promotion aggregate {field} does not match the final history entry."
+                    "History promotion {authority_field} {field} does not match the final history entry."
                 )));
             }
         }
-        let aggregate_patchset_id = aggregate.get("patchset_id").and_then(Value::as_str);
-        if receipt_patchset_ids.contains(aggregate_patchset_id.unwrap_or_default()) {
+        let authority_patchset_id = authority.get("patchset_id").and_then(Value::as_str);
+        if receipt_patchset_ids.contains(authority_patchset_id.unwrap_or_default()) {
             return Err(PlanHttpClientError::Invalid(
-                "History promotion aggregate Patchset repeats a receipt Patchset identity."
+                "History promotion stage or aggregate Patchset repeats a receipt Patchset identity."
                     .to_string(),
             ));
         }
-        let aggregate_patchset = aggregate
+        let authority_patchset = authority
             .get("patchset")
             .and_then(Value::as_object)
             .ok_or_else(|| {
-                PlanHttpClientError::Invalid(
-                    "History promotion aggregate requires Patchset projection.".to_string(),
-                )
+                PlanHttpClientError::Invalid(format!(
+                    "History promotion {authority_field} requires Patchset projection."
+                ))
             })?;
-        if aggregate_patchset
+        if authority_patchset
             .get("patchset_id")
             .and_then(Value::as_str)
-            != aggregate_patchset_id
+            != authority_patchset_id
         {
             return Err(PlanHttpClientError::Invalid(
-                "History promotion aggregate Patchset projection disagrees with patchset_id."
+                "History promotion stage or aggregate Patchset projection disagrees with patchset_id."
                     .to_string(),
             ));
         }
-        for field in ["base_snapshot_id", "revision_snapshot_id"] {
-            if aggregate_patchset.get(field).and_then(Value::as_str)
-                != request.get(field).and_then(Value::as_str)
+        let expected_base_field = if staged && !final_stage {
+            "stage_base_snapshot_id"
+        } else {
+            "base_snapshot_id"
+        };
+        let expected_revision_field = if staged && !final_stage {
+            "stage_revision_snapshot_id"
+        } else {
+            "revision_snapshot_id"
+        };
+        for (patchset_field, request_field) in [
+            ("base_snapshot_id", expected_base_field),
+            ("revision_snapshot_id", expected_revision_field),
+        ] {
+            if authority_patchset
+                .get(patchset_field)
+                .and_then(Value::as_str)
+                != request.get(request_field).and_then(Value::as_str)
             {
                 return Err(PlanHttpClientError::Invalid(format!(
-                    "History promotion aggregate Patchset {field} does not match the request."
+                    "History promotion {authority_field} Patchset {patchset_field} does not match request {request_field}."
                 )));
             }
         }
-        if aggregate_patchset
+        let expected_source_kind = if staged && !final_stage {
+            "history_promotion_stage"
+        } else {
+            "history_promotion_aggregate"
+        };
+        if authority_patchset
             .get("source_kind")
             .and_then(Value::as_str)
-            != Some("history_promotion_aggregate")
-            || aggregate_patchset
+            != Some(expected_source_kind)
+            || authority_patchset
                 .get("governance_authority")
                 .and_then(Value::as_bool)
-                != Some(true)
+                != Some(final_stage)
         {
             return Err(PlanHttpClientError::Invalid(
-                "History promotion aggregate Patchset lacks sole governance authority.".to_string(),
+                "History promotion stage/aggregate Patchset governance authority is invalid."
+                    .to_string(),
             ));
+        }
+        if staged {
+            if final_stage {
+                if response_object.get("aggregate") != response_object.get("stage") {
+                    return Err(PlanHttpClientError::Invalid(
+                        "Final history promotion stage and aggregate authority disagree."
+                            .to_string(),
+                    ));
+                }
+            } else if response_object
+                .get("aggregate")
+                .is_none_or(|value| !value.is_null())
+            {
+                return Err(PlanHttpClientError::Invalid(
+                    "Intermediate history promotion stage must not expose aggregate authority."
+                        .to_string(),
+                ));
+            }
         }
         Ok(response)
     }

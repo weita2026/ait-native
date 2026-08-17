@@ -9,7 +9,6 @@ pub trait DiagnosticsProbe {
         &self,
         payload_json: &str,
     ) -> Result<JsonValue, String>;
-    fn normalize_wheel_status_payload_json(&self, payload_json: &str) -> Result<JsonValue, String>;
     fn normalize_diagnostics_compatibility_payload_json(
         &self,
         payload_json: &str,

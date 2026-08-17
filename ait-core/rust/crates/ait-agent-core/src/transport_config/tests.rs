@@ -179,7 +179,7 @@ fn transport_config_prefers_existing_repo_env_over_cross_repo_override() {
 }
 
 #[test]
-fn transport_config_telegram_is_typed_and_preserves_alias_precedence() {
+fn transport_config_telegram_is_typed_and_manifest_authoritative() {
     let temp = local_repo();
     let config = resolve(
         &temp,
@@ -188,29 +188,26 @@ fn transport_config_telegram_is_typed_and_preserves_alias_precedence() {
             "kind": "telegram",
             "name": "main",
             "token": "manifest-telegram-token",
-            "username": "@ait_bot"
+            "username": "@ait_bot",
+            "openai_model": "manifest-model",
+            "request_timeout_seconds": "unlimited",
+            "openai_timeout_seconds": "null",
+            "poll_timeout_seconds": 2,
+            "background_sync_enabled": true,
+            "background_sync_interval_seconds": 1,
+            "turn_merge_window_seconds": 0,
+            "reply_markdown_enabled": false,
+            "stt_mode": "local-stt",
+            "stt_include_audio_uploads": true,
+            "stt_program": "/opt/ait/bin/native-stt",
+            "stt_timeout_seconds": 17.5,
+            "expected_concurrent_workers": 3,
+            "event_loop_backend": "portable_poll",
+            "workers_per_shard": 2,
+            "sync_state_path": "state/telegram.json"
         }),
-        "AIT_TELEGRAM_MODEL=file-canonical-model\n\
-         AIT_TELEGRAM_REQUEST_TIMEOUT_SECONDS=unlimited\n\
-         AIT_TELEGRAM_OPENAI_TIMEOUT_SECONDS=null\n\
-         AIT_TELEGRAM_OPENAI_API_KEY=openai-secret\n\
-         AIT_TELEGRAM_POLL_TIMEOUT_SECONDS=2\n\
-         AIT_TELEGRAM_BACKGROUND_SYNC_ENABLED=yes\n\
-         AIT_TELEGRAM_BACKGROUND_SYNC_INTERVAL_SECONDS=1\n\
-         AIT_TELEGRAM_TURN_MERGE_WINDOW_SECONDS=0\n\
-         AIT_TELEGRAM_REPLY_MARKDOWN_ENABLED=false\n\
-         AIT_TELEGRAM_STT_MODE=local-stt\n\
-         AIT_TELEGRAM_STT_INCLUDE_AUDIO_UPLOADS=true\n\
-         AIT_TELEGRAM_STT_PROGRAM=/opt/ait/bin/native-stt\n\
-         AIT_TELEGRAM_STT_TIMEOUT_SECONDS=17.5\n\
-         AIT_AGENT_EXPECTED_CONCURRENT_WORKERS=3\n\
-         AIT_AGENT_EVENT_LOOP_BACKEND=portable_poll\n\
-         AIT_AGENT_WORKERS_PER_SHARD=2\n\
-         AIT_TELEGRAM_STATE_PATH=state/telegram.json\n",
-        env(&[
-            ("AIT_TELEGRAM_BOT_TOKEN", "process-telegram-token"),
-            ("AIT_MODEL", "process-legacy-model"),
-        ]),
+        "AIT_TELEGRAM_OPENAI_API_KEY=openai-secret\n",
+        env(&[("AIT_TELEGRAM_BOT_TOKEN", "process-telegram-token")]),
     )
     .expect("Telegram config");
     let AgentWorkerRuntimeConfig::Telegram(config) = &config else {
@@ -224,7 +221,7 @@ fn transport_config_telegram_is_typed_and_preserves_alias_precedence() {
     assert_eq!(config.bind_port, 8090);
     assert_eq!(config.webhook_path, "/webhook");
     assert!(config.webhook_secret.is_none());
-    assert_eq!(config.openai_model, "file-canonical-model");
+    assert_eq!(config.openai_model, "manifest-model");
     assert_eq!(config.shared.request_timeout_seconds, None);
     assert_eq!(config.openai_timeout_seconds, None);
     assert_eq!(config.poll_timeout_seconds, 5);
@@ -246,7 +243,6 @@ fn transport_config_telegram_is_typed_and_preserves_alias_precedence() {
         config.shared.paths.sync_state_path,
         temp.path().join("state/telegram.json").to_string_lossy()
     );
-    assert!(config.shared.paths.pid_file.ends_with("telegram-main.pid"));
     assert_redacted(
         &AgentWorkerRuntimeConfig::Telegram(config.clone()),
         &[
@@ -356,9 +352,10 @@ fn transport_config_telegram_missing_and_malformed_values_fail_or_fallback_safel
         json!({
             "kind": "telegram",
             "name": "unsupported",
-            "token": "safe-token"
+            "token": "safe-token",
+            "mode": "sidecar"
         }),
-        "AIT_TELEGRAM_MODE=sidecar\n",
+        "",
         BTreeMap::new(),
     )
     .expect_err("unknown mode must fail");
@@ -371,9 +368,10 @@ fn transport_config_telegram_missing_and_malformed_values_fail_or_fallback_safel
         json!({
             "kind": "telegram",
             "name": "invalid-port",
-            "token": "safe-token"
+            "token": "safe-token",
+            "bind_port": 70000
         }),
-        "AIT_TELEGRAM_BIND_PORT=70000\n",
+        "",
         BTreeMap::new(),
     )
     .expect("typed port remains available for host validation");
@@ -393,12 +391,14 @@ fn transport_config_line_handles_disabled_timeout_overrides_and_redaction() {
             "kind": "line",
             "name": "main",
             "token": "manifest-line-token",
-            "secret": "manifest-line-secret"
+            "secret": "manifest-line-secret",
+            "request_timeout_seconds": "none",
+            "api_base_url": "https://api.line.example///",
+            "bind_port": "bad",
+            "webhook_path": "events"
         }),
-        "AIT_LINE_REQUEST_TIMEOUT_SECONDS=none\n\
-         AIT_LINE_API_BASE_URL=https://api.line.example///\n\
-         AIT_LINE_BIND_PORT=bad\n\
-         AIT_LINE_WEBHOOK_PATH=events\n",
+        "AIT_LINE_REQUEST_TIMEOUT_SECONDS=99\n\
+         AIT_LINE_API_BASE_URL=https://ignored.example\n",
         env(&[
             ("AIT_LINE_CHANNEL_ACCESS_TOKEN", "process-line-token"),
             ("AIT_LINE_CHANNEL_SECRET", "process-line-secret"),
@@ -455,13 +455,15 @@ fn transport_config_discord_handles_remote_runtime_disabled_timeouts_and_redacti
             "name": "main",
             "application_id": "manifest-discord-app",
             "public_key": "manifest-discord-public",
-            "bot_token": "manifest-discord-bot"
+            "bot_token": "manifest-discord-bot",
+            "request_timeout_seconds": "inf",
+            "turn_timeout_seconds": "unlimited",
+            "http_user_agent": "manifest-canonical-agent",
+            "bind_port": 0,
+            "interaction_path": "interact"
         }),
-        "AIT_DISCORD_REQUEST_TIMEOUT_SECONDS=inf\n\
-         AIT_DISCORD_TURN_TIMEOUT_SECONDS=unlimited\n\
-         AIT_DISCORD_HTTP_USER_AGENT=file-canonical-agent\n\
-         AIT_DISCORD_BIND_PORT=0\n\
-         AIT_DISCORD_INTERACTION_PATH=interact\n",
+        "AIT_DISCORD_REQUEST_TIMEOUT_SECONDS=31\n\
+         AIT_DISCORD_HTTP_USER_AGENT=ignored-file-agent\n",
         env(&[
             ("DISCORD_HTTP_USER_AGENT", "process-legacy-agent"),
             ("AIT_DISCORD_APPLICATION_ID", "process-discord-app"),
@@ -483,7 +485,7 @@ fn transport_config_discord_handles_remote_runtime_disabled_timeouts_and_redacti
     );
     assert_eq!(discord.shared.request_timeout_seconds, None);
     assert_eq!(discord.turn_timeout_seconds, None);
-    assert_eq!(discord.http_user_agent, "file-canonical-agent");
+    assert_eq!(discord.http_user_agent, "manifest-canonical-agent");
     assert_eq!(discord.bind_port, 8092);
     assert_eq!(discord.interaction_path, "/interact");
     assert_eq!(discord.shared.runtime_target.mode, AgentRuntimeMode::Remote);
@@ -524,13 +526,18 @@ fn transport_config_slack_keeps_optional_credentials_typed_and_redacted() {
             "app_token": "manifest-slack-app",
             "signing_secret": "manifest-slack-signing",
             "api_base_url": "https://slack.manifest.example/api/",
-            "http_user_agent": "manifest-slack-agent"
+            "http_user_agent": "manifest-slack-agent",
+            "request_timeout_seconds": "none",
+            "bind_port": 70000,
+            "command_path": "ait",
+            "ack_text": "queued",
+            "response_type": "ephemeral"
         }),
-        "AIT_SLACK_REQUEST_TIMEOUT_SECONDS=none\n\
-         AIT_SLACK_BIND_PORT=70000\n\
-         AIT_SLACK_COMMAND_PATH=ait\n\
-         AIT_SLACK_ACK_TEXT=queued\n\
-         AIT_SLACK_RESPONSE_TYPE=ephemeral\n\
+        "AIT_SLACK_REQUEST_TIMEOUT_SECONDS=42\n\
+         AIT_SLACK_BIND_PORT=9000\n\
+         AIT_SLACK_COMMAND_PATH=ignored\n\
+         AIT_SLACK_ACK_TEXT=ignored\n\
+         AIT_SLACK_RESPONSE_TYPE=ignored\n\
          AIT_SLACK_API_BASE_URL=https://slack.file.example/api\n\
          AIT_SLACK_HTTP_USER_AGENT=file-slack-agent\n",
         env(&[
@@ -590,6 +597,57 @@ fn transport_config_slack_keeps_optional_credentials_typed_and_redacted() {
     assert_eq!(optional.bind_port, 8093);
     assert_eq!(optional.api_base_url, "https://slack.com/api");
     assert_eq!(optional.http_user_agent, "ait-agent-worker/0.1");
+}
+
+#[test]
+fn transport_config_validates_and_preserves_typed_local_reply_settings() {
+    let temp = local_repo();
+    let local_reply = json!({
+        "program": "/opt/ait/bin/ait-agent-worker",
+        "args": ["reply-provider"],
+        "timeout_seconds": 45,
+        "append_turn_analysis": true,
+        "codex_program": "/opt/ait/bin/codex",
+        "model": "gpt-5.6",
+        "reasoning_effort": "high",
+        "sandbox": "workspace-write",
+        "turn_timeout_seconds": "none",
+    });
+    let config = resolve(
+        &temp,
+        "telegram/main",
+        json!({
+            "kind": "telegram",
+            "name": "main",
+            "token": "safe-token",
+            "local_reply": local_reply.clone(),
+        }),
+        "AIT_TELEGRAM_CODEX_MODEL=ignored-file-model\n",
+        env(&[("AIT_TELEGRAM_CODEX_MODEL", "ignored-process-model")]),
+    )
+    .expect("typed local reply");
+
+    assert_eq!(config.shared().local_reply.as_ref(), Some(&local_reply));
+    assert_eq!(
+        config.redacted_json()["common"]["local_reply_configured"],
+        true
+    );
+
+    let error = resolve(
+        &temp,
+        "telegram/invalid",
+        json!({
+            "kind": "telegram",
+            "name": "invalid",
+            "token": "safe-token",
+            "local_reply": {"unknown_setting": true},
+        }),
+        "",
+        BTreeMap::new(),
+    )
+    .expect_err("unknown local reply setting must fail closed");
+    assert!(error.contains("unsupported field"));
+    assert!(!error.contains("safe-token"));
 }
 
 #[test]

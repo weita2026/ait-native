@@ -2,9 +2,15 @@ use std::fmt;
 use std::path::PathBuf;
 
 use ait_core::json_support::{json, JsonValue};
+use serde::Serialize;
 
-use crate::supervisor::AgentWorkerRuntimePaths;
 use crate::transport::TransportKind;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct AgentWorkerRuntimePaths {
+    pub sync_state_path: String,
+    pub env_path: String,
+}
 
 #[derive(Clone, PartialEq, Eq)]
 pub struct AgentSecret(String);
@@ -76,6 +82,7 @@ pub struct AgentSharedWorkerConfig {
     pub paths: AgentWorkerRuntimePaths,
     pub ait_web_url: Option<String>,
     pub request_timeout_seconds: Option<f64>,
+    pub local_reply: Option<JsonValue>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -223,6 +230,7 @@ impl AgentWorkerRuntimeConfig {
             "paths": shared.paths,
             "ait_web_url_set": shared.ait_web_url.is_some(),
             "request_timeout_seconds": shared.request_timeout_seconds,
+            "local_reply_configured": shared.local_reply.is_some(),
         });
         match self {
             Self::Telegram(config) => json!({

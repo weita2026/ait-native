@@ -1014,6 +1014,17 @@ fn resolve_generic_command_argv(
         .collect()
 }
 
+fn configure_generic_command_environment(command: &mut Command, source_date_epoch: i64) {
+    for name in GENERIC_RELEASE_ARGUMENT_TOKENS
+        .iter()
+        .filter_map(|token| token.strip_prefix('$'))
+        .filter(|name| name.starts_with("AIT_"))
+    {
+        command.env_remove(name);
+    }
+    command.env("SOURCE_DATE_EPOCH", source_date_epoch.to_string());
+}
+
 fn run_generic_commands(
     source_dir: &Path,
     component: &GenericReleaseComponent,
@@ -1023,8 +1034,6 @@ fn run_generic_commands(
     commands: &[Vec<String>],
     mut evidence: Vec<JsonValue>,
 ) -> Result<Vec<JsonValue>, GenericCommandFailure> {
-    let release_id = string_field(record, "release_id").unwrap_or_default();
-    let version = string_field(record, "version").unwrap_or_default();
     for (index, argv) in commands.iter().enumerate() {
         let working_directory = generic_component_working_directory(source_dir, component)
             .map_err(|detail| GenericCommandFailure {
@@ -1045,21 +1054,9 @@ fn run_generic_commands(
         command
             .args(&resolved_argv[1..])
             .current_dir(&working_directory)
-            .env("AIT_RELEASE_ID", &release_id)
-            .env("AIT_RELEASE_VERSION", &version)
-            .env("AIT_RELEASE_COMPONENT", &component.id)
-            .env("AIT_RELEASE_ECOSYSTEM", &component.ecosystem)
-            .env("SOURCE_DATE_EPOCH", source_date_epoch.to_string())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped());
-        if let Some(target) =
-            generic_record_selection(record).map_err(|detail| GenericCommandFailure {
-                detail,
-                evidence: evidence.clone(),
-            })?
-        {
-            command.env("AIT_RELEASE_TARGET", target);
-        }
+        configure_generic_command_environment(&mut command, source_date_epoch);
         match command.spawn() {
             Ok(mut child) => {
                 let stdout_reader = child
@@ -2574,6 +2571,25 @@ mod tests {
         )
         .unwrap_err();
         assert!(error.contains("without an exact target or portable selection"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn generic_adapter_scrubs_manifest_tokens_from_child_environment() {
+        let ambient_name = GENERIC_RELEASE_ARGUMENT_TOKENS[0]
+            .strip_prefix('$')
+            .expect("release argument token prefix");
+        let mut command = Command::new("sh");
+        command
+            .args([
+                "-c",
+                "test -z \"${AIT_RELEASE_ID+x}\" && test \"$SOURCE_DATE_EPOCH\" = 1767225600",
+            ])
+            .env(ambient_name, "ambient");
+
+        configure_generic_command_environment(&mut command, 1_767_225_600);
+
+        assert!(command.status().unwrap().success());
     }
 
     #[test]

@@ -7,7 +7,6 @@ fn run_tag(repo: RepoRuntime, command: TagCommand) -> Result<(), String> {
                     name: args.name,
                     snapshot_id: args.snapshot,
                     message: args.message,
-                    force: args.force,
                 },
             )?;
             emit_result(

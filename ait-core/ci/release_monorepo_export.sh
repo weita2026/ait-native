@@ -16,6 +16,11 @@ template_root=${repo_root}/release/monorepo
 readme_template=${template_root}/README.template
 contributing_template=${template_root}/CONTRIBUTING.template
 security_template=${template_root}/SECURITY.template
+code_of_conduct_template=${template_root}/CODE_OF_CONDUCT.template
+support_template=${template_root}/SUPPORT.template
+citation_template=${template_root}/CITATION.cff
+github_template_root=${template_root}/.github
+pull_request_template=${github_template_root}/PULL_REQUEST_TEMPLATE.template
 git_attributes_template=${template_root}/.gitattributes
 root_license_scope=${template_root}/LICENSE.scope
 transform_tool=${repo_root}/ci/release_monorepo_transform.mjs
@@ -26,6 +31,7 @@ fi
 receipt_workflow=${repo_root}/.github/workflows/ait-release-component-receipts.yml
 promotion_workflow=${repo_root}/.github/workflows/ait-release-protected-promotion.yml
 endpoint_workflow=${repo_root}/.github/workflows/pypi-publish.yml
+latest_alias_workflow=${repo_root}/.github/workflows/ait-release-latest-alias.yml
 endpoint_defaults=${repo_root}/release/endpoint-publication.defaults.json
 server_dockerfile=${repo_root}/release/oci/ait-server.Dockerfile
 runner_dockerfile=${repo_root}/release/oci/ait-runner.Dockerfile
@@ -34,6 +40,7 @@ release_control_paths=(
   ci/native_bootstrap_matrix.json
   ci/release_endpoint_publication.sh
   ci/release_endpoint_remote.sh
+  ci/release_latest_alias.sh
   ci/release_operator.sh
   ci/release_protected_promotion.sh
   ci/release_receipt_matrix.jq
@@ -89,6 +96,11 @@ if [[ ! -d ${template_root} || -L ${template_root} ||
   ! -f ${readme_template} || -L ${readme_template} ||
   ! -f ${contributing_template} || -L ${contributing_template} ||
   ! -f ${security_template} || -L ${security_template} ||
+  ! -f ${code_of_conduct_template} || -L ${code_of_conduct_template} ||
+  ! -f ${support_template} || -L ${support_template} ||
+  ! -f ${citation_template} || -L ${citation_template} ||
+  ! -d ${github_template_root} || -L ${github_template_root} ||
+  ! -f ${pull_request_template} || -L ${pull_request_template} ||
   ! -f ${git_attributes_template} || -L ${git_attributes_template} ||
   ! -f ${root_license_scope} || -L ${root_license_scope} ||
   ! -f ${transform_tool} || -L ${transform_tool} ||
@@ -96,10 +108,15 @@ if [[ ! -d ${template_root} || -L ${template_root} ||
   ! -f ${receipt_workflow} || -L ${receipt_workflow} ||
   ! -f ${promotion_workflow} || -L ${promotion_workflow} ||
   ! -f ${endpoint_workflow} || -L ${endpoint_workflow} ||
+  ! -f ${latest_alias_workflow} || -L ${latest_alias_workflow} ||
   ! -f ${endpoint_defaults} || -L ${endpoint_defaults} ||
   ! -f ${server_dockerfile} || -L ${server_dockerfile} ||
   ! -f ${runner_dockerfile} || -L ${runner_dockerfile} ]]; then
   printf 'monorepo release templates or transform tool are unavailable\n' >&2
+  exit 66
+fi
+if find "${github_template_root}" -type l -print -quit | grep -q .; then
+  printf 'GitHub community templates must not contain symbolic links\n' >&2
   exit 66
 fi
 for release_control_path in "${release_control_paths[@]}"; do
@@ -179,6 +196,10 @@ fi
 
 family_version=$(jq -er '.family.version' "${family_manifest}")
 family_tag=$(jq -er '.family.tag' "${family_manifest}")
+python_version=$(jq -er '
+  [.components[] | select(.id == "ait-python") | .version]
+    | if length == 1 then .[0] else error("missing unique ait-python version") end
+' "${family_manifest}")
 
 sha256_file() {
   local path=$1
@@ -448,8 +469,16 @@ mkdir -p \
 cp "${readme_template}" "${staging}/README.md"
 node "${transform_tool}" "${staging}/README.md" \
   '@AIT_RELEASE_TAG@' "${family_tag}"
+node "${transform_tool}" "${staging}/README.md" \
+  '@AIT_PYPI_VERSION@' "${python_version}"
 cp "${contributing_template}" "${staging}/CONTRIBUTING.md"
 cp "${security_template}" "${staging}/SECURITY.md"
+cp "${code_of_conduct_template}" "${staging}/CODE_OF_CONDUCT.md"
+cp "${support_template}" "${staging}/SUPPORT.md"
+cp "${citation_template}" "${staging}/CITATION.cff"
+cp -R "${github_template_root}/." "${staging}/.github/"
+cp "${pull_request_template}" "${staging}/.github/PULL_REQUEST_TEMPLATE.md"
+rm -- "${staging}/.github/PULL_REQUEST_TEMPLATE.template"
 cp "${template_root}/NOTICE" "${staging}/NOTICE"
 if [[ $(grep -c '^---$' "${staging}/ait-core/LICENSE") -ne 1 ]]; then
   printf 'ait-core LICENSE must contain one scope/body delimiter\n' >&2
@@ -498,9 +527,11 @@ fi
 root_receipt_workflow=${staging}/.github/workflows/ait-release-component-receipts.yml
 root_promotion_workflow=${staging}/.github/workflows/ait-release-protected-promotion.yml
 root_endpoint_workflow=${staging}/.github/workflows/pypi-publish.yml
+root_latest_alias_workflow=${staging}/.github/workflows/ait-release-latest-alias.yml
 cp "${receipt_workflow}" "${root_receipt_workflow}"
 cp "${promotion_workflow}" "${root_promotion_workflow}"
 cp "${endpoint_workflow}" "${root_endpoint_workflow}"
+cp "${latest_alias_workflow}" "${root_latest_alias_workflow}"
 cp "${server_dockerfile}" "${staging}/release/oci/ait-server.Dockerfile"
 cp "${runner_dockerfile}" "${staging}/release/oci/ait-runner.Dockerfile"
 node "${transform_tool}" \
@@ -512,6 +543,9 @@ chmod 0644 \
   "${staging}/README.md" \
   "${staging}/CONTRIBUTING.md" \
   "${staging}/SECURITY.md" \
+  "${staging}/CODE_OF_CONDUCT.md" \
+  "${staging}/SUPPORT.md" \
+  "${staging}/CITATION.cff" \
   "${staging}/LICENSE" \
   "${staging}/NOTICE" \
   "${staging}/.gitattributes" \
@@ -524,6 +558,16 @@ chmod 0644 \
   "${root_receipt_workflow}" \
   "${root_promotion_workflow}" \
   "${root_endpoint_workflow}" \
+  "${root_latest_alias_workflow}" \
+  "${staging}/.github/ISSUE_TEMPLATE/bug_report.yml" \
+  "${staging}/.github/ISSUE_TEMPLATE/documentation.yml" \
+  "${staging}/.github/ISSUE_TEMPLATE/config.yml" \
+  "${staging}/.github/DISCUSSION_TEMPLATE/q-a.yml" \
+  "${staging}/.github/DISCUSSION_TEMPLATE/ideas.yml" \
+  "${staging}/.github/DISCUSSION_TEMPLATE/show-and-tell.yml" \
+  "${staging}/.github/PULL_REQUEST_TEMPLATE.md" \
+  "${staging}/.github/release.yml" \
+  "${staging}/.github/social-preview.png" \
   "${staging}/release/endpoint-publication.defaults.json" \
   "${staging}/release/oci/ait-server.Dockerfile" \
   "${staging}/release/oci/ait-runner.Dockerfile"
@@ -532,6 +576,7 @@ chmod 0755 \
   "${staging}/build-release.mjs" \
   "${staging}/ci/release_endpoint_publication.sh" \
   "${staging}/ci/release_endpoint_remote.sh" \
+  "${staging}/ci/release_latest_alias.sh" \
   "${staging}/ci/release_operator.sh" \
   "${staging}/ci/release_protected_promotion.sh"
 

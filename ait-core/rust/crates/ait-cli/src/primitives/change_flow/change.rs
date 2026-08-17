@@ -12,7 +12,12 @@ pub fn change_create(
     guard_repo_root_pinned_bound_worktree(repo, Some(task_id), "ait change create")?;
     guard_current_worktree_task_bound_authoring(repo, "change create")?;
     guard_current_worktree_task_scope(repo, task_id, "ait change create")?;
-    let resolved_base_line = normalized_text(base_line).unwrap_or_else(|| repo.default_line_name());
+    let bound_base_line = current_worktree_metadata(repo)?
+        .and_then(|metadata| metadata.target_base_line)
+        .and_then(|line| normalized_text(Some(&line)));
+    let resolved_base_line = normalized_text(base_line)
+        .or(bound_base_line)
+        .unwrap_or_else(|| repo.default_line_name());
     guard_current_worktree_retarget(
         repo,
         &resolved_base_line,
@@ -47,9 +52,7 @@ pub fn change_create(
     let (remote_row, repo_name) = remote_context(repo, remote_name, None)?;
     let mut task_remote = http_task_remote(repo, &remote_row)?;
     change_create_remote_flow_with_task_remote(
-        repo,
         &mut task_remote,
-        &remote_row.name,
         &repo_name,
         task_id,
         title,
@@ -58,14 +61,8 @@ pub fn change_create(
     )
 }
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "remote change creation keeps task, plan linkage, and author fields explicit"
-)]
 pub(in crate::primitives) fn change_create_remote_flow_with_task_remote<R>(
-    repo: &RepoRuntime,
     task_remote: &mut R,
-    remote_name: &str,
     repo_name: &str,
     task_id: &str,
     title: &str,
@@ -78,15 +75,8 @@ where
         + TaskWorkflowLineagePayloadBuilder
         + ?Sized,
 {
-    let (line_row, lineage_payload) =
+    let (_line_row, lineage_payload) =
         change_create_remote_lineage_with_task_remote(task_remote, repo_name, base_line)?;
-    guard_remote_base_line_converged(
-        repo,
-        remote_name,
-        base_line,
-        Some(&line_row),
-        "creating a remote change",
-    )?;
     change_create_with_task_remote(
         task_remote,
         repo_name,

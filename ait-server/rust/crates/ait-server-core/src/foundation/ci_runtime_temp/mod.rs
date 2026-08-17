@@ -3,14 +3,10 @@ use crate::foundation::ci_workspace_cleanup::{
 };
 use std::sync::atomic::AtomicU64;
 
-const CI_RAM_MIN_AVAILABLE_BYTES_ENV_NAMES: [&str; 2] = [
-    "AIT_NATIVE_SERVER_CI_RAM_MIN_AVAILABLE_BYTES",
-    "AIT_CI_RAM_MIN_AVAILABLE_BYTES",
-];
-const CI_RAM_RECLAIM_TARGET_BYTES_ENV_NAMES: [&str; 2] = [
-    "AIT_NATIVE_SERVER_CI_RAM_RECLAIM_TARGET_BYTES",
-    "AIT_CI_RAM_RECLAIM_TARGET_BYTES",
-];
+const CI_RAM_MIN_AVAILABLE_BYTES_ENV_NAMES: [&str; 1] =
+    [crate::environment_contract::names::AIT_NATIVE_SERVER_CI_RAM_MIN_AVAILABLE_BYTES];
+const CI_RAM_RECLAIM_TARGET_BYTES_ENV_NAMES: [&str; 1] =
+    [crate::environment_contract::names::AIT_NATIVE_SERVER_CI_RAM_RECLAIM_TARGET_BYTES];
 const CI_RUNTIME_PRESSURE_PRUNE_NAMESPACES: [&str; 4] = [
     "patchset-ci",
     "repo-ci",
@@ -22,11 +18,8 @@ const CARGO_PROFILE_LOCK_NAMES: [&str; 3] =
 const CARGO_BUILD_DIR_LEASE_NAME: &str = ".ait-ci-build-lease";
 const CARGO_WORKSPACE_PATH_HASH_TEMPLATE: &str = "{workspace-path-hash}";
 const MAX_CARGO_CACHE_DISCOVERY_DEPTH: usize = 8;
-const PERSISTENT_RUNTIME_ROOT_ENV_NAMES: [&str; 3] = [
-    "AIT_RUNTIME_ROOT",
-    "AIT_NATIVE_SERVER_CI_TMP_ROOT",
-    "AIT_NATIVE_SERVER_DATA",
-];
+const PERSISTENT_RUNTIME_ROOT_ENV_NAMES: [&str; 1] =
+    [crate::environment_contract::names::AIT_NATIVE_SERVER_DATA];
 
 static RUNTIME_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 

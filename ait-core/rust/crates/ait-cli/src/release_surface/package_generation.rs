@@ -1,10 +1,22 @@
 use super::*;
 
+pub const DEFAULT_HOMEBREW_PYTHON_FORMULA: &str = "python@3";
+
 pub fn release_formula(
     repo: &RepoRuntime,
     release_id: &str,
     name: &str,
 ) -> Result<JsonValue, String> {
+    release_formula_with_python(repo, release_id, name, DEFAULT_HOMEBREW_PYTHON_FORMULA)
+}
+
+pub fn release_formula_with_python(
+    repo: &RepoRuntime,
+    release_id: &str,
+    name: &str,
+    python_formula: &str,
+) -> Result<JsonValue, String> {
+    let python_formula = require_homebrew_formula_name(python_formula)?;
     let record = get_release_candidate(repo, release_id)?;
     let artifacts = record
         .get("artifacts")
@@ -42,8 +54,6 @@ pub fn release_formula(
             .unwrap_or_default(),
     );
     let wheel_filename = artifact_download_name(&wheel)?;
-    let python_formula =
-        std::env::var("AIT_RELEASE_HOMEBREW_PYTHON").unwrap_or_else(|_| "python@3".to_string());
     let mut symlink_lines = script_names
         .iter()
         .map(|script| format!("    bin.install_symlink libexec/\"bin/{script}\""))
@@ -101,6 +111,22 @@ pub fn release_formula(
     get_release_candidate(repo, release_id)
 }
 
+fn require_homebrew_formula_name(value: &str) -> Result<&str, String> {
+    if value.is_empty()
+        || value.trim() != value
+        || value.len() > 128
+        || !value.chars().all(|character| {
+            character.is_ascii_alphanumeric() || matches!(character, '@' | '+' | '-' | '.' | '_')
+        })
+    {
+        return Err(
+            "--python-formula must be a bounded Homebrew formula name without whitespace or path separators."
+                .to_string(),
+        );
+    }
+    Ok(value)
+}
+
 impl ReleaseProfile {
     pub(super) fn to_json(&self) -> JsonValue {
         json!({
@@ -147,7 +173,7 @@ pub(super) fn require_profile(profile: &str) -> Result<ReleaseProfile, String> {
     match profile.trim().to_ascii_lowercase().as_str() {
         "local-cli" => Ok(ReleaseProfile {
             id: "local-cli",
-            required_scripts: &["ait", "ait-agent", "ait-agent-worker", "aitk"],
+            required_scripts: &["ait", "ait-agent-worker", "aitk"],
             forbidden_scripts: &["ait-server", "ait-worker", "ait-web"],
             release_docs: &[
                 "README.md",
@@ -696,5 +722,24 @@ pub(super) fn wheel_source_root(source_dir: &Path) -> Result<PathBuf, String> {
         Ok(src)
     } else {
         Ok(source_dir.to_path_buf())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn homebrew_python_formula_is_an_explicit_bounded_name() {
+        assert_eq!(
+            require_homebrew_formula_name("python@3.14").unwrap(),
+            "python@3.14"
+        );
+        for invalid in ["", " python@3", "owner/python@3", "python@3\nnext"] {
+            assert!(
+                require_homebrew_formula_name(invalid).is_err(),
+                "{invalid:?}"
+            );
+        }
     }
 }

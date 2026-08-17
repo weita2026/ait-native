@@ -1,3 +1,4 @@
+pub mod environment_contract;
 pub mod foundation;
 pub mod middle;
 

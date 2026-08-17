@@ -5,15 +5,7 @@ fn native_patchset_namespace_supports_list_show_and_select() {
 
     let listed = json_output(
         &worktree,
-        &[
-            "patchset",
-            "list",
-            "--change",
-            "RC-1",
-            "--repo",
-            "fixture-ait",
-            "--json",
-        ],
+        &["patchset", "list", "RC-1", "--json"],
     );
     let listed_rows = listed.as_array().unwrap();
     assert_eq!(listed_rows[0]["patchset_id"].as_str(), Some("RP-1"));
@@ -24,11 +16,7 @@ fn native_patchset_namespace_supports_list_show_and_select() {
         &[
             "patchset",
             "show",
-            "1",
-            "--repo",
-            "fixture-ait",
-            "--change",
-            "RC-1",
+            "RP-1",
             "--json",
         ],
     );
@@ -38,7 +26,7 @@ fn native_patchset_namespace_supports_list_show_and_select() {
 
     let selected = json_output(
         &worktree,
-        &["patchset", "select", "RP-1", "--change", "RC-1", "--json"],
+        &["patchset", "select", "RP-1", "--json"],
     );
     assert_eq!(selected["change_id"].as_str(), Some("RC-1"));
     assert_eq!(selected["selected_patchset_id"].as_str(), Some("RP-1"));
@@ -48,7 +36,7 @@ fn native_patchset_namespace_supports_list_show_and_select() {
     assert!(logged.iter().any(|row| row.method == "GET"
         && row.url == "/v1/native/repository-authorities/7/changes/RC-1/patchsets"));
     assert!(logged.iter().any(|row| row.method == "GET"
-        && row.url == "/v1/native/repository-authorities/7/patchsets/1?change_ref=RC-1"));
+        && row.url == "/v1/native/repository-authorities/7/patchsets/RP-1"));
     assert!(logged.iter().any(|row| row.method == "POST"
         && row.url == "/v1/native/repository-authorities/7/changes/RC-1:selectPatchset"
         && row.body.contains("\"patchset_id\":\"RP-1\"")));
@@ -71,8 +59,6 @@ fn native_change_namespace_supports_local_and_remote_scopes() {
             "Native local change",
             "--intent",
             "create local change for change namespace coverage",
-            "--base-line",
-            "main",
             "--json",
         ],
     );
@@ -174,7 +160,6 @@ fn native_task_complete_local_cli_surface_is_removed() {
     let output = cargo_bin()
         .current_dir(root)
         .args(["task", "complete", "RT-LOCAL", "--local", "--json"])
-        .env_remove("AIT_JSON_MODE")
         .output()
         .unwrap();
 
@@ -197,7 +182,6 @@ fn native_task_start_local_scope_creates_authoritative_rows_and_worktree() {
   "task_default_scope": "local",
   "sprint": "off",
   "plan_task_binding": {"mode": "off"},
-  "task_tracking": "on",
   "user_name": "Fixture User",
   "user_email": "fixture@example.com"
 }"#,
@@ -213,8 +197,6 @@ fn native_task_start_local_scope_creates_authoritative_rows_and_worktree() {
             "Bootstrap local workflow",
             "--intent",
             "create draft task and change together",
-            "--base-line",
-            "main",
             "--json",
         ],
     );
@@ -256,8 +238,6 @@ fn native_task_start_local_scope_creates_authoritative_rows_and_worktree() {
             "Second local workflow",
             "--intent",
             "prove Change ordinals are Task-local",
-            "--base-line",
-            "main",
             "--json",
         ],
     );
@@ -271,7 +251,6 @@ fn native_task_start_local_scope_creates_authoritative_rows_and_worktree() {
     let ambiguous = cargo_bin()
         .current_dir(root)
         .args(["change", "show", "C-01", "--local", "--json"])
-        .env_remove("AIT_JSON_MODE")
         .output()
         .unwrap();
     assert!(!ambiguous.status.success());
@@ -293,7 +272,7 @@ fn native_task_start_local_scope_creates_authoritative_rows_and_worktree() {
 
     let audit = json_output(root, &["task", "audit", "LT-0002", "--json"]);
     assert_eq!(audit["task"]["task_id"].as_str(), Some("LT-0002"));
-    assert_eq!(audit["audit_source"]["mode"].as_str(), Some("local_draft"));
+    assert_eq!(audit["audit_source"]["mode"].as_str(), Some("local"));
     assert_eq!(
         audit["audit_source"]["remote_task_missing"].as_bool(),
         Some(false)
@@ -308,26 +287,6 @@ fn native_task_start_local_scope_creates_authoritative_rows_and_worktree() {
         Some("local_change_not_landed")
     );
 
-    let land_preview = json_output(
-        root,
-        &[
-            "task", "land", "LT-0002", "--local", "--preview", "--json",
-        ],
-    );
-    assert_eq!(land_preview["status"].as_str(), Some("ready"));
-    assert_eq!(land_preview["change_id"].as_str(), Some("C-01"));
-    assert_eq!(
-        land_preview["change_ref"].as_str(),
-        Some("LT-0002/C-01")
-    );
-    assert_eq!(
-        land_preview["change"]["task_id"].as_str(),
-        Some("LT-0002")
-    );
-    assert_eq!(
-        land_preview["change"]["change_ref"].as_str(),
-        Some("LT-0002/C-01")
-    );
 }
 
 #[test]
@@ -387,7 +346,7 @@ fn native_task_start_enforces_sprint_specific_public_forms() {
 }
 
 #[test]
-fn native_task_start_from_emits_one_json_document_and_ordered_human_progress() {
+fn native_task_start_from_emits_one_json_document_and_compact_text_output() {
     let temp = init_repo("https://example.test");
     let root = temp.path();
     write_file(
@@ -399,7 +358,6 @@ fn native_task_start_from_emits_one_json_document_and_ordered_human_progress() {
   "task_default_scope": "local",
   "sprint": "on",
   "plan_task_binding": {"mode": "required"},
-  "task_tracking": "on",
   "user_name": "Fixture User",
   "user_email": "fixture@example.com"
 }"#,
@@ -444,11 +402,9 @@ fn native_task_start_from_emits_one_json_document_and_ordered_human_progress() {
             "--from",
             "docs/sprints/source-start.md#source-start/human",
             "--intent",
-            "Prove human progress follows the durable phase order",
+            "Prove non-TTY output stays compact without a verbosity option",
             "--local",
-            "--verbose",
         ])
-        .env_remove("AIT_JSON_MODE")
         .output()
         .unwrap();
     assert!(
@@ -458,15 +414,11 @@ fn native_task_start_from_emits_one_json_document_and_ordered_human_progress() {
         String::from_utf8_lossy(&output.stderr)
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let sync_index = stdout.find("synchronizing Plan source:").unwrap();
-    let validation_index = stdout.find("Plan item taskable:").unwrap();
-    let task_index = stdout.find("task created:").unwrap();
-    let ready_index = stdout.find("worktree ready:").unwrap();
-    assert!(sync_index < validation_index);
-    assert!(validation_index < task_index);
-    assert!(task_index < ready_index);
     assert!(stdout.contains("ait task start"));
+    assert!(stdout.contains("task: LT-"));
     assert!(stdout.contains("next: cd "));
+    assert!(!stdout.contains("synchronizing Plan source:"));
+    assert!(!stdout.contains("worktree ready:"));
     assert!(!stdout.contains("Your current shell has not been switched automatically."));
 
     let compact_output = cargo_bin()
@@ -480,7 +432,6 @@ fn native_task_start_from_emits_one_json_document_and_ordered_human_progress() {
             "Prove default Agent output contains only decision facts",
             "--local",
         ])
-        .env_remove("AIT_JSON_MODE")
         .output()
         .unwrap();
     assert!(compact_output.status.success());
@@ -505,7 +456,6 @@ fn native_task_start_from_emits_one_json_document_and_ordered_human_progress() {
     let audit = cargo_bin()
         .current_dir(root)
         .args(["task", "audit", compact_task_id])
-        .env_remove("AIT_JSON_MODE")
         .output()
         .unwrap();
     assert!(audit.status.success());
@@ -517,7 +467,6 @@ fn native_task_start_from_emits_one_json_document_and_ordered_human_progress() {
     let shown = cargo_bin()
         .current_dir(root)
         .args(["task", "show", compact_task_id, "--local"])
-        .env_remove("AIT_JSON_MODE")
         .output()
         .unwrap();
     assert!(shown.status.success());
@@ -529,10 +478,23 @@ fn native_task_start_from_emits_one_json_document_and_ordered_human_progress() {
 
 #[test]
 fn native_remote_task_start_from_uses_one_atomic_mutation_and_no_legacy_posts() {
+    let remote_temp = init_repo("https://example.test");
+    let remote_root = remote_temp.path();
+    write_file(
+        &remote_root.join("src/lib.rs"),
+        "pub fn example() -> &'static str { \"atomic remote base\" }\n",
+    );
+    let remote_snapshot_id = seed_snapshot(remote_root, "atomic remote base");
+    let remote_zstd = zstd_remote_import_fixture_from_repo(remote_root, &remote_snapshot_id);
     let (base_url, log, state, handle) = spawn_fake_remote();
     let temp = init_repo(&base_url);
     let root = temp.path();
-    state.lock().unwrap().remote_head_snapshot_id = Some(FIXTURE_BASE_SNAPSHOT_ID.to_string());
+    let local_head_before = local_line_head(root, "main");
+    {
+        let mut guard = state.lock().unwrap();
+        guard.remote_head_snapshot_id = Some(remote_snapshot_id.clone());
+        guard.zstd_import_fixture = Some(remote_zstd);
+    }
     let config_path = root.join(".ait/config.json");
     let config = fs::read_to_string(&config_path)
         .unwrap()
@@ -559,14 +521,22 @@ fn native_remote_task_start_from_uses_one_atomic_mutation_and_no_legacy_posts() 
             "docs/sprints/atomic-start.md#atomic-start/implement",
             "--intent",
             "Publish the Plan head and create Task plus Change in one mutation",
-            "--base-line",
-            "main",
             "--json",
         ],
     );
 
     assert_eq!(payload["task_id"], "RT-ATOMIC");
     assert_eq!(payload["change"]["change_id"], "C-01");
+    assert_eq!(
+        payload["change"]["fork_snapshot_id"].as_str(),
+        Some(remote_snapshot_id.as_str()),
+    );
+    assert_eq!(local_line_head(root, "main"), local_head_before);
+    let worktree = PathBuf::from(payload["worktree"]["open_path"].as_str().unwrap());
+    assert_eq!(
+        fs::read_to_string(worktree.join("src/lib.rs")).unwrap(),
+        "pub fn example() -> &'static str { \"atomic remote base\" }\n",
+    );
     assert_eq!(
         payload["plan_source"]["transport_contract"],
         "task-start-atomic/v1"
@@ -587,8 +557,6 @@ fn native_remote_task_start_from_uses_one_atomic_mutation_and_no_legacy_posts() 
             "docs/sprints/atomic-start.md#atomic-start/implement",
             "--intent",
             "Publish the Plan head and create Task plus Change in one mutation",
-            "--base-line",
-            "main",
             "--json",
         ],
     );
@@ -602,6 +570,7 @@ fn native_remote_task_start_from_uses_one_atomic_mutation_and_no_legacy_posts() 
 
     handle.join().unwrap();
     let logged = log.lock().unwrap().clone();
+    assert_zstd_snapshot_download_logged(&logged, &remote_snapshot_id);
     let atomic = logged
         .iter()
         .filter(|row| {
@@ -694,8 +663,6 @@ fn native_remote_task_start_attaches_task_change_only_to_final_plan_revision() {
             "docs/sprints/atomic-revise.md#atomic-revise/implement",
             "--intent",
             "Attach workflow lineage only after the final Plan pack is committed",
-            "--base-line",
-            "main",
             "--json",
         ],
     );
@@ -765,8 +732,6 @@ fn native_remote_task_start_atomic_failure_never_falls_back_to_legacy_posts() {
             "docs/sprints/atomic-failure.md#atomic-failure/implement",
             "--intent",
             "Prove transport failure does not use legacy mutation endpoints",
-            "--base-line",
-            "main",
             "--json",
         ])
         .output()
@@ -817,8 +782,6 @@ fn native_task_start_uses_remote_task_payload_contract() {
             "Bootstrap remote workflow",
             "--intent",
             "create remote task without task tracking payload",
-            "--base-line",
-            "main",
             "--json",
         ],
     );
@@ -904,8 +867,6 @@ fn native_task_start_local_scope_bootstraps_main_seed() {
             "Bootstrap main seed",
             "--intent",
             "exercise fresh main-seed bootstrap",
-            "--base-line",
-            "main",
             "--json",
         ],
     );
@@ -953,7 +914,7 @@ fn native_task_start_ignores_disjoint_server_seed_root() {
     );
     write_file(
         &root.join(".cargo/config.toml"),
-        "# AIT source policy: canonical Cargo settings; task worktrees receive a managed projection.\n[build]\ntarget-dir = \".ait/cargo-target\"\nbuild-dir = \".ait/cargo-build/workspaces/{workspace-path-hash}\"\n\n[alias]\nmanaged-test = [\"test\", \"--profile\", \"ait-ci\"]\n",
+        "# AIT source policy: canonical Cargo settings; task worktrees receive a managed projection.\n[build]\ntarget-dir = \".ait/cargo-target\"\nbuild-dir = \".ait/cargo-build/canonical\"\n\n[alias]\nmanaged-test = [\"test\", \"--profile\", \"ait-ci\"]\n",
     );
     let server_seed_snapshot_id = seed_snapshot(root, "server seed source Cargo policy");
     fs::create_dir_all(server_seed.join("src")).unwrap();
@@ -978,8 +939,6 @@ fn native_task_start_ignores_disjoint_server_seed_root() {
             "Ignore server land seed",
             "--intent",
             "prove the CLI refreshes only its own local seed",
-            "--base-line",
-            "main",
             "--json",
         ],
         &[("AIT_NATIVE_SERVER_CI_RAM_ROOT", &server_runtime_root_text)],
@@ -1018,11 +977,26 @@ fn native_task_start_ignores_disjoint_server_seed_root() {
     let worktree = PathBuf::from(payload["worktree"]["open_path"].as_str().unwrap());
     let projected_cargo_config = fs::read_to_string(worktree.join(".cargo/config.toml")).unwrap();
     assert!(projected_cargo_config
-        .starts_with("# Managed by ait: stable final artifacts, workspace-isolated intermediates."));
+        .starts_with("# Managed by ait: workspace-isolated final artifacts and intermediates."));
     assert!(projected_cargo_config
         .contains("[alias]\nmanaged-test = [\"test\", \"--profile\", \"ait-ci\"]\n"));
     assert!(payload["worktree"]["cargo_target_dir"].is_string());
     assert!(payload["worktree"]["cargo_build_dir"].is_string());
+    let cargo_target_dir = payload["worktree"]["cargo_target_dir"]
+        .as_str()
+        .expect("Task Cargo target dir");
+    let cargo_build_dir = payload["worktree"]["cargo_build_dir"]
+        .as_str()
+        .expect("Task Cargo build dir");
+    assert!(cargo_target_dir.contains("/cargo-target/task-workspaces/"));
+    assert!(cargo_build_dir.contains("/cargo-build/task-workspaces/"));
+    assert_ne!(cargo_target_dir, cargo_build_dir);
+    assert!(projected_cargo_config.contains(&format!(
+        "target-dir = \"{cargo_target_dir}\""
+    )));
+    assert!(projected_cargo_config.contains(&format!(
+        "build-dir = \"{cargo_build_dir}\""
+    )));
     assert!(payload["worktree"]["shell_command"]
         .as_str()
         .unwrap()
@@ -1060,8 +1034,6 @@ fn native_task_start_uses_remote_base_when_local_line_is_ahead() {
             "Use authoritative remote base",
             "--intent",
             "start shared work without pushing the local-only head",
-            "--base-line",
-            "main",
             "--json",
         ],
     );
@@ -1106,16 +1078,23 @@ fn native_task_start_uses_remote_base_when_local_line_is_ahead() {
 
 #[test]
 fn native_task_start_uses_remote_base_when_remote_line_is_ahead() {
-    let (base_url, log, state, handle) = spawn_fake_remote();
-    let temp = init_repo(&base_url);
-    let root = temp.path();
+    let remote_temp = init_repo("https://example.test");
+    let remote_root = remote_temp.path();
     write_file(
-        &root.join("src/lib.rs"),
+        &remote_root.join("src/lib.rs"),
         "pub fn example() -> &'static str { \"remote ahead\" }\n",
     );
-    let remote_snapshot_id = seed_snapshot(root, "remote ahead");
-    seed_binary_line(root, "main", FIXTURE_BASE_SNAPSHOT_ID);
-    state.lock().unwrap().remote_head_snapshot_id = Some(remote_snapshot_id.clone());
+    let remote_snapshot_id = seed_snapshot(remote_root, "remote ahead");
+    let remote_zstd = zstd_remote_import_fixture_from_repo(remote_root, &remote_snapshot_id);
+    let (base_url, log, state, handle) = spawn_fake_remote();
+    {
+        let mut guard = state.lock().unwrap();
+        guard.remote_head_snapshot_id = Some(remote_snapshot_id.clone());
+        guard.zstd_import_fixture = Some(remote_zstd);
+    }
+    let temp = init_repo(&base_url);
+    let root = temp.path();
+    let local_head_before = local_line_head(root, "main");
 
     let payload = json_output(
         root,
@@ -1126,8 +1105,6 @@ fn native_task_start_uses_remote_base_when_remote_line_is_ahead() {
             "Use imported remote base",
             "--intent",
             "start shared work from the imported Remote head",
-            "--base-line",
-            "main",
             "--json",
         ],
     );
@@ -1139,7 +1116,7 @@ fn native_task_start_uses_remote_base_when_remote_line_is_ahead() {
     );
     assert_eq!(
         local_line_head(root, "main").as_deref(),
-        Some(FIXTURE_BASE_SNAPSHOT_ID),
+        local_head_before.as_deref(),
         "Remote Task start must not fast-forward the local Line"
     );
     let worktree = PathBuf::from(payload["worktree"]["open_path"].as_str().unwrap());
@@ -1151,6 +1128,7 @@ fn native_task_start_uses_remote_base_when_remote_line_is_ahead() {
 
     handle.join().unwrap();
     let logged = log.lock().unwrap().clone();
+    assert_zstd_snapshot_download_logged(&logged, &remote_snapshot_id);
     assert!(logged
         .iter()
         .any(|row| row.method == "GET"
@@ -1168,6 +1146,51 @@ fn native_task_start_uses_remote_base_when_remote_line_is_ahead() {
         parse_json(&change_create.body)["fork_snapshot_id"].as_str(),
         Some(remote_snapshot_id.as_str())
     );
+}
+
+#[test]
+fn native_task_start_preserves_an_empty_remote_base_when_local_main_has_a_head() {
+    let (base_url, log, _state, handle) = spawn_fake_remote();
+    let temp = init_repo(&base_url);
+    let root = temp.path();
+    let local_head_before = local_line_head(root, "main");
+
+    let payload = json_output(
+        root,
+        &[
+            "task",
+            "start",
+            "--title",
+            "Use empty remote base",
+            "--intent",
+            "preserve the authoritative empty Remote Line",
+            "--json",
+        ],
+    );
+
+    assert!(payload["change"]["fork_snapshot_id"].is_null());
+    assert!(payload["worktree"]["fork_snapshot_id"].is_null());
+    assert!(payload["worktree"]["head_snapshot_id"].is_null());
+    assert_eq!(
+        local_line_head(root, "main"),
+        local_head_before,
+        "empty Remote Task start must not move or borrow local main",
+    );
+    let worktree = PathBuf::from(payload["worktree"]["open_path"].as_str().unwrap());
+    assert!(
+        !worktree.join("src/lib.rs").exists(),
+        "empty Remote base must materialize an empty authoring tree",
+    );
+
+    handle.join().unwrap();
+    let logged = log.lock().unwrap().clone();
+    let change_create = logged
+        .iter()
+        .find(|row| {
+            row.method == "POST" && row.url == "/v1/native/repository-authorities/7/changes"
+        })
+        .unwrap();
+    assert!(parse_json(&change_create.body)["fork_snapshot_id"].is_null());
 }
 
 #[test]
@@ -1194,8 +1217,6 @@ fn native_task_start_from_existing_worktree_performs_zero_remote_mutations() {
             "Must not mutate",
             "--intent",
             "Reject before remote task create",
-            "--base-line",
-            "main",
             "--json",
         ])
         .output()
@@ -1269,8 +1290,6 @@ fn native_task_namespace_reads_local_and_remote_scopes() {
             "Local namespace task",
             "--intent",
             "verify local task reads",
-            "--base-line",
-            "main",
             "--json",
         ],
     );
@@ -1284,6 +1303,36 @@ fn native_task_namespace_reads_local_and_remote_scopes() {
     );
     assert_eq!(local_shown["task_id"].as_str(), Some("LT-0001"));
     assert_eq!(local_shown["publication_state"].as_str(), Some("local_draft"));
+    assert!(log.lock().unwrap().is_empty());
+
+    let abandoned = json_output(
+        root,
+        &["task", "abandon", "LT-0001", "--local", "--json"],
+    );
+    assert_eq!(abandoned["status"].as_str(), Some("abandoned"));
+    let bounded_local = json_output(root, &["task", "list", "--local", "--json"]);
+    assert!(bounded_local.as_array().unwrap().is_empty());
+    let all_local = json_output(
+        root,
+        &["task", "list", "--local", "--all", "--json"],
+    );
+    assert_eq!(all_local.as_array().unwrap().len(), 1);
+    assert_eq!(all_local[0]["task_id"].as_str(), Some("LT-0001"));
+    assert_eq!(all_local[0]["status"].as_str(), Some("abandoned"));
+    let bounded_text = cargo_bin()
+        .current_dir(root)
+        .args(["task", "list", "--local"])
+        .output()
+        .unwrap();
+    assert!(bounded_text.status.success());
+    assert!(!String::from_utf8_lossy(&bounded_text.stdout).contains("LT-0001"));
+    let all_text = cargo_bin()
+        .current_dir(root)
+        .args(["task", "list", "--local", "--all"])
+        .output()
+        .unwrap();
+    assert!(all_text.status.success());
+    assert!(String::from_utf8_lossy(&all_text.stdout).contains("LT-0001"));
     assert!(log.lock().unwrap().is_empty());
 
     let remote_listed = json_output(root, &["task", "list", "--remote", "origin", "--json"]);

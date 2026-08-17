@@ -5,7 +5,10 @@ use crate::runtime::{RemoteRow, RepoRuntime};
 use ait_core::json_support::{json, JsonMap, JsonValue};
 use ait_core::plan_http_client::{PlanHttpClientConfig, PlanHttpClientManager};
 use ait_core::repository_pack_json::repository_payload_with_pack_storage_default;
-use ait_core::server_operational::{WorkerJobIndex, WorkerJobKey};
+use ait_core::server_operational::{
+    validate_worker_job_list_limit, WorkerJobIndex, WorkerJobKey, WORKER_JOB_LIST_LIMIT_DEFAULT,
+    WORKER_JOB_LIST_LIMIT_MAX, WORKER_JOB_LIST_LIMIT_MIN,
+};
 
 #[derive(Clone, Debug)]
 pub struct RepoCommandRequest {
@@ -17,17 +20,13 @@ pub struct RepoCommandRequest {
 
 pub fn repo_command(repo: &RepoRuntime, request: &RepoCommandRequest) -> Result<JsonValue, String> {
     let command = normalize_required_text(&request.command, "repo command")?;
+    validate_repo_command_request(&command, request)?;
     if command == "retire" {
         return retire_repository(
             repo,
             &RepoRetireRequest {
                 remote_name: request.remote_name.clone(),
                 abort: bool_value(request.args.get("abort"), "abort", false)?,
-                replace_export: bool_value(
-                    request.args.get("replace_export"),
-                    "replace_export",
-                    false,
-                )?,
             },
         );
     }
@@ -52,16 +51,7 @@ pub fn repo_command(repo: &RepoRuntime, request: &RepoCommandRequest) -> Result<
             })
             .map_err(|err| err.to_string()),
         "jobs" => repo_jobs(repo, &mut client, request),
-        "run-ci" => repo_run_ci(&mut client, &remote_row, &repo_name, request),
         "ci-capabilities" => repo_ci_capabilities(&mut client, &remote_row, &repo_name),
-        "ci-runs" => client
-            .read_repository_ci_runs(
-                &repo_name,
-                i64_arg(request, "limit", 20)?,
-                optional_string_arg(request, "plane")?.as_deref(),
-                optional_string_arg(request, "suite_id")?.as_deref(),
-            )
-            .map_err(|err| err.to_string()),
         _ => Err(format!("Unknown repo command `{command}`.")),
     }
 }
@@ -73,11 +63,16 @@ pub fn repo_command_from_payload(
     let object = payload
         .as_object()
         .ok_or_else(|| "repo command payload must decode to an object.".to_string())?;
-    let args = object
-        .get("args")
-        .and_then(JsonValue::as_object)
-        .cloned()
-        .unwrap_or_else(JsonMap::new);
+    reject_unknown_fields(
+        "repo command payload",
+        object,
+        &["command", "remote_name", "json_output", "args"],
+    )?;
+    let args = match object.get("args") {
+        None | Some(JsonValue::Null) => JsonMap::new(),
+        Some(JsonValue::Object(args)) => args.clone(),
+        Some(_) => return Err("repo command payload `args` must be an object.".to_string()),
+    };
     repo_command(
         repo,
         &RepoCommandRequest {
@@ -103,15 +98,10 @@ pub fn render_repo_command_text(request: &RepoCommandRequest, payload: &JsonValu
 }
 
 fn repo_text(command: &str, payload: &JsonValue, request: Option<&RepoCommandRequest>) -> String {
-    if payload.get("surface").and_then(JsonValue::as_str) == Some("ait.test.status") {
-        return test_status_text(payload, request);
-    }
     match command {
         "show" => repo_show_text(payload, request),
         "ci-capabilities" => repo_ci_capabilities_text(payload, request),
         "jobs" => repo_jobs_text("ait repo jobs", payload, request),
-        "ci-runs" => repo_jobs_text("ait repo ci-runs", payload, request),
-        "run-ci" => repo_run_ci_text(payload, request),
         _ => {
             let title = match command {
                 "retire" => "repo retirement",
@@ -325,7 +315,7 @@ fn repo_ci_capabilities_text(payload: &JsonValue, request: Option<&RepoCommandRe
             request_remote_suffix(request)
         ));
     } else {
-        output.push("decision: native CI submission and zstd remote sync are ready".to_string());
+        output.push("decision: Patchset CI submission and zstd remote sync are ready".to_string());
     }
     if server_ready && !runner_contract.is_empty() && ready_sync == sync_checks.len() {
         output.push(format!(
@@ -439,14 +429,24 @@ fn repo_jobs_text(
         ));
     }
     if query_bound_reached {
-        output.push(format!(
-            "older: {}",
-            repo_jobs_json_command_at_limit(
-                title,
-                request,
-                requested_limit.saturating_mul(2).max(requested_limit + 1),
-            )
-        ));
+        if requested_limit < u64::from(WORKER_JOB_LIST_LIMIT_MAX) {
+            output.push(format!(
+                "older: {}",
+                repo_jobs_json_command_at_limit(
+                    title,
+                    request,
+                    requested_limit
+                        .saturating_mul(2)
+                        .max(requested_limit + 1)
+                        .min(u64::from(WORKER_JOB_LIST_LIMIT_MAX)),
+                )
+            ));
+        } else {
+            output.push(format!(
+                "older: server query maximum {} reached; narrow the inventory with --state",
+                WORKER_JOB_LIST_LIMIT_MAX
+            ));
+        }
     }
     output.join("\n")
 }
@@ -493,194 +493,6 @@ fn single_job_text(title: &str, job: &JsonValue, request: Option<&RepoCommandReq
         request_remote_suffix(request)
     ));
     output.join("\n")
-}
-
-fn repo_run_ci_text(payload: &JsonValue, request: Option<&RepoCommandRequest>) -> String {
-    let job = payload.get("job").unwrap_or(payload);
-    let index = job_index(job);
-    let mut output = vec!["ait repo run-ci".to_string()];
-    push_key_value(
-        &mut output,
-        "submission",
-        if payload.get("queued").and_then(JsonValue::as_bool) == Some(true) {
-            "queued"
-        } else {
-            "accepted"
-        },
-    );
-    push_key_value(&mut output, "job", format!("#{index}"));
-    push_key_value(&mut output, "type", value_text(job.get("job_type")));
-    push_key_value(&mut output, "state", job_state(job));
-    push_key_value(
-        &mut output,
-        "snapshot",
-        value_text(payload.get("snapshot_id")),
-    );
-    if index > 0 {
-        output.push(format!(
-            "next: ait repo jobs --worker-job-index {index}{}",
-            request_remote_suffix(request)
-        ));
-    }
-    output.join("\n")
-}
-
-fn test_status_text(payload: &JsonValue, request: Option<&RepoCommandRequest>) -> String {
-    let suite = value_text(payload.get("suite_id"));
-    let plane = value_text(payload.get("plane"));
-    let status = value_text(payload.get("status"));
-    let limit = payload
-        .get("limit")
-        .and_then(JsonValue::as_i64)
-        .unwrap_or(5)
-        .max(1);
-    let latest = payload.get("latest").filter(|value| value.is_object());
-    let decision_status = latest
-        .map(|job| {
-            if job_has_failure(job) {
-                "failed".to_string()
-            } else {
-                job_state(job)
-            }
-        })
-        .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| {
-            if status.is_empty() {
-                "unknown".to_string()
-            } else {
-                status.clone()
-            }
-        });
-    let mut output = vec!["ait test status".to_string()];
-    push_key_value(&mut output, "suite", suite.clone());
-    push_key_value(&mut output, "plane", plane.clone());
-    push_key_value(&mut output, "status", decision_status);
-    output.push(
-        "authority: latest repo.ci Worker Job; Binary v0 history does not persist plane/suite selectors"
-            .to_string(),
-    );
-    let returned_count = payload
-        .get("runs")
-        .and_then(|runs| runs.get("count"))
-        .and_then(JsonValue::as_u64)
-        .or_else(|| {
-            payload
-                .get("runs")
-                .and_then(|runs| runs.get("jobs"))
-                .and_then(JsonValue::as_array)
-                .map(|jobs| jobs.len() as u64)
-        })
-        .unwrap_or(0);
-    let query_bound_reached = returned_count > 0 && returned_count >= limit as u64;
-    if let Some(latest) = latest {
-        let index = job_index(latest);
-        push_key_value(&mut output, "latest job", format!("#{index}"));
-        push_key_value(&mut output, "result", job_result(latest));
-        push_key_value(
-            &mut output,
-            "updated",
-            epoch_text(latest.get("updated_at_s")),
-        );
-        match job_state(latest).as_str() {
-            _ if job_has_failure(latest) => {
-                output.push("blocker: latest available repository CI evidence failed".to_string());
-                output.push(format!(
-                    "next: {}",
-                    test_rerun_command(&suite, &plane, request)
-                ));
-            }
-            "queued" | "running" => output.push(format!(
-                "next: ait repo jobs --worker-job-index {index}{}",
-                request_remote_suffix(request)
-            )),
-            "succeeded" => output.push(
-                "decision: latest available repository CI job passed (suite/plane unverified)"
-                    .to_string(),
-            ),
-            other => output.push(format!(
-                "attention: latest repository CI run reports {other}"
-            )),
-        }
-    } else if query_bound_reached {
-        let next_limit = (limit as u64).saturating_mul(2).max(limit as u64 + 1);
-        output.push(format!(
-            "attention: no repo.ci test run was found in the latest {limit} Worker Jobs; older records may exist"
-        ));
-        output.push(format!(
-            "next: {}",
-            test_status_command(&suite, &plane, next_limit, request, false)
-        ));
-    } else {
-        output.push(format!(
-            "blocker: no repo.ci test run was found in the latest {limit} Worker Jobs"
-        ));
-        output.push(format!(
-            "next: {}",
-            test_rerun_command(&suite, &plane, request)
-        ));
-    }
-
-    let mut runs = payload
-        .get("runs")
-        .and_then(|runs| runs.get("jobs"))
-        .and_then(JsonValue::as_array)
-        .cloned()
-        .unwrap_or_default();
-    if latest.is_some() {
-        runs.retain(|job| job.get("job_type").and_then(JsonValue::as_str) == Some("repo.ci"));
-    }
-    if !runs.is_empty() {
-        let mut ranked = runs;
-        ranked.sort_by(|left, right| {
-            job_attention_priority(left)
-                .cmp(&job_attention_priority(right))
-                .then_with(|| job_index(right).cmp(&job_index(left)))
-        });
-        let shown = ranked.len().min(5);
-        output.push(String::new());
-        output.push(if latest.is_some() {
-            "recent repository CI evidence".to_string()
-        } else {
-            "returned CI evidence (no matching repo.ci run)".to_string()
-        });
-        output.push("job\ttype\tstate\tresult\tattempts\tfailures\tupdated".to_string());
-        for job in ranked.iter().take(shown) {
-            output.push(project_job_row(job));
-        }
-        if shown < ranked.len() {
-            output.push(format!("shown: {shown}/{}", ranked.len()));
-        }
-    }
-    output.push(format!(
-        "details: {}",
-        test_status_command(&suite, &plane, limit as u64, request, true)
-    ));
-    output.join("\n")
-}
-
-fn test_status_command(
-    suite: &str,
-    plane: &str,
-    limit: u64,
-    request: Option<&RepoCommandRequest>,
-    json_output: bool,
-) -> String {
-    format!(
-        "ait test status --suite-id {suite} --plane {plane} --limit {limit}{}{}",
-        request_remote_suffix(request),
-        if json_output { " --json" } else { "" }
-    )
-}
-
-fn test_rerun_command(suite: &str, plane: &str, request: Option<&RepoCommandRequest>) -> String {
-    let command = match suite {
-        "full_repo" => format!("ait test run --full --plane {plane} --target-line main"),
-        "full_repo_zstd_only" => {
-            format!("ait test run --full --variant zstd_only --plane {plane} --target-line main")
-        }
-        _ => format!("ait repo run-ci --suite {suite} --plane {plane} --target-line main"),
-    };
-    format!("{command}{}", request_remote_suffix(request))
 }
 
 fn project_job_row(job: &JsonValue) -> String {
@@ -850,7 +662,10 @@ fn repo_jobs_request_limit(payload: &JsonValue, request: Option<&RepoCommandRequ
         .and_then(JsonValue::as_u64)
         .or_else(|| payload.get("count").and_then(JsonValue::as_u64))
         .unwrap_or(REPO_TEXT_EVIDENCE_LIMIT as u64)
-        .max(1)
+        .clamp(
+            u64::from(WORKER_JOB_LIST_LIMIT_MIN),
+            u64::from(WORKER_JOB_LIST_LIMIT_MAX),
+        )
 }
 
 fn repo_jobs_json_command_at_limit(
@@ -975,11 +790,13 @@ fn repo_jobs(
             ))
             .map_err(|err| err.to_string());
     }
+    let limit = u32_arg(request, "limit", WORKER_JOB_LIST_LIMIT_DEFAULT)?;
+    validate_worker_job_list_limit(limit)?;
     client
         .list_worker_jobs(
             repository_index,
             worker_job_state_kind(optional_string_arg(request, "state")?.as_deref())?,
-            u32_arg(request, "limit", 50)?,
+            limit,
         )
         .map_err(|err| err.to_string())
 }
@@ -989,54 +806,70 @@ fn worker_job_state_kind(state: Option<&str>) -> Result<Option<u8>, String> {
         return Ok(None);
     };
     match state.as_str() {
-        "queued" | "1" => Ok(Some(1)),
-        "running" | "2" => Ok(Some(2)),
-        "succeeded" | "3" => Ok(Some(3)),
-        "failed" | "4" => Ok(Some(4)),
+        "queued" => Ok(Some(1)),
+        "running" => Ok(Some(2)),
+        "succeeded" => Ok(Some(3)),
+        "failed" => Ok(Some(4)),
         _ => Err(format!(
-            "Worker Job state must be queued, running, succeeded, failed, or its canonical 1..4 value; received `{state}`."
+            "Worker Job state must be queued, running, succeeded, or failed; received `{state}`."
         )),
     }
 }
 
-fn repo_run_ci(
-    client: &mut PlanHttpClientManager,
-    remote_row: &RemoteRow,
-    repo_name: &str,
+fn validate_repo_command_request(
+    command: &str,
     request: &RepoCommandRequest,
-) -> Result<JsonValue, String> {
-    let result = client
-        .run_repo_ci(
-            repo_name,
-            &string_list_arg(request, "suite_ids")?,
-            optional_string_arg(request, "plane")?.as_deref(),
-            &string_arg(request, "target_line", "main")?,
-            &string_arg(request, "trigger", "manual_rerun")?,
-            optional_string_arg(request, "selector")?.as_deref(),
-            &string_list_arg(request, "task_ids")?,
-            optional_string_arg(request, "curated_corpus")?.as_deref(),
-            optional_i64_arg(request, "count")?,
-            optional_i64_arg(request, "window_days")?,
-            &string_list_arg(request, "dependency_evidence")?,
-            &string_list_arg(request, "compliance_evidence")?,
-        )
-        .map_err(|err| err.to_string());
-    match result {
-        Ok(payload) => Ok(payload),
-        Err(message) if matches!(remote_error_status_code(&message), Some(404 | 405)) => {
-            let cli_hint = format!(
-                "ait repo ci-capabilities --remote {}",
-                remote_row.name.as_str()
-            );
-            Err(ci_route_mismatch_guidance(
-                client,
-                &remote_row.url,
-                "repo_run_ci_route",
-                &cli_hint,
-                &message,
-            ))
+) -> Result<(), String> {
+    let allowed_args = match command {
+        "show" | "restore" | "ci-capabilities" => &[][..],
+        "retire" => &["abort"][..],
+        "jobs" => &["worker_job_index", "state", "limit"][..],
+        _ => return Err(format!("Unknown repo command `{command}`.")),
+    };
+    reject_unknown_fields("repo command args", &request.args, allowed_args)?;
+
+    match command {
+        "retire" => {
+            bool_value(request.args.get("abort"), "abort", false)?;
         }
-        Err(message) => Err(message),
+        "jobs" => {
+            let worker_job_index = optional_u32_arg(request, "worker_job_index")?;
+            let state = optional_string_arg(request, "state")?;
+            let limit = optional_u32_arg(request, "limit")?;
+            if worker_job_index.is_some() && (state.is_some() || limit.is_some()) {
+                return Err(
+                    "repo jobs `worker_job_index` cannot be combined with `state` or `limit`."
+                        .to_string(),
+                );
+            }
+            if worker_job_index.is_none() {
+                worker_job_state_kind(state.as_deref())?;
+                validate_worker_job_list_limit(limit.unwrap_or(WORKER_JOB_LIST_LIMIT_DEFAULT))?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn reject_unknown_fields(
+    context: &str,
+    object: &JsonMap<String, JsonValue>,
+    allowed: &[&str],
+) -> Result<(), String> {
+    let mut unsupported = object
+        .keys()
+        .filter(|field| !allowed.contains(&field.as_str()))
+        .cloned()
+        .collect::<Vec<_>>();
+    unsupported.sort();
+    if unsupported.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "{context} contains retired or unknown field(s): {}.",
+            unsupported.join(", ")
+        ))
     }
 }
 
@@ -1080,79 +913,6 @@ fn http_config(repo: &RepoRuntime, remote_row: &RemoteRow) -> PlanHttpClientConf
     }
 }
 
-fn ci_route_mismatch_guidance(
-    client: &mut PlanHttpClientManager,
-    base_url: &str,
-    route_label: &str,
-    cli_hint: &str,
-    original_error: &str,
-) -> String {
-    let Some(status_code) = remote_error_status_code(original_error) else {
-        return original_error.to_string();
-    };
-    let capability_hint = match client.get_server_health() {
-        Err(_) => {
-            "Could not read /healthz from the live runtime, so treat this as a stale or partially updated ait-server process and restart/update it before retrying.".to_string()
-        }
-        Ok(healthz) => {
-            let capabilities = healthz
-                .get("ci_capabilities")
-                .and_then(JsonValue::as_object);
-            let readiness = healthz.get("ci_readiness").and_then(JsonValue::as_object);
-            let runtime_root = healthz
-                .get("runtime_root")
-                .and_then(JsonValue::as_str)
-                .unwrap_or("");
-            let mut hint = if capabilities.is_none() {
-                "The live runtime /healthz payload does not advertise ci_capabilities, so this ait-server process likely predates the native CI routes. Restart/update the live runtime, then retry.".to_string()
-            } else {
-                let route_supported = capabilities
-                    .and_then(|value| value.get(route_label))
-                    .and_then(JsonValue::as_bool);
-                let generation = readiness
-                    .and_then(|value| value.get("runtime_generation"))
-                    .and_then(JsonValue::as_str)
-                    .unwrap_or("")
-                    .trim();
-                let mut route_hint = if route_supported == Some(false) {
-                    format!("/healthz reports ci_capabilities.{route_label}=false, so the running ait-server process does not support this CI route yet. Restart/update the live runtime, then retry.")
-                } else {
-                    format!("/healthz advertises ci_capabilities for {route_label}, but the live runtime still returned {status_code}. Treat this as a stale or partially updated server process and restart/update it before retrying.")
-                };
-                if !generation.is_empty() {
-                    route_hint.push_str(&format!(" runtime_generation={generation}."));
-                }
-                route_hint
-            };
-            if !runtime_root.is_empty() {
-                hint.push_str(&format!(" runtime_root={runtime_root}."));
-            }
-            hint
-        }
-    };
-    format!(
-        "Live runtime rejected the {route_label} CI route with HTTP {status_code}. {capability_hint} Verify support with `{cli_hint}`. Original error: {original_error} base_url={base_url}"
-    )
-}
-
-fn remote_error_status_code(message: &str) -> Option<i64> {
-    message
-        .split(" failed: ")
-        .nth(1)?
-        .split_whitespace()
-        .next()?
-        .parse::<i64>()
-        .ok()
-}
-
-fn i64_arg(request: &RepoCommandRequest, key: &str, default: i64) -> Result<i64, String> {
-    i64_value(request.args.get(key), key, default)
-}
-
-fn optional_i64_arg(request: &RepoCommandRequest, key: &str) -> Result<Option<i64>, String> {
-    optional_i64_value(request.args.get(key), key)
-}
-
 fn u32_arg(request: &RepoCommandRequest, key: &str, default: u32) -> Result<u32, String> {
     optional_u32_arg(request, key).map(|value| value.unwrap_or(default))
 }
@@ -1171,34 +931,8 @@ fn optional_u32_arg(request: &RepoCommandRequest, key: &str) -> Result<Option<u3
     }
 }
 
-fn string_arg(request: &RepoCommandRequest, key: &str, default: &str) -> Result<String, String> {
-    match request.args.get(key) {
-        None | Some(JsonValue::Null) => Ok(default.to_string()),
-        Some(JsonValue::String(value)) => Ok(value.clone()),
-        Some(_) => Err(format!("repo command arg `{key}` must be a string.")),
-    }
-}
-
 fn optional_string_arg(request: &RepoCommandRequest, key: &str) -> Result<Option<String>, String> {
     optional_string_value(request.args.get(key), key)
-}
-
-fn string_list_arg(request: &RepoCommandRequest, key: &str) -> Result<Vec<String>, String> {
-    match request.args.get(key) {
-        None | Some(JsonValue::Null) => Ok(Vec::new()),
-        Some(JsonValue::Array(values)) => values
-            .iter()
-            .map(|value| match value {
-                JsonValue::String(text) => Ok(text.clone()),
-                _ => Err(format!(
-                    "repo command arg `{key}` must be a list of strings."
-                )),
-            })
-            .collect(),
-        Some(_) => Err(format!(
-            "repo command arg `{key}` must be a list of strings."
-        )),
-    }
 }
 
 fn bool_value(value: Option<&JsonValue>, key: &str, default: bool) -> Result<bool, String> {
@@ -1206,27 +940,6 @@ fn bool_value(value: Option<&JsonValue>, key: &str, default: bool) -> Result<boo
         None | Some(JsonValue::Null) => Ok(default),
         Some(JsonValue::Bool(value)) => Ok(*value),
         Some(_) => Err(format!("repo command arg `{key}` must be a boolean.")),
-    }
-}
-
-fn i64_value(value: Option<&JsonValue>, key: &str, default: i64) -> Result<i64, String> {
-    match value {
-        None | Some(JsonValue::Null) => Ok(default),
-        Some(JsonValue::Number(value)) => value
-            .as_i64()
-            .ok_or_else(|| format!("repo command arg `{key}` must be an integer.")),
-        Some(_) => Err(format!("repo command arg `{key}` must be an integer.")),
-    }
-}
-
-fn optional_i64_value(value: Option<&JsonValue>, key: &str) -> Result<Option<i64>, String> {
-    match value {
-        None | Some(JsonValue::Null) => Ok(None),
-        Some(JsonValue::Number(value)) => value
-            .as_i64()
-            .map(Some)
-            .ok_or_else(|| format!("repo command arg `{key}` must be an integer.")),
-        Some(_) => Err(format!("repo command arg `{key}` must be an integer.")),
     }
 }
 
@@ -1305,8 +1018,70 @@ mod tests {
         assert_eq!(worker_job_state_kind(Some("running")), Ok(Some(2)));
         assert_eq!(worker_job_state_kind(Some("succeeded")), Ok(Some(3)));
         assert_eq!(worker_job_state_kind(Some("failed")), Ok(Some(4)));
-        assert_eq!(worker_job_state_kind(Some("4")), Ok(Some(4)));
+        for storage_encoding in ["1", "2", "3", "4"] {
+            assert!(worker_job_state_kind(Some(storage_encoding)).is_err());
+        }
         assert!(worker_job_state_kind(Some("canceled")).is_err());
+    }
+
+    #[test]
+    fn repo_payload_rejects_retired_unknown_and_ambiguous_args_before_mutation() {
+        let temp = tempfile::tempdir().expect("temporary repo");
+        let ait_dir = temp.path().join(".ait");
+        std::fs::create_dir(&ait_dir).expect("create .ait");
+        let config_path = ait_dir.join("config.json");
+        std::fs::write(&config_path, "{\"repo_name\":\"fixture\"}\n").expect("write config");
+        let config_before = std::fs::read(&config_path).expect("read config before validation");
+        let repo = RepoRuntime::discover_from_path(temp.path()).expect("discover repo");
+
+        let rejected = [
+            json!({
+                "command": "retire",
+                "args": {"replace_export": true}
+            }),
+            json!({
+                "command": "retire",
+                "args": {"abort": false},
+                "retired_field": true
+            }),
+            json!({
+                "command": "jobs",
+                "args": {"worker_job_index": 7, "state": "failed"}
+            }),
+            json!({
+                "command": "jobs",
+                "args": {"worker_job_index": 7, "limit": 50}
+            }),
+            json!({
+                "command": "jobs",
+                "args": {"state": "4"}
+            }),
+            json!({
+                "command": "jobs",
+                "args": {"limit": 0}
+            }),
+            json!({
+                "command": "jobs",
+                "args": {"limit": 1001}
+            }),
+        ];
+        for payload in rejected {
+            let error = repo_command_from_payload(&repo, &payload)
+                .expect_err("invalid payload must fail before remote selection");
+            assert!(
+                error.contains("retired or unknown")
+                    || error.contains("cannot be combined")
+                    || error.contains("state must be")
+                    || error.contains("list limit must be"),
+                "{error}"
+            );
+        }
+
+        assert_eq!(
+            std::fs::read(&config_path).expect("read config after validation"),
+            config_before
+        );
+        assert!(!ait_dir.join("remote").exists());
     }
 
     #[test]
@@ -1353,7 +1128,7 @@ mod tests {
                 "ready": true,
                 "authority_backend": "binary_v0",
                 "contract_version": "ait.agent_server_protocol.v2",
-                "supported_async_job_types": ["repo.ci"]
+                "supported_async_job_types": ["patchset.ci"]
             },
             "ci_capabilities": {
                 "native_runner": {
@@ -1368,14 +1143,18 @@ mod tests {
             }
         });
         let rendered = repo_text("ci-capabilities", &ready, None);
-        assert!(rendered.contains("decision: native CI submission and zstd remote sync are ready"));
+        assert!(
+            rendered.contains("decision: Patchset CI submission and zstd remote sync are ready")
+        );
 
         let mut optional_manifest_missing = ready.clone();
         optional_manifest_missing["ci_capabilities"]["remote_sync_capabilities"]
             ["zstd_pull_manifest"] = json!(false);
         let rendered = repo_text("ci-capabilities", &optional_manifest_missing, None);
         assert!(rendered.contains("pull manifest unavailable (optional)"));
-        assert!(rendered.contains("decision: native CI submission and zstd remote sync are ready"));
+        assert!(
+            rendered.contains("decision: Patchset CI submission and zstd remote sync are ready")
+        );
 
         let mut incomplete = ready;
         incomplete["ci_capabilities"]["remote_sync_capabilities"]["zstd_pack_bulk_download"] =
@@ -1419,6 +1198,37 @@ mod tests {
     }
 
     #[test]
+    fn repo_jobs_text_never_recommends_an_out_of_range_limit() {
+        let request = RepoCommandRequest {
+            command: "jobs".to_string(),
+            remote_name: None,
+            json_output: false,
+            args: JsonMap::from_iter([
+                ("state".to_string(), JsonValue::Null),
+                ("limit".to_string(), json!(WORKER_JOB_LIST_LIMIT_MAX)),
+            ]),
+        };
+        let rendered = repo_text(
+            "jobs",
+            &json!({
+                "count": WORKER_JOB_LIST_LIMIT_MAX,
+                "jobs": [{
+                    "worker_job_index": 9,
+                    "job_type": "patchset.ci",
+                    "state": "succeeded"
+                }]
+            }),
+            Some(&request),
+        );
+        assert!(
+            rendered.contains("server query maximum 1000 reached"),
+            "{rendered}"
+        );
+        assert!(!rendered.contains("--limit 1001"), "{rendered}");
+        assert!(!rendered.contains("--limit 2000"), "{rendered}");
+    }
+
+    #[test]
     fn repo_jobs_text_handles_empty_and_single_job_payloads() {
         let empty = repo_text("jobs", &json!({"count": 0, "jobs": []}), None);
         assert!(empty.contains("state: no matching jobs returned"));
@@ -1430,7 +1240,7 @@ mod tests {
                 "contract": "ait.server.worker-job.service.v1",
                 "job": {
                     "worker_job_index": 9,
-                    "job_type": "repo.ci",
+                    "job_type": "patchset.ci",
                     "state": "running",
                     "attempt_count": 1,
                     "max_attempts": 3
@@ -1442,92 +1252,5 @@ mod tests {
         assert!(single.contains("state: running"));
         assert!(single.contains("ait repo jobs --worker-job-index 9 --json"));
         assert!(!single.contains("{\""));
-    }
-
-    #[test]
-    fn test_status_text_reports_unknown_authority_and_exact_recovery() {
-        let payload = json!({
-            "surface": "ait.test.status",
-            "suite_id": "full_repo",
-            "plane": "nightly",
-            "limit": 20,
-            "status": "unknown",
-            "latest": null,
-            "runs": {"count": 0, "jobs": []}
-        });
-
-        let rendered = repo_text("ci-runs", &payload, None);
-        assert!(rendered.contains("blocker: no repo.ci test run was found"));
-        assert!(rendered.contains("next: ait test run --full --plane nightly --target-line main"));
-        assert!(rendered.contains(
-            "details: ait test status --suite-id full_repo --plane nightly --limit 20 --json"
-        ));
-        assert!(rendered.contains("does not persist plane/suite selectors"));
-    }
-
-    #[test]
-    fn test_status_text_preserves_remote_and_searches_past_a_bounded_query() {
-        let jobs = (1_u64..=20)
-            .map(|index| {
-                json!({
-                    "worker_job_index": index,
-                    "job_type": "patchset.ci",
-                    "state": "succeeded"
-                })
-            })
-            .collect::<Vec<_>>();
-        let payload = json!({
-            "surface": "ait.test.status",
-            "suite_id": "full_repo",
-            "plane": "nightly",
-            "limit": 20,
-            "status": "unknown",
-            "latest": null,
-            "runs": {"count": 20, "jobs": jobs}
-        });
-        let request = RepoCommandRequest {
-            command: "ci-runs".to_string(),
-            remote_name: Some("origin".to_string()),
-            json_output: false,
-            args: JsonMap::new(),
-        };
-
-        let rendered = repo_text("ci-runs", &payload, Some(&request));
-        assert!(rendered.contains("attention: no repo.ci test run was found"));
-        assert!(rendered.contains(
-            "next: ait test status --suite-id full_repo --plane nightly --limit 40 --remote origin"
-        ));
-        assert!(!rendered.contains("ait test run --full"));
-        assert!(rendered.contains(
-            "details: ait test status --suite-id full_repo --plane nightly --limit 20 --remote origin --json"
-        ));
-    }
-
-    #[test]
-    fn test_status_text_treats_failed_ci_outcome_as_a_blocker() {
-        let latest = json!({
-            "worker_job_index": 8,
-            "job_type": "repo.ci",
-            "state": "succeeded",
-            "patchset_ci": {
-                "overall_status": "fail",
-                "blocking_failure_count": 1
-            }
-        });
-        let payload = json!({
-            "surface": "ait.test.status",
-            "suite_id": "full_repo",
-            "plane": "nightly",
-            "limit": 20,
-            "status": "succeeded",
-            "latest": latest,
-            "runs": {"count": 1, "jobs": [latest]}
-        });
-
-        let rendered = repo_text("ci-runs", &payload, None);
-        assert!(rendered.contains("status: failed"));
-        assert!(rendered.contains("blocker: latest available repository CI evidence failed"));
-        assert!(rendered.contains("next: ait test run --full --plane nightly --target-line main"));
-        assert!(!rendered.contains("CI job passed"));
     }
 }

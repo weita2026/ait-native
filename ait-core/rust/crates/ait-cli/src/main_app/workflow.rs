@@ -101,15 +101,6 @@ fn run_workflow(repo: RepoRuntime, command: WorkflowCommand) -> Result<ExitCode,
             println!("{}", render_workflow_guide_text(&payload)?);
             Ok(ExitCode::SUCCESS)
         }
-        WorkflowCommand::Tier(args) => {
-            let payload = workflow_tier_payload(&repo)?;
-            if args.json {
-                print_json(&payload)?;
-            } else {
-                println!("{}", render_workflow_tier_text(&payload, args.verbose)?);
-            }
-            Ok(ExitCode::SUCCESS)
-        }
         WorkflowCommand::Reconcile(args) => {
             let payload = if args.scheduled {
                 run_locked_workspace_command(
@@ -162,7 +153,7 @@ fn run_workflow(repo: RepoRuntime, command: WorkflowCommand) -> Result<ExitCode,
                     args.lint.as_deref(),
                     args.security.as_deref(),
                     args.license.as_deref(),
-                    args.author_mode.as_deref(),
+                    args.author_mode.map(ConfigAuthorModeArg::as_str),
                     args.model.as_deref(),
                     args.remote.as_deref(),
                     None::<fn(&JsonValue) -> Result<(), String>>,
@@ -173,90 +164,29 @@ fn run_workflow(repo: RepoRuntime, command: WorkflowCommand) -> Result<ExitCode,
             println!("{}", render_workflow_phase_text(&payload, "ready")?);
             Ok(ExitCode::SUCCESS)
         }
-        WorkflowCommand::LandLocal(args) => {
-            let payload =
-                run_locked_workspace_command(&repo, "ait-cli workflow land-local", || {
-                    let mut payload = workflow_land_local(
-                        &repo,
-                        &args.change_id,
-                        args.target.as_deref(),
-                        args.snapshot.as_deref(),
-                        args.snapshot_message.as_deref(),
-                    )?;
-                    let task_id = workflow_payload_task_id(&payload);
-                    let reconciliation = workflow_reconcile_automatic_best_effort(
-                        &repo,
-                        AutomaticReconciliationScope::Local,
-                        task_id.as_deref(),
-                        task_land_automatic_trigger(&payload),
-                        None,
-                    );
-                    attach_automatic_reconciliation(&mut payload, reconciliation);
-                    Ok(payload)
-                })?;
-            println!("{}", render_workflow_land_local_text(&payload)?);
-            Ok(ExitCode::SUCCESS)
-        }
         WorkflowCommand::Land(args) => {
-            if args.all_completed_local {
-                return Err(workflow_completed_local_batch_retired_error());
-            }
-            let (use_local_scope, scoped_remote_name) =
-                resolve_task_land_scope(&repo, args.local, args.remote.as_deref())?;
-            let change_id = args
-                .change_id
-                .as_deref()
-                .ok_or_else(|| "change-id is required.".to_string())?;
             let mut payload = if args.apply {
-                task_land_apply_scoped(
+                workflow_land_apply(
                     &repo,
-                    change_id,
-                    args.snapshot_message.as_deref(),
-                    args.summary.as_deref(),
-                    args.tests.as_deref(),
-                    args.lint.as_deref(),
-                    args.security.as_deref(),
-                    args.license.as_deref(),
-                    args.author_mode.as_deref(),
-                    args.model.as_deref(),
-                    args.reviewer.as_deref(),
+                    &args.change_id,
                     args.review_message.as_deref(),
-                    args.target.as_deref(),
-                    &args.mode,
-                    use_local_scope,
-                    scoped_remote_name.as_deref(),
+                    args.remote.as_deref(),
                     None::<fn(&JsonValue) -> Result<(), String>>,
                 )?
             } else {
-                task_land_payload_scoped(
-                    &repo,
-                    change_id,
-                    use_local_scope,
-                    scoped_remote_name.as_deref(),
-                )?
+                workflow_land_payload(&repo, &args.change_id, args.remote.as_deref())?
             };
             if args.apply {
                 let task_id = workflow_payload_task_id(&payload);
-                let scope = if use_local_scope {
-                    AutomaticReconciliationScope::Local
-                } else {
-                    AutomaticReconciliationScope::Remote(scoped_remote_name.clone())
-                };
                 let reconciliation = run_automatic_reconciliation_locked(
                     &repo,
-                    scope,
+                    AutomaticReconciliationScope::Remote(args.remote.clone()),
                     task_id.as_deref(),
                     task_land_automatic_trigger(&payload),
                 );
                 attach_automatic_reconciliation(&mut payload, reconciliation);
             }
-            if payload.get("mode").and_then(JsonValue::as_str) == Some("local")
-                && payload.get("apply_status").and_then(JsonValue::as_str) == Some("done")
-            {
-                println!("{}", render_workflow_land_local_text(&payload)?);
-            } else {
-                println!("{}", render_workflow_phase_text(&payload, "land")?);
-            }
+            println!("{}", render_workflow_phase_text(&payload, "land")?);
             Ok(ExitCode::SUCCESS)
         }
     }
@@ -611,7 +541,7 @@ fn render_task_land_text(payload: &JsonValue) -> Result<String, String> {
     let rendered = if payload.get("mode").and_then(JsonValue::as_str) == Some("local")
         && payload.get("apply_status").and_then(JsonValue::as_str) == Some("done")
     {
-        render_workflow_land_local_text(payload)?
+        render_local_task_land_text(payload)?
     } else {
         let old_title = format!("ait workflow {}", "land");
         render_workflow_phase_text(payload, "land")?.replacen(&old_title, "ait task land", 1)
@@ -657,10 +587,10 @@ fn append_task_land_contract_text(mut rendered: String, payload: &JsonValue) -> 
     rendered
 }
 
-fn render_workflow_land_local_text(payload: &JsonValue) -> Result<String, String> {
+fn render_local_task_land_text(payload: &JsonValue) -> Result<String, String> {
     let obj = payload
         .as_object()
-        .ok_or_else(|| "workflow land-local payload must decode to an object.".to_string())?;
+        .ok_or_else(|| "local Task Land payload must decode to an object.".to_string())?;
     let cleanup = obj
         .get("bound_worktree_cleanup")
         .and_then(JsonValue::as_object);
@@ -808,8 +738,18 @@ fn workflow_guide_payload(topic: Option<&str>) -> Result<JsonValue, String> {
         "commands": [
             {
                 "label": "Shared queue",
-                "command": "ait queue summary --all-changes",
-                "detail": "Use this first for the shared non-landed picture across tasks and changes."
+                "command": "ait queue summary",
+                "detail": "Use this first for the current actionable Task, review, local draft, workspace, and worktree picture."
+            },
+            {
+                "label": "Task history",
+                "command": "ait task list --all",
+                "detail": "Use the Task inventory instead of widening the actionable queue to terminal history."
+            },
+            {
+                "label": "Change history",
+                "command": "ait change list --all",
+                "detail": "Use the Change inventory instead of adding every non-landed Change to the queue."
             },
             {
                 "label": "One task readiness",
@@ -847,52 +787,17 @@ fn workflow_guide_payload(topic: Option<&str>) -> Result<JsonValue, String> {
             {
                 "label": "Workflow land apply",
                 "command": "ait workflow land <change-id> --apply",
-                "detail": "Auto-rebase a clean task worktree before publish, record task approval, submit remote land through task land closeout, sync the target line, complete the task, and force-remove the bound task worktree once landing is done."
+                "detail": "Run the reviewer-owned exact-Patchset code-review and Task-approval gates, evaluate final Policy, then delegate the already-ready final mutation, target-Line sync, Task completion, and cleanup to atomic Task Land. Add --review-message with the structured review when code-review evidence is required."
             },
             {
                 "label": "Task land direct",
                 "command": "ait task land <task-or-change-id>",
-                "detail": format!("Contract {TASK_LAND_CONTRACT_VERSION}: solo_local uses `{local_plan_closeout_policy}` Plan closeout; solo_remote uses `{remote_plan_closeout_policy}`. A partial post-land closeout returns exit 2 and is resumed by rerunning the reported idempotent task-land command.")
+                "detail": format!("Direct already-ready finalizer and recovery entry. It creates no Review evidence. Contract {TASK_LAND_CONTRACT_VERSION}: solo_local uses `{local_plan_closeout_policy}` Plan closeout; solo_remote uses `{remote_plan_closeout_policy}`. A partial post-land closeout is resumed by rerunning the reported idempotent task-land command.")
             },
         ],
         "avoid": [
             "Do not rediscover the same land path with many separate low-level gate or help commands in one turn.",
-            "Do not use `ait land` or `ait task complete`; `ait workflow land` routes shared landing and task closeout through `ait task land`."
-        ]
-    });
-    let tiers = json!({
-        "topic": "tiers",
-        "contract_version": ait_core::workflow_tier::WORKFLOW_TIER_CONTRACT,
-        "summary": "Classify the current change before choosing a quick Snapshot, normal Task, or fully governed remote workflow.",
-        "when_to_use": [
-            "You want the lowest-ceremony path that still satisfies the repository risk boundary.",
-            "Changed paths or scope grew and the current work may need to escalate before any remote mutation."
-        ],
-        "commands": [
-            {
-                "label": "Classify current workspace",
-                "command": "ait workflow tier --json",
-                "detail": "Returns reasons, required gates, quick limits, escalation, and comparable ceremony metrics without mutating state."
-            },
-            {
-                "label": "Quick modification",
-                "command": "ait snapshot create --profile quick --intent \"<intent>\" --validation \"<evidence>\" --message \"<message>\"",
-                "detail": "Records one bounded low-risk local change on a known non-default line; runtime risk is re-evaluated immediately before Snapshot creation."
-            },
-            {
-                "label": "Normal Task",
-                "command": "ait task start --from <sprint-card>#<exact-ref> --intent \"<intent>\" --base-line <line>",
-                "detail": "Uses scoped Plan sync, taskability validation, Task/Change creation, a bound worktree, focused validation, and scope-appropriate land."
-            },
-            {
-                "label": "Fully governed",
-                "command": "ait workflow ready <change-id> --apply; ait task land <task-or-change-id>",
-                "detail": "Adds Patchset, CI, attestation, policy, and review gates; protected risk classifications cannot be downgraded."
-            }
-        ],
-        "avoid": [
-            "Do not use quick modification on the default line, in a task worktree, for deletions, over configured limits, or for protected paths.",
-            "Do not publish a quick Snapshot directly to a governed remote; start a Task from its local lineage first."
+            "Do not use the removed top-level `ait land`; `ait workflow land` routes shared landing and task closeout through `ait task land`."
         ]
     });
     match topic.map(|value| value.trim().to_ascii_lowercase()) {
@@ -907,139 +812,15 @@ fn workflow_guide_payload(topic: Option<&str>) -> Result<JsonValue, String> {
                     "topic": "land",
                     "summary": land["summary"],
                     "command": "ait workflow guide land"
-                },
-                {
-                    "topic": "tiers",
-                    "summary": tiers["summary"],
-                    "command": "ait workflow guide tiers"
                 }
             ]
         })),
         Some(value) if value == "inventory" => Ok(inventory),
         Some(value) if value == "land" => Ok(land),
-        Some(value) if value == "tiers" => Ok(tiers),
         Some(value) => Err(format!(
-            "Unknown workflow guide topic: {value}. Available topics: inventory, land, tiers"
+            "Unknown workflow guide topic: {value}. Available topics: inventory, land"
         )),
     }
-}
-
-fn render_workflow_tier_text(data: &JsonValue, verbose: bool) -> Result<String, String> {
-    let recommended = data
-        .get("recommended_tier")
-        .and_then(JsonValue::as_str)
-        .ok_or_else(|| "workflow tier payload is missing recommended_tier".to_string())?;
-    let quick_allowed = data
-        .get("quick_allowed")
-        .and_then(JsonValue::as_bool)
-        .unwrap_or(false);
-    let changed_path_count = data
-        .get("changed_path_count")
-        .and_then(JsonValue::as_u64)
-        .unwrap_or(0);
-    let changed_bytes = data
-        .get("changed_bytes")
-        .and_then(JsonValue::as_u64)
-        .unwrap_or(0);
-    let limits = data.get("limits").and_then(JsonValue::as_object);
-    let max_files = limits
-        .and_then(|value| value.get("max_files"))
-        .and_then(JsonValue::as_u64)
-        .unwrap_or(0);
-    let max_bytes = limits
-        .and_then(|value| value.get("max_bytes"))
-        .and_then(JsonValue::as_u64)
-        .unwrap_or(0);
-    let mut lines = vec![
-        "ait workflow tier".to_string(),
-        format!("result: {recommended}"),
-    ];
-    let is_worktree = data
-        .get("facts")
-        .and_then(|facts| facts.get("is_worktree"))
-        .and_then(JsonValue::as_bool)
-        .unwrap_or(false);
-    let bound_task_id = string_field(
-        data.get("facts")
-            .and_then(|facts| facts.get("bound_task_id")),
-    );
-    if !bound_task_id.is_empty() {
-        lines.push(format!("task: {bound_task_id}"));
-    }
-    if verbose {
-        lines.push(format!("quick allowed: {quick_allowed}"));
-        lines.push(format!(
-            "workspace: {changed_path_count} changed paths, {changed_bytes} bytes"
-        ));
-        lines.push(format!("quick limits: {max_files} files, {max_bytes} bytes"));
-    }
-
-    if let Some(reasons) = data.get("reasons").and_then(JsonValue::as_array) {
-        for reason in reasons {
-            let code = reason
-                .get("code")
-                .and_then(JsonValue::as_str)
-                .unwrap_or("risk");
-            let detail = reason
-                .get("detail")
-                .and_then(JsonValue::as_str)
-                .unwrap_or("");
-            if is_worktree && !verbose && code != "worktree_scope" {
-                continue;
-            }
-            lines.push(format!("reason: {code} — {detail}"));
-        }
-    }
-    if verbose {
-        if let Some(gates) = data.get("required_gates").and_then(JsonValue::as_array) {
-            let gates = gates
-                .iter()
-                .filter_map(JsonValue::as_str)
-                .collect::<Vec<_>>()
-                .join(", ");
-            if !gates.is_empty() {
-                lines.push(String::new());
-                lines.push(format!("required gates: {gates}"));
-            }
-        }
-    }
-    if verbose {
-        if let Some(ceremony) = data.get("ceremony").and_then(JsonValue::as_array) {
-            lines.push(String::new());
-            lines.push("Ceremony baseline".to_string());
-            for row in ceremony {
-                let tier = row.get("tier").and_then(JsonValue::as_str).unwrap_or("unknown");
-                let commands = row
-                    .get("minimum_commands")
-                    .and_then(JsonValue::as_u64)
-                    .unwrap_or(0);
-                let records = row
-                    .get("records_created")
-                    .and_then(JsonValue::as_u64)
-                    .unwrap_or(0);
-                let decisions = row
-                    .get("human_decisions")
-                    .and_then(JsonValue::as_u64)
-                    .unwrap_or(0);
-                let recovery = row
-                    .get("recovery_steps")
-                    .and_then(JsonValue::as_u64)
-                    .unwrap_or(0);
-                lines.push(format!(
-                    "- {tier}: commands={commands}, records={records}, decisions={decisions}, recovery={recovery}"
-                ));
-            }
-        }
-    }
-    if let Some(command) = data
-        .get("escalation_command")
-        .and_then(JsonValue::as_str)
-        .filter(|_| verbose || !is_worktree)
-    {
-        lines.push(String::new());
-        lines.push(format!("next: {command}"));
-    }
-    Ok(lines.join("\n"))
 }
 
 fn render_workflow_guide_text(data: &JsonValue) -> Result<String, String> {

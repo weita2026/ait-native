@@ -1,13 +1,11 @@
 use std::env;
 use std::path::{Path, PathBuf};
 
+use ait_core::environment_contract::names;
+
 use crate::diagnostic::{WorkerDiagnostic, EXIT_INVALID_CONFIGURATION, EXIT_INVALID_REQUEST};
 
-const REPO_DISCOVERY_ENV_VARS: &[&str] = &[
-    "AIT_REPO_ROOT",
-    "AIT_NATIVE_WORKSPACE_ROOT",
-    "AIT_WORKSPACE_ROOT",
-];
+const REPO_DISCOVERY_ENV_VARS: &[&str] = &[names::AIT_REPO_ROOT];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkerPathInputs {
@@ -35,7 +33,7 @@ pub fn process_worker_path_inputs() -> Result<WorkerPathInputs, WorkerDiagnostic
         .filter_map(env::var_os)
         .map(PathBuf::from)
         .find(|path| !path.as_os_str().is_empty());
-    let manifest_path_override = env::var_os("AIT_AGENT_CONFIG_PATH")
+    let manifest_path_override = env::var_os(names::AIT_AGENT_CONFIG_PATH)
         .map(PathBuf::from)
         .filter(|path| !path.as_os_str().is_empty());
     Ok(WorkerPathInputs {

@@ -379,14 +379,9 @@ struct ZstdBulkUploadResult {
 }
 
 const DEFAULT_REMOTE_SYNC_PACK_PARALLELISM: usize = 4;
-const MAX_REMOTE_SYNC_PACK_PARALLELISM: usize = 16;
 
 fn remote_sync_pack_parallelism() -> usize {
-    std::env::var("AIT_REMOTE_SYNC_PACK_PARALLELISM")
-        .ok()
-        .and_then(|value| value.trim().parse::<usize>().ok())
-        .unwrap_or(DEFAULT_REMOTE_SYNC_PACK_PARALLELISM)
-        .clamp(1, MAX_REMOTE_SYNC_PACK_PARALLELISM)
+    DEFAULT_REMOTE_SYNC_PACK_PARALLELISM
 }
 
 fn remote_sync_elapsed_ms(started: Instant) -> f64 {
@@ -1728,7 +1723,6 @@ where
         .map_err(|err| err.to_string())
 }
 
-#[cfg(test)]
 pub(in crate::primitives) fn hydrate_remote_snapshot_chain_with_task_remote_and_capabilities<R>(
     repo: &RepoRuntime,
     task_remote: &mut R,
@@ -1738,7 +1732,7 @@ pub(in crate::primitives) fn hydrate_remote_snapshot_chain_with_task_remote_and_
     remote_sync_capabilities: &RemoteSyncCapabilities,
 ) -> Result<JsonValue, String>
 where
-    R: TaskWorkflowSnapshotMetadataReader + TaskWorkflowZstdPackReader + ?Sized,
+    R: TaskWorkflowZstdPackReader + ?Sized,
 {
     let negotiation = require_zstd_download_capability(remote_sync_capabilities)?;
     let initial_manifest =
@@ -1932,6 +1926,25 @@ fn restore_pulled_line_workspace(
     Ok(restored)
 }
 
+fn validate_pull_workspace_options(merge: bool, restore: bool, force: bool) -> Result<(), String> {
+    if merge && force {
+        return Err(
+            "--force cannot be used with --merge; divergent merge requires a clean workspace."
+                .to_string(),
+        );
+    }
+    if merge && !restore {
+        return Err(
+            "--merge requires --restore because a divergent merge materializes the workspace."
+                .to_string(),
+        );
+    }
+    if force && !restore {
+        return Err("--force only applies together with --restore".to_string());
+    }
+    Ok(())
+}
+
 pub fn pull(
     repo: &RepoRuntime,
     remote_name: Option<&str>,
@@ -1964,15 +1977,7 @@ pub(in crate::primitives) fn pull_with_remote_sync_backend<B>(
 where
     B: RemoteSyncBackend + ?Sized,
 {
-    if force && !restore {
-        return Err("--force only applies together with --restore".to_string());
-    }
-    if merge && force {
-        return Err(
-            "--force cannot be used with --merge; divergent merge requires a clean workspace."
-                .to_string(),
-        );
-    }
+    validate_pull_workspace_options(merge, restore, force)?;
     let (remote_row, repo_name) = backend.remote_context(repo, remote_name)?;
     let resolved_line_name = match normalized_text(line_name) {
         Some(value) => value,
@@ -2011,15 +2016,7 @@ where
     R: TaskWorkflowLineReader + TaskWorkflowZstdPackReader + ?Sized,
 {
     let _pull_range = perfetto_range!("ait.remote_sync.pull");
-    if force && !restore {
-        return Err("--force only applies together with --restore".to_string());
-    }
-    if merge && force {
-        return Err(
-            "--force cannot be used with --merge; divergent merge requires a clean workspace."
-                .to_string(),
-        );
-    }
+    validate_pull_workspace_options(merge, restore, force)?;
     let remote_line = {
         let _range = perfetto_range!("ait.remote_sync.pull.line_read");
         remote_sync_line_read_with_task_remote(task_remote, repo_name, line_name)?
@@ -2075,6 +2072,13 @@ where
             head_snapshot_id.as_deref(),
         )?
     };
+    if relationship == "local_ahead" && restore {
+        return Err(format!(
+            "Cannot apply --restore because local Line {line_name} at {} is ahead of remote {remote_name}/{line_name} at {}. Imported {imported_snapshots} missing Snapshot(s), which remain available; no Line head or workspace was moved. Run `ait pull --remote {remote_name} --line {line_name}` without --restore for import-only synchronization.",
+            previous_line_head_snapshot_id.as_deref().unwrap_or("none"),
+            head_snapshot_id.as_deref().unwrap_or("none"),
+        ));
+    }
     if relationship == "divergent" && !merge {
         let remote_flag = format!("--remote {remote_name}");
         let tracking_line = format!("remote/{remote_name}/{line_name}");
@@ -2173,7 +2177,7 @@ where
     }
 
     let should_advance = matches!(relationship.as_str(), "remote_ahead" | "new_remote_line");
-    let restore_payload = if restore && !matches!(relationship.as_str(), "local_ahead") {
+    let restore_payload = if restore {
         let _range = perfetto_range!("ait.remote_sync.pull.materialization");
         ensure_local_line_can_move(repo, line_name)?;
         Some(restore_pulled_line_workspace(
@@ -2549,7 +2553,8 @@ fn require_solo_local_default_line_push_authority(
          Snapshot and pack upload remains available to workflow preparation, but only \
          authoritative remote Task Land may move this governed Line. Promote the latest \
          completed local Change with `ait workflow ready <local-change-id> --apply --remote \
-         {remote_name}`, then `ait task land <local-change-id> --remote {remote_name}`.",
+         {remote_name}`, then hand it to a reviewer running `ait workflow land \
+         <local-change-id> --apply --remote {remote_name}`.",
         remote_head = remote_head_snapshot_id.unwrap_or("none"),
         local_head = local_head_snapshot_id.unwrap_or("none"),
     ))

@@ -55,7 +55,7 @@ fn server_context_command_from_env_uses_payload_environment() {
     let _ = fs::remove_dir_all(&root);
     let payload = json!({
         "env": {
-            "AIT_RUNTIME_DATA": root,
+            "AIT_NATIVE_SERVER_DATA": root,
             "AIT_NATIVE_SERVER_DB_BACKEND": "postgres",
             "AIT_NATIVE_SERVER_POSTGRES_DSN": "postgres://example/ait"
         },

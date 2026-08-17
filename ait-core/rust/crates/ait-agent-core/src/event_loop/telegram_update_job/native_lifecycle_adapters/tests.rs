@@ -1,6 +1,7 @@
 use std::sync::Mutex;
 
 use super::*;
+use tempfile::tempdir;
 
 #[derive(Default)]
 struct SessionlessRuntime {
@@ -142,6 +143,35 @@ fn wait_for_idle_is_local_and_sessionless() {
     assert_eq!(result["lifecycle_state"], "idle");
     assert_eq!(result["idle"], true);
     assert!(runtime.backend_requests.lock().unwrap().is_empty());
+}
+
+#[test]
+fn native_runtime_projects_manifest_local_reply_into_the_gateway_request() {
+    let temp = tempdir().expect("tempdir");
+    let runtime = NativeTelegramUpdateLifecycleRuntime::new(
+        temp.path().join("state.json"),
+        AgentRuntimeTarget {
+            mode: AgentRuntimeMode::Local,
+            workflow_mode: crate::transport_config::AgentWorkflowMode::SoloLocal,
+            repo_name: "fixture".to_string(),
+            repo_root: temp.path().to_path_buf(),
+            remote_name: None,
+            server_url: None,
+        },
+        Some(20.0),
+        Some(json!({"model": "fixture-model", "sandbox": "workspace-write"})),
+        "telegram-token",
+        None,
+        true,
+    )
+    .expect("native runtime");
+
+    let request = runtime.turn_backend_request(&json!({"operation": "create_telegram_turn"}));
+
+    assert_eq!(request["local_reply"]["model"], "fixture-model");
+    assert_eq!(request["local_reply"]["sandbox"], "workspace-write");
+    assert_eq!(request["target"]["mode"], "local");
+    assert_eq!(request["timeout_seconds"], 20.0);
 }
 
 #[test]

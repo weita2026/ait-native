@@ -216,6 +216,7 @@ pub(crate) fn command_job_request(
         "response_type": config.response_type,
         "defer_replies": true,
         "timeout_seconds": config.shared.request_timeout_seconds.map(JsonValue::from).unwrap_or(JsonValue::Null),
+        "local_reply": config.shared.local_reply,
     })
 }
 

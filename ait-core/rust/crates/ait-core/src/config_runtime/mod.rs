@@ -3,14 +3,6 @@ use crate::json_support::{JsonMap, JsonValue};
 use crate::json_support::JsonCodec;
 use crate::shared_foundation::ConfigProvider;
 
-mod env_ports;
-mod env_source;
-
-use self::env_ports::{
-    env_value_with_runtime_config_environment_source, RuntimeConfigEnvironmentSource,
-};
-use self::env_source::ProcessRuntimeConfigEnvironmentSource;
-
 pub struct RuntimeConfigJson<S> {
     store: S,
 }
@@ -43,8 +35,7 @@ impl<S> RuntimeConfigJson<S> {
     ) -> Result<JsonValue, String> {
         let payload =
             self.parse_object_payload(payload_json, "plan config/runtime selection request")?;
-        let env_source = ProcessRuntimeConfigEnvironmentSource;
-        build_plan_runtime_selection_facts_with_environment_source_map(&env_source, payload)
+        build_plan_runtime_selection_facts_map(payload)
     }
 
     pub fn normalize_runtime_selection_facts_payload_json(
@@ -239,26 +230,9 @@ pub fn build_plan_runtime_selection_facts_json(payload_json: &str) -> Result<Jso
     RuntimeConfigJson::stateless().build_runtime_selection_facts_json(payload_json)
 }
 
-#[cfg(test)]
-fn build_plan_runtime_selection_facts_with_environment_source<S>(
-    env_source: &S,
-    payload_json: &str,
-) -> Result<JsonValue, String>
-where
-    S: RuntimeConfigEnvironmentSource + ?Sized,
-{
-    let payload = RuntimeConfigJson::stateless()
-        .parse_object_payload(payload_json, "plan config/runtime selection request")?;
-    build_plan_runtime_selection_facts_with_environment_source_map(env_source, payload)
-}
-
-fn build_plan_runtime_selection_facts_with_environment_source_map<S>(
-    env_source: &S,
+fn build_plan_runtime_selection_facts_map(
     payload: JsonMap<String, JsonValue>,
-) -> Result<JsonValue, String>
-where
-    S: RuntimeConfigEnvironmentSource + ?Sized,
-{
+) -> Result<JsonValue, String> {
     let request = normalize_plan_runtime_selection_request_payload_map(payload)?;
     let request_object = require_object(Some(&request), "plan config/runtime selection request")?;
     let overrides = require_object(
@@ -267,7 +241,7 @@ where
     )?;
     let mut normalized = JsonMap::new();
     for key in PLAN_CONFIG_RUNTIME_SELECTION_KEYS {
-        let fact = selector_fact_with_environment_source(env_source, key, overrides)?;
+        let fact = selector_fact(key, overrides)?;
         normalized.insert((*key).to_string(), JsonValue::Object(fact));
     }
     Ok(JsonValue::Object(normalized))
@@ -302,10 +276,6 @@ fn normalize_plan_runtime_compatibility_payload_map(
         payload.get("plan_authority"),
         "plan config/runtime compatibility plan_authority",
     )?)?;
-    let wheel_status = normalize_wheel_status_map(require_object(
-        payload.get("wheel_status"),
-        "plan config/runtime compatibility wheel_status",
-    )?)?;
     let compatible = require_bool(payload.get("compatible"), "compatible")?;
     let issues = normalize_string_list(payload.get("issues"), "issues")?;
     let surface_commands = normalize_command_surface(payload.get("surface_commands"))?;
@@ -315,7 +285,6 @@ fn normalize_plan_runtime_compatibility_payload_map(
             "plan_authority".to_string(),
             JsonValue::Object(plan_authority),
         ),
-        ("wheel_status".to_string(), JsonValue::Object(wheel_status)),
         ("compatible".to_string(), JsonValue::Bool(compatible)),
         ("issues".to_string(), JsonValue::Array(issues)),
         (
@@ -533,37 +502,6 @@ fn normalize_plan_authority_map(
     Ok(normalized)
 }
 
-fn normalize_wheel_status_map(
-    payload: &JsonMap<String, JsonValue>,
-) -> Result<JsonMap<String, JsonValue>, String> {
-    let mut normalized = payload.clone();
-    let current_supported = require_bool(
-        payload.get("current_supported"),
-        "wheel_status.current_supported",
-    )?;
-    let current_target = optional_text(payload.get("current_target"))?;
-    let installed_wheel_tag = optional_text(payload.get("installed_wheel_tag"))?;
-    let issues = normalize_string_list(payload.get("issues"), "wheel_status.issues")?;
-    normalized.insert(
-        "current_supported".to_string(),
-        JsonValue::Bool(current_supported),
-    );
-    normalized.insert(
-        "current_target".to_string(),
-        current_target
-            .map(JsonValue::String)
-            .unwrap_or(JsonValue::Null),
-    );
-    normalized.insert(
-        "installed_wheel_tag".to_string(),
-        installed_wheel_tag
-            .map(JsonValue::String)
-            .unwrap_or(JsonValue::Null),
-    );
-    normalized.insert("issues".to_string(), JsonValue::Array(issues));
-    Ok(normalized)
-}
-
 fn normalize_env_snapshot_map(
     payload: &JsonMap<String, JsonValue>,
 ) -> Result<JsonMap<String, JsonValue>, String> {
@@ -610,66 +548,24 @@ fn normalize_string_list(
     Ok(normalized)
 }
 
-fn selector_fact_with_environment_source<S>(
-    env_source: &S,
+fn selector_fact(
     key: &str,
     overrides: &JsonMap<String, JsonValue>,
-) -> Result<JsonMap<String, JsonValue>, String>
-where
-    S: RuntimeConfigEnvironmentSource + ?Sized,
-{
+) -> Result<JsonMap<String, JsonValue>, String> {
     let override_value = overrides.get(key).map(|value| match value {
         JsonValue::String(text) => text.clone(),
         _ => String::new(),
     });
-    let (value, source) = if let Some(explicit_value) = override_value {
-        (Some(explicit_value), "explicit")
+    let (value, source) = if let Some(explicit_value) = override_value.as_deref() {
+        (explicit_value, "explicit")
     } else {
-        backend_selection_input_with_environment_source(env_source, selector_env_var_name(key))
+        ("rust", "default")
     };
-    let normalized_value = resolve_runtime_backend_selection_with_environment_source(
-        env_source,
-        value.as_deref(),
-        selector_capability(key),
-        source,
-    )?;
+    let normalized_value = resolve_runtime_backend_selection(value, selector_capability(key))?;
     Ok(JsonMap::from_iter([
         ("value".to_string(), JsonValue::String(normalized_value)),
         ("source".to_string(), JsonValue::String(source.to_string())),
     ]))
-}
-
-fn backend_selection_input_with_environment_source<S>(
-    env_source: &S,
-    env_var_name: &str,
-) -> (Option<String>, &'static str)
-where
-    S: RuntimeConfigEnvironmentSource + ?Sized,
-{
-    match env_value_with_runtime_config_environment_source(env_source, env_var_name) {
-        Some(value) => (Some(value), "env"),
-        None if env_var_name != "AIT_PLAN_BACKEND" && env_var_name.starts_with("AIT_PLAN_") => {
-            match env_value_with_runtime_config_environment_source(env_source, "AIT_PLAN_BACKEND") {
-                Some(value) => (Some(value), "env"),
-                None => (None, "default"),
-            }
-        }
-        None => (None, "default"),
-    }
-}
-
-fn selector_env_var_name(key: &str) -> &'static str {
-    match key {
-        "plan_core_backend" => "AIT_PLAN_CORE_BACKEND",
-        "plan_http_backend" => "AIT_PLAN_HTTP_BACKEND",
-        "plan_filesystem_backend" => "AIT_PLAN_FILESYSTEM_BACKEND",
-        "plan_blob_diff_backend" => "AIT_PLAN_BLOB_DIFF_BACKEND",
-        "plan_pack_substrate_backend" => "AIT_PLAN_PACK_SUBSTRATE_BACKEND",
-        "workflow_primitives_backend" => "AIT_PLAN_CORE_BACKEND",
-        "plan_ports_protocols_backend" => "AIT_PLAN_PORTS_PROTOCOLS_BACKEND",
-        "plan_config_runtime_backend" => "AIT_PLAN_CONFIG_RUNTIME_BACKEND",
-        _ => unreachable!("unsupported selector key"),
-    }
 }
 
 fn selector_capability(key: &str) -> &'static str {
@@ -686,74 +582,14 @@ fn selector_capability(key: &str) -> &'static str {
     }
 }
 
-fn resolve_runtime_backend_selection_with_environment_source<S>(
-    env_source: &S,
-    value: Option<&str>,
-    capability: &str,
-    source: &str,
-) -> Result<String, String>
-where
-    S: RuntimeConfigEnvironmentSource + ?Sized,
-{
-    let requested = value.map(str::trim).filter(|text| !text.is_empty());
-    let normalized = normalize_backend_name(
-        requested.or(Some(default_backend_for_capability("python", capability))),
-    )?;
-    if normalized == "python" && production_rust_capability(capability) {
+fn resolve_runtime_backend_selection(value: &str, capability: &str) -> Result<String, String> {
+    let normalized = normalize_backend_name(Some(value))?;
+    if normalized == "python" {
         return Err(format!(
             "Backend `python` is no longer allowed for production runtime selection of {capability}; remove Python backend overrides and rerun."
         ));
     }
-    if normalized == "rust"
-        && !rust_backend_allowed_with_environment_source(env_source, source, capability)
-    {
-        return Err(format!(
-            "Rust {capability} is disabled for the local trust-layer runtime until an explicit authority cutover lands."
-        ));
-    }
     Ok(normalized)
-}
-
-fn default_backend_for_capability<'a>(default: &'a str, capability: &str) -> &'a str {
-    if default == "python" && production_rust_capability(capability) {
-        "rust"
-    } else {
-        default
-    }
-}
-
-fn rust_backend_allowed_with_environment_source<S>(
-    env_source: &S,
-    source: &str,
-    capability: &str,
-) -> bool
-where
-    S: RuntimeConfigEnvironmentSource + ?Sized,
-{
-    if production_rust_capability(capability) {
-        return true;
-    }
-    let env_value = env_value_with_runtime_config_environment_source(
-        env_source,
-        "AIT_ALLOW_RUST_BACKEND_EXPERIMENTS",
-    )
-    .unwrap_or_default()
-    .trim()
-    .to_lowercase();
-    if matches!(env_value.as_str(), "1" | "true" | "yes" | "on") {
-        return true;
-    }
-    source == "explicit"
-        && env_value_with_runtime_config_environment_source(env_source, "PYTEST_CURRENT_TEST")
-            .is_some()
-}
-
-fn production_rust_capability(capability: &str) -> bool {
-    capability.starts_with("plan ")
-        || capability.starts_with("task ")
-        || capability.starts_with("change ")
-        || capability.starts_with("workflow ")
-        || capability.starts_with("task/workflow ")
 }
 
 fn normalize_backend_name(value: Option<&str>) -> Result<String, String> {
@@ -817,21 +653,6 @@ fn require_nonempty_text(value: Option<&JsonValue>, field_name: &str) -> Result<
         ));
     }
     Ok(normalized)
-}
-
-fn optional_text(value: Option<&JsonValue>) -> Result<Option<String>, String> {
-    match value {
-        None | Some(JsonValue::Null) => Ok(None),
-        Some(JsonValue::String(text)) => {
-            let normalized = text.trim().to_string();
-            if normalized.is_empty() {
-                Ok(None)
-            } else {
-                Ok(Some(normalized))
-            }
-        }
-        _ => Err("Plan config/runtime optional text fields must be strings.".to_string()),
-    }
 }
 
 fn require_bool(value: Option<&JsonValue>, field_name: &str) -> Result<bool, String> {

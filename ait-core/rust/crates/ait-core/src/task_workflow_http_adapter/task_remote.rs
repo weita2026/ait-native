@@ -646,16 +646,6 @@ impl TaskWorkflowRemoteChangeLister for HttpTaskRemote {
     }
 }
 
-impl TaskWorkflowQueueChangeLister for HttpTaskRemote {
-    fn list_changes(&mut self, repo_name: &str) -> TaskWorkflowHttpClientResult<Vec<Value>> {
-        self.manager
-            .list_changes(repo_name)?
-            .into_iter()
-            .map(|row| self.normalize_change(&row, None))
-            .collect()
-    }
-}
-
 impl TaskWorkflowRemoteChangeDetailReader for HttpTaskRemote {
     fn get_change_detail(
         &mut self,

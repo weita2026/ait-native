@@ -1,5 +1,4 @@
 use ait_agent_core::{
-    agent_management_binding_json,
     event_loop::{
         agent_telegram_message_delivery_execute_json, agent_telegram_turn_input_plan_json,
         agent_telegram_workflow_notification_format_json, agent_telegram_workflow_query_plan_json,
@@ -22,13 +21,9 @@ use ait_cli::config_surface::{
 };
 use ait_cli::doctor_surface::{
     doctor_plan_authority as rust_task_workflow_doctor_plan_authority,
-    doctor_plan_authority_wheel as rust_task_workflow_doctor_plan_authority_wheel,
-    doctor_postgres as rust_task_workflow_doctor_postgres,
     doctor_runtime_root as rust_task_workflow_doctor_runtime_root,
-    postgres_schema_checks as rust_task_workflow_postgres_schema_checks,
 };
 use ait_cli::init_surface::{init_repo as rust_task_workflow_init, InitRequest};
-use ait_cli::install_surface::install_from_payload as rust_task_workflow_install;
 use ait_cli::primitives as task_workflow_primitives;
 use ait_cli::release_surface as task_workflow_release_surface;
 use ait_cli::remote_surface::{
@@ -37,8 +32,9 @@ use ait_cli::remote_surface::{
 };
 use ait_cli::repo_surface::repo_command_from_payload as rust_task_workflow_repo_command;
 use ait_cli::runtime::RepoRuntime as TaskWorkflowRepoRuntime;
-use ait_cli::test_surface::{
-    test_run_full as rust_task_workflow_test_run_full, TestRunFullRequest,
+use ait_cli::snapshot_restore_surface::{
+    snapshot_restore_lines as rust_task_workflow_snapshot_restore_lines,
+    SnapshotRestoreLinesRequest,
 };
 use ait_cli::workspace_lock::{
     workspace_command_lock_path as rust_workspace_command_lock_path,
@@ -62,12 +58,11 @@ use ait_core::current_source_cache::{
 use ait_core::diagnostics::{
     build_plan_backend_identity_facts_json, build_plan_diagnostics_compatibility_status_json,
     build_plan_diagnostics_doctor_facts_json, build_plan_diagnostics_readiness_status_json,
-    build_plan_storage_readiness_facts_json, build_plan_wheel_status_facts_json,
-    normalize_plan_backend_identity_payload_json,
+    build_plan_storage_readiness_facts_json, normalize_plan_backend_identity_payload_json,
     normalize_plan_diagnostics_compatibility_payload_json,
     normalize_plan_diagnostics_doctor_payload_json,
     normalize_plan_diagnostics_readiness_payload_json,
-    normalize_plan_diagnostics_request_payload_json, normalize_plan_wheel_status_payload_json,
+    normalize_plan_diagnostics_request_payload_json,
 };
 use ait_core::json_support::{json, JsonMap as Map, JsonNumber as Number, JsonValue};
 use ait_core::object_diff::{
@@ -182,7 +177,6 @@ use ait_core::runtime_binding_state::{
 };
 use ait_core::runtime_roots as rust_runtime_roots;
 use ait_core::server_repo_retire::project_repo_retire_runtime_blockers as rust_project_repo_retire_runtime_blockers;
-use ait_core::task_close::{resolve_task_close, TaskCloseRequest, TaskCloseScope};
 use ait_core::task_lifecycle::build_task_audit_verdict_payload as build_rust_task_audit_verdict_payload;
 use ait_core::task_remote::task_remote_change_lineage_payload as rust_task_remote_change_lineage_payload;
 use ait_core::task_workflow_http_adapter::{

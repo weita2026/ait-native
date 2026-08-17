@@ -2,7 +2,6 @@ use super::*;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct LocalContentStatsOptions {
-    pub include_inventory: bool,
     pub compute_reachability: bool,
 }
 
@@ -22,6 +21,8 @@ pub trait LocalContentValidationStore {
 }
 
 pub trait LocalContentOrphanPackPruneStore {
+    fn preview_orphan_pack_prune(&self) -> Result<JsonValue, String>;
+
     fn prune_orphan_packs(&self) -> Result<JsonValue, String>;
 }
 
@@ -53,7 +54,6 @@ impl<const WRITE_LAYOUT: u32> LocalContentValidationStore for LocalContentBinary
             self,
             LocalContentStatsOptions {
                 compute_reachability: true,
-                ..LocalContentStatsOptions::default()
             },
         )?;
         Ok(storage_validation_view(&stats))
@@ -63,6 +63,10 @@ impl<const WRITE_LAYOUT: u32> LocalContentValidationStore for LocalContentBinary
 impl<const WRITE_LAYOUT: u32> LocalContentOrphanPackPruneStore
     for LocalContentBinaryDb<WRITE_LAYOUT>
 {
+    fn preview_orphan_pack_prune(&self) -> Result<JsonValue, String> {
+        binary_db_preview_orphan_pack_prune(self)
+    }
+
     fn prune_orphan_packs(&self) -> Result<JsonValue, String> {
         binary_db_prune_orphan_packs(self)
     }

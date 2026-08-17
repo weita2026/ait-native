@@ -92,6 +92,7 @@ impl NativeTelegramUpdateLifecyclePort<DefaultTelegramUpdateLifecycleExecutor> {
         state_path: impl Into<PathBuf>,
         runtime_target: AgentRuntimeTarget,
         request_timeout_seconds: Option<f64>,
+        local_reply: Option<JsonValue>,
         bot_token: impl Into<String>,
         ait_web_url: Option<String>,
         reply_markdown_enabled: bool,
@@ -101,6 +102,7 @@ impl NativeTelegramUpdateLifecyclePort<DefaultTelegramUpdateLifecycleExecutor> {
                 state_path,
                 runtime_target,
                 request_timeout_seconds,
+                local_reply,
                 bot_token,
                 ait_web_url,
                 reply_markdown_enabled,
@@ -219,6 +221,7 @@ impl DefaultTelegramUpdateLifecycleExecutor {
         state_path: impl Into<PathBuf>,
         runtime_target: AgentRuntimeTarget,
         request_timeout_seconds: Option<f64>,
+        local_reply: Option<JsonValue>,
         bot_token: impl Into<String>,
         ait_web_url: Option<String>,
         reply_markdown_enabled: bool,
@@ -228,6 +231,7 @@ impl DefaultTelegramUpdateLifecycleExecutor {
                 state_path,
                 runtime_target,
                 request_timeout_seconds,
+                local_reply,
                 bot_token,
                 ait_web_url,
                 reply_markdown_enabled,
@@ -265,6 +269,7 @@ pub struct NativeTelegramUpdateLifecycleRuntime {
     message: NativeTelegramUpdateMessagePort,
     runtime_target: AgentRuntimeTarget,
     request_timeout_seconds: Option<f64>,
+    local_reply: Option<JsonValue>,
     bot_token: String,
     reply_markdown_enabled: bool,
 }
@@ -275,6 +280,7 @@ impl NativeTelegramUpdateLifecycleRuntime {
         state_path: impl Into<PathBuf>,
         runtime_target: AgentRuntimeTarget,
         request_timeout_seconds: Option<f64>,
+        local_reply: Option<JsonValue>,
         bot_token: impl Into<String>,
         ait_web_url: Option<String>,
         reply_markdown_enabled: bool,
@@ -307,6 +313,7 @@ impl NativeTelegramUpdateLifecycleRuntime {
             )?,
             runtime_target,
             request_timeout_seconds,
+            local_reply,
             bot_token,
             reply_markdown_enabled,
         })
@@ -327,6 +334,16 @@ impl NativeTelegramUpdateLifecycleRuntime {
             }
         }
         target
+    }
+
+    fn turn_backend_request(&self, request: &JsonValue) -> JsonValue {
+        let mut request = request.clone();
+        request["target"] = self.runtime_target_json();
+        request["timeout_seconds"] = json!(self.request_timeout_seconds);
+        if let Some(local_reply) = &self.local_reply {
+            request["local_reply"] = local_reply.clone();
+        }
+        request
     }
 }
 
@@ -381,9 +398,7 @@ impl TelegramUpdateLifecycleRuntimePort for NativeTelegramUpdateLifecycleRuntime
     }
 
     fn execute_turn_backend(&self, request: &JsonValue) -> Result<JsonValue, String> {
-        let mut request = request.clone();
-        request["target"] = self.runtime_target_json();
-        request["timeout_seconds"] = json!(self.request_timeout_seconds);
+        let request = self.turn_backend_request(request);
         self.backend.execute(&request)
     }
 

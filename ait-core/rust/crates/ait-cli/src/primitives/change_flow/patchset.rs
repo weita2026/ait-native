@@ -9,6 +9,21 @@ pub(in crate::primitives) struct PatchsetPublishRemoteContext {
     pub(in crate::primitives) base_snapshot_id: String,
 }
 
+const PUBLIC_PATCHSET_CI_RECENT_LIMIT: i64 = 10;
+const PUBLIC_PATCHSET_CI_RERUN_TRIGGER: &str = "manual_rerun";
+
+pub(super) fn exact_patchset_id(value: &str) -> Result<String, String> {
+    let patchset_id =
+        normalized_text(Some(value)).ok_or_else(|| "Patchset ID must be non-empty.".to_string())?;
+    if patchset_id.chars().all(|ch| ch.is_ascii_digit()) {
+        return Err(
+            "Exact published Patchset ID required; numeric repo-scoped refs are ambiguous."
+                .to_string(),
+        );
+    }
+    Ok(patchset_id)
+}
+
 pub(in crate::primitives) fn patchset_publish_remote_context_with_task_remote<R>(
     task_remote: &mut R,
     change_id: &str,
@@ -92,12 +107,15 @@ where
     };
     {
         let _range = perfetto_range!("ait.workflow_ready.publish.scope_guards");
-        guard_repo_root_bound_task_worktree(
-            repo,
-            publish_context.change_task_id.as_deref(),
-            Some(&publish_context.resolved_change_id),
-            "ait patchset publish",
-        )?;
+        {
+            let _range = perfetto_range!("ait.workflow_ready.publish.worktree_guard");
+            guard_repo_root_bound_task_worktree(
+                repo,
+                publish_context.change_task_id.as_deref(),
+                Some(&publish_context.resolved_change_id),
+                "ait patchset publish",
+            )?;
+        }
         guard_patchset_worktree_retarget(
             repo,
             &publish_context.base_line,
@@ -150,7 +168,6 @@ pub fn patchset_publish(
     author_mode: Option<&str>,
     remote_name: Option<&str>,
 ) -> Result<JsonValue, String> {
-    guard_repo_root_pinned_bound_worktree(repo, None, "ait patchset publish")?;
     guard_no_planning_only_artifact_drift(repo, "ait patchset publish")?;
     let (remote_row, repo_name) = remote_context(repo, remote_name, None)?;
     let mut task_remote = http_task_remote(repo, &remote_row)?;
@@ -308,12 +325,10 @@ pub fn patchset_list(
     repo: &RepoRuntime,
     change_id: &str,
     remote_name: Option<&str>,
-    repo_name_override: Option<&str>,
 ) -> Result<JsonValue, String> {
-    let remote_row = repo.remote_row(remote_name)?;
-    let repo_name = normalized_text(repo_name_override);
+    let (remote_row, repo_name) = remote_context(repo, remote_name, None)?;
     let mut closeout_remote = http_closeout_remote(repo, &remote_row)?;
-    patchset_list_with_closeout_remote(&mut closeout_remote, change_id, repo_name.as_deref())
+    patchset_list_with_closeout_remote(&mut closeout_remote, change_id, Some(&repo_name))
 }
 
 pub(in crate::primitives) fn patchset_list_with_closeout_remote<R>(
@@ -334,25 +349,11 @@ pub fn patchset_show(
     repo: &RepoRuntime,
     patchset_id: &str,
     remote_name: Option<&str>,
-    repo_name_override: Option<&str>,
-    change_ref: Option<&str>,
 ) -> Result<JsonValue, String> {
-    let remote_row = repo.remote_row(remote_name)?;
-    let repo_name = normalized_text(repo_name_override);
-    let change_ref = normalized_text(change_ref);
-    if repo_name.is_some()
-        && patchset_id.chars().all(|ch| ch.is_ascii_digit())
-        && change_ref.is_none()
-    {
-        return Err("Repo-scoped numeric patchset refs require --change.".to_string());
-    }
+    let patchset_id = exact_patchset_id(patchset_id)?;
+    let (remote_row, repo_name) = remote_context(repo, remote_name, None)?;
     let mut closeout_remote = http_closeout_remote(repo, &remote_row)?;
-    patchset_show_with_closeout_remote(
-        &mut closeout_remote,
-        patchset_id,
-        repo_name.as_deref(),
-        change_ref.as_deref(),
-    )
+    patchset_show_with_closeout_remote(&mut closeout_remote, &patchset_id, Some(&repo_name), None)
 }
 
 pub(in crate::primitives) fn patchset_show_with_closeout_remote<R>(
@@ -371,13 +372,34 @@ where
 
 pub fn patchset_select(
     repo: &RepoRuntime,
-    change_id: &str,
     patchset_id: &str,
     remote_name: Option<&str>,
 ) -> Result<JsonValue, String> {
+    let patchset_id = exact_patchset_id(patchset_id)?;
     let (remote_row, repo_name) = remote_context(repo, remote_name, None)?;
     let mut closeout_remote = http_closeout_remote(repo, &remote_row)?;
-    patchset_select_with_closeout_remote(&mut closeout_remote, change_id, patchset_id, &repo_name)
+    patchset_select_by_id_with_closeout_remote(&mut closeout_remote, &patchset_id, &repo_name)
+}
+
+pub(in crate::primitives) fn patchset_select_by_id_with_closeout_remote<R>(
+    closeout_remote: &mut R,
+    patchset_id: &str,
+    repo_name: &str,
+) -> Result<JsonValue, String>
+where
+    R: TaskWorkflowPatchsetReader + TaskWorkflowPatchsetSelector + ?Sized,
+{
+    let patchset =
+        patchset_show_with_closeout_remote(closeout_remote, patchset_id, Some(repo_name), None)?;
+    let resolved_patchset_id =
+        string_field(&patchset, "patchset_id").unwrap_or_else(|| patchset_id.to_string());
+    let owning_change_ref = change_reference_from_payload(&patchset, None)?;
+    patchset_select_with_closeout_remote(
+        closeout_remote,
+        &owning_change_ref,
+        &resolved_patchset_id,
+        repo_name,
+    )
 }
 
 pub(in crate::primitives) fn patchset_select_with_closeout_remote<R>(
@@ -398,16 +420,15 @@ pub fn patchset_ci_status(
     repo: &RepoRuntime,
     patchset_id: &str,
     remote_name: Option<&str>,
-    recent_limit: i64,
-    repo_name_override: Option<&str>,
 ) -> Result<JsonValue, String> {
-    let (remote_row, repo_name) = remote_context(repo, remote_name, repo_name_override)?;
+    let patchset_id = exact_patchset_id(patchset_id)?;
+    let (remote_row, repo_name) = remote_context(repo, remote_name, None)?;
     let mut closeout_remote = http_closeout_remote(repo, &remote_row)?;
     patchset_ci_status_with_closeout_remote(
         &mut closeout_remote,
-        patchset_id,
+        &patchset_id,
         &repo_name,
-        recent_limit,
+        PUBLIC_PATCHSET_CI_RECENT_LIMIT,
     )
 }
 
@@ -590,17 +611,15 @@ pub fn patchset_rerun_ci(
     repo: &RepoRuntime,
     patchset_id: &str,
     remote_name: Option<&str>,
-    trigger: &str,
-    repo_name_override: Option<&str>,
-    execution_profile: Option<&str>,
 ) -> Result<JsonValue, String> {
-    let (remote_row, repo_name) = remote_context(repo, remote_name, repo_name_override)?;
+    let patchset_id = exact_patchset_id(patchset_id)?;
+    let (remote_row, repo_name) = remote_context(repo, remote_name, None)?;
     let mut closeout_remote = http_closeout_remote(repo, &remote_row)?;
     patchset_run_ci_with_closeout_remote(
         &mut closeout_remote,
-        patchset_id,
-        trigger,
-        execution_profile,
+        &patchset_id,
+        PUBLIC_PATCHSET_CI_RERUN_TRIGGER,
+        None,
         &repo_name,
     )
 }
@@ -624,4 +643,19 @@ where
             false,
         )
         .map_err(|err| err.to_string())
+}
+
+#[cfg(test)]
+mod patchset_reference_tests {
+    use super::*;
+
+    #[test]
+    fn exact_reference_guard_rejects_numeric_ordinals() {
+        let error = exact_patchset_id(" 12 ").expect_err("numeric Patchset ref must be rejected");
+        assert!(error.contains("Exact published Patchset ID required"));
+        assert_eq!(
+            exact_patchset_id(" RCT-1/C-01/P-02 ").expect("exact Patchset ID"),
+            "RCT-1/C-01/P-02"
+        );
+    }
 }

@@ -1,7 +1,7 @@
 # AIT source policy: canonical Cargo settings; task worktrees receive a managed projection.
 [build]
 target-dir = ".ait/cargo-target"
-build-dir = ".ait/cargo-build/workspaces/{workspace-path-hash}"
+build-dir = ".ait/cargo-build/canonical"
 
 [alias]
 ait-core-patch-ci-build = [

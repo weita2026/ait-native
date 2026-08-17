@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 
 from ait_python import AgentCapabilities, AgentClient, NativeProtocolError
@@ -50,22 +48,6 @@ def test_capabilities_fail_closed(
         AgentCapabilities.from_payload(payload)
 
 
-def test_management_lists_empty_manifest_through_real_binding(
-    tmp_path: Path,
-) -> None:
-    (tmp_path / ".ait").mkdir()
-    manifest_path = tmp_path / ".ait" / "agent-workers.json"
-
-    assert (
-        AgentClient().list_workers(
-            "telegram",
-            repo_root=tmp_path,
-            manifest_path=manifest_path,
-        )
-        == []
-    )
-
-
 def test_reply_provider_uses_real_worker_transaction_binding() -> None:
     result = AgentClient().reply_provider({"contract": "unsupported"})
 
@@ -76,14 +58,30 @@ def test_reply_provider_uses_real_worker_transaction_binding() -> None:
 def test_agent_input_validation_happens_before_native_call() -> None:
     client = AgentClient()
 
-    with pytest.raises(ValueError, match="unsupported agent transport"):
-        client.list_workers("email")
     with pytest.raises(ValueError, match="worker name"):
-        client.start("telegram", " ")
+        client.reply_provider({}, worker=" ")
     with pytest.raises(ValueError, match="unsupported worker operation"):
         client.worker_transaction("run-command", {})
     with pytest.raises(ValueError, match="unsupported worker operation"):
         client.worker_transaction("graph-watch", {})
     assert not hasattr(client, "telegram_graph_watch")
     with pytest.raises(TypeError, match="unsupported agent context"):
-        client.list_workers("telegram", command_args=[])
+        client.reply_provider({}, command_args=[])
+
+
+def test_retired_agent_management_surface_is_absent() -> None:
+    client = AgentClient()
+
+    for name in [
+        "manage",
+        "add",
+        "list_workers",
+        "status",
+        "start",
+        "stop",
+        "restart",
+        "remove",
+        "logs",
+    ]:
+        assert not hasattr(client, name)
+    assert not hasattr(client.runtime, "agent_management")

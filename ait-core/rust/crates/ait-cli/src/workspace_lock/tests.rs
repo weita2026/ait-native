@@ -1,6 +1,6 @@
 use super::{
     can_borrow_legacy_process_lock, workspace_command_lock_path, workspace_root,
-    WorkspaceCommandLock, LOCK_PATH_ENV, LOCK_PID_ENV, LOCK_ROOT_ENV, LOCK_TOKEN_ENV,
+    WorkspaceCommandLock, LOCK_TOKEN_ENV,
 };
 use crate::runtime::RepoRuntime;
 use ait_core::json_support::{json, JsonMap, JsonValue};
@@ -38,7 +38,7 @@ fn workspace_command_lock_records_metadata_after_blocking_acquire() {
     let temp = TempDir::new().unwrap();
     let repo = test_repo(&temp);
 
-    let lock = WorkspaceCommandLock::acquire(&repo, "ait-cli task canceled").unwrap();
+    let lock = WorkspaceCommandLock::acquire(&repo, "ait-cli task abandon").unwrap();
 
     let path = workspace_command_lock_path(&repo);
     let metadata: JsonValue =
@@ -46,7 +46,7 @@ fn workspace_command_lock_records_metadata_after_blocking_acquire() {
             .unwrap();
     assert_eq!(
         metadata.get("command").and_then(JsonValue::as_str),
-        Some("ait-cli task canceled")
+        Some("ait-cli task abandon")
     );
     assert!(metadata
         .get("owner_token")
@@ -79,26 +79,19 @@ fn nested_rust_workspace_command_borrows_outer_lock() {
 }
 
 #[test]
-fn workspace_lock_env_is_restored_after_owned_lock_drop() {
+fn workspace_lock_token_is_restored_after_owned_lock_drop() {
     let _env_lock = ENV_LOCK.lock().unwrap();
     let temp = TempDir::new().unwrap();
     let repo = test_repo(&temp);
-    std::env::set_var(LOCK_ROOT_ENV, "previous-root");
-    std::env::remove_var(LOCK_PATH_ENV);
-    std::env::remove_var(LOCK_TOKEN_ENV);
-    std::env::remove_var(LOCK_PID_ENV);
+    std::env::set_var(LOCK_TOKEN_ENV, "previous-token");
 
     {
         let _lock = WorkspaceCommandLock::acquire(&repo, "outer command").unwrap();
-        assert_ne!(std::env::var(LOCK_ROOT_ENV).unwrap(), "previous-root");
-        assert!(std::env::var(LOCK_TOKEN_ENV).is_ok());
+        assert_ne!(std::env::var(LOCK_TOKEN_ENV).unwrap(), "previous-token");
     }
 
-    assert_eq!(std::env::var(LOCK_ROOT_ENV).unwrap(), "previous-root");
-    assert!(std::env::var(LOCK_PATH_ENV).is_err());
-    assert!(std::env::var(LOCK_TOKEN_ENV).is_err());
-    assert!(std::env::var(LOCK_PID_ENV).is_err());
-    std::env::remove_var(LOCK_ROOT_ENV);
+    assert_eq!(std::env::var(LOCK_TOKEN_ENV).unwrap(), "previous-token");
+    std::env::remove_var(LOCK_TOKEN_ENV);
 }
 
 #[test]

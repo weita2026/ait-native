@@ -1,0 +1,39 @@
+title: "[Show and tell] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Show the community how you use AIT. Share only repositories, screenshots, logs, and links you have permission to publish.
+
+  - type: textarea
+    id: project
+    attributes:
+      label: What did you build or change?
+      description: Briefly describe the repository and the outcome AIT helped you reach.
+    validations:
+      required: true
+
+  - type: input
+    id: link
+    attributes:
+      label: Public link
+      description: Add a repository, demo, article, or release URL when one is available.
+      placeholder: https://...
+
+  - type: textarea
+    id: workflow
+    attributes:
+      label: How did AIT fit your workflow?
+      description: Mention the installation channel, coding agent, validation, or recovery path that mattered.
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: permission
+    attributes:
+      label: Publication check
+      options:
+        - label: I have permission to publish everything included in this post.
+          required: true
+        - label: I removed credentials, tokens, personal data, and private paths.
+          required: true

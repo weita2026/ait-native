@@ -33,6 +33,34 @@ struct CountingReversePathStore {
     visits: Cell<usize>,
 }
 
+#[test]
+fn blame_request_validation_rejects_zero_in_every_line_selector() {
+    for request in [
+        BlameRequest {
+            path: "tracked.txt".to_string(),
+            line: Some(0),
+            ..BlameRequest::default()
+        },
+        BlameRequest {
+            path: "tracked.txt".to_string(),
+            start_line: Some(0),
+            end_line: Some(1),
+            ..BlameRequest::default()
+        },
+        BlameRequest {
+            path: "tracked.txt".to_string(),
+            start_line: Some(1),
+            end_line: Some(0),
+            ..BlameRequest::default()
+        },
+    ] {
+        assert_eq!(
+            validate_request(&request).unwrap_err(),
+            "Line selections are 1-based and must be positive."
+        );
+    }
+}
+
 impl ReverseSnapshotPathBlobStore for CountingReversePathStore {
     fn visit_reverse_path_blobs(
         &self,
@@ -431,7 +459,7 @@ fn merge_snapshot_blame_reports_alternates_and_accepts_explicit_parent() {
         &BlameRequest {
             path: "tracked.txt".to_string(),
             snapshot_id: Some(merge_id.clone()),
-            parent_snapshot_id: Some(right_id.clone()),
+            via_parent_snapshot_id: Some(right_id.clone()),
             ..BlameRequest::default()
         },
     )
@@ -448,7 +476,7 @@ fn merge_snapshot_blame_reports_alternates_and_accepts_explicit_parent() {
         &BlameRequest {
             path: "tracked.txt".to_string(),
             snapshot_id: Some(merge_id),
-            parent_snapshot_id: Some("SNP-NOT-A-PARENT".to_string()),
+            via_parent_snapshot_id: Some("SNP-NOT-A-PARENT".to_string()),
             ..BlameRequest::default()
         },
     )

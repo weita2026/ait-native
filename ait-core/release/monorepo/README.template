@@ -1,25 +1,62 @@
 # ait-native
 
-AIT is a language-neutral, agent-first workflow for repository changes.
-Initialize AIT once, then tell your coding agent what outcome you want. AIT
-does not identify the repository's programming language or project type.
+[![Latest release](https://img.shields.io/github/v/release/weita2026/ait-native?include_prereleases&sort=semver&label=release)](https://github.com/weita2026/ait-native/releases)
+[![Documentation](https://img.shields.io/badge/docs-ait--native.dev-0ea5e9)](https://ait-native.dev/)
+[![Discussions](https://img.shields.io/github/discussions/weita2026/ait-native?label=discussions)](https://github.com/weita2026/ait-native/discussions)
+[![License](https://img.shields.io/badge/license-Apache--2.0%20%2B%20AGPL--3.0--only-22c55e)](#license-map)
+
+[Install guide](https://ait-native.dev/local-quickstart/) ·
+[Technical documentation](https://ait-native.dev/technical/) ·
+[Releases](https://github.com/weita2026/ait-native/releases) ·
+[Discussions](https://github.com/weita2026/ait-native/discussions) ·
+[Report a bug](https://github.com/weita2026/ait-native/issues/new/choose)
+
+AIT turns an ordinary coding request into an isolated, sprint-bound repository
+change with validation evidence and a recoverable land path. It is for
+individual developers and maintainers who use coding agents and want the work
+to remain reviewable without inventing a workflow for every repository.
+
+AIT does not identify the repository's programming language or project type.
+The same workflow applies to Python, Node.js, Rust, Java, mixed-language, and
+non-code repositories.
+
+Official website: <https://ait-native.dev/>
+
+## Install and initialize
+
+```sh
+python -m pip install ait-native==@AIT_PYPI_VERSION@
+cd path/to/your-repository
+ait init
+```
+
+Run `ait init` once inside the repository your coding agent will change. For
+Homebrew, npm, apt, and verified native archive routes, use the
+[official install guide](https://ait-native.dev/local-quickstart/).
+
+Confirm the selected release before initializing a repository:
+
+```sh
+ait --version
+```
 
 This is the public `@AIT_RELEASE_TAG@` source tree. One tag contains the exact
 exported source of `ait-core`, `ait-server`, `ait-runner`, `ait-python`, and
 `ait-node`; their AIT Snapshot mapping is recorded in
 `ait-monorepo-source.json`.
 
-## Start with an agent
+## What you have after 90 seconds
 
-After installing a verified `ait-native` release, initialize the repository
-that you want the agent to change:
+For a normal package install, the practical 90-second result is an initialized
+repository: local AIT authority exists, `AGENTS.md` contains the effective
+repository-specific workflow, and the next coding-agent request can use an
+isolated Task, validation, Snapshot, and safe land or recovery path. The server
+remains off. The 90 seconds covers installation and initialization, not the
+completion time of an arbitrary code change.
 
-```sh
-cd path/to/your-repository
-ait init
-```
+## Ask for a change
 
-Then open your coding agent in that repository and describe the result:
+Open your coding agent in the initialized repository and describe the result:
 
 > Update the login flow, preserve the public behavior, and add the relevant
 > tests.
@@ -28,6 +65,16 @@ You do not need to manually drive Task, Snapshot, or Land commands. `ait init`
 creates or updates the generated AIT workflow block in `AGENTS.md`. That block
 records the effective repository-specific mode, sprint setting, mutation
 scope, commands, and closeout policy that the agent must follow.
+
+## Moving from 0.x
+
+The 0.x requirement to run `ait install` and its task-DAG positioning are
+retired. The 1.0 release line starts with `ait init` and a sprint-bound Local
+workflow. Keep the existing Git repository and history, but do not treat a
+release candidate as proof that legacy 0.x `.ait` data can be migrated in
+place. Use a clean clone or a new repository authority unless the selected
+release notes explicitly admit that migration. See the
+[public transition contract](ait-core/docs/distribution.md#public-0x-to-10-transition).
 
 ## What the agent follows from `AGENTS.md`
 
@@ -79,10 +126,11 @@ portable JS/TS package, and the current host's direct Node-API addon under
 non-publishable; protected release CI promotes only separately admitted family
 artifacts.
 
-For Node.js, `import { NativeRuntime, AgentClient } from "ait-native"` loads the
+For Node.js,
+`import { NativeRuntime, AgentClient } from "@wa120/ait-native"` loads the
 package-owned `native/ait_napi.node` in the current process. The npm `ait`
-command calls the same Rust binding through `NativeRuntime.runCli()`. It
-does not locate or launch a child executable. `ait-server` is intentionally
+command calls the same Rust binding through `NativeRuntime.runCli()`.
+It does not locate or launch a child executable. `ait-server` is intentionally
 not an npm command and remains available through the declared native/server
 channels.
 

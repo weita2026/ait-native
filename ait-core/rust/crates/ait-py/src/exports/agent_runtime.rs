@@ -50,18 +50,6 @@ fn ait_agent_worker_capabilities_py(py: Python<'_>) -> PyResult<Py<PyDict>> {
     render_json_dict(py, payload)
 }
 
-#[pyfunction(name = "ait_agent_management")]
-fn ait_agent_management_py(
-    py: Python<'_>,
-    request: Bound<'_, PyAny>,
-) -> PyResult<Py<PyAny>> {
-    let request = parse_json_value(request, "request")?;
-    let payload = py
-        .detach(move || agent_management_binding_json(&request))
-        .map_err(PyRuntimeError::new_err)?;
-    render_json_value(py, payload)
-}
-
 #[pyfunction(name = "ait_agent_worker_transaction")]
 fn ait_agent_worker_transaction_py(
     py: Python<'_>,
@@ -446,7 +434,6 @@ fn register_agent_runtime(_py: Python<'_>, module: &Bound<'_, PyModule>) -> PyRe
         ait_agent_worker_capabilities_py,
         module
     )?)?;
-    module.add_function(wrap_pyfunction!(ait_agent_management_py, module)?)?;
     module.add_function(wrap_pyfunction!(
         ait_agent_worker_transaction_py,
         module

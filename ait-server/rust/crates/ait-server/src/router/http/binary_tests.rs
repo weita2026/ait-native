@@ -4,9 +4,9 @@ use crate::repository_retirement::REMOTE_AUTHORITY_FILE_MEDIA_TYPE;
 use axum::body::Body;
 use axum::http::Request;
 use hyper::body::to_bytes;
-use std::fs;
 use std::path::{Path as FsPath, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::{env, fs};
 use tower::ServiceExt;
 
 static TEST_DIRECTORY_SEQUENCE: AtomicU64 = AtomicU64::new(1);
@@ -145,7 +145,7 @@ async fn fresh_install_serves_fixed_numeric_repository_authorities() {
         .expect("handshake response");
     assert_eq!(handshake.status(), StatusCode::OK);
     let handshake = response_json(handshake).await;
-    assert_eq!(handshake["package_version"], json!("1.0.0-rc.6"));
+    assert_eq!(handshake["package_version"], json!("1.0.0-rc.7"));
     assert_eq!(
         handshake["operational_capabilities"]["runner_contracts"],
         json!(["ait.runner.native-job.v3"])

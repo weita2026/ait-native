@@ -6,19 +6,6 @@ impl RepoRuntime {
         if let Some(actor) = self.actor_identity() {
             headers.insert("X-AIT-Actor".to_string(), actor);
         }
-        if let Some(actor_type) =
-            env_nonempty("AIT_NATIVE_ACTOR_TYPE").or_else(|| env_nonempty("AIT_ACTOR_TYPE"))
-        {
-            headers.insert("X-AIT-Actor-Type".to_string(), actor_type);
-        }
-        if let Some(roles) = env_nonempty("AIT_NATIVE_ROLES").or_else(|| env_nonempty("AIT_ROLES"))
-        {
-            headers.insert("X-AIT-Roles".to_string(), roles);
-        }
-        if let Some(repos) = env_nonempty("AIT_NATIVE_REPOS").or_else(|| env_nonempty("AIT_REPOS"))
-        {
-            headers.insert("X-AIT-Repos".to_string(), repos);
-        }
         headers
     }
 

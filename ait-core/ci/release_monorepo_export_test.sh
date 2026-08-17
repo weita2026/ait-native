@@ -7,6 +7,15 @@ if [[ ! -e ${product_document} && ! -L ${product_document} ]]; then
   product_document=${repo_root}/../docs/distribution.md
 fi
 temporary_root=$(mktemp -d "${TMPDIR:-/tmp}/ait-monorepo-export-test.XXXXXX")
+selftest_mode=0
+if [[ ${1:-} == --public-layout-selftest ]]; then
+  selftest_mode=1
+  shift
+fi
+if (( $# != 0 )); then
+  printf 'usage: %s [--public-layout-selftest]\n' "$0" >&2
+  exit 64
+fi
 export AIT_RELEASE_COORDINATOR_SNAPSHOT=SNP-AAAAAAAAAAAA
 export AIT_RELEASE_COORDINATOR_MANIFEST_HASH=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 export AIT_RELEASE_COORDINATOR_CREATED_AT=1700000000
@@ -36,7 +45,7 @@ expect_failure() {
   test -s "${temporary_root}/${label}.stderr"
 }
 
-if [[ ${AIT_RELEASE_MONOREPO_PUBLIC_LAYOUT_SELFTEST:-0} == 0 ]]; then
+if (( selftest_mode == 0 )); then
   public_layout=${temporary_root}/public-layout
   public_core=${public_layout}/ait-core
   mkdir -p \
@@ -53,6 +62,7 @@ if [[ ${AIT_RELEASE_MONOREPO_PUBLIC_LAYOUT_SELFTEST:-0} == 0 ]]; then
     "${repo_root}/ci/native_bootstrap_matrix.json" \
     "${repo_root}/ci/release_endpoint_publication.sh" \
     "${repo_root}/ci/release_endpoint_remote.sh" \
+    "${repo_root}/ci/release_latest_alias.sh" \
     "${repo_root}/ci/release_operator.sh" \
     "${repo_root}/ci/release_protected_promotion.sh" \
     "${repo_root}/ci/release_receipt_matrix.jq" \
@@ -68,13 +78,15 @@ if [[ ${AIT_RELEASE_MONOREPO_PUBLIC_LAYOUT_SELFTEST:-0} == 0 ]]; then
     "${public_core}/release/oci/"
   cp "${repo_root}/.github/workflows/ait-release-component-receipts.yml" \
     "${public_core}/.github/workflows/ait-release-component-receipts.yml"
+  cp "${repo_root}/.github/workflows/ait-release-latest-alias.yml" \
+    "${public_core}/.github/workflows/ait-release-latest-alias.yml"
   cp "${repo_root}/.github/workflows/ait-release-protected-promotion.yml" \
     "${public_core}/.github/workflows/ait-release-protected-promotion.yml"
   cp "${repo_root}/.github/workflows/pypi-publish.yml" \
     "${public_core}/.github/workflows/pypi-publish.yml"
   cp "${product_document}" "${public_layout}/docs/distribution.md"
-  AIT_RELEASE_MONOREPO_PUBLIC_LAYOUT_SELFTEST=1 \
-    bash "${public_core}/ci/release_monorepo_export_test.sh" >/dev/null
+  bash "${public_core}/ci/release_monorepo_export_test.sh" \
+    --public-layout-selftest >/dev/null
 fi
 
 write_common_source() {
@@ -165,7 +177,7 @@ for repository in ait-core ait-server ait-runner ait-python ait-node; do
         "${repo_root}/ci/release_repository_authorities.json" \
         >"${source}/ci/release_repository_authorities.json"
       printf '[workspace]\nmembers = ["crates/ait-py"]\n' >"${source}/rust/Cargo.toml"
-      printf '[package]\nname = "ait-py"\nversion = "1.0.0-rc.5"\n' \
+      printf '[package]\nname = "ait-py"\nversion = "1.0.0-rc.6"\n' \
         >"${source}/rust/crates/ait-py/Cargo.toml"
       cp "${product_document}" "${source}/docs/distribution.md"
       ;;
@@ -174,7 +186,7 @@ for repository in ait-core ait-server ait-runner ait-python ait-node; do
       printf '[workspace]\nmembers = []\n' >"${source}/rust/Cargo.toml"
       ;;
     ait-runner)
-      printf '[package]\nname = "ait-runner"\nversion = "1.0.0-rc.5"\n\n[dependencies]\nait-core = { path = ".ait-external/ait-core/rust/crates/ait-core" }\n' \
+      printf '[package]\nname = "ait-runner"\nversion = "1.0.0-rc.6"\n\n[dependencies]\nait-core = { path = ".ait-external/ait-core/rust/crates/ait-core" }\n' \
         >"${source}/Cargo.toml"
       ;;
     ait-python)
@@ -187,7 +199,9 @@ for repository in ait-core ait-server ait-runner ait-python ait-node; do
       jq -n '
         {
           name: "@wa120/ait-native",
-          version: "1.0.0-rc.5",
+          version: "1.0.0-rc.6",
+          description: "Agent-first, language-neutral workflow for verified repository changes",
+          homepage: "https://ait-native.dev/",
           type: "module",
           bin: {ait: "bin/ait.mjs"},
           exports: {
@@ -199,12 +213,12 @@ for repository in ait-core ait-server ait-runner ait-python ait-node; do
           },
           types: "./src/index.d.ts",
           optionalDependencies: {
-            "@wa120/ait-native-darwin-arm64": "1.0.0-rc.5",
-            "@wa120/ait-native-darwin-x64": "1.0.0-rc.5",
-            "@wa120/ait-native-linux-arm64": "1.0.0-rc.5",
-            "@wa120/ait-native-linux-x64": "1.0.0-rc.5",
-            "@wa120/ait-native-win32-arm64": "1.0.0-rc.5",
-            "@wa120/ait-native-win32-x64": "1.0.0-rc.5"
+            "@wa120/ait-native-darwin-arm64": "1.0.0-rc.6",
+            "@wa120/ait-native-darwin-x64": "1.0.0-rc.6",
+            "@wa120/ait-native-linux-arm64": "1.0.0-rc.6",
+            "@wa120/ait-native-linux-x64": "1.0.0-rc.6",
+            "@wa120/ait-native-win32-arm64": "1.0.0-rc.6",
+            "@wa120/ait-native-win32-x64": "1.0.0-rc.6"
           },
           scripts: {}
         }
@@ -216,6 +230,23 @@ for repository in ait-core ait-server ait-runner ait-python ait-node; do
       printf 'export interface NativeAddon {}\n' >"${source}/src/index.d.ts"
       printf 'export {};\n' >"${source}/scripts/native-build.mjs"
       printf 'export {};\n' >"${source}/release/npm-payload-package.mjs"
+      printf '%s\n' \
+        '# ait-native' \
+        '' \
+        'AIT turns an ordinary coding request into an isolated, sprint-bound repository change.' \
+        'It is for individual developers and maintainers who use coding agents.' \
+        'Official website: <https://ait-native.dev/>' \
+        '' \
+        '## Install and initialize' \
+        'npm install --global @wa120/ait-native@@AIT_NPM_VERSION@' \
+        'ait init' \
+        '' \
+        '## What you have after 90 seconds' \
+        'Installation and initialization are complete; arbitrary coding work is not promised.' \
+        '' \
+        '## Moving from 0.x' \
+        'The 0.x requirement to run `ait install` and its task-DAG positioning are retired.' \
+        >"${source}/release/npm-readme.txt"
       core_snapshot=$(jq -er '
         [.components[] | select(.source_repository == "ait-core") | .source_snapshot]
           | unique | .[0]
@@ -230,7 +261,7 @@ for repository in ait-core ait-server ait-runner ait-python ait-node; do
           ["x86_64-pc-windows-msvc", "win32", "x64", null]
         ] | {
           schema: "ait.node.napi-platform-packages/v2",
-          family_version: "1.0.0-rc.5",
+          family_version: "1.0.0-rc.6",
           top_level_package: "@wa120/ait-native",
           payloads: map({
             target: .[0],
@@ -239,7 +270,7 @@ for repository in ait-core ait-server ait-runner ait-python ait-node; do
             libc: .[3],
             component: "ait-node",
             package: ("@wa120/ait-native-" + .[1] + "-" + .[2]),
-            version: "1.0.0-rc.5",
+            version: "1.0.0-rc.6",
             binding_repository: "ait-core",
             binding_snapshot: $snapshot,
             license: "Apache-2.0",
@@ -259,10 +290,10 @@ for repository in ait-core ait-server ait-runner ait-python ait-node; do
         '  ["aarch64-pc-windows-msvc", "wa120-ait-native-win32-arm64"],' \
         '  ["x86_64-pc-windows-msvc", "wa120-ait-native-win32-x64"],' \
         ']);' \
-        'if ((target !== "portable" && !targets.has(target)) || version !== "1.0.0-rc.5") process.exit(64);' \
+        'if ((target !== "portable" && !targets.has(target)) || version !== "1.0.0-rc.6") process.exit(64);' \
         'const artifact = target === "portable"' \
-        '  ? "dist/wa120-ait-native-1.0.0-rc.5.tgz"' \
-        '  : `dist/npm-addons/${targets.get(target)}-1.0.0-rc.5.tgz`;' \
+        '  ? "dist/wa120-ait-native-1.0.0-rc.6.tgz"' \
+        '  : `dist/npm-addons/${targets.get(target)}-1.0.0-rc.6.tgz`;' \
         'if (phase === "build") {' \
         '  mkdirSync(dirname(artifact), { recursive: true });' \
         '  writeFileSync(artifact, `fixture direct Node-API ${target}\n`);' \
@@ -276,7 +307,7 @@ for repository in ait-core ait-server ait-runner ait-python ait-node; do
           schema: "ait.release.adapter/v1",
           package: {
             name: "@wa120/ait-native",
-            version: "1.0.0-rc.5",
+            version: "1.0.0-rc.6",
             description: "fixture",
             license_files: [
               {path: "LICENSE", role: "license"},
@@ -292,6 +323,7 @@ for repository in ait-core ait-server ait-runner ait-python ait-node; do
               "lib/npm-payload-contract.json",
               "src/runtime.js",
               "scripts/native-build.mjs",
+              "release/npm-readme.txt",
               "release/npm-payload-package.mjs",
               "release/fixture-receipt.mjs"
             ],
@@ -301,13 +333,13 @@ for repository in ait-core ait-server ait-runner ait-python ait-node; do
               smoke: [["node", "release/fixture-receipt.mjs", "smoke", "$AIT_RELEASE_TARGET", "$AIT_RELEASE_VERSION"]]
             },
             artifacts: [
-              {path: "dist/wa120-ait-native-1.0.0-rc.5.tgz", kind: "npm-napi-envelope"},
-              {path: "dist/npm-addons/wa120-ait-native-darwin-arm64-1.0.0-rc.5.tgz", kind: "npm-napi-addon", target: "aarch64-apple-darwin"},
-              {path: "dist/npm-addons/wa120-ait-native-darwin-x64-1.0.0-rc.5.tgz", kind: "npm-napi-addon", target: "x86_64-apple-darwin"},
-              {path: "dist/npm-addons/wa120-ait-native-linux-arm64-1.0.0-rc.5.tgz", kind: "npm-napi-addon", target: "aarch64-unknown-linux-gnu"},
-              {path: "dist/npm-addons/wa120-ait-native-linux-x64-1.0.0-rc.5.tgz", kind: "npm-napi-addon", target: "x86_64-unknown-linux-gnu"},
-              {path: "dist/npm-addons/wa120-ait-native-win32-arm64-1.0.0-rc.5.tgz", kind: "npm-napi-addon", target: "aarch64-pc-windows-msvc"},
-              {path: "dist/npm-addons/wa120-ait-native-win32-x64-1.0.0-rc.5.tgz", kind: "npm-napi-addon", target: "x86_64-pc-windows-msvc"}
+              {path: "dist/wa120-ait-native-1.0.0-rc.6.tgz", kind: "npm-napi-envelope"},
+              {path: "dist/npm-addons/wa120-ait-native-darwin-arm64-1.0.0-rc.6.tgz", kind: "npm-napi-addon", target: "aarch64-apple-darwin"},
+              {path: "dist/npm-addons/wa120-ait-native-darwin-x64-1.0.0-rc.6.tgz", kind: "npm-napi-addon", target: "x86_64-apple-darwin"},
+              {path: "dist/npm-addons/wa120-ait-native-linux-arm64-1.0.0-rc.6.tgz", kind: "npm-napi-addon", target: "aarch64-unknown-linux-gnu"},
+              {path: "dist/npm-addons/wa120-ait-native-linux-x64-1.0.0-rc.6.tgz", kind: "npm-napi-addon", target: "x86_64-unknown-linux-gnu"},
+              {path: "dist/npm-addons/wa120-ait-native-win32-arm64-1.0.0-rc.6.tgz", kind: "npm-napi-addon", target: "aarch64-pc-windows-msvc"},
+              {path: "dist/npm-addons/wa120-ait-native-win32-x64-1.0.0-rc.6.tgz", kind: "npm-napi-addon", target: "x86_64-pc-windows-msvc"}
             ]
           }]
         }
@@ -401,17 +433,39 @@ if [[ -x ${output_one}/ait-core/ci/fixture-data.txt ]]; then
 fi
 node --check "${output_one}/build-release.mjs"
 node "${output_one}/build-release.mjs" --validate-only >/dev/null
+missing_public_storefront=${temporary_root}/missing-public-storefront
+cp -R "${output_one}" "${missing_public_storefront}"
+printf '# ait-native\n' >"${missing_public_storefront}/README.md"
+expect_failure missing-public-storefront node \
+  "${missing_public_storefront}/build-release.mjs" --validate-only
+stale_public_storefront=${temporary_root}/stale-public-storefront
+cp -R "${output_one}" "${stale_public_storefront}"
+printf '\nJira-like\n' >>"${stale_public_storefront}/README.md"
+expect_failure stale-public-storefront node \
+  "${stale_public_storefront}/build-release.mjs" --validate-only
+unresolved_public_storefront=${temporary_root}/unresolved-public-storefront
+cp -R "${output_one}" "${unresolved_public_storefront}"
+printf '\n@AIT_PYPI_VERSION@\n' >>"${unresolved_public_storefront}/README.md"
+expect_failure unresolved-public-storefront node \
+  "${unresolved_public_storefront}/build-release.mjs" --validate-only
+missing_npm_storefront=${temporary_root}/missing-npm-storefront
+cp -R "${output_one}" "${missing_npm_storefront}"
+printf '# ait-native\n' \
+  >"${missing_npm_storefront}/ait-node/release/npm-readme.txt"
+expect_failure missing-npm-storefront node \
+  "${missing_npm_storefront}/build-release.mjs" --validate-only
 test "$(jq -r '.family.version' \
   "${output_one}/ait-core/ait-release-family.json")" = "1.0.0-rc.2"
 test "$(jq -r '.family_version' \
   "${output_one}/ait-core/ci/release_repository_authorities.json")" = \
   "1.0.0-rc.2"
 test "$(jq -r '.family_version' \
-  "${output_one}/ci/release_repository_authorities.json")" = "1.0.0-rc.5"
+  "${output_one}/ci/release_repository_authorities.json")" = "1.0.0-rc.6"
 for release_control_path in \
   ci/native_bootstrap_matrix.jq \
   ci/release_endpoint_publication.sh \
   ci/release_endpoint_remote.sh \
+  ci/release_latest_alias.sh \
   ci/release_operator.sh \
   ci/release_protected_promotion.sh \
   ci/release_receipt_matrix.jq \
@@ -420,7 +474,7 @@ for release_control_path in \
     "${output_one}/${release_control_path}"
 done
 test "$(jq -r '.version' "${output_one}/ci/native_bootstrap_matrix.json")" = \
-  '1.0.0-rc.5'
+  '1.0.0-rc.6'
 AIT_RELEASE_FAMILY_MANIFEST="${output_one}/ait-release-family.json" \
   bash "${output_one}/ci/release_receipt_matrix_test.sh" >/dev/null
 expect_failure historical-component-family env \
@@ -480,7 +534,7 @@ node "${output_one}/build-release.mjs" \
   --component-receipt \
   --repository ait-node \
   --target portable \
-  --version 1.0.0-rc.5 \
+  --version 1.0.0-rc.6 \
   --git-commit "${fixture_git_commit}" \
   --out-dir "${fixture_receipt}" >/dev/null
 jq -e \
@@ -518,14 +572,24 @@ expect_failure receipt-parent-symlink node "${output_one}/build-release.mjs" \
   --component-receipt \
   --repository ait-node \
   --target portable \
-  --version 1.0.0-rc.5 \
+  --version 1.0.0-rc.6 \
   --git-commit "${fixture_git_commit}" \
   --out-dir "${temporary_root}/receipt-parent-link/escaped-receipt"
 public_readme=${output_one}/README.md
 for required_readme_text in \
+  'AIT turns an ordinary coding request into an isolated, sprint-bound repository' \
+  'individual developers and maintainers' \
+  'python -m pip install ait-native==1.0.0rc6' \
+  'img.shields.io/github/v/release/weita2026/ait-native' \
+  'https://github.com/weita2026/ait-native/discussions' \
+  'https://github.com/weita2026/ait-native/issues/new/choose' \
   'ait init' \
+  'ait --version' \
+  '## What you have after 90 seconds' \
+  'https://ait-native.dev/' \
+  '## Moving from 0.x' \
+  'The 0.x requirement to run `ait install` and its task-DAG positioning are' \
   'AGENTS.md' \
-  'ait workflow tier --json' \
   'ait task start' \
   'ait plan sync' \
   'ait snapshot create' \
@@ -538,8 +602,9 @@ for required_readme_text in \
   'No commercial or proprietary license applies to a public 1.0 source path'; do
   grep -F "${required_readme_text}" "${public_readme}" >/dev/null
 done
-if grep -F 'mkdir -p docs/sprints' "${public_readme}" >/dev/null; then
-  printf 'public README teaches the user a manual sprint bootstrap\n' >&2
+if grep -E '@AIT_[A-Z0-9_]+@|Jira-like|parallel AI execution|compact task DAG|mkdir -p docs/sprints' \
+  "${public_readme}" >/dev/null; then
+  printf 'public README contains an unresolved token, stale positioning, or manual sprint bootstrap\n' >&2
   exit 65
 fi
 
@@ -548,6 +613,58 @@ grep -F 'deterministic release monorepo' \
 grep -F 'material AI assistance' "${output_one}/CONTRIBUTING.md" >/dev/null
 grep -F 'security/advisories/new' "${output_one}/SECURITY.md" >/dev/null
 grep -F 'Do not open a public issue' "${output_one}/SECURITY.md" >/dev/null
+
+cmp "${repo_root}/release/monorepo/CODE_OF_CONDUCT.template" \
+  "${output_one}/CODE_OF_CONDUCT.md"
+cmp "${repo_root}/release/monorepo/SUPPORT.template" \
+  "${output_one}/SUPPORT.md"
+cmp "${repo_root}/release/monorepo/.github/PULL_REQUEST_TEMPLATE.template" \
+  "${output_one}/.github/PULL_REQUEST_TEMPLATE.md"
+
+for public_community_path in \
+  CITATION.cff \
+  .github/ISSUE_TEMPLATE/bug_report.yml \
+  .github/ISSUE_TEMPLATE/documentation.yml \
+  .github/ISSUE_TEMPLATE/config.yml \
+  .github/DISCUSSION_TEMPLATE/q-a.yml \
+  .github/DISCUSSION_TEMPLATE/ideas.yml \
+  .github/DISCUSSION_TEMPLATE/show-and-tell.yml \
+  .github/release.yml \
+  .github/social-preview.png; do
+  cmp "${repo_root}/release/monorepo/${public_community_path}" \
+    "${output_one}/${public_community_path}"
+done
+
+community_path_index=0
+for required_community_path in \
+  CODE_OF_CONDUCT.md \
+  SUPPORT.md \
+  CITATION.cff \
+  .github/ISSUE_TEMPLATE/bug_report.yml \
+  .github/ISSUE_TEMPLATE/documentation.yml \
+  .github/ISSUE_TEMPLATE/config.yml \
+  .github/DISCUSSION_TEMPLATE/q-a.yml \
+  .github/DISCUSSION_TEMPLATE/ideas.yml \
+  .github/DISCUSSION_TEMPLATE/show-and-tell.yml \
+  .github/PULL_REQUEST_TEMPLATE.md \
+  .github/release.yml \
+  .github/social-preview.png; do
+  missing_community_output=${temporary_root}/missing-community-${community_path_index}
+  cp -R "${output_one}" "${missing_community_output}"
+  rm -- "${missing_community_output}/${required_community_path}"
+  expect_failure "missing-community-${community_path_index}" node \
+    "${missing_community_output}/build-release.mjs" --validate-only
+  community_path_index=$((community_path_index + 1))
+done
+
+community_drift_output=${temporary_root}/community-drift-output
+cp -R "${output_one}" "${community_drift_output}"
+node "${repo_root}/ci/release_monorepo_transform.mjs" \
+  "${community_drift_output}/SUPPORT.md" \
+  'private vulnerability reporting' \
+  'public vulnerability reporting'
+expect_failure community-drift node \
+  "${community_drift_output}/build-release.mjs" --validate-only
 
 missing_contributing_output=${temporary_root}/missing-contributing-output
 cp -R "${output_one}" "${missing_contributing_output}"
@@ -593,12 +710,14 @@ printf '* text=auto\n' >"${byte_policy_drift_output}/.gitattributes"
 expect_failure byte-policy-drift node \
   "${byte_policy_drift_output}/build-release.mjs" --validate-only
 root_workflow=${output_one}/.github/workflows/ait-release-component-receipts.yml
+latest_alias_workflow=${output_one}/.github/workflows/ait-release-latest-alias.yml
 promotion_workflow=${output_one}/.github/workflows/ait-release-protected-promotion.yml
 endpoint_workflow=${output_one}/.github/workflows/pypi-publish.yml
 test -f "${root_workflow}"
+test -f "${latest_alias_workflow}"
 test -f "${promotion_workflow}"
 test -f "${endpoint_workflow}"
-test "$(find "${output_one}/.github/workflows" -maxdepth 1 -type f | wc -l | tr -d '[:space:]')" = 3
+test "$(find "${output_one}/.github/workflows" -maxdepth 1 -type f | wc -l | tr -d '[:space:]')" = 4
 grep -F '    working-directory: source/ait-core' "${root_workflow}" >/dev/null
 grep -F '          path: release-receipt-matrix.json' \
   "${root_workflow}" >/dev/null
@@ -623,6 +742,7 @@ done
 for endpoint_control in \
   "${output_one}/ci/release_endpoint_publication.sh" \
   "${output_one}/ci/release_endpoint_remote.sh" \
+  "${output_one}/ci/release_latest_alias.sh" \
   "${output_one}/ci/release_operator.sh" \
   "${output_one}/release/endpoint-publication.defaults.json"; do
   test -f "${endpoint_control}"
@@ -630,6 +750,17 @@ done
 grep -F 'endpoint_config_sha256:' "${endpoint_workflow}" >/dev/null
 grep -F 'control/ci/release_operator.sh validate-config' \
   "${endpoint_workflow}" >/dev/null
+# shellcheck disable=SC2016
+for required_latest_alias_text in \
+  'name: ait release latest alias' \
+  '      name: pypi' \
+  'AIT_RELEASE_LATEST_RELEASE_ID: ${{ inputs.release_id }}' \
+  'control/ci/release_latest_alias.sh apply' \
+  'control/ci/release_latest_alias.sh verify' \
+  'AIT_NPM_TOKEN: ${{ secrets.AIT_NPM_TOKEN }}' \
+  'packages: write'; do
+  grep -F -- "${required_latest_alias_text}" "${latest_alias_workflow}" >/dev/null
+done
 cmp "${repo_root}/release/endpoint-publication.defaults.json" \
   "${output_one}/release/endpoint-publication.defaults.json"
 test ! -e "${output_one}/release/endpoint-publication.rc1.json"
@@ -680,6 +811,15 @@ node "${repo_root}/ci/release_monorepo_transform.mjs" \
   '          merge-multiple: false'
 expect_failure promotion-download-drift node \
   "${promotion_download_drift_output}/build-release.mjs" --validate-only
+
+latest_alias_workflow_drift_output=${temporary_root}/latest-alias-workflow-drift-output
+cp -R "${output_one}" "${latest_alias_workflow_drift_output}"
+node "${repo_root}/ci/release_monorepo_transform.mjs" \
+  "${latest_alias_workflow_drift_output}/.github/workflows/ait-release-latest-alias.yml" \
+  '      name: pypi' \
+  '      name: unprotected'
+expect_failure latest-alias-workflow-drift node \
+  "${latest_alias_workflow_drift_output}/build-release.mjs" --validate-only
 
 missing_root_license=${temporary_root}/missing-root-license
 cp -R "${output_one}" "${missing_root_license}"

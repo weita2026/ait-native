@@ -4,17 +4,7 @@ fn init_plain_line_lifecycle_repo() -> TempDir {
         &temp.path().join("src/lib.rs"),
         "pub fn line_lifecycle_fixture() -> &'static str { \"ready\" }\n",
     );
-    json_output(
-        temp.path(),
-        &[
-            "init",
-            "--name",
-            "line-lifecycle-fixture",
-            "--default-line",
-            "main",
-            "--json",
-        ],
-    );
+    json_output(temp.path(), &["init", "--json"]);
     json_output(
         temp.path(),
         &[
@@ -336,8 +326,8 @@ fn native_line_cleanup_text_groups_protection_and_bounds_representative_rows() {
         root,
         &[
             "line",
-            "cleanup-candidates",
-            "--older-than",
+            "cleanup",
+            "--idle-for",
             "1m",
             "--include-protected",
         ],
@@ -350,17 +340,179 @@ fn native_line_cleanup_text_groups_protection_and_bounds_representative_rows() {
     assert!(output.contains("protected examples\nline_name\tlifecycle_kind"));
     assert!(output.contains("representative rows"));
     assert!(output.contains(
-        "more: ait line cleanup-candidates --older-than 1m --include-protected --all"
+        "more: ait line cleanup --idle-for 1m --include-protected --all"
     ));
 
     let bounded = command_output_with_env(
         root,
-        &["line", "cleanup-candidates", "--older-than", "1m"],
+        &["line", "cleanup", "--idle-for", "1m"],
         &[],
     );
     assert!(bounded.status.success());
     let bounded = String::from_utf8_lossy(&bounded.stdout);
     assert!(bounded.contains(
-        "protected detail: ait line cleanup-candidates --older-than 1m --include-protected --all"
+        "protected detail: ait line cleanup --idle-for 1m --include-protected --all"
     ));
+}
+
+#[test]
+fn native_line_cleanup_previews_by_default_and_requires_yes_to_archive() {
+    let temp = init_plain_line_lifecycle_repo();
+    let root = temp.path();
+    let head = json_output(root, &["line", "show", "main", "--json"])
+        ["head_snapshot_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    seed_binary_line(root, "wip/idle-a", &head);
+    seed_binary_line(root, "wip/idle-b", &head);
+
+    let preview = json_output(
+        root,
+        &[
+            "line",
+            "cleanup",
+            "--idle-for",
+            "7d",
+            "--kind",
+            "wip",
+            "--limit",
+            "1",
+            "--include-protected",
+            "--json",
+        ],
+    );
+    assert_eq!(preview["mode"], json!("preview"));
+    assert_eq!(preview["applied"], json!(false));
+    assert_eq!(preview["idle_for"], json!("7d"));
+    assert_eq!(preview["cleanup_kind"], json!("wip"));
+    assert_eq!(preview["candidate_count"], json!(2));
+    assert_eq!(preview["planned_count"], json!(1));
+    assert_eq!(preview["archived_count"], json!(0));
+    assert!(preview["protected_count"].as_u64().unwrap() >= 1);
+    assert_eq!(
+        json_output(root, &["line", "show", "wip/idle-a", "--json"])["status"],
+        json!("active")
+    );
+
+    let applied = json_output(
+        root,
+        &[
+            "line",
+            "cleanup",
+            "--idle-for",
+            "7d",
+            "--kind",
+            "wip",
+            "--limit",
+            "1",
+            "--yes",
+            "--json",
+        ],
+    );
+    assert_eq!(applied["mode"], json!("applied"));
+    assert_eq!(applied["applied"], json!(true));
+    assert_eq!(applied["archived_count"], json!(1));
+    assert_eq!(
+        json_output(root, &["line", "show", "wip/idle-a", "--json"])["status"],
+        json!("archived")
+    );
+    assert_eq!(
+        json_output(root, &["line", "show", "wip/idle-b", "--json"])["status"],
+        json!("active")
+    );
+}
+
+#[test]
+fn native_line_removed_options_fail_before_authority_mutation() {
+    let temp = init_plain_line_lifecycle_repo();
+    let root = temp.path();
+    let before = json_output(root, &["line", "list", "--all", "--json"]);
+
+    for args in [
+        vec!["line", "cleanup-candidates"],
+        vec!["line", "cleanup", "--older-than", "7d"],
+        vec!["line", "cleanup", "--dry-run"],
+        vec!["line", "create", "topic/removed", "--restore"],
+        vec!["line", "create", "topic/removed", "--force"],
+        vec!["line", "merge", "main", "--into", "main"],
+    ] {
+        let error = failed_cli(root, &args);
+        assert!(
+            error.contains("unrecognized subcommand") || error.contains("unexpected argument"),
+            "{args:?}: {error}"
+        );
+    }
+
+    for args in [
+        vec!["line", "cleanup", "--idle-for", "0d", "--json"],
+        vec!["line", "cleanup", "--idle-for=-1d", "--json"],
+        vec!["line", "cleanup", "--limit", "0", "--json"],
+    ] {
+        let error = failed_cli(root, &args);
+        assert!(error.contains("greater than zero"), "{args:?}: {error}");
+    }
+    let malformed = failed_cli(
+        root,
+        &["line", "cleanup", "--idle-for", "7天", "--json"],
+    );
+    assert!(malformed.contains("must look like"), "{malformed}");
+    let overflow = failed_cli(
+        root,
+        &[
+            "line",
+            "cleanup",
+            "--idle-for",
+            "9223372036854775807d",
+            "--json",
+        ],
+    );
+    assert!(overflow.contains("supported duration range"), "{overflow}");
+
+    assert_eq!(
+        json_output(root, &["line", "list", "--all", "--json"]),
+        before
+    );
+}
+
+#[test]
+fn native_line_help_exposes_the_compact_creation_merge_and_cleanup_contract() {
+    let temp = init_plain_line_lifecycle_repo();
+    let root = temp.path();
+
+    let help_text = |args: &[&str]| {
+        let output = command_output_with_env(root, args, &[]);
+        assert!(output.status.success(), "help failed for {args:?}");
+        String::from_utf8(output.stdout).unwrap()
+    };
+
+    let line_help = help_text(&["line", "--help"]);
+    assert!(line_help.contains("cleanup"));
+    assert!(!line_help.contains("cleanup-candidates"));
+
+    let create_help = help_text(&["line", "create", "--help"]);
+    assert!(create_help.contains("--from-snapshot"));
+    assert!(create_help.contains("--switch"));
+    assert!(!create_help.contains("--restore"));
+    assert!(!create_help.contains("--force"));
+
+    let merge_help = help_text(&["line", "merge", "--help"]);
+    assert!(merge_help.contains("--continue"));
+    assert!(merge_help.contains("--abort"));
+    assert!(!merge_help.contains("--into"));
+
+    let cleanup_help = help_text(&["line", "cleanup", "--help"]);
+    for option in [
+        "--idle-for",
+        "--kind",
+        "--limit",
+        "--include-protected",
+        "--all",
+        "--yes",
+        "--json",
+    ] {
+        assert!(cleanup_help.contains(option), "missing {option}: {cleanup_help}");
+    }
+    assert!(!cleanup_help.contains("--older-than"));
+    assert!(!cleanup_help.contains("--dry-run"));
 }

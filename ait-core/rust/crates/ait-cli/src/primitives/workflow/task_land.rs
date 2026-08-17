@@ -215,7 +215,7 @@ pub(super) fn resolve_task_land_change_id(
         {
             let remote_name = normalized_text(remote_name).unwrap_or_else(|| "origin".to_string());
             return Err(format!(
-                "Local change {local_change_id} is completed but has no ready remote Patchset. Run `ait workflow ready {local_change_id} --apply --remote {remote_name}` to publish its consecutive local workflow history and CI-test the single aggregate Patchset, then retry `ait task land {local_change_id} --remote {remote_name}`."
+                "Local change {local_change_id} is completed but has no ready remote Patchset. Run `ait workflow ready {local_change_id} --apply --remote {remote_name}` to publish its consecutive local workflow history and CI-test the single aggregate Patchset, then hand it to a reviewer running `ait workflow land {local_change_id} --apply --remote {remote_name}`."
             ));
         }
     }
@@ -1154,22 +1154,9 @@ pub(in crate::primitives) fn task_land_defer_bound_cleanup(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 pub fn task_land_apply<F>(
     repo: &RepoRuntime,
     task_or_change_id: &str,
-    snapshot_message: Option<&str>,
-    summary: Option<&str>,
-    tests: Option<&str>,
-    lint: Option<&str>,
-    security: Option<&str>,
-    license: Option<&str>,
-    author_mode: Option<&str>,
-    model: Option<&str>,
-    reviewer: Option<&str>,
-    review_message: Option<&str>,
-    target: Option<&str>,
-    mode: &str,
     remote_name: Option<&str>,
     mut progress: Option<F>,
 ) -> Result<JsonValue, String>
@@ -1178,18 +1165,6 @@ where
 {
     let _task_land_range = perfetto_range!("ait.task_land.apply");
     let total_started = Instant::now();
-    let _legacy_ready_arguments = (
-        snapshot_message,
-        summary,
-        tests,
-        lint,
-        security,
-        license,
-        author_mode,
-        model,
-        reviewer,
-        review_message,
-    );
     let preflight_started = Instant::now();
     let task_or_change_ref = task_land_exact_atomic_reference(repo, task_or_change_id)?;
     let task_hint = task_land_reference_task_hint(repo, &task_or_change_ref);
@@ -1205,7 +1180,7 @@ where
     let (remote_row, repo_name) = remote_context(repo, remote_name, None)?;
     let mut closeout_remote = http_closeout_remote(repo, &remote_row)?;
     let idempotency_key =
-        task_land_atomic_idempotency_key(repo, &task_or_change_ref, target, mode)?;
+        task_land_atomic_idempotency_key(repo, &task_or_change_ref, Some("main"), "direct")?;
     let preflight_elapsed = elapsed_ms(preflight_started);
 
     workflow_progress_emit(
@@ -1228,8 +1203,8 @@ where
         closeout_remote
             .submit_task_land(
                 &task_or_change_ref,
-                target,
-                mode,
+                Some("main"),
+                "direct",
                 &idempotency_key,
                 Some(&repo_name),
             )
@@ -1377,22 +1352,9 @@ where
     Ok(output)
 }
 
-#[allow(clippy::too_many_arguments)]
 pub fn task_land_apply_scoped<F>(
     repo: &RepoRuntime,
     task_or_change_id: &str,
-    snapshot_message: Option<&str>,
-    summary: Option<&str>,
-    tests: Option<&str>,
-    lint: Option<&str>,
-    security: Option<&str>,
-    license: Option<&str>,
-    author_mode: Option<&str>,
-    model: Option<&str>,
-    reviewer: Option<&str>,
-    review_message: Option<&str>,
-    target: Option<&str>,
-    mode: &str,
     use_local_scope: bool,
     remote_name: Option<&str>,
     progress: Option<F>,
@@ -1404,8 +1366,8 @@ where
         return task_land_apply_local(
             repo,
             task_or_change_id,
-            snapshot_message,
-            target,
+            None,
+            Some("main"),
             None,
             None::<fn(&JsonValue) -> Result<(), String>>,
         )?
@@ -1415,22 +1377,5 @@ where
             )
         });
     }
-    task_land_apply(
-        repo,
-        task_or_change_id,
-        snapshot_message,
-        summary,
-        tests,
-        lint,
-        security,
-        license,
-        author_mode,
-        model,
-        reviewer,
-        review_message,
-        target,
-        mode,
-        remote_name,
-        progress,
-    )
+    task_land_apply(repo, task_or_change_id, remote_name, progress)
 }

@@ -283,33 +283,18 @@ pub(super) fn build_http_client_manager(
 
 pub(super) fn plan_sync_http_headers(request: &SyncRequest) -> BTreeMap<String, String> {
     plan_sync_http_headers_from_values(
-        env_first(&["AIT_NATIVE_ACTOR", "AIT_ACTOR"]),
-        env_first(&["AIT_NATIVE_ACTOR_TYPE", "AIT_ACTOR_TYPE"]),
-        env_first(&["AIT_NATIVE_ROLES", "AIT_ROLES"]),
-        env_first(&["AIT_NATIVE_REPOS", "AIT_REPOS"]),
+        env_first(&[crate::environment_contract::names::AIT_NATIVE_ACTOR]),
         request.created_by.as_deref(),
     )
 }
 
 pub(super) fn plan_sync_http_headers_from_values(
     actor: Option<String>,
-    actor_type: Option<String>,
-    roles: Option<String>,
-    repos: Option<String>,
     fallback_actor: Option<&str>,
 ) -> BTreeMap<String, String> {
     let mut headers = BTreeMap::new();
     if let Some(value) = actor.or_else(|| normalize_optional_text(fallback_actor)) {
         headers.insert("X-AIT-Actor".to_string(), value);
-    }
-    if let Some(value) = actor_type {
-        headers.insert("X-AIT-Actor-Type".to_string(), value);
-    }
-    if let Some(value) = roles {
-        headers.insert("X-AIT-Roles".to_string(), value);
-    }
-    if let Some(value) = repos {
-        headers.insert("X-AIT-Repos".to_string(), value);
     }
     headers
 }

@@ -1,7 +1,7 @@
 use super::*;
 
 pub(crate) fn active_workspace_runtime_root(repo_root: &Path) -> Option<String> {
-    let raw = std::env::var("AIT_RUNTIME_DATA").ok()?;
+    let raw = std::env::var(crate::environment_contract::names::AIT_RUNTIME_DATA).ok()?;
     let trimmed = raw.trim();
     if trimmed.is_empty() {
         return None;

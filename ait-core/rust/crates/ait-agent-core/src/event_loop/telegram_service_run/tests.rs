@@ -327,7 +327,7 @@ fn stop_and_clock_observation_failures_are_secret_safe_and_prevent_cycle_executi
     let stop_cycle = ScriptedCycle::new(Vec::new());
     let stop_runtime = ScriptedRuntime::new(
         Vec::new(),
-        vec![Err("termination-context-secret".to_string())],
+        vec![Err("shutdown-observation-secret".to_string())],
     );
     let stop_outcome = execute(&stop_cycle, &stop_runtime, &request(2));
     assert_eq!(stop_outcome["stop_reason"], "stop_observation_failed");
@@ -336,7 +336,7 @@ fn stop_and_clock_observation_failures_are_secret_safe_and_prevent_cycle_executi
     assert_eq!(stop_outcome["cycle_count"], 0);
     assert!(!stop_outcome
         .to_string()
-        .contains("termination-context-secret"));
+        .contains("shutdown-observation-secret"));
 
     let clock_cycle = ScriptedCycle::new(Vec::new());
     let clock_runtime =

@@ -1,5 +1,4 @@
 use serde_json::{Map as JsonMap, Value as JsonValue};
-use std::env;
 
 use crate::foundation::transport::normalize_async_job_payload;
 
@@ -10,7 +9,6 @@ const NORMAL_CI_PRIORITY: i64 = 30;
 const FULL_TEST_PRIORITY: i64 = 20;
 const MAIN_SEED_PRIORITY: i64 = 80;
 const MAINTENANCE_PRIORITY: i64 = 10;
-const FULL_TEST_JOB_CPU_TOKENS_ENV: &str = "AIT_SERVER_FULL_TEST_JOB_CPU_TOKENS";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SchedulerDeploymentPosture {
@@ -19,13 +17,6 @@ pub enum SchedulerDeploymentPosture {
 }
 
 impl SchedulerDeploymentPosture {
-    pub fn from_environment() -> Self {
-        std::env::var("AIT_SERVER_SCHEDULER_POSTURE")
-            .ok()
-            .and_then(|value| Self::parse(&value))
-            .unwrap_or(Self::LocalCoResident)
-    }
-
     pub fn parse(value: &str) -> Option<Self> {
         match value.trim().to_ascii_lowercase().replace('-', "_").as_str() {
             "local" | "local_co_resident" | "local_coresident" => Some(Self::LocalCoResident),
@@ -50,14 +41,7 @@ pub struct SchedulerPolicy {
 
 impl SchedulerPolicy {
     pub fn detected_host_default() -> Self {
-        Self::from_environment()
-    }
-
-    pub fn from_environment() -> Self {
-        Self::for_detected_host_with_full_test_job_cpu_tokens(
-            SchedulerDeploymentPosture::from_environment(),
-            positive_env_usize(FULL_TEST_JOB_CPU_TOKENS_ENV),
-        )
+        Self::for_detected_host(SchedulerDeploymentPosture::LocalCoResident)
     }
 
     pub fn for_detected_host(posture: SchedulerDeploymentPosture) -> Self {
@@ -140,13 +124,6 @@ pub fn detected_host_cpu_cores() -> usize {
     std::thread::available_parallelism()
         .map(|value| value.get())
         .unwrap_or(1)
-}
-
-fn positive_env_usize(name: &str) -> Option<usize> {
-    env::var(name)
-        .ok()
-        .and_then(|value| value.trim().parse::<usize>().ok())
-        .filter(|value| *value > 0)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

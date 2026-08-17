@@ -12,7 +12,7 @@ use std::sync::{Mutex, OnceLock};
 use std::thread;
 use std::time::Instant;
 
-const PERFETTO_TRACE_PATH_ENV: &str = "AIT_PERFETTO_TRACE";
+const PERFETTO_TRACE_PATH_ENV: &str = crate::environment_contract::names::AIT_PERFETTO_TRACE;
 
 #[derive(Debug)]
 struct TraceEvent {

@@ -758,7 +758,7 @@ fn task_audit_target_info_accepts_line_and_snapshot_store_traits() {
 }
 
 #[test]
-fn task_audit_decisions_accept_local_stores_and_task_record_line_snapshot_remote_traits() {
+fn task_audit_local_projection_uses_only_local_authority() {
     let tmp = tempdir().expect("task audit tempdir");
     let repo_root = tmp.path();
     init_repo(&InitRequest {
@@ -805,21 +805,18 @@ fn task_audit_decisions_accept_local_stores_and_task_record_line_snapshot_remote
     )
     .expect("create local draft audit change");
 
-    let mut local_draft_remote = FakeTaskAuditRemote::default();
-    let local_draft_audit = task_audit_with_local_stores_and_task_remote(
+    let task = task_local_read_with_task_store(&task_store, "LCT-1").expect("local task");
+    let target = local_task_audit_target_info(&repo, "main").expect("local main target");
+    let local_draft_audit = infer_local_task_audit_with_change_store(
         &repo,
-        &task_store,
         &change_store,
-        &mut local_draft_remote,
-        "fixture-ait",
+        &task,
         "LCT-1",
         "main",
+        &target,
     )
     .expect("local draft audit");
-    assert_eq!(
-        local_draft_audit["audit_source"]["mode"],
-        json!("local_draft")
-    );
+    assert_eq!(local_draft_audit["audit_source"]["mode"], json!("local"));
     assert_eq!(
         local_draft_audit["audit_source"]["remote_task_missing"],
         json!(false)
@@ -833,52 +830,6 @@ fn task_audit_decisions_accept_local_stores_and_task_record_line_snapshot_remote
         local_draft_audit["task_land_closeout"]["plan_closeout_policy"],
         json!("automatic_exact_local_when_final_task_completed")
     );
-    assert!(local_draft_remote.task_audit_requests.is_empty());
-
-    task_local_create_with_task_store(
-        &task_store,
-        "fixture-ait",
-        "Published missing remote audit task",
-        "Exercise remote missing fallback",
-        Some("LCT"),
-        None,
-        None,
-        None,
-    )
-    .expect("create published fallback task");
-    task_local_mark_published_with_task_store(&task_store, "LCT-2", Some("origin"), Some("RCT-2"))
-        .expect("mark fallback task published");
-    change_local_create_with_change_store(
-        &change_store,
-        "fixture-ait",
-        "LCT-2",
-        "Fallback audit change",
-        "main",
-        Some("LCC"),
-        None,
-    )
-    .expect("create fallback audit change");
-
-    let mut missing_remote = FakeTaskAuditRemote::default();
-    let fallback_audit = task_audit_with_local_stores_and_task_remote(
-        &repo,
-        &task_store,
-        &change_store,
-        &mut missing_remote,
-        "fixture-ait",
-        "LCT-2",
-        "main",
-    )
-    .expect("remote missing fallback audit");
-    assert_eq!(
-        fallback_audit["audit_source"]["mode"],
-        json!("local_fallback")
-    );
-    assert_eq!(
-        fallback_audit["changes"][0]["change"]["title"],
-        json!("Fallback audit change")
-    );
-    assert_eq!(missing_remote.task_audit_requests, vec!["RCT-2"]);
 }
 
 #[test]
@@ -918,139 +869,4 @@ fn task_remote_audit_read_accepts_task_record_remote_trait() {
         task_remote_audit_read_with_task_remote(missing_port, "fixture-ait", "RCT-AUDIT", "main")
             .expect_err("missing audit should fail");
     assert!(err.contains("missing task audit"));
-}
-
-#[test]
-fn task_audit_remote_helpers_accept_task_record_line_snapshot_remote_traits() {
-    let mut remote = FakeTaskAuditRemote {
-        tasks: BTreeMap::from([(
-            "RCT-1".to_string(),
-            json!({
-                "task_id": "RCT-1",
-                "repo_name": "fixture-ait"
-            }),
-        )]),
-        remote_snapshots: BTreeMap::from([
-            (
-                "SNP-MERGE".to_string(),
-                json!({
-                    "repo_name": "fixture-ait",
-                    "snapshot_id": "SNP-MERGE",
-                    "parent_snapshot_ids": ["SNP-2", "SNP-RIGHT"],
-                    "primary_parent_snapshot_id": "SNP-2",
-                    "parent_snapshot_id": "SNP-2"
-                }),
-            ),
-            (
-                "SNP-RIGHT".to_string(),
-                json!({
-                    "repo_name": "fixture-ait",
-                    "snapshot_id": "SNP-RIGHT",
-                    "parent_snapshot_ids": ["SNP-1"],
-                    "primary_parent_snapshot_id": "SNP-1",
-                    "parent_snapshot_id": "SNP-1"
-                }),
-            ),
-            (
-                "SNP-2".to_string(),
-                json!({
-                    "repo_name": "fixture-ait",
-                    "snapshot_id": "SNP-2",
-                    "parent_snapshot_id": "SNP-1"
-                }),
-            ),
-            (
-                "SNP-1".to_string(),
-                json!({
-                    "repo_name": "fixture-ait",
-                    "snapshot_id": "SNP-1"
-                }),
-            ),
-        ]),
-        lines: vec![json!({
-            "repo_name": "fixture-ait",
-            "line_name": "main",
-            "status": "active",
-            "head_snapshot_id": "SNP-2"
-        })],
-        ..Default::default()
-    };
-
-    let remote_target_line =
-        task_audit_remote_target_line_read_with_task_remote(&mut remote, "fixture-ait", "main")
-            .expect("read remote audit target line");
-    assert_eq!(remote_target_line["head_snapshot_id"], json!("SNP-2"));
-
-    let ancestry = remote_snapshot_ancestry(&mut remote, "fixture-ait", Some("SNP-2"))
-        .expect("remote ancestry");
-
-    assert_eq!(ancestry, vec!["SNP-1".to_string(), "SNP-2".to_string()]);
-    let merge_ancestry = remote_snapshot_ancestry(&mut remote, "fixture-ait", Some("SNP-MERGE"))
-        .expect("remote merge ancestry");
-    assert_eq!(
-        merge_ancestry,
-        vec!["SNP-1", "SNP-2", "SNP-RIGHT", "SNP-MERGE"]
-    );
-    assert!(!remote_task_missing(&mut remote, "fixture-ait", "RCT-1"));
-    assert!(remote_task_missing(
-        &mut remote,
-        "fixture-ait",
-        "RCT-MISSING"
-    ));
-
-    let err = task_audit_remote_target_line_read_with_task_remote(
-        &mut remote,
-        "fixture-ait",
-        "feature/missing",
-    )
-    .expect_err("missing remote target line should fail");
-    assert!(err.contains("Unknown line"));
-}
-
-#[test]
-fn task_audit_remote_snapshot_metadata_read_accepts_task_remote_trait() {
-    let mut remote = FakeWorkspaceTaskRemote {
-        remote_snapshots: BTreeMap::from([
-            (
-                "SNP-2".to_string(),
-                json!({
-                    "repo_name": "fixture-ait",
-                    "snapshot_id": "SNP-2",
-                    "parent_snapshot_id": "SNP-1"
-                }),
-            ),
-            (
-                "SNP-WRONG-REPO".to_string(),
-                json!({
-                    "repo_name": "other-ait",
-                    "snapshot_id": "SNP-WRONG-REPO"
-                }),
-            ),
-        ]),
-        ..Default::default()
-    };
-
-    let snapshot = task_audit_remote_snapshot_metadata_read_with_task_remote(
-        &mut remote,
-        "fixture-ait",
-        "SNP-2",
-    )
-    .expect("read task audit remote snapshot metadata");
-    assert_eq!(snapshot["parent_snapshot_id"], json!("SNP-1"));
-
-    let err = task_audit_remote_snapshot_metadata_read_with_task_remote(
-        &mut remote,
-        "fixture-ait",
-        "SNP-WRONG-REPO",
-    )
-    .expect_err("repo mismatch should fail");
-    assert!(err.contains("unexpected repository"));
-
-    let err = task_audit_remote_snapshot_metadata_read_with_task_remote(
-        &mut remote,
-        "fixture-ait",
-        "SNP-MISSING",
-    )
-    .expect_err("missing snapshot should fail");
-    assert!(err.contains("Unknown snapshot"));
 }

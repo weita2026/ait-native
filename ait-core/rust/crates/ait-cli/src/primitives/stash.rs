@@ -244,6 +244,20 @@ pub fn stash_pop(repo: &RepoRuntime, stash_id: &str, force: bool) -> Result<Json
     stash_apply_inner(repo, stash_id, force, true)
 }
 
+pub(super) fn guard_stash_source_line(
+    stash_id: &str,
+    source_line_name: &str,
+    current_line_name: &str,
+    operation: &str,
+) -> Result<(), String> {
+    if source_line_name == current_line_name {
+        return Ok(());
+    }
+    Err(format!(
+        "Cannot {operation} stash {stash_id}: it was saved from Line {source_line_name}, but the current Line is {current_line_name}. Switch to Line {source_line_name} before restoring it. --force only overwrites unsaved managed-workspace changes and cannot bypass this Line check."
+    ))
+}
+
 fn stash_apply_inner(
     repo: &RepoRuntime,
     stash_id: &str,
@@ -255,7 +269,10 @@ fn stash_apply_inner(
     guard_no_active_line_merge(repo, None, "applying a stash")?;
     let stash = stash_show(repo, stash_id)?;
     let snapshot_id = required_string_field(&stash, "snapshot_id")?;
+    let source_line_name = required_string_field(&stash, "source_line_name")?;
     let line_name = repo.current_line_name()?;
+    let operation = if drop { "pop" } else { "apply" };
+    guard_stash_source_line(stash_id, &source_line_name, &line_name, operation)?;
     let line_head_before = local_line_head_snapshot_id(repo, &line_name)?;
     restore_workspace_all(
         repo,

@@ -13,21 +13,22 @@ use super::change_flow::{
 };
 use super::line::{
     line_show_with_line_store, remote_line_archive_with_task_remote,
-    remote_line_list_with_task_remote, repo_status_storage_counts_with_store,
+    remote_line_list_with_task_remote, repo_status_snapshot_count_with_store,
 };
 use super::queue::{
-    queue_remote_change_rows_with_task_remote, queue_remote_reads_with_task_remote,
-    queue_remote_reviewer_inbox_with_task_remote, queue_remote_summary_bundle_with_task_remote,
-    queue_remote_task_queue_with_task_remote,
+    queue_remote_reads_with_task_remote, queue_remote_reviewer_inbox_with_task_remote,
+    queue_remote_summary_bundle_with_task_remote, queue_remote_task_queue_with_task_remote,
 };
 use super::stash::{
-    drop_stash_record_with_stash_store, stash_list_with_stash_store, stash_show_with_stash_store,
+    drop_stash_record_with_stash_store, guard_stash_source_line, stash_list_with_stash_store,
+    stash_show_with_stash_store,
 };
 use super::task::{
+    infer_local_task_audit_with_change_store, local_task_audit_target_info,
     local_task_audit_target_info_with_stores, task_audit_local_change_rows_with_change_store,
-    task_audit_with_local_stores_and_task_remote, task_remote_audit_read_with_task_remote,
-    task_remote_create_with_task_remote, task_remote_list_with_task_remote,
-    task_remote_read_with_task_remote, validate_remote_task_create_response,
+    task_remote_audit_read_with_task_remote, task_remote_create_with_task_remote,
+    task_remote_list_with_task_remote, task_remote_read_with_task_remote,
+    validate_remote_task_create_response,
 };
 use super::workflow::{
     task_land_local_change_id_with_change_store, task_land_remote_task_read_with_task_remote,
@@ -88,14 +89,13 @@ use ait_core::task_workflow_http_adapter::{
     TaskWorkflowPatchsetCiRunner, TaskWorkflowPatchsetCiStatusReader, TaskWorkflowPatchsetLister,
     TaskWorkflowPatchsetPublisher, TaskWorkflowPatchsetReader, TaskWorkflowPatchsetSelector,
     TaskWorkflowPolicyEvaluator, TaskWorkflowPolicyReader, TaskWorkflowPolicyWaiverCreator,
-    TaskWorkflowQueueChangeLister, TaskWorkflowQueueSummaryBundleReader,
-    TaskWorkflowRemoteChangeCloser, TaskWorkflowRemoteChangeCreator,
-    TaskWorkflowRemoteChangeDetailReader, TaskWorkflowRemoteChangeLister,
-    TaskWorkflowRemoteChangeReader, TaskWorkflowRemoteTaskAuditReader,
-    TaskWorkflowRemoteTaskCloser, TaskWorkflowRemoteTaskCreator, TaskWorkflowRemoteTaskLister,
-    TaskWorkflowRemoteTaskReader, TaskWorkflowRepoJobLister, TaskWorkflowRepositoryEnsurer,
-    TaskWorkflowRepositoryReader, TaskWorkflowReviewLister, TaskWorkflowReviewRecorder,
-    TaskWorkflowReviewRequester, TaskWorkflowReviewerInboxReader,
+    TaskWorkflowQueueSummaryBundleReader, TaskWorkflowRemoteChangeCloser,
+    TaskWorkflowRemoteChangeCreator, TaskWorkflowRemoteChangeDetailReader,
+    TaskWorkflowRemoteChangeLister, TaskWorkflowRemoteChangeReader,
+    TaskWorkflowRemoteTaskAuditReader, TaskWorkflowRemoteTaskCloser, TaskWorkflowRemoteTaskCreator,
+    TaskWorkflowRemoteTaskLister, TaskWorkflowRemoteTaskReader, TaskWorkflowRepoJobLister,
+    TaskWorkflowRepositoryEnsurer, TaskWorkflowRepositoryReader, TaskWorkflowReviewLister,
+    TaskWorkflowReviewRecorder, TaskWorkflowReviewRequester, TaskWorkflowReviewerInboxReader,
     TaskWorkflowSnapshotExistenceReader, TaskWorkflowSnapshotMetadataReader,
     TaskWorkflowTaskQueueReader, TaskWorkflowTaskRecordRemote, TaskWorkflowZstdPackReader,
     TaskWorkflowZstdPackUploader,
@@ -165,7 +165,6 @@ struct FakeQueueRemote {
     queue_summary_error: Option<String>,
     task_queue: Option<JsonValue>,
     reviewer_inbox: Option<JsonValue>,
-    changes: Vec<JsonValue>,
 }
 
 #[derive(Debug, Default)]
@@ -219,15 +218,6 @@ struct FakeTaskRecordRemote {
     repository: Option<JsonValue>,
     ensured_repositories: Vec<JsonValue>,
     task_create_repository_present: Vec<bool>,
-}
-
-#[derive(Debug, Default)]
-struct FakeTaskAuditRemote {
-    tasks: BTreeMap<String, JsonValue>,
-    task_audit: Option<JsonValue>,
-    task_audit_requests: Vec<String>,
-    lines: Vec<JsonValue>,
-    remote_snapshots: BTreeMap<String, JsonValue>,
 }
 
 #[derive(Debug, Default)]
@@ -504,12 +494,6 @@ impl TaskWorkflowQueueSummaryBundleReader for FakeQueueRemote {
     }
 }
 
-impl TaskWorkflowQueueChangeLister for FakeQueueRemote {
-    fn list_changes(&mut self, _repo_name: &str) -> TaskWorkflowHttpClientResult<Vec<JsonValue>> {
-        Ok(self.changes.clone())
-    }
-}
-
 #[derive(Debug, Default)]
 struct FakeTaskQueueReader;
 
@@ -553,18 +537,6 @@ impl TaskWorkflowQueueSummaryBundleReader for FakeQueueSummaryBundleReader {
             "status": status,
             "summary": true,
         }))
-    }
-}
-
-#[derive(Debug, Default)]
-struct FakeQueueChangeLister;
-
-impl TaskWorkflowQueueChangeLister for FakeQueueChangeLister {
-    fn list_changes(&mut self, repo_name: &str) -> TaskWorkflowHttpClientResult<Vec<JsonValue>> {
-        Ok(vec![json!({
-            "repo_name": repo_name,
-            "change_id": "RCC-1",
-        })])
     }
 }
 
@@ -1781,69 +1753,6 @@ impl TaskWorkflowRepositoryReader for FakeTaskRecordRemote {
     }
 }
 
-impl TaskWorkflowRemoteTaskReader for FakeTaskAuditRemote {
-    fn get_task(
-        &mut self,
-        task_id: &str,
-        _repo_name: Option<&str>,
-    ) -> TaskWorkflowHttpClientResult<JsonValue> {
-        self.tasks.get(task_id).cloned().ok_or_else(|| {
-            TaskWorkflowHttpClientError::Remote(format!(
-                "GET task {task_id} failed: 404 Unknown task"
-            ))
-        })
-    }
-}
-
-impl TaskWorkflowRemoteTaskLister for FakeTaskAuditRemote {
-    fn list_tasks(&mut self, _repo_name: &str) -> TaskWorkflowHttpClientResult<Vec<JsonValue>> {
-        Ok(self.tasks.values().cloned().collect())
-    }
-}
-
-impl TaskWorkflowRemoteTaskAuditReader for FakeTaskAuditRemote {
-    fn read_task_audit(
-        &mut self,
-        _repo_name: &str,
-        task_id: &str,
-        _target_line: &str,
-    ) -> TaskWorkflowHttpClientResult<JsonValue> {
-        self.task_audit_requests.push(task_id.to_string());
-        self.task_audit
-            .clone()
-            .ok_or_else(|| TaskWorkflowHttpClientError::Remote("missing task audit".to_string()))
-    }
-}
-
-impl TaskWorkflowRemoteTaskCreator for FakeTaskAuditRemote {
-    fn create_task(
-        &mut self,
-        repo_name: &str,
-        title: &str,
-        intent: &str,
-        task_id: Option<&str>,
-        plan_id: Option<&str>,
-        origin_plan_revision_id: Option<&str>,
-        plan_item_ref: Option<&str>,
-    ) -> TaskWorkflowHttpClientResult<JsonValue> {
-        let resolved_task_id = task_id
-            .map(str::to_string)
-            .unwrap_or_else(|| format!("RCT-{}", self.tasks.len() + 1));
-        let task = json!({
-            "repo_name": repo_name,
-            "task_id": resolved_task_id,
-            "title": title,
-            "intent": intent,
-            "status": "open",
-            "plan_id": plan_id,
-            "origin_plan_revision_id": origin_plan_revision_id,
-            "plan_item_ref": plan_item_ref,
-        });
-        self.tasks.insert(resolved_task_id, task.clone());
-        Ok(task)
-    }
-}
-
 impl TaskWorkflowRemoteTaskReader for FakeRemoteTaskReaderOnly {
     fn get_task(
         &mut self,
@@ -1901,109 +1810,6 @@ impl TaskWorkflowRemoteTaskCreator for FakeRemoteTaskCreatorOnly {
             "origin_plan_revision_id": origin_plan_revision_id,
             "plan_item_ref": plan_item_ref,
         }))
-    }
-}
-
-impl TaskWorkflowLineagePayloadBuilder for FakeTaskAuditRemote {
-    fn change_lineage_payload(
-        &self,
-        base_line: &str,
-        line_row: Option<&JsonValue>,
-    ) -> Result<JsonValue, String> {
-        let fork_snapshot_id = line_row.and_then(|row| string_field(row, "head_snapshot_id"));
-        Ok(json!({
-            "fork_snapshot_id": fork_snapshot_id,
-            "forked_from_line": base_line
-        }))
-    }
-}
-
-impl TaskWorkflowLineReader for FakeTaskAuditRemote {
-    fn get_line(
-        &mut self,
-        _repo_name: &str,
-        line_name: &str,
-    ) -> TaskWorkflowHttpClientResult<JsonValue> {
-        self.lines
-            .iter()
-            .find(|row| string_field(row, "line_name").as_deref() == Some(line_name))
-            .cloned()
-            .ok_or_else(|| {
-                TaskWorkflowHttpClientError::Remote(format!(
-                    "GET line {line_name} failed: 404 Unknown line"
-                ))
-            })
-    }
-}
-
-impl TaskWorkflowLineLister for FakeTaskAuditRemote {
-    fn list_lines(&mut self, _repo_name: &str) -> TaskWorkflowHttpClientResult<Vec<JsonValue>> {
-        Ok(self.lines.clone())
-    }
-}
-
-impl TaskWorkflowLineHeadUpdater for FakeTaskAuditRemote {
-    fn update_remote_line(
-        &mut self,
-        _repo_name: &str,
-        line_name: &str,
-        _head_snapshot_id: Option<&str>,
-        _expected_head_snapshot_id: Option<&str>,
-    ) -> TaskWorkflowHttpClientResult<JsonValue> {
-        Err(TaskWorkflowHttpClientError::Remote(format!(
-            "update line {line_name} is unused by task audit helper tests"
-        )))
-    }
-}
-
-impl TaskWorkflowLineCloser for FakeTaskAuditRemote {
-    fn close_line(
-        &mut self,
-        _repo_name: &str,
-        line_name: &str,
-        _status: &str,
-    ) -> TaskWorkflowHttpClientResult<JsonValue> {
-        Err(TaskWorkflowHttpClientError::Remote(format!(
-            "close line {line_name} is unused by task audit helper tests"
-        )))
-    }
-}
-
-impl TaskWorkflowZstdPackUploader for FakeTaskAuditRemote {}
-
-impl TaskWorkflowSnapshotMetadataReader for FakeTaskAuditRemote {
-    fn get_remote_snapshot(
-        &mut self,
-        _repo_name: &str,
-        snapshot_id: &str,
-        _include_content: bool,
-        _path: Option<&str>,
-    ) -> TaskWorkflowHttpClientResult<JsonValue> {
-        self.remote_snapshots
-            .get(snapshot_id)
-            .cloned()
-            .ok_or_else(|| {
-                TaskWorkflowHttpClientError::Remote(format!(
-                    "GET snapshot {snapshot_id} failed: 404 Unknown snapshot"
-                ))
-            })
-    }
-}
-
-impl TaskWorkflowZstdPackReader for FakeTaskAuditRemote {}
-
-impl TaskWorkflowSnapshotExistenceReader for FakeTaskAuditRemote {
-    fn get_remote_snapshots_existence(
-        &mut self,
-        _repo_name: &str,
-        snapshot_ids: &[String],
-    ) -> TaskWorkflowHttpClientResult<JsonValue> {
-        let present = snapshot_ids
-            .iter()
-            .filter(|snapshot_id| self.remote_snapshots.contains_key(*snapshot_id))
-            .cloned()
-            .collect::<Vec<_>>();
-        Ok(json!({"present": present}))
     }
 }
 
@@ -2973,12 +2779,6 @@ impl TaskWorkflowRemoteChangeLister for FakeWorkspaceTaskRemote {
     }
 }
 
-impl TaskWorkflowQueueChangeLister for FakeWorkspaceTaskRemote {
-    fn list_changes(&mut self, _repo_name: &str) -> TaskWorkflowHttpClientResult<Vec<JsonValue>> {
-        Ok(self.changes.clone())
-    }
-}
-
 impl TaskWorkflowRemoteChangeDetailReader for FakeWorkspaceTaskRemote {
     fn get_change_detail(
         &mut self,
@@ -3237,11 +3037,8 @@ fn task_bootstrap_reuses_corrected_task_feature_line_without_lifetime_inference(
         TaskStartBootstrapRequest {
             task: &task,
             change: Some(&change),
-            title_hint: "Reuse corrected Line",
-            intent_hint: "Trust the corrected Task-derived Line mapping",
             base_line_name: "main",
             local: true,
-            remote_name: None,
             worktree_name: "rct-line-reuse",
             worktree_path: worktree_tmp.path().to_str().expect("worktree path"),
             worktree_alias_path: None,
@@ -3294,11 +3091,8 @@ fn task_bootstrap_checks_nonempty_target_before_creating_feature_line() {
         TaskStartBootstrapRequest {
             task: &task,
             change: Some(&change),
-            title_hint: "Path collision",
-            intent_hint: "Do not leave an orphan Line",
             base_line_name: "main",
             local: true,
-            remote_name: None,
             worktree_name: "rct-path-collision",
             worktree_path: worktree_tmp.path().to_str().expect("worktree path"),
             worktree_alias_path: None,
@@ -3402,5 +3196,4 @@ mod stash_ports;
 mod task_workspace_ports;
 mod workflow_closeout_ports;
 mod workflow_ready_worktree;
-mod workflow_tier;
 mod workspace_ci_contracts;

@@ -5,8 +5,8 @@ use crate::remote_repository::{
     ensure_or_read_remote_repository_authority_for_url, local_policy_requires_tests,
     remote_repository_index,
 };
-use crate::repository_retirement::enforce_fresh_registration_archive_policy;
-use crate::runtime::RepoRuntime;
+use crate::repository_retirement::ensure_fresh_registration_has_no_archive;
+use crate::runtime::{canonical_repository_directory_name, RepoRuntime};
 use crate::workspace_lock::run_locked_workspace_command;
 use ait_core::json_support::{json, JsonMap, JsonValue};
 use ait_core::remote_store::{
@@ -26,9 +26,7 @@ const PATCH_CI_PLACEHOLDER_COMMAND: &str = "CONFIGURE_PATCHSET_TEST_COMMAND";
 pub struct RemoteAddRequest {
     pub name: String,
     pub url: String,
-    pub repo_name: Option<String>,
     pub make_default: bool,
-    pub discard_export: bool,
 }
 
 pub fn remote_add(repo: &RepoRuntime, request: &RemoteAddRequest) -> Result<JsonValue, String> {
@@ -44,28 +42,25 @@ fn remote_add_unlocked(
 ) -> Result<JsonValue, String> {
     let name = normalize_required_text(&request.name, "remote name")?;
     let url = normalize_required_text(&request.url, "remote URL")?;
-    let repo_name = normalize_optional_text(request.repo_name.as_deref());
     let store = repo.remote_store()?;
     ensure_remote_name_available_with_remote_store(&store, &name)?;
-    let discarded_export =
-        enforce_fresh_registration_archive_policy(repo, &name, request.discard_export)?;
+    ensure_fresh_registration_has_no_archive(repo, &name)?;
+    let repo_name = canonical_repository_directory_name(&repo.authoritative_repo_root())?;
     let normalized_request = RemoteAddRequest {
         name: name.clone(),
         url: url.clone(),
-        repo_name: repo_name.clone(),
         make_default: request.make_default,
-        discard_export: request.discard_export,
     };
     let patch_ci = prepare_remote_registration_patch_ci(repo, &normalized_request)?;
-    let resolved_repo_name = repo_name.clone().unwrap_or_else(|| repo.repo_name());
-    let remote_repository =
-        ensure_or_read_remote_repository_authority_for_url(repo, &url, &resolved_repo_name)
-            .map_err(|err| {
-                format!(
-                    "Remote repository {} could not be ensured for remote {}: {}",
-                    resolved_repo_name, name, err
-                )
-            })?;
+    let remote_repository = ensure_or_read_remote_repository_authority_for_url(
+        repo, &url, &repo_name,
+    )
+    .map_err(|err| {
+        format!(
+            "Remote repository {} could not be ensured for remote {}: {}",
+            repo_name, name, err
+        )
+    })?;
     let repository_index = remote_repository_index(&remote_repository)?;
     if repo.repository_index().is_none() {
         persist_repository_index(repo, repository_index)?;
@@ -77,7 +72,7 @@ fn remote_add_unlocked(
         &RemoteAddRecord {
             name: name.clone(),
             url,
-            repo_name,
+            repo_name: Some(repo_name),
             make_default: request.make_default,
             created_at: now,
         },
@@ -92,13 +87,6 @@ fn remote_add_unlocked(
         .as_object_mut()
         .ok_or_else(|| "Remote add payload must be an object.".to_string())?
         .insert("patch_ci".to_string(), patch_ci);
-    payload
-        .as_object_mut()
-        .ok_or_else(|| "Remote add payload must be an object.".to_string())?
-        .insert(
-            "discarded_export".to_string(),
-            JsonValue::Bool(discarded_export),
-        );
     if request.make_default {
         let agent_harness = converge_agent_workflow_harness(&refreshed)?;
         payload
@@ -471,15 +459,8 @@ fn remote_add_retry_command(request: &RemoteAddRequest) -> String {
         shell_quote(&request.name),
         shell_quote(&request.url),
     ];
-    if let Some(repo_name) = request.repo_name.as_deref() {
-        command.push("--repo-name".to_string());
-        command.push(shell_quote(repo_name));
-    }
     if request.make_default {
         command.push("--default".to_string());
-    }
-    if request.discard_export {
-        command.push("--discard-export".to_string());
     }
     command.join(" ")
 }
@@ -560,14 +541,23 @@ pub fn remote_add_from_payload(
     let obj = payload
         .as_object()
         .ok_or_else(|| "remote add payload must decode to an object.".to_string())?;
+    let unsupported = obj
+        .keys()
+        .filter(|field| !matches!(field.as_str(), "name" | "url" | "make_default"))
+        .cloned()
+        .collect::<Vec<_>>();
+    if !unsupported.is_empty() {
+        return Err(format!(
+            "remote add payload contains retired or unknown field(s): {}.",
+            unsupported.join(", ")
+        ));
+    }
     remote_add(
         repo,
         &RemoteAddRequest {
             name: string_field(obj, "name")?,
             url: string_field(obj, "url")?,
-            repo_name: optional_string_field(obj, "repo_name")?,
             make_default: bool_field(obj, "make_default")?,
-            discard_export: bool_field(obj, "discard_export")?,
         },
     )
 }
@@ -748,19 +738,6 @@ fn string_field(obj: &JsonMap<String, JsonValue>, field: &str) -> Result<String,
         .and_then(JsonValue::as_str)
         .map(str::to_string)
         .ok_or_else(|| format!("remote add payload requires `{field}`."))
-}
-
-fn optional_string_field(
-    obj: &JsonMap<String, JsonValue>,
-    field: &str,
-) -> Result<Option<String>, String> {
-    match obj.get(field) {
-        None | Some(JsonValue::Null) => Ok(None),
-        Some(JsonValue::String(value)) => Ok(Some(value.clone())),
-        Some(_) => Err(format!(
-            "remote add payload field `{field}` must be a string."
-        )),
-    }
 }
 
 fn bool_field(obj: &JsonMap<String, JsonValue>, field: &str) -> Result<bool, String> {

@@ -24,6 +24,7 @@ use serde_json::Value as JsonValue;
 use sha2::{Digest, Sha256};
 
 use crate::RunnerError;
+use crate::environment_contract::names::{EXTERNAL_REPO_ROOT_PREFIX, EXTERNAL_REPO_ROOT_SUFFIX};
 
 pub const IMPORT_MANIFEST_CONTRACT: &str = "ait.remote_sync.zstd_bulk.import_manifest.v1";
 pub const MAX_IMPORT_MANIFEST_BYTES: usize = 64 * 1024 * 1024;
@@ -1408,7 +1409,9 @@ fn external_environment_key(name: &str) -> Result<String, RunnerError> {
             "external name `{name}` cannot form a portable environment key"
         )));
     }
-    Ok(format!("AIT_EXTERNAL_{normalized}_REPO_ROOT"))
+    Ok(format!(
+        "{EXTERNAL_REPO_ROOT_PREFIX}{normalized}{EXTERNAL_REPO_ROOT_SUFFIX}"
+    ))
 }
 
 fn runner_external(error: RunnerError) -> ExternalError {

@@ -15,10 +15,7 @@ fn native_source_local_setup_fails_closed_without_workflow_release_authority() {
     let temp = TempDir::new().unwrap();
     let repo_root = temp.path().join("repo");
     fs::create_dir_all(&repo_root).unwrap();
-    run_success(
-        &repo_root,
-        &["init", "--name", "native-source-fixture", "--json"],
-    );
+    run_success(&repo_root, &["init", "--json"]);
     let repo = RepoRuntime::discover_from_path(&repo_root).unwrap();
 
     let error = create_workflow_release_explicit(

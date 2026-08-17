@@ -1,11 +1,11 @@
 fn run_init(args: InitArgs) -> Result<(), String> {
     let payload = init_cmd(&InitRequest {
         root: env::current_dir().map_err(|err| err.to_string())?,
-        name: args.name,
-        default_line: args.default_line,
+        name: None,
+        default_line: "main".to_string(),
         policy_profile: args.policy_profile,
-        default_author_mode: args.default_author_mode,
-        default_model: args.default_model,
+        default_author_mode: "ai_with_human_review".to_string(),
+        default_model: None,
         repair_existing: args.repair_existing,
     })?;
     if args.json {
@@ -16,88 +16,27 @@ fn run_init(args: InitArgs) -> Result<(), String> {
     Ok(())
 }
 
-fn run_install(args: InstallArgs) -> Result<(), String> {
-    let payload = install_cmd(&InstallRequest {
-        cwd: env::current_dir().map_err(|err| err.to_string())?,
-        mode: args.mode,
-        attach: args.attach,
-        server_setup: args.server_setup,
-        server_url: args.server_url,
-        remote_name: args.remote_name,
-        remote_repo_name: args.remote_repo_name,
-        repo_name: args.repo_name,
-        user_name: args.user_name,
-        user_email: args.user_email,
-        initialize: tri_state_flag(args.init, args.no_init),
-        sprint: tri_state_flag(args.sprint, args.no_sprint),
-        worker_name: args.worker_name,
-        telegram_token: args.telegram_token,
-        telegram_username: args.telegram_username,
-        discord_application_id: args.discord_application_id,
-        discord_bot_token: args.discord_bot_token,
-        dry_run: args.dry_run,
-        json_output: args.json,
-        interactive: !args.json,
-    })?;
-    if args.json {
-        print_json(&payload)?;
-    } else {
-        println!("{}", render_install_text(&payload));
-    }
-    Ok(())
-}
-
-fn tri_state_flag(yes: bool, no: bool) -> Option<bool> {
-    if yes {
-        Some(true)
-    } else if no {
-        Some(false)
-    } else {
-        None
-    }
-}
-
 fn run_doctor(command: DoctorCommand) -> Result<ExitCode, String> {
     match command {
         DoctorCommand::MemoryRoot(args) => {
-            let payload = doctor_memory_root(args.ensure)?;
+            let repo = RepoRuntime::discover()?;
+            let payload = doctor_memory_root(&repo)?;
             emit_doctor_result("ait-cli doctor memory-root", &payload, args.json)?;
         }
         DoctorCommand::RuntimeRoot(args) => {
             let repo = RepoRuntime::discover()?;
-            let payload =
-                doctor_runtime_root(&repo.authoritative_repo_root(), args.server_data.as_deref())?;
+            let payload = doctor_runtime_root(&repo.authoritative_repo_root())?;
             emit_doctor_result("ait-cli doctor runtime-root", &payload, args.json)?;
         }
-        DoctorCommand::Postgres(args) => {
-            let payload = doctor_postgres(
-                None,
-                args.server_data.as_deref(),
-                Some(args.backend.as_str()),
-                args.dsn.as_deref(),
-                args.content_schema.as_deref(),
-                args.control_schema.as_deref(),
-                args.connect,
-            )?;
-            emit_doctor_result("ait-cli doctor postgres", &payload, args.json)?;
-        }
         DoctorCommand::PlanAuthority(args) => {
-            let payload = doctor_plan_authority(args.backend.as_deref())?;
+            let payload = doctor_plan_authority()?;
             emit_doctor_result("ait-cli doctor plan-authority", &payload, args.json)?;
-        }
-        DoctorCommand::PlanAuthorityWheel(args) => {
-            let payload = doctor_plan_authority_wheel(
-                args.wheel.as_deref(),
-                args.repack_installed,
-                args.smoke,
-            )?;
-            emit_doctor_result("ait-cli doctor plan-authority-wheel", &payload, args.json)?;
         }
     }
     Ok(ExitCode::SUCCESS)
 }
 
-fn run_gc(repo: RepoRuntime, command: GcCommand) -> Result<(), String> {
+fn run_gc(repo: RepoRuntime, command: GcCommand) -> Result<ExitCode, String> {
     let content_maintenance =
         repo.local_content_maintenance_store::<SNAPSHOT_BINARY_DB_WRITE_LAYOUT>()?;
     match command {
@@ -105,21 +44,36 @@ fn run_gc(repo: RepoRuntime, command: GcCommand) -> Result<(), String> {
             let _command_range = perfetto_range!("ait.cli.gc.stats.command");
             let payload = {
                 let _range = perfetto_range!("ait.cli.gc.stats.compute");
-                content_maintenance.storage_stats_with_options(LocalContentStatsOptions {
-                    include_inventory: args.include_inventory,
-                    compute_reachability: args.deep || args.include_inventory,
-                })?
+                content_maintenance.storage_stats()?
             };
             let _range = perfetto_range!("ait.cli.gc.stats.render");
-            emit_gc_payload("ait-cli gc stats", &payload, args.json)
+            emit_gc_payload("ait-cli gc stats", &payload, args.json)?;
+            Ok(ExitCode::SUCCESS)
         }
         GcCommand::Validate(args) => {
             let payload = content_maintenance.validate()?;
-            emit_gc_payload("ait-cli gc validate", &payload, args.json)
+            let needs_attention = payload
+                .get("needs_attention")
+                .and_then(JsonValue::as_bool)
+                .ok_or_else(|| {
+                    "gc validate payload must contain a boolean needs_attention field."
+                        .to_string()
+                })?;
+            emit_gc_payload("ait-cli gc validate", &payload, args.json)?;
+            Ok(if needs_attention {
+                ExitCode::from(1)
+            } else {
+                ExitCode::SUCCESS
+            })
         }
         GcCommand::Prune(args) => {
-            let payload = content_maintenance.prune_orphan_packs()?;
-            emit_gc_payload("ait-cli gc prune", &payload, args.json)
+            let payload = if args.apply {
+                content_maintenance.prune_orphan_packs()?
+            } else {
+                content_maintenance.preview_orphan_pack_prune()?
+            };
+            emit_gc_payload("ait-cli gc prune", &payload, args.json)?;
+            Ok(ExitCode::SUCCESS)
         }
     }
 }
@@ -190,10 +144,69 @@ fn emit_gc_payload(title: &str, payload: &JsonValue, json_output: bool) -> Resul
             ),
             ("created", string_field(obj.get("created"))),
             ("pack_id", string_field(obj.get("pack_id"))),
+            ("mode", string_field(obj.get("mode"))),
+            ("applied", string_field(obj.get("applied"))),
+            (
+                "candidate_orphan_pack_count",
+                string_field(obj.get("candidate_orphan_pack_count")),
+            ),
+            (
+                "candidate_orphan_pack_member_count",
+                string_field(obj.get("candidate_orphan_pack_member_count")),
+            ),
+            (
+                "candidate_duplicate_blob_count",
+                string_field(obj.get("candidate_duplicate_blob_count")),
+            ),
+            (
+                "candidate_verified_fallback_blob_count",
+                string_field(obj.get("candidate_verified_fallback_blob_count")),
+            ),
+            (
+                "candidate_base_blob_pointer_rewrite_count",
+                string_field(obj.get("candidate_base_blob_pointer_rewrite_count")),
+            ),
+            (
+                "candidate_orphan_pack_ids",
+                string_field(obj.get("candidate_orphan_pack_ids")),
+            ),
+            (
+                "candidate_orphan_pack_paths",
+                string_field(obj.get("candidate_orphan_pack_paths")),
+            ),
             (
                 "removed_orphan_pack_count",
                 string_field(obj.get("removed_orphan_pack_count")),
             ),
+            (
+                "removed_orphan_pack_member_count",
+                string_field(obj.get("removed_orphan_pack_member_count")),
+            ),
+            (
+                "removed_duplicate_blob_count",
+                string_field(obj.get("removed_duplicate_blob_count")),
+            ),
+            (
+                "verified_fallback_blob_count",
+                string_field(obj.get("verified_fallback_blob_count")),
+            ),
+            (
+                "rewritten_base_blob_pointer_count",
+                string_field(obj.get("rewritten_base_blob_pointer_count")),
+            ),
+            (
+                "removed_orphan_pack_ids",
+                string_field(obj.get("removed_orphan_pack_ids")),
+            ),
+            (
+                "removed_orphan_pack_paths",
+                string_field(obj.get("removed_orphan_pack_paths")),
+            ),
+            (
+                "already_missing_orphan_pack_paths",
+                string_field(obj.get("already_missing_orphan_pack_paths")),
+            ),
+            ("cleanup_warnings", string_field(obj.get("cleanup_warnings"))),
             (
                 "executed_step_count",
                 string_field(obj.get("executed_step_count")),
@@ -514,14 +527,10 @@ fn run_blame(repo: RepoRuntime, args: BlameArgs) -> Result<(), String> {
                 line: args.line,
                 start_line: args.start_line,
                 end_line: args.end_line,
-                restore: args.restore,
-                dry_run: args.dry_run,
                 snapshot_id: args.snapshot_id,
-                parent_snapshot_id: args.parent_snapshot_id,
+                via_parent_snapshot_id: args.via_parent_snapshot_id,
                 patchset_id: args.patchset_id,
                 remote_name: args.remote_name,
-                repo_name: args.repo_name,
-                change_ref: args.change_ref,
                 plan_id: args.plan_id,
                 plan_ref: args.plan_ref,
             },
@@ -562,8 +571,6 @@ fn run_line(repo: RepoRuntime, command: LineCommand) -> Result<(), String> {
                 &args.name,
                 args.from_snapshot.as_deref(),
                 args.switch,
-                args.restore,
-                args.force,
             )?;
             emit_result(
                 "ait-cli line create",
@@ -576,7 +583,6 @@ fn run_line(repo: RepoRuntime, command: LineCommand) -> Result<(), String> {
                     "head_snapshot_id",
                     "current_line",
                     "switched",
-                    "restored",
                 ],
             )?;
         }
@@ -668,7 +674,6 @@ fn run_line(repo: RepoRuntime, command: LineCommand) -> Result<(), String> {
             let payload = line_merge(
                 &repo,
                 args.source.as_deref(),
-                args.target.as_deref(),
                 args.message.as_deref(),
                 args.continue_merge,
                 args.abort_merge,
@@ -688,32 +693,24 @@ fn run_line(repo: RepoRuntime, command: LineCommand) -> Result<(), String> {
                 ],
             )?;
         }
-        LineCommand::CleanupCandidates(args) => {
-            let payload = line_cleanup_candidates(
+        LineCommand::Cleanup(args) => {
+            let payload = line_cleanup(
                 &repo,
-                Some(args.older_than.as_str()),
+                Some(args.idle_for.as_str()),
                 args.cleanup_kind.as_deref(),
+                args.limit,
                 args.include_protected,
+                args.yes,
             )?;
-            emit_line_cleanup_candidates_result(
+            emit_line_cleanup_result(
                 &payload,
                 args.json,
                 args.all,
                 args.include_protected,
-                &args.older_than,
-                args.cleanup_kind.as_deref(),
-            )?;
-        }
-        LineCommand::Cleanup(args) => {
-            let payload = line_cleanup(
-                &repo,
-                Some(args.older_than.as_str()),
+                &args.idle_for,
                 args.cleanup_kind.as_deref(),
                 args.limit,
-                args.dry_run,
-                args.yes,
             )?;
-            emit_line_cleanup_report_result(&payload, args.json)?;
         }
     }
     Ok(())
@@ -725,12 +722,7 @@ fn run_queue(repo: RepoRuntime, command: QueueCommand) -> Result<ExitCode, Strin
             let _command_range = perfetto_range!("ait.cli.queue.command");
             let payload = {
                 let _range = perfetto_range!("ait.cli.queue.compute");
-                queue_summary_cmd(
-                    &repo,
-                    args.remote.as_deref(),
-                    &args.status,
-                    args.all_changes,
-                )?
+                queue_summary_cmd(&repo, args.remote.as_deref())?
             };
             {
                 let _range = perfetto_range!("ait.cli.queue.render");
@@ -749,9 +741,7 @@ fn run_remote(repo: RepoRuntime, command: RemoteCommand) -> Result<(), String> {
                 &RemoteAddRequest {
                     name: args.name,
                     url: args.url,
-                    repo_name: args.repo_name,
                     make_default: args.default,
-                    discard_export: args.discard_export,
                 },
             )?;
             emit_remote_add_result(&payload, args.json)?;
@@ -773,8 +763,6 @@ fn run_remote_head_recovery(args: RemoteRecoverHeadArgs) -> Result<(), String> {
         &context,
         &RemoteHeadRecoveryRequest {
             remote_name: args.remote,
-            line_name: args.line,
-            include_line_names: args.include_lines,
             jobs: args.jobs,
             apply: args.apply,
         },
@@ -791,8 +779,7 @@ fn run_remote_head_recovery(args: RemoteRecoverHeadArgs) -> Result<(), String> {
             "snapshot_id",
             "source_parent_snapshot_id",
             "history_mode",
-            "recovered_line_count",
-            "recovered_lines",
+            "reachable_snapshot_count",
             "object_pack_count",
             "tree_pack_count",
             "downloaded_object_packs",
@@ -923,9 +910,9 @@ fn run_release(repo: RepoRuntime, command: ReleaseCommand) -> Result<(), String>
         }
         ReleaseCommand::Build(args) => {
             let payload = if family_candidate_exists(&repo, &args.release_id) {
-                if args.native_matrix_dir.is_some() {
+                if args.native_matrix_dir.is_some() || args.native_command_dir.is_some() {
                     return Err(
-                        "Family release builds consume component receipts; --native-matrix-dir applies only to legacy native profiles."
+                        "Family release builds consume component receipts; --native-matrix-dir and --native-command-dir apply only to legacy native profiles."
                             .to_string(),
                     );
                 }
@@ -958,6 +945,7 @@ fn run_release(repo: RepoRuntime, command: ReleaseCommand) -> Result<(), String>
                     &repo,
                     &args.release_id,
                     args.native_matrix_dir.as_deref(),
+                    args.native_command_dir.as_deref(),
                 )?
             };
             (payload, args.json)
@@ -991,7 +979,12 @@ fn run_release(repo: RepoRuntime, command: ReleaseCommand) -> Result<(), String>
             args.json,
         ),
         ReleaseCommand::Formula(args) => (
-            release_formula_cmd(&repo, &args.release_id, &args.name)?,
+            release_formula_cmd(
+                &repo,
+                &args.release_id,
+                &args.name,
+                &args.python_formula,
+            )?,
             args.json,
         ),
         ReleaseCommand::Show(args) => {
@@ -1057,89 +1050,6 @@ fn run_repo(repo: RepoRuntime, command: RepoCommand) -> Result<(), String> {
     Ok(())
 }
 
-fn run_test(repo: RepoRuntime, command: TestCommand) -> Result<(), String> {
-    match command {
-        TestCommand::Run(args) => {
-            if !args.full {
-                return Err(
-                    "Native `ait-cli test run` currently supports only `--full`.".to_string(),
-                );
-            }
-            let render_request = repo_request(
-                "run-ci",
-                args.remote.clone(),
-                false,
-                JsonMap::new(),
-            );
-            let payload = test_run_full_cmd(
-                &repo,
-                &TestRunFullRequest {
-                    remote_name: args.remote,
-                    json_output: args.json,
-                    variant: args.variant,
-                    plane: args.plane,
-                    target_line: args.target_line,
-                    trigger: args.trigger,
-                },
-            )?;
-            if args.json {
-                print_json(&payload)?;
-            } else {
-                render_repo_command_text(&render_request, &payload);
-            }
-        }
-        TestCommand::Status(args) => {
-            let render_request = repo_request(
-                "ci-runs",
-                args.remote.clone(),
-                false,
-                JsonMap::new(),
-            );
-            let payload = test_status_cmd(
-                &repo,
-                &TestStatusRequest {
-                    remote_name: args.remote,
-                    json_output: args.json,
-                    plane: args.plane,
-                    suite_id: args.suite_id,
-                    limit: args.limit,
-                },
-            )?;
-            if args.json {
-                print_json(&payload)?;
-            } else {
-                render_repo_command_text(&render_request, &payload);
-            }
-        }
-        TestCommand::PatchsetCi { command } => {
-            let (json_output, payload) = match command {
-                PatchsetCiSmokeCommand::Preflight(args) => {
-                    (args.json, patchset_ci_preflight_cmd(&repo)?)
-                }
-                PatchsetCiSmokeCommand::PackageSmoke(args) => {
-                    (args.json, patchset_ci_package_smoke_cmd(&repo)?)
-                }
-                PatchsetCiSmokeCommand::StableSmoke(args) => {
-                    (args.json, patchset_ci_stable_smoke_cmd(&repo)?)
-                }
-                PatchsetCiSmokeCommand::ReleaseArtifactSmoke(args) => {
-                    (args.json, patchset_ci_release_artifact_smoke_cmd(&repo)?)
-                }
-                PatchsetCiSmokeCommand::Tg1Required(args) => (
-                    args.json,
-                    patchset_ci_tg1_required_cmd(&repo, &args.case_ids)?,
-                ),
-            };
-            if json_output {
-                print_json(&payload)?;
-            } else {
-                render_repo_text("patchset-ci-smoke", &payload);
-            }
-        }
-    }
-    Ok(())
-}
-
 fn build_repo_command_request(command: RepoCommand) -> Result<RepoCommandRequest, String> {
     match command {
         RepoCommand::Show(args) => Ok(repo_request("show", args.remote, args.json, JsonMap::new())),
@@ -1147,13 +1057,7 @@ fn build_repo_command_request(command: RepoCommand) -> Result<RepoCommandRequest
             "retire",
             args.remote,
             args.json,
-            JsonMap::from_iter([
-                ("abort".to_string(), json!(args.abort)),
-                (
-                    "replace_export".to_string(),
-                    json!(args.replace_export),
-                ),
-            ]),
+            JsonMap::from_iter([("abort".to_string(), json!(args.abort))]),
         )),
         RepoCommand::Restore(args) => Ok(repo_request(
             "restore",
@@ -1163,34 +1067,13 @@ fn build_repo_command_request(command: RepoCommand) -> Result<RepoCommandRequest
         )),
         RepoCommand::Jobs(args) => {
             let mut data = JsonMap::new();
-            data.insert(
-                "worker_job_index".to_string(),
-                json!(args.worker_job_index),
-            );
-            data.insert("state".to_string(), json!(args.state));
-            data.insert("limit".to_string(), json!(args.limit));
+            if let Some(worker_job_index) = args.worker_job_index {
+                data.insert("worker_job_index".to_string(), json!(worker_job_index));
+            } else {
+                data.insert("state".to_string(), json!(args.state));
+                data.insert("limit".to_string(), json!(args.limit));
+            }
             Ok(repo_request("jobs", args.remote, args.json, data))
-        }
-        RepoCommand::RunCi(args) => {
-            let mut data = JsonMap::new();
-            data.insert("suite_ids".to_string(), json!(args.suite_ids));
-            data.insert("plane".to_string(), json!(args.plane));
-            data.insert("target_line".to_string(), json!(args.target_line));
-            data.insert("trigger".to_string(), json!(args.trigger));
-            data.insert("selector".to_string(), json!(args.selector));
-            data.insert("task_ids".to_string(), json!(args.task_ids));
-            data.insert("curated_corpus".to_string(), json!(args.curated_corpus));
-            data.insert("count".to_string(), json!(args.count));
-            data.insert("window_days".to_string(), json!(args.window_days));
-            data.insert(
-                "dependency_evidence".to_string(),
-                json!(args.dependency_evidence),
-            );
-            data.insert(
-                "compliance_evidence".to_string(),
-                json!(args.compliance_evidence),
-            );
-            Ok(repo_request("run-ci", args.remote, args.json, data))
         }
         RepoCommand::CiCapabilities(args) => Ok(repo_request(
             "ci-capabilities",
@@ -1198,13 +1081,6 @@ fn build_repo_command_request(command: RepoCommand) -> Result<RepoCommandRequest
             args.json,
             JsonMap::new(),
         )),
-        RepoCommand::CiRuns(args) => {
-            let mut data = JsonMap::new();
-            data.insert("limit".to_string(), json!(args.limit));
-            data.insert("plane".to_string(), json!(args.plane));
-            data.insert("suite_id".to_string(), json!(args.suite_id));
-            Ok(repo_request("ci-runs", args.remote, args.json, data))
-        }
     }
 }
 

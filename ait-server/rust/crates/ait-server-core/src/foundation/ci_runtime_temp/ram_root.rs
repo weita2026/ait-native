@@ -11,18 +11,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 pub fn ci_ram_runtime_root_with_source() -> Result<(PathBuf, String), String> {
-    for name in ["AIT_NATIVE_SERVER_CI_RAM_ROOT", "AIT_CI_RAM_ROOT"] {
-        if let Some(path) = nonempty_env_path(name) {
-            return Ok((path, name.to_string()));
-        }
-    }
-    for name in ["AIT_NATIVE_SERVER_RAM_SHARD_ROOT", "AIT_RAM_SHARD_ROOT"] {
-        if let Some(shard_root) = nonempty_env_path(name) {
-            let runtime_root = shard_root.parent().map(Path::to_path_buf).ok_or_else(|| {
-                format!("{name} must have a parent directory so the CI RAM runtime root can be derived.")
-            })?;
-            return Ok((runtime_root, format!("{name}/parent")));
-        }
+    const CI_RAM_ROOT_ENV: &str = crate::environment_contract::names::AIT_NATIVE_SERVER_CI_RAM_ROOT;
+    if let Some(path) = nonempty_env_path(CI_RAM_ROOT_ENV) {
+        return Ok((path, CI_RAM_ROOT_ENV.to_string()));
     }
     if let Some(memory_root) = detect_memory_root() {
         return Ok((
@@ -31,7 +22,7 @@ pub fn ci_ram_runtime_root_with_source() -> Result<(PathBuf, String), String> {
         ));
     }
     Err(
-        "CI requires a memory-backed runtime root. Set AIT_NATIVE_SERVER_CI_RAM_ROOT (preferred) or AIT_NATIVE_SERVER_RAM_SHARD_ROOT; no supported RAM mount was detected."
+        "CI requires a memory-backed runtime root. Set AIT_NATIVE_SERVER_CI_RAM_ROOT; no supported RAM mount was detected."
             .to_string(),
     )
 }

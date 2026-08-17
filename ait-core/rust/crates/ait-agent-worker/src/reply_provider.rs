@@ -96,46 +96,13 @@ struct CodexThreadLock {
 
 /// Installs the current Rust worker executable as the reply-provider process.
 /// A complete explicit provider configuration always wins over this default.
-pub fn configure_native_reply_provider(surface: &str) -> Result<(), String> {
+pub fn configure_native_reply_provider(_surface: &str) -> Result<(), String> {
     let executable = env::current_exe()
         .map_err(|_| "The native reply provider executable could not be resolved.".to_string())?;
-    let process_env = env::vars().collect::<BTreeMap<_, _>>();
-    for (name, value) in native_reply_provider_defaults(surface, &executable, &process_env) {
-        env::set_var(name, value);
-    }
-    Ok(())
-}
-
-fn native_reply_provider_defaults(
-    surface: &str,
-    executable: &Path,
-    process_env: &BTreeMap<String, String>,
-) -> BTreeMap<String, String> {
-    if process_env
-        .get("AIT_AGENT_LOCAL_REPLY_PROGRAM")
-        .is_some_and(|value| !value.trim().is_empty())
-    {
-        return BTreeMap::new();
-    }
-    let mut defaults = BTreeMap::from([
-        (
-            "AIT_AGENT_LOCAL_REPLY_PROGRAM".to_string(),
-            executable.to_string_lossy().into_owned(),
-        ),
-        (
-            "AIT_AGENT_LOCAL_REPLY_ARGS_JSON".to_string(),
-            r#"["reply-provider"]"#.to_string(),
-        ),
-    ]);
-    if process_env
-        .get("AIT_AGENT_LOCAL_REPLY_TIMEOUT_SECONDS")
-        .is_none_or(|value| value.trim().is_empty())
-    {
-        if let Some(value) = inherited_turn_timeout(surface, process_env) {
-            defaults.insert("AIT_AGENT_LOCAL_REPLY_TIMEOUT_SECONDS".to_string(), value);
-        }
-    }
-    defaults
+    ait_agent_core::configure_agent_local_reply_process_defaults(
+        executable.to_string_lossy().into_owned(),
+        vec!["reply-provider".to_string()],
+    )
 }
 
 /// Executes one versioned, conversation-keyed gateway provider request.
@@ -175,7 +142,7 @@ pub fn execute_native_reply_provider(
             None,
         );
     }
-    let settings = match CodexReplySettings::from_request(&request, process_env) {
+    let settings = match CodexReplySettings::from_request(&request) {
         Ok(value) => value,
         Err(message) => {
             return provider_failure(
@@ -236,50 +203,24 @@ pub fn execute_native_reply_provider(
 }
 
 impl CodexReplySettings {
-    fn from_request(
-        request: &JsonValue,
-        process_env: &BTreeMap<String, String>,
-    ) -> Result<Self, String> {
-        let surface = request_surface(request);
-        let prefix = surface_env_prefix(&surface);
-        let program = first_environment(
-            process_env,
-            &[
-                format!("{prefix}_CODEX_BIN"),
-                "AIT_CHAT_CODEX_BIN".to_string(),
-                "AIT_AGENT_CODEX_BIN".to_string(),
-                "CODEX_BIN".to_string(),
-            ],
-        )
-        .unwrap_or_else(default_codex_program);
+    fn from_request(request: &JsonValue) -> Result<Self, String> {
+        let settings = match request.get("settings") {
+            None | Some(JsonValue::Null) => None,
+            Some(value) => Some(value.as_object().ok_or_else(|| {
+                "The native reply provider settings must be an object.".to_string()
+            })?),
+        };
+        let program =
+            optional_setting_text(settings, "codex_program")?.unwrap_or_else(default_codex_program);
         validate_codex_program(&program)?;
 
-        let model = first_environment(
-            process_env,
-            &[
-                format!("{prefix}_CODEX_MODEL"),
-                format!("{prefix}_MODEL"),
-                "AIT_CHAT_CODEX_MODEL".to_string(),
-                "AIT_CHAT_MODEL".to_string(),
-                "CODEX_MODEL".to_string(),
-                "AIT_MODEL".to_string(),
-            ],
-        );
+        let model = optional_setting_text(settings, "model")?;
         if model.as_deref().is_some_and(invalid_option_value) {
             return Err("The configured Codex model is invalid.".to_string());
         }
 
-        let reasoning_effort = first_environment(
-            process_env,
-            &[
-                format!("{prefix}_CODEX_REASONING_EFFORT"),
-                format!("{prefix}_REASONING_EFFORT"),
-                "AIT_CHAT_CODEX_REASONING_EFFORT".to_string(),
-                "AIT_CHAT_REASONING_EFFORT".to_string(),
-                "CODEX_REASONING_EFFORT".to_string(),
-            ],
-        )
-        .map(|value| value.to_ascii_lowercase());
+        let reasoning_effort = optional_setting_text(settings, "reasoning_effort")?
+            .map(|value| value.to_ascii_lowercase());
         if reasoning_effort.as_deref().is_some_and(|value| {
             !matches!(
                 value,
@@ -289,17 +230,9 @@ impl CodexReplySettings {
             return Err("The configured Codex reasoning effort is invalid.".to_string());
         }
 
-        let sandbox = first_environment(
-            process_env,
-            &[
-                format!("{prefix}_CODEX_SANDBOX"),
-                format!("{prefix}_SANDBOX"),
-                "AIT_CHAT_CODEX_SANDBOX".to_string(),
-                "CODEX_SANDBOX".to_string(),
-            ],
-        )
-        .unwrap_or_else(|| "workspace-write".to_string())
-        .to_ascii_lowercase();
+        let sandbox = optional_setting_text(settings, "sandbox")?
+            .unwrap_or_else(|| "workspace-write".to_string())
+            .to_ascii_lowercase();
         if !matches!(
             sandbox.as_str(),
             "read-only" | "workspace-write" | "danger-full-access"
@@ -307,19 +240,16 @@ impl CodexReplySettings {
             return Err("The configured Codex sandbox is invalid.".to_string());
         }
 
-        let timeout = first_environment(
-            process_env,
-            &[
-                format!("{prefix}_CODEX_TURN_TIMEOUT_SECONDS"),
-                format!("{prefix}_TURN_TIMEOUT_SECONDS"),
-                "AIT_CHAT_CODEX_TURN_TIMEOUT_SECONDS".to_string(),
-                "AIT_CHAT_TURN_TIMEOUT_SECONDS".to_string(),
-                "AIT_AGENT_LOCAL_REPLY_TIMEOUT_SECONDS".to_string(),
-            ],
-        )
-        .map(|value| parse_timeout(&value))
-        .transpose()?
-        .unwrap_or(Some(DEFAULT_CODEX_TIMEOUT));
+        let timeout = match settings.and_then(|settings| settings.get("turn_timeout_seconds")) {
+            None | Some(JsonValue::Null) => Some(DEFAULT_CODEX_TIMEOUT),
+            Some(JsonValue::String(value)) => parse_timeout(value)?,
+            Some(value) => value
+                .as_f64()
+                .filter(|value| value.is_finite() && *value > 0.0)
+                .map(Duration::from_secs_f64)
+                .map(Some)
+                .ok_or_else(|| "The configured Codex turn timeout is invalid.".to_string())?,
+        };
 
         Ok(Self {
             program,
@@ -328,6 +258,26 @@ impl CodexReplySettings {
             sandbox,
             timeout,
         })
+    }
+}
+
+fn optional_setting_text(
+    settings: Option<&Map<String, JsonValue>>,
+    field: &str,
+) -> Result<Option<String>, String> {
+    match settings.and_then(|settings| settings.get(field)) {
+        None | Some(JsonValue::Null) => Ok(None),
+        Some(JsonValue::String(value)) => {
+            let value = value.trim();
+            if value.is_empty() {
+                Err(format!("The configured reply provider {field} is empty."))
+            } else {
+                Ok(Some(value.to_string()))
+            }
+        }
+        Some(_) => Err(format!(
+            "The configured reply provider {field} must be a string."
+        )),
     }
 }
 
@@ -1167,39 +1117,6 @@ fn request_surface(request: &JsonValue) -> String {
         .to_ascii_lowercase()
 }
 
-fn surface_env_prefix(surface: &str) -> &'static str {
-    match surface {
-        "telegram" => "AIT_TELEGRAM",
-        "discord" => "AIT_DISCORD",
-        "slack" => "AIT_SLACK",
-        "line" => "AIT_LINE",
-        _ => "AIT_AGENT",
-    }
-}
-
-fn inherited_turn_timeout(surface: &str, process_env: &BTreeMap<String, String>) -> Option<String> {
-    let prefix = surface_env_prefix(&surface.to_ascii_lowercase());
-    first_environment(
-        process_env,
-        &[
-            format!("{prefix}_CODEX_TURN_TIMEOUT_SECONDS"),
-            format!("{prefix}_TURN_TIMEOUT_SECONDS"),
-            "AIT_CHAT_CODEX_TURN_TIMEOUT_SECONDS".to_string(),
-            "AIT_CHAT_TURN_TIMEOUT_SECONDS".to_string(),
-        ],
-    )
-}
-
-fn first_environment(process_env: &BTreeMap<String, String>, names: &[String]) -> Option<String> {
-    names.iter().find_map(|name| {
-        process_env
-            .get(name)
-            .map(|value| value.trim())
-            .filter(|value| !value.is_empty())
-            .map(str::to_string)
-    })
-}
-
 fn parse_timeout(value: &str) -> Result<Option<Duration>, String> {
     if matches!(
         value.trim().to_ascii_lowercase().as_str(),
@@ -1400,6 +1317,8 @@ fn terminate(child: &mut Child) {
 
 #[cfg(test)]
 mod tests {
+    use ait_core::environment_contract::names;
+
     use super::*;
 
     fn gateway_request(surface: &str) -> JsonValue {
@@ -1442,31 +1361,16 @@ mod tests {
     }
 
     #[test]
-    fn settings_honor_surface_specific_codex_configuration() {
-        let environment = BTreeMap::from([
-            (
-                "AIT_TELEGRAM_CODEX_BIN".to_string(),
-                "/opt/codex-next".to_string(),
-            ),
-            (
-                "AIT_TELEGRAM_CODEX_MODEL".to_string(),
-                "gpt-5.6".to_string(),
-            ),
-            (
-                "AIT_TELEGRAM_CODEX_REASONING_EFFORT".to_string(),
-                "xhigh".to_string(),
-            ),
-            (
-                "AIT_TELEGRAM_CODEX_SANDBOX".to_string(),
-                "danger-full-access".to_string(),
-            ),
-            (
-                "AIT_TELEGRAM_CODEX_TURN_TIMEOUT_SECONDS".to_string(),
-                "inf".to_string(),
-            ),
-        ]);
-        let settings = CodexReplySettings::from_request(&gateway_request("telegram"), &environment)
-            .expect("settings");
+    fn settings_honor_typed_request_configuration() {
+        let mut request = gateway_request("telegram");
+        request["settings"] = json!({
+            "codex_program": "/opt/codex-next",
+            "model": "gpt-5.6",
+            "reasoning_effort": "xhigh",
+            "sandbox": "danger-full-access",
+            "turn_timeout_seconds": "inf",
+        });
+        let settings = CodexReplySettings::from_request(&request).expect("settings");
 
         assert_eq!(settings.program, "/opt/codex-next");
         assert_eq!(settings.model.as_deref(), Some("gpt-5.6"));
@@ -1639,11 +1543,10 @@ mod tests {
     fn transport_credentials_are_scrubbed_from_codex_child_environment() {
         for name in [
             "BOT_TOKEN",
-            "AIT_TELEGRAM_BOT_TOKEN",
-            "AIT_DISCORD_BOT_TOKEN",
-            "AIT_SLACK_SIGNING_SECRET",
-            "AIT_LINE_CHANNEL_ACCESS_TOKEN",
-            "AIT_REMOTE_AUTH_HEADER",
+            names::AIT_TELEGRAM_BOT_TOKEN,
+            names::AIT_DISCORD_BOT_TOKEN,
+            names::AIT_SLACK_SIGNING_SECRET,
+            names::AIT_LINE_CHANNEL_ACCESS_TOKEN,
         ] {
             assert!(is_transport_credential_name(name), "{name}");
         }

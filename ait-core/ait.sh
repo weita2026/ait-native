@@ -4,6 +4,10 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PATH="/Users/weita/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:${PATH:-}"
+DEFAULT_REPOSITORY_CARGO_BUILD_MAX_BYTES=4294967296
+DEFAULT_CANONICAL_CARGO_BUILD_MAX_BYTES=1073741824
+CANONICAL_CARGO_BUILD_DIRNAME="canonical"
+MANAGED_WORKTREE_CARGO_TARGET_DIRNAME="task-workspaces"
 
 resolve_cargo() {
   if command -v cargo >/dev/null 2>&1; then
@@ -26,12 +30,55 @@ resolve_rust_tool() {
   command -v "$name" 2>/dev/null || true
 }
 
+repository_cargo_target_root() {
+  local ait_root="${ROOT_DIR}/.ait"
+  if [[ -d "${ait_root}" ]]; then
+    ait_root="$(cd "${ait_root}" && pwd -P)"
+  fi
+  printf '%s/cargo-target\n' "${ait_root}"
+}
+
+repository_cargo_build_root() {
+  local build_root="${ROOT_DIR}/.ait/cargo-build"
+  mkdir -p "${build_root}"
+  (cd "${build_root}" && pwd -P)
+}
+
+managed_worktree_name() {
+  local marker="${ROOT_DIR}/.ait-worktree.json"
+  if [[ ! -f "${marker}" || -L "${marker}" ]]; then
+    return 1
+  fi
+  local name
+  name="$(sed -n 's/.*"worktree_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
+    "${marker}" | head -n 1)"
+  case "${name}" in
+    ''|.|..|*[!a-zA-Z0-9._-]*)
+      return 1
+      ;;
+  esac
+  printf '%s\n' "${name}"
+}
+
 cargo_target_dir() {
   if [[ -n "${AIT_SHARED_CARGO_TARGET_DIR:-}" ]]; then
     printf '%s\n' "${AIT_SHARED_CARGO_TARGET_DIR}"
     return 0
   fi
-  printf '%s\n' "${CARGO_TARGET_DIR:-${ROOT_DIR}/.ait/cargo-target}"
+  if [[ -n "${CARGO_TARGET_DIR:-}" ]]; then
+    printf '%s\n' "${CARGO_TARGET_DIR}"
+    return 0
+  fi
+  local target_root
+  target_root="$(repository_cargo_target_root)"
+  local worktree_name
+  worktree_name="$(managed_worktree_name || true)"
+  if [[ -n "${worktree_name}" ]]; then
+    printf '%s/%s/%s\n' \
+      "${target_root}" "${MANAGED_WORKTREE_CARGO_TARGET_DIRNAME}" "${worktree_name}"
+    return 0
+  fi
+  printf '%s\n' "${target_root}"
 }
 
 cargo_build_dir() {
@@ -43,7 +90,15 @@ cargo_build_dir() {
     printf '%s\n' "${CARGO_BUILD_BUILD_DIR}"
     return 0
   fi
-  printf '%s\n' "${ROOT_DIR}/.ait/cargo-build/workspaces/{workspace-path-hash}"
+  local build_root
+  build_root="$(repository_cargo_build_root)"
+  local worktree_name
+  worktree_name="$(managed_worktree_name || true)"
+  if [[ -n "${worktree_name}" ]]; then
+    printf '%s/task-workspaces/%s\n' "${build_root}" "${worktree_name}"
+    return 0
+  fi
+  printf '%s/%s\n' "${build_root}" "${CANONICAL_CARGO_BUILD_DIRNAME}"
 }
 
 resolved_cargo_dir() {
@@ -85,6 +140,81 @@ cargo_cache_in_use() {
   local owner_pid
   owner_pid="$(lsof -t +D "${cache_dir}" 2>/dev/null | head -n 1 || true)"
   [[ -n "${owner_pid}" ]]
+}
+
+repository_workspace_cargo_build_leaves() {
+  local build_root="$1"
+  local shard
+  local leaf
+  local shard_name
+  local leaf_name
+  for shard in "${build_root}"/workspaces/*; do
+    [[ -d "${shard}" && ! -L "${shard}" ]] || continue
+    shard_name="$(basename "${shard}")"
+    if [[ ${#shard_name} -ne 2 || ! "${shard_name}" =~ ^[0-9a-f]+$ ]]; then
+      continue
+    fi
+    for leaf in "${shard}"/*; do
+      [[ -d "${leaf}" && ! -L "${leaf}" ]] || continue
+      leaf_name="$(basename "${leaf}")"
+      if [[ ${#leaf_name} -ne 14 || ! "${leaf_name}" =~ ^[0-9a-f]+$ ]]; then
+        continue
+      fi
+      (cd "${leaf}" && pwd -P)
+    done
+  done
+}
+
+repository_task_cargo_build_leaves() {
+  local build_root="$1"
+  local leaf
+  for leaf in "${build_root}"/task-workspaces/*; do
+    [[ -d "${leaf}" && ! -L "${leaf}" ]] || continue
+    (cd "${leaf}" && pwd -P)
+  done
+}
+
+repository_task_cargo_target_leaves() {
+  local target_root="$1"
+  local leaf
+  for leaf in "${target_root}/${MANAGED_WORKTREE_CARGO_TARGET_DIRNAME}"/*; do
+    [[ -d "${leaf}" && ! -L "${leaf}" ]] || continue
+    (cd "${leaf}" && pwd -P)
+  done
+}
+
+repository_managed_cargo_build_leaves() {
+  local build_root="$1"
+  local canonical_dir="${build_root}/${CANONICAL_CARGO_BUILD_DIRNAME}"
+  if [[ -d "${canonical_dir}" && ! -L "${canonical_dir}" ]]; then
+    (cd "${canonical_dir}" && pwd -P)
+  fi
+  repository_workspace_cargo_build_leaves "${build_root}"
+  repository_task_cargo_build_leaves "${build_root}"
+}
+
+cargo_build_leaf_activity_mtime() {
+  local leaf="$1"
+  local entry
+  local entry_mtime
+  local newest_mtime=0
+  local entries=()
+  shopt -s dotglob nullglob
+  entries=("${leaf}"/* "${leaf}"/*/*)
+  shopt -u dotglob nullglob
+  for entry in "${entries[@]}"; do
+    case "${entry}" in
+      "${leaf}/.ait-gc-lock"|"${leaf}/.ait-gc-marker")
+        continue
+        ;;
+    esac
+    entry_mtime="$(file_mtime_epoch "${entry}" || true)"
+    [[ -n "${entry_mtime}" ]] || continue
+    if (( entry_mtime > newest_mtime )); then
+      newest_mtime="${entry_mtime}"
+    fi
+  done
+  printf '%s\n' "${newest_mtime}"
 }
 
 clear_cargo_build_contents() {
@@ -145,19 +275,10 @@ acquire_cargo_gc_lock() {
   printf '%s\n' "$$" > "${lock_dir}/pid"
 }
 
-auto_reclaim_cargo_build_dir() {
+auto_reclaim_single_cargo_build_dir() {
   local build_dir="$1"
-  local max_bytes="${AIT_CARGO_BUILD_MAX_BYTES:-0}"
-  local interval_seconds="${AIT_CARGO_BUILD_GC_INTERVAL_SECONDS:-3600}"
-  case "${max_bytes}:${interval_seconds}" in
-    *[!0-9:]*|:*)
-      printf 'Skipping Cargo build-dir GC because its numeric configuration is invalid.\n' >&2
-      return 0
-      ;;
-  esac
-  if [[ "${max_bytes}" == "0" ]]; then
-    return 0
-  fi
+  local max_bytes="$2"
+  local interval_seconds="$3"
   if [[ "$(basename "${build_dir}")" == "{workspace-path-hash}" ]]; then
     printf 'Skipping Cargo build-dir GC for a workspace template; use explicit cache maintenance after Cargo expands it: %s\n' \
       "${build_dir}" >&2
@@ -212,6 +333,169 @@ auto_reclaim_cargo_build_dir() {
   fi
   touch "${marker}"
   release_cargo_gc_lock "${lock_dir}"
+}
+
+auto_reclaim_repository_cargo_build_pool() {
+  local build_dir="$1"
+  local max_bytes="$2"
+  local interval_seconds="$3"
+  local build_root
+  build_root="$(repository_cargo_build_root)"
+  local marker="${build_root}/.ait-gc-marker"
+  local lock_dir="${build_root}/.ait-gc-lock"
+  local now
+  local marker_mtime
+  now="$(date +%s)"
+  if [[ -f "${marker}" && "${interval_seconds}" != "0" ]]; then
+    marker_mtime="$(file_mtime_epoch "${marker}" || true)"
+    if [[ -n "${marker_mtime}" ]] && (( now - marker_mtime < interval_seconds )); then
+      return 0
+    fi
+  fi
+  if ! acquire_cargo_gc_lock "${lock_dir}" "${now}"; then
+    return 0
+  fi
+
+  local size_kib
+  local max_kib
+  size_kib="$(du -sk "${build_root}" 2>/dev/null | awk '{print $1}')"
+  max_kib=$((max_bytes / 1024))
+  if [[ -z "${size_kib}" ]] || (( size_kib <= max_kib )); then
+    touch "${marker}"
+    release_cargo_gc_lock "${lock_dir}"
+    return 0
+  fi
+  if ! command -v lsof >/dev/null 2>&1; then
+    printf 'Skipping repository Cargo build-dir GC because active use cannot be verified without lsof: %s\n' \
+      "${build_root}" >&2
+    release_cargo_gc_lock "${lock_dir}"
+    return 0
+  fi
+
+  local protected_dir=""
+  local candidate
+  local candidate_mtime
+  if [[ "$(basename "${build_dir}")" == "{workspace-path-hash}" ]]; then
+    local newest_mtime=-1
+    while IFS= read -r candidate; do
+      candidate_mtime="$(cargo_build_leaf_activity_mtime "${candidate}")"
+      [[ -n "${candidate_mtime}" ]] || continue
+      if (( candidate_mtime > newest_mtime )); then
+        newest_mtime="${candidate_mtime}"
+        protected_dir="${candidate}"
+      fi
+    done < <(repository_workspace_cargo_build_leaves "${build_root}")
+  elif [[ -d "${build_dir}" ]]; then
+    protected_dir="$(cd "${build_dir}" && pwd -P)"
+  fi
+  if [[ -n "${protected_dir}" ]]; then
+    touch "${protected_dir}/.ait-last-used"
+  fi
+
+  printf 'Repository Cargo build cache exceeds %s bytes; reclaiming oldest idle leaves: %s\n' \
+    "${max_bytes}" "${build_root}"
+  local resolved_candidate
+  while IFS=$'\t' read -r _ candidate; do
+    [[ -n "${candidate:-}" ]] || continue
+    if [[ "${candidate}" == "${protected_dir}" ]]; then
+      continue
+    fi
+    size_kib="$(du -sk "${build_root}" 2>/dev/null | awk '{print $1}')"
+    if [[ -z "${size_kib}" ]] || (( size_kib <= max_kib )); then
+      break
+    fi
+    if cargo_cache_in_use "${candidate}"; then
+      printf 'Skipping active Cargo build-dir GC: %s\n' "${candidate}" >&2
+      continue
+    fi
+    resolved_candidate="$(cd "${candidate}" && pwd -P)"
+    if [[ "${resolved_candidate}" != "${candidate}" ]]; then
+      printf 'Skipping Cargo build-dir GC after path resolution changed: %s\n' \
+        "${candidate}" >&2
+      continue
+    fi
+    printf 'Reclaiming idle Cargo build-dir leaf: %s\n' "${candidate}"
+    if ! clear_cargo_build_contents "${candidate}"; then
+      printf 'Cargo build-dir GC could not remove every intermediate: %s\n' \
+        "${candidate}" >&2
+      continue
+    fi
+    touch "${candidate}/.ait-gc-marker"
+  done < <(
+    while IFS= read -r candidate; do
+      candidate_mtime="$(cargo_build_leaf_activity_mtime "${candidate}")"
+      printf '%020d\t%s\n' "${candidate_mtime}" "${candidate}"
+    done < <(repository_managed_cargo_build_leaves "${build_root}") | sort -n
+  )
+
+  size_kib="$(du -sk "${build_root}" 2>/dev/null | awk '{print $1}')"
+  if [[ -n "${size_kib}" ]] && (( size_kib > max_kib )); then
+    printf 'Repository Cargo build cache remains above %s bytes because the newest or active leaves were retained: %s\n' \
+      "${max_bytes}" "${build_root}" >&2
+  fi
+  touch "${marker}"
+  release_cargo_gc_lock "${lock_dir}"
+}
+
+cargo_build_dir_is_repository_owned() {
+  local build_dir="$1"
+  local build_root
+  local resolved_build_dir
+  build_root="$(repository_cargo_build_root)"
+  resolved_build_dir="$(resolved_cargo_dir "${build_dir}")"
+  [[ "${resolved_build_dir}" == "${build_root}" || \
+    "${resolved_build_dir}" == "${build_root}/"* ]]
+}
+
+cargo_build_dir_is_canonical() {
+  local build_dir="$1"
+  local build_root
+  local resolved_build_dir
+  build_root="$(repository_cargo_build_root)"
+  resolved_build_dir="$(resolved_cargo_dir "${build_dir}")"
+  [[ "${resolved_build_dir}" == "${build_root}/${CANONICAL_CARGO_BUILD_DIRNAME}" ]]
+}
+
+auto_reclaim_cargo_build_dir() {
+  local build_dir="$1"
+  local interval_seconds="${AIT_CARGO_BUILD_GC_INTERVAL_SECONDS:-3600}"
+  local repository_owned=0
+  if cargo_build_dir_is_repository_owned "${build_dir}"; then
+    repository_owned=1
+  fi
+  local max_bytes
+  if [[ "${AIT_CARGO_BUILD_MAX_BYTES+configured}" == "configured" ]]; then
+    max_bytes="${AIT_CARGO_BUILD_MAX_BYTES}"
+  elif [[ "${repository_owned}" == "1" ]]; then
+    max_bytes="${DEFAULT_REPOSITORY_CARGO_BUILD_MAX_BYTES}"
+  else
+    max_bytes=0
+  fi
+  case "${max_bytes}:${interval_seconds}" in
+    *[!0-9:]*|:*)
+      printf 'Skipping Cargo build-dir GC because its numeric configuration is invalid.\n' >&2
+      return 0
+      ;;
+  esac
+  if [[ "${max_bytes}" == "0" ]]; then
+    return 0
+  fi
+  if [[ "${repository_owned}" == "1" ]]; then
+    auto_reclaim_repository_cargo_build_pool \
+      "${build_dir}" "${max_bytes}" "${interval_seconds}"
+    if cargo_build_dir_is_canonical "${build_dir}"; then
+      local canonical_max_bytes
+      if [[ "${AIT_CARGO_BUILD_MAX_BYTES+configured}" == "configured" ]]; then
+        canonical_max_bytes="${AIT_CARGO_BUILD_MAX_BYTES}"
+      else
+        canonical_max_bytes="${DEFAULT_CANONICAL_CARGO_BUILD_MAX_BYTES}"
+      fi
+      auto_reclaim_single_cargo_build_dir \
+        "${build_dir}" "${canonical_max_bytes}" 0
+    fi
+    return 0
+  fi
+  auto_reclaim_single_cargo_build_dir "${build_dir}" "${max_bytes}" "${interval_seconds}"
 }
 
 core_build_profile() {
@@ -276,8 +560,6 @@ refresh_build_artifact_mtimes() {
   for artifact in \
     "${target_dir}/${profile_dir}/ait-cli" \
     "${target_dir}/${profile_dir}/ait-cli.exe" \
-    "${target_dir}/${profile_dir}/ait-agent" \
-    "${target_dir}/${profile_dir}/ait-agent.exe" \
     "${target_dir}/${profile_dir}/ait-agent-worker" \
     "${target_dir}/${profile_dir}/ait-agent-worker.exe" \
     "${target_dir}/${profile_dir}/libait_py.dylib" \
@@ -285,6 +567,26 @@ refresh_build_artifact_mtimes() {
     "${target_dir}/${profile_dir}/ait_py.dll"; do
     if [[ -e "${artifact}" ]]; then
       touch "${artifact}"
+    fi
+  done
+}
+
+remove_retired_agent_artifacts() {
+  local artifact_dir="$1"
+  local retired_path
+  for retired_path in \
+    "${artifact_dir}/ait-agent" \
+    "${artifact_dir}/ait-agent.exe"; do
+    if [[ -L "${retired_path}" || -f "${retired_path}" ]]; then
+      if ! rm -f -- "${retired_path}"; then
+        printf 'Failed to remove retired command artifact: %s\n' "${retired_path}" >&2
+        return 2
+      fi
+      printf 'Removed retired command artifact: %s\n' "${retired_path}"
+    elif [[ -e "${retired_path}" ]]; then
+      printf 'Refusing to remove non-file retired command path: %s\n' \
+        "${retired_path}" >&2
+      return 2
     fi
   done
 }
@@ -329,8 +631,10 @@ Usage:
 Build and install the ait-core-owned native commands:
 
   ait-cli            -> ait
-  ait-agent          -> ait-agent
   ait-agent-worker   -> ait-agent-worker
+
+An obsolete ait-agent executable from an earlier direct install is removed
+from the exact destination directory during upgrade.
 
 The default destination is AIT_NATIVE_BIN_DIR when set, otherwise
 ${XDG_BIN_HOME}/ when set, otherwise ${HOME}/.local/bin. The destination must
@@ -373,44 +677,37 @@ EOF
   artifact_dir="${target_dir}/${profile_dir}"
 
   local cli_artifact
-  local agent_artifact
   local worker_artifact
   cli_artifact="$(resolve_native_artifact "${artifact_dir}" ait-cli)"
-  agent_artifact="$(resolve_native_artifact "${artifact_dir}" ait-agent)"
   worker_artifact="$(resolve_native_artifact "${artifact_dir}" ait-agent-worker)"
 
   local command_suffix=""
-  local agent_suffix=""
   local worker_suffix=""
   if [[ "${cli_artifact}" == *.exe ]]; then
     command_suffix=".exe"
   fi
-  if [[ "${agent_artifact}" == *.exe ]]; then
-    agent_suffix=".exe"
-  fi
   if [[ "${worker_artifact}" == *.exe ]]; then
     worker_suffix=".exe"
   fi
-  if [[ "${agent_suffix}" != "${command_suffix}" ||
-    "${worker_suffix}" != "${command_suffix}" ]]; then
+  if [[ "${worker_suffix}" != "${command_suffix}" ]]; then
     printf 'Native release artifacts use inconsistent executable suffixes.\n' >&2
     return 2
   fi
 
   mkdir -p "${bin_dir}"
   bin_dir="$(cd "${bin_dir}" && pwd -P)"
+  remove_retired_agent_artifacts "${bin_dir}" || return $?
   local staging_dir
   staging_dir="$(mktemp -d "${bin_dir}/.ait-native-install.XXXXXX")"
 
   if ! install -m 0755 "${cli_artifact}" "${staging_dir}/ait${command_suffix}" ||
-    ! install -m 0755 "${agent_artifact}" "${staging_dir}/ait-agent${command_suffix}" ||
     ! install -m 0755 "${worker_artifact}" "${staging_dir}/ait-agent-worker${command_suffix}"; then
     rm -rf -- "${staging_dir}"
     return 2
   fi
 
   local command_name
-  for command_name in ait ait-agent ait-agent-worker; do
+  for command_name in ait ait-agent-worker; do
     command_name="${command_name}${command_suffix}"
     if ! mv -f -- "${staging_dir}/${command_name}" "${bin_dir}/${command_name}"; then
       rm -rf -- "${staging_dir}"
@@ -439,12 +736,14 @@ compact_one_cargo_target() {
     printf 'Skipping missing Cargo target: %s\n' "${target_dir}"
     return 0
   fi
-  if [[ "${force}" != "1" ]] && ! command -v lsof >/dev/null 2>&1; then
+  if [[ "${dry_run}" != "1" && "${force}" != "1" ]] && \
+    ! command -v lsof >/dev/null 2>&1; then
     printf 'Refusing to compact Cargo target without lsof active-use verification: %s\n' \
       "${target_dir}" >&2
     return 2
   fi
-  if [[ "${force}" != "1" ]] && cargo_cache_in_use "${target_dir}"; then
+  if [[ "${dry_run}" != "1" && "${force}" != "1" ]] && \
+    cargo_cache_in_use "${target_dir}"; then
     printf 'Refusing to compact active Cargo target: %s\n' "${target_dir}" >&2
     printf 'Stop processes using it, or pass --force if you have verified it is safe.\n' >&2
     return 2
@@ -497,12 +796,14 @@ compact_one_cargo_build_dir() {
     printf 'Skipping missing Cargo build dir: %s\n' "${build_dir}"
     return 0
   fi
-  if [[ "${force}" != "1" ]] && ! command -v lsof >/dev/null 2>&1; then
+  if [[ "${dry_run}" != "1" && "${force}" != "1" ]] && \
+    ! command -v lsof >/dev/null 2>&1; then
     printf 'Refusing to compact Cargo build dir without lsof active-use verification: %s\n' \
       "${build_dir}" >&2
     return 2
   fi
-  if [[ "${force}" != "1" ]] && cargo_cache_in_use "${build_dir}"; then
+  if [[ "${dry_run}" != "1" && "${force}" != "1" ]] && \
+    cargo_cache_in_use "${build_dir}"; then
     printf 'Refusing to compact active Cargo build dir: %s\n' "${build_dir}" >&2
     printf 'Stop processes using it, or pass --force if you have verified it is safe.\n' >&2
     return 2
@@ -527,6 +828,7 @@ compact_cargo_targets() {
   local dry_run=0
   local force=0
   local include_worktrees=0
+  local include_legacy=0
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --dry-run)
@@ -538,24 +840,32 @@ compact_cargo_targets() {
       --include-worktrees)
         include_worktrees=1
         ;;
+      --include-legacy)
+        include_legacy=1
+        ;;
       --help|-h)
         cat <<'EOF'
 Usage:
-  ./ait.sh core compact [--dry-run] [--force] [--include-worktrees]
+  ./ait.sh core compact [--dry-run] [--force] [--include-worktrees] [--include-legacy]
 
 Remove Cargo intermediates from the configured build dir and legacy
 intermediate paths from the target dir while leaving final release binaries in
-place. With --include-worktrees it also scans managed task worktree caches.
+place. With --include-worktrees it also scans managed Task cache leaves and
+worktree-local targets. With --include-legacy it scans only the known old
+ait-core Cargo target/build locations, including former two-level workspace
+hash leaves.
 
 Target selection follows the build/test path:
   1. AIT_SHARED_CARGO_TARGET_DIR, when set, explicitly opts into a shared target.
   2. CARGO_TARGET_DIR, when set, is honored for caller-managed targets.
-  3. Otherwise .ait/cargo-target is used.
+  3. Otherwise a managed Task worktree uses its task-workspaces leaf beneath
+     .ait/cargo-target, and the canonical checkout uses .ait/cargo-target.
 
 Build-dir selection follows:
   1. AIT_SHARED_CARGO_BUILD_DIR, when set.
   2. CARGO_BUILD_BUILD_DIR, when set.
-  3. Otherwise a workspace-isolated leaf beneath .ait/cargo-build is used.
+  3. Otherwise a managed Task leaf or the fixed canonical directory beneath
+     .ait/cargo-build is used.
 EOF
         return 0
         ;;
@@ -570,19 +880,59 @@ EOF
   local targets=()
   targets+=("$(cargo_target_dir)")
   local build_dirs=()
-  build_dirs+=("$(cargo_build_dir)")
+  local configured_build_dir
+  configured_build_dir="$(cargo_build_dir)"
+  build_dirs+=("${configured_build_dir}")
   if [[ "${include_worktrees}" == "1" ]]; then
+    local repository_build_root
+    repository_build_root="$(repository_cargo_build_root)"
+    local task_build_dir
+    while IFS= read -r task_build_dir; do
+      build_dirs+=("${task_build_dir}")
+    done < <(repository_task_cargo_build_leaves "${repository_build_root}")
+    local repository_target_root
+    repository_target_root="$(repository_cargo_target_root)"
+    local task_target_dir
+    while IFS= read -r task_target_dir; do
+      targets+=("${task_target_dir}")
+    done < <(repository_task_cargo_target_leaves "${repository_target_root}")
     local worktree_target
-    for worktree_target in "${ROOT_DIR}"/.ait-worktree-links/*/.ait/cargo-target; do
-      [[ -d "${worktree_target}" ]] || continue
+    for worktree_target in \
+      "${ROOT_DIR}"/.ait-worktree-links/*/rust/target; do
+      [[ -d "${worktree_target}" && ! -L "${worktree_target}" ]] || continue
       targets+=("${worktree_target}")
     done
     local worktree_build
-    for worktree_build in "${ROOT_DIR}"/.ait-worktree-links/*/rust/target \
+    for worktree_build in \
       "${ROOT_DIR}"/.ait-worktree-links/*/.ait/cargo-build/workspaces/*/* \
       "${ROOT_DIR}"/.ait-worktree-links/*/.ait/cargo-build/task-workspaces/*; do
-      [[ -d "${worktree_build}" ]] || continue
+      [[ -d "${worktree_build}" && ! -L "${worktree_build}" ]] || continue
       build_dirs+=("${worktree_build}")
+    done
+  fi
+  if [[ "${include_legacy}" == "1" ]]; then
+    local repository_build_root
+    repository_build_root="$(repository_cargo_build_root)"
+    local workspace_hash_build_dir
+    while IFS= read -r workspace_hash_build_dir; do
+      build_dirs+=("${workspace_hash_build_dir}")
+    done < <(repository_workspace_cargo_build_leaves "${repository_build_root}")
+    local legacy_target
+    for legacy_target in \
+      "${ROOT_DIR}"/rust/target \
+      "${ROOT_DIR}"/target \
+      "${ROOT_DIR}"/.ait-runtime/*-cargo-target \
+      "${ROOT_DIR}"/.ait/generated/runner/cargo-target; do
+      [[ -d "${legacy_target}" && ! -L "${legacy_target}" ]] || continue
+      targets+=("${legacy_target}")
+    done
+    local legacy_build_dir
+    for legacy_build_dir in \
+      "${ROOT_DIR}"/.ait/cargo-build-rct-* \
+      "${ROOT_DIR}"/.ait-runtime/*-cargo-build \
+      "${ROOT_DIR}"/.ait/generated/runner/cargo-build; do
+      [[ -d "${legacy_build_dir}" && ! -L "${legacy_build_dir}" ]] || continue
+      build_dirs+=("${legacy_build_dir}")
     done
   fi
 
@@ -631,7 +981,7 @@ usage() {
 Usage:
   ./ait.sh core build    # release profile
   ./ait.sh core install [--bin-dir <path>] [--skip-build]
-  ./ait.sh core compact [--dry-run] [--force] [--include-worktrees]
+  ./ait.sh core compact [--dry-run] [--force] [--include-worktrees] [--include-legacy]
   ./ait.sh core test     # lean ait-ci profile
 
 `ait-core` is Rust-only and owns its native build. Python packaging and
@@ -639,39 +989,54 @@ compatibility glue belong to `../ait-python`; `../ait` is transitional.
 AIT_CORE_BUILD_PROFILE may be set to release; debug/dev profiles are forbidden.
 AIT-owned tests use the non-debug ait-ci profile.
 Set AIT_SHARED_CARGO_TARGET_DIR to opt into a shared Cargo target. Otherwise
-CARGO_TARGET_DIR is honored when set, then .ait/cargo-target is used.
+CARGO_TARGET_DIR is honored when set, managed Task worktrees use their
+task-workspaces leaf beneath .ait/cargo-target, and the canonical checkout uses
+.ait/cargo-target.
 Set AIT_SHARED_CARGO_BUILD_DIR to opt into shared intermediates. Otherwise
-CARGO_BUILD_BUILD_DIR is honored, then Cargo expands a workspace-isolated leaf
-beneath .ait/cargo-build. Automatic build-dir reclamation is disabled by default; set a nonzero
-AIT_CARGO_BUILD_MAX_BYTES to opt in. Reclamation is rate-limited by
-AIT_CARGO_BUILD_GC_INTERVAL_SECONDS (default 3600).
+CARGO_BUILD_BUILD_DIR is honored, managed Task worktrees use their dedicated
+task-workspaces leaf, and the canonical checkout reuses the fixed
+.ait/cargo-build/canonical directory. The repository pool is bounded to 4 GiB
+and the canonical cache to 1 GiB by default. Set AIT_CARGO_BUILD_MAX_BYTES=0 to
+opt out or set one explicit byte limit. Caller-managed external build dirs
+remain unbounded unless that variable is set. Repository-pool reclamation is
+rate-limited by AIT_CARGO_BUILD_GC_INTERVAL_SECONDS (default 3600 seconds);
+the canonical bound is checked after every launcher-owned Cargo invocation.
 EOF
 }
 
-if [[ "${1:-}" != "core" ]]; then
-  usage >&2
-  exit 1
-fi
-
-case "${2:-}" in
-  build)
-    profile="$(core_build_profile)"
-    run_cargo build --profile "${profile}" --manifest-path "${ROOT_DIR}/rust/Cargo.toml" --workspace
-    refresh_build_artifact_mtimes
-    ;;
-  install)
-    shift 2
-    install_native_core_commands "$@"
-    ;;
-  compact)
-    shift 2
-    compact_cargo_targets "$@"
-    ;;
-  test)
-    run_cargo test --manifest-path "${ROOT_DIR}/rust/Cargo.toml" --workspace --profile ait-ci
-    ;;
-  *)
+main() {
+  if [[ "${1:-}" != "core" ]]; then
     usage >&2
-    exit 1
-    ;;
-esac
+    return 1
+  fi
+
+  case "${2:-}" in
+    build)
+      local profile
+      profile="$(core_build_profile)"
+      run_cargo build --profile "${profile}" --manifest-path "${ROOT_DIR}/rust/Cargo.toml" --workspace
+      remove_retired_agent_artifacts "$(cargo_target_dir)/$(cargo_profile_dir)"
+      refresh_build_artifact_mtimes
+      ;;
+    install)
+      shift 2
+      install_native_core_commands "$@"
+      ;;
+    compact)
+      shift 2
+      compact_cargo_targets "$@"
+      ;;
+    test)
+      run_cargo test --manifest-path "${ROOT_DIR}/rust/Cargo.toml" --workspace --profile ait-ci
+      "${ROOT_DIR}/tests/test_ait_sh_core_compact.sh"
+      ;;
+    *)
+      usage >&2
+      return 1
+      ;;
+  esac
+}
+
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  main "$@"
+fi

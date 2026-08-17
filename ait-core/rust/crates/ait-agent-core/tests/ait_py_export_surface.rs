@@ -23,11 +23,11 @@ const RETIRED_AGENT_SESSION_EXPORTS: &[&str] = &[
     "agent_outbox_resolve_delivery",
     "agent_outbox_entry_is_due",
     "ait_agent_transport_envelope_build_binding_metadata",
+    "ait_agent_management",
 ];
 
 const SUPPORTED_AIT_AGENT_EXPORTS: &[&str] = &[
     "ait_agent_env_file_load",
-    "ait_agent_management",
     "ait_agent_telegram_message_delivery_execute",
     "ait_agent_telegram_turn_input_plan",
     "ait_agent_telegram_workflow_notification_format",
@@ -55,6 +55,30 @@ fn ait_py_rejects_retired_agent_session_compatibility_exports() {
             "retired PyO3 module registration `{export_name}` must stay removed"
         );
     }
+}
+
+#[test]
+fn ait_py_rejects_retired_doctor_overrides_and_wheel_export() {
+    let compact_source = compact_source(&ait_py_source());
+
+    for export_name in [
+        "task_workflow_doctor_plan_authority_wheel",
+        "plan_diagnostics_normalize_wheel_status",
+        "plan_diagnostics_build_wheel_status_facts",
+    ] {
+        assert!(
+            !compact_source.contains(export_name),
+            "wheel-specific PyO3 export `{export_name}` must stay removed"
+        );
+    }
+    assert!(
+        !compact_source.contains("signature=(repo_root,*,server_data="),
+        "runtime-root must not retain a hidden server-data override"
+    );
+    assert!(
+        !compact_source.contains("task_workflow_doctor_plan_authority_py(py:Python<'_>,backend:"),
+        "plan-authority must not retain a hidden backend override"
+    );
 }
 
 #[test]
@@ -95,7 +119,6 @@ fn supported_blocking_agent_exports_release_the_python_gil() {
     let source = ait_py_source();
     for export_name in [
         "ait_agent_env_file_load",
-        "ait_agent_management",
         "ait_agent_telegram_message_delivery_execute",
         "ait_agent_web_runtime_execute",
         "ait_agent_worker_capabilities",

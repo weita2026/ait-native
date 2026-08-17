@@ -74,13 +74,16 @@ fn sha256_hex(bytes: &[u8]) -> ([u8; 32], String) {
 fn generated_worktree_cargo_config_text(root: &Path) -> String {
     let ait_dir = root.join(".ait");
     let shared_ait_dir = fs::canonicalize(&ait_dir).unwrap_or(ait_dir);
-    let target_dir = shared_ait_dir.join("cargo-target");
+    let target_dir = shared_ait_dir
+        .join("cargo-target")
+        .join("task-workspaces")
+        .join("lct-test");
     let build_dir = shared_ait_dir
         .join("cargo-build")
         .join("task-workspaces")
         .join("lct-test");
     format!(
-        "# Managed by ait: stable final artifacts, workspace-isolated intermediates.\n[build]\ntarget-dir = \"{}\"\nbuild-dir = \"{}\"\n\n[alias]\nmanaged-test = [\"test\", \"--profile\", \"ait-ci\"]\n",
+        "# Managed by ait: workspace-isolated final artifacts and intermediates.\n[build]\ntarget-dir = \"{}\"\nbuild-dir = \"{}\"\n\n[alias]\nmanaged-test = [\"test\", \"--profile\", \"ait-ci\"]\n",
         target_dir.to_string_lossy(),
         build_dir.to_string_lossy(),
     )
@@ -754,7 +757,7 @@ fn local_content_maintenance_selected_binary_reads_stats_and_prunes_only_orphan_
     assert_eq!(stats["packed_blob_count"], 1);
     assert_eq!(stats["pack_count"], 1);
     assert_eq!(stats["tree_pack_count"], 1);
-    assert_eq!(stats["inventory_included"], false);
+    assert!(stats.get("inventory_included").is_none());
     assert_eq!(stats["reachability_summary"]["computed"], false);
     assert!(stats["reachable_blob_count"].is_null());
     assert_eq!(
@@ -764,29 +767,19 @@ fn local_content_maintenance_selected_binary_reads_stats_and_prunes_only_orphan_
     assert!(stats.get("packs").is_none());
     assert!(stats.get("tree_packs").is_none());
 
-    let inventory = store
-        .storage_stats_with_options(LocalContentStatsOptions {
-            include_inventory: true,
-            compute_reachability: true,
-        })
-        .expect("selected Binary DB stats with inventory");
-    assert_eq!(inventory["inventory_included"], true);
-    assert_eq!(inventory["reachability_summary"]["computed"], true);
-    assert_eq!(inventory["reachable_blob_count"], 0);
-    assert_eq!(
-        inventory["packs"][0]["pack_format"].as_str(),
-        Some(PACK_FORMAT_ZSTD_CHUNKED_V1)
-    );
-    assert_eq!(
-        inventory["tree_packs"][0]["pack_format"].as_str(),
-        Some(TREE_PACK_FORMAT_ZSTD_CHUNKED_V1)
-    );
-
     let validation = store.validate().expect("selected Binary DB validate");
     assert!(validation.get("state").is_some());
+    let preview = store
+        .preview_orphan_pack_prune()
+        .expect("selected Binary DB orphan-pack preview");
+    assert_eq!(preview["mode"], "preview");
+    assert_eq!(preview["applied"], false);
+    assert_eq!(preview["candidate_orphan_pack_count"], 0);
     let prune = store
         .prune_orphan_packs()
         .expect("selected Binary DB orphan-pack prune");
+    assert_eq!(prune["mode"], "apply");
+    assert_eq!(prune["applied"], true);
     assert_eq!(prune["removed_orphan_pack_count"], 0);
 }
 
@@ -1047,7 +1040,7 @@ fn snapshot_binary_db_selected_create_writes_parent_snapshot_without_retired_bac
 fn snapshot_binary_db_selected_worktree_create_preserves_parent_cargo_config_without_retired_backend_fallback(
 ) {
     const TEST_LAYOUT: u32 = 1;
-    const SOURCE_CARGO_CONFIG: &str = "# AIT source policy: canonical Cargo settings; task worktrees receive a managed projection.\n[build]\njobs = 8\ntarget-dir = \".ait/cargo-target\"\nbuild-dir = \".ait/cargo-build/workspaces/{workspace-path-hash}\"\n\n[alias]\nmanaged-test = [\"test\", \"--profile\", \"ait-ci\"]\n";
+    const SOURCE_CARGO_CONFIG: &str = "# AIT source policy: canonical Cargo settings; task worktrees receive a managed projection.\n[build]\njobs = 8\ntarget-dir = \".ait/cargo-target\"\nbuild-dir = \".ait/cargo-build/canonical\"\n\n[alias]\nmanaged-test = [\"test\", \"--profile\", \"ait-ci\"]\n";
     let temp = TempDir::new().unwrap();
     let root = temp.path();
     fs::create_dir_all(root.join(".ait")).unwrap();
@@ -2420,6 +2413,28 @@ fn team_review_enabled_only_in_team_remote_mode() {
 }
 
 #[test]
+fn change_scope_resolution_uses_change_default_and_explicit_solo_overrides() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    fs::create_dir_all(root.join(".ait")).unwrap();
+    fs::write(
+        root.join(".ait/config.json"),
+        r#"{"repo_name":"fixture","workflow_default_scope":"remote","task_default_scope":"remote","change_default_scope":"local"}"#,
+    )
+    .unwrap();
+    let ctx = RepoRuntime::discover_from(root).unwrap();
+
+    assert!(ctx.change_uses_local_scope(false, None));
+    assert!(ctx.change_uses_local_scope(true, None));
+    assert!(!ctx.change_uses_local_scope(false, Some("origin")));
+    assert!(!ctx.task_uses_local_scope(false, None).unwrap());
+    assert!(ctx
+        .task_uses_local_scope(true, Some("origin"))
+        .unwrap_err()
+        .contains("cannot be combined"));
+}
+
+#[test]
 fn ai_code_review_identity_uses_executable_basename_without_human_fallback() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path();
@@ -2430,7 +2445,7 @@ fn ai_code_review_identity_uses_executable_basename_without_human_fallback() {
     )
     .unwrap();
     let ctx = RepoRuntime::discover_from(root).unwrap();
-    let identity = ctx.ai_code_review_reviewer_identity(Some("custom-reviewer"));
+    let identity = ctx.ai_code_review_reviewer_identity();
     assert!(identity.is_some());
     assert_ne!(identity.as_deref(), Some("custom-reviewer"));
     assert_ne!(
@@ -2440,7 +2455,7 @@ fn ai_code_review_identity_uses_executable_basename_without_human_fallback() {
 }
 
 #[test]
-fn task_review_auto_approval_identity_uses_configured_user_name_only() {
+fn task_review_identity_uses_configured_user_name_only() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path();
     fs::create_dir_all(root.join(".ait")).unwrap();
@@ -2451,14 +2466,8 @@ fn task_review_auto_approval_identity_uses_configured_user_name_only() {
     .unwrap();
     let ctx = RepoRuntime::discover_from(root).unwrap();
     assert_eq!(
-        ctx.task_review_auto_approval_reviewer_identity(None)
-            .as_deref(),
+        ctx.task_review_reviewer_identity().as_deref(),
         Some("Alice Example")
-    );
-    assert_eq!(
-        ctx.task_review_auto_approval_reviewer_identity(Some("Task Reviewer"))
-            .as_deref(),
-        Some("Task Reviewer")
     );
 }
 

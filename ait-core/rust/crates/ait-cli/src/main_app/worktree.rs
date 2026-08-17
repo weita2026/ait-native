@@ -1,3 +1,13 @@
+const WORKTREE_DESTRUCTIVE_CONFIRMATION_ERROR: &str =
+    "Pass --yes to apply this destructive worktree operation, or use --dry-run to preview it.";
+
+fn require_worktree_destructive_confirmation(dry_run: bool, yes: bool) -> Result<(), String> {
+    if !dry_run && !yes {
+        return Err(WORKTREE_DESTRUCTIVE_CONFIRMATION_ERROR.to_string());
+    }
+    Ok(())
+}
+
 fn run_worktree(repo: RepoRuntime, command: WorktreeCommand) -> Result<ExitCode, String> {
     match command {
         WorktreeCommand::Status(args) => {
@@ -74,12 +84,7 @@ fn run_worktree(repo: RepoRuntime, command: WorktreeCommand) -> Result<ExitCode,
             Ok(ExitCode::SUCCESS)
         }
         WorktreeCommand::Cleanup(args) => {
-            if !args.dry_run && !args.yes {
-                return Err(
-                    "Pass --yes to apply worktree cleanup, or use --dry-run to preview it."
-                        .to_string(),
-                );
-            }
+            require_worktree_destructive_confirmation(args.dry_run, args.yes)?;
             let payload = run_locked_workspace_command(&repo, "ait-cli worktree cleanup", || {
                 worktree_cleanup(
                     &repo,
@@ -94,6 +99,7 @@ fn run_worktree(repo: RepoRuntime, command: WorktreeCommand) -> Result<ExitCode,
             Ok(ExitCode::SUCCESS)
         }
         WorktreeCommand::PruneStale(args) => {
+            require_worktree_destructive_confirmation(args.dry_run, args.yes)?;
             let payload = worktree_prune_stale(&repo, args.dry_run)?;
             emit_worktree_prune_result(&payload, args.json)?;
             Ok(ExitCode::SUCCESS)
@@ -261,6 +267,7 @@ fn run_worktree(repo: RepoRuntime, command: WorktreeCommand) -> Result<ExitCode,
             if args.all_stale && args.force {
                 return Err("--force cannot be combined with --all-stale".to_string());
             }
+            require_worktree_destructive_confirmation(args.dry_run, args.yes)?;
             let payload = run_locked_workspace_command(&repo, "ait-cli worktree remove", || {
                 if args.all_stale {
                     worktree_prune_stale(&repo, args.dry_run)

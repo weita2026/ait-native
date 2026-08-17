@@ -417,21 +417,15 @@ mod tests {
         let mut worker = json!({
             "kind": "slack",
             "name": "main",
+            "command_path": "/command",
+            "ack_text": "queued by rust",
+            "response_type": "in_channel",
+            "local_reply": {"model": "fixture-model"},
         });
         if let Some(signing_secret) = signing_secret {
             worker["signing_secret"] = JsonValue::String(signing_secret.to_string());
         }
-        let mut process_env = BTreeMap::from([
-            ("AIT_SLACK_COMMAND_PATH".to_string(), "/command".to_string()),
-            (
-                "AIT_SLACK_ACK_TEXT".to_string(),
-                "queued by rust".to_string(),
-            ),
-            (
-                "AIT_SLACK_RESPONSE_TYPE".to_string(),
-                "in_channel".to_string(),
-            ),
-        ]);
+        let mut process_env = BTreeMap::new();
         process_env.extend(
             environment
                 .into_iter()
@@ -547,6 +541,7 @@ mod tests {
         assert_eq!(calls[0]["command_payload"]["text"], "hello world");
         assert_eq!(calls[0]["runtime_target"]["mode"], "remote");
         assert_eq!(calls[0]["runtime_target"]["repo_name"], "fixture");
+        assert_eq!(calls[0]["local_reply"]["model"], "fixture-model");
         assert!(calls[0]["state_path"].as_str().is_some());
         assert!(!calls[0].to_string().contains(SIGNING_SECRET));
     }
@@ -660,10 +655,11 @@ mod tests {
             .expect("missing signing secret");
         assert_eq!(error.code, "slack_signing_secret_missing");
 
-        let invalid_port = slack_config(Some(SIGNING_SECRET), [("AIT_SLACK_BIND_PORT", "70000")]);
-        let AgentWorkerRuntimeConfig::Slack(invalid_port) = invalid_port else {
+        let invalid_port = slack_config(Some(SIGNING_SECRET), []);
+        let AgentWorkerRuntimeConfig::Slack(mut invalid_port) = invalid_port else {
             panic!("Slack config");
         };
+        invalid_port.bind_port = 70000;
         let error = resolve_slack_bind_addr(&invalid_port).expect_err("invalid port");
         assert_eq!(error.code, "slack_worker_bind_port_invalid");
         assert!(!error.render_json().contains(SIGNING_SECRET));

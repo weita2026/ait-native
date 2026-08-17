@@ -1,11 +1,11 @@
 use std::env;
 use std::ffi::{OsStr, OsString};
+use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 
-use ait_server_core::foundation::server_binary_lifecycle::{RUNTIME_DATA_ENV, SERVER_DATA_ENV};
+use ait_server_core::foundation::server_binary_lifecycle::SERVER_DATA_ENV;
 
-pub const CI_STARTUP_ADMISSION_ENV: &str = "AIT_NATIVE_SERVER_CI_STARTUP_ADMISSION";
-pub const CI_STARTUP_ADMISSION_DEFERRED: &str = "deferred";
+pub const DEFAULT_LISTEN_ADDRESS: &str = "127.0.0.1:8088";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum LifecycleCommand {
@@ -20,6 +20,7 @@ pub enum LifecycleCommand {
 pub struct LifecycleOptions {
     pub command: LifecycleCommand,
     pub data_root: Option<PathBuf>,
+    pub listen_address: Option<SocketAddr>,
     pub defer_ci_admission: bool,
     pub init_if_missing: bool,
 }
@@ -29,12 +30,13 @@ pub struct PreparedLifecycle {
     pub command: LifecycleCommand,
     pub data_root: PathBuf,
     pub data_root_source: &'static str,
+    pub listen_address: SocketAddr,
     pub defer_ci_admission: bool,
     pub init_if_missing: bool,
 }
 
 pub fn lifecycle_usage() -> &'static str {
-    "Usage:\n  ait-server run [--data <absolute-path>] [--init-if-missing] [--defer-ci-admission]\n  ait-server init [--data <absolute-path>]\n  ait-server probe [--data <absolute-path>] [--defer-ci-admission]\n  ait-server --startup-probe\n  ait-server --version\n\nWith no arguments, ait-server prints this help without starting the server.\nWith no --data flag or AIT_NATIVE_SERVER_DATA/AIT_RUNTIME_DATA environment,\nAIT uses the platform user-data root and safely initializes it on first run.\n--defer-ci-admission skips only the startup RAM-workspace probe; managed CI\nallocation still fails closed until a memory-backed root is configured."
+    "Usage:\n  ait-server run [--data <absolute-path>] [--listen <ip:port>] [--init-if-missing] [--defer-ci-admission]\n  ait-server init [--data <absolute-path>]\n  ait-server probe [--data <absolute-path>] [--defer-ci-admission]\n  ait-server --startup-probe\n  ait-server --version\n\nWith no arguments, ait-server prints this help without starting the server.\nWith no --data flag or AIT_NATIVE_SERVER_DATA environment, AIT uses the\nplatform user-data root and safely initializes it on first run.\n--listen defaults to 127.0.0.1:8088 and is accepted only by `run`.\n--defer-ci-admission skips only the startup RAM-workspace probe; managed CI\nallocation still fails closed until a memory-backed root is configured."
 }
 
 pub fn parse_lifecycle_args<I, S>(args: I) -> Result<LifecycleOptions, String>
@@ -50,6 +52,7 @@ where
         return Ok(LifecycleOptions {
             command: LifecycleCommand::Help,
             data_root: None,
+            listen_address: None,
             defer_ci_admission: false,
             init_if_missing: false,
         });
@@ -58,6 +61,7 @@ where
         return Ok(LifecycleOptions {
             command: LifecycleCommand::Version,
             data_root: None,
+            listen_address: None,
             defer_ci_admission: false,
             init_if_missing: false,
         });
@@ -66,6 +70,7 @@ where
         return Ok(LifecycleOptions {
             command: LifecycleCommand::Help,
             data_root: None,
+            listen_address: None,
             defer_ci_admission: false,
             init_if_missing: false,
         });
@@ -73,6 +78,7 @@ where
 
     let mut command = None;
     let mut data_root = None;
+    let mut listen_address = None;
     let mut defer_ci_admission = false;
     let mut init_if_missing = false;
     let mut index = 0usize;
@@ -91,6 +97,19 @@ where
                     .ok_or_else(|| "--data requires an absolute path".to_string())?;
                 if data_root.replace(PathBuf::from(raw)).is_some() {
                     return Err("--data may be supplied only once".to_string());
+                }
+            }
+            "--listen" => {
+                index += 1;
+                let raw = values
+                    .get(index)
+                    .and_then(|value| value.to_str())
+                    .ok_or_else(|| "--listen requires an IP address and port".to_string())?;
+                let parsed = raw
+                    .parse::<SocketAddr>()
+                    .map_err(|_| format!("--listen must be an IP address and port: {raw}"))?;
+                if listen_address.replace(parsed).is_some() {
+                    return Err("--listen may be supplied only once".to_string());
                 }
             }
             "--init-if-missing" => init_if_missing = true,
@@ -112,12 +131,16 @@ where
     if defer_ci_admission && command == LifecycleCommand::Init {
         return Err("--defer-ci-admission has no meaning for `ait-server init`".to_string());
     }
+    if listen_address.is_some() && command != LifecycleCommand::Run {
+        return Err("--listen is accepted only with `ait-server run`".to_string());
+    }
     if let Some(root) = data_root.as_deref() {
         require_absolute_data_root(root)?;
     }
     Ok(LifecycleOptions {
         command,
         data_root,
+        listen_address,
         defer_ci_admission,
         init_if_missing,
     })
@@ -152,30 +175,25 @@ fn require_absolute_data_root(root: &Path) -> Result<(), String> {
 pub fn prepare_installed_lifecycle(options: LifecycleOptions) -> Result<PreparedLifecycle, String> {
     let (data_root, data_root_source, platform_default) = if let Some(root) = options.data_root {
         require_absolute_data_root(&root)?;
-        env::set_var(SERVER_DATA_ENV, &root);
         (root, "cli", false)
     } else if let Some(root) = nonempty_env_path(SERVER_DATA_ENV) {
         (root, "env:AIT_NATIVE_SERVER_DATA", false)
-    } else if let Some(root) = nonempty_env_path(RUNTIME_DATA_ENV) {
-        (root, "env:AIT_RUNTIME_DATA", false)
     } else {
         let root = platform_user_data_root()?;
-        env::set_var(SERVER_DATA_ENV, &root);
         (root, "platform-user-default", true)
     };
     require_absolute_data_root(&data_root)?;
 
-    let configured_ci_admission = env::var_os(CI_STARTUP_ADMISSION_ENV);
-    let defer_ci_admission = options.defer_ci_admission
-        || configured_ci_admission.as_deref() == Some(OsStr::new(CI_STARTUP_ADMISSION_DEFERRED))
-        || (platform_default && configured_ci_admission.is_none());
-    if options.defer_ci_admission || (platform_default && configured_ci_admission.is_none()) {
-        env::set_var(CI_STARTUP_ADMISSION_ENV, CI_STARTUP_ADMISSION_DEFERRED);
-    }
+    let defer_ci_admission = options.defer_ci_admission || platform_default;
     Ok(PreparedLifecycle {
         command: options.command,
         data_root,
         data_root_source,
+        listen_address: options.listen_address.unwrap_or_else(|| {
+            DEFAULT_LISTEN_ADDRESS
+                .parse()
+                .expect("default listen address must remain valid")
+        }),
         defer_ci_admission,
         init_if_missing: options.init_if_missing || platform_default,
     })
@@ -253,6 +271,12 @@ mod tests {
             LifecycleCommand::Run
         );
         assert_eq!(
+            parse_lifecycle_args(["run", "--listen", "127.0.0.1:9090"])
+                .unwrap()
+                .listen_address,
+            Some("127.0.0.1:9090".parse().unwrap())
+        );
+        assert_eq!(
             parse_lifecycle_args(["--data", "/tmp/ait-server"])
                 .unwrap()
                 .command,
@@ -283,6 +307,14 @@ mod tests {
         assert!(parse_lifecycle_args(["--data", "relative"])
             .unwrap_err()
             .contains("absolute"));
+        assert!(
+            parse_lifecycle_args(["probe", "--listen", "127.0.0.1:9090"])
+                .unwrap_err()
+                .contains("only with")
+        );
+        assert!(parse_lifecycle_args(["run", "--listen", "localhost:9090"])
+            .unwrap_err()
+            .contains("IP address"));
     }
 
     #[test]

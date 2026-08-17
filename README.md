@@ -25,7 +25,7 @@ Official website: <https://ait-native.dev/>
 ## Install and initialize
 
 ```sh
-python -m pip install ait-native==1.0.0rc6
+python -m pip install ait-native==1.0.0rc7
 cd path/to/your-repository
 ait init
 ```
@@ -40,7 +40,7 @@ Confirm the selected release before initializing a repository:
 ait --version
 ```
 
-This is the public `v1.0.0-rc.6` source tree. One tag contains the exact
+This is the public `v1.0.0-rc.7` source tree. One tag contains the exact
 exported source of `ait-core`, `ait-server`, `ait-runner`, `ait-python`, and
 `ait-node`; their AIT Snapshot mapping is recorded in
 `ait-monorepo-source.json`.

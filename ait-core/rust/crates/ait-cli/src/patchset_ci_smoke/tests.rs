@@ -30,7 +30,7 @@ fn write_release_exec_fixture(root: &Path) {
     .unwrap();
     fs::write(
         root.join("ci/patch_ci.json"),
-        "AIT_SHARED_CARGO_TARGET_DIR/debug/ait-cli test patchset-ci release-artifact-smoke --json\n",
+        r#"{"schema_version":1,"suites":[{"runner":{"kind":"test_discovery_sharded","build_args":["test","--test","patchset_ci_runner","--no-run"]}}]}"#,
     )
     .unwrap();
 }

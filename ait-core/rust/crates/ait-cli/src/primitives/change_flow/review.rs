@@ -152,13 +152,48 @@ where
 pub fn review_task_approve(
     repo: &RepoRuntime,
     change_id: &str,
+    patchset_id: &str,
+    message: &str,
+    remote_name: Option<&str>,
+) -> Result<JsonValue, String> {
+    if !super::super::workflow::workflow_task_review_required(repo) {
+        return Err(
+            "Task review is configured as `automatic`; workflow or AI code review owns automatic `task_approve`."
+                .to_string(),
+        );
+    }
+    let patchset_id = super::patchset::exact_patchset_id(patchset_id)
+        .map_err(|error| format!("Task approval requires one exact --patchset ID. {error}"))?;
+    let resolved_reviewer = repo.task_review_reviewer_identity().ok_or_else(|| {
+        "Task review requires `ait config` `user_name`; reviewer identity cannot be overridden."
+            .to_string()
+    })?;
+    let message = normalized_text(Some(message)).ok_or_else(|| {
+        "Task approval requires --message with the functional validation performed.".to_string()
+    })?;
+    record_review(
+        repo,
+        change_id,
+        Some(&patchset_id),
+        &resolved_reviewer,
+        "task_approve",
+        Some(message),
+        false,
+        remote_name,
+    )
+}
+
+pub fn review_task_record(
+    repo: &RepoRuntime,
+    change_id: &str,
+    action: &str,
+    blocking: bool,
     patchset_id: Option<&str>,
-    reviewer: Option<&str>,
     message: Option<&str>,
     remote_name: Option<&str>,
 ) -> Result<JsonValue, String> {
-    let resolved_reviewer = repo.reviewer_identity(reviewer).ok_or_else(|| {
-        "No reviewer identity available. Pass --reviewer or configure user_name/user_email."
+    let resolved_reviewer = repo.task_review_reviewer_identity().ok_or_else(|| {
+        "Task review requires `ait config` `user_name`; reviewer identity cannot be overridden."
             .to_string()
     })?;
     record_review(
@@ -166,9 +201,9 @@ pub fn review_task_approve(
         change_id,
         patchset_id,
         &resolved_reviewer,
-        "task_approve",
+        action,
         normalized_text(message),
-        false,
+        blocking,
         remote_name,
     )
 }
@@ -189,10 +224,23 @@ pub fn review_record(
 ) -> Result<JsonValue, String> {
     let resolved_action = normalized_text(Some(action))
         .ok_or_else(|| "Review action must be a non-empty string.".to_string())?;
-    let resolved_reviewer = repo.reviewer_identity(reviewer).ok_or_else(|| {
-        "No reviewer identity available. Pass --reviewer or configure user_name/user_email."
-            .to_string()
-    })?;
+    let resolved_reviewer = if resolved_action.starts_with("task_") {
+        if reviewer.is_some() {
+            return Err(
+                "Task reviewer identity comes only from `ait config` `user_name`; remove the reviewer override."
+                    .to_string(),
+            );
+        }
+        repo.task_review_reviewer_identity().ok_or_else(|| {
+            "Task review requires `ait config` `user_name`; reviewer identity cannot be overridden."
+                .to_string()
+        })?
+    } else {
+        repo.reviewer_identity(reviewer).ok_or_else(|| {
+            "No reviewer identity available. Pass --reviewer or configure user_name/user_email."
+                .to_string()
+        })?
+    };
     record_review(
         repo,
         change_id,
@@ -208,22 +256,11 @@ pub fn review_record(
 pub fn review_code_submit(
     repo: &RepoRuntime,
     change_id: &str,
-    verdict: &str,
-    patchset_id: Option<&str>,
-    reviewer: Option<&str>,
+    patchset_id: &str,
     message: &str,
     remote_name: Option<&str>,
 ) -> Result<JsonValue, String> {
-    let normalized_verdict = normalized_text(Some(verdict))
-        .unwrap_or_else(|| "pass".to_string())
-        .replace('_', "-")
-        .to_lowercase();
-    if !matches!(
-        normalized_verdict.as_str(),
-        "pass" | "request-changes" | "defer"
-    ) {
-        return Err("--verdict must be one of: pass, request-changes, defer.".to_string());
-    }
+    let patchset_id = super::patchset::exact_patchset_id(patchset_id)?;
     let missing = missing_code_review_summary_sections(message);
     if !missing.is_empty() {
         return Err(format!(
@@ -231,27 +268,108 @@ pub fn review_code_submit(
             missing.join(", ")
         ));
     }
-    let resolved_reviewer = repo
-        .ai_code_review_reviewer_identity(reviewer)
-        .ok_or_else(|| {
-            "No AI code review reviewer identity available. The signer must come from the executing agent basename; `--reviewer` and human reviewer config do not override that lane.".to_string()
-        })?;
-    let action = if normalized_verdict == "defer" {
-        "code_review_defer"
+    let code_reviewer = repo.ai_code_review_reviewer_identity().ok_or_else(|| {
+        "No AI code review app identity is available from the executing app basename.".to_string()
+    })?;
+    let task_review_required = super::super::workflow::workflow_task_review_required(repo);
+    let automatic_task_reviewer = if task_review_required {
+        None
     } else {
-        "code_review_summary"
+        Some(repo.task_review_reviewer_identity().ok_or_else(|| {
+            "Automatic Task approval requires `ait config` `user_name` before AI code review can be recorded."
+                .to_string()
+        })?)
     };
-    let blocking = normalized_verdict == "request-changes";
-    record_review(
-        repo,
+    let (remote_row, repo_name) = remote_context(repo, remote_name, None)?;
+    let mut closeout_remote = http_closeout_remote(repo, &remote_row)?;
+    review_code_submit_with_closeout_remote(
+        &mut closeout_remote,
         change_id,
-        patchset_id,
-        &resolved_reviewer,
-        action,
-        Some(message.to_string()),
-        blocking,
-        remote_name,
+        &patchset_id,
+        &code_reviewer,
+        automatic_task_reviewer.as_deref(),
+        message,
+        &repo_name,
     )
+}
+
+pub(in crate::primitives) fn review_code_submit_with_closeout_remote<R>(
+    closeout_remote: &mut R,
+    change_id: &str,
+    patchset_id: &str,
+    code_reviewer: &str,
+    automatic_task_reviewer: Option<&str>,
+    message: &str,
+    repo_name: &str,
+) -> Result<JsonValue, String>
+where
+    R: TaskWorkflowPatchsetReader
+        + TaskWorkflowReviewRecorder
+        + TaskWorkflowPolicyEvaluator
+        + ?Sized,
+{
+    let patchset_id = super::patchset::exact_patchset_id(patchset_id)?;
+    let code_reviewer = normalized_text(Some(code_reviewer))
+        .ok_or_else(|| "AI code review requires a non-empty app identity.".to_string())?;
+    let missing = missing_code_review_summary_sections(message);
+    if !missing.is_empty() {
+        return Err(format!(
+            "Code review summary is missing sections with non-placeholder content: {}.",
+            missing.join(", ")
+        ));
+    }
+    let automatic_task_reviewer = automatic_task_reviewer
+        .map(|reviewer| {
+            normalized_text(Some(reviewer)).ok_or_else(|| {
+                "Automatic Task approval requires a non-empty configured user_name.".to_string()
+            })
+        })
+        .transpose()?;
+    let resolved_patchset_id = resolve_patchset_id(closeout_remote, &patchset_id, Some(repo_name))?;
+    let mut code_review = review_record_with_closeout_remote(
+        closeout_remote,
+        change_id,
+        &resolved_patchset_id,
+        &code_reviewer,
+        "code_review_summary",
+        Some(message),
+        false,
+        repo_name,
+    )?;
+    let task_review = if let Some(task_reviewer) = automatic_task_reviewer.as_deref() {
+        let result = review_record_with_closeout_remote(
+            closeout_remote,
+            change_id,
+            &resolved_patchset_id,
+            task_reviewer,
+            "task_approve",
+            Some(AUTOMATIC_TASK_APPROVAL_COMMENT),
+            false,
+            repo_name,
+        )?;
+        let policy_refresh = super::policy_eval_with_closeout_remote(
+            closeout_remote,
+            &resolved_patchset_id,
+            repo_name,
+        )?;
+        json!({
+            "mode": "automatic",
+            "status": "recorded",
+            "reviewer": task_reviewer,
+            "result": result,
+            "policy_refresh": policy_refresh,
+        })
+    } else {
+        json!({
+            "mode": "required",
+            "status": "pending",
+        })
+    };
+    code_review
+        .as_object_mut()
+        .ok_or_else(|| "AI code review response must decode to an object.".to_string())?
+        .insert("task_review".to_string(), task_review);
+    Ok(code_review)
 }
 
 pub fn review_code_template(style: Option<&str>) -> Result<JsonValue, String> {

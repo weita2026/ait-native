@@ -27,10 +27,6 @@ fn admin_cache_contract_names_reference_and_boundaries() {
             "cached_at"
         ])
     );
-    assert_eq!(
-        contract["compatibility_notes"]["task_dag"],
-        json!("Task DAG is retired and is not an admin cache surface.")
-    );
 }
 
 #[test]

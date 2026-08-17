@@ -22,15 +22,8 @@ pub trait TaskWorkflowQueueSummaryBundleReader {
     ) -> TaskWorkflowHttpClientResult<Value>;
 }
 
-pub trait TaskWorkflowQueueChangeLister {
-    fn list_changes(&mut self, repo_name: &str) -> TaskWorkflowHttpClientResult<Vec<Value>>;
-}
-
 pub trait TaskWorkflowQueueRemote:
-    TaskWorkflowTaskQueueReader
-    + TaskWorkflowReviewerInboxReader
-    + TaskWorkflowQueueSummaryBundleReader
-    + TaskWorkflowQueueChangeLister
+    TaskWorkflowTaskQueueReader + TaskWorkflowReviewerInboxReader + TaskWorkflowQueueSummaryBundleReader
 {
 }
 
@@ -38,7 +31,6 @@ impl<R> TaskWorkflowQueueRemote for R where
     R: TaskWorkflowTaskQueueReader
         + TaskWorkflowReviewerInboxReader
         + TaskWorkflowQueueSummaryBundleReader
-        + TaskWorkflowQueueChangeLister
         + ?Sized
 {
 }

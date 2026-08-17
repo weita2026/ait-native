@@ -537,7 +537,7 @@ pub(super) fn assert_publish_ready(record: &JsonValue) -> Result<(), String> {
     }
     assert_release_metadata_has_build_profile_contracts(record)?;
     assert_release_artifact_paths_are_publishable(&release_id, &artifacts)?;
-    assert_native_agent_artifact_pair(&artifacts)?;
+    assert_native_worker_artifact(&artifacts)?;
     assert_native_distribution_publish_ready(record)?;
     Ok(())
 }

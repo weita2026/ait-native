@@ -79,18 +79,10 @@ fn binary_db_default_stats_output_is_bounded_across_pack_inventory_rows() {
 
     let stats = content.storage_stats().unwrap();
     assert_eq!(stats["pack_count"], 128);
-    assert_eq!(stats["inventory_included"], false);
+    assert!(stats.get("inventory_included").is_none());
     assert!(stats.get("packs").is_none());
     assert!(stats.get("tree_packs").is_none());
     assert!(stats.to_string().len() < 10_000);
-
-    let inventory = content
-        .storage_stats_with_options(LocalContentStatsOptions {
-            include_inventory: true,
-            compute_reachability: false,
-        })
-        .unwrap();
-    assert_eq!(inventory["packs"].as_array().unwrap().len(), 128);
 }
 
 fn write_readable_full_pack(temp: &TempDir, pack_id: &str, blob_id: &str, data: &[u8]) -> String {
@@ -110,6 +102,62 @@ fn write_readable_full_pack(temp: &TempDir, pack_id: &str, blob_id: &str, data: 
     )
     .unwrap();
     relative
+}
+
+#[test]
+fn binary_db_prune_revalidation_rejects_catalog_change_before_mutation() {
+    let temp = TempDir::new().unwrap();
+    let content = local_content(&temp);
+    let plan = binary_db_verified_orphan_pack_prune_plan(&content).unwrap();
+
+    let pack_hash = 0x7172_7374_7576;
+    let pack_id = object_pack_id_from_hash48(pack_hash);
+    let pack_path = write_pack_placeholder(&temp, &pack_id);
+    let (pack_hi, pack_lo) = split_hash48(pack_hash);
+    let mut mutation = content
+        .object_packs()
+        .begin_write_txn_with_fsync_policy(
+            BinaryDbCommandScope::ContentWrite,
+            BinaryDbNoopFsyncPolicy,
+        )
+        .unwrap();
+    content
+        .object_packs()
+        .append_object_pack_with_id_index(
+            &mut mutation,
+            &BinaryObjectPackRecord {
+                pack_meta: BinaryObjectPackRecord::META_READY,
+                pack_format_kind: 1,
+                pack_hash_hi16: pack_hi,
+                pack_hash_lo32: pack_lo,
+                first_member_index: 0,
+                member_count: 0,
+                total_bytes: 0,
+                created_at_s: 1,
+            },
+        )
+        .unwrap();
+    mutation.commit().unwrap();
+
+    let mut revalidation = content
+        .object_packs()
+        .begin_write_txn_with_fsync_policy(
+            BinaryDbCommandScope::ContentWrite,
+            BinaryDbNoopFsyncPolicy,
+        )
+        .unwrap();
+    let error =
+        binary_db_require_unchanged_orphan_pack_prune_plan::<TEST_LAYOUT, _>(&revalidation, &plan)
+            .unwrap_err();
+    revalidation.abort().unwrap();
+    assert!(error.contains("content catalog changed"));
+    assert!(temp.path().join(pack_path).is_file());
+    let read = content.object_packs().begin_read_txn();
+    assert!(!content
+        .object_packs()
+        .read_object_pack_record(&read, 0)
+        .unwrap()
+        .is_tombstone());
 }
 
 #[test]
@@ -213,7 +261,39 @@ fn binary_db_prune_removes_only_fully_unreferenced_object_pack() {
         .unwrap();
     write.commit().unwrap();
 
+    let preview = content.preview_orphan_pack_prune().unwrap();
+    assert_eq!(preview["mode"], "preview");
+    assert_eq!(preview["applied"], false);
+    assert_eq!(preview["candidate_orphan_pack_count"], 1);
+    assert_eq!(preview["candidate_orphan_pack_member_count"], 1);
+    assert_eq!(preview["candidate_orphan_pack_ids"][0], orphan_id);
+    assert_eq!(preview["candidate_orphan_pack_paths"][0], orphan_path);
+    assert!(temp.path().join(&valid_path).is_file());
+    assert!(temp.path().join(&orphan_path).is_file());
+    let preview_read = content.object_packs().begin_read_txn();
+    assert!(!content
+        .object_packs()
+        .read_object_pack_record(&preview_read, 1)
+        .unwrap()
+        .is_tombstone());
+    assert!(!content
+        .object_packs()
+        .read_object_pack_member_record(&preview_read, 1)
+        .unwrap()
+        .is_tombstone());
+    drop(preview_read);
+
     let result = content.prune_orphan_packs().unwrap();
+    assert_eq!(result["mode"], "apply");
+    assert_eq!(result["applied"], true);
+    assert_eq!(
+        result["candidate_orphan_pack_ids"],
+        preview["candidate_orphan_pack_ids"]
+    );
+    assert_eq!(
+        result["candidate_orphan_pack_paths"],
+        preview["candidate_orphan_pack_paths"]
+    );
     assert_eq!(result["removed_orphan_pack_count"], 1);
     assert_eq!(result["removed_orphan_pack_member_count"], 1);
     assert_eq!(result["removed_orphan_pack_ids"][0], orphan_id);
@@ -244,6 +324,8 @@ fn binary_db_prune_removes_only_fully_unreferenced_object_pack() {
     drop(read);
 
     let second = content.prune_orphan_packs().unwrap();
+    assert_eq!(second["mode"], "apply");
+    assert_eq!(second["applied"], true);
     assert_eq!(second["removed_orphan_pack_count"], 0);
 }
 

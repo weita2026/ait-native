@@ -6,7 +6,7 @@ fn run_patchset(repo: RepoRuntime, command: PatchsetCommand) -> Result<(), Strin
                     &repo,
                     &args.change,
                     &args.summary,
-                    args.author_mode.as_deref(),
+                    args.author_mode.map(ConfigAuthorModeArg::as_str),
                     args.remote.as_deref(),
                 )
             })?;
@@ -25,12 +25,7 @@ fn run_patchset(repo: RepoRuntime, command: PatchsetCommand) -> Result<(), Strin
             Ok(())
         }
         PatchsetCommand::List(args) => {
-            let payload = patchset_list_cmd(
-                &repo,
-                &args.change,
-                args.remote.as_deref(),
-                args.repo.as_deref(),
-            )?;
+            let payload = patchset_list_cmd(&repo, &args.change, args.remote.as_deref())?;
             if args.json {
                 print_json(&payload)?;
             } else if let Some(rows) = payload.as_array() {
@@ -49,13 +44,8 @@ fn run_patchset(repo: RepoRuntime, command: PatchsetCommand) -> Result<(), Strin
             Ok(())
         }
         PatchsetCommand::Show(args) => {
-            let payload = patchset_show_cmd(
-                &repo,
-                &args.patchset_id,
-                args.remote.as_deref(),
-                args.repo.as_deref(),
-                args.change.as_deref(),
-            )?;
+            let payload =
+                patchset_show_cmd(&repo, &args.patchset_id, args.remote.as_deref())?;
             emit_result(
                 "ait-cli patchset show",
                 &payload,
@@ -75,12 +65,8 @@ fn run_patchset(repo: RepoRuntime, command: PatchsetCommand) -> Result<(), Strin
             Ok(())
         }
         PatchsetCommand::Select(args) => {
-            let payload = patchset_select_cmd(
-                &repo,
-                &args.change,
-                &args.patchset_id,
-                args.remote.as_deref(),
-            )?;
+            let payload =
+                patchset_select_cmd(&repo, &args.patchset_id, args.remote.as_deref())?;
             emit_result(
                 "ait-cli patchset select",
                 &payload,
@@ -90,13 +76,8 @@ fn run_patchset(repo: RepoRuntime, command: PatchsetCommand) -> Result<(), Strin
             Ok(())
         }
         PatchsetCommand::CiStatus(args) => {
-            let payload = patchset_ci_status_cmd(
-                &repo,
-                &args.patchset_id,
-                args.remote.as_deref(),
-                args.recent_limit,
-                None,
-            )?;
+            let payload =
+                patchset_ci_status_cmd(&repo, &args.patchset_id, args.remote.as_deref())?;
             if args.json {
                 print_json(&payload)?;
             } else {
@@ -112,14 +93,8 @@ fn run_patchset(repo: RepoRuntime, command: PatchsetCommand) -> Result<(), Strin
             Ok(())
         }
         PatchsetCommand::RerunCi(args) => {
-            let payload = patchset_rerun_ci_cmd(
-                &repo,
-                &args.patchset_id,
-                args.remote.as_deref(),
-                &args.trigger,
-                None,
-                None,
-            )?;
+            let payload =
+                patchset_rerun_ci_cmd(&repo, &args.patchset_id, args.remote.as_deref())?;
             emit_result(
                 "ait-cli patchset rerun-ci",
                 &payload,

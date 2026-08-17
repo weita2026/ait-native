@@ -68,6 +68,87 @@ fn history_response() -> JsonValue {
     })
 }
 
+fn staged_history_request(final_stage: bool) -> JsonValue {
+    let mut request = history_request();
+    request["contract"] = json!("history-promotion-prepare/v2");
+    request["promotion_id"] = json!("history-promotion-v2:stable");
+    request["idempotency_key"] = json!(if final_stage {
+        "history-promotion-stage:final"
+    } else {
+        "history-promotion-stage:first"
+    });
+    request["revision_snapshot_id"] = json!("SNP-65");
+    request["stage_ordinal"] = json!(if final_stage { 1 } else { 0 });
+    request["stage_base_snapshot_id"] = json!(if final_stage { "SNP-64" } else { "SNP-0" });
+    request["stage_revision_snapshot_id"] = json!(if final_stage { "SNP-65" } else { "SNP-64" });
+    request["previous_stage_patchset_id"] = if final_stage {
+        json!("RCT-64/C-01/P-02")
+    } else {
+        JsonValue::Null
+    };
+    request["total_entry_count"] = json!(65);
+    request["final_stage"] = json!(final_stage);
+    request["entries"][0]["local_task_id"] = json!(if final_stage { "LCT-65" } else { "LCT-64" });
+    request["entries"][0]["local_change_ref"] = json!(if final_stage {
+        "LCT-65/C-01"
+    } else {
+        "LCT-64/C-01"
+    });
+    request["entries"][0]["pre_land_target_snapshot_id"] =
+        request["stage_base_snapshot_id"].clone();
+    request["entries"][0]["landed_snapshot_id"] = request["stage_revision_snapshot_id"].clone();
+    request
+}
+
+fn staged_history_response(final_stage: bool) -> JsonValue {
+    let request = staged_history_request(final_stage);
+    let remote_task_id = if final_stage { "RCT-65" } else { "RCT-64" };
+    let stage_patchset_id = format!("{remote_task_id}/C-01/P-02");
+    let stage = json!({
+        "task_id": remote_task_id,
+        "change_ref": format!("{remote_task_id}/C-01"),
+        "patchset_id": stage_patchset_id,
+        "patchset": {
+            "patchset_id": stage_patchset_id,
+            "base_snapshot_id": if final_stage { "SNP-0" } else { "SNP-0" },
+            "revision_snapshot_id": if final_stage { "SNP-65" } else { "SNP-64" },
+            "source_kind": if final_stage {
+                "history_promotion_aggregate"
+            } else {
+                "history_promotion_stage"
+            },
+            "governance_authority": final_stage
+        }
+    });
+    json!({
+        "contract": "history-promotion-prepare/v2",
+        "repo_name": "repo",
+        "repository_index": 7,
+        "promotion_id": request["promotion_id"],
+        "idempotency_key": request["idempotency_key"],
+        "replayed": false,
+        "target_line": "main",
+        "base_snapshot_id": "SNP-0",
+        "revision_snapshot_id": "SNP-65",
+        "stage_ordinal": request["stage_ordinal"],
+        "stage_base_snapshot_id": request["stage_base_snapshot_id"],
+        "stage_revision_snapshot_id": request["stage_revision_snapshot_id"],
+        "previous_stage_patchset_id": request["previous_stage_patchset_id"],
+        "total_entry_count": 65,
+        "final_stage": final_stage,
+        "entries": [{
+            "local_task_id": request["entries"][0]["local_task_id"],
+            "local_change_id": "C-01",
+            "local_change_ref": request["entries"][0]["local_change_ref"],
+            "task_id": remote_task_id,
+            "change_ref": format!("{remote_task_id}/C-01"),
+            "receipt_patchset_id": format!("{remote_task_id}/C-01/P-01")
+        }],
+        "stage": stage,
+        "aggregate": if final_stage { stage } else { JsonValue::Null }
+    })
+}
+
 #[test]
 fn history_promotion_uses_one_repository_authority_request() {
     let request = history_request();
@@ -99,6 +180,62 @@ fn history_promotion_uses_one_repository_authority_request() {
         spec.path,
         "/v1/native/repository-authorities/7/history-promotion:prepare"
     );
+}
+
+#[test]
+fn staged_history_promotion_validates_intermediate_and_final_authority() {
+    for final_stage in [false, true] {
+        let request = staged_history_request(final_stage);
+        let (mut config, server) =
+            serve_task_workflow_json_once(staged_history_response(final_stage));
+        config.repository_index = Some(crate::server_operational::RepositoryIndex::new(7));
+        let spec_config = config.clone();
+        let mut remote = HttpWorkflowCloseoutRemote::new(config).unwrap();
+
+        let response = remote
+            .prepare_history_promotion("repo", &request)
+            .expect("validate staged history response");
+        assert_eq!(response["contract"], "history-promotion-prepare/v2");
+        assert_eq!(response["final_stage"], final_stage);
+        assert_eq!(response["aggregate"].is_object(), final_stage);
+        assert_eq!(
+            response["stage"]["patchset"]["governance_authority"],
+            final_stage
+        );
+
+        let recorded = server.join().unwrap();
+        assert_eq!(recorded.body, Some(request.clone()));
+        let spec =
+            build_prepare_history_promotion_request_spec(&spec_config, "repo", &request).unwrap();
+        assert_eq!(spec.body, Some(request));
+    }
+}
+
+#[test]
+fn staged_history_promotion_rejects_early_or_divergent_aggregate_authority() {
+    let request = staged_history_request(false);
+    let mut response = staged_history_response(false);
+    response["aggregate"] = response["stage"].clone();
+    let (mut config, server) = serve_task_workflow_json_once(response);
+    config.repository_index = Some(crate::server_operational::RepositoryIndex::new(7));
+    let mut remote = HttpWorkflowCloseoutRemote::new(config).unwrap();
+    let error = remote
+        .prepare_history_promotion("repo", &request)
+        .expect_err("intermediate aggregate authority must fail closed");
+    assert!(error.to_string().contains("must not expose aggregate"));
+    server.join().unwrap();
+
+    let request = staged_history_request(true);
+    let mut response = staged_history_response(true);
+    response["aggregate"]["patchset_id"] = json!("RCT-65/C-01/P-99");
+    let (mut config, server) = serve_task_workflow_json_once(response);
+    config.repository_index = Some(crate::server_operational::RepositoryIndex::new(7));
+    let mut remote = HttpWorkflowCloseoutRemote::new(config).unwrap();
+    let error = remote
+        .prepare_history_promotion("repo", &request)
+        .expect_err("final stage and aggregate divergence must fail closed");
+    assert!(error.to_string().contains("disagree"));
+    server.join().unwrap();
 }
 
 #[test]

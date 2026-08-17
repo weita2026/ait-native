@@ -171,7 +171,6 @@ pub(super) fn register(py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult
         "plan_http_close_planning_session",
         module.getattr("close_planning_session")?,
     )?;
-    module.add("resolve_task_close", module.getattr("resolve_task_close")?)?;
     #[cfg(test)]
     {
         module.add(

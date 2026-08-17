@@ -780,7 +780,7 @@ fn auth_request_specs_match_native_auth_contract() {
 }
 
 #[test]
-fn repo_operational_specs_use_numeric_authority_and_keep_run_ci_long_timeout() {
+fn repo_operational_specs_use_numeric_authority() {
     let spec = build_get_repository_storage_request_spec(&config(), "repo with/slash").unwrap();
     assert_eq!(spec.method, "GET");
     assert_eq!(
@@ -790,73 +790,6 @@ fn repo_operational_specs_use_numeric_authority_and_keep_run_ci_long_timeout() {
     assert_eq!(
         spec.url,
         "https://example.test/v1/native/admin/repositories/repo%20with%2Fslash/storage"
-    );
-    assert!(spec.body.is_none());
-
-    let spec = build_run_repo_ci_request_spec(
-        &config(),
-        "repo with/slash",
-        &[" smoke ".to_string(), "".to_string()],
-        Some("ci"),
-        " main ",
-        " manual ",
-        Some("selector"),
-        &["RT-1".to_string()],
-        Some("corpus"),
-        Some(3),
-        Some(14),
-        &["dep".to_string()],
-        &["comp".to_string()],
-    )
-    .unwrap();
-    assert_eq!(spec.method, "POST");
-    assert_eq!(spec.path, "/v1/native/repository-authorities/7:runCi");
-    assert_eq!(spec.timeout_ms, 3_600_000);
-    let body = spec.body.unwrap();
-    assert_eq!(
-        body["suite_ids"],
-        JsonValue::Array(vec![JsonValue::String("smoke".to_string())])
-    );
-    assert_eq!(body["plane"], "ci");
-    assert_eq!(body["target_line"], "main");
-    assert_eq!(body["trigger"], "manual");
-    assert_eq!(body["selector"], "selector");
-    assert_eq!(
-        body["task_ids"],
-        JsonValue::Array(vec![JsonValue::String("RT-1".to_string())])
-    );
-    assert_eq!(body["curated_corpus"], "corpus");
-    assert_eq!(body["count"], 3);
-    assert_eq!(body["window_days"], 14);
-    assert_eq!(
-        body["dependency_evidence"],
-        JsonValue::Array(vec![JsonValue::String("dep".to_string())])
-    );
-    assert_eq!(
-        body["compliance_evidence"],
-        JsonValue::Array(vec![JsonValue::String("comp".to_string())])
-    );
-
-    let filtered_error = build_read_repository_ci_runs_request_spec(
-        &config(),
-        "repo with/slash",
-        10,
-        Some(" nightly "),
-        Some(" task_batch "),
-    )
-    .unwrap_err();
-    assert!(filtered_error
-        .to_string()
-        .contains("does not support plane or suite_id filters"));
-
-    let spec =
-        build_read_repository_ci_runs_request_spec(&config(), "repo with/slash", 10, None, None)
-            .unwrap();
-    assert_eq!(spec.method, "GET");
-    assert_eq!(spec.path, "/v1/native/repository-authorities/7/worker-jobs");
-    assert_eq!(
-        spec.url,
-        "https://example.test/v1/native/repository-authorities/7/worker-jobs?limit=10"
     );
     assert!(spec.body.is_none());
 
@@ -877,6 +810,45 @@ fn repo_operational_specs_use_numeric_authority_and_keep_run_ci_long_timeout() {
             "https://example.test/v1/native/admin/readiness?recent_jobs_limit=10&stale_after_seconds=300"
         );
     assert!(spec.body.is_none());
+}
+
+#[test]
+fn worker_job_list_request_spec_enforces_the_server_limit_contract() {
+    let repository_index = crate::server_operational::RepositoryIndex::new(7);
+    let minimum = build_list_worker_jobs_request_spec(
+        &config(),
+        repository_index,
+        Some(4),
+        crate::server_operational::WORKER_JOB_LIST_LIMIT_MIN,
+    )
+    .expect("minimum Worker Job list limit");
+    assert_eq!(
+        minimum.url,
+        "https://example.test/v1/native/repository-authorities/7/worker-jobs?limit=1&state_kind=4"
+    );
+
+    let maximum = build_list_worker_jobs_request_spec(
+        &config(),
+        repository_index,
+        None,
+        crate::server_operational::WORKER_JOB_LIST_LIMIT_MAX,
+    )
+    .expect("maximum Worker Job list limit");
+    assert_eq!(
+        maximum.url,
+        "https://example.test/v1/native/repository-authorities/7/worker-jobs?limit=1000"
+    );
+
+    for invalid in [0, crate::server_operational::WORKER_JOB_LIST_LIMIT_MAX + 1] {
+        let error = build_list_worker_jobs_request_spec(&config(), repository_index, None, invalid)
+            .expect_err("out-of-range Worker Job list limit must fail before transport");
+        assert!(
+            error
+                .to_string()
+                .contains("Worker Job list limit must be between 1 and 1000"),
+            "{error}"
+        );
+    }
 }
 
 #[test]

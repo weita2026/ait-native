@@ -21,6 +21,7 @@ struct FakeCloseoutRemote {
     repo_jobs: JsonValue,
     repo_job_requests: usize,
     reviews: BTreeMap<String, JsonValue>,
+    recorded_reviews: Vec<JsonValue>,
     attestations: BTreeMap<String, JsonValue>,
     policies: BTreeMap<String, JsonValue>,
     land_submissions: BTreeMap<String, JsonValue>,
@@ -520,7 +521,7 @@ impl TaskWorkflowReviewRecorder for FakeCloseoutRemote {
         repo_name: Option<&str>,
         _exact_id: bool,
     ) -> TaskWorkflowHttpClientResult<JsonValue> {
-        Ok(json!({
+        let review = json!({
             "change_id": change_id,
             "patchset_id": patchset_id,
             "reviewer": reviewer,
@@ -529,7 +530,9 @@ impl TaskWorkflowReviewRecorder for FakeCloseoutRemote {
             "blocking": blocking,
             "repo_name": repo_name,
             "recorded": true
-        }))
+        });
+        self.recorded_reviews.push(review.clone());
+        Ok(review)
     }
 }
 
@@ -1127,18 +1130,15 @@ fn patchset_command_helpers_accept_closeout_remote_trait() {
         .expect("patchset list");
     assert_eq!(listed.as_array().expect("list array").len(), 2);
 
-    let shown = patchset_show_with_closeout_remote(
-        &mut remote,
-        "RCP-0083-2",
-        Some("fixture-ait"),
-        Some("RCC-0083"),
-    )
-    .expect("patchset show");
+    let shown =
+        patchset_show_with_closeout_remote(&mut remote, "RCP-0083-2", Some("fixture-ait"), None)
+            .expect("patchset show");
     assert_eq!(shown["patchset_number"], json!(2));
 
     let selected =
-        patchset_select_with_closeout_remote(&mut remote, "RCC-0083", "RCP-0083-2", "fixture-ait")
-            .expect("patchset select");
+        patchset_select_by_id_with_closeout_remote(&mut remote, "RCP-0083-2", "fixture-ait")
+            .expect("patchset select by authoritative Patchset owner");
+    assert_eq!(selected["change_id"], json!("RCC-0083"));
     assert_eq!(selected["selected_patchset_id"], json!("RCP-0083-2"));
 }
 
@@ -1289,6 +1289,160 @@ fn review_helpers_accept_single_capability_ports() {
     let shown = review_show_with_closeout_remote(&mut lister, "RCC-0083", "fixture-ait")
         .expect("review show");
     assert_eq!(shown["reviews"][0]["reviewer"], json!("alice"));
+}
+
+#[test]
+fn code_review_submit_records_distinct_code_and_automatic_task_lanes() {
+    let mut remote = FakeCloseoutRemote {
+        patchsets: BTreeMap::from([(
+            "RCP-0083-1".to_string(),
+            json!({
+                "patchset_id": "RCP-0083-1",
+                "change_id": "RCC-0083",
+            }),
+        )]),
+        ..Default::default()
+    };
+    let summary = "Reviewed files: src/lib.rs; Findings: none after inspection; Risks: low; Tests: cargo test; Recommendation: pass";
+
+    let submitted = review_code_submit_with_closeout_remote(
+        &mut remote,
+        "RCC-0083",
+        "RCP-0083-1",
+        "codex",
+        Some("Alice Example"),
+        summary,
+        "fixture-ait",
+    )
+    .expect("submit AI and automatic Task review");
+
+    assert_eq!(submitted["action"], json!("code_review_summary"));
+    assert_eq!(submitted["reviewer"], json!("codex"));
+    assert_eq!(submitted["task_review"]["mode"], json!("automatic"));
+    assert_eq!(submitted["task_review"]["status"], json!("recorded"));
+    assert_eq!(submitted["task_review"]["reviewer"], json!("Alice Example"));
+    assert_eq!(remote.recorded_reviews.len(), 2);
+    assert_eq!(
+        remote.recorded_reviews[0]["action"],
+        json!("code_review_summary")
+    );
+    assert_eq!(remote.recorded_reviews[0]["reviewer"], json!("codex"));
+    assert_eq!(remote.recorded_reviews[1]["action"], json!("task_approve"));
+    assert_eq!(
+        remote.recorded_reviews[1]["reviewer"],
+        json!("Alice Example")
+    );
+    assert_eq!(
+        remote.recorded_reviews[1]["comment"],
+        json!(AUTOMATIC_TASK_APPROVAL_COMMENT)
+    );
+    assert_eq!(remote.policies["RCP-0083-1"]["decision"], json!("pass"));
+}
+
+#[test]
+fn code_review_submit_required_mode_records_only_ai_lane() {
+    let mut remote = FakeCloseoutRemote {
+        patchsets: BTreeMap::from([(
+            "RCP-0083-1".to_string(),
+            json!({
+                "patchset_id": "RCP-0083-1",
+                "change_id": "RCC-0083",
+            }),
+        )]),
+        ..Default::default()
+    };
+    let summary = "Reviewed files: src/lib.rs; Findings: none after inspection; Risks: low; Tests: cargo test; Recommendation: pass";
+
+    let submitted = review_code_submit_with_closeout_remote(
+        &mut remote,
+        "RCC-0083",
+        "RCP-0083-1",
+        "codex",
+        None,
+        summary,
+        "fixture-ait",
+    )
+    .expect("submit required-mode AI review");
+
+    assert_eq!(submitted["task_review"]["mode"], json!("required"));
+    assert_eq!(submitted["task_review"]["status"], json!("pending"));
+    assert_eq!(remote.recorded_reviews.len(), 1);
+    assert!(remote.policies.is_empty());
+}
+
+#[test]
+fn code_review_submit_rejects_invalid_summary_before_remote_mutation() {
+    let mut remote = FakeCloseoutRemote {
+        patchsets: BTreeMap::from([(
+            "RCP-0083-1".to_string(),
+            json!({
+                "patchset_id": "RCP-0083-1",
+                "change_id": "RCC-0083",
+            }),
+        )]),
+        ..Default::default()
+    };
+
+    let error = review_code_submit_with_closeout_remote(
+        &mut remote,
+        "RCC-0083",
+        "RCP-0083-1",
+        "codex",
+        Some("Alice Example"),
+        "looks good",
+        "fixture-ait",
+    )
+    .expect_err("incomplete summary must fail");
+
+    assert!(error.contains("missing sections"), "{error}");
+    assert!(remote.recorded_reviews.is_empty());
+    assert!(remote.policies.is_empty());
+}
+
+#[test]
+fn code_review_submit_rejects_numeric_patchset_ref_before_remote_mutation() {
+    let mut remote = FakeCloseoutRemote::default();
+    let summary = "Reviewed files: src/lib.rs; Findings: none after inspection; Risks: low; Tests: cargo test; Recommendation: pass";
+
+    let error = review_code_submit_with_closeout_remote(
+        &mut remote,
+        "RCC-0083",
+        "1",
+        "codex",
+        Some("Alice Example"),
+        summary,
+        "fixture-ait",
+    )
+    .expect_err("numeric Patchset ref must fail");
+
+    assert!(error.contains("numeric repo-scoped refs"), "{error}");
+    assert!(remote.recorded_reviews.is_empty());
+    assert!(remote.policies.is_empty());
+}
+
+#[test]
+fn automatic_code_review_requires_configured_user_name_before_remote_access() {
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(temp.path().join(".ait")).unwrap();
+    std::fs::write(
+        temp.path().join(".ait/config.json"),
+        r#"{"repo_name":"fixture","task_review":false}"#,
+    )
+    .unwrap();
+    let repo = RepoRuntime::discover_from_path(temp.path()).unwrap();
+    let summary = "Reviewed files: src/lib.rs; Findings: none after inspection; Risks: low; Tests: cargo test; Recommendation: pass";
+
+    let error = review_code_submit(
+        &repo,
+        "RCC-0083",
+        "RCP-0083-1",
+        summary,
+        Some("missing-remote"),
+    )
+    .expect_err("missing automatic reviewer must fail before remote access");
+
+    assert!(error.contains("`user_name`"), "{error}");
+    assert!(!error.contains("remote"), "{error}");
 }
 
 #[test]

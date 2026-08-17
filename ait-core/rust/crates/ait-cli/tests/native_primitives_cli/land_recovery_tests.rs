@@ -26,7 +26,6 @@ fn native_patchset_publish_recovers_from_broken_change_read_and_response_path() 
         &[
             "patchset",
             "publish",
-            "--change",
             "RC-1",
             "--summary",
             "Recovery publish",
@@ -67,9 +66,7 @@ const CLOSEOUT_RECOVERY_ENV: [(&str, &str); 3] = [
 fn closeout_recovery_json(root: &Path, fixture_seed: u64, phase: &str) -> JsonValue {
     let output = command_output_with_env(
         root,
-        &[
-            "task", "land", "RT-1", "--target", "main", "--mode", "direct", "--json",
-        ],
+        &["task", "land", "RT-1", "--json"],
         &CLOSEOUT_RECOVERY_ENV,
     );
     assert!(
@@ -149,6 +146,10 @@ fn native_task_land_recovers_land_submit_from_authoritative_land_state() {
         row.method == "POST" && row.url == "/v1/native/repository-authorities/7/changes/RC-1:submit"
     }));
     assert!(!logged.iter().any(|row| {
+        row.method == "POST"
+            && row.url == "/v1/native/repository-authorities/7/changes/RC-1/reviews"
+    }));
+    assert!(!logged.iter().any(|row| {
         row.method == "GET"
             && row.url == "/v1/native/repository-authorities/7/read/changes/RC-1"
     }));
@@ -215,9 +216,7 @@ fn native_task_land_waits_for_timed_out_in_flight_mutation_then_replays() {
     let started = Instant::now();
     let output = command_output_with_env(
         root,
-        &[
-            "task", "land", "RT-1", "--target", "main", "--mode", "direct", "--json",
-        ],
+        &["task", "land", "RT-1", "--json"],
         &[
             ("AIT_REMOTE_MUTATION_RESPONSE_DEADLINE_SECONDS", "0.02"),
             ("AIT_REMOTE_MUTATION_SETTLE_WINDOW_SECONDS", "0.04"),
@@ -311,9 +310,7 @@ fn native_task_land_timeout_before_remote_mutation_stays_failed_and_bounded() {
     let started = Instant::now();
     let output = command_output_with_env(
         root,
-        &[
-            "task", "land", "RT-1", "--target", "main", "--mode", "direct", "--json",
-        ],
+        &["task", "land", "RT-1", "--json"],
         &[
             ("AIT_REMOTE_MUTATION_RESPONSE_DEADLINE_SECONDS", "0.01"),
             ("AIT_REMOTE_MUTATION_SETTLE_WINDOW_SECONDS", "0.05"),
@@ -486,9 +483,7 @@ fn native_task_land_current_worktree_skips_unrelated_backlog_refresh() {
 
     let payload = json_output_with_env(
         &worktree,
-        &[
-            "task", "land", "RT-1", "--target", "main", "--mode", "direct", "--json",
-        ],
+        &["task", "land", "RT-1", "--json"],
         &[
             ("AIT_REMOTE_MUTATION_RESPONSE_DEADLINE_SECONDS", "0.05"),
             ("AIT_REMOTE_MUTATION_SETTLE_WINDOW_SECONDS", "1.0"),
@@ -535,8 +530,8 @@ fn native_task_land_current_worktree_skips_unrelated_backlog_refresh() {
 }
 
 #[test]
-fn native_workflow_land_apply_defers_current_worktree_backlog_cleanup_after_completion() {
-    let (base_url, _log, state, handle) = spawn_closeout_recovery_remote();
+fn native_workflow_land_apply_delegates_final_closeout_to_atomic_task_land() {
+    let (base_url, log, state, handle) = spawn_closeout_recovery_remote();
     let (temp, worktree) = init_worktree_repo(&base_url);
     let root = temp.path();
     write_file(
@@ -563,18 +558,7 @@ fn native_workflow_land_apply_defers_current_worktree_backlog_cleanup_after_comp
     let payload = workflow_land_apply(
         &repo,
         "RC-1",
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        Some("codex"),
         Some("Reviewed files: src/lib.rs; Findings: no blocking findings; Risks: low; Tests: cargo test passed; Recommendation: land."),
-        Some("main"),
-        "direct",
         None,
         None::<fn(&JsonValue) -> Result<(), String>>,
     )
@@ -588,54 +572,165 @@ fn native_workflow_land_apply_defers_current_worktree_backlog_cleanup_after_comp
     );
     assert!(state.lock().unwrap().land_submitted);
     assert!(state.lock().unwrap().task_completed);
-    let actions = payload["applied_actions"].as_array().unwrap();
-    assert!(actions
-        .iter()
-        .any(|row| row["code"].as_str() == Some("complete_task")));
-    let cleanup = actions
-        .iter()
-        .find(|row| row["code"].as_str() == Some("complete_task"))
-        .and_then(|row| row.get("result"))
-        .and_then(|result| result.get("bound_worktree_cleanup"))
-        .unwrap();
-    assert_eq!(cleanup["status"].as_str(), Some("skipped"));
-    assert_eq!(cleanup["reason"].as_str(), Some("current_worktree"));
     assert_eq!(
-        cleanup["backlog_cleanup"]["status"].as_str(),
-        Some("deferred")
+        payload["reviewer_workflow"]["contract"].as_str(),
+        Some("workflow-land-reviewer-atomic-closeout/v1")
     );
     assert_eq!(
-        cleanup["backlog_cleanup"]["next_step_command"].as_str(),
-        Some("ait worktree cleanup --yes")
+        payload["reviewer_workflow"]["finalizer"].as_str(),
+        Some("task-land-atomic/v1")
     );
+    assert_eq!(
+        payload["atomic_task_land"]["remote_mutation_count"].as_u64(),
+        Some(1)
+    );
+    let cleanup = &payload["bound_worktree_cleanup"];
+    assert_eq!(cleanup["status"].as_str(), Some("removed"));
+    assert!(matches!(
+        cleanup["reason"].as_str(),
+        Some("promoted_to_cli_main_seed" | "task_land_force_close")
+    ));
     assert!(backlog_path.exists());
     let after: JsonValue =
         parse_json_file(&backlog_metadata_path);
     assert!(after.get("workspace_status_cache").is_none());
     handle.join().unwrap();
+    let logged = log.lock().unwrap().clone();
+    assert_eq!(
+        logged
+            .iter()
+            .filter(|row| {
+                row.method == "POST"
+                    && row.url == "/v1/native/repository-authorities/7/task-land"
+            })
+            .count(),
+        1
+    );
+    assert!(!logged.iter().any(|row| {
+        row.method == "POST"
+            && matches!(
+                row.url.as_str(),
+                "/v1/native/repository-authorities/7/changes/RC-1:submit"
+                    | "/v1/native/repository-authorities/7/tasks/RT-1:close"
+            )
+    }));
 }
 
 #[test]
-fn native_task_land_task_reference_does_not_probe_remote_change() {
+fn native_workflow_land_cli_uses_default_remote_in_solo_local_before_atomic_task_land() {
+    let (base_url, log, state, handle) = spawn_closeout_recovery_remote();
+    let (temp, worktree) = init_worktree_repo(&base_url);
+    let config_path = temp.path().join(".ait/config.json");
+    let mut config: JsonValue = parse_json_file(&config_path);
+    config["workflow_mode"] = json!("solo_local");
+    config["workflow_default_scope"] = json!("local");
+    config["task_default_scope"] = json!("local");
+    config["change_default_scope"] = json!("local");
+    write_file(&config_path, &(encode_json_pretty(&config) + "\n"));
+    write_file(
+        &worktree.join("src/lib.rs"),
+        "pub fn repo_root_version() -> &'static str { \"reviewed\" }\n",
+    );
+    let patchset_revision_snapshot_id = seed_snapshot(&worktree, "reviewer workflow land");
+    {
+        let mut guard = state.lock().unwrap();
+        guard.patchset_revision_snapshot_id = Some(patchset_revision_snapshot_id);
+        guard.enforce_reviewer_workflow = true;
+        guard.code_review_recorded = false;
+        guard.task_review_recorded = false;
+        guard.policy_evaluated = false;
+    }
+
+    let output = command_output_with_env(
+        &worktree,
+        &[
+            "workflow",
+            "land",
+            "RC-1",
+            "--apply",
+            "--review-message",
+            "Reviewed files: src/lib.rs; Findings: no blocking findings; Risks: low; Tests: cargo test passed; Recommendation: land.",
+        ],
+        &[],
+    );
+    assert!(
+        output.status.success(),
+        "workflow land failed\nstdout:\n{}\n\nstderr:\n{}\nrequests:\n{:#?}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+        log.lock().unwrap().clone()
+    );
+    assert!(state.lock().unwrap().land_submitted);
+    assert!(state.lock().unwrap().task_completed);
+
+    handle.join().unwrap();
+    let logged = log.lock().unwrap().clone();
+    let code_review_index = logged
+        .iter()
+        .position(|row| {
+            row.method == "POST"
+                && row.url == "/v1/native/repository-authorities/7/changes/RC-1/reviews"
+                && row.body.contains("\"action\":\"code_review_summary\"")
+        })
+        .expect("workflow land must record exact-Patchset code review");
+    let task_review_index = logged
+        .iter()
+        .position(|row| {
+            row.method == "POST"
+                && row.url == "/v1/native/repository-authorities/7/changes/RC-1/reviews"
+                && row.body.contains("\"action\":\"task_approve\"")
+        })
+        .expect("workflow land must record configured Task approval");
+    let policy_index = logged
+        .iter()
+        .position(|row| {
+            row.method == "POST"
+                && row.url
+                    == "/v1/native/repository-authorities/7/patchsets/RP-1:evaluatePolicy"
+        })
+        .expect("workflow land must evaluate final Policy");
+    let atomic_land_index = logged
+        .iter()
+        .position(|row| {
+            row.method == "POST"
+                && row.url == "/v1/native/repository-authorities/7/task-land"
+        })
+        .expect("workflow land must delegate to atomic Task Land");
+    assert!(code_review_index < task_review_index);
+    assert!(task_review_index < policy_index);
+    assert!(policy_index < atomic_land_index);
+}
+
+#[test]
+fn native_task_audit_remote_task_reference_does_not_probe_remote_change() {
     let (base_url, log, _state, handle) = spawn_closeout_recovery_remote();
     let (temp, worktree) = init_worktree_repo(&base_url);
+    let config_path = temp.path().join(".ait/config.json");
+    let config = fs::read_to_string(&config_path)
+        .unwrap()
+        .replace(
+            "\"workflow_default_scope\": \"remote\"",
+            "\"workflow_default_scope\": \"local\"",
+        )
+        .replace(
+            "\"task_default_scope\": \"remote\"",
+            "\"task_default_scope\": \"local\"",
+        );
+    write_file(&config_path, &config);
     let payload = json_output(
         &worktree,
         &[
             "task",
-            "land",
+            "audit",
             "RT-1",
             "--remote",
             "origin",
-            "--target",
-            "main",
-            "--preview",
             "--json",
         ],
     );
 
     assert_eq!(
-        payload["change"]["change_id"].as_str(),
+        payload["changes"][0]["change"]["change_id"].as_str(),
         Some("RC-1"),
         "{}",
         encode_json_pretty(&payload)
@@ -649,7 +744,7 @@ fn native_task_land_task_reference_does_not_probe_remote_change() {
 }
 
 #[test]
-fn native_task_land_cli_solo_remote_default_uses_remote_for_unpublished_local_draft() {
+fn native_task_audit_cli_solo_remote_default_uses_remote_for_unpublished_local_draft() {
     let (base_url, log, _state, handle) = spawn_closeout_recovery_remote();
     let (temp, worktree) = init_local_draft_worktree_repo(&base_url);
 
@@ -657,27 +752,29 @@ fn native_task_land_cli_solo_remote_default_uses_remote_for_unpublished_local_dr
         &worktree,
         &[
             "task",
-            "land",
+            "audit",
             "RT-1",
-            "--target",
-            "main",
-            "--preview",
             "--json",
         ],
     );
 
-    assert_ne!(payload["mode"].as_str(), Some("local"));
-    assert_eq!(payload["change"]["change_id"].as_str(), Some("RC-1"));
+    assert_eq!(
+        payload["changes"][0]["change"]["change_id"].as_str(),
+        Some("RC-1")
+    );
     assert_eq!(payload["task"]["task_id"].as_str(), Some("RT-1"));
     assert!(log.lock().unwrap().iter().any(|row| {
-        row.method == "GET" && row.url == "/v1/native/repository-authorities/7/tasks/RT-1"
+        row.method == "GET"
+            && row.url.starts_with(
+                "/v1/native/repository-authorities/7/read/tasks/RT-1/audit?target_line=main",
+            )
     }));
     drop(temp);
     handle.join().unwrap();
 }
 
 #[test]
-fn native_task_land_cli_local_override_previews_local_draft() {
+fn native_task_audit_cli_local_override_reads_local_draft() {
     let (_temp, worktree, _started) =
         init_cli_local_draft_worktree_repo("http://127.0.0.1:1");
 
@@ -685,25 +782,27 @@ fn native_task_land_cli_local_override_previews_local_draft() {
         &worktree,
         &[
             "task",
-            "land",
+            "audit",
             "LT-0001",
             "--local",
-            "--target",
-            "main",
-            "--preview",
             "--json",
         ],
     );
 
-    assert_eq!(payload["mode"].as_str(), Some("local"));
-    assert_eq!(payload["apply_status"].as_str(), Some("preview"));
-    assert_eq!(payload["task_id"].as_str(), Some("LT-0001"));
-    assert_eq!(payload["change_id"].as_str(), Some("C-01"));
-    assert_eq!(payload["change_ref"].as_str(), Some("LT-0001/C-01"));
+    assert_eq!(payload["audit_source"]["mode"].as_str(), Some("local"));
+    assert_eq!(payload["task"]["task_id"].as_str(), Some("LT-0001"));
+    assert_eq!(
+        payload["changes"][0]["change"]["change_id"].as_str(),
+        Some("C-01")
+    );
+    assert_eq!(
+        payload["changes"][0]["change"]["change_ref"].as_str(),
+        Some("LT-0001/C-01")
+    );
 }
 
 #[test]
-fn native_task_land_cli_solo_local_default_does_not_fallback_to_remote_closeout() {
+fn native_task_audit_cli_solo_local_default_does_not_fallback_to_remote() {
     let (temp, worktree, _started) =
         init_cli_local_draft_worktree_repo("http://127.0.0.1:1");
     let config_path = temp.path().join(".ait/config.json");
@@ -723,18 +822,14 @@ fn native_task_land_cli_solo_local_default_does_not_fallback_to_remote_closeout(
         &worktree,
         &[
             "task",
-            "land",
+            "audit",
             "LT-0001",
-            "--target",
-            "main",
-            "--preview",
             "--json",
         ],
     );
 
-    assert_eq!(payload["mode"].as_str(), Some("local"));
-    assert_eq!(payload["apply_status"].as_str(), Some("preview"));
-    assert_eq!(payload["task_id"].as_str(), Some("LT-0001"));
+    assert_eq!(payload["audit_source"]["mode"].as_str(), Some("local"));
+    assert_eq!(payload["task"]["task_id"].as_str(), Some("LT-0001"));
 }
 
 #[test]
@@ -772,8 +867,6 @@ fn native_task_land_local_apply_lands_snapshot_and_cleans_worktree() {
             "land",
             "LT-0001/C-01",
             "--local",
-            "--target",
-            "main",
             "--json",
         ],
     );
@@ -812,18 +905,6 @@ fn native_task_land_apply_force_removes_current_worktree_after_completion() {
     let payload = task_land_apply(
         &repo,
         "RT-1",
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        Some("codex"),
-        Some("Reviewed files: src/lib.rs; Findings: no blocking findings; Risks: low; Tests: cargo test passed; Recommendation: land."),
-        Some("main"),
-        "direct",
         None,
         None::<fn(&JsonValue) -> Result<(), String>>,
     )
@@ -920,18 +1001,6 @@ fn native_task_land_promotes_clean_completed_worktree_to_cli_main_seed() {
         &repo,
         "RT-1",
         None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        Some("codex"),
-        Some("Reviewed files: src/lib.rs; Findings: no blocking findings; Risks: low; Tests: cargo test passed; Recommendation: land."),
-        Some("main"),
-        "direct",
-        None,
         None::<fn(&JsonValue) -> Result<(), String>>,
     )
     .unwrap();
@@ -994,18 +1063,6 @@ fn native_task_land_missing_patchset_fails_fast_without_publish_sync_or_ci() {
     let error = task_land_apply(
         &repo,
         "RT-1",
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        Some("main"),
-        "direct",
         None,
         None::<fn(&JsonValue) -> Result<(), String>>,
     )

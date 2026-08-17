@@ -3,9 +3,8 @@ use super::normalization::{
     normalize_plan_diagnostics_compatibility_payload_map,
     normalize_plan_diagnostics_doctor_payload_map,
     normalize_plan_diagnostics_readiness_payload_map,
-    normalize_plan_diagnostics_request_payload_map, normalize_plan_wheel_status_payload_map,
+    normalize_plan_diagnostics_request_payload_map,
 };
-use crate::file_io::FilesystemFileIoStore;
 use crate::json_support::{JsonCodec, JsonMap, JsonValue};
 use crate::shared_foundation::DiagnosticsProbe;
 
@@ -19,9 +18,9 @@ impl<S> DiagnosticsJson<S> {
     }
 }
 
-impl DiagnosticsJson<FilesystemFileIoStore> {
-    pub fn filesystem() -> Self {
-        Self::new(FilesystemFileIoStore)
+impl DiagnosticsJson<()> {
+    pub fn stateless() -> Self {
+        Self::new(())
     }
 }
 
@@ -41,14 +40,6 @@ impl<S> DiagnosticsJson<S> {
         let payload =
             self.parse_object_payload(payload_json, "plan diagnostics backend identity")?;
         normalize_plan_backend_identity_payload_map(payload)
-    }
-
-    pub fn normalize_wheel_status_payload_json(
-        &self,
-        payload_json: &str,
-    ) -> Result<JsonValue, String> {
-        let payload = self.parse_object_payload(payload_json, "plan diagnostics wheel status")?;
-        normalize_plan_wheel_status_payload_map(payload)
     }
 
     pub fn normalize_diagnostics_compatibility_payload_json(
@@ -98,39 +89,35 @@ impl DiagnosticsProbe for DiagnosticsFoundation {
         &self,
         payload_json: &str,
     ) -> Result<JsonValue, String> {
-        DiagnosticsJson::filesystem().normalize_diagnostics_request_payload_json(payload_json)
+        DiagnosticsJson::stateless().normalize_diagnostics_request_payload_json(payload_json)
     }
 
     fn normalize_backend_identity_payload_json(
         &self,
         payload_json: &str,
     ) -> Result<JsonValue, String> {
-        DiagnosticsJson::filesystem().normalize_backend_identity_payload_json(payload_json)
-    }
-
-    fn normalize_wheel_status_payload_json(&self, payload_json: &str) -> Result<JsonValue, String> {
-        DiagnosticsJson::filesystem().normalize_wheel_status_payload_json(payload_json)
+        DiagnosticsJson::stateless().normalize_backend_identity_payload_json(payload_json)
     }
 
     fn normalize_diagnostics_compatibility_payload_json(
         &self,
         payload_json: &str,
     ) -> Result<JsonValue, String> {
-        DiagnosticsJson::filesystem().normalize_diagnostics_compatibility_payload_json(payload_json)
+        DiagnosticsJson::stateless().normalize_diagnostics_compatibility_payload_json(payload_json)
     }
 
     fn normalize_diagnostics_readiness_payload_json(
         &self,
         payload_json: &str,
     ) -> Result<JsonValue, String> {
-        DiagnosticsJson::filesystem().normalize_diagnostics_readiness_payload_json(payload_json)
+        DiagnosticsJson::stateless().normalize_diagnostics_readiness_payload_json(payload_json)
     }
 
     fn normalize_diagnostics_doctor_payload_json(
         &self,
         payload_json: &str,
     ) -> Result<JsonValue, String> {
-        DiagnosticsJson::filesystem().normalize_diagnostics_doctor_payload_json(payload_json)
+        DiagnosticsJson::stateless().normalize_diagnostics_doctor_payload_json(payload_json)
     }
 }
 
@@ -152,16 +139,6 @@ where
     P: DiagnosticsProbe + ?Sized,
 {
     probe.normalize_backend_identity_payload_json(payload_json)
-}
-
-pub fn normalize_plan_wheel_status_with_diagnostics_probe<P>(
-    probe: &P,
-    payload_json: &str,
-) -> Result<JsonValue, String>
-where
-    P: DiagnosticsProbe + ?Sized,
-{
-    probe.normalize_wheel_status_payload_json(payload_json)
 }
 
 pub fn normalize_plan_diagnostics_compatibility_with_diagnostics_probe<P>(

@@ -56,8 +56,6 @@ pub(super) fn response_for(
             json!({
                 "ci_capabilities": {
                     "patchset_run_ci_route": true,
-                    "repo_run_ci_route": true,
-                    "repo_ci_runs_route": true,
                     "remote_sync_capabilities": {
                         "zstd_pack_bulk": true
                     }
@@ -991,18 +989,12 @@ fn atomic_task_land_response(body: &str, state: &Arc<Mutex<FakeRemoteState>>) ->
     locked.last_submitted_change_id = Some(change_id.clone());
     locked.last_submitted_patchset_id = Some(patchset_id.clone());
     locked.closed_task_ids.insert(task_id.clone());
-    if let Some(entries) = locked
-        .history_promotion
-        .as_ref()
-        .and_then(|promotion| promotion.get("entries"))
-        .and_then(JsonValue::as_array)
-    {
-        let history_task_ids = entries
-            .iter()
-            .filter_map(|entry| string_field(entry, "task_id"))
-            .collect::<Vec<_>>();
-        locked.closed_task_ids.extend(history_task_ids);
-    }
+    let history_task_ids = locked
+        .history_promotion_receipt_task_ids
+        .iter()
+        .cloned()
+        .collect::<Vec<_>>();
+    locked.closed_task_ids.extend(history_task_ids);
     locked.remote_head_snapshot_id = Some(landed_snapshot_id.clone());
     locked
         .line_head_snapshot_ids
@@ -1051,6 +1043,22 @@ fn atomic_task_land_response(body: &str, state: &Arc<Mutex<FakeRemoteState>>) ->
 
 fn history_promotion_response(body: &str, state: &Arc<Mutex<FakeRemoteState>>) -> JsonValue {
     let parsed = parse_value_or(body, JsonValue::Null);
+    let staged =
+        parsed.get("contract").and_then(JsonValue::as_str) == Some("history-promotion-prepare/v2");
+    let stage_ordinal = parsed
+        .get("stage_ordinal")
+        .and_then(JsonValue::as_u64)
+        .unwrap_or(0);
+    let global_start = if staged {
+        stage_ordinal.saturating_mul(64)
+    } else {
+        0
+    };
+    let final_stage = !staged
+        || parsed
+            .get("final_stage")
+            .and_then(JsonValue::as_bool)
+            .unwrap_or(false);
     let entries = parsed
         .get("entries")
         .and_then(JsonValue::as_array)
@@ -1060,14 +1068,15 @@ fn history_promotion_response(body: &str, state: &Arc<Mutex<FakeRemoteState>>) -
         .iter()
         .enumerate()
         .map(|(ordinal, entry)| {
-            let task_id = format!("RT-{:04}", ordinal + 1);
+            let global_ordinal = global_start + ordinal as u64 + 1;
+            let task_id = format!("RT-{global_ordinal:04}");
             json!({
                 "local_task_id": entry.get("local_task_id").cloned().unwrap_or(JsonValue::Null),
                 "local_change_id": entry.get("local_change_id").cloned().unwrap_or(JsonValue::Null),
                 "local_change_ref": entry.get("local_change_ref").cloned().unwrap_or(JsonValue::Null),
                 "task_id": task_id,
                 "change_ref": format!("{task_id}/C-01"),
-                "receipt_patchset_id": format!("RLP-{:02}", ordinal + 1),
+                "receipt_patchset_id": format!("RLP-{global_ordinal:04}"),
             })
         })
         .collect::<Vec<_>>();
@@ -1075,57 +1084,116 @@ fn history_promotion_response(body: &str, state: &Arc<Mutex<FakeRemoteState>>) -
     let final_task_id = final_mapping
         .get("task_id")
         .and_then(JsonValue::as_str)
-        .unwrap_or("RT-0001");
+        .unwrap_or("RT-0001")
+        .to_string();
     let final_change_ref = final_mapping
         .get("change_ref")
         .and_then(JsonValue::as_str)
-        .unwrap_or("RT-0001/C-01");
-    let response = json!({
-        "contract": "history-promotion-prepare/v1",
-        "repo_name": "fixture-ait",
-        "repository_index": 7,
-        "idempotency_key": parsed.get("idempotency_key").cloned().unwrap_or(JsonValue::Null),
-        "replayed": false,
-        "target_line": parsed.get("target_line").cloned().unwrap_or(JsonValue::Null),
-        "base_snapshot_id": parsed.get("base_snapshot_id").cloned().unwrap_or(JsonValue::Null),
-        "revision_snapshot_id": parsed.get("revision_snapshot_id").cloned().unwrap_or(JsonValue::Null),
-        "entries": mappings,
-        "aggregate": {
-            "task_id": final_task_id,
-            "change_ref": final_change_ref,
-            "patchset_id": "RP-2",
-            "patchset": {
-                "patchset_id": "RP-2",
-                "source_kind": "history_promotion_aggregate",
-                "governance_authority": true,
-                "base_snapshot_id": parsed.get("base_snapshot_id").cloned().unwrap_or(JsonValue::Null),
-                "revision_snapshot_id": parsed.get("revision_snapshot_id").cloned().unwrap_or(JsonValue::Null),
-                "evaluation_state": "pending"
-            }
+        .unwrap_or("RT-0001/C-01")
+        .to_string();
+    let authority_patchset_id = if final_stage {
+        "RP-2".to_string()
+    } else {
+        format!("RHP-STAGE-{stage_ordinal}")
+    };
+    let authority = json!({
+        "task_id": final_task_id,
+        "change_ref": final_change_ref,
+        "patchset_id": authority_patchset_id,
+        "patchset": {
+            "patchset_id": authority_patchset_id,
+            "source_kind": if final_stage {
+                "history_promotion_aggregate"
+            } else {
+                "history_promotion_stage"
+            },
+            "governance_authority": final_stage,
+            "base_snapshot_id": if staged && !final_stage {
+                parsed.get("stage_base_snapshot_id").cloned().unwrap_or(JsonValue::Null)
+            } else {
+                parsed.get("base_snapshot_id").cloned().unwrap_or(JsonValue::Null)
+            },
+            "revision_snapshot_id": if staged && !final_stage {
+                parsed.get("stage_revision_snapshot_id").cloned().unwrap_or(JsonValue::Null)
+            } else {
+                parsed.get("revision_snapshot_id").cloned().unwrap_or(JsonValue::Null)
+            },
+            "evaluation_state": "pending"
         }
     });
+    let response = if staged {
+        json!({
+            "contract": "history-promotion-prepare/v2",
+            "repo_name": "fixture-ait",
+            "repository_index": 7,
+            "promotion_id": parsed.get("promotion_id").cloned().unwrap_or(JsonValue::Null),
+            "idempotency_key": parsed.get("idempotency_key").cloned().unwrap_or(JsonValue::Null),
+            "replayed": false,
+            "target_line": parsed.get("target_line").cloned().unwrap_or(JsonValue::Null),
+            "base_snapshot_id": parsed.get("base_snapshot_id").cloned().unwrap_or(JsonValue::Null),
+            "revision_snapshot_id": parsed.get("revision_snapshot_id").cloned().unwrap_or(JsonValue::Null),
+            "stage_ordinal": stage_ordinal,
+            "stage_base_snapshot_id": parsed.get("stage_base_snapshot_id").cloned().unwrap_or(JsonValue::Null),
+            "stage_revision_snapshot_id": parsed.get("stage_revision_snapshot_id").cloned().unwrap_or(JsonValue::Null),
+            "previous_stage_patchset_id": parsed.get("previous_stage_patchset_id").cloned().unwrap_or(JsonValue::Null),
+            "total_entry_count": parsed.get("total_entry_count").cloned().unwrap_or(JsonValue::Null),
+            "final_stage": final_stage,
+            "entries": mappings,
+            "stage": authority,
+            "aggregate": if final_stage { authority } else { JsonValue::Null }
+        })
+    } else {
+        json!({
+            "contract": "history-promotion-prepare/v1",
+            "repo_name": "fixture-ait",
+            "repository_index": 7,
+            "idempotency_key": parsed.get("idempotency_key").cloned().unwrap_or(JsonValue::Null),
+            "replayed": false,
+            "target_line": parsed.get("target_line").cloned().unwrap_or(JsonValue::Null),
+            "base_snapshot_id": parsed.get("base_snapshot_id").cloned().unwrap_or(JsonValue::Null),
+            "revision_snapshot_id": parsed.get("revision_snapshot_id").cloned().unwrap_or(JsonValue::Null),
+            "entries": mappings,
+            "aggregate": authority
+        })
+    };
     let mut locked = state.lock().unwrap();
-    locked.selected_change_id = Some(final_change_ref.to_string());
-    locked.selected_patchset_id = Some("RP-2".to_string());
-    locked.selected_patchset_base_snapshot_id = parsed
-        .get("base_snapshot_id")
-        .and_then(JsonValue::as_str)
-        .map(ToString::to_string);
-    locked.selected_patchset_revision_snapshot_id = parsed
-        .get("revision_snapshot_id")
-        .and_then(JsonValue::as_str)
-        .map(ToString::to_string);
-    locked
-        .published_change_task_ids
-        .insert("C-01".to_string(), final_task_id.to_string());
-    locked.history_promotion = Some(json!({
-        "contract": "ait-history-promotion/v1",
-        "target_line": parsed.get("target_line").cloned().unwrap_or(JsonValue::Null),
-        "base_snapshot_id": parsed.get("base_snapshot_id").cloned().unwrap_or(JsonValue::Null),
-        "revision_snapshot_id": parsed.get("revision_snapshot_id").cloned().unwrap_or(JsonValue::Null),
-        "entries": response["entries"].clone(),
-        "aggregate": response["aggregate"].clone(),
-    }));
+    locked.history_promotion_receipt_task_ids.extend(
+        response["entries"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|entry| string_field(entry, "task_id")),
+    );
+    if final_stage {
+        locked.selected_change_id = Some(final_change_ref.to_string());
+        locked.selected_patchset_id = Some("RP-2".to_string());
+        locked.selected_patchset_base_snapshot_id = parsed
+            .get("base_snapshot_id")
+            .and_then(JsonValue::as_str)
+            .map(ToString::to_string);
+        locked.selected_patchset_revision_snapshot_id = parsed
+            .get("revision_snapshot_id")
+            .and_then(JsonValue::as_str)
+            .map(ToString::to_string);
+        locked
+            .published_change_task_ids
+            .insert("C-01".to_string(), final_task_id.to_string());
+        locked.history_promotion = Some(json!({
+            "contract": if staged {
+                "ait-history-promotion/v2"
+            } else {
+                "ait-history-promotion/v1"
+            },
+            "target_line": parsed.get("target_line").cloned().unwrap_or(JsonValue::Null),
+            "base_snapshot_id": parsed.get("base_snapshot_id").cloned().unwrap_or(JsonValue::Null),
+            "revision_snapshot_id": parsed.get("revision_snapshot_id").cloned().unwrap_or(JsonValue::Null),
+            "stage_ordinal": parsed.get("stage_ordinal").cloned().unwrap_or(JsonValue::Null),
+            "total_entry_count": parsed.get("total_entry_count").cloned().unwrap_or(JsonValue::Null),
+            "final_stage": final_stage,
+            "entries": response["entries"].clone(),
+            "aggregate": response["aggregate"].clone(),
+        }));
+    }
     response
 }
 

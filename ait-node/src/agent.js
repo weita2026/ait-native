@@ -10,13 +10,6 @@ import { NativeRuntime } from "./runtime.js";
 
 const TRANSPORTS = new Set(SUPPORTED_TRANSPORTS);
 const WORKER_OPERATIONS = new Set(SUPPORTED_WORKER_OPERATIONS);
-const MANAGEMENT_CONTEXT_FIELDS = Object.freeze({
-  cwd: "cwd",
-  repoRoot: "repo_root",
-  manifestPath: "manifest_path",
-  env: "env",
-  workerBinary: "worker_binary",
-});
 const WORKER_CONTEXT_FIELDS = Object.freeze({
   cwd: "cwd",
   repoRoot: "repo_root",
@@ -100,72 +93,6 @@ export class AgentClient {
     return new AgentCapabilities(this.runtime.agentCapabilities());
   }
 
-  manage(request) {
-    return this.runtime.agentManagement(request);
-  }
-
-  add(worker, options = {}) {
-    if (!isRecord(worker)) {
-      throw new TypeError("worker must be an object");
-    }
-    return this.manage({
-      operation: "add",
-      worker: { ...worker },
-      ...managementContext(options),
-    });
-  }
-
-  listWorkers(transport, options = {}) {
-    return this.manage({
-      operation: "list",
-      transport: normalizeTransport(transport),
-      ...managementContext(options),
-    });
-  }
-
-  status(transport, name = null, options = {}) {
-    const request = {
-      operation: "status",
-      transport: normalizeTransport(transport),
-      ...managementContext(options),
-    };
-    if (name !== null && name !== undefined) {
-      request.name = normalizeWorkerName(name);
-    }
-    return this.manage(request);
-  }
-
-  start(transport, name, options = {}) {
-    return this.namedManagement(transport, "start", name, options);
-  }
-
-  stop(transport, name, options = {}) {
-    return this.namedManagement(transport, "stop", name, options);
-  }
-
-  restart(transport, name, options = {}) {
-    return this.namedManagement(transport, "restart", name, options);
-  }
-
-  remove(transport, name, options = {}) {
-    return this.namedManagement(transport, "remove", name, options);
-  }
-
-  logs(transport, name, options = {}) {
-    const normalizedOptions = optionsObject(options, "agent options");
-    const { lines = 200, ...context } = normalizedOptions;
-    if (!Number.isSafeInteger(lines) || lines < 0) {
-      throw new TypeError("lines must be a non-negative safe integer");
-    }
-    return this.manage({
-      operation: "logs",
-      transport: normalizeTransport(transport),
-      name: normalizeWorkerName(name),
-      lines,
-      ...managementContext(context),
-    });
-  }
-
   workerTransaction(operation, payload, options = {}) {
     if (typeof operation !== "string") {
       throw new TypeError("worker operation must be text");
@@ -205,22 +132,6 @@ export class AgentClient {
     return this.workerTransaction("reply-provider", payload, options);
   }
 
-  namedManagement(transport, operation, name, options) {
-    return this.manage({
-      operation,
-      transport: normalizeTransport(transport),
-      name: normalizeWorkerName(name),
-      ...managementContext(options),
-    });
-  }
-}
-
-function managementContext(options) {
-  return bindingContext(
-    options,
-    MANAGEMENT_CONTEXT_FIELDS,
-    "agent options",
-  );
 }
 
 function workerContext(options) {
@@ -288,23 +199,6 @@ function normalizeTextOrFileUrl(value, field) {
     value instanceof URL ? fileURLToPath(value) : String(value).trim();
   if (normalized.length === 0) {
     throw new TypeError(`${field} must not be empty`);
-  }
-  return normalized;
-}
-
-function normalizeTransport(value) {
-  if (typeof value !== "string") {
-    throw new TypeError("agent transport must be text");
-  }
-  const normalized = value.trim().toLowerCase();
-  if (!TRANSPORTS.has(normalized)) {
-    throw new TypeError(
-      `unsupported agent transport ${JSON.stringify(value)}; expected: ${[
-        ...TRANSPORTS,
-      ]
-        .sort()
-        .join(", ")}`,
-    );
   }
   return normalized;
 }

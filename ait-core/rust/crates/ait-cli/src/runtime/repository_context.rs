@@ -72,8 +72,7 @@ impl RepoRuntime {
     }
 
     pub fn actor_identity(&self) -> Option<String> {
-        env_nonempty("AIT_NATIVE_ACTOR")
-            .or_else(|| env_nonempty("AIT_ACTOR"))
+        env_nonempty(ait_core::environment_contract::names::AIT_NATIVE_ACTOR)
             .or_else(|| self.config.get("user_email").and_then(as_nonempty_string))
             .or_else(|| self.config.get("user_name").and_then(as_nonempty_string))
     }
@@ -133,34 +132,24 @@ impl RepoRuntime {
     }
 
     pub fn effective_model_name(&self, requested: Option<&str>) -> Option<String> {
-        nonempty(requested.map(str::to_string))
-            .or_else(|| env_nonempty("AIT_MODEL"))
-            .or_else(|| env_nonempty("CODEX_MODEL"))
-            .or_else(|| env_nonempty("OPENAI_MODEL"))
-            .or_else(|| {
-                self.config
-                    .get("default_model")
-                    .and_then(as_nonempty_string)
-            })
+        nonempty(requested.map(str::to_string)).or_else(|| {
+            self.config
+                .get("default_model")
+                .and_then(as_nonempty_string)
+        })
     }
 
     pub fn reviewer_identity(&self, requested: Option<&str>) -> Option<String> {
         nonempty(requested.map(str::to_string))
             .or_else(|| self.formatted_user_identity())
-            .or_else(|| env_nonempty("AIT_NATIVE_ACTOR"))
-            .or_else(|| env_nonempty("AIT_ACTOR"))
+            .or_else(|| env_nonempty(ait_core::environment_contract::names::AIT_NATIVE_ACTOR))
     }
 
-    pub fn task_review_auto_approval_reviewer_identity(
-        &self,
-        requested: Option<&str>,
-    ) -> Option<String> {
-        nonempty(requested.map(str::to_string))
-            .or_else(|| self.config.get("user_name").and_then(as_nonempty_string))
+    pub fn task_review_reviewer_identity(&self) -> Option<String> {
+        self.config.get("user_name").and_then(as_nonempty_string)
     }
 
-    pub fn ai_code_review_reviewer_identity(&self, requested: Option<&str>) -> Option<String> {
-        let _ = requested;
+    pub fn ai_code_review_reviewer_identity(&self) -> Option<String> {
         command_executable_basename()
     }
 
@@ -259,12 +248,15 @@ impl RepoRuntime {
         &self,
         local_requested: bool,
         remote_requested: Option<&str>,
-    ) -> bool {
+    ) -> Result<bool, String> {
+        if local_requested && nonempty(remote_requested.map(str::to_string)).is_some() {
+            return Err("`--local` cannot be combined with `--remote`.".to_string());
+        }
         if local_requested {
-            return true;
+            return Ok(true);
         }
         if nonempty(remote_requested.map(str::to_string)).is_some() {
-            return false;
+            return Ok(false);
         }
         let configured = self
             .config
@@ -276,6 +268,48 @@ impl RepoRuntime {
                     .and_then(as_nonempty_string)
             })
             .unwrap_or_else(|| DEFAULT_WORKFLOW_SCOPE.to_string());
+        Ok(configured == "local")
+    }
+
+    pub fn change_uses_local_scope(
+        &self,
+        local_requested: bool,
+        remote_requested: Option<&str>,
+    ) -> bool {
+        if local_requested {
+            return true;
+        }
+        if nonempty(remote_requested.map(str::to_string)).is_some() {
+            return false;
+        }
+        let configured = self
+            .config
+            .get("change_default_scope")
+            .and_then(as_nonempty_string)
+            .or_else(|| {
+                self.config
+                    .get("workflow_default_scope")
+                    .and_then(as_nonempty_string)
+            })
+            .unwrap_or_else(|| DEFAULT_WORKFLOW_SCOPE.to_string());
         configured == "local"
+    }
+
+    pub fn workflow_uses_local_scope(
+        &self,
+        local_requested: bool,
+        remote_requested: Option<&str>,
+    ) -> bool {
+        if local_requested {
+            return true;
+        }
+        if nonempty(remote_requested.map(str::to_string)).is_some() {
+            return false;
+        }
+        self.config
+            .get("workflow_default_scope")
+            .and_then(as_nonempty_string)
+            .unwrap_or_else(|| DEFAULT_WORKFLOW_SCOPE.to_string())
+            == "local"
     }
 }

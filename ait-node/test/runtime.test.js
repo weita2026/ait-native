@@ -26,10 +26,9 @@ test("binding info and version come from the real in-process addon", () => {
   assert.equal(payload.runtime_authority, "rust");
   assert.equal(payload.node_binding, "napi");
   assert.equal(payload.process_transport_allowed, false);
-  assert.equal(payload.version, "1.0.0-rc.6");
+  assert.equal(payload.version, "1.0.0-rc.7");
   assert.deepEqual(payload.supported_surfaces, [
     "ait-core",
-    "ait-agent",
     "ait-agent-worker",
   ]);
   assert.equal(runtime.version(), payload.version);
@@ -49,11 +48,14 @@ test("generic call resolves the installed N-API exports directly", () => {
   assert.throws(() => runtime.runCli(["ok", 1]), /array of NUL-free strings/);
 });
 
-test("removed task publish operation is not exported", () => {
+test("retired management and task publish operations are not exported", () => {
   const runtime = new NativeRuntime();
   const addon = runtime.loadAddon();
 
+  assert.equal("agentManagement" in runtime, false);
   for (const name of [
+    "agentManagementJson",
+    "agent_management_json",
     "taskWorkflowTaskPublish",
     "task_workflow_task_publish",
     "taskPublish",

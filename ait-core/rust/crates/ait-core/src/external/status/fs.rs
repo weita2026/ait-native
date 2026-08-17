@@ -266,7 +266,7 @@ fn should_inspect_current_source_core(repo_root: &Path) -> bool {
 }
 
 fn current_source_core_repo_root_hint(repo_root: &Path) -> Option<PathBuf> {
-    std::env::var_os("AIT_EXTERNAL_CORE_REPO_ROOT")
+    std::env::var_os(crate::environment_contract::names::AIT_EXTERNAL_CORE_REPO_ROOT)
         .map(PathBuf::from)
         .filter(|path| path.join("rust/crates/ait-core/Cargo.toml").is_file())
         .or_else(|| {

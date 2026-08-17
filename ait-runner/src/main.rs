@@ -27,7 +27,7 @@ struct Cli {
 enum Command {
     /// Verify the live ait-server health contract without claiming a job.
     Doctor {
-        #[arg(long, env = "AIT_SERVER_URL")]
+        #[arg(long)]
         server: String,
     },
     /// Execute one typed native request from stdin or a named file.
@@ -36,12 +36,12 @@ enum Command {
         request: String,
         #[arg(long, default_value = ".")]
         source_root: PathBuf,
-        #[arg(long, env = "AIT_RUNNER_ATTEMPT_ROOT")]
+        #[arg(long)]
         attempt_root: Option<PathBuf>,
     },
     /// Claim, execute, and finish one explicit Binary Worker Job pair.
     RunJob {
-        #[arg(long, env = "AIT_SERVER_URL")]
+        #[arg(long)]
         server: String,
         #[arg(long)]
         repository_index: u32,
@@ -49,15 +49,15 @@ enum Command {
         worker_job_index: u32,
         #[arg(long, default_value = ".")]
         source_root: PathBuf,
-        #[arg(long, env = "AIT_RUNNER_ATTEMPT_ROOT")]
+        #[arg(long)]
         attempt_root: Option<PathBuf>,
     },
     /// Poll for compatible native jobs, maintain their lease, and deliver results.
     Serve {
-        #[arg(long, env = "AIT_SERVER_URL")]
+        #[arg(long)]
         server: String,
-        #[arg(long, env = "AIT_RUNNER_WORKER_ID")]
-        worker_id: Option<String>,
+        #[arg(long)]
+        worker_id: String,
         #[arg(long = "repository-index")]
         repository_indexes: Vec<u32>,
         #[arg(long)]
@@ -68,7 +68,7 @@ enum Command {
         heartbeat_interval_ms: u64,
         #[arg(long, default_value = ".")]
         source_root: PathBuf,
-        #[arg(long, env = "AIT_RUNNER_ATTEMPT_ROOT")]
+        #[arg(long)]
         attempt_root: Option<PathBuf>,
     },
 }
@@ -136,7 +136,7 @@ fn run(cli: Cli) -> Result<JsonValue, RunnerError> {
             server_client(&server)?.serve(
                 &executor,
                 &ServeOptions {
-                    worker_id: worker_id.unwrap_or_else(default_worker_id),
+                    worker_id,
                     repository_indexes: normalize_repository_indexes(repository_indexes),
                     once,
                     poll_interval: Duration::from_millis(poll_interval_ms),
@@ -158,7 +158,7 @@ fn normalize_repository_indexes(indexes: Vec<u32>) -> Vec<RepositoryIndex> {
 }
 
 fn server_client(server: &str) -> Result<ServerClient, RunnerError> {
-    let token = std::env::var("AIT_SERVER_TOKEN")
+    let token = std::env::var(ait_runner::environment_contract::names::AIT_SERVER_TOKEN)
         .ok()
         .filter(|value| !value.trim().is_empty());
     ServerClient::new(server, token)
@@ -173,14 +173,6 @@ fn executor(source_root: PathBuf, attempt_root: Option<PathBuf>) -> NativeExecut
 
 fn default_attempt_root() -> PathBuf {
     std::env::temp_dir().join("ait-runner").join("attempts")
-}
-
-fn default_worker_id() -> String {
-    let host = std::env::var("HOSTNAME")
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| "host".to_string());
-    format!("ait-runner-{host}-{}", std::process::id())
 }
 
 fn read_request(request: &str) -> Result<Vec<u8>, RunnerError> {

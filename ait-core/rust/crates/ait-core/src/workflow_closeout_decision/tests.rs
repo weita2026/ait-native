@@ -4,7 +4,7 @@ fn commands_with_patchset_ci() -> JsonValue {
     json!({
         "apply_command": "ait workflow ready RCC-1 --apply",
         "patchset_ci_command": "ait patchset rerun-ci RCP-1",
-        "land_command": "ait task land RCC-1",
+        "land_command": "ait workflow land RCC-1 --apply",
     })
 }
 
@@ -154,40 +154,59 @@ fn ready_facts(patchset_ci_status: JsonValue) -> JsonValue {
 }
 
 #[test]
-fn workflow_ready_owns_auto_task_approval_before_atomic_land() {
+fn workflow_ready_hands_pending_review_and_policy_to_workflow_land() {
     let mut facts = ready_facts(passing_ci_status());
+    facts["requires_code_review_summary"] = json!(true);
+    facts["code_review_summary_count"] = json!(0);
     facts["task_review_approvals"] = json!(0);
+    facts["policy"] = json!({"decision": "pending"});
     let commands = json!({
         "apply_command": "ait workflow ready RCC-1 --apply",
         "auto_review_reviewer": "alice",
-        "review_command": "ait review task approve RCC-1 --patchset RCP-1",
-        "land_command": "ait task land RCC-1"
+        "review_command": "ait workflow land RCC-1 --apply",
+        "land_command": "ait workflow land RCC-1 --apply"
     });
 
     let action = workflow_ready_next_action(&facts, &commands, false, false, true);
 
-    assert_eq!(action["code"], json!("record_review"));
-    assert_eq!(action["command"], json!("ait workflow ready RCC-1 --apply"));
+    assert_eq!(action["code"], json!("done"));
+    assert_eq!(action["command"], json!("ait workflow land RCC-1 --apply"));
     assert!(action["detail"]
         .as_str()
         .unwrap()
-        .contains("already-ready Patchset"));
+        .contains("reviewer-owned `workflow land`"));
 }
 
 #[test]
-fn workflow_ready_evaluates_policy_after_review() {
+fn workflow_ready_does_not_claim_ai_code_review() {
+    let mut facts = ready_facts(passing_ci_status());
+    facts["requires_code_review_summary"] = json!(true);
+    facts["code_review_summary_count"] = json!(0);
+    let commands = json!({
+        "apply_command": "ait workflow ready RCC-1 --apply",
+        "land_command": "ait workflow land RCC-1 --apply"
+    });
+
+    let action = workflow_ready_next_action(&facts, &commands, false, false, true);
+
+    assert_eq!(action["code"], json!("done"));
+    assert_eq!(action["command"], json!("ait workflow land RCC-1 --apply"));
+}
+
+#[test]
+fn workflow_ready_does_not_claim_final_policy_evaluation() {
     let mut facts = ready_facts(passing_ci_status());
     facts["policy"] = json!({"decision": "pending"});
     let commands = json!({
         "apply_command": "ait workflow ready RCC-1 --apply",
         "policy_command": "ait policy eval RCP-1",
-        "land_command": "ait task land RCC-1"
+        "land_command": "ait workflow land RCC-1 --apply"
     });
 
     let action = workflow_ready_next_action(&facts, &commands, false, false, true);
 
-    assert_eq!(action["code"], json!("evaluate_policy"));
-    assert_eq!(action["command"], json!("ait workflow ready RCC-1 --apply"));
+    assert_eq!(action["code"], json!("done"));
+    assert_eq!(action["command"], json!("ait workflow land RCC-1 --apply"));
 }
 
 fn land_facts(patchset_ci_status: JsonValue) -> JsonValue {
@@ -215,6 +234,80 @@ fn land_facts(patchset_ci_status: JsonValue) -> JsonValue {
         "task_review_approvals": 1,
         "landing_status": ""
     })
+}
+
+#[test]
+fn workflow_land_owns_exact_patchset_ai_review_before_task_land() {
+    let mut facts = land_facts(passing_ci_status());
+    facts["requires_code_review_summary"] = json!(true);
+    facts["code_review_summary_count"] = json!(0);
+    facts["task_review_approvals"] = json!(0);
+    let commands = json!({
+        "apply_command": "ait workflow land RCC-1 --apply",
+        "ready_command": "ait workflow ready RCC-1 --apply",
+        "code_review_summary_command": "ait workflow land RCC-1 --apply --review-message \"structured summary\"",
+        "auto_review_reviewer": "alice",
+        "review_command": "ait workflow land RCC-1 --apply",
+        "land_command": "ait task land RCC-1"
+    });
+
+    let action = workflow_land_next_action(
+        &facts, &commands, true, false, true, true, None, "pass", None, false,
+    );
+
+    assert_eq!(action["code"], json!("record_code_review_summary"));
+    assert_eq!(
+        action["command"],
+        json!("ait workflow land RCC-1 --apply --review-message \"structured summary\"")
+    );
+}
+
+#[test]
+fn workflow_land_owns_automatic_task_approval() {
+    let mut facts = land_facts(passing_ci_status());
+    facts["task_review_approvals"] = json!(0);
+    let commands = json!({
+        "apply_command": "ait workflow land RCC-1 --apply",
+        "ready_command": "ait workflow ready RCC-1 --apply",
+        "auto_review_reviewer": "alice",
+        "review_command": "ait workflow land RCC-1 --apply",
+        "land_command": "ait task land RCC-1"
+    });
+
+    let action = workflow_land_next_action(
+        &facts, &commands, true, false, true, true, None, "pass", None, false,
+    );
+
+    assert_eq!(action["code"], json!("record_review"));
+    assert_eq!(action["command"], json!("ait workflow land RCC-1 --apply"));
+}
+
+#[test]
+fn workflow_land_owns_pending_policy_evaluation() {
+    let facts = land_facts(passing_ci_status());
+    let pending_policy = json!({"decision": "pending"});
+    let commands = json!({
+        "apply_command": "ait workflow land RCC-1 --apply",
+        "ready_command": "ait workflow ready RCC-1 --apply",
+        "policy_command": "ait policy eval RCP-1",
+        "land_command": "ait task land RCC-1"
+    });
+
+    let action = workflow_land_next_action(
+        &facts,
+        &commands,
+        true,
+        false,
+        true,
+        true,
+        pending_policy.as_object().cloned(),
+        "pending",
+        None,
+        false,
+    );
+
+    assert_eq!(action["code"], json!("evaluate_policy"));
+    assert_eq!(action["command"], json!("ait workflow land RCC-1 --apply"));
 }
 
 #[test]

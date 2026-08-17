@@ -142,7 +142,7 @@ fn normal_remote_change_create_rejects_legacy_global_id() {
 }
 
 #[test]
-fn change_create_remote_flow_accepts_change_and_line_remote_traits() {
+fn change_create_remote_flow_uses_remote_head_when_local_line_is_ahead() {
     let repo_tmp = tempdir().expect("repo tempdir");
     let repo_root = repo_tmp.path();
     init_repo(&InitRequest {
@@ -183,50 +183,33 @@ fn change_create_remote_flow_accepts_change_and_line_remote_traits() {
             "repo_name": "fixture-ait",
             "line_name": "main",
             "status": "active",
-            "head_snapshot_id": base_snapshot_id,
+            "head_snapshot_id": base_snapshot_id.clone(),
         })],
         ..Default::default()
     };
 
-    let err = super::change_flow::change_create_remote_flow_with_task_remote(
-        &repo,
-        &mut remote,
-        "origin",
-        "fixture-ait",
-        "RCT-0091",
-        "Trait create flow",
-        "main",
-        None,
-    )
-    .expect_err("remote create flow should guard local-ahead base lines");
-    assert!(err.contains("local `main` is ahead of remote `origin`"));
-    assert!(remote.changes.is_empty());
-
-    remote.lines = vec![json!({
-        "repo_name": "fixture-ait",
-        "line_name": "main",
-        "status": "active",
-        "head_snapshot_id": head_snapshot_id,
-    })];
     let created = super::change_flow::change_create_remote_flow_with_task_remote(
-        &repo,
         &mut remote,
-        "origin",
         "fixture-ait",
         "RCT-0091",
         "Trait create flow",
         "main",
         None,
     )
-    .expect("remote create flow should reuse task remote");
+    .expect("remote create flow should use the Remote head independently");
 
     assert_eq!(created["repo_name"], json!("fixture-ait"));
     assert_eq!(created["task_id"], json!("RCT-0091"));
     assert_eq!(created["title"], json!("Trait create flow"));
     assert_eq!(created["base_line"], json!("main"));
-    assert_eq!(created["fork_snapshot_id"], json!(head_snapshot_id));
+    assert_eq!(created["fork_snapshot_id"], json!(base_snapshot_id));
     assert_eq!(created["forked_from_line"], json!("main"));
     assert_eq!(remote.changes.len(), 1);
+    assert_eq!(
+        local_line_head_snapshot_id(&repo, "main").expect("local main head"),
+        Some(head_snapshot_id),
+        "Remote Change creation must not move the local Line",
+    );
 }
 
 #[test]

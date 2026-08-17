@@ -15,11 +15,9 @@ mod registry;
 mod restore;
 mod status;
 
+pub(crate) use bootstrap::task_start_with_progress;
 pub(in crate::primitives) use bootstrap::*;
-pub use bootstrap::{
-    task_resolve_worktree_location, task_start, task_start_bootstrap, task_start_with_progress,
-    worktree_recover_task,
-};
+pub use bootstrap::{task_resolve_worktree_location, task_start, worktree_recover_task};
 pub(super) use cleanup::{
     cleanup_candidate_sort_key, cleanup_registered_worktree_cargo_build_dir,
     coerce_worktree_datetime, finalize_promoted_worktree_registration, remove_one_worktree,
@@ -298,8 +296,8 @@ pub(super) fn line_usage_summary(line_name: &str, indexes: &LineUsageIndexes) ->
 pub(super) fn line_cleanup_decision(
     _repo: &RepoRuntime,
     row: &JsonValue,
-    older_than_delta: ChronoDuration,
-    older_than_label: &str,
+    idle_for_delta: ChronoDuration,
+    idle_for_label: &str,
     cleanup_kind: Option<&str>,
     indexes: &LineUsageIndexes,
     current_line_name: &str,
@@ -313,7 +311,7 @@ pub(super) fn line_cleanup_decision(
         .or_else(|| string_field(row, "created_at"))
         .unwrap_or_else(system_event_timestamp);
     let idle_long_enough =
-        reference_now - coerce_worktree_datetime(Some(updated_at.as_str())) >= older_than_delta;
+        reference_now - coerce_worktree_datetime(Some(updated_at.as_str())) >= idle_for_delta;
     let usage_obj = usage.as_object().cloned().unwrap_or_default();
 
     let mut protected_reason = None::<String>;
@@ -360,7 +358,7 @@ pub(super) fn line_cleanup_decision(
         protected_reason = Some("line lifecycle is manual_only".to_string());
     }
     if protected_reason.is_none() && !idle_long_enough {
-        protected_reason = Some(format!("idle threshold {older_than_label} not reached"));
+        protected_reason = Some(format!("idle threshold {idle_for_label} not reached"));
     }
     if protected_reason.is_none() {
         cleanup_class = "safe_cleanup_candidate".to_string();
@@ -404,8 +402,8 @@ pub(super) fn line_cleanup_decision(
             JsonValue::String(updated_at),
         ),
         (
-            "older_than".to_string(),
-            JsonValue::String(older_than_label.to_string()),
+            "idle_for".to_string(),
+            JsonValue::String(idle_for_label.to_string()),
         ),
         ("usage".to_string(), usage),
     ])

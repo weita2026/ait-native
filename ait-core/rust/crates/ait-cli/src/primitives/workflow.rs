@@ -61,11 +61,6 @@ pub(super) use wait_hint::{
     workflow_wait_hint_change_rows_with_task_remote,
 };
 
-pub use local_completion::{
-    workflow_completed_local_batch_retired_error, workflow_land_completed_local_apply,
-    workflow_land_completed_local_payload,
-};
-
 use local_completion::workflow_effective_pre_land_target_snapshot_id;
 
 pub(super) use local_completion::{
@@ -79,7 +74,7 @@ pub use ready_apply::workflow_ready_apply;
 pub(super) use local_completion::{
     workflow_final_snapshot_candidate_from_entry, workflow_local_history_entries,
     workflow_mark_history_published, workflow_same_head_remote_land_authority,
-    workflow_unique_history_plan_artifact_paths,
+    workflow_unique_history_plan_artifact_paths, workflow_unique_history_plan_publications,
 };
 
 pub use task_land::{
@@ -320,6 +315,24 @@ pub fn workflow_land_payload(
     change_id: &str,
     remote_name: Option<&str>,
 ) -> Result<JsonValue, String> {
+    if let Some(candidate) =
+        workflow_final_snapshot_promotion_candidate(repo, change_id, remote_name)?
+    {
+        let publication_state = candidate
+            .get("state")
+            .and_then(|state| state.get("change"))
+            .and_then(|change| string_field(change, "publication_state"));
+        if publication_state.as_deref() != Some("published") {
+            return workflow_final_snapshot_promotion_preview(&candidate);
+        }
+        let remote_change_id = workflow_final_snapshot_promotion_remote_change_id(&candidate)?;
+        return workflow_land_payload_with_workspace_mode(
+            repo,
+            &remote_change_id,
+            remote_name,
+            false,
+        );
+    }
     workflow_land_payload_with_workspace_mode(repo, change_id, remote_name, false)
 }
 
@@ -414,6 +427,7 @@ fn workflow_insert_external_readiness(
     Ok(())
 }
 
+#[cfg(test)]
 pub(super) fn workflow_local_land_landed_snapshot_id_with_task_remote<R>(
     task_remote: &mut R,
     repo_name: &str,
@@ -437,6 +451,7 @@ where
         })
 }
 
+#[cfg(test)]
 pub(super) fn workflow_local_land_task_id_with_task_remote<R>(
     task_remote: &mut R,
     repo_name: &str,
@@ -452,6 +467,7 @@ where
     required_string_field(&change, "task_id")
 }
 
+#[cfg(test)]
 pub(super) fn workflow_attach_local_land_sync_with_task_remote<R>(
     repo: &RepoRuntime,
     task_remote: &mut R,
@@ -626,43 +642,37 @@ pub(super) fn workflow_attach_local_land_sync_from_atomic_response(
     Ok(payload)
 }
 
-#[allow(clippy::too_many_arguments)]
 pub fn workflow_land_apply<F>(
     repo: &RepoRuntime,
     change_id: &str,
-    snapshot_message: Option<&str>,
-    summary: Option<&str>,
-    tests: Option<&str>,
-    lint: Option<&str>,
-    security: Option<&str>,
-    license: Option<&str>,
-    author_mode: Option<&str>,
-    model: Option<&str>,
-    reviewer: Option<&str>,
     review_message: Option<&str>,
-    target: Option<&str>,
-    mode: &str,
     remote_name: Option<&str>,
     progress: Option<F>,
 ) -> Result<JsonValue, String>
 where
     F: FnMut(&JsonValue) -> Result<(), String>,
 {
+    let resolved_change_id = if let Some(candidate) =
+        workflow_final_snapshot_promotion_candidate(repo, change_id, remote_name)?
+    {
+        let publication_state = candidate
+            .get("state")
+            .and_then(|state| state.get("change"))
+            .and_then(|change| string_field(change, "publication_state"));
+        if publication_state.as_deref() != Some("published") {
+            let remote_name = normalized_text(remote_name).unwrap_or_else(|| "origin".to_string());
+            return Err(format!(
+                "Completed local change {change_id} must pass the explicit ready phase before reviewer land. Run `ait workflow ready {change_id} --apply --remote {remote_name}`, then `ait workflow land {change_id} --apply --remote {remote_name}`."
+            ));
+        }
+        workflow_final_snapshot_promotion_remote_change_id(&candidate)?
+    } else {
+        change_id.to_string()
+    };
     workflow_land_apply_with_state_mode(
         repo,
-        change_id,
-        snapshot_message,
-        summary,
-        tests,
-        lint,
-        security,
-        license,
-        author_mode,
-        model,
-        reviewer,
+        &resolved_change_id,
         review_message,
-        target,
-        mode,
         remote_name,
         false,
         None,
@@ -670,22 +680,10 @@ where
     )
 }
 
-#[allow(clippy::too_many_arguments)]
 fn workflow_land_apply_with_state_mode<F>(
     repo: &RepoRuntime,
     change_id: &str,
-    snapshot_message: Option<&str>,
-    summary: Option<&str>,
-    tests: Option<&str>,
-    lint: Option<&str>,
-    security: Option<&str>,
-    license: Option<&str>,
-    author_mode: Option<&str>,
-    model: Option<&str>,
-    reviewer: Option<&str>,
     review_message: Option<&str>,
-    target: Option<&str>,
-    mode: &str,
     remote_name: Option<&str>,
     ready_patchset_is_authoritative: bool,
     mut initial_state: Option<JsonValue>,
@@ -903,23 +901,54 @@ where
             None,
             None,
         )?;
+        if matches!(code.as_str(), "submit_land" | "complete_task") {
+            let resolved_change_ref = state
+                .get("change")
+                .filter(|change| change.is_object())
+                .map(|change| change_reference_from_payload(change, Some(change_id)))
+                .transpose()?
+                .unwrap_or_else(|| change_id.to_string());
+            let atomic_change_ref = if resolved_change_ref.contains("/C-") {
+                resolved_change_ref
+            } else {
+                workflow_nested_text(&state, "task", "task_id").unwrap_or(resolved_change_ref)
+            };
+            let atomic_output = task_land_apply(
+                repo,
+                &atomic_change_ref,
+                remote_name,
+                None::<fn(&JsonValue) -> Result<(), String>>,
+            )?;
+            let summary = workflow_applied_action_summary(&json!({
+                "code": "submit_land",
+                "result": atomic_output.clone(),
+            }))
+            .unwrap_or_else(|_| "completed atomic Task Land".to_string());
+            workflow_progress_emit(
+                &mut progress,
+                "completed",
+                "atomic_task_land",
+                current_change_id.as_deref(),
+                current_patchset_id.as_deref(),
+                Some(applied_actions.len() + 1),
+                Some("Atomic Task Land committed the reviewer-approved closeout."),
+                Some("mutation_accepted"),
+                None,
+                None,
+                Some(&summary),
+            )?;
+            return workflow_land_attach_atomic_task_land_history(
+                atomic_output,
+                applied_actions,
+                mutation_receipts,
+            );
+        }
         let action = workflow_land_apply_action(
             repo,
             &code,
             &state,
             change_id,
-            snapshot_message,
-            summary,
-            tests,
-            lint,
-            security,
-            license,
-            author_mode,
-            model,
-            reviewer,
             review_message,
-            target,
-            mode,
             remote_name,
         )?;
         if let Some(stopped_reason) = workflow_root_text(&action, "stopped_reason") {
@@ -991,6 +1020,48 @@ where
     }
 }
 
+fn workflow_land_attach_atomic_task_land_history(
+    mut output: JsonValue,
+    mut reviewer_actions: Vec<JsonValue>,
+    mut reviewer_receipts: Vec<JsonValue>,
+) -> Result<JsonValue, String> {
+    let object = output
+        .as_object_mut()
+        .ok_or_else(|| "Atomic Task Land output must decode to an object.".to_string())?;
+    let reviewer_action_count = reviewer_actions.len();
+    reviewer_actions.extend(
+        object
+            .get("applied_actions")
+            .and_then(JsonValue::as_array)
+            .cloned()
+            .unwrap_or_default(),
+    );
+    reviewer_receipts.extend(
+        object
+            .get("mutation_receipts")
+            .and_then(JsonValue::as_array)
+            .cloned()
+            .unwrap_or_default(),
+    );
+    object.insert(
+        "applied_actions".to_string(),
+        JsonValue::Array(reviewer_actions),
+    );
+    object.insert(
+        "mutation_receipts".to_string(),
+        JsonValue::Array(reviewer_receipts),
+    );
+    object.insert(
+        "reviewer_workflow".to_string(),
+        json!({
+            "contract": "workflow-land-reviewer-atomic-closeout/v1",
+            "reviewer_action_count": reviewer_action_count,
+            "finalizer": "task-land-atomic/v1",
+        }),
+    );
+    Ok(output)
+}
+
 fn workflow_done_state_needs_converged_land_submit(
     state: &JsonValue,
     applied_actions: &[JsonValue],
@@ -1050,7 +1121,7 @@ fn workflow_done_state_needs_converged_land_submit(
         })
 }
 
-pub fn workflow_land_local(
+fn workflow_land_local(
     repo: &RepoRuntime,
     change_id: &str,
     target: Option<&str>,
@@ -1134,7 +1205,7 @@ pub fn workflow_land_local(
                 format!(": {}", changed_paths.join(", "))
             };
             format!(
-                "Workspace is dirty ({changed_count} changed{changed_paths_hint}); run `ait snapshot create --message ...` before `ait workflow land-local`."
+                "Workspace is dirty ({changed_count} changed{changed_paths_hint}); run `ait snapshot create --message ...` before `ait task land {change_ref} --local`."
             )
         })?;
         let snapshot = snapshot_create(repo, Some(message.as_str()))?;
@@ -1165,11 +1236,11 @@ pub fn workflow_land_local(
     {
         let guidance = if repo.is_worktree() {
             format!(
-                " Run `ait worktree rebase --onto {target_line}` in the bound worktree and retry `ait workflow land-local`."
+                " Run `ait worktree rebase --onto {target_line}` in the bound worktree and retry `ait task land {change_ref} --local`."
             )
         } else {
             format!(
-                " Rebase or retarget the current line onto `{target_line}` before retrying `ait workflow land-local`."
+                " Rebase or retarget the current line onto `{target_line}` before retrying `ait task land {change_ref} --local`."
             )
         };
         return Err(format!(

@@ -8,6 +8,45 @@ type CreatedRemotePlanFromLocalSeed = (
     Option<AtomicTaskStartOutcome>,
 );
 
+pub(super) fn history_publish_result_row<L>(
+    request: &SyncRequest,
+    local_source: &L,
+    plan_id: &str,
+) -> Result<JsonValue, String>
+where
+    L: PlanSyncLocalPlanStore + ?Sized,
+{
+    let selected_plan_id = LocalPlanId::from_raw(plan_id.to_string())?;
+    let local_plan = get_plan_with_plan_sync_local_store(local_source, selected_plan_id.raw())?;
+    if text_field(&local_plan, "repo_name").as_deref() != Some(request.repo_name.as_str()) {
+        return Err(format!(
+            "Local history Plan {} belongs to repository {}, not {}.",
+            selected_plan_id.reference(),
+            text_field(&local_plan, "repo_name").unwrap_or_default(),
+            request.repo_name
+        ));
+    }
+    let artifact_path = head_text(&local_plan, "artifact_path").ok_or_else(|| {
+        format!(
+            "Local history Plan {} has no head artifact path.",
+            selected_plan_id.reference()
+        )
+    })?;
+    if head_text(&local_plan, "plan_revision_id").is_none() {
+        return Err(format!(
+            "Local history Plan {} has no head revision.",
+            selected_plan_id.reference()
+        ));
+    }
+    Ok(plan_sync_result_row(
+        "history_publish",
+        &artifact_path,
+        head_text(&local_plan, "artifact_selector").as_deref(),
+        &local_plan,
+        None,
+    ))
+}
+
 #[derive(Clone, Debug)]
 struct AtomicTaskStartOutcome {
     response: JsonValue,
