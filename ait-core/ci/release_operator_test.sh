@@ -3,11 +3,15 @@ set -euo pipefail
 
 repo_root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 operator=${repo_root}/ci/release_operator.sh
-temporary_root=$(mktemp -d "${TMPDIR:-/tmp}/ait-release-operator-test.XXXXXX")
+operator_test_tmp_parent=$(CDPATH='' cd -- "${TMPDIR:-/tmp}" && pwd -P)
+temporary_root=$(mktemp -d \
+  "${operator_test_tmp_parent}/ait-release-operator-test.XXXXXX")
 
 cleanup() {
   case "${temporary_root}" in
-    "${TMPDIR:-/tmp}"/ait-release-operator-test.*) rm -rf -- "${temporary_root}" ;;
+    "${operator_test_tmp_parent}"/ait-release-operator-test.*)
+      rm -rf -- "${temporary_root}"
+      ;;
     *) printf 'refusing to remove unexpected release-operator test path: %s\n' \
       "${temporary_root}" >&2 ;;
   esac
@@ -502,32 +506,48 @@ jq '
   .endpoints.oci.immutable_tag = "1.0.0-rc.8"
 ' "${endpoint_config}" >"${rc8_config}"
 "${operator}" validate-config --config "${rc8_config}" >/dev/null
-rc8_status=${temporary_root}/rc8-status.json
-jq '
-  .release.version = "1.0.0-rc.8" |
-  .release.tag = "v1.0.0-rc.8" |
-  .platforms.oci.immutable_tag = "1.0.0-rc.8"
-' "${status_output}" >"${rc8_status}"
+current_version=$(jq -er '.family.version' \
+  "${repo_root}/ait-release-family.json")
+current_python_version=$(jq -er \
+  '.components[] | select(.id == "ait-python") | .version' \
+  "${repo_root}/ait-release-family.json")
+current_tag=v${current_version}
+current_config=${temporary_root}/current-config.json
+jq --arg version "${current_version}" \
+  --arg python_version "${current_python_version}" \
+  --arg tag "${current_tag}" '
+  .release.version = $version |
+  .release.python_version = $python_version |
+  .release.tag = $tag |
+  .endpoints.oci.immutable_tag = $version
+' "${endpoint_config}" >"${current_config}"
+"${operator}" validate-config --config "${current_config}" >/dev/null
+current_status=${temporary_root}/current-status.json
+jq --arg version "${current_version}" --arg tag "${current_tag}" '
+  .release.version = $version |
+  .release.tag = $tag |
+  .platforms.oci.immutable_tag = $version
+' "${status_output}" >"${current_status}"
 clean_host_request=${temporary_root}/clean-host-request.json
 "${operator}" clean-host \
-  --config "${rc8_config}" \
-  --status "${rc8_status}" \
-  --prior-version 1.0.0-rc.7 \
-  --prior-python-version 1.0.0rc7 \
+  --config "${current_config}" \
+  --status "${current_status}" \
+  --prior-version 1.0.0-rc.8 \
+  --prior-python-version 1.0.0rc8 \
   --output "${clean_host_request}" >/dev/null
 "${operator}" validate-clean-host-request \
   --request "${clean_host_request}" \
-  --config "${rc8_config}" \
-  --status "${rc8_status}" >/dev/null
-jq -e '
+  --config "${current_config}" \
+  --status "${current_status}" >/dev/null
+jq -e --arg version "${current_version}" '
   .contract == "ait.release.operator.clean-host-request/v1" and
   .status == "ready_for_clean_host_matrix" and
-  .release.version == "1.0.0-rc.8" and
+  .release.version == $version and
   .prior == {
-    python_version: "1.0.0rc7",
+    python_version: "1.0.0rc8",
     selector: "exact_immutable_version",
-    tag: "v1.0.0-rc.7",
-    version: "1.0.0-rc.7"
+    tag: "v1.0.0-rc.8",
+    version: "1.0.0-rc.8"
   } and
   .matrix.revision == "distribution-target-32-2026-08-17.1" and
   .matrix.row_count == 32 and
@@ -535,12 +555,12 @@ jq -e '
   ([.mutation[]] | all(. == false))
 ' "${clean_host_request}" >/dev/null
 
-expect_failure future-prior "${operator}" clean-host \
-  --config "${rc8_config}" \
-  --status "${rc8_status}" \
-  --prior-version 1.0.0-rc.9 \
-  --prior-python-version 1.0.0rc9 \
-  --output "${temporary_root}/future-prior.json"
+expect_failure non-prior "${operator}" clean-host \
+  --config "${current_config}" \
+  --status "${current_status}" \
+  --prior-version "${current_version}" \
+  --prior-python-version "${current_python_version}" \
+  --output "${temporary_root}/non-prior.json"
 
 clean_host_matrix=${temporary_root}/clean-host-matrix.json
 node "${repo_root}/ci/release_clean_host.mjs" matrix \
@@ -552,10 +572,15 @@ mkdir "${blocked_rows}"
 blocked_evidence=${temporary_root}/blocked-evidence
 expect_failure blocked-aggregate node "${repo_root}/ci/release_clean_host.mjs" aggregate \
   --matrix "${clean_host_matrix}" \
-  --config "${rc8_config}" \
-  --status "${rc8_status}" \
+  --config "${current_config}" \
+  --status "${current_status}" \
   --evidence-root "${blocked_rows}" \
   --output-root "${blocked_evidence}"
+blocked_transport=${temporary_root}/blocked-transport
+mkdir "${blocked_transport}"
+cp "${blocked_evidence}/ait-release.clean-host-status.json" \
+  "${blocked_evidence}/SHA256SUMS" "${blocked_transport}/"
+test ! -e "${blocked_transport}/rows"
 
 clean_host_run=${temporary_root}/clean-host-run.json
 clean_host_artifact=${temporary_root}/clean-host-artifact.json
@@ -583,11 +608,11 @@ jq -n '
 clean_host_status=${temporary_root}/clean-host-status.json
 "${operator}" clean-host-status \
   --request "${clean_host_request}" \
-  --config "${rc8_config}" \
-  --status "${rc8_status}" \
+  --config "${current_config}" \
+  --status "${current_status}" \
   --run-record "${clean_host_run}" \
   --artifact-record "${clean_host_artifact}" \
-  --evidence-root "${blocked_evidence}" \
+  --evidence-root "${blocked_transport}" \
   --output "${clean_host_status}" >/dev/null
 jq -e '
   .contract == "ait.release.operator.clean-host-status/v1" and
@@ -613,16 +638,34 @@ jq -e '
   .next_action == "freeze_new_release_after_repair"
 ' "${clean_host_status}" >/dev/null
 
+nonempty_missing_rows=${temporary_root}/nonempty-missing-rows
+cp -R "${blocked_transport}" "${nonempty_missing_rows}"
+jq '.evidence_inventory = [{path: "rows/missing.json", sha256: ("a" * 64)}]' \
+  "${nonempty_missing_rows}/ait-release.clean-host-status.json" \
+  >"${temporary_root}/nonempty-missing-rows.json"
+mv "${temporary_root}/nonempty-missing-rows.json" \
+  "${nonempty_missing_rows}/ait-release.clean-host-status.json"
+expect_failure nonempty-missing-rows "${operator}" clean-host-status \
+  --request "${clean_host_request}" \
+  --config "${current_config}" \
+  --status "${current_status}" \
+  --run-record "${clean_host_run}" \
+  --artifact-record "${clean_host_artifact}" \
+  --evidence-root "${nonempty_missing_rows}" \
+  --output "${temporary_root}/nonempty-missing-rows-status.json"
+grep -F 'clean-host row evidence directory is missing for a non-empty inventory' \
+  "${temporary_root}/nonempty-missing-rows.stderr" >/dev/null
+
 tampered_evidence=${temporary_root}/tampered-evidence
-cp -R "${blocked_evidence}" "${tampered_evidence}"
+cp -R "${blocked_transport}" "${tampered_evidence}"
 jq '.failures = []' "${tampered_evidence}/ait-release.clean-host-status.json" \
   >"${temporary_root}/tampered-aggregate.json"
 mv "${temporary_root}/tampered-aggregate.json" \
   "${tampered_evidence}/ait-release.clean-host-status.json"
 expect_failure tampered-clean-host "${operator}" clean-host-status \
   --request "${clean_host_request}" \
-  --config "${rc8_config}" \
-  --status "${rc8_status}" \
+  --config "${current_config}" \
+  --status "${current_status}" \
   --run-record "${clean_host_run}" \
   --artifact-record "${clean_host_artifact}" \
   --evidence-root "${tampered_evidence}" \

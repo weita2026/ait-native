@@ -19,6 +19,11 @@ fi
 export AIT_RELEASE_COORDINATOR_SNAPSHOT=SNP-AAAAAAAAAAAA
 export AIT_RELEASE_COORDINATOR_MANIFEST_HASH=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 export AIT_RELEASE_COORDINATOR_CREATED_AT=1700000000
+family_version=$(jq -er '.family.version' \
+  "${repo_root}/ait-release-family.json")
+python_version=$(jq -er \
+  '.components[] | select(.id == "ait-python") | .version' \
+  "${repo_root}/ait-release-family.json")
 
 node --test "${repo_root}/release/monorepo/build-release.test.mjs"
 
@@ -183,8 +188,8 @@ for repository in ait-core ait-server ait-runner ait-python ait-node; do
         "${repo_root}/ci/release_repository_authorities.json" \
         >"${source}/ci/release_repository_authorities.json"
       printf '[workspace]\nmembers = ["crates/ait-py"]\n' >"${source}/rust/Cargo.toml"
-      printf '[package]\nname = "ait-py"\nversion = "1.0.0-rc.8"\n' \
-        >"${source}/rust/crates/ait-py/Cargo.toml"
+      printf '[package]\nname = "ait-py"\nversion = "%s"\n' \
+        "${family_version}" >"${source}/rust/crates/ait-py/Cargo.toml"
       cp "${product_document}" "${source}/docs/distribution.md"
       ;;
     ait-server)
@@ -192,8 +197,8 @@ for repository in ait-core ait-server ait-runner ait-python ait-node; do
       printf '[workspace]\nmembers = []\n' >"${source}/rust/Cargo.toml"
       ;;
     ait-runner)
-      printf '[package]\nname = "ait-runner"\nversion = "1.0.0-rc.8"\n\n[dependencies]\nait-core = { path = ".ait-external/ait-core/rust/crates/ait-core" }\n' \
-        >"${source}/Cargo.toml"
+      printf '[package]\nname = "ait-runner"\nversion = "%s"\n\n[dependencies]\nait-core = { path = ".ait-external/ait-core/rust/crates/ait-core" }\n' \
+        "${family_version}" >"${source}/Cargo.toml"
       ;;
     ait-python)
       printf '[build-system]\nrequires = ["maturin==1.13.3"]\nbuild-backend = "maturin"\n\n[tool.maturin]\nmanifest-path = ".ait-external/ait-core/rust/crates/ait-py/Cargo.toml"\n' \
@@ -202,10 +207,10 @@ for repository in ait-core ait-server ait-runner ait-python ait-node; do
     ait-node)
       mkdir -p "${source}/bin" "${source}/lib" "${source}/release" \
         "${source}/scripts" "${source}/src"
-      jq -n '
+      jq -n --arg version "${family_version}" '
         {
           name: "@wa120/ait-native",
-          version: "1.0.0-rc.8",
+          version: $version,
           description: "Agent-first, language-neutral workflow for verified repository changes",
           homepage: "https://ait-native.dev/",
           type: "module",
@@ -219,12 +224,12 @@ for repository in ait-core ait-server ait-runner ait-python ait-node; do
           },
           types: "./src/index.d.ts",
           optionalDependencies: {
-            "@wa120/ait-native-darwin-arm64": "1.0.0-rc.8",
-            "@wa120/ait-native-darwin-x64": "1.0.0-rc.8",
-            "@wa120/ait-native-linux-arm64": "1.0.0-rc.8",
-            "@wa120/ait-native-linux-x64": "1.0.0-rc.8",
-            "@wa120/ait-native-win32-arm64": "1.0.0-rc.8",
-            "@wa120/ait-native-win32-x64": "1.0.0-rc.8"
+            "@wa120/ait-native-darwin-arm64": $version,
+            "@wa120/ait-native-darwin-x64": $version,
+            "@wa120/ait-native-linux-arm64": $version,
+            "@wa120/ait-native-linux-x64": $version,
+            "@wa120/ait-native-win32-arm64": $version,
+            "@wa120/ait-native-win32-x64": $version
           },
           scripts: {}
         }
@@ -257,7 +262,8 @@ for repository in ait-core ait-server ait-runner ait-python ait-node; do
         [.components[] | select(.source_repository == "ait-core") | .source_snapshot]
           | unique | .[0]
       ' "${repo_root}/ait-release-family.json")
-      jq -n --arg snapshot "${core_snapshot}" '
+      jq -n --arg snapshot "${core_snapshot}" \
+        --arg version "${family_version}" '
         [
           ["aarch64-apple-darwin", "darwin", "arm64", null],
           ["x86_64-apple-darwin", "darwin", "x64", null],
@@ -267,7 +273,7 @@ for repository in ait-core ait-server ait-runner ait-python ait-node; do
           ["x86_64-pc-windows-msvc", "win32", "x64", null]
         ] | {
           schema: "ait.node.napi-platform-packages/v2",
-          family_version: "1.0.0-rc.8",
+          family_version: $version,
           top_level_package: "@wa120/ait-native",
           payloads: map({
             target: .[0],
@@ -276,7 +282,7 @@ for repository in ait-core ait-server ait-runner ait-python ait-node; do
             libc: .[3],
             component: "ait-node",
             package: ("@wa120/ait-native-" + .[1] + "-" + .[2]),
-            version: "1.0.0-rc.8",
+            version: $version,
             binding_repository: "ait-core",
             binding_snapshot: $snapshot,
             license: "Apache-2.0",
@@ -296,10 +302,10 @@ for repository in ait-core ait-server ait-runner ait-python ait-node; do
         '  ["aarch64-pc-windows-msvc", "wa120-ait-native-win32-arm64"],' \
         '  ["x86_64-pc-windows-msvc", "wa120-ait-native-win32-x64"],' \
         ']);' \
-        'if ((target !== "portable" && !targets.has(target)) || version !== "1.0.0-rc.8") process.exit(64);' \
+        'if ((target !== "portable" && !targets.has(target)) || version !== "'"${family_version}"'") process.exit(64);' \
         'const artifact = target === "portable"' \
-        '  ? "dist/wa120-ait-native-1.0.0-rc.8.tgz"' \
-        '  : `dist/npm-addons/${targets.get(target)}-1.0.0-rc.8.tgz`;' \
+        '  ? "dist/wa120-ait-native-'"${family_version}"'.tgz"' \
+        '  : `dist/npm-addons/${targets.get(target)}-'"${family_version}"'.tgz`;' \
         'if (phase === "build") {' \
         '  mkdirSync(dirname(artifact), { recursive: true });' \
         '  writeFileSync(artifact, `fixture direct Node-API ${target}\n`);' \
@@ -308,12 +314,12 @@ for repository in ait-core ait-server ait-runner ait-python ait-node; do
         '} else if (phase !== "check" && phase !== "smoke") {' \
         '  process.exit(64);' \
         '}' >"${source}/release/fixture-receipt.mjs"
-      jq -n '
+      jq -n --arg version "${family_version}" '
         {
           schema: "ait.release.adapter/v1",
           package: {
             name: "@wa120/ait-native",
-            version: "1.0.0-rc.8",
+            version: $version,
             description: "fixture",
             license_files: [
               {path: "LICENSE", role: "license"},
@@ -339,13 +345,13 @@ for repository in ait-core ait-server ait-runner ait-python ait-node; do
               smoke: [["node", "release/fixture-receipt.mjs", "smoke", "$AIT_RELEASE_TARGET", "$AIT_RELEASE_VERSION"]]
             },
             artifacts: [
-              {path: "dist/wa120-ait-native-1.0.0-rc.8.tgz", kind: "npm-napi-envelope"},
-              {path: "dist/npm-addons/wa120-ait-native-darwin-arm64-1.0.0-rc.8.tgz", kind: "npm-napi-addon", target: "aarch64-apple-darwin"},
-              {path: "dist/npm-addons/wa120-ait-native-darwin-x64-1.0.0-rc.8.tgz", kind: "npm-napi-addon", target: "x86_64-apple-darwin"},
-              {path: "dist/npm-addons/wa120-ait-native-linux-arm64-1.0.0-rc.8.tgz", kind: "npm-napi-addon", target: "aarch64-unknown-linux-gnu"},
-              {path: "dist/npm-addons/wa120-ait-native-linux-x64-1.0.0-rc.8.tgz", kind: "npm-napi-addon", target: "x86_64-unknown-linux-gnu"},
-              {path: "dist/npm-addons/wa120-ait-native-win32-arm64-1.0.0-rc.8.tgz", kind: "npm-napi-addon", target: "aarch64-pc-windows-msvc"},
-              {path: "dist/npm-addons/wa120-ait-native-win32-x64-1.0.0-rc.8.tgz", kind: "npm-napi-addon", target: "x86_64-pc-windows-msvc"}
+              {path: ("dist/wa120-ait-native-" + $version + ".tgz"), kind: "npm-napi-envelope"},
+              {path: ("dist/npm-addons/wa120-ait-native-darwin-arm64-" + $version + ".tgz"), kind: "npm-napi-addon", target: "aarch64-apple-darwin"},
+              {path: ("dist/npm-addons/wa120-ait-native-darwin-x64-" + $version + ".tgz"), kind: "npm-napi-addon", target: "x86_64-apple-darwin"},
+              {path: ("dist/npm-addons/wa120-ait-native-linux-arm64-" + $version + ".tgz"), kind: "npm-napi-addon", target: "aarch64-unknown-linux-gnu"},
+              {path: ("dist/npm-addons/wa120-ait-native-linux-x64-" + $version + ".tgz"), kind: "npm-napi-addon", target: "x86_64-unknown-linux-gnu"},
+              {path: ("dist/npm-addons/wa120-ait-native-win32-arm64-" + $version + ".tgz"), kind: "npm-napi-addon", target: "aarch64-pc-windows-msvc"},
+              {path: ("dist/npm-addons/wa120-ait-native-win32-x64-" + $version + ".tgz"), kind: "npm-napi-addon", target: "x86_64-pc-windows-msvc"}
             ]
           }]
         }
@@ -466,7 +472,8 @@ test "$(jq -r '.family_version' \
   "${output_one}/ait-core/ci/release_repository_authorities.json")" = \
   "1.0.0-rc.2"
 test "$(jq -r '.family_version' \
-  "${output_one}/ci/release_repository_authorities.json")" = "1.0.0-rc.8"
+  "${output_one}/ci/release_repository_authorities.json")" = \
+  "${family_version}"
 for release_control_path in \
   ci/native_bootstrap_matrix.jq \
   ci/release_clean_host.mjs \
@@ -484,7 +491,7 @@ for release_control_path in \
     "${output_one}/${release_control_path}"
 done
 test "$(jq -r '.version' "${output_one}/ci/native_bootstrap_matrix.json")" = \
-  '1.0.0-rc.8'
+  "${family_version}"
 AIT_RELEASE_FAMILY_MANIFEST="${output_one}/ait-release-family.json" \
   bash "${output_one}/ci/release_receipt_matrix_test.sh" >/dev/null
 bash "${output_one}/ci/release_clean_host_test.sh" >/dev/null
@@ -545,7 +552,7 @@ node "${output_one}/build-release.mjs" \
   --component-receipt \
   --repository ait-node \
   --target portable \
-  --version 1.0.0-rc.8 \
+  --version "${family_version}" \
   --git-commit "${fixture_git_commit}" \
   --out-dir "${fixture_receipt}" >/dev/null
 jq -e \
@@ -583,14 +590,14 @@ expect_failure receipt-parent-symlink node "${output_one}/build-release.mjs" \
   --component-receipt \
   --repository ait-node \
   --target portable \
-  --version 1.0.0-rc.8 \
+  --version "${family_version}" \
   --git-commit "${fixture_git_commit}" \
   --out-dir "${temporary_root}/receipt-parent-link/escaped-receipt"
 public_readme=${output_one}/README.md
 for required_readme_text in \
   'AIT turns an ordinary coding request into an isolated, sprint-bound repository' \
   'individual developers and maintainers' \
-  'python -m pip install ait-native==1.0.0rc8' \
+  "python -m pip install ait-native==${python_version}" \
   'img.shields.io/github/v/release/weita2026/ait-native' \
   'https://github.com/weita2026/ait-native/discussions' \
   'https://github.com/weita2026/ait-native/issues/new/choose' \

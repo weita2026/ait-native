@@ -696,6 +696,8 @@ async function validateProtectedWorkflows() {
     "brew_bin=/home/linuxbrew/.linuxbrew/bin",
     "name: Register inbox Windows Package Manager",
     "Add-AppxPackage -RegisterByFamilyName -MainPackage Microsoft.DesktopAppInstaller_8wekyb3d8bbwe",
+    "C:\\Program Files\\Git\\bin\\bash.exe",
+    "Split-Path -Parent $gitBash | Out-File -FilePath $env:GITHUB_PATH",
     "release_clean_host_probe.mjs",
     "release_clean_host_phase.mjs run",
     "release_clean_host.mjs combine",

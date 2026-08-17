@@ -189,6 +189,11 @@ jobs:
           }
           $winget = Get-Command winget.exe -ErrorAction Stop
           Split-Path -Parent $winget.Source | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          $gitBash = 'C:\Program Files\Git\bin\bash.exe'
+          if (-not (Test-Path -LiteralPath $gitBash -PathType Leaf)) {
+            throw "Hosted runner Git Bash is missing: $gitBash"
+          }
+          Split-Path -Parent $gitBash | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
       - name: Probe the native runner and channel capabilities
         id: probe
@@ -260,6 +265,11 @@ jobs:
           }
           $winget = Get-Command winget.exe -ErrorAction Stop
           Split-Path -Parent $winget.Source | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          $gitBash = 'C:\Program Files\Git\bin\bash.exe'
+          if (-not (Test-Path -LiteralPath $gitBash -PathType Leaf)) {
+            throw "Hosted runner Git Bash is missing: $gitBash"
+          }
+          Split-Path -Parent $gitBash | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
       - name: Select Python for the PyPI row
         if: matrix.channel == 'pypi'
@@ -359,6 +369,11 @@ jobs:
           }
           $winget = Get-Command winget.exe -ErrorAction Stop
           Split-Path -Parent $winget.Source | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          $gitBash = 'C:\Program Files\Git\bin\bash.exe'
+          if (-not (Test-Path -LiteralPath $gitBash -PathType Leaf)) {
+            throw "Hosted runner Git Bash is missing: $gitBash"
+          }
+          Split-Path -Parent $gitBash | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
       - name: Select Python for the PyPI row
         if: matrix.channel == 'pypi'

@@ -42,6 +42,10 @@ test "$(grep -c 'name: Register inbox Windows Package Manager' "${workflow}")" =
 grep -F 'brew_bin=/home/linuxbrew/.linuxbrew/bin' "${workflow}" >/dev/null
 grep -F 'Add-AppxPackage -RegisterByFamilyName -MainPackage Microsoft.DesktopAppInstaller_8wekyb3d8bbwe' \
   "${workflow}" >/dev/null
+test "$(grep -Fc "\$gitBash = 'C:\Program Files\Git\bin\bash.exe'" \
+  "${workflow}")" = 3
+test "$(grep -Fc 'Split-Path -Parent $gitBash | Out-File -FilePath $env:GITHUB_PATH' \
+  "${workflow}")" = 3
 test "$(grep -c 'mark(checks, "immutable_image_digest")' "${phase_runner}")" = 2
 
 matrix=${temporary_root}/matrix.json

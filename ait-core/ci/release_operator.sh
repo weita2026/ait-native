@@ -1301,7 +1301,17 @@ case "${mode}" in
     rows_root=${evidence_root}/rows
     require_regular_file "${aggregate}" 'clean-host aggregate status'
     require_regular_file "${checksums}" 'clean-host checksum inventory'
-    require_real_directory "${rows_root}" 'clean-host row evidence directory'
+    inventory_count=$(jq -er '.evidence_inventory | length' "${aggregate}")
+    if [[ -d ${rows_root} ]]; then
+      rows_root=$(canonical_directory "${rows_root}")
+    elif [[ -e ${rows_root} ]]; then
+      fail 65 'clean-host row evidence path is not a directory'
+    elif [[ ${inventory_count} -eq 0 ]]; then
+      rows_root=${temporary_root}/clean-host-empty-rows
+      mkdir "${rows_root}"
+    else
+      fail 65 'clean-host row evidence directory is missing for a non-empty inventory'
+    fi
     if find "${evidence_root}" -type l -print -quit | grep -q .; then
       fail 65 'clean-host evidence contains a symbolic link'
     fi
@@ -1321,7 +1331,6 @@ case "${mode}" in
       fail 65 'clean-host aggregate differs from deterministic row reaggregation'
     cmp "${checksums}" "${verified_root}/SHA256SUMS" >/dev/null ||
       fail 65 'clean-host checksum inventory differs from deterministic reaggregation'
-    inventory_count=$(jq -er '.evidence_inventory | length' "${aggregate}")
     checksum_count=0
     while IFS= read -r line || [[ -n ${line} ]]; do
       [[ ${line} =~ ^([0-9a-f]{64})\ \ (.+)$ ]] ||

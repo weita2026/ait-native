@@ -56,6 +56,8 @@ mkdir -p "${canonical_core}/ci" "${canonical_core}/.ait/cargo-target/release"
 cp "${repo_root}/ait-release-family.json" "${canonical_core}/ait-release-family.json"
 cp "${repo_root}/ci/release_repository_authorities.json" \
   "${canonical_core}/ci/release_repository_authorities.json"
+expected_family_version=$(jq -er '.family.version' \
+  "${canonical_core}/ait-release-family.json")
 
 state=${temporary_root}/state.json
 jq -n --slurpfile family "${canonical_core}/ait-release-family.json" '
@@ -132,9 +134,9 @@ chmod 0755 "${canonical_core}/.ait/cargo-target/release/ait-cli"
 export AIT_TEST_AUTHORITY_STATE=${state}
 evidence=${temporary_root}/authority.json
 "${preflight}" "${canonical_core}" "${evidence}" >/dev/null
-jq -e '
+jq -e --arg version "${expected_family_version}" '
   .contract == "ait.release.canonical-authority-preflight/v1" and
-  .status == "ready" and .family_version == "1.0.0-rc.8" and
+  .status == "ready" and .family_version == $version and
   (.repositories | length) == 5 and
   ([.repositories[].repository_index] | sort) == [0, 1, 2, 3, 4] and
   ([.repositories[].selected_snapshot_retained_by_main] | all(. == true)) and
@@ -182,9 +184,9 @@ chmod 0755 "${canonical_core}/ci/release_source_cache.sh"
 source_bundles=${temporary_root}/source-bundles
 "${repo_root}/ci/release_source_bundles.sh" "${canonical_core}" \
   "${source_bundles}" >/dev/null
-jq -e '
+jq -e --arg version "${expected_family_version}" '
   .contract == "ait.release.source-bundles/v1" and .status == "ready" and
-  .family_version == "1.0.0-rc.8" and .source_bundle_count == 5 and
+  .family_version == $version and .source_bundle_count == 5 and
   (.bundles | length) == 5 and .recovery_authority_used == false and
   .registry_write == false and .public_publish == false
 ' "${source_bundles}/source-bundles.evidence.json" >/dev/null
