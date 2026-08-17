@@ -1,5 +1,6 @@
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 #[test]
 fn release_receipt_packages_the_complete_agpl_license() {
@@ -313,6 +314,73 @@ fn ait_server_launcher_uses_release_binary_only() {
     assert!(script.contains("Unknown server start argument"));
     assert!(script.contains(r#"exec "$1" run --data "$2" --listen "$3""#));
     assert!(!script.contains("shift 3"));
+}
+
+#[test]
+fn ait_server_launcher_isolates_managed_task_cargo_directories() {
+    let source = ait_script_candidates()
+        .into_iter()
+        .find(|path| path.is_file())
+        .expect("ait.sh should be readable");
+    let fixture = tempfile::tempdir().expect("launcher fixture");
+    let script = fixture.path().join("ait.sh");
+    fs::copy(&source, &script).expect("copy launcher");
+    fs::create_dir_all(
+        fixture
+            .path()
+            .join(".ait/cargo-target/task-workspaces/lset-fixture"),
+    )
+    .expect("Task Cargo target");
+    fs::create_dir_all(
+        fixture
+            .path()
+            .join(".ait/cargo-build/task-workspaces/lset-fixture"),
+    )
+    .expect("Task Cargo build");
+    fs::write(
+        fixture.path().join(".ait-worktree.json"),
+        r#"{"worktree_name":"lset-fixture"}"#,
+    )
+    .expect("Task worktree marker");
+
+    let selected_paths = || {
+        let output = Command::new("bash")
+            .args([
+                "-c",
+                "source \"$1\"; printf '%s\\n%s\\n' \"$(cargo_target_dir)\" \"$(cargo_build_dir)\"",
+                "_",
+            ])
+            .arg(&script)
+            .env_remove("AIT_SHARED_CARGO_TARGET_DIR")
+            .env_remove("AIT_SHARED_CARGO_BUILD_DIR")
+            .env_remove("CARGO_TARGET_DIR")
+            .env_remove("CARGO_BUILD_BUILD_DIR")
+            .output()
+            .expect("source launcher");
+        assert!(
+            output.status.success(),
+            "launcher selection failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8(output.stdout)
+            .expect("launcher paths should be UTF-8")
+            .lines()
+            .map(str::to_string)
+            .collect::<Vec<_>>()
+    };
+
+    let task_paths = selected_paths();
+    assert_eq!(task_paths.len(), 2);
+    assert!(task_paths[0].ends_with("cargo-target/task-workspaces/lset-fixture"));
+    assert!(task_paths[1].ends_with("cargo-build/task-workspaces/lset-fixture"));
+    assert_ne!(task_paths[0], task_paths[1]);
+
+    fs::remove_file(fixture.path().join(".ait-worktree.json")).expect("remove Task marker");
+    let canonical_paths = selected_paths();
+    assert_eq!(canonical_paths.len(), 2);
+    assert!(canonical_paths[0].ends_with(".ait/cargo-target"));
+    assert!(canonical_paths[1].ends_with(".ait/cargo-build/canonical"));
+    assert_ne!(task_paths, canonical_paths);
 }
 
 #[test]

@@ -97,9 +97,12 @@ for required_workflow_text in \
   'test -f "${admission_rust}/crates/ait-cli/src/release_surface/family_packages.rs"' \
   'test -f "${admission_rust}/crates/ait-cli/src/release_surface/family_release.rs"' \
   '--manifest-path "${admission_rust}/Cargo.toml"' \
-  'admission_root="${RUNNER_TEMP}/ait-family-admission-repository"' \
-  'test ! -e "${admission_root}"' \
+  'admission_parent="${RUNNER_TEMP}/ait-family-admission-repository"' \
+  'admission_root="${admission_parent}/ait-core"' \
+  'test ! -e "${admission_parent}"' \
+  'mkdir -p "${admission_root}"' \
   'cd "${admission_root}"' \
+  '"${AIT_FAMILY_ADMISSION_BIN}" init --json' \
   'release show "${release_id}"' \
   'release package "${release_id}"' \
   'release promote "${release_id}"' \
@@ -132,6 +135,9 @@ for forbidden_workflow_text in \
   'cp -R "${AIT_PUBLIC_SOURCE_ROOT}/ait-core"' \
   'release_family_rc4_admission.patch' \
   'patch --batch --forward' \
+  'admission_root="${RUNNER_TEMP}/ait-family-admission-repository"' \
+  'init --name' \
+  '--default-line' \
   '--repair-existing' \
   'pattern: ait-release-source-ait-*'; do
   if grep -F -- "${forbidden_workflow_text}" "${workflow}" >/dev/null; then
@@ -151,7 +157,7 @@ jq -e '
   .public_publish == false and
   .expected_source_count == 5 and
   .expected_receipt_count == 31 and
-  .expected_component_artifact_count == 37 and
+  .expected_component_artifact_count == 43 and
   .source_line == "main" and
   .bootstrap_line == "release-bootstrap" and
   (.bootstrap.include | length) == 6 and
@@ -159,10 +165,13 @@ jq -e '
   (.builds.include | length) == 31 and
   ([.builds.include[].receipt_artifact] | unique | length) == 31 and
   ([.builds.include[] | select(.repo_name == "ait-core") |
-    .expected_component_artifact_count] | all(. == 2)) and
+    .expected_component_artifact_count] | all(. == 3)) and
+  ([.builds.include[] | select(.repo_name == "ait-core") |
+    .expected_components] |
+    all(. == ["ait", "ait-agent", "ait-agent-worker"])) and
   ([.builds.include[] | select(.target == "portable")] | length) == 1 and
   ([.builds.include[] | select(.repo_name == "ait-node")] | length) == 7 and
-  ([.builds.include[].expected_component_artifact_count] | add) == 37
+  ([.builds.include[].expected_component_artifact_count] | add) == 43
 ' "${projection}" >/dev/null
 
 for required_verifier_text in \

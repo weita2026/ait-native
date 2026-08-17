@@ -13,7 +13,7 @@ test("release adapter declares the portable envelope and six native addons", asy
   assert.equal(manifest.schema, "ait.release.adapter/v1");
   assert.deepEqual(manifest.package, {
     name: "@wa120/ait-native",
-    version: "1.0.0-rc.8",
+    version: "1.0.0-rc.9",
     description: "Agent-first, language-neutral workflow for verified repository changes",
     license_files: [
       { path: "LICENSE", role: "license" },
@@ -26,7 +26,7 @@ test("release adapter declares the portable envelope and six native addons", asy
   assert.equal(component.ecosystem, "node");
   assert.equal(component.artifacts.length, 7);
   assert.deepEqual(component.artifacts[0], {
-    path: "dist/wa120-ait-native-1.0.0-rc.8.tgz",
+    path: "dist/wa120-ait-native-1.0.0-rc.9.tgz",
     kind: "npm-napi-envelope",
   });
   assert.equal(component.artifacts[0].target, undefined);
@@ -37,13 +37,13 @@ test("release adapter declares the portable envelope and six native addons", asy
   assert.deepEqual(
     component.artifacts.map((artifact) => artifact.path),
     [
-      "dist/wa120-ait-native-1.0.0-rc.8.tgz",
-      "dist/npm-addons/wa120-ait-native-darwin-arm64-1.0.0-rc.8.tgz",
-      "dist/npm-addons/wa120-ait-native-darwin-x64-1.0.0-rc.8.tgz",
-      "dist/npm-addons/wa120-ait-native-linux-arm64-1.0.0-rc.8.tgz",
-      "dist/npm-addons/wa120-ait-native-linux-x64-1.0.0-rc.8.tgz",
-      "dist/npm-addons/wa120-ait-native-win32-arm64-1.0.0-rc.8.tgz",
-      "dist/npm-addons/wa120-ait-native-win32-x64-1.0.0-rc.8.tgz",
+      "dist/wa120-ait-native-1.0.0-rc.9.tgz",
+      "dist/npm-addons/wa120-ait-native-darwin-arm64-1.0.0-rc.9.tgz",
+      "dist/npm-addons/wa120-ait-native-darwin-x64-1.0.0-rc.9.tgz",
+      "dist/npm-addons/wa120-ait-native-linux-arm64-1.0.0-rc.9.tgz",
+      "dist/npm-addons/wa120-ait-native-linux-x64-1.0.0-rc.9.tgz",
+      "dist/npm-addons/wa120-ait-native-win32-arm64-1.0.0-rc.9.tgz",
+      "dist/npm-addons/wa120-ait-native-win32-x64-1.0.0-rc.9.tgz",
     ],
   );
   assert.deepEqual(
@@ -149,6 +149,6 @@ test("release tools are registry-inert and package direct addon fixtures", async
 
   const ci = await readFile(path.join(ROOT, "ci", "run.sh"), "utf8");
   assert.match(ci, /npm run native:build/);
-  assert.match(ci, /release-adapter\.mjs build portable 1\.0\.0-rc\.8/);
-  assert.match(ci, /release-adapter\.mjs smoke portable 1\.0\.0-rc\.8/);
+  assert.match(ci, /release-adapter\.mjs build portable 1\.0\.0-rc\.9/);
+  assert.match(ci, /release-adapter\.mjs smoke portable 1\.0\.0-rc\.9/);
 });

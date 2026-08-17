@@ -134,7 +134,7 @@ evidence=${temporary_root}/authority.json
 "${preflight}" "${canonical_core}" "${evidence}" >/dev/null
 jq -e '
   .contract == "ait.release.canonical-authority-preflight/v1" and
-  .status == "ready" and .family_version == "1.0.0-rc.7" and
+  .status == "ready" and .family_version == "1.0.0-rc.8" and
   (.repositories | length) == 5 and
   ([.repositories[].repository_index] | sort) == [0, 1, 2, 3, 4] and
   ([.repositories[].selected_snapshot_retained_by_main] | all(. == true)) and
@@ -184,7 +184,7 @@ source_bundles=${temporary_root}/source-bundles
   "${source_bundles}" >/dev/null
 jq -e '
   .contract == "ait.release.source-bundles/v1" and .status == "ready" and
-  .family_version == "1.0.0-rc.7" and .source_bundle_count == 5 and
+  .family_version == "1.0.0-rc.8" and .source_bundle_count == 5 and
   (.bundles | length) == 5 and .recovery_authority_used == false and
   .registry_write == false and .public_publish == false
 ' "${source_bundles}/source-bundles.evidence.json" >/dev/null

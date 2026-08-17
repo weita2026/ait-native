@@ -159,15 +159,13 @@ pub(in crate::primitives) fn workflow_repo_root_restore_after_land(
         payload["reason"] = JsonValue::String("target_not_default_line".to_string());
         return Ok(payload);
     }
-    let landed_diff_paths = if let (Some(previous), Some(target)) = (
-        normalized_text(previous_head_snapshot_id),
-        normalized_text(target_snapshot_id),
-    ) {
+    let previous = normalized_text(previous_head_snapshot_id);
+    let landed_diff_paths = if let Some(target) = normalized_text(target_snapshot_id) {
         let workspace_root = root_repo.workspace_root();
         let store = root_repo
             .local_snapshot_operation_store::<SNAPSHOT_BINARY_DB_WRITE_LAYOUT>(&workspace_root)?;
         store
-            .snapshot_tree_path_delta(Some(previous.as_str()), Some(target.as_str()))?
+            .snapshot_tree_path_delta(previous.as_deref(), Some(target.as_str()))?
             .affected_paths
             .into_iter()
             .collect::<BTreeSet<_>>()

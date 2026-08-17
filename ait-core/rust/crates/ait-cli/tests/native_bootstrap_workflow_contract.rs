@@ -135,6 +135,7 @@ fn bootstrap_workflow_builds_and_executes_without_publication_or_fallback() {
     assert!(workflow.contains("test \"${{ runner.arch }}\" = \"${expected_runner_arch}\""));
     assert!(workflow.contains("\"${AIT_BOOTSTRAP_BIN}\" --version"));
     assert!(workflow.contains("\"${AIT_BOOTSTRAP_BIN}\" --help"));
+    assert!(workflow.contains("\"${AIT_BOOTSTRAP_BIN}\" init --json"));
     assert!(workflow.contains("plan list --json"));
     assert!(workflow.contains("test ! -s \"${smoke}/${stderr_channel}\""));
     assert!(workflow.contains("cp \"${AIT_BOOTSTRAP_SMOKE}\"/*.stdout"));
@@ -151,4 +152,6 @@ fn bootstrap_workflow_builds_and_executes_without_publication_or_fallback() {
     assert!(!workflow.contains("node"));
     assert!(!workflow.contains("curl "));
     assert!(!workflow.contains("wget "));
+    assert!(!workflow.contains("init --name"));
+    assert!(!workflow.contains("--default-line"));
 }

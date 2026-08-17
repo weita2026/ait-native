@@ -528,11 +528,11 @@ mod tests {
 
     #[test]
     fn worker_manifest_store_child_process_upsert() {
-        let Ok(path) = std::env::var("AIT_TEST_WORKER_MANIFEST_CHILD_PATH") else {
+        let Ok(path) = std::env::var("AGENT_TEST_WORKER_MANIFEST_CHILD_PATH") else {
             return;
         };
-        let name = std::env::var("AIT_TEST_WORKER_MANIFEST_CHILD_NAME").expect("child name");
-        let barrier_dir = std::env::var("AIT_TEST_WORKER_MANIFEST_BARRIER_DIR")
+        let name = std::env::var("AGENT_TEST_WORKER_MANIFEST_CHILD_NAME").expect("child name");
+        let barrier_dir = std::env::var("AGENT_TEST_WORKER_MANIFEST_BARRIER_DIR")
             .map(PathBuf::from)
             .expect("barrier dir");
         fs::write(barrier_dir.join(format!("{name}.ready")), "ready").expect("ready marker");
@@ -568,9 +568,9 @@ mod tests {
                     .arg("--exact")
                     .arg(test_name)
                     .arg("--nocapture")
-                    .env("AIT_TEST_WORKER_MANIFEST_CHILD_PATH", &path)
-                    .env("AIT_TEST_WORKER_MANIFEST_CHILD_NAME", &name)
-                    .env("AIT_TEST_WORKER_MANIFEST_BARRIER_DIR", &barrier_dir)
+                    .env("AGENT_TEST_WORKER_MANIFEST_CHILD_PATH", &path)
+                    .env("AGENT_TEST_WORKER_MANIFEST_CHILD_NAME", &name)
+                    .env("AGENT_TEST_WORKER_MANIFEST_BARRIER_DIR", &barrier_dir)
                     .spawn()
                     .expect("child process"),
             );

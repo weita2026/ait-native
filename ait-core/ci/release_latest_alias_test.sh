@@ -26,6 +26,14 @@ expect_failure() {
   test -s "${temporary_root}/${label}.stderr"
 }
 
+sha256_file() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" | awk '{print $1}'
+  else
+    shasum -a 256 "$1" | awk '{print $1}'
+  fi
+}
+
 test -x "${latest_alias}"
 bash -n "${latest_alias}"
 
@@ -37,6 +45,7 @@ server_digest=sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 runner_digest=sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
 config=${temporary_root}/endpoints.json
 status=${temporary_root}/status.json
+clean_status=${temporary_root}/clean-host-status.json
 
 jq -S -n --slurpfile defaults "${defaults}" \
   --arg version "${version}" --arg python_version "${python_version}" \
@@ -116,6 +125,37 @@ jq -S -n --arg release_id "${release_id}" --arg version "${version}" \
     }
   }
 ' >"${status}"
+
+config_sha=$(sha256_file "${config}")
+endpoint_status_sha=$(sha256_file "${status}")
+jq -S -n --slurpfile endpoint_status "${status}" \
+  --arg release_id "${release_id}" --arg version "${version}" \
+  --arg python_version "${python_version}" --arg source_commit "${source_commit}" \
+  --arg config_sha "${config_sha}" --arg endpoint_status_sha "${endpoint_status_sha}" '
+  {
+    contract: "ait.release.operator.clean-host-status/v1",
+    status: "published",
+    release: {
+      id: $release_id,
+      version: $version,
+      python_version: $python_version,
+      channel: "rc",
+      tag: ("v" + $version),
+      source_commit: $source_commit,
+      endpoint_config_sha256: $config_sha,
+      operator_status_sha256: $endpoint_status_sha
+    },
+    clean_host_request_sha256: "6666666666666666666666666666666666666666666666666666666666666666",
+    endpoint_publication: {
+      operator_status_sha256: $endpoint_status_sha,
+      workflow: $endpoint_status[0].publication_workflow,
+      platforms: $endpoint_status[0].platforms
+    },
+    promotion_allowed: true,
+    terminal_for_release: false,
+    next_action: "release_complete"
+  }
+' >"${clean_status}"
 
 state=${temporary_root}/state
 bin=${temporary_root}/bin
@@ -256,14 +296,27 @@ chmod 0755 "${bin}/gh" "${bin}/npm" "${bin}/docker" "${bin}/sleep"
 export AIT_TEST_LATEST_STATE=${state}
 export PATH=${bin}:${PATH}
 
-expect_failure verify-before "${latest_alias}" verify "${config}" "${status}" \
+expect_failure verify-before "${latest_alias}" verify "${config}" "${clean_status}" \
   "${temporary_root}/verify-before.json"
-expect_failure missing-approval "${latest_alias}" apply "${config}" "${status}" \
+expect_failure missing-approval "${latest_alias}" apply "${config}" "${clean_status}" \
   "${temporary_root}/missing-approval.json"
+jq '.status = "blocked" | .promotion_allowed = false |
+  .terminal_for_release = true |
+  .next_action = "freeze_new_release_after_repair"' "${clean_status}" \
+  >"${temporary_root}/blocked-clean-host-status.json"
+expect_failure blocked-clean-host "${latest_alias}" verify "${config}" \
+  "${temporary_root}/blocked-clean-host-status.json" \
+  "${temporary_root}/blocked-clean-host-output.json"
+jq '.release.endpoint_config_sha256 =
+  "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"' \
+  "${clean_status}" >"${temporary_root}/wrong-config-hash-status.json"
+expect_failure wrong-config-hash "${latest_alias}" verify "${config}" \
+  "${temporary_root}/wrong-config-hash-status.json" \
+  "${temporary_root}/wrong-config-hash-output.json"
 
 apply_evidence=${temporary_root}/apply.json
 AIT_RELEASE_LATEST_RELEASE_ID=${release_id} \
-  "${latest_alias}" apply "${config}" "${status}" "${apply_evidence}" >/dev/null
+  "${latest_alias}" apply "${config}" "${clean_status}" "${apply_evidence}" >/dev/null
 test "$(sed -n '1p' "${state}/npm-stale-read-count")" = 7
 jq -e 'length == 0' "${state}/npm-stale.json" >/dev/null
 jq -e --arg version "${version}" --arg server "${server_digest}" \
@@ -292,7 +345,7 @@ jq -e --arg version "${version}" --arg server "${server_digest}" \
 ' "${apply_evidence}" >/dev/null
 
 verify_evidence=${temporary_root}/verify.json
-"${latest_alias}" verify "${config}" "${status}" "${verify_evidence}" >/dev/null
+"${latest_alias}" verify "${config}" "${clean_status}" "${verify_evidence}" >/dev/null
 jq -e '
   .status == "verified" and
   .mutation.github_release_write == false and
@@ -302,7 +355,7 @@ jq -e '
   ([.aliases.oci.images[].mutated] | all(. == false))
 ' "${verify_evidence}" >/dev/null
 
-jq '.release.id = "REL-FAM-FFFFFFFFFFFFFFFF"' "${status}" \
+jq '.release.id = "REL-FAM-FFFFFFFFFFFFFFFF"' "${clean_status}" \
   >"${temporary_root}/wrong-status.json"
 expect_failure wrong-status "${latest_alias}" verify "${config}" \
   "${temporary_root}/wrong-status.json" "${temporary_root}/wrong-status-output.json"

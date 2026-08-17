@@ -4,6 +4,8 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PATH="/Users/weita/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:${PATH:-}"
+CANONICAL_CARGO_BUILD_DIRNAME="canonical"
+MANAGED_WORKTREE_CARGO_TARGET_DIRNAME="task-workspaces"
 
 resolve_cargo() {
   if command -v cargo >/dev/null 2>&1; then
@@ -26,12 +28,55 @@ resolve_rust_tool() {
   command -v "$name" 2>/dev/null || true
 }
 
+repository_cargo_target_root() {
+  local ait_root="${ROOT_DIR}/.ait"
+  if [[ -d "${ait_root}" ]]; then
+    ait_root="$(cd "${ait_root}" && pwd -P)"
+  fi
+  printf '%s/cargo-target\n' "${ait_root}"
+}
+
+repository_cargo_build_root() {
+  local build_root="${ROOT_DIR}/.ait/cargo-build"
+  mkdir -p "${build_root}"
+  (cd "${build_root}" && pwd -P)
+}
+
+managed_worktree_name() {
+  local marker="${ROOT_DIR}/.ait-worktree.json"
+  if [[ ! -f "${marker}" || -L "${marker}" ]]; then
+    return 1
+  fi
+  local name
+  name="$(sed -n 's/.*"worktree_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
+    "${marker}" | head -n 1)"
+  case "${name}" in
+    ''|.|..|*[!a-zA-Z0-9._-]*)
+      return 1
+      ;;
+  esac
+  printf '%s\n' "${name}"
+}
+
 cargo_target_dir() {
   if [[ -n "${AIT_SHARED_CARGO_TARGET_DIR:-}" ]]; then
     printf '%s\n' "${AIT_SHARED_CARGO_TARGET_DIR}"
     return 0
   fi
-  printf '%s\n' "${CARGO_TARGET_DIR:-${ROOT_DIR}/.ait/cargo-target}"
+  if [[ -n "${CARGO_TARGET_DIR:-}" ]]; then
+    printf '%s\n' "${CARGO_TARGET_DIR}"
+    return 0
+  fi
+  local target_root
+  target_root="$(repository_cargo_target_root)"
+  local worktree_name
+  worktree_name="$(managed_worktree_name || true)"
+  if [[ -n "${worktree_name}" ]]; then
+    printf '%s/%s/%s\n' \
+      "${target_root}" "${MANAGED_WORKTREE_CARGO_TARGET_DIRNAME}" "${worktree_name}"
+    return 0
+  fi
+  printf '%s\n' "${target_root}"
 }
 
 cargo_build_dir() {
@@ -43,7 +88,15 @@ cargo_build_dir() {
     printf '%s\n' "${CARGO_BUILD_BUILD_DIR}"
     return 0
   fi
-  printf '%s\n' "${ROOT_DIR}/.ait/cargo-build/workspaces/{workspace-path-hash}"
+  local build_root
+  build_root="$(repository_cargo_build_root)"
+  local worktree_name
+  worktree_name="$(managed_worktree_name || true)"
+  if [[ -n "${worktree_name}" ]]; then
+    printf '%s/task-workspaces/%s\n' "${build_root}" "${worktree_name}"
+    return 0
+  fi
+  printf '%s/%s\n' "${build_root}" "${CANONICAL_CARGO_BUILD_DIRNAME}"
 }
 
 resolved_cargo_dir() {
@@ -601,17 +654,19 @@ Usage:
 
 Remove Cargo intermediates from the configured build dir and legacy
 intermediate paths from the target dir while leaving final release binaries in
-place. With --include-worktrees it also scans managed task worktree caches.
+place. With --include-worktrees it also scans managed Task target/build leaves.
 
 Target selection follows the build/test path:
   1. AIT_SHARED_CARGO_TARGET_DIR, when set, explicitly opts into a shared target.
   2. CARGO_TARGET_DIR, when set, is honored for caller-managed targets.
-  3. Otherwise .ait/cargo-target is used.
+  3. Otherwise a managed Task worktree uses its task-workspaces leaf beneath
+     .ait/cargo-target, and the canonical checkout uses .ait/cargo-target.
 
 Build-dir selection follows:
   1. AIT_SHARED_CARGO_BUILD_DIR, when set.
   2. CARGO_BUILD_BUILD_DIR, when set.
-  3. Otherwise a workspace-isolated leaf beneath .ait/cargo-build is used.
+  3. Otherwise a managed Task leaf or the fixed canonical directory beneath
+     .ait/cargo-build is used.
 EOF
         return 0
         ;;
@@ -628,15 +683,22 @@ EOF
   local build_dirs=()
   build_dirs+=("$(cargo_build_dir)")
   if [[ "${include_worktrees}" == "1" ]]; then
+    local repository_target_root
+    repository_target_root="$(repository_cargo_target_root)"
     local worktree_target
-    for worktree_target in "${ROOT_DIR}"/.ait-worktree-links/*/.ait/cargo-target; do
-      [[ -d "${worktree_target}" ]] || continue
+    for worktree_target in \
+      "${repository_target_root}/${MANAGED_WORKTREE_CARGO_TARGET_DIRNAME}"/* \
+      "${ROOT_DIR}"/.ait-worktree-links/*/rust/target; do
+      [[ -d "${worktree_target}" && ! -L "${worktree_target}" ]] || continue
       targets+=("${worktree_target}")
     done
+    local repository_build_root
+    repository_build_root="$(repository_cargo_build_root)"
     local worktree_build
-    for worktree_build in "${ROOT_DIR}"/.ait-worktree-links/*/rust/target \
+    for worktree_build in \
+      "${repository_build_root}/task-workspaces"/* \
       "${ROOT_DIR}"/.ait-worktree-links/*/.ait/cargo-build/workspaces/*/*; do
-      [[ -d "${worktree_build}" ]] || continue
+      [[ -d "${worktree_build}" && ! -L "${worktree_build}" ]] || continue
       build_dirs+=("${worktree_build}")
     done
   fi
@@ -696,40 +758,49 @@ Usage:
 `ait-server` is AGPL server-side Rust. The migrated core crate is still named
 `ait-server-core` for the first repository cut.
 Set AIT_SHARED_CARGO_TARGET_DIR to opt into a shared Cargo target. Otherwise
-CARGO_TARGET_DIR is honored when set, then .ait/cargo-target is used.
+CARGO_TARGET_DIR is honored when set, managed Task worktrees use their
+task-workspaces leaf beneath .ait/cargo-target, and the canonical checkout uses
+.ait/cargo-target.
 Set AIT_SHARED_CARGO_BUILD_DIR to opt into shared intermediates. Otherwise
-CARGO_BUILD_BUILD_DIR is honored, then Cargo expands a workspace-isolated leaf
-beneath .ait/cargo-build. Automatic build-dir reclamation is disabled by default; set a nonzero
+CARGO_BUILD_BUILD_DIR is honored, managed Task worktrees use their dedicated
+task-workspaces leaf, and the canonical checkout reuses the fixed
+.ait/cargo-build/canonical directory. Automatic build-dir reclamation is disabled by default; set a nonzero
 AIT_CARGO_BUILD_MAX_BYTES to opt in. Reclamation is rate-limited by
 AIT_CARGO_BUILD_GC_INTERVAL_SECONDS (default 3600).
 EOF
 }
 
-case "${1:-}" in
-  core)
-    case "${2:-}" in
-      build)
-        run_cargo build --manifest-path "${ROOT_DIR}/rust/Cargo.toml" --workspace --release
-        ;;
-      compact)
-        shift 2
-        compact_cargo_targets "$@"
-        ;;
-      test)
-        run_cargo test --manifest-path "${ROOT_DIR}/rust/Cargo.toml" --workspace --profile ait-ci
-        ;;
-      *)
-        usage >&2
-        exit 1
-        ;;
-    esac
-    ;;
-  server)
-    shift
-    server_command "$@"
-    ;;
-  *)
-    usage >&2
-    exit 1
-    ;;
-esac
+main() {
+  case "${1:-}" in
+    core)
+      case "${2:-}" in
+        build)
+          run_cargo build --manifest-path "${ROOT_DIR}/rust/Cargo.toml" --workspace --release
+          ;;
+        compact)
+          shift 2
+          compact_cargo_targets "$@"
+          ;;
+        test)
+          run_cargo test --manifest-path "${ROOT_DIR}/rust/Cargo.toml" --workspace --profile ait-ci
+          ;;
+        *)
+          usage >&2
+          return 1
+          ;;
+      esac
+      ;;
+    server)
+      shift
+      server_command "$@"
+      ;;
+    *)
+      usage >&2
+      return 1
+      ;;
+  esac
+}
+
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  main "$@"
+fi

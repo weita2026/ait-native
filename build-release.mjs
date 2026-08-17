@@ -41,6 +41,12 @@ const LATEST_ALIAS_WORKFLOW = path.join(
   "workflows",
   "ait-release-latest-alias.yml",
 );
+const CLEAN_HOST_WORKFLOW = path.join(
+  ROOT,
+  ".github",
+  "workflows",
+  "ait-release-clean-host.yml",
+);
 const ENDPOINT_DEFAULTS = path.join(
   ROOT,
   "release",
@@ -50,6 +56,10 @@ const ENDPOINT_PREPARER = path.join(ROOT, "ci", "release_endpoint_publication.sh
 const ENDPOINT_REMOTE = path.join(ROOT, "ci", "release_endpoint_remote.sh");
 const LATEST_ALIAS = path.join(ROOT, "ci", "release_latest_alias.sh");
 const RELEASE_OPERATOR = path.join(ROOT, "ci", "release_operator.sh");
+const CLEAN_HOST_CONTROL = path.join(ROOT, "ci", "release_clean_host.mjs");
+const CLEAN_HOST_PHASE = path.join(ROOT, "ci", "release_clean_host_phase.mjs");
+const CLEAN_HOST_PROBE = path.join(ROOT, "ci", "release_clean_host_probe.mjs");
+const CLEAN_HOST_TEST = path.join(ROOT, "ci", "release_clean_host_test.sh");
 const PROMOTION_VERIFIER = path.join(
   ROOT,
   "ci",
@@ -454,6 +464,10 @@ async function validateReleaseControl(family) {
     [ENDPOINT_REMOTE, "root endpoint publisher"],
     [LATEST_ALIAS, "root latest-alias promoter"],
     [RELEASE_OPERATOR, "root release operator"],
+    [CLEAN_HOST_CONTROL, "root clean-host evidence control"],
+    [CLEAN_HOST_PHASE, "root clean-host lifecycle runner"],
+    [CLEAN_HOST_PROBE, "root clean-host runner probe"],
+    [CLEAN_HOST_TEST, "root clean-host regression"],
   ]) {
     await regularFile(filePath, label);
   }
@@ -501,6 +515,10 @@ async function validateReleaseControl(family) {
   const matrixTest = await readFile(RECEIPT_MATRIX_TEST, "utf8");
   const verifier = await readFile(PROMOTION_VERIFIER, "utf8");
   const latestAlias = await readFile(LATEST_ALIAS, "utf8");
+  const cleanHost = await readFile(CLEAN_HOST_CONTROL, "utf8");
+  const cleanHostPhase = await readFile(CLEAN_HOST_PHASE, "utf8");
+  const cleanHostProbe = await readFile(CLEAN_HOST_PROBE, "utf8");
+  const cleanHostTest = await readFile(CLEAN_HOST_TEST, "utf8");
   for (const required of [
     "AIT_RELEASE_FAMILY_MANIFEST",
     "release_receipt_matrix.jq",
@@ -533,6 +551,7 @@ async function validateReleaseControl(family) {
   }
   for (const required of [
     "ait.release.latest-alias/v1",
+    "ait.release.operator.clean-host-status/v1",
     "AIT_RELEASE_LATEST_RELEASE_ID",
     "make_latest=true",
     "npm dist-tag add",
@@ -541,6 +560,46 @@ async function validateReleaseControl(family) {
   ]) {
     if (!latestAlias.includes(required)) {
       fail(`root latest-alias promoter is missing ${JSON.stringify(required)}`);
+    }
+  }
+  for (const [contents, label, requiredValues] of [
+    [
+      cleanHost,
+      "clean-host evidence control",
+      [
+        "ait.release.clean-host.matrix/v1",
+        "ait.release.clean-host.row/v1",
+        "ait.release.clean-host.aggregate/v1",
+        "distribution-target-32-2026-08-17.1",
+        "row_count: rows.length",
+      ],
+    ],
+    [
+      cleanHostPhase,
+      "clean-host lifecycle runner",
+      [
+        "ait.release.clean-host.phase/v1",
+        "generated_workflow_current",
+        "python_direct_binding",
+        "node_direct_addon",
+        "explicit_component_lifecycle",
+      ],
+    ],
+    [
+      cleanHostProbe,
+      "clean-host runner probe",
+      ["ait.release.clean-host.runner-probe/v1", "AIT_CLEAN_HOST_RUNNER_LABEL"],
+    ],
+    [
+      cleanHostTest,
+      "clean-host regression",
+      ["release clean-host contract: pass", "row_count == 32"],
+    ],
+  ]) {
+    for (const required of requiredValues) {
+      if (!contents.includes(required)) {
+        fail(`root ${label} is missing ${JSON.stringify(required)}`);
+      }
     }
   }
 }
@@ -617,6 +676,50 @@ async function validateProtectedWorkflows() {
     if (promotion.includes(forbidden)) {
       fail(`root protected promotion workflow contains publication authority ${JSON.stringify(forbidden)}`);
     }
+  }
+
+  await regularFile(CLEAN_HOST_WORKFLOW, "root clean-host workflow");
+  const cleanHostWorkflow = await readFile(CLEAN_HOST_WORKFLOW, "utf8");
+  for (const required of [
+    "name: ait release clean host",
+    "workflow_dispatch:",
+    "permissions:\n  contents: read",
+    "matrix_sha256:",
+    "prior_version:",
+    "prior_python_version:",
+    "ait-clean-host-authority-${{ inputs.release_id }}",
+    "ait-clean-host-probe-${{ inputs.release_id }}-${{ matrix.target }}",
+    "ait-clean-host-install-${{ inputs.release_id }}-${{ matrix.id }}",
+    "ait-clean-host-row-${{ inputs.release_id }}-${{ matrix.id }}",
+    "ait-clean-host-${{ inputs.release_id }}",
+    "name: Activate preinstalled Linux Homebrew",
+    "brew_bin=/home/linuxbrew/.linuxbrew/bin",
+    "name: Register inbox Windows Package Manager",
+    "Add-AppxPackage -RegisterByFamilyName -MainPackage Microsoft.DesktopAppInstaller_8wekyb3d8bbwe",
+    "release_clean_host_probe.mjs",
+    "release_clean_host_phase.mjs run",
+    "release_clean_host.mjs combine",
+    "release_clean_host.mjs aggregate",
+    "test \"$(jq -r '.row_count' \"${RUNNER_TEMP}/clean-host-matrix.json\")\" = 32",
+  ]) {
+    if (!cleanHostWorkflow.includes(required)) {
+      fail(`root clean-host workflow must contain ${JSON.stringify(required)}`);
+    }
+  }
+  for (const forbidden of [
+    "contents: write",
+    "packages: write",
+    "continue-on-error: false",
+    "--profile quick",
+    "workflow local-land",
+    "workflow tier",
+  ]) {
+    if (cleanHostWorkflow.includes(forbidden)) {
+      fail(`root clean-host workflow contains ${JSON.stringify(forbidden)}`);
+    }
+  }
+  if (cleanHostWorkflow.split("retention-days: 90").length !== 6) {
+    fail("root clean-host workflow must retain five 90-day evidence artifacts");
   }
 
   for (const [filePath, label] of [
@@ -706,6 +809,8 @@ async function validateProtectedWorkflows() {
     "AIT_NPM_TOKEN: ${{ secrets.AIT_NPM_TOKEN }}",
     "NODE_AUTH_TOKEN: ${{ secrets.AIT_NPM_TOKEN }}",
     "AIT_RELEASE_LATEST_RELEASE_ID: ${{ inputs.release_id }}",
+    "ait.release.operator.clean-host-status/v1",
+    "promotion_allowed == true",
     "control/ci/release_latest_alias.sh apply",
     "control/ci/release_latest_alias.sh verify",
     "actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a",
@@ -727,6 +832,7 @@ async function validateProtectedWorkflows() {
     "ait release build",
     "ait release package",
     "ait release publish",
+    "published_pending_clean_host_smoke",
   ]) {
     if (latestAliasWorkflow.includes(forbidden)) {
       fail(`root latest-alias workflow contains publication or build behavior ${JSON.stringify(forbidden)}`);
@@ -752,8 +858,8 @@ async function validatePublicReadme() {
     "## Moving from 0.x",
     "The 0.x requirement to run `ait install` and its task-DAG positioning are",
     "AGENTS.md",
-    "ait workflow tier --json",
     "ait task start",
+    "ait task start --from",
     "ait blame",
     "ait plan sync",
     "ait snapshot create",
@@ -775,6 +881,9 @@ async function validatePublicReadme() {
   for (const forbidden of [
     "mkdir -p docs/sprints",
     "Follow the printed `cd` hint",
+    "ait workflow tier --json",
+    "--profile quick",
+    "ait workflow local-land",
     "Jira-like",
     "parallel AI execution",
     "compact task DAG",
@@ -1342,6 +1451,7 @@ async function validateBuildInputs(expectedGitCommit) {
   }
   for (const required of [
     ".github/workflows/ait-release-component-receipts.yml",
+    ".github/workflows/ait-release-clean-host.yml",
     ".github/workflows/ait-release-latest-alias.yml",
     ".github/workflows/ait-release-protected-promotion.yml",
     ".github/workflows/pypi-publish.yml",
@@ -1367,6 +1477,10 @@ async function validateBuildInputs(expectedGitCommit) {
     "LICENSES/AGPL-3.0-only.txt",
     "ci/native_bootstrap_matrix.jq",
     "ci/native_bootstrap_matrix.json",
+    "ci/release_clean_host.mjs",
+    "ci/release_clean_host_phase.mjs",
+    "ci/release_clean_host_probe.mjs",
+    "ci/release_clean_host_test.sh",
     "ci/release_endpoint_publication.sh",
     "ci/release_endpoint_remote.sh",
     "ci/release_latest_alias.sh",

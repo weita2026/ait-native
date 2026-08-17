@@ -494,4 +494,138 @@ jq -e '
   .platforms.winget == "validation_assets_published_no_community_submission"
 ' "${status_output}" >/dev/null
 
+rc8_config=${temporary_root}/rc8-config.json
+jq '
+  .release.version = "1.0.0-rc.8" |
+  .release.python_version = "1.0.0rc8" |
+  .release.tag = "v1.0.0-rc.8" |
+  .endpoints.oci.immutable_tag = "1.0.0-rc.8"
+' "${endpoint_config}" >"${rc8_config}"
+"${operator}" validate-config --config "${rc8_config}" >/dev/null
+rc8_status=${temporary_root}/rc8-status.json
+jq '
+  .release.version = "1.0.0-rc.8" |
+  .release.tag = "v1.0.0-rc.8" |
+  .platforms.oci.immutable_tag = "1.0.0-rc.8"
+' "${status_output}" >"${rc8_status}"
+clean_host_request=${temporary_root}/clean-host-request.json
+"${operator}" clean-host \
+  --config "${rc8_config}" \
+  --status "${rc8_status}" \
+  --prior-version 1.0.0-rc.7 \
+  --prior-python-version 1.0.0rc7 \
+  --output "${clean_host_request}" >/dev/null
+"${operator}" validate-clean-host-request \
+  --request "${clean_host_request}" \
+  --config "${rc8_config}" \
+  --status "${rc8_status}" >/dev/null
+jq -e '
+  .contract == "ait.release.operator.clean-host-request/v1" and
+  .status == "ready_for_clean_host_matrix" and
+  .release.version == "1.0.0-rc.8" and
+  .prior == {
+    python_version: "1.0.0rc7",
+    selector: "exact_immutable_version",
+    tag: "v1.0.0-rc.7",
+    version: "1.0.0-rc.7"
+  } and
+  .matrix.revision == "distribution-target-32-2026-08-17.1" and
+  .matrix.row_count == 32 and
+  .workflow.requested == false and
+  ([.mutation[]] | all(. == false))
+' "${clean_host_request}" >/dev/null
+
+expect_failure future-prior "${operator}" clean-host \
+  --config "${rc8_config}" \
+  --status "${rc8_status}" \
+  --prior-version 1.0.0-rc.9 \
+  --prior-python-version 1.0.0rc9 \
+  --output "${temporary_root}/future-prior.json"
+
+clean_host_matrix=${temporary_root}/clean-host-matrix.json
+node "${repo_root}/ci/release_clean_host.mjs" matrix \
+  --family "${repo_root}/ait-release-family.json" \
+  --platforms "${repo_root}/ci/native_bootstrap_matrix.json" \
+  --output "${clean_host_matrix}" >/dev/null
+blocked_rows=${temporary_root}/blocked-rows
+mkdir "${blocked_rows}"
+blocked_evidence=${temporary_root}/blocked-evidence
+expect_failure blocked-aggregate node "${repo_root}/ci/release_clean_host.mjs" aggregate \
+  --matrix "${clean_host_matrix}" \
+  --config "${rc8_config}" \
+  --status "${rc8_status}" \
+  --evidence-root "${blocked_rows}" \
+  --output-root "${blocked_evidence}"
+
+clean_host_run=${temporary_root}/clean-host-run.json
+clean_host_artifact=${temporary_root}/clean-host-artifact.json
+jq -n '
+  {
+    id: 104,
+    run_attempt: 1,
+    name: "ait release clean host",
+    path: ".github/workflows/ait-release-clean-host.yml",
+    event: "workflow_dispatch",
+    status: "completed",
+    conclusion: "failure",
+    head_sha: "abababababababababababababababababababab"
+  }
+' >"${clean_host_run}"
+jq -n '
+  {
+    id: 204,
+    name: "ait-clean-host-REL-FAM-0123456789ABCDEF",
+    digest: "sha256:cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+    expired: false,
+    workflow_run: {id: 104}
+  }
+' >"${clean_host_artifact}"
+clean_host_status=${temporary_root}/clean-host-status.json
+"${operator}" clean-host-status \
+  --request "${clean_host_request}" \
+  --config "${rc8_config}" \
+  --status "${rc8_status}" \
+  --run-record "${clean_host_run}" \
+  --artifact-record "${clean_host_artifact}" \
+  --evidence-root "${blocked_evidence}" \
+  --output "${clean_host_status}" >/dev/null
+jq -e '
+  .contract == "ait.release.operator.clean-host-status/v1" and
+  .status == "blocked" and
+  .release.id == "REL-FAM-0123456789ABCDEF" and
+  .endpoint_publication.operator_status_sha256 == .release.operator_status_sha256 and
+  .endpoint_publication.workflow == {
+    run_id: 103,
+    artifact_id: 203,
+    artifact_digest: "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+    conclusion: "success"
+  } and
+  .endpoint_publication.platforms.github == "published_and_read_back" and
+  (.endpoint_publication.platforms.oci.server |
+    test("^sha256:[0-9a-f]{64}$")) and
+  .clean_host_workflow.run_id == 104 and
+  .clean_host_workflow.conclusion == "failure" and
+  .evidence.rows.expected_rows == 32 and
+  .evidence.rows.admitted_rows == 0 and
+  (.failures | length) == 32 and
+  .promotion_allowed == false and
+  .terminal_for_release == true and
+  .next_action == "freeze_new_release_after_repair"
+' "${clean_host_status}" >/dev/null
+
+tampered_evidence=${temporary_root}/tampered-evidence
+cp -R "${blocked_evidence}" "${tampered_evidence}"
+jq '.failures = []' "${tampered_evidence}/ait-release.clean-host-status.json" \
+  >"${temporary_root}/tampered-aggregate.json"
+mv "${temporary_root}/tampered-aggregate.json" \
+  "${tampered_evidence}/ait-release.clean-host-status.json"
+expect_failure tampered-clean-host "${operator}" clean-host-status \
+  --request "${clean_host_request}" \
+  --config "${rc8_config}" \
+  --status "${rc8_status}" \
+  --run-record "${clean_host_run}" \
+  --artifact-record "${clean_host_artifact}" \
+  --evidence-root "${tampered_evidence}" \
+  --output "${temporary_root}/tampered-clean-host-status.json"
+
 printf 'release operator contract: pass\n'

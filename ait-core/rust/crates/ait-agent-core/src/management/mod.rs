@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+use ait_core::environment_contract::names;
 use ait_core::json_support::{json, JsonValue};
 
 use crate::cli::{plan_agent_cli_launch, AgentCliPlanInput, AgentWorkerLaunchState};
@@ -93,12 +94,22 @@ where
         repo_root: impl Into<PathBuf>,
         manifest_path: impl Into<PathBuf>,
         worker_binary: impl Into<String>,
-        parent_env: BTreeMap<String, String>,
+        mut parent_env: BTreeMap<String, String>,
         process_port: P,
         capability_probe: C,
     ) -> Self {
+        let repo_root = repo_root.into();
+        let manifest_path = manifest_path.into();
+        parent_env.insert(
+            names::AIT_REPO_ROOT.to_string(),
+            repo_root.to_string_lossy().into_owned(),
+        );
+        parent_env.insert(
+            names::AIT_AGENT_CONFIG_PATH.to_string(),
+            manifest_path.to_string_lossy().into_owned(),
+        );
         Self {
-            repo_root: repo_root.into(),
+            repo_root,
             manifest_store: AgentWorkerManifestStore::filesystem(manifest_path),
             worker_binary: worker_binary.into(),
             parent_env,
@@ -352,7 +363,7 @@ where
         let env_bot_token = if plan.transport == TransportKind::Discord {
             runtime_env_value(
                 Path::new(&paths.env_path),
-                &["AIT_DISCORD_BOT_TOKEN", "DISCORD_BOT_TOKEN"],
+                &[names::AIT_DISCORD_BOT_TOKEN, "DISCORD_BOT_TOKEN"],
             )
         } else {
             None

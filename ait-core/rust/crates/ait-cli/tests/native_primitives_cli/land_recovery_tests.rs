@@ -79,6 +79,102 @@ fn closeout_recovery_json(root: &Path, fixture_seed: u64, phase: &str) -> JsonVa
     parse_json_bytes(&output.stdout)
 }
 
+#[test]
+fn native_first_local_task_land_materializes_empty_default_line() {
+    let temp = TempDir::new().expect("first-land repository tempdir");
+    let root = temp.path();
+    initialize_repo(&InitRequest {
+        root: root.to_path_buf(),
+        name: Some("first-land-fixture".to_string()),
+        default_line: "main".to_string(),
+        policy_profile: "prototype".to_string(),
+        default_author_mode: "ai_with_human_review".to_string(),
+        default_model: None,
+        repair_existing: false,
+    })
+    .expect("initialize empty first-land repository");
+    let sprint_card = root.join("docs/sprints/first_land.md");
+    write_file(
+        &sprint_card,
+        concat!(
+            "# First Land [plan-ref: first-land/root]\n\n",
+            "## Work\n\n",
+            "- [ ] Land the first file. [ref: first-land/write]\n",
+        ),
+    );
+
+    let started = json_output(
+        root,
+        &[
+            "task",
+            "start",
+            "--from",
+            "docs/sprints/first_land.md#first-land/write",
+            "--intent",
+            "Prove the empty default Line first-land boundary",
+            "--json",
+        ],
+    );
+    let task_id = started["task_id"]
+        .as_str()
+        .expect("first-land Task ID")
+        .to_string();
+    let worktree = PathBuf::from(
+        started["worktree"]["open_path"]
+            .as_str()
+            .or_else(|| started["worktree"]["path"].as_str())
+            .expect("first-land worktree path"),
+    );
+    write_file(&worktree.join("first-land.txt"), "landed from first Snapshot\n");
+    let snapshot = json_output(
+        &worktree,
+        &[
+            "snapshot",
+            "create",
+            "--message",
+            "First local Task Snapshot",
+            "--json",
+        ],
+    );
+    assert_eq!(snapshot["parent_snapshot_id"], JsonValue::Null);
+
+    let landed = json_output(
+        &worktree,
+        &[
+            "task",
+            "land",
+            task_id.as_str(),
+            "--local",
+            "--json",
+        ],
+    );
+
+    assert_eq!(landed["task_status"].as_str(), Some("completed"));
+    assert_eq!(landed["closeout_status"].as_str(), Some("complete"));
+    assert_eq!(
+        landed["repo_root_restore"]["landed_diff_paths"],
+        json!(["first-land.txt"])
+    );
+    assert_eq!(
+        landed["repo_root_restore"]["plan"]["write_paths"],
+        json!(["first-land.txt"])
+    );
+    assert_eq!(
+        landed["plan_checklist_closeout"]["status"].as_str(),
+        Some("synced")
+    );
+    assert_eq!(
+        fs::read_to_string(root.join("first-land.txt")).expect("canonical first-land file"),
+        "landed from first Snapshot\n"
+    );
+    assert!(
+        fs::read_to_string(&sprint_card)
+            .expect("closed first-land sprint card")
+            .contains("- [x] Land the first file. [ref: first-land/write]")
+    );
+    assert!(!worktree.exists(), "completed first-land worktree must be removed");
+}
+
 fn assert_closeout_mutated_once(
     state: &Arc<Mutex<CloseoutRecoveryRemoteState>>,
     fixture_seed: u64,

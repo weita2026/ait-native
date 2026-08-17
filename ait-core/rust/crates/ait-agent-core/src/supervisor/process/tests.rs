@@ -162,7 +162,7 @@ fn process_status_json_matches_python_contract_keys() {
 
 #[test]
 #[cfg(unix)]
-fn start_contract_builds_telegram_env_spawns_child_and_writes_pid_file() {
+fn start_contract_uses_typed_manifest_environment_and_writes_pid_file() {
     let root = temp_dir("start-telegram");
     let capture_env_path = root.join("captured.env");
     let termination_context_path = root.join("termination.json");
@@ -201,7 +201,7 @@ fn start_contract_builds_telegram_env_spawns_child_and_writes_pid_file() {
     assert!(result.running);
     assert!(result.pid.is_some());
     assert_eq!(result.command[0], "/bin/sh");
-    assert!(result.env_file_seeded);
+    assert!(!result.env_file_seeded);
     assert!(result.termination_context_removed);
     assert!(result.pid_file_written);
     assert!(!PathBuf::from(&test_paths(&root).termination_context_path).exists());
@@ -209,19 +209,8 @@ fn start_contract_builds_telegram_env_spawns_child_and_writes_pid_file() {
 
     let captured_env = wait_for_file_containing(&capture_env_path, "AIT_REPO_ROOT=");
     assert!(captured_env.contains("AIT_REPO_ROOT="));
-    assert!(captured_env.contains("AIT_TELEGRAM_ENV_PATH="));
-    assert!(captured_env.contains("AIT_TELEGRAM_BOT_TOKEN=123456:secret-token"));
-    assert!(captured_env.contains("BOT_TOKEN=123456:secret-token"));
-    assert!(captured_env.contains("AIT_TELEGRAM_BOT_USERNAME=ait_main_bot"));
-    assert!(captured_env.contains("AIT_TELEGRAM_STATE_PATH="));
-    assert!(captured_env.contains("AIT_TELEGRAM_TERMINATION_CONTEXT_PATH="));
-
-    let env_seed = fs::read_to_string(root.join("worker.env")).unwrap();
-    assert!(env_seed.contains("# Seeded by `ait-agent telegram start`"));
-    assert!(env_seed.contains("AIT_TELEGRAM_BOT_TOKEN=123456:secret-token"));
-    assert!(env_seed.contains("BOT_USERNAME=ait_main_bot"));
-    assert!(env_seed.contains("AIT_TELEGRAM_POLL_TIMEOUT_SECONDS=45"));
-    assert!(env_seed.contains("AIT_TELEGRAM_STT_MODE=off"));
+    assert!(!captured_env.contains("123456:secret-token"));
+    assert!(!root.join("worker.env").exists());
 
     let stop = stop_worker_process(AgentWorkerStopInput {
         paths: test_paths(&root),
@@ -235,46 +224,14 @@ fn start_contract_builds_telegram_env_spawns_child_and_writes_pid_file() {
 }
 
 #[test]
-fn worker_start_env_imports_only_selected_transport_provider_defaults() {
+fn worker_start_env_preserves_parent_and_binds_only_the_current_repo_root() {
     let root = temp_dir("provider-env-defaults");
-    let paths = test_paths(&root);
-    fs::write(
-        &paths.env_path,
-        "AIT_DISCORD_CODEX_MODEL=gpt-5.6\n\
-         AIT_DISCORD_CODEX_REASONING_EFFORT=xhigh\n\
-         AIT_DISCORD_CODEX_SANDBOX=workspace-write\n\
-         AIT_DISCORD_BOT_TOKEN=file-token\n\
-         AIT_TELEGRAM_CODEX_MODEL=wrong-transport\n\
-         UNRELATED_KEY=must-not-be-imported\n",
-    )
-    .unwrap();
-    let parent_env = BTreeMap::from([(
-        "AIT_DISCORD_CODEX_REASONING_EFFORT".to_string(),
-        "high".to_string(),
-    )]);
-    let env = build_worker_start_env(
-        &AgentWorkerStartSpec {
-            transport: TransportKind::Discord,
-            name: "sidecar".to_string(),
-            token: None,
-            username: None,
-            secret: None,
-            app_token: None,
-            bot_token: Some("manifest-token".to_string()),
-            application_id: Some("123456789".to_string()),
-        },
-        &paths,
-        &root,
-        parent_env,
-    )
-    .unwrap();
+    let parent_env = BTreeMap::from([("PARENT_KEEP".to_string(), "value".to_string())]);
+    let env = build_worker_start_env(&root, parent_env);
 
-    assert_eq!(env["AIT_DISCORD_CODEX_MODEL"], "gpt-5.6");
-    assert_eq!(env["AIT_DISCORD_CODEX_REASONING_EFFORT"], "high");
-    assert_eq!(env["AIT_DISCORD_CODEX_SANDBOX"], "workspace-write");
-    assert_eq!(env["AIT_DISCORD_BOT_TOKEN"], "manifest-token");
-    assert!(!env.contains_key("AIT_TELEGRAM_CODEX_MODEL"));
-    assert!(!env.contains_key("UNRELATED_KEY"));
+    assert_eq!(env["PARENT_KEEP"], "value");
+    assert_eq!(env[names::AIT_REPO_ROOT], root.to_string_lossy());
+    assert_eq!(env.len(), 2);
 }
 
 #[test]
@@ -310,11 +267,12 @@ fn start_contract_returns_already_running_without_spawn() {
 }
 
 #[test]
-fn start_contract_rejects_missing_required_transport_env() {
+fn start_contract_leaves_transport_validation_to_the_typed_worker_manifest() {
     let root = temp_dir("start-missing-env");
-    let err = start_worker_process(AgentWorkerStartInput {
+    let paths = test_paths(&root);
+    let result = start_worker_process(AgentWorkerStartInput {
         repo_root: root.to_string_lossy().into_owned(),
-        paths: test_paths(&root),
+        paths: paths.clone(),
         worker: AgentWorkerStartSpec {
             transport: TransportKind::Line,
             name: "main".to_string(),
@@ -328,9 +286,18 @@ fn start_contract_rejects_missing_required_transport_env() {
         argv: vec!["/bin/sleep".to_string(), "30".to_string()],
         parent_env: BTreeMap::new(),
     })
-    .expect_err("LINE worker without secret must fail");
+    .expect("the process layer must not duplicate typed manifest validation");
 
-    assert!(err.contains("LINE worker main does not have a secret"));
+    assert!(result.started);
+    let stop = stop_worker_process(AgentWorkerStopInput {
+        paths,
+        reason: Some("test_cleanup".to_string()),
+        worker_name: Some("main".to_string()),
+        stop_timeout_seconds: Some(2.0),
+        kill_grace_seconds: Some(0.2),
+    })
+    .unwrap();
+    assert!(stop.stopped);
 }
 
 #[test]

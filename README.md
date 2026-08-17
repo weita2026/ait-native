@@ -25,7 +25,7 @@ Official website: <https://ait-native.dev/>
 ## Install and initialize
 
 ```sh
-python -m pip install ait-native==1.0.0rc8
+python -m pip install ait-native==1.0.0rc9
 cd path/to/your-repository
 ait init
 ```
@@ -40,7 +40,7 @@ Confirm the selected release before initializing a repository:
 ait --version
 ```
 
-This is the public `v1.0.0-rc.8` source tree. One tag contains the exact
+This is the public `v1.0.0-rc.9` source tree. One tag contains the exact
 exported source of `ait-core`, `ait-server`, `ait-runner`, `ait-python`, and
 `ait-node`; their AIT Snapshot mapping is recorded in
 `ait-monorepo-source.json`.
@@ -84,18 +84,16 @@ For a repository mutation, the agent:
    and current AIT configuration before changing files;
 2. keeps the requested scope, preserves unrelated user work, and uses
    `ait blame` before repairing an identified regression;
-3. evaluates the bounded edit with `ait workflow tier --json`; it uses a quick
-   Snapshot only when the generated policy explicitly permits it;
-4. for governed work, writes one exact sprint item, runs `ait task start`, and
-   performs the change in the bound isolated worktree;
-5. implements the requested code and runs proportionate tests, while routing
+3. writes one exact sprint item, runs `ait task start --from`, and performs
+   every code change in the bound isolated worktree;
+4. implements the requested code and runs proportionate tests, while routing
    authored Markdown through `ait plan sync` instead of hiding it in a code
    Snapshot;
-6. records the completed code with `ait snapshot create`, then uses
+5. records the completed code with `ait snapshot create`, then uses
    `ait task land` in the configured local or remote scope;
-7. verifies closeout of the exact Plan item, Task, worktree, and feature Line;
+6. verifies closeout of the exact Plan item, Task, worktree, and feature Line;
    and
-8. fails closed when required evidence, policy, review, CI, authority, or user
+7. fails closed when required evidence, policy, review, CI, authority, or user
    direction is missing instead of bypassing the repository contract.
 
 The generated block supplies the exact commands. The user supplies the desired

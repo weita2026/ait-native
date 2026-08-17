@@ -46,12 +46,18 @@ def test_package_builds_the_pinned_pyo3_extension() -> None:
         assert "{workspace-path-hash}" in build_dir.parts
     else:
         assert cargo_config_text.startswith(
-            "# Managed by ait: stable final artifacts, workspace-isolated intermediates."
+            "# Managed by ait: workspace-isolated final artifacts and intermediates."
         )
-        assert target_dir.parts[-2:] == (".ait", "cargo-target")
+        worktree = json.loads(
+            (ROOT / ".ait-worktree.json").read_text(encoding="utf-8")
+        )
+        worktree_name = worktree["worktree_name"]
+        assert target_dir.parts[-3] == "cargo-target"
+        assert target_dir.parts[-2] == "task-workspaces"
+        assert target_dir.name == worktree_name
         assert "cargo-build" in build_dir.parts
         assert build_dir.parts[-2] == "task-workspaces"
-        assert build_dir.name != "main-seed"
+        assert build_dir.name == worktree_name != "main-seed"
         assert target_dir != build_dir
 
 
@@ -61,7 +67,7 @@ def test_package_declares_the_apache_rc_identity() -> None:
     )
     project = pyproject["project"]
 
-    assert project["version"] == ait_python.__version__ == "1.0.0rc8"
+    assert project["version"] == ait_python.__version__ == "1.0.0rc9"
     assert project["license"] == "Apache-2.0"
     assert project["license-files"] == ["LICENSE", "NOTICE"]
     assert "Apache License" in (ROOT / "LICENSE").read_text(encoding="utf-8")
@@ -96,7 +102,7 @@ def test_package_declares_the_apache_rc_identity() -> None:
     assert ".ait-external/ait-core/rust/Cargo.toml" in generator
 
     installed = metadata("ait-python")
-    assert installed["Version"] == "1.0.0rc8"
+    assert installed["Version"] == "1.0.0rc9"
     assert installed["License-Expression"] == "Apache-2.0"
     assert installed.get_all("License-File") == ["LICENSE", "NOTICE"]
 
@@ -116,7 +122,7 @@ def test_materialized_core_matches_the_external_lock() -> None:
     node = lock["node"][0]
 
     assert node["repository_index"] == 0
-    assert node["snapshot"] == "SNP-F136DB9A342B"
+    assert node["snapshot"] == "SNP-22EC9E9A6AB0"
     assert marker["format"] == "ait.external.materialized"
     assert marker["name"] == node["name"] == "ait-core"
     assert marker["repo_name"] == node["repo_name"] == "ait-core"

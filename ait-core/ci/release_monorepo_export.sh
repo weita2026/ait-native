@@ -32,12 +32,17 @@ receipt_workflow=${repo_root}/.github/workflows/ait-release-component-receipts.y
 promotion_workflow=${repo_root}/.github/workflows/ait-release-protected-promotion.yml
 endpoint_workflow=${repo_root}/.github/workflows/pypi-publish.yml
 latest_alias_workflow=${repo_root}/.github/workflows/ait-release-latest-alias.yml
+clean_host_workflow=${repo_root}/.github/workflows/ait-release-clean-host.yml
 endpoint_defaults=${repo_root}/release/endpoint-publication.defaults.json
 server_dockerfile=${repo_root}/release/oci/ait-server.Dockerfile
 runner_dockerfile=${repo_root}/release/oci/ait-runner.Dockerfile
 release_control_paths=(
   ci/native_bootstrap_matrix.jq
   ci/native_bootstrap_matrix.json
+  ci/release_clean_host.mjs
+  ci/release_clean_host_phase.mjs
+  ci/release_clean_host_probe.mjs
+  ci/release_clean_host_test.sh
   ci/release_endpoint_publication.sh
   ci/release_endpoint_remote.sh
   ci/release_latest_alias.sh
@@ -109,6 +114,7 @@ if [[ ! -d ${template_root} || -L ${template_root} ||
   ! -f ${promotion_workflow} || -L ${promotion_workflow} ||
   ! -f ${endpoint_workflow} || -L ${endpoint_workflow} ||
   ! -f ${latest_alias_workflow} || -L ${latest_alias_workflow} ||
+  ! -f ${clean_host_workflow} || -L ${clean_host_workflow} ||
   ! -f ${endpoint_defaults} || -L ${endpoint_defaults} ||
   ! -f ${server_dockerfile} || -L ${server_dockerfile} ||
   ! -f ${runner_dockerfile} || -L ${runner_dockerfile} ]]; then
@@ -528,10 +534,12 @@ root_receipt_workflow=${staging}/.github/workflows/ait-release-component-receipt
 root_promotion_workflow=${staging}/.github/workflows/ait-release-protected-promotion.yml
 root_endpoint_workflow=${staging}/.github/workflows/pypi-publish.yml
 root_latest_alias_workflow=${staging}/.github/workflows/ait-release-latest-alias.yml
+root_clean_host_workflow=${staging}/.github/workflows/ait-release-clean-host.yml
 cp "${receipt_workflow}" "${root_receipt_workflow}"
 cp "${promotion_workflow}" "${root_promotion_workflow}"
 cp "${endpoint_workflow}" "${root_endpoint_workflow}"
 cp "${latest_alias_workflow}" "${root_latest_alias_workflow}"
+cp "${clean_host_workflow}" "${root_clean_host_workflow}"
 cp "${server_dockerfile}" "${staging}/release/oci/ait-server.Dockerfile"
 cp "${runner_dockerfile}" "${staging}/release/oci/ait-runner.Dockerfile"
 node "${transform_tool}" \
@@ -553,12 +561,16 @@ chmod 0644 \
   "${staging}/build-release.ps1" \
   "${staging}/ait-release-family.json" \
   "${staging}/docs/distribution.md" \
+  "${staging}/ci/release_clean_host.mjs" \
+  "${staging}/ci/release_clean_host_phase.mjs" \
+  "${staging}/ci/release_clean_host_probe.mjs" \
   "${staging}/LICENSES/Apache-2.0.txt" \
   "${staging}/LICENSES/AGPL-3.0-only.txt" \
   "${root_receipt_workflow}" \
   "${root_promotion_workflow}" \
   "${root_endpoint_workflow}" \
   "${root_latest_alias_workflow}" \
+  "${root_clean_host_workflow}" \
   "${staging}/.github/ISSUE_TEMPLATE/bug_report.yml" \
   "${staging}/.github/ISSUE_TEMPLATE/documentation.yml" \
   "${staging}/.github/ISSUE_TEMPLATE/config.yml" \
@@ -574,6 +586,7 @@ chmod 0644 \
 chmod 0755 \
   "${staging}/build-release.sh" \
   "${staging}/build-release.mjs" \
+  "${staging}/ci/release_clean_host_test.sh" \
   "${staging}/ci/release_endpoint_publication.sh" \
   "${staging}/ci/release_endpoint_remote.sh" \
   "${staging}/ci/release_latest_alias.sh" \

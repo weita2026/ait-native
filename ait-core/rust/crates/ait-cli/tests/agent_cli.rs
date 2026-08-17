@@ -4,6 +4,7 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::process::Output;
 
+use ait_core::environment_contract::names;
 use ait_core::json_support::{JsonCodec, JsonValue};
 use assert_cmd::Command;
 use predicates::prelude::*;
@@ -23,14 +24,12 @@ fn ait_cli_command(root: &Path) -> Command {
 
 fn isolate_environment(command: &mut Command, root: &Path) {
     for name in [
-        "AIT_NATIVE_WORKSPACE_ROOT",
-        "AIT_WORKSPACE_ROOT",
-        "AIT_AGENT_CONFIG_PATH",
-        "AIT_AGENT_RUST_WORKER_BINARY",
+        names::AIT_AGENT_CONFIG_PATH,
+        names::AIT_AGENT_RUST_WORKER_BINARY,
     ] {
         command.env_remove(name);
     }
-    command.current_dir(root).env("AIT_REPO_ROOT", root);
+    command.current_dir(root).env(names::AIT_REPO_ROOT, root);
 }
 
 fn run_json(root: &Path, args: &[&str]) -> JsonValue {
@@ -227,7 +226,7 @@ fn start_and_supervisor_probe_rust_capabilities_and_never_fall_back_to_python() 
     let sentinel = root.path().join("unexpected-worker-run");
 
     let output = agent_command(root.path())
-        .env("AIT_AGENT_RUST_WORKER_BINARY", &worker)
+        .env(names::AIT_AGENT_RUST_WORKER_BINARY, &worker)
         .env("FAKE_WORKER_RUN_SENTINEL", &sentinel)
         .args(["telegram", "start", "main", "--json"])
         .output()
@@ -247,7 +246,7 @@ fn start_and_supervisor_probe_rust_capabilities_and_never_fall_back_to_python() 
     assert!(!sentinel.exists(), "worker run command must remain blocked");
 
     let supervisor = agent_command(root.path())
-        .env("AIT_AGENT_RUST_WORKER_BINARY", &worker)
+        .env(names::AIT_AGENT_RUST_WORKER_BINARY, &worker)
         .env("FAKE_WORKER_RUN_SENTINEL", &sentinel)
         .args([
             "telegram",
@@ -339,7 +338,7 @@ fn telegram_foreground_defaults_to_main_and_preserves_native_worker_exit_status(
     let args_path = root.path().join("worker-args");
 
     agent_command(root.path())
-        .env("AIT_AGENT_RUST_WORKER_BINARY", &worker)
+        .env(names::AIT_AGENT_RUST_WORKER_BINARY, &worker)
         .env("FAKE_WORKER_ARGS", &args_path)
         .env("FAKE_WORKER_EXIT_CODE", "23")
         .arg("telegram")
@@ -353,7 +352,7 @@ fn telegram_foreground_defaults_to_main_and_preserves_native_worker_exit_status(
     assert!(!args.contains("python"));
 
     ait_cli_command(root.path())
-        .env("AIT_AGENT_RUST_WORKER_BINARY", &worker)
+        .env(names::AIT_AGENT_RUST_WORKER_BINARY, &worker)
         .env("FAKE_WORKER_ARGS", &args_path)
         .env("FAKE_WORKER_EXIT_CODE", "24")
         .args(["agent", "telegram"])
@@ -382,7 +381,7 @@ fn telegram_foreground_accepts_explicit_worker_and_stdin_webhook_mode() {
     let update = r#"{"update_id":42,"message":{"text":"private-update"}}"#;
 
     agent_command(root.path())
-        .env("AIT_AGENT_RUST_WORKER_BINARY", &worker)
+        .env(names::AIT_AGENT_RUST_WORKER_BINARY, &worker)
         .env("FAKE_WORKER_ARGS", &args_path)
         .env("FAKE_WORKER_STDIN", &stdin_path)
         .args(["telegram", "--worker", "secondary", "--mode", "webhook"])

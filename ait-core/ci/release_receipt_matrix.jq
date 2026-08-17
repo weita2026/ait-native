@@ -258,9 +258,9 @@ null
 | ensure(
     ($sources | length) == 5
       and ($builds | length) == 31
-      and ($artifact_rows | length) == 37
-      and ([ $builds[].expected_component_artifact_count ] | add) == 37;
-    "release matrix must resolve to five sources, 31 receipts, and 37 component artifacts"
+      and ($artifact_rows | length) == 43
+      and ([ $builds[].expected_component_artifact_count ] | add) == 43;
+    "release matrix must resolve to five sources, 31 receipts, and 43 component artifacts"
   )
 | ensure(
     ([ $builds[] | select(.target == "portable") ] | length) == 1

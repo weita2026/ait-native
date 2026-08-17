@@ -26,7 +26,7 @@ test("binding info and version come from the real in-process addon", () => {
   assert.equal(payload.runtime_authority, "rust");
   assert.equal(payload.node_binding, "napi");
   assert.equal(payload.process_transport_allowed, false);
-  assert.equal(payload.version, "1.0.0-rc.8");
+  assert.equal(payload.version, "1.0.0-rc.9");
   assert.deepEqual(payload.supported_surfaces, [
     "ait-core",
     "ait-agent",

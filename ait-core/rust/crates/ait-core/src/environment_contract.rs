@@ -87,6 +87,7 @@ macro_rules! define_environment_contract {
 
 define_environment_contract!(
     AIT_AGENT_CONFIG_PATH => (Bootstrap, Agent, false, "Path to the typed Agent worker manifest."),
+    AIT_AGENT_RUST_WORKER_BINARY => (Bootstrap, Agent, false, "Explicit native ait-agent-worker executable selected by the public manager."),
     AIT_DISCORD_APPLICATION_ID => (Credential, Agent, false, "Discord application identity used by the selected worker."),
     AIT_DISCORD_BOT_TOKEN => (Credential, Agent, true, "Discord bot credential for the selected worker."),
     AIT_DISCORD_PUBLIC_KEY => (Credential, Agent, false, "Discord verification public key for the selected worker."),
@@ -213,7 +214,7 @@ mod tests {
 
     #[test]
     fn registry_is_sorted_unique_and_excludes_removed_names() {
-        assert_eq!(ENVIRONMENT_VARIABLES.len(), 23);
+        assert_eq!(ENVIRONMENT_VARIABLES.len(), 24);
         let names = ENVIRONMENT_VARIABLES
             .iter()
             .map(|entry| entry.name)

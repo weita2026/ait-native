@@ -6,6 +6,7 @@ use std::thread;
 use std::time::Duration;
 
 use ait_agent_core::{AgentManagementRuntime, AgentSupervisorAction, TransportKind};
+use ait_core::environment_contract::names;
 use ait_core::file_io::FilesystemFileIoStore;
 use ait_core::json_support::{
     expand_home_path_with_file_io_store, json, JsonCodec, JsonEncodeOptions, JsonValue,
@@ -404,16 +405,14 @@ fn management_runtime() -> Result<AgentManagementRuntime, String> {
 fn resolve_repo_root() -> Result<PathBuf, String> {
     let cwd =
         env::current_dir().map_err(|error| format!("Failed to read current directory: {error}"))?;
-    let raw = env::var_os("AIT_REPO_ROOT")
-        .or_else(|| env::var_os("AIT_NATIVE_WORKSPACE_ROOT"))
-        .or_else(|| env::var_os("AIT_WORKSPACE_ROOT"))
+    let raw = env::var_os(names::AIT_REPO_ROOT)
         .map(PathBuf::from)
         .unwrap_or(cwd.clone());
     Ok(resolve_absolute_path(&cwd, raw))
 }
 
 fn resolve_manifest_path(repo_root: &Path) -> Result<PathBuf, String> {
-    let path = match env::var("AIT_AGENT_CONFIG_PATH") {
+    let path = match env::var(names::AIT_AGENT_CONFIG_PATH) {
         Ok(value) if !value.trim().is_empty() => {
             expand_home_path_with_file_io_store(&FilesystemFileIoStore, value.trim())
         }
@@ -434,7 +433,7 @@ fn resolve_absolute_path(cwd: &Path, path: PathBuf) -> PathBuf {
 }
 
 fn resolve_worker_binary() -> String {
-    if let Ok(value) = env::var("AIT_AGENT_RUST_WORKER_BINARY") {
+    if let Ok(value) = env::var(names::AIT_AGENT_RUST_WORKER_BINARY) {
         let value = value.trim();
         if !value.is_empty() {
             return value.to_string();

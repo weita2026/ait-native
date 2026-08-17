@@ -132,7 +132,7 @@ jobs:
           test -s "${smoke}/help.stdout"
           (
             cd "${repo}"
-            "${AIT_BOOTSTRAP_BIN}" init --name native-bootstrap-smoke --json \
+            "${AIT_BOOTSTRAP_BIN}" init --json \
               >"${smoke}/init.stdout" 2>"${smoke}/init.stderr"
             "${AIT_BOOTSTRAP_BIN}" status --json \
               >"${smoke}/status.stdout" 2>"${smoke}/status.stderr"

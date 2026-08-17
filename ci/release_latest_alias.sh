@@ -143,21 +143,37 @@ bash "${operator}" validate-config --config "${endpoint_config}" >/dev/null
 
 if ! jq -e --slurpfile config "${endpoint_config}" '
   ($config[0]) as $c |
-  .contract == "ait.release.operator.status/v1" and
-  .status == "published_pending_clean_host_smoke" and
-  .release == {id: $c.release.id, tag: $c.release.tag, version: $c.release.version} and
-  .platforms.github == "published_and_read_back" and
-  .platforms.pypi == "published_and_read_back" and
-  .platforms.npm == "published_and_read_back" and
-  .platforms.homebrew == "published_and_read_back" and
-  .platforms.apt == "published_signed_and_read_back" and
-  .platforms.oci.immutable_tag == $c.endpoints.oci.immutable_tag and
-  .platforms.oci.moving_tag == $c.endpoints.oci.moving_tag and
-  (.platforms.oci.server | test("^sha256:[0-9a-f]{64}$")) and
-  (.platforms.oci.runner | test("^sha256:[0-9a-f]{64}$"))
+  .contract == "ait.release.operator.clean-host-status/v1" and
+  .status == "published" and
+  .promotion_allowed == true and
+  .terminal_for_release == false and
+  .next_action == "release_complete" and
+  .release.id == $c.release.id and
+  .release.tag == $c.release.tag and
+  .release.version == $c.release.version and
+  .release.python_version == $c.release.python_version and
+  .release.channel == $c.release.channel and
+  .release.source_commit == $c.release.source_commit and
+  (.release.endpoint_config_sha256 | test("^[0-9a-f]{64}$")) and
+  (.release.operator_status_sha256 | test("^[0-9a-f]{64}$")) and
+  .endpoint_publication.operator_status_sha256 == .release.operator_status_sha256 and
+  .endpoint_publication.workflow.conclusion == "success" and
+  .endpoint_publication.platforms.github == "published_and_read_back" and
+  .endpoint_publication.platforms.pypi == "published_and_read_back" and
+  .endpoint_publication.platforms.npm == "published_and_read_back" and
+  .endpoint_publication.platforms.homebrew == "published_and_read_back" and
+  .endpoint_publication.platforms.apt == "published_signed_and_read_back" and
+  .endpoint_publication.platforms.oci.immutable_tag == $c.endpoints.oci.immutable_tag and
+  .endpoint_publication.platforms.oci.moving_tag == $c.endpoints.oci.moving_tag and
+  (.endpoint_publication.platforms.oci.server | test("^sha256:[0-9a-f]{64}$")) and
+  (.endpoint_publication.platforms.oci.runner | test("^sha256:[0-9a-f]{64}$"))
 ' "${operator_status}" >/dev/null; then
-  fail 65 'operator status is incomplete or belongs to another release'
+  fail 65 'clean-host status is incomplete, blocked, or belongs to another release'
 fi
+
+[[ $(jq -er '.release.endpoint_config_sha256' "${operator_status}") == \
+  "$(sha256_file "${endpoint_config}")" ]] ||
+  fail 65 'clean-host status does not bind the exact endpoint configuration'
 
 IFS=$'\t' read -r release_id release_version release_channel release_tag \
   release_commit python_version repository npm_registry npm_route oci_immutable_tag \
@@ -276,7 +292,7 @@ while IFS= read -r image; do
     *) fail 65 "OCI image is not a supported AIT release component: ${image}" ;;
   esac
   expected_digest=$(jq -er --arg component "${status_key}" \
-    '.platforms.oci[$component] | select(test("^sha256:[0-9a-f]{64}$"))' \
+    '.endpoint_publication.platforms.oci[$component] | select(test("^sha256:[0-9a-f]{64}$"))' \
     "${operator_status}")
   immutable_digest=$(oci_digest "${image}@${expected_digest}")
   [[ ${immutable_digest} == "${expected_digest}" ]] ||

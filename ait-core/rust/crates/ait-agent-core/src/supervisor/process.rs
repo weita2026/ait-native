@@ -6,6 +6,7 @@ use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use ait_core::environment_contract::names;
 use ait_core::json_support::{json, JsonValue};
 use serde::{Deserialize, Serialize};
 
@@ -16,43 +17,6 @@ const DEFAULT_LOG_TAIL_LINES: usize = 100;
 const DEFAULT_STOP_TIMEOUT_SECONDS: f64 = 10.0;
 const DEFAULT_KILL_GRACE_SECONDS: f64 = 2.0;
 const MIGRATION_STAGE: &str = "rust_agent_supervisor_process_contract";
-const TELEGRAM_ENV_SEED_KEYS: &[&str] = &[
-    "AIT_REPO_ROOT",
-    "AIT_TELEGRAM_ENV_PATH",
-    "AIT_TELEGRAM_BOT_TOKEN",
-    "BOT_TOKEN",
-    "AIT_TELEGRAM_STATE_PATH",
-    "AIT_TELEGRAM_TERMINATION_CONTEXT_PATH",
-    "AIT_TELEGRAM_BOT_USERNAME",
-    "BOT_USERNAME",
-];
-const TELEGRAM_ENV_SEED_DEFAULTS: &[(&str, &str)] = &[
-    ("AIT_TELEGRAM_REQUEST_TIMEOUT_SECONDS", "inf"),
-    ("AIT_TELEGRAM_POLL_TIMEOUT_SECONDS", "45"),
-    ("AIT_TELEGRAM_OPENAI_TIMEOUT_SECONDS", "inf"),
-    ("AIT_TELEGRAM_CODEX_APP_SERVER_READY_TIMEOUT_SECONDS", "30"),
-    ("AIT_TELEGRAM_CODEX_TURN_TIMEOUT_SECONDS", "inf"),
-    ("AIT_CHAT_CODEX_CHILD_REAP_TIMEOUT_SECONDS", "30"),
-    ("AIT_TELEGRAM_CODEX_CHILD_REAP_TIMEOUT_SECONDS", "30"),
-    ("AIT_TELEGRAM_STT_MODE", "off"),
-    (
-        "AIT_TELEGRAM_STT_MODEL",
-        "mlx-community/whisper-large-v3-mlx",
-    ),
-    ("AIT_TELEGRAM_STT_DEVICE", "auto"),
-    ("AIT_TELEGRAM_STT_INCLUDE_AUDIO_UPLOADS", "false"),
-];
-const TRANSPORT_PROVIDER_ENV_SUFFIXES: &[&str] = &[
-    "CODEX_BIN",
-    "CODEX_MODEL",
-    "MODEL",
-    "CODEX_REASONING_EFFORT",
-    "REASONING_EFFORT",
-    "CODEX_SANDBOX",
-    "SANDBOX",
-    "CODEX_TURN_TIMEOUT_SECONDS",
-    "TURN_TIMEOUT_SECONDS",
-];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentWorkerProcessPaths {
@@ -496,12 +460,8 @@ fn start_worker_process_native(
 
     let termination_context_removed =
         remove_file_if_exists(&PathBuf::from(&paths.termination_context_path))?;
-    let env = build_worker_start_env(&input.worker, &paths, &repo_root, input.parent_env)?;
-    let env_file_seeded = if input.worker.transport == TransportKind::Telegram {
-        seed_telegram_env_file(&PathBuf::from(&paths.env_path), &env)?
-    } else {
-        false
-    };
+    let env = build_worker_start_env(&repo_root, input.parent_env);
+    let env_file_seeded = false;
     let pid = spawn_worker_command(&command, &repo_root, &PathBuf::from(&paths.log_file), &env)?;
     write_pid_file(&PathBuf::from(&paths.pid_file), pid)?;
 
@@ -671,156 +631,14 @@ fn ensure_parent_dir(path: &Path, label: &str) -> Result<(), String> {
 }
 
 fn build_worker_start_env(
-    worker: &AgentWorkerStartSpec,
-    paths: &AgentWorkerProcessPaths,
     repo_root: &Path,
     mut env: BTreeMap<String, String>,
-) -> Result<BTreeMap<String, String>, String> {
-    overlay_transport_provider_env_defaults(
-        worker.transport,
-        &PathBuf::from(&paths.env_path),
-        &mut env,
-    );
+) -> BTreeMap<String, String> {
     env.insert(
-        "AIT_REPO_ROOT".to_string(),
+        names::AIT_REPO_ROOT.to_string(),
         repo_root.to_string_lossy().into_owned(),
     );
-    match worker.transport {
-        TransportKind::Telegram => {
-            let token =
-                required_worker_text(worker.token.as_deref(), "Telegram", &worker.name, "token")?;
-            env.insert("AIT_TELEGRAM_ENV_PATH".to_string(), paths.env_path.clone());
-            env.insert("AIT_TELEGRAM_BOT_TOKEN".to_string(), token.clone());
-            env.insert("BOT_TOKEN".to_string(), token);
-            if let Some(username) = clean_optional_text(worker.username.as_deref()) {
-                env.insert("AIT_TELEGRAM_BOT_USERNAME".to_string(), username.clone());
-                env.insert("BOT_USERNAME".to_string(), username);
-            }
-            env.insert(
-                "AIT_TELEGRAM_STATE_PATH".to_string(),
-                paths.sync_state_path.clone(),
-            );
-            env.insert(
-                "AIT_TELEGRAM_TERMINATION_CONTEXT_PATH".to_string(),
-                paths.termination_context_path.clone(),
-            );
-        }
-        TransportKind::Line => {
-            let token =
-                required_worker_text(worker.token.as_deref(), "LINE", &worker.name, "token")?;
-            let secret =
-                required_worker_text(worker.secret.as_deref(), "LINE", &worker.name, "secret")?;
-            env.insert("AIT_LINE_ENV_PATH".to_string(), paths.env_path.clone());
-            env.insert("AIT_LINE_CHANNEL_ACCESS_TOKEN".to_string(), token.clone());
-            env.insert("LINE_CHANNEL_ACCESS_TOKEN".to_string(), token);
-            env.insert("AIT_LINE_CHANNEL_SECRET".to_string(), secret.clone());
-            env.insert("LINE_CHANNEL_SECRET".to_string(), secret);
-            env.insert(
-                "AIT_LINE_STATE_PATH".to_string(),
-                paths.sync_state_path.clone(),
-            );
-            env.insert(
-                "AIT_LINE_TERMINATION_CONTEXT_PATH".to_string(),
-                paths.termination_context_path.clone(),
-            );
-        }
-        TransportKind::Discord => {
-            let application_id = required_worker_text(
-                worker.application_id.as_deref(),
-                "Discord",
-                &worker.name,
-                "application id",
-            )?;
-            let bot_token = clean_optional_text(worker.bot_token.as_deref())
-                .or_else(|| {
-                    runtime_env_value(
-                        &PathBuf::from(&paths.env_path),
-                        &["AIT_DISCORD_BOT_TOKEN", "DISCORD_BOT_TOKEN"],
-                    )
-                })
-                .ok_or_else(|| {
-                    format!(
-                        "Discord worker {} does not have a bot token in config or {}.",
-                        clean_optional_text(Some(&worker.name)).unwrap_or_default(),
-                        paths.env_path
-                    )
-                })?;
-            env.insert("AIT_DISCORD_ENV_PATH".to_string(), paths.env_path.clone());
-            env.insert(
-                "AIT_DISCORD_APPLICATION_ID".to_string(),
-                application_id.clone(),
-            );
-            env.insert("DISCORD_APPLICATION_ID".to_string(), application_id);
-            env.insert("AIT_DISCORD_BOT_TOKEN".to_string(), bot_token.clone());
-            env.insert("DISCORD_BOT_TOKEN".to_string(), bot_token);
-            env.insert(
-                "AIT_DISCORD_STATE_PATH".to_string(),
-                paths.sync_state_path.clone(),
-            );
-            env.insert(
-                "AIT_DISCORD_TERMINATION_CONTEXT_PATH".to_string(),
-                paths.termination_context_path.clone(),
-            );
-        }
-        TransportKind::Slack => {
-            let app_token = required_worker_text(
-                worker.app_token.as_deref(),
-                "Slack",
-                &worker.name,
-                "app token",
-            )?;
-            env.insert("AIT_SLACK_ENV_PATH".to_string(), paths.env_path.clone());
-            env.insert("AIT_SLACK_APP_TOKEN".to_string(), app_token.clone());
-            env.insert("SLACK_APP_TOKEN".to_string(), app_token);
-            env.insert(
-                "AIT_SLACK_STATE_PATH".to_string(),
-                paths.sync_state_path.clone(),
-            );
-            env.insert(
-                "AIT_SLACK_TERMINATION_CONTEXT_PATH".to_string(),
-                paths.termination_context_path.clone(),
-            );
-        }
-    }
-    Ok(env)
-}
-
-fn overlay_transport_provider_env_defaults(
-    transport: TransportKind,
-    path: &Path,
-    env: &mut BTreeMap<String, String>,
-) {
-    let prefix = match transport {
-        TransportKind::Telegram => "AIT_TELEGRAM",
-        TransportKind::Line => "AIT_LINE",
-        TransportKind::Discord => "AIT_DISCORD",
-        TransportKind::Slack => "AIT_SLACK",
-    };
-    let file_values = load_simple_env_file(path);
-    for suffix in TRANSPORT_PROVIDER_ENV_SUFFIXES {
-        let key = format!("{prefix}_{suffix}");
-        if clean_optional_text(env.get(&key).map(String::as_str)).is_some() {
-            continue;
-        }
-        let Some(value) = clean_optional_text(file_values.get(&key).map(String::as_str)) else {
-            continue;
-        };
-        env.insert(key, value);
-    }
-}
-
-fn required_worker_text(
-    value: Option<&str>,
-    transport_label: &str,
-    worker_name: &str,
-    field_label: &str,
-) -> Result<String, String> {
-    clean_optional_text(value).ok_or_else(|| {
-        format!(
-            "{transport_label} worker {} does not have a {field_label}.",
-            clean_optional_text(Some(worker_name)).unwrap_or_default()
-        )
-    })
+    env
 }
 
 pub(crate) fn runtime_env_value(path: &Path, names: &[&str]) -> Option<String> {
@@ -858,53 +676,6 @@ fn load_simple_env_file(path: &Path) -> BTreeMap<String, String> {
             Some((key.to_string(), value))
         })
         .collect()
-}
-
-fn seed_telegram_env_file(path: &Path, env: &BTreeMap<String, String>) -> Result<bool, String> {
-    if path_exists(path) {
-        return Ok(false);
-    }
-    ensure_parent_dir(path, "Telegram env")?;
-    let mut body = String::from(
-        "# Seeded by `ait-agent telegram start` on first worker launch.\n\
-         # Later edits are preserved; re-running start does not overwrite this file.\n",
-    );
-    for key in TELEGRAM_ENV_SEED_KEYS {
-        let Some(value) = env
-            .get(*key)
-            .and_then(|value| clean_optional_text(Some(value)))
-        else {
-            continue;
-        };
-        ensure_env_file_value_is_single_line(key, &value)?;
-        body.push_str(key);
-        body.push('=');
-        body.push_str(&value);
-        body.push('\n');
-    }
-    for (key, value) in TELEGRAM_ENV_SEED_DEFAULTS {
-        ensure_env_file_value_is_single_line(key, value)?;
-        body.push_str(key);
-        body.push('=');
-        body.push_str(value);
-        body.push('\n');
-    }
-    fs::write(path, body).map_err(|err| {
-        format!(
-            "failed to write Telegram worker env seed `{}`: {err}",
-            path.display()
-        )
-    })?;
-    Ok(true)
-}
-
-fn ensure_env_file_value_is_single_line(key: &str, value: &str) -> Result<(), String> {
-    if value.contains('\n') || value.contains('\r') {
-        return Err(format!(
-            "Telegram worker env value for {key} contains a newline and cannot be seeded."
-        ));
-    }
-    Ok(())
 }
 
 fn spawn_worker_command(

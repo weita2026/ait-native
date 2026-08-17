@@ -1,0 +1,534 @@
+name: ait release clean host
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_id:
+        description: Exact REL-FAM identity
+        required: true
+        type: string
+      request_sha256:
+        description: SHA-256 of the clean-host operator request
+        required: true
+        type: string
+      request_b64:
+        description: Base64 clean-host operator request
+        required: true
+        type: string
+      endpoint_config_sha256:
+        description: SHA-256 of the endpoint configuration
+        required: true
+        type: string
+      endpoint_config_b64:
+        description: Base64 endpoint configuration
+        required: true
+        type: string
+      operator_status_sha256:
+        description: SHA-256 of the pending endpoint operator status
+        required: true
+        type: string
+      operator_status_b64:
+        description: Base64 pending endpoint operator status
+        required: true
+        type: string
+      source_commit:
+        description: Exact public release source commit
+        required: true
+        type: string
+      tag:
+        description: Exact immutable candidate tag
+        required: true
+        type: string
+      prior_version:
+        description: Exact prior supported public SemVer
+        required: true
+        type: string
+      prior_python_version:
+        description: Exact prior supported public PEP 440 version
+        required: true
+        type: string
+      matrix_sha256:
+        description: SHA-256 of the exact generated 32-row matrix
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ait-release-clean-host-${{ inputs.release_id }}
+  cancel-in-progress: false
+
+jobs:
+  contract:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    outputs:
+      rows: ${{ steps.matrix.outputs.rows }}
+      platforms: ${{ steps.matrix.outputs.platforms }}
+    steps:
+      - name: Check out the exact public release source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ inputs.source_commit }}
+          path: source
+          persist-credentials: false
+
+      - name: Select the workflow Node runtime
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: "24.5.0"
+          check-latest: false
+
+      - name: Decode and validate the immutable release authority
+        shell: bash
+        env:
+          AIT_REQUEST_B64: ${{ inputs.request_b64 }}
+          AIT_CONFIG_B64: ${{ inputs.endpoint_config_b64 }}
+          AIT_STATUS_B64: ${{ inputs.operator_status_b64 }}
+          AIT_REQUEST_SHA: ${{ inputs.request_sha256 }}
+          AIT_CONFIG_SHA: ${{ inputs.endpoint_config_sha256 }}
+          AIT_STATUS_SHA: ${{ inputs.operator_status_sha256 }}
+          AIT_RELEASE_ID: ${{ inputs.release_id }}
+          AIT_SOURCE_COMMIT: ${{ inputs.source_commit }}
+          AIT_RELEASE_TAG: ${{ inputs.tag }}
+          AIT_PRIOR_VERSION: ${{ inputs.prior_version }}
+          AIT_PRIOR_PYTHON_VERSION: ${{ inputs.prior_python_version }}
+        run: |
+          mkdir authority
+          printf '%s' "${AIT_REQUEST_B64}" | base64 --decode >authority/request.json
+          printf '%s' "${AIT_CONFIG_B64}" | base64 --decode >authority/config.json
+          printf '%s' "${AIT_STATUS_B64}" | base64 --decode >authority/status.json
+          test "$(sha256sum authority/request.json | awk '{print $1}')" = "${AIT_REQUEST_SHA}"
+          test "$(sha256sum authority/config.json | awk '{print $1}')" = "${AIT_CONFIG_SHA}"
+          test "$(sha256sum authority/status.json | awk '{print $1}')" = "${AIT_STATUS_SHA}"
+          test "$(git -C source rev-parse HEAD)" = "${AIT_SOURCE_COMMIT}"
+          bash source/ci/release_operator.sh validate-clean-host-request \
+            --request authority/request.json \
+            --config authority/config.json \
+            --status authority/status.json >/dev/null
+          jq -e \
+            --arg release_id "${AIT_RELEASE_ID}" \
+            --arg commit "${AIT_SOURCE_COMMIT}" \
+            --arg tag "${AIT_RELEASE_TAG}" \
+            --arg prior "${AIT_PRIOR_VERSION}" \
+            --arg prior_python "${AIT_PRIOR_PYTHON_VERSION}" '
+              .release.id == $release_id and
+              .release.source_commit == $commit and
+              .release.tag == $tag and
+              .prior.version == $prior and
+              .prior.python_version == $prior_python and
+              .workflow.requested == true
+            ' authority/request.json >/dev/null
+
+      - name: Generate the sole row and runner matrices
+        id: matrix
+        shell: bash
+        env:
+          AIT_MATRIX_SHA: ${{ inputs.matrix_sha256 }}
+        run: |
+          node source/ci/release_clean_host.mjs matrix \
+            --family source/ait-release-family.json \
+            --platforms source/ci/native_bootstrap_matrix.json \
+            --output "${RUNNER_TEMP}/clean-host-matrix.json" >/dev/null
+          test "$(sha256sum "${RUNNER_TEMP}/clean-host-matrix.json" | awk '{print $1}')" = "${AIT_MATRIX_SHA}"
+          test "$(jq -r '.row_count' "${RUNNER_TEMP}/clean-host-matrix.json")" = 32
+          printf 'rows=%s\n' \
+            "$(jq -c '{include: .rows}' "${RUNNER_TEMP}/clean-host-matrix.json")" \
+            >>"${GITHUB_OUTPUT}"
+          printf 'platforms=%s\n' \
+            "$(jq -c '{include: .targets}' source/ci/native_bootstrap_matrix.json)" \
+            >>"${GITHUB_OUTPUT}"
+          cp "${RUNNER_TEMP}/clean-host-matrix.json" authority/matrix.json
+
+      - name: Preserve the exact dispatched authority
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ait-clean-host-authority-${{ inputs.release_id }}
+          path: authority
+          if-no-files-found: error
+          include-hidden-files: true
+          compression-level: 0
+          retention-days: 90
+
+  probe:
+    needs: contract
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.contract.outputs.platforms) }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    steps:
+      - name: Check out the exact public release source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ inputs.source_commit }}
+          path: source
+          persist-credentials: false
+
+      - name: Select the probe Node runtime
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: "24.5.0"
+          check-latest: false
+
+      - name: Activate preinstalled Linux Homebrew
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          brew_bin=/home/linuxbrew/.linuxbrew/bin
+          test -x "${brew_bin}/brew"
+          printf '%s\n' "${brew_bin}" >>"${GITHUB_PATH}"
+
+      - name: Register inbox Windows Package Manager
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          if (-not (Get-Command winget.exe -ErrorAction SilentlyContinue)) {
+            Add-AppxPackage -RegisterByFamilyName -MainPackage Microsoft.DesktopAppInstaller_8wekyb3d8bbwe
+          }
+          $winget = Get-Command winget.exe -ErrorAction Stop
+          Split-Path -Parent $winget.Source | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Probe the native runner and channel capabilities
+        id: probe
+        continue-on-error: true
+        shell: bash
+        env:
+          AIT_CLEAN_HOST_RUNNER_LABEL: ${{ matrix.runner }}
+        run: |
+          mkdir evidence
+          node source/ci/release_clean_host_probe.mjs \
+            --platforms source/ci/native_bootstrap_matrix.json \
+            --target '${{ matrix.target }}' \
+            --output "${PWD}/evidence/${{ matrix.target }}.json"
+
+      - name: Upload the immutable runner probe
+        id: upload
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ait-clean-host-probe-${{ inputs.release_id }}-${{ matrix.target }}
+          path: evidence/${{ matrix.target }}.json
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 90
+
+      - name: Enforce the runner capability gate
+        if: always()
+        shell: bash
+        run: |
+          test '${{ steps.probe.outcome }}' = success
+          test '${{ steps.upload.outcome }}' = success
+
+  install:
+    needs: [contract, probe]
+    strategy:
+      fail-fast: false
+      max-parallel: 12
+      matrix: ${{ fromJSON(needs.contract.outputs.rows) }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    steps:
+      - name: Check out the exact public release source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ inputs.source_commit }}
+          path: source
+          persist-credentials: false
+
+      - name: Select the lifecycle Node runtime
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: "24.5.0"
+          check-latest: false
+
+      - name: Activate preinstalled Linux Homebrew
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          brew_bin=/home/linuxbrew/.linuxbrew/bin
+          test -x "${brew_bin}/brew"
+          printf '%s\n' "${brew_bin}" >>"${GITHUB_PATH}"
+
+      - name: Register inbox Windows Package Manager
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          if (-not (Get-Command winget.exe -ErrorAction SilentlyContinue)) {
+            Add-AppxPackage -RegisterByFamilyName -MainPackage Microsoft.DesktopAppInstaller_8wekyb3d8bbwe
+          }
+          $winget = Get-Command winget.exe -ErrorAction Stop
+          Split-Path -Parent $winget.Source | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Select Python for the PyPI row
+        if: matrix.channel == 'pypi'
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.11"
+          check-latest: false
+
+      - name: Reconstruct the exact phase authority
+        shell: bash
+        env:
+          AIT_CONFIG_B64: ${{ inputs.endpoint_config_b64 }}
+          AIT_STATUS_B64: ${{ inputs.operator_status_b64 }}
+          AIT_MATRIX_SHA: ${{ inputs.matrix_sha256 }}
+        run: |
+          mkdir evidence
+          printf '%s' "${AIT_CONFIG_B64}" | base64 --decode >evidence/config.json
+          printf '%s' "${AIT_STATUS_B64}" | base64 --decode >evidence/status.json
+          node source/ci/release_clean_host.mjs matrix \
+            --family source/ait-release-family.json \
+            --platforms source/ci/native_bootstrap_matrix.json \
+            --output "${PWD}/evidence/matrix.json" >/dev/null
+          test "$(node -e "const fs=require('fs'),c=require('crypto');process.stdout.write(c.createHash('sha256').update(fs.readFileSync(process.argv[1])).digest('hex'))" evidence/matrix.json)" = "${AIT_MATRIX_SHA}"
+
+      - name: Execute clean install, first land, and uninstall
+        id: phase
+        continue-on-error: true
+        shell: bash
+        env:
+          AIT_CLEAN_HOST_RUNNER_LABEL: ${{ matrix.runner }}
+        run: |
+          node source/ci/release_clean_host_phase.mjs run \
+            --matrix "${PWD}/evidence/matrix.json" \
+            --row-id '${{ matrix.id }}' \
+            --config "${PWD}/evidence/config.json" \
+            --status "${PWD}/evidence/status.json" \
+            --phase install \
+            --prior-version '${{ inputs.prior_version }}' \
+            --prior-python-version '${{ inputs.prior_python_version }}' \
+            --output "${PWD}/evidence/install.json"
+
+      - name: Upload install-phase evidence
+        id: upload
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ait-clean-host-install-${{ inputs.release_id }}-${{ matrix.id }}
+          path: evidence/install.json
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 90
+
+      - name: Enforce install-phase success
+        if: always()
+        shell: bash
+        run: |
+          test '${{ steps.phase.outcome }}' = success
+          test '${{ steps.upload.outcome }}' = success
+
+  upgrade:
+    needs: [contract, install]
+    if: ${{ always() && needs.contract.result == 'success' }}
+    strategy:
+      fail-fast: false
+      max-parallel: 12
+      matrix: ${{ fromJSON(needs.contract.outputs.rows) }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    steps:
+      - name: Check out the exact public release source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ inputs.source_commit }}
+          path: source
+          persist-credentials: false
+
+      - name: Select the lifecycle Node runtime
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: "24.5.0"
+          check-latest: false
+
+      - name: Activate preinstalled Linux Homebrew
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          brew_bin=/home/linuxbrew/.linuxbrew/bin
+          test -x "${brew_bin}/brew"
+          printf '%s\n' "${brew_bin}" >>"${GITHUB_PATH}"
+
+      - name: Register inbox Windows Package Manager
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          if (-not (Get-Command winget.exe -ErrorAction SilentlyContinue)) {
+            Add-AppxPackage -RegisterByFamilyName -MainPackage Microsoft.DesktopAppInstaller_8wekyb3d8bbwe
+          }
+          $winget = Get-Command winget.exe -ErrorAction Stop
+          Split-Path -Parent $winget.Source | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Select Python for the PyPI row
+        if: matrix.channel == 'pypi'
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.11"
+          check-latest: false
+
+      - name: Download the matching install-phase evidence
+        id: download_install
+        continue-on-error: true
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: ait-clean-host-install-${{ inputs.release_id }}-${{ matrix.id }}
+          path: evidence/install
+
+      - name: Reconstruct the exact phase authority
+        shell: bash
+        env:
+          AIT_CONFIG_B64: ${{ inputs.endpoint_config_b64 }}
+          AIT_STATUS_B64: ${{ inputs.operator_status_b64 }}
+          AIT_MATRIX_SHA: ${{ inputs.matrix_sha256 }}
+        run: |
+          mkdir -p evidence/row
+          printf '%s' "${AIT_CONFIG_B64}" | base64 --decode >evidence/config.json
+          printf '%s' "${AIT_STATUS_B64}" | base64 --decode >evidence/status.json
+          node source/ci/release_clean_host.mjs matrix \
+            --family source/ait-release-family.json \
+            --platforms source/ci/native_bootstrap_matrix.json \
+            --output "${PWD}/evidence/matrix.json" >/dev/null
+          test "$(node -e "const fs=require('fs'),c=require('crypto');process.stdout.write(c.createHash('sha256').update(fs.readFileSync(process.argv[1])).digest('hex'))" evidence/matrix.json)" = "${AIT_MATRIX_SHA}"
+
+      - name: Execute exact prior install and candidate upgrade
+        id: phase
+        continue-on-error: true
+        shell: bash
+        env:
+          AIT_CLEAN_HOST_RUNNER_LABEL: ${{ matrix.runner }}
+        run: |
+          node source/ci/release_clean_host_phase.mjs run \
+            --matrix "${PWD}/evidence/matrix.json" \
+            --row-id '${{ matrix.id }}' \
+            --config "${PWD}/evidence/config.json" \
+            --status "${PWD}/evidence/status.json" \
+            --phase upgrade \
+            --prior-version '${{ inputs.prior_version }}' \
+            --prior-python-version '${{ inputs.prior_python_version }}' \
+            --output "${PWD}/evidence/upgrade.json"
+
+      - name: Bind both fresh-host phases into one row record
+        id: combine
+        if: always()
+        continue-on-error: true
+        shell: bash
+        run: |
+          node source/ci/release_clean_host.mjs combine \
+            --matrix "${PWD}/evidence/matrix.json" \
+            --config "${PWD}/evidence/config.json" \
+            --status "${PWD}/evidence/status.json" \
+            --install "${PWD}/evidence/install/install.json" \
+            --upgrade "${PWD}/evidence/upgrade.json" \
+            --output "${PWD}/evidence/row/${{ matrix.id }}.json"
+
+      - name: Upload the immutable row evidence
+        id: upload
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ait-clean-host-row-${{ inputs.release_id }}-${{ matrix.id }}
+          path: evidence/row/${{ matrix.id }}.json
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 90
+
+      - name: Enforce upgrade and row success
+        if: always()
+        shell: bash
+        run: |
+          test '${{ steps.download_install.outcome }}' = success
+          test '${{ steps.phase.outcome }}' = success
+          test '${{ steps.combine.outcome }}' = success
+          test '${{ steps.upload.outcome }}' = success
+
+  aggregate:
+    needs: [contract, probe, install, upgrade]
+    if: ${{ always() && needs.contract.result == 'success' }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    steps:
+      - name: Check out the exact public release source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ inputs.source_commit }}
+          path: source
+          persist-credentials: false
+
+      - name: Select the aggregation Node runtime
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: "24.5.0"
+          check-latest: false
+
+      - name: Download every available immutable row
+        id: download_rows
+        continue-on-error: true
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: ait-clean-host-row-${{ inputs.release_id }}-*
+          path: rows
+          merge-multiple: true
+
+      - name: Reconstruct the exact aggregation authority
+        shell: bash
+        env:
+          AIT_CONFIG_B64: ${{ inputs.endpoint_config_b64 }}
+          AIT_STATUS_B64: ${{ inputs.operator_status_b64 }}
+          AIT_MATRIX_SHA: ${{ inputs.matrix_sha256 }}
+        run: |
+          mkdir -p rows authority
+          printf '%s' "${AIT_CONFIG_B64}" | base64 --decode >authority/config.json
+          printf '%s' "${AIT_STATUS_B64}" | base64 --decode >authority/status.json
+          node source/ci/release_clean_host.mjs matrix \
+            --family source/ait-release-family.json \
+            --platforms source/ci/native_bootstrap_matrix.json \
+            --output "${PWD}/authority/matrix.json" >/dev/null
+          test "$(sha256sum authority/matrix.json | awk '{print $1}')" = "${AIT_MATRIX_SHA}"
+
+      - name: Aggregate only the exact complete row inventory
+        id: aggregate
+        continue-on-error: true
+        shell: bash
+        run: |
+          node source/ci/release_clean_host.mjs aggregate \
+            --matrix "${PWD}/authority/matrix.json" \
+            --config "${PWD}/authority/config.json" \
+            --status "${PWD}/authority/status.json" \
+            --evidence-root "${PWD}/rows" \
+            --output-root "${RUNNER_TEMP}/clean-host-aggregate"
+
+      - name: Upload the terminal clean-host decision
+        id: upload
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ait-clean-host-${{ inputs.release_id }}
+          path: ${{ runner.temp }}/clean-host-aggregate
+          if-no-files-found: error
+          include-hidden-files: true
+          compression-level: 0
+          retention-days: 90
+
+      - name: Record the terminal matrix result
+        if: always()
+        shell: bash
+        env:
+          AIT_SUMMARY_RELEASE_ID: ${{ inputs.release_id }}
+          AIT_AGGREGATE_OUTCOME: ${{ steps.aggregate.outcome }}
+          AIT_UPLOAD_OUTCOME: ${{ steps.upload.outcome }}
+        run: |
+          if test -f "${RUNNER_TEMP}/clean-host-aggregate/ait-release.clean-host-status.json"; then
+            status=$(jq -r '.status' "${RUNNER_TEMP}/clean-host-aggregate/ait-release.clean-host-status.json")
+            failures=$(jq -r '.failures | length' "${RUNNER_TEMP}/clean-host-aggregate/ait-release.clean-host-status.json")
+            {
+              echo '### ait-native clean-host matrix'
+              echo
+              printf "%s \`%s\`\n" "- release:" "${AIT_SUMMARY_RELEASE_ID}"
+              printf "%s \`%s\`\n" "- status:" "${status}"
+              printf "%s \`%s\`\n" "- declared rows:" "32"
+              printf "%s \`%s\`\n" "- evidence failures:" "${failures}"
+            } >>"${GITHUB_STEP_SUMMARY}"
+          fi
+          test "${AIT_AGGREGATE_OUTCOME}" = success
+          test "${AIT_UPLOAD_OUTCOME}" = success

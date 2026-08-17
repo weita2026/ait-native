@@ -87,7 +87,7 @@ test("local source builds remove exact outputs without deleting admitted Node.js
     for (const [directory, file] of [
       [".ait-native-target", "release/libait_napi.dylib"],
       ["native", "ait_napi.node"],
-      ["dist", "wa120-ait-native-1.0.0-rc.7.tgz"],
+      ["dist", "wa120-ait-native-1.0.0-rc.8.tgz"],
     ]) {
       const generated = path.join(nodeRoot, directory, file);
       await mkdir(path.dirname(generated), { recursive: true });
@@ -97,13 +97,13 @@ test("local source builds remove exact outputs without deleting admitted Node.js
     await mkdir(path.dirname(admittedDist), { recursive: true });
     await writeFile(admittedDist, "admitted\n");
 
-    await cleanLocalNodeBuildTransients("1.0.0-rc.7", sourceRoot);
+    await cleanLocalNodeBuildTransients("1.0.0-rc.8", sourceRoot);
 
     assert.equal(await readFile(retained, "utf8"), "export const retained = true;\n");
     await assert.rejects(lstat(path.join(nodeRoot, ".ait-native-target")), { code: "ENOENT" });
     await assert.rejects(lstat(path.join(nodeRoot, "native", "ait_napi.node")), { code: "ENOENT" });
     await assert.rejects(
-      lstat(path.join(nodeRoot, "dist", "wa120-ait-native-1.0.0-rc.7.tgz")),
+      lstat(path.join(nodeRoot, "dist", "wa120-ait-native-1.0.0-rc.8.tgz")),
       { code: "ENOENT" },
     );
     assert.equal(await readFile(admittedDist, "utf8"), "admitted\n");

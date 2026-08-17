@@ -16,11 +16,11 @@ on:
         required: true
         type: string
       operator_status_sha256:
-        description: SHA-256 of the successful endpoint operator status
+        description: SHA-256 of the successful final clean-host status
         required: true
         type: string
       operator_status_b64:
-        description: Base64 of the successful endpoint operator status
+        description: Base64 of the successful final clean-host status
         required: true
         type: string
       promote_exact_release:
@@ -107,10 +107,18 @@ jobs:
           jq -e --arg release_id "${AIT_RELEASE_ID}" \
             --slurpfile config "${endpoint_config}" '
             ($config[0]) as $c |
-            .contract == "ait.release.operator.status/v1" and
-            .status == "published_pending_clean_host_smoke" and
+            .contract == "ait.release.operator.clean-host-status/v1" and
+            .status == "published" and
+            .promotion_allowed == true and
+            .terminal_for_release == false and
+            .next_action == "release_complete" and
             .release.id == $release_id and
-            .release == {id: $c.release.id, tag: $c.release.tag, version: $c.release.version}
+            .release.id == $c.release.id and
+            .release.tag == $c.release.tag and
+            .release.version == $c.release.version and
+            .release.python_version == $c.release.python_version and
+            .release.source_commit == $c.release.source_commit and
+            .release.endpoint_config_sha256 == env.AIT_ENDPOINT_CONFIG_SHA256
           ' "${operator_status}" >/dev/null
           test -x control/ci/release_latest_alias.sh
           mkdir "${GITHUB_WORKSPACE}/latest-alias-evidence"

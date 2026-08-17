@@ -944,7 +944,8 @@ only in `release/endpoint-publication.defaults.json`; secret values never
 enter source or operator records.
 
 After the endpoint workflow succeeds, copy its numeric run ID and generate the
-final machine-readable status:
+checksum-bound endpoint status. This status is deliberately pending; it is not
+the final release decision:
 
 ```bash
 ./ci/release_operator.sh status \
@@ -963,8 +964,57 @@ WinGet output stops at validated release assets by contract;
 stable WinGet still requires the generated community manifest to be submitted,
 reviewed, merged, and independently found with `winget search`.
 
+Next dispatch the exact 32-row clean-host lifecycle matrix. The prior version
+and prior Python version are immutable inputs, never a mutable `latest`
+selector. `clean-host` binds the endpoint configuration, pending status,
+candidate tag and commit, frozen six-runner platform authority, and exact
+matrix hash before dispatch:
+
+```bash
+./ci/release_operator.sh clean-host \
+  --config "${AIT_RELEASE_RECORDS}/03-endpoints.json" \
+  --status "${AIT_RELEASE_RECORDS}/04-status.json" \
+  --prior-version <exact-prior-semver> \
+  --prior-python-version <exact-prior-pep440-version> \
+  --output "${AIT_RELEASE_RECORDS}/05-clean-host-request.json" \
+  --dispatch
+```
+
+Each install phase and upgrade phase runs as a distinct GitHub-hosted job on a
+fresh VM. The matrix contains six GitHub, six PyPI, six npm, four Homebrew,
+four apt, two WinGet, and four OCI rows. Product rows prove install, command
+origin, default-inactive server behavior, explicit service lifecycle where
+declared, sprint-bound first-land, uninstall with user-data retention, exact
+prior-state upgrade, and candidate land. Direct PyO3 and Node-API rows exercise
+their bindings in process; OCI rows bind immutable digests.
+
+The hosted setup activates the runner image's preinstalled Linux Homebrew from
+`/home/linuxbrew/.linuxbrew/bin` and, when necessary, registers the inbox
+`Microsoft.DesktopAppInstaller_8wekyb3d8bbwe` package before probing WinGet.
+It does not download or substitute either package manager. Probe evidence
+still records the resolved native command and fails visibly when the declared
+runner image does not supply the required capability.
+
+After the workflow completes, copy only its numeric run ID and close the exact
+request against the immutable row artifact:
+
+```bash
+./ci/release_operator.sh clean-host-status \
+  --request "${AIT_RELEASE_RECORDS}/05-clean-host-request.json" \
+  --config "${AIT_RELEASE_RECORDS}/03-endpoints.json" \
+  --status "${AIT_RELEASE_RECORDS}/04-status.json" \
+  --run-id <clean-host-run-id> \
+  --output "${AIT_RELEASE_RECORDS}/06-clean-host-status.json"
+```
+
+Only an exact complete 32-row aggregate produces final status `published`,
+`promotion_allowed: true`, and `next_action: release_complete`. Missing,
+duplicate, unexpected, cross-release, or failed evidence produces terminal
+status `blocked`; the already-published immutable bytes remain preserved and
+the only next action is to repair main and freeze a new release.
+
 For a release that the repository owner explicitly chooses as the default,
-promote only mutable aliases after the exact endpoint status above succeeds.
+promote only mutable aliases after the final clean-host status above succeeds.
 The approval value is the exact `REL-FAM-*` ID from `03-endpoints.json`, not a
 version wildcard. Production promotion runs only through the protected `pypi`
 GitHub environment so the maintainer machine never needs the npm or GHCR
@@ -981,7 +1031,7 @@ sha256_file() {
 }
 
 endpoint_config="${AIT_RELEASE_RECORDS}/03-endpoints.json"
-operator_status="${AIT_RELEASE_RECORDS}/04-status.json"
+operator_status="${AIT_RELEASE_RECORDS}/06-clean-host-status.json"
 gh workflow run ait-release-latest-alias.yml \
   --repo weita2026/ait-native \
   --ref main \
@@ -1010,13 +1060,11 @@ same script and an older, still-valid endpoint dossier with a new explicit
 approval and evidence path; immutable package versions, tags, and assets are
 never deleted or overwritten.
 
-Run the documented clean-host install, upgrade, command-smoke, and uninstall
-matrix from fresh macOS, Linux, and Windows hosts after publication. Preserve
-`00-authority.json`, source-bundle evidence, export evidence, the four operator
-records, both latest-alias records, workflow artifacts, endpoint receipts,
-clean-host logs, and their SHA-256 inventory together as the permanent release
-dossier. Any rerun must use a new output path and bind a new successful
-workflow run; scripts never relabel or overwrite earlier evidence.
+Preserve `00-authority.json`, source-bundle evidence, export evidence, all six
+operator records, both latest-alias records, workflow artifacts, endpoint
+receipts, clean-host row evidence, and the aggregate SHA-256 inventory together
+as the permanent release dossier. Any rerun must use a new output path and bind
+a new workflow run; scripts never relabel or overwrite earlier evidence.
 
 ### Implemented package-assembly boundary
 

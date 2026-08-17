@@ -3,6 +3,7 @@ use std::env;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
+use ait_core::environment_contract::names;
 use ait_core::json_support::{json, JsonMap, JsonValue};
 
 use crate::{AgentManagementRuntime, TransportKind};
@@ -91,7 +92,7 @@ fn management_runtime(
         .unwrap_or_else(|| current_dir.clone());
     let manifest_path = optional_text(object.get("manifest_path"), "manifest_path")?
         .map(PathBuf::from)
-        .or_else(|| env::var_os("AIT_AGENT_CONFIG_PATH").map(PathBuf::from))
+        .or_else(|| env::var_os(names::AIT_AGENT_CONFIG_PATH).map(PathBuf::from))
         .map(|path| absolute_path(&current_dir, &path))
         .unwrap_or_else(|| repo_root.join(".ait/agent-workers.json"));
     let worker_binary = optional_text(object.get("worker_binary"), "worker_binary")?
@@ -108,19 +109,15 @@ fn management_runtime(
 }
 
 fn process_repo_root() -> Option<PathBuf> {
-    [
-        "AIT_REPO_ROOT",
-        "AIT_NATIVE_WORKSPACE_ROOT",
-        "AIT_WORKSPACE_ROOT",
-    ]
-    .iter()
-    .filter_map(env::var_os)
-    .map(PathBuf::from)
-    .find(|path| !path.as_os_str().is_empty())
+    [names::AIT_REPO_ROOT]
+        .iter()
+        .filter_map(env::var_os)
+        .map(PathBuf::from)
+        .find(|path| !path.as_os_str().is_empty())
 }
 
 fn process_worker_binary() -> Option<String> {
-    if let Ok(value) = env::var("AIT_AGENT_RUST_WORKER_BINARY") {
+    if let Ok(value) = env::var(names::AIT_AGENT_RUST_WORKER_BINARY) {
         let value = value.trim();
         if !value.is_empty() {
             return Some(value.to_string());

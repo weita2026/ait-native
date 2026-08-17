@@ -2006,6 +2006,7 @@ pub fn workspace_restore_paths(
 #[cfg(test)]
 mod selected_binary_line_tests {
     use super::*;
+    use crate::primitives::workflow::workflow_repo_root_restore_after_land;
     use ait_core::line_store::LineStore;
     use ait_core::local_snapshot::LocalSnapshotWriteStore;
     use std::fs;
@@ -2170,6 +2171,32 @@ mod selected_binary_line_tests {
             "nested target\n"
         );
         assert!(!root.join("extra.txt").exists());
+    }
+
+    #[test]
+    fn first_land_restores_empty_line_delta_into_canonical_workspace() {
+        let (_temp, repo) = binary_snapshot_repo();
+        let root = repo.workspace_root();
+        write_file(&root.join("first-land.txt"), "landed from empty line\n");
+        let snapshot_store = repo
+            .local_snapshot_operation_store::<SNAPSHOT_BINARY_DB_WRITE_LAYOUT>(&root)
+            .expect("selected snapshot store");
+        let target = snapshot_store
+            .create_snapshot("fixture-ait", "main", Some("first land"), false)
+            .expect("create first Binary DB snapshot");
+        let target_id = required_string_field(&target, "snapshot_id").expect("target snapshot id");
+
+        fs::remove_file(root.join("first-land.txt")).expect("simulate absent canonical file");
+        let restored = workflow_repo_root_restore_after_land(&repo, "main", None, Some(&target_id))
+            .expect("restore first landed snapshot");
+
+        assert_eq!(restored["landed_diff_paths"], json!(["first-land.txt"]));
+        assert_eq!(restored["plan"]["write_paths"], json!(["first-land.txt"]));
+        assert_eq!(restored["outside_paths_enumerated"], json!(false));
+        assert_eq!(
+            fs::read_to_string(root.join("first-land.txt")).expect("restored first-land file"),
+            "landed from empty line\n"
+        );
     }
 
     #[test]
