@@ -37,11 +37,53 @@ expect_failure() {
 
 node --check "${tool}"
 node --check "${phase_runner}"
+test "$(grep -c 'CHECKSUM_ASSET_NAME.test(match\[2\])' "${phase_runner}")" = 2
+node --input-type=module - "${phase_runner}" <<'NODE'
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+
+const source = readFileSync(process.argv[2], "utf8");
+const declaration = source.match(/^const CHECKSUM_ASSET_NAME = \/(.*)\/;$/m);
+assert.ok(declaration, "clean-host checksum asset-name rule is missing");
+const rule = new RegExp(declaration[1]);
+for (const name of [
+  "ait-native_1.0.0~rc.11_amd64.deb",
+  "ait-native-1.0.0-rc.11-x86_64.tar.gz",
+  "wa120@ait+native_1.0.0.tgz",
+]) {
+  assert.equal(rule.test(name), true, `expected safe checksum asset name: ${name}`);
+}
+for (const name of [
+  "",
+  "/ait-native.deb",
+  "../ait-native.deb",
+  "assets/ait-native.deb",
+  "assets\\ait-native.deb",
+  "ait native.deb",
+]) {
+  assert.equal(rule.test(name), false, `expected unsafe checksum asset name: ${name}`);
+}
+NODE
 test "$(grep -c 'name: Activate preinstalled Linux Homebrew' "${workflow}")" = 3
 test "$(grep -c 'name: Register inbox Windows Package Manager' "${workflow}")" = 3
 grep -F 'test -x /home/linuxbrew/.linuxbrew/bin/brew' "${workflow}" >/dev/null
 grep -F 'Add-AppxPackage -RegisterByFamilyName -MainPackage Microsoft.DesktopAppInstaller_8wekyb3d8bbwe' \
   "${workflow}" >/dev/null
+test "$(grep -Fc "\$gitBash = 'C:\Program Files\Git\bin\bash.exe'" \
+  "${workflow}")" = 3
+test "$(grep -Fc 'Split-Path -Parent $gitBash | Out-File -FilePath $env:GITHUB_PATH' \
+  "${workflow}")" = 3
+test "$(grep -c '^        id: python$' "${workflow}")" = 2
+test "$(grep -Fc 'AIT_CLEAN_HOST_PYTHON: ${{ steps.python.outputs.python-path }}' \
+  "${workflow}")" = 2
+python_command_source=$(sed -n '/^function pythonCommand() {$/,/^}$/p' "${phase_runner}")
+grep -F 'process.env.AIT_CLEAN_HOST_PYTHON' <<<"${python_command_source}" >/dev/null
+grep -F 'requireExecutableFile(configured, "configured clean-host Python")' \
+  <<<"${python_command_source}" >/dev/null
+grep -F 'process.platform === "win32"' <<<"${python_command_source}" >/dev/null
+grep -F 'explicit setup-python output' <<<"${python_command_source}" >/dev/null
+grep -F 'package_manager_commands = { python: pythonCommand() }' \
+  "${phase_runner}" >/dev/null
 grep -F 'ait-prepublish-candidate-${{ inputs.release_id }}' "${workflow}" >/dev/null
 grep -F 'ait-prepublish-clean-host-${{ inputs.release_id }}' "${workflow}" >/dev/null
 grep -F 'release_prepublish_verify.mjs qualify' "${workflow}" >/dev/null

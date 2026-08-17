@@ -2,6 +2,12 @@
 
 set -euo pipefail
 
+# `core test` invokes this after the launcher exports its selected Cargo
+# directories. These fixtures validate their own canonical and Task policies,
+# so caller selections must not override the isolated fixture roots.
+unset AIT_SHARED_CARGO_TARGET_DIR AIT_SHARED_CARGO_BUILD_DIR
+unset CARGO_TARGET_DIR CARGO_BUILD_BUILD_DIR
+
 repo_root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 launcher=${repo_root}/ait.sh
 temporary_root=$(mktemp -d "${TMPDIR:-/tmp}/ait-core-cargo-policy.XXXXXX")

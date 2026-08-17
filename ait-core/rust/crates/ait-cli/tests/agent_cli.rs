@@ -57,16 +57,11 @@ fn fixture_root() -> TempDir {
 }
 
 #[test]
-fn native_agent_help_is_available_from_both_rust_binaries() {
+fn native_agent_help_is_available_from_the_standalone_binary() {
     let root = fixture_root();
     for transport in ["telegram", "line", "discord", "slack"] {
         agent_command(root.path())
             .arg("--help")
-            .assert()
-            .success()
-            .stdout(predicate::str::contains(transport));
-        ait_cli_command(root.path())
-            .args(["agent", "--help"])
             .assert()
             .success()
             .stdout(predicate::str::contains(transport));
@@ -287,36 +282,13 @@ fn start_and_supervisor_probe_rust_capabilities_and_never_fall_back_to_python() 
 }
 
 #[test]
-fn ait_cli_agent_namespace_dispatches_without_repository_discovery() {
+fn root_ait_agent_namespace_is_absent() {
     let root = fixture_root();
-    let output = ait_cli_command(root.path())
-        .args([
-            "agent",
-            "slack",
-            "add",
-            "primary",
-            "--app-token",
-            "slack-full-secret",
-            "--json",
-        ])
-        .output()
-        .expect("ait-cli agent output");
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let payload = JsonCodec::parse_slice_with_error_prefix(&output.stdout, "ait-cli agent JSON")
-        .expect("ait-cli agent JSON");
-    assert_eq!(payload["kind"], "slack");
-    assert_eq!(payload["name"], "primary");
-    assert!(!String::from_utf8_lossy(&output.stdout).contains("slack-full-secret"));
-
-    agent_command(root.path())
-        .args(["slack", "status", "missing", "--json"])
+    ait_cli_command(root.path())
+        .args(["agent", "--help"])
         .assert()
         .failure()
-        .stderr(predicate::str::contains("Unknown slack worker: missing"));
+        .stderr(predicate::str::contains("unrecognized subcommand 'agent'"));
 }
 
 #[test]
@@ -350,14 +322,6 @@ fn telegram_foreground_defaults_to_main_and_preserves_native_worker_exit_status(
     assert!(args.contains("\n--event-loop-backend\n"));
     assert!(args.contains("\n--shard\n0\n"));
     assert!(!args.contains("python"));
-
-    ait_cli_command(root.path())
-        .env(names::AIT_AGENT_RUST_WORKER_BINARY, &worker)
-        .env("FAKE_WORKER_ARGS", &args_path)
-        .env("FAKE_WORKER_EXIT_CODE", "24")
-        .args(["agent", "telegram"])
-        .assert()
-        .code(24);
 }
 
 #[test]

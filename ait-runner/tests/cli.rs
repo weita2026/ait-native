@@ -51,7 +51,7 @@ fn package_declares_the_owner_selected_apache_license() {
     for relative in ["ait-external.toml", "ait-external.lock"] {
         let pin = fs::read_to_string(repo_root.join(relative)).expect("core pin");
         assert!(
-            pin.contains("snapshot = \"SNP-3E68163E83B7\""),
+            pin.contains("snapshot = \"SNP-BAC3BC8C0BBA\""),
             "{relative} must select the corrected core Snapshot"
         );
     }

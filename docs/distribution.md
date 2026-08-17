@@ -370,7 +370,7 @@ reinterpret the native runtime.
 | Component | Public surface | Source authority | License | 1.0.0 role |
 | --- | --- | --- | --- | --- |
 | `ait` | native executable | `ait-core` | Apache-2.0 | repository and workflow CLI |
-| `ait-agent` | native executable and `ait agent` namespace | `ait-core` | Apache-2.0 | public management and supervision of configured agent workers |
+| `ait-agent` | standalone native executable | `ait-core` | Apache-2.0 | public management and supervision of configured agent workers |
 | `ait-agent-worker` | native executable | `ait-core` | Apache-2.0 | configuration-backed agent runtime and transports |
 | `ait-server` | native executable | `ait-server` | AGPL-3.0-only | remote protocol and durable authority |
 | `ait-runner` | native executable | `ait-runner` | Apache-2.0 | remote native execution plane |

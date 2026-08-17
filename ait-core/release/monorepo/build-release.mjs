@@ -628,6 +628,8 @@ async function validateReleaseControl(family) {
         "python_direct_binding",
         "node_direct_addon",
         "explicit_component_lifecycle",
+        "process.env.AIT_CLEAN_HOST_PYTHON",
+        "explicit setup-python output",
       ],
     ],
     [
@@ -744,6 +746,9 @@ async function validateProtectedWorkflows() {
     "test -x /home/linuxbrew/.linuxbrew/bin/brew",
     "name: Register inbox Windows Package Manager",
     "Add-AppxPackage -RegisterByFamilyName -MainPackage Microsoft.DesktopAppInstaller_8wekyb3d8bbwe",
+    "C:\\Program Files\\Git\\bin\\bash.exe",
+    "Split-Path -Parent $gitBash | Out-File -FilePath $env:GITHUB_PATH",
+    "AIT_CLEAN_HOST_PYTHON: ${{ steps.python.outputs.python-path }}",
     "release_prepublish_stage.sh",
     "release_prepublish_verify.mjs stage",
     "release_prepublish_verify.mjs qualify",

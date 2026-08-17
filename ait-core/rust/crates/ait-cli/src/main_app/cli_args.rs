@@ -15,10 +15,6 @@ enum Commands {
         #[command(subcommand)]
         command: BinaryDbCommand,
     },
-    Agent {
-        #[command(subcommand)]
-        command: ait_cli::agent_surface::AgentCommand,
-    },
     Line {
         #[command(subcommand)]
         command: LineCommand,

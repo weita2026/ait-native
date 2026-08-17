@@ -400,6 +400,7 @@ jobs:
           check-latest: false
 
       - name: Select Python for the PyPI row
+        id: python
         if: matrix.channel == 'pypi'
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
@@ -445,6 +446,7 @@ jobs:
         env:
           AIT_CLEAN_HOST_CANDIDATE_ARTIFACT_DIGEST: ${{ needs.stage.outputs.candidate_artifact_digest }}
           AIT_CLEAN_HOST_CANDIDATE_ROOT: ${{ github.workspace }}/candidate
+          AIT_CLEAN_HOST_PYTHON: ${{ steps.python.outputs.python-path }}
           AIT_CLEAN_HOST_RUNNER_LABEL: ${{ matrix.runner }}
         run: |
           set -euo pipefail
@@ -505,6 +507,7 @@ jobs:
           check-latest: false
 
       - name: Select Python for the PyPI row
+        id: python
         if: matrix.channel == 'pypi'
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
@@ -558,6 +561,7 @@ jobs:
         env:
           AIT_CLEAN_HOST_CANDIDATE_ARTIFACT_DIGEST: ${{ needs.stage.outputs.candidate_artifact_digest }}
           AIT_CLEAN_HOST_CANDIDATE_ROOT: ${{ github.workspace }}/candidate
+          AIT_CLEAN_HOST_PYTHON: ${{ steps.python.outputs.python-path }}
           AIT_CLEAN_HOST_RUNNER_LABEL: ${{ matrix.runner }}
         run: |
           set -euo pipefail

@@ -46,6 +46,20 @@ expect_failure() {
   test -s "${temporary_root}/${label}.stderr"
 }
 
+require_direct_exact_artifact_downloads() {
+  local workflow=$1
+  local line
+  local block
+  while IFS=: read -r line _; do
+    block=$(sed -n "${line},$((line + 5))p" "${workflow}")
+    if ! grep -F 'merge-multiple: true' <<<"${block}" >/dev/null; then
+      printf 'exact artifact download does not extract into its consumer root: %s:%s\n' \
+        "${workflow}" "${line}" >&2
+      return 1
+    fi
+  done < <(grep -n '^[[:space:]]*artifact-ids:' "${workflow}")
+}
+
 node --check "${verifier}"
 bash -n "${stage_control}"
 bash -n "${oci_control}"
@@ -58,6 +72,10 @@ for required in \
   'cmp "${comparison_root}/ait-release.clean-host-matrix.json" "${matrix}"' \
   '"failure", "cancelled", "timed_out", "startup_failure",' \
   '"stale", "action_required"' \
+  'AIT_NEW_ARTIFACT_DIGEST: ${{ steps.upload.outputs.artifact-digest }}' \
+  'if [[ ${candidate_artifact_digest} =~ ^[0-9a-f]{64}$ ]]; then' \
+  'candidate_artifact_digest=sha256:${candidate_artifact_digest}' \
+  '[[ "${candidate_artifact_digest}" =~ ^sha256:[0-9a-f]{64}$ ]]' \
   'candidate_run_id: ${{ steps.select.outputs.candidate_run_id }}' \
   'run-id: ${{ needs.stage.outputs.candidate_run_id }}' \
   'release_prepublish_verify.mjs qualify' \
@@ -75,6 +93,8 @@ for required in \
   'run-id: ${{ needs.prepublish.outputs.candidate_run_id }}'; do
   grep -F -- "${required}" "${publication_workflow}" >/dev/null
 done
+require_direct_exact_artifact_downloads "${prepublish_workflow}"
+require_direct_exact_artifact_downloads "${publication_workflow}"
 if grep -E '(^|[[:space:]])(gh release|npm publish|docker push)([[:space:]]|$)' \
   "${prepublish_workflow}" "${stage_control}" >/dev/null; then
   printf 'prepublish controls contain a public endpoint write\n' >&2
@@ -96,7 +116,10 @@ jq -S -n '{
   }
 }' >"${config}"
 printf 'endpoint-stage\n' >"${candidate}/ait-release.endpoint-publication.json"
-printf 'assets\n' >"${candidate}/assets/SHA256SUMS"
+debian_asset=${candidate}/assets/ait-native_1.2.3~rc.6_amd64.deb
+printf 'debian-rc-package\n' >"${debian_asset}"
+printf '%s  %s\n' "$(sha256_file "${debian_asset}")" \
+  "$(basename "${debian_asset}")" >"${candidate}/assets/SHA256SUMS"
 for component in ait-server ait-runner; do
   for architecture in amd64 arm64; do
     printf '%s-%s\n' "${component}" "${architecture}" \
@@ -179,6 +202,19 @@ config_sha=$(sha256_file "${config}")
 status_sha=$(sha256_file "${status}")
 node "${verifier}" stage --root "${candidate}" \
   --config-sha256 "${config_sha}" --status-sha256 "${status_sha}" >/dev/null
+
+unsafe_inventory=${temporary_root}/unsafe-inventory
+cp -R "${candidate}" "${unsafe_inventory}"
+{
+  printf '%064d  assets/../escape\n' 0
+  cat "${candidate}/PREPUBLISH_SHA256SUMS"
+} >"${unsafe_inventory}/PREPUBLISH_SHA256SUMS"
+expect_failure unsafe-inventory node "${verifier}" stage \
+  --root "${unsafe_inventory}" \
+  --config-sha256 "${config_sha}" \
+  --status-sha256 "${status_sha}"
+grep -F 'prepublish checksum inventory contains an unsafe or duplicate row' \
+  "${temporary_root}/unsafe-inventory.stderr" >/dev/null
 
 incomplete_mutation=${temporary_root}/incomplete-mutation
 cp -R "${candidate}" "${incomplete_mutation}"

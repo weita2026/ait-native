@@ -23,6 +23,7 @@ const PHASE_CONTRACT = "ait.release.clean-host.phase/v1";
 const MATRIX_CONTRACT = "ait.release.clean-host.matrix/v1";
 const MAX_CAPTURE = 16 * 1024 * 1024;
 const COMMAND_TIMEOUT_MS = 10 * 60 * 1000;
+const CHECKSUM_ASSET_NAME = /^[A-Za-z0-9][A-Za-z0-9._@+~-]*$/;
 
 function usage(message) {
   if (message) {
@@ -198,8 +199,8 @@ function candidateAssetIndex(root) {
     if (!line) {
       continue;
     }
-    const match = line.match(/^([0-9a-f]{64})  ([A-Za-z0-9][A-Za-z0-9._@+-]*)$/);
-    if (!match || index.has(match[2])) {
+    const match = line.match(/^([0-9a-f]{64})  (.+)$/);
+    if (!match || !CHECKSUM_ASSET_NAME.test(match[2]) || index.has(match[2])) {
       fail(`prepublish candidate checksums contain an invalid or duplicate row: ${line}`);
     }
     index.set(match[2], match[1]);
@@ -430,8 +431,8 @@ async function releaseAssetIndex(repository, tag) {
     if (!line) {
       continue;
     }
-    const match = line.match(/^([0-9a-f]{64})  ([A-Za-z0-9][A-Za-z0-9._@+-]*)$/);
-    if (!match || index.has(match[2])) {
+    const match = line.match(/^([0-9a-f]{64})  (.+)$/);
+    if (!match || !CHECKSUM_ASSET_NAME.test(match[2]) || index.has(match[2])) {
       fail(`release checksum inventory contains an invalid or duplicate row: ${line}`);
     }
     index.set(match[2], match[1]);
@@ -819,6 +820,16 @@ async function githubContext(config, row, version, root, recorder, candidateStag
 }
 
 function pythonCommand() {
+  const configured = process.env.AIT_CLEAN_HOST_PYTHON ?? "";
+  if (configured) {
+    if (!path.isAbsolute(configured)) {
+      fail("configured clean-host Python must be an absolute path", 64);
+    }
+    return requireExecutableFile(configured, "configured clean-host Python");
+  }
+  if (process.platform === "win32") {
+    fail("Windows clean-host Python must come from the explicit setup-python output", 69);
+  }
   return commandExists("python3") ?? commandExists("python") ?? fail("Python is unavailable", 69);
 }
 
@@ -1731,9 +1742,12 @@ function ociContext(
 }
 
 function probePackageManager(row, recorder) {
+  if (row.channel === "pypi") {
+    recorder.observations.package_manager_commands = { python: pythonCommand() };
+    return;
+  }
   const commands = {
     github: ["node"],
-    pypi: [process.platform === "win32" ? "python" : commandExists("python3") ? "python3" : "python"],
     npm: [process.platform === "win32" ? "npm.cmd" : "npm", "node"],
     homebrew: ["brew"],
     apt: ["sudo", "apt-get", "apt-cache", "dpkg-query", "systemctl"],

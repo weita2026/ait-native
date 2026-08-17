@@ -136,7 +136,7 @@ function verifyChecksumInventory(root, name) {
     if (!line) {
       continue;
     }
-    const match = line.match(/^([0-9a-f]{64})  ([A-Za-z0-9][A-Za-z0-9._@+\/-]*)$/);
+    const match = line.match(/^([0-9a-f]{64})  ([A-Za-z0-9][A-Za-z0-9._@+~\/-]*)$/);
     if (
       !match ||
       match[2].includes("..") ||

@@ -13,6 +13,7 @@ fn public_cli_identity_help_is_ait() {
             "AIT native local repository and workflow tool.",
         ))
         .stdout(predicate::str::contains("\n  install ").not())
+        .stdout(predicate::str::contains("\n  agent ").not())
         .stdout(predicate::str::contains("\n  test ").not())
         .stdout(predicate::str::contains("current-source-cache").not())
         .stdout(predicate::str::contains("ait-cli").not());

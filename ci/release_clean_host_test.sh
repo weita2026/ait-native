@@ -73,6 +73,17 @@ test "$(grep -Fc "\$gitBash = 'C:\Program Files\Git\bin\bash.exe'" \
   "${workflow}")" = 3
 test "$(grep -Fc 'Split-Path -Parent $gitBash | Out-File -FilePath $env:GITHUB_PATH' \
   "${workflow}")" = 3
+test "$(grep -c '^        id: python$' "${workflow}")" = 2
+test "$(grep -Fc 'AIT_CLEAN_HOST_PYTHON: ${{ steps.python.outputs.python-path }}' \
+  "${workflow}")" = 2
+python_command_source=$(sed -n '/^function pythonCommand() {$/,/^}$/p' "${phase_runner}")
+grep -F 'process.env.AIT_CLEAN_HOST_PYTHON' <<<"${python_command_source}" >/dev/null
+grep -F 'requireExecutableFile(configured, "configured clean-host Python")' \
+  <<<"${python_command_source}" >/dev/null
+grep -F 'process.platform === "win32"' <<<"${python_command_source}" >/dev/null
+grep -F 'explicit setup-python output' <<<"${python_command_source}" >/dev/null
+grep -F 'package_manager_commands = { python: pythonCommand() }' \
+  "${phase_runner}" >/dev/null
 grep -F 'ait-prepublish-candidate-${{ inputs.release_id }}' "${workflow}" >/dev/null
 grep -F 'ait-prepublish-clean-host-${{ inputs.release_id }}' "${workflow}" >/dev/null
 grep -F 'release_prepublish_verify.mjs qualify' "${workflow}" >/dev/null

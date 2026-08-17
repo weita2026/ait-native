@@ -2,7 +2,7 @@
   "schema": "ait.release.adapter/v1",
   "package": {
     "name": "@wa120/ait-native",
-    "version": "1.0.0-rc.11",
+    "version": "1.0.0-rc.12",
     "description": "Agent-first, language-neutral workflow for verified repository changes",
     "license_files": [
       {
@@ -74,36 +74,36 @@
       },
       "artifacts": [
         {
-          "path": "dist/wa120-ait-native-1.0.0-rc.11.tgz",
+          "path": "dist/wa120-ait-native-1.0.0-rc.12.tgz",
           "kind": "npm-napi-envelope"
         },
         {
-          "path": "dist/npm-addons/wa120-ait-native-darwin-arm64-1.0.0-rc.11.tgz",
+          "path": "dist/npm-addons/wa120-ait-native-darwin-arm64-1.0.0-rc.12.tgz",
           "kind": "npm-napi-addon",
           "target": "aarch64-apple-darwin"
         },
         {
-          "path": "dist/npm-addons/wa120-ait-native-darwin-x64-1.0.0-rc.11.tgz",
+          "path": "dist/npm-addons/wa120-ait-native-darwin-x64-1.0.0-rc.12.tgz",
           "kind": "npm-napi-addon",
           "target": "x86_64-apple-darwin"
         },
         {
-          "path": "dist/npm-addons/wa120-ait-native-linux-arm64-1.0.0-rc.11.tgz",
+          "path": "dist/npm-addons/wa120-ait-native-linux-arm64-1.0.0-rc.12.tgz",
           "kind": "npm-napi-addon",
           "target": "aarch64-unknown-linux-gnu"
         },
         {
-          "path": "dist/npm-addons/wa120-ait-native-linux-x64-1.0.0-rc.11.tgz",
+          "path": "dist/npm-addons/wa120-ait-native-linux-x64-1.0.0-rc.12.tgz",
           "kind": "npm-napi-addon",
           "target": "x86_64-unknown-linux-gnu"
         },
         {
-          "path": "dist/npm-addons/wa120-ait-native-win32-arm64-1.0.0-rc.11.tgz",
+          "path": "dist/npm-addons/wa120-ait-native-win32-arm64-1.0.0-rc.12.tgz",
           "kind": "npm-napi-addon",
           "target": "aarch64-pc-windows-msvc"
         },
         {
-          "path": "dist/npm-addons/wa120-ait-native-win32-x64-1.0.0-rc.11.tgz",
+          "path": "dist/npm-addons/wa120-ait-native-win32-x64-1.0.0-rc.12.tgz",
           "kind": "npm-napi-addon",
           "target": "x86_64-pc-windows-msvc"
         }
