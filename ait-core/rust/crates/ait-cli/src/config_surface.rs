@@ -908,7 +908,7 @@ fn agent_runtime_summary(repo: &RepoRuntime) -> JsonValue {
             Err(err) => json!({"error": err}),
         },
         _ => json!({
-            "error": "Agent workers require a repo workflow preset. Set `ait config set --workflow-mode solo_local|solo_remote|team_remote` before launching the configured worker runtime."
+            "error": "ait-agent requires a repo workflow preset. Set `ait config set --workflow-mode solo_local|solo_remote|team_remote` before starting agent workers."
         }),
     }
 }

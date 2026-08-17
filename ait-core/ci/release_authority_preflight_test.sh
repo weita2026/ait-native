@@ -3,6 +3,7 @@ set -euo pipefail
 
 repo_root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 preflight=${repo_root}/ci/release_authority_preflight.sh
+source_cache=${repo_root}/ci/release_source_cache.sh
 temporary_root=$(mktemp -d "${TMPDIR:-/tmp}/ait-release-authority-test.XXXXXX")
 
 cleanup() {
@@ -27,6 +28,27 @@ expect_failure() {
 
 test -x "${preflight}"
 bash -n "${preflight}"
+test -x "${source_cache}"
+bash -n "${source_cache}"
+if ! awk '
+  index($0, "\"${ait_bin}\" config set") {
+    in_config = 1
+    config_line = NR
+    next
+  }
+  in_config && index($0, "--repository-index") { retired = 1 }
+  in_config && index($0, "--id-namespace-prefix") { namespace = 1 }
+  in_config && index($0, "--json") { in_config = 0 }
+  index($0, "\"${ait_bin}\" remote add") { remote_line = NR }
+  END {
+    exit(config_line > 0 && namespace && !retired &&
+      remote_line > config_line ? 0 : 1)
+  }
+' "${source_cache}"; then
+  printf '%s\n' \
+    'release source cache must configure only namespace before remote registration' >&2
+  exit 65
+fi
 
 workspace=${temporary_root}/workspace
 canonical_core=${workspace}/ait-core
@@ -112,7 +134,7 @@ evidence=${temporary_root}/authority.json
 "${preflight}" "${canonical_core}" "${evidence}" >/dev/null
 jq -e '
   .contract == "ait.release.canonical-authority-preflight/v1" and
-  .status == "ready" and .family_version == "1.0.0-rc.6" and
+  .status == "ready" and .family_version == "1.0.0-rc.7" and
   (.repositories | length) == 5 and
   ([.repositories[].repository_index] | sort) == [0, 1, 2, 3, 4] and
   ([.repositories[].selected_snapshot_retained_by_main] | all(. == true)) and
@@ -162,7 +184,7 @@ source_bundles=${temporary_root}/source-bundles
   "${source_bundles}" >/dev/null
 jq -e '
   .contract == "ait.release.source-bundles/v1" and .status == "ready" and
-  .family_version == "1.0.0-rc.6" and .source_bundle_count == 5 and
+  .family_version == "1.0.0-rc.7" and .source_bundle_count == 5 and
   (.bundles | length) == 5 and .recovery_authority_used == false and
   .registry_write == false and .public_publish == false
 ' "${source_bundles}/source-bundles.evidence.json" >/dev/null

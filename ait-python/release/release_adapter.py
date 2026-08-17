@@ -225,7 +225,8 @@ def validate_public_monorepo_authority(
     if (
         core_row.get("path") != "ait-core"
         or core_row.get("license") != "Apache-2.0"
-        or core_row.get("components") != ["ait", "ait-agent"]
+        or core_row.get("components")
+        != ["ait", "ait-agent", "ait-agent-worker"]
         or core_row.get("transforms") != []
         or python_row.get("path") != "ait-python"
         or python_row.get("license") != "Apache-2.0"
@@ -260,6 +261,7 @@ def validate_public_monorepo_authority(
     if (
         component_snapshot(family, "ait", "ait-core") != core_snapshot
         or component_snapshot(family, "ait-agent", "ait-core") != core_snapshot
+        or component_snapshot(family, "ait-agent-worker", "ait-core") != core_snapshot
         or component_snapshot(family, "ait-python", "ait-python")
         != python_snapshot
     ):

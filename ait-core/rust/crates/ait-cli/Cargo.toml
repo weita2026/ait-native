@@ -8,11 +8,16 @@ license.workspace = true
 name = "ait-cli"
 path = "src/main.rs"
 
+[[bin]]
+name = "ait-agent"
+path = "src/bin/ait-agent.rs"
+
 [features]
 default = []
 perfetto-tracing = ["ait-core/perfetto-tracing"]
 
 [dependencies]
+ait-agent-core = { path = "../ait-agent-core" }
 ait-core = { path = "../ait-core", default-features = false }
 base64 = "0.22"
 clap = { version = "4.5", features = ["derive"] }

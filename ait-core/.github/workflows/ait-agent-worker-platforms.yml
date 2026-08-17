@@ -1,4 +1,4 @@
-name: ait-agent-worker native platforms
+name: ait-agent manager and worker native platforms
 
 on:
   pull_request:
@@ -37,11 +37,17 @@ jobs:
       - name: Check formatting
         run: cargo fmt --manifest-path rust/Cargo.toml --all -- --check
 
-      - name: Check native agent crates
-        run: cargo check --manifest-path rust/Cargo.toml -p ait-agent-core -p ait-agent-worker
+      - name: Check native agent manager and worker
+        run: cargo check --manifest-path rust/Cargo.toml -p ait-agent-core -p ait-agent-worker -p ait-cli --bin ait-agent
 
-      - name: Test native agent crates
+      - name: Test native agent runtime crates
         run: cargo test --manifest-path rust/Cargo.toml -p ait-agent-core -p ait-agent-worker -- --test-threads=1
+
+      - name: Test native agent management commands
+        run: cargo test --manifest-path rust/Cargo.toml -p ait-cli --test agent_cli --test public_cli_identity -- --test-threads=1
+
+      - name: Report native manager identity
+        run: cargo run --manifest-path rust/Cargo.toml -p ait-cli --bin ait-agent -- --version
 
       - name: Report native worker capabilities
         run: cargo run --manifest-path rust/Cargo.toml -p ait-agent-worker -- capabilities --json

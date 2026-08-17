@@ -2,6 +2,7 @@ mod backend;
 mod binding_state;
 mod binding_store;
 mod gateway_reply;
+mod plan;
 mod selected_backend;
 
 pub use backend::{
@@ -27,6 +28,7 @@ pub use gateway_reply::{
     AGENT_GATEWAY_REPLY_PROVIDER_RESPONSE_CONTRACT, AGENT_GATEWAY_REPLY_RUNTIME_CONTRACT,
     AGENT_GATEWAY_TURN_TELEMETRY_CONTRACT,
 };
+pub use plan::{plan_agent_runtime, AgentRuntimePlan, AgentRuntimePlanInput};
 pub use selected_backend::{
     agent_runtime_backend_execute_json, AgentLocalRuntimeBackend, NativeAgentLocalRuntimeBackend,
     SelectedAitRuntimeBackend, AGENT_RUNTIME_BACKEND_CONTRACT,

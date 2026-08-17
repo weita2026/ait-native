@@ -19,6 +19,7 @@ const LOCAL_ADDON_PATH = fileURLToPath(
 const REQUIRED_EXPORTS = Object.freeze([
   "bindingInfoJson",
   "agentWorkerCapabilitiesJson",
+  "agentManagementJson",
   "agentWorkerTransactionJson",
   "runCli",
 ]);
@@ -233,6 +234,13 @@ export class NativeRuntime {
     );
   }
 
+  agentManagement(request) {
+    return parseJsonPayload(
+      this.call("agentManagementJson", encodeRequest(request, "ait-agent")),
+      "ait-agent response",
+    );
+  }
+
   agentWorkerTransaction(request) {
     return parseJsonPayload(
       this.call(
@@ -257,7 +265,7 @@ function loadContract() {
   if (
     contract.schema !== "ait.node.napi-platform-packages/v2" ||
     contract.top_level_package !== "@wa120/ait-native" ||
-    contract.family_version !== "1.0.0-rc.7" ||
+    contract.family_version !== "1.0.0-rc.8" ||
     !Array.isArray(contract.payloads) ||
     contract.payloads.length !== 6
   ) {
@@ -280,7 +288,7 @@ function loadContract() {
       payload.package !== expectedPackage ||
       payload.component !== "ait-node" ||
       payload.binding_repository !== "ait-core" ||
-      payload.binding_snapshot !== "SNP-E164008CF117" ||
+      payload.binding_snapshot !== "SNP-F136DB9A342B" ||
       payload.license !== "Apache-2.0" ||
       payload.version !== contract.family_version ||
       payload.addon !== "native/ait_napi.node"

@@ -1,4 +1,4 @@
-use ait_agent_core::language_binding_info_json;
+use ait_agent_core::{agent_management_binding_json, language_binding_info_json};
 use ait_agent_worker::{
     agent_worker_capabilities_binding_json, agent_worker_transaction_binding_json,
 };
@@ -23,6 +23,14 @@ pub fn binding_info_json() -> Result<String> {
 #[napi(js_name = "agentWorkerCapabilitiesJson")]
 pub fn agent_worker_capabilities_json() -> Result<String> {
     agent_worker_capabilities_binding_json()
+        .map_err(Error::from_reason)
+        .and_then(encode)
+}
+
+#[napi(js_name = "agentManagementJson")]
+pub fn agent_management_json(request_json: String) -> Result<String> {
+    let request = parse_request(&request_json)?;
+    agent_management_binding_json(&request)
         .map_err(Error::from_reason)
         .and_then(encode)
 }
@@ -61,7 +69,7 @@ mod tests {
 
     #[test]
     fn malformed_request_fails_at_the_addon_boundary() {
-        let error = agent_worker_transaction_json("{".to_string()).expect_err("invalid request");
+        let error = agent_management_json("{".to_string()).expect_err("invalid request");
 
         assert!(error.reason.contains("invalid AIT N-API request JSON"));
     }

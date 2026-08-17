@@ -1,6 +1,7 @@
 use ait_core::json_support::JsonValue;
 use ait_core::json_support::{JsonCodec, JsonEncodeOptions};
 use serde::{de::DeserializeOwned, Serialize};
+use std::io::Write;
 
 pub(crate) fn decode_from_value<T>(value: &JsonValue, error_prefix: &str) -> Result<T, String>
 where
@@ -28,6 +29,39 @@ pub(crate) fn encode_value(value: &JsonValue, error_prefix: &str) -> Result<Stri
         error_prefix,
     )
     .map_err(String::from)
+}
+
+pub(crate) fn write_value<W>(
+    writer: &mut W,
+    value: &JsonValue,
+    error_prefix: &str,
+) -> Result<(), String>
+where
+    W: Write + ?Sized,
+{
+    let text = encode_value(value, error_prefix)?;
+    writer
+        .write_all(text.as_bytes())
+        .map_err(|err| format!("{error_prefix}: {err}"))
+}
+
+pub(crate) fn write_pretty_value<W>(
+    writer: &mut W,
+    value: &JsonValue,
+    error_prefix: &str,
+) -> Result<(), String>
+where
+    W: Write + ?Sized,
+{
+    let text = JsonCodec::encode_serializable_with_error_prefix(
+        value,
+        JsonEncodeOptions::pretty(),
+        error_prefix,
+    )
+    .map_err(String::from)?;
+    writer
+        .write_all(text.as_bytes())
+        .map_err(|err| format!("{error_prefix}: {err}"))
 }
 
 pub(crate) fn encode_value_or(value: &JsonValue, fallback: &str) -> String {

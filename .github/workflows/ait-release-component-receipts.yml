@@ -153,7 +153,7 @@ jobs:
               .public_publish == false and
               .expected_source_count == 5 and
               .expected_receipt_count == 31 and
-              .expected_component_artifact_count == 37
+              .expected_component_artifact_count == 43
             ' "${projection}" >/dev/null
           test "$(jq -r '.coordinator_snapshot' \
             "${AIT_PUBLIC_SOURCE_ROOT}/ait-monorepo-source.json")" = \
@@ -541,14 +541,14 @@ jobs:
               .check_summary.decision == "pass" and
               ([.component_receipts[].git_commit] | unique) == [$commit] and
               (.component_receipts | length) == $receipt_count and
-              (.artifacts | length) == 37
+              (.artifacts | length) == 43
             ' "${check}" >/dev/null
           jq -e \
             --arg release_id "${release_id}" '
               .release_id == $release_id and
               .status == "built" and
               .check_summary.decision == "pass" and
-              ([.artifacts[] | select(.role == "component-artifact")] | length) == 37 and
+              ([.artifacts[] | select(.role == "component-artifact")] | length) == 43 and
               .promotion.authorized == false and
               .promotion.performed == false and
               .promotion.registry_write == false

@@ -2166,7 +2166,7 @@ async function build({ family, mapping }, skipTests) {
     "build", "--locked", "--release",
     "--manifest-path", path.join(ROOT, "ait-core", "rust", "Cargo.toml"),
     "--target-dir", coreTarget,
-    "-p", "ait-cli", "--bin", "ait-cli",
+    "-p", "ait-cli", "--bin", "ait-cli", "--bin", "ait-agent",
     "-p", "ait-agent-worker", "--bin", "ait-agent-worker",
   ]);
   run("cargo", [
@@ -2185,11 +2185,13 @@ async function build({ family, mapping }, skipTests) {
   const binOutput = path.join(OUTPUT_ROOT, target, "bin");
   const built = {
     ait: path.join(binOutput, executableName("ait")),
+    "ait-agent": path.join(binOutput, executableName("ait-agent")),
     "ait-agent-worker": path.join(binOutput, executableName("ait-agent-worker")),
     "ait-server": path.join(binOutput, executableName("ait-server")),
     "ait-runner": path.join(binOutput, executableName("ait-runner")),
   };
   await copyExecutable(path.join(coreTarget, "release", `ait-cli${suffix}`), built.ait);
+  await copyExecutable(path.join(coreTarget, "release", `ait-agent${suffix}`), built["ait-agent"]);
   await copyExecutable(
     path.join(coreTarget, "release", `ait-agent-worker${suffix}`),
     built["ait-agent-worker"],

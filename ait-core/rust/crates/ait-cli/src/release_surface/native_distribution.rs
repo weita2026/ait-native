@@ -119,16 +119,16 @@ impl NativeTarget {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum NativeCommandProfile {
     Cli,
-    CliWithWorker,
+    CliWithAgent,
 }
 
 impl NativeCommandProfile {
     fn parse(value: &str) -> Result<Self, String> {
         match value.trim() {
             "cli" => Ok(Self::Cli),
-            "cli-with-worker" => Ok(Self::CliWithWorker),
+            "cli-with-agent" => Ok(Self::CliWithAgent),
             other => Err(format!(
-                "Unsupported native command profile {other:?}; expected cli or cli-with-worker."
+                "Unsupported native command profile {other:?}; expected cli or cli-with-agent."
             )),
         }
     }
@@ -136,14 +136,18 @@ impl NativeCommandProfile {
     fn id(self) -> &'static str {
         match self {
             Self::Cli => "cli",
-            Self::CliWithWorker => "cli-with-worker",
+            Self::CliWithAgent => "cli-with-agent",
         }
     }
 
     fn commands(self) -> &'static [(&'static str, &'static str)] {
         match self {
             Self::Cli => &[("ait", "ait-cli")],
-            Self::CliWithWorker => &[("ait", "ait-cli"), ("ait-agent-worker", "ait-agent-worker")],
+            Self::CliWithAgent => &[
+                ("ait", "ait-cli"),
+                ("ait-agent", "ait-agent"),
+                ("ait-agent-worker", "ait-agent-worker"),
+            ],
         }
     }
 }
@@ -159,6 +163,11 @@ struct NativeCommandInput {
 
 impl NativeCommandInput {
     fn to_manifest_json(&self) -> JsonValue {
+        let paired_with = match self.public_identity.as_str() {
+            "ait-agent" => json!(["ait-agent-worker"]),
+            "ait-agent-worker" => json!(["ait-agent"]),
+            _ => json!([]),
+        };
         json!({
             "public_identity": self.public_identity,
             "source_binary_identity": self.source_binary_identity,
@@ -167,6 +176,7 @@ impl NativeCommandInput {
             "sha256": sha256_hex(&self.data),
             "size_bytes": self.data.len(),
             "executable_mode": format!("{:04o}", self.mode),
+            "paired_with": paired_with,
         })
     }
 }
@@ -1014,6 +1024,14 @@ fn validate_command_membership(
             profile.id()
         ));
     }
+    let has_agent = identities.contains("ait-agent");
+    let has_worker = identities.contains("ait-agent-worker");
+    if has_agent != has_worker {
+        return Err(
+            "Native bundle must include ait-agent and ait-agent-worker as an inseparable pair."
+                .to_string(),
+        );
+    }
     Ok(())
 }
 
@@ -1093,6 +1111,10 @@ fn build_native_bundle_archive(
         "profile": profile.id(),
         "target": target.to_json(),
         "commands": command_rows,
+        "agent_pair": {
+            "members": ["ait-agent", "ait-agent-worker"],
+            "policy": "both_or_neither"
+        },
         "bundle": {
             "filename": filename,
             "digest_algorithm": "sha256",
@@ -1480,6 +1502,9 @@ fn validate_native_bundle_artifact(
             target.triple,
             profile.id()
         ));
+    }
+    if identities.contains("ait-agent") != identities.contains("ait-agent-worker") {
+        return Err(format!("{} bundle has a partial agent pair", target.triple));
     }
     let ait_sha256 =
         ait_sha256.ok_or_else(|| format!("{} bundle is missing ait", target.triple))?;
@@ -2145,6 +2170,14 @@ mod tests {
             json!({"kind": "checksum", "path": "dist/ait-release-1.2.3.sha256"}),
             json!({
                 "kind": "native-command",
+                "command": "ait-agent",
+                "runtime_authority": "rust",
+                "python_fallback": false,
+                "cargo_profile": "release",
+                "path": "dist/ait-agent-1.2.3"
+            }),
+            json!({
+                "kind": "native-command",
                 "command": "ait-agent-worker",
                 "runtime_authority": "rust",
                 "python_fallback": false,
@@ -2291,7 +2324,7 @@ mod tests {
     }
 
     #[test]
-    fn malformed_paths_partial_worker_profiles_and_manifest_modes_fail_closed() {
+    fn malformed_paths_partial_agent_pairs_and_manifest_modes_fail_closed() {
         assert!(validate_archive_path("../bin/ait").is_err());
         assert!(validate_archive_path("/bin/ait").is_err());
         assert!(validate_archive_path("bin\\ait").is_err());
@@ -2305,15 +2338,15 @@ mod tests {
                 mode: 0o755,
             },
             NativeCommandInput {
-                public_identity: "unexpected".to_string(),
-                source_binary_identity: "unexpected".to_string(),
-                archive_path: "bin/unexpected".to_string(),
-                data: b"unexpected".to_vec(),
+                public_identity: "ait-agent".to_string(),
+                source_binary_identity: "ait-agent".to_string(),
+                archive_path: "bin/ait-agent".to_string(),
+                data: b"agent".to_vec(),
                 mode: 0o755,
             },
         ];
         assert!(
-            validate_command_membership(&partial, NativeCommandProfile::CliWithWorker)
+            validate_command_membership(&partial, NativeCommandProfile::CliWithAgent)
                 .unwrap_err()
                 .contains("command membership")
         );

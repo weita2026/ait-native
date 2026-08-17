@@ -1692,6 +1692,8 @@ fn canonical_core_build_refreshes_every_consumer_artifact_after_cargo_succeeds()
 
     for artifact in [
         "ait-cli",
+        "ait-agent",
+        "ait-agent.exe",
         "ait-agent-worker",
         "ait-agent-worker.exe",
         "libait_py.dylib",

@@ -26,6 +26,7 @@ export class NativeProtocolError extends NativeBridgeError {}
 export interface NativeAddon {
   bindingInfoJson(): string;
   agentWorkerCapabilitiesJson(): string;
+  agentManagementJson(requestJson: string): string;
   agentWorkerTransactionJson(requestJson: string): string;
   runCli(args: string[]): number;
 }
@@ -37,7 +38,7 @@ export interface LanguageBindingInfo extends JsonObject {
   python_binding: "pyo3";
   node_binding: "napi";
   process_transport_allowed: false;
-  supported_surfaces: ["ait-core", "ait-agent-worker"];
+  supported_surfaces: ["ait-core", "ait-agent", "ait-agent-worker"];
 }
 
 export class NativeRuntime {
@@ -49,7 +50,7 @@ export class NativeRuntime {
   call(name: "bindingInfoJson"): string;
   call(name: "agentWorkerCapabilitiesJson"): string;
   call(
-    name: "agentWorkerTransactionJson",
+    name: "agentManagementJson" | "agentWorkerTransactionJson",
     requestJson: string,
   ): string;
   call(name: "runCli", args: string[]): number;
@@ -58,6 +59,7 @@ export class NativeRuntime {
   version(): string;
   runCli(args?: string[]): number;
   agentCapabilities(): AgentCapabilitiesPayload;
+  agentManagement<T extends JsonValue = JsonValue>(request: JsonObject): T;
   agentWorkerTransaction<T extends JsonValue = JsonValue>(
     request: JsonObject,
   ): T;
@@ -96,6 +98,14 @@ export interface AgentContext {
   env?: EnvironmentOverrides;
 }
 
+export interface AgentManagementContext extends AgentContext {
+  workerBinary?: string | URL;
+}
+
+export interface AgentLogsContext extends AgentManagementContext {
+  lines?: number;
+}
+
 export interface AgentWorkerContext extends AgentContext {
   worker?: string;
   signature?: string;
@@ -107,6 +117,45 @@ export class AgentClient {
   constructor(runtime?: NativeRuntime);
   readonly runtime: NativeRuntime;
   capabilities(): AgentCapabilities;
+  manage<T extends JsonValue = JsonValue>(request: JsonObject): T;
+  add<T extends JsonValue = JsonValue>(
+    worker: JsonObject,
+    options?: AgentManagementContext,
+  ): T;
+  listWorkers<T extends JsonValue = JsonValue>(
+    transport: AgentTransport,
+    options?: AgentManagementContext,
+  ): T;
+  status<T extends JsonValue = JsonValue>(
+    transport: AgentTransport,
+    name?: string | null,
+    options?: AgentManagementContext,
+  ): T;
+  start<T extends JsonValue = JsonValue>(
+    transport: AgentTransport,
+    name: string,
+    options?: AgentManagementContext,
+  ): T;
+  stop<T extends JsonValue = JsonValue>(
+    transport: AgentTransport,
+    name: string,
+    options?: AgentManagementContext,
+  ): T;
+  restart<T extends JsonValue = JsonValue>(
+    transport: AgentTransport,
+    name: string,
+    options?: AgentManagementContext,
+  ): T;
+  remove<T extends JsonValue = JsonValue>(
+    transport: AgentTransport,
+    name: string,
+    options?: AgentManagementContext,
+  ): T;
+  logs<T extends JsonValue = JsonValue>(
+    transport: AgentTransport,
+    name: string,
+    options?: AgentLogsContext,
+  ): T;
   workerTransaction<T extends JsonValue = JsonValue>(
     operation: AgentWorkerOperation,
     payload: JsonValue,

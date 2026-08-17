@@ -29,13 +29,13 @@ fn public_cli_identity_version_is_package_version() {
 }
 
 #[test]
-fn removed_agent_command_is_absent_instead_of_hidden() {
-    let mut command = Command::cargo_bin("ait-cli").expect("ait-cli build artifact");
+fn public_agent_identity_version_is_package_version() {
+    let mut command = Command::cargo_bin("ait-agent").expect("ait-agent build artifact");
     command
-        .arg("agent")
+        .arg("--version")
         .assert()
-        .failure()
-        .stderr(predicate::str::contains("unrecognized subcommand"));
+        .success()
+        .stdout(format!("ait-agent {}\n", env!("CARGO_PKG_VERSION")));
 }
 
 #[test]

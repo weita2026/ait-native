@@ -23,11 +23,11 @@ const RETIRED_AGENT_SESSION_EXPORTS: &[&str] = &[
     "agent_outbox_resolve_delivery",
     "agent_outbox_entry_is_due",
     "ait_agent_transport_envelope_build_binding_metadata",
-    "ait_agent_management",
 ];
 
 const SUPPORTED_AIT_AGENT_EXPORTS: &[&str] = &[
     "ait_agent_env_file_load",
+    "ait_agent_management",
     "ait_agent_telegram_message_delivery_execute",
     "ait_agent_telegram_turn_input_plan",
     "ait_agent_telegram_workflow_notification_format",
@@ -119,6 +119,7 @@ fn supported_blocking_agent_exports_release_the_python_gil() {
     let source = ait_py_source();
     for export_name in [
         "ait_agent_env_file_load",
+        "ait_agent_management",
         "ait_agent_telegram_message_delivery_execute",
         "ait_agent_web_runtime_execute",
         "ait_agent_worker_capabilities",

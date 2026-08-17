@@ -113,7 +113,6 @@ trap cleanup EXIT HUP INT TERM
     --message "Release source-cache bootstrap policy" \
     --json >"${evidence_root}/bootstrap-snapshot.json"
   "${ait_bin}" config set \
-    --repository-index "${repository_index}" \
     --id-namespace-prefix "${namespace}" \
     --json >"${evidence_root}/config.json"
   "${ait_bin}" remote add origin "${server_url}" \

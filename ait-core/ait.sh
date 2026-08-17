@@ -560,6 +560,8 @@ refresh_build_artifact_mtimes() {
   for artifact in \
     "${target_dir}/${profile_dir}/ait-cli" \
     "${target_dir}/${profile_dir}/ait-cli.exe" \
+    "${target_dir}/${profile_dir}/ait-agent" \
+    "${target_dir}/${profile_dir}/ait-agent.exe" \
     "${target_dir}/${profile_dir}/ait-agent-worker" \
     "${target_dir}/${profile_dir}/ait-agent-worker.exe" \
     "${target_dir}/${profile_dir}/libait_py.dylib" \
@@ -567,26 +569,6 @@ refresh_build_artifact_mtimes() {
     "${target_dir}/${profile_dir}/ait_py.dll"; do
     if [[ -e "${artifact}" ]]; then
       touch "${artifact}"
-    fi
-  done
-}
-
-remove_retired_agent_artifacts() {
-  local artifact_dir="$1"
-  local retired_path
-  for retired_path in \
-    "${artifact_dir}/ait-agent" \
-    "${artifact_dir}/ait-agent.exe"; do
-    if [[ -L "${retired_path}" || -f "${retired_path}" ]]; then
-      if ! rm -f -- "${retired_path}"; then
-        printf 'Failed to remove retired command artifact: %s\n' "${retired_path}" >&2
-        return 2
-      fi
-      printf 'Removed retired command artifact: %s\n' "${retired_path}"
-    elif [[ -e "${retired_path}" ]]; then
-      printf 'Refusing to remove non-file retired command path: %s\n' \
-        "${retired_path}" >&2
-      return 2
     fi
   done
 }
@@ -631,10 +613,8 @@ Usage:
 Build and install the ait-core-owned native commands:
 
   ait-cli            -> ait
+  ait-agent          -> ait-agent
   ait-agent-worker   -> ait-agent-worker
-
-An obsolete ait-agent executable from an earlier direct install is removed
-from the exact destination directory during upgrade.
 
 The default destination is AIT_NATIVE_BIN_DIR when set, otherwise
 ${XDG_BIN_HOME}/ when set, otherwise ${HOME}/.local/bin. The destination must
@@ -677,37 +657,44 @@ EOF
   artifact_dir="${target_dir}/${profile_dir}"
 
   local cli_artifact
+  local agent_artifact
   local worker_artifact
   cli_artifact="$(resolve_native_artifact "${artifact_dir}" ait-cli)"
+  agent_artifact="$(resolve_native_artifact "${artifact_dir}" ait-agent)"
   worker_artifact="$(resolve_native_artifact "${artifact_dir}" ait-agent-worker)"
 
   local command_suffix=""
+  local agent_suffix=""
   local worker_suffix=""
   if [[ "${cli_artifact}" == *.exe ]]; then
     command_suffix=".exe"
   fi
+  if [[ "${agent_artifact}" == *.exe ]]; then
+    agent_suffix=".exe"
+  fi
   if [[ "${worker_artifact}" == *.exe ]]; then
     worker_suffix=".exe"
   fi
-  if [[ "${worker_suffix}" != "${command_suffix}" ]]; then
+  if [[ "${agent_suffix}" != "${command_suffix}" ||
+    "${worker_suffix}" != "${command_suffix}" ]]; then
     printf 'Native release artifacts use inconsistent executable suffixes.\n' >&2
     return 2
   fi
 
   mkdir -p "${bin_dir}"
   bin_dir="$(cd "${bin_dir}" && pwd -P)"
-  remove_retired_agent_artifacts "${bin_dir}" || return $?
   local staging_dir
   staging_dir="$(mktemp -d "${bin_dir}/.ait-native-install.XXXXXX")"
 
   if ! install -m 0755 "${cli_artifact}" "${staging_dir}/ait${command_suffix}" ||
+    ! install -m 0755 "${agent_artifact}" "${staging_dir}/ait-agent${command_suffix}" ||
     ! install -m 0755 "${worker_artifact}" "${staging_dir}/ait-agent-worker${command_suffix}"; then
     rm -rf -- "${staging_dir}"
     return 2
   fi
 
   local command_name
-  for command_name in ait ait-agent-worker; do
+  for command_name in ait ait-agent ait-agent-worker; do
     command_name="${command_name}${command_suffix}"
     if ! mv -f -- "${staging_dir}/${command_name}" "${bin_dir}/${command_name}"; then
       rm -rf -- "${staging_dir}"
@@ -1015,7 +1002,6 @@ main() {
       local profile
       profile="$(core_build_profile)"
       run_cargo build --profile "${profile}" --manifest-path "${ROOT_DIR}/rust/Cargo.toml" --workspace
-      remove_retired_agent_artifacts "$(cargo_target_dir)/$(cargo_profile_dir)"
       refresh_build_artifact_mtimes
       ;;
     install)

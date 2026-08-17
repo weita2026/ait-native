@@ -21,6 +21,7 @@ def test_generic_call_uses_installed_ait_py_export() -> None:
     runtime = NativeRuntime()
 
     assert runtime.call("language_binding_info") == runtime.binding_info()
+    assert callable(runtime.resolve_callable("ait_agent_management"))
     assert callable(runtime.resolve_callable("ait_agent_worker_transaction"))
 
 

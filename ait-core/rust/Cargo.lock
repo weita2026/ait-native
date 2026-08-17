@@ -30,11 +30,12 @@ dependencies = [
 
 [[package]]
 name = "ait-agent-core"
-version = "1.0.0-rc.7"
+version = "1.0.0-rc.8"
 dependencies = [
  "ait-core",
  "base64",
  "chrono",
+ "fs2",
  "hmac",
  "libc",
  "regex",
@@ -52,7 +53,7 @@ dependencies = [
 
 [[package]]
 name = "ait-agent-worker"
-version = "1.0.0-rc.7"
+version = "1.0.0-rc.8"
 dependencies = [
  "ait-agent-core",
  "ait-core",
@@ -87,8 +88,9 @@ dependencies = [
 
 [[package]]
 name = "ait-cli"
-version = "1.0.0-rc.7"
+version = "1.0.0-rc.8"
 dependencies = [
+ "ait-agent-core",
  "ait-core",
  "assert_cmd",
  "base64",
@@ -133,7 +135,7 @@ dependencies = [
 
 [[package]]
 name = "ait-napi"
-version = "1.0.0-rc.7"
+version = "1.0.0-rc.8"
 dependencies = [
  "ait-agent-core",
  "ait-agent-worker",

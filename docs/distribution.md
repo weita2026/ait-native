@@ -269,9 +269,9 @@ cd ait-native
 ```
 
 Windows uses `build-release.ps1`. The shared Node implementation builds the
-native `ait`, `ait-agent-worker`, `ait-server`, and `ait-runner` executables, the
-Python wheel, the portable npm JS/TS envelope, and the current host's direct
-Node-API addon. Its locally synthesized receipts and all resulting files are
+native `ait`, `ait-agent`, `ait-agent-worker`, `ait-server`, and `ait-runner`
+executables, the Python wheel, the portable npm JS/TS envelope, and the current
+host's direct Node-API addon. Its locally synthesized receipts and all resulting files are
 marked `publishable: false`; they prove clean source usability but cannot
 replace protected component receipts or be uploaded by `ait release`.
 
@@ -370,6 +370,7 @@ reinterpret the native runtime.
 | Component | Public surface | Source authority | License | 1.0.0 role |
 | --- | --- | --- | --- | --- |
 | `ait` | native executable | `ait-core` | Apache-2.0 | repository and workflow CLI |
+| `ait-agent` | native executable and `ait agent` namespace | `ait-core` | Apache-2.0 | public management and supervision of configured agent workers |
 | `ait-agent-worker` | native executable | `ait-core` | Apache-2.0 | configuration-backed agent runtime and transports |
 | `ait-server` | native executable | `ait-server` | AGPL-3.0-only | remote protocol and durable authority |
 | `ait-runner` | native executable | `ait-runner` | Apache-2.0 | remote native execution plane |
@@ -381,8 +382,8 @@ reinterpret the native runtime.
 ## License And Source Publication Gate
 
 The family is an aggregate of separately licensed components; bundling does
-not relicense them. `ait`, `ait-agent-worker`, `ait-runner`, `ait-python`, and
-the `ait-node` envelope and addons are Apache-2.0. `ait-server` is
+not relicense them. `ait`, `ait-agent`, `ait-agent-worker`, `ait-runner`,
+`ait-python`, and the `ait-node` envelope and addons are Apache-2.0. `ait-server` is
 AGPL-3.0-only. The public source tree has this exact license topology:
 
 | Public path | License authority |

@@ -57,6 +57,9 @@ fn run(mut argv: Vec<OsString>) -> Result<ExitCode, String> {
             run_binary_db_command(command)?;
             return Ok(ExitCode::SUCCESS);
         }
+        Commands::Agent { command } => {
+            return ait_cli::agent_surface::run_command(command);
+        }
         Commands::Doctor { command } => return run_doctor(command),
         Commands::CurrentSourceCache { command } => {
             run_current_source_cache(command)?;
@@ -79,6 +82,7 @@ fn run(mut argv: Vec<OsString>) -> Result<ExitCode, String> {
         Commands::BinaryDb { .. } => {
             unreachable!("binary-db is handled before repo discovery")
         }
+        Commands::Agent { .. } => unreachable!("agent is handled before repo discovery"),
         Commands::Doctor { .. } => unreachable!("doctor is handled before repo discovery"),
         Commands::CurrentSourceCache { .. } => {
             unreachable!("current-source-cache is handled before repo discovery")

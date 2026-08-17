@@ -173,7 +173,7 @@ pub(super) fn require_profile(profile: &str) -> Result<ReleaseProfile, String> {
     match profile.trim().to_ascii_lowercase().as_str() {
         "local-cli" => Ok(ReleaseProfile {
             id: "local-cli",
-            required_scripts: &["ait", "ait-agent-worker", "aitk"],
+            required_scripts: &["ait", "ait-agent", "ait-agent-worker", "aitk"],
             forbidden_scripts: &["ait-server", "ait-worker", "ait-web"],
             release_docs: &[
                 "README.md",

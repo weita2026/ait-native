@@ -77,6 +77,67 @@ class AgentClient:
     def capabilities(self) -> AgentCapabilities:
         return AgentCapabilities.from_payload(self.runtime.agent_capabilities())
 
+    def manage(self, request: Mapping[str, Any]) -> Any:
+        return self.runtime.agent_management(request)
+
+    def add(self, worker: Mapping[str, Any], **context: Any) -> Any:
+        return self.manage(
+            {"operation": "add", "worker": dict(worker), **_context(context)}
+        )
+
+    def list_workers(self, transport: str, **context: Any) -> Any:
+        return self.manage(
+            {
+                "operation": "list",
+                "transport": _transport(transport),
+                **_context(context),
+            }
+        )
+
+    def status(
+        self, transport: str, name: str | None = None, **context: Any
+    ) -> Any:
+        request = {
+            "operation": "status",
+            "transport": _transport(transport),
+            **_context(context),
+        }
+        if name is not None:
+            request["name"] = _worker_name(name)
+        return self.manage(request)
+
+    def start(self, transport: str, name: str, **context: Any) -> Any:
+        return self._named_management(transport, "start", name, context)
+
+    def stop(self, transport: str, name: str, **context: Any) -> Any:
+        return self._named_management(transport, "stop", name, context)
+
+    def restart(self, transport: str, name: str, **context: Any) -> Any:
+        return self._named_management(transport, "restart", name, context)
+
+    def remove(self, transport: str, name: str, **context: Any) -> Any:
+        return self._named_management(transport, "remove", name, context)
+
+    def logs(
+        self,
+        transport: str,
+        name: str,
+        *,
+        lines: int = 200,
+        **context: Any,
+    ) -> Any:
+        if not isinstance(lines, int) or isinstance(lines, bool) or lines < 0:
+            raise ValueError("lines must be a non-negative integer")
+        return self.manage(
+            {
+                "operation": "logs",
+                "transport": _transport(transport),
+                "name": _worker_name(name),
+                "lines": lines,
+                **_context(context),
+            }
+        )
+
     def worker_transaction(
         self,
         operation: str,
@@ -96,7 +157,7 @@ class AgentClient:
                 "operation": normalized,
                 "payload": payload,
                 "worker": _worker_name(worker),
-                **_context(context),
+                **_context(context, worker_transaction=True),
             }
         )
 
@@ -121,16 +182,42 @@ class AgentClient:
             "reply-provider", payload, worker=worker, **context
         )
 
-def _context(values: Mapping[str, Any]) -> dict[str, Any]:
+    def _named_management(
+        self,
+        transport: str,
+        operation: str,
+        name: str,
+        context: Mapping[str, Any],
+    ) -> Any:
+        return self.manage(
+            {
+                "operation": operation,
+                "transport": _transport(transport),
+                "name": _worker_name(name),
+                **_context(context),
+            }
+        )
+
+
+def _context(
+    values: Mapping[str, Any], *, worker_transaction: bool = False
+) -> dict[str, Any]:
     aliases = {
         "cwd": "cwd",
         "repo_root": "repo_root",
         "manifest_path": "manifest_path",
         "env": "env",
-        "signature": "signature",
-        "signature_timestamp": "signature_timestamp",
-        "now_unix_seconds": "now_unix_seconds",
     }
+    if not worker_transaction:
+        aliases["worker_binary"] = "worker_binary"
+    else:
+        aliases.update(
+            {
+                "signature": "signature",
+                "signature_timestamp": "signature_timestamp",
+                "now_unix_seconds": "now_unix_seconds",
+            }
+        )
     unknown = set(values).difference(aliases)
     if unknown:
         names = ", ".join(sorted(unknown))
@@ -160,6 +247,14 @@ def _environment(value: Any) -> dict[str, str | None]:
             raise TypeError("environment override names must be non-empty strings")
         result[name] = None if item is None else os.fspath(item)
     return result
+
+
+def _transport(value: str) -> str:
+    normalized = value.strip().lower()
+    if normalized not in SUPPORTED_TRANSPORTS:
+        choices = ", ".join(sorted(SUPPORTED_TRANSPORTS))
+        raise ValueError(f"unsupported agent transport {value!r}; expected: {choices}")
+    return normalized
 
 
 def _worker_name(value: str) -> str:

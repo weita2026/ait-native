@@ -4,7 +4,8 @@ use std::str::FromStr;
 use ait_core::json_support::{json, JsonValue};
 use ait_core::worker_manifest::{
     default_worker_manifest_config_json, normalize_worker_manifest_document_json,
-    select_telegram_worker_json, worker_manifest_ir_version, worker_manifest_schema_json,
+    select_telegram_worker_json, upsert_worker_manifest_worker_json, worker_manifest_ir_version,
+    worker_manifest_schema_json,
 };
 use serde::{Deserialize, Serialize};
 
@@ -12,7 +13,11 @@ use crate::transport::TransportKind;
 
 mod store;
 
-pub use store::{AgentWorkerManifestDocument, AgentWorkerManifestStore};
+pub use store::{
+    agent_worker_manifest_store_execute_json, AgentWorkerManifestDocument,
+    AgentWorkerManifestMutation, AgentWorkerManifestRemoval, AgentWorkerManifestStore,
+    AGENT_WORKER_MANIFEST_STORE_CONTRACT,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentWorkerCount {
@@ -55,6 +60,14 @@ pub fn agent_select_telegram_worker_json(
     requested_name: Option<&str>,
 ) -> JsonValue {
     select_telegram_worker_json(config, requested_name)
+}
+
+pub fn agent_list_manifest_workers_json(payload: &JsonValue) -> JsonValue {
+    json!(list_manifest_workers(payload))
+}
+
+pub fn agent_upsert_worker_manifest_worker_json(request: &JsonValue) -> Result<JsonValue, String> {
+    upsert_worker_manifest_worker_json(request)
 }
 
 pub fn count_manifest_workers(payload: &JsonValue) -> Vec<AgentWorkerCount> {

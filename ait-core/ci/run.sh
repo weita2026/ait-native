@@ -17,7 +17,8 @@ cleanup_owned_root=0
 if [ -n "${AIT_RUNNER_ATTEMPT_ROOT:-}" ]; then
   owned_root=$AIT_RUNNER_ATTEMPT_ROOT
 else
-  owned_root=$(mktemp -d "${TMPDIR:-/tmp}/ait-core-ci.XXXXXX")
+  temporary_parent=$(cd "${TMPDIR:-/tmp}" && pwd -P)
+  owned_root=$(mktemp -d "$temporary_parent/ait-core-ci.XXXXXX")
   cleanup_owned_root=1
 fi
 
