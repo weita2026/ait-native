@@ -503,10 +503,8 @@ jobs:
           test ! -e "${admission_root}"
           mkdir "${admission_root}"
           cd "${admission_root}"
-          "${AIT_FAMILY_ADMISSION_BIN}" init \
-            --name ait-core \
-            --default-line release-bootstrap \
-            --json >"${RUNNER_TEMP}/family-init.json"
+          "${AIT_FAMILY_ADMISSION_BIN}" init --json \
+            >"${RUNNER_TEMP}/family-init.json"
           candidate="${RUNNER_TEMP}/family-candidate.json"
           check="${RUNNER_TEMP}/family-check.json"
           build="${RUNNER_TEMP}/family-build.json"

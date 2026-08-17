@@ -100,6 +100,7 @@ for required_workflow_text in \
   'admission_root="${RUNNER_TEMP}/ait-family-admission-repository"' \
   'test ! -e "${admission_root}"' \
   'cd "${admission_root}"' \
+  '"${AIT_FAMILY_ADMISSION_BIN}" init --json' \
   'release show "${release_id}"' \
   'release package "${release_id}"' \
   'release promote "${release_id}"' \
@@ -132,6 +133,8 @@ for forbidden_workflow_text in \
   'cp -R "${AIT_PUBLIC_SOURCE_ROOT}/ait-core"' \
   'release_family_rc4_admission.patch' \
   'patch --batch --forward' \
+  'init --name' \
+  '--default-line' \
   '--repair-existing' \
   'pattern: ait-release-source-ait-*'; do
   if grep -F -- "${forbidden_workflow_text}" "${workflow}" >/dev/null; then
