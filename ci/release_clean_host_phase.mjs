@@ -23,6 +23,7 @@ const PHASE_CONTRACT = "ait.release.clean-host.phase/v1";
 const MATRIX_CONTRACT = "ait.release.clean-host.matrix/v1";
 const MAX_CAPTURE = 16 * 1024 * 1024;
 const COMMAND_TIMEOUT_MS = 10 * 60 * 1000;
+const CHECKSUM_ASSET_NAME = /^[A-Za-z0-9][A-Za-z0-9._@+~-]*$/;
 
 function usage(message) {
   if (message) {
@@ -198,8 +199,8 @@ function candidateAssetIndex(root) {
     if (!line) {
       continue;
     }
-    const match = line.match(/^([0-9a-f]{64})  ([A-Za-z0-9][A-Za-z0-9._@+-]*)$/);
-    if (!match || index.has(match[2])) {
+    const match = line.match(/^([0-9a-f]{64})  (.+)$/);
+    if (!match || !CHECKSUM_ASSET_NAME.test(match[2]) || index.has(match[2])) {
       fail(`prepublish candidate checksums contain an invalid or duplicate row: ${line}`);
     }
     index.set(match[2], match[1]);
@@ -430,8 +431,8 @@ async function releaseAssetIndex(repository, tag) {
     if (!line) {
       continue;
     }
-    const match = line.match(/^([0-9a-f]{64})  ([A-Za-z0-9][A-Za-z0-9._@+-]*)$/);
-    if (!match || index.has(match[2])) {
+    const match = line.match(/^([0-9a-f]{64})  (.+)$/);
+    if (!match || !CHECKSUM_ASSET_NAME.test(match[2]) || index.has(match[2])) {
       fail(`release checksum inventory contains an invalid or duplicate row: ${line}`);
     }
     index.set(match[2], match[1]);
