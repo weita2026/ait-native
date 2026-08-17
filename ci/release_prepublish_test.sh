@@ -96,7 +96,10 @@ jq -S -n '{
   }
 }' >"${config}"
 printf 'endpoint-stage\n' >"${candidate}/ait-release.endpoint-publication.json"
-printf 'assets\n' >"${candidate}/assets/SHA256SUMS"
+debian_asset=${candidate}/assets/ait-native_1.2.3~rc.6_amd64.deb
+printf 'debian-rc-package\n' >"${debian_asset}"
+printf '%s  %s\n' "$(sha256_file "${debian_asset}")" \
+  "$(basename "${debian_asset}")" >"${candidate}/assets/SHA256SUMS"
 for component in ait-server ait-runner; do
   for architecture in amd64 arm64; do
     printf '%s-%s\n' "${component}" "${architecture}" \
@@ -179,6 +182,19 @@ config_sha=$(sha256_file "${config}")
 status_sha=$(sha256_file "${status}")
 node "${verifier}" stage --root "${candidate}" \
   --config-sha256 "${config_sha}" --status-sha256 "${status_sha}" >/dev/null
+
+unsafe_inventory=${temporary_root}/unsafe-inventory
+cp -R "${candidate}" "${unsafe_inventory}"
+{
+  printf '%064d  assets/../escape\n' 0
+  cat "${candidate}/PREPUBLISH_SHA256SUMS"
+} >"${unsafe_inventory}/PREPUBLISH_SHA256SUMS"
+expect_failure unsafe-inventory node "${verifier}" stage \
+  --root "${unsafe_inventory}" \
+  --config-sha256 "${config_sha}" \
+  --status-sha256 "${status_sha}"
+grep -F 'prepublish checksum inventory contains an unsafe or duplicate row' \
+  "${temporary_root}/unsafe-inventory.stderr" >/dev/null
 
 incomplete_mutation=${temporary_root}/incomplete-mutation
 cp -R "${candidate}" "${incomplete_mutation}"
