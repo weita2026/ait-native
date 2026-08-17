@@ -499,9 +499,10 @@ jobs:
           test "$(find "${RUNNER_TEMP}/component-receipts" \
             -type f -name ait-release.receipt.json -exec jq -r \
               '.authority.git_commit' {} \; | sort -u)" = "${AIT_SOURCE_GIT_COMMIT}"
-          admission_root="${RUNNER_TEMP}/ait-family-admission-repository"
-          test ! -e "${admission_root}"
-          mkdir "${admission_root}"
+          admission_parent="${RUNNER_TEMP}/ait-family-admission-repository"
+          admission_root="${admission_parent}/ait-core"
+          test ! -e "${admission_parent}"
+          mkdir -p "${admission_root}"
           cd "${admission_root}"
           "${AIT_FAMILY_ADMISSION_BIN}" init --json \
             >"${RUNNER_TEMP}/family-init.json"
