@@ -631,12 +631,26 @@ function firstLand(recorder, aitSpec, root, expectedText, priorState = null) {
   if (snapshot.parent_snapshot_id !== null) {
     fail("clean-host first land did not author the first Snapshot on an empty default Line");
   }
-  const landed = jsonSpec(
+  let landed = jsonSpec(
     recorder,
     aitSpec,
     ["task", "land", taskId, "--local", "--json"],
-    { cwd: worktree, label: "candidate task land" },
+    { cwd: worktree, label: "candidate task land", allowed: [0, 2] },
   );
+  if (landed.task_status === "completed" && landed.closeout_status !== "complete") {
+    // The land consumes the bound worktree's line head, so it must start
+    // inside that worktree; Windows cannot remove a directory that is still
+    // a process working directory, so the closeout reports partial with
+    // exit 2. The land contract's idempotent_phase_resume finishes the exact
+    // closeout from the repository root, where no process holds the
+    // worktree.
+    landed = jsonSpec(
+      recorder,
+      aitSpec,
+      ["task", "land", taskId, "--local", "--json"],
+      { cwd: root, label: "candidate task land closeout resume" },
+    );
+  }
   if (
     landed.task_status !== "completed" ||
     landed.closeout_status !== "complete" ||
@@ -1055,8 +1069,17 @@ function brewEnvironment() {
   };
 }
 
+function homebrewFormulaFileName(config, version) {
+  // The configured formula path names the candidate channel's route. A prior
+  // release installs from its own channel route: RC identities use the
+  // "-rc" formula, stable identities use the bare formula.
+  const configured = path.basename(config.endpoints.homebrew.formula_path, ".rb");
+  const stem = configured.replace(/-rc$/, "");
+  return /-rc\./.test(version) ? `${stem}-rc.rb` : `${stem}.rb`;
+}
+
 async function homebrewFormula(config, version, root, candidateStage = null) {
-  const formulaName = path.basename(config.endpoints.homebrew.formula_path);
+  const formulaName = homebrewFormulaFileName(config, version);
   const destination = path.join(root, `${version}-${formulaName}`);
   if (candidateStage) {
     writeFileSync(destination, readFileSync(localCandidateAsset(candidateStage, formulaName)), {
@@ -1119,7 +1142,8 @@ async function homebrewContext(
   candidateStage = null,
 ) {
   const formulaPath = await homebrewFormula(config, version, root, candidateStage);
-  const formula = path.basename(config.endpoints.homebrew.formula_path, ".rb");
+  const formulaFileName = homebrewFormulaFileName(config, version);
+  const formula = path.basename(formulaFileName, ".rb");
   const tap = config.endpoints.homebrew.tap;
   if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(tap ?? "")) {
     fail("Homebrew endpoint configuration has no canonical tap identity");
@@ -1133,7 +1157,11 @@ async function homebrewContext(
   if (!path.isAbsolute(tapRoot)) {
     fail("Homebrew tap repository origin is not absolute");
   }
-  const installedFormulaPath = path.join(tapRoot, config.endpoints.homebrew.formula_path);
+  const installedFormulaPath = path.join(
+    tapRoot,
+    path.dirname(config.endpoints.homebrew.formula_path),
+    formulaFileName,
+  );
   const formulaParent = path.dirname(installedFormulaPath);
   mkdirSync(formulaParent, { recursive: true, mode: 0o755 });
   writeFileSync(installedFormulaPath, readFileSync(formulaPath), { mode: 0o644 });
@@ -1145,11 +1173,38 @@ async function homebrewContext(
   }
   const qualifiedFormula = `${tap}/${formula}`;
   if (upgrade) {
-    brewCommand(
+    // A stable candidate upgrading over an RC prior crosses formula names;
+    // Homebrew cannot upgrade across formulae, so the prior channel formula
+    // is replaced by an exact uninstall-then-install transition. Same-name
+    // upgrades keep the native upgrade path.
+    const stem = formula.replace(/-rc$/, "");
+    const crossFormula = formula === stem ? `${stem}-rc` : stem;
+    const installedFormulae = brewCommand(
       recorder,
-      ["upgrade", "--formula", qualifiedFormula],
-      "Homebrew exact upgrade",
-    );
+      ["list", "--formula"],
+      "Homebrew installed formula inventory",
+    ).stdout;
+    const crossInstalled = installedFormulae
+      .split(/\r?\n/)
+      .some((line) => line.trim() === crossFormula);
+    if (crossInstalled) {
+      brewCommand(
+        recorder,
+        ["uninstall", "--formula", crossFormula],
+        "Homebrew prior channel replacement uninstall",
+      );
+      brewCommand(
+        recorder,
+        ["install", "--formula", qualifiedFormula],
+        "Homebrew exact channel-transition install",
+      );
+    } else {
+      brewCommand(
+        recorder,
+        ["upgrade", "--formula", qualifiedFormula],
+        "Homebrew exact upgrade",
+      );
+    }
   } else {
     brewCommand(
       recorder,
@@ -1213,7 +1268,7 @@ function debianVersion(version) {
   return version.replace(/-rc\.([1-9]\d*)$/, "~rc.$1");
 }
 
-async function configureApt(config, root, recorder) {
+async function configureApt(config, root, recorder, suite = config.endpoints.apt.suite) {
   const keyUrl = `${config.endpoints.apt.base_url}/ait-native-archive-keyring.gpg`;
   const key = await fetchBytes(keyUrl, "APT archive keyring");
   const localKey = path.join(root, "ait-native-archive-keyring.gpg");
@@ -1221,7 +1276,7 @@ async function configureApt(config, root, recorder) {
   writeFileSync(localKey, key, { mode: 0o644 });
   writeFileSync(
     localSource,
-    `deb [signed-by=/usr/share/keyrings/ait-native-archive-keyring.gpg] ${config.endpoints.apt.base_url} ${config.endpoints.apt.suite} ${config.endpoints.apt.component}\n`,
+    `deb [signed-by=/usr/share/keyrings/ait-native-archive-keyring.gpg] ${config.endpoints.apt.base_url} ${suite} ${config.endpoints.apt.component}\n`,
     { encoding: "utf8", mode: 0o644 },
   );
   recorder.run("sudo", ["install", "-m", "0644", localKey, "/usr/share/keyrings/ait-native-archive-keyring.gpg"], {
@@ -1972,7 +2027,12 @@ async function executeUpgrade({ options, config, status, row, checks, recorder, 
   mark(checks, "runner_target");
   mark(checks, "package_manager");
   if (row.channel === "apt") {
-    await configureApt(config, root, recorder);
+    // The prior release installs from its own channel suite. An RC prior
+    // lives on the testing suite even when the candidate publishes stable;
+    // the candidate itself upgrades from the frozen local package, so the
+    // configured route only ever serves the prior baseline.
+    const priorSuite = /-rc\./.test(options["prior-version"]) ? "testing" : "stable";
+    await configureApt(config, root, recorder, priorSuite);
   }
   const priorRoot = row.channel === "github" ? path.join(root, "prior-github") : root;
   mkdirSync(priorRoot, { recursive: true, mode: 0o755 });
