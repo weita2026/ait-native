@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "ait-python"
-version = "1.0.0rc12"
+version = "1.0.0rc13"
 description = "In-process PyO3 bindings for the Rust-owned AIT runtime"
 readme = { text = "Direct Python bindings for ait-core and its ait-agent runtime.", content-type = "text/plain" }
 requires-python = ">=3.11"

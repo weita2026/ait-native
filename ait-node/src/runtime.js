@@ -265,7 +265,7 @@ function loadContract() {
   if (
     contract.schema !== "ait.node.napi-platform-packages/v2" ||
     contract.top_level_package !== "@wa120/ait-native" ||
-    contract.family_version !== "1.0.0-rc.12" ||
+    contract.family_version !== "1.0.0-rc.13" ||
     !Array.isArray(contract.payloads) ||
     contract.payloads.length !== 6
   ) {
@@ -288,7 +288,7 @@ function loadContract() {
       payload.package !== expectedPackage ||
       payload.component !== "ait-node" ||
       payload.binding_repository !== "ait-core" ||
-      payload.binding_snapshot !== "SNP-A25D351DE720" ||
+      payload.binding_snapshot !== "SNP-AB80C507E78F" ||
       payload.license !== "Apache-2.0" ||
       payload.version !== contract.family_version ||
       payload.addon !== "native/ait_napi.node"

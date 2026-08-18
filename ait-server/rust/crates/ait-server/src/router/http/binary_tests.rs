@@ -145,7 +145,7 @@ async fn fresh_install_serves_fixed_numeric_repository_authorities() {
         .expect("handshake response");
     assert_eq!(handshake.status(), StatusCode::OK);
     let handshake = response_json(handshake).await;
-    assert_eq!(handshake["package_version"], json!("1.0.0-rc.12"));
+    assert_eq!(handshake["package_version"], json!("1.0.0-rc.13"));
     assert_eq!(
         handshake["operational_capabilities"]["runner_contracts"],
         json!(["ait.runner.native-job.v3"])
