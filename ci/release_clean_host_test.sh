@@ -125,9 +125,11 @@ version=$(jq -er '.family.version' "${repo_root}/ait-release-family.json")
 python_version=$(jq -er '.components[] | select(.id == "ait-python") | .version' \
   "${repo_root}/ait-release-family.json")
 tag=v${version}
+channel=$(jq -er '.family.channel' "${repo_root}/ait-release-family.json")
 jq -n \
   --arg version "${version}" \
   --arg python_version "${python_version}" \
+  --arg channel "${channel}" \
   --arg tag "${tag}" '
   {
     contract: "ait.release.family.endpoints/v1",
@@ -135,7 +137,7 @@ jq -n \
       id: "REL-FAM-0123456789ABCDEF",
       version: $version,
       python_version: $python_version,
-      channel: "rc",
+      channel: $channel,
       tag: $tag,
       source_commit: "1111111111111111111111111111111111111111"
     }
@@ -168,6 +170,7 @@ release_binding=${temporary_root}/release-binding.json
 jq -n \
   --arg version "${version}" \
   --arg python_version "${python_version}" \
+  --arg channel "${channel}" \
   --arg tag "${tag}" \
   --arg config_sha "${config_sha}" \
   --arg status_sha "${status_sha}" '
@@ -175,7 +178,7 @@ jq -n \
     id: "REL-FAM-0123456789ABCDEF",
     version: $version,
     python_version: $python_version,
-    channel: "rc",
+    channel: $channel,
     tag: $tag,
     source_commit: "1111111111111111111111111111111111111111",
     endpoint_config_sha256: $config_sha,

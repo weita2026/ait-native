@@ -287,6 +287,56 @@ jq -e --arg qualified "${qualified_commit}" --arg release "${source_commit}" '
   ([.mutation[]] | all(. == false))
 ' "${admission}" >/dev/null
 
+stable_root=${temporary_root}/stable-release
+git clone -q "${source_root}" "${stable_root}"
+configure_git_identity "${stable_root}"
+git -C "${stable_root}" checkout -qb stable-release "${qualified_commit}"
+jq '
+  .family.version = "1.2.3" |
+  .family.channel = "stable" |
+  .family.tag = "v1.2.3" |
+  .components |= map(.version = "1.2.3")
+' "${stable_root}/ait-release-family.json" >"${temporary_root}/stable-family.json"
+mv "${temporary_root}/stable-family.json" "${stable_root}/ait-release-family.json"
+stable_family_sha=$(sha256_file "${stable_root}/ait-release-family.json")
+jq --arg family_sha "${stable_family_sha}" '
+  .family_version = "1.2.3" |
+  .family_tag = "v1.2.3" |
+  .family_manifest_sha256 = $family_sha
+' "${stable_root}/ait-monorepo-source.json" >"${temporary_root}/stable-mapping.json"
+mv "${temporary_root}/stable-mapping.json" "${stable_root}/ait-monorepo-source.json"
+jq '.family_version = "1.2.3"' \
+  "${stable_root}/ci/release_repository_authorities.json" \
+  >"${temporary_root}/stable-authorities.json"
+mv "${temporary_root}/stable-authorities.json" \
+  "${stable_root}/ci/release_repository_authorities.json"
+jq '.version = "1.2.3"' \
+  "${stable_root}/ci/native_bootstrap_matrix.json" \
+  >"${temporary_root}/stable-platforms.json"
+mv "${temporary_root}/stable-platforms.json" \
+  "${stable_root}/ci/native_bootstrap_matrix.json"
+printf '1.2.3\n' >"${stable_root}/component/version.txt"
+git -C "${stable_root}" add -A
+git -C "${stable_root}" commit -qm 'stable version-only release source'
+stable_commit=$(git -C "${stable_root}" rev-parse HEAD)
+stable_admission=${temporary_root}/stable-admission.json
+"${operator}" admit \
+  --source-root "${stable_root}" \
+  --qualification "${qualification}" \
+  --output "${stable_admission}" >/dev/null
+jq -e --arg qualified "${qualified_commit}" --arg release "${stable_commit}" '
+  .contract == "ait.release.operator.pre-tag-admission/v1" and
+  .status == "ready_for_immutable_tag" and
+  .release.version == "1.2.3" and
+  .release.channel == "stable" and
+  .release.python_version == "1.2.3" and
+  .release.tag == "v1.2.3" and
+  .qualification.source_commit == $qualified and
+  .release.source_commit == $release and
+  .tag == {created: false, verified: false} and
+  ([.mutation[]] | all(. == false))
+' "${stable_admission}" >/dev/null
+
 git -C "${source_root}" tag -a v1.2.3-rc.5 -m 'fixture release tag'
 
 prepare=${temporary_root}/prepare.json

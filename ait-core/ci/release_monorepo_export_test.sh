@@ -83,6 +83,7 @@ if (( selftest_mode == 0 )); then
     "${repo_root}/ci/release_prepublish_test.sh" \
     "${repo_root}/ci/release_prepublish_verify.mjs" \
     "${repo_root}/ci/release_protected_promotion.sh" \
+    "${repo_root}/ci/release_protected_promotion_test.sh" \
     "${repo_root}/ci/release_receipt_matrix.jq" \
     "${repo_root}/ci/release_receipt_matrix_test.sh" \
     "${repo_root}/ci/release_repository_authorities.json" \
@@ -507,6 +508,7 @@ for release_control_path in \
   ci/release_prepublish_test.sh \
   ci/release_prepublish_verify.mjs \
   ci/release_protected_promotion.sh \
+  ci/release_protected_promotion_test.sh \
   ci/release_receipt_matrix.jq \
   ci/release_receipt_matrix_test.sh; do
   cmp "${repo_root}/${release_control_path}" \
@@ -520,6 +522,7 @@ bash "${output_one}/ci/release_clean_host_test.sh" >/dev/null
 bash "${output_one}/ci/release_operator_test.sh" >/dev/null
 bash "${output_one}/ci/release_pre_rc_qualification_test.sh" >/dev/null
 bash "${output_one}/ci/release_prepublish_test.sh" >/dev/null
+bash "${output_one}/ci/release_protected_promotion_test.sh" >/dev/null
 env \
   AIT_RELEASE_FAMILY_MANIFEST="${output_one}/ait-core/ait-release-family.json" \
   bash "${output_one}/ci/release_receipt_matrix_test.sh" >/dev/null

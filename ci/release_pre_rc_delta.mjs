@@ -73,17 +73,27 @@ const newVersion = releaseFamily?.family?.version;
 const oldPython = qualifiedFamily?.components?.find((row) => row.id === "ait-python")?.version;
 const newPython = releaseFamily?.components?.find((row) => row.id === "ait-python")?.version;
 const oldMatch = /^([0-9]+\.[0-9]+\.[0-9]+)-rc\.([1-9][0-9]*)$/.exec(oldVersion ?? "");
-const newMatch = /^([0-9]+\.[0-9]+\.[0-9]+)-rc\.([1-9][0-9]*)$/.exec(newVersion ?? "");
-if (
-  !oldMatch ||
-  !newMatch ||
-  oldMatch[1] !== newMatch[1] ||
-  Number(newMatch[2]) !== Number(oldMatch[2]) + 1 ||
-  oldPython !== `${oldMatch[1]}rc${oldMatch[2]}` ||
-  newPython !== `${newMatch[1]}rc${newMatch[2]}` ||
-  releaseFamily.family.tag !== `v${newVersion}`
-) {
-  fail("release delta must advance exactly one canonical RC ordinal and Python mapping");
+const newRcMatch = /^([0-9]+\.[0-9]+\.[0-9]+)-rc\.([1-9][0-9]*)$/.exec(newVersion ?? "");
+const newStableMatch = /^[0-9]+\.[0-9]+\.[0-9]+$/.exec(newVersion ?? "");
+const qualifiedPythonCanonical =
+  oldMatch !== null && oldPython === `${oldMatch[1]}rc${oldMatch[2]}`;
+const rcAdvance =
+  oldMatch !== null &&
+  newRcMatch !== null &&
+  qualifiedPythonCanonical &&
+  oldMatch[1] === newRcMatch[1] &&
+  Number(newRcMatch[2]) === Number(oldMatch[2]) + 1 &&
+  newPython === `${newRcMatch[1]}rc${newRcMatch[2]}`;
+const stablePromotion =
+  oldMatch !== null &&
+  newStableMatch !== null &&
+  qualifiedPythonCanonical &&
+  oldMatch[1] === newVersion &&
+  newPython === newVersion;
+if (!(rcAdvance || stablePromotion) || releaseFamily.family.tag !== `v${newVersion}`) {
+  fail(
+    "release delta must advance exactly one canonical RC ordinal or promote the qualified RC base to its stable version",
+  );
 }
 
 const expectedSourceRepositories = [
@@ -160,6 +170,10 @@ const tokenTransitions = [
     qualified: row.qualified_snapshot,
   })),
 ];
+// Normalization replaces qualified tokens with release tokens, so the
+// qualified side must stay unambiguous. The release side is allowed to
+// collide: a stable promotion maps both the family and Python qualified
+// forms onto the same stable version string.
 if (
   tokenTransitions.some(
     (transition) =>
@@ -167,7 +181,7 @@ if (
       !transition.qualified ||
       transition.release === transition.qualified,
   ) ||
-  new Set(tokenTransitions.map((transition) => transition.release)).size !==
+  new Set(tokenTransitions.map((transition) => transition.qualified)).size !==
     tokenTransitions.length
 ) {
   fail("release delta token authority is invalid or ambiguous");
@@ -204,11 +218,11 @@ for (const relativePath of changed) {
   if (before.includes(0) || after.includes(0)) {
     fail(`release delta changes a binary non-authority path: ${relativePath}`);
   }
-  let normalized = after.toString("utf8");
+  let normalized = before.toString("utf8");
   for (const transition of tokenTransitions) {
-    normalized = normalized.split(transition.release).join(transition.qualified);
+    normalized = normalized.split(transition.qualified).join(transition.release);
   }
-  if (normalized !== before.toString("utf8")) {
+  if (normalized !== after.toString("utf8")) {
     fail(`release delta contains non-version changes: ${relativePath}`);
   }
   normalizedPaths.push(relativePath);

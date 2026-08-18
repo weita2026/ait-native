@@ -133,17 +133,21 @@ jobs:
             "${GITHUB_WORKSPACE}/source/ait-release-family.json")
           tag=$(jq -r '.family.tag' \
             "${GITHUB_WORKSPACE}/source/ait-release-family.json")
+          channel=$(jq -r '.family.channel' \
+            "${GITHUB_WORKSPACE}/source/ait-release-family.json")
+          [[ "${channel}" == rc || "${channel}" == stable ]]
           jq -e \
             --arg version "${version}" \
             --arg python_version "${python_version}" \
             --arg tag "${tag}" \
+            --arg channel "${channel}" \
             --arg commit "${RELEASE_SOURCE_COMMIT}" '
               .contract == "ait.release.operator.pre-tag-admission/v1" and
               .status == "ready_for_immutable_tag" and
               .release == {
                 repository: "weita2026/ait-native",
                 version: $version,
-                channel: "rc",
+                channel: $channel,
                 python_version: $python_version,
                 tag: $tag,
                 source_commit: $commit

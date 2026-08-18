@@ -126,6 +126,8 @@ if ! jq -e --slurpfile config "${endpoint_config}" '
   .dossier.checksum_sha256 == $config[0].release.frozen_checksums_sha256 and
   (.dossier.frozen_checksum_count | type == "number" and . > 0 and floor == .) and
   .dossier.native_promotion_readback_equal == true and
+  .dossier.pre_tag_admission_verified == true and
+  (.dossier.pre_tag_admission_sha256 | test("^[0-9a-f]{64}$")) and
   .dossier.admission_replay == {
     model: "immutable-tag-native-admission/v1",
     rust_toolchain: .dossier.admission_replay.rust_toolchain,
@@ -169,6 +171,7 @@ printf '%s\n' \
   ait-release.build.json \
   ait-release.candidate.json \
   ait-release.check.json \
+  ait-release.pre-tag-admission.json \
   ait-release.promotion.json \
   frozen \
   packages | LC_ALL=C sort >"${expected_top}"
@@ -176,6 +179,14 @@ find "${dossier_root}" -mindepth 1 -maxdepth 1 -exec basename {} \; |
   LC_ALL=C sort >"${actual_top}"
 if ! diff -u "${expected_top}" "${actual_top}"; then
   printf 'family dossier top-level inventory is not exact\n' >&2
+  exit 65
+fi
+
+pre_tag_admission=${dossier_root}/ait-release.pre-tag-admission.json
+require_regular_file "${pre_tag_admission}" 'family dossier pre-tag admission'
+if [[ $(sha256_file "${pre_tag_admission}") != \
+  $(jq -er '.dossier.pre_tag_admission_sha256' "${protected_evidence}") ]]; then
+  printf 'family dossier pre-tag admission differs from the protected authorization\n' >&2
   exit 65
 fi
 

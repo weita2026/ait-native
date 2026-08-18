@@ -56,6 +56,7 @@ release_control_paths=(
   ci/release_prepublish_test.sh
   ci/release_prepublish_verify.mjs
   ci/release_protected_promotion.sh
+  ci/release_protected_promotion_test.sh
   ci/release_receipt_matrix.jq
   ci/release_receipt_matrix_test.sh
   ci/release_repository_authorities.json
@@ -655,7 +656,8 @@ chmod 0755 \
   "${staging}/ci/release_prepublish_oci.sh" \
   "${staging}/ci/release_prepublish_stage.sh" \
   "${staging}/ci/release_prepublish_test.sh" \
-  "${staging}/ci/release_protected_promotion.sh"
+  "${staging}/ci/release_protected_promotion.sh" \
+  "${staging}/ci/release_protected_promotion_test.sh"
 
 content_sha256=$(tree_digest "${staging}" monorepo-content)
 family_manifest_sha256=$(sha256_file "${staging}/ait-release-family.json")
