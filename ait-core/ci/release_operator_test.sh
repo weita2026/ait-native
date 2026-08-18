@@ -6,6 +6,16 @@ operator=${repo_root}/ci/release_operator.sh
 operator_test_tmp_parent=$(CDPATH='' cd -- "${TMPDIR:-/tmp}" && pwd -P)
 temporary_root=$(mktemp -d \
   "${operator_test_tmp_parent}/ait-release-operator-test.XXXXXX")
+git_global_config=${temporary_root}/global.gitconfig
+touch "${git_global_config}"
+export GIT_CONFIG_GLOBAL="${git_global_config}"
+export GIT_CONFIG_NOSYSTEM=1
+
+configure_git_identity() {
+  local repository=$1
+  git -C "${repository}" config user.name 'AIT release operator test'
+  git -C "${repository}" config user.email 'release-operator@localhost'
+}
 
 cleanup() {
   case "${temporary_root}" in
@@ -97,8 +107,7 @@ printf '%s\n' \
   >"${source_root}/build-release.mjs"
 chmod 0755 "${source_root}/build-release.mjs"
 git -C "${source_root}" init -q
-git -C "${source_root}" config user.name 'AIT release operator test'
-git -C "${source_root}" config user.email 'release-operator@localhost'
+configure_git_identity "${source_root}"
 git -C "${source_root}" add -A
 git -C "${source_root}" commit -qm 'qualified repair source'
 qualified_commit=$(git -C "${source_root}" rev-parse HEAD)
@@ -172,6 +181,7 @@ expect_failure failed-qualification "${operator}" bind-qualification \
 
 tagged_repair=${temporary_root}/tagged-repair
 git clone -q "${source_root}" "${tagged_repair}"
+configure_git_identity "${tagged_repair}"
 git -C "${tagged_repair}" tag -a v1.2.3-rc.4 -m 'premature repair tag'
 expect_failure tagged-repair "${operator}" bind-qualification \
   --source-root "${tagged_repair}" \
@@ -236,6 +246,7 @@ source_commit=$(git -C "${source_root}" rev-parse HEAD)
 
 tagged_before_admission=${temporary_root}/tagged-before-admission
 git clone -q "${source_root}" "${tagged_before_admission}"
+configure_git_identity "${tagged_before_admission}"
 git -C "${tagged_before_admission}" tag -a v1.2.3-rc.5 -m 'premature tag'
 expect_failure tagged-before-admission "${operator}" admit \
   --source-root "${tagged_before_admission}" \
@@ -246,6 +257,7 @@ grep -F 'release tag exists before pre-tag admission' \
 
 tagged_qualified_after_binding=${temporary_root}/tagged-qualified-after-binding
 git clone -q "${source_root}" "${tagged_qualified_after_binding}"
+configure_git_identity "${tagged_qualified_after_binding}"
 git -C "${tagged_qualified_after_binding}" tag -a v1.2.3-rc.4 \
   "${qualified_commit}" -m 'late repair tag'
 expect_failure tagged-qualified-after-binding "${operator}" admit \

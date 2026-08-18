@@ -44,6 +44,7 @@ for required in \
   'init_cli_creates_then_reinitializes_the_agent_contract' \
   'init_is_idempotent_and_creates_only_an_empty_runtime_root' \
   'installed_run_initializes_then_serves_from_an_explicit_root' \
+  'bash ait-core/ci/release_monorepo_export_test.sh --public-layout-selftest' \
   'root_command_inventory_is_frozen' \
   'root_ait_agent_namespace_is_absent' \
   'ait.release.pre-rc-qualification/v1' \
@@ -62,6 +63,7 @@ for forbidden in \
   'twine upload' \
   'gh release create' \
   'docker push' \
+  'bash ci/release_monorepo_export_test.sh' \
   'git tag -a'; do
   if grep -F -- "${forbidden}" "${workflow}" >/dev/null; then
     printf 'pre-RC qualification gained release authority: %s\n' "${forbidden}" >&2

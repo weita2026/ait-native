@@ -81,7 +81,7 @@ jobs:
           set -euo pipefail
           bash ci/release_operator_test.sh
           bash ci/release_pre_rc_qualification_test.sh
-          bash ci/release_monorepo_export_test.sh
+          bash ait-core/ci/release_monorepo_export_test.sh --public-layout-selftest
           cargo test --locked --manifest-path ait-core/rust/Cargo.toml \
             -p ait-core --test environment_contract
           cargo test --locked --manifest-path ait-core/rust/Cargo.toml \
