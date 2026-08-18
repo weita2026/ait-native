@@ -29,6 +29,7 @@ if [[ ! -e ${product_document} && ! -L ${product_document} ]]; then
   product_document=${repo_root}/../docs/distribution.md
 fi
 receipt_workflow=${repo_root}/.github/workflows/ait-release-component-receipts.yml
+qualification_workflow=${repo_root}/.github/workflows/ait-release-pre-rc-qualification.yml
 promotion_workflow=${repo_root}/.github/workflows/ait-release-protected-promotion.yml
 endpoint_workflow=${repo_root}/.github/workflows/pypi-publish.yml
 latest_alias_workflow=${repo_root}/.github/workflows/ait-release-latest-alias.yml
@@ -47,6 +48,9 @@ release_control_paths=(
   ci/release_endpoint_remote.sh
   ci/release_latest_alias.sh
   ci/release_operator.sh
+  ci/release_operator_test.sh
+  ci/release_pre_rc_delta.mjs
+  ci/release_pre_rc_qualification_test.sh
   ci/release_prepublish_oci.sh
   ci/release_prepublish_stage.sh
   ci/release_prepublish_test.sh
@@ -115,6 +119,7 @@ if [[ ! -d ${template_root} || -L ${template_root} ||
   ! -f ${transform_tool} || -L ${transform_tool} ||
   ! -f ${product_document} || -L ${product_document} ||
   ! -f ${receipt_workflow} || -L ${receipt_workflow} ||
+  ! -f ${qualification_workflow} || -L ${qualification_workflow} ||
   ! -f ${promotion_workflow} || -L ${promotion_workflow} ||
   ! -f ${endpoint_workflow} || -L ${endpoint_workflow} ||
   ! -f ${latest_alias_workflow} || -L ${latest_alias_workflow} ||
@@ -535,11 +540,13 @@ if find "${staging}" -type f -name 'LicenseRef-AIT-Commercial.txt' \
   exit 65
 fi
 root_receipt_workflow=${staging}/.github/workflows/ait-release-component-receipts.yml
+root_qualification_workflow=${staging}/.github/workflows/ait-release-pre-rc-qualification.yml
 root_promotion_workflow=${staging}/.github/workflows/ait-release-protected-promotion.yml
 root_endpoint_workflow=${staging}/.github/workflows/pypi-publish.yml
 root_latest_alias_workflow=${staging}/.github/workflows/ait-release-latest-alias.yml
 root_prepublish_workflow=${staging}/.github/workflows/ait-release-prepublish-clean-host.yml
 cp "${receipt_workflow}" "${root_receipt_workflow}"
+cp "${qualification_workflow}" "${root_qualification_workflow}"
 cp "${promotion_workflow}" "${root_promotion_workflow}"
 cp "${endpoint_workflow}" "${root_endpoint_workflow}"
 cp "${latest_alias_workflow}" "${root_latest_alias_workflow}"
@@ -548,8 +555,8 @@ cp "${server_dockerfile}" "${staging}/release/oci/ait-server.Dockerfile"
 cp "${runner_dockerfile}" "${staging}/release/oci/ait-runner.Dockerfile"
 node "${transform_tool}" \
   "${root_receipt_workflow}" \
-  $'permissions:\n  contents: read\n\nconcurrency:' \
-  $'permissions:\n  contents: read\n\ndefaults:\n  run:\n    working-directory: source/ait-core\n\nconcurrency:'
+  $'permissions:\n  actions: read\n  contents: read\n\nconcurrency:' \
+  $'permissions:\n  actions: read\n  contents: read\n\ndefaults:\n  run:\n    working-directory: source/ait-core\n\nconcurrency:'
 find "${staging}" -type d -exec chmod 0755 {} +
 chmod 0644 \
   "${staging}/README.md" \
@@ -569,9 +576,11 @@ chmod 0644 \
   "${staging}/ci/release_clean_host_phase.mjs" \
   "${staging}/ci/release_clean_host_probe.mjs" \
   "${staging}/ci/release_prepublish_verify.mjs" \
+  "${staging}/ci/release_pre_rc_delta.mjs" \
   "${staging}/LICENSES/Apache-2.0.txt" \
   "${staging}/LICENSES/AGPL-3.0-only.txt" \
   "${root_receipt_workflow}" \
+  "${root_qualification_workflow}" \
   "${root_promotion_workflow}" \
   "${root_endpoint_workflow}" \
   "${root_latest_alias_workflow}" \
@@ -596,6 +605,9 @@ chmod 0755 \
   "${staging}/ci/release_endpoint_remote.sh" \
   "${staging}/ci/release_latest_alias.sh" \
   "${staging}/ci/release_operator.sh" \
+  "${staging}/ci/release_operator_test.sh" \
+  "${staging}/ci/release_pre_rc_delta.mjs" \
+  "${staging}/ci/release_pre_rc_qualification_test.sh" \
   "${staging}/ci/release_prepublish_oci.sh" \
   "${staging}/ci/release_prepublish_stage.sh" \
   "${staging}/ci/release_prepublish_test.sh" \

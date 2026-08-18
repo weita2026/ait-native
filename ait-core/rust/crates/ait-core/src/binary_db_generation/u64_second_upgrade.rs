@@ -12,6 +12,7 @@ use crate::binary_db::{
     REPOSITORY_BINARY_DB_BIN_PATHS, REPOSITORY_BINARY_DB_INDEX_PATHS,
 };
 use crate::content_binary_db::{object_pack_id_from_hash48, tree_pack_id_from_hash48};
+use crate::file_io::sync_filesystem_directory;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
@@ -782,8 +783,7 @@ fn required_layout_ids() -> BTreeMap<String, u32> {
 }
 
 fn sync_directory(path: &Path) -> GenerationResult<()> {
-    fs::File::open(path)
-        .and_then(|file| file.sync_all())
+    sync_filesystem_directory(path)
         .map_err(|error| format!("failed to sync directory {}: {error}", path.display()))
 }
 

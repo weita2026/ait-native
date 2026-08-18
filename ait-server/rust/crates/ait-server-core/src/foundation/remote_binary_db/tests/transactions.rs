@@ -156,7 +156,28 @@ fn std_fsync_policy_syncs_files_and_directories() -> StoreResult<()> {
     policy.sync_file(&file_path)?;
     policy.sync_file_data(&file_path)?;
     policy.sync_directory(root.as_path())?;
+    assert_eq!(fs::read(&file_path).unwrap(), b"sync me");
     Ok(())
+}
+
+#[cfg(windows)]
+#[test]
+fn std_fsync_policy_rejects_a_file_as_a_directory_on_windows() {
+    let root = make_temporary_root();
+    fs::create_dir_all(root.as_path()).expect("failed to create fsync test root");
+    let file_path = root.as_path().join("not-a-directory.bin");
+    fs::write(&file_path, b"file").expect("failed to write fsync test file");
+
+    let error = BinaryDbStdFsyncPolicy
+        .sync_directory(&file_path)
+        .expect_err("Windows directory durability must reject a file target");
+
+    assert!(
+        error
+            .to_string()
+            .contains("directory sync target is not a directory"),
+        "{error}"
+    );
 }
 
 #[test]

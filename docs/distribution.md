@@ -824,9 +824,11 @@ those values. Promotion first creates a credential-free protected-CI handoff;
 publisher jobs then promote the frozen bytes without rebuilding. Stable
 `1.0.0` is a separate admitted family build, not an RC tag rename.
 
-### Script-only next-release operator SOP
+### Script-only next-RC operator SOP
 
-This is the complete maintainer operator path for a later RC or stable release.
+This is the complete maintainer operator path for a later RC. Stable promotion
+requires its own separately admitted family after an RC has completed this
+sequence; it may not bypass or reinterpret the pre-RC qualification evidence.
 It uses repository scripts and existing GitHub Actions only; it does not add or
 invoke a new AIT product command, change `ait release publish`, require a
 runner-reachable `ait-server`, or publish from the maintainer machine.
@@ -844,15 +846,38 @@ the landed Snapshot in the local Binary DB that executes the command; using a
 second recovery root therefore produces a second local authority even when
 both roots point at the same Remote.
 
-First create a new, empty release-record directory. The authority preflight
+The ordering below is mandatory. An RC tag is a publication event even when no
+package or endpoint has been written. Therefore no next-RC version change,
+family freeze, annotated tag, receipt build, or protected promotion may be used
+as the test vehicle for a pending bug fix. A failed or missing gate stops the
+release; it never moves a later gate earlier and never reuses a blocked RC as a
+success.
+
+| Gate | Allowed work | Required evidence before exit | Prohibited work |
+| --- | --- | --- | --- |
+| Repair | Bug fixes under the prior version | Local tests, Remote CI, reviewer land | Next-RC versions, tags, receipts, endpoint writes |
+| Qualification | Untagged repair export and hosted regression | Successful bound run including Windows x64 and arm64 lifecycle | Release tag, release freeze, protected promotion |
+| Release delta | Exact next-RC version and authority updates only | Successful pre-tag admission against the qualified direct parent | Product behavior or unrelated source changes, any tag before admission |
+| Tagged release | Annotated tag, receipts, protected prepublication, endpoint publication | Admission-bound prepare record and every later gate in order | Rebuilds, evidence substitution, bypass after failure |
+
+### Phase 1: repair and qualify without an RC
+
+Diagnose and land every repair in non-release Tasks while all version
+authorities retain the prior value. Each affected repository must complete its
+ordinary local and Remote CI and reviewer land. Then select those landed repair
+Snapshots in a non-publishing qualification family, run the authority
+preflight, and materialize the five exact source bundles. This qualification
+family may retain the prior version only as an input format; it is not another
+build or publication of that version.
+
+Create a new, empty qualification-record directory. The authority preflight
 checks all five repository indexes, identities, clean workspaces, selected
 Snapshots, canonical `main` ancestry, and Remote URLs. The source-bundle
-coordinator then materializes the exact five Snapshot authorities without
-copying a recovery `.ait` directory:
+coordinator does not copy a recovery `.ait` directory:
 
 ```bash
 export AIT_CANONICAL_CORE=/absolute/path/to/canonical/ait-core
-export AIT_RELEASE_RECORDS=/absolute/path/to/new/release-records
+export AIT_RELEASE_RECORDS=/absolute/path/to/new/qualification-records
 mkdir -p "${AIT_RELEASE_RECORDS}"
 
 ./ci/release_authority_preflight.sh \
@@ -874,10 +899,10 @@ publisher has been migrated to upload every asset to a draft before publishing
 it. The current exact tag ruleset, checksum readback, and protected-environment
 evidence remain authoritative for already-published RCs.
 
-The public repository must then contain one reviewed, clean deterministic
-export with an immutable family tag resolving to its current commit. Produce
-that export with the existing script after selecting and landing the five
-source Snapshots:
+Produce a reviewed deterministic export from the landed repair Snapshots and
+commit it to public `main` without creating any tag. The exact public repair
+commit must remain untagged through qualification, admission, and receipt
+revalidation:
 
 ```bash
 AIT_RELEASE_COORDINATOR_SNAPSHOT=SNP-XXXXXXXXXXXX \
@@ -890,18 +915,66 @@ AIT_RELEASE_COORDINATOR_CREATED_AT=<unix-seconds> \
   /absolute/path/to/export-evidence.json
 ```
 
-Review the export, commit it to `weita2026/ait-native`, create its declared
-annotated tag exactly once, push the commit and tag, and validate a clean clone
-before dispatch. The operator refuses a dirty checkout, a moved or mismatched
-tag, an invalid source mapping, or inconsistent RC/stable/Python versions:
+Review the export, commit and push it to public `main` without a tag, validate a
+clean clone, and dispatch the dedicated qualification workflow. That workflow
+has read-only repository permission, performs no build freeze or endpoint
+write, runs release-control plus command/environment inventory regression, and
+executes real core and server initialization on native Windows x64 and arm64:
 
 ```bash
 export AIT_PUBLIC_SOURCE=/absolute/path/to/clean/ait-native
 
 cd "${AIT_PUBLIC_SOURCE}"
 ./build-release.sh --validate-only --git-commit "$(git rev-parse HEAD)"
+test -z "$(git tag --points-at HEAD | grep -E '^v[0-9]' || true)"
+gh workflow run ait-release-pre-rc-qualification.yml \
+  --repo weita2026/ait-native \
+  --ref main \
+  -f source_commit="$(git rev-parse HEAD)"
+```
+
+After the workflow succeeds, bind its exact run, artifact, digest, and evidence
+while the repair commit is still untagged. A failed run, missing Windows row,
+tagged source, source mismatch, or incomplete inventory evidence fails closed:
+
+```bash
+./ci/release_operator.sh bind-qualification \
+  --source-root "${AIT_PUBLIC_SOURCE}" \
+  --run-id <successful-pre-rc-qualification-run-id> \
+  --output "${AIT_RELEASE_RECORDS}/pre-rc-qualification.json"
+```
+
+### Phase 2: admit the version-only release delta before tagging
+
+Only after `pre-rc-qualification.json` exists may separate release Tasks advance
+the five component versions and coordinating family to the next RC. Land their
+normal CI/reviewer changes, generate a second deterministic public export, and
+commit it as the single direct child of the qualified repair commit. Do not tag
+it yet. The admission command requires that the commit is untagged and rejects
+every non-version component change. Only the four generated root family/source
+authority files and their exact coordinator-subtree authority copies may
+change structurally:
+
+```bash
+./ci/release_operator.sh admit \
+  --source-root "${AIT_PUBLIC_SOURCE}" \
+  --qualification "${AIT_RELEASE_RECORDS}/pre-rc-qualification.json" \
+  --output "${AIT_RELEASE_RECORDS}/pre-tag-admission.json"
+```
+
+If admission succeeds, create and push the declared annotated tag exactly once.
+Then, and only then, prepare component receipts. `prepare` requires the exact
+admission record and verifies that the annotated tag now resolves to the same
+admitted commit:
+
+```bash
+git tag -a "$(jq -r '.family.tag' ait-release-family.json)" \
+  -m "Release $(jq -r '.family.version' ait-release-family.json)"
+git push origin main "$(jq -r '.family.tag' ait-release-family.json)"
+
 ./ci/release_operator.sh prepare \
   --source-root "${AIT_PUBLIC_SOURCE}" \
+  --admission "${AIT_RELEASE_RECORDS}/pre-tag-admission.json" \
   --output "${AIT_RELEASE_RECORDS}/01-prepare.json" \
   --dispatch
 ```
@@ -1149,12 +1222,15 @@ The manually dispatched
 workflow is the sole cross-repository component-matrix entrypoint. Its required
 `coordinator_snapshot` input is the exact landed AIT Snapshot named by the
 selected source mapping, and `source_commit` is the exact immutable public Git
-commit to build. The dispatched `github.sha` is a separate reviewed
-release-control commit. Every runner checks out the selected source commit
-under `source/`; only contract and matrix-projection jobs also check out
-`github.sha` under `control/`. `ait-monorepo-source.json` proves how the source
-tree was exported from the coordinator Snapshot and five component Snapshots;
-a Git checkout is never represented as a selected local AIT Snapshot checkout.
+commit to build. The required `pre_tag_admission_sha256` and
+`pre_tag_admission_b64` inputs carry the exact admission created while that
+commit was still untagged; a raw dispatch without them is invalid. The
+dispatched `github.sha` is a separate reviewed release-control commit. Every
+runner checks out the selected source commit under `source/`; only contract and
+matrix-projection jobs also check out `github.sha` under `control/`.
+`ait-monorepo-source.json` proves how the source tree was exported from the
+coordinator Snapshot and five component Snapshots; a Git checkout is never
+represented as a selected local AIT Snapshot checkout.
 
 The deterministic monorepo exporter projects the reviewed workflows and exact
 release-control files to the public repository root because GitHub Actions
@@ -1165,17 +1241,19 @@ manifest explicitly. The nested component copy is source history, not a second
 dispatch entrypoint or current control directory. This projection does not
 create another GitHub repository or change any component Snapshot authority.
 
-Before dispatch, deterministically export the landed controls, review and
-commit that complete tree to `weita2026/ait-native`, confirm that the selected
-tag still resolves to `source_commit`, and confirm that the selected source's
+Before dispatch, use the operator SOP above to bind the successful untagged
+qualification, admit the direct version-only child while it is still untagged,
+and only then create the annotated tag. `prepare --admission` supplies the exact
+admission hash and bytes; do not dispatch this workflow manually. Confirm that
+the selected tag resolves to `source_commit` and that the selected source's
 `ait-monorepo-source.json` names `coordinator_snapshot`. Protect the default
 branch, immutable tag, workflow, and manual dispatch through normal GitHub
 repository controls. A post-tag control correction may change `github.sha` but
-must never rewrite the selected source commit or tag. This workflow has no
-environment secret and specifically must not receive `AIT_RELEASE_SERVER_URL`:
-GitHub-hosted runners neither connect to an AIT server nor download private AIT
-repository state. PyPI, npm, GitHub Release, Homebrew, apt, WinGet, OCI,
-signing, and publication credentials also remain absent.
+must never rewrite the selected source commit, tag, qualification, or admission.
+This workflow has no environment secret and specifically must not receive
+`AIT_RELEASE_SERVER_URL`: GitHub-hosted runners neither connect to an AIT server
+nor download private AIT repository state. PyPI, npm, GitHub Release, Homebrew,
+apt, WinGet, OCI, signing, and publication credentials also remain absent.
 
 The pre-commit export is a maintainer-side authority operation, separate from
 the hosted build. It may read already-landed Snapshots from the maintainer's
@@ -1190,18 +1268,23 @@ The workflow performs these bounded operations:
    credentials disabled; validate both public export contracts, then verify the
    source content digest, family manifest, mapping, and requested coordinator
    Snapshot before any build command runs;
-2. project 31 target/portable receipt jobs and 37 component artifacts from the
+2. revalidate the exact successful qualification run and artifact through the
+   GitHub Actions API, replay the admitted direct-parent version-only delta,
+   verify the admission digest, and require the annotated tag to resolve to the
+   admitted release commit;
+3. project 31 target/portable receipt jobs and 37 component artifacts from the
    mapped family manifest;
-3. run each repository-owned generic adapter directly in its fixed public
+4. run each repository-owned generic adapter directly in its fixed public
    subtree on the matching native runner;
-4. emit a `public_git_commit` receipt that binds the artifact bytes to one Git
+5. emit a `public_git_commit` receipt that binds the artifact bytes to one Git
    commit, mapping digest, coordinator Snapshot, source-repository Snapshot,
    adapter definition, target, and legal material;
-5. archive the exact Git commit and its mapping as non-public run evidence,
+6. archive the exact Git commit and its mapping as non-public run evidence,
    without regenerating source or creating a second repository; and
-6. reconstruct the same deterministic `REL-FAM-*` candidate from exported
+7. reconstruct the same deterministic `REL-FAM-*` candidate from exported
    coordinator metadata, reject mixed authority or commits, admit all 31
-   receipts, and upload one frozen internal dossier.
+   receipts, and upload one frozen internal dossier containing the exact
+   pre-tag admission.
 
 `public_git_commit` is only the receipt's source-authority label. The actual
 `authority.git_commit` value is the full immutable `source_commit` checked out

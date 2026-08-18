@@ -28,6 +28,12 @@ const RECEIPT_WORKFLOW = path.join(
   "workflows",
   "ait-release-component-receipts.yml",
 );
+const PRE_RC_QUALIFICATION_WORKFLOW = path.join(
+  ROOT,
+  ".github",
+  "workflows",
+  "ait-release-pre-rc-qualification.yml",
+);
 const PROMOTION_WORKFLOW = path.join(
   ROOT,
   ".github",
@@ -56,6 +62,12 @@ const ENDPOINT_PREPARER = path.join(ROOT, "ci", "release_endpoint_publication.sh
 const ENDPOINT_REMOTE = path.join(ROOT, "ci", "release_endpoint_remote.sh");
 const LATEST_ALIAS = path.join(ROOT, "ci", "release_latest_alias.sh");
 const RELEASE_OPERATOR = path.join(ROOT, "ci", "release_operator.sh");
+const PRE_RC_DELTA = path.join(ROOT, "ci", "release_pre_rc_delta.mjs");
+const PRE_RC_QUALIFICATION_TEST = path.join(
+  ROOT,
+  "ci",
+  "release_pre_rc_qualification_test.sh",
+);
 const CLEAN_HOST_CONTROL = path.join(ROOT, "ci", "release_clean_host.mjs");
 const CLEAN_HOST_PHASE = path.join(ROOT, "ci", "release_clean_host_phase.mjs");
 const CLEAN_HOST_PROBE = path.join(ROOT, "ci", "release_clean_host_probe.mjs");
@@ -468,6 +480,8 @@ async function validateReleaseControl(family) {
     [ENDPOINT_REMOTE, "root endpoint publisher"],
     [LATEST_ALIAS, "root latest-alias promoter"],
     [RELEASE_OPERATOR, "root release operator"],
+    [PRE_RC_DELTA, "root pre-RC version-delta verifier"],
+    [PRE_RC_QUALIFICATION_TEST, "root pre-RC qualification regression"],
     [CLEAN_HOST_CONTROL, "root clean-host evidence control"],
     [CLEAN_HOST_PHASE, "root clean-host lifecycle runner"],
     [CLEAN_HOST_PROBE, "root clean-host runner probe"],
@@ -531,6 +545,9 @@ async function validateReleaseControl(family) {
   const prepublishOci = await readFile(PREPUBLISH_OCI, "utf8");
   const prepublishVerify = await readFile(PREPUBLISH_VERIFY, "utf8");
   const prepublishTest = await readFile(PREPUBLISH_TEST, "utf8");
+  const releaseOperator = await readFile(RELEASE_OPERATOR, "utf8");
+  const preRcDelta = await readFile(PRE_RC_DELTA, "utf8");
+  const preRcQualificationTest = await readFile(PRE_RC_QUALIFICATION_TEST, "utf8");
   for (const required of [
     "AIT_RELEASE_FAMILY_MANIFEST",
     "release_receipt_matrix.jq",
@@ -539,6 +556,37 @@ async function validateReleaseControl(family) {
   ]) {
     if (!matrixTest.includes(required)) {
       fail(`root receipt-matrix regression is missing ${JSON.stringify(required)}`);
+    }
+  }
+  for (const required of [
+    "bind-qualification",
+    "ait.release.operator.qualification-binding/v1",
+    "ait.release.operator.pre-tag-admission/v1",
+    "release tag exists before pre-tag admission",
+    "qualified repair commit gained a release tag after qualification",
+    "ait.release.operator.prepare/v2",
+    "--admission",
+  ]) {
+    if (!releaseOperator.includes(required)) {
+      fail(`root release operator is missing ${JSON.stringify(required)}`);
+    }
+  }
+  for (const required of [
+    "ait.release.pre-rc-delta/v1",
+    "single direct child of the qualified repair commit",
+    "release delta contains non-version changes",
+  ]) {
+    if (!preRcDelta.includes(required)) {
+      fail(`root pre-RC version-delta verifier is missing ${JSON.stringify(required)}`);
+    }
+  }
+  for (const required of [
+    "pre-RC qualification contract: pass",
+    "ait.release.pre-rc-delta/v1",
+    "release_receipts_created: false",
+  ]) {
+    if (!preRcQualificationTest.includes(required)) {
+      fail(`root pre-RC qualification regression is missing ${JSON.stringify(required)}`);
     }
   }
   for (const required of [
@@ -660,16 +708,23 @@ async function validateProtectedWorkflows() {
   for (const required of [
     "name: ait release component receipts",
     "workflow_dispatch:",
-    "permissions:\n  contents: read",
+    "permissions:\n  actions: read\n  contents: read",
     exactWorkingDirectory,
     exactArtifactPath,
     "source_commit:",
+    "pre_tag_admission_sha256:",
+    "pre_tag_admission_b64:",
     "ref: ${{ inputs.source_commit }}",
     "path: control",
     "path: source",
     "working-directory: control",
     "AIT_RELEASE_FAMILY_MANIFEST: ${{ github.workspace }}/source/ait-release-family.json",
     "workflow_control_commit: $control_commit",
+    "ait.release.operator.pre-tag-admission/v1",
+    "ci/release_pre_rc_delta.mjs",
+    "ait pre-RC qualification",
+    "qualified repair commit gained a release tag after qualification",
+    "ait-release.pre-tag-admission.json",
   ]) {
     if (!workflow.includes(required)) {
       fail(`root protected workflow must contain ${JSON.stringify(required)}`);
@@ -722,6 +777,54 @@ async function validateProtectedWorkflows() {
   ]) {
     if (promotion.includes(forbidden)) {
       fail(`root protected promotion workflow contains publication authority ${JSON.stringify(forbidden)}`);
+    }
+  }
+
+  await regularFile(
+    PRE_RC_QUALIFICATION_WORKFLOW,
+    "root pre-RC qualification workflow",
+  );
+  const preRcQualificationWorkflow = await readFile(
+    PRE_RC_QUALIFICATION_WORKFLOW,
+    "utf8",
+  );
+  for (const required of [
+    "name: ait pre-RC qualification",
+    "workflow_dispatch:",
+    "source_commit:",
+    "permissions:\n  contents: read",
+    "git tag --points-at HEAD",
+    "runner: windows-11-arm",
+    "target: aarch64-pc-windows-msvc",
+    "runner: windows-2025",
+    "target: x86_64-pc-windows-msvc",
+    "init_cli_creates_then_reinitializes_the_agent_contract",
+    "init_is_idempotent_and_creates_only_an_empty_runtime_root",
+    "installed_run_initializes_then_serves_from_an_explicit_root",
+    "ait.release.pre-rc-qualification/v1",
+    "immutable_release_tag_created: false",
+    "release_receipts_created: false",
+    "public_endpoint_writes: false",
+    "ait-pre-rc-qualification-${{ inputs.source_commit }}",
+  ]) {
+    if (!preRcQualificationWorkflow.includes(required)) {
+      fail(`root pre-RC qualification workflow must contain ${JSON.stringify(required)}`);
+    }
+  }
+  for (const forbidden of [
+    "contents: write",
+    "packages: write",
+    "id-token: write",
+    "environment:",
+    "secrets.",
+    "npm publish",
+    "twine upload",
+    "gh release create",
+    "docker push",
+    "git tag -a",
+  ]) {
+    if (preRcQualificationWorkflow.includes(forbidden)) {
+      fail(`root pre-RC qualification workflow contains publication authority ${JSON.stringify(forbidden)}`);
     }
   }
 
@@ -1544,6 +1647,7 @@ async function validateBuildInputs(expectedGitCommit) {
   }
   for (const required of [
     ".github/workflows/ait-release-component-receipts.yml",
+    ".github/workflows/ait-release-pre-rc-qualification.yml",
     ".github/workflows/ait-release-prepublish-clean-host.yml",
     ".github/workflows/ait-release-latest-alias.yml",
     ".github/workflows/ait-release-protected-promotion.yml",
@@ -1578,6 +1682,9 @@ async function validateBuildInputs(expectedGitCommit) {
     "ci/release_endpoint_remote.sh",
     "ci/release_latest_alias.sh",
     "ci/release_operator.sh",
+    "ci/release_operator_test.sh",
+    "ci/release_pre_rc_delta.mjs",
+    "ci/release_pre_rc_qualification_test.sh",
     "ci/release_prepublish_oci.sh",
     "ci/release_prepublish_stage.sh",
     "ci/release_prepublish_test.sh",

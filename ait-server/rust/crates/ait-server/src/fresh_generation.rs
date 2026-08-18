@@ -1,5 +1,6 @@
 use ait_server_core::foundation::remote_binary_db::{
-    FilesystemServerRemoteBinaryDb, RepoId, RepoName, StoreGeneration, StorePath,
+    sync_filesystem_directory, FilesystemServerRemoteBinaryDb, RepoId, RepoName, StoreGeneration,
+    StorePath,
 };
 use ait_server_core::foundation::server_binary_db_schema_registry::{
     SERVER_BINARY_DB_BIN_SCHEMAS, SERVER_BINARY_DB_INDEX_SCHEMAS, SERVER_BINARY_DB_LAYOUT_ID,
@@ -19,7 +20,7 @@ use ait_server_core::foundation::server_operational_worker_jobs::{
 use ait_server_core::foundation::workflow_binary_v0_adapter::validate_frozen_server_workflow_v0;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, OpenOptions};
 use std::io::{ErrorKind, Write};
 use std::path::Path;
 use std::sync::Arc;
@@ -128,14 +129,12 @@ pub(crate) fn initialize_fresh_generation(
         &generation_root.join(SERVER_FRESH_COMPLETION_FILE),
         &pretty_json_line(&completion)?,
     )?;
-    File::open(generation_root)
-        .and_then(|directory| directory.sync_all())
-        .map_err(|error| {
-            format!(
-                "failed to sync fresh Binary generation {}: {error}",
-                generation_root.display()
-            )
-        })
+    sync_filesystem_directory(generation_root).map_err(|error| {
+        format!(
+            "failed to sync fresh Binary generation {}: {error}",
+            generation_root.display()
+        )
+    })
 }
 
 pub(crate) fn initialize_repository_authority(
@@ -172,14 +171,12 @@ pub(crate) fn initialize_repository_authority(
             }
         }
     }
-    File::open(authority_root)
-        .and_then(|directory| directory.sync_all())
-        .map_err(|error| {
-            format!(
-                "failed to sync Binary authority directory {}: {error}",
-                authority_root.display()
-            )
-        })?;
+    sync_filesystem_directory(authority_root).map_err(|error| {
+        format!(
+            "failed to sync Binary authority directory {}: {error}",
+            authority_root.display()
+        )
+    })?;
 
     let db = FilesystemServerRemoteBinaryDb::serving_authority(
         RepoId::new(repository_index.to_string()),

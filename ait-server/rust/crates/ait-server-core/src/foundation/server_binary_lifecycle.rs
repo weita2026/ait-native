@@ -1,3 +1,4 @@
+use crate::foundation::remote_binary_db::sync_filesystem_directory;
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -413,14 +414,12 @@ fn atomic_create(path: &Path, bytes: &[u8]) -> Result<(), String> {
                 path.display()
             )
         })?;
-        File::open(parent)
-            .and_then(|directory| directory.sync_all())
-            .map_err(|error| {
-                format!(
-                    "failed to sync activation directory {}: {error}",
-                    parent.display()
-                )
-            })?;
+        sync_filesystem_directory(parent).map_err(|error| {
+            format!(
+                "failed to sync activation directory {}: {error}",
+                parent.display()
+            )
+        })?;
         Ok(())
     })();
     let cleanup_result = fs::remove_file(&temporary);

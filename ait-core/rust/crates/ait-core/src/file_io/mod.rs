@@ -102,6 +102,35 @@ fn file_io_error_kind(kind: io::ErrorKind) -> FileIoErrorKind {
     }
 }
 
+#[cfg(unix)]
+pub(crate) fn sync_filesystem_directory(path: &Path) -> io::Result<()> {
+    File::open(path).and_then(|directory| directory.sync_all())
+}
+
+#[cfg(windows)]
+pub(crate) fn sync_filesystem_directory(path: &Path) -> io::Result<()> {
+    let metadata = fs::metadata(path)?;
+    if !metadata.is_dir() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "directory sync target is not a directory: {}",
+                path.display()
+            ),
+        ));
+    }
+    // Windows does not expose Unix directory fsync semantics through
+    // `std::fs::File`. File contents are synced before publication, and the
+    // closed-handle rename is the durability boundary available to this
+    // adapter.
+    Ok(())
+}
+
+#[cfg(not(any(unix, windows)))]
+pub(crate) fn sync_filesystem_directory(path: &Path) -> io::Result<()> {
+    File::open(path).and_then(|directory| directory.sync_all())
+}
+
 pub trait FileIoStore {
     fn home_dir(&self) -> Option<PathBuf>;
     fn path_exists(&self, path: &Path) -> bool;
@@ -547,14 +576,12 @@ impl FileIoDurabilityStore for FilesystemFileIoStore {
     }
 
     fn sync_dir(&self, path: &Path) -> FileIoResult<()> {
-        File::open(path)
-            .and_then(|file| file.sync_all())
-            .map_err(|err| {
-                FileIoError::new(
-                    FileIoErrorKind::Durability,
-                    format!("Failed to sync directory {}: {err}", path.display()),
-                )
-            })
+        sync_filesystem_directory(path).map_err(|err| {
+            FileIoError::new(
+                FileIoErrorKind::Durability,
+                format!("Failed to sync directory {}: {err}", path.display()),
+            )
+        })
     }
 }
 

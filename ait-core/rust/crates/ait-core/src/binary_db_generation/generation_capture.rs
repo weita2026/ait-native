@@ -19,6 +19,7 @@ use crate::content_binary_db::{
     TREE_BIN, TREE_ID_IDX, TREE_PACK_BIN, TREE_PACK_ID_IDX, TREE_PACK_RECORD_SIZE,
     TREE_RECORD_SIZE,
 };
+use crate::file_io::sync_filesystem_directory;
 use crate::json_support::{json, JsonCodec, JsonEncodeOptions, JsonValue};
 use crate::pack_substrate::{
     build_tree_pack_members, default_object_pack_relative_path, default_tree_pack_relative_path,
@@ -2284,8 +2285,7 @@ fn required_layout_ids() -> BTreeMap<String, u32> {
 }
 
 fn sync_directory(path: &Path) -> GenerationResult<()> {
-    fs::File::open(path)
-        .and_then(|file| file.sync_all())
+    sync_filesystem_directory(path)
         .map_err(|error| format!("failed to sync directory {}: {error}", path.display()))
 }
 

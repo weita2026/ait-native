@@ -75,6 +75,9 @@ fi
 
 for required_workflow_text in \
   'source_commit:' \
+  'pre_tag_admission_sha256:' \
+  'pre_tag_admission_b64:' \
+  'actions: read' \
   'ref: ${{ inputs.source_commit }}' \
   'AIT_CONTROL_GIT_COMMIT: ${{ github.sha }}' \
   'workflow_control_commit: $control_commit' \
@@ -86,6 +89,11 @@ for required_workflow_text in \
   'monorepo-source:' \
   '--component-receipt' \
   'public_git_commit' \
+  'ait.release.operator.pre-tag-admission/v1' \
+  'ci/release_pre_rc_delta.mjs' \
+  'ait pre-RC qualification' \
+  'qualified repair commit gained a release tag after qualification' \
+  'ait-release.pre-tag-admission.json' \
   'persist-credentials: false' \
   'name: ait-release-monorepo-source' \
   "if: matrix.repo_name == 'ait-python' && runner.os == 'Linux'" \

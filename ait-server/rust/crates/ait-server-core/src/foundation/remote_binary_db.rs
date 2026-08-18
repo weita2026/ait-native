@@ -35,7 +35,10 @@ pub use errors::*;
 #[path = "remote_binary_db/filesystem_store.rs"]
 mod filesystem_store;
 use filesystem_store::store_path_for;
-pub use filesystem_store::ServerBinaryDbFilesystemStore;
+pub use filesystem_store::{
+    sync_filesystem_directory, sync_filesystem_file, sync_filesystem_file_data,
+    ServerBinaryDbFilesystemStore,
+};
 #[path = "remote_binary_db/contracts.rs"]
 mod contracts;
 pub(crate) use contracts::private::BinaryDbJournalIo;

@@ -239,6 +239,32 @@ fn filesystem_file_durability_syncs_an_existing_file_with_write_authority() {
 }
 
 #[test]
+fn filesystem_directory_durability_accepts_an_existing_directory() {
+    let temp = tempdir().expect("tempdir");
+
+    FilesystemFileIoStore
+        .sync_dir(temp.path())
+        .expect("sync existing directory");
+}
+
+#[cfg(windows)]
+#[test]
+fn filesystem_directory_durability_rejects_a_file_target_on_windows() {
+    let temp = tempdir().expect("tempdir");
+    let path = temp.path().join("not-a-directory.bin");
+    fs::write(&path, b"file").expect("write file target");
+
+    let error = FilesystemFileIoStore
+        .sync_dir(&path)
+        .expect_err("Windows directory durability must reject a file target");
+
+    assert_eq!(error.kind(), FileIoErrorKind::Durability);
+    assert!(error
+        .message()
+        .contains("directory sync target is not a directory"));
+}
+
+#[test]
 fn filesystem_process_lock_guard_clears_metadata_and_releases_on_drop() {
     let temp = tempdir().expect("tempdir");
     let store = FilesystemFileIoStore;

@@ -1,5 +1,6 @@
 use super::*;
 use ait_core::external::update::ExternalUpdateSelection;
+use clap::CommandFactory;
 use std::fs;
 use tempfile::TempDir;
 
@@ -12,6 +13,34 @@ fn embedded_entry_returns_help_and_parse_status_without_exiting() {
         entry_with_args(vec!["ait".into(), "not-a-command".into()]),
         2
     );
+}
+
+#[test]
+fn root_command_inventory_is_frozen() {
+    let command = Cli::command();
+    let visible = command
+        .get_subcommands()
+        .filter(|subcommand| !subcommand.is_hide_set())
+        .map(|subcommand| subcommand.get_name())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        visible,
+        [
+            "init", "line", "git", "blame", "doctor", "queue", "remote", "release", "repo",
+            "config", "external", "status", "diff", "pull", "push", "gc", "stash", "plan", "task",
+            "change", "snapshot", "tag", "patchset", "review", "attest", "policy", "worktree",
+            "workflow",
+        ]
+    );
+    assert_eq!(visible.len(), 28);
+    assert!(!visible.contains(&"agent"));
+
+    let hidden = command
+        .get_subcommands()
+        .filter(|subcommand| subcommand.is_hide_set())
+        .map(|subcommand| subcommand.get_name())
+        .collect::<Vec<_>>();
+    assert_eq!(hidden, ["binary-db", "current-source-cache", "auth"]);
 }
 
 #[test]

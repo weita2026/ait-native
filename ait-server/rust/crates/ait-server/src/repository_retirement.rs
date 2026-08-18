@@ -2,7 +2,9 @@ use ait_server_core::foundation::operational_binary_v0::{
     validate_namespace, REPOSITORY_LIFECYCLE_ACTIVE, REPOSITORY_LIFECYCLE_PURGED,
     REPOSITORY_LIFECYCLE_RETIRING,
 };
-use ait_server_core::foundation::remote_binary_db::{BinaryDbError, StoreResult};
+use ait_server_core::foundation::remote_binary_db::{
+    sync_filesystem_directory, sync_filesystem_file, BinaryDbError, StoreResult,
+};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
@@ -559,8 +561,7 @@ fn copy_regular_file_sync(source: &Path, target: &Path) -> StoreResult<()> {
             error,
         )
     })?;
-    File::open(target)
-        .and_then(|file| file.sync_all())
+    sync_filesystem_file(target)
         .map_err(|error| BinaryDbError::io(format!("sync {}", target.display()), error))
 }
 
@@ -723,8 +724,7 @@ fn sync_tree_directories(current: &Path) -> StoreResult<()> {
 }
 
 fn sync_directory(path: &Path) -> StoreResult<()> {
-    File::open(path)
-        .and_then(|directory| directory.sync_all())
+    sync_filesystem_directory(path)
         .map_err(|error| BinaryDbError::io(format!("sync directory {}", path.display()), error))
 }
 

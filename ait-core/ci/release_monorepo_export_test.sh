@@ -73,6 +73,9 @@ if (( selftest_mode == 0 )); then
     "${repo_root}/ci/release_endpoint_remote.sh" \
     "${repo_root}/ci/release_latest_alias.sh" \
     "${repo_root}/ci/release_operator.sh" \
+    "${repo_root}/ci/release_operator_test.sh" \
+    "${repo_root}/ci/release_pre_rc_delta.mjs" \
+    "${repo_root}/ci/release_pre_rc_qualification_test.sh" \
     "${repo_root}/ci/release_prepublish_oci.sh" \
     "${repo_root}/ci/release_prepublish_stage.sh" \
     "${repo_root}/ci/release_prepublish_test.sh" \
@@ -91,6 +94,8 @@ if (( selftest_mode == 0 )); then
     "${public_core}/release/oci/"
   cp "${repo_root}/.github/workflows/ait-release-component-receipts.yml" \
     "${public_core}/.github/workflows/ait-release-component-receipts.yml"
+  cp "${repo_root}/.github/workflows/ait-release-pre-rc-qualification.yml" \
+    "${public_core}/.github/workflows/ait-release-pre-rc-qualification.yml"
   cp "${repo_root}/.github/workflows/ait-release-prepublish-clean-host.yml" \
     "${public_core}/.github/workflows/ait-release-prepublish-clean-host.yml"
   cp "${repo_root}/.github/workflows/ait-release-latest-alias.yml" \
@@ -491,6 +496,9 @@ for release_control_path in \
   ci/release_endpoint_remote.sh \
   ci/release_latest_alias.sh \
   ci/release_operator.sh \
+  ci/release_operator_test.sh \
+  ci/release_pre_rc_delta.mjs \
+  ci/release_pre_rc_qualification_test.sh \
   ci/release_prepublish_oci.sh \
   ci/release_prepublish_stage.sh \
   ci/release_prepublish_test.sh \
@@ -506,6 +514,8 @@ test "$(jq -r '.version' "${output_one}/ci/native_bootstrap_matrix.json")" = \
 AIT_RELEASE_FAMILY_MANIFEST="${output_one}/ait-release-family.json" \
   bash "${output_one}/ci/release_receipt_matrix_test.sh" >/dev/null
 bash "${output_one}/ci/release_clean_host_test.sh" >/dev/null
+bash "${output_one}/ci/release_operator_test.sh" >/dev/null
+bash "${output_one}/ci/release_pre_rc_qualification_test.sh" >/dev/null
 bash "${output_one}/ci/release_prepublish_test.sh" >/dev/null
 expect_failure historical-component-family env \
   AIT_RELEASE_FAMILY_MANIFEST="${output_one}/ait-core/ait-release-family.json" \
@@ -744,16 +754,18 @@ printf '* text=auto\n' >"${byte_policy_drift_output}/.gitattributes"
 expect_failure byte-policy-drift node \
   "${byte_policy_drift_output}/build-release.mjs" --validate-only
 root_workflow=${output_one}/.github/workflows/ait-release-component-receipts.yml
+qualification_workflow=${output_one}/.github/workflows/ait-release-pre-rc-qualification.yml
 prepublish_workflow=${output_one}/.github/workflows/ait-release-prepublish-clean-host.yml
 latest_alias_workflow=${output_one}/.github/workflows/ait-release-latest-alias.yml
 promotion_workflow=${output_one}/.github/workflows/ait-release-protected-promotion.yml
 endpoint_workflow=${output_one}/.github/workflows/pypi-publish.yml
 test -f "${root_workflow}"
+test -f "${qualification_workflow}"
 test -f "${prepublish_workflow}"
 test -f "${latest_alias_workflow}"
 test -f "${promotion_workflow}"
 test -f "${endpoint_workflow}"
-test "$(find "${output_one}/.github/workflows" -maxdepth 1 -type f | wc -l | tr -d '[:space:]')" = 5
+test "$(find "${output_one}/.github/workflows" -maxdepth 1 -type f | wc -l | tr -d '[:space:]')" = 6
 grep -F '    working-directory: source/ait-core' "${root_workflow}" >/dev/null
 grep -F '          path: release-receipt-matrix.json' \
   "${root_workflow}" >/dev/null
@@ -763,6 +775,33 @@ if grep -F 'contents: write' "${root_workflow}" >/dev/null ||
   printf 'root protected workflow retained unsafe monorepo execution paths\n' >&2
   exit 65
 fi
+for required_qualification_text in \
+  'name: ait pre-RC qualification' \
+  'runner: windows-11-arm' \
+  'target: aarch64-pc-windows-msvc' \
+  'runner: windows-2025' \
+  'target: x86_64-pc-windows-msvc' \
+  'init_cli_creates_then_reinitializes_the_agent_contract' \
+  'init_is_idempotent_and_creates_only_an_empty_runtime_root' \
+  'ait.release.pre-rc-qualification/v1' \
+  'public_endpoint_writes: false'; do
+  grep -F -- "${required_qualification_text}" "${qualification_workflow}" >/dev/null
+done
+for forbidden_qualification_text in \
+  'contents: write' \
+  'packages: write' \
+  'npm publish' \
+  'gh release create' \
+  'git tag -a'; do
+  if grep -F -- "${forbidden_qualification_text}" \
+    "${qualification_workflow}" >/dev/null; then
+    printf 'pre-RC qualification workflow gained publication authority: %s\n' \
+      "${forbidden_qualification_text}" >&2
+    exit 65
+  fi
+done
+grep -F 'qualified repair commit gained a release tag after qualification' \
+  "${root_workflow}" >/dev/null
 for required_prepublish_text in \
   'name: ait release prepublish clean host' \
   'workflow_call:' \
@@ -848,6 +887,15 @@ node "${repo_root}/ci/release_monorepo_transform.mjs" \
   '    working-directory: .'
 expect_failure workflow-drift node \
   "${workflow_drift_output}/build-release.mjs" --validate-only
+
+qualification_workflow_drift_output=${temporary_root}/qualification-workflow-drift-output
+cp -R "${output_one}" "${qualification_workflow_drift_output}"
+node "${repo_root}/ci/release_monorepo_transform.mjs" \
+  "${qualification_workflow_drift_output}/.github/workflows/ait-release-pre-rc-qualification.yml" \
+  'name: ait pre-RC qualification' \
+  'name: tag-first qualification'
+expect_failure qualification-workflow-drift node \
+  "${qualification_workflow_drift_output}/build-release.mjs" --validate-only
 
 prepublish_workflow_drift_output=${temporary_root}/prepublish-workflow-drift-output
 cp -R "${output_one}" "${prepublish_workflow_drift_output}"

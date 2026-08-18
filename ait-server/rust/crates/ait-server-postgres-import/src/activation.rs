@@ -3,6 +3,7 @@ use crate::u64_second_upgrade::{
     with_frozen_upgrade_source, U64_SECOND_UPGRADE_COMPLETION_SCHEMA,
     U64_SECOND_UPGRADE_REPORT_SCHEMA,
 };
+use ait_server_core::foundation::remote_binary_db::sync_filesystem_directory;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
@@ -413,8 +414,7 @@ pub(crate) fn read_regular_file(path: &Path) -> Result<Vec<u8>, String> {
 }
 
 pub(crate) fn sync_directory(path: &Path) -> Result<(), String> {
-    File::open(path)
-        .and_then(|directory| directory.sync_all())
+    sync_filesystem_directory(path)
         .map_err(|error| format!("failed to sync directory {}: {error}", path.display()))
 }
 

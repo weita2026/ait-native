@@ -7,7 +7,10 @@ defaults=${repo_root}/release/endpoint-publication.defaults.json
 usage() {
   cat >&2 <<'USAGE'
 usage:
-  release_operator.sh prepare --source-root <absolute-dir> --output <absolute-json> [--dispatch]
+  release_operator.sh bind-qualification --source-root <absolute-dir> --run-id <id> --output <absolute-json>
+  release_operator.sh bind-qualification --source-root <absolute-dir> --run-record <json> --artifact-record <json> --evidence-root <absolute-dir> --output <absolute-json>
+  release_operator.sh admit --source-root <absolute-dir> --qualification <json> --output <absolute-json>
+  release_operator.sh prepare --source-root <absolute-dir> --admission <json> --output <absolute-json> [--dispatch]
   release_operator.sh bind-receipts --prepare <json> --run-id <id> --output <absolute-json> [--dispatch]
   release_operator.sh bind-receipts --prepare <json> --run-record <json> --artifact-record <json> --dossier-root <absolute-dir> --output <absolute-json> [--dispatch]
   release_operator.sh bind-authorization --receipts <json> --run-id <id> --output <absolute-json> [--prior-version <semver> --prior-python-version <pep440> --dispatch]
@@ -16,9 +19,11 @@ usage:
   release_operator.sh status --config <json> --run-id <id> --output <absolute-json>
   release_operator.sh status --config <json> --run-record <json> --artifact-record <json> --evidence-root <absolute-dir> --output <absolute-json>
 
-All preparation and binding modes are non-publishing by default. --dispatch only
-starts the reviewed workflow. Its frozen-byte clean-host gate completes before
-the protected publishing environment can begin.
+Qualification and admission are mandatory and non-publishing. Admission must
+be created while the exact release commit is still untagged. --dispatch only
+starts a reviewed workflow after the admitted annotated tag has been verified.
+The frozen-byte clean-host gate completes before the protected publishing
+environment can begin.
 USAGE
   exit 64
 }
@@ -344,6 +349,44 @@ validate_artifact_record() {
     ' "${record}" >/dev/null || fail 65 "workflow artifact ${expected_id} is not the exact ${expected_name} artifact"
 }
 
+validate_pre_rc_qualification_evidence() {
+  local evidence=$1
+  local source_commit=$2
+  local control_commit=$3
+  require_regular_file "${evidence}" 'pre-RC qualification evidence'
+  jq -e \
+    --arg source_commit "${source_commit}" \
+    --arg control_commit "${control_commit}" '
+      .contract == "ait.release.pre-rc-qualification/v1" and
+      .status == "qualified" and
+      .source == {
+        repository: "weita2026/ait-native",
+        git_commit: $source_commit,
+        workflow_control_commit: $control_commit,
+        release_tags_at_qualification: []
+      } and
+      .gates.release_controls == "pass" and
+      .gates.command_inventory == "pass" and
+      .gates.environment_inventory == "pass" and
+      .gates.windows == {
+        "aarch64-pc-windows-msvc": {
+          core_init: "pass",
+          server_init: "pass",
+          server_run: "pass"
+        },
+        "x86_64-pc-windows-msvc": {
+          core_init: "pass",
+          server_init: "pass",
+          server_run: "pass"
+        }
+      } and
+      .immutable_release_tag_created == false and
+      .release_receipts_created == false and
+      .public_endpoint_writes == false
+    ' "${evidence}" >/dev/null ||
+    fail 65 'pre-RC qualification evidence is incomplete or inconsistent'
+}
+
 validate_prior_release() {
   local candidate=$1
   local channel=$2
@@ -377,22 +420,265 @@ mode=${1:-}
 shift
 
 case "${mode}" in
+  bind-qualification)
+    source_root=
+    run_id=
+    run_record=
+    artifact_record=
+    evidence_root=
+    output=
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        --source-root) [[ $# -ge 2 ]] || usage; source_root=$2; shift 2 ;;
+        --run-id) [[ $# -ge 2 ]] || usage; run_id=$2; shift 2 ;;
+        --run-record) [[ $# -ge 2 ]] || usage; run_record=$2; shift 2 ;;
+        --artifact-record) [[ $# -ge 2 ]] || usage; artifact_record=$2; shift 2 ;;
+        --evidence-root) [[ $# -ge 2 ]] || usage; evidence_root=$2; shift 2 ;;
+        --output) [[ $# -ge 2 ]] || usage; output=$2; shift 2 ;;
+        *) usage ;;
+      esac
+    done
+    [[ -n ${source_root} && -n ${output} ]] || usage
+    require_real_directory "${source_root}" 'qualified public source root'
+    require_new_output "${output}" 'qualification binding output'
+    source_root=$(canonical_directory "${source_root}")
+    output=$(canonical_file "${output}")
+    source_commit=$(git -C "${source_root}" rev-parse HEAD)
+    [[ ${source_commit} =~ ^[0-9a-f]{40}$ ]] ||
+      fail 65 'qualified public source HEAD is not a full Git commit'
+    [[ -z $(git -C "${source_root}" status --porcelain --untracked-files=all) ]] ||
+      fail 65 'qualified public source checkout is not clean'
+    if git -C "${source_root}" tag --points-at "${source_commit}" | grep -Eq '^v[0-9]'; then
+      fail 65 'qualified repair commit already has a release tag'
+    fi
+    node "${source_root}/build-release.mjs" \
+      --validate-only --git-commit "${source_commit}" >/dev/null
+    repository=$(jq -er '.public_source.identity | select(. == "weita2026/ait-native")' \
+      "${source_root}/ait-release-family.json")
+    artifact_name="ait-pre-rc-qualification-${source_commit}"
+    if [[ -n ${run_id} ]]; then
+      [[ ${run_id} =~ ^[1-9][0-9]*$ && -z ${run_record}${artifact_record}${evidence_root} ]] || usage
+      run_record=${temporary_root}/qualification-run.json
+      artifact_record=${temporary_root}/qualification-artifact.json
+      fetch_run_record "${repository}" "${run_id}" "${run_record}"
+      fetch_artifact_record "${repository}" "${run_id}" \
+        "${artifact_name}" "${artifact_record}"
+      evidence_root=${temporary_root}/qualification-evidence
+      download_run_artifact "${repository}" "${run_id}" \
+        "${artifact_name}" "${evidence_root}"
+    else
+      [[ -n ${run_record} && -n ${artifact_record} && -n ${evidence_root} ]] || usage
+      run_id=$(jq -er '.id | select(type == "number" and . > 0 and floor == .)' \
+        "${run_record}")
+    fi
+    require_real_directory "${evidence_root}" 'pre-RC qualification evidence root'
+    validate_workflow_run "${run_record}" "${run_id}" \
+      'ait pre-RC qualification' \
+      '.github/workflows/ait-release-pre-rc-qualification.yml'
+    control_commit=$(jq -er '.head_sha' "${run_record}")
+    [[ ${control_commit} == "${source_commit}" ]] ||
+      fail 65 'pre-RC qualification workflow did not run from the repair commit'
+    validate_artifact_record "${artifact_record}" \
+      "$(jq -er '.id' "${artifact_record}")" "${artifact_name}" "${run_id}"
+    evidence=${evidence_root}/ait-release.pre-rc-qualification.json
+    validate_pre_rc_qualification_evidence \
+      "${evidence}" "${source_commit}" "${control_commit}"
+    evidence_sha=$(sha256_file "${evidence}")
+    artifact_id=$(jq -er '.id' "${artifact_record}")
+    artifact_digest=$(jq -er '.digest' "${artifact_record}")
+    run_attempt=$(jq -er '.run_attempt' "${run_record}")
+    jq -S -n \
+      --arg repository "${repository}" \
+      --arg source_commit "${source_commit}" \
+      --arg control_commit "${control_commit}" \
+      --arg evidence_sha "${evidence_sha}" \
+      --arg artifact_digest "${artifact_digest}" \
+      --argjson run_id "${run_id}" \
+      --argjson run_attempt "${run_attempt}" \
+      --argjson artifact_id "${artifact_id}" '
+        {
+          contract: "ait.release.operator.qualification-binding/v1",
+          status: "qualified_for_version_only_release",
+          source: {
+            repository: $repository,
+            git_commit: $source_commit,
+            release_tag_present: false
+          },
+          workflow: {
+            run_id: $run_id,
+            run_attempt: $run_attempt,
+            control_commit: $control_commit,
+            artifact_id: $artifact_id,
+            artifact_digest: $artifact_digest,
+            evidence_sha256: $evidence_sha
+          },
+          gates: {
+            release_controls: "pass",
+            command_inventory: "pass",
+            environment_inventory: "pass",
+            windows_x64_lifecycle: "pass",
+            windows_arm64_lifecycle: "pass"
+          },
+          mutation: {
+            version_authority_write: false,
+            tag_write: false,
+            receipt_write: false,
+            registry_write: false,
+            endpoint_repository_write: false
+          }
+        }
+      ' >"${output}"
+    printf '%s\n' "${output}"
+    ;;
+
+  admit)
+    source_root=
+    qualification=
+    output=
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        --source-root) [[ $# -ge 2 ]] || usage; source_root=$2; shift 2 ;;
+        --qualification) [[ $# -ge 2 ]] || usage; qualification=$2; shift 2 ;;
+        --output) [[ $# -ge 2 ]] || usage; output=$2; shift 2 ;;
+        *) usage ;;
+      esac
+    done
+    [[ -n ${source_root} && -n ${qualification} && -n ${output} ]] || usage
+    require_real_directory "${source_root}" 'release public source root'
+    require_regular_file "${qualification}" 'pre-RC qualification binding'
+    require_new_output "${output}" 'pre-tag admission output'
+    source_root=$(canonical_directory "${source_root}")
+    qualification=$(canonical_file "${qualification}")
+    output=$(canonical_file "${output}")
+    jq -e '
+      .contract == "ait.release.operator.qualification-binding/v1" and
+      .status == "qualified_for_version_only_release" and
+      .source.repository == "weita2026/ait-native" and
+      (.source.git_commit | test("^[0-9a-f]{40}$")) and
+      .source.release_tag_present == false and
+      ([.gates[]] | all(. == "pass")) and
+      ([.mutation[]] | all(. == false))
+    ' "${qualification}" >/dev/null ||
+      fail 65 'pre-RC qualification binding is not admissible'
+    qualified_commit=$(jq -er '.source.git_commit' "${qualification}")
+    release_commit=$(git -C "${source_root}" rev-parse HEAD)
+    [[ ${release_commit} =~ ^[0-9a-f]{40}$ ]] ||
+      fail 65 'release public source HEAD is not a full Git commit'
+    [[ -z $(git -C "${source_root}" status --porcelain --untracked-files=all) ]] ||
+      fail 65 'release public source checkout is not clean'
+    family=${source_root}/ait-release-family.json
+    IFS=$'\t' read -r version channel tag python_version < <(release_identity_tsv "${family}")
+    validate_version_identity "${version}" "${channel}" "${tag}" "${python_version}"
+    [[ ${channel} == rc ]] || fail 65 'pre-RC admission accepts only an RC release commit'
+    if git -C "${source_root}" show-ref --verify --quiet "refs/tags/${tag}"; then
+      fail 65 'release tag exists before pre-tag admission'
+    fi
+    if git -C "${source_root}" tag --points-at "${release_commit}" | grep -Eq '^v[0-9]'; then
+      fail 65 'release commit has a release tag before pre-tag admission'
+    fi
+    if git -C "${source_root}" tag --points-at "${qualified_commit}" | grep -Eq '^v[0-9]'; then
+      fail 65 'qualified repair commit gained a release tag after qualification'
+    fi
+    node "${source_root}/build-release.mjs" \
+      --validate-only --git-commit "${release_commit}" >/dev/null
+    delta=${temporary_root}/pre-rc-delta.json
+    node "${repo_root}/ci/release_pre_rc_delta.mjs" \
+      --repository "${source_root}" \
+      --qualified-commit "${qualified_commit}" \
+      --release-commit "${release_commit}" >"${delta}"
+    jq -e \
+      --arg qualified "${qualified_commit}" \
+      --arg release "${release_commit}" \
+      --arg version "${version}" '
+        .contract == "ait.release.pre-rc-delta/v1" and
+        .decision == "pass" and
+        .qualified_commit == $qualified and
+        .release_commit == $release and
+        .release_version == $version
+      ' "${delta}" >/dev/null || fail 65 'pre-RC release delta is not admissible'
+    qualification_sha=$(sha256_file "${qualification}")
+    delta_sha=$(sha256_file "${delta}")
+    qualification_run_id=$(jq -er '.workflow.run_id' "${qualification}")
+    qualification_run_attempt=$(jq -er '.workflow.run_attempt' "${qualification}")
+    qualification_control_commit=$(jq -er '.workflow.control_commit' "${qualification}")
+    qualification_artifact_id=$(jq -er '.workflow.artifact_id' "${qualification}")
+    qualification_artifact_digest=$(jq -er '.workflow.artifact_digest' "${qualification}")
+    qualification_evidence_sha=$(jq -er '.workflow.evidence_sha256' "${qualification}")
+    jq -S -n \
+      --arg repository 'weita2026/ait-native' \
+      --arg version "${version}" \
+      --arg channel "${channel}" \
+      --arg python_version "${python_version}" \
+      --arg tag "${tag}" \
+      --arg qualified_commit "${qualified_commit}" \
+      --arg release_commit "${release_commit}" \
+      --arg qualification_sha "${qualification_sha}" \
+      --arg delta_sha "${delta_sha}" \
+      --arg qualification_control_commit "${qualification_control_commit}" \
+      --arg qualification_artifact_digest "${qualification_artifact_digest}" \
+      --arg qualification_evidence_sha "${qualification_evidence_sha}" \
+      --argjson qualification_run_id "${qualification_run_id}" \
+      --argjson qualification_run_attempt "${qualification_run_attempt}" \
+      --argjson qualification_artifact_id "${qualification_artifact_id}" \
+      --slurpfile delta "${delta}" '
+        {
+          contract: "ait.release.operator.pre-tag-admission/v1",
+          status: "ready_for_immutable_tag",
+          release: {
+            repository: $repository,
+            version: $version,
+            channel: $channel,
+            python_version: $python_version,
+            tag: $tag,
+            source_commit: $release_commit
+          },
+          qualification: {
+            source_commit: $qualified_commit,
+            workflow_run_id: $qualification_run_id,
+            workflow_run_attempt: $qualification_run_attempt,
+            workflow_control_commit: $qualification_control_commit,
+            artifact_id: $qualification_artifact_id,
+            artifact_digest: $qualification_artifact_digest,
+            evidence_sha256: $qualification_evidence_sha,
+            binding_sha256: $qualification_sha
+          },
+          delta: {
+            contract: $delta[0].contract,
+            sha256: $delta_sha,
+            changed_paths: $delta[0].changed_paths
+          },
+          tag: {created: false, verified: false},
+          mutation: {
+            tag_write: false,
+            receipt_write: false,
+            registry_write: false,
+            endpoint_repository_write: false
+          }
+        }
+      ' >"${output}"
+    printf '%s\n' "${output}"
+    ;;
+
   prepare)
     source_root=
+    admission=
     output=
     dispatch=false
     while [[ $# -gt 0 ]]; do
       case "$1" in
         --source-root) [[ $# -ge 2 ]] || usage; source_root=$2; shift 2 ;;
+        --admission) [[ $# -ge 2 ]] || usage; admission=$2; shift 2 ;;
         --output) [[ $# -ge 2 ]] || usage; output=$2; shift 2 ;;
         --dispatch) dispatch=true; shift ;;
         *) usage ;;
       esac
     done
-    [[ -n ${source_root} && -n ${output} ]] || usage
+    [[ -n ${source_root} && -n ${admission} && -n ${output} ]] || usage
     require_real_directory "${source_root}" 'public source root'
+    require_regular_file "${admission}" 'pre-tag admission'
     require_new_output "${output}" 'prepare output'
     source_root=$(canonical_directory "${source_root}")
+    admission=$(canonical_file "${admission}")
     output=$(canonical_file "${output}")
     family=${source_root}/ait-release-family.json
     mapping=${source_root}/ait-monorepo-source.json
@@ -435,6 +721,44 @@ case "${mode}" in
       "${platforms}" >/dev/null || fail 65 'native platform version differs from the public family'
     validate_defaults
     repository=$(jq -er '.publisher.repository' "${defaults}")
+    jq -e \
+      --arg repository "${repository}" \
+      --arg version "${version}" \
+      --arg channel "${channel}" \
+      --arg python_version "${python_version}" \
+      --arg tag "${tag}" \
+      --arg source_commit "${source_commit}" '
+        .contract == "ait.release.operator.pre-tag-admission/v1" and
+        .status == "ready_for_immutable_tag" and
+        .release == {
+          repository: $repository,
+          version: $version,
+          channel: $channel,
+          python_version: $python_version,
+          tag: $tag,
+          source_commit: $source_commit
+        } and
+        (.qualification.source_commit | test("^[0-9a-f]{40}$")) and
+        (.qualification.workflow_run_id | type == "number" and . > 0 and floor == .) and
+        (.qualification.workflow_run_attempt | type == "number" and . > 0 and floor == .) and
+        (.qualification.workflow_control_commit | test("^[0-9a-f]{40}$")) and
+        (.qualification.artifact_id | type == "number" and . > 0 and floor == .) and
+        (.qualification.artifact_digest | test("^sha256:[0-9a-f]{64}$")) and
+        (.qualification.evidence_sha256 | test("^[0-9a-f]{64}$")) and
+        (.qualification.binding_sha256 | test("^[0-9a-f]{64}$")) and
+        .delta.contract == "ait.release.pre-rc-delta/v1" and
+        (.delta.sha256 | test("^[0-9a-f]{64}$")) and
+        (.delta.changed_paths | type == "array" and length > 4) and
+        .tag == {created: false, verified: false} and
+        ([.mutation[]] | all(. == false))
+      ' "${admission}" >/dev/null ||
+      fail 65 'pre-tag admission does not bind the exact release commit'
+    admission_sha=$(sha256_file "${admission}")
+    qualified_commit=$(jq -er '.qualification.source_commit' "${admission}")
+    qualification_run_id=$(jq -er '.qualification.workflow_run_id' "${admission}")
+    qualification_artifact_id=$(jq -er '.qualification.artifact_id' "${admission}")
+    delta_sha=$(jq -er '.delta.sha256' "${admission}")
+    admission_b64=$(base64 <"${admission}" | tr -d '\r\n')
     jq -S -n \
       --arg version "${version}" \
       --arg channel "${channel}" \
@@ -445,9 +769,15 @@ case "${mode}" in
       --arg coordinator_snapshot "${coordinator_snapshot}" \
       --arg family_sha "${family_sha}" \
       --arg mapping_sha "${mapping_sha}" \
+      --arg admission_sha "${admission_sha}" \
+      --arg qualified_commit "${qualified_commit}" \
+      --arg delta_sha "${delta_sha}" \
+      --arg admission_b64 "${admission_b64}" \
+      --argjson qualification_run_id "${qualification_run_id}" \
+      --argjson qualification_artifact_id "${qualification_artifact_id}" \
       --argjson dispatch "${dispatch}" '
         {
-          contract: "ait.release.operator.prepare/v1",
+          contract: "ait.release.operator.prepare/v2",
           status: "ready_for_component_receipts",
           release: {
             version: $version,
@@ -460,12 +790,22 @@ case "${mode}" in
             family_manifest_sha256: $family_sha,
             source_mapping_sha256: $mapping_sha
           },
+          pre_rc_admission: {
+            admission_sha256: $admission_sha,
+            qualified_source_commit: $qualified_commit,
+            qualification_workflow_run_id: $qualification_run_id,
+            qualification_artifact_id: $qualification_artifact_id,
+            version_only_delta_sha256: $delta_sha,
+            tag_verified_after_admission: true
+          },
           receipt_dispatch: {
             workflow: "ait-release-component-receipts.yml",
             ref: "main",
             inputs: {
               coordinator_snapshot: $coordinator_snapshot,
-              source_commit: $source_commit
+              source_commit: $source_commit,
+              pre_tag_admission_sha256: $admission_sha,
+              pre_tag_admission_b64: $admission_b64
             },
             requested: $dispatch
           },
@@ -483,7 +823,9 @@ case "${mode}" in
       gh workflow run ait-release-component-receipts.yml \
         --repo "${repository}" --ref main \
         -f "coordinator_snapshot=${coordinator_snapshot}" \
-        -f "source_commit=${source_commit}"
+        -f "source_commit=${source_commit}" \
+        -f "pre_tag_admission_sha256=${admission_sha}" \
+        -f "pre_tag_admission_b64=${admission_b64}"
     fi
     printf '%s\n' "${output}"
     ;;
@@ -514,10 +856,19 @@ case "${mode}" in
     prepare=$(canonical_file "${prepare}")
     output=$(canonical_file "${output}")
     jq -e '
-      .contract == "ait.release.operator.prepare/v1" and
+      .contract == "ait.release.operator.prepare/v2" and
       .status == "ready_for_component_receipts" and
       (.release.source_commit | test("^[0-9a-f]{40}$")) and
       (.release.coordinator_snapshot | test("^SNP-[0-9A-F]{12}$")) and
+      (.pre_rc_admission.admission_sha256 | test("^[0-9a-f]{64}$")) and
+      (.pre_rc_admission.qualified_source_commit | test("^[0-9a-f]{40}$")) and
+      (.pre_rc_admission.qualification_workflow_run_id | type == "number" and . > 0 and floor == .) and
+      (.pre_rc_admission.qualification_artifact_id | type == "number" and . > 0 and floor == .) and
+      (.pre_rc_admission.version_only_delta_sha256 | test("^[0-9a-f]{64}$")) and
+      .pre_rc_admission.tag_verified_after_admission == true and
+      .receipt_dispatch.inputs.pre_tag_admission_sha256 ==
+        .pre_rc_admission.admission_sha256 and
+      (.receipt_dispatch.inputs.pre_tag_admission_b64 | test("^[A-Za-z0-9+/=]+$")) and
       ([.mutation[]] | all(. == false))
     ' "${prepare}" >/dev/null || fail 65 'prepare record is not an immutable release preparation'
     repository=$(jq -er '.release.repository' "${prepare}")
@@ -545,9 +896,11 @@ case "${mode}" in
     promotion=${dossier_root}/ait-release.promotion.json
     source_mapping=${dossier_root}/ait-monorepo-source.json
     source_evidence=${dossier_root}/ait-public-git-source.evidence.json
+    pre_tag_admission=${dossier_root}/ait-release.pre-tag-admission.json
     frozen_manifest=${dossier_root}/frozen/ait-release-family.manifest.json
     frozen_checksums=${dossier_root}/frozen/SHA256SUMS
     for input in "${candidate}" "${promotion}" "${source_mapping}" "${source_evidence}" \
+      "${pre_tag_admission}" \
       "${frozen_manifest}" "${frozen_checksums}"; do
       require_regular_file "${input}" 'family dossier binding input'
     done
@@ -560,10 +913,31 @@ case "${mode}" in
     coordinator_snapshot=$(jq -er '.release.coordinator_snapshot' "${prepare}")
     family_sha=$(jq -er '.release.family_manifest_sha256' "${prepare}")
     mapping_sha=$(jq -er '.release.source_mapping_sha256' "${prepare}")
+    admission_sha=$(jq -er '.pre_rc_admission.admission_sha256' "${prepare}")
     control_commit=$(jq -er '.head_sha' "${run_record}")
     run_attempt=$(jq -er '.run_attempt' "${run_record}")
     artifact_id=$(jq -er '.id' "${artifact_record}")
     artifact_digest=$(jq -er '.digest' "${artifact_record}")
+    [[ $(sha256_file "${pre_tag_admission}") == "${admission_sha}" ]] ||
+      fail 65 'family dossier pre-tag admission differs from preparation'
+    jq -e \
+      --arg version "${version}" --arg channel "${channel}" \
+      --arg python_version "${python_version}" --arg tag "${tag}" \
+      --arg repository "${repository}" --arg commit "${source_commit}" '
+        .contract == "ait.release.operator.pre-tag-admission/v1" and
+        .status == "ready_for_immutable_tag" and
+        .release == {
+          repository: $repository,
+          version: $version,
+          channel: $channel,
+          python_version: $python_version,
+          tag: $tag,
+          source_commit: $commit
+        } and
+        .tag == {created: false, verified: false} and
+        ([.mutation[]] | all(. == false))
+      ' "${pre_tag_admission}" >/dev/null ||
+      fail 65 'family dossier pre-tag admission is invalid'
     validate_artifact_record "${artifact_record}" "${artifact_id}" \
       "ait-family-dossier-${release_id}" "${run_id}"
     jq -e \
@@ -623,7 +997,8 @@ case "${mode}" in
       --arg frozen_checksums_sha "${frozen_checksums_sha}" \
       --argjson run_id "${run_id}" --argjson run_attempt "${run_attempt}" \
       --arg control_commit "${control_commit}" --argjson artifact_id "${artifact_id}" \
-      --arg artifact_digest "${artifact_digest}" --argjson dispatch "${dispatch}" '
+      --arg artifact_digest "${artifact_digest}" --argjson dispatch "${dispatch}" \
+      --slurpfile prepare_record "${prepare}" '
         {
           contract: "ait.release.operator.receipt-binding/v1",
           status: "ready_for_protected_authorization",
@@ -646,6 +1021,7 @@ case "${mode}" in
             artifact_id: $artifact_id,
             artifact_digest: $artifact_digest
           },
+          pre_rc_admission: $prepare_record[0].pre_rc_admission,
           protected_dispatch: {
             workflow: "ait-release-protected-promotion.yml",
             ref: "main",
@@ -727,6 +1103,7 @@ case "${mode}" in
       .contract == "ait.release.operator.receipt-binding/v1" and
       .status == "ready_for_protected_authorization" and
       (.release.id | test("^REL-FAM-[0-9A-F]{16}$")) and
+      .pre_rc_admission.tag_verified_after_admission == true and
       ([.mutation[]] | all(. == false))
     ' "${receipts}" >/dev/null || fail 65 'receipt binding is not ready for protected authorization'
     repository=$(jq -er '.release.repository' "${receipts}")

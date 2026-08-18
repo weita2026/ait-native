@@ -11,8 +11,17 @@ on:
         description: Exact immutable public source commit to build and archive
         required: true
         type: string
+      pre_tag_admission_sha256:
+        description: SHA-256 of the pre-RC admission created while the release commit was untagged
+        required: true
+        type: string
+      pre_tag_admission_b64:
+        description: Base64 of the exact pre-RC admission record
+        required: true
+        type: string
 
 permissions:
+  actions: read
   contents: read
 
 defaults:
@@ -33,6 +42,7 @@ jobs:
       family_version: ${{ steps.contract.outputs.family_version }}
       rust_toolchain: ${{ steps.contract.outputs.rust_toolchain }}
       source_git_commit: ${{ steps.contract.outputs.source_git_commit }}
+      pre_tag_admission_sha256: ${{ steps.admission.outputs.pre_tag_admission_sha256 }}
     steps:
       - name: Check out the reviewed release-control commit
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
@@ -46,7 +56,7 @@ jobs:
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           ref: ${{ inputs.source_commit }}
-          fetch-depth: 1
+          fetch-depth: 0
           path: source
           persist-credentials: false
 
@@ -99,6 +109,122 @@ jobs:
               ci/native_bootstrap_matrix.json)"
             echo "source_git_commit=${AIT_SOURCE_GIT_COMMIT}"
           } >>"${GITHUB_OUTPUT}"
+
+      - name: Revalidate qualification, version-only delta, and post-admission tag
+        id: admission
+        shell: bash
+        working-directory: control
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          PRE_TAG_ADMISSION_B64: ${{ inputs.pre_tag_admission_b64 }}
+          PRE_TAG_ADMISSION_SHA256: ${{ inputs.pre_tag_admission_sha256 }}
+          RELEASE_SOURCE_COMMIT: ${{ inputs.source_commit }}
+        run: |
+          set -euo pipefail
+          [[ "${PRE_TAG_ADMISSION_SHA256}" =~ ^[0-9a-f]{64}$ ]]
+          admission="${RUNNER_TEMP}/pre-tag-admission.json"
+          printf '%s' "${PRE_TAG_ADMISSION_B64}" | base64 --decode >"${admission}"
+          test "$(sha256sum "${admission}" | awk '{print $1}')" = \
+            "${PRE_TAG_ADMISSION_SHA256}"
+          version=$(jq -r '.family.version' \
+            "${GITHUB_WORKSPACE}/source/ait-release-family.json")
+          python_version=$(jq -r \
+            '.components[] | select(.id == "ait-python") | .version' \
+            "${GITHUB_WORKSPACE}/source/ait-release-family.json")
+          tag=$(jq -r '.family.tag' \
+            "${GITHUB_WORKSPACE}/source/ait-release-family.json")
+          jq -e \
+            --arg version "${version}" \
+            --arg python_version "${python_version}" \
+            --arg tag "${tag}" \
+            --arg commit "${RELEASE_SOURCE_COMMIT}" '
+              .contract == "ait.release.operator.pre-tag-admission/v1" and
+              .status == "ready_for_immutable_tag" and
+              .release == {
+                repository: "weita2026/ait-native",
+                version: $version,
+                channel: "rc",
+                python_version: $python_version,
+                tag: $tag,
+                source_commit: $commit
+              } and
+              (.qualification.source_commit | test("^[0-9a-f]{40}$")) and
+              (.qualification.workflow_run_id | type == "number" and . > 0 and floor == .) and
+              (.qualification.workflow_run_attempt | type == "number" and . > 0 and floor == .) and
+              (.qualification.workflow_control_commit | test("^[0-9a-f]{40}$")) and
+              (.qualification.artifact_id | type == "number" and . > 0 and floor == .) and
+              (.qualification.artifact_digest | test("^sha256:[0-9a-f]{64}$")) and
+              (.qualification.evidence_sha256 | test("^[0-9a-f]{64}$")) and
+              (.qualification.binding_sha256 | test("^[0-9a-f]{64}$")) and
+              .delta.contract == "ait.release.pre-rc-delta/v1" and
+              (.delta.sha256 | test("^[0-9a-f]{64}$")) and
+              .tag == {created: false, verified: false} and
+              ([.mutation[]] | all(. == false))
+            ' "${admission}" >/dev/null
+          qualified_commit=$(jq -r '.qualification.source_commit' "${admission}")
+          if git -C "${GITHUB_WORKSPACE}/source" tag \
+            --points-at "${qualified_commit}" | grep -Eq '^v[0-9]'; then
+            printf 'qualified repair commit gained a release tag after qualification\n' >&2
+            exit 65
+          fi
+          qualification_run_id=$(jq -r '.qualification.workflow_run_id' "${admission}")
+          qualification_run_attempt=$(jq -r \
+            '.qualification.workflow_run_attempt' "${admission}")
+          qualification_control_commit=$(jq -r \
+            '.qualification.workflow_control_commit' "${admission}")
+          qualification_artifact_id=$(jq -r \
+            '.qualification.artifact_id' "${admission}")
+          qualification_artifact_digest=$(jq -r \
+            '.qualification.artifact_digest' "${admission}")
+          delta="${RUNNER_TEMP}/pre-rc-delta.json"
+          node ci/release_pre_rc_delta.mjs \
+            --repository "${GITHUB_WORKSPACE}/source" \
+            --qualified-commit "${qualified_commit}" \
+            --release-commit "${RELEASE_SOURCE_COMMIT}" >"${delta}"
+          test "$(sha256sum "${delta}" | awk '{print $1}')" = \
+            "$(jq -r '.delta.sha256' "${admission}")"
+          test "$(git -C "${GITHUB_WORKSPACE}/source" cat-file -t \
+            "refs/tags/${tag}")" = tag
+          test "$(git -C "${GITHUB_WORKSPACE}/source" rev-list -n 1 \
+            "refs/tags/${tag}")" = "${RELEASE_SOURCE_COMMIT}"
+          api="https://api.github.com/repos/${GITHUB_REPOSITORY}"
+          run_record="${RUNNER_TEMP}/qualification-run.json"
+          artifact_record="${RUNNER_TEMP}/qualification-artifact.json"
+          curl --fail --silent --show-error --location \
+            --header "Authorization: Bearer ${GITHUB_TOKEN}" \
+            --header 'Accept: application/vnd.github+json' \
+            --header 'X-GitHub-Api-Version: 2022-11-28' \
+            "${api}/actions/runs/${qualification_run_id}" \
+            --output "${run_record}"
+          curl --fail --silent --show-error --location \
+            --header "Authorization: Bearer ${GITHUB_TOKEN}" \
+            --header 'Accept: application/vnd.github+json' \
+            --header 'X-GitHub-Api-Version: 2022-11-28' \
+            "${api}/actions/artifacts/${qualification_artifact_id}" \
+            --output "${artifact_record}"
+          jq -e \
+            --argjson id "${qualification_run_id}" \
+            --argjson attempt "${qualification_run_attempt}" \
+            --arg commit "${qualified_commit}" \
+            --arg control "${qualification_control_commit}" '
+              .id == $id and .run_attempt == $attempt and
+              .name == "ait pre-RC qualification" and
+              .path == ".github/workflows/ait-release-pre-rc-qualification.yml" and
+              .event == "workflow_dispatch" and
+              .status == "completed" and .conclusion == "success" and
+              .head_sha == $commit and .head_sha == $control
+            ' "${run_record}" >/dev/null
+          jq -e \
+            --argjson id "${qualification_artifact_id}" \
+            --argjson run_id "${qualification_run_id}" \
+            --arg name "ait-pre-rc-qualification-${qualified_commit}" \
+            --arg digest "${qualification_artifact_digest}" '
+              .id == $id and .name == $name and .digest == $digest and
+              .expired == false and .workflow_run.id == $run_id
+            ' "${artifact_record}" >/dev/null
+          cp "${admission}" "${RUNNER_TEMP}/ait-release.pre-tag-admission.json"
+          echo "pre_tag_admission_sha256=${PRE_TAG_ADMISSION_SHA256}" \
+            >>"${GITHUB_OUTPUT}"
 
   project:
     name: Project the exact family receipt matrix
@@ -491,6 +617,8 @@ jobs:
           AIT_PUBLIC_SOURCE_ROOT: ${{ github.workspace }}/source
           AIT_RECEIPT_COUNT: ${{ needs.project.outputs.receipt_count }}
           AIT_SOURCE_GIT_COMMIT: ${{ needs.contract.outputs.source_git_commit }}
+          PRE_TAG_ADMISSION_B64: ${{ inputs.pre_tag_admission_b64 }}
+          PRE_TAG_ADMISSION_SHA256: ${{ needs.contract.outputs.pre_tag_admission_sha256 }}
         run: |
           set -euo pipefail
           receipt_count=$(find "${RUNNER_TEMP}/component-receipts" \
@@ -608,6 +736,11 @@ jobs:
             "${dossier}/ait-monorepo-source.json"
           cp "${RUNNER_TEMP}/monorepo-source/ait-public-git-source.evidence.json" \
             "${dossier}/ait-public-git-source.evidence.json"
+          printf '%s' "${PRE_TAG_ADMISSION_B64}" | base64 --decode \
+            >"${dossier}/ait-release.pre-tag-admission.json"
+          test "$(sha256sum "${dossier}/ait-release.pre-tag-admission.json" | \
+            awk '{print $1}')" = \
+            "${PRE_TAG_ADMISSION_SHA256}"
           cp -R "dist/${release_id}/frozen" "${dossier}/frozen"
           cp -R "dist/${release_id}/packages" "${dossier}/packages"
           {

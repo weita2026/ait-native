@@ -1,0 +1,192 @@
+name: ait pre-RC qualification
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_commit:
+        description: Exact untagged public repair commit to qualify before any next-RC work
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ait-pre-rc-qualification-${{ inputs.source_commit }}
+  cancel-in-progress: false
+
+jobs:
+  contract:
+    name: Require an exact untagged repair commit
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out the exact repair source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ inputs.source_commit }}
+          fetch-depth: 0
+          path: source
+          persist-credentials: false
+
+      - name: Reject release authority before qualification
+        shell: bash
+        working-directory: source
+        run: |
+          set -euo pipefail
+          [[ '${{ inputs.source_commit }}' =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse HEAD)" = '${{ inputs.source_commit }}'
+          test '${{ github.sha }}' = '${{ inputs.source_commit }}'
+          test -z "$(git status --porcelain --untracked-files=all)"
+          if git tag --points-at HEAD | grep -Eq '^v[0-9]'; then
+            printf 'pre-RC qualification source already has a release tag\n' >&2
+            exit 65
+          fi
+          jq -e '.public_publish == false' ci/native_bootstrap_matrix.json >/dev/null
+          jq -e '.public_publish == false' ci/release_repository_authorities.json >/dev/null
+          node build-release.mjs --validate-only --git-commit '${{ inputs.source_commit }}'
+
+  regression:
+    name: Release controls and public-surface regression
+    needs: contract
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+    steps:
+      - name: Check out the exact repair source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ inputs.source_commit }}
+          fetch-depth: 1
+          path: source
+          persist-credentials: false
+
+      - name: Select fixed Node.js and Rust runtimes
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '22'
+
+      - name: Install the pinned Rust toolchain
+        shell: bash
+        working-directory: source
+        run: |
+          set -euo pipefail
+          toolchain=$(jq -r '.rust_toolchain' ci/native_bootstrap_matrix.json)
+          rustup toolchain install "${toolchain}" --profile minimal
+          rustup default "${toolchain}"
+
+      - name: Run release-order, export, command, and environment controls
+        shell: bash
+        working-directory: source
+        run: |
+          set -euo pipefail
+          bash ci/release_operator_test.sh
+          bash ci/release_pre_rc_qualification_test.sh
+          bash ci/release_monorepo_export_test.sh
+          cargo test --locked --manifest-path ait-core/rust/Cargo.toml \
+            -p ait-core --test environment_contract
+          cargo test --locked --manifest-path ait-core/rust/Cargo.toml \
+            -p ait-cli root_command_inventory_is_frozen
+          cargo test --locked --manifest-path ait-core/rust/Cargo.toml \
+            -p ait-cli --test agent_cli root_ait_agent_namespace_is_absent
+
+  windows-lifecycle:
+    name: Windows lifecycle / ${{ matrix.target }}
+    needs: contract
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-11-arm
+            target: aarch64-pc-windows-msvc
+          - runner: windows-2025
+            target: x86_64-pc-windows-msvc
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    steps:
+      - name: Check out the exact repair source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ inputs.source_commit }}
+          fetch-depth: 1
+          path: source
+          persist-credentials: false
+
+      - name: Install and verify the native Rust host
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $toolchain = (Get-Content source/ci/native_bootstrap_matrix.json | ConvertFrom-Json).rust_toolchain
+          rustup toolchain install $toolchain --profile minimal
+          rustup default $toolchain
+          $hostTriple = ((rustc -vV | Select-String '^host: ').Line -replace '^host: ', '')
+          if ($hostTriple -ne '${{ matrix.target }}') {
+            throw "Rust host $hostTriple does not match ${{ matrix.target }}"
+          }
+
+      - name: Execute fresh core and server initialization
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          cargo test --locked --manifest-path source/ait-core/rust/Cargo.toml `
+            -p ait-cli --test init_cli init_cli_creates_then_reinitializes_the_agent_contract
+          cargo test --locked --manifest-path source/ait-server/rust/Cargo.toml `
+            -p ait-server --test installed_lifecycle init_is_idempotent_and_creates_only_an_empty_runtime_root
+          cargo test --locked --manifest-path source/ait-server/rust/Cargo.toml `
+            -p ait-server --test installed_lifecycle installed_run_initializes_then_serves_from_an_explicit_root
+
+  qualify:
+    name: Freeze non-release qualification evidence
+    needs:
+      - contract
+      - regression
+      - windows-lifecycle
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    steps:
+      - name: Create the exact no-publication evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir qualification
+          jq -S -n \
+            --arg commit '${{ inputs.source_commit }}' \
+            --arg control_commit '${{ github.sha }}' '
+              {
+                contract: "ait.release.pre-rc-qualification/v1",
+                status: "qualified",
+                source: {
+                  repository: "weita2026/ait-native",
+                  git_commit: $commit,
+                  workflow_control_commit: $control_commit,
+                  release_tags_at_qualification: []
+                },
+                gates: {
+                  release_controls: "pass",
+                  command_inventory: "pass",
+                  environment_inventory: "pass",
+                  windows: {
+                    "aarch64-pc-windows-msvc": {
+                      core_init: "pass",
+                      server_init: "pass",
+                      server_run: "pass"
+                    },
+                    "x86_64-pc-windows-msvc": {
+                      core_init: "pass",
+                      server_init: "pass",
+                      server_run: "pass"
+                    }
+                  }
+                },
+                immutable_release_tag_created: false,
+                release_receipts_created: false,
+                public_endpoint_writes: false
+              }
+            ' >qualification/ait-release.pre-rc-qualification.json
+
+      - name: Upload the immutable qualification evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ait-pre-rc-qualification-${{ inputs.source_commit }}
+          path: qualification/ait-release.pre-rc-qualification.json
+          if-no-files-found: error
+          retention-days: 90

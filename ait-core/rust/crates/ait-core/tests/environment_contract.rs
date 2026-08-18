@@ -4,6 +4,12 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+#[test]
+fn environment_inventory_sizes_are_frozen() {
+    assert_eq!(ENVIRONMENT_VARIABLES.len(), 24);
+    assert_eq!(REMOVED_ENVIRONMENT_NAMES.len(), 80);
+}
+
 fn repository_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .ancestors()
