@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 
 import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
 import path from "node:path";
 
 function fail(message) {
@@ -87,6 +86,93 @@ if (
   fail("release delta must advance exactly one canonical RC ordinal and Python mapping");
 }
 
+const expectedSourceRepositories = [
+  "ait-core",
+  "ait-node",
+  "ait-python",
+  "ait-runner",
+  "ait-server",
+];
+
+function sourceSnapshots(mapping, version, label) {
+  if (
+    mapping?.schema !== "ait.release.monorepo-source/v1" ||
+    mapping.family_version !== version ||
+    mapping.family_tag !== `v${version}` ||
+    !Array.isArray(mapping.subtrees) ||
+    mapping.subtrees.length !== expectedSourceRepositories.length
+  ) {
+    fail(`${label} monorepo mapping authority is invalid`);
+  }
+  const snapshots = new Map();
+  for (const subtree of mapping.subtrees) {
+    const repositoryName = subtree?.source_repository;
+    const snapshot = subtree?.source_snapshot;
+    if (
+      !expectedSourceRepositories.includes(repositoryName) ||
+      !/^SNP-[0-9A-F]{12}$/.test(snapshot ?? "") ||
+      snapshots.has(repositoryName)
+    ) {
+      fail(`${label} monorepo mapping Snapshot authority is invalid`);
+    }
+    snapshots.set(repositoryName, snapshot);
+  }
+  if (expectedSourceRepositories.some((name) => !snapshots.has(name))) {
+    fail(`${label} monorepo mapping repository inventory is invalid`);
+  }
+  if (new Set(snapshots.values()).size !== snapshots.size) {
+    fail(`${label} monorepo mapping Snapshot authority is ambiguous`);
+  }
+  return snapshots;
+}
+
+const qualifiedMapping = jsonAt(qualifiedCommit, "ait-monorepo-source.json");
+const releaseMapping = jsonAt(releaseCommit, "ait-monorepo-source.json");
+const qualifiedSnapshots = sourceSnapshots(qualifiedMapping, oldVersion, "qualified");
+const releaseSnapshots = sourceSnapshots(releaseMapping, newVersion, "release");
+const authoritySnapshotTransitions = expectedSourceRepositories
+  .map((sourceRepository) => ({
+    source_repository: sourceRepository,
+    qualified_snapshot: qualifiedSnapshots.get(sourceRepository),
+    release_snapshot: releaseSnapshots.get(sourceRepository),
+  }))
+  .filter((row) => row.qualified_snapshot !== row.release_snapshot);
+
+function dotEscaped(value, slashCount) {
+  return value.replaceAll(".", `${"\\".repeat(slashCount)}.`);
+}
+
+const tokenTransitions = [
+  { release: newPython, qualified: oldPython },
+  { release: newVersion, qualified: oldVersion },
+  ...[1, 2].flatMap((slashCount) => [
+    {
+      release: dotEscaped(newPython, slashCount),
+      qualified: dotEscaped(oldPython, slashCount),
+    },
+    {
+      release: dotEscaped(newVersion, slashCount),
+      qualified: dotEscaped(oldVersion, slashCount),
+    },
+  ]),
+  ...authoritySnapshotTransitions.map((row) => ({
+    release: row.release_snapshot,
+    qualified: row.qualified_snapshot,
+  })),
+];
+if (
+  tokenTransitions.some(
+    (transition) =>
+      !transition.release ||
+      !transition.qualified ||
+      transition.release === transition.qualified,
+  ) ||
+  new Set(tokenTransitions.map((transition) => transition.release)).size !==
+    tokenTransitions.length
+) {
+  fail("release delta token authority is invalid or ambiguous");
+}
+
 const requiredAuthorityPaths = new Set([
   "ait-release-family.json",
   "ait-monorepo-source.json",
@@ -118,12 +204,10 @@ for (const relativePath of changed) {
   if (before.includes(0) || after.includes(0)) {
     fail(`release delta changes a binary non-authority path: ${relativePath}`);
   }
-  const normalized = after
-    .toString("utf8")
-    .split(newPython)
-    .join(oldPython)
-    .split(newVersion)
-    .join(oldVersion);
+  let normalized = after.toString("utf8");
+  for (const transition of tokenTransitions) {
+    normalized = normalized.split(transition.release).join(transition.qualified);
+  }
   if (normalized !== before.toString("utf8")) {
     fail(`release delta contains non-version changes: ${relativePath}`);
   }
@@ -147,6 +231,7 @@ process.stdout.write(
       release_commit: releaseCommit,
       qualified_version: oldVersion,
       release_version: newVersion,
+      authority_snapshot_transitions: authoritySnapshotTransitions,
       structural_authority_paths: [...structuralAuthorityPaths],
       normalized_version_paths: normalizedPaths,
       changed_paths: changed,

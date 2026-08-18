@@ -91,7 +91,13 @@ jq -n --arg family_sha "${family_sha}" '
     family_version: "1.2.3-rc.4",
     family_tag: "v1.2.3-rc.4",
     family_manifest_sha256: $family_sha,
-    subtrees: [1, 2, 3, 4, 5],
+    subtrees: [
+      {source_repository: "ait-core", source_snapshot: "SNP-111111111111"},
+      {source_repository: "ait-node", source_snapshot: "SNP-222222222222"},
+      {source_repository: "ait-python", source_snapshot: "SNP-333333333333"},
+      {source_repository: "ait-runner", source_snapshot: "SNP-444444444444"},
+      {source_repository: "ait-server", source_snapshot: "SNP-555555555555"}
+    ],
     git_commit_created: false,
     public_publish: false
   }

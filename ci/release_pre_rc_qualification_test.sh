@@ -80,6 +80,9 @@ git -C "${fixture}" config user.email 'pre-rc@localhost'
 write_family() {
   local version=$1
   local python_version=$2
+  local core_snapshot=$3
+  local authority_snapshot=${4:-${core_snapshot}}
+  local escaped_version=${version//./\\.}
   jq -S -n --arg version "${version}" --arg python "${python_version}" '
     {
       schema: "ait.release.family/v3",
@@ -92,8 +95,20 @@ write_family() {
       components: [{id: "ait-python", version: $python}]
     }
   ' >"${fixture}/ait-release-family.json"
-  jq -S -n --arg version "${version}" \
-    '{schema: "ait.release.monorepo-source/v1", family_version: $version}' \
+  jq -S -n --arg version "${version}" --arg core "${core_snapshot}" '
+    {
+      schema: "ait.release.monorepo-source/v1",
+      family_version: $version,
+      family_tag: ("v" + $version),
+      subtrees: [
+        {source_repository: "ait-core", source_snapshot: $core},
+        {source_repository: "ait-node", source_snapshot: "SNP-222222222222"},
+        {source_repository: "ait-python", source_snapshot: "SNP-333333333333"},
+        {source_repository: "ait-runner", source_snapshot: "SNP-444444444444"},
+        {source_repository: "ait-server", source_snapshot: "SNP-555555555555"}
+      ]
+    }
+  ' \
     >"${fixture}/ait-monorepo-source.json"
   jq -S -n --arg version "${version}" \
     '{version: $version, public_publish: false}' \
@@ -102,14 +117,18 @@ write_family() {
     '{family_version: $version, public_publish: false}' \
     >"${fixture}/ci/release_repository_authorities.json"
   printf '%s\n' "${version}" >"${fixture}/component/version.txt"
+  printf 'version=%s\nregex=%s\nsnapshot=%s\n' \
+    "${version}" "${escaped_version}" "${authority_snapshot}" \
+    >"${fixture}/component/authority.txt"
 }
 
-write_family 1.2.3-rc.4 1.2.3rc4
+write_family 1.2.3-rc.4 1.2.3rc4 SNP-111111111111
+printf '\0qualified\n' >"${fixture}/component/blob.bin"
 git -C "${fixture}" add -A
 git -C "${fixture}" commit -qm 'qualified repair'
 qualified_commit=$(git -C "${fixture}" rev-parse HEAD)
 
-write_family 1.2.3-rc.5 1.2.3rc5
+write_family 1.2.3-rc.5 1.2.3rc5 SNP-AAAAAAAAAAAA
 git -C "${fixture}" add -A
 git -C "${fixture}" commit -qm 'version-only release'
 release_commit=$(git -C "${fixture}" rev-parse HEAD)
@@ -127,21 +146,76 @@ jq -e \
     .release_commit == $release and
     .qualified_version == "1.2.3-rc.4" and
     .release_version == "1.2.3-rc.5" and
-    .normalized_version_paths == ["component/version.txt"]
+    .authority_snapshot_transitions == [{
+      source_repository: "ait-core",
+      qualified_snapshot: "SNP-111111111111",
+      release_snapshot: "SNP-AAAAAAAAAAAA"
+    }] and
+    .normalized_version_paths == [
+      "component/authority.txt",
+      "component/version.txt"
+    ]
   ' "${temporary_root}/delta.json" >/dev/null
 
-printf 'behavior changed\n' >"${fixture}/component/behavior.txt"
+git -C "${fixture}" checkout -q --detach "${qualified_commit}"
+write_family 1.2.3-rc.5 1.2.3rc5 SNP-AAAAAAAAAAAA
+printf 'behavior=changed\n' >>"${fixture}/component/authority.txt"
 git -C "${fixture}" add -A
 git -C "${fixture}" commit -qm 'forbidden release behavior'
 non_version_commit=$(git -C "${fixture}" rev-parse HEAD)
 expect_failure non-version node "${delta}" \
   --repository "${fixture}" \
-  --qualified-commit "${release_commit}" \
+  --qualified-commit "${qualified_commit}" \
   --release-commit "${non_version_commit}"
+grep -F 'release delta contains non-version changes' \
+  "${temporary_root}/non-version.stderr" >/dev/null
 
+printf 'second generation\n' >>"${fixture}/component/authority.txt"
+git -C "${fixture}" add -A
+git -C "${fixture}" commit -qm 'non-direct forbidden release behavior'
+non_direct_commit=$(git -C "${fixture}" rev-parse HEAD)
 expect_failure non-direct node "${delta}" \
   --repository "${fixture}" \
   --qualified-commit "${qualified_commit}" \
-  --release-commit "${non_version_commit}"
+  --release-commit "${non_direct_commit}"
+grep -F 'release commit must be the single direct child' \
+  "${temporary_root}/non-direct.stderr" >/dev/null
+
+git -C "${fixture}" checkout -q --detach "${qualified_commit}"
+write_family 1.2.3-rc.5 1.2.3rc5 \
+  SNP-AAAAAAAAAAAA SNP-FFFFFFFFFFFF
+git -C "${fixture}" add -A
+git -C "${fixture}" commit -qm 'unbound Snapshot release behavior'
+unbound_snapshot_commit=$(git -C "${fixture}" rev-parse HEAD)
+expect_failure unbound-snapshot node "${delta}" \
+  --repository "${fixture}" \
+  --qualified-commit "${qualified_commit}" \
+  --release-commit "${unbound_snapshot_commit}"
+grep -F 'release delta contains non-version changes' \
+  "${temporary_root}/unbound-snapshot.stderr" >/dev/null
+
+git -C "${fixture}" checkout -q --detach "${qualified_commit}"
+write_family 1.2.3-rc.5 1.2.3rc5 SNP-AAAAAAAAAAAA
+printf 'added path\n' >"${fixture}/component/added.txt"
+git -C "${fixture}" add -A
+git -C "${fixture}" commit -qm 'added non-authority release path'
+added_path_commit=$(git -C "${fixture}" rev-parse HEAD)
+expect_failure added-path node "${delta}" \
+  --repository "${fixture}" \
+  --qualified-commit "${qualified_commit}" \
+  --release-commit "${added_path_commit}"
+
+git -C "${fixture}" checkout -q --detach "${qualified_commit}"
+write_family 1.2.3-rc.5 1.2.3rc5 SNP-AAAAAAAAAAAA
+printf '\0release\n' >"${fixture}/component/blob.bin"
+git -C "${fixture}" add -A
+git -C "${fixture}" commit -qm 'changed binary release path'
+binary_path_commit=$(git -C "${fixture}" rev-parse HEAD)
+expect_failure binary-path node "${delta}" \
+  --repository "${fixture}" \
+  --qualified-commit "${qualified_commit}" \
+  --release-commit "${binary_path_commit}"
+grep -F 'release delta changes a binary non-authority path' \
+  "${temporary_root}/binary-path.stderr" >/dev/null
 
 printf 'pre-RC qualification contract: pass\n'

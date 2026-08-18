@@ -345,6 +345,47 @@ validate_subtree_license() {
   esac
 }
 
+validate_selected_core_authority() {
+  local source_root=$1
+  local selected_family=${source_root}/ait-release-family.json
+  local selected_adapter=${source_root}/ait-release.json
+  local selected_authorities=${source_root}/ci/release_repository_authorities.json
+  local selected_platforms=${source_root}/ci/native_bootstrap_matrix.json
+  local selected_input
+  for selected_input in \
+    "${selected_family}" \
+    "${selected_adapter}" \
+    "${selected_authorities}" \
+    "${selected_platforms}"; do
+    [[ -f ${selected_input} && ! -L ${selected_input} ]] || {
+      printf 'selected ait-core source authority is unavailable: %s\n' \
+        "${selected_input#${source_root}/}" >&2
+      return 65
+    }
+  done
+  jq -e --arg version "${family_version}" --arg python "${python_version}" '
+    .family.version == $version and .family.tag == ("v" + $version) and
+    ([.components[] |
+      if .version_scheme == "pep440" then .version == $python
+      else .version == $version end] | all)
+  ' "${selected_family}" >/dev/null &&
+    jq -e --arg version "${family_version}" '
+      .schema == "ait.release.adapter/v1" and .package.version == $version
+    ' "${selected_adapter}" >/dev/null &&
+    jq -e --arg version "${family_version}" '
+      .contract == "ait.release.repository-authorities/v1" and
+      .family_version == $version and .public_publish == false
+    ' "${selected_authorities}" >/dev/null &&
+    jq -e --arg version "${family_version}" '
+      .contract == "ait-native-bootstrap-matrix/v1" and
+      .version == $version and .public_publish == false
+    ' "${selected_platforms}" >/dev/null || {
+      printf '%s\n' \
+        'selected ait-core source authority differs from coordinator family' >&2
+      return 65
+    }
+}
+
 temporary_root=$(mktemp -d "${TMPDIR:-/tmp}/ait-monorepo-export.XXXXXX")
 cleanup() {
   case "${temporary_root}" in
@@ -428,6 +469,9 @@ for repository in "${repositories[@]}"; do
   while IFS= read -r -d '' file; do
     if [[ -x ${file} ]]; then chmod 0755 "${file}"; else chmod 0644 "${file}"; fi
   done < <(find "${subtree}" -type f -print0)
+  if [[ ${repository} == ait-core ]]; then
+    validate_selected_core_authority "${subtree}"
+  fi
   validate_subtree_license "${subtree}" "${repository}" "${license}"
   source_content_sha256=$(tree_digest "${subtree}" "${repository}-source")
   source_manifest_hash=$(jq -r '.source_manifest_hash' "${evidence}")

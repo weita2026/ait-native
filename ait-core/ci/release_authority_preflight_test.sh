@@ -56,6 +56,9 @@ mkdir -p "${canonical_core}/ci" "${canonical_core}/.ait/cargo-target/release"
 cp "${repo_root}/ait-release-family.json" "${canonical_core}/ait-release-family.json"
 cp "${repo_root}/ci/release_repository_authorities.json" \
   "${canonical_core}/ci/release_repository_authorities.json"
+cp "${repo_root}/ait-release.json" "${canonical_core}/ait-release.json"
+cp "${repo_root}/ci/native_bootstrap_matrix.json" \
+  "${canonical_core}/ci/native_bootstrap_matrix.json"
 expected_family_version=$(jq -er '.family.version' \
   "${canonical_core}/ait-release-family.json")
 
@@ -162,6 +165,28 @@ evidence=${AIT_RELEASE_SOURCE_EVIDENCE_PATH:?}
 mkdir -p "${destination}/source"
 printf '%s %s\n' "${repo_name}" "${source_snapshot}" \
   >"${destination}/source/fixture.txt"
+if [[ ${repo_name} == ait-core ]]; then
+  fixture_root=${AIT_TEST_AUTHORITY_FIXTURES:?}
+  repository_version=${AIT_TEST_SELECTED_CORE_REPOSITORY_VERSION:-${version}}
+  mkdir -p "${destination}/ci"
+  jq --arg version "${version}" '
+    .family.version = $version |
+    .family.tag = ("v" + $version) |
+    .components |= map(
+      if .version_scheme == "pep440" then
+        .version = ($version | sub("-rc\\."; "rc"))
+      else .version = $version end)
+  ' "${fixture_root}/ait-release-family.json" \
+    >"${destination}/ait-release-family.json"
+  jq --arg version "${version}" '.package.version = $version' \
+    "${fixture_root}/ait-release.json" >"${destination}/ait-release.json"
+  jq --arg version "${repository_version}" '.family_version = $version' \
+    "${fixture_root}/ci/release_repository_authorities.json" \
+    >"${destination}/ci/release_repository_authorities.json"
+  jq --arg version "${version}" '.version = $version' \
+    "${fixture_root}/ci/native_bootstrap_matrix.json" \
+    >"${destination}/ci/native_bootstrap_matrix.json"
+fi
 jq -n --arg repo "${repo_name}" --argjson index "${repository_index}" \
   --arg snapshot "${source_snapshot}" --arg version "${version}" \
   --arg license "${license}" '
@@ -181,6 +206,7 @@ jq -n --arg repo "${repo_name}" --argjson index "${repository_index}" \
 STUB
 chmod 0755 "${canonical_core}/ci/release_source_cache.sh"
 
+export AIT_TEST_AUTHORITY_FIXTURES=${canonical_core}
 source_bundles=${temporary_root}/source-bundles
 "${repo_root}/ci/release_source_bundles.sh" "${canonical_core}" \
   "${source_bundles}" >/dev/null
@@ -188,6 +214,7 @@ jq -e --arg version "${expected_family_version}" '
   .contract == "ait.release.source-bundles/v1" and .status == "ready" and
   .family_version == $version and .source_bundle_count == 5 and
   (.bundles | length) == 5 and .recovery_authority_used == false and
+  .selected_core_version_authority_verified == true and
   .registry_write == false and .public_publish == false
 ' "${source_bundles}/source-bundles.evidence.json" >/dev/null
 test "$(find "${source_bundles}" -mindepth 1 -maxdepth 1 -type d \
@@ -200,6 +227,14 @@ while IFS= read -r repo_name; do
 done < <(jq -er '.repositories[].repo_name' \
   "${canonical_core}/ci/release_repository_authorities.json")
 test -z "$(find "${source_bundles}" -maxdepth 1 -name '.source-cache-*' -print -quit)"
+
+export AIT_TEST_SELECTED_CORE_REPOSITORY_VERSION=1.0.0-rc.999
+expect_failure selected-core-repository-version-drift \
+  "${repo_root}/ci/release_source_bundles.sh" "${canonical_core}" \
+  "${temporary_root}/drifted-source-bundles"
+grep -F 'selected ait-core source authority differs from coordinator family' \
+  "${temporary_root}/selected-core-repository-version-drift.stderr" >/dev/null
+unset AIT_TEST_SELECTED_CORE_REPOSITORY_VERSION
 
 expect_failure existing-output "${preflight}" "${canonical_core}" "${evidence}"
 mkdir "${workspace}/.ait-core-recovery"

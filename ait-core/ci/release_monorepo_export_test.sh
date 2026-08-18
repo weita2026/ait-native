@@ -59,7 +59,9 @@ if (( selftest_mode == 0 )); then
     "${public_core}/release/oci" \
     "${public_core}/.github/workflows" \
     "${public_layout}/docs"
-  cp "${repo_root}/ait-release-family.json" "${public_core}/ait-release-family.json"
+  cp "${repo_root}/ait-release-family.json" \
+    "${public_core}/ait-release-family.json"
+  cp "${repo_root}/ait-release.json" "${public_core}/ait-release.json"
   cp "${repo_root}/LICENSE" "${repo_root}/NOTICE" "${public_core}/"
   cp "${repo_root}/ci/release_monorepo_export.sh" \
     "${repo_root}/ci/release_monorepo_export_test.sh" \
@@ -190,12 +192,13 @@ for repository in ait-core ait-server ait-runner ait-python ait-node; do
     ait-core)
       mkdir -p "${source}/rust/crates/ait-py" "${source}/docs"
       cp "${repo_root}/ci/release_protected_promotion.sh" "${source}/ci/"
-      jq '.family.version = "1.0.0-rc.2"' \
+      jq '(.components[] | select(.source_repository == "ait-core") |
+        .source_snapshot) = "SNP-010101010101"' \
         "${repo_root}/ait-release-family.json" \
         >"${source}/ait-release-family.json"
-      jq '.family_version = "1.0.0-rc.2"' \
-        "${repo_root}/ci/release_repository_authorities.json" \
-        >"${source}/ci/release_repository_authorities.json"
+      cp "${repo_root}/ait-release.json" "${source}/ait-release.json"
+      cp "${repo_root}/ci/release_repository_authorities.json" \
+        "${repo_root}/ci/native_bootstrap_matrix.json" "${source}/ci/"
       printf '[workspace]\nmembers = ["crates/ait-py"]\n' >"${source}/rust/Cargo.toml"
       printf '[package]\nname = "ait-py"\nversion = "%s"\n' \
         "${family_version}" >"${source}/rust/crates/ait-py/Cargo.toml"
@@ -479,10 +482,10 @@ printf '# ait-native\n' \
 expect_failure missing-npm-storefront node \
   "${missing_npm_storefront}/build-release.mjs" --validate-only
 test "$(jq -r '.family.version' \
-  "${output_one}/ait-core/ait-release-family.json")" = "1.0.0-rc.2"
+  "${output_one}/ait-core/ait-release-family.json")" = "${family_version}"
 test "$(jq -r '.family_version' \
   "${output_one}/ait-core/ci/release_repository_authorities.json")" = \
-  "1.0.0-rc.2"
+  "${family_version}"
 test "$(jq -r '.family_version' \
   "${output_one}/ci/release_repository_authorities.json")" = \
   "${family_version}"
@@ -517,9 +520,9 @@ bash "${output_one}/ci/release_clean_host_test.sh" >/dev/null
 bash "${output_one}/ci/release_operator_test.sh" >/dev/null
 bash "${output_one}/ci/release_pre_rc_qualification_test.sh" >/dev/null
 bash "${output_one}/ci/release_prepublish_test.sh" >/dev/null
-expect_failure historical-component-family env \
+env \
   AIT_RELEASE_FAMILY_MANIFEST="${output_one}/ait-core/ait-release-family.json" \
-  bash "${output_one}/ci/release_receipt_matrix_test.sh"
+  bash "${output_one}/ci/release_receipt_matrix_test.sh" >/dev/null
 expect_failure relative-public-family env \
   AIT_RELEASE_FAMILY_MANIFEST=../ait-release-family.json bash \
   "${output_one}/ci/release_receipt_matrix_test.sh"
@@ -978,6 +981,25 @@ mv "${temporary_root}/wrong-snapshot.json" \
 expect_failure wrong-snapshot bash "${repo_root}/ci/release_monorepo_export.sh" \
   "${repo_root}/ait-release-family.json" "${wrong_snapshot_bundles}" \
   "${temporary_root}/wrong-snapshot-output" "${temporary_root}/wrong-snapshot-evidence.json"
+
+nested_authority_bundles=${temporary_root}/nested-authority-bundles
+cp -R "${bundles}" "${nested_authority_bundles}"
+nested_authority_source=${temporary_root}/nested-authority-source
+cp -R "${sources}/ait-core" "${nested_authority_source}"
+jq '.family_version = "1.0.0-rc.999"' \
+  "${nested_authority_source}/ci/release_repository_authorities.json" \
+  >"${temporary_root}/nested-authority.json"
+mv "${temporary_root}/nested-authority.json" \
+  "${nested_authority_source}/ci/release_repository_authorities.json"
+tar -czf \
+  "${nested_authority_bundles}/ait-release-source-ait-core/source-cache.tar.gz" \
+  -C "${nested_authority_source}" .
+expect_failure nested-authority bash "${repo_root}/ci/release_monorepo_export.sh" \
+  "${repo_root}/ait-release-family.json" "${nested_authority_bundles}" \
+  "${temporary_root}/nested-authority-output" \
+  "${temporary_root}/nested-authority-evidence.json"
+grep -F 'selected ait-core source authority differs from coordinator family' \
+  "${temporary_root}/nested-authority.stderr" >/dev/null
 
 symlink_bundles=${temporary_root}/symlink-bundles
 cp -R "${bundles}" "${symlink_bundles}"

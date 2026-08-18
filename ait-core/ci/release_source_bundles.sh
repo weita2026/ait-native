@@ -61,6 +61,44 @@ for command in jq tar; do
     fail 69 "required source-bundle command is unavailable: ${command}"
 done
 
+family_version=$(jq -er '.family.version' "${family}")
+python_version=${family_version/-rc./rc}
+
+validate_selected_core_authority() {
+  local source_root=$1
+  local selected_family=${source_root}/ait-release-family.json
+  local selected_adapter=${source_root}/ait-release.json
+  local selected_authorities=${source_root}/ci/release_repository_authorities.json
+  local selected_platforms=${source_root}/ci/native_bootstrap_matrix.json
+  local selected_input
+  for selected_input in \
+    "${selected_family}" \
+    "${selected_adapter}" \
+    "${selected_authorities}" \
+    "${selected_platforms}"; do
+    [[ -f ${selected_input} && ! -L ${selected_input} ]] ||
+      fail 65 "selected ait-core source authority is unavailable: ${selected_input#${source_root}/}"
+  done
+  jq -e --arg version "${family_version}" --arg python "${python_version}" '
+    .family.version == $version and .family.tag == ("v" + $version) and
+    ([.components[] |
+      if .version_scheme == "pep440" then .version == $python
+      else .version == $version end] | all)
+  ' "${selected_family}" >/dev/null &&
+    jq -e --arg version "${family_version}" '
+      .schema == "ait.release.adapter/v1" and .package.version == $version
+    ' "${selected_adapter}" >/dev/null &&
+    jq -e --arg version "${family_version}" '
+      .contract == "ait.release.repository-authorities/v1" and
+      .family_version == $version and .public_publish == false
+    ' "${selected_authorities}" >/dev/null &&
+    jq -e --arg version "${family_version}" '
+      .contract == "ait-native-bootstrap-matrix/v1" and
+      .version == $version and .public_publish == false
+    ' "${selected_platforms}" >/dev/null ||
+    fail 65 'selected ait-core source authority differs from coordinator family'
+}
+
 staging=$(mktemp -d "${output_parent}/.ait-release-source-bundles.XXXXXX")
 cleanup() {
   case "${staging}" in
@@ -121,6 +159,9 @@ while IFS=$'\t' read -r repo_name repository_index namespace; do
     .public_publish == false
   ' "${evidence}" >/dev/null ||
     fail 65 "source cache evidence differs from the selected family: ${repo_name}"
+  if [[ ${repo_name} == ait-core ]]; then
+    validate_selected_core_authority "${cache_root}"
+  fi
   COPYFILE_DISABLE=1 tar -czf "${bundle_root}/source-cache.tar.gz" -C "${cache_root}" .
   rm -rf -- "${cache_root}"
   jq -cn \
@@ -141,7 +182,7 @@ done < <(jq -er '.repositories | sort_by(.repository_index)[] |
   [.repo_name, (.repository_index | tostring), .namespace] | @tsv' "${authorities}")
 
 jq -S -n \
-  --arg family_version "$(jq -er '.family.version' "${family}")" \
+  --arg family_version "${family_version}" \
   --arg family_tag "$(jq -er '.family.tag' "${family}")" \
   --arg authority_evidence_sha256 \
     "$(sha256_file "${staging}/canonical-authority.evidence.json")" \
@@ -154,6 +195,7 @@ jq -S -n \
     canonical_authority_evidence_sha256: $authority_evidence_sha256,
     bundles: $bundles,
     source_bundle_count: ($bundles | length),
+    selected_core_version_authority_verified: true,
     recovery_authority_used: false,
     artifact_rebuild: false,
     registry_write: false,
