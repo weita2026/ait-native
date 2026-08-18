@@ -637,6 +637,7 @@ function firstLand(recorder, aitSpec, root, expectedText, priorState = null) {
     ["task", "land", taskId, "--local", "--json"],
     { cwd: worktree, label: "candidate task land", allowed: [0, 2] },
   );
+  let resumedCloseout = false;
   if (landed.task_status === "completed" && landed.closeout_status !== "complete") {
     // The land consumes the bound worktree's line head, so it must start
     // inside that worktree; Windows cannot remove a directory that is still
@@ -650,6 +651,7 @@ function firstLand(recorder, aitSpec, root, expectedText, priorState = null) {
       ["task", "land", taskId, "--local", "--json"],
       { cwd: root, label: "candidate task land closeout resume" },
     );
+    resumedCloseout = true;
   }
   if (
     landed.task_status !== "completed" ||
@@ -663,6 +665,12 @@ function firstLand(recorder, aitSpec, root, expectedText, priorState = null) {
   }
   if (!readFileSync(sprintPath, "utf8").includes("- [x] Materialize the exact clean-host file.")) {
     fail("candidate first land did not close the exact sprint checklist item");
+  }
+  if (resumedCloseout && existsSync(worktree)) {
+    // The first attempt could not remove the bound worktree while it was
+    // the process working directory; the resumed closeout already released
+    // the binding, so the leftover directory is orphaned rehearsal debris.
+    rmSync(worktree, { recursive: true, force: true });
   }
   if (existsSync(worktree)) {
     fail("candidate first land left its bound worktree behind");
