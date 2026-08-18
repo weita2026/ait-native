@@ -2,9 +2,9 @@
   "schema": "ait.release.family/v3",
   "family": {
     "name": "ait-native",
-    "version": "1.0.0-rc.13",
-    "channel": "rc",
-    "tag": "v1.0.0-rc.13"
+    "version": "1.0.0",
+    "channel": "stable",
+    "tag": "v1.0.0"
   },
   "targets": [
     "aarch64-apple-darwin",
@@ -77,11 +77,11 @@
     {
       "id": "ait",
       "source_repository": "ait-core",
-      "source_snapshot": "SNP-07C1F8776D47",
+      "source_snapshot": "SNP-E33BA1BD7B90",
       "ecosystem": "native",
       "license": "Apache-2.0",
       "version_scheme": "family",
-      "version": "1.0.0-rc.13",
+      "version": "1.0.0",
       "artifacts": [
         {
           "kind": "native-executable",
@@ -99,11 +99,11 @@
     {
       "id": "ait-agent",
       "source_repository": "ait-core",
-      "source_snapshot": "SNP-07C1F8776D47",
+      "source_snapshot": "SNP-E33BA1BD7B90",
       "ecosystem": "native",
       "license": "Apache-2.0",
       "version_scheme": "family",
-      "version": "1.0.0-rc.13",
+      "version": "1.0.0",
       "artifacts": [
         {
           "kind": "native-executable",
@@ -121,11 +121,11 @@
     {
       "id": "ait-agent-worker",
       "source_repository": "ait-core",
-      "source_snapshot": "SNP-07C1F8776D47",
+      "source_snapshot": "SNP-E33BA1BD7B90",
       "ecosystem": "native",
       "license": "Apache-2.0",
       "version_scheme": "family",
-      "version": "1.0.0-rc.13",
+      "version": "1.0.0",
       "artifacts": [
         {
           "kind": "native-executable",
@@ -143,11 +143,11 @@
     {
       "id": "ait-server",
       "source_repository": "ait-server",
-      "source_snapshot": "SNP-572BE3D4DD7B",
+      "source_snapshot": "SNP-E90456E6425E",
       "ecosystem": "native",
       "license": "AGPL-3.0-only",
       "version_scheme": "family",
-      "version": "1.0.0-rc.13",
+      "version": "1.0.0",
       "artifacts": [
         {
           "kind": "native-executable",
@@ -165,11 +165,11 @@
     {
       "id": "ait-runner",
       "source_repository": "ait-runner",
-      "source_snapshot": "SNP-C35BF19AC5AC",
+      "source_snapshot": "SNP-FAA7E8DFE9F7",
       "ecosystem": "native",
       "license": "Apache-2.0",
       "version_scheme": "family",
-      "version": "1.0.0-rc.13",
+      "version": "1.0.0",
       "artifacts": [
         {
           "kind": "native-executable",
@@ -187,11 +187,11 @@
     {
       "id": "ait-python",
       "source_repository": "ait-python",
-      "source_snapshot": "SNP-6ED619A8293E",
+      "source_snapshot": "SNP-A9DA52A6EB4C",
       "ecosystem": "python",
       "license": "Apache-2.0",
       "version_scheme": "pep440",
-      "version": "1.0.0rc13",
+      "version": "1.0.0",
       "artifacts": [
         {
           "kind": "python-wheel",
@@ -209,11 +209,11 @@
     {
       "id": "ait-node",
       "source_repository": "ait-node",
-      "source_snapshot": "SNP-952C3140EB93",
+      "source_snapshot": "SNP-078001F0E476",
       "ecosystem": "node",
       "license": "Apache-2.0",
       "version_scheme": "family",
-      "version": "1.0.0-rc.13",
+      "version": "1.0.0",
       "artifacts": [
         {
           "kind": "npm-napi-envelope",

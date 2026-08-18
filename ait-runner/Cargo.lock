@@ -51,7 +51,7 @@ dependencies = [
 
 [[package]]
 name = "ait-runner"
-version = "1.0.0-rc.13"
+version = "1.0.0"
 dependencies = [
  "ait-core",
  "base64",

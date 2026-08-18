@@ -2,7 +2,7 @@
   "schema": "ait.release.adapter/v1",
   "package": {
     "name": "ait-core",
-    "version": "1.0.0-rc.13",
+    "version": "1.0.0",
     "description": "Native ait, public ait-agent manager, and configuration-backed agent worker artifacts",
     "license_files": [
       {

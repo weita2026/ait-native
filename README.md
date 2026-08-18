@@ -26,7 +26,7 @@ Official website: <https://ait-native.dev/>
 ## Install and initialize
 
 ```sh
-python -m pip install ait-native==1.0.0rc13
+python -m pip install ait-native==1.0.0
 cd path/to/your-repository
 ait --version
 ait init
@@ -41,7 +41,7 @@ Use `ait config show --json` to inspect the effective mode and scope. Homebrew,
 npm, APT, WinGet, OCI, and native-archive installation routes are documented in
 the [install guide](https://ait-native.dev/local-quickstart/).
 
-This is the public `v1.0.0-rc.13` source tree. The tag binds the exported
+This is the public `v1.0.0` source tree. The tag binds the exported
 source of `ait-core`, `ait-server`, `ait-runner`, `ait-python`, and `ait-node`;
 `ait-monorepo-source.json` records their exact AIT Snapshot mapping.
 
