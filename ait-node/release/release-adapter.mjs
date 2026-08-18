@@ -179,7 +179,7 @@ async function validateContract(target, version) {
           payload.version === version &&
           payload.component === "ait-node" &&
           payload.binding_repository === "ait-core" &&
-          payload.binding_snapshot === "SNP-BAC3BC8C0BBA" &&
+          payload.binding_snapshot === "SNP-457345B5E136" &&
           payload.addon === "native/ait_napi.node"
         );
       },

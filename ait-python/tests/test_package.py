@@ -122,7 +122,7 @@ def test_materialized_core_matches_the_external_lock() -> None:
     node = lock["node"][0]
 
     assert node["repository_index"] == 0
-    assert node["snapshot"] == "SNP-BAC3BC8C0BBA"
+    assert node["snapshot"] == "SNP-457345B5E136"
     assert marker["format"] == "ait.external.materialized"
     assert marker["name"] == node["name"] == "ait-core"
     assert marker["repo_name"] == node["repo_name"] == "ait-core"
