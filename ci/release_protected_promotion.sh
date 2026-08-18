@@ -158,6 +158,7 @@ printf '%s\n' \
   ait-release.build.json \
   ait-release.candidate.json \
   ait-release.check.json \
+  ait-release.pre-tag-admission.json \
   ait-release.promotion.json \
   frozen \
   packages | LC_ALL=C sort >"${expected_top}"
@@ -174,6 +175,7 @@ build=${dossier_root}/ait-release.build.json
 promotion=${dossier_root}/ait-release.promotion.json
 source_mapping=${dossier_root}/ait-monorepo-source.json
 source_evidence=${dossier_root}/ait-public-git-source.evidence.json
+pre_tag_admission=${dossier_root}/ait-release.pre-tag-admission.json
 source_archive=${dossier_root}/ait-native-source-tree.tar.gz
 frozen_root=${dossier_root}/frozen
 frozen_manifest=${frozen_root}/ait-release-family.manifest.json
@@ -182,6 +184,7 @@ packages_root=${dossier_root}/packages
 for required in \
   "${candidate}" "${check}" "${build}" "${promotion}" \
   "${source_mapping}" "${source_evidence}" "${source_archive}" \
+  "${pre_tag_admission}" \
   "${frozen_manifest}" "${frozen_checksums}" \
   "${frozen_root}/ait-release.build.json"; do
   require_regular_file "${required}" 'protected-promotion input'
@@ -453,6 +456,46 @@ if ! jq -e \
     .public_publish == false
   ' "${source_mapping}" >/dev/null; then
   printf 'public monorepo source mapping differs from the approved family\n' >&2
+  exit 65
+fi
+
+admission_python_version=$(jq -er '
+  first(.components[] | select(.id == "ait-python") | .version) |
+  select(type == "string" and . != "")
+' "${public_source_root}/ait-release-family.json")
+pre_tag_admission_sha256=$(sha256_file "${pre_tag_admission}")
+if ! jq -e \
+  --arg repository "${AIT_RELEASE_REPOSITORY}" \
+  --arg version "${version}" \
+  --arg channel "${AIT_RELEASE_CHANNEL}" \
+  --arg python_version "${admission_python_version}" \
+  --arg tag "${AIT_RELEASE_TAG}" \
+  --arg commit "${AIT_RELEASE_GIT_COMMIT}" '
+    .contract == "ait.release.operator.pre-tag-admission/v1" and
+    .status == "ready_for_immutable_tag" and
+    .release == {
+      repository: $repository,
+      version: $version,
+      channel: $channel,
+      python_version: $python_version,
+      tag: $tag,
+      source_commit: $commit
+    } and
+    (.qualification.source_commit | test("^[0-9a-f]{40}$")) and
+    .qualification.source_commit != $commit and
+    (.qualification.workflow_run_id | type == "number" and . > 0 and floor == .) and
+    (.qualification.workflow_run_attempt | type == "number" and . > 0 and floor == .) and
+    (.qualification.workflow_control_commit | test("^[0-9a-f]{40}$")) and
+    (.qualification.artifact_id | type == "number" and . > 0 and floor == .) and
+    (.qualification.artifact_digest | test("^sha256:[0-9a-f]{64}$")) and
+    (.qualification.evidence_sha256 | test("^[0-9a-f]{64}$")) and
+    (.qualification.binding_sha256 | test("^[0-9a-f]{64}$")) and
+    .delta.contract == "ait.release.pre-rc-delta/v1" and
+    (.delta.sha256 | test("^[0-9a-f]{64}$")) and
+    .tag == {created: false, verified: false} and
+    ([.mutation[]] | all(. == false))
+  ' "${pre_tag_admission}" >/dev/null; then
+  printf 'pre-tag admission record does not admit this exact tagged release\n' >&2
   exit 65
 fi
 
@@ -777,6 +820,7 @@ jq -n \
   --arg check_sha256 "${check_sha256}" \
   --arg build_sha256 "${build_sha256}" \
   --arg promotion_sha256 "${promotion_sha256}" \
+  --arg pre_tag_admission_sha256 "${pre_tag_admission_sha256}" \
   --arg source_mapping_sha256 "${mapping_sha256}" \
   --arg source_evidence_sha256 "${source_evidence_sha256}" \
   --arg source_archive_sha256 "${source_archive_sha256}" \
@@ -823,6 +867,8 @@ jq -n \
         check_sha256: $check_sha256,
         build_sha256: $build_sha256,
         promotion_sha256: $promotion_sha256,
+        pre_tag_admission_sha256: $pre_tag_admission_sha256,
+        pre_tag_admission_verified: true,
         frozen_manifest_sha256: $frozen_manifest_sha256,
         checksum_sha256: $checksum_sha256,
         frozen_checksum_count: $frozen_checksum_count,
@@ -869,7 +915,8 @@ if ! jq -e \
   --arg channel "${AIT_RELEASE_CHANNEL}" \
   --arg source_control_sha "${AIT_RELEASE_SOURCE_CONTROL_SHA}" \
   --arg frozen_manifest_sha256 "${AIT_RELEASE_FROZEN_MANIFEST_SHA256}" \
-  --arg checksum_sha256 "${AIT_RELEASE_CHECKSUM_SHA256}" '
+  --arg checksum_sha256 "${AIT_RELEASE_CHECKSUM_SHA256}" \
+  --arg pre_tag_admission_sha256 "${pre_tag_admission_sha256}" '
     .contract == "ait.release.family.protected-promotion/v1" and
     .status == "authorized_for_explicit_endpoint_promotion" and
     .release_id == $release_id and .channel == $channel and
@@ -877,6 +924,8 @@ if ! jq -e \
     .dossier.source_workflow_sha == $source_control_sha and
     .dossier.frozen_manifest_sha256 == $frozen_manifest_sha256 and
     .dossier.checksum_sha256 == $checksum_sha256 and
+    .dossier.pre_tag_admission_verified == true and
+    .dossier.pre_tag_admission_sha256 == $pre_tag_admission_sha256 and
     .dossier.native_promotion_readback_equal == true and
     .dossier.admission_replay.model ==
       "immutable-tag-native-admission/v1" and
