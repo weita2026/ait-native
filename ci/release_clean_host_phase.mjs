@@ -407,14 +407,30 @@ function releaseBinding(config, status, options) {
 }
 
 async function fetchBytes(url, label) {
-  const response = await fetch(url, {
-    redirect: "follow",
-    headers: { "User-Agent": "ait-native-clean-host/v1" },
-  });
-  if (!response.ok) {
-    fail(`${label} returned HTTP ${response.status}: ${url}`, 69);
+  // A stalled connection to the release or repository host has held a leg
+  // until the job timeout; bound every attempt and retry transient
+  // failures, while HTTP error statuses keep failing closed immediately.
+  const attempts = 3;
+  let lastError = null;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      const response = await fetch(url, {
+        redirect: "follow",
+        headers: { "User-Agent": "ait-native-clean-host/v1" },
+        signal: AbortSignal.timeout(120_000),
+      });
+      if (!response.ok) {
+        fail(`${label} returned HTTP ${response.status}: ${url}`, 69);
+      }
+      return Buffer.from(await response.arrayBuffer());
+    } catch (error) {
+      if (error?.exitCode !== undefined) {
+        throw error;
+      }
+      lastError = error;
+    }
   }
-  return Buffer.from(await response.arrayBuffer());
+  fail(`${label} did not complete after ${attempts} bounded attempts: ${url}: ${lastError}`, 69);
 }
 
 function releaseDownloadUrl(repository, tag, name) {
