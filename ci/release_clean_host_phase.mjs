@@ -1562,7 +1562,11 @@ async function wingetContext(
       files: manifests.overlay,
     };
   }
-  const list = recorder.run(
+  // Source-correlated listing cannot see a local-manifest portable install
+  // on hosted runners, so the list stays recorded observability while the
+  // receipt authority is the Windows uninstall registration that WinGet
+  // itself writes for the package identity.
+  recorder.run(
     winget,
     [
       "list",
@@ -1570,15 +1574,33 @@ async function wingetContext(
       config.endpoints.winget.identity,
       "--exact",
       "--disable-interactivity",
-      // The readback refreshes the default sources, and hosted runners have
-      // never accepted the msstore agreements; without acceptance the list
-      // cancels after a successful install.
       "--accept-source-agreements",
     ],
-    { label: "WinGet package receipt readback" },
+    { label: "WinGet source-correlated list observability", recordOnly: true },
   );
-  if (!list.stdout.includes(version)) {
-    fail("WinGet list does not report the exact installed version");
+  const registrationScript =
+    "$identity = '" +
+    config.endpoints.winget.identity +
+    "';" +
+    "$roots = @(" +
+    "'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall'," +
+    "'HKLM:\\SOFTWARE\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall'," +
+    "'HKCU:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall'" +
+    ");" +
+    "$versions = foreach ($root in $roots) {" +
+    "  Get-ChildItem -Path $root -ErrorAction SilentlyContinue |" +
+    "    Where-Object { $_.PSChildName -like ($identity + '*') } |" +
+    "    ForEach-Object { (Get-ItemProperty -Path $_.PSPath).DisplayVersion }" +
+    "};" +
+    "if (-not $versions) { exit 3 };" +
+    "$versions -join \"`n\"";
+  const registration = recorder.run(
+    "powershell.exe",
+    ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", registrationScript],
+    { label: "WinGet package registration readback" },
+  );
+  if (!registration.stdout.includes(version)) {
+    fail("WinGet package registration does not report the exact installed version");
   }
   const aitPath = requireCommand("ait.exe");
   const serverPath = requireCommand("ait-server.exe");
@@ -1617,14 +1639,17 @@ async function wingetContext(
       }
     },
     uninstall() {
+      // Source-correlated identity lookup cannot see the local-manifest
+      // portable install on hosted runners; the local manifest names the
+      // exact package for removal instead.
       recorder.run(
         winget,
         [
           "uninstall",
-          "--id",
-          config.endpoints.winget.identity,
-          "--exact",
+          "--manifest",
+          manifests.validationRoot,
           "--disable-interactivity",
+          "--accept-source-agreements",
         ],
         { label: "WinGet uninstall" },
       );
