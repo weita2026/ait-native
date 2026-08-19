@@ -1564,7 +1564,17 @@ async function wingetContext(
   }
   const list = recorder.run(
     winget,
-    ["list", "--id", config.endpoints.winget.identity, "--exact", "--disable-interactivity"],
+    [
+      "list",
+      "--id",
+      config.endpoints.winget.identity,
+      "--exact",
+      "--disable-interactivity",
+      // The readback refreshes the default sources, and hosted runners have
+      // never accepted the msstore agreements; without acceptance the list
+      // cancels after a successful install.
+      "--accept-source-agreements",
+    ],
     { label: "WinGet package receipt readback" },
   );
   if (!list.stdout.includes(version)) {
