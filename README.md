@@ -115,9 +115,10 @@ generated block.
 
 ## Upgrading from 0.x
 
-There is no `ait install` command in 1.0. Install or upgrade the `ait-native`
-package through your selected package manager, verify it with `ait --version`,
-then run `ait init` only when creating a new 1.0 repository authority. Keep the
+Install or upgrade the `ait-native` package through your selected package
+manager, which replaces the 0.x `ait install` workflow. Verify the result with
+`ait --version`, then run `ait init` only when creating a new 1.0 repository
+authority. Keep the
 Git repository and its history, but do not assume that a release candidate can
 migrate an existing 0.x `.ait` authority in place. Preserve the old authority
 for recovery and use a clean clone or a new repository authority unless the
