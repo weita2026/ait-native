@@ -266,9 +266,15 @@ class Recorder {
     });
     const allowed = options.allowed ?? [0];
     if (options.recordOnly !== true && !allowed.includes(status)) {
-      fail(
-        `${options.label ?? command} failed with ${status}: ${tail(stderr || stdout, 1200)}`,
-      );
+      // The head of the output carries the actual error line for commands
+      // that append long usage text; keep the head and tail halves of the
+      // excerpt budget so the failure stays diagnosable.
+      const text = stderr || stdout;
+      const excerpt =
+        text.length <= 1200
+          ? text
+          : `${text.slice(0, 600)}\n[...]\n${tail(text, 600)}`;
+      fail(`${options.label ?? command} failed with ${status}: ${excerpt}`);
     }
     return { status, stdout, stderr };
   }
@@ -1509,6 +1515,12 @@ async function wingetContext(
   candidateStage = null,
 ) {
   const winget = requireCommand("winget.exe");
+  // Installing from a local manifest requires the LocalManifestFiles
+  // setting; hosted runners never persist it, validation alone is exempt,
+  // and the enablement is idempotent for an administrator session.
+  recorder.run(winget, ["settings", "--enable", "LocalManifestFiles"], {
+    label: "WinGet local manifest enablement",
+  });
   const transport = candidateStage ? await startCandidateAssetServer(candidateStage) : null;
   let manifests;
   try {
