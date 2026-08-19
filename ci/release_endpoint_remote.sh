@@ -1741,6 +1741,12 @@ case "${mode}" in
     else
       winget_status=community_manifest_assets_published_submission_required
     fi
+    # The prepublish workflow emits the aggregate artifact digest as bare
+    # hex while the candidate digest arrives prefixed; normalize the shape
+    # before the strict gates so a malformed digest still fails closed.
+    if [[ ${AIT_PREPUBLISH_AGGREGATE_ARTIFACT_DIGEST} =~ ^[0-9a-f]{64}$ ]]; then
+      AIT_PREPUBLISH_AGGREGATE_ARTIFACT_DIGEST="sha256:${AIT_PREPUBLISH_AGGREGATE_ARTIFACT_DIGEST}"
+    fi
     [[ ${AIT_PREPUBLISH_CANDIDATE_ARTIFACT_DIGEST} =~ ^sha256:[0-9a-f]{64}$ ]]
     [[ ${AIT_PREPUBLISH_AGGREGATE_ARTIFACT_DIGEST} =~ ^sha256:[0-9a-f]{64}$ ]]
     [[ ${AIT_PREPUBLISH_AGGREGATE_STATUS_SHA256} =~ ^[0-9a-f]{64}$ ]]
