@@ -1503,7 +1503,17 @@ async function wingetManifests(config, version, root, candidateStage = null, bas
 }
 
 function wingetArgs(action, manifestRoot) {
-  return [action, "--manifest", manifestRoot, "--disable-interactivity"];
+  // Hosted runners always execute as administrator, and WinGet refuses to
+  // uninstall a user-scope package from an administrator session; machine
+  // scope keeps the portable registration and removal deterministic.
+  return [
+    action,
+    "--manifest",
+    manifestRoot,
+    "--scope",
+    "machine",
+    "--disable-interactivity",
+  ];
 }
 
 async function wingetContext(
