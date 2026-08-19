@@ -1,5 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
+set -E
+
+# Strict mode kills the script on the first failing command, and several
+# external commands fail without printing; name the dying command so no
+# publication or readback failure is ever silent. Errtrace carries the trap
+# into functions, and the command text is reported before expansion, so no
+# secret material is added to the log.
+trap 'printf "release_endpoint_remote.sh failed at line %s with status %s: %s\n" \
+  "${LINENO}" "$?" "${BASH_COMMAND}" >&2' ERR
 
 if [[ $# -ne 3 ]]; then
   printf '%s\n' \
