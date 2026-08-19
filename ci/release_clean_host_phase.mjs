@@ -1298,6 +1298,18 @@ function debianVersion(version) {
   return version.replace(/-rc\.([1-9]\d*)$/, "~rc.$1");
 }
 
+function aptAcquireBounds() {
+  // Hosted x86_64 runners intermittently stall inside apt's own HTTP client
+  // against the repository host until the job timeout; force IPv4 and bound
+  // every acquire with a timeout and retries.
+  return [
+    "-o", "Acquire::ForceIPv4=true",
+    "-o", "Acquire::http::Timeout=30",
+    "-o", "Acquire::https::Timeout=30",
+    "-o", "Acquire::Retries=3",
+  ];
+}
+
 async function configureApt(config, root, recorder, suite = config.endpoints.apt.suite) {
   const keyUrl = `${config.endpoints.apt.base_url}/ait-native-archive-keyring.gpg`;
   const key = await fetchBytes(keyUrl, "APT archive keyring");
@@ -1315,7 +1327,9 @@ async function configureApt(config, root, recorder, suite = config.endpoints.apt
   recorder.run("sudo", ["install", "-m", "0644", localSource, "/etc/apt/sources.list.d/ait-native.list"], {
     label: "APT install exact source route",
   });
-  recorder.run("sudo", ["apt-get", "update"], { label: "APT signed repository update" });
+  recorder.run("sudo", ["apt-get", ...aptAcquireBounds(), "update"], {
+    label: "APT signed repository update",
+  });
   for (const identity of ["ait-native", "ait-runner"]) {
     const result = recorder.run("apt-cache", ["search", "--names-only", `^${identity}$`], {
       label: `APT exact search ${identity}`,
@@ -1338,13 +1352,14 @@ function aptContext(row, version, recorder, upgrade = false, candidateStage = nu
     : `${packageName}=${expectedVersion}`;
   const args = [
     "apt-get",
+    ...aptAcquireBounds(),
     "install",
     "--yes",
     "--no-install-recommends",
     selector,
   ];
   if (upgrade) {
-    args.splice(2, 0, "--only-upgrade");
+    args.splice(args.indexOf("install") + 1, 0, "--only-upgrade");
   }
   recorder.run("sudo", args, { label: upgrade ? "APT exact upgrade" : "APT exact install" });
   const installed = recorder
