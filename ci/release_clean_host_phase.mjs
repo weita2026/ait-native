@@ -1469,12 +1469,18 @@ async function wingetManifests(config, version, root, candidateStage = null, bas
     let text = readFileSync(original, "utf8");
     if (name.endsWith(".installer.yaml")) {
       let replacements = 0;
-      text = text.replace(/^(\s*InstallerUrl:\s*)(\S+)\s*$/gm, (_line, prefix, url) => {
-        const assetName = path.basename(new URL(url).pathname);
-        localCandidateAsset(candidateStage, assetName);
-        replacements += 1;
-        return `${prefix}${baseUrl}/${encodeURIComponent(assetName)}`;
-      });
+      // The generated stable manifest quotes its URLs; accept an optional
+      // matched double quote and preserve the original quoting byte-for-byte
+      // in the rewritten transport line.
+      text = text.replace(
+        /^(\s*InstallerUrl:\s*)("?)(\S+?)\2\s*$/gm,
+        (_line, prefix, quote, url) => {
+          const assetName = path.basename(new URL(url).pathname);
+          localCandidateAsset(candidateStage, assetName);
+          replacements += 1;
+          return `${prefix}${quote}${baseUrl}/${encodeURIComponent(assetName)}${quote}`;
+        },
+      );
       if (replacements !== 2) {
         fail("WinGet candidate manifest did not expose exactly two installer URLs");
       }
