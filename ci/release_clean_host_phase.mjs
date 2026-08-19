@@ -1602,8 +1602,26 @@ async function wingetContext(
   if (!registration.stdout.includes(version)) {
     fail("WinGet package registration does not report the exact installed version");
   }
-  const aitPath = requireCommand("ait.exe");
-  const serverPath = requireCommand("ait-server.exe");
+  // The portable install modifies the persisted PATH, which this already
+  // running process and its children never observe; resolve the aliases
+  // through WinGet's Links directories first.
+  const wingetAliasPath = (name) => {
+    const candidates = [];
+    if (process.env.ProgramFiles) {
+      candidates.push(path.join(process.env.ProgramFiles, "WinGet", "Links", name));
+    }
+    if (process.env.LOCALAPPDATA) {
+      candidates.push(path.join(process.env.LOCALAPPDATA, "Microsoft", "WinGet", "Links", name));
+    }
+    for (const candidate of candidates) {
+      if (existsSync(candidate)) {
+        return candidate;
+      }
+    }
+    return null;
+  };
+  const aitPath = wingetAliasPath("ait.exe") ?? requireCommand("ait.exe");
+  const serverPath = wingetAliasPath("ait-server.exe") ?? requireCommand("ait-server.exe");
   return {
     ait: commandSpec(aitPath),
     server: commandSpec(serverPath),
@@ -1613,7 +1631,7 @@ async function wingetContext(
     },
     async lifecycle() {
       const script =
-        "$link=Get-Item (Get-Command ait-server.exe).Source;" +
+        `$link=Get-Item '${serverPath}';` +
         "$serverPath=@($link.Target)[0];" +
         "if(-not $serverPath){$serverPath=$link.FullName}" +
         "elseif(-not [IO.Path]::IsPathRooted($serverPath)){$serverPath=Join-Path $link.DirectoryName $serverPath};" +
@@ -1653,9 +1671,12 @@ async function wingetContext(
         ],
         { label: "WinGet uninstall" },
       );
+      if (existsSync(aitPath)) {
+        fail("WinGet uninstall retained the ait portable alias");
+      }
       const readback = spawnSync("where.exe", ["ait.exe"], { encoding: "utf8" });
       if (readback.status === 0) {
-        fail("WinGet uninstall retained the ait portable alias");
+        fail("WinGet uninstall retained the ait portable alias on PATH");
       }
     },
   };
