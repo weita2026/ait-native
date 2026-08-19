@@ -1458,9 +1458,23 @@ case "${mode}" in
         apt_update_required=false
       fi
     else
-      if [[ -e ${clone_root}/pool || -e ${clone_root}/dists ||
+      # The target suite has never been published. Repository content is
+      # legitimate when every existing suite is complete; only a genuinely
+      # torn state fails closed: a pool or keyring without any dists, or an
+      # existing suite directory lacking its own InRelease.
+      apt_prior_state=clean
+      if [[ -d ${clone_root}/dists ]]; then
+        while IFS= read -r prior_suite_root; do
+          if [[ ! -f ${prior_suite_root}/InRelease ]]; then
+            apt_prior_state=incomplete
+          fi
+        done < <(find "${clone_root}/dists" -mindepth 1 -maxdepth 1 -type d)
+      elif [[ -e ${clone_root}/pool || -e ${clone_root}/dists ||
         -e ${clone_root}/ait-native-archive-keyring.gpg ||
         -e ${clone_root}/ait-native-archive-keyring.asc ]]; then
+        apt_prior_state=incomplete
+      fi
+      if [[ ${apt_prior_state} == incomplete ]]; then
         printf 'apt repository contains an incomplete prior publication\n' >&2
         exit 65
       fi
