@@ -60,13 +60,12 @@ modes; the generic examples in this README never override it.
 
 ## Local and reviewed workflows
 
-AIT has three workflow presets:
+AIT has two workflow presets:
 
 | Mode | Authoring and closeout |
 | --- | --- |
 | `solo_local` | Task, Change, Snapshot, and `ait task land` all stay local unless you explicitly promote to a remote. No reviewer, no server. |
 | `solo_remote` | You prepare one exact Patchset with `ait workflow ready <change-id> --apply`; a reviewer runs `ait workflow land <change-id> --apply`. |
-| `team_remote` | The same author-ready and reviewer-land boundary, with remote-backed reviewable Changes for team work. |
 
 With sprint mode on, start from one exact sprint item:
 
