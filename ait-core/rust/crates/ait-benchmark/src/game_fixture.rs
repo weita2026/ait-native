@@ -535,7 +535,9 @@ mod tests {
         let evaluator = fs::read_to_string(manifest_dir.join(&manifest.evaluator_path)).unwrap();
         assert!(evaluator.contains("candidatePath(\"RELEASE.txt\")"));
         assert!(!evaluator.contains("candidatePath(\"docs/RELEASE.txt\")"));
-        assert!(evaluator.contains(r"/(?:scripts\/release-check\.mjs|npm run release-check)/"));
+        assert!(
+            evaluator.contains(r"/(?:scripts\/release-check\.mjs|npm run release(?:-|:)check)/")
+        );
     }
 
     #[test]

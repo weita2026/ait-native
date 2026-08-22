@@ -151,14 +151,14 @@ fn markdown_path_helpers_match_expected_shape() {
         "release/guides/LOCAL_QUICKSTART.md",
         false
     ));
-    assert!(path_is_projected_out_for_workspace(
+    assert!(!path_is_projected_out_for_workspace(
         ".",
-        "docs/sprints/card.task_graph.json",
+        "docs/sprints/data.json",
         false
     ));
     assert!(path_is_projected_out_for_workspace(
         ".",
-        "docs/sprints/card.task_graph.json",
+        "docs/sprints/data.json",
         true
     ));
 }

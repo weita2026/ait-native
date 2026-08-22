@@ -41,12 +41,7 @@ pub fn path_is_projected_out_for_workspace(
     if is_lineage_only_markdown_artifact_path(&normalized) {
         return true;
     }
-    !is_worktree && is_retired_task_dag_artifact_path(&normalized)
-}
-
-fn is_retired_task_dag_artifact_path(normalized: &str) -> bool {
-    // Keep already-authored Task DAG files inert without deleting user data.
-    normalized.starts_with("docs/sprints/") && normalized.ends_with(".task_graph.json")
+    false
 }
 
 pub fn workspace_path_is_ignored(

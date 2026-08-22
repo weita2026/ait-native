@@ -1985,13 +1985,7 @@ fn validate_storefront_readme(
             "{surface} storefront copy contains an unresolved release token."
         ));
     }
-    for legacy_claim in [
-        "Jira-like",
-        "parallel AI execution",
-        "compact task DAG",
-        "90 seconds",
-        "task-DAG positioning",
-    ] {
+    for legacy_claim in ["Jira-like", "parallel AI execution", "90 seconds"] {
         if readme.contains(legacy_claim) {
             return Err(format!(
                 "{surface} storefront copy preserves legacy claim {legacy_claim:?}."

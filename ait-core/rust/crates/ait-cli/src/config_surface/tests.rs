@@ -73,36 +73,36 @@ fn repository_index_is_read_only_and_removed_payload_fields_fail_before_mutation
 }
 
 #[test]
-fn retired_task_dag_config_is_inert_and_preserved() {
+fn unknown_config_extension_is_inert_and_preserved() {
     let (_temp, repo) = initialized_repo();
     let config_path = repo.root.join(".ait/config.json");
     let mut raw_config = parse_object_or_empty(&std::fs::read_to_string(&config_path).unwrap());
-    let legacy_task_dag = json!({"allow_multi_worker": true});
-    raw_config.insert("task_dag".to_string(), legacy_task_dag.clone());
+    let extension_value = json!({"keep": true});
+    raw_config.insert("future_extension".to_string(), extension_value.clone());
     std::fs::write(
         &config_path,
         encode_value_pretty_with_newline_error_string(&JsonValue::Object(raw_config)).unwrap(),
     )
     .unwrap();
 
-    let repo_with_legacy_config =
-        RepoRuntime::discover_from_path(&repo.root).expect("runtime with legacy config");
-    assert!(config_show(&repo_with_legacy_config)
+    let repo_with_extension =
+        RepoRuntime::discover_from_path(&repo.root).expect("runtime with unknown extension");
+    assert!(config_show(&repo_with_extension)
         .unwrap()
-        .get("task_dag")
+        .get("future_extension")
         .is_none());
 
     let updated = config_set(
-        &repo_with_legacy_config,
+        &repo_with_extension,
         &ConfigSetRequest {
             default_model: Some("test-model".to_string()),
             ..ConfigSetRequest::default()
         },
     )
     .expect("unrelated config update");
-    assert!(updated.get("task_dag").is_none());
+    assert!(updated.get("future_extension").is_none());
     let preserved = parse_object_or_empty(&std::fs::read_to_string(&config_path).unwrap());
-    assert_eq!(preserved.get("task_dag"), Some(&legacy_task_dag));
+    assert_eq!(preserved.get("future_extension"), Some(&extension_value));
 }
 
 #[test]

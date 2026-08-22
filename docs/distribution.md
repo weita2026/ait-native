@@ -285,10 +285,10 @@ forks, and source traceability.
 ## Public 0.x To 1.0 Transition
 
 The public 0.x package page is historical. Its requirement to run `ait install`
-as a second installation step and its Task-DAG, parallel-agent, chat-dispatch,
-and server-first positioning do not describe the 1.0 product. The 1.0 start
-command is `ait init`; `ait install` is absent rather than retained as a
-compatibility or onboarding path.
+as a second installation step and its previous orchestration, parallel-agent,
+chat-dispatch, and server-first positioning do not describe the 1.0 product.
+The 1.0 start command is `ait init`; `ait install` is absent rather than
+retained as a compatibility or onboarding path.
 
 Keep the existing Git repository and history when evaluating 1.0. A release
 candidate does not by itself admit in-place reuse of legacy 0.x `.ait` data.

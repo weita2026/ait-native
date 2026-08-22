@@ -37,36 +37,6 @@ fn native_snapshot_create_excludes_markdown_paths_without_planning_only_artifact
 }
 
 #[test]
-fn native_snapshot_create_projects_out_retired_task_dag_files() {
-    let temp = init_repo("https://example.test");
-    let root = temp.path();
-    write_file(
-        &root.join("docs/sprints/card.task_graph.json"),
-        "{\"nodes\": []}\n",
-    );
-    write_file(&root.join("src/retained.rs"), "pub fn retained() {}\n");
-
-    let snapshot = json_output(
-        root,
-        &[
-            "snapshot",
-            "create",
-            "--message",
-            "ignore retired task DAG file",
-            "--json",
-        ],
-    );
-    let snapshot_paths = snapshot["files"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|row| row["path"].as_str().unwrap())
-        .collect::<Vec<_>>();
-    assert!(snapshot_paths.contains(&"src/retained.rs"));
-    assert!(!snapshot_paths.contains(&"docs/sprints/card.task_graph.json"));
-}
-
-#[test]
 fn native_status_and_diff_filter_markdown_without_status_manifest_cache() {
     let temp = init_repo("https://example.test");
     let root = temp.path();

@@ -257,7 +257,7 @@ async function checkStartup() {
     const releaseDocument = await readFile(candidatePath("RELEASE.txt"), "utf8");
     assert.match(
       releaseDocument,
-      /(?:scripts\/release-check\.mjs|npm run release-check)/,
+      /(?:scripts\/release-check\.mjs|npm run release(?:-|:)check)/,
     );
   }
 }

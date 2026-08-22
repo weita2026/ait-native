@@ -617,7 +617,7 @@ fn remote_task_create_response_rejects_binary_allocator_collision() {
         &json!({
             "task_id": "RT-2698",
             "repo_name": "ait",
-            "title": "Remove ait_server native plan and DAG compatibility",
+            "title": "Remove ait_server native planning compatibility",
             "intent": "Historical unrelated task",
             "plan_id": "PR-OLD",
             "origin_plan_revision_id": "plan-revision:old",

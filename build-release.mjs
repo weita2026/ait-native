@@ -1079,9 +1079,7 @@ async function validatePublicReadme() {
     "ait workflow local-land",
     "Jira-like",
     "parallel AI execution",
-    "compact task DAG",
     "90 seconds",
-    "task-DAG positioning",
   ]) {
     if (readme.includes(forbidden)) {
       fail(`public README teaches a manual workflow step: ${JSON.stringify(forbidden)}`);
@@ -1783,7 +1781,7 @@ async function validateBuildInputs(expectedGitCommit) {
       fail(`npm storefront README is missing ${JSON.stringify(required)}`);
     }
   }
-  for (const forbidden of ["90 seconds", "task-DAG positioning"]) {
+  for (const forbidden of ["90 seconds"]) {
     if (nodeReadme.includes(forbidden)) {
       fail(`npm storefront copy contains stale wording ${JSON.stringify(forbidden)}`);
     }
@@ -1791,7 +1789,7 @@ async function validateBuildInputs(expectedGitCommit) {
   if ((nodeReadme.match(/@AIT_NPM_VERSION@/gu) ?? []).length !== 1) {
     fail("npm storefront README must contain exactly one version token");
   }
-  for (const legacyClaim of ["Jira-like", "parallel AI execution", "compact task DAG"]) {
+  for (const legacyClaim of ["Jira-like", "parallel AI execution"]) {
     if (nodeReadme.includes(legacyClaim)) {
       fail(`npm storefront README preserves legacy claim ${JSON.stringify(legacyClaim)}`);
     }

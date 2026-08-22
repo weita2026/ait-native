@@ -635,7 +635,7 @@ function firstLand(recorder, aitSpec, root, expectedText, priorState = null) {
     { cwd: root, label: "candidate task start" },
   );
   const taskId = started.task_id;
-  const worktree = started.worktree?.open_path ?? started.worktree?.path;
+  const worktree = started.edit_root;
   if (!/^LT-[0-9]{4,}$/.test(taskId ?? "") || !path.isAbsolute(worktree ?? "")) {
     fail("candidate task start returned no exact Task or worktree");
   }
@@ -660,7 +660,10 @@ function firstLand(recorder, aitSpec, root, expectedText, priorState = null) {
     { cwd: worktree, label: "candidate task land", allowed: [0, 2] },
   );
   let resumedCloseout = false;
-  if (landed.task_status === "completed" && landed.closeout_status !== "complete") {
+  if (
+    landed.closeout?.task_status === "completed" &&
+    landed.closeout?.status !== "complete"
+  ) {
     // The land consumes the bound worktree's line head, so it must start
     // inside that worktree; Windows cannot remove a directory that is still
     // a process working directory, so the closeout reports partial with
@@ -676,9 +679,9 @@ function firstLand(recorder, aitSpec, root, expectedText, priorState = null) {
     resumedCloseout = true;
   }
   if (
-    landed.task_status !== "completed" ||
-    landed.closeout_status !== "complete" ||
-    landed.plan_checklist_closeout?.status !== "synced"
+    landed.closeout?.task_status !== "completed" ||
+    landed.closeout?.status !== "complete" ||
+    landed.closeout?.plan_status !== "synced"
   ) {
     fail("candidate first land did not complete exact Task and Plan closeout");
   }

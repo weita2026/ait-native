@@ -1,6 +1,6 @@
 {
   "contract": "ait-agent-token-benchmark-protocol/v1",
-  "protocol_revision": "game-development-2026-08-22.9",
+  "protocol_revision": "game-development-2026-08-22.10",
   "subject": {
     "domain": "deterministic-static-web-2d-plane-shooter-development",
     "measured_quantity": "provider-reported token usage of an AI agent completing an accepted equivalent repository task",
@@ -12,7 +12,6 @@
     "workflow_mode": "solo_local",
     "core_sprint_mode": "off",
     "public_ait_command": false,
-    "task_dag_product_supported": false,
     "ait_server_connection_allowed": false,
     "remote_ait_authority_allowed": false,
     "loopback_static_game_server_is_fixture_only": true,
@@ -33,7 +32,7 @@
         },
         {
           "id": "ait_linear_single_session",
-          "repository_surface": "current non-DAG solo_local sprint-off AIT Task, Snapshot, inspection, and local-land workflow",
+          "repository_surface": "current solo_local sprint-off AIT Task, Snapshot, inspection, and local-land workflow",
           "required_evidence": "effective solo_local sprint-off authority plus task-relevant local AIT workflow commands without Plan binding, raw Git, or ait-server substitution"
         }
       ],
@@ -45,8 +44,7 @@
         "remote-ci",
         "remote-land",
         "ait-server",
-        "remote-ait-authority",
-        "retired-task-dag"
+        "remote-ait-authority"
       ]
     },
     "optional_scoped_context": {
@@ -54,7 +52,7 @@
       "mode": {
         "id": "ait_scoped_brief_single_session",
         "repository_surface": "one fresh AIT linear session with one benchmark-owned compact execution brief",
-        "claim_boundary": "benchmark context experiment; never describe as current AIT Task DAG behavior"
+        "claim_boundary": "benchmark context experiment; it does not change the current AIT product workflow"
       },
       "brief_constraints": [
         "derived from the shared task contract",
@@ -314,7 +312,6 @@
   "non_goals": [
     "claim AIT always uses fewer tokens than Git",
     "claim AIT is faster or cheaper for every repository task",
-    "restore or advertise Task DAG product behavior",
     "compare different model providers inside one AIT-versus-Git claim",
     "generalize game-development results to unrelated domains",
     "treat token savings alone as developer productivity"

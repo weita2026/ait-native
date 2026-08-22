@@ -17,7 +17,7 @@ pub const AGENT_TOKEN_RUN_SUMMARY_CONTRACT: &str = "ait-agent-token-benchmark-ru
 pub const AGENT_TOKEN_REPORT_CONTRACT: &str = "ait-agent-token-benchmark-report/v1";
 pub const AGENT_TOKEN_ENVIRONMENT_CONTRACT: &str = "ait-agent-token-benchmark-environment/v1";
 pub const AGENT_TOKEN_BROWSER_REPORT_CONTRACT: &str = "ait-agent-token-browser-report/v1";
-pub const AGENT_TOKEN_PROTOCOL_REVISION: &str = "game-development-2026-08-22.9";
+pub const AGENT_TOKEN_PROTOCOL_REVISION: &str = "game-development-2026-08-22.10";
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]

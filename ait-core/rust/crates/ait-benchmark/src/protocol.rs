@@ -560,7 +560,7 @@ mod tests {
     }
 
     #[test]
-    fn compiled_agent_token_protocol_freezes_non_dag_game_comparison() {
+    fn compiled_agent_token_protocol_freezes_linear_game_comparison() {
         let protocol: serde_json::Value =
             serde_json::from_str(crate::AGENT_TOKEN_PROTOCOL_V1_JSON).unwrap();
         assert_eq!(
@@ -569,7 +569,7 @@ mod tests {
         );
         assert_eq!(
             protocol["protocol_revision"],
-            serde_json::json!("game-development-2026-08-22.9")
+            serde_json::json!("game-development-2026-08-22.10")
         );
         assert_eq!(protocol["workloads"].as_array().unwrap().len(), 5);
         assert_eq!(
@@ -581,10 +581,6 @@ mod tests {
         );
         assert_eq!(
             protocol["product_boundary"]["python_allowed"],
-            serde_json::json!(false)
-        );
-        assert_eq!(
-            protocol["product_boundary"]["task_dag_product_supported"],
             serde_json::json!(false)
         );
         assert_eq!(

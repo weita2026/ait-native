@@ -652,7 +652,7 @@ for required_readme_text in \
   'No commercial or proprietary license applies to a public 1.0 source path'; do
   grep -F "${required_readme_text}" "${public_readme}" >/dev/null
 done
-if grep -E '@AIT_[A-Z0-9_]+@|Jira-like|parallel AI execution|compact task DAG|mkdir -p docs/sprints|90 seconds|task-DAG positioning|team_remote' \
+if grep -E '@AIT_[A-Z0-9_]+@|Jira-like|parallel AI execution|mkdir -p docs/sprints|90 seconds|team_remote' \
   "${public_readme}" >/dev/null; then
   printf 'public README contains an unresolved token, stale positioning, or manual sprint bootstrap\n' >&2
   exit 65
