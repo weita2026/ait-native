@@ -225,7 +225,7 @@ test("npm admits a glibc optional package and omits it for musl", async (context
     `${JSON.stringify(
       {
         name: "@ait-native-test/glibc-addon",
-        version: "1.0.0",
+        version: "1.0.1",
         os: ["linux"],
         cpu: ["x64"],
         libc: ["glibc"],
@@ -268,7 +268,7 @@ test("npm admits a glibc optional package and omits it for musl", async (context
       `${JSON.stringify(
         {
           name: `ait-native-libc-${libc}-consumer`,
-          version: "1.0.0",
+          version: "1.0.1",
           private: true,
           optionalDependencies: {
             "@ait-native-test/glibc-addon": `file:${relativeArchive}`,

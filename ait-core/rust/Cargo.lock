@@ -30,7 +30,7 @@ dependencies = [
 
 [[package]]
 name = "ait-agent-core"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "ait-core",
  "base64",
@@ -53,7 +53,7 @@ dependencies = [
 
 [[package]]
 name = "ait-agent-worker"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "ait-agent-core",
  "ait-core",
@@ -88,7 +88,7 @@ dependencies = [
 
 [[package]]
 name = "ait-cli"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "ait-agent-core",
  "ait-core",
@@ -135,7 +135,7 @@ dependencies = [
 
 [[package]]
 name = "ait-napi"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "ait-agent-core",
  "ait-agent-worker",
@@ -148,7 +148,7 @@ dependencies = [
 
 [[package]]
 name = "ait-py"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "ait-agent-core",
  "ait-agent-worker",

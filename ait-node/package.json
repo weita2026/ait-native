@@ -1,6 +1,6 @@
 {
   "name": "@wa120/ait-native",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Agent-first, language-neutral workflow for verified repository changes",
   "homepage": "https://ait-native.dev/",
   "license": "Apache-2.0",
@@ -32,12 +32,12 @@
     "NOTICE"
   ],
   "optionalDependencies": {
-    "@wa120/ait-native-darwin-arm64": "1.0.0",
-    "@wa120/ait-native-darwin-x64": "1.0.0",
-    "@wa120/ait-native-linux-arm64": "1.0.0",
-    "@wa120/ait-native-linux-x64": "1.0.0",
-    "@wa120/ait-native-win32-arm64": "1.0.0",
-    "@wa120/ait-native-win32-x64": "1.0.0"
+    "@wa120/ait-native-darwin-arm64": "1.0.1",
+    "@wa120/ait-native-darwin-x64": "1.0.1",
+    "@wa120/ait-native-linux-arm64": "1.0.1",
+    "@wa120/ait-native-linux-x64": "1.0.1",
+    "@wa120/ait-native-win32-arm64": "1.0.1",
+    "@wa120/ait-native-win32-x64": "1.0.1"
   },
   "scripts": {
     "native:build": "node scripts/native-build.mjs build",

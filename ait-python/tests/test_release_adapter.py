@@ -32,7 +32,7 @@ def test_release_adapter_maps_all_six_targets_to_exact_abi3_wheels() -> None:
     component = manifest["components"][0]
 
     assert manifest["package"]["name"] == component["id"] == "ait-python"
-    assert manifest["package"]["version"] == "1.0.0"
+    assert manifest["package"]["version"] == "1.0.1"
     assert manifest["package"]["license_files"] == [
         {"path": "LICENSE", "role": "license"},
         {"path": "NOTICE", "role": "notice"},
@@ -43,7 +43,7 @@ def test_release_adapter_maps_all_six_targets_to_exact_abi3_wheels() -> None:
         artifact["target"]: artifact["path"]
         for artifact in component["artifacts"]
     } == {
-        target: f"dist/wheels/{expected_wheel_name(target, '1.0.0')}"
+        target: f"dist/wheels/{expected_wheel_name(target, '1.0.1')}"
         for target in targets
     }
     assert {artifact["kind"] for artifact in component["artifacts"]} == {
