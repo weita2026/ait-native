@@ -689,10 +689,6 @@ fn coerce_payload_value(
                             "{job_type} payload field `{field}` must be a boolean."
                         ))
                     }
-                } else if number.is_f64() {
-                    Err(format!(
-                        "{job_type} payload field `{field}` must be a boolean."
-                    ))
                 } else {
                     Err(format!(
                         "{job_type} payload field `{field}` must be a boolean."

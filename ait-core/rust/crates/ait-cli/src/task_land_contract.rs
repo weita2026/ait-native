@@ -204,7 +204,20 @@ pub fn attach_task_audit_land_contract(output: &mut JsonValue, use_local_scope: 
         .get("bound_plan_closeout")
         .filter(|value| value.is_object())
         .cloned();
-    let (status, recovery) = if task_status == "completed" && use_local_scope {
+    let local_closeout_evidence = output
+        .get("local_closeout_evidence")
+        .filter(|value| value.is_object())
+        .cloned();
+    let (status, recovery) = if task_status == "completed"
+        && use_local_scope
+        && local_closeout_evidence
+            .as_ref()
+            .and_then(|value| value.get("status"))
+            .and_then(JsonValue::as_str)
+            == Some("done")
+    {
+        ("complete", JsonValue::Null)
+    } else if task_status == "completed" && use_local_scope {
         (
             "inspect_or_resume_local_closeout",
             json!({
@@ -290,7 +303,11 @@ pub fn attach_task_audit_land_contract(output: &mut JsonValue, use_local_scope: 
             "status": status,
             "scope": contract["scope"].clone(),
             "plan_closeout_policy": contract["plan_closeout_policy"].clone(),
-            "evidence": plan_evidence.unwrap_or(JsonValue::Null),
+            "evidence": if use_local_scope {
+                local_closeout_evidence.unwrap_or(JsonValue::Null)
+            } else {
+                plan_evidence.unwrap_or(JsonValue::Null)
+            },
             "recovery": recovery,
         }),
     );
@@ -313,6 +330,44 @@ mod tests {
         assert_eq!(
             task_land_scope_contract(true).remote_contact_policy,
             "explicit_only"
+        );
+    }
+
+    #[test]
+    fn completed_local_audit_is_terminal_only_with_converged_closeout_evidence() {
+        let mut complete = json!({
+            "task": {
+                "task_id": "LCT-8",
+                "status": "completed",
+                "plan_id": "PR-8",
+                "plan_item_ref": "release/fix"
+            },
+            "summary": {"open_changes": 0},
+            "local_closeout_evidence": {"status": "done", "scope": "local"},
+        });
+        attach_task_audit_land_contract(&mut complete, true);
+        assert_eq!(complete["task_land_closeout"]["status"], "complete");
+        assert!(complete["task_land_closeout"]["recovery"].is_null());
+        assert_eq!(complete["task_land_closeout"]["evidence"]["status"], "done");
+
+        let mut incomplete = json!({
+            "task": {
+                "task_id": "LCT-8",
+                "status": "completed",
+                "plan_id": "PR-8",
+                "plan_item_ref": "release/fix"
+            },
+            "summary": {"open_changes": 0},
+            "local_closeout_evidence": {"status": "incomplete", "scope": "local"},
+        });
+        attach_task_audit_land_contract(&mut incomplete, true);
+        assert_eq!(
+            incomplete["task_land_closeout"]["status"],
+            "inspect_or_resume_local_closeout"
+        );
+        assert_eq!(
+            incomplete["task_land_closeout"]["recovery"]["command"],
+            "ait task land LCT-8 --local"
         );
     }
 

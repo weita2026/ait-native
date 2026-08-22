@@ -10,6 +10,16 @@ use ait_core::task_workflow_store::get_task_with_task_workflow_task_store;
 pub fn snapshot_create(repo: &RepoRuntime, message: Option<&str>) -> Result<JsonValue, String> {
     guard_repo_root_pinned_bound_worktree(repo, None, "ait snapshot create")?;
     guard_current_worktree_task_bound_authoring(repo, "snapshot create")?;
+    snapshot_create_in_current_workspace(repo, message)
+}
+
+/// Snapshot the current workspace without the task-bound authoring guard.
+/// Reserved for callers that already own the authoring boundary (fixtures and
+/// internal orchestration); the public command path stays fail-closed.
+pub(in crate::primitives) fn snapshot_create_in_current_workspace(
+    repo: &RepoRuntime,
+    message: Option<&str>,
+) -> Result<JsonValue, String> {
     guard_no_active_line_merge(repo, None, "creating a Snapshot")?;
     guard_no_planning_only_artifact_drift(repo, "ait snapshot create")?;
     let workspace_root = repo.workspace_root();
@@ -792,6 +802,18 @@ pub(super) fn guard_current_worktree_task_bound_authoring(
     command_name: &str,
 ) -> Result<(), String> {
     let Some(metadata) = current_worktree_metadata(repo)? else {
+        // The repo root stays writable only while the repository has never
+        // adopted task governance. Once any Task exists, authoring moves to
+        // task-bound worktrees and the root fails closed.
+        let task_store = repo.task_store()?;
+        if ait_core::task_store::has_tasks_with_task_store(&task_store)
+            .map_err(|err| err.to_string())?
+        {
+            return Err(format!(
+                "The repo root is not an authoring workspace once tasks govern this repository. `ait {}` requires a task-bound worktree. Start with `ait task start` and author inside the worktree it prints, or continue in the matching existing task worktree.",
+                command_name
+            ));
+        }
         return Ok(());
     };
     if metadata.bound_task_id.is_some() {
@@ -869,12 +891,10 @@ fn track_markdown_plan_head(
 fn artifact_path_candidates(repo: &RepoRuntime, artifact_path: &str) -> Vec<PathBuf> {
     let mut seen = BTreeSet::new();
     let mut candidates = Vec::new();
-    let roots = if repo.is_worktree() {
-        vec![repo.authoritative_repo_root()]
-    } else {
-        vec![repo.workspace_root(), repo.authoritative_repo_root()]
-    };
-    for root in roots {
+    // The active workspace is the authored surface. The authoritative root is
+    // only a fallback for Plan artifacts that are intentionally not
+    // materialized in a task worktree; it must never hide workspace drift.
+    for root in [repo.workspace_root(), repo.authoritative_repo_root()] {
         let path = root.join(artifact_path);
         let key = path.to_string_lossy().to_string();
         if seen.insert(key) {
@@ -901,18 +921,15 @@ fn collect_tracked_markdown_drift_paths(repo: &RepoRuntime) -> Result<Vec<String
     let tracked = current_markdown_plan_head_blob_ids(repo)?;
     let mut dirty = BTreeSet::new();
     for (artifact_path, head_blob_ids) in tracked {
-        let mut saw_existing_file = false;
+        let mut current_blob_id = None;
         for candidate in artifact_path_candidates(repo, &artifact_path) {
-            let Some(current_blob_id) = current_artifact_blob_id(&candidate)? else {
+            let Some(candidate_blob_id) = current_artifact_blob_id(&candidate)? else {
                 continue;
             };
-            saw_existing_file = true;
-            if !head_blob_ids.contains(&current_blob_id) {
-                dirty.insert(artifact_path.clone());
-                break;
-            }
+            current_blob_id = Some(candidate_blob_id);
+            break;
         }
-        if !saw_existing_file {
+        if !current_blob_id.is_some_and(|blob_id| head_blob_ids.contains(&blob_id)) {
             dirty.insert(artifact_path);
         }
     }

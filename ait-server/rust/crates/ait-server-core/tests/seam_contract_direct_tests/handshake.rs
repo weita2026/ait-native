@@ -90,10 +90,9 @@ fn handshake_advertises_contract_version_and_capabilities() {
         "server.worker_queue.kernel",
         "server.worker_queue.service",
     ] {
-        assert_eq!(
-            capabilities.contains(&json!(legacy_capability)),
-            cfg!(feature = "legacy-postgres-runtime"),
-            "legacy capability presence must match the explicit legacy feature: {legacy_capability}"
+        assert!(
+            !capabilities.contains(&json!(legacy_capability)),
+            "retired PostgreSQL capability must stay absent: {legacy_capability}"
         );
     }
 

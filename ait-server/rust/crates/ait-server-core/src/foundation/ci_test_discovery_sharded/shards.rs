@@ -313,7 +313,7 @@ pub(super) fn run_test_case_shards(
     for completion in rx {
         completed.push(completion);
     }
-    completed.sort_by(|left, right| left.index.cmp(&right.index));
+    completed.sort_by_key(|left| left.index);
     let shard_values = completed
         .into_iter()
         .map(|completion| {

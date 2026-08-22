@@ -287,23 +287,6 @@ pub fn read_tree_pack_index_without_ordinals_with_format(
         .read_tree_pack_index_without_ordinals(pack_path)
 }
 
-pub fn read_tree_pack_physical_ordinals_with_format(
-    pack_path: &str,
-    persisted_pack_format: &str,
-) -> Result<BTreeMap<String, u32>, String> {
-    let index =
-        read_tree_pack_index_without_ordinals_with_format(pack_path, persisted_pack_format)?;
-    TreePackIndexJson::stateless()
-        .entries_by_ordinal_relaxed(&index)?
-        .into_iter()
-        .map(|(ordinal, entry)| {
-            let ordinal = u32::try_from(ordinal)
-                .map_err(|_| format!("Tree pack physical ordinal exceeds u32: {ordinal}"))?;
-            Ok((entry.tree_id.to_ascii_lowercase(), ordinal))
-        })
-        .collect()
-}
-
 pub(in crate::pack_substrate) fn read_zstd_chunked_tree_pack_index_without_ordinals(
     pack_path: &str,
 ) -> Result<JsonValue, String> {
@@ -483,7 +466,6 @@ pub(in crate::pack_substrate) fn zstd_chunked_tree_member_payload_bytes(
 ) -> Result<Vec<u8>, String> {
     let entry = TreePackIndexEntry {
         tree_id: member.tree_id.clone(),
-        entry_ordinal: 0,
         entry_count: member.entry_count,
         byte_length: member.data.len(),
         checksum: member.checksum.clone(),

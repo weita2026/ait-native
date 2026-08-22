@@ -72,11 +72,6 @@ where
         }
     }
 
-    pub fn with_writer_admission(mut self, admission: Arc<BinaryDbWriterAdmission>) -> Self {
-        self.writer_admission = admission;
-        self
-    }
-
     pub fn file_store(&self) -> &S {
         &self.files
     }

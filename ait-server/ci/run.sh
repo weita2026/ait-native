@@ -57,22 +57,77 @@ if [ -n "$python_file" ]; then
   exit 1
 fi
 
-cargo test \
-  --manifest-path rust/Cargo.toml \
-  --profile ait-ci \
-  --no-run \
-  -p ait-server-core \
-  -p ait-server \
-  --lib \
-  --test seam_contract_direct_tests \
-  --features ait-server-core/patch-ci-harness
+run_patchset_gate() {
+  cargo test \
+    --manifest-path rust/Cargo.toml \
+    --locked \
+    --profile ait-ci \
+    --no-run \
+    -p ait-server-core \
+    -p ait-server \
+    --lib \
+    --test seam_contract_direct_tests \
+    --features ait-server-core/patch-ci-harness
 
-cargo test \
-  --manifest-path rust/Cargo.toml \
-  --profile ait-ci \
-  -p ait-server-core \
-  -p ait-server \
-  --lib \
-  --test seam_contract_direct_tests \
-  --features ait-server-core/patch-ci-harness \
-  --no-fail-fast
+  cargo test \
+    --manifest-path rust/Cargo.toml \
+    --locked \
+    --profile ait-ci \
+    -p ait-server-core \
+    -p ait-server \
+    --lib \
+    --test seam_contract_direct_tests \
+    --features ait-server-core/patch-ci-harness \
+    --no-fail-fast
+}
+
+run_workspace_gate() {
+  cargo check \
+    --manifest-path rust/Cargo.toml \
+    --locked \
+    --workspace \
+    --all-targets \
+    --all-features
+
+  cargo clippy \
+    --manifest-path rust/Cargo.toml \
+    --locked \
+    --workspace \
+    --all-targets \
+    --all-features \
+    -- \
+    -D warnings
+
+  cargo test \
+    --manifest-path rust/Cargo.toml \
+    --locked \
+    --workspace \
+    --all-targets \
+    --no-fail-fast
+
+  cargo test \
+    --manifest-path rust/Cargo.toml \
+    --locked \
+    --workspace \
+    --doc \
+    --no-fail-fast
+
+  cargo build \
+    --manifest-path rust/Cargo.toml \
+    --locked \
+    --workspace \
+    --release
+}
+
+case "$mode" in
+  patchset)
+    run_patchset_gate
+    ;;
+  repo)
+    run_workspace_gate
+    ;;
+  all)
+    run_patchset_gate
+    run_workspace_gate
+    ;;
+esac

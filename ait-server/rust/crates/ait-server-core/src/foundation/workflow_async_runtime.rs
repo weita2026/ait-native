@@ -168,7 +168,7 @@ fn patchset_ci_start_plan(payload: &JsonMap<String, JsonValue>) -> Result<JsonVa
     let trigger = optional_text(payload, "trigger").unwrap_or_else(|| "manual_rerun".to_string());
     let execution_profile =
         normalize_patchset_ci_execution_profile(optional_text(payload, "execution_profile"))?;
-    if optional_bool(payload, "contract_available").unwrap_or(false) != true {
+    if !optional_bool(payload, "contract_available").unwrap_or(false) {
         return Ok(json!({
             "contract": "ait.server.workflow_async.patchset_ci_start_plan.v1",
             "state": "unavailable",

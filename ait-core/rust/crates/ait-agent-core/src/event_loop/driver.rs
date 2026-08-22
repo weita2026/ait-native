@@ -116,17 +116,6 @@ enum AgentEventLoopDriverInner {
 }
 
 impl AgentEventLoopDriver {
-    pub fn new_default() -> io::Result<Self> {
-        match AgentEventLoopBackend::current_platform_default() {
-            AgentEventLoopBackend::LinuxEpoll => {
-                Self::new_for_backend(AgentEventLoopBackend::LinuxEpoll)
-            }
-            AgentEventLoopBackend::PortablePoll => {
-                Self::new_for_backend(AgentEventLoopBackend::PortablePoll)
-            }
-        }
-    }
-
     pub fn new_for_backend(backend: AgentEventLoopBackend) -> io::Result<Self> {
         match backend {
             AgentEventLoopBackend::LinuxEpoll => {

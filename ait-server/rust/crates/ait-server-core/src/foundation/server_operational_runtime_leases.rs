@@ -342,6 +342,7 @@ impl ServerOperationalRuntimeLeases {
         .map(|(worker_job, ())| worker_job)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn complete_with_domain_commit<T>(
         &self,
         store: &ServerOperationalWorkerJobStore,
@@ -389,6 +390,7 @@ impl ServerOperationalRuntimeLeases {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn fail_attempt(
         &self,
         store: &ServerOperationalWorkerJobStore,

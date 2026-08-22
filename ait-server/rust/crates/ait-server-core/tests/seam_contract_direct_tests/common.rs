@@ -13,15 +13,6 @@ fn run_seam(args: &[&str]) -> Output {
         .expect("seam binary should run")
 }
 
-#[cfg(feature = "legacy-postgres-runtime")]
-fn run_seam_without_postgres_dsn(args: &[&str]) -> Output {
-    Command::new(seam_binary_path())
-        .args(args)
-        .env_remove("AIT_NATIVE_SERVER_POSTGRES_DSN")
-        .output()
-        .expect("seam binary should run")
-}
-
 fn run_seam_with_stdin(args: &[&str], stdin: &str) -> Output {
     let mut child = Command::new(seam_binary_path())
         .args(args)

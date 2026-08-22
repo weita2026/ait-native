@@ -15,6 +15,44 @@ pub(super) fn line_record_json(line: &LineRecord) -> JsonValue {
     })
 }
 
+impl<const WRITE_LAYOUT: u32> RepoBinaryDbLocalSnapshotOperationStore<WRITE_LAYOUT> {
+    pub(crate) fn create_detached_empty_snapshot(
+        &self,
+        repo_name: &str,
+        line_name: &str,
+        message: Option<&str>,
+    ) -> Result<JsonValue, String> {
+        let line = self
+            .lines
+            .line_by_name(line_name)?
+            .ok_or_else(|| format!("Snapshot authoring line does not exist: {line_name}"))?;
+        if line.status == "archived" {
+            return Err(format!(
+                "Snapshot authoring line {line_name} is archived and cannot create an empty remote base"
+            ));
+        }
+        let snapshot = self.content.create_snapshot_content_with_parents(
+            repo_name,
+            line_name,
+            &[],
+            message,
+            false,
+        )?;
+        if snapshot.get("file_count").and_then(JsonValue::as_i64) != Some(0)
+            || snapshot
+                .get("parent_snapshot_ids")
+                .and_then(JsonValue::as_array)
+                .is_none_or(|parents| !parents.is_empty())
+        {
+            return Err(
+                "Detached empty-base Snapshot authoring produced non-empty content or ancestry."
+                    .to_string(),
+            );
+        }
+        Ok(snapshot)
+    }
+}
+
 impl<const WRITE_LAYOUT: u32> SnapshotStore
     for RepoBinaryDbLocalSnapshotOperationStore<WRITE_LAYOUT>
 {
@@ -464,7 +502,7 @@ impl<const WRITE_LAYOUT: u32> RemoteSyncLocalSnapshotSource
 
     fn snapshot_content_complete(
         &self,
-        ctx: &RemoteSyncLocalStoreContext,
+        _ctx: &RemoteSyncLocalStoreContext,
         snapshot_id: &str,
     ) -> Result<bool, String> {
         let read = self.snapshots.begin_read_txn();
@@ -475,77 +513,25 @@ impl<const WRITE_LAYOUT: u32> RemoteSyncLocalSnapshotSource
         else {
             return Ok(false);
         };
-        let graph_stats =
-            match binary_snapshot_graph_stats(&read, &self.blobs, &self.trees, &snapshot) {
-                Ok(stats) => stats,
-                Err(_) => return Ok(false),
-            };
-        if graph_stats.file_count != snapshot.file_count
-            || graph_stats.total_bytes != snapshot.total_bytes
-        {
-            return Ok(false);
-        }
-        if snapshot.record.is_remote_head_history_boundary() {
-            // A boundary Snapshot is intentionally not an upload source. The
-            // graph walk above has already proved every materializable tree
-            // and blob and matched the signed file/byte totals; requiring a
-            // reconstructed upload pack closure would reject valid sparse
-            // local reuse of content already owned by another pack.
-            return Ok(true);
-        }
-        let snapshot_ids = vec![snapshot_id.to_string()];
-        let mut object_packs = BTreeMap::new();
-        let mut tree_packs = BTreeMap::new();
-        let mut tree_pack_order = Vec::new();
-        let mut blob_locators = BTreeMap::new();
-        let mut tree_locators = BTreeMap::new();
-        let content_catalog = match binary_snapshot_content_catalog(
-            &read,
-            &self.blobs,
-            &self.tree_packs,
-            &self.trees,
-        ) {
-            Ok(catalog) => catalog,
-            Err(_) => return Ok(false),
-        };
-        let content_closure = match binary_snapshot_content_closure(
-            &read,
-            &self.trees,
-            &self.snapshots,
-            &snapshot_ids,
-            content_catalog,
-        ) {
-            Ok(closure) => closure,
-            Err(_) => return Ok(false),
-        };
-        if binary_collect_snapshot_zstd_tree_packs(
-            ctx,
-            &read,
-            &self.trees,
-            &content_closure,
-            &mut tree_packs,
-            &mut tree_pack_order,
-            &mut tree_locators,
-        )
-        .is_err()
-        {
-            return Ok(false);
-        }
-        if binary_collect_snapshot_zstd_object_packs(
-            ctx,
-            &read,
-            &self.blobs,
-            &self.object_packs,
-            &content_closure,
-            &BTreeSet::new(),
-            &mut object_packs,
-            &mut blob_locators,
-        )
-        .is_err()
-        {
-            return Ok(false);
-        }
-        Ok(true)
+        // The content write transaction commits the Snapshot, its tree-pack
+        // locator, and the root tree record under the same content lock. A
+        // read transaction therefore needs only this bounded resolved-root
+        // projection to decide whether the Snapshot can bound hydration.
+        // Descendant and physical-pack verification belongs to `gc validate`.
+        Ok(snapshot.record.is_ready()
+            && snapshot
+                .root_tree_pack_id
+                .as_deref()
+                .is_some_and(|value| !value.trim().is_empty())
+            && snapshot
+                .root_tree_pack_path
+                .as_deref()
+                .is_some_and(|value| !value.trim().is_empty())
+            && snapshot
+                .root_tree_id
+                .as_deref()
+                .is_some_and(|value| !value.trim().is_empty())
+            && snapshot.root_tree_index.is_some())
     }
 }
 
@@ -777,137 +763,6 @@ struct BinarySnapshotContentCatalog {
     tree_record_by_tree_index: BTreeMap<u32, BinaryTreeRecord>,
     tree_index_by_tree_id: BTreeMap<String, u32>,
     blob_index_by_blob_id: BTreeMap<String, u32>,
-}
-
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-struct BinarySnapshotGraphStats {
-    file_count: u64,
-    total_bytes: u64,
-}
-
-fn binary_snapshot_graph_stats<const WRITE_LAYOUT: u32>(
-    read: &BinaryDbReadTxn<'_, LocalBinaryDbFs>,
-    blobs: &BinaryDbBlobStore<LocalBinaryDbFs, WRITE_LAYOUT>,
-    trees: &BinaryDbTreeStore<LocalBinaryDbFs, WRITE_LAYOUT>,
-    snapshot: &BinarySnapshotView,
-) -> Result<BinarySnapshotGraphStats, String> {
-    let root_tree_index = snapshot.root_tree_index.ok_or_else(|| {
-        format!(
-            "Snapshot {} is missing a resolvable root tree index.",
-            snapshot.snapshot_id
-        )
-    })?;
-    let mut tree_pack_cache = BinaryDbTreeReadCache::default();
-    let mut visiting = BTreeSet::new();
-    let mut memoized = BTreeMap::new();
-    binary_tree_graph_stats(
-        read,
-        blobs,
-        trees,
-        root_tree_index,
-        snapshot.file_count,
-        snapshot.total_bytes,
-        &mut tree_pack_cache,
-        &mut visiting,
-        &mut memoized,
-    )
-}
-
-#[allow(clippy::too_many_arguments)]
-fn binary_tree_graph_stats<const WRITE_LAYOUT: u32>(
-    read: &BinaryDbReadTxn<'_, LocalBinaryDbFs>,
-    blobs: &BinaryDbBlobStore<LocalBinaryDbFs, WRITE_LAYOUT>,
-    trees: &BinaryDbTreeStore<LocalBinaryDbFs, WRITE_LAYOUT>,
-    tree_index: u32,
-    declared_file_count: u64,
-    declared_total_bytes: u64,
-    tree_pack_cache: &mut BinaryDbTreeReadCache,
-    visiting: &mut BTreeSet<u32>,
-    memoized: &mut BTreeMap<u32, BinarySnapshotGraphStats>,
-) -> Result<BinarySnapshotGraphStats, String> {
-    if let Some(stats) = memoized.get(&tree_index).copied() {
-        return Ok(stats);
-    }
-    if !visiting.insert(tree_index) {
-        return Err(format!(
-            "Cycle detected while validating Binary DB snapshot tree index {tree_index}."
-        ));
-    }
-    let result = (|| {
-        let tree = trees
-            .tree_view_at(read, tree_index)
-            .map_err(|err| err.to_string())?;
-        if tree.record.is_tombstone() {
-            return Err(format!(
-                "Binary DB snapshot references tombstoned tree index {tree_index}."
-            ));
-        }
-        let mut stats = BinarySnapshotGraphStats::default();
-        for entry in trees
-            .list_tree_entry_views_with_cache(read, &tree.tree_id, tree_pack_cache)
-            .map_err(|err| err.to_string())?
-        {
-            let contribution = match entry.entry_type.as_str() {
-                "blob" => {
-                    let blob = blobs
-                        .get_blob_view(read, &entry.target_id)
-                        .map_err(|err| err.to_string())?
-                        .ok_or_else(|| format!("Unknown Binary DB blob: {}", entry.target_id))?;
-                    if blob.record.is_tombstone() {
-                        return Err(format!(
-                            "Binary DB snapshot references tombstoned blob {}.",
-                            entry.target_id
-                        ));
-                    }
-                    BinarySnapshotGraphStats {
-                        file_count: 1,
-                        total_bytes: blob.size_bytes,
-                    }
-                }
-                "tree" => {
-                    let child = trees
-                        .get_tree_view(read, &entry.target_id)
-                        .map_err(|err| err.to_string())?
-                        .ok_or_else(|| format!("Unknown Binary DB tree: {}", entry.target_id))?;
-                    binary_tree_graph_stats(
-                        read,
-                        blobs,
-                        trees,
-                        child.tree_index,
-                        declared_file_count,
-                        declared_total_bytes,
-                        tree_pack_cache,
-                        visiting,
-                        memoized,
-                    )?
-                }
-                value => {
-                    return Err(format!(
-                        "Unsupported Binary DB tree entry kind {value} at ordinal {}.",
-                        entry.entry_ordinal
-                    ));
-                }
-            };
-            stats.file_count = stats
-                .file_count
-                .checked_add(contribution.file_count)
-                .ok_or_else(|| "Binary DB snapshot file count overflow".to_string())?;
-            stats.total_bytes = stats
-                .total_bytes
-                .checked_add(contribution.total_bytes)
-                .ok_or_else(|| "Binary DB snapshot total bytes overflow".to_string())?;
-            if stats.file_count > declared_file_count || stats.total_bytes > declared_total_bytes {
-                return Err(format!(
-                    "Binary DB snapshot tree graph exceeds declared file count or total bytes at tree index {tree_index}."
-                ));
-            }
-        }
-        Ok(stats)
-    })();
-    visiting.remove(&tree_index);
-    let stats = result?;
-    memoized.insert(tree_index, stats);
-    Ok(stats)
 }
 
 fn binary_snapshot_content_catalog<const WRITE_LAYOUT: u32>(

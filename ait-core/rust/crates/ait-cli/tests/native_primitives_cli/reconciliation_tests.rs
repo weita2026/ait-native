@@ -324,8 +324,32 @@ fn native_scheduled_reconciliation_is_remote_bounded_and_safe_only() {
 
 #[test]
 fn native_task_terminal_hook_reconciles_clean_bound_worktree() {
-    let (temp, worktree, started) = init_cli_local_draft_worktree_repo("https://example.test");
+    let temp = init_repo("https://example.test");
     let root = temp.path();
+    let config_path = root.join(".ait/config.json");
+    let mut config = parse_json_file(&config_path);
+    config["id_namespace_prefix"] = json!("WT");
+    write_file(&config_path, &format!("{}\n", encode_json_pretty(&config)));
+    let started = json_output(
+        root,
+        &[
+            "task",
+            "start",
+            "--local",
+            "--title",
+            "Native namespaced local task",
+            "--intent",
+            "exercise terminal lineage cleanup with a two-byte namespace",
+            "--json",
+        ],
+    );
+    assert_eq!(started["task_id"], json!("LWTT-0001"));
+    let worktree = PathBuf::from(
+        started["worktree"]["open_path"]
+            .as_str()
+            .or_else(|| started["worktree"]["path"].as_str())
+            .expect("local task worktree path"),
+    );
     let task_id = started["task_id"].as_str().unwrap();
     let worktree_name = started["worktree"]["name"].as_str().unwrap();
     let registry = root
@@ -346,8 +370,47 @@ fn native_task_terminal_hook_reconciles_clean_bound_worktree() {
     );
     assert_eq!(abandoned["automatic_reconciliation"]["safe_only"], json!(true));
     assert_eq!(abandoned["automatic_reconciliation"]["mutated"], json!(true));
+    let change_id = started["change"]["change_id"].as_str().unwrap();
+    let canceled_change = json_output(
+        root,
+        &["change", "show", change_id, "--local", "--json"],
+    );
+    assert_eq!(canceled_change["status"], json!("canceled"));
+    let audit = json_output(
+        root,
+        &["task", "audit", task_id, "--local", "--json"],
+    );
+    assert_eq!(audit["summary"]["open_change_count"], json!(0));
+    assert!(abandoned["automatic_reconciliation"]["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|finding| {
+            finding["code"] != json!("task.terminal_with_open_change")
+                && finding["disposition"] != json!("manual_resolution")
+    }));
     assert!(!registry.exists());
     assert!(!worktree.exists());
+    let line_after_worktree_cleanup =
+        json_output(root, &["line", "show", "feature/lwtt-0001", "--json"]);
+    assert_eq!(line_after_worktree_cleanup["status"], json!("active"));
+
+    let repeated = json_output(
+        root,
+        &["task", "abandon", task_id, "--local", "--json"],
+    );
+    assert_eq!(repeated["status"], json!("abandoned"));
+    assert_eq!(
+        repeated["automatic_reconciliation"]["mutated"],
+        json!(true)
+    );
+    let preserved_change = json_output(
+        root,
+        &["change", "show", change_id, "--local", "--json"],
+    );
+    assert_eq!(preserved_change["status"], json!("canceled"));
+    let feature_line = json_output(root, &["line", "show", "feature/lwtt-0001", "--json"]);
+    assert_eq!(feature_line["status"], json!("archived"));
 }
 
 #[test]

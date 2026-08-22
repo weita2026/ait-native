@@ -623,7 +623,7 @@ expect_failure receipt-parent-symlink node "${output_one}/build-release.mjs" \
   --out-dir "${temporary_root}/receipt-parent-link/escaped-receipt"
 public_readme=${output_one}/README.md
 for required_readme_text in \
-  'AIT turns an ordinary coding request into an isolated, sprint-bound repository' \
+  'You ask for a change in plain language. AIT gives that work its own sprint' \
   'individual developers and maintainers' \
   "python -m pip install ait-native==${python_version}" \
   'img.shields.io/github/v/release/weita2026/ait-native' \
@@ -631,14 +631,14 @@ for required_readme_text in \
   'https://github.com/weita2026/ait-native/issues/new/choose' \
   'ait init' \
   'ait --version' \
-  '## What initialization provides' \
+  '## What `ait init` gives you' \
   'https://ait-native.dev/' \
   '## Upgrading from 0.x' \
   'There is no `ait install` command in 1.0.' \
-  'AIT has three workflow presets' \
+  'AIT has two workflow presets' \
   'ait workflow ready <change-id> --apply' \
   'ait workflow land <change-id> --apply' \
-  '## Installed component boundaries' \
+  '## What each install route gives you' \
   'AGENTS.md' \
   'ait task start' \
   'ait plan sync' \
@@ -652,7 +652,7 @@ for required_readme_text in \
   'No commercial or proprietary license applies to a public 1.0 source path'; do
   grep -F "${required_readme_text}" "${public_readme}" >/dev/null
 done
-if grep -E '@AIT_[A-Z0-9_]+@|Jira-like|parallel AI execution|compact task DAG|mkdir -p docs/sprints|90 seconds|task-DAG positioning' \
+if grep -E '@AIT_[A-Z0-9_]+@|Jira-like|parallel AI execution|compact task DAG|mkdir -p docs/sprints|90 seconds|task-DAG positioning|team_remote' \
   "${public_readme}" >/dev/null; then
   printf 'public README contains an unresolved token, stale positioning, or manual sprint bootstrap\n' >&2
   exit 65
@@ -750,8 +750,8 @@ readme_drift_output=${temporary_root}/readme-drift-output
 cp -R "${output_one}" "${readme_drift_output}"
 node "${repo_root}/ci/release_monorepo_transform.mjs" \
   "${readme_drift_output}/README.md" \
-  "does not identify the repository's programming language or project type" \
-  "tries to identify the repository's programming language or project type"
+  "It never tries to" \
+  "It always tries to"
 expect_failure readme-drift node \
   "${readme_drift_output}/build-release.mjs" --validate-only
 byte_policy_drift_output=${temporary_root}/byte-policy-drift-output

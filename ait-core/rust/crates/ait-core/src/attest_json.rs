@@ -1,4 +1,4 @@
-use crate::json_support::{json, JsonCodec, JsonMap, JsonValue};
+use crate::json_support::{json, JsonMap, JsonValue};
 use crate::plan_http_client::{
     build_plan_http_request_spec, configured_repository_authority_path_segment,
     encode_path_segment, PlanHttpClientConfig, PlanHttpClientError, PlanHttpClientResult,
@@ -116,14 +116,6 @@ impl<S> AttestJson<S> {
         policy::build_minimum_provenance(author_mode, model_name)
     }
 
-    pub fn normalize_attestation_payload_json(
-        &self,
-        payload_json: &str,
-    ) -> Result<JsonValue, String> {
-        let payload = self.parse_object_payload(payload_json, "attestation payload")?;
-        self.normalize_attestation_payload(&JsonValue::Object(payload))
-    }
-
     pub fn normalize_attestation_payload(&self, payload: &JsonValue) -> Result<JsonValue, String> {
         let _ = &self.store;
         Ok(JsonValue::Object(
@@ -131,50 +123,9 @@ impl<S> AttestJson<S> {
         ))
     }
 
-    pub fn normalize_evaluation_summary_payload(
-        &self,
-        payload: &JsonValue,
-    ) -> Result<JsonValue, String> {
-        let _ = &self.store;
-        Ok(JsonValue::Object(
-            require_object(Some(payload), "evaluation summary payload")?.clone(),
-        ))
-    }
-
-    pub fn normalize_provenance_summary_payload(
-        &self,
-        payload: &JsonValue,
-    ) -> Result<JsonValue, String> {
-        let _ = &self.store;
-        Ok(JsonValue::Object(
-            require_object(Some(payload), "provenance summary payload")?.clone(),
-        ))
-    }
-
-    pub fn normalize_detail_payload(&self, payload: &JsonValue) -> Result<JsonValue, String> {
-        let _ = &self.store;
-        Ok(JsonValue::Object(
-            require_object(Some(payload), "attestation detail payload")?.clone(),
-        ))
-    }
-
-    pub fn optional_attestation_id(&self, attestation: &JsonValue) -> Option<String> {
-        let _ = &self.store;
-        normalize_optional_text(
-            attestation
-                .get("attestation_id")
-                .and_then(JsonValue::as_str),
-        )
-    }
-
     pub fn optional_patchset_id(&self, attestation: &JsonValue) -> Option<String> {
         let _ = &self.store;
         normalize_optional_text(attestation.get("patchset_id").and_then(JsonValue::as_str))
-    }
-
-    pub fn optional_author_mode(&self, attestation: &JsonValue) -> Option<String> {
-        let _ = &self.store;
-        normalize_optional_text(attestation.get("author_mode").and_then(JsonValue::as_str))
     }
 
     pub fn tests_state_from_attestation(&self, attestation: Option<&JsonValue>) -> Option<String> {
@@ -186,20 +137,6 @@ impl<S> AttestJson<S> {
             .and_then(|summary| summary.get("tests"))
             .and_then(JsonValue::as_str)
             .and_then(|value| normalize_optional_text(Some(value)))
-    }
-
-    fn parse_object_payload(
-        &self,
-        payload_json: &str,
-        label: &str,
-    ) -> Result<JsonMap<String, JsonValue>, String> {
-        let _ = &self.store;
-        JsonCodec::parse_object_with_error_prefix(
-            payload_json,
-            &format!("{label} invalid JSON"),
-            &format!("{label} must be an object."),
-        )
-        .map_err(|err| err.to_string())
     }
 }
 

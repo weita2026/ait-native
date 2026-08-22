@@ -16,17 +16,7 @@ fn run_snapshot(repo: RepoRuntime, command: SnapshotCommand) -> Result<ExitCode,
                         object.remove("phase_timings_ms");
                     }
                 }
-                emit_result(
-                    "ait-cli snapshot create",
-                    &output,
-                    args.json,
-                    &[
-                        "snapshot_id",
-                        "line_name",
-                        "parent_snapshot_id",
-                        "message",
-                    ],
-                )?;
+                emit_snapshot_create_result(&output, args.json, args.full)?;
             }
             Ok(ExitCode::SUCCESS)
         }

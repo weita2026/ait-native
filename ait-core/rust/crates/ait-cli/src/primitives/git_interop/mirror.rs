@@ -1052,7 +1052,6 @@ fn record_final_mirror_state(
 mod tests {
     use super::*;
     use crate::init_surface::{init_repo, InitRequest};
-    use crate::primitives::snapshot_create;
     use std::process::Command;
     use tempfile::TempDir;
 
@@ -1088,8 +1087,11 @@ mod tests {
         .expect("initialize AIT mirror source");
         fs::write(source.path().join("native.txt"), "mirror root\n").expect("write mirror content");
         let repo = RepoRuntime::discover_from_path(source.path()).expect("discover source");
-        let snapshot = snapshot_create(&repo, Some("mirror root")).expect("create source Snapshot")
-            ["snapshot_id"]
+        let snapshot = crate::primitives::workspace::snapshot_create_in_current_workspace(
+            &repo,
+            Some("mirror root"),
+        )
+        .expect("create source Snapshot")["snapshot_id"]
             .as_str()
             .expect("snapshot id")
             .to_string();

@@ -266,9 +266,15 @@ class Recorder {
     });
     const allowed = options.allowed ?? [0];
     if (options.recordOnly !== true && !allowed.includes(status)) {
-      fail(
-        `${options.label ?? command} failed with ${status}: ${tail(stderr || stdout, 1200)}`,
-      );
+      // The head of the output carries the actual error line for commands
+      // that append long usage text; keep the head and tail halves of the
+      // excerpt budget so the failure stays diagnosable.
+      const text = stderr || stdout;
+      const excerpt =
+        text.length <= 1200
+          ? text
+          : `${text.slice(0, 600)}\n[...]\n${tail(text, 600)}`;
+      fail(`${options.label ?? command} failed with ${status}: ${excerpt}`);
     }
     return { status, stdout, stderr };
   }
@@ -401,14 +407,30 @@ function releaseBinding(config, status, options) {
 }
 
 async function fetchBytes(url, label) {
-  const response = await fetch(url, {
-    redirect: "follow",
-    headers: { "User-Agent": "ait-native-clean-host/v1" },
-  });
-  if (!response.ok) {
-    fail(`${label} returned HTTP ${response.status}: ${url}`, 69);
+  // A stalled connection to the release or repository host has held a leg
+  // until the job timeout; bound every attempt and retry transient
+  // failures, while HTTP error statuses keep failing closed immediately.
+  const attempts = 3;
+  let lastError = null;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      const response = await fetch(url, {
+        redirect: "follow",
+        headers: { "User-Agent": "ait-native-clean-host/v1" },
+        signal: AbortSignal.timeout(120_000),
+      });
+      if (!response.ok) {
+        fail(`${label} returned HTTP ${response.status}: ${url}`, 69);
+      }
+      return Buffer.from(await response.arrayBuffer());
+    } catch (error) {
+      if (error?.exitCode !== undefined) {
+        throw error;
+      }
+      lastError = error;
+    }
   }
-  return Buffer.from(await response.arrayBuffer());
+  fail(`${label} did not complete after ${attempts} bounded attempts: ${url}: ${lastError}`, 69);
 }
 
 function releaseDownloadUrl(repository, tag, name) {
@@ -631,12 +653,28 @@ function firstLand(recorder, aitSpec, root, expectedText, priorState = null) {
   if (snapshot.parent_snapshot_id !== null) {
     fail("clean-host first land did not author the first Snapshot on an empty default Line");
   }
-  const landed = jsonSpec(
+  let landed = jsonSpec(
     recorder,
     aitSpec,
     ["task", "land", taskId, "--local", "--json"],
-    { cwd: worktree, label: "candidate task land" },
+    { cwd: worktree, label: "candidate task land", allowed: [0, 2] },
   );
+  let resumedCloseout = false;
+  if (landed.task_status === "completed" && landed.closeout_status !== "complete") {
+    // The land consumes the bound worktree's line head, so it must start
+    // inside that worktree; Windows cannot remove a directory that is still
+    // a process working directory, so the closeout reports partial with
+    // exit 2. The land contract's idempotent_phase_resume finishes the exact
+    // closeout from the repository root, where no process holds the
+    // worktree.
+    landed = jsonSpec(
+      recorder,
+      aitSpec,
+      ["task", "land", taskId, "--local", "--json"],
+      { cwd: root, label: "candidate task land closeout resume" },
+    );
+    resumedCloseout = true;
+  }
   if (
     landed.task_status !== "completed" ||
     landed.closeout_status !== "complete" ||
@@ -649,6 +687,12 @@ function firstLand(recorder, aitSpec, root, expectedText, priorState = null) {
   }
   if (!readFileSync(sprintPath, "utf8").includes("- [x] Materialize the exact clean-host file.")) {
     fail("candidate first land did not close the exact sprint checklist item");
+  }
+  if (resumedCloseout && existsSync(worktree)) {
+    // The first attempt could not remove the bound worktree while it was
+    // the process working directory; the resumed closeout already released
+    // the binding, so the leftover directory is orphaned rehearsal debris.
+    rmSync(worktree, { recursive: true, force: true });
   }
   if (existsSync(worktree)) {
     fail("candidate first land left its bound worktree behind");
@@ -1055,8 +1099,17 @@ function brewEnvironment() {
   };
 }
 
+function homebrewFormulaFileName(config, version) {
+  // The configured formula path names the candidate channel's route. A prior
+  // release installs from its own channel route: RC identities use the
+  // "-rc" formula, stable identities use the bare formula.
+  const configured = path.basename(config.endpoints.homebrew.formula_path, ".rb");
+  const stem = configured.replace(/-rc$/, "");
+  return /-rc\./.test(version) ? `${stem}-rc.rb` : `${stem}.rb`;
+}
+
 async function homebrewFormula(config, version, root, candidateStage = null) {
-  const formulaName = path.basename(config.endpoints.homebrew.formula_path);
+  const formulaName = homebrewFormulaFileName(config, version);
   const destination = path.join(root, `${version}-${formulaName}`);
   if (candidateStage) {
     writeFileSync(destination, readFileSync(localCandidateAsset(candidateStage, formulaName)), {
@@ -1119,7 +1172,8 @@ async function homebrewContext(
   candidateStage = null,
 ) {
   const formulaPath = await homebrewFormula(config, version, root, candidateStage);
-  const formula = path.basename(config.endpoints.homebrew.formula_path, ".rb");
+  const formulaFileName = homebrewFormulaFileName(config, version);
+  const formula = path.basename(formulaFileName, ".rb");
   const tap = config.endpoints.homebrew.tap;
   if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(tap ?? "")) {
     fail("Homebrew endpoint configuration has no canonical tap identity");
@@ -1133,7 +1187,11 @@ async function homebrewContext(
   if (!path.isAbsolute(tapRoot)) {
     fail("Homebrew tap repository origin is not absolute");
   }
-  const installedFormulaPath = path.join(tapRoot, config.endpoints.homebrew.formula_path);
+  const installedFormulaPath = path.join(
+    tapRoot,
+    path.dirname(config.endpoints.homebrew.formula_path),
+    formulaFileName,
+  );
   const formulaParent = path.dirname(installedFormulaPath);
   mkdirSync(formulaParent, { recursive: true, mode: 0o755 });
   writeFileSync(installedFormulaPath, readFileSync(formulaPath), { mode: 0o644 });
@@ -1145,11 +1203,38 @@ async function homebrewContext(
   }
   const qualifiedFormula = `${tap}/${formula}`;
   if (upgrade) {
-    brewCommand(
+    // A stable candidate upgrading over an RC prior crosses formula names;
+    // Homebrew cannot upgrade across formulae, so the prior channel formula
+    // is replaced by an exact uninstall-then-install transition. Same-name
+    // upgrades keep the native upgrade path.
+    const stem = formula.replace(/-rc$/, "");
+    const crossFormula = formula === stem ? `${stem}-rc` : stem;
+    const installedFormulae = brewCommand(
       recorder,
-      ["upgrade", "--formula", qualifiedFormula],
-      "Homebrew exact upgrade",
-    );
+      ["list", "--formula"],
+      "Homebrew installed formula inventory",
+    ).stdout;
+    const crossInstalled = installedFormulae
+      .split(/\r?\n/)
+      .some((line) => line.trim() === crossFormula);
+    if (crossInstalled) {
+      brewCommand(
+        recorder,
+        ["uninstall", "--formula", crossFormula],
+        "Homebrew prior channel replacement uninstall",
+      );
+      brewCommand(
+        recorder,
+        ["install", "--formula", qualifiedFormula],
+        "Homebrew exact channel-transition install",
+      );
+    } else {
+      brewCommand(
+        recorder,
+        ["upgrade", "--formula", qualifiedFormula],
+        "Homebrew exact upgrade",
+      );
+    }
   } else {
     brewCommand(
       recorder,
@@ -1213,7 +1298,19 @@ function debianVersion(version) {
   return version.replace(/-rc\.([1-9]\d*)$/, "~rc.$1");
 }
 
-async function configureApt(config, root, recorder) {
+function aptAcquireBounds() {
+  // Hosted x86_64 runners intermittently stall inside apt's own HTTP client
+  // against the repository host until the job timeout; force IPv4 and bound
+  // every acquire with a timeout and retries.
+  return [
+    "-o", "Acquire::ForceIPv4=true",
+    "-o", "Acquire::http::Timeout=30",
+    "-o", "Acquire::https::Timeout=30",
+    "-o", "Acquire::Retries=3",
+  ];
+}
+
+async function configureApt(config, root, recorder, suite = config.endpoints.apt.suite) {
   const keyUrl = `${config.endpoints.apt.base_url}/ait-native-archive-keyring.gpg`;
   const key = await fetchBytes(keyUrl, "APT archive keyring");
   const localKey = path.join(root, "ait-native-archive-keyring.gpg");
@@ -1221,7 +1318,7 @@ async function configureApt(config, root, recorder) {
   writeFileSync(localKey, key, { mode: 0o644 });
   writeFileSync(
     localSource,
-    `deb [signed-by=/usr/share/keyrings/ait-native-archive-keyring.gpg] ${config.endpoints.apt.base_url} ${config.endpoints.apt.suite} ${config.endpoints.apt.component}\n`,
+    `deb [signed-by=/usr/share/keyrings/ait-native-archive-keyring.gpg] ${config.endpoints.apt.base_url} ${suite} ${config.endpoints.apt.component}\n`,
     { encoding: "utf8", mode: 0o644 },
   );
   recorder.run("sudo", ["install", "-m", "0644", localKey, "/usr/share/keyrings/ait-native-archive-keyring.gpg"], {
@@ -1230,7 +1327,9 @@ async function configureApt(config, root, recorder) {
   recorder.run("sudo", ["install", "-m", "0644", localSource, "/etc/apt/sources.list.d/ait-native.list"], {
     label: "APT install exact source route",
   });
-  recorder.run("sudo", ["apt-get", "update"], { label: "APT signed repository update" });
+  recorder.run("sudo", ["apt-get", ...aptAcquireBounds(), "update"], {
+    label: "APT signed repository update",
+  });
   for (const identity of ["ait-native", "ait-runner"]) {
     const result = recorder.run("apt-cache", ["search", "--names-only", `^${identity}$`], {
       label: `APT exact search ${identity}`,
@@ -1253,13 +1352,14 @@ function aptContext(row, version, recorder, upgrade = false, candidateStage = nu
     : `${packageName}=${expectedVersion}`;
   const args = [
     "apt-get",
+    ...aptAcquireBounds(),
     "install",
     "--yes",
     "--no-install-recommends",
     selector,
   ];
   if (upgrade) {
-    args.splice(2, 0, "--only-upgrade");
+    args.splice(args.indexOf("install") + 1, 0, "--only-upgrade");
   }
   recorder.run("sudo", args, { label: upgrade ? "APT exact upgrade" : "APT exact install" });
   const installed = recorder
@@ -1406,12 +1506,18 @@ async function wingetManifests(config, version, root, candidateStage = null, bas
     let text = readFileSync(original, "utf8");
     if (name.endsWith(".installer.yaml")) {
       let replacements = 0;
-      text = text.replace(/^(\s*InstallerUrl:\s*)(\S+)\s*$/gm, (_line, prefix, url) => {
-        const assetName = path.basename(new URL(url).pathname);
-        localCandidateAsset(candidateStage, assetName);
-        replacements += 1;
-        return `${prefix}${baseUrl}/${encodeURIComponent(assetName)}`;
-      });
+      // The generated stable manifest quotes its URLs; accept an optional
+      // matched double quote and preserve the original quoting byte-for-byte
+      // in the rewritten transport line.
+      text = text.replace(
+        /^(\s*InstallerUrl:\s*)("?)(\S+?)\2\s*$/gm,
+        (_line, prefix, quote, url) => {
+          const assetName = path.basename(new URL(url).pathname);
+          localCandidateAsset(candidateStage, assetName);
+          replacements += 1;
+          return `${prefix}${quote}${baseUrl}/${encodeURIComponent(assetName)}${quote}`;
+        },
+      );
       if (replacements !== 2) {
         fail("WinGet candidate manifest did not expose exactly two installer URLs");
       }
@@ -1428,7 +1534,17 @@ async function wingetManifests(config, version, root, candidateStage = null, bas
 }
 
 function wingetArgs(action, manifestRoot) {
-  return [action, "--manifest", manifestRoot, "--disable-interactivity"];
+  // Hosted runners always execute as administrator, and WinGet refuses to
+  // uninstall a user-scope package from an administrator session; machine
+  // scope keeps the portable registration and removal deterministic.
+  return [
+    action,
+    "--manifest",
+    manifestRoot,
+    "--scope",
+    "machine",
+    "--disable-interactivity",
+  ];
 }
 
 async function wingetContext(
@@ -1440,6 +1556,12 @@ async function wingetContext(
   candidateStage = null,
 ) {
   const winget = requireCommand("winget.exe");
+  // Installing from a local manifest requires the LocalManifestFiles
+  // setting; hosted runners never persist it, validation alone is exempt,
+  // and the enablement is idempotent for an administrator session.
+  recorder.run(winget, ["settings", "--enable", "LocalManifestFiles"], {
+    label: "WinGet local manifest enablement",
+  });
   const transport = candidateStage ? await startCandidateAssetServer(candidateStage) : null;
   let manifests;
   try {
@@ -1481,16 +1603,66 @@ async function wingetContext(
       files: manifests.overlay,
     };
   }
-  const list = recorder.run(
+  // Source-correlated listing cannot see a local-manifest portable install
+  // on hosted runners, so the list stays recorded observability while the
+  // receipt authority is the Windows uninstall registration that WinGet
+  // itself writes for the package identity.
+  recorder.run(
     winget,
-    ["list", "--id", config.endpoints.winget.identity, "--exact", "--disable-interactivity"],
-    { label: "WinGet package receipt readback" },
+    [
+      "list",
+      "--id",
+      config.endpoints.winget.identity,
+      "--exact",
+      "--disable-interactivity",
+      "--accept-source-agreements",
+    ],
+    { label: "WinGet source-correlated list observability", recordOnly: true },
   );
-  if (!list.stdout.includes(version)) {
-    fail("WinGet list does not report the exact installed version");
+  const registrationScript =
+    "$identity = '" +
+    config.endpoints.winget.identity +
+    "';" +
+    "$roots = @(" +
+    "'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall'," +
+    "'HKLM:\\SOFTWARE\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall'," +
+    "'HKCU:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall'" +
+    ");" +
+    "$versions = foreach ($root in $roots) {" +
+    "  Get-ChildItem -Path $root -ErrorAction SilentlyContinue |" +
+    "    Where-Object { $_.PSChildName -like ($identity + '*') } |" +
+    "    ForEach-Object { (Get-ItemProperty -Path $_.PSPath).DisplayVersion }" +
+    "};" +
+    "if (-not $versions) { exit 3 };" +
+    "$versions -join \"`n\"";
+  const registration = recorder.run(
+    "powershell.exe",
+    ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", registrationScript],
+    { label: "WinGet package registration readback" },
+  );
+  if (!registration.stdout.includes(version)) {
+    fail("WinGet package registration does not report the exact installed version");
   }
-  const aitPath = requireCommand("ait.exe");
-  const serverPath = requireCommand("ait-server.exe");
+  // The portable install modifies the persisted PATH, which this already
+  // running process and its children never observe; resolve the aliases
+  // through WinGet's Links directories first.
+  const wingetAliasPath = (name) => {
+    const candidates = [];
+    if (process.env.ProgramFiles) {
+      candidates.push(path.join(process.env.ProgramFiles, "WinGet", "Links", name));
+    }
+    if (process.env.LOCALAPPDATA) {
+      candidates.push(path.join(process.env.LOCALAPPDATA, "Microsoft", "WinGet", "Links", name));
+    }
+    for (const candidate of candidates) {
+      if (existsSync(candidate)) {
+        return candidate;
+      }
+    }
+    return null;
+  };
+  const aitPath = wingetAliasPath("ait.exe") ?? requireCommand("ait.exe");
+  const serverPath = wingetAliasPath("ait-server.exe") ?? requireCommand("ait-server.exe");
   return {
     ait: commandSpec(aitPath),
     server: commandSpec(serverPath),
@@ -1500,7 +1672,7 @@ async function wingetContext(
     },
     async lifecycle() {
       const script =
-        "$link=Get-Item (Get-Command ait-server.exe).Source;" +
+        `$link=Get-Item '${serverPath}';` +
         "$serverPath=@($link.Target)[0];" +
         "if(-not $serverPath){$serverPath=$link.FullName}" +
         "elseif(-not [IO.Path]::IsPathRooted($serverPath)){$serverPath=Join-Path $link.DirectoryName $serverPath};" +
@@ -1526,20 +1698,26 @@ async function wingetContext(
       }
     },
     uninstall() {
+      // Source-correlated identity lookup cannot see the local-manifest
+      // portable install on hosted runners; the local manifest names the
+      // exact package for removal instead.
       recorder.run(
         winget,
         [
           "uninstall",
-          "--id",
-          config.endpoints.winget.identity,
-          "--exact",
+          "--manifest",
+          manifests.validationRoot,
           "--disable-interactivity",
+          "--accept-source-agreements",
         ],
         { label: "WinGet uninstall" },
       );
+      if (existsSync(aitPath)) {
+        fail("WinGet uninstall retained the ait portable alias");
+      }
       const readback = spawnSync("where.exe", ["ait.exe"], { encoding: "utf8" });
       if (readback.status === 0) {
-        fail("WinGet uninstall retained the ait portable alias");
+        fail("WinGet uninstall retained the ait portable alias on PATH");
       }
     },
   };
@@ -1972,7 +2150,12 @@ async function executeUpgrade({ options, config, status, row, checks, recorder, 
   mark(checks, "runner_target");
   mark(checks, "package_manager");
   if (row.channel === "apt") {
-    await configureApt(config, root, recorder);
+    // The prior release installs from its own channel suite. An RC prior
+    // lives on the testing suite even when the candidate publishes stable;
+    // the candidate itself upgrades from the frozen local package, so the
+    // configured route only ever serves the prior baseline.
+    const priorSuite = /-rc\./.test(options["prior-version"]) ? "testing" : "stable";
+    await configureApt(config, root, recorder, priorSuite);
   }
   const priorRoot = row.channel === "github" ? path.join(root, "prior-github") : root;
   mkdirSync(priorRoot, { recursive: true, mode: 0o755 });

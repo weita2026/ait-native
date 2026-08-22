@@ -174,49 +174,6 @@ where
     remote.list_lines(repo_name)
 }
 
-#[allow(clippy::too_many_arguments)]
-pub fn rename_remote_line_with_task_workflow_task_remote<R>(
-    remote: &mut R,
-    repo_name: &str,
-    old_line_name: &str,
-    new_line_name: &str,
-    expected_line_id: &str,
-    expected_head_snapshot_id: Option<&str>,
-    idempotency_key: &str,
-) -> TaskWorkflowHttpClientResult<Value>
-where
-    R: TaskWorkflowLineRenamer + ?Sized,
-{
-    remote.rename_remote_line(
-        repo_name,
-        old_line_name,
-        new_line_name,
-        expected_line_id,
-        expected_head_snapshot_id,
-        idempotency_key,
-    )
-}
-
-pub fn delete_remote_line_with_task_workflow_task_remote<R>(
-    remote: &mut R,
-    repo_name: &str,
-    line_name: &str,
-    expected_line_id: &str,
-    expected_head_snapshot_id: Option<&str>,
-    idempotency_key: &str,
-) -> TaskWorkflowHttpClientResult<Value>
-where
-    R: TaskWorkflowLineDeleter + ?Sized,
-{
-    remote.delete_remote_line(
-        repo_name,
-        line_name,
-        expected_line_id,
-        expected_head_snapshot_id,
-        idempotency_key,
-    )
-}
-
 pub fn get_task_with_task_workflow_task_remote<R>(
     remote: &mut R,
     task_id: &str,

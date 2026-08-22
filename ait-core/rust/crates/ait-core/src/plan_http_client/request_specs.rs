@@ -12,10 +12,9 @@ use crate::repository_pack_json::{
     ZstdPullManifestRequest, ZstdPullManifestRequestJson,
 };
 use crate::server_operational::{
-    claim_next_worker_job_path, repository_authority_path, repository_restores_path,
-    repository_retirement_abort_path, repository_retirement_path, repository_retirement_purge_path,
-    repository_worker_jobs_path, worker_job_operation_path, worker_job_path, RepositoryIndex,
-    WorkerJobKey, WorkerLeaseProof,
+    repository_authority_path, repository_restores_path, repository_retirement_abort_path,
+    repository_retirement_path, repository_retirement_purge_path, repository_worker_jobs_path,
+    worker_job_path, RepositoryIndex, WorkerJobKey,
 };
 use crate::server_repo_retire::{
     validate_remote_authority_relative_path, RemoteExportManifest, REMOTE_AUTHORITY_FILE_MEDIA_TYPE,

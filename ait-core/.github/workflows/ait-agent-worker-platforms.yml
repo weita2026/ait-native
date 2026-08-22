@@ -1,26 +1,32 @@
-name: ait-agent manager and worker native platforms
+name: ait-core Rust workspace platforms
 
 on:
   pull_request:
     paths:
       - ".github/workflows/ait-agent-worker-platforms.yml"
       - "rust/**"
+      - "ci/**"
   push:
     branches:
       - main
     paths:
       - ".github/workflows/ait-agent-worker-platforms.yml"
       - "rust/**"
+      - "ci/**"
+  schedule:
+    - cron: "17 3 * * *"
   workflow_dispatch:
 
 permissions:
   contents: read
+  checks: write
 
 jobs:
-  native-platform:
+  workspace-platform:
+    if: github.event_name != 'schedule'
     name: ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 45
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
@@ -37,17 +43,28 @@ jobs:
       - name: Check formatting
         run: cargo fmt --manifest-path rust/Cargo.toml --all -- --check
 
-      - name: Check native agent manager and worker
-        run: cargo check --manifest-path rust/Cargo.toml -p ait-agent-core -p ait-agent-worker -p ait-cli --bin ait-agent
+      - name: Lint complete Rust workspace
+        run: cargo clippy --manifest-path rust/Cargo.toml --workspace --all-targets --all-features --locked -- -D warnings
 
-      - name: Test native agent runtime crates
-        run: cargo test --manifest-path rust/Cargo.toml -p ait-agent-core -p ait-agent-worker -- --test-threads=1
-
-      - name: Test native agent management commands
-        run: cargo test --manifest-path rust/Cargo.toml -p ait-cli --test agent_cli --test public_cli_identity -- --test-threads=1
+      - name: Test complete locked Rust workspace
+        run: cargo test --manifest-path rust/Cargo.toml --workspace --all-targets --all-features --locked
 
       - name: Report native manager identity
         run: cargo run --manifest-path rust/Cargo.toml -p ait-cli --bin ait-agent -- --version
 
       - name: Report native worker capabilities
         run: cargo run --manifest-path rust/Cargo.toml -p ait-agent-worker -- capabilities --json
+
+  dependency-audit:
+    name: RustSec dependency audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+
+      - name: Audit locked Rust dependencies
+        uses: rustsec/audit-check@v2.0.0
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          working-directory: rust

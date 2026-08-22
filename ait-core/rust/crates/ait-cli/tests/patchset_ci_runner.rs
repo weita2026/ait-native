@@ -410,7 +410,7 @@ fn repo_patch_ci_manifest_uses_sharded_runner_without_command_bundle() {
     assert_eq!(runner["kind"].as_str(), Some("test_discovery_sharded"));
     assert_eq!(runner["adapter"].as_str(), Some("cargo"));
     assert_eq!(runner["manifest_path"].as_str(), Some("rust/Cargo.toml"));
-    assert_eq!(runner["workspace"].as_bool(), Some(false));
+    assert_eq!(runner["workspace"].as_bool(), Some(true));
     assert_eq!(runner["doc_tests"].as_bool(), Some(false));
     let build_args = runner["build_args"].as_array().unwrap();
     let build_args = build_args
@@ -423,12 +423,20 @@ fn repo_patch_ci_manifest_uses_sharded_runner_without_command_bundle() {
             "test",
             "--profile",
             "ait-ci",
+            "--locked",
+            "--all-features",
             "-p",
             "ait-core",
             "-p",
             "ait-cli",
             "-p",
             "ait-agent-core",
+            "-p",
+            "ait-agent-worker",
+            "-p",
+            "ait-benchmark",
+            "-p",
+            "ait-napi",
             "-p",
             "ait-py",
             "--lib",
@@ -472,7 +480,7 @@ fn repo_patch_ci_manifest_uses_sharded_runner_without_command_bundle() {
     );
 }
 
-fn expected_native_patchset_cargo_invocations() -> Vec<Vec<String>> {
+fn expected_native_ci_test_invocations() -> Vec<Vec<String>> {
     vec![
         vec![
             "test",
@@ -480,12 +488,20 @@ fn expected_native_patchset_cargo_invocations() -> Vec<Vec<String>> {
             "rust/Cargo.toml",
             "--profile",
             "ait-ci",
+            "--locked",
+            "--all-features",
             "-p",
             "ait-core",
             "-p",
             "ait-cli",
             "-p",
             "ait-agent-core",
+            "-p",
+            "ait-agent-worker",
+            "-p",
+            "ait-benchmark",
+            "-p",
+            "ait-napi",
             "-p",
             "ait-py",
             "--lib",
@@ -501,11 +517,23 @@ fn expected_native_patchset_cargo_invocations() -> Vec<Vec<String>> {
             "rust/Cargo.toml",
             "--profile",
             "ait-ci",
+            "--locked",
+            "--all-features",
             "-p",
             "ait-core",
+            "-p",
+            "ait-cli",
+            "-p",
+            "ait-agent-core",
+            "-p",
+            "ait-agent-worker",
+            "-p",
+            "ait-benchmark",
+            "-p",
+            "ait-napi",
+            "-p",
+            "ait-py",
             "--lib",
-            "--test",
-            "server_source_ownership",
         ],
         vec![
             "test",
@@ -513,6 +541,24 @@ fn expected_native_patchset_cargo_invocations() -> Vec<Vec<String>> {
             "rust/Cargo.toml",
             "--profile",
             "ait-ci",
+            "--locked",
+            "--all-features",
+            "-p",
+            "ait-core",
+            "-p",
+            "ait-cli",
+            "--test",
+            "server_source_ownership",
+            "--test",
+            "patchset_ci_runner",
+        ],
+        vec![
+            "test",
+            "--manifest-path",
+            "rust/Cargo.toml",
+            "--profile",
+            "ait-ci",
+            "--locked",
             "-p",
             "ait-core",
             "--test",
@@ -524,40 +570,10 @@ fn expected_native_patchset_cargo_invocations() -> Vec<Vec<String>> {
             "rust/Cargo.toml",
             "--profile",
             "ait-ci",
-            "-p",
-            "ait-cli",
-            "--lib",
-        ],
-        vec![
-            "test",
-            "--manifest-path",
-            "rust/Cargo.toml",
-            "--profile",
-            "ait-ci",
-            "-p",
-            "ait-agent-core",
-            "--lib",
-        ],
-        vec![
-            "test",
-            "--manifest-path",
-            "rust/Cargo.toml",
-            "--profile",
-            "ait-ci",
-            "-p",
-            "ait-py",
-            "--lib",
-        ],
-        vec![
-            "test",
-            "--manifest-path",
-            "rust/Cargo.toml",
-            "--profile",
-            "ait-ci",
-            "-p",
-            "ait-cli",
-            "--test",
-            "patchset_ci_runner",
+            "--workspace",
+            "--all-targets",
+            "--all-features",
+            "--locked",
         ],
     ]
     .into_iter()
@@ -613,28 +629,28 @@ fn script_region_between<'a>(script: &'a str, start: &str, end: &str) -> &'a str
 }
 
 #[test]
-fn repo_native_patchset_entrypoints_guard_lineage_schema_beyond_discovered_harnesses() {
+fn repo_native_ci_entrypoints_cover_workspace_and_guard_lineage_schema() {
     let root = repo_root_for_patch_ci_manifest();
     let unix = fs::read_to_string(root.join("ci/run.sh")).unwrap();
     let windows = fs::read_to_string(root.join("ci/run.ps1")).unwrap();
-    let expected = expected_native_patchset_cargo_invocations();
+    let expected = expected_native_ci_test_invocations();
 
     assert_eq!(
         shell_cargo_test_invocations(&unix),
         expected,
-        "Unix Patchset CI must build every Snapshot-runnable harness and conditionally execute the local schema authority harness"
+        "Unix CI must cover every Snapshot-runnable harness, the complete repository, and the conditional local schema authority harness"
     );
     assert_eq!(
         powershell_cargo_test_invocations(&windows),
         expected,
-        "Windows Patchset CI must build every Snapshot-runnable harness and conditionally execute the local schema authority harness"
+        "Windows CI must cover every Snapshot-runnable harness, the complete repository, and the conditional local schema authority harness"
     );
 
-    let expected_schema_invocation = vec![expected[2].clone()];
+    let expected_schema_invocation = vec![expected[3].clone()];
     let unix_schema_guard = script_region_between(
         &unix,
         "if [ -f \"$repo_root/docs/binary_db_v0.md\" ]; then",
-        "\nfi",
+        "\n  fi",
     );
     assert_eq!(
         shell_cargo_test_invocations(unix_schema_guard),
@@ -644,12 +660,78 @@ fn repo_native_patchset_entrypoints_guard_lineage_schema_beyond_discovered_harne
     let windows_schema_guard = script_region_between(
         &windows,
         "if (Test-Path -LiteralPath (Join-Path $repoRoot \"docs/binary_db_v0.md\") -PathType Leaf) {",
-        "\n    } else {",
+        "\n        } else {",
     );
     assert_eq!(
         powershell_cargo_test_invocations(windows_schema_guard),
-        vec![expected[2].clone()],
+        vec![expected[3].clone()],
         "Windows must execute the schema-authority harness only while its lineage-only Markdown source exists"
+    );
+
+    for script in [&unix, &windows] {
+        assert!(
+            script.contains("--workspace")
+                && script.contains("--all-targets")
+                && script.contains("--all-features")
+                && script.contains("--locked"),
+            "repo/all modes must cover the complete locked Rust workspace"
+        );
+        assert!(
+            script.contains("clippy") && script.contains("warnings"),
+            "all mode must enforce a warning-free clippy baseline"
+        );
+    }
+    assert!(
+        unix.contains("repo)\n    run_repo_tests")
+            && unix.contains("all)\n    run_repo_tests\n    run_clippy"),
+        "Unix repo and all mode routing must remain distinct"
+    );
+    assert!(
+        windows.contains("\"repo\" { Invoke-RepoTests }")
+            && windows
+                .contains("\"all\" {\n            Invoke-RepoTests\n            Invoke-Clippy"),
+        "Windows repo and all mode routing must remain distinct"
+    );
+}
+
+#[test]
+fn repository_quality_workflow_and_binding_metadata_are_release_complete() {
+    let root = repo_root_for_patch_ci_manifest();
+    let workflow =
+        fs::read_to_string(root.join(".github/workflows/ait-agent-worker-platforms.yml")).unwrap();
+    for required in [
+        "cargo clippy --manifest-path rust/Cargo.toml --workspace --all-targets --all-features --locked -- -D warnings",
+        "cargo test --manifest-path rust/Cargo.toml --workspace --all-targets --all-features --locked",
+        "rustsec/audit-check@v2.0.0",
+        "working-directory: rust",
+    ] {
+        assert!(
+            workflow.contains(required),
+            "repository workflow is missing required contract `{required}`"
+        );
+    }
+
+    let py_manifest = fs::read_to_string(root.join("rust/crates/ait-py/Cargo.toml")).unwrap();
+    let napi_manifest = fs::read_to_string(root.join("rust/crates/ait-napi/Cargo.toml")).unwrap();
+    for (crate_name, manifest) in [("ait-py", py_manifest), ("ait-napi", napi_manifest)] {
+        assert!(
+            manifest
+                .lines()
+                .any(|line| line.trim() == "version.workspace = true"),
+            "{crate_name} must inherit the workspace release version"
+        );
+        assert!(
+            manifest
+                .lines()
+                .any(|line| line.trim() == "license.workspace = true"),
+            "{crate_name} must inherit the workspace license"
+        );
+    }
+
+    let gitignore = fs::read_to_string(root.join(".gitignore")).unwrap();
+    assert!(
+        gitignore.lines().any(|line| line.trim() == "error.log"),
+        "local runtime diagnostics must remain excluded from raw Git tooling"
     );
 }
 

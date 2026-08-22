@@ -445,6 +445,86 @@ fn native_workflow_ready_uses_remote_base_when_only_local_main_advanced() {
 }
 
 #[test]
+fn native_workflow_ready_apply_uses_remote_base_when_only_local_main_advanced() {
+    let (base_url, log, state, handle) = spawn_fake_remote();
+    let (temp, worktree) = init_worktree_repo(&base_url);
+    let root = temp.path();
+    {
+        let mut guard = state.lock().unwrap();
+        guard.remote_head_snapshot_id = Some(FIXTURE_BASE_SNAPSHOT_ID.to_string());
+        guard.force_no_selected_patchset = true;
+    }
+    let feature_snapshot = json_output(
+        &worktree,
+        &[
+            "snapshot",
+            "create",
+            "--message",
+            "remote workflow candidate",
+            "--json",
+        ],
+    );
+    let feature_snapshot_id = feature_snapshot["snapshot_id"]
+        .as_str()
+        .expect("feature snapshot id")
+        .to_string();
+
+    write_file(
+        &root.join("src/lib.rs"),
+        "pub fn repo_root_version() -> &'static str { \"local only\" }\n",
+    );
+    let advanced_local_main_snapshot_id = seed_snapshot(root, "advance local main only");
+
+    let output = cargo_bin()
+        .current_dir(&worktree)
+        .args([
+            "workflow",
+            "ready",
+            "RC-1",
+            "--apply",
+            "--summary",
+            "Use authoritative Remote base",
+        ])
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "stdout:\n{}\n\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        local_line_head(root, "main").as_deref(),
+        Some(advanced_local_main_snapshot_id.as_str())
+    );
+    assert_eq!(
+        local_line_head(&worktree, "feature/rt-1").as_deref(),
+        Some(feature_snapshot_id.as_str())
+    );
+
+    handle.join().unwrap();
+    let logged = log.lock().unwrap().clone();
+    let published = logged
+        .iter()
+        .find(|row| {
+            row.method == "POST"
+                && row.url
+                    == "/v1/native/repository-authorities/7/changes/RC-1/patchsets"
+        })
+        .unwrap_or_else(|| panic!("missing Patchset publication: {logged:#?}"));
+    let body = parse_json(&published.body);
+    assert_eq!(
+        body["base_snapshot_id"].as_str(),
+        Some(FIXTURE_BASE_SNAPSHOT_ID)
+    );
+    assert_eq!(
+        body["revision_snapshot_id"].as_str(),
+        Some(feature_snapshot_id.as_str())
+    );
+}
+
+#[test]
 fn native_worktree_rebase_recovers_stale_registry_fork_from_bound_change() {
     let (base_url, _log, _state, handle) = spawn_fake_remote();
     let (temp, worktree) = init_worktree_repo(&base_url);

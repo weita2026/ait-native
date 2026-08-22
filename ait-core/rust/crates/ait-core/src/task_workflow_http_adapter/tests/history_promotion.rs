@@ -110,7 +110,7 @@ fn staged_history_response(final_stage: bool) -> JsonValue {
         "patchset_id": stage_patchset_id,
         "patchset": {
             "patchset_id": stage_patchset_id,
-            "base_snapshot_id": if final_stage { "SNP-0" } else { "SNP-0" },
+            "base_snapshot_id": "SNP-0",
             "revision_snapshot_id": if final_stage { "SNP-65" } else { "SNP-64" },
             "source_kind": if final_stage {
                 "history_promotion_aggregate"

@@ -1143,3 +1143,30 @@ fn storage_validation_summary_matches_packed_full_only_case() {
     assert_eq!(summary["recommended_action"], "none");
     assert_eq!(summary["next_actions"], json!([]));
 }
+
+#[test]
+fn object_pack_summary_counts_missing_archive_authority_as_an_error() {
+    let missing_relative_path = format!(
+        "ait-missing-pack-{}/missing.zstpack",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    );
+    let summary = summarize_pack_archives(
+        std::env::temp_dir().to_string_lossy().as_ref(),
+        &json!([
+            {
+                "pack_path": missing_relative_path,
+                "pack_format": PACK_FORMAT_ZSTD_CHUNKED_V1,
+            },
+            {
+                "pack_format": PACK_FORMAT_ZSTD_CHUNKED_V1,
+            },
+        ]),
+    )
+    .unwrap();
+
+    assert_eq!(summary["indexed_pack_count"], 0);
+    assert_eq!(summary["index_error_count"], 2);
+}

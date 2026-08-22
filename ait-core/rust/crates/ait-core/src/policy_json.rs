@@ -1,4 +1,4 @@
-use crate::json_support::{json, JsonCodec, JsonMap, JsonValue};
+use crate::json_support::{json, JsonMap, JsonValue};
 use crate::plan_http_client::{
     build_plan_http_request_spec, configured_repository_authority_path_segment,
     encode_path_segment, PlanHttpClientConfig, PlanHttpClientError, PlanHttpClientResult,
@@ -212,11 +212,6 @@ impl<S> PolicyJson<S> {
         policy::code_review_summary_requirement_text(value)
     }
 
-    pub fn normalize_policy_payload_json(&self, payload_json: &str) -> Result<JsonValue, String> {
-        let payload = self.parse_object_payload(payload_json, "policy payload")?;
-        self.normalize_policy_payload(&JsonValue::Object(payload))
-    }
-
     pub fn normalize_policy_payload(&self, payload: &JsonValue) -> Result<JsonValue, String> {
         let _ = &self.store;
         Ok(JsonValue::Object(
@@ -224,41 +219,11 @@ impl<S> PolicyJson<S> {
         ))
     }
 
-    pub fn normalize_policy_eval_payload_json(
-        &self,
-        payload_json: &str,
-    ) -> Result<JsonValue, String> {
-        let payload = self.parse_object_payload(payload_json, "policy eval payload")?;
-        self.normalize_policy_eval_payload(&JsonValue::Object(payload))
-    }
-
-    pub fn normalize_policy_eval_payload(&self, payload: &JsonValue) -> Result<JsonValue, String> {
-        let _ = &self.store;
-        Ok(JsonValue::Object(
-            require_object(Some(payload), "policy eval payload")?.clone(),
-        ))
-    }
-
-    pub fn normalize_waiver_payload_json(&self, payload_json: &str) -> Result<JsonValue, String> {
-        let payload = self.parse_object_payload(payload_json, "policy waiver payload")?;
-        self.normalize_waiver_payload(&JsonValue::Object(payload))
-    }
-
     pub fn normalize_waiver_payload(&self, payload: &JsonValue) -> Result<JsonValue, String> {
         let _ = &self.store;
         Ok(JsonValue::Object(
             require_object(Some(payload), "policy waiver payload")?.clone(),
         ))
-    }
-
-    pub fn optional_policy_id(&self, policy: &JsonValue) -> Option<String> {
-        let _ = &self.store;
-        normalize_optional_text(policy.get("policy_id").and_then(JsonValue::as_str))
-    }
-
-    pub fn optional_decision(&self, policy: &JsonValue) -> Option<String> {
-        let _ = &self.store;
-        normalize_optional_text(policy.get("decision").and_then(JsonValue::as_str))
     }
 
     pub fn policy_checks(&self, policy: Option<&JsonMap<String, JsonValue>>) -> Vec<JsonValue> {
@@ -283,23 +248,6 @@ impl<S> PolicyJson<S> {
         self.policy_checks(policy)
             .iter()
             .filter_map(blocking_policy_check_label)
-            .collect()
-    }
-
-    pub fn policy_check_statuses(
-        &self,
-        policy: Option<&JsonMap<String, JsonValue>>,
-    ) -> Vec<String> {
-        let _ = &self.store;
-        self.policy_checks(policy)
-            .iter()
-            .filter_map(|check| {
-                check
-                    .as_object()
-                    .and_then(|obj| obj.get("status"))
-                    .and_then(JsonValue::as_str)
-                    .and_then(|value| normalize_optional_text(Some(value)))
-            })
             .collect()
     }
 
@@ -358,43 +306,6 @@ impl<S> PolicyJson<S> {
         } else {
             format!("Land preflight is currently blocked because policy is `{decision}`.")
         }
-    }
-
-    pub fn build_policy_action_result(&self, result: JsonValue) -> JsonValue {
-        let _ = &self.store;
-        json!({ "result": result })
-    }
-
-    pub fn policy_refresh_from_review_result(&self, result: &JsonValue) -> Option<JsonValue> {
-        let _ = &self.store;
-        result
-            .as_object()
-            .and_then(|result| result.get("policy_refresh"))
-            .cloned()
-    }
-
-    pub fn policy_refresh_recovery(&self, policy_refresh: Option<&JsonValue>) -> Option<JsonValue> {
-        let _ = &self.store;
-        policy_refresh
-            .and_then(JsonValue::as_object)
-            .and_then(|policy_refresh| policy_refresh.get("response_recovery"))
-            .and_then(JsonValue::as_object)
-            .cloned()
-            .map(JsonValue::Object)
-    }
-
-    fn parse_object_payload(
-        &self,
-        payload_json: &str,
-        label: &str,
-    ) -> Result<JsonMap<String, JsonValue>, String> {
-        let _ = &self.store;
-        JsonCodec::parse_object_with_error_prefix(
-            payload_json,
-            &format!("{label} invalid JSON"),
-            &format!("{label} must be an object."),
-        )
-        .map_err(|err| err.to_string())
     }
 }
 

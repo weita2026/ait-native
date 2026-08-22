@@ -1,6 +1,5 @@
 use serde::{Deserialize, Serialize};
 
-use crate::manifest::count_manifest_workers;
 use crate::runtime::AgentRuntimePlan;
 use crate::transport::TransportKind;
 
@@ -63,24 +62,6 @@ pub fn plan_worker_launches(plan: &AgentRuntimePlan) -> Vec<WorkerLaunchPlan> {
         });
     }
     launches
-}
-
-pub fn plan_manifest_worker_launches(
-    manifest: &ait_core::json_support::JsonValue,
-    capacity: &crate::event_loop::AgentRuntimeCapacity,
-) -> Vec<WorkerLaunchPlan> {
-    let plan = AgentRuntimePlan {
-        total_configured_workers: count_manifest_workers(manifest)
-            .iter()
-            .map(|count| count.configured_workers)
-            .sum(),
-        expected_concurrent_workers: capacity.expected_workers,
-        transport_counts: count_manifest_workers(manifest),
-        capacity: capacity.clone(),
-        python_worker_execution_allowed: false,
-        migration_stage: "rust_agent_runtime_foundation",
-    };
-    plan_worker_launches(&plan)
 }
 
 #[cfg(test)]

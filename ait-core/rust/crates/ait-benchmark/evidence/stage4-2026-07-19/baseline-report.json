@@ -3,7 +3,7 @@
   "benchmark_id": "ait-stage4-focused-status-baseline-2026-07-19",
   "protocol_revision": "vcs-performance-2026-07-19.1",
   "generated_at": "2026-07-19T05:14:51.052048+00:00",
-  "manifest_digest": "sha256:5294fcf000fd04790a89e3ff8636308f52783038a420cb985f5a0384c246540e",
+  "manifest_digest": "sha256:179203c29b746c8687887d901be38844b570d7178217160d60ade089be4d3574",
   "raw_jsonl_path": "rust/crates/ait-benchmark/evidence/stage4-2026-07-19/baseline-raw.jsonl",
   "environment": {
     "captured_at": "2026-07-19T04:42:00Z",

@@ -602,6 +602,8 @@ refresh_build_artifact_mtimes() {
     "${target_dir}/${profile_dir}/ait-agent.exe" \
     "${target_dir}/${profile_dir}/ait-agent-worker" \
     "${target_dir}/${profile_dir}/ait-agent-worker.exe" \
+    "${target_dir}/${profile_dir}/aitk" \
+    "${target_dir}/${profile_dir}/aitk.exe" \
     "${target_dir}/${profile_dir}/libait_py.dylib" \
     "${target_dir}/${profile_dir}/libait_py.so" \
     "${target_dir}/${profile_dir}/ait_py.dll"; do
@@ -653,6 +655,7 @@ Build and install the ait-core-owned native commands:
   ait-cli            -> ait
   ait-agent          -> ait-agent
   ait-agent-worker   -> ait-agent-worker
+  aitk               -> aitk
 
 The default destination is AIT_NATIVE_BIN_DIR when set, otherwise
 ${XDG_BIN_HOME}/ when set, otherwise ${HOME}/.local/bin. The destination must
@@ -698,13 +701,16 @@ EOF
   local cli_artifact
   local agent_artifact
   local worker_artifact
+  local aitk_artifact
   cli_artifact="$(resolve_native_artifact "${artifact_dir}" ait-cli)"
   agent_artifact="$(resolve_native_artifact "${artifact_dir}" ait-agent)"
   worker_artifact="$(resolve_native_artifact "${artifact_dir}" ait-agent-worker)"
+  aitk_artifact="$(resolve_native_artifact "${artifact_dir}" aitk)"
 
   local command_suffix=""
   local agent_suffix=""
   local worker_suffix=""
+  local aitk_suffix=""
   if [[ "${cli_artifact}" == *.exe ]]; then
     command_suffix=".exe"
   fi
@@ -714,8 +720,12 @@ EOF
   if [[ "${worker_artifact}" == *.exe ]]; then
     worker_suffix=".exe"
   fi
+  if [[ "${aitk_artifact}" == *.exe ]]; then
+    aitk_suffix=".exe"
+  fi
   if [[ "${agent_suffix}" != "${command_suffix}" ||
-    "${worker_suffix}" != "${command_suffix}" ]]; then
+    "${worker_suffix}" != "${command_suffix}" ||
+    "${aitk_suffix}" != "${command_suffix}" ]]; then
     printf 'Native release artifacts use inconsistent executable suffixes.\n' >&2
     return 2
   fi
@@ -727,13 +737,14 @@ EOF
 
   if ! install -m 0755 "${cli_artifact}" "${staging_dir}/ait${command_suffix}" ||
     ! install -m 0755 "${agent_artifact}" "${staging_dir}/ait-agent${command_suffix}" ||
-    ! install -m 0755 "${worker_artifact}" "${staging_dir}/ait-agent-worker${command_suffix}"; then
+    ! install -m 0755 "${worker_artifact}" "${staging_dir}/ait-agent-worker${command_suffix}" ||
+    ! install -m 0755 "${aitk_artifact}" "${staging_dir}/aitk${command_suffix}"; then
     rm -rf -- "${staging_dir}"
     return 2
   fi
 
   local command_name
-  for command_name in ait ait-agent ait-agent-worker; do
+  for command_name in ait ait-agent ait-agent-worker aitk; do
     command_name="${command_name}${command_suffix}"
     if ! mv -f -- "${staging_dir}/${command_name}" "${bin_dir}/${command_name}"; then
       rm -rf -- "${staging_dir}"

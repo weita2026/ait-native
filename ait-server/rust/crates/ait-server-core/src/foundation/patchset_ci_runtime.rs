@@ -113,9 +113,9 @@ fn finalize_runtime_config_error(
 }
 
 fn run_patchset_ci_with_config(config: &PatchsetCiRuntimeConfig) -> Result<JsonValue, String> {
-    materialize_workspace(&config)?;
+    materialize_workspace(config)?;
 
-    let all_patchset_suites = selected_patchset_suites(&config)?;
+    let all_patchset_suites = selected_patchset_suites(config)?;
     if all_patchset_suites.is_empty() {
         return Err(format!(
             "Patchset {} does not expose any runnable patchset gate manifests in the configured CI suite catalog.",
@@ -124,7 +124,7 @@ fn run_patchset_ci_with_config(config: &PatchsetCiRuntimeConfig) -> Result<JsonV
     }
     let suites = suites_for_execution_profile(&all_patchset_suites, &config.execution_profile)?;
 
-    let native_prewarm = run_native_prewarm_once(&config)?;
+    let native_prewarm = run_native_prewarm_once(config)?;
     let suite_results = Vec::new();
     if native_prewarm
         .as_ref()
@@ -134,22 +134,22 @@ fn run_patchset_ci_with_config(config: &PatchsetCiRuntimeConfig) -> Result<JsonV
     {
         let mut tests_status = "fail".to_string();
         let mut detail = build_patchset_ci_detail(
-            &config,
+            config,
             &all_patchset_suites,
             &suite_results,
             native_prewarm.clone(),
             None,
             &tests_status,
         );
-        attach_flow_finish_evidence(&config, &mut detail, 0);
-        attach_workflow_ready_evidence(&config, &mut detail, &mut tests_status)?;
-        let mut result = build_result(&config, detail.clone(), suite_results, native_prewarm, None);
+        attach_flow_finish_evidence(config, &mut detail, 0);
+        attach_workflow_ready_evidence(config, &mut detail, &mut tests_status)?;
+        let mut result = build_result(config, detail.clone(), suite_results, native_prewarm, None);
         result["patchset_ci_completion"] =
-            build_patchset_ci_completion(&config, suites.len(), &detail, &tests_status);
+            build_patchset_ci_completion(config, suites.len(), &detail, &tests_status);
         return Ok(result);
     }
 
-    let (suite_results, suite_pool) = run_suites_with_bounded_pool(&config, &suites)?;
+    let (suite_results, suite_pool) = run_suites_with_bounded_pool(config, &suites)?;
 
     let mut tests_status = if suite_results.iter().any(|suite| {
         suite.get("blocking").and_then(JsonValue::as_bool) == Some(true)
@@ -160,29 +160,29 @@ fn run_patchset_ci_with_config(config: &PatchsetCiRuntimeConfig) -> Result<JsonV
         "pass".to_string()
     };
     let mut detail = build_patchset_ci_detail(
-        &config,
+        config,
         &all_patchset_suites,
         &suite_results,
         native_prewarm.clone(),
         Some(&suite_pool),
         &tests_status,
     );
-    attach_flow_finish_evidence(&config, &mut detail, suite_results.len());
-    attach_workflow_ready_evidence(&config, &mut detail, &mut tests_status)?;
+    attach_flow_finish_evidence(config, &mut detail, suite_results.len());
+    attach_workflow_ready_evidence(config, &mut detail, &mut tests_status)?;
     let policy_job_payload = if config.policy_mode == "async" {
-        Some(policy_job_payload(&config))
+        Some(policy_job_payload(config))
     } else {
         None
     };
     let mut result = build_result(
-        &config,
+        config,
         detail.clone(),
         suite_results.clone(),
         native_prewarm,
         policy_job_payload,
     );
     result["patchset_ci_completion"] =
-        build_patchset_ci_completion(&config, suites.len(), &detail, &tests_status);
+        build_patchset_ci_completion(config, suites.len(), &detail, &tests_status);
     Ok(result)
 }
 

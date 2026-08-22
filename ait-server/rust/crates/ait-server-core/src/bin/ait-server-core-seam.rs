@@ -2,11 +2,6 @@ use ait_server_core::foundation::agent_protocol::{
     agent_server_protocol_schema_json, normalize_agent_server_job_json,
 };
 use ait_server_core::foundation::ci_command_bundle::ci_command_bundle_run_json;
-#[cfg(feature = "legacy-postgres-runtime")]
-use ait_server_core::foundation::db::{
-    connect_server_plane, resolve_postgres_pool_max_size, NativePostgresDriver,
-    PostgresConnectionPoolRegistry, PostgresTimeoutScope,
-};
 use ait_server_core::foundation::identity::identity_json;
 use ait_server_core::foundation::main_seed_prewarm::ci_main_seed_prewarm_json;
 use ait_server_core::foundation::patchset_ci::{
@@ -29,14 +24,6 @@ use ait_server_core::foundation::scheduler::{
     SchedulerDeploymentPosture, SchedulerJobSpec, SchedulerPolicy, SchedulerQueuedJob,
     SchedulerRunningJob,
 };
-#[cfg(feature = "legacy-postgres-runtime")]
-use ait_server_core::foundation::server_context::server_context_json;
-#[cfg(feature = "legacy-postgres-runtime")]
-use ait_server_core::foundation::server_patchset_store::server_patchset_store_json;
-#[cfg(feature = "legacy-postgres-runtime")]
-use ait_server_core::foundation::server_policy_store::server_policy_store_json;
-#[cfg(feature = "legacy-postgres-runtime")]
-use ait_server_core::foundation::server_review_store::server_review_store_json;
 use ait_server_core::foundation::test_shard_runner::ci_test_shard_run_json;
 use ait_server_core::foundation::test_shard_runtime::{
     ci_test_shard_cleanup_json, ci_test_shard_prepare_json,
@@ -45,12 +32,6 @@ use ait_server_core::foundation::test_shards::ci_test_shard_plan_json;
 use ait_server_core::foundation::transport::{
     async_job_contract, land_request_json, normalize_async_job_payload,
     retry_delay_seconds_for_job, supported_async_job_types,
-};
-#[cfg(feature = "legacy-postgres-runtime")]
-use ait_server_core::foundation::worker_queue::worker_queue_kernel_json;
-#[cfg(feature = "legacy-postgres-runtime")]
-use ait_server_core::foundation::worker_queue::{
-    worker_queue_service_json, PostgresWorkerQueuePool, WorkerQueueKernel,
 };
 use ait_server_core::foundation::workflow_artifacts::workflow_artifacts_json;
 use ait_server_core::foundation::workflow_async_runtime::workflow_async_runtime_json;
@@ -74,13 +55,9 @@ use ait_server_core::middle::workflow_repository_read_model::{
 use serde_json::{json, Map as JsonMap, Value as JsonValue};
 use std::io::{self, Read};
 use std::process::ExitCode;
-#[cfg(feature = "legacy-postgres-runtime")]
-use std::sync::Arc;
 use std::{env, fs};
 
 const SEAM_CONTRACT_VERSION: &str = "ait-server-core-seam-v1";
-#[cfg(feature = "legacy-postgres-runtime")]
-const FAKE_POSTGRES_PREFIX: &str = "fake-postgres://";
 const SEAM_CAPABILITIES: &[&str] = &[
     "foundation.agent_protocol.normalize_agent_server_job",
     "foundation.agent_protocol.schema",
@@ -152,19 +129,6 @@ const SEAM_CAPABILITIES: &[&str] = &[
     "server.storage.tree_pack_manifest_path",
     "server.storage.build_tree_records",
     "server.storage.build_snapshot_id",
-];
-
-#[cfg(feature = "legacy-postgres-runtime")]
-const LEGACY_SEAM_CAPABILITIES: &[&str] = &[
-    "foundation.server_context.path_shaping",
-    "foundation.server_context.directory_bootstrap",
-    "server.patchset_store.postgres",
-    "server.policy_store.postgres",
-    "server.review_store.postgres",
-    "server.postgres.connection_driver",
-    "server.postgres.runtime_probe",
-    "server.worker_queue.kernel",
-    "server.worker_queue.service",
 ];
 
 #[path = "ait_server_core_seam/ci.rs"]

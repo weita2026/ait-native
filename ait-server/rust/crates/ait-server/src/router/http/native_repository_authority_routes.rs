@@ -185,27 +185,19 @@ pub(super) async fn native_repository_authority_put_zstd_bulk_object_pack(
     State(state): State<ServerState>,
     Path((repository_index, pack_id)): Path<(String, String)>,
     headers: HeaderMap,
-    body: Bytes,
+    RawBody(body): RawBody,
 ) -> Result<impl IntoResponse, ApiError> {
-    validate_zstd_bulk_content_type(
-        &headers,
+    let payload = stream_zstd_bulk_pack_upload(
+        state,
+        repository_index,
+        pack_id,
+        headers,
+        body,
+        NativeZstdPackKind::Object,
         ZSTD_BULK_OBJECT_PACK_MEDIA_TYPE,
-        "zstd object-pack upload",
-    )?;
-    if body.is_empty() {
-        return Err(ApiError::bad_request("zstd object-pack body is empty"));
-    }
-    let runtime = state.runtime_service.clone();
-    let result = task::spawn_blocking(move || {
-        runtime.put_repository_zstd_object_pack(&repository_index, &pack_id, body.to_vec())
-    })
-    .await
-    .map_err(|error| {
-        ApiError::internal(format!(
-            "numeric Repository object-pack worker failed: {error}"
-        ))
-    })?;
-    map_json_result(result)
+    )
+    .await?;
+    Ok(ok_json(payload))
 }
 
 pub(super) async fn native_repository_authority_get_zstd_bulk_object_pack(
@@ -235,27 +227,19 @@ pub(super) async fn native_repository_authority_put_zstd_bulk_tree_pack(
     State(state): State<ServerState>,
     Path((repository_index, pack_id)): Path<(String, String)>,
     headers: HeaderMap,
-    body: Bytes,
+    RawBody(body): RawBody,
 ) -> Result<impl IntoResponse, ApiError> {
-    validate_zstd_bulk_content_type(
-        &headers,
+    let payload = stream_zstd_bulk_pack_upload(
+        state,
+        repository_index,
+        pack_id,
+        headers,
+        body,
+        NativeZstdPackKind::Tree,
         ZSTD_BULK_TREE_PACK_MEDIA_TYPE,
-        "zstd tree-pack upload",
-    )?;
-    if body.is_empty() {
-        return Err(ApiError::bad_request("zstd tree-pack body is empty"));
-    }
-    let runtime = state.runtime_service.clone();
-    let result = task::spawn_blocking(move || {
-        runtime.put_repository_zstd_tree_pack(&repository_index, &pack_id, body.to_vec())
-    })
-    .await
-    .map_err(|error| {
-        ApiError::internal(format!(
-            "numeric Repository tree-pack worker failed: {error}"
-        ))
-    })?;
-    map_json_result(result)
+    )
+    .await?;
+    Ok(ok_json(payload))
 }
 
 pub(super) async fn native_repository_authority_get_zstd_bulk_tree_pack(
@@ -300,6 +284,123 @@ fn validate_zstd_bulk_content_type(
         format!("{label} content type `{actual}` is unsupported; expected `{expected}`")
     };
     Err(ApiError::bad_request(message))
+}
+
+fn declared_zstd_pack_content_length(headers: &HeaderMap) -> Result<Option<u64>, ApiError> {
+    let Some(value) = headers.get(CONTENT_LENGTH) else {
+        return Ok(None);
+    };
+    let value = value
+        .to_str()
+        .map_err(|_| ApiError::bad_request("zstd Pack Content-Length is not valid ASCII"))?;
+    let bytes = value
+        .parse::<u64>()
+        .map_err(|_| ApiError::bad_request("zstd Pack Content-Length is not a valid integer"))?;
+    if bytes > NATIVE_ZSTD_BULK_BODY_LIMIT_BYTES as u64 {
+        return Err(ApiError::payload_too_large(format!(
+            "zstd Pack body exceeds the {} byte limit",
+            NATIVE_ZSTD_BULK_BODY_LIMIT_BYTES
+        )));
+    }
+    Ok(Some(bytes))
+}
+
+pub(super) async fn stream_zstd_pack_body(
+    body: &mut AxumBody,
+    file: &mut tokio::fs::File,
+    limit_bytes: u64,
+    label: &str,
+) -> Result<(u64, String), ApiError> {
+    let mut payload_bytes = 0_u64;
+    let mut payload_sha256 = Sha256::new();
+    while let Some(chunk) = body.data().await {
+        let chunk = chunk.map_err(|error| {
+            ApiError::bad_request(format!("failed to receive zstd {label} body: {error}"))
+        })?;
+        payload_bytes = payload_bytes
+            .checked_add(chunk.len() as u64)
+            .ok_or_else(|| ApiError::payload_too_large("zstd Pack body length overflow"))?;
+        if payload_bytes > limit_bytes {
+            return Err(ApiError::payload_too_large(format!(
+                "zstd {label} body exceeds the {limit_bytes} byte limit"
+            )));
+        }
+        file.write_all(&chunk).await.map_err(|error| {
+            ApiError::internal(format!("failed to stage zstd {label} body: {error}"))
+        })?;
+        payload_sha256.update(&chunk);
+    }
+    Ok((payload_bytes, format!("{:x}", payload_sha256.finalize())))
+}
+
+async fn stream_zstd_bulk_pack_upload(
+    state: ServerState,
+    repository_index: String,
+    pack_id: String,
+    headers: HeaderMap,
+    mut body: AxumBody,
+    kind: NativeZstdPackKind,
+    expected_media_type: &str,
+) -> Result<JsonValue, ApiError> {
+    let label = format!("{}-pack", kind.label());
+    validate_zstd_bulk_content_type(
+        &headers,
+        expected_media_type,
+        &format!("zstd {label} upload"),
+    )?;
+    let declared_bytes = declared_zstd_pack_content_length(&headers)?;
+    if declared_bytes == Some(0) {
+        return Err(ApiError::bad_request(format!("zstd {label} body is empty")));
+    }
+    let _permit = state
+        .zstd_pack_upload_admission
+        .clone()
+        .try_acquire_owned()
+        .map_err(|_| {
+            ApiError::service_unavailable(
+                "zstd Pack upload capacity is exhausted; retry the request",
+            )
+        })?;
+
+    let service = state.repository_service.clone();
+    let begin_repository_index = repository_index.clone();
+    let begin_pack_id = pack_id.clone();
+    let mut upload = run_repository_call(move || {
+        service.begin_zstd_bulk_pack_upload(&begin_repository_index, &begin_pack_id, kind)
+    })
+    .await?;
+    let staged_file = upload.take_file().map_err(map_native_repository_error)?;
+    let mut staged_file = tokio::fs::File::from_std(staged_file);
+    let (payload_bytes, payload_sha256) = stream_zstd_pack_body(
+        &mut body,
+        &mut staged_file,
+        NATIVE_ZSTD_BULK_BODY_LIMIT_BYTES as u64,
+        &label,
+    )
+    .await?;
+    if payload_bytes == 0 {
+        return Err(ApiError::bad_request(format!("zstd {label} body is empty")));
+    }
+    if declared_bytes.is_some_and(|expected| expected != payload_bytes) {
+        return Err(ApiError::bad_request(format!(
+            "zstd {label} body length does not match Content-Length"
+        )));
+    }
+    staged_file.sync_all().await.map_err(|error| {
+        ApiError::internal(format!("failed to sync staged zstd {label}: {error}"))
+    })?;
+    drop(staged_file);
+
+    let service = state.repository_service.clone();
+    run_repository_call(move || {
+        service.finish_zstd_bulk_pack_upload(
+            &repository_index,
+            upload,
+            payload_bytes,
+            &payload_sha256,
+        )
+    })
+    .await
 }
 
 pub(super) async fn native_get_snapshot_tail(

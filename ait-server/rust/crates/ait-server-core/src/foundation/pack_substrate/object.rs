@@ -342,6 +342,7 @@ pub fn summarize_pack_archives(
     Ok(summary)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn build_storage_validation_summary(
     packed_blob_count: usize,
     packed_full_blob_count: usize,
@@ -699,22 +700,6 @@ impl TreePackEntryArchive {
             "entry_ordinal": member.member_ordinal,
             "rows": rows,
         }))
-    }
-
-    pub fn tree_ordinals(&self) -> Result<Vec<(String, usize, usize)>, String> {
-        self.pack_index
-            .members
-            .iter()
-            .map(|entry| {
-                Ok((
-                    entry.content_id.clone(),
-                    entry.member_ordinal,
-                    entry.entry_count.ok_or_else(|| {
-                        format!("tree pack member {} has no entry count", entry.content_id)
-                    })?,
-                ))
-            })
-            .collect()
     }
 
     #[cfg(test)]

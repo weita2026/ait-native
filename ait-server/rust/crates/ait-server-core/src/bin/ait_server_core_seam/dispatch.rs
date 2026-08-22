@@ -47,17 +47,6 @@ const SEAM_COMMANDS: &[&str] = &[
     "server-storage",
 ];
 
-#[cfg(feature = "legacy-postgres-runtime")]
-const LEGACY_SEAM_COMMANDS: &[&str] = &[
-    "server-context",
-    "patchset-store",
-    "policy-store",
-    "review-store",
-    "worker-queue-kernel",
-    "worker-queue-service",
-    "postgres-runtime-probe",
-];
-
 pub(super) fn run() -> ExitCode {
     let mut args = env::args().skip(1);
     let result = (|| match args.next().as_deref() {
@@ -95,12 +84,6 @@ pub(super) fn run() -> ExitCode {
             let payload_json = payload_arg("payload_json", args.next())?;
             plan_revision_command(&operation, &payload_json)
         }
-        #[cfg(feature = "legacy-postgres-runtime")]
-        Some("server-context") => {
-            let operation = required_arg("operation", args.next())?;
-            let payload_json = payload_arg("payload_json", args.next())?;
-            server_context_command(&operation, &payload_json)
-        }
         Some("scheduler-shape-async-job") => {
             let job_type = required_arg("job_type", args.next())?;
             let payload_json = payload_arg("payload_json", args.next())?;
@@ -128,39 +111,6 @@ pub(super) fn run() -> ExitCode {
             let operation = required_arg("operation", args.next())?;
             let payload_json = payload_arg("payload_json", args.next())?;
             policy_gate_command(&operation, &payload_json)
-        }
-        #[cfg(feature = "legacy-postgres-runtime")]
-        Some("policy-store") => {
-            let operation = required_arg("operation", args.next())?;
-            let payload_json = payload_arg("payload_json", args.next())?;
-            policy_store_command(&operation, &payload_json)
-        }
-        #[cfg(feature = "legacy-postgres-runtime")]
-        Some("review-store") => {
-            let operation = required_arg("operation", args.next())?;
-            let payload_json = payload_arg("payload_json", args.next())?;
-            review_store_command(&operation, &payload_json)
-        }
-        #[cfg(feature = "legacy-postgres-runtime")]
-        Some("patchset-store") => {
-            let operation = required_arg("operation", args.next())?;
-            let payload_json = payload_arg("payload_json", args.next())?;
-            patchset_store_command(&operation, &payload_json)
-        }
-        #[cfg(feature = "legacy-postgres-runtime")]
-        Some("worker-queue-kernel") => {
-            let payload_json = payload_arg("payload_json", args.next())?;
-            worker_queue_kernel_command(&payload_json)
-        }
-        #[cfg(feature = "legacy-postgres-runtime")]
-        Some("worker-queue-service") => {
-            let payload_json = payload_arg("payload_json", args.next())?;
-            worker_queue_service_command(&payload_json)
-        }
-        #[cfg(feature = "legacy-postgres-runtime")]
-        Some("postgres-runtime-probe") => {
-            let payload_json = payload_arg("payload_json", args.next())?;
-            postgres_runtime_probe_command(&payload_json)
         }
         Some("patchset-ci-schedule-admission") => {
             let payload_json = payload_arg("payload_json", args.next())?;
@@ -285,26 +235,10 @@ fn handshake() -> Result<(), String> {
     }))
 }
 
-#[cfg(not(feature = "legacy-postgres-runtime"))]
 fn seam_capabilities() -> Vec<&'static str> {
     SEAM_CAPABILITIES.to_vec()
 }
 
-#[cfg(feature = "legacy-postgres-runtime")]
-fn seam_capabilities() -> Vec<&'static str> {
-    let mut capabilities = SEAM_CAPABILITIES.to_vec();
-    capabilities.extend_from_slice(LEGACY_SEAM_CAPABILITIES);
-    capabilities
-}
-
-#[cfg(not(feature = "legacy-postgres-runtime"))]
 fn supported_commands() -> String {
     SEAM_COMMANDS.join(", ")
-}
-
-#[cfg(feature = "legacy-postgres-runtime")]
-fn supported_commands() -> String {
-    let mut commands = SEAM_COMMANDS.to_vec();
-    commands.extend_from_slice(LEGACY_SEAM_COMMANDS);
-    commands.join(", ")
 }

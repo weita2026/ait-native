@@ -13,7 +13,7 @@ pub fn repository_worker_status_read_model(
     for job in input.jobs.iter().filter(|job| {
         object_text(job, "repo_name")
             .as_deref()
-            .map_or(true, |name| name == repo_name)
+            .is_none_or(|name| name == repo_name)
     }) {
         let state = object_text(job, "state").unwrap_or_default();
         *state_summary.entry(state.clone()).or_default() += 1;
@@ -67,7 +67,7 @@ pub fn repository_worker_status_read_model(
             .filter(|job| {
                 object_text(job, "repo_name")
                     .as_deref()
-                    .map_or(true, |name| name == repo_name)
+                    .is_none_or(|name| name == repo_name)
             })
             .cloned()
             .map(JsonValue::Object)

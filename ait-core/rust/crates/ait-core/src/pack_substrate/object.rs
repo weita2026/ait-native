@@ -442,6 +442,7 @@ pub fn summarize_pack_archives(
     for row in rows {
         let row_obj = as_object(row, "pack row")?;
         let Some(pack_path) = optional_text_field(row_obj, "pack_path") else {
+            increment_u64(summary_obj, "index_error_count", 1);
             continue;
         };
         let Some(pack_format) = optional_text_field(row_obj, "pack_format") else {
@@ -450,6 +451,7 @@ pub fn summarize_pack_archives(
         };
         let pack_abs = root.join(pack_path);
         if !pack_abs.exists() {
+            increment_u64(summary_obj, "index_error_count", 1);
             continue;
         }
         increment_u64(

@@ -1,7 +1,5 @@
 use super::*;
-#[cfg(feature = "legacy-postgres-runtime")]
-use crate::foundation::pack_substrate::DEFAULT_MAX_DELTA_CHAIN_DEPTH;
-
+use crate::foundation::native_repositories::zstd_bulk::validate_zstd_pack_index_metadata;
 fn current_object_pack_index(blob_id: &str, checksum: &str, entry_type: &str) -> JsonValue {
     json!({
         "pack_format": PACK_FORMAT_ZSTD_CHUNKED_V1,
@@ -43,97 +41,6 @@ fn current_tree_pack_index(
         }],
     })
 }
-
-#[test]
-#[cfg(feature = "legacy-postgres-runtime")]
-fn repository_metadata_schema_does_not_recreate_binary_owned_content_tables() {
-    assert!(REPOSITORY_METADATA_SCHEMA_SQL.contains("create table if not exists repositories"));
-    for table_name in [
-        "lines",
-        "blobs",
-        "blob_locators",
-        "blob_inline_contents",
-        "snapshots",
-        "trees",
-        "packs",
-        "tree_packs",
-    ] {
-        assert!(
-            !REPOSITORY_METADATA_SCHEMA_SQL
-                .contains(&format!("create table if not exists {table_name}")),
-            "metadata-only schema must not create {table_name}"
-        );
-    }
-    assert!(!REPOSITORY_METADATA_SCHEMA_SQL.contains("create index"));
-    assert!(!REPOSITORY_METADATA_SCHEMA_SQL.contains("alter table"));
-}
-
-#[test]
-#[cfg(feature = "legacy-postgres-runtime")]
-fn content_schema_defines_tree_pack_repository_owner_columns() {
-    assert!(CONTENT_SCHEMA_SQL.contains("repo_name text references repositories(repo_name)"));
-    assert!(CONTENT_SCHEMA_SQL.contains("repo_id text"));
-    assert!(!CONTENT_SCHEMA_SQL.contains("alter table tree_packs"));
-    assert!(CONTENT_SCHEMA_SQL.contains(
-        "create index if not exists idx_tree_packs_repo on tree_packs(repo_id, pack_id)"
-    ));
-}
-
-#[test]
-#[cfg(feature = "legacy-postgres-runtime")]
-fn content_schema_defines_repo_scoped_blob_locators() {
-    assert!(CONTENT_SCHEMA_SQL.contains("create table if not exists blob_locators"));
-    assert!(
-        CONTENT_SCHEMA_SQL.contains("repo_name text not null references repositories(repo_name)")
-    );
-    assert!(CONTENT_SCHEMA_SQL.contains("repo_id text not null"));
-    assert!(CONTENT_SCHEMA_SQL.contains("primary key (repo_id, blob_id)"));
-    assert!(CONTENT_SCHEMA_SQL.contains("create index if not exists idx_blob_locators_pack_id"));
-}
-
-#[test]
-fn tree_pack_owner_validation_uses_repository_owner_columns() {
-    validate_tree_pack_owner_values(Some("repo-a"), Some("REPO-A"), "TPK-A", "repo-a", "REPO-A")
-        .expect("matching repo owner should pass");
-    let incomplete =
-        validate_tree_pack_owner_values(Some("repo-a"), None, "TPK-A", "repo-a", "REPO-A")
-            .expect_err("incomplete tree-pack ownership must fail closed");
-    assert_eq!(incomplete.kind, NativeRepositoryErrorKind::Conflict);
-
-    let mismatch = validate_tree_pack_owner_values(
-        Some("repo-b"),
-        Some("REPO-B"),
-        "TPK-A",
-        "repo-a",
-        "REPO-A",
-    )
-    .expect_err("cross-repo tree pack should conflict");
-    assert_eq!(mismatch.kind, NativeRepositoryErrorKind::Conflict);
-    assert_eq!(
-        mismatch.message,
-        "Tree pack TPK-A belongs to repository repo-b, not repo-a"
-    );
-
-    let missing = validate_tree_pack_owner_values(None, None, "TPK-A", "repo-a", "REPO-A")
-        .expect_err("missing tree pack owner should conflict");
-    assert_eq!(missing.kind, NativeRepositoryErrorKind::Conflict);
-    assert_eq!(
-        missing.message,
-        "Tree pack TPK-A is missing repository ownership metadata"
-    );
-}
-
-#[test]
-#[cfg(feature = "legacy-postgres-runtime")]
-fn native_blob_resolver_allows_external_base_chains_beyond_pack_local_limit() {
-    assert!(!native_blob_resolver_delta_chain_exceeded(
-        DEFAULT_MAX_DELTA_CHAIN_DEPTH + 1
-    ));
-    assert!(native_blob_resolver_delta_chain_exceeded(
-        NATIVE_BLOB_RESOLVER_MAX_DELTA_CHAIN_DEPTH + 1
-    ));
-}
-
 #[test]
 fn remote_sync_plan_json_capabilities_match_server_contract() {
     assert_eq!(
@@ -193,7 +100,7 @@ fn zstd_pull_manifest_request_rejects_invalid_contract_and_duplicate_have_ids() 
 }
 
 #[test]
-fn repository_pack_storage_capability_and_empty_format_defaults_match_contract() {
+fn repository_pack_storage_capability_matches_contract() {
     assert_eq!(
         repository_pack_storage_capability_json(),
         json!({
@@ -201,57 +108,6 @@ fn repository_pack_storage_capability_and_empty_format_defaults_match_contract()
             "payload_field": "pack_storage",
             "missing_payload_default": "zstd_only",
         })
-    );
-    assert_eq!(
-        object_pack_format_summary(&[]),
-        PACK_FORMAT_ZSTD_CHUNKED_V1.to_string()
-    );
-    assert_eq!(
-        tree_pack_format_summary(&[]),
-        TREE_PACK_FORMAT_ZSTD_CHUNKED_V1.to_string()
-    );
-    assert_eq!(
-        object_pack_format_summary(&[
-            ("unsupported-object-pack".to_string(), 1),
-            (PACK_FORMAT_ZSTD_CHUNKED_V1.to_string(), 1),
-        ]),
-        "mixed"
-    );
-}
-
-#[test]
-fn zstd_only_server_flows_require_verified_zstd_only_pack_storage() {
-    let zstd_only = json!({
-        "contract": "ait.repository.pack_storage.v1",
-        "zstd_only_verified": true,
-    });
-    ensure_zstd_only_repository_flow_allowed_for_pack_storage(
-        "repo-a",
-        &zstd_only,
-        ZstdOnlyRepositoryFlow::ZstdBulkCommit,
-    )
-    .expect("verified zstd-only storage should allow zstd bulk commit");
-    ensure_zstd_only_repository_flow_allowed_for_pack_storage(
-        "repo-a",
-        &zstd_only,
-        ZstdOnlyRepositoryFlow::SnapshotMaterialize,
-    )
-    .expect("verified zstd-only storage should allow materialize");
-
-    let invalid = json!({
-        "contract": "ait.repository.pack_storage.v1",
-        "zstd_only_verified": false,
-    });
-    let err = ensure_zstd_only_repository_flow_allowed_for_pack_storage(
-        "repo-a",
-        &invalid,
-        ZstdOnlyRepositoryFlow::LineUpdate,
-    )
-    .expect_err("unverified storage should reject line updates");
-    assert_eq!(err.kind, NativeRepositoryErrorKind::BadRequest);
-    assert_eq!(
-        err.message,
-        "Repository repo-a has not passed current zstd-only pack validation; line update is unavailable."
     );
 }
 

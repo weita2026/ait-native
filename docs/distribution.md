@@ -367,6 +367,13 @@ reinterpret the native runtime.
 
 ## Public Components
 
+Current `ait-core` source additionally builds the native `aitk` read-only
+history-browser companion. It shares the `ait-core` source/version identity and
+is not a new family component. The frozen stable 1.0.0 manifest below remains
+unchanged; no existing package may claim `aitk` until a later family freezes
+its six-target executable bytes and the affected installer receipts. Local
+source builds and `./ait.sh core install` do install the current executable.
+
 | Component | Public surface | Source authority | License | 1.0.0 role |
 | --- | --- | --- | --- | --- |
 | `ait` | native executable | `ait-core` | Apache-2.0 | repository and workflow CLI |

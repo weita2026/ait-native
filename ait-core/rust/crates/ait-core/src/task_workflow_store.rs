@@ -88,39 +88,6 @@ where
     store.get_change(change_id)
 }
 
-pub fn create_change_with_task_workflow_change_store<S>(
-    store: &S,
-    repo_name: &str,
-    task_id: &str,
-    title: &str,
-    base_line: &str,
-    namespace_prefix: Option<&str>,
-    fork_snapshot_id: Option<&str>,
-) -> PlanStoreResult<Value>
-where
-    S: TaskWorkflowChangeCreator + ?Sized,
-{
-    store.create_change(
-        repo_name,
-        task_id,
-        title,
-        base_line,
-        namespace_prefix,
-        fork_snapshot_id,
-    )
-}
-
-pub fn close_change_with_task_workflow_change_store<S>(
-    store: &S,
-    change_id: &str,
-    status: &str,
-) -> PlanStoreResult<Value>
-where
-    S: TaskWorkflowChangeCloser + ?Sized,
-{
-    store.close_change(change_id, status)
-}
-
 pub fn land_change_with_task_workflow_change_store<S>(
     store: &S,
     change_id: &str,
@@ -137,17 +104,4 @@ where
         landed_snapshot_id,
         pre_land_target_snapshot_id,
     )
-}
-
-pub fn mark_change_published_with_task_workflow_change_store<S>(
-    store: &S,
-    change_id: &str,
-    remote_name: Option<&str>,
-    published_change_id: Option<&str>,
-    allow_landed: bool,
-) -> PlanStoreResult<Value>
-where
-    S: TaskWorkflowChangePublisher + ?Sized,
-{
-    store.mark_change_published(change_id, remote_name, published_change_id, allow_landed)
 }

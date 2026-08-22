@@ -14,13 +14,3 @@ pub struct WorkflowEventRecord {
 pub trait WorkflowEventStore {
     fn record_event(&self, event: &WorkflowEventRecord) -> WorkflowEventStoreResult<bool>;
 }
-
-pub fn record_workflow_event_with_store<S>(
-    store: &S,
-    event: &WorkflowEventRecord,
-) -> WorkflowEventStoreResult<bool>
-where
-    S: WorkflowEventStore + ?Sized,
-{
-    store.record_event(event)
-}

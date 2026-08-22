@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use ait_core::json_support::{JsonCodec, JsonEncodeOptions};
 use ait_core::json_support::{JsonMap, JsonValue};
 use std::io::Write;
@@ -31,10 +29,6 @@ pub(crate) fn parse_slice_value(bytes: &[u8], error_prefix: &str) -> Result<Json
     JsonCodec::parse_slice_with_error_prefix(bytes, error_prefix).map_err(String::from)
 }
 
-pub(crate) fn parse_slice_value_error_string(bytes: &[u8]) -> Result<JsonValue, String> {
-    parse_slice_value(bytes, "Invalid JSON").map_err(|err| strip_error_prefix(err, "Invalid JSON"))
-}
-
 pub(crate) fn encode_value(value: &JsonValue, error_prefix: &str) -> Result<String, String> {
     JsonCodec::encode_serializable_with_error_prefix(
         value,
@@ -51,11 +45,6 @@ pub(crate) fn encode_value_pretty(value: &JsonValue, error_prefix: &str) -> Resu
         error_prefix,
     )
     .map_err(String::from)
-}
-
-pub(crate) fn encode_value_pretty_error_string(value: &JsonValue) -> Result<String, String> {
-    encode_value_pretty(value, "Failed to encode JSON")
-        .map_err(|err| strip_error_prefix(err, "Failed to encode JSON"))
 }
 
 pub(crate) fn encode_value_pretty_with_newline(
@@ -89,6 +78,7 @@ pub(crate) fn encode_value_to_vec(
     .map_err(String::from)
 }
 
+#[cfg(test)]
 pub(crate) fn encode_value_to_vec_error_string(value: &JsonValue) -> Result<Vec<u8>, String> {
     encode_value_to_vec(value, "Failed to encode JSON")
         .map_err(|err| strip_error_prefix(err, "Failed to encode JSON"))
@@ -104,13 +94,6 @@ pub(crate) fn encode_value_pretty_to_vec(
         error_prefix,
     )
     .map_err(String::from)
-}
-
-pub(crate) fn encode_value_pretty_to_vec_error_string(
-    value: &JsonValue,
-) -> Result<Vec<u8>, String> {
-    encode_value_pretty_to_vec(value, "Failed to encode JSON")
-        .map_err(|err| strip_error_prefix(err, "Failed to encode JSON"))
 }
 
 pub(crate) fn encode_value_or(value: &JsonValue, fallback: &str) -> String {

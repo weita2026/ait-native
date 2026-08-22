@@ -1480,6 +1480,10 @@ fn task_workflow_blame_py(
 }
 
 #[pyfunction(name = "task_workflow_snapshot_restore_lines")]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the function mirrors the stable Python positional and keyword ABI"
+)]
 #[pyo3(signature = (
     repo_root,
     snapshot_id,

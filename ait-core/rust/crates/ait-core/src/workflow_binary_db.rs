@@ -45,10 +45,8 @@ pub const LAND_RECORD_BIN: &str = "land.bin";
 
 const MAX_CHANGE_ORDINAL: u8 = 63;
 const MAX_LAND_ORDINAL: u8 = 63;
-const TASK_META_KNOWN: u8 = 0xff;
 const LOCAL_TASK_META_KNOWN: u8 = 0b0000_0111;
 const CHANGE_META_LIFECYCLE_MASK: u8 = 0b0000_0011;
-const CHANGE_META_KNOWN: u8 = 0xff;
 const CHANGE_STATE_KNOWN: u8 = 0b0000_0001;
 const LOCAL_CHANGE_META_KNOWN: u8 = 0b0000_0001;
 const LAND_META_STATUS_MASK: u8 = 0b0000_0111;
@@ -367,6 +365,16 @@ struct WorkflowRows {
     changes: BTreeMap<String, JsonValue>,
     task_record_indexes: BTreeMap<String, u32>,
     change_record_indexes: BTreeMap<String, u32>,
+}
+
+struct LocalTaskCreateInput<'a> {
+    title: String,
+    intent: String,
+    planned: bool,
+    revision_plus1: u32,
+    item_plus1: u32,
+    plan_linked_at_s: u64,
+    status: &'a str,
 }
 
 #[derive(Clone, Debug)]
@@ -970,12 +978,12 @@ impl<B: BinaryDb, const WRITE_LAYOUT: u32> BinaryDbWorkflowStore<B, WRITE_LAYOUT
                             .map_err(storage_error)?,
                     )
                     .map_err(storage_error)?;
-                    if payload.plan_item_ref_bytes == expected.as_bytes() {
-                        if found.replace(item_index).is_some() {
-                            return Err(PlanStoreError::Invalid(format!(
-                                "Plan Item ref {expected} is ambiguous in {revision_text}"
-                            )));
-                        }
+                    if payload.plan_item_ref_bytes == expected.as_bytes()
+                        && found.replace(item_index).is_some()
+                    {
+                        return Err(PlanStoreError::Invalid(format!(
+                            "Plan Item ref {expected} is ambiguous in {revision_text}"
+                        )));
                     }
                 }
                 found
@@ -1001,25 +1009,19 @@ impl<B: BinaryDb, const WRITE_LAYOUT: u32> BinaryDbWorkflowStore<B, WRITE_LAYOUT
     fn create_task_record<F>(
         &self,
         write: &mut BinaryDbWriteTxn<'_, B, F>,
-        title: &str,
-        intent: &str,
-        planned: bool,
-        revision_plus1: u32,
-        item_plus1: u32,
-        plan_linked_at_s: u64,
-        status: &str,
+        input: LocalTaskCreateInput<'_>,
     ) -> PlanStoreResult<(u32, LocalTaskRecord)>
     where
         F: BinaryDbFsyncPolicy,
     {
-        let payload = encode_task_payload(title, intent).map_err(storage_error)?;
+        let payload = encode_task_payload(&input.title, &input.intent).map_err(storage_error)?;
         let range = write
             .append_payload(Self::task_payload_file(), &payload)
             .map_err(storage_error)?;
         let now = now_s()?;
-        let mut task_meta = u8::from(planned);
+        let mut task_meta = u8::from(input.planned);
         let mut local_meta = 0_u8;
-        let closed_at_s = match status {
+        let closed_at_s = match input.status {
             "active" => 0,
             "completed" => {
                 task_meta |= 0b0100_0000;
@@ -1045,12 +1047,12 @@ impl<B: BinaryDb, const WRITE_LAYOUT: u32> BinaryDbWorkflowStore<B, WRITE_LAYOUT
             payload_len: u16::try_from(range.payload_len)
                 .map_err(|_| PlanStoreError::Invalid("Task payload exceeds u16".to_string()))?,
             payload_offset: range.payload_offset,
-            origin_plan_revision_index_plus1: revision_plus1,
-            plan_item_index_plus1: item_plus1,
+            origin_plan_revision_index_plus1: input.revision_plus1,
+            plan_item_index_plus1: input.item_plus1,
             published_remote_task_index: 0,
             created_at_s: now,
             updated_at_s: now,
-            plan_linked_at_s,
+            plan_linked_at_s: input.plan_linked_at_s,
             published_at_s: 0,
             closed_at_s,
         };
@@ -1280,13 +1282,15 @@ impl<B: BinaryDb, const WRITE_LAYOUT: u32> TaskStore for BinaryDbWorkflowStore<B
         let plan_linked_at_s = if revision_plus1 == 0 { 0 } else { now_s()? };
         let (task_index, _) = self.create_task_record(
             &mut write,
-            &required_text(title, "title")?,
-            &required_text(intent, "intent")?,
-            plan_id.is_some(),
-            revision_plus1,
-            item_plus1,
-            plan_linked_at_s,
-            "active",
+            LocalTaskCreateInput {
+                title: required_text(title, "title")?,
+                intent: required_text(intent, "intent")?,
+                planned: plan_id.is_some(),
+                revision_plus1,
+                item_plus1,
+                plan_linked_at_s,
+                status: "active",
+            },
         )?;
         write.commit().map_err(storage_error)?;
         TaskStore::get_task(
@@ -1357,13 +1361,15 @@ impl<B: BinaryDb, const WRITE_LAYOUT: u32> TaskStore for BinaryDbWorkflowStore<B
         };
         self.create_task_record(
             &mut write,
-            &required_text(title, "title")?,
-            &required_text(intent, "intent")?,
-            planned,
-            revision_plus1,
-            item_plus1,
-            linked_at,
-            status.unwrap_or("active"),
+            LocalTaskCreateInput {
+                title: required_text(title, "title")?,
+                intent: required_text(intent, "intent")?,
+                planned,
+                revision_plus1,
+                item_plus1,
+                plan_linked_at_s: linked_at,
+                status: status.unwrap_or("active"),
+            },
         )?;
         write.commit().map_err(storage_error)?;
         TaskStore::get_task(self, &expected_id)
@@ -2107,7 +2113,7 @@ fn payload_file<const LAYOUT: u32>(path: &'static str) -> BinaryPayloadFileId {
 }
 
 fn validate_local_task_record(record: &LocalTaskRecord) -> StoreResult<()> {
-    if record.task_meta & !TASK_META_KNOWN != 0 || record.local_meta & !LOCAL_TASK_META_KNOWN != 0 {
+    if record.local_meta & !LOCAL_TASK_META_KNOWN != 0 {
         return Err("LocalTaskRecord has reserved metadata bits".into());
     }
     if record.payload_len < 2 || record.payload_offset < 4 {
@@ -2133,8 +2139,7 @@ fn validate_local_task_record(record: &LocalTaskRecord) -> StoreResult<()> {
 }
 
 fn validate_local_change_record(record: &LocalChangeRecord) -> StoreResult<()> {
-    if record.change_meta & !CHANGE_META_KNOWN != 0
-        || record.local_meta & !LOCAL_CHANGE_META_KNOWN != 0
+    if record.local_meta & !LOCAL_CHANGE_META_KNOWN != 0
         || record.change_state & !CHANGE_STATE_KNOWN != 0
         || record.reserved1 != 0
         || record.reserved2 != 0
@@ -2264,10 +2269,8 @@ fn line_index_by_name<A: WorkflowReadAccess>(
             record.line_name_offset,
             u32::from(record.line_name_len),
         )?;
-        if name == expected.as_bytes() && !record.is_tombstone() {
-            if found.replace(index).is_some() {
-                return Err(format!("Line name {expected:?} is ambiguous").into());
-            }
+        if name == expected.as_bytes() && !record.is_tombstone() && found.replace(index).is_some() {
+            return Err(format!("Line name {expected:?} is ambiguous").into());
         }
     }
     Ok(found)
@@ -2304,10 +2307,11 @@ fn snapshot_index_by_id<A: WorkflowReadAccess>(
                 index,
             )?,
         )?;
-        if record.snapshot_hash48 == expected && !record.is_tombstone() {
-            if found.replace(index).is_some() {
-                return Err(format!("Snapshot ID {snapshot_id} is ambiguous").into());
-            }
+        if record.snapshot_hash48 == expected
+            && !record.is_tombstone()
+            && found.replace(index).is_some()
+        {
+            return Err(format!("Snapshot ID {snapshot_id} is ambiguous").into());
         }
     }
     Ok(found)

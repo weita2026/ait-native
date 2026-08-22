@@ -360,6 +360,49 @@ fn workflow_recover_task_owned_pre_land_boundary(
     ))
 }
 
+/// Walk an unowned pre-land boundary back to the nearest owned Snapshot or
+/// the promotion base. Only single-parent `line`-kind Snapshots on the target
+/// Line are adoptable; they upload as ancestry of the following landed Change
+/// and are never replayed as a remote head. Every other unowned boundary
+/// keeps the fail-closed gap error.
+fn workflow_adopt_unowned_direct_boundary(
+    repo: &RepoRuntime,
+    owned_boundaries: &BTreeMap<String, Vec<&JsonValue>>,
+    local_change_ref: &str,
+    target_line: &str,
+    base_snapshot_id: &str,
+    boundary_snapshot_id: &str,
+) -> Result<(String, Vec<String>), String> {
+    let mut cursor = boundary_snapshot_id.to_string();
+    let mut adopted = Vec::new();
+    for _ in 0..=MAX_HISTORY_PROMOTION_SNAPSHOTS_PER_ENTRY {
+        if cursor == base_snapshot_id || owned_boundaries.contains_key(&cursor) {
+            return Ok((cursor, adopted));
+        }
+        let snapshot = snapshot_show(repo, &cursor)?;
+        let snapshot_kind =
+            string_field(&snapshot, "snapshot_kind").unwrap_or_else(|| "line".to_string());
+        let snapshot_line = required_string_field(&snapshot, "line_name")?;
+        if snapshot_kind != "line" || snapshot_line != target_line {
+            return Err(format!(
+                "Local Land history has a gap before Snapshot `{cursor}`; no landed Change on `{target_line}` owns that target head, and the unowned boundary is not an adoptable direct `{target_line}` Snapshot (kind `{snapshot_kind}`, line `{snapshot_line}`)."
+            ));
+        }
+        let parents = workflow_history_snapshot_parent_ids(&snapshot)?;
+        let [parent] = parents.as_slice() else {
+            return Err(format!(
+                "Local Land history has a gap before Snapshot `{cursor}`; adopting an unowned direct boundary requires exactly one parent, found {}.",
+                parents.len()
+            ));
+        };
+        adopted.push(cursor.clone());
+        cursor = parent.clone();
+    }
+    Err(format!(
+        "Local Land history adoption before Change {local_change_ref} exceeds the bounded maximum of {MAX_HISTORY_PROMOTION_SNAPSHOTS_PER_ENTRY} unowned boundary Snapshots."
+    ))
+}
+
 pub(super) fn workflow_effective_pre_land_target_snapshot_id(
     repo: &RepoRuntime,
     change: &JsonValue,
@@ -451,6 +494,15 @@ pub(in crate::primitives) fn workflow_local_history_entries(
                 &current_snapshot_id,
                 &recorded_pre_land_snapshot_id,
             )?;
+        let (pre_land_snapshot_id, adopted_boundary_snapshot_ids) =
+            workflow_adopt_unowned_direct_boundary(
+                repo,
+                &landed_changes_by_snapshot,
+                &local_change_ref,
+                target_line,
+                base_snapshot_id,
+                &pre_land_snapshot_id,
+            )?;
         let task = workflow_local_task_read_with_task_store(&task_store, &local_task_id)?;
         if string_field(&task, "status").as_deref() != Some("completed") {
             return Err(format!(
@@ -505,6 +557,7 @@ pub(in crate::primitives) fn workflow_local_history_entries(
             },
             "landed_snapshot_id": landed_snapshot_id,
             "landed_at_s": landed_at_s,
+            "adopted_boundary_snapshot_ids": adopted_boundary_snapshot_ids,
             "snapshots": snapshots,
             "already_published": task_is_published,
             "publication_recovery_required": task_is_published && !change_is_published,

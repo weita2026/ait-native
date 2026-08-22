@@ -1,5 +1,4 @@
 use std::collections::BTreeMap;
-use std::sync::{Mutex, OnceLock};
 
 use serde_json::{json, Map as JsonMap, Value as JsonValue};
 
@@ -115,19 +114,6 @@ pub fn admin_cache_contract() -> JsonValue {
     })
 }
 
-pub fn admin_cache_json(operation: &str, request: &JsonValue) -> Result<JsonValue, String> {
-    if operation == "contract" {
-        return Ok(admin_cache_contract());
-    }
-    let payload = request
-        .as_object()
-        .ok_or_else(|| "admin cache payload must be a JSON object.".to_string())?;
-    let mut cache = default_admin_response_cache()
-        .lock()
-        .map_err(|_| "admin response cache lock is poisoned".to_string())?;
-    admin_cache_json_with_cache(&mut cache, operation, payload)
-}
-
 pub fn admin_cache_json_with_cache(
     cache: &mut AdminResponseCache,
     operation: &str,
@@ -221,11 +207,6 @@ pub fn annotated_admin_payload(
     annotated.insert("cache_ttl_seconds".to_string(), json!(cache_ttl_seconds));
     annotated.insert("cached_at".to_string(), json!(cached_at));
     JsonValue::Object(annotated)
-}
-
-fn default_admin_response_cache() -> &'static Mutex<AdminResponseCache> {
-    static CACHE: OnceLock<Mutex<AdminResponseCache>> = OnceLock::new();
-    CACHE.get_or_init(|| Mutex::new(AdminResponseCache::new()))
 }
 
 fn round_cache_age_seconds(value: f64) -> f64 {

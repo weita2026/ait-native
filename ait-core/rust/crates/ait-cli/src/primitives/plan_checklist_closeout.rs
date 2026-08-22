@@ -208,13 +208,18 @@ pub(in crate::primitives) fn close_task_plan_checklist_item(
 pub(in crate::primitives) fn inspect_task_plan_checklist_item(
     repo: &RepoRuntime,
     task: &JsonValue,
-    remote_name: &str,
+    remote_name: Option<&str>,
 ) -> Result<JsonValue, String> {
+    let scope = if remote_name.is_some() {
+        "remote"
+    } else {
+        "local"
+    };
     let Some(plan_id) = string_field(task, "plan_id") else {
         return Ok(json!({
             "status": "unbound",
             "reason": "no_plan_binding",
-            "scope": "remote",
+            "scope": scope,
             "remote": remote_name,
         }));
     };
@@ -222,13 +227,13 @@ pub(in crate::primitives) fn inspect_task_plan_checklist_item(
         return Ok(json!({
             "status": "invalid",
             "reason": "no_plan_item_ref",
-            "scope": "remote",
+            "scope": scope,
             "remote": remote_name,
             "plan_id": plan_id,
         }));
     }
     let plan = execute_plan_show_command_request_json(
-        &plan_show_request(repo, &plan_id, None, Some(remote_name))?.to_string(),
+        &plan_show_request(repo, &plan_id, None, remote_name)?.to_string(),
     )?;
     task_plan_checklist_evidence_from_shown_plan(task, &plan, remote_name)
 }
@@ -236,7 +241,7 @@ pub(in crate::primitives) fn inspect_task_plan_checklist_item(
 fn task_plan_checklist_evidence_from_shown_plan(
     task: &JsonValue,
     plan: &JsonValue,
-    remote_name: &str,
+    remote_name: Option<&str>,
 ) -> Result<JsonValue, String> {
     let plan_id = required_string_field(task, "plan_id")?;
     let plan_item_ref = required_string_field(task, "plan_item_ref")?;
@@ -256,7 +261,7 @@ fn task_plan_checklist_evidence_from_shown_plan(
         })
         .unwrap_or_default();
     let common = json!({
-        "scope": "remote",
+        "scope": if remote_name.is_some() { "remote" } else { "local" },
         "remote": remote_name,
         "plan_id": plan_id,
         "plan_item_ref": plan_item_ref,
@@ -532,7 +537,7 @@ mod tests {
     }
 
     #[test]
-    fn remote_audit_evidence_distinguishes_done_open_and_invalid_items() {
+    fn audit_evidence_distinguishes_scope_and_checkbox_states() {
         let task = json!({
             "plan_id": "PR-8",
             "plan_item_ref": "release/fix",
@@ -553,16 +558,22 @@ mod tests {
         };
 
         let done =
-            task_plan_checklist_evidence_from_shown_plan(&task, &shown("done"), "origin").unwrap();
+            task_plan_checklist_evidence_from_shown_plan(&task, &shown("done"), Some("origin"))
+                .unwrap();
         assert_eq!(done["status"], "done");
+        assert_eq!(done["scope"], "remote");
+        assert_eq!(done["remote"], "origin");
         assert_eq!(done["artifact_path"], "docs/sprints/release.md");
 
         let pending =
-            task_plan_checklist_evidence_from_shown_plan(&task, &shown("open"), "origin").unwrap();
+            task_plan_checklist_evidence_from_shown_plan(&task, &shown("open"), None).unwrap();
         assert_eq!(pending["status"], "pending");
+        assert_eq!(pending["scope"], "local");
+        assert!(pending["remote"].is_null());
 
         let invalid =
-            task_plan_checklist_evidence_from_shown_plan(&task, &shown("none"), "origin").unwrap();
+            task_plan_checklist_evidence_from_shown_plan(&task, &shown("none"), Some("origin"))
+                .unwrap();
         assert_eq!(invalid["status"], "invalid");
         assert_eq!(invalid["reason"], "head_plan_item_not_checkbox");
     }
@@ -629,6 +640,19 @@ mod tests {
         )
         .unwrap();
         assert_eq!(resynced["reason"], "already_done_resynced");
+
+        let evidence = inspect_task_plan_checklist_item(
+            &repo,
+            &json!({
+                "plan_id": plan_id,
+                "plan_item_ref": "closeout/done",
+            }),
+            None,
+        )
+        .unwrap();
+        assert_eq!(evidence["status"], "done");
+        assert_eq!(evidence["scope"], "local");
+        assert!(evidence["remote"].is_null());
     }
 
     #[test]

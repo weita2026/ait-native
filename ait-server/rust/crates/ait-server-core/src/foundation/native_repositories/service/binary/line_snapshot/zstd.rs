@@ -2,8 +2,14 @@ use super::*;
 use crate::foundation::remote_binary_db::acquire_serving_repository_pack_lock;
 use crate::foundation::server_content_binary_db::ServerBinaryTreeReadCache;
 use std::collections::VecDeque;
+use std::fs::{File, OpenOptions};
+use std::io::{BufReader, Read, Write};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 const ZSTD_PULL_MANIFEST_MAX_SNAPSHOTS: usize = 100_000;
+const ZSTD_PACK_FILE_COMPARE_BUFFER_BYTES: usize = 64 * 1024;
+const ZSTD_STAGED_UPLOAD_MARKER: &str = ".zstpack.upload-";
+static ZSTD_STAGED_UPLOAD_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[cfg(test)]
 std::thread_local! {
@@ -19,6 +25,79 @@ pub(in super::super) struct PreparedRepositoryMetadataMutation {
 pub(in super::super) struct PreparedSnapshotMutation {
     pub snapshot_id: String,
     pub value: JsonValue,
+}
+
+struct BinaryZstdPackPayloadEvidence {
+    pack_index: JsonValue,
+    detected_checksum: Option<String>,
+    pack_sha256: String,
+    payload_bytes: u64,
+}
+
+fn binary_zstd_pack_files_equal(
+    left_path: &Path,
+    right_path: &Path,
+) -> Result<bool, NativeRepositoryError> {
+    let left_len = std::fs::metadata(left_path)
+        .map_err(|error| {
+            NativeRepositoryError::internal(format!(
+                "failed to inspect Binary DB pack {}: {error}",
+                left_path.display()
+            ))
+        })?
+        .len();
+    let right_len = std::fs::metadata(right_path)
+        .map_err(|error| {
+            NativeRepositoryError::internal(format!(
+                "failed to inspect staged Binary DB pack {}: {error}",
+                right_path.display()
+            ))
+        })?
+        .len();
+    if left_len != right_len {
+        return Ok(false);
+    }
+
+    let mut left = BufReader::with_capacity(
+        ZSTD_PACK_FILE_COMPARE_BUFFER_BYTES,
+        File::open(left_path).map_err(|error| {
+            NativeRepositoryError::internal(format!(
+                "failed to open Binary DB pack {}: {error}",
+                left_path.display()
+            ))
+        })?,
+    );
+    let mut right = BufReader::with_capacity(
+        ZSTD_PACK_FILE_COMPARE_BUFFER_BYTES,
+        File::open(right_path).map_err(|error| {
+            NativeRepositoryError::internal(format!(
+                "failed to open staged Binary DB pack {}: {error}",
+                right_path.display()
+            ))
+        })?,
+    );
+    let mut left_buffer = [0_u8; ZSTD_PACK_FILE_COMPARE_BUFFER_BYTES];
+    let mut right_buffer = [0_u8; ZSTD_PACK_FILE_COMPARE_BUFFER_BYTES];
+    loop {
+        let left_read = left.read(&mut left_buffer).map_err(|error| {
+            NativeRepositoryError::internal(format!(
+                "failed to read Binary DB pack {}: {error}",
+                left_path.display()
+            ))
+        })?;
+        let right_read = right.read(&mut right_buffer).map_err(|error| {
+            NativeRepositoryError::internal(format!(
+                "failed to read staged Binary DB pack {}: {error}",
+                right_path.display()
+            ))
+        })?;
+        if left_read != right_read || left_buffer[..left_read] != right_buffer[..right_read] {
+            return Ok(false);
+        }
+        if left_read == 0 {
+            return Ok(true);
+        }
+    }
 }
 
 #[derive(Default)]
@@ -241,11 +320,13 @@ where
                     .map_err(binary_native_repository_store_error)?;
             }
         }
+        self.invalidate_zstd_pull_catalog()?;
         tx.commit()
             .map(|_| ())
             .map_err(binary_native_repository_store_error)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(in super::super) fn prefetch_binary_zstd_commit_read_set(
         &self,
         repo_name: &str,
@@ -392,42 +473,179 @@ where
     ) -> Result<(Vec<JsonValue>, Vec<String>, BinaryZstdImportManifestContent), NativeRepositoryError>
     {
         self.ensure_repository(repo_name)?;
-        let read = BinaryDbReadTxn::new_bounded_for_scope(&self.db, BinaryDbReadScope::CONTENT);
-        let mut manifest_cache = self
-            .repository_content()
-            .manifest_tree_read_cache_with_read(&read)
-            .map_err(binary_native_repository_store_error)?;
+        let catalog = self.binary_zstd_pull_catalog()?;
         let (snapshots, boundary_snapshot_ids) = self
-            .binary_zstd_pull_manifest_snapshots_with_read(
-                &read,
-                &manifest_cache,
+            .binary_zstd_pull_manifest_snapshots_with_catalog(
+                &catalog,
                 repo_name,
                 head_snapshot_id,
                 have_snapshot_ids,
             )?;
-        let content = self.binary_zstd_import_manifest_content_for_snapshots_with_read(
-            &read,
-            &mut manifest_cache,
-            &snapshots,
-        )?;
+        let content = self
+            .binary_zstd_import_manifest_content_for_snapshots_with_catalog(&catalog, &snapshots)?;
         Ok((snapshots, boundary_snapshot_ids, content))
     }
 
-    fn binary_zstd_pull_manifest_snapshots_with_read(
+    fn binary_zstd_pull_catalog(
+        &self,
+    ) -> Result<Arc<BinaryZstdPullCatalog>, NativeRepositoryError> {
+        let read = BinaryDbReadTxn::new_bounded_for_scope(&self.db, BinaryDbReadScope::CONTENT);
+        let content = self.repository_content();
+        let revision = content
+            .manifest_revision_with_read(&read)
+            .map_err(binary_native_repository_store_error)?;
+        let mut current = self.pull_catalog_cache.current.lock().map_err(|_| {
+            NativeRepositoryError::internal("Binary DB pull catalog cache lock is poisoned")
+        })?;
+        if let Some(catalog) = current
+            .as_ref()
+            .filter(|catalog| catalog.revision == revision)
+        {
+            return Ok(catalog.clone());
+        }
+
+        let catalog = Arc::new(self.build_binary_zstd_pull_catalog(&read, revision)?);
+        *current = Some(catalog.clone());
+        #[cfg(test)]
+        self.pull_catalog_cache
+            .build_count
+            .fetch_add(1, Ordering::Relaxed);
+        Ok(catalog)
+    }
+
+    fn build_binary_zstd_pull_catalog(
         &self,
         read: &BinaryDbReadTxn<'_, D>,
-        manifest_cache: &ServerBinaryTreeReadCache,
+        revision: [u8; 32],
+    ) -> Result<BinaryZstdPullCatalog, NativeRepositoryError> {
+        let content = self.repository_content();
+        let mut manifest_cache = content
+            .manifest_tree_read_cache_with_read(read)
+            .map_err(binary_native_repository_store_error)?;
+        content
+            .validate_complete_manifest_identity_indexes_with_read(read, &manifest_cache)
+            .map_err(binary_native_repository_store_error)?;
+
+        let mut object_pack_rows_by_id = BTreeMap::new();
+        for pack in manifest_cache
+            .projected_object_packs()
+            .map_err(binary_native_repository_store_error)?
+        {
+            let metadata = self.committed_object_pack_metadata(&pack)?;
+            object_pack_rows_by_id.insert(
+                pack.pack_id.clone(),
+                binary_zstd_import_manifest_pack_row(metadata, false)?,
+            );
+        }
+        let mut blob_locator_rows_by_index = BTreeMap::new();
+        for blob in manifest_cache
+            .projected_blobs()
+            .map_err(binary_native_repository_store_error)?
+        {
+            blob_locator_rows_by_index.insert(
+                blob.blob_index,
+                binary_zstd_import_manifest_blob_locator_row(self.typed_blob_locator(&blob)?)?,
+            );
+        }
+
+        let mut tree_pack_rows_by_id = BTreeMap::new();
+        for pack in manifest_cache
+            .projected_tree_packs()
+            .map_err(binary_native_repository_store_error)?
+        {
+            // `tree_count` owns the normalized logical Tree range, not the
+            // physical archive member count. A conversion may retain a
+            // physical-only pack after every Tree in it resolves to an
+            // earlier normalized identity. Such a zero-range pack cannot be
+            // selected by any projected Tree, so it has no transfer row in a
+            // Snapshot content closure and its archive must not poison the
+            // request-wide catalog.
+            if pack.record.tree_count == 0 {
+                continue;
+            }
+            let metadata =
+                self.committed_tree_pack_metadata_with_cache(&pack, &mut manifest_cache)?;
+            tree_pack_rows_by_id.insert(
+                pack.pack_id.clone(),
+                binary_zstd_import_manifest_pack_row(metadata, true)?,
+            );
+        }
+        let mut tree_locator_rows_by_index = BTreeMap::new();
+        let mut tree_entries_by_index = BTreeMap::new();
+        for tree in manifest_cache
+            .projected_trees()
+            .map_err(binary_native_repository_store_error)?
+        {
+            tree_locator_rows_by_index.insert(
+                tree.tree_index,
+                binary_zstd_import_manifest_tree_locator_row(
+                    self.typed_tree_locator_with_manifest_cache(&tree, &mut manifest_cache)?,
+                )?,
+            );
+            tree_entries_by_index.insert(
+                tree.tree_index,
+                content
+                    .projected_tree_entries_for_tree_with_read_cache(
+                        read,
+                        &tree,
+                        &mut manifest_cache,
+                    )
+                    .map_err(binary_native_repository_store_error)?,
+            );
+        }
+
+        let mut snapshots_by_id = BTreeMap::new();
+        for entry in self
+            .content_snapshots()
+            .snapshot_catalog(read)
+            .map_err(binary_native_repository_store_error)?
+        {
+            let value = self.canonical_snapshot_value_with_parent_snapshot_ids_and_manifest_cache(
+                read,
+                &manifest_cache,
+                self.repo_name(),
+                entry.snapshot_index,
+                &entry.record,
+                &entry.parent_snapshot_ids,
+            )?;
+            let key = entry.snapshot_id.to_ascii_uppercase();
+            if snapshots_by_id
+                .insert(
+                    key,
+                    BinaryZstdPullCatalogSnapshot {
+                        snapshot_id: entry.snapshot_id,
+                        parent_snapshot_ids: entry.parent_snapshot_ids,
+                        value,
+                    },
+                )
+                .is_some()
+            {
+                return Err(NativeRepositoryError::internal(
+                    "canonical Binary DB Snapshot catalog repeats an identity",
+                ));
+            }
+        }
+        manifest_cache.compact_for_immutable_pull_catalog();
+
+        Ok(BinaryZstdPullCatalog {
+            revision,
+            manifest_cache,
+            snapshots_by_id,
+            object_pack_rows_by_id,
+            tree_pack_rows_by_id,
+            blob_locator_rows_by_index,
+            tree_locator_rows_by_index,
+            tree_entries_by_index,
+        })
+    }
+
+    fn binary_zstd_pull_manifest_snapshots_with_catalog(
+        &self,
+        catalog: &BinaryZstdPullCatalog,
         repo_name: &str,
         head_snapshot_id: &str,
         have_snapshot_ids: &BTreeSet<String>,
     ) -> Result<(Vec<JsonValue>, Vec<String>), NativeRepositoryError> {
-        let snapshot_catalog = self
-            .content_snapshots()
-            .snapshot_catalog(read)
-            .map_err(binary_native_repository_store_error)?
-            .into_iter()
-            .map(|entry| (entry.snapshot_id.to_ascii_uppercase(), entry))
-            .collect::<BTreeMap<_, _>>();
         let mut pending = VecDeque::from([head_snapshot_id.to_string()]);
         let mut queued = BTreeSet::from([head_snapshot_id.to_string()]);
         let mut boundary_snapshot_ids = BTreeSet::new();
@@ -438,7 +656,8 @@ where
                 boundary_snapshot_ids.insert(snapshot_id);
                 continue;
             }
-            let entry = snapshot_catalog
+            let entry = catalog
+                .snapshots_by_id
                 .get(&snapshot_id.to_ascii_uppercase())
                 .ok_or_else(|| {
                     NativeRepositoryError::not_found(format!(
@@ -446,15 +665,7 @@ where
                     ))
                 })?;
             let parents = entry.parent_snapshot_ids.clone();
-            let snapshot = self
-                .canonical_snapshot_value_with_parent_snapshot_ids_and_manifest_cache(
-                    read,
-                    manifest_cache,
-                    repo_name,
-                    entry.snapshot_index,
-                    &entry.record,
-                    &parents,
-                )?;
+            let snapshot = entry.value.clone();
             for parent in &parents {
                 if queued.insert(parent.clone()) {
                     if queued.len() > ZSTD_PULL_MANIFEST_MAX_SNAPSHOTS {
@@ -537,25 +748,16 @@ where
         snapshots: &[JsonValue],
     ) -> Result<BinaryZstdImportManifestContent, NativeRepositoryError> {
         self.ensure_repository(repo_name)?;
-        let read = BinaryDbReadTxn::new_bounded_for_scope(&self.db, BinaryDbReadScope::CONTENT);
-        let content = self.repository_content();
-        let mut manifest_cache = content
-            .manifest_tree_read_cache_with_read(&read)
-            .map_err(binary_native_repository_store_error)?;
-        self.binary_zstd_import_manifest_content_for_snapshots_with_read(
-            &read,
-            &mut manifest_cache,
-            snapshots,
-        )
+        let catalog = self.binary_zstd_pull_catalog()?;
+        self.binary_zstd_import_manifest_content_for_snapshots_with_catalog(&catalog, snapshots)
     }
 
-    fn binary_zstd_import_manifest_content_for_snapshots_with_read(
+    fn binary_zstd_import_manifest_content_for_snapshots_with_catalog(
         &self,
-        read: &BinaryDbReadTxn<'_, D>,
-        manifest_cache: &mut ServerBinaryTreeReadCache,
+        catalog: &BinaryZstdPullCatalog,
         snapshots: &[JsonValue],
     ) -> Result<BinaryZstdImportManifestContent, NativeRepositoryError> {
-        let content = self.repository_content();
+        let manifest_cache = &catalog.manifest_cache;
         let mut pending_trees = BTreeMap::new();
         for snapshot in snapshots {
             let snapshot_id =
@@ -596,8 +798,6 @@ where
         let mut tree_pack_dependencies = BTreeMap::<String, BTreeSet<String>>::new();
         let mut tree_locator_rows = BTreeMap::new();
         let mut referenced_blob_ids = BTreeSet::new();
-        let mut selected_tree_pack_ids = BTreeSet::new();
-        let mut selected_tree_ids = BTreeSet::new();
         while !pending_trees.is_empty() {
             let current_trees = std::mem::take(&mut pending_trees);
             let mut child_tree_sources = BTreeMap::<String, BTreeMap<String, String>>::new();
@@ -605,7 +805,6 @@ where
                 if !visited_tree_ids.insert(tree_id.clone()) {
                     continue;
                 }
-                selected_tree_ids.insert(tree_id.to_ascii_uppercase());
                 let pack_id = tree.pack_id.clone();
                 if !tree_pack_rows.contains_key(&pack_id) {
                     let pack_view = manifest_cache
@@ -616,35 +815,38 @@ where
                                 "canonical Binary DB tree pack {pack_id} is missing"
                             ))
                         })?;
-                    let pack =
-                        self.committed_tree_pack_metadata_with_cache(&pack_view, manifest_cache)?;
-                    if binary_json_text(&pack, "status").as_deref() != Some("ready") {
-                        return Err(NativeRepositoryError::internal(format!(
-                            "canonical Binary DB tree pack {pack_id} is not committed"
-                        )));
-                    }
                     tree_pack_rows.insert(
                         pack_id.clone(),
-                        binary_zstd_import_manifest_pack_row(pack, true)?,
+                        catalog
+                            .tree_pack_rows_by_id
+                            .get(&pack_id)
+                            .cloned()
+                            .ok_or_else(|| {
+                                NativeRepositoryError::internal(format!(
+                                    "validated Binary DB pull catalog has no tree pack row {pack_id}"
+                                ))
+                            })?,
                     );
-                    selected_tree_pack_ids.insert(pack_id.to_ascii_uppercase());
                     for pack_tree in manifest_cache
                         .projected_trees_for_tree_pack(&pack_view)
                         .map_err(binary_native_repository_store_error)?
                     {
-                        selected_tree_ids.insert(pack_tree.tree_id.to_ascii_uppercase());
                         selected_tree_pack_ids_by_tree_id
                             .entry(pack_tree.tree_id.clone())
                             .or_default()
                             .insert(pack_tree.pack_id.clone());
                         tree_locator_rows.insert(
                             pack_tree.tree_id.clone(),
-                            binary_zstd_import_manifest_tree_locator_row(
-                                self.typed_tree_locator_with_manifest_cache(
-                                    &pack_tree,
-                                    manifest_cache,
-                                )?,
-                            )?,
+                            catalog
+                                .tree_locator_rows_by_index
+                                .get(&pack_tree.tree_index)
+                                .cloned()
+                                .ok_or_else(|| {
+                                    NativeRepositoryError::internal(format!(
+                                        "validated Binary DB pull catalog has no Tree locator row {}",
+                                        pack_tree.tree_id
+                                    ))
+                                })?,
                         );
                         pending_trees
                             .entry(pack_tree.tree_id.clone())
@@ -652,10 +854,16 @@ where
                     }
                 }
 
-                for entry in content
-                    .projected_tree_entries_for_tree_with_read_cache(read, &tree, manifest_cache)
-                    .map_err(binary_native_repository_store_error)?
-                {
+                let tree_entries = catalog
+                    .tree_entries_by_index
+                    .get(&tree.tree_index)
+                    .ok_or_else(|| {
+                        NativeRepositoryError::internal(format!(
+                            "validated Binary DB pull catalog has no Tree entry projection {}",
+                            tree.tree_id
+                        ))
+                    })?;
+                for entry in tree_entries {
                     match entry.entry_type.as_str() {
                         "blob" => {
                             referenced_blob_ids.insert(entry.target_id.to_ascii_uppercase());
@@ -731,25 +939,11 @@ where
             }
         }
 
-        let mut selected_object_pack_ids = BTreeSet::new();
-        let mut selected_blob_ids = BTreeSet::new();
-        let object_content = self.binary_zstd_import_manifest_object_content_with_read(
-            manifest_cache,
+        let object_content = self.binary_zstd_import_manifest_object_content_with_catalog(
+            catalog,
             referenced_blob_ids,
             "tree closure",
-            &mut selected_object_pack_ids,
-            &mut selected_blob_ids,
         )?;
-        content
-            .validate_manifest_identity_indexes_with_read(
-                read,
-                manifest_cache,
-                &selected_object_pack_ids,
-                &selected_tree_pack_ids,
-                &selected_blob_ids,
-                &selected_tree_ids,
-            )
-            .map_err(binary_native_repository_store_error)?;
 
         Ok(BinaryZstdImportManifestContent {
             object_packs: object_content.object_packs,
@@ -781,44 +975,25 @@ where
                     .map(|blob_id| blob_id.to_ascii_uppercase())
             })
             .collect::<Result<BTreeSet<_>, _>>()?;
-        let read = BinaryDbReadTxn::new_bounded_for_scope(&self.db, BinaryDbReadScope::CONTENT);
-        let content_store = self.repository_content();
-        let manifest_cache = content_store
-            .manifest_object_read_cache_with_read(&read)
-            .map_err(binary_native_repository_store_error)?;
-        let mut selected_object_pack_ids = BTreeSet::new();
-        let mut selected_blob_ids = BTreeSet::new();
-        let content = self.binary_zstd_import_manifest_object_content_with_read(
-            &manifest_cache,
+        let catalog = self.binary_zstd_pull_catalog()?;
+        let content = self.binary_zstd_import_manifest_object_content_with_catalog(
+            &catalog,
             referenced_blob_ids,
             "requested Blob closure",
-            &mut selected_object_pack_ids,
-            &mut selected_blob_ids,
         )?;
-        content_store
-            .validate_manifest_identity_indexes_with_read(
-                &read,
-                &manifest_cache,
-                &selected_object_pack_ids,
-                &BTreeSet::new(),
-                &selected_blob_ids,
-                &BTreeSet::new(),
-            )
-            .map_err(binary_native_repository_store_error)?;
         Ok(json!({
             "object_packs": content.object_packs,
             "blob_locators": content.blob_locators,
         }))
     }
 
-    fn binary_zstd_import_manifest_object_content_with_read(
+    fn binary_zstd_import_manifest_object_content_with_catalog(
         &self,
-        manifest_cache: &ServerBinaryTreeReadCache,
+        catalog: &BinaryZstdPullCatalog,
         referenced_blob_ids: BTreeSet<String>,
         closure_label: &str,
-        selected_object_pack_ids: &mut BTreeSet<String>,
-        selected_blob_ids: &mut BTreeSet<String>,
     ) -> Result<BinaryZstdImportManifestContent, NativeRepositoryError> {
+        let manifest_cache = &catalog.manifest_cache;
         let mut pending_object_packs = BTreeSet::new();
         for blob_id in referenced_blob_ids {
             let blob = manifest_cache
@@ -829,7 +1004,6 @@ where
                         "canonical Binary DB {closure_label} references missing blob {blob_id}"
                     ))
                 })?;
-            selected_blob_ids.insert(blob.blob_id.to_ascii_uppercase());
             pending_object_packs.insert(blob.pack_id);
         }
         let mut visited_object_packs = BTreeSet::new();
@@ -849,17 +1023,18 @@ where
                         "canonical Binary DB object pack {pack_id} is missing"
                     ))
                 })?;
-            let pack = self.committed_object_pack_metadata(&pack_view)?;
-            if binary_json_text(&pack, "status").as_deref() != Some("ready") {
-                return Err(NativeRepositoryError::internal(format!(
-                    "canonical Binary DB object pack {pack_id} is not committed"
-                )));
-            }
             object_pack_rows.insert(
                 pack_id.clone(),
-                binary_zstd_import_manifest_pack_row(pack, false)?,
+                catalog
+                    .object_pack_rows_by_id
+                    .get(&pack_id)
+                    .cloned()
+                    .ok_or_else(|| {
+                        NativeRepositoryError::internal(format!(
+                            "validated Binary DB pull catalog has no object pack row {pack_id}"
+                        ))
+                    })?,
             );
-            selected_object_pack_ids.insert(pack_id.to_ascii_uppercase());
             let blobs = manifest_cache
                 .projected_blobs_for_object_pack(&pack_view)
                 .map_err(binary_native_repository_store_error)?;
@@ -880,7 +1055,6 @@ where
                             "canonical Binary DB blob {source_blob_id} references missing base {base_blob_id}"
                         ))
                     })?;
-                selected_blob_ids.insert(base.blob_id.to_ascii_uppercase());
                 if base.pack_id != pack_id {
                     object_pack_dependencies
                         .entry(pack_id.clone())
@@ -890,10 +1064,18 @@ where
                 pending_object_packs.insert(base.pack_id);
             }
             for blob in blobs {
-                selected_blob_ids.insert(blob.blob_id.to_ascii_uppercase());
                 blob_locator_rows.insert(
                     blob.blob_id.clone(),
-                    binary_zstd_import_manifest_blob_locator_row(self.typed_blob_locator(&blob)?)?,
+                    catalog
+                        .blob_locator_rows_by_index
+                        .get(&blob.blob_index)
+                        .cloned()
+                        .ok_or_else(|| {
+                            NativeRepositoryError::internal(format!(
+                                "validated Binary DB pull catalog has no Blob locator row {}",
+                                blob.blob_id
+                            ))
+                        })?,
                 );
             }
         }
@@ -1451,6 +1633,63 @@ where
     ) -> Result<JsonValue, NativeRepositoryError> {
         let (pack_index, detected_checksum) =
             zstd_pack_index_from_bytes(pack_bytes, pack_id, tree_pack)?;
+        self.binary_zstd_pack_metadata_from_evidence(
+            repo_name,
+            pack_id,
+            tree_pack,
+            committed,
+            object,
+            BinaryZstdPackPayloadEvidence {
+                pack_index,
+                detected_checksum,
+                pack_sha256: sha256_hex(pack_bytes),
+                payload_bytes: pack_bytes.len() as u64,
+            },
+        )
+    }
+
+    fn binary_zstd_pack_metadata_from_staged_upload(
+        &self,
+        repo_name: &str,
+        upload: &NativeZstdPackUpload,
+        payload_bytes: u64,
+        payload_sha256: &str,
+    ) -> Result<JsonValue, NativeRepositoryError> {
+        let (pack_index, detected_checksum) = zstd_pack_index_from_path(
+            upload.temporary_path(),
+            upload.pack_id(),
+            upload.kind().is_tree(),
+        )?;
+        self.binary_zstd_pack_metadata_from_evidence(
+            repo_name,
+            upload.pack_id(),
+            upload.kind().is_tree(),
+            false,
+            None,
+            BinaryZstdPackPayloadEvidence {
+                pack_index,
+                detected_checksum,
+                pack_sha256: payload_sha256.to_string(),
+                payload_bytes,
+            },
+        )
+    }
+
+    fn binary_zstd_pack_metadata_from_evidence(
+        &self,
+        repo_name: &str,
+        pack_id: &str,
+        tree_pack: bool,
+        committed: bool,
+        object: Option<&JsonMap<String, JsonValue>>,
+        evidence: BinaryZstdPackPayloadEvidence,
+    ) -> Result<JsonValue, NativeRepositoryError> {
+        let BinaryZstdPackPayloadEvidence {
+            pack_index,
+            detected_checksum,
+            pack_sha256,
+            payload_bytes,
+        } = evidence;
         if let Some(object) = object {
             validate_remote_sync_uploaded_zstd_pack_index_metadata(
                 &pack_index,
@@ -1501,6 +1740,11 @@ where
                 "zstd pack {pack_id} is missing current index checksum"
             ))
         })?;
+        let payload_total_bytes = i64::try_from(payload_bytes).map_err(|_| {
+            NativeRepositoryError::bad_request(format!(
+                "zstd pack {pack_id} payload length exceeds i64"
+            ))
+        })?;
         Ok(json!({
             BINARY_ZSTD_PAYLOAD_KIND_FIELD: if tree_pack { BINARY_ZSTD_TREE_PACK_KIND } else { BINARY_ZSTD_OBJECT_PACK_KIND },
             "repo_name": repo_name,
@@ -1512,8 +1756,8 @@ where
             "total_bytes": total_bytes,
             "pack_index_entry_name": index_entry_name,
             "pack_index_checksum": index_checksum,
-            "pack_sha256": sha256_hex(pack_bytes),
-            "payload_total_bytes": pack_bytes.len() as i64,
+            "pack_sha256": pack_sha256,
+            "payload_total_bytes": payload_total_bytes,
             "pack_index": pack_index,
             "created_at": created_at,
             "updated_at": created_at,
@@ -1528,65 +1772,53 @@ where
         pack_bytes: Vec<u8>,
         tree_pack: bool,
     ) -> Result<JsonValue, NativeRepositoryError> {
-        validate_pack_id_segment(pack_id)?;
-        if pack_bytes.is_empty() {
-            return Err(NativeRepositoryError::bad_request(if tree_pack {
-                "zstd tree pack body is empty"
-            } else {
-                "zstd object pack body is empty"
-            }));
-        }
         let kind = if tree_pack {
-            BINARY_ZSTD_TREE_PACK_KIND
+            NativeZstdPackKind::Tree
         } else {
-            BINARY_ZSTD_OBJECT_PACK_KIND
+            NativeZstdPackKind::Object
         };
-        let label = if tree_pack {
-            "tree pack"
-        } else {
-            "object pack"
-        };
-        if let Some(existing) =
-            self.latest_binary_zstd_record_optional(repo_name, kind, "pack_id", pack_id)?
-        {
-            let existing_bytes = self.read_zstd_pack_payload(&existing, tree_pack, pack_id)?;
-            if existing_bytes != pack_bytes {
-                return Err(NativeRepositoryError::conflict(format!(
-                    "{} pack {pack_id} already exists with different content",
-                    if tree_pack { "Tree" } else { "Object" }
-                )));
-            }
-            let pack_format = binary_json_text(&existing, "pack_format").ok_or_else(|| {
-                NativeRepositoryError::internal(format!(
-                    "Binary DB {label} {pack_id} is missing pack_format"
-                ))
-            })?;
-            return Ok(json!({
-                "repo_name": repo_name,
-                "repo_id": self.repo_id(),
-                "pack_id": pack_id,
-                "pack_format": pack_format,
-                "status": "already_present",
-                "raw_binary_upload": true,
-            }));
-        }
-        let metadata = self.binary_zstd_pack_metadata(
+        let mut upload = self.begin_binary_zstd_pack_upload(repo_name, pack_id, kind)?;
+        let mut file = upload.take_file()?;
+        file.write_all(&pack_bytes).map_err(|error| {
+            NativeRepositoryError::internal(format!(
+                "failed to write staged Binary DB {} pack {}: {error}",
+                kind.label(),
+                upload.temporary_path().display()
+            ))
+        })?;
+        file.sync_all().map_err(|error| {
+            NativeRepositoryError::internal(format!(
+                "failed to sync staged Binary DB {} pack {}: {error}",
+                kind.label(),
+                upload.temporary_path().display()
+            ))
+        })?;
+        drop(file);
+        self.finish_binary_zstd_pack_upload(
             repo_name,
-            pack_id,
-            &pack_bytes,
-            tree_pack,
-            false,
-            None,
-        )?;
-        let path = if tree_pack {
+            upload,
+            pack_bytes.len() as u64,
+            &sha256_hex(&pack_bytes),
+        )
+    }
+
+    pub(in super::super) fn begin_binary_zstd_pack_upload(
+        &self,
+        repo_name: &str,
+        pack_id: &str,
+        kind: NativeZstdPackKind,
+    ) -> Result<NativeZstdPackUpload, NativeRepositoryError> {
+        self.ensure_repository(repo_name)?;
+        validate_pack_id_segment(pack_id)?;
+        let final_path = if kind.is_tree() {
             self.repository_content().tree_pack_path(pack_id)
         } else {
             self.repository_content().object_pack_path(pack_id)
         };
-        let parent = path.parent().ok_or_else(|| {
+        let parent = final_path.parent().ok_or_else(|| {
             NativeRepositoryError::internal(format!(
                 "Binary DB pack path has no parent: {}",
-                path.display()
+                final_path.display()
             ))
         })?;
         std::fs::create_dir_all(parent).map_err(|error| {
@@ -1596,42 +1828,149 @@ where
             ))
         })?;
 
-        // Pack validation happened above. Prepare and durably flush the unique
-        // temporary inode before taking the repository-pack namespace lock so
-        // slow storage cannot block unrelated pack publishers.
-        let temp = path.with_extension(format!(
-            "zstpack.tmp-{}",
-            new_identifier("upload-pack", pack_id)
-        ));
-        std::fs::write(&temp, &pack_bytes).map_err(|error| {
-            NativeRepositoryError::internal(format!(
-                "failed to write Binary DB pack temporary file {}: {error}",
-                temp.display()
-            ))
-        })?;
-        if let Err(error) = self.db.sync_file(&temp) {
-            let _ = std::fs::remove_file(&temp);
-            return Err(binary_native_repository_store_error(error));
+        let final_name = final_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| {
+                NativeRepositoryError::internal(format!(
+                    "Binary DB pack path has no UTF-8 file name: {}",
+                    final_path.display()
+                ))
+            })?;
+        for _ in 0..128 {
+            let sequence = ZSTD_STAGED_UPLOAD_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+            let temporary_path = parent.join(format!(
+                "{final_name}.upload-{}-{sequence}.tmp",
+                std::process::id()
+            ));
+            match OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&temporary_path)
+            {
+                Ok(file) => {
+                    return Ok(NativeZstdPackUpload::new(
+                        file,
+                        temporary_path,
+                        final_path,
+                        repo_name.to_string(),
+                        pack_id.to_string(),
+                        kind,
+                    ));
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => {
+                    return Err(NativeRepositoryError::internal(format!(
+                        "failed to create staged Binary DB {} pack in {}: {error}",
+                        kind.label(),
+                        parent.display()
+                    )));
+                }
+            }
+        }
+        Err(NativeRepositoryError::internal(format!(
+            "failed to allocate a unique staged Binary DB {} pack in {}",
+            kind.label(),
+            parent.display()
+        )))
+    }
+
+    pub(in super::super) fn finish_binary_zstd_pack_upload(
+        &self,
+        repo_name: &str,
+        mut upload: NativeZstdPackUpload,
+        payload_bytes: u64,
+        payload_sha256: &str,
+    ) -> Result<JsonValue, NativeRepositoryError> {
+        self.ensure_repository(repo_name)?;
+        validate_pack_id_segment(upload.pack_id())?;
+        if repo_name != upload.repo_name {
+            return Err(NativeRepositoryError::bad_request(
+                "staged zstd Pack upload repository does not match publication repository",
+            ));
+        }
+        if upload.file.is_some() {
+            return Err(NativeRepositoryError::internal(
+                "staged zstd Pack upload file must be closed before publication",
+            ));
+        }
+        if payload_bytes == 0 {
+            return Err(NativeRepositoryError::bad_request(format!(
+                "zstd {} pack body is empty",
+                upload.kind().label()
+            )));
+        }
+        if payload_sha256.len() != 64
+            || !payload_sha256.bytes().all(|byte| byte.is_ascii_hexdigit())
+        {
+            return Err(NativeRepositoryError::internal(
+                "staged zstd Pack upload has an invalid SHA-256 digest",
+            ));
         }
 
-        let mut pack_lock = match acquire_serving_repository_pack_lock(&self.db) {
-            Ok(lock) => lock,
-            Err(error) => {
-                let _ = std::fs::remove_file(&temp);
-                return Err(binary_native_repository_store_error(error));
-            }
+        let expected_final_path = if upload.kind().is_tree() {
+            self.repository_content().tree_pack_path(upload.pack_id())
+        } else {
+            self.repository_content().object_pack_path(upload.pack_id())
         };
-        // This is the complete RepositoryPack lock boundary: final-path
-        // existence/content comparison plus the atomic namespace rename.
+        if upload.final_path() != expected_final_path {
+            return Err(NativeRepositoryError::internal(format!(
+                "staged zstd Pack final path {} does not match repository path {}",
+                upload.final_path().display(),
+                expected_final_path.display()
+            )));
+        }
+        let parent = expected_final_path.parent().ok_or_else(|| {
+            NativeRepositoryError::internal(format!(
+                "Binary DB pack path has no parent: {}",
+                expected_final_path.display()
+            ))
+        })?;
+        if upload.temporary_path().parent() != Some(parent) {
+            return Err(NativeRepositoryError::internal(format!(
+                "staged zstd Pack {} is not in final directory {}",
+                upload.temporary_path().display(),
+                parent.display()
+            )));
+        }
+        let staged_metadata = std::fs::metadata(upload.temporary_path()).map_err(|error| {
+            NativeRepositoryError::internal(format!(
+                "failed to inspect staged Binary DB {} pack {}: {error}",
+                upload.kind().label(),
+                upload.temporary_path().display()
+            ))
+        })?;
+        if !staged_metadata.is_file() || staged_metadata.len() != payload_bytes {
+            return Err(NativeRepositoryError::internal(format!(
+                "staged zstd {} pack length does not match streamed byte count",
+                upload.kind().label()
+            )));
+        }
+        self.db
+            .sync_file(upload.temporary_path())
+            .map_err(binary_native_repository_store_error)?;
+        let metadata = self.binary_zstd_pack_metadata_from_staged_upload(
+            repo_name,
+            &upload,
+            payload_bytes,
+            &payload_sha256.to_ascii_lowercase(),
+        )?;
+
+        let tree_pack = upload.kind().is_tree();
+        let label = if tree_pack {
+            "tree pack"
+        } else {
+            "object pack"
+        };
+        let pack_id = upload.pack_id().to_string();
+        let temporary_path = upload.temporary_path().to_path_buf();
+        let mut pack_lock = acquire_serving_repository_pack_lock(&self.db)
+            .map_err(binary_native_repository_store_error)?;
+        // This is the complete RepositoryPack lock boundary: committed-state
+        // consistency, final-path comparison, and same-directory rename.
         let publish_result = (|| {
-            if path.exists() {
-                let existing = std::fs::read(&path).map_err(|read_error| {
-                    NativeRepositoryError::internal(format!(
-                        "failed to read locked Binary DB pack {}: {read_error}",
-                        path.display()
-                    ))
-                })?;
-                if existing != pack_bytes {
+            if expected_final_path.exists() {
+                if !binary_zstd_pack_files_equal(&expected_final_path, &temporary_path)? {
                     return Err(NativeRepositoryError::conflict(format!(
                         "{} pack {pack_id} already exists with different content",
                         if tree_pack { "Tree" } else { "Object" }
@@ -1640,16 +1979,27 @@ where
                 return Ok("already_present");
             }
 
-            match std::fs::rename(&temp, &path) {
+            let committed = if tree_pack {
+                self.repository_content()
+                    .tree_pack(&pack_id)
+                    .map_err(binary_native_repository_store_error)?
+                    .is_some()
+            } else {
+                self.repository_content()
+                    .object_pack(&pack_id)
+                    .map_err(binary_native_repository_store_error)?
+                    .is_some()
+            };
+            if committed {
+                return Err(NativeRepositoryError::internal(format!(
+                    "Binary DB {label} {pack_id} is committed but its payload is missing"
+                )));
+            }
+
+            match std::fs::rename(&temporary_path, &expected_final_path) {
                 Ok(()) => Ok("uploaded"),
-                Err(error) if path.exists() => {
-                    let existing = std::fs::read(&path).map_err(|read_error| {
-                        NativeRepositoryError::internal(format!(
-                            "failed to read concurrent Binary DB pack {}: {read_error}",
-                            path.display()
-                        ))
-                    })?;
-                    if existing != pack_bytes {
+                Err(error) if expected_final_path.exists() => {
+                    if !binary_zstd_pack_files_equal(&expected_final_path, &temporary_path)? {
                         return Err(NativeRepositoryError::conflict(format!(
                             "Binary DB pack {pack_id} already exists with different bytes ({error})"
                         )));
@@ -1658,7 +2008,7 @@ where
                 }
                 Err(error) => Err(NativeRepositoryError::internal(format!(
                     "failed to publish Binary DB pack {}: {error}",
-                    path.display()
+                    expected_final_path.display()
                 ))),
             }
         })();
@@ -1668,29 +2018,119 @@ where
         let release_result = pack_lock
             .release()
             .map_err(binary_native_repository_store_error);
-        let cleanup_result = match std::fs::remove_file(&temp) {
+        let cleanup_result = match std::fs::remove_file(&temporary_path) {
             Ok(()) => Ok(()),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
             Err(error) => Err(NativeRepositoryError::internal(format!(
                 "failed to remove Binary DB pack temporary file {}: {error}",
-                temp.display()
+                temporary_path.display()
             ))),
         };
+        if cleanup_result.is_ok() {
+            upload.disarm_cleanup();
+        }
+        // A successful rename must reach the directory durability barrier even
+        // if lock release reports an error. Failed or idempotent publications
+        // also durably remove their staging directory entry.
+        let directory_sync_result = self
+            .db
+            .sync_directory(parent)
+            .map_err(binary_native_repository_store_error);
         release_result?;
         cleanup_result?;
         let status = publish_result?;
-        self.db
-            .sync_directory(parent)
-            .map_err(binary_native_repository_store_error)?;
+        directory_sync_result?;
+        if status == "already_present" {
+            let pack_format = metadata.get("pack_format").cloned().ok_or_else(|| {
+                NativeRepositoryError::internal(format!(
+                    "Binary DB {label} {pack_id} metadata is missing pack_format"
+                ))
+            })?;
+            return Ok(json!({
+                "repo_name": repo_name,
+                "repo_id": self.repo_id(),
+                "pack_id": pack_id,
+                "pack_format": pack_format,
+                "status": status,
+                "raw_binary_upload": true,
+            }));
+        }
         binary_zstd_pack_upload_response(
             &metadata,
             repo_name,
             self.repo_id(),
-            pack_id,
+            &pack_id,
             label,
             tree_pack,
             status,
         )
+    }
+
+    pub fn cleanup_abandoned_zstd_pack_uploads(&self) -> Result<usize, NativeRepositoryError> {
+        let store = self.repository_content();
+        let pack_paths = [
+            store.object_pack_path("cleanup-probe"),
+            store.tree_pack_path("cleanup-probe"),
+        ];
+        let mut cleaned = 0_usize;
+        for pack_path in pack_paths {
+            let parent = pack_path.parent().ok_or_else(|| {
+                NativeRepositoryError::internal(format!(
+                    "Binary DB pack path has no parent: {}",
+                    pack_path.display()
+                ))
+            })?;
+            let entries = match std::fs::read_dir(parent) {
+                Ok(entries) => entries,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(error) => {
+                    return Err(NativeRepositoryError::internal(format!(
+                        "failed to scan Binary DB pack directory {}: {error}",
+                        parent.display()
+                    )));
+                }
+            };
+            let mut cleaned_parent = false;
+            for entry in entries {
+                let entry = entry.map_err(|error| {
+                    NativeRepositoryError::internal(format!(
+                        "failed to scan Binary DB pack directory {}: {error}",
+                        parent.display()
+                    ))
+                })?;
+                let file_name = entry.file_name();
+                let Some(file_name) = file_name.to_str() else {
+                    continue;
+                };
+                if !file_name.contains(ZSTD_STAGED_UPLOAD_MARKER) || !file_name.ends_with(".tmp") {
+                    continue;
+                }
+                let path = entry.path();
+                let metadata = std::fs::symlink_metadata(&path).map_err(|error| {
+                    NativeRepositoryError::internal(format!(
+                        "failed to inspect abandoned zstd Pack upload {}: {error}",
+                        path.display()
+                    ))
+                })?;
+                if !metadata.file_type().is_file() {
+                    continue;
+                }
+                std::fs::remove_file(&path).map_err(|error| {
+                    NativeRepositoryError::internal(format!(
+                        "failed to remove abandoned zstd Pack upload {}: {error}",
+                        path.display()
+                    ))
+                })?;
+                cleaned += 1;
+                cleaned_parent = true;
+            }
+            if cleaned_parent {
+                self.db
+                    .sync_directory(parent)
+                    .map_err(binary_native_repository_store_error)?;
+            }
+        }
+        Ok(cleaned)
     }
 
     pub(in super::super) fn prepare_binary_zstd_pack_from_commit(
@@ -1800,19 +2240,19 @@ where
             &entry_type,
         )?;
         if let Some(existing) = read_set.metadata(BINARY_ZSTD_BLOB_LOCATOR_KIND, &blob_id)? {
-            let existing_sha = binary_json_text(&existing, "sha256").unwrap_or_default();
+            let existing_sha = binary_json_text(existing, "sha256").unwrap_or_default();
             if existing_sha != sha256 {
                 return Err(NativeRepositoryError::conflict(format!(
                     "Blob locator {blob_id} already exists for repository {repo_name} with different sha256"
                 )));
             }
             let same = existing.get("size_bytes").and_then(JsonValue::as_i64) == Some(size_bytes)
-                && binary_json_text(&existing, "pack_id").as_deref() == Some(pack_id.as_str())
-                && binary_json_text(&existing, "pack_entry_type").as_deref()
+                && binary_json_text(existing, "pack_id").as_deref() == Some(pack_id.as_str())
+                && binary_json_text(existing, "pack_entry_type").as_deref()
                     == Some(entry_type.as_str())
-                && binary_json_text(&existing, "pack_entry_name").as_deref()
+                && binary_json_text(existing, "pack_entry_name").as_deref()
                     == Some(entry_name.as_str())
-                && binary_json_text(&existing, "pack_base_blob_id")
+                && binary_json_text(existing, "pack_base_blob_id")
                     == optional_json_text(object, "pack_base_blob_id")
                 && existing.get("pack_chain_depth").and_then(JsonValue::as_i64)
                     == Some(chain_depth);
@@ -1870,9 +2310,9 @@ where
         )?;
         if let Some(existing) = read_set.metadata(BINARY_ZSTD_TREE_LOCATOR_KIND, &tree_id)? {
             let same = existing.get("entry_count").and_then(JsonValue::as_i64) == Some(entry_count)
-                && binary_json_text(&existing, "tree_pack_id").as_deref()
+                && binary_json_text(existing, "tree_pack_id").as_deref()
                     == Some(tree_pack_id.as_str())
-                && binary_json_text(&existing, "tree_pack_checksum").as_deref()
+                && binary_json_text(existing, "tree_pack_checksum").as_deref()
                     == Some(checksum.as_str());
             if same {
                 return Ok(None);
@@ -1938,7 +2378,7 @@ where
         )?;
         if let Some(existing) = read_set.snapshot(&snapshot_id)? {
             binary_validate_existing_snapshot_payload(
-                &existing,
+                existing,
                 repo_name,
                 &line_name,
                 parent_snapshot_id.as_deref(),

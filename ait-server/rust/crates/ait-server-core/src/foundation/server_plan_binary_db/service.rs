@@ -537,17 +537,6 @@ where
         self.audit_artifact_blob_closure_matching(None)
     }
 
-    pub fn audit_artifact_blob_closure_for(
-        &self,
-        artifact_blob_id: &str,
-    ) -> Result<PlanArtifactBlobClosureAudit, String> {
-        let artifact_blob_id = artifact_blob_id.trim();
-        if artifact_blob_id.is_empty() {
-            return Err("Plan artifact closure target blob id must not be empty".to_string());
-        }
-        self.audit_artifact_blob_closure_matching(Some(artifact_blob_id))
-    }
-
     fn audit_artifact_blob_closure_matching(
         &self,
         target_blob_id: Option<&str>,

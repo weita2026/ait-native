@@ -1464,3 +1464,58 @@ fn native_blame_resolves_one_exact_patchset_without_repo_or_change_options() {
     }));
     assert!(!logged.iter().any(|row| row.url.contains("change_ref=")));
 }
+
+#[test]
+fn native_blame_keeps_task_scope_from_a_current_format_patchset() {
+    let (base_url, log, state, handle) = spawn_fake_remote();
+    let temp = init_repo(&base_url);
+    let root = temp.path();
+    state.lock().unwrap().selected_patchset_revision_snapshot_id =
+        Some(FIXTURE_BASE_SNAPSHOT_ID.to_string());
+    let workspace_before = fs::read(root.join("src/lib.rs")).unwrap();
+
+    let payload = json_output(
+        root,
+        &[
+            "blame",
+            "src/lib.rs",
+            "--patchset",
+            "RT-1/C-01/P-01",
+            "--remote",
+            "origin",
+            "--line",
+            "1",
+            "--json",
+        ],
+    );
+    assert_eq!(payload["target"]["kind"], "patchset");
+    assert_eq!(payload["target"]["patchset_id"], "RT-1/C-01/P-01");
+    assert_eq!(payload["target"]["task_id"], "RT-1");
+    assert_eq!(payload["target"]["change_id"], "C-01");
+    assert_eq!(payload["target"]["change_ref"], "RT-1/C-01");
+    assert_eq!(payload["lines"][0]["task_id"], "RT-1");
+    assert_eq!(payload["lines"][0]["change_id"], "C-01");
+    assert_eq!(payload["lines"][0]["patchset_id"], "RT-1/C-01/P-01");
+    assert_eq!(
+        payload["lines"][0]["provenance_confidence"],
+        "derived_from_patchset"
+    );
+    assert_eq!(fs::read(root.join("src/lib.rs")).unwrap(), workspace_before);
+
+    handle.join().unwrap();
+    let logged = log.lock().unwrap();
+    for url in [
+        "/v1/native/repository-authorities/7/patchsets/RT-1%2FC-01%2FP-01",
+        "/v1/native/repository-authorities/7/changes/RT-1%2FC-01",
+        "/v1/native/repository-authorities/7/changes/RT-1%2FC-01/patchsets",
+    ] {
+        assert!(
+            logged.iter().any(|row| row.method == "GET" && row.url == url),
+            "missing task-scoped request {url}: {logged:?}"
+        );
+    }
+    assert!(!logged.iter().any(|row| {
+        row.url == "/v1/native/repository-authorities/7/changes/C-01"
+            || row.url == "/v1/native/repository-authorities/7/changes/C-01/patchsets"
+    }));
+}

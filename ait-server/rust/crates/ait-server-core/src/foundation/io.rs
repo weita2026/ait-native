@@ -60,18 +60,6 @@ pub fn require_schema_ready(ready: bool) -> Result<(), String> {
     )
 }
 
-pub fn manifest_path_for_tree(tree_pack_path: Option<&str>, tree_id: &str) -> String {
-    let normalized_tree_id = tree_id.trim();
-    let tree_entry_name = format!("trees/{normalized_tree_id}.json");
-    match tree_pack_path
-        .map(str::trim)
-        .filter(|pack_path| !pack_path.is_empty())
-    {
-        Some(pack_path) => format!("{pack_path}#{tree_entry_name}"),
-        None => format!("trees/{normalized_tree_id}"),
-    }
-}
-
 pub fn snapshot_manifest_map_from_rows(
     rows: &[JsonValue],
 ) -> Result<JsonMap<String, JsonValue>, String> {

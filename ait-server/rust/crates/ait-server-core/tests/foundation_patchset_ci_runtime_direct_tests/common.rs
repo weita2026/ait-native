@@ -5,7 +5,7 @@ use std::env;
 use std::fs;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 fn temp_root(label: &str) -> PathBuf {
@@ -83,7 +83,7 @@ echo "explicit TG1 native env pass"
     ]
 }
 
-fn write_static_ait_test_tg1_contract(root: &PathBuf) {
+fn write_static_ait_test_tg1_contract(root: &Path) {
     let descriptor_dir = root.join("descriptors/suites");
     let members_dir = root.join("crates/ait-test-contract/src");
     fs::create_dir_all(&descriptor_dir).expect("descriptor dir should be created");

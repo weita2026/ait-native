@@ -4,6 +4,15 @@ impl<D> BinaryDbNativeRepositoryService<D>
 where
     D: ServerRemoteBinaryDb + BinaryDbIndexAppender + Clone,
 {
+    pub fn ensure_default_line(&self) -> Result<(), NativeRepositoryError> {
+        if !self.default_line_exists()? {
+            self.content_lines()
+                .create_line(&self.default_line, 0, now_timestamp_s())
+                .map_err(binary_native_repository_store_error)?;
+        }
+        Ok(())
+    }
+
     pub(in super::super) fn current_lines(
         &self,
         repo_name: &str,

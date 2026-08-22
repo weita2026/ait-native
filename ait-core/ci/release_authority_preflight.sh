@@ -130,8 +130,8 @@ while IFS=$'\t' read -r repo_name repository_index namespace; do
       "$(jq -er '.head_snapshot_id' "${line_record}")" --json >"${ancestry_record}"
   )
   jq -e --arg repo "${repo_name}" '
-    .repo_name == $repo and .workspace_status == "clean" and
-    .workspace_changed_count == 0
+    .repo_name == $repo and .workspace.status == "clean" and
+    .workspace.changed_count == 0
   ' "${status_record}" >/dev/null ||
     fail 65 "canonical component workspace is not clean: ${repo_name}"
   jq -e --arg snapshot "${source_snapshot}" \

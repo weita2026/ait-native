@@ -1,8 +1,6 @@
 use std::ops::Deref;
 
-use crate::binary_db::{
-    BinaryDbFsyncPolicy, BinaryDbStoreFsyncPolicy, RemoteBinaryDb, RemoteBinaryDbFs, StoreResult,
-};
+use crate::binary_db::{BinaryDbFsyncPolicy, RemoteBinaryDb, RemoteBinaryDbFs, StoreResult};
 
 use crate::plan_binary_db::{
     BinaryDbPlanStore, PlanBinaryDbWritePurpose, PlanBinaryDbWriteTxn, PlanRevisionRootUpdate,
@@ -44,13 +42,6 @@ where
 
     pub fn db(&self) -> &B {
         self.inner.db()
-    }
-
-    pub fn begin_publish_txn(
-        &self,
-    ) -> StoreResult<RemotePlanSyncPublishTxn<'_, B, BinaryDbStoreFsyncPolicy<'_, B>, WRITE_LAYOUT>>
-    {
-        self.begin_publish_txn_with_fsync_policy(BinaryDbStoreFsyncPolicy::new(self.db()))
     }
 
     pub fn begin_publish_txn_with_fsync_policy<F>(

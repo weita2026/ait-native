@@ -163,6 +163,7 @@ where
         .map_err(|error| Self::error("Task Change index decode", error))
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn append_task_in_write<F>(
         &self,
         tx: &mut BinaryDbWriteTxn<'_, D, F>,
@@ -254,6 +255,7 @@ where
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn append_change_with_fork_in_write<F>(
         &self,
         tx: &mut BinaryDbWriteTxn<'_, D, F>,
@@ -472,13 +474,12 @@ where
             if change.remote_meta & 1 == 0
                 && change.task_index == task_index
                 && change.change_ordinal == 0
+                && initial_change_index.replace(change_index).is_some()
             {
-                if initial_change_index.replace(change_index).is_some() {
-                    return Err(format!(
-                        "Task {} has multiple initial Changes.",
-                        self.task_id(task_index)
-                    ));
-                }
+                return Err(format!(
+                    "Task {} has multiple initial Changes.",
+                    self.task_id(task_index)
+                ));
             }
         }
         let change_index = initial_change_index.ok_or_else(|| {

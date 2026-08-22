@@ -1,0 +1,56 @@
+{
+  "contract": "ait-agent-token-game-fixture-manifest/v1",
+  "fixture_id": "ait-plane-shooter-agent-token-v1",
+  "revision": "game-development-2026-08-22.6",
+  "baseline_dir": "baseline",
+  "evaluator_path": "evaluator/accept.mjs",
+  "browser_evaluator_path": "evaluator/browser-check.mjs",
+  "metadata_excludes": [".ait", ".git"],
+  "workloads": [
+    {
+      "workload_id": "GD-01",
+      "name": "projectile-cooldown-regression",
+      "scale": "small",
+      "overlay_dir": "workloads/GD-01/overlay",
+      "transform_path": "workloads/GD-01/source-transform.json",
+      "acceptance_path": "workloads/GD-01/acceptance.json",
+      "expected_content_digest": "sha256:be5589514582183ce9d3ccdf7c3e2a4ae75753c55500826b8463cac102aa124e"
+    },
+    {
+      "workload_id": "GD-02",
+      "name": "armored-enemy-feature",
+      "scale": "medium",
+      "overlay_dir": "workloads/GD-02/overlay",
+      "transform_path": "workloads/GD-02/source-transform.json",
+      "acceptance_path": "workloads/GD-02/acceptance.json",
+      "expected_content_digest": "sha256:c3970ad4be751a83eb7d9ad18404bfd2d4fa0adbec09fcfb1e7975c4a28b18b3"
+    },
+    {
+      "workload_id": "GD-03",
+      "name": "replay-divergence-diagnosis",
+      "scale": "medium-diagnostic",
+      "overlay_dir": "workloads/GD-03/overlay",
+      "transform_path": "workloads/GD-03/source-transform.json",
+      "acceptance_path": "workloads/GD-03/acceptance.json",
+      "expected_content_digest": "sha256:a64a6a3b4361f0df3e85b95b1377115c5cced580a09c1958bc41e8e4537fb45b"
+    },
+    {
+      "workload_id": "GD-04",
+      "name": "gameplay-modularization",
+      "scale": "cross-file-refactor",
+      "overlay_dir": "workloads/GD-04/overlay",
+      "transform_path": "workloads/GD-04/source-transform.json",
+      "acceptance_path": "workloads/GD-04/acceptance.json",
+      "expected_content_digest": "sha256:424052205658dd82ab28192543c9b933c5f986d2d619e437cad216e004cf15d2"
+    },
+    {
+      "workload_id": "GD-05",
+      "name": "beta-release-hardening",
+      "scale": "long-integration",
+      "overlay_dir": "workloads/GD-05/overlay",
+      "transform_path": "workloads/GD-05/source-transform.json",
+      "acceptance_path": "workloads/GD-05/acceptance.json",
+      "expected_content_digest": "sha256:076571585a4e35dcf3dfa3c32d4c47c8a64d4060b0b12686a797cb4aaa81e691"
+    }
+  ]
+}

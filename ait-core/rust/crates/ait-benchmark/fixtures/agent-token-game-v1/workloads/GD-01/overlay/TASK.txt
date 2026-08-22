@@ -1,0 +1,13 @@
+GD-01: Projectile Cooldown Regression
+=====================================
+
+Holding the fire control now creates a projectile every simulation frame. Find
+and repair the regression so the admitted 180 ms cooldown is enforced again.
+
+Preserve deterministic replay, movement, enemy behavior, boss timing, lives,
+score, browser controls, and the existing public GameModel surface. Add or
+update focused tests if needed. Do not rewrite unrelated gameplay or add a
+dependency, backend, hosted asset, network request, Python file, or remote AIT
+workflow.
+
+Run the project-local validation before completing the repository workflow.

@@ -11,7 +11,7 @@ pub(super) fn default_main_seed_root() -> Result<PathBuf, String> {
 pub(super) fn normalize_plane(value: Option<String>) -> Result<String, String> {
     let plane = value.unwrap_or_else(|| DEFAULT_REPO_CI_PLANE.to_string());
     let plane = plane.trim();
-    if REPO_CI_PLANES.iter().any(|allowed| plane == *allowed) {
+    if REPO_CI_PLANES.contains(&plane) {
         Ok(plane.to_string())
     } else {
         Err(format!(

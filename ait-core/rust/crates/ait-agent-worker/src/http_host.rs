@@ -181,10 +181,6 @@ impl<H> WorkerHttpHostRuntime<H> {
     pub fn handler(&self) -> &H {
         &self.handler
     }
-
-    pub fn handler_mut(&mut self) -> &mut H {
-        &mut self.handler
-    }
 }
 
 impl<H> WorkerHttpHostRuntime<H>

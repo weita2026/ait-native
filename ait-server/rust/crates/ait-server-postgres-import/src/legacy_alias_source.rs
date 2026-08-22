@@ -988,12 +988,10 @@ fn legacy_payload_patchset_id(bytes: &[u8]) -> Result<&str, String> {
     for _ in 0..exact_index_count {
         let path = read_legacy_length_prefixed_text(bytes, &mut offset, "index path")?;
         let key = read_legacy_length_prefixed_text(bytes, &mut offset, "index key")?;
-        if path == "patchset_id.idx" {
-            if patchset_id.replace(key).is_some() {
-                return Err(
-                    "legacy Patchset payload repeats the patchset_id.idx exact key".to_string(),
-                );
-            }
+        if path == "patchset_id.idx" && patchset_id.replace(key).is_some() {
+            return Err(
+                "legacy Patchset payload repeats the patchset_id.idx exact key".to_string(),
+            );
         }
     }
     if offset >= bytes.len() {
@@ -1205,7 +1203,7 @@ fn looks_like_legacy_patchset_alias(value: &str) -> bool {
 fn validate_layout_file(bytes: &[u8], record_size: usize, label: &str) -> Result<(), String> {
     if bytes.len() < 4
         || bytes[..4] != 1_u32.to_le_bytes()
-        || (record_size > 1 && (bytes.len() - 4) % record_size != 0)
+        || (record_size > 1 && !(bytes.len() - 4).is_multiple_of(record_size))
     {
         Err(format!(
             "legacy explicit {label} is not a layout-1 aligned file"

@@ -176,13 +176,6 @@ pub fn validate_password(value: Option<&str>) -> Result<String, String> {
     Ok(text)
 }
 
-pub fn hash_community_password(password: &str) -> Result<(String, String, String), String> {
-    let mut salt = [0_u8; SALT_BYTE_LEN];
-    getrandom::fill(&mut salt)
-        .map_err(|exc| format!("Failed to read secure password salt: {exc}"))?;
-    hash_community_password_with_salt(password, &salt)
-}
-
 pub fn hash_community_password_with_salt(
     password: &str,
     salt: &[u8],
@@ -371,7 +364,7 @@ fn hex_encode(bytes: &[u8]) -> String {
 
 fn hex_decode(text: &str) -> Result<Vec<u8>, String> {
     let text = text.trim();
-    if text.len() % 2 != 0 {
+    if !text.len().is_multiple_of(2) {
         return Err("hex payload must contain an even number of characters.".to_string());
     }
     let mut bytes = Vec::with_capacity(text.len() / 2);

@@ -19,10 +19,11 @@ fn run(mut argv: Vec<OsString>) -> Result<ExitCode, String> {
     #[cfg(feature = "perfetto-tracing")]
     let mut forwarded_current_source_cli = false;
     let command = loop {
-        let cli = match {
+        let parsed_cli = {
             let _range = perfetto_range!("ait.cli.parse_args");
             parse_cli_from(&argv)
-        } {
+        };
+        let cli = match parsed_cli {
             Ok(cli) => cli,
             Err(error) => {
                 let exit_code = u8::try_from(error.exit_code()).unwrap_or(2);

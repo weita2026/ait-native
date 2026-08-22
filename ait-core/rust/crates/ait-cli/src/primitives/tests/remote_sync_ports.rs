@@ -2151,7 +2151,7 @@ fn zstd_pull_uses_one_deduplicated_manifest_and_stages_pack_batches() {
 }
 
 #[test]
-fn zstd_pull_retries_without_an_incomplete_advertised_boundary() {
+fn zstd_pull_trusts_committed_boundary_without_descendant_pack_scan() {
     let fixture = create_two_snapshot_zstd_source();
     let (target_tmp, target_repo) = create_empty_fixture_repo();
 
@@ -2189,12 +2189,24 @@ fn zstd_pull_retries_without_an_incomplete_advertised_boundary() {
 
     assert!(snapshot_exists_in_repo(&target_repo, &fixture.parent_id));
     assert!(
-        !remote_sync::remote_sync_snapshot_content_complete_for_repo(
+        remote_sync::remote_sync_snapshot_content_complete_for_repo(
             &target_repo,
             &fixture.parent_id,
         )
-        .expect("inspect incomplete parent closure"),
-        "Snapshot/root metadata must not hide a missing reachable object pack"
+        .expect("inspect committed parent boundary"),
+        "normal pull boundary detection must not traverse a committed Snapshot's physical packs"
+    );
+    let maintenance = target_repo
+        .local_content_maintenance_store::<SNAPSHOT_BINARY_DB_WRITE_LAYOUT>()
+        .expect("target Binary DB maintenance store");
+    let exact_validation =
+        ait_core::local_content_gc::validate_with_local_content_maintenance_store(&maintenance);
+    assert!(
+        exact_validation.is_err()
+            || exact_validation
+                .as_ref()
+                .is_ok_and(|payload| payload["needs_attention"] == json!(true)),
+        "explicit exact validation must not silently accept the missing physical pack"
     );
 
     let snapshot_ids = vec![fixture.parent_id.clone(), fixture.child_id.clone()];
@@ -2234,22 +2246,19 @@ fn zstd_pull_retries_without_an_incomplete_advertised_boundary() {
         false,
         &zstd_only_download_capabilities().with_zstd_pull_manifest(),
     )
-    .expect("bulk pull must retry and restore the incomplete boundary closure");
+    .expect("bulk pull must accept the committed parent boundary without a descendant scan");
 
-    assert_eq!(remote.zstd_pull_manifest_requests.len(), 2);
+    assert_eq!(remote.zstd_pull_manifest_requests.len(), 1);
     assert!(remote.zstd_pull_manifest_requests[0]
         .have_snapshot_ids
         .contains(&fixture.parent_id));
-    assert!(!remote.zstd_pull_manifest_requests[1]
-        .have_snapshot_ids
-        .contains(&fixture.parent_id));
     assert_eq!(pulled["imported_snapshot_ids"], json!([fixture.child_id]));
-    assert!(target_tmp.path().join(parent_object_pack_path).is_file());
+    assert!(!target_tmp.path().join(parent_object_pack_path).is_file());
     assert!(remote_sync::remote_sync_snapshot_content_complete_for_repo(
         &target_repo,
         &fixture.parent_id,
     )
-    .expect("restored parent closure"));
+    .expect("committed parent boundary"));
     assert!(remote_sync::remote_sync_snapshot_content_complete_for_repo(
         &target_repo,
         &fixture.child_id,
@@ -3108,6 +3117,8 @@ fn remote_sync_push_line_selects_zstd_backend_when_capability_is_advertised() {
     assert_eq!(remote.zstd_plan_requests.len(), 1);
     assert_eq!(remote.uploaded_zstd_object_packs.len(), 1);
     assert_eq!(remote.uploaded_zstd_tree_packs.len(), 1);
+    assert_eq!(remote.zstd_pack_parallelism_requests, vec![2]);
+    assert_eq!(pushed["remote_sync_metrics"]["pack_parallelism"], json!(2));
     assert_eq!(remote.zstd_commit_requests.len(), 1);
     assert_eq!(remote.line_update_calls, 0);
     assert_eq!(remote.lines[0]["head_snapshot_id"], json!(snapshot_id));

@@ -14,7 +14,8 @@ pub(crate) use sync::{
     hydrate_remote_snapshot_boundary_for_repo, remote_sync_snapshot_content_complete_for_repo,
 };
 pub(super) use sync::{
-    hydrate_remote_snapshot_chain_with_task_remote_and_capabilities, set_or_create_local_line_head,
+    hydrate_remote_snapshot_chain_with_task_remote_and_capabilities,
+    initialize_remote_null_head_line_with_snapshot_via_zstd, set_or_create_local_line_head,
     sync_patchset_revision_snapshot, sync_patchset_revision_snapshot_with_task_remote,
 };
 pub use sync::{pull, push, upload_snapshot_chain};

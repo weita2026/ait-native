@@ -21,26 +21,6 @@ impl PlanProvenanceCodec for PlanProvenanceFoundation {
     }
 }
 
-pub fn normalize_plan_revision_provenance_with_plan_provenance_codec<C>(
-    codec: &C,
-    payload_json: &str,
-) -> Result<JsonValue, String>
-where
-    C: PlanProvenanceCodec + ?Sized,
-{
-    codec.normalize_revision_provenance_payload_json(payload_json)
-}
-
-pub fn build_plan_revision_provenance_with_plan_provenance_codec<C>(
-    codec: &C,
-    payload_json: &str,
-) -> Result<JsonValue, String>
-where
-    C: PlanProvenanceCodec + ?Sized,
-{
-    codec.build_revision_provenance_payload_json(payload_json)
-}
-
 pub fn normalize_plan_revision_provenance_payload_json(
     payload_json: &str,
 ) -> Result<JsonValue, String> {
@@ -167,6 +147,3 @@ fn maybe_json_entry(key: &str, value: Option<String>) -> (String, JsonValue) {
         value.map(JsonValue::String).unwrap_or(JsonValue::Null),
     )
 }
-
-#[cfg(test)]
-mod tests;

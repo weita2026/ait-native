@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Map as JsonMap, Value as JsonValue};
 use std::collections::BTreeSet;
 use std::fmt;
+use std::fs::File;
 use std::path::{Path, PathBuf};
 
 const NATIVE_REPOSITORY_ERROR_PREFIX: &str = "ait-native-repository-error:";
@@ -364,6 +365,7 @@ impl<S> RemoteSyncCommitJson<S> {
 }
 
 impl<S> RemoteSyncZstdImportManifestJson<S> {
+    #[allow(clippy::too_many_arguments)]
     pub fn zstd_import_manifest_response(
         &self,
         repo_name: &str,
@@ -609,6 +611,100 @@ pub struct SnapshotManifestFileEntry {
     pub sha256: String,
 }
 
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum NativeZstdPackKind {
+    Object,
+    Tree,
+}
+
+impl NativeZstdPackKind {
+    pub fn is_tree(self) -> bool {
+        matches!(self, Self::Tree)
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Object => "object",
+            Self::Tree => "tree",
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct NativeZstdPackUpload {
+    pub(super) file: Option<File>,
+    pub(super) temporary_path: Option<PathBuf>,
+    pub(super) final_path: PathBuf,
+    pub(super) repo_name: String,
+    pub(super) pack_id: String,
+    pub(super) kind: NativeZstdPackKind,
+}
+
+impl NativeZstdPackUpload {
+    pub(super) fn new(
+        file: File,
+        temporary_path: PathBuf,
+        final_path: PathBuf,
+        repo_name: String,
+        pack_id: String,
+        kind: NativeZstdPackKind,
+    ) -> Self {
+        Self {
+            file: Some(file),
+            temporary_path: Some(temporary_path),
+            final_path,
+            repo_name,
+            pack_id,
+            kind,
+        }
+    }
+
+    pub fn take_file(&mut self) -> Result<File, NativeRepositoryError> {
+        self.file.take().ok_or_else(|| {
+            NativeRepositoryError::internal("zstd Pack upload staging file was already taken")
+        })
+    }
+
+    pub fn temporary_path(&self) -> &Path {
+        self.temporary_path
+            .as_deref()
+            .expect("active zstd Pack upload must retain its temporary path")
+    }
+
+    pub fn final_path(&self) -> &Path {
+        &self.final_path
+    }
+
+    pub fn pack_id(&self) -> &str {
+        &self.pack_id
+    }
+
+    pub fn kind(&self) -> NativeZstdPackKind {
+        self.kind
+    }
+
+    pub(super) fn disarm_cleanup(&mut self) {
+        self.temporary_path = None;
+    }
+}
+
+impl Drop for NativeZstdPackUpload {
+    fn drop(&mut self) {
+        drop(self.file.take());
+        let Some(path) = self.temporary_path.take() else {
+            return;
+        };
+        if let Err(error) = std::fs::remove_file(&path) {
+            if error.kind() != std::io::ErrorKind::NotFound {
+                eprintln!(
+                    "warning: failed to remove abandoned zstd Pack upload {}: {error}",
+                    path.display()
+                );
+            }
+        }
+    }
+}
+
 pub trait NativeRepositoryService: Send + Sync {
     fn create_repository(
         &self,
@@ -664,6 +760,27 @@ pub trait NativeRepositoryService: Send + Sync {
         pack_id: &str,
         pack_bytes: Vec<u8>,
     ) -> Result<JsonValue, NativeRepositoryError>;
+    fn begin_zstd_bulk_pack_upload(
+        &self,
+        repo_name: &str,
+        _pack_id: &str,
+        _kind: NativeZstdPackKind,
+    ) -> Result<NativeZstdPackUpload, NativeRepositoryError> {
+        Err(NativeRepositoryError::service_unavailable(format!(
+            "Repository {repo_name} does not support staged zstd Pack upload"
+        )))
+    }
+    fn finish_zstd_bulk_pack_upload(
+        &self,
+        repo_name: &str,
+        _upload: NativeZstdPackUpload,
+        _payload_bytes: u64,
+        _payload_sha256: &str,
+    ) -> Result<JsonValue, NativeRepositoryError> {
+        Err(NativeRepositoryError::service_unavailable(format!(
+            "Repository {repo_name} does not support staged zstd Pack publication"
+        )))
+    }
     fn get_zstd_bulk_object_pack(
         &self,
         repo_name: &str,

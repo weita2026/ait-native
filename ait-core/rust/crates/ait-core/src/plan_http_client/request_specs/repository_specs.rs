@@ -187,20 +187,6 @@ fn reject_repository_policy_extra_keys(
     Ok(())
 }
 
-pub fn build_get_repository_request_spec(
-    config: &PlanHttpClientConfig,
-    _repo_name: &str,
-) -> PlanHttpClientResult<PlanHttpRequestSpec> {
-    let repository_index = configured_repository_authority_path_segment(config)?;
-    plan_http_transport::build_request_spec(
-        config,
-        Method::GET,
-        &format!("/v1/native/repository-authorities/{repository_index}"),
-        Vec::new(),
-        None,
-    )
-}
-
 pub fn build_get_server_handshake_request_spec(
     config: &PlanHttpClientConfig,
 ) -> PlanHttpClientResult<PlanHttpRequestSpec> {

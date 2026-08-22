@@ -1,6 +1,7 @@
 use crate::runtime::{
     RemoteRow, RepoLocalSnapshotOperationStore, RepoRuntime, SNAPSHOT_BINARY_DB_WRITE_LAYOUT,
 };
+use ait_core::change_json::ChangeJson;
 use ait_core::json_support::{json, JsonMap, JsonValue};
 use ait_core::local_snapshot::{
     LocalSnapshotBlobReadStore, LocalSnapshotReadStore, LocalSnapshotTreeReadStore,
@@ -44,6 +45,7 @@ struct BlameTarget {
     line_name: Option<String>,
     patchset_id: Option<String>,
     change_id: Option<String>,
+    change_ref: Option<String>,
     task_id: Option<String>,
     base_snapshot_id: Option<String>,
     revision_snapshot_id: Option<String>,
@@ -316,8 +318,10 @@ pub fn render_human_blame(payload: &JsonValue) {
                 "target: patchset {}",
                 string_field_obj(&target, "patchset_id").unwrap_or_default()
             ));
-            if let Some(change_id) = string_field_obj(&target, "change_id") {
-                header.push(format!("change: {change_id}"));
+            if let Some(change_ref) = string_field_obj(&target, "change_ref")
+                .or_else(|| string_field_obj(&target, "change_id"))
+            {
+                header.push(format!("change: {change_ref}"));
             }
             if let Some(base_snapshot_id) = string_field_obj(&target, "base_snapshot_id") {
                 header.push(format!("base: {base_snapshot_id}"));
@@ -344,9 +348,7 @@ pub fn render_human_blame(payload: &JsonValue) {
         _ => {
             header.push(format!(
                 "target: current line {}",
-                string_field(payload, "line_name")
-                    .or_else(|| string_field_obj(&target, "line_name"))
-                    .unwrap_or_default()
+                current_line_target_name(payload, &target)
             ));
             header.push(format!(
                 "resolved snapshot: {}",
@@ -413,6 +415,12 @@ pub fn render_human_blame(payload: &JsonValue) {
             }
         }
     }
+}
+
+fn current_line_target_name(payload: &JsonValue, target: &JsonMap<String, JsonValue>) -> String {
+    string_field_obj(target, "line_name")
+        .or_else(|| string_field(payload, "line_name"))
+        .unwrap_or_default()
 }
 
 fn validate_request(request: &BlameRequest) -> Result<(), String> {
@@ -497,19 +505,22 @@ fn resolve_blame_target(
                 "Patchset {resolved_patchset_id} resolved to revision snapshot {resolved_snapshot_id}, but that snapshot is not available in the local store. Materialize or import the snapshot first."
             ));
         }
-        let change_id = string_field(&patchset, "change_id").unwrap_or_default();
+        let (change_id, change_ref, scoped_task_id) =
+            resolve_patchset_change_identity(&patchset, &patchset_id)?;
         let change = task_remote
-            .get_change_detail(&change_id, Some(&resolved_repo_name))
+            .get_change_detail(&change_ref, Some(&resolved_repo_name))
             .map_err(|err| err.to_string())?;
         let task = change.get("task").and_then(JsonValue::as_object).cloned();
         return Ok(BlameTarget {
             kind: "patchset".to_string(),
             patchset_id: string_field(&patchset, "patchset_id").or(Some(patchset_id)),
-            change_id: string_field(&patchset, "change_id"),
+            change_id: Some(change_id),
+            change_ref: Some(change_ref),
             task_id: task
                 .as_ref()
                 .and_then(|value| string_field_obj(value, "task_id"))
-                .or_else(|| string_field(&change, "task_id")),
+                .or_else(|| string_field(&change, "task_id"))
+                .or(scoped_task_id),
             base_snapshot_id: string_field(&patchset, "base_snapshot_id"),
             revision_snapshot_id: string_field(&patchset, "revision_snapshot_id"),
             resolved_snapshot_id: Some(resolved_snapshot_id),
@@ -538,6 +549,134 @@ fn resolve_blame_target(
         resolved_snapshot_id: Some(resolved_snapshot_id),
         ..BlameTarget::default()
     })
+}
+
+fn resolve_patchset_change_identity(
+    patchset: &JsonValue,
+    requested_patchset_id: &str,
+) -> Result<(String, String, Option<String>), String> {
+    let resolved_patchset_id =
+        string_field(patchset, "patchset_id").unwrap_or_else(|| requested_patchset_id.to_string());
+    if resolved_patchset_id != requested_patchset_id {
+        return Err(format!(
+            "Patchset lookup for {requested_patchset_id} returned unrelated Patchset {resolved_patchset_id}."
+        ));
+    }
+
+    let raw_change_id = required_string_field(patchset, "change_id")?;
+    let canonical_change_id = ChangeJson::stateless().canonical_change_id(&raw_change_id)?;
+    let payload_task_id = string_field(patchset, "task_id");
+    let mut candidates = Vec::new();
+    if let Some(change_ref) = string_field(patchset, "change_ref") {
+        candidates.push(("change_ref", change_ref));
+    }
+    if raw_change_id != canonical_change_id {
+        candidates.push(("change_id", raw_change_id.clone()));
+    }
+    if let Some(task_id) = payload_task_id.as_deref() {
+        candidates.push((
+            "task_id",
+            ChangeJson::stateless()
+                .rolling_server_change_id(Some(task_id), &canonical_change_id)?,
+        ));
+    }
+    if let Some(change_ref) = current_patchset_change_reference(&resolved_patchset_id) {
+        candidates.push(("patchset_id", change_ref));
+    }
+    if candidates.is_empty() {
+        candidates.push((
+            "change_id",
+            ChangeJson::stateless().rolling_server_change_id(None, &canonical_change_id)?,
+        ));
+    }
+
+    let mut references = BTreeMap::<String, Vec<&str>>::new();
+    for (source, candidate) in &candidates {
+        let candidate_canonical = ChangeJson::stateless().canonical_change_id(candidate)?;
+        if candidate_canonical != canonical_change_id {
+            return Err(format!(
+                "Patchset {resolved_patchset_id} {source} `{candidate}` does not identify Change `{canonical_change_id}`."
+            ));
+        }
+        references
+            .entry(candidate.clone())
+            .or_default()
+            .push(*source);
+    }
+    if references.len() != 1 {
+        let conflicts = references
+            .iter()
+            .map(|(reference, sources)| format!("{reference} ({})", sources.join(", ")))
+            .collect::<Vec<_>>()
+            .join("; ");
+        return Err(format!(
+            "Patchset {resolved_patchset_id} has conflicting owning Change identity: {conflicts}."
+        ));
+    }
+    let change_ref = references.into_keys().next().unwrap_or_default();
+    let inferred_task_id = scoped_task_id(&change_ref, &canonical_change_id);
+    if let (Some(expected), Some(actual)) =
+        (payload_task_id.as_deref(), inferred_task_id.as_deref())
+    {
+        if expected != actual {
+            return Err(format!(
+                "Patchset {resolved_patchset_id} belongs to task `{actual}`, not declared task `{expected}`."
+            ));
+        }
+    }
+    Ok((
+        canonical_change_id,
+        change_ref,
+        payload_task_id.or(inferred_task_id),
+    ))
+}
+
+fn current_patchset_change_reference(patchset_id: &str) -> Option<String> {
+    let (change_ref, patchset_ordinal) = patchset_id.rsplit_once('/')?;
+    if !scoped_ordinal(patchset_ordinal, 'P') {
+        return None;
+    }
+    let (_, change_ordinal) = change_ref.rsplit_once('/')?;
+    scoped_ordinal(change_ordinal, 'C').then(|| change_ref.to_string())
+}
+
+fn scoped_ordinal(value: &str, kind: char) -> bool {
+    value
+        .strip_prefix(kind)
+        .and_then(|value| value.strip_prefix('-'))
+        .is_some_and(|ordinal| {
+            !ordinal.is_empty() && ordinal.bytes().all(|byte| byte.is_ascii_digit())
+        })
+}
+
+fn scoped_task_id(change_ref: &str, canonical_change_id: &str) -> Option<String> {
+    let (task_id, child) = change_ref.rsplit_once('/')?;
+    (child == canonical_change_id && scoped_ordinal(child, 'C')).then(|| task_id.to_string())
+}
+
+fn overlay_change_reference(row: &JsonMap<String, JsonValue>) -> Result<Option<String>, String> {
+    let Some(change_id) = string_field_obj(row, "change_id") else {
+        return Ok(None);
+    };
+    let canonical_change_id = ChangeJson::stateless().canonical_change_id(&change_id)?;
+    let task_id = string_field_obj(row, "task_id");
+    if change_id != canonical_change_id {
+        let inferred_task_id = scoped_task_id(&change_id, &canonical_change_id);
+        if let (Some(expected), Some(actual)) = (task_id.as_deref(), inferred_task_id.as_deref()) {
+            if expected != actual {
+                return Err(format!(
+                    "Snapshot provenance Change `{change_id}` belongs to task `{actual}`, not recorded task `{expected}`."
+                ));
+            }
+        }
+        return Ok(Some(change_id));
+    }
+    if scoped_ordinal(&canonical_change_id, 'C') && task_id.is_none() {
+        return Ok(None);
+    }
+    ChangeJson::stateless()
+        .rolling_server_change_id(task_id.as_deref(), &canonical_change_id)
+        .map(Some)
 }
 
 fn compute_snapshot_blame(
@@ -1261,14 +1400,16 @@ fn snapshot_overlay(
         overlay.insert(snapshot_id.clone(), entry);
     }
     if matches!(target.kind.as_str(), "patchset" | "snapshot") {
-        let mut change_ids = overlay
-            .values()
-            .filter_map(|row| string_field_obj(row, "change_id"))
-            .collect::<Vec<_>>();
-        if let Some(change_id) = target.change_id.clone() {
-            change_ids.push(change_id);
+        let mut change_refs = Vec::new();
+        for row in overlay.values() {
+            if let Some(change_ref) = overlay_change_reference(row)? {
+                change_refs.push(change_ref);
+            }
         }
-        let remote_overlay = remote_change_overlay(repo, target, &change_ids)?;
+        if let Some(change_ref) = target.change_ref.clone() {
+            change_refs.push(change_ref);
+        }
+        let remote_overlay = remote_change_overlay(repo, target, &change_refs)?;
         for (snapshot_id, remote_entry) in remote_overlay {
             let Some(entry) = overlay.get_mut(&snapshot_id) else {
                 continue;
@@ -1290,9 +1431,9 @@ fn snapshot_overlay(
 fn remote_change_overlay(
     repo: &RepoRuntime,
     target: &BlameTarget,
-    change_ids: &[String],
+    change_refs: &[String],
 ) -> Result<BTreeMap<String, JsonMap<String, JsonValue>>, String> {
-    let requested = ordered_unique(change_ids);
+    let requested = ordered_unique(change_refs);
     if requested.is_empty() {
         return Ok(BTreeMap::new());
     }
@@ -1307,16 +1448,21 @@ fn remote_change_overlay(
         .unwrap_or_else(|| repo.repo_name());
     let mut task_remote = http_task_remote(repo, &remote_row)?;
     let mut overlay = BTreeMap::new();
-    for change_id in requested {
-        let detail = match task_remote.get_change_detail(&change_id, Some(&repo_name)) {
+    for change_ref in requested {
+        let detail = match task_remote.get_change_detail(&change_ref, Some(&repo_name)) {
             Ok(value) => value,
             Err(_) => continue,
         };
         let mut closeout_remote = http_closeout_remote(repo, &remote_row)?;
-        let patchsets = match closeout_remote.list_patchsets(&change_id, Some(&repo_name)) {
+        let patchsets = match closeout_remote.list_patchsets(&change_ref, Some(&repo_name)) {
             Ok(value) => value,
             Err(_) => continue,
         };
+        let change_id = string_field(&detail, "change_id").unwrap_or_else(|| {
+            ChangeJson::stateless()
+                .canonical_change_id(&change_ref)
+                .unwrap_or_else(|_| change_ref.clone())
+        });
         let task = detail.get("task").and_then(JsonValue::as_object).cloned();
         let landing = detail
             .get("landing_summary")
@@ -1341,7 +1487,8 @@ fn remote_change_overlay(
                 "task_id",
                 task.as_ref()
                     .and_then(|value| string_field_obj(value, "task_id"))
-                    .or_else(|| string_field(&detail, "task_id")),
+                    .or_else(|| string_field(&detail, "task_id"))
+                    .or_else(|| scoped_task_id(&change_ref, &change_id)),
             );
             insert_optional_string(&mut defaults, "change_id", Some(change_id.clone()));
             insert_optional_string(
@@ -1369,7 +1516,8 @@ fn remote_change_overlay(
             "task_id",
             task.as_ref()
                 .and_then(|value| string_field_obj(value, "task_id"))
-                .or_else(|| string_field(&detail, "task_id")),
+                .or_else(|| string_field(&detail, "task_id"))
+                .or_else(|| scoped_task_id(&change_ref, &change_id)),
         );
         insert_optional_string(&mut defaults, "change_id", Some(change_id));
         insert_optional_string(
@@ -2317,6 +2465,7 @@ impl BlameTarget {
             "line_name": self.line_name,
             "patchset_id": self.patchset_id,
             "change_id": self.change_id,
+            "change_ref": self.change_ref,
             "task_id": self.task_id,
             "base_snapshot_id": self.base_snapshot_id,
             "revision_snapshot_id": self.revision_snapshot_id,

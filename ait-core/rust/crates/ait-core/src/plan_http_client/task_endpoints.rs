@@ -179,20 +179,6 @@ impl PlanHttpClientManager {
             .map_err(PlanHttpClientError::Remote)
     }
 
-    pub fn plan_remote_zstd_bulk_json(
-        &mut self,
-        repo_name: &str,
-        request: &Value,
-    ) -> PlanHttpClientResult<Value> {
-        let typed_request = ZstdBulkPlanRequestJson::stateless()
-            .decode_value(request.clone())
-            .map_err(PlanHttpClientError::Invalid)?;
-        let response = self.plan_remote_zstd_bulk(repo_name, &typed_request)?;
-        ZstdBulkPlanResponseJson::stateless()
-            .encode_value(&response)
-            .map_err(PlanHttpClientError::Remote)
-    }
-
     pub fn put_remote_zstd_object_pack(
         &mut self,
         repo_name: &str,
@@ -215,18 +201,6 @@ impl PlanHttpClientManager {
             .map_err(PlanHttpClientError::Remote)
     }
 
-    pub fn put_remote_zstd_object_pack_json(
-        &mut self,
-        repo_name: &str,
-        pack_id: &str,
-        pack_bytes: &[u8],
-    ) -> PlanHttpClientResult<Value> {
-        let response = self.put_remote_zstd_object_pack(repo_name, pack_id, pack_bytes)?;
-        ZstdPackUploadResponseJson::stateless()
-            .encode_value(&response)
-            .map_err(PlanHttpClientError::Remote)
-    }
-
     pub fn put_remote_zstd_tree_pack(
         &mut self,
         repo_name: &str,
@@ -246,18 +220,6 @@ impl PlanHttpClientManager {
             parse_object_payload(parse_json_bytes_payload(&method, &url, response_bytes)?)?;
         ZstdPackUploadResponseJson::stateless()
             .decode_value(payload)
-            .map_err(PlanHttpClientError::Remote)
-    }
-
-    pub fn put_remote_zstd_tree_pack_json(
-        &mut self,
-        repo_name: &str,
-        pack_id: &str,
-        pack_bytes: &[u8],
-    ) -> PlanHttpClientResult<Value> {
-        let response = self.put_remote_zstd_tree_pack(repo_name, pack_id, pack_bytes)?;
-        ZstdPackUploadResponseJson::stateless()
-            .encode_value(&response)
             .map_err(PlanHttpClientError::Remote)
     }
 
@@ -314,20 +276,6 @@ impl PlanHttpClientManager {
         let payload = parse_object_payload(self.execute_json(spec)?)?;
         ZstdBulkCommitResponseJson::stateless()
             .decode_value(payload)
-            .map_err(PlanHttpClientError::Remote)
-    }
-
-    pub fn commit_remote_zstd_bulk_json(
-        &mut self,
-        repo_name: &str,
-        request: &Value,
-    ) -> PlanHttpClientResult<Value> {
-        let typed_request = ZstdBulkCommitRequestJson::stateless()
-            .decode_value(request.clone())
-            .map_err(PlanHttpClientError::Invalid)?;
-        let response = self.commit_remote_zstd_bulk(repo_name, &typed_request)?;
-        ZstdBulkCommitResponseJson::stateless()
-            .encode_value(&response)
             .map_err(PlanHttpClientError::Remote)
     }
 

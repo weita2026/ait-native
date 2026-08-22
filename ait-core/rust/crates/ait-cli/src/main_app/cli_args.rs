@@ -73,7 +73,7 @@ enum Commands {
     },
     #[command(
         about = "Inspect the current repository, Line, Snapshot, workspace, and actionable local status.",
-        long_about = "Inspect the current repository, Line, Snapshot, workspace, bounded hygiene findings, and actionable reconciliation state without modifying repository or runtime authority. Use --json for the sole stable machine-readable projection."
+        long_about = "Inspect the current repository, Line, Snapshot, workspace, bounded hygiene findings, and actionable reconciliation state without modifying repository or runtime authority. Use --json for the compact versioned agent-action projection; add --full for the previous complete projection."
     )]
     Status(StatusArgs),
     #[command(
@@ -246,12 +246,6 @@ struct GcPruneArgs {
     )]
     apply: bool,
     #[arg(long, help = "Emit the preview or apply result as stable JSON.")]
-    json: bool,
-}
-
-#[derive(Args, Clone)]
-struct JsonOnlyArgs {
-    #[arg(long)]
     json: bool,
 }
 
@@ -1244,8 +1238,14 @@ struct AuthBindingsArgs {
 
 #[derive(Args, Clone)]
 struct StatusArgs {
-    #[arg(long, help = "Emit the stable machine-readable status projection.")]
+    #[arg(long, help = "Emit the compact versioned machine-readable status projection.")]
     json: bool,
+    #[arg(
+        long,
+        requires = "json",
+        help = "With --json, emit the previous complete status projection."
+    )]
+    full: bool,
 }
 
 #[derive(Args, Clone)]
@@ -1632,7 +1632,7 @@ enum PlanCommand {
 enum TaskCommand {
     #[command(
         about = "Start one Task and its initial Change in the configured scope or an explicit local/remote compatibility scope; sprint mode uses one exact file-backed Plan item",
-        override_usage = "ait task start --intent <INTENT> (--from <MARKDOWN_PATH#ITEM_REF> | --title <TITLE>) [--local | --remote <REMOTE>] [--json]"
+        override_usage = "ait task start --intent <INTENT> (--from <MARKDOWN_PATH#ITEM_REF> | --title <TITLE>) [--local | --remote <REMOTE>] [--json [--full]]"
     )]
     Start(TaskStartArgs),
     #[command(about = "List the bounded open Task inventory or complete history in one selected scope")]
@@ -1645,7 +1645,9 @@ enum TaskCommand {
         about = TASK_LAND_COMMAND_ABOUT
     )]
     Land(TaskLandArgs),
-    #[command(about = "Permanently abandon one Task lineage in the configured scope or an explicit local/remote compatibility scope")]
+    #[command(
+        about = "Permanently abandon one Task lineage and cancel its open Changes in the configured scope or an explicit local/remote compatibility scope"
+    )]
     Abandon(TaskAbandonArgs),
 }
 
@@ -2170,8 +2172,14 @@ struct TaskStartArgs {
         help = "Force the named remote authority even when the configured workflow mode defaults to local"
     )]
     remote: Option<String>,
-    #[arg(long, help = "Emit the complete machine-readable Task-start result")]
+    #[arg(long, help = "Emit the compact versioned machine-readable Task-start result")]
     json: bool,
+    #[arg(
+        long,
+        requires = "json",
+        help = "With --json, emit the previous complete Task-start result"
+    )]
+    full: bool,
 }
 
 #[derive(Args, Clone)]
@@ -2250,8 +2258,14 @@ struct TaskLandArgs {
         help = "Force closeout through the named remote's already-ready selected Patchset even when the configured workflow mode defaults to local"
     )]
     remote: Option<String>,
-    #[arg(long, help = "Emit the complete machine-readable land and closeout result")]
+    #[arg(long, help = "Emit the compact versioned machine-readable land and closeout result")]
     json: bool,
+    #[arg(
+        long,
+        requires = "json",
+        help = "With --json, emit the previous complete land and closeout result"
+    )]
+    full: bool,
 }
 
 #[derive(Args, Clone)]
@@ -2464,8 +2478,14 @@ struct ChangePublishArgs {
 struct SnapshotCreateArgs {
     #[arg(long, value_name = "MESSAGE", help = "Record an optional human-readable Snapshot message.")]
     message: Option<String>,
-    #[arg(long, help = "Emit the complete stable machine-readable creation payload.")]
+    #[arg(long, help = "Emit the compact versioned machine-readable creation payload.")]
     json: bool,
+    #[arg(
+        long,
+        requires = "json",
+        help = "With --json, emit the previous complete stable creation payload."
+    )]
+    full: bool,
 }
 
 #[derive(Args, Clone)]

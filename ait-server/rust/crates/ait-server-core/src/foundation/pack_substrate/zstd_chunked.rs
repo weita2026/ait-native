@@ -41,6 +41,7 @@ pub(super) struct ZstdChunkedMemberInput {
     pub(super) checksum: String,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn write_zstd_chunked_container(
     pack_path: &str,
     kind: u8,
@@ -377,6 +378,7 @@ pub(super) fn read_zstd_chunked_object_entry(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn read_zstd_chunked_object_entry_with_chunk_cache(
     pack_path: &str,
     pack_index: &ZstdChunkedPackIndex,

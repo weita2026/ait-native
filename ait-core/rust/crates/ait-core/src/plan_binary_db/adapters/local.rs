@@ -96,14 +96,6 @@ impl<const WRITE_LAYOUT: u32> LocalPlanBinaryDb<WRITE_LAYOUT> {
         )
     }
 
-    pub fn begin_local_adoption_txn(
-        &self,
-    ) -> StoreResult<
-        LocalPlanSyncAdoptionTxn<'_, BinaryDbStoreFsyncPolicy<'_, LocalBinaryDbFs>, WRITE_LAYOUT>,
-    > {
-        self.begin_local_adoption_txn_with_fsync_policy(BinaryDbStoreFsyncPolicy::new(self.db()))
-    }
-
     pub fn begin_local_adoption_txn_with_fsync_policy<F>(
         &self,
         fsync_policy: F,

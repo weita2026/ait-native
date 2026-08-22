@@ -20,6 +20,187 @@ fn string_field_or_default(value: Option<&JsonValue>, default: &str) -> String {
 }
 
 const DEFAULT_AGENT_TEXT_LIST_LIMIT: usize = 20;
+const AGENT_ACTION_JSON_CONTRACT: &str = "ait-agent-action/v1";
+
+fn cloned_field(payload: &JsonValue, field: &str) -> JsonValue {
+    payload.get(field).cloned().unwrap_or(JsonValue::Null)
+}
+
+fn compact_status_payload(payload: &JsonValue) -> JsonValue {
+    let changed_count = payload
+        .get("workspace_changed_count")
+        .and_then(JsonValue::as_i64)
+        .unwrap_or(0);
+    let next_action = if changed_count > 0 {
+        json!({
+            "code": "inspect_workspace",
+            "command": "ait diff",
+        })
+    } else {
+        let command = payload
+            .get("reconciliation")
+            .map(|reconciliation| {
+                let safe = reconciliation
+                    .get("safe_finding_count")
+                    .and_then(JsonValue::as_i64)
+                    .unwrap_or(0);
+                let manual = reconciliation
+                    .get("manual_resolution_count")
+                    .and_then(JsonValue::as_i64)
+                    .unwrap_or(0);
+                let protected = reconciliation
+                    .get("protected_count")
+                    .and_then(JsonValue::as_i64)
+                    .unwrap_or(0);
+                status_reconciliation_next(reconciliation, safe, manual, protected)
+            })
+            .unwrap_or_default();
+        if command.is_empty() {
+            JsonValue::Null
+        } else {
+            json!({
+                "code": "reconcile",
+                "command": command,
+            })
+        }
+    };
+    let worktree = if payload
+        .get("is_worktree")
+        .and_then(JsonValue::as_bool)
+        .unwrap_or(false)
+    {
+        json!({
+            "name": cloned_field(payload, "worktree_name"),
+        })
+    } else {
+        JsonValue::Null
+    };
+    json!({
+        "contract": AGENT_ACTION_JSON_CONTRACT,
+        "command": "status",
+        "ok": true,
+        "repo_name": cloned_field(payload, "repo_name"),
+        "line_name": cloned_field(payload, "current_line"),
+        "head_snapshot_id": cloned_field(payload, "head_snapshot_id"),
+        "workspace": {
+            "status": cloned_field(payload, "workspace_status"),
+            "dirty": cloned_field(payload, "workspace_dirty"),
+            "changed_count": cloned_field(payload, "workspace_changed_count"),
+            "modified_count": cloned_field(payload, "workspace_modified_count"),
+            "missing_count": cloned_field(payload, "workspace_missing_count"),
+            "untracked_count": cloned_field(payload, "workspace_untracked_count"),
+        },
+        "worktree": worktree,
+        "next_action": next_action,
+    })
+}
+
+fn shell_quote_text(text: &str) -> String {
+    if text
+        .chars()
+        .all(|character| character.is_ascii_alphanumeric() || matches!(character, '/' | '-' | '_' | '.' | ':'))
+    {
+        text.to_string()
+    } else {
+        format!("'{}'", text.replace('\'', "'\"'\"'"))
+    }
+}
+
+fn compact_task_start_payload(payload: &JsonValue) -> JsonValue {
+    let worktree = payload.get("worktree").unwrap_or(&JsonValue::Null);
+    let edit_root = worktree.get("path").and_then(JsonValue::as_str);
+    let next_action = edit_root.map_or(JsonValue::Null, |path| {
+        json!({
+            "code": "enter_worktree",
+            "command": format!("cd {}", shell_quote_text(path)),
+        })
+    });
+    let change_ref = payload
+        .get("change")
+        .map(task_scoped_change_ref)
+        .unwrap_or_default();
+    json!({
+        "contract": AGENT_ACTION_JSON_CONTRACT,
+        "command": "task.start",
+        "ok": true,
+        "task_id": cloned_field(payload, "task_id"),
+        "change_ref": change_ref,
+        "line_name": cloned_field(worktree, "current_line"),
+        "head_snapshot_id": cloned_field(worktree, "head_snapshot_id"),
+        "worktree_name": cloned_field(worktree, "name"),
+        "edit_root": edit_root,
+        "next_action": next_action,
+    })
+}
+
+fn compact_snapshot_create_payload(payload: &JsonValue) -> JsonValue {
+    json!({
+        "contract": AGENT_ACTION_JSON_CONTRACT,
+        "command": "snapshot.create",
+        "ok": true,
+        "snapshot_id": cloned_field(payload, "snapshot_id"),
+        "line_name": cloned_field(payload, "line_name"),
+        "parent_snapshot_id": cloned_field(payload, "parent_snapshot_id"),
+        "message": cloned_field(payload, "message"),
+    })
+}
+
+fn compact_nested_status(payload: &JsonValue, field: &str) -> JsonValue {
+    payload
+        .get(field)
+        .and_then(|value| value.get("status"))
+        .cloned()
+        .unwrap_or(JsonValue::Null)
+}
+
+fn compact_task_land_payload(payload: &JsonValue) -> JsonValue {
+    let recovery = payload
+        .get("closeout_recovery")
+        .filter(|value| value.is_object())
+        .map(|value| {
+            json!({
+                "code": cloned_field(value, "code"),
+                "command": cloned_field(value, "command"),
+            })
+        })
+        .unwrap_or(JsonValue::Null);
+    let change_ref = string_field(payload.get("change_ref"));
+    let change_ref = if change_ref.is_empty() {
+        string_field(payload.get("change_id"))
+    } else {
+        change_ref
+    };
+    let mode = payload
+        .get("mode")
+        .cloned()
+        .or_else(|| {
+            payload
+                .get("task_land_contract")
+                .and_then(|contract| contract.get("scope"))
+                .cloned()
+        })
+        .unwrap_or(JsonValue::Null);
+    json!({
+        "contract": AGENT_ACTION_JSON_CONTRACT,
+        "command": "task.land",
+        "ok": task_land_exit_code(payload) == 0,
+        "mode": mode,
+        "task_id": cloned_field(payload, "task_id"),
+        "change_ref": change_ref,
+        "patchset_id": cloned_field(payload, "patchset_id"),
+        "target_line": cloned_field(payload, "target_line"),
+        "landed_snapshot_id": cloned_field(payload, "landed_snapshot_id"),
+        "closeout": {
+            "status": cloned_field(payload, "closeout_status"),
+            "task_status": cloned_field(payload, "task_status"),
+            "change_status": cloned_field(payload, "change_status"),
+            "worktree_status": compact_nested_status(payload, "bound_worktree_cleanup"),
+            "line_status": compact_nested_status(payload, "bound_line_closeout"),
+            "plan_status": compact_nested_status(payload, "plan_checklist_closeout"),
+        },
+        "next_action": recovery,
+    })
+}
 
 fn print_bounded_evidence(
     rows: &[JsonValue],
@@ -327,9 +508,17 @@ fn emit_auth_bindings_result(payload: &JsonValue, json_output: bool) -> Result<(
     Ok(())
 }
 
-fn emit_status_result(payload: &JsonValue, json_output: bool) -> Result<(), String> {
+fn emit_status_result(
+    payload: &JsonValue,
+    json_output: bool,
+    full_output: bool,
+) -> Result<(), String> {
     if json_output {
-        return print_json(payload);
+        return if full_output {
+            print_json(payload)
+        } else {
+            print_json(&compact_status_payload(payload))
+        };
     }
     let obj = payload
         .as_object()
@@ -740,32 +929,41 @@ fn emit_task_audit_result(
         }
     }
     if let Some(change_rows) = obj.get("changes").and_then(JsonValue::as_array) {
-        let projected = change_rows
-            .iter()
-            .map(|row| {
-                let change_ref = row
-                    .get("change")
-                    .map(task_scoped_change_ref)
-                    .unwrap_or_default();
-                let change_status = string_field(
-                    row.get("change")
-                        .and_then(JsonValue::as_object)
-                        .and_then(|change| change.get("status")),
-                );
-                json!({
-                    "change": change_ref,
-                    "status": change_status,
-                    "target_state": string_field(row.get("target_state")),
-                })
-            })
-            .collect::<Vec<_>>();
+        let (projected, has_target_state) = project_task_audit_change_text_rows(change_rows);
         if !projected.is_empty() {
             println!();
             println!("changes");
-            print_list(&projected, &["change", "status", "target_state"]);
+            let columns = if has_target_state {
+                &["change", "status", "target_state"][..]
+            } else {
+                &["change", "status"][..]
+            };
+            print_list(&projected, columns);
         }
     }
     Ok(())
+}
+
+fn project_task_audit_change_text_rows(change_rows: &[JsonValue]) -> (Vec<JsonValue>, bool) {
+    let has_target_state = !change_rows.is_empty()
+        && change_rows
+            .iter()
+            .all(|row| !string_field(row.get("target_state")).is_empty());
+    let projected = change_rows
+        .iter()
+        .map(|row| {
+            let change = row
+                .get("change")
+                .filter(|value| value.is_object())
+                .unwrap_or(row);
+            json!({
+                "change": task_scoped_change_ref(change),
+                "status": string_field(change.get("status")),
+                "target_state": string_field(row.get("target_state")),
+            })
+        })
+        .collect();
+    (projected, has_target_state)
 }
 
 fn task_audit_reason_label(action_code: &str) -> Option<&'static str> {
@@ -1052,9 +1250,17 @@ fn task_start_progress_line(payload: &JsonValue) -> Option<String> {
     }
 }
 
-fn emit_task_start_result(payload: &JsonValue, json_output: bool) -> Result<(), String> {
+fn emit_task_start_result(
+    payload: &JsonValue,
+    json_output: bool,
+    full_output: bool,
+) -> Result<(), String> {
     if json_output {
-        return print_json(payload);
+        return if full_output {
+            print_json(payload)
+        } else {
+            print_json(&compact_task_start_payload(payload))
+        };
     }
     let obj = payload
         .as_object()
@@ -1080,6 +1286,47 @@ fn emit_task_start_result(payload: &JsonValue, json_output: bool) -> Result<(), 
     {
         println!("warning: reconciliation: {error}");
     }
+    Ok(())
+}
+
+fn emit_snapshot_create_result(
+    payload: &JsonValue,
+    json_output: bool,
+    full_output: bool,
+) -> Result<(), String> {
+    if json_output {
+        return if full_output {
+            print_json(payload)
+        } else {
+            print_json(&compact_snapshot_create_payload(payload))
+        };
+    }
+    emit_result(
+        "ait-cli snapshot create",
+        payload,
+        false,
+        &[
+            "snapshot_id",
+            "line_name",
+            "parent_snapshot_id",
+            "message",
+        ],
+    )
+}
+
+fn emit_task_land_result(
+    payload: &JsonValue,
+    json_output: bool,
+    full_output: bool,
+) -> Result<(), String> {
+    if json_output {
+        return if full_output {
+            print_json(payload)
+        } else {
+            print_json(&compact_task_land_payload(payload))
+        };
+    }
+    println!("{}", render_task_land_text(payload)?);
     Ok(())
 }
 

@@ -11,9 +11,18 @@ fn ait_cli() -> Command {
 }
 
 fn run_json(root: &Path, args: &[&str]) -> JsonValue {
+    let mut effective_args = args.to_vec();
+    let command = args.first().copied();
+    let subcommand = args.get(1).copied();
+    let complete_action_receipt = command == Some("status")
+        || (command == Some("task") && (subcommand == Some("start") || subcommand == Some("land")))
+        || (command == Some("snapshot") && subcommand == Some("create"));
+    if complete_action_receipt && args.contains(&"--json") && !args.contains(&"--full") {
+        effective_args.push("--full");
+    }
     let output = ait_cli()
         .current_dir(root)
-        .args(args)
+        .args(&effective_args)
         .assert()
         .success()
         .get_output()
@@ -22,19 +31,44 @@ fn run_json(root: &Path, args: &[&str]) -> JsonValue {
     JsonCodec::parse_slice_with_error_prefix(&output, "Invalid stash CLI JSON").unwrap()
 }
 
+fn init_authoring_worktree(root: &Path) -> std::path::PathBuf {
+    run_json(root, &["init", "--json"]);
+    run_json(root, &["config", "set", "--sprint", "off", "--json"]);
+    let started = run_json(
+        root,
+        &[
+            "task",
+            "start",
+            "--title",
+            "fixture authoring",
+            "--intent",
+            "fixture authoring",
+            "--json",
+        ],
+    );
+    std::path::PathBuf::from(
+        started["worktree"]["path"]
+            .as_str()
+            .expect("task start worktree path"),
+    )
+}
+
 #[test]
 fn native_stash_cli_preserves_the_complete_binary_db_lifecycle() {
     let temp = TempDir::new().unwrap();
     let root = temp.path();
-    let work = root.join("work.txt");
+    let worktree = init_authoring_worktree(root);
+    let work = worktree.join("work.txt");
     fs::write(&work, "base\n").unwrap();
 
-    run_json(root, &["init", "--json"]);
-    let base = run_json(root, &["snapshot", "create", "--message", "base", "--json"]);
+    let base = run_json(
+        worktree.as_path(),
+        &["snapshot", "create", "--message", "base", "--json"],
+    );
     let base_snapshot_id = base["snapshot_id"].as_str().unwrap().to_string();
 
     ait_cli()
-        .current_dir(root)
+        .current_dir(&worktree)
         .args(["stash", "save", "--json"])
         .assert()
         .failure()
@@ -44,7 +78,7 @@ fn native_stash_cli_preserves_the_complete_binary_db_lifecycle() {
 
     fs::write(&work, "parked\n").unwrap();
     let saved = run_json(
-        root,
+        worktree.as_path(),
         &["stash", "save", "--message", "parked work", "--json"],
     );
     let stash_id = saved["stash_id"].as_str().unwrap().to_string();
@@ -54,18 +88,18 @@ fn native_stash_cli_preserves_the_complete_binary_db_lifecycle() {
     assert_eq!(saved["line_head_snapshot_id_after"], base_snapshot_id);
     assert_eq!(fs::read_to_string(&work).unwrap(), "base\n");
 
-    let listed = run_json(root, &["stash", "list", "--json"]);
+    let listed = run_json(worktree.as_path(), &["stash", "list", "--json"]);
     assert_eq!(listed.as_array().unwrap().len(), 1);
     assert_eq!(listed[0]["stash_id"], stash_id);
-    let shown = run_json(root, &["stash", "show", &stash_id, "--json"]);
+    let shown = run_json(worktree.as_path(), &["stash", "show", &stash_id, "--json"]);
     assert_eq!(shown["message"], "parked work");
 
-    let applied = run_json(root, &["stash", "apply", &stash_id, "--json"]);
+    let applied = run_json(worktree.as_path(), &["stash", "apply", &stash_id, "--json"]);
     assert_eq!(applied["applied"], true);
     assert_eq!(applied["dropped"], false);
     assert_eq!(fs::read_to_string(&work).unwrap(), "parked\n");
     assert_eq!(
-        run_json(root, &["stash", "list", "--json"])
+        run_json(worktree.as_path(), &["stash", "list", "--json"])
             .as_array()
             .unwrap()
             .len(),
@@ -73,21 +107,24 @@ fn native_stash_cli_preserves_the_complete_binary_db_lifecycle() {
     );
 
     ait_cli()
-        .current_dir(root)
+        .current_dir(&worktree)
         .args(["stash", "pop", &stash_id, "--json"])
         .assert()
         .failure()
         .stderr(predicate::str::contains("--force"));
-    let popped = run_json(root, &["stash", "pop", &stash_id, "--force", "--json"]);
+    let popped = run_json(
+        worktree.as_path(),
+        &["stash", "pop", &stash_id, "--force", "--json"],
+    );
     assert_eq!(popped["applied"], true);
     assert_eq!(popped["dropped"], true);
-    assert!(run_json(root, &["stash", "list", "--json"])
+    assert!(run_json(worktree.as_path(), &["stash", "list", "--json"])
         .as_array()
         .unwrap()
         .is_empty());
 
     let second = run_json(
-        root,
+        worktree.as_path(),
         &[
             "stash",
             "save",
@@ -100,9 +137,9 @@ fn native_stash_cli_preserves_the_complete_binary_db_lifecycle() {
     let second_id = second["stash_id"].as_str().unwrap();
     assert_eq!(second["workspace_cleared"], false);
     assert_eq!(fs::read_to_string(&work).unwrap(), "parked\n");
-    let dropped = run_json(root, &["stash", "drop", second_id, "--json"]);
+    let dropped = run_json(worktree.as_path(), &["stash", "drop", second_id, "--json"]);
     assert_eq!(dropped["dropped"], true);
-    assert!(run_json(root, &["stash", "list", "--json"])
+    assert!(run_json(worktree.as_path(), &["stash", "list", "--json"])
         .as_array()
         .unwrap()
         .is_empty());
@@ -115,19 +152,29 @@ fn native_stash_cli_preserves_the_complete_binary_db_lifecycle() {
 fn native_stash_cli_rejects_cross_line_restore_without_mutation() {
     let temp = TempDir::new().unwrap();
     let root = temp.path();
-    let work = root.join("work.txt");
+    let worktree = init_authoring_worktree(root);
+    let work = worktree.join("work.txt");
     fs::write(&work, "base\n").unwrap();
 
-    run_json(root, &["init", "--json"]);
-    let base = run_json(root, &["snapshot", "create", "--message", "base", "--json"]);
+    let base = run_json(
+        worktree.as_path(),
+        &["snapshot", "create", "--message", "base", "--json"],
+    );
     let base_snapshot_id = base["snapshot_id"].as_str().unwrap().to_string();
+    let task_line = run_json(worktree.as_path(), &["status", "--json"])["current_line"]
+        .as_str()
+        .unwrap()
+        .to_string();
 
     fs::write(&work, "parked on main\n").unwrap();
-    let saved = run_json(root, &["stash", "save", "--message", "main WIP", "--json"]);
+    let saved = run_json(
+        worktree.as_path(),
+        &["stash", "save", "--message", "main WIP", "--json"],
+    );
     let stash_id = saved["stash_id"].as_str().unwrap().to_string();
 
     run_json(
-        root,
+        worktree.as_path(),
         &["line", "create", "feature/other", "--switch", "--json"],
     );
     fs::write(&work, "dirty on feature/other\n").unwrap();
@@ -144,7 +191,7 @@ fn native_stash_cli_rejects_cross_line_restore_without_mutation() {
         }
         args.push("--json");
         let output = ait_cli()
-            .current_dir(root)
+            .current_dir(&worktree)
             .args(&args)
             .assert()
             .failure()
@@ -156,7 +203,10 @@ fn native_stash_cli_rejects_cross_line_restore_without_mutation() {
             error.contains(&format!("Cannot {operation} stash {stash_id}")),
             "{error}"
         );
-        assert!(error.contains("saved from Line main"), "{error}");
+        assert!(
+            error.contains(&format!("saved from Line {task_line}")),
+            "{error}"
+        );
         assert!(error.contains("current Line is feature/other"), "{error}");
         assert!(error.contains("--force only overwrites"), "{error}");
 
@@ -164,13 +214,16 @@ fn native_stash_cli_rejects_cross_line_restore_without_mutation() {
             fs::read_to_string(&work).unwrap(),
             "dirty on feature/other\n"
         );
-        let status = run_json(root, &["status", "--json"]);
+        let status = run_json(worktree.as_path(), &["status", "--json"]);
         assert_eq!(status["current_line"], "feature/other");
-        let current_line = run_json(root, &["line", "show", "feature/other", "--json"]);
+        let current_line = run_json(
+            worktree.as_path(),
+            &["line", "show", "feature/other", "--json"],
+        );
         assert_eq!(current_line["head_snapshot_id"], base_snapshot_id);
-        let source_line = run_json(root, &["line", "show", "main", "--json"]);
+        let source_line = run_json(worktree.as_path(), &["line", "show", &task_line, "--json"]);
         assert_eq!(source_line["head_snapshot_id"], base_snapshot_id);
-        let stashes = run_json(root, &["stash", "list", "--json"]);
+        let stashes = run_json(worktree.as_path(), &["stash", "list", "--json"]);
         assert_eq!(stashes.as_array().unwrap().len(), 1);
         assert_eq!(stashes[0]["stash_id"], stash_id);
     }

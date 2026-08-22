@@ -1038,6 +1038,7 @@ fn change_list_projects_greatest_successful_land_from_one_inventory() {
                 land_ordinal: u8,
                 status: u8,
                 tombstone: bool,
+                landed_snapshot_index_plus1: u32,
                 updated_at_s: u64| V0LandRecord {
         land_meta: status
             | if status == LAND_STATUS_SUCCEEDED {
@@ -1054,21 +1055,17 @@ fn change_list_projects_greatest_successful_land_from_one_inventory() {
         previous_task_land_index_plus1: 0,
         previous_change_land_index_plus1: 0,
         pre_land_target_snapshot_index_plus1: 0,
-        landed_snapshot_index_plus1: if status == LAND_STATUS_SUCCEEDED {
-            1
-        } else {
-            0
-        },
+        landed_snapshot_index_plus1,
         submitted_at_s: updated_at_s,
         updated_at_s,
         target_line_index_plus1: 1,
     };
     let fixture_lands = [
-        land(0, 0, 0, LAND_STATUS_SUCCEEDED, false, 10),
-        land(0, 0, 3, LAND_STATUS_FAILED, false, 20),
-        land(0, 0, 2, LAND_STATUS_SUCCEEDED, false, 30),
-        land(0, 0, 4, LAND_STATUS_SUCCEEDED, true, 40),
-        land(1, 1, 0, LAND_STATUS_FAILED, false, 50),
+        land(0, 0, 0, LAND_STATUS_SUCCEEDED, false, 1, 10),
+        land(0, 0, 3, LAND_STATUS_FAILED, false, 0, 20),
+        land(0, 0, 2, LAND_STATUS_SUCCEEDED, false, 2, 30),
+        land(0, 0, 4, LAND_STATUS_SUCCEEDED, true, 3, 40),
+        land(1, 1, 0, LAND_STATUS_FAILED, false, 0, 50),
     ];
     let mut write = BinaryDbWriteTxn::begin(&db, BinaryDbCommandScope::ServerWorkflow)
         .expect("begin Land fixture transaction");
@@ -1086,9 +1083,20 @@ fn change_list_projects_greatest_successful_land_from_one_inventory() {
     assert_eq!(changes[0]["change_ref"], json!("T-0001/C-02"));
     assert!(changes[0]["target_line"].is_null());
     assert!(changes[0]["landed_at"].is_null());
+    assert!(changes[0]["landed_snapshot_id"].is_null());
     assert_eq!(changes[1]["change_ref"], json!("T-0001/C-01"));
     assert_eq!(changes[1]["target_line"], json!("main"));
     assert_eq!(changes[1]["landed_at"], json!("1970-01-01T00:00:30+00:00"));
+    assert_eq!(changes[1]["landed_snapshot_id"], json!("SNP-0000000000A2"));
+
+    let landed = store
+        .get_change(Some("repo"), "T-0001/C-01")
+        .expect("read landed Change");
+    assert_eq!(landed["landed_snapshot_id"], json!("SNP-0000000000A2"));
+    let unlanded = store
+        .get_change(Some("repo"), "T-0001/C-02")
+        .expect("read unlanded Change");
+    assert!(unlanded["landed_snapshot_id"].is_null());
 }
 
 #[test]

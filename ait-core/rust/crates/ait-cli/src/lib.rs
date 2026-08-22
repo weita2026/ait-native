@@ -19,6 +19,7 @@ macro_rules! perfetto_range {
 
 pub mod agent_harness;
 pub mod agent_surface;
+pub mod aitk_surface;
 pub mod auth_surface;
 pub mod blame_surface;
 pub mod config_surface;

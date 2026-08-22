@@ -49,6 +49,7 @@ impl ServerPlanBinaryDbWritePurpose {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[allow(clippy::enum_variant_names)]
 enum ServerPlanBinaryDbWriteOperation {
     PlanRecord,
     PlanUpdate,

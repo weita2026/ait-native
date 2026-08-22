@@ -36,13 +36,6 @@ pub(super) fn plan_revision_command(operation: &str, payload_json: &str) -> Resu
     print_json(&plan_revision_json(operation, &payload_value)?)
 }
 
-#[cfg(feature = "legacy-postgres-runtime")]
-pub(super) fn server_context_command(operation: &str, payload_json: &str) -> Result<(), String> {
-    let payload_value: JsonValue = serde_json::from_str(payload_json)
-        .map_err(|exc| format!("payload_json must be valid JSON: {exc}"))?;
-    print_json(&server_context_json(operation, &payload_value)?)
-}
-
 pub(super) fn workflow_async_runtime_command(
     operation: &str,
     payload_json: &str,

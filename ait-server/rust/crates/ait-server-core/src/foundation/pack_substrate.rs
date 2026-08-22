@@ -101,18 +101,6 @@ impl PackFormatKind {
             other => Err(format!("Unsupported object pack format: {other}")),
         }
     }
-
-    pub fn persisted_name(self) -> &'static str {
-        match self {
-            Self::ZstdChunkedV1 => PACK_FORMAT_ZSTD_CHUNKED_V1,
-        }
-    }
-
-    pub fn format_kind_name(self) -> &'static str {
-        match self {
-            Self::ZstdChunkedV1 => PACK_FORMAT_KIND_ZSTD_CHUNKED_V1,
-        }
-    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

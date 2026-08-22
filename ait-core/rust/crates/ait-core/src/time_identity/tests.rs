@@ -1,8 +1,6 @@
 use super::*;
 use crate::json_support::json;
 
-fn assert_time_identity_provider<T: TimeIdentityProvider>() {}
-
 struct SubstituteTimeIdentityProvider;
 
 impl SubstituteTimeIdentityProvider {
@@ -90,11 +88,6 @@ impl TimeIdentityProvider for SubstituteTimeIdentityProvider {
             payload_json,
         ))
     }
-}
-
-#[test]
-fn plan_time_identity_foundation_implements_trait() {
-    assert_time_identity_provider::<TimeIdentityFoundation>();
 }
 
 #[test]

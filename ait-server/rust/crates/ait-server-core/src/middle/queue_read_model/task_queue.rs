@@ -16,7 +16,7 @@ pub fn queue_summary_read_model(input: &QueueReadModelInput) -> Result<JsonValue
     let queue_changes = input
         .changes
         .iter()
-        .filter(|change| repo_matches(input.repo_name.as_deref(), *change))
+        .filter(|change| repo_matches(input.repo_name.as_deref(), change))
         .filter(|change| {
             object_text(change, "task_id")
                 .map(|task_id| selected_task_ids.contains(&task_id))

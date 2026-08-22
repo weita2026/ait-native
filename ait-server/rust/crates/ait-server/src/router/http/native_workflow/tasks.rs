@@ -356,28 +356,6 @@ pub(in super::super) async fn native_list_tasks(
     .await
 }
 
-pub(in super::super) async fn native_get_task(
-    State(state): State<ServerState>,
-    Path(task_ref): Path<String>,
-) -> Result<impl IntoResponse, ApiError> {
-    let workflow = state.workflow_service.clone();
-    run_workflow_call("native task read", move || {
-        workflow.get_task(None, &task_ref)
-    })
-    .await
-}
-
-pub(in super::super) async fn native_get_repository_task(
-    State(state): State<ServerState>,
-    Path((repo_name, task_ref)): Path<(String, String)>,
-) -> Result<impl IntoResponse, ApiError> {
-    let workflow = state.workflow_service.clone();
-    run_workflow_call("native repository task read", move || {
-        workflow.get_task(Some(&repo_name), &task_ref)
-    })
-    .await
-}
-
 pub(in super::super) async fn native_get_repository_authority_task(
     State(state): State<ServerState>,
     Path((repo_id, task_ref)): Path<(String, String)>,
@@ -388,50 +366,6 @@ pub(in super::super) async fn native_get_repository_authority_task(
             repository_authority_workflow_store(routed_workflow.as_ref(), &repo_id)?;
         workflow.get_task(None, &task_ref)
     })
-    .await
-}
-
-pub(in super::super) async fn native_read_task_detail_global(
-    State(state): State<ServerState>,
-    Path(task_ref): Path<String>,
-) -> Result<impl IntoResponse, ApiError> {
-    let workflow = state.workflow_service.clone();
-    let repositories = state.repository_service.clone();
-    run_workflow_call("native task detail", move || {
-        read_task_detail_json(workflow.as_ref(), repositories.as_ref(), None, &task_ref)
-    })
-    .await
-}
-
-pub(in super::super) async fn native_read_repository_task_detail(
-    State(state): State<ServerState>,
-    Path((repo_name, task_ref)): Path<(String, String)>,
-) -> Result<impl IntoResponse, ApiError> {
-    let workflow = state.workflow_service.clone();
-    let repositories = state.repository_service.clone();
-    run_workflow_call("native repository task detail", move || {
-        read_task_detail_json(
-            workflow.as_ref(),
-            repositories.as_ref(),
-            Some(&repo_name),
-            &task_ref,
-        )
-    })
-    .await
-}
-
-pub(in super::super) async fn native_task_action(
-    State(state): State<ServerState>,
-    Path(task_tail): Path<String>,
-    Json(payload): Json<JsonValue>,
-) -> Result<impl IntoResponse, ApiError> {
-    let task_id = parse_suffixed_tail(&task_tail, ":close", "task action")?;
-    let workflow = state.workflow_service.clone();
-    run_workflow_mutation(
-        "native task close",
-        state.runtime_service.clone(),
-        move || workflow.close_task(&task_id, &payload),
-    )
     .await
 }
 
@@ -465,36 +399,6 @@ pub(in super::super) async fn native_read_task_audit(
         let (repo_name, workflow) =
             repository_authority_workflow_store(routed_workflow.as_ref(), &repository_index)?;
         workflow.read_task_audit(&repo_name, &task_ref, &target_line)
-    })
-    .await
-}
-
-pub(in super::super) async fn native_read_task_audit_global(
-    State(state): State<ServerState>,
-    Path(task_ref): Path<String>,
-    Query(query): Query<NativeTaskAuditQuery>,
-) -> Result<impl IntoResponse, ApiError> {
-    let target_line = query.target_line.unwrap_or_else(|| "main".to_string());
-    let workflow = state.workflow_service.clone();
-    let resolve_workflow = workflow.clone();
-    let task = task::spawn_blocking(move || resolve_workflow.get_task(None, &task_ref))
-        .await
-        .map_err(|exc| {
-            ApiError::internal(format!("native task audit resolve worker failed: {exc}"))
-        })?
-        .map_err(ApiError::bad_request)?;
-    let repo_name = task
-        .get("repo_name")
-        .and_then(JsonValue::as_str)
-        .ok_or_else(|| ApiError::internal("resolved task is missing repo_name"))?
-        .to_string();
-    let task_id = task
-        .get("task_id")
-        .and_then(JsonValue::as_str)
-        .ok_or_else(|| ApiError::internal("resolved task is missing task_id"))?
-        .to_string();
-    run_workflow_call("native task audit", move || {
-        workflow.read_task_audit(&repo_name, &task_id, &target_line)
     })
     .await
 }

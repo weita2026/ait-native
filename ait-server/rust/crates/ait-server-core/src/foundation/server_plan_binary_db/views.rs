@@ -5,12 +5,6 @@ impl<D, const WRITE_LAYOUT: u32> ServerPlanBinaryDbStore<D, WRITE_LAYOUT>
 where
     D: ServerRemoteBinaryDb + Clone,
 {
-    #[cfg(test)]
-    pub(super) fn plan_detail_json(&self, meta: &ServerPlanMeta) -> Result<JsonValue, String> {
-        let read = self.read_txn();
-        self.plan_detail_json_with_read(&read, meta)
-    }
-
     pub(super) fn plan_detail_json_with_read(
         &self,
         read: &BinaryDbReadTxn<'_, D>,

@@ -266,10 +266,6 @@ impl BinaryDbCommitOutcome {
         self.lock_cleanup_warning.as_ref()
     }
 
-    pub fn into_lock_cleanup_warning(self) -> Option<BinaryDbError> {
-        self.lock_cleanup_warning
-    }
-
     pub fn admission_wait_duration(&self) -> Duration {
         self.admission_wait_duration
     }
@@ -383,21 +379,6 @@ where
                 max_wait,
                 retry_interval: retry_interval.max(Duration::from_millis(1)),
             },
-        )
-    }
-
-    pub fn begin_serving_with_fsync_policy(
-        db: &'a B,
-        command_scope: BinaryDbCommandScope,
-        fsync_policy: F,
-    ) -> StoreResult<Self> {
-        ensure_serving_command_scope(command_scope)?;
-        Self::begin_queued_with_fsync_policy(
-            db,
-            command_scope,
-            binary_db_serving_write_max_wait(command_scope),
-            BINARY_DB_SERVING_WRITE_RETRY_INTERVAL,
-            fsync_policy,
         )
     }
 

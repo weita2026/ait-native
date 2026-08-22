@@ -413,6 +413,7 @@ impl SourceFreeze {
         let lifecycle_path = binary_root.join(LIFECYCLE_LOCK_FILE);
         let lifecycle = OpenOptions::new()
             .create(true)
+            .truncate(false)
             .read(true)
             .write(true)
             .open(&lifecycle_path)

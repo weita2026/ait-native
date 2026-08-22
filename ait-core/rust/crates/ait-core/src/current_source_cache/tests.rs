@@ -8,7 +8,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::artifact_ports::CurrentSourceNativeCacheArtifactStore;
 use super::lease_ports::CurrentSourceNativeCacheLeaseStore;
-use super::manifest_ports::CurrentSourceNativeCacheManifestStore;
 use super::source_ports::{
     CurrentSourceNativeCacheSourceEntry, CurrentSourceNativeCacheSourceStore,
 };
@@ -107,45 +106,6 @@ fn test_cache_paths(root: &Path, build_key: &str) -> CurrentSourceNativeCachePat
         lock_path: cache_root.join(".build.lock"),
         manifest_path: cache_root.join("manifest.json"),
         leases_dir: cache_root.join("leases"),
-    }
-}
-
-#[derive(Default)]
-struct FakeCurrentSourceNativeCacheManifestStore {
-    manifest: JsonMap<String, JsonValue>,
-    size_bytes: u64,
-    calls: RefCell<Vec<String>>,
-    writes: RefCell<Vec<JsonValue>>,
-}
-
-impl CurrentSourceNativeCacheManifestStore for FakeCurrentSourceNativeCacheManifestStore {
-    fn ensure_cache_root(&self, cache_root: &Path) -> Result<(), String> {
-        self.calls
-            .borrow_mut()
-            .push(format!("ensure:{}", path_text(cache_root)));
-        Ok(())
-    }
-
-    fn cache_size_bytes(&self, cache_root: &Path) -> u64 {
-        self.calls
-            .borrow_mut()
-            .push(format!("size:{}", path_text(cache_root)));
-        self.size_bytes
-    }
-
-    fn load_manifest(&self, manifest_path: &Path) -> JsonMap<String, JsonValue> {
-        self.calls
-            .borrow_mut()
-            .push(format!("load:{}", path_text(manifest_path)));
-        self.manifest.clone()
-    }
-
-    fn write_manifest(&self, manifest_path: &Path, payload: &JsonValue) -> Result<(), String> {
-        self.calls
-            .borrow_mut()
-            .push(format!("write:{}", path_text(manifest_path)));
-        self.writes.borrow_mut().push(payload.clone());
-        Ok(())
     }
 }
 
@@ -542,47 +502,6 @@ fn cache_contract_returns_stable_path_shape() {
     );
     assert_eq!(payload["leases_dir"], format!("{cache_root}/leases"));
     fs::remove_dir_all(root).unwrap();
-}
-
-#[test]
-fn repair_manifest_after_use_reads_and_writes_through_manifest_store_trait_object() {
-    let root = temp_dir("manifest-store-port");
-    let paths = test_cache_paths(&root, "manifest-build");
-    let store = FakeCurrentSourceNativeCacheManifestStore {
-        manifest: JsonMap::from_iter([
-            ("state".to_string(), json!("ready")),
-            ("build_key".to_string(), json!("manifest-build")),
-            ("source_mtime_ns".to_string(), json!(1)),
-            ("last_used_at".to_string(), json!(2.0)),
-            ("size_bytes".to_string(), json!(3)),
-            ("core_repo_root".to_string(), json!("/native/core")),
-        ]),
-        size_bytes: 42,
-        ..Default::default()
-    };
-    let store_port: &dyn CurrentSourceNativeCacheManifestStore = &store;
-
-    let payload =
-        repair_current_source_native_cache_manifest_after_use_with_store(store_port, &paths, 99)
-            .unwrap();
-
-    assert_eq!(payload["state"], "ready");
-    assert_eq!(payload["build_key"], "manifest-build");
-    assert_eq!(payload["source_mtime_ns"], 99);
-    assert_eq!(payload["size_bytes"], 42);
-    assert_eq!(payload["core_repo_root"], "/native/core");
-    assert!(payload["last_used_at"].as_f64().is_some());
-    assert_eq!(
-        store.calls.borrow().as_slice(),
-        [
-            format!("load:{}", path_text(&paths.manifest_path)),
-            format!("ensure:{}", path_text(&paths.cache_root)),
-            format!("size:{}", path_text(&paths.cache_root)),
-            format!("write:{}", path_text(&paths.manifest_path)),
-        ]
-    );
-    assert_eq!(store.writes.borrow().as_slice(), [payload]);
-    fs::remove_dir_all(root).ok();
 }
 
 #[test]

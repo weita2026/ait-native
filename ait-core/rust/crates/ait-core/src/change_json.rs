@@ -1,4 +1,4 @@
-use crate::json_support::{json, JsonCodec, JsonMap, JsonValue};
+use crate::json_support::{json, JsonMap, JsonValue};
 use crate::land_json::LandJson;
 use crate::plan_http_client::{
     build_plan_http_request_spec, configured_repository_authority_path_segment,
@@ -218,14 +218,6 @@ impl<S> ChangeJson<S> {
         ])))
     }
 
-    pub fn normalize_linked_change_lookup_payload_json(
-        &self,
-        payload_json: &str,
-    ) -> Result<JsonValue, String> {
-        let payload = self.parse_object_payload(payload_json, "linked change lookup payload")?;
-        self.normalize_linked_change_lookup_payload(&JsonValue::Object(payload))
-    }
-
     pub fn build_linked_change_lookup_payload(
         &self,
         change_links_by_task_rows: Option<&JsonValue>,
@@ -366,20 +358,6 @@ impl<S> ChangeJson<S> {
     fn build_close_change_body(&self, status: &str) -> PlanHttpClientResult<JsonValue> {
         let status = require_plan_http_non_empty_text(status, "status")?;
         Ok(json!({ "status": status }))
-    }
-
-    fn parse_object_payload(
-        &self,
-        payload_json: &str,
-        label: &str,
-    ) -> Result<JsonMap<String, JsonValue>, String> {
-        let _ = &self.store;
-        JsonCodec::parse_object_with_error_prefix(
-            payload_json,
-            &format!("Failed to parse {label} JSON"),
-            &format!("{label} payload must decode to an object."),
-        )
-        .map_err(String::from)
     }
 }
 

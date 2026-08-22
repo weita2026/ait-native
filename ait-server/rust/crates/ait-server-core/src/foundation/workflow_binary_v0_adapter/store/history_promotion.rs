@@ -1774,7 +1774,7 @@ where
             "final_stage": final_stage,
             "entries": manifest.get("entries").cloned().unwrap_or_else(|| json!([])),
             "stage": stage,
-            "aggregate": final_stage.then_some(stage).unwrap_or(JsonValue::Null),
+            "aggregate": if final_stage { stage } else { JsonValue::Null },
         }))
     }
 

@@ -57,13 +57,6 @@ impl<S> TreePackIndexJson<S> {
         }
     }
 
-    pub(in crate::pack_substrate) fn entries_by_ordinal_relaxed(
-        &self,
-        pack_index: &JsonValue,
-    ) -> Result<BTreeMap<usize, TreePackIndexEntry>, String> {
-        tree_entries_by_ordinal_relaxed(pack_index)
-    }
-
     pub(in crate::pack_substrate) fn zstd_chunked_index_json(
         &self,
         pack_index: &ZstdChunkedPackIndex,

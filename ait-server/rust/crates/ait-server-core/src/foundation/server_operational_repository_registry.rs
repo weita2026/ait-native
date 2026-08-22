@@ -630,9 +630,8 @@ impl ServerOperationalRepositoryRegistry {
         let repository_path = self.repository_path();
         let repository_len = required_file_len(&repository_path)?;
         if repository_len < OPERATIONAL_BIN_HEADER_SIZE
-            || (repository_len - OPERATIONAL_BIN_HEADER_SIZE)
-                % u64::from(OPERATIONAL_REPOSITORY_RECORD_SIZE)
-                != 0
+            || !(repository_len - OPERATIONAL_BIN_HEADER_SIZE)
+                .is_multiple_of(u64::from(OPERATIONAL_REPOSITORY_RECORD_SIZE))
         {
             return Err(corrupt("repository.bin is not record-aligned"));
         }

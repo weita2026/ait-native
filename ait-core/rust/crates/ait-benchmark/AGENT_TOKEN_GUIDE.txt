@@ -1,0 +1,90 @@
+AIT Agent-Token Game Benchmark
+==============================
+
+This is an internal, zero-Python evidence tool. It compares provider-reported
+tokens consumed by fresh coding-agent sessions using two repository surfaces:
+
+- git_linear_single_session
+- ait_linear_single_session
+
+The AIT core mode is always solo_local with sprint mode off. It must have no
+default remote, no configured server URL, no remote authority, and no
+ait-server process or command in the measured workflow. The only loopback
+service is the fixture's static game server during browser acceptance.
+Project document loading is disabled symmetrically with project_doc_max_bytes=0;
+the frozen measured prompt carries the mode-specific workflow rules. Generated
+AIT AGENTS.md guidance remains unchanged so Markdown lineage stays reconciled.
+Shared tasks must require only paths authorable through both repository
+surfaces. In particular, candidate changes under AIT's projected docs namespace
+are forbidden; use an ordinary tracked path such as a root release document.
+Every acceptance requirement must be visible in the shared task. Evaluators may
+accept equivalent user-facing documentation forms, but must not impose an
+undisclosed literal string.
+
+Useful commands
+---------------
+
+Print the frozen protocol:
+
+  ait-benchmark agent-token protocol
+
+Validate the create-new smoke template:
+
+  ait-benchmark agent-token validate \
+    --manifest campaigns/agent-token-game-v1/smoke-steady-state.json
+
+Materialize one exact starting workload:
+
+  ait-benchmark agent-token fixture \
+    --manifest fixtures/agent-token-game-v1/manifest.json \
+    --workload GD-01 \
+    --output-dir /absent/candidate
+
+Freeze a deterministic schedule:
+
+  ait-benchmark agent-token schedule \
+    --manifest /path/to/campaign.json \
+    --output /absent/randomization-schedule.json
+
+Execute a campaign into an absent or empty evidence directory:
+
+  ait-benchmark agent-token run \
+    --manifest /path/to/pinned-campaign.json \
+    --output-dir /absent/evidence
+
+The runner refuses evidence overwrite. A --max-runs smoke slice remains visibly
+incomplete and is never claim eligible. The committed template intentionally
+has a null browser program and placeholder model pin; replace both in a runtime
+campaign before collecting acceptance evidence.
+
+Import one Codex JSONL provider usage stream:
+
+  ait-benchmark agent-token import-usage \
+    --source codex-events.raw.jsonl \
+    --run-id RUN \
+    --workload GD-01 \
+    --mode git_linear_single_session \
+    --profile steady_state_task_cost \
+    --model-provider openai \
+    --model-id MODEL \
+    --model-revision REVISION \
+    --reasoning-effort medium
+
+Validate a completed evidence directory:
+
+  ait-benchmark agent-token validate \
+    --manifest /path/to/pinned-campaign.json \
+    --campaign-dir /path/to/evidence
+
+Regenerate a report without overwriting an existing artifact:
+
+  ait-benchmark agent-token report \
+    --manifest /path/to/pinned-campaign.json \
+    --campaign-dir /path/to/evidence \
+    --output-json /absent/report.json \
+    --output-markdown /absent/report.txt
+
+Run acceptance, invalidity, timeout, and unfavorable token results are retained.
+Only qualification scope with complete evidence, acceptable quality parity,
+positive failure-adjusted median savings, and a positive bootstrap 95-percent
+lower bound may be claim eligible.

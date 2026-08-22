@@ -200,7 +200,7 @@ fn try_reuse_cargo_discovery_build(
     }
     let manifest = read_cargo_executable_manifest(manifest_path)?;
     let mut executables = test_executables_from_manifest(&manifest)?;
-    executables.sort_by(|left, right| path_string(&left.path).cmp(&path_string(&right.path)));
+    executables.sort_by_key(|left| path_string(&left.path));
     for (index, executable) in executables.iter_mut().enumerate() {
         executable.index = index + 1;
     }
@@ -567,7 +567,7 @@ where
             .cloned()
             .unwrap_or_default();
     }
-    executables.sort_by(|left, right| path_string(&left.path).cmp(&path_string(&right.path)));
+    executables.sort_by_key(|left| path_string(&left.path));
     executables.dedup_by(|left, right| left.path == right.path);
     for (index, executable) in executables.iter_mut().enumerate() {
         executable.index = index + 1;

@@ -568,6 +568,102 @@ fn history_promotion_collects_ten_consecutive_local_lands() {
 }
 
 #[test]
+fn history_promotion_adopts_unowned_direct_boundary_snapshot() {
+    let (temp, repo, base_snapshot_id, first_landed_snapshot_id, _first_change_ref) =
+        local_land_fixture(1);
+
+    // An unowned direct Snapshot advances main between two landed Changes,
+    // exactly like the historical repo-root authoring incident.
+    fs::write(temp.path().join("orphan.txt"), "unowned direct snapshot").unwrap();
+    let orphan = create_local_snapshot(
+        temp.path().to_string_lossy().as_ref(),
+        "fixture-ait",
+        "main",
+        Some("reviewable snapshot"),
+        false,
+    )
+    .expect("orphan snapshot");
+    let orphan_snapshot_id = required_string_field(&orphan, "snapshot_id").unwrap();
+
+    let task_store = repo.task_store().unwrap();
+    let change_store = repo.change_store().unwrap();
+    let task = task_local_create_with_task_store(
+        &task_store,
+        "fixture-ait",
+        "Adopting Task",
+        "Land after the orphan boundary",
+        None,
+        None,
+        None,
+        None,
+    )
+    .unwrap();
+    let task_id = required_string_field(&task, "task_id").unwrap();
+    let change = change_local_create_with_change_store(
+        &change_store,
+        "fixture-ait",
+        &task_id,
+        "Adopting Change",
+        "main",
+        None,
+        Some(&orphan_snapshot_id),
+    )
+    .unwrap();
+    let change_ref = required_string_field(&change, "change_ref").unwrap();
+    fs::write(temp.path().join("history.txt"), "landed after orphan").unwrap();
+    let landed = create_local_snapshot(
+        temp.path().to_string_lossy().as_ref(),
+        "fixture-ait",
+        "main",
+        Some("local land after orphan"),
+        false,
+    )
+    .unwrap();
+    let landed_snapshot_id = required_string_field(&landed, "snapshot_id").unwrap();
+    workflow_local_change_land_with_change_store(
+        &change_store,
+        &change_ref,
+        "main",
+        &landed_snapshot_id,
+        Some(&orphan_snapshot_id),
+    )
+    .unwrap();
+    workflow_local_task_close_with_task_store(&task_store, &task_id, "completed").unwrap();
+
+    let (entries, _) = workflow_local_history_entries(
+        &repo,
+        &change_ref,
+        "main",
+        &base_snapshot_id,
+        &landed_snapshot_id,
+    )
+    .expect("adopted history");
+
+    assert_eq!(entries.len(), 2);
+    let adopting = entries.last().unwrap();
+    assert_eq!(
+        adopting["pre_land_target_snapshot_id"],
+        first_landed_snapshot_id
+    );
+    assert_eq!(
+        adopting["adopted_boundary_snapshot_ids"],
+        json!([orphan_snapshot_id])
+    );
+    let chain: Vec<&str> = adopting["snapshots"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|row| row["snapshot_id"].as_str())
+        .collect();
+    assert!(chain.contains(&orphan_snapshot_id.as_str()));
+    assert!(chain.contains(&landed_snapshot_id.as_str()));
+    assert_eq!(
+        entries.first().unwrap()["adopted_boundary_snapshot_ids"],
+        json!([])
+    );
+}
+
+#[test]
 fn history_promotion_collects_sixty_five_consecutive_local_lands_without_a_ceiling() {
     let (_temp, repo, base_snapshot_id, final_snapshot_id, final_change_ref) =
         local_land_fixture(65);

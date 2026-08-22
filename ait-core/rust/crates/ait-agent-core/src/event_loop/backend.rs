@@ -23,10 +23,6 @@ impl AgentEventLoopBackend {
         matches!(self, Self::LinuxEpoll)
     }
 
-    pub fn supports_many_workers(self) -> bool {
-        matches!(self, Self::LinuxEpoll)
-    }
-
     pub fn label(self) -> &'static str {
         match self {
             Self::LinuxEpoll => "linux_epoll",

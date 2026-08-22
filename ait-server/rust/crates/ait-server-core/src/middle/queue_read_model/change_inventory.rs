@@ -10,7 +10,7 @@ pub(super) fn change_inventory(input: &QueueReadModelInput, index: &QueueIndex<'
     let mut items = input
         .changes
         .iter()
-        .filter(|change| repo_matches(input.repo_name.as_deref(), *change))
+        .filter(|change| repo_matches(input.repo_name.as_deref(), change))
         .filter(|change| {
             !matches!(
                 object_text(change, "status").unwrap_or_default().as_str(),

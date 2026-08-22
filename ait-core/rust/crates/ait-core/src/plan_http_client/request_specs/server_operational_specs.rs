@@ -218,107 +218,11 @@ pub fn build_get_worker_job_request_spec(
     )
 }
 
-pub fn build_claim_next_worker_job_request_spec(
-    config: &PlanHttpClientConfig,
-    accepted_job_kinds: &[u8],
-    repository_indexes: &[RepositoryIndex],
-) -> PlanHttpClientResult<PlanHttpRequestSpec> {
-    let body = Value::Object(Map::from_iter([
-        (
-            "accepted_job_kinds".to_string(),
-            Value::Array(
-                accepted_job_kinds
-                    .iter()
-                    .copied()
-                    .map(|kind| Value::Number(kind.into()))
-                    .collect(),
-            ),
-        ),
-        (
-            "repository_indexes".to_string(),
-            Value::Array(
-                repository_indexes
-                    .iter()
-                    .map(|index| Value::Number(index.get().into()))
-                    .collect(),
-            ),
-        ),
-        (
-            "accepted_runtime_contracts".to_string(),
-            Value::Array(vec![Value::String(
-                crate::server_operational::NATIVE_JOB_V3_CONTRACT.to_string(),
-            )]),
-        ),
-    ]));
-    plan_http_transport::build_request_spec(
-        config,
-        Method::POST,
-        claim_next_worker_job_path(),
-        Vec::new(),
-        Some(body),
-    )
-}
-
-pub fn build_worker_job_lease_operation_request_spec(
-    config: &PlanHttpClientConfig,
-    operation: &str,
-    proof: &WorkerLeaseProof,
-    detail: Option<Value>,
-) -> PlanHttpClientResult<PlanHttpRequestSpec> {
-    proof.validate().map_err(PlanHttpClientError::Invalid)?;
-    if operation == "claim" {
-        return Err(PlanHttpClientError::Invalid(
-            "claim creates the lease proof and cannot present one".to_string(),
-        ));
-    }
-    let path =
-        worker_job_operation_path(proof.key(), operation).map_err(PlanHttpClientError::Invalid)?;
-    let mut body = Map::from_iter([
-        (
-            "attempt_count".to_string(),
-            Value::Number(proof.attempt_count.into()),
-        ),
-        (
-            "lease_token".to_string(),
-            Value::String(proof.lease_token.clone()),
-        ),
-    ]);
-    if let Some(detail) = detail {
-        body.insert("detail".to_string(), detail);
-    }
-    plan_http_transport::build_request_spec(
-        config,
-        Method::POST,
-        &path,
-        Vec::new(),
-        Some(Value::Object(body)),
-    )
-}
-
-pub fn build_claim_worker_job_request_spec(
-    config: &PlanHttpClientConfig,
-    key: WorkerJobKey,
-) -> PlanHttpClientResult<PlanHttpRequestSpec> {
-    let path = worker_job_operation_path(key, "claim").map_err(PlanHttpClientError::Invalid)?;
-    plan_http_transport::build_request_spec(
-        config,
-        Method::POST,
-        &path,
-        Vec::new(),
-        Some(Value::Object(Map::from_iter([(
-            "accepted_runtime_contracts".to_string(),
-            Value::Array(vec![Value::String(
-                crate::server_operational::NATIVE_JOB_V3_CONTRACT.to_string(),
-            )]),
-        )]))),
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::json_support::json;
-    use crate::server_operational::{WorkerJobIndex, WorkerLeaseProof};
+    use crate::server_operational::WorkerJobIndex;
 
     fn config() -> PlanHttpClientConfig {
         PlanHttpClientConfig {
@@ -335,45 +239,6 @@ mod tests {
             get.path,
             "/v1/native/repository-authorities/4/worker-jobs/8"
         );
-
-        let claim = build_claim_worker_job_request_spec(&config(), key).expect("claim job spec");
-        let claim_body = claim.body.expect("claim body");
-        assert_eq!(
-            claim_body["accepted_runtime_contracts"],
-            json!([crate::server_operational::NATIVE_JOB_V3_CONTRACT])
-        );
-        let encoded = claim_body.to_string();
-        assert!(!encoded.contains("repo_id"));
-        assert!(!encoded.contains("job_id"));
-
-        let claim_next = build_claim_next_worker_job_request_spec(
-            &config(),
-            &[7, 11],
-            &[RepositoryIndex::new(4)],
-        )
-        .expect("claim next spec");
-        assert_eq!(
-            claim_next.body.expect("claim next body"),
-            json!({
-                "accepted_job_kinds": [7, 11],
-                "repository_indexes": [4],
-                "accepted_runtime_contracts": [
-                    crate::server_operational::NATIVE_JOB_V3_CONTRACT
-                ],
-            })
-        );
-
-        let proof = WorkerLeaseProof::new(key, 1, "lease-token").expect("lease proof");
-        let heartbeat =
-            build_worker_job_lease_operation_request_spec(&config(), "heartbeat", &proof, None)
-                .expect("heartbeat spec");
-        assert_eq!(
-            heartbeat.path,
-            "/v1/native/repository-authorities/4/worker-jobs/8:heartbeat"
-        );
-        let encoded = heartbeat.body.expect("heartbeat body").to_string();
-        assert!(!encoded.contains("repo_id"));
-        assert!(!encoded.contains("job_id"));
     }
 
     #[test]

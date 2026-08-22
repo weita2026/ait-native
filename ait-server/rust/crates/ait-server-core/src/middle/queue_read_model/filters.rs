@@ -60,7 +60,7 @@ pub(super) fn selected_tasks<'a>(
     let mut tasks = input
         .tasks
         .iter()
-        .filter(|task| repo_matches(input.repo_name.as_deref(), *task))
+        .filter(|task| repo_matches(input.repo_name.as_deref(), task))
         .filter(|task| task_matches_filter(task, normalized_status))
         .collect::<Vec<_>>();
     tasks.sort_by(|left, right| {

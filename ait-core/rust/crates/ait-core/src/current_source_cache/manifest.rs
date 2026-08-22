@@ -56,52 +56,6 @@ where
     Ok(value)
 }
 
-pub fn repair_current_source_native_cache_manifest_after_use_json(
-    paths: &CurrentSourceNativeCachePaths,
-    source_mtime_ns: u64,
-) -> Result<JsonValue, String> {
-    let store = FilesystemCurrentSourceNativeCacheManifestStore;
-    repair_current_source_native_cache_manifest_after_use_with_store(&store, paths, source_mtime_ns)
-}
-
-pub(super) fn repair_current_source_native_cache_manifest_after_use_with_store<S>(
-    store: &S,
-    paths: &CurrentSourceNativeCachePaths,
-    source_mtime_ns: u64,
-) -> Result<JsonValue, String>
-where
-    S: CurrentSourceNativeCacheManifestStore + ?Sized,
-{
-    let manifest =
-        load_manifest_with_current_source_native_cache_manifest_store(store, &paths.manifest_path);
-    let state = manifest
-        .get("state")
-        .and_then(JsonValue::as_str)
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or("ready")
-        .to_string();
-    let mut extra = JsonMap::new();
-    for (key, value) in manifest {
-        if !matches!(
-            key.as_str(),
-            "state" | "source_mtime_ns" | "last_used_at" | "size_bytes"
-        ) {
-            extra.insert(key, value);
-        }
-    }
-    write_current_source_native_cache_manifest_with_store(
-        store,
-        &CurrentSourceNativeCacheManifestRequest {
-            paths: paths.clone(),
-            state,
-            source_mtime_ns,
-            last_used_at: Some(now_seconds()),
-            size_bytes: None,
-            extra,
-        },
-    )
-}
-
 pub(super) fn load_json_object(path: &Path) -> JsonMap<String, JsonValue> {
     CurrentSourceCacheJson::filesystem().load_object_or_empty(path)
 }

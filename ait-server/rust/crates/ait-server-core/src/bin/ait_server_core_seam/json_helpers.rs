@@ -105,27 +105,6 @@ pub(super) fn optional_text(
     }
 }
 
-#[cfg(feature = "legacy-postgres-runtime")]
-pub(super) fn optional_i64(
-    obj: &serde_json::Map<String, JsonValue>,
-    field: &str,
-) -> Result<Option<i64>, String> {
-    match obj.get(field) {
-        None | Some(JsonValue::Null) => Ok(None),
-        Some(JsonValue::Number(value)) => value
-            .as_i64()
-            .ok_or_else(|| format!("Field `{field}` must be an integer."))
-            .map(Some),
-        Some(JsonValue::String(value)) if value.trim().is_empty() => Ok(None),
-        Some(JsonValue::String(value)) => value
-            .trim()
-            .parse::<i64>()
-            .map(Some)
-            .map_err(|_| format!("Field `{field}` must be an integer.")),
-        Some(_) => Err(format!("Field `{field}` must be an integer.")),
-    }
-}
-
 pub(super) fn optional_usize(
     obj: &serde_json::Map<String, JsonValue>,
     field: &str,

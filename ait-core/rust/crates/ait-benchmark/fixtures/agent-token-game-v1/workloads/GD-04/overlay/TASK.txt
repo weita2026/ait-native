@@ -1,0 +1,17 @@
+GD-04: Gameplay Modularization
+==============================
+
+Split the monolithic src/game.js implementation into clear modules without
+changing observable gameplay. The final source tree must contain at least:
+
+- src/model.js for deterministic game state and replay;
+- src/renderer.js for canvas rendering; and
+- src/input.js for keyboard input.
+
+Keep src/game.js as the browser entry and compatibility export for GameModel.
+Preserve fixed-seed state/event output, controls, fire cooldown, enemy behavior,
+boss timing and health, lives, score, game-over, victory, and the
+window.__AIT_GAME__ benchmark seam. Do not add a dependency, backend, hosted
+asset, network request, Python file, or remote AIT workflow.
+
+Run the project-local validation before completing the repository workflow.

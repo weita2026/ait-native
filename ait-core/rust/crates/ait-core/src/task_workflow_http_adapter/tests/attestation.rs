@@ -137,54 +137,6 @@ fn attest_json_builds_evaluation_and_provenance_payloads() {
 }
 
 #[test]
-fn attest_json_normalizes_payload_boundaries() {
-    let attest = AttestJson::stateless();
-    let payload = attest
-        .normalize_attestation_payload_json(r#"{"attestation_id":"AT-1"}"#)
-        .unwrap();
-    assert_eq!(payload["attestation_id"], json!("AT-1"));
-    assert!(attest
-        .normalize_attestation_payload_json(r#"[{"attestation_id":"AT-1"}]"#)
-        .is_err());
-    assert!(attest
-        .normalize_evaluation_summary_payload(&json!(["not", "object"]))
-        .is_err());
-}
-
-#[test]
-fn attest_json_extracts_field_helpers_and_tests_state() {
-    let attest = AttestJson::stateless();
-    let payload = json!({
-        "attestation_id": " AT-1 ",
-        "patchset_id": " RCP-1 ",
-        "author_mode": " ai_with_human_review ",
-        "evaluation_summary": {
-            "tests": " pass "
-        }
-    });
-
-    assert_eq!(
-        attest.optional_attestation_id(&payload).as_deref(),
-        Some("AT-1")
-    );
-    assert_eq!(
-        attest.optional_patchset_id(&payload).as_deref(),
-        Some("RCP-1")
-    );
-    assert_eq!(
-        attest.optional_author_mode(&payload).as_deref(),
-        Some("ai_with_human_review")
-    );
-    assert_eq!(
-        attest
-            .tests_state_from_attestation(Some(&payload))
-            .as_deref(),
-        Some("pass")
-    );
-    assert_eq!(attest.tests_state_from_attestation(None), None);
-}
-
-#[test]
 fn task_workflow_attestation_helpers_accept_attestation_remote_trait() {
     let mut remote = FakeAttestationRemote;
     let remote_port: &mut dyn TaskWorkflowAttestationRemote = &mut remote;

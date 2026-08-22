@@ -108,10 +108,6 @@ impl BinaryBlobRecord {
     pub const META_PRUNED: u8 = 0b0000_0010;
     pub const META_TOMBSTONE: u8 = 0b1000_0000;
 
-    pub fn has_pack_member(&self) -> bool {
-        self.blob_meta & Self::META_HAS_PACK_MEMBER != 0 && self.pack_member_index_plus1 != 0
-    }
-
     pub fn is_pruned(&self) -> bool {
         self.blob_meta & Self::META_PRUNED != 0 || self.pruned_at_s != 0
     }

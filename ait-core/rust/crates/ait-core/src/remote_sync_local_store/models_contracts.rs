@@ -124,6 +124,10 @@ pub trait RemoteSyncLocalSnapshotSource {
         ctx: &RemoteSyncLocalStoreContext,
     ) -> Result<Vec<RemoteSyncLocalSnapshotParent>, String>;
 
+    /// Reports whether committed local root metadata can serve as a hydration
+    /// boundary. Despite the historical method name, this is intentionally not
+    /// an exhaustive descendant or physical-pack integrity check; callers use
+    /// the explicit local content maintenance validator for that purpose.
     fn snapshot_content_complete(
         &self,
         ctx: &RemoteSyncLocalStoreContext,
@@ -190,17 +194,6 @@ pub trait RemoteSyncZstdImportTransactionStore {
         manifest: &ZstdImportManifestPayload,
         history_mode: ZstdImportHistoryMode,
     ) -> Result<ZstdImportMetadataCommitResult, String>;
-}
-
-pub fn zstd_import_snapshot_exists_with_remote_sync_zstd_import_transaction_store<S>(
-    store: &S,
-    ctx: &RemoteSyncLocalStoreContext,
-    snapshot_id: &str,
-) -> Result<bool, String>
-where
-    S: RemoteSyncZstdImportTransactionStore + ?Sized,
-{
-    store.zstd_import_snapshot_exists(ctx, snapshot_id)
 }
 
 pub fn commit_zstd_import_metadata_with_remote_sync_zstd_import_transaction_store<S>(

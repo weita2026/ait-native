@@ -1,4 +1,4 @@
-use crate::json_support::{json, JsonCodec, JsonMap, JsonValue};
+use crate::json_support::{json, JsonMap, JsonValue};
 use crate::plan_http_client::{
     build_plan_http_request_spec, configured_repository_authority_path_segment,
     encode_path_segment, PlanHttpClientConfig, PlanHttpClientError, PlanHttpClientResult,
@@ -237,24 +237,11 @@ impl<S> PatchsetJson<S> {
         ]
     }
 
-    pub fn normalize_patchset_payload_json(&self, payload_json: &str) -> Result<JsonValue, String> {
-        let payload = self.parse_object_payload(payload_json, "patchset payload")?;
-        self.normalize_patchset_payload(&JsonValue::Object(payload))
-    }
-
     pub fn normalize_patchset_payload(&self, payload: &JsonValue) -> Result<JsonValue, String> {
         let _ = &self.store;
         Ok(JsonValue::Object(
             require_object(Some(payload), "patchset payload")?.clone(),
         ))
-    }
-
-    pub fn normalize_patchset_list_payload_json(
-        &self,
-        payload_json: &str,
-    ) -> Result<JsonValue, String> {
-        let payload = self.parse_array_payload(payload_json, "patchset list payload")?;
-        self.normalize_patchset_list_payload(payload)
     }
 
     pub fn normalize_patchset_list_payload(
@@ -268,14 +255,6 @@ impl<S> PatchsetJson<S> {
             normalized.push(JsonValue::Object(object.clone()));
         }
         Ok(JsonValue::Array(normalized))
-    }
-
-    pub fn normalize_patchset_ci_status_payload_json(
-        &self,
-        payload_json: &str,
-    ) -> Result<JsonValue, String> {
-        let payload = self.parse_object_payload(payload_json, "patchset CI status payload")?;
-        self.normalize_patchset_ci_status_payload(&JsonValue::Object(payload))
     }
 
     pub fn normalize_patchset_ci_status_payload(
@@ -380,34 +359,6 @@ impl<S> PatchsetJson<S> {
             );
         }
         patchset
-    }
-
-    fn parse_object_payload(
-        &self,
-        payload_json: &str,
-        label: &str,
-    ) -> Result<JsonMap<String, JsonValue>, String> {
-        let _ = &self.store;
-        JsonCodec::parse_object_with_error_prefix(
-            payload_json,
-            &format!("{label} invalid JSON"),
-            &format!("{label} must be an object."),
-        )
-        .map_err(|err| err.to_string())
-    }
-
-    fn parse_array_payload(
-        &self,
-        payload_json: &str,
-        label: &str,
-    ) -> Result<Vec<JsonValue>, String> {
-        let _ = &self.store;
-        JsonCodec::parse_array_with_error_prefix(
-            payload_json,
-            &format!("{label} invalid JSON"),
-            &format!("{label} must be an array."),
-        )
-        .map_err(|err| err.to_string())
     }
 }
 

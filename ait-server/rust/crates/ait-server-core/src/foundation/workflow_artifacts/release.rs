@@ -13,9 +13,11 @@ pub fn release_artifact_media_type(kind: &str, path: &str) -> &'static str {
     let normalized_path = path.trim().to_ascii_lowercase();
     if normalized_kind == "manifest" || normalized_path.ends_with(".manifest.json") {
         "application/json"
-    } else if normalized_kind == "checksum" || normalized_path.ends_with(".sha256") {
-        "text/plain; charset=utf-8"
-    } else if normalized_kind == "formula" || normalized_path.ends_with(".rb") {
+    } else if normalized_kind == "checksum"
+        || normalized_path.ends_with(".sha256")
+        || normalized_kind == "formula"
+        || normalized_path.ends_with(".rb")
+    {
         "text/plain; charset=utf-8"
     } else if normalized_kind == "wheel" || normalized_path.ends_with(".whl") {
         "application/octet-stream"

@@ -1,0 +1,14 @@
+{
+  "contract": "ait-agent-token-game-acceptance/v1",
+  "workload_id": "GD-03",
+  "minimum_score": 90,
+  "required_checks": [
+    "common-gameplay",
+    "paused-time-is-frozen",
+    "pause-resume-replay-converges",
+    "project-local-startup",
+    "zero-python-and-no-external-network"
+  ],
+  "required_paths": ["index.html", "styles.css", "src/game.js", "scripts/self-test.mjs"],
+  "forbidden_paths": ["node_modules", ".venv"]
+}

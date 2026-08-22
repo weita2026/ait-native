@@ -43,16 +43,6 @@ impl ExternalStatusInput {
         }
     }
 
-    pub fn with_manifest_path(mut self, path: impl Into<String>) -> Self {
-        self.manifest_path = path.into();
-        self
-    }
-
-    pub fn with_lockfile_path(mut self, path: impl Into<String>) -> Self {
-        self.lockfile_path = path.into();
-        self
-    }
-
     pub fn with_local_link(mut self, name: impl Into<String>, path: impl Into<String>) -> Self {
         self.local_links.push(ExternalLocalLinkOverride {
             name: name.into(),

@@ -11,6 +11,35 @@ use crate::foundation::server_content_binary_db::{
     ServerBinaryTreeReadCache, SERVER_SNAPSHOT_BIN, SERVER_SNAPSHOT_ID_IDX,
     SERVER_SNAPSHOT_PARENT_EDGE_BIN,
 };
+use std::io::Write as _;
+use std::sync::{Arc, Barrier};
+
+#[test]
+fn native_repository_pack_storage_projects_empty_and_committed_inventory() {
+    let db = native_line_binary_db("repository-pack-inventory");
+    let service = BinaryDbNativeRepositoryService::new(db);
+    let empty = service
+        .create_repository(RepositoryCreateRequest {
+            repo_name: "repo-bin".to_string(),
+            default_line: "main".to_string(),
+            policy: json!({}),
+            id_namespace_prefix: None,
+        })
+        .expect("empty Binary Repository should project storage");
+    assert_eq!(empty["pack_storage"]["object_pack_count"], 0);
+    assert_eq!(empty["pack_storage"]["tree_pack_count"], 0);
+    assert_eq!(empty["pack_storage"]["zstd_only_verified"], true);
+
+    seed_native_binary_content(&service, "repository-pack-inventory");
+    let populated = service
+        .get_repository("repo-bin")
+        .expect("committed Pack inventory should project from Binary authority");
+    assert_eq!(populated["pack_storage"]["object_pack_count"], 1);
+    assert_eq!(populated["pack_storage"]["tree_pack_count"], 1);
+    assert_eq!(populated["pack_storage"]["zstd_object_pack_count"], 1);
+    assert_eq!(populated["pack_storage"]["zstd_tree_pack_count"], 1);
+    assert_eq!(populated["pack_storage"]["validation"]["state"], "valid");
+}
 
 #[test]
 fn native_line_binary_db_list_get_update_and_close_without_postgres() {
@@ -41,6 +70,16 @@ fn native_line_binary_db_list_get_update_and_close_without_postgres() {
         )
         .expect("main line should update");
     assert_eq!(main["head_snapshot_id"], "SNP-000000000001");
+    service
+        .ensure_default_line()
+        .expect("repeated default-Line ensure should be idempotent");
+    let preserved_main = service
+        .get_line("repo-bin", "main")
+        .expect("existing main Line should remain readable");
+    assert_eq!(
+        preserved_main["head_snapshot_id"], "SNP-000000000001",
+        "default-Line repair must not replace an existing head",
+    );
 
     let feature = service
         .update_line(
@@ -868,6 +907,173 @@ fn binary_zstd_import_manifest_expands_every_selected_tree_pack_member() {
 }
 
 #[test]
+fn binary_zstd_pull_catalog_ignores_unreachable_physical_only_tree_pack() {
+    let db = native_line_binary_db("zstd-physical-only-tree-pack");
+    let authority_db = db.clone();
+    let service = BinaryDbNativeRepositoryService::new(db);
+    create_native_binary_repository(&service);
+    let content = seed_native_binary_content(&service, "zstd-physical-only-tree-pack");
+    let created_at = "2026-08-21T00:00:00Z";
+    let physical_only_pack_id = "TPK-000000000000";
+    let fixture_root = env::temp_dir().join(format!(
+        "ait-server-core-zstd-physical-only-tree-pack-{}",
+        std::process::id()
+    ));
+    if fixture_root.exists() {
+        fs::remove_dir_all(&fixture_root).expect("stale physical-only fixture should remove");
+    }
+    fs::create_dir_all(&fixture_root).expect("physical-only fixture root should create");
+
+    let tree_rows = json!([{
+        "tree_id": "TRE-00000000000000000000",
+        "entry_count": 0,
+    }]);
+    let members = build_tree_pack_members(&tree_rows, &json!([]))
+        .expect("physical-only Tree member should build");
+    let pack_path = fixture_root.join(format!("{physical_only_pack_id}.zstpack"));
+    let mut metadata = write_tree_pack_archive_with_format(
+        pack_path
+            .to_str()
+            .expect("physical-only pack path should be UTF-8"),
+        physical_only_pack_id,
+        created_at,
+        &members,
+        TREE_PACK_FORMAT_ZSTD_CHUNKED_V1,
+    )
+    .expect("physical-only Tree archive should write");
+    service
+        .seed_zstd_pack_batch_for_test(
+            "repo-bin",
+            vec![(
+                physical_only_pack_id.to_string(),
+                fs::read(&pack_path).expect("physical-only Tree archive should read"),
+            )],
+            true,
+        )
+        .expect("physical-only Tree archive should upload");
+
+    let metadata_object = metadata
+        .as_object_mut()
+        .expect("Tree pack metadata should be an object");
+    metadata_object.insert("pack_id".to_string(), json!(physical_only_pack_id));
+    metadata_object.insert("created_at".to_string(), json!(created_at));
+    metadata_object.insert("tree_count".to_string(), json!(0));
+    let pack_index = metadata_object
+        .get_mut("pack_index")
+        .and_then(JsonValue::as_object_mut)
+        .expect("Tree pack metadata should contain an index");
+    pack_index.insert("tree_count".to_string(), json!(0));
+    pack_index.insert("trees".to_string(), json!([]));
+
+    let store = ServerBinaryRepositoryContentStore::new(authority_db.clone());
+    let mut tx = BinaryDbWriteTxn::begin_serving(
+        &authority_db,
+        BinaryDbCommandScope::ServerRemoteSyncCommit,
+    )
+    .expect("physical-only Tree pack transaction should begin");
+    store
+        .append_tree_pack_in_tx(&mut tx, &metadata, &[])
+        .expect("physical-only Tree pack record should append");
+    tx.commit()
+        .expect("physical-only Tree pack record should commit");
+    let physical_only = store
+        .tree_pack(physical_only_pack_id)
+        .expect("physical-only Tree pack should read")
+        .expect("physical-only Tree pack should exist");
+    assert_eq!(physical_only.record.tree_count, 0);
+
+    let invalid_root = service
+        .commit_zstd_bulk(
+            "repo-bin",
+            json!({
+                "contract": "ait.remote_sync.zstd_bulk.commit.v1",
+                "object_packs": [],
+                "tree_packs": [],
+                "blob_locators": [],
+                "tree_locators": [],
+                "snapshots": [{
+                    "snapshot_id": "SNP-0000000000E0",
+                    "repo_name": "repo-bin",
+                    "line_name": "main",
+                    "message": "invalid physical-only root",
+                    "root_tree_pack_id": physical_only_pack_id,
+                    "root_entry_ordinal": 0,
+                    "file_count": 0,
+                    "total_bytes": 0,
+                    "created_at": created_at,
+                    "files": [],
+                }],
+            }),
+        )
+        .expect_err("a zero-logical-Tree pack must remain invalid as a Snapshot root");
+    assert!(
+        invalid_root
+            .message
+            .contains("has no physical entry ordinal 0"),
+        "unexpected zero-logical-Tree root error: {invalid_root:?}"
+    );
+
+    service
+        .commit_zstd_bulk(
+            "repo-bin",
+            json!({
+                "contract": "ait.remote_sync.zstd_bulk.commit.v1",
+                "object_packs": [],
+                "tree_packs": [],
+                "blob_locators": [],
+                "tree_locators": [],
+                "snapshots": [{
+                    "snapshot_id": "SNP-0000000000E1",
+                    "repo_name": "repo-bin",
+                    "line_name": "main",
+                    "message": "valid root beside physical-only pack",
+                    "root_tree_pack_id": content.tree_pack_id,
+                    "root_entry_ordinal": 0,
+                    "file_count": 1,
+                    "total_bytes": content.bytes.len(),
+                    "created_at": created_at,
+                    "files": [{
+                        "path": "README.md",
+                        "blob_id": content.blob_id,
+                        "size_bytes": content.bytes.len(),
+                        "mode": "100644",
+                        "sha256": sha256_hex(&content.bytes),
+                    }],
+                }],
+            }),
+        )
+        .expect("valid Snapshot beside physical-only Tree pack should commit");
+
+    service.reset_test_import_manifest_read_counts();
+    let manifest = service
+        .get_zstd_pull_manifest(
+            "repo-bin",
+            json!({
+                "contract": REMOTE_SYNC_ZSTD_PULL_MANIFEST_REQUEST_CONTRACT_V1,
+                "head_snapshot_id": "SNP-0000000000E1",
+                "have_snapshot_ids": [],
+            }),
+        )
+        .expect("unrelated physical-only Tree pack must not block a valid pull catalog");
+    assert_eq!(
+        manifest["tree_packs"]
+            .as_array()
+            .expect("pull manifest Tree packs should be an array")
+            .iter()
+            .map(|row| row["pack_id"].as_str().expect("Tree pack ID"))
+            .collect::<Vec<_>>(),
+        vec![content.tree_pack_id.as_str()]
+    );
+    assert_eq!(
+        service.test_import_manifest_zstd_file_read_counts(),
+        (1, 1, 0),
+        "catalog construction must not open the physical-only Tree archive"
+    );
+
+    fs::remove_dir_all(fixture_root).expect("physical-only fixture should remove");
+}
+
+#[test]
 fn binary_zstd_pull_manifest_reads_snapshot_authority_once_for_a_long_chain() {
     let root = env::temp_dir().join(format!(
         "ait-server-core-zstd-pull-snapshot-catalog-{}",
@@ -1026,6 +1232,162 @@ fn binary_zstd_pull_manifest_reads_snapshot_authority_once_for_a_long_chain() {
             snapshot_rows.len()
         );
     }
+
+    assert_eq!(service.zstd_pull_catalog_build_count_for_test(), 1);
+    let cache_hit_event_offset = db.file_store().events().len();
+    let cached_manifest = service
+        .get_zstd_pull_manifest(
+            "repo-bin",
+            json!({
+                "contract": REMOTE_SYNC_ZSTD_PULL_MANIFEST_REQUEST_CONTRACT_V1,
+                "head_snapshot_id": head_snapshot_id,
+                "have_snapshot_ids": [],
+            }),
+        )
+        .expect("cached long-chain pull manifest should build");
+    assert_eq!(
+        cached_manifest, manifest,
+        "cache hits must preserve exact JSON"
+    );
+    assert_eq!(
+        serde_json::to_vec(&cached_manifest).expect("cached manifest should encode"),
+        serde_json::to_vec(&manifest).expect("initial manifest should encode"),
+        "cache hits must preserve exact manifest bytes and ordering"
+    );
+    assert_eq!(service.zstd_pull_catalog_build_count_for_test(), 1);
+    let cache_hit_events = db.file_store().events();
+    assert!(
+        cache_hit_events[cache_hit_event_offset..]
+            .iter()
+            .all(|event| event.operation != BinaryDbTestStorageOperation::ReadRange),
+        "cache hits must not rescan fixed or payload authority ranges"
+    );
+
+    service
+        .invalidate_zstd_pull_catalog()
+        .expect("test should invalidate the shared pull catalog");
+    let reader_count = 8;
+    let barrier = Arc::new(Barrier::new(reader_count));
+    let readers = (0..reader_count)
+        .map(|_| {
+            let service = service.clone();
+            let barrier = barrier.clone();
+            let head_snapshot_id = head_snapshot_id.clone();
+            std::thread::spawn(move || {
+                barrier.wait();
+                service.get_zstd_pull_manifest(
+                    "repo-bin",
+                    json!({
+                        "contract": REMOTE_SYNC_ZSTD_PULL_MANIFEST_REQUEST_CONTRACT_V1,
+                        "head_snapshot_id": head_snapshot_id,
+                        "have_snapshot_ids": [],
+                    }),
+                )
+            })
+        })
+        .collect::<Vec<_>>();
+    for reader in readers {
+        assert_eq!(
+            reader
+                .join()
+                .expect("concurrent pull reader should not panic")
+                .expect("concurrent pull reader should succeed"),
+            manifest,
+            "concurrent readers must share the same immutable catalog"
+        );
+    }
+    assert_eq!(
+        service.zstd_pull_catalog_build_count_for_test(),
+        2,
+        "a concurrent cold miss must build exactly one shared catalog"
+    );
+
+    let mutated_head_snapshot_id = "SNP-000000000061";
+    service
+        .commit_zstd_bulk(
+            "repo-bin",
+            json!({
+                "contract": "ait.remote_sync.zstd_bulk.commit.v1",
+                "object_packs": [],
+                "tree_packs": [],
+                "blob_locators": [],
+                "tree_locators": [],
+                "snapshots": [{
+                    "snapshot_id": mutated_head_snapshot_id,
+                    "repo_name": "repo-bin",
+                    "line_name": "main",
+                    "parent_snapshot_id": head_snapshot_id,
+                    "message": "catalog mutation",
+                    "root_tree_pack_id": content.tree_pack_id,
+                    "root_entry_ordinal": 0,
+                    "file_count": 1,
+                    "total_bytes": content.bytes.len(),
+                    "created_at": "2026-08-14T00:10:00Z",
+                    "files": [{
+                        "path": "README.md",
+                        "blob_id": content.blob_id,
+                        "size_bytes": content.bytes.len(),
+                        "mode": "100644",
+                        "sha256": sha256_hex(&content.bytes),
+                    }],
+                }],
+            }),
+        )
+        .expect("content mutation should commit and invalidate the pull catalog");
+    let mutated_manifest = service
+        .get_zstd_pull_manifest(
+            "repo-bin",
+            json!({
+                "contract": REMOTE_SYNC_ZSTD_PULL_MANIFEST_REQUEST_CONTRACT_V1,
+                "head_snapshot_id": mutated_head_snapshot_id,
+                "have_snapshot_ids": [],
+            }),
+        )
+        .expect("pull after mutation should rebuild the catalog");
+    assert_eq!(mutated_manifest["snapshots"].as_array().unwrap().len(), 97);
+    assert_eq!(
+        mutated_manifest["snapshots"][96]["snapshot_id"],
+        mutated_head_snapshot_id
+    );
+    assert_eq!(
+        service.zstd_pull_catalog_build_count_for_test(),
+        3,
+        "the first pull after an admitted mutation must build the new revision"
+    );
+
+    let tree_index_path = root.join("tree_id.idx");
+    let tree_index_bytes = fs::read(&tree_index_path).expect("Tree index should read");
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(&tree_index_path)
+        .expect("Tree index should open for corruption injection")
+        .write_all(&[0xff])
+        .expect("Tree index corruption byte should append");
+    let corrupt = service
+        .get_zstd_pull_manifest(
+            "repo-bin",
+            json!({
+                "contract": REMOTE_SYNC_ZSTD_PULL_MANIFEST_REQUEST_CONTRACT_V1,
+                "head_snapshot_id": mutated_head_snapshot_id,
+                "have_snapshot_ids": [],
+            }),
+        )
+        .expect_err("a changed corrupt authority revision must fail closed");
+    assert_eq!(corrupt.kind, NativeRepositoryErrorKind::Internal);
+    fs::write(&tree_index_path, tree_index_bytes).expect("Tree index should restore exactly");
+    assert_eq!(
+        service
+            .get_zstd_pull_manifest(
+                "repo-bin",
+                json!({
+                    "contract": REMOTE_SYNC_ZSTD_PULL_MANIFEST_REQUEST_CONTRACT_V1,
+                    "head_snapshot_id": mutated_head_snapshot_id,
+                    "have_snapshot_ids": [],
+                }),
+            )
+            .expect("exact restored authority should reuse the valid catalog"),
+        mutated_manifest
+    );
 
     fs::remove_dir_all(root).expect("pull catalog fixture should remove");
 }
@@ -2145,7 +2507,7 @@ fn raw_pack_durability_work_stays_outside_repository_pack_lock_boundary() {
         .iter()
         .position(|event| {
             event.operation == BinaryDbTestStorageOperation::SyncFile
-                && event.path.to_string_lossy().contains(".zstpack.tmp-")
+                && event.path.to_string_lossy().contains(".zstpack.upload-")
         })
         .expect("temporary pack must be synced");
     let lock_acquire = events
@@ -2179,4 +2541,147 @@ fn raw_pack_durability_work_stays_outside_repository_pack_lock_boundary() {
     assert!(lock_acquire < lock_release);
     assert!(lock_release < directory_sync);
     fs::remove_dir_all(root).expect("pack boundary root should remove");
+}
+
+fn staged_object_pack_bytes(root: &Path, pack_id: &str, label: &str, bytes: &[u8]) -> Vec<u8> {
+    let source = root.join(format!("staged-{label}.zstpack"));
+    let sha256 = sha256_hex(bytes);
+    let blob_id = format!("BLB-{}", &sha256[..20]);
+    write_rebuilt_zstd_pack_archive(
+        source
+            .to_str()
+            .expect("staged source Pack path should be UTF-8"),
+        pack_id,
+        "2026-01-01T00:00:00Z",
+        vec![ObjectPackRewriteBlob {
+            entry_name: format!("blobs/{blob_id}"),
+            blob_id,
+            data: bytes.to_vec(),
+            path_hint: Some(format!("{label}.txt")),
+        }],
+        0,
+    )
+    .expect("staged source Pack should write");
+    fs::read(source).expect("staged source Pack should read")
+}
+
+fn write_staged_pack(upload: &mut NativeZstdPackUpload, bytes: &[u8]) -> (u64, String) {
+    let mut file = upload
+        .take_file()
+        .expect("staging file should be available");
+    for chunk in bytes.chunks(17) {
+        file.write_all(chunk)
+            .expect("staged Pack chunk should write");
+    }
+    file.sync_all().expect("staged Pack should sync");
+    drop(file);
+    (bytes.len() as u64, sha256_hex(bytes))
+}
+
+#[test]
+fn staged_pack_upload_publishes_idempotently_and_conflicts_without_full_file_materialization() {
+    let db = native_line_binary_db("staged-pack-publication");
+    let root = ServerRemoteBinaryDb::authority_root(&db)
+        .as_path()
+        .to_path_buf();
+    let service = BinaryDbNativeRepositoryService::new(db);
+    create_native_binary_repository(&service);
+
+    let pack_id = "PCK-0000000000AD";
+    let pack_bytes = staged_object_pack_bytes(&root, pack_id, "first", b"first staged bytes\n");
+    let mut upload = service
+        .begin_zstd_bulk_pack_upload("repo-bin", pack_id, NativeZstdPackKind::Object)
+        .expect("staged Pack should begin");
+    let temporary_path = upload.temporary_path().to_path_buf();
+    let final_path = upload.final_path().to_path_buf();
+    assert_eq!(temporary_path.parent(), final_path.parent());
+    assert!(temporary_path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .is_some_and(|value| value.contains(".zstpack.upload-") && value.ends_with(".tmp")));
+    let (payload_bytes, payload_sha256) = write_staged_pack(&mut upload, &pack_bytes);
+    let response = service
+        .finish_zstd_bulk_pack_upload("repo-bin", upload, payload_bytes, &payload_sha256)
+        .expect("staged Pack should publish");
+    assert_eq!(response["status"], "uploaded");
+    assert_eq!(
+        fs::read(&final_path).expect("published Pack should read"),
+        pack_bytes
+    );
+    assert!(!temporary_path.exists());
+
+    let mut repeated = service
+        .begin_zstd_bulk_pack_upload("repo-bin", pack_id, NativeZstdPackKind::Object)
+        .expect("idempotent staged Pack should begin");
+    let repeated_path = repeated.temporary_path().to_path_buf();
+    let (payload_bytes, payload_sha256) = write_staged_pack(&mut repeated, &pack_bytes);
+    let response = service
+        .finish_zstd_bulk_pack_upload("repo-bin", repeated, payload_bytes, &payload_sha256)
+        .expect("identical staged Pack should be idempotent");
+    assert_eq!(response["status"], "already_present");
+    assert!(!repeated_path.exists());
+
+    let conflicting_bytes =
+        staged_object_pack_bytes(&root, pack_id, "second", b"different staged bytes\n");
+    let mut conflicting = service
+        .begin_zstd_bulk_pack_upload("repo-bin", pack_id, NativeZstdPackKind::Object)
+        .expect("conflicting staged Pack should begin");
+    let conflicting_path = conflicting.temporary_path().to_path_buf();
+    let (payload_bytes, payload_sha256) = write_staged_pack(&mut conflicting, &conflicting_bytes);
+    let error = service
+        .finish_zstd_bulk_pack_upload("repo-bin", conflicting, payload_bytes, &payload_sha256)
+        .expect_err("different staged Pack must conflict");
+    assert_eq!(error.kind, NativeRepositoryErrorKind::Conflict);
+    assert!(!conflicting_path.exists());
+    assert_eq!(
+        fs::read(final_path).expect("winning Pack should remain"),
+        pack_bytes
+    );
+}
+
+#[test]
+fn invalid_and_abandoned_staged_pack_uploads_are_removed() {
+    let db = native_line_binary_db("staged-pack-cleanup");
+    let service = BinaryDbNativeRepositoryService::new(db);
+    create_native_binary_repository(&service);
+
+    let mut invalid = service
+        .begin_zstd_bulk_pack_upload("repo-bin", "PCK-0000000000AE", NativeZstdPackKind::Object)
+        .expect("invalid staged Pack should begin");
+    let invalid_path = invalid.temporary_path().to_path_buf();
+    let invalid_bytes = b"not a zstd Pack";
+    let (payload_bytes, payload_sha256) = write_staged_pack(&mut invalid, invalid_bytes);
+    let error = service
+        .finish_zstd_bulk_pack_upload("repo-bin", invalid, payload_bytes, &payload_sha256)
+        .expect_err("invalid staged Pack must fail validation");
+    assert_eq!(error.kind, NativeRepositoryErrorKind::BadRequest);
+    assert!(!invalid_path.exists());
+
+    let mut abandoned = service
+        .begin_zstd_bulk_pack_upload("repo-bin", "TPK-0000000000AF", NativeZstdPackKind::Tree)
+        .expect("abandoned staged Pack should begin");
+    let abandoned_path = abandoned.temporary_path().to_path_buf();
+    let mut abandoned_file = abandoned
+        .take_file()
+        .expect("abandoned staging file should be available");
+    abandoned_file
+        .write_all(b"partial")
+        .expect("abandoned staging bytes should write");
+    drop(abandoned_file);
+    std::mem::forget(abandoned);
+    assert!(abandoned_path.exists());
+
+    assert_eq!(
+        service
+            .cleanup_abandoned_zstd_pack_uploads()
+            .expect("abandoned staged Pack cleanup should succeed"),
+        1
+    );
+    assert!(!abandoned_path.exists());
+    assert_eq!(
+        service
+            .cleanup_abandoned_zstd_pack_uploads()
+            .expect("repeated staged Pack cleanup should be idempotent"),
+        0
+    );
 }

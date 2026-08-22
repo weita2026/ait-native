@@ -638,16 +638,18 @@ fn native_status_json_ignores_the_retired_debug_environment() {
     assert_eq!(normal.stdout, retired.stdout);
     let status = parse_json_bytes(&retired.stdout);
 
-    assert_eq!(status["workspace_dirty"].as_bool(), Some(true));
-    assert_eq!(
-        status["workspace_changed_paths_sample"],
-        json!([".aitignore"])
-    );
+    assert_eq!(status["contract"], json!("ait-agent-action/v1"));
+    assert_eq!(status["command"], json!("status"));
+    assert_eq!(status["workspace"]["dirty"].as_bool(), Some(true));
+    assert_eq!(status["workspace"]["changed_count"].as_u64(), Some(1));
+    assert_eq!(status["next_action"]["command"], json!("ait diff"));
     for internal in [
         "pack_count",
         "packed_blob_count",
         "ignore_policy",
         "phase_timings_ms",
+        "workspace_changed_paths_sample",
+        "reconciliation",
         "binary_db_authority_root",
         "objects_path",
         "refs_path",
@@ -1091,8 +1093,19 @@ fn native_repo_show_uses_fixed_authority() {
         Some("fixture-ait")
     );
     assert_eq!(shown["repository"]["namespace"].as_str(), Some(""));
+    assert_eq!(
+        shown["pack_storage"]["contract"].as_str(),
+        Some("ait.repository.pack_storage.v1")
+    );
+    assert_eq!(
+        shown["ci_capabilities"]["repository_pack_storage"]["supported"].as_bool(),
+        Some(true)
+    );
 
     let logged = log.lock().unwrap().clone();
+    assert!(logged
+        .iter()
+        .any(|row| row.method == "GET" && row.url == "/v1/handshake"));
     assert!(logged
         .iter()
         .any(|row| row.method == "GET" && row.url == "/v1/native/repository-authorities/7"));

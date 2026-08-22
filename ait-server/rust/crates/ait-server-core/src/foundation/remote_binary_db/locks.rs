@@ -15,6 +15,7 @@ impl ServerBinaryDbLockStore for ServerBinaryDbFilesystemStore {
             .read(true)
             .write(true)
             .create(true)
+            .truncate(false)
             .open(path)
             .map_err(|err| {
                 BinaryDbError::io(format!("open Binary DB lock file {}", path.display()), err)
@@ -414,10 +415,6 @@ impl BinaryDbCommandLockSet {
 
     pub fn paths(&self) -> &[PathBuf] {
         &self.paths
-    }
-
-    pub fn lock_paths(&self) -> &[PathBuf] {
-        self.paths()
     }
 
     pub fn release(&mut self) -> StoreResult<()> {

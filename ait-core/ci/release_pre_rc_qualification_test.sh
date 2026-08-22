@@ -218,4 +218,76 @@ expect_failure binary-path node "${delta}" \
 grep -F 'release delta changes a binary non-authority path' \
   "${temporary_root}/binary-path.stderr" >/dev/null
 
+git -C "${fixture}" checkout -q --detach "${qualified_commit}"
+write_family 1.2.3 1.2.3 SNP-111111111111
+git -C "${fixture}" add -A
+git -C "${fixture}" commit -qm 'qualified stable base'
+stable_base_commit=$(git -C "${fixture}" rev-parse HEAD)
+
+write_family 1.2.4 1.2.4 SNP-AAAAAAAAAAAA
+git -C "${fixture}" add -A
+git -C "${fixture}" commit -qm 'stable patch release'
+stable_patch_commit=$(git -C "${fixture}" rev-parse HEAD)
+node "${delta}" \
+  --repository "${fixture}" \
+  --qualified-commit "${stable_base_commit}" \
+  --release-commit "${stable_patch_commit}" >"${temporary_root}/stable-patch.json"
+jq -e '
+  .decision == "pass" and
+  .qualified_version == "1.2.3" and
+  .release_version == "1.2.4"
+' "${temporary_root}/stable-patch.json" >/dev/null
+
+git -C "${fixture}" checkout -q --detach "${stable_base_commit}"
+write_family 1.2.5 1.2.5 SNP-AAAAAAAAAAAA
+git -C "${fixture}" add -A
+git -C "${fixture}" commit -qm 'stable patch skip'
+stable_skip_commit=$(git -C "${fixture}" rev-parse HEAD)
+expect_failure stable-skip node "${delta}" \
+  --repository "${fixture}" \
+  --qualified-commit "${stable_base_commit}" \
+  --release-commit "${stable_skip_commit}"
+grep -F 'advance a qualified stable base by exactly one patch version' \
+  "${temporary_root}/stable-skip.stderr" >/dev/null
+
+git -C "${fixture}" checkout -q --detach "${stable_base_commit}"
+write_family 1.3.0 1.3.0 SNP-AAAAAAAAAAAA
+git -C "${fixture}" add -A
+git -C "${fixture}" commit -qm 'stable minor jump'
+stable_minor_commit=$(git -C "${fixture}" rev-parse HEAD)
+expect_failure stable-minor node "${delta}" \
+  --repository "${fixture}" \
+  --qualified-commit "${stable_base_commit}" \
+  --release-commit "${stable_minor_commit}"
+
+git -C "${fixture}" checkout -q --detach "${stable_base_commit}"
+printf 'own 1.2.3 dependency 1.2.3 kept\n' >"${fixture}/component/mixed.txt"
+git -C "${fixture}" add -A
+git -C "${fixture}" commit -qm 'qualified stable base with mixed occurrences'
+mixed_base_commit=$(git -C "${fixture}" rev-parse HEAD)
+git -C "${fixture}" checkout -q --detach "${mixed_base_commit}"
+write_family 1.2.4 1.2.4 SNP-AAAAAAAAAAAA
+printf 'own 1.2.4 dependency 1.2.3 kept\n' >"${fixture}/component/mixed.txt"
+git -C "${fixture}" add -A
+git -C "${fixture}" commit -qm 'stable patch advancing only the family occurrence'
+mixed_patch_commit=$(git -C "${fixture}" rev-parse HEAD)
+node "${delta}" \
+  --repository "${fixture}" \
+  --qualified-commit "${mixed_base_commit}" \
+  --release-commit "${mixed_patch_commit}" >"${temporary_root}/mixed-patch.json"
+jq -e '.decision == "pass"' "${temporary_root}/mixed-patch.json" >/dev/null
+
+git -C "${fixture}" checkout -q --detach "${mixed_base_commit}"
+write_family 1.2.4 1.2.4 SNP-AAAAAAAAAAAA
+printf 'own 1.2.4 dependency 9.9.9 kept\n' >"${fixture}/component/mixed.txt"
+git -C "${fixture}" add -A
+git -C "${fixture}" commit -qm 'stable patch with a non-token edit'
+mixed_bad_commit=$(git -C "${fixture}" rev-parse HEAD)
+expect_failure mixed-non-token node "${delta}" \
+  --repository "${fixture}" \
+  --qualified-commit "${mixed_base_commit}" \
+  --release-commit "${mixed_bad_commit}"
+grep -F 'release delta contains non-version changes' \
+  "${temporary_root}/mixed-non-token.stderr" >/dev/null
+
 printf 'pre-RC qualification contract: pass\n'

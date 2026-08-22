@@ -31,6 +31,13 @@ struct TaskStartPlanBinding {
     sync_action: String,
 }
 
+struct RemoteTaskStartContext<'a> {
+    remote: &'a RemoteRow,
+    debug_probe_override: Option<&'a JsonValue>,
+    total_started: Instant,
+    plan_source_preflight_elapsed: f64,
+}
+
 pub fn task_start_from_with_progress(
     repo: &RepoRuntime,
     source: &str,
@@ -74,13 +81,15 @@ pub fn task_start_from_with_progress(
             repo,
             &source,
             intent,
-            remote
-                .as_ref()
-                .ok_or_else(|| "Remote task-start context is missing.".to_string())?,
-            debug_probe_override,
             progress,
-            total_started,
-            plan_source_preflight_elapsed,
+            RemoteTaskStartContext {
+                remote: remote
+                    .as_ref()
+                    .ok_or_else(|| "Remote task-start context is missing.".to_string())?,
+                debug_probe_override,
+                total_started,
+                plan_source_preflight_elapsed,
+            },
         );
     }
     let plan_sync_started = Instant::now();
@@ -223,12 +232,15 @@ fn task_start_from_remote_atomic_with_progress(
     repo: &RepoRuntime,
     source: &TaskStartPlanSource,
     intent: &str,
-    remote: &RemoteRow,
-    debug_probe_override: Option<&JsonValue>,
     mut progress: Option<&mut TaskStartProgressEmitter<'_>>,
-    total_started: Instant,
-    plan_source_preflight_elapsed: f64,
+    context: RemoteTaskStartContext<'_>,
 ) -> Result<JsonValue, String> {
+    let RemoteTaskStartContext {
+        remote,
+        debug_probe_override,
+        total_started,
+        plan_source_preflight_elapsed,
+    } = context;
     let context_preflight_started = Instant::now();
     task_start_from_atomic_context_preflight(repo, source)?;
     let resolved_intent = normalized_text(Some(intent))
@@ -244,12 +256,20 @@ fn task_start_from_remote_atomic_with_progress(
     let remote_repo_name = remote.repo_name.clone().unwrap_or_else(|| repo.repo_name());
     let remote_base_line_preflight_started = Instant::now();
     let mut task_remote = http_task_remote(repo, remote)?;
-    task_start_remote_base_line_preflight_with_task_remote(
+    let remote_base_line = task_start_remote_base_line_preflight_with_task_remote(
         repo,
         remote,
         &mut task_remote,
         &remote_repo_name,
         &resolved_base_line,
+    )?;
+    ensure_remote_base_line_snapshot_with_task_remote(
+        repo,
+        remote,
+        &mut task_remote,
+        &remote_repo_name,
+        &resolved_base_line,
+        &remote_base_line,
     )?;
     let remote_base_line_preflight_elapsed = elapsed_ms(remote_base_line_preflight_started);
 

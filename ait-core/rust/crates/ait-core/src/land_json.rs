@@ -1,4 +1,4 @@
-use crate::json_support::{json, JsonCodec, JsonMap, JsonValue};
+use crate::json_support::{json, JsonMap, JsonValue};
 use crate::plan_http_client::{
     build_plan_http_request_spec, configured_repository_authority_path_segment,
     encode_path_segment, PlanHttpClientConfig, PlanHttpClientError, PlanHttpClientResult,
@@ -158,14 +158,6 @@ impl<S> LandJson<S> {
         json!({ "reason": optional_json_string_value(reason) })
     }
 
-    pub fn normalize_land_submission_payload_json(
-        &self,
-        payload_json: &str,
-    ) -> Result<JsonValue, String> {
-        let payload = self.parse_object_payload(payload_json, "land submission payload")?;
-        self.normalize_land_submission_payload(&JsonValue::Object(payload))
-    }
-
     pub fn normalize_land_submission_payload(
         &self,
         payload: &JsonValue,
@@ -174,14 +166,6 @@ impl<S> LandJson<S> {
         Ok(JsonValue::Object(
             require_object(Some(payload), "land submission payload")?.clone(),
         ))
-    }
-
-    pub fn normalize_landing_summary_payload_json(
-        &self,
-        payload_json: &str,
-    ) -> Result<JsonValue, String> {
-        let payload = self.parse_object_payload(payload_json, "landing summary payload")?;
-        self.normalize_landing_summary_payload(&JsonValue::Object(payload))
     }
 
     pub fn normalize_landing_summary_payload(
@@ -194,31 +178,6 @@ impl<S> LandJson<S> {
         ))
     }
 
-    pub fn optional_submission_id(&self, payload: &JsonValue) -> Option<String> {
-        let _ = &self.store;
-        optional_json_text(payload.get("submission_id"))
-    }
-
-    pub fn optional_land_status(&self, payload: &JsonValue) -> Option<String> {
-        let _ = &self.store;
-        optional_json_text(payload.get("status"))
-    }
-
-    pub fn optional_landed_snapshot_id(&self, payload: &JsonValue) -> Option<String> {
-        let _ = &self.store;
-        optional_json_text(payload.get("landed_snapshot_id")).or_else(|| {
-            payload
-                .get("result")
-                .and_then(JsonValue::as_object)
-                .and_then(|result| optional_json_text(result.get("landed_snapshot_id")))
-        })
-    }
-
-    pub fn optional_landed_at(&self, payload: &JsonValue) -> Option<String> {
-        let _ = &self.store;
-        optional_json_text(payload.get("landed_at"))
-    }
-
     pub fn landing_result(&self, payload: &JsonValue) -> JsonMap<String, JsonValue> {
         let _ = &self.store;
         payload
@@ -226,39 +185,6 @@ impl<S> LandJson<S> {
             .and_then(JsonValue::as_object)
             .cloned()
             .unwrap_or_default()
-    }
-
-    pub fn optional_blocker_class(&self, payload: &JsonValue) -> Option<String> {
-        let _ = &self.store;
-        optional_json_text(payload.get("blocker_class")).or_else(|| {
-            payload
-                .get("result")
-                .and_then(JsonValue::as_object)
-                .and_then(|result| optional_json_text(result.get("blocker_class")))
-        })
-    }
-
-    pub fn landing_policy(&self, payload: &JsonValue) -> Option<JsonValue> {
-        let _ = &self.store;
-        payload
-            .get("policy")
-            .or_else(|| {
-                payload
-                    .get("result")
-                    .and_then(JsonValue::as_object)
-                    .and_then(|result| result.get("policy"))
-            })
-            .and_then(JsonValue::as_object)
-            .cloned()
-            .map(JsonValue::Object)
-    }
-
-    pub fn land_status_is_pending(&self, status: &str) -> bool {
-        let _ = &self.store;
-        matches!(
-            status.trim().to_ascii_lowercase().as_str(),
-            "queued" | "running"
-        )
     }
 
     pub fn land_status_is_success(&self, status: &str) -> bool {
@@ -369,15 +295,6 @@ impl<S> LandJson<S> {
             .to_ascii_uppercase()
     }
 
-    pub fn landing_summary_blocker_class(
-        &self,
-        landing_summary: Option<&JsonMap<String, JsonValue>>,
-    ) -> String {
-        let _ = &self.store;
-        let result = self.landing_summary_result(landing_summary);
-        self.landing_result_blocker_class(&result)
-    }
-
     pub fn stale_policy_blocker_cleared(
         &self,
         landing_status: &str,
@@ -443,20 +360,6 @@ impl<S> LandJson<S> {
             }),
         );
         Some(JsonValue::Object(recovered))
-    }
-
-    fn parse_object_payload(
-        &self,
-        payload_json: &str,
-        label: &str,
-    ) -> Result<JsonMap<String, JsonValue>, String> {
-        let _ = &self.store;
-        JsonCodec::parse_object_with_error_prefix(
-            payload_json,
-            &format!("{label} invalid JSON"),
-            &format!("{label} must be an object."),
-        )
-        .map_err(|err| err.to_string())
     }
 }
 

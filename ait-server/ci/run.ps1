@@ -21,6 +21,46 @@ function Invoke-Checked {
     }
 }
 
+function Invoke-PatchsetGate {
+    Invoke-Checked "cargo" @(
+        "test", "--manifest-path", "rust/Cargo.toml", "--locked",
+        "--profile", "ait-ci", "--no-run",
+        "-p", "ait-server-core", "-p", "ait-server", "--lib",
+        "--test", "seam_contract_direct_tests",
+        "--features", "ait-server-core/patch-ci-harness"
+    )
+    Invoke-Checked "cargo" @(
+        "test", "--manifest-path", "rust/Cargo.toml", "--locked",
+        "--profile", "ait-ci",
+        "-p", "ait-server-core", "-p", "ait-server", "--lib",
+        "--test", "seam_contract_direct_tests",
+        "--features", "ait-server-core/patch-ci-harness", "--no-fail-fast"
+    )
+}
+
+function Invoke-WorkspaceGate {
+    Invoke-Checked "cargo" @(
+        "check", "--manifest-path", "rust/Cargo.toml", "--locked",
+        "--workspace", "--all-targets", "--all-features"
+    )
+    Invoke-Checked "cargo" @(
+        "clippy", "--manifest-path", "rust/Cargo.toml", "--locked",
+        "--workspace", "--all-targets", "--all-features", "--", "-D", "warnings"
+    )
+    Invoke-Checked "cargo" @(
+        "test", "--manifest-path", "rust/Cargo.toml", "--locked",
+        "--workspace", "--all-targets", "--no-fail-fast"
+    )
+    Invoke-Checked "cargo" @(
+        "test", "--manifest-path", "rust/Cargo.toml", "--locked",
+        "--workspace", "--doc", "--no-fail-fast"
+    )
+    Invoke-Checked "cargo" @(
+        "build", "--manifest-path", "rust/Cargo.toml", "--locked",
+        "--workspace", "--release"
+    )
+}
+
 $repoRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..")).Path
 if ([string]::IsNullOrWhiteSpace($env:AIT_RUNNER_ATTEMPT_ROOT)) {
     $ownedRoot = Join-Path ([IO.Path]::GetTempPath()) ("ait-server-ci-" + [guid]::NewGuid().ToString("N"))
@@ -67,18 +107,18 @@ try {
         throw "Python source is forbidden in ait-server: $($pythonFile.FullName)"
     }
 
-    Invoke-Checked "cargo" @(
-        "test", "--manifest-path", "rust/Cargo.toml", "--profile", "ait-ci", "--no-run",
-        "-p", "ait-server-core", "-p", "ait-server", "--lib",
-        "--test", "seam_contract_direct_tests",
-        "--features", "ait-server-core/patch-ci-harness"
-    )
-    Invoke-Checked "cargo" @(
-        "test", "--manifest-path", "rust/Cargo.toml", "--profile", "ait-ci",
-        "-p", "ait-server-core", "-p", "ait-server", "--lib",
-        "--test", "seam_contract_direct_tests",
-        "--features", "ait-server-core/patch-ci-harness", "--no-fail-fast"
-    )
+    switch ($Mode) {
+        "patchset" {
+            Invoke-PatchsetGate
+        }
+        "repo" {
+            Invoke-WorkspaceGate
+        }
+        "all" {
+            Invoke-PatchsetGate
+            Invoke-WorkspaceGate
+        }
+    }
 } finally {
     if (Test-Path -LiteralPath $ownedRoot) {
         Remove-Item -LiteralPath $ownedRoot -Recurse -Force

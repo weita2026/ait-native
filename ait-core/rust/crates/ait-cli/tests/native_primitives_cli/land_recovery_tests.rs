@@ -66,7 +66,7 @@ const CLOSEOUT_RECOVERY_ENV: [(&str, &str); 3] = [
 fn closeout_recovery_json(root: &Path, fixture_seed: u64, phase: &str) -> JsonValue {
     let output = command_output_with_env(
         root,
-        &["task", "land", "RT-1", "--json"],
+        &["task", "land", "RT-1", "--json", "--full"],
         &CLOSEOUT_RECOVERY_ENV,
     );
     assert!(
@@ -312,7 +312,7 @@ fn native_task_land_waits_for_timed_out_in_flight_mutation_then_replays() {
     let started = Instant::now();
     let output = command_output_with_env(
         root,
-        &["task", "land", "RT-1", "--json"],
+        &["task", "land", "RT-1", "--json", "--full"],
         &[
             ("AIT_REMOTE_MUTATION_RESPONSE_DEADLINE_SECONDS", "0.02"),
             ("AIT_REMOTE_MUTATION_SETTLE_WINDOW_SECONDS", "0.04"),
@@ -406,7 +406,7 @@ fn native_task_land_timeout_before_remote_mutation_stays_failed_and_bounded() {
     let started = Instant::now();
     let output = command_output_with_env(
         root,
-        &["task", "land", "RT-1", "--json"],
+        &["task", "land", "RT-1", "--json", "--full"],
         &[
             ("AIT_REMOTE_MUTATION_RESPONSE_DEADLINE_SECONDS", "0.01"),
             ("AIT_REMOTE_MUTATION_SETTLE_WINDOW_SECONDS", "0.05"),
@@ -935,6 +935,130 @@ fn native_task_land_unscoped_api_does_not_fallback_to_local_authority() {
     let repo = RepoRuntime::discover_from_path(&worktree).unwrap();
     let error = task_land_payload(&repo, "RT-1", None).unwrap_err();
     assert!(error.contains("as a remote task or change"));
+}
+
+#[test]
+fn native_local_task_land_from_root_reports_exact_bound_worktree_before_mutation() {
+    let (temp, worktree, started) =
+        init_cli_local_draft_worktree_repo("http://127.0.0.1:1");
+    let root = temp.path();
+    let source = "pub fn example() -> &'static str { \"guarded local land\" }\n";
+    write_file(&worktree.join("src/lib.rs"), source);
+    let snapshot = json_output(
+        &worktree,
+        &[
+            "snapshot",
+            "create",
+            "--message",
+            "guarded local land snapshot",
+            "--json",
+        ],
+    );
+    let snapshot_id = snapshot["snapshot_id"].as_str().unwrap().to_string();
+    let _unrelated_worktree = init_registered_worktree(
+        root,
+        "lt-other",
+        "feature/lt-other",
+        Some("LT-OTHER"),
+        Some("C-01"),
+        true,
+        Some("after_remote_land"),
+    );
+    set_active_root_worktree(root, "lt-other");
+
+    let task_before = json_output(
+        root,
+        &["task", "show", "LT-0001", "--local", "--json"],
+    );
+    let change_before = json_output(
+        root,
+        &[
+            "change",
+            "show",
+            "LT-0001/C-01",
+            "--local",
+            "--json",
+        ],
+    );
+    let main_before = json_output(root, &["line", "show", "main", "--json"]);
+    let feature_before = json_output(
+        root,
+        &["line", "show", "feature/lt-0001", "--json"],
+    );
+
+    let output = command_output_with_env(
+        root,
+        &[
+            "task",
+            "land",
+            "LT-0001",
+            "--local",
+            "--json",
+        ],
+        &[],
+    );
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("Repo root has bound worktree `lt-0001` for task `LT-0001`"));
+    assert!(stderr.contains("Continue in that task workspace"));
+    assert!(!stderr.contains("pinned to bound worktree `lt-other`"));
+    assert!(!stderr.contains("empty Land boundary"));
+    assert_eq!(
+        json_output(
+            root,
+            &["task", "show", "LT-0001", "--local", "--json"]
+        ),
+        task_before
+    );
+    assert_eq!(
+        json_output(
+            root,
+            &[
+                "change",
+                "show",
+                "LT-0001/C-01",
+                "--local",
+                "--json",
+            ]
+        ),
+        change_before
+    );
+    assert_eq!(
+        json_output(root, &["line", "show", "main", "--json"]),
+        main_before
+    );
+    assert_eq!(
+        json_output(
+            root,
+            &["line", "show", "feature/lt-0001", "--json"]
+        ),
+        feature_before
+    );
+    assert_eq!(feature_before["head_snapshot_id"].as_str(), Some(snapshot_id.as_str()));
+    assert_eq!(task_before["status"].as_str(), Some("active"));
+    assert_eq!(change_before["status"].as_str(), Some("draft"));
+    assert_eq!(
+        main_before["head_snapshot_id"].as_str(),
+        started["worktree"]["fork_snapshot_id"].as_str()
+    );
+    assert!(worktree.exists());
+
+    let landed = json_output(
+        &worktree,
+        &[
+            "task",
+            "land",
+            "LT-0001",
+            "--local",
+            "--json",
+        ],
+    );
+    assert_eq!(landed["task_status"].as_str(), Some("completed"));
+    assert_eq!(landed["change_status"].as_str(), Some("landed"));
+    assert_eq!(landed["landed_snapshot_id"].as_str(), Some(snapshot_id.as_str()));
+    assert_eq!(fs::read_to_string(root.join("src/lib.rs")).unwrap(), source);
+    assert!(!worktree.exists());
 }
 
 #[test]

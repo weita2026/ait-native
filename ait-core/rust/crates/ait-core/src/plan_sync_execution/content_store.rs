@@ -29,7 +29,6 @@ use crate::repository_pack_policy::{
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 
-#[allow(dead_code)]
 pub(super) struct BinaryDbPlanSyncLocalContentStore<B, const WRITE_LAYOUT: u32>
 where
     B: BinaryDb,
@@ -41,7 +40,6 @@ where
     snapshots: BinaryDbSnapshotStore<B, WRITE_LAYOUT>,
 }
 
-#[allow(dead_code)]
 impl<B, const WRITE_LAYOUT: u32> BinaryDbPlanSyncLocalContentStore<B, WRITE_LAYOUT>
 where
     B: BinaryDb,

@@ -161,7 +161,7 @@ fn resolve_full_test_items(
             suite.suite_id.trim()
         )
     })?;
-    if optional_bool(collection, "collect_once_before_sharding")?.unwrap_or(true) != true {
+    if !optional_bool(collection, "collect_once_before_sharding")?.unwrap_or(true) {
         return Err(format!(
             "Full-test suite `{}` collection must set collect_once_before_sharding=true.",
             suite.suite_id.trim()

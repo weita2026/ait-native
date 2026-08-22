@@ -101,10 +101,10 @@ case "${1:-} ${2:-}" in
     dirty=$(jq -r --arg repo "${repo}" '.[$repo].dirty' "${state}")
     if [[ ${dirty} == true ]]; then
       jq -n --arg repo "${repo}" \
-        '{repo_name: $repo, workspace_status: "dirty", workspace_changed_count: 1}'
+        '{repo_name: $repo, workspace: {status: "dirty", changed_count: 1}}'
     else
       jq -n --arg repo "${repo}" \
-        '{repo_name: $repo, workspace_status: "clean", workspace_changed_count: 0}'
+        '{repo_name: $repo, workspace: {status: "clean", changed_count: 0}}'
     fi
     ;;
   'snapshot show')

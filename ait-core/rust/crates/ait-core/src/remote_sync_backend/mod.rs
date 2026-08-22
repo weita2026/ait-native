@@ -262,18 +262,6 @@ impl RemoteSyncSnapshotInventory {
         Ok(())
     }
 
-    pub fn uses_zstd_pack_formats(&self) -> Result<bool, String> {
-        self.validate_formats()?;
-        Ok(self
-            .object_pack_formats
-            .iter()
-            .any(|format| is_zstd_object_pack_format(format))
-            || self
-                .tree_pack_formats
-                .iter()
-                .any(|format| is_zstd_tree_pack_format(format)))
-    }
-
     pub fn uses_only_zstd_pack_formats(&self) -> Result<bool, String> {
         self.validate_formats()?;
         let has_pack_formats =
@@ -312,45 +300,6 @@ pub struct RemoteSyncBackendNegotiation {
     pub backend: RemoteSyncBackendKind,
     pub reason: &'static str,
     pub capabilities: RemoteSyncCapabilities,
-}
-
-pub fn negotiate_remote_sync_backend(
-    local_inventory: &RemoteSyncSnapshotInventory,
-    capabilities: &RemoteSyncCapabilities,
-) -> Result<RemoteSyncBackendNegotiation, String> {
-    let local_uses_only_zstd = local_inventory.uses_only_zstd_pack_formats()?;
-    if !local_uses_only_zstd {
-        return Err(
-            "Remote sync requires all local pack metadata to use the current zstd formats."
-                .to_string(),
-        );
-    }
-    if capabilities.zstd_pack_bulk {
-        return Ok(RemoteSyncBackendNegotiation {
-            backend: RemoteSyncBackendKind::ZstdPackBulk,
-            reason: "local_inventory_and_remote_support_zstd_pack_bulk",
-            capabilities: capabilities.clone(),
-        });
-    }
-    Err(format!(
-        "Remote sync requires capability {REMOTE_SYNC_CAPABILITY_ZSTD_PACK_BULK}."
-    ))
-}
-
-pub fn validate_remote_sync_backend_request(
-    requested_backend: RemoteSyncBackendKind,
-    local_inventory: &RemoteSyncSnapshotInventory,
-    capabilities: &RemoteSyncCapabilities,
-) -> Result<(), String> {
-    validate_remote_sync_backend_capability(requested_backend, capabilities)?;
-    let local_uses_only_zstd = local_inventory.uses_only_zstd_pack_formats()?;
-    if requested_backend == RemoteSyncBackendKind::ZstdPackBulk && !local_uses_only_zstd {
-        return Err(
-            "ZstdPackBulkRemoteBackend requires all local pack metadata to use the current zstd formats."
-                .to_string(),
-        );
-    }
-    Ok(())
 }
 
 pub fn validate_remote_sync_backend_capability(

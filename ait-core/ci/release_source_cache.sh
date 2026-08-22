@@ -167,6 +167,7 @@ mv "${sanitized_config}" "${config_path}"
 (
   cd "${destination}"
   "${ait_bin}" status --json >"${evidence_root}/status.json"
+  "${ait_bin}" remote list --json >"${evidence_root}/remotes.json"
   "${ait_bin}" snapshot show "${source_snapshot}" --json \
     >"${evidence_root}/snapshot.json"
 )
@@ -176,12 +177,13 @@ jq -e \
   --arg source_line "${source_line}" \
   --arg source_snapshot "${source_snapshot}" '
     .repo_name == $repo_name and
-    .current_line == $source_line and
+    .line_name == $source_line and
     .head_snapshot_id == $source_snapshot and
-    .workspace_status == "clean" and
-    .workspace_changed_count == 0 and
-    .remote_count == 0
+    .workspace.status == "clean" and
+    .workspace.changed_count == 0
   ' "${evidence_root}/status.json" >/dev/null
+jq -e 'type == "array" and length == 0' \
+  "${evidence_root}/remotes.json" >/dev/null
 jq -e --arg source_snapshot "${source_snapshot}" '
   .snapshot_id == $source_snapshot and
   (.parent_snapshot_ids | length) == 0

@@ -25,21 +25,6 @@ fn submit_atomic_task_land(
     Ok(result)
 }
 
-pub(in super::super) async fn native_repository_task_land(
-    State(state): State<ServerState>,
-    Path(repo_name): Path<String>,
-    Json(payload): Json<JsonValue>,
-) -> Result<impl IntoResponse, ApiError> {
-    let routed = state.workflow_service.clone();
-    let runtime = state.runtime_service.clone();
-    let delivery_runtime = runtime.clone();
-    run_workflow_mutation("native atomic task land", runtime, move || {
-        let (_, workflow) = repository_workflow_store(routed.as_ref(), &repo_name)?;
-        submit_atomic_task_land(delivery_runtime.as_ref(), workflow.as_ref(), &payload)
-    })
-    .await
-}
-
 pub(in super::super) async fn native_repository_authority_task_land(
     State(state): State<ServerState>,
     Path(repo_id): Path<String>,

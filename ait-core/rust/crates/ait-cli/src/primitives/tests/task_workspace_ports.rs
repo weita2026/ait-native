@@ -833,6 +833,72 @@ fn task_audit_local_projection_uses_only_local_authority() {
 }
 
 #[test]
+fn completed_local_closeout_evidence_fails_safe_for_each_incomplete_phase() {
+    let target = json!({"ancestry": ["SNP-BASE", "SNP-LANDED"]});
+    let change_rows = vec![json!({
+        "change": {
+            "task_id": "LCT-1",
+            "change_id": "C-01",
+            "change_ref": "LCT-1/C-01",
+            "status": "landed",
+            "landed_snapshot_id": "SNP-LANDED",
+        },
+        "candidate_lines": [{
+            "line_name": "feature/lct-1",
+            "status": "archived",
+        }],
+    })];
+    let done_plan = json!({"status": "done", "scope": "local"});
+    let absent_worktree = json!({"status": "absent"});
+
+    let complete = local_task_closeout_evidence_from_parts(
+        done_plan.clone(),
+        absent_worktree.clone(),
+        &change_rows,
+        &target,
+    );
+    assert_eq!(complete["status"], "done");
+    assert_eq!(complete["feature_lines"]["active_count"], 0);
+    assert_eq!(complete["changes"]["incomplete_count"], 0);
+
+    let open_plan = local_task_closeout_evidence_from_parts(
+        json!({"status": "pending", "scope": "local"}),
+        absent_worktree.clone(),
+        &change_rows,
+        &target,
+    );
+    assert_eq!(open_plan["status"], "incomplete");
+
+    let retained_worktree = local_task_closeout_evidence_from_parts(
+        done_plan.clone(),
+        json!({"status": "present", "name": "lct-1"}),
+        &change_rows,
+        &target,
+    );
+    assert_eq!(retained_worktree["status"], "incomplete");
+
+    let mut active_line_rows = change_rows.clone();
+    active_line_rows[0]["candidate_lines"][0]["status"] = json!("active");
+    let active_line = local_task_closeout_evidence_from_parts(
+        done_plan.clone(),
+        absent_worktree.clone(),
+        &active_line_rows,
+        &target,
+    );
+    assert_eq!(active_line["status"], "incomplete");
+    assert_eq!(active_line["feature_lines"]["active_count"], 1);
+
+    let divergent_target = local_task_closeout_evidence_from_parts(
+        done_plan,
+        absent_worktree,
+        &change_rows,
+        &json!({"ancestry": ["SNP-OTHER"]}),
+    );
+    assert_eq!(divergent_target["status"], "incomplete");
+    assert_eq!(divergent_target["changes"]["incomplete_count"], 1);
+}
+
+#[test]
 fn task_remote_audit_read_accepts_task_record_remote_trait() {
     let mut remote = FakeTaskRecordRemote {
         task_audit: Some(json!({

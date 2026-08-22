@@ -1,0 +1,144 @@
+:root {
+  color-scheme: dark;
+  font-family: "Courier New", ui-monospace, monospace;
+  background: #050713;
+  color: #f7f4d2;
+  --ink: #f7f4d2;
+  --cyan: #65f7e5;
+  --orange: #ffb347;
+  --red: #ff5a6f;
+  --panel: #11162c;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  min-height: 100vh;
+  margin: 0;
+  display: grid;
+  place-items: center;
+  background:
+    radial-gradient(circle at 20% 15%, rgb(101 247 229 / 10%), transparent 28rem),
+    linear-gradient(#050713, #090b1c 70%, #02030a);
+}
+
+.cabinet {
+  width: min(94vw, 620px);
+  padding: 1.25rem;
+  border: 4px solid var(--ink);
+  border-radius: 18px;
+  background: #0b0f22;
+  box-shadow: 0 0 0 6px #252b50, 0 24px 80px #000;
+}
+
+.masthead {
+  text-align: center;
+  text-transform: uppercase;
+}
+
+.eyebrow,
+.tagline {
+  margin: 0.2rem 0;
+  color: var(--cyan);
+  font-size: 0.75rem;
+  letter-spacing: 0.12em;
+}
+
+h1 {
+  margin: 0.35rem 0;
+  color: var(--orange);
+  font-size: clamp(1.75rem, 7vw, 2.65rem);
+  line-height: 1;
+  text-shadow: 3px 3px 0 #9a294b;
+}
+
+.game-shell {
+  margin-top: 1rem;
+  border: 3px solid #59618f;
+  background: #03050f;
+}
+
+.hud,
+.status-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.55rem 0.75rem;
+  background: var(--panel);
+  color: var(--cyan);
+  font-size: 0.8rem;
+  text-transform: uppercase;
+}
+
+canvas {
+  display: block;
+  width: 100%;
+  height: auto;
+  image-rendering: pixelated;
+  background: #03050f;
+}
+
+.controls {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.65rem;
+  margin-top: 1rem;
+}
+
+button {
+  min-height: 44px;
+  border: 2px solid var(--ink);
+  border-radius: 4px;
+  background: #263061;
+  color: var(--ink);
+  font: inherit;
+  font-weight: 700;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+button:hover,
+button:focus-visible {
+  background: #394786;
+  outline: 2px solid var(--cyan);
+  outline-offset: 2px;
+}
+
+.controls p {
+  margin: 0;
+  color: #b8c0ed;
+  font-size: 0.75rem;
+  text-align: center;
+}
+
+kbd {
+  display: inline-block;
+  min-width: 1.55rem;
+  margin-right: 0.18rem;
+  padding: 0.12rem 0.25rem;
+  border: 1px solid #8089b8;
+  border-bottom-width: 3px;
+  border-radius: 3px;
+  background: #171d3a;
+  color: #fff;
+}
+
+@media (max-width: 520px) {
+  body {
+    display: block;
+  }
+
+  .cabinet {
+    width: 100%;
+    min-height: 100vh;
+    padding: 0.75rem;
+    border-width: 0;
+    border-radius: 0;
+  }
+
+  .controls {
+    grid-template-columns: 1fr 1fr;
+  }
+}

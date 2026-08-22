@@ -400,14 +400,6 @@ pub fn release_build(repo: &RepoRuntime, release_id: &str) -> Result<JsonValue, 
     release_build_with_native_inputs(repo, release_id, None, None)
 }
 
-pub fn release_build_with_native_matrix(
-    repo: &RepoRuntime,
-    release_id: &str,
-    native_matrix_dir: Option<&Path>,
-) -> Result<JsonValue, String> {
-    release_build_with_native_inputs(repo, release_id, native_matrix_dir, None)
-}
-
 pub fn release_build_with_native_inputs(
     repo: &RepoRuntime,
     release_id: &str,
@@ -445,10 +437,12 @@ pub fn release_build_with_native_inputs(
         &record,
         &bundle,
         &profile,
-        &dist_dir,
-        epoch,
-        native_matrix_dir,
-        native_command_dir,
+        NativeDistributionBuildOptions {
+            dist_dir: &dist_dir,
+            epoch,
+            explicit_matrix_root: native_matrix_dir,
+            explicit_host_source_dir: native_command_dir,
+        },
     )?;
     artifacts.extend(native_bundles);
     let manifest_path = dist_dir.join(format!(
@@ -584,10 +578,12 @@ pub fn release_native_bundle(
         &record,
         &source_bundle,
         &profile,
-        &dist_dir,
-        epoch,
-        Some(native_matrix_dir),
-        None,
+        NativeDistributionBuildOptions {
+            dist_dir: &dist_dir,
+            epoch,
+            explicit_matrix_root: Some(native_matrix_dir),
+            explicit_host_source_dir: None,
+        },
     )?;
     assert_release_artifact_paths_are_publishable(release_id, &native_bundles)?;
     let artifacts = replace_native_bundle_artifacts(&record, native_bundles);

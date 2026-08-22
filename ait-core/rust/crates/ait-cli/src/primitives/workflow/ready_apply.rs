@@ -1,5 +1,36 @@
 use super::*;
 
+pub(in crate::primitives) fn workflow_ready_ci_pending_wait_state(
+    state: &JsonValue,
+    code: &str,
+    ci_requested_patchsets: &BTreeSet<String>,
+) -> Result<Option<JsonValue>, String> {
+    if code == "waiting_for_ci" {
+        return Ok(Some(state.clone()));
+    }
+    if code != "run_patchset_ci" {
+        return Ok(None);
+    }
+    let patchset_id = workflow_nested_text(state, "patchset", "patchset_id")
+        .ok_or_else(|| "Run-Patchset-CI state is missing patchset.patchset_id.".to_string())?;
+    if !ci_requested_patchsets.contains(&patchset_id) {
+        return Ok(None);
+    }
+    let mut pending_state = state
+        .as_object()
+        .cloned()
+        .ok_or_else(|| "Workflow ready CI pending state must be an object.".to_string())?;
+    let next_action = pending_state
+        .get_mut("next_action")
+        .and_then(JsonValue::as_object_mut)
+        .ok_or_else(|| "Run-Patchset-CI state is missing next_action authority.".to_string())?;
+    next_action.insert(
+        "code".to_string(),
+        JsonValue::String("waiting_for_ci".to_string()),
+    );
+    Ok(Some(JsonValue::Object(pending_state)))
+}
+
 fn workflow_ready_apply_output(
     mut output: JsonMap<String, JsonValue>,
     final_snapshot_promotion: Option<&JsonValue>,
@@ -58,6 +89,7 @@ where
     let mut mutation_receipts = Vec::new();
     let mut seen_signatures = BTreeSet::new();
     let mut attempted_pending_waits = BTreeSet::new();
+    let mut ci_requested_patchsets = BTreeSet::new();
     let helper_started = Instant::now();
     workflow_progress_emit(
         &mut progress,
@@ -147,25 +179,28 @@ where
             )?
         };
         let mut code = workflow_nested_text(&state, "next_action", "code").unwrap_or_default();
-        if code == "waiting_for_ci" && !attempted_pending_waits.contains("waiting_for_ci") {
-            attempted_pending_waits.insert("waiting_for_ci".to_string());
-            let (remote_row, repo_name) = remote_context(repo, remote_name, None)?;
-            let mut closeout_remote = http_closeout_remote(repo, &remote_row)?;
-            let pending_state = state.clone();
-            state = {
-                let _range = perfetto_range!("ait.workflow_ready.wait_for_ci");
-                workflow_wait_for_pending_state(repo, &state, "waiting_for_ci", || {
-                    workflow_ready_ci_poll_payload_with_closeout_remote(
-                        repo,
-                        &mut closeout_remote,
-                        &repo_name,
-                        &pending_state,
-                        &effective_change_id,
-                        remote_name,
-                    )
-                })?
-            };
-            code = workflow_nested_text(&state, "next_action", "code").unwrap_or_default();
+        let pending_ci_state =
+            workflow_ready_ci_pending_wait_state(&state, &code, &ci_requested_patchsets)?;
+        if !attempted_pending_waits.contains("waiting_for_ci") {
+            if let Some(pending_state) = pending_ci_state {
+                attempted_pending_waits.insert("waiting_for_ci".to_string());
+                let (remote_row, repo_name) = remote_context(repo, remote_name, None)?;
+                let mut closeout_remote = http_closeout_remote(repo, &remote_row)?;
+                state = {
+                    let _range = perfetto_range!("ait.workflow_ready.wait_for_ci");
+                    workflow_wait_for_pending_state(repo, &pending_state, "waiting_for_ci", || {
+                        workflow_ready_ci_poll_payload_with_closeout_remote(
+                            repo,
+                            &mut closeout_remote,
+                            &repo_name,
+                            &pending_state,
+                            &effective_change_id,
+                            remote_name,
+                        )
+                    })?
+                };
+                code = workflow_nested_text(&state, "next_action", "code").unwrap_or_default();
+            }
         }
         let (current_change_id, current_patchset_id) = workflow_current_ids(&state);
         if code.is_empty() || code == "done" {
@@ -416,6 +451,14 @@ where
             .filter(|value| value.is_object())
             .cloned()
             .unwrap_or_else(|| json!({}));
+        if code == "run_patchset_ci" {
+            let patchset_id = current_patchset_id.clone().ok_or_else(|| {
+                "Workflow ready submitted Patchset CI without current Patchset identity."
+                    .to_string()
+            })?;
+            ci_requested_patchsets.insert(patchset_id);
+            attempted_pending_waits.remove("waiting_for_ci");
+        }
         let receipts = workflow_remote_action_mutation_receipts(&code, &result)
             .ok()
             .and_then(|value| value.as_array().cloned())

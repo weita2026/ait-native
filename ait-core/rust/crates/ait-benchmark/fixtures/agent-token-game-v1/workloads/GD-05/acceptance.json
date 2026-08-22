@@ -1,0 +1,28 @@
+{
+  "contract": "ait-agent-token-game-acceptance/v1",
+  "workload_id": "GD-05",
+  "minimum_score": 90,
+  "required_checks": [
+    "common-gameplay",
+    "seeded-replay",
+    "versioned-replay-persistence",
+    "versioned-settings-normalization",
+    "mobile-input-controls",
+    "focus-recovery",
+    "benchmark-panel",
+    "release-check-and-documentation",
+    "zero-python-and-no-external-network"
+  ],
+  "required_paths": [
+    "index.html",
+    "styles.css",
+    "src/game.js",
+    "src/replay.js",
+    "src/settings.js",
+    "src/mobile-input.js",
+    "scripts/self-test.mjs",
+    "scripts/release-check.mjs",
+    "RELEASE.txt"
+  ],
+  "forbidden_paths": ["node_modules", ".venv"]
+}

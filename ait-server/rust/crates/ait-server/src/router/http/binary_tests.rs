@@ -4,6 +4,7 @@ use crate::repository_retirement::REMOTE_AUTHORITY_FILE_MEDIA_TYPE;
 use axum::body::Body;
 use axum::http::Request;
 use hyper::body::to_bytes;
+use std::collections::BTreeMap;
 use std::path::{Path as FsPath, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::{env, fs};
@@ -59,6 +60,9 @@ fn state_from_operational(operational: Arc<OperationalBinaryRuntime>) -> ServerS
         workflow_service: binary.workflow,
         repository_service: binary.repository,
         operational_binary: operational,
+        zstd_pack_upload_admission: Arc::new(tokio::sync::Semaphore::new(
+            NATIVE_ZSTD_BULK_UPLOAD_CONCURRENCY,
+        )),
     }
 }
 
@@ -78,6 +82,31 @@ fn fresh_state(root: &FsPath) -> ServerState {
     state_from_operational(operational)
 }
 
+#[test]
+fn runtime_activation_removes_only_abandoned_zstd_pack_staging_files() {
+    let directory = TestDirectory::new("abandoned-pack-activation");
+    let generation = directory.path().join("generation");
+    initialize_fresh_generation(&generation, 1_786_000_000)
+        .expect("initialize frozen Binary v0 generation");
+    let pack_directory = generation.join("repositories/0/.ait/objects/packs");
+    fs::create_dir_all(&pack_directory).expect("Pack directory should create");
+    let abandoned = pack_directory.join("PCK-000000000104.zstpack.upload-999-0.tmp");
+    let unrelated = pack_directory.join("unrelated.tmp");
+    fs::write(&abandoned, b"partial Pack").expect("abandoned Pack stage should write");
+    fs::write(&unrelated, b"unrelated").expect("unrelated temp file should write");
+
+    let runtime = OperationalBinaryRuntime::open_generation(
+        generation,
+        directory.path().join("runtime-worker-leases.bin"),
+        60,
+        15,
+    )
+    .expect("runtime activation should clean abandoned Pack staging");
+    assert!(!abandoned.exists());
+    assert!(unrelated.exists());
+    drop(runtime);
+}
+
 async fn response_json(response: Response) -> JsonValue {
     let bytes = to_bytes(response.into_body())
         .await
@@ -94,6 +123,57 @@ fn post_json(uri: &str, payload: JsonValue) -> Request<Body> {
             serde_json::to_vec(&payload).expect("encode Binary route request"),
         ))
         .expect("Binary route request")
+}
+
+fn chunked_body(bytes: Vec<u8>, chunk_bytes: usize) -> Body {
+    let (mut sender, body) = Body::channel();
+    tokio::spawn(async move {
+        let mut offset = 0_usize;
+        while offset < bytes.len() {
+            let end = offset.saturating_add(chunk_bytes).min(bytes.len());
+            let chunk = Bytes::copy_from_slice(&bytes[offset..end]);
+            if sender.send_data(chunk).await.is_err() {
+                return;
+            }
+            offset = end;
+        }
+    });
+    body
+}
+
+fn put_pack(uri: &str, media_type: &str, body: Body) -> Request<Body> {
+    Request::builder()
+        .method("PUT")
+        .uri(uri)
+        .header(CONTENT_TYPE, media_type)
+        .body(body)
+        .expect("zstd Pack route request")
+}
+
+fn uploaded_object_pack_bytes(pack_id: &str) -> Vec<u8> {
+    serde_json::to_vec(&json!({
+        "pack_id": pack_id,
+        "pack_format": "ait-pack-v3-zstd-chunked",
+        "index_entry_name": "zstd-chunked-object-index",
+        "pack_index_checksum": "router-object-index-checksum",
+        "member_count": 0,
+        "total_bytes": 0,
+        "entries": [],
+    }))
+    .expect("object Pack test body should encode")
+}
+
+fn uploaded_tree_pack_bytes(pack_id: &str) -> Vec<u8> {
+    serde_json::to_vec(&json!({
+        "pack_id": pack_id,
+        "pack_format": "ait-tree-pack-v2-zstd-chunked",
+        "index_entry_name": "zstd-chunked-tree-index",
+        "pack_index_checksum": "router-tree-index-checksum",
+        "tree_count": 0,
+        "total_bytes": 0,
+        "trees": [],
+    }))
+    .expect("tree Pack test body should encode")
 }
 
 #[tokio::test]
@@ -245,6 +325,30 @@ async fn fresh_install_serves_fixed_numeric_repository_authorities() {
     let repository = response_json(repository).await;
     assert_eq!(repository["repository"]["repository_index"], 1);
     assert_eq!(repository["repository"]["repository_name"], "ait-server");
+    assert_eq!(
+        repository["pack_storage"]["contract"],
+        "ait.repository.pack_storage.v1"
+    );
+    assert_eq!(repository["pack_storage"]["object_pack_count"], 0);
+    assert_eq!(repository["pack_storage"]["tree_pack_count"], 0);
+    assert_eq!(repository["pack_storage"]["zstd_only_verified"], true);
+    assert_eq!(repository["pack_storage"]["validation"]["state"], "valid");
+
+    let default_line = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/v1/native/repository-authorities/1/lines/main")
+                .body(Body::empty())
+                .expect("fresh Repository default-Line request"),
+        )
+        .await
+        .expect("fresh Repository default-Line response");
+    assert_eq!(default_line.status(), StatusCode::OK);
+    let default_line = response_json(default_line).await;
+    assert_eq!(default_line["line_name"], "main");
+    assert_eq!(default_line["status"], "active");
+    assert!(default_line["head_snapshot_id"].is_null());
 
     let snapshot_existence = router
         .clone()
@@ -318,6 +422,22 @@ async fn repository_registration_is_numeric_live_and_namespace_idempotent() {
     assert_eq!(created["repository"]["repository_index"], 4);
     assert_eq!(created["repository"]["namespace"], "R");
 
+    let default_line = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/v1/native/repository-authorities/4/lines/main")
+                .body(Body::empty())
+                .expect("registered Repository default-Line request"),
+        )
+        .await
+        .expect("registered Repository default-Line response");
+    assert_eq!(default_line.status(), StatusCode::OK);
+    let default_line = response_json(default_line).await;
+    assert_eq!(default_line["line_name"], "main");
+    assert_eq!(default_line["status"], "active");
+    assert!(default_line["head_snapshot_id"].is_null());
+
     let repeated = router
         .clone()
         .oneshot(post_json("/v1/native/repository-authorities", registration))
@@ -327,6 +447,23 @@ async fn repository_registration_is_numeric_live_and_namespace_idempotent() {
     let repeated = response_json(repeated).await;
     assert_eq!(repeated["created"], false);
     assert_eq!(repeated["repository"]["repository_index"], 4);
+
+    let lines = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/v1/native/repository-authorities/4/lines")
+                .body(Body::empty())
+                .expect("idempotent Repository Line-list request"),
+        )
+        .await
+        .expect("idempotent Repository Line-list response");
+    assert_eq!(lines.status(), StatusCode::OK);
+    let lines = response_json(lines).await;
+    let lines = lines.as_array().expect("Repository Line array");
+    assert_eq!(lines.len(), 1);
+    assert_eq!(lines[0]["line_name"], "main");
+    assert!(lines[0]["head_snapshot_id"].is_null());
 
     let conflict = router
         .clone()
@@ -589,6 +726,89 @@ async fn retirement_transfer_routes_block_mutation_and_restore_under_a_new_index
     assert_eq!(purged["purged"], true);
     assert_eq!(purged["repository"]["repository_index"], 1);
 
+    let disposable = router
+        .clone()
+        .oneshot(post_json(
+            "/v1/native/repository-restores",
+            json!({
+                "manifest": manifest,
+                "policy_flags": 0b1000_0011,
+            }),
+        ))
+        .await
+        .expect("disposable Repository restore session response");
+    assert_eq!(disposable.status(), StatusCode::CREATED);
+    let disposable = response_json(disposable).await;
+    let disposable_token = disposable["restore_token"]
+        .as_str()
+        .expect("disposable restore token");
+    for expected_state in ["aborted", "absent"] {
+        let aborted = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!(
+                        "/v1/native/repository-restores/{disposable_token}/abort"
+                    ))
+                    .body(Body::empty())
+                    .expect("restore abort request"),
+            )
+            .await
+            .expect("restore abort response");
+        assert_eq!(aborted.status(), StatusCode::OK);
+        assert_eq!(response_json(aborted).await["state"], expected_state);
+    }
+
+    let oversized = router
+        .clone()
+        .oneshot(post_json(
+            "/v1/native/repository-restores",
+            json!({
+                "manifest": manifest,
+                "policy_flags": 0b1000_0011,
+            }),
+        ))
+        .await
+        .expect("oversized-upload Repository restore session response");
+    let oversized = response_json(oversized).await;
+    let oversized_token = oversized["restore_token"]
+        .as_str()
+        .expect("oversized-upload restore token");
+    let rejected = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri(format!(
+                    "/v1/native/repository-restores/{oversized_token}/files/worker_job.bin"
+                ))
+                .header(CONTENT_TYPE, REMOTE_AUTHORITY_FILE_MEDIA_TYPE)
+                .header(
+                    "content-length",
+                    (NATIVE_ZSTD_BULK_BODY_LIMIT_BYTES as u64 + 1).to_string(),
+                )
+                .body(Body::empty())
+                .expect("oversized restore upload request"),
+        )
+        .await
+        .expect("oversized restore upload response");
+    assert_eq!(rejected.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    let oversized_abort = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!(
+                    "/v1/native/repository-restores/{oversized_token}/abort"
+                ))
+                .body(Body::empty())
+                .expect("oversized restore abort inspection"),
+        )
+        .await
+        .expect("oversized restore abort inspection response");
+    assert_eq!(response_json(oversized_abort).await["state"], "absent");
+
     let session = router
         .clone()
         .oneshot(post_json(
@@ -847,4 +1067,189 @@ async fn numeric_repository_route_owns_plan_linked_task_identity() {
         .as_str()
         .expect("error text")
         .contains("Repository authority comes from the numeric route"));
+}
+
+#[tokio::test]
+async fn zstd_pack_routes_stream_chunked_bodies_and_preserve_exact_bytes() {
+    let directory = TestDirectory::new("streaming-pack-routes");
+    let router = build_router_with_state(fresh_state(directory.path()));
+
+    let object_pack_id = "PCK-000000000101";
+    let object_uri = format!(
+        "/v1/native/repository-authorities/0/remote-sync/zstd-bulk/object-packs/{object_pack_id}"
+    );
+    let object_bytes = uploaded_object_pack_bytes(object_pack_id);
+    let response = router
+        .clone()
+        .oneshot(put_pack(
+            &object_uri,
+            ZSTD_BULK_OBJECT_PACK_MEDIA_TYPE,
+            chunked_body(object_bytes.clone(), 7),
+        ))
+        .await
+        .expect("chunked object Pack upload response");
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response_json(response).await["status"], "uploaded");
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(&object_uri)
+                .body(Body::empty())
+                .expect("object Pack download request"),
+        )
+        .await
+        .expect("object Pack download response");
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        to_bytes(response.into_body())
+            .await
+            .expect("object Pack response body"),
+        object_bytes
+    );
+
+    let tree_pack_id = "TPK-000000000102";
+    let tree_uri = format!(
+        "/v1/native/repository-authorities/0/remote-sync/zstd-bulk/tree-packs/{tree_pack_id}"
+    );
+    let tree_bytes = uploaded_tree_pack_bytes(tree_pack_id);
+    let response = router
+        .clone()
+        .oneshot(put_pack(
+            &tree_uri,
+            ZSTD_BULK_TREE_PACK_MEDIA_TYPE,
+            chunked_body(tree_bytes.clone(), 11),
+        ))
+        .await
+        .expect("chunked tree Pack upload response");
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response_json(response).await["status"], "uploaded");
+    let response = router
+        .oneshot(
+            Request::builder()
+                .uri(&tree_uri)
+                .body(Body::empty())
+                .expect("tree Pack download request"),
+        )
+        .await
+        .expect("tree Pack download response");
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        to_bytes(response.into_body())
+            .await
+            .expect("tree Pack response body"),
+        tree_bytes
+    );
+}
+
+#[tokio::test]
+async fn zstd_pack_route_streams_beyond_axum_default_body_limit() {
+    let directory = TestDirectory::new("streaming-pack-default-limit");
+    let router = build_router_with_state(fresh_state(directory.path()));
+    let pack_id = "PCK-000000000105";
+    let uri =
+        format!("/v1/native/repository-authorities/0/remote-sync/zstd-bulk/object-packs/{pack_id}");
+    let mut payload: JsonValue = serde_json::from_slice(&uploaded_object_pack_bytes(pack_id))
+        .expect("object Pack test payload should parse");
+    payload["streaming_padding"] = JsonValue::String("x".repeat(3 * 1024 * 1024));
+    let payload = serde_json::to_vec(&payload).expect("large object Pack test body should encode");
+    assert!(payload.len() > 2 * 1024 * 1024);
+
+    let response = router
+        .oneshot(put_pack(
+            &uri,
+            ZSTD_BULK_OBJECT_PACK_MEDIA_TYPE,
+            chunked_body(payload, 64 * 1024),
+        ))
+        .await
+        .expect("large chunked object Pack upload response");
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response_json(response).await["status"], "uploaded");
+}
+
+#[tokio::test]
+async fn zstd_pack_routes_reject_empty_declared_oversize_and_exhausted_admission() {
+    let directory = TestDirectory::new("streaming-pack-rejections");
+    let state = fresh_state(directory.path());
+    let admission = state.zstd_pack_upload_admission.clone();
+    let router = build_router_with_state(state);
+    let uri =
+        "/v1/native/repository-authorities/0/remote-sync/zstd-bulk/object-packs/PCK-000000000103";
+
+    let empty = router
+        .clone()
+        .oneshot(put_pack(
+            uri,
+            ZSTD_BULK_OBJECT_PACK_MEDIA_TYPE,
+            Body::empty(),
+        ))
+        .await
+        .expect("empty object Pack response");
+    assert_eq!(empty.status(), StatusCode::BAD_REQUEST);
+
+    let declared_oversize = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri(uri)
+                .header(CONTENT_TYPE, ZSTD_BULK_OBJECT_PACK_MEDIA_TYPE)
+                .header(
+                    CONTENT_LENGTH,
+                    (NATIVE_ZSTD_BULK_BODY_LIMIT_BYTES as u64 + 1).to_string(),
+                )
+                .body(Body::empty())
+                .expect("declared oversized Pack request"),
+        )
+        .await
+        .expect("declared oversized Pack response");
+    assert_eq!(declared_oversize.status(), StatusCode::PAYLOAD_TOO_LARGE);
+
+    let permits = admission.available_permits();
+    let held_permits = admission
+        .clone()
+        .acquire_many_owned(permits as u32)
+        .await
+        .expect("test should reserve every Pack upload permit");
+    let unavailable = router
+        .oneshot(put_pack(
+            uri,
+            ZSTD_BULK_OBJECT_PACK_MEDIA_TYPE,
+            Body::from(uploaded_object_pack_bytes("PCK-000000000103")),
+        ))
+        .await
+        .expect("exhausted Pack admission response");
+    assert_eq!(unavailable.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(
+        unavailable
+            .headers()
+            .get(RETRY_AFTER)
+            .and_then(|value| value.to_str().ok()),
+        Some("1")
+    );
+    drop(held_permits);
+}
+
+#[tokio::test]
+async fn zstd_pack_chunk_stream_enforces_limit_before_writing_overflow_chunk() {
+    let directory = TestDirectory::new("streaming-pack-chunk-limit");
+    let path = directory.path().join("staged-pack.tmp");
+    let mut file = tokio::fs::File::create(&path)
+        .await
+        .expect("test staging file should create");
+    let mut body = chunked_body(b"abcd".to_vec(), 3);
+
+    let response = stream_zstd_pack_body(&mut body, &mut file, 3, "object-pack")
+        .await
+        .expect_err("overflowing chunk stream must fail")
+        .into_response();
+    assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    file.sync_all()
+        .await
+        .expect("test staging file should sync");
+    drop(file);
+    assert_eq!(
+        fs::read(path).expect("bounded staging bytes should read"),
+        b"abc"
+    );
 }

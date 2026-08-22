@@ -8,7 +8,8 @@ use ait_core::content_binary_db::{
     blob_id_from_sha256, object_pack_id_from_hash48, snapshot_id_from_hash48,
     tree_pack_id_from_hash48, BinaryDbContentWriteCoordinator, BinaryDbObjectPackMemberWriteInput,
     BinaryDbObjectPackWriteInput, BinaryDbSnapshotWriteInput, BinaryDbTreeEntryWriteInput,
-    BinaryDbTreePackTreeWriteInput, BinaryDbTreePackWriteInput,
+    BinaryDbTreePackTreeWriteInput, BinaryDbTreePackWriteInput, BinarySnapshotPayload,
+    BinarySnapshotRecord,
 };
 use ait_core::json_support::json;
 use ait_core::line_store::LineStore;
@@ -1414,7 +1415,7 @@ fn remote_sync_binary_db_selected_inventory_reads_binary_metadata_without_retire
 }
 
 #[test]
-fn remote_sync_binary_db_snapshot_completeness_checks_declared_graph_totals() {
+fn remote_sync_binary_db_snapshot_boundary_uses_only_committed_root_metadata() {
     const TEST_LAYOUT: u32 = 1;
     let temp = TempDir::new().unwrap();
     let root = temp.path();
@@ -1558,13 +1559,94 @@ fn remote_sync_binary_db_snapshot_completeness_checks_declared_graph_totals() {
             .unwrap();
     }
 
+    // Boundary detection must not reopen either physical pack or traverse the
+    // declared graph totals. Exact physical and descendant validation remains
+    // the explicit `ait gc validate` responsibility.
+    fs::remove_file(object_pack_abs_path).unwrap();
+    fs::remove_file(tree_pack_abs_path).unwrap();
+
     let store = ctx.remote_sync_local_store::<TEST_LAYOUT>().unwrap();
     let sync_ctx = RemoteSyncLocalStoreContext::new(root);
     assert!(store
         .snapshot_content_complete(&sync_ctx, &correct_snapshot_id)
         .unwrap());
-    assert!(!store
+    assert!(store
         .snapshot_content_complete(&sync_ctx, &wrong_snapshot_id)
+        .unwrap());
+}
+
+#[test]
+fn remote_sync_binary_db_snapshot_boundary_fails_closed_without_committed_root() {
+    const TEST_LAYOUT: u32 = 1;
+    let temp = TempDir::new().unwrap();
+    let root = temp.path();
+    fs::create_dir_all(root.join(".ait")).unwrap();
+    write_file(
+        &root.join(".ait/config.json"),
+        r#"{"repo_name":"ait","remote_sync_binary_db_storage":"binary"}"#,
+    );
+
+    let ctx = RepoRuntime::discover_from(root).unwrap();
+    let stores = ctx.binary_db_stores::<TEST_LAYOUT>();
+    let content = stores.content();
+    let snapshots = content.snapshots();
+    let store = ctx.remote_sync_local_store::<TEST_LAYOUT>().unwrap();
+    let sync_ctx = RemoteSyncLocalStoreContext::new(root);
+    let missing_snapshot_id = snapshot_id_from_hash48(0x1111_0000_0001);
+    assert!(!store
+        .snapshot_content_complete(&sync_ctx, &missing_snapshot_id)
+        .unwrap());
+
+    let rootless_hash48 = 0x1111_0000_0002;
+    let rootless_snapshot_id = snapshot_id_from_hash48(rootless_hash48);
+    let rootless_record = BinarySnapshotRecord {
+        snapshot_meta: 0,
+        history_flags: 0,
+        payload_len: 0,
+        payload_offset: 0,
+        snapshot_hash48: rootless_hash48,
+        parent_snapshot_index_plus1: 0,
+        root_tree_pack_index_plus1: 0,
+        root_entry_ordinal: 0,
+        line_index_plus1: 0,
+        manifest_hash: [0x44; 32],
+        file_count: 0,
+        total_bytes: 0,
+        created_at_s: 1_786_953_600,
+    };
+    let rootless_payload = BinarySnapshotPayload {
+        line_name: "main".to_string(),
+        message: None,
+        additional_parent_snapshot_indices: Vec::new(),
+    };
+
+    let mut uncommitted = snapshots
+        .begin_write_txn(BinaryDbCommandScope::ContentWrite)
+        .unwrap();
+    let (_, appended_id, _) = snapshots
+        .append_snapshot_with_id_index(&mut uncommitted, rootless_record.clone(), &rootless_payload)
+        .unwrap();
+    assert_eq!(appended_id, rootless_snapshot_id);
+    assert!(
+        store
+            .snapshot_content_complete(&sync_ctx, &rootless_snapshot_id)
+            .is_err(),
+        "an in-flight content write must never be reported as a complete boundary"
+    );
+    uncommitted.abort().unwrap();
+    assert!(!store
+        .snapshot_content_complete(&sync_ctx, &rootless_snapshot_id)
+        .unwrap());
+
+    let mut committed = snapshots
+        .begin_write_txn(BinaryDbCommandScope::ContentWrite)
+        .unwrap();
+    snapshots
+        .append_snapshot_with_id_index(&mut committed, rootless_record, &rootless_payload)
+        .unwrap();
+    committed.commit().unwrap();
+    assert!(!store
+        .snapshot_content_complete(&sync_ctx, &rootless_snapshot_id)
         .unwrap());
 }
 

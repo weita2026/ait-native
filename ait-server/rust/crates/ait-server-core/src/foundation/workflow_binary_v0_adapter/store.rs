@@ -689,12 +689,13 @@ where
             let record = self
                 .read_patchset(read, index)
                 .map_err(|error| Self::error("Patchset identity read", error))?;
-            if record.change_index == change_index && record.patch_ordinal == ordinal {
-                if found.replace(index).is_some() {
-                    return Err(format!(
-                        "Duplicate Binary DB v0 Patchset identity: {patchset_id}"
-                    ));
-                }
+            if record.change_index == change_index
+                && record.patch_ordinal == ordinal
+                && found.replace(index).is_some()
+            {
+                return Err(format!(
+                    "Duplicate Binary DB v0 Patchset identity: {patchset_id}"
+                ));
             }
         }
         found.ok_or_else(|| format!("Unknown patchset: {patchset_id}"))
@@ -795,7 +796,7 @@ where
             Some(latest_success) => latest_success,
             None => self.latest_succeeded_land(read, index)?,
         };
-        let (target_line, landed_at) = match latest_success {
+        let (target_line, landed_at, landed_snapshot_id) = match latest_success {
             Some((_land_index, land)) => {
                 let line_raw_record = read.read_record_v0(
                     crate::foundation::server_content_binary_db::ServerBinaryLineCodec::<1>::record_file(),
@@ -803,12 +804,20 @@ where
                 ).map_err(|error| Self::error("Land target Line read", error))?;
                 let line_record = crate::foundation::server_content_binary_db::ServerBinaryLineCodec::<1>::decode_record(&line_raw_record)
                     .map_err(|error| Self::error("Land target Line decode", error))?;
+                let landed_snapshot_index = land
+                    .landed_snapshot_index_plus1
+                    .checked_sub(1)
+                    .ok_or_else(|| {
+                        "Binary DB v0 successful Land is missing its landed Snapshot reference"
+                            .to_string()
+                    })?;
                 (
                     json!(self.content_line_name(read, &line_record)?),
                     Self::timestamp(land.updated_at_s)?,
+                    json!(self.content_snapshot_id(read, landed_snapshot_index)?),
                 )
             }
-            None => (JsonValue::Null, JsonValue::Null),
+            None => (JsonValue::Null, JsonValue::Null, JsonValue::Null),
         };
         let status = if record.change_state & CHANGE_STATE_CANCELED != 0 {
             "abandoned"
@@ -843,6 +852,7 @@ where
             "selected_patchset_number": selected_patchset_number,
             "selected_patchset_id": selected_patchset_id,
             "target_line": target_line,
+            "landed_snapshot_id": landed_snapshot_id,
             "created_at": Self::timestamp(record.created_at_s)?,
             "updated_at": Self::timestamp(record.updated_at_s)?,
             "landed_at": landed_at,
@@ -1978,12 +1988,11 @@ where
         let payload = WorkflowBinaryV0Codec::decode_snapshot_link_payload(&payload)
             .map_err(|error| BinaryDbServerWorkflowV0Store::<D>::error("validation", error))?;
         if (record.link_meta & SNAPSHOT_LINK_HAS_WORKTREE_NAME != 0)
-            != !payload.worktree_name.is_empty()
-            || (record.link_meta & SNAPSHOT_LINK_HAS_LINE_NAME != 0)
-                != !payload.line_name.is_empty()
+            == payload.worktree_name.is_empty()
+            || (record.link_meta & SNAPSHOT_LINK_HAS_LINE_NAME != 0) == payload.line_name.is_empty()
             || (record.link_meta & SNAPSHOT_LINK_HAS_AUTHOR_OR_MODEL != 0)
                 != (!payload.author_mode.is_empty() || !payload.model_name.is_empty())
-            || (record.change_index_plus1 != 0) != !payload.change_id.is_empty()
+            || (record.change_index_plus1 != 0) == payload.change_id.is_empty()
         {
             return Err(format!(
                 "Binary DB v0 Snapshot Link {index} payload presence flags disagree"

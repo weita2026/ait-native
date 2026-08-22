@@ -9,8 +9,22 @@ pub fn change_create(
     local: bool,
     remote_name: Option<&str>,
 ) -> Result<JsonValue, String> {
-    guard_repo_root_pinned_bound_worktree(repo, Some(task_id), "ait change create")?;
     guard_current_worktree_task_bound_authoring(repo, "change create")?;
+    change_create_for_worktree_bootstrap(repo, task_id, title, base_line, local, remote_name)
+}
+
+/// Create a change without the task-bound authoring guard. Reserved for the
+/// task-start worktree bootstrap, which runs at the repo root before the
+/// bound worktree exists; the public command path stays fail-closed.
+pub(in crate::primitives) fn change_create_for_worktree_bootstrap(
+    repo: &RepoRuntime,
+    task_id: &str,
+    title: &str,
+    base_line: Option<&str>,
+    local: bool,
+    remote_name: Option<&str>,
+) -> Result<JsonValue, String> {
+    guard_repo_root_pinned_bound_worktree(repo, Some(task_id), "ait change create")?;
     guard_current_worktree_task_scope(repo, task_id, "ait change create")?;
     let bound_base_line = current_worktree_metadata(repo)?
         .and_then(|metadata| metadata.target_base_line)

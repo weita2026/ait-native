@@ -197,7 +197,7 @@ fn run_status(repo: RepoRuntime, args: StatusArgs) -> Result<(), String> {
         repo_status_cmd(&repo)?
     };
     let _range = perfetto_range!("ait.cli.status.render");
-    emit_status_result(&payload, args.json)
+    emit_status_result(&payload, args.json, args.full)
 }
 
 fn run_diff(repo: RepoRuntime, args: DiffArgs) -> Result<(), String> {

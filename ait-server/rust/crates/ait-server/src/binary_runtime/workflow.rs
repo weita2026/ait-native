@@ -137,47 +137,6 @@ impl RoutedBinaryWorkflowStore {
             store.get_patchset(None, patchset_id)
         })
     }
-
-    pub(crate) fn patchset_ci_workflow_rows(
-        &self,
-        patchset_id: &str,
-    ) -> Result<(JsonValue, JsonValue), String> {
-        let store = self.store_for_patchset(patchset_id)?;
-        Self::patchset_ci_workflow_rows_from_store(store.as_ref(), patchset_id)
-    }
-
-    pub(crate) fn repository_patchset_ci_workflow_rows(
-        &self,
-        repo_name: &str,
-        patchset_id: &str,
-    ) -> Result<(JsonValue, JsonValue), String> {
-        let (_, store) = self.store_for_repo(repo_name)?;
-        Self::patchset_ci_workflow_rows_from_store(store.as_ref(), patchset_id)
-    }
-
-    pub(crate) fn repository_patchset_ci_workflow_rows_by_id(
-        &self,
-        repository_index: &str,
-        patchset_id: &str,
-    ) -> Result<(JsonValue, JsonValue), String> {
-        let (_, store) = self.store_for_repo(repository_index)?;
-        Self::patchset_ci_workflow_rows_from_store(store.as_ref(), patchset_id)
-    }
-
-    fn patchset_ci_workflow_rows_from_store(
-        store: &dyn ServerWorkflowStore,
-        patchset_id: &str,
-    ) -> Result<(JsonValue, JsonValue), String> {
-        let patchset = store.get_patchset(None, patchset_id)?;
-        let change_ref = patchset
-            .get("change_ref")
-            .and_then(JsonValue::as_str)
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .ok_or_else(|| format!("Patchset {patchset_id} is missing change_ref"))?;
-        let change = store.get_change(None, change_ref)?;
-        Ok((patchset, change))
-    }
 }
 
 fn is_missing_workflow_entity(error: &str) -> bool {
@@ -185,25 +144,6 @@ fn is_missing_workflow_entity(error: &str) -> bool {
         || error.contains(": Unknown ")
         || error.contains(" did not match any Binary DB records")
         || error.contains(" is not a Task in this repository namespace")
-}
-
-#[cfg(test)]
-mod tests {
-    use super::is_missing_workflow_entity;
-
-    #[test]
-    fn binary_workflow_lookup_treats_empty_adapter_matches_as_repository_local_misses() {
-        assert!(is_missing_workflow_entity(
-            "Binary DB workflow adapter ServerWorkflowPatchsetStore::get_patchset failed: PatchsetById did not match any Binary DB records"
-        ));
-        assert!(is_missing_workflow_entity("Unknown patchset RSEP-1"));
-        assert!(is_missing_workflow_entity(
-            "\"RAST-0001\" is not a Task in this repository namespace"
-        ));
-        assert!(!is_missing_workflow_entity(
-            "patchset.bin layout is corrupt"
-        ));
-    }
 }
 
 impl ServerWorkflowTaskStore for RoutedBinaryWorkflowStore {
@@ -427,5 +367,24 @@ impl ServerWorkflowLandStore for RoutedBinaryWorkflowStore {
                 store.get_land(None, submission_id)
             }),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_missing_workflow_entity;
+
+    #[test]
+    fn binary_workflow_lookup_treats_empty_adapter_matches_as_repository_local_misses() {
+        assert!(is_missing_workflow_entity(
+            "Binary DB workflow adapter ServerWorkflowPatchsetStore::get_patchset failed: PatchsetById did not match any Binary DB records"
+        ));
+        assert!(is_missing_workflow_entity("Unknown patchset RSEP-1"));
+        assert!(is_missing_workflow_entity(
+            "\"RAST-0001\" is not a Task in this repository namespace"
+        ));
+        assert!(!is_missing_workflow_entity(
+            "patchset.bin layout is corrupt"
+        ));
     }
 }

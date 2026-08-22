@@ -1,6 +1,6 @@
 use super::*;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Default)]
 pub struct StoreGeneration(u64);
 
 impl StoreGeneration {
@@ -10,12 +10,6 @@ impl StoreGeneration {
 
     pub fn value(self) -> u64 {
         self.0
-    }
-}
-
-impl Default for StoreGeneration {
-    fn default() -> Self {
-        Self(0)
     }
 }
 

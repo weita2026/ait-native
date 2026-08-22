@@ -23,13 +23,16 @@ artifact_path() {
 cmp "$(artifact_path ait-cli)" "${TEMP_ROOT}/bin/ait"
 cmp "$(artifact_path ait-agent)" "${TEMP_ROOT}/bin/ait-agent"
 cmp "$(artifact_path ait-agent-worker)" "${TEMP_ROOT}/bin/ait-agent-worker"
+cmp "$(artifact_path aitk)" "${TEMP_ROOT}/bin/aitk"
 test -x "${TEMP_ROOT}/bin/ait"
 test -x "${TEMP_ROOT}/bin/ait-agent"
 test -x "${TEMP_ROOT}/bin/ait-agent-worker"
+test -x "${TEMP_ROOT}/bin/aitk"
 SEMVER_PATTERN='[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?'
 "${TEMP_ROOT}/bin/ait" --version | grep -Eq "^ait ${SEMVER_PATTERN}$"
 "${TEMP_ROOT}/bin/ait-agent" --version | grep -Eq "^ait-agent ${SEMVER_PATTERN}$"
 "${TEMP_ROOT}/bin/ait-agent-worker" --version | grep -Eq "^ait-agent-worker ${SEMVER_PATTERN}$"
+"${TEMP_ROOT}/bin/aitk" --version | grep -Eq "^aitk ${SEMVER_PATTERN}$"
 
 if "${ROOT_DIR}/ait.sh" core install --unknown-option >/dev/null 2>&1; then
   printf 'Unknown install options must fail closed.\n' >&2

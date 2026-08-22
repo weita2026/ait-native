@@ -295,19 +295,6 @@ where
         Ok(record)
     }
 
-    pub fn overwrite_plan_record<F>(
-        &self,
-        write: &mut BinaryDbWriteTxn<'_, B, F>,
-        plan_index: u32,
-        record: &PlanRecord,
-    ) -> StoreResult<()>
-    where
-        F: BinaryDbFsyncPolicy,
-    {
-        let bytes = PlanCodec::<WRITE_LAYOUT>::encode_record(record)?;
-        write.overwrite_record(Self::plan_file(), plan_index, &bytes)
-    }
-
     pub fn append_plan_revision_record<F>(
         &self,
         write: &mut BinaryDbWriteTxn<'_, B, F>,

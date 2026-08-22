@@ -40,16 +40,6 @@ pub trait StashStore {
     fn drop_stash(&self, stash_id: &str) -> StashStoreResult<Option<DroppedStashRecord>>;
 }
 
-pub fn create_stash_with_stash_store<S>(
-    store: &S,
-    record: NewStashRecord<'_>,
-) -> StashStoreResult<StashRecord>
-where
-    S: StashStore + ?Sized,
-{
-    store.create_stash(record)
-}
-
 pub fn list_stashes_with_stash_store<S>(store: &S) -> StashStoreResult<Vec<StashRecord>>
 where
     S: StashStore + ?Sized,

@@ -220,7 +220,7 @@ impl PatchsetSmokeSuite for StableSmokeSuite {
             return Err("policy eval smoke did not pass".to_string());
         }
 
-        let task_land = json_output(root, &["task", "land", "RT-1", "--json"])?;
+        let task_land = json_output(root, &["task", "land", "RT-1", "--json", "--full"])?;
         if string_field(&task_land, "apply_status").as_deref() != Some("done") {
             return Err("task land smoke did not finish land and task completion".to_string());
         }

@@ -210,30 +210,6 @@ fn patchset_ci_specs_prefer_the_configured_repository_authority_id() {
 }
 
 #[test]
-fn patchset_json_normalizes_payload_boundaries() {
-    let patchset = PatchsetJson::stateless();
-    let payload = patchset
-        .normalize_patchset_payload_json(r#"{"patchset_id":"RCP-1"}"#)
-        .unwrap();
-    assert_eq!(payload["patchset_id"], json!("RCP-1"));
-
-    let list = patchset
-        .normalize_patchset_list_payload_json(
-            r#"[{"patchset_id":"RCP-1"},{"patchset_id":"RCP-2"}]"#,
-        )
-        .unwrap();
-    assert_eq!(list.as_array().unwrap().len(), 2);
-
-    let ci_status = patchset
-        .normalize_patchset_ci_status_payload_json(r#"{"tests_status":"pass"}"#)
-        .unwrap();
-    assert_eq!(ci_status["tests_status"], json!("pass"));
-    assert!(patchset
-        .normalize_patchset_list_payload_json(r#"[{"patchset_id":"RCP-1"}, null]"#)
-        .is_err());
-}
-
-#[test]
 fn patchset_json_resolves_ids_and_derives_patchset_ids() {
     let patchset = PatchsetJson::stateless();
     assert_eq!(

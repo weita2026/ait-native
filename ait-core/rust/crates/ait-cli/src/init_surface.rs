@@ -418,13 +418,15 @@ fn prepare_existing_init(
     })
 }
 
+type PreparedExistingConfig = (JsonMap<String, JsonValue>, bool, Option<String>);
+
 fn prepare_existing_config(
     root: &Path,
     ait_dir: &Path,
     existing_config: Option<JsonMap<String, JsonValue>>,
     existing_policy_id: Option<String>,
     request: &ValidatedInitRequest,
-) -> Result<(JsonMap<String, JsonValue>, bool, Option<String>), String> {
+) -> Result<PreparedExistingConfig, String> {
     let config_was_missing = existing_config.is_none();
     let policy_was_missing = existing_policy_id.is_none();
     let mut config = existing_config.unwrap_or_default();

@@ -5,6 +5,7 @@ use crate::repository_retirement::{
     recover_purge_journal, restore_staging_parent, validate_staged_archive, write_staged_file,
     RemoteExportManifest, REMOTE_EXPORT_SCHEMA, REMOTE_EXPORT_STATE_COMPLETE,
 };
+use ait_server_core::foundation::native_repositories::BinaryDbNativeRepositoryService;
 use ait_server_core::foundation::operational_binary_v0::{
     REPOSITORY_LIFECYCLE_ACTIVE, REPOSITORY_LIFECYCLE_PURGED, REPOSITORY_LIFECYCLE_RETIRING,
     WORKER_JOB_ERROR_RETRYABLE_EXECUTION, WORKER_JOB_ERROR_TERMINAL_EXECUTION,
@@ -13,8 +14,8 @@ use ait_server_core::foundation::operational_binary_v0::{
     WORKER_JOB_STATE_SUCCEEDED,
 };
 use ait_server_core::foundation::remote_binary_db::{
-    BinaryDbError, BinaryDbErrorKind, BinaryDbReadTxn, FilesystemServerRemoteBinaryDb, RepoId,
-    RepoName, StoreGeneration, StorePath, StoreResult,
+    sync_filesystem_directory, BinaryDbError, BinaryDbErrorKind, BinaryDbReadTxn,
+    FilesystemServerRemoteBinaryDb, RepoId, RepoName, StoreGeneration, StorePath, StoreResult,
 };
 use ait_server_core::foundation::server_binary_lifecycle::{
     ServerBinaryActivation, ServerBinaryLifecycleConfig, SERVER_FRESH_COMPLETION_FILE,
@@ -22,6 +23,7 @@ use ait_server_core::foundation::server_binary_lifecycle::{
 };
 use ait_server_core::foundation::server_content_binary_db::{
     validate_server_snapshot_dag_v0, validate_server_tree_serving_authority_v0,
+    ServerBinaryRepositoryContentStore,
 };
 use ait_server_core::foundation::server_operational_job_domain::{
     FrozenBinaryV0WorkerJobAuthority, WorkerJobCompactCiEvidence, WorkerJobExecutionAuthority,
@@ -44,11 +46,12 @@ use ait_server_core::foundation::workflow_binary_v0::{
 use ait_server_core::foundation::workflow_binary_v0_adapter::{
     validate_frozen_server_workflow_v0, BinaryDbServerWorkflowV0Store,
 };
+use fs2::FileExt;
 use serde::Deserialize;
 use serde_json::{json, Value as JsonValue};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
-use std::fs;
+use std::fs::{self, File, OpenOptions};
 use std::io::ErrorKind;
 #[cfg(unix)]
 use std::os::unix::fs::MetadataExt;
@@ -56,7 +59,6 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-const ACTIVATION_SCHEMA: &str = "ait.server.binary_v0.activation.v1";
 const GENERATION_SCHEMA: &str = "ait.server.binary_v0.operational_generation.v1";
 const POSTGRES_CONVERSION_COMPLETION_SCHEMA: &str = "ait.server.postgres_to_binary_v0.complete.v1";
 const POSTGRES_CONVERSION_REPORT_SCHEMA: &str = "ait.server.postgres_to_binary_v0.report.v1";
@@ -88,6 +90,10 @@ const DEFAULT_NATIVE_TIMEOUT_MS: u64 = 15 * 60 * 1000;
 const MAX_LIST_LIMIT: usize = 1_000;
 const MAX_CLAIM_CANDIDATES: usize = 1_024;
 const MAX_FAILURE_DETAIL_CHARS: usize = 4_096;
+const MAX_RESTORE_SESSIONS: usize = 64;
+const DEFAULT_RESTORE_SESSION_TTL_S: u64 = 24 * 60 * 60;
+const DEFAULT_RESTORE_STAGING_MAX_BYTES: u64 = 64 * 1024 * 1024 * 1024;
+const RESTORE_STAGING_LOCK_FILE: &str = ".restore-sessions.lock";
 
 pub(crate) type OperationalDb = FilesystemServerRemoteBinaryDb;
 type FrozenAuthority = FrozenBinaryV0WorkerJobAuthority<OperationalDb>;
@@ -191,15 +197,6 @@ fn require_empty_fresh_runtime_root(root: &Path) -> Result<(), String> {
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct ActivationPointer {
-    schema: String,
-    layout_id: u32,
-    generation: String,
-    completion_sha256: String,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
 struct GenerationManifest {
     schema: String,
     layout_id: u32,
@@ -286,6 +283,8 @@ struct RestoreSession {
     manifest: RemoteExportManifest,
     policy_flags: u8,
     session_root: PathBuf,
+    reserved_bytes: u64,
+    expires_at_s: u64,
     committed: Option<JsonValue>,
 }
 
@@ -294,6 +293,7 @@ struct OperationalRepositoryRuntime {
     entry: OperationalRepositoryEntry,
     authority: Arc<FrozenAuthority>,
     jobs: ServerOperationalWorkerJobStore,
+    native: BinaryDbNativeRepositoryService<OperationalDb>,
 }
 
 #[derive(Clone)]
@@ -304,69 +304,61 @@ pub(crate) struct OperationalBinaryRuntime {
     retirement_exports: Arc<Mutex<BTreeMap<u32, RemoteExportManifest>>>,
     restore_sessions: Arc<Mutex<BTreeMap<String, RestoreSession>>>,
     restore_staging_parent: PathBuf,
+    _restore_staging_lock: Arc<File>,
+    restore_session_ttl_s: u64,
+    restore_staging_max_bytes: u64,
     leases: ServerOperationalRuntimeLeases,
     lease_duration_s: u32,
     retry_delay_s: u32,
 }
 
 impl OperationalBinaryRuntime {
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn repository_indexes(&self) -> Vec<u32> {
+        self.repositories
+            .read()
+            .expect("Repository runtime lock is poisoned")
+            .keys()
+            .copied()
+            .collect()
+    }
+
     pub(crate) fn ensure_from_config(config: &ServerBinaryLifecycleConfig) -> Result<Self, String> {
         let activation = ensure_runtime_activation(config)?;
-        Self::from_activation(
+        Self::from_activation_with_restore_limits(
             &activation,
             config.runtime_lease_replica.clone(),
             DEFAULT_LEASE_DURATION_S,
             DEFAULT_RETRY_DELAY_S,
+            DEFAULT_RESTORE_SESSION_TTL_S,
+            DEFAULT_RESTORE_STAGING_MAX_BYTES,
         )
     }
 
-    pub(crate) fn from_activation_pointer(
-        pointer_path: &Path,
-        lease_replica: PathBuf,
-        lease_duration_s: u32,
-        retry_delay_s: u32,
-    ) -> Result<Self, String> {
-        require_positive_runtime_durations(lease_duration_s, retry_delay_s)?;
-        let pointer_bytes = read_regular_file(pointer_path)?;
-        let pointer: ActivationPointer =
-            serde_json::from_slice(&pointer_bytes).map_err(|error| {
-                format!(
-                    "failed to parse Binary v0 activation pointer {}: {error}",
-                    pointer_path.display()
-                )
-            })?;
-        if pointer.schema != ACTIVATION_SCHEMA
-            || pointer.layout_id != 1
-            || !is_sha256(&pointer.completion_sha256)
-        {
-            return Err("Binary v0 activation pointer envelope is invalid".to_string());
-        }
-        let generation_path = PathBuf::from(&pointer.generation);
-        if !generation_path.is_absolute() {
-            return Err("Binary v0 activation generation must be absolute".to_string());
-        }
-        let generation_root = canonical_real_directory(&generation_path)?;
-        let (completion_path, completion_bytes) =
-            completion_for_hash(&generation_root, &pointer.completion_sha256)?;
-        if sha256(&completion_bytes) != pointer.completion_sha256 {
-            return Err(
-                "Binary v0 activation completion hash disagrees with the generation".to_string(),
-            );
-        }
-        validate_completion(&generation_root, &completion_path, &completion_bytes)?;
-        Self::open_generation(
-            generation_root,
-            lease_replica,
-            lease_duration_s,
-            retry_delay_s,
-        )
-    }
-
+    #[cfg(test)]
     pub(crate) fn from_activation(
         activation: &ServerBinaryActivation,
         lease_replica: PathBuf,
         lease_duration_s: u32,
         retry_delay_s: u32,
+    ) -> Result<Self, String> {
+        Self::from_activation_with_restore_limits(
+            activation,
+            lease_replica,
+            lease_duration_s,
+            retry_delay_s,
+            DEFAULT_RESTORE_SESSION_TTL_S,
+            DEFAULT_RESTORE_STAGING_MAX_BYTES,
+        )
+    }
+
+    fn from_activation_with_restore_limits(
+        activation: &ServerBinaryActivation,
+        lease_replica: PathBuf,
+        lease_duration_s: u32,
+        retry_delay_s: u32,
+        restore_session_ttl_s: u64,
+        restore_staging_max_bytes: u64,
     ) -> Result<Self, String> {
         let completion_bytes = read_regular_file(&activation.completion_file)?;
         if sha256(&completion_bytes) != activation.completion_sha256 {
@@ -379,21 +371,48 @@ impl OperationalBinaryRuntime {
             &activation.completion_file,
             &completion_bytes,
         )?;
-        Self::open_generation(
+        Self::open_generation_with_restore_limits(
             activation.generation_root.clone(),
             lease_replica,
             lease_duration_s,
             retry_delay_s,
+            restore_session_ttl_s,
+            restore_staging_max_bytes,
         )
     }
 
+    #[cfg(test)]
     pub(crate) fn open_generation(
         generation_root: PathBuf,
         lease_replica: PathBuf,
         lease_duration_s: u32,
         retry_delay_s: u32,
     ) -> Result<Self, String> {
+        Self::open_generation_with_restore_limits(
+            generation_root,
+            lease_replica,
+            lease_duration_s,
+            retry_delay_s,
+            DEFAULT_RESTORE_SESSION_TTL_S,
+            DEFAULT_RESTORE_STAGING_MAX_BYTES,
+        )
+    }
+
+    fn open_generation_with_restore_limits(
+        generation_root: PathBuf,
+        lease_replica: PathBuf,
+        lease_duration_s: u32,
+        retry_delay_s: u32,
+        restore_session_ttl_s: u64,
+        restore_staging_max_bytes: u64,
+    ) -> Result<Self, String> {
         require_positive_runtime_durations(lease_duration_s, retry_delay_s)?;
+        if restore_session_ttl_s == 0 {
+            return Err("Repository restore session TTL must be positive".to_string());
+        }
+        if restore_staging_max_bytes == 0 {
+            return Err("Repository restore staging byte ceiling must be positive".to_string());
+        }
         let generation_root = canonical_real_directory(&generation_root)?;
         let manifest_bytes = read_regular_file(&generation_root.join("generation.json"))?;
         let manifest: GenerationManifest =
@@ -454,6 +473,8 @@ impl OperationalBinaryRuntime {
 
         let restore_staging_parent = restore_staging_parent(&generation_root)
             .map_err(|error| format!("prepare Repository restore staging: {error}"))?;
+        let restore_staging_lock = acquire_restore_staging_lock(&restore_staging_parent)?;
+        cleanup_abandoned_restore_staging(&restore_staging_parent)?;
         let (leases, _) =
             ServerOperationalRuntimeLeases::open(lease_replica, [generation_root.clone()])
                 .map_err(|error| format!("open Binary runtime lease replica: {error}"))?;
@@ -464,6 +485,9 @@ impl OperationalBinaryRuntime {
             retirement_exports: Arc::new(Mutex::new(BTreeMap::new())),
             restore_sessions: Arc::new(Mutex::new(BTreeMap::new())),
             restore_staging_parent,
+            _restore_staging_lock: Arc::new(restore_staging_lock),
+            restore_session_ttl_s,
+            restore_staging_max_bytes,
             leases,
             lease_duration_s,
             retry_delay_s,
@@ -491,13 +515,15 @@ impl OperationalBinaryRuntime {
         Ok((repository.entry.clone(), repository.authority.db().clone()))
     }
 
-    pub(crate) fn repository_indexes(&self) -> Vec<u32> {
-        self.repositories
-            .read()
-            .expect("Repository runtime lock is poisoned")
-            .keys()
-            .copied()
-            .collect()
+    pub(crate) fn repository_native_service(
+        &self,
+        repository_index: u32,
+    ) -> StoreResult<(
+        OperationalRepositoryEntry,
+        BinaryDbNativeRepositoryService<OperationalDb>,
+    )> {
+        let repository = self.repository(repository_index)?;
+        Ok((repository.entry.clone(), repository.native.clone()))
     }
 
     pub(crate) fn serving_repository_indexes(&self) -> Vec<u32> {
@@ -602,7 +628,7 @@ impl OperationalBinaryRuntime {
             now,
             starts_new_run,
         )?;
-        Ok(self.job_projection(&repository, entry)?)
+        self.job_projection(&repository, entry)
     }
 
     pub(crate) fn snapshot_index_for_id(
@@ -676,14 +702,18 @@ impl OperationalBinaryRuntime {
             now,
             now,
         )?;
-        Ok(self.job_projection(&repository, entry)?)
+        self.job_projection(&repository, entry)
     }
 
     pub(crate) fn repository_authority(&self, repository_index: u32) -> StoreResult<JsonValue> {
         let repository = self.repository(repository_index)?;
+        let pack_storage =
+            ServerBinaryRepositoryContentStore::new(repository.authority.db().clone())
+                .repository_pack_storage_payload()?;
         Ok(json!({
             "contract": "ait.server.repository-authority.v1",
             "repository": repository_projection(&repository.entry),
+            "pack_storage": pack_storage,
         }))
     }
 
@@ -901,6 +931,12 @@ impl OperationalBinaryRuntime {
                     .resolve_authority_directory(repository_index)?,
                 REPOSITORY_LIFECYCLE_PURGED,
             )?;
+            if let Ok(repository) = self.repository_any(repository_index) {
+                repository
+                    .native
+                    .invalidate_zstd_pull_catalog()
+                    .map_err(|error| BinaryDbError::other(error.to_string()))?;
+            }
             return Ok(repository_purge_projection(current, true));
         }
         if current.record.lifecycle_kind != REPOSITORY_LIFECYCLE_RETIRING {
@@ -956,6 +992,10 @@ impl OperationalBinaryRuntime {
                 return Err(error);
             }
         };
+        repository
+            .native
+            .invalidate_zstd_pull_catalog()
+            .map_err(|error| BinaryDbError::other(error.to_string()))?;
         self.update_repository_entry(purged.clone())?;
         finish_purge_journal(&authority_root)?;
         Ok(repository_purge_projection(purged, false))
@@ -964,6 +1004,13 @@ impl OperationalBinaryRuntime {
     pub(crate) fn begin_repository_restore(&self, payload: &JsonValue) -> StoreResult<JsonValue> {
         let request: RestoreStartRequest = decode_request(payload, "Repository restore")?;
         request.manifest.validate()?;
+        let reserved_bytes = restore_manifest_bytes(&request.manifest)?;
+        if reserved_bytes > self.restore_staging_max_bytes {
+            return Err(invalid(format!(
+                "Repository restore declares {reserved_bytes} bytes, above the configured staging ceiling {}",
+                self.restore_staging_max_bytes
+            )));
+        }
         let namespace = namespace_ascii(&request.manifest.namespace)?;
         if let Some(existing) = self
             .registry
@@ -976,19 +1023,38 @@ impl OperationalBinaryRuntime {
                 namespace, existing.repository_index
             )));
         }
+        let now = now_s_store()?;
         let mut sessions = self
             .restore_sessions
             .lock()
             .map_err(|_| BinaryDbError::other("Repository restore session lock is poisoned"))?;
+        self.cleanup_expired_restore_sessions_locked(&mut sessions, now)?;
         if sessions
             .values()
             .filter(|session| session.committed.is_none())
             .count()
-            >= 64
+            >= MAX_RESTORE_SESSIONS
         {
             return Err(BinaryDbError::retryable_busy(
                 "Repository restore session capacity is exhausted",
             ));
+        }
+        let reserved_in_use = sessions
+            .values()
+            .filter(|session| session.committed.is_none())
+            .try_fold(0_u64, |total, session| {
+                total.checked_add(session.reserved_bytes).ok_or_else(|| {
+                    corrupt("Repository restore staging reservation total overflowed")
+                })
+            })?;
+        if reserved_in_use
+            .checked_add(reserved_bytes)
+            .is_none_or(|total| total > self.restore_staging_max_bytes)
+        {
+            return Err(BinaryDbError::retryable_busy(format!(
+                "Repository restore staging byte capacity is exhausted: reserved={reserved_in_use}, requested={reserved_bytes}, ceiling={}",
+                self.restore_staging_max_bytes
+            )));
         }
         let token = loop {
             let token = random_restore_token()?;
@@ -1004,6 +1070,8 @@ impl OperationalBinaryRuntime {
                 manifest: request.manifest,
                 policy_flags: request.policy_flags,
                 session_root,
+                reserved_bytes,
+                expires_at_s: now.saturating_add(self.restore_session_ttl_s),
                 committed: None,
             },
         );
@@ -1011,6 +1079,8 @@ impl OperationalBinaryRuntime {
             "contract": "ait.server.repository-restore-session.v1",
             "restore_token": token,
             "state": "uploading",
+            "reserved_bytes": reserved_bytes,
+            "expires_at_s": now.saturating_add(self.restore_session_ttl_s),
         }))
     }
 
@@ -1020,64 +1090,88 @@ impl OperationalBinaryRuntime {
         file_path: &str,
         bytes: &[u8],
     ) -> StoreResult<JsonValue> {
+        require_restore_token(restore_token)?;
+        let now = now_s_store()?;
         let mut sessions = self
             .restore_sessions
             .lock()
             .map_err(|_| BinaryDbError::other("Repository restore session lock is poisoned"))?;
-        let session = sessions
-            .get_mut(restore_token)
-            .ok_or_else(|| BinaryDbError::missing_data("unknown Repository restore session"))?;
-        if session.committed.is_some() {
-            return Err(invalid("Repository restore session is already committed"));
-        }
-        let expected = session
-            .manifest
-            .files
-            .iter()
-            .find(|file| file.path == file_path)
-            .cloned()
-            .ok_or_else(|| {
-                BinaryDbError::missing_data(format!(
-                    "restore manifest has no authority file {file_path:?}"
-                ))
+        self.cleanup_expired_restore_sessions_locked(&mut sessions, now)?;
+        let (expected, session_root) = {
+            let session = sessions.get(restore_token).ok_or_else(|| {
+                BinaryDbError::missing_data("unknown or expired Repository restore session")
             })?;
-        write_staged_file(&session.session_root.join("data"), &expected, bytes)?;
+            if session.committed.is_some() {
+                return Err(invalid("Repository restore session is already committed"));
+            }
+            let expected = session
+                .manifest
+                .files
+                .iter()
+                .find(|file| file.path == file_path)
+                .cloned()
+                .ok_or_else(|| {
+                    BinaryDbError::missing_data(format!(
+                        "restore manifest has no authority file {file_path:?}"
+                    ))
+                })?;
+            (expected, session.session_root.clone())
+        };
+        if let Err(error) = write_staged_file(&session_root.join("data"), &expected, bytes) {
+            return Err(self.discard_failed_restore_session(&mut sessions, restore_token, error));
+        }
+        let expires_at_s = now.saturating_add(self.restore_session_ttl_s);
+        sessions
+            .get_mut(restore_token)
+            .expect("restore session remains present while its lock is held")
+            .expires_at_s = expires_at_s;
         Ok(json!({
             "contract": "ait.server.repository-restore-session.v1",
             "restore_token": restore_token,
             "state": "uploading",
             "file": expected,
+            "expires_at_s": expires_at_s,
         }))
     }
 
     pub(crate) fn commit_repository_restore(&self, restore_token: &str) -> StoreResult<JsonValue> {
+        require_restore_token(restore_token)?;
         let _registration = self
             .registration_lock
             .lock()
             .map_err(|_| BinaryDbError::other("Repository registration lock is poisoned"))?;
+        let now = now_s_store()?;
         let mut sessions = self
             .restore_sessions
             .lock()
             .map_err(|_| BinaryDbError::other("Repository restore session lock is poisoned"))?;
-        let session = sessions
-            .get_mut(restore_token)
-            .ok_or_else(|| BinaryDbError::missing_data("unknown Repository restore session"))?;
-        if let Some(committed) = &session.committed {
-            return Ok(committed.clone());
+        self.cleanup_expired_restore_sessions_locked(&mut sessions, now)?;
+        let (data_root, namespace, repository_name, manifest, policy_flags) = {
+            let session = sessions.get(restore_token).ok_or_else(|| {
+                BinaryDbError::missing_data("unknown or expired Repository restore session")
+            })?;
+            if let Some(committed) = &session.committed {
+                return Ok(committed.clone());
+            }
+            (
+                session.session_root.join("data"),
+                namespace_ascii(&session.manifest.namespace)?,
+                session.manifest.repo_name.clone(),
+                session.manifest.clone(),
+                session.policy_flags,
+            )
+        };
+        if let Err(error) = validate_staged_archive(&data_root, &manifest) {
+            return Err(self.discard_failed_restore_session(&mut sessions, restore_token, error));
         }
-        let data_root = session.session_root.join("data");
-        validate_staged_archive(&data_root, &session.manifest)?;
-        let namespace = namespace_ascii(&session.manifest.namespace)?;
-        let created_at_s = now_s_store()?;
-        let repository_name = session.manifest.repo_name.clone();
-        let manifest = session.manifest.clone();
+        let created_at_s = now;
         let spec = RepositoryCreateSpec {
             repo_name: repository_name.clone(),
             namespace_ascii: namespace,
-            policy_flags: session.policy_flags,
+            policy_flags,
             created_at_s,
         };
-        let entry = self.registry.append_repository_with_initializer(
+        let entry = match self.registry.append_repository_with_initializer(
             &spec,
             |repository_index, authority_root| {
                 copy_manifest_files(&data_root, authority_root, &manifest)?;
@@ -1089,23 +1183,109 @@ impl OperationalBinaryRuntime {
                     created_at_s,
                 )
             },
-        )?;
+        ) {
+            Ok(entry) => entry,
+            Err(error) => {
+                return Err(self.discard_failed_restore_session(
+                    &mut sessions,
+                    restore_token,
+                    error,
+                ));
+            }
+        };
         self.ensure_repository_runtime(entry.clone())?;
         let response = json!({
             "contract": "ait.server.repository-restore.v1",
             "created": true,
             "repository": repository_projection(&entry),
         });
+        let session = sessions
+            .get_mut(restore_token)
+            .expect("restore session remains present while its lock is held");
         session.committed = Some(response.clone());
-        if let Err(error) = fs::remove_dir_all(&session.session_root) {
-            if error.kind() != std::io::ErrorKind::NotFound {
-                eprintln!(
-                    "warning: failed to remove committed Repository restore staging {}: {error}",
-                    session.session_root.display()
-                );
-            }
+        session.expires_at_s = now.saturating_add(self.restore_session_ttl_s);
+        if let Err(error) =
+            remove_restore_session_directory(&self.restore_staging_parent, &session.session_root)
+        {
+            eprintln!(
+                "warning: failed to remove committed Repository restore staging {}: {error}",
+                session.session_root.display()
+            );
         }
         Ok(response)
+    }
+
+    pub(crate) fn abort_repository_restore(&self, restore_token: &str) -> StoreResult<JsonValue> {
+        require_restore_token(restore_token)?;
+        let now = now_s_store()?;
+        let mut sessions = self
+            .restore_sessions
+            .lock()
+            .map_err(|_| BinaryDbError::other("Repository restore session lock is poisoned"))?;
+        self.cleanup_expired_restore_sessions_locked(&mut sessions, now)?;
+        let Some(session) = sessions.get(restore_token) else {
+            return Ok(repository_restore_abort_projection(
+                restore_token,
+                "absent",
+                true,
+                true,
+            ));
+        };
+        if session.committed.is_some() {
+            return Ok(repository_restore_abort_projection(
+                restore_token,
+                "committed",
+                false,
+                true,
+            ));
+        }
+        let session_root = session.session_root.clone();
+        remove_restore_session_directory(&self.restore_staging_parent, &session_root)?;
+        sessions.remove(restore_token);
+        Ok(repository_restore_abort_projection(
+            restore_token,
+            "aborted",
+            true,
+            false,
+        ))
+    }
+
+    fn cleanup_expired_restore_sessions_locked(
+        &self,
+        sessions: &mut BTreeMap<String, RestoreSession>,
+        now_s: u64,
+    ) -> StoreResult<()> {
+        let expired = sessions
+            .iter()
+            .filter(|(_, session)| now_s >= session.expires_at_s)
+            .map(|(token, session)| (token.clone(), session.session_root.clone()))
+            .collect::<Vec<_>>();
+        for (token, session_root) in expired {
+            remove_restore_session_directory(&self.restore_staging_parent, &session_root)?;
+            sessions.remove(&token);
+        }
+        Ok(())
+    }
+
+    fn discard_failed_restore_session(
+        &self,
+        sessions: &mut BTreeMap<String, RestoreSession>,
+        restore_token: &str,
+        cause: BinaryDbError,
+    ) -> BinaryDbError {
+        let Some(session) = sessions.get(restore_token) else {
+            return cause;
+        };
+        let session_root = session.session_root.clone();
+        match remove_restore_session_directory(&self.restore_staging_parent, &session_root) {
+            Ok(()) => {
+                sessions.remove(restore_token);
+                cause
+            }
+            Err(cleanup_error) => BinaryDbError::other(format!(
+                "{cause}; additionally failed to discard Repository restore staging: {cleanup_error}"
+            )),
+        }
     }
 
     pub(crate) fn list_worker_jobs(
@@ -1121,12 +1301,10 @@ impl OperationalBinaryRuntime {
             )));
         }
         let repository = self.repository(repository_index)?;
-        let mut entries = repository.jobs.list()?;
-        entries.sort_by_key(|entry| std::cmp::Reverse(entry.key.worker_job_index));
-        let jobs = entries
+        let jobs = repository
+            .jobs
+            .list_recent(state_kind, limit)?
             .into_iter()
-            .filter(|entry| state_kind.is_none_or(|state| entry.record.state_kind == state))
-            .take(limit)
             .map(|entry| self.job_projection(&repository, entry))
             .collect::<StoreResult<Vec<_>>>()?;
         Ok(json!({
@@ -1682,6 +1860,27 @@ fn open_repository_runtime(
         StorePath::new(authority_root.clone()),
         StoreGeneration::new(1),
     );
+    let native = BinaryDbNativeRepositoryService::new(db.clone()).with_default_line("main");
+    native.ensure_default_line().map_err(|error| {
+        format!(
+            "ensure default main Line for Binary Repository {}: {error}",
+            entry.repository_index
+        )
+    })?;
+    let abandoned_uploads = native
+        .cleanup_abandoned_zstd_pack_uploads()
+        .map_err(|error| {
+            format!(
+                "clean abandoned zstd Pack uploads for Repository {}: {error}",
+                entry.repository_index
+            )
+        })?;
+    if abandoned_uploads != 0 {
+        eprintln!(
+            "removed {abandoned_uploads} abandoned zstd Pack upload(s) for Repository {}",
+            entry.repository_index
+        );
+    }
     let authority = Arc::new(FrozenAuthority::new(db.clone()));
     let domain: Arc<dyn WorkerJobDomainAuthority> = authority.clone();
     let jobs = ServerOperationalWorkerJobStore::new(entry.repository_index, authority_root, domain)
@@ -1727,6 +1926,7 @@ fn open_repository_runtime(
         entry,
         authority,
         jobs,
+        native,
     })
 }
 
@@ -1765,6 +1965,21 @@ fn repository_retirement_abort_projection(
     })
 }
 
+fn repository_restore_abort_projection(
+    restore_token: &str,
+    state: &str,
+    aborted: bool,
+    already_terminal: bool,
+) -> JsonValue {
+    json!({
+        "contract": "ait.server.repository-restore-abort.v1",
+        "restore_token": restore_token,
+        "state": state,
+        "aborted": aborted,
+        "already_terminal": already_terminal,
+    })
+}
+
 fn repository_projection(entry: &OperationalRepositoryEntry) -> JsonValue {
     json!({
         "repository_index": entry.repository_index,
@@ -1784,6 +1999,181 @@ fn random_restore_token() -> StoreResult<String> {
         BinaryDbError::other(format!("generate restore session token: {error}"))
     })?;
     Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
+}
+
+fn require_restore_token(token: &str) -> StoreResult<()> {
+    if token.len() == 32
+        && token
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        Ok(())
+    } else {
+        Err(invalid("Repository restore session token is invalid"))
+    }
+}
+
+fn restore_manifest_bytes(manifest: &RemoteExportManifest) -> StoreResult<u64> {
+    manifest.files.iter().try_fold(0_u64, |total, file| {
+        total
+            .checked_add(file.size)
+            .ok_or_else(|| invalid("Repository restore manifest byte total overflows u64"))
+    })
+}
+
+fn acquire_restore_staging_lock(staging_parent: &Path) -> Result<File, String> {
+    let lock_path = staging_parent.join(RESTORE_STAGING_LOCK_FILE);
+    if let Ok(metadata) = fs::symlink_metadata(&lock_path) {
+        if metadata.file_type().is_symlink() || !metadata.is_file() {
+            return Err(format!(
+                "Repository restore staging lock is not a regular file: {}",
+                lock_path.display()
+            ));
+        }
+    }
+    let lock = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(&lock_path)
+        .map_err(|error| {
+            format!(
+                "open Repository restore staging lock {}: {error}",
+                lock_path.display()
+            )
+        })?;
+    FileExt::try_lock_exclusive(&lock).map_err(|error| {
+        format!(
+            "acquire exclusive Repository restore staging lock {}: {error}",
+            lock_path.display()
+        )
+    })?;
+    lock.sync_all().map_err(|error| {
+        format!(
+            "sync Repository restore staging lock {}: {error}",
+            lock_path.display()
+        )
+    })?;
+    sync_filesystem_directory(staging_parent).map_err(|error| {
+        format!(
+            "sync Repository restore staging directory {}: {error}",
+            staging_parent.display()
+        )
+    })?;
+    Ok(lock)
+}
+
+fn cleanup_abandoned_restore_staging(staging_parent: &Path) -> Result<(), String> {
+    for entry in fs::read_dir(staging_parent).map_err(|error| {
+        format!(
+            "read Repository restore staging directory {}: {error}",
+            staging_parent.display()
+        )
+    })? {
+        let entry = entry.map_err(|error| {
+            format!(
+                "read Repository restore staging entry in {}: {error}",
+                staging_parent.display()
+            )
+        })?;
+        let name = entry
+            .file_name()
+            .into_string()
+            .map_err(|_| "Repository restore staging contains a non-UTF-8 entry".to_string())?;
+        let path = entry.path();
+        let metadata = fs::symlink_metadata(&path).map_err(|error| {
+            format!(
+                "inspect Repository restore staging {}: {error}",
+                path.display()
+            )
+        })?;
+        if name == RESTORE_STAGING_LOCK_FILE {
+            if metadata.file_type().is_symlink() || !metadata.is_file() {
+                return Err(format!(
+                    "Repository restore staging lock is not a regular file: {}",
+                    path.display()
+                ));
+            }
+            continue;
+        }
+        require_restore_token(&name).map_err(|error| {
+            format!(
+                "Repository restore staging contains an unmanaged entry {}: {error}",
+                path.display()
+            )
+        })?;
+        if metadata.file_type().is_symlink() || !metadata.is_dir() {
+            return Err(format!(
+                "Repository restore staging session is not a real directory: {}",
+                path.display()
+            ));
+        }
+        fs::remove_dir_all(&path).map_err(|error| {
+            format!(
+                "remove abandoned Repository restore staging {}: {error}",
+                path.display()
+            )
+        })?;
+    }
+    sync_filesystem_directory(staging_parent).map_err(|error| {
+        format!(
+            "sync cleaned Repository restore staging directory {}: {error}",
+            staging_parent.display()
+        )
+    })
+}
+
+fn remove_restore_session_directory(staging_parent: &Path, session_root: &Path) -> StoreResult<()> {
+    if session_root.parent() != Some(staging_parent) {
+        return Err(corrupt(format!(
+            "Repository restore session escaped its staging parent: {}",
+            session_root.display()
+        )));
+    }
+    let token = session_root
+        .file_name()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| corrupt("Repository restore session path has no UTF-8 token"))?;
+    require_restore_token(token)?;
+    match fs::symlink_metadata(session_root) {
+        Ok(metadata) => {
+            if metadata.file_type().is_symlink() || !metadata.is_dir() {
+                return Err(corrupt(format!(
+                    "Repository restore session is not a real directory: {}",
+                    session_root.display()
+                )));
+            }
+            fs::remove_dir_all(session_root).map_err(|error| {
+                BinaryDbError::io(
+                    format!(
+                        "remove Repository restore staging {}",
+                        session_root.display()
+                    ),
+                    error,
+                )
+            })?;
+        }
+        Err(error) if error.kind() == ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(BinaryDbError::io(
+                format!(
+                    "inspect Repository restore staging {}",
+                    session_root.display()
+                ),
+                error,
+            ));
+        }
+    }
+    sync_filesystem_directory(staging_parent).map_err(|error| {
+        BinaryDbError::io(
+            format!(
+                "sync Repository restore staging directory {}",
+                staging_parent.display()
+            ),
+            error,
+        )
+    })
 }
 
 fn claim_response(
@@ -2093,36 +2483,6 @@ fn read_regular_file(path: &Path) -> Result<Vec<u8>, String> {
     fs::read(path).map_err(|error| format!("failed to read {}: {error}", path.display()))
 }
 
-fn completion_for_hash(
-    generation_root: &Path,
-    expected_sha256: &str,
-) -> Result<(PathBuf, Vec<u8>), String> {
-    let mut matches = Vec::new();
-    for file_name in [
-        SERVER_FRESH_COMPLETION_FILE,
-        SERVER_LEGACY_CONVERSION_COMPLETION_FILE,
-    ] {
-        let path = generation_root.join(file_name);
-        match fs::symlink_metadata(&path) {
-            Ok(_) => {
-                let bytes = read_regular_file(&path)?;
-                if sha256(&bytes) == expected_sha256 {
-                    matches.push((path, bytes));
-                }
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(format!("failed to inspect {}: {error}", path.display())),
-        }
-    }
-    match matches.len() {
-        1 => Ok(matches.remove(0)),
-        0 => Err(
-            "Binary v0 activation completion hash disagrees with generation evidence".to_string(),
-        ),
-        _ => Err("Binary v0 activation completion evidence is ambiguous".to_string()),
-    }
-}
-
 fn validate_completion(
     generation_root: &Path,
     completion_path: &Path,
@@ -2312,7 +2672,14 @@ fn corrupt(message: impl Into<String>) -> BinaryDbError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ait_server_core::foundation::remote_binary_db::BinaryDbReadTxn;
+    use ait_server_core::foundation::pack_substrate::{
+        build_pack_members, build_tree_pack_members, read_pack_index, read_tree_pack_index,
+        write_pack_archive, write_tree_pack_archive, DEFAULT_MAX_DELTA_CHAIN_DEPTH,
+        PACK_FORMAT_ZSTD_CHUNKED_V1, TREE_PACK_FORMAT_ZSTD_CHUNKED_V1,
+    };
+    use ait_server_core::foundation::remote_binary_db::{
+        BinaryDbCommandScope, BinaryDbReadTxn, BinaryDbWriteTxn,
+    };
     use ait_server_core::foundation::server_content_binary_db::{
         server_snapshot_hash48_from_id, ServerBinaryDbLineStore, ServerBinaryDbSnapshotStore,
         ServerBinarySnapshotPayload, ServerBinarySnapshotRecord, SERVER_CONTENT_BINARY_LAYOUT_ID,
@@ -2593,6 +2960,121 @@ mod tests {
     }
 
     #[test]
+    fn repository_authority_projects_committed_pack_inventory() {
+        let directory = TestDirectory::new("repository-pack-inventory");
+        let generation = directory.0.join("generation");
+        initialize_fresh_generation(&generation, 1_786_000_000)
+            .expect("initialize frozen Binary generation");
+        let runtime = OperationalBinaryRuntime::open_generation(
+            generation,
+            directory.0.join("runtime-worker-leases.bin"),
+            60,
+            15,
+        )
+        .expect("open frozen Binary generation");
+        let (_, db) = runtime.repository_db(0).expect("read Repository DB");
+        let content = ServerBinaryRepositoryContentStore::new(db.clone());
+
+        let created_at = "2026-08-17T00:00:00Z";
+        let object_pack_id = "PCK-000000000001";
+        let object_pack_path = content.object_pack_path(object_pack_id);
+        fs::create_dir_all(object_pack_path.parent().expect("object Pack parent"))
+            .expect("create object Pack directory");
+        let bytes = b"pack inventory fixture\n";
+        let blob_sha256 = sha256(bytes);
+        let blob_id = format!("BLB-{}", &blob_sha256[..20]);
+        let object_members = build_pack_members(
+            &json!([{
+                "entry_name": format!("blobs/{blob_id}"),
+                "blob_id": blob_id,
+                "data": bytes,
+                "path_hint": "README.md"
+            }]),
+            DEFAULT_MAX_DELTA_CHAIN_DEPTH,
+            None,
+        )
+        .expect("build object Pack members");
+        write_pack_archive(
+            object_pack_path.to_str().expect("UTF-8 object Pack path"),
+            object_pack_id,
+            created_at,
+            &object_members,
+        )
+        .expect("write object Pack");
+        let object_index =
+            read_pack_index(object_pack_path.to_str().expect("UTF-8 object Pack path"))
+                .expect("read object Pack index");
+
+        let tree_pack_id = "TPK-000000000002";
+        let tree_id = "TRE-00000000000000000002";
+        let tree_pack_path = content.tree_pack_path(tree_pack_id);
+        fs::create_dir_all(tree_pack_path.parent().expect("Tree Pack parent"))
+            .expect("create Tree Pack directory");
+        let tree_members = build_tree_pack_members(
+            &json!([{"tree_id": tree_id, "entry_count": 1}]),
+            &json!([{
+                "tree_id": tree_id,
+                "entry_name": "README.md",
+                "entry_type": "blob",
+                "target_id": blob_id,
+                "size_bytes": bytes.len(),
+                "mode": "0o644"
+            }]),
+        )
+        .expect("build Tree Pack members");
+        write_tree_pack_archive(
+            tree_pack_path.to_str().expect("UTF-8 Tree Pack path"),
+            tree_pack_id,
+            created_at,
+            &tree_members,
+        )
+        .expect("write Tree Pack");
+        let tree_index =
+            read_tree_pack_index(tree_pack_path.to_str().expect("UTF-8 Tree Pack path"))
+                .expect("read Tree Pack index");
+
+        let mut tx = BinaryDbWriteTxn::begin(&db, BinaryDbCommandScope::ServerRemoteSyncCommit)
+            .expect("begin Pack inventory fixture transaction");
+        content
+            .append_object_pack_in_tx(
+                &mut tx,
+                &json!({
+                    "pack_id": object_pack_id,
+                    "pack_format": PACK_FORMAT_ZSTD_CHUNKED_V1,
+                    "pack_index": object_index,
+                    "total_bytes": fs::metadata(&object_pack_path).expect("object Pack metadata").len(),
+                    "created_at": created_at
+                }),
+                &[],
+            )
+            .expect("append Object Pack authority");
+        content
+            .append_tree_pack_in_tx(
+                &mut tx,
+                &json!({
+                    "pack_id": tree_pack_id,
+                    "pack_format": TREE_PACK_FORMAT_ZSTD_CHUNKED_V1,
+                    "pack_index": tree_index,
+                    "total_bytes": fs::metadata(&tree_pack_path).expect("Tree Pack metadata").len(),
+                    "created_at": created_at
+                }),
+                &[],
+            )
+            .expect("append Tree Pack authority");
+        tx.commit().expect("commit Pack inventory fixture");
+
+        let repository = runtime
+            .repository_authority(0)
+            .expect("project Repository Pack inventory");
+        assert_eq!(repository["pack_storage"]["object_pack_count"], 1);
+        assert_eq!(repository["pack_storage"]["tree_pack_count"], 1);
+        assert_eq!(repository["pack_storage"]["zstd_object_pack_count"], 1);
+        assert_eq!(repository["pack_storage"]["zstd_tree_pack_count"], 1);
+        assert_eq!(repository["pack_storage"]["zstd_only_verified"], true);
+        assert_eq!(repository["pack_storage"]["validation"]["state"], "valid");
+    }
+
+    #[test]
     fn live_registration_is_immediate_idempotent_and_restart_safe() {
         let directory = TestDirectory::new("live-registration");
         let generation = directory.0.join("generation");
@@ -2731,6 +3213,8 @@ mod tests {
         runtime
             .upload_repository_restore_file(&interrupted_token, first_path, first_bytes)
             .expect("stage one file before interruption");
+        let interrupted_root = runtime.restore_staging_parent.join(&interrupted_token);
+        assert!(interrupted_root.is_dir());
         drop(runtime);
 
         let runtime = OperationalBinaryRuntime::open_generation(
@@ -2740,10 +3224,14 @@ mod tests {
             15,
         )
         .expect("reopen after interrupted restore upload");
+        assert!(
+            !interrupted_root.exists(),
+            "runtime activation must remove non-resumable restore staging"
+        );
         assert!(runtime
             .commit_repository_restore(&interrupted_token)
             .expect_err("memory-local interrupted session must not be published")
-            .contains("unknown Repository restore session"));
+            .contains("unknown or expired Repository restore session"));
         assert!(runtime.registry.get(4).is_err());
 
         let session = runtime
@@ -2773,6 +3261,11 @@ mod tests {
                 .expect("repeat committed restore"),
             restored
         );
+        let committed_abort = runtime
+            .abort_repository_restore(&token)
+            .expect("abort committed restore is terminal-idempotent");
+        assert_eq!(committed_abort["aborted"], false);
+        assert_eq!(committed_abort["state"], "committed");
         assert_eq!(
             runtime
                 .register_repository("ait-server", *b"SE", 0b1000_0011)
@@ -2794,6 +3287,134 @@ mod tests {
             reopened.registry.get(1).unwrap().record.lifecycle_kind,
             REPOSITORY_LIFECYCLE_PURGED
         );
+    }
+
+    #[test]
+    fn restore_staging_enforces_quota_abort_expiry_failure_cleanup_and_process_lock() {
+        let directory = TestDirectory::new("restore-staging-bounds");
+        let generation = directory.0.join("generation");
+        initialize_fresh_generation(&generation, 1_786_000_000)
+            .expect("initialize frozen Binary generation");
+        let lease_replica = directory.0.join("runtime-worker-leases.bin");
+        let runtime = OperationalBinaryRuntime::open_generation_with_restore_limits(
+            generation.clone(),
+            lease_replica.clone(),
+            60,
+            15,
+            60,
+            8,
+        )
+        .expect("open frozen Binary generation with bounded restore staging");
+        let second_open_error = match OperationalBinaryRuntime::open_generation_with_restore_limits(
+            generation.clone(),
+            lease_replica.clone(),
+            60,
+            15,
+            60,
+            8,
+        ) {
+            Ok(_) => panic!("a second runtime must not own the same restore staging"),
+            Err(error) => error,
+        };
+        assert!(second_open_error.contains("exclusive Repository restore staging lock"));
+
+        let bytes = b"hello";
+        let manifest = RemoteExportManifest {
+            schema: REMOTE_EXPORT_SCHEMA.to_string(),
+            state: REMOTE_EXPORT_STATE_COMPLETE.to_string(),
+            repo_name: "restored".to_string(),
+            namespace: "RZ".to_string(),
+            exported_at_s: 1_786_000_000,
+            files: vec![crate::repository_retirement::RemoteExportFile {
+                path: "worker_job.bin".to_string(),
+                size: bytes.len() as u64,
+                sha256: sha256(bytes),
+            }],
+        };
+        let payload = json!({"manifest": manifest, "policy_flags": 0});
+        let oversized = json!({
+            "manifest": RemoteExportManifest {
+                files: vec![crate::repository_retirement::RemoteExportFile {
+                    path: "worker_job.bin".to_string(),
+                    size: 9,
+                    sha256: sha256(b"123456789"),
+                }],
+                ..manifest.clone()
+            },
+            "policy_flags": 0,
+        });
+        assert!(runtime
+            .begin_repository_restore(&oversized)
+            .expect_err("one manifest cannot exceed the staging byte ceiling")
+            .contains("above the configured staging ceiling"));
+
+        let failed = runtime
+            .begin_repository_restore(&payload)
+            .expect("begin failed-upload fixture");
+        let failed_token = failed["restore_token"].as_str().unwrap().to_string();
+        let failed_root = runtime.restore_staging_parent.join(&failed_token);
+        assert!(runtime
+            .upload_repository_restore_file(&failed_token, "worker_job.bin", b"wrong")
+            .expect_err("checksum mismatch must fail and discard the session")
+            .contains("does not match"));
+        assert!(!failed_root.exists());
+        assert!(!runtime
+            .restore_sessions
+            .lock()
+            .unwrap()
+            .contains_key(&failed_token));
+
+        let first = runtime
+            .begin_repository_restore(&payload)
+            .expect("reserve first restore");
+        assert!(runtime
+            .begin_repository_restore(&payload)
+            .expect_err("aggregate reservations must honor the byte ceiling")
+            .contains("byte capacity is exhausted"));
+        let first_token = first["restore_token"].as_str().unwrap().to_string();
+        let aborted = runtime
+            .abort_repository_restore(&first_token)
+            .expect("abort live restore");
+        assert_eq!(aborted["state"], "aborted");
+        assert_eq!(aborted["aborted"], true);
+        let repeated = runtime
+            .abort_repository_restore(&first_token)
+            .expect("repeat abort is idempotent");
+        assert_eq!(repeated["state"], "absent");
+        assert_eq!(repeated["already_terminal"], true);
+
+        let expired = runtime
+            .begin_repository_restore(&payload)
+            .expect("begin expiry fixture");
+        let expired_token = expired["restore_token"].as_str().unwrap().to_string();
+        let expired_root = runtime.restore_staging_parent.join(&expired_token);
+        runtime
+            .restore_sessions
+            .lock()
+            .unwrap()
+            .get_mut(&expired_token)
+            .unwrap()
+            .expires_at_s = 0;
+        let replacement = runtime
+            .begin_repository_restore(&payload)
+            .expect("expired reservation is reclaimed before admission");
+        assert!(!expired_root.exists());
+        let replacement_token = replacement["restore_token"].as_str().unwrap().to_string();
+        let replacement_root = runtime.restore_staging_parent.join(&replacement_token);
+        assert!(replacement_root.is_dir());
+        drop(runtime);
+
+        let reopened = OperationalBinaryRuntime::open_generation_with_restore_limits(
+            generation,
+            lease_replica,
+            60,
+            15,
+            60,
+            8,
+        )
+        .expect("reopen and clean abandoned restore staging");
+        assert!(!replacement_root.exists());
+        assert!(reopened.restore_sessions.lock().unwrap().is_empty());
     }
 
     #[test]

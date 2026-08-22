@@ -1,5 +1,6 @@
 use super::*;
 use crate::primitives::plan_checklist_closeout::inspect_task_plan_checklist_item;
+use crate::primitives::workflow::{workflow_find_bound_task_worktree_metadata, workflow_root_repo};
 use crate::runtime::SNAPSHOT_BINARY_DB_WRITE_LAYOUT;
 use crate::task_land_contract::attach_task_audit_land_contract;
 use ait_core::line_store::{LineRecord, LineStore};
@@ -360,7 +361,7 @@ fn attach_remote_task_plan_closeout_evidence(
         return output;
     }
     let evidence =
-        inspect_task_plan_checklist_item(repo, &task, remote_name).unwrap_or_else(|error| {
+        inspect_task_plan_checklist_item(repo, &task, Some(remote_name)).unwrap_or_else(|error| {
             json!({
                 "status": "unavailable",
                 "reason": "remote_plan_read_failed",
@@ -376,6 +377,146 @@ fn attach_remote_task_plan_closeout_evidence(
     }
     attach_task_audit_land_contract(&mut output, false);
     output
+}
+
+const LOCAL_CLOSEOUT_EVIDENCE_SAMPLE_LIMIT: usize = 20;
+
+fn inspect_local_task_closeout_evidence(
+    repo: &RepoRuntime,
+    task: &JsonValue,
+    change_rows: &[JsonValue],
+    target: &JsonValue,
+) -> JsonValue {
+    let root_repo = match workflow_root_repo(repo) {
+        Ok(root_repo) => root_repo,
+        Err(error) => {
+            return json!({
+                "status": "incomplete",
+                "scope": "local",
+                "reason": "root_repository_unavailable",
+                "error": error,
+            });
+        }
+    };
+    let plan_evidence =
+        inspect_task_plan_checklist_item(&root_repo, task, None).unwrap_or_else(|error| {
+            json!({
+                "status": "unavailable",
+                "reason": "local_plan_read_failed",
+                "scope": "local",
+                "plan_id": string_field(task, "plan_id"),
+                "plan_item_ref": string_field(task, "plan_item_ref"),
+                "error": error,
+            })
+        });
+    let task_id = string_field(task, "task_id").unwrap_or_default();
+    let worktree_evidence = match workflow_find_bound_task_worktree_metadata(&root_repo, &task_id) {
+        Ok(None) => json!({"status": "absent"}),
+        Ok(Some(row)) => json!({
+            "status": "present",
+            "name": string_field(&row, "name"),
+            "line_name": string_field(&row, "line_name")
+                .or_else(|| string_field(&row, "current_line")),
+        }),
+        Err(error) => json!({
+            "status": "unavailable",
+            "error": error,
+        }),
+    };
+    local_task_closeout_evidence_from_parts(plan_evidence, worktree_evidence, change_rows, target)
+}
+
+pub(super) fn local_task_closeout_evidence_from_parts(
+    plan_evidence: JsonValue,
+    worktree_evidence: JsonValue,
+    change_rows: &[JsonValue],
+    target: &JsonValue,
+) -> JsonValue {
+    let plan_converged = matches!(
+        string_field(&plan_evidence, "status").as_deref(),
+        Some("done" | "unbound")
+    );
+    let worktree_converged =
+        string_field(&worktree_evidence, "status").as_deref() == Some("absent");
+
+    let mut feature_lines = BTreeMap::<String, String>::new();
+    for candidate in change_rows
+        .iter()
+        .filter_map(|row| row.get("candidate_lines"))
+        .filter_map(JsonValue::as_array)
+        .flatten()
+    {
+        let Some(line_name) = string_field(candidate, "line_name") else {
+            continue;
+        };
+        feature_lines.insert(
+            line_name,
+            string_field(candidate, "status").unwrap_or_else(|| "unknown".to_string()),
+        );
+    }
+    let active_feature_lines = feature_lines
+        .iter()
+        .filter(|(_, status)| !matches!(status.as_str(), "archived" | "deleted"))
+        .map(|(line_name, _)| line_name.clone())
+        .collect::<Vec<_>>();
+    let lines_converged = active_feature_lines.is_empty();
+
+    let target_ancestry = target
+        .get("ancestry")
+        .and_then(JsonValue::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(JsonValue::as_str)
+        .collect::<BTreeSet<_>>();
+    let incomplete_changes = change_rows
+        .iter()
+        .filter_map(|row| row.get("change"))
+        .filter(|change| match string_field(change, "status").as_deref() {
+            Some("archived") => false,
+            Some("landed") => string_field(change, "landed_snapshot_id")
+                .map(|snapshot_id| !target_ancestry.contains(snapshot_id.as_str()))
+                .unwrap_or(true),
+            _ => true,
+        })
+        .map(|change| {
+            change_reference_from_payload(change, None).unwrap_or_else(|_| {
+                string_field(change, "change_ref")
+                    .or_else(|| string_field(change, "change_id"))
+                    .unwrap_or_else(|| "<unknown-change>".to_string())
+            })
+        })
+        .collect::<Vec<_>>();
+    let changes_converged = incomplete_changes.is_empty();
+    let status = if plan_converged && worktree_converged && lines_converged && changes_converged {
+        "done"
+    } else {
+        "incomplete"
+    };
+
+    json!({
+        "status": status,
+        "scope": "local",
+        "plan": plan_evidence,
+        "bound_worktree": worktree_evidence,
+        "feature_lines": {
+            "status": if lines_converged { "done" } else { "pending" },
+            "candidate_count": feature_lines.len(),
+            "active_count": active_feature_lines.len(),
+            "active_sample": active_feature_lines
+                .into_iter()
+                .take(LOCAL_CLOSEOUT_EVIDENCE_SAMPLE_LIMIT)
+                .collect::<Vec<_>>(),
+        },
+        "changes": {
+            "status": if changes_converged { "done" } else { "pending" },
+            "change_count": change_rows.len(),
+            "incomplete_count": incomplete_changes.len(),
+            "incomplete_sample": incomplete_changes
+                .into_iter()
+                .take(LOCAL_CLOSEOUT_EVIDENCE_SAMPLE_LIMIT)
+                .collect::<Vec<_>>(),
+        },
+    })
 }
 
 pub(super) fn task_remote_audit_read_with_task_remote<R>(
@@ -604,6 +745,8 @@ where
     let verdict_obj = verdict
         .as_object()
         .ok_or_else(|| "task audit verdict payload must decode to an object".to_string())?;
+    let local_closeout_evidence = (string_field(task, "status").as_deref() == Some("completed"))
+        .then(|| inspect_local_task_closeout_evidence(repo, task, &change_rows, target));
     let mut output = json!({
         "task": task.clone(),
         "repository": {
@@ -628,6 +771,9 @@ where
         "summary": verdict_obj.get("summary").cloned().unwrap_or(JsonValue::Null),
         "changes": change_rows,
     });
+    if let (Some(object), Some(evidence)) = (output.as_object_mut(), local_closeout_evidence) {
+        object.insert("local_closeout_evidence".to_string(), evidence);
+    }
     attach_task_audit_land_contract(&mut output, true);
     Ok(output)
 }

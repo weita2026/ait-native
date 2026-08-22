@@ -276,12 +276,11 @@ where
             if record.land_meta & LAND_TOMBSTONE == 0
                 && record.change_index == change_index
                 && record.land_ordinal == ordinal
+                && found.replace(index).is_some()
             {
-                if found.replace(index).is_some() {
-                    return Err(format!(
-                        "Duplicate Binary DB v0 Land identity: {submission_id}"
-                    ));
-                }
+                return Err(format!(
+                    "Duplicate Binary DB v0 Land identity: {submission_id}"
+                ));
             }
         }
         found.ok_or_else(|| format!("Unknown land: {submission_id}"))
@@ -388,8 +387,6 @@ where
             json!("already_at_selected_patchset_revision")
         } else if landed_snapshot == pre_target {
             json!("already_contains_selected_patchset_revision")
-        } else if landed_snapshot.as_str() == Some(revision_snapshot.as_str()) {
-            json!("moved")
         } else {
             json!("moved")
         };

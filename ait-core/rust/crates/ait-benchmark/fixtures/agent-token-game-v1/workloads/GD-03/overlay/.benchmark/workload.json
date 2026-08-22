@@ -1,0 +1,7 @@
+{
+  "contract": "ait-agent-token-game-workload/v1",
+  "workload_id": "GD-03",
+  "name": "replay-divergence-diagnosis",
+  "workflow_mode": "solo_local",
+  "ait_server_allowed": false
+}

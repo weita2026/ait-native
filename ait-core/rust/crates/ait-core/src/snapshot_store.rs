@@ -180,37 +180,6 @@ where
     store.snapshot_exists(snapshot_id)
 }
 
-pub fn snapshot_parent_link_with_snapshot_store<S>(
-    store: &S,
-    snapshot_id: &str,
-) -> SnapshotStoreResult<Option<SnapshotParentLink>>
-where
-    S: SnapshotStore + ?Sized,
-{
-    store.snapshot_parent_link(snapshot_id)
-}
-
-pub fn snapshot_parent_links_with_snapshot_store<S>(
-    store: &S,
-    snapshot_ids: &[String],
-) -> SnapshotStoreResult<Vec<Option<SnapshotParentLink>>>
-where
-    S: SnapshotStore + ?Sized,
-{
-    store.snapshot_parent_links(snapshot_ids)
-}
-
-pub fn snapshot_parent_link_page_with_snapshot_store<S>(
-    store: &S,
-    cursor: usize,
-    limit: usize,
-) -> SnapshotStoreResult<SnapshotParentLinkPage>
-where
-    S: SnapshotStore + ?Sized,
-{
-    store.snapshot_parent_link_page(cursor, limit)
-}
-
 pub fn snapshot_by_id_with_snapshot_store<S>(
     store: &S,
     snapshot_id: &str,
@@ -219,35 +188,6 @@ where
     S: SnapshotStore + ?Sized,
 {
     store.snapshot_by_id(snapshot_id)
-}
-
-pub fn list_line_snapshots_with_snapshot_store<S>(
-    store: &S,
-) -> SnapshotStoreResult<Vec<SnapshotRecord>>
-where
-    S: SnapshotStore + ?Sized,
-{
-    store.list_line_snapshots()
-}
-
-pub fn snapshot_total_bytes_with_snapshot_store<S>(
-    store: &S,
-    snapshot_id: &str,
-) -> SnapshotStoreResult<Option<i64>>
-where
-    S: SnapshotStore + ?Sized,
-{
-    store.snapshot_total_bytes(snapshot_id)
-}
-
-pub fn snapshot_root_tree_pack_id_with_snapshot_store<S>(
-    store: &S,
-    snapshot_id: &str,
-) -> SnapshotStoreResult<Option<String>>
-where
-    S: SnapshotStore + ?Sized,
-{
-    store.snapshot_root_tree_pack_id(snapshot_id)
 }
 
 pub fn snapshot_kind_with_snapshot_store<S>(

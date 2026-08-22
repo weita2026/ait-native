@@ -90,9 +90,22 @@ const stablePromotion =
   qualifiedPythonCanonical &&
   oldMatch[1] === newVersion &&
   newPython === newVersion;
-if (!(rcAdvance || stablePromotion) || releaseFamily.family.tag !== `v${newVersion}`) {
+const oldStableMatch = /^([0-9]+)\.([0-9]+)\.([0-9]+)$/.exec(oldVersion ?? "");
+const newStableParts = /^([0-9]+)\.([0-9]+)\.([0-9]+)$/.exec(newVersion ?? "");
+const stablePatchAdvance =
+  oldStableMatch !== null &&
+  newStableParts !== null &&
+  oldPython === oldVersion &&
+  oldStableMatch[1] === newStableParts[1] &&
+  oldStableMatch[2] === newStableParts[2] &&
+  Number(newStableParts[3]) === Number(oldStableMatch[3]) + 1 &&
+  newPython === newVersion;
+if (
+  !(rcAdvance || stablePromotion || stablePatchAdvance) ||
+  releaseFamily.family.tag !== `v${newVersion}`
+) {
   fail(
-    "release delta must advance exactly one canonical RC ordinal or promote the qualified RC base to its stable version",
+    "release delta must advance exactly one canonical RC ordinal, promote the qualified RC base to its stable version, or advance a qualified stable base by exactly one patch version",
   );
 }
 
@@ -173,7 +186,20 @@ const tokenTransitions = [
 // Normalization replaces qualified tokens with release tokens, so the
 // qualified side must stay unambiguous. The release side is allowed to
 // collide: a stable promotion maps both the family and Python qualified
-// forms onto the same stable version string.
+// forms onto the same stable version string. A stable patch advance makes
+// the family and Python transitions byte-identical, so exact duplicate
+// pairs collapse before ambiguity is judged; distinct release targets for
+// one qualified token remain an error.
+const dedupedTransitions = [
+  ...new Map(
+    tokenTransitions.map((transition) => [
+      `${transition.qualified}\u0000${transition.release}`,
+      transition,
+    ]),
+  ).values(),
+];
+tokenTransitions.length = 0;
+tokenTransitions.push(...dedupedTransitions);
 if (
   tokenTransitions.some(
     (transition) =>
@@ -218,11 +244,66 @@ for (const relativePath of changed) {
   if (before.includes(0) || after.includes(0)) {
     fail(`release delta changes a binary non-authority path: ${relativePath}`);
   }
-  let normalized = before.toString("utf8");
-  for (const transition of tokenTransitions) {
-    normalized = normalized.split(transition.qualified).join(transition.release);
-  }
-  if (normalized !== after.toString("utf8")) {
+  // Each qualified token occurrence may independently advance to its
+  // release form or remain unchanged. Third-party version strings that
+  // coincide with a bare stable family version (for example a dependency
+  // whose own version equals the qualified family version) therefore stay
+  // valid without weakening the rule that every byte outside the token
+  // occurrences must match exactly. The walk is a bounded depth-first
+  // match over the token occurrence points; regular expressions are
+  // deliberately avoided because engine code-size limits reject patterns
+  // built from large lockfiles.
+  const qualifiedText = before.toString("utf8");
+  const releaseText = after.toString("utf8");
+  const orderedTransitions = [...tokenTransitions].sort(
+    (a, b) => b.qualified.length - a.qualified.length,
+  );
+  const admissible = (() => {
+    const stack = [[0, 0]];
+    const seen = new Set();
+    while (stack.length > 0) {
+      let [qi, ri] = stack.pop();
+      const key = `${qi}:${ri}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      let diverged = false;
+      while (qi < qualifiedText.length) {
+        const transition = orderedTransitions.find((row) =>
+          qualifiedText.startsWith(row.qualified, qi),
+        );
+        if (transition === undefined) {
+          if (releaseText[ri] !== qualifiedText[qi]) {
+            diverged = true;
+            break;
+          }
+          qi += 1;
+          ri += 1;
+        } else {
+          const keepMatches = releaseText.startsWith(transition.qualified, ri);
+          const advanceMatches = releaseText.startsWith(transition.release, ri);
+          if (advanceMatches && keepMatches) {
+            stack.push([qi + transition.qualified.length, ri + transition.qualified.length]);
+            qi += transition.qualified.length;
+            ri += transition.release.length;
+          } else if (advanceMatches) {
+            qi += transition.qualified.length;
+            ri += transition.release.length;
+          } else if (keepMatches) {
+            qi += transition.qualified.length;
+            ri += transition.qualified.length;
+          } else {
+            diverged = true;
+            break;
+          }
+        }
+      }
+      if (!diverged && qi === qualifiedText.length && ri === releaseText.length) {
+        return true;
+      }
+    }
+    return false;
+  })();
+  if (!admissible) {
     fail(`release delta contains non-version changes: ${relativePath}`);
   }
   normalizedPaths.push(relativePath);

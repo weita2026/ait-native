@@ -73,10 +73,16 @@ fn write_remote_add_fixture(root: &Path, repository_index: Option<u32>) -> RepoR
     RepoRuntime::discover_from_path(root).unwrap()
 }
 
+type RecordedRepositoryAuthorityRequests = Vec<(String, String, String)>;
+type RepositoryAuthorityServer = (
+    String,
+    thread::JoinHandle<RecordedRepositoryAuthorityRequests>,
+);
+
 fn spawn_repository_authority_server(
     response: JsonValue,
     request_count: usize,
-) -> (String, thread::JoinHandle<Vec<(String, String, String)>>) {
+) -> RepositoryAuthorityServer {
     let server = Server::http("127.0.0.1:0").unwrap();
     let address = server.server_addr();
     let handle = thread::spawn(move || {
@@ -134,7 +140,7 @@ fn remote_add_registers_and_persists_an_unconfigured_numeric_authority() {
     assert_eq!(method, "POST");
     assert_eq!(path, "/v1/native/repository-authorities");
     assert_eq!(
-        parse_value(&body, "registration body").unwrap(),
+        parse_value(body, "registration body").unwrap(),
         json!({
             "repository_name": "ait-core",
             "namespace": "R",
@@ -439,7 +445,7 @@ fn repository_registration_persists_numeric_index_without_rebinding() {
         read_json_object(&root.join(".ait/config.json")).unwrap()["repository_index"],
         json!(4)
     );
-    assert!(fs::read_dir(&root.join(".ait")).unwrap().all(|entry| !entry
+    assert!(fs::read_dir(root.join(".ait")).unwrap().all(|entry| !entry
         .unwrap()
         .file_name()
         .to_string_lossy()

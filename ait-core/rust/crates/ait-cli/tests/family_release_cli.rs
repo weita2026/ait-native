@@ -2403,7 +2403,14 @@ fn family_release_cli_rejects_wrong_channel_and_missing_receipts() {
     .unwrap();
     run_json(
         root,
-        &["snapshot", "create", "--message", "family", "--json"],
+        &[
+            "snapshot",
+            "create",
+            "--message",
+            "family",
+            "--json",
+            "--full",
+        ],
     );
 
     let wrong = run(

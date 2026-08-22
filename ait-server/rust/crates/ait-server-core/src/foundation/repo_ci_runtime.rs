@@ -68,9 +68,9 @@ pub(crate) fn repo_ci_run_json_impl(request: &JsonValue) -> Result<JsonValue, St
 }
 
 fn run_repo_ci_with_config(config: &RepoCiRuntimeConfig) -> Result<JsonValue, String> {
-    materialize_workspace(&config)?;
+    materialize_workspace(config)?;
 
-    let selected_suites = selected_repo_suites(&config)?;
+    let selected_suites = selected_repo_suites(config)?;
     if selected_suites.is_empty() {
         return Err(format!(
             "No repo CI suites matched plane `{}`.",
@@ -82,7 +82,7 @@ fn run_repo_ci_with_config(config: &RepoCiRuntimeConfig) -> Result<JsonValue, St
     let mut native_prewarm = if full_test_only {
         None
     } else {
-        run_native_prewarm_once(&config)?
+        run_native_prewarm_once(config)?
     };
     let mut suite_results = Vec::new();
     if native_prewarm
@@ -91,13 +91,13 @@ fn run_repo_ci_with_config(config: &RepoCiRuntimeConfig) -> Result<JsonValue, St
         .and_then(JsonValue::as_str)
         == Some("fail")
     {
-        let detail = build_repo_ci_detail(&config, &suite_results, native_prewarm.clone(), "fail");
-        let result = build_result(&config, detail, suite_results, native_prewarm);
+        let detail = build_repo_ci_detail(config, &suite_results, native_prewarm.clone(), "fail");
+        let result = build_result(config, detail, suite_results, native_prewarm);
         return Ok(result);
     }
 
     for suite in &selected_suites {
-        suite_results.push(run_one_suite(&config, suite)?);
+        suite_results.push(run_one_suite(config, suite)?);
     }
 
     if native_prewarm.is_none() {
@@ -112,13 +112,8 @@ fn run_repo_ci_with_config(config: &RepoCiRuntimeConfig) -> Result<JsonValue, St
     } else {
         "pass"
     };
-    let detail = build_repo_ci_detail(
-        &config,
-        &suite_results,
-        native_prewarm.clone(),
-        tests_status,
-    );
-    let result = build_result(&config, detail, suite_results, native_prewarm);
+    let detail = build_repo_ci_detail(config, &suite_results, native_prewarm.clone(), tests_status);
+    let result = build_result(config, detail, suite_results, native_prewarm);
     Ok(result)
 }
 

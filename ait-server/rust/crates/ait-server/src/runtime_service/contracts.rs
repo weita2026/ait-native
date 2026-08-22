@@ -23,15 +23,6 @@ pub trait ServerRuntimeService: Send + Sync {
         ))
     }
 
-    fn run_repository_patchset_ci(
-        &self,
-        _repo_name: &str,
-        patchset_id: &str,
-        payload: &JsonValue,
-    ) -> Result<JsonValue, String> {
-        self.run_patchset_ci(patchset_id, payload)
-    }
-
     fn run_repository_authority_patchset_ci(
         &self,
         _repository_index: &str,
@@ -39,16 +30,6 @@ pub trait ServerRuntimeService: Send + Sync {
         payload: &JsonValue,
     ) -> Result<JsonValue, String> {
         self.run_patchset_ci(patchset_id, payload)
-    }
-
-    #[cfg(test)]
-    fn run_patchset_ci_from_workflow_rows(
-        &self,
-        _patchset: &JsonValue,
-        _change: &JsonValue,
-        _payload: &JsonValue,
-    ) -> Option<Result<JsonValue, String>> {
-        None
     }
 
     /// Invalidates the derived workflow queue projection after a durable
@@ -93,16 +74,6 @@ pub trait ServerRuntimeService: Send + Sync {
         ))
     }
 
-    fn read_repository_patchset_ci_status(
-        &self,
-        _repo_name: &str,
-        patchset_id: &str,
-        recent_limit: i64,
-        projection: Option<&str>,
-    ) -> Result<JsonValue, String> {
-        self.read_patchset_ci_status(patchset_id, recent_limit, projection)
-    }
-
     fn read_repository_authority_patchset_ci_status(
         &self,
         _repository_index: &str,
@@ -111,16 +82,6 @@ pub trait ServerRuntimeService: Send + Sync {
         projection: Option<&str>,
     ) -> Result<JsonValue, String> {
         self.read_patchset_ci_status(patchset_id, recent_limit, projection)
-    }
-
-    fn read_patchset_ci_status_from_workflow_rows(
-        &self,
-        _patchset: &JsonValue,
-        _change: &JsonValue,
-        _recent_limit: i64,
-        _projection: Option<&str>,
-    ) -> Option<Result<JsonValue, String>> {
-        None
     }
 
     fn plan_repository_zstd_bulk(
@@ -133,17 +94,6 @@ pub trait ServerRuntimeService: Send + Sync {
         ))
     }
 
-    fn put_repository_zstd_object_pack(
-        &self,
-        repository_index: &str,
-        _pack_id: &str,
-        _pack_bytes: Vec<u8>,
-    ) -> Result<JsonValue, String> {
-        Err(format!(
-            "Repository authority {repository_index} does not support numeric object-pack upload"
-        ))
-    }
-
     fn get_repository_zstd_object_pack(
         &self,
         repository_index: &str,
@@ -151,17 +101,6 @@ pub trait ServerRuntimeService: Send + Sync {
     ) -> Result<Vec<u8>, String> {
         Err(format!(
             "Repository authority {repository_index} does not support numeric object-pack download"
-        ))
-    }
-
-    fn put_repository_zstd_tree_pack(
-        &self,
-        repository_index: &str,
-        _pack_id: &str,
-        _pack_bytes: Vec<u8>,
-    ) -> Result<JsonValue, String> {
-        Err(format!(
-            "Repository authority {repository_index} does not support numeric tree-pack upload"
         ))
     }
 

@@ -4,6 +4,7 @@
 
 # Local environment and developer machine noise.
 .DS_Store
+error.log
 deploy/dev/.env
 .venv/
 venv/

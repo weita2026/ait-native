@@ -25,10 +25,10 @@ use super::stash::{
 };
 use super::task::{
     infer_local_task_audit_with_change_store, local_task_audit_target_info,
-    local_task_audit_target_info_with_stores, task_audit_local_change_rows_with_change_store,
-    task_remote_audit_read_with_task_remote, task_remote_create_with_task_remote,
-    task_remote_list_with_task_remote, task_remote_read_with_task_remote,
-    validate_remote_task_create_response,
+    local_task_audit_target_info_with_stores, local_task_closeout_evidence_from_parts,
+    task_audit_local_change_rows_with_change_store, task_remote_audit_read_with_task_remote,
+    task_remote_create_with_task_remote, task_remote_list_with_task_remote,
+    task_remote_read_with_task_remote, validate_remote_task_create_response,
 };
 use super::workflow::{
     task_land_local_change_id_with_change_store, task_land_remote_task_read_with_task_remote,
@@ -58,8 +58,9 @@ use super::workspace::{
 };
 use super::worktree::{
     archive_local_line_with_line_store, create_local_line_with_line_store,
-    ensure_task_feature_line, line_change_usage_index_with_change_store,
-    set_local_line_head_with_line_store, snapshot_distance_if_ancestor_with_snapshot_store,
+    ensure_remote_base_line_snapshot_with_task_remote, ensure_task_feature_line,
+    line_change_usage_index_with_change_store, set_local_line_head_with_line_store,
+    snapshot_distance_if_ancestor_with_snapshot_store,
     snapshot_distance_if_ancestor_with_snapshot_store_and_cache,
     task_start_remote_base_line_preflight_with_task_remote, worktree_doctor_from_rows,
     worktree_local_change_for_worktree_with_change_store,
@@ -70,7 +71,7 @@ use super::worktree::{
 };
 use super::*;
 use crate::init_surface::{init_repo, InitRequest};
-use ait_core::line_store::{line_count_with_line_store, LineRecord, LineStore, LineStoreResult};
+use ait_core::line_store::{LineRecord, LineStore, LineStoreResult};
 use ait_core::plan_store::{PlanStoreError, PlanStoreResult};
 use ait_core::repo_status_store::{
     RepoStatusStorageCounts, RepoStatusStore, RepoStatusStoreResult,
@@ -181,6 +182,7 @@ struct FakeChangeRemote {
     zstd_commit_requests: Vec<JsonValue>,
     present_zstd_object_pack_ids: BTreeSet<String>,
     present_zstd_tree_pack_ids: BTreeSet<String>,
+    zstd_commit_peer_head_once: Option<String>,
 }
 
 #[derive(Debug, Default)]
@@ -206,6 +208,7 @@ struct FakeLineSnapshotRemote {
     present_zstd_tree_pack_ids: BTreeSet<String>,
     fail_zstd_object_pack_upload_for: Option<String>,
     fail_zstd_tree_pack_upload_for: Option<String>,
+    zstd_pack_parallelism_requests: Vec<usize>,
     line_update_calls: usize,
 }
 
@@ -1106,6 +1109,28 @@ impl TaskWorkflowZstdPackUploader for FakeChangeRemote {
                 .encode_value(request)
                 .expect("fake zstd commit request should encode"),
         );
+        if let (Some(peer_head), Some(line_update)) = (
+            self.zstd_commit_peer_head_once.take(),
+            request.line_update.as_ref(),
+        ) {
+            let peer_line = json!({
+                "repo_name": repo_name,
+                "line_name": line_update.line_name.clone(),
+                "status": "active",
+                "head_snapshot_id": peer_head,
+            });
+            if let Some(existing) = self.lines.iter_mut().find(|row| {
+                string_field(row, "line_name").as_deref() == Some(&line_update.line_name)
+            }) {
+                *existing = peer_line;
+            } else {
+                self.lines.push(peer_line);
+            }
+            return Err(TaskWorkflowHttpClientError::Remote(format!(
+                "GOVERNED_TARGET_LINE_REQUIRES_LAND: peer initialized {} before commit",
+                line_update.line_name
+            )));
+        }
         let mut upserted_snapshots = 0_i64;
         for snapshot in &request.snapshots {
             let snapshot_id = snapshot.snapshot_id.clone();
@@ -1477,6 +1502,27 @@ impl TaskWorkflowZstdPackUploader for FakeLineSnapshotRemote {
             pack_bytes: Some(pack_bytes.len() as i64),
             raw_binary_upload: Some(true),
         })
+    }
+
+    fn put_remote_zstd_packs_bounded(
+        &mut self,
+        repo_name: &str,
+        object_packs: &[(String, Vec<u8>)],
+        tree_packs: &[(String, Vec<u8>)],
+        max_parallelism: usize,
+    ) -> TaskWorkflowHttpClientResult<(Vec<ZstdPackUploadResponse>, Vec<ZstdPackUploadResponse>)>
+    {
+        self.zstd_pack_parallelism_requests.push(max_parallelism);
+        let mut object_responses = Vec::with_capacity(object_packs.len());
+        for (pack_id, pack_bytes) in object_packs {
+            object_responses
+                .push(self.put_remote_zstd_object_pack(repo_name, pack_id, pack_bytes)?);
+        }
+        let mut tree_responses = Vec::with_capacity(tree_packs.len());
+        for (pack_id, pack_bytes) in tree_packs {
+            tree_responses.push(self.put_remote_zstd_tree_pack(repo_name, pack_id, pack_bytes)?);
+        }
+        Ok((object_responses, tree_responses))
     }
 
     fn commit_remote_zstd_bulk(

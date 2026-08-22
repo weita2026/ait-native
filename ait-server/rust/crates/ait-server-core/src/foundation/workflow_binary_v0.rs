@@ -1,6 +1,6 @@
 use crate::foundation::remote_binary_db::{
     BinaryDbError, BinaryDbFileFamily, BinaryFileId, BinaryIndexId, BinaryPayloadFileId,
-    PayloadRange, StoreResult,
+    StoreResult,
 };
 
 pub const WORKFLOW_V0_LAYOUT_ID: u32 = 1;
@@ -114,16 +114,6 @@ pub fn workflow_record_file(path: &'static str, record_size: u32) -> BinaryFileI
 
 pub fn workflow_payload_file(path: &'static str) -> BinaryPayloadFileId {
     BinaryPayloadFileId::new(path, WORKFLOW_V0_LAYOUT_ID, BinaryDbFileFamily::Workflow)
-}
-
-pub fn workflow_fixed_index_file(path: &'static str, key_size: u32) -> BinaryIndexId {
-    BinaryIndexId::new_fixed(
-        path,
-        WORKFLOW_V0_LAYOUT_ID,
-        key_size,
-        false,
-        BinaryDbFileFamily::Workflow,
-    )
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -1214,13 +1204,6 @@ impl WorkflowBinaryV0Codec {
             author_mode,
             model_name,
         })
-    }
-
-    pub fn payload_range(offset: u64, len: u16) -> PayloadRange {
-        PayloadRange {
-            payload_offset: offset,
-            payload_len: u32::from(len),
-        }
     }
 }
 

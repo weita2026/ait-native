@@ -4,7 +4,10 @@ use crate::repository_retirement::{
 use crate::runtime::{RemoteRow, RepoRuntime};
 use ait_core::json_support::{json, JsonMap, JsonValue};
 use ait_core::plan_http_client::{PlanHttpClientConfig, PlanHttpClientManager};
-use ait_core::repository_pack_json::repository_payload_with_pack_storage_default;
+use ait_core::repository_pack_json::{
+    repository_payload_with_validated_pack_storage, RepositoryPackStorageContract,
+    REPOSITORY_PACK_STORAGE_CAPABILITY_FIELD, REPOSITORY_PACK_STORAGE_PAYLOAD_FIELD,
+};
 use ait_core::server_operational::{
     validate_worker_job_list_limit, WorkerJobIndex, WorkerJobKey, WORKER_JOB_LIST_LIMIT_DEFAULT,
     WORKER_JOB_LIST_LIMIT_MAX, WORKER_JOB_LIST_LIMIT_MIN,
@@ -43,13 +46,7 @@ pub fn repo_command(repo: &RepoRuntime, request: &RepoCommandRequest) -> Result<
         .map_err(|err| err.to_string())?;
 
     match command.as_str() {
-        "show" => client
-            .get_repository(&repo_name)
-            .and_then(|payload| {
-                repo_show_payload_with_pack_storage(payload)
-                    .map_err(ait_core::plan_http_client::PlanHttpClientError::Invalid)
-            })
-            .map_err(|err| err.to_string()),
+        "show" => repo_show(&mut client, &repo_name),
         "jobs" => repo_jobs(repo, &mut client, request),
         "ci-capabilities" => repo_ci_capabilities(&mut client, &remote_row, &repo_name),
         _ => Err(format!("Unknown repo command `{command}`.")),
@@ -86,10 +83,6 @@ pub fn repo_command_from_payload(
 
 const REPO_TEXT_EVIDENCE_LIMIT: usize = 20;
 
-pub fn render_repo_text(command: &str, payload: &JsonValue) {
-    println!("{}", repo_text(command, payload, None));
-}
-
 pub fn render_repo_command_text(request: &RepoCommandRequest, payload: &JsonValue) {
     println!(
         "{}",
@@ -118,6 +111,7 @@ fn repo_text(command: &str, payload: &JsonValue, request: Option<&RepoCommandReq
 fn repo_show_text(payload: &JsonValue, request: Option<&RepoCommandRequest>) -> String {
     let repository = payload.get("repository").unwrap_or(&JsonValue::Null);
     let storage = payload.get("pack_storage").unwrap_or(&JsonValue::Null);
+    let storage_loaded = storage.is_object();
     let validation = storage.get("validation").unwrap_or(&JsonValue::Null);
     let capabilities = payload.get("ci_capabilities").unwrap_or(&JsonValue::Null);
     let runner = capabilities
@@ -168,23 +162,28 @@ fn repo_show_text(payload: &JsonValue, request: Option<&RepoCommandRequest>) -> 
         "state",
         if tombstoned { "tombstoned" } else { "active" },
     );
-    push_key_value(
-        &mut output,
-        "storage",
-        format!("{validation_state} ({error_count} errors)"),
-    );
-    push_key_value(
-        &mut output,
-        "packs",
-        format!(
-            "{object_packs} object, {tree_packs} tree; zstd-only {}",
-            if zstd_verified {
-                "verified"
-            } else {
-                "not verified"
-            }
-        ),
-    );
+    if storage_loaded {
+        push_key_value(
+            &mut output,
+            "storage",
+            format!("{validation_state} ({error_count} errors)"),
+        );
+        push_key_value(
+            &mut output,
+            "packs",
+            format!(
+                "{object_packs} object, {tree_packs} tree; zstd-only {}",
+                if zstd_verified {
+                    "verified"
+                } else {
+                    "not verified"
+                }
+            ),
+        );
+    } else {
+        push_key_value(&mut output, "storage", "unknown (inventory not supplied)");
+        push_key_value(&mut output, "packs", "unknown; zstd-only unverified");
+    }
     if !runner_contract.is_empty() || !runner_entrypoint.is_empty() {
         push_key_value(
             &mut output,
@@ -213,6 +212,12 @@ fn repo_show_text(payload: &JsonValue, request: Option<&RepoCommandRequest>) -> 
         output.push("blocker: repository authority is tombstoned".to_string());
         output.push(format!(
             "recovery: ait repo restore{}",
+            request_remote_suffix(request)
+        ));
+    } else if !storage_loaded {
+        output.push("attention: repository pack inventory is unavailable".to_string());
+        output.push(format!(
+            "next: ait repo show{} --json",
             request_remote_suffix(request)
         ));
     } else if validation_state != "valid" || error_count > 0 || !zstd_verified {
@@ -772,8 +777,126 @@ fn append_scalar_payload(output: &mut Vec<String>, prefix: &str, payload: &JsonV
     }
 }
 
-fn repo_show_payload_with_pack_storage(payload: JsonValue) -> Result<JsonValue, String> {
-    repository_payload_with_pack_storage_default(payload)
+fn repo_show(client: &mut PlanHttpClientManager, repo_name: &str) -> Result<JsonValue, String> {
+    let handshake = client
+        .get_server_handshake()
+        .map_err(|err| err.to_string())?;
+    let repository = client
+        .get_repository(repo_name)
+        .map_err(|err| err.to_string())?;
+    repo_show_payload_with_pack_storage(repository, &handshake)
+}
+
+fn repo_show_payload_with_pack_storage(
+    payload: JsonValue,
+    handshake: &JsonValue,
+) -> Result<JsonValue, String> {
+    let pack_storage_advertised = handshake_advertises_pack_storage(handshake)?;
+    let mut payload = repository_payload_with_validated_pack_storage(payload)?;
+    let pack_storage_loaded = payload
+        .get(REPOSITORY_PACK_STORAGE_PAYLOAD_FIELD)
+        .is_some_and(|value| !value.is_null());
+    if pack_storage_advertised && !pack_storage_loaded {
+        return Err(format!(
+            "Server handshake advertises {}, but the Repository response omitted `{REPOSITORY_PACK_STORAGE_PAYLOAD_FIELD}`.",
+            RepositoryPackStorageContract::NAME
+        ));
+    }
+
+    let object = payload
+        .as_object_mut()
+        .ok_or_else(|| "repository payload must be a JSON object.".to_string())?;
+    for field in [
+        "ci_capabilities",
+        "ci_readiness",
+        "operational_capabilities",
+    ] {
+        merge_handshake_object_projection(object, handshake, field)?;
+    }
+    Ok(payload)
+}
+
+fn handshake_advertises_pack_storage(handshake: &JsonValue) -> Result<bool, String> {
+    let Some(ci_capabilities) = handshake.get("ci_capabilities") else {
+        return Ok(false);
+    };
+    if ci_capabilities.is_null() {
+        return Ok(false);
+    }
+    let ci_capabilities = ci_capabilities
+        .as_object()
+        .ok_or_else(|| "Server handshake `ci_capabilities` must be an object.".to_string())?;
+    let Some(capability) = ci_capabilities.get(REPOSITORY_PACK_STORAGE_CAPABILITY_FIELD) else {
+        return Ok(false);
+    };
+    if capability.is_null() {
+        return Ok(false);
+    }
+    let capability = capability.as_object().ok_or_else(|| {
+        format!(
+            "Server handshake `ci_capabilities.{REPOSITORY_PACK_STORAGE_CAPABILITY_FIELD}` must be an object."
+        )
+    })?;
+    let contract = capability
+        .get("contract")
+        .and_then(JsonValue::as_str)
+        .ok_or_else(|| {
+            format!(
+                "Server handshake `ci_capabilities.{REPOSITORY_PACK_STORAGE_CAPABILITY_FIELD}.contract` is required."
+            )
+        })?;
+    if contract != RepositoryPackStorageContract::NAME {
+        return Err(format!(
+            "Unsupported Repository Pack storage capability contract `{contract}`."
+        ));
+    }
+    match capability.get("supported") {
+        None => Ok(true),
+        Some(JsonValue::Bool(supported)) => Ok(*supported),
+        Some(_) => Err(format!(
+            "Server handshake `ci_capabilities.{REPOSITORY_PACK_STORAGE_CAPABILITY_FIELD}.supported` must be a boolean when present."
+        )),
+    }
+}
+
+fn merge_handshake_object_projection(
+    target: &mut JsonMap<String, JsonValue>,
+    handshake: &JsonValue,
+    field: &str,
+) -> Result<(), String> {
+    let Some(source) = handshake.get(field) else {
+        return Ok(());
+    };
+    if source.is_null() {
+        return Ok(());
+    }
+    let source = source
+        .as_object()
+        .ok_or_else(|| format!("Server handshake `{field}` must be an object."))?;
+    match target.get_mut(field) {
+        None | Some(JsonValue::Null) => {
+            target.insert(field.to_string(), JsonValue::Object(source.clone()));
+        }
+        Some(JsonValue::Object(target)) => merge_json_objects(target, source),
+        Some(_) => return Err(format!("Repository payload `{field}` must be an object.")),
+    }
+    Ok(())
+}
+
+fn merge_json_objects(
+    target: &mut JsonMap<String, JsonValue>,
+    source: &JsonMap<String, JsonValue>,
+) {
+    for (key, source_value) in source {
+        match (target.get_mut(key), source_value) {
+            (Some(JsonValue::Object(target)), JsonValue::Object(source)) => {
+                merge_json_objects(target, source);
+            }
+            _ => {
+                target.insert(key.clone(), source_value.clone());
+            }
+        }
+    }
 }
 
 fn repo_jobs(
@@ -985,15 +1108,98 @@ fn normalize_optional_text(value: Option<&str>) -> Option<String> {
 mod tests {
     use super::*;
 
+    fn pack_storage_payload(object_pack_count: u64, tree_pack_count: u64) -> JsonValue {
+        json!({
+            "contract": RepositoryPackStorageContract::NAME,
+            "zstd_only_verified": true,
+            "object_pack_format": "ait-pack-v3-zstd-chunked",
+            "tree_pack_format": "ait-tree-pack-v2-zstd-chunked",
+            "object_pack_count": object_pack_count,
+            "tree_pack_count": tree_pack_count,
+            "zstd_object_pack_count": object_pack_count,
+            "zstd_tree_pack_count": tree_pack_count,
+            "requires_zstd_remote_sync": true,
+            "validation": {"state": "valid", "error_count": 0}
+        })
+    }
+
+    fn pack_storage_handshake() -> JsonValue {
+        json!({
+            "ci_capabilities": {
+                (REPOSITORY_PACK_STORAGE_CAPABILITY_FIELD): {
+                    "contract": RepositoryPackStorageContract::NAME,
+                    "payload_field": REPOSITORY_PACK_STORAGE_PAYLOAD_FIELD,
+                    "missing_payload_default": "zstd_only"
+                },
+                "native_runner": {
+                    "contract": "ait.runner.native-job.v3",
+                    "repository_entrypoint": "ci/run"
+                },
+                "remote_sync_capabilities": {
+                    "zstd_pack_bulk": true,
+                    "zstd_pack_bulk_download": true
+                }
+            },
+            "ci_readiness": {"runtime_generation": "current"}
+        })
+    }
+
     #[test]
-    fn local_repo_show_exposes_pack_storage_payload() {
-        let payload = repo_show_payload_with_pack_storage(json!({
-            "repository": {
-                "repository_index": 7,
-                "repository_name": "repo",
-                "tombstoned": false
+    fn pack_storage_capability_accepts_current_shape_and_bounds_legacy_supported() {
+        assert!(handshake_advertises_pack_storage(&pack_storage_handshake()).unwrap());
+
+        let legacy_false = json!({
+            "ci_capabilities": {
+                (REPOSITORY_PACK_STORAGE_CAPABILITY_FIELD): {
+                    "contract": RepositoryPackStorageContract::NAME,
+                    "supported": false
+                }
             }
-        }))
+        });
+        assert!(!handshake_advertises_pack_storage(&legacy_false).unwrap());
+
+        for malformed in [
+            json!({
+                "ci_capabilities": {
+                    (REPOSITORY_PACK_STORAGE_CAPABILITY_FIELD): "invalid"
+                }
+            }),
+            json!({
+                "ci_capabilities": {
+                    (REPOSITORY_PACK_STORAGE_CAPABILITY_FIELD): {
+                        "contract": "ait.repository.pack_storage.v2"
+                    }
+                }
+            }),
+            json!({
+                "ci_capabilities": {
+                    (REPOSITORY_PACK_STORAGE_CAPABILITY_FIELD): {
+                        "contract": RepositoryPackStorageContract::NAME,
+                        "supported": "yes"
+                    }
+                }
+            }),
+        ] {
+            assert!(handshake_advertises_pack_storage(&malformed).is_err());
+        }
+    }
+
+    #[test]
+    fn repo_show_preserves_supplied_pack_storage_and_merges_handshake_capabilities() {
+        let payload = repo_show_payload_with_pack_storage(
+            json!({
+                "repository": {
+                    "repository_index": 7,
+                    "repository_name": "repo",
+                    "tombstoned": false
+                },
+                "pack_storage": pack_storage_payload(2, 3),
+                "ci_capabilities": {
+                    "remote_sync_capabilities": {"zstd_pull_manifest": true}
+                }
+            }),
+            &pack_storage_handshake(),
+        )
         .expect("repo show payload should normalize");
 
         assert_eq!(
@@ -1008,6 +1214,82 @@ mod tests {
         assert_eq!(
             payload["pack_storage"]["tree_pack_format"],
             json!("ait-tree-pack-v2-zstd-chunked")
+        );
+        assert_eq!(payload["pack_storage"]["object_pack_count"], json!(2));
+        assert_eq!(payload["pack_storage"]["tree_pack_count"], json!(3));
+        assert_eq!(
+            payload["ci_capabilities"]["native_runner"]["contract"],
+            json!("ait.runner.native-job.v3")
+        );
+        assert_eq!(
+            payload["ci_capabilities"]["remote_sync_capabilities"]["zstd_pull_manifest"],
+            json!(true)
+        );
+        assert_eq!(
+            payload["ci_readiness"]["runtime_generation"],
+            json!("current")
+        );
+    }
+
+    #[test]
+    fn repo_show_fails_closed_when_advertised_pack_inventory_is_missing() {
+        let error = repo_show_payload_with_pack_storage(
+            json!({
+                "repository": {
+                    "repository_index": 7,
+                    "repository_name": "repo",
+                    "tombstoned": false
+                }
+            }),
+            &pack_storage_handshake(),
+        )
+        .expect_err("advertised Pack storage must require a Repository inventory");
+        assert!(
+            error.contains(RepositoryPackStorageContract::NAME),
+            "{error}"
+        );
+        assert!(error.contains("omitted `pack_storage`"), "{error}");
+    }
+
+    #[test]
+    fn legacy_repo_show_preserves_missing_inventory_as_unknown() {
+        let payload = repo_show_payload_with_pack_storage(
+            json!({
+                "repository": {
+                    "repository_index": 7,
+                    "repository_name": "legacy-repo",
+                    "tombstoned": false
+                }
+            }),
+            &json!({
+                "ci_capabilities": {
+                    "native_runner": {
+                        "contract": "ait.runner.native-job.v3",
+                        "repository_entrypoint": "ci/run"
+                    }
+                }
+            }),
+        )
+        .expect("a legacy server without the capability remains readable");
+
+        assert!(payload.get(REPOSITORY_PACK_STORAGE_PAYLOAD_FIELD).is_none());
+        assert_eq!(
+            payload["ci_capabilities"]["native_runner"]["contract"],
+            json!("ait.runner.native-job.v3")
+        );
+        let rendered = repo_text("show", &payload, None);
+        assert!(
+            rendered.contains("storage: unknown (inventory not supplied)"),
+            "{rendered}"
+        );
+        assert!(
+            rendered.contains("packs: unknown; zstd-only unverified"),
+            "{rendered}"
+        );
+        assert!(!rendered.contains("0 object, 0 tree"), "{rendered}");
+        assert!(
+            rendered.contains("attention: repository pack inventory is unavailable"),
+            "{rendered}"
         );
     }
 

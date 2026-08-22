@@ -7,4 +7,5 @@ pub struct ServerState {
     pub(super) workflow_service: Arc<dyn ServerWorkflowStore>,
     pub(super) repository_service: Arc<dyn NativeRepositoryService>,
     pub(super) operational_binary: Arc<OperationalBinaryRuntime>,
+    pub(super) zstd_pack_upload_admission: Arc<tokio::sync::Semaphore>,
 }

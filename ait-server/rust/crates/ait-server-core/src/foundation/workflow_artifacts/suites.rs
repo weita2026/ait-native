@@ -42,14 +42,14 @@ pub fn patchset_rollout_suite_ids(
 ) -> (Vec<String>, Vec<String>, Vec<String>) {
     let patchset_suite_ids = suites_by_id
         .iter()
-        .filter_map(|(suite_id, suite)| {
-            (suite
+        .filter(|&(_suite_id, suite)| {
+            suite
                 .as_object()
                 .and_then(|object| optional_text(object.get("plane")))
                 .as_deref()
-                == Some("patchset"))
-            .then(|| suite_id.clone())
+                == Some("patchset")
         })
+        .map(|(suite_id, _suite)| suite_id.clone())
         .collect::<Vec<_>>();
     let required_suite_ids = patchset_suite_ids
         .iter()

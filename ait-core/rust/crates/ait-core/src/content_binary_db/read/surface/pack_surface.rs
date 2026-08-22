@@ -157,14 +157,6 @@ impl<B, const WRITE_LAYOUT: u32> BinaryDbTreePackStore<B, WRITE_LAYOUT>
 where
     B: BinaryDb,
 {
-    pub fn read_tree_pack_record(
-        &self,
-        read: &BinaryDbReadTxn<'_, B>,
-        tree_pack_index: u32,
-    ) -> StoreResult<BinaryTreePackRecord> {
-        read_tree_pack_record_at::<B, WRITE_LAYOUT>(read, tree_pack_index)
-    }
-
     pub fn tree_pack_view_at(
         &self,
         read: &BinaryDbReadTxn<'_, B>,

@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="dark">
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg' viewBox='0 0 32 32'%3E%3Cpath fill='%2365f7e5' d='M14 2h4l2 10 9 7-1 4-10-3-1 10h-2l-1-10-10 3-1-4 9-7z'/%3E%3C/svg%3E">
+    <title>Starline Defender</title>
+    <link rel="stylesheet" href="styles.css">
+  </head>
+  <body>
+    <main class="cabinet" aria-labelledby="game-title">
+      <header class="masthead">
+        <p class="eyebrow">Sector 13 // Local Defense</p>
+        <h1 id="game-title">Starline Defender</h1>
+        <p class="tagline">Hold the line until the command carrier arrives.</p>
+      </header>
+
+      <section class="game-shell" aria-label="Starline Defender game">
+        <div class="hud" aria-live="polite">
+          <span>Lives <strong id="lives">3</strong></span>
+          <span>Score <strong id="score">000000</strong></span>
+          <span>Boss <strong id="boss-health">--</strong></span>
+        </div>
+        <canvas id="game" width="480" height="640" aria-label="Plane shooter playfield"></canvas>
+        <div class="status-row">
+          <span id="status">Ready</span>
+          <span id="seed-label">Seed 1337</span>
+        </div>
+      </section>
+
+      <section class="controls" aria-label="Game controls">
+        <button id="start" type="button">Start / Restart</button>
+        <button id="pause" type="button">Pause</button>
+        <p><kbd>A</kbd><kbd>D</kbd> or <kbd>←</kbd><kbd>→</kbd> move</p>
+        <p><kbd>Space</kbd> fires · <kbd>P</kbd> pauses</p>
+      </section>
+    </main>
+    <script type="module" src="src/game.js"></script>
+  </body>
+</html>

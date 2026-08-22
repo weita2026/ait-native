@@ -115,6 +115,7 @@ pub(super) fn binary_line_response(
     }))
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn binary_line_payload(
     repo_name: &str,
     repo_id: &str,
@@ -142,20 +143,13 @@ pub(super) fn binary_line_payload(
     })
 }
 
-pub(super) fn binary_repository_pack_storage_payload_json() -> JsonValue {
-    json!({
-        "contract": REPOSITORY_PACK_STORAGE_CONTRACT,
-        "zstd_only_verified": true,
-        "object_pack_format": PACK_FORMAT_ZSTD_CHUNKED_V1,
-        "tree_pack_format": TREE_PACK_FORMAT_ZSTD_CHUNKED_V1,
-        "object_pack_count": 0_u64,
-        "tree_pack_count": 0_u64,
-        "zstd_object_pack_count": 0_u64,
-        "zstd_tree_pack_count": 0_u64,
-        "requires_zstd_remote_sync": true,
-        "validation": {
-            "state": "valid",
-            "error_count": 0,
-        },
-    })
+pub(super) fn binary_repository_pack_storage_payload_json<D>(
+    db: &D,
+) -> Result<JsonValue, NativeRepositoryError>
+where
+    D: ServerRemoteBinaryDb + Clone,
+{
+    ServerBinaryRepositoryContentStore::new(db.clone())
+        .repository_pack_storage_payload()
+        .map_err(binary_native_repository_store_error)
 }

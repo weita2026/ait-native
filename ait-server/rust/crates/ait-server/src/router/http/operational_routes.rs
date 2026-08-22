@@ -248,6 +248,21 @@ pub(super) async fn native_commit_repository_restore(
     map_lifecycle_result(result)
 }
 
+pub(super) async fn native_abort_repository_restore(
+    State(state): State<ServerState>,
+    Path(restore_token): Path<String>,
+) -> Result<impl IntoResponse, ApiError> {
+    let runtime = require_operational_runtime(&state)?;
+    let result = task::spawn_blocking(move || runtime.abort_repository_restore(&restore_token))
+        .await
+        .map_err(|error| {
+            ApiError::internal(format!(
+                "Binary Repository restore abort worker failed: {error}"
+            ))
+        })?;
+    map_lifecycle_result(result)
+}
+
 pub(super) async fn native_operational_worker_jobs(
     State(state): State<ServerState>,
     Path(repository_index): Path<String>,

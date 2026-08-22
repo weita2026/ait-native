@@ -378,7 +378,7 @@ struct ZstdBulkUploadResult {
     pack_parallelism: usize,
 }
 
-const DEFAULT_REMOTE_SYNC_PACK_PARALLELISM: usize = 4;
+const DEFAULT_REMOTE_SYNC_PACK_PARALLELISM: usize = 2;
 
 fn remote_sync_pack_parallelism() -> usize {
     DEFAULT_REMOTE_SYNC_PACK_PARALLELISM
@@ -2507,6 +2507,84 @@ where
     ))
 }
 
+pub(in crate::primitives) fn initialize_remote_null_head_line_with_snapshot_via_zstd<R>(
+    repo: &RepoRuntime,
+    task_remote: &mut R,
+    repo_name: &str,
+    line_name: &str,
+    snapshot_id: &str,
+    remote_sync_capabilities: &RemoteSyncCapabilities,
+) -> Result<JsonValue, String>
+where
+    R: TaskWorkflowZstdPackUploader + ?Sized,
+{
+    if line_name != repo.default_line_name() {
+        return Err(format!(
+            "Remote empty-base initialization only admits the configured default Line `{}`; got `{line_name}`.",
+            repo.default_line_name()
+        ));
+    }
+    let snapshot_ids = vec![snapshot_id.to_string()];
+    let (backend_negotiation, _) = require_zstd_bulk_upload_backend(
+        &snapshot_ids,
+        &BTreeSet::new(),
+        remote_sync_capabilities,
+    )?;
+    let upload = run_zstd_bulk_upload(
+        repo,
+        task_remote,
+        repo_name,
+        &snapshot_ids,
+        &BTreeSet::new(),
+        None,
+        Some(line_name),
+        Some(snapshot_id),
+        None,
+    )?;
+    let remote_plan_payload = ZstdBulkPlanResponseJson::stateless()
+        .encode_value(&upload.remote_plan)
+        .map_err(|err| err.to_string())?;
+    let commit_payload = ZstdBulkCommitResponseJson::stateless()
+        .encode_value(&upload.commit_response)
+        .map_err(|err| err.to_string())?;
+    Ok(json!({
+        "repo_name": repo_name,
+        "line_name": line_name,
+        "head_snapshot_id": snapshot_id,
+        "checked_snapshots": snapshot_ids.len(),
+        "uploaded_snapshots": upload.uploaded_snapshots,
+        "skipped_snapshots": upload.skipped_snapshots,
+        "remote_sync_backend": remote_sync_backend_payload(
+            &backend_negotiation,
+            &RemoteSyncInventoryDiff::from_present_snapshot_ids(
+                &snapshot_ids,
+                &upload
+                    .remote_plan
+                    .present_snapshot_ids
+                    .iter()
+                    .cloned()
+                    .collect::<BTreeSet<_>>(),
+            ),
+        ),
+        "phase_timings_ms": {
+            "zstd_bulk": upload.phase_timings_ms,
+        },
+        "remote_sync_metrics": {
+            "remote_round_trips": upload.remote_round_trips,
+            "transferred_pack_bytes": upload.transferred_pack_bytes,
+            "pack_parallelism": upload.pack_parallelism,
+        },
+        "zstd_bulk": {
+            "uploaded_object_packs": upload.uploaded_object_packs,
+            "skipped_object_packs": upload.skipped_object_packs,
+            "uploaded_tree_packs": upload.uploaded_tree_packs,
+            "skipped_tree_packs": upload.skipped_tree_packs,
+            "remote_plan": remote_plan_payload,
+            "commit": commit_payload,
+        },
+    }))
+}
+
 pub(in crate::primitives) fn push_line_to_remote_with_task_remote_and_capabilities<R>(
     repo: &RepoRuntime,
     task_remote: &mut R,
@@ -2560,10 +2638,6 @@ fn require_solo_local_default_line_push_authority(
     ))
 }
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "remote push keeps capability and zstd boundary inputs explicit"
-)]
 fn push_line_to_remote_with_task_remote_and_capabilities_and_zstd_boundary<R>(
     repo: &RepoRuntime,
     task_remote: &mut R,

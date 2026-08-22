@@ -1,7 +1,7 @@
 use super::*;
 use crate::foundation::pack_substrate::{
     read_zstd_object_pack_blob_from_bytes, TreePackEntryArchive, MAX_DELTA_CHAIN_READ_DEPTH,
-    TREE_PACK_FORMAT_ZSTD_CHUNKED_V1,
+    PACK_FORMAT_ZSTD_CHUNKED_V1, TREE_PACK_FORMAT_ZSTD_CHUNKED_V1,
 };
 use crate::foundation::remote_binary_db::{BinaryDbReadScope, BinaryIndexKeyRef};
 use serde_json::{json, Value as JsonValue};
@@ -13,9 +13,9 @@ use std::path::PathBuf;
 #[cfg(test)]
 std::thread_local! {
     static TEST_CONTENT_RECORD_READ_RANGES: std::cell::RefCell<BTreeMap<String, Vec<(u32, u32)>>> =
-        std::cell::RefCell::new(BTreeMap::new());
+        const { std::cell::RefCell::new(BTreeMap::new()) };
     static TEST_CONTENT_PAYLOAD_READ_RANGES: std::cell::RefCell<BTreeMap<String, Vec<(u64, u32)>>> =
-        std::cell::RefCell::new(BTreeMap::new());
+        const { std::cell::RefCell::new(BTreeMap::new()) };
 }
 
 #[cfg(test)]
@@ -419,6 +419,49 @@ impl ServerBinaryTreeReadCache {
         Ok(self.trees_by_id.get(&tree_id.to_ascii_uppercase()).cloned())
     }
 
+    pub(crate) fn projected_object_packs(&self) -> StoreResult<Vec<ServerBinaryObjectPackView>> {
+        if !self.manifest_object_projection_complete {
+            return Err(BinaryDbError::corruption(
+                "manifest Object authority projection is incomplete",
+            ));
+        }
+        Ok(self.object_packs_by_id.values().cloned().collect())
+    }
+
+    pub(crate) fn projected_tree_packs(&self) -> StoreResult<Vec<ServerBinaryTreePackView>> {
+        if !self.manifest_tree_projection_complete {
+            return Err(BinaryDbError::corruption(
+                "manifest Tree authority projection is incomplete",
+            ));
+        }
+        Ok(self.tree_packs_by_id.values().cloned().collect())
+    }
+
+    pub(crate) fn projected_blobs(&self) -> StoreResult<Vec<ServerBinaryBlobView>> {
+        if !self.manifest_object_projection_complete {
+            return Err(BinaryDbError::corruption(
+                "manifest Blob authority projection is incomplete",
+            ));
+        }
+        Ok(self.blobs_by_index.values().cloned().collect())
+    }
+
+    pub(crate) fn projected_trees(&self) -> StoreResult<Vec<ServerBinaryTreeView>> {
+        if !self.manifest_tree_projection_complete {
+            return Err(BinaryDbError::corruption(
+                "manifest Tree authority projection is incomplete",
+            ));
+        }
+        Ok(self.trees_by_index.values().cloned().collect())
+    }
+
+    pub(crate) fn compact_for_immutable_pull_catalog(&mut self) {
+        self.archives.clear();
+        self.normalized_entry_ranges = None;
+        self.normalized_entries = None;
+        self.tree_name_payload_body = None;
+    }
+
     pub(crate) fn projected_blobs_for_object_pack(
         &self,
         pack: &ServerBinaryObjectPackView,
@@ -604,6 +647,69 @@ where
             .join(format!("{pack_id}.zstpack"))
     }
 
+    /// Returns the exact append-only content revision observed while the
+    /// caller holds the normal Content read lock. Every admitted catalog
+    /// mutation changes at least one fixed authority or payload/index length;
+    /// immutable pack payloads become visible only through those authorities.
+    pub(crate) fn manifest_revision_with_read(
+        &self,
+        read: &BinaryDbReadTxn<'_, D>,
+    ) -> StoreResult<[u8; 32]> {
+        read.read_lock_paths()?;
+        const MANIFEST_AUTHORITY_FILES: &[&str] = &[
+            OBJECT_PACK_BIN,
+            OBJECT_PACK_ID_IDX,
+            OBJECT_PACK_MEMBER_BIN,
+            BLOB_BIN,
+            BLOB_ID_IDX,
+            TREE_PACK_BIN,
+            TREE_PACK_ID_IDX,
+            TREE_BIN,
+            TREE_ID_IDX,
+            TREE_ENTRY_BIN,
+            TREE_ENTRY_RANGE_BIN,
+            TREE_NAME_PAYLOAD_BIN,
+            SERVER_SNAPSHOT_BIN,
+            SERVER_SNAPSHOT_PAYLOAD_BIN,
+            SERVER_SNAPSHOT_ID_IDX,
+            SERVER_SNAPSHOT_PARENT_EDGE_BIN,
+        ];
+
+        let root = ServerRemoteBinaryDb::authority_root(&self.db).as_path();
+        let mut digest = Sha256::new();
+        digest.update(b"ait.server.pull-catalog-revision.v1\0");
+        digest.update(self.db.storage_generation().value().to_le_bytes());
+        for relative_path in MANIFEST_AUTHORITY_FILES {
+            let relative_bytes = relative_path.as_bytes();
+            digest.update((relative_bytes.len() as u32).to_le_bytes());
+            digest.update(relative_bytes);
+            let path = root.join(relative_path);
+            match fs::symlink_metadata(&path) {
+                Ok(metadata) => {
+                    if !metadata.file_type().is_file() {
+                        return Err(BinaryDbError::corruption(format!(
+                            "manifest authority {} is not a regular file",
+                            path.display()
+                        )));
+                    }
+                    digest.update([1]);
+                    digest.update(metadata.len().to_le_bytes());
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    digest.update([0]);
+                    digest.update(0_u64.to_le_bytes());
+                }
+                Err(error) => {
+                    return Err(BinaryDbError::other(format!(
+                        "inspect manifest authority {}: {error}",
+                        path.display()
+                    )))
+                }
+            }
+        }
+        Ok(digest.finalize().into())
+    }
+
     pub(crate) fn manifest_object_read_cache_with_read(
         &self,
         read: &BinaryDbReadTxn<'_, D>,
@@ -701,6 +807,25 @@ where
             |id| prefixed_hex_key(id, "TRE-", 10),
             |tree| tree.tree_index,
             "Tree",
+        )
+    }
+
+    pub(crate) fn validate_complete_manifest_identity_indexes_with_read(
+        &self,
+        read: &BinaryDbReadTxn<'_, D>,
+        cache: &ServerBinaryTreeReadCache,
+    ) -> StoreResult<()> {
+        let object_pack_ids = cache.object_packs_by_id.keys().cloned().collect();
+        let tree_pack_ids = cache.tree_packs_by_id.keys().cloned().collect();
+        let blob_ids = cache.blobs_by_id.keys().cloned().collect();
+        let tree_ids = cache.trees_by_id.keys().cloned().collect();
+        self.validate_manifest_identity_indexes_with_read(
+            read,
+            cache,
+            &object_pack_ids,
+            &tree_pack_ids,
+            &blob_ids,
+            &tree_ids,
         )
     }
 
@@ -832,18 +957,6 @@ where
         blob_with_read(read, blob_id)
     }
 
-    pub fn blobs_with_read(
-        &self,
-        read: &BinaryDbReadTxn<'_, D>,
-        blob_ids: &BTreeSet<String>,
-    ) -> StoreResult<BTreeMap<String, ServerBinaryBlobView>> {
-        let normalized_ids = blob_ids
-            .iter()
-            .map(|blob_id| blob_id.to_ascii_uppercase())
-            .collect::<BTreeSet<_>>();
-        blobs_with_access(read, &normalized_ids)
-    }
-
     pub fn blob_bytes_with_read(
         &self,
         read: &BinaryDbReadTxn<'_, D>,
@@ -864,32 +977,6 @@ where
         tree_id: &str,
     ) -> StoreResult<Option<ServerBinaryTreeView>> {
         tree_with_read(read, tree_id)
-    }
-
-    pub fn trees_with_read(
-        &self,
-        read: &BinaryDbReadTxn<'_, D>,
-        tree_ids: &BTreeSet<String>,
-    ) -> StoreResult<BTreeMap<String, ServerBinaryTreeView>> {
-        let normalized_ids = tree_ids
-            .iter()
-            .map(|tree_id| tree_id.to_ascii_uppercase())
-            .collect::<BTreeSet<_>>();
-        trees_with_access(read, &normalized_ids)
-    }
-
-    pub fn tree_at_with_read(
-        &self,
-        read: &BinaryDbReadTxn<'_, D>,
-        tree_index: u32,
-    ) -> StoreResult<ServerBinaryTreeView> {
-        let view = tree_at(read, tree_index)?;
-        if view.record.tree_meta & META_TOMBSTONE != 0 {
-            return Err(BinaryDbError::corruption(format!(
-                "snapshot references tombstoned tree index {tree_index}"
-            )));
-        }
-        Ok(view)
     }
 
     pub fn tree_for_pack_entry_ordinal_with_read(
@@ -962,7 +1049,7 @@ where
         let archive = self.tree_pack_archive_with_read_cache(pack, cache)?;
         archive
             .index_json_and_checksum()
-            .map_err(|error| BinaryDbError::corruption(error))
+            .map_err(BinaryDbError::corruption)
     }
 
     pub(crate) fn tree_pack_tree_checksum_with_read_cache(
@@ -1068,6 +1155,74 @@ where
                 Err(error) => Some(Err(error)),
             })
             .collect()
+    }
+
+    pub fn repository_pack_storage_payload(&self) -> StoreResult<JsonValue> {
+        let read = BinaryDbReadTxn::new_bounded_for_scope(&self.db, BinaryDbReadScope::CONTENT);
+        let object_packs = bulk_object_pack_views(&read)?
+            .into_iter()
+            .filter(|pack| pack.record.pack_meta & META_TOMBSTONE == 0)
+            .collect::<Vec<_>>();
+        let tree_packs = bulk_tree_pack_views(&read)?
+            .into_iter()
+            .filter(|pack| pack.record.pack_meta & META_TOMBSTONE == 0)
+            .collect::<Vec<_>>();
+        drop(read);
+
+        for pack in &object_packs {
+            if !pack.record.is_ready() {
+                return Err(BinaryDbError::corruption(format!(
+                    "object pack {} is not ready",
+                    pack.pack_id
+                )));
+            }
+            if pack.record.pack_format_kind != ZSTD_PACK_FORMAT_KIND {
+                return Err(BinaryDbError::corruption(format!(
+                    "object pack {} is not canonical zstd",
+                    pack.pack_id
+                )));
+            }
+            validate_regular_pack_file(
+                &self.object_pack_path(&pack.pack_id),
+                "object",
+                &pack.pack_id,
+            )?;
+        }
+        for pack in &tree_packs {
+            if !pack.record.is_ready() {
+                return Err(BinaryDbError::corruption(format!(
+                    "tree pack {} is not ready",
+                    pack.pack_id
+                )));
+            }
+            if pack.record.pack_format_kind != ZSTD_PACK_FORMAT_KIND {
+                return Err(BinaryDbError::corruption(format!(
+                    "tree pack {} is not canonical zstd",
+                    pack.pack_id
+                )));
+            }
+            validate_regular_pack_file(&self.tree_pack_path(&pack.pack_id), "tree", &pack.pack_id)?;
+        }
+
+        let object_pack_count = u64::try_from(object_packs.len())
+            .map_err(|_| BinaryDbError::corruption("object pack count exceeds u64"))?;
+        let tree_pack_count = u64::try_from(tree_packs.len())
+            .map_err(|_| BinaryDbError::corruption("tree pack count exceeds u64"))?;
+        Ok(json!({
+            "contract": "ait.repository.pack_storage.v1",
+            "zstd_only_verified": true,
+            "object_pack_format": PACK_FORMAT_ZSTD_CHUNKED_V1,
+            "tree_pack_format": TREE_PACK_FORMAT_ZSTD_CHUNKED_V1,
+            "object_pack_count": object_pack_count,
+            "tree_pack_count": tree_pack_count,
+            "zstd_object_pack_count": object_pack_count,
+            "zstd_tree_pack_count": tree_pack_count,
+            "requires_zstd_remote_sync": true,
+            "validation": {
+                "state": "valid",
+                "error_count": 0,
+            },
+        }))
     }
 
     pub fn blobs(&self) -> StoreResult<Vec<ServerBinaryBlobView>> {
@@ -1424,6 +1579,29 @@ where
         }
         Ok(normalized)
     }
+}
+
+fn validate_regular_pack_file(
+    path: &std::path::Path,
+    kind: &str,
+    pack_id: &str,
+) -> StoreResult<()> {
+    let metadata = fs::symlink_metadata(path).map_err(|error| {
+        BinaryDbError::io(
+            format!(
+                "inspect Binary DB {kind} pack {pack_id} at {}",
+                path.display()
+            ),
+            error,
+        )
+    })?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err(BinaryDbError::corruption(format!(
+            "Binary DB {kind} pack {pack_id} is not a regular non-symlink file: {}",
+            path.display()
+        )));
+    }
+    Ok(())
 }
 
 impl<D> ServerBinaryRepositoryContentStore<D>
@@ -3152,13 +3330,11 @@ fn tree_for_pack_entry_ordinal(
                 pack.pack_id
             )));
         }
-        if tree.record.pack_entry_ordinal == physical_ordinal {
-            if found.replace(tree).is_some() {
-                return Err(BinaryDbError::corruption(format!(
-                    "tree pack {} repeats physical ordinal {physical_ordinal}",
-                    pack.pack_id
-                )));
-            }
+        if tree.record.pack_entry_ordinal == physical_ordinal && found.replace(tree).is_some() {
+            return Err(BinaryDbError::corruption(format!(
+                "tree pack {} repeats physical ordinal {physical_ordinal}",
+                pack.pack_id
+            )));
         }
     }
     found.ok_or_else(|| {
@@ -4191,35 +4367,36 @@ mod mode_tests {
             ),
         ]);
         let mut load_count = BTreeMap::<String, usize>::new();
-        let mut load_node = |tree_id: &str| {
-            *load_count.entry(tree_id.to_string()).or_default() += 1;
-            nodes
-                .get(tree_id)
-                .cloned()
-                .ok_or_else(|| BinaryDbError::corruption("missing test tree"))
-        };
-        let mut aggregate_cache = BTreeMap::new();
-        let aggregate = fold_snapshot_tree_aggregate(
-            "TRE-ROOT",
-            &mut BTreeSet::new(),
-            &mut aggregate_cache,
-            &mut load_node,
-        )?;
-        assert_eq!(
-            aggregate,
-            ServerBinaryTreeAggregate {
-                file_count: 5,
-                total_bytes: 17,
-            }
-        );
-        let repeated = fold_snapshot_tree_aggregate(
-            "TRE-ROOT",
-            &mut BTreeSet::new(),
-            &mut aggregate_cache,
-            &mut load_node,
-        )?;
-        assert_eq!(repeated, aggregate);
-        drop(load_node);
+        {
+            let mut load_node = |tree_id: &str| {
+                *load_count.entry(tree_id.to_string()).or_default() += 1;
+                nodes
+                    .get(tree_id)
+                    .cloned()
+                    .ok_or_else(|| BinaryDbError::corruption("missing test tree"))
+            };
+            let mut aggregate_cache = BTreeMap::new();
+            let aggregate = fold_snapshot_tree_aggregate(
+                "TRE-ROOT",
+                &mut BTreeSet::new(),
+                &mut aggregate_cache,
+                &mut load_node,
+            )?;
+            assert_eq!(
+                aggregate,
+                ServerBinaryTreeAggregate {
+                    file_count: 5,
+                    total_bytes: 17,
+                }
+            );
+            let repeated = fold_snapshot_tree_aggregate(
+                "TRE-ROOT",
+                &mut BTreeSet::new(),
+                &mut aggregate_cache,
+                &mut load_node,
+            )?;
+            assert_eq!(repeated, aggregate);
+        }
         assert_eq!(load_count.get("TRE-ROOT"), Some(&1));
         assert_eq!(load_count.get("TRE-SHARED"), Some(&1));
         Ok(())

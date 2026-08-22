@@ -27,10 +27,6 @@ impl FsExternalLinkStore {
         }
     }
 
-    pub fn at_path(path: impl Into<PathBuf>) -> Self {
-        Self { path: path.into() }
-    }
-
     pub fn path(&self) -> &Path {
         &self.path
     }

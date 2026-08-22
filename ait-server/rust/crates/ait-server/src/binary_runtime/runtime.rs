@@ -151,15 +151,17 @@ impl RoutedBinaryRuntimeService {
         repository_index: &str,
         patchset_id: &str,
         recent_limit: i64,
+        projection: Option<&str>,
     ) -> Result<JsonValue, String> {
-        let (index, _, workflow) = self.workflow_store(repository_index)?;
+        let recent_limit = patchset_ci_status_recent_limit(recent_limit, projection)?;
+        let (index, repo_name, workflow) = self.workflow_store(repository_index)?;
         let patchset = workflow.get_patchset(None, patchset_id)?;
         let patchset_index = self
             .workflow
             .physical_patchset_index(repository_index, patchset_id)?;
         let jobs = self
             .operational
-            .patchset_ci_jobs(index, patchset_index, normalize_limit(recent_limit)?)
+            .patchset_ci_jobs(index, patchset_index, recent_limit)
             .map_err(|error| error.to_string())?;
         let completed_at_s = patchset
             .get("ci_completed_at_s")
@@ -179,7 +181,7 @@ impl RoutedBinaryRuntimeService {
         };
         let latest_job = jobs["latest_job"].clone();
         let recent_jobs = jobs["recent_jobs"].clone();
-        Ok(json!({
+        let status = json!({
             "available": true,
             "repository_index": index,
             "patchset_index": patchset_index,
@@ -201,7 +203,15 @@ impl RoutedBinaryRuntimeService {
             "suite_results": [],
             "latest_job": latest_job,
             "recent_jobs": recent_jobs,
-        }))
+        });
+        project_patchset_ci_status(
+            status,
+            projection,
+            patchset.get("change_id").and_then(JsonValue::as_str),
+            patchset.get("change_ref").and_then(JsonValue::as_str),
+            &repo_name,
+            recent_limit,
+        )
     }
 
     fn run_scoped_patchset_ci(
@@ -357,15 +367,6 @@ impl ServerRuntimeService for RoutedBinaryRuntimeService {
         Err("Patchset CI requires an explicit numeric repository_index".to_string())
     }
 
-    fn run_repository_patchset_ci(
-        &self,
-        repository_index: &str,
-        patchset_id: &str,
-        payload: &JsonValue,
-    ) -> Result<JsonValue, String> {
-        self.run_scoped_patchset_ci(repository_index, patchset_id, payload)
-    }
-
     fn run_repository_authority_patchset_ci(
         &self,
         repository_index: &str,
@@ -384,24 +385,14 @@ impl ServerRuntimeService for RoutedBinaryRuntimeService {
         Err("Patchset CI status requires an explicit numeric repository_index".to_string())
     }
 
-    fn read_repository_patchset_ci_status(
-        &self,
-        repository_index: &str,
-        patchset_id: &str,
-        recent_limit: i64,
-        _projection: Option<&str>,
-    ) -> Result<JsonValue, String> {
-        self.patchset_ci_status(repository_index, patchset_id, recent_limit)
-    }
-
     fn read_repository_authority_patchset_ci_status(
         &self,
         repository_index: &str,
         patchset_id: &str,
         recent_limit: i64,
-        _projection: Option<&str>,
+        projection: Option<&str>,
     ) -> Result<JsonValue, String> {
-        self.patchset_ci_status(repository_index, patchset_id, recent_limit)
+        self.patchset_ci_status(repository_index, patchset_id, recent_limit, projection)
     }
 
     fn plan_repository_zstd_bulk(
@@ -414,17 +405,6 @@ impl ServerRuntimeService for RoutedBinaryRuntimeService {
             .map_err(|error| error.to_string())
     }
 
-    fn put_repository_zstd_object_pack(
-        &self,
-        repository_index: &str,
-        pack_id: &str,
-        pack_bytes: Vec<u8>,
-    ) -> Result<JsonValue, String> {
-        self.repository
-            .put_zstd_bulk_object_pack(repository_index, pack_id, pack_bytes)
-            .map_err(|error| error.to_string())
-    }
-
     fn get_repository_zstd_object_pack(
         &self,
         repository_index: &str,
@@ -432,17 +412,6 @@ impl ServerRuntimeService for RoutedBinaryRuntimeService {
     ) -> Result<Vec<u8>, String> {
         self.repository
             .get_zstd_bulk_object_pack(repository_index, pack_id)
-            .map_err(|error| error.to_string())
-    }
-
-    fn put_repository_zstd_tree_pack(
-        &self,
-        repository_index: &str,
-        pack_id: &str,
-        pack_bytes: Vec<u8>,
-    ) -> Result<JsonValue, String> {
-        self.repository
-            .put_zstd_bulk_tree_pack(repository_index, pack_id, pack_bytes)
             .map_err(|error| error.to_string())
     }
 
@@ -678,6 +647,79 @@ fn normalize_limit(limit: i64) -> Result<usize, String> {
         .ok_or_else(|| "list limit must be between 1 and 1000".to_string())
 }
 
+fn patchset_ci_status_recent_limit(
+    recent_limit: i64,
+    projection: Option<&str>,
+) -> Result<usize, String> {
+    let recent_limit = normalize_limit(recent_limit)?;
+    match projection {
+        None => Ok(recent_limit),
+        Some("readiness") => Ok(recent_limit.min(20)),
+        Some(value) => Err(format!(
+            "Unsupported patchset CI status projection `{value}`. Expected `readiness`."
+        )),
+    }
+}
+
+fn project_patchset_ci_status(
+    mut status: JsonValue,
+    projection: Option<&str>,
+    change_id: Option<&str>,
+    change_ref: Option<&str>,
+    repo_name: &str,
+    recent_limit: usize,
+) -> Result<JsonValue, String> {
+    let Some(projection) = projection else {
+        return Ok(status);
+    };
+    if projection != "readiness" {
+        return Err(format!(
+            "Unsupported patchset CI status projection `{projection}`. Expected `readiness`."
+        ));
+    }
+    let required_identity = |value: Option<&str>, field: &str| {
+        value
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+            .ok_or_else(|| {
+                format!("Patchset CI readiness projection is missing non-empty {field}.")
+            })
+    };
+    let change_id = required_identity(change_id, "change_id")?;
+    let change_ref = required_identity(change_ref, "change_ref")?;
+    let repo_name = required_identity(Some(repo_name), "repo_name")?;
+    let object = status
+        .as_object_mut()
+        .ok_or_else(|| "Patchset CI status projection requires a JSON object.".to_string())?;
+    let completed = object
+        .get("ci_completed_at_s")
+        .and_then(JsonValue::as_u64)
+        .is_some_and(|value| value > 0);
+    let suite_result_count = object
+        .get("suite_result_count")
+        .and_then(JsonValue::as_u64)
+        .unwrap_or_default();
+    let blocking_failure_count = object
+        .get("blocking_failure_count")
+        .and_then(JsonValue::as_u64)
+        .unwrap_or_default();
+    object.insert(
+        "contract".to_string(),
+        json!("ait.server.patchset_ci.readiness.v1"),
+    );
+    object.insert("projection".to_string(), json!("readiness"));
+    object.insert("change_id".to_string(), json!(change_id));
+    object.insert("change_ref".to_string(), json!(change_ref));
+    object.insert("repo_name".to_string(), json!(repo_name));
+    object.insert("recent_limit_applied".to_string(), json!(recent_limit));
+    object.insert(
+        "has_runnable_evidence".to_string(),
+        json!(completed && (suite_result_count > 0 || blocking_failure_count > 0)),
+    );
+    Ok(status)
+}
+
 fn is_missing_plan_error(error: &str) -> bool {
     error.contains("Unknown plan") || error.contains("did not match any Binary DB records")
 }
@@ -692,5 +734,68 @@ mod tests {
         assert_eq!(parse_repository_index("3").unwrap(), 3);
         assert!(parse_repository_index("03").is_err());
         assert!(parse_repository_index("ait-core").is_err());
+    }
+
+    #[test]
+    fn patchset_ci_readiness_projection_is_bounded_and_complete() {
+        let ordinary = json!({
+            "available": true,
+            "patchset_id": "RWTT-0057/C-01/P-01",
+            "ci_completed_at_s": 1_787_326_949_u64,
+            "tests_status": "pass",
+            "selected_suite_ids": [],
+            "suite_result_count": 1,
+            "blocking_failure_count": 0,
+            "has_runnable_evidence": true,
+            "latest_job": {"worker_job_index": 6, "state": "succeeded"},
+            "recent_jobs": [{"worker_job_index": 6, "state": "succeeded"}],
+        });
+
+        assert_eq!(
+            project_patchset_ci_status(ordinary.clone(), None, None, None, "ait-web-test", 1_000,)
+                .expect("ordinary projection"),
+            ordinary
+        );
+        let readiness = project_patchset_ci_status(
+            ordinary,
+            Some("readiness"),
+            Some("C-01"),
+            Some("RWTT-0057/C-01"),
+            "ait-web-test",
+            20,
+        )
+        .expect("readiness projection");
+        assert_eq!(
+            readiness["contract"],
+            json!("ait.server.patchset_ci.readiness.v1")
+        );
+        assert_eq!(readiness["projection"], json!("readiness"));
+        assert_eq!(readiness["patchset_id"], json!("RWTT-0057/C-01/P-01"));
+        assert_eq!(readiness["change_id"], json!("C-01"));
+        assert_eq!(readiness["change_ref"], json!("RWTT-0057/C-01"));
+        assert_eq!(readiness["repo_name"], json!("ait-web-test"));
+        assert_eq!(readiness["recent_limit_applied"], json!(20));
+        assert_eq!(readiness["has_runnable_evidence"], json!(true));
+        assert_eq!(readiness["latest_job"]["worker_job_index"], json!(6));
+        assert_eq!(readiness["recent_jobs"].as_array().map(Vec::len), Some(1));
+    }
+
+    #[test]
+    fn patchset_ci_readiness_limit_and_projection_fail_closed() {
+        assert_eq!(patchset_ci_status_recent_limit(1_000, None).unwrap(), 1_000);
+        assert_eq!(
+            patchset_ci_status_recent_limit(1_000, Some("readiness")).unwrap(),
+            20
+        );
+        assert!(patchset_ci_status_recent_limit(10, Some("diagnostics")).is_err());
+        assert!(project_patchset_ci_status(
+            json!({}),
+            Some("readiness"),
+            None,
+            Some("RWTT-0057/C-01"),
+            "ait-web-test",
+            10,
+        )
+        .is_err());
     }
 }

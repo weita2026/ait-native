@@ -786,6 +786,7 @@ pub fn line_set_head(
     name: &str,
     snapshot_id: Option<&str>,
 ) -> Result<JsonValue, String> {
+    guard_current_worktree_task_bound_authoring(repo, "line set-head")?;
     run_locked_workspace_command(repo, "ait-cli line set-head", || {
         set_or_create_local_line_head(repo, name, snapshot_id)
     })

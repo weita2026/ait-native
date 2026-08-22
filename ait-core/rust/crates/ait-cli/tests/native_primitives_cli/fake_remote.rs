@@ -395,6 +395,18 @@ fn repository_payload(repo_name: &str) -> JsonValue {
             "policy_flags": 0,
             "tombstoned": false
         },
+        "pack_storage": {
+            "contract": "ait.repository.pack_storage.v1",
+            "zstd_only_verified": true,
+            "object_pack_format": "ait-pack-v3-zstd-chunked",
+            "tree_pack_format": "ait-tree-pack-v2-zstd-chunked",
+            "object_pack_count": 0,
+            "tree_pack_count": 0,
+            "zstd_object_pack_count": 0,
+            "zstd_tree_pack_count": 0,
+            "requires_zstd_remote_sync": true,
+            "validation": {"state": "valid", "error_count": 0}
+        },
         "ci_capabilities": {
             "native_runner": {
                 "contract": "ait.runner.native-job.v3",
@@ -416,6 +428,10 @@ fn handshake_payload() -> JsonValue {
         "supported_async_job_types": ["patchset.ci"],
         "ci_capabilities": {
             "patchset_run_ci_route": true,
+            "repository_pack_storage": {
+                "contract": "ait.repository.pack_storage.v1",
+                "supported": true
+            },
             "native_runner": {
                 "contract": "ait.runner.native-job.v3",
                 "repository_entrypoint": "ci/run"
@@ -1007,6 +1023,25 @@ fn response_for(
                 "landing_summary": landing_summary
             })
         }
+        ("GET", "/v1/native/repository-authorities/7/changes/RT-1%2FC-01") => {
+            let guard = state.lock().unwrap();
+            json!({
+                "change_id":"C-01",
+                "change_ref":"RT-1/C-01",
+                "task_id":"RT-1",
+                "title":"Task-scoped published review change",
+                "base_line":"main",
+                "fork_snapshot_id": FIXTURE_BASE_SNAPSHOT_ID,
+                "forked_from_line":"main",
+                "status":"active",
+                "publication_state":"published",
+                "published_remote_name":"origin",
+                "published_change_id":"C-01",
+                "selected_patchset_id":"RT-1/C-01/P-01",
+                "current_patchset_number":1,
+                "landing_summary": fake_landing_summary(&guard, "RT-1/C-01/P-01")
+            })
+        }
         ("GET", "/v1/native/repository-authorities/7/read/changes/RC-1") => {
             let guard = state.lock().unwrap();
             let selected_patchset_id =
@@ -1186,6 +1221,49 @@ fn response_for(
                 "publish_state":"published",
                 "evaluation_state":"pending"
             }])
+        }
+        ("GET", "/v1/native/repository-authorities/7/changes/RT-1%2FC-01/patchsets") => {
+            let guard = state.lock().unwrap();
+            let base_snapshot_id = guard
+                .selected_patchset_base_snapshot_id
+                .clone()
+                .unwrap_or_else(|| FIXTURE_BASE_SNAPSHOT_ID.to_string());
+            let revision_snapshot_id = guard
+                .selected_patchset_revision_snapshot_id
+                .clone()
+                .unwrap_or_else(|| "SNP-REV".to_string());
+            json!([{
+                "patchset_id":"RT-1/C-01/P-01",
+                "change_id":"C-01",
+                "change_ref":"RT-1/C-01",
+                "patchset_number":1,
+                "base_snapshot_id":base_snapshot_id,
+                "revision_snapshot_id":revision_snapshot_id,
+                "publish_state":"published",
+                "evaluation_state":"pending"
+            }])
+        }
+        ("GET", "/v1/native/repository-authorities/7/patchsets/RT-1%2FC-01%2FP-01") => {
+            let guard = state.lock().unwrap();
+            let base_snapshot_id = guard
+                .selected_patchset_base_snapshot_id
+                .clone()
+                .unwrap_or_else(|| FIXTURE_BASE_SNAPSHOT_ID.to_string());
+            let revision_snapshot_id = guard
+                .selected_patchset_revision_snapshot_id
+                .clone()
+                .unwrap_or_else(|| "SNP-REV".to_string());
+            json!({
+                "patchset_id":"RT-1/C-01/P-01",
+                "change_id":"C-01",
+                "change_ref":"RT-1/C-01",
+                "patchset_number":1,
+                "base_snapshot_id":base_snapshot_id,
+                "revision_snapshot_id":revision_snapshot_id,
+                "publish_state":"published",
+                "evaluation_state":"pending",
+                "summary":"Task-scoped native Rust patchset"
+            })
         }
         _ if method == "GET"
             && (url == "/v1/native/repository-authorities/7/patchsets/RP-1"

@@ -1,6 +1,5 @@
 use crate::foundation::remote_binary_db::{
-    BinaryDbError, BinaryDbFileFamily, BinaryFileId, BinaryIndexId, BinaryPayloadFileId,
-    StoreResult,
+    BinaryDbError, BinaryDbFileFamily, BinaryIndexId, StoreResult,
 };
 
 pub const OPERATIONAL_V0_LAYOUT_ID: u32 = 1;
@@ -169,38 +168,12 @@ pub struct ServerWorkerStateIndexRecord {
 pub struct ServerOperationalBinaryV0Codec;
 
 impl ServerOperationalBinaryV0Codec {
-    pub fn repository_file() -> BinaryFileId {
-        BinaryFileId::new(
-            "repository.bin",
-            OPERATIONAL_V0_LAYOUT_ID,
-            OPERATIONAL_REPOSITORY_RECORD_SIZE,
-            BinaryDbFileFamily::Queue,
-        )
-    }
-
-    pub fn repository_payload_file() -> BinaryPayloadFileId {
-        BinaryPayloadFileId::new(
-            "repository_payload.bin",
-            OPERATIONAL_V0_LAYOUT_ID,
-            BinaryDbFileFamily::Queue,
-        )
-    }
-
     pub fn repository_namespace_index_file() -> BinaryIndexId {
         BinaryIndexId::new_fixed(
             "repository_namespace.idx",
             OPERATIONAL_V0_LAYOUT_ID,
             OPERATIONAL_NAMESPACE_INDEX_KEY_SIZE,
             true,
-            BinaryDbFileFamily::Queue,
-        )
-    }
-
-    pub fn worker_job_file() -> BinaryFileId {
-        BinaryFileId::new(
-            "worker_job.bin",
-            OPERATIONAL_V0_LAYOUT_ID,
-            SERVER_WORKER_JOB_RECORD_SIZE,
             BinaryDbFileFamily::Queue,
         )
     }

@@ -900,14 +900,12 @@ fn recovery_omission_category(job: &SourceJobRow, error: &str) -> Option<&'stati
     {
         return Some(LEGACY_PATCHSET_OMISSION);
     }
-    if job.result_json.contains("\"status\":\"attached\"")
-        || job.result_json.contains("\"status\": \"attached\"")
+    if (job.result_json.contains("\"status\":\"attached\"")
+        || job.result_json.contains("\"status\": \"attached\""))
+        && (error.contains("result lacks a valid related Job ID")
+            || error.contains("historical attached outcome has no distinct related Job"))
     {
-        if error.contains("result lacks a valid related Job ID")
-            || error.contains("historical attached outcome has no distinct related Job")
-        {
-            return Some(UNPROVABLE_ATTACHED_OMISSION);
-        }
+        return Some(UNPROVABLE_ATTACHED_OMISSION);
     }
     if error.contains("legacy Snapshot-only Patchset alias")
         && error.contains("resolved to 0 candidates")
@@ -920,6 +918,7 @@ fn recovery_omission_category(job: &SourceJobRow, error: &str) -> Option<&'stati
     None
 }
 
+#[allow(clippy::too_many_arguments)]
 fn convert_job(
     job: &SourceJobRow,
     worker_job_index: u32,
@@ -1067,6 +1066,7 @@ fn validate_repository_payload_identity(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn resolve_job_domain_references(
     source_job_id: i64,
     job_kind: u8,
@@ -1784,6 +1784,7 @@ fn validate_direct_main_land(payload: &JsonMap<String, JsonValue>) -> Result<(),
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn validate_result_domain_values(
     job: &SourceJobRow,
     result: &JsonMap<String, JsonValue>,

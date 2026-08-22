@@ -186,36 +186,6 @@ where
     store.create_snapshot(repo_name, line_name, message, is_worktree)
 }
 
-pub fn create_snapshot_with_parents_with_local_snapshot_write_store<S>(
-    store: &S,
-    repo_name: &str,
-    line_name: &str,
-    parent_snapshot_ids: &[String],
-    message: Option<&str>,
-    is_worktree: bool,
-) -> Result<JsonValue, String>
-where
-    S: LocalSnapshotWriteStore + ?Sized,
-{
-    store.create_snapshot_with_parents(
-        repo_name,
-        line_name,
-        parent_snapshot_ids,
-        message,
-        is_worktree,
-    )
-}
-
-pub fn read_blob_bytes_with_local_snapshot_operation_store<S>(
-    store: &S,
-    blob_id: &str,
-) -> Result<Vec<u8>, String>
-where
-    S: LocalSnapshotOperationStore + ?Sized,
-{
-    read_blob_bytes_with_local_snapshot_blob_read_store(store, blob_id)
-}
-
 pub fn read_blob_bytes_with_local_snapshot_blob_read_store<S>(
     store: &S,
     blob_id: &str,
@@ -224,16 +194,6 @@ where
     S: LocalSnapshotBlobReadStore + ?Sized,
 {
     store.read_blob_bytes(blob_id)
-}
-
-pub fn get_snapshot_with_local_snapshot_operation_store<S>(
-    store: &S,
-    snapshot_id: &str,
-) -> Result<JsonValue, String>
-where
-    S: LocalSnapshotOperationStore + ?Sized,
-{
-    get_snapshot_with_local_snapshot_read_store(store, snapshot_id)
 }
 
 pub fn get_snapshot_with_local_snapshot_read_store<S>(
@@ -246,28 +206,11 @@ where
     store.get_snapshot(snapshot_id)
 }
 
-pub fn list_snapshots_with_local_snapshot_operation_store<S>(store: &S) -> Result<JsonValue, String>
-where
-    S: LocalSnapshotOperationStore + ?Sized,
-{
-    list_snapshots_with_local_snapshot_read_store(store)
-}
-
 pub fn list_snapshots_with_local_snapshot_read_store<S>(store: &S) -> Result<JsonValue, String>
 where
     S: LocalSnapshotReadStore + ?Sized,
 {
     store.list_snapshots()
-}
-
-pub fn get_line_with_local_snapshot_operation_store<S>(
-    store: &S,
-    line_name: &str,
-) -> Result<JsonValue, String>
-where
-    S: LocalSnapshotOperationStore + ?Sized,
-{
-    get_line_with_local_snapshot_read_store(store, line_name)
 }
 
 pub fn get_line_with_local_snapshot_read_store<S>(
@@ -278,21 +221,6 @@ where
     S: LocalSnapshotReadStore + ?Sized,
 {
     store.get_line(line_name)
-}
-
-pub fn snapshot_tree_path_delta_with_local_snapshot_operation_store<S>(
-    store: &S,
-    old_snapshot_id: Option<&str>,
-    new_snapshot_id: Option<&str>,
-) -> Result<SnapshotPathDelta, String>
-where
-    S: LocalSnapshotOperationStore + ?Sized,
-{
-    snapshot_tree_path_delta_with_local_snapshot_tree_read_store(
-        store,
-        old_snapshot_id,
-        new_snapshot_id,
-    )
 }
 
 pub fn snapshot_tree_path_delta_with_local_snapshot_tree_read_store<S>(
@@ -306,16 +234,6 @@ where
     store.snapshot_tree_path_delta(old_snapshot_id, new_snapshot_id)
 }
 
-pub fn snapshot_tree_root_locator_with_local_snapshot_operation_store<S>(
-    store: &S,
-    snapshot_id: &str,
-) -> Result<SnapshotTreeRootLocator, String>
-where
-    S: LocalSnapshotOperationStore + ?Sized,
-{
-    snapshot_tree_root_locator_with_local_snapshot_tree_read_store(store, snapshot_id)
-}
-
 pub fn snapshot_tree_root_locator_with_local_snapshot_tree_read_store<S>(
     store: &S,
     snapshot_id: &str,
@@ -324,16 +242,6 @@ where
     S: LocalSnapshotTreeReadStore + ?Sized,
 {
     store.snapshot_tree_root_locator(snapshot_id)
-}
-
-pub fn snapshot_tree_manifest_path_with_local_snapshot_operation_store<S>(
-    store: &S,
-    snapshot_id: &str,
-) -> Result<String, String>
-where
-    S: LocalSnapshotOperationStore + ?Sized,
-{
-    snapshot_tree_manifest_path_with_local_snapshot_tree_read_store(store, snapshot_id)
 }
 
 pub fn snapshot_tree_manifest_path_with_local_snapshot_tree_read_store<S>(
@@ -346,16 +254,6 @@ where
     store.snapshot_tree_manifest_path(snapshot_id)
 }
 
-pub fn snapshot_tree_file_rows_with_local_snapshot_operation_store<S>(
-    store: &S,
-    snapshot_id: Option<&str>,
-) -> Result<Vec<SnapshotFileRow>, String>
-where
-    S: LocalSnapshotOperationStore + ?Sized,
-{
-    snapshot_tree_file_rows_with_local_snapshot_tree_read_store(store, snapshot_id)
-}
-
 pub fn snapshot_tree_file_rows_with_local_snapshot_tree_read_store<S>(
     store: &S,
     snapshot_id: Option<&str>,
@@ -364,17 +262,6 @@ where
     S: LocalSnapshotTreeReadStore + ?Sized,
 {
     store.snapshot_tree_file_rows(snapshot_id)
-}
-
-pub fn snapshot_tree_path_file_rows_with_local_snapshot_operation_store<S>(
-    store: &S,
-    snapshot_id: &str,
-    paths: &[String],
-) -> Result<BTreeMap<String, SnapshotFileRow>, String>
-where
-    S: LocalSnapshotOperationStore + ?Sized,
-{
-    snapshot_tree_path_file_rows_with_local_snapshot_tree_read_store(store, snapshot_id, paths)
 }
 
 pub fn snapshot_tree_path_file_rows_with_local_snapshot_tree_read_store<S>(
@@ -388,17 +275,6 @@ where
     store.snapshot_tree_path_file_rows(snapshot_id, paths)
 }
 
-pub fn snapshot_tree_path_rows_with_local_snapshot_operation_store<S>(
-    store: &S,
-    snapshot_id: &str,
-    paths: &[String],
-) -> Result<BTreeMap<String, JsonValue>, String>
-where
-    S: LocalSnapshotOperationStore + ?Sized,
-{
-    snapshot_tree_path_rows_with_local_snapshot_tree_read_store(store, snapshot_id, paths)
-}
-
 pub fn snapshot_tree_path_rows_with_local_snapshot_tree_read_store<S>(
     store: &S,
     snapshot_id: &str,
@@ -408,21 +284,6 @@ where
     S: LocalSnapshotTreeReadStore + ?Sized,
 {
     store.snapshot_tree_path_rows(snapshot_id, paths)
-}
-
-pub fn snapshot_tree_path_rows_for_snapshots_with_local_snapshot_operation_store<S>(
-    store: &S,
-    snapshot_ids: &[String],
-    path: &str,
-) -> Result<BTreeMap<String, JsonValue>, String>
-where
-    S: LocalSnapshotOperationStore + ?Sized,
-{
-    snapshot_tree_path_rows_for_snapshots_with_local_snapshot_tree_read_store(
-        store,
-        snapshot_ids,
-        path,
-    )
 }
 
 pub fn snapshot_tree_path_rows_for_snapshots_with_local_snapshot_tree_read_store<S>(
@@ -436,21 +297,6 @@ where
     store.snapshot_tree_path_rows_for_snapshots(snapshot_ids, path)
 }
 
-pub fn snapshot_tree_path_blob_rows_for_snapshots_with_local_snapshot_operation_store<S>(
-    store: &S,
-    snapshot_ids: &[String],
-    path: &str,
-) -> Result<Vec<SnapshotPathBlobRow>, String>
-where
-    S: LocalSnapshotOperationStore + ?Sized,
-{
-    snapshot_tree_path_blob_rows_for_snapshots_with_local_snapshot_tree_read_store(
-        store,
-        snapshot_ids,
-        path,
-    )
-}
-
 pub fn snapshot_tree_path_blob_rows_for_snapshots_with_local_snapshot_tree_read_store<S>(
     store: &S,
     snapshot_ids: &[String],
@@ -460,17 +306,6 @@ where
     S: LocalSnapshotTreeReadStore + ?Sized,
 {
     store.snapshot_tree_path_blob_rows_for_snapshots(snapshot_ids, path)
-}
-
-pub fn snapshot_tree_path_row_with_local_snapshot_operation_store<S>(
-    store: &S,
-    snapshot_id: &str,
-    path: &str,
-) -> Result<Option<JsonValue>, String>
-where
-    S: LocalSnapshotOperationStore + ?Sized,
-{
-    snapshot_tree_path_row_with_local_snapshot_tree_read_store(store, snapshot_id, path)
 }
 
 pub fn snapshot_tree_path_row_with_local_snapshot_tree_read_store<S>(

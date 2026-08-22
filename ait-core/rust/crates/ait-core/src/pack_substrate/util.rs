@@ -217,38 +217,6 @@ pub(in crate::pack_substrate) fn pack_entries_by_name(
     Ok(out)
 }
 
-pub(in crate::pack_substrate) fn tree_entries_by_ordinal_relaxed(
-    pack_index: &JsonValue,
-) -> Result<BTreeMap<usize, TreePackIndexEntry>, String> {
-    let pack_index_obj = as_object(pack_index, "tree pack index")?;
-    let trees = as_array(
-        pack_index_obj
-            .get("trees")
-            .ok_or_else(|| "Invalid tree pack index: missing trees list".to_string())?,
-        "trees",
-    )?;
-    let mut out = BTreeMap::new();
-    for (fallback_ordinal, entry) in trees.iter().enumerate() {
-        let entry_obj = as_object(entry, "tree pack index entry")?;
-        let parsed = TreePackIndexEntry {
-            tree_id: required_text_field(entry_obj, "tree_id")?,
-            entry_ordinal: optional_usize_field(entry_obj, "entry_ordinal")?
-                .unwrap_or(fallback_ordinal),
-            entry_count: required_usize_field(entry_obj, "entry_count")?,
-            byte_length: required_usize_field(entry_obj, "byte_length")?,
-            checksum: required_text_field(entry_obj, "checksum")?,
-        };
-        if out.contains_key(&parsed.entry_ordinal) {
-            return Err(format!(
-                "Invalid tree pack index: duplicate entry_ordinal {}",
-                parsed.entry_ordinal
-            ));
-        }
-        out.insert(parsed.entry_ordinal, parsed);
-    }
-    Ok(out)
-}
-
 pub(in crate::pack_substrate) fn pack_index_entries_equivalent(
     left: &PackIndexEntry,
     right: &PackIndexEntry,

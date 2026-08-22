@@ -1,4 +1,3 @@
-use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use crate::binary_runtime::BinaryServingServices;
@@ -10,8 +9,8 @@ use crate::runtime_service::ServerRuntimeService;
 use ait_server_core::foundation::agent_protocol::agent_server_protocol_version;
 use ait_server_core::foundation::native_repositories::{
     require_remote_sync_line_update_authority, LineCloseRequest, LineUpdateRequest,
-    NativeRepositoryError, NativeRepositoryErrorKind, NativeRepositoryService, RemoteSyncPlanJson,
-    RepositoryCreateRequest, RetireRepositoryRequest, SnapshotExistsRequest, SnapshotExportQuery,
+    NativeRepositoryError, NativeRepositoryErrorKind, NativeRepositoryService, NativeZstdPackKind,
+    RemoteSyncPlanJson, SnapshotExistsRequest, SnapshotExportQuery,
     ZSTD_BULK_OBJECT_PACK_MEDIA_TYPE, ZSTD_BULK_TREE_PACK_MEDIA_TYPE,
 };
 use ait_server_core::foundation::remote_binary_db::{
@@ -20,12 +19,11 @@ use ait_server_core::foundation::remote_binary_db::{
 use ait_server_core::foundation::server_binary_lifecycle::ServerBinaryLifecycleConfig;
 use ait_server_core::foundation::server_operational_job_domain::WorkerJobKind;
 use ait_server_core::foundation::server_workflow_store::ServerWorkflowStore;
-use ait_server_core::foundation::workflow_artifacts::review_summary_from_rows;
 use axum::{
-    body::Bytes,
-    extract::{DefaultBodyLimit, Path, Query, State},
+    body::{Body as AxumBody, Bytes, HttpBody},
+    extract::{DefaultBodyLimit, Path, Query, RawBody, State},
     http::{
-        header::{CONTENT_TYPE, RETRY_AFTER},
+        header::{CONTENT_LENGTH, CONTENT_TYPE, RETRY_AFTER},
         HeaderMap, HeaderValue, Method, Request, StatusCode,
     },
     middleware::{self, Next},
@@ -35,7 +33,9 @@ use axum::{
 };
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Map as JsonMap, Value as JsonValue};
+use serde_json::{json, Value as JsonValue};
+use sha2::{Digest, Sha256};
+use tokio::io::AsyncWriteExt;
 use tokio::task;
 
 mod common;
@@ -58,6 +58,7 @@ use operational_routes::*;
 use state::*;
 
 const NATIVE_ZSTD_BULK_BODY_LIMIT_BYTES: usize = 2 * 1024 * 1024 * 1024;
+const NATIVE_ZSTD_BULK_UPLOAD_CONCURRENCY: usize = 2;
 const SERVICE_ENDPOINTS: &[&str] = &[
     "/healthz",
     "/v1/handshake",
@@ -111,6 +112,9 @@ fn release_server_state(config: &ServerBinaryLifecycleConfig) -> ServerState {
         workflow_service: binary.workflow,
         repository_service: binary.repository,
         operational_binary,
+        zstd_pack_upload_admission: Arc::new(tokio::sync::Semaphore::new(
+            NATIVE_ZSTD_BULK_UPLOAD_CONCURRENCY,
+        )),
     }
 }
 
@@ -167,6 +171,10 @@ fn build_router_with_state(state: ServerState) -> Router {
             post(native_commit_repository_restore),
         )
         .route(
+            "/v1/native/repository-restores/:restore_token/abort",
+            post(native_abort_repository_restore),
+        )
+        .route(
             "/v1/native/repository-authorities/:repository_index/worker-jobs",
             get(native_operational_worker_jobs),
         )
@@ -214,14 +222,12 @@ fn build_router_with_state(state: ServerState) -> Router {
         .route(
             "/v1/native/repository-authorities/:repository_index/remote-sync/zstd-bulk/object-packs/:pack_id",
             get(native_repository_authority_get_zstd_bulk_object_pack)
-                .put(native_repository_authority_put_zstd_bulk_object_pack)
-                .layer(DefaultBodyLimit::max(NATIVE_ZSTD_BULK_BODY_LIMIT_BYTES)),
+                .put(native_repository_authority_put_zstd_bulk_object_pack),
         )
         .route(
             "/v1/native/repository-authorities/:repository_index/remote-sync/zstd-bulk/tree-packs/:pack_id",
             get(native_repository_authority_get_zstd_bulk_tree_pack)
-                .put(native_repository_authority_put_zstd_bulk_tree_pack)
-                .layer(DefaultBodyLimit::max(NATIVE_ZSTD_BULK_BODY_LIMIT_BYTES)),
+                .put(native_repository_authority_put_zstd_bulk_tree_pack),
         )
         .route(
             "/v1/native/repository-authorities/:repository_index/tasks",
@@ -337,9 +343,67 @@ fn build_router_with_state(state: ServerState) -> Router {
         )
         .layer(middleware::from_fn_with_state(
             state.clone(),
+            restore_upload_failure_cleanup,
+        ))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
             repository_lifecycle_admission,
         ))
         .with_state(state)
+}
+
+async fn restore_upload_failure_cleanup<B>(
+    State(state): State<ServerState>,
+    request: Request<B>,
+    next: Next<B>,
+) -> Response
+where
+    B: Send + 'static,
+{
+    let restore_token = (*request.method() == Method::PUT)
+        .then(|| restore_upload_token(request.uri().path()))
+        .flatten()
+        .map(str::to_string);
+    let declared_oversized = request
+        .headers()
+        .get(CONTENT_LENGTH)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<u64>().ok())
+        .is_some_and(|length| length > NATIVE_ZSTD_BULK_BODY_LIMIT_BYTES as u64);
+    if declared_oversized {
+        if let Some(restore_token) = restore_token.as_ref() {
+            discard_restore_upload(state.operational_binary.clone(), restore_token.to_string())
+                .await;
+            return StatusCode::PAYLOAD_TOO_LARGE.into_response();
+        }
+    }
+    let response = next.run(request).await;
+    if response.status() == StatusCode::PAYLOAD_TOO_LARGE {
+        if let Some(restore_token) = restore_token {
+            discard_restore_upload(state.operational_binary.clone(), restore_token).await;
+        }
+    }
+    response
+}
+
+async fn discard_restore_upload(runtime: Arc<OperationalBinaryRuntime>, restore_token: String) {
+    match task::spawn_blocking(move || runtime.abort_repository_restore(&restore_token)).await {
+        Ok(Ok(_)) => {}
+        Ok(Err(error)) => {
+            eprintln!("warning: failed to discard oversized Repository restore upload: {error}");
+        }
+        Err(error) => {
+            eprintln!(
+                "warning: Repository restore oversized-upload cleanup worker failed: {error}"
+            );
+        }
+    }
+}
+
+fn restore_upload_token(path: &str) -> Option<&str> {
+    let tail = path.strip_prefix("/v1/native/repository-restores/")?;
+    let (token, file_path) = tail.split_once("/files/")?;
+    (!token.is_empty() && !file_path.is_empty()).then_some(token)
 }
 
 async fn repository_lifecycle_admission<B>(
@@ -448,14 +512,6 @@ async fn native_run_repository_ci(
             ))
         })?;
     map_json_result(result)
-}
-
-fn task_workflow_detail_read_model_json(payload: &JsonValue) -> Result<JsonValue, String> {
-    if payload.is_object() {
-        Ok(payload.clone())
-    } else {
-        Err("task workflow detail input must be an object".to_string())
-    }
 }
 
 #[cfg(test)]

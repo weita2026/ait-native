@@ -781,11 +781,25 @@ fn task_id_from_feature_line(line_name: &str) -> Option<String> {
     let suffix = line_name.strip_prefix("feature/")?;
     let token = suffix.split('/').next()?.trim();
     let uppercase = token.to_ascii_uppercase();
-    (uppercase.starts_with("RCT-")
-        || uppercase.starts_with("LCT-")
-        || uppercase.starts_with("RT-")
-        || uppercase.starts_with("LT-"))
-    .then_some(uppercase)
+    let (family, ordinal) = uppercase.split_once('-')?;
+    if ordinal.is_empty() || !ordinal.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    let family = family.as_bytes();
+    if !(2..=4).contains(&family.len())
+        || !matches!(family.first(), Some(b'L' | b'R'))
+        || family.last() != Some(&b'T')
+        || !family[1..family.len() - 1]
+            .iter()
+            .all(|byte| byte.is_ascii_alphanumeric())
+    {
+        return None;
+    }
+    Some(uppercase)
+}
+
+fn task_id_has_remote_origin(task_id: &str) -> bool {
+    task_id.as_bytes().first() == Some(&b'R')
 }
 
 fn identity_map(
@@ -1524,7 +1538,9 @@ fn build_reconciliation_inventory(
             continue;
         }
         let Some(task) = tasks.get(&task_id) else {
-            if !remote_task_inventory_complete {
+            if !remote_task_inventory_complete
+                || (task_id_has_remote_origin(&task_id) && input.remote_name.is_none())
+            {
                 continue;
             }
             push_finding(
@@ -2457,7 +2473,7 @@ mod tests {
     }
 
     #[test]
-    fn feature_line_owner_recognizes_remote_and_solo_local_task_namespaces() {
+    fn feature_line_owner_recognizes_empty_one_and_two_byte_task_namespaces() {
         assert_eq!(
             task_id_from_feature_line("feature/rct-42/extra").as_deref(),
             Some("RCT-42")
@@ -2474,8 +2490,73 @@ mod tests {
             task_id_from_feature_line("feature/lt-3").as_deref(),
             Some("LT-3")
         );
+        assert_eq!(
+            task_id_from_feature_line("feature/lwtt-0006").as_deref(),
+            Some("LWTT-0006")
+        );
+        assert_eq!(
+            task_id_from_feature_line("feature/rwtt-9").as_deref(),
+            Some("RWTT-9")
+        );
         assert_eq!(task_id_from_feature_line("feature/manual"), None);
+        assert_eq!(task_id_from_feature_line("feature/laitt-1"), None);
+        assert_eq!(task_id_from_feature_line("feature/wtt-1"), None);
+        assert_eq!(task_id_from_feature_line("feature/lwtt-not-a-number"), None);
+        assert_eq!(task_id_from_feature_line("feature/lwtt-1-extra"), None);
         assert!(change_status_is_terminal(Some("archived")));
         assert!(!change_status_is_open(Some("archived")));
+    }
+
+    #[test]
+    fn remote_origin_line_missing_owner_requires_selected_complete_remote_tasks() {
+        let mut input = fixture_input();
+        input.task_filter = None;
+        input.current_line = "main".to_string();
+        input.default_line = "main".to_string();
+        input.local_tasks.clear();
+        input.remote_tasks.clear();
+        input.local_changes.clear();
+        input.remote_changes.clear();
+        input.local_lines = vec![
+            json!({"line_id":"LNE-1","line_name":"main","status":"active"}),
+            json!({"line_id":"LNE-2","line_name":"feature/lwtt-0001","status":"active"}),
+            json!({"line_id":"LNE-3","line_name":"feature/rwtt-0001","status":"active"}),
+        ];
+        input.remote_lines.clear();
+        input.worktrees.clear();
+        input.mutation_receipts.clear();
+        input.remote_errors.clear();
+
+        let missing_owner_ids = |result: &JsonValue| {
+            result["findings"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|finding| finding["code"] == json!("line.owner_missing"))
+                .filter_map(|finding| finding["identities"]["task_id"].as_str())
+                .map(str::to_string)
+                .collect::<BTreeSet<_>>()
+        };
+
+        input.remote_name = None;
+        let local_only = build_reconciliation_inventory(input.clone(), false, 100).unwrap();
+        assert_eq!(
+            missing_owner_ids(&local_only),
+            BTreeSet::from(["LWTT-0001".to_string()])
+        );
+
+        input.remote_name = Some("origin".to_string());
+        let selected_remote = build_reconciliation_inventory(input.clone(), false, 100).unwrap();
+        assert_eq!(
+            missing_owner_ids(&selected_remote),
+            BTreeSet::from(["LWTT-0001".to_string(), "RWTT-0001".to_string()])
+        );
+
+        input.remote_errors.push(RemoteReadError {
+            source: "tasks",
+            message: "remote Task read failed".to_string(),
+        });
+        let failed_remote = build_reconciliation_inventory(input, false, 100).unwrap();
+        assert!(missing_owner_ids(&failed_remote).is_empty());
     }
 }

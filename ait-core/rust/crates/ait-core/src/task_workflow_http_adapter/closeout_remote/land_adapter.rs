@@ -1,5 +1,15 @@
 use super::*;
 
+#[derive(Clone, Copy)]
+struct AtomicTaskLandRequest<'a> {
+    task_or_change_ref: &'a str,
+    target_line: Option<&'a str>,
+    mode: &'a str,
+    idempotency_key: &'a str,
+    repo_name: Option<&'a str>,
+    response_deadline_ms: Option<u64>,
+}
+
 impl HttpWorkflowCloseoutRemote {
     pub fn submit_task_land(
         &mut self,
@@ -197,38 +207,36 @@ impl HttpWorkflowCloseoutRemote {
 
     fn submit_task_land_once(
         &mut self,
-        task_or_change_ref: &str,
-        target_line: Option<&str>,
-        mode: &str,
-        idempotency_key: &str,
-        repo_name: Option<&str>,
+        request: AtomicTaskLandRequest<'_>,
         timeout_ms: Option<u64>,
     ) -> TaskWorkflowHttpClientResult<Value> {
-        let wire_reference = self.atomic_task_land_wire_reference(task_or_change_ref)?;
+        let wire_reference = self.atomic_task_land_wire_reference(request.task_or_change_ref)?;
         let result = self.with_temporary_default_timeout(timeout_ms, |remote| {
             remote.manager.submit_task_land(
                 &wire_reference,
-                target_line,
-                mode,
-                idempotency_key,
-                repo_name,
+                request.target_line,
+                request.mode,
+                request.idempotency_key,
+                request.repo_name,
             )
         })?;
-        self.normalize_atomic_task_land_payload(result, &wire_reference, idempotency_key, repo_name)
+        self.normalize_atomic_task_land_payload(
+            result,
+            &wire_reference,
+            request.idempotency_key,
+            request.repo_name,
+        )
     }
 
     fn resume_task_land_after_retryable_busy(
         &mut self,
-        task_or_change_ref: &str,
-        target_line: Option<&str>,
-        mode: &str,
-        idempotency_key: &str,
-        repo_name: Option<&str>,
-        response_deadline_ms: Option<u64>,
+        request: AtomicTaskLandRequest<'_>,
         mut last_error: TaskWorkflowHttpClientError,
     ) -> TaskWorkflowHttpClientResult<Value> {
         let in_flight_request_budget = Duration::from_millis(
-            response_deadline_ms.unwrap_or(self.manager.config.default_timeout_ms),
+            request
+                .response_deadline_ms
+                .unwrap_or(self.manager.config.default_timeout_ms),
         );
         let deadline = Instant::now()
             + remote_mutation_settle_window().saturating_add(in_flight_request_budget);
@@ -247,18 +255,12 @@ impl HttpWorkflowCloseoutRemote {
                 return Err(last_error);
             };
             let attempt_timeout_ms = Some(
-                response_deadline_ms
+                request
+                    .response_deadline_ms
                     .map(|timeout_ms| timeout_ms.min(remaining_ms))
                     .unwrap_or(remaining_ms),
             );
-            match self.submit_task_land_once(
-                task_or_change_ref,
-                target_line,
-                mode,
-                idempotency_key,
-                repo_name,
-                attempt_timeout_ms,
-            ) {
+            match self.submit_task_land_once(request, attempt_timeout_ms) {
                 Ok(result) => return Ok(result),
                 Err(error) if error.is_retryable_busy() => last_error = error,
                 Err(error) => return Err(error),
@@ -492,46 +494,27 @@ impl TaskWorkflowAtomicTaskLandSubmitter for HttpWorkflowCloseoutRemote {
     ) -> TaskWorkflowHttpClientResult<Value> {
         let response_deadline_ms = remote_task_land_response_deadline_timeout_ms()
             .map(|timeout_ms| timeout_ms.min(self.manager.config.default_timeout_ms));
-        match self.submit_task_land_once(
+        let request = AtomicTaskLandRequest {
             task_or_change_ref,
             target_line,
             mode,
             idempotency_key,
             repo_name,
             response_deadline_ms,
-        ) {
+        };
+        match self.submit_task_land_once(request, response_deadline_ms) {
             Ok(result) => Ok(result),
             Err(error) if is_remote_mutation_timeout(&error) => {
-                match self.submit_task_land_once(
-                    task_or_change_ref,
-                    target_line,
-                    mode,
-                    idempotency_key,
-                    repo_name,
-                    response_deadline_ms,
-                ) {
-                    Err(retry_error) if retry_error.is_retryable_busy() => self
-                        .resume_task_land_after_retryable_busy(
-                            task_or_change_ref,
-                            target_line,
-                            mode,
-                            idempotency_key,
-                            repo_name,
-                            response_deadline_ms,
-                            retry_error,
-                        ),
+                match self.submit_task_land_once(request, response_deadline_ms) {
+                    Err(retry_error) if retry_error.is_retryable_busy() => {
+                        self.resume_task_land_after_retryable_busy(request, retry_error)
+                    }
                     retry => retry,
                 }
             }
-            Err(error) if error.is_retryable_busy() => self.resume_task_land_after_retryable_busy(
-                task_or_change_ref,
-                target_line,
-                mode,
-                idempotency_key,
-                repo_name,
-                response_deadline_ms,
-                error,
-            ),
+            Err(error) if error.is_retryable_busy() => {
+                self.resume_task_land_after_retryable_busy(request, error)
+            }
             Err(error) => Err(error),
         }
     }

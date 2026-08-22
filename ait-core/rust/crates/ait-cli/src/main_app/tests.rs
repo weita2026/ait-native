@@ -168,21 +168,31 @@ fn tag_parser_exposes_only_immutable_local_tag_contract() {
 }
 
 #[test]
-fn status_parser_exposes_only_compact_text_and_stable_json() {
+fn status_parser_exposes_compact_json_and_explicit_full_projection() {
     let parsed = Cli::try_parse_from(["ait-cli", "status", "--json"])
-        .expect("status should accept stable JSON output");
+        .expect("status should accept compact JSON output");
     let Commands::Status(args) = parsed.command else {
         panic!("expected status command");
     };
     assert!(args.json);
+    assert!(!args.full);
+
+    let parsed = Cli::try_parse_from(["ait-cli", "status", "--json", "--full"])
+        .expect("status should accept explicit full JSON output");
+    let Commands::Status(args) = parsed.command else {
+        panic!("expected status command");
+    };
+    assert!(args.json);
+    assert!(args.full);
 
     let help = Cli::try_parse_from(["ait-cli", "status", "--help"])
         .err()
         .expect("status --help must render Clap help")
         .to_string();
     assert!(help.contains("without modifying"), "{help}");
-    assert!(help.contains("stable machine-readable"), "{help}");
+    assert!(help.contains("compact versioned"), "{help}");
     assert!(help.contains("--json"), "{help}");
+    assert!(help.contains("--full"), "{help}");
     assert!(!help.contains("--verbose"), "{help}");
 
     let error = Cli::try_parse_from(["ait-cli", "status", "--verbose"])
@@ -190,6 +200,153 @@ fn status_parser_exposes_only_compact_text_and_stable_json() {
         .expect("retired status --verbose must be rejected")
         .to_string();
     assert!(error.contains("unexpected argument '--verbose'"), "{error}");
+}
+
+#[test]
+fn agent_action_full_projection_requires_json_on_each_supported_command() {
+    let invocations = [
+        vec!["ait-cli", "status"],
+        vec![
+            "ait-cli", "task", "start", "--title", "Task", "--intent", "Intent",
+        ],
+        vec!["ait-cli", "snapshot", "create"],
+        vec!["ait-cli", "task", "land", "LCT-1"],
+    ];
+
+    for invocation in invocations {
+        let mut compact = invocation.clone();
+        compact.push("--json");
+        Cli::try_parse_from(compact).expect("compact JSON invocation must parse");
+
+        let mut full = invocation.clone();
+        full.extend(["--json", "--full"]);
+        Cli::try_parse_from(full).expect("full JSON invocation must parse");
+
+        let mut missing_json = invocation;
+        missing_json.push("--full");
+        let error = Cli::try_parse_from(missing_json)
+            .err()
+            .expect("--full without --json must fail");
+        assert_eq!(
+            error.kind(),
+            clap::error::ErrorKind::MissingRequiredArgument
+        );
+    }
+}
+
+#[test]
+fn compact_agent_action_projections_keep_only_next_step_evidence() {
+    let status = compact_status_payload(&json!({
+        "repo_name": "fixture",
+        "current_line": "main",
+        "head_snapshot_id": "SNP-AAAA1111",
+        "workspace_status": "clean",
+        "workspace_dirty": false,
+        "workspace_changed_count": 0,
+        "workspace_modified_count": 0,
+        "workspace_missing_count": 0,
+        "workspace_untracked_count": 0,
+        "is_worktree": false,
+        "worktree_name": null,
+        "remote_count": 7,
+        "reconciliation": {
+            "safe_finding_count": 1,
+            "manual_resolution_count": 0,
+            "protected_count": 0,
+            "next_command": "ait workflow reconcile --local --apply --safe-only"
+        }
+    }));
+    assert_eq!(status["contract"], AGENT_ACTION_JSON_CONTRACT);
+    assert_eq!(status["command"], "status");
+    assert_eq!(status["line_name"], "main");
+    assert_eq!(status["workspace"]["changed_count"], 0);
+    assert_eq!(status["next_action"]["code"], "reconcile");
+    assert!(status.get("remote_count").is_none());
+    assert!(status.get("reconciliation").is_none());
+
+    let dirty_status = compact_status_payload(&json!({
+        "workspace_changed_count": 2,
+        "workspace_modified_count": 1,
+        "workspace_missing_count": 0,
+        "workspace_untracked_count": 1,
+        "workspace_dirty": true,
+        "workspace_status": "dirty",
+        "is_worktree": true,
+        "worktree_name": "lct-1"
+    }));
+    assert_eq!(dirty_status["next_action"]["command"], "ait diff");
+    assert_eq!(dirty_status["worktree"]["name"], "lct-1");
+
+    let started = compact_task_start_payload(&json!({
+        "task_id": "LCT-1",
+        "change": {"task_id": "LCT-1", "change_id": "C-01"},
+        "cd_command": "cd /alias/lct-1",
+        "worktree": {
+            "name": "lct-1",
+            "path": "/physical roots/lct-1",
+            "open_path": "/alias/lct-1",
+            "current_line": "feature/lct-1",
+            "head_snapshot_id": "SNP-AAAA1111"
+        },
+        "automatic_reconciliation": {"findings": [1, 2, 3]}
+    }));
+    assert_eq!(started["change_ref"], "LCT-1/C-01");
+    assert_eq!(started["edit_root"], "/physical roots/lct-1");
+    assert_eq!(
+        started["next_action"]["command"],
+        "cd '/physical roots/lct-1'"
+    );
+    assert!(started.get("worktree").is_none());
+    assert!(started.get("automatic_reconciliation").is_none());
+
+    let snapshot = compact_snapshot_create_payload(&json!({
+        "snapshot_id": "SNP-BBBB2222",
+        "line_name": "feature/lct-1",
+        "parent_snapshot_id": "SNP-AAAA1111",
+        "message": "Implement compact output",
+        "files": [1, 2, 3],
+        "phase_timings_ms": {"total": 10.0}
+    }));
+    assert_eq!(snapshot["command"], "snapshot.create");
+    assert_eq!(snapshot["snapshot_id"], "SNP-BBBB2222");
+    assert!(snapshot.get("files").is_none());
+    assert!(snapshot.get("phase_timings_ms").is_none());
+
+    let landed = compact_task_land_payload(&json!({
+        "mode": "local",
+        "task_id": "LCT-1",
+        "change_ref": "LCT-1/C-01",
+        "target_line": "main",
+        "landed_snapshot_id": "SNP-BBBB2222",
+        "task_status": "completed",
+        "change_status": "landed",
+        "closeout_status": "partial",
+        "bound_worktree_cleanup": {"status": "failed", "detail": "large"},
+        "bound_line_closeout": {"status": "deferred"},
+        "plan_checklist_closeout": {"status": "synced"},
+        "closeout_recovery": {
+            "code": "resume_task_land_closeout",
+            "command": "ait task land LCT-1/C-01 --local",
+            "detail": "large recovery explanation"
+        },
+        "task": {"large": true},
+        "change": {"large": true}
+    }));
+    assert_eq!(landed["ok"], false);
+    assert_eq!(landed["closeout"]["worktree_status"], "failed");
+    assert_eq!(
+        landed["next_action"]["command"],
+        "ait task land LCT-1/C-01 --local"
+    );
+    assert!(landed.get("task").is_none());
+    assert!(landed.get("change").is_none());
+
+    let remote_landed = compact_task_land_payload(&json!({
+        "task_land_contract": {"scope": "remote"},
+        "closeout_status": "execution_complete_plan_separate"
+    }));
+    assert_eq!(remote_landed["mode"], "remote");
+    assert_eq!(remote_landed["ok"], true);
 }
 
 #[test]
@@ -2199,6 +2356,65 @@ fn plan_scope_builders_follow_workflow_defaults_and_explicit_overrides() {
 }
 
 #[test]
+fn plan_sync_from_a_worktree_uses_the_authoritative_repository_root_for_all_scopes() {
+    let temp = TempDir::new().unwrap();
+    let authoritative_root = temp.path().join("canonical");
+    let worktree_root = temp.path().join("worktree");
+    fs::create_dir_all(&authoritative_root).unwrap();
+    write_runtime_config(
+        &worktree_root,
+        r#"{
+  "repo_name": "fixture",
+  "default_remote": "origin",
+  "remotes": {
+    "origin": {
+      "url": "http://example.test/fixture",
+      "repo_name": "fixture"
+    }
+  }
+}"#,
+    );
+    fs::write(
+        worktree_root.join(".ait-worktree.json"),
+        serde_json::to_vec(&json!({
+            "repo_root": authoritative_root,
+            "workspace_root": worktree_root,
+            "worktree_name": "fixture-task",
+            "current_line": "feature/fixture-task"
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+
+    let repo = RepoRuntime::discover_from_path(&worktree_root).unwrap();
+    assert!(repo.is_worktree());
+    assert_ne!(repo.workspace_root(), repo.authoritative_repo_root());
+
+    let local = parse_value_error_string(
+        &build_sync_request(&repo, &plan_sync_test_args(true, None)).unwrap(),
+    )
+    .unwrap();
+    let remote = parse_value_error_string(
+        &build_sync_request(&repo, &plan_sync_test_args(false, Some("origin"))).unwrap(),
+    )
+    .unwrap();
+    let expected_root = repo.authoritative_repo_root().to_string_lossy().to_string();
+
+    for payload in [&local, &remote] {
+        assert_eq!(payload["root_path"], expected_root);
+        assert_eq!(payload["plan_storage"]["repo_root"], expected_root);
+        assert_eq!(
+            payload["target"],
+            JsonValue::String("docs/sprints/card.md".to_string())
+        );
+    }
+    assert_eq!(local["local"], true);
+    assert!(local["base_url"].is_null());
+    assert_eq!(remote["local"], false);
+    assert_eq!(remote["base_url"], "http://example.test/fixture");
+}
+
+#[test]
 fn remote_default_plan_scope_without_a_default_remote_fails_closed() {
     let (_temp, repo) = plan_scope_runtime("solo_remote", "remote", false);
     let query_error = plan_query_payload(&repo, false, None).unwrap_err();
@@ -2501,6 +2717,53 @@ fn task_audit_labels_expected_work_as_pending_not_blocked() {
         Some("blocker")
     );
     assert_eq!(task_audit_reason_label("none"), None);
+}
+
+#[test]
+fn task_audit_change_text_projection_accepts_flat_remote_rows() {
+    let rows = vec![json!({
+        "change_id": "C-01",
+        "change_ref": "RWCT-0008/C-01",
+        "task_id": "RWCT-0008",
+        "status": "landed"
+    })];
+
+    let (projected, has_target_state) = project_task_audit_change_text_rows(&rows);
+
+    assert_eq!(projected.len(), 1);
+    assert_eq!(projected[0]["change"], "RWCT-0008/C-01");
+    assert_eq!(projected[0]["status"], "landed");
+    assert_eq!(projected[0]["target_state"], "");
+    assert!(!has_target_state);
+}
+
+#[test]
+fn task_audit_change_text_projection_preserves_nested_local_target_state() {
+    let rows = vec![json!({
+        "change": {
+            "change_id": "C-01",
+            "change_ref": "LCT-0767/C-01",
+            "task_id": "LCT-0767",
+            "status": "draft"
+        },
+        "target_state": "local_change_not_landed"
+    })];
+
+    let (projected, has_target_state) = project_task_audit_change_text_rows(&rows);
+
+    assert_eq!(projected.len(), 1);
+    assert_eq!(projected[0]["change"], "LCT-0767/C-01");
+    assert_eq!(projected[0]["status"], "draft");
+    assert_eq!(projected[0]["target_state"], "local_change_not_landed");
+    assert!(has_target_state);
+}
+
+#[test]
+fn task_audit_change_text_projection_omits_empty_inventory() {
+    let (projected, has_target_state) = project_task_audit_change_text_rows(&[]);
+
+    assert!(projected.is_empty());
+    assert!(!has_target_state);
 }
 
 #[test]

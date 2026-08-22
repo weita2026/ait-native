@@ -1,13 +1,48 @@
 use super::*;
 
-pub(in crate::primitives) fn workflow_publish_base_line(
+fn workflow_publish_base_authority(
     state: &JsonValue,
     target: Option<&str>,
-) -> String {
-    workflow_nested_text(state, "change", "base_line")
-        .or_else(|| workflow_nested_text(state, "base_line", "line_name"))
+) -> Result<(String, String), String> {
+    let change_base_line = workflow_nested_text(state, "change", "base_line");
+    let projected_base_line = workflow_nested_text(state, "base_line", "line_name");
+    if let (Some(change_line), Some(projected_line)) =
+        (change_base_line.as_deref(), projected_base_line.as_deref())
+    {
+        if change_line != projected_line {
+            return Err(format!(
+                "Remote workflow base authority is inconsistent: Change base line `{change_line}` does not match projected base line `{projected_line}`. Refresh workflow state before publishing."
+            ));
+        }
+    }
+    let base_line = change_base_line
+        .or(projected_base_line)
         .or_else(|| normalized_text(target))
-        .unwrap_or_else(|| "main".to_string())
+        .ok_or_else(|| {
+            "Remote workflow state has no authoritative base Line. Refresh workflow state before publishing."
+                .to_string()
+        })?;
+
+    let projected_snapshot_id = workflow_nested_text(state, "base_line", "head_snapshot_id");
+    let freshness_snapshot_id = workflow_nested_text(state, "freshness", "remote_base_snapshot_id");
+    if let (Some(projected), Some(freshness)) = (
+        projected_snapshot_id.as_deref(),
+        freshness_snapshot_id.as_deref(),
+    ) {
+        if projected != freshness {
+            return Err(format!(
+                "Remote workflow base authority is inconsistent for line `{base_line}`: projected head `{projected}` does not match freshness head `{freshness}`. Refresh workflow state before publishing."
+            ));
+        }
+    }
+    let snapshot_id = projected_snapshot_id
+        .or(freshness_snapshot_id)
+        .ok_or_else(|| {
+            format!(
+                "Remote workflow base line `{base_line}` has no authoritative head Snapshot. Refresh workflow state before publishing."
+            )
+        })?;
+    Ok((base_line, snapshot_id))
 }
 
 pub(in crate::primitives) fn workflow_auto_rebase_current_worktree_before_publish(
@@ -18,9 +53,16 @@ pub(in crate::primitives) fn workflow_auto_rebase_current_worktree_before_publis
     if !repo.is_worktree() {
         return Ok(None);
     }
-    let base_line = workflow_publish_base_line(state, target);
-    let prepared = prepare_worktree_rebase(repo, None, Some(&base_line), false)?;
-    if prepared.old_base_snapshot_id == prepared.new_base_snapshot_id {
+    let (base_line, authoritative_base_snapshot_id) =
+        workflow_publish_base_authority(state, target)?;
+    let prepared = prepare_worktree_rebase_to_snapshot(
+        repo,
+        None,
+        &base_line,
+        &authoritative_base_snapshot_id,
+    )?;
+    if prepared.old_base_snapshot_id == prepared.new_base_snapshot_id && !prepared.rewrites_ancestry
+    {
         return Ok(None);
     }
     let worktree_name = prepared.worktree_name.clone();
@@ -29,9 +71,8 @@ pub(in crate::primitives) fn workflow_auto_rebase_current_worktree_before_publis
     let old_head_snapshot_id = prepared.old_head_snapshot_id.clone();
     let new_base_snapshot_id = prepared.new_base_snapshot_id.clone();
     let feature_delta_count = prepared.plan.feature_delta_count;
-    drop(prepared);
 
-    let rebase = worktree_rebase(repo, None, Some(&base_line))?;
+    let rebase = apply_prepared_worktree_rebase(repo, prepared)?;
     let rebase_payload = rebase
         .get("rebase")
         .filter(|value| value.is_object())
@@ -285,13 +326,36 @@ pub(in crate::primitives) fn workflow_ready_apply_action(
                 let _range = perfetto_range!("ait.workflow_ready.publish.guard");
                 guard_no_planning_only_artifact_drift(repo, "ait workflow ready")?;
             }
-            let auto_rebase = {
-                let _range = perfetto_range!("ait.workflow_ready.publish.auto_rebase");
-                workflow_auto_rebase_current_worktree_before_publish(repo, state, None)?
-            };
             let (remote_row, repo_name) = remote_context(repo, remote_name, None)?;
             let mut task_remote = http_task_remote(repo, &remote_row)?;
             let mut closeout_remote = http_closeout_remote(repo, &remote_row)?;
+            let auto_rebase = if repo.is_worktree() {
+                let _range = perfetto_range!("ait.workflow_ready.publish.auto_rebase");
+                let (base_line, expected_snapshot_id) =
+                    workflow_publish_base_authority(state, None)?;
+                let verified_line = task_start_remote_base_line_preflight_with_task_remote(
+                    repo,
+                    &remote_row,
+                    &mut task_remote,
+                    &repo_name,
+                    &base_line,
+                )
+                .map_err(|err| {
+                    format!(
+                        "Cannot prepare remote workflow publication against `{base_line}` at `{expected_snapshot_id}`: {err}"
+                    )
+                })?;
+                let verified_snapshot_id = string_field(&verified_line, "head_snapshot_id");
+                if verified_snapshot_id.as_deref() != Some(expected_snapshot_id.as_str()) {
+                    return Err(format!(
+                        "Remote base line `{base_line}` changed after workflow state was read: expected `{expected_snapshot_id}`, found `{}`. Retry the workflow command so publication uses one current authoritative base.",
+                        verified_snapshot_id.as_deref().unwrap_or("none"),
+                    ));
+                }
+                workflow_auto_rebase_current_worktree_before_publish(repo, state, None)?
+            } else {
+                None
+            };
             let resolved_author_mode = repo.effective_author_mode(author_mode);
             workflow_publish_patchset_action_with_task_and_closeout_remotes(
                 repo,
@@ -687,5 +751,72 @@ pub(in crate::primitives) fn workflow_land_apply_action(
         _ => Ok(json!({
             "stopped_reason": format!("Workflow land apply does not support automatic `{code}`."),
         })),
+    }
+}
+
+#[cfg(test)]
+mod remote_base_authority_tests {
+    use super::*;
+
+    #[test]
+    fn publish_base_authority_requires_one_consistent_remote_head() {
+        let state = json!({
+            "change": {"base_line": "main"},
+            "base_line": {
+                "line_name": "main",
+                "head_snapshot_id": "SNP-REMOTE"
+            },
+            "freshness": {"remote_base_snapshot_id": "SNP-REMOTE"}
+        });
+
+        assert_eq!(
+            workflow_publish_base_authority(&state, None).unwrap(),
+            ("main".to_string(), "SNP-REMOTE".to_string())
+        );
+    }
+
+    #[test]
+    fn publish_base_authority_rejects_line_or_snapshot_disagreement() {
+        let line_error = workflow_publish_base_authority(
+            &json!({
+                "change": {"base_line": "main"},
+                "base_line": {
+                    "line_name": "release",
+                    "head_snapshot_id": "SNP-REMOTE"
+                }
+            }),
+            None,
+        )
+        .unwrap_err();
+        assert!(line_error.contains("does not match projected base line"));
+
+        let snapshot_error = workflow_publish_base_authority(
+            &json!({
+                "change": {"base_line": "main"},
+                "base_line": {
+                    "line_name": "main",
+                    "head_snapshot_id": "SNP-ONE"
+                },
+                "freshness": {"remote_base_snapshot_id": "SNP-TWO"}
+            }),
+            None,
+        )
+        .unwrap_err();
+        assert!(snapshot_error.contains("does not match freshness head"));
+    }
+
+    #[test]
+    fn publish_base_authority_rejects_a_null_remote_head() {
+        let error = workflow_publish_base_authority(
+            &json!({
+                "change": {"base_line": "main"},
+                "base_line": {"line_name": "main", "head_snapshot_id": null},
+                "freshness": {"remote_base_snapshot_id": null}
+            }),
+            None,
+        )
+        .unwrap_err();
+
+        assert!(error.contains("has no authoritative head Snapshot"));
     }
 }

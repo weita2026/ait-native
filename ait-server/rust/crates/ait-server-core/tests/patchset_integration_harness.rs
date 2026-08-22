@@ -36,8 +36,6 @@ mod foundation_patchset_ci_plan_direct_tests;
 mod foundation_patchset_ci_runtime_direct_tests;
 #[path = "foundation_policy_gate_direct_tests.rs"]
 mod foundation_policy_gate_direct_tests;
-#[path = "foundation_postgres_adapter_direct_tests.rs"]
-mod foundation_postgres_adapter_direct_tests;
 #[path = "foundation_python_reference_deletion_guard_direct_tests.rs"]
 mod foundation_python_reference_deletion_guard_direct_tests;
 #[path = "foundation_repo_ci_full_shard_direct_tests.rs"]
@@ -64,8 +62,6 @@ mod foundation_test_shard_runtime_direct_tests;
 mod foundation_transport_async_job_direct_tests;
 #[path = "foundation_transport_job_row_direct_tests.rs"]
 mod foundation_transport_job_row_direct_tests;
-#[path = "foundation_worker_queue_direct_tests.rs"]
-mod foundation_worker_queue_direct_tests;
 #[path = "foundation_workflow_artifacts_direct_tests.rs"]
 mod foundation_workflow_artifacts_direct_tests;
 #[path = "foundation_workflow_async_runtime_direct_tests.rs"]

@@ -213,6 +213,14 @@ fn patchset_ci_and_prewarm_share_lean_ci_build_contract_without_alias_expansion(
     assert!(cargo_config.contains("\"ait-server-core/patch-ci-harness\""));
     let patch_ci: serde_json::Value =
         serde_json::from_str(&patch_ci).expect("patchset CI catalog should parse");
+    assert_eq!(
+        patch_ci["suites"][0]["display_name"],
+        "Rust Patchset Gate (Bounded)"
+    );
+    assert_eq!(
+        patch_ci["suites"][0]["runner"]["workspace"], false,
+        "the bounded patchset gate must not claim full-workspace coverage"
+    );
     let build_args = patch_ci["suites"][0]["runner"]["build_args"]
         .as_array()
         .expect("patchset CI build args should be an array");
@@ -221,6 +229,7 @@ fn patchset_ci_and_prewarm_share_lean_ci_build_contract_without_alias_expansion(
         "documentation tests belong to full workspace validation, not the patchset gate"
     );
     assert_eq!(build_args[0], "test");
+    assert!(build_args.iter().any(|arg| arg == "--locked"));
     assert!(build_args
         .windows(2)
         .any(|args| args[0] == "--profile" && args[1] == "ait-ci"));
@@ -234,6 +243,75 @@ fn patchset_ci_and_prewarm_share_lean_ci_build_contract_without_alias_expansion(
         .any(|arg| arg == "ait-server-core/patch-ci-harness"));
     assert!(!build_args.iter().any(|arg| arg == "patch-ci-build"));
     assert!(!build_args.iter().any(|arg| arg == "--bins"));
+}
+
+#[test]
+fn ci_entrypoints_keep_bounded_patchset_and_full_workspace_modes_distinct() {
+    let repo_root = repo_root_from_manifest_dir();
+    let shell = fs::read_to_string(repo_root.join("ci/run.sh"))
+        .expect("shell CI entrypoint should be readable");
+    let powershell = fs::read_to_string(repo_root.join("ci/run.ps1"))
+        .expect("PowerShell CI entrypoint should be readable");
+
+    assert!(shell.contains("run_patchset_gate()"));
+    assert!(shell.contains("run_workspace_gate()"));
+    assert!(shell.contains("patchset)\n    run_patchset_gate"));
+    assert!(shell.contains("repo)\n    run_workspace_gate"));
+    assert!(shell.contains("all)\n    run_patchset_gate\n    run_workspace_gate"));
+    assert!(powershell.contains("function Invoke-PatchsetGate"));
+    assert!(powershell.contains("function Invoke-WorkspaceGate"));
+    assert!(powershell.contains("\"patchset\" {\n            Invoke-PatchsetGate"));
+    assert!(powershell.contains("\"repo\" {\n            Invoke-WorkspaceGate"));
+    assert!(powershell
+        .contains("\"all\" {\n            Invoke-PatchsetGate\n            Invoke-WorkspaceGate"));
+
+    for entrypoint in [&shell, &powershell] {
+        assert!(entrypoint.contains("--locked"));
+        assert!(entrypoint.contains("--workspace"));
+        assert!(entrypoint.contains("--all-targets"));
+        assert!(entrypoint.contains("--all-features"));
+        assert!(entrypoint.contains("clippy"));
+        assert!(entrypoint.contains("warnings"));
+        assert!(entrypoint.contains("--doc"));
+        assert!(entrypoint.contains("--release"));
+        assert!(entrypoint.contains("seam_contract_direct_tests"));
+        assert!(entrypoint.contains("ait-server-core/patch-ci-harness"));
+    }
+
+    assert!(shell.contains("-D warnings"));
+    assert!(powershell.contains("\"-D\", \"warnings\""));
+}
+
+#[test]
+fn retired_postgres_runtime_is_absent_while_the_importer_stays_isolated() {
+    let repo_root = repo_root_from_manifest_dir();
+    let workspace = fs::read_to_string(repo_root.join("rust/Cargo.toml"))
+        .expect("workspace manifest should be readable");
+    let core = fs::read_to_string(repo_root.join("rust/crates/ait-server-core/Cargo.toml"))
+        .expect("core manifest should be readable");
+    let server = fs::read_to_string(repo_root.join("rust/crates/ait-server/Cargo.toml"))
+        .expect("server manifest should be readable");
+    let importer =
+        fs::read_to_string(repo_root.join("rust/crates/ait-server-postgres-import/Cargo.toml"))
+            .expect("importer manifest should be readable");
+
+    assert!(workspace.contains("\"crates/ait-server-postgres-import\""));
+    assert!(!core.contains("legacy-postgres-runtime"));
+    assert!(!core.contains("postgres ="));
+    assert!(!server.contains("postgres ="));
+    assert!(importer.contains("postgres ="));
+    assert!(
+        !repo_root
+            .join("rust/crates/ait-server-core/src/bin/ait-server-core-postgres-driver.rs")
+            .exists(),
+        "the retired runtime driver must not remain as an orphaned build target"
+    );
+    assert!(
+        !repo_root
+            .join("rust/crates/ait-server-core/tests/foundation_postgres_adapter_direct_tests.rs")
+            .exists(),
+        "feature-only runtime adapter tests must be retired with the feature"
+    );
 }
 
 #[test]

@@ -1,12 +1,20 @@
-use std::fs;
+use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
 use ait_benchmark::{
-    build_report, compare_reports, create_synthetic_fixture, digest_workspace,
-    load_benchmark_report, load_budget_manifest, load_manifest, run_benchmark, validate_manifest,
-    write_comparison_report, write_report, RunOptions, SyntheticFixtureRecipe, PROTOCOL_V1_JSON,
+    build_agent_token_report, build_agent_token_schedule, build_report,
+    compare_agent_token_reports, compare_reports, create_synthetic_fixture, digest_workspace,
+    encode_manifest, extract_and_validate_codex_transcript, import_codex_usage,
+    load_agent_token_campaign, load_agent_token_report, load_agent_token_run_summaries,
+    load_agent_token_schedule, load_benchmark_report, load_budget_manifest, load_manifest,
+    materialize_game_fixture, normalize_manifest, render_agent_token_report_markdown,
+    run_agent_token_campaign, run_benchmark, sha256_digest, validate_agent_token_campaign_evidence,
+    validate_manifest, validate_portable_manifest, write_comparison_report, write_json_new,
+    write_report, write_text_new, AgentTokenAccountingProfile, AgentTokenMode, AgentTokenModelPin,
+    NormalizationReport, RunOptions, RuntimeBindings, SyntheticFixtureRecipe,
+    AGENT_TOKEN_PROTOCOL_V1_JSON, NORMALIZATION_CONTRACT, PROTOCOL_V1_JSON,
 };
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use serde::Serialize;
@@ -15,7 +23,7 @@ use serde::Serialize;
 #[command(
     name = "ait-benchmark",
     version,
-    about = "Run the Python-free, versioned AIT/Git VCS benchmark protocol"
+    about = "Run the Python-free, versioned AIT/Git benchmark protocols"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -28,6 +36,8 @@ enum BenchmarkCommand {
     Protocol,
     /// Validate the full multi-scale benchmark manifest and pinned environment.
     Validate(ManifestArgs),
+    /// Replace explicit runtime paths with portable binding placeholders.
+    Normalize(NormalizeArgs),
     /// Execute external AIT and Git subjects and write authoritative raw JSONL.
     Run(RunArgs),
     /// Render JSON and Markdown statistics from authoritative raw JSONL.
@@ -44,12 +54,186 @@ enum BenchmarkCommand {
         #[command(subcommand)]
         command: ProbeCommand,
     },
+    /// Measure fresh coding-agent token usage for deterministic game-development tasks.
+    AgentToken {
+        #[command(subcommand)]
+        command: AgentTokenCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum AgentTokenCommand {
+    /// Print the compiled game-development agent-token protocol.
+    Protocol,
+    /// Materialize one immutable game workload into an absent or empty directory.
+    Fixture(AgentTokenFixtureArgs),
+    /// Validate a campaign manifest and, optionally, its complete evidence directory.
+    Validate(AgentTokenValidateArgs),
+    /// Freeze the deterministic block-randomized campaign schedule.
+    Schedule(AgentTokenScheduleArgs),
+    /// Import provider-reported Codex JSONL usage without double-counting cache fields.
+    ImportUsage(AgentTokenImportUsageArgs),
+    /// Validate and normalize repository command events from a Codex JSONL transcript.
+    ImportTranscript(AgentTokenImportTranscriptArgs),
+    /// Execute the frozen schedule into a create-new evidence directory.
+    Run(AgentTokenRunArgs),
+    /// Rebuild aggregate and Markdown reports from immutable per-run summaries.
+    Report(AgentTokenReportArgs),
+    /// Compare two compatible, already aggregated agent-token campaigns.
+    Compare(AgentTokenCompareArgs),
+}
+
+#[derive(Debug, Args)]
+struct AgentTokenFixtureArgs {
+    #[arg(long)]
+    manifest: PathBuf,
+    #[arg(long)]
+    workload: String,
+    #[arg(long)]
+    output_dir: PathBuf,
+    #[arg(long)]
+    receipt: Option<PathBuf>,
+}
+
+#[derive(Debug, Args)]
+struct AgentTokenValidateArgs {
+    #[arg(long)]
+    manifest: PathBuf,
+    #[arg(long)]
+    campaign_dir: Option<PathBuf>,
+}
+
+#[derive(Debug, Args)]
+struct AgentTokenScheduleArgs {
+    #[arg(long)]
+    manifest: PathBuf,
+    #[arg(long)]
+    output: Option<PathBuf>,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum AgentTokenCliMode {
+    #[value(name = "git_linear_single_session")]
+    GitLinearSingleSession,
+    #[value(name = "ait_linear_single_session")]
+    AitLinearSingleSession,
+}
+
+impl From<AgentTokenCliMode> for AgentTokenMode {
+    fn from(value: AgentTokenCliMode) -> Self {
+        match value {
+            AgentTokenCliMode::GitLinearSingleSession => Self::GitLinearSingleSession,
+            AgentTokenCliMode::AitLinearSingleSession => Self::AitLinearSingleSession,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum AgentTokenCliProfile {
+    #[value(name = "steady_state_task_cost")]
+    SteadyStateTaskCost,
+    #[value(name = "first_use_total_cost")]
+    FirstUseTotalCost,
+}
+
+impl From<AgentTokenCliProfile> for AgentTokenAccountingProfile {
+    fn from(value: AgentTokenCliProfile) -> Self {
+        match value {
+            AgentTokenCliProfile::SteadyStateTaskCost => Self::SteadyStateTaskCost,
+            AgentTokenCliProfile::FirstUseTotalCost => Self::FirstUseTotalCost,
+        }
+    }
+}
+
+#[derive(Debug, Args)]
+struct AgentTokenImportUsageArgs {
+    #[arg(long)]
+    source: PathBuf,
+    #[arg(long)]
+    output: Option<PathBuf>,
+    #[arg(long)]
+    run_id: String,
+    #[arg(long)]
+    workload: String,
+    #[arg(long, value_enum)]
+    mode: AgentTokenCliMode,
+    #[arg(long, value_enum)]
+    profile: AgentTokenCliProfile,
+    #[arg(long)]
+    model_provider: String,
+    #[arg(long)]
+    model_id: String,
+    #[arg(long)]
+    model_revision: String,
+    #[arg(long)]
+    reasoning_effort: String,
+}
+
+#[derive(Debug, Args)]
+struct AgentTokenImportTranscriptArgs {
+    #[arg(long)]
+    source: PathBuf,
+    #[arg(long)]
+    output: Option<PathBuf>,
+    #[arg(long)]
+    run_id: String,
+    #[arg(long, value_enum)]
+    mode: AgentTokenCliMode,
+    #[arg(long, value_enum)]
+    profile: AgentTokenCliProfile,
+}
+
+#[derive(Debug, Args)]
+struct AgentTokenRunArgs {
+    #[arg(long)]
+    manifest: PathBuf,
+    #[arg(long)]
+    output_dir: PathBuf,
+    /// Execute only the first N frozen entries; retained as incomplete smoke evidence.
+    #[arg(long)]
+    max_runs: Option<usize>,
+}
+
+#[derive(Debug, Args)]
+struct AgentTokenReportArgs {
+    #[arg(long)]
+    manifest: PathBuf,
+    #[arg(long)]
+    campaign_dir: PathBuf,
+    #[arg(long)]
+    output_json: PathBuf,
+    #[arg(long)]
+    output_markdown: Option<PathBuf>,
+}
+
+#[derive(Debug, Args)]
+struct AgentTokenCompareArgs {
+    #[arg(long)]
+    baseline_report: PathBuf,
+    #[arg(long)]
+    candidate_report: PathBuf,
+    #[arg(long)]
+    output_json: PathBuf,
 }
 
 #[derive(Debug, Args)]
 struct ManifestArgs {
     #[arg(long)]
     manifest: PathBuf,
+    /// Also reject absolute or host-specific paths and validate binding syntax.
+    #[arg(long)]
+    portable: bool,
+}
+
+#[derive(Debug, Args)]
+struct NormalizeArgs {
+    #[arg(long)]
+    manifest: PathBuf,
+    #[arg(long)]
+    output: PathBuf,
+    /// Runtime path mapping in NAME=ABSOLUTE_PATH form; repeat for each path.
+    #[arg(long = "bind", value_name = "NAME=ABSOLUTE_PATH", required = true)]
+    bindings: Vec<String>,
 }
 
 #[derive(Debug, Args)]
@@ -61,6 +245,9 @@ struct RunArgs {
     /// Run one warm-up and two measured iterations per subject; output is not claim eligible.
     #[arg(long)]
     smoke: bool,
+    /// Resolve a portable manifest binding in NAME=ABSOLUTE_PATH form.
+    #[arg(long = "bind", value_name = "NAME=ABSOLUTE_PATH")]
+    bindings: Vec<String>,
 }
 
 #[derive(Debug, Args)]
@@ -165,23 +352,87 @@ fn entry(cli: Cli) -> Result<(), String> {
         BenchmarkCommand::Validate(args) => {
             let (manifest, digest) = load_manifest(&args.manifest)?;
             let validation = validate_manifest(&manifest, &digest);
-            emit_json(&validation)?;
-            if validation.valid {
-                Ok(())
+            if args.portable {
+                let portability = validate_portable_manifest(&manifest);
+                let valid = validation.valid && portability.portable;
+                emit_json(&serde_json::json!({
+                    "manifest": validation,
+                    "portability": portability,
+                    "valid": valid,
+                }))?;
+                if valid {
+                    Ok(())
+                } else {
+                    Err("Benchmark manifest failed protocol or portability validation".to_string())
+                }
             } else {
-                Err(format!(
-                    "Benchmark manifest failed validation with {} error(s)",
-                    validation.errors.len()
-                ))
+                emit_json(&validation)?;
+                if validation.valid {
+                    Ok(())
+                } else {
+                    Err(format!(
+                        "Benchmark manifest failed validation with {} error(s)",
+                        validation.errors.len()
+                    ))
+                }
             }
+        }
+        BenchmarkCommand::Normalize(args) => {
+            let bindings = RuntimeBindings::parse(&args.bindings)?;
+            let (manifest, source_digest) = load_and_validate(&args.manifest)?;
+            let normalized = normalize_manifest(&manifest, &bindings)?;
+            let bytes = encode_manifest(&normalized.manifest)?;
+            let normalized_digest = sha256_digest(&bytes);
+            if let Some(parent) = args
+                .output
+                .parent()
+                .filter(|parent| !parent.as_os_str().is_empty())
+            {
+                fs::create_dir_all(parent).map_err(|error| {
+                    format!(
+                        "Failed to create normalized manifest directory {}: {error}",
+                        parent.display()
+                    )
+                })?;
+            }
+            let mut output = OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&args.output)
+                .map_err(|error| {
+                    format!(
+                        "Failed to create normalized manifest {} without overwriting: {error}",
+                        args.output.display()
+                    )
+                })?;
+            output.write_all(&bytes).map_err(|error| {
+                format!(
+                    "Failed to write normalized manifest {}: {error}",
+                    args.output.display()
+                )
+            })?;
+            emit_json(&NormalizationReport {
+                contract: NORMALIZATION_CONTRACT,
+                benchmark_id: normalized.manifest.benchmark_id,
+                source_manifest_digest: source_digest,
+                normalized_manifest_digest: normalized_digest,
+                output_path: args.output.display().to_string(),
+                replacement_count: normalized.replacement_count,
+                required_bindings: normalized.required_bindings,
+                portable: true,
+            })
         }
         BenchmarkCommand::Run(args) => {
             let (manifest, digest) = load_and_validate(&args.manifest)?;
+            let bindings = RuntimeBindings::parse(&args.bindings)?;
             let summary = run_benchmark(
                 &manifest,
                 &digest,
                 &args.raw_jsonl,
-                RunOptions { smoke: args.smoke },
+                RunOptions {
+                    smoke: args.smoke,
+                    bindings,
+                },
             )?;
             emit_json(&summary)
         }
@@ -271,6 +522,149 @@ fn entry(cli: Cli) -> Result<(), String> {
                 let count = history_node_count(args.vcs, &args.program, &args.root)?;
                 writeln!(io::stdout(), "{count}")
                     .map_err(|error| format!("Failed to write history count: {error}"))
+            }
+        },
+        BenchmarkCommand::AgentToken { command } => match command {
+            AgentTokenCommand::Protocol => {
+                let protocol =
+                    serde_json::from_str::<serde_json::Value>(AGENT_TOKEN_PROTOCOL_V1_JSON)
+                        .map_err(|error| {
+                            format!("Compiled agent-token benchmark protocol is invalid: {error}")
+                        })?;
+                emit_json(&protocol)
+            }
+            AgentTokenCommand::Fixture(args) => {
+                let receipt =
+                    materialize_game_fixture(&args.manifest, &args.workload, &args.output_dir)?;
+                if let Some(path) = args.receipt {
+                    write_json_new(&path, &receipt)?;
+                }
+                emit_json(&receipt)
+            }
+            AgentTokenCommand::Validate(args) => {
+                let manifest = load_agent_token_campaign(&args.manifest)?;
+                let evidence_errors = if let Some(path) = args.campaign_dir.as_deref() {
+                    validate_agent_token_campaign_evidence(&manifest, path)?
+                } else {
+                    Vec::new()
+                };
+                let valid = evidence_errors.is_empty();
+                emit_json(&serde_json::json!({
+                    "contract": "ait-agent-token-validation/v1",
+                    "campaign_id": manifest.campaign_id,
+                    "manifest_valid": true,
+                    "evidence_checked": args.campaign_dir.is_some(),
+                    "valid": valid,
+                    "errors": evidence_errors,
+                    "workflow_mode": "solo_local",
+                    "sprint_mode": "off",
+                    "ait_server_connected": false,
+                }))?;
+                if valid {
+                    Ok(())
+                } else {
+                    Err("Agent-token campaign evidence failed validation".to_string())
+                }
+            }
+            AgentTokenCommand::Schedule(args) => {
+                let manifest = load_agent_token_campaign(&args.manifest)?;
+                let schedule = build_agent_token_schedule(&manifest);
+                if let Some(path) = args.output {
+                    write_json_new(&path, &schedule)?;
+                }
+                emit_json(&schedule)
+            }
+            AgentTokenCommand::ImportUsage(args) => {
+                let model = AgentTokenModelPin {
+                    provider: args.model_provider,
+                    model_id: args.model_id,
+                    model_revision: args.model_revision,
+                    reasoning_effort: args.reasoning_effort,
+                };
+                let usage = import_codex_usage(
+                    &args.source,
+                    &args.run_id,
+                    &args.workload,
+                    args.mode.into(),
+                    args.profile.into(),
+                    &model,
+                )?;
+                if let Some(path) = args.output {
+                    write_text_new(
+                        &path,
+                        &format!(
+                            "{}\n",
+                            serde_json::to_string(&usage).map_err(|error| {
+                                format!("Failed to encode normalized usage JSONL: {error}")
+                            })?
+                        ),
+                    )?;
+                }
+                emit_json(&usage)
+            }
+            AgentTokenCommand::ImportTranscript(args) => {
+                let transcript = extract_and_validate_codex_transcript(
+                    &args.source,
+                    &args.run_id,
+                    args.mode.into(),
+                    args.profile.into(),
+                )?;
+                if let Some(path) = args.output {
+                    write_json_new(&path, &transcript)?;
+                }
+                let valid = transcript.valid;
+                emit_json(&transcript)?;
+                if valid {
+                    Ok(())
+                } else {
+                    Err("Agent-token command transcript violates the selected mode".to_string())
+                }
+            }
+            AgentTokenCommand::Run(args) => {
+                let execution =
+                    run_agent_token_campaign(&args.manifest, &args.output_dir, args.max_runs)?;
+                emit_json(&execution)
+            }
+            AgentTokenCommand::Report(args) => {
+                let manifest = load_agent_token_campaign(&args.manifest)?;
+                let schedule = load_agent_token_schedule(
+                    &args.campaign_dir.join("randomization-schedule.json"),
+                )?;
+                let runs = load_agent_token_run_summaries(&args.campaign_dir)?;
+                let evidence_errors =
+                    validate_agent_token_campaign_evidence(&manifest, &args.campaign_dir)?;
+                if !evidence_errors.is_empty() {
+                    return Err(format!(
+                        "Agent-token evidence failed validation: {}",
+                        evidence_errors.join("; ")
+                    ));
+                }
+                let report = build_agent_token_report(&manifest, &schedule, &runs)?;
+                write_json_new(&args.output_json, &report)?;
+                if let Some(path) = args.output_markdown.as_deref() {
+                    write_text_new(path, &render_agent_token_report_markdown(&report))?;
+                }
+                emit_json(&serde_json::json!({
+                    "contract": report.contract,
+                    "campaign_id": report.campaign_id,
+                    "output_json": args.output_json,
+                    "output_markdown": args.output_markdown,
+                    "claim_eligible": report.claim_eligible,
+                    "invalid_run_count": report.invalid_run_count,
+                }))
+            }
+            AgentTokenCommand::Compare(args) => {
+                let baseline = load_agent_token_report(&args.baseline_report)?;
+                let candidate = load_agent_token_report(&args.candidate_report)?;
+                let comparison = compare_agent_token_reports(&baseline, &candidate);
+                write_json_new(&args.output_json, &comparison)?;
+                let comparable = comparison.comparable;
+                emit_json(&comparison)?;
+                if comparable {
+                    Ok(())
+                } else {
+                    Err("Agent-token campaign reports are not comparable".to_string())
+                }
             }
         },
     }

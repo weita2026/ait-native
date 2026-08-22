@@ -1,0 +1,16 @@
+{
+  "contract": "ait-vcs-benchmark-normalization/v1",
+  "benchmark_id": "ait-stage4-focused-status-candidate-2026-07-19",
+  "source_manifest_digest": "sha256:7e906470697c544e3a6daff588ad0a1ee40fa5edd6914597a8ef20cc68fd832b",
+  "normalized_manifest_digest": "sha256:f5e47209074f9a2ed903e69f7bb3379878fc40e2c50da5f53c52bc19d5aea7b8",
+  "output_path": "rust/crates/ait-benchmark/evidence/stage4-2026-07-19/candidate-manifest.json",
+  "replacement_count": 10,
+  "required_bindings": [
+    "ait-benchmark",
+    "candidate-ait-cli",
+    "candidate-ait-workspace",
+    "candidate-git-workspace",
+    "git"
+  ],
+  "portable": true
+}

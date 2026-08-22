@@ -15,11 +15,12 @@ use crate::model::{
 };
 use crate::protocol::fixture_for_cell;
 use crate::statistics::DeterministicRng;
-use crate::RAW_CONTRACT;
+use crate::{resolve_manifest_bindings, RuntimeBindings, RAW_CONTRACT};
 
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct RunOptions {
     pub smoke: bool,
+    pub bindings: RuntimeBindings,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -41,6 +42,8 @@ pub fn run_benchmark(
     raw_jsonl_path: &Path,
     options: RunOptions,
 ) -> Result<RunSummary, String> {
+    let resolved_manifest = resolve_manifest_bindings(manifest, &options.bindings)?;
+    let manifest = &resolved_manifest;
     if let Some(parent) = raw_jsonl_path.parent() {
         fs::create_dir_all(parent).map_err(|error| {
             format!(

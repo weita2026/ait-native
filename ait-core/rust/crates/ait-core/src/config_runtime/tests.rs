@@ -2,8 +2,6 @@ use super::*;
 use crate::json_support::json;
 use crate::shared_foundation::ConfigProvider;
 
-fn assert_config_provider<T: ConfigProvider>() {}
-
 struct SubstituteConfigProvider;
 
 impl SubstituteConfigProvider {
@@ -73,11 +71,6 @@ impl ConfigProvider for SubstituteConfigProvider {
             payload_json,
         ))
     }
-}
-
-#[test]
-fn plan_runtime_config_foundation_implements_config_provider() {
-    assert_config_provider::<RuntimeConfigFoundation>();
 }
 
 #[test]

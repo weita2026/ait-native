@@ -551,7 +551,7 @@ fn encode_hex(bytes: &[u8]) -> String {
 }
 
 fn decode_hex(value: &str) -> StoreResult<Vec<u8>> {
-    if value.len() % 2 != 0 {
+    if !value.len().is_multiple_of(2) {
         return Err(BinaryDbError::corruption(
             "Binary DB before-image hex has odd length",
         ));

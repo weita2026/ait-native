@@ -1,0 +1,7 @@
+{
+  "contract": "ait-agent-token-game-workload/v1",
+  "workload_id": "GD-05",
+  "name": "beta-release-hardening",
+  "workflow_mode": "solo_local",
+  "ait_server_allowed": false
+}

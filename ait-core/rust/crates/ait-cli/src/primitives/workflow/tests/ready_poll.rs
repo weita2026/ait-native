@@ -1,6 +1,51 @@
 use super::*;
 
 #[test]
+fn workflow_ready_waits_after_its_exact_ci_request_instead_of_resubmitting() {
+    let state = json!({
+        "change": {"change_id": "RCC-1", "status": "review"},
+        "patchset": {"patchset_id": "RCP-1"},
+        "next_action": {
+            "code": "run_patchset_ci",
+            "command": "ait patchset rerun-ci RCP-1"
+        }
+    });
+    let requested = BTreeSet::from(["RCP-1".to_string()]);
+
+    let pending = workflow_ready_ci_pending_wait_state(&state, "run_patchset_ci", &requested)
+        .expect("normalize the just-requested Patchset")
+        .expect("same-Patchset CI request must enter the pending wait");
+
+    assert_eq!(pending["next_action"]["code"], json!("waiting_for_ci"));
+    assert_eq!(state["next_action"]["code"], json!("run_patchset_ci"));
+    assert!(
+        workflow_ready_ci_pending_wait_state(&state, "run_patchset_ci", &BTreeSet::new())
+            .expect("inspect a not-yet-requested Patchset")
+            .is_none()
+    );
+    assert!(workflow_ready_ci_pending_wait_state(
+        &state,
+        "run_patchset_ci",
+        &BTreeSet::from(["RCP-2".to_string()]),
+    )
+    .expect("inspect a different requested Patchset")
+    .is_none());
+    assert!(
+        workflow_ready_ci_pending_wait_state(&state, "record_attestation", &requested)
+            .expect("inspect a non-CI action")
+            .is_none()
+    );
+
+    let mut already_waiting = state.clone();
+    already_waiting["next_action"]["code"] = json!("waiting_for_ci");
+    assert_eq!(
+        workflow_ready_ci_pending_wait_state(&already_waiting, "waiting_for_ci", &BTreeSet::new())
+            .expect("retain an authoritative waiting state"),
+        Some(already_waiting)
+    );
+}
+
+#[test]
 fn workflow_ready_ci_poll_reuses_workspace_and_refreshes_only_remote_ci_state() {
     let repo_tmp = tempdir().expect("repo tempdir");
     init_repo(&InitRequest {

@@ -44,7 +44,7 @@ impl<'a> QueueIndex<'a> {
             }
         }
         for patchsets in index.patchsets_by_change_key.values_mut() {
-            patchsets.sort_by(|left, right| patchset_number(left).cmp(&patchset_number(right)));
+            patchsets.sort_by_key(|left| patchset_number(left));
         }
         for review in input.reviews.iter() {
             if let Some(change_key) = index.change_key(review) {

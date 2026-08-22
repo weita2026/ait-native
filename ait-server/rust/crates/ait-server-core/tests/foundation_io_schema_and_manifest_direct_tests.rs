@@ -128,17 +128,17 @@ fn postgres_schema_ready_key_and_cache_are_predictable() {
 
     let mut cache = PostgresSchemaReadyCache::default();
     let key = postgres_schema_ready_key("postgres", Some("dsn"), Some("schema"));
-    assert_eq!(cache.is_ready(key.as_ref()), false);
+    assert!(!cache.is_ready(key.as_ref()));
     cache.mark_ready(key.clone());
-    assert_eq!(cache.is_ready(key.as_ref()), true);
+    assert!(cache.is_ready(key.as_ref()));
 
     let missing_key = postgres_schema_ready_key("postgres", Some("other"), Some("other"));
-    assert_eq!(cache.is_ready(missing_key.as_ref()), false);
-    assert_eq!(cache.is_ready(None), true);
+    assert!(!cache.is_ready(missing_key.as_ref()));
+    assert!(cache.is_ready(None));
 
     cache.reset();
-    assert_eq!(cache.is_ready(key.as_ref()), false);
-    assert_eq!(cache.is_ready(None), true);
+    assert!(!cache.is_ready(key.as_ref()));
+    assert!(cache.is_ready(None));
 }
 
 #[test]

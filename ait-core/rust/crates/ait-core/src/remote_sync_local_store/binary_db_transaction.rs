@@ -1,6 +1,5 @@
 use super::*;
 
-#[allow(dead_code)]
 pub struct BinaryDbRemoteSyncZstdImportTransactionStore<B, const WRITE_LAYOUT: u32>
 where
     B: BinaryDb,
@@ -12,7 +11,6 @@ where
     trees: Option<BinaryDbTreeStore<B, WRITE_LAYOUT>>,
 }
 
-#[allow(dead_code)]
 impl<B, const WRITE_LAYOUT: u32> BinaryDbRemoteSyncZstdImportTransactionStore<B, WRITE_LAYOUT>
 where
     B: BinaryDb,
@@ -44,7 +42,6 @@ where
     }
 }
 
-#[allow(dead_code)]
 pub struct BinaryDbRemoteSyncZstdImportStore<B, const WRITE_LAYOUT: u32>
 where
     B: BinaryDb + Clone,
@@ -54,7 +51,6 @@ where
     tree_packs: BinaryDbTreePackStore<B, WRITE_LAYOUT>,
 }
 
-#[allow(dead_code)]
 impl<B, const WRITE_LAYOUT: u32> BinaryDbRemoteSyncZstdImportStore<B, WRITE_LAYOUT>
 where
     B: BinaryDb + Clone,

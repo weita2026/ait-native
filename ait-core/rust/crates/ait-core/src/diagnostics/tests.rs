@@ -2,8 +2,6 @@ use super::*;
 use crate::json_support::{json, JsonValue};
 use crate::shared_foundation::DiagnosticsProbe;
 
-fn assert_diagnostics_probe<T: DiagnosticsProbe>() {}
-
 struct SubstituteDiagnosticsProbe;
 
 impl SubstituteDiagnosticsProbe {
@@ -66,11 +64,6 @@ impl DiagnosticsProbe for SubstituteDiagnosticsProbe {
             payload_json,
         ))
     }
-}
-
-#[test]
-fn plan_diagnostics_foundation_implements_probe_trait() {
-    assert_diagnostics_probe::<DiagnosticsFoundation>();
 }
 
 #[test]

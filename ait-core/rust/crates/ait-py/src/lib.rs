@@ -90,4 +90,30 @@ mod dependency_security_tests {
             );
         }
     }
+
+    #[test]
+    fn python_abi_version_matches_workspace_release() {
+        let package_manifest = include_str!("../Cargo.toml");
+        assert!(
+            package_manifest
+                .lines()
+                .any(|line| line.trim() == "version.workspace = true"),
+            "ait-py must inherit the workspace release version"
+        );
+
+        let workspace_manifest = include_str!("../../../Cargo.toml");
+        let workspace_version = workspace_manifest
+            .lines()
+            .map(str::trim)
+            .find_map(|line| {
+                line.strip_prefix("version = \"")
+                    .and_then(|value| value.strip_suffix('"'))
+            })
+            .expect("workspace package metadata must declare a release version");
+        assert_eq!(
+            env!("CARGO_PKG_VERSION"),
+            workspace_version,
+            "the Python package_version ABI export must use the workspace release version"
+        );
+    }
 }

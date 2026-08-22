@@ -1,5 +1,4 @@
 use std::collections::{BTreeMap, VecDeque};
-use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::{json, Map as JsonMap, Value as JsonValue};
@@ -186,11 +185,6 @@ impl LiveTurnRegistry {
         }))
     }
 
-    pub fn reset_for_tests(&mut self) {
-        self.active_turns.clear();
-        self.recent_finished_turns.clear();
-    }
-
     fn unique_token(&self) -> Result<String, String> {
         loop {
             let mut bytes = [0_u8; 16];
@@ -236,19 +230,6 @@ pub fn live_turns_contract() -> JsonValue {
             "task_dag": "Task DAG is retired; live turns expose no graph-progress injection.",
         },
     })
-}
-
-pub fn live_turns_json(operation: &str, request: &JsonValue) -> Result<JsonValue, String> {
-    if operation == "contract" {
-        return Ok(live_turns_contract());
-    }
-    let payload = request
-        .as_object()
-        .ok_or_else(|| "live turns payload must be a JSON object.".to_string())?;
-    let mut registry = default_live_turn_registry()
-        .lock()
-        .map_err(|_| "live turn registry lock is poisoned".to_string())?;
-    live_turns_json_with_registry(&mut registry, operation, payload)
 }
 
 pub fn live_turns_json_with_registry(
@@ -298,16 +279,6 @@ pub fn live_turns_json_with_registry(
         }
         other => Err(format!("Unsupported live turns operation `{other}`.")),
     }
-}
-
-fn default_live_turn_registry() -> &'static Mutex<LiveTurnRegistry> {
-    static REGISTRY: OnceLock<Mutex<LiveTurnRegistry>> = OnceLock::new();
-    REGISTRY.get_or_init(|| {
-        Mutex::new(
-            LiveTurnRegistry::new(DEFAULT_RECENT_COMPLETED_LIMIT)
-                .expect("default live turn registry limit is valid"),
-        )
-    })
 }
 
 fn completion_outcome(completion_metadata: &JsonMap<String, JsonValue>) -> String {

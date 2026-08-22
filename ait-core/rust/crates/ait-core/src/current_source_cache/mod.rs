@@ -47,7 +47,6 @@ use self::lease_store::FilesystemCurrentSourceNativeCacheLeaseStore;
 use self::manifest_ports::{
     cache_size_bytes_with_current_source_native_cache_manifest_store,
     ensure_cache_root_with_current_source_native_cache_manifest_store,
-    load_manifest_with_current_source_native_cache_manifest_store,
     write_manifest_with_current_source_native_cache_manifest_store,
     CurrentSourceNativeCacheManifestStore,
 };

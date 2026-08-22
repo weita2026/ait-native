@@ -71,12 +71,6 @@ impl PlanHeadView {
         })
     }
 
-    pub fn head_revision_index(&self) -> Option<u32> {
-        self.head_revision
-            .as_ref()
-            .map(|revision| revision.revision_index)
-    }
-
     pub fn head_revision_number(&self) -> Option<u16> {
         self.head_revision
             .as_ref()

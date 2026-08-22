@@ -329,6 +329,8 @@ where
     let change_id = required_string_field(&local_payload, "change_id")?;
     let change_ref = required_string_field(&local_payload, "change_ref")?;
     let task_id = required_string_field(&local_payload, "task_id")?;
+    guard_repo_root_pinned_bound_worktree(repo, Some(&task_id), "ait task land")?;
+    guard_repo_root_bound_task_worktree(repo, Some(&task_id), Some(&change_ref), "ait task land")?;
     let captured_bound_line = task_land_capture_bound_line(&closeout_repo, &task_id);
     let already_landed = local_payload
         .get("already_landed")

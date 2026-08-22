@@ -112,7 +112,7 @@ impl<S> TaskJson<S> {
         )?;
 
         let open_change_count = count_change_rows(change_rows, |row| {
-            !matches!(change_status(row).as_deref(), Some("landed" | "archived"))
+            !change_status_is_terminal(change_status(row).as_deref())
         });
         let landed_change_count = count_change_rows(change_rows, |row| {
             matches!(change_status(row).as_deref(), Some("landed"))
@@ -121,7 +121,7 @@ impl<S> TaskJson<S> {
             count_change_rows(change_rows, |row| bool_field(row, "effective_on_target"));
         let open_on_target_count = count_change_rows(change_rows, |row| {
             bool_field(row, "effective_on_target")
-                && !matches!(change_status(row).as_deref(), Some("landed" | "archived"))
+                && !change_status_is_terminal(change_status(row).as_deref())
         });
         let stale_workflow_count =
             count_change_rows(change_rows, |row| bool_field(row, "stale_workflow_record"));
@@ -240,7 +240,7 @@ impl<S> TaskJson<S> {
         } else {
             let open_change = change_rows.iter().find_map(|row| {
                 let row = row.as_object()?;
-                if matches!(change_status(row).as_deref(), Some("landed" | "archived")) {
+                if change_status_is_terminal(change_status(row).as_deref()) {
                     None
                 } else {
                     row.get("change")
@@ -666,6 +666,21 @@ fn change_status_from_value(value: Option<&JsonValue>) -> Option<String> {
     value
         .and_then(JsonValue::as_object)
         .and_then(|change| optional_text(change.get("status")).ok().flatten())
+}
+
+fn change_status_is_terminal(status: Option<&str>) -> bool {
+    matches!(
+        status,
+        Some(
+            "landed"
+                | "closed"
+                | "archived"
+                | "canceled"
+                | "cancelled"
+                | "abandoned"
+                | "superseded"
+        )
+    )
 }
 
 fn bool_field(row: &JsonMap<String, JsonValue>, field_name: &str) -> bool {

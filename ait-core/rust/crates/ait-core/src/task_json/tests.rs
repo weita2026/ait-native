@@ -127,3 +127,67 @@ fn task_json_recovers_closed_task_response() {
         }))
     );
 }
+
+#[test]
+fn task_json_audit_treats_every_canonical_terminal_change_as_closed() {
+    let json = TaskJson::stateless();
+    let change_rows = [
+        "landed",
+        "closed",
+        "archived",
+        "canceled",
+        "cancelled",
+        "abandoned",
+        "superseded",
+    ]
+    .into_iter()
+    .enumerate()
+    .map(|(index, status)| {
+        json!({
+            "change": {
+                "change_id": format!("C-{:02}", index + 1),
+                "status": status,
+            },
+            "effective_on_target": true,
+        })
+    })
+    .collect::<Vec<_>>();
+
+    let audit = json
+        .build_task_audit_verdict_payload(
+            &json!({"task_id": "LWTT-0001", "status": "abandoned"}),
+            &json!(change_rows),
+            "main",
+        )
+        .expect("terminal Change audit payload");
+
+    assert_eq!(audit["summary"]["change_count"], 7);
+    assert_eq!(audit["summary"]["open_change_count"], 0);
+    assert_eq!(audit["summary"]["open_on_target_change_count"], 0);
+    assert_eq!(audit["summary"]["verdict"], "task_abandoned");
+    assert_eq!(audit["recommended_action"]["code"], "none");
+}
+
+#[test]
+fn task_json_audit_keeps_nonterminal_or_missing_change_status_open() {
+    let json = TaskJson::stateless();
+    let audit = json
+        .build_task_audit_verdict_payload(
+            &json!({"task_id": "LWTT-0001", "status": "active"}),
+            &json!([
+                {
+                    "change": {"change_id": "C-01", "status": "draft"},
+                    "effective_on_target": true,
+                },
+                {
+                    "change": {"change_id": "C-02"},
+                    "effective_on_target": false,
+                }
+            ]),
+            "main",
+        )
+        .expect("open Change audit payload");
+
+    assert_eq!(audit["summary"]["open_change_count"], 2);
+    assert_eq!(audit["summary"]["open_on_target_change_count"], 1);
+}

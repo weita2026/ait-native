@@ -1311,6 +1311,158 @@ where
     Ok(line_row)
 }
 
+fn create_detached_empty_remote_base_snapshot(
+    repo: &RepoRuntime,
+    base_line: &str,
+) -> Result<JsonValue, String> {
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|err| format!("System clock cannot create empty-base staging identity: {err}"))?
+        .as_nanos();
+    let staging_parent = repo
+        .authoritative_repo_root()
+        .join(APP_DIR)
+        .join("runtime")
+        .join("empty-base-snapshot-workspaces");
+    if let Ok(metadata) = fs::symlink_metadata(&staging_parent) {
+        if metadata.file_type().is_symlink() || !metadata.is_dir() {
+            return Err(format!(
+                "Empty-base staging parent is not a physical directory: {}",
+                staging_parent.display()
+            ));
+        }
+    }
+    fs::create_dir_all(&staging_parent).map_err(|err| {
+        format!(
+            "Failed to create empty-base staging parent {}: {err}",
+            staging_parent.display()
+        )
+    })?;
+    let staging_root = staging_parent.join(format!("{}-{nonce}", std::process::id()));
+    fs::create_dir(&staging_root).map_err(|err| {
+        format!(
+            "Failed to create empty-base staging workspace {}: {err}",
+            staging_root.display()
+        )
+    })?;
+    let created = repo
+        .local_snapshot_operation_store::<SNAPSHOT_BINARY_DB_WRITE_LAYOUT>(&staging_root)
+        .and_then(|store| {
+            store.create_detached_empty_snapshot(
+                &repo.repo_name(),
+                base_line,
+                Some("Initialize empty remote base"),
+            )
+        });
+    let cleanup = remove_tree_force(&staging_root);
+    match (created, cleanup) {
+        (Ok(snapshot), Ok(())) => Ok(snapshot),
+        (Err(error), Ok(())) => Err(error),
+        (Ok(_), Err(cleanup_error)) => Err(format!(
+            "Created an empty-base Snapshot but failed to clean staging workspace {}: {cleanup_error}",
+            staging_root.display()
+        )),
+        (Err(error), Err(cleanup_error)) => Err(format!(
+            "{error} Staging cleanup also failed for {}: {cleanup_error}",
+            staging_root.display()
+        )),
+    }
+}
+
+pub(in crate::primitives) fn ensure_remote_base_line_snapshot_with_task_remote<R>(
+    repo: &RepoRuntime,
+    remote_row: &RemoteRow,
+    task_remote: &mut R,
+    repo_name: &str,
+    base_line: &str,
+    preflight_line_row: &JsonValue,
+) -> Result<JsonValue, String>
+where
+    R: TaskWorkflowLineReader
+        + TaskWorkflowRepositoryReader
+        + TaskWorkflowZstdPackReader
+        + TaskWorkflowZstdPackUploader
+        + ?Sized,
+{
+    if let Some(head_snapshot_id) = string_field(preflight_line_row, "head_snapshot_id") {
+        return Ok(json!({
+            "line": preflight_line_row,
+            "initialized": false,
+            "head_snapshot_id": head_snapshot_id,
+            "reason": "remote_base_already_initialized",
+        }));
+    }
+    let snapshot = create_detached_empty_remote_base_snapshot(repo, base_line)?;
+    let snapshot_id = required_string_field(&snapshot, "snapshot_id")?;
+    let remote_repository = read_remote_repository_authority(repo, task_remote, repo_name)?;
+    let remote_sync_capabilities =
+        RemoteSyncCapabilities::from_server_payload(Some(&remote_repository));
+    let initialization =
+        super::super::remote_sync::initialize_remote_null_head_line_with_snapshot_via_zstd(
+            repo,
+            task_remote,
+            repo_name,
+            base_line,
+            &snapshot_id,
+            &remote_sync_capabilities,
+        );
+    match initialization {
+        Ok(snapshot_sync) => {
+            let line = task_remote
+                .get_line(repo_name, base_line)
+                .map_err(|err| err.to_string())?;
+            if string_field(&line, "head_snapshot_id").as_deref() != Some(snapshot_id.as_str()) {
+                return Err(format!(
+                    "Remote empty-base initialization returned an unexpected `{base_line}` head."
+                ));
+            }
+            Ok(json!({
+                "line": line,
+                "initialized": true,
+                "head_snapshot_id": snapshot_id,
+                "snapshot": snapshot,
+                "snapshot_sync": snapshot_sync,
+                "remote_repository": remote_repository,
+                "reason": "remote_null_head_initialized",
+            }))
+        }
+        Err(initialization_error) => {
+            let winner = task_start_remote_base_line_preflight_with_task_remote(
+                repo,
+                remote_row,
+                task_remote,
+                repo_name,
+                base_line,
+            )?;
+            let Some(winner_snapshot_id) = string_field(&winner, "head_snapshot_id") else {
+                return Err(format!(
+                    "Remote empty-base initialization failed and `{base_line}` still has no head: {initialization_error}"
+                ));
+            };
+            if winner_snapshot_id == snapshot_id {
+                return Ok(json!({
+                    "line": winner,
+                    "initialized": true,
+                    "head_snapshot_id": winner_snapshot_id,
+                    "snapshot": snapshot,
+                    "initialization_error": initialization_error,
+                    "remote_repository": remote_repository,
+                    "reason": "remote_null_head_initialized_after_uncertain_response",
+                }));
+            }
+            Ok(json!({
+                "line": winner,
+                "initialized": false,
+                "head_snapshot_id": winner_snapshot_id,
+                "orphaned_snapshot_id": snapshot_id,
+                "initialization_error": initialization_error,
+                "remote_repository": remote_repository,
+                "reason": "remote_null_head_initialized_by_peer",
+            }))
+        }
+    }
+}
+
 fn task_start_remote_initial_change_with_task_remote<R>(
     task_remote: &mut R,
     repo_name: &str,
@@ -1477,6 +1629,17 @@ pub(crate) fn task_start_with_progress(
             &repo_name,
             &resolved_base_line,
         )?;
+        let initialized = ensure_remote_base_line_snapshot_with_task_remote(
+            repo,
+            &remote_row,
+            &mut task_remote,
+            &repo_name,
+            &resolved_base_line,
+            &line_row,
+        )?;
+        let line_row = initialized.get("line").cloned().ok_or_else(|| {
+            "Remote base-Line initialization response is missing `line`.".to_string()
+        })?;
         Some((remote_row, repo_name, line_row))
     } else {
         None
@@ -1519,7 +1682,7 @@ pub(crate) fn task_start_with_progress(
         recovery_scope,
     );
     let change = if use_local {
-        change_create(
+        crate::primitives::change_flow::change_create_for_worktree_bootstrap(
             repo,
             &task_id,
             &resolved_change_title,

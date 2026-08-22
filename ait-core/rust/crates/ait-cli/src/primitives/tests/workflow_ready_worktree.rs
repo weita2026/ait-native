@@ -549,8 +549,9 @@ fn workflow_ready_apply_resumes_done_authoritative_state() {
     .expect("init repo");
     fs::write(repo_root.join("ready.txt"), "done").expect("ready file");
     let snapshot_repo = RepoRuntime::discover_from_path(repo_root).expect("snapshot repo runtime");
-    let revision_snapshot = snapshot_create(&snapshot_repo, Some("ready revision"))
-        .expect("create ready revision snapshot");
+    let revision_snapshot =
+        snapshot_create_in_current_workspace(&snapshot_repo, Some("ready revision"))
+            .expect("create ready revision snapshot");
     let revision_snapshot_id =
         required_string_field(&revision_snapshot, "snapshot_id").expect("revision snapshot id");
     let (base_url, requests, handle) = spawn_workflow_ready_done_remote(&revision_snapshot_id);

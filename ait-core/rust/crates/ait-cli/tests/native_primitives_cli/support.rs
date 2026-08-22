@@ -781,7 +781,20 @@ fn command_output_with_env(root: &Path, args: &[&str], envs: &[(&str, &str)]) ->
 }
 
 fn json_output_with_env(root: &Path, args: &[&str], envs: &[(&str, &str)]) -> JsonValue {
-    let output = command_output_with_env(root, args, envs);
+    // Most native primitive tests assert the complete historical receipts. Keep
+    // those consumers explicit about compatibility mode while dedicated compact
+    // contract tests call `compact_json_output` below.
+    let mut effective_args = args.to_vec();
+    let command = args.first().copied();
+    let subcommand = args.get(1).copied();
+    let agent_action_command = command == Some("status")
+        || (command == Some("task")
+            && (subcommand == Some("start") || subcommand == Some("land")))
+        || (command == Some("snapshot") && subcommand == Some("create"));
+    if agent_action_command && args.contains(&"--json") && !args.contains(&"--full") {
+        effective_args.push("--full");
+    }
+    let output = command_output_with_env(root, &effective_args, envs);
     assert!(
         output.status.success(),
         "stdout:\n{}\n\nstderr:\n{}",
@@ -793,6 +806,17 @@ fn json_output_with_env(root: &Path, args: &[&str], envs: &[(&str, &str)]) -> Js
 
 fn json_output(root: &Path, args: &[&str]) -> JsonValue {
     json_output_with_env(root, args, &[])
+}
+
+fn compact_json_output(root: &Path, args: &[&str]) -> JsonValue {
+    let output = command_output_with_env(root, args, &[]);
+    assert!(
+        output.status.success(),
+        "stdout:\n{}\n\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    parse_json_bytes(&output.stdout)
 }
 
 fn action_result<'a>(payload: &'a JsonValue, code: &str) -> &'a JsonValue {

@@ -52,7 +52,7 @@ pub fn repository_detail_read_model(input: &RepositoryDetailInput) -> Result<Jso
         .filter(|job| {
             object_text(job, "repo_name")
                 .as_deref()
-                .map_or(true, |name| name == repo_name)
+                .is_none_or(|name| name == repo_name)
         })
         .cloned()
         .map(JsonValue::Object)

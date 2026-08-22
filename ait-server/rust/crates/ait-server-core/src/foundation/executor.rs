@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 use std::panic::{self, AssertUnwindSafe};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread::{self, JoinHandle};
@@ -19,14 +18,9 @@ pub enum ExecutorError {
 
 pub struct ExecutorFuture<R> {
     receiver: mpsc::Receiver<Result<R, ExecutorError>>,
-    done: Arc<AtomicBool>,
 }
 
 impl<R> ExecutorFuture<R> {
-    pub fn is_done(&self) -> bool {
-        self.done.load(Ordering::SeqCst)
-    }
-
     pub fn wait(self) -> Result<R, ExecutorError> {
         self.receiver
             .recv()
@@ -66,18 +60,10 @@ pub enum ScheduledExecutorSubmission<R> {
     },
 }
 
+#[derive(Default)]
 struct ScheduledExecutorState {
     running: HashMap<String, SchedulerRunningJob>,
     stop_requested: bool,
-}
-
-impl Default for ScheduledExecutorState {
-    fn default() -> Self {
-        Self {
-            running: HashMap::new(),
-            stop_requested: false,
-        }
-    }
 }
 
 #[derive(Clone)]
@@ -313,20 +299,11 @@ struct Worker {
     handle: JoinHandle<()>,
 }
 
+#[derive(Default)]
 struct ExecutorState {
     workers: HashMap<String, Worker>,
     active_jobs: usize,
     stop_requested: bool,
-}
-
-impl Default for ExecutorState {
-    fn default() -> Self {
-        Self {
-            workers: HashMap::new(),
-            active_jobs: 0,
-            stop_requested: false,
-        }
-    }
 }
 
 #[derive(Clone)]
@@ -357,14 +334,11 @@ impl SerializedExecutorPool {
         F: FnOnce() -> R + Send + 'static,
     {
         let (sender, receiver) = mpsc::channel();
-        let done = Arc::new(AtomicBool::new(false));
-        let tracked_done = Arc::clone(&done);
         let tracker = self.clone();
         let wrapped: Job = Box::new(move || {
             let result =
                 panic::catch_unwind(AssertUnwindSafe(job)).map_err(|_| ExecutorError::Panic);
             let _ = sender.send(result);
-            tracked_done.store(true, Ordering::SeqCst);
             tracker.finish_job();
         });
 
@@ -384,10 +358,9 @@ impl SerializedExecutorPool {
             let mut state = self.state.lock().expect("executor mutex poisoned");
             state.active_jobs = state.active_jobs.saturating_sub(1);
             self.condition.notify_all();
-            done.store(true, Ordering::SeqCst);
             return Err(ExecutorError::WorkerClosed);
         }
-        Ok(ExecutorFuture { receiver, done })
+        Ok(ExecutorFuture { receiver })
     }
 
     pub fn wait_for_idle(&self, timeout: Option<f64>) -> bool {

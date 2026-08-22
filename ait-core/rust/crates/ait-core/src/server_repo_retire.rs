@@ -190,10 +190,6 @@ pub fn project_repo_retire_runtime_blockers(payload: &JsonValue) -> Result<JsonV
     Ok(JsonValue::Object(output))
 }
 
-pub fn project_repo_retire_runtime_blockers_json(payload_json: &str) -> Result<JsonValue, String> {
-    RepoRetireJson::stateless().project_runtime_blockers_json(payload_json)
-}
-
 fn runtime_groups(
     rows: Vec<&JsonMap<String, JsonValue>>,
     kind_key: Option<&str>,

@@ -1,0 +1,30 @@
+GD-05: Beta Release Hardening
+=============================
+
+Turn the working static shooter into a beta-ready artifact while preserving all
+current gameplay and original visual identity. Deliver all of the following:
+
+1. src/replay.js exports REPLAY_SCHEMA_VERSION = 1, encodeReplay(value), and
+   decodeReplay(text). The encoded payload carries the schema version and is
+   deterministic; decoding validates that version and rejects malformed input.
+2. src/settings.js exports SETTINGS_SCHEMA_VERSION = 1 and
+   normalizeSettings(value). The normalized shape contains schemaVersion equal
+   to SETTINGS_SCHEMA_VERSION, volume clamped to 0..1, boolean soundEnabled,
+   and difficulty equal to normal or hard with invalid values defaulting to
+   normal.
+3. src/mobile-input.js exports normalizeTouchInput(value), returning boolean
+   left, right, and fire fields with missing inputs false. The page includes
+   visible left, right, and fire touch controls marked with data-touch-control.
+4. Pause safely on window blur or document visibility loss and recover without
+   advancing simulation time.
+5. Add a visible benchmark panel marked data-benchmark-panel that reports seed,
+   elapsed simulation time, event count, and replay export availability.
+6. Add scripts/release-check.mjs as a dependency-free, non-Python validation
+   command and document it in the repository-root RELEASE.txt.
+
+Keep GameModel and window.__AIT_GAME__ compatible, retain deterministic replay,
+and add focused tests. Do not add a backend, hosted asset, external network
+request, Python file, remote AIT workflow, or ait-server dependency.
+
+Run the project-local and release validation before completing the repository
+workflow.

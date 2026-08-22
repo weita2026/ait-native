@@ -1,0 +1,14 @@
+GD-03: Pause/Resume Replay Divergence
+=====================================
+
+Recorded runs diverge after a pause and resume cycle. Diagnose and repair the
+regression so paused simulation time never advances, gameplay input has no
+effect while paused, and GameModel.replay(model.exportReplay()) converges to the
+original observable state after resuming.
+
+Preserve seeded enemy order, fire cooldown, boss timing, lives, score, browser
+controls, and the existing public GameModel surface. Add or update focused
+tests. Do not add a dependency, backend, hosted asset, network request, Python
+file, or remote AIT workflow.
+
+Run the project-local validation before completing the repository workflow.

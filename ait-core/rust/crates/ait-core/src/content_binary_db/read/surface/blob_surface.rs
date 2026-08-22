@@ -11,14 +11,6 @@ impl<B, const WRITE_LAYOUT: u32> BinaryDbBlobStore<B, WRITE_LAYOUT>
 where
     B: BinaryDb,
 {
-    pub fn read_blob_record(
-        &self,
-        read: &BinaryDbReadTxn<'_, B>,
-        blob_index: u32,
-    ) -> StoreResult<BinaryBlobRecord> {
-        read_blob_record_at::<B, WRITE_LAYOUT>(read, blob_index)
-    }
-
     pub fn blob_view_at(
         &self,
         read: &BinaryDbReadTxn<'_, B>,
@@ -35,36 +27,6 @@ where
         get_blob_view_by_id::<B, WRITE_LAYOUT>(read, blob_id)
     }
 
-    pub fn legacy_physical_blob_index_by_id(
-        &self,
-        read: &BinaryDbReadTxn<'_, B>,
-    ) -> StoreResult<BTreeMap<String, u32>> {
-        let count = read.record_count(Self::blob_file())?;
-        let mut indexes = BTreeMap::new();
-        for blob_index in 0..count {
-            let view = self.blob_view_at(read, blob_index)?;
-            if view.record.is_tombstone() {
-                continue;
-            }
-            let key = view.blob_id.to_ascii_lowercase();
-            if let Some(existing_index) = indexes.get(&key).copied() {
-                let existing = self.blob_view_at(read, existing_index)?;
-                if existing.record.sha256 != view.record.sha256
-                    || existing.size_bytes != view.size_bytes
-                {
-                    return Err(format!(
-                        "legacy physical Blob identity {} has conflicting records {} and {}",
-                        view.blob_id, existing_index, blob_index
-                    )
-                    .into());
-                }
-                continue;
-            }
-            indexes.insert(key, blob_index);
-        }
-        Ok(indexes)
-    }
-
     pub fn read_blob_bytes_for_id(
         &self,
         read: &BinaryDbReadTxn<'_, B>,
@@ -72,22 +34,6 @@ where
     ) -> StoreResult<Option<Vec<u8>>> {
         let mut session = BinaryBlobReadSession::default();
         self.read_blob_bytes_for_id_with_session(read, blob_id, &mut session, 0, None)
-    }
-
-    pub fn read_blob_bytes_for_id_with_legacy_physical_catalog(
-        &self,
-        read: &BinaryDbReadTxn<'_, B>,
-        blob_index_by_id: &BTreeMap<String, u32>,
-        blob_id: &str,
-    ) -> StoreResult<Option<Vec<u8>>> {
-        let mut session = BinaryBlobReadSession::default();
-        self.read_blob_bytes_for_id_with_session(
-            read,
-            blob_id,
-            &mut session,
-            0,
-            Some(blob_index_by_id),
-        )
     }
 
     fn read_blob_bytes_for_id_with_session(

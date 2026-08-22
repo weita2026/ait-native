@@ -64,6 +64,7 @@ pub(super) fn assert_final_snapshot_remote_promotion_contract() -> Result<(), St
             "--remote",
             "origin",
             "--json",
+            "--full",
         ],
     )?;
     let remote_task_land_ms = remote_task_land_started.elapsed().as_secs_f64() * 1_000.0;
@@ -362,6 +363,7 @@ fn create_local_lands(root: &Path, local_land_count: usize) -> Result<LocalLandH
             root,
             &[
                 "task", "start", "--title", &title, "--intent", &intent, "--local", "--json",
+                "--full",
             ],
         )?;
         task_start_ms.push(task_start_started.elapsed().as_secs_f64() * 1_000.0);
@@ -400,7 +402,7 @@ fn create_local_lands(root: &Path, local_land_count: usize) -> Result<LocalLandH
         let local_task_land_started = Instant::now();
         let local_land = json_output(
             &worktree_path,
-            &["task", "land", &change_ref, "--local", "--json"],
+            &["task", "land", &change_ref, "--local", "--json", "--full"],
         )?;
         local_task_land_ms.push(local_task_land_started.elapsed().as_secs_f64() * 1_000.0);
         if string_field(&local_land, "apply_status").as_deref() != Some("done") {

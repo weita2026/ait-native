@@ -1,0 +1,16 @@
+GD-02: Armored Enemy Feature
+============================
+
+Add an original armored enemy while preserving every existing shooter behavior.
+GameModel.spawnEnemy("armored", x) must create a deterministic armored enemy
+with two hit points, an observable visual value of armored, and a score value of
+250. The first one-damage hit leaves it alive with one hit point; the second
+destroys it and awards exactly 250 points. Normal enemies remain one-hit,
+100-point scouts.
+
+Give the armored enemy a clearly distinct canvas appearance, retain seeded
+replay and the current GameModel API, and add focused validation. Do not add a
+dependency, backend, hosted asset, network request, Python file, or remote AIT
+workflow.
+
+Run the project-local validation before completing the repository workflow.

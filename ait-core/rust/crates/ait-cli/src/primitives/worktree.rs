@@ -28,7 +28,9 @@ pub use cleanup::{
 };
 pub(in crate::primitives) use main_seed::*;
 pub use main_seed::{task_ensure_main_seed_mirror, task_resolve_main_seed_mirror_location};
-pub(super) use rebase::{prepare_worktree_rebase, set_local_line_head};
+pub(super) use rebase::{
+    apply_prepared_worktree_rebase, prepare_worktree_rebase_to_snapshot, set_local_line_head,
+};
 pub(in crate::primitives) use rebase::{
     read_worktree_snapshot_blob_bytes, write_workspace_snapshot_row,
 };

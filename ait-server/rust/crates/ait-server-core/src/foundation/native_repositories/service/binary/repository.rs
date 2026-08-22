@@ -23,6 +23,7 @@ where
             default_line: default_main_line(),
             id_namespace_prefix: "BIN".to_string(),
             created_at: now_rfc3339(),
+            pull_catalog_cache: Arc::new(BinaryZstdPullCatalogCache::default()),
         }
     }
 
@@ -33,6 +34,21 @@ where
 
     pub fn db(&self) -> &D {
         &self.db
+    }
+
+    pub fn invalidate_zstd_pull_catalog(&self) -> Result<(), NativeRepositoryError> {
+        let mut current = self.pull_catalog_cache.current.lock().map_err(|_| {
+            NativeRepositoryError::internal("Binary DB pull catalog cache lock is poisoned")
+        })?;
+        *current = None;
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub fn zstd_pull_catalog_build_count_for_test(&self) -> u64 {
+        self.pull_catalog_cache
+            .build_count
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     pub(super) fn repo_name(&self) -> &str {
@@ -107,7 +123,7 @@ where
         })?;
         object.insert(
             REPOSITORY_PACK_STORAGE_PAYLOAD_FIELD.to_string(),
-            binary_repository_pack_storage_payload_json(),
+            binary_repository_pack_storage_payload_json(&self.db)?,
         );
         Ok(payload)
     }
@@ -141,11 +157,7 @@ where
                 self.default_line
             )));
         }
-        if !self.default_line_exists()? {
-            self.content_lines()
-                .create_line(&self.default_line, 0, now_timestamp_s())
-                .map_err(binary_native_repository_store_error)?;
-        }
+        self.ensure_default_line()?;
         self.repository_payload()
     }
 
@@ -415,6 +427,25 @@ where
         self.put_binary_zstd_pack(repo_name, pack_id, pack_bytes, false)
     }
 
+    fn begin_zstd_bulk_pack_upload(
+        &self,
+        repo_name: &str,
+        pack_id: &str,
+        kind: NativeZstdPackKind,
+    ) -> Result<NativeZstdPackUpload, NativeRepositoryError> {
+        self.begin_binary_zstd_pack_upload(repo_name, pack_id, kind)
+    }
+
+    fn finish_zstd_bulk_pack_upload(
+        &self,
+        repo_name: &str,
+        upload: NativeZstdPackUpload,
+        payload_bytes: u64,
+        payload_sha256: &str,
+    ) -> Result<JsonValue, NativeRepositoryError> {
+        self.finish_binary_zstd_pack_upload(repo_name, upload, payload_bytes, payload_sha256)
+    }
+
     fn get_zstd_bulk_object_pack(
         &self,
         repo_name: &str,
@@ -642,8 +673,8 @@ where
                         "duplicate object pack {pack_id} in zstd bulk request"
                     )));
                 }
-                let (index, mutation) = self
-                    .prepare_binary_zstd_pack_from_commit(repo_name, &object, false, &read_set)?;
+                let (index, mutation) =
+                    self.prepare_binary_zstd_pack_from_commit(repo_name, object, false, &read_set)?;
                 object_pack_indexes.insert(pack_id, index);
                 if let Some(mutation) = mutation {
                     metadata_mutations.push(mutation);
@@ -671,7 +702,7 @@ where
                     )));
                 }
                 let (index, mutation) =
-                    self.prepare_binary_zstd_pack_from_commit(repo_name, &object, true, &read_set)?;
+                    self.prepare_binary_zstd_pack_from_commit(repo_name, object, true, &read_set)?;
                 tree_pack_indexes.insert(pack_id, index);
                 if let Some(mutation) = mutation {
                     metadata_mutations.push(mutation);
@@ -700,7 +731,7 @@ where
                 }
                 if let Some(mutation) = self.prepare_binary_zstd_blob_locator(
                     repo_name,
-                    &object,
+                    object,
                     &mut object_pack_indexes,
                     &read_set,
                 )? {
@@ -728,7 +759,7 @@ where
                 }
                 if let Some(mutation) = self.prepare_binary_zstd_tree_locator(
                     repo_name,
-                    &object,
+                    object,
                     &mut tree_pack_indexes,
                     &read_set,
                 )? {
@@ -757,7 +788,7 @@ where
                 }
                 if let Some(mutation) = self.prepare_binary_zstd_snapshot(
                     repo_name,
-                    &object,
+                    object,
                     &mut tree_pack_indexes,
                     &incoming_seen,
                     &read_set,
@@ -945,6 +976,10 @@ where
             let transaction_commit_trace = crate::perfetto_trace::PerfettoRange::new(
                 "ait.server.remote_sync.zstd_commit.transaction_commit",
             );
+            // Clear before the durable commit point while the Content writer
+            // still excludes new readers. Existing readers retain a complete
+            // immutable old catalog; the first later reader builds the new one.
+            self.invalidate_zstd_pull_catalog()?;
             tx.commit().map_err(binary_native_repository_store_error)?;
             #[cfg(feature = "perfetto-tracing")]
             drop(transaction_commit_trace);

@@ -34,6 +34,98 @@ struct CountingReversePathStore {
 }
 
 #[test]
+fn patchset_change_identity_preserves_exact_task_scope() {
+    let exact = json!({
+        "patchset_id": "RT-1/C-01/P-02",
+        "change_id": "C-01",
+        "change_ref": "RT-1/C-01",
+    });
+    assert_eq!(
+        resolve_patchset_change_identity(&exact, "RT-1/C-01/P-02")
+            .expect("exact Patchset identity"),
+        (
+            "C-01".to_string(),
+            "RT-1/C-01".to_string(),
+            Some("RT-1".to_string()),
+        )
+    );
+
+    let derived = json!({
+        "patchset_id": "RT-2/C-03/P-04",
+        "change_id": "C-03",
+    });
+    assert_eq!(
+        resolve_patchset_change_identity(&derived, "RT-2/C-03/P-04")
+            .expect("current-format Patchset identity"),
+        (
+            "C-03".to_string(),
+            "RT-2/C-03".to_string(),
+            Some("RT-2".to_string()),
+        )
+    );
+}
+
+#[test]
+fn patchset_change_identity_rejects_conflicts_and_keeps_legacy_non_short_ids() {
+    let conflict = json!({
+        "patchset_id": "RT-1/C-01/P-01",
+        "change_id": "C-01",
+        "change_ref": "RT-2/C-01",
+    });
+    let error = resolve_patchset_change_identity(&conflict, "RT-1/C-01/P-01")
+        .expect_err("conflicting Patchset scope must fail closed");
+    assert!(error.contains("conflicting owning Change identity"));
+
+    let legacy = json!({
+        "patchset_id": "RP-1",
+        "change_id": "RC-1",
+    });
+    assert_eq!(
+        resolve_patchset_change_identity(&legacy, "RP-1").expect("legacy identity"),
+        ("RC-1".to_string(), "RC-1".to_string(), None)
+    );
+}
+
+#[test]
+fn snapshot_overlay_change_identity_never_emits_an_unscoped_short_lookup() {
+    assert_eq!(
+        overlay_change_reference(&json!({"change_id":"C-01"}).as_object().unwrap().clone())
+            .expect("unscoped legacy provenance"),
+        None
+    );
+    assert_eq!(
+        overlay_change_reference(
+            &json!({"task_id":"RT-1","change_id":"C-01"})
+                .as_object()
+                .unwrap()
+                .clone()
+        )
+        .expect("scoped provenance"),
+        Some("RT-1/C-01".to_string())
+    );
+}
+
+#[test]
+fn current_line_header_prefers_the_selected_line_over_snapshot_authoring_line() {
+    let payload = json!({
+        "target": {
+            "kind": "current_line",
+            "line_name": "main",
+        },
+        "line_name": "feature/task-authoring-line",
+        "resolved_snapshot_id": "SNP-LANDED",
+    });
+    let target = payload["target"].as_object().unwrap();
+    assert_eq!(current_line_target_name(&payload, target), "main");
+
+    let legacy_payload = json!({"line_name": "legacy-line"});
+    assert_eq!(
+        current_line_target_name(&legacy_payload, &JsonMap::new()),
+        "legacy-line"
+    );
+}
+
+#[test]
 fn blame_request_validation_rejects_zero_in_every_line_selector() {
     for request in [
         BlameRequest {

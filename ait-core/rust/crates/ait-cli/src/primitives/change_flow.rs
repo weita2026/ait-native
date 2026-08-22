@@ -11,6 +11,7 @@ mod task_lifecycle;
 
 pub use attestation::{attest_put, attest_show};
 pub use change::change_create;
+pub(in crate::primitives) use change::change_create_for_worktree_bootstrap;
 pub use change::{
     change_close, change_list, change_publish, change_replay, change_revert, change_show,
 };

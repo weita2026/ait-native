@@ -55,42 +55,92 @@ if [ -n "$python_file" ]; then
   exit 1
 fi
 
-cargo test \
-  --manifest-path rust/Cargo.toml \
-  --profile ait-ci \
-  -p ait-core \
-  -p ait-cli \
-  -p ait-agent-core \
-  -p ait-py \
-  --lib \
-  --test server_source_ownership \
-  --test patchset_ci_runner \
-  --no-run
-
-cargo test \
-  --manifest-path rust/Cargo.toml \
-  --profile ait-ci \
-  -p ait-core \
-  --lib \
-  --test server_source_ownership
-
-# Markdown is Plan lineage and is intentionally absent from remote Snapshot
-# materialization. Canonical source still carries the sole protected authority.
-if [ -f "$repo_root/docs/binary_db_v0.md" ]; then
+run_patchset_tests() {
   cargo test \
     --manifest-path rust/Cargo.toml \
     --profile ait-ci \
+    --locked \
+    --all-features \
     -p ait-core \
-    --test binary_db_schema_authority
-else
-  printf '%s\n' "skipping binary_db_schema_authority: lineage-only Markdown is unavailable in this Snapshot"
-fi
+    -p ait-cli \
+    -p ait-agent-core \
+    -p ait-agent-worker \
+    -p ait-benchmark \
+    -p ait-napi \
+    -p ait-py \
+    --lib \
+    --test server_source_ownership \
+    --test patchset_ci_runner \
+    --no-run
 
-cargo test --manifest-path rust/Cargo.toml --profile ait-ci -p ait-cli --lib
-cargo test --manifest-path rust/Cargo.toml --profile ait-ci -p ait-agent-core --lib
-cargo test --manifest-path rust/Cargo.toml --profile ait-ci -p ait-py --lib
-cargo test \
-  --manifest-path rust/Cargo.toml \
-  --profile ait-ci \
-  -p ait-cli \
-  --test patchset_ci_runner
+  cargo test \
+    --manifest-path rust/Cargo.toml \
+    --profile ait-ci \
+    --locked \
+    --all-features \
+    -p ait-core \
+    -p ait-cli \
+    -p ait-agent-core \
+    -p ait-agent-worker \
+    -p ait-benchmark \
+    -p ait-napi \
+    -p ait-py \
+    --lib
+
+  cargo test \
+    --manifest-path rust/Cargo.toml \
+    --profile ait-ci \
+    --locked \
+    --all-features \
+    -p ait-core \
+    -p ait-cli \
+    --test server_source_ownership \
+    --test patchset_ci_runner
+
+  # Markdown is Plan lineage and is intentionally absent from remote Snapshot
+  # materialization. Canonical source still carries the sole protected authority.
+  if [ -f "$repo_root/docs/binary_db_v0.md" ]; then
+    cargo test \
+      --manifest-path rust/Cargo.toml \
+      --profile ait-ci \
+      --locked \
+      -p ait-core \
+      --test binary_db_schema_authority
+  else
+    printf '%s\n' "skipping binary_db_schema_authority: lineage-only Markdown is unavailable in this Snapshot"
+  fi
+}
+
+run_repo_tests() {
+  cargo test \
+    --manifest-path rust/Cargo.toml \
+    --profile ait-ci \
+    --workspace \
+    --all-targets \
+    --all-features \
+    --locked
+}
+
+run_clippy() {
+  cargo clippy \
+    --manifest-path rust/Cargo.toml \
+    --workspace \
+    --all-targets \
+    --all-features \
+    --locked \
+    -- \
+    -D warnings
+}
+
+case "$mode" in
+  patchset)
+    run_patchset_tests
+    ;;
+  repo)
+    run_repo_tests
+    ;;
+  all)
+    run_repo_tests
+    run_clippy
+    ;;
+esac

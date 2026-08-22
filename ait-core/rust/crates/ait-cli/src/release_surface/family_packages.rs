@@ -1598,7 +1598,7 @@ fn assemble_apt(
             )?;
             data_entries.insert(
                 format!("{documentation_root}/copyright"),
-                (debian_copyright(input, distribution, &package_name)?, 0o644),
+                (debian_copyright(input, distribution, package_name)?, 0o644),
             );
             if installs_server_unit
                 && data_entries

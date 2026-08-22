@@ -95,63 +95,6 @@ pub(in crate::foundation::native_repositories) fn validate_pack_id_segment(
     Ok(())
 }
 
-pub(in crate::foundation::native_repositories) fn validate_zstd_pack_index_metadata(
-    index: &JsonValue,
-    object: &JsonMap<String, JsonValue>,
-    pack_id: &str,
-    tree_pack: bool,
-) -> Result<(), NativeRepositoryError> {
-    if index.get("pack_id").and_then(JsonValue::as_str) != Some(pack_id) {
-        return Err(NativeRepositoryError::bad_request(format!(
-            "zstd pack {pack_id} index pack_id mismatch"
-        )));
-    }
-    let expected_format = if tree_pack {
-        TREE_PACK_FORMAT_ZSTD_CHUNKED_V1
-    } else {
-        PACK_FORMAT_ZSTD_CHUNKED_V1
-    };
-    if index.get("pack_format").and_then(JsonValue::as_str) != Some(expected_format) {
-        return Err(NativeRepositoryError::bad_request(format!(
-            "zstd pack {pack_id} index pack_format mismatch"
-        )));
-    }
-    if let Some(expected) = optional_i64_field(
-        object,
-        if tree_pack {
-            "tree_count"
-        } else {
-            "member_count"
-        },
-    )? {
-        let actual = index
-            .get(if tree_pack {
-                "tree_count"
-            } else {
-                "member_count"
-            })
-            .and_then(JsonValue::as_i64)
-            .unwrap_or(-1);
-        if actual != expected {
-            return Err(NativeRepositoryError::bad_request(format!(
-                "zstd pack {pack_id} member count mismatch"
-            )));
-        }
-    }
-    if let Some(expected) = optional_i64_field(object, "total_bytes")? {
-        let actual = index
-            .get("total_bytes")
-            .and_then(JsonValue::as_i64)
-            .unwrap_or(-1);
-        if actual != expected {
-            return Err(NativeRepositoryError::bad_request(format!(
-                "zstd pack {pack_id} total_bytes mismatch"
-            )));
-        }
-    }
-    Ok(())
-}
-
 pub(in crate::foundation::native_repositories) fn validate_object_pack_entry(
     object_pack_indexes: &BTreeMap<String, JsonValue>,
     pack_id: &str,
@@ -264,4 +207,62 @@ pub(in crate::foundation::native_repositories) fn tree_pack_entry_for_root_ordin
                 "Tree pack {pack_id} is missing root entry ordinal {root_entry_ordinal}"
             ))
         })
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+pub(in crate::foundation::native_repositories) fn validate_zstd_pack_index_metadata(
+    index: &JsonValue,
+    object: &JsonMap<String, JsonValue>,
+    pack_id: &str,
+    tree_pack: bool,
+) -> Result<(), NativeRepositoryError> {
+    if index.get("pack_id").and_then(JsonValue::as_str) != Some(pack_id) {
+        return Err(NativeRepositoryError::bad_request(format!(
+            "zstd pack {pack_id} index pack_id mismatch"
+        )));
+    }
+    let expected_format = if tree_pack {
+        TREE_PACK_FORMAT_ZSTD_CHUNKED_V1
+    } else {
+        PACK_FORMAT_ZSTD_CHUNKED_V1
+    };
+    if index.get("pack_format").and_then(JsonValue::as_str) != Some(expected_format) {
+        return Err(NativeRepositoryError::bad_request(format!(
+            "zstd pack {pack_id} index pack_format mismatch"
+        )));
+    }
+    if let Some(expected) = optional_i64_field(
+        object,
+        if tree_pack {
+            "tree_count"
+        } else {
+            "member_count"
+        },
+    )? {
+        let actual = index
+            .get(if tree_pack {
+                "tree_count"
+            } else {
+                "member_count"
+            })
+            .and_then(JsonValue::as_i64)
+            .unwrap_or(-1);
+        if actual != expected {
+            return Err(NativeRepositoryError::bad_request(format!(
+                "zstd pack {pack_id} member count mismatch"
+            )));
+        }
+    }
+    if let Some(expected) = optional_i64_field(object, "total_bytes")? {
+        let actual = index
+            .get("total_bytes")
+            .and_then(JsonValue::as_i64)
+            .unwrap_or(-1);
+        if actual != expected {
+            return Err(NativeRepositoryError::bad_request(format!(
+                "zstd pack {pack_id} total_bytes mismatch"
+            )));
+        }
+    }
+    Ok(())
 }

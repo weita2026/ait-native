@@ -103,87 +103,6 @@ pub struct PlanRecord {
     pub head_summary: Option<PlanHeadSummary>,
 }
 
-pub struct CreatePlanInput<'a> {
-    pub plan_id: &'a str,
-    pub plan_revision_id: &'a str,
-    pub repo_name: &'a str,
-    pub title: &'a str,
-    pub artifact_path: &'a str,
-    pub artifact_selector: Option<&'a str>,
-    pub artifact_heading: &'a str,
-    pub items_json: &'a str,
-    pub artifact_blob_id: Option<&'a str>,
-    pub summary: Option<&'a str>,
-    pub status: &'a str,
-    pub source_kind: &'a str,
-    pub created_by: Option<&'a str>,
-    pub actor_type: &'a str,
-    pub publication_state: &'a str,
-    pub now: &'a str,
-}
-
-pub struct RevisePlanInput<'a> {
-    pub plan_id: &'a str,
-    pub plan_revision_id: &'a str,
-    pub artifact_path: &'a str,
-    pub artifact_selector: Option<&'a str>,
-    pub artifact_heading: &'a str,
-    pub items_json: &'a str,
-    pub artifact_blob_id: Option<&'a str>,
-    pub title: Option<&'a str>,
-    pub summary: Option<&'a str>,
-    pub source_kind: &'a str,
-    pub created_by: Option<&'a str>,
-    pub actor_type: &'a str,
-    pub now: &'a str,
-}
-
-pub struct ClosePlanInput<'a> {
-    pub plan_id: &'a str,
-    pub status: &'a str,
-    pub now: &'a str,
-}
-
-pub struct RekeyPlanInput<'a> {
-    pub plan_id: &'a str,
-    pub new_plan_id: &'a str,
-    pub now: &'a str,
-}
-
-pub struct PublishPlanInput<'a> {
-    pub plan_id: &'a str,
-    pub remote_name: Option<&'a str>,
-    pub published_plan_id: &'a str,
-    pub published_head_revision_id: Option<&'a str>,
-    pub revision_mappings: &'a [(String, String)],
-    pub now: &'a str,
-}
-
-pub trait PlanStore {
-    fn list_plans(&self) -> PlanStoreResult<Vec<PlanRecord>>;
-    fn get_plan(&self, plan_id: &str) -> PlanStoreResult<PlanRecord>;
-    fn list_plan_revisions(&self, plan_id: &str) -> PlanStoreResult<Vec<PlanRevisionRecord>>;
-    fn get_plan_revision(
-        &self,
-        plan_id: &str,
-        plan_revision_id: &str,
-    ) -> PlanStoreResult<PlanRevisionRecord>;
-    fn get_plan_revision_by_id(
-        &self,
-        plan_revision_id: &str,
-    ) -> PlanStoreResult<PlanRevisionRecord>;
-    fn resolve_plan_publish_linkage(
-        &self,
-        plan_id: Option<&str>,
-        plan_revision_id: Option<&str>,
-    ) -> PlanStoreResult<PlanPublishLinkage>;
-    fn create_plan(&self, input: CreatePlanInput<'_>) -> PlanStoreResult<PlanRecord>;
-    fn revise_plan(&self, input: RevisePlanInput<'_>) -> PlanStoreResult<PlanRecord>;
-    fn close_plan(&self, input: ClosePlanInput<'_>) -> PlanStoreResult<PlanRecord>;
-    fn rekey_plan(&self, input: RekeyPlanInput<'_>) -> PlanStoreResult<PlanRecord>;
-    fn mark_plan_published(&self, input: PublishPlanInput<'_>) -> PlanStoreResult<PlanRecord>;
-}
-
 /// Read-only Plan port used by command surfaces that must not acquire a write boundary.
 pub trait PlanReadStore {
     fn list_plans(&self) -> PlanStoreResult<Vec<PlanRecord>>;
@@ -203,46 +122,6 @@ pub trait PlanReadStore {
         plan_id: Option<&str>,
         plan_revision_id: Option<&str>,
     ) -> PlanStoreResult<PlanPublishLinkage>;
-}
-
-impl<S> PlanReadStore for S
-where
-    S: PlanStore + ?Sized,
-{
-    fn list_plans(&self) -> PlanStoreResult<Vec<PlanRecord>> {
-        PlanStore::list_plans(self)
-    }
-
-    fn get_plan(&self, plan_id: &str) -> PlanStoreResult<PlanRecord> {
-        PlanStore::get_plan(self, plan_id)
-    }
-
-    fn list_plan_revisions(&self, plan_id: &str) -> PlanStoreResult<Vec<PlanRevisionRecord>> {
-        PlanStore::list_plan_revisions(self, plan_id)
-    }
-
-    fn get_plan_revision(
-        &self,
-        plan_id: &str,
-        plan_revision_id: &str,
-    ) -> PlanStoreResult<PlanRevisionRecord> {
-        PlanStore::get_plan_revision(self, plan_id, plan_revision_id)
-    }
-
-    fn get_plan_revision_by_id(
-        &self,
-        plan_revision_id: &str,
-    ) -> PlanStoreResult<PlanRevisionRecord> {
-        PlanStore::get_plan_revision_by_id(self, plan_revision_id)
-    }
-
-    fn resolve_plan_publish_linkage(
-        &self,
-        plan_id: Option<&str>,
-        plan_revision_id: Option<&str>,
-    ) -> PlanStoreResult<PlanPublishLinkage> {
-        PlanStore::resolve_plan_publish_linkage(self, plan_id, plan_revision_id)
-    }
 }
 
 pub fn list_plans_with_plan_store<S>(store: &S) -> PlanStoreResult<Vec<PlanRecord>>
@@ -269,17 +148,6 @@ where
     PlanReadStore::list_plan_revisions(store, plan_id)
 }
 
-pub fn get_plan_revision_with_plan_store<S>(
-    store: &S,
-    plan_id: &str,
-    plan_revision_id: &str,
-) -> PlanStoreResult<PlanRevisionRecord>
-where
-    S: PlanReadStore + ?Sized,
-{
-    PlanReadStore::get_plan_revision(store, plan_id, plan_revision_id)
-}
-
 pub fn get_plan_revision_by_id_with_plan_store<S>(
     store: &S,
     plan_revision_id: &str,
@@ -288,67 +156,6 @@ where
     S: PlanReadStore + ?Sized,
 {
     PlanReadStore::get_plan_revision_by_id(store, plan_revision_id)
-}
-
-pub fn resolve_plan_publish_linkage_with_plan_store<S>(
-    store: &S,
-    plan_id: Option<&str>,
-    plan_revision_id: Option<&str>,
-) -> PlanStoreResult<PlanPublishLinkage>
-where
-    S: PlanReadStore + ?Sized,
-{
-    PlanReadStore::resolve_plan_publish_linkage(store, plan_id, plan_revision_id)
-}
-
-pub fn create_plan_with_plan_store<S>(
-    store: &S,
-    input: CreatePlanInput<'_>,
-) -> PlanStoreResult<PlanRecord>
-where
-    S: PlanStore + ?Sized,
-{
-    store.create_plan(input)
-}
-
-pub fn revise_plan_with_plan_store<S>(
-    store: &S,
-    input: RevisePlanInput<'_>,
-) -> PlanStoreResult<PlanRecord>
-where
-    S: PlanStore + ?Sized,
-{
-    store.revise_plan(input)
-}
-
-pub fn close_plan_with_plan_store<S>(
-    store: &S,
-    input: ClosePlanInput<'_>,
-) -> PlanStoreResult<PlanRecord>
-where
-    S: PlanStore + ?Sized,
-{
-    store.close_plan(input)
-}
-
-pub fn rekey_plan_with_plan_store<S>(
-    store: &S,
-    input: RekeyPlanInput<'_>,
-) -> PlanStoreResult<PlanRecord>
-where
-    S: PlanStore + ?Sized,
-{
-    store.rekey_plan(input)
-}
-
-pub fn mark_plan_published_with_plan_store<S>(
-    store: &S,
-    input: PublishPlanInput<'_>,
-) -> PlanStoreResult<PlanRecord>
-where
-    S: PlanStore + ?Sized,
-{
-    store.mark_plan_published(input)
 }
 
 pub fn plan_record_list_json(record: &PlanRecord) -> Value {

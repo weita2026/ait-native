@@ -172,6 +172,30 @@ fn init_repo_with_markdown_revision(
     (repo_tmp, repo)
 }
 
+fn discover_markdown_guard_worktree(
+    repo_root: &Path,
+    worktree_name: &str,
+) -> (PathBuf, RepoRuntime) {
+    let worktree_root = repo_root.join(format!(".{worktree_name}-workspace"));
+    fs::create_dir_all(&worktree_root).expect("worktree root");
+    std::os::unix::fs::symlink(repo_root.join(".ait"), worktree_root.join(".ait"))
+        .expect("symlink shared .ait");
+    fs::write(
+        worktree_root.join(WORKTREE_CONFIG_NAME),
+        json!({
+            "repo_root": repo_root.to_string_lossy(),
+            "workspace_root": worktree_root.to_string_lossy(),
+            "worktree_name": worktree_name,
+            "current_line": format!("feature/{worktree_name}"),
+        })
+        .to_string(),
+    )
+    .expect("worktree config");
+    let repo = RepoRuntime::discover_from_path(&worktree_root).expect("worktree runtime");
+    assert!(repo.is_worktree());
+    (worktree_root, repo)
+}
+
 fn assert_markdown_guard_error(surface: &str, err: String) {
     assert!(
         err.contains("authored Markdown drift"),
@@ -226,6 +250,55 @@ fn planning_only_guard_ignores_legacy_revision_without_blob_evidence() {
 }
 
 #[test]
+fn planning_only_guard_prefers_synced_worktree_markdown_over_stale_root() {
+    let synced = "# Guard\n\nsynced worktree\n";
+    let (repo_tmp, _root_repo) = init_repo_with_tracked_markdown("README.md", synced);
+    let repo_root = repo_tmp.path();
+    fs::write(repo_root.join("README.md"), "# Guard\n\nstale root\n").expect("stale root");
+    let (worktree_root, worktree_repo) =
+        discover_markdown_guard_worktree(repo_root, "rct-synced-markdown");
+    fs::write(worktree_root.join("README.md"), synced).expect("synced worktree markdown");
+
+    guard_no_planning_only_artifact_drift(&worktree_repo, "ait snapshot create")
+        .expect("synced worktree Markdown should take precedence over a stale root copy");
+}
+
+#[test]
+fn planning_only_guard_does_not_let_synced_root_hide_worktree_drift() {
+    let synced = "# Guard\n\nsynced root\n";
+    let (repo_tmp, _root_repo) = init_repo_with_tracked_markdown("README.md", synced);
+    let (worktree_root, worktree_repo) =
+        discover_markdown_guard_worktree(repo_tmp.path(), "rct-dirty-markdown");
+    fs::write(
+        worktree_root.join("README.md"),
+        "# Guard\n\nunsynced worktree\n",
+    )
+    .expect("dirty worktree markdown");
+
+    let err = guard_no_planning_only_artifact_drift(&worktree_repo, "ait snapshot create")
+        .expect_err("a synced root copy must not hide worktree Markdown drift");
+    assert!(
+        err.contains("authored Markdown drift"),
+        "unexpected error: {err}"
+    );
+    assert!(
+        err.contains("ait plan sync README.md"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn planning_only_guard_falls_back_to_synced_root_when_worktree_path_is_absent() {
+    let synced = "# Guard\n\nshared root\n";
+    let (repo_tmp, _root_repo) = init_repo_with_tracked_markdown("README.md", synced);
+    let (_worktree_root, worktree_repo) =
+        discover_markdown_guard_worktree(repo_tmp.path(), "rct-shared-markdown");
+
+    guard_no_planning_only_artifact_drift(&worktree_repo, "ait snapshot create")
+        .expect("an absent worktree path should fall back to the synced root artifact");
+}
+
+#[test]
 fn markdown_drift_blocks_requested_mutating_workflow_surfaces() {
     let (repo_tmp, repo) = init_repo_with_tracked_markdown("docs/guard.md", "# Guard\n");
     fs::write(
@@ -236,12 +309,20 @@ fn markdown_drift_blocks_requested_mutating_workflow_surfaces() {
 
     assert_markdown_guard_error(
         "snapshot create",
-        snapshot_create(&repo, Some("blocked")).expect_err("snapshot should block"),
+        snapshot_create_in_current_workspace(&repo, Some("blocked"))
+            .expect_err("snapshot should block"),
     );
     assert_markdown_guard_error(
         "task start initial change",
-        change_create(&repo, "RCT-GUARD", "blocked", Some("main"), false, None)
-            .expect_err("initial change creation should block"),
+        crate::primitives::change_flow::change_create_for_worktree_bootstrap(
+            &repo,
+            "RCT-GUARD",
+            "blocked",
+            Some("main"),
+            false,
+            None,
+        )
+        .expect_err("initial change creation should block"),
     );
     assert_markdown_guard_error(
         "change close",

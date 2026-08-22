@@ -20,47 +20,6 @@ fn http_config() -> PlanHttpClientConfig {
     }
 }
 
-fn current_inventory() -> RemoteSyncSnapshotInventory {
-    RemoteSyncSnapshotInventory::from_pack_formats(
-        ["SNP-1"],
-        [PACK_FORMAT_ZSTD_CHUNKED_V1],
-        [TREE_PACK_FORMAT_ZSTD_CHUNKED_V1],
-    )
-}
-
-#[test]
-fn remote_sync_selects_current_zstd_backend() {
-    let negotiated = negotiate_remote_sync_backend(
-        &current_inventory(),
-        &RemoteSyncCapabilities::with_zstd_pack_bulk(),
-    )
-    .expect("current inventory and capability negotiate");
-
-    assert_eq!(negotiated.backend, RemoteSyncBackendKind::ZstdPackBulk);
-    assert_eq!(
-        negotiated.reason,
-        "local_inventory_and_remote_support_zstd_pack_bulk"
-    );
-}
-
-#[test]
-fn remote_sync_rejects_unknown_pack_format_and_missing_capability() {
-    let unknown = RemoteSyncSnapshotInventory::from_pack_formats(
-        ["SNP-1"],
-        ["unknown-object"],
-        ["unknown-tree"],
-    );
-    let format_error =
-        negotiate_remote_sync_backend(&unknown, &RemoteSyncCapabilities::with_zstd_pack_bulk())
-            .expect_err("unknown local formats fail closed");
-    assert!(format_error.contains("Unsupported object pack format"));
-
-    let capability_error =
-        negotiate_remote_sync_backend(&current_inventory(), &RemoteSyncCapabilities::default())
-            .expect_err("the remote must advertise the current backend");
-    assert!(capability_error.contains(REMOTE_SYNC_CAPABILITY_ZSTD_PACK_BULK));
-}
-
 #[test]
 fn current_remote_capabilities_parse_from_repository_and_health_shapes() {
     let direct = RemoteSyncCapabilities::from_server_payload(Some(&json!({

@@ -169,6 +169,87 @@ fn native_task_complete_local_cli_surface_is_removed() {
 }
 
 #[test]
+fn compact_agent_action_json_drives_the_complete_local_task_loop() {
+    let temp = init_repo("https://example.test");
+    let root = temp.path();
+
+    let started = compact_json_output(
+        root,
+        &[
+            "task",
+            "start",
+            "--local",
+            "--title",
+            "Compact agent action",
+            "--intent",
+            "exercise compact JSON through local land",
+            "--json",
+        ],
+    );
+    assert_eq!(started["contract"], "ait-agent-action/v1");
+    assert_eq!(started["command"], "task.start");
+    assert_eq!(started["task_id"], "LT-0001");
+    assert_eq!(started["change_ref"], "LT-0001/C-01");
+    let edit_root = PathBuf::from(
+        started["edit_root"]
+            .as_str()
+            .expect("compact Task start physical edit root"),
+    );
+    assert!(edit_root.is_dir());
+    assert!(started["next_action"]["command"]
+        .as_str()
+        .is_some_and(|command| command.contains(edit_root.to_string_lossy().as_ref())));
+    assert!(encode_json_pretty(&started).len() < 1_500);
+
+    write_file(
+        &edit_root.join("src/compact_agent_action.rs"),
+        "pub fn compact_agent_action() -> bool { true }\n",
+    );
+    let snapshot = compact_json_output(
+        &edit_root,
+        &[
+            "snapshot",
+            "create",
+            "--message",
+            "compact action snapshot",
+            "--json",
+        ],
+    );
+    assert_eq!(snapshot["contract"], "ait-agent-action/v1");
+    assert_eq!(snapshot["command"], "snapshot.create");
+    assert!(snapshot["snapshot_id"].as_str().is_some());
+    assert!(snapshot.get("files").is_none());
+    assert!(encode_json_pretty(&snapshot).len() < 900);
+
+    let landed = compact_json_output(
+        &edit_root,
+        &["task", "land", "LT-0001", "--local", "--json"],
+    );
+    assert_eq!(landed["contract"], "ait-agent-action/v1");
+    assert_eq!(landed["command"], "task.land");
+    assert_eq!(landed["ok"], true);
+    assert_eq!(landed["task_id"], "LT-0001");
+    assert_eq!(landed["change_ref"], "LT-0001/C-01");
+    assert_eq!(landed["closeout"]["status"], "complete_unbound");
+    assert!(landed["next_action"].is_null());
+    assert!(landed.get("task").is_none());
+    assert!(encode_json_pretty(&landed).len() < 1_500);
+
+    let status = compact_json_output(root, &["status", "--json"]);
+    assert_eq!(status["contract"], "ait-agent-action/v1");
+    assert_eq!(status["command"], "status");
+    assert_eq!(status["line_name"], "main");
+    assert_eq!(status["workspace"]["dirty"], false);
+    assert!(status.get("snapshot_count").is_none());
+    assert!(encode_json_pretty(&status).len() < 1_200);
+
+    let full_status = json_output(root, &["status", "--json"]);
+    assert_eq!(full_status["current_line"], "main");
+    assert!(full_status["snapshot_count"].as_u64().is_some());
+    assert!(full_status.get("contract").is_none());
+}
+
+#[test]
 fn native_task_start_local_scope_creates_authoritative_rows_and_worktree() {
     let temp = init_repo("https://example.test");
     let root = temp.path();
@@ -608,6 +689,96 @@ fn native_remote_task_start_from_uses_one_atomic_mutation_and_no_legacy_posts() 
         })
         .unwrap();
     assert!(commit_index < atomic_index);
+}
+
+#[test]
+fn native_remote_task_start_from_initializes_empty_base_before_atomic_task_change() {
+    let (base_url, log, state, handle) = spawn_fake_remote();
+    let temp = init_repo(&base_url);
+    let root = temp.path();
+    let local_head_before = local_line_head(root, "main");
+    let config_path = root.join(".ait/config.json");
+    let config = fs::read_to_string(&config_path)
+        .unwrap()
+        .replace(r#""sprint": "off""#, r#""sprint": "on""#)
+        .replace(
+            r#""plan_task_binding": {"mode": "off"}"#,
+            r#""plan_task_binding": {"mode": "required"}"#,
+        );
+    write_file(&config_path, &config);
+    write_file(
+        &root.join("docs/sprints/atomic-empty-start.md"),
+        r#"# Atomic Empty Start [plan-ref: atomic-empty-start]
+
+- [ ] Start the first remote Task from a real empty anchor. [ref: atomic-empty-start/implement]
+"#,
+    );
+
+    let payload = json_output(
+        root,
+        &[
+            "task",
+            "start",
+            "--from",
+            "docs/sprints/atomic-empty-start.md#atomic-empty-start/implement",
+            "--intent",
+            "Initialize the empty remote Line before atomic Task and Change creation",
+            "--json",
+        ],
+    );
+
+    let anchor_snapshot_id = payload["change"]["fork_snapshot_id"]
+        .as_str()
+        .expect("atomic Change must fork from the empty anchor");
+    assert_eq!(payload["task_id"], "RT-ATOMIC");
+    assert_eq!(
+        payload["worktree"]["fork_snapshot_id"].as_str(),
+        Some(anchor_snapshot_id)
+    );
+    assert_eq!(
+        payload["worktree"]["head_snapshot_id"].as_str(),
+        Some(anchor_snapshot_id)
+    );
+    assert_eq!(local_line_head(root, "main"), local_head_before);
+    assert_eq!(
+        state.lock().unwrap().remote_head_snapshot_id.as_deref(),
+        Some(anchor_snapshot_id)
+    );
+    let worktree = PathBuf::from(payload["worktree"]["open_path"].as_str().unwrap());
+    assert!(!worktree.join("src/lib.rs").exists());
+
+    handle.join().unwrap();
+    let logged = log.lock().unwrap().clone();
+    let commit_index = logged
+        .iter()
+        .position(|row| {
+            row.method == "POST"
+                && row.url
+                    == "/v1/native/repository-authorities/7/remote-sync/zstd-bulk/commit"
+        })
+        .expect("expected empty-base zstd commit");
+    let atomic_index = logged
+        .iter()
+        .position(|row| {
+            row.method == "POST"
+                && row.url == "/v1/native/repository-authorities/7/task-start"
+        })
+        .expect("expected atomic Task start");
+    assert!(commit_index < atomic_index);
+    let commit = parse_json(&logged[commit_index].body);
+    assert_eq!(
+        commit["line_update"]["head_snapshot_id"].as_str(),
+        Some(anchor_snapshot_id)
+    );
+    assert!(commit["line_update"]["expected_head_snapshot_id"].is_null());
+    assert_eq!(commit["snapshots"][0]["file_count"].as_i64(), Some(0));
+    assert_eq!(commit["snapshots"][0]["parent_snapshot_ids"], json!([]));
+    assert!(!logged.iter().any(|row| {
+        row.method == "POST" && row.url == "/v1/native/repository-authorities/7/tasks"
+    }));
+    assert!(!logged.iter().any(|row| {
+        row.method == "POST" && row.url == "/v1/native/repository-authorities/7/changes"
+    }));
 }
 
 #[test]
@@ -1149,7 +1320,7 @@ fn native_task_start_uses_remote_base_when_remote_line_is_ahead() {
 }
 
 #[test]
-fn native_task_start_preserves_an_empty_remote_base_when_local_main_has_a_head() {
+fn native_task_start_bootstraps_an_empty_remote_base_without_borrowing_local_main() {
     let (base_url, log, _state, handle) = spawn_fake_remote();
     let temp = init_repo(&base_url);
     let root = temp.path();
@@ -1168,29 +1339,83 @@ fn native_task_start_preserves_an_empty_remote_base_when_local_main_has_a_head()
         ],
     );
 
-    assert!(payload["change"]["fork_snapshot_id"].is_null());
-    assert!(payload["worktree"]["fork_snapshot_id"].is_null());
-    assert!(payload["worktree"]["head_snapshot_id"].is_null());
+    let anchor_snapshot_id = payload["change"]["fork_snapshot_id"]
+        .as_str()
+        .expect("remote Change must fork from the empty anchor");
+    assert_eq!(
+        payload["worktree"]["fork_snapshot_id"].as_str(),
+        Some(anchor_snapshot_id)
+    );
+    assert_eq!(
+        payload["worktree"]["head_snapshot_id"].as_str(),
+        Some(anchor_snapshot_id)
+    );
     assert_eq!(
         local_line_head(root, "main"),
         local_head_before,
-        "empty Remote Task start must not move or borrow local main",
+        "empty-base bootstrap must not move or borrow local main",
     );
     let worktree = PathBuf::from(payload["worktree"]["open_path"].as_str().unwrap());
     assert!(
         !worktree.join("src/lib.rs").exists(),
-        "empty Remote base must materialize an empty authoring tree",
+        "the zero-file Remote anchor must materialize an empty authoring tree",
     );
 
     handle.join().unwrap();
     let logged = log.lock().unwrap().clone();
+    let zstd_commit_index = logged
+        .iter()
+        .position(|row| {
+            row.method == "POST"
+                && row.url
+                    == "/v1/native/repository-authorities/7/remote-sync/zstd-bulk/commit"
+        })
+        .expect("expected atomic empty-base zstd commit");
+    let task_create_index = logged
+        .iter()
+        .position(|row| {
+            row.method == "POST" && row.url == "/v1/native/repository-authorities/7/tasks"
+        })
+        .expect("expected Task create");
+    let change_create_index = logged
+        .iter()
+        .position(|row| {
+            row.method == "POST" && row.url == "/v1/native/repository-authorities/7/changes"
+        })
+        .expect("expected Change create");
+    assert!(zstd_commit_index < task_create_index);
+    assert!(zstd_commit_index < change_create_index);
+    let zstd_commit = parse_json(&logged[zstd_commit_index].body);
+    assert_eq!(
+        zstd_commit["line_update"]["line_name"].as_str(),
+        Some("main")
+    );
+    assert_eq!(
+        zstd_commit["line_update"]["head_snapshot_id"].as_str(),
+        Some(anchor_snapshot_id)
+    );
+    assert!(zstd_commit["line_update"]["expected_head_snapshot_id"].is_null());
+    let committed_anchor = zstd_commit["snapshots"]
+        .as_array()
+        .and_then(|rows| rows.first())
+        .expect("empty anchor Snapshot commit row");
+    assert_eq!(
+        committed_anchor["snapshot_id"].as_str(),
+        Some(anchor_snapshot_id)
+    );
+    assert_eq!(committed_anchor["file_count"].as_i64(), Some(0));
+    assert_eq!(committed_anchor["total_bytes"].as_i64(), Some(0));
+    assert_eq!(committed_anchor["parent_snapshot_ids"], json!([]));
     let change_create = logged
         .iter()
         .find(|row| {
             row.method == "POST" && row.url == "/v1/native/repository-authorities/7/changes"
         })
         .unwrap();
-    assert!(parse_json(&change_create.body)["fork_snapshot_id"].is_null());
+    assert_eq!(
+        parse_json(&change_create.body)["fork_snapshot_id"].as_str(),
+        Some(anchor_snapshot_id)
+    );
 }
 
 #[test]

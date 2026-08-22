@@ -70,9 +70,7 @@ impl SchedulerPolicy {
     ) -> Self {
         let host_cpu_cores = host_cpu_cores.max(1);
         let reserved_local_cpu_cores = match posture {
-            SchedulerDeploymentPosture::LocalCoResident => {
-                DEFAULT_LOCAL_RESERVED_CPU_CORES.min(host_cpu_cores.saturating_sub(1))
-            }
+            SchedulerDeploymentPosture::LocalCoResident => DEFAULT_LOCAL_RESERVED_CPU_CORES,
             SchedulerDeploymentPosture::DedicatedServer => 0,
         };
         let global_cpu_tokens = host_cpu_cores
@@ -508,6 +506,7 @@ fn content_gc_spec(payload: &JsonMap<String, JsonValue>) -> Result<SchedulerJobS
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn ci_spec(
     job_kind: &str,
     job_class: SchedulerJobClass,

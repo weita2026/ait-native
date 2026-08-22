@@ -14,16 +14,47 @@ fn ait_cli() -> assert_cmd::Command {
 }
 
 fn run_json(root: &Path, args: &[&str]) -> JsonValue {
+    let mut effective_args = args.to_vec();
+    let command = args.first().copied();
+    let subcommand = args.get(1).copied();
+    let complete_action_receipt = command == Some("status")
+        || (command == Some("task") && (subcommand == Some("start") || subcommand == Some("land")))
+        || (command == Some("snapshot") && subcommand == Some("create"));
+    if complete_action_receipt && args.contains(&"--json") && !args.contains(&"--full") {
+        effective_args.push("--full");
+    }
     let mut cmd = ait_cli();
     let output = cmd
         .current_dir(root)
-        .args(args)
+        .args(&effective_args)
         .assert()
         .success()
         .get_output()
         .stdout
         .clone();
     JsonCodec::parse_slice_with_error_prefix(&output, "Invalid CLI JSON").unwrap()
+}
+
+fn init_authoring_worktree(root: &Path) -> std::path::PathBuf {
+    run_json(root, &["init", "--json"]);
+    run_json(root, &["config", "set", "--sprint", "off", "--json"]);
+    let started = run_json(
+        root,
+        &[
+            "task",
+            "start",
+            "--title",
+            "fixture authoring",
+            "--intent",
+            "fixture authoring",
+            "--json",
+        ],
+    );
+    std::path::PathBuf::from(
+        started["worktree"]["path"]
+            .as_str()
+            .expect("task start worktree path"),
+    )
 }
 
 fn write_base(path: &Path) {
@@ -46,11 +77,15 @@ fn write_update(path: &Path) {
 fn gc_binary_runtime_exposes_only_supported_maintenance_operations() {
     let temp = TempDir::new().unwrap();
     let root = temp.path();
-    let app = root.join("app.txt");
+    let worktree = init_authoring_worktree(root);
+    let worktree = worktree.as_path();
+    let app = worktree.join("app.txt");
     write_base(&app);
 
-    run_json(root, &["init", "--json"]);
-    run_json(root, &["snapshot", "create", "--message", "base", "--json"]);
+    run_json(
+        worktree,
+        &["snapshot", "create", "--message", "base", "--json"],
+    );
 
     let validate = run_json(root, &["gc", "validate", "--json"]);
     assert_eq!(validate["state"], "packed_full_only");
@@ -59,7 +94,7 @@ fn gc_binary_runtime_exposes_only_supported_maintenance_operations() {
 
     write_update(&app);
     run_json(
-        root,
+        worktree,
         &["snapshot", "create", "--message", "update", "--json"],
     );
 
@@ -125,9 +160,12 @@ fn gc_binary_runtime_exposes_only_supported_maintenance_operations() {
 fn gc_validate_emits_attention_result_before_returning_failure() {
     let temp = TempDir::new().unwrap();
     let root = temp.path();
-    fs::write(root.join("app.txt"), "content requiring a pack\n").unwrap();
-    run_json(root, &["init", "--json"]);
-    run_json(root, &["snapshot", "create", "--message", "base", "--json"]);
+    let worktree = init_authoring_worktree(root);
+    fs::write(worktree.join("app.txt"), "content requiring a pack\n").unwrap();
+    run_json(
+        worktree.as_path(),
+        &["snapshot", "create", "--message", "base", "--json"],
+    );
 
     let pack_path = fs::read_dir(root.join(".ait/objects/packs"))
         .unwrap()
@@ -152,4 +190,48 @@ fn gc_validate_emits_attention_result_before_returning_failure() {
     assert!(payload["issues"]
         .as_array()
         .is_some_and(|issues| !issues.is_empty()));
+}
+
+#[test]
+fn task_governed_repo_root_rejects_authoring_surfaces() {
+    let temp = TempDir::new().unwrap();
+    let root = temp.path();
+    let worktree = init_authoring_worktree(root);
+    fs::write(worktree.join("seed.txt"), "seed\n").unwrap();
+    run_json(
+        worktree.as_path(),
+        &["snapshot", "create", "--message", "seed", "--json"],
+    );
+
+    let task_line = run_json(worktree.as_path(), &["status", "--json"])["current_line"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // Any Task adopts governance: the repo root stops being an authoring surface.
+    fs::write(root.join("root.txt"), "root drift\n").unwrap();
+    for args in [
+        vec!["snapshot", "create", "--message", "root", "--json"],
+        vec!["stash", "save", "--message", "root", "--json"],
+        vec!["line", "merge", task_line.as_str(), "--json"],
+        vec!["change", "create", "LT-0001", "--title", "root", "--json"],
+    ] {
+        let output = ait_cli()
+            .current_dir(root)
+            .args(&args)
+            .assert()
+            .failure()
+            .get_output()
+            .stderr
+            .clone();
+        let error = String::from_utf8(output).unwrap();
+        assert!(
+            error.contains("not an authoring workspace once tasks govern")
+                || error.contains("requires a task-bound worktree")
+                || error.contains("pinned to bound worktree"),
+            "root authoring should fail closed for `{}`, got: {error}",
+            args.join(" ")
+        );
+    }
+    fs::remove_file(root.join("root.txt")).unwrap();
 }

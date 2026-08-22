@@ -228,6 +228,13 @@ pub fn worktree_rebase(
     onto_line_name: Option<&str>,
 ) -> Result<JsonValue, String> {
     let prepared = prepare_worktree_rebase(repo, name, onto_line_name, false)?;
+    apply_prepared_worktree_rebase(repo, prepared)
+}
+
+pub(in crate::primitives) fn apply_prepared_worktree_rebase(
+    repo: &RepoRuntime,
+    prepared: PreparedWorktreeRebase,
+) -> Result<JsonValue, String> {
     let workspace = worktree_get(repo, Some(&prepared.worktree_name), true)?;
     if !workspace
         .get("clean")
@@ -957,6 +964,37 @@ pub(in crate::primitives) fn prepare_worktree_rebase(
     onto_line_name: Option<&str>,
     allow_conflicted_state: bool,
 ) -> Result<PreparedWorktreeRebase, String> {
+    prepare_worktree_rebase_with_target_snapshot(
+        repo,
+        name,
+        onto_line_name,
+        None,
+        allow_conflicted_state,
+    )
+}
+
+pub(in crate::primitives) fn prepare_worktree_rebase_to_snapshot(
+    repo: &RepoRuntime,
+    name: Option<&str>,
+    onto_line_name: &str,
+    authoritative_target_snapshot_id: &str,
+) -> Result<PreparedWorktreeRebase, String> {
+    prepare_worktree_rebase_with_target_snapshot(
+        repo,
+        name,
+        Some(onto_line_name),
+        Some(authoritative_target_snapshot_id),
+        false,
+    )
+}
+
+fn prepare_worktree_rebase_with_target_snapshot(
+    repo: &RepoRuntime,
+    name: Option<&str>,
+    onto_line_name: Option<&str>,
+    authoritative_target_snapshot_id: Option<&str>,
+    allow_conflicted_state: bool,
+) -> Result<PreparedWorktreeRebase, String> {
     guard_no_active_line_merge(repo, name, "rebasing the worktree")?;
     let worktree_name = resolve_runtime_worktree_name(repo, name)?;
     let metadata = worktree_metadata_with_defaults(&load_worktree_metadata(repo, &worktree_name)?);
@@ -979,8 +1017,23 @@ pub(in crate::primitives) fn prepare_worktree_rebase(
         .ok_or_else(|| {
             format!("Worktree {worktree_name} has no target base line. Pass --onto <line>.")
         })?;
-    let new_base_snapshot_id = local_line_head_snapshot_id(repo, &onto_line_name)?
-        .ok_or_else(|| format!("Base line {onto_line_name} has no head snapshot."))?;
+    let new_base_snapshot_id = match authoritative_target_snapshot_id {
+        Some(snapshot_id) => {
+            let snapshot_id = normalized_text(Some(snapshot_id)).ok_or_else(|| {
+                format!(
+                    "Authoritative remote base line {onto_line_name} has no head Snapshot. Refresh workflow state before publishing."
+                )
+            })?;
+            if !remote_sync_snapshot_content_complete_for_repo(repo, &snapshot_id)? {
+                return Err(format!(
+                    "Authoritative remote base Snapshot {snapshot_id} for line {onto_line_name} is not locally complete. Refresh or hydrate the remote workflow state before publishing."
+                ));
+            }
+            snapshot_id
+        }
+        None => local_line_head_snapshot_id(repo, &onto_line_name)?
+            .ok_or_else(|| format!("Base line {onto_line_name} has no head snapshot."))?,
+    };
     let registered_fork_snapshot_id = metadata_string(&metadata, "fork_snapshot_id");
     let mut old_base_snapshot_id = registered_fork_snapshot_id
         .clone()
@@ -1245,6 +1298,105 @@ mod selected_binary_line_tests {
         (temp, repo)
     }
 
+    #[cfg(unix)]
+    fn authoritative_rebase_fixture() -> (
+        TempDir,
+        RepoRuntime,
+        RepoRuntime,
+        String,
+        String,
+        String,
+        String,
+    ) {
+        let (temp, root_repo) = binary_snapshot_repo();
+        let root = root_repo.workspace_root();
+        let snapshot_store = root_repo
+            .local_snapshot_operation_store::<SNAPSHOT_BINARY_DB_WRITE_LAYOUT>(&root)
+            .expect("root snapshot store");
+
+        write_file(&root.join("base.txt"), "base\n");
+        let base = snapshot_store
+            .create_snapshot("fixture-ait", "main", Some("base"), false)
+            .expect("base snapshot");
+        let base_id = required_string_field(&base, "snapshot_id").expect("base id");
+
+        write_file(&root.join("remote.txt"), "remote authority\n");
+        let remote = snapshot_store
+            .create_snapshot("fixture-ait", "main", Some("remote target"), false)
+            .expect("remote target snapshot");
+        let remote_id = required_string_field(&remote, "snapshot_id").expect("remote id");
+
+        root_repo
+            .binary_db_stores::<SNAPSHOT_BINARY_DB_WRITE_LAYOUT>()
+            .lines()
+            .set_line_head("main", Some(&base_id), "2026-07-08T00:00:01Z")
+            .expect("reset local main");
+        fs::remove_file(root.join("remote.txt")).expect("remove remote-only file");
+        write_file(&root.join("local.txt"), "local authority\n");
+        let local = snapshot_store
+            .create_snapshot("fixture-ait", "main", Some("local target"), false)
+            .expect("local target snapshot");
+        let local_id = required_string_field(&local, "snapshot_id").expect("local id");
+
+        let worktree_name = "remote-task";
+        let feature_line = "feature/remote-task";
+        root_repo
+            .binary_db_stores::<SNAPSHOT_BINARY_DB_WRITE_LAYOUT>()
+            .lines()
+            .create_line(feature_line, Some(&base_id), "2026-07-08T00:00:02Z")
+            .expect("feature line");
+        let worktree_root = root.join("managed").join(worktree_name);
+        fs::create_dir_all(&worktree_root).expect("worktree root");
+        std::os::unix::fs::symlink(root.join(".ait"), worktree_root.join(".ait"))
+            .expect("shared .ait");
+        write_file(
+            &worktree_root.join(".ait-worktree.json"),
+            &json!({
+                "repo_root": root,
+                "workspace_root": worktree_root,
+                "worktree_name": worktree_name,
+                "current_line": feature_line,
+                "materialized_snapshot_id": base_id,
+            })
+            .to_string(),
+        );
+        write_file(&worktree_root.join("base.txt"), "base\n");
+        fs::create_dir_all(root.join(".ait/worktrees")).expect("worktree registry");
+        write_file(
+            &root.join(".ait/worktrees/remote-task.json"),
+            &json!({
+                "name": worktree_name,
+                "path": worktree_root,
+                "repo_root": root,
+                "line_name": feature_line,
+                "fork_snapshot_id": base_id,
+                "forked_from_line": "main",
+                "target_base_line": "main",
+                "rebase_state": "idle",
+                "rebase_conflict_paths": [],
+                "created_at": "2026-07-08T00:00:02Z",
+            })
+            .to_string(),
+        );
+        let worktree_repo =
+            RepoRuntime::discover_from_path(&worktree_root).expect("worktree runtime");
+        write_file(&worktree_root.join("feature.txt"), "feature\n");
+        let feature = snapshot_create_in_current_workspace(&worktree_repo, Some("feature"))
+            .expect("feature snapshot");
+        let feature_id =
+            required_string_field(&feature, "snapshot_id").expect("feature snapshot id");
+
+        (
+            temp,
+            root_repo,
+            worktree_repo,
+            base_id,
+            remote_id,
+            local_id,
+            feature_id,
+        )
+    }
+
     #[test]
     fn divergent_registered_fork_rewrites_equal_recovered_base_ancestry() {
         assert!(requires_same_base_ancestry_rewrite(
@@ -1275,6 +1427,81 @@ mod selected_binary_line_tests {
             "SNP-FEATURE",
             "SNP-MAIN",
         ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn authoritative_target_rebase_ignores_divergent_local_line_and_applies_one_prepared_plan() {
+        let (_temp, root_repo, worktree_repo, base_id, remote_id, local_id, feature_id) =
+            authoritative_rebase_fixture();
+
+        let metadata_before = fs::read(
+            root_repo
+                .workspace_root()
+                .join(".ait/worktrees/remote-task.json"),
+        )
+        .expect("metadata before missing target");
+        let missing =
+            prepare_worktree_rebase_to_snapshot(&worktree_repo, None, "main", "SNP-000000000000")
+                .expect_err("missing authoritative target must fail closed");
+        assert!(missing.contains("is not locally complete"), "{missing}");
+        assert_eq!(
+            fs::read(
+                root_repo
+                    .workspace_root()
+                    .join(".ait/worktrees/remote-task.json")
+            )
+            .expect("metadata after missing target"),
+            metadata_before
+        );
+
+        let manual = prepare_worktree_rebase(&worktree_repo, None, Some("main"), false)
+            .expect("manual local rebase preparation");
+        assert_eq!(manual.new_base_snapshot_id, local_id);
+
+        let prepared =
+            prepare_worktree_rebase_to_snapshot(&worktree_repo, None, "main", &remote_id)
+                .expect("authoritative remote rebase preparation");
+        assert_eq!(prepared.old_base_snapshot_id, base_id);
+        assert_eq!(prepared.old_head_snapshot_id, feature_id);
+        assert_eq!(prepared.new_base_snapshot_id, remote_id);
+
+        let applied = apply_prepared_worktree_rebase(&worktree_repo, prepared)
+            .expect("apply authoritative prepared rebase");
+        assert_eq!(applied["rebase"]["status"], json!("applied"));
+        let rebased_id = required_string_field(&applied["rebase"], "new_head_snapshot_id")
+            .expect("rebased head");
+        assert_eq!(
+            root_repo
+                .binary_db_stores::<SNAPSHOT_BINARY_DB_WRITE_LAYOUT>()
+                .lines()
+                .line_by_name("main")
+                .expect("read local main")
+                .expect("local main")
+                .head_snapshot_id
+                .as_deref(),
+            Some(local_id.as_str()),
+        );
+        let rebased = snapshot_show(&worktree_repo, &rebased_id).expect("rebased snapshot");
+        assert_eq!(rebased["parent_snapshot_id"], json!(remote_id));
+        let paths = worktree_repo
+            .local_snapshot_operation_store::<SNAPSHOT_BINARY_DB_WRITE_LAYOUT>(
+                &worktree_repo.workspace_root(),
+            )
+            .expect("rebased snapshot store")
+            .snapshot_tree_file_rows(Some(&rebased_id))
+            .expect("rebased files")
+            .into_iter()
+            .map(|row| row.path)
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            paths,
+            BTreeSet::from([
+                "base.txt".to_string(),
+                "feature.txt".to_string(),
+                "remote.txt".to_string(),
+            ])
+        );
     }
 
     #[test]

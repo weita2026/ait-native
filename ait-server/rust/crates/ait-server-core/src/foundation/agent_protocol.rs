@@ -49,10 +49,6 @@ pub fn agent_server_protocol_version() -> &'static str {
     AgentProtocolJson::stateless().protocol_version()
 }
 
-pub fn agent_server_supported_job_kinds() -> Vec<String> {
-    AgentProtocolJson::stateless().supported_job_kinds()
-}
-
 pub fn agent_server_protocol_schema_json() -> JsonValue {
     AgentProtocolJson::stateless().schema_json()
 }

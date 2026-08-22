@@ -193,26 +193,7 @@ fn repository_pack_storage_json_wrapper_owns_pack_storage_payload_shape() {
 }
 
 #[test]
-fn new_empty_repository_pack_storage_payload_is_zstd_only() {
-    let inventory = RepositoryPackInventory::new("repo");
-    let payload =
-        RepositoryPackStoragePayload::from_inventory(&inventory).expect("storage payload");
-
-    assert!(payload.zstd_only_verified);
-    assert!(payload.requires_zstd_remote_sync);
-    assert_eq!(payload.object_pack_format, PackFormatKind::ZstdChunkedV1);
-    assert_eq!(
-        payload.tree_pack_format,
-        TreePackFormatKind::ZstdChunkedTreeV1
-    );
-    assert_eq!(
-        payload.validation.state,
-        RepositoryPackStorageValidationState::Valid
-    );
-}
-
-#[test]
-fn remote_repository_payload_missing_pack_storage_defaults_to_current_format() {
+fn remote_repository_payload_distinguishes_missing_from_verified_empty_storage() {
     let repository = json!({
         "repo_name": "repo",
         "repo_id": "REPO-1",
@@ -220,38 +201,37 @@ fn remote_repository_payload_missing_pack_storage_defaults_to_current_format() {
     });
 
     let storage = RepositoryPackStoragePayload::from_repository_payload(Some(&repository))
-        .expect("missing pack_storage should default");
-    assert_eq!(storage, RepositoryPackStoragePayload::current_default());
+        .expect("missing pack_storage should remain readable");
+    assert_eq!(storage, None);
 
-    let normalized = repository_payload_with_pack_storage_default(repository)
-        .expect("repository payload should normalize");
-    let normalized_storage =
-        RepositoryPackStoragePayload::from_repository_payload(Some(&normalized))
-            .expect("normalized pack_storage should decode");
-    assert_eq!(
-        normalized_storage,
-        RepositoryPackStoragePayload::current_default()
-    );
-}
+    let validated = repository_payload_with_validated_pack_storage(repository)
+        .expect("legacy repository payload should remain readable");
+    assert!(validated
+        .get(REPOSITORY_PACK_STORAGE_PAYLOAD_FIELD)
+        .is_none());
 
-#[test]
-fn server_handshake_pack_storage_capability_payload_names_contract_and_defaults() {
-    let capability = repository_pack_storage_capability_payload();
+    let null_storage = json!({
+        "repo_name": "repo",
+        "pack_storage": JsonValue::Null,
+    });
+    assert_eq!(
+        RepositoryPackStoragePayload::from_repository_payload(Some(&null_storage))
+            .expect("null pack_storage should remain distinguishable"),
+        None
+    );
 
+    let empty = RepositoryPackStoragePayload::current_default();
+    let supplied = json!({
+        "repo_name": "repo",
+        "pack_storage": RepositoryPackStorageJson::stateless()
+            .encode_value(&empty)
+            .expect("encode verified empty storage"),
+    });
     assert_eq!(
-        capability["contract"].as_str(),
-        Some(RepositoryPackStorageContract::NAME)
+        RepositoryPackStoragePayload::from_repository_payload(Some(&supplied))
+            .expect("supplied pack_storage should decode"),
+        Some(empty)
     );
-    assert_eq!(
-        capability["payload_field"].as_str(),
-        Some(REPOSITORY_PACK_STORAGE_PAYLOAD_FIELD)
-    );
-    assert_eq!(
-        capability["missing_payload_default"].as_str(),
-        Some(REPOSITORY_PACK_STORAGE_MISSING_PAYLOAD_DEFAULT)
-    );
-    assert!(capability.get("new_repository_default_policy").is_none());
-    assert!(capability.get("supported_policies").is_none());
 }
 
 #[test]

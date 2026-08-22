@@ -1,5 +1,5 @@
 use super::manifest_ports::CurrentSourceNativeCacheManifestStore;
-use crate::json_support::{JsonMap, JsonValue};
+use crate::json_support::JsonValue;
 use std::fs;
 use std::path::Path;
 
@@ -17,10 +17,6 @@ impl CurrentSourceNativeCacheManifestStore for FilesystemCurrentSourceNativeCach
 
     fn cache_size_bytes(&self, cache_root: &Path) -> u64 {
         super::current_source_cache_size_bytes(cache_root)
-    }
-
-    fn load_manifest(&self, manifest_path: &Path) -> JsonMap<String, JsonValue> {
-        super::load_json_object(manifest_path)
     }
 
     fn write_manifest(&self, manifest_path: &Path, payload: &JsonValue) -> Result<(), String> {

@@ -14,3 +14,4 @@ deploy/site/.env
 deploy/site/macos-nginx/site.env
 deploy/site/nginx-rendered/
 error.log
+.claude/

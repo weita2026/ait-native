@@ -25,7 +25,7 @@ impl<'a> WorkflowDetailIndex<'a> {
             }
         }
         for patchsets in index.patchsets_by_change.values_mut() {
-            patchsets.sort_by(|left, right| patchset_number(left).cmp(&patchset_number(right)));
+            patchsets.sort_by_key(|left| patchset_number(left));
         }
         for review in &input.reviews {
             if let Some(change_id) = object_text(review, "change_id") {
@@ -303,10 +303,9 @@ pub(super) fn change_is_landable(row: &JsonValue) -> bool {
     if change_has_failed_validation(row) {
         return false;
     }
-    if value_text_path(row, &["policy_summary", "decision"])
+    if !value_text_path(row, &["policy_summary", "decision"])
         .unwrap_or_else(|| "pending".to_string())
-        .to_ascii_lowercase()
-        != "pass"
+        .eq_ignore_ascii_case("pass")
     {
         return false;
     }

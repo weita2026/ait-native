@@ -35,11 +35,11 @@ pub fn patchset_ci_embedded_status_summary_json(patchset_ci: Option<&JsonValue>)
     let selected_suite_count = patchset_ci
         .and_then(|value| optional_int(value.get("selected_suite_count")))
         .and_then(|count| usize::try_from(count.max(0)).ok())
-        .unwrap_or_else(|| selected_suite_ids.len());
+        .unwrap_or(selected_suite_ids.len());
     let blocking_failure_count = patchset_ci
         .and_then(|value| optional_int(value.get("blocking_failure_count")))
         .and_then(|count| usize::try_from(count.max(0)).ok())
-        .unwrap_or_else(|| blocking_failures.len());
+        .unwrap_or(blocking_failures.len());
     let suite_results = compact_suite_results(source_suite_results);
     let tests_status = patchset_ci
         .and_then(|value| value.get("tests_status"))
@@ -133,12 +133,16 @@ pub fn patchset_ci_status_summary_json(request: &JsonValue) -> Result<JsonValue,
         .and_then(|value| u64::try_from(value).ok())
         .unwrap_or_default();
     let embedded_completed = run_seq > 0 && completed_at_s > 0;
-    let ci_completed_at_s = (completed_at_s > 0)
-        .then(|| JsonValue::from(completed_at_s))
-        .unwrap_or(JsonValue::Null);
-    let ci_run_seq = (run_seq > 0)
-        .then(|| JsonValue::from(run_seq))
-        .unwrap_or(JsonValue::Null);
+    let ci_completed_at_s = if completed_at_s > 0 {
+        JsonValue::from(completed_at_s)
+    } else {
+        JsonValue::Null
+    };
+    let ci_run_seq = if run_seq > 0 {
+        JsonValue::from(run_seq)
+    } else {
+        JsonValue::Null
+    };
 
     let recent_jobs: Vec<JsonValue> = jobs
         .iter()
@@ -245,7 +249,7 @@ pub fn patchset_ci_status_summary_json(request: &JsonValue) -> Result<JsonValue,
                 .and_then(JsonValue::as_u64)
                 .and_then(|count| usize::try_from(count).ok())
         })
-        .unwrap_or_else(|| final_suite_results.len());
+        .unwrap_or(final_suite_results.len());
     let embedded_blocking_failure_count = embedded_patchset_ci
         .and_then(|value| optional_int(value.get("blocking_failure_count")))
         .and_then(|count| usize::try_from(count.max(0)).ok())
@@ -258,7 +262,7 @@ pub fn patchset_ci_status_summary_json(request: &JsonValue) -> Result<JsonValue,
                 .and_then(JsonValue::as_u64)
                 .and_then(|count| usize::try_from(count).ok())
         })
-        .unwrap_or_else(|| final_blocking_failures.len());
+        .unwrap_or(final_blocking_failures.len());
 
     if readiness_projection && tests_status == "pass" {
         if blocking_failure_count > 0 {

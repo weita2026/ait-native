@@ -148,10 +148,10 @@ pub fn normalized_plan_items(value: Option<&JsonValue>) -> Result<Vec<JsonValue>
         Some(_) => return Err("Plan items must be a JSON array.".to_string()),
         None => Vec::new(),
     };
-    Ok(items
+    items
         .into_iter()
         .filter_map(|item| normalize_plan_item(item).transpose())
-        .collect::<Result<Vec<_>, _>>()?)
+        .collect::<Result<Vec<_>, _>>()
 }
 
 pub fn plan_link_surface_entries_value(

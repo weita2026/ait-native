@@ -393,7 +393,7 @@ fn run_command_test_case_shards(
     drop(tx);
 
     let mut completed = rx.into_iter().collect::<Vec<_>>();
-    completed.sort_by(|left, right| left.index.cmp(&right.index));
+    completed.sort_by_key(|left| left.index);
     let shard_values = completed
         .into_iter()
         .map(|completion| {

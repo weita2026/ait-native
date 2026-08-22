@@ -70,27 +70,27 @@
         {
           "subject_id": "ait-baseline-snp-2b2362fa553e",
           "role": "ait",
-          "workspace_root": "/tmp/ait-stage4-campaign.KbCG1f/baseline-ait",
+          "workspace_root": "{binding:baseline-ait-workspace}",
           "metadata_excludes": [".ait", ".ait-runtime", ".git", "AGENTS.md", "ait-native.md", "docs"],
-          "command": {"program": "/tmp/ait-stage4-campaign.KbCG1f/baseline-target/release/ait-cli", "args": ["status", "--json"], "cwd": "{workspace}", "env": {"LC_ALL": "C"}, "expected_exit_codes": [0]},
+          "command": {"program": "{binding:baseline-ait-cli}", "args": ["status", "--json"], "cwd": "{workspace}", "env": {"LC_ALL": "C"}, "expected_exit_codes": [0]},
           "reset_commands": [],
           "prepare_commands": [],
           "cleanup_commands": [],
-          "history_node_probe": {"program": "/Users/weita/AI_Play_Ground/ait-core/.ait-worktree-links/rct-1151/.ait/cargo-target/release/ait-benchmark", "args": ["probe", "history", "--vcs", "ait", "--program", "/tmp/ait-stage4-campaign.KbCG1f/baseline-target/release/ait-cli", "--root", "{workspace}"], "cwd": "{workspace}", "env": {}, "expected_exit_codes": [0]},
-          "outcome_probe": {"program": "/Users/weita/AI_Play_Ground/ait-core/.ait-worktree-links/rct-1151/.ait/cargo-target/release/ait-benchmark", "args": ["fixture", "digest", "--plain", "--root", "{workspace}", "--exclude", ".ait", "--exclude", ".ait-runtime", "--exclude", ".git", "--exclude", "AGENTS.md", "--exclude", "ait-native.md", "--exclude", "docs"], "cwd": "{workspace}", "env": {}, "expected_exit_codes": [0]},
+          "history_node_probe": {"program": "{binding:ait-benchmark}", "args": ["probe", "history", "--vcs", "ait", "--program", "{binding:baseline-ait-cli}", "--root", "{workspace}"], "cwd": "{workspace}", "env": {}, "expected_exit_codes": [0]},
+          "outcome_probe": {"program": "{binding:ait-benchmark}", "args": ["fixture", "digest", "--plain", "--root", "{workspace}", "--exclude", ".ait", "--exclude", ".ait-runtime", "--exclude", ".git", "--exclude", "AGENTS.md", "--exclude", "ait-native.md", "--exclude", "docs"], "cwd": "{workspace}", "env": {}, "expected_exit_codes": [0]},
           "metrics_json_path": null
         },
         {
           "subject_id": "git-baseline-2.50.1",
           "role": "git",
-          "workspace_root": "/tmp/ait-stage4-campaign.KbCG1f/baseline-git",
+          "workspace_root": "{binding:baseline-git-workspace}",
           "metadata_excludes": [".ait", ".ait-runtime", ".git", "AGENTS.md", "ait-native.md", "docs"],
-          "command": {"program": "/usr/bin/git", "args": ["status", "--porcelain=v2", "--untracked-files=all"], "cwd": "{workspace}", "env": {"LC_ALL": "C"}, "expected_exit_codes": [0]},
+          "command": {"program": "{binding:git}", "args": ["status", "--porcelain=v2", "--untracked-files=all"], "cwd": "{workspace}", "env": {"LC_ALL": "C"}, "expected_exit_codes": [0]},
           "reset_commands": [],
           "prepare_commands": [],
           "cleanup_commands": [],
-          "history_node_probe": {"program": "/Users/weita/AI_Play_Ground/ait-core/.ait-worktree-links/rct-1151/.ait/cargo-target/release/ait-benchmark", "args": ["probe", "history", "--vcs", "git", "--program", "/usr/bin/git", "--root", "{workspace}"], "cwd": "{workspace}", "env": {}, "expected_exit_codes": [0]},
-          "outcome_probe": {"program": "/Users/weita/AI_Play_Ground/ait-core/.ait-worktree-links/rct-1151/.ait/cargo-target/release/ait-benchmark", "args": ["fixture", "digest", "--plain", "--root", "{workspace}", "--exclude", ".ait", "--exclude", ".ait-runtime", "--exclude", ".git", "--exclude", "AGENTS.md", "--exclude", "ait-native.md", "--exclude", "docs"], "cwd": "{workspace}", "env": {}, "expected_exit_codes": [0]},
+          "history_node_probe": {"program": "{binding:ait-benchmark}", "args": ["probe", "history", "--vcs", "git", "--program", "{binding:git}", "--root", "{workspace}"], "cwd": "{workspace}", "env": {}, "expected_exit_codes": [0]},
+          "outcome_probe": {"program": "{binding:ait-benchmark}", "args": ["fixture", "digest", "--plain", "--root", "{workspace}", "--exclude", ".ait", "--exclude", ".ait-runtime", "--exclude", ".git", "--exclude", "AGENTS.md", "--exclude", "ait-native.md", "--exclude", "docs"], "cwd": "{workspace}", "env": {}, "expected_exit_codes": [0]},
           "metrics_json_path": null
         }
       ]

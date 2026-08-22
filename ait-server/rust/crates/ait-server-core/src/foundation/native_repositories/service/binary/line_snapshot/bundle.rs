@@ -144,6 +144,7 @@ where
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn materialize_canonical_files(
         &self,
         repo_name: &str,

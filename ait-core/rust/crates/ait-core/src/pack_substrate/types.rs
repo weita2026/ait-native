@@ -109,7 +109,6 @@ pub(in crate::pack_substrate) struct TreePackMember {
 #[derive(Clone, Debug)]
 pub(in crate::pack_substrate) struct TreePackIndexEntry {
     pub(in crate::pack_substrate) tree_id: String,
-    pub(in crate::pack_substrate) entry_ordinal: usize,
     pub(in crate::pack_substrate) entry_count: usize,
     pub(in crate::pack_substrate) byte_length: usize,
     pub(in crate::pack_substrate) checksum: String,

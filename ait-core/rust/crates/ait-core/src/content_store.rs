@@ -75,16 +75,6 @@ pub trait BlobStore {
     fn ensure_blob_bytes(&self, input: EnsureBlobInput<'_>) -> ContentStoreResult<BlobRecord>;
 }
 
-pub fn ensure_blob_bytes_with_blob_store<S>(
-    store: &S,
-    input: EnsureBlobInput<'_>,
-) -> ContentStoreResult<BlobRecord>
-where
-    S: BlobStore + ?Sized,
-{
-    store.ensure_blob_bytes(input)
-}
-
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ObjectPackRecord {
     pub pack_id: String,

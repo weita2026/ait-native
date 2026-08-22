@@ -208,7 +208,7 @@ where
             member_sha256.push(sha256);
         }
 
-        if object_pack_index_in_write::<B, _, WRITE_LAYOUT>(&tx, &input.pack_id)?.is_some() {
+        if object_pack_index_in_write::<B, _, WRITE_LAYOUT>(tx, &input.pack_id)?.is_some() {
             return Ok(false);
         }
         let first_member_index =
@@ -229,7 +229,7 @@ where
             {
                 continue;
             }
-            let base_index = blob_index_in_write::<B, _, WRITE_LAYOUT>(&tx, base_blob_id)?
+            let base_index = blob_index_in_write::<B, _, WRITE_LAYOUT>(tx, base_blob_id)?
                 .ok_or_else(|| {
                     format!(
                         "Binary DB object pack {} base blob {} is missing.",
@@ -265,8 +265,7 @@ where
                 .ok_or_else(|| "object pack member index overflow".to_string())?;
             let size_bytes = u64_from_i64(member.size_bytes, "size_bytes")?;
             let sha256 = member_sha256[offset as usize];
-            let blob_index = match blob_index_in_write::<B, _, WRITE_LAYOUT>(&tx, &member.blob_id)?
-            {
+            let blob_index = match blob_index_in_write::<B, _, WRITE_LAYOUT>(tx, &member.blob_id)? {
                 Some(existing_index) => {
                     let raw = tx.read_record(
                         BinaryBlobCodec::<WRITE_LAYOUT>::record_file(),
@@ -459,10 +458,10 @@ where
         let created_at_s = parse_created_at_s(&input.created_at)?;
 
         if let Some(existing_pack_index) =
-            tree_pack_index_in_write::<B, _, WRITE_LAYOUT>(&tx, &input.pack_id)?
+            tree_pack_index_in_write::<B, _, WRITE_LAYOUT>(tx, &input.pack_id)?
         {
             validate_existing_tree_pack_metadata::<B, _, WRITE_LAYOUT>(
-                &tx,
+                tx,
                 existing_pack_index,
                 input,
                 &ordered_trees,
@@ -973,7 +972,7 @@ where
             parent_snapshot_id.as_deref(),
         )?;
 
-        if snapshot_index_in_write::<B, _, WRITE_LAYOUT>(&tx, &input.snapshot_id)?.is_some() {
+        if snapshot_index_in_write::<B, _, WRITE_LAYOUT>(tx, &input.snapshot_id)?.is_some() {
             return Ok(false);
         }
         let source_has_parent = !parent_snapshot_ids.is_empty();
@@ -983,13 +982,11 @@ where
             parent_snapshot_ids
                 .iter()
                 .map(|parent_id| {
-                    snapshot_index_in_write::<B, _, WRITE_LAYOUT>(&tx, parent_id)?.ok_or_else(
-                        || {
-                            BinaryDbError::missing_data(format!(
-                                "Binary DB parent snapshot {parent_id} is missing."
-                            ))
-                        },
-                    )
+                    snapshot_index_in_write::<B, _, WRITE_LAYOUT>(tx, parent_id)?.ok_or_else(|| {
+                        BinaryDbError::missing_data(format!(
+                            "Binary DB parent snapshot {parent_id} is missing."
+                        ))
+                    })
                 })
                 .collect::<StoreResult<Vec<_>>>()?
         };
@@ -1004,7 +1001,7 @@ where
             .transpose()?
             .unwrap_or(0);
         let root_tree_pack_index_plus1 =
-            tree_pack_index_in_write::<B, _, WRITE_LAYOUT>(&tx, &input.root_tree_pack_id)?
+            tree_pack_index_in_write::<B, _, WRITE_LAYOUT>(tx, &input.root_tree_pack_id)?
                 .ok_or_else(|| {
                     format!(
                         "Binary DB root tree pack {} is missing for snapshot {}.",
@@ -1013,7 +1010,7 @@ where
                 })?
                 .checked_add(1)
                 .ok_or_else(|| "root tree pack index overflow".to_string())?;
-        let line_index_plus1 = binary_line_index_by_name_in_write(&tx, &input.line_name)?
+        let line_index_plus1 = binary_line_index_by_name_in_write(tx, &input.line_name)?
             .map(|index| {
                 index
                     .checked_add(1)

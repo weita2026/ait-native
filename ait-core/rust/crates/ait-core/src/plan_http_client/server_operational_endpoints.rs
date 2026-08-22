@@ -1,20 +1,8 @@
 use super::*;
-use crate::server_operational::{
-    RepositoryIndex, ServerOperationalCapabilities, WorkerJobKey, WorkerLeaseProof,
-};
+use crate::server_operational::{RepositoryIndex, WorkerJobKey};
 use crate::server_repo_retire::RemoteExportManifest;
 
 impl PlanHttpClientManager {
-    pub fn get_server_operational_capabilities(
-        &mut self,
-    ) -> PlanHttpClientResult<ServerOperationalCapabilities> {
-        let spec = build_get_server_operational_capabilities_request_spec(&self.config)?;
-        let payload = parse_object_payload(self.execute_json(spec)?)?;
-        Ok(ServerOperationalCapabilities::from_server_payload(Some(
-            &payload,
-        )))
-    }
-
     pub fn get_repository_by_index(
         &mut self,
         repository_index: RepositoryIndex,
@@ -55,14 +43,6 @@ impl PlanHttpClientManager {
         repository_index: RepositoryIndex,
     ) -> PlanHttpClientResult<Value> {
         let spec = build_abort_repository_retirement_request_spec(&self.config, repository_index)?;
-        parse_object_payload(self.execute_json(spec)?)
-    }
-
-    pub fn get_repository_retirement(
-        &mut self,
-        repository_index: RepositoryIndex,
-    ) -> PlanHttpClientResult<Value> {
-        let spec = build_get_repository_retirement_request_spec(&self.config, repository_index)?;
         parse_object_payload(self.execute_json(spec)?)
     }
 
@@ -141,48 +121,6 @@ impl PlanHttpClientManager {
 
     pub fn get_worker_job(&mut self, key: WorkerJobKey) -> PlanHttpClientResult<Value> {
         let spec = build_get_worker_job_request_spec(&self.config, key)?;
-        parse_object_payload(self.execute_json(spec)?)
-    }
-
-    pub fn claim_worker_job(&mut self, key: WorkerJobKey) -> PlanHttpClientResult<Value> {
-        let spec = build_claim_worker_job_request_spec(&self.config, key)?;
-        parse_object_payload(self.execute_json(spec)?)
-    }
-
-    pub fn heartbeat_worker_job(
-        &mut self,
-        proof: &WorkerLeaseProof,
-    ) -> PlanHttpClientResult<Value> {
-        let spec =
-            build_worker_job_lease_operation_request_spec(&self.config, "heartbeat", proof, None)?;
-        parse_object_payload(self.execute_json(spec)?)
-    }
-
-    pub fn complete_worker_job(
-        &mut self,
-        proof: &WorkerLeaseProof,
-        detail: Value,
-    ) -> PlanHttpClientResult<Value> {
-        let spec = build_worker_job_lease_operation_request_spec(
-            &self.config,
-            "complete",
-            proof,
-            Some(detail),
-        )?;
-        parse_object_payload(self.execute_json(spec)?)
-    }
-
-    pub fn fail_worker_job(
-        &mut self,
-        proof: &WorkerLeaseProof,
-        detail: Value,
-    ) -> PlanHttpClientResult<Value> {
-        let spec = build_worker_job_lease_operation_request_spec(
-            &self.config,
-            "fail",
-            proof,
-            Some(detail),
-        )?;
         parse_object_payload(self.execute_json(spec)?)
     }
 }

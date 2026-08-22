@@ -324,6 +324,7 @@ fn tg1_cleanup_evidence(shard_run: &JsonValue) -> JsonValue {
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn tg1_shard_runner_request(
     config: &PatchsetCiRuntimeConfig,
     runner: &JsonMap<String, JsonValue>,

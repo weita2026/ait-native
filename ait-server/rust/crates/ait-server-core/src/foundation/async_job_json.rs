@@ -1,8 +1,6 @@
 use serde_json::{Map as JsonMap, Value as JsonValue};
 
 use crate::foundation::transport::{self, AsyncJobPayloadInput};
-#[cfg(feature = "legacy-postgres-runtime")]
-use crate::foundation::worker_queue::{self, WorkerQueueConnectionPool, WorkerQueueKernel};
 
 pub struct AsyncJobJson<S> {
     store: S,
@@ -75,59 +73,5 @@ impl<S> AsyncJobJson<S> {
     ) -> JsonMap<String, JsonValue> {
         let _ = &self.store;
         transport::phase_timings_from_result_impl(result)
-    }
-}
-
-#[cfg(feature = "legacy-postgres-runtime")]
-pub struct WorkerQueueJobJson<S> {
-    store: S,
-}
-
-#[cfg(feature = "legacy-postgres-runtime")]
-impl<S> WorkerQueueJobJson<S> {
-    pub fn new(store: S) -> Self {
-        Self { store }
-    }
-}
-
-#[cfg(feature = "legacy-postgres-runtime")]
-impl WorkerQueueJobJson<()> {
-    pub fn stateless() -> Self {
-        Self::new(())
-    }
-}
-
-#[cfg(feature = "legacy-postgres-runtime")]
-impl<S> WorkerQueueJobJson<S> {
-    pub fn job_diagnostics_from_jobs(
-        &self,
-        repo_name: Option<&str>,
-        stale_after_seconds: i64,
-        limit: i64,
-        now: &str,
-        jobs: Vec<JsonMap<String, JsonValue>>,
-    ) -> Result<JsonMap<String, JsonValue>, String> {
-        let _ = &self.store;
-        worker_queue::worker_queue_job_diagnostics_from_jobs_impl(
-            repo_name,
-            stale_after_seconds,
-            limit,
-            now,
-            jobs,
-        )
-    }
-
-    pub fn kernel_json(&self, request: &JsonValue) -> Result<JsonValue, String> {
-        let _ = &self.store;
-        worker_queue::worker_queue_kernel_json_impl(request)
-    }
-
-    pub fn service_json<P: WorkerQueueConnectionPool>(
-        &self,
-        kernel: &WorkerQueueKernel<P>,
-        request: &JsonValue,
-    ) -> Result<JsonValue, String> {
-        let _ = &self.store;
-        worker_queue::worker_queue_service_json_impl(kernel, request)
     }
 }

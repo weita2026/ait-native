@@ -1,4 +1,4 @@
-use crate::json_support::{JsonCodec, JsonEncodeOptions, JsonMap, JsonValue};
+use crate::json_support::{JsonCodec, JsonEncodeOptions, JsonValue};
 use crate::pack_substrate::{PackFormatKind, TreePackFormatKind};
 use crate::remote_sync_backend::{
     RemoteSyncBackendKind, RemoteSyncCapabilities, RemoteSyncInventoryDiff,
@@ -34,7 +34,6 @@ pub trait JsonPayloadContract {
 
 pub const REPOSITORY_PACK_STORAGE_PAYLOAD_FIELD: &str = "pack_storage";
 pub const REPOSITORY_PACK_STORAGE_CAPABILITY_FIELD: &str = "repository_pack_storage";
-pub const REPOSITORY_PACK_STORAGE_MISSING_PAYLOAD_DEFAULT: &str = "zstd_only";
 pub const ZSTD_IMPORT_MANIFEST_CONTRACT_NAME: &str = "ait.remote_sync.zstd_bulk.import_manifest.v1";
 pub const ZSTD_PULL_MANIFEST_REQUEST_CONTRACT_NAME: &str =
     "ait.remote_sync.zstd_bulk.pull_manifest.request.v1";
@@ -122,80 +121,32 @@ impl RepositoryPackStoragePayload {
         }
     }
 
-    pub fn from_inventory(inventory: &RepositoryPackInventory) -> Result<Self, String> {
-        let validation_result = inventory.validate_zstd_only();
-        let validation = RepositoryPackStorageValidationPayload {
-            state: if validation_result.is_ok() {
-                RepositoryPackStorageValidationState::Valid
-            } else {
-                RepositoryPackStorageValidationState::Invalid
-            },
-            error_count: if validation_result.is_ok() { 0 } else { 1 },
-        };
-        let object_pack_count = inventory.object_packs.len() as u64;
-        let tree_pack_count = inventory.tree_packs.len() as u64;
-        let payload = Self {
-            contract: RepositoryPackStorageContract::V1,
-            zstd_only_verified: validation_result.is_ok(),
-            object_pack_format: PackFormatKind::ZstdChunkedV1,
-            tree_pack_format: TreePackFormatKind::ZstdChunkedTreeV1,
-            object_pack_count,
-            tree_pack_count,
-            zstd_object_pack_count: object_pack_count,
-            zstd_tree_pack_count: tree_pack_count,
-            requires_zstd_remote_sync: true,
-            validation,
-        };
-        validate_pack_storage(&payload)?;
-        Ok(payload)
-    }
-
-    pub fn from_repository_payload(payload: Option<&JsonValue>) -> Result<Self, String> {
+    pub fn from_repository_payload(payload: Option<&JsonValue>) -> Result<Option<Self>, String> {
         let Some(payload) = payload else {
-            return Ok(Self::current_default());
+            return Ok(None);
         };
         let Some(object) = payload.as_object() else {
             return Err("repository payload must be a JSON object.".to_string());
         };
         let Some(value) = object.get(REPOSITORY_PACK_STORAGE_PAYLOAD_FIELD) else {
-            return Ok(Self::current_default());
+            return Ok(None);
         };
         if value.is_null() {
-            return Ok(Self::current_default());
+            return Ok(None);
         }
-        RepositoryPackStorageJson::stateless().decode_value(value.clone())
+        RepositoryPackStorageJson::stateless()
+            .decode_value(value.clone())
+            .map(Some)
     }
 }
 
-pub fn repository_payload_with_pack_storage_default(
+pub fn repository_payload_with_validated_pack_storage(
     payload: JsonValue,
 ) -> Result<JsonValue, String> {
-    let mut object = object_from_value(payload, "repository payload")?;
-    let pack_storage = RepositoryPackStoragePayload::from_repository_payload(Some(
-        &JsonValue::Object(object.clone()),
-    ))?;
-    object.insert(
-        REPOSITORY_PACK_STORAGE_PAYLOAD_FIELD.to_string(),
-        RepositoryPackStorageJson::stateless().encode_value(&pack_storage)?,
-    );
-    Ok(JsonValue::Object(object))
-}
-
-pub fn repository_pack_storage_capability_payload() -> JsonValue {
-    let mut object = JsonMap::new();
-    object.insert(
-        "contract".to_string(),
-        string_value(RepositoryPackStorageContract::NAME),
-    );
-    object.insert(
-        "payload_field".to_string(),
-        string_value(REPOSITORY_PACK_STORAGE_PAYLOAD_FIELD),
-    );
-    object.insert(
-        "missing_payload_default".to_string(),
-        string_value(REPOSITORY_PACK_STORAGE_MISSING_PAYLOAD_DEFAULT),
-    );
-    JsonValue::Object(object)
+    let object = object_from_value(payload, "repository payload")?;
+    let payload = JsonValue::Object(object);
+    RepositoryPackStoragePayload::from_repository_payload(Some(&payload))?;
+    Ok(payload)
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

@@ -51,7 +51,7 @@ fn run_task(repo: RepoRuntime, command: TaskCommand) -> Result<ExitCode, String>
                 attach_automatic_reconciliation(&mut payload, reconciliation);
                 Ok(payload)
             })?;
-            emit_task_start_result(&payload, args.json)?;
+            emit_task_start_result(&payload, args.json, args.full)?;
             Ok(ExitCode::SUCCESS)
         }
         TaskCommand::List(args) => {
@@ -150,11 +150,7 @@ fn run_task(repo: RepoRuntime, command: TaskCommand) -> Result<ExitCode, String>
                 task_land_automatic_trigger(&payload),
             );
             attach_automatic_reconciliation(&mut payload, reconciliation);
-            if args.json {
-                print_json(&payload)?;
-            } else {
-                println!("{}", render_task_land_text(&payload)?);
-            }
+            emit_task_land_result(&payload, args.json, args.full)?;
             Ok(ExitCode::from(task_land_exit_code(&payload)))
         }
         TaskCommand::Abandon(args) => {

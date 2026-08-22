@@ -1216,16 +1216,27 @@ fn consumer_projections(version: &str, bundles: &[NativeBundleBuild]) -> Vec<Jso
     rows
 }
 
+#[derive(Clone, Copy)]
+pub(super) struct NativeDistributionBuildOptions<'a> {
+    pub(super) dist_dir: &'a Path,
+    pub(super) epoch: i64,
+    pub(super) explicit_matrix_root: Option<&'a Path>,
+    pub(super) explicit_host_source_dir: Option<&'a Path>,
+}
+
 pub(super) fn build_native_distribution(
     repo: &RepoRuntime,
     record: &JsonValue,
     source_bundle: &ReleaseBundle,
     release_profile: &ReleaseProfile,
-    dist_dir: &Path,
-    epoch: i64,
-    explicit_matrix_root: Option<&Path>,
-    explicit_host_source_dir: Option<&Path>,
+    options: NativeDistributionBuildOptions<'_>,
 ) -> Result<(Vec<JsonValue>, JsonValue), String> {
+    let NativeDistributionBuildOptions {
+        dist_dir,
+        epoch,
+        explicit_matrix_root,
+        explicit_host_source_dir,
+    } = options;
     let version = required_string_field(record, "version")?;
     let profile = record
         .get("metadata")
@@ -1923,10 +1934,12 @@ mod tests {
             &record,
             &source_bundle,
             &profile,
-            &dist,
-            1_784_438_400,
-            Some(&matrix_root),
-            None,
+            NativeDistributionBuildOptions {
+                dist_dir: &dist,
+                epoch: 1_784_438_400,
+                explicit_matrix_root: Some(&matrix_root),
+                explicit_host_source_dir: None,
+            },
         )
         .unwrap();
         record["artifacts"] = JsonValue::Array(artifacts.clone());
@@ -1997,10 +2010,12 @@ mod tests {
             &test_record(),
             &source_bundle,
             &profile,
-            &dist,
-            1_784_438_400,
-            Some(&matrix_root),
-            None,
+            NativeDistributionBuildOptions {
+                dist_dir: &dist,
+                epoch: 1_784_438_400,
+                explicit_matrix_root: Some(&matrix_root),
+                explicit_host_source_dir: None,
+            },
         )
         .unwrap();
         assert_eq!(artifacts.len(), 1);
@@ -2224,10 +2239,12 @@ mod tests {
             &test_record(),
             &source_bundle,
             &profile,
-            &dist,
-            1_784_438_400,
-            Some(&matrix_root),
-            None,
+            NativeDistributionBuildOptions {
+                dist_dir: &dist,
+                epoch: 1_784_438_400,
+                explicit_matrix_root: Some(&matrix_root),
+                explicit_host_source_dir: None,
+            },
         )
         .unwrap();
 
@@ -2274,10 +2291,12 @@ mod tests {
             &record,
             &source_bundle,
             &profile,
-            &dist,
-            1_784_438_400,
-            Some(&matrix_root),
-            None,
+            NativeDistributionBuildOptions {
+                dist_dir: &dist,
+                epoch: 1_784_438_400,
+                explicit_matrix_root: Some(&matrix_root),
+                explicit_host_source_dir: None,
+            },
         )
         .unwrap();
         record["artifacts"] = JsonValue::Array(artifacts);
@@ -2309,10 +2328,12 @@ mod tests {
             &test_record(),
             &source_bundle,
             &profile,
-            &dist,
-            1_784_438_400,
-            Some(&matrix_root),
-            None,
+            NativeDistributionBuildOptions {
+                dist_dir: &dist,
+                epoch: 1_784_438_400,
+                explicit_matrix_root: Some(&matrix_root),
+                explicit_host_source_dir: None,
+            },
         )
         .unwrap();
         let rejected = projection["rejected_targets"].as_array().unwrap();

@@ -301,6 +301,7 @@ where
         }))
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn append_review(
         &self,
         change_id: &str,

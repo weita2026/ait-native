@@ -3,19 +3,20 @@
   "suites": [
     {
       "suite_id": "rust_core",
-      "display_name": "Rust Core",
+      "display_name": "Rust Patchset Gate (Bounded)",
       "plane": "patchset",
       "default_blocking": true,
       "mode": "gate",
-      "purpose": "Validate the ait-server Rust core crate and boundary rules before remote land.",
+      "purpose": "Run the bounded ait-server core/server library and seam contract gate before remote land; full workspace validation belongs to repo/all CI.",
       "runner": {
         "kind": "test_discovery_sharded",
         "adapter": "cargo",
         "manifest_path": "rust/Cargo.toml",
-        "workspace": true,
+        "workspace": false,
         "doc_tests": false,
         "build_args": [
           "test",
+          "--locked",
           "--profile",
           "ait-ci",
           "--no-run",

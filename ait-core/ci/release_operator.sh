@@ -569,7 +569,8 @@ case "${mode}" in
     family=${source_root}/ait-release-family.json
     IFS=$'\t' read -r version channel tag python_version < <(release_identity_tsv "${family}")
     validate_version_identity "${version}" "${channel}" "${tag}" "${python_version}"
-    [[ ${channel} == rc ]] || fail 65 'pre-RC admission accepts only an RC release commit'
+    [[ ${channel} == rc || ${channel} == stable ]] ||
+      fail 65 'pre-tag admission accepts only an rc or stable release commit'
     if git -C "${source_root}" show-ref --verify --quiet "refs/tags/${tag}"; then
       fail 65 'release tag exists before pre-tag admission'
     fi

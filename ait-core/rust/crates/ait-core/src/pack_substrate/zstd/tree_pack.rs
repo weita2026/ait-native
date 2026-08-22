@@ -53,7 +53,6 @@ pub(in crate::pack_substrate) fn read_zstd_chunked_tree_member(
     })?;
     let entry = TreePackIndexEntry {
         tree_id: member.content_id.clone(),
-        entry_ordinal: member.member_ordinal,
         entry_count,
         byte_length: member.stored_len,
         checksum: member.checksum.clone(),
@@ -81,7 +80,6 @@ pub(in crate::pack_substrate) fn read_zstd_chunked_tree_member_with_chunk_cache(
     })?;
     let entry = TreePackIndexEntry {
         tree_id: member.content_id.clone(),
-        entry_ordinal: member.member_ordinal,
         entry_count,
         byte_length: member.stored_len,
         checksum: member.checksum.clone(),

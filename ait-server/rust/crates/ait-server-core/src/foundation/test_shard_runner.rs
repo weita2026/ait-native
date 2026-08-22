@@ -484,59 +484,6 @@ fn rendered_command(program: &str, runner: &RunnerSpec, test_items: &[String]) -
     parts.join(" ")
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::time::{SystemTime, UNIX_EPOCH};
-
-    #[test]
-    fn expands_env_vars_in_runner_program() {
-        let runner_env = clean_ci_process_env(&BTreeMap::new());
-        let home = runner_env
-            .get("HOME")
-            .expect("HOME is expected in clean test environments");
-        assert_eq!(
-            resolve_runner_program("$HOME/bin/ait-cli", &runner_env)
-                .expect("runner should expand $HOME"),
-            format!("{home}/bin/ait-cli"),
-        );
-        assert_eq!(
-            resolve_runner_program("${HOME}/bin/ait-cli", &runner_env)
-                .expect("runner should expand ${HOME}"),
-            format!("{home}/bin/ait-cli"),
-        );
-    }
-
-    #[test]
-    fn expands_runner_env_vars_before_process_env() {
-        let explicit = BTreeMap::from([(
-            "AIT_TEST_RUNNER_BIN_DIR".to_string(),
-            "/tmp/ait-runner-bin".to_string(),
-        )]);
-        let runner_env = clean_ci_process_env(&explicit);
-
-        assert_eq!(
-            resolve_runner_program("$AIT_TEST_RUNNER_BIN_DIR/ait-cli", &runner_env)
-                .expect("runner env should expand"),
-            "/tmp/ait-runner-bin/ait-cli",
-        );
-    }
-
-    #[test]
-    fn errors_when_runner_program_env_var_is_missing() {
-        let duration = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("time should progress");
-        let missing = format!("AIT_TEST_SHARD_MISSING_ENV_{}", duration.as_nanos());
-        let runner_env = clean_ci_process_env(&BTreeMap::new());
-        assert!(!runner_env.contains_key(&missing));
-        let error = resolve_runner_program(&format!("${{{missing}}}/bin/ait-cli"), &runner_env)
-            .expect_err("missing variable should fail");
-        assert!(error.contains("missing"));
-        assert!(error.contains(&missing));
-    }
-}
-
 fn duration_seconds(started: Instant) -> f64 {
     let millis = started.elapsed().as_millis() as f64;
     (millis / 1000.0 * 1000.0).round() / 1000.0
@@ -653,4 +600,57 @@ fn path_from_json(value: &JsonValue, field: &str) -> Result<PathBuf, String> {
 
 fn path_string(path: &Path) -> String {
     path.to_string_lossy().to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn expands_env_vars_in_runner_program() {
+        let runner_env = clean_ci_process_env(&BTreeMap::new());
+        let home = runner_env
+            .get("HOME")
+            .expect("HOME is expected in clean test environments");
+        assert_eq!(
+            resolve_runner_program("$HOME/bin/ait-cli", &runner_env)
+                .expect("runner should expand $HOME"),
+            format!("{home}/bin/ait-cli"),
+        );
+        assert_eq!(
+            resolve_runner_program("${HOME}/bin/ait-cli", &runner_env)
+                .expect("runner should expand ${HOME}"),
+            format!("{home}/bin/ait-cli"),
+        );
+    }
+
+    #[test]
+    fn expands_runner_env_vars_before_process_env() {
+        let explicit = BTreeMap::from([(
+            "AIT_TEST_RUNNER_BIN_DIR".to_string(),
+            "/tmp/ait-runner-bin".to_string(),
+        )]);
+        let runner_env = clean_ci_process_env(&explicit);
+
+        assert_eq!(
+            resolve_runner_program("$AIT_TEST_RUNNER_BIN_DIR/ait-cli", &runner_env)
+                .expect("runner env should expand"),
+            "/tmp/ait-runner-bin/ait-cli",
+        );
+    }
+
+    #[test]
+    fn errors_when_runner_program_env_var_is_missing() {
+        let duration = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time should progress");
+        let missing = format!("AIT_TEST_SHARD_MISSING_ENV_{}", duration.as_nanos());
+        let runner_env = clean_ci_process_env(&BTreeMap::new());
+        assert!(!runner_env.contains_key(&missing));
+        let error = resolve_runner_program(&format!("${{{missing}}}/bin/ait-cli"), &runner_env)
+            .expect_err("missing variable should fail");
+        assert!(error.contains("missing"));
+        assert!(error.contains(&missing));
+    }
 }

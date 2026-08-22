@@ -8,7 +8,7 @@ pub(super) fn reviewer_inbox(input: &QueueReadModelInput, index: &QueueIndex<'_>
     let mut items = input
         .changes
         .iter()
-        .filter(|change| repo_matches(input.repo_name.as_deref(), *change))
+        .filter(|change| repo_matches(input.repo_name.as_deref(), change))
         .filter(|change| {
             object_text(change, "status")
                 .map(|status| REVIEWABLE_CHANGE_STATES.contains(&status.as_str()))

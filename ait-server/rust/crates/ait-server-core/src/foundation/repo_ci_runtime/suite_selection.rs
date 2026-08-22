@@ -115,7 +115,7 @@ pub(super) fn configured_suite_ids_for_plane(config: &RepoCiRuntimeConfig) -> Op
 
 pub(super) fn validate_repo_ci_plane(suite: &PatchsetSuiteManifest) -> Result<(), String> {
     let plane = suite.plane.trim();
-    if REPO_CI_PLANES.iter().any(|allowed| plane == *allowed) {
+    if REPO_CI_PLANES.contains(&plane) {
         Ok(())
     } else {
         Err(format!(

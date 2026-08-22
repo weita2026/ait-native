@@ -2,7 +2,7 @@ use ait_server_core::foundation::repo_ci_runtime::repo_ci_run_json;
 use serde_json::json;
 use std::env;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 fn temp_root(name: &str) -> PathBuf {
     let root = env::temp_dir().join(format!(
@@ -40,7 +40,7 @@ printf '%s\n' 'explicit shard runner pass'"#
     ]
 }
 
-fn full_repo_payload(root: &PathBuf) -> serde_json::Value {
+fn full_repo_payload(root: &Path) -> serde_json::Value {
     let workspace = root.join("workspace");
     let output = root.join("output");
     json!({
@@ -104,7 +104,7 @@ fn full_repo_payload(root: &PathBuf) -> serde_json::Value {
     })
 }
 
-fn full_repo_zstd_only_payload(root: &PathBuf) -> serde_json::Value {
+fn full_repo_zstd_only_payload(root: &Path) -> serde_json::Value {
     let mut payload = full_repo_payload(root);
     payload["suite_ids"] = json!(["full_repo_zstd_only"]);
     payload["suites"][0]["suite_id"] = json!("full_repo_zstd_only");

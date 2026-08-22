@@ -6,17 +6,7 @@ pub enum AgentTransportConfigIntMode {
     Minimum,
 }
 
-impl AgentTransportConfigIntMode {
-    pub fn from_name(value: &str) -> Result<Self, String> {
-        match value.trim().to_ascii_lowercase().as_str() {
-            "" | "positive_or_minimum" | "positive" => Ok(Self::PositiveOrMinimum),
-            "minimum" | "strict_minimum" => Ok(Self::Minimum),
-            other => Err(format!(
-                "unsupported ait-agent transport config int mode `{other}`"
-            )),
-        }
-    }
-}
+impl AgentTransportConfigIntMode {}
 
 pub fn agent_transport_config_clean_optional_text(value: Option<&str>) -> Option<String> {
     let text = value?.trim();

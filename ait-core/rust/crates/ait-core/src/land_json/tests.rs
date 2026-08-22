@@ -124,35 +124,6 @@ fn atomic_task_land_spec_requires_exact_repository_scope_and_bounds_identity() {
 }
 
 #[test]
-fn land_json_normalizes_payloads_and_status_helpers() {
-    let land = LandJson::stateless();
-    let payload = land
-            .normalize_land_submission_payload_json(
-                r#"{"submission_id":"LAND-1","status":"blocked","result":{"blocker_class":"policy_blocked","policy":{"decision":"block"}}}"#,
-            )
-            .unwrap();
-
-    assert_eq!(
-        land.optional_submission_id(&payload).as_deref(),
-        Some("LAND-1")
-    );
-    assert_eq!(
-        land.optional_land_status(&payload).as_deref(),
-        Some("blocked")
-    );
-    assert_eq!(
-        land.optional_blocker_class(&payload).as_deref(),
-        Some("policy_blocked")
-    );
-    assert_eq!(land.landing_policy(&payload).unwrap()["decision"], "block");
-    assert!(land.land_status_is_pending("queued"));
-    assert!(land.land_status_is_success("completed"));
-    assert!(land.land_status_has_landing_evidence("applied"));
-    assert!(land.land_status_is_blocked("blocked"));
-    assert!(land.stale_policy_blocker_cleared("blocked", "POLICY_BLOCKED", "pass"));
-}
-
-#[test]
 fn land_json_extracts_landing_state_and_recovers_submission() {
     let land = LandJson::stateless();
     let change = json!({

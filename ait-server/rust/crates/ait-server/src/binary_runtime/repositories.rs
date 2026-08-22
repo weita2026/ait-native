@@ -1,8 +1,8 @@
 use crate::operational_binary_runtime::{OperationalBinaryRuntime, OperationalDb};
 use ait_server_core::foundation::native_repositories::{
     BinaryDbNativeRepositoryService, LineCloseRequest, LineUpdateRequest, NativeRepositoryError,
-    NativeRepositoryService, RepositoryCreateRequest, RetireRepositoryRequest,
-    SnapshotExistsRequest, SnapshotExportQuery, SnapshotManifestFileEntry,
+    NativeRepositoryService, NativeZstdPackKind, NativeZstdPackUpload, RepositoryCreateRequest,
+    RetireRepositoryRequest, SnapshotExistsRequest, SnapshotExportQuery, SnapshotManifestFileEntry,
 };
 use ait_server_core::foundation::remote_binary_db::{BinaryDbError, BinaryDbErrorKind};
 use ait_server_core::foundation::server_operational_repository_registry::OperationalRepositoryEntry;
@@ -51,38 +51,15 @@ impl RoutedBinaryNativeRepositoryService {
         Ok((entry, namespace, db))
     }
 
-    pub(crate) fn resolve_repository_index(
-        &self,
-        repository_index: &str,
-    ) -> Result<u32, NativeRepositoryError> {
-        let index = parse_repository_index(repository_index)?;
-        self.runtime
-            .repository_db(index)
-            .map_err(map_binary_error)
-            .map(|_| index)
-    }
-
-    pub(crate) fn repository_entry(
-        &self,
-        repository_index: &str,
-    ) -> Result<OperationalRepositoryEntry, NativeRepositoryError> {
-        let index = parse_repository_index(repository_index)?;
-        self.runtime
-            .repository_db(index)
-            .map_err(map_binary_error)
-            .map(|(entry, _)| entry)
-    }
-
     fn service(
         &self,
         repository_index: &str,
     ) -> Result<(u32, OperationalRepositoryEntry, RepositoryService), NativeRepositoryError> {
         let index = parse_repository_index(repository_index)?;
-        let (entry, db) = self
+        let (entry, service) = self
             .runtime
-            .repository_db(index)
+            .repository_native_service(index)
             .map_err(map_binary_error)?;
-        let service = BinaryDbNativeRepositoryService::new(db).with_default_line("main");
         Ok((index, entry, service))
     }
 
@@ -225,6 +202,36 @@ impl NativeRepositoryService for RoutedBinaryNativeRepositoryService {
         Self::project(
             index,
             service.put_zstd_bulk_object_pack(&entry.repo_name, pack_id, pack_bytes)?,
+            true,
+        )
+    }
+
+    fn begin_zstd_bulk_pack_upload(
+        &self,
+        repository_index: &str,
+        pack_id: &str,
+        kind: NativeZstdPackKind,
+    ) -> Result<NativeZstdPackUpload, NativeRepositoryError> {
+        let (_, entry, service) = self.service(repository_index)?;
+        service.begin_zstd_bulk_pack_upload(&entry.repo_name, pack_id, kind)
+    }
+
+    fn finish_zstd_bulk_pack_upload(
+        &self,
+        repository_index: &str,
+        upload: NativeZstdPackUpload,
+        payload_bytes: u64,
+        payload_sha256: &str,
+    ) -> Result<JsonValue, NativeRepositoryError> {
+        let (index, entry, service) = self.service(repository_index)?;
+        Self::project(
+            index,
+            service.finish_zstd_bulk_pack_upload(
+                &entry.repo_name,
+                upload,
+                payload_bytes,
+                payload_sha256,
+            )?,
             true,
         )
     }

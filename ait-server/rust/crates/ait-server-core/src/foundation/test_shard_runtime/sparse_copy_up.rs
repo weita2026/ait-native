@@ -163,7 +163,7 @@ fn collect_seed_immutable_link_paths(
 ) -> Result<Vec<PathBuf>, String> {
     let mut paths = Vec::new();
     collect_seed_immutable_link_paths_inner(seed_path, Path::new(""), copy_up_paths, &mut paths)?;
-    paths.sort_by(|left, right| path_string(left).cmp(&path_string(right)));
+    paths.sort_by_key(|left| path_string(left));
     Ok(paths)
 }
 

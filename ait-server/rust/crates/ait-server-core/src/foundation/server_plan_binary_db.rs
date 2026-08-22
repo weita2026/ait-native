@@ -48,41 +48,12 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Map as JsonMap, Value as JsonValue};
 #[cfg(test)]
 use sha2::{Digest, Sha256};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 type ServerPlanDefaultWriteTxn<'a, D, const WRITE_LAYOUT: u32> =
     ServerPlanBinaryDbWriteTxn<'a, D, BinaryDbStoreFsyncPolicy<'a, D>, WRITE_LAYOUT>;
 
 pub const SERVER_PLAN_BINARY_DB_LAYOUT_V1: u32 = PLAN_LAYOUT_ID;
-
-/// Exact fixed-record file identities used by offline, layout-preserving
-/// recovery tooling. These expose the existing Plan v1 files without allowing
-/// callers to construct undeclared Binary DB files.
-pub fn server_plan_file_id() -> BinaryFileId {
-    plan_file()
-}
-
-pub fn server_plan_revision_file_id() -> BinaryFileId {
-    plan_revision_file()
-}
-
-pub fn server_plan_item_file_id() -> BinaryFileId {
-    plan_item_file()
-}
-
-pub fn server_plan_payload_file_id() -> crate::foundation::remote_binary_db::BinaryPayloadFileId {
-    plan_payload_file()
-}
-
-pub fn server_plan_revision_payload_file_id(
-) -> crate::foundation::remote_binary_db::BinaryPayloadFileId {
-    plan_revision_payload_file()
-}
-
-pub fn server_plan_item_payload_file_id() -> crate::foundation::remote_binary_db::BinaryPayloadFileId
-{
-    plan_item_payload_file()
-}
 
 pub type BinaryDbServerPlanServiceV1<D> =
     BinaryDbServerPlanService<D, SERVER_PLAN_BINARY_DB_LAYOUT_V1>;
@@ -117,32 +88,6 @@ pub struct PlanArtifactBlobClosureAudit {
 impl PlanArtifactBlobClosureAudit {
     pub fn is_complete(&self) -> bool {
         self.status == "complete" && self.unhealthy_blob_count == 0
-    }
-
-    pub fn failure_summary(&self) -> String {
-        let blob_ids = self
-            .issues
-            .iter()
-            .map(|issue| issue.artifact_blob_id.as_str())
-            .collect::<BTreeSet<_>>()
-            .into_iter()
-            .take(8)
-            .collect::<Vec<_>>()
-            .join(", ");
-        let suffix = if self.issues_truncated {
-            "; issue list truncated"
-        } else {
-            ""
-        };
-        let blob_detail = if blob_ids.is_empty() {
-            String::new()
-        } else {
-            format!("; blobs: {blob_ids}")
-        };
-        format!(
-            "Plan artifact closure is incomplete: {} unique blobs affect {} revisions{blob_detail}{suffix}",
-            self.unhealthy_blob_count, self.unhealthy_revision_count
-        )
     }
 }
 

@@ -120,9 +120,7 @@ fn server_auth_policy_evaluates_repo_action_permissions() {
     )
     .expect("operator decision");
     assert!(operator_decision.allowed);
-    assert!(operator_decision
-        .effective_roles
-        .contains(&"operator".to_string()));
+    assert!(operator_decision.effective_roles.contains("operator"));
 }
 
 #[test]

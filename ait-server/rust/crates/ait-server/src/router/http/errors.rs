@@ -37,6 +37,14 @@ impl ApiError {
         }
     }
 
+    pub(super) fn payload_too_large(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::PAYLOAD_TOO_LARGE,
+            message: message.into(),
+            retry_after_seconds: None,
+        }
+    }
+
     pub(super) fn internal(message: impl Into<String>) -> Self {
         Self {
             status: StatusCode::INTERNAL_SERVER_ERROR,

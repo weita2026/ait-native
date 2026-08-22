@@ -25,6 +25,7 @@ dependencies = [
  "axum",
  "base64",
  "chrono",
+ "fs2",
  "getrandom 0.3.4",
  "hyper",
  "serde",
@@ -46,7 +47,6 @@ dependencies = [
  "fs2",
  "getrandom 0.3.4",
  "libc",
- "postgres",
  "regex",
  "scrypt",
  "serde",
@@ -1015,8 +1015,6 @@ dependencies = [
  "chrono",
  "fallible-iterator",
  "postgres-protocol",
- "serde_core",
- "serde_json",
 ]
 
 [[package]]

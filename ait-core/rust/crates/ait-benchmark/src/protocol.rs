@@ -553,6 +553,60 @@ mod tests {
             protocol["campaign_scopes"]["focused_slice"],
             serde_json::json!("One or more explicitly selected cells with full sample counts; useful for engineering evidence but never claim eligible.")
         );
+        assert_eq!(
+            protocol["portable_manifests"]["binding_placeholder"],
+            serde_json::json!("{binding:<name>}")
+        );
+    }
+
+    #[test]
+    fn compiled_agent_token_protocol_freezes_non_dag_game_comparison() {
+        let protocol: serde_json::Value =
+            serde_json::from_str(crate::AGENT_TOKEN_PROTOCOL_V1_JSON).unwrap();
+        assert_eq!(
+            protocol["contract"],
+            serde_json::json!("ait-agent-token-benchmark-protocol/v1")
+        );
+        assert_eq!(
+            protocol["protocol_revision"],
+            serde_json::json!("game-development-2026-08-22.9")
+        );
+        assert_eq!(protocol["workloads"].as_array().unwrap().len(), 5);
+        assert_eq!(
+            protocol["comparison_families"]["core"]["modes"]
+                .as_array()
+                .unwrap()
+                .len(),
+            2
+        );
+        assert_eq!(
+            protocol["product_boundary"]["python_allowed"],
+            serde_json::json!(false)
+        );
+        assert_eq!(
+            protocol["product_boundary"]["task_dag_product_supported"],
+            serde_json::json!(false)
+        );
+        assert_eq!(
+            protocol["product_boundary"]["workflow_mode"],
+            serde_json::json!("solo_local")
+        );
+        assert_eq!(
+            protocol["product_boundary"]["core_sprint_mode"],
+            serde_json::json!("off")
+        );
+        assert_eq!(
+            protocol["product_boundary"]["ait_server_connection_allowed"],
+            serde_json::json!(false)
+        );
+        assert_eq!(
+            protocol["sampling"]["minimum_claim_attempts_per_cell"],
+            serde_json::json!(20)
+        );
+        assert_eq!(
+            protocol["claim_eligibility"]["maximum_ait_acceptance_rate_deficit_percentage_points"],
+            serde_json::json!(5)
+        );
     }
 
     fn complete_manifest() -> BenchmarkManifest {

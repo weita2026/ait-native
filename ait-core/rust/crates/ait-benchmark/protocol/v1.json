@@ -9,6 +9,13 @@
     "full_matrix": "All required cells and fixture scales; the only scope eligible for release claims.",
     "focused_slice": "One or more explicitly selected cells with full sample counts; useful for engineering evidence but never claim eligible."
   },
+  "portable_manifests": {
+    "binding_placeholder": "{binding:<name>}",
+    "binding_name": "lowercase ASCII letter followed by lowercase ASCII letters, digits, or hyphens",
+    "runtime_value": "absolute Unix, UNC, or Windows drive path supplied with --bind and never serialized into evidence",
+    "normalization": "explicit longest-path-first replacement; every supplied binding must be used and no absolute or host-specific path may remain",
+    "publication_gate": "committed manifests and their dependent raw/report digest references must pass portable validation"
+  },
   "sampling": {
     "minimum_warmup_iterations": 5,
     "minimum_measured_local_iterations": 50,

@@ -25,7 +25,6 @@ fn non_object_payload_json_fails_closed() {
     assert_failed_with(&output, "content.gc payload must be a JSON object.");
 }
 
-#[cfg(not(feature = "legacy-postgres-runtime"))]
 #[test]
 fn retired_postgres_commands_are_absent_from_the_patch_ci_seam() {
     for command in [

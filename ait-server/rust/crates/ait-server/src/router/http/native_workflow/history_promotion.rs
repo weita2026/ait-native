@@ -1,24 +1,5 @@
 use super::*;
 
-pub(in super::super) async fn native_prepare_repository_history_promotion(
-    State(state): State<ServerState>,
-    Path((repo_name, action)): Path<(String, String)>,
-    Json(payload): Json<JsonValue>,
-) -> Result<impl IntoResponse, ApiError> {
-    if action != ":prepare" {
-        return Err(ApiError::not_found(format!(
-            "unknown repository history-promotion action {action:?}"
-        )));
-    }
-    let routed = state.workflow_service.clone();
-    let runtime = state.runtime_service.clone();
-    run_workflow_mutation("native history promotion prepare", runtime, move || {
-        let (repo_name, workflow) = repository_workflow_store(routed.as_ref(), &repo_name)?;
-        workflow.prepare_history_promotion(&repo_name, &payload)
-    })
-    .await
-}
-
 pub(in super::super) async fn native_prepare_repository_authority_history_promotion(
     State(state): State<ServerState>,
     Path((repo_id, action)): Path<(String, String)>,

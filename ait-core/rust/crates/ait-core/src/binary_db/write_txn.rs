@@ -217,14 +217,6 @@ where
         self.track_relative_path(file.relative_path())
     }
 
-    pub fn track_payload_file(&mut self, file: BinaryPayloadFileId) -> StoreResult<()> {
-        self.track_relative_path(file.relative_path())
-    }
-
-    pub fn track_index_file(&mut self, index: BinaryIndexId) -> StoreResult<()> {
-        self.track_relative_path(index.relative_path())
-    }
-
     pub fn track_relative_path(&mut self, path: &StorePath) -> StoreResult<()> {
         let path = store_path_for(self.db.authority_root(), path)?;
         self.track_absolute_file(path)

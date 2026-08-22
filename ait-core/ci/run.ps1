@@ -63,46 +63,67 @@ try {
         throw "zero-Python boundary violation: $($pythonFile.FullName)"
     }
 
-    Invoke-Checked "cargo" @(
-        "test", "--manifest-path", "rust/Cargo.toml", "--profile", "ait-ci",
-        "-p", "ait-core", "-p", "ait-cli", "-p", "ait-agent-core", "-p", "ait-py",
-        "--lib",
-        "--test", "server_source_ownership",
-        "--test", "patchset_ci_runner", "--no-run"
-    )
-    Invoke-Checked "cargo" @(
-        "test", "--manifest-path", "rust/Cargo.toml", "--profile", "ait-ci",
-        "-p", "ait-core", "--lib",
-        "--test", "server_source_ownership"
-    )
-
-    # Markdown is Plan lineage and is intentionally absent from remote Snapshot
-    # materialization. Canonical source still carries the sole protected authority.
-    if (Test-Path -LiteralPath (Join-Path $repoRoot "docs/binary_db_v0.md") -PathType Leaf) {
+    function Invoke-PatchsetTests {
         Invoke-Checked "cargo" @(
             "test", "--manifest-path", "rust/Cargo.toml", "--profile", "ait-ci",
-            "-p", "ait-core", "--test", "binary_db_schema_authority"
+            "--locked", "--all-features",
+            "-p", "ait-core", "-p", "ait-cli", "-p", "ait-agent-core",
+            "-p", "ait-agent-worker", "-p", "ait-benchmark", "-p", "ait-napi",
+            "-p", "ait-py",
+            "--lib",
+            "--test", "server_source_ownership",
+            "--test", "patchset_ci_runner", "--no-run"
         )
-    } else {
-        Write-Output "skipping binary_db_schema_authority: lineage-only Markdown is unavailable in this Snapshot"
+        Invoke-Checked "cargo" @(
+            "test", "--manifest-path", "rust/Cargo.toml", "--profile", "ait-ci",
+            "--locked", "--all-features",
+            "-p", "ait-core", "-p", "ait-cli", "-p", "ait-agent-core",
+            "-p", "ait-agent-worker", "-p", "ait-benchmark", "-p", "ait-napi",
+            "-p", "ait-py", "--lib"
+        )
+        Invoke-Checked "cargo" @(
+            "test", "--manifest-path", "rust/Cargo.toml", "--profile", "ait-ci",
+            "--locked", "--all-features",
+            "-p", "ait-core", "-p", "ait-cli",
+            "--test", "server_source_ownership",
+            "--test", "patchset_ci_runner"
+        )
+
+        # Markdown is Plan lineage and is intentionally absent from remote Snapshot
+        # materialization. Canonical source still carries the sole protected authority.
+        if (Test-Path -LiteralPath (Join-Path $repoRoot "docs/binary_db_v0.md") -PathType Leaf) {
+            Invoke-Checked "cargo" @(
+                "test", "--manifest-path", "rust/Cargo.toml", "--profile", "ait-ci",
+                "--locked", "-p", "ait-core", "--test", "binary_db_schema_authority"
+            )
+        } else {
+            Write-Output "skipping binary_db_schema_authority: lineage-only Markdown is unavailable in this Snapshot"
+        }
     }
 
-    Invoke-Checked "cargo" @(
-        "test", "--manifest-path", "rust/Cargo.toml", "--profile", "ait-ci",
-        "-p", "ait-cli", "--lib"
-    )
-    Invoke-Checked "cargo" @(
-        "test", "--manifest-path", "rust/Cargo.toml", "--profile", "ait-ci",
-        "-p", "ait-agent-core", "--lib"
-    )
-    Invoke-Checked "cargo" @(
-        "test", "--manifest-path", "rust/Cargo.toml", "--profile", "ait-ci",
-        "-p", "ait-py", "--lib"
-    )
-    Invoke-Checked "cargo" @(
-        "test", "--manifest-path", "rust/Cargo.toml", "--profile", "ait-ci",
-        "-p", "ait-cli", "--test", "patchset_ci_runner"
-    )
+    function Invoke-RepoTests {
+        Invoke-Checked "cargo" @(
+            "test", "--manifest-path", "rust/Cargo.toml", "--profile", "ait-ci",
+            "--workspace", "--all-targets", "--all-features", "--locked"
+        )
+    }
+
+    function Invoke-Clippy {
+        Invoke-Checked "cargo" @(
+            "clippy", "--manifest-path", "rust/Cargo.toml",
+            "--workspace", "--all-targets", "--all-features", "--locked",
+            "--", "-D", "warnings"
+        )
+    }
+
+    switch ($Mode) {
+        "patchset" { Invoke-PatchsetTests }
+        "repo" { Invoke-RepoTests }
+        "all" {
+            Invoke-RepoTests
+            Invoke-Clippy
+        }
+    }
 } finally {
     if ($cleanupOwnedRoot -and (Test-Path -LiteralPath $ownedRoot)) {
         Remove-Item -LiteralPath $ownedRoot -Recurse -Force

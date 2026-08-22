@@ -71,6 +71,9 @@ pub(super) use local_completion::{
 pub use ready_apply::workflow_ready_apply;
 
 #[cfg(test)]
+pub(super) use ready_apply::workflow_ready_ci_pending_wait_state;
+
+#[cfg(test)]
 pub(super) use local_completion::{
     workflow_final_snapshot_candidate_from_entry, workflow_local_history_entries,
     workflow_mark_history_published, workflow_same_head_remote_land_authority,
@@ -233,7 +236,7 @@ fn workflow_project_ready_payload(
         .unwrap_or_else(|| "main".to_string());
     let facts = {
         let _range = perfetto_range!("ait.workflow_ready.payload.facts");
-        workflow_ready_facts(&full_state)?
+        workflow_ready_facts(full_state)?
     };
     let command_hints = workflow_ready_command_hints(
         repo,
