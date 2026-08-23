@@ -7,6 +7,7 @@
 
 [Install guide](https://ait-native.dev/local-quickstart/) ·
 [Technical documentation](https://ait-native.dev/technical/) ·
+[Components](https://ait-native.dev/components/) ·
 [Releases](https://github.com/weita2026/ait-native/releases) ·
 [Discussions](https://github.com/weita2026/ait-native/discussions) ·
 [Report a bug](https://github.com/weita2026/ait-native/issues/new/choose)
