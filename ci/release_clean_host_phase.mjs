@@ -30,6 +30,13 @@ const OCI_SERVER_RUNTIME_ARGS = Object.freeze([
   "--init-if-missing",
   "--defer-ci-admission",
 ]);
+const GITHUB_NATIVE_COMPONENTS = Object.freeze([
+  "ait",
+  "ait-agent",
+  "ait-agent-worker",
+  "ait-server",
+  "ait-runner",
+]);
 const MATRIX_ROW_COUNTS = {
   "distribution-target-32-2026-08-17.2": 32,
   "distribution-target-runner-bundle-32-2026-08-26.1": 32,
@@ -570,8 +577,11 @@ function generatedWorkflowCurrent(agents) {
   }
 }
 
-function knownRc10WindowsInitRegression(error, priorVersion) {
-  if (process.platform !== "win32" || priorVersion !== "1.0.0-rc.10") {
+function knownLegacyWindowsInitRegression(error, priorVersion) {
+  if (
+    process.platform !== "win32" ||
+    !["1.0.0-rc.6", "1.0.0-rc.10"].includes(priorVersion)
+  ) {
     return false;
   }
   return /^prior ait init failed with 1: Error: sync Binary DB file .*[/\\]\.ait-init-[^/\\]+[/\\]binary-db[/\\]line_name_payload\.bin: Failed to sync file .*[/\\]\.ait-init-[^/\\]+[/\\]binary-db[/\\]line_name_payload\.bin: Access is denied\. \(os error 5\)\s*$/s.test(
@@ -587,7 +597,7 @@ function initializePriorState(recorder, aitSpec, root, priorVersion) {
       label: "prior ait init",
     });
   } catch (error) {
-    if (!knownRc10WindowsInitRegression(error, priorVersion)) {
+    if (!knownLegacyWindowsInitRegression(error, priorVersion)) {
       throw error;
     }
     if (
@@ -598,7 +608,8 @@ function initializePriorState(recorder, aitSpec, root, priorVersion) {
     }
     return {
       available: false,
-      expected_regression: "rc10_windows_read_only_fsync",
+      expected_regression: "legacy_windows_read_only_fsync",
+      prior_version: priorVersion,
     };
   }
   const configPath = path.join(root, ".ait", "config.json");
@@ -995,7 +1006,15 @@ async function githubContext(config, row, version, root, recorder, candidateStag
   const bin = path.join(root, "github-bin");
   mkdirSync(bin, { recursive: true, mode: 0o755 });
   const assets = [];
-  for (const component of ["ait", "ait-agent", "ait-agent-worker", "ait-server", "ait-runner"]) {
+  const githubNativeComponents = row.components.filter((component) =>
+    GITHUB_NATIVE_COMPONENTS.includes(component),
+  );
+  for (const required of ["ait", "ait-agent", "ait-server", "ait-runner"]) {
+    if (!githubNativeComponents.includes(required)) {
+      fail(`GitHub native row is missing required prior-compatible component: ${required}`);
+    }
+  }
+  for (const component of githubNativeComponents) {
     const suffix = row.executable_suffix;
     const name = `${component}-${version}-${row.target}${suffix}`;
     const destination = path.join(bin, `${component}${suffix}`);
@@ -1491,15 +1510,26 @@ function runnerBundleVersion(version) {
 }
 
 function packageRowForVersion(row, version) {
+  let components = row.components;
+  if (row.channel === "github" && row.role === "product" && version === "1.0.0-rc.6") {
+    components = [
+      "ait",
+      "ait-agent",
+      "ait-server",
+      "ait-runner",
+      "ait-python",
+      "ait-node",
+    ];
+  }
   if (
     row.lifecycle === "product" &&
-    row.components.includes("ait-runner") &&
+    components.includes("ait-runner") &&
     ["homebrew", "apt", "winget"].includes(row.channel) &&
     !runnerBundleVersion(version)
   ) {
-    return { ...row, components: ["ait", "ait-server"] };
+    components = ["ait", "ait-server"];
   }
-  return row;
+  return components === row.components ? row : { ...row, components };
 }
 
 function aptAcquireBounds() {

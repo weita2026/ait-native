@@ -93,6 +93,22 @@ assert.ok(
   "upgrade evidence must record byte-for-byte prior workflow guidance preservation",
 );
 assert.ok(
+  source.includes('!["1.0.0-rc.6", "1.0.0-rc.10"].includes(priorVersion)'),
+  "only the exact affected legacy versions may admit the Windows init regression",
+);
+assert.ok(
+  source.includes('expected_regression: "legacy_windows_read_only_fsync"'),
+  "bounded legacy Windows init evidence must identify the admitted regression",
+);
+assert.ok(
+  source.includes("for (const component of githubNativeComponents)"),
+  "GitHub installation must consume its shaped native component inventory",
+);
+assert.ok(
+  /row\.channel === "github"[\s\S]*?version === "1\.0\.0-rc\.6"[\s\S]*?components = \[\s*"ait",\s*"ait-agent",\s*"ait-server",\s*"ait-runner",\s*"ait-python",\s*"ait-node",\s*\]/.test(source),
+  "the exact rc.6 GitHub prior row must match its signed historical family manifest",
+);
+assert.ok(
   /if \(priorState\?\.available === true\) \{[\s\S]*?\} else \{\s*generatedWorkflowCurrent\(agents\);\s*\}/.test(source),
   "new installs must validate current generated guidance while upgrades preserve prior guidance",
 );
