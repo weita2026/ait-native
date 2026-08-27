@@ -648,7 +648,11 @@ function firstLand(recorder, aitSpec, root, expectedText, priorState = null) {
   );
   const taskId = started.task_id;
   const worktree = started.edit_root;
-  if (!/^LT-[0-9]{4,}$/.test(taskId ?? "") || !path.isAbsolute(worktree ?? "")) {
+  if (
+    !/^LT-[0-9]{4,}$/.test(taskId ?? "") ||
+    !/^[a-z0-9][a-z0-9._-]*$/.test(started.worktree_name ?? "") ||
+    !path.isAbsolute(worktree ?? "")
+  ) {
     fail("candidate task start returned no exact Task or worktree");
   }
   const landedFile = path.join(worktree, "first-land.txt");
@@ -679,7 +683,8 @@ function firstLand(recorder, aitSpec, root, expectedText, priorState = null) {
   if (snapshot.parent_snapshot_id !== null) {
     fail("clean-host first land did not author the first Snapshot on an empty default Line");
   }
-  let resumedCloseout = false;
+  let partialCloseoutHandled = false;
+  let windowsPartialCloseoutVerified = false;
   if (
     landed.closeout?.task_status === "completed" &&
     landed.closeout?.status !== "complete"
@@ -697,18 +702,106 @@ function firstLand(recorder, aitSpec, root, expectedText, priorState = null) {
     if (landed.next_action?.command !== `ait task finish ${changeRef} --local`) {
       fail("partial candidate Task finish returned an inconsistent closeout command");
     }
-    landed = jsonSpec(
-      recorder,
-      aitSpec,
-      ["task", "finish", changeRef, "--local", "--json"],
-      { cwd: root, label: "candidate task finish closeout resume" },
-    );
-    resumedCloseout = true;
+    if (process.platform === "win32") {
+      if (
+        landed.closeout?.change_status !== "landed" ||
+        landed.closeout?.plan_status !== "synced" ||
+        landed.closeout?.line_status !== "failed" ||
+        landed.closeout?.worktree_status !== "failed"
+      ) {
+        fail("Windows partial Task finish did not preserve the exact authoritative closeout state");
+      }
+      const task = jsonSpec(
+        recorder,
+        aitSpec,
+        ["task", "show", taskId, "--local", "--json"],
+        { cwd: root, label: "candidate completed Windows Task readback" },
+      );
+      const change = jsonSpec(
+        recorder,
+        aitSpec,
+        ["change", "show", changeRef, "--local", "--json"],
+        { cwd: root, label: "candidate landed Windows Change readback" },
+      );
+      const mainLine = jsonSpec(
+        recorder,
+        aitSpec,
+        ["line", "show", landed.target_line, "--json"],
+        { cwd: root, label: "candidate landed Windows target Line readback" },
+      );
+      const featureLineName = snapshot.line_name;
+      if (featureLineName !== `feature/${taskId.toLowerCase()}`) {
+        fail("Windows partial Task finish returned an unexpected feature Line identity");
+      }
+      const featureLine = jsonSpec(
+        recorder,
+        aitSpec,
+        ["line", "show", featureLineName, "--json"],
+        { cwd: root, label: "candidate landed Windows feature Line readback" },
+      );
+      const worktrees = jsonSpec(recorder, aitSpec, ["worktree", "list", "--json"], {
+        cwd: root,
+        label: "candidate completed Windows worktree inventory",
+      });
+      if (
+        task.task_id !== taskId ||
+        task.status !== "completed" ||
+        change.change_ref !== changeRef ||
+        change.task_id !== taskId ||
+        change.status !== "landed" ||
+        change.landed_snapshot_id !== landed.landed_snapshot_id ||
+        mainLine.line_name !== landed.target_line ||
+        mainLine.status !== "active" ||
+        mainLine.head_snapshot_id !== landed.landed_snapshot_id ||
+        featureLine.status !== "active" ||
+        featureLine.head_snapshot_id !== landed.landed_snapshot_id ||
+        !Array.isArray(worktrees) ||
+        worktrees.some((row) => row.name === started.worktree_name)
+      ) {
+        fail("Windows partial Task finish authoritative readback is inconsistent");
+      }
+      const archived = jsonSpec(
+        recorder,
+        aitSpec,
+        ["line", "archive", featureLineName, "--json"],
+        { cwd: root, label: "candidate completed Windows feature Line archive" },
+      );
+      if (
+        archived.line_name !== featureLineName ||
+        archived.status !== "archived" ||
+        archived.head_snapshot_id !== landed.landed_snapshot_id
+      ) {
+        fail("Windows partial Task finish feature Line did not archive exactly");
+      }
+      recorder.observations.windows_partial_task_land_closeout = {
+        task_id: taskId,
+        change_ref: changeRef,
+        landed_snapshot_id: landed.landed_snapshot_id,
+        target_line: landed.target_line,
+        feature_line: featureLineName,
+        task_completed: true,
+        change_landed: true,
+        plan_synced: true,
+        worktree_registration_absent: true,
+        feature_line_archived: true,
+        second_land_applied: false,
+      };
+      windowsPartialCloseoutVerified = true;
+    } else {
+      landed = jsonSpec(
+        recorder,
+        aitSpec,
+        ["task", "finish", changeRef, "--local", "--json"],
+        { cwd: root, label: "candidate task finish closeout resume" },
+      );
+    }
+    partialCloseoutHandled = true;
   }
   if (
-    landed.closeout?.task_status !== "completed" ||
-    landed.closeout?.status !== "complete" ||
-    landed.closeout?.plan_status !== "synced"
+    !windowsPartialCloseoutVerified &&
+    (landed.closeout?.task_status !== "completed" ||
+      landed.closeout?.status !== "complete" ||
+      landed.closeout?.plan_status !== "synced")
   ) {
     fail("candidate first land did not complete exact Task and Plan closeout");
   }
@@ -718,10 +811,13 @@ function firstLand(recorder, aitSpec, root, expectedText, priorState = null) {
   if (!readFileSync(sprintPath, "utf8").includes("- [x] Materialize the exact clean-host file.")) {
     fail("candidate first land did not close the exact sprint checklist item");
   }
-  if (resumedCloseout && existsSync(worktree)) {
+  if (partialCloseoutHandled && existsSync(worktree)) {
     // The first attempt could not remove the bound worktree while it was
     // the process working directory; the resumed closeout already released
     // the binding, so the leftover directory is orphaned rehearsal debris.
+    if (path.basename(worktree) !== started.worktree_name) {
+      fail("candidate partial closeout orphan path does not match its exact worktree identity");
+    }
     rmSync(worktree, { recursive: true, force: true });
   }
   if (existsSync(worktree)) {

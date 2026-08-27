@@ -76,6 +76,21 @@ assert.ok(
   source.includes('["task", "finish", changeRef, "--local", "--json"]'),
   "partial Task closeout must resume with the exact returned Change reference",
 );
+for (const requiredWindowsCloseout of [
+  '["task", "show", taskId, "--local", "--json"]',
+  '["change", "show", changeRef, "--local", "--json"]',
+  '["line", "show", landed.target_line, "--json"]',
+  '["worktree", "list", "--json"]',
+  '["line", "archive", featureLineName, "--json"]',
+  "windows_partial_task_land_closeout",
+  "second_land_applied: false",
+  "path.basename(worktree) !== started.worktree_name",
+]) {
+  assert.ok(
+    source.includes(requiredWindowsCloseout),
+    `Windows direct partial-closeout verification is missing: ${requiredWindowsCloseout}`,
+  );
+}
 const rule = new RegExp(declaration[1]);
 for (const name of [
   "ait-native_1.0.0~rc.11_amd64.deb",
