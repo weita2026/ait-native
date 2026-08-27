@@ -602,8 +602,14 @@ function initializePriorState(recorder, aitSpec, root, priorVersion) {
     };
   }
   const configPath = path.join(root, ".ait", "config.json");
+  const agentsPath = path.join(root, "AGENTS.md");
   requireRegularFile(configPath, "prior repository config");
-  return { available: true, config_sha256: sha256File(configPath) };
+  requireRegularFile(agentsPath, "prior repository workflow guidance");
+  return {
+    available: true,
+    config_sha256: sha256File(configPath),
+    agents_sha256: sha256File(agentsPath),
+  };
 }
 
 function firstLand(recorder, aitSpec, root, expectedText, priorState = null) {
@@ -823,8 +829,21 @@ function firstLand(recorder, aitSpec, root, expectedText, priorState = null) {
   if (existsSync(worktree)) {
     fail("candidate first land left its bound worktree behind");
   }
-  const agents = readFileSync(path.join(root, "AGENTS.md"), "utf8");
-  generatedWorkflowCurrent(agents);
+  const agentsPath = path.join(root, "AGENTS.md");
+  requireRegularFile(agentsPath, "candidate repository workflow guidance");
+  const agents = readFileSync(agentsPath, "utf8");
+  if (priorState?.available === true) {
+    const agentsSha256 = sha256Bytes(agents);
+    if (agentsSha256 !== priorState.agents_sha256) {
+      fail("candidate upgrade replaced the prior repository workflow guidance");
+    }
+    recorder.observations.prior_workflow_guidance_preserved = {
+      sha256: agentsSha256,
+      byte_for_byte: true,
+    };
+  } else {
+    generatedWorkflowCurrent(agents);
+  }
   return { root, task_id: taskId, snapshot_id: snapshot.snapshot_id };
 }
 

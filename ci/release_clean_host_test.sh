@@ -76,6 +76,26 @@ assert.ok(
   source.includes('["task", "finish", changeRef, "--local", "--json"]'),
   "partial Task closeout must resume with the exact returned Change reference",
 );
+assert.ok(
+  source.includes("agents_sha256: sha256File(agentsPath)"),
+  "upgrade baseline must capture the prior repository workflow guidance",
+);
+assert.ok(
+  source.includes("agentsSha256 !== priorState.agents_sha256"),
+  "upgrade verification must compare the candidate repository guidance with its prior digest",
+);
+assert.ok(
+  source.includes("candidate upgrade replaced the prior repository workflow guidance"),
+  "upgrade verification must fail closed when candidate installation rewrites prior guidance",
+);
+assert.ok(
+  source.includes("prior_workflow_guidance_preserved"),
+  "upgrade evidence must record byte-for-byte prior workflow guidance preservation",
+);
+assert.ok(
+  /if \(priorState\?\.available === true\) \{[\s\S]*?\} else \{\s*generatedWorkflowCurrent\(agents\);\s*\}/.test(source),
+  "new installs must validate current generated guidance while upgrades preserve prior guidance",
+);
 for (const requiredWindowsCloseout of [
   '["task", "show", taskId, "--local", "--json"]',
   '["change", "show", changeRef, "--local", "--json"]',
