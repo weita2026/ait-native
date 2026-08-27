@@ -24,6 +24,49 @@ Java, mixed-language, and non-code repositories.
 
 Official website: <https://ait-native.dev/>
 
+## 1.1.0: a Task-driven core built for concurrent agents
+
+AIT Native 1.1.0 makes the **Task** the unit of agent work. Every Task owns
+its Change lineage, feature Line, and isolated worktree. This supports
+high-concurrency operation: commands for independent Tasks can be issued and
+run at the same time across many coding-agent sessions without sharing one
+mutable checkout.
+
+Concurrency has an explicit safety boundary: authoring and validation can run
+in parallel, while admission to a shared target Line is revalidated and
+serialized. If the target moved, AIT rebases or stops for a real conflict
+instead of overwriting newer work. It does not make concurrent writes to the
+same worktree safe.
+
+The 1.1.0 core also unifies closeout under `ait task finish` and
+`ait workflow finish`, keeps intermediate `ait snapshot create` checkpoints,
+and adds `ait commit` as a Git-friendly way to create an AIT Snapshot. The
+normal local path remains native and server-free.
+
+## Measured against Git worktrees
+
+The frozen 1.1.0 game-development benchmark used GPT-5.6 Sol at max reasoning
+effort on five workloads, with 20 admitted paired attempts per workload: 100
+fresh AIT sessions and 100 fresh Git sessions. Functional acceptance was
+100/100 in both treatments.
+
+| Measure | Published result |
+| --- | ---: |
+| Workload-median token saving | **34.95%** |
+| Bootstrap 95% confidence interval | **27.85% to 39.77%** |
+| Raw provider tokens | **46,300,272 AIT vs 70,140,925 Git (33.99% lower)** |
+| Workload-median elapsed-time saving | **21.04%** |
+
+In other words, the AIT Task/worktree treatment used about one-third fewer raw
+provider tokens and finished about one-fifth faster in this controlled
+campaign. The workload-balanced 34.95% result is the primary token metric; the
+33.99% pooled total is descriptive. These results are scoped to the published
+fixtures, model pin, and linear fresh-session protocol. They are not a promise
+for every workload, and the benchmark did not directly measure high-concurrency
+execution.
+
+[Read the summary and machine-readable evidence](https://github.com/weita2026/ait-native/tree/v1.1.0/ait-core/release/benchmarks/game-v1-g56s-max-complete200-fx27-20260826).
+
 ## Install and initialize
 
 ```sh
