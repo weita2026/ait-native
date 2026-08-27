@@ -2,7 +2,7 @@
   "contract": "ait-native-bootstrap-matrix/v1",
   "schema_version": 1,
   "matrix_revision": "six-target-2026-07-19.1",
-  "version": "1.0.1",
+  "version": "1.1.0",
   "rust_toolchain": "1.96.0",
   "cargo_profile": "release",
   "package": "ait-cli",

@@ -2,7 +2,7 @@
   "schema": "ait.release.adapter/v1",
   "package": {
     "name": "ait-runner",
-    "version": "1.0.1",
+    "version": "1.1.0",
     "description": "Native ait-runner release executable",
     "license_files": [
       {
