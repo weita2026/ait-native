@@ -45,6 +45,42 @@ import { readFileSync } from "node:fs";
 const source = readFileSync(process.argv[2], "utf8");
 const declaration = source.match(/^const CHECKSUM_ASSET_NAME = \/(.*)\/;$/m);
 assert.ok(declaration, "clean-host checksum asset-name rule is missing");
+assert.ok(
+  source.includes(`const OCI_SERVER_RUNTIME_ARGS = Object.freeze([
+  "--listen",
+  "0.0.0.0:8088",
+  "--init-if-missing",
+  "--defer-ci-admission",
+]);`),
+  "OCI server lifecycle must retain the exact documented runtime arguments",
+);
+assert.ok(
+  source.includes(`          reference,
+          ...OCI_SERVER_RUNTIME_ARGS,`),
+  "OCI server lifecycle must pass the documented arguments after the image reference",
+);
+assert.ok(
+  source.includes('const stderr = result.stderr || result.error?.message || "";'),
+  "clean-host command failures must retain spawn and timeout diagnostics",
+);
+assert.ok(
+  source.includes('landed.next_action?.command !== `ait task finish ${changeRef} --local`'),
+  "partial Task closeout must bind its exact returned recovery command",
+);
+assert.ok(
+  source.includes(`          "worktree",
+          "remove",
+          worktreeName,
+          "--delete-path",
+          "--force",
+          "--yes",
+          "--json",`),
+  "Windows partial closeout must remove only the exact completed Task worktree",
+);
+assert.ok(
+  source.includes('["task", "finish", changeRef, "--local", "--json"]'),
+  "partial Task closeout must resume with the exact returned Change reference",
+);
 const rule = new RegExp(declaration[1]);
 for (const name of [
   "ait-native_1.0.0~rc.11_amd64.deb",

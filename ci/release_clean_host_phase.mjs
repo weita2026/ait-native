@@ -24,6 +24,12 @@ const MATRIX_CONTRACT = "ait.release.clean-host.matrix/v1";
 const MAX_CAPTURE = 16 * 1024 * 1024;
 const COMMAND_TIMEOUT_MS = 10 * 60 * 1000;
 const CHECKSUM_ASSET_NAME = /^[A-Za-z0-9][A-Za-z0-9._@+~-]*$/;
+const OCI_SERVER_RUNTIME_ARGS = Object.freeze([
+  "--listen",
+  "0.0.0.0:8088",
+  "--init-if-missing",
+  "--defer-ci-admission",
+]);
 const MATRIX_ROW_COUNTS = {
   "distribution-target-32-2026-08-17.2": 32,
   "distribution-target-runner-bundle-32-2026-08-26.1": 32,
@@ -257,7 +263,7 @@ class Recorder {
     });
     const status = result.status ?? (result.error ? 127 : 0);
     const stdout = result.stdout ?? "";
-    const stderr = result.stderr ?? result.error?.message ?? "";
+    const stderr = result.stderr || result.error?.message || "";
     this.commands.push({
       label: options.label ?? "command",
       command: shellCommandText(command, args),
@@ -684,10 +690,45 @@ function firstLand(recorder, aitSpec, root, expectedText, priorState = null) {
     // exit 2. The closeout contract's idempotent_phase_resume finishes the exact
     // closeout from the repository root, where no process holds the
     // worktree.
+    const changeRef = landed.change_ref;
+    if (!/^LT-[0-9]{4,}\/C-[0-9]{2,}$/.test(changeRef ?? "")) {
+      fail("partial candidate Task finish returned no exact Change reference");
+    }
+    if (landed.next_action?.command !== `ait task finish ${changeRef} --local`) {
+      fail("partial candidate Task finish returned an inconsistent closeout command");
+    }
+    if (process.platform === "win32") {
+      // The first finish is authoritative but cannot delete its own current
+      // directory on Windows. Remove that exact completed Task worktree from
+      // the Repository root after the child exits, then resume closeout with
+      // the Change identity returned by the CLI contract. This preserves the
+      // landed Snapshot and Plan result while avoiding a second land.
+      const worktreeName = started.worktree_name;
+      if (!/^[a-z0-9][a-z0-9._-]*$/.test(worktreeName ?? "")) {
+        fail("candidate task start returned no exact removable worktree name");
+      }
+      jsonSpec(
+        recorder,
+        aitSpec,
+        [
+          "worktree",
+          "remove",
+          worktreeName,
+          "--delete-path",
+          "--force",
+          "--yes",
+          "--json",
+        ],
+        { cwd: root, label: "candidate completed Windows worktree removal" },
+      );
+      if (existsSync(worktree)) {
+        fail("candidate completed Windows worktree removal retained its path");
+      }
+    }
     landed = jsonSpec(
       recorder,
       aitSpec,
-      ["task", "finish", taskId, "--local", "--json"],
+      ["task", "finish", changeRef, "--local", "--json"],
       { cwd: root, label: "candidate task finish closeout resume" },
     );
     resumedCloseout = true;
@@ -1969,6 +2010,7 @@ function ociContext(
           "--volume",
           `${volume}:/var/lib/ait`,
           reference,
+          ...OCI_SERVER_RUNTIME_ARGS,
         ],
         { label: "OCI explicit server start" },
       );
