@@ -405,7 +405,7 @@ server_run() {
   local server_bin
   server_bin="$(server_binary_path)"
   reject_debug_server_binary "${server_bin}"
-  exec "${server_bin}" run --data "${AIT_NATIVE_SERVER_DATA}" "$@"
+  exec "${server_bin}" --data "${AIT_NATIVE_SERVER_DATA}" "$@"
 }
 
 server_start() {
@@ -451,9 +451,9 @@ server_start() {
   case "${launcher}" in
     foreground)
       if [[ "${defer_ci_admission}" == "1" ]]; then
-        exec "${server_bin}" run --data "${AIT_NATIVE_SERVER_DATA}" --listen "${listen}" --defer-ci-admission
+        exec "${server_bin}" --data "${AIT_NATIVE_SERVER_DATA}" --listen "${listen}" --defer-ci-admission
       fi
-      exec "${server_bin}" run --data "${AIT_NATIVE_SERVER_DATA}" --listen "${listen}"
+      exec "${server_bin}" --data "${AIT_NATIVE_SERVER_DATA}" --listen "${listen}"
       ;;
     screen)
       if ! command -v screen >/dev/null 2>&1; then
@@ -464,7 +464,7 @@ server_start() {
       local log_file
       session_name="${AIT_SERVER_SCREEN_NAME:-ait-server}"
       log_file="${AIT_SERVER_LOG_FILE:-${AIT_LOG_DIR}/ait-server.log}"
-      screen -dmS "${session_name}" /bin/sh -c 'if [ "$4" = "1" ]; then exec "$1" run --data "$2" --listen "$3" --defer-ci-admission >> "$5" 2>&1; fi; exec "$1" run --data "$2" --listen "$3" >> "$5" 2>&1' sh "${server_bin}" "${AIT_NATIVE_SERVER_DATA}" "${listen}" "${defer_ci_admission}" "${log_file}"
+      screen -dmS "${session_name}" /bin/sh -c 'if [ "$4" = "1" ]; then exec "$1" --data "$2" --listen "$3" --defer-ci-admission >> "$5" 2>&1; fi; exec "$1" --data "$2" --listen "$3" >> "$5" 2>&1' sh "${server_bin}" "${AIT_NATIVE_SERVER_DATA}" "${listen}" "${defer_ci_admission}" "${log_file}"
       printf 'ait-server started with screen session %s\n' "${session_name}"
       printf 'binary: %s\n' "${server_bin}"
       printf 'log: %s\n' "${log_file}"

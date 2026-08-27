@@ -708,6 +708,30 @@ where
         })
     }
 
+    fn replace_file_atomically(
+        &self,
+        path: &Path,
+        bytes: &[u8],
+        publish_label: &str,
+    ) -> StoreResult<PathBuf> {
+        let authority_parent = self.authority_root.as_path().parent().ok_or_else(|| {
+            BinaryDbError::invalid_domain_data(format!(
+                "Binary DB authority root has no staging parent: {}",
+                self.authority_root.as_path().display()
+            ))
+        })?;
+        let staging_directory = authority_parent.join("binary-db-staging");
+        self.files
+            .write_bytes_atomically_from_directory(path, &staging_directory, bytes, publish_label)
+            .map_err(|e| {
+                file_io_error_to_binary(
+                    format!("atomically replace Binary DB file {}", path.display()),
+                    e,
+                )
+            })?;
+        Ok(staging_directory)
+    }
+
     fn layout_id(&self, file: BinaryFileId) -> StoreResult<u32> {
         let path = self.file_path_for_binary_record(&file)?;
         let size = self.metadata_len(&path)?.ok_or_else(|| {

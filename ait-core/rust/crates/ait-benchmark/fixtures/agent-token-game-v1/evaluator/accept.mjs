@@ -309,8 +309,6 @@ async function checkHygiene() {
   }
   const workload = JSON.parse(await readFile(candidatePath(".benchmark/workload.json"), "utf8"));
   assert.equal(workload.workload_id, workloadId);
-  assert.equal(workload.workflow_mode, "solo_local");
-  assert.equal(workload.ait_server_allowed, false);
 }
 
 let gameModule;

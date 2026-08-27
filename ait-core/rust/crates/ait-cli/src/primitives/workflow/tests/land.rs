@@ -206,7 +206,7 @@ fn workflow_land_base_line_read_accepts_line_remote_trait() {
     };
 
     let line = workflow_land_base_line_read_with_task_remote(&mut remote, "fixture-ait", "main")
-        .expect("read workflow land base line");
+        .expect("read workflow finish base line");
     assert_eq!(line["head_snapshot_id"], json!("SNP-MAIN"));
 
     let err = workflow_land_base_line_read_with_task_remote(
@@ -279,7 +279,7 @@ fn workflow_land_policy_read_accepts_closeout_remote_trait() {
 
     let policy =
         workflow_land_policy_read_with_closeout_remote(&mut remote, "fixture-ait", Some("LCP-1"))
-            .expect("read workflow land policy");
+            .expect("read workflow finish policy");
     assert_eq!(policy["decision"], json!("pass"));
 
     let missing = workflow_land_policy_read_with_closeout_remote(
@@ -324,7 +324,7 @@ fn workflow_land_attestation_read_accepts_closeout_remote_trait() {
         "fixture-ait",
         Some("LCP-1"),
     )
-    .expect("read workflow land attestation");
+    .expect("read workflow finish attestation");
     assert_eq!(attestation["tests_status"], json!("pass"));
 
     let missing = workflow_land_attestation_read_with_closeout_remote(
@@ -366,7 +366,7 @@ fn workflow_land_review_summary_read_accepts_closeout_remote_trait() {
 
     let review_summary =
         workflow_land_review_summary_read_with_closeout_remote(&mut remote, "fixture-ait", "LCC-1")
-            .expect("read workflow land review summary");
+            .expect("read workflow finish review summary");
     assert_eq!(review_summary["review_state"], json!("approved"));
 
     let err = workflow_land_review_summary_read_with_closeout_remote(
@@ -508,7 +508,7 @@ fn workflow_land_remote_state_accepts_read_capability_traits() {
         None,
         false,
     )
-    .expect("hydrate workflow land remote state");
+    .expect("hydrate workflow finish remote state");
 
     assert_eq!(state["landed"], json!(false));
     assert_eq!(state["resolved_change_id"], json!("RCC-REMOTE"));
@@ -652,7 +652,7 @@ fn workflow_land_remote_state_landed_change_short_circuits_closeout_reads() {
         None,
         false,
     )
-    .expect("hydrate already-landed workflow land remote state");
+    .expect("hydrate already-landed workflow finish remote state");
 
     assert_eq!(state["landed"], json!(true));
     assert_eq!(state["resolved_change_id"], json!("RCC-LANDED"));
@@ -744,7 +744,7 @@ fn workflow_land_record_task_review_accepts_patchset_review_and_policy_traits() 
         "alice",
         "fixture-ait",
     )
-    .expect("record workflow land task review");
+    .expect("record workflow finish task review");
 
     assert_eq!(payload["result"]["patchset_id"], json!("RCP-REVIEW-1"));
     assert_eq!(payload["result"]["reviewer"], json!("alice"));
@@ -796,7 +796,7 @@ fn workflow_land_record_code_review_summary_accepts_patchset_and_review_traits()
         review_message,
         "fixture-ait",
     )
-    .expect("record workflow land code review summary");
+    .expect("record workflow finish code review summary");
 
     assert_eq!(payload["result"]["patchset_id"], json!("RCP-REVIEW-2"));
     assert_eq!(payload["result"]["reviewer"], json!("review-bot"));

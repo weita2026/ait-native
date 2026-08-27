@@ -12,7 +12,7 @@ pub enum LifecycleCommand {
     Help,
     Init,
     Probe,
-    Run,
+    Serve,
     Version,
 }
 
@@ -36,7 +36,7 @@ pub struct PreparedLifecycle {
 }
 
 pub fn lifecycle_usage() -> &'static str {
-    "Usage:\n  ait-server run [--data <absolute-path>] [--listen <ip:port>] [--init-if-missing] [--defer-ci-admission]\n  ait-server init [--data <absolute-path>]\n  ait-server probe [--data <absolute-path>] [--defer-ci-admission]\n  ait-server --startup-probe\n  ait-server --version\n\nWith no arguments, ait-server prints this help without starting the server.\nWith no --data flag or AIT_NATIVE_SERVER_DATA environment, AIT uses the\nplatform user-data root and safely initializes it on first run.\n--listen defaults to 127.0.0.1:8088 and is accepted only by `run`.\n--defer-ci-admission skips only the startup RAM-workspace probe; managed CI\nallocation still fails closed until a memory-backed root is configured."
+    "Usage:\n  ait-server [--data <absolute-path>] [--listen <ip:port>] [--init-if-missing] [--defer-ci-admission]\n  ait-server init [--data <absolute-path>]\n  ait-server probe [--data <absolute-path>] [--defer-ci-admission]\n  ait-server --startup-probe\n  ait-server --help\n  ait-server --version\n\nWith no arguments, ait-server starts with the platform user-data root,\ninitializes it on first use, listens on 127.0.0.1:8088, and defers the startup\nCI RAM-workspace probe. An explicit --data or AIT_NATIVE_SERVER_DATA root does\nnot enable guarded initialization unless --init-if-missing is supplied.\n--listen is accepted only when starting the server.\n--defer-ci-admission skips only the startup RAM-workspace probe; managed CI\nallocation still fails closed until a memory-backed root is configured."
 }
 
 pub fn parse_lifecycle_args<I, S>(args: I) -> Result<LifecycleOptions, String>
@@ -48,15 +48,6 @@ where
         .into_iter()
         .map(|value| value.as_ref().to_os_string())
         .collect::<Vec<_>>();
-    if values.is_empty() {
-        return Ok(LifecycleOptions {
-            command: LifecycleCommand::Help,
-            data_root: None,
-            listen_address: None,
-            defer_ci_admission: false,
-            init_if_missing: false,
-        });
-    }
     if values.len() == 1 && matches!(values[0].to_str(), Some("--version") | Some("-V")) {
         return Ok(LifecycleOptions {
             command: LifecycleCommand::Version,
@@ -87,7 +78,6 @@ where
             .to_str()
             .ok_or_else(|| "ait-server arguments must be valid UTF-8".to_string())?;
         match value {
-            "run" => select_command(&mut command, LifecycleCommand::Run)?,
             "init" => select_command(&mut command, LifecycleCommand::Init)?,
             "probe" | "--startup-probe" => select_command(&mut command, LifecycleCommand::Probe)?,
             "--data" => {
@@ -124,15 +114,15 @@ where
         }
         index += 1;
     }
-    let command = command.unwrap_or(LifecycleCommand::Run);
-    if init_if_missing && command != LifecycleCommand::Run {
-        return Err("--init-if-missing is accepted only with `ait-server run`".to_string());
+    let command = command.unwrap_or(LifecycleCommand::Serve);
+    if init_if_missing && command != LifecycleCommand::Serve {
+        return Err("--init-if-missing is accepted only when starting ait-server".to_string());
     }
     if defer_ci_admission && command == LifecycleCommand::Init {
         return Err("--defer-ci-admission has no meaning for `ait-server init`".to_string());
     }
-    if listen_address.is_some() && command != LifecycleCommand::Run {
-        return Err("--listen is accepted only with `ait-server run`".to_string());
+    if listen_address.is_some() && command != LifecycleCommand::Serve {
+        return Err("--listen is accepted only when starting ait-server".to_string());
     }
     if let Some(root) = data_root.as_deref() {
         require_absolute_data_root(root)?;
@@ -259,19 +249,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parser_preserves_legacy_forms_and_adds_native_commands() {
+    fn parser_preserves_direct_start_and_native_commands() {
         assert_eq!(
             parse_lifecycle_args(Vec::<OsString>::new())
                 .unwrap()
                 .command,
-            LifecycleCommand::Help
+            LifecycleCommand::Serve
         );
         assert_eq!(
-            parse_lifecycle_args(["run"]).unwrap().command,
-            LifecycleCommand::Run
-        );
-        assert_eq!(
-            parse_lifecycle_args(["run", "--listen", "127.0.0.1:9090"])
+            parse_lifecycle_args(["--listen", "127.0.0.1:9090"])
                 .unwrap()
                 .listen_address,
             Some("127.0.0.1:9090".parse().unwrap())
@@ -280,7 +266,7 @@ mod tests {
             parse_lifecycle_args(["--data", "/tmp/ait-server"])
                 .unwrap()
                 .command,
-            LifecycleCommand::Run
+            LifecycleCommand::Serve
         );
         assert_eq!(
             parse_lifecycle_args(["--startup-probe"]).unwrap().command,
@@ -300,19 +286,19 @@ mod tests {
         );
         assert!(parse_lifecycle_args(["init", "--init-if-missing"])
             .unwrap_err()
-            .contains("only with"));
-        assert!(parse_lifecycle_args(["run", "probe"])
+            .contains("only when starting"));
+        assert!(parse_lifecycle_args(["run"])
             .unwrap_err()
-            .contains("mutually exclusive"));
+            .contains("unknown ait-server argument `run`"));
         assert!(parse_lifecycle_args(["--data", "relative"])
             .unwrap_err()
             .contains("absolute"));
         assert!(
             parse_lifecycle_args(["probe", "--listen", "127.0.0.1:9090"])
                 .unwrap_err()
-                .contains("only with")
+                .contains("only when starting")
         );
-        assert!(parse_lifecycle_args(["run", "--listen", "localhost:9090"])
+        assert!(parse_lifecycle_args(["--listen", "localhost:9090"])
             .unwrap_err()
             .contains("IP address"));
     }

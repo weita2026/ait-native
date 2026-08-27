@@ -22,4 +22,3 @@ ENV AIT_NATIVE_SERVER_DATA=/var/lib/ait/server-data \
 USER 65532:65532
 EXPOSE 8088
 ENTRYPOINT ["/usr/local/bin/ait-server"]
-CMD ["run", "--listen", "0.0.0.0:8088", "--init-if-missing", "--defer-ci-admission"]

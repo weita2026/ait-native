@@ -17,12 +17,12 @@ const PRODUCT_DESCRIPTION: &str =
 const OFFICIAL_WEBSITE: &str = "https://ait-native.dev/";
 const OFFICIAL_QUICKSTART: &str = "https://ait-native.dev/local-quickstart/";
 const AIT_SERVER_SYSTEMD_UNIT_PATH: &str = "usr/lib/systemd/system/ait-server.service";
-const AIT_SERVER_SYSTEMD_UNIT: &str = "[Unit]\nDescription=AIT native server\nDocumentation=https://github.com/weita2026/ait-native\nAfter=network.target\n\n[Service]\nType=simple\nDynamicUser=yes\nStateDirectory=ait-native\nRuntimeDirectory=ait-native\nUMask=0077\nExecStart=/usr/bin/ait-server run --data /var/lib/ait-native/server-data --init-if-missing --defer-ci-admission\nRestart=on-failure\nRestartSec=2s\nNoNewPrivileges=yes\nPrivateTmp=yes\nProtectSystem=strict\nProtectHome=yes\nProtectControlGroups=yes\nProtectKernelModules=yes\nProtectKernelTunables=yes\nRestrictAddressFamilies=AF_UNIX AF_INET AF_INET6\nRestrictSUIDSGID=yes\nLockPersonality=yes\nCapabilityBoundingSet=\nAmbientCapabilities=\n\n[Install]\nWantedBy=multi-user.target\n";
+const AIT_SERVER_SYSTEMD_UNIT: &str = "[Unit]\nDescription=AIT native server\nDocumentation=https://github.com/weita2026/ait-native\nAfter=network.target\n\n[Service]\nType=simple\nDynamicUser=yes\nStateDirectory=ait-native\nRuntimeDirectory=ait-native\nUMask=0077\nExecStart=/usr/bin/ait-server --data /var/lib/ait-native/server-data --init-if-missing --defer-ci-admission\nRestart=on-failure\nRestartSec=2s\nNoNewPrivileges=yes\nPrivateTmp=yes\nProtectSystem=strict\nProtectHome=yes\nProtectControlGroups=yes\nProtectKernelModules=yes\nProtectKernelTunables=yes\nRestrictAddressFamilies=AF_UNIX AF_INET AF_INET6\nRestrictSUIDSGID=yes\nLockPersonality=yes\nCapabilityBoundingSet=\nAmbientCapabilities=\n\n[Install]\nWantedBy=multi-user.target\n";
 const WINGET_SERVER_CONTROLLER_PATH: &str = "ait-server-control.ps1";
 const WINGET_SERVER_CONTROLLER: &str = r#"[CmdletBinding()]
 param(
     [Parameter(Position = 0)]
-    [ValidateSet('init', 'probe', 'run', 'start', 'status', 'stop')]
+    [ValidateSet('init', 'probe', 'start', 'status', 'stop')]
     [string]$Command = 'status',
     [string]$DataRoot = '',
     [string]$Listen = '127.0.0.1:8088'
@@ -116,16 +116,13 @@ switch ($Command) {
     'probe' {
         Invoke-AitServer @('probe', '--data', $DataRoot, '--defer-ci-admission')
     }
-    'run' {
-        Invoke-AitServer @('run', '--data', $DataRoot, '--listen', $Listen, '--init-if-missing', '--defer-ci-admission')
-    }
     'start' {
         if ($null -ne (Get-ManagedAitServer)) {
             throw "ait-server is already active; state: $StatePath"
         }
         Invoke-AitServer @('init', '--data', $DataRoot)
         $Started = Start-Process -FilePath $Server `
-            -ArgumentList @('run', '--data', $DataRoot, '--listen', $Listen, '--init-if-missing', '--defer-ci-admission') `
+            -ArgumentList @('--data', $DataRoot, '--listen', $Listen, '--init-if-missing', '--defer-ci-admission') `
             -RedirectStandardOutput $StdoutPath `
             -RedirectStandardError $StderrPath `
             -WindowStyle Hidden `
@@ -554,6 +551,24 @@ fn require_distribution_components(
         ));
     }
     Ok(())
+}
+
+fn require_native_product_components(
+    distribution: &DistributionDefinition,
+) -> Result<bool, String> {
+    let includes_runner = distribution
+        .components
+        .iter()
+        .any(|component| component == "ait-runner");
+    if includes_runner {
+        require_distribution_components(distribution, &["ait", "ait-server", "ait-runner"])?;
+    } else {
+        // Preserve the already-published 1.0.x package inputs exactly. New
+        // family dossiers add the existing runner executable to the product
+        // payload without changing the server-only service contract.
+        require_distribution_components(distribution, &["ait", "ait-server"])?;
+    }
+    Ok(includes_runner)
 }
 
 fn component_command(component: &str, target: &str) -> Result<String, String> {
@@ -1169,6 +1184,59 @@ fn native_distribution_entries(
     Ok((entries, content, material_projections))
 }
 
+fn documentation_only_distribution_entries(
+    repo: &RepoRuntime,
+    input: &FamilyPackageInput,
+    distribution: &DistributionDefinition,
+    target: &str,
+    license_prefix: &str,
+    provenance_path: &str,
+) -> Result<NativeDistributionEntries, String> {
+    let mut entries = PackageEntries::new();
+    let content = Vec::new();
+    let materials = material_for_components(input, &distribution.components)?;
+    let mut material_projections = Vec::new();
+    for material in materials {
+        let destination = format!(
+            "{license_prefix}/{}/{}",
+            material.source_repository, material.declared_path
+        );
+        let bytes = read_frozen_bytes(
+            repo,
+            &material.path,
+            material.size_bytes,
+            &material.sha256,
+            "Frozen license material",
+        )?;
+        if entries
+            .insert(destination.clone(), (bytes, 0o644))
+            .is_some()
+        {
+            return Err(format!(
+                "License-material destination collides at {destination:?}."
+            ));
+        }
+        material_projections.push(MaterialProjection {
+            source: material,
+            destination,
+        });
+    }
+    entries.insert(
+        provenance_path.to_string(),
+        (
+            package_provenance(
+                input,
+                distribution,
+                Some(target),
+                &content,
+                &material_projections,
+            )?,
+            0o644,
+        ),
+    );
+    Ok((entries, content, material_projections))
+}
+
 fn homebrew_formula_class(name: &str) -> String {
     let mut class_name = String::new();
     let mut capitalize = true;
@@ -1279,6 +1347,7 @@ fn assemble_homebrew(
     if distribution.role != "product" {
         return Err("Homebrew ait-native distribution must have product role.".to_string());
     }
+    let includes_runner = require_native_product_components(distribution)?;
     let asset_base = github_asset_base(input)?;
     let mut generated = Vec::new();
     let mut archive_rows = BTreeMap::new();
@@ -1312,6 +1381,18 @@ fn assemble_homebrew(
             "sha256": digest,
             "size_bytes": bytes.len(),
         }));
+        let archive_metadata = if includes_runner {
+            json!({
+                "asset_url": format!("{asset_base}/{filename}"),
+                "server_activation": "inactive",
+                "runner_activation": "inactive",
+            })
+        } else {
+            json!({
+                "asset_url": format!("{asset_base}/{filename}"),
+                "server_activation": "inactive",
+            })
+        };
         generated.push(GeneratedArtifact {
             relative_path: format!("archives/{filename}"),
             bytes,
@@ -1321,10 +1402,7 @@ fn assemble_homebrew(
                 Some(target),
                 &content,
                 &materials,
-                json!({
-                    "asset_url": format!("{asset_base}/{filename}"),
-                    "server_activation": "inactive",
-                }),
+                archive_metadata,
                 input,
             )?,
         });
@@ -1345,12 +1423,56 @@ fn assemble_homebrew(
         platform_blocks.push('\n');
     }
     let homepage = format!("https://github.com/{}", github_source_identity(input)?);
+    let description = if includes_runner {
+        "Language-neutral native AIT CLI and runner with an inactive self-hosted server"
+    } else {
+        "Language-neutral native AIT CLI and inactive self-hosted server"
+    };
+    let runner_install = if includes_runner {
+        "    bin.install \"bin/ait-runner\"\n"
+    } else {
+        ""
+    };
+    let runner_caveat = if includes_runner {
+        "\n      ait-runner is installed but no runner daemon is configured or started.\n      Inspect the released runner interface with: #{bin}/ait-runner serve --help"
+    } else {
+        ""
+    };
+    let runner_test = if includes_runner {
+        "\n    assert_match version.to_s, shell_output(\"#{bin}/ait-runner --version\")"
+    } else {
+        ""
+    };
     let formula = format!(
-        "class {class_name} < Formula\n  desc \"Language-neutral native AIT CLI and inactive self-hosted server\"\n  homepage \"{homepage}\"\n  license {}\n\n{}  def install\n    bin.install \"bin/ait\"\n    bin.install \"bin/ait-server\"\n    pkgshare.install \"share/licenses\"\n    pkgshare.install \"share/ait-native/ait-family-provenance.json\"\n  end\n\n  service do\n    run [\n      opt_bin/\"ait-server\",\n      \"run\",\n      \"--data\",\n      var/\"ait-native/server-data\",\n      \"--init-if-missing\",\n      \"--defer-ci-admission\",\n    ]\n    keep_alive true\n    log_path var/\"log/ait-server.log\"\n    error_log_path var/\"log/ait-server.error.log\"\n  end\n\n  def caveats\n    <<~EOS\n      ait-server is installed but remains inactive until explicitly started.\n      Foreground: #{{bin}}/ait-server run\n      Managed user service: brew services start {route_name}\n      Service data: #{{var}}/ait-native/server-data\n      Managed CI still requires an admitted memory-backed runtime root.\n    EOS\n  end\n\n  test do\n    assert_match version.to_s, shell_output(\"#{{bin}}/ait --version\")\n    assert_match version.to_s, shell_output(\"#{{bin}}/ait-server --version\")\n  end\nend\n",
+        "class {class_name} < Formula\n  desc \"{description}\"\n  homepage \"{homepage}\"\n  license {}\n\n{}  def install\n    bin.install \"bin/ait\"\n    bin.install \"bin/ait-server\"\n{runner_install}    pkgshare.install \"share/licenses\"\n    pkgshare.install \"share/ait-native/ait-family-provenance.json\"\n  end\n\n  service do\n    run [\n      opt_bin/\"ait-server\",\n      \"--data\",\n      var/\"ait-native/server-data\",\n      \"--init-if-missing\",\n      \"--defer-ci-admission\",\n    ]\n    keep_alive true\n    log_path var/\"log/ait-server.log\"\n    error_log_path var/\"log/ait-server.error.log\"\n  end\n\n  def caveats\n    <<~EOS\n      ait-server is installed but remains inactive until explicitly started.{runner_caveat}\n      Foreground: #{{bin}}/ait-server\n      Managed user service: brew services start {route_name}\n      Service data: #{{var}}/ait-native/server-data\n      Managed CI still requires an admitted memory-backed runtime root.\n    EOS\n  end\n\n  test do\n    assert_match version.to_s, shell_output(\"#{{bin}}/ait --version\")\n    assert_match version.to_s, shell_output(\"#{{bin}}/ait-server --version\"){runner_test}\n  end\nend\n",
         homebrew_license_expression(input, distribution)?,
         platform_blocks,
     );
     let formula_filename = format!("{route_name}.rb");
+    let formula_metadata = if includes_runner {
+        json!({
+            "class_name": class_name,
+            "route": if input.release_channel == "rc" { "rc-tap" } else { "stable" },
+            "stable_formula_mutation": input.release_channel == "stable",
+            "archives": formula_inputs,
+            "server_service_stanza": true,
+            "server_activation": "explicit_brew_services_start",
+            "server_data_root": "#{var}/ait-native/server-data",
+            "runner_included": true,
+            "runner_activation": "inactive",
+            "runner_service_stanza": false,
+        })
+    } else {
+        json!({
+            "class_name": class_name,
+            "route": if input.release_channel == "rc" { "rc-tap" } else { "stable" },
+            "stable_formula_mutation": input.release_channel == "stable",
+            "archives": formula_inputs,
+            "server_service_stanza": true,
+            "server_activation": "explicit_brew_services_start",
+            "server_data_root": "#{var}/ait-native/server-data",
+        })
+    };
     generated.push(GeneratedArtifact {
         relative_path: format!("Formula/{formula_filename}"),
         bytes: formula.into_bytes(),
@@ -1360,15 +1482,7 @@ fn assemble_homebrew(
             None,
             &[],
             &[],
-            json!({
-                "class_name": class_name,
-                "route": if input.release_channel == "rc" { "rc-tap" } else { "stable" },
-                "stable_formula_mutation": input.release_channel == "stable",
-                "archives": formula_inputs,
-                "server_service_stanza": true,
-                "server_activation": "explicit_brew_services_start",
-                "server_data_root": "#{var}/ait-native/server-data",
-            }),
+            formula_metadata,
             input,
         )?,
     });
@@ -1456,6 +1570,7 @@ fn debian_copyright(
     input: &FamilyPackageInput,
     distribution: &DistributionDefinition,
     package_name: &str,
+    owns_component_commands: bool,
 ) -> Result<Vec<u8>, String> {
     let mut repositories = BTreeMap::<String, (String, String)>::new();
     let source_root = public_source_root(input)?;
@@ -1485,13 +1600,16 @@ fn debian_copyright(
                 );
             }
         }
-        let command = component_command(component_id, "x86_64-unknown-linux-gnu")?;
-        let component_source_url = public_source_subtree_url(input, &component.source_repository)?;
-        text.push_str(&format!(
-            "Files: usr/bin/{command}\nCopyright: 2026 Weita and contributors\nLicense: {}\nComment: Source: {component_source_url} ; AIT Snapshot: {}\n\n",
-            component.license,
-            component.source_snapshot
-        ));
+        if owns_component_commands {
+            let command = component_command(component_id, "x86_64-unknown-linux-gnu")?;
+            let component_source_url =
+                public_source_subtree_url(input, &component.source_repository)?;
+            text.push_str(&format!(
+                "Files: usr/bin/{command}\nCopyright: 2026 Weita and contributors\nLicense: {}\nComment: Source: {component_source_url} ; AIT Snapshot: {}\n\n",
+                component.license,
+                component.source_snapshot
+            ));
+        }
     }
     for (repository, (snapshot, license)) in &repositories {
         let repository_source_url = public_source_subtree_url(input, repository)?;
@@ -1565,6 +1683,24 @@ fn assemble_apt(
         .iter()
         .filter(|distribution| distribution.channel == "apt")
         .collect::<Vec<_>>();
+    let product_distributions = distributions
+        .iter()
+        .copied()
+        .filter(|distribution| distribution.role == "product")
+        .collect::<Vec<_>>();
+    if product_distributions.len() != 1 {
+        return Err(format!(
+            "apt assembly requires exactly one product distribution; found {}.",
+            product_distributions.len()
+        ));
+    }
+    let product_includes_runner = require_native_product_components(product_distributions[0])?;
+    if product_includes_runner && distributions.len() > 2 {
+        return Err(
+            "apt runner bundle permits only its product package and optional dependency-only ait-runner transition alias."
+                .to_string(),
+        );
+    }
     let version = debian_version(&input.version)?;
     let suite = if input.release_channel == "rc" {
         "testing"
@@ -1579,6 +1715,17 @@ fn assemble_apt(
                 "apt distribution {package_name:?} must have product or standalone role."
             ));
         }
+        if distribution.role == "standalone" {
+            require_distribution_components(distribution, &["ait-runner"])?;
+            if product_includes_runner && package_name != "ait-runner" {
+                return Err(format!(
+                    "apt runner transition package must retain identity `ait-runner`, found {package_name:?}."
+                ));
+            }
+        }
+        let transitional_runner_alias = product_includes_runner
+            && distribution.role == "standalone"
+            && package_name == "ait-runner";
         for target in &distribution.targets {
             let architecture = debian_architecture(target)?;
             let documentation_root = format!("usr/share/doc/{package_name}");
@@ -1587,18 +1734,37 @@ fn assemble_apt(
                     .components
                     .iter()
                     .any(|component| component == "ait-server");
-            let (mut data_entries, content, materials) = native_distribution_entries(
-                repo,
-                input,
-                distribution,
-                target,
-                "usr/bin",
-                &format!("{documentation_root}/licenses"),
-                &format!("{documentation_root}/ait-family-provenance.json"),
-            )?;
+            let (mut data_entries, content, materials) = if transitional_runner_alias {
+                documentation_only_distribution_entries(
+                    repo,
+                    input,
+                    distribution,
+                    target,
+                    &format!("{documentation_root}/licenses"),
+                    &format!("{documentation_root}/ait-family-provenance.json"),
+                )?
+            } else {
+                native_distribution_entries(
+                    repo,
+                    input,
+                    distribution,
+                    target,
+                    "usr/bin",
+                    &format!("{documentation_root}/licenses"),
+                    &format!("{documentation_root}/ait-family-provenance.json"),
+                )?
+            };
             data_entries.insert(
                 format!("{documentation_root}/copyright"),
-                (debian_copyright(input, distribution, package_name)?, 0o644),
+                (
+                    debian_copyright(
+                        input,
+                        distribution,
+                        package_name,
+                        !transitional_runner_alias,
+                    )?,
+                    0o644,
+                ),
             );
             if installs_server_unit
                 && data_entries
@@ -1617,14 +1783,23 @@ fn assemble_apt(
                 .map(|(bytes, _)| bytes.len() as u64)
                 .sum::<u64>();
             let installed_size = installed_bytes.div_ceil(1024).max(1);
-            let description = if distribution.role == "product" {
+            let description = if transitional_runner_alias {
+                "Transition alias for the AIT runner bundled by ait-native"
+            } else if product_includes_runner && distribution.role == "product" {
+                "Language-neutral native AIT CLI and runner with an inactive self-hosted server"
+            } else if distribution.role == "product" {
                 "Language-neutral native AIT CLI and inactive self-hosted server"
             } else {
                 "Native AIT execution runner"
             };
             let homepage = format!("https://github.com/{}", github_source_identity(input)?);
+            let dependencies = if transitional_runner_alias {
+                format!("ait-native (= {version}), libc6 (>= 2.28)")
+            } else {
+                "libc6 (>= 2.28)".to_string()
+            };
             let control = format!(
-                "Package: {package_name}\nVersion: {version}\nSection: devel\nPriority: optional\nArchitecture: {architecture}\nMaintainer: AIT maintainers <weita2026@users.noreply.github.com>\nInstalled-Size: {installed_size}\nDepends: libc6 (>= 2.28)\nHomepage: {homepage}\nDescription: {description}\n Built from an immutable AIT family dossier without starting services.\n"
+                "Package: {package_name}\nVersion: {version}\nSection: devel\nPriority: optional\nArchitecture: {architecture}\nMaintainer: AIT maintainers <weita2026@users.noreply.github.com>\nInstalled-Size: {installed_size}\nDepends: {dependencies}\nHomepage: {homepage}\nDescription: {description}\n Built from an immutable AIT family dossier without starting services.\n"
             );
             let control_entries =
                 BTreeMap::from([("control".to_string(), (control.into_bytes(), 0o644))]);
@@ -1632,6 +1807,47 @@ fn assemble_apt(
             let data_tar = tar_gz_bytes_with_parent_directories(&data_entries, input.epoch)?;
             let bytes = debian_archive_bytes(&control_tar, &data_tar, input.epoch)?;
             let filename = format!("{package_name}_{version}_{architecture}.deb");
+            let package_metadata = if transitional_runner_alias {
+                json!({
+                    "package": package_name,
+                    "debian_version": version,
+                    "architecture": architecture,
+                    "suite": suite,
+                    "server_activation": "inactive",
+                    "maintainer_script_count": 0,
+                    "systemd_unit": false,
+                    "transitional_dependency_alias": true,
+                    "runner_payload_owner": "ait-native",
+                    "depends": format!("ait-native (= {version})"),
+                })
+            } else if product_includes_runner && distribution.role == "product" {
+                json!({
+                    "package": package_name,
+                    "debian_version": version,
+                    "architecture": architecture,
+                    "suite": suite,
+                    "server_activation": "inactive",
+                    "maintainer_script_count": 0,
+                    "systemd_unit": installs_server_unit,
+                    "systemd_unit_path": installs_server_unit.then_some(AIT_SERVER_SYSTEMD_UNIT_PATH),
+                    "systemd_unit_sha256": installs_server_unit.then(|| sha256_hex(AIT_SERVER_SYSTEMD_UNIT.as_bytes())),
+                    "runner_included": true,
+                    "runner_activation": "inactive",
+                    "runner_systemd_unit": false,
+                })
+            } else {
+                json!({
+                    "package": package_name,
+                    "debian_version": version,
+                    "architecture": architecture,
+                    "suite": suite,
+                    "server_activation": "inactive",
+                    "maintainer_script_count": 0,
+                    "systemd_unit": installs_server_unit,
+                    "systemd_unit_path": installs_server_unit.then_some(AIT_SERVER_SYSTEMD_UNIT_PATH),
+                    "systemd_unit_sha256": installs_server_unit.then(|| sha256_hex(AIT_SERVER_SYSTEMD_UNIT.as_bytes())),
+                })
+            };
             generated.push(GeneratedArtifact {
                 relative_path: format!("packages/{filename}"),
                 bytes,
@@ -1641,17 +1857,7 @@ fn assemble_apt(
                     Some(target),
                     &content,
                     &materials,
-                    json!({
-                        "package": package_name,
-                        "debian_version": version,
-                        "architecture": architecture,
-                        "suite": suite,
-                        "server_activation": "inactive",
-                        "maintainer_script_count": 0,
-                        "systemd_unit": installs_server_unit,
-                        "systemd_unit_path": installs_server_unit.then_some(AIT_SERVER_SYSTEMD_UNIT_PATH),
-                        "systemd_unit_sha256": installs_server_unit.then(|| sha256_hex(AIT_SERVER_SYSTEMD_UNIT.as_bytes())),
-                    }),
+                    package_metadata,
                     input,
                 )?,
             });
@@ -1705,6 +1911,12 @@ fn assemble_winget(
     if distribution.role != "product" {
         return Err("WinGet ait-native distribution must have product role.".to_string());
     }
+    let includes_runner = require_native_product_components(distribution)?;
+    let portable_commands = if includes_runner {
+        vec!["ait", "ait-server", "ait-runner"]
+    } else {
+        vec!["ait", "ait-server"]
+    };
     let asset_base = github_asset_base(input)?;
     let route = if input.release_channel == "rc" {
         "validation"
@@ -1777,10 +1989,22 @@ fn assemble_winget(
         let digest = sha256_hex(&bytes);
         let url = format!("{asset_base}/{filename}");
         installer_yaml.push_str(&format!(
-            "  - Architecture: {architecture}\n    InstallerUrl: {}\n    InstallerSha256: {}\n    NestedInstallerType: portable\n    NestedInstallerFiles:\n    - RelativeFilePath: ait.exe\n      PortableCommandAlias: ait\n    - RelativeFilePath: ait-server.exe\n      PortableCommandAlias: ait-server\n    InstallationMetadata:\n      Files:\n      - RelativeFilePath: ait.exe\n        FileType: launch\n        InvocationParameter: --help\n      - RelativeFilePath: ait-server.exe\n        FileType: launch\n        InvocationParameter: --help\n    ArchiveBinariesDependOnPath: false\n",
+            "  - Architecture: {architecture}\n    InstallerUrl: {}\n    InstallerSha256: {}\n    NestedInstallerType: portable\n    NestedInstallerFiles:\n",
             json_quoted(&url),
             digest.to_ascii_uppercase(),
         ));
+        for command in &portable_commands {
+            installer_yaml.push_str(&format!(
+                "    - RelativeFilePath: {command}.exe\n      PortableCommandAlias: {command}\n"
+            ));
+        }
+        installer_yaml.push_str("    InstallationMetadata:\n      Files:\n");
+        for command in &portable_commands {
+            installer_yaml.push_str(&format!(
+                "      - RelativeFilePath: {command}.exe\n        FileType: launch\n        InvocationParameter: --help\n"
+            ));
+        }
+        installer_yaml.push_str("    ArchiveBinariesDependOnPath: false\n");
         installer_rows.push(json!({
             "target": target,
             "architecture": architecture,
@@ -1789,6 +2013,45 @@ fn assemble_winget(
             "sha256": digest,
             "size_bytes": bytes.len(),
         }));
+        let package_metadata = if includes_runner {
+            json!({
+                "architecture": architecture,
+                "installer_type": "zip",
+                "nested_installer_type": "portable",
+                "portable_commands": portable_commands.clone(),
+                "portable_invocation_parameters": {
+                    "ait": "--help",
+                    "ait-server": "--help",
+                    "ait-runner": "--help",
+                },
+                "asset_url": url,
+                "server_activation": "inactive",
+                "server_controller": "user_session_powershell",
+                "server_controller_path": WINGET_SERVER_CONTROLLER_PATH,
+                "server_controller_sha256": sha256_hex(WINGET_SERVER_CONTROLLER.as_bytes()),
+                "runner_included": true,
+                "runner_activation": "inactive",
+                "runner_controller": false,
+                "windows_service_registration": false,
+            })
+        } else {
+            json!({
+                "architecture": architecture,
+                "installer_type": "zip",
+                "nested_installer_type": "portable",
+                "portable_commands": portable_commands.clone(),
+                "portable_invocation_parameters": {
+                    "ait": "--help",
+                    "ait-server": "--help",
+                },
+                "asset_url": url,
+                "server_activation": "inactive",
+                "server_controller": "user_session_powershell",
+                "server_controller_path": WINGET_SERVER_CONTROLLER_PATH,
+                "server_controller_sha256": sha256_hex(WINGET_SERVER_CONTROLLER.as_bytes()),
+                "windows_service_registration": false,
+            })
+        };
         generated.push(GeneratedArtifact {
             relative_path: format!("installers/{filename}"),
             bytes,
@@ -1798,22 +2061,7 @@ fn assemble_winget(
                 Some(target),
                 &content,
                 &materials,
-                json!({
-                    "architecture": architecture,
-                    "installer_type": "zip",
-                    "nested_installer_type": "portable",
-                    "portable_commands": ["ait", "ait-server"],
-                    "portable_invocation_parameters": {
-                        "ait": "--help",
-                        "ait-server": "--help",
-                    },
-                    "asset_url": url,
-                    "server_activation": "inactive",
-                    "server_controller": "user_session_powershell",
-                    "server_controller_path": WINGET_SERVER_CONTROLLER_PATH,
-                    "server_controller_sha256": sha256_hex(WINGET_SERVER_CONTROLLER.as_bytes()),
-                    "windows_service_registration": false,
-                }),
+                package_metadata,
                 input,
             )?,
         });
@@ -1831,8 +2079,13 @@ fn assemble_winget(
         "{public_repository_url}/blob/{}/docs/distribution.md#license-and-source-publication-gate",
         input.tag
     );
+    let short_description = if includes_runner {
+        "Language-neutral native AIT CLI and runner with an inactive self-hosted server"
+    } else {
+        "Language-neutral native AIT CLI and inactive self-hosted server"
+    };
     let locale_yaml = format!(
-        "# yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.{WINGET_MANIFEST_VERSION}.schema.json\nPackageIdentifier: {}\nPackageVersion: {}\nPackageLocale: en-US\nPublisher: Weita\nPublisherUrl: https://github.com/weita2026\nPackageName: ait-native\nPackageUrl: {}\nLicense: {}\nLicenseUrl: {}\nShortDescription: Language-neutral native AIT CLI and inactive self-hosted server\nTags:\n  - ai\n  - cli\n  - developer-tools\nManifestType: defaultLocale\nManifestVersion: {WINGET_MANIFEST_VERSION}\n",
+        "# yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.{WINGET_MANIFEST_VERSION}.schema.json\nPackageIdentifier: {}\nPackageVersion: {}\nPackageLocale: en-US\nPublisher: Weita\nPublisherUrl: https://github.com/weita2026\nPackageName: ait-native\nPackageUrl: {}\nLicense: {}\nLicenseUrl: {}\nShortDescription: {short_description}\nTags:\n  - ai\n  - cli\n  - developer-tools\nManifestType: defaultLocale\nManifestVersion: {WINGET_MANIFEST_VERSION}\n",
         json_quoted(&distribution.identity),
         json_quoted(&input.version),
         json_quoted(&public_repository_url),
@@ -1970,9 +2223,9 @@ fn validate_storefront_readme(
         "## What initialization provides",
         OFFICIAL_WEBSITE,
         "## Upgrading from 0.x",
-        "There is no `ait install` command in 1.0.",
+        "There is no `ait install` command in 1.",
         "ait workflow ready <change-id> --apply",
-        "ait workflow land <change-id> --apply",
+        "ait workflow finish <change-id> --apply",
     ] {
         if !readme.contains(required) {
             return Err(format!(
@@ -2110,7 +2363,7 @@ other verified installation routes, use the [official quickstart]({OFFICIAL_QUIC
 `ait init` creates repository-local authority, defaults to `solo_local` with
 sprint mode on, creates the sprint directory, and writes the effective workflow
 router to `AGENTS.md`. Local work uses bound Task worktrees, Snapshots, and
-atomic Task Land. The server remains off.
+atomic Task finish. The server remains off.
 
 ## Package boundary
 
@@ -2120,14 +2373,15 @@ only when explicitly requested.
 
 ## Local and reviewed closeout
 
-The default local flow finishes with `ait task land <task-or-change-id>`. For a
+The default local flow finishes dirty work with `ait task finish
+<task-or-change-id> --message "<message>"`; clean work omits `--message`. For a
 reviewed remote flow, the author prepares the exact Patchset and CI evidence
 with `ait workflow ready <change-id> --apply`; a reviewer then runs
-`ait workflow land <change-id> --apply` for Review, Policy, and atomic Task Land.
+`ait workflow finish <change-id> --apply` for Review, Policy, and atomic closeout.
 
 ## Upgrading from 0.x
 
-There is no `ait install` command in 1.0. Install or upgrade `ait-native`
+There is no `ait install` command in 1.x. Install or upgrade `ait-native`
 through your selected package manager, verify it with `ait --version`, then run
 `ait init` only when creating a new 1.0 repository authority. Keep the existing
 Git repository and history, but do not treat a release candidate as proof that
@@ -3554,6 +3808,35 @@ pub fn family_release_package(
 mod tests {
     use super::*;
 
+    #[test]
+    fn native_product_component_contract_preserves_legacy_and_admits_runner_bundle() {
+        let distribution = |components: &[&str]| DistributionDefinition {
+            channel: "homebrew".to_string(),
+            role: "product".to_string(),
+            identity: "ait-native".to_string(),
+            components: components
+                .iter()
+                .map(|value| (*value).to_string())
+                .collect(),
+            targets: Vec::new(),
+        };
+
+        assert!(
+            !require_native_product_components(&distribution(&["ait", "ait-server",])).unwrap()
+        );
+        assert!(require_native_product_components(&distribution(&[
+            "ait",
+            "ait-server",
+            "ait-runner",
+        ]))
+        .unwrap());
+        assert!(
+            require_native_product_components(&distribution(&["ait", "ait-runner"]))
+                .unwrap_err()
+                .contains("invalid product component set")
+        );
+    }
+
     fn npm_validation_input() -> FamilyPackageInput {
         let components = BTreeMap::from([
             (
@@ -3692,7 +3975,7 @@ mod tests {
             (
                 "package/README.md".to_string(),
                 (
-                    b"# ait-native\n\nAIT turns an ordinary coding request into an isolated, sprint-bound repository change with validation evidence. It is for individual developers and maintainers who use coding agents.\n\nOfficial website: <https://ait-native.dev/>\n\n## Install and initialize\n\n```sh\nnpm install --global @wa120/ait-native@1.0.0-rc.2\nait init\n```\n\n## What initialization provides\n\nRepository-local authority, a generated AGENTS.md workflow, and an inactive server boundary.\n\n## Local and reviewed closeout\n\nAuthors run `ait workflow ready <change-id> --apply`; reviewers run `ait workflow land <change-id> --apply`.\n\n## Upgrading from 0.x\n\nThere is no `ait install` command in 1.0. Install or upgrade `ait-native` through your selected package manager, then run `ait init` only for a new 1.0 repository authority.\n"
+                    b"# ait-native\n\nAIT turns an ordinary coding request into an isolated, sprint-bound repository change with validation evidence. It is for individual developers and maintainers who use coding agents.\n\nOfficial website: <https://ait-native.dev/>\n\n## Install and initialize\n\n```sh\nnpm install --global @wa120/ait-native@1.0.0-rc.2\nait init\n```\n\n## What initialization provides\n\nRepository-local authority, a generated AGENTS.md workflow, and an inactive server boundary.\n\n## Local and reviewed closeout\n\nAuthors run `ait workflow ready <change-id> --apply`; reviewers run `ait workflow finish <change-id> --apply`.\n\n## Upgrading from 0.x\n\nThere is no `ait install` command in 1.0. Install or upgrade `ait-native` through your selected package manager, then run `ait init` only for a new 1.0 repository authority.\n"
                         .to_vec(),
                     0o644,
                 ),

@@ -734,7 +734,7 @@ fn local_plan_command_binary_storage_resolves_scan_refs_and_rejects_legacy_ids()
 }
 
 #[test]
-fn local_plan_command_binary_storage_missing_files_returns_binary_db_error() {
+fn local_plan_command_binary_storage_absent_plan_family_is_empty() {
     let temp_dir = tempdir().expect("tempdir");
     fs::create_dir_all(temp_dir.path().join(".ait/binary-db"))
         .expect("create empty Binary DB authority");
@@ -746,9 +746,9 @@ fn local_plan_command_binary_storage_missing_files_returns_binary_db_error() {
     .expect("write repository config");
     let request = binary_plan_command_request(&temp_dir);
 
-    let err = execute_plan_list_command_request_json(&request.to_string())
-        .expect_err("missing Binary DB files must fail closed");
-    assert!(err.contains("plan.bin"));
+    let plans = execute_plan_list_command_request_json(&request.to_string())
+        .expect("an absent Plan family is the canonical empty state");
+    assert_eq!(plans, JsonValue::Array(Vec::new()));
 }
 
 #[test]

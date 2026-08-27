@@ -71,11 +71,14 @@ pub(super) use local_completion::{
 pub use ready_apply::workflow_ready_apply;
 
 #[cfg(test)]
-pub(super) use ready_apply::workflow_ready_ci_pending_wait_state;
+pub(super) use ready_apply::{
+    workflow_ready_ci_pending_wait_state, workflow_ready_ci_poll_wait_state,
+};
 
 #[cfg(test)]
 pub(super) use local_completion::{
-    workflow_final_snapshot_candidate_from_entry, workflow_local_history_entries,
+    workflow_final_snapshot_candidate_from_entry,
+    workflow_initialize_null_remote_base_with_task_remote, workflow_local_history_entries,
     workflow_mark_history_published, workflow_same_head_remote_land_authority,
     workflow_unique_history_plan_artifact_paths, workflow_unique_history_plan_publications,
 };
@@ -267,7 +270,7 @@ fn workflow_ready_patchset_authority_from_state(state: &JsonValue) -> Result<boo
         .unwrap_or(false);
     if ignore_workspace_authoring != patchset_is_authoritative {
         return Err(
-            "Workflow ready authority state has inconsistent workspace and Patchset authority flags."
+            "Workflow ready state is inconsistent: workspace authoring and Patchset selection disagree."
                 .to_string(),
         );
     }
@@ -391,7 +394,7 @@ fn workflow_land_payload_with_workspace_mode(
     let mut payload = phase_payload
         .as_object()
         .cloned()
-        .ok_or_else(|| "workflow land payload must decode to an object".to_string())?;
+        .ok_or_else(|| "workflow finish payload must decode to an object".to_string())?;
     if let Some(full_object) = full_state.as_object() {
         for key in [
             "change",
@@ -665,7 +668,7 @@ where
         if publication_state.as_deref() != Some("published") {
             let remote_name = normalized_text(remote_name).unwrap_or_else(|| "origin".to_string());
             return Err(format!(
-                "Completed local change {change_id} must pass the explicit ready phase before reviewer land. Run `ait workflow ready {change_id} --apply --remote {remote_name}`, then `ait workflow land {change_id} --apply --remote {remote_name}`."
+                "Completed local change {change_id} must pass the explicit ready phase before reviewer land. Run `ait workflow ready {change_id} --apply --remote {remote_name}`, then `ait workflow finish {change_id} --apply --remote {remote_name}`."
             ));
         }
         workflow_final_snapshot_promotion_remote_change_id(&candidate)?
@@ -705,7 +708,7 @@ where
         Some(change_id),
         None,
         None,
-        Some("Reading authoritative workflow state before applying helper mutations."),
+        Some("Reading current workflow state before applying requested changes."),
         Some("authoritative_read"),
         None,
         None,
@@ -728,9 +731,9 @@ where
         let (current_change_id, current_patchset_id) = workflow_current_ids(&state);
         if code.is_empty() || code == "done" {
             let detail = if applied_actions.is_empty() {
-                "Authoritative state already satisfies `task land`; no new mutation was needed."
+                "Current state already satisfies `task finish`; no change was needed."
             } else {
-                "Workflow land apply completed."
+                "Workflow finish apply completed."
             };
             if applied_actions.is_empty() {
                 workflow_progress_emit(
@@ -785,7 +788,7 @@ where
         if matches!(code.as_str(), "waiting_for_ci" | "waiting_for_land") {
             let detail = workflow_nested_text(&state, "next_action", "detail")
                 .or_else(|| workflow_nested_text(&state, "next_action", "summary"))
-                .unwrap_or_else(|| format!("Workflow land helper is waiting at `{code}`."));
+                .unwrap_or_else(|| format!("Workflow finish helper is waiting at `{code}`."));
             let resumed = applied_actions.is_empty();
             workflow_progress_emit(
                 &mut progress,
@@ -853,7 +856,7 @@ where
         );
         if seen_signatures.contains(&signature) {
             let stopped_reason =
-                format!("Workflow land apply made no further progress at `{code}`.");
+                format!("Workflow finish apply made no further progress at `{code}`.");
             workflow_progress_emit(
                 &mut progress,
                 "stopped",
@@ -1139,22 +1142,22 @@ fn workflow_land_local(
     let change_status = string_field(&change, "status").unwrap_or_default();
     if change_status == "landed" {
         return Err(format!(
-            "Local change {resolved_change_id} is already landed"
+            "Local change {resolved_change_id} is already finished"
         ));
     }
     if matches!(change_status.as_str(), "archived") {
         return Err(format!(
-            "Local change {resolved_change_id} is {change_status} and cannot be landed"
+            "Local change {resolved_change_id} is {change_status} and cannot be finished"
         ));
     }
     if !matches!(change_status.as_str(), "draft" | "active") {
         return Err(format!(
-            "Local change {resolved_change_id} is {change_status} and cannot be landed"
+            "Local change {resolved_change_id} is {change_status} and cannot be finished"
         ));
     }
     if string_field(&change, "publication_state").as_deref() == Some("published") {
         return Err(format!(
-            "Local change {resolved_change_id} has already been published; use `ait task land` for shared landing."
+            "Local change {resolved_change_id} has already been published; use `ait task finish` for shared closeout."
         ));
     }
     let local_change_id = required_string_field(&change, "change_id")?;
@@ -1163,13 +1166,13 @@ fn workflow_land_local(
     let task = workflow_local_task_read_with_task_store(&task_store, &task_id)?;
     if string_field(&task, "publication_state").as_deref() == Some("published") {
         return Err(format!(
-            "Local task {task_id} has already been published; use `ait task land` for shared landing."
+            "Local task {task_id} has already been published; use `ait task finish` for shared closeout."
         ));
     }
     let task_status = string_field(&task, "status").unwrap_or_default();
     if !matches!(task_status.as_str(), "active" | "completed") {
         return Err(format!(
-            "Local task {task_id} is {task_status} and cannot be locally landed"
+            "Local task {task_id} is {task_status} and cannot be locally finished"
         ));
     }
     let current_line_name = repo.current_line_name()?;
@@ -1208,7 +1211,7 @@ fn workflow_land_local(
                 format!(": {}", changed_paths.join(", "))
             };
             format!(
-                "Workspace is dirty ({changed_count} changed{changed_paths_hint}); run `ait snapshot create --message ...` before `ait task land {change_ref} --local`."
+                "Workspace is dirty ({changed_count} changed{changed_paths_hint}); pass `--message <MESSAGE>` to `ait task finish {change_ref} --local`, or create an intermediate Snapshot first."
             )
         })?;
         let snapshot = snapshot_create(repo, Some(message.as_str()))?;
@@ -1239,11 +1242,11 @@ fn workflow_land_local(
     {
         let guidance = if repo.is_worktree() {
             format!(
-                " Run `ait worktree rebase --onto {target_line}` in the bound worktree and retry `ait task land {change_ref} --local`."
+                " Run `ait worktree rebase --onto {target_line}` in the bound worktree and retry `ait task finish {change_ref} --local`."
             )
         } else {
             format!(
-                " Rebase or retarget the current line onto `{target_line}` before retrying `ait task land {change_ref} --local`."
+                " Rebase or retarget the current line onto `{target_line}` before retrying `ait task finish {change_ref} --local`."
             )
         };
         return Err(format!(

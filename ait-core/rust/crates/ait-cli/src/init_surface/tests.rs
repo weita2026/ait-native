@@ -50,8 +50,10 @@ fn init_creates_authority_agent_contract_and_configured_sprint_directory() {
     );
     let agents = fs::read_to_string(temp.path().join("AGENTS.md")).unwrap();
     assert!(agents.contains("<!-- ait:workflow:start -->"));
-    assert!(agents.contains("sprint mode: `on`"));
-    assert!(agents.contains("Read `docs/plan.md` when it exists"));
+    assert!(agents.contains("entry: mode=`solo_local`; sprint=`on`; scopes=`local`"));
+    assert!(agents.contains("entry: plan-binding=`required`"));
+    assert!(agents.contains("`task start` revalidates entry"));
+    assert!(agents.contains("Read this block and `docs/plan.md` when it exists"));
     assert!(temp.path().join("docs/sprints").is_dir());
     for path in ["ait-native.md", "docs/plan.md", "docs/milestone.md"] {
         assert!(!temp.path().join(path).exists(), "unexpected {path}");

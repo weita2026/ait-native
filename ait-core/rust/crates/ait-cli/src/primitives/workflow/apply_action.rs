@@ -11,7 +11,7 @@ fn workflow_publish_base_authority(
     {
         if change_line != projected_line {
             return Err(format!(
-                "Remote workflow base authority is inconsistent: Change base line `{change_line}` does not match projected base line `{projected_line}`. Refresh workflow state before publishing."
+                "Remote workflow base is inconsistent: Change base Line `{change_line}` does not match resolved base Line `{projected_line}`. Refresh workflow state before publishing."
             ));
         }
     }
@@ -31,7 +31,7 @@ fn workflow_publish_base_authority(
     ) {
         if projected != freshness {
             return Err(format!(
-                "Remote workflow base authority is inconsistent for line `{base_line}`: projected head `{projected}` does not match freshness head `{freshness}`. Refresh workflow state before publishing."
+                "Remote workflow base is inconsistent for Line `{base_line}`: resolved head `{projected}` does not match the freshness check `{freshness}`. Refresh workflow state before publishing."
             ));
         }
     }
@@ -86,7 +86,7 @@ pub(in crate::primitives) fn workflow_auto_rebase_current_worktree_before_publis
         let conflict_paths = json_string_list(rebase_payload.get("conflict_paths"));
         let sample = summarize_path_sample(&conflict_paths);
         return Err(format!(
-            "Automatic worktree rebase before publishing conflicted on {sample}. Resolve the conflict with `ait worktree rebase --continue` or abort it with `ait worktree rebase --abort` before retrying `ait task land`."
+            "Automatic worktree rebase before publishing conflicted on {sample}. Resolve the conflict with `ait worktree rebase --continue` or abort it with `ait worktree rebase --abort` before retrying `ait task finish`."
         ));
     }
     let rebase_status = rebase_payload
@@ -403,7 +403,7 @@ pub(in crate::primitives) fn workflow_ready_apply_action(
             )
         }
         _ => Ok(json!({
-            "stopped_reason": format!("Workflow ready apply does not own `{code}`; reviewer actions continue through `ait workflow land`."),
+            "stopped_reason": format!("Workflow ready apply does not own `{code}`; reviewer actions continue through `ait workflow finish`."),
         })),
     }
 }
@@ -438,7 +438,7 @@ where
         author_mode,
         model_name,
         repo_name,
-        "Workflow land apply could not resolve a patchset for attestation.",
+        "Workflow finish apply could not resolve a patchset for attestation.",
         None,
     )
 }
@@ -466,7 +466,7 @@ where
             Some(AUTOMATIC_TASK_APPROVAL_COMMENT),
             false,
             repo_name,
-            "Workflow land apply could not resolve the patchset for task approval.",
+            "Workflow finish apply could not resolve the patchset for task approval.",
         )?;
     let policy_refresh = {
         let _range = perfetto_range!("ait.workflow.review_policy_refresh");
@@ -574,7 +574,7 @@ where
         Some(review_message),
         false,
         repo_name,
-        "Workflow land apply could not resolve the patchset for code review summary.",
+        "Workflow finish apply could not resolve the patchset for code review summary.",
     )
 }
 
@@ -588,7 +588,7 @@ where
 {
     let patchset_id = workflow_land_patchset_id(
         patchset,
-        "Workflow land apply could not resolve a patchset for policy evaluation.",
+        "Workflow finish apply could not resolve a patchset for policy evaluation.",
     )?;
     Ok(json!({
         "result": super::change_flow::policy_eval_with_closeout_remote(
@@ -671,22 +671,22 @@ pub(in crate::primitives) fn workflow_land_apply_action(
         "snapshot_create" | "publish_patchset" | "refresh_patchset" | "record_attestation"
         | "run_patchset_ci" => Ok(json!({
             "stopped_reason": format!(
-                "Workflow land does not own `{code}`. Run `ait workflow ready <change-id> --apply` explicitly before land."
+                "Workflow finish does not own `{code}`. Run `ait workflow ready <change-id> --apply` explicitly before land."
             ),
         })),
         "record_review" => {
             let _range = perfetto_range!("ait.workflow_land.action.record_review");
             if workflow_task_review_required(repo) {
                 return Ok(json!({
-                    "stopped_reason": "Task review is required. Record the explicit `ait review task approve` action shown by the workflow decision, then rerun workflow land."
+                    "stopped_reason": "Task review is required. Record the explicit `ait review task approve` action shown by the workflow decision, then rerun workflow finish."
                 }));
             }
             workflow_land_patchset_id(
                 &patchset,
-                "Workflow land apply could not resolve the patchset for task approval.",
+                "Workflow finish apply could not resolve the patchset for task approval.",
             )?;
             let resolved_reviewer = repo.task_review_reviewer_identity().ok_or_else(|| {
-                "Workflow land apply needs `ait config` `user_name` before it can auto-record task approval."
+                "Workflow finish apply needs `ait config` `user_name` before it can auto-record task approval."
                     .to_string()
             })?;
             let (remote_row, repo_name) = remote_context(repo, remote_name, None)?;
@@ -703,13 +703,13 @@ pub(in crate::primitives) fn workflow_land_apply_action(
             let _range = perfetto_range!("ait.workflow_land.action.record_code_review_summary");
             workflow_land_patchset_id(
                 &patchset,
-                "Workflow land apply could not resolve the patchset for code review summary.",
+                "Workflow finish apply could not resolve the patchset for code review summary.",
             )?;
             let resolved_reviewer = repo.ai_code_review_reviewer_identity().ok_or_else(|| {
-                "Workflow land apply needs a reviewer identity before it can record code review evidence.".to_string()
+                "Workflow finish apply needs a reviewer identity before it can record code review evidence.".to_string()
             })?;
             let review_message = normalized_text(review_message).ok_or_else(|| {
-                "Workflow land apply needs --review-message containing the code review summary before it can record code review evidence.".to_string()
+                "Workflow finish apply needs --review-message containing the code review summary before it can record code review evidence.".to_string()
             })?;
             let (remote_row, repo_name) = remote_context(repo, remote_name, None)?;
             let mut closeout_remote = http_closeout_remote(repo, &remote_row)?;
@@ -733,23 +733,23 @@ pub(in crate::primitives) fn workflow_land_apply_action(
             )
         }
         "submit_land" | "complete_task" => Ok(json!({
-            "stopped_reason": "Workflow land final closeout must be executed by its atomic Task Land boundary.",
+            "stopped_reason": "Workflow finish final closeout must be executed by its atomic Task Land boundary.",
         })),
         "workflow_ready" => Ok(json!({
             "stopped_reason": workflow_nested_text(state, "next_action", "detail")
                 .or_else(|| workflow_nested_text(state, "next_action", "summary"))
-                .unwrap_or_else(|| "Workflow land apply stopped because the change still needs `workflow ready` first.".to_string()),
+                .unwrap_or_else(|| "Workflow finish apply stopped because the change still needs `workflow ready` first.".to_string()),
         })),
         "land_blocked" => Ok(json!({
             "stopped_reason": workflow_nested_text(state, "next_action", "detail")
                 .or_else(|| workflow_nested_text(state, "next_action", "summary"))
-                .unwrap_or_else(|| "Workflow land apply stopped because land preflight is blocked.".to_string()),
+                .unwrap_or_else(|| "Workflow finish apply stopped because land preflight is blocked.".to_string()),
         })),
         "address_blocking_review" => Ok(json!({
-            "stopped_reason": "Workflow land apply stopped because blocking review feedback still needs manual resolution.",
+            "stopped_reason": "Workflow finish apply stopped because blocking review feedback still needs manual resolution.",
         })),
         _ => Ok(json!({
-            "stopped_reason": format!("Workflow land apply does not support automatic `{code}`."),
+            "stopped_reason": format!("Workflow finish apply does not support automatic `{code}`."),
         })),
     }
 }
@@ -788,7 +788,7 @@ mod remote_base_authority_tests {
             None,
         )
         .unwrap_err();
-        assert!(line_error.contains("does not match projected base line"));
+        assert!(line_error.contains("does not match resolved base Line"));
 
         let snapshot_error = workflow_publish_base_authority(
             &json!({
@@ -802,7 +802,7 @@ mod remote_base_authority_tests {
             None,
         )
         .unwrap_err();
-        assert!(snapshot_error.contains("does not match freshness head"));
+        assert!(snapshot_error.contains("does not match the freshness check"));
     }
 
     #[test]

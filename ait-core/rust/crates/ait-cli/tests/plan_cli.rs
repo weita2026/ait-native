@@ -285,6 +285,56 @@ fn local_plan_commands_work_end_to_end() {
 }
 
 #[test]
+fn local_plan_admission_repairs_uncommitted_empty_payload_before_command_execution() {
+    let temp = init_repo();
+    let root = temp.path();
+    let authority = root.join(".ait/binary-db");
+    for name in [
+        "plan.bin",
+        "plan_payload.bin",
+        "plan_revision.bin",
+        "plan_revision_payload.bin",
+        "plan_item.bin",
+        "plan_item_payload.bin",
+    ] {
+        let _ = fs::remove_file(authority.join(name));
+    }
+    fs::write(authority.join("plan_payload.bin"), []).unwrap();
+
+    let list = json_output(root, &["plan", "list", "--local", "--json"]);
+    assert_eq!(list, json!([]));
+    assert!(
+        !authority.join("plan_payload.bin").exists(),
+        "safe recovery removes an unreferenced empty payload instead of preserving invalid authority"
+    );
+
+    let sync = json_output(
+        root,
+        &[
+            "plan",
+            "sync",
+            "docs/sprints/example.md",
+            "--local",
+            "--json",
+        ],
+    );
+    assert_eq!(sync["status"], "ok");
+    for name in [
+        "plan.bin",
+        "plan_payload.bin",
+        "plan_revision.bin",
+        "plan_revision_payload.bin",
+        "plan_item.bin",
+        "plan_item_payload.bin",
+    ] {
+        assert!(
+            fs::metadata(authority.join(name)).unwrap().len() > 4,
+            "{name} must not be empty or header-only after a clean sync"
+        );
+    }
+}
+
+#[test]
 fn native_plan_scope_defaults_and_cross_mode_overrides_are_compatible() {
     let temp = init_repo();
     let root = temp.path();
@@ -338,7 +388,7 @@ fn remote_plan_sync_failure_retains_local_lineage_and_retry_is_idempotent() {
     assert_eq!(failed["mode"], "local_publish");
     assert_eq!(failed["results"].as_array().unwrap().len(), 1);
     assert!(String::from_utf8_lossy(&failed_output.stderr)
-        .contains("failed after retaining local Plan lineage"));
+        .contains("failed after saving local Plan history"));
     let first_requests = failing_server.join().unwrap();
     assert!(
         first_requests.iter().any(|(method, url)| {

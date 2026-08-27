@@ -2,13 +2,13 @@ use std::path::PathBuf;
 
 use crate::binary_db::{
     BinaryDb, BinaryDbCommandScope, BinaryDbError, BinaryDbFsyncPolicy, BinaryDbWriteTxn,
-    BinaryFileId, StorePath, StoreResult,
+    BinaryFileId, StorePath, StoreResult, BIN_FILE_HEADER_BYTES,
 };
 use crate::content_binary_db::{BinaryTreeCodec, BinaryTreePackCodec, BinaryTreePackFormatKind};
 
 use super::{
-    BinaryDbPlanStore, PlanItemPayload, PlanItemRecord, PlanPayload, PlanRecord,
-    PlanRevisionPayload, PlanRevisionRecord, PlanRevisionRootUpdate,
+    BinaryDbPlanStore, PlanCodec, PlanItemPayload, PlanItemRecord, PlanPayload, PlanRecord,
+    PlanRevisionPayload, PlanRevisionRecord, PlanRevisionRootUpdate, PLAN_RECORD_SIZE,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -90,6 +90,7 @@ where
     write: BinaryDbWriteTxn<'a, B, F>,
     purpose: PlanBinaryDbWritePurpose,
     commit_point: Option<PlanBinaryDbCommitPoint>,
+    staged_plan_file: Option<Vec<u8>>,
 }
 
 impl<'a, B, F, const WRITE_LAYOUT: u32> PlanBinaryDbWriteTxn<'a, B, F, WRITE_LAYOUT>
@@ -107,6 +108,7 @@ where
             write,
             purpose,
             commit_point: None,
+            staged_plan_file: None,
         }
     }
 
@@ -129,6 +131,11 @@ where
 
     pub fn record_count(&self, file: BinaryFileId) -> StoreResult<u32> {
         self.ensure_commit_point_open("read a record count")?;
+        if file == BinaryDbPlanStore::<B, WRITE_LAYOUT>::plan_file() {
+            if let Some(bytes) = self.staged_plan_file.as_deref() {
+                return staged_plan_record_count(bytes);
+            }
+        }
         self.write.record_count(file)
     }
 
@@ -223,11 +230,27 @@ where
 
     pub fn append_plan(
         &mut self,
-        record: PlanRecord,
+        mut record: PlanRecord,
         payload: &PlanPayload,
     ) -> StoreResult<(u32, PlanRecord)> {
         self.ensure_commit_point_open("append plan")?;
-        self.store.append_plan(&mut self.write, record, payload)
+        let range = self.store.append_plan_payload(&mut self.write, payload)?;
+        record.payload_offset = range.payload_offset;
+        record.payload_len = u16::try_from(range.payload_len).map_err(|_| {
+            format!(
+                "plan payload length exceeds u16::MAX: {}",
+                range.payload_len
+            )
+        })?;
+        let encoded = PlanCodec::<WRITE_LAYOUT>::encode_record(&record)?;
+        self.ensure_staged_plan_file()?;
+        let bytes = self
+            .staged_plan_file
+            .as_mut()
+            .unwrap_or_else(|| unreachable!("staged Plan root must be initialized"));
+        let index = staged_plan_record_count(bytes)?;
+        bytes.extend_from_slice(&encoded);
+        Ok((index, record))
     }
 
     pub fn append_plan_item(
@@ -282,9 +305,40 @@ where
             purpose.can_overwrite_plan()
         })?;
         self.ensure_plan_commit_allowed()?;
-        let record = self
-            .store
-            .overwrite_plan(&mut self.write, plan_index, record, payload)?;
+        let range = self.store.append_plan_payload(&mut self.write, payload)?;
+        let mut record = record;
+        record.payload_offset = range.payload_offset;
+        record.payload_len = u16::try_from(range.payload_len).map_err(|_| {
+            format!(
+                "plan payload length exceeds u16::MAX: {}",
+                range.payload_len
+            )
+        })?;
+        let encoded = PlanCodec::<WRITE_LAYOUT>::encode_record(&record)?;
+        self.ensure_staged_plan_file()?;
+        let bytes = self
+            .staged_plan_file
+            .as_mut()
+            .unwrap_or_else(|| unreachable!("staged Plan root must be initialized"));
+        let count = staged_plan_record_count(bytes)?;
+        if plan_index >= count {
+            return Err(BinaryDbError::missing_data(format!(
+                "plan record index {plan_index} out of range for staged plan.bin count {count}"
+            )));
+        }
+        let offset = usize::try_from(BIN_FILE_HEADER_BYTES)
+            .unwrap_or(4)
+            .checked_add(
+                usize::try_from(plan_index)
+                    .map_err(|_| format!("plan index overflows usize: {plan_index}"))?
+                    .checked_mul(encoded.len())
+                    .ok_or_else(|| BinaryDbError::invalid_domain_data("plan offset overflow"))?,
+            )
+            .ok_or_else(|| BinaryDbError::invalid_domain_data("plan offset overflow"))?;
+        let end = offset
+            .checked_add(encoded.len())
+            .ok_or_else(|| BinaryDbError::invalid_domain_data("plan range overflow"))?;
+        bytes[offset..end].copy_from_slice(&encoded);
         self.commit_point = Some(PlanBinaryDbCommitPoint::Plan { plan_index });
         Ok((plan_index, record))
     }
@@ -318,7 +372,18 @@ where
                 purpose: self.purpose,
             },
         };
-        self.write.commit()?;
+        match self.staged_plan_file.take() {
+            Some(bytes) => {
+                self.write.commit_with_atomic_file_replacement(
+                    BinaryDbPlanStore::<B, WRITE_LAYOUT>::plan_file(),
+                    &bytes,
+                    "Plan root commit point",
+                )?;
+            }
+            None => {
+                self.write.commit()?;
+            }
+        }
         Ok(commit_point)
     }
 
@@ -365,6 +430,21 @@ where
     }
 
     fn current_plan_record_locked(&self, plan_index: u32) -> StoreResult<PlanRecord> {
+        if let Some(bytes) = self.staged_plan_file.as_deref() {
+            let count = staged_plan_record_count(bytes)?;
+            if plan_index >= count {
+                return Err(BinaryDbError::missing_data(format!(
+                    "plan record index {plan_index} out of range for staged plan.bin count {count}"
+                )));
+            }
+            let record_size = usize::try_from(PlanCodec::<WRITE_LAYOUT>::RECORD_SIZE)
+                .map_err(|_| "Plan record size overflows usize".to_string())?;
+            let offset = usize::try_from(BIN_FILE_HEADER_BYTES).unwrap_or(4)
+                + usize::try_from(plan_index)
+                    .map_err(|_| format!("plan index overflows usize: {plan_index}"))?
+                    * record_size;
+            return PlanCodec::<WRITE_LAYOUT>::decode_record(&bytes[offset..offset + record_size]);
+        }
         let layout = self
             .write
             .db()
@@ -373,6 +453,45 @@ where
         let raw = self.write.read_record(file, plan_index)?;
         BinaryDbPlanStore::<B, WRITE_LAYOUT>::decode_plan_record(layout, &raw)
     }
+
+    fn ensure_staged_plan_file(&mut self) -> StoreResult<()> {
+        if self.staged_plan_file.is_some() {
+            return Ok(());
+        }
+        let file = BinaryDbPlanStore::<B, WRITE_LAYOUT>::plan_file();
+        let count = self.write.record_count(file.clone())?;
+        let record_size = usize::try_from(file.record_size())
+            .map_err(|_| format!("Plan record size overflows usize: {}", file.record_size()))?;
+        let count_usize = usize::try_from(count)
+            .map_err(|_| format!("Plan record count overflows usize: {count}"))?;
+        let mut bytes = Vec::with_capacity(
+            usize::try_from(BIN_FILE_HEADER_BYTES).unwrap_or(4)
+                + count_usize.saturating_mul(record_size),
+        );
+        bytes.extend_from_slice(&WRITE_LAYOUT.to_le_bytes());
+        for index in 0..count {
+            bytes.extend_from_slice(&self.write.read_record(file.clone(), index)?);
+        }
+        self.staged_plan_file = Some(bytes);
+        Ok(())
+    }
+}
+
+fn staged_plan_record_count(bytes: &[u8]) -> StoreResult<u32> {
+    let header_len = usize::try_from(BIN_FILE_HEADER_BYTES).unwrap_or(4);
+    let record_size = usize::try_from(PLAN_RECORD_SIZE)
+        .map_err(|_| "Plan record size overflows usize".to_string())?;
+    let body_len = bytes
+        .len()
+        .checked_sub(header_len)
+        .ok_or_else(|| BinaryDbError::corruption("staged plan.bin has no complete header"))?;
+    if !body_len.is_multiple_of(record_size) {
+        return Err(BinaryDbError::corruption(format!(
+            "staged plan.bin body length {body_len} is not aligned to {record_size}"
+        )));
+    }
+    u32::try_from(body_len / record_size)
+        .map_err(|_| BinaryDbError::corruption("staged plan.bin record count exceeds u32::MAX"))
 }
 
 fn revision_ref(index_plus1: u32) -> String {

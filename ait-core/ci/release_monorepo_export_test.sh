@@ -61,12 +61,12 @@ if (( selftest_mode == 0 )); then
     "${public_layout}/docs"
   cp "${repo_root}/ait-release-family.json" \
     "${public_core}/ait-release-family.json"
-  cp "${repo_root}/ait-release.json" "${public_core}/ait-release.json"
+  jq --arg version "${family_version}" '.package.version = $version' \
+    "${repo_root}/ait-release.json" >"${public_core}/ait-release.json"
   cp "${repo_root}/LICENSE" "${repo_root}/NOTICE" "${public_core}/"
   cp "${repo_root}/ci/release_monorepo_export.sh" \
     "${repo_root}/ci/release_monorepo_export_test.sh" \
     "${repo_root}/ci/native_bootstrap_matrix.jq" \
-    "${repo_root}/ci/native_bootstrap_matrix.json" \
     "${repo_root}/ci/release_clean_host.mjs" \
     "${repo_root}/ci/release_clean_host_phase.mjs" \
     "${repo_root}/ci/release_clean_host_probe.mjs" \
@@ -86,9 +86,14 @@ if (( selftest_mode == 0 )); then
     "${repo_root}/ci/release_protected_promotion_test.sh" \
     "${repo_root}/ci/release_receipt_matrix.jq" \
     "${repo_root}/ci/release_receipt_matrix_test.sh" \
-    "${repo_root}/ci/release_repository_authorities.json" \
     "${repo_root}/ci/release_monorepo_transform.mjs" \
     "${public_core}/ci/"
+  jq --arg version "${family_version}" '.version = $version' \
+    "${repo_root}/ci/native_bootstrap_matrix.json" \
+    >"${public_core}/ci/native_bootstrap_matrix.json"
+  jq --arg version "${family_version}" '.family_version = $version' \
+    "${repo_root}/ci/release_repository_authorities.json" \
+    >"${public_core}/ci/release_repository_authorities.json"
   cp -R "${repo_root}/release/monorepo" "${public_core}/release/monorepo"
   cp "${repo_root}/release/endpoint-publication.defaults.json" \
     "${public_core}/release/endpoint-publication.defaults.json"
@@ -197,9 +202,14 @@ for repository in ait-core ait-server ait-runner ait-python ait-node; do
         .source_snapshot) = "SNP-010101010101"' \
         "${repo_root}/ait-release-family.json" \
         >"${source}/ait-release-family.json"
-      cp "${repo_root}/ait-release.json" "${source}/ait-release.json"
-      cp "${repo_root}/ci/release_repository_authorities.json" \
-        "${repo_root}/ci/native_bootstrap_matrix.json" "${source}/ci/"
+      jq --arg version "${family_version}" '.package.version = $version' \
+        "${repo_root}/ait-release.json" >"${source}/ait-release.json"
+      jq --arg version "${family_version}" '.family_version = $version' \
+        "${repo_root}/ci/release_repository_authorities.json" \
+        >"${source}/ci/release_repository_authorities.json"
+      jq --arg version "${family_version}" '.version = $version' \
+        "${repo_root}/ci/native_bootstrap_matrix.json" \
+        >"${source}/ci/native_bootstrap_matrix.json"
       printf '[workspace]\nmembers = ["crates/ait-py"]\n' >"${source}/rust/Cargo.toml"
       printf '[package]\nname = "ait-py"\nversion = "%s"\n' \
         "${family_version}" >"${source}/rust/crates/ait-py/Cargo.toml"
@@ -269,7 +279,7 @@ for repository in ait-core ait-server ait-runner ait-python ait-node; do
         'Repository-local authority, a generated AGENTS.md workflow, and an inactive server boundary.' \
         '' \
         '## Local and reviewed closeout' \
-        'Authors run `ait workflow ready <change-id> --apply`; reviewers run `ait workflow land <change-id> --apply`.' \
+        'Authors run `ait workflow ready <change-id> --apply`; reviewers run `ait workflow finish <change-id> --apply`.' \
         '' \
         '## Upgrading from 0.x' \
         'There is no `ait install` command in 1.0. Install or upgrade `ait-native` through your selected package manager, then run `ait init` only for a new 1.0 repository authority.' \
@@ -633,17 +643,18 @@ for required_readme_text in \
   'ait --version' \
   '## What `ait init` gives you' \
   'https://ait-native.dev/' \
+  'https://ait-native.dev/components/' \
   '## Upgrading from 0.x' \
-  'There is no `ait install` command in 1.0.' \
+  'There is no `ait install` command in 1.x.' \
   'AIT has two workflow presets' \
   'ait workflow ready <change-id> --apply' \
-  'ait workflow land <change-id> --apply' \
+  'ait workflow finish <change-id> --apply' \
   '## What each install route gives you' \
   'AGENTS.md' \
   'ait task start' \
   'ait plan sync' \
   'ait snapshot create' \
-  'ait task land' \
+  'ait task finish' \
   'package-owned `native/ait_napi.node`' \
   'does not locate or launch a child executable' \
   '## License map' \
@@ -652,7 +663,7 @@ for required_readme_text in \
   'No commercial or proprietary license applies to a public 1.0 source path'; do
   grep -F "${required_readme_text}" "${public_readme}" >/dev/null
 done
-if grep -E '@AIT_[A-Z0-9_]+@|Jira-like|parallel AI execution|mkdir -p docs/sprints|90 seconds|team_remote' \
+if grep -E '@AIT_[A-Z0-9_]+@|Jira-like|parallel AI execution|mkdir -p docs/sprints|90 seconds|team_remote|ait-native\.dev/services/' \
   "${public_readme}" >/dev/null; then
   printf 'public README contains an unresolved token, stale positioning, or manual sprint bootstrap\n' >&2
   exit 65
@@ -869,6 +880,15 @@ cmp "${repo_root}/release/oci/ait-server.Dockerfile" \
   "${output_one}/release/oci/ait-server.Dockerfile"
 cmp "${repo_root}/release/oci/ait-runner.Dockerfile" \
   "${output_one}/release/oci/ait-runner.Dockerfile"
+for server_dockerfile in \
+  "${repo_root}/release/oci/ait-server.Dockerfile" \
+  "${output_one}/release/oci/ait-server.Dockerfile"; do
+  if grep -Eiq '^[[:space:]]*CMD([[:space:]]|$)' "${server_dockerfile}"; then
+    printf 'ait-server OCI recipe must not declare a Docker CMD: %s\n' \
+      "${server_dockerfile}" >&2
+    exit 65
+  fi
+done
 for forbidden_promotion_text in \
   'contents: write' \
   'packages: write' \

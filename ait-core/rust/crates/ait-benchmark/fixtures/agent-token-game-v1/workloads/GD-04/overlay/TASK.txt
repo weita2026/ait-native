@@ -12,6 +12,6 @@ Keep src/game.js as the browser entry and compatibility export for GameModel.
 Preserve fixed-seed state/event output, controls, fire cooldown, enemy behavior,
 boss timing and health, lives, score, game-over, victory, and the
 window.__AIT_GAME__ benchmark seam. Do not add a dependency, backend, hosted
-asset, network request, Python file, or remote AIT workflow.
+asset, network request, Python file, or unrelated infrastructure.
 
 Run the project-local validation before completing the repository workflow.

@@ -389,8 +389,9 @@ fn config_set_sprint_off_disables_plan_task_binding() {
     assert_eq!(refreshed.config["plan_task_binding"]["mode"], "off");
     assert_eq!(refreshed.effective_workflow_mode(), "solo_local");
     let agents = std::fs::read_to_string(temp.path().join("AGENTS.md")).unwrap();
-    assert!(agents.contains("workflow mode: `solo_local`"));
-    assert!(agents.contains("sprint mode: `off`"));
+    assert!(agents.contains("entry: mode=`solo_local`; sprint=`off`; scopes=`local`"));
+    assert!(agents.contains("entry: plan-binding=`off`"));
+    assert!(agents.contains("`task start` revalidates entry"));
     assert!(agents.contains("sprint card is not required"));
     assert!(agents.contains("`--from` is unavailable"));
     assert!(temp.path().join("docs/sprints").is_dir());
@@ -432,8 +433,9 @@ fn config_set_workflow_mode_sprint_on_requires_plan_task_binding() {
     assert_eq!(refreshed.config["sprint"], "on");
     assert_eq!(refreshed.config["plan_task_binding"]["mode"], "required");
     let agents = std::fs::read_to_string(temp.path().join("AGENTS.md")).unwrap();
-    assert!(agents.contains("workflow mode: `solo_remote`"));
-    assert!(agents.contains("sprint mode: `on`"));
+    assert!(agents.contains("entry: mode=`solo_remote`; sprint=`on`; scopes=`remote`"));
+    assert!(agents.contains("entry: plan-binding=`required`"));
+    assert!(agents.contains("`task start` revalidates entry"));
     assert!(agents.contains("ait plan sync <markdown-file-or-dir> --remote origin"));
     assert!(agents.contains("ait task start --from"));
     assert!(agents.contains("owns exact-file Plan sync"));

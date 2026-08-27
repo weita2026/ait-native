@@ -15,8 +15,9 @@ current gameplay and original visual identity. Deliver all of the following:
 3. src/mobile-input.js exports normalizeTouchInput(value), returning boolean
    left, right, and fire fields with missing inputs false. The page includes
    visible left, right, and fire touch controls marked with data-touch-control.
-4. Pause safely on window blur or document visibility loss and recover without
-   advancing simulation time.
+4. Pause safely on window blur or document visibility loss, without advancing
+   simulation time while unfocused, and automatically resume the simulation
+   when focus returns.
 5. Add a visible benchmark panel marked data-benchmark-panel that reports seed,
    elapsed simulation time, event count, and replay export availability.
 6. Add scripts/release-check.mjs as a dependency-free, non-Python validation
@@ -24,7 +25,7 @@ current gameplay and original visual identity. Deliver all of the following:
 
 Keep GameModel and window.__AIT_GAME__ compatible, retain deterministic replay,
 and add focused tests. Do not add a backend, hosted asset, external network
-request, Python file, remote AIT workflow, or ait-server dependency.
+request, Python file, or unrelated infrastructure.
 
 Run the project-local and release validation before completing the repository
 workflow.

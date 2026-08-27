@@ -589,12 +589,12 @@ fn plan_sync_terminal_error(payload: &JsonValue) -> Option<String> {
     };
     if status == "partial_success" {
         return Some(format!(
-            "Plan sync partially succeeded: {message}. Local Plan lineage and completed remote publications were retained; retry the same `ait plan sync` command."
+            "Plan sync partially succeeded: {message}. Local Plan history and completed remote publications were kept; retry the same `ait plan sync` command."
         ));
     }
     if has_rows("results") || has_rows("adoptions") {
         return Some(format!(
-            "Plan sync failed after retaining local Plan lineage: {message}. Local results were not rolled back; retry the same `ait plan sync` command."
+            "Plan sync failed after saving local Plan history: {message}. Local results were not rolled back; retry the same `ait plan sync` command."
         ));
     }
     Some(format!("Plan sync failed: {message}"))

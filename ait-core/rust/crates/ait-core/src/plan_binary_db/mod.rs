@@ -6,6 +6,7 @@ use crate::binary_db::{
 
 pub mod adapters;
 pub mod read;
+pub mod recovery;
 pub mod schema;
 pub mod write;
 
@@ -16,6 +17,11 @@ pub use adapters::{
 pub use read::{
     PlanHeadScanFilter, PlanHeadView, PlanItemView, PlanRevisionSummaryView, PlanRevisionView,
     PlanSummaryView,
+};
+pub use recovery::{
+    inspect_plan_binary_db_authority, plan_binary_db_recovery_required,
+    repair_plan_binary_db_authority, repair_plan_binary_db_authority_if_needed,
+    PlanBinaryDbRecoveryReport, PlanBinaryDbRecoveryState,
 };
 pub use schema::{
     PlanCodec, PlanItemCheckboxState, PlanItemCodec, PlanItemPayload, PlanItemRecord, PlanPayload,

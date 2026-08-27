@@ -1156,7 +1156,7 @@ pub fn git_import(
         .count();
     if replace_ref_count > 0 && !dry_run {
         return Err(format!(
-            "Git import blocked before AIT history mutation: {replace_ref_count} replace ref(s) are unsupported. Remove or materialize replacement history, then retry."
+            "Git import stopped before changing AIT history: {replace_ref_count} replace ref(s) are unsupported. Remove the replace refs or expand their replacement history, then retry."
         ));
     }
 
@@ -1315,7 +1315,7 @@ pub fn git_import(
     }
     if !blockers.is_empty() {
         return Err(format!(
-            "Git import blocked before AIT Snapshot or ref mutation: {}",
+            "Git import stopped before changing any AIT Snapshot or ref: {}",
             encode_value(&JsonValue::Array(blockers), "Failed to encode Git blockers")?
         ));
     }

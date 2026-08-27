@@ -135,7 +135,7 @@ test("release tools are registry-inert and package direct addon fixtures", async
   assert.match(npmReadme, /Upgrading from 0\.x/);
   assert.match(npmReadme, /There is no `ait install` command in 1\.0\./);
   assert.match(npmReadme, /ait workflow ready <change-id> --apply/);
-  assert.match(npmReadme, /ait workflow land <change-id> --apply/);
+  assert.match(npmReadme, /ait workflow finish <change-id> --apply/);
   assert.doesNotMatch(
     npmReadme,
     /90 seconds|task-DAG positioning|Jira-like|parallel AI execution|compact task DAG/,

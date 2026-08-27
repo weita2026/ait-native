@@ -105,7 +105,7 @@ fn ensure_runtime_activation(
         return Ok(activation);
     }
     Err(format!(
-        "Binary server activation is missing at {}. Refusing to create an empty generation during startup. Run `ait-server init --data {}` or use `ait-server run --data {} --init-if-missing` for an intentional new installation.",
+        "Binary server activation is missing at {}. Refusing to create an empty generation during startup. Use `ait-server init --data {}` or `ait-server --data {} --init-if-missing` for an intentional new installation.",
         config.activation_pointer.display(),
         config.server_data_root.display(),
         config.server_data_root.display(),

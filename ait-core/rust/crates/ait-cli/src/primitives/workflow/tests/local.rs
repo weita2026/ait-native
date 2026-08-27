@@ -308,6 +308,7 @@ fn final_snapshot_promotion_aggregates_remote_head_to_latest_local_head() {
         &completed_local_entry("LCC-FINAL", "SNP-N"),
         Some("SNP-N"),
         Some("SNP-ZERO"),
+        None,
         Some(5),
     )
     .expect("final snapshot candidate");
@@ -320,11 +321,48 @@ fn final_snapshot_promotion_aggregates_remote_head_to_latest_local_head() {
 }
 
 #[test]
+fn final_snapshot_promotion_null_remote_selects_exact_pre_land_base() {
+    let candidate = workflow_final_snapshot_candidate_from_entry(
+        &completed_local_entry("LCC-FINAL", "SNP-N"),
+        Some("SNP-N"),
+        None,
+        Some("SNP-PRE-LAND"),
+        Some(1),
+    )
+    .expect("null remote candidate should use the selected Change pre-land base");
+
+    assert_eq!(candidate["base_snapshot_id"], json!("SNP-PRE-LAND"));
+    assert_eq!(candidate["revision_snapshot_id"], json!("SNP-N"));
+    assert_eq!(candidate["aggregate_snapshot_count"], json!(1));
+    assert_eq!(
+        candidate["remote_head_initialization_required"],
+        json!(true)
+    );
+    assert_eq!(candidate["remote_already_contains_revision"], json!(false));
+}
+
+#[test]
+fn final_snapshot_promotion_null_remote_rejects_final_snapshot_as_base() {
+    let error = workflow_final_snapshot_candidate_from_entry(
+        &completed_local_entry("LCC-FINAL", "SNP-N"),
+        Some("SNP-N"),
+        None,
+        Some("SNP-N"),
+        Some(0),
+    )
+    .expect_err("null remote must not initialize directly at the final local Snapshot");
+
+    assert!(error.contains("Refusing to initialize null remote `main` directly"));
+    assert!(error.contains("requires an earlier pre-land bootstrap boundary"));
+}
+
+#[test]
 fn final_snapshot_promotion_preview_uses_an_exact_local_change_reference() {
     let mut candidate = workflow_final_snapshot_candidate_from_entry(
         &completed_local_entry("C-01", "SNP-N"),
         Some("SNP-N"),
         Some("SNP-ZERO"),
+        None,
         Some(1),
     )
     .expect("final snapshot candidate");
@@ -342,7 +380,7 @@ fn final_snapshot_promotion_preview_uses_an_exact_local_change_reference() {
     assert!(preview["next_action"]["detail"]
         .as_str()
         .unwrap()
-        .contains("ait workflow land LCT-FINAL/C-01 --apply --remote origin"));
+        .contains("ait workflow finish LCT-FINAL/C-01 --apply --remote origin"));
 }
 
 #[test]
@@ -351,6 +389,7 @@ fn final_snapshot_promotion_rejects_an_older_completed_local_row() {
         &completed_local_entry("LCC-OLDER", "SNP-N-MINUS-ONE"),
         Some("SNP-N"),
         Some("SNP-ZERO"),
+        None,
         Some(4),
     )
     .expect_err("older local row must not promote");
@@ -365,6 +404,7 @@ fn final_snapshot_promotion_rejects_remote_divergence_before_publish() {
         &completed_local_entry("LCC-FINAL", "SNP-N"),
         Some("SNP-N"),
         Some("SNP-REMOTE-DIVERGED"),
+        None,
         None,
     )
     .expect_err("diverged remote head must fail closed");
@@ -382,7 +422,7 @@ fn same_head_promotion_rejects_unpublished_local_authority() {
     )
     .expect_err("unpublished same-head state must fail closed");
 
-    assert!(error.contains("do not have complete canonical remote publication mappings"));
+    assert!(error.contains("do not have complete remote publication records"));
     assert!(error.contains("Refusing to treat this as completed promotion"));
 }
 
@@ -994,8 +1034,15 @@ fn history_promotion_publishes_ambiguous_child_ids_by_exact_change_reference() {
         })
         .collect::<Vec<_>>();
 
-    let mappings = workflow_mark_history_published(&repo, "origin", &entries, &response_entries)
-        .expect("publish all exact history mappings");
+    let publication_remote_name =
+        contextual_publication_remote_name("camera-server").expect("configured Remote alias");
+    let mappings = workflow_mark_history_published(
+        &repo,
+        publication_remote_name,
+        &entries,
+        &response_entries,
+    )
+    .expect("publish all exact history mappings");
     assert_eq!(mappings.len(), 10);
     for (ordinal, entry) in entries.iter().enumerate() {
         let exact_ref = required_string_field(entry, "local_change_ref").unwrap();
@@ -1003,6 +1050,7 @@ fn history_promotion_publishes_ambiguous_child_ids_by_exact_change_reference() {
         let change =
             workflow_local_change_read_with_change_store(&change_store, &exact_ref).unwrap();
         assert_eq!(change["publication_state"], "published");
+        assert_eq!(change["published_remote_name"], "origin");
         assert_eq!(
             change["published_change_id"],
             format!("RT-{:04}/C-01", ordinal + 1)

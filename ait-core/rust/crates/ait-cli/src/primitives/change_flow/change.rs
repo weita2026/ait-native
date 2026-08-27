@@ -412,7 +412,7 @@ pub fn change_revert(
         change_revision_snapshot_id(repo, &change, local, remote_name, repo_name_override)?;
     let fork_snapshot_id = string_field(&change, "fork_snapshot_id").ok_or_else(|| {
         format!(
-            "Change {resolved_change_id} is missing fork_snapshot_id lineage metadata, so `ait change revert` cannot compute a safe base."
+            "Change {resolved_change_id} is missing its fork Snapshot history, so `ait change revert` cannot determine a safe base."
         )
     })?;
     let snapshot_store = snapshot_store(repo)?;
@@ -492,7 +492,7 @@ pub fn change_replay(
         change_revision_snapshot_id(repo, &change, local, remote_name, repo_name_override)?;
     let fork_snapshot_id = string_field(&change, "fork_snapshot_id").ok_or_else(|| {
         format!(
-            "Change {resolved_change_id} is missing fork_snapshot_id lineage metadata, so `ait change replay` cannot compute a safe base."
+            "Change {resolved_change_id} is missing its fork Snapshot history, so `ait change replay` cannot determine a safe base."
         )
     })?;
     let snapshot_store = snapshot_store(repo)?;
@@ -718,6 +718,7 @@ where
     C: TaskWorkflowChangePublisher + ?Sized,
     R: TaskWorkflowRemoteChangeCreator + ?Sized,
 {
+    let publication_remote_name = contextual_publication_remote_name(remote_name)?;
     change_publish_status_gate(local_change, change_id, allow_landed_local)?;
     let task_id = required_string_field(local_change, "task_id")?;
     change_publish_task_gate(local_task, change_id)?;
@@ -745,7 +746,7 @@ where
     change_local_mark_published_with_change_store(
         change_store,
         change_id,
-        Some(remote_name),
+        Some(publication_remote_name),
         Some(&published_change_id),
         allow_landed_local,
     )

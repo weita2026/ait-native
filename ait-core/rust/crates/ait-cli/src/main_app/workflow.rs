@@ -25,7 +25,7 @@ fn run_automatic_reconciliation_locked(
                 "task_filter": task_filter,
                 "safe_only": true,
                 "mutated": false,
-                "error": format!("Failed to bind automatic reconciliation to the authoritative repository root: {error}"),
+                "error": format!("Failed to run automatic repair from the main repository root: {error}"),
                 "next_command": "ait workflow reconcile --dry-run",
             });
         }
@@ -144,37 +144,81 @@ fn run_workflow(repo: RepoRuntime, command: WorkflowCommand) -> Result<ExitCode,
         }
         WorkflowCommand::Ready(args) => {
             let payload = if args.apply {
-                workflow_ready_apply(
+                run_task_scoped_workspace_command(
                     &repo,
                     &args.change_id,
-                    args.snapshot_message.as_deref(),
-                    args.summary.as_deref(),
-                    args.tests.as_deref(),
-                    args.lint.as_deref(),
-                    args.security.as_deref(),
-                    args.license.as_deref(),
-                    args.author_mode.map(ConfigAuthorModeArg::as_str),
-                    args.model.as_deref(),
+                    true,
+                    true,
                     args.remote.as_deref(),
-                    None::<fn(&JsonValue) -> Result<(), String>>,
+                    "ait-cli workflow ready --apply",
+                    |execution_repo| {
+                        workflow_ready_apply(
+                            execution_repo,
+                            &args.change_id,
+                            args.snapshot_message.as_deref(),
+                            args.summary.as_deref(),
+                            args.tests.as_deref(),
+                            args.lint.as_deref(),
+                            args.security.as_deref(),
+                            args.license.as_deref(),
+                            args.author_mode.map(ConfigAuthorModeArg::as_str),
+                            args.model.as_deref(),
+                            args.remote.as_deref(),
+                            None::<fn(&JsonValue) -> Result<(), String>>,
+                        )
+                    },
                 )?
             } else {
-                workflow_ready_payload(&repo, &args.change_id, args.remote.as_deref())?
+                let execution_repo = resolve_task_scoped_execution_repo(
+                    &repo,
+                    &args.change_id,
+                    true,
+                    true,
+                    args.remote.as_deref(),
+                    "ait-cli workflow ready",
+                )?;
+                workflow_ready_payload(
+                    &execution_repo,
+                    &args.change_id,
+                    args.remote.as_deref(),
+                )?
             };
             println!("{}", render_workflow_phase_text(&payload, "ready")?);
             Ok(ExitCode::SUCCESS)
         }
-        WorkflowCommand::Land(args) => {
+        WorkflowCommand::Finish(args) => {
             let mut payload = if args.apply {
-                workflow_land_apply(
+                run_task_scoped_workspace_command(
                     &repo,
                     &args.change_id,
-                    args.review_message.as_deref(),
+                    true,
+                    true,
                     args.remote.as_deref(),
-                    None::<fn(&JsonValue) -> Result<(), String>>,
+                    "ait-cli workflow finish --apply",
+                    |execution_repo| {
+                        workflow_land_apply(
+                            execution_repo,
+                            &args.change_id,
+                            args.review_message.as_deref(),
+                            args.remote.as_deref(),
+                            None::<fn(&JsonValue) -> Result<(), String>>,
+                        )
+                    },
                 )?
             } else {
-                workflow_land_payload(&repo, &args.change_id, args.remote.as_deref())?
+                let execution_repo = resolve_task_scoped_execution_repo(
+                    &repo,
+                    &args.change_id,
+                    true,
+                    true,
+                    args.remote.as_deref(),
+                    "ait-cli workflow finish",
+                )?;
+                workflow_land_payload(
+                    &execution_repo,
+                    &args.change_id,
+                    args.remote.as_deref(),
+                )?
             };
             if args.apply {
                 let task_id = workflow_payload_task_id(&payload);
@@ -186,7 +230,7 @@ fn run_workflow(repo: RepoRuntime, command: WorkflowCommand) -> Result<ExitCode,
                 );
                 attach_automatic_reconciliation(&mut payload, reconciliation);
             }
-            println!("{}", render_workflow_phase_text(&payload, "land")?);
+            println!("{}", render_workflow_phase_text(&payload, "finish")?);
             Ok(ExitCode::SUCCESS)
         }
     }
@@ -537,14 +581,14 @@ fn render_workflow_phase_text(payload: &JsonValue, phase: &str) -> Result<String
     Ok(lines.join("\n"))
 }
 
-fn render_task_land_text(payload: &JsonValue) -> Result<String, String> {
+fn render_task_finish_text(payload: &JsonValue) -> Result<String, String> {
     let rendered = if payload.get("mode").and_then(JsonValue::as_str) == Some("local")
         && payload.get("apply_status").and_then(JsonValue::as_str) == Some("done")
     {
         render_local_task_land_text(payload)?
     } else {
-        let old_title = format!("ait workflow {}", "land");
-        render_workflow_phase_text(payload, "land")?.replacen(&old_title, "ait task land", 1)
+        let old_title = format!("ait workflow {}", "finish");
+        render_workflow_phase_text(payload, "finish")?.replacen(&old_title, "ait task finish", 1)
     };
     Ok(append_task_land_contract_text(rendered, payload))
 }
@@ -569,7 +613,7 @@ fn append_task_land_contract_text(mut rendered: String, payload: &JsonValue) -> 
         return rendered;
     }
     rendered.push_str(&format!(
-        "\n\ntask-land contract: {version}\ncloseout: {closeout_status}"
+        "\n\ntask-finish contract: {version}\ncloseout: {closeout_status}"
     ));
     if let Some(recovery) = payload
         .get("closeout_recovery")
@@ -590,7 +634,7 @@ fn append_task_land_contract_text(mut rendered: String, payload: &JsonValue) -> 
 fn render_local_task_land_text(payload: &JsonValue) -> Result<String, String> {
     let obj = payload
         .as_object()
-        .ok_or_else(|| "local Task Land payload must decode to an object.".to_string())?;
+        .ok_or_else(|| "local Task Finish payload must decode to an object.".to_string())?;
     let cleanup = obj
         .get("bound_worktree_cleanup")
         .and_then(JsonValue::as_object);
@@ -612,7 +656,7 @@ fn render_local_task_land_text(payload: &JsonValue) -> Result<String, String> {
             "complete" | "complete_unbound" | "already_complete"
         );
     let mut lines = vec![format!(
-        "landed: {change_id} -> {target_line} @ {snapshot_id}"
+        "finished: {change_id} -> {target_line} @ {snapshot_id}"
     )];
     let mut closed = Vec::new();
     let task_status = string_field(obj.get("task_status"));
@@ -773,7 +817,7 @@ fn workflow_guide_payload(topic: Option<&str>) -> Result<JsonValue, String> {
             "local": local_land_contract.clone(),
             "remote": remote_land_contract.clone(),
         },
-        "summary": "Use `workflow ready` then `workflow land` instead of rediscovering low-level remote gates by hand.",
+        "summary": "Use `workflow ready` then `workflow finish` instead of rediscovering low-level remote gates by hand.",
         "when_to_use": [
             "You want to see what still blocks one remote change from landing.",
             "You want the helper to advance safe remote-land steps without teaching the low-level gate commands first."
@@ -785,19 +829,19 @@ fn workflow_guide_payload(topic: Option<&str>) -> Result<JsonValue, String> {
                 "detail": "Create any needed snapshot or patchset updates, run patchset CI, and stop once attestation-backed ready state exists."
             },
             {
-                "label": "Workflow land apply",
-                "command": "ait workflow land <change-id> --apply",
-                "detail": "Run the reviewer-owned exact-Patchset code-review and Task-approval gates, evaluate final Policy, then delegate the already-ready final mutation, target-Line sync, Task completion, and cleanup to atomic Task Land. Add --review-message with the structured review when code-review evidence is required."
+                "label": "Workflow finish apply",
+                "command": "ait workflow finish <change-id> --apply",
+                "detail": "Review the selected Patchset, record any required Task approval, check final Policy, then safely sync the target Line, complete the Task, and clean up. Add --review-message with the structured review when code-review evidence is required."
             },
             {
-                "label": "Task land direct",
-                "command": "ait task land <task-or-change-id>",
-                "detail": format!("Direct already-ready finalizer and recovery entry. It creates no Review evidence. Contract {TASK_LAND_CONTRACT_VERSION}: solo_local uses `{local_plan_closeout_policy}` Plan closeout; solo_remote uses `{remote_plan_closeout_policy}`. A partial post-land closeout is resumed by rerunning the reported idempotent task-land command.")
+                "label": "Task finish direct",
+                "command": "ait task finish <task-or-change-id>",
+                "detail": format!("Direct finish and recovery command. Dirty local work can add `--message`; remote finish consumes an already-ready selected Patchset. It creates no Review evidence. Contract {TASK_LAND_CONTRACT_VERSION}: solo_local uses `{local_plan_closeout_policy}` Plan closeout; solo_remote uses `{remote_plan_closeout_policy}`. Resume a partial finish by rerunning the reported task-finish command.")
             },
         ],
         "avoid": [
             "Do not rediscover the same land path with many separate low-level gate or help commands in one turn.",
-            "Do not use the removed top-level `ait land`; `ait workflow land` routes shared landing and task closeout through `ait task land`."
+            "Do not use the removed top-level `ait land`; `ait workflow finish` routes shared landing and Task closeout through `ait task finish`."
         ]
     });
     match topic.map(|value| value.trim().to_ascii_lowercase()) {

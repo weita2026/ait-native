@@ -52,6 +52,52 @@ fn doctor_plan_authority_runs_without_repo() {
         "plan-foundation-v7"
     );
     assert_eq!(payload["missing_exports"].as_array().unwrap().len(), 0);
+    assert_eq!(payload["repository_inspected"], false);
+    assert!(payload["repository_authority"].is_null());
+}
+
+#[test]
+fn doctor_plan_authority_reports_repairable_repository_damage_without_mutating_it() {
+    let temp = TempDir::new().unwrap();
+    cargo_bin()
+        .current_dir(temp.path())
+        .arg("init")
+        .assert()
+        .success();
+    let authority = temp.path().join(".ait/binary-db");
+    for name in [
+        "plan.bin",
+        "plan_payload.bin",
+        "plan_revision.bin",
+        "plan_revision_payload.bin",
+        "plan_item.bin",
+        "plan_item_payload.bin",
+    ] {
+        let _ = fs::remove_file(authority.join(name));
+    }
+    fs::write(authority.join("plan_payload.bin"), []).unwrap();
+
+    let payload = output_json(cargo_bin().current_dir(temp.path()).args([
+        "doctor",
+        "plan-authority",
+        "--json",
+    ]));
+    assert_eq!(payload["compatibility"], "compatible");
+    assert_eq!(payload["repository_inspected"], true);
+    assert_eq!(payload["repository_ready"], false);
+    assert_eq!(payload["repository_authority"]["state"], "repairable");
+    assert_eq!(
+        payload["repository_authority"]["recommended_action"],
+        "retry_for_safe_automatic_recovery"
+    );
+    assert!(authority.join("plan_payload.bin").exists());
+    assert_eq!(
+        fs::metadata(authority.join("plan_payload.bin"))
+            .unwrap()
+            .len(),
+        0,
+        "doctor must remain read-only"
+    );
 }
 
 #[test]
@@ -152,7 +198,9 @@ fn doctor_help_exposes_only_configuration_driven_diagnostics() {
         .assert()
         .success()
         .stdout(predicate::str::contains("--json"))
-        .stdout(predicate::str::contains("fixed Rust-native Plan authority"));
+        .stdout(predicate::str::contains(
+            "fixed Rust-native Plan storage contract",
+        ));
 }
 
 #[test]

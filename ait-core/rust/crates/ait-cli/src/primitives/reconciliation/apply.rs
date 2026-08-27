@@ -935,7 +935,7 @@ pub fn workflow_reconcile_automatic(
 ) -> Result<JsonValue, String> {
     if trigger == AutomaticReconciliationTrigger::ScheduledRemote {
         if scope == AutomaticReconciliationScope::Local {
-            return Err("Scheduled reconciliation requires remote scope.".to_string());
+            return Err("Scheduled repair requires a remote.".to_string());
         }
         let (requested_remote, use_default_remote) = scope.selection();
         if normalized_text(requested_remote).is_none()

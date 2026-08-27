@@ -540,7 +540,7 @@ fn validate_patchset_ci_readiness_payload(
     }
     if required_text("projection")? != "readiness" {
         return Err(
-            "Patchset CI readiness response has the wrong projection; refusing repository-job fallback."
+            "Patchset CI returned an unexpected response type; repository-job fallback was not started."
                 .to_string(),
         );
     }

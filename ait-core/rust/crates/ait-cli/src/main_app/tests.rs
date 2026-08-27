@@ -28,12 +28,21 @@ fn root_command_inventory_is_frozen() {
         [
             "init", "line", "git", "blame", "doctor", "queue", "remote", "release", "repo",
             "config", "external", "status", "diff", "pull", "push", "gc", "stash", "plan", "task",
-            "change", "snapshot", "tag", "patchset", "review", "attest", "policy", "worktree",
-            "workflow",
+            "change", "snapshot", "commit", "tag", "patchset", "review", "attest", "policy",
+            "worktree", "workflow",
         ]
     );
-    assert_eq!(visible.len(), 28);
+    assert_eq!(visible.len(), 29);
     assert!(!visible.contains(&"agent"));
+    assert!(!visible.contains(&"branch"));
+
+    let root_help = Cli::try_parse_from(["ait-cli", "--help"])
+        .err()
+        .expect("root --help must render Clap help")
+        .to_string();
+    assert!(root_help.contains("line"), "{root_help}");
+    assert!(root_help.contains("[alias: branch]"), "{root_help}");
+    assert!(root_help.contains("commit"), "{root_help}");
 
     let hidden = command
         .get_subcommands()
@@ -189,7 +198,7 @@ fn status_parser_exposes_compact_json_and_explicit_full_projection() {
         .err()
         .expect("status --help must render Clap help")
         .to_string();
-    assert!(help.contains("without modifying"), "{help}");
+    assert!(help.contains("without changing repository data"), "{help}");
     assert!(help.contains("compact versioned"), "{help}");
     assert!(help.contains("--json"), "{help}");
     assert!(help.contains("--full"), "{help}");
@@ -203,6 +212,107 @@ fn status_parser_exposes_compact_json_and_explicit_full_projection() {
 }
 
 #[test]
+fn common_public_help_uses_user_actions_instead_of_internal_vocabulary() {
+    const COMMAND_PATHS: &[&[&str]] = &[
+        &["--help"],
+        &["status", "--help"],
+        &["diff", "--help"],
+        &["line", "--help"],
+        &["git", "--help"],
+        &["queue", "--help"],
+        &["repo", "--help"],
+        &["config", "--help"],
+        &["external", "--help"],
+        &["plan", "--help"],
+        &["task", "--help"],
+        &["change", "--help"],
+        &["snapshot", "--help"],
+        &["patchset", "--help"],
+        &["attest", "--help"],
+        &["policy", "--help"],
+        &["worktree", "--help"],
+        &["workflow", "--help"],
+    ];
+    const INTERNAL_TERMS: &[&str] = &[
+        "authority",
+        "lineage",
+        "materializ",
+        "mutation",
+        "projection",
+        " scope",
+        "admitted",
+    ];
+
+    for command_path in COMMAND_PATHS {
+        let help =
+            Cli::try_parse_from(std::iter::once("ait-cli").chain(command_path.iter().copied()))
+                .err()
+                .unwrap_or_else(|| panic!("{} must render help", command_path.join(" ")))
+                .to_string();
+        let normalized = help.to_ascii_lowercase();
+        for term in INTERNAL_TERMS {
+            assert!(
+                !normalized.contains(term),
+                "public `{}` help exposes internal term {term:?}:\n{help}",
+                command_path.join(" ")
+            );
+        }
+    }
+}
+
+#[test]
+fn every_visible_public_help_field_uses_user_language() {
+    const INTERNAL_TERMS: &[&str] = &[
+        "authority",
+        "lineage",
+        "materializ",
+        "mutation",
+        "projection",
+        " scope",
+        "admitted",
+    ];
+
+    fn inspect(command: &clap::Command, path: &str) {
+        let mut help_fields = Vec::new();
+        if let Some(value) = command.get_about() {
+            help_fields.push(value.to_string());
+        }
+        if let Some(value) = command.get_long_about() {
+            help_fields.push(value.to_string());
+        }
+        for argument in command
+            .get_arguments()
+            .filter(|argument| !argument.is_hide_set())
+        {
+            if let Some(value) = argument.get_help() {
+                help_fields.push(value.to_string());
+            }
+            if let Some(value) = argument.get_long_help() {
+                help_fields.push(value.to_string());
+            }
+        }
+
+        let help = help_fields.join("\n");
+        let normalized = help.to_ascii_lowercase();
+        for term in INTERNAL_TERMS {
+            assert!(
+                !normalized.contains(term),
+                "public `{path}` help exposes internal term {term:?}:\n{help}"
+            );
+        }
+
+        for subcommand in command
+            .get_subcommands()
+            .filter(|subcommand| !subcommand.is_hide_set())
+        {
+            inspect(subcommand, &format!("{path} {}", subcommand.get_name()));
+        }
+    }
+
+    inspect(&Cli::command(), "ait");
+}
+
+#[test]
 fn agent_action_full_projection_requires_json_on_each_supported_command() {
     let invocations = [
         vec!["ait-cli", "status"],
@@ -210,7 +320,7 @@ fn agent_action_full_projection_requires_json_on_each_supported_command() {
             "ait-cli", "task", "start", "--title", "Task", "--intent", "Intent",
         ],
         vec!["ait-cli", "snapshot", "create"],
-        vec!["ait-cli", "task", "land", "LCT-1"],
+        vec!["ait-cli", "task", "finish", "LCT-1"],
     ];
 
     for invocation in invocations {
@@ -312,7 +422,7 @@ fn compact_agent_action_projections_keep_only_next_step_evidence() {
     assert!(snapshot.get("files").is_none());
     assert!(snapshot.get("phase_timings_ms").is_none());
 
-    let landed = compact_task_land_payload(&json!({
+    let finished = compact_task_finish_payload(&json!({
         "mode": "local",
         "task_id": "LCT-1",
         "change_ref": "LCT-1/C-01",
@@ -326,27 +436,28 @@ fn compact_agent_action_projections_keep_only_next_step_evidence() {
         "plan_checklist_closeout": {"status": "synced"},
         "closeout_recovery": {
             "code": "resume_task_land_closeout",
-            "command": "ait task land LCT-1/C-01 --local",
+            "command": "ait task finish LCT-1/C-01 --local",
             "detail": "large recovery explanation"
         },
         "task": {"large": true},
         "change": {"large": true}
     }));
-    assert_eq!(landed["ok"], false);
-    assert_eq!(landed["closeout"]["worktree_status"], "failed");
+    assert_eq!(finished["command"], "task.finish");
+    assert_eq!(finished["ok"], false);
+    assert_eq!(finished["closeout"]["worktree_status"], "failed");
     assert_eq!(
-        landed["next_action"]["command"],
-        "ait task land LCT-1/C-01 --local"
+        finished["next_action"]["command"],
+        "ait task finish LCT-1/C-01 --local"
     );
-    assert!(landed.get("task").is_none());
-    assert!(landed.get("change").is_none());
+    assert!(finished.get("task").is_none());
+    assert!(finished.get("change").is_none());
 
-    let remote_landed = compact_task_land_payload(&json!({
+    let remote_finished = compact_task_finish_payload(&json!({
         "task_land_contract": {"scope": "remote"},
         "closeout_status": "execution_complete_plan_separate"
     }));
-    assert_eq!(remote_landed["mode"], "remote");
-    assert_eq!(remote_landed["ok"], true);
+    assert_eq!(remote_finished["mode"], "remote");
+    assert_eq!(remote_finished["ok"], true);
 }
 
 #[test]
@@ -366,7 +477,7 @@ fn diff_parser_exposes_only_positional_paths_and_one_output_mode() {
         .expect("diff --help must render Clap help")
         .to_string();
     assert!(help.contains("current Line head"), "{help}");
-    assert!(help.contains("without modifying"), "{help}");
+    assert!(help.contains("without changing repository data"), "{help}");
     assert!(help.contains("[PATH]..."), "{help}");
     assert!(help.contains("--json"), "{help}");
     assert!(help.contains("--stat"), "{help}");
@@ -858,10 +969,10 @@ fn config_help_documents_the_complete_public_contract() {
         .expect("config show help")
         .to_string();
     assert!(
-        show_help.contains("authoritative root configuration"),
+        show_help.contains("repository configuration"),
         "{show_help}"
     );
-    assert!(show_help.contains("worktree overlay"), "{show_help}");
+    assert!(show_help.contains("worktree settings"), "{show_help}");
     assert!(show_help.contains("--json"), "{show_help}");
 
     let set_help = Cli::try_parse_from(["ait-cli", "config", "set", "--help"])
@@ -1113,7 +1224,7 @@ fn workflow_tier_command_and_guide_topic_are_removed() {
 fn workflow_land_local_command_is_removed() {
     let parse_error = Cli::try_parse_from(["ait", "workflow", "land-local", "LCC-1"])
         .err()
-        .expect("removed workflow land-local command must be rejected")
+        .expect("removed workflow finish-local command must be rejected")
         .to_string();
     assert!(parse_error.contains("land-local"), "{parse_error}");
     assert!(
@@ -1205,14 +1316,23 @@ fn workflow_ready_parser_requires_apply_for_every_mutation_input() {
 }
 
 #[test]
-fn workflow_land_parser_exposes_only_the_remote_reviewer_contract() {
-    let preview = Cli::try_parse_from(["ait", "workflow", "land", "RCC-1"])
+fn workflow_finish_replaces_land_and_exposes_only_the_remote_reviewer_contract() {
+    let removed_land = Cli::try_parse_from(["ait", "workflow", "land", "RCC-1"])
+        .err()
+        .expect("workflow land must be removed without an alias")
+        .to_string();
+    assert!(
+        removed_land.contains("unrecognized subcommand 'land'"),
+        "{removed_land}"
+    );
+
+    let preview = Cli::try_parse_from(["ait", "workflow", "finish", "RCC-1"])
         .expect("remote reviewer preview should parse without an explicit remote");
     let Commands::Workflow {
-        command: WorkflowCommand::Land(args),
+        command: WorkflowCommand::Finish(args),
     } = preview.command
     else {
-        panic!("expected workflow land command");
+        panic!("expected workflow finish command");
     };
     assert_eq!(args.change_id, "RCC-1");
     assert!(!args.apply);
@@ -1235,27 +1355,28 @@ fn workflow_land_parser_exposes_only_the_remote_reviewer_contract() {
         ("--all-completed-local", None),
         ("--json", None),
     ] {
-        let mut argv = vec!["ait", "workflow", "land", "RCC-1", option];
+        let mut argv = vec!["ait", "workflow", "finish", "RCC-1", option];
         if let Some(value) = value {
             argv.push(value);
         }
         let error = Cli::try_parse_from(argv.clone())
             .err()
-            .unwrap_or_else(|| panic!("removed Workflow Land option parsed: {argv:?}"))
+            .unwrap_or_else(|| panic!("removed Workflow finish option parsed: {argv:?}"))
             .to_string();
         assert!(error.contains("unexpected argument"), "{option}: {error}");
     }
 
-    let missing_id = Cli::try_parse_from(["ait", "workflow", "land"])
+    let missing_id = Cli::try_parse_from(["ait", "workflow", "finish"])
         .err()
-        .expect("Workflow Land Change ID must be parser-required")
+        .expect("Workflow finish Change ID must be parser-required")
         .to_string();
     assert!(missing_id.contains("required"), "{missing_id}");
 
-    let help = Cli::try_parse_from(["ait", "workflow", "land", "--help"])
+    let help = Cli::try_parse_from(["ait", "workflow", "finish", "--help"])
         .err()
-        .expect("Workflow Land help must render")
+        .expect("Workflow finish help must render")
         .to_string();
+    assert!(help.contains("Usage: ait workflow finish"), "{help}");
     for retained in ["--apply", "--review-message", "--remote"] {
         assert!(help.contains(retained), "missing {retained}: {help}");
     }
@@ -1401,6 +1522,102 @@ fn snapshot_create_rejects_removed_quick_options_and_accepts_plain_creation() {
 }
 
 #[test]
+fn git_friendly_commit_and_branch_aliases_reuse_canonical_grammar() {
+    let canonical = Cli::try_parse_from([
+        "ait",
+        "snapshot",
+        "create",
+        "-m",
+        "Alias Snapshot",
+        "--json",
+        "--full",
+    ])
+    .expect("snapshot create should accept the shared -m spelling");
+    let Commands::Snapshot {
+        command: SnapshotCommand::Create(canonical),
+    } = canonical.command
+    else {
+        panic!("expected snapshot create command");
+    };
+
+    let alias = Cli::try_parse_from(["ait", "commit", "-m", "Alias Snapshot", "--json", "--full"])
+        .expect("commit should parse as the Snapshot creation alias");
+    let Commands::Commit(alias) = alias.command else {
+        panic!("expected commit command");
+    };
+    assert_eq!(alias.message, canonical.message);
+    assert_eq!(alias.json, canonical.json);
+    assert_eq!(alias.full, canonical.full);
+
+    let branch = Cli::try_parse_from([
+        "ait",
+        "branch",
+        "create",
+        "feature/example",
+        "--from-snapshot",
+        "SNP-EXAMPLE",
+        "--switch",
+        "--json",
+    ])
+    .expect("branch should accept the complete Line subcommand grammar");
+    let Commands::Line {
+        command: LineCommand::Create(branch),
+    } = branch.command
+    else {
+        panic!("expected branch alias to parse as line create");
+    };
+    assert_eq!(branch.name, "feature/example");
+    assert_eq!(branch.from_snapshot.as_deref(), Some("SNP-EXAMPLE"));
+    assert!(branch.switch);
+    assert!(branch.json);
+
+    let commit_help = Cli::try_parse_from(["ait", "commit", "--help"])
+        .err()
+        .expect("commit --help must render Clap help")
+        .to_string();
+    for text in [
+        "Git-friendly alias for `ait snapshot create`",
+        "Usage: ait commit [OPTIONS]",
+        "-m, --message <MESSAGE>",
+        "AIT Snapshot",
+    ] {
+        assert!(commit_help.contains(text), "{commit_help}");
+    }
+
+    let branch_help = Cli::try_parse_from(["ait", "branch", "--help"])
+        .err()
+        .expect("branch --help must render Clap help")
+        .to_string();
+    for text in [
+        "`ait branch` is a Git-friendly alias",
+        "Usage: ait line <COMMAND>",
+        "create",
+        "switch",
+        "delete",
+        "merge",
+    ] {
+        assert!(branch_help.contains(text), "{branch_help}");
+    }
+
+    for args in [
+        vec!["ait", "commit", "--amend"],
+        vec!["ait", "commit", "-a"],
+        vec!["ait", "commit", "src/lib.rs"],
+        vec!["ait", "branch", "feature/example"],
+        vec!["ait", "branch", "-d", "feature/example"],
+    ] {
+        let error = Cli::try_parse_from(args.clone())
+            .err()
+            .unwrap_or_else(|| panic!("unsupported Git spelling must fail: {args:?}"))
+            .to_string();
+        assert!(
+            error.contains("unexpected argument") || error.contains("unrecognized subcommand"),
+            "{error}"
+        );
+    }
+}
+
+#[test]
 fn snapshot_diff_parser_requires_text_for_positive_explicit_byte_bounds() {
     let defaulted = Cli::try_parse_from(["ait", "snapshot", "diff", "SNP-OLD", "SNP-NEW"])
         .expect("structural Snapshot diff should retain its internal text-size default");
@@ -1513,7 +1730,7 @@ fn snapshot_help_explains_public_behavior_and_hides_compatibility_inputs() {
     let root = help(None);
     assert!(root.contains("immutable local Snapshots"), "{root}");
     assert!(
-        root.contains("restore-lines, revert, and replay modify only the current workspace"),
+        root.contains("restore-lines, revert, and replay change only workspace files"),
         "{root}"
     );
 
@@ -1860,7 +2077,7 @@ fn plan_sync_terminal_errors_preserve_local_ahead_recovery_context() {
         "error": {"message": "remote publish rejected"},
     }))
     .expect("failed status must be terminal");
-    assert!(failed.contains("retaining local Plan lineage"), "{failed}");
+    assert!(failed.contains("saving local Plan history"), "{failed}");
     assert!(failed.contains("were not rolled back"), "{failed}");
     assert!(
         failed.contains("retry the same `ait plan sync`"),
@@ -1876,7 +2093,7 @@ fn plan_sync_terminal_errors_preserve_local_ahead_recovery_context() {
     .expect("partial success must be terminal");
     assert!(partial.contains("partially succeeded"), "{partial}");
     assert!(
-        partial.contains("completed remote publications were retained"),
+        partial.contains("completed remote publications were kept"),
         "{partial}"
     );
     assert!(render_sync_like(&json!({
@@ -1983,20 +2200,24 @@ fn task_parser_freezes_the_supported_command_surface() {
         Err(error) => error,
     };
     let rendered = help.to_string();
-    for command in ["start", "list", "show", "audit", "land", "abandon"] {
+    for command in ["start", "list", "show", "audit", "finish", "abandon"] {
         assert!(
             rendered.contains(&format!("\n  {command}")),
             "missing task command {command}"
         );
     }
-    for removed in ["tokens", "canceled", "complete", "restart", "publish"] {
+    for removed in [
+        "land", "tokens", "canceled", "complete", "restart", "publish",
+    ] {
         assert!(
             !rendered.contains(&format!("\n  {removed}")),
             "retired command leaked: {removed}"
         );
     }
 
-    for command in ["tokens", "canceled", "complete", "publish", "restart"] {
+    for command in [
+        "land", "tokens", "canceled", "complete", "publish", "restart",
+    ] {
         let removed = match Cli::try_parse_from(["ait-cli", "task", command, "LCT-1"]) {
             Ok(_) => panic!("removed task command must not parse"),
             Err(error) => error,
@@ -2014,7 +2235,7 @@ fn task_scope_overrides_are_consistent_and_mutually_exclusive() {
         vec!["ait-cli", "task", "list"],
         vec!["ait-cli", "task", "show", "LCT-1"],
         vec!["ait-cli", "task", "audit", "LCT-1"],
-        vec!["ait-cli", "task", "land", "LCT-1"],
+        vec!["ait-cli", "task", "finish", "LCT-1"],
         vec!["ait-cli", "task", "abandon", "LCT-1"],
     ];
 
@@ -2038,7 +2259,7 @@ fn task_scope_overrides_are_consistent_and_mutually_exclusive() {
 }
 
 #[test]
-fn task_parser_rejects_every_retired_option_and_requires_land_identity() {
+fn task_parser_rejects_every_retired_option_and_requires_finish_identity() {
     let retired_cases = [
         vec![
             "ait-cli",
@@ -2105,37 +2326,51 @@ fn task_parser_rejects_every_retired_option_and_requires_land_identity() {
         vec![
             "ait-cli",
             "task",
-            "land",
+            "finish",
             "LCT-1",
             "--snapshot-message",
             "Snapshot",
         ],
-        vec!["ait-cli", "task", "land", "LCT-1", "--summary", "Summary"],
-        vec!["ait-cli", "task", "land", "LCT-1", "--tests", "Tests"],
-        vec!["ait-cli", "task", "land", "LCT-1", "--lint", "Lint"],
-        vec!["ait-cli", "task", "land", "LCT-1", "--security", "Security"],
-        vec!["ait-cli", "task", "land", "LCT-1", "--license", "License"],
+        vec!["ait-cli", "task", "finish", "LCT-1", "--summary", "Summary"],
+        vec!["ait-cli", "task", "finish", "LCT-1", "--tests", "Tests"],
+        vec!["ait-cli", "task", "finish", "LCT-1", "--lint", "Lint"],
         vec![
             "ait-cli",
             "task",
-            "land",
+            "finish",
+            "LCT-1",
+            "--security",
+            "Security",
+        ],
+        vec!["ait-cli", "task", "finish", "LCT-1", "--license", "License"],
+        vec![
+            "ait-cli",
+            "task",
+            "finish",
             "LCT-1",
             "--author-mode",
             "human_only",
         ],
-        vec!["ait-cli", "task", "land", "LCT-1", "--model", "model"],
-        vec!["ait-cli", "task", "land", "LCT-1", "--reviewer", "reviewer"],
+        vec!["ait-cli", "task", "finish", "LCT-1", "--model", "model"],
         vec![
             "ait-cli",
             "task",
-            "land",
+            "finish",
+            "LCT-1",
+            "--reviewer",
+            "reviewer",
+        ],
+        vec![
+            "ait-cli",
+            "task",
+            "finish",
             "LCT-1",
             "--review-message",
             "Review",
         ],
-        vec!["ait-cli", "task", "land", "LCT-1", "--target", "other"],
-        vec!["ait-cli", "task", "land", "LCT-1", "--mode", "merge"],
-        vec!["ait-cli", "task", "land", "LCT-1", "--preview"],
+        vec!["ait-cli", "task", "finish", "LCT-1", "--target", "other"],
+        vec!["ait-cli", "task", "finish", "LCT-1", "--mode", "merge"],
+        vec!["ait-cli", "task", "finish", "LCT-1", "--preview"],
         vec!["ait-cli", "task", "abandon", "LCT-1", "--abandoned"],
         vec![
             "ait-cli",
@@ -2157,11 +2392,49 @@ fn task_parser_rejects_every_retired_option_and_requires_land_identity() {
         );
     }
 
-    let missing_id = match Cli::try_parse_from(["ait-cli", "task", "land"]) {
-        Ok(_) => panic!("Task land identity must be parser-required"),
+    let missing_id = match Cli::try_parse_from(["ait-cli", "task", "finish"]) {
+        Ok(_) => panic!("Task finish identity must be parser-required"),
         Err(error) => error,
     };
     assert!(missing_id.to_string().contains("required"));
+
+    for identity in ["LCT-1", "LCT-1/C-02"] {
+        let parsed = Cli::try_parse_from([
+            "ait-cli",
+            "task",
+            "finish",
+            identity,
+            "--message",
+            "Final Snapshot",
+            "--local",
+        ])
+        .expect("Task finish must accept Task or Change identity and a local Snapshot message");
+        let Commands::Task {
+            command: TaskCommand::Finish(args),
+        } = parsed.command
+        else {
+            panic!("expected task finish command");
+        };
+        assert_eq!(args.task_or_change_id, identity);
+        assert_eq!(args.message.as_deref(), Some("Final Snapshot"));
+        assert!(args.local);
+    }
+
+    let retired_land = Cli::try_parse_from(["ait-cli", "task", "land", "LCT-1"])
+        .err()
+        .expect("task land must remain retired");
+    assert_eq!(
+        retired_land.kind(),
+        clap::error::ErrorKind::InvalidSubcommand
+    );
+
+    let forbidden_change_land = Cli::try_parse_from(["ait-cli", "change", "land", "LCT-1/C-01"])
+        .err()
+        .expect("change land must not exist");
+    assert_eq!(
+        forbidden_change_land.kind(),
+        clap::error::ErrorKind::InvalidSubcommand
+    );
 }
 
 #[test]
@@ -2585,7 +2858,7 @@ fn plan_help_documents_every_public_subcommand_and_option_contract() {
 }
 
 #[test]
-fn local_task_land_render_compacts_successful_closeout_and_keeps_material_retention() {
+fn local_task_finish_render_compacts_successful_closeout_and_keeps_material_retention() {
     let rendered = render_local_task_land_text(&json!({
         "change_id": "LCC-1",
         "target_line": "main",
@@ -2609,15 +2882,15 @@ fn local_task_land_render_compacts_successful_closeout_and_keeps_material_retent
     }))
     .unwrap();
 
-    assert!(rendered.contains("landed: LCC-1 -> main @ SNP-1"));
+    assert!(rendered.contains("finished: LCC-1 -> main @ SNP-1"));
     assert!(rendered.contains("closed: task, line, sprint"));
     assert!(rendered.contains("retention: pruned (3 removed, 20 retained)"));
     assert!(!rendered.contains("checklist reason"));
 }
 
 #[test]
-fn remote_task_land_render_surfaces_separate_plan_sync_action() {
-    let rendered = render_task_land_text(&json!({
+fn remote_task_finish_render_surfaces_separate_plan_sync_action() {
+    let rendered = render_task_finish_text(&json!({
         "change": {
             "change_id": "RCT-1/C-01",
             "status": "landed",
@@ -2635,25 +2908,25 @@ fn remote_task_land_render_surfaces_separate_plan_sync_action() {
         "plan_checklist_closeout": {
             "status": "deferred",
             "reason": "remote_plan_sync_is_separate_from_task_land",
-            "detail": "Remote task land completed without reading or synchronizing Plan state.",
+            "detail": "Remote task finish completed without reading or synchronizing Plan state.",
             "command": "ait plan sync <bound-sprint-card-path> --remote origin"
         }
     }))
     .unwrap();
 
-    assert!(rendered.contains("ait task land"));
+    assert!(rendered.contains("ait task finish"));
     assert!(rendered.contains("Feature Line closeout"));
     assert!(rendered.contains("- archived: feature/rct-1"));
     assert!(rendered.contains("Sprint checklist closeout"));
     assert!(rendered.contains("- deferred"));
     assert!(rendered
-        .contains("Remote task land completed without reading or synchronizing Plan state."));
+        .contains("Remote task finish completed without reading or synchronizing Plan state."));
     assert!(rendered.contains("ait plan sync <bound-sprint-card-path> --remote origin"));
 }
 
 #[test]
-fn task_land_render_surfaces_versioned_partial_recovery() {
-    let rendered = render_task_land_text(&json!({
+fn task_finish_render_surfaces_versioned_partial_recovery() {
+    let rendered = render_task_finish_text(&json!({
         "mode": "local",
         "apply_status": "done",
         "change_id": "LCC-9",
@@ -2668,8 +2941,8 @@ fn task_land_render_surfaces_versioned_partial_recovery() {
             "scope": "local"
         },
         "closeout_recovery": {
-            "detail": "Repair the Plan drift and rerun task land.",
-            "command": "ait task land LCC-9 --local"
+            "detail": "Repair the Plan drift and rerun task finish.",
+            "command": "ait task finish LCC-9 --local"
         },
         "plan_checklist_closeout": {
             "status": "skipped",
@@ -2678,10 +2951,10 @@ fn task_land_render_surfaces_versioned_partial_recovery() {
     }))
     .unwrap();
 
-    assert!(rendered.contains("task-land contract: task-land-plan-closeout/v1"));
+    assert!(rendered.contains("task-finish contract: task-land-plan-closeout/v1"));
     assert!(rendered.contains("closeout: partial"));
-    assert!(rendered.contains("Repair the Plan drift and rerun task land."));
-    assert!(rendered.contains("ait task land LCC-9 --local"));
+    assert!(rendered.contains("Repair the Plan drift and rerun task finish."));
+    assert!(rendered.contains("ait task finish LCC-9 --local"));
 }
 
 #[test]
@@ -2939,7 +3212,7 @@ fn change_help_explains_retained_behavior_and_hides_compatibility_inputs() {
     let parent = help(None);
     for description in [
         "additional Change",
-        "open Changes or complete history",
+        "open Changes or complete Change history",
         "Archive one Change",
         "local draft Change record",
     ] {
@@ -2967,20 +3240,23 @@ fn change_help_explains_retained_behavior_and_hides_compatibility_inputs() {
     let revert = help(Some("revert"));
     assert!(revert.contains("does not create a Snapshot"), "{revert}");
     assert!(
-        revert.contains("workspace mutation remains local"),
+        revert.contains("only local workspace files are changed"),
         "{revert}"
     );
 
     let replay = help(Some("replay"));
     assert!(replay.contains("does not create a Snapshot"), "{replay}");
     assert!(
-        replay.contains("workspace mutation remains local"),
+        replay.contains("only local workspace files are changed"),
         "{replay}"
     );
     assert!(!replay.contains("--onto"), "{replay}");
 
     let close = help(Some("close"));
-    assert!(close.contains("Archive one Change"), "{close}");
+    assert!(
+        close.contains("Archive one local or remote Change"),
+        "{close}"
+    );
     assert!(close.contains("without landing code"), "{close}");
 
     let publish = help(Some("publish"));
@@ -3429,7 +3705,7 @@ fn git_interop_help_explains_scope_mutation_and_endpoint_constraints() {
     assert!(import_help.contains("local repository path or a Git remote URL"));
     assert!(import_help.contains("--all-branches-and-tags"));
     assert!(import_help.contains("only the source HEAD branch"));
-    assert!(import_help.contains("without persistent AIT mutation"));
+    assert!(import_help.contains("without writing AIT data"));
 
     let export_help = Cli::try_parse_from(["ait-cli", "git", "export", "--help"])
         .err()
@@ -3438,7 +3714,7 @@ fn git_interop_help_explains_scope_mutation_and_endpoint_constraints() {
     assert!(export_help.contains("Local Git repository path"));
     assert!(export_help.contains("--all-lines-and-tags"));
     assert!(export_help.contains("only the current Line"));
-    assert!(export_help.contains("without target or AIT mutation"));
+    assert!(export_help.contains("without writing the target or AIT data"));
 
     let mirror_help = Cli::try_parse_from(["ait-cli", "git", "mirror", "--help"])
         .err()
@@ -3446,7 +3722,7 @@ fn git_interop_help_explains_scope_mutation_and_endpoint_constraints() {
         .to_string();
     assert!(mirror_help.contains("local Git path for outbound or bidirectional mode"));
     assert!(mirror_help.contains("--direction <DIRECTION>"));
-    assert!(mirror_help.contains("complete branch/tag ref set"));
+    assert!(mirror_help.contains("complete branch and tag set"));
     assert!(!mirror_help.contains("--once"));
 }
 
@@ -3644,7 +3920,7 @@ fn stash_help_explains_workspace_line_and_output_contracts() {
             &[
                 "entire managed workspace",
                 "current Line must be the stash's source Line",
-                "not a patch or three-way merge",
+                "rather than applying a patch or three-way merge",
                 "does not permit restoring a stash from another Line",
                 "machine-readable JSON",
             ],
@@ -3654,7 +3930,7 @@ fn stash_help_explains_workspace_line_and_output_contracts() {
             &[
                 "drop its stash record only after a successful restore",
                 "current Line must be the stash's source Line",
-                "not a patch or three-way merge",
+                "rather than applying a patch or three-way merge",
                 "does not permit restoring a stash from another Line",
                 "machine-readable JSON",
             ],
@@ -3844,7 +4120,7 @@ fn worktree_help_documents_every_public_command_and_option_contract() {
         (
             &["recover-task"],
             &[
-                "authoritative repository root",
+                "main repository root",
                 "<TASK_ID>",
                 "--change <CHANGE>",
                 "--remote <REMOTE>",
@@ -4048,7 +4324,7 @@ fn patchset_parser_exposes_only_the_remote_authority_contract() {
         .expect("patchset --help must render Clap help")
         .to_string();
     for text in [
-        "remote authority only",
+        "Published Patchsets exist only on remotes",
         "publish",
         "list",
         "show",
@@ -4696,7 +4972,7 @@ fn review_parser_enforces_exact_ai_and_task_review_identity_contracts() {
         Cli::try_parse_from([
             "ait-cli",
             "workflow",
-            "land",
+            "finish",
             "RCC-1",
             "--reviewer",
             "spoofed"
@@ -4705,10 +4981,10 @@ fn review_parser_enforces_exact_ai_and_task_review_identity_contracts() {
         "removed workflow-land reviewer override parsed"
     );
 
-    let workflow_land = Cli::try_parse_from([
+    let workflow_finish = Cli::try_parse_from([
         "ait-cli",
         "workflow",
-        "land",
+        "finish",
         "RCC-1",
         "--apply",
         "--review-message",
@@ -4716,12 +4992,12 @@ fn review_parser_enforces_exact_ai_and_task_review_identity_contracts() {
         "--remote",
         "origin",
     ])
-    .expect("reviewer-owned workflow land summary should parse");
+    .expect("reviewer-owned workflow finish summary should parse");
     let Commands::Workflow {
-        command: WorkflowCommand::Land(args),
-    } = workflow_land.command
+        command: WorkflowCommand::Finish(args),
+    } = workflow_finish.command
     else {
-        panic!("expected workflow land command");
+        panic!("expected workflow finish command");
     };
     assert_eq!(
         args.review_message.as_deref(),
@@ -4734,7 +5010,7 @@ fn review_parser_enforces_exact_ai_and_task_review_identity_contracts() {
         Cli::try_parse_from([
             "ait-cli",
             "workflow",
-            "land",
+            "finish",
             "RCC-1",
             "--review-message",
             "structured exact-Patchset review"
@@ -4901,7 +5177,7 @@ fn repo_help_explains_every_retained_command_and_option() {
 
     let parent = help(None);
     assert!(
-        parent.contains("Inspect and manage the configured remote Repository authority"),
+        parent.contains("Inspect and manage the configured Repository on its remote server"),
         "{parent}"
     );
     for command in ["show", "retire", "restore", "jobs", "ci-capabilities"] {
@@ -4914,7 +5190,7 @@ fn repo_help_explains_every_retained_command_and_option() {
 
     let retire = help(Some("retire"));
     assert!(
-        retire.contains("durably download and verify its complete authority archive"),
+        retire.contains("download and verify its complete archive"),
         "{retire}"
     );
     assert!(
@@ -5111,7 +5387,7 @@ fn external_help_explains_modes_safety_and_machine_output() {
 
     let parent = help(None);
     assert!(
-        parent.contains("Inspect, diagnose, resolve, pin, materialize, and locally link"),
+        parent.contains("Inspect, diagnose, resolve, pin, restore, and locally link"),
         "{parent}"
     );
     for command in ["update", "status", "doctor", "link", "unlink"] {
@@ -5124,8 +5400,8 @@ fn external_help_explains_modes_safety_and_machine_output() {
         "exact immutable Snapshot",
         "declared remote and line head",
         "drift-free ait-external.lock",
-        "Stage the selected materialization",
-        "lockfile remains a complete recursive DAG",
+        "Prepare the selected files",
+        "lockfile still records the complete dependency graph",
         "machine-readable update report",
     ] {
         assert!(update.contains(description), "{description:?}: {update}");

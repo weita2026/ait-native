@@ -1,0 +1,41 @@
+# AIT vs Git: 200-admitted-session game-development benchmark
+
+This result accompanies AIT Native 1.1.0. It measures GPT-5.6 Sol at max reasoning effort on five frozen game-development workloads, with 20 statistically admitted paired attempts per workload and one fresh model session per lane.
+
+## Result
+
+- Workload-median token saving: **34.95%**.
+- Aggregate bootstrap 95% confidence interval: **27.85% to 39.77%**.
+- Workload-median elapsed-time saving: **21.04%**.
+- Raw provider-total tokens: **46,300,272 AIT** versus **70,140,925 Git**, a descriptive **33.99%** reduction.
+- Effective functional acceptance: **100/100 AIT** versus **100/100 Git**; all 200 statistically admitted sessions were protocol-valid and accepted.
+- Evidence history: **201 executed sessions**; **1 session(s) were statistically excluded**.
+- Replacement-qualified claim eligible: **true**.
+
+The primary metric divides each workload and mode's statistically admitted provider tokens by accepted outcomes, then takes the median of the five workload-level AIT savings. The bootstrap interval resamples admitted paired attempts within each workload and aggregates their workload medians over 2,000 deterministic resamples. Raw pooled totals are descriptive and do not replace the workload-balanced primary metric.
+
+The measured AIT subject was source Snapshot `SNP-654C89C118BB` with executable SHA-256 `64a4eb75f839aff49f33a62fb6592f8ab7469aa851a00daf1ea544108ff83e1f`. The campaign runner SHA-256 was `c3a4267fe029b72d4336ad06a6f879251cfec37f4e5a5b22014d2935c175052f`. AIT Native 1.1.0 publishes this immutable result and the corrected report boundary without relabeling later source bytes as the measured subject.
+
+## Workload results
+
+| Workload | AIT effective tokens | Git effective tokens | Saving | Bootstrap 95% CI | AIT/Git acceptance |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `GD-01` | 213481.0 | 317517.8 | 32.77% | 22.07% to 41.92% | 20/20 |
+| `GD-02` | 266652.6 | 428522.2 | 37.77% | 27.59% to 45.66% | 20/20 |
+| `GD-03` | 376821.3 | 496364.8 | 24.08% | 12.41% to 34.32% | 20/20 |
+| `GD-04` | 580373.9 | 915416.8 | 36.60% | 25.68% to 45.84% | 20/20 |
+| `GD-05` | 877684.7 | 1349224.8 | 34.95% | 22.36% to 44.82% | 20/20 |
+
+## Quality and scope
+
+The original AIT GD-05 candidate remains retained and disclosed as a valid functional failure: the evaluator scored it 50/100 because `normalizeSettings({soundEnabled: 0})` produced `soundEnabled: true`. Its browser checks and workflow closeout passed, but it was not accepted. Under the repository-owner-authorized transparent replacement policy, that lane is excluded from effective statistics and one same-pinned, accepted AIT replacement is admitted against the unchanged Git counterpart. The raw failure evidence and replacement provenance remain checksummed; the replacement runner SHA-256 is `sha256:89046039ffa7554b8791e5b2c2c75eaa42ac8c719bd93e831d1fc6ba2814d71d` and the effective matrix is claim-eligible under the replacement policy.
+
+The finding is limited to these fixtures, this model revision, max reasoning effort, provider-default fresh sessions, and the recorded local workflows. It does not establish that AIT always outperforms Git, generalize to other tasks, models, or environments, or measure high-concurrency execution. Both treatments had symmetric read-only repository inspection allowances.
+
+## Audit files
+
+- `result.json` contains the aggregate, workload, acceptance, exclusion, replacement, and source-digest record.
+- `runs.json` contains 200 statistically admitted rows plus the disclosed excluded source row.
+- `SHA256SUMS` checksums the public files.
+
+The frozen source protocol, replacement policy, and workload fixtures are versioned with the AIT source. Private executor event streams and host-specific absolute paths are intentionally excluded.

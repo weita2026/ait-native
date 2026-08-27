@@ -789,7 +789,7 @@ fn json_output_with_env(root: &Path, args: &[&str], envs: &[(&str, &str)]) -> Js
     let subcommand = args.get(1).copied();
     let agent_action_command = command == Some("status")
         || (command == Some("task")
-            && (subcommand == Some("start") || subcommand == Some("land")))
+            && (subcommand == Some("start") || subcommand == Some("finish")))
         || (command == Some("snapshot") && subcommand == Some("create"));
     if agent_action_command && args.contains(&"--json") && !args.contains(&"--full") {
         effective_args.push("--full");

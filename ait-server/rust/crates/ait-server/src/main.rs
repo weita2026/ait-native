@@ -46,7 +46,7 @@ async fn main() {
             print_startup_probe(&prepared);
             return;
         }
-        LifecycleCommand::Run => {}
+        LifecycleCommand::Serve => {}
         LifecycleCommand::Help | LifecycleCommand::Version => unreachable!(),
     }
     if prepared.init_if_missing {

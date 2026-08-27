@@ -15,7 +15,8 @@ pub(crate) use sync::{
 };
 pub(super) use sync::{
     hydrate_remote_snapshot_chain_with_task_remote_and_capabilities,
-    initialize_remote_null_head_line_with_snapshot_via_zstd, set_or_create_local_line_head,
+    initialize_remote_null_head_line_with_snapshot_via_zstd,
+    remote_sync_line_read_with_task_remote, set_or_create_local_line_head,
     sync_patchset_revision_snapshot, sync_patchset_revision_snapshot_with_task_remote,
 };
 pub use sync::{pull, push, upload_snapshot_chain};
@@ -30,8 +31,8 @@ pub(super) use sync::{
     ordered_tree_pack_metadata, pull_line_with_task_remote_and_capabilities,
     pull_with_remote_sync_backend, push_line_to_remote_with_task_remote_and_capabilities,
     push_with_remote_sync_backend, remote_repository_authority_http_config,
-    remote_sync_line_head_with_task_remote, remote_sync_line_read_with_task_remote,
-    remote_sync_line_update_with_task_remote, remote_sync_present_snapshot_ids_with_task_remote,
+    remote_sync_line_head_with_task_remote, remote_sync_line_update_with_task_remote,
+    remote_sync_present_snapshot_ids_with_task_remote,
     remote_sync_snapshot_metadata_read_with_task_remote,
     require_snapshot_dag_upload_capability_with_source,
     sync_patchset_revision_snapshot_with_remote_sync_backend,

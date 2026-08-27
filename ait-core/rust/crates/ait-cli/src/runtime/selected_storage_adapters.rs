@@ -30,29 +30,12 @@ impl<const WRITE_LAYOUT: u32> RepoBinaryDbStoreFactory<WRITE_LAYOUT> {
         } else {
             LocalStateScope::Repository
         };
-        let generation_guard = match BinaryDbReadLockSet::try_acquire(
-            &binary_db_activation_lock_root(&repo_root),
+        match admit_activated_binary_db_generation_for_runtime(
+            &repo_root,
+            &authority_root,
+            &repo.repo_name(),
         ) {
-            Ok(guard) => Some(std::sync::Arc::new(std::sync::Mutex::new(guard))),
-            Err(error) => {
-                return Self {
-                    pack_root: repo_root
-                        .join(APP_DIR)
-                        .join("unadmitted-binary-db-generation"),
-                    repo_root,
-                    authority_root,
-                    local_authority_id,
-                    id_namespace_prefix,
-                    current_line_state_scope,
-                    admission_error: Some(format!(
-                        "Selected Binary DB generation could not acquire activation admission: {error}"
-                    )),
-                    generation_guard: None,
-                };
-            }
-        };
-        match admit_activated_binary_db_generation(&authority_root, &repo.repo_name()) {
-            Ok(generation) => Self {
+            Ok((generation, generation_guard)) => Self {
                 repo_root,
                 authority_root: generation.authority_root,
                 pack_root: generation.generation_root,
@@ -60,17 +43,15 @@ impl<const WRITE_LAYOUT: u32> RepoBinaryDbStoreFactory<WRITE_LAYOUT> {
                 id_namespace_prefix,
                 current_line_state_scope,
                 admission_error: None,
-                generation_guard,
+                generation_guard: Some(generation_guard),
             },
             Err(_error) if cfg!(test) && (!authority_root.exists() || authority_root.is_dir()) => {
-                let mut stores = Self::new(
+                Self::new(
                     repo_root,
                     authority_root,
                     local_authority_id,
                     current_line_state_scope,
-                );
-                stores.generation_guard = generation_guard;
-                stores
+                )
             }
             Err(error) => Self {
                 pack_root: repo_root
@@ -84,7 +65,7 @@ impl<const WRITE_LAYOUT: u32> RepoBinaryDbStoreFactory<WRITE_LAYOUT> {
                 admission_error: Some(format!(
                     "Selected Binary DB generation failed activation admission: {error}"
                 )),
-                generation_guard,
+                generation_guard: None,
             },
         }
     }

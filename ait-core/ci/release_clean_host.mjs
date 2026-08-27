@@ -60,7 +60,7 @@ const PLATFORM_AUTHORITY = [
   },
 ];
 
-const DISTRIBUTION_AUTHORITY = [
+const LEGACY_DISTRIBUTION_AUTHORITY = [
   {
     channel: "github",
     role: "product",
@@ -160,6 +160,27 @@ const DISTRIBUTION_AUTHORITY = [
     service: "container",
   },
 ];
+
+const RUNNER_BUNDLE_DISTRIBUTION_AUTHORITY = LEGACY_DISTRIBUTION_AUTHORITY.map((row) => {
+  if (
+    row.role === "product" &&
+    ["homebrew", "apt", "winget"].includes(row.channel)
+  ) {
+    return { ...row, components: ["ait", "ait-server", "ait-runner"] };
+  }
+  return row;
+});
+
+const MATRIX_AUTHORITIES = {
+  "distribution-target-32-2026-08-17.2": {
+    distributions: LEGACY_DISTRIBUTION_AUTHORITY,
+    rowCount: 32,
+  },
+  "distribution-target-runner-bundle-32-2026-08-26.1": {
+    distributions: RUNNER_BUNDLE_DISTRIBUTION_AUTHORITY,
+    rowCount: 32,
+  },
+};
 
 function usage(message) {
   if (message) {
@@ -363,19 +384,28 @@ function validateFamily(family) {
     components: row.components,
     targets: row.targets,
   }));
-  const expected = DISTRIBUTION_AUTHORITY.map((authority) => ({
-    channel: authority.channel,
-    role: authority.role,
-    identity: authority.identity,
-    components: authority.components,
-    targets: PLATFORM_AUTHORITY.filter((platform) =>
-      authority.targetOs.includes(platform.os),
-    ).map((platform) => platform.target),
-  }));
-  if (!sameJson(projected, expected)) {
+  const matches = Object.entries(MATRIX_AUTHORITIES).filter(([, contract]) => {
+    const expected = contract.distributions.map((authority) => ({
+      channel: authority.channel,
+      role: authority.role,
+      identity: authority.identity,
+      components: authority.components,
+      targets: PLATFORM_AUTHORITY.filter((platform) =>
+        authority.targetOs.includes(platform.os),
+      ).map((platform) => platform.target),
+    }));
+    return sameJson(projected, expected);
+  });
+  if (matches.length !== 1) {
     fail("release family distributions differ from the exact clean-host inventory");
   }
-  return family.family.version;
+  const [matrixRevision, contract] = matches[0];
+  return {
+    version: family.family.version,
+    matrixRevision,
+    distributions: contract.distributions,
+    rowCount: contract.rowCount,
+  };
 }
 
 function rowIdentity(authority, platform) {
@@ -434,10 +464,11 @@ function requiredChecks(row, phase) {
 }
 
 function buildMatrix(family, platforms) {
-  const version = validateFamily(family);
+  const familyContract = validateFamily(family);
+  const { version } = familyContract;
   validatePlatformManifest(platforms, version);
   const rows = [];
-  for (const authority of DISTRIBUTION_AUTHORITY) {
+  for (const authority of familyContract.distributions) {
     for (const platform of PLATFORM_AUTHORITY.filter((candidate) =>
       authority.targetOs.includes(candidate.os),
     )) {
@@ -469,8 +500,11 @@ function buildMatrix(family, platforms) {
     }
   }
   const ids = rows.map((row) => row.id);
-  if (rows.length !== 32 || new Set(ids).size !== 32) {
-    fail("clean-host row inventory is not exactly 32 unique rows");
+  if (
+    rows.length !== familyContract.rowCount ||
+    new Set(ids).size !== familyContract.rowCount
+  ) {
+    fail("clean-host row inventory does not match its exact unique-row contract");
   }
   const counts = Object.fromEntries(
     [...new Set(rows.map((row) => `${row.channel}:${row.role}`))].map((key) => [
@@ -478,23 +512,34 @@ function buildMatrix(family, platforms) {
       rows.filter((row) => `${row.channel}:${row.role}` === key).length,
     ]),
   );
-  const expectedCounts = {
-    "apt:product": 2,
-    "apt:standalone": 2,
-    "github:product": 6,
-    "homebrew:product": 4,
-    "npm:product": 6,
-    "oci:standalone": 4,
-    "pypi:product": 6,
-    "winget:product": 2,
-  };
+  const expectedCounts = Object.fromEntries(
+    [
+      ...new Set(
+        familyContract.distributions.map(
+          (authority) => `${authority.channel}:${authority.role}`,
+        ),
+      ),
+    ].map((key) => [
+      key,
+      familyContract.distributions
+        .filter((authority) => `${authority.channel}:${authority.role}` === key)
+        .reduce(
+          (count, authority) =>
+            count +
+            PLATFORM_AUTHORITY.filter((platform) =>
+              authority.targetOs.includes(platform.os),
+            ).length,
+          0,
+        ),
+    ]),
+  );
   if (!sameJson(counts, expectedCounts)) {
     fail("clean-host distribution counts drifted");
   }
   return {
     contract: MATRIX_CONTRACT,
     schema_version: 1,
-    matrix_revision: "distribution-target-32-2026-08-17.2",
+    matrix_revision: familyContract.matrixRevision,
     release: {
       version,
       channel: family.family.channel,
@@ -532,17 +577,18 @@ function validateConfigAndStatus(config, status) {
 }
 
 function validateMatrix(matrix, config) {
+  const contract = MATRIX_AUTHORITIES[matrix.matrix_revision];
   if (
     matrix.contract !== MATRIX_CONTRACT ||
     matrix.schema_version !== 1 ||
-    matrix.matrix_revision !== "distribution-target-32-2026-08-17.2" ||
+    !contract ||
     matrix.release?.version !== config.release.version ||
     matrix.release?.channel !== config.release.channel ||
     matrix.release?.tag !== config.release.tag ||
-    matrix.row_count !== 32 ||
+    matrix.row_count !== contract.rowCount ||
     !Array.isArray(matrix.rows) ||
-    matrix.rows.length !== 32 ||
-    new Set(matrix.rows.map((row) => row.id)).size !== 32
+    matrix.rows.length !== contract.rowCount ||
+    new Set(matrix.rows.map((row) => row.id)).size !== contract.rowCount
   ) {
     fail("clean-host matrix does not bind the endpoint release");
   }
@@ -736,7 +782,10 @@ function aggregateEvidence(matrix, config, status, configFile, statusFile, evide
   failures.sort((left, right) =>
     JSON.stringify(left).localeCompare(JSON.stringify(right), "en"),
   );
-  const passed = failures.length === 0 && admitted.size === 32 && inventory.length === 32;
+  const passed =
+    failures.length === 0 &&
+    admitted.size === matrix.row_count &&
+    inventory.length === matrix.row_count;
   const promotion = {
     allowed: passed,
     retry_same_candidate: !passed,
@@ -748,7 +797,7 @@ function aggregateEvidence(matrix, config, status, configFile, statusFile, evide
     release: expectedRelease,
     matrix: {
       revision: matrix.matrix_revision,
-      expected_rows: 32,
+      expected_rows: matrix.row_count,
       admitted_rows: admitted.size,
       evidence_files: inventory.length,
     },

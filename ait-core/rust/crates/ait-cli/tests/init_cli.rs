@@ -44,7 +44,9 @@ fn init_cli_creates_then_reinitializes_the_agent_contract() {
     assert!(temp.path().join(".ait/config.json").is_file());
     let agents = fs::read_to_string(temp.path().join("AGENTS.md")).unwrap();
     assert!(agents.contains("<!-- ait:workflow:start -->"));
-    assert!(agents.contains("sprint mode: `on`"));
+    assert!(agents.contains("entry: mode=`solo_local`; sprint=`on`; scopes=`local`"));
+    assert!(agents.contains("entry: plan-binding=`required`"));
+    assert!(agents.contains("`task start` revalidates entry"));
     assert!(temp.path().join("docs/sprints").is_dir());
     for path in ["ait-native.md", "docs/plan.md", "docs/milestone.md"] {
         assert!(!temp.path().join(path).exists(), "unexpected {path}");

@@ -11,9 +11,46 @@ The AIT core mode is always solo_local with sprint mode off. It must have no
 default remote, no configured server URL, no remote authority, and no
 ait-server process or command in the measured workflow. The only loopback
 service is the fixture's static game server during browser acceptance.
-Project document loading is disabled symmetrically with project_doc_max_bytes=0;
-the frozen measured prompt carries the mode-specific workflow rules. Generated
-AIT AGENTS.md guidance remains unchanged so Markdown lineage stays reconciled.
+The frozen protocol keeps project document loading disabled symmetrically with
+project_doc_max_bytes=0; the frozen measured prompt carries the mode-specific
+workflow rules. The AIT prompt teaches only one local task start, entry into its
+returned worktree, project editing and validation, and one local task finish.
+The Git prompt begins at the clean main worktree and measures the corresponding
+isolation lifecycle: one linked-worktree creation on `benchmark-task`, product
+editing and validation inside it, one final candidate commit, fast-forward
+integration onto main, linked-worktree removal, and temporary-branch deletion.
+The repository-command surfaces are explicitly mutually exclusive: both AIT
+accounting-profile prompts prohibit every Git command, including post-validation
+status or diff inspection, and both Git prompts prohibit every AIT command.
+AIT-side change inspection therefore uses ordinary file reads, search, and
+project-local validation.
+Each accounting profile has separate prompt prose, so steady-state treatments
+contain no first-use initialization, identity, configuration, or baseline
+instructions in either mode.
+For the steady-state profile, repository admission is performed by the runner
+before model accounting. The Git baseline commit is prepared outside measured
+tokens, but Git linked-worktree creation and complete cleanup remain inside the
+measured session. Both modes execute through the same benchmark-owned
+`ait_benchmark_local_v1` Codex permission profile, which extends `:workspace`
+and disables command network access. Git receives only the additional exact
+write exceptions required for its current main `.git` pointer, resolved
+external metadata, and linked-task `.git` pointer; danger-full-access is never
+used. The linked task is created below an otherwise empty writable container,
+so `git worktree remove` can delete it without write access to sibling evidence.
+A measured AIT lane is invalid if it invokes
+workflow-ready, general inventory, history-list, or task-audit management
+surfaces. Compliance searches and quoted examples are not treated as
+invocations.
+In a measured steady-state AIT lane, exactly one task start and one task finish
+are required, an intermediate Snapshot create is optional, and every other AIT
+invocation is invalid. The prompt tells the agent to retain and directly reuse
+the task ID returned by task start, so no discovery command is needed.
+A pilot manifest may instead set project_doc_max_bytes to a
+shared value from 1 through 65536 to screen the effect of generated AIT
+AGENTS.md guidance. That diagnostic is admitted only in pilot scope, applies
+the same byte limit to both repository modes, and is never claim eligible.
+Generated AIT AGENTS.md guidance remains unchanged so Markdown lineage stays
+reconciled.
 Shared tasks must require only paths authorable through both repository
 surfaces. In particular, candidate changes under AIT's projected docs namespace
 are forbidden; use an ordinary tracked path such as a root release document.
@@ -52,10 +89,44 @@ Execute a campaign into an absent or empty evidence directory:
     --manifest /path/to/pinned-campaign.json \
     --output-dir /absent/evidence
 
-The runner refuses evidence overwrite. A --max-runs smoke slice remains visibly
-incomplete and is never claim eligible. The committed template intentionally
-has a null browser program and placeholder model pin; replace both in a runtime
+Before any model request, the runner first drives the pinned Git executable
+through the exact generated Codex permission profile and requires a complete
+temporary linked-worktree add, empty commit, fast-forward merge, worktree
+removal, and branch deletion. It then uses the exact pinned Codex subject in an
+isolated temporary directory and requires 30 separate successful `/bin/pwd`
+shell calls. Every command must complete before the next starts; embedded or
+extended command text, other tool items, and file or workspace changes fail
+admission. Model preflight tokens are recorded as admission overhead and
+excluded from both repository modes. A failed permission or executor preflight
+starts zero candidate lanes and stops the campaign.
+
+The schedule keeps each workload/attempt Git/AIT pair adjacent while
+randomizing pair order and the two modes inside each pair. Use `--max-pairs 5`
+to execute five complete pairs. The retired `--max-runs` spelling is rejected.
+The runner refuses evidence overwrite, and a pair slice remains visibly
+incomplete and never claim eligible. The committed template intentionally has
+a null browser program and placeholder model pin; replace both in a runtime
 campaign before collecting acceptance evidence.
+
+A protocol-valid candidate that fails functional, browser, or clean-closeout
+acceptance remains a measured outcome: it is retained and acceptance-penalized,
+the safe counterpart is completed, and the runner continues the exact frozen
+suffix without retry. Infrastructure failure still stops immediately. A
+protocol-invalid attempt stops after its pair completes because it cannot enter
+the comparison. Protocol `.27` complete evidence may resume narrowly under the
+`.28` controller only when it is an exact immutable complete-pair prefix with
+identical pinned tool versions. Each new resume records both protocol revisions,
+the no-retry continuation policy, and the executing runner path and SHA-256 in
+append-only provenance; `.26` and other complete predecessors remain read-only.
+
+Exact common workload/attempt pairs remain comparable when both summaries are
+protocol-valid and carry normalized provider usage. A difference in successful
+file-change or patch-attempt frequency is measured behavior, not an exclusion.
+Reports keep provider tokens, elapsed time, completed file-change items,
+rejected apply-patch attempts, and total patch attempts as separate dimensions;
+they do not manufacture a weighted composite score. A structured provider
+error event still makes its lane infrastructure-invalid even if Codex later
+recovers and exits zero.
 
 Import one Codex JSONL provider usage stream:
 
@@ -84,7 +155,26 @@ Regenerate a report without overwriting an existing artifact:
     --output-json /absent/report.json \
     --output-markdown /absent/report.txt
 
+Produce a sanitized, checksummed public result bundle from the same immutable
+evidence. The measured subject pins must come from the frozen campaign record;
+they are not inferred from the later publishing checkout:
+
+  ait-benchmark agent-token publish \
+    --manifest /path/to/pinned-campaign.json \
+    --campaign-dir /path/to/evidence \
+    --output-dir /absent/public-bundle \
+    --release-version 1.1.0 \
+    --measured-product-snapshot SNP-XXXXXXXXXXXX \
+    --measured-ait-sha256 <64-lowercase-hex> \
+    --campaign-runner-sha256 <64-lowercase-hex>
+
+The bundle contains summary.txt, result.json, one sanitized runs.json row for
+every scheduled session, and SHA256SUMS. It excludes private executor streams
+and host-specific absolute paths and refuses an existing output directory.
+
 Run acceptance, invalidity, timeout, and unfavorable token results are retained.
+No failed candidate may be repaired, replaced, or selectively retried under the
+same frozen campaign identity.
 Only qualification scope with complete evidence, acceptable quality parity,
 positive failure-adjusted median savings, and a positive bootstrap 95-percent
 lower bound may be claim eligible.

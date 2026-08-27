@@ -922,7 +922,7 @@ fn workflow_command_hints_preserve_explicit_remote_scope() {
     assert_eq!(ready["policy_command"], JsonValue::Null);
     assert_eq!(
         ready["land_command"],
-        json!("ait workflow land RCT-9/C-01 --apply --remote mirror")
+        json!("ait workflow finish RCT-9/C-01 --apply --remote mirror")
     );
 
     let land = workflow_land_command_hints(
@@ -939,7 +939,7 @@ fn workflow_command_hints_preserve_explicit_remote_scope() {
     );
     assert_eq!(
         land["apply_command"],
-        json!("ait workflow land RCT-9/C-01 --apply --remote mirror")
+        json!("ait workflow finish RCT-9/C-01 --apply --remote mirror")
     );
     assert_eq!(
         land["ready_command"],
@@ -951,14 +951,14 @@ fn workflow_command_hints_preserve_explicit_remote_scope() {
     );
     assert_eq!(
         land["task_land_command"],
-        json!("ait task land RCT-9/C-01 --remote mirror")
+        json!("ait task finish RCT-9/C-01 --remote mirror")
     );
 
     let local =
         workflow_ready_command_hints(&repo, "LCT-9/C-01", None, Some(&patchset), "main", None);
     assert_eq!(
         local["land_command"],
-        json!("ait workflow land LCT-9/C-01 --apply")
+        json!("ait workflow finish LCT-9/C-01 --apply")
     );
     assert!(!local["apply_command"]
         .as_str()
@@ -1017,10 +1017,10 @@ fn workflow_review_hints_distinguish_required_and_automatic_task_review_owners()
     assert_eq!(automatic["manual_review_command"], JsonValue::Null);
     assert_eq!(
         automatic["review_command"],
-        json!("ait workflow land RCT-9/C-01 --apply --remote mirror")
+        json!("ait workflow finish RCT-9/C-01 --apply --remote mirror")
     );
     assert_ne!(
         automatic["review_command"],
-        json!("ait task land RCT-9/C-01 --remote mirror")
+        json!("ait task finish RCT-9/C-01 --remote mirror")
     );
 }

@@ -300,7 +300,7 @@ pub(super) fn guard_patchset_revision_scope(
         .map(|value| format!(" / change `{value}`"))
         .unwrap_or_default();
     Err(format!(
-        "Current line head `{revision_snapshot_id}` includes snapshot lineage that is not owned by bound task `{expected_task_id}`{change_fragment} between base `{base_snapshot_id}` and the current head: {issue_sample}. Restore or reopen the correct task worktree before running `ait patchset publish`."
+        "Current Line head `{revision_snapshot_id}` includes Snapshots that are not owned by bound Task `{expected_task_id}`{change_fragment} between base `{base_snapshot_id}` and the current head: {issue_sample}. Restore or reopen the correct Task worktree before running `ait patchset publish`."
     ))
 }
 
@@ -672,6 +672,576 @@ pub(super) fn guard_repo_root_bound_task_worktree(
     ))
 }
 
+#[derive(Clone, Debug)]
+struct TaskScopedWorktreeBinding {
+    registry_name: String,
+    metadata: CurrentWorktreeMetadata,
+    payload: JsonValue,
+}
+
+fn task_scoped_worktree_bindings(
+    repo: &RepoRuntime,
+) -> Result<Vec<TaskScopedWorktreeBinding>, String> {
+    let registry_dir = repo
+        .authoritative_repo_root()
+        .join(".ait")
+        .join("worktrees");
+    if !registry_dir.is_dir() {
+        return Ok(Vec::new());
+    }
+    let mut paths = fs::read_dir(&registry_dir)
+        .map_err(|err| err.to_string())?
+        .map(|entry| {
+            entry
+                .map(|value| value.path())
+                .map_err(|err| err.to_string())
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    paths.sort();
+    let mut bindings = Vec::new();
+    for path in paths {
+        if path.extension().and_then(|value| value.to_str()) != Some("json") {
+            continue;
+        }
+        let payload = read_json_value(&path);
+        let Some(registry_name) = path
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .and_then(|value| normalized_text(Some(value)))
+        else {
+            continue;
+        };
+        let metadata = worktree_metadata_from_payload(&payload, &registry_name);
+        if metadata.bound_task_id.is_none() && metadata.bound_change_id.is_none() {
+            continue;
+        }
+        bindings.push(TaskScopedWorktreeBinding {
+            registry_name,
+            metadata,
+            payload,
+        });
+    }
+    Ok(bindings)
+}
+
+fn syntactic_task_id(reference: &str) -> Option<String> {
+    let reference = normalized_text(Some(reference))?;
+    if let Some((task_id, _change_id)) = reference.split_once('/') {
+        if exact_task_or_change_reference_family(task_id) == Some('T') {
+            return Some(task_id.to_string());
+        }
+    }
+    (exact_task_or_change_reference_family(&reference) == Some('T')).then_some(reference)
+}
+
+fn exact_task_or_change_reference_family(reference: &str) -> Option<char> {
+    let text = reference.trim().to_ascii_uppercase();
+    let (prefix, ordinal) = text.rsplit_once('-')?;
+    if ordinal.is_empty() || !ordinal.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    match prefix.chars().last()? {
+        family @ ('T' | 'C') => Some(family),
+        _ => None,
+    }
+}
+
+fn task_id_from_direct_change_binding(
+    bindings: &[TaskScopedWorktreeBinding],
+    reference: &str,
+) -> Result<Option<String>, String> {
+    let reference = normalized_text(Some(reference));
+    let mut matches = bindings
+        .iter()
+        .filter(|binding| {
+            metadata_change_matches_reference(&binding.metadata, reference.as_deref())
+        })
+        .collect::<Vec<_>>();
+    matches.sort_by(|left, right| left.registry_name.cmp(&right.registry_name));
+    if matches.len() > 1 {
+        let names = matches
+            .iter()
+            .map(|binding| binding.registry_name.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Err(format!(
+            "Exact worktree routing is ambiguous for `{}`: matching bindings are {names}. Use a task-scoped Change reference such as `<task-id>/C-01`.",
+            reference.unwrap_or_default()
+        ));
+    }
+    Ok(matches
+        .first()
+        .and_then(|binding| binding.metadata.bound_task_id.clone()))
+}
+
+fn metadata_change_matches_reference(
+    metadata: &CurrentWorktreeMetadata,
+    reference: Option<&str>,
+) -> bool {
+    let reference = normalized_text(reference);
+    let canonical = reference
+        .as_deref()
+        .and_then(|value| canonical_change_id(value).ok());
+    let exact_ref_match = metadata.bound_change_ref.as_ref() == reference.as_ref();
+    let canonical_match = reference.as_ref() == canonical.as_ref()
+        && metadata.bound_change_id.as_ref() == canonical.as_ref();
+    exact_ref_match || canonical_match
+}
+
+fn task_id_from_change_authority(
+    repo: &RepoRuntime,
+    reference: &str,
+    lookup_local_change: bool,
+    lookup_remote_change: bool,
+    remote_name: Option<&str>,
+) -> Option<String> {
+    if lookup_local_change {
+        if let Ok(change) = change_show(repo, reference, true, None, None) {
+            if let Some(task_id) = change_task_id_from_payload(&change) {
+                return Some(task_id);
+            }
+        }
+    }
+    if lookup_remote_change {
+        if let Ok(change) = change_show(repo, reference, false, remote_name, None) {
+            if let Some(task_id) = change_task_id_from_payload(&change) {
+                return Some(task_id);
+            }
+        }
+    }
+    None
+}
+
+fn bound_task_id_for_alias(
+    repo: &RepoRuntime,
+    bindings: &[TaskScopedWorktreeBinding],
+    requested_task_id: &str,
+) -> Result<String, String> {
+    if bindings
+        .iter()
+        .any(|binding| binding.metadata.bound_task_id.as_deref() == Some(requested_task_id))
+    {
+        return Ok(requested_task_id.to_string());
+    }
+    let mut matches = BTreeMap::<String, BTreeSet<String>>::new();
+    for binding in bindings {
+        let Some(bound_task_id) = binding.metadata.bound_task_id.as_deref() else {
+            continue;
+        };
+        let Ok(task) = task_show(repo, bound_task_id, true, None) else {
+            continue;
+        };
+        let alias_matches = [
+            string_field(&task, "task_id"),
+            string_field(&task, "published_task_id"),
+        ]
+        .into_iter()
+        .flatten()
+        .any(|alias| alias == requested_task_id);
+        if alias_matches {
+            matches
+                .entry(bound_task_id.to_string())
+                .or_default()
+                .insert(binding.registry_name.clone());
+        }
+    }
+    if matches.len() > 1 {
+        let scopes = matches
+            .iter()
+            .map(|(task_id, names)| {
+                format!(
+                    "{task_id} ({})",
+                    names.iter().cloned().collect::<Vec<_>>().join(", ")
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("; ");
+        return Err(format!(
+            "Refusing exact worktree routing because Task alias `{requested_task_id}` maps to multiple bound Tasks: {scopes}."
+        ));
+    }
+    Ok(matches
+        .into_keys()
+        .next()
+        .unwrap_or_else(|| requested_task_id.to_string()))
+}
+
+fn synchronized_plan_artifact_at_root(
+    repo: &RepoRuntime,
+    path: &str,
+    plan_heads: &BTreeMap<String, BTreeSet<String>>,
+) -> Result<bool, String> {
+    let Some(expected_blob_ids) = plan_heads.get(path) else {
+        return Ok(false);
+    };
+    let Some(actual_blob_id) =
+        current_artifact_blob_id(&repo.authoritative_repo_root().join(path))?
+    else {
+        return Ok(false);
+    };
+    Ok(expected_blob_ids.contains(&actual_blob_id))
+}
+
+fn verified_nested_worktree_prefixes(
+    repo: &RepoRuntime,
+    bindings: &[TaskScopedWorktreeBinding],
+) -> BTreeSet<String> {
+    let Ok(root_path) = repo.authoritative_repo_root().canonicalize() else {
+        return BTreeSet::new();
+    };
+    bindings
+        .iter()
+        .filter_map(|binding| {
+            if binding.metadata.name != binding.registry_name {
+                return None;
+            }
+            let registered_path = required_path_field(&binding.payload, "path").ok()?;
+            let registered_line = binding
+                .payload
+                .get("line_name")
+                .and_then(JsonValue::as_str)
+                .and_then(|value| normalized_text(Some(value)))?;
+            let registered_path = registered_path.canonicalize().ok()?;
+            let relative = registered_path.strip_prefix(&root_path).ok()?;
+            if relative.as_os_str().is_empty() {
+                return None;
+            }
+            let worktree_repo = discover_worktree_repo(&registered_path)?;
+            let worktree_root = worktree_repo.workspace_root().canonicalize().ok()?;
+            let worktree_repo_root = worktree_repo
+                .authoritative_repo_root()
+                .canonicalize()
+                .ok()?;
+            let overlay_name = worktree_repo
+                .config
+                .get("worktree_name")
+                .and_then(JsonValue::as_str)
+                .and_then(|value| normalized_text(Some(value)))?;
+            let overlay_line = worktree_repo.current_line_name().ok()?;
+            (worktree_root == registered_path
+                && worktree_repo_root == root_path
+                && overlay_name == binding.registry_name
+                && overlay_line == registered_line)
+                .then(|| relative.to_string_lossy().replace('\\', "/"))
+        })
+        .collect()
+}
+
+fn path_is_inside_verified_worktree(path: &str, prefixes: &BTreeSet<String>) -> bool {
+    prefixes
+        .iter()
+        .any(|prefix| path == prefix || path.starts_with(&format!("{prefix}/")))
+}
+
+fn guard_repo_root_control_surface_clean(
+    repo: &RepoRuntime,
+    bindings: &[TaskScopedWorktreeBinding],
+    operation: &str,
+) -> Result<(), String> {
+    if repo.is_worktree() {
+        return Ok(());
+    }
+    let status = workflow_workspace_status(repo, None, None)?;
+    let changed_paths = json_string_list(status.get("changed_paths"));
+    if changed_paths.is_empty() {
+        return Ok(());
+    }
+    let plan_heads = current_markdown_plan_head_blob_ids(repo)?;
+    let nested_worktree_prefixes = verified_nested_worktree_prefixes(repo, bindings);
+    let mut authoring_paths = Vec::new();
+    for path in changed_paths {
+        if !path_is_inside_verified_worktree(&path, &nested_worktree_prefixes)
+            && !synchronized_plan_artifact_at_root(repo, &path, &plan_heads)?
+        {
+            authoring_paths.push(path);
+        }
+    }
+    if authoring_paths.is_empty() {
+        return Ok(());
+    }
+    Err(format!(
+        "Refusing to run `{operation}` from the Repository root while code/workspace drift is present there: {}. Task code must be authored in its bound worktree; move or revert these root edits before retrying.",
+        summarize_path_sample(&authoring_paths)
+    ))
+}
+
+fn canonical_existing_path(path: &Path, label: &str) -> Result<PathBuf, String> {
+    path.canonicalize()
+        .map_err(|err| format!("Unable to verify {label} `{}`: {err}", path.display()))
+}
+
+fn verified_task_scoped_worktree_repo(
+    root_repo: &RepoRuntime,
+    task_id: &str,
+    binding: &TaskScopedWorktreeBinding,
+    operation: &str,
+) -> Result<RepoRuntime, String> {
+    if binding.metadata.name != binding.registry_name {
+        return Err(format!(
+            "Refusing to route `{operation}` because worktree registry `{}` declares mismatched name `{}`.",
+            binding.registry_name, binding.metadata.name
+        ));
+    }
+    let payload = binding.payload.as_object().ok_or_else(|| {
+        format!(
+            "Refusing to route `{operation}` because worktree registry `{}` is malformed.",
+            binding.registry_name
+        )
+    })?;
+    let registered_path = required_path_field(&binding.payload, "path").map_err(|error| {
+        format!(
+            "Refusing to route `{operation}` because worktree `{}` has no valid registered path: {error}",
+            binding.registry_name
+        )
+    })?;
+    let registered_repo_root = required_path_field(&binding.payload, "repo_root").map_err(|error| {
+        format!(
+            "Refusing to route `{operation}` because worktree `{}` has no valid Repository root: {error}",
+            binding.registry_name
+        )
+    })?;
+    let registered_line = payload
+        .get("line_name")
+        .and_then(JsonValue::as_str)
+        .and_then(|value| normalized_text(Some(value)))
+        .ok_or_else(|| {
+            format!(
+                "Refusing to route `{operation}` because worktree `{}` has no registered Line.",
+                binding.registry_name
+            )
+        })?;
+    let root_path = canonical_existing_path(
+        &root_repo.authoritative_repo_root(),
+        "authoritative Repository root",
+    )?;
+    let registry_root_path =
+        canonical_existing_path(&registered_repo_root, "registered Repository root")?;
+    if registry_root_path != root_path {
+        return Err(format!(
+            "Refusing to route `{operation}` because worktree `{}` belongs to a different Repository root `{}`.",
+            binding.registry_name,
+            registered_repo_root.display()
+        ));
+    }
+    if !registered_path.is_dir() {
+        return Err(format!(
+            "Bound worktree `{}` for Task `{task_id}` is missing or detached at `{}`. Run `ait worktree recreate {}`.",
+            binding.registry_name,
+            registered_path.display(),
+            binding.registry_name
+        ));
+    }
+    let registered_path = canonical_existing_path(&registered_path, "registered worktree path")?;
+    let worktree_repo = discover_worktree_repo(&registered_path).ok_or_else(|| {
+        format!(
+            "Bound worktree `{}` for Task `{task_id}` is missing or detached at `{}`. Run `ait worktree recreate {}`.",
+            binding.registry_name,
+            registered_path.display(),
+            binding.registry_name
+        )
+    })?;
+    if !worktree_repo.is_worktree() {
+        return Err(format!(
+            "Refusing to route `{operation}` because `{}` is not a worktree runtime.",
+            registered_path.display()
+        ));
+    }
+    let worktree_root = canonical_existing_path(&worktree_repo.workspace_root(), "worktree root")?;
+    let worktree_repo_root = canonical_existing_path(
+        &worktree_repo.authoritative_repo_root(),
+        "worktree authoritative Repository root",
+    )?;
+    let overlay_name = worktree_repo
+        .config
+        .get("worktree_name")
+        .and_then(JsonValue::as_str)
+        .and_then(|value| normalized_text(Some(value)));
+    let overlay_line = worktree_repo.current_line_name()?;
+    if worktree_root != registered_path
+        || worktree_repo_root != root_path
+        || overlay_name.as_deref() != Some(binding.registry_name.as_str())
+        || overlay_line != registered_line
+        || binding.metadata.bound_task_id.as_deref() != Some(task_id)
+    {
+        return Err(format!(
+            "Refusing to route `{operation}` because worktree `{}` no longer exactly matches its registered Task, path, Repository, or Line binding.",
+            binding.registry_name
+        ));
+    }
+    Ok(worktree_repo)
+}
+
+/// Resolve an exact Task- or Change-scoped command to its verified bound
+/// worktree for read-only inspection. A Repository-root invocation never
+/// becomes an authoring context, and a different current worktree is rejected
+/// instead of implicitly switching workspaces. Mutations must use
+/// `run_task_scoped_workspace_command`, which also rejects root authoring drift.
+pub fn resolve_task_scoped_execution_repo(
+    repo: &RepoRuntime,
+    reference: &str,
+    lookup_local_change: bool,
+    lookup_remote_change: bool,
+    remote_name: Option<&str>,
+    operation: &str,
+) -> Result<RepoRuntime, String> {
+    resolve_task_scoped_execution_repo_with_root_guard(
+        repo,
+        reference,
+        lookup_local_change,
+        lookup_remote_change,
+        remote_name,
+        operation,
+        false,
+    )
+}
+
+fn resolve_task_scoped_execution_repo_with_root_guard(
+    repo: &RepoRuntime,
+    reference: &str,
+    lookup_local_change: bool,
+    lookup_remote_change: bool,
+    remote_name: Option<&str>,
+    operation: &str,
+    reject_root_drift: bool,
+) -> Result<RepoRuntime, String> {
+    let reference = normalized_text(Some(reference))
+        .ok_or_else(|| "Task or Change ID must not be empty.".to_string())?;
+    let bindings = task_scoped_worktree_bindings(repo)?;
+    let current_metadata = if repo.is_worktree() {
+        current_worktree_metadata(repo)?
+    } else {
+        None
+    };
+    let task_id = if let Some(task_id) = syntactic_task_id(&reference) {
+        Some(task_id)
+    } else if current_metadata
+        .as_ref()
+        .is_some_and(|metadata| metadata_change_matches_reference(metadata, Some(&reference)))
+    {
+        current_metadata
+            .as_ref()
+            .and_then(|metadata| metadata.bound_task_id.clone())
+    } else if repo.is_worktree() {
+        task_id_from_change_authority(
+            repo,
+            &reference,
+            lookup_local_change,
+            lookup_remote_change,
+            remote_name,
+        )
+    } else {
+        task_id_from_direct_change_binding(&bindings, &reference)?.or_else(|| {
+            task_id_from_change_authority(
+                repo,
+                &reference,
+                lookup_local_change,
+                lookup_remote_change,
+                remote_name,
+            )
+        })
+    }
+    .map(|task_id| bound_task_id_for_alias(repo, &bindings, &task_id))
+    .transpose()?;
+
+    if repo.is_worktree() {
+        let metadata = current_metadata.ok_or_else(|| {
+            format!(
+                "Current worktree metadata is unavailable; refusing to run `{operation}` without a verified Task binding."
+            )
+        })?;
+        let bound_task_id = metadata.bound_task_id.as_deref().ok_or_else(|| {
+            format!(
+                "Current worktree `{}` is not bound to a Task; refusing to run `{operation}`.",
+                metadata.name
+            )
+        })?;
+        if let Some(task_id) = task_id.as_deref() {
+            if task_id != bound_task_id {
+                return Err(format!(
+                    "Current worktree `{}` is bound to Task `{bound_task_id}`, not Task `{task_id}`. Continue in the matching Task worktree before running `{operation}`.",
+                    metadata.name
+                ));
+            }
+        }
+        return Ok(repo.clone());
+    }
+
+    let Some(task_id) = task_id else {
+        return Ok(repo.clone());
+    };
+    let mut matches = bindings
+        .iter()
+        .filter(|binding| binding.metadata.bound_task_id.as_deref() == Some(task_id.as_str()))
+        .collect::<Vec<_>>();
+    matches.sort_by(|left, right| left.registry_name.cmp(&right.registry_name));
+    if matches.len() > 1 {
+        let names = matches
+            .iter()
+            .map(|binding| binding.registry_name.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Err(format!(
+            "Refusing to route `{operation}` because Task `{task_id}` has multiple bound worktrees: {names}. Repair the duplicate binding before retrying."
+        ));
+    }
+    let Some(binding) = matches.first() else {
+        // Preserve pre-worktree repositories and remote-only workflows. The
+        // downstream authority still decides whether the operation itself is
+        // valid; no implicit workspace routing occurs in this compatibility
+        // path.
+        return Ok(repo.clone());
+    };
+    if reject_root_drift {
+        guard_repo_root_control_surface_clean(repo, &bindings, operation)?;
+    }
+    verified_task_scoped_worktree_repo(repo, &task_id, binding, operation)
+}
+
+/// Execute a mutating Task-scoped command under the resolved workspace lock.
+/// Resolution is repeated after locking so a concurrent binding change fails
+/// rather than redirecting the operation to another workspace.
+pub fn run_task_scoped_workspace_command<T, F>(
+    repo: &RepoRuntime,
+    reference: &str,
+    lookup_local_change: bool,
+    lookup_remote_change: bool,
+    remote_name: Option<&str>,
+    operation: &str,
+    command: F,
+) -> Result<T, String>
+where
+    F: FnOnce(&RepoRuntime) -> Result<T, String>,
+{
+    let execution_repo = resolve_task_scoped_execution_repo_with_root_guard(
+        repo,
+        reference,
+        lookup_local_change,
+        lookup_remote_change,
+        remote_name,
+        operation,
+        true,
+    )?;
+    run_locked_workspace_command(&execution_repo, operation, || {
+        let verified_repo = resolve_task_scoped_execution_repo_with_root_guard(
+            repo,
+            reference,
+            lookup_local_change,
+            lookup_remote_change,
+            remote_name,
+            operation,
+            true,
+        )?;
+        let before = canonical_existing_path(&execution_repo.workspace_root(), "execution root")?;
+        let after = canonical_existing_path(&verified_repo.workspace_root(), "verified root")?;
+        if before != after {
+            return Err(format!(
+                "Refusing to run `{operation}` because its Task worktree binding changed while acquiring the workspace lock; retry the command."
+            ));
+        }
+        command(&verified_repo)
+    })
+}
+
 pub(super) fn remote_change_task_id<R>(
     task_remote: &mut R,
     repo_name: &str,
@@ -843,7 +1413,7 @@ pub(super) fn guard_current_worktree_task_scope(
         return Ok(());
     }
     Err(format!(
-        "Current worktree `{}` is bound to task `{}`; requested task `{}` is outside that task lineage. Continue in the matching task worktree before running `{}`.",
+        "Current worktree `{}` is bound to Task `{}`, not Task `{}`. Continue in the matching Task worktree before running `{}`.",
         metadata.name, bound_task_id, requested_task_id, operation
     ))
 }
@@ -853,7 +1423,9 @@ fn current_markdown_plan_head_blob_ids(
 ) -> Result<BTreeMap<String, BTreeSet<String>>, String> {
     let mut tracked = BTreeMap::<String, BTreeSet<String>>::new();
     let heads = repo.local_plan_head_artifacts().map_err(|err| {
-        format!("Unable to inspect local Markdown plan lineage before workflow authoring: {err}")
+        format!(
+            "Unable to inspect local Markdown Plan history before creating workflow data: {err}"
+        )
     })?;
     for head in heads {
         if matches!(head.status.as_str(), "archived" | "superseded") {
@@ -2088,6 +2660,197 @@ mod selected_binary_line_tests {
         assert!(error.contains("matches multiple task worktrees"));
         assert!(error.contains("RT-1/C-01"));
         assert!(error.contains("RT-2/C-01"));
+    }
+
+    #[cfg(unix)]
+    fn register_routable_worktree(
+        repo: &RepoRuntime,
+        target_root: &Path,
+        name: &str,
+        task_id: &str,
+        change_id: &str,
+        registered_line: &str,
+        overlay_line: &str,
+    ) -> RepoRuntime {
+        fs::create_dir_all(target_root.join("src")).expect("create worktree root");
+        std::os::unix::fs::symlink(&repo.ait_dir, target_root.join(".ait"))
+            .expect("link shared .ait");
+        write_file(
+            &target_root.join(".ait-worktree.json"),
+            &json!({
+                "worktree_name": name,
+                "current_line": overlay_line,
+                "repo_root": repo.authoritative_repo_root(),
+                "workspace_root": target_root,
+            })
+            .to_string(),
+        );
+        write_file(
+            &repo.ait_dir.join("worktrees").join(format!("{name}.json")),
+            &json!({
+                "name": name,
+                "path": target_root,
+                "repo_root": repo.authoritative_repo_root(),
+                "line_name": registered_line,
+                "bound_task_id": task_id,
+                "bound_change_id": change_id,
+                "bound_change_ref": format!("{task_id}/{change_id}"),
+                "auto_created_for_task": true,
+            })
+            .to_string(),
+        );
+        RepoRuntime::discover_from_path(target_root).expect("discover worktree")
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn exact_task_id_routes_root_to_verified_bound_worktree() {
+        let (_root_temp, repo) = binary_snapshot_repo();
+        let target = TempDir::new().expect("worktree tempdir");
+        register_routable_worktree(
+            &repo,
+            target.path(),
+            "rt-1",
+            "RT-1",
+            "C-01",
+            "feature/rt-1",
+            "feature/rt-1",
+        );
+
+        let routed =
+            resolve_task_scoped_execution_repo(&repo, "RT-1", false, false, None, "test route")
+                .expect("route exact Task");
+
+        assert!(routed.is_worktree());
+        assert_eq!(
+            routed.workspace_root().canonicalize().unwrap(),
+            target.path().canonicalize().unwrap()
+        );
+
+        let mut observed_target_lock = false;
+        run_task_scoped_workspace_command(
+            &repo,
+            "RT-1",
+            false,
+            false,
+            None,
+            "test locked route",
+            |execution_repo| {
+                assert_eq!(
+                    execution_repo.workspace_root().canonicalize().unwrap(),
+                    target.path().canonicalize().unwrap()
+                );
+                let lock = crate::workspace_lock::workspace_command_lock_path(execution_repo);
+                let metadata = fs::read_to_string(lock).expect("target lock metadata");
+                assert!(metadata.contains("test locked route"));
+                observed_target_lock = true;
+                Ok(())
+            },
+        )
+        .expect("run under exact target lock");
+        assert!(observed_target_lock);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn root_routing_rejects_duplicate_task_bindings_and_ambiguous_short_changes() {
+        let (_root_temp, repo) = binary_snapshot_repo();
+        let first = TempDir::new().expect("first worktree tempdir");
+        let second = TempDir::new().expect("second worktree tempdir");
+        register_routable_worktree(
+            &repo,
+            first.path(),
+            "rt-1-a",
+            "RT-1",
+            "C-01",
+            "feature/rt-1-a",
+            "feature/rt-1-a",
+        );
+        register_routable_worktree(
+            &repo,
+            second.path(),
+            "rt-1-b",
+            "RT-1",
+            "C-01",
+            "feature/rt-1-b",
+            "feature/rt-1-b",
+        );
+
+        let duplicate =
+            resolve_task_scoped_execution_repo(&repo, "RT-1", false, false, None, "test route")
+                .expect_err("duplicate Task bindings must fail");
+        assert!(duplicate.contains("multiple bound worktrees"));
+
+        let ambiguous =
+            resolve_task_scoped_execution_repo(&repo, "C-01", false, false, None, "test route")
+                .expect_err("ambiguous short Change must fail");
+        assert!(ambiguous.contains("routing is ambiguous"));
+    }
+
+    #[test]
+    fn root_routing_rejects_missing_bound_worktree_path() {
+        let (_root_temp, repo) = binary_snapshot_repo();
+        let missing = repo.workspace_root().join("missing-task-worktree");
+        write_file(
+            &repo.ait_dir.join("worktrees/rt-missing.json"),
+            &json!({
+                "name": "rt-missing",
+                "path": missing,
+                "repo_root": repo.authoritative_repo_root(),
+                "line_name": "feature/rt-missing",
+                "bound_task_id": "RT-404",
+                "bound_change_id": "C-01",
+            })
+            .to_string(),
+        );
+
+        let error =
+            resolve_task_scoped_execution_repo(&repo, "RT-404", false, false, None, "test route")
+                .expect_err("missing worktree must fail");
+        assert!(error.contains("missing or detached"));
+        assert!(error.contains("ait worktree recreate rt-missing"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn root_routing_rejects_mismatched_overlay_and_wrong_current_worktree() {
+        let (_root_temp, repo) = binary_snapshot_repo();
+        let first = TempDir::new().expect("first worktree tempdir");
+        let second = TempDir::new().expect("second worktree tempdir");
+        let first_repo = register_routable_worktree(
+            &repo,
+            first.path(),
+            "rt-1",
+            "RT-1",
+            "C-01",
+            "feature/rt-1",
+            "feature/wrong-overlay",
+        );
+        register_routable_worktree(
+            &repo,
+            second.path(),
+            "rt-2",
+            "RT-2",
+            "C-01",
+            "feature/rt-2",
+            "feature/rt-2",
+        );
+
+        let mismatch =
+            resolve_task_scoped_execution_repo(&repo, "RT-1", false, false, None, "test route")
+                .expect_err("overlay mismatch must fail");
+        assert!(mismatch.contains("no longer exactly matches"));
+
+        let wrong_worktree = resolve_task_scoped_execution_repo(
+            &first_repo,
+            "RT-2",
+            false,
+            false,
+            None,
+            "test route",
+        )
+        .expect_err("wrong current worktree must fail");
+        assert!(wrong_worktree.contains("bound to Task `RT-1`, not Task `RT-2`"));
     }
 
     fn write_file(path: &Path, content: &str) {

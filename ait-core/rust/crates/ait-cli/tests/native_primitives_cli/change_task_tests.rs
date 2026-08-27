@@ -223,10 +223,10 @@ fn compact_agent_action_json_drives_the_complete_local_task_loop() {
 
     let landed = compact_json_output(
         &edit_root,
-        &["task", "land", "LT-0001", "--local", "--json"],
+        &["task", "finish", "LT-0001", "--local", "--json"],
     );
     assert_eq!(landed["contract"], "ait-agent-action/v1");
-    assert_eq!(landed["command"], "task.land");
+    assert_eq!(landed["command"], "task.finish");
     assert_eq!(landed["ok"], true);
     assert_eq!(landed["task_id"], "LT-0001");
     assert_eq!(landed["change_ref"], "LT-0001/C-01");
@@ -247,6 +247,210 @@ fn compact_agent_action_json_drives_the_complete_local_task_loop() {
     assert_eq!(full_status["current_line"], "main");
     assert!(full_status["snapshot_count"].as_u64().is_some());
     assert!(full_status.get("contract").is_none());
+}
+
+#[test]
+fn task_finish_creates_one_final_snapshot_for_dirty_local_work_and_reuses_it_on_retry() {
+    let temp = init_repo("http://127.0.0.1:1");
+    let root = temp.path();
+    let started = json_output(
+        root,
+        &[
+            "task",
+            "start",
+            "--local",
+            "--title",
+            "Integrated final Snapshot",
+            "--intent",
+            "prove Task finish creates exactly one final Snapshot",
+            "--json",
+        ],
+    );
+    let edit_root = PathBuf::from(started["worktree"]["path"].as_str().unwrap());
+    write_file(
+        &edit_root.join("src/task_finish_snapshot.rs"),
+        "pub fn task_finish_snapshot() -> bool { true }\n",
+    );
+
+    let before_count = json_output(&edit_root, &["snapshot", "list", "--json"])
+        .as_array()
+        .unwrap()
+        .len();
+    let finished = json_output(
+        &edit_root,
+        &[
+            "task",
+            "finish",
+            "LT-0001",
+            "--message",
+            "Create the final Snapshot in Task finish",
+            "--local",
+            "--json",
+            "--full",
+        ],
+    );
+    let created_snapshot_id = finished["auto_snapshot"]["snapshot_id"]
+        .as_str()
+        .expect("dirty Task finish must expose its created Snapshot")
+        .to_string();
+    assert_eq!(
+        finished["auto_snapshot"]["message"].as_str(),
+        Some("Create the final Snapshot in Task finish")
+    );
+    assert_eq!(
+        finished["landed_snapshot_id"].as_str(),
+        Some(created_snapshot_id.as_str())
+    );
+    assert!(!edit_root.exists());
+
+    let after_count = json_output(root, &["snapshot", "list", "--json"])
+        .as_array()
+        .unwrap()
+        .len();
+    assert_eq!(after_count, before_count + 1);
+
+    let retried = json_output(
+        root,
+        &[
+            "task",
+            "finish",
+            "LT-0001/C-01",
+            "--local",
+            "--json",
+            "--full",
+        ],
+    );
+    assert_eq!(retried["execution_status"].as_str(), Some("already_landed"));
+    assert_eq!(
+        retried["landed_snapshot_id"].as_str(),
+        Some(created_snapshot_id.as_str())
+    );
+    let retry_count = json_output(root, &["snapshot", "list", "--json"])
+        .as_array()
+        .unwrap()
+        .len();
+    assert_eq!(retry_count, after_count);
+}
+
+#[test]
+fn task_finish_rejects_snapshot_message_before_remote_contact() {
+    let temp = init_repo("http://127.0.0.1:1");
+    let output = cargo_bin()
+        .current_dir(temp.path())
+        .args([
+            "task",
+            "finish",
+            "RT-1",
+            "--message",
+            "must stay local",
+            "--remote",
+            "origin",
+            "--json",
+        ])
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains(
+        "`--message` is available only for local `ait task finish`; remote finish consumes an already-ready selected Patchset."
+    ));
+}
+
+#[test]
+fn task_finish_retry_after_post_snapshot_failure_does_not_duplicate_snapshot() {
+    let temp = init_repo("http://127.0.0.1:1");
+    let root = temp.path();
+    let base_snapshot_id = local_line_head(root, "main").expect("initialized main head");
+    let original = fs::read_to_string(root.join("src/lib.rs")).unwrap();
+    write_file(
+        &root.join("src/lib.rs"),
+        "pub fn example() -> &'static str { \"divergent target\" }\n",
+    );
+    let divergent_target_snapshot_id = seed_snapshot(root, "Divergent target Snapshot");
+    write_file(&root.join("src/lib.rs"), &original);
+    seed_binary_line(root, "main", &base_snapshot_id);
+    assert_eq!(
+        json_output(root, &["status", "--json"])["workspace_status"].as_str(),
+        Some("clean")
+    );
+
+    let started = json_output(
+        root,
+        &[
+            "task",
+            "start",
+            "--local",
+            "--title",
+            "Post-Snapshot retry",
+            "--intent",
+            "prove retry reuses the final Snapshot after a later failure",
+            "--json",
+        ],
+    );
+    let worktree = PathBuf::from(started["worktree"]["path"].as_str().unwrap());
+    write_file(
+        &worktree.join("src/task_finish_retry.rs"),
+        "pub fn task_finish_retry() -> bool { true }\n",
+    );
+    let before_count = json_output(&worktree, &["snapshot", "list", "--json"])
+        .as_array()
+        .unwrap()
+        .len();
+
+    seed_binary_line(root, "main", &divergent_target_snapshot_id);
+    let first = cargo_bin()
+        .current_dir(&worktree)
+        .args([
+            "task",
+            "finish",
+            "LT-0001",
+            "--message",
+            "Snapshot before injected Line failure",
+            "--local",
+            "--json",
+            "--full",
+        ])
+        .output()
+        .unwrap();
+    assert!(!first.status.success());
+    assert!(String::from_utf8_lossy(&first.stderr).contains("does not descend"));
+
+    let after_first_count = json_output(&worktree, &["snapshot", "list", "--json"])
+        .as_array()
+        .unwrap()
+        .len();
+    assert_eq!(after_first_count, before_count + 1);
+    let created = json_output(&worktree, &["snapshot", "list", "--json"])
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|row| {
+            row["message"].as_str() == Some("Snapshot before injected Line failure")
+        })
+        .count();
+    assert_eq!(created, 1);
+
+    let second = cargo_bin()
+        .current_dir(&worktree)
+        .args([
+            "task",
+            "finish",
+            "LT-0001/C-01",
+            "--message",
+            "Snapshot before injected Line failure",
+            "--local",
+            "--json",
+            "--full",
+        ])
+        .output()
+        .unwrap();
+    assert!(!second.status.success());
+    assert!(String::from_utf8_lossy(&second.stderr).contains("does not descend"));
+    let after_retry_count = json_output(&worktree, &["snapshot", "list", "--json"])
+        .as_array()
+        .unwrap()
+        .len();
+    assert_eq!(after_retry_count, after_first_count);
 }
 
 #[test]
@@ -692,7 +896,7 @@ fn native_remote_task_start_from_uses_one_atomic_mutation_and_no_legacy_posts() 
 }
 
 #[test]
-fn native_remote_task_start_from_initializes_empty_base_before_atomic_task_change() {
+fn native_remote_task_start_from_seeds_local_main_before_atomic_task_change() {
     let (base_url, log, state, handle) = spawn_fake_remote();
     let temp = init_repo(&base_url);
     let root = temp.path();
@@ -708,9 +912,9 @@ fn native_remote_task_start_from_initializes_empty_base_before_atomic_task_chang
     write_file(&config_path, &config);
     write_file(
         &root.join("docs/sprints/atomic-empty-start.md"),
-        r#"# Atomic Empty Start [plan-ref: atomic-empty-start]
+        r#"# Atomic Local Seed Start [plan-ref: atomic-empty-start]
 
-- [ ] Start the first remote Task from a real empty anchor. [ref: atomic-empty-start/implement]
+- [ ] Start the first remote Task from the existing local main. [ref: atomic-empty-start/implement]
 "#,
     );
 
@@ -722,30 +926,34 @@ fn native_remote_task_start_from_initializes_empty_base_before_atomic_task_chang
             "--from",
             "docs/sprints/atomic-empty-start.md#atomic-empty-start/implement",
             "--intent",
-            "Initialize the empty remote Line before atomic Task and Change creation",
+            "Seed the null remote Line from local main before atomic Task and Change creation",
             "--json",
         ],
     );
 
-    let anchor_snapshot_id = payload["change"]["fork_snapshot_id"]
+    let seed_snapshot_id = payload["change"]["fork_snapshot_id"]
         .as_str()
-        .expect("atomic Change must fork from the empty anchor");
+        .expect("atomic Change must fork from the local seed");
     assert_eq!(payload["task_id"], "RT-ATOMIC");
+    assert_eq!(Some(seed_snapshot_id), local_head_before.as_deref());
     assert_eq!(
         payload["worktree"]["fork_snapshot_id"].as_str(),
-        Some(anchor_snapshot_id)
+        Some(seed_snapshot_id)
     );
     assert_eq!(
         payload["worktree"]["head_snapshot_id"].as_str(),
-        Some(anchor_snapshot_id)
+        Some(seed_snapshot_id)
     );
     assert_eq!(local_line_head(root, "main"), local_head_before);
     assert_eq!(
         state.lock().unwrap().remote_head_snapshot_id.as_deref(),
-        Some(anchor_snapshot_id)
+        Some(seed_snapshot_id)
     );
     let worktree = PathBuf::from(payload["worktree"]["open_path"].as_str().unwrap());
-    assert!(!worktree.join("src/lib.rs").exists());
+    assert_eq!(
+        fs::read_to_string(worktree.join("src/lib.rs")).unwrap(),
+        "pub fn example() -> &'static str { \"ok\" }\n"
+    );
 
     handle.join().unwrap();
     let logged = log.lock().unwrap().clone();
@@ -756,7 +964,7 @@ fn native_remote_task_start_from_initializes_empty_base_before_atomic_task_chang
                 && row.url
                     == "/v1/native/repository-authorities/7/remote-sync/zstd-bulk/commit"
         })
-        .expect("expected empty-base zstd commit");
+        .expect("expected local-seed zstd commit");
     let atomic_index = logged
         .iter()
         .position(|row| {
@@ -768,10 +976,14 @@ fn native_remote_task_start_from_initializes_empty_base_before_atomic_task_chang
     let commit = parse_json(&logged[commit_index].body);
     assert_eq!(
         commit["line_update"]["head_snapshot_id"].as_str(),
-        Some(anchor_snapshot_id)
+        Some(seed_snapshot_id)
     );
     assert!(commit["line_update"]["expected_head_snapshot_id"].is_null());
-    assert_eq!(commit["snapshots"][0]["file_count"].as_i64(), Some(0));
+    assert_eq!(
+        commit["snapshots"][0]["snapshot_id"].as_str(),
+        Some(seed_snapshot_id)
+    );
+    assert!(commit["snapshots"][0]["file_count"].as_i64().unwrap() > 0);
     assert_eq!(commit["snapshots"][0]["parent_snapshot_ids"], json!([]));
     assert!(!logged.iter().any(|row| {
         row.method == "POST" && row.url == "/v1/native/repository-authorities/7/tasks"
@@ -1320,7 +1532,7 @@ fn native_task_start_uses_remote_base_when_remote_line_is_ahead() {
 }
 
 #[test]
-fn native_task_start_bootstraps_an_empty_remote_base_without_borrowing_local_main() {
+fn native_task_start_seeds_a_null_remote_base_from_local_main() {
     let (base_url, log, _state, handle) = spawn_fake_remote();
     let temp = init_repo(&base_url);
     let root = temp.path();
@@ -1332,33 +1544,35 @@ fn native_task_start_bootstraps_an_empty_remote_base_without_borrowing_local_mai
             "task",
             "start",
             "--title",
-            "Use empty remote base",
+            "Use existing local main",
             "--intent",
-            "preserve the authoritative empty Remote Line",
+            "prevent a fresh Remote Line from creating independent ancestry",
             "--json",
         ],
     );
 
-    let anchor_snapshot_id = payload["change"]["fork_snapshot_id"]
+    let seed_snapshot_id = payload["change"]["fork_snapshot_id"]
         .as_str()
-        .expect("remote Change must fork from the empty anchor");
+        .expect("remote Change must fork from the local seed");
+    assert_eq!(Some(seed_snapshot_id), local_head_before.as_deref());
     assert_eq!(
         payload["worktree"]["fork_snapshot_id"].as_str(),
-        Some(anchor_snapshot_id)
+        Some(seed_snapshot_id)
     );
     assert_eq!(
         payload["worktree"]["head_snapshot_id"].as_str(),
-        Some(anchor_snapshot_id)
+        Some(seed_snapshot_id)
     );
     assert_eq!(
         local_line_head(root, "main"),
         local_head_before,
-        "empty-base bootstrap must not move or borrow local main",
+        "local-main seeding must preserve the local Line",
     );
     let worktree = PathBuf::from(payload["worktree"]["open_path"].as_str().unwrap());
-    assert!(
-        !worktree.join("src/lib.rs").exists(),
-        "the zero-file Remote anchor must materialize an empty authoring tree",
+    assert_eq!(
+        fs::read_to_string(worktree.join("src/lib.rs")).unwrap(),
+        "pub fn example() -> &'static str { \"ok\" }\n",
+        "the Remote Task must materialize the existing local main",
     );
 
     handle.join().unwrap();
@@ -1370,7 +1584,7 @@ fn native_task_start_bootstraps_an_empty_remote_base_without_borrowing_local_mai
                 && row.url
                     == "/v1/native/repository-authorities/7/remote-sync/zstd-bulk/commit"
         })
-        .expect("expected atomic empty-base zstd commit");
+        .expect("expected atomic local-seed zstd commit");
     let task_create_index = logged
         .iter()
         .position(|row| {
@@ -1392,20 +1606,20 @@ fn native_task_start_bootstraps_an_empty_remote_base_without_borrowing_local_mai
     );
     assert_eq!(
         zstd_commit["line_update"]["head_snapshot_id"].as_str(),
-        Some(anchor_snapshot_id)
+        Some(seed_snapshot_id)
     );
     assert!(zstd_commit["line_update"]["expected_head_snapshot_id"].is_null());
-    let committed_anchor = zstd_commit["snapshots"]
+    let committed_seed = zstd_commit["snapshots"]
         .as_array()
         .and_then(|rows| rows.first())
-        .expect("empty anchor Snapshot commit row");
+        .expect("local seed Snapshot commit row");
     assert_eq!(
-        committed_anchor["snapshot_id"].as_str(),
-        Some(anchor_snapshot_id)
+        committed_seed["snapshot_id"].as_str(),
+        Some(seed_snapshot_id)
     );
-    assert_eq!(committed_anchor["file_count"].as_i64(), Some(0));
-    assert_eq!(committed_anchor["total_bytes"].as_i64(), Some(0));
-    assert_eq!(committed_anchor["parent_snapshot_ids"], json!([]));
+    assert!(committed_seed["file_count"].as_i64().unwrap() > 0);
+    assert!(committed_seed["total_bytes"].as_i64().unwrap() > 0);
+    assert_eq!(committed_seed["parent_snapshot_ids"], json!([]));
     let change_create = logged
         .iter()
         .find(|row| {
@@ -1414,7 +1628,7 @@ fn native_task_start_bootstraps_an_empty_remote_base_without_borrowing_local_mai
         .unwrap();
     assert_eq!(
         parse_json(&change_create.body)["fork_snapshot_id"].as_str(),
-        Some(anchor_snapshot_id)
+        Some(seed_snapshot_id)
     );
 }
 
@@ -1448,7 +1662,7 @@ fn native_task_start_from_existing_worktree_performs_zero_remote_mutations() {
         .unwrap();
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("Refusing to run `ait task start` inside existing worktree"));
+    assert!(stderr.contains("`ait task start` cannot run inside existing worktree"));
     assert!(stderr.contains(root.to_string_lossy().as_ref()));
 
     let _ = json_output(root, &["task", "list", "--json"]);

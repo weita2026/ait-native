@@ -1935,7 +1935,7 @@ fn validate_pull_workspace_options(merge: bool, restore: bool, force: bool) -> R
     }
     if merge && !restore {
         return Err(
-            "--merge requires --restore because a divergent merge materializes the workspace."
+            "--merge requires --restore because a divergent merge changes workspace files."
                 .to_string(),
         );
     }
@@ -2520,11 +2520,16 @@ where
 {
     if line_name != repo.default_line_name() {
         return Err(format!(
-            "Remote empty-base initialization only admits the configured default Line `{}`; got `{line_name}`.",
+            "Remote null-head initialization only admits the configured default Line `{}`; got `{line_name}`.",
             repo.default_line_name()
         ));
     }
-    let snapshot_ids = vec![snapshot_id.to_string()];
+    let sync_plan = remote_sync_snapshot_sync_plan(repo, snapshot_id, None)?;
+    require_snapshot_dag_remote_capability(
+        remote_sync_capabilities,
+        &sync_plan.multi_parent_snapshot_ids(),
+    )?;
+    let snapshot_ids = sync_plan.snapshot_ids_bounded_by(None)?;
     let (backend_negotiation, _) = require_zstd_bulk_upload_backend(
         &snapshot_ids,
         &BTreeSet::new(),
@@ -2611,6 +2616,51 @@ where
     )
 }
 
+fn solo_local_default_line_push_governed_change_ref(
+    repo: &RepoRuntime,
+    local_head_snapshot_id: Option<&str>,
+) -> Result<Option<String>, String> {
+    let Some(local_head_snapshot_id) = normalized_text(local_head_snapshot_id) else {
+        return Ok(None);
+    };
+    let change_store = repo.change_store()?;
+    let default_line_name = repo.default_line_name();
+    let mut matching_changes = Vec::new();
+    for change in list_changes_with_change_store(&change_store).map_err(|err| err.to_string())? {
+        if string_field(&change, "status").as_deref() != Some("landed")
+            || string_field(&change, "target_line")
+                .or_else(|| string_field(&change, "base_line"))
+                .as_deref()
+                != Some(default_line_name.as_str())
+        {
+            continue;
+        }
+        let Some(landed_snapshot_id) = string_field(&change, "landed_snapshot_id") else {
+            continue;
+        };
+        let Some(distance) = snapshot_distance_if_ancestor(
+            repo,
+            Some(&landed_snapshot_id),
+            Some(&local_head_snapshot_id),
+        )?
+        else {
+            continue;
+        };
+        let change_id = required_string_field(&change, "change_id")?;
+        let change_ref = string_field(&change, "change_ref")
+            .or_else(|| {
+                string_field(&change, "task_id").map(|task_id| format!("{task_id}/{change_id}"))
+            })
+            .unwrap_or(change_id);
+        matching_changes.push((distance, change_ref));
+    }
+    matching_changes.sort();
+    Ok(matching_changes
+        .into_iter()
+        .next()
+        .map(|(_, change_ref)| change_ref))
+}
+
 fn require_solo_local_default_line_push_authority(
     repo: &RepoRuntime,
     remote_name: &str,
@@ -2620,21 +2670,39 @@ fn require_solo_local_default_line_push_authority(
 ) -> Result<(), String> {
     if repo.effective_workflow_mode() != "solo_local"
         || line_name != repo.default_line_name()
-        || remote_head_snapshot_id.is_none()
         || remote_head_snapshot_id == local_head_snapshot_id
     {
         return Ok(());
     }
+    let governed_change_ref = if remote_head_snapshot_id.is_none() {
+        solo_local_default_line_push_governed_change_ref(repo, local_head_snapshot_id)?
+    } else {
+        None
+    };
+    if remote_head_snapshot_id.is_none() && governed_change_ref.is_none() {
+        return Ok(());
+    }
+    let operation = if remote_head_snapshot_id.is_none() {
+        "initialize null"
+    } else {
+        "advance initialized"
+    };
     Err(format!(
-        "Refusing to advance initialized remote `{remote_name}` target Line `{line_name}` with \
+        "Refusing to {operation} remote `{remote_name}` target Line `{line_name}` with \
          `ait push` while `workflow_mode=solo_local` ({remote_head} -> {local_head}). Immutable \
          Snapshot and pack upload remains available to workflow preparation, but only \
          authoritative remote Task Land may move this governed Line. Promote the latest \
          completed local Change with `ait workflow ready <local-change-id> --apply --remote \
-         {remote_name}`, then hand it to a reviewer running `ait workflow land \
-         <local-change-id> --apply --remote {remote_name}`.",
+         {remote_name}`, then hand it to a reviewer running `ait workflow finish \
+         <local-change-id> --apply --remote {remote_name}`.{governed_change}",
         remote_head = remote_head_snapshot_id.unwrap_or("none"),
         local_head = local_head_snapshot_id.unwrap_or("none"),
+        governed_change = governed_change_ref
+            .as_deref()
+            .map(|change_ref| format!(
+                " Local head contains landed local Change {change_ref}; use that exact Change as the governed promotion subject"
+            ))
+            .unwrap_or_default(),
     ))
 }
 

@@ -2,9 +2,9 @@ use ait_core::json_support::{json, JsonValue};
 
 pub const TASK_LAND_CONTRACT_VERSION: &str = "task-land-plan-closeout/v1";
 
-pub const TASK_LAND_COMMAND_ABOUT: &str = "Land one Task or Change onto logical main with fixed direct mode. The configured workflow mode selects local or remote authority unless mutually exclusive --local or --remote explicitly chooses the compatibility scope. Local land consumes an existing Snapshot; remote land consumes an already-ready selected Patchset. Final Task closeout removes the bound worktree and archives its accepted-head feature Line.";
+pub const TASK_FINISH_COMMAND_ABOUT: &str = "Finish one Task or selected Change onto main. The configured workflow mode chooses local or remote unless --local or --remote explicitly overrides it. Dirty local work requires --message to create its final Snapshot; clean local work reuses the current Line head. Remote finish consumes an already-ready selected Patchset and rejects --message. Final Task cleanup removes the bound worktree and archives its accepted-head feature Line.";
 
-pub const PLAN_SYNC_COMMAND_ABOUT: &str = "Reconcile file-backed Markdown into Plan revision lineage using workflow-mode scope defaults. solo_local writes local Plan state; solo_remote reconciles local Plan lineage and publishes the touched heads to the configured default remote. --local or --remote overrides the configured scope. Plan sync never creates a Snapshot or advances a Line.";
+pub const PLAN_SYNC_COMMAND_ABOUT: &str = "Sync file-backed Markdown into Plan revision history using the workflow mode's local or remote default. solo_local saves local Plan changes; solo_remote updates local Plan history and publishes the changed heads to the configured default remote. --local or --remote overrides that default. Plan sync never creates a Snapshot or advances a Line.";
 
 pub const LOCAL_PLAN_CLOSEOUT_POLICY: &str = "automatic_exact_local_when_final_task_completed";
 pub const REMOTE_PLAN_CLOSEOUT_POLICY: &str = "separate_after_land";
@@ -164,8 +164,8 @@ fn task_land_recovery(output: &JsonValue, use_local_scope: bool) -> JsonValue {
     json!({
         "code": "resume_task_land_closeout",
         "idempotent": true,
-        "command": format!("ait task land {change_id}{scope_flag}"),
-        "detail": "The code land is already authoritative. Repair the reported Plan, worktree, or feature-Line condition, then rerun task land; completed phases are inspected and reused instead of being applied twice.",
+        "command": format!("ait task finish {change_id}{scope_flag}"),
+        "detail": "The code finish is already authoritative. Repair the reported Plan, worktree, or feature-Line condition, then rerun task finish; completed phases are inspected and reused instead of being applied twice.",
     })
 }
 
@@ -223,8 +223,8 @@ pub fn attach_task_audit_land_contract(output: &mut JsonValue, use_local_scope: 
             json!({
                 "code": "resume_task_land_closeout",
                 "idempotent": true,
-                "command": format!("ait task land {task_id} --local"),
-                "detail": "The Task is completed locally. Rerun task land to inspect and resume any exact Plan or bound-worktree closeout that did not converge.",
+                "command": format!("ait task finish {task_id} --local"),
+                "detail": "The Task is completed locally. Rerun task finish to inspect and resume any exact Plan or bound-worktree closeout that did not converge.",
             }),
         )
     } else if task_status == "completed" && plan_id.is_none() {
@@ -367,7 +367,7 @@ mod tests {
         );
         assert_eq!(
             incomplete["task_land_closeout"]["recovery"]["command"],
-            "ait task land LCT-8 --local"
+            "ait task finish LCT-8 --local"
         );
     }
 
@@ -437,7 +437,7 @@ mod tests {
         assert_eq!(task_land_exit_code(&payload), 2);
         assert_eq!(
             payload["closeout_recovery"]["command"],
-            "ait task land RCT-4/C-02"
+            "ait task finish RCT-4/C-02"
         );
         assert_eq!(payload["closeout_recovery"]["idempotent"], true);
     }

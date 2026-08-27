@@ -100,12 +100,20 @@ const stablePatchAdvance =
   oldStableMatch[2] === newStableParts[2] &&
   Number(newStableParts[3]) === Number(oldStableMatch[3]) + 1 &&
   newPython === newVersion;
+const stableMinorAdvance =
+  oldStableMatch !== null &&
+  newStableParts !== null &&
+  oldPython === oldVersion &&
+  oldStableMatch[1] === newStableParts[1] &&
+  Number(newStableParts[2]) === Number(oldStableMatch[2]) + 1 &&
+  Number(newStableParts[3]) === 0 &&
+  newPython === newVersion;
 if (
-  !(rcAdvance || stablePromotion || stablePatchAdvance) ||
+  !(rcAdvance || stablePromotion || stablePatchAdvance || stableMinorAdvance) ||
   releaseFamily.family.tag !== `v${newVersion}`
 ) {
   fail(
-    "release delta must advance exactly one canonical RC ordinal, promote the qualified RC base to its stable version, or advance a qualified stable base by exactly one patch version",
+    "release delta must advance exactly one canonical RC ordinal, promote the qualified RC base to its stable version, or advance a qualified stable base by exactly one patch version or one minor version with a reset patch",
   );
 }
 

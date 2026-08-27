@@ -24,6 +24,10 @@ const MATRIX_CONTRACT = "ait.release.clean-host.matrix/v1";
 const MAX_CAPTURE = 16 * 1024 * 1024;
 const COMMAND_TIMEOUT_MS = 10 * 60 * 1000;
 const CHECKSUM_ASSET_NAME = /^[A-Za-z0-9][A-Za-z0-9._@+~-]*$/;
+const MATRIX_ROW_COUNTS = {
+  "distribution-target-32-2026-08-17.2": 32,
+  "distribution-target-runner-bundle-32-2026-08-26.1": 32,
+};
 
 function usage(message) {
   if (message) {
@@ -339,13 +343,15 @@ function githubRunner(row) {
 }
 
 function validateInputs(options, matrix, config, status) {
+  const expectedRows = MATRIX_ROW_COUNTS[matrix.matrix_revision];
   if (
     matrix.contract !== MATRIX_CONTRACT ||
-    matrix.matrix_revision !== "distribution-target-32-2026-08-17.2" ||
-    matrix.row_count !== 32 ||
-    !Array.isArray(matrix.rows)
+    !expectedRows ||
+    matrix.row_count !== expectedRows ||
+    !Array.isArray(matrix.rows) ||
+    matrix.rows.length !== expectedRows
   ) {
-    fail("phase matrix is not the exact 32-row authority");
+    fail("phase matrix is not an admitted exact-row authority");
   }
   const row = matrix.rows.find((candidate) => candidate.id === options["row-id"]);
   if (!row) {
@@ -551,7 +557,7 @@ function generatedWorkflowCurrent(agents) {
       fail(`generated AGENTS.md retained removed workflow spelling: ${forbidden}`);
     }
   }
-  for (const required of ["ait task start --from", "ait snapshot create", "ait task land"]) {
+  for (const required of ["ait task start --from", "ait snapshot create", "ait task finish"]) {
     if (!agents.includes(required)) {
       fail(`generated AGENTS.md is missing current workflow spelling: ${required}`);
     }
@@ -641,11 +647,25 @@ function firstLand(recorder, aitSpec, root, expectedText, priorState = null) {
   }
   const landedFile = path.join(worktree, "first-land.txt");
   writeFileSync(landedFile, expectedText, { encoding: "utf8", mode: 0o644 });
+  let landed = jsonSpec(
+    recorder,
+    aitSpec,
+    [
+      "task",
+      "finish",
+      taskId,
+      "--message",
+      "Clean-host first Snapshot",
+      "--local",
+      "--json",
+    ],
+    { cwd: worktree, label: "candidate task finish", allowed: [0, 2] },
+  );
   const snapshot = jsonSpec(
     recorder,
     aitSpec,
-    ["snapshot", "create", "--message", "Clean-host first Snapshot", "--json"],
-    { cwd: worktree, label: "candidate Snapshot create" },
+    ["snapshot", "show", landed.landed_snapshot_id, "--json"],
+    { cwd: root, label: "candidate integrated Snapshot show" },
   );
   if (!/^SNP-[0-9A-F]{12}$/.test(snapshot.snapshot_id ?? "")) {
     fail("candidate Snapshot identity is invalid");
@@ -653,28 +673,22 @@ function firstLand(recorder, aitSpec, root, expectedText, priorState = null) {
   if (snapshot.parent_snapshot_id !== null) {
     fail("clean-host first land did not author the first Snapshot on an empty default Line");
   }
-  let landed = jsonSpec(
-    recorder,
-    aitSpec,
-    ["task", "land", taskId, "--local", "--json"],
-    { cwd: worktree, label: "candidate task land", allowed: [0, 2] },
-  );
   let resumedCloseout = false;
   if (
     landed.closeout?.task_status === "completed" &&
     landed.closeout?.status !== "complete"
   ) {
-    // The land consumes the bound worktree's line head, so it must start
+    // Finish consumes the bound worktree's Line head, so it must start
     // inside that worktree; Windows cannot remove a directory that is still
     // a process working directory, so the closeout reports partial with
-    // exit 2. The land contract's idempotent_phase_resume finishes the exact
+    // exit 2. The closeout contract's idempotent_phase_resume finishes the exact
     // closeout from the repository root, where no process holds the
     // worktree.
     landed = jsonSpec(
       recorder,
       aitSpec,
-      ["task", "land", taskId, "--local", "--json"],
-      { cwd: root, label: "candidate task land closeout resume" },
+      ["task", "finish", taskId, "--local", "--json"],
+      { cwd: root, label: "candidate task finish closeout resume" },
     );
     resumedCloseout = true;
   }
@@ -742,7 +756,6 @@ async function foregroundServer(recorder, serverSpec, root) {
   const dataRoot = path.join(root, "server-data");
   const args = [
     ...serverSpec.argsPrefix,
-    "run",
     "--data",
     dataRoot,
     "--listen",
@@ -819,6 +832,33 @@ function assertNoServerProcess(recorder) {
     allowed: [1],
   });
   return true;
+}
+
+function assertNoRunnerProcess(recorder) {
+  if (process.platform === "win32") {
+    const result = recorder.run(
+      "powershell.exe",
+      [
+        "-NoProfile",
+        "-Command",
+        "if (Get-Process -Name ait-runner -ErrorAction SilentlyContinue) { exit 9 }",
+      ],
+      { label: "runner inactive process check" },
+    );
+    return result.status === 0;
+  }
+  recorder.run("pgrep", ["-x", "ait-runner"], {
+    label: "runner inactive process check",
+    allowed: [1],
+  });
+  return true;
+}
+
+function assertProductProcessesInactive(recorder, includesRunner) {
+  assertNoServerProcess(recorder);
+  if (includesRunner) {
+    assertNoRunnerProcess(recorder);
+  }
 }
 
 async function githubContext(config, row, version, root, recorder, candidateStage = null) {
@@ -1168,6 +1208,7 @@ function seedHomebrewCandidateCache(recorder, formulaPath, candidateStage) {
 
 async function homebrewContext(
   config,
+  row,
   version,
   root,
   recorder,
@@ -1255,11 +1296,17 @@ async function homebrewContext(
   }
   const aitPath = path.join(prefix, "bin", "ait");
   const serverPath = path.join(prefix, "bin", "ait-server");
+  const includesRunner = row.components.includes("ait-runner");
+  const runnerPath = path.join(prefix, "bin", "ait-runner");
   requireRegularFile(aitPath, "Homebrew ait command");
   requireRegularFile(serverPath, "Homebrew ait-server command");
+  if (includesRunner) {
+    requireRegularFile(runnerPath, "Homebrew ait-runner command");
+  }
   return {
     ait: commandSpec(aitPath),
     server: commandSpec(serverPath),
+    runner: includesRunner ? commandSpec(runnerPath) : null,
     origin: prefix,
     formula: qualifiedFormula,
     inactive() {
@@ -1274,6 +1321,7 @@ async function homebrewContext(
       if (row && /\bstarted\b/.test(row)) {
         fail("Homebrew install or upgrade started ait-server implicitly");
       }
+      assertProductProcessesInactive(recorder, includesRunner);
     },
     async lifecycle() {
       brewCommand(recorder, ["services", "start", formula], "Homebrew explicit service start");
@@ -1290,7 +1338,11 @@ async function homebrewContext(
     },
     uninstall() {
       brewCommand(recorder, ["uninstall", "--formula", formula], "Homebrew uninstall");
-      if (existsSync(aitPath) || existsSync(serverPath)) {
+      if (
+        existsSync(aitPath) ||
+        existsSync(serverPath) ||
+        (includesRunner && existsSync(runnerPath))
+      ) {
         fail("Homebrew uninstall retained exposed commands");
       }
     },
@@ -1299,6 +1351,27 @@ async function homebrewContext(
 
 function debianVersion(version) {
   return version.replace(/-rc\.([1-9]\d*)$/, "~rc.$1");
+}
+
+function runnerBundleVersion(version) {
+  const match = /^(\d+)\.(\d+)\./.exec(version);
+  return Boolean(
+    match &&
+      (Number(match[1]) > 1 ||
+        (Number(match[1]) === 1 && Number(match[2]) >= 1)),
+  );
+}
+
+function packageRowForVersion(row, version) {
+  if (
+    row.lifecycle === "product" &&
+    row.components.includes("ait-runner") &&
+    ["homebrew", "apt", "winget"].includes(row.channel) &&
+    !runnerBundleVersion(version)
+  ) {
+    return { ...row, components: ["ait", "ait-server"] };
+  }
+  return row;
 }
 
 function aptAcquireBounds() {
@@ -1353,15 +1426,26 @@ function aptContext(row, version, recorder, upgrade = false, candidateStage = nu
         `${packageName}_${expectedVersion}_${architecture}.deb`,
       )
     : `${packageName}=${expectedVersion}`;
+  const transitionalRunnerAlias =
+    packageName === "ait-runner" && candidateStage && runnerBundleVersion(version);
+  const selectors = transitionalRunnerAlias
+    ? [
+        localCandidateAsset(
+          candidateStage,
+          `ait-native_${expectedVersion}_${architecture}.deb`,
+        ),
+        selector,
+      ]
+    : [selector];
   const args = [
     "apt-get",
     ...aptAcquireBounds(),
     "install",
     "--yes",
     "--no-install-recommends",
-    selector,
+    ...selectors,
   ];
-  if (upgrade) {
+  if (upgrade && !transitionalRunnerAlias) {
     args.splice(args.indexOf("install") + 1, 0, "--only-upgrade");
   }
   recorder.run("sudo", args, { label: upgrade ? "APT exact upgrade" : "APT exact install" });
@@ -1376,7 +1460,8 @@ function aptContext(row, version, recorder, upgrade = false, candidateStage = nu
   const context = {
     origin: "/usr/bin",
     uninstall() {
-      recorder.run("sudo", ["apt-get", "remove", "--purge", "--yes", packageName], {
+      const removals = transitionalRunnerAlias ? [packageName, "ait-native"] : [packageName];
+      recorder.run("sudo", ["apt-get", "remove", "--purge", "--yes", ...removals], {
         label: "APT uninstall",
       });
       const query = recorder.run("dpkg-query", ["-W", packageName], {
@@ -1386,11 +1471,16 @@ function aptContext(row, version, recorder, upgrade = false, candidateStage = nu
       if (query.status !== 1) {
         fail("APT uninstall retained the package receipt");
       }
+      if (transitionalRunnerAlias && existsSync("/usr/bin/ait-runner")) {
+        fail("APT transition-alias uninstall retained the bundled runner");
+      }
     },
   };
   if (packageName === "ait-native") {
+    const includesRunner = row.components.includes("ait-runner");
     context.ait = commandSpec("/usr/bin/ait");
     context.server = commandSpec("/usr/bin/ait-server");
+    context.runner = includesRunner ? commandSpec("/usr/bin/ait-runner") : null;
     context.inactive = () => {
       const active = recorder.run("systemctl", ["is-active", "ait-server.service"], {
         label: "APT server inactive readback",
@@ -1406,6 +1496,7 @@ function aptContext(row, version, recorder, upgrade = false, candidateStage = nu
       if (enabled.status === 0) {
         fail("APT install or upgrade enabled ait-server implicitly");
       }
+      assertProductProcessesInactive(recorder, includesRunner);
     };
     context.lifecycle = async () => {
       recorder.run("sudo", ["systemctl", "daemon-reload"], { label: "APT systemd reload" });
@@ -1552,6 +1643,7 @@ function wingetArgs(action, manifestRoot) {
 
 async function wingetContext(
   config,
+  row,
   version,
   root,
   recorder,
@@ -1666,12 +1758,17 @@ async function wingetContext(
   };
   const aitPath = wingetAliasPath("ait.exe") ?? requireCommand("ait.exe");
   const serverPath = wingetAliasPath("ait-server.exe") ?? requireCommand("ait-server.exe");
+  const includesRunner = row.components.includes("ait-runner");
+  const runnerPath = includesRunner
+    ? wingetAliasPath("ait-runner.exe") ?? requireCommand("ait-runner.exe")
+    : null;
   return {
     ait: commandSpec(aitPath),
     server: commandSpec(serverPath),
+    runner: runnerPath ? commandSpec(runnerPath) : null,
     origin: path.dirname(realpathSync(aitPath)),
     inactive() {
-      assertNoServerProcess(recorder);
+      assertProductProcessesInactive(recorder, includesRunner);
     },
     async lifecycle() {
       const script =
@@ -1717,6 +1814,9 @@ async function wingetContext(
       );
       if (existsSync(aitPath)) {
         fail("WinGet uninstall retained the ait portable alias");
+      }
+      if (runnerPath && existsSync(runnerPath)) {
+        fail("WinGet uninstall retained the ait-runner portable alias");
       }
       const readback = spawnSync("where.exe", ["ait.exe"], { encoding: "utf8" });
       if (readback.status === 0) {
@@ -2007,6 +2107,9 @@ async function exerciseLifecycle(context, row, root, recorder) {
   }
   if (typeof context.lifecycle === "function") {
     await context.lifecycle(root);
+    if (typeof context.inactive === "function") {
+      context.inactive();
+    }
   } else if (context.server) {
     return foregroundServer(recorder, context.server, root);
   } else {
@@ -2047,11 +2150,11 @@ async function installChannel({
         candidateStage,
       );
     case "homebrew":
-      return homebrewContext(config, version, root, recorder, upgrade, candidateStage);
+      return homebrewContext(config, row, version, root, recorder, upgrade, candidateStage);
     case "apt":
       return aptContext(row, version, recorder, upgrade, candidateStage);
     case "winget":
-      return wingetContext(config, version, root, recorder, upgrade, candidateStage);
+      return wingetContext(config, row, version, root, recorder, upgrade, candidateStage);
     case "oci":
       return ociContext(
         config,
@@ -2152,6 +2255,7 @@ async function executeUpgrade({ options, config, status, row, checks, recorder, 
   probePackageManager(row, recorder);
   mark(checks, "runner_target");
   mark(checks, "package_manager");
+  const priorRow = packageRowForVersion(row, options["prior-version"]);
   if (row.channel === "apt") {
     // The prior release installs from its own channel suite. An RC prior
     // lives on the testing suite even when the candidate publishes stable;
@@ -2165,7 +2269,7 @@ async function executeUpgrade({ options, config, status, row, checks, recorder, 
   const prior = await installChannel({
     config,
     status,
-    row,
+    row: priorRow,
     version: options["prior-version"],
     pythonVersion: options["prior-python-version"],
     root: priorRoot,
@@ -2173,8 +2277,8 @@ async function executeUpgrade({ options, config, status, row, checks, recorder, 
     upgrade: false,
     candidate: false,
   });
-  exactContextVersion(prior, row, options["prior-version"], recorder);
-  exerciseBinding(prior, row);
+  exactContextVersion(prior, priorRow, options["prior-version"], recorder);
+  exerciseBinding(prior, priorRow);
   mark(checks, "prior_exact_install");
   let priorState = null;
   let repositoryRoot = null;

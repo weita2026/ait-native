@@ -228,10 +228,26 @@ fn task_governed_repo_root_rejects_authoring_surfaces() {
         assert!(
             error.contains("not an authoring workspace once tasks govern")
                 || error.contains("requires a task-bound worktree")
-                || error.contains("pinned to bound worktree"),
+                || error.contains("pinned to bound worktree")
+                || error.contains("code/workspace drift"),
             "root authoring should fail closed for `{}`, got: {error}",
             args.join(" ")
         );
     }
     fs::remove_file(root.join("root.txt")).unwrap();
+
+    let change = run_json(
+        root,
+        &[
+            "change",
+            "create",
+            "LT-0001",
+            "--title",
+            "root-routed control command",
+            "--local",
+            "--json",
+        ],
+    );
+    assert_eq!(change["task_id"], "LT-0001");
+    assert_eq!(change["change_id"], "C-02");
 }

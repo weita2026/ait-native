@@ -7,17 +7,60 @@ use chrono::Utc;
 use serde::{Deserialize, Serialize};
 
 use crate::statistics::DeterministicRng;
-use crate::{summarize_samples, DistributionSummary};
+use crate::{sha256_digest, summarize_samples, DistributionSummary};
 
 pub const AGENT_TOKEN_CAMPAIGN_CONTRACT: &str = "ait-agent-token-benchmark-campaign/v1";
 pub const AGENT_TOKEN_SCHEDULE_CONTRACT: &str = "ait-agent-token-benchmark-schedule/v1";
 pub const AGENT_TOKEN_USAGE_CONTRACT: &str = "ait-agent-token-provider-usage/v1";
 pub const AGENT_TOKEN_TRANSCRIPT_CONTRACT: &str = "ait-agent-token-command-transcript/v1";
 pub const AGENT_TOKEN_RUN_SUMMARY_CONTRACT: &str = "ait-agent-token-benchmark-run-summary/v1";
-pub const AGENT_TOKEN_REPORT_CONTRACT: &str = "ait-agent-token-benchmark-report/v1";
+pub const AGENT_TOKEN_RUN_ADJUDICATION_CONTRACT: &str = "ait-agent-token-run-adjudication/v1";
+pub const AGENT_TOKEN_LEGACY_RESUMABLE_PROTOCOL_REVISION: &str = "game-development-2026-08-24.20";
+pub const AGENT_TOKEN_ADJUDICATOR_REVISION: &str = "game-development-2026-08-24.21";
+/// Exact complete-campaign predecessor whose frozen schedule may be continued
+/// by the successor controller without reclassifying or retrying any existing
+/// valid candidate outcome.
+pub const AGENT_TOKEN_VALID_OUTCOME_RESUMABLE_PROTOCOL_REVISION: &str =
+    "game-development-2026-08-26.27";
+pub const AGENT_TOKEN_PRE_REPLACEMENT_PROTOCOL_REVISION: &str = "game-development-2026-08-27.28";
+pub const AGENT_TOKEN_200_SESSION_PREDECESSOR_PROTOCOL_REVISION: &str =
+    "game-development-2026-08-26.26";
+/// Complete-scope predecessor revisions that remain readable as frozen
+/// evidence; campaigns cannot start under them. Protocol `.27` has the sole
+/// narrow continuation exception enforced by the runner.
+pub const AGENT_TOKEN_COMPLETE_PREDECESSOR_PROTOCOL_REVISIONS: &[&str] = &[
+    AGENT_TOKEN_PRE_REPLACEMENT_PROTOCOL_REVISION,
+    AGENT_TOKEN_VALID_OUTCOME_RESUMABLE_PROTOCOL_REVISION,
+    AGENT_TOKEN_200_SESSION_PREDECESSOR_PROTOCOL_REVISION,
+    "game-development-2026-08-26.25",
+    "game-development-2026-08-25.24",
+    "game-development-2026-08-25.23",
+    "game-development-2026-08-25.22",
+];
+pub const AGENT_TOKEN_REPORT_CONTRACT: &str = "ait-agent-token-benchmark-report/v3";
 pub const AGENT_TOKEN_ENVIRONMENT_CONTRACT: &str = "ait-agent-token-benchmark-environment/v1";
 pub const AGENT_TOKEN_BROWSER_REPORT_CONTRACT: &str = "ait-agent-token-browser-report/v1";
-pub const AGENT_TOKEN_PROTOCOL_REVISION: &str = "game-development-2026-08-22.10";
+pub const AGENT_TOKEN_PROTOCOL_REVISION: &str = "game-development-2026-08-27.29";
+/// Read-only repository inspection subcommands admitted as informational in
+/// the measured AIT lifecycle, mirroring the Git treatment's unrestricted
+/// `status`/`diff`/`log` inspection: token cost stays measured while the
+/// invocation is neither a lifecycle step nor a forbidden surface.
+pub const AIT_INFORMATIONAL_INSPECTION_SUBCOMMANDS: &[&[&str]] =
+    &[&["status"], &["diff"], &["blame"]];
+
+/// The exact built-in tool surface available to measured Claude lanes; the
+/// runner pins availability with `--tools` and the transcript validator
+/// fails closed on any tool use outside this set.
+pub const CLAUDE_MEASURED_TOOL_SURFACE: &[&str] =
+    &["Bash", "Read", "Grep", "Glob", "Edit", "Write"];
+
+pub const AGENT_TOKEN_PAIR_ADMISSION_POLICY: &str =
+    "exact_protocol_valid_pair_without_workflow_metric_exclusion";
+const AGENT_TOKEN_COMPLETE_ATTEMPTS_PER_WORKLOAD: usize = 20;
+const AGENT_TOKEN_COMPLETE_SCHEDULED_RUNS: usize = 200;
+const AGENT_TOKEN_PREDECESSOR_COMPLETE_ATTEMPTS_PER_WORKLOAD: usize = 10;
+const GIT_METADATA_CONTEXT_OVERRIDE_ERROR: &str =
+    "Git mode overrode the runner-owned isolated repository metadata context";
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
@@ -64,6 +107,7 @@ pub enum AgentTokenCampaignScope {
     Smoke,
     Pilot,
     Qualification,
+    Complete,
 }
 
 impl AgentTokenCampaignScope {
@@ -72,6 +116,7 @@ impl AgentTokenCampaignScope {
             Self::Smoke => "smoke",
             Self::Pilot => "pilot",
             Self::Qualification => "qualification",
+            Self::Complete => "complete",
         }
     }
 
@@ -80,7 +125,12 @@ impl AgentTokenCampaignScope {
             Self::Smoke => 1,
             Self::Pilot => 10,
             Self::Qualification => 20,
+            Self::Complete => AGENT_TOKEN_COMPLETE_ATTEMPTS_PER_WORKLOAD,
         }
+    }
+
+    fn requires_full_workload_matrix(&self) -> bool {
+        !matches!(self, Self::Smoke)
     }
 }
 
@@ -119,7 +169,16 @@ pub struct AgentTokenModelPin {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct AgentTokenRuntime {
+    /// Measured agent executor. Defaults to `codex`, keeping every existing
+    /// manifest byte-compatible; `claude` selects the Claude Code headless
+    /// executor introduced by protocol revision `.23`.
+    #[serde(default)]
+    pub executor: AgentTokenExecutor,
     pub codex_program: PathBuf,
+    /// Claude Code executable. Required when `executor` is `claude`; unused
+    /// and optional for the codex executor.
+    #[serde(default)]
+    pub claude_program: Option<PathBuf>,
     pub ait_program: PathBuf,
     pub git_program: PathBuf,
     pub node_program: PathBuf,
@@ -127,6 +186,25 @@ pub struct AgentTokenRuntime {
     pub fixture_manifest: PathBuf,
     pub run_timeout_seconds: u64,
     pub ait_first_use_worktree_add_dir: Option<PathBuf>,
+    #[serde(default)]
+    pub project_doc_max_bytes: usize,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentTokenExecutor {
+    #[default]
+    Codex,
+    Claude,
+}
+
+impl AgentTokenExecutor {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Codex => "codex",
+            Self::Claude => "claude",
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -198,7 +276,17 @@ pub struct AgentTokenEnvironment {
     pub sprint_mode: String,
     pub ait_server_connected: bool,
     pub network_policy: String,
+    #[serde(default)]
+    pub codex_permission_profile: String,
+    #[serde(default)]
+    pub codex_permission_profile_parent: String,
     pub cache_class: String,
+    #[serde(default)]
+    pub benchmark_enabled_feature_overrides: Vec<String>,
+    #[serde(default)]
+    pub benchmark_disabled_feature_overrides: Vec<String>,
+    #[serde(default)]
+    pub project_doc_max_bytes: usize,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -247,12 +335,28 @@ pub struct AgentTokenRunSummary {
     pub failure_reasons: Vec<String>,
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct AgentTokenRunAdjudication {
+    pub contract: String,
+    pub campaign_id: String,
+    pub run_id: String,
+    pub source_protocol_revision: String,
+    pub adjudicator_revision: String,
+    pub source_run_summary_sha256: String,
+    pub reason: String,
+    pub effective_summary: AgentTokenRunSummary,
+}
+
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct AgentTokenSecondaryMetrics {
     pub agent_turns: usize,
     pub model_calls: usize,
     pub command_tool_calls: usize,
     pub file_change_items: usize,
+    #[serde(default)]
+    pub apply_patch_rejected_attempts: usize,
+    #[serde(default)]
+    pub apply_patch_attempts: usize,
     pub tool_output_bytes: u64,
     pub project_validation_calls: usize,
     pub repository_query_calls: usize,
@@ -272,17 +376,60 @@ pub struct AgentTokenReport {
     pub model: AgentTokenModelPin,
     pub cache_class: String,
     pub network_policy: String,
+    #[serde(default)]
+    pub project_doc_max_bytes: usize,
+    #[serde(default)]
+    pub pair_admission_policy: String,
     pub generated_at: String,
     pub scheduled_run_count: usize,
     pub observed_run_count: usize,
+    #[serde(default)]
+    pub executed_evidence_run_count: usize,
+    #[serde(default)]
+    pub statistically_excluded_run_count: usize,
     pub invalid_run_count: usize,
     pub groups: Vec<AgentTokenGroupReport>,
     pub comparisons: Vec<AgentTokenModeComparison>,
     pub aggregate_median_token_savings_percent: Option<f64>,
     pub aggregate_token_savings_bootstrap_ci95: Option<[f64; 2]>,
+    #[serde(default)]
+    pub aggregate_median_elapsed_savings_percent: Option<f64>,
+    #[serde(default)]
+    pub aggregate_median_completed_file_change_reduction_percent: Option<f64>,
+    #[serde(default)]
+    pub aggregate_median_rejected_apply_patch_reduction_percent: Option<f64>,
+    #[serde(default)]
+    pub aggregate_median_apply_patch_attempt_reduction_percent: Option<f64>,
+    #[serde(default)]
+    pub source_protocol_claim_eligible: bool,
+    #[serde(default)]
+    pub current_policy_revision: String,
+    #[serde(default)]
+    pub current_policy_evaluation_mode: String,
+    #[serde(default)]
+    pub current_policy_criteria_met: bool,
+    #[serde(default)]
+    pub current_policy_blockers: Vec<String>,
+    #[serde(default)]
+    pub source_protocol_blockers: Vec<String>,
+    #[serde(default)]
+    pub replacement_policy_revision: Option<String>,
+    #[serde(default)]
+    pub statistical_replacements: Vec<AgentTokenStatisticalReplacementRecord>,
     pub claim_eligible: bool,
     pub blockers: Vec<String>,
     pub limitations: Vec<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct AgentTokenStatisticalReplacementRecord {
+    pub source_run_id: String,
+    pub replacement_run_id: String,
+    pub source_run_summary_sha256: String,
+    pub replacement_run_summary_sha256: String,
+    #[serde(default)]
+    pub replacement_runner_sha256: String,
+    pub reason: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -301,6 +448,14 @@ pub struct AgentTokenGroupReport {
     pub cached_input_token_distribution: Option<DistributionSummary>,
     pub output_token_distribution: Option<DistributionSummary>,
     pub reasoning_token_distribution: Option<DistributionSummary>,
+    #[serde(default)]
+    pub elapsed_ms_distribution: Option<DistributionSummary>,
+    #[serde(default)]
+    pub completed_file_change_item_distribution: Option<DistributionSummary>,
+    #[serde(default)]
+    pub rejected_apply_patch_attempt_distribution: Option<DistributionSummary>,
+    #[serde(default)]
+    pub apply_patch_attempt_distribution: Option<DistributionSummary>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -311,6 +466,30 @@ pub struct AgentTokenModeComparison {
     pub token_savings_percent: Option<f64>,
     pub token_savings_bootstrap_ci95: Option<[f64; 2]>,
     pub paired_valid_attempt_count: usize,
+    #[serde(default)]
+    pub git_effective_elapsed_ms: Option<f64>,
+    #[serde(default)]
+    pub ait_effective_elapsed_ms: Option<f64>,
+    #[serde(default)]
+    pub elapsed_savings_percent: Option<f64>,
+    #[serde(default)]
+    pub git_effective_completed_file_change_items: Option<f64>,
+    #[serde(default)]
+    pub ait_effective_completed_file_change_items: Option<f64>,
+    #[serde(default)]
+    pub completed_file_change_reduction_percent: Option<f64>,
+    #[serde(default)]
+    pub git_effective_rejected_apply_patch_attempts: Option<f64>,
+    #[serde(default)]
+    pub ait_effective_rejected_apply_patch_attempts: Option<f64>,
+    #[serde(default)]
+    pub rejected_apply_patch_reduction_percent: Option<f64>,
+    #[serde(default)]
+    pub git_effective_apply_patch_attempts: Option<f64>,
+    #[serde(default)]
+    pub ait_effective_apply_patch_attempts: Option<f64>,
+    #[serde(default)]
+    pub apply_patch_attempt_reduction_percent: Option<f64>,
     pub git_acceptance_rate: f64,
     pub ait_acceptance_rate: f64,
     pub acceptance_rate_deficit_percentage_points: f64,
@@ -343,6 +522,20 @@ fn default_bootstrap_resamples() -> usize {
 }
 
 pub fn load_agent_token_campaign(path: &Path) -> Result<AgentTokenCampaignManifest, String> {
+    let manifest = read_agent_token_campaign(path)?;
+    validate_agent_token_campaign(&manifest)?;
+    Ok(manifest)
+}
+
+pub fn load_agent_token_campaign_for_evidence(
+    path: &Path,
+) -> Result<AgentTokenCampaignManifest, String> {
+    let manifest = read_agent_token_campaign(path)?;
+    validate_agent_token_campaign_source(&manifest)?;
+    Ok(manifest)
+}
+
+fn read_agent_token_campaign(path: &Path) -> Result<AgentTokenCampaignManifest, String> {
     let bytes = fs::read(path).map_err(|error| {
         format!(
             "Failed to read agent-token campaign manifest {}: {error}",
@@ -357,21 +550,74 @@ pub fn load_agent_token_campaign(path: &Path) -> Result<AgentTokenCampaignManife
             )
         })?;
     resolve_campaign_paths(path, &mut manifest)?;
-    validate_agent_token_campaign(&manifest)?;
     Ok(manifest)
 }
 
 pub fn validate_agent_token_campaign(manifest: &AgentTokenCampaignManifest) -> Result<(), String> {
-    if manifest.contract != AGENT_TOKEN_CAMPAIGN_CONTRACT {
-        return Err(format!(
-            "Agent-token campaign contract must be {AGENT_TOKEN_CAMPAIGN_CONTRACT}, got {}",
-            manifest.contract
-        ));
-    }
     if manifest.protocol_revision != AGENT_TOKEN_PROTOCOL_REVISION {
         return Err(format!(
             "Agent-token protocol revision must be {AGENT_TOKEN_PROTOCOL_REVISION}, got {}",
             manifest.protocol_revision
+        ));
+    }
+    if !matches!(
+        manifest.campaign_scope,
+        AgentTokenCampaignScope::Smoke | AgentTokenCampaignScope::Complete
+    ) {
+        return Err(format!(
+            "Agent-token protocol {AGENT_TOKEN_PROTOCOL_REVISION} admits only smoke or complete campaign scope, got {}",
+            manifest.campaign_scope.as_str()
+        ));
+    }
+    validate_agent_token_campaign_shape(manifest)
+}
+
+fn validate_agent_token_campaign_source(
+    manifest: &AgentTokenCampaignManifest,
+) -> Result<(), String> {
+    let revision = manifest.protocol_revision.as_str();
+    if revision == AGENT_TOKEN_PROTOCOL_REVISION
+        || AGENT_TOKEN_COMPLETE_PREDECESSOR_PROTOCOL_REVISIONS.contains(&revision)
+    {
+        if !matches!(
+            manifest.campaign_scope,
+            AgentTokenCampaignScope::Smoke | AgentTokenCampaignScope::Complete
+        ) {
+            return Err(format!(
+                "Agent-token protocol {} admits only smoke or complete campaign scope, got {}",
+                manifest.protocol_revision,
+                manifest.campaign_scope.as_str()
+            ));
+        }
+    } else if revision == AGENT_TOKEN_LEGACY_RESUMABLE_PROTOCOL_REVISION {
+        if !matches!(
+            manifest.campaign_scope,
+            AgentTokenCampaignScope::Smoke
+                | AgentTokenCampaignScope::Pilot
+                | AgentTokenCampaignScope::Qualification
+        ) {
+            return Err(format!(
+                "Agent-token protocol {AGENT_TOKEN_LEGACY_RESUMABLE_PROTOCOL_REVISION} admits only smoke, pilot, or qualification campaign scope, got {}",
+                manifest.campaign_scope.as_str()
+            ));
+        }
+    } else {
+        return Err(format!(
+            "Agent-token evidence protocol revision must be {AGENT_TOKEN_PROTOCOL_REVISION}, a complete predecessor ({}), or the narrow resumable predecessor {AGENT_TOKEN_LEGACY_RESUMABLE_PROTOCOL_REVISION}, got {}",
+            AGENT_TOKEN_COMPLETE_PREDECESSOR_PROTOCOL_REVISIONS.join(", "),
+            manifest.protocol_revision
+        ));
+    }
+    validate_agent_token_campaign_shape(manifest)
+}
+
+fn validate_agent_token_campaign_shape(
+    manifest: &AgentTokenCampaignManifest,
+) -> Result<(), String> {
+    if manifest.contract != AGENT_TOKEN_CAMPAIGN_CONTRACT {
+        return Err(format!(
+            "Agent-token campaign contract must be {AGENT_TOKEN_CAMPAIGN_CONTRACT}, got {}",
+            manifest.contract
         ));
     }
     require_text("campaign_id", &manifest.campaign_id)?;
@@ -388,11 +634,12 @@ pub fn validate_agent_token_campaign(manifest: &AgentTokenCampaignManifest) -> R
                 .to_string(),
         );
     }
-    if manifest.attempts_per_cell < manifest.campaign_scope.minimum_attempts() {
+    let required_attempts = source_required_attempts_per_cell(manifest);
+    if manifest.attempts_per_cell != required_attempts {
         return Err(format!(
-            "{} campaign requires at least {} attempts per cell",
+            "{} campaign requires exactly {} attempts per workload and mode",
             manifest.campaign_scope.as_str(),
-            manifest.campaign_scope.minimum_attempts()
+            required_attempts
         ));
     }
     if manifest.bootstrap_resamples < 1_000 {
@@ -411,12 +658,13 @@ pub fn validate_agent_token_campaign(manifest: &AgentTokenCampaignManifest) -> R
             return Err(format!("Unsupported game benchmark workload: {workload}"));
         }
     }
-    if manifest.campaign_scope != AgentTokenCampaignScope::Smoke
+    if manifest.campaign_scope.requires_full_workload_matrix()
         && workloads != BTreeSet::from(["GD-01", "GD-02", "GD-03", "GD-04", "GD-05"])
     {
-        return Err(
-            "Pilot and qualification campaigns must contain all five workloads".to_string(),
-        );
+        return Err(format!(
+            "{} campaigns must contain all five workloads",
+            manifest.campaign_scope.as_str()
+        ));
     }
     let modes = manifest.modes.iter().copied().collect::<BTreeSet<_>>();
     if modes.len() != manifest.modes.len() || modes.is_empty() {
@@ -450,11 +698,44 @@ pub fn validate_agent_token_campaign(manifest: &AgentTokenCampaignManifest) -> R
     if manifest.network_policy != "disabled_except_loopback" {
         return Err("network_policy must be disabled_except_loopback".to_string());
     }
-    if manifest.tool_policy != "codex_shell_only" {
-        return Err("tool_policy must be codex_shell_only".to_string());
+    match manifest.runtime.executor {
+        AgentTokenExecutor::Codex => {
+            if manifest.tool_policy != "codex_shell_only" {
+                return Err("tool_policy must be codex_shell_only".to_string());
+            }
+            if manifest.model.provider != "openai" {
+                return Err("The codex executor admits only model.provider openai".to_string());
+            }
+        }
+        AgentTokenExecutor::Claude => {
+            if manifest.tool_policy != "claude_code_local_tools" {
+                return Err(
+                    "The claude executor requires tool_policy claude_code_local_tools".to_string(),
+                );
+            }
+            if manifest.model.provider != "anthropic" {
+                return Err("The claude executor admits only model.provider anthropic".to_string());
+            }
+            if manifest.runtime.claude_program.is_none() {
+                return Err(
+                    "runtime.claude_program is required for the claude executor".to_string()
+                );
+            }
+        }
     }
     if manifest.runtime.run_timeout_seconds < 60 {
         return Err("runtime.run_timeout_seconds must be at least 60".to_string());
+    }
+    if manifest.runtime.project_doc_max_bytes > 65_536 {
+        return Err("runtime.project_doc_max_bytes must not exceed 65536".to_string());
+    }
+    if manifest.runtime.project_doc_max_bytes > 0
+        && manifest.campaign_scope != AgentTokenCampaignScope::Smoke
+    {
+        return Err(
+            "Nonzero runtime.project_doc_max_bytes is admitted only for smoke diagnostics"
+                .to_string(),
+        );
     }
     for (field, value) in [
         ("runtime.codex_program", &manifest.runtime.codex_program),
@@ -494,13 +775,30 @@ pub fn validate_agent_token_campaign(manifest: &AgentTokenCampaignManifest) -> R
     Ok(())
 }
 
+fn source_required_attempts_per_cell(manifest: &AgentTokenCampaignManifest) -> usize {
+    if manifest.campaign_scope != AgentTokenCampaignScope::Complete
+        || manifest.protocol_revision == AGENT_TOKEN_PROTOCOL_REVISION
+        || manifest.protocol_revision == AGENT_TOKEN_VALID_OUTCOME_RESUMABLE_PROTOCOL_REVISION
+        || manifest.protocol_revision == AGENT_TOKEN_200_SESSION_PREDECESSOR_PROTOCOL_REVISION
+    {
+        return manifest.campaign_scope.minimum_attempts();
+    }
+    AGENT_TOKEN_PREDECESSOR_COMPLETE_ATTEMPTS_PER_WORKLOAD
+}
+
 pub fn build_agent_token_schedule(manifest: &AgentTokenCampaignManifest) -> AgentTokenSchedule {
     let mut entries = Vec::new();
     for attempt in 1..=manifest.attempts_per_cell {
-        let mut block = Vec::new();
-        for workload_id in &manifest.workload_ids {
-            for mode in &manifest.modes {
-                block.push(AgentTokenScheduleEntry {
+        let mut generator =
+            DeterministicRng::new(manifest.seed ^ (attempt as u64).wrapping_mul(0x9E37_79B9));
+        let mut workloads = manifest.workload_ids.clone();
+        generator.shuffle(&mut workloads);
+        let mut block_order = 1_usize;
+        for workload_id in workloads {
+            let mut pair_modes = manifest.modes.clone();
+            generator.shuffle(&mut pair_modes);
+            for mode in pair_modes {
+                entries.push(AgentTokenScheduleEntry {
                     run_id: format!(
                         "{}-b{attempt:03}-{}-{}",
                         manifest.campaign_id,
@@ -508,20 +806,14 @@ pub fn build_agent_token_schedule(manifest: &AgentTokenCampaignManifest) -> Agen
                         mode.short_name()
                     ),
                     workload_id: workload_id.clone(),
-                    mode: *mode,
+                    mode,
                     attempt,
                     block_index: attempt,
-                    randomized_order: 0,
+                    randomized_order: block_order,
                 });
+                block_order += 1;
             }
         }
-        let mut generator =
-            DeterministicRng::new(manifest.seed ^ (attempt as u64).wrapping_mul(0x9E37_79B9));
-        generator.shuffle(&mut block);
-        for (order, entry) in block.iter_mut().enumerate() {
-            entry.randomized_order = order + 1;
-        }
-        entries.extend(block);
     }
     AgentTokenSchedule {
         contract: AGENT_TOKEN_SCHEDULE_CONTRACT.to_string(),
@@ -642,11 +934,116 @@ pub fn import_codex_usage(
     })
 }
 
+/// Import provider usage from a Claude Code stream-json transcript. The
+/// terminal `result` event carries cumulative usage; Claude reports cache
+/// reads and cache writes outside `input_tokens`, so the normalized input
+/// re-adds them to keep the codex semantics where cached input is a subset
+/// of total input and `provider_total_tokens = input + output`.
+pub fn import_claude_usage(
+    source: &Path,
+    run_id: &str,
+    workload_id: &str,
+    mode: AgentTokenMode,
+    profile: AgentTokenAccountingProfile,
+    model: &AgentTokenModelPin,
+) -> Result<NormalizedAgentTokenUsage, String> {
+    let source_text = fs::read_to_string(source).map_err(|error| {
+        format!(
+            "Failed to read Claude stream-json usage source {}: {error}",
+            source.display()
+        )
+    })?;
+    let mut result_usage = None;
+    for (index, line) in source_text.lines().enumerate() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let event = serde_json::from_str::<serde_json::Value>(line).map_err(|error| {
+            format!(
+                "Claude stream-json {} line {} is invalid: {error}",
+                source.display(),
+                index + 1
+            )
+        })?;
+        if event.get("type").and_then(serde_json::Value::as_str) != Some("result") {
+            continue;
+        }
+        if result_usage.is_some() {
+            return Err("Claude stream-json contains more than one result event".to_string());
+        }
+        let usage = event
+            .get("usage")
+            .and_then(serde_json::Value::as_object)
+            .ok_or_else(|| "Claude result event carries no usage object".to_string())?
+            .clone();
+        let num_turns = event
+            .get("num_turns")
+            .and_then(serde_json::Value::as_u64)
+            .ok_or_else(|| "Claude result event carries no num_turns".to_string())?;
+        result_usage = Some((usage, num_turns));
+    }
+    let Some((usage, num_turns)) = result_usage else {
+        return Err("Claude stream-json contains no result usage event".to_string());
+    };
+    let direct_input = required_u64(&usage, "input_tokens", 0)?;
+    let cache_read = required_u64(&usage, "cache_read_input_tokens", 0)?;
+    let cache_write = required_u64(&usage, "cache_creation_input_tokens", 0)?;
+    let output_tokens = required_u64(&usage, "output_tokens", 0)?;
+    let reasoning_tokens = usage
+        .get("output_tokens_details")
+        .and_then(|details| details.get("thinking_tokens"))
+        .and_then(serde_json::Value::as_u64);
+    let input_tokens = direct_input
+        .checked_add(cache_read)
+        .and_then(|sum| sum.checked_add(cache_write))
+        .ok_or_else(|| "Claude input token sum overflowed u64".to_string())?;
+    if let Some(reasoning) = reasoning_tokens {
+        if reasoning > output_tokens {
+            return Err("Claude thinking_tokens exceeds output_tokens".to_string());
+        }
+    }
+    let provider_total_tokens = input_tokens
+        .checked_add(output_tokens)
+        .ok_or_else(|| "Claude provider total token sum overflowed u64".to_string())?;
+    if num_turns == 0 {
+        return Err("Claude result event reports zero turns".to_string());
+    }
+    Ok(NormalizedAgentTokenUsage {
+        contract: AGENT_TOKEN_USAGE_CONTRACT.to_string(),
+        run_id: run_id.to_string(),
+        workload_id: workload_id.to_string(),
+        mode,
+        accounting_profile: profile,
+        model_provider: model.provider.clone(),
+        model_id: model.model_id.clone(),
+        model_revision: model.model_revision.clone(),
+        reasoning_effort: model.reasoning_effort.clone(),
+        input_tokens,
+        cached_input_tokens: Some(cache_read),
+        cache_write_input_tokens: Some(cache_write),
+        output_tokens,
+        reasoning_tokens,
+        provider_total_tokens,
+        completed_turns: 1,
+        usage_provenance: "claude-code-stream-json:result".to_string(),
+    })
+}
+
 pub fn extract_and_validate_codex_transcript(
     source: &Path,
     run_id: &str,
     mode: AgentTokenMode,
     profile: AgentTokenAccountingProfile,
+) -> Result<AgentTokenCommandTranscript, String> {
+    extract_and_validate_codex_transcript_with_git_start_proof(source, run_id, mode, profile, false)
+}
+
+pub(crate) fn extract_and_validate_codex_transcript_with_git_start_proof(
+    source: &Path,
+    run_id: &str,
+    mode: AgentTokenMode,
+    profile: AgentTokenAccountingProfile,
+    clean_main_head_proven: bool,
 ) -> Result<AgentTokenCommandTranscript, String> {
     let source_text = fs::read_to_string(source).map_err(|error| {
         format!(
@@ -688,21 +1085,52 @@ pub fn extract_and_validate_codex_transcript(
         }
     }
 
+    if clean_main_head_proven {
+        validate_agent_token_command_list_with_git_start_proof(
+            commands, run_id, mode, profile, true,
+        )
+    } else {
+        validate_agent_token_command_list(commands, run_id, mode, profile)
+    }
+}
+
+fn validate_agent_token_command_list(
+    commands: Vec<String>,
+    run_id: &str,
+    mode: AgentTokenMode,
+    profile: AgentTokenAccountingProfile,
+) -> Result<AgentTokenCommandTranscript, String> {
+    validate_agent_token_command_list_with_git_start_proof(commands, run_id, mode, profile, false)
+}
+
+fn validate_agent_token_command_list_with_git_start_proof(
+    commands: Vec<String>,
+    run_id: &str,
+    mode: AgentTokenMode,
+    profile: AgentTokenAccountingProfile,
+    clean_main_head_proven: bool,
+) -> Result<AgentTokenCommandTranscript, String> {
     let mut errors = Vec::new();
     let mut observed_required_commands = Vec::new();
     match mode {
         AgentTokenMode::GitLinearSingleSession => {
-            let discovery = [
-                "git status",
-                "git diff",
-                "git log",
-                "git show",
-                "git branch",
-                "git rev-parse",
-            ];
-            for required in discovery {
-                if commands.iter().any(|command| command.contains(required)) {
-                    observed_required_commands.push(required.to_string());
+            let git_invocations = commands
+                .iter()
+                .flat_map(|command| git_command_invocations(command))
+                .filter(|invocation| !invocation_is_help_introspection(invocation))
+                .collect::<Vec<_>>();
+            for (name, subcommand) in [
+                ("git status", &["status"][..]),
+                ("git diff", &["diff"][..]),
+                ("git log", &["log"][..]),
+                ("git show", &["show"][..]),
+                ("git rev-parse", &["rev-parse"][..]),
+            ] {
+                if git_invocations
+                    .iter()
+                    .any(|invocation| git_invocation_has_subcommand(invocation, subcommand))
+                {
+                    observed_required_commands.push(name.to_string());
                 }
             }
             if observed_required_commands.is_empty() {
@@ -711,27 +1139,141 @@ pub fn extract_and_validate_codex_transcript(
             if commands.iter().any(|command| command_invokes_ait(command)) {
                 errors.push("Git mode invoked AIT".to_string());
             }
-            if commands.iter().any(|command| {
-                ["GIT_DIR=", "GIT_WORK_TREE=", "--git-dir", "--work-tree"]
-                    .iter()
-                    .any(|forbidden| command.contains(forbidden))
-            }) {
-                errors.push(
-                    "Git mode overrode the runner-owned isolated repository metadata context"
-                        .to_string(),
-                );
-            }
-            if !commands
+            if git_invocations
                 .iter()
-                .any(|command| command.contains("git commit"))
+                .any(git_invocation_overrides_metadata_context)
+                || commands
+                    .iter()
+                    .any(|command| command_exports_git_metadata_context(command))
             {
-                errors.push("Git mode did not commit its accepted candidate state".to_string());
+                errors.push(GIT_METADATA_CONTEXT_OVERRIDE_ERROR.to_string());
+            }
+            let commit_count = git_invocations
+                .iter()
+                .filter(|invocation| git_invocation_has_subcommand(invocation, &["commit"]))
+                .count();
+            let expected_commit_count = if profile == AgentTokenAccountingProfile::FirstUseTotalCost
+            {
+                2
+            } else {
+                1
+            };
+            if commit_count != expected_commit_count {
+                errors.push(format!(
+                    "Git mode must execute exactly {expected_commit_count} git commit command(s); observed {commit_count}"
+                ));
             } else {
                 observed_required_commands.push("git commit".to_string());
             }
+
+            for (name, subcommand) in [
+                ("git worktree add", &["worktree", "add"][..]),
+                ("git merge", &["merge"][..]),
+                ("git worktree remove", &["worktree", "remove"][..]),
+            ] {
+                let count = git_invocations
+                    .iter()
+                    .filter(|invocation| git_invocation_has_subcommand(invocation, subcommand))
+                    .count();
+                if count != 1 {
+                    errors.push(format!(
+                        "Git mode must execute exactly one {name}; observed {count}"
+                    ));
+                } else {
+                    observed_required_commands.push(name.to_string());
+                }
+            }
+            let branch_delete_count = git_invocations
+                .iter()
+                .filter(|invocation| {
+                    git_invocation_has_subcommand(invocation, &["branch"])
+                        && invocation
+                            .arguments
+                            .iter()
+                            .any(|argument| matches!(argument.as_str(), "-d" | "--delete"))
+                })
+                .count();
+            if branch_delete_count != 1 {
+                errors.push(format!(
+                    "Git mode must execute exactly one git branch deletion; observed {branch_delete_count}"
+                ));
+            } else {
+                observed_required_commands.push("git branch --delete".to_string());
+            }
+
+            let worktree_add = git_invocations
+                .iter()
+                .find(|invocation| git_invocation_has_subcommand(invocation, &["worktree", "add"]));
+            match worktree_add.map(classify_git_worktree_add_start) {
+                Some(GitWorktreeAddStart::ExplicitMain) => {}
+                Some(GitWorktreeAddStart::ImplicitHead)
+                    if profile == AgentTokenAccountingProfile::SteadyStateTaskCost
+                        && clean_main_head_proven =>
+                {
+                    observed_required_commands
+                        .push("git worktree add from runner-proven clean main HEAD".to_string());
+                }
+                Some(GitWorktreeAddStart::ImplicitHead) => errors.push(
+                    "Git mode omitted the worktree start point without a runner-proven clean main HEAD"
+                        .to_string(),
+                ),
+                None | Some(GitWorktreeAddStart::Invalid) => errors.push(
+                    "Git mode did not create the declared benchmark-task linked worktree from main"
+                        .to_string(),
+                ),
+            }
+            if !git_invocations.iter().any(|invocation| {
+                git_invocation_has_subcommand(invocation, &["merge"])
+                    && invocation_has_option(invocation, "--ff-only")
+                    && invocation
+                        .arguments
+                        .iter()
+                        .any(|argument| argument == "benchmark-task")
+            }) {
+                errors.push(
+                    "Git mode did not fast-forward main to benchmark-task with git merge --ff-only"
+                        .to_string(),
+                );
+            }
+            if !git_invocations.iter().any(|invocation| {
+                git_invocation_has_subcommand(invocation, &["worktree", "remove"])
+                    && invocation
+                        .arguments
+                        .iter()
+                        .any(|argument| argument.ends_with("git-task-worktree"))
+            }) {
+                errors.push(
+                    "Git mode did not remove the declared benchmark-owned linked worktree"
+                        .to_string(),
+                );
+            }
+            if !git_invocations.iter().any(|invocation| {
+                git_invocation_has_subcommand(invocation, &["branch"])
+                    && invocation
+                        .arguments
+                        .iter()
+                        .any(|argument| matches!(argument.as_str(), "-d" | "--delete"))
+                    && invocation
+                        .arguments
+                        .iter()
+                        .any(|argument| argument == "benchmark-task")
+            }) {
+                errors
+                    .push("Git mode did not delete the declared benchmark-task branch".to_string());
+            }
+            if git_invocations.iter().any(|invocation| {
+                ["clone", "fetch", "pull", "push", "remote", "ls-remote"]
+                    .iter()
+                    .any(|subcommand| git_invocation_has_subcommand(invocation, &[*subcommand]))
+            }) {
+                errors.push("Git mode invoked a forbidden remote operation".to_string());
+            }
             match profile {
                 AgentTokenAccountingProfile::SteadyStateTaskCost => {
-                    if commands.iter().any(|command| command.contains("git init")) {
+                    if git_invocations
+                        .iter()
+                        .any(|invocation| git_invocation_has_subcommand(invocation, &["init"]))
+                    {
                         errors.push(
                             "Steady-state Git mode repeated first-use repository bootstrap"
                                 .to_string(),
@@ -739,23 +1281,22 @@ pub fn extract_and_validate_codex_transcript(
                     }
                 }
                 AgentTokenAccountingProfile::FirstUseTotalCost => {
-                    if commands.iter().any(|command| command.contains("git init")) {
+                    if git_invocations
+                        .iter()
+                        .any(|invocation| git_invocation_has_subcommand(invocation, &["init"]))
+                    {
                         observed_required_commands.push("git init".to_string());
                     } else {
                         errors.push("First-use Git mode did not initialize Git".to_string());
                     }
-                    let commit_count = commands
-                        .iter()
-                        .map(|command| command.match_indices("git commit").count())
-                        .sum::<usize>();
-                    if commit_count < 2 {
-                        errors.push(
-                            "First-use Git mode did not create separate baseline and final commits"
-                                .to_string(),
-                        );
-                    }
-                    for required in ["git config user.name", "git config user.email"] {
-                        if commands.iter().any(|command| command.contains(required)) {
+                    for (required, key) in [
+                        ("git config user.name", "user.name"),
+                        ("git config user.email", "user.email"),
+                    ] {
+                        if git_invocations.iter().any(|invocation| {
+                            git_invocation_has_subcommand(invocation, &["config"])
+                                && invocation.arguments.iter().any(|argument| argument == key)
+                        }) {
                             observed_required_commands.push(required.to_string());
                         } else {
                             errors.push(format!(
@@ -767,8 +1308,24 @@ pub fn extract_and_validate_codex_transcript(
             }
         }
         AgentTokenMode::AitLinearSingleSession => {
-            for required in ["ait task start", "ait snapshot create", "ait task land"] {
-                if commands.iter().any(|command| command.contains(required)) {
+            let ait_invocations = commands
+                .iter()
+                .flat_map(|command| ait_command_invocations(command))
+                .filter(|invocation| {
+                    !invocation_is_help_introspection(invocation)
+                        && !invocation_is_ait_readonly_inspection(invocation)
+                })
+                .collect::<Vec<_>>();
+            for required in ["ait task start", "ait task finish"] {
+                let subcommand = required
+                    .strip_prefix("ait ")
+                    .expect("required AIT command has the frozen prefix")
+                    .split_ascii_whitespace()
+                    .collect::<Vec<_>>();
+                if ait_invocations
+                    .iter()
+                    .any(|invocation| invocation_has_subcommand(invocation, &subcommand))
+                {
                     observed_required_commands.push(required.to_string());
                 } else {
                     errors.push(format!(
@@ -776,31 +1333,110 @@ pub fn extract_and_validate_codex_transcript(
                     ));
                 }
             }
+            for (name, subcommand) in [
+                ("ait task start", &["task", "start"][..]),
+                ("ait task finish", &["task", "finish"][..]),
+            ] {
+                let count = ait_invocations
+                    .iter()
+                    .filter(|invocation| invocation_has_subcommand(invocation, subcommand))
+                    .count();
+                if count != 1 {
+                    errors.push(format!(
+                        "AIT mode must execute exactly one {name}; observed {count}"
+                    ));
+                }
+            }
+            for required in [["task", "start"], ["task", "finish"]] {
+                if ait_invocations.iter().any(|invocation| {
+                    invocation_has_subcommand(invocation, &required)
+                        && !invocation_has_option(invocation, "--local")
+                }) {
+                    errors.push(format!(
+                        "AIT mode omitted --local from ait {} {}",
+                        required[0], required[1]
+                    ));
+                }
+            }
+            if !ait_invocations.iter().any(|invocation| {
+                invocation_has_subcommand(invocation, &["task", "finish"])
+                    && invocation_has_option(invocation, "--message")
+            }) {
+                errors.push(
+                    "AIT mode did not use Task finish to create the final local Snapshot"
+                        .to_string(),
+                );
+            }
             if commands
                 .iter()
                 .any(|command| command_invokes_git_vcs(command))
             {
                 errors.push("AIT mode substituted raw Git workflow commands".to_string());
             }
-            for forbidden in [
-                "ait-server",
-                " --remote",
-                "ait push",
-                "ait pull",
-                "ait remote",
-                "ait plan",
-                "task start --from",
+            if commands
+                .iter()
+                .any(|command| command_invokes_ait_server(command))
+            {
+                errors.push("AIT mode used forbidden solo-local surface: ait-server".to_string());
+            }
+            for (forbidden, subcommand) in [
+                ("ait push", &["push"][..]),
+                ("ait pull", &["pull"][..]),
+                ("ait remote", &["remote"][..]),
+                ("ait plan", &["plan"][..]),
+                ("ait workflow ready", &["workflow", "ready"][..]),
+                ("ait queue summary", &["queue", "summary"][..]),
+                ("ait task list", &["task", "list"][..]),
+                ("ait change list", &["change", "list"][..]),
+                ("ait task audit", &["task", "audit"][..]),
             ] {
-                if commands.iter().any(|command| command.contains(forbidden)) {
+                if ait_invocations
+                    .iter()
+                    .any(|invocation| invocation_has_subcommand(invocation, subcommand))
+                {
                     errors.push(format!(
                         "AIT mode used forbidden solo-local surface: {forbidden}"
                     ));
                 }
             }
+            if ait_invocations
+                .iter()
+                .any(|invocation| invocation_has_option(invocation, "--remote"))
+            {
+                errors.push("AIT mode used forbidden solo-local surface: --remote".to_string());
+            }
+            if ait_invocations.iter().any(|invocation| {
+                invocation_has_subcommand(invocation, &["task", "start"])
+                    && invocation_has_option(invocation, "--from")
+            }) {
+                errors.push(
+                    "AIT mode used forbidden solo-local surface: task start --from".to_string(),
+                );
+            }
+            for invocation in &ait_invocations {
+                let common_lifecycle = invocation_has_subcommand(invocation, &["task", "start"])
+                    || invocation_has_subcommand(invocation, &["snapshot", "create"])
+                    || invocation_has_subcommand(invocation, &["task", "finish"]);
+                let first_use_bootstrap = profile == AgentTokenAccountingProfile::FirstUseTotalCost
+                    && (invocation_has_subcommand(invocation, &["init"])
+                        || invocation_has_subcommand(invocation, &["config", "set"]));
+                if !common_lifecycle && !first_use_bootstrap {
+                    errors.push(format!(
+                        "AIT mode invoked a command outside the measured lifecycle: ait {}",
+                        invocation.arguments.join(" ")
+                    ));
+                }
+            }
             match profile {
                 AgentTokenAccountingProfile::SteadyStateTaskCost => {
-                    for forbidden in ["ait init", "ait config set"] {
-                        if commands.iter().any(|command| command.contains(forbidden)) {
+                    for (forbidden, subcommand) in [
+                        ("ait init", &["init"][..]),
+                        ("ait config set", &["config", "set"][..]),
+                    ] {
+                        if ait_invocations
+                            .iter()
+                            .any(|invocation| invocation_has_subcommand(invocation, subcommand))
+                        {
                             errors.push(format!(
                                 "Steady-state AIT mode repeated first-use bootstrap: {forbidden}"
                             ));
@@ -808,8 +1444,14 @@ pub fn extract_and_validate_codex_transcript(
                     }
                 }
                 AgentTokenAccountingProfile::FirstUseTotalCost => {
-                    for required in ["ait init", "ait config set"] {
-                        if commands.iter().any(|command| command.contains(required)) {
+                    for (required, subcommand) in [
+                        ("ait init", &["init"][..]),
+                        ("ait config set", &["config", "set"][..]),
+                    ] {
+                        if ait_invocations
+                            .iter()
+                            .any(|invocation| invocation_has_subcommand(invocation, subcommand))
+                        {
                             observed_required_commands.push(required.to_string());
                         } else {
                             errors.push(format!(
@@ -817,10 +1459,12 @@ pub fn extract_and_validate_codex_transcript(
                             ));
                         }
                     }
-                    let snapshot_count = commands
+                    let snapshot_count = ait_invocations
                         .iter()
-                        .map(|command| command.match_indices("ait snapshot create").count())
-                        .sum::<usize>();
+                        .filter(|invocation| {
+                            invocation_has_subcommand(invocation, &["snapshot", "create"])
+                        })
+                        .count();
                     if snapshot_count < 2 {
                         errors.push(
                             "First-use AIT mode did not create separate baseline and task Snapshots"
@@ -851,6 +1495,114 @@ pub fn extract_and_validate_codex_transcript(
         errors,
         observed_required_commands,
     })
+}
+
+/// Extract the measured shell commands from a Claude Code stream-json
+/// transcript and validate them against the same mode contract the codex
+/// executor uses. Commands are the `Bash` tool_use inputs; every other
+/// tool (Read, Grep, Glob, Edit, Write) is a non-shell surface and is
+/// validated separately by the patch-attempt metrics.
+pub fn extract_and_validate_claude_transcript(
+    source: &Path,
+    run_id: &str,
+    mode: AgentTokenMode,
+    profile: AgentTokenAccountingProfile,
+) -> Result<AgentTokenCommandTranscript, String> {
+    extract_and_validate_claude_transcript_with_git_start_proof(
+        source, run_id, mode, profile, false,
+    )
+}
+
+pub(crate) fn extract_and_validate_claude_transcript_with_git_start_proof(
+    source: &Path,
+    run_id: &str,
+    mode: AgentTokenMode,
+    profile: AgentTokenAccountingProfile,
+    clean_main_head_proven: bool,
+) -> Result<AgentTokenCommandTranscript, String> {
+    let source_text = fs::read_to_string(source).map_err(|error| {
+        format!(
+            "Failed to read Claude stream-json transcript source {}: {error}",
+            source.display()
+        )
+    })?;
+    let mut commands = Vec::new();
+    let mut seen_items = BTreeSet::new();
+    let mut out_of_surface_tools = BTreeSet::new();
+    for (index, line) in source_text.lines().enumerate() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let event = serde_json::from_str::<serde_json::Value>(line).map_err(|error| {
+            format!(
+                "Claude stream-json {} line {} is invalid: {error}",
+                source.display(),
+                index + 1
+            )
+        })?;
+        if event.get("type").and_then(serde_json::Value::as_str) != Some("assistant") {
+            continue;
+        }
+        let Some(content) = event
+            .get("message")
+            .and_then(|message| message.get("content"))
+            .and_then(serde_json::Value::as_array)
+        else {
+            continue;
+        };
+        for block in content {
+            if block.get("type").and_then(serde_json::Value::as_str) != Some("tool_use") {
+                continue;
+            }
+            let tool_name = block
+                .get("name")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default();
+            if !CLAUDE_MEASURED_TOOL_SURFACE.contains(&tool_name) {
+                out_of_surface_tools.insert(if tool_name.is_empty() {
+                    "<unnamed>".to_string()
+                } else {
+                    tool_name.to_string()
+                });
+                continue;
+            }
+            if tool_name != "Bash" {
+                continue;
+            }
+            let id = block
+                .get("id")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("");
+            if !id.is_empty() && !seen_items.insert(id.to_string()) {
+                continue;
+            }
+            if let Some(command) = block
+                .get("input")
+                .and_then(|input| input.get("command"))
+                .and_then(serde_json::Value::as_str)
+            {
+                commands.push(command.to_string());
+            }
+        }
+    }
+    let mut transcript = if clean_main_head_proven {
+        validate_agent_token_command_list_with_git_start_proof(
+            commands, run_id, mode, profile, true,
+        )?
+    } else {
+        validate_agent_token_command_list(commands, run_id, mode, profile)?
+    };
+    if !out_of_surface_tools.is_empty() {
+        transcript.valid = false;
+        transcript.errors.push(format!(
+            "Claude session used tools outside the declared measured surface: {}",
+            out_of_surface_tools
+                .into_iter()
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+    Ok(transcript)
 }
 
 pub fn extract_agent_token_secondary_metrics(
@@ -900,6 +1652,17 @@ pub fn extract_agent_token_secondary_metrics(
             _ => {}
         }
     }
+    apply_shared_command_statistics(&mut metrics, transcript);
+    Ok(metrics)
+}
+
+/// Shell-command-derived statistics shared by every executor: family
+/// grouping, validation/query/help/read classification, and repeated-query
+/// accounting operate on the validated transcript alone.
+fn apply_shared_command_statistics(
+    metrics: &mut AgentTokenSecondaryMetrics,
+    transcript: &AgentTokenCommandTranscript,
+) {
     metrics.command_tool_calls = transcript.commands.len();
     let mut query_families = BTreeSet::new();
     for command in &transcript.commands {
@@ -940,6 +1703,114 @@ pub fn extract_agent_token_secondary_metrics(
     metrics.repeated_repository_query_calls = metrics
         .repository_query_calls
         .saturating_sub(query_families.len());
+}
+
+/// Claude-executor counterpart of the secondary metrics extractor. Tool
+/// output bytes come from tool_result content; completed file changes are
+/// successful Edit/Write tool uses; rejected patch attempts are Edit/Write
+/// tool uses whose tool_result reports is_error. Shell-command-derived
+/// statistics reuse the shared classification below.
+pub fn extract_agent_token_claude_secondary_metrics(
+    source: &Path,
+    transcript: &AgentTokenCommandTranscript,
+) -> Result<AgentTokenSecondaryMetrics, String> {
+    let source_text = fs::read_to_string(source).map_err(|error| {
+        format!(
+            "Failed to read Claude stream-json metrics source {}: {error}",
+            source.display()
+        )
+    })?;
+    let mut metrics = AgentTokenSecondaryMetrics::default();
+    let mut edit_tool_ids = BTreeSet::new();
+    for (index, line) in source_text.lines().enumerate() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let event = serde_json::from_str::<serde_json::Value>(line).map_err(|error| {
+            format!(
+                "Claude stream-json {} line {} is invalid: {error}",
+                source.display(),
+                index + 1
+            )
+        })?;
+        match event.get("type").and_then(serde_json::Value::as_str) {
+            Some("assistant") => {
+                metrics.model_calls += 1;
+                let Some(content) = event
+                    .pointer("/message/content")
+                    .and_then(serde_json::Value::as_array)
+                else {
+                    continue;
+                };
+                for block in content {
+                    if block.get("type").and_then(serde_json::Value::as_str) != Some("tool_use") {
+                        continue;
+                    }
+                    let name = block
+                        .get("name")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or("");
+                    if matches!(name, "Edit" | "Write") {
+                        metrics.apply_patch_attempts += 1;
+                        if let Some(id) = block.get("id").and_then(serde_json::Value::as_str) {
+                            edit_tool_ids.insert(id.to_string());
+                        }
+                    }
+                }
+            }
+            Some("user") => {
+                let Some(content) = event
+                    .pointer("/message/content")
+                    .and_then(serde_json::Value::as_array)
+                else {
+                    continue;
+                };
+                for block in content {
+                    if block.get("type").and_then(serde_json::Value::as_str) != Some("tool_result")
+                    {
+                        continue;
+                    }
+                    if let Some(text) = block.get("content").and_then(serde_json::Value::as_str) {
+                        metrics.tool_output_bytes =
+                            metrics.tool_output_bytes.saturating_add(text.len() as u64);
+                    } else if let Some(parts) =
+                        block.get("content").and_then(serde_json::Value::as_array)
+                    {
+                        for part in parts {
+                            if let Some(text) = part.get("text").and_then(serde_json::Value::as_str)
+                            {
+                                metrics.tool_output_bytes =
+                                    metrics.tool_output_bytes.saturating_add(text.len() as u64);
+                            }
+                        }
+                    }
+                    let is_error = block
+                        .get("is_error")
+                        .and_then(serde_json::Value::as_bool)
+                        .unwrap_or(false);
+                    let for_edit = block
+                        .get("tool_use_id")
+                        .and_then(serde_json::Value::as_str)
+                        .map(|id| edit_tool_ids.contains(id))
+                        .unwrap_or(false);
+                    if for_edit {
+                        if is_error {
+                            metrics.apply_patch_rejected_attempts += 1;
+                        } else {
+                            metrics.file_change_items += 1;
+                        }
+                    }
+                }
+            }
+            Some("result") => {
+                if let Some(turns) = event.get("num_turns").and_then(serde_json::Value::as_u64) {
+                    metrics.agent_turns = usize::try_from(turns).unwrap_or(usize::MAX);
+                }
+            }
+            _ => {}
+        }
+    }
+    apply_shared_command_statistics(&mut metrics, transcript);
     Ok(metrics)
 }
 
@@ -1039,6 +1910,35 @@ pub fn build_agent_token_report(
         } else {
             None
         };
+        let elapsed_ms_distribution = summarize_optional_u64(
+            &valid.iter().map(|run| run.elapsed_ms).collect::<Vec<_>>(),
+            manifest.bootstrap_resamples,
+            distribution_seed ^ 0x50,
+        )?;
+        let completed_file_change_item_distribution = summarize_optional_u64(
+            &valid
+                .iter()
+                .map(|run| run.secondary_metrics.file_change_items as u64)
+                .collect::<Vec<_>>(),
+            manifest.bootstrap_resamples,
+            distribution_seed ^ 0x60,
+        )?;
+        let rejected_apply_patch_attempt_distribution = summarize_optional_u64(
+            &valid
+                .iter()
+                .map(|run| run.secondary_metrics.apply_patch_rejected_attempts as u64)
+                .collect::<Vec<_>>(),
+            manifest.bootstrap_resamples,
+            distribution_seed ^ 0x70,
+        )?;
+        let apply_patch_attempt_distribution = summarize_optional_u64(
+            &valid
+                .iter()
+                .map(|run| run.secondary_metrics.apply_patch_attempts as u64)
+                .collect::<Vec<_>>(),
+            manifest.bootstrap_resamples,
+            distribution_seed ^ 0x80,
+        )?;
         groups.push(AgentTokenGroupReport {
             workload_id,
             mode: mode.as_str().to_string(),
@@ -1058,6 +1958,10 @@ pub fn build_agent_token_report(
             cached_input_token_distribution,
             output_token_distribution,
             reasoning_token_distribution,
+            elapsed_ms_distribution,
+            completed_file_change_item_distribution,
+            rejected_apply_patch_attempt_distribution,
+            apply_patch_attempt_distribution,
         });
     }
     groups.sort_by(|left, right| {
@@ -1066,26 +1970,9 @@ pub fn build_agent_token_report(
 
     let mut comparisons = Vec::new();
     let mut comparison_bootstrap_samples = Vec::new();
+    let mut acceptance_rate_deficit_exceeded = false;
     for workload_id in &manifest.workload_ids {
-        let git = groups.iter().find(|group| {
-            group.workload_id == *workload_id
-                && group.mode == AgentTokenMode::GitLinearSingleSession.as_str()
-        });
-        let ait = groups.iter().find(|group| {
-            group.workload_id == *workload_id
-                && group.mode == AgentTokenMode::AitLinearSingleSession.as_str()
-        });
-        let git_effective = git.and_then(|group| group.effective_tokens_per_accepted_task);
-        let ait_effective = ait.and_then(|group| group.effective_tokens_per_accepted_task);
-        let token_savings_percent = match (git_effective, ait_effective) {
-            (Some(git_value), Some(ait_value)) if git_value > 0.0 => {
-                Some(100.0 * (1.0 - ait_value / git_value))
-            }
-            _ => None,
-        };
-        let git_acceptance_rate = git.map_or(0.0, |group| group.acceptance_rate);
-        let ait_acceptance_rate = ait.map_or(0.0, |group| group.acceptance_rate);
-        let git_runs = runs
+        let git_candidates = runs
             .iter()
             .filter(|run| {
                 run.workload_id == *workload_id
@@ -1094,7 +1981,7 @@ pub fn build_agent_token_report(
                     && run.usage.is_some()
             })
             .collect::<Vec<_>>();
-        let ait_runs = runs
+        let ait_candidates = runs
             .iter()
             .filter(|run| {
                 run.workload_id == *workload_id
@@ -1103,6 +1990,59 @@ pub fn build_agent_token_report(
                     && run.usage.is_some()
             })
             .collect::<Vec<_>>();
+        let (git_runs, ait_runs) = paired_runs(&git_candidates, &ait_candidates);
+        let git_effective = failure_adjusted_effective_tokens(&git_runs);
+        let ait_effective = failure_adjusted_effective_tokens(&ait_runs);
+        let token_savings_percent = relative_reduction(git_effective, ait_effective);
+        let git_effective_elapsed_ms =
+            failure_adjusted_effective_measure(&git_runs, |run| Some(run.elapsed_ms));
+        let ait_effective_elapsed_ms =
+            failure_adjusted_effective_measure(&ait_runs, |run| Some(run.elapsed_ms));
+        let elapsed_savings_percent =
+            relative_reduction(git_effective_elapsed_ms, ait_effective_elapsed_ms);
+        let git_effective_completed_file_change_items =
+            failure_adjusted_effective_measure(&git_runs, |run| {
+                Some(run.secondary_metrics.file_change_items as u64)
+            });
+        let ait_effective_completed_file_change_items =
+            failure_adjusted_effective_measure(&ait_runs, |run| {
+                Some(run.secondary_metrics.file_change_items as u64)
+            });
+        let completed_file_change_reduction_percent = relative_reduction(
+            git_effective_completed_file_change_items,
+            ait_effective_completed_file_change_items,
+        );
+        let git_effective_rejected_apply_patch_attempts =
+            failure_adjusted_effective_measure(&git_runs, |run| {
+                Some(run.secondary_metrics.apply_patch_rejected_attempts as u64)
+            });
+        let ait_effective_rejected_apply_patch_attempts =
+            failure_adjusted_effective_measure(&ait_runs, |run| {
+                Some(run.secondary_metrics.apply_patch_rejected_attempts as u64)
+            });
+        let rejected_apply_patch_reduction_percent = relative_reduction(
+            git_effective_rejected_apply_patch_attempts,
+            ait_effective_rejected_apply_patch_attempts,
+        );
+        let git_effective_apply_patch_attempts =
+            failure_adjusted_effective_measure(&git_runs, |run| {
+                Some(run.secondary_metrics.apply_patch_attempts as u64)
+            });
+        let ait_effective_apply_patch_attempts =
+            failure_adjusted_effective_measure(&ait_runs, |run| {
+                Some(run.secondary_metrics.apply_patch_attempts as u64)
+            });
+        let apply_patch_attempt_reduction_percent = relative_reduction(
+            git_effective_apply_patch_attempts,
+            ait_effective_apply_patch_attempts,
+        );
+        let git_acceptance_rate = acceptance_rate(&git_runs);
+        let ait_acceptance_rate = acceptance_rate(&ait_runs);
+        let acceptance_rate_deficit_percentage_points =
+            acceptance_rate_percentage_points(&git_runs)
+                - acceptance_rate_percentage_points(&ait_runs);
+        acceptance_rate_deficit_exceeded |=
+            acceptance_rate_deficit_exceeds_five_percentage_points(&git_runs, &ait_runs);
         let bootstrap = bootstrap_failure_adjusted_savings(
             &git_runs,
             &ait_runs,
@@ -1124,10 +2064,21 @@ pub fn build_agent_token_report(
             token_savings_percent,
             token_savings_bootstrap_ci95,
             paired_valid_attempt_count,
+            git_effective_elapsed_ms,
+            ait_effective_elapsed_ms,
+            elapsed_savings_percent,
+            git_effective_completed_file_change_items,
+            ait_effective_completed_file_change_items,
+            completed_file_change_reduction_percent,
+            git_effective_rejected_apply_patch_attempts,
+            ait_effective_rejected_apply_patch_attempts,
+            rejected_apply_patch_reduction_percent,
+            git_effective_apply_patch_attempts,
+            ait_effective_apply_patch_attempts,
+            apply_patch_attempt_reduction_percent,
             git_acceptance_rate,
             ait_acceptance_rate,
-            acceptance_rate_deficit_percentage_points: 100.0
-                * (git_acceptance_rate - ait_acceptance_rate),
+            acceptance_rate_deficit_percentage_points,
         });
     }
 
@@ -1144,14 +2095,49 @@ pub fn build_agent_token_report(
             quantile_r7_local(samples, 0.975),
         ]
     });
+    let aggregate_median_elapsed_savings_percent =
+        complete_comparison_median(&comparisons, manifest.workload_ids.len(), |comparison| {
+            comparison.elapsed_savings_percent
+        });
+    let aggregate_median_completed_file_change_reduction_percent =
+        complete_comparison_median(&comparisons, manifest.workload_ids.len(), |comparison| {
+            comparison.completed_file_change_reduction_percent
+        });
+    let aggregate_median_rejected_apply_patch_reduction_percent =
+        complete_comparison_median(&comparisons, manifest.workload_ids.len(), |comparison| {
+            comparison.rejected_apply_patch_reduction_percent
+        });
+    let aggregate_median_apply_patch_attempt_reduction_percent =
+        complete_comparison_median(&comparisons, manifest.workload_ids.len(), |comparison| {
+            comparison.apply_patch_attempt_reduction_percent
+        });
 
-    let complete_counts = groups.iter().all(|group| {
-        group.attempted_count == manifest.attempts_per_cell
-            && group.valid_count == manifest.attempts_per_cell
-            && group.valid_count >= manifest.campaign_scope.minimum_attempts()
-    });
-    if !complete_counts {
-        blockers.push("Required per-cell attempt counts are incomplete".to_string());
+    let complete_group_counts = groups.len() == manifest.workload_ids.len() * manifest.modes.len()
+        && groups.iter().all(|group| {
+            group.attempted_count == manifest.attempts_per_cell
+                && group.valid_count == manifest.attempts_per_cell
+                && group.accepted_count == manifest.attempts_per_cell
+        });
+    let complete_pair_counts = comparisons.len() == manifest.workload_ids.len()
+        && comparisons
+            .iter()
+            .all(|comparison| comparison.paired_valid_attempt_count == manifest.attempts_per_cell);
+    if !complete_group_counts || !complete_pair_counts {
+        blockers.push("The required accepted paired schedule is incomplete".to_string());
+    }
+    let source_scheduled_run_count = manifest
+        .workload_ids
+        .len()
+        .saturating_mul(manifest.modes.len())
+        .saturating_mul(manifest.attempts_per_cell);
+    if manifest.campaign_scope == AgentTokenCampaignScope::Complete
+        && (schedule.entry_count != source_scheduled_run_count
+            || schedule.entries.len() != source_scheduled_run_count
+            || runs.len() != source_scheduled_run_count)
+    {
+        blockers.push(format!(
+            "Complete campaign evidence must contain exactly {source_scheduled_run_count} scheduled runs"
+        ));
     }
     if comparisons
         .iter()
@@ -1160,10 +2146,7 @@ pub fn build_agent_token_report(
         blockers
             .push("At least one workload lacks an accepted effective-token comparison".to_string());
     }
-    if comparisons
-        .iter()
-        .any(|comparison| comparison.acceptance_rate_deficit_percentage_points > 5.0)
-    {
+    if acceptance_rate_deficit_exceeded {
         blockers.push("AIT acceptance-rate deficit exceeds five percentage points".to_string());
     }
     if aggregate_median_token_savings_percent.is_none() {
@@ -1173,14 +2156,60 @@ pub fn build_agent_token_report(
         blockers
             .push("Aggregate token-savings bootstrap 95% lower bound is not positive".to_string());
     }
-    let claim_eligible = manifest.campaign_scope == AgentTokenCampaignScope::Qualification
-        && blockers.is_empty()
-        && aggregate_median_token_savings_percent.is_some_and(|saving| saving > 0.0)
+    if manifest.runtime.project_doc_max_bytes > 0 {
+        blockers.push(
+            "Project-document-loading diagnostic evidence is not publication eligible".to_string(),
+        );
+    }
+    let positive_statistics = aggregate_median_token_savings_percent
+        .is_some_and(|saving| saving > 0.0)
         && aggregate_token_savings_bootstrap_ci95.is_some_and(|interval| interval[0] > 0.0);
-    if manifest.campaign_scope != AgentTokenCampaignScope::Qualification {
-        blockers.push(format!(
-            "{} evidence is never claim eligible",
-            manifest.campaign_scope.as_str()
+
+    let current_complete_group_counts = manifest.workload_ids
+        == ["GD-01", "GD-02", "GD-03", "GD-04", "GD-05"]
+        && groups.len() == 10
+        && groups.iter().all(|group| {
+            group.attempted_count == AGENT_TOKEN_COMPLETE_ATTEMPTS_PER_WORKLOAD
+                && group.valid_count == AGENT_TOKEN_COMPLETE_ATTEMPTS_PER_WORKLOAD
+                && group.accepted_count == AGENT_TOKEN_COMPLETE_ATTEMPTS_PER_WORKLOAD
+        });
+    let current_complete_pair_counts = comparisons.len() == 5
+        && comparisons.iter().all(|comparison| {
+            comparison.paired_valid_attempt_count == AGENT_TOKEN_COMPLETE_ATTEMPTS_PER_WORKLOAD
+        });
+    let current_complete_schedule = schedule.entry_count == AGENT_TOKEN_COMPLETE_SCHEDULED_RUNS
+        && schedule.entries.len() == AGENT_TOKEN_COMPLETE_SCHEDULED_RUNS
+        && runs.len() == AGENT_TOKEN_COMPLETE_SCHEDULED_RUNS;
+    let mut current_policy_blockers = blockers.clone();
+    if !current_complete_group_counts || !current_complete_pair_counts || !current_complete_schedule
+    {
+        current_policy_blockers.push(format!(
+            "Current policy {AGENT_TOKEN_PROTOCOL_REVISION} requires the exact five-workload, two-mode, twenty-pair, 200-session matrix"
+        ));
+    }
+    let current_policy_criteria_met = current_policy_blockers.is_empty() && positive_statistics;
+
+    match manifest.campaign_scope {
+        AgentTokenCampaignScope::Smoke => {
+            blockers.push("Smoke evidence is not publication eligible".to_string());
+        }
+        AgentTokenCampaignScope::Pilot => {
+            blockers.push("pilot evidence is never claim eligible".to_string());
+        }
+        AgentTokenCampaignScope::Qualification | AgentTokenCampaignScope::Complete => {}
+    }
+    let source_protocol_claim_eligible = matches!(
+        manifest.campaign_scope,
+        AgentTokenCampaignScope::Qualification | AgentTokenCampaignScope::Complete
+    ) && blockers.is_empty()
+        && positive_statistics;
+    let claim_eligible = source_protocol_claim_eligible;
+
+    let mut limitations = manifest.limitations.clone();
+    if manifest.runtime.project_doc_max_bytes > 0 {
+        limitations.push(format!(
+            "Diagnostic project-document loading was enabled symmetrically with project_doc_max_bytes={}; results are screening evidence only.",
+            manifest.runtime.project_doc_max_bytes
         ));
     }
 
@@ -1193,22 +2222,65 @@ pub fn build_agent_token_report(
         model: manifest.model.clone(),
         cache_class: manifest.cache_class.clone(),
         network_policy: manifest.network_policy.clone(),
+        project_doc_max_bytes: manifest.runtime.project_doc_max_bytes,
+        pair_admission_policy: AGENT_TOKEN_PAIR_ADMISSION_POLICY.to_string(),
         generated_at: Utc::now().to_rfc3339(),
         scheduled_run_count: schedule.entry_count,
         observed_run_count: runs.len(),
+        executed_evidence_run_count: runs.len(),
+        statistically_excluded_run_count: 0,
         invalid_run_count,
         groups,
         comparisons,
         aggregate_median_token_savings_percent,
         aggregate_token_savings_bootstrap_ci95,
+        aggregate_median_elapsed_savings_percent,
+        aggregate_median_completed_file_change_reduction_percent,
+        aggregate_median_rejected_apply_patch_reduction_percent,
+        aggregate_median_apply_patch_attempt_reduction_percent,
+        source_protocol_claim_eligible,
+        current_policy_revision: AGENT_TOKEN_PROTOCOL_REVISION.to_string(),
+        current_policy_evaluation_mode: if manifest.protocol_revision
+            == AGENT_TOKEN_PROTOCOL_REVISION
+        {
+            "prospective".to_string()
+        } else {
+            "retrospective".to_string()
+        },
+        current_policy_criteria_met,
+        current_policy_blockers,
+        source_protocol_blockers: blockers.clone(),
+        replacement_policy_revision: None,
+        statistical_replacements: Vec::new(),
         claim_eligible,
         blockers,
-        limitations: manifest.limitations.clone(),
+        limitations,
     })
 }
 
 pub fn load_agent_token_report(path: &Path) -> Result<AgentTokenReport, String> {
-    read_json(path, "agent-token report")
+    let mut report = read_json::<AgentTokenReport>(path, "agent-token report")?;
+    if report.current_policy_revision.is_empty() {
+        report.source_protocol_claim_eligible = false;
+        report.current_policy_revision = AGENT_TOKEN_PROTOCOL_REVISION.to_string();
+        report.current_policy_evaluation_mode = "not_evaluated".to_string();
+        report.current_policy_criteria_met = false;
+        report.current_policy_blockers.push(
+            "Legacy report lacks dual-policy provenance; regenerate it from the immutable source campaign"
+                .to_string(),
+        );
+        report.claim_eligible = false;
+        if !report.blockers.iter().any(|blocker| {
+            blocker
+                == "Legacy report lacks dual-policy provenance; regenerate it from the immutable source campaign"
+        }) {
+            report.blockers.push(
+                "Legacy report lacks dual-policy provenance; regenerate it from the immutable source campaign"
+                    .to_string(),
+            );
+        }
+    }
+    Ok(report)
 }
 
 pub fn compare_agent_token_reports(
@@ -1233,6 +2305,9 @@ pub fn compare_agent_token_reports(
     }
     if baseline.network_policy != candidate.network_policy {
         blockers.push("network policy differs".to_string());
+    }
+    if baseline.project_doc_max_bytes != candidate.project_doc_max_bytes {
+        blockers.push("project-document loading differs".to_string());
     }
     let mut keys = baseline
         .groups
@@ -1300,6 +2375,44 @@ pub fn load_agent_token_schedule(path: &Path) -> Result<AgentTokenSchedule, Stri
 pub fn load_agent_token_run_summaries(
     campaign_dir: &Path,
 ) -> Result<Vec<AgentTokenRunSummary>, String> {
+    let mut runs = load_agent_token_raw_run_summaries(campaign_dir)?;
+    let manifest_path = campaign_dir.join("campaign-manifest.json");
+    let mut adjudication_manifest = None;
+    for run in &mut runs {
+        let path = campaign_dir
+            .join("adjudications")
+            .join(format!("{}.json", run.run_id));
+        if !path.exists() {
+            continue;
+        }
+        let manifest = match adjudication_manifest.as_ref() {
+            Some(manifest) => manifest,
+            None => {
+                adjudication_manifest = Some(read_json::<AgentTokenCampaignManifest>(
+                    &manifest_path,
+                    "agent-token campaign manifest",
+                )?);
+                adjudication_manifest
+                    .as_ref()
+                    .expect("adjudication manifest was assigned")
+            }
+        };
+        let adjudication =
+            read_json::<AgentTokenRunAdjudication>(&path, "agent-token run adjudication")?;
+        if adjudication.source_protocol_revision != manifest.protocol_revision {
+            return Err(format!(
+                "Run {} adjudication source protocol {} differs from campaign protocol {}",
+                run.run_id, adjudication.source_protocol_revision, manifest.protocol_revision
+            ));
+        }
+        *run = validate_agent_token_run_adjudication(campaign_dir, run, adjudication)?;
+    }
+    Ok(runs)
+}
+
+pub fn load_agent_token_raw_run_summaries(
+    campaign_dir: &Path,
+) -> Result<Vec<AgentTokenRunSummary>, String> {
     let runs_dir = campaign_dir.join("runs");
     let mut entries = fs::read_dir(&runs_dir)
         .map_err(|error| {
@@ -1328,6 +2441,118 @@ pub fn load_agent_token_run_summaries(
     Ok(runs)
 }
 
+pub fn build_agent_token_run_adjudication(
+    campaign_dir: &Path,
+    source: &AgentTokenRunSummary,
+    source_protocol_revision: &str,
+) -> Result<AgentTokenRunAdjudication, String> {
+    if source_protocol_revision != AGENT_TOKEN_LEGACY_RESUMABLE_PROTOCOL_REVISION {
+        return Err(format!(
+            "Transcript adjudication is admitted only for {AGENT_TOKEN_LEGACY_RESUMABLE_PROTOCOL_REVISION}, got {source_protocol_revision}"
+        ));
+    }
+    if source.invalid_reasons.len() != 1
+        || source.invalid_reasons.first().map(String::as_str)
+            != Some(GIT_METADATA_CONTEXT_OVERRIDE_ERROR)
+        || source.transcript.errors.len() != 1
+        || source.transcript.errors.first().map(String::as_str)
+            != Some(GIT_METADATA_CONTEXT_OVERRIDE_ERROR)
+        || source.transcript.valid
+        || source.mode != AgentTokenMode::GitLinearSingleSession
+    {
+        return Err(format!(
+            "Run {} is not the narrow legacy Git metadata-query false positive",
+            source.run_id
+        ));
+    }
+    let run_dir = campaign_dir.join("runs").join(&source.run_id);
+    let raw_events = run_dir.join("private/codex-events.raw.jsonl");
+    let transcript = extract_and_validate_codex_transcript(
+        &raw_events,
+        &source.run_id,
+        source.mode,
+        source.accounting_profile,
+    )?;
+    if !transcript.valid {
+        return Err(format!(
+            "Run {} remains transcript-invalid under adjudicator {}: {}",
+            source.run_id,
+            AGENT_TOKEN_ADJUDICATOR_REVISION,
+            transcript.errors.join("; ")
+        ));
+    }
+    if transcript.contract != source.transcript.contract
+        || transcript.run_id != source.transcript.run_id
+        || transcript.mode != source.transcript.mode
+        || transcript.accounting_profile != source.transcript.accounting_profile
+        || transcript.command_count != source.transcript.command_count
+        || transcript.commands != source.transcript.commands
+        || transcript.observed_required_commands != source.transcript.observed_required_commands
+    {
+        return Err(format!(
+            "Run {} transcript adjudication changed evidence outside valid/errors",
+            source.run_id
+        ));
+    }
+    let mut effective_summary = source.clone();
+    effective_summary.transcript = transcript;
+    effective_summary.invalid_reasons.clear();
+    effective_summary.valid_attempt = true;
+    effective_summary.accepted_equivalent = !effective_summary.codex_timed_out
+        && effective_summary.codex_exit_code == Some(0)
+        && effective_summary.infrastructure_failure.is_none()
+        && effective_summary.usage.is_some()
+        && effective_summary.evaluator_accepted
+        && effective_summary.browser.status == "passed"
+        && effective_summary.workflow_closed;
+    if !effective_summary.accepted_equivalent || !effective_summary.failure_reasons.is_empty() {
+        return Err(format!(
+            "Run {} passed transcript adjudication but does not have unchanged accepted functional evidence",
+            source.run_id
+        ));
+    }
+    let source_path = run_dir.join("run-summary.json");
+    let source_bytes = fs::read(&source_path).map_err(|error| {
+        format!(
+            "Failed to read source run summary {}: {error}",
+            source_path.display()
+        )
+    })?;
+    Ok(AgentTokenRunAdjudication {
+        contract: AGENT_TOKEN_RUN_ADJUDICATION_CONTRACT.to_string(),
+        campaign_id: source.campaign_id.clone(),
+        run_id: source.run_id.clone(),
+        source_protocol_revision: source_protocol_revision.to_string(),
+        adjudicator_revision: AGENT_TOKEN_ADJUDICATOR_REVISION.to_string(),
+        source_run_summary_sha256: sha256_digest(&source_bytes),
+        reason: "read-only git rev-parse --git-dir was previously conflated with a global Git metadata override".to_string(),
+        effective_summary,
+    })
+}
+
+fn validate_agent_token_run_adjudication(
+    campaign_dir: &Path,
+    source: &AgentTokenRunSummary,
+    adjudication: AgentTokenRunAdjudication,
+) -> Result<AgentTokenRunSummary, String> {
+    let expected = build_agent_token_run_adjudication(
+        campaign_dir,
+        source,
+        &adjudication.source_protocol_revision,
+    )?;
+    let observed = serde_json::to_value(&adjudication)
+        .map_err(|error| format!("Failed to normalize run adjudication: {error}"))?;
+    let expected = serde_json::to_value(&expected)
+        .map_err(|error| format!("Failed to normalize expected run adjudication: {error}"))?;
+    if observed != expected {
+        return Err(format!(
+            "Run {} adjudication differs from its source evidence and current narrow correction",
+            source.run_id
+        ));
+    }
+    Ok(adjudication.effective_summary)
+}
+
 pub fn write_json_new(path: &Path, value: &impl Serialize) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
@@ -1349,19 +2574,65 @@ pub fn render_agent_token_report_markdown(report: &AgentTokenReport) -> String {
         "# Agent Token Benchmark: {}\n\n",
         report.campaign_id
     ));
-    output.push_str(&format!("- Scope: `{}`\n", report.campaign_scope));
-    output.push_str(&format!("- Accounting: `{}`\n", report.accounting_profile));
-    output.push_str(&format!("- Claim eligible: `{}`\n", report.claim_eligible));
     output.push_str(&format!(
-        "- Aggregate median savings: `{}`\n",
+        "- Source protocol: `{}`\n",
+        report.protocol_revision
+    ));
+    output.push_str(&format!(
+        "- Source campaign scope: `{}`\n",
+        report.campaign_scope
+    ));
+    output.push_str(&format!("- Accounting: `{}`\n", report.accounting_profile));
+    output.push_str(&format!(
+        "- Source-protocol claim eligible: `{}`\n",
+        report.source_protocol_claim_eligible
+    ));
+    output.push_str(&format!(
+        "- Current policy: `{}` (`{}` evaluation)\n",
+        report.current_policy_revision, report.current_policy_evaluation_mode
+    ));
+    output.push_str(&format!(
+        "- Current-policy criteria met: `{}`\n",
+        report.current_policy_criteria_met
+    ));
+    output.push_str(&format!(
+        "- Effective `claim_eligible`: `{}`\n",
+        report.claim_eligible
+    ));
+    output.push_str(&format!(
+        "- Aggregate median token savings: `{}`\n",
         report
             .aggregate_median_token_savings_percent
             .map(|value| format!("{value:.2}%"))
             .unwrap_or_else(|| "n/a".to_string())
     ));
     output.push_str(&format!(
-        "- Runs: `{}/{}` observed\n\n",
+        "- Aggregate median elapsed savings: `{}`\n",
+        display_optional_percent(report.aggregate_median_elapsed_savings_percent)
+    ));
+    output.push_str(&format!(
+        "- Aggregate median completed file-change reduction: `{}`\n",
+        display_optional_percent(report.aggregate_median_completed_file_change_reduction_percent,)
+    ));
+    output.push_str(&format!(
+        "- Aggregate median total patch-attempt reduction: `{}`\n",
+        display_optional_percent(report.aggregate_median_apply_patch_attempt_reduction_percent)
+    ));
+    output.push_str(&format!(
+        "- Runs: `{}/{}` observed\n",
         report.observed_run_count, report.scheduled_run_count
+    ));
+    if report.executed_evidence_run_count != report.observed_run_count
+        || report.statistically_excluded_run_count > 0
+    {
+        output.push_str(&format!(
+            "- Executed evidence sessions: `{}`\n- Statistically excluded sessions: `{}`\n",
+            report.executed_evidence_run_count, report.statistically_excluded_run_count
+        ));
+    }
+    output.push_str(&format!(
+        "- Pair admission: `{}`\n\n",
+        report.pair_admission_policy
     ));
     output.push_str("## Workload Results\n\n");
     output.push_str(
@@ -1387,8 +2658,8 @@ pub fn render_agent_token_report_markdown(report: &AgentTokenReport) -> String {
                 .unwrap_or_else(|| "n/a".to_string()),
         ));
     }
-    output.push_str("\n## AIT vs Git\n\n");
-    output.push_str("| Workload | Git effective | AIT effective | Savings | Savings CI95 | Paired runs | AIT acceptance deficit |\n");
+    output.push_str("\n## AIT vs Git Tokens\n\n");
+    output.push_str("| Workload | Git effective | AIT effective | Savings | Savings CI95 | Valid pairs | AIT acceptance deficit |\n");
     output.push_str("| --- | ---: | ---: | ---: | ---: | ---: | ---: |\n");
     for comparison in &report.comparisons {
         output.push_str(&format!(
@@ -1396,10 +2667,7 @@ pub fn render_agent_token_report_markdown(report: &AgentTokenReport) -> String {
             comparison.workload_id,
             display_optional(comparison.git_effective_tokens),
             display_optional(comparison.ait_effective_tokens),
-            comparison
-                .token_savings_percent
-                .map(|value| format!("{value:.2}%"))
-                .unwrap_or_else(|| "n/a".to_string()),
+            display_optional_percent(comparison.token_savings_percent),
             comparison
                 .token_savings_bootstrap_ci95
                 .map(|value| format!("[{:.2}%, {:.2}%]", value[0], value[1]))
@@ -1408,9 +2676,57 @@ pub fn render_agent_token_report_markdown(report: &AgentTokenReport) -> String {
             comparison.acceptance_rate_deficit_percentage_points,
         ));
     }
+    output.push_str("\n## Workflow Efficiency\n\n");
+    output.push_str("| Workload | Elapsed Git/AIT ms | Elapsed saving | File changes Git/AIT | File-change reduction | Rejected patches Git/AIT | Rejected reduction | Total patches Git/AIT | Total-patch reduction |\n");
+    output.push_str("| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |\n");
+    for comparison in &report.comparisons {
+        output.push_str(&format!(
+            "| {} | {}/{} | {} | {}/{} | {} | {}/{} | {} | {}/{} | {} |\n",
+            comparison.workload_id,
+            display_optional(comparison.git_effective_elapsed_ms),
+            display_optional(comparison.ait_effective_elapsed_ms),
+            display_optional_percent(comparison.elapsed_savings_percent),
+            display_optional(comparison.git_effective_completed_file_change_items),
+            display_optional(comparison.ait_effective_completed_file_change_items),
+            display_optional_percent(comparison.completed_file_change_reduction_percent),
+            display_optional(comparison.git_effective_rejected_apply_patch_attempts),
+            display_optional(comparison.ait_effective_rejected_apply_patch_attempts),
+            display_optional_percent(comparison.rejected_apply_patch_reduction_percent),
+            display_optional(comparison.git_effective_apply_patch_attempts),
+            display_optional(comparison.ait_effective_apply_patch_attempts),
+            display_optional_percent(comparison.apply_patch_attempt_reduction_percent),
+        ));
+    }
+    if !report.statistical_replacements.is_empty() {
+        output.push_str("\n## Statistical Replacements\n\n");
+        for replacement in &report.statistical_replacements {
+            output.push_str(&format!(
+                "- `{}` was retained but excluded from effective statistics and replaced by `{}`: {}\n",
+                replacement.source_run_id, replacement.replacement_run_id, replacement.reason
+            ));
+        }
+    }
+    if !report.limitations.is_empty() {
+        output.push_str("\n## Limitations\n\n");
+        for limitation in &report.limitations {
+            output.push_str(&format!("- {limitation}\n"));
+        }
+    }
     if !report.blockers.is_empty() {
         output.push_str("\n## Claim Blockers\n\n");
         for blocker in &report.blockers {
+            output.push_str(&format!("- {blocker}\n"));
+        }
+    }
+    if report.replacement_policy_revision.is_some() && !report.source_protocol_blockers.is_empty() {
+        output.push_str("\n## Frozen Source-Protocol Blockers\n\n");
+        for blocker in &report.source_protocol_blockers {
+            output.push_str(&format!("- {blocker}\n"));
+        }
+    }
+    if !report.current_policy_blockers.is_empty() {
+        output.push_str("\n## Current-Policy Criteria Blockers\n\n");
+        for blocker in &report.current_policy_blockers {
             output.push_str(&format!("- {blocker}\n"));
         }
     }
@@ -1470,33 +2786,427 @@ fn add_optional_u64(
     Ok(())
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct CommandInvocation {
+    executable: String,
+    arguments: Vec<String>,
+    environment_assignments: Vec<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum GitWorktreeAddStart {
+    ExplicitMain,
+    ImplicitHead,
+    Invalid,
+}
+
+fn classify_git_worktree_add_start(invocation: &CommandInvocation) -> GitWorktreeAddStart {
+    let arguments = git_subcommand_arguments(invocation);
+    if arguments.first().map(String::as_str) != Some("worktree")
+        || arguments.get(1).map(String::as_str) != Some("add")
+    {
+        return GitWorktreeAddStart::Invalid;
+    }
+    let lifecycle = &arguments[2..];
+    match lifecycle {
+        [branch_flag, branch, path]
+            if branch_flag == "-b"
+                && branch == "benchmark-task"
+                && path.ends_with("git-task-worktree") =>
+        {
+            GitWorktreeAddStart::ImplicitHead
+        }
+        [branch_flag, branch, path, start]
+            if branch_flag == "-b"
+                && branch == "benchmark-task"
+                && path.ends_with("git-task-worktree")
+                && start == "main" =>
+        {
+            GitWorktreeAddStart::ExplicitMain
+        }
+        _ => GitWorktreeAddStart::Invalid,
+    }
+}
+
+/// A repository-CLI invocation that only prints usage help: it carries
+/// `--help`/`-h` anywhere (clap and git print help and exit without
+/// executing the action) or opens with the `help` subcommand. Such
+/// invocations are informational: token cost stays measured while
+/// lifecycle-count and surface checks skip them.
+/// A read-only AIT inspection invocation (`ait status`, `ait diff`,
+/// `ait blame`) carrying no remote authority. Informational on the same
+/// terms as help introspection.
+fn invocation_is_ait_readonly_inspection(invocation: &CommandInvocation) -> bool {
+    if invocation_has_option(invocation, "--remote") {
+        return false;
+    }
+    AIT_INFORMATIONAL_INSPECTION_SUBCOMMANDS
+        .iter()
+        .any(|subcommand| invocation_has_subcommand(invocation, subcommand))
+}
+
+fn invocation_is_help_introspection(invocation: &CommandInvocation) -> bool {
+    invocation
+        .arguments
+        .iter()
+        .any(|argument| argument == "--help" || argument == "-h")
+        || invocation.arguments.first().map(String::as_str) == Some("help")
+}
+
+fn finish_shell_word(current: &mut String, words: &mut Vec<String>) {
+    if !current.is_empty() {
+        words.push(std::mem::take(current));
+    }
+}
+
+fn finish_shell_command(words: &mut Vec<String>, commands: &mut Vec<Vec<String>>) {
+    if !words.is_empty() {
+        commands.push(std::mem::take(words));
+    }
+}
+
+fn parse_shell_commands(source: &str) -> Vec<Vec<String>> {
+    let mut commands = Vec::new();
+    let mut words = Vec::new();
+    let mut current = String::new();
+    let mut quote = None;
+    let mut characters = source.chars().peekable();
+    while let Some(character) = characters.next() {
+        match quote {
+            Some('\'') => {
+                if character == '\'' {
+                    quote = None;
+                } else {
+                    current.push(character);
+                }
+            }
+            Some('"') => {
+                if character == '"' {
+                    quote = None;
+                } else if character == '\\'
+                    && characters
+                        .peek()
+                        .is_some_and(|next| matches!(next, '"' | '\\'))
+                {
+                    current.push(characters.next().expect("peeked escaped character"));
+                } else {
+                    current.push(character);
+                }
+            }
+            Some(_) => unreachable!("shell quote state is bounded"),
+            None => match character {
+                '\'' | '"' => quote = Some(character),
+                '\\' if characters.peek().is_some_and(|next| {
+                    next.is_ascii_whitespace()
+                        || matches!(next, '\'' | '"' | '\\' | ';' | '|' | '&' | '(' | ')')
+                }) =>
+                {
+                    current.push(characters.next().expect("peeked escaped character"));
+                }
+                '\n' | '\r' => {
+                    finish_shell_word(&mut current, &mut words);
+                    finish_shell_command(&mut words, &mut commands);
+                }
+                character if character.is_ascii_whitespace() => {
+                    finish_shell_word(&mut current, &mut words);
+                }
+                ';' | '|' | '&' | '(' | ')' => {
+                    finish_shell_word(&mut current, &mut words);
+                    finish_shell_command(&mut words, &mut commands);
+                }
+                _ => current.push(character),
+            },
+        }
+    }
+    finish_shell_word(&mut current, &mut words);
+    finish_shell_command(&mut words, &mut commands);
+    commands
+}
+
+fn executable_name(executable: &str) -> &str {
+    executable.rsplit(['/', '\\']).next().unwrap_or(executable)
+}
+
+fn is_shell_assignment(word: &str) -> bool {
+    shell_assignment_name(word).is_some()
+}
+
+fn shell_assignment_name(word: &str) -> Option<&str> {
+    word.split_once('=').and_then(|(name, _)| {
+        (!name.is_empty()
+            && name
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_'))
+        .then_some(name)
+    })
+}
+
+fn invocation_from_words(words: &[String]) -> Option<CommandInvocation> {
+    let mut index = 0;
+    let mut environment_assignments = Vec::new();
+    if words
+        .first()
+        .is_some_and(|word| executable_name(word).eq_ignore_ascii_case("env"))
+    {
+        index += 1;
+        while let Some(word) = words.get(index) {
+            if is_shell_assignment(word) {
+                environment_assignments.push(word.clone());
+                index += 1;
+            } else if word.starts_with('-') {
+                index += 1;
+            } else {
+                break;
+            }
+        }
+    } else {
+        while let Some(word) = words.get(index).filter(|word| is_shell_assignment(word)) {
+            environment_assignments.push(word.clone());
+            index += 1;
+        }
+    }
+    if words
+        .get(index)
+        .is_some_and(|word| executable_name(word).eq_ignore_ascii_case("command"))
+    {
+        index += 1;
+    }
+    let executable = words.get(index)?.clone();
+    Some(CommandInvocation {
+        executable,
+        arguments: words[index + 1..].to_vec(),
+        environment_assignments,
+    })
+}
+
+fn shell_payload(invocation: &CommandInvocation) -> Option<&str> {
+    let shell = executable_name(&invocation.executable);
+    let shell_supported = [
+        "sh",
+        "bash",
+        "zsh",
+        "powershell",
+        "powershell.exe",
+        "pwsh",
+        "pwsh.exe",
+        "cmd",
+        "cmd.exe",
+    ]
+    .iter()
+    .any(|candidate| shell.eq_ignore_ascii_case(candidate));
+    if !shell_supported {
+        return None;
+    }
+    invocation.arguments.windows(2).find_map(|pair| {
+        ["-c", "-lc", "-command", "/c"]
+            .iter()
+            .any(|flag| pair[0].eq_ignore_ascii_case(flag))
+            .then_some(pair[1].as_str())
+    })
+}
+
+fn command_invocations(command: &str) -> Vec<CommandInvocation> {
+    let mut invocations = Vec::new();
+    let mut pending = vec![(command.to_string(), 0_usize)];
+    while let Some((source, depth)) = pending.pop() {
+        let mut bindings: Vec<(String, String)> = Vec::new();
+        for words in parse_shell_commands(&source) {
+            let words = words
+                .iter()
+                .map(|word| expand_shell_bindings(word, &bindings))
+                .collect::<Vec<_>>();
+            if !words.is_empty() && words.iter().all(|word| is_shell_assignment(word)) {
+                for word in &words {
+                    if let Some((name, value)) = word.split_once('=') {
+                        bindings.retain(|(existing, _)| existing != name);
+                        bindings.push((name.to_string(), value.to_string()));
+                    }
+                }
+                continue;
+            }
+            let Some(invocation) = invocation_from_words(&words) else {
+                continue;
+            };
+            if depth < 4 {
+                if let Some(payload) = shell_payload(&invocation) {
+                    pending.push((payload.to_string(), depth + 1));
+                }
+            }
+            invocations.push(invocation);
+        }
+    }
+    invocations
+}
+
+/// Expand `$NAME` and `${NAME}` occurrences from bindings assigned earlier in
+/// the same command string. Agents legally abbreviate long declared paths
+/// through such assignments; path-anchored lifecycle checks must see the
+/// resolved text. Unknown variables stay untouched.
+fn expand_shell_bindings(word: &str, bindings: &[(String, String)]) -> String {
+    if bindings.is_empty() || !word.contains('$') {
+        return word.to_string();
+    }
+    let mut expanded = word.to_string();
+    let mut ordered = bindings.to_vec();
+    ordered.sort_by_key(|(name, _)| std::cmp::Reverse(name.len()));
+    for (name, value) in &ordered {
+        expanded = expanded.replace(&format!("${{{name}}}"), value);
+        expanded = expanded.replace(&format!("${name}"), value);
+    }
+    expanded
+}
+
+fn invocation_executable_is(invocation: &CommandInvocation, names: &[&str]) -> bool {
+    let executable = executable_name(&invocation.executable);
+    names
+        .iter()
+        .any(|name| executable.eq_ignore_ascii_case(name))
+}
+
+fn ait_command_invocations(command: &str) -> Vec<CommandInvocation> {
+    command_invocations(command)
+        .into_iter()
+        .filter(|invocation| invocation_executable_is(invocation, &["ait", "ait.exe"]))
+        .collect()
+}
+
+fn git_command_invocations(command: &str) -> Vec<CommandInvocation> {
+    command_invocations(command)
+        .into_iter()
+        .filter(|invocation| invocation_executable_is(invocation, &["git", "git.exe"]))
+        .collect()
+}
+
+fn git_invocation_overrides_metadata_context(invocation: &CommandInvocation) -> bool {
+    if invocation.environment_assignments.iter().any(|assignment| {
+        shell_assignment_name(assignment)
+            .is_some_and(|name| matches!(name, "GIT_DIR" | "GIT_WORK_TREE"))
+    }) {
+        return true;
+    }
+
+    let mut index = 0;
+    while let Some(argument) = invocation.arguments.get(index) {
+        match argument.as_str() {
+            "--git-dir" | "--work-tree" => return true,
+            value if value.starts_with("--git-dir=") || value.starts_with("--work-tree=") => {
+                return true;
+            }
+            "-C" | "-c" | "--exec-path" | "--namespace" => {
+                index = index.saturating_add(2);
+            }
+            "--bare"
+            | "--no-pager"
+            | "--paginate"
+            | "--no-replace-objects"
+            | "--literal-pathspecs"
+            | "--glob-pathspecs"
+            | "--noglob-pathspecs"
+            | "--icase-pathspecs" => {
+                index = index.saturating_add(1);
+            }
+            value
+                if value.starts_with("-C")
+                    || value.starts_with("-c=")
+                    || value.starts_with("--exec-path=")
+                    || value.starts_with("--namespace=") =>
+            {
+                index = index.saturating_add(1);
+            }
+            _ => break,
+        }
+    }
+    false
+}
+
+fn command_exports_git_metadata_context(command: &str) -> bool {
+    command_invocations(command).iter().any(|invocation| {
+        invocation_executable_is(invocation, &["export"])
+            && invocation.arguments.iter().any(|argument| {
+                shell_assignment_name(argument)
+                    .is_some_and(|name| matches!(name, "GIT_DIR" | "GIT_WORK_TREE"))
+            })
+    })
+}
+
+fn git_subcommand_arguments(invocation: &CommandInvocation) -> &[String] {
+    let mut index = 0;
+    while let Some(argument) = invocation.arguments.get(index) {
+        match argument.as_str() {
+            "-C" | "-c" | "--exec-path" | "--git-dir" | "--work-tree" | "--namespace" => {
+                index = index.saturating_add(2);
+            }
+            "--bare"
+            | "--no-pager"
+            | "--paginate"
+            | "--no-replace-objects"
+            | "--literal-pathspecs"
+            | "--glob-pathspecs"
+            | "--noglob-pathspecs"
+            | "--icase-pathspecs" => {
+                index = index.saturating_add(1);
+            }
+            value
+                if value.starts_with("-C")
+                    || value.starts_with("-c=")
+                    || value.starts_with("--exec-path=")
+                    || value.starts_with("--git-dir=")
+                    || value.starts_with("--work-tree=")
+                    || value.starts_with("--namespace=") =>
+            {
+                index = index.saturating_add(1);
+            }
+            _ => break,
+        }
+    }
+    &invocation.arguments[index.min(invocation.arguments.len())..]
+}
+
+fn git_invocation_has_subcommand(invocation: &CommandInvocation, expected: &[&str]) -> bool {
+    let arguments = git_subcommand_arguments(invocation);
+    arguments
+        .iter()
+        .map(String::as_str)
+        .zip(expected.iter().copied())
+        .all(|(actual, expected)| actual == expected)
+        && arguments.len() >= expected.len()
+}
+
+fn invocation_has_subcommand(invocation: &CommandInvocation, expected: &[&str]) -> bool {
+    invocation
+        .arguments
+        .iter()
+        .map(String::as_str)
+        .zip(expected.iter().copied())
+        .all(|(actual, expected)| actual == expected)
+        && invocation.arguments.len() >= expected.len()
+}
+
+fn invocation_has_option(invocation: &CommandInvocation, option: &str) -> bool {
+    invocation.arguments.iter().any(|token| {
+        token == option
+            || token
+                .strip_prefix(option)
+                .is_some_and(|suffix| suffix.starts_with('='))
+    })
+}
+
 fn command_invokes_ait(command: &str) -> bool {
-    command.contains(" ait ")
-        || command.contains("; ait ")
-        || command.contains("&& ait ")
-        || command.contains("/ait ")
-        || command.trim_start().starts_with("ait ")
+    !ait_command_invocations(command).is_empty()
+}
+
+fn command_invokes_ait_server(command: &str) -> bool {
+    command_invocations(command)
+        .iter()
+        .any(|invocation| invocation_executable_is(invocation, &["ait-server", "ait-server.exe"]))
 }
 
 fn command_invokes_git_vcs(command: &str) -> bool {
-    [
-        "git status",
-        "git diff",
-        "git log",
-        "git show",
-        "git branch",
-        "git rev-parse",
-        "git add",
-        "git commit",
-        "git checkout",
-        "git switch",
-    ]
-    .iter()
-    .any(|needle| command.contains(needle))
+    !git_command_invocations(command).is_empty()
 }
 
 fn command_family(command: &str) -> &'static str {
-    if command_invokes_ait(command) || command.contains("/ait ") {
+    if command_invokes_ait(command) {
         "ait"
     } else if command.contains("git ") || command.trim_start().starts_with("git ") {
         "git"
@@ -1553,6 +3263,102 @@ fn paired_attempt_count(
         .map(|run| run.attempt)
         .collect::<BTreeSet<_>>();
     git_attempts.intersection(&ait_attempts).count()
+}
+
+fn paired_runs<'a>(
+    git_runs: &[&'a AgentTokenRunSummary],
+    ait_runs: &[&'a AgentTokenRunSummary],
+) -> (Vec<&'a AgentTokenRunSummary>, Vec<&'a AgentTokenRunSummary>) {
+    let git_by_attempt = git_runs
+        .iter()
+        .map(|run| (run.attempt, *run))
+        .collect::<BTreeMap<_, _>>();
+    let ait_by_attempt = ait_runs
+        .iter()
+        .map(|run| (run.attempt, *run))
+        .collect::<BTreeMap<_, _>>();
+    let mut paired_git = Vec::new();
+    let mut paired_ait = Vec::new();
+    for (attempt, git) in git_by_attempt {
+        let Some(ait) = ait_by_attempt.get(&attempt).copied() else {
+            continue;
+        };
+        paired_git.push(git);
+        paired_ait.push(ait);
+    }
+    (paired_git, paired_ait)
+}
+
+fn failure_adjusted_effective_tokens(runs: &[&AgentTokenRunSummary]) -> Option<f64> {
+    failure_adjusted_effective_measure(runs, |run| Some(run.usage.as_ref()?.provider_total_tokens))
+}
+
+fn failure_adjusted_effective_measure(
+    runs: &[&AgentTokenRunSummary],
+    measure: impl Fn(&AgentTokenRunSummary) -> Option<u64>,
+) -> Option<f64> {
+    let accepted = runs.iter().filter(|run| run.accepted_equivalent).count();
+    if accepted == 0 {
+        return None;
+    }
+    let total = runs
+        .iter()
+        .try_fold(0_u64, |total, run| total.checked_add(measure(run)?))?;
+    Some(total as f64 / accepted as f64)
+}
+
+fn relative_reduction(baseline: Option<f64>, candidate: Option<f64>) -> Option<f64> {
+    match (baseline, candidate) {
+        (Some(baseline), Some(candidate)) if baseline > 0.0 => {
+            Some(100.0 * (1.0 - candidate / baseline))
+        }
+        _ => None,
+    }
+}
+
+fn complete_comparison_median(
+    comparisons: &[AgentTokenModeComparison],
+    required_count: usize,
+    metric: impl Fn(&AgentTokenModeComparison) -> Option<f64>,
+) -> Option<f64> {
+    let values = comparisons.iter().filter_map(metric).collect::<Vec<_>>();
+    (values.len() == required_count).then(|| quantile_r7_local(&values, 0.5))
+}
+
+fn acceptance_rate(runs: &[&AgentTokenRunSummary]) -> f64 {
+    if runs.is_empty() {
+        return 0.0;
+    }
+    runs.iter().filter(|run| run.accepted_equivalent).count() as f64 / runs.len() as f64
+}
+
+fn acceptance_rate_percentage_points(runs: &[&AgentTokenRunSummary]) -> f64 {
+    if runs.is_empty() {
+        return 0.0;
+    }
+    let accepted = runs.iter().filter(|run| run.accepted_equivalent).count();
+    accepted as f64 * 100.0 / runs.len() as f64
+}
+
+fn acceptance_rate_deficit_exceeds_five_percentage_points(
+    git_runs: &[&AgentTokenRunSummary],
+    ait_runs: &[&AgentTokenRunSummary],
+) -> bool {
+    if git_runs.is_empty() || ait_runs.is_empty() {
+        return false;
+    }
+    let git_accepted = git_runs
+        .iter()
+        .filter(|run| run.accepted_equivalent)
+        .count() as i128;
+    let ait_accepted = ait_runs
+        .iter()
+        .filter(|run| run.accepted_equivalent)
+        .count() as i128;
+    let git_count = git_runs.len() as i128;
+    let ait_count = ait_runs.len() as i128;
+    let deficit_numerator = git_accepted * ait_count - ait_accepted * git_count;
+    100 * deficit_numerator > 5 * git_count * ait_count
 }
 
 fn bootstrap_failure_adjusted_savings(
@@ -1689,8 +3495,427 @@ fn display_optional(value: Option<f64>) -> String {
         .unwrap_or_else(|| "n/a".to_string())
 }
 
+fn display_optional_percent(value: Option<f64>) -> String {
+    value
+        .map(|number| format!("{number:.2}%"))
+        .unwrap_or_else(|| "n/a".to_string())
+}
+
 #[cfg(test)]
 mod tests {
+    fn git_lifecycle_commands(worktree_start: &str) -> Vec<String> {
+        let worktree = "/evidence/run/git-worktree-runtime/git-task-worktree";
+        vec![
+            "/usr/bin/git status --short --branch".to_string(),
+            format!(
+                "/bin/zsh -lc '/usr/bin/git worktree add -b benchmark-task {worktree}{worktree_start} && /usr/bin/git status --short --branch'"
+            ),
+            "npm test".to_string(),
+            "/usr/bin/git commit -m candidate".to_string(),
+            "/usr/bin/git merge --ff-only benchmark-task".to_string(),
+            format!("/usr/bin/git worktree remove {worktree}"),
+            "/usr/bin/git branch -d benchmark-task".to_string(),
+        ]
+    }
+
+    #[test]
+    fn implicit_git_worktree_main_requires_steady_state_start_proof() {
+        let explicit = validate_agent_token_command_list_with_git_start_proof(
+            git_lifecycle_commands(" main"),
+            "explicit-main",
+            AgentTokenMode::GitLinearSingleSession,
+            AgentTokenAccountingProfile::SteadyStateTaskCost,
+            false,
+        )
+        .unwrap();
+        assert!(explicit.valid, "{:?}", explicit.errors);
+
+        let unproven = validate_agent_token_command_list_with_git_start_proof(
+            git_lifecycle_commands(""),
+            "implicit-unproven",
+            AgentTokenMode::GitLinearSingleSession,
+            AgentTokenAccountingProfile::SteadyStateTaskCost,
+            false,
+        )
+        .unwrap();
+        assert!(!unproven.valid);
+        assert!(unproven
+            .errors
+            .iter()
+            .any(|error| error.contains("without a runner-proven clean main HEAD")));
+
+        let proven = validate_agent_token_command_list_with_git_start_proof(
+            git_lifecycle_commands(""),
+            "implicit-proven",
+            AgentTokenMode::GitLinearSingleSession,
+            AgentTokenAccountingProfile::SteadyStateTaskCost,
+            true,
+        )
+        .unwrap();
+        assert!(proven.valid, "{:?}", proven.errors);
+        assert!(proven
+            .observed_required_commands
+            .iter()
+            .any(|command| command.contains("runner-proven clean main HEAD")));
+
+        let first_use = validate_agent_token_command_list_with_git_start_proof(
+            git_lifecycle_commands(""),
+            "implicit-first-use",
+            AgentTokenMode::GitLinearSingleSession,
+            AgentTokenAccountingProfile::FirstUseTotalCost,
+            true,
+        )
+        .unwrap();
+        assert!(first_use
+            .errors
+            .iter()
+            .any(|error| error.contains("without a runner-proven clean main HEAD")));
+
+        let alternate_start = validate_agent_token_command_list_with_git_start_proof(
+            git_lifecycle_commands(" feature"),
+            "alternate-start",
+            AgentTokenMode::GitLinearSingleSession,
+            AgentTokenAccountingProfile::SteadyStateTaskCost,
+            true,
+        )
+        .unwrap();
+        assert!(alternate_start.errors.iter().any(|error| error
+            .contains("did not create the declared benchmark-task linked worktree from main")));
+    }
+
+    #[test]
+    fn claude_transcript_extracts_bash_commands_and_validates() {
+        let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/claude-stream-sample.jsonl");
+        // The sample transcript is a plain echo probe, so validating it as a
+        // measured lane must fail closed (no task start/finish), while the
+        // command extraction itself must find the exact Bash invocation.
+        let transcript = extract_and_validate_claude_transcript(
+            &fixture,
+            "claude-sample",
+            AgentTokenMode::AitLinearSingleSession,
+            AgentTokenAccountingProfile::SteadyStateTaskCost,
+        )
+        .expect("claude transcript parses");
+        assert_eq!(transcript.commands, vec!["echo hello".to_string()]);
+        assert!(!transcript.valid);
+        assert!(transcript
+            .errors
+            .iter()
+            .any(|error| error.contains("required command")));
+    }
+
+    #[test]
+    fn variable_bound_paths_resolve_for_declared_lifecycle_matching() {
+        // The captured GD-02 closing command: the executed worktree removal
+        // was previously misjudged as missing because the declared path was
+        // carried through same-command shell variables.
+        let closing = concat!(
+            "M=/evidence/run-gd-02-git/workspace\n",
+            "W=/evidence/run-gd-02-git/git-worktree-runtime/git-task-worktree\n",
+            "/usr/bin/git -C \"$M\" merge --ff-only benchmark-task\n",
+            "/usr/bin/git -C \"$M\" worktree remove \"$W\"\n",
+            "/usr/bin/git -C \"$M\" branch -d benchmark-task"
+        );
+        let commands = vec![
+            "/usr/bin/git worktree add -b benchmark-task /evidence/run-gd-02-git/git-worktree-runtime/git-task-worktree main".to_string(),
+            "npm test".to_string(),
+            "/usr/bin/git commit -m candidate".to_string(),
+            closing.to_string(),
+        ];
+        let transcript = validate_agent_token_command_list(
+            commands,
+            "variable-paths",
+            AgentTokenMode::GitLinearSingleSession,
+            AgentTokenAccountingProfile::SteadyStateTaskCost,
+        )
+        .expect("transcript validates");
+        assert!(
+            !transcript
+                .errors
+                .iter()
+                .any(|error| error.contains("did not remove the declared")),
+            "variable-bound removal must be recognized: {:?}",
+            transcript.errors
+        );
+
+        // Unknown variables must not silently satisfy a declared-path check.
+        let transcript = validate_agent_token_command_list(
+            vec![
+                "/usr/bin/git worktree add -b benchmark-task /evidence/x/git-worktree-runtime/git-task-worktree main".to_string(),
+                "npm test".to_string(),
+                "/usr/bin/git commit -m candidate".to_string(),
+                "/usr/bin/git worktree remove \"$UNSET\"".to_string(),
+            ],
+            "unset-variable",
+            AgentTokenMode::GitLinearSingleSession,
+            AgentTokenAccountingProfile::SteadyStateTaskCost,
+        )
+        .expect("transcript validates");
+        assert!(transcript
+            .errors
+            .iter()
+            .any(|error| error.contains("did not remove the declared")));
+    }
+
+    #[test]
+    fn ait_readonly_inspection_is_informational_but_remote_authority_stays_forbidden() {
+        // Symmetric with the Git treatment's unrestricted status/diff/log:
+        // read-only local inspection must not consume lifecycle budget.
+        let transcript = validate_agent_token_command_list(
+            vec![
+                "/opt/ait task start --title t --intent i --local --json".to_string(),
+                "/opt/ait status --json".to_string(),
+                "/opt/ait diff --stat".to_string(),
+                "/opt/ait blame src/game.js".to_string(),
+                "npm test".to_string(),
+                "/opt/ait task finish LT-0001 --message m --local".to_string(),
+            ],
+            "readonly-inspection",
+            AgentTokenMode::AitLinearSingleSession,
+            AgentTokenAccountingProfile::SteadyStateTaskCost,
+        )
+        .expect("transcript validates");
+        assert!(
+            transcript.valid,
+            "read-only inspection must be admitted: {:?}",
+            transcript.errors
+        );
+
+        // Remote authority is never informational.
+        let transcript = validate_agent_token_command_list(
+            vec![
+                "/opt/ait task start --title t --intent i --local --json".to_string(),
+                "/opt/ait status --remote=origin".to_string(),
+                "npm test".to_string(),
+                "/opt/ait task finish LT-0001 --message m --local".to_string(),
+            ],
+            "remote-inspection",
+            AgentTokenMode::AitLinearSingleSession,
+            AgentTokenAccountingProfile::SteadyStateTaskCost,
+        )
+        .expect("transcript validates");
+        assert!(!transcript.valid);
+        assert!(transcript
+            .errors
+            .iter()
+            .any(|error| error.contains("--remote")));
+
+        // Management surfaces stay forbidden even though they are read-only.
+        let transcript = validate_agent_token_command_list(
+            vec![
+                "/opt/ait task start --title t --intent i --local --json".to_string(),
+                "/opt/ait task list --all".to_string(),
+                "npm test".to_string(),
+                "/opt/ait task finish LT-0001 --message m --local".to_string(),
+            ],
+            "management-surface",
+            AgentTokenMode::AitLinearSingleSession,
+            AgentTokenAccountingProfile::SteadyStateTaskCost,
+        )
+        .expect("transcript validates");
+        assert!(!transcript.valid);
+    }
+
+    #[test]
+    fn same_tool_help_introspection_is_admitted_and_cross_tool_stays_forbidden() {
+        // The exact r5-lane phrasing must now validate cleanly alongside the
+        // frozen lifecycle.
+        let commands = vec![
+            "/Users/weita/.local/bin/ait --help 2>&1 | head -50".to_string(),
+            "/Users/weita/.local/bin/ait task start --title t --intent i --local --json"
+                .to_string(),
+            "npm test 2>&1 | tail -25".to_string(),
+            "/Users/weita/.local/bin/ait task finish LT-0001 --message m --local --json"
+                .to_string(),
+        ];
+        let transcript = validate_agent_token_command_list(
+            commands,
+            "help-admitted",
+            AgentTokenMode::AitLinearSingleSession,
+            AgentTokenAccountingProfile::SteadyStateTaskCost,
+        )
+        .expect("transcript validates");
+        assert!(
+            transcript.valid,
+            "help introspection must be admitted: {:?}",
+            transcript.errors
+        );
+
+        // Subcommand help forms are informational too.
+        let transcript = validate_agent_token_command_list(
+            vec![
+                "/opt/ait workflow ready --help".to_string(),
+                "/opt/ait help task".to_string(),
+                "ait task start --title t --intent i --local --json".to_string(),
+                "npm test".to_string(),
+                "ait task finish LT-0001 --message m --local".to_string(),
+            ],
+            "help-forms",
+            AgentTokenMode::AitLinearSingleSession,
+            AgentTokenAccountingProfile::SteadyStateTaskCost,
+        )
+        .expect("transcript validates");
+        assert!(transcript.valid, "{:?}", transcript.errors);
+
+        // Cross-tool help stays prohibited: git help inside AIT mode.
+        let transcript = validate_agent_token_command_list(
+            vec![
+                "/usr/bin/git --help".to_string(),
+                "ait task start --title t --intent i --local --json".to_string(),
+                "npm test".to_string(),
+                "ait task finish LT-0001 --message m --local".to_string(),
+            ],
+            "cross-tool-help",
+            AgentTokenMode::AitLinearSingleSession,
+            AgentTokenAccountingProfile::SteadyStateTaskCost,
+        )
+        .expect("transcript validates");
+        assert!(!transcript.valid);
+
+        // Git mode admits its own help the same way.
+        let transcript = validate_agent_token_command_list(
+            vec![
+                "/usr/bin/git worktree --help".to_string(),
+                "/usr/bin/git worktree add -b benchmark-task /tmp/wt main".to_string(),
+                "/usr/bin/git commit -m candidate".to_string(),
+                "/usr/bin/git merge --ff-only benchmark-task".to_string(),
+                "/usr/bin/git worktree remove /tmp/wt".to_string(),
+                "/usr/bin/git branch -d benchmark-task".to_string(),
+            ],
+            "git-help",
+            AgentTokenMode::GitLinearSingleSession,
+            AgentTokenAccountingProfile::SteadyStateTaskCost,
+        )
+        .expect("transcript validates");
+        assert!(
+            !transcript
+                .errors
+                .iter()
+                .any(|error| error.contains("--help")),
+            "git help must not be flagged: {:?}",
+            transcript.errors
+        );
+    }
+
+    #[test]
+    fn claude_transcript_fails_closed_on_out_of_surface_tool_use() {
+        let temp = tempfile::tempdir().unwrap();
+        let stream = temp.path().join("claude-events.raw.jsonl");
+        std::fs::write(
+            &stream,
+            concat!(
+                "{\"type\":\"assistant\",\"message\":{\"content\":[",
+                "{\"type\":\"tool_use\",\"id\":\"toolu_1\",\"name\":\"Bash\",",
+                "\"input\":{\"command\":\"echo hi\"}}]}}\n",
+                "{\"type\":\"assistant\",\"message\":{\"content\":[",
+                "{\"type\":\"tool_use\",\"id\":\"toolu_2\",\"name\":\"Task\",",
+                "\"input\":{\"prompt\":\"spawn\"}}]}}\n",
+                "{\"type\":\"result\",\"subtype\":\"success\",\"num_turns\":2}\n"
+            ),
+        )
+        .unwrap();
+        let transcript = extract_and_validate_claude_transcript(
+            &stream,
+            "claude-surface",
+            AgentTokenMode::AitLinearSingleSession,
+            AgentTokenAccountingProfile::SteadyStateTaskCost,
+        )
+        .expect("claude transcript parses");
+        assert!(!transcript.valid);
+        assert!(transcript.errors.iter().any(|error| {
+            error.contains("outside the declared measured surface") && error.contains("Task")
+        }));
+    }
+
+    #[test]
+    fn claude_secondary_metrics_count_edits_rejections_and_tool_output() {
+        let temp = tempfile::tempdir().unwrap();
+        let stream = temp.path().join("claude-events.raw.jsonl");
+        std::fs::write(
+            &stream,
+            concat!(
+                "{\"type\":\"system\",\"subtype\":\"init\"}\n",
+                "{\"type\":\"assistant\",\"message\":{\"content\":[",
+                "{\"type\":\"tool_use\",\"id\":\"toolu_1\",\"name\":\"Bash\",",
+                "\"input\":{\"command\":\"git status\"}}]}}\n",
+                "{\"type\":\"user\",\"message\":{\"content\":[",
+                "{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_1\",",
+                "\"content\":\"0123456789\"}]}}\n",
+                "{\"type\":\"assistant\",\"message\":{\"content\":[",
+                "{\"type\":\"tool_use\",\"id\":\"toolu_2\",\"name\":\"Edit\",",
+                "\"input\":{\"file_path\":\"a.txt\"}}]}}\n",
+                "{\"type\":\"user\",\"message\":{\"content\":[",
+                "{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_2\",",
+                "\"is_error\":true,\"content\":\"edit failed\"}]}}\n",
+                "{\"type\":\"assistant\",\"message\":{\"content\":[",
+                "{\"type\":\"tool_use\",\"id\":\"toolu_3\",\"name\":\"Write\",",
+                "\"input\":{\"file_path\":\"a.txt\"}}]}}\n",
+                "{\"type\":\"user\",\"message\":{\"content\":[",
+                "{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_3\",",
+                "\"content\":[{\"type\":\"text\",\"text\":\"ok\"}]}]}}\n",
+                "{\"type\":\"result\",\"subtype\":\"success\",\"num_turns\":4}\n"
+            ),
+        )
+        .unwrap();
+        let transcript = AgentTokenCommandTranscript {
+            contract: AGENT_TOKEN_TRANSCRIPT_CONTRACT.to_string(),
+            run_id: "claude-metrics".to_string(),
+            mode: AgentTokenMode::AitLinearSingleSession,
+            accounting_profile: AgentTokenAccountingProfile::SteadyStateTaskCost,
+            command_count: 1,
+            commands: vec!["git status".to_string()],
+            valid: false,
+            errors: Vec::new(),
+            observed_required_commands: Vec::new(),
+        };
+        let metrics = extract_agent_token_claude_secondary_metrics(&stream, &transcript)
+            .expect("claude metrics extract");
+        assert_eq!(metrics.model_calls, 3);
+        assert_eq!(metrics.agent_turns, 4);
+        assert_eq!(metrics.apply_patch_attempts, 2);
+        assert_eq!(metrics.apply_patch_rejected_attempts, 1);
+        assert_eq!(metrics.file_change_items, 1);
+        // "0123456789" + "edit failed" + "ok" from the three tool results.
+        assert_eq!(metrics.tool_output_bytes, 10 + 11 + 2);
+        // Shared command statistics run over the validated transcript.
+        assert_eq!(metrics.command_tool_calls, 1);
+        assert_eq!(metrics.repository_query_calls, 1);
+    }
+
+    #[test]
+    fn claude_usage_import_normalizes_the_result_event() {
+        let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/claude-stream-sample.jsonl");
+        let model = AgentTokenModelPin {
+            provider: "anthropic".to_string(),
+            model_id: "claude-haiku-4-5".to_string(),
+            model_revision: "sample".to_string(),
+            reasoning_effort: "max".to_string(),
+        };
+        let usage = import_claude_usage(
+            &fixture,
+            "claude-sample",
+            "GD-00",
+            AgentTokenMode::AitLinearSingleSession,
+            AgentTokenAccountingProfile::SteadyStateTaskCost,
+            &model,
+        )
+        .expect("claude usage imports");
+        // Values are pinned to the committed fixture bytes.
+        assert_eq!(usage.input_tokens, 18 + 54_125 + 8_014);
+        assert_eq!(usage.cached_input_tokens, Some(54_125));
+        assert_eq!(usage.cache_write_input_tokens, Some(8_014));
+        assert_eq!(usage.output_tokens, 159);
+        assert_eq!(usage.reasoning_tokens, Some(78));
+        assert_eq!(
+            usage.provider_total_tokens,
+            usage.input_tokens + usage.output_tokens
+        );
+        assert_eq!(usage.completed_turns, 1);
+        assert_eq!(usage.usage_provenance, "claude-code-stream-json:result");
+    }
+
     use super::*;
 
     fn model() -> AgentTokenModelPin {
@@ -1700,6 +3925,144 @@ mod tests {
             model_revision: "test-revision".to_string(),
             reasoning_effort: "medium".to_string(),
         }
+    }
+
+    fn write_test_transcript(path: &Path, commands: &[&str]) {
+        let body = commands
+            .iter()
+            .enumerate()
+            .map(|(index, command)| {
+                serde_json::json!({
+                    "type": "item.completed",
+                    "item": {
+                        "id": format!("item-{index}"),
+                        "type": "command_execution",
+                        "command": command,
+                    }
+                })
+                .to_string()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        fs::write(path, format!("{body}\n")).unwrap();
+    }
+
+    fn validation_manifest(
+        scope: AgentTokenCampaignScope,
+        project_doc_max_bytes: usize,
+        fixture_manifest: PathBuf,
+    ) -> AgentTokenCampaignManifest {
+        AgentTokenCampaignManifest {
+            contract: AGENT_TOKEN_CAMPAIGN_CONTRACT.to_string(),
+            campaign_id: "project-doc-diagnostic".to_string(),
+            protocol_revision: AGENT_TOKEN_PROTOCOL_REVISION.to_string(),
+            campaign_scope: scope,
+            accounting_profile: AgentTokenAccountingProfile::SteadyStateTaskCost,
+            seed: 42,
+            attempts_per_cell: scope.minimum_attempts(),
+            workload_ids: ["GD-01", "GD-02", "GD-03", "GD-04", "GD-05"]
+                .into_iter()
+                .map(str::to_string)
+                .collect(),
+            modes: vec![
+                AgentTokenMode::GitLinearSingleSession,
+                AgentTokenMode::AitLinearSingleSession,
+            ],
+            model: model(),
+            runtime: AgentTokenRuntime {
+                executor: AgentTokenExecutor::default(),
+                claude_program: None,
+                codex_program: PathBuf::from("codex"),
+                ait_program: PathBuf::from("ait"),
+                git_program: PathBuf::from("git"),
+                node_program: PathBuf::from("node"),
+                browser_program: None,
+                fixture_manifest,
+                run_timeout_seconds: 60,
+                ait_first_use_worktree_add_dir: None,
+                project_doc_max_bytes,
+            },
+            cache_class: "provider_default".to_string(),
+            network_policy: "disabled_except_loopback".to_string(),
+            tool_policy: "codex_shell_only".to_string(),
+            bootstrap_resamples: 1_000,
+            limitations: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn project_document_loading_is_bounded_smoke_only_and_publication_blocked() {
+        let temp = tempfile::tempdir().unwrap();
+        let fixture = temp.path().join("fixture.json");
+        fs::write(&fixture, "{}\n").unwrap();
+
+        let smoke = validation_manifest(AgentTokenCampaignScope::Smoke, 8_192, fixture.clone());
+        validate_agent_token_campaign(&smoke).unwrap();
+        let schedule = build_agent_token_schedule(&smoke);
+        let report = build_agent_token_report(&smoke, &schedule, &[]).unwrap();
+        assert_eq!(report.project_doc_max_bytes, 8_192);
+        assert!(!report.claim_eligible);
+        assert!(report.blockers.iter().any(|blocker| blocker
+            == "Project-document-loading diagnostic evidence is not publication eligible"));
+        assert!(report
+            .limitations
+            .iter()
+            .any(|limitation| limitation.contains("project_doc_max_bytes=8192")));
+
+        let complete =
+            validation_manifest(AgentTokenCampaignScope::Complete, 8_192, fixture.clone());
+        assert!(validate_agent_token_campaign(&complete)
+            .unwrap_err()
+            .contains("only for smoke diagnostics"));
+        let oversized = validation_manifest(AgentTokenCampaignScope::Smoke, 65_537, fixture);
+        assert!(validate_agent_token_campaign(&oversized)
+            .unwrap_err()
+            .contains("must not exceed 65536"));
+    }
+
+    #[test]
+    fn protocols_26_and_27_are_readable_as_frozen_200_session_predecessors_only() {
+        let temp = tempfile::tempdir().unwrap();
+        let fixture = temp.path().join("fixture.json");
+        fs::write(&fixture, "{}\n").unwrap();
+        let mut predecessor = validation_manifest(AgentTokenCampaignScope::Complete, 0, fixture);
+        predecessor.protocol_revision =
+            AGENT_TOKEN_200_SESSION_PREDECESSOR_PROTOCOL_REVISION.to_string();
+        predecessor.attempts_per_cell = 20;
+
+        validate_agent_token_campaign_source(&predecessor)
+            .expect(".26 200-session evidence remains readable");
+        let error = validate_agent_token_campaign(&predecessor)
+            .expect_err(".26 must not start under the .28 binary");
+        assert!(error.contains(AGENT_TOKEN_PROTOCOL_REVISION));
+
+        predecessor.protocol_revision =
+            AGENT_TOKEN_VALID_OUTCOME_RESUMABLE_PROTOCOL_REVISION.to_string();
+        validate_agent_token_campaign_source(&predecessor)
+            .expect(".27 200-session evidence remains readable");
+        let error = validate_agent_token_campaign(&predecessor)
+            .expect_err(".27 must not start a new campaign under the .28 binary");
+        assert!(error.contains(AGENT_TOKEN_PROTOCOL_REVISION));
+    }
+
+    #[test]
+    fn cross_campaign_comparison_blocks_different_project_document_loading() {
+        let fixture = PathBuf::from("fixture");
+        let baseline_manifest =
+            validation_manifest(AgentTokenCampaignScope::Smoke, 0, fixture.clone());
+        let candidate_manifest =
+            validation_manifest(AgentTokenCampaignScope::Smoke, 8_192, fixture);
+        let baseline_schedule = build_agent_token_schedule(&baseline_manifest);
+        let candidate_schedule = build_agent_token_schedule(&candidate_manifest);
+        let baseline =
+            build_agent_token_report(&baseline_manifest, &baseline_schedule, &[]).unwrap();
+        let candidate =
+            build_agent_token_report(&candidate_manifest, &candidate_schedule, &[]).unwrap();
+        let comparison = compare_agent_token_reports(&baseline, &candidate);
+        assert!(comparison
+            .blockers
+            .iter()
+            .any(|blocker| blocker == "project-document loading differs"));
     }
 
     #[test]
@@ -1735,10 +4098,9 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let source = temp.path().join("codex.jsonl");
         let events = [
-            "/bin/zsh -lc 'ait task start --title fix --intent fix'",
+            "/bin/zsh -lc 'ait task start --title fix --intent fix --local'",
             "/bin/zsh -lc 'npm test'",
-            "/bin/zsh -lc 'ait snapshot create --message fix'",
-            "/bin/zsh -lc 'ait task land LCT-1 --local'",
+            "/bin/zsh -lc 'ait task finish LCT-1 --message fix --local'",
         ];
         let body = events
             .iter()
@@ -1768,31 +4130,19 @@ mod tests {
     }
 
     #[test]
-    fn git_transcript_rejects_candidate_metadata_context_override() {
+    fn git_transcript_requires_complete_linked_worktree_lifecycle() {
         let temp = tempfile::tempdir().unwrap();
         let source = temp.path().join("codex.jsonl");
-        let events = [
-            "/bin/zsh -lc 'git status --short'",
-            "/bin/zsh -lc 'npm test'",
-            "/bin/zsh -lc 'GIT_DIR=/tmp/copied-git git commit -m repair'",
-        ];
-        let body = events
-            .iter()
-            .enumerate()
-            .map(|(index, command)| {
-                serde_json::json!({
-                    "type": "item.completed",
-                    "item": {
-                        "id": format!("item-{index}"),
-                        "type": "command_execution",
-                        "command": command,
-                    }
-                })
-                .to_string()
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
-        fs::write(&source, format!("{body}\n")).unwrap();
+        write_test_transcript(
+            &source,
+            &[
+                "/bin/zsh -lc '/usr/bin/git status --short'",
+                "/bin/zsh -lc '/usr/bin/git rev-parse --git-dir'",
+                "/bin/zsh -lc '/usr/bin/git worktree add -b benchmark-task /tmp/git-task-worktree main'",
+                "/bin/zsh -lc 'cd /tmp/git-task-worktree && npm test && /usr/bin/git add --all && /usr/bin/git commit -m repair'",
+                "/bin/zsh -lc 'cd /tmp/workspace && /usr/bin/git merge --ff-only benchmark-task && /usr/bin/git worktree remove /tmp/git-task-worktree && /usr/bin/git branch -d benchmark-task'",
+            ],
+        );
 
         let transcript = extract_and_validate_codex_transcript(
             &source,
@@ -1801,9 +4151,347 @@ mod tests {
             AgentTokenAccountingProfile::SteadyStateTaskCost,
         )
         .unwrap();
-        assert!(!transcript.valid);
-        assert!(transcript.errors.iter().any(|error| error
-            .contains("overrode the runner-owned isolated repository metadata context")));
+
+        assert!(transcript.valid, "{:?}", transcript.errors);
+        for required in [
+            "git worktree add",
+            "git commit",
+            "git merge",
+            "git worktree remove",
+            "git branch --delete",
+        ] {
+            assert!(
+                transcript
+                    .observed_required_commands
+                    .contains(&required.to_string()),
+                "missing {required:?} in {:?}",
+                transcript.observed_required_commands
+            );
+        }
+    }
+
+    #[test]
+    fn git_transcript_rejects_incomplete_or_remote_worktree_lifecycle() {
+        let cases = [
+            (
+                vec![
+                    "git status --short",
+                    "git add --all && git commit -m repair",
+                    "npm test",
+                    "git merge --ff-only benchmark-task",
+                    "git worktree remove /tmp/git-task-worktree",
+                    "git branch -d benchmark-task",
+                ],
+                "exactly one git worktree add; observed 0",
+            ),
+            (
+                vec![
+                    "git status --short",
+                    "git worktree add -b benchmark-task /tmp/git-task-worktree main",
+                    "npm test && git add --all && git commit -m repair",
+                    "git merge benchmark-task",
+                    "git worktree remove /tmp/git-task-worktree",
+                    "git branch -d benchmark-task",
+                ],
+                "merge --ff-only",
+            ),
+            (
+                vec![
+                    "git status --short",
+                    "git worktree add -b benchmark-task /tmp/git-task-worktree main",
+                    "npm test && git add --all && git commit -m repair",
+                    "git merge --ff-only benchmark-task",
+                    "git branch -d benchmark-task",
+                ],
+                "exactly one git worktree remove; observed 0",
+            ),
+            (
+                vec![
+                    "git status --short",
+                    "git worktree add -b benchmark-task /tmp/git-task-worktree main",
+                    "npm test && git add --all && git commit -m repair",
+                    "git merge --ff-only benchmark-task",
+                    "git worktree remove /tmp/git-task-worktree",
+                ],
+                "exactly one git branch deletion; observed 0",
+            ),
+            (
+                vec![
+                    "git status --short",
+                    "git worktree add -b benchmark-task /tmp/git-task-worktree main",
+                    "npm test && git add --all && git commit -m first && git commit --allow-empty -m second",
+                    "git merge --ff-only benchmark-task",
+                    "git worktree remove /tmp/git-task-worktree",
+                    "git branch -d benchmark-task",
+                ],
+                "exactly 1 git commit command(s); observed 2",
+            ),
+            (
+                vec![
+                    "git status --short",
+                    "git worktree add -b benchmark-task /tmp/git-task-worktree main",
+                    "npm test && git add --all && git commit -m repair",
+                    "git push origin benchmark-task",
+                    "git merge --ff-only benchmark-task",
+                    "git worktree remove /tmp/git-task-worktree",
+                    "git branch -d benchmark-task",
+                ],
+                "forbidden remote operation",
+            ),
+        ];
+
+        for (index, (commands, expected)) in cases.iter().enumerate() {
+            let temp = tempfile::tempdir().unwrap();
+            let source = temp
+                .path()
+                .join(format!("codex-git-lifecycle-{index}.jsonl"));
+            write_test_transcript(&source, commands);
+            let transcript = extract_and_validate_codex_transcript(
+                &source,
+                "run-1",
+                AgentTokenMode::GitLinearSingleSession,
+                AgentTokenAccountingProfile::SteadyStateTaskCost,
+            )
+            .unwrap();
+            assert!(
+                transcript
+                    .errors
+                    .iter()
+                    .any(|error| error.contains(expected)),
+                "missing {expected:?}: {:?}",
+                transcript.errors
+            );
+        }
+    }
+
+    #[test]
+    fn ait_transcript_ignores_forbidden_spellings_inside_compliance_searches() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("codex.jsonl");
+        write_test_transcript(
+            &source,
+            &[
+                "/bin/zsh -lc '/opt/ait task start --title fix --intent fix --local'",
+                "/bin/zsh -lc 'npm test'",
+                r#"/bin/zsh -lc "rg -n \"ait-server| --remote|ait push|ait pull|ait remote|ait plan|ait workflow ready|ait queue summary|ait task list|ait change list|ait task audit|task start --from\" .""#,
+                "/bin/zsh -lc 'rg ait-server . || true'",
+                "/bin/zsh -lc 'echo /opt/ait push'",
+                "/bin/zsh -lc '/opt/ait task finish LT-1 --message fix --local'",
+            ],
+        );
+
+        let transcript = extract_and_validate_codex_transcript(
+            &source,
+            "run-1",
+            AgentTokenMode::AitLinearSingleSession,
+            AgentTokenAccountingProfile::SteadyStateTaskCost,
+        )
+        .unwrap();
+
+        assert!(transcript.valid, "{:?}", transcript.errors);
+        assert!(!command_invokes_ait_server("rg ait-server ."));
+        assert!(!command_invokes_ait("echo /opt/ait push"));
+    }
+
+    #[test]
+    fn ait_transcript_rejects_real_forbidden_surface_invocations() {
+        let cases = [
+            ("/bin/zsh -lc '/opt/ait-server serve'", "ait-server"),
+            (
+                r#"cmd.exe /C "C:\tools\ait-server.exe serve""#,
+                "ait-server",
+            ),
+            ("/opt/ait push", "ait push"),
+            (r"C:\tools\ait.exe pull", "ait pull"),
+            ("ait remote list", "ait remote"),
+            (
+                r#"powershell.exe -Command "C:\tools\ait.exe plan list""#,
+                "ait plan",
+            ),
+            ("/opt/ait workflow ready", "ait workflow ready"),
+            (
+                "/bin/zsh -lc '/opt/ait queue summary --json'",
+                "ait queue summary",
+            ),
+            (r"C:\tools\ait.exe task list --all", "ait task list"),
+            ("ait change list --all", "ait change list"),
+            (
+                r#"powershell.exe -Command "C:\tools\ait.exe task audit LT-1 --json""#,
+                "ait task audit",
+            ),
+            ("/opt/ait snapshot list", "outside the measured lifecycle"),
+            ("/opt/ait status --remote=origin", " --remote"),
+            (
+                "/opt/ait task start --from docs/sprint.md#item",
+                "task start --from",
+            ),
+        ];
+        for (index, (forbidden_command, expected)) in cases.iter().enumerate() {
+            let temp = tempfile::tempdir().unwrap();
+            let source = temp.path().join(format!("codex-{index}.jsonl"));
+            write_test_transcript(
+                &source,
+                &[
+                    "/opt/ait task start --title fix --intent fix --local",
+                    forbidden_command,
+                    "npm test",
+                    "/opt/ait task finish LT-1 --message fix --local",
+                ],
+            );
+
+            let transcript = extract_and_validate_codex_transcript(
+                &source,
+                "run-1",
+                AgentTokenMode::AitLinearSingleSession,
+                AgentTokenAccountingProfile::SteadyStateTaskCost,
+            )
+            .unwrap();
+
+            assert!(
+                transcript
+                    .errors
+                    .iter()
+                    .any(|error| error.contains(expected)),
+                "missing {expected:?} rejection for {forbidden_command:?}: {:?}",
+                transcript.errors
+            );
+        }
+    }
+
+    #[test]
+    fn ait_transcript_requires_one_local_task_lifecycle() {
+        let cases = [
+            (
+                vec![
+                    "/opt/ait task start --title fix --intent fix",
+                    "npm test",
+                    "/opt/ait task finish LT-1 --message fix --local",
+                ],
+                "omitted --local from ait task start",
+            ),
+            (
+                vec![
+                    "/opt/ait task start --title fix --intent fix --local",
+                    "/opt/ait task start --title retry --intent retry --local",
+                    "npm test",
+                    "/opt/ait task finish LT-1 --message fix --local",
+                ],
+                "exactly one ait task start; observed 2",
+            ),
+            (
+                vec![
+                    "/opt/ait task start --title fix --intent fix --local",
+                    "npm test",
+                    "/opt/ait task finish LT-1 --message fix",
+                ],
+                "omitted --local from ait task finish",
+            ),
+        ];
+        for (index, (commands, expected)) in cases.iter().enumerate() {
+            let temp = tempfile::tempdir().unwrap();
+            let source = temp.path().join(format!("codex-lifecycle-{index}.jsonl"));
+            write_test_transcript(&source, commands);
+
+            let transcript = extract_and_validate_codex_transcript(
+                &source,
+                "run-1",
+                AgentTokenMode::AitLinearSingleSession,
+                AgentTokenAccountingProfile::SteadyStateTaskCost,
+            )
+            .unwrap();
+
+            assert!(
+                transcript
+                    .errors
+                    .iter()
+                    .any(|error| error.contains(expected)),
+                "missing {expected:?}: {:?}",
+                transcript.errors
+            );
+        }
+    }
+
+    #[test]
+    fn first_use_ait_transcript_preserves_bootstrap_and_snapshot_requirements() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("codex.jsonl");
+        write_test_transcript(
+            &source,
+            &[
+                "/bin/zsh -lc '/opt/ait init --json'",
+                "/bin/zsh -lc '/opt/ait config set workflow.mode solo_local --json'",
+                "/bin/zsh -lc '/opt/ait snapshot create --message baseline --json'",
+                "/bin/zsh -lc '/opt/ait task start --title fix --intent fix --local'",
+                "/bin/zsh -lc 'npm test'",
+                "/bin/zsh -lc '/opt/ait snapshot create --message checkpoint --json'",
+                "/bin/zsh -lc '/opt/ait task finish LT-1 --message fix --local'",
+            ],
+        );
+
+        let transcript = extract_and_validate_codex_transcript(
+            &source,
+            "run-1",
+            AgentTokenMode::AitLinearSingleSession,
+            AgentTokenAccountingProfile::FirstUseTotalCost,
+        )
+        .unwrap();
+
+        assert!(transcript.valid, "{:?}", transcript.errors);
+        for command in [
+            "ait init",
+            "ait config set",
+            "ait task start",
+            "ait task finish",
+        ] {
+            assert!(
+                transcript
+                    .observed_required_commands
+                    .contains(&command.to_string()),
+                "missing {command:?} in {:?}",
+                transcript.observed_required_commands
+            );
+        }
+    }
+
+    #[test]
+    fn git_transcript_rejects_candidate_metadata_context_override() {
+        let forbidden_commands = [
+            "GIT_DIR=/tmp/copied-git git status --short",
+            "env GIT_WORK_TREE=/tmp/copied-worktree git status --short",
+            "git --git-dir /tmp/copied-git status --short",
+            "git --work-tree=/tmp/copied-worktree status --short",
+            "export GIT_DIR=/tmp/copied-git; git status --short",
+        ];
+        for (index, forbidden_command) in forbidden_commands.iter().enumerate() {
+            let temp = tempfile::tempdir().unwrap();
+            let source = temp.path().join(format!("codex-metadata-{index}.jsonl"));
+            write_test_transcript(
+                &source,
+                &[
+                    forbidden_command,
+                    "git worktree add -b benchmark-task /tmp/git-task-worktree main",
+                    "npm test && git add --all && git commit -m repair",
+                    "git merge --ff-only benchmark-task",
+                    "git worktree remove /tmp/git-task-worktree",
+                    "git branch -d benchmark-task",
+                ],
+            );
+
+            let transcript = extract_and_validate_codex_transcript(
+                &source,
+                "run-1",
+                AgentTokenMode::GitLinearSingleSession,
+                AgentTokenAccountingProfile::SteadyStateTaskCost,
+            )
+            .unwrap();
+            assert!(!transcript.valid);
+            assert!(
+                transcript.errors.iter().any(|error| error
+                    .contains("overrode the runner-owned isolated repository metadata context")),
+                "missing metadata override rejection for {forbidden_command:?}: {:?}",
+                transcript.errors
+            );
+        }
     }
 
     #[test]
@@ -1854,7 +4542,7 @@ mod tests {
     }
 
     #[test]
-    fn schedule_is_seeded_block_randomized_and_exact() {
+    fn schedule_is_seeded_block_randomized_adjacent_and_exact() {
         let manifest = AgentTokenCampaignManifest {
             contract: AGENT_TOKEN_CAMPAIGN_CONTRACT.to_string(),
             campaign_id: "smoke".to_string(),
@@ -1870,6 +4558,8 @@ mod tests {
             ],
             model: model(),
             runtime: AgentTokenRuntime {
+                executor: AgentTokenExecutor::default(),
+                claude_program: None,
                 codex_program: PathBuf::from("codex"),
                 ait_program: PathBuf::from("ait"),
                 git_program: PathBuf::from("git"),
@@ -1878,6 +4568,7 @@ mod tests {
                 fixture_manifest: PathBuf::from("fixture"),
                 run_timeout_seconds: 60,
                 ait_first_use_worktree_add_dir: None,
+                project_doc_max_bytes: 0,
             },
             cache_class: "provider_default".to_string(),
             network_policy: "disabled_except_loopback".to_string(),
@@ -1898,6 +4589,34 @@ mod tests {
                 .len(),
             8
         );
+        for pair in first.entries.chunks_exact(2) {
+            assert_eq!(pair[0].attempt, pair[1].attempt);
+            assert_eq!(pair[0].workload_id, pair[1].workload_id);
+            assert_eq!(pair[1].randomized_order, pair[0].randomized_order + 1);
+            assert_eq!(
+                pair.iter().map(|entry| entry.mode).collect::<BTreeSet<_>>(),
+                BTreeSet::from([
+                    AgentTokenMode::GitLinearSingleSession,
+                    AgentTokenMode::AitLinearSingleSession,
+                ])
+            );
+        }
+        assert_eq!(
+            first
+                .entries
+                .chunks_exact(2)
+                .map(|pair| pair[0].mode)
+                .collect::<BTreeSet<_>>(),
+            BTreeSet::from([
+                AgentTokenMode::GitLinearSingleSession,
+                AgentTokenMode::AitLinearSingleSession,
+            ])
+        );
+        assert!(first.entries.chunks_exact(4).all(|block| {
+            block[0].attempt == block[3].attempt
+                && block[0].randomized_order == 1
+                && block[3].randomized_order == 4
+        }));
     }
 
     fn synthetic_run(
@@ -1980,6 +4699,642 @@ mod tests {
     }
 
     #[test]
+    fn legacy_run_adjudication_is_digest_linked_narrow_and_raw_immutable() {
+        let temp = tempfile::tempdir().unwrap();
+        let campaign_dir = temp.path();
+        let entry = AgentTokenScheduleEntry {
+            run_id: "legacy-git-run".to_string(),
+            workload_id: "GD-04".to_string(),
+            mode: AgentTokenMode::GitLinearSingleSession,
+            attempt: 8,
+            block_index: 8,
+            randomized_order: 2,
+        };
+        let run_dir = campaign_dir.join("runs").join(&entry.run_id);
+        fs::create_dir_all(run_dir.join("private")).unwrap();
+        let raw_events = run_dir.join("private/codex-events.raw.jsonl");
+        write_test_transcript(
+            &raw_events,
+            &[
+                "/usr/bin/git status --short",
+                "/usr/bin/git rev-parse --git-dir",
+                "/usr/bin/git worktree add -b benchmark-task /tmp/git-task-worktree main",
+                "cd /tmp/git-task-worktree && npm test && /usr/bin/git add --all && /usr/bin/git commit -m repair",
+                "/usr/bin/git merge --ff-only benchmark-task && /usr/bin/git worktree remove /tmp/git-task-worktree && /usr/bin/git branch -d benchmark-task",
+            ],
+        );
+        let valid_transcript = extract_and_validate_codex_transcript(
+            &raw_events,
+            &entry.run_id,
+            entry.mode,
+            AgentTokenAccountingProfile::SteadyStateTaskCost,
+        )
+        .unwrap();
+        assert!(valid_transcript.valid, "{:?}", valid_transcript.errors);
+
+        let mut source = synthetic_run(&entry, true, 100);
+        source.transcript = valid_transcript;
+        source.transcript.valid = false;
+        source.transcript.errors = vec![GIT_METADATA_CONTEXT_OVERRIDE_ERROR.to_string()];
+        source.valid_attempt = false;
+        source.accepted_equivalent = false;
+        source.invalid_reasons = vec![GIT_METADATA_CONTEXT_OVERRIDE_ERROR.to_string()];
+        let source_path = run_dir.join("run-summary.json");
+        write_json_new(&source_path, &source).unwrap();
+        let original_source_bytes = fs::read(&source_path).unwrap();
+
+        let mut manifest = validation_manifest(
+            AgentTokenCampaignScope::Smoke,
+            0,
+            campaign_dir.join("fixture.json"),
+        );
+        manifest.campaign_id = source.campaign_id.clone();
+        manifest.protocol_revision = AGENT_TOKEN_LEGACY_RESUMABLE_PROTOCOL_REVISION.to_string();
+        write_json_new(&campaign_dir.join("campaign-manifest.json"), &manifest).unwrap();
+
+        let adjudication = build_agent_token_run_adjudication(
+            campaign_dir,
+            &source,
+            AGENT_TOKEN_LEGACY_RESUMABLE_PROTOCOL_REVISION,
+        )
+        .unwrap();
+        assert_eq!(
+            adjudication.source_run_summary_sha256,
+            sha256_digest(&original_source_bytes)
+        );
+        assert!(adjudication.effective_summary.valid_attempt);
+        assert!(adjudication.effective_summary.accepted_equivalent);
+        assert!(adjudication.effective_summary.transcript.valid);
+        assert!(adjudication.effective_summary.transcript.errors.is_empty());
+        write_json_new(
+            &campaign_dir
+                .join("adjudications")
+                .join(format!("{}.json", entry.run_id)),
+            &adjudication,
+        )
+        .unwrap();
+
+        let raw = load_agent_token_raw_run_summaries(campaign_dir).unwrap();
+        let effective = load_agent_token_run_summaries(campaign_dir).unwrap();
+        assert!(!raw[0].valid_attempt);
+        assert!(effective[0].valid_attempt);
+        assert!(effective[0].accepted_equivalent);
+        assert_eq!(fs::read(&source_path).unwrap(), original_source_bytes);
+
+        let mut tampered = adjudication;
+        tampered.reason.push_str(" tampered");
+        fs::write(
+            campaign_dir
+                .join("adjudications")
+                .join(format!("{}.json", entry.run_id)),
+            serde_json::to_vec_pretty(&tampered).unwrap(),
+        )
+        .unwrap();
+        let error = load_agent_token_run_summaries(campaign_dir).unwrap_err();
+        assert!(
+            error.contains("differs from its source evidence"),
+            "{error}"
+        );
+        assert_eq!(fs::read(&source_path).unwrap(), original_source_bytes);
+    }
+
+    #[test]
+    fn evidence_loader_preserves_source_scope_across_admitted_revisions() {
+        let temp = tempfile::tempdir().unwrap();
+        let manifest_path = temp.path().join("campaign.json");
+        let fixture_path = temp.path().join("fixture.json");
+        fs::write(&fixture_path, "{}\n").unwrap();
+        let mut manifest = validation_manifest(AgentTokenCampaignScope::Complete, 0, fixture_path);
+        manifest.protocol_revision = AGENT_TOKEN_LEGACY_RESUMABLE_PROTOCOL_REVISION.to_string();
+        let mut legacy_value = serde_json::to_value(&manifest).unwrap();
+        legacy_value["campaign_scope"] = serde_json::json!("pilot");
+        legacy_value["attempts_per_cell"] = serde_json::json!(10);
+        write_json_new(&manifest_path, &legacy_value).unwrap();
+        assert!(load_agent_token_campaign(&manifest_path).is_err());
+        let loaded = load_agent_token_campaign_for_evidence(&manifest_path).unwrap();
+        assert_eq!(
+            loaded.protocol_revision,
+            AGENT_TOKEN_LEGACY_RESUMABLE_PROTOCOL_REVISION
+        );
+        assert_eq!(loaded.campaign_scope, AgentTokenCampaignScope::Pilot);
+
+        let mut qualification = validation_manifest(
+            AgentTokenCampaignScope::Qualification,
+            0,
+            temp.path().join("fixture.json"),
+        );
+        qualification.protocol_revision =
+            AGENT_TOKEN_LEGACY_RESUMABLE_PROTOCOL_REVISION.to_string();
+        let qualification_path = temp.path().join("qualification.json");
+        write_json_new(&qualification_path, &qualification).unwrap();
+        let loaded = load_agent_token_campaign_for_evidence(&qualification_path).unwrap();
+        assert_eq!(
+            loaded.campaign_scope,
+            AgentTokenCampaignScope::Qualification
+        );
+
+        for (index, revision) in AGENT_TOKEN_COMPLETE_PREDECESSOR_PROTOCOL_REVISIONS
+            .iter()
+            .enumerate()
+        {
+            let mut predecessor = validation_manifest(
+                AgentTokenCampaignScope::Complete,
+                0,
+                temp.path().join("fixture.json"),
+            );
+            predecessor.protocol_revision = (*revision).to_string();
+            predecessor.attempts_per_cell = if *revision
+                == AGENT_TOKEN_VALID_OUTCOME_RESUMABLE_PROTOCOL_REVISION
+                || *revision == AGENT_TOKEN_200_SESSION_PREDECESSOR_PROTOCOL_REVISION
+            {
+                20
+            } else {
+                AGENT_TOKEN_PREDECESSOR_COMPLETE_ATTEMPTS_PER_WORKLOAD
+            };
+            let predecessor_path = temp.path().join(format!("predecessor-{index}.json"));
+            write_json_new(&predecessor_path, &predecessor).unwrap();
+            let loaded = load_agent_token_campaign_for_evidence(&predecessor_path).unwrap();
+            assert_eq!(loaded.campaign_scope, AgentTokenCampaignScope::Complete);
+        }
+
+        manifest.protocol_revision = "game-development-2026-08-24.19".to_string();
+        fs::write(
+            &manifest_path,
+            serde_json::to_vec_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+        assert!(load_agent_token_campaign_for_evidence(&manifest_path).is_err());
+    }
+
+    fn report_test_manifest(attempts_per_cell: usize) -> AgentTokenCampaignManifest {
+        AgentTokenCampaignManifest {
+            contract: AGENT_TOKEN_CAMPAIGN_CONTRACT.to_string(),
+            campaign_id: "smoke".to_string(),
+            protocol_revision: AGENT_TOKEN_PROTOCOL_REVISION.to_string(),
+            campaign_scope: AgentTokenCampaignScope::Smoke,
+            accounting_profile: AgentTokenAccountingProfile::SteadyStateTaskCost,
+            seed: 42,
+            attempts_per_cell,
+            workload_ids: vec!["GD-01".to_string()],
+            modes: vec![
+                AgentTokenMode::GitLinearSingleSession,
+                AgentTokenMode::AitLinearSingleSession,
+            ],
+            model: model(),
+            runtime: AgentTokenRuntime {
+                executor: AgentTokenExecutor::default(),
+                claude_program: None,
+                codex_program: PathBuf::from("codex"),
+                ait_program: PathBuf::from("ait"),
+                git_program: PathBuf::from("git"),
+                node_program: PathBuf::from("node"),
+                browser_program: None,
+                fixture_manifest: PathBuf::from("fixture"),
+                run_timeout_seconds: 60,
+                ait_first_use_worktree_add_dir: None,
+                project_doc_max_bytes: 0,
+            },
+            cache_class: "provider_default".to_string(),
+            network_policy: "disabled_except_loopback".to_string(),
+            tool_policy: "codex_shell_only".to_string(),
+            bootstrap_resamples: 1_000,
+            limitations: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn complete_two_hundred_session_campaign_is_publication_eligible() {
+        let mut manifest = validation_manifest(
+            AgentTokenCampaignScope::Complete,
+            0,
+            PathBuf::from("fixture"),
+        );
+        manifest.campaign_id = "smoke".to_string();
+        let schedule = build_agent_token_schedule(&manifest);
+        assert_eq!(schedule.entry_count, AGENT_TOKEN_COMPLETE_SCHEDULED_RUNS);
+        let runs = schedule
+            .entries
+            .iter()
+            .map(|entry| {
+                synthetic_run(
+                    entry,
+                    true,
+                    match entry.mode {
+                        AgentTokenMode::GitLinearSingleSession => 100,
+                        AgentTokenMode::AitLinearSingleSession => 50,
+                    },
+                )
+            })
+            .collect::<Vec<_>>();
+
+        let report = build_agent_token_report(&manifest, &schedule, &runs).unwrap();
+        assert_eq!(report.campaign_scope, "complete");
+        assert_eq!(
+            report.observed_run_count,
+            AGENT_TOKEN_COMPLETE_SCHEDULED_RUNS
+        );
+        assert!(report.claim_eligible, "{:?}", report.blockers);
+        assert!(report.source_protocol_claim_eligible);
+        assert_eq!(
+            report.current_policy_revision,
+            AGENT_TOKEN_PROTOCOL_REVISION
+        );
+        assert_eq!(report.current_policy_evaluation_mode, "prospective");
+        assert!(report.current_policy_criteria_met);
+        assert!(report.current_policy_blockers.is_empty());
+        assert!(report.blockers.is_empty());
+        assert_eq!(report.aggregate_median_token_savings_percent, Some(50.0));
+        assert_eq!(
+            report.aggregate_token_savings_bootstrap_ci95,
+            Some([50.0, 50.0])
+        );
+
+        let prefix = runs.iter().take(10).cloned().collect::<Vec<_>>();
+        let prefix_report = build_agent_token_report(&manifest, &schedule, &prefix).unwrap();
+        assert_eq!(prefix_report.observed_run_count, 10);
+        assert!(!prefix_report.claim_eligible);
+        assert!(!prefix_report.current_policy_criteria_met);
+        assert!(prefix_report
+            .blockers
+            .iter()
+            .any(|blocker| blocker == "The required accepted paired schedule is incomplete"));
+
+        let mut incomplete = runs;
+        let first_ait = schedule
+            .entries
+            .iter()
+            .position(|entry| {
+                entry.workload_id == "GD-01" && entry.mode == AgentTokenMode::AitLinearSingleSession
+            })
+            .unwrap();
+        incomplete[first_ait] = synthetic_run(&schedule.entries[first_ait], false, 100);
+        let blocked = build_agent_token_report(&manifest, &schedule, &incomplete).unwrap();
+        assert!(!blocked.claim_eligible);
+        assert!(!blocked.source_protocol_claim_eligible);
+        assert!(!blocked.current_policy_criteria_met);
+        assert!(blocked
+            .blockers
+            .iter()
+            .any(|blocker| blocker == "The required accepted paired schedule is incomplete"));
+        assert_eq!(
+            blocked
+                .comparisons
+                .iter()
+                .find(|comparison| comparison.workload_id == "GD-01")
+                .unwrap()
+                .acceptance_rate_deficit_percentage_points,
+            5.0
+        );
+        assert!(
+            !blocked
+                .blockers
+                .iter()
+                .any(|blocker| blocker
+                    == "AIT acceptance-rate deficit exceeds five percentage points")
+        );
+
+        let second_ait = schedule
+            .entries
+            .iter()
+            .enumerate()
+            .find_map(|(index, entry)| {
+                (index != first_ait
+                    && entry.workload_id == "GD-01"
+                    && entry.mode == AgentTokenMode::AitLinearSingleSession)
+                    .then_some(index)
+            })
+            .unwrap();
+        incomplete[second_ait] = synthetic_run(&schedule.entries[second_ait], false, 100);
+        let over_boundary = build_agent_token_report(&manifest, &schedule, &incomplete).unwrap();
+        assert_eq!(
+            over_boundary
+                .comparisons
+                .iter()
+                .find(|comparison| comparison.workload_id == "GD-01")
+                .unwrap()
+                .acceptance_rate_deficit_percentage_points,
+            10.0
+        );
+        assert!(
+            over_boundary
+                .blockers
+                .iter()
+                .any(|blocker| blocker
+                    == "AIT acceptance-rate deficit exceeds five percentage points")
+        );
+    }
+
+    #[test]
+    fn legacy_pilot_remains_source_ineligible_but_gets_separate_retrospective_assessment() {
+        let mut manifest =
+            validation_manifest(AgentTokenCampaignScope::Pilot, 0, PathBuf::from("fixture"));
+        manifest.campaign_id = "legacy-pilot".to_string();
+        manifest.protocol_revision = AGENT_TOKEN_LEGACY_RESUMABLE_PROTOCOL_REVISION.to_string();
+        let schedule = build_agent_token_schedule(&manifest);
+        let runs = schedule
+            .entries
+            .iter()
+            .map(|entry| {
+                synthetic_run(
+                    entry,
+                    true,
+                    match entry.mode {
+                        AgentTokenMode::GitLinearSingleSession => 100,
+                        AgentTokenMode::AitLinearSingleSession => 50,
+                    },
+                )
+            })
+            .collect::<Vec<_>>();
+
+        let report = build_agent_token_report(&manifest, &schedule, &runs).unwrap();
+        assert_eq!(
+            report.protocol_revision,
+            AGENT_TOKEN_LEGACY_RESUMABLE_PROTOCOL_REVISION
+        );
+        assert_eq!(report.campaign_scope, "pilot");
+        assert!(!report.source_protocol_claim_eligible);
+        assert!(!report.claim_eligible);
+        assert!(report
+            .blockers
+            .iter()
+            .any(|blocker| blocker == "pilot evidence is never claim eligible"));
+        assert_eq!(
+            report.current_policy_revision,
+            AGENT_TOKEN_PROTOCOL_REVISION
+        );
+        assert_eq!(report.current_policy_evaluation_mode, "retrospective");
+        assert!(!report.current_policy_criteria_met);
+        assert!(report
+            .current_policy_blockers
+            .iter()
+            .any(|blocker| blocker.contains("twenty-pair, 200-session matrix")));
+
+        let markdown = render_agent_token_report_markdown(&report);
+        assert!(markdown.contains("Source campaign scope: `pilot`"));
+        assert!(markdown.contains("Source-protocol claim eligible: `false`"));
+        assert!(markdown.contains("Current-policy criteria met: `false`"));
+        assert!(markdown.contains("pilot evidence is never claim eligible"));
+    }
+
+    #[test]
+    fn mixed_workflow_metrics_retain_asymmetric_patch_pairs() {
+        let manifest = report_test_manifest(4);
+        let schedule = build_agent_token_schedule(&manifest);
+        let runs = schedule
+            .entries
+            .iter()
+            .map(|entry| {
+                let mut run = synthetic_run(
+                    entry,
+                    true,
+                    match entry.mode {
+                        AgentTokenMode::GitLinearSingleSession => 100,
+                        AgentTokenMode::AitLinearSingleSession => 50,
+                    },
+                );
+                match entry.mode {
+                    AgentTokenMode::GitLinearSingleSession => {
+                        run.elapsed_ms = 200;
+                        run.secondary_metrics.file_change_items = 3;
+                        run.secondary_metrics.apply_patch_rejected_attempts = 1;
+                        run.secondary_metrics.apply_patch_attempts = 4;
+                    }
+                    AgentTokenMode::AitLinearSingleSession => {
+                        run.elapsed_ms = 150;
+                        run.secondary_metrics.file_change_items = 1;
+                        run.secondary_metrics.apply_patch_rejected_attempts = 0;
+                        run.secondary_metrics.apply_patch_attempts = 1;
+                    }
+                };
+                run
+            })
+            .collect::<Vec<_>>();
+
+        let report = build_agent_token_report(&manifest, &schedule, &runs).unwrap();
+        let comparison = &report.comparisons[0];
+        assert_eq!(report.contract, "ait-agent-token-benchmark-report/v3");
+        assert_eq!(
+            report.pair_admission_policy,
+            AGENT_TOKEN_PAIR_ADMISSION_POLICY
+        );
+        assert_eq!(comparison.paired_valid_attempt_count, 4);
+        assert_eq!(comparison.git_effective_tokens, Some(100.0));
+        assert_eq!(comparison.ait_effective_tokens, Some(50.0));
+        assert_eq!(comparison.token_savings_percent, Some(50.0));
+        assert_eq!(comparison.git_effective_elapsed_ms, Some(200.0));
+        assert_eq!(comparison.ait_effective_elapsed_ms, Some(150.0));
+        assert_eq!(comparison.elapsed_savings_percent, Some(25.0));
+        assert_eq!(
+            comparison.git_effective_completed_file_change_items,
+            Some(3.0)
+        );
+        assert_eq!(
+            comparison.ait_effective_completed_file_change_items,
+            Some(1.0)
+        );
+        assert_eq!(
+            comparison.completed_file_change_reduction_percent,
+            Some(100.0 * (1.0 - 1.0 / 3.0))
+        );
+        assert_eq!(
+            comparison.git_effective_rejected_apply_patch_attempts,
+            Some(1.0)
+        );
+        assert_eq!(
+            comparison.ait_effective_rejected_apply_patch_attempts,
+            Some(0.0)
+        );
+        assert_eq!(
+            comparison.rejected_apply_patch_reduction_percent,
+            Some(100.0)
+        );
+        assert_eq!(comparison.git_effective_apply_patch_attempts, Some(4.0));
+        assert_eq!(comparison.ait_effective_apply_patch_attempts, Some(1.0));
+        assert_eq!(comparison.apply_patch_attempt_reduction_percent, Some(75.0));
+        assert_eq!(report.aggregate_median_elapsed_savings_percent, Some(25.0));
+        assert_eq!(
+            report.aggregate_median_apply_patch_attempt_reduction_percent,
+            Some(75.0)
+        );
+        assert!(report.groups.iter().all(|group| {
+            group.elapsed_ms_distribution.is_some()
+                && group.completed_file_change_item_distribution.is_some()
+                && group.rejected_apply_patch_attempt_distribution.is_some()
+                && group.apply_patch_attempt_distribution.is_some()
+        }));
+
+        let json = serde_json::to_value(&report).unwrap();
+        assert_eq!(json["contract"], "ait-agent-token-benchmark-report/v3");
+        assert_eq!(
+            json["pair_admission_policy"],
+            AGENT_TOKEN_PAIR_ADMISSION_POLICY
+        );
+        assert_eq!(
+            json["comparisons"][0]["git_effective_apply_patch_attempts"],
+            4.0
+        );
+        assert_eq!(
+            json["comparisons"][0]["ait_effective_apply_patch_attempts"],
+            1.0
+        );
+        assert!(json.get("apply_patch_pair_threshold").is_none());
+
+        let markdown = render_agent_token_report_markdown(&report);
+        assert!(markdown.contains("## AIT vs Git Tokens"));
+        assert!(markdown.contains("## Workflow Efficiency"));
+        assert!(markdown.contains("File changes Git/AIT"));
+        assert!(markdown.contains("Rejected patches Git/AIT"));
+        assert!(markdown.contains("Total patches Git/AIT"));
+        assert!(!markdown.contains("Patch-parity"));
+    }
+
+    #[test]
+    fn legacy_report_remains_readable_and_is_blocked_by_protocol_revision() {
+        let manifest = report_test_manifest(1);
+        let schedule = build_agent_token_schedule(&manifest);
+        let runs = schedule
+            .entries
+            .iter()
+            .map(|entry| synthetic_run(entry, true, 100))
+            .collect::<Vec<_>>();
+        let current = build_agent_token_report(&manifest, &schedule, &runs).unwrap();
+        let mut legacy_json = serde_json::to_value(&current).unwrap();
+        let legacy = legacy_json.as_object_mut().unwrap();
+        legacy.insert(
+            "contract".to_string(),
+            serde_json::json!("ait-agent-token-benchmark-report/v1"),
+        );
+        legacy.insert(
+            "protocol_revision".to_string(),
+            serde_json::json!("game-development-2026-08-23.13"),
+        );
+        for field in [
+            "pair_admission_policy",
+            "aggregate_median_elapsed_savings_percent",
+            "aggregate_median_completed_file_change_reduction_percent",
+            "aggregate_median_rejected_apply_patch_reduction_percent",
+            "aggregate_median_apply_patch_attempt_reduction_percent",
+            "source_protocol_claim_eligible",
+            "current_policy_revision",
+            "current_policy_evaluation_mode",
+            "current_policy_criteria_met",
+            "current_policy_blockers",
+        ] {
+            legacy.remove(field);
+        }
+        for group in legacy["groups"].as_array_mut().unwrap() {
+            let group = group.as_object_mut().unwrap();
+            for field in [
+                "elapsed_ms_distribution",
+                "completed_file_change_item_distribution",
+                "rejected_apply_patch_attempt_distribution",
+                "apply_patch_attempt_distribution",
+            ] {
+                group.remove(field);
+            }
+        }
+        for comparison in legacy["comparisons"].as_array_mut().unwrap() {
+            let comparison = comparison.as_object_mut().unwrap();
+            for field in [
+                "git_effective_elapsed_ms",
+                "ait_effective_elapsed_ms",
+                "elapsed_savings_percent",
+                "git_effective_completed_file_change_items",
+                "ait_effective_completed_file_change_items",
+                "completed_file_change_reduction_percent",
+                "git_effective_rejected_apply_patch_attempts",
+                "ait_effective_rejected_apply_patch_attempts",
+                "rejected_apply_patch_reduction_percent",
+                "git_effective_apply_patch_attempts",
+                "ait_effective_apply_patch_attempts",
+                "apply_patch_attempt_reduction_percent",
+            ] {
+                comparison.remove(field);
+            }
+            comparison.insert(
+                "paired_patch_parity_excluded_count".to_string(),
+                serde_json::json!(0),
+            );
+            comparison.insert(
+                "paired_patch_parity_excluded_attempts".to_string(),
+                serde_json::json!([]),
+            );
+        }
+
+        let legacy: AgentTokenReport = serde_json::from_value(legacy_json).unwrap();
+        assert!(legacy.pair_admission_policy.is_empty());
+        assert_eq!(legacy.aggregate_median_elapsed_savings_percent, None);
+        assert!(legacy.groups[0].elapsed_ms_distribution.is_none());
+        assert_eq!(legacy.comparisons[0].git_effective_elapsed_ms, None);
+        let comparison = compare_agent_token_reports(&legacy, &current);
+        assert!(!comparison.comparable);
+        assert!(comparison
+            .blockers
+            .iter()
+            .any(|blocker| blocker == "protocol revision differs"));
+    }
+
+    #[test]
+    fn missing_counterpart_is_incomplete_without_workflow_metric_exclusion() {
+        let manifest = report_test_manifest(2);
+        let schedule = build_agent_token_schedule(&manifest);
+        let runs = schedule
+            .entries
+            .iter()
+            .filter(|entry| {
+                !(entry.attempt == 2 && entry.mode == AgentTokenMode::AitLinearSingleSession)
+            })
+            .map(|entry| synthetic_run(entry, true, 100))
+            .collect::<Vec<_>>();
+
+        let report = build_agent_token_report(&manifest, &schedule, &runs).unwrap();
+        let comparison = &report.comparisons[0];
+        assert_eq!(comparison.paired_valid_attempt_count, 1);
+        assert!(report
+            .blockers
+            .iter()
+            .any(|blocker| blocker == "The required accepted paired schedule is incomplete"));
+    }
+
+    #[test]
+    fn zero_git_workflow_baseline_retains_raw_values_without_reduction() {
+        let manifest = report_test_manifest(1);
+        let schedule = build_agent_token_schedule(&manifest);
+        let runs = schedule
+            .entries
+            .iter()
+            .map(|entry| {
+                let mut run = synthetic_run(entry, true, 100);
+                run.secondary_metrics.apply_patch_rejected_attempts =
+                    if entry.mode == AgentTokenMode::AitLinearSingleSession {
+                        1
+                    } else {
+                        0
+                    };
+                run.secondary_metrics.apply_patch_attempts =
+                    run.secondary_metrics.apply_patch_rejected_attempts;
+                run
+            })
+            .collect::<Vec<_>>();
+
+        let report = build_agent_token_report(&manifest, &schedule, &runs).unwrap();
+        let comparison = &report.comparisons[0];
+        assert_eq!(
+            comparison.git_effective_rejected_apply_patch_attempts,
+            Some(0.0)
+        );
+        assert_eq!(
+            comparison.ait_effective_rejected_apply_patch_attempts,
+            Some(1.0)
+        );
+        assert_eq!(comparison.rejected_apply_patch_reduction_percent, None);
+        assert_eq!(
+            report.aggregate_median_rejected_apply_patch_reduction_percent,
+            None
+        );
+    }
+
+    #[test]
     fn report_counts_valid_failures_and_requires_bootstrap_claim_boundary() {
         let manifest = AgentTokenCampaignManifest {
             contract: AGENT_TOKEN_CAMPAIGN_CONTRACT.to_string(),
@@ -1996,6 +5351,8 @@ mod tests {
             ],
             model: model(),
             runtime: AgentTokenRuntime {
+                executor: AgentTokenExecutor::default(),
+                claude_program: None,
                 codex_program: PathBuf::from("codex"),
                 ait_program: PathBuf::from("ait"),
                 git_program: PathBuf::from("git"),
@@ -2004,6 +5361,7 @@ mod tests {
                 fixture_manifest: PathBuf::from("fixture"),
                 run_timeout_seconds: 60,
                 ait_first_use_worktree_add_dir: None,
+                project_doc_max_bytes: 0,
             },
             cache_class: "provider_default".to_string(),
             network_policy: "disabled_except_loopback".to_string(),
@@ -2015,11 +5373,27 @@ mod tests {
         let runs = schedule
             .entries
             .iter()
-            .map(|entry| match entry.mode {
-                AgentTokenMode::GitLinearSingleSession => {
-                    synthetic_run(entry, entry.attempt != 3, 100)
+            .map(|entry| {
+                let mut run = match entry.mode {
+                    AgentTokenMode::GitLinearSingleSession => {
+                        synthetic_run(entry, entry.attempt != 3, 100)
+                    }
+                    AgentTokenMode::AitLinearSingleSession => synthetic_run(entry, true, 60),
+                };
+                match entry.mode {
+                    AgentTokenMode::GitLinearSingleSession => {
+                        run.elapsed_ms = 100;
+                        run.secondary_metrics.file_change_items = 2;
+                        run.secondary_metrics.apply_patch_rejected_attempts = 1;
+                        run.secondary_metrics.apply_patch_attempts = 3;
+                    }
+                    AgentTokenMode::AitLinearSingleSession => {
+                        run.elapsed_ms = 60;
+                        run.secondary_metrics.file_change_items = 1;
+                        run.secondary_metrics.apply_patch_attempts = 1;
+                    }
                 }
-                AgentTokenMode::AitLinearSingleSession => synthetic_run(entry, true, 60),
+                run
             })
             .collect::<Vec<_>>();
         let report = build_agent_token_report(&manifest, &schedule, &runs).unwrap();
@@ -2035,6 +5409,33 @@ mod tests {
         assert!((git.acceptance_rate - 2.0 / 3.0).abs() < 1e-9);
         assert_eq!(report.comparisons[0].token_savings_percent, Some(60.0));
         assert_eq!(report.comparisons[0].paired_valid_attempt_count, 3);
+        assert_eq!(report.comparisons[0].git_effective_elapsed_ms, Some(150.0));
+        assert_eq!(report.comparisons[0].ait_effective_elapsed_ms, Some(60.0));
+        assert_eq!(report.comparisons[0].elapsed_savings_percent, Some(60.0));
+        assert_eq!(
+            report.comparisons[0].git_effective_completed_file_change_items,
+            Some(3.0)
+        );
+        assert_eq!(
+            report.comparisons[0].ait_effective_completed_file_change_items,
+            Some(1.0)
+        );
+        assert_eq!(
+            report.comparisons[0].git_effective_rejected_apply_patch_attempts,
+            Some(1.5)
+        );
+        assert_eq!(
+            report.comparisons[0].ait_effective_rejected_apply_patch_attempts,
+            Some(0.0)
+        );
+        assert_eq!(
+            report.comparisons[0].git_effective_apply_patch_attempts,
+            Some(4.5)
+        );
+        assert_eq!(
+            report.comparisons[0].ait_effective_apply_patch_attempts,
+            Some(1.0)
+        );
         assert!(report.comparisons[0].token_savings_bootstrap_ci95.is_some());
         assert_eq!(report.aggregate_median_token_savings_percent, Some(60.0));
         assert!(

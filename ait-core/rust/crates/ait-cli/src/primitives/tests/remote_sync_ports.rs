@@ -138,7 +138,7 @@ fn remote_sync_pull_defensively_validates_workspace_options_before_remote_access
         .expect_err("merge without restore should fail before remote lookup");
     assert_eq!(
         err,
-        "--merge requires --restore because a divergent merge materializes the workspace."
+        "--merge requires --restore because a divergent merge changes workspace files."
     );
 
     let mut remote = FakeLineSnapshotRemote::default();
@@ -156,7 +156,7 @@ fn remote_sync_pull_defensively_validates_workspace_options_before_remote_access
     .expect_err("direct pull primitive must require restore for merge");
     assert_eq!(
         err,
-        "--merge requires --restore because a divergent merge materializes the workspace."
+        "--merge requires --restore because a divergent merge changes workspace files."
     );
 }
 
@@ -1385,6 +1385,109 @@ fn remote_sync_solo_local_push_rejects_initialized_default_line_advance() {
     assert_eq!(remote.zstd_plan_requests.len(), 0);
     assert_eq!(remote.zstd_commit_requests.len(), 0);
     assert_eq!(remote.lines[0]["head_snapshot_id"], json!(base_snapshot_id));
+}
+
+#[test]
+fn remote_sync_solo_local_push_rejects_null_default_line_initialization() {
+    let repo_tmp = tempdir().expect("repo tempdir");
+    let repo_root = repo_tmp.path();
+    init_repo(&InitRequest {
+        root: repo_root.to_path_buf(),
+        name: Some("fixture-ait".to_string()),
+        default_line: "main".to_string(),
+        policy_profile: "prototype".to_string(),
+        default_author_mode: "ai_with_human_review".to_string(),
+        default_model: None,
+        repair_existing: false,
+    })
+    .expect("init repo");
+    fs::write(repo_root.join("src.txt"), "base").expect("base fixture file");
+    let base = create_local_snapshot(
+        repo_root.to_string_lossy().as_ref(),
+        "fixture-ait",
+        "main",
+        Some("base fixture"),
+        false,
+    )
+    .expect("create base snapshot");
+    let base_snapshot_id = required_string_field(&base, "snapshot_id").expect("base snapshot id");
+    let repo = RepoRuntime::discover_from_path(repo_root).expect("repo runtime");
+    let task_store = repo.task_store().expect("task store");
+    let change_store = repo.change_store().expect("change store");
+    let task = task_local_create_with_task_store(
+        &task_store,
+        "fixture-ait",
+        "Completed local Task",
+        "Require governed remote promotion",
+        None,
+        None,
+        None,
+        None,
+    )
+    .expect("create local Task");
+    let task_id = required_string_field(&task, "task_id").expect("task id");
+    let change = change_local_create_with_change_store(
+        &change_store,
+        "fixture-ait",
+        &task_id,
+        "Completed local Change",
+        "main",
+        None,
+        Some(&base_snapshot_id),
+    )
+    .expect("create local Change");
+    let change_ref = required_string_field(&change, "change_ref").expect("change ref");
+    fs::write(repo_root.join("src.txt"), "completed local head").expect("head fixture file");
+    let head = create_local_snapshot(
+        repo_root.to_string_lossy().as_ref(),
+        "fixture-ait",
+        "main",
+        Some("completed local head fixture"),
+        false,
+    )
+    .expect("create local head snapshot");
+    let head_snapshot_id = required_string_field(&head, "snapshot_id").expect("head snapshot id");
+    workflow_local_change_land_with_change_store(
+        &change_store,
+        &change_ref,
+        "main",
+        &head_snapshot_id,
+        Some(&base_snapshot_id),
+    )
+    .expect("land local Change");
+    workflow_local_task_close_with_task_store(&task_store, &task_id, "completed")
+        .expect("complete local Task");
+    assert_eq!(repo.effective_workflow_mode(), "solo_local");
+    let mut remote = FakeLineSnapshotRemote {
+        lines: vec![json!({
+            "repo_name": "fixture-ait",
+            "line_name": "main",
+            "status": "active",
+            "head_snapshot_id": null,
+        })],
+        ..FakeLineSnapshotRemote::default()
+    };
+
+    let error = remote_sync::push_line_to_remote_with_task_remote_and_capabilities(
+        &repo,
+        &mut remote,
+        "origin",
+        "fixture-ait",
+        "main",
+        &zstd_only_capabilities(),
+    )
+    .expect_err("solo-local push must not initialize a null remote default Line");
+
+    assert!(error.contains("Refusing to initialize null remote `origin` target Line `main`"));
+    assert!(error.contains("only authoritative remote Task Land may move this governed Line"));
+    assert!(error.contains("ait workflow ready <local-change-id> --apply --remote origin"));
+    assert!(error.contains("none"));
+    assert!(error.contains(&head_snapshot_id));
+    assert!(error.contains(&change_ref));
+    assert_eq!(remote.line_update_calls, 0);
+    assert_eq!(remote.zstd_plan_requests.len(), 0);
+    assert_eq!(remote.zstd_commit_requests.len(), 0);
+    assert!(remote.lines[0]["head_snapshot_id"].is_null());
 }
 
 fn rewrite_repo_packs_as_zstd(repo_root: &Path, _snapshot_id: &str) {

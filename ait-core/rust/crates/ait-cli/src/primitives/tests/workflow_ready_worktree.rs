@@ -591,7 +591,7 @@ fn workflow_ready_apply_resumes_done_authoritative_state() {
         json!({
             "phase": "authoritative_resume",
             "code": "done",
-            "detail": "Authoritative state already satisfies `workflow ready --apply`; no new mutation was needed.",
+            "detail": "Current state already satisfies `workflow ready --apply`; no change was needed.",
             "resumed_from_authoritative_state": true
         })
     );

@@ -12,6 +12,15 @@ fn public_cli_identity_help_is_ait() {
         .stdout(predicate::str::contains(
             "AIT native local repository and workflow tool.",
         ))
+        .stdout(predicate::str::contains(
+            "Start, inspect, check, finish, or abandon Tasks locally or on a remote.",
+        ))
+        .stdout(predicate::str::contains("[alias: branch]"))
+        .stdout(predicate::str::contains(
+            "commit    Create an AIT Snapshot using Git-friendly commit naming.",
+        ))
+        .stdout(predicate::str::contains("audit, land").not())
+        .stdout(predicate::str::contains("\n  ci-host ").not())
         .stdout(predicate::str::contains("\n  install ").not())
         .stdout(predicate::str::contains("\n  agent ").not())
         .stdout(predicate::str::contains("\n  test ").not())

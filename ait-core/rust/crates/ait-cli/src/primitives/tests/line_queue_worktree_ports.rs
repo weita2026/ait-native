@@ -495,7 +495,7 @@ fn task_start_remote_preflight_uses_an_available_remote_head_independently_of_lo
 }
 
 #[test]
-fn task_start_remote_empty_base_bootstrap_is_detached_atomic_and_idempotent() {
+fn completed_local_null_remote_base_seed_is_atomic_bounded_and_race_safe() {
     let repo_tmp = tempdir().expect("repo tempdir");
     let repo_root = repo_tmp.path();
     init_repo(&InitRequest {
@@ -508,12 +508,193 @@ fn task_start_remote_empty_base_bootstrap_is_detached_atomic_and_idempotent() {
         repair_existing: false,
     })
     .expect("init repo");
-    fs::write(repo_root.join("src.txt"), "unrelated local main\n").expect("local fixture");
+    fs::write(repo_root.join("src.txt"), "ancestry root\n").expect("root fixture");
+    let root_snapshot = create_local_snapshot(
+        repo_root.to_string_lossy().as_ref(),
+        "fixture-ait",
+        "main",
+        Some("ancestry root"),
+        false,
+    )
+    .expect("root snapshot");
+    let root_snapshot_id =
+        required_string_field(&root_snapshot, "snapshot_id").expect("root snapshot id");
+    fs::write(repo_root.join("src.txt"), "pre-land base\n").expect("base fixture");
+    let base_snapshot = create_local_snapshot(
+        repo_root.to_string_lossy().as_ref(),
+        "fixture-ait",
+        "main",
+        Some("pre-land base"),
+        false,
+    )
+    .expect("pre-land base snapshot");
+    let base_snapshot_id =
+        required_string_field(&base_snapshot, "snapshot_id").expect("base snapshot id");
+    fs::write(repo_root.join("src.txt"), "final local result\n").expect("final fixture");
+    let final_snapshot = create_local_snapshot(
+        repo_root.to_string_lossy().as_ref(),
+        "fixture-ait",
+        "main",
+        Some("final local result"),
+        false,
+    )
+    .expect("final snapshot");
+    let final_snapshot_id =
+        required_string_field(&final_snapshot, "snapshot_id").expect("final snapshot id");
+    set_runtime_repository_index(repo_root, 7);
+    let repo = RepoRuntime::discover_from_path(repo_root).expect("repo runtime");
+    let remote_row = RemoteRow {
+        name: "origin".to_string(),
+        url: "https://ait.example".to_string(),
+        repo_name: Some("fixture-ait".to_string()),
+    };
+    let remote_repository = json!({
+        "repository": {
+            "repository_index": 7,
+            "repository_name": "fixture-ait",
+            "namespace": "",
+            "tombstoned": false,
+        },
+        "ci_capabilities": {
+            "remote_sync_capabilities": {
+                "zstd_pack_bulk": true,
+            }
+        }
+    });
+    let null_line = json!({
+        "repo_name": "fixture-ait",
+        "line_name": "main",
+        "status": "active",
+        "head_snapshot_id": null,
+    });
+
+    let mut remote = FakeChangeRemote {
+        lines: vec![null_line.clone()],
+        repository: Some(remote_repository.clone()),
+        ..Default::default()
+    };
+    let initialized = workflow::workflow_initialize_null_remote_base_with_task_remote(
+        &repo,
+        &remote_row,
+        &mut remote,
+        "fixture-ait",
+        "main",
+        &base_snapshot_id,
+    )
+    .expect("initialize null remote at exact pre-land base");
+
+    assert_eq!(initialized["status"], json!("initialized"));
+    assert_eq!(
+        initialized["reason"],
+        json!("remote_null_head_seeded_from_completed_local_pre_land_base")
+    );
+    assert_eq!(initialized["head_snapshot_id"], json!(base_snapshot_id));
+    assert_eq!(remote.lines[0]["head_snapshot_id"], json!(base_snapshot_id));
+    assert!(remote.remote_snapshots.contains_key(&root_snapshot_id));
+    assert!(remote.remote_snapshots.contains_key(&base_snapshot_id));
+    assert!(!remote.remote_snapshots.contains_key(&final_snapshot_id));
+    assert_eq!(remote.zstd_plan_requests.len(), 1);
+    assert_eq!(remote.zstd_commit_requests.len(), 1);
+    assert!(remote.zstd_commit_requests[0]["line_update"]["expected_head_snapshot_id"].is_null());
+    assert_eq!(
+        remote.zstd_commit_requests[0]["line_update"]["head_snapshot_id"],
+        json!(base_snapshot_id)
+    );
+    assert_eq!(
+        remote.zstd_commit_requests[0]["snapshots"]
+            .as_array()
+            .expect("committed snapshot rows")
+            .iter()
+            .filter_map(|row| string_field(row, "snapshot_id"))
+            .collect::<Vec<_>>(),
+        vec![root_snapshot_id, base_snapshot_id.clone()]
+    );
+    assert_eq!(
+        line_show(&repo, Some("main")).expect("local main")["head_snapshot_id"],
+        json!(final_snapshot_id)
+    );
+
+    let mut same_winner_remote = FakeChangeRemote {
+        lines: vec![null_line.clone()],
+        repository: Some(remote_repository.clone()),
+        zstd_commit_peer_head_once: Some(base_snapshot_id.clone()),
+        ..Default::default()
+    };
+    let same_winner = workflow::workflow_initialize_null_remote_base_with_task_remote(
+        &repo,
+        &remote_row,
+        &mut same_winner_remote,
+        "fixture-ait",
+        "main",
+        &base_snapshot_id,
+    )
+    .expect("same concurrent pre-land base must be idempotent");
+    assert_eq!(
+        same_winner["reason"],
+        json!(
+            "remote_null_head_seeded_from_completed_local_pre_land_base_after_uncertain_response"
+        )
+    );
+    assert_eq!(same_winner["head_snapshot_id"], json!(base_snapshot_id));
+
+    let mut different_winner_remote = FakeChangeRemote {
+        lines: vec![null_line],
+        repository: Some(remote_repository),
+        zstd_commit_peer_head_once: Some(final_snapshot_id.clone()),
+        ..Default::default()
+    };
+    let error = workflow::workflow_initialize_null_remote_base_with_task_remote(
+        &repo,
+        &remote_row,
+        &mut different_winner_remote,
+        "fixture-ait",
+        "main",
+        &base_snapshot_id,
+    )
+    .expect_err("different concurrent winner must fail before publication");
+    assert!(error.contains("was initialized concurrently"));
+    assert!(
+        error.contains("Refusing to create Remote Task, Change, Patchset, or publication mappings")
+    );
+    assert!(error.contains(&final_snapshot_id));
+    assert!(error.contains(&base_snapshot_id));
+    assert_eq!(
+        different_winner_remote.lines[0]["head_snapshot_id"],
+        json!(final_snapshot_id)
+    );
+}
+
+#[test]
+fn task_start_remote_null_head_seeds_complete_local_main_atomically_and_idempotently() {
+    let repo_tmp = tempdir().expect("repo tempdir");
+    let repo_root = repo_tmp.path();
+    init_repo(&InitRequest {
+        root: repo_root.to_path_buf(),
+        name: Some("fixture-ait".to_string()),
+        default_line: "main".to_string(),
+        policy_profile: "prototype".to_string(),
+        default_author_mode: "ai_with_human_review".to_string(),
+        default_model: None,
+        repair_existing: false,
+    })
+    .expect("init repo");
+    fs::write(repo_root.join("src.txt"), "local base\n").expect("local base fixture");
+    let base_snapshot = create_local_snapshot(
+        repo_root.to_string_lossy().as_ref(),
+        "fixture-ait",
+        "main",
+        Some("local base"),
+        false,
+    )
+    .expect("local base snapshot");
+    let base_snapshot_id =
+        required_string_field(&base_snapshot, "snapshot_id").expect("local base snapshot id");
+    fs::write(repo_root.join("src.txt"), "local head\n").expect("local head fixture");
     let local_snapshot = create_local_snapshot(
         repo_root.to_string_lossy().as_ref(),
         "fixture-ait",
         "main",
-        Some("unrelated local main"),
+        Some("local head"),
         false,
     )
     .expect("local main snapshot");
@@ -522,6 +703,11 @@ fn task_start_remote_empty_base_bootstrap_is_detached_atomic_and_idempotent() {
     let local_bytes = fs::read(repo_root.join("src.txt")).expect("local fixture bytes");
     set_runtime_repository_index(repo_root, 7);
     let repo = RepoRuntime::discover_from_path(repo_root).expect("repo runtime");
+    let snapshot_count_before = snapshot_list(&repo)
+        .expect("snapshot list before seed")
+        .as_array()
+        .expect("snapshot list array")
+        .len();
     let remote_row = RemoteRow {
         name: "origin".to_string(),
         url: "https://ait.example".to_string(),
@@ -566,34 +752,57 @@ fn task_start_remote_empty_base_bootstrap_is_detached_atomic_and_idempotent() {
         "main",
         &empty_line,
     )
-    .expect("initialize empty remote base");
-    let anchor_snapshot_id =
-        required_string_field(&initialized, "head_snapshot_id").expect("anchor snapshot id");
+    .expect("seed remote base from local main");
+    let seeded_snapshot_id =
+        required_string_field(&initialized, "head_snapshot_id").expect("seed snapshot id");
 
     assert_eq!(initialized["initialized"], json!(true));
-    assert_eq!(initialized["reason"], json!("remote_null_head_initialized"));
-    assert_ne!(anchor_snapshot_id, local_snapshot_id);
+    assert_eq!(
+        initialized["reason"],
+        json!("remote_null_head_seeded_from_local_main")
+    );
+    assert_eq!(initialized["seed_source"], json!("local_main"));
+    assert_eq!(
+        initialized["local_seed_snapshot_id"],
+        json!(local_snapshot_id)
+    );
+    assert!(initialized["snapshot"].is_null());
+    assert_eq!(seeded_snapshot_id, local_snapshot_id);
     assert_eq!(
         remote.lines[0]["head_snapshot_id"],
-        json!(anchor_snapshot_id)
+        json!(local_snapshot_id)
     );
-    assert!(remote.remote_snapshots.contains_key(&anchor_snapshot_id));
+    assert!(remote.remote_snapshots.contains_key(&base_snapshot_id));
+    assert!(remote.remote_snapshots.contains_key(&local_snapshot_id));
     assert_eq!(remote.zstd_plan_requests.len(), 1);
     assert_eq!(remote.zstd_commit_requests.len(), 1);
+    assert_eq!(initialized["snapshot_sync"]["checked_snapshots"], json!(2));
     assert_eq!(
         remote.zstd_commit_requests[0]["line_update"]["expected_head_snapshot_id"],
         JsonValue::Null
     );
     assert_eq!(
         remote.zstd_commit_requests[0]["line_update"]["head_snapshot_id"],
-        json!(anchor_snapshot_id)
+        json!(local_snapshot_id)
     );
-
-    let anchor = snapshot_show(&repo, &anchor_snapshot_id).expect("empty anchor readback");
-    assert_eq!(anchor["file_count"], json!(0));
-    assert_eq!(anchor["total_bytes"], json!(0));
-    assert_eq!(anchor["parent_snapshot_ids"], json!([]));
-    assert_eq!(anchor["line_name"], json!("main"));
+    assert_eq!(
+        remote.zstd_commit_requests[0]["snapshots"]
+            .as_array()
+            .expect("committed snapshot rows")
+            .iter()
+            .filter_map(|row| string_field(row, "snapshot_id"))
+            .collect::<Vec<_>>(),
+        vec![base_snapshot_id.clone(), local_snapshot_id.clone()]
+    );
+    assert_eq!(
+        snapshot_list(&repo)
+            .expect("snapshot list after seed")
+            .as_array()
+            .expect("snapshot list array")
+            .len(),
+        snapshot_count_before,
+        "local-main seeding must not author a detached Snapshot",
+    );
     assert_eq!(
         line_show(&repo, Some("main")).expect("local main")["head_snapshot_id"],
         json!(local_snapshot_id)
@@ -621,24 +830,24 @@ fn task_start_remote_empty_base_bootstrap_is_detached_atomic_and_idempotent() {
     )
     .expect("reuse initialized remote base");
     assert_eq!(reused["initialized"], json!(false));
-    assert_eq!(reused["head_snapshot_id"], json!(anchor_snapshot_id));
+    assert_eq!(reused["head_snapshot_id"], json!(local_snapshot_id));
     assert_eq!(reused["reason"], json!("remote_base_already_initialized"));
     assert_eq!(remote.zstd_plan_requests.len(), 1);
     assert_eq!(remote.zstd_commit_requests.len(), 1);
 
     let feature = ensure_task_feature_line(
         &repo,
-        "RCT-EMPTY-BASE",
-        "empty-base",
-        Some(&anchor_snapshot_id),
+        "RCT-LOCAL-SEED",
+        "main",
+        Some(&local_snapshot_id),
         false,
     )
-    .expect("feature Line from empty anchor");
-    assert_eq!(feature["head_snapshot_id"], json!(anchor_snapshot_id));
+    .expect("feature Line from local seed");
+    assert_eq!(feature["head_snapshot_id"], json!(local_snapshot_id));
 }
 
 #[test]
-fn task_start_remote_empty_base_bootstrap_adopts_a_peer_winner() {
+fn task_start_remote_null_head_still_bootstraps_empty_when_local_head_is_null() {
     let repo_tmp = tempdir().expect("repo tempdir");
     let repo_root = repo_tmp.path();
     init_repo(&InitRequest {
@@ -651,17 +860,202 @@ fn task_start_remote_empty_base_bootstrap_adopts_a_peer_winner() {
         repair_existing: false,
     })
     .expect("init repo");
-    fs::write(repo_root.join("peer.txt"), "peer winner\n").expect("peer fixture");
+    set_runtime_repository_index(repo_root, 7);
+    let repo = RepoRuntime::discover_from_path(repo_root).expect("repo runtime");
+    let remote_row = RemoteRow {
+        name: "origin".to_string(),
+        url: "https://ait.example".to_string(),
+        repo_name: Some("fixture-ait".to_string()),
+    };
+    let mut remote = FakeChangeRemote {
+        lines: vec![json!({
+            "repo_name": "fixture-ait",
+            "line_name": "main",
+            "status": "active",
+            "head_snapshot_id": null,
+        })],
+        repository: Some(json!({
+            "repository": {
+                "repository_index": 7,
+                "repository_name": "fixture-ait",
+                "namespace": "",
+                "tombstoned": false,
+            },
+            "ci_capabilities": {
+                "remote_sync_capabilities": {
+                    "zstd_pack_bulk": true,
+                }
+            }
+        })),
+        ..Default::default()
+    };
+
+    let empty_line = task_start_remote_base_line_preflight_with_task_remote(
+        &repo,
+        &remote_row,
+        &mut remote,
+        "fixture-ait",
+        "main",
+    )
+    .expect("empty remote preflight");
+    let selected = ensure_remote_base_line_snapshot_with_task_remote(
+        &repo,
+        &remote_row,
+        &mut remote,
+        "fixture-ait",
+        "main",
+        &empty_line,
+    )
+    .expect("initialize a truly empty remote base");
+    let anchor_snapshot_id =
+        required_string_field(&selected, "head_snapshot_id").expect("empty anchor snapshot id");
+
+    assert_eq!(selected["initialized"], json!(true));
+    assert_eq!(selected["reason"], json!("remote_null_head_initialized"));
+    assert_eq!(selected["seed_source"], json!("detached_empty"));
+    assert!(selected["local_seed_snapshot_id"].is_null());
+    assert_eq!(
+        remote.lines[0]["head_snapshot_id"],
+        json!(anchor_snapshot_id)
+    );
+    assert!(remote.remote_snapshots.contains_key(&anchor_snapshot_id));
+    assert_eq!(remote.zstd_plan_requests.len(), 1);
+    assert_eq!(remote.zstd_commit_requests.len(), 1);
+    let anchor = snapshot_show(&repo, &anchor_snapshot_id).expect("empty anchor readback");
+    assert_eq!(anchor["file_count"], json!(0));
+    assert_eq!(anchor["total_bytes"], json!(0));
+    assert_eq!(anchor["parent_snapshot_ids"], json!([]));
+    assert_eq!(
+        line_show(&repo, Some("main")).expect("local main")["head_snapshot_id"],
+        JsonValue::Null
+    );
+}
+
+#[test]
+fn task_start_remote_null_head_accepts_same_concurrent_local_seed() {
+    let repo_tmp = tempdir().expect("repo tempdir");
+    let repo_root = repo_tmp.path();
+    init_repo(&InitRequest {
+        root: repo_root.to_path_buf(),
+        name: Some("fixture-ait".to_string()),
+        default_line: "main".to_string(),
+        policy_profile: "prototype".to_string(),
+        default_author_mode: "ai_with_human_review".to_string(),
+        default_model: None,
+        repair_existing: false,
+    })
+    .expect("init repo");
+    fs::write(repo_root.join("same.txt"), "same seed\n").expect("same seed fixture");
+    let local_snapshot = create_local_snapshot(
+        repo_root.to_string_lossy().as_ref(),
+        "fixture-ait",
+        "main",
+        Some("same seed"),
+        false,
+    )
+    .expect("same local seed snapshot");
+    let local_snapshot_id =
+        required_string_field(&local_snapshot, "snapshot_id").expect("local snapshot id");
+    set_runtime_repository_index(repo_root, 7);
+    let repo = RepoRuntime::discover_from_path(repo_root).expect("repo runtime");
+    let remote_row = RemoteRow {
+        name: "origin".to_string(),
+        url: "https://ait.example".to_string(),
+        repo_name: Some("fixture-ait".to_string()),
+    };
+    let mut remote = FakeChangeRemote {
+        lines: vec![json!({
+            "repo_name": "fixture-ait",
+            "line_name": "main",
+            "status": "active",
+            "head_snapshot_id": null,
+        })],
+        repository: Some(json!({
+            "repository": {
+                "repository_index": 7,
+                "repository_name": "fixture-ait",
+                "namespace": "",
+                "tombstoned": false,
+            },
+            "ci_capabilities": {
+                "remote_sync_capabilities": {
+                    "zstd_pack_bulk": true,
+                }
+            }
+        })),
+        zstd_commit_peer_head_once: Some(local_snapshot_id.clone()),
+        ..Default::default()
+    };
+    let empty_line = task_start_remote_base_line_preflight_with_task_remote(
+        &repo,
+        &remote_row,
+        &mut remote,
+        "fixture-ait",
+        "main",
+    )
+    .expect("empty remote preflight");
+
+    let selected = ensure_remote_base_line_snapshot_with_task_remote(
+        &repo,
+        &remote_row,
+        &mut remote,
+        "fixture-ait",
+        "main",
+        &empty_line,
+    )
+    .expect("same concurrent seed should be idempotent");
+
+    assert_eq!(selected["initialized"], json!(true));
+    assert_eq!(
+        selected["reason"],
+        json!("remote_null_head_seeded_from_local_main_after_uncertain_response")
+    );
+    assert_eq!(selected["head_snapshot_id"], json!(local_snapshot_id));
+    assert_eq!(
+        remote.lines[0]["head_snapshot_id"],
+        json!(local_snapshot_id)
+    );
+    assert!(remote.remote_snapshots.contains_key(&local_snapshot_id));
+    assert_eq!(remote.zstd_commit_requests.len(), 1);
+}
+
+#[test]
+fn task_start_remote_null_head_rejects_a_different_concurrent_winner() {
+    let repo_tmp = tempdir().expect("repo tempdir");
+    let repo_root = repo_tmp.path();
+    init_repo(&InitRequest {
+        root: repo_root.to_path_buf(),
+        name: Some("fixture-ait".to_string()),
+        default_line: "main".to_string(),
+        policy_profile: "prototype".to_string(),
+        default_author_mode: "ai_with_human_review".to_string(),
+        default_model: None,
+        repair_existing: false,
+    })
+    .expect("init repo");
+    fs::write(repo_root.join("src.txt"), "peer base\n").expect("peer base fixture");
     let peer_snapshot = create_local_snapshot(
         repo_root.to_string_lossy().as_ref(),
         "fixture-ait",
         "main",
-        Some("peer winner"),
+        Some("peer base"),
         false,
     )
-    .expect("peer snapshot");
+    .expect("peer base snapshot");
     let peer_snapshot_id =
         required_string_field(&peer_snapshot, "snapshot_id").expect("peer snapshot id");
+    fs::write(repo_root.join("src.txt"), "selected local head\n")
+        .expect("selected local head fixture");
+    let local_snapshot = create_local_snapshot(
+        repo_root.to_string_lossy().as_ref(),
+        "fixture-ait",
+        "main",
+        Some("selected local head"),
+        false,
+    )
+    .expect("selected local head snapshot");
+    let local_snapshot_id =
+        required_string_field(&local_snapshot, "snapshot_id").expect("local snapshot id");
     set_runtime_repository_index(repo_root, 7);
     let repo = RepoRuntime::discover_from_path(repo_root).expect("repo runtime");
     let remote_row = RemoteRow {
@@ -696,7 +1090,6 @@ fn task_start_remote_empty_base_bootstrap_adopts_a_peer_winner() {
         zstd_commit_peer_head_once: Some(peer_snapshot_id.clone()),
         ..Default::default()
     };
-
     let empty_line = task_start_remote_base_line_preflight_with_task_remote(
         &repo,
         &remote_row,
@@ -705,7 +1098,8 @@ fn task_start_remote_empty_base_bootstrap_adopts_a_peer_winner() {
         "main",
     )
     .expect("empty remote preflight");
-    let selected = ensure_remote_base_line_snapshot_with_task_remote(
+
+    let error = ensure_remote_base_line_snapshot_with_task_remote(
         &repo,
         &remote_row,
         &mut remote,
@@ -713,27 +1107,16 @@ fn task_start_remote_empty_base_bootstrap_adopts_a_peer_winner() {
         "main",
         &empty_line,
     )
-    .expect("adopt peer initialization");
-    let orphaned_snapshot_id = required_string_field(&selected, "orphaned_snapshot_id")
-        .expect("orphaned bootstrap snapshot id");
+    .expect_err("a different concurrent head must fail closed");
 
-    assert_eq!(selected["initialized"], json!(false));
-    assert_eq!(
-        selected["reason"],
-        json!("remote_null_head_initialized_by_peer")
-    );
-    assert_eq!(selected["head_snapshot_id"], json!(peer_snapshot_id));
-    assert_ne!(orphaned_snapshot_id, peer_snapshot_id);
+    assert!(error.contains("Refusing to create a Task or Change from a different ancestry"));
+    assert!(error.contains(&peer_snapshot_id));
+    assert!(error.contains(&local_snapshot_id));
     assert_eq!(remote.lines[0]["head_snapshot_id"], json!(peer_snapshot_id));
-    assert!(!remote.remote_snapshots.contains_key(&orphaned_snapshot_id));
-    assert_eq!(remote.zstd_plan_requests.len(), 1);
-    assert_eq!(remote.zstd_commit_requests.len(), 1);
-    let orphaned = snapshot_show(&repo, &orphaned_snapshot_id).expect("local orphan readback");
-    assert_eq!(orphaned["file_count"], json!(0));
-    assert_eq!(orphaned["parent_snapshot_ids"], json!([]));
+    assert!(!remote.remote_snapshots.contains_key(&local_snapshot_id));
     assert_eq!(
         line_show(&repo, Some("main")).expect("local main")["head_snapshot_id"],
-        json!(peer_snapshot_id)
+        json!(local_snapshot_id)
     );
 }
 

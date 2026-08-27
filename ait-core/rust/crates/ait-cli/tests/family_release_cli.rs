@@ -458,7 +458,7 @@ fn fixture_npm_envelope() -> Vec<u8> {
         (
             "package/README.md".to_string(),
             (
-                b"# ait-native\n\nAIT turns an ordinary coding request into an isolated, sprint-bound repository change with validation evidence. It is for individual developers and maintainers who use coding agents.\n\nOfficial website: <https://ait-native.dev/>\n\n## Install and initialize\n\n```sh\nnpm install --global @wa120/ait-native@1.0.0-rc.2\nait init\n```\n\n## What initialization provides\n\nRepository-local authority, a generated AGENTS.md workflow, and an inactive server boundary.\n\n## Local and reviewed closeout\n\nAuthors run `ait workflow ready <change-id> --apply`; reviewers run `ait workflow land <change-id> --apply`.\n\n## Upgrading from 0.x\n\nThere is no `ait install` command in 1.0. Install or upgrade `ait-native` through your selected package manager, then run `ait init` only for a new 1.0 repository authority.\n"
+                b"# ait-native\n\nAIT turns an ordinary coding request into an isolated, sprint-bound repository change with validation evidence. It is for individual developers and maintainers who use coding agents.\n\nOfficial website: <https://ait-native.dev/>\n\n## Install and initialize\n\n```sh\nnpm install --global @wa120/ait-native@1.0.0-rc.2\nait init\n```\n\n## What initialization provides\n\nRepository-local authority, a generated AGENTS.md workflow, and an inactive server boundary.\n\n## Local and reviewed closeout\n\nAuthors run `ait workflow ready <change-id> --apply`; reviewers run `ait workflow finish <change-id> --apply`.\n\n## Upgrading from 0.x\n\nThere is no `ait install` command in 1.0. Install or upgrade `ait-native` through your selected package manager, then run `ait init` only for a new 1.0 repository authority.\n"
                     .to_vec(),
                 0o644,
             ),
@@ -1329,7 +1329,7 @@ fn family_package_assembles_native_channels_without_endpoint_mutation() {
                 "channel": "homebrew",
                 "role": "product",
                 "identity": "ait-native",
-                "components": ["ait", "ait-server"],
+                "components": ["ait", "ait-server", "ait-runner"],
                 "targets": [
                     "aarch64-apple-darwin",
                     "x86_64-apple-darwin",
@@ -1341,7 +1341,7 @@ fn family_package_assembles_native_channels_without_endpoint_mutation() {
                 "channel": "apt",
                 "role": "product",
                 "identity": "ait-native",
-                "components": ["ait", "ait-server"],
+                "components": ["ait", "ait-server", "ait-runner"],
                 "targets": linux_targets
             },
             {
@@ -1355,7 +1355,7 @@ fn family_package_assembles_native_channels_without_endpoint_mutation() {
                 "channel": "winget",
                 "role": "product",
                 "identity": "Weita.AitNative",
-                "components": ["ait", "ait-server"],
+                "components": ["ait", "ait-server", "ait-runner"],
                 "targets": [
                     "aarch64-pc-windows-msvc",
                     "x86_64-pc-windows-msvc"
@@ -1509,9 +1509,12 @@ fn family_package_assembles_native_channels_without_endpoint_mutation() {
         .iter()
         .filter(|artifact| artifact["kind"] == "winget-portable-zip")
         .all(|artifact| artifact["metadata"].get("scope").is_none()
-            && artifact["metadata"]["portable_commands"] == json!(["ait", "ait-server"])
+            && artifact["metadata"]["portable_commands"]
+                == json!(["ait", "ait-server", "ait-runner"])
             && artifact["metadata"]["portable_invocation_parameters"]
-                == json!({"ait": "--help", "ait-server": "--help"})));
+                == json!({"ait": "--help", "ait-server": "--help", "ait-runner": "--help"})
+            && artifact["metadata"]["runner_activation"] == "inactive"
+            && artifact["metadata"]["runner_controller"] == false));
     assert_eq!(
         run_json(
             root,
@@ -1537,13 +1540,20 @@ fn family_package_assembles_native_channels_without_endpoint_mutation() {
     assert!(!formula.contains("\n  version \""));
     assert!(formula.contains("bin.install \"bin/ait\""));
     assert!(formula.contains("bin.install \"bin/ait-server\""));
+    assert!(formula.contains("bin.install \"bin/ait-runner\""));
     assert!(formula.contains("service do"));
     assert!(formula.contains(
-        "run [\n      opt_bin/\"ait-server\",\n      \"run\",\n      \"--data\",\n      var/\"ait-native/server-data\",\n      \"--init-if-missing\",\n      \"--defer-ci-admission\",\n    ]"
+        "run [\n      opt_bin/\"ait-server\",\n      \"--data\",\n      var/\"ait-native/server-data\",\n      \"--init-if-missing\",\n      \"--defer-ci-admission\",\n    ]"
     ));
+    assert!(!formula.contains("opt_bin/\"ait-server\",\n      \"run\""));
     assert!(formula.contains("keep_alive true"));
     assert!(formula.contains("brew services start ait-native-rc"));
     assert!(formula.contains("Service data: #{var}/ait-native/server-data"));
+    assert!(
+        formula.contains("ait-runner is installed but no runner daemon is configured or started")
+    );
+    assert!(formula.contains("#{bin}/ait-runner serve --help"));
+    assert!(!formula.contains("ait ci-host"));
     let formula_evidence = homebrew["artifacts"]
         .as_array()
         .unwrap()
@@ -1555,6 +1565,12 @@ fn family_package_assembles_native_channels_without_endpoint_mutation() {
         formula_evidence["metadata"]["server_activation"],
         "explicit_brew_services_start"
     );
+    assert_eq!(formula_evidence["metadata"]["runner_included"], true);
+    assert_eq!(
+        formula_evidence["metadata"]["runner_activation"],
+        "inactive"
+    );
+    assert_eq!(formula_evidence["metadata"]["runner_service_stanza"], false);
 
     let homebrew_archive = fs::read(
         package_root
@@ -1567,10 +1583,13 @@ fn family_package_assembles_native_channels_without_endpoint_mutation() {
     for path in [
         "bin/ait",
         "bin/ait-server",
+        "bin/ait-runner",
         "share/licenses/ait-core/LICENSE",
         "share/licenses/ait-core/NOTICE",
         "share/licenses/ait-server/LICENSE",
         "share/licenses/ait-server/NOTICE",
+        "share/licenses/ait-runner/LICENSE",
+        "share/licenses/ait-runner/NOTICE",
         "share/ait-native/ait-family-provenance.json",
     ] {
         assert!(homebrew_members.contains_key(path), "missing {path}");
@@ -1589,6 +1608,10 @@ fn family_package_assembles_native_channels_without_endpoint_mutation() {
     assert_eq!(
         homebrew_provenance["component_content"][1]["public_source_url"],
         "https://github.com/weita2026/ait-native/tree/v1.0.0-rc.1/ait-server"
+    );
+    assert_eq!(
+        homebrew_provenance["component_content"][2]["installed_path"],
+        "bin/ait-runner"
     );
     assert!(homebrew_provenance["license_material"]
         .as_array()
@@ -1641,8 +1664,10 @@ fn family_package_assembles_native_channels_without_endpoint_mutation() {
     for path in [
         "usr/bin/ait",
         "usr/bin/ait-server",
+        "usr/bin/ait-runner",
         "usr/share/doc/ait-native/licenses/ait-core/LICENSE",
         "usr/share/doc/ait-native/licenses/ait-server/NOTICE",
+        "usr/share/doc/ait-native/licenses/ait-runner/LICENSE",
         "usr/share/doc/ait-native/ait-family-provenance.json",
         "usr/share/doc/ait-native/copyright",
         "usr/lib/systemd/system/ait-server.service",
@@ -1655,7 +1680,7 @@ fn family_package_assembles_native_channels_without_endpoint_mutation() {
     assert!(systemd_unit.contains("DynamicUser=yes\n"));
     assert!(systemd_unit.contains("StateDirectory=ait-native\n"));
     assert!(systemd_unit.contains(
-        "ExecStart=/usr/bin/ait-server run --data /var/lib/ait-native/server-data --init-if-missing --defer-ci-admission\n"
+        "ExecStart=/usr/bin/ait-server --data /var/lib/ait-native/server-data --init-if-missing --defer-ci-admission\n"
     ));
     assert!(systemd_unit.contains("ProtectSystem=strict\n"));
     assert!(systemd_unit.contains("WantedBy=multi-user.target\n"));
@@ -1667,8 +1692,12 @@ fn family_package_assembles_native_channels_without_endpoint_mutation() {
     assert!(copyright.contains(
         "Files: usr/bin/ait-server\nCopyright: 2026 Weita and contributors\nLicense: AGPL-3.0-only"
     ));
+    assert!(copyright.contains(
+        "Files: usr/bin/ait-runner\nCopyright: 2026 Weita and contributors\nLicense: Apache-2.0"
+    ));
     assert!(copyright.contains("Files: usr/share/doc/ait-native/licenses/ait-core/*"));
     assert!(copyright.contains("Files: usr/share/doc/ait-native/licenses/ait-server/*"));
+    assert!(copyright.contains("Files: usr/share/doc/ait-native/licenses/ait-runner/*"));
     assert!(copyright.contains("usr/lib/systemd/system/ait-server.service"));
     assert!(copyright.contains("/usr/share/common-licenses/Apache-2.0"));
     assert!(copyright.contains("/usr/share/common-licenses/AGPL-3"));
@@ -1683,10 +1712,13 @@ fn family_package_assembles_native_channels_without_endpoint_mutation() {
     .unwrap();
     let runner_debian_members = ar_members(&runner_debian_bytes);
     let runner_control_members = tar_gz_members(&runner_debian_members["control.tar.gz"]);
-    assert_eq!(runner_control_members.len(), 1);
+    let runner_control = String::from_utf8(runner_control_members["control"].clone()).unwrap();
+    assert!(runner_control.contains("Depends: ait-native (= 1.0.0~rc.1), libc6 (>= 2.28)"));
     let runner_data_members = tar_gz_members(&runner_debian_members["data.tar.gz"]);
     assert_regular_file_parents_are_directories(&runner_debian_members["data.tar.gz"]);
+    assert!(!runner_data_members.contains_key("usr/bin/ait-runner"));
     assert!(!runner_data_members.contains_key("usr/lib/systemd/system/ait-server.service"));
+    assert!(runner_data_members.contains_key("usr/share/doc/ait-runner/ait-family-provenance.json"));
     let apt_product_evidence = apt["artifacts"]
         .as_array()
         .unwrap()
@@ -1699,8 +1731,39 @@ fn family_package_assembles_native_channels_without_endpoint_mutation() {
         .unwrap();
     assert_eq!(apt_product_evidence["metadata"]["systemd_unit"], true);
     assert_eq!(
+        apt_product_evidence["metadata"]["systemd_unit_path"],
+        "usr/lib/systemd/system/ait-server.service"
+    );
+    assert_eq!(apt_product_evidence["metadata"]["runner_included"], true);
+    assert_eq!(
+        apt_product_evidence["metadata"]["runner_activation"],
+        "inactive"
+    );
+    assert_eq!(
+        apt_product_evidence["metadata"]["runner_systemd_unit"],
+        false
+    );
+    assert_eq!(
         apt_product_evidence["metadata"]["maintainer_script_count"],
         0
+    );
+    let apt_runner_alias_evidence = apt["artifacts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| {
+            row["kind"] == "debian-package"
+                && row["distribution_identity"] == "ait-runner"
+                && row["target"] == "x86_64-unknown-linux-gnu"
+        })
+        .unwrap();
+    assert_eq!(
+        apt_runner_alias_evidence["metadata"]["transitional_dependency_alias"],
+        true
+    );
+    assert_eq!(
+        apt_runner_alias_evidence["metadata"]["runner_payload_owner"],
+        "ait-native"
     );
 
     let installer_manifest = fs::read_to_string(
@@ -1714,6 +1777,7 @@ fn family_package_assembles_native_channels_without_endpoint_mutation() {
     assert!(installer_manifest.contains("NestedInstallerType: portable"));
     assert!(installer_manifest.contains("PortableCommandAlias: ait\n"));
     assert!(installer_manifest.contains("PortableCommandAlias: ait-server\n"));
+    assert!(installer_manifest.contains("PortableCommandAlias: ait-runner\n"));
     assert!(!installer_manifest.contains("\n    Scope:"));
     assert!(!installer_manifest.contains("RelativeFilePath: ait-server-control.ps1"));
     assert!(!installer_manifest.contains("PortableCommandAlias: ait-server-control.ps1"));
@@ -1721,14 +1785,14 @@ fn family_package_assembles_native_channels_without_endpoint_mutation() {
         installer_manifest.matches("InstallationMetadata:").count(),
         2
     );
-    assert_eq!(installer_manifest.matches("FileType: launch").count(), 4);
+    assert_eq!(installer_manifest.matches("FileType: launch").count(), 6);
     assert_eq!(
         installer_manifest
             .matches("InvocationParameter: --help")
             .count(),
-        4
+        6
     );
-    assert_eq!(installer_manifest.matches("RelativeFilePath:").count(), 8);
+    assert_eq!(installer_manifest.matches("RelativeFilePath:").count(), 12);
     assert!(installer_manifest.contains("ManifestVersion: 1.12.0"));
     let locale_manifest = fs::read_to_string(
         package_root
@@ -1751,10 +1815,13 @@ fn family_package_assembles_native_channels_without_endpoint_mutation() {
     for path in [
         "ait.exe",
         "ait-server.exe",
+        "ait-runner.exe",
         "licenses/ait-core/LICENSE",
         "licenses/ait-core/NOTICE",
         "licenses/ait-server/LICENSE",
         "licenses/ait-server/NOTICE",
+        "licenses/ait-runner/LICENSE",
+        "licenses/ait-runner/NOTICE",
         "ait-family-provenance.json",
         "ait-server-control.ps1",
     ] {
@@ -1762,12 +1829,13 @@ fn family_package_assembles_native_channels_without_endpoint_mutation() {
     }
     assert!(!winget_members.contains_key("bin/ait.exe"));
     let controller = String::from_utf8(winget_members["ait-server-control.ps1"].clone()).unwrap();
-    assert!(controller.contains("ValidateSet('init', 'probe', 'run', 'start', 'status', 'stop')"));
+    assert!(controller.contains("ValidateSet('init', 'probe', 'start', 'status', 'stop')"));
     assert!(controller.contains("Join-Path $env:LOCALAPPDATA 'AIT\\server-data'"));
     assert!(controller.contains("PID $ManagedProcessId belongs to another executable"));
     assert!(controller.contains(
-        "@('run', '--data', $DataRoot, '--listen', $Listen, '--init-if-missing', '--defer-ci-admission')"
+        "@('--data', $DataRoot, '--listen', $Listen, '--init-if-missing', '--defer-ci-admission')"
     ));
+    assert!(!controller.contains("'run'"));
     assert!(controller.contains("Stop-Process -Id $Managed.Id"));
     assert!(!controller.contains("sc.exe"));
     assert!(!controller.contains("New-Service"));
@@ -1780,6 +1848,10 @@ fn family_package_assembles_native_channels_without_endpoint_mutation() {
     assert_eq!(
         winget_provenance["component_content"][1]["installed_path"],
         "ait-server.exe"
+    );
+    assert_eq!(
+        winget_provenance["component_content"][2]["installed_path"],
+        "ait-runner.exe"
     );
 
     fs::write(&formula_path, b"tampered formula\n").unwrap();
@@ -2159,9 +2231,9 @@ fn family_package_assembles_registry_channels_without_endpoint_mutation() {
         "## What initialization provides",
         "Official website: <https://ait-native.dev/>",
         "## Upgrading from 0.x",
-        "There is no `ait install` command in 1.0.",
+        "There is no `ait install` command in 1.x.",
         "ait workflow ready <change-id> --apply",
-        "ait workflow land <change-id> --apply",
+        "ait workflow finish <change-id> --apply",
     ] {
         assert!(
             metadata.contains(storefront_marker),
@@ -2240,7 +2312,7 @@ fn family_package_assembles_registry_channels_without_endpoint_mutation() {
         "## Upgrading from 0.x",
         "There is no `ait install` command in 1.0.",
         "ait workflow ready <change-id> --apply",
-        "ait workflow land <change-id> --apply",
+        "ait workflow finish <change-id> --apply",
     ] {
         assert!(
             envelope_readme.contains(storefront_marker),

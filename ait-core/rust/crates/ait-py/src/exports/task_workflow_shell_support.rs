@@ -417,7 +417,7 @@ pub fn workflow_ready_command_hints(
         "review_command": review_command,
         "manual_review_command": manual_review_command,
         "auto_review_reviewer": auto_review_reviewer,
-        "land_command": format!("ait task land {change_id}"),
+        "land_command": format!("ait task finish {change_id}"),
     }))
 }
 
@@ -440,7 +440,7 @@ pub fn workflow_land_command_hints(
     let patchset_id = patchset
         .and_then(JsonValue::as_object)
         .and_then(|patchset| normalize_json_text(patchset.get("patchset_id")));
-    let apply_command = format!("ait task land {change_id}");
+    let apply_command = format!("ait task finish {change_id}");
     let publish_command =
         workflow_land_patchset_command(change_id, base_line_name, worktree_retarget);
     let patchset_ci_command =
@@ -531,7 +531,7 @@ pub fn workflow_land_command_hints(
         "auto_review_reviewer": auto_review_reviewer,
         "policy_command": patchset_id.as_ref().map(|patchset_id| JsonValue::String(format!("ait policy eval {patchset_id}"))).unwrap_or(JsonValue::Null),
         "land_command": land_command,
-        "task_land_command": format!("ait task land {change_id}"),
+        "task_land_command": format!("ait task finish {change_id}"),
     }))
 }
 

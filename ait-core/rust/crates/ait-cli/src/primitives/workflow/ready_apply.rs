@@ -1,9 +1,43 @@
 use super::*;
 
+fn workflow_ready_ci_run_seq(state: &JsonValue) -> u64 {
+    state
+        .get("patchset_ci_status")
+        .and_then(JsonValue::as_object)
+        .and_then(|status| status.get("ci_run_seq"))
+        .and_then(JsonValue::as_u64)
+        .unwrap_or_default()
+}
+
+fn workflow_ready_completed_ci_failure_after(
+    state: &JsonValue,
+    previous_run_seq: u64,
+) -> Option<String> {
+    let status = state
+        .get("patchset_ci_status")
+        .and_then(JsonValue::as_object)?;
+    let run_seq = status
+        .get("ci_run_seq")
+        .and_then(JsonValue::as_u64)
+        .unwrap_or_default();
+    let completed_at_s = status
+        .get("ci_completed_at_s")
+        .and_then(JsonValue::as_u64)
+        .unwrap_or_default();
+    let tests_status = workflow_json_text(status.get("tests_status"))?.to_ascii_lowercase();
+    (run_seq > previous_run_seq
+        && completed_at_s > 0
+        && matches!(
+            tests_status.as_str(),
+            "fail" | "failed" | "hard_fail" | "soft_fail"
+        ))
+    .then_some(tests_status)
+}
+
 pub(in crate::primitives) fn workflow_ready_ci_pending_wait_state(
     state: &JsonValue,
     code: &str,
-    ci_requested_patchsets: &BTreeSet<String>,
+    ci_requested_patchsets: &BTreeMap<String, u64>,
 ) -> Result<Option<JsonValue>, String> {
     if code == "waiting_for_ci" {
         return Ok(Some(state.clone()));
@@ -13,7 +47,10 @@ pub(in crate::primitives) fn workflow_ready_ci_pending_wait_state(
     }
     let patchset_id = workflow_nested_text(state, "patchset", "patchset_id")
         .ok_or_else(|| "Run-Patchset-CI state is missing patchset.patchset_id.".to_string())?;
-    if !ci_requested_patchsets.contains(&patchset_id) {
+    let Some(previous_run_seq) = ci_requested_patchsets.get(&patchset_id) else {
+        return Ok(None);
+    };
+    if workflow_ready_completed_ci_failure_after(state, *previous_run_seq).is_some() {
         return Ok(None);
     }
     let mut pending_state = state
@@ -23,12 +60,23 @@ pub(in crate::primitives) fn workflow_ready_ci_pending_wait_state(
     let next_action = pending_state
         .get_mut("next_action")
         .and_then(JsonValue::as_object_mut)
-        .ok_or_else(|| "Run-Patchset-CI state is missing next_action authority.".to_string())?;
+        .ok_or_else(|| "Run-Patchset-CI state is missing its next action.".to_string())?;
     next_action.insert(
         "code".to_string(),
         JsonValue::String("waiting_for_ci".to_string()),
     );
     Ok(Some(JsonValue::Object(pending_state)))
+}
+
+pub(in crate::primitives) fn workflow_ready_ci_poll_wait_state(
+    state: JsonValue,
+    ci_requested_patchsets: &BTreeMap<String, u64>,
+) -> Result<JsonValue, String> {
+    let code = workflow_nested_text(&state, "next_action", "code").unwrap_or_default();
+    Ok(
+        workflow_ready_ci_pending_wait_state(&state, &code, ci_requested_patchsets)?
+            .unwrap_or(state),
+    )
 }
 
 fn workflow_ready_apply_output(
@@ -89,7 +137,7 @@ where
     let mut mutation_receipts = Vec::new();
     let mut seen_signatures = BTreeSet::new();
     let mut attempted_pending_waits = BTreeSet::new();
-    let mut ci_requested_patchsets = BTreeSet::new();
+    let mut ci_requested_patchsets = BTreeMap::new();
     let helper_started = Instant::now();
     workflow_progress_emit(
         &mut progress,
@@ -98,7 +146,7 @@ where
         Some(change_id),
         None,
         None,
-        Some("Reading authoritative workflow state before applying helper mutations."),
+        Some("Reading current workflow state before applying requested changes."),
         Some("authoritative_read"),
         None,
         None,
@@ -189,23 +237,77 @@ where
                 state = {
                     let _range = perfetto_range!("ait.workflow_ready.wait_for_ci");
                     workflow_wait_for_pending_state(repo, &pending_state, "waiting_for_ci", || {
-                        workflow_ready_ci_poll_payload_with_closeout_remote(
+                        let polled_state = workflow_ready_ci_poll_payload_with_closeout_remote(
                             repo,
                             &mut closeout_remote,
                             &repo_name,
                             &pending_state,
                             &effective_change_id,
                             remote_name,
-                        )
+                        )?;
+                        workflow_ready_ci_poll_wait_state(polled_state, &ci_requested_patchsets)
                     })?
                 };
                 code = workflow_nested_text(&state, "next_action", "code").unwrap_or_default();
             }
         }
         let (current_change_id, current_patchset_id) = workflow_current_ids(&state);
+        let completed_ci_failure = if code == "run_patchset_ci" {
+            current_patchset_id
+                .as_ref()
+                .and_then(|patchset_id| ci_requested_patchsets.get(patchset_id))
+                .and_then(|previous_run_seq| {
+                    workflow_ready_completed_ci_failure_after(&state, *previous_run_seq)
+                })
+        } else {
+            None
+        };
+        if let Some(tests_status) = completed_ci_failure {
+            let stopped_reason = format!(
+                "Patchset CI completed with tests `{tests_status}`; workflow ready stopped without submitting an automatic rerun."
+            );
+            workflow_progress_emit(
+                &mut progress,
+                "stopped",
+                &code,
+                current_change_id.as_deref(),
+                current_patchset_id.as_deref(),
+                Some(applied_actions.len() + 1),
+                None,
+                Some("stopped"),
+                Some(&stopped_reason),
+                None,
+                None,
+            )?;
+            let mut output = state.as_object().cloned().unwrap_or_default();
+            output.insert(
+                "applied_actions".to_string(),
+                JsonValue::Array(applied_actions),
+            );
+            output.insert(
+                "mutation_receipts".to_string(),
+                JsonValue::Array(mutation_receipts),
+            );
+            output.insert(
+                "apply_status".to_string(),
+                JsonValue::String("stopped".to_string()),
+            );
+            output.insert(
+                "apply_stopped_reason".to_string(),
+                JsonValue::String(stopped_reason.clone()),
+            );
+            output.insert(
+                "apply_phase".to_string(),
+                workflow_apply_phase_payload_json("stopped", &code, Some(&stopped_reason), false),
+            );
+            return Ok(workflow_ready_apply_output(
+                output,
+                final_snapshot_promotion.as_ref(),
+            ));
+        }
         if code.is_empty() || code == "done" {
             let detail = if applied_actions.is_empty() {
-                "Authoritative state already satisfies `workflow ready --apply`; no new mutation was needed."
+                "Current state already satisfies `workflow ready --apply`; no change was needed."
             } else {
                 "Workflow ready apply completed."
             };
@@ -456,7 +558,7 @@ where
                 "Workflow ready submitted Patchset CI without current Patchset identity."
                     .to_string()
             })?;
-            ci_requested_patchsets.insert(patchset_id);
+            ci_requested_patchsets.insert(patchset_id, workflow_ready_ci_run_seq(&state));
             attempted_pending_waits.remove("waiting_for_ci");
         }
         let receipts = workflow_remote_action_mutation_receipts(&code, &result)

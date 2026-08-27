@@ -329,7 +329,7 @@ test("packager rejects missing addon, drift, wrong target, and a non-addon", asy
   assert.match(missingAddon.stderr, /missing required npm addon package option --addon/);
 
   const wrongVersion = packagerArgs("check", payload, LOCAL_ADDON, outputRoot);
-  wrongVersion[wrongVersion.indexOf("--version") + 1] = "1.0.0-rc.99";
+  wrongVersion[wrongVersion.indexOf("--version") + 1] = "1.0.1-rc.99";
   const drift = run(process.execPath, wrongVersion);
   assert.notEqual(drift.status, 0);
   assert.match(drift.stderr, /version .* does not match/);

@@ -151,7 +151,7 @@ fn workflow_land_full_read_model_preserves_patchset_ci_status() {
     let commands = json!({
         "ready_command": "ait workflow ready RCC-1 --apply",
         "patchset_ci_command": "ait patchset rerun-ci RCP-1",
-        "land_command": "ait workflow land RCC-1 --apply"
+        "land_command": "ait workflow finish RCC-1 --apply"
     });
 
     let model =

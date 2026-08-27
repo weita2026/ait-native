@@ -479,15 +479,19 @@ Channel metadata must preserve the aggregate boundary:
 
 ## Public Channel Roles
 
-| Channel | Required 1.0.0 role |
-| --- | --- |
-| GitHub Release | Canonical native assets and fallback download for every declared target |
-| Homebrew | The `ait-native` formula installs `ait` and `ait-server` together on macOS/Linux; RCs use a non-stable route and stable admission follows Homebrew policy |
-| apt | The signed `ait-native` package installs `ait` and `ait-server` together on Debian/Ubuntu for `amd64` and `arm64`; `ait-runner` retains a separate package identity |
-| WinGet | The `ait-native` product package installs `ait` and `ait-server` together on Windows `x64` and `arm64` |
-| PyPI/pip | The sole `ait-native` project publishes platform wheels containing `ait`, `ait-server`, and the direct Python binding; no separate `ait-python` project is published |
-| npm | The sole supported top-level `@wa120/ait-native` package exposes the JS/TS API and an in-process `ait` command, selecting one exact-version implementation-only Node-API addon package; it does not install `ait-server` |
-| OCI | Immutable `ait-server` and `ait-runner` images |
+| Channel | Published 1.0.x role | 1.1+ role |
+| --- | --- | --- |
+| GitHub Release | Canonical native assets and fallback download for every declared target | Same role, including exact-version component assets |
+| Homebrew | The `ait-native` formula installs `ait` and `ait-server` together on macOS/Linux | The formula installs `ait`, `ait-server`, and `ait-runner` together; RCs use a non-stable route and stable admission follows Homebrew policy |
+| apt | The signed `ait-native` package installs `ait` and `ait-server`; `ait-runner` is separately installable | `ait-native` owns all three executables; the `ait-runner` package name is a dependency-only transition alias to the exact `ait-native` version |
+| WinGet | The `ait-native` product package installs `ait` and `ait-server` on Windows `x64` and `arm64` | The same product package installs all three native executables |
+| PyPI/pip | The sole `ait-native` project publishes platform wheels containing `ait`, `ait-server`, and the direct Python binding | Unchanged; PyPI does not acquire the runner payload |
+| npm | The sole supported top-level `@wa120/ait-native` package exposes the JS/TS API and an in-process `ait` command; it does not install `ait-server` | Unchanged |
+| OCI | Immutable, separate `ait-server` and `ait-runner` images | Unchanged |
+
+The published 1.0.x family dossiers and package bytes remain frozen. The 1.1+
+column is a new family contract; it does not relabel or regenerate a prior
+release.
 
 The shared product-facing identity for all five acquisition channels is
 `ait-native`. The Homebrew formula, apt package, and PyPI project use that
@@ -501,34 +505,67 @@ reserved, recorded in the frozen family or an owner-approved immutable
 supplement, and smoke-tested before GA. A name that cannot be secured requires
 an explicit owner-approved mapping rather than an ad hoc per-channel alias.
 
-## Bundled Server Contract
+<a id="bundled-server-contract"></a>
 
-The Homebrew, apt, WinGet, and PyPI/pip `ait-native` package is one
-install, upgrade, and uninstall unit containing at least these two commands:
+## Bundled Native Commands Contract
+
+Beginning with 1.1.0, the Homebrew, apt, and WinGet `ait-native` package is one
+install, upgrade, and uninstall unit containing these three commands:
 
 ```text
 ait
 ait-server
+ait-runner
 ```
 
-The PyPI unit additionally contains the admitted Python binding. npm is not a
-server bundle: it contains the portable JS/TS facade plus the platform-selected
-Node-API addon and exposes only `ait` as a command. Neither registry creates a
-second product or independently selectable version.
+The apt `ait-runner` package remains discoverable only as a dependency-only
+transition alias to the exact `ait-native` version and owns no executable, so
+there is no `/usr/bin/ait-runner` package collision. The PyPI unit retains the
+published two-command `ait`/`ait-server` contract and additionally contains the
+admitted Python binding. npm is not a server bundle: it contains the portable
+JS/TS facade plus the platform-selected Node-API addon and exposes only `ait`
+as a command. Neither registry creates a second product or independently
+selectable version.
 
-The two executables retain independent source-component receipts and license
-notices. Package construction must prove that each installed byte is copied
-from the matching frozen `ait-core` or `ait-server` artifact; it must not
-rebuild either component at an endpoint.
+The three native executables retain independent source-component receipts and
+license notices. Package construction must prove that each installed byte is
+copied from the matching frozen `ait-core`, `ait-server`, or `ait-runner`
+artifact; it must not rebuild a component at an endpoint.
 
 Bundling is distribution convenience, not implicit server activation. Install
-and upgrade hooks must not start `ait-server`, enable or register a persistent
-service with a service manager, open a port, initialize server authority, or
-make the Local CLI depend on a running server. A package may install an
-inactive declarative service definition or an explicit user-session
-controller. Activation remains a separate user command. Standalone GitHub and
-OCI server artifacts may coexist with the bundle but must resolve to the same
-admitted server digest.
+and upgrade hooks must not start `ait-server` or `ait-runner`, enable or
+register a persistent service with a service manager, open a port, initialize
+server authority, execute CI, or make the Local CLI depend on a running
+server. A package may install an inactive server-only service definition or an
+explicit server-only user-session controller. It must not register or start a
+runner daemon. Server and runner activation remain separate operator actions.
+Standalone GitHub and OCI artifacts may coexist with the bundle but must
+resolve to the same admitted component digests.
+
+The package does not add a combined `ait` command. It preserves the existing
+component interfaces:
+
+```text
+ait-server --data <ABSOLUTE_SERVER_DATA> --listen <ADDRESS>
+ait-runner serve --server <SERVER> --worker-id <WORKER_ID> [OPTIONS]
+```
+
+The released `ait-runner serve` interface accepts `--server`, `--worker-id`,
+`--source-root`, optional `--attempt-root`, and optional repeatable
+`--repository-index` filters. The package does not choose whether the runner
+is unfiltered or Repository-filtered. Operators must inspect the exact
+installed executable's `serve --help`, configure the server and runner as
+separate processes, and supply their own daemon/service supervision when a
+persistent runner is required.
+
+Repository registration is not a CI trigger and does not execute source. A
+runner can claim work only after synchronized Snapshot content exists, the
+server has admitted a queued Worker Job, and the selected Snapshot contains an
+executable `ci/run` entrypoint. Repository write, CI-submission, and runner
+filter authority therefore form a native code-execution trust boundary on the
+runner host.
+
+<a id="installed-server-lifecycle"></a>
 
 ### Installed server lifecycle
 
@@ -537,10 +574,10 @@ The installed native executable, not `ait.sh`, owns the portable lifecycle:
 ```text
 ait-server init
 ait-server probe --defer-ci-admission
-ait-server run --init-if-missing --defer-ci-admission
+ait-server --init-if-missing --defer-ci-admission
 ```
 
-Plain `ait-server run` is the shortest user-mode form. With no `--data` flag or
+Plain `ait-server` is the shortest user-mode form. With no `--data` flag or
 runtime environment, it selects the platform default below and safely creates
 a new Binary v0 authority only when that path is missing or empty. `init` is
 idempotent for an existing valid activation and refuses a symlink, legacy
@@ -565,19 +602,20 @@ remaining inactive after install or upgrade:
 
 | Channel | Explicit activation | Data and lifecycle behavior |
 | --- | --- | --- |
-| Homebrew | `brew services start ait-native-rc` for the RC formula, or `brew services start ait-native` for stable; stop with the matching `brew services stop` command | The formula service runs the installed binary and uses `$HOMEBREW_PREFIX/var/ait-native/server-data`; the formula installation itself neither initializes nor starts it. |
-| apt | `sudo systemctl daemon-reload && sudo systemctl enable --now ait-server`; stop with `sudo systemctl disable --now ait-server` | The shipped, initially disabled unit uses `DynamicUser`, `StateDirectory=ait-native`, and `/var/lib/ait-native/server-data`. The Debian package has zero maintainer scripts. |
-| WinGet | Resolve `$ctl` from the installed `ait-server.exe` link with the PowerShell snippet below, then run `powershell.exe -NoProfile -ExecutionPolicy Bypass -File $ctl start`; replace `start` with `status` or `stop` as needed | WinGet exposes only the two supported executable portable aliases. The adjacent controller remains supporting archive content; it is user-session only, stores PID/log state below `%LOCALAPPDATA%\AIT\runtime`, uses `%LOCALAPPDATA%\AIT\server-data`, verifies PID ownership before stopping, and does not install or claim a Windows SCM service. |
-| PyPI/pip | Run `ait-server run`, or pass the installed executable to the user's own service manager | The wheel installs the same native command and adds no install hook or second lifecycle implementation. |
+| Homebrew | `brew services start ait-native-rc` for the generated RC formula, or `brew services start ait-native` for the generated stable formula; stop with the matching `brew services stop` command | The formula executes only `ait-server`. It installs `ait-runner` but does not configure or start a runner daemon. Installation itself starts neither process. |
+| apt | `sudo systemctl daemon-reload && sudo systemctl enable --now ait-server`; stop with `sudo systemctl disable --now ait-server` | The shipped, initially disabled `ait-server.service` uses `DynamicUser`, `StateDirectory=ait-native`, and `/var/lib/ait-native/server-data`. There is no packaged runner unit, and the Debian package has zero maintainer scripts. |
+| WinGet | Resolve `$ctl` from the installed `ait-server.exe` link with the PowerShell snippet below, then run `powershell.exe -NoProfile -ExecutionPolicy Bypass -File $ctl start`; replace `start` with `status` or `stop` as needed | WinGet exposes all three executable portable aliases. The adjacent `ait-server-control.ps1` manages only the server in the user session, stores PID/log state below `%LOCALAPPDATA%\AIT\runtime`, uses `%LOCALAPPDATA%\AIT\server-data`, verifies PID ownership, and does not register a Windows SCM service or runner daemon. |
+| PyPI/pip | Execute `ait-server`, or pass the installed executable to the user's own service manager | The wheel installs the same native command and adds no install hook or second lifecycle implementation. |
 
 WinGet accepts executable portable command aliases, not the packaged
 PowerShell controller itself. Resolve that supporting file beside the actual
-installed server executable rather than treating the `.ps1` file as a WinGet
-alias. Each architecture's installer manifest also identifies `ait.exe` and
-`ait-server.exe` as launch files with `InvocationParameter: --help`. This gives
+installed `ait-server` executable rather than treating the `.ps1` file as a WinGet
+alias. Each architecture's installer manifest also identifies `ait.exe`,
+`ait-server.exe`, and `ait-runner.exe` as launch files with
+`InvocationParameter: --help`. This gives
 WinGet's executable validation a non-mutating invocation that exits without
 initializing a repository or starting the server; it does not alter either
-command's normal user-facing behavior:
+component's normal user-facing behavior:
 
 ```powershell
 $link = Get-Item (Get-Command ait-server.exe).Source
@@ -621,32 +659,47 @@ docker run --detach \
   --publish 127.0.0.1:8088:8088 \
   --restart unless-stopped \
   --volume ait-native-rc-data:/var/lib/ait \
-  ghcr.io/weita2026/ait-server:1.0.0-rc.6
+  ghcr.io/weita2026/ait-server:1.0.0-rc.6 \
+  --listen 0.0.0.0:8088 \
+  --init-if-missing \
+  --defer-ci-admission
 curl --fail http://127.0.0.1:8088/healthz
 ```
 
-The image sets `AITSERVER_LISTEN=0.0.0.0:8088` only inside the container so
-Docker networking can reach the process. The example still publishes the host
-port only on `127.0.0.1`; omitting `--publish` keeps the server private to the
-named container network. Pulling the image does not start or initialize a
-server. The named volume is initialized only when `docker run` starts the
-container and remains intact after `docker stop ait-server` and
-`docker rm ait-server`.
+The image sets only the `ait-server` executable entrypoint and declares no
+Docker `CMD`; listener, initialization, and CI-admission arguments remain
+explicit operator input after the image name. The example binds the process to
+the container network while publishing the host port only on `127.0.0.1`;
+omitting `--publish` keeps the server private to the named container network.
+Pulling the image does not start or initialize a server. The named volume is
+initialized only when `docker run` starts the container and remains intact
+after `docker stop ait-server` and `docker rm ait-server`.
 
-An explicitly invoked runner can share that network and mount the repository
-whose declared CI command it must execute:
+An explicitly invoked runner can share that network. Snapshot Jobs materialize
+under its source root, so it needs persistent runner storage rather than a bind
+mount of the client Repository:
 
 ```sh
-docker run --rm \
+docker volume create ait-native-rc-runner
+docker run --detach \
+  --name ait-runner \
   --network ait-native-rc \
-  --volume "$PWD:/workspace" \
+  --restart unless-stopped \
+  --volume ait-native-rc-runner:/var/lib/ait-runner \
   ghcr.io/weita2026/ait-runner:1.0.0-rc.6 \
-  serve --server http://ait-server:8088 --source-root /workspace --once
+  serve \
+  --server http://ait-server:8088 \
+  --worker-id container-ci-host-01 \
+  --source-root /var/lib/ait-runner/source \
+  --attempt-root /var/lib/ait-runner/attempts
 ```
 
 The runner image has no implicit public server and does not identify the
-repository language. It executes only typed work admitted by the referenced
-AIT server and the repository-authored validation contract.
+repository language. Its released `serve` interface accepts optional repeated
+`--repository-index` values. Operators choose those filters explicitly for
+their trust boundary; package and container installation do not register or
+reconfigure the runner. It executes only typed work admitted by that server
+and the repository-authored validation contract.
 
 The post-publication package names and commands are:
 
@@ -742,12 +795,14 @@ libc admission contract forward with the direct in-process Node-API runtime.
 Its Linux addon packages must publish and read back `libc: ["glibc"]`, while
 Darwin and Windows must omit the selector.
 
-The PyPI `ait-native` wheels must pair `ait` and `ait-server` on all six
-targets. Homebrew must pair them on the four admitted macOS/Linux targets, apt
-on the two admitted Linux targets, and WinGet on the two admitted Windows
-targets. npm instead requires the matching Node-API addon for each of the same
-six targets. A channel must not publish a target when any component declared by
-that channel is absent.
+The published 1.0.x PyPI and native product packages pair `ait` and
+`ait-server` on their admitted targets. Beginning with 1.1.0, Homebrew must
+pair `ait`, `ait-server`, and `ait-runner` on the four admitted macOS/Linux
+targets, apt on the two admitted Linux targets, and WinGet on the two admitted
+Windows targets. PyPI retains its `ait`/`ait-server` plus binding contract. npm
+instead requires the matching Node-API addon for each of the same six targets.
+A channel must not publish a target when any component declared by that
+channel is absent.
 
 This six-target matrix is the exact 1.0.0 cross-platform claim. It is not a
 claim of support for every operating system or C library. Linux/musl, other
@@ -760,8 +815,10 @@ governed solely by [the centralized requirements above](#repository-language-neu
 ## Compatibility Rules
 
 - Every public component reports or exposes version `1.0.0`.
-- Every bundled `ait`/`ait-server` pair reports the same family version while
-  retaining independent component digests and license notices.
+- Every bundled native command reports the same family version while retaining
+  independent component digests and license notices. The 1.1+ Homebrew, apt,
+  and WinGet product rows require the exact `ait`/`ait-server`/`ait-runner`
+  triple; frozen 1.0.x rows retain their original pair.
 - Server/runner wire contracts are tested against the exact paired artifacts.
 - The Python binding loads package-owned native bytes in-process and does not
   invoke the CLI, inspect ambient `PATH`, or download a runtime after
@@ -1063,10 +1120,14 @@ matrix hash before dispatch:
 Each install phase and upgrade phase runs as a distinct GitHub-hosted job on a
 fresh VM. The matrix contains six GitHub, six PyPI, six npm, four Homebrew,
 four apt, two WinGet, and four OCI rows. Product rows prove install, command
-origin, default-inactive server behavior, explicit service lifecycle where
+origin, default-inactive process behavior, explicit service lifecycle where
 declared, sprint-bound first-land, uninstall with user-data retention, exact
-prior-state upgrade, and candidate land. Direct PyO3 and Node-API rows exercise
-their bindings in process; OCI rows bind immutable digests.
+prior-state upgrade, and candidate land. The 1.1+ Homebrew, apt, and WinGet
+rows additionally prove all three exact command versions, that installation
+starts neither process, and that the existing packaged lifecycle remains
+server-only with no registered runner daemon. Direct
+PyO3 and Node-API rows exercise their bindings in process; OCI rows bind
+immutable digests.
 
 The hosted setup activates the runner image's preinstalled Linux Homebrew from
 `/home/linuxbrew/.linuxbrew/bin` and, when necessary, registers the inbox
@@ -1161,13 +1222,14 @@ ait release package <REL-FAM-ID> --channel npm --json
 ```
 
 Each command writes below
-`dist/<REL-FAM-ID>/packages/<channel>/`. The exact 1.0 matrix produces:
+`dist/<REL-FAM-ID>/packages/<channel>/`. An admitted 1.1+ runner-bundle
+matrix produces:
 
 | Channel | Deterministic channel artifacts |
 | --- | --- |
-| Homebrew | four macOS/Linux product archives and one RC- or stable-routed formula |
-| apt | two `ait-native` and two standalone `ait-runner` Debian packages for `arm64`/`amd64` |
-| WinGet | two Windows portable ZIPs and the three-file WinGet 1.12 manifest set |
+| Homebrew | four macOS/Linux product archives containing all three native commands and one RC- or stable-routed formula |
+| apt | two three-command `ait-native` packages and two dependency-only `ait-runner` transition packages for `arm64`/`amd64` |
+| WinGet | two three-command Windows portable ZIPs and the three-file WinGet 1.12 manifest set |
 | PyPI | six platform-specific `ait_native` `cp311-abi3` wheels |
 | npm | the portable `@wa120/ait-native` JS/TS envelope plus six exact-version, OS/CPU/libc-restricted scoped Node-API addon packages |
 

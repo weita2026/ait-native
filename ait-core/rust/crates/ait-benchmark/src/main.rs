@@ -4,17 +4,19 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
 use ait_benchmark::{
-    build_agent_token_report, build_agent_token_schedule, build_report,
-    compare_agent_token_reports, compare_reports, create_synthetic_fixture, digest_workspace,
-    encode_manifest, extract_and_validate_codex_transcript, import_codex_usage,
-    load_agent_token_campaign, load_agent_token_report, load_agent_token_run_summaries,
-    load_agent_token_schedule, load_benchmark_report, load_budget_manifest, load_manifest,
-    materialize_game_fixture, normalize_manifest, render_agent_token_report_markdown,
-    run_agent_token_campaign, run_benchmark, sha256_digest, validate_agent_token_campaign_evidence,
-    validate_manifest, validate_portable_manifest, write_comparison_report, write_json_new,
-    write_report, write_text_new, AgentTokenAccountingProfile, AgentTokenMode, AgentTokenModelPin,
-    NormalizationReport, RunOptions, RuntimeBindings, SyntheticFixtureRecipe,
-    AGENT_TOKEN_PROTOCOL_V1_JSON, NORMALIZATION_CONTRACT, PROTOCOL_V1_JSON,
+    build_agent_token_schedule, build_report, compare_agent_token_reports, compare_reports,
+    create_synthetic_fixture, digest_workspace, encode_manifest,
+    extract_and_validate_codex_transcript, import_codex_usage, load_agent_token_campaign,
+    load_agent_token_campaign_for_evidence, load_agent_token_campaign_statistical_view,
+    load_agent_token_report, load_agent_token_schedule, load_benchmark_report,
+    load_budget_manifest, load_manifest, materialize_game_fixture, normalize_manifest,
+    render_agent_token_report_markdown, resume_agent_token_campaign, run_agent_token_campaign,
+    run_agent_token_statistical_replacement, run_benchmark, sha256_digest,
+    validate_agent_token_campaign_evidence, validate_manifest, validate_portable_manifest,
+    write_agent_token_publication_bundle, write_comparison_report, write_json_new, write_report,
+    write_text_new, AgentTokenAccountingProfile, AgentTokenMode, AgentTokenModelPin,
+    AgentTokenPublicationInput, NormalizationReport, RunOptions, RuntimeBindings,
+    SyntheticFixtureRecipe, AGENT_TOKEN_PROTOCOL_V1_JSON, NORMALIZATION_CONTRACT, PROTOCOL_V1_JSON,
 };
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use serde::Serialize;
@@ -77,8 +79,14 @@ enum AgentTokenCommand {
     ImportTranscript(AgentTokenImportTranscriptArgs),
     /// Execute the frozen schedule into a create-new evidence directory.
     Run(AgentTokenRunArgs),
+    /// Resume the exact missing suffix of an existing immutable campaign.
+    Resume(AgentTokenResumeArgs),
+    /// Execute the exact owner-authorized transparent statistical replacement lane.
+    Replace(AgentTokenReplaceArgs),
     /// Rebuild aggregate and Markdown reports from immutable per-run summaries.
     Report(AgentTokenReportArgs),
+    /// Produce a sanitized, checksummed public bundle from immutable campaign evidence.
+    Publish(AgentTokenPublishArgs),
     /// Compare two compatible, already aggregated agent-token campaigns.
     Compare(AgentTokenCompareArgs),
 }
@@ -189,9 +197,29 @@ struct AgentTokenRunArgs {
     manifest: PathBuf,
     #[arg(long)]
     output_dir: PathBuf,
-    /// Execute only the first N frozen entries; retained as incomplete smoke evidence.
+    /// Execute only the first N adjacent workload/attempt pairs.
     #[arg(long)]
-    max_runs: Option<usize>,
+    max_pairs: Option<usize>,
+}
+
+#[derive(Debug, Args)]
+struct AgentTokenResumeArgs {
+    #[arg(long)]
+    campaign_dir: PathBuf,
+    /// Execute only the next N complete adjacent pairs from the missing suffix.
+    #[arg(long)]
+    max_pairs: Option<usize>,
+    /// Append supported validator-only adjudications before checking the prefix.
+    #[arg(long)]
+    adjudicate_transcripts: bool,
+}
+
+#[derive(Debug, Args)]
+struct AgentTokenReplaceArgs {
+    #[arg(long)]
+    campaign_dir: PathBuf,
+    #[arg(long)]
+    source_run_id: String,
 }
 
 #[derive(Debug, Args)]
@@ -204,6 +232,24 @@ struct AgentTokenReportArgs {
     output_json: PathBuf,
     #[arg(long)]
     output_markdown: Option<PathBuf>,
+}
+
+#[derive(Debug, Args)]
+struct AgentTokenPublishArgs {
+    #[arg(long)]
+    manifest: PathBuf,
+    #[arg(long)]
+    campaign_dir: PathBuf,
+    #[arg(long)]
+    output_dir: PathBuf,
+    #[arg(long)]
+    release_version: String,
+    #[arg(long)]
+    measured_product_snapshot: String,
+    #[arg(long)]
+    measured_ait_sha256: String,
+    #[arg(long)]
+    campaign_runner_sha256: String,
 }
 
 #[derive(Debug, Args)]
@@ -542,7 +588,11 @@ fn entry(cli: Cli) -> Result<(), String> {
                 emit_json(&receipt)
             }
             AgentTokenCommand::Validate(args) => {
-                let manifest = load_agent_token_campaign(&args.manifest)?;
+                let manifest = if args.campaign_dir.is_some() {
+                    load_agent_token_campaign_for_evidence(&args.manifest)?
+                } else {
+                    load_agent_token_campaign(&args.manifest)?
+                };
                 let evidence_errors = if let Some(path) = args.campaign_dir.as_deref() {
                     validate_agent_token_campaign_evidence(&manifest, path)?
                 } else {
@@ -552,6 +602,8 @@ fn entry(cli: Cli) -> Result<(), String> {
                 emit_json(&serde_json::json!({
                     "contract": "ait-agent-token-validation/v1",
                     "campaign_id": manifest.campaign_id,
+                    "executor": manifest.runtime.executor.as_str(),
+                    "tool_policy": manifest.tool_policy,
                     "manifest_valid": true,
                     "evidence_checked": args.campaign_dir.is_some(),
                     "valid": valid,
@@ -622,15 +674,55 @@ fn entry(cli: Cli) -> Result<(), String> {
             }
             AgentTokenCommand::Run(args) => {
                 let execution =
-                    run_agent_token_campaign(&args.manifest, &args.output_dir, args.max_runs)?;
-                emit_json(&execution)
+                    run_agent_token_campaign(&args.manifest, &args.output_dir, args.max_pairs)?;
+                emit_json(&execution)?;
+                if execution.stop_reason.is_some() {
+                    Err(
+                        "Agent-token campaign stopped before completing its admitted pair slice"
+                            .to_string(),
+                    )
+                } else {
+                    Ok(())
+                }
+            }
+            AgentTokenCommand::Resume(args) => {
+                let execution = resume_agent_token_campaign(
+                    &args.campaign_dir,
+                    args.max_pairs,
+                    args.adjudicate_transcripts,
+                )?;
+                let stopped_early = execution.stopped_early;
+                emit_json(&execution)?;
+                if stopped_early {
+                    Err(
+                        "Agent-token campaign resume stopped before completing its admitted pair slice"
+                            .to_string(),
+                    )
+                } else {
+                    Ok(())
+                }
+            }
+            AgentTokenCommand::Replace(args) => {
+                let execution = run_agent_token_statistical_replacement(
+                    &args.campaign_dir,
+                    &args.source_run_id,
+                )?;
+                let admitted = execution.selection_activated && execution.claim_eligible;
+                emit_json(&execution)?;
+                if admitted {
+                    Ok(())
+                } else {
+                    Err(
+                        "Agent-token statistical replacement did not satisfy every admission and claim gate"
+                            .to_string(),
+                    )
+                }
             }
             AgentTokenCommand::Report(args) => {
-                let manifest = load_agent_token_campaign(&args.manifest)?;
+                let manifest = load_agent_token_campaign_for_evidence(&args.manifest)?;
                 let schedule = load_agent_token_schedule(
                     &args.campaign_dir.join("randomization-schedule.json"),
                 )?;
-                let runs = load_agent_token_run_summaries(&args.campaign_dir)?;
                 let evidence_errors =
                     validate_agent_token_campaign_evidence(&manifest, &args.campaign_dir)?;
                 if !evidence_errors.is_empty() {
@@ -639,7 +731,12 @@ fn entry(cli: Cli) -> Result<(), String> {
                         evidence_errors.join("; ")
                     ));
                 }
-                let report = build_agent_token_report(&manifest, &schedule, &runs)?;
+                let statistical_view = load_agent_token_campaign_statistical_view(
+                    &manifest,
+                    &schedule,
+                    &args.campaign_dir,
+                )?;
+                let report = statistical_view.report;
                 write_json_new(&args.output_json, &report)?;
                 if let Some(path) = args.output_markdown.as_deref() {
                     write_text_new(path, &render_agent_token_report_markdown(&report))?;
@@ -649,9 +746,83 @@ fn entry(cli: Cli) -> Result<(), String> {
                     "campaign_id": report.campaign_id,
                     "output_json": args.output_json,
                     "output_markdown": args.output_markdown,
+                    "source_protocol_claim_eligible": report.source_protocol_claim_eligible,
+                    "current_policy_revision": report.current_policy_revision,
+                    "current_policy_evaluation_mode": report.current_policy_evaluation_mode,
+                    "current_policy_criteria_met": report.current_policy_criteria_met,
                     "claim_eligible": report.claim_eligible,
                     "invalid_run_count": report.invalid_run_count,
                 }))
+            }
+            AgentTokenCommand::Publish(args) => {
+                let manifest = load_agent_token_campaign_for_evidence(&args.manifest)?;
+                let schedule = load_agent_token_schedule(
+                    &args.campaign_dir.join("randomization-schedule.json"),
+                )?;
+                let evidence_errors =
+                    validate_agent_token_campaign_evidence(&manifest, &args.campaign_dir)?;
+                if !evidence_errors.is_empty() {
+                    return Err(format!(
+                        "Agent-token evidence failed validation: {}",
+                        evidence_errors.join("; ")
+                    ));
+                }
+                let statistical_view = load_agent_token_campaign_statistical_view(
+                    &manifest,
+                    &schedule,
+                    &args.campaign_dir,
+                )?;
+                let report = &statistical_view.report;
+                let campaign_manifest = args.campaign_dir.join("campaign-manifest.json");
+                let protocol = args.campaign_dir.join("protocol.json");
+                let fixture_manifest = args.campaign_dir.join("fixture-manifest.json");
+                let randomization_schedule = args.campaign_dir.join("randomization-schedule.json");
+                let raw_run_index = args.campaign_dir.join("raw-run-index.json");
+                let mut source_files = vec![
+                    ("campaign-manifest.json", campaign_manifest.as_path()),
+                    ("fixture-manifest.json", fixture_manifest.as_path()),
+                    ("protocol.json", protocol.as_path()),
+                    (
+                        "randomization-schedule.json",
+                        randomization_schedule.as_path(),
+                    ),
+                    ("raw-run-index.json", raw_run_index.as_path()),
+                ];
+                let replacement_selection = args.campaign_dir.join("statistical-replacement.json");
+                let replacement_runner = args
+                    .campaign_dir
+                    .join("statistical-replacements/replacement-0001/replacement-runner");
+                let replacement_summary = statistical_view
+                    .selection
+                    .as_ref()
+                    .map(|selection| args.campaign_dir.join(&selection.replacement_run_summary));
+                if replacement_selection.is_file() {
+                    source_files.push((
+                        "statistical-replacement.json",
+                        replacement_selection.as_path(),
+                    ));
+                }
+                if let Some(path) = replacement_summary.as_deref() {
+                    source_files.push(("replacement-run-summary.json", path));
+                }
+                if replacement_runner.is_file() {
+                    source_files.push(("replacement-runner", replacement_runner.as_path()));
+                }
+                let receipt = write_agent_token_publication_bundle(AgentTokenPublicationInput {
+                    output_dir: &args.output_dir,
+                    release_version: &args.release_version,
+                    measured_product_snapshot: &args.measured_product_snapshot,
+                    measured_ait_executable_sha256: &args.measured_ait_sha256,
+                    campaign_runner_sha256: &args.campaign_runner_sha256,
+                    manifest: &manifest,
+                    report,
+                    runs: &statistical_view.effective_runs,
+                    excluded_runs: &statistical_view.excluded_runs,
+                    run_summary_paths: &statistical_view.effective_run_summary_paths,
+                    excluded_run_summary_paths: &statistical_view.excluded_run_summary_paths,
+                    source_files: &source_files,
+                })?;
+                emit_json(&receipt)
             }
             AgentTokenCommand::Compare(args) => {
                 let baseline = load_agent_token_report(&args.baseline_report)?;

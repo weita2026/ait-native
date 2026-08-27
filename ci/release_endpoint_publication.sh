@@ -555,6 +555,87 @@ copy_asset "${dossier_root}/ait-release.promotion.json" 'ait-release.promotion.j
 copy_asset "${frozen_manifest}" 'ait-release-family.manifest.json'
 copy_asset "${frozen_checksums}" 'ait-release-frozen.SHA256SUMS'
 
+if [[ ${release_version} == 1.1.0 ]]; then
+  benchmark_campaign=game-v1-g56s-max-complete200-fx27-20260826
+  benchmark_relative=release/benchmarks/${benchmark_campaign}
+  if [[ -d ${repo_root}/${benchmark_relative} &&
+    ! -L ${repo_root}/${benchmark_relative} ]]; then
+    benchmark_root=${repo_root}/${benchmark_relative}
+  elif [[ -d ${repo_root}/ait-core/${benchmark_relative} &&
+    ! -L ${repo_root}/ait-core/${benchmark_relative} ]]; then
+    benchmark_root=${repo_root}/ait-core/${benchmark_relative}
+  else
+    printf '1.1.0 public benchmark dossier is unavailable\n' >&2
+    exit 66
+  fi
+  for benchmark_file in summary.txt result.json runs.json SHA256SUMS; do
+    require_regular_file "${benchmark_root}/${benchmark_file}" \
+      '1.1.0 public benchmark artifact'
+  done
+  if [[ $(verify_checksum_inventory \
+      "${benchmark_root}/SHA256SUMS" "${benchmark_root}" \
+      '1.1.0 public benchmark dossier') != 3 ]]; then
+    printf '1.1.0 public benchmark checksum inventory is not exact\n' >&2
+    exit 65
+  fi
+  if ! jq -e '
+    .contract == "ait-agent-token-benchmark-publication/v1" and
+    .release_version == "1.1.0" and
+    .campaign_id == "game-v1-g56s-max-complete200-fx27-20260826" and
+    .scheduled_run_count == 200 and .observed_run_count == 200 and
+    .executed_evidence_run_count == 201 and
+    .statistically_excluded_run_count == 1 and
+    .valid_run_count == 200 and .invalid_run_count == 0 and
+    .accepted_run_count == 200 and
+    .accepted_by_mode == {
+      ait_linear_single_session: 100,
+      git_linear_single_session: 100
+    } and
+    .source_protocol_claim_eligible == false and
+    .claim_eligible == true and
+    .claim_blockers == [] and
+    (.retained_failures | length) == 0 and
+    (.statistically_excluded_failures | length) == 1 and
+    .statistically_excluded_failures[0].workload_id == "GD-05" and
+    .statistically_excluded_failures[0].mode == "ait_linear_single_session" and
+    .statistically_excluded_failures[0].evaluator_score == 50 and
+    .replacement_policy_revision == "game-development-2026-08-27.29" and
+    (.statistical_replacements | length) == 1 and
+    .statistical_replacements[0].source_run_id == "game-v1-g56s-max-complete200-fx27-20260826-b006-gd-05-ait" and
+    .statistical_replacements[0].replacement_run_id == "game-v1-g56s-max-complete200-fx27-20260826-b006-gd-05-ait-replacement-01" and
+    .statistical_replacements[0].replacement_runner_sha256 == "sha256:89046039ffa7554b8791e5b2c2c75eaa42ac8c719bd93e831d1fc6ba2814d71d" and
+    .source_sha256["replacement-runner"] == "89046039ffa7554b8791e5b2c2c75eaa42ac8c719bd93e831d1fc6ba2814d71d"
+  ' "${benchmark_root}/result.json" >/dev/null; then
+    printf '1.1.0 public benchmark result contract is not exact\n' >&2
+    exit 65
+  fi
+  if ! jq -e '
+    .contract == "ait-agent-token-benchmark-public-runs/v1" and
+    .campaign_id == "game-v1-g56s-max-complete200-fx27-20260826" and
+    .scheduled_run_count == 200 and .observed_run_count == 200 and
+    .executed_evidence_run_count == 201 and
+    .statistically_excluded_run_count == 1 and
+    (.runs | length) == 200 and
+    ([.runs[] | select(.valid_attempt == false)] | length) == 0 and
+    ([.runs[] | select(.accepted_equivalent == false)] | length) == 0 and
+    (.excluded_runs | length) == 1 and
+    .excluded_runs[0].valid_attempt == true and
+    .excluded_runs[0].accepted_equivalent == false and
+    .excluded_runs[0].evaluator_score == 50
+  ' "${benchmark_root}/runs.json" >/dev/null; then
+    printf '1.1.0 public benchmark run index is not exact\n' >&2
+    exit 65
+  fi
+  copy_asset "${benchmark_root}/summary.txt" \
+    "ait-agent-token-benchmark-${benchmark_campaign}.txt"
+  copy_asset "${benchmark_root}/result.json" \
+    "ait-agent-token-benchmark-${benchmark_campaign}.result.json"
+  copy_asset "${benchmark_root}/runs.json" \
+    "ait-agent-token-benchmark-${benchmark_campaign}.runs.json"
+  copy_asset "${benchmark_root}/SHA256SUMS" \
+    "ait-agent-token-benchmark-${benchmark_campaign}.SHA256SUMS"
+fi
+
 for component in ait-server ait-runner; do
   context=${staging}/oci/${component}
   cp "${repo_root}/release/oci/${component}.Dockerfile" "${context}/Dockerfile"

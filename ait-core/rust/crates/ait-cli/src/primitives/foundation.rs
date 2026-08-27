@@ -11,15 +11,15 @@ pub(super) const AI_RELATED_AUTHOR_MODES: &[&str] = &[
     "human_with_ai_assist",
 ];
 pub(super) const CODE_REVIEW_SUMMARY_TEMPLATE: &str =
-    "Reviewed files: <paths reviewed>; Findings: <findings resolved before submission>; Risks: <residual risks>; Tests: <checks run>; Recommendation: <pass when this exact Patchset is ready>";
+    "Reviewed files: <paths reviewed>; Findings: <findings resolved before submission>; Risks: <residual risks>; Tests: <checks run>; Recommendation: <pass when this selected Patchset is ready>";
 pub(super) const CODE_REVIEW_SUMMARY_NUMBERED_TEMPLATE: &str =
-    "1. Reviewed files\n<paths reviewed>\n2. Findings\n<findings resolved before submission>\n3. Risks\n<residual risks>\n4. Tests\n<checks run>\n5. Recommendation\n<pass when this exact Patchset is ready>";
+    "1. Reviewed files\n<paths reviewed>\n2. Findings\n<findings resolved before submission>\n3. Risks\n<residual risks>\n4. Tests\n<checks run>\n5. Recommendation\n<pass when this selected Patchset is ready>";
 pub(super) const CODE_REVIEW_SUMMARY_TEMPLATE_HINT_COMMAND: &str =
     "ait review code template --style numbered";
 pub(super) const AUTOMATIC_TASK_APPROVAL_COMMENT: &str =
     "Automatic Task approval authorized by repository `task_review=automatic` policy.";
 pub(super) const COMPLETED_LOCAL_FINAL_SNAPSHOT_PROMOTION_GUIDANCE: &str =
-    "To promote completed `solo_local` work, select the latest landed local change and run `ait workflow ready <local-change-id> --apply --remote <name>` once, then hand that exact Patchset to a reviewer running `ait workflow land <local-change-id> --apply --remote <name>`. This publishes the consecutive local Task/Change/Snapshot/Land history while gating only one aggregate Patchset; do not replay earlier local rows with `change publish` or `--all-completed-local`.";
+    "To promote completed `solo_local` work, select the latest landed local Change and run `ait workflow ready <local-change-id> --apply --remote <name>` once, then hand the selected Patchset to a reviewer running `ait workflow finish <local-change-id> --apply --remote <name>`. This publishes the consecutive local Task, Change, Snapshot, and Land history while checking only one aggregate Patchset; do not replay earlier local rows with `change publish` or `--all-completed-local`.";
 pub(super) const APP_DIR: &str = ".ait";
 pub(super) const WORKTREE_CONFIG_NAME: &str = ".ait-worktree.json";
 pub(super) const WORKFLOW_READY_POLL_SECONDS_KEY: &str = "workflow_ready_poll_seconds";
@@ -868,9 +868,9 @@ pub(super) fn validate_main_seed_cargo_projection(
     let workspace_root = seed_repo.workspace_root();
     let cargo_config_path = workspace_root.join(WORKTREE_CARGO_CONFIG_RELATIVE_PATH);
     let metadata = fs::symlink_metadata(&cargo_config_path)
-        .map_err(|err| format!("Cargo projection metadata is unavailable: {err}"))?;
+        .map_err(|err| format!("Managed Cargo file metadata is unavailable: {err}"))?;
     if metadata.file_type().is_symlink() || !metadata.is_file() {
-        return Err("Cargo projection is not a physical file.".to_string());
+        return Err("The managed Cargo path is not a physical file.".to_string());
     }
     let store = seed_repo
         .local_snapshot_operation_store::<SNAPSHOT_BINARY_DB_WRITE_LAYOUT>(&workspace_root)?;
@@ -890,7 +890,7 @@ pub(super) fn validate_main_seed_cargo_projection(
     let actual = fs::read_to_string(&cargo_config_path).map_err(|err| err.to_string())?;
     if actual != expected {
         return Err(format!(
-            "Cargo projection content does not match the seed workspace path: expected_sha256={}, actual_sha256={}.",
+            "Managed Cargo file content does not match the seed workspace path: expected_sha256={}, actual_sha256={}.",
             sha256_hex_bytes(expected.as_bytes()),
             sha256_hex_bytes(actual.as_bytes())
         ));
@@ -901,7 +901,7 @@ pub(super) fn validate_main_seed_cargo_projection(
     )?) & 0o777;
     if fingerprint.file_kind != "file" || fingerprint.mode_bits & 0o777 != expected_mode {
         return Err(format!(
-            "Cargo projection mode does not match: expected {expected_mode:#o}, got {:#o}.",
+            "Managed Cargo file mode does not match: expected {expected_mode:#o}, got {:#o}.",
             fingerprint.mode_bits & 0o777
         ));
     }

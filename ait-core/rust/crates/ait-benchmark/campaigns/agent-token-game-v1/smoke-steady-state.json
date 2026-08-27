@@ -1,7 +1,7 @@
 {
   "contract": "ait-agent-token-benchmark-campaign/v1",
   "campaign_id": "game-v1-smoke-steady-state-template",
-  "protocol_revision": "game-development-2026-08-22.10",
+  "protocol_revision": "game-development-2026-08-27.29",
   "campaign_scope": "smoke",
   "accounting_profile": "steady_state_task_cost",
   "seed": 20260822,
@@ -22,7 +22,8 @@
     "browser_program": null,
     "fixture_manifest": "../../fixtures/agent-token-game-v1/manifest.json",
     "run_timeout_seconds": 1800,
-    "ait_first_use_worktree_add_dir": null
+    "ait_first_use_worktree_add_dir": null,
+    "project_doc_max_bytes": 0
   },
   "cache_class": "provider_default_fresh_ephemeral_session",
   "network_policy": "disabled_except_loopback",

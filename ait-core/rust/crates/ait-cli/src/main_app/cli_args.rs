@@ -15,10 +15,16 @@ enum Commands {
         #[command(subcommand)]
         command: BinaryDbCommand,
     },
+    #[command(
+        visible_alias = "branch",
+        about = "Manage named Lines and their Snapshot heads.",
+        long_about = "Manage named Lines and their Snapshot heads. `ait branch` is a Git-friendly alias with the same subcommands, safety checks, and output; the recorded objects remain AIT Lines and Snapshots."
+    )]
     Line {
         #[command(subcommand)]
         command: LineCommand,
     },
+    #[command(about = "Import, export, or mirror history between Git and AIT.")]
     Git {
         #[command(subcommand)]
         command: GitCommand,
@@ -30,6 +36,7 @@ enum Commands {
         #[command(subcommand)]
         command: DoctorCommand,
     },
+    #[command(about = "Summarize active Tasks, Changes, worktrees, and reviews.")]
     Queue {
         #[command(subcommand)]
         command: QueueCommand,
@@ -44,11 +51,12 @@ enum Commands {
         #[command(subcommand)]
         command: CurrentSourceCacheCommand,
     },
+    #[command(about = "Build, inspect, and publish versioned release artifacts.")]
     Release {
         #[command(subcommand)]
         command: ReleaseCommand,
     },
-    #[command(about = "Inspect and manage the configured remote Repository authority.")]
+    #[command(about = "Inspect and manage the configured Repository on its remote server.")]
     Repo {
         #[command(subcommand)]
         command: RepoCommand,
@@ -58,14 +66,14 @@ enum Commands {
         #[command(subcommand)]
         command: AuthCommand,
     },
-    #[command(about = "Inspect effective configuration and mutate only admitted user-owned overrides.")]
+    #[command(about = "Inspect effective configuration and change supported user settings.")]
     Config {
         #[command(subcommand)]
         command: ConfigCommand,
     },
     #[command(
         about = "Manage reproducible external Repository dependencies.",
-        long_about = "Inspect, diagnose, resolve, pin, materialize, and locally link external Repository dependencies declared by ait-external.toml. Resolution writes an exact ait-external.lock; generated content is materialized below each declaration's repository-relative destination."
+        long_about = "Inspect, diagnose, resolve, pin, restore, and locally link external Repository dependencies declared by ait-external.toml. Resolution writes an exact ait-external.lock; generated content is placed at each repository-relative destination declared in the manifest."
     )]
     External {
         #[command(subcommand)]
@@ -73,12 +81,12 @@ enum Commands {
     },
     #[command(
         about = "Inspect the current repository, Line, Snapshot, workspace, and actionable local status.",
-        long_about = "Inspect the current repository, Line, Snapshot, workspace, bounded hygiene findings, and actionable reconciliation state without modifying repository or runtime authority. Use --json for the compact versioned agent-action projection; add --full for the previous complete projection."
+        long_about = "Inspect the current repository, Line, Snapshot, workspace, bounded maintenance findings, and actionable repair state without changing repository data or runtime state. Use --json for compact versioned machine-readable output; add --full for the complete output."
     )]
     Status(StatusArgs),
     #[command(
         about = "Compare the current workspace with the current Line head.",
-        long_about = "Compare the current workspace with the current Line head without modifying repository or workspace authority. With no output option, emit the existing unified text diff. Use --json for the stable machine-readable projection, --stat for per-file text statistics, or --name-only for the ordered changed-path list. Positional PATH values select exact workspace-relative files or directory subtrees using lexical matching, not globs."
+        long_about = "Compare the current workspace with the current Line head without changing repository data or workspace files. With no output option, emit a unified text diff. Use --json for stable machine-readable output, --stat for per-file text statistics, or --name-only for the ordered changed-path list. Positional PATH values select specific workspace-relative files or directory subtrees using lexical matching, not globs."
     )]
     Diff(DiffArgs),
     #[command(
@@ -86,6 +94,10 @@ enum Commands {
         long_about = "Import the selected remote Line's reachable Snapshot chain and safely create or fast-forward its local Line. The configured default remote and current local Line are used when omitted. Workspace files remain unchanged unless --restore is supplied."
     )]
     Pull(PullArgs),
+    #[command(
+        about = "Upload one local Line and its Snapshot history to a remote.",
+        long_about = "Upload an already-recorded local Line head and its required Snapshot history, then update the remote Line. Push does not capture workspace changes, create a Snapshot, publish a Patchset, or finish a Task."
+    )]
     Push(PushArgs),
     #[command(
         about = "Inspect and safely maintain local content storage.",
@@ -104,30 +116,36 @@ enum Commands {
         command: StashCommand,
     },
     #[command(
-        about = "Inspect and reconcile local or remote Plan authority.",
-        long_about = "Inspect, select, and reconcile Plan revision lineage. With no scope flag, solo_local uses local authority and solo_remote uses the configured default remote. --local and --remote are explicit cross-mode compatibility overrides. Remote sync always reconciles local Plan lineage before publishing; no Plan command creates a Snapshot or advances a Line."
+        about = "Inspect and sync local or remote Plans.",
+        long_about = "Inspect, select, and sync Plan revision history. Without --local or --remote, solo_local uses local Plans and solo_remote uses the configured default remote. Either flag explicitly overrides that default. Remote sync updates local Plan history before publishing; no Plan command creates a Snapshot or advances a Line."
     )]
     Plan {
         #[command(subcommand)]
         command: PlanCommand,
     },
-    #[command(about = "Start, inspect, audit, land, or abandon scoped Task lifecycle authority.")]
+    #[command(about = "Start, inspect, check, finish, or abandon Tasks locally or on a remote.")]
     Task {
         #[command(subcommand)]
         command: TaskCommand,
     },
+    #[command(about = "Create, inspect, publish, or close Task-owned Changes.")]
     Change {
         #[command(subcommand)]
         command: ChangeCommand,
     },
     #[command(
         about = "Create and inspect immutable local Snapshots and restore selected workspace content.",
-        long_about = "Create, inspect, compare, and query immutable local Snapshots. Snapshot create advances the current Line head; restore-lines, revert, and replay modify only the current workspace and never create a Snapshot, move a Line head, or mutate remote authority."
+        long_about = "Create, inspect, compare, and query immutable local Snapshots. Snapshot create advances the current Line head; restore-lines, revert, and replay change only workspace files and never create a Snapshot, move a Line head, or change remote data."
     )]
     Snapshot {
         #[command(subcommand)]
         command: SnapshotCommand,
     },
+    #[command(
+        about = "Create an AIT Snapshot using Git-friendly commit naming.",
+        long_about = "Git-friendly alias for `ait snapshot create`. Capture the managed workspace as a new immutable local Snapshot and advance the current Line head. The result remains an AIT Snapshot, uses the same output and safety checks, and does not publish remote data."
+    )]
+    Commit(SnapshotCreateArgs),
     #[command(
         about = "Create, inspect, and delete local Snapshot Tags.",
         long_about = "Create, inspect, list, and delete local-only AIT Tags that name exact Snapshots. An existing Tag binding cannot be retargeted, and deleting a Tag never deletes its Snapshot."
@@ -138,7 +156,7 @@ enum Commands {
     },
     #[command(
         about = "Publish and inspect remote Change revisions and their CI state.",
-        long_about = "Publish the current local Line head as a remote Change revision, inspect or select exact published Patchsets, and read or manually rerun their remote CI. Patchsets have remote authority only; --remote selects a configured remote and there is no local Patchset mode."
+        long_about = "Publish the current local Line head as a remote Change revision, inspect or select specific published Patchsets, and read or manually rerun their remote CI. Published Patchsets exist only on remotes; --remote selects a configured remote and there is no local Patchset mode."
     )]
     Patchset {
         #[command(subcommand)]
@@ -149,22 +167,25 @@ enum Commands {
         #[command(subcommand)]
         command: ReviewCommand,
     },
+    #[command(about = "Record and inspect evidence for remote Patchsets.")]
     Attest {
         #[command(subcommand)]
         command: AttestCommand,
     },
+    #[command(about = "Check, inspect, or waive remote Patchset requirements.")]
     Policy {
         #[command(subcommand)]
         command: PolicyCommand,
     },
     #[command(
         about = "Inspect, restore, recover, synchronize, rebase, and remove isolated worktrees.",
-        long_about = "Inspect and maintain isolated worktrees that share repository .ait authority while carrying their own materialized content, current Line, and optional Task/Change binding. Normal Task worktrees are created by task start. Cleanup, prune-stale, and remove require --yes when applied; use --dry-run to preview destructive removal."
+        long_about = "Inspect and maintain isolated worktrees that share repository .ait data while carrying their own checked-out files, current Line, and optional Task/Change binding. Normal Task worktrees are created by task start. Cleanup, prune-stale, and remove require --yes when applied; use --dry-run to preview destructive removal."
     )]
     Worktree {
         #[command(subcommand)]
         command: WorktreeCommand,
     },
+    #[command(about = "Prepare Changes for review, finish ready work, and repair workflow state.")]
     Workflow {
         #[command(subcommand)]
         command: WorkflowCommand,
@@ -200,7 +221,7 @@ struct InitArgs {
     policy_profile: String,
     #[arg(
         long = "repair-existing",
-        help = "Complete missing structure in an existing .ait directory; malformed authority is never overwritten."
+        help = "Complete missing structure in an existing .ait directory; invalid existing data is never overwritten."
     )]
     repair_existing: bool,
     #[arg(long, help = "Emit the stable JSON result.")]
@@ -251,10 +272,15 @@ struct GcPruneArgs {
 
 #[derive(Subcommand)]
 enum LineCommand {
+    #[command(about = "List active local Lines or Lines from a remote.")]
     List(LineListArgs),
+    #[command(about = "Create a new local Line at a Snapshot head.")]
     Create(LineCreateArgs),
+    #[command(about = "Select a local Line, optionally restoring its files.")]
     Switch(LineSwitchArgs),
+    #[command(about = "Show one local or remote Line and its current head.")]
     Show(LineShowArgs),
+    #[command(about = "Archive a local or remote Line without deleting its Snapshots.")]
     Archive(LineArchiveArgs),
     #[command(about = "Rename a line while preserving its stable identity and reconciling bound pointers.")]
     Rename(LineRenameArgs),
@@ -262,7 +288,7 @@ enum LineCommand {
     Delete(LineDeleteArgs),
     #[command(about = "Merge one Line into the current Line with resumable conflict state and a two-parent Snapshot.")]
     Merge(LineMergeArgs),
-    #[command(about = "Preview idle temporary Lines, or archive the admitted candidates with --yes.")]
+    #[command(about = "Preview idle temporary Lines, or archive eligible candidates with --yes.")]
     Cleanup(LineCleanupArgs),
 }
 
@@ -290,7 +316,7 @@ struct GitImportArgs {
     all_branches_and_tags: bool,
     #[arg(
         long,
-        help = "Inspect and validate the immutable import plan without persistent AIT mutation."
+        help = "Inspect and validate the immutable import plan without writing AIT data."
     )]
     dry_run: bool,
     #[arg(long, help = "Emit the complete machine-readable JSON result.")]
@@ -311,7 +337,7 @@ struct GitExportArgs {
     all_lines_and_tags: bool,
     #[arg(
         long,
-        help = "Inspect and validate the immutable export plan without target or AIT mutation."
+        help = "Inspect and validate the immutable export plan without writing the target or AIT data."
     )]
     dry_run: bool,
     #[arg(long, help = "Emit the complete machine-readable JSON result.")]
@@ -334,7 +360,7 @@ struct GitMirrorArgs {
     direction: String,
     #[arg(
         long,
-        help = "Classify and validate the complete branch/tag ref set without persistent mutation."
+        help = "Classify and validate the complete branch and tag set without writing changes."
     )]
     dry_run: bool,
     #[arg(long, help = "Emit the complete machine-readable JSON result.")]
@@ -343,6 +369,7 @@ struct GitMirrorArgs {
 
 #[derive(Subcommand)]
 enum QueueCommand {
+    #[command(about = "Show active local work and the configured remote review inbox.")]
     Summary(QueueSummaryArgs),
 }
 
@@ -362,23 +389,23 @@ enum RemoteCommand {
 #[derive(Subcommand)]
 enum ExternalCommand {
     #[command(
-        about = "Resolve and materialize declared external Repositories.",
-        long_about = "Resolve and materialize declared external Repositories. With no NAME, preserve the manifest's exact pins while reconciling the complete lock DAG. NAME requires exactly one of --to or --latest. --locked is a separate target-free mode that reads an existing drift-free lockfile without changing manifest or lock authority."
+        about = "Resolve and restore declared external Repositories.",
+        long_about = "Resolve and restore declared external Repositories. With no NAME, preserve the manifest's exact pins while updating the complete dependency lock. NAME requires exactly one of --to or --latest. --locked is a separate target-free mode that reads an existing drift-free lockfile without changing the manifest or lockfile."
     )]
     Update(ExternalUpdateArgs),
     #[command(
-        about = "Inspect external pins, links, lock drift, and materialization state.",
-        long_about = "Read manifest, lockfile, local-link, binding-path, and generated-materialization facts without repairing or changing them. States include materialized, missing, linked, dirty, and outdated; lock drift is reported separately."
+        about = "Inspect external pins, links, lock drift, and restored content.",
+        long_about = "Read the manifest, lockfile, local links, destination paths, and generated content without repairing or changing them. The report explains whether content is present, missing, linked, dirty, or outdated; lock drift is reported separately."
     )]
     Status(ExternalStatusArgs),
     #[command(
         about = "Evaluate external dependency release readiness without repairing it.",
-        long_about = "Evaluate manifest, lockfile, materialization, local-link, binding, license, and applicable current-source readiness. The report is always emitted. By default findings are diagnostic only; --fail-on-blocking returns exit code 2 when release_ready is false."
+        long_about = "Check the manifest, lockfile, restored content, local links, destination bindings, licenses, and applicable current-source readiness. The report is always emitted. By default findings are diagnostic only; --fail-on-blocking returns exit code 2 when release_ready is false."
     )]
     Doctor(ExternalDoctorArgs),
     #[command(
         about = "Use another local checkout for one declared direct external.",
-        long_about = "Record a local development override in ait-external.links.toml. NAME must match exactly one direct ait-external.toml declaration. PATH must be an existing directory outside this authoritative Repository; regular updates preserve the override, while locked and release-ready materialization reject active links."
+        long_about = "Record a local development override in ait-external.links.toml. NAME must match exactly one direct ait-external.toml declaration. PATH must be an existing directory outside the current Repository; regular updates preserve the override, while locked restores and release checks reject active links."
     )]
     Link(ExternalLinkArgs),
     #[command(
@@ -408,7 +435,7 @@ struct ExternalUpdateArgs {
         long = "to",
         requires = "name",
         conflicts_with_all = ["latest", "locked"],
-        help = "Pin NAME to this exact immutable Snapshot before resolving and materializing."
+        help = "Pin NAME to this exact immutable Snapshot before resolving and restoring its files."
     )]
     snapshot: Option<String>,
     #[arg(
@@ -421,17 +448,17 @@ struct ExternalUpdateArgs {
     #[arg(
         long,
         conflicts_with_all = ["name", "snapshot", "latest"],
-        help = "Materialize the existing drift-free ait-external.lock without resolving or changing pins; active local links are rejected."
+        help = "Restore external files from the existing drift-free ait-external.lock without resolving or changing pins; active local links are rejected."
     )]
     locked: bool,
     #[arg(
         long,
-        help = "Stage the selected materialization and binding toolchain probes first; apply it only when validation has no errors."
+        help = "Prepare the selected files and run destination toolchain checks first; install them only when validation has no errors."
     )]
     validate: bool,
     #[arg(
         long = "no-recursive",
-        help = "Materialize direct externals only; the resolved lockfile remains a complete recursive DAG."
+        help = "Restore direct external dependencies only; the resolved lockfile still records the complete dependency graph."
     )]
     no_recursive: bool,
     #[arg(long, help = "Emit the complete machine-readable update report.")]
@@ -541,12 +568,12 @@ enum RepoCommand {
     Show(RemoteJsonArgs),
     #[command(
         about = "Drain, archive, verify, and purge a remote Repository, or abort that retirement.",
-        long_about = "Without --abort, drain the remote Repository, durably download and verify its complete authority archive, then purge server authority. An unrelated complete local archive blocks retirement and must be handled with `ait repo restore --remote <NAME>`; there is no archive replacement option. With --abort, reactivate the Repository and preserve any complete local archive."
+        long_about = "Without --abort, stop new work for the remote Repository, download and verify its complete archive, then delete its server data. An unrelated complete local archive blocks retirement and must be handled with `ait repo restore --remote <NAME>`; there is no archive replacement option. With --abort, reactivate the Repository and preserve any complete local archive."
     )]
     Retire(RepoRetireArgs),
     #[command(
         about = "Restore a complete local retirement archive as a new remote Repository.",
-        long_about = "Verify the complete `.ait/remote/<remote>/` retirement archive, create a new remote Repository index, upload and commit its authority, then update the local configured Repository index. Archive identity is authoritative; there is no name, index, or force override."
+        long_about = "Verify the complete `.ait/remote/<remote>/` retirement archive, create a new remote Repository index, upload and save its data, then update the locally configured Repository index. The archive determines the restored identity; there is no name, index, or force override."
     )]
     Restore(RemoteJsonArgs),
     #[command(about = "Read one Worker Job or a bounded, optionally filtered Job inventory.")]
@@ -569,17 +596,17 @@ enum AuthCommand {
 enum ConfigCommand {
     #[command(
         about = "Inspect effective repository configuration without modifying it.",
-        long_about = "Read authoritative root configuration plus the applicable worktree overlay and report effective values. Human output is compact; --json returns the complete machine-readable projection."
+        long_about = "Read repository configuration plus the applicable worktree settings and report the effective values. Human output is compact; --json returns the complete machine-readable result."
     )]
     Show(ConfigShowArgs),
     #[command(
-        about = "Set admitted user-owned repository defaults.",
-        long_about = "Set one or more admitted user-owned defaults, then refresh effective configuration and generated workflow guidance. Repository authority indexes, derived scopes, and Plan-binding internals cannot be set here. Use `ait config unset <KEY>` to remove an optional override."
+        about = "Set supported user-owned repository defaults.",
+        long_about = "Set one or more supported user-owned defaults, then refresh effective configuration and generated workflow guidance. Internal Repository indexes, derived local/remote settings, and Plan bindings cannot be set here. Use `ait config unset <KEY>` to remove an optional override."
     )]
     Set(Box<ConfigSetArgs>),
     #[command(
-        about = "Remove one admitted user-owned override.",
-        long_about = "Delete exactly one admitted optional override from authoritative root configuration, then refresh effective configuration and generated workflow guidance. Fallbacks are: default-author-mode -> ai_with_human_review; default-model -> unset; task-review -> automatic; task-worktree-alias-root -> .ait-worktree-links; task-worktree-main-seed-ram-max-bytes -> no configured budget; id-namespace-prefix -> empty; user-name and user-email -> unset while actor detection remains available. Repository authority indexes, workflow-mode, sprint, derived scopes, and Plan-binding internals cannot be unset."
+        about = "Remove one supported user setting.",
+        long_about = "Delete exactly one optional user setting from repository configuration, then refresh effective configuration and generated workflow guidance. Fallbacks are: default-author-mode -> ai_with_human_review; default-model -> unset; task-review -> automatic; task-worktree-alias-root -> .ait-worktree-links; task-worktree-main-seed-ram-max-bytes -> no configured budget; id-namespace-prefix -> empty; user-name and user-email -> unset while actor detection remains available. Internal Repository indexes, workflow-mode, sprint, derived local/remote settings, and Plan bindings cannot be unset."
     )]
     Unset(ConfigUnsetArgs),
 }
@@ -597,8 +624,8 @@ enum DoctorCommand {
     )]
     RuntimeRoot(DoctorRuntimeRootArgs),
     #[command(
-        about = "Inspect the fixed Rust-native Plan authority contract.",
-        long_about = "Inspect the fixed Rust-native Plan authority contract and required exports."
+        about = "Inspect the fixed Rust-native Plan storage contract.",
+        long_about = "Inspect the fixed Rust-native Plan storage contract and required exports."
     )]
     PlanAuthority(DoctorPlanAuthorityArgs),
 }
@@ -629,7 +656,7 @@ struct LineCreateArgs {
 #[derive(Args, Clone)]
 struct LineSwitchArgs {
     name: String,
-    #[arg(long, help = "Materialize the selected Line head into the workspace.")]
+    #[arg(long, help = "Restore the selected Line head's files into the workspace.")]
     restore: bool,
     #[arg(long, requires = "restore", help = "Allow --restore to overwrite conflicting workspace changes.")]
     force: bool,
@@ -713,7 +740,7 @@ struct LineCleanupArgs {
         help = "Show every selected row; protected rows still require --include-protected."
     )]
     all: bool,
-    #[arg(long, help = "Archive the admitted candidates; omission is always a read-only preview.")]
+    #[arg(long, help = "Archive the eligible candidates; omission is always a read-only preview.")]
     yes: bool,
     #[arg(long)]
     json: bool,
@@ -721,9 +748,9 @@ struct LineCleanupArgs {
 
 #[derive(Args, Clone)]
 struct QueueSummaryArgs {
-    #[arg(long)]
+    #[arg(long, help = "Read the review inbox from this configured remote instead of the default remote.")]
     remote: Option<String>,
-    #[arg(long)]
+    #[arg(long, help = "Emit the complete machine-readable summary.")]
     json: bool,
 }
 
@@ -972,7 +999,7 @@ struct ReleaseCheckArgs {
         long = "public-source-root",
         value_name = "DIR",
         hide = true,
-        help = "Protected CI only: retain exported public Git source authority while verifying family receipts"
+        help = "Protected CI only: retain the exported public Git source while verifying family receipts"
     )]
     public_source_root: Option<PathBuf>,
     #[arg(long = "tests-command")]
@@ -989,14 +1016,14 @@ struct ReleaseBuildArgs {
     #[arg(
         long = "receipts",
         value_name = "DIR",
-        help = "Freeze family artifacts admitted from component receipts below DIR"
+        help = "Freeze family artifacts verified from component receipts below DIR"
     )]
     receipts: Option<PathBuf>,
     #[arg(
         long = "public-source-root",
         value_name = "DIR",
         hide = true,
-        help = "Protected CI only: retain exported public Git source authority while freezing family artifacts"
+        help = "Protected CI only: retain the exported public Git source while freezing family artifacts"
     )]
     public_source_root: Option<PathBuf>,
     #[arg(
@@ -1060,7 +1087,7 @@ struct ReleasePackageArgs {
         long = "public-source-root",
         value_name = "DIR",
         hide = true,
-        help = "Protected CI only: retain exported public Git source authority while assembling a frozen family channel"
+        help = "Protected CI only: retain the exported public Git source while assembling a frozen family channel"
     )]
     public_source_root: Option<PathBuf>,
     #[arg(long)]
@@ -1091,7 +1118,7 @@ struct ReleaseShowArgs {
         long = "public-source-root",
         value_name = "DIR",
         hide = true,
-        help = "Protected CI only: retain exported public Git source authority while inspecting a family dossier"
+        help = "Protected CI only: retain the exported public Git source while inspecting a family dossier"
     )]
     public_source_root: Option<PathBuf>,
     #[arg(long)]
@@ -1116,7 +1143,7 @@ struct ReleasePromoteArgs {
         long = "public-source-root",
         value_name = "DIR",
         hide = true,
-        help = "Protected CI only: retain exported public Git source authority while emitting the family promotion handoff"
+        help = "Protected CI only: retain the exported public Git source while emitting the family promotion handoff"
     )]
     public_source_root: Option<PathBuf>,
     #[arg(long)]
@@ -1164,7 +1191,7 @@ struct RepoJobsArgs {
         long = "worker-job-index",
         value_name = "INDEX",
         conflicts_with_all = ["state", "limit"],
-        help = "Read one exact Repository-scoped Worker Job; cannot be combined with list filters."
+        help = "Read one specific Worker Job from the current Repository; cannot be combined with list filters."
     )]
     worker_job_index: Option<u32>,
     #[arg(
@@ -1238,12 +1265,12 @@ struct AuthBindingsArgs {
 
 #[derive(Args, Clone)]
 struct StatusArgs {
-    #[arg(long, help = "Emit the compact versioned machine-readable status projection.")]
+    #[arg(long, help = "Emit compact versioned machine-readable status.")]
     json: bool,
     #[arg(
         long,
         requires = "json",
-        help = "With --json, emit the previous complete status projection."
+        help = "With --json, emit the complete status result."
     )]
     full: bool,
 }
@@ -1253,7 +1280,7 @@ struct DiffArgs {
     #[arg(
         long,
         conflicts_with_all = ["stat", "name_only"],
-        help = "Emit the stable machine-readable workspace-diff projection."
+        help = "Emit the stable machine-readable workspace diff."
     )]
     json: bool,
     #[arg(
@@ -1291,12 +1318,12 @@ struct PullArgs {
     #[arg(
         long,
         requires = "restore",
-        help = "Merge a divergent imported remote head into the current local Line and materialize the result; requires --restore and a clean workspace."
+        help = "Merge a divergent imported remote head into the current local Line and restore the resulting files; requires --restore and a clean workspace."
     )]
     merge: bool,
     #[arg(
         long,
-        help = "Materialize the pulled Line into the workspace and select that Line; rejected when the local Line is ahead of the remote."
+        help = "Restore the pulled Line's files into the workspace and select that Line; rejected when the local Line is ahead of the remote."
     )]
     restore: bool,
     #[arg(
@@ -1312,11 +1339,11 @@ struct PullArgs {
 
 #[derive(Args, Clone)]
 struct PushArgs {
-    #[arg(long)]
+    #[arg(long, help = "Upload to this configured remote instead of the repository default.")]
     remote: Option<String>,
-    #[arg(long)]
+    #[arg(long, help = "Upload this local Line instead of the current Line.")]
     line: Option<String>,
-    #[arg(long)]
+    #[arg(long, help = "Emit the complete machine-readable push result.")]
     json: bool,
 }
 
@@ -1392,13 +1419,13 @@ struct BlameArgs {
     #[arg(
         long = "plan-id",
         conflicts_with_all = ["plan_ref", "snapshot_id", "patchset_id"],
-        help = "Select one current Markdown lineage plan explicitly when the same artifact path is tracked by multiple current plans."
+        help = "Select one current Markdown Plan when the same file path is tracked by multiple current Plans."
     )]
     plan_id: Option<String>,
     #[arg(
         long = "plan-ref",
         conflicts_with_all = ["plan_id", "snapshot_id", "patchset_id"],
-        help = "Select one current Markdown lineage plan by artifact selector/ref."
+        help = "Select one current Markdown Plan by file selector or reference."
     )]
     plan_ref: Option<String>,
     #[arg(long)]
@@ -1526,7 +1553,7 @@ struct ConfigSetArgs {
     #[arg(
         long = "workflow-mode",
         value_enum,
-        help = "Set the complete workflow preset. This owns workflow/task/change scopes and defaults sprint mode to on unless --sprint is supplied."
+        help = "Set the complete workflow preset. This chooses where Workflow, Task, and Change commands run and defaults sprint mode to on unless --sprint is supplied."
     )]
     workflow_mode: Option<ConfigWorkflowModeArg>,
     #[arg(
@@ -1582,7 +1609,7 @@ struct ConfigSetArgs {
 struct ConfigUnsetArgs {
     #[arg(
         value_enum,
-        help = "Admitted optional user override to remove."
+        help = "Supported optional user setting to remove."
     )]
     key: ConfigUnsetKeyArg,
     #[arg(long, help = "Emit the complete machine-readable effective configuration after removal.")]
@@ -1592,33 +1619,33 @@ struct ConfigUnsetArgs {
 #[derive(Subcommand)]
 enum PlanCommand {
     #[command(
-        about = "List Plans in the effective local or remote scope.",
-        long_about = "List Plans from the scope selected by --local, --remote, or the workflow-mode default. Human output is bounded to active Plans unless --all is supplied; JSON always returns the complete command payload and therefore rejects --all. This command is read-only."
+        about = "List local Plans or Plans from a remote.",
+        long_about = "List Plans locally, from --remote, or from the location selected by the workflow mode. Human output is bounded to active Plans unless --all is supplied; JSON always returns the complete command result and therefore rejects --all. This command is read-only."
     )]
     List(PlanListArgs),
     #[command(
         about = "Show one Plan and its selected revision.",
-        long_about = "Show one Plan from the effective local or remote scope. Without --revision, show the current head revision. Local canonical selectors include PR-<ordinal>, artifact:<path>, title:<title>, and published-plan:<index>; remote selectors are the identifiers returned by remote plan list. This command is read-only."
+        long_about = "Show one Plan locally, from --remote, or from the location selected by the workflow mode. Without --revision, show the current head revision. Local selectors include PR-<ordinal>, artifact:<path>, title:<title>, and published-plan:<index>; remote selectors are the identifiers returned by remote plan list. This command is read-only."
     )]
     Show(ShowArgs),
     #[command(
         about = "List revision history for one Plan.",
-        long_about = "List one Plan's revisions newest first from the effective local or remote scope. Human output is bounded unless --all is supplied; JSON already returns the complete command payload and therefore rejects --all. This command is read-only."
+        long_about = "List one Plan's revisions newest first, using local data, --remote, or the location selected by the workflow mode. Human output is bounded unless --all is supplied; JSON already returns the complete command result and therefore rejects --all. This command is read-only."
     )]
     Revisions(PlanIdArgs),
     #[command(
         about = "List checklist items from one Plan revision.",
-        long_about = "List parsed checklist items from one Plan in the effective local or remote scope. Without --revision, inspect the current head. This command is read-only and does not change item or Task state."
+        long_about = "List parsed checklist items from one local or remote Plan. Without --revision, inspect the current head. This command is read-only and does not change item or Task state."
     )]
     Items(ShowArgs),
     #[command(
         about = "Find active Plans that can supply Task candidates.",
-        long_about = "Find active Plans in the effective local or remote scope, ordered for Task selection. By default only Plans with at least one taskable item are returned; --all also includes active Plans with zero taskable items. --contains applies case-insensitive OR matching across Plan titles, artifact paths and selectors, headings, and item text or refs. This command is read-only."
+        long_about = "Find active local or remote Plans, ordered for Task selection. By default only Plans with at least one taskable item are returned; --all also includes active Plans with zero taskable items. --contains applies case-insensitive OR matching across Plan titles, file paths and selectors, headings, and item text or refs. This command is read-only."
     )]
     Candidates(CandidatesArgs),
     #[command(
         about = "Inspect Task-readiness details for one Plan revision.",
-        long_about = "Inspect summary counts and per-item Task-readiness blockers for one Plan in the effective local or remote scope. Without --revision, inspect the current head. This command is read-only."
+        long_about = "Inspect summary counts and per-item Task-readiness blockers for one local or remote Plan. Without --revision, inspect the current head. This command is read-only."
     )]
     Inspect(ShowArgs),
     #[command(
@@ -1631,22 +1658,22 @@ enum PlanCommand {
 #[derive(Subcommand)]
 enum TaskCommand {
     #[command(
-        about = "Start one Task and its initial Change in the configured scope or an explicit local/remote compatibility scope; sprint mode uses one exact file-backed Plan item",
+        about = "Start one Task and its initial Change locally or on a remote; sprint mode uses one specific file-backed Plan item",
         override_usage = "ait task start --intent <INTENT> (--from <MARKDOWN_PATH#ITEM_REF> | --title <TITLE>) [--local | --remote <REMOTE>] [--json [--full]]"
     )]
     Start(TaskStartArgs),
-    #[command(about = "List the bounded open Task inventory or complete history in one selected scope")]
+    #[command(about = "List open Tasks or complete Task history locally or on a remote")]
     List(TaskListArgs),
-    #[command(about = "Show one Task record from one selected scope")]
+    #[command(about = "Show one local or remote Task")]
     Show(TaskShowArgs),
-    #[command(about = "Read-only audit of one Task against logical main in one selected scope")]
+    #[command(about = "Check one local or remote Task against main without changing it")]
     Audit(TaskAuditArgs),
     #[command(
-        about = TASK_LAND_COMMAND_ABOUT
+        about = TASK_FINISH_COMMAND_ABOUT
     )]
-    Land(TaskLandArgs),
+    Finish(TaskFinishArgs),
     #[command(
-        about = "Permanently abandon one Task lineage and cancel its open Changes in the configured scope or an explicit local/remote compatibility scope"
+        about = "Permanently abandon one local or remote Task and cancel its open Changes"
     )]
     Abandon(TaskAbandonArgs),
 }
@@ -1655,23 +1682,23 @@ enum TaskCommand {
 enum ChangeCommand {
     #[command(about = "Create an additional Change for an existing Task.")]
     Create(ChangeCreateArgs),
-    #[command(about = "List the current scope's open Changes or complete history.")]
+    #[command(about = "List open Changes or complete Change history locally or on a remote.")]
     List(ChangeListArgs),
-    #[command(about = "Inspect one task-scoped Change without modifying it.")]
+    #[command(about = "Inspect one Task-owned Change without changing it.")]
     Show(ChangeShowArgs),
     #[command(
         about = "Remove one Change's recorded delta from the current workspace.",
-        long_about = "Remove one Change's recorded fork-to-revision delta from the current workspace. This does not create a Snapshot, move the current Line head, close the Change, or mutate remote state."
+        long_about = "Remove one Change's recorded fork-to-revision delta from the current workspace. This does not create a Snapshot, move the current Line head, close the Change, or change remote data."
     )]
     Revert(ChangeRevertArgs),
     #[command(
         about = "Apply one Change's recorded delta to the current workspace.",
-        long_about = "Apply one Change's recorded fork-to-revision delta to the current Line workspace. This does not create a Snapshot, move the Line head, land the Change, or mutate remote state."
+        long_about = "Apply one Change's recorded fork-to-revision delta to the current Line workspace. This does not create a Snapshot, move the Line head, land the Change, or change remote data."
     )]
     Replay(ChangeReplayArgs),
     #[command(
         about = "Archive one Change without landing it.",
-        long_about = "Archive one Change in the selected scope without landing code. A successful close also attempts bounded safe-only Plan reconciliation for the owning Task."
+        long_about = "Archive one local or remote Change without landing code. A successful close also attempts a bounded safe Plan repair for the owning Task."
     )]
     Close(ChangeCloseArgs),
     #[command(
@@ -1685,7 +1712,7 @@ enum ChangeCommand {
 enum SnapshotCommand {
     #[command(
         about = "Capture the managed workspace as a new Snapshot.",
-        long_about = "Capture the projected managed workspace as a new immutable local Snapshot and advance the current Line head. This command does not publish remote state."
+        long_about = "Capture the managed workspace as a new immutable local Snapshot and advance the current Line head. This command does not publish remote data."
     )]
     Create(SnapshotCreateArgs),
     #[command(
@@ -1742,7 +1769,7 @@ enum SnapshotCommand {
 enum StashCommand {
     #[command(
         about = "Save modified workspace content as a temporary local-only stash.",
-        long_about = "Save modified managed-workspace content as a temporary local-only stash Snapshot without advancing the current Line head. By default, restore the current Line head into the workspace after saving; --keep-workspace leaves the saved content materialized."
+        long_about = "Save modified managed-workspace content as a temporary local-only stash Snapshot without advancing the current Line head. By default, restore the current Line head into the workspace after saving; --keep-workspace leaves the saved files in place."
     )]
     Save(StashSaveArgs),
     #[command(
@@ -1756,12 +1783,12 @@ enum StashCommand {
     Show(StashIdArgs),
     #[command(
         about = "Restore a same-Line stash and retain its stash record.",
-        long_about = "Replace the entire managed workspace with an active stash Snapshot and retain its stash record, without moving the current Line head. The current Line must be the stash's source Line. This is full workspace materialization, not a patch or three-way merge."
+        long_about = "Replace the entire managed workspace with an active stash Snapshot and retain its stash record, without moving the current Line head. The current Line must be the stash's source Line. This restores the complete workspace rather than applying a patch or three-way merge."
     )]
     Apply(StashRestoreArgs),
     #[command(
         about = "Restore a same-Line stash and then drop its stash record.",
-        long_about = "Replace the entire managed workspace with an active stash Snapshot and drop its stash record only after a successful restore, without moving the current Line head. The current Line must be the stash's source Line. This is full workspace materialization, not a patch or three-way merge."
+        long_about = "Replace the entire managed workspace with an active stash Snapshot and drop its stash record only after a successful restore, without moving the current Line head. The current Line must be the stash's source Line. This restores the complete workspace rather than applying a patch or three-way merge."
     )]
     Pop(StashRestoreArgs),
     #[command(
@@ -1800,14 +1827,14 @@ enum PatchsetCommand {
     #[command(about = "Show one exact published remote Patchset without modifying it.")]
     Show(PatchsetShowArgs),
     #[command(
-        about = "Select one exact Patchset on its owning remote Change.",
-        long_about = "Read the exact Patchset first, derive its owning Change from remote authority, then make that Patchset the Change's selected revision. The owning Change cannot be supplied or overridden by the caller."
+        about = "Select one specific Patchset on its owning remote Change.",
+        long_about = "Read the requested Patchset, find its owning remote Change, then make that Patchset the Change's selected revision. The owning Change cannot be supplied or overridden by the caller."
     )]
     Select(PatchsetSelectArgs),
     #[command(
         name = "ci-status",
         about = "Read CI state for one exact remote Patchset.",
-        long_about = "Read current CI readiness and a fixed bounded history of the 10 most recent CI jobs for one exact published Patchset without modifying remote authority."
+        long_about = "Read current CI readiness and the 10 most recent CI jobs for one published Patchset without changing remote data."
     )]
     CiStatus(PatchsetCiStatusArgs),
     #[command(
@@ -1822,7 +1849,7 @@ enum PatchsetCommand {
 enum ReviewCommand {
     #[command(about = "Show compact remote Review state for one Change.")]
     Show(ReviewShowArgs),
-    #[command(about = "Manage team governance review; admitted only in team_remote mode.")]
+    #[command(about = "Manage team governance review; available only in team_remote mode.")]
     Team {
         #[command(subcommand)]
         command: ReviewTeamCommand,
@@ -1850,7 +1877,7 @@ enum ReviewTeamCommand {
 
 #[derive(Subcommand)]
 enum ReviewTaskCommand {
-    #[command(about = "Approve one exact Patchset after functional validation; task_review=required only.")]
+    #[command(about = "Approve one specific Patchset after functional validation; task_review=required only.")]
     Approve(ReviewTaskApproveArgs),
     RequestChanges(ReviewTaskRecordArgs),
     Comment(ReviewTaskRecordArgs),
@@ -1882,21 +1909,26 @@ impl ReviewCodeTemplateStyleArg {
 
 #[derive(Subcommand)]
 enum AttestCommand {
+    #[command(about = "Record test, lint, security, license, and authorship evidence for a remote Patchset.")]
     Put(AttestPutArgs),
+    #[command(about = "Show recorded evidence for one remote Patchset.")]
     Show(AttestShowArgs),
 }
 
 #[derive(Subcommand)]
 enum PolicyCommand {
+    #[command(about = "Check the configured Policy for a selected remote Patchset.")]
     Eval(PolicyEvalArgs),
+    #[command(about = "Show the recorded Policy result for a remote Patchset.")]
     Show(PolicyShowArgs),
+    #[command(about = "Request a reasoned Policy waiver for a remote Patchset.")]
     Waive(PolicyWaiveArgs),
 }
 
 #[derive(Subcommand)]
 enum WorktreeCommand {
     #[command(
-        about = "Compare one checkout with a Line head or exact Snapshot.",
+        about = "Compare one checkout with a Line head or specific Snapshot.",
         long_about = "Report modified, missing, and untracked paths in the selected checkout without restoring content or moving a Line head. NAME selects a registered worktree; when omitted, inspect the current checkout. --snapshot and --line are mutually exclusive, and omission of both compares with the current Line head."
     )]
     Status(WorktreeStatusArgs),
@@ -1907,7 +1939,7 @@ enum WorktreeCommand {
     Restore(WorktreeRestoreArgs),
     #[command(
         about = "Show one registered worktree and its refreshed live status.",
-        long_about = "Show registered and current Line identity, materialized status, Task/Change binding, cleanup classification, and rebase or merge state for one worktree. NAME may be omitted only when the current runtime context resolves a worktree binding."
+        long_about = "Show the registered and current Line, checked-out Snapshot, Task/Change binding, cleanup classification, and rebase or merge state for one worktree. NAME may be omitted only when the current checkout belongs to a registered worktree."
     )]
     Show(WorktreeShowArgs),
     #[command(
@@ -1945,18 +1977,18 @@ enum WorktreeCommand {
     List(WorktreeListArgs),
     #[command(
         about = "Synchronize one or all worktrees to their selected Line heads.",
-        long_about = "Restore a complete registered worktree to a Line head and update its materialized Snapshot, current Line, and runtime metadata. NAME selects one worktree; --all selects every live worktree and uses each one's current Line. --all cannot be combined with NAME or --line. Dirty content requires --force, and --dry-run previews without applying the restore."
+        long_about = "Restore a complete registered worktree to a Line head and update its checked-out Snapshot, current Line, and runtime metadata. NAME selects one worktree; --all selects every available worktree and uses each one's current Line. --all cannot be combined with NAME or --line. Unsaved changes require --force, and --dry-run previews without applying the restore."
     )]
     Sync(WorktreeSyncArgs),
     #[command(
         about = "Recreate a missing registered Task worktree.",
-        long_about = "Recreate the recorded path and alias of a Task-bound worktree whose registered path is missing. Recovery selects the first locally available current-Line head, fork Snapshot, or selected remote Patchset revision. A present or unbound worktree is rejected; --dry-run validates and reports the candidate without materializing it."
+        long_about = "Recreate the recorded path and alias of a Task-bound worktree whose registered path is missing. Recovery selects the first locally available current-Line head, fork Snapshot, or selected remote Patchset revision. An existing or unbound worktree is rejected; --dry-run validates and reports the candidate without creating its files."
     )]
     Recreate(WorktreeRecreateArgs),
     #[command(
         name = "recover-task",
         about = "Recover a local authoring worktree for an existing remote Task and Change.",
-        long_about = "Run from the authoritative repository root to validate an active or draft remote Task and its draft or review Change, then recreate their local feature Line and Task-bound worktree. This command does not create remote Task or Change authority. If a registration already exists but its path is missing, use worktree recreate instead."
+        long_about = "Run from the main repository root to validate an active or draft remote Task and its draft or review Change, then recreate their local feature Line and Task-bound worktree. This command does not create a remote Task or Change. If a registration already exists but its path is missing, use worktree recreate instead."
     )]
     RecoverTask(WorktreeRecoverTaskArgs),
     #[command(
@@ -1982,14 +2014,14 @@ struct QueryScopeArgs {
     #[arg(
         long,
         conflicts_with = "remote",
-        help = "Use local Plan authority, overriding a remote workflow default"
+        help = "Use local Plans even when the workflow mode defaults to a remote"
     )]
     local: bool,
     #[arg(
         long,
         conflicts_with = "local",
         value_name = "NAME",
-        help = "Use the named remote Plan authority, overriding a local workflow default"
+        help = "Use Plans from the named remote even when the workflow mode defaults to local"
     )]
     remote: Option<String>,
     #[arg(long, help = "Emit the complete stable machine-readable payload")]
@@ -2047,14 +2079,14 @@ struct CandidatesArgs {
     #[arg(
         long,
         conflicts_with = "remote",
-        help = "Use local Plan authority, overriding a remote workflow default"
+        help = "Use local Plans even when the workflow mode defaults to a remote"
     )]
     local: bool,
     #[arg(
         long,
         conflicts_with = "local",
         value_name = "NAME",
-        help = "Use the named remote Plan authority, overriding a local workflow default"
+        help = "Use Plans from the named remote even when the workflow mode defaults to local"
     )]
     remote: Option<String>,
     #[arg(
@@ -2076,7 +2108,7 @@ struct CandidatesArgs {
 struct SyncArgs {
     #[arg(
         value_name = "TARGET",
-        help = "Repository-relative Markdown file or directory to reconcile into local Plan revision lineage"
+        help = "Repository-relative Markdown file or directory to sync into local Plan revision history"
     )]
     target: PathBuf,
     #[arg(
@@ -2093,20 +2125,20 @@ struct SyncArgs {
     #[arg(
         long,
         conflicts_with = "remote",
-        help = "Reconcile local Plan lineage only, overriding a remote workflow default; never create a Snapshot or advance a Line"
+        help = "Sync local Plan history only, even when the workflow mode defaults to a remote; never create a Snapshot or advance a Line"
     )]
     local: bool,
     #[arg(
         long,
         conflicts_with = "local",
         value_name = "NAME",
-        help = "Reconcile local Plan lineage, then publish the touched heads to the named remote, overriding a local workflow default"
+        help = "Sync local Plan history, then publish the updated heads to the named remote even when the workflow mode defaults to local"
     )]
     remote: Option<String>,
     #[arg(
         long,
         conflicts_with = "reconcile",
-        help = "In effective remote scope, replay the current local Plan head after a divergent remote-head rejection"
+        help = "When using a remote, replay the current local Plan head after the remote rejects divergent history"
     )]
     rebase: bool,
     #[arg(
@@ -2125,21 +2157,21 @@ struct SyncArgs {
 #[derive(Subcommand)]
 enum WorkflowCommand {
     #[command(
-        about = "Show helper playbooks that collapse common inventory and landing command bursts."
+        about = "Show step-by-step guidance for common inventory and finish operations."
     )]
     Guide(WorkflowGuideArgs),
     #[command(
-        about = "Inventory cross-object Task, Change, Line, worktree, land, and Plan-binding state; dry-run is the default and never mutates Plan state."
+        about = "Inspect Task, Change, Line, worktree, land, and Plan bindings for repair; dry-run is the default and never changes Plan state."
     )]
     Reconcile(WorkflowReconcileArgs),
     #[command(
-        about = "Show or apply the text-only ready phase for one change before review and remote land; every preparation input requires --apply."
+        about = "Check or prepare one Change for review and remote finish; changes require --apply."
     )]
     Ready(WorkflowReadyArgs),
     #[command(
-        about = "Show or apply the remote-only reviewer-owned exact-Patchset Review and Policy gates for one change, then delegate the already-ready final mutation to atomic Task Land."
+        about = "Check or apply remote Review and Policy requirements for one Change's selected Patchset, then safely finish the ready Change."
     )]
-    Land(WorkflowLandArgs),
+    Finish(WorkflowFinishArgs),
 }
 
 #[derive(Args, Clone)]
@@ -2163,13 +2195,13 @@ struct TaskStartArgs {
     #[arg(
         long,
         conflicts_with = "remote",
-        help = "Force local authority even when the configured workflow mode defaults to remote"
+        help = "Start the Task locally even when the workflow mode defaults to a remote"
     )]
     local: bool,
     #[arg(
         long,
         conflicts_with = "local",
-        help = "Force the named remote authority even when the configured workflow mode defaults to local"
+        help = "Start the Task on the named remote even when the workflow mode defaults to local"
     )]
     remote: Option<String>,
     #[arg(long, help = "Emit the compact versioned machine-readable Task-start result")]
@@ -2187,13 +2219,13 @@ struct TaskListArgs {
     #[arg(
         long,
         conflicts_with = "remote",
-        help = "Read local Task authority even when the configured workflow mode defaults to remote"
+        help = "List local Tasks even when the workflow mode defaults to a remote"
     )]
     local: bool,
     #[arg(
         long,
         conflicts_with = "local",
-        help = "Read Task authority from the named remote even when the configured workflow mode defaults to local"
+        help = "List Tasks from the named remote even when the workflow mode defaults to local"
     )]
     remote: Option<String>,
     #[arg(long, help = "Show complete Task history instead of the bounded open view")]
@@ -2208,13 +2240,13 @@ struct TaskShowArgs {
     #[arg(
         long,
         conflicts_with = "remote",
-        help = "Read local Task authority even when the configured workflow mode defaults to remote"
+        help = "Read the local Task even when the workflow mode defaults to a remote"
     )]
     local: bool,
     #[arg(
         long,
         conflicts_with = "local",
-        help = "Read Task authority from the named remote even when the configured workflow mode defaults to local"
+        help = "Read the Task from the named remote even when the workflow mode defaults to local"
     )]
     remote: Option<String>,
     #[arg(long, help = "Emit the complete machine-readable Task record")]
@@ -2227,13 +2259,13 @@ struct TaskAuditArgs {
     #[arg(
         long,
         conflicts_with = "remote",
-        help = "Audit local Task authority even when the configured workflow mode defaults to remote"
+        help = "Check the local Task even when the workflow mode defaults to a remote"
     )]
     local: bool,
     #[arg(
         long,
         conflicts_with = "local",
-        help = "Audit Task authority on the named remote even when the configured workflow mode defaults to local"
+        help = "Check the Task on the named remote even when the workflow mode defaults to local"
     )]
     remote: Option<String>,
     #[arg(long, help = "Emit the complete machine-readable audit and recommended action")]
@@ -2241,15 +2273,21 @@ struct TaskAuditArgs {
 }
 
 #[derive(Args, Clone)]
-struct TaskLandArgs {
+struct TaskFinishArgs {
     #[arg(
-        help = "Task id or change id to land onto logical main with fixed direct mode. Scope follows workflow-mode unless --local or --remote is provided."
+        help = "Task ID or Change ID to finish onto main. The workflow mode chooses local or remote unless --local or --remote is provided."
     )]
     task_or_change_id: String,
     #[arg(
         long,
+        value_name = "MESSAGE",
+        help = "Create the final Snapshot from dirty local work before finishing; clean local work reuses the current Line head. Remote finish rejects this option."
+    )]
+    message: Option<String>,
+    #[arg(
+        long,
         conflicts_with = "remote",
-        help = "Force local draft land even when the configured workflow mode defaults to remote"
+        help = "Force local draft finish even when the configured workflow mode defaults to remote"
     )]
     local: bool,
     #[arg(
@@ -2258,12 +2296,12 @@ struct TaskLandArgs {
         help = "Force closeout through the named remote's already-ready selected Patchset even when the configured workflow mode defaults to local"
     )]
     remote: Option<String>,
-    #[arg(long, help = "Emit the compact versioned machine-readable land and closeout result")]
+    #[arg(long, help = "Emit the compact versioned machine-readable finish and closeout result")]
     json: bool,
     #[arg(
         long,
         requires = "json",
-        help = "With --json, emit the previous complete land and closeout result"
+        help = "With --json, emit the previous complete finish and closeout result"
     )]
     full: bool,
 }
@@ -2274,13 +2312,13 @@ struct TaskAbandonArgs {
     #[arg(
         long,
         conflicts_with = "remote",
-        help = "Abandon local Task authority even when the configured workflow mode defaults to remote"
+        help = "Abandon the local Task even when the workflow mode defaults to a remote"
     )]
     local: bool,
     #[arg(
         long,
         conflicts_with = "local",
-        help = "Abandon Task authority on the named remote even when the configured workflow mode defaults to local"
+        help = "Abandon the Task on the named remote even when the workflow mode defaults to local"
     )]
     remote: Option<String>,
     #[arg(long, help = "Emit the complete machine-readable terminal Task record")]
@@ -2289,7 +2327,7 @@ struct TaskAbandonArgs {
 
 #[derive(Args, Clone)]
 struct ChangeCreateArgs {
-    #[arg(help = "Existing Task ID that will own the new task-scoped Change.")]
+    #[arg(help = "Existing Task ID that will own the new Change.")]
     task_id: String,
     #[arg(long, help = "Required title for the new Change.")]
     title: String,
@@ -2302,13 +2340,13 @@ struct ChangeCreateArgs {
     #[arg(
         long,
         conflicts_with = "remote",
-        help = "Use local Change authority even when the configured Change scope is remote."
+        help = "Create the Change locally even when Change commands default to a remote."
     )]
     local: bool,
     #[arg(
         long,
         value_name = "REMOTE",
-        help = "Use the named remote Change authority even when the configured Change scope is local."
+        help = "Create the Change on the named remote even when Change commands default to local."
     )]
     remote: Option<String>,
     #[arg(long, help = "Emit stable machine-readable JSON.")]
@@ -2320,13 +2358,13 @@ struct ChangeListArgs {
     #[arg(
         long,
         conflicts_with = "remote",
-        help = "List local Changes even when the configured Change scope is remote."
+        help = "List local Changes even when Change commands default to a remote."
     )]
     local: bool,
     #[arg(
         long,
         value_name = "REMOTE",
-        help = "List Changes from the named remote even when the configured Change scope is local."
+        help = "List Changes from the named remote even when Change commands default to local."
     )]
     remote: Option<String>,
     #[arg(long, help = "Show complete Change history instead of the bounded open view.")]
@@ -2342,19 +2380,19 @@ struct ChangeListArgs {
 struct ChangeShowArgs {
     #[arg(
         value_name = "TASK_ID/C-##",
-        help = "Task-scoped Change reference; a bare C-## is accepted only when uniquely resolvable."
+        help = "Task-owned Change reference; a bare C-## is accepted only when it identifies one Change."
     )]
     change_id: String,
     #[arg(
         long,
         conflicts_with = "remote",
-        help = "Read local Change authority even when the configured Change scope is remote."
+        help = "Read the local Change even when Change commands default to a remote."
     )]
     local: bool,
     #[arg(
         long,
         value_name = "REMOTE",
-        help = "Read the named remote Change authority even when the configured Change scope is local."
+        help = "Read the Change from the named remote even when Change commands default to local."
     )]
     remote: Option<String>,
     #[arg(long, help = "Emit the complete stable machine-readable Change payload.")]
@@ -2365,7 +2403,7 @@ struct ChangeShowArgs {
 struct ChangeRevertArgs {
     #[arg(
         value_name = "TASK_ID/C-##",
-        help = "Task-scoped Change whose recorded delta will be removed from the workspace."
+        help = "Task-owned Change whose recorded delta will be removed from the workspace."
     )]
     change_id: String,
     #[arg(
@@ -2381,13 +2419,13 @@ struct ChangeRevertArgs {
     #[arg(
         long,
         conflicts_with = "remote",
-        help = "Resolve Change lineage locally even when the configured Change scope is remote."
+        help = "Read the Change's local history even when Change commands default to a remote."
     )]
     local: bool,
     #[arg(
         long,
         value_name = "REMOTE",
-        help = "Resolve Change lineage from the named remote; workspace mutation remains local."
+        help = "Read the Change's history from the named remote; only local workspace files are changed."
     )]
     remote: Option<String>,
     #[arg(long, help = "Emit the complete stable machine-readable workspace plan or result.")]
@@ -2398,7 +2436,7 @@ struct ChangeRevertArgs {
 struct ChangeReplayArgs {
     #[arg(
         value_name = "TASK_ID/C-##",
-        help = "Task-scoped Change whose recorded delta will be applied to the workspace."
+        help = "Task-owned Change whose recorded delta will be applied to the workspace."
     )]
     change_id: String,
     #[arg(
@@ -2421,13 +2459,13 @@ struct ChangeReplayArgs {
     #[arg(
         long,
         conflicts_with = "remote",
-        help = "Resolve Change lineage locally even when the configured Change scope is remote."
+        help = "Read the Change's local history even when Change commands default to a remote."
     )]
     local: bool,
     #[arg(
         long,
         value_name = "REMOTE",
-        help = "Resolve Change lineage from the named remote; workspace mutation remains local."
+        help = "Read the Change's history from the named remote; only local workspace files are changed."
     )]
     remote: Option<String>,
     #[arg(long, help = "Emit the complete stable machine-readable workspace plan or result.")]
@@ -2438,19 +2476,19 @@ struct ChangeReplayArgs {
 struct ChangeCloseArgs {
     #[arg(
         value_name = "TASK_ID/C-##",
-        help = "Task-scoped Change to archive without landing."
+        help = "Task-owned Change to archive without landing."
     )]
     change_id: String,
     #[arg(
         long,
         conflicts_with = "remote",
-        help = "Archive local Change authority even when the configured Change scope is remote."
+        help = "Archive the local Change even when Change commands default to a remote."
     )]
     local: bool,
     #[arg(
         long,
         value_name = "REMOTE",
-        help = "Archive Change authority on the named remote even when the configured scope is local."
+        help = "Archive the Change on the named remote even when Change commands default to local."
     )]
     remote: Option<String>,
     #[arg(long, help = "Emit the complete stable machine-readable closeout payload.")]
@@ -2461,7 +2499,7 @@ struct ChangeCloseArgs {
 struct ChangePublishArgs {
     #[arg(
         value_name = "TASK_ID/C-##",
-        help = "Local task-scoped draft Change to promote."
+        help = "Local Task-owned draft Change to promote."
     )]
     change_id: String,
     #[arg(
@@ -2476,7 +2514,12 @@ struct ChangePublishArgs {
 
 #[derive(Args, Clone)]
 struct SnapshotCreateArgs {
-    #[arg(long, value_name = "MESSAGE", help = "Record an optional human-readable Snapshot message.")]
+    #[arg(
+        short = 'm',
+        long,
+        value_name = "MESSAGE",
+        help = "Record an optional human-readable Snapshot message."
+    )]
     message: Option<String>,
     #[arg(long, help = "Emit the compact versioned machine-readable creation payload.")]
     json: bool,
@@ -2538,7 +2581,7 @@ struct SnapshotDiffArgs {
         default_value_t = DEFAULT_SNAPSHOT_DIFF_MAX_BYTES,
         value_parser = parse_positive_usize,
         requires = "include_text",
-        help = "Maximum old or new file size admitted for text diff generation; requires --include-text."
+        help = "Maximum old or new file size allowed for text diff generation; requires --include-text."
     )]
     max_bytes: usize,
     #[arg(long, help = "Emit the complete stable machine-readable diff payload.")]
@@ -2683,7 +2726,7 @@ struct SnapshotAncestryArgs {
     limit: usize,
     #[arg(
         long,
-        help = "Show every result admitted by --limit in text output instead of the nearest 20; JSON already includes every admitted result."
+        help = "Show every result allowed by --limit in text output instead of the nearest 20; JSON already includes all of them."
     )]
     all: bool,
     #[arg(long, help = "Emit the complete stable machine-readable bounded query payload.")]
@@ -2730,7 +2773,7 @@ struct StashSaveArgs {
     message: Option<String>,
     #[arg(
         long = "keep-workspace",
-        help = "Leave the saved content materialized; the Line head stays unchanged, so the workspace remains dirty relative to it."
+        help = "Leave the saved files in the workspace; the Line head stays unchanged, so the workspace remains dirty relative to it."
     )]
     keep_workspace: bool,
     #[arg(long, help = "Emit the complete machine-readable JSON result.")]
@@ -2968,12 +3011,12 @@ struct ReviewCodeSubmitArgs {
     #[arg(
         long = "patchset",
         value_parser = parse_exact_patchset_id,
-        help = "Complete published Patchset ID reviewed by the executing AI app; numeric repo-scoped refs are rejected."
+        help = "Complete published Patchset ID reviewed by the executing AI app; numeric Repository references are rejected."
     )]
     patchset_id: String,
     #[arg(
         long,
-        help = "Structured Reviewed files, Findings, Risks, Tests, and pass Recommendation summary for this exact Patchset."
+        help = "Structured Reviewed files, Findings, Risks, Tests, and pass Recommendation summary for this specific Patchset."
     )]
     message: String,
     #[arg(long, help = "Configured remote name; defaults to the repository's default remote.")]
@@ -2989,7 +3032,7 @@ struct ReviewTaskApproveArgs {
     #[arg(
         long = "patchset",
         value_parser = parse_exact_patchset_id,
-        help = "Complete published Patchset ID whose functionality was validated; numeric repo-scoped refs are rejected."
+        help = "Complete published Patchset ID whose functionality was validated; numeric Repository references are rejected."
     )]
     patchset_id: String,
     #[arg(
@@ -3031,11 +3074,11 @@ struct ReviewCodeTemplateArgs {
 
 #[derive(Args, Clone)]
 struct ReviewShowArgs {
-    #[arg(help = "Remote Change ID or admitted Change reference to inspect.")]
+    #[arg(help = "Remote Change ID or supported Change reference to inspect.")]
     change_id: String,
     #[arg(long, help = "Configured remote name; defaults to the repository's default remote.")]
     remote: Option<String>,
-    #[arg(long, help = "Emit the compact stable machine-readable Review projection.")]
+    #[arg(long, help = "Emit the compact stable machine-readable Review result.")]
     json: bool,
 }
 
@@ -3156,7 +3199,7 @@ struct WorktreeRestoreArgs {
     paths: Vec<String>,
     #[arg(
         long,
-        help = "Overwrite unsaved changes in the selected restore scope"
+        help = "Overwrite unsaved changes in the selected files"
     )]
     force: bool,
     #[arg(
@@ -3357,7 +3400,7 @@ struct WorktreeRecoverTaskArgs {
     #[arg(
         long,
         value_name = "CHANGE",
-        help = "Existing remote Change ID or Task-scoped Change reference"
+        help = "Existing remote Change ID or Task-owned Change reference"
     )]
     change: String,
     #[arg(
@@ -3515,12 +3558,12 @@ struct WorkflowReadyArgs {
 }
 
 #[derive(Args, Clone)]
-struct WorkflowLandArgs {
-    #[arg(help = "Remote Change id to inspect or land through reviewer-owned closeout.")]
+struct WorkflowFinishArgs {
+    #[arg(help = "Remote Change id to inspect or finish through reviewer-owned closeout.")]
     change_id: String,
     #[arg(
         long,
-        help = "Apply the safe next reviewer, policy, and atomic Task Land actions instead of only showing state."
+        help = "Apply the safe next reviewer, policy, and atomic closeout actions instead of only showing state."
     )]
     apply: bool,
     #[arg(
@@ -3560,7 +3603,7 @@ fn parse_exact_patchset_id(value: &str) -> Result<String, String> {
     }
     if patchset_id.chars().all(|ch| ch.is_ascii_digit()) {
         return Err(
-            "exact published Patchset ID required; numeric repo-scoped refs are ambiguous"
+            "complete published Patchset ID required; numeric Repository references are ambiguous"
                 .to_string(),
         );
     }

@@ -104,7 +104,7 @@ pub(in crate::primitives) fn workflow_ready_command_hints(
         remote_name,
     );
     let workflow_land_apply_command = workflow_command_with_remote_scope(
-        format!("ait workflow land {change_id} --apply"),
+        format!("ait workflow finish {change_id} --apply"),
         remote_name,
     );
     json!({
@@ -136,7 +136,7 @@ pub(in crate::primitives) fn workflow_land_command_hints(
     let team_review_enabled = repo.team_review_enabled();
     let patchset_id = patchset.and_then(|value| string_field(value, "patchset_id"));
     let apply_command = workflow_command_with_remote_scope(
-        format!("ait workflow land {change_id} --apply"),
+        format!("ait workflow finish {change_id} --apply"),
         remote_name,
     );
     let ready_command = workflow_command_with_remote_scope(
@@ -173,7 +173,7 @@ pub(in crate::primitives) fn workflow_land_command_hints(
         .map(|_| {
             JsonValue::String(workflow_command_with_remote_scope(
                 format!(
-                    "ait workflow land {change_id} --apply --review-message \"{CODE_REVIEW_SUMMARY_TEMPLATE}\""
+                    "ait workflow finish {change_id} --apply --review-message \"{CODE_REVIEW_SUMMARY_TEMPLATE}\""
                 ),
                 remote_name,
             ))
@@ -230,7 +230,7 @@ pub(in crate::primitives) fn workflow_land_command_hints(
         JsonValue::String("ait config set --user-name \"<name>\"".to_string())
     };
     let land_command =
-        workflow_command_with_remote_scope(format!("ait task land {change_id}"), remote_name);
+        workflow_command_with_remote_scope(format!("ait task finish {change_id}"), remote_name);
     json!({
         "publish_command": publish_command,
         "apply_command": apply_command,
@@ -250,6 +250,6 @@ pub(in crate::primitives) fn workflow_land_command_hints(
         "auto_review_reviewer": auto_review_reviewer,
         "policy_command": patchset_id.as_ref().map(|value| JsonValue::String(workflow_command_with_remote_scope(format!("ait policy eval {value}"), remote_name))).unwrap_or(JsonValue::Null),
         "land_command": land_command,
-        "task_land_command": workflow_command_with_remote_scope(format!("ait task land {change_id}"), remote_name),
+        "task_land_command": workflow_command_with_remote_scope(format!("ait task finish {change_id}"), remote_name),
     })
 }

@@ -1,7 +1,7 @@
 {
   "contract": "ait-agent-token-game-fixture-manifest/v1",
   "fixture_id": "ait-plane-shooter-agent-token-v1",
-  "revision": "game-development-2026-08-22.6",
+  "revision": "game-development-2026-08-25.8",
   "baseline_dir": "baseline",
   "evaluator_path": "evaluator/accept.mjs",
   "browser_evaluator_path": "evaluator/browser-check.mjs",
@@ -14,7 +14,7 @@
       "overlay_dir": "workloads/GD-01/overlay",
       "transform_path": "workloads/GD-01/source-transform.json",
       "acceptance_path": "workloads/GD-01/acceptance.json",
-      "expected_content_digest": "sha256:be5589514582183ce9d3ccdf7c3e2a4ae75753c55500826b8463cac102aa124e"
+      "expected_content_digest": "sha256:3fab82a398eefe2e47bdc5e0d80166160639e2ed97908361fe041e58ae65bee0"
     },
     {
       "workload_id": "GD-02",
@@ -23,7 +23,7 @@
       "overlay_dir": "workloads/GD-02/overlay",
       "transform_path": "workloads/GD-02/source-transform.json",
       "acceptance_path": "workloads/GD-02/acceptance.json",
-      "expected_content_digest": "sha256:c3970ad4be751a83eb7d9ad18404bfd2d4fa0adbec09fcfb1e7975c4a28b18b3"
+      "expected_content_digest": "sha256:f564d5b764819a35096a1a3be60ddc702feacab13ea42522e2ddb909e8b46b62"
     },
     {
       "workload_id": "GD-03",
@@ -32,7 +32,7 @@
       "overlay_dir": "workloads/GD-03/overlay",
       "transform_path": "workloads/GD-03/source-transform.json",
       "acceptance_path": "workloads/GD-03/acceptance.json",
-      "expected_content_digest": "sha256:a64a6a3b4361f0df3e85b95b1377115c5cced580a09c1958bc41e8e4537fb45b"
+      "expected_content_digest": "sha256:5fac1925aa87022013ed3fcfc3fec213fc88447f48548a001e4e8d7795d7c487"
     },
     {
       "workload_id": "GD-04",
@@ -41,7 +41,7 @@
       "overlay_dir": "workloads/GD-04/overlay",
       "transform_path": "workloads/GD-04/source-transform.json",
       "acceptance_path": "workloads/GD-04/acceptance.json",
-      "expected_content_digest": "sha256:424052205658dd82ab28192543c9b933c5f986d2d619e437cad216e004cf15d2"
+      "expected_content_digest": "sha256:e4e749a7147960746bb63d8e8b7ccacf1b99b0799e6bcb5d6e236cdf63cb53de"
     },
     {
       "workload_id": "GD-05",
@@ -50,7 +50,7 @@
       "overlay_dir": "workloads/GD-05/overlay",
       "transform_path": "workloads/GD-05/source-transform.json",
       "acceptance_path": "workloads/GD-05/acceptance.json",
-      "expected_content_digest": "sha256:076571585a4e35dcf3dfa3c32d4c47c8a64d4060b0b12686a797cb4aaa81e691"
+      "expected_content_digest": "sha256:f9848d13745358fe444d16e80ac94300454e973770576173421186bdf3a1a645"
     }
   ]
 }

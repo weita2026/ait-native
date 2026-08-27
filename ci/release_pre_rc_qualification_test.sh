@@ -251,16 +251,6 @@ grep -F 'advance a qualified stable base by exactly one patch version' \
   "${temporary_root}/stable-skip.stderr" >/dev/null
 
 git -C "${fixture}" checkout -q --detach "${stable_base_commit}"
-write_family 1.3.0 1.3.0 SNP-AAAAAAAAAAAA
-git -C "${fixture}" add -A
-git -C "${fixture}" commit -qm 'stable minor jump'
-stable_minor_commit=$(git -C "${fixture}" rev-parse HEAD)
-expect_failure stable-minor node "${delta}" \
-  --repository "${fixture}" \
-  --qualified-commit "${stable_base_commit}" \
-  --release-commit "${stable_minor_commit}"
-
-git -C "${fixture}" checkout -q --detach "${stable_base_commit}"
 printf 'own 1.2.3 dependency 1.2.3 kept\n' >"${fixture}/component/mixed.txt"
 git -C "${fixture}" add -A
 git -C "${fixture}" commit -qm 'qualified stable base with mixed occurrences'
@@ -289,5 +279,50 @@ expect_failure mixed-non-token node "${delta}" \
   --release-commit "${mixed_bad_commit}"
 grep -F 'release delta contains non-version changes' \
   "${temporary_root}/mixed-non-token.stderr" >/dev/null
+
+git -C "${fixture}" checkout -q --detach "${stable_base_commit}"
+write_family 1.3.0 1.3.0 SNP-AAAAAAAAAAAA
+git -C "${fixture}" add -A
+git -C "${fixture}" commit -qm 'stable minor release'
+stable_minor_ok_commit=$(git -C "${fixture}" rev-parse HEAD)
+node "${delta}" \
+  --repository "${fixture}" \
+  --qualified-commit "${stable_base_commit}" \
+  --release-commit "${stable_minor_ok_commit}" >"${temporary_root}/stable-minor-ok.json"
+jq -e '
+  .decision == "pass" and
+  .qualified_version == "1.2.3" and
+  .release_version == "1.3.0"
+' "${temporary_root}/stable-minor-ok.json" >/dev/null
+
+git -C "${fixture}" checkout -q --detach "${stable_base_commit}"
+write_family 1.4.0 1.4.0 SNP-AAAAAAAAAAAA
+git -C "${fixture}" add -A
+git -C "${fixture}" commit -qm 'stable minor skip'
+stable_minor_skip_commit=$(git -C "${fixture}" rev-parse HEAD)
+expect_failure stable-minor-skip node "${delta}" \
+  --repository "${fixture}" \
+  --qualified-commit "${stable_base_commit}" \
+  --release-commit "${stable_minor_skip_commit}"
+
+git -C "${fixture}" checkout -q --detach "${stable_base_commit}"
+write_family 1.3.1 1.3.1 SNP-AAAAAAAAAAAA
+git -C "${fixture}" add -A
+git -C "${fixture}" commit -qm 'stable minor with nonzero patch'
+stable_minor_patch_commit=$(git -C "${fixture}" rev-parse HEAD)
+expect_failure stable-minor-nonzero-patch node "${delta}" \
+  --repository "${fixture}" \
+  --qualified-commit "${stable_base_commit}" \
+  --release-commit "${stable_minor_patch_commit}"
+
+git -C "${fixture}" checkout -q --detach "${stable_base_commit}"
+write_family 2.0.0 2.0.0 SNP-AAAAAAAAAAAA
+git -C "${fixture}" add -A
+git -C "${fixture}" commit -qm 'stable major jump'
+stable_major_commit=$(git -C "${fixture}" rev-parse HEAD)
+expect_failure stable-major-jump node "${delta}" \
+  --repository "${fixture}" \
+  --qualified-commit "${stable_base_commit}" \
+  --release-commit "${stable_major_commit}"
 
 printf 'pre-RC qualification contract: pass\n'

@@ -10,7 +10,6 @@ destroys it and awards exactly 250 points. Normal enemies remain one-hit,
 
 Give the armored enemy a clearly distinct canvas appearance, retain seeded
 replay and the current GameModel API, and add focused validation. Do not add a
-dependency, backend, hosted asset, network request, Python file, or remote AIT
-workflow.
+dependency, backend, hosted asset, network request, or Python file.
 
 Run the project-local validation before completing the repository workflow.

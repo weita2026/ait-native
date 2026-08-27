@@ -84,6 +84,30 @@ pub trait BinaryDb: private::BinaryDbRecoveryIo {
         })
     }
 
+    /// Replaces one complete authority file through a same-filesystem staging
+    /// directory outside the active Binary DB root.
+    ///
+    /// Success means the atomic rename crossed. The caller still owns syncing
+    /// the returned staging directory and the target parent directory. An
+    /// error guarantees that the target was not replaced.
+    fn replace_file_atomically(
+        &self,
+        path: &Path,
+        bytes: &[u8],
+        publish_label: &str,
+    ) -> StoreResult<PathBuf> {
+        let staging_directory = binary_db_atomic_staging_directory(self.authority_root())?;
+        FilesystemFileIoStore
+            .write_bytes_atomically_from_directory(path, &staging_directory, bytes, publish_label)
+            .map_err(|e| {
+                file_io_error_to_binary(
+                    format!("atomically replace Binary DB file {}", path.display()),
+                    e,
+                )
+            })?;
+        Ok(staging_directory)
+    }
+
     fn layout_id(&self, file: BinaryFileId) -> StoreResult<u32>;
 
     fn record_count(&self, file: BinaryFileId) -> StoreResult<u32>;
@@ -204,6 +228,16 @@ pub trait BinaryDb: private::BinaryDbRecoveryIo {
     ) -> StoreResult<Vec<u32>> {
         self.lookup_index(index, key)
     }
+}
+
+fn binary_db_atomic_staging_directory(authority_root: &StorePath) -> StoreResult<PathBuf> {
+    let authority_parent = authority_root.as_path().parent().ok_or_else(|| {
+        BinaryDbError::invalid_domain_data(format!(
+            "Binary DB authority root has no staging parent: {}",
+            authority_root.as_path().display()
+        ))
+    })?;
+    Ok(authority_parent.join("binary-db-staging"))
 }
 
 #[derive(Clone, Copy, Debug)]

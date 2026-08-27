@@ -1,16 +1,24 @@
 fn run_change(repo: RepoRuntime, command: ChangeCommand) -> Result<(), String> {
     match command {
         ChangeCommand::Create(args) => {
-            let payload = run_locked_workspace_command(&repo, "ait-cli change create", || {
+            let payload = run_task_scoped_workspace_command(
+                &repo,
+                &args.task_id,
+                false,
+                false,
+                args.remote.as_deref(),
+                "ait-cli change create",
+                |execution_repo| {
                 change_create_cmd(
-                    &repo,
+                    execution_repo,
                     &args.task_id,
                     &args.title,
                     args.base_line.as_deref(),
                     args.local,
                     args.remote.as_deref(),
                 )
-            })?;
+                },
+            )?;
             emit_result(
                 "ait-cli change create",
                 &payload,

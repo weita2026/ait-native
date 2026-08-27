@@ -40,7 +40,7 @@ fn snapshot_restore_lines_unlocked(
     let rel_path = normalize_workspace_path(repo, &request.path)?;
     if is_lineage_only_markdown_artifact_path(&rel_path) {
         return Err(format!(
-            "Path {rel_path} is lineage-only Markdown and cannot be restored from a Snapshot."
+            "Path {rel_path} is a planning-only Markdown file and cannot be restored from a Snapshot."
         ));
     }
 

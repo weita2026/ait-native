@@ -29,7 +29,12 @@ fn run_doctor(command: DoctorCommand) -> Result<ExitCode, String> {
             emit_doctor_result("ait-cli doctor runtime-root", &payload, args.json)?;
         }
         DoctorCommand::PlanAuthority(args) => {
-            let payload = doctor_plan_authority()?;
+            let repo = RepoRuntime::discover().ok();
+            let repo_root = repo.as_ref().map(RepoRuntime::authoritative_repo_root);
+            let payload = match repo_root.as_deref() {
+                Some(repo_root) => doctor_plan_authority_for_repository(repo_root)?,
+                None => doctor_plan_authority()?,
+            };
             emit_doctor_result("ait-cli doctor plan-authority", &payload, args.json)?;
         }
     }
@@ -824,7 +829,7 @@ fn run_release(repo: RepoRuntime, command: ReleaseCommand) -> Result<(), String>
                     && args.profile.as_deref() != Some(FAMILY_RELEASE_PROFILE)
                 {
                     return Err(
-                        "--public-source-root is protected-CI authority input and requires --profile family."
+                        "--public-source-root is a protected-CI source input and requires --profile family."
                             .to_string(),
                     );
                 }

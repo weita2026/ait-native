@@ -44,8 +44,10 @@ will:
 2. use `ait blame` before repairing an identified regression;
 3. route authored Markdown through `ait plan sync`;
 4. use `ait task start` and the bound worktree for governed changes;
-5. record code through `ait snapshot create` after appropriate validation;
-6. finish through the configured `ait task land` path; and
+5. use standalone `ait snapshot create` for intermediate checkpoints when
+   needed and run appropriate validation;
+6. finish through the configured `ait task finish` path, adding `--message`
+   when dirty local work needs its final Snapshot; and
 7. stop when required policy, review, CI, authority, or user direction is
    missing.
 

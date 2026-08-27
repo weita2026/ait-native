@@ -277,7 +277,7 @@ where
         + ?Sized,
 {
     if change_id.is_none() && patchset_id.is_none() {
-        return Err("Provide CHANGE_ID so the task land helper can resolve a change.".to_string());
+        return Err("Provide CHANGE_ID so Task finish can resolve a Change.".to_string());
     }
     let resolved_patchset_id = normalized_text(patchset_id);
     let mut requested_change = normalized_text(change_id);
@@ -295,7 +295,7 @@ where
         explicit_patchset = Some(patchset);
     }
     let requested_change = requested_change
-        .ok_or_else(|| "Could not resolve a change for the task land helper.".to_string())?;
+        .ok_or_else(|| "Could not resolve a Change for Task finish.".to_string())?;
     let (change, task) =
         workflow_land_change_task_read_with_task_remote(task_remote, repo_name, &requested_change)?;
     let resolved_change_id = required_string_field(&change, "change_id")?;
@@ -648,7 +648,7 @@ pub(in crate::primitives) fn workflow_hydrate_land_state(
 ) -> Result<JsonValue, String> {
     let _hydrate_range = perfetto_range!("ait.task_land.state_hydration");
     if change_id.is_none() && patchset_id.is_none() {
-        return Err("Provide CHANGE_ID so the task land helper can resolve a change.".to_string());
+        return Err("Provide CHANGE_ID so Task finish can resolve a Change.".to_string());
     }
     let (remote_row, repo_name) = remote_context(repo, remote_name, None)?;
     let mut task_remote = http_task_remote(repo, &remote_row)?;
@@ -706,7 +706,7 @@ pub(in crate::primitives) fn workflow_hydrate_land_state(
             ) {
                 let object = remote_state
                     .as_object_mut()
-                    .ok_or_else(|| "Workflow land remote state must be an object.".to_string())?;
+                    .ok_or_else(|| "Workflow finish remote state must be an object.".to_string())?;
                 object.insert("landed".to_string(), JsonValue::Bool(true));
                 object.insert("landing_summary".to_string(), landing_summary);
             }
@@ -746,7 +746,7 @@ pub(in crate::primitives) fn workflow_hydrate_land_state(
         );
         let object = remote_state
             .as_object_mut()
-            .ok_or_else(|| "Workflow land remote state must be an object.".to_string())?;
+            .ok_or_else(|| "Workflow finish remote state must be an object.".to_string())?;
         object.insert(
             "workspace_matches_patchset".to_string(),
             json!(workspace_matches_patchset),
@@ -757,7 +757,7 @@ pub(in crate::primitives) fn workflow_hydrate_land_state(
 
     let object = remote_state
         .as_object_mut()
-        .ok_or_else(|| "Workflow land remote state must be an object.".to_string())?;
+        .ok_or_else(|| "Workflow finish remote state must be an object.".to_string())?;
     object.insert("workspace".to_string(), workspace);
     object.insert(
         "current_line_name".to_string(),

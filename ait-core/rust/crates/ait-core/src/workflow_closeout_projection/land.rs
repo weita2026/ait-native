@@ -387,7 +387,7 @@ pub(crate) fn workflow_land_full_steps(
                 "Code review: {code_review_state}; Task review: pending; Team review: {team_review_state}."
             )
         } else if let Some(reviewer) = auto_review_reviewer {
-            format!("Code review: {code_review_state}; Task review: pending; Team review: {team_review_state}. Reviewer-owned `ait workflow land --apply` or a successful direct `ait review code submit` can record `task_approve` as `{reviewer}` before atomic Task Land.")
+            format!("Code review: {code_review_state}; Task review: pending; Team review: {team_review_state}. Reviewer-owned `ait workflow finish --apply` or a successful direct `ait review code submit` can record `task_approve` as `{reviewer}` before atomic Task Land.")
         } else {
             format!(
                 "Code review: {code_review_state}; Task review: pending; Team review: {team_review_state}. `task_review=automatic` requires `ait config` `user_name` before approval can be recorded."
@@ -461,7 +461,7 @@ pub(crate) fn workflow_land_full_steps(
             None,
         ));
     } else {
-        steps.push(workflow_land_step("policy", "Policy", "advisory", &format!("Policy is folded into `task land` for patchset `{patchset_id}`; land preflight will run the authoritative evaluation."), None));
+        steps.push(workflow_land_step("policy", "Policy", "advisory", &format!("Policy is folded into `task finish` for Patchset `{patchset_id}`; Land preflight will run the authoritative evaluation."), None));
     }
 
     let change_status = optional_string_field(&change, "status").unwrap_or_default();
@@ -559,7 +559,7 @@ pub(crate) fn workflow_land_full_steps(
             "land", "Land", "pending", &detail, command,
         ));
     } else {
-        steps.push(workflow_land_step("land", "Land", "ready", &format!("Change `{}` is ready to submit onto `{}`. `task land` will re-evaluate policy as part of land preflight.", string_field(facts, "resolved_change_id"), string_field(facts, "base_line_name")), land_command));
+        steps.push(workflow_land_step("land", "Land", "ready", &format!("Change `{}` is ready to submit onto `{}`. `task finish` will re-evaluate Policy as part of Land preflight.", string_field(facts, "resolved_change_id"), string_field(facts, "base_line_name")), land_command));
     }
 
     steps
@@ -618,10 +618,10 @@ pub(crate) fn workflow_land_phase_steps(facts: &JsonValue) -> Vec<JsonValue> {
                 "task",
                 "Task",
                 "pending",
-                "The change is landed; run task land again to close the slice.",
+                "The Change is landed; run task finish again to close the Task slice.",
                 optional_string_field(facts, "state_next_action_command").or_else(|| {
                     Some(format!(
-                        "ait task land {}",
+                        "ait task finish {}",
                         optional_string_field(&field_obj(facts, "change"), "change_id")
                             .unwrap_or_default()
                     ))

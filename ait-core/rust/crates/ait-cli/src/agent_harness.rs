@@ -167,6 +167,165 @@ fn effective_agent_harness_scope(repo: &RepoRuntime) -> &'static str {
     }
 }
 
+fn markdown_code_span(value: &str) -> String {
+    let normalized = value.split_whitespace().collect::<Vec<_>>().join(" ");
+    let longest_backtick_run = normalized
+        .split(|character| character != '`')
+        .map(str::len)
+        .max()
+        .unwrap_or(0);
+    let fence = "`".repeat(longest_backtick_run + 1);
+    if normalized.starts_with('`') || normalized.ends_with('`') {
+        format!("{fence} {normalized} {fence}")
+    } else {
+        format!("{fence}{normalized}{fence}")
+    }
+}
+
+fn effective_plan_binding_mode(repo: &RepoRuntime, sprint_enabled: bool) -> String {
+    repo.config
+        .get("plan_task_binding")
+        .and_then(|binding| binding.get("mode"))
+        .and_then(JsonValue::as_str)
+        .map(str::to_string)
+        .unwrap_or_else(|| {
+            if sprint_enabled {
+                "required".to_string()
+            } else {
+                "off".to_string()
+            }
+        })
+}
+
+fn render_effective_workflow_admission(
+    repo: &RepoRuntime,
+    workflow_mode: &str,
+    sprint_enabled: bool,
+    scope_label: &str,
+    land_contract: &crate::task_land_contract::TaskLandScopeContract,
+) -> String {
+    let mut satisfied = Vec::new();
+    let mut action_required = Vec::new();
+    let sprint = if sprint_enabled { "on" } else { "off" };
+    let binding = effective_plan_binding_mode(repo, sprint_enabled);
+    let expected_binding = if sprint_enabled { "required" } else { "off" };
+
+    if workflow_mode == "custom" {
+        action_required.push(format!(
+            "- entry: mode={}; scopes={} (unsupported workflow combination)",
+            markdown_code_span(workflow_mode),
+            markdown_code_span(scope_label),
+        ));
+    } else {
+        satisfied.push(format!(
+            "- entry: mode={}; sprint={}; scopes={}",
+            markdown_code_span(workflow_mode),
+            markdown_code_span(sprint),
+            markdown_code_span(scope_label),
+        ));
+    }
+    let binding_fact = format!("plan-binding={}", markdown_code_span(&binding));
+    if binding == expected_binding {
+        satisfied.push(format!("- entry: {binding_fact}"));
+    } else {
+        action_required.push(format!(
+            "- entry: {binding_fact} (expected {} for sprint={})",
+            markdown_code_span(expected_binding),
+            markdown_code_span(sprint),
+        ));
+    }
+
+    let default_remote = repo.default_remote_name();
+    if scope_label == "local" {
+        let remote = match default_remote.as_deref() {
+            Some(name) => format!("{} (inactive)", markdown_code_span(name)),
+            None => markdown_code_span("none"),
+        };
+        satisfied.push(format!(
+            "- entry: default-remote={remote}; transport={}; server-use={}",
+            markdown_code_span("local-only"),
+            markdown_code_span("none"),
+        ));
+    } else {
+        match default_remote.as_deref() {
+            Some(name) if repo.remote_row(Some(name)).is_ok() => satisfied.push(format!(
+                "- entry: default-remote={}; transport={}",
+                markdown_code_span(name),
+                markdown_code_span("remote"),
+            )),
+            Some(name) => action_required.push(format!(
+                "- entry: default-remote={} (configured remote is unavailable)",
+                markdown_code_span(name),
+            )),
+            None => action_required.push(format!(
+                "- entry: default-remote={} (required by {})",
+                markdown_code_span("unset"),
+                markdown_code_span(workflow_mode),
+            )),
+        }
+    }
+
+    let author_mode = repo.effective_author_mode(None);
+    let model = repo
+        .effective_model_name(None)
+        .map(|value| markdown_code_span(&value))
+        .unwrap_or_else(|| format!("{} (optional)", markdown_code_span("unset")));
+    satisfied.push(format!(
+        "- authoring: author-mode={}; model={model}",
+        markdown_code_span(&author_mode),
+    ));
+
+    let task_review = if repo
+        .config
+        .get("task_review")
+        .and_then(JsonValue::as_bool)
+        .unwrap_or(false)
+    {
+        "required"
+    } else {
+        "automatic"
+    };
+    if repo.task_review_reviewer_identity().is_some() {
+        satisfied.push(format!(
+            "- closeout: review={}; reviewer={}",
+            markdown_code_span(task_review),
+            markdown_code_span("configured"),
+        ));
+    } else {
+        action_required.push(format!(
+            "- closeout: review={}; reviewer={} (configure user-name)",
+            markdown_code_span(task_review),
+            markdown_code_span("unset"),
+        ));
+    }
+    satisfied.push(format!(
+        "- closeout: contract={}; readiness={}; plan-closeout={}",
+        markdown_code_span(TASK_LAND_CONTRACT_VERSION),
+        markdown_code_span(land_contract.readiness_policy),
+        markdown_code_span(land_contract.plan_closeout_policy),
+    ));
+
+    let action_section = if action_required.is_empty() {
+        "Action required: none.".to_string()
+    } else {
+        format!("Action required:\n\n{}", action_required.join("\n"))
+    };
+    format!(
+        r#"### Effective workflow admission
+
+Satisfied:
+
+{}
+
+{action_section}
+
+`task start` revalidates entry; Snapshot creation and `task finish` revalidate
+authoring and closeout. Inspect configuration only for an action-required item,
+an explicit configuration task, or a validator-reported mismatch."#,
+        satisfied.join("\n"),
+    )
+}
+
 pub fn render_agent_workflow_block(repo: &RepoRuntime) -> String {
     let workflow_mode = repo.effective_workflow_mode();
     let sprint_enabled = repo.sprint_enabled();
@@ -175,6 +334,13 @@ pub fn render_agent_workflow_block(repo: &RepoRuntime) -> String {
         .unwrap_or_else(|| "origin".to_string());
     let scope_label = effective_agent_harness_scope(repo);
     let land_contract = task_land_scope_contract(scope_label == "local");
+    let admission = render_effective_workflow_admission(
+        repo,
+        &workflow_mode,
+        sprint_enabled,
+        scope_label,
+        &land_contract,
+    );
     let plan_sync_command = if scope_label == "remote" {
         format!("ait plan sync <markdown-file-or-dir> --remote {remote_name}")
     } else {
@@ -204,29 +370,40 @@ pub fn render_agent_workflow_block(repo: &RepoRuntime) -> String {
         format!(
             r#"Prepare the exact Patchset with `ait workflow ready <change-id>
    --apply`, then hand it to the reviewer. The reviewer finishes with `ait
-   workflow land <change-id> --apply` (adding `--review-message` when asked).
+   workflow finish <change-id> --apply` (adding `--review-message` when asked).
    After successful land, mark the exact bound checklist item complete and
    sync its card separately:
    `ait plan sync <sprint-card-path> --remote {remote_name}`."#
         )
     } else {
-        r#"Finish with `ait task land <task-or-change-id>`. A successful final
-   local task land closes and syncs the exact bound sprint checklist item
-   locally."#
+        r#"Finish dirty work with `ait task finish <task-or-change-id> --message
+   "<message>"`. If an explicit Snapshot already made the worktree clean, omit
+   `--message`; finish reuses the current Line head. A successful final local
+   Task finish closes and syncs the exact bound sprint checklist item locally."#
             .to_string()
     };
     let non_sprint_finish = if scope_label == "remote" {
         r#"Prepare the exact Patchset with `ait workflow ready <change-id>
    --apply`, then hand it to the reviewer. The reviewer finishes with `ait
-   workflow land <change-id> --apply` (adding `--review-message` when asked)."#
+   workflow finish <change-id> --apply` (adding `--review-message` when asked)."#
             .to_string()
     } else {
-        "Finish with `ait task land <task-or-change-id>`.".to_string()
+        r#"Finish dirty work with `ait task finish <task-or-change-id> --message
+   "<message>"`. For clean work, omit `--message` and reuse the Line head."#
+            .to_string()
     };
     let code_closeout = if scope_label == "remote" {
-        "reviewer-owned `ait workflow land <change-id> --apply`, which delegates final closeout to atomic Task Land"
+        "reviewer-owned `ait workflow finish <change-id> --apply`, which delegates final closeout to the atomic internal Land authority"
     } else {
-        "`ait task land <task-or-change-id>`"
+        "`ait task finish <task-or-change-id>`"
+    };
+    let authoring_step = if scope_label == "remote" {
+        r#"Enter the task worktree emitted by `task start`, author the code there,
+   and create a Snapshot with `ait snapshot create --message "<message>"`."#
+    } else {
+        r#"Enter the task worktree emitted by `task start` and author the code there.
+   `ait snapshot create --message "<message>"` remains available for optional
+   intermediate checkpoints; final dirty work can be Snapshotted by Task finish."#
     };
 
     let sprint_path = if sprint_enabled {
@@ -244,8 +421,7 @@ For changes classified as `normal_task` or `fully_governed`:
    post-sync item taskability validation, canonical Plan binding, Task/Change
    creation, bound-worktree bootstrap, and the printed `cd` hint. The task is
    {task_scope}; do not run a separate pre-start Plan sync or copy Plan IDs.
-3. Enter the task worktree emitted by `task start`, author the code there, and
-   create a snapshot with `ait snapshot create --message "<message>"`.
+3. {authoring_step}
 4. {sprint_finish}
 
 After every context-window compaction, re-read the bound sprint card before
@@ -261,8 +437,7 @@ For changes classified as `normal_task` or `fully_governed`:
    --intent "<intent>"`. The task scope is {task_scope}; a
    sprint card is not required and `--from` is unavailable while sprint mode
    is off.
-2. Enter the emitted task worktree, author the code there, and create a snapshot
-   with `ait snapshot create --message "<message>"`.
+2. {authoring_step}
 3. {non_sprint_finish}"#
         )
     };
@@ -274,31 +449,33 @@ For changes classified as `normal_task` or `fully_governed`:
   the reviewable code state.
 - Prepare snapshot freshness, patchset publication/content synchronization, CI,
   and attestation explicitly with `ait workflow ready <change-id> --apply`.
-- Hand the exact Patchset to the reviewer. `ait workflow land <change-id>
+- Hand the exact Patchset to the reviewer. `ait workflow finish <change-id>
   --apply` owns code Review, Task approval, final Policy, and then delegates the
-  already-ready final mutation to atomic Task Land. Supply `--review-message`
+  already-ready final mutation to the atomic internal Land authority. Supply `--review-message`
   when the decision requests structured code-review evidence; required human
   Review and blocking feedback remain manual stop points.
-- Direct `ait task land <task-or-change-id>` is the already-ready finalizer and
+- Direct `ait task finish <task-or-change-id>` is the already-ready finalizer and
   recovery entry. It creates no Review evidence, does not publish/synchronize
   content, start/wait for CI, or sync Plan state. Success owns remote land, Task
   completion, target-Line sync, and bound-worktree cleanup."#
             .to_string()
     } else if scope_label == "local" {
-        r#"### Local land
+        r#"### Local finish
 
-- `task start`, its initial change, snapshots, and `task land` stay local unless
+- `task start`, its initial change, Snapshots, and `task finish` stay local unless
   a command explicitly requests remote promotion.
-- `ait task land <task-or-change-id> --local` lands the code onto the local
-  target line, completes the task, cleans the bound worktree, and (when bound)
-  closes the local sprint checklist item."#
+- `ait task finish <task-or-change-id> --message "<message>" --local` creates
+  the final Snapshot for dirty work, applies it to the local target Line,
+  completes the Task, cleans the bound worktree, and (when bound) closes the
+  local sprint checklist item. Clean work omits `--message` and reuses the
+  current Line-head Snapshot."#
             .to_string()
     } else {
         r#"### Effective custom closeout
 
 - Run `ait config show` before mutating workflow state and follow its effective
   plan/task/change scopes explicitly.
-- Use `ait task land <task-or-change-id>` for the configured closeout path."#
+- Use `ait task finish <task-or-change-id>` for the configured closeout path."#
             .to_string()
     };
 
@@ -306,30 +483,20 @@ For changes classified as `normal_task` or `fully_governed`:
         r#"{MANAGED_START}
 ## Effective Ait Workflow (Generated)
 
-`ait init`, relevant `ait config set` / `ait config unset` changes, and default-remote setup
-regenerate this block from `.ait/config.json` and sync it when the
-configured target is available. The current values and commands are
-authoritative; they replace stale context and generic examples.
+`ait init`, relevant `ait config set`/`unset` changes, and default-remote setup
+regenerate this authoritative block from `.ait/config.json` and sync its
+configured target when available.
 
-- workflow mode: `{workflow_mode}`
-- sprint mode: `{}`
-- default mutation scope: `{scope_label}`
-- task-land contract: `{TASK_LAND_CONTRACT_VERSION}`
-- task-land readiness policy: `{}`
-- task-land Plan closeout policy: `{}`
-
-Commands below already reflect these values. Do not mix local and remote
-variants.
+{admission}
 
 ### Rules for every repository mutation
 
-- Read this block at the start of a session. Read `docs/plan.md` when it exists,
-  and use `ait config show` if runtime state may have changed.
+- Read this block and `docs/plan.md` when it exists.
 - When a regression is found, run `ait blame <path>` (narrow with `--line` or
   `--start`/`--end`) to identify the responsible Snapshot or Plan revision
   before choosing the repair.
 {markdown_sync_rule}
-- `ait workflow ready` and `ait workflow land` are text-only decision surfaces;
+- `ait workflow ready` and `ait workflow finish` are text-only decision surfaces;
   never append or recommend `--json` for either command.
 - Every code change must start with a new `ait task start`, be authored in its
   bound worktree, and finish through {code_closeout}.
@@ -342,9 +509,6 @@ variants.
 
 {closeout}
 {MANAGED_END}"#,
-        if sprint_enabled { "on" } else { "off" },
-        land_contract.readiness_policy,
-        land_contract.plan_closeout_policy,
     )
 }
 
@@ -563,6 +727,12 @@ mod tests {
             json!({"mode": if sprint == "on" { "required" } else { "off" }}),
         );
         config.insert("default_remote".to_string(), json!("upstream"));
+        config.insert(
+            "default_author_mode".to_string(),
+            json!("ai_only_experimental"),
+        );
+        config.insert("default_model".to_string(), json!("test-model"));
+        config.insert("user_name".to_string(), json!("Benchmark Agent"));
         RepoRuntime {
             root: PathBuf::from("/repo"),
             ait_dir: PathBuf::from("/repo/.ait"),
@@ -576,26 +746,39 @@ mod tests {
         for mode in ["solo_local", "solo_remote", "team_remote"] {
             for sprint in ["on", "off"] {
                 let rendered = render_agent_workflow_block(&repo(mode, sprint));
-                assert!(rendered.contains(&format!("workflow mode: `{mode}`")));
-                assert!(rendered.contains(&format!("sprint mode: `{sprint}`")));
+                let scope = if mode == "solo_local" {
+                    "local"
+                } else {
+                    "remote"
+                };
                 assert!(rendered.contains(&format!(
-                    "task-land contract: `{TASK_LAND_CONTRACT_VERSION}`"
+                    "entry: mode=`{mode}`; sprint=`{sprint}`; scopes=`{scope}`"
                 )));
                 assert!(rendered.contains(&format!(
-                    "task-land Plan closeout policy: `{}`",
+                    "plan-binding=`{}`",
+                    if sprint == "on" { "required" } else { "off" }
+                )));
+                assert!(rendered.contains(&format!("contract=`{TASK_LAND_CONTRACT_VERSION}`")));
+                assert!(rendered.contains(&format!(
+                    "plan-closeout=`{}`",
                     task_land_scope_contract(mode == "solo_local").plan_closeout_policy
                 )));
                 assert_eq!(rendered.matches(MANAGED_START).count(), 1);
-                assert!(rendered.contains(
-                    "`ait init`, relevant `ait config set` / `ait config unset` changes"
-                ));
+                assert!(rendered.contains("`ait init`, relevant `ait config set`/`unset` changes"));
+                assert!(rendered.contains("### Effective workflow admission"));
+                assert!(rendered.contains("Satisfied:"));
+                assert!(rendered.contains("`task start` revalidates entry"));
+                assert!(rendered.contains("author-mode=`ai_only_experimental`; model=`test-model`"));
+                assert!(rendered.contains("review=`automatic`; reviewer=`configured`"));
+                assert!(!rendered.contains("They are currently satisfied"));
                 assert!(!rendered.contains("ait install"));
-                assert!(rendered.contains("relevant `ait config set` / `ait config unset` changes"));
-                assert!(rendered.contains("default-remote setup\nregenerate this block"));
-                assert!(rendered.contains("Read `docs/plan.md` when it exists"));
+                assert!(rendered.contains("regenerate this authoritative block"));
+                assert!(rendered.contains("default-remote setup\nregenerate this authoritative"));
+                assert!(rendered.contains("Read this block and `docs/plan.md` when it exists"));
+                assert!(!rendered.contains("runtime state may have changed"));
                 assert!(rendered.contains("ait blame <path>"));
                 assert!(rendered.contains(
-                    "`ait workflow ready` and `ait workflow land` are text-only decision surfaces"
+                    "`ait workflow ready` and `ait workflow finish` are text-only decision surfaces"
                 ));
                 assert!(rendered.contains("never append or recommend `--json`"));
                 assert!(!rendered.contains("workflow tier"));
@@ -613,11 +796,11 @@ mod tests {
                     assert!(rendered.contains("Hand the exact Patchset to the reviewer"));
                     assert!(rendered.contains("owns code Review, Task approval, final Policy"));
                     assert!(rendered.contains(
-                        "delegates the\n  already-ready final mutation to atomic Task Land"
+                        "delegates the\n  already-ready final mutation to the atomic internal Land authority"
                     ));
                     assert!(rendered.contains("It creates no Review evidence"));
                     assert!(!rendered.contains("attestation, policy, and review state"));
-                    assert!(!rendered.contains("### Local land"));
+                    assert!(!rendered.contains("### Local finish"));
                 } else {
                     assert!(rendered.contains("plan sync <markdown-file-or-dir> --local"));
                     assert!(!rendered.contains("### Remote readiness and land"));
@@ -674,7 +857,7 @@ mod tests {
 
             let rendered = render_agent_workflow_block(&runtime);
             assert!(
-                rendered.contains(&format!("sprint mode: `{expected_sprint}`")),
+                rendered.contains(&format!("sprint=`{expected_sprint}`")),
                 "binding mode {binding_mode:?} rendered the wrong sprint mode"
             );
         }
@@ -693,9 +876,57 @@ mod tests {
         )
         .unwrap();
         assert!(second.contains("Custom before."));
-        assert!(second.contains("workflow mode: `solo_remote`"));
+        assert!(second.contains("entry: mode=`solo_remote`; sprint=`off`; scopes=`remote`"));
         assert_eq!(second.matches(MANAGED_START).count(), 1);
         assert_eq!(second.matches(MANAGED_END).count(), 1);
+    }
+
+    #[test]
+    fn local_admission_distinguishes_absent_and_inactive_default_remotes() {
+        let with_remote = render_agent_workflow_block(&repo("solo_local", "off"));
+        assert!(with_remote.contains(
+            "default-remote=`upstream` (inactive); transport=`local-only`; server-use=`none`"
+        ));
+        assert!(!with_remote.contains("configured remote is unavailable"));
+
+        let mut without_remote = repo("solo_local", "off");
+        without_remote.config.remove("default_remote");
+        let rendered = render_agent_workflow_block(&without_remote);
+        assert!(
+            rendered.contains("default-remote=`none`; transport=`local-only`; server-use=`none`")
+        );
+        assert!(rendered.contains("Action required: none."));
+    }
+
+    #[test]
+    fn mismatched_plan_binding_is_action_required_without_markdown_checkboxes() {
+        let mut runtime = repo("solo_local", "off");
+        runtime
+            .config
+            .insert("plan_task_binding".to_string(), json!({"mode": "required"}));
+        let rendered = render_agent_workflow_block(&runtime);
+        assert!(
+            rendered.contains("entry: plan-binding=`required` (expected `off` for sprint=`off`)")
+        );
+        assert!(!rendered.contains("- [x]"));
+        assert!(!rendered.contains("- [ ]"));
+    }
+
+    #[test]
+    fn arbitrary_model_text_is_kept_inside_a_safe_code_span() {
+        let mut runtime = repo("solo_local", "off");
+        runtime.config.insert(
+            "default_model".to_string(),
+            json!("model`name\nwith whitespace"),
+        );
+        let rendered = render_agent_workflow_block(&runtime);
+        assert!(rendered.contains("model=``model`name with whitespace``"));
+
+        runtime
+            .config
+            .insert("default_model".to_string(), json!("`edge ticks`"));
+        let rendered = render_agent_workflow_block(&runtime);
+        assert!(rendered.contains("model=`` `edge ticks` ``"));
     }
 
     #[test]
@@ -740,6 +971,7 @@ mod tests {
             ("change_default_scope", json!("remote")),
             ("sprint", json!("on")),
             ("plan_task_binding", json!({"mode": "required"})),
+            ("user_name", json!("Benchmark Agent")),
         ] {
             config.insert(key.to_string(), value);
         }
@@ -763,6 +995,8 @@ mod tests {
         assert_eq!(request["base_url"], "https://example.test");
         let agents = fs::read_to_string(temp.path().join("AGENTS.md")).unwrap();
         assert!(agents.contains("--remote mirror"));
+        assert!(agents.contains("default-remote=`mirror`; transport=`remote`"));
+        assert!(agents.contains("Action required: none."));
     }
 
     #[test]
@@ -808,6 +1042,7 @@ mod tests {
         assert_eq!(convergence["reason"], "no_default_remote");
         assert!(!executed);
         let agents = fs::read_to_string(temp.path().join("AGENTS.md")).unwrap();
-        assert!(agents.contains("workflow mode: `solo_remote`"));
+        assert!(agents.contains("entry: mode=`solo_remote`; sprint=`on`; scopes=`remote`"));
+        assert!(agents.contains("default-remote=`unset` (required by `solo_remote`)"));
     }
 }

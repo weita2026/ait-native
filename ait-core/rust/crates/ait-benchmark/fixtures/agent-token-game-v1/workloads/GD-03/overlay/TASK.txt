@@ -9,6 +9,6 @@ original observable state after resuming.
 Preserve seeded enemy order, fire cooldown, boss timing, lives, score, browser
 controls, and the existing public GameModel surface. Add or update focused
 tests. Do not add a dependency, backend, hosted asset, network request, Python
-file, or remote AIT workflow.
+file, or unrelated infrastructure.
 
 Run the project-local validation before completing the repository workflow.

@@ -1,4 +1,7 @@
 use ait_core::json_support::{json, JsonMap, JsonValue};
+use ait_core::plan_binary_db::{
+    inspect_plan_binary_db_authority, PlanBinaryDbRecoveryReport, PlanBinaryDbRecoveryState,
+};
 use ait_core::plan_filesystem::operational_external_materialization_roots;
 use std::env;
 use std::fs;
@@ -114,6 +117,14 @@ pub fn doctor_runtime_root(repo_root: &Path) -> Result<JsonValue, String> {
 }
 
 pub fn doctor_plan_authority() -> Result<JsonValue, String> {
+    doctor_plan_authority_impl(None)
+}
+
+pub fn doctor_plan_authority_for_repository(repo_root: &Path) -> Result<JsonValue, String> {
+    doctor_plan_authority_impl(Some(repo_root))
+}
+
+fn doctor_plan_authority_impl(repo_root: Option<&Path>) -> Result<JsonValue, String> {
     let selected_backend = selected_plan_backend()?;
     let mut payload = json!({
         "selected_backend": selected_backend,
@@ -135,6 +146,9 @@ pub fn doctor_plan_authority() -> Result<JsonValue, String> {
         "missing_exports": [],
         "issues": [],
         "env": {},
+        "repository_inspected": false,
+        "repository_ready": JsonValue::Null,
+        "repository_authority": JsonValue::Null,
     });
     if selected_backend != "rust" {
         return Ok(payload);
@@ -167,7 +181,51 @@ pub fn doctor_plan_authority() -> Result<JsonValue, String> {
         JsonValue::String(PLAN_AUTHORITY_CONTRACT_VERSION.to_string()),
     );
     obj.insert("exports".to_string(), JsonValue::Object(exports));
+    if let Some(repo_root) = repo_root {
+        let report = inspect_plan_binary_db_authority(&repo_root.join(".ait/binary-db"));
+        let repository_ready = report.is_ready();
+        obj.insert("repository_inspected".to_string(), JsonValue::Bool(true));
+        obj.insert(
+            "repository_ready".to_string(),
+            JsonValue::Bool(repository_ready),
+        );
+        obj.insert(
+            "repository_authority".to_string(),
+            plan_recovery_report_json(&report),
+        );
+        if !repository_ready {
+            let issues = obj
+                .get_mut("issues")
+                .and_then(JsonValue::as_array_mut)
+                .ok_or_else(|| "plan-authority issues must be an array".to_string())?;
+            issues.extend(report.issues.iter().cloned().map(JsonValue::String));
+            if report.state == PlanBinaryDbRecoveryState::Repairable {
+                issues.push(JsonValue::String(
+                    "Active Plan authority contains only uncommitted damage that the next repository admission can repair safely."
+                        .to_string(),
+                ));
+            }
+        }
+    }
     Ok(payload)
+}
+
+fn plan_recovery_report_json(report: &PlanBinaryDbRecoveryReport) -> JsonValue {
+    let recommended_action = match report.state {
+        PlanBinaryDbRecoveryState::Clean | PlanBinaryDbRecoveryState::Repaired => "none",
+        PlanBinaryDbRecoveryState::Repairable => "retry_for_safe_automatic_recovery",
+        PlanBinaryDbRecoveryState::Blocked => "restore_known_good_binary_db_authority",
+    };
+    json!({
+        "authority_root": report.authority_root.to_string_lossy().to_string(),
+        "state": report.state.as_str(),
+        "ready": report.is_ready(),
+        "committed_plan_count": report.committed_plan_count,
+        "repair_candidates": report.repair_candidates,
+        "repairs": report.repairs,
+        "issues": report.issues,
+        "recommended_action": recommended_action,
+    })
 }
 
 pub fn render_doctor_text(title: &str, payload: &JsonValue) -> Result<String, String> {

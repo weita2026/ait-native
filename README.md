@@ -52,7 +52,7 @@ source of `ait-core`, `ait-server`, `ait-runner`, `ait-python`, and `ait-node`;
   routes the workflow.
 - A sprint-backed Task and a dedicated worktree for every code change.
 - Snapshots, check evidence, `ait blame` for tracing a regression to its
-  revision, and a recoverable Task Land closeout.
+  revision, and a recoverable Task finish closeout.
 - A server that stays off: local work never needs a running `ait-server`.
 
 The generated `AGENTS.md` block is the source of truth for your repository.
@@ -65,8 +65,8 @@ AIT has two workflow presets:
 
 | Mode | Authoring and closeout |
 | --- | --- |
-| `solo_local` | Task, Change, Snapshot, and `ait task land` all stay local unless you explicitly promote to a remote. No reviewer, no server. |
-| `solo_remote` | You prepare one exact Patchset with `ait workflow ready <change-id> --apply`; a reviewer runs `ait workflow land <change-id> --apply`. |
+| `solo_local` | Task, Change, Snapshot, and `ait task finish` all stay local unless you explicitly promote to a remote. No reviewer, no server. |
+| `solo_remote` | You prepare one exact Patchset with `ait workflow ready <change-id> --apply`; a reviewer runs `ait workflow finish <change-id> --apply`. |
 
 With sprint mode on, start from one exact sprint item:
 
@@ -76,19 +76,21 @@ ait task start --from docs/sprints/<card>.md#<item-ref> --intent "<intent>"
 
 With sprint mode off, use `ait task start --title "<title>" --intent
 "<intent>"` instead. Either way, the command creates the Task's bound
-worktree; the code is written there and recorded with `ait snapshot create`.
+worktree; the code is written there. Standalone `ait snapshot create` remains
+available for intermediate checkpoints.
 Authored Markdown goes through the generated `ait plan sync` scope rather
 than being buried inside a code Snapshot.
 
 In a reviewed remote flow, `workflow ready` is the author's side: it takes
 care of Snapshot freshness, publishing the exact Patchset, CI, and
-attestation. `workflow land` is the reviewer's side: it runs the Review and
-Policy gates, then hands the already-ready change to atomic Task Land. It
+attestation. `workflow finish` is the reviewer's side: it runs the Review and
+Policy gates, then hands the already-ready change to the atomic internal Land. It
 never redoes the author's build or CI.
 
-In `solo_local`, finish with `ait task land <task-or-change-id>`. The final
-local Task Land updates the target Line, completes the Task, removes its
-bound worktree, and closes the bound sprint item when there is one.
+In `solo_local`, finish dirty work with `ait task finish <task-or-change-id>
+--message "<message>"`. Clean work omits `--message` and reuses its current
+Line-head Snapshot. Task finish updates the target Line, completes the Task,
+removes its bound worktree, and closes the bound sprint item when there is one.
 
 ## Ask for a change
 
@@ -108,14 +110,14 @@ generated block names.
 | --- | --- |
 | PyPI `ait-native` | `ait`, an inactive-by-default `ait-server`, and the direct `ait-python` binding. |
 | npm `@wa120/ait-native` | `ait` and the direct in-process Node-API binding; it does not install `ait-server`. |
-| Homebrew and WinGet | Native `ait` and `ait-server` commands. |
-| APT | `ait-native` (`ait` plus `ait-server`) and the separately installable `ait-runner` package. |
+| Homebrew and WinGet | From 1.1, native `ait`, `ait-server`, and `ait-runner` commands; installation starts neither server nor runner. |
+| APT | From 1.1, `ait-native` owns `ait`, `ait-server`, and `ait-runner`; the `ait-runner` package name is a dependency-only transition alias. The shipped service remains server-only. |
 | OCI | Separate `ait-server` and `ait-runner` images. |
 | GitHub Release | Checksum-bound native archives and the package assets used by the declared routes. |
 
 ## Upgrading from 0.x
 
-There is no `ait install` command in 1.0. Install or upgrade the `ait-native`
+There is no `ait install` command in 1.x. Install or upgrade the `ait-native`
 package with your package manager, check it with `ait --version`, and run
 `ait init` only when you are creating a new 1.0 repository authority. Keep
 your Git repository and its history — but don't assume a release candidate

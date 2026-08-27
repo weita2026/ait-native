@@ -208,7 +208,7 @@ pub(in crate::primitives) fn workflow_repo_root_restore_after_land(
         "line_name": target_line,
         "default_line": default_line,
         "target_snapshot_id": target_snapshot_id,
-        "detail": "Task land will update the CLI-owned main seed after final Task status is known; the server-owned refresh remains asynchronous.",
+        "detail": "Task finish will update the CLI-owned main seed after final Task status is known; the server-owned refresh remains asynchronous.",
     });
     Ok(payload)
 }

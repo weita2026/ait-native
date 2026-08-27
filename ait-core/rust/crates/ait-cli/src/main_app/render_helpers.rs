@@ -153,7 +153,7 @@ fn compact_nested_status(payload: &JsonValue, field: &str) -> JsonValue {
         .unwrap_or(JsonValue::Null)
 }
 
-fn compact_task_land_payload(payload: &JsonValue) -> JsonValue {
+fn compact_task_finish_payload(payload: &JsonValue) -> JsonValue {
     let recovery = payload
         .get("closeout_recovery")
         .filter(|value| value.is_object())
@@ -182,7 +182,7 @@ fn compact_task_land_payload(payload: &JsonValue) -> JsonValue {
         .unwrap_or(JsonValue::Null);
     json!({
         "contract": AGENT_ACTION_JSON_CONTRACT,
-        "command": "task.land",
+        "command": "task.finish",
         "ok": task_land_exit_code(payload) == 0,
         "mode": mode,
         "task_id": cloned_field(payload, "task_id"),
@@ -1225,15 +1225,15 @@ fn task_start_progress_line(payload: &JsonValue) -> Option<String> {
             let source = payload.get("source").and_then(JsonValue::as_str);
             Some(match (source, open_path) {
                 (Some("main_seed_mirror"), Some(path)) => format!(
-                    "materializing worktree {worktree_name} at {path} from main-seed (not ready yet)"
+                    "preparing worktree {worktree_name} at {path} from main-seed (not ready yet)"
                 ),
                 (Some("main_seed_mirror"), None) => {
-                    format!("materializing worktree {worktree_name} from main-seed (not ready yet)")
+                    format!("preparing worktree {worktree_name} from main-seed (not ready yet)")
                 }
                 (_, Some(path)) => {
-                    format!("materializing worktree {worktree_name} at {path} (not ready yet)")
+                    format!("preparing worktree {worktree_name} at {path} (not ready yet)")
                 }
-                _ => format!("materializing worktree {worktree_name} (not ready yet)"),
+                _ => format!("preparing worktree {worktree_name} (not ready yet)"),
             })
         }
         "worktree_ready" => {
@@ -1314,7 +1314,7 @@ fn emit_snapshot_create_result(
     )
 }
 
-fn emit_task_land_result(
+fn emit_task_finish_result(
     payload: &JsonValue,
     json_output: bool,
     full_output: bool,
@@ -1323,10 +1323,10 @@ fn emit_task_land_result(
         return if full_output {
             print_json(payload)
         } else {
-            print_json(&compact_task_land_payload(payload))
+            print_json(&compact_task_finish_payload(payload))
         };
     }
-    println!("{}", render_task_land_text(payload)?);
+    println!("{}", render_task_finish_text(payload)?);
     Ok(())
 }
 

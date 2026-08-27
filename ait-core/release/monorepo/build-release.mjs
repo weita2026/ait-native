@@ -664,6 +664,7 @@ async function validateReleaseControl(family) {
         "ait.release.clean-host.row/v1",
         "ait.release.clean-host.aggregate/v1",
         "distribution-target-32-2026-08-17.2",
+        "distribution-target-runner-bundle-32-2026-08-26.1",
         "row_count: rows.length",
       ],
     ],
@@ -909,13 +910,8 @@ async function validateProtectedWorkflows() {
         fail(`${component} OCI recipe must contain ${JSON.stringify(required)}`);
       }
     }
-    if (
-      component === "ait-server" &&
-      !dockerfile.includes(
-        'CMD ["run", "--listen", "0.0.0.0:8088", "--init-if-missing", "--defer-ci-admission"]',
-      )
-    ) {
-      fail("ait-server OCI recipe must pass the explicit container-network listener to the CLI");
+    if (component === "ait-server" && /^[ \t]*CMD(?:[ \t]|$)/imu.test(dockerfile)) {
+      fail("ait-server OCI recipe must not declare a Docker CMD");
     }
     if (component === "ait-server" && dockerfile.includes("AITSERVER_LISTEN")) {
       fail("ait-server OCI recipe restored a retired listener environment control");
@@ -1043,12 +1039,12 @@ async function validatePublicReadme() {
     "## What `ait init` gives you",
     OFFICIAL_WEBSITE,
     "## Upgrading from 0.x",
-    "There is no `ait install` command in 1.0.",
+    "There is no `ait install` command in 1.x.",
     "AIT has two workflow presets",
     "`solo_local`",
     "`solo_remote`",
     "ait workflow ready <change-id> --apply",
-    "ait workflow land <change-id> --apply",
+    "ait workflow finish <change-id> --apply",
     "## What each install route gives you",
     "AGENTS.md",
     "ait task start",
@@ -1056,7 +1052,7 @@ async function validatePublicReadme() {
     "ait blame",
     "ait plan sync",
     "ait snapshot create",
-    "ait task land",
+    "ait task finish",
     "It never tries to\ndetect a project type",
     "local work never needs a running `ait-server`",
     "package-owned `native/ait_napi.node`",
@@ -1117,7 +1113,7 @@ async function validatePublicPolicies() {
     "`ait plan sync`",
     "`ait task start`",
     "`ait snapshot create`",
-    "`ait task land`",
+    "`ait task finish`",
     "material AI assistance",
     "`ait-server/` | `ait-server` | AGPL-3.0-only",
   ]) {
@@ -1775,7 +1771,7 @@ async function validateBuildInputs(expectedGitCommit) {
     "## Upgrading from 0.x",
     "There is no `ait install` command in 1.0.",
     "ait workflow ready <change-id> --apply",
-    "ait workflow land <change-id> --apply",
+    "ait workflow finish <change-id> --apply",
   ]) {
     if (!nodeReadme.includes(required)) {
       fail(`npm storefront README is missing ${JSON.stringify(required)}`);

@@ -1,6 +1,17 @@
 use super::*;
 
 #[test]
+fn configured_remote_alias_normalizes_to_contextual_publication_authority() {
+    assert_eq!(
+        contextual_publication_remote_name("camera-server").unwrap(),
+        "origin"
+    );
+    let error = contextual_publication_remote_name("  ")
+        .expect_err("empty Remote alias must fail before publication");
+    assert!(error.contains("selected configured Remote"), "{error}");
+}
+
+#[test]
 fn remote_change_task_id_accepts_change_remote_trait() {
     let mut remote = FakeChangeRemote {
         detail: None,
@@ -389,6 +400,21 @@ fn change_publish_flow_accepts_local_stores_and_change_remote_traits() {
         change_local_read_with_change_store(&change_store, "LCC-1").expect("read change");
     let local_task = task_local_read_with_task_store(&task_store, "LCT-1").expect("read task");
 
+    let mut rejected_remote = FakeChangeRemote::default();
+    let error = change_publish_with_local_stores_and_task_remote(
+        &change_store,
+        &mut rejected_remote,
+        &local_change,
+        &local_task,
+        "LCC-1",
+        "fixture-ait",
+        "  ",
+        false,
+    )
+    .expect_err("empty Remote alias must fail before Remote publication");
+    assert!(error.contains("selected configured Remote"), "{error}");
+    assert!(rejected_remote.changes.is_empty());
+
     let mut remote = FakeChangeRemote::default();
     let published = change_publish_with_local_stores_and_task_remote(
         &change_store,
@@ -397,7 +423,7 @@ fn change_publish_flow_accepts_local_stores_and_change_remote_traits() {
         &local_task,
         "LCC-1",
         "fixture-ait",
-        "origin",
+        "camera-server",
         false,
     )
     .expect("publish change through flow helper");

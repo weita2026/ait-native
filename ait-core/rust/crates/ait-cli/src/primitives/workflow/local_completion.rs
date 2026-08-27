@@ -121,9 +121,9 @@ fn workflow_history_plan_publications(
         .plans();
     let mut publications = Vec::new();
     for entry in entries {
-        let task = entry.get("task").ok_or_else(|| {
-            "History promotion entry is missing local Task projection.".to_string()
-        })?;
+        let task = entry
+            .get("task")
+            .ok_or_else(|| "History promotion entry is missing local Task data.".to_string())?;
         let plan_id = string_field(task, "plan_id");
         let revision_id = string_field(task, "origin_plan_revision_id");
         match (plan_id.as_deref(), revision_id.as_deref()) {
@@ -591,6 +591,7 @@ pub(in crate::primitives) fn workflow_final_snapshot_candidate_from_entry(
     entry: &JsonValue,
     local_target_head: Option<&str>,
     remote_target_head: Option<&str>,
+    null_remote_base_snapshot_id: Option<&str>,
     remote_to_revision_distance: Option<i64>,
 ) -> Result<JsonValue, String> {
     let state = entry.get("state").cloned().unwrap_or_else(|| json!({}));
@@ -608,10 +609,21 @@ pub(in crate::primitives) fn workflow_final_snapshot_candidate_from_entry(
             "Completed local change {local_change_id} landed at `{revision_snapshot_id}`, but `{target_line}` is now at `{local_target_head}`. Only the latest completed local change that owns the current target-line head can be promoted; select the change for `{local_target_head}`."
         ));
     }
-    let base_snapshot_id = normalized_text(remote_target_head).ok_or_else(|| {
-        format!("Remote target line `{target_line}` has no head snapshot; initialize or reconcile the remote line before history promotion.")
-    })?;
-    let remote_already_contains_revision = base_snapshot_id == revision_snapshot_id;
+    let remote_head_initialization_required = normalized_text(remote_target_head).is_none();
+    let base_snapshot_id = normalized_text(remote_target_head)
+        .or_else(|| normalized_text(null_remote_base_snapshot_id))
+        .ok_or_else(|| {
+            format!(
+                "Remote target line `{target_line}` has no head snapshot and completed local change {local_change_id} has no admissible pre-land bootstrap boundary."
+            )
+        })?;
+    if remote_head_initialization_required && base_snapshot_id == revision_snapshot_id {
+        return Err(format!(
+            "Refusing to initialize null remote `{target_line}` directly at final local Snapshot `{revision_snapshot_id}`; completed local change {local_change_id} requires an earlier pre-land bootstrap boundary."
+        ));
+    }
+    let remote_already_contains_revision =
+        !remote_head_initialization_required && base_snapshot_id == revision_snapshot_id;
     if !remote_already_contains_revision && remote_to_revision_distance.is_none() {
         return Err(format!(
             "Final local snapshot `{revision_snapshot_id}` does not descend from remote `{target_line}` head `{base_snapshot_id}`. Pull/reconcile the remote target line and rebase the final local result before promotion."
@@ -641,6 +653,10 @@ pub(in crate::primitives) fn workflow_final_snapshot_candidate_from_entry(
         "remote_already_contains_revision".to_string(),
         JsonValue::Bool(remote_already_contains_revision),
     );
+    candidate.insert(
+        "remote_head_initialization_required".to_string(),
+        JsonValue::Bool(remote_head_initialization_required),
+    );
     Ok(JsonValue::Object(candidate))
 }
 
@@ -666,9 +682,9 @@ fn workflow_same_head_published_remote_change_id(
         return Err(format!(
             "Remote target Line already equals final local Snapshot \
              `{revision_snapshot_id}`, but completed local Change {local_change_id} and Task \
-             {local_task_id} do not have complete canonical remote publication mappings. \
+             {local_task_id} do not have complete remote publication records. \
              Refusing to treat this as completed promotion or skip aggregate Patchset CI; the \
-             remote target head moved without provable remote Land authority."
+             remote target head moved without a matching successful remote Land."
         ));
     }
     Ok(remote_change_id.expect("checked above"))
@@ -685,7 +701,7 @@ pub(in crate::primitives) fn workflow_same_head_remote_land_authority(
         format!(
             "Remote target Line already equals final local Snapshot \
              `{revision_snapshot_id}`, but published Change {remote_change_id} could not be read. \
-             Refusing to skip aggregate Patchset CI without provable remote Land authority."
+             Aggregate Patchset CI cannot be skipped without a matching successful remote Land."
         )
     })?;
     let remote_status = string_field(remote_change, "status");
@@ -709,6 +725,116 @@ pub(in crate::primitives) fn workflow_same_head_remote_land_authority(
         "remote_change_status": remote_status,
         "landed_snapshot_id": remote_landed_snapshot_id,
     }))
+}
+
+pub(in crate::primitives) fn workflow_initialize_null_remote_base_with_task_remote<R>(
+    repo: &RepoRuntime,
+    remote_row: &RemoteRow,
+    task_remote: &mut R,
+    repo_name: &str,
+    target_line: &str,
+    base_snapshot_id: &str,
+) -> Result<JsonValue, String>
+where
+    R: TaskWorkflowLineReader
+        + TaskWorkflowRepositoryReader
+        + TaskWorkflowZstdPackUploader
+        + ?Sized,
+{
+    if target_line != repo.default_line_name() {
+        return Err(format!(
+            "Completed-local null-head initialization only admits the configured default Line `{}`; got `{target_line}`.",
+            repo.default_line_name()
+        ));
+    }
+    let preflight_line = super::super::remote_sync::remote_sync_line_read_with_task_remote(
+        task_remote,
+        repo_name,
+        target_line,
+    )?;
+    if let Some(current_head_snapshot_id) = string_field(&preflight_line, "head_snapshot_id") {
+        if current_head_snapshot_id == base_snapshot_id {
+            return Ok(json!({
+                "status": "already_initialized",
+                "reason": "remote_null_head_promotion_base_already_selected",
+                "line": preflight_line,
+                "head_snapshot_id": current_head_snapshot_id,
+                "snapshot_sync": JsonValue::Null,
+            }));
+        }
+        return Err(format!(
+            "Cannot prepare completed-local promotion: Remote `{}` target Line `{target_line}` moved from null to `{current_head_snapshot_id}` while this promotion selected pre-land base `{base_snapshot_id}`. Refusing to create Remote publication authority from a different base.",
+            remote_row.name,
+        ));
+    }
+
+    let remote_repository = read_remote_repository_authority(repo, task_remote, repo_name)?;
+    let remote_sync_capabilities =
+        RemoteSyncCapabilities::from_server_payload(Some(&remote_repository));
+    let initialization =
+        super::super::remote_sync::initialize_remote_null_head_line_with_snapshot_via_zstd(
+            repo,
+            task_remote,
+            repo_name,
+            target_line,
+            base_snapshot_id,
+            &remote_sync_capabilities,
+        );
+    match initialization {
+        Ok(snapshot_sync) => {
+            let line = super::super::remote_sync::remote_sync_line_read_with_task_remote(
+                task_remote,
+                repo_name,
+                target_line,
+            )?;
+            let initialized_head_snapshot_id = string_field(&line, "head_snapshot_id");
+            if initialized_head_snapshot_id.as_deref() != Some(base_snapshot_id) {
+                return Err(format!(
+                    "Completed-local null-head initialization returned `{}` for Remote `{}` target Line `{target_line}` instead of selected pre-land base `{base_snapshot_id}`.",
+                    initialized_head_snapshot_id.as_deref().unwrap_or("null"),
+                    remote_row.name,
+                ));
+            }
+            Ok(json!({
+                "status": "initialized",
+                "reason": "remote_null_head_seeded_from_completed_local_pre_land_base",
+                "line": line,
+                "head_snapshot_id": base_snapshot_id,
+                "snapshot_sync": snapshot_sync,
+                "remote_repository": remote_repository,
+            }))
+        }
+        Err(initialization_error) => {
+            let winner = super::super::remote_sync::remote_sync_line_read_with_task_remote(
+                task_remote,
+                repo_name,
+                target_line,
+            )
+            .map_err(|readback_error| {
+                format!(
+                    "Completed-local null-head initialization failed: {initialization_error} Readback of Remote `{}` target Line `{target_line}` also failed: {readback_error}",
+                    remote_row.name,
+                )
+            })?;
+            let winner_snapshot_id = string_field(&winner, "head_snapshot_id");
+            if winner_snapshot_id.as_deref() == Some(base_snapshot_id) {
+                return Ok(json!({
+                    "status": "initialized",
+                    "reason": "remote_null_head_seeded_from_completed_local_pre_land_base_after_uncertain_response",
+                    "line": winner,
+                    "head_snapshot_id": base_snapshot_id,
+                    "snapshot_sync": JsonValue::Null,
+                    "initialization_error": initialization_error,
+                    "remote_repository": remote_repository,
+                }));
+            }
+            Err(format!(
+                "Cannot prepare completed-local promotion: Remote `{}` target Line `{target_line}` was initialized concurrently at `{}` while this promotion selected pre-land base `{base_snapshot_id}`. Refusing to create Remote Task, Change, Patchset, or publication mappings from a different base. Initial synchronization failed: {initialization_error}",
+                remote_row.name,
+                winner_snapshot_id.as_deref().unwrap_or("null"),
+            ))
+        }
+    }
 }
 
 pub(in crate::primitives) fn workflow_final_snapshot_promotion_candidate(
@@ -739,6 +865,30 @@ pub(in crate::primitives) fn workflow_final_snapshot_promotion_candidate(
         .get_line(&repo_name, &target_line)
         .map_err(|err| err.to_string())?;
     let remote_target_head = string_field(&remote_line, "head_snapshot_id");
+    let (null_remote_base_snapshot_id, null_remote_base_recovered) = if remote_target_head.is_none()
+    {
+        if target_line != root_repo.default_line_name() {
+            return Err(format!(
+                    "Completed-local null-head promotion only admits the configured default Line `{}`; got `{target_line}`.",
+                    root_repo.default_line_name()
+                ));
+        }
+        let recorded_pre_land_snapshot_id =
+                string_field(&change, "pre_land_target_snapshot_id").ok_or_else(|| {
+                    format!(
+                        "Completed local change {change_id} is missing pre_land_target_snapshot_id required to initialize null remote `{target_line}`."
+                    )
+                })?;
+        let (base_snapshot_id, recovered) = workflow_effective_pre_land_target_snapshot_id(
+            &root_repo,
+            &change,
+            &revision_snapshot_id,
+            &recorded_pre_land_snapshot_id,
+        )?;
+        (Some(base_snapshot_id), Some(recovered))
+    } else {
+        (None, None)
+    };
     let same_head_land_authority =
         if remote_target_head.as_deref() == Some(revision_snapshot_id.as_str()) {
             let remote_change_id =
@@ -746,7 +896,7 @@ pub(in crate::primitives) fn workflow_final_snapshot_promotion_candidate(
             let remote_change = task_remote
                 .get_change(&remote_change_id, Some(&repo_name))
                 .map_err(|err| {
-                    format!("Failed to verify remote Land authority for {remote_change_id}: {err}")
+                    format!("Failed to verify the remote Land for {remote_change_id}: {err}")
                 })?;
             Some(workflow_same_head_remote_land_authority(
                 &entry,
@@ -759,6 +909,10 @@ pub(in crate::primitives) fn workflow_final_snapshot_promotion_candidate(
     for (label, snapshot_id) in [
         ("final local", Some(revision_snapshot_id.as_str())),
         ("remote base", remote_target_head.as_deref()),
+        (
+            "remote initialization base",
+            null_remote_base_snapshot_id.as_deref(),
+        ),
     ] {
         let Some(snapshot_id) = snapshot_id else {
             continue;
@@ -772,13 +926,16 @@ pub(in crate::primitives) fn workflow_final_snapshot_promotion_candidate(
     }
     let distance = snapshot_distance_if_ancestor(
         &root_repo,
-        remote_target_head.as_deref(),
+        remote_target_head
+            .as_deref()
+            .or(null_remote_base_snapshot_id.as_deref()),
         Some(&revision_snapshot_id),
     )?;
     let mut candidate = workflow_final_snapshot_candidate_from_entry(
         &entry,
         local_target_head.as_deref(),
         remote_target_head.as_deref(),
+        null_remote_base_snapshot_id.as_deref(),
         distance,
     )?;
     let base_snapshot_id = required_string_field(&candidate, "base_snapshot_id")?;
@@ -830,6 +987,14 @@ pub(in crate::primitives) fn workflow_final_snapshot_promotion_candidate(
         object.insert(
             "same_head_land_authority".to_string(),
             same_head_land_authority.unwrap_or(JsonValue::Null),
+        );
+        object.insert(
+            "remote_base_initialization_source".to_string(),
+            match null_remote_base_recovered {
+                Some(true) => JsonValue::String("task_owned_snapshot_lineage_recovery".to_string()),
+                Some(false) => JsonValue::String("land_record".to_string()),
+                None => JsonValue::Null,
+            },
         );
     }
     Ok(Some(candidate))
@@ -885,7 +1050,7 @@ pub(in crate::primitives) fn workflow_final_snapshot_promotion_preview(
         "next_action": {
             "code": "prepare_final_snapshot_promotion",
             "summary": "Promote the consecutive local Task/Change/Snapshot/Land history and run shared CI once on its aggregate Patchset.",
-            "detail": format!("Run `ait workflow ready {local_change_ref} --apply --remote {remote_name}`. After it is ready, hand the exact Patchset to a reviewer running `ait workflow land {local_change_ref} --apply --remote {remote_name}`."),
+            "detail": format!("Run `ait workflow ready {local_change_ref} --apply --remote {remote_name}`. After it is ready, hand the selected Patchset to a reviewer running `ait workflow finish {local_change_ref} --apply --remote {remote_name}`."),
             "command": format!("ait workflow ready {local_change_ref} --apply --remote {remote_name}"),
         },
     }))
@@ -944,7 +1109,7 @@ fn workflow_remote_plan_linkage_for_local_task(
     if resolved_plan_id.is_none() && resolved_revision_id.is_none() {
         if mode == "required" {
             return Err(
-                "Required plan/task binding requires local draft tasks to carry durable plan linkage before remote promotion.".to_string(),
+                "Required Plan/Task binding needs every local draft Task to keep its Plan link before remote promotion.".to_string(),
             );
         }
         if resolved_plan_item_ref.is_some() {
@@ -1007,10 +1172,10 @@ pub(super) fn workflow_history_prepare_entries(
         .iter()
         .map(|entry| {
             let task = entry.get("task").ok_or_else(|| {
-                "History promotion entry is missing local Task projection.".to_string()
+                "History promotion entry is missing local Task data.".to_string()
             })?;
             let change = entry.get("change").ok_or_else(|| {
-                "History promotion entry is missing local Change projection.".to_string()
+                "History promotion entry is missing local Change data.".to_string()
             })?;
             let (expected_remote_task_id, expected_remote_change_ref) =
                 workflow_expected_history_publication_ids(entry)?;
@@ -1052,10 +1217,10 @@ fn workflow_expected_history_publication_ids(
 ) -> Result<(Option<String>, Option<String>), String> {
     let task = entry
         .get("task")
-        .ok_or_else(|| "History promotion entry is missing local Task projection.".to_string())?;
+        .ok_or_else(|| "History promotion entry is missing local Task data.".to_string())?;
     let change = entry
         .get("change")
-        .ok_or_else(|| "History promotion entry is missing local Change projection.".to_string())?;
+        .ok_or_else(|| "History promotion entry is missing local Change data.".to_string())?;
     let local_task_id = required_string_field(entry, "local_task_id")?;
     let local_change_ref = required_string_field(entry, "local_change_ref")?;
     let task_is_published = string_field(task, "publication_state").as_deref() == Some("published");
@@ -1234,7 +1399,7 @@ pub(super) fn workflow_staged_history_prepare_request(
     let final_stage = stage_start + expected_entry_count == total_entry_count;
     if (stage_ordinal == 0) != previous_stage_patchset_id.is_none() {
         return Err(
-            "History promotion predecessor authority does not match the stage ordinal.".to_string(),
+            "History promotion's recorded predecessor does not match the stage number.".to_string(),
         );
     }
     let stage_base_snapshot_id = entries
@@ -1411,13 +1576,77 @@ pub(in crate::primitives) fn workflow_prepare_final_snapshot_promotion(
 ) -> Result<JsonValue, String> {
     let _prepare_range = perfetto_range!("ait.workflow_ready.history_promotion.prepare");
     let root_repo = workflow_root_repo(repo)?;
-    let candidate = {
+    let (remote_row, repo_name) = remote_context(&root_repo, remote_name, None)?;
+    let publication_remote_name = contextual_publication_remote_name(remote_row.name.as_str())?;
+    let mut candidate = {
         let _range = perfetto_range!("ait.workflow_ready.history_promotion.collect");
         workflow_final_snapshot_promotion_candidate(&root_repo, change_id, remote_name)?
             .ok_or_else(|| {
                 format!("Local change {change_id} is not a completed history-promotion candidate.")
             })?
     };
+    let mut remote_base_initialization = None;
+    if candidate
+        .get("remote_head_initialization_required")
+        .and_then(JsonValue::as_bool)
+        .unwrap_or(false)
+    {
+        let selected_base_snapshot_id = required_string_field(&candidate, "base_snapshot_id")?;
+        let selected_revision_snapshot_id =
+            required_string_field(&candidate, "revision_snapshot_id")?;
+        let selected_target_line = candidate
+            .get("state")
+            .and_then(|state| state.get("change"))
+            .and_then(|change| string_field(change, "base_line"))
+            .unwrap_or_else(|| root_repo.default_line_name());
+        let initialization = {
+            let _range =
+                perfetto_range!("ait.workflow_ready.history_promotion.remote_base_initialize");
+            let mut task_remote = http_task_remote(&root_repo, &remote_row)?;
+            workflow_initialize_null_remote_base_with_task_remote(
+                &root_repo,
+                &remote_row,
+                &mut task_remote,
+                &repo_name,
+                &selected_target_line,
+                &selected_base_snapshot_id,
+            )?
+        };
+        let mut revalidated = workflow_final_snapshot_promotion_candidate(
+            &root_repo,
+            change_id,
+            remote_name,
+        )?
+        .ok_or_else(|| {
+            format!(
+                "Completed local change {change_id} stopped being a history-promotion candidate after Remote base initialization."
+            )
+        })?;
+        let revalidated_base_snapshot_id = required_string_field(&revalidated, "base_snapshot_id")?;
+        let revalidated_revision_snapshot_id =
+            required_string_field(&revalidated, "revision_snapshot_id")?;
+        if revalidated
+            .get("remote_head_initialization_required")
+            .and_then(JsonValue::as_bool)
+            .unwrap_or(false)
+            || revalidated_base_snapshot_id != selected_base_snapshot_id
+            || revalidated_revision_snapshot_id != selected_revision_snapshot_id
+        {
+            return Err(format!(
+                "Remote `{}` target Line `{selected_target_line}` changed while completed-local promotion initialized base `{selected_base_snapshot_id}`. Revalidated authority is `{revalidated_base_snapshot_id}` -> `{revalidated_revision_snapshot_id}`; refusing to prepare history from stale authority.",
+                remote_row.name,
+            ));
+        }
+        revalidated
+            .as_object_mut()
+            .ok_or_else(|| "Revalidated history promotion candidate is malformed.".to_string())?
+            .insert(
+                "remote_base_initialization".to_string(),
+                initialization.clone(),
+            );
+        candidate = revalidated;
+        remote_base_initialization = Some(initialization);
+    }
     if candidate
         .get("remote_already_contains_revision")
         .and_then(JsonValue::as_bool)
@@ -1436,7 +1665,6 @@ pub(in crate::primitives) fn workflow_prepare_final_snapshot_promotion(
         string_field(&change, "base_line").unwrap_or_else(|| root_repo.default_line_name());
     let base_snapshot_id = required_string_field(&candidate, "base_snapshot_id")?;
     let revision_snapshot_id = required_string_field(&candidate, "revision_snapshot_id")?;
-    let (remote_row, repo_name) = remote_context(&root_repo, remote_name, None)?;
     let candidate_entries = candidate
         .get("history_entries")
         .and_then(JsonValue::as_array)
@@ -1502,7 +1730,7 @@ pub(in crate::primitives) fn workflow_prepare_final_snapshot_promotion(
             let _range = perfetto_range!("ait.workflow_ready.history_promotion.local_mapping");
             workflow_mark_history_published(
                 &root_repo,
-                remote_row.name.as_str(),
+                publication_remote_name,
                 &candidate_entries,
                 &response_entries,
             )?
@@ -1582,7 +1810,7 @@ pub(in crate::primitives) fn workflow_prepare_final_snapshot_promotion(
                 let _range = perfetto_range!("ait.workflow_ready.history_promotion.local_mapping");
                 workflow_mark_history_published(
                     &root_repo,
-                    remote_row.name.as_str(),
+                    publication_remote_name,
                     &candidate_entries[stage_start..stage_end],
                     &response_entries,
                 )?
@@ -1604,7 +1832,7 @@ pub(in crate::primitives) fn workflow_prepare_final_snapshot_promotion(
         }
         (
             final_prepared.ok_or_else(|| {
-                "Staged history promotion completed without final aggregate authority.".to_string()
+                "Staged history promotion completed without a final aggregate result.".to_string()
             })?,
             publication_mappings,
         )
@@ -1612,7 +1840,7 @@ pub(in crate::primitives) fn workflow_prepare_final_snapshot_promotion(
     let aggregate = prepared
         .get("aggregate")
         .and_then(JsonValue::as_object)
-        .ok_or_else(|| "History promotion response is missing aggregate authority.".to_string())?;
+        .ok_or_else(|| "History promotion response is missing its aggregate result.".to_string())?;
     let remote_task_id = aggregate
         .get("task_id")
         .and_then(JsonValue::as_str)
@@ -1628,7 +1856,7 @@ pub(in crate::primitives) fn workflow_prepare_final_snapshot_promotion(
     let patchset = aggregate
         .get("patchset")
         .cloned()
-        .ok_or_else(|| "History promotion aggregate is missing Patchset projection.".to_string())?;
+        .ok_or_else(|| "History promotion aggregate is missing Patchset data.".to_string())?;
     Ok(json!({
         "mode": "solo_local_history_promotion",
         "routing": state.get("routing").cloned().unwrap_or(JsonValue::Null),
@@ -1651,5 +1879,6 @@ pub(in crate::primitives) fn workflow_prepare_final_snapshot_promotion(
         },
         "publication_mappings": publication_mappings,
         "history_promotion": prepared,
+        "remote_base_initialization": remote_base_initialization,
     }))
 }

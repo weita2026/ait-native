@@ -222,7 +222,7 @@ pub fn task_start_from_with_progress(
 
     after_sync.map_err(|error| {
         format!(
-            "Plan sync completed for `{}`, but task start stopped afterward: {error} The synchronized Plan lineage was retained.",
+            "Plan sync completed for `{}`, but Task start stopped afterward: {error} The synchronized Plan history was kept.",
             source.artifact_path
         )
     })

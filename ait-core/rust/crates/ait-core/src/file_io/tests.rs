@@ -182,6 +182,43 @@ fn filesystem_atomic_byte_writes_create_replace_and_preserve_binary_payloads() {
 }
 
 #[test]
+fn filesystem_atomic_byte_write_can_stage_outside_target_directory() {
+    let temp = tempdir().expect("tempdir");
+    let store = FilesystemFileIoStore;
+    let target_directory = temp.path().join("authority");
+    let staging_directory = temp.path().join("staging");
+    let path = target_directory.join("plan.bin");
+    fs::create_dir_all(&target_directory).expect("target directory");
+    fs::write(&path, b"old").expect("old target");
+
+    store
+        .write_bytes_atomically_from_directory(
+            &path,
+            &staging_directory,
+            b"complete-new-root",
+            "Plan root",
+        )
+        .expect("publish staged replacement");
+
+    assert_eq!(
+        fs::read(&path).expect("published target"),
+        b"complete-new-root"
+    );
+    assert_eq!(
+        fs::read_dir(&target_directory)
+            .expect("target inventory")
+            .count(),
+        1
+    );
+    assert_eq!(
+        fs::read_dir(&staging_directory)
+            .expect("staging inventory")
+            .count(),
+        0
+    );
+}
+
+#[test]
 fn filesystem_atomic_byte_write_failure_removes_temporary_file() {
     let temp = tempdir().expect("tempdir");
     let store = FilesystemFileIoStore;

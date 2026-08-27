@@ -4,6 +4,8 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
+#[cfg(windows)]
+use std::{iter, os::windows::ffi::OsStrExt};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FileIoErrorKind {
@@ -238,6 +240,29 @@ pub trait FileIoByteStore: FileIoStore {
         ))
     }
 
+    /// Stages a complete replacement outside the target directory before an
+    /// atomic same-filesystem rename.
+    ///
+    /// An error from this method guarantees that the target was not replaced.
+    /// Directory durability is deliberately owned by the caller after the
+    /// successful rename so it can distinguish a crossed commit point from a
+    /// pre-publication failure.
+    fn write_bytes_atomically_from_directory(
+        &self,
+        path: &Path,
+        _staging_directory: &Path,
+        _bytes: &[u8],
+        _publish_label: &str,
+    ) -> FileIoResult<()> {
+        Err(FileIoError::new(
+            FileIoErrorKind::Unsupported,
+            format!(
+                "Staged atomic file byte writes are not supported for {}",
+                path.display()
+            ),
+        ))
+    }
+
     fn read_range(&self, path: &Path, offset: u64, len: u32) -> FileIoResult<Vec<u8>> {
         Err(FileIoError::new(
             FileIoErrorKind::Unsupported,
@@ -353,6 +378,21 @@ where
         (**self).write_bytes_atomically(path, bytes, publish_label)
     }
 
+    fn write_bytes_atomically_from_directory(
+        &self,
+        path: &Path,
+        staging_directory: &Path,
+        bytes: &[u8],
+        publish_label: &str,
+    ) -> FileIoResult<()> {
+        (**self).write_bytes_atomically_from_directory(
+            path,
+            staging_directory,
+            bytes,
+            publish_label,
+        )
+    }
+
     fn read_range(&self, path: &Path, offset: u64, len: u32) -> FileIoResult<Vec<u8>> {
         (**self).read_range(path, offset, len)
     }
@@ -464,6 +504,21 @@ impl FileIoByteStore for FilesystemFileIoStore {
         publish_label: &str,
     ) -> FileIoResult<()> {
         write_bytes_atomically_to_filesystem(path, bytes, publish_label)
+    }
+
+    fn write_bytes_atomically_from_directory(
+        &self,
+        path: &Path,
+        staging_directory: &Path,
+        bytes: &[u8],
+        publish_label: &str,
+    ) -> FileIoResult<()> {
+        write_bytes_atomically_from_directory_to_filesystem(
+            path,
+            staging_directory,
+            bytes,
+            publish_label,
+        )
     }
 
     fn read_range(&self, path: &Path, offset: u64, len: u32) -> FileIoResult<Vec<u8>> {
@@ -708,11 +763,36 @@ fn write_bytes_atomically_to_filesystem(
             )
         })?;
     }
-    let temp_path = path.with_extension(format!(
-        "{}.tmp-{}-{}",
-        path.extension()
-            .and_then(|value| value.to_str())
-            .unwrap_or("file"),
+    let staging_directory = path.parent().unwrap_or_else(|| Path::new("."));
+    write_bytes_atomically_from_directory_to_filesystem(
+        path,
+        staging_directory,
+        bytes,
+        publish_label,
+    )
+}
+
+fn write_bytes_atomically_from_directory_to_filesystem(
+    path: &Path,
+    staging_directory: &Path,
+    bytes: &[u8],
+    publish_label: &str,
+) -> FileIoResult<()> {
+    fs::create_dir_all(staging_directory).map_err(|err| {
+        FileIoError::from_io_message(
+            format!(
+                "Failed to create atomic staging directory {}: {err}",
+                staging_directory.display()
+            ),
+            err,
+        )
+    })?;
+    let file_name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("file");
+    let temp_path = staging_directory.join(format!(
+        ".{file_name}.tmp-{}-{}",
         std::process::id(),
         monotonic_nanos()
     ));
@@ -735,7 +815,7 @@ fn write_bytes_atomically_to_filesystem(
                 format!("Failed to sync {}: {err}", temp_path.display()),
             )
         })?;
-        fs::rename(&temp_path, path).map_err(|err| {
+        replace_file_atomically(&temp_path, path).map_err(|err| {
             FileIoError::from_io_message(
                 format!(
                     "Failed to publish {publish_label} {} -> {}: {err}",
@@ -751,6 +831,41 @@ fn write_bytes_atomically_to_filesystem(
         let _ = fs::remove_file(&temp_path);
     }
     write_result
+}
+
+#[cfg(not(windows))]
+fn replace_file_atomically(source: &Path, target: &Path) -> io::Result<()> {
+    fs::rename(source, target)
+}
+
+#[cfg(windows)]
+fn replace_file_atomically(source: &Path, target: &Path) -> io::Result<()> {
+    use windows_sys::Win32::Storage::FileSystem::{
+        MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
+    };
+
+    let source = source
+        .as_os_str()
+        .encode_wide()
+        .chain(iter::once(0))
+        .collect::<Vec<_>>();
+    let target = target
+        .as_os_str()
+        .encode_wide()
+        .chain(iter::once(0))
+        .collect::<Vec<_>>();
+    let result = unsafe {
+        MoveFileExW(
+            source.as_ptr(),
+            target.as_ptr(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    };
+    if result == 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
 }
 
 #[cfg(test)]

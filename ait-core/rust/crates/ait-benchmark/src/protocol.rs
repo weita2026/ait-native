@@ -569,7 +569,25 @@ mod tests {
         );
         assert_eq!(
             protocol["protocol_revision"],
-            serde_json::json!("game-development-2026-08-22.10")
+            serde_json::json!("game-development-2026-08-27.29")
+        );
+        assert_eq!(
+            protocol["sampling"]["statistical_replacement"]["contract"],
+            serde_json::json!("ait-agent-token-statistical-replacement/v1")
+        );
+        assert_eq!(
+            protocol["sampling"]["statistical_replacement"]["execution_limit"],
+            serde_json::json!(
+                "exactly one new AIT session; no second replacement or repair is admitted"
+            )
+        );
+        assert_eq!(
+            protocol["executors"]["claude"]["tool_policy"],
+            serde_json::json!("claude_code_local_tools")
+        );
+        assert_eq!(
+            protocol["executors"]["codex"]["tool_policy"],
+            serde_json::json!("codex_shell_only")
         );
         assert_eq!(protocol["workloads"].as_array().unwrap().len(), 5);
         assert_eq!(
@@ -588,6 +606,65 @@ mod tests {
             serde_json::json!("solo_local")
         );
         assert_eq!(
+            protocol["mixed_workflow_metrics"]["weighted_composite_score_allowed"],
+            serde_json::json!(false)
+        );
+        assert_eq!(
+            protocol["fairness"]["measured_ait_management_commands_allowed"],
+            serde_json::json!(false)
+        );
+        assert!(
+            protocol["fairness"]["git_worktree_start_point_admission"]["implicit_head"]
+                .as_str()
+                .is_some_and(|value| value.contains("git-start-state-proof.json"))
+        );
+        assert!(
+            protocol["fairness"]["git_worktree_start_point_admission"]["first_use"]
+                .as_str()
+                .is_some_and(|value| value.contains("rejected"))
+        );
+        assert_eq!(
+            protocol["fairness"]["measured_ait_allowed_commands"]
+                .as_array()
+                .unwrap()
+                .len(),
+            5
+        );
+        assert_eq!(
+            protocol["fairness"]["symmetric_readonly_inspection"]["ait_channel"],
+            serde_json::json!(["ait status", "ait diff", "ait blame"])
+        );
+        assert_eq!(
+            protocol["fairness"]["symmetric_readonly_inspection"]["remote_authority_policy"],
+            serde_json::json!(
+                "never informational: any remote-carrying inspection remains a mode violation"
+            )
+        );
+        assert_eq!(
+            protocol["fairness"]["informational_cli_help_introspection"]["cross_tool_policy"],
+            serde_json::json!("help of the other mode's CLI remains a mode-exclusion violation")
+        );
+        assert!(protocol["fairness"]["measured_ait_treatment"]
+            .as_str()
+            .is_some_and(|value| value.contains("one local task start")));
+        assert_eq!(
+            protocol["fairness"]["measured_git_required_commands"]
+                .as_array()
+                .unwrap()
+                .len(),
+            6
+        );
+        assert!(protocol["fairness"]["measured_git_treatment"]
+            .as_str()
+            .is_some_and(|value| value.contains("linked worktree")));
+        assert_eq!(
+            protocol["sampling"]["paired_comparison_admission"]["workflow_metric_asymmetry_policy"],
+            serde_json::json!("retain the pair and report the difference")
+        );
+        assert!(protocol["sampling"]
+            .get("paired_apply_patch_admission")
+            .is_none());
+        assert_eq!(
             protocol["product_boundary"]["core_sprint_mode"],
             serde_json::json!("off")
         );
@@ -596,11 +673,99 @@ mod tests {
             serde_json::json!(false)
         );
         assert_eq!(
-            protocol["sampling"]["minimum_claim_attempts_per_cell"],
-            serde_json::json!(20)
+            protocol["sampling"]["complete_campaign"]["scheduled_run_count"],
+            serde_json::json!(200)
         );
         assert_eq!(
-            protocol["claim_eligibility"]["maximum_ait_acceptance_rate_deficit_percentage_points"],
+            protocol["sampling"]["complete_campaign"]["paired_attempts_per_workload"],
+            serde_json::json!(20)
+        );
+        assert!(protocol["sampling"]["complete_campaign"]["revision_note"]
+            .as_str()
+            .is_some_and(|value| value.contains("symmetric read-only inspection treatment")));
+        assert!(
+            protocol["sampling"]["atomic_pair_schedule"]["candidate_defect_policy"]
+                .as_str()
+                .is_some_and(|value| value.contains("continue the exact suffix without retry"))
+        );
+        assert!(
+            protocol["sampling"]["immutable_resume"]["valid_unaccepted_outcome_policy"]
+                .as_str()
+                .is_some_and(|value| value.contains("cannot be repaired, replaced, or retried"))
+        );
+        assert!(
+            protocol["sampling"]["immutable_resume"]["resume_audit_policy"]
+                .as_str()
+                .is_some_and(|value| value.contains("runner SHA-256"))
+        );
+        assert_eq!(
+            protocol["publication_eligibility"]["required_scope"],
+            serde_json::json!("complete")
+        );
+        assert_eq!(
+            protocol["publication_provenance"]["legacy_pilot_policy"],
+            serde_json::json!(
+                "pilot evidence remains pilot and is never source-protocol claim eligible"
+            )
+        );
+        assert!(
+            protocol["publication_provenance"]["predecessor_complete_campaign_policy"]
+                .as_str()
+                .is_some_and(|value| value.contains("never reinterpreted"))
+        );
+        assert!(
+            protocol["publication_provenance"]["current_policy_reanalysis"]
+                .as_str()
+                .is_some_and(|value| value.contains("never changes source scope"))
+        );
+        assert_eq!(
+            protocol["sampling"]["paired_comparison_admission"]["total_patch_attempt_authority"],
+            serde_json::json!(
+                "completed file-change items plus rejected apply-patch attempts under the \
+                 pinned executor's authorities"
+            )
+        );
+        assert_eq!(
+            protocol["executor_preflight"]["required_separate_read_only_shell_commands"],
+            serde_json::json!(30)
+        );
+        assert_eq!(
+            protocol["executor_preflight"]["required_started_command_items"],
+            serde_json::json!(30)
+        );
+        assert_eq!(
+            protocol["executor_preflight"]["unexpected_non_command_tool_items_allowed"],
+            serde_json::json!(0)
+        );
+        assert_eq!(
+            protocol["executor_preflight"]["benchmark_disabled_feature_overrides"],
+            serde_json::json!([])
+        );
+        assert_eq!(
+            protocol["executor_preflight"]["git_worktree_permission_probe_required"],
+            serde_json::json!(true)
+        );
+        assert_eq!(
+            protocol["fairness"]["permission_profile"]["name"],
+            serde_json::json!("ait_benchmark_local_v1")
+        );
+        assert_eq!(
+            protocol["fairness"]["permission_profile"]["danger_full_access_allowed"],
+            serde_json::json!(false)
+        );
+        assert_eq!(
+            protocol["sampling"]["atomic_pair_schedule"]["slice_unit"],
+            serde_json::json!(
+                "--max-pairs counts complete adjacent Git/AIT pairs; --max-runs is retired"
+            )
+        );
+        assert_eq!(
+            protocol["provider_usage"]["candidate_tool_process_spawn_failure_policy"],
+            serde_json::json!("retain the invalid run and stop the remaining schedule immediately even when the model recovers and exits zero; recognize both unified CreateProcess stderr and non-unified executor Io/exit-code-minus-one evidence")
+        );
+        assert_eq!(
+            protocol["publication_eligibility"]
+                ["maximum_ait_acceptance_rate_deficit_percentage_points"],
             serde_json::json!(5)
         );
     }

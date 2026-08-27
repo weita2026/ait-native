@@ -157,12 +157,12 @@ fn task_land_selected_patchset_id(output: &JsonValue) -> Result<String, String> 
     if let (Some(selected), Some(projected)) = (selected.as_deref(), projected.as_deref()) {
         if selected != projected {
             return Err(format!(
-                "Task land selected Patchset `{selected}`, but its closeout projection names `{projected}`."
+                "Task finish selected Patchset `{selected}`, but the finish result names `{projected}`."
             ));
         }
     }
     selected.or(projected).ok_or_else(|| {
-        "Task land completed, but its selected Patchset identity is unavailable for feature-Line closeout."
+        "Task finish completed, but its selected Patchset identity is unavailable for feature-Line closeout."
             .to_string()
     })
 }
@@ -172,7 +172,7 @@ fn task_land_change_identity(output: &JsonValue) -> Result<(String, String), Str
         .get("change")
         .filter(|value| value.is_object())
         .ok_or_else(|| {
-            "Task land completed, but its authoritative Change is unavailable for feature-Line closeout."
+            "Task finish completed, but its recorded Change is unavailable for feature-Line cleanup."
                 .to_string()
         })?;
     let change_id = required_string_field(change, "change_id")?;
@@ -194,8 +194,7 @@ where
         != Some(true)
     {
         return Err(
-            "Task land did not identify its selected Patchset projection as authoritative."
-                .to_string(),
+            "Task finish did not confirm the selected Patchset as its final revision.".to_string(),
         );
     }
     let patchset_id = task_land_selected_patchset_id(output)?;
@@ -233,7 +232,7 @@ fn task_land_expected_revision_snapshot_id_for_closeout(
     }
     if use_local_scope {
         return Err(
-            "Task land completed, but the accepted revision Snapshot is unavailable for feature-Line closeout."
+            "Task finish completed, but the accepted revision Snapshot is unavailable for feature-Line closeout."
                 .to_string(),
         );
     }
@@ -377,7 +376,7 @@ pub(in crate::primitives) fn task_land_archive_local_bound_line(
     target_line: Option<&str>,
     allow_empty_head: bool,
 ) -> Result<JsonValue, String> {
-    run_locked_workspace_command(repo, "ait task land feature line closeout", || {
+    run_locked_workspace_command(repo, "ait task finish feature line closeout", || {
         let current = task_land_validate_local_bound_line(
             repo,
             candidate,
@@ -613,7 +612,7 @@ pub(in crate::primitives) fn task_land_attach_bound_line_closeout(
                 "task_id": task_id,
                 "task_status": task_status,
                 "error": error,
-                "detail": "Code land and Task completion are already authoritative. Repair the reported Line condition, then rerun the same `ait task land` command to resume closeout without landing twice.",
+                "detail": "The Land record and Task completion are already authoritative. Repair the reported Line condition, then rerun the same `ait task finish` command to resume closeout without creating a second Land.",
             })
         })
     };

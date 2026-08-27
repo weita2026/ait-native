@@ -950,7 +950,7 @@ fn snapshot_file_row_json(row: &SnapshotFileRow) -> JsonValue {
 
 fn require_merge_worktree(repo: &RepoRuntime) -> Result<String, String> {
     resolve_runtime_worktree_name(repo, None).map_err(|_| {
-        "Divergent line merge requires a managed worktree so conflict and abort state is durable. Start or enter a task worktree first.".to_string()
+        "Divergent Line merge requires a managed worktree so conflicts can be resumed or aborted safely. Start or enter a Task worktree first.".to_string()
     })
 }
 

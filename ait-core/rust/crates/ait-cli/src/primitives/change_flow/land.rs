@@ -8,8 +8,8 @@ pub fn land_submit(
     mode: &str,
     remote_name: Option<&str>,
 ) -> Result<JsonValue, String> {
-    guard_repo_root_pinned_bound_worktree(repo, None, "ait task land")?;
-    guard_no_planning_only_artifact_drift(repo, "ait task land")?;
+    guard_repo_root_pinned_bound_worktree(repo, None, "ait task finish")?;
+    guard_no_planning_only_artifact_drift(repo, "ait task finish")?;
     let (remote_row, repo_name) = remote_context(repo, remote_name, None)?;
     let mut task_remote = http_task_remote(repo, &remote_row)?;
     let mut closeout_remote = http_closeout_remote(repo, &remote_row)?;
@@ -28,7 +28,7 @@ pub fn land_submit(
                 repo,
                 change_task_id,
                 Some(resolved_change_id),
-                "ait task land",
+                "ait task finish",
             )
         },
     )

@@ -55,8 +55,8 @@ fn clean_server_command() -> Command {
 }
 
 #[test]
-fn no_arguments_print_help_without_storage_or_listener_side_effects() {
-    let directory = TestDirectory::new("no-arguments");
+fn help_is_side_effect_free() {
+    let directory = TestDirectory::new("help");
     let root = directory.path().join("server-data");
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let address = listener.local_addr().unwrap();
@@ -64,18 +64,27 @@ fn no_arguments_print_help_without_storage_or_listener_side_effects() {
 
     let output = clean_server_command()
         .env("AIT_NATIVE_SERVER_DATA", &root)
+        .arg("--help")
         .output()
-        .expect("execute no-argument ait-server");
+        .expect("execute ait-server help");
 
     assert!(
         output.status.success(),
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    assert!(String::from_utf8_lossy(&output.stdout).contains("ait-server run"));
+    assert!(String::from_utf8_lossy(&output.stdout).contains("ait-server [--data"));
     assert!(output.stderr.is_empty());
     assert!(!root.exists());
     assert!(TcpListener::bind(address).is_ok());
+}
+
+#[test]
+fn removed_run_subcommand_is_rejected_before_runtime_access() {
+    let output = run_server(&["run"]);
+
+    assert_eq!(output.status.code(), Some(64));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("unknown ait-server argument `run`"));
 }
 
 struct ChildGuard(Child);
@@ -148,8 +157,8 @@ fn deferred_probe_checks_durable_storage_without_requiring_a_ram_mount() {
 }
 
 #[test]
-fn installed_run_initializes_then_serves_from_an_explicit_root() {
-    let directory = TestDirectory::new("run");
+fn direct_start_initializes_then_serves_from_an_explicit_root() {
+    let directory = TestDirectory::new("direct-start");
     let root = directory.path().join("server-data");
     let root_text = root.to_str().unwrap();
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -159,7 +168,6 @@ fn installed_run_initializes_then_serves_from_an_explicit_root() {
 
     let child = clean_server_command()
         .args([
-            "run",
             "--data",
             root_text,
             "--listen",

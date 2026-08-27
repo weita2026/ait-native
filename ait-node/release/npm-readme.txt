@@ -36,7 +36,7 @@ the configured local or reviewed closeout path.
 
 For a reviewed remote flow, the author prepares the exact Patchset with
 `ait workflow ready <change-id> --apply`; the reviewer records the decision
-and lands it with `ait workflow land <change-id> --apply`.
+and lands it with `ait workflow finish <change-id> --apply`.
 
 ## Node.js API
 

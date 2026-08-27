@@ -1113,6 +1113,9 @@ impl TaskWorkflowZstdPackUploader for FakeChangeRemote {
             self.zstd_commit_peer_head_once.take(),
             request.line_update.as_ref(),
         ) {
+            self.remote_snapshots
+                .entry(peer_head.clone())
+                .or_insert_with(|| json!({"snapshot_id": peer_head.clone()}));
             let peer_line = json!({
                 "repo_name": repo_name,
                 "line_name": line_update.line_name.clone(),

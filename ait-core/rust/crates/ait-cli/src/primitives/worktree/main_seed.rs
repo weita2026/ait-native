@@ -46,13 +46,13 @@ fn validate_workspace_cargo_projection_for_snapshot(
     let config_path = workspace_path.join(WORKTREE_CARGO_CONFIG_RELATIVE_PATH);
     let metadata = fs::symlink_metadata(&config_path).map_err(|err| {
         format!(
-            "Managed Cargo projection metadata is unavailable at {}: {err}",
+            "Managed Cargo file metadata is unavailable at {}: {err}",
             config_path.display()
         )
     })?;
     if metadata.file_type().is_symlink() || !metadata.is_file() {
         return Err(format!(
-            "Managed Cargo projection must be a physical file at {}.",
+            "Managed Cargo path must be a physical file at {}.",
             config_path.display()
         ));
     }
@@ -62,7 +62,7 @@ fn validate_workspace_cargo_projection_for_snapshot(
         upgrade_generated_worktree_cargo_config_text(workspace_path, &actual)
     else {
         return Err(format!(
-            "Managed Cargo projection at {} is not a recognized task-worktree projection.",
+            "Managed Cargo file at {} is not recognized as a Task-worktree file.",
             config_path.display()
         ));
     };
@@ -71,7 +71,7 @@ fn validate_workspace_cargo_projection_for_snapshot(
             != normalize_workspace_cargo_projection_target(workspace_path, &expected)
     {
         return Err(format!(
-            "Managed Cargo projection does not match Snapshot {target_snapshot_id}: expected_sha256={}, actual_sha256={}.",
+            "Managed Cargo file does not match Snapshot {target_snapshot_id}: expected_sha256={}, actual_sha256={}.",
             sha256_hex_bytes(expected.as_bytes()),
             sha256_hex_bytes(actual.as_bytes())
         ));
@@ -363,19 +363,19 @@ fn materialize_main_seed_cargo_projection(
     if path_exists_or_directory_link(&config_path) {
         let metadata = fs::symlink_metadata(&config_path).map_err(|err| {
             format!(
-                "Failed to inspect staged managed Cargo projection {}: {err}",
+                "Failed to inspect staged managed Cargo file {}: {err}",
                 config_path.display()
             )
         })?;
         if metadata.file_type().is_symlink() || !metadata.is_file() {
             return Err(format!(
-                "Staged managed Cargo projection must be a physical file at {}.",
+                "Staged managed Cargo path must be a physical file at {}.",
                 config_path.display()
             ));
         }
         fs::remove_file(&config_path).map_err(|err| {
             format!(
-                "Failed to replace staged managed Cargo projection {}: {err}",
+                "Failed to replace staged managed Cargo file {}: {err}",
                 config_path.display()
             )
         })?;
@@ -1921,7 +1921,7 @@ mod selected_binary_main_seed_tests {
         write_file(&root.join(WORKTREE_CARGO_CONFIG_RELATIVE_PATH), &tampered);
         let error = validate_workspace_for_snapshot(&repo, &snapshot_id, &root, true)
             .expect_err("hidden managed projection must still match Snapshot source");
-        assert!(error.contains("Managed Cargo projection does not match Snapshot"));
+        assert!(error.contains("Managed Cargo file does not match Snapshot"));
     }
 
     #[test]

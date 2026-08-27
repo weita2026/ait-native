@@ -176,7 +176,7 @@ pub(crate) fn workflow_ready_next_action(
     if change_effectively_landed(&change, landing_summary.as_ref()) {
         let task_status = string_field(&task, "status");
         let detail = if task_status != "completed" {
-            "The change is already landed; `task land` can still close the task."
+            "The change is already landed; `task finish` can still close the Task."
         } else {
             "No further ready-workflow action is required."
         };
@@ -320,7 +320,7 @@ pub(crate) fn workflow_ready_next_action(
     json!({
         "code": "done",
         "summary": "Ready phase is complete.",
-        "detail": format!("Patchset `{patchset_id}` and its CI/Attestation evidence are ready for reviewer-owned `workflow land`."),
+        "detail": format!("Patchset `{patchset_id}` and its CI/Attestation evidence are ready for reviewer-owned `workflow finish`."),
         "command": land_command,
     })
 }
@@ -361,7 +361,7 @@ pub(crate) fn workflow_land_next_action(
     };
     let change_id = optional_string_field(&change, "change_id").unwrap_or_default();
     let apply_command = command_hint(commands, "apply_command")
-        .unwrap_or_else(|| format!("ait task land {change_id}"));
+        .unwrap_or_else(|| format!("ait task finish {change_id}"));
     let ready_command = command_hint(commands, "ready_command")
         .unwrap_or_else(|| format!("ait workflow ready {change_id} --apply"));
     let landing_status = workflow_land_submission_status(landing_summary.as_ref());
@@ -489,7 +489,7 @@ pub(crate) fn workflow_land_next_action(
                 "Land still needs task/outcome approval.".to_string()
             } else if let Some(reviewer) = auto_review_reviewer.clone() {
                 let mut detail = format!(
-                    "Task/outcome review auto approval is configured. Reviewer-owned Workflow Land or a successful direct AI code review can record `task_approve` as `{reviewer}` before atomic Task Land."
+                    "Task/outcome review auto approval is configured. Reviewer-owned Workflow Finish or a successful direct AI code review can record `task_approve` as `{reviewer}` before atomic Task Land."
                 );
                 if team_review_available {
                     detail.push_str(" Preserved team review remains available separately in `team_remote`.");
@@ -522,7 +522,7 @@ pub(crate) fn workflow_land_next_action(
         return json!({
             "code": "evaluate_policy",
             "summary": "Evaluate policy after reviewer approval.",
-            "detail": "Workflow Land owns the final Policy evaluation before it delegates atomic closeout to Task Land.",
+            "detail": "Workflow Finish owns the final Policy evaluation before it delegates atomic closeout to Task Land.",
             "command": workflow_land_owned_command(
                 "evaluate_policy",
                 command_hint(commands, "apply_command"),
@@ -580,7 +580,7 @@ pub(crate) fn workflow_land_next_action(
     json!({
         "code": "submit_land",
         "summary": "Submit the approved patchset for landing.",
-        "detail": format!("The selected patchset is ready to submit onto `{target_line}`. `task land` will re-evaluate policy as part of land preflight."),
+        "detail": format!("The selected Patchset is ready to submit onto `{target_line}`. `task finish` will re-evaluate Policy as part of Land preflight."),
         "command": workflow_land_owned_command(
             "submit_land",
             command_hint(commands, "apply_command"),

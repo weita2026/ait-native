@@ -129,6 +129,7 @@ dependencies = [
  "similar",
  "tempfile",
  "toml",
+ "windows-sys 0.61.2",
  "zip",
  "zstd 0.13.3",
 ]

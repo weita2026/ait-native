@@ -4,7 +4,7 @@ fn commands_with_patchset_ci() -> JsonValue {
     json!({
         "apply_command": "ait workflow ready RCC-1 --apply",
         "patchset_ci_command": "ait patchset rerun-ci RCP-1",
-        "land_command": "ait workflow land RCC-1 --apply",
+        "land_command": "ait workflow finish RCC-1 --apply",
     })
 }
 
@@ -163,18 +163,21 @@ fn workflow_ready_hands_pending_review_and_policy_to_workflow_land() {
     let commands = json!({
         "apply_command": "ait workflow ready RCC-1 --apply",
         "auto_review_reviewer": "alice",
-        "review_command": "ait workflow land RCC-1 --apply",
-        "land_command": "ait workflow land RCC-1 --apply"
+        "review_command": "ait workflow finish RCC-1 --apply",
+        "land_command": "ait workflow finish RCC-1 --apply"
     });
 
     let action = workflow_ready_next_action(&facts, &commands, false, false, true);
 
     assert_eq!(action["code"], json!("done"));
-    assert_eq!(action["command"], json!("ait workflow land RCC-1 --apply"));
+    assert_eq!(
+        action["command"],
+        json!("ait workflow finish RCC-1 --apply")
+    );
     assert!(action["detail"]
         .as_str()
         .unwrap()
-        .contains("reviewer-owned `workflow land`"));
+        .contains("reviewer-owned `workflow finish`"));
 }
 
 #[test]
@@ -184,13 +187,16 @@ fn workflow_ready_does_not_claim_ai_code_review() {
     facts["code_review_summary_count"] = json!(0);
     let commands = json!({
         "apply_command": "ait workflow ready RCC-1 --apply",
-        "land_command": "ait workflow land RCC-1 --apply"
+        "land_command": "ait workflow finish RCC-1 --apply"
     });
 
     let action = workflow_ready_next_action(&facts, &commands, false, false, true);
 
     assert_eq!(action["code"], json!("done"));
-    assert_eq!(action["command"], json!("ait workflow land RCC-1 --apply"));
+    assert_eq!(
+        action["command"],
+        json!("ait workflow finish RCC-1 --apply")
+    );
 }
 
 #[test]
@@ -200,13 +206,16 @@ fn workflow_ready_does_not_claim_final_policy_evaluation() {
     let commands = json!({
         "apply_command": "ait workflow ready RCC-1 --apply",
         "policy_command": "ait policy eval RCP-1",
-        "land_command": "ait workflow land RCC-1 --apply"
+        "land_command": "ait workflow finish RCC-1 --apply"
     });
 
     let action = workflow_ready_next_action(&facts, &commands, false, false, true);
 
     assert_eq!(action["code"], json!("done"));
-    assert_eq!(action["command"], json!("ait workflow land RCC-1 --apply"));
+    assert_eq!(
+        action["command"],
+        json!("ait workflow finish RCC-1 --apply")
+    );
 }
 
 fn land_facts(patchset_ci_status: JsonValue) -> JsonValue {
@@ -243,12 +252,12 @@ fn workflow_land_owns_exact_patchset_ai_review_before_task_land() {
     facts["code_review_summary_count"] = json!(0);
     facts["task_review_approvals"] = json!(0);
     let commands = json!({
-        "apply_command": "ait workflow land RCC-1 --apply",
+        "apply_command": "ait workflow finish RCC-1 --apply",
         "ready_command": "ait workflow ready RCC-1 --apply",
-        "code_review_summary_command": "ait workflow land RCC-1 --apply --review-message \"structured summary\"",
+        "code_review_summary_command": "ait workflow finish RCC-1 --apply --review-message \"structured summary\"",
         "auto_review_reviewer": "alice",
-        "review_command": "ait workflow land RCC-1 --apply",
-        "land_command": "ait task land RCC-1"
+        "review_command": "ait workflow finish RCC-1 --apply",
+        "land_command": "ait task finish RCC-1"
     });
 
     let action = workflow_land_next_action(
@@ -258,7 +267,7 @@ fn workflow_land_owns_exact_patchset_ai_review_before_task_land() {
     assert_eq!(action["code"], json!("record_code_review_summary"));
     assert_eq!(
         action["command"],
-        json!("ait workflow land RCC-1 --apply --review-message \"structured summary\"")
+        json!("ait workflow finish RCC-1 --apply --review-message \"structured summary\"")
     );
 }
 
@@ -267,11 +276,11 @@ fn workflow_land_owns_automatic_task_approval() {
     let mut facts = land_facts(passing_ci_status());
     facts["task_review_approvals"] = json!(0);
     let commands = json!({
-        "apply_command": "ait workflow land RCC-1 --apply",
+        "apply_command": "ait workflow finish RCC-1 --apply",
         "ready_command": "ait workflow ready RCC-1 --apply",
         "auto_review_reviewer": "alice",
-        "review_command": "ait workflow land RCC-1 --apply",
-        "land_command": "ait task land RCC-1"
+        "review_command": "ait workflow finish RCC-1 --apply",
+        "land_command": "ait task finish RCC-1"
     });
 
     let action = workflow_land_next_action(
@@ -279,7 +288,10 @@ fn workflow_land_owns_automatic_task_approval() {
     );
 
     assert_eq!(action["code"], json!("record_review"));
-    assert_eq!(action["command"], json!("ait workflow land RCC-1 --apply"));
+    assert_eq!(
+        action["command"],
+        json!("ait workflow finish RCC-1 --apply")
+    );
 }
 
 #[test]
@@ -287,10 +299,10 @@ fn workflow_land_owns_pending_policy_evaluation() {
     let facts = land_facts(passing_ci_status());
     let pending_policy = json!({"decision": "pending"});
     let commands = json!({
-        "apply_command": "ait workflow land RCC-1 --apply",
+        "apply_command": "ait workflow finish RCC-1 --apply",
         "ready_command": "ait workflow ready RCC-1 --apply",
         "policy_command": "ait policy eval RCP-1",
-        "land_command": "ait task land RCC-1"
+        "land_command": "ait task finish RCC-1"
     });
 
     let action = workflow_land_next_action(
@@ -307,7 +319,10 @@ fn workflow_land_owns_pending_policy_evaluation() {
     );
 
     assert_eq!(action["code"], json!("evaluate_policy"));
-    assert_eq!(action["command"], json!("ait workflow land RCC-1 --apply"));
+    assert_eq!(
+        action["command"],
+        json!("ait workflow finish RCC-1 --apply")
+    );
 }
 
 #[test]
@@ -375,7 +390,7 @@ fn workflow_ready_without_ci_contract_keeps_manual_attestation_command() {
     let commands = json!({
         "apply_command": "ait workflow ready RCC-1 --apply",
         "attest_command": "ait attest put RCP-1 --tests pass",
-        "land_command": "ait task land RCC-1",
+        "land_command": "ait task finish RCC-1",
     });
 
     let action = workflow_ready_next_action(&facts, &commands, false, false, false);

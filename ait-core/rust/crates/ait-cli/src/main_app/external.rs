@@ -57,7 +57,7 @@ fn external_update_options_from_args(args: &ExternalUpdateArgs) -> Result<Extern
         return Err("`ait external update` accepts either `--to <snapshot>` or `--latest`, not both.".to_string());
     }
     if args.locked && (args.name.is_some() || args.snapshot.is_some() || args.latest) {
-        return Err("`ait external update --locked` materializes the committed lockfile and does not accept a target, `--to`, or `--latest`.".to_string());
+        return Err("`ait external update --locked` restores the files recorded by the committed lockfile and does not accept a target, `--to`, or `--latest`.".to_string());
     }
     let mut options = match (&args.name, &args.snapshot, args.latest) {
         (Some(name), Some(snapshot), false) => ExternalUpdateOptions::exact(name, snapshot),

@@ -124,7 +124,7 @@ fn load_sprint_card_lineage(
             || string_field(row, "publication_state").as_deref() == Some("published");
         let order_key = if row_is_eligible {
             Some(sprint_card_order_key(row).map_err(|error| {
-                format!("Invalid sprint-card Plan lineage for {artifact_path}: {error}")
+                format!("Invalid sprint-card Plan history for {artifact_path}: {error}")
             })?)
         } else {
             None
@@ -303,7 +303,7 @@ fn validate_prune_sync(payload: &JsonValue, artifact_path: &str) -> Result<JsonV
         });
     if !pruned {
         return Err(format!(
-            "Prune sync for {artifact_path} did not archive tracked plan lineage."
+            "Prune sync for {artifact_path} did not archive the tracked Plan history."
         ));
     }
     Ok(payload.clone())

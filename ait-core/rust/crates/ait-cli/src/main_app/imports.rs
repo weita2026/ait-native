@@ -12,7 +12,8 @@ use ait_cli::config_surface::{
     config_unset as config_unset_cmd, ConfigSetRequest, ConfigUnsetKey,
 };
 use ait_cli::doctor_surface::{
-    doctor_memory_root, doctor_plan_authority, doctor_runtime_root, render_doctor_text,
+    doctor_memory_root, doctor_plan_authority, doctor_plan_authority_for_repository,
+    doctor_runtime_root, render_doctor_text,
 };
 use ait_cli::external_surface::{
     external_doctor as external_doctor_cmd, external_link as external_link_cmd,
@@ -39,6 +40,7 @@ use ait_cli::primitives::{
     snapshot_revert, snapshot_show, stash_apply, stash_drop, stash_list, stash_pop, stash_save,
     stash_show, task_abandon, task_audit, task_land_apply_scoped, task_list, task_show,
     task_start_from_with_progress, task_start_with_progress,
+    resolve_task_scoped_execution_repo, run_task_scoped_workspace_command,
     workflow_reconcile_apply, workflow_reconcile_automatic,
     workflow_reconcile_automatic_best_effort, workflow_reconcile_inventory,
     workflow_land_apply, workflow_land_payload,
@@ -87,7 +89,7 @@ use ait_cli::tag_surface::{
 };
 use ait_cli::task_land_contract::{
     task_land_exit_code, task_land_scope_contract_json, PLAN_SYNC_COMMAND_ABOUT,
-    TASK_LAND_COMMAND_ABOUT, TASK_LAND_CONTRACT_VERSION,
+    TASK_FINISH_COMMAND_ABOUT, TASK_LAND_CONTRACT_VERSION,
 };
 use ait_cli::workspace_lock::run_locked_workspace_command;
 use ait_core::binary_db_generation::{

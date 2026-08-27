@@ -98,7 +98,7 @@ where
             .collect::<Vec<_>>()
             .join(", ");
         return Err(format!(
-            "Task {task_id} has multiple landable changes ({ids}); run `ait task land <change-id>` for the intended change."
+            "Task {task_id} has multiple finishable changes ({ids}); run `ait task finish <change-id>` for the intended change."
         ));
     }
     candidates
@@ -187,7 +187,7 @@ where
             .collect::<Vec<_>>()
             .join(", ");
         return Err(format!(
-            "Local task {requested_id} has multiple landable changes ({ids}); run `ait task land <change-id>` for the intended change."
+            "Local task {requested_id} has multiple finishable changes ({ids}); run `ait task finish <change-id>` for the intended change."
         ));
     }
     candidates
@@ -215,12 +215,12 @@ pub(super) fn resolve_task_land_change_id(
         {
             let remote_name = normalized_text(remote_name).unwrap_or_else(|| "origin".to_string());
             return Err(format!(
-                "Local change {local_change_id} is completed but has no ready remote Patchset. Run `ait workflow ready {local_change_id} --apply --remote {remote_name}` to publish its consecutive local workflow history and CI-test the single aggregate Patchset, then hand it to a reviewer running `ait workflow land {local_change_id} --apply --remote {remote_name}`."
+                "Local change {local_change_id} is completed but has no ready remote Patchset. Run `ait workflow ready {local_change_id} --apply --remote {remote_name}` to publish its consecutive local workflow history and CI-test the single aggregate Patchset, then hand it to a reviewer running `ait workflow finish {local_change_id} --apply --remote {remote_name}`."
             ));
         }
     }
     Err(format!(
-        "Could not resolve `{requested_id}` as a remote task or change for `ait task land`."
+        "Could not resolve `{requested_id}` as a remote task or change for `ait task finish`."
     ))
 }
 
@@ -247,7 +247,7 @@ pub(in crate::primitives) fn task_land_local_payload(
     let change_status = string_field(&change, "status").unwrap_or_default();
     if !matches!(change_status.as_str(), "draft" | "active" | "landed") {
         return Err(format!(
-            "Local change {change_id} is {change_status} and cannot be locally landed"
+            "Local change {change_id} is {change_status} and cannot be locally finished"
         ));
     }
     let task_id = required_string_field(&change, "task_id")?;
@@ -258,7 +258,7 @@ pub(in crate::primitives) fn task_land_local_payload(
     let task_status = string_field(&task, "status").unwrap_or_default();
     if !matches!(task_status.as_str(), "active" | "completed") {
         return Err(format!(
-            "Local task {task_id} is {task_status} and cannot be locally landed"
+            "Local task {task_id} is {task_status} and cannot be locally finished"
         ));
     }
     let target_line = string_field(&change, "target_line")
@@ -284,9 +284,9 @@ pub(in crate::primitives) fn task_land_local_payload(
             "workspace": workspace,
             "next_action": {
                 "code": "resume_local_task_land_closeout",
-                "summary": "Resume the already-landed local Task's Plan closeout and worktree cleanup without landing again.",
-                "detail": "Run the same `ait task land <task-or-change-id>` command. The landed Line, Change, and Task state is reused idempotently.",
-                "command": format!("ait task land {requested_id}"),
+                "summary": "Resume the already-finished local Task's Plan closeout and worktree cleanup without applying it again.",
+                "detail": "Run the same `ait task finish <task-or-change-id>` command. The finished Line, Change, and Task state is reused idempotently.",
+                "command": format!("ait task finish {requested_id}"),
             },
         })));
     }
@@ -304,9 +304,9 @@ pub(in crate::primitives) fn task_land_local_payload(
         "workspace": workspace,
         "next_action": {
             "code": "workflow_land_local",
-            "summary": "Land the local draft change onto its local target line.",
-            "detail": "Run `ait task land <task-or-change-id> --local`, or omit the scope flag when workflow_mode defaults task land to local. Add `--remote <name>` after local land to promote completed local work.",
-            "command": format!("ait task land {requested_id}"),
+            "summary": "Finish the local draft change onto its local target line.",
+            "detail": "Run `ait task finish <task-or-change-id> --message <MESSAGE> --local` for dirty work. Clean work reuses the current Line head, so omit --message. You may omit --local when workflow_mode already defaults Task finish to local.",
+            "command": format!("ait task finish {requested_id}"),
         },
     })))
 }
@@ -329,8 +329,13 @@ where
     let change_id = required_string_field(&local_payload, "change_id")?;
     let change_ref = required_string_field(&local_payload, "change_ref")?;
     let task_id = required_string_field(&local_payload, "task_id")?;
-    guard_repo_root_pinned_bound_worktree(repo, Some(&task_id), "ait task land")?;
-    guard_repo_root_bound_task_worktree(repo, Some(&task_id), Some(&change_ref), "ait task land")?;
+    guard_repo_root_pinned_bound_worktree(repo, Some(&task_id), "ait task finish")?;
+    guard_repo_root_bound_task_worktree(
+        repo,
+        Some(&task_id),
+        Some(&change_ref),
+        "ait task finish",
+    )?;
     let captured_bound_line = task_land_capture_bound_line(&closeout_repo, &task_id);
     let already_landed = local_payload
         .get("already_landed")
@@ -467,9 +472,9 @@ pub(in crate::primitives) fn task_land_attach_plan_checklist_closeout(
             .filter(|task| task.is_object())
             .cloned()
             .ok_or_else(|| {
-                "Local task land output did not preserve its pre-land task binding.".to_string()
+                "Local task finish output did not preserve its pre-finish task binding.".to_string()
             })?;
-        run_locked_workspace_command(repo, "ait task land sprint checklist closeout", || {
+        run_locked_workspace_command(repo, "ait task finish sprint checklist closeout", || {
             close_task_plan_checklist_item(repo, &task, None)
         })
     })()
@@ -477,7 +482,7 @@ pub(in crate::primitives) fn task_land_attach_plan_checklist_closeout(
         json!({
             "status": "failed",
             "error": error,
-            "detail": "Code land and task completion succeeded, but automatic bound sprint checklist closeout did not converge. Run the scope-correct `ait plan sync <artifact>` after reconciling the reported error.",
+            "detail": "Code land and Task completion succeeded, but the bound sprint checklist did not close automatically. Resolve the reported error, then run `ait plan sync <artifact>` in the same local or remote location.",
         })
     });
     if let Some(object) = output.as_object_mut() {
@@ -538,7 +543,7 @@ fn task_land_deferred_remote_plan_checklist_closeout(
         "origin_plan_revision_id": task.and_then(|task| string_field(task, "origin_plan_revision_id")),
         "plan_item_ref": task.and_then(|task| string_field(task, "plan_item_ref")),
         "updated": false,
-        "detail": "Remote task land completed without reading or synchronizing Plan state. Mark the exact bound checklist item complete in its Markdown sprint card, then run the separate Plan sync command.",
+        "detail": "Remote task finish completed without reading or synchronizing Plan state. Mark the exact bound checklist item complete in its Markdown sprint card, then run the separate Plan sync command.",
         "command": command,
     })
 }
@@ -648,7 +653,7 @@ pub(in crate::primitives) fn task_land_attach_cli_main_seed_sync(
             "reason": "already_at_trusted_local_landed_snapshot",
             "line_name": fallback_target_line,
             "snapshot_id": fallback_snapshot_id,
-            "detail": "The remote history promotion landed the Snapshot already held by the local target Line; the prior local Task Land already refreshed the CLI main seed.",
+            "detail": "The remote history promotion landed the Snapshot already held by the local target Line; the prior local Task finish already refreshed the CLI main seed.",
         });
         return;
     }
@@ -792,7 +797,7 @@ pub(in crate::primitives) fn task_land_attach_forced_cleanup(
         return Ok(());
     }
     let cleanup = task_land_force_bound_worktree_cleanup(repo, output).map_err(|err| {
-        format!("Task land completed, but forced bound worktree cleanup failed: {err}")
+        format!("Task finish completed, but forced bound worktree cleanup failed: {err}")
     })?;
     if let Some(output_obj) = output.as_object_mut() {
         output_obj.insert("bound_worktree_cleanup".to_string(), cleanup.clone());
@@ -834,7 +839,7 @@ pub fn task_land_payload_scoped(
     let mut output = if use_local_scope {
         task_land_local_payload(repo, task_or_change_id, None)?.ok_or_else(|| {
             format!(
-                "`ait task land {task_or_change_id}` is using local scope, but no unpublished local draft is ready to land. Pass `--remote <name>` for shared remote closeout."
+                "`ait task finish {task_or_change_id}` is using local data, but no unpublished local draft is ready to finish. Pass `--remote <name>` to finish the shared remote Change."
             )
         })?
     } else {
@@ -956,7 +961,7 @@ pub(in crate::primitives) fn task_land_atomic_action_result(
         .get("land")
         .and_then(JsonValue::as_object)
         .cloned()
-        .ok_or_else(|| "Atomic Task Land response is missing Land projection.".to_string())?;
+        .ok_or_else(|| "Task finish server response is missing Land data.".to_string())?;
     for key in [
         "task_id",
         "change_id",
@@ -998,22 +1003,22 @@ pub(in crate::primitives) fn task_land_atomic_output(
         .get("task")
         .filter(|value| value.is_object())
         .cloned()
-        .ok_or_else(|| "Atomic Task Land response is missing Task projection.".to_string())?;
+        .ok_or_else(|| "Task finish server response is missing Task data.".to_string())?;
     let change = atomic_response
         .get("change")
         .filter(|value| value.is_object())
         .cloned()
-        .ok_or_else(|| "Atomic Task Land response is missing Change projection.".to_string())?;
+        .ok_or_else(|| "Task finish server response is missing Change data.".to_string())?;
     let patchset = atomic_response
         .get("patchset")
         .filter(|value| value.is_object())
         .cloned()
-        .ok_or_else(|| "Atomic Task Land response is missing Patchset projection.".to_string())?;
+        .ok_or_else(|| "Task finish server response is missing Patchset data.".to_string())?;
     let land = atomic_response
         .get("land")
         .filter(|value| value.is_object())
         .cloned()
-        .ok_or_else(|| "Atomic Task Land response is missing Land projection.".to_string())?;
+        .ok_or_else(|| "Task finish server response is missing Land data.".to_string())?;
     let task_id = required_string_field(atomic_response, "task_id")?;
     let change_id = required_string_field(atomic_response, "change_id")?;
     let change_ref = required_string_field(atomic_response, "change_ref")?;
@@ -1090,7 +1095,7 @@ pub(in crate::primitives) fn task_land_atomic_output(
         ],
         "next_action": {
             "code": "done",
-            "summary": "Atomic remote Task Land completed."
+            "summary": "Remote Task finish completed."
         },
         "apply_status": "done",
         "apply_phase": workflow_apply_phase_payload_json(
@@ -1100,7 +1105,7 @@ pub(in crate::primitives) fn task_land_atomic_output(
                 "done"
             },
             "done",
-            Some("Land, Change, target Line, and Task completion were committed by one atomic server mutation."),
+            Some("The server saved the Land, Change, target Line, and Task completion in one operation."),
             atomic_response.get("replayed").and_then(JsonValue::as_bool) == Some(true),
         ),
     }))
@@ -1170,15 +1175,15 @@ where
     let preflight_started = Instant::now();
     let task_or_change_ref = task_land_exact_atomic_reference(repo, task_or_change_id)?;
     let task_hint = task_land_reference_task_hint(repo, &task_or_change_ref);
-    guard_repo_root_pinned_bound_worktree(repo, task_hint.as_deref(), "ait task land")?;
+    guard_repo_root_pinned_bound_worktree(repo, task_hint.as_deref(), "ait task finish")?;
     guard_repo_root_bound_task_worktree(
         repo,
         task_hint.as_deref(),
         (task_land_reference_family(&task_or_change_ref) == Some(TaskLandReferenceFamily::Change))
             .then_some(task_or_change_ref.as_str()),
-        "ait task land",
+        "ait task finish",
     )?;
-    guard_no_planning_only_artifact_drift(repo, "ait task land")?;
+    guard_no_planning_only_artifact_drift(repo, "ait task finish")?;
     let (remote_row, repo_name) = remote_context(repo, remote_name, None)?;
     let mut closeout_remote = http_closeout_remote(repo, &remote_row)?;
     let idempotency_key =
@@ -1193,7 +1198,7 @@ where
             .then_some(task_or_change_ref.as_str()),
         None,
         Some(1),
-        Some("Submitting one atomic already-ready Task Land mutation."),
+        Some("Submitting the already-ready Task finish request."),
         Some("mutation_started"),
         None,
         None,
@@ -1229,7 +1234,7 @@ where
         Some("mutation_accepted"),
         None,
         None,
-        Some("Land and Task completion committed atomically."),
+        Some("The server saved the Land and Task completion together."),
     )?;
     let captured_bound_line = task_land_capture_bound_line(repo, &response_task_id);
 
@@ -1239,7 +1244,7 @@ where
         &response_task_id,
         atomic_response
             .get("land")
-            .ok_or_else(|| "Atomic Task Land response is missing Land projection.".to_string())?,
+            .ok_or_else(|| "Task finish server response is missing Land data.".to_string())?,
         &response_target_line,
         &response_snapshot_id,
     )
@@ -1297,7 +1302,7 @@ where
         let (reason, detail, error) = if task_land_main_seed_failed(&output) {
             (
                 "main_seed_sync_failed",
-                "Remote land is authoritative, but the CLI main seed was not updated. Repair the reported local path or permission issue, then rerun the same Task Land command; the server will replay without a second Land.",
+                "Remote Land is authoritative, but the CLI main seed was not updated. Repair the reported local path or permission issue, then rerun the same Task finish command; the server will replay without a second Land.",
                 output
                     .get("main_seed_sync")
                     .and_then(|value| string_field(value, "error")),
@@ -1305,7 +1310,7 @@ where
         } else {
             (
                 "local_line_sync_failed",
-                "Remote land is authoritative, but local target-Line synchronization failed. Repair the reported local state, then rerun the same Task Land command.",
+                "Remote Land is authoritative, but local target-Line synchronization failed. Repair the reported local state, then rerun the same Task finish command.",
                 output
                     .get("local_line_sync")
                     .and_then(|value| string_field(value, "error")),
@@ -1359,6 +1364,7 @@ pub fn task_land_apply_scoped<F>(
     task_or_change_id: &str,
     use_local_scope: bool,
     remote_name: Option<&str>,
+    snapshot_message: Option<&str>,
     progress: Option<F>,
 ) -> Result<JsonValue, String>
 where
@@ -1368,16 +1374,19 @@ where
         return task_land_apply_local(
             repo,
             task_or_change_id,
-            None,
+            snapshot_message,
             Some("main"),
             None,
             None::<fn(&JsonValue) -> Result<(), String>>,
         )?
         .ok_or_else(|| {
             format!(
-                "`ait task land {task_or_change_id}` is using local scope, but no unpublished local draft is ready to land. Pass `--remote <name>` for shared remote closeout."
+                "`ait task finish {task_or_change_id}` is using local data, but no unpublished local draft is ready to finish. Pass `--remote <name>` to finish the shared remote Change."
             )
         });
+    }
+    if snapshot_message.is_some() {
+        return Err("`--message` is available only for local `ait task finish`; remote finish consumes an already-ready selected Patchset.".to_string());
     }
     task_land_apply(repo, task_or_change_id, remote_name, progress)
 }

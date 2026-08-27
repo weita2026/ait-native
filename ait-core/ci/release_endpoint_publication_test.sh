@@ -860,9 +860,11 @@ for component in ait-server ait-runner; do
   grep -F "COPY --chmod=0755 bin/\${TARGETARCH}/${component} /usr/local/bin/${component}" \
     "${dockerfile}" >/dev/null
   if [[ ${component} == ait-server ]]; then
-    grep -F 'CMD ["run", "--listen", "0.0.0.0:8088", "--init-if-missing", "--defer-ci-admission"]' \
-      "${dockerfile}" >/dev/null
-    grep -F 'Config.Cmd == ["run", "--listen", "0.0.0.0:8088", "--init-if-missing", "--defer-ci-admission"]' \
+    if grep -Eiq '^[[:space:]]*CMD([[:space:]]|$)' "${dockerfile}"; then
+      printf 'ait-server OCI recipe must not declare a Docker CMD\n' >&2
+      exit 65
+    fi
+    grep -F '((.[0].Config.Cmd == null) or (.[0].Config.Cmd == [])) and' \
       "${remote}" >/dev/null
     if grep -F 'AITSERVER_LISTEN=' "${dockerfile}" >/dev/null; then
       printf 'ait-server OCI recipe restored the retired listener environment control\n' >&2

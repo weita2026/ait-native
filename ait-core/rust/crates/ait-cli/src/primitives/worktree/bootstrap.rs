@@ -46,7 +46,7 @@ pub(in crate::primitives) fn ensure_task_feature_line(
     )?;
     create_local_line(repo, &line_name, resolved_base_snapshot_id.as_deref()).map_err(|err| {
         format!(
-            "failed to create the task feature line in Binary DB authority {}: {err}",
+            "failed to create the Task feature Line in the Binary DB at {}: {err}",
             repo.ait_dir.join("binary-db").display()
         )
     })
@@ -643,7 +643,7 @@ pub fn worktree_recover_task(
 ) -> Result<JsonValue, String> {
     if repo.is_worktree() {
         return Err(format!(
-            "Run `ait worktree recover-task` from the authoritative repository root `{}`.",
+            "Run `ait worktree recover-task` from the main repository root `{}`.",
             repo.authoritative_repo_root().display()
         ));
     }
@@ -1111,9 +1111,7 @@ pub(in crate::primitives) fn task_start_bootstrap_with_progress(
                         &created_at,
                         None,
                     )
-                    .map_err(|err| {
-                        format!("failed to materialize the task worktree runtime layout: {err}")
-                    })?
+                    .map_err(|err| format!("failed to prepare the Task worktree files: {err}"))?
                 }
                 Err(err) => {
                     if path_exists_or_directory_link(&worktree_path) {
@@ -1144,9 +1142,7 @@ pub(in crate::primitives) fn task_start_bootstrap_with_progress(
                         &created_at,
                         None,
                     )
-                    .map_err(|err| {
-                        format!("failed to materialize the task worktree runtime layout: {err}")
-                    })?;
+                    .map_err(|err| format!("failed to prepare the Task worktree files: {err}"))?;
                     task_start_snapshot_restore(
                         &worktree_repo,
                         feature_line_head_snapshot_id.as_deref(),
@@ -1168,9 +1164,7 @@ pub(in crate::primitives) fn task_start_bootstrap_with_progress(
                 &created_at,
                 None,
             )
-            .map_err(|err| {
-                format!("failed to materialize the task worktree runtime layout: {err}")
-            })?;
+            .map_err(|err| format!("failed to prepare the Task worktree files: {err}"))?;
             task_start_snapshot_restore(
                 &worktree_repo,
                 feature_line_head_snapshot_id.as_deref(),
@@ -1188,7 +1182,7 @@ pub(in crate::primitives) fn task_start_bootstrap_with_progress(
             &created_at,
             None,
         )
-        .map_err(|err| format!("failed to materialize the task worktree runtime layout: {err}"))?;
+        .map_err(|err| format!("failed to prepare the Task worktree files: {err}"))?;
         task_start_snapshot_restore(
             &worktree_repo,
             feature_line_head_snapshot_id.as_deref(),
@@ -1201,7 +1195,7 @@ pub(in crate::primitives) fn task_start_bootstrap_with_progress(
         worktree_repo
             .set_worktree_materialized_snapshot(feature_line_head_snapshot_id.as_deref())
             .map_err(|err| {
-                format!("failed to mark the copied task worktree materialized snapshot: {err}")
+                format!("failed to record the Task worktree's checked-out Snapshot: {err}")
             })?;
     }
     materialize_worktree_cargo_config(&repo.authoritative_repo_root(), &worktree_path).map_err(
@@ -1392,8 +1386,15 @@ where
             "reason": "remote_base_already_initialized",
         }));
     }
-    let snapshot = create_detached_empty_remote_base_snapshot(repo, base_line)?;
-    let snapshot_id = required_string_field(&snapshot, "snapshot_id")?;
+    let local_head_snapshot_id = local_line_head_snapshot_id(repo, base_line)?;
+    let (snapshot_id, bootstrap_snapshot, seed_source) = match local_head_snapshot_id.as_deref() {
+        Some(snapshot_id) => (snapshot_id.to_string(), None, "local_main"),
+        None => {
+            let snapshot = create_detached_empty_remote_base_snapshot(repo, base_line)?;
+            let snapshot_id = required_string_field(&snapshot, "snapshot_id")?;
+            (snapshot_id, Some(snapshot), "detached_empty")
+        }
+    };
     let remote_repository = read_remote_repository_authority(repo, task_remote, repo_name)?;
     let remote_sync_capabilities =
         RemoteSyncCapabilities::from_server_payload(Some(&remote_repository));
@@ -1413,17 +1414,23 @@ where
                 .map_err(|err| err.to_string())?;
             if string_field(&line, "head_snapshot_id").as_deref() != Some(snapshot_id.as_str()) {
                 return Err(format!(
-                    "Remote empty-base initialization returned an unexpected `{base_line}` head."
+                    "Remote null-head initialization returned an unexpected `{base_line}` head."
                 ));
             }
             Ok(json!({
                 "line": line,
                 "initialized": true,
                 "head_snapshot_id": snapshot_id,
-                "snapshot": snapshot,
+                "snapshot": bootstrap_snapshot,
+                "seed_source": seed_source,
+                "local_seed_snapshot_id": local_head_snapshot_id,
                 "snapshot_sync": snapshot_sync,
                 "remote_repository": remote_repository,
-                "reason": "remote_null_head_initialized",
+                "reason": if seed_source == "local_main" {
+                    "remote_null_head_seeded_from_local_main"
+                } else {
+                    "remote_null_head_initialized"
+                },
             }))
         }
         Err(initialization_error) => {
@@ -1436,7 +1443,7 @@ where
             )?;
             let Some(winner_snapshot_id) = string_field(&winner, "head_snapshot_id") else {
                 return Err(format!(
-                    "Remote empty-base initialization failed and `{base_line}` still has no head: {initialization_error}"
+                    "Remote null-head initialization failed and `{base_line}` still has no head: {initialization_error}"
                 ));
             };
             if winner_snapshot_id == snapshot_id {
@@ -1444,21 +1451,22 @@ where
                     "line": winner,
                     "initialized": true,
                     "head_snapshot_id": winner_snapshot_id,
-                    "snapshot": snapshot,
+                    "snapshot": bootstrap_snapshot,
+                    "seed_source": seed_source,
+                    "local_seed_snapshot_id": local_head_snapshot_id,
                     "initialization_error": initialization_error,
                     "remote_repository": remote_repository,
-                    "reason": "remote_null_head_initialized_after_uncertain_response",
+                    "reason": if seed_source == "local_main" {
+                        "remote_null_head_seeded_from_local_main_after_uncertain_response"
+                    } else {
+                        "remote_null_head_initialized_after_uncertain_response"
+                    },
                 }));
             }
-            Ok(json!({
-                "line": winner,
-                "initialized": false,
-                "head_snapshot_id": winner_snapshot_id,
-                "orphaned_snapshot_id": snapshot_id,
-                "initialization_error": initialization_error,
-                "remote_repository": remote_repository,
-                "reason": "remote_null_head_initialized_by_peer",
-            }))
+            Err(format!(
+                "Cannot start a remote task: Remote `{}` target Line `{base_line}` was initialized concurrently at `{winner_snapshot_id}` while this bootstrap selected `{snapshot_id}` from {seed_source}. Refusing to create a Task or Change from a different ancestry. Re-run after reconciling local `{base_line}` with the remote head. Initial synchronization failed: {initialization_error}",
+                remote_row.name,
+            ))
         }
     }
 }
@@ -1490,7 +1498,7 @@ where
 pub(in crate::primitives) fn task_start_root_preflight(repo: &RepoRuntime) -> Result<(), String> {
     if repo.is_worktree() {
         return Err(format!(
-            "Refusing to run `ait task start` inside existing worktree `{}`. Start new task lineage from the authoritative repository root `{}` so all deterministic guards run before remote task creation.",
+            "`ait task start` cannot run inside existing worktree `{}`. Start the new Task from the main repository root `{}` so every safety check runs before remote Task creation.",
             repo.workspace_root().display(),
             repo.authoritative_repo_root().display(),
         ));

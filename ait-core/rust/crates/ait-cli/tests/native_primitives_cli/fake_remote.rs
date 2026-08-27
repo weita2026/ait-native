@@ -1881,7 +1881,7 @@ fn response_for_closeout_recovery(
                 {
                     return json_response(
                         409,
-                        &json!({"detail":"reviewer Workflow Land gates are incomplete"}),
+                        &json!({"detail":"reviewer Workflow Finish gates are incomplete"}),
                     );
                 }
             }

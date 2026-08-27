@@ -151,6 +151,7 @@ fn run(mut argv: Vec<OsString>) -> Result<ExitCode, String> {
         Commands::Snapshot { command } => {
             run_snapshot(repo, command)
         }
+        Commands::Commit(args) => run_snapshot(repo, SnapshotCommand::Create(args)),
         Commands::Tag { command } => {
             run_tag(repo, command)?;
             Ok(ExitCode::SUCCESS)
@@ -234,7 +235,7 @@ fn is_retired_workflow_json_invocation(args: &[std::ffi::OsString]) -> bool {
         Some("workflow")
     ) && matches!(
         args.get(2).and_then(|value| value.to_str()),
-        Some("ready" | "land")
+        Some("ready" | "finish")
     ) && args
         .iter()
         .skip(3)

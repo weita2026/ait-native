@@ -156,6 +156,16 @@ impl BinaryDb for RemoteBinaryDbFs {
         self.inner.metadata_len(path)
     }
 
+    fn replace_file_atomically(
+        &self,
+        path: &Path,
+        bytes: &[u8],
+        publish_label: &str,
+    ) -> StoreResult<std::path::PathBuf> {
+        self.inner
+            .replace_file_atomically(path, bytes, publish_label)
+    }
+
     fn layout_id(&self, file: BinaryFileId) -> StoreResult<u32> {
         self.inner.layout_id(file)
     }

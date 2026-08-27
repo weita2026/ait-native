@@ -48,6 +48,146 @@ fn native_snapshot_json_ignores_the_retired_debug_environment() {
     );
 }
 
+#[test]
+fn native_git_friendly_aliases_preserve_snapshot_and_line_contracts() {
+    let temp = init_repo("https://example.test");
+    let root = temp.path();
+
+    write_file(
+        &root.join("src/lib.rs"),
+        "pub fn example() -> &'static str { \"alias-commit\" }\n",
+    );
+    let alias_snapshot = compact_json_output(
+        root,
+        &["commit", "-m", "Alias Snapshot", "--json"],
+    );
+    let alias_snapshot_id = alias_snapshot["snapshot_id"]
+        .as_str()
+        .expect("commit alias Snapshot ID")
+        .to_string();
+    assert!(alias_snapshot_id.starts_with("SNP-"));
+    assert_eq!(alias_snapshot["contract"], json!("ait-agent-action/v1"));
+    assert_eq!(alias_snapshot["command"], json!("snapshot.create"));
+    assert_eq!(alias_snapshot["line_name"], json!("main"));
+    assert_eq!(alias_snapshot["message"], json!("Alias Snapshot"));
+    assert_eq!(
+        local_line_head(root, "main").as_deref(),
+        Some(alias_snapshot_id.as_str())
+    );
+    let alias_shown = json_output(
+        root,
+        &["snapshot", "show", &alias_snapshot_id, "--json"],
+    );
+    assert_eq!(alias_shown["snapshot_id"], json!(alias_snapshot_id));
+    assert_eq!(alias_shown["message"], json!("Alias Snapshot"));
+
+    write_file(
+        &root.join("src/lib.rs"),
+        "pub fn example() -> &'static str { \"canonical-snapshot\" }\n",
+    );
+    let canonical_snapshot = compact_json_output(
+        root,
+        &[
+            "snapshot",
+            "create",
+            "-m",
+            "Canonical Snapshot",
+            "--json",
+        ],
+    );
+    let canonical_snapshot_id = canonical_snapshot["snapshot_id"]
+        .as_str()
+        .expect("canonical Snapshot ID")
+        .to_string();
+    assert_eq!(
+        alias_snapshot
+            .as_object()
+            .expect("alias Snapshot payload")
+            .keys()
+            .collect::<BTreeSet<_>>(),
+        canonical_snapshot
+            .as_object()
+            .expect("canonical Snapshot payload")
+            .keys()
+            .collect::<BTreeSet<_>>()
+    );
+    for field in ["contract", "command", "ok", "line_name"] {
+        assert_eq!(alias_snapshot[field], canonical_snapshot[field], "{field}");
+    }
+    assert_eq!(
+        canonical_snapshot["parent_snapshot_id"],
+        json!(alias_snapshot_id)
+    );
+
+    let branch_created = json_output(
+        root,
+        &["branch", "create", "feature/alias", "--json"],
+    );
+    let line_created = json_output(
+        root,
+        &["line", "create", "feature/canonical", "--json"],
+    );
+    assert_eq!(
+        branch_created
+            .as_object()
+            .expect("branch create payload")
+            .keys()
+            .collect::<BTreeSet<_>>(),
+        line_created
+            .as_object()
+            .expect("line create payload")
+            .keys()
+            .collect::<BTreeSet<_>>()
+    );
+    for field in ["status", "head_snapshot_id"] {
+        assert_eq!(branch_created[field], line_created[field], "{field}");
+    }
+    assert_eq!(
+        branch_created["head_snapshot_id"],
+        json!(canonical_snapshot_id)
+    );
+    assert!(branch_created.get("current_line").is_none());
+    assert!(branch_created.get("switched").is_none());
+    assert_eq!(
+        json_output(root, &["status", "--json"])["current_line"],
+        json!("main")
+    );
+
+    assert_eq!(
+        json_output(root, &["branch", "show", "feature/alias", "--json"]),
+        json_output(root, &["line", "show", "feature/alias", "--json"])
+    );
+    assert_eq!(
+        json_output(root, &["branch", "list", "--all", "--json"]),
+        json_output(root, &["line", "list", "--all", "--json"])
+    );
+
+    let branch_text = command_output_with_env(root, &["branch", "show", "feature/alias"], &[]);
+    let line_text = command_output_with_env(root, &["line", "show", "feature/alias"], &[]);
+    assert!(branch_text.status.success());
+    assert!(line_text.status.success());
+    assert_eq!(branch_text.stdout, line_text.stdout);
+    assert!(String::from_utf8_lossy(&branch_text.stdout).contains("feature/alias"));
+
+    write_file(
+        &root.join("src/lib.rs"),
+        "pub fn example() -> &'static str { \"unsaved-workspace\" }\n",
+    );
+    let switched = json_output(
+        root,
+        &["branch", "switch", "feature/alias", "--json"],
+    );
+    assert_eq!(switched["line_name"], json!("feature/alias"));
+    assert_eq!(
+        json_output(root, &["status", "--json"])["current_line"],
+        json!("feature/alias")
+    );
+    assert_eq!(
+        fs::read_to_string(root.join("src/lib.rs")).unwrap(),
+        "pub fn example() -> &'static str { \"unsaved-workspace\" }\n"
+    );
+}
+
 #[cfg(feature = "perfetto-tracing")]
 #[test]
 fn native_snapshot_perfetto_trace_names_cover_stable_hot_phases() {
@@ -214,7 +354,7 @@ fn native_snapshot_and_remote_primitives_work_end_to_end() {
 
     let task_land = json_output(
         root,
-        &["task", "land", "RT-1", "--json"],
+        &["task", "finish", "RT-1", "--json"],
     );
     assert_eq!(
         task_land["apply_status"].as_str(),
@@ -363,7 +503,7 @@ fn native_task_land_closes_when_base_stale_submit_already_moved_target_to_revisi
 
     let task_land = json_output(
         root,
-        &["task", "land", "RT-1", "--json"],
+        &["task", "finish", "RT-1", "--json"],
     );
 
     assert_eq!(
@@ -434,7 +574,7 @@ fn native_task_land_submits_when_target_line_already_points_at_revision() {
 
     let task_land = json_output(
         root,
-        &["task", "land", "RT-1", "--json"],
+        &["task", "finish", "RT-1", "--json"],
     );
 
     assert_eq!(
@@ -494,7 +634,7 @@ fn native_task_land_submits_when_target_line_already_contains_revision() {
 
     let task_land = json_output(
         root,
-        &["task", "land", "RT-1", "--json"],
+        &["task", "finish", "RT-1", "--json"],
     );
 
     assert_eq!(
@@ -1287,7 +1427,7 @@ fn native_snapshot_restore_lines_rejects_unsafe_paths_and_content() {
                 "1",
                 "--yes",
             ],
-            "lineage-only Markdown",
+            "planning-only Markdown file",
         ),
         (
             vec![
@@ -1415,7 +1555,8 @@ fn native_removed_blame_options_fail_before_any_mutation() {
         &[],
     );
     assert!(!numeric_patchset.status.success());
-    assert!(String::from_utf8_lossy(&numeric_patchset.stderr).contains("numeric repo-scoped refs are ambiguous"));
+    assert!(String::from_utf8_lossy(&numeric_patchset.stderr)
+        .contains("numeric Repository references are ambiguous"));
 
     assert_eq!(fs::read(root.join("src/lib.rs")).unwrap(), workspace_before);
     assert_eq!(local_line_head(root, "main"), head_before);

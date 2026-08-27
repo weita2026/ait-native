@@ -53,11 +53,18 @@ impl<const WRITE_LAYOUT: u32> LocalBinaryPlanCommandSource<WRITE_LAYOUT> {
         &self,
         read: &crate::binary_db::BinaryDbReadTxn<'_, LocalBinaryDbFs>,
     ) -> Result<(), String> {
-        read.layout_id(BinaryDbPlanStore::<LocalBinaryDbFs, WRITE_LAYOUT>::plan_file())
-            .map(|_| ())
-            .map_err(|err| {
-                format!("Plan Binary DB metadata file `plan.bin` is not readable: {err}")
-            })
+        let plan_file = BinaryDbPlanStore::<LocalBinaryDbFs, WRITE_LAYOUT>::plan_file();
+        let count = read.record_count(plan_file.clone()).map_err(|err| {
+            format!("Plan Binary DB metadata file `plan.bin` is not readable: {err}")
+        })?;
+        if count == 0 {
+            // Binary DB represents an empty file family by absence; creating a
+            // header-only plan.bin is forbidden by the authority contract.
+            return Ok(());
+        }
+        read.layout_id(plan_file).map(|_| ()).map_err(|err| {
+            format!("Plan Binary DB metadata file `plan.bin` is not readable: {err}")
+        })
     }
 
     fn resolve_plan_index(

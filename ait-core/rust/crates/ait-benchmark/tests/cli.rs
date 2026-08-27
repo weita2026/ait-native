@@ -1,5 +1,6 @@
 use assert_cmd::Command;
 use predicates::prelude::*;
+use serde_json::Value as JsonValue;
 
 fn evidence_manifest(name: &str) -> std::path::PathBuf {
     std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -10,6 +11,141 @@ fn evidence_manifest(name: &str) -> std::path::PathBuf {
 
 fn agent_token_path(relative: &str) -> std::path::PathBuf {
     std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(relative)
+}
+
+fn repository_root() -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../..")
+        .canonicalize()
+        .unwrap()
+}
+
+#[test]
+fn agent_token_publication_bundle_is_sanitized_checksummed_and_release_bound() {
+    let campaign = "game-v1-g56s-max-complete200-fx27-20260826";
+    let bundle = repository_root().join("release/benchmarks").join(campaign);
+    let result: JsonValue =
+        serde_json::from_slice(&std::fs::read(bundle.join("result.json")).unwrap()).unwrap();
+    let runs: JsonValue =
+        serde_json::from_slice(&std::fs::read(bundle.join("runs.json")).unwrap()).unwrap();
+
+    assert_eq!(
+        result["contract"],
+        "ait-agent-token-benchmark-publication/v1"
+    );
+    assert_eq!(result["release_version"], "1.1.0");
+    assert_eq!(result["scheduled_run_count"], 200);
+    assert_eq!(result["observed_run_count"], 200);
+    assert_eq!(result["executed_evidence_run_count"], 201);
+    assert_eq!(result["statistically_excluded_run_count"], 1);
+    assert_eq!(result["valid_run_count"], 200);
+    assert_eq!(result["invalid_run_count"], 0);
+    assert_eq!(result["accepted_run_count"], 200);
+    assert_eq!(result["accepted_by_mode"]["ait_linear_single_session"], 100);
+    assert_eq!(result["accepted_by_mode"]["git_linear_single_session"], 100);
+    assert_eq!(result["source_protocol_claim_eligible"], false);
+    assert_eq!(result["claim_eligible"], true);
+    assert_eq!(result["claim_blockers"], serde_json::json!([]));
+    assert_eq!(result["retained_failures"].as_array().unwrap().len(), 0);
+    assert_eq!(
+        result["statistically_excluded_failures"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        result["statistically_excluded_failures"][0]["evaluator_score"],
+        50
+    );
+    assert_eq!(
+        result["replacement_policy_revision"],
+        "game-development-2026-08-27.29"
+    );
+    assert_eq!(
+        result["statistical_replacements"].as_array().unwrap().len(),
+        1
+    );
+    assert_eq!(
+        result["statistical_replacements"][0]["replacement_runner_sha256"],
+        "sha256:89046039ffa7554b8791e5b2c2c75eaa42ac8c719bd93e831d1fc6ba2814d71d"
+    );
+    assert_eq!(
+        result["source_sha256"]["replacement-runner"],
+        "89046039ffa7554b8791e5b2c2c75eaa42ac8c719bd93e831d1fc6ba2814d71d"
+    );
+    assert_eq!(
+        result["workload_results"][4]["acceptance_rate_deficit_percentage_points"],
+        0.0
+    );
+    assert_eq!(runs["contract"], "ait-agent-token-benchmark-public-runs/v1");
+    assert_eq!(runs["executed_evidence_run_count"], 201);
+    assert_eq!(runs["statistically_excluded_run_count"], 1);
+    let rows = runs["runs"].as_array().unwrap();
+    assert_eq!(rows.len(), 200);
+    assert_eq!(
+        rows.iter()
+            .filter(|row| row["valid_attempt"] == false)
+            .count(),
+        0
+    );
+    assert_eq!(
+        rows.iter()
+            .filter(|row| row["accepted_equivalent"] == false)
+            .count(),
+        0
+    );
+    let excluded_rows = runs["excluded_runs"].as_array().unwrap();
+    assert_eq!(excluded_rows.len(), 1);
+    assert_eq!(excluded_rows[0]["accepted_equivalent"], false);
+    assert_eq!(excluded_rows[0]["evaluator_score"], 50);
+
+    let checksum_text = std::fs::read_to_string(bundle.join("SHA256SUMS")).unwrap();
+    for line in checksum_text.lines() {
+        let (expected, name) = line.split_once("  ").unwrap();
+        let bytes = std::fs::read(bundle.join(name)).unwrap();
+        let observed = ait_benchmark::sha256_digest(&bytes);
+        assert_eq!(observed.strip_prefix("sha256:").unwrap(), expected);
+    }
+    for name in ["summary.txt", "result.json", "runs.json", "SHA256SUMS"] {
+        let text = std::fs::read_to_string(bundle.join(name)).unwrap();
+        for private_marker in ["/Users/", ".ait-runtime", "private/", "codex-events.raw"] {
+            assert!(
+                !text.contains(private_marker),
+                "{name} contains {private_marker}"
+            );
+        }
+    }
+
+    let preparer =
+        std::fs::read_to_string(repository_root().join("ci/release_endpoint_publication.sh"))
+            .unwrap();
+    let remote =
+        std::fs::read_to_string(repository_root().join("ci/release_endpoint_remote.sh")).unwrap();
+    assert!(preparer.contains("ait-agent-token-benchmark-publication/v1"));
+    assert!(preparer.contains("ait-agent-token-benchmark-${benchmark_campaign}.runs.json"));
+    assert!(remote.contains("## AIT vs Git benchmark"));
+    assert!(remote.contains("replacement-qualified result is claim-eligible"));
+
+    Command::cargo_bin("ait-benchmark")
+        .unwrap()
+        .args(["agent-token", "replace", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--campaign-dir"))
+        .stdout(predicate::str::contains("--source-run-id"));
+
+    Command::cargo_bin("ait-benchmark")
+        .unwrap()
+        .args(["agent-token", "publish", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--campaign-dir"))
+        .stdout(predicate::str::contains("--output-dir"))
+        .stdout(predicate::str::contains("--release-version"))
+        .stdout(predicate::str::contains("--measured-product-snapshot"))
+        .stdout(predicate::str::contains("--measured-ait-sha256"))
+        .stdout(predicate::str::contains("--campaign-runner-sha256"));
 }
 
 #[test]
@@ -41,6 +177,53 @@ fn agent_token_protocol_and_solo_local_template_validate() {
         .stdout(predicate::str::contains("\"core_sprint_mode\": \"off\""))
         .stdout(predicate::str::contains(
             "\"ait_server_connection_allowed\": false",
+        ))
+        .stdout(predicate::str::contains(
+            "\"protocol_revision\": \"game-development-2026-08-27.29\"",
+        ))
+        .stdout(predicate::str::contains(
+            "\"contract\": \"ait-agent-token-statistical-replacement/v1\"",
+        ))
+        .stdout(predicate::str::contains("\"measured_ait_treatment\""))
+        .stdout(predicate::str::contains(
+            "\"measured_ait_allowed_commands\"",
+        ))
+        .stdout(predicate::str::contains("\"measured_git_treatment\""))
+        .stdout(predicate::str::contains(
+            "\"measured_git_required_commands\"",
+        ))
+        .stdout(predicate::str::contains(
+            "\"cross_mode_repository_command_exclusion\"",
+        ))
+        .stdout(predicate::str::contains(
+            "\"weighted_composite_score_allowed\": false",
+        ))
+        .stdout(predicate::str::contains(
+            "\"workflow_metric_asymmetry_policy\": \"retain the pair and report the difference\"",
+        ))
+        .stdout(predicate::str::contains(
+            "\"zero_git_baseline_encoding\": \"null reduction with both raw mode values retained\"",
+        ))
+        .stdout(predicate::str::contains("executor-feature-override-sets"))
+        .stdout(predicate::str::contains("executor-program-and-version"))
+        .stdout(predicate::str::contains("\"claude_code_local_tools\""))
+        .stdout(predicate::str::contains(
+            "\"required_separate_read_only_shell_commands\": 30",
+        ))
+        .stdout(predicate::str::contains(
+            "\"required_started_command_items\": 30",
+        ))
+        .stdout(predicate::str::contains(
+            "\"unexpected_non_command_tool_items_allowed\": 0",
+        ))
+        .stdout(predicate::str::contains(
+            "\"git_worktree_permission_probe_required\": true",
+        ))
+        .stdout(predicate::str::contains(
+            "\"name\": \"ait_benchmark_local_v1\"",
+        ))
+        .stdout(predicate::str::contains(
+            "\"danger_full_access_allowed\": false",
         ));
 
     Command::cargo_bin("ait-benchmark")
@@ -56,6 +239,57 @@ fn agent_token_protocol_and_solo_local_template_validate() {
         ))
         .stdout(predicate::str::contains("\"sprint_mode\": \"off\""))
         .stdout(predicate::str::contains("\"ait_server_connected\": false"));
+
+    Command::cargo_bin("ait-benchmark")
+        .unwrap()
+        .args(["agent-token", "validate", "--manifest"])
+        .arg(agent_token_path(
+            "campaigns/agent-token-game-v1/smoke-steady-state-claude.json",
+        ))
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"executor\": \"claude\""))
+        .stdout(predicate::str::contains(
+            "\"tool_policy\": \"claude_code_local_tools\"",
+        ))
+        .stdout(predicate::str::contains("\"ait_server_connected\": false"));
+}
+
+#[test]
+fn agent_token_run_exposes_pair_slicing_and_rejects_retired_run_slicing() {
+    Command::cargo_bin("ait-benchmark")
+        .unwrap()
+        .args(["agent-token", "run", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--max-pairs"))
+        .stdout(predicate::str::contains("--max-runs").not());
+
+    Command::cargo_bin("ait-benchmark")
+        .unwrap()
+        .args([
+            "agent-token",
+            "run",
+            "--manifest",
+            "missing.json",
+            "--output-dir",
+            "missing-output",
+            "--max-runs",
+            "2",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("unexpected argument '--max-runs'"));
+
+    Command::cargo_bin("ait-benchmark")
+        .unwrap()
+        .args(["agent-token", "resume", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--campaign-dir"))
+        .stdout(predicate::str::contains("--max-pairs"))
+        .stdout(predicate::str::contains("--adjudicate-transcripts"))
+        .stdout(predicate::str::contains("--max-runs").not());
 }
 
 #[test]

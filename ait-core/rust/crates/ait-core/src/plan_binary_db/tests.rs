@@ -6,10 +6,17 @@ use crate::binary_db::{
     PayloadRange, RemoteBinaryDb, RemoteBinaryDbFs, RepoId, RepoName, StorePath, StoreResult,
     BINARY_DB_PLAN_GOLDEN_CHECKSUM, BINARY_DB_PLAN_GOLDEN_SOURCE, BINARY_DB_PLAN_GOLDEN_VERSION,
 };
+use crate::file_io::{
+    BoxedFileIoProcessLockGuard, FileIoByteStore, FileIoDurabilityStore, FileIoError,
+    FileIoErrorKind, FileIoLockMode, FileIoLockStore, FileIoLockWait, FileIoResult, FileIoStore,
+    FilesystemFileIoStore,
+};
 use crate::json_support::JsonValue;
 use serde::Deserialize;
 use std::collections::BTreeSet;
 use std::fs;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use tempfile::tempdir;
 
 const TEST_WRITE_LAYOUT: u32 = PLAN_LAYOUT_ID;
@@ -17,6 +24,319 @@ const UNSUPPORTED_TEST_LAYOUT: u32 = PLAN_LAYOUT_ID + 1;
 type TestPlanStore = BinaryDbPlanStore<TestBinaryDb, TEST_WRITE_LAYOUT>;
 type LocalTestPlanStore = BinaryDbPlanStore<LocalBinaryDbFs, TEST_WRITE_LAYOUT>;
 type UnsupportedLocalTestPlanStore = BinaryDbPlanStore<LocalBinaryDbFs, UNSUPPORTED_TEST_LAYOUT>;
+
+const PLAN_AUTHORITY_FILES: &[&str] = &[
+    PLAN_BIN,
+    PLAN_PAYLOAD_BIN,
+    PLAN_REVISION_BIN,
+    PLAN_REVISION_PAYLOAD_BIN,
+    PLAN_ITEM_BIN,
+    PLAN_ITEM_PAYLOAD_BIN,
+];
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PlanCommitFaultPhase {
+    None,
+    DependencyWrite,
+    DependencySync,
+    StagedRootWrite,
+    StagedRootSync,
+    RootRename,
+    RootDirectorySync,
+}
+
+#[derive(Clone, Debug)]
+struct PlanCrashCapture {
+    source_authority: PathBuf,
+    crash_authority: PathBuf,
+    captured: Arc<Mutex<bool>>,
+}
+
+impl PlanCrashCapture {
+    fn new(source_authority: PathBuf, crash_authority: PathBuf) -> Self {
+        Self {
+            source_authority,
+            crash_authority,
+            captured: Arc::new(Mutex::new(false)),
+        }
+    }
+
+    fn capture(&self) -> std::io::Result<()> {
+        let mut captured = self.captured.lock().expect("crash capture lock");
+        if *captured {
+            return Ok(());
+        }
+        fs::create_dir_all(&self.crash_authority)?;
+        for name in PLAN_AUTHORITY_FILES {
+            let source = self.source_authority.join(name);
+            if source.is_file() {
+                fs::copy(source, self.crash_authority.join(name))?;
+            }
+        }
+        *captured = true;
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug)]
+struct PlanCommitFaultFileIo {
+    phase: PlanCommitFaultPhase,
+    events: Arc<Mutex<Vec<String>>>,
+    crash_capture: PlanCrashCapture,
+}
+
+impl PlanCommitFaultFileIo {
+    fn new(phase: PlanCommitFaultPhase, crash_capture: PlanCrashCapture) -> Self {
+        Self {
+            phase,
+            events: Arc::new(Mutex::new(Vec::new())),
+            crash_capture,
+        }
+    }
+
+    fn record(&self, event: impl Into<String>) {
+        self.events.lock().expect("events lock").push(event.into());
+    }
+
+    fn events(&self) -> Vec<String> {
+        self.events.lock().expect("events lock").clone()
+    }
+}
+
+impl FileIoStore for PlanCommitFaultFileIo {
+    fn home_dir(&self) -> Option<PathBuf> {
+        FilesystemFileIoStore.home_dir()
+    }
+
+    fn path_exists(&self, path: &Path) -> bool {
+        FilesystemFileIoStore.path_exists(path)
+    }
+
+    fn list_directory_paths(&self, path: &Path) -> FileIoResult<Vec<PathBuf>> {
+        FilesystemFileIoStore.list_directory_paths(path)
+    }
+
+    fn read_bytes(&self, path: &Path) -> FileIoResult<Vec<u8>> {
+        FilesystemFileIoStore.read_bytes(path)
+    }
+
+    fn read_to_string(&self, path: &Path) -> FileIoResult<String> {
+        FilesystemFileIoStore.read_to_string(path)
+    }
+
+    fn write_string(&self, path: &Path, text: &str) -> FileIoResult<()> {
+        FilesystemFileIoStore.write_string(path, text)
+    }
+
+    fn write_string_atomically(
+        &self,
+        path: &Path,
+        text: &str,
+        publish_label: &str,
+    ) -> FileIoResult<()> {
+        FilesystemFileIoStore.write_string_atomically(path, text, publish_label)
+    }
+}
+
+impl FileIoByteStore for PlanCommitFaultFileIo {
+    fn write_bytes(&self, path: &Path, bytes: &[u8]) -> FileIoResult<()> {
+        FilesystemFileIoStore.write_bytes(path, bytes)
+    }
+
+    fn write_bytes_atomically(
+        &self,
+        path: &Path,
+        bytes: &[u8],
+        publish_label: &str,
+    ) -> FileIoResult<()> {
+        FilesystemFileIoStore.write_bytes_atomically(path, bytes, publish_label)
+    }
+
+    fn write_bytes_atomically_from_directory(
+        &self,
+        path: &Path,
+        staging_directory: &Path,
+        bytes: &[u8],
+        publish_label: &str,
+    ) -> FileIoResult<()> {
+        self.record(format!("atomic-stage:{}", staging_directory.display()));
+        match self.phase {
+            PlanCommitFaultPhase::StagedRootWrite
+            | PlanCommitFaultPhase::StagedRootSync
+            | PlanCommitFaultPhase::RootRename => {
+                fs::create_dir_all(staging_directory).map_err(FileIoError::from)?;
+                let staged = staging_directory.join(".plan.bin.injected-stage");
+                let staged_bytes = if self.phase == PlanCommitFaultPhase::StagedRootWrite {
+                    &bytes[..bytes.len().saturating_div(2)]
+                } else {
+                    bytes
+                };
+                fs::write(&staged, staged_bytes).map_err(FileIoError::from)?;
+                if self.phase == PlanCommitFaultPhase::RootRename {
+                    fs::File::open(&staged)
+                        .and_then(|file| file.sync_all())
+                        .map_err(FileIoError::from)?;
+                }
+                self.crash_capture.capture().map_err(FileIoError::from)?;
+                let label = match self.phase {
+                    PlanCommitFaultPhase::StagedRootWrite => "staged root write",
+                    PlanCommitFaultPhase::StagedRootSync => "staged root sync",
+                    PlanCommitFaultPhase::RootRename => "root rename",
+                    _ => unreachable!(),
+                };
+                Err(FileIoError::new(
+                    FileIoErrorKind::Other,
+                    format!("injected failure at {label}"),
+                ))
+            }
+            _ => FilesystemFileIoStore.write_bytes_atomically_from_directory(
+                path,
+                staging_directory,
+                bytes,
+                publish_label,
+            ),
+        }
+    }
+
+    fn read_range(&self, path: &Path, offset: u64, len: u32) -> FileIoResult<Vec<u8>> {
+        FilesystemFileIoStore.read_range(path, offset, len)
+    }
+
+    fn metadata_len(&self, path: &Path) -> FileIoResult<Option<u64>> {
+        FilesystemFileIoStore.metadata_len(path)
+    }
+
+    fn create_parent_dirs(&self, path: &Path) -> FileIoResult<()> {
+        FilesystemFileIoStore.create_parent_dirs(path)
+    }
+
+    fn append_bytes(&self, path: &Path, bytes: &[u8]) -> FileIoResult<u64> {
+        if self.phase == PlanCommitFaultPhase::DependencyWrite
+            && path.ends_with(PLAN_REVISION_PAYLOAD_BIN)
+            && bytes != PLAN_LAYOUT_ID.to_le_bytes()
+        {
+            self.record("dependency-write-fault");
+            let partial_len = bytes.len().saturating_div(2).max(1);
+            FilesystemFileIoStore.append_bytes(path, &bytes[..partial_len])?;
+            self.crash_capture.capture().map_err(FileIoError::from)?;
+            return Err(FileIoError::new(
+                FileIoErrorKind::Other,
+                "injected dependency write failure",
+            ));
+        }
+        FilesystemFileIoStore.append_bytes(path, bytes)
+    }
+
+    fn overwrite_range(&self, path: &Path, offset: u64, bytes: &[u8]) -> FileIoResult<()> {
+        FilesystemFileIoStore.overwrite_range(path, offset, bytes)
+    }
+
+    fn truncate_file(&self, path: &Path, len: u64) -> FileIoResult<()> {
+        FilesystemFileIoStore.truncate_file(path, len)
+    }
+
+    fn remove_file_if_exists(&self, path: &Path) -> FileIoResult<()> {
+        FilesystemFileIoStore.remove_file_if_exists(path)
+    }
+}
+
+impl FileIoDurabilityStore for PlanCommitFaultFileIo {
+    fn sync_file(&self, path: &Path) -> FileIoResult<()> {
+        FilesystemFileIoStore.sync_file(path)
+    }
+
+    fn sync_dir(&self, path: &Path) -> FileIoResult<()> {
+        FilesystemFileIoStore.sync_dir(path)
+    }
+}
+
+impl FileIoLockStore for PlanCommitFaultFileIo {
+    fn acquire_process_lock(
+        &self,
+        path: &Path,
+        mode: FileIoLockMode,
+        wait: FileIoLockWait,
+    ) -> FileIoResult<Option<BoxedFileIoProcessLockGuard>> {
+        FilesystemFileIoStore.acquire_process_lock(path, mode, wait)
+    }
+}
+
+#[derive(Clone, Debug)]
+struct PlanCommitFaultFsyncPolicy {
+    phase: PlanCommitFaultPhase,
+    authority_root: PathBuf,
+    authority_sync_count: Arc<Mutex<u32>>,
+    failed_dependency_sync: Arc<Mutex<bool>>,
+    crash_capture: PlanCrashCapture,
+}
+
+impl PlanCommitFaultFsyncPolicy {
+    fn new(
+        phase: PlanCommitFaultPhase,
+        authority_root: PathBuf,
+        crash_capture: PlanCrashCapture,
+    ) -> Self {
+        Self {
+            phase,
+            authority_root,
+            authority_sync_count: Arc::new(Mutex::new(0)),
+            failed_dependency_sync: Arc::new(Mutex::new(false)),
+            crash_capture,
+        }
+    }
+}
+
+impl crate::binary_db::BinaryDbFsyncPolicy for PlanCommitFaultFsyncPolicy {
+    fn sync_file(&self, path: &Path) -> StoreResult<()> {
+        if self.phase == PlanCommitFaultPhase::DependencySync {
+            let mut failed = self
+                .failed_dependency_sync
+                .lock()
+                .expect("dependency sync lock");
+            if !*failed {
+                *failed = true;
+                self.crash_capture.capture().map_err(|error| {
+                    crate::binary_db::BinaryDbError::new(
+                        BinaryDbErrorKind::Io,
+                        format!("failed to capture dependency-sync crash image: {error}"),
+                    )
+                })?;
+                return Err(crate::binary_db::BinaryDbError::new(
+                    BinaryDbErrorKind::Io,
+                    format!("injected dependency sync failure for {}", path.display()),
+                ));
+            }
+        }
+        FilesystemFileIoStore.sync_file(path).map_err(|error| {
+            crate::binary_db::BinaryDbError::new(BinaryDbErrorKind::Io, error.to_string())
+        })
+    }
+
+    fn sync_directory(&self, path: &Path) -> StoreResult<()> {
+        if path == self.authority_root {
+            let mut count = self
+                .authority_sync_count
+                .lock()
+                .expect("authority sync lock");
+            *count += 1;
+            if self.phase == PlanCommitFaultPhase::RootDirectorySync && *count == 2 {
+                self.crash_capture.capture().map_err(|error| {
+                    crate::binary_db::BinaryDbError::new(
+                        BinaryDbErrorKind::Io,
+                        format!("failed to capture directory-sync crash image: {error}"),
+                    )
+                })?;
+                return Err(crate::binary_db::BinaryDbError::new(
+                    BinaryDbErrorKind::Io,
+                    "injected root directory sync failure",
+                ));
+            }
+        }
+        FilesystemFileIoStore.sync_dir(path).map_err(|error| {
+            crate::binary_db::BinaryDbError::new(BinaryDbErrorKind::Io, error.to_string())
+        })
+    }
+}
 
 #[test]
 fn repository_plan_identity_is_the_direct_plan_bin_ordinal() {
@@ -767,6 +1087,286 @@ fn local_plan_sync_txn_rejects_stale_plan_state_under_the_write_lock() {
     assert_eq!(error.kind(), BinaryDbErrorKind::InvalidDomainData);
     assert!(error.contains("state advanced under the Binary DB write lock"));
     stale.abort().expect("stale transaction should abort");
+}
+
+#[test]
+fn plan_root_fault_boundaries_expose_only_complete_old_or_new_state() {
+    for (phase, expect_new_root) in [
+        (PlanCommitFaultPhase::DependencyWrite, false),
+        (PlanCommitFaultPhase::DependencySync, false),
+        (PlanCommitFaultPhase::StagedRootWrite, false),
+        (PlanCommitFaultPhase::StagedRootSync, false),
+        (PlanCommitFaultPhase::RootRename, false),
+        (PlanCommitFaultPhase::RootDirectorySync, true),
+        (PlanCommitFaultPhase::None, true),
+    ] {
+        let temp = tempdir().expect("tempdir");
+        let authority = temp.path().join(".ait/binary-db");
+        let crash_authority = temp.path().join("crash-image/.ait/binary-db");
+        seed_atomic_plan_root(&authority, temp.path());
+        let crash_capture = PlanCrashCapture::new(authority.clone(), crash_authority.clone());
+        let files = PlanCommitFaultFileIo::new(phase, crash_capture.clone());
+        let db = LocalBinaryDbFs::with_file_io_store(
+            files.clone(),
+            authority.clone(),
+            temp.path(),
+            AuthorityId::new("fault-boundary"),
+            LocalStateScope::Repository,
+        );
+        let store = BinaryDbPlanStore::<_, TEST_WRITE_LAYOUT>::new(db);
+        let (current, current_payload) = {
+            let read = store.begin_read_txn();
+            store.read_current_plan(&read, 0).expect("read old root")
+        };
+        let policy =
+            PlanCommitFaultFsyncPolicy::new(phase, authority.clone(), crash_capture.clone());
+        let write = store
+            .begin_write_txn_with_fsync_policy(BinaryDbCommandScope::PlanSyncLocal, policy)
+            .expect("begin fault transaction");
+        let mut tx =
+            PlanBinaryDbWriteTxn::new(&store, write, PlanBinaryDbWritePurpose::LocalPlanSyncUpsert);
+        tx.require_unchanged_plan(0, &current)
+            .expect("old root remains current");
+        let revision_result = tx.append_plan_revision_commit(
+            PlanRevisionRecord {
+                revision_meta: 0,
+                reserved0: 0,
+                payload_len: 0,
+                revision_number: 2,
+                item_count: 0,
+                payload_offset: 0,
+                plan_index: 0,
+                previous_revision_index_plus1: 1,
+                item_start_index: 0,
+                published_revision_index_plus1: 0,
+                root_tree_pack_index_plus1: 0,
+                root_entry_ordinal: 0,
+                created_at_s: 2,
+                published_at_s: 0,
+            },
+            &PlanRevisionPayload {
+                title_snapshot_bytes: b"Atomic plan".to_vec(),
+                summary_bytes: b"new revision".to_vec(),
+                artifact_path_bytes: b"docs/atomic.md".to_vec(),
+                artifact_selector_bytes: Vec::new(),
+                artifact_heading_bytes: b"Atomic".to_vec(),
+                artifact_blob_id_bytes: Vec::new(),
+            },
+        );
+        let outcome = match revision_result {
+            Ok((revision_index, _)) => {
+                assert_eq!(revision_index, 1);
+                let mut next = current.clone();
+                next.latest_revision_index_plus1 = 2;
+                next.updated_at_s = 2;
+                tx.overwrite_plan_commit(0, next, &current_payload)
+                    .expect("stage next root");
+                tx.commit().map(|_| ())
+            }
+            Err(error) => {
+                assert_eq!(phase, PlanCommitFaultPhase::DependencyWrite);
+                drop(tx);
+                Err(error)
+            }
+        };
+        if phase == PlanCommitFaultPhase::None {
+            outcome.expect("clean publication");
+            crash_capture.capture().expect("capture committed image");
+        } else {
+            let error = outcome.expect_err("fault must be observable");
+            if phase == PlanCommitFaultPhase::RootDirectorySync {
+                assert!(error.contains("may already be committed"));
+            }
+        }
+
+        assert_crash_image_is_complete(
+            &crash_authority,
+            temp.path().join("crash-image"),
+            phase,
+            expect_new_root,
+        );
+
+        let reopened = LocalPlanBinaryDb::<TEST_WRITE_LAYOUT>::new(
+            authority.clone(),
+            temp.path(),
+            AuthorityId::new("fault-reopen"),
+            LocalStateScope::Repository,
+        );
+        let read = reopened.begin_read_txn();
+        let view = reopened
+            .get_plan(&read, 0, Some("fixture"))
+            .expect("root must remain fully readable");
+        let revision_count = read
+            .record_count(
+                BinaryDbPlanStore::<LocalBinaryDbFs, TEST_WRITE_LAYOUT>::plan_revision_file(),
+            )
+            .expect("revision count");
+        if expect_new_root {
+            assert_eq!(
+                view.record.latest_revision_index_plus1, 2,
+                "phase {phase:?}"
+            );
+            assert_eq!(revision_count, 2, "phase {phase:?}");
+        } else {
+            assert_eq!(
+                view.record.latest_revision_index_plus1, 1,
+                "phase {phase:?}"
+            );
+            assert_eq!(revision_count, 1, "phase {phase:?}");
+        }
+
+        let events = files.events();
+        let staged = authority
+            .parent()
+            .expect("authority parent")
+            .join("binary-db-staging")
+            .to_string_lossy()
+            .to_string();
+        if matches!(
+            phase,
+            PlanCommitFaultPhase::StagedRootWrite
+                | PlanCommitFaultPhase::StagedRootSync
+                | PlanCommitFaultPhase::RootRename
+                | PlanCommitFaultPhase::RootDirectorySync
+                | PlanCommitFaultPhase::None
+        ) {
+            assert!(
+                events
+                    .iter()
+                    .any(|event| event == &format!("atomic-stage:{staged}")),
+                "phase {phase:?} events: {events:?}"
+            );
+        }
+        assert!(
+            fs::read_dir(&authority)
+                .expect("authority inventory")
+                .all(|entry| !entry
+                    .expect("authority entry")
+                    .file_name()
+                    .to_string_lossy()
+                    .contains("tmp")),
+            "atomic staging must never pollute active Binary DB authority"
+        );
+    }
+}
+
+fn assert_crash_image_is_complete(
+    crash_authority: &Path,
+    crash_repo_root: PathBuf,
+    phase: PlanCommitFaultPhase,
+    expect_new_root: bool,
+) {
+    let reopened = LocalPlanBinaryDb::<TEST_WRITE_LAYOUT>::new(
+        crash_authority.to_path_buf(),
+        crash_repo_root.clone(),
+        AuthorityId::new("fault-crash-image"),
+        LocalStateScope::Repository,
+    );
+    let read = reopened.begin_read_txn();
+    let view = reopened
+        .get_plan(&read, 0, Some("fixture"))
+        .unwrap_or_else(|error| panic!("phase {phase:?} crash image must reopen: {error}"));
+    assert_eq!(
+        view.record.latest_revision_index_plus1,
+        if expect_new_root { 2 } else { 1 },
+        "phase {phase:?} crash root"
+    );
+    drop(read);
+
+    let diagnostic = inspect_plan_binary_db_authority(crash_authority);
+    if expect_new_root {
+        assert_eq!(
+            diagnostic.state,
+            PlanBinaryDbRecoveryState::Clean,
+            "phase {phase:?} committed crash image: {diagnostic:?}"
+        );
+        return;
+    }
+    assert_eq!(
+        diagnostic.state,
+        PlanBinaryDbRecoveryState::Repairable,
+        "phase {phase:?} pre-publication crash image: {diagnostic:?}"
+    );
+    let repaired = repair_plan_binary_db_authority(crash_authority)
+        .unwrap_or_else(|error| panic!("phase {phase:?} crash recovery failed: {error}"));
+    assert_eq!(repaired.state, PlanBinaryDbRecoveryState::Repaired);
+
+    let recovered = LocalPlanBinaryDb::<TEST_WRITE_LAYOUT>::new(
+        crash_authority.to_path_buf(),
+        crash_repo_root,
+        AuthorityId::new("fault-recovered-image"),
+        LocalStateScope::Repository,
+    );
+    let read = recovered.begin_read_txn();
+    let view = recovered
+        .get_plan(&read, 0, Some("fixture"))
+        .expect("recovered crash image must remain readable");
+    assert_eq!(view.record.latest_revision_index_plus1, 1);
+    assert_eq!(
+        read.record_count(
+            BinaryDbPlanStore::<LocalBinaryDbFs, TEST_WRITE_LAYOUT>::plan_revision_file(),
+        )
+        .expect("recovered revision count"),
+        1
+    );
+}
+
+fn seed_atomic_plan_root(authority: &Path, repo_root: &Path) {
+    let local = LocalPlanBinaryDb::<TEST_WRITE_LAYOUT>::new(
+        authority.to_path_buf(),
+        repo_root.to_path_buf(),
+        AuthorityId::new("fault-seed"),
+        LocalStateScope::Repository,
+    );
+    let mut tx = local
+        .begin_local_upsert_txn_with_fsync_policy(BinaryDbNoopFsyncPolicy)
+        .expect("begin seed transaction");
+    tx.append_plan(
+        PlanRecord {
+            plan_meta: 0,
+            reserved0: 0,
+            payload_len: 0,
+            payload_offset: 0,
+            latest_revision_index_plus1: 1,
+            published_plan_index_plus1: 0,
+            published_latest_revision_index_plus1: 0,
+            created_at_s: 1,
+            updated_at_s: 1,
+            published_at_s: 0,
+        },
+        &PlanPayload {
+            title_bytes: b"Atomic plan".to_vec(),
+        },
+    )
+    .expect("append seed plan");
+    tx.append_plan_revision_commit(
+        PlanRevisionRecord {
+            revision_meta: 0,
+            reserved0: 0,
+            payload_len: 0,
+            revision_number: 1,
+            item_count: 0,
+            payload_offset: 0,
+            plan_index: 0,
+            previous_revision_index_plus1: 0,
+            item_start_index: 0,
+            published_revision_index_plus1: 0,
+            root_tree_pack_index_plus1: 0,
+            root_entry_ordinal: 0,
+            created_at_s: 1,
+            published_at_s: 0,
+        },
+        &PlanRevisionPayload {
+            title_snapshot_bytes: b"Atomic plan".to_vec(),
+            summary_bytes: b"old revision".to_vec(),
+            artifact_path_bytes: b"docs/atomic.md".to_vec(),
+            artifact_selector_bytes: Vec::new(),
+            artifact_heading_bytes: b"Atomic".to_vec(),
+            artifact_blob_id_bytes: Vec::new(),
+        },
+    )
+    .expect("append seed revision");
+    tx.commit().expect("commit seed root");
 }
 
 #[test]

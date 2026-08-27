@@ -452,6 +452,8 @@ pub fn admit_activated_binary_db_generation_for_runtime(
 )> {
     let guard = BinaryDbReadLockSet::try_acquire(&binary_db_activation_lock_root(repo_root))
         .map_err(|error| format!("Binary DB generation activation is active: {error}"))?;
+    crate::plan_binary_db::repair_plan_binary_db_authority_if_needed(authority)
+        .map_err(|error| format!("Selected Binary DB Plan recovery failed: {error}"))?;
     let generation = admit_activated_binary_db_generation(authority, expected_repo_name)?;
     Ok((
         generation,

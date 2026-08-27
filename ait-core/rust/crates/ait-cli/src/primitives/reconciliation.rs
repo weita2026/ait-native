@@ -1025,7 +1025,7 @@ fn build_reconciliation_inventory(
             input.workspace_lock.clone(),
             "wait_for_active_mutation",
             "ait workflow reconcile --dry-run".to_string(),
-            "A workflow mutation currently holds the workspace lock; no repair is safe until it releases the lease.",
+            "Another workflow operation is changing the workspace; wait for it to finish before repairing anything.",
         );
     }
 
@@ -1284,7 +1284,7 @@ fn build_reconciliation_inventory(
                         task_id.clone().unwrap_or_else(|| "<task-id>".to_string())
                     )
                 },
-                "The registered worktree materialization is missing. An active owner prevents automatic pruning.",
+                "The registered worktree directory is missing. An active owner prevents automatic pruning.",
             );
         }
         if status == "detached" {
@@ -1677,7 +1677,7 @@ fn build_reconciliation_inventory(
                         "ait task audit {}",
                         local_task_id.as_deref().unwrap_or("<task-id>")
                     ),
-                    "Independent Local Land evidence exists, but the Local Change did not finish closeout. The current inventory does not carry the complete Local Land payload needed to reconstruct that fixed authority safely, so reconciliation will not synthesize it.",
+                    "Independent Local Land evidence exists, but the local Change did not finish. The available records do not contain everything needed to rebuild the missing Local Land safely, so repair will not invent it.",
                 );
             }
         }

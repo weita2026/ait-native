@@ -93,10 +93,15 @@ grep -F 'platformPackageName = `@wa120/ait-native-${npmTargetSuffix(row)}`' \
 grep -F 'fail("npm uninstall retained the target platform package")' \
   "${phase_runner}" >/dev/null
 
+family_version=$(jq -er '.family.version' "${repo_root}/ait-release-family.json")
+legacy_platforms=${temporary_root}/legacy-platforms.json
+jq --arg version "${family_version}" '.version = $version' \
+  "${repo_root}/ci/native_bootstrap_matrix.json" >"${legacy_platforms}"
+
 matrix=${temporary_root}/matrix.json
 node "${tool}" matrix \
   --family "${repo_root}/ait-release-family.json" \
-  --platforms "${repo_root}/ci/native_bootstrap_matrix.json" \
+  --platforms "${legacy_platforms}" \
   --output "${matrix}" >/dev/null
 jq -e '
   .contract == "ait.release.clean-host.matrix/v1" and
@@ -119,9 +124,47 @@ jq -e '
   ] | sort)
 ' "${matrix}" >/dev/null
 
+runner_bundle_family=${temporary_root}/runner-bundle-family.json
+jq '
+  .family.version = "1.1.0" |
+  .family.channel = "stable" |
+  .family.tag = "v1.1.0" |
+  .components |= map(
+    if .version_scheme == "family" then .version = "1.1.0"
+    elif .version_scheme == "pep440" then .version = "1.1.0"
+    else . end
+  ) |
+  .distributions |= map(
+    if .role == "product" and
+       (.channel == "homebrew" or .channel == "apt" or .channel == "winget")
+    then .components = ["ait", "ait-server", "ait-runner"]
+    else . end
+  )
+' "${repo_root}/ait-release-family.json" >"${runner_bundle_family}"
+runner_bundle_platforms=${temporary_root}/runner-bundle-platforms.json
+jq '.version = "1.1.0"' \
+  "${repo_root}/ci/native_bootstrap_matrix.json" >"${runner_bundle_platforms}"
+runner_bundle_matrix=${temporary_root}/runner-bundle-matrix.json
+node "${tool}" matrix \
+  --family "${runner_bundle_family}" \
+  --platforms "${runner_bundle_platforms}" \
+  --output "${runner_bundle_matrix}" >/dev/null
+jq -e '
+  .matrix_revision == "distribution-target-runner-bundle-32-2026-08-26.1" and
+  .row_count == 32 and (.rows | length) == 32 and
+  ([.rows[].id] | unique | length) == 32 and
+  ([.rows[] |
+    select(.role == "product" and
+      (.channel == "homebrew" or .channel == "apt" or .channel == "winget")) |
+    .components] | all(. == ["ait", "ait-server", "ait-runner"])) and
+  ([.rows[] |
+    select(.channel == "apt" and .role == "standalone") |
+    .components] == [["ait-runner"], ["ait-runner"]])
+' "${runner_bundle_matrix}" >/dev/null
+
 config=${temporary_root}/config.json
 status=${temporary_root}/status.json
-version=$(jq -er '.family.version' "${repo_root}/ait-release-family.json")
+version=${family_version}
 python_version=$(jq -er '.components[] | select(.id == "ait-python") | .version' \
   "${repo_root}/ait-release-family.json")
 tag=v${version}

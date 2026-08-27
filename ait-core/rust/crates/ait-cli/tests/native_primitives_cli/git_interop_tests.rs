@@ -917,7 +917,7 @@ fn native_git_import_fails_closed_for_replace_refs_and_submodules() {
     );
     assert!(!submodule_blocked.status.success());
     assert!(String::from_utf8_lossy(&submodule_blocked.stderr)
-        .contains("blocked before AIT Snapshot or ref mutation"));
+        .contains("stopped before changing any AIT Snapshot or ref"));
     assert_eq!(
         json_output(submodule_ait.path(), &["line", "show", "main", "--json"])
             ["head_snapshot_id"],

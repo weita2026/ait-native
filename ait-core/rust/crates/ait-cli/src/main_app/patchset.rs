@@ -1,15 +1,23 @@
 fn run_patchset(repo: RepoRuntime, command: PatchsetCommand) -> Result<(), String> {
     match command {
         PatchsetCommand::Publish(args) => {
-            let payload = run_locked_workspace_command(&repo, "ait-cli patchset publish", || {
+            let payload = run_task_scoped_workspace_command(
+                &repo,
+                &args.change,
+                true,
+                true,
+                args.remote.as_deref(),
+                "ait-cli patchset publish",
+                |execution_repo| {
                 patchset_publish(
-                    &repo,
+                    execution_repo,
                     &args.change,
                     &args.summary,
                     args.author_mode.map(ConfigAuthorModeArg::as_str),
                     args.remote.as_deref(),
                 )
-            })?;
+                },
+            )?;
             emit_result(
                 "ait-cli patchset publish",
                 &payload,

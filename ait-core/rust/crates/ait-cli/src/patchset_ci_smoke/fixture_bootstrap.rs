@@ -19,6 +19,8 @@ struct LocalLandHistory {
 const LOCAL_HISTORY_LAND_COUNT: usize = 65;
 
 pub(super) fn assert_final_snapshot_remote_promotion_contract() -> Result<(), String> {
+    assert_completed_local_null_remote_main_promotion_contract()?;
+
     let mut remote = spawn_fake_remote();
     let temp = init_solo_local_fixture_repo_unactivated(&remote.base_url)?;
     let root = temp.path();
@@ -59,7 +61,7 @@ pub(super) fn assert_final_snapshot_remote_promotion_contract() -> Result<(), St
         root,
         &[
             "task",
-            "land",
+            "finish",
             final_change_ref,
             "--remote",
             "origin",
@@ -348,6 +350,111 @@ pub(super) fn assert_final_snapshot_remote_promotion_contract() -> Result<(), St
     Ok(())
 }
 
+fn assert_completed_local_null_remote_main_promotion_contract() -> Result<(), String> {
+    let mut remote = spawn_fake_remote();
+    let temp = init_solo_local_fixture_repo_unactivated(&remote.base_url)?;
+    let root = temp.path();
+    remote
+        .state
+        .lock()
+        .map_err(|_| "fake remote state lock poisoned".to_string())?
+        .ci_run_required_patchset_ids
+        .insert("RP-2".to_string());
+    let history = create_local_lands(root, 1)?;
+    let final_change_ref = history
+        .change_refs
+        .last()
+        .ok_or_else(|| "null-main local history has no final Change".to_string())?;
+
+    let ready = command_output(
+        root,
+        &[
+            "workflow",
+            "ready",
+            final_change_ref,
+            "--apply",
+            "--remote",
+            "origin",
+        ],
+    )?;
+    if ready.status != 0 {
+        return Err(format!(
+            "completed-local null-main workflow ready did not complete: {}",
+            combined_output(&ready)
+        ));
+    }
+
+    let logged = remote
+        .log
+        .lock()
+        .map_err(|_| "fake remote log lock poisoned".to_string())?
+        .clone();
+    let seed_commit = logged
+        .iter()
+        .enumerate()
+        .find_map(|(index, row)| {
+            if row.method != "POST" || !row.url.ends_with("/remote-sync/zstd-bulk/commit") {
+                return None;
+            }
+            let body = parse_value_option(&row.body)?;
+            let line_update = body.get("line_update")?;
+            (string_field(line_update, "line_name").as_deref() == Some("main")
+                && line_update
+                    .get("expected_head_snapshot_id")
+                    .is_some_and(JsonValue::is_null)
+                && string_field(line_update, "head_snapshot_id").as_deref()
+                    == Some(FIXTURE_BASE_SNAPSHOT_ID))
+            .then_some((index, body))
+        })
+        .ok_or_else(|| {
+            "completed-local null-main promotion omitted the pre-land null-head CAS seed commit"
+                .to_string()
+        })?;
+    let history_prepare = logged
+        .iter()
+        .enumerate()
+        .find(|(_, row)| row.method == "POST" && row.url.ends_with("/history-promotion:prepare"))
+        .ok_or_else(|| "completed-local null-main promotion omitted history prepare".to_string())?;
+    if seed_commit.0 >= history_prepare.0 {
+        return Err(
+            "completed-local null-main promotion sent history prepare before the pre-land CAS seed"
+                .to_string(),
+        );
+    }
+    let history_body = parse_value_error_string(&history_prepare.1.body)?;
+    let entries = history_body
+        .get("entries")
+        .and_then(JsonValue::as_array)
+        .ok_or_else(|| "null-main history prepare omitted entries".to_string())?;
+    if string_field(&history_body, "contract").as_deref() != Some("history-promotion-prepare/v1")
+        || string_field(&history_body, "base_snapshot_id").as_deref()
+            != Some(FIXTURE_BASE_SNAPSHOT_ID)
+        || string_field(&history_body, "revision_snapshot_id").as_deref()
+            != Some(history.final_snapshot_id.as_str())
+        || entries.len() != 1
+    {
+        return Err(format!(
+            "completed-local null-main history prepare did not use the exact pre-land base: {}",
+            history_prepare.1.body
+        ));
+    }
+    let remote_head_snapshot_id = remote
+        .state
+        .lock()
+        .map_err(|_| "fake remote state lock poisoned".to_string())?
+        .remote_head_snapshot_id
+        .clone();
+    if remote_head_snapshot_id.as_deref() != Some(FIXTURE_BASE_SNAPSHOT_ID) {
+        return Err(format!(
+            "workflow ready moved null remote main beyond the pre-land base before Land: {}",
+            remote_head_snapshot_id.as_deref().unwrap_or("null")
+        ));
+    }
+
+    remote.stop()?;
+    Ok(())
+}
+
 fn create_local_lands(root: &Path, local_land_count: usize) -> Result<LocalLandHistory, String> {
     activate_fixture_binary_db_generation(root)?;
     let mut task_ids = Vec::new();
@@ -402,7 +509,7 @@ fn create_local_lands(root: &Path, local_land_count: usize) -> Result<LocalLandH
         let local_task_land_started = Instant::now();
         let local_land = json_output(
             &worktree_path,
-            &["task", "land", &change_ref, "--local", "--json", "--full"],
+            &["task", "finish", &change_ref, "--local", "--json", "--full"],
         )?;
         local_task_land_ms.push(local_task_land_started.elapsed().as_secs_f64() * 1_000.0);
         if string_field(&local_land, "apply_status").as_deref() != Some("done") {

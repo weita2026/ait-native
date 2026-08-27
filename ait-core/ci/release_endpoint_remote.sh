@@ -1006,12 +1006,11 @@ inspect_oci_image() {
         .[0].Config.Labels["org.opencontainers.image.revision"] == $source_commit and
         .[0].Config.Labels["org.opencontainers.image.version"] == $version and
         .[0].Config.Entrypoint == ["/usr/local/bin/" + $component] and
+        ((.[0].Config.Cmd == null) or (.[0].Config.Cmd == [])) and
         if $component == "ait-server" then
-          .[0].Config.Cmd == ["run", "--listen", "0.0.0.0:8088", "--init-if-missing", "--defer-ci-admission"] and
           (all(.[0].Config.Env[]; startswith("AITSERVER_LISTEN=") | not)) and
           any(.[0].Config.Env[]; . == "AIT_NATIVE_SERVER_DATA=/var/lib/ait/server-data")
         else
-          ((.[0].Config.Cmd == null) or (.[0].Config.Cmd == [])) and
           .[0].Config.WorkingDir == "/workspace"
         end
       ' "${image_record}" >/dev/null; then
@@ -1149,6 +1148,32 @@ case "${mode}" in
       "https://api.github.com/repos/${github_repository}/releases/tags/${release_tag}")
     notes=${temporary_root}/release-notes.md
     release_title="AIT Native ${release_version}"
+    benchmark_campaign=
+    benchmark_result=
+    if [[ ${release_version} == 1.1.0 ]]; then
+      benchmark_campaign=game-v1-g56s-max-complete200-fx27-20260826
+      benchmark_result=${assets}/ait-agent-token-benchmark-${benchmark_campaign}.result.json
+      require_regular_file "${benchmark_result}" '1.1.0 benchmark result asset'
+      if ! jq -e '
+        .contract == "ait-agent-token-benchmark-publication/v1" and
+        .release_version == "1.1.0" and
+        .campaign_id == "game-v1-g56s-max-complete200-fx27-20260826" and
+        .observed_run_count == 200 and .valid_run_count == 200 and
+        .executed_evidence_run_count == 201 and
+        .statistically_excluded_run_count == 1 and
+        .accepted_by_mode.ait_linear_single_session == 100 and
+        .accepted_by_mode.git_linear_single_session == 100 and
+        .source_protocol_claim_eligible == false and
+        .claim_eligible == true and
+        .claim_blockers == [] and
+        (.statistically_excluded_failures | length) == 1 and
+        (.statistical_replacements | length) == 1 and
+        .statistical_replacements[0].replacement_runner_sha256 == "sha256:89046039ffa7554b8791e5b2c2c75eaa42ac8c719bd93e831d1fc6ba2814d71d"
+      ' "${benchmark_result}" >/dev/null; then
+        printf '1.1.0 benchmark result asset is not exact\n' >&2
+        exit 65
+      fi
+    fi
     {
       printf '# %s\n\n' "${release_title}"
       printf 'This GitHub Release publishes the exact protected `%s` %s family bytes.\n' \
@@ -1161,6 +1186,27 @@ case "${mode}" in
       printf 'Then ask an AIT-aware coding agent to make the change. The generated\n'
       printf '`AGENTS.md` block directs Plan binding, Task worktree use, Snapshot creation,\n'
       printf 'validation, and local land.\n\n'
+      if [[ -n ${benchmark_result} ]]; then
+        printf '## AIT vs Git benchmark\n\n'
+        printf 'On five frozen game-development workloads using GPT-5.6 Sol at max reasoning\n'
+        printf 'effort, the 100-pair, 200-session campaign measured a failure-adjusted\n'
+        printf 'workload-median token saving of **%.2f%%** with a bootstrap 95%% confidence\n' \
+          "$(jq -er '.aggregate_median_token_savings_percent' "${benchmark_result}")"
+        printf 'interval of **%.2f%% to %.2f%%**. Median elapsed-time saving was **%.2f%%**.\n\n' \
+          "$(jq -er '.aggregate_token_savings_bootstrap_ci95[0]' "${benchmark_result}")" \
+          "$(jq -er '.aggregate_token_savings_bootstrap_ci95[1]' "${benchmark_result}")" \
+          "$(jq -er '.aggregate_median_elapsed_savings_percent' "${benchmark_result}")"
+        printf 'The effective matrix accepted 100/100 AIT outcomes and 100/100 Git outcomes.\n'
+        printf 'The original AIT GD-05 failure scored 50/100, remains disclosed, and is the one\n'
+        printf 'excluded row among 201 executed evidence sessions; its same-pinned replacement\n'
+        printf 'scored 100/100. The replacement-qualified result is claim-eligible. These\n'
+        printf 'findings remain scoped to the published fixtures, model pin, and linear local\n'
+        printf 'single-session workflows; they do not measure high concurrency.\n\n'
+        printf 'The full summary, machine-readable result, sanitized admitted-plus-excluded run index, and\n'
+        printf 'checksums are attached and versioned in the tagged source at\n'
+        printf 'https://github.com/%s/tree/%s/ait-core/release/benchmarks/%s.\n\n' \
+          "${github_repository}" "${release_tag}" "${benchmark_campaign}"
+      fi
       printf 'The attached `SHA256SUMS`, package receipts, protected-promotion evidence, and\n'
       printf 'GitHub attestations bind every downloadable byte. '
       if [[ ${release_channel} == rc ]]; then

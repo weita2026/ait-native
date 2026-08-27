@@ -13,17 +13,42 @@ fn prepare_root_publication_candidate(root: &Path, message: &str) -> String {
     seed_snapshot(root, message)
 }
 
+fn prepare_worktree_publication_candidate(worktree: &Path, message: &str) -> String {
+    write_file(
+        &worktree.join("src/lib.rs"),
+        "pub fn example() -> &'static str { \"worktree publication candidate\" }\n",
+    );
+    seed_snapshot(worktree, message)
+}
+
 fn register_publication_bound_worktree(
     root: &Path,
     name: &str,
     line_name: &str,
     task_id: &str,
     change_id: &str,
-) {
-    let external_path = root
-        .parent()
-        .expect("fixture repo parent")
-        .join(format!("{name}-external"));
+    materialize: bool,
+) -> PathBuf {
+    let external_path = root.join(format!("{name}-external"));
+    if materialize {
+        fs::create_dir_all(external_path.join("src")).unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(root.join(".ait"), external_path.join(".ait")).unwrap();
+        write_file(
+            &external_path.join(".ait-worktree.json"),
+            &(encode_json_pretty(&json!({
+                "current_line": line_name,
+                "repo_root": root.display().to_string(),
+                "workspace_root": external_path.display().to_string(),
+                "worktree_name": name,
+            })) + "\n"),
+        );
+        write_file(
+            &external_path.join("src/lib.rs"),
+            "pub fn example() -> &'static str { \"worktree baseline\" }\n",
+        );
+    }
+    seed_binary_line(root, line_name, FIXTURE_BASE_SNAPSHOT_ID);
     write_file(
         &root.join(".ait/worktrees").join(format!("{name}.json")),
         &(encode_json_pretty(&json!({
@@ -43,6 +68,7 @@ fn register_publication_bound_worktree(
             "cleanup_policy": "after_remote_land",
         })) + "\n"),
     );
+    external_path
 }
 
 fn register_unrelated_active_worktree(root: &Path) {
@@ -52,18 +78,20 @@ fn register_unrelated_active_worktree(root: &Path) {
         "feature/rt-other",
         "RT-OTHER",
         "RC-OTHER",
+        false,
     );
     set_active_root_worktree(root, "rt-other");
 }
 
-fn register_matching_target_worktree(root: &Path) {
+fn register_matching_target_worktree(root: &Path) -> PathBuf {
     register_publication_bound_worktree(
         root,
         "rt-1",
         "feature/rt-1",
         "RT-1",
         "RC-1",
-    );
+        true,
+    )
 }
 
 #[test]
@@ -101,35 +129,35 @@ fn native_patchset_publish_ignores_unrelated_active_root_worktree() {
 }
 
 #[test]
-fn native_patchset_publish_from_root_reports_matching_not_active_unrelated_worktree() {
+fn native_patchset_publish_from_root_routes_matching_not_active_unrelated_worktree() {
     let (base_url, log, state, handle) = spawn_fake_remote();
     let temp = init_repo(&base_url);
     let root = temp.path();
     state.lock().unwrap().remote_head_snapshot_id = Some(FIXTURE_BASE_SNAPSHOT_ID.to_string());
-    prepare_root_publication_candidate(root, "matching direct publication pin");
-    register_matching_target_worktree(root);
+    let matching_worktree = register_matching_target_worktree(root);
+    let revision_snapshot_id =
+        prepare_worktree_publication_candidate(&matching_worktree, "matching direct publication pin");
     register_unrelated_active_worktree(root);
 
-    let output = cargo_bin()
-        .current_dir(root)
-        .args([
+    let patchset = json_output(
+        root,
+        &[
             "patchset",
             "publish",
             "RC-1",
             "--summary",
             "Require matching worktree",
             "--json",
-        ])
-        .output()
-        .unwrap();
+        ],
+    );
 
-    assert!(!output.status.success());
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("Repo root has bound worktree `rt-1` for task `RT-1`"));
-    assert!(!stderr.contains("pinned to bound worktree `rt-other`"));
+    assert_eq!(
+        patchset["revision_snapshot_id"].as_str(),
+        Some(revision_snapshot_id.as_str())
+    );
     handle.join().unwrap();
     let logged = log.lock().unwrap().clone();
-    assert!(!logged.iter().any(|row| {
+    assert!(logged.iter().any(|row| {
         row.method == "POST"
             && row.url == "/v1/native/repository-authorities/7/changes/RC-1/patchsets"
     }));
@@ -176,7 +204,7 @@ fn native_workflow_ready_apply_ignores_unrelated_active_root_worktree() {
 }
 
 #[test]
-fn native_workflow_ready_apply_from_root_reports_matching_not_active_unrelated_worktree() {
+fn native_workflow_ready_apply_from_root_routes_matching_not_active_unrelated_worktree() {
     let (base_url, log, state, handle) = spawn_fake_remote();
     let temp = init_repo(&base_url);
     let root = temp.path();
@@ -185,8 +213,8 @@ fn native_workflow_ready_apply_from_root_reports_matching_not_active_unrelated_w
         guard.remote_head_snapshot_id = Some(FIXTURE_BASE_SNAPSHOT_ID.to_string());
         guard.force_no_selected_patchset = true;
     }
-    prepare_root_publication_candidate(root, "matching workflow publication pin");
-    register_matching_target_worktree(root);
+    let matching_worktree = register_matching_target_worktree(root);
+    prepare_worktree_publication_candidate(&matching_worktree, "matching workflow publication pin");
     register_unrelated_active_worktree(root);
 
     let output = cargo_bin()
@@ -202,13 +230,15 @@ fn native_workflow_ready_apply_from_root_reports_matching_not_active_unrelated_w
         .output()
         .unwrap();
 
-    assert!(!output.status.success());
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("Repo root has bound worktree `rt-1` for task `RT-1`"));
-    assert!(!stderr.contains("pinned to bound worktree `rt-other`"));
+    assert!(
+        output.status.success(),
+        "stdout:\n{}\n\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
     handle.join().unwrap();
     let logged = log.lock().unwrap().clone();
-    assert!(!logged.iter().any(|row| {
+    assert!(logged.iter().any(|row| {
         row.method == "POST"
             && row.url == "/v1/native/repository-authorities/7/changes/RC-1/patchsets"
     }));

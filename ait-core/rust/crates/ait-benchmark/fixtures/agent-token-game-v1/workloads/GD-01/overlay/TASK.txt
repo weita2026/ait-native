@@ -7,7 +7,6 @@ and repair the regression so the admitted 180 ms cooldown is enforced again.
 Preserve deterministic replay, movement, enemy behavior, boss timing, lives,
 score, browser controls, and the existing public GameModel surface. Add or
 update focused tests if needed. Do not rewrite unrelated gameplay or add a
-dependency, backend, hosted asset, network request, Python file, or remote AIT
-workflow.
+dependency, backend, hosted asset, network request, or Python file.
 
 Run the project-local validation before completing the repository workflow.

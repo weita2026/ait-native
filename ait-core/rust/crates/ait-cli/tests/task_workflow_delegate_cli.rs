@@ -40,9 +40,7 @@ fn workflow_ready_help_is_consumed_by_clap_without_delegate() {
         .args(["workflow", "ready", "--help"]);
     cmd.assert()
         .success()
-        .stdout(predicate::str::contains(
-            "every preparation input requires --apply",
-        ))
+        .stdout(predicate::str::contains("changes require --apply"))
         .stdout(predicate::str::contains("--snapshot-message"))
         .stdout(predicate::str::contains("--author-mode"))
         .stdout(predicate::str::contains("--remote"))
@@ -53,7 +51,7 @@ fn workflow_ready_help_is_consumed_by_clap_without_delegate() {
 fn text_only_workflow_commands_reject_json_without_parser_hints() {
     let repo = make_repo();
 
-    for subcommand in ["ready", "land"] {
+    for subcommand in ["ready", "finish"] {
         for json_arg in ["--json", "--json=true"] {
             let mut cmd = Command::cargo_bin("ait-cli").unwrap();
             cmd.current_dir(repo.path())
@@ -70,7 +68,7 @@ fn text_only_workflow_commands_reject_json_without_parser_hints() {
 }
 
 #[test]
-fn workflow_land_help_stays_native_without_top_level_land_or_task_complete() {
+fn workflow_finish_help_replaces_land_without_top_level_land_or_task_complete() {
     let repo = make_repo();
 
     let mut workflow_help = Command::cargo_bin("ait-cli").unwrap();
@@ -80,7 +78,18 @@ fn workflow_land_help_stays_native_without_top_level_land_or_task_complete() {
     workflow_help
         .assert()
         .success()
+        .stdout(predicate::str::contains("\n  finish "))
+        .stdout(predicate::str::contains("\n  land ").not())
         .stdout(predicate::str::contains("\n  land-local").not());
+
+    let mut removed_workflow_land = Command::cargo_bin("ait-cli").unwrap();
+    removed_workflow_land
+        .current_dir(repo.path())
+        .args(["workflow", "land", "RCC-1"]);
+    removed_workflow_land
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("unrecognized subcommand 'land'"));
 
     let mut removed_land_local = Command::cargo_bin("ait-cli").unwrap();
     removed_land_local
@@ -93,14 +102,16 @@ fn workflow_land_help_stays_native_without_top_level_land_or_task_complete() {
             "unrecognized subcommand 'land-local'",
         ));
 
-    let mut workflow_land_help = Command::cargo_bin("ait-cli").unwrap();
-    workflow_land_help
+    let mut workflow_finish_help = Command::cargo_bin("ait-cli").unwrap();
+    workflow_finish_help
         .current_dir(repo.path())
-        .args(["workflow", "land", "--help"]);
-    workflow_land_help
+        .args(["workflow", "finish", "--help"]);
+    workflow_finish_help
         .assert()
         .success()
-        .stdout(predicate::str::contains("remote-only reviewer-owned"))
+        .stdout(predicate::str::contains(
+            "selected Patchset, then safely finish the ready Change",
+        ))
         .stdout(predicate::str::contains("--apply"))
         .stdout(predicate::str::contains("--review-message"))
         .stdout(predicate::str::contains("--remote"))
@@ -134,31 +145,32 @@ fn workflow_land_help_stays_native_without_top_level_land_or_task_complete() {
         .assert()
         .success()
         .stdout(predicate::str::contains("\n  complete ").not())
-        .stdout(predicate::str::contains("land"));
+        .stdout(predicate::str::contains("\n  finish "))
+        .stdout(predicate::str::contains("\n  land ").not());
 }
 
 #[test]
-fn task_land_and_plan_sync_help_publish_the_same_scope_contract() {
+fn task_finish_and_plan_sync_help_publish_the_same_scope_contract() {
     let repo = make_repo();
 
-    let mut task_land = Command::cargo_bin("ait-cli").unwrap();
-    task_land
+    let mut task_finish = Command::cargo_bin("ait-cli").unwrap();
+    task_finish
         .current_dir(repo.path())
-        .args(["task", "land", "--help"]);
-    task_land
+        .args(["task", "finish", "--help"]);
+    task_finish
         .assert()
         .success()
         .stdout(predicate::str::contains(
-            "configured workflow mode selects local or remote authority",
+            "configured workflow mode chooses local or remote",
         ))
         .stdout(predicate::str::contains(
-            "Local land consumes an existing Snapshot",
+            "Dirty local work requires --message",
         ))
         .stdout(predicate::str::contains(
-            "remote land consumes an already-ready selected Patchset",
+            "Remote finish consumes an already-ready selected Patchset",
         ))
         .stdout(predicate::str::contains(
-            "Final Task closeout removes the bound worktree",
+            "Final Task cleanup removes the bound worktree",
         ));
 
     let mut plan_sync = Command::cargo_bin("ait-cli").unwrap();
@@ -172,13 +184,13 @@ fn task_land_and_plan_sync_help_publish_the_same_scope_contract() {
             "Plan sync never creates a Snapshot or advances a Line",
         ))
         .stdout(predicate::str::contains(
-            "solo_local writes local Plan state",
+            "solo_local saves local Plan changes",
         ))
         .stdout(predicate::str::contains(
-            "solo_remote reconciles local Plan lineage and publishes the touched heads",
+            "solo_remote updates local Plan history and publishes the changed heads",
         ))
         .stdout(predicate::str::contains(
-            "--local or --remote overrides the configured scope",
+            "--local or --remote overrides that default",
         ));
 }
 
@@ -194,10 +206,10 @@ fn workflow_guide_is_native_and_not_delegated() {
         .stdout(predicate::str::contains("ait workflow guide · land"))
         .stdout(predicate::str::contains("task-land-plan-closeout/v1"))
         .stdout(predicate::str::contains(
-            "reviewer-owned exact-Patchset code-review",
+            "record any required Task approval",
         ))
         .stdout(predicate::str::contains(
-            "delegate the already-ready final mutation",
+            "remote finish consumes an already-ready selected Patchset",
         ))
         .stdout(predicate::str::contains("It creates no Review evidence"))
         .stdout(predicate::str::contains(

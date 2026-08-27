@@ -59,7 +59,7 @@ if [ ! -f "$external_core/.ait-external-marker.json" ]; then
   printf '%s\n' "ait-node CI requires the exact materialized ait-core external" >&2
   exit 1
 fi
-node -e 'const fs=require("node:fs");const marker=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));if(marker.name!=="ait-core"||marker.snapshot!=="SNP-7F95342C97E7"){throw new Error("ait-core external marker identity drift")}' "$external_core/.ait-external-marker.json"
+node -e 'const fs=require("node:fs");const marker=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));if(marker.name!=="ait-core"||marker.snapshot!=="SNP-4E294F80B7B1"){throw new Error("ait-core external marker identity drift")}' "$external_core/.ait-external-marker.json"
 mkdir -p .ait-external
 ln -s "$external_core" .ait-external/ait-core
 bash ci/generate_notice.sh --check

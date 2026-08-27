@@ -127,15 +127,29 @@ fn run_task(repo: RepoRuntime, command: TaskCommand) -> Result<ExitCode, String>
             emit_task_audit_result(&args.task_id, &payload, args.json)?;
             Ok(ExitCode::SUCCESS)
         }
-        TaskCommand::Land(args) => {
+        TaskCommand::Finish(args) => {
             let (use_local_scope, scoped_remote_name) =
                 resolve_task_land_scope(&repo, args.local, args.remote.as_deref())?;
-            let mut payload = task_land_apply_scoped(
+            if !use_local_scope && args.message.is_some() {
+                return Err("`--message` is available only for local `ait task finish`; remote finish consumes an already-ready selected Patchset.".to_string());
+            }
+            let mut payload = run_task_scoped_workspace_command(
                 &repo,
                 &args.task_or_change_id,
                 use_local_scope,
+                !use_local_scope,
                 scoped_remote_name.as_deref(),
-                None::<fn(&JsonValue) -> Result<(), String>>,
+                "ait-cli task finish",
+                |execution_repo| {
+                    task_land_apply_scoped(
+                        execution_repo,
+                        &args.task_or_change_id,
+                        use_local_scope,
+                        scoped_remote_name.as_deref(),
+                        args.message.as_deref(),
+                        None::<fn(&JsonValue) -> Result<(), String>>,
+                    )
+                },
             )?;
             let task_id = workflow_payload_task_id(&payload);
             let scope = if use_local_scope {
@@ -150,7 +164,7 @@ fn run_task(repo: RepoRuntime, command: TaskCommand) -> Result<ExitCode, String>
                 task_land_automatic_trigger(&payload),
             );
             attach_automatic_reconciliation(&mut payload, reconciliation);
-            emit_task_land_result(&payload, args.json, args.full)?;
+            emit_task_finish_result(&payload, args.json, args.full)?;
             Ok(ExitCode::from(task_land_exit_code(&payload)))
         }
         TaskCommand::Abandon(args) => {

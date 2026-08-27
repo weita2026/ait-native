@@ -271,24 +271,107 @@ where
         if let Some(outcome) = &self.commit_outcome {
             return Ok(outcome.clone());
         }
+        self.ensure_commit_open()?;
+        self.sync_touched_dependencies()?;
+        Ok(self.finish_committed())
+    }
+
+    /// Durably flushes dependency files, atomically publishes one complete
+    /// root file, and finally syncs the target directory.
+    ///
+    /// The root file must not have been directly mutated by this transaction.
+    /// A failure before the atomic rename retains normal rollback semantics. A
+    /// failure syncing the target directory happens after the visible commit
+    /// point, so rollback is deliberately disabled and the error tells callers
+    /// to inspect state before retrying.
+    pub fn commit_with_atomic_file_replacement(
+        &mut self,
+        file: BinaryFileId,
+        bytes: &[u8],
+        publish_label: &str,
+    ) -> StoreResult<BinaryDbCommitOutcome> {
+        if let Some(outcome) = &self.commit_outcome {
+            return Ok(outcome.clone());
+        }
+        self.ensure_commit_open()?;
+        self.write_context
+            .ensure_authorized_path(file.relative_path())?;
+        let target = store_path_for(self.db.authority_root(), file.relative_path())?;
+        if self.touched_files.contains(&target) {
+            return Err(BinaryDbError::invalid_domain_data(format!(
+                "Atomic Binary DB root {} was already mutated directly in this transaction",
+                target.display()
+            )));
+        }
+
+        self.sync_touched_dependencies()?;
+        let staging_directory = self
+            .db
+            .replace_file_atomically(&target, bytes, publish_label)?;
+        let target_directory = target.parent().ok_or_else(|| {
+            BinaryDbError::invalid_domain_data(format!(
+                "Atomic Binary DB root has no parent directory: {}",
+                target.display()
+            ))
+        })?;
+        if let Err(error) = self.fsync_policy.sync_directory(target_directory) {
+            let cleanup_warning = self.finish_crossed_commit_point();
+            let cleanup_suffix = cleanup_warning
+                .map(|warning| format!(" Lock cleanup also failed: {warning}"))
+                .unwrap_or_default();
+            return Err(BinaryDbError::new(
+                error.kind(),
+                format!(
+                    "{error}. Atomic Binary DB publication for {} may already be committed; inspect authority before retrying.{cleanup_suffix}",
+                    target.display()
+                ),
+            ));
+        }
+        if staging_directory != target_directory {
+            // The target directory is the authority durability boundary. A
+            // source-directory sync only prevents an operational staging name
+            // from reappearing after a crash, so it is intentionally best
+            // effort after the authority commit is durable.
+            let _ = self.fsync_policy.sync_directory(&staging_directory);
+        }
+        Ok(self.finish_committed())
+    }
+
+    fn ensure_commit_open(&self) -> StoreResult<()> {
         if self.finished {
             return Err(BinaryDbError::invalid_domain_data(
                 "Binary DB write transaction was aborted before commit",
             ));
         }
+        Ok(())
+    }
+
+    fn sync_touched_dependencies(&self) -> StoreResult<()> {
         for path in &self.touched_files {
             self.fsync_policy.sync_file(path)?;
         }
         for path in &self.touched_directories {
             self.fsync_policy.sync_directory(path)?;
         }
+        Ok(())
+    }
+
+    fn finish_committed(&mut self) -> BinaryDbCommitOutcome {
         self.rollback_files.clear();
         self.rollback_records.clear();
         self.write_context.finish();
         self.finished = true;
         let outcome = BinaryDbCommitOutcome::new(self.lock.release().err());
         self.commit_outcome = Some(outcome.clone());
-        Ok(outcome)
+        outcome
+    }
+
+    fn finish_crossed_commit_point(&mut self) -> Option<BinaryDbError> {
+        self.rollback_files.clear();
+        self.rollback_records.clear();
+        self.write_context.finish();
+        self.finished = true;
+        self.lock.release().err()
     }
 
     pub fn abort(&mut self) -> StoreResult<()> {

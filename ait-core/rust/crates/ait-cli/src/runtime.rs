@@ -1,10 +1,8 @@
 use crate::json_support::{encode_value_pretty_with_newline_error_string, parse_object_or_empty};
 use ait_core::binary_db::{
-    AuthorityId, BinaryDbReadLockSet, BinaryDbReadTxn, LocalBinaryDbFs, LocalStateScope, StorePath,
+    AuthorityId, BinaryDbReadTxn, LocalBinaryDbFs, LocalStateScope, StorePath,
 };
-use ait_core::binary_db_generation::{
-    admit_activated_binary_db_generation, binary_db_activation_lock_root,
-};
+use ait_core::binary_db_generation::admit_activated_binary_db_generation_for_runtime;
 #[cfg(test)]
 use ait_core::change_store::ChangeStore;
 use ait_core::content_binary_db::{

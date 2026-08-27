@@ -462,7 +462,7 @@ fn task_land_local_change_id_accepts_change_store_trait() {
     .expect("create second task change");
     let err = task_land_local_change_id_with_change_store(&change_store, "LCT-2")
         .expect_err("multiple local changes should fail");
-    assert!(err.contains("multiple landable changes"));
+    assert!(err.contains("multiple finishable changes"));
     assert!(err.contains("LCC-2"));
     assert!(err.contains("LCC-3"));
 

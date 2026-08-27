@@ -1,0 +1,44 @@
+{
+  "contract": "ait-agent-token-benchmark-campaign/v1",
+  "campaign_id": "game-v1-smoke-steady-state-claude-template",
+  "protocol_revision": "game-development-2026-08-27.29",
+  "campaign_scope": "smoke",
+  "accounting_profile": "steady_state_task_cost",
+  "seed": 20260822,
+  "attempts_per_cell": 1,
+  "workload_ids": [
+    "GD-01"
+  ],
+  "modes": [
+    "git_linear_single_session",
+    "ait_linear_single_session"
+  ],
+  "model": {
+    "provider": "anthropic",
+    "model_id": "claude-opus-5",
+    "model_revision": "REPLACE_WITH_PINNED_MODEL_REVISION",
+    "reasoning_effort": "max"
+  },
+  "runtime": {
+    "executor": "claude",
+    "codex_program": "codex",
+    "claude_program": "claude",
+    "ait_program": "ait",
+    "git_program": "git",
+    "node_program": "node",
+    "browser_program": null,
+    "fixture_manifest": "../../fixtures/agent-token-game-v1/manifest.json",
+    "run_timeout_seconds": 1800,
+    "ait_first_use_worktree_add_dir": null,
+    "project_doc_max_bytes": 0
+  },
+  "cache_class": "provider_default_fresh_ephemeral_session",
+  "network_policy": "disabled_except_loopback",
+  "tool_policy": "claude_code_local_tools",
+  "bootstrap_resamples": 2000,
+  "limitations": [
+    "Template only: pin the real model revision, claude program path, and browser program before execution.",
+    "A null browser program makes candidate outcomes non-accepted and is suitable only for harness smoke checks.",
+    "Model fallbacks must remain disabled in the pinned claude CLI configuration."
+  ]
+}

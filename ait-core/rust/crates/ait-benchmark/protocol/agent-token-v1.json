@@ -1,10 +1,53 @@
 {
   "contract": "ait-agent-token-benchmark-protocol/v1",
-  "protocol_revision": "game-development-2026-08-22.10",
+  "protocol_revision": "game-development-2026-08-27.29",
   "subject": {
     "domain": "deterministic-static-web-2d-plane-shooter-development",
     "measured_quantity": "provider-reported token usage of an AI agent completing an accepted equivalent repository task",
     "interpretation": "AIT and Git do not intrinsically consume model tokens; this protocol compares declared agent workflow surfaces."
+  },
+  "executors": {
+    "axis": "executor is a pinned campaign axis; one campaign runs exactly one executor, and cross-executor results are reported side by side under their own campaigns, never pooled or paired",
+    "shared_permission_scope": "both executors declare the identical ait_benchmark_local_v1 filesystem scope recorded in the per-run codex-permission-profile.json artifact (legacy shared filename); Codex enforces it through its native permission profile, Claude through the workspace working directory, --add-dir roots, and the pinned tool allow/deny lists",
+    "codex": {
+      "program": "codex CLI in exec mode",
+      "session_log_authority": "codex exec --json event stream",
+      "usage_authority": "turn.completed usage events",
+      "tool_policy": "codex_shell_only",
+      "feature_overrides": "none",
+      "completed_file_change_authority": "completed Codex file_change items",
+      "rejected_apply_patch_authority": "rejected apply_patch attempts recorded by Codex stderr",
+      "infrastructure_failure_signals": "structured error events, turn.failed, error items, and candidate tool-process spawn failures"
+    },
+    "claude": {
+      "program": "claude CLI headless: --print --output-format stream-json --verbose --no-session-persistence --strict-mcp-config --setting-sources \"\" (zero settings-file contamination), --settings with the inline sandbox policy, --tools pinning the exact built-in tool availability surface; model fallbacks disabled",
+      "session_log_authority": "claude stream-json event stream",
+      "usage_authority": "the single terminal result event; normalized input_tokens = direct input plus cache_read plus cache_creation tokens so cached input remains a subset of input and provider_total = input plus output",
+      "reasoning_token_authority": "output_tokens_details.thinking_tokens",
+      "tool_policy": "claude_code_local_tools",
+      "allowed_tools": [
+        "Bash",
+        "Read",
+        "Grep",
+        "Glob",
+        "Edit",
+        "Write"
+      ],
+      "disallowed_tools": [
+        "WebFetch",
+        "WebSearch",
+        "Task",
+        "NotebookEdit",
+        "TodoWrite"
+      ],
+      "feature_overrides": "exactly the declared allowed-tool and disallowed-tool lists, recorded verbatim as the campaign feature-override evidence",
+      "completed_file_change_authority": "Edit or Write tool_use events whose tool_result completed without is_error",
+      "rejected_apply_patch_authority": "Edit or Write tool_use events whose tool_result reports is_error",
+      "infrastructure_failure_signals": "a terminal result event with a non-success subtype or is_error, structured stream error events, or a session that ends without any terminal result event",
+      "network_enforcement": "bash sandbox enabled in strict mode (unsandboxed-command escape hatch disabled) with external network egress denied at the sandbox proxy and loopback binding allowed, matching disabled_except_loopback; verified by probe: external curl blocked, 127.0.0.1 listen permitted",
+      "tool_surface_enforcement": "availability pinned with --tools to exactly the allowed set, and the transcript validator fails the lane closed on any tool_use event outside that set",
+      "filesystem_enforcement": "sandbox filesystem writes scoped to the lane working directory plus exactly the declared additional workspace roots and Git write exceptions via sandbox.filesystem.allowWrite; verified by probe outside the tmp default-allow zone: listed roots writable including nested directory creation, unlisted external paths denied"
+    }
   },
   "product_boundary": {
     "implementation_language": "Rust",
@@ -26,14 +69,14 @@
       "modes": [
         {
           "id": "git_linear_single_session",
-          "repository_surface": "real Git working tree without .ait metadata",
-          "required_evidence": "task-relevant explicit Git discovery, status, history, or diff commands",
-          "metadata_isolation": "runner-owned writable Git metadata is outside the Codex-protected candidate root and inherited through standard GIT_DIR and GIT_WORK_TREE; candidate commands must not override or redirect it"
+          "repository_surface": "real local Git main worktree plus one measured linked task worktree, without .ait metadata",
+          "required_evidence": "task-relevant explicit Git discovery plus exactly one linked-worktree creation, final candidate commit, fast-forward integration onto main, linked-worktree removal, and temporary-branch deletion",
+          "metadata_isolation": "each run owns a writable external Git directory connected to its fresh main worktree through a standard .git gitfile, plus one task path below an otherwise empty benchmark-owned writable worktree container; the narrow no-network shared executor permission scope reopens only the current run's protected Git pointer and resolved metadata, and no inherited GIT_DIR or GIT_WORK_TREE override is used"
         },
         {
           "id": "ait_linear_single_session",
-          "repository_surface": "current solo_local sprint-off AIT Task, Snapshot, inspection, and local-land workflow",
-          "required_evidence": "effective solo_local sprint-off authority plus task-relevant local AIT workflow commands without Plan binding, raw Git, or ait-server substitution"
+          "repository_surface": "current solo_local sprint-off AIT Task, Snapshot, and local Task-finish workflow",
+          "required_evidence": "runner-admitted solo_local sprint-off authority plus measured task start, task finish, and task-relevant local AIT workflow commands"
         }
       ],
       "excluded_topologies": [
@@ -152,8 +195,36 @@
     ],
     "unavailable_field_encoding": "null",
     "unknown_provider_schema_policy": "fail-closed",
-    "provider_session_failure_policy": "retain the invalid pre-execution run and stop the remaining schedule immediately",
+    "provider_session_failure_policy": "retain a lane with any structured provider error event as infrastructure-invalid even when later commands, usage, or exit status appear successful",
+    "candidate_tool_process_spawn_failure_policy": "retain the invalid run and stop the remaining schedule immediately even when the model recovers and exits zero; recognize both unified CreateProcess stderr and non-unified executor Io/exit-code-minus-one evidence",
     "overlapping_field_double_count_allowed": false
+  },
+  "executor_preflight": {
+    "contract": "ait-agent-token-executor-preflight/v1",
+    "required_before_candidate_materialization": true,
+    "topology": "one fresh ephemeral session of the pinned campaign executor in an isolated temporary directory",
+    "model_and_runtime_pin": "exact campaign executor executable, model id and revision, reasoning effort, the shared ait_benchmark_local_v1 permission scope (Codex extends :workspace natively; Claude enforces the identical scope through its pinned tool policy), disabled command network, project-document limit, and default feature settings",
+    "git_worktree_permission_probe_required": true,
+    "git_worktree_permission_probe_commands": [
+      "git worktree add on a temporary branch",
+      "git commit --allow-empty in the linked worktree",
+      "git merge --ff-only on main",
+      "git worktree remove",
+      "git branch -d"
+    ],
+    "git_worktree_permission_probe_accounting": "runner admission without a model request; completes through the exact generated shared permission profile before the 30-command model executor probe and every candidate lane",
+    "required_separate_read_only_shell_commands": 30,
+    "required_started_command_items": 30,
+    "command_lifecycle_order": "each command item must complete before the next command item starts",
+    "exact_command": "/bin/pwd",
+    "required_completed_provider_turns": 1,
+    "unexpected_non_command_tool_items_allowed": 0,
+    "file_change_items_allowed": 0,
+    "workspace_content_change_allowed": false,
+    "benchmark_enabled_feature_overrides": [],
+    "benchmark_disabled_feature_overrides": [],
+    "token_accounting": "record separately as admission overhead; never include in AIT or Git metrics",
+    "failure_policy": "preserve create-new preflight evidence, start zero candidate lanes, emit a stopped execution result, and require a new campaign identity after runtime recovery"
   },
   "primary_metrics": {
     "effective_tokens_per_accepted_task": "sum(provider_total_tokens for every valid attempted run) / count(accepted equivalent outcomes)",
@@ -161,6 +232,20 @@
     "failed_attempt_tokens_included": true,
     "invalid_protocol_run_tokens_included": false,
     "lowest_successful_run_may_define_claim": false
+  },
+  "mixed_workflow_metrics": {
+    "pair_admission": "exact common workload_id plus attempt with two protocol-valid summaries and normalized provider usage; workflow metric asymmetry never excludes the pair",
+    "dimensions": [
+      "failure_adjusted_provider_tokens_per_accepted_task",
+      "failure_adjusted_elapsed_ms_per_accepted_task",
+      "failure_adjusted_completed_file_change_items_per_accepted_task",
+      "failure_adjusted_rejected_apply_patch_attempts_per_accepted_task",
+      "failure_adjusted_total_apply_patch_attempts_per_accepted_task"
+    ],
+    "reduction_formula": "100 * (1 - AIT / Git) when the Git baseline is positive",
+    "zero_git_baseline_encoding": "null reduction with both raw mode values retained",
+    "weighted_composite_score_allowed": false,
+    "token_claim_gate_changed": false
   },
   "secondary_metrics": [
     "input_tokens",
@@ -171,6 +256,9 @@
     "model_calls",
     "tool_calls_by_family",
     "tool_output_bytes",
+    "file_change_items",
+    "apply_patch_rejected_attempts",
+    "apply_patch_attempts",
     "files_opened",
     "files_reopened",
     "build_and_test_calls",
@@ -210,10 +298,13 @@
     "pinned_axes": [
       "model-provider",
       "model-id-and-revision",
+      "executor-program-and-version",
       "reasoning-effort",
       "system-and-developer-instructions",
       "task-prompt",
       "tool-inventory",
+      "executor-feature-override-sets",
+      "executor-permission-profile-name-and-parent",
       "browsing-and-network-policy",
       "host-class",
       "fixture-digest",
@@ -224,7 +315,70 @@
     "fresh_agent_session_per_run": true,
     "conversation_carryover_allowed": false,
     "project_document_loading": "disabled symmetrically with project_doc_max_bytes=0; mode rules come only from the frozen measured prompt",
-    "git_metadata_layout": "isolated external writable directory supplied to the Codex sandbox and used by runner bootstrap, candidate commands, and closeout verification",
+    "measured_ait_treatment": "accounting-profile-specific prose; steady-state contains only one local task start, returned worktree entry, project editing and validation, optional intermediate Snapshot, and one local task finish; every Git command is explicitly prohibited while read-only AIT inspection (status, diff, blame) is informational and unrestricted, symmetric with the Git treatment's unrestricted status, diff, and log inspection; environment admission is runner-owned outside model accounting",
+    "measured_ait_management_commands_allowed": false,
+    "measured_ait_allowed_commands": [
+      "ait task start --local",
+      "ait snapshot create (optional intermediate checkpoint)",
+      "ait task finish --local",
+      "read-only help introspection of the mode's own CLI (--help, -h, or a leading help subcommand): informational, exempt from lifecycle counts and surface checks, token cost measured; cross-tool help remains prohibited",
+      "read-only local inspection with ait status, ait diff, or ait blame: informational, exempt from lifecycle counts and surface checks, token cost measured; any remote authority remains prohibited"
+    ],
+    "informational_cli_help_introspection": {
+      "allowed": "the mode's own repository CLI only, symmetrically for both executors",
+      "forms": [
+        "--help",
+        "-h",
+        "leading help subcommand"
+      ],
+      "accounting": "token cost stays in the measurement; the invocation is not a lifecycle step",
+      "cross_tool_policy": "help of the other mode's CLI remains a mode-exclusion violation"
+    },
+    "symmetric_readonly_inspection": {
+      "rationale": "each measured mode must reach repository state through its own native read-only channel; denying one side that channel forces its verification demand into full project validation runs and inflates its measured cost, which observation at high reasoning effort confirmed",
+      "ait_channel": [
+        "ait status",
+        "ait diff",
+        "ait blame"
+      ],
+      "git_channel": [
+        "git status",
+        "git diff",
+        "git log",
+        "git show",
+        "git blame"
+      ],
+      "accounting": "token cost stays in the measurement; the invocation is not a lifecycle step and not a forbidden surface",
+      "remote_authority_policy": "never informational: any remote-carrying inspection remains a mode violation",
+      "management_surface_policy": "unchanged: task list, change list, task audit, queue summary, plan, workflow, and remote surfaces remain forbidden",
+      "prior_revision_note": "revisions through game-development-2026-08-25.24 measured the AIT mode without an inspection channel while instructing project-local validation as the substitute; the codex r14 and r15 columns were measured under that prior asymmetric wording"
+    },
+    "measured_git_treatment": "accounting-profile-specific prose; steady-state starts from a runner-bootstrapped worktree with a recorded proof that symbolic HEAD is clean main and equals refs/heads/main, then the measured agent creates one benchmark-task linked worktree from either explicit main or the proven current HEAD, edits and validates only there, creates one candidate commit, fast-forwards main, removes the linked worktree, and deletes the temporary branch; first-use has no runner-owned start proof and still requires explicit main; every AIT command is explicitly prohibited",
+    "cross_mode_repository_command_exclusion": "mutually exclusive and fail-closed: AIT treatment prohibits every Git command, and Git treatment prohibits every AIT command",
+    "measured_git_required_commands": [
+      "steady-state: git worktree add -b benchmark-task <benchmark-owned-path> main, or omit main only with the runner-owned clean-main HEAD proof",
+      "first-use: git worktree add -b benchmark-task <benchmark-owned-path> main",
+      "git commit (exactly one final candidate commit in steady state)",
+      "git merge --ff-only benchmark-task",
+      "git worktree remove <benchmark-owned-path>",
+      "git branch -d benchmark-task"
+    ],
+    "git_worktree_start_point_admission": {
+      "explicit_main": "always admitted when the remaining declared worktree lifecycle matches",
+      "implicit_head": "admitted only in steady-state when git-start-state-proof.json was captured before the provider turn and proves an empty porcelain status, symbolic main, and HEAD equal to refs/heads/main; the declared worktree path must be the final positional argument, so no alternate commit-ish is present; closeout must additionally prove that ORIG_HEAD and the candidate commit parent both equal the recorded start HEAD",
+      "first_use": "implicit HEAD is rejected because repository creation occurs inside the measured provider turn and no runner-owned start proof exists",
+      "predecessor_evidence": "protocol .27 continuation retains its frozen proof-backed implicit-main treatment; protocol .26 retains its frozen literal-main classification and is never reinterpreted by this successor rule"
+    },
+    "git_metadata_layout": "normal per-run separate Git directory connected through a standard .git gitfile; the metadata directory and an empty worktree container are additional roots of the ait_benchmark_local_v1 profile, while exact write exceptions reopen only the main .git pointer, resolved metadata, and task-worktree .git pointer; the task child is deletable without exposing sibling evidence and commands discover metadata after cd without inherited GIT_DIR or GIT_WORK_TREE",
+    "git_metadata_override_admission": "reject GIT_DIR or GIT_WORK_TREE assignments applied to Git, persistent shell exports of either variable, and global git --git-dir/--work-tree options before the subcommand; admit read-only subcommand query options such as git rev-parse --git-dir",
+    "permission_profile": {
+      "name": "ait_benchmark_local_v1",
+      "extends": ":workspace",
+      "command_network_enabled": false,
+      "danger_full_access_allowed": false,
+      "git_write_exception_scope": "current run main .git pointer, resolved external metadata, and linked-task .git pointer only",
+      "executor_enforcement": "Codex enforces the profile natively; Claude enforces the identical declared scope through workspace working directory, --add-dir roots, and the pinned tool allow/deny lists"
+    },
     "candidate_repository_metadata_redirection_allowed": false,
     "shared_task_paths_must_be_authorable_in_both_repository_surfaces": true,
     "ait_projected_docs_namespace_allowed_in_shared_task": false,
@@ -235,8 +389,16 @@
     "failures_timeouts_and_interventions_retained": true
   },
   "sampling": {
-    "minimum_pilot_attempts_per_cell": 10,
-    "minimum_claim_attempts_per_cell": 20,
+    "complete_campaign": {
+      "scope": "complete",
+      "workload_count": 5,
+      "mode_count": 2,
+      "paired_attempts_per_workload": 20,
+      "scheduled_run_count": 200,
+      "revision_note": ".29 retains the exact .27 prompts, fixtures, evaluator, symmetric read-only inspection treatment, proof-backed implicit-main treatment, and twenty-pair 200-session sampling authority; it adds only the narrow repository-owner-authorized transparent statistical replacement policy for the named GD-05 AIT lane after .28 completed the frozen schedule without retry",
+      "every_run_must_be_protocol_valid_and_accepted": true
+    },
+    "smoke_publication_eligible": false,
     "paired_axes": [
       "workload",
       "fixture-revision",
@@ -255,12 +417,50 @@
       "bootstrap-95-percent-confidence-interval"
     ],
     "aggregate_method": "median of paired workload and run ratios",
+    "atomic_pair_schedule": {
+      "pair_identity": "workload_id plus attempt",
+      "pair_order": "randomize workload pairs inside each block, then randomize Git/AIT order inside each adjacent pair",
+      "partial_pair_comparison_allowed": false,
+      "slice_unit": "--max-pairs counts complete adjacent Git/AIT pairs; --max-runs is retired",
+      "candidate_defect_policy": "retain a protocol-valid unaccepted candidate as a measured outcome, finish the counterpart when safe, and continue the exact suffix without retry; an invalid attempt stops after its completed pair and an infrastructure failure stops immediately"
+    },
+    "immutable_resume": {
+      "scope": "a stopped .27 complete campaign may resume under the .28 controller when its existing run IDs are an exact protocol-valid complete-pair prefix of its frozen schedule; legacy .20 retains only its existing narrow .21-adjudicator path; all other predecessors are read-only",
+      "existing_run_policy": "never recreate, overwrite, or retry an existing run ID; execute only the missing schedule suffix with identical pinned tool versions",
+      "valid_unaccepted_outcome_policy": "retain every valid unaccepted prefix run as measured evidence and continue only the missing suffix; it remains acceptance-penalized and cannot be repaired, replaced, or retried",
+      "validator_adjudication_policy": "append-only and digest-linked to the immutable raw summary and transcript; limited to the exact read-only git rev-parse --git-dir false positive; no measured field may change",
+      "derived_report_policy": "archive each replaced derived report by content digest before atomically publishing the refreshed effective view",
+      "resume_audit_policy": "record each resume start and result append-only under a monotonically numbered resumptions directory with source and controller protocol revisions, continuation policy, runner path, and runner SHA-256"
+    },
+    "statistical_replacement": {
+      "contract": "ait-agent-token-statistical-replacement/v1",
+      "authorization": "repository-owner-authorized narrow exception",
+      "policy_revision": "game-development-2026-08-27.29",
+      "campaign_id": "game-v1-g56s-max-complete200-fx27-20260826",
+      "source_run_id": "game-v1-g56s-max-complete200-fx27-20260826-b006-gd-05-ait",
+      "replacement_run_id": "game-v1-g56s-max-complete200-fx27-20260826-b006-gd-05-ait-replacement-01",
+      "execution_limit": "exactly one new AIT session; no second replacement or repair is admitted",
+      "pin_equivalence": "campaign manifest, fixture manifest, prompt bytes, model and reasoning pin, executor and tool versions, permission and network policy, cache class, run identity axes, initial content digest, and executor preflight must match the disclosed source lane",
+      "admission": "the replacement must be protocol-valid, evaluator-accepted, browser-passed, workflow-closed, and carry valid transcript and normalized provider usage",
+      "history": "retain the original valid functional failure and every raw artifact append-only; record source and replacement run-summary digests plus replacement-runner digest in statistical-replacement.json",
+      "statistical_view": "exclude only the named source AIT lane, admit only the named replacement AIT lane against the unchanged Git counterpart, and calculate effective statistics over exactly 200 admitted sessions from 201 executed evidence sessions",
+      "claim_policy": "source_protocol_claim_eligible remains false; effective claim_eligible may be true only when the replacement-qualified 200-session matrix has no claim blockers and positive primary statistics",
+      "disclosure": "publish the excluded failure, reason, exact replacement mapping, executed and admitted counts, and checksummed provenance"
+    },
+    "paired_comparison_admission": {
+      "admit_when": "both Git and AIT lanes share the exact workload plus attempt identity, are protocol-valid, and carry normalized provider usage",
+      "workflow_metric_asymmetry_policy": "retain the pair and report the difference",
+      "completed_file_change_authority": "the pinned executor's completed-file-change authority declared in the executors section",
+      "rejected_apply_patch_authority": "the pinned executor's rejected-apply-patch authority declared in the executors section",
+      "total_patch_attempt_authority": "completed file-change items plus rejected apply-patch attempts under the pinned executor's authorities"
+    },
     "minimum_bootstrap_resamples": 1000,
     "default_bootstrap_resamples": 2000
   },
   "required_evidence": {
     "per_run": [
       "campaign-manifest.json",
+      "codex-permission-profile.json",
       "fixture-manifest.json",
       "prompt.txt",
       "run-manifest.json",
@@ -269,16 +469,43 @@
       "acceptance-report.json",
       "browser-report.json",
       "environment.json",
+      "git-start-state-proof.json (steady-state Git only)",
       "workflow-verification.json",
       "run-summary.json"
     ],
     "per_campaign": [
       "protocol.json",
       "randomization-schedule.json",
+      "executor-preflight-prompt.txt",
+      "executor-preflight-report.json",
+      "executor-preflight-usage.jsonl",
+      "executor-preflight-environment.json",
+      "executor-preflight-permission-profile.json",
+      "git-worktree-permission-profile.json",
+      "git-worktree-permission-preflight-report.json",
+      "private/executor-preflight-events.raw.jsonl",
+      "private/executor-preflight.stderr.txt",
+      "private/git-worktree-permission-preflight-events.jsonl",
       "raw-run-index.json",
       "aggregate-report.json",
       "comparison-report.json",
       "claim-boundary.md"
+    ],
+    "conditional_legacy_resume_evidence": [
+      "adjudications/<run-id>.json",
+      "resumptions/resume-<ordinal>/start.json",
+      "resumptions/resume-<ordinal>/result.json",
+      "derived-history/<derived-file>.<source-sha256>"
+    ],
+    "conditional_statistical_replacement_evidence": [
+      "statistical-replacement.json",
+      "statistical-replacements/replacement-0001/replacement-entry.json",
+      "statistical-replacements/replacement-0001/replacement-runner",
+      "statistical-replacements/replacement-0001/executor-preflight-*",
+      "statistical-replacements/replacement-0001/git-worktree-permission-*",
+      "statistical-replacements/replacement-0001/runs/<replacement-run-id>/*",
+      "statistical-replacements/replacement-0001/result.json",
+      "effective-run-index.json"
     ],
     "portable_paths_required": true,
     "digest_linkage_required": true,
@@ -288,20 +515,46 @@
     "paired tracked content or task prompt differs",
     "model, reasoning effort, tools, cache, or network policy drifted",
     "Git mode lacks explicit Git repository discovery evidence",
+    "steady-state Git omits the explicit main start point without a passing runner-owned clean-main HEAD proof and matching closeout lineage",
     "Git mode overrides or redirects the runner-owned repository metadata context",
     "AIT mode lacks current AIT workflow evidence",
     "AIT mode contacted ait-server or any remote AIT authority",
+    "AIT mode invoked any Git command or any AIT command outside its accounting-profile-specific measured lifecycle allowlist",
+    "Git mode invoked any AIT command",
     "excluded topology entered only one core mode",
     "accounting profiles were mixed",
     "provider usage is missing or ambiguous",
     "provider session failed before candidate execution",
-    "mandatory acceptance failed or human repair occurred",
+    "candidate command process failed to spawn",
+    "human repair, an undisclosed or non-authorized replacement, or selective retry occurred",
     "digest linkage is stale",
-    "failed or high-token attempts were discarded"
+    "failed or high-token attempts were discarded outside the exact disclosed game-development-2026-08-27.29 statistical-replacement contract"
   ],
-  "claim_eligibility": {
+  "invalid_campaign_conditions": [
+    "Git worktree permission profile probe did not pass before model execution",
+    "executor preflight did not pass before candidate execution",
+    "benchmark-owned executor feature overrides differ from the pinned executor's declared set (Codex: none; Claude: exactly the declared tool allow and deny lists)",
+    "schedule separated the two lanes in one workload-attempt pair",
+    "a partial pair entered comparative aggregates",
+    "a stopped campaign recreated or retried an existing lane, resumed a non-prefix schedule, or changed a pinned measured axis under the same campaign identity"
+  ],
+  "publication_provenance": {
+    "source_protocol_revision_authority": "the immutable campaign manifest",
+    "source_campaign_scope_authority": "the immutable campaign manifest",
+    "source_claim_eligibility_policy": "evaluate under the declared source protocol without relabeling its campaign scope",
+    "predecessor_complete_campaign_policy": ".22 through .25 complete evidence remains readable only at its original ten-pair-per-workload, 100-session shape; .26 remains read-only at its original twenty-pair-per-workload, 200-session shape and literal-main classifications; .27 remains frozen at its original twenty-pair-per-workload, 200-session shape and proof-backed implicit-main classifications and is narrowly resumable only under the provenance-recorded .28 controller; .29 may derive only the explicitly authorized transparent statistical view while preserving .27 source-protocol status and all 201 raw sessions; predecessors are never reinterpreted as current .29 source evidence",
+    "legacy_pilot_policy": "pilot evidence remains pilot and is never source-protocol claim eligible",
+    "current_policy_reanalysis": "report separately as retrospective criteria satisfaction; it never changes source scope or source-protocol claim eligibility",
+    "replacement_qualified_publication_policy": "the exact .29 replacement-qualified statistical view may publish claim_eligible=true while separately retaining source_protocol_claim_eligible=false, the original failure, its exclusion, the replacement, and all provenance digests",
+    "descriptive_publication_policy": "fully disclosed pilot measurements may be published as pilot results but not as original-protocol-qualified claims"
+  },
+  "publication_eligibility": {
     "all_required_evidence_complete": true,
-    "minimum_attempts_per_cell": 20,
+    "required_scope": "complete",
+    "required_scheduled_run_count": 200,
+    "replacement_qualified_executed_evidence_run_count": 201,
+    "replacement_qualified_statistically_admitted_run_count": 200,
+    "required_accepted_paired_attempts_per_workload": 20,
     "maximum_ait_acceptance_rate_deficit_percentage_points": 5,
     "median_failure_adjusted_savings_must_be_positive": true,
     "bootstrap_95_percent_lower_bound_must_be_positive": true,

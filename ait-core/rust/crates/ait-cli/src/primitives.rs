@@ -200,8 +200,9 @@ pub use workflow::{
     workflow_land_apply, workflow_land_payload, workflow_ready_apply, workflow_ready_payload,
 };
 pub use workspace::{
-    snapshot_create, snapshot_create_explicit, workflow_workspace_status, workspace_delta,
-    workspace_dirty_diff, workspace_restore, workspace_restore_paths,
+    resolve_task_scoped_execution_repo, run_task_scoped_workspace_command, snapshot_create,
+    snapshot_create_explicit, workflow_workspace_status, workspace_delta, workspace_dirty_diff,
+    workspace_restore, workspace_restore_paths,
 };
 pub(crate) use worktree::task_start_with_progress;
 pub use worktree::{
@@ -234,6 +235,17 @@ pub(crate) fn resolved_snapshot_ownership_rows(
     workspace::snapshot_ownership_rows(repo, snapshot_ids)
 }
 use worktree::*;
+
+// Binary DB v0 stores the selected publication authority contextually. The
+// configured alias remains a transport concern and is intentionally not
+// persisted in Local Task or Change records.
+const CONTEXTUAL_PUBLICATION_REMOTE_NAME: &str = "origin";
+
+fn contextual_publication_remote_name(selected_remote_name: &str) -> Result<&'static str, String> {
+    normalized_text(Some(selected_remote_name))
+        .ok_or_else(|| "Publication requires a selected configured Remote.".to_string())?;
+    Ok(CONTEXTUAL_PUBLICATION_REMOTE_NAME)
+}
 
 #[cfg(test)]
 mod tests;

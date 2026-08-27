@@ -759,7 +759,7 @@ where
         "recommended_action": verdict_obj.get("recommended_action").cloned().unwrap_or(JsonValue::Null),
         "audit_source": {
             "mode": "local",
-            "detail": "Task audit used only local Task, Change, Line, and Snapshot authority.",
+            "detail": "Task audit read only local Task, Change, Line, and Snapshot data.",
             "remote_task_missing": false,
         },
         "target": {
