@@ -67,15 +67,10 @@ assert.ok(
   source.includes('landed.next_action?.command !== `ait task finish ${changeRef} --local`'),
   "partial Task closeout must bind its exact returned recovery command",
 );
-assert.ok(
-  source.includes(`          "worktree",
-          "remove",
-          worktreeName,
-          "--delete-path",
-          "--force",
-          "--yes",
-          "--json",`),
-  "Windows partial closeout must remove only the exact completed Task worktree",
+assert.equal(
+  source.includes('label: "candidate completed Windows worktree removal"'),
+  false,
+  "partial closeout must not require an already-removed worktree registration",
 );
 assert.ok(
   source.includes('["task", "finish", changeRef, "--local", "--json"]'),

@@ -687,8 +687,8 @@ function firstLand(recorder, aitSpec, root, expectedText, priorState = null) {
     // Finish consumes the bound worktree's Line head, so it must start
     // inside that worktree; Windows cannot remove a directory that is still
     // a process working directory, so the closeout reports partial with
-    // exit 2. The closeout contract's idempotent_phase_resume finishes the exact
-    // closeout from the repository root, where no process holds the
+    // exit 2. The closeout contract returns the exact Change identity for an
+    // idempotent resume from the Repository root, where no process holds the
     // worktree.
     const changeRef = landed.change_ref;
     if (!/^LT-[0-9]{4,}\/C-[0-9]{2,}$/.test(changeRef ?? "")) {
@@ -696,34 +696,6 @@ function firstLand(recorder, aitSpec, root, expectedText, priorState = null) {
     }
     if (landed.next_action?.command !== `ait task finish ${changeRef} --local`) {
       fail("partial candidate Task finish returned an inconsistent closeout command");
-    }
-    if (process.platform === "win32") {
-      // The first finish is authoritative but cannot delete its own current
-      // directory on Windows. Remove that exact completed Task worktree from
-      // the Repository root after the child exits, then resume closeout with
-      // the Change identity returned by the CLI contract. This preserves the
-      // landed Snapshot and Plan result while avoiding a second land.
-      const worktreeName = started.worktree_name;
-      if (!/^[a-z0-9][a-z0-9._-]*$/.test(worktreeName ?? "")) {
-        fail("candidate task start returned no exact removable worktree name");
-      }
-      jsonSpec(
-        recorder,
-        aitSpec,
-        [
-          "worktree",
-          "remove",
-          worktreeName,
-          "--delete-path",
-          "--force",
-          "--yes",
-          "--json",
-        ],
-        { cwd: root, label: "candidate completed Windows worktree removal" },
-      );
-      if (existsSync(worktree)) {
-        fail("candidate completed Windows worktree removal retained its path");
-      }
     }
     landed = jsonSpec(
       recorder,
