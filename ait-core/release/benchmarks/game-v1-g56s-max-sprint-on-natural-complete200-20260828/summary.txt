@@ -1,0 +1,43 @@
+# AIT vs Git: 200-admitted-session game-development benchmark
+
+This result accompanies AIT Native 1.1.0. It measures GPT-5.6 Sol at max reasoning effort on five frozen game-development workloads, with 20 statistically admitted paired attempts per workload and one fresh model session per lane.
+
+## Result
+
+- Workload-median token saving: **36.28%**.
+- Aggregate bootstrap 95% confidence interval: **28.26% to 41.83%**.
+- Workload-median elapsed-time saving: **15.22%**.
+- Raw provider-total tokens: **45,432,262 AIT** versus **71,238,660 Git**, a descriptive **36.23%** reduction.
+- Effective functional acceptance: **100/100 AIT** versus **100/100 Git**; all 200 statistically admitted sessions were protocol-valid and accepted.
+- Evidence history: **203 executed sessions**; **3 session(s) were statistically excluded**.
+- Source-protocol claim eligible: **false**.
+- Current policy: `game-development-2026-08-29.36` (`owner_authorized_recovery_adjudication_and_statistical_replacement` evaluation); criteria met: **true**.
+- Effective recovery-policy-qualified claim eligible: **true**.
+
+The primary metric divides each workload and mode's statistically admitted provider tokens by accepted outcomes, then takes the median of the five workload-level AIT savings. The bootstrap interval resamples admitted paired attempts within each workload and aggregates their workload medians over 2,000 deterministic resamples. Raw pooled totals are descriptive and do not replace the workload-balanced primary metric.
+
+The measured AIT subject was source Snapshot `SNP-46C179E4EE2D` with executable SHA-256 `722843d8355a86c6148ce2d520be202a4775a2a558911183d4611b68273c78e9`. The campaign runner SHA-256 was `ff1b4b8903c80fb46f24f768bcfdf8ab71f0d1839d75f2c1dc799bfb615db43a`. AIT Native 1.1.0 publishes this immutable result and the corrected report boundary without relabeling later source bytes as the measured subject.
+
+## Workload results
+
+| Workload | AIT effective tokens | Git effective tokens | Saving | Bootstrap 95% CI | AIT/Git acceptance |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `GD-01` | 254455.2 | 363422.4 | 29.98% | 15.11% to 41.62% | 20/20 |
+| `GD-02` | 286894.6 | 454931.1 | 36.94% | 26.82% to 46.31% | 20/20 |
+| `GD-03` | 355256.8 | 557551.1 | 36.28% | 22.92% to 47.19% | 20/20 |
+| `GD-04` | 636606.8 | 904065.0 | 29.58% | 21.19% to 37.73% | 20/20 |
+| `GD-05` | 738399.7 | 1281963.4 | 42.40% | 34.53% to 49.32% | 20/20 |
+
+## Quality and scope
+
+The original `game-v1-g56s-max-sprint-on-natural-complete200-20260828-b006-gd-05-ait` candidate remains retained and disclosed as a valid functional failure with source-summary digest `sha256:ff7ac57f60d93a4fd5d8c9da8aa1a678ef2944329e84dc94a8b336ee867333fc`. Under the exact repository-owner-authorized transparent replacement policy, one same-pinned AIT lane `game-v1-g56s-max-sprint-on-natural-complete200-20260828-b006-gd-05-ait-replacement-01` was executed once and admitted only after every original evaluator, browser, workflow, transcript, environment, and usage gate passed. Its summary digest is `sha256:984b13d252bca52663457d8f1eef089fd92a0faa3712040d666e62cbf941e99f` and replacement-runner SHA-256 is `sha256:b6781894d2278dedfe2e5c61f5aeac4ec6df614a632f2c1da4699efaf5852f75`. The earlier executor-infrastructure recovery, host-shutdown recovery, and digest-linked recovered-spawn adjudication remain separately disclosed and unchanged. This exact replacement does not erase the failure or authorize retries for other functional outcomes.
+
+The finding is limited to these fixtures, this model revision, max reasoning effort, provider-default fresh sessions, and the recorded local workflows. It does not establish that AIT always outperforms Git, generalize to other tasks, models, or environments, or measure high-concurrency execution. Both treatments had symmetric read-only repository inspection allowances.
+
+## Audit files
+
+- `result.json` contains the aggregate, workload, acceptance, exclusion, recovery or replacement, and source-digest record.
+- `runs.json` contains 200 statistically admitted rows plus every disclosed excluded source row.
+- `SHA256SUMS` checksums the public files.
+
+The frozen source protocol, recovery or replacement policy, and workload fixtures are versioned with the AIT source. Private executor event streams and host-specific absolute paths are intentionally excluded.

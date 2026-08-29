@@ -1,0 +1,2054 @@
+{
+  "contract": "ait-agent-token-benchmark-publication/v1",
+  "release_version": "1.1.0",
+  "campaign_id": "game-v1-g56s-max-sprint-on-natural-complete200-20260828",
+  "protocol_revision": "game-development-2026-08-28.32",
+  "campaign_scope": "complete",
+  "accounting_profile": "steady_state_task_cost",
+  "model": {
+    "provider": "openai",
+    "model_id": "gpt-5.6-sol",
+    "model_revision": "gpt-5.6-sol-provider-alias-observed-2026-08-23",
+    "reasoning_effort": "max"
+  },
+  "measured_product_snapshot": "SNP-46C179E4EE2D",
+  "measured_ait_executable_sha256": "722843d8355a86c6148ce2d520be202a4775a2a558911183d4611b68273c78e9",
+  "campaign_runner_sha256": "ff1b4b8903c80fb46f24f768bcfdf8ab71f0d1839d75f2c1dc799bfb615db43a",
+  "cache_class": "provider_default_fresh_ephemeral_session",
+  "network_policy": "disabled_except_loopback",
+  "workload_ids": [
+    "GD-01",
+    "GD-02",
+    "GD-03",
+    "GD-04",
+    "GD-05"
+  ],
+  "modes": [
+    "git_linear_single_session",
+    "ait_linear_single_session"
+  ],
+  "attempts_per_cell": 20,
+  "bootstrap_resamples": 2000,
+  "scheduled_run_count": 200,
+  "observed_run_count": 200,
+  "executed_evidence_run_count": 203,
+  "statistically_excluded_run_count": 3,
+  "valid_run_count": 200,
+  "invalid_run_count": 0,
+  "accepted_run_count": 200,
+  "accepted_by_mode": {
+    "ait_linear_single_session": 100,
+    "git_linear_single_session": 100
+  },
+  "provider_total_tokens_by_mode": {
+    "ait_linear_single_session": 45432262,
+    "git_linear_single_session": 71238660
+  },
+  "raw_provider_total_token_savings_percent": 36.22527150286095,
+  "aggregate_median_token_savings_percent": 36.282647455991025,
+  "aggregate_token_savings_bootstrap_ci95": [
+    28.25593354118225,
+    41.831010665253146
+  ],
+  "aggregate_median_elapsed_savings_percent": 15.224249386299327,
+  "pair_admission_policy": "exact_protocol_valid_pairs_with_transparent_infrastructure_and_host_shutdown_whole_pair_recovery_plus_digest_linked_recovered_spawn_adjudication_and_single_lane_statistical_replacement",
+  "workload_results": [
+    {
+      "workload_id": "GD-01",
+      "git_effective_tokens": 363422.4,
+      "ait_effective_tokens": 254455.2,
+      "token_savings_percent": 29.98362236339862,
+      "token_savings_bootstrap_ci95": [
+        15.108381247944559,
+        41.62013358674855
+      ],
+      "paired_valid_attempt_count": 20,
+      "git_effective_elapsed_ms": 127444.05,
+      "ait_effective_elapsed_ms": 108041.65,
+      "elapsed_savings_percent": 15.224249386299327,
+      "git_effective_completed_file_change_items": 1.2,
+      "ait_effective_completed_file_change_items": 2.1,
+      "completed_file_change_reduction_percent": -75.00000000000003,
+      "git_effective_rejected_apply_patch_attempts": 0.05,
+      "ait_effective_rejected_apply_patch_attempts": 0.25,
+      "rejected_apply_patch_reduction_percent": -400.0,
+      "git_effective_apply_patch_attempts": 1.25,
+      "ait_effective_apply_patch_attempts": 2.35,
+      "apply_patch_attempt_reduction_percent": -88.00000000000001,
+      "git_acceptance_rate": 1.0,
+      "ait_acceptance_rate": 1.0,
+      "acceptance_rate_deficit_percentage_points": 0.0
+    },
+    {
+      "workload_id": "GD-02",
+      "git_effective_tokens": 454931.1,
+      "ait_effective_tokens": 286894.6,
+      "token_savings_percent": 36.93669217162775,
+      "token_savings_bootstrap_ci95": [
+        26.823285211592726,
+        46.311247351575595
+      ],
+      "paired_valid_attempt_count": 20,
+      "git_effective_elapsed_ms": 190722.55,
+      "ait_effective_elapsed_ms": 174447.85,
+      "elapsed_savings_percent": 8.533180790630146,
+      "git_effective_completed_file_change_items": 1.3,
+      "ait_effective_completed_file_change_items": 2.45,
+      "completed_file_change_reduction_percent": -88.46153846153845,
+      "git_effective_rejected_apply_patch_attempts": 0.0,
+      "ait_effective_rejected_apply_patch_attempts": 0.0,
+      "rejected_apply_patch_reduction_percent": null,
+      "git_effective_apply_patch_attempts": 1.3,
+      "ait_effective_apply_patch_attempts": 2.45,
+      "apply_patch_attempt_reduction_percent": -88.46153846153845,
+      "git_acceptance_rate": 1.0,
+      "ait_acceptance_rate": 1.0,
+      "acceptance_rate_deficit_percentage_points": 0.0
+    },
+    {
+      "workload_id": "GD-03",
+      "git_effective_tokens": 557551.1,
+      "ait_effective_tokens": 355256.8,
+      "token_savings_percent": 36.282647455991025,
+      "token_savings_bootstrap_ci95": [
+        22.9246165019599,
+        47.18990437290247
+      ],
+      "paired_valid_attempt_count": 20,
+      "git_effective_elapsed_ms": 234242.05,
+      "ait_effective_elapsed_ms": 184306.45,
+      "elapsed_savings_percent": 21.317948677447106,
+      "git_effective_completed_file_change_items": 1.35,
+      "ait_effective_completed_file_change_items": 2.4,
+      "completed_file_change_reduction_percent": -77.77777777777777,
+      "git_effective_rejected_apply_patch_attempts": 0.1,
+      "ait_effective_rejected_apply_patch_attempts": 0.0,
+      "rejected_apply_patch_reduction_percent": 100.0,
+      "git_effective_apply_patch_attempts": 1.45,
+      "ait_effective_apply_patch_attempts": 2.4,
+      "apply_patch_attempt_reduction_percent": -65.51724137931035,
+      "git_acceptance_rate": 1.0,
+      "ait_acceptance_rate": 1.0,
+      "acceptance_rate_deficit_percentage_points": 0.0
+    },
+    {
+      "workload_id": "GD-04",
+      "git_effective_tokens": 904065.0,
+      "ait_effective_tokens": 636606.85,
+      "token_savings_percent": 29.583951375177676,
+      "token_savings_bootstrap_ci95": [
+        21.18625989070609,
+        37.734451925771715
+      ],
+      "paired_valid_attempt_count": 20,
+      "git_effective_elapsed_ms": 439002.95,
+      "ait_effective_elapsed_ms": 417492.85,
+      "elapsed_savings_percent": 4.89976206310232,
+      "git_effective_completed_file_change_items": 3.65,
+      "ait_effective_completed_file_change_items": 5.45,
+      "completed_file_change_reduction_percent": -49.315068493150704,
+      "git_effective_rejected_apply_patch_attempts": 0.5,
+      "ait_effective_rejected_apply_patch_attempts": 0.6,
+      "rejected_apply_patch_reduction_percent": -19.999999999999996,
+      "git_effective_apply_patch_attempts": 4.15,
+      "ait_effective_apply_patch_attempts": 6.05,
+      "apply_patch_attempt_reduction_percent": -45.783132530120476,
+      "git_acceptance_rate": 1.0,
+      "ait_acceptance_rate": 1.0,
+      "acceptance_rate_deficit_percentage_points": 0.0
+    },
+    {
+      "workload_id": "GD-05",
+      "git_effective_tokens": 1281963.4,
+      "ait_effective_tokens": 738399.65,
+      "token_savings_percent": 42.400878995453375,
+      "token_savings_bootstrap_ci95": [
+        34.52759700486259,
+        49.32238437068126
+      ],
+      "paired_valid_attempt_count": 20,
+      "git_effective_elapsed_ms": 700890.9,
+      "ait_effective_elapsed_ms": 531204.0,
+      "elapsed_savings_percent": 24.210173081145726,
+      "git_effective_completed_file_change_items": 5.6,
+      "ait_effective_completed_file_change_items": 5.55,
+      "completed_file_change_reduction_percent": 0.8928571428571397,
+      "git_effective_rejected_apply_patch_attempts": 0.3,
+      "ait_effective_rejected_apply_patch_attempts": 0.05,
+      "rejected_apply_patch_reduction_percent": 83.33333333333333,
+      "git_effective_apply_patch_attempts": 5.9,
+      "ait_effective_apply_patch_attempts": 5.6,
+      "apply_patch_attempt_reduction_percent": 5.084745762711873,
+      "git_acceptance_rate": 1.0,
+      "ait_acceptance_rate": 1.0,
+      "acceptance_rate_deficit_percentage_points": 0.0
+    }
+  ],
+  "group_results": [
+    {
+      "workload_id": "GD-01",
+      "mode": "ait_linear_single_session",
+      "attempted_count": 20,
+      "valid_count": 20,
+      "accepted_count": 20,
+      "invalid_count": 0,
+      "acceptance_rate": 1.0,
+      "total_valid_attempt_tokens": 5089104,
+      "effective_tokens_per_accepted_task": 254455.2,
+      "valid_attempt_token_distribution": {
+        "sample_count": 20,
+        "min": 192778.0,
+        "p50": 235138.5,
+        "p95": 327134.6000000001,
+        "max": 474111.0,
+        "median_absolute_deviation": 15218.5,
+        "p50_bootstrap_ci95": [
+          227189.5,
+          255900.86249999987
+        ],
+        "p95_bootstrap_ci95": [
+          266056.2,
+          474111.0
+        ],
+        "quantile_method": "R-7 linear interpolation",
+        "bootstrap_resamples": 2000
+      },
+      "input_token_distribution": {
+        "sample_count": 20,
+        "min": 189569.0,
+        "p50": 231451.5,
+        "p95": 322363.9000000001,
+        "max": 467446.0,
+        "median_absolute_deviation": 15792.0,
+        "p50_bootstrap_ci95": [
+          223105.5,
+          252196.5
+        ],
+        "p95_bootstrap_ci95": [
+          261100.0,
+          467446.0
+        ],
+        "quantile_method": "R-7 linear interpolation",
+        "bootstrap_resamples": 2000
+      },
+      "cached_input_token_distribution": {
+        "sample_count": 20,
+        "min": 144896.0,
+        "p50": 198400.0,
+        "p95": 276684.8000000001,
+        "max": 431360.0,
+        "median_absolute_deviation": 9088.0,
+        "p50_bootstrap_ci95": [
+          192896.0,
+          207488.0
+        ],
+        "p95_bootstrap_ci95": [
+          211852.80000000002,
+          431360.0
+        ],
+        "quantile_method": "R-7 linear interpolation",
+        "bootstrap_resamples": 2000
+      },
+      "output_token_distribution": {
+        "sample_count": 20,
+        "min": 3054.0,
+        "p50": 4308.5,
+        "p95": 5262.800000000001,
+        "max": 6665.0,
+        "median_absolute_deviation": 363.5,
+        "p50_bootstrap_ci95": [
+          3920.0,
+          4493.549999999999
+        ],
+        "p95_bootstrap_ci95": [
+          4671.0,
+          6665.0
+        ],
+        "quantile_method": "R-7 linear interpolation",
+        "bootstrap_resamples": 2000
+      },
+      "reasoning_token_distribution": {
+        "sample_count": 20,
+        "min": 1285.0,
+        "p50": 1864.0,
+        "p95": 2669.8,
+        "max": 2761.0,
+        "median_absolute_deviation": 351.5,
+        "p50_bootstrap_ci95": [
+          1709.0,
+          2262.012499999997
+        ],
+        "p95_bootstrap_ci95": [
+          2372.0,
+          2761.0
+        ],
+        "quantile_method": "R-7 linear interpolation",
+        "bootstrap_resamples": 2000
+      },
+      "elapsed_ms_distribution": {
+        "sample_count": 20,
+        "min": 84752.0,
+        "p50": 104351.5,
+        "p95": 135207.25000000003,
+        "max": 159741.0,
+        "median_absolute_deviation": 9024.0,
+        "p50_bootstrap_ci95": [
+          98925.5,
+          111445.0
+        ],
+        "p95_bootstrap_ci95": [
+          114691.05000000003,
+          159741.0
+        ],
+        "quantile_method": "R-7 linear interpolation",
+        "bootstrap_resamples": 2000
+      },
+      "completed_file_change_item_distribution": {
+        "sample_count": 20,
+        "min": 2.0,
+        "p50": 2.0,
+        "p95": 3.0,
+        "max": 3.0,
+        "median_absolute_deviation": 0.0,
+        "p50_bootstrap_ci95": [
+          2.0,
+          2.0
+        ],
+        "p95_bootstrap_ci95": [
+          2.0,
+          3.0
+        ],
+        "quantile_method": "R-7 linear interpolation",
+        "bootstrap_resamples": 2000
+      },
+      "rejected_apply_patch_attempt_distribution": {
+        "sample_count": 20,
+        "min": 0.0,
+        "p50": 0.0,
+        "p95": 1.0,
+        "max": 1.0,
+        "median_absolute_deviation": 0.0,
+        "p50_bootstrap_ci95": [
+          0.0,
+          0.0
+        ],
+        "p95_bootstrap_ci95": [
+          0.05000000000000071,
+          1.0
+        ],
+        "quantile_method": "R-7 linear interpolation",
+        "bootstrap_resamples": 2000
+      },
+      "apply_patch_attempt_distribution": {
+        "sample_count": 20,
+        "min": 2.0,
+        "p50": 2.0,
+        "p95": 3.0500000000000007,
+        "max": 4.0,
+        "median_absolute_deviation": 0.0,
+        "p50_bootstrap_ci95": [
+          2.0,
+          2.5
+        ],
+        "p95_bootstrap_ci95": [
+          3.0,
+          4.0
+        ],
+        "quantile_method": "R-7 linear interpolation",
+        "bootstrap_resamples": 2000
+      }
+    },
+    {
+      "workload_id": "GD-01",
+      "mode": "git_linear_single_session",
+      "attempted_count": 20,
+      "valid_count": 20,
+      "accepted_count": 20,
+      "invalid_count": 0,
+      "acceptance_rate": 1.0,
+      "total_valid_attempt_tokens": 7268448,
+      "effective_tokens_per_accepted_task": 363422.4,
+      "valid_attempt_token_distribution": {
+        "sample_count": 20,
+        "min": 189250.0,
+        "p50": 348228.5,
+        "p95": 576914.1,
+        "max": 577809.0,
+        "median_absolute_deviation": 95734.0,
+        "p50_bootstrap_ci95": [
+          259029.0,
+          421441.0
+        ],
+        "p95_bootstrap_ci95": [
+          496711.75000000006,
+          577809.0
+        ],
+        "quantile_method": "R-7 linear interpolation",
+        "bootstrap_resamples": 2000
+      },
+      "input_token_distribution": {
+        "sample_count": 20,
+        "min": 185882.0,
+        "p50": 342979.5,
+        "p95": 570351.95,
+        "max": 571168.0,
+        "median_absolute_deviation": 95114.5,
+        "p50_bootstrap_ci95": [
+          253969.0,
+          401929.0
+        ],
+        "p95_bootstrap_ci95": [
+          424073.8000000001,
+          571168.0
+        ],
+        "quantile_method": "R-7 linear interpolation",
+        "bootstrap_resamples": 2000
+      },
+      "cached_input_token_distribution": {
+        "sample_count": 20,
+        "min": 142336.0,
+        "p50": 307712.0,
+        "p95": 533811.2,
+        "max": 534784.0,
+        "median_absolute_deviation": 89344.0,
+        "p50_bootstrap_ci95": [
+          221312.0,
+          357760.0
+        ],
+        "p95_bootstrap_ci95": [
+          412403.20000000007,
+          534784.0
+        ],
+        "quantile_method": "R-7 linear interpolation",
+        "bootstrap_resamples": 2000
+      },
+      "output_token_distribution": {
+        "sample_count": 20,
+        "min": 3293.0,
+        "p50": 5238.0,
+        "p95": 6642.55,
+        "max": 6672.0,
+        "median_absolute_deviation": 969.0,
+        "p50_bootstrap_ci95": [
+          4629.5,
+          5956.5
+        ],
+        "p95_bootstrap_ci95": [
+          6305.650000000001,
+          6672.0
+        ],
+        "quantile_method": "R-7 linear interpolation",
+        "bootstrap_resamples": 2000
+      },
+      "reasoning_token_distribution": {
+        "sample_count": 20,
+        "min": 1214.0,
+        "p50": 1829.5,
+        "p95": 2386.05,
+        "max": 2482.0,
+        "median_absolute_deviation": 206.0,
+        "p50_bootstrap_ci95": [
+          1681.5,
+          2013.0
+        ],
+        "p95_bootstrap_ci95": [
+          2076.85,
+          2482.0
+        ],
+        "quantile_method": "R-7 linear interpolation",
+        "bootstrap_resamples": 2000
+      },
+      "elapsed_ms_distribution": {
+        "sample_count": 20,
+        "min": 87305.0,
+        "p50": 130691.5,
+        "p95": 170835.35,
+        "max": 173008.0,
+        "median_absolute_deviation": 27836.5,
+        "p50_bootstrap_ci95": [
+          103881.5,
+          147231.0
+        ],
+        "p95_bootstrap_ci95": [
+          157790.2,
+          173008.0
+        ],
+        "quantile_method": "R-7 linear interpolation",
+        "bootstrap_resamples": 2000
+      },
+      "completed_file_change_item_distribution": {
+        "sample_count": 20,
+        "min": 1.0,
+        "p50": 1.0,
+        "p95": 2.0,
+        "max": 2.0,
+        "median_absolute_deviation": 0.0,
+        "p50_bootstrap_ci95": [
+          1.0,
+          1.0
+        ],
+        "p95_bootstrap_ci95": [
+          1.0500000000000007,
+          2.0
+        ],
+        "quantile_method": "R-7 linear interpolation",
+        "bootstrap_resamples": 2000
+      },
+      "rejected_apply_patch_attempt_distribution": {
+        "sample_count": 20,
+        "min": 0.0,
+        "p50": 0.0,
+        "p95": 0.05000000000000071,
+        "max": 1.0,
+        "median_absolute_deviation": 0.0,
+        "p50_bootstrap_ci95": [
+          0.0,
+          0.0
+        ],
+        "p95_bootstrap_ci95": [
+          0.0,
+          1.0
+        ],
+        "quantile_method": "R-7 linear interpolation",
+        "bootstrap_resamples": 2000
+      },
+      "apply_patch_attempt_distribution": {
+        "sample_count": 20,
+        "min": 1.0,
+        "p50": 1.0,
+        "p95": 2.0,
+        "max": 2.0,
+        "median_absolute_deviation": 0.0,
+        "p50_bootstrap_ci95": [
+          1.0,
+          1.0
+        ],
+        "p95_bootstrap_ci95": [
+          2.0,
+          2.0
+        ],
+        "quantile_method": "R-7 linear interpolation",
+        "bootstrap_resamples": 2000
+      }
+    },
+    {
+      "workload_id": "GD-02",
+      "mode": "ait_linear_single_session",
+      "attempted_count": 20,
+      "valid_count": 20,
+      "accepted_count": 20,
+      "invalid_count": 0,
+      "acceptance_rate": 1.0,
+      "total_valid_attempt_tokens": 5737892,
+      "effective_tokens_per_accepted_task": 286894.6,
+      "valid_attempt_token_distribution": {
+        "sample_count": 20,
+        "min": 204720.0,
+        "p50": 275911.5,
+        "p95": 353451.60000000003,
+        "max": 422072.0,
+        "median_absolute_deviation": 32808.5,
+        "p50_bootstrap_ci95": [
+          260710.725,
+          313675.0
+        ],
+        "p95_bootstrap_ci95": [
+          334114.0,
+          422072.0
+        ],
+        "quantile_method": "R-7 linear interpolation",
+        "bootstrap_resamples": 2000
+      },
+      "input_token_distribution": {
+        "sample_count": 20,
+        "min": 199593.0,
+        "p50": 269367.5,
+        "p95": 346131.45000000007,
+        "max": 412963.0,
+        "median_absolute_deviation": 32748.0,
+        "p50_bootstrap_ci95": [
+          254367.0,
+          305905.5
+        ],
+        "p95_bootstrap_ci95": [
+          327178.0,
+          412963.0
+        ],
+        "quantile_method": "R-7 linear interpolation",
+        "bootstrap_resamples": 2000
+      },
+      "cached_input_token_distribution": {
+        "sample_count": 20,
+        "min": 173824.0,
+        "p50": 225152.0,
+        "p95": 313164.80000000005,
+        "max": 358400.0,
+        "median_absolute_deviation": 24064.0,
+        "p50_bootstrap_ci95": [
+          211200.0,
+          262016.0
+        ],
+        "p95_bootstrap_ci95": [
+          273326.72000000003,
+          358400.0
+        ],
+        "quantile_method": "R-7 linear interpolation",
+        "bootstrap_resamples": 2000
+      },
+      "output_token_distribution": {
+        "sample_count": 20,
+        "min": 5127.0,
+        "p50": 6798.0,
+        "p95": 9122.800000000001,
+        "max": 9385.0,
+        "median_absolute_deviation": 566.5,
+        "p50_bootstrap_ci95": [
+          6475.0,
+          7366.0
+        ],
+        "p95_bootstrap_ci95": [
+          7436.550000000001,
+          9385.0
+        ],
+        "quantile_method": "R-7 linear interpolation",
+        "bootstrap_resamples": 2000
+      },
+      "reasoning_token_distribution": {
+        "sample_count": 20,
+        "min": 2283.0,
+        "p50": 3354.5,
+        "p95": 4880.950000000001,
+        "max": 5754.0,
+        "median_absolute_deviation": 384.5,
+        "p50_bootstrap_ci95": [
+          3032.0,
+          3732.5
+        ],
+        "p95_bootstrap_ci95": [
+          3781.0,
+          5754.0
+        ],
+        "quantile_method": "R-7 linear interpolation",
+        "bootstrap_resamples": 2000
+      },
+      "elapsed_ms_distribution": {
+        "sample_count": 20,
+        "min": 115820.0,
+        "p50": 156506.0,
+        "p95": 217896.90000000023,
+        "max": 513345.0,
+        "median_absolute_deviation": 15324.5,
+        "p50_bootstrap_ci95": [
+          143648.5,
+          167828.5
+        ],
+        "p95_bootstrap_ci95": [
+          173192.65000000002,
+          513345.0
+        ],
+        "quantile_method": "R-7 linear interpolation",
+        "bootstrap_resamples": 2000
+      },
+      "completed_file_change_item_distribution": {
+        "sample_count": 20,
+        "min": 2.0,
+        "p50": 2.0,
+        "p95": 3.0,
+        "max": 3.0,
+        "median_absolute_deviation": 0.0,
+        "p50_bootstrap_ci95": [
+          2.0,
+          3.0
+        ],
+        "p95_bootstrap_ci95": [
+          3.0,
+          3.0
+        ],
+        "quantile_method": "R-7 linear interpolation",
+        "bootstrap_resamples": 2000
+      },
+      "rejected_apply_patch_attempt_distribution": {
+        "sample_count": 20,
+        "min": 0.0,
+        "p50": 0.0,
+        "p95": 0.0,
+        "max": 0.0,
+        "median_absolute_deviation": 0.0,
+        "p50_bootstrap_ci95": [
+          0.0,
+          0.0
+        ],
+        "p95_bootstrap_ci95": [
+          0.0,
+          0.0
+        ],
+        "quantile_method": "R-7 linear interpolation",
+        "bootstrap_resamples": 2000
+      },
+      "apply_patch_attempt_distribution": {
+        "sample_count": 20,
+        "min": 2.0,
+        "p50": 2.0,
+        "p95": 3.0,
+        "max": 3.0,
+        "median_absolute_deviation": 0.0,
+        "p50_bootstrap_ci95": [
+          2.0,
+          3.0
+        ],
+        "p95_bootstrap_ci95": [
+          3.0,
+          3.0
+        ],
+        "quantile_method": "R-7 linear interpolation",
+        "bootstrap_resamples": 2000
+      }
+    },
+    {
+      "workload_id": "GD-02",
+      "mode": "git_linear_single_session",
+      "attempted_count": 20,
+      "valid_count": 20,
+      "accepted_count": 20,
+      "invalid_count": 0,
+      "acceptance_rate": 1.0,
+      "total_valid_attempt_tokens": 9098622,
+      "effective_tokens_per_accepted_task": 454931.1,
+      "valid_attempt_token_distribution": {
+        "sample_count": 20,
+        "min": 282894.0,
+        "p50": 410372.5,
+        "p95": 689143.8,
+        "max": 798466.0,
+        "median_absolute_deviation": 114779.5,
+        "p50_bootstrap_ci95": [
+          334593.5,
+          558746.5
+        ],
+        "p95_bootstrap_ci95": [
+          588164.6000000001,
+          798466.0
+        ],
+        "quantile_method": "R-7 linear interpolation",
+        "bootstrap_resamples": 2000
+      },
+      "input_token_distribution": {
+        "sample_count": 20,
+        "min": 276420.0,
+        "p50": 403217.5,
+        "p95": 679170.0000000001,
+        "max": 787603.0,
+        "median_absolute_deviation": 114882.0,
+        "p50_bootstrap_ci95": [
+          327289.0,
+          549033.0
+        ],
+        "p95_bootstrap_ci95": [
+          578977.55,
+          787603.0
+        ],
+        "quantile_method": "R-7 linear interpolation",
+        "bootstrap_resamples": 2000
+      },
+      "cached_input_token_distribution": {
+        "sample_count": 20,
+        "min": 247040.0,
+        "p50": 365184.0,
+        "p95": 627878.4,
+        "max": 708864.0,
+        "median_absolute_deviation": 111744.0,
+        "p50_bootstrap_ci95": [
+          292224.0,
+          499840.0
+        ],
+        "p95_bootstrap_ci95": [
+          536069.1200000001,
+          708864.0
+        ],
+        "quantile_method": "R-7 linear interpolation",
+        "bootstrap_resamples": 2000
+      },
+      "output_token_distribution": {
+        "sample_count": 20,
+        "min": 5801.0,
+        "p50": 8215.0,
+        "p95": 10281.6,
+        "max": 10863.0,
+        "median_absolute_deviation": 1158.5,
+        "p50_bootstrap_ci95": [
+          7215.0,
+          9106.5
+        ],
+        "p95_bootstrap_ci95": [
+          9927.0,
+          10863.0
+        ],
+        "quantile_method": "R-7 linear interpolation",
+        "bootstrap_resamples": 2000
+      },
+      "reasoning_token_distribution": {
+        "sample_count": 20,
+        "min": 1702.0,
+        "p50": 3690.0,
+        "p95": 4631.65,
+        "max": 4701.0,
+        "median_absolute_deviation": 602.5,
+        "p50_bootstrap_ci95": [
+          3123.0,
+          4242.0
+        ],
+        "p95_bootstrap_ci95": [
+          4265.05,
+          4701.0
+        ],
+        "quantile_method": "R-7 linear interpolation",
+        "bootstrap_resamples": 2000
+      },
+      "elapsed_ms_distribution": {
+        "sample_count": 20,
+        "min": 129952.0,
+        "p50": 184201.0,
+        "p95": 263948.7,
+        "max": 269206.0,
+        "median_absolute_deviation": 31833.0,
+        "p50_bootstrap_ci95": [
+          172169.5125,
+          211923.5
+        ],
+        "p95_bootstrap_ci95": [
+          221300.7,
+          269206.0
+        ],
+        "quantile_method": "R-7 linear interpolation",
+        "bootstrap_resamples": 2000
+      },
+      "completed_file_change_item_distribution": {
+        "sample_count": 20,
+        "min": 1.0,
+        "p50": 1.0,
+        "p95": 2.0,
+        "max": 2.0,
+        "median_absolute_deviation": 0.0,
+        "p50_bootstrap_ci95": [
+          1.0,
+          1.5
+        ],
+        "p95_bootstrap_ci95": [
+          2.0,
+          2.0
+        ],
+        "quantile_method": "R-7 linear interpolation",
+        "bootstrap_resamples": 2000
+      },
+      "rejected_apply_patch_attempt_distribution": {
+        "sample_count": 20,
+        "min": 0.0,
+        "p50": 0.0,
+        "p95": 0.0,
+        "max": 0.0,
+        "median_absolute_deviation": 0.0,
+        "p50_bootstrap_ci95": [
+          0.0,
+          0.0
+        ],
+        "p95_bootstrap_ci95": [
+          0.0,
+          0.0
+        ],
+        "quantile_method": "R-7 linear interpolation",
+        "bootstrap_resamples": 2000
+      },
+      "apply_patch_attempt_distribution": {
+        "sample_count": 20,
+        "min": 1.0,
+        "p50": 1.0,
+        "p95": 2.0,
+        "max": 2.0,
+        "median_absolute_deviation": 0.0,
+        "p50_bootstrap_ci95": [
+          1.0,
+          1.5
+        ],
+        "p95_bootstrap_ci95": [
+          2.0,
+          2.0
+        ],
+        "quantile_method": "R-7 linear interpolation",
+        "bootstrap_resamples": 2000
+      }
+    },
+    {
+      "workload_id": "GD-03",
+      "mode": "ait_linear_single_session",
+      "attempted_count": 20,
+      "valid_count": 20,
+      "accepted_count": 20,
+      "invalid_count": 0,
+      "acceptance_rate": 1.0,
+      "total_valid_attempt_tokens": 7105136,
+      "effective_tokens_per_accepted_task": 355256.8,
+      "valid_attempt_token_distribution": {
+        "sample_count": 20,
+        "min": 219652.0,
+        "p50": 307302.5,
+        "p95": 654316.7000000001,
+        "max": 691532.0,
+        "median_absolute_deviation": 43365.5,
+        "p50_bootstrap_ci95": [
+          280029.5,
+          357490.0
+        ],
+        "p95_bootstrap_ci95": [
+          397607.15,
+          691532.0
+        ],
+        "quantile_method": "R-7 linear interpolation",
+        "bootstrap_resamples": 2000
+      },
+      "input_token_distribution": {
+        "sample_count": 20,
+        "min": 214694.0,
+        "p50": 301266.0,
+        "p95": 642749.5,
+        "max": 676142.0,
+        "median_absolute_deviation": 44133.0,
+        "p50_bootstrap_ci95": [
+          273108.0,
+          348853.5
+        ],
+        "p95_bootstrap_ci95": [
+          387902.0,
+          676142.0
+        ],
+        "quantile_method": "R-7 linear interpolation",
+        "bootstrap_resamples": 2000
+      },
+      "cached_input_token_distribution": {
+        "sample_count": 20,
+        "min": 180736.0,
+        "p50": 244992.0,
+        "p95": 567987.2000000001,
+        "max": 600576.0,
+        "median_absolute_deviation": 47360.0,
+        "p50_bootstrap_ci95": [
+          234496.0,
+          316288.0
+        ],
+        "p95_bootstrap_ci95": [
+          350412.80000000005,
+          600576.0
+        ],
+        "quantile_method": "R-7 linear interpolation",
+        "bootstrap_resamples": 2000
+      },
+      "output_token_distribution": {
+        "sample_count": 20,
+        "min": 4630.0,
+        "p50": 7505.5,
+        "p95": 12289.200000000003,
+        "max": 15390.0,
+        "median_absolute_deviation": 1398.5,
+        "p50_bootstrap_ci95": [
+          6200.4125,
+          8523.0
+        ],
+        "p95_bootstrap_ci95": [
+          8803.0,
+          15390.0
+        ],
+        "quantile_method": "R-7 linear interpolation",
+        "bootstrap_resamples": 2000
+      },
+      "reasoning_token_distribution": {
+        "sample_count": 20,
+        "min": 2504.0,
+        "p50": 4620.0,
+        "p95": 7377.4000000000015,
+        "max": 9228.0,
+        "median_absolute_deviation": 821.0,
+        "p50_bootstrap_ci95": [
+          4007.0,
+          5340.5
+        ],
+        "p95_bootstrap_ci95": [
+          5525.850000000003,
+          9228.0
+        ],
+        "quantile_method": "R-7 linear interpolation",
+        "bootstrap_resamples": 2000
+      },
+      "elapsed_ms_distribution": {
+        "sample_count": 20,
+        "min": 114525.0,
+        "p50": 176849.5,
+        "p95": 285887.4,
+        "max": 324104.0,
+        "median_absolute_deviation": 27289.5,
+        "p50_bootstrap_ci95": [
+          150628.0,
+          196721.0
+        ],
+        "p95_bootstrap_ci95": [
+          206620.05000000002,
+          324104.0
+        ],
+        "quantile_method": "R-7 linear interpolation",
+        "bootstrap_resamples": 2000
+      },
+      "completed_file_change_item_distribution": {
+        "sample_count": 20,
+        "min": 2.0,
+        "p50": 2.0,
+        "p95": 4.0,
+        "max": 4.0,
+        "median_absolute_deviation": 0.0,
+        "p50_bootstrap_ci95": [
+          2.0,
+          2.5
+        ],
+        "p95_bootstrap_ci95": [
+          3.0,
+          4.0
+        ],
+        "quantile_method": "R-7 linear interpolation",
+        "bootstrap_resamples": 2000
+      },
+      "rejected_apply_patch_attempt_distribution": {
+        "sample_count": 20,
+        "min": 0.0,
+        "p50": 0.0,
+        "p95": 0.0,
+        "max": 0.0,
+        "median_absolute_deviation": 0.0,
+        "p50_bootstrap_ci95": [
+          0.0,
+          0.0
+        ],
+        "p95_bootstrap_ci95": [
+          0.0,
+          0.0
+        ],
+        "quantile_method": "R-7 linear interpolation",
+        "bootstrap_resamples": 2000
+      },
+      "apply_patch_attempt_distribution": {
+        "sample_count": 20,
+        "min": 2.0,
+        "p50": 2.0,
+        "p95": 4.0,
+        "max": 4.0,
+        "median_absolute_deviation": 0.0,
+        "p50_bootstrap_ci95": [
+          2.0,
+          2.5
+        ],
+        "p95_bootstrap_ci95": [
+          3.0,
+          4.0
+        ],
+        "quantile_method": "R-7 linear interpolation",
+        "bootstrap_resamples": 2000
+      }
+    },
+    {
+      "workload_id": "GD-03",
+      "mode": "git_linear_single_session",
+      "attempted_count": 20,
+      "valid_count": 20,
+      "accepted_count": 20,
+      "invalid_count": 0,
+      "acceptance_rate": 1.0,
+      "total_valid_attempt_tokens": 11151022,
+      "effective_tokens_per_accepted_task": 557551.1,
+      "valid_attempt_token_distribution": {
+        "sample_count": 20,
+        "min": 249591.0,
+        "p50": 581835.5,
+        "p95": 843134.75,
+        "max": 864163.0,
+        "median_absolute_deviation": 147642.5,
+        "p50_bootstrap_ci95": [
+          421689.0,
+          673346.5
+        ],
+        "p95_bootstrap_ci95": [
+          693700.7000000001,
+          864163.0
+        ],
+        "quantile_method": "R-7 linear interpolation",
+        "bootstrap_resamples": 2000
+      },
+      "input_token_distribution": {
+        "sample_count": 20,
+        "min": 244265.0,
+        "p50": 570019.5,
+        "p95": 828314.5,
+        "max": 852093.0,
+        "median_absolute_deviation": 144520.5,
+        "p50_bootstrap_ci95": [
+          414409.0,
+          662888.5
+        ],
+        "p95_bootstrap_ci95": [
+          691939.0,
+          852093.0
+        ],
+        "quantile_method": "R-7 linear interpolation",
+        "bootstrap_resamples": 2000
+      },
+      "cached_input_token_distribution": {
+        "sample_count": 20,
+        "min": 197120.0,
+        "p50": 521728.0,
+        "p95": 778790.4,
+        "max": 803840.0,
+        "median_absolute_deviation": 137984.0,
+        "p50_bootstrap_ci95": [
+          373248.0,
+          594048.0
+        ],
+        "p95_bootstrap_ci95": [
+          649472.0,
+          803840.0
+        ],
+        "quantile_method": "R-7 linear interpolation",
+        "bootstrap_resamples": 2000
+      },
+      "output_token_distribution": {
+        "sample_count": 20,
+        "min": 5326.0,
+        "p50": 9453.5,
+        "p95": 13565.650000000001,
+        "max": 14965.0,
+        "median_absolute_deviation": 2585.0,
+        "p50_bootstrap_ci95": [
+          7967.0,
+          11657.5
+        ],
+        "p95_bootstrap_ci95": [
+          12106.75,
+          14965.0
+        ],
+        "quantile_method": "R-7 linear interpolation",
+        "bootstrap_resamples": 2000
+      },
+      "reasoning_token_distribution": {
+        "sample_count": 20,
+        "min": 3014.0,
+        "p50": 4704.5,
+        "p95": 8234.85,
+        "max": 8270.0,
+        "median_absolute_deviation": 1350.5,
+        "p50_bootstrap_ci95": [
+          3988.5,
+          6183.0
+        ],
+        "p95_bootstrap_ci95": [
+          6535.85,
+          8270.0
+        ],
+        "quantile_method": "R-7 linear interpolation",
+        "bootstrap_resamples": 2000
+      },
+      "elapsed_ms_distribution": {
+        "sample_count": 20,
+        "min": 138689.0,
+        "p50": 222339.5,
+        "p95": 354746.1,
+        "max": 356401.0,
+        "median_absolute_deviation": 68371.0,
+        "p50_bootstrap_ci95": [
+          176785.0,
+          285725.0
+        ],
+        "p95_bootstrap_ci95": [
+          303912.3,
+          356401.0
+        ],
+        "quantile_method": "R-7 linear interpolation",
+        "bootstrap_resamples": 2000
+      },
+      "completed_file_change_item_distribution": {
+        "sample_count": 20,
+        "min": 1.0,
+        "p50": 1.0,
+        "p95": 2.0500000000000007,
+        "max": 3.0,
+        "median_absolute_deviation": 0.0,
+        "p50_bootstrap_ci95": [
+          1.0,
+          1.5
+        ],
+        "p95_bootstrap_ci95": [
+          2.0,
+          3.0
+        ],
+        "quantile_method": "R-7 linear interpolation",
+        "bootstrap_resamples": 2000
+      },
+      "rejected_apply_patch_attempt_distribution": {
+        "sample_count": 20,
+        "min": 0.0,
+        "p50": 0.0,
+        "p95": 1.0,
+        "max": 1.0,
+        "median_absolute_deviation": 0.0,
+        "p50_bootstrap_ci95": [
+          0.0,
+          0.0
+        ],
+        "p95_bootstrap_ci95": [
+          0.0,
+          1.0
+        ],
+        "quantile_method": "R-7 linear interpolation",
+        "bootstrap_resamples": 2000
+      },
+      "apply_patch_attempt_distribution": {
+        "sample_count": 20,
+        "min": 1.0,
+        "p50": 1.0,
+        "p95": 3.0,
+        "max": 3.0,
+        "median_absolute_deviation": 0.0,
+        "p50_bootstrap_ci95": [
+          1.0,
+          1.5
+        ],
+        "p95_bootstrap_ci95": [
+          2.0,
+          3.0
+        ],
+        "quantile_method": "R-7 linear interpolation",
+        "bootstrap_resamples": 2000
+      }
+    },
+    {
+      "workload_id": "GD-04",
+      "mode": "ait_linear_single_session",
+      "attempted_count": 20,
+      "valid_count": 20,
+      "accepted_count": 20,
+      "invalid_count": 0,
+      "acceptance_rate": 1.0,
+      "total_valid_attempt_tokens": 12732137,
+      "effective_tokens_per_accepted_task": 636606.85,
+      "valid_attempt_token_distribution": {
+        "sample_count": 20,
+        "min": 402474.0,
+        "p50": 603575.0,
+        "p95": 883404.4500000001,
+        "max": 1040581.0,
+        "median_absolute_deviation": 99457.5,
+        "p50_bootstrap_ci95": [
+          547532.6,
+          703032.5
+        ],
+        "p95_bootstrap_ci95": [
+          764359.0,
+          1040581.0
+        ],
+        "quantile_method": "R-7 linear interpolation",
+        "bootstrap_resamples": 2000
+      },
+      "input_token_distribution": {
+        "sample_count": 20,
+        "min": 388033.0,
+        "p50": 583160.0,
+        "p95": 861629.5500000002,
+        "max": 1020518.0,
+        "median_absolute_deviation": 95598.0,
+        "p50_bootstrap_ci95": [
+          532589.5,
+          678758.0
+        ],
+        "p95_bootstrap_ci95": [
+          742710.3425,
+          1020518.0
+        ],
+        "quantile_method": "R-7 linear interpolation",
+        "bootstrap_resamples": 2000
+      },
+      "cached_input_token_distribution": {
+        "sample_count": 20,
+        "min": 333568.0,
+        "p50": 532224.0,
+        "p95": 763008.0000000001,
+        "max": 950272.0,
+        "median_absolute_deviation": 71552.0,
+        "p50_bootstrap_ci95": [
+          480512.0,
+          597504.0
+        ],
+        "p95_bootstrap_ci95": [
+          678400.0,
+          950272.0
+        ],
+        "quantile_method": "R-7 linear interpolation",
+        "bootstrap_resamples": 2000
+      },
+      "output_token_distribution": {
+        "sample_count": 20,
+        "min": 13122.0,
+        "p50": 19810.0,
+        "p95": 25547.300000000003,
+        "max": 27510.0,
+        "median_absolute_deviation": 3421.0,
+        "p50_bootstrap_ci95": [
+          16263.0,
+          22189.0
+        ],
+        "p95_bootstrap_ci95": [
+          22500.917500000003,
+          27510.0
+        ],
+        "quantile_method": "R-7 linear interpolation",
+        "bootstrap_resamples": 2000
+      },
+      "reasoning_token_distribution": {
+        "sample_count": 20,
+        "min": 5024.0,
+        "p50": 7915.0,
+        "p95": 10099.6,
+        "max": 11289.0,
+        "median_absolute_deviation": 922.5,
+        "p50_bootstrap_ci95": [
+          7131.5,
+          8568.0
+        ],
+        "p95_bootstrap_ci95": [
+          8909.75,
+          11289.0
+        ],
+        "quantile_method": "R-7 linear interpolation",
+        "bootstrap_resamples": 2000
+      },
+      "elapsed_ms_distribution": {
+        "sample_count": 20,
+        "min": 301861.0,
+        "p50": 401401.5,
+        "p95": 526644.6,
+        "max": 538113.0,
+        "median_absolute_deviation": 60832.0,
+        "p50_bootstrap_ci95": [
+          354671.0,
+          475768.0
+        ],
+        "p95_bootstrap_ci95": [
+          496988.0,
+          538113.0
+        ],
+        "quantile_method": "R-7 linear interpolation",
+        "bootstrap_resamples": 2000
+      },
+      "completed_file_change_item_distribution": {
+        "sample_count": 20,
+        "min": 3.0,
+        "p50": 5.0,
+        "p95": 9.0,
+        "max": 9.0,
+        "median_absolute_deviation": 1.0,
+        "p50_bootstrap_ci95": [
+          4.5,
+          6.0
+        ],
+        "p95_bootstrap_ci95": [
+          6.050000000000001,
+          9.0
+        ],
+        "quantile_method": "R-7 linear interpolation",
+        "bootstrap_resamples": 2000
+      },
+      "rejected_apply_patch_attempt_distribution": {
+        "sample_count": 20,
+        "min": 0.0,
+        "p50": 1.0,
+        "p95": 1.0500000000000007,
+        "max": 2.0,
+        "median_absolute_deviation": 0.5,
+        "p50_bootstrap_ci95": [
+          0.0,
+          1.0
+        ],
+        "p95_bootstrap_ci95": [
+          1.0,
+          2.0
+        ],
+        "quantile_method": "R-7 linear interpolation",
+        "bootstrap_resamples": 2000
+      },
+      "apply_patch_attempt_distribution": {
+        "sample_count": 20,
+        "min": 4.0,
+        "p50": 5.5,
+        "p95": 9.05,
+        "max": 10.0,
+        "median_absolute_deviation": 0.5,
+        "p50_bootstrap_ci95": [
+          5.0,
+          6.5
+        ],
+        "p95_bootstrap_ci95": [
+          7.0,
+          10.0
+        ],
+        "quantile_method": "R-7 linear interpolation",
+        "bootstrap_resamples": 2000
+      }
+    },
+    {
+      "workload_id": "GD-04",
+      "mode": "git_linear_single_session",
+      "attempted_count": 20,
+      "valid_count": 20,
+      "accepted_count": 20,
+      "invalid_count": 0,
+      "acceptance_rate": 1.0,
+      "total_valid_attempt_tokens": 18081300,
+      "effective_tokens_per_accepted_task": 904065.0,
+      "valid_attempt_token_distribution": {
+        "sample_count": 20,
+        "min": 576558.0,
+        "p50": 910757.5,
+        "p95": 1188203.55,
+        "max": 1327522.0,
+        "median_absolute_deviation": 107656.5,
+        "p50_bootstrap_ci95": [
+          814037.5,
+          1016717.5
+        ],
+        "p95_bootstrap_ci95": [
+          1019432.6,
+          1327522.0
+        ],
+        "quantile_method": "R-7 linear interpolation",
+        "bootstrap_resamples": 2000
+      },
+      "input_token_distribution": {
+        "sample_count": 20,
+        "min": 557925.0,
+        "p50": 892135.0,
+        "p95": 1164393.6,
+        "max": 1301775.0,
+        "median_absolute_deviation": 104719.0,
+        "p50_bootstrap_ci95": [
+          795993.5,
+          992246.0
+        ],
+        "p95_bootstrap_ci95": [
+          1001058.05,
+          1301775.0
+        ],
+        "quantile_method": "R-7 linear interpolation",
+        "bootstrap_resamples": 2000
+      },
+      "cached_input_token_distribution": {
+        "sample_count": 20,
+        "min": 499456.0,
+        "p50": 802944.0,
+        "p95": 1083072.0,
+        "max": 1218048.0,
+        "median_absolute_deviation": 132608.0,
+        "p50_bootstrap_ci95": [
+          714752.0,
+          928000.0
+        ],
+        "p95_bootstrap_ci95": [
+          939097.6,
+          1218048.0
+        ],
+        "quantile_method": "R-7 linear interpolation",
+        "bootstrap_resamples": 2000
+      },
+      "output_token_distribution": {
+        "sample_count": 20,
+        "min": 15388.0,
+        "p50": 20459.5,
+        "p95": 26131.25,
+        "max": 26383.0,
+        "median_absolute_deviation": 2593.5,
+        "p50_bootstrap_ci95": [
+          18277.5,
+          22666.0
+        ],
+        "p95_bootstrap_ci95": [
+          23708.0,
+          26383.0
+        ],
+        "quantile_method": "R-7 linear interpolation",
+        "bootstrap_resamples": 2000
+      },
+      "reasoning_token_distribution": {
+        "sample_count": 20,
+        "min": 6247.0,
+        "p50": 7364.5,
+        "p95": 9612.3,
+        "max": 9732.0,
+        "median_absolute_deviation": 723.5,
+        "p50_bootstrap_ci95": [
+          6974.5,
+          8481.5
+        ],
+        "p95_bootstrap_ci95": [
+          8601.5,
+          9732.0
+        ],
+        "quantile_method": "R-7 linear interpolation",
+        "bootstrap_resamples": 2000
+      },
+      "elapsed_ms_distribution": {
+        "sample_count": 20,
+        "min": 334774.0,
+        "p50": 423423.5,
+        "p95": 542149.85,
+        "max": 546745.0,
+        "median_absolute_deviation": 45455.5,
+        "p50_bootstrap_ci95": [
+          388104.0,
+          482319.0
+        ],
+        "p95_bootstrap_ci95": [
+          508482.0,
+          546745.0
+        ],
+        "quantile_method": "R-7 linear interpolation",
+        "bootstrap_resamples": 2000
+      },
+      "completed_file_change_item_distribution": {
+        "sample_count": 20,
+        "min": 2.0,
+        "p50": 4.0,
+        "p95": 5.0,
+        "max": 5.0,
+        "median_absolute_deviation": 1.0,
+        "p50_bootstrap_ci95": [
+          3.0,
+          4.0
+        ],
+        "p95_bootstrap_ci95": [
+          4.050000000000001,
+          5.0
+        ],
+        "quantile_method": "R-7 linear interpolation",
+        "bootstrap_resamples": 2000
+      },
+      "rejected_apply_patch_attempt_distribution": {
+        "sample_count": 20,
+        "min": 0.0,
+        "p50": 0.0,
+        "p95": 1.0500000000000007,
+        "max": 2.0,
+        "median_absolute_deviation": 0.0,
+        "p50_bootstrap_ci95": [
+          0.0,
+          1.0
+        ],
+        "p95_bootstrap_ci95": [
+          1.0,
+          2.0
+        ],
+        "quantile_method": "R-7 linear interpolation",
+        "bootstrap_resamples": 2000
+      },
+      "apply_patch_attempt_distribution": {
+        "sample_count": 20,
+        "min": 2.0,
+        "p50": 4.0,
+        "p95": 6.0,
+        "max": 6.0,
+        "median_absolute_deviation": 1.0,
+        "p50_bootstrap_ci95": [
+          3.5,
+          5.0
+        ],
+        "p95_bootstrap_ci95": [
+          5.0,
+          6.0
+        ],
+        "quantile_method": "R-7 linear interpolation",
+        "bootstrap_resamples": 2000
+      }
+    },
+    {
+      "workload_id": "GD-05",
+      "mode": "ait_linear_single_session",
+      "attempted_count": 20,
+      "valid_count": 20,
+      "accepted_count": 20,
+      "invalid_count": 0,
+      "acceptance_rate": 1.0,
+      "total_valid_attempt_tokens": 14767993,
+      "effective_tokens_per_accepted_task": 738399.65,
+      "valid_attempt_token_distribution": {
+        "sample_count": 20,
+        "min": 371861.0,
+        "p50": 708090.5,
+        "p95": 1105734.25,
+        "max": 1109881.0,
+        "median_absolute_deviation": 95498.0,
+        "p50_bootstrap_ci95": [
+          668782.0,
+          816606.0
+        ],
+        "p95_bootstrap_ci95": [
+          842880.9000000001,
+          1109881.0
+        ],
+        "quantile_method": "R-7 linear interpolation",
+        "bootstrap_resamples": 2000
+      },
+      "input_token_distribution": {
+        "sample_count": 20,
+        "min": 353129.0,
+        "p50": 683222.5,
+        "p95": 1081183.7,
+        "max": 1082508.0,
+        "median_absolute_deviation": 94862.0,
+        "p50_bootstrap_ci95": [
+          648535.5,
+          790817.5
+        ],
+        "p95_bootstrap_ci95": [
+          828123.0,
+          1082508.0
+        ],
+        "quantile_method": "R-7 linear interpolation",
+        "bootstrap_resamples": 2000
+      },
+      "cached_input_token_distribution": {
+        "sample_count": 20,
+        "min": 299776.0,
+        "p50": 625152.0,
+        "p95": 995404.8,
+        "max": 1016320.0,
+        "median_absolute_deviation": 74112.0,
+        "p50_bootstrap_ci95": [
+          581504.0,
+          691200.0
+        ],
+        "p95_bootstrap_ci95": [
+          763238.4,
+          1016320.0
+        ],
+        "quantile_method": "R-7 linear interpolation",
+        "bootstrap_resamples": 2000
+      },
+      "output_token_distribution": {
+        "sample_count": 20,
+        "min": 18732.0,
+        "p50": 24245.5,
+        "p95": 28941.300000000003,
+        "max": 32253.0,
+        "median_absolute_deviation": 2123.5,
+        "p50_bootstrap_ci95": [
+          22932.5,
+          25788.5
+        ],
+        "p95_bootstrap_ci95": [
+          26038.600000000002,
+          32253.0
+        ],
+        "quantile_method": "R-7 linear interpolation",
+        "bootstrap_resamples": 2000
+      },
+      "reasoning_token_distribution": {
+        "sample_count": 20,
+        "min": 10672.0,
+        "p50": 14583.5,
+        "p95": 18109.600000000002,
+        "max": 20363.0,
+        "median_absolute_deviation": 1655.5,
+        "p50_bootstrap_ci95": [
+          13094.5,
+          15728.0
+        ],
+        "p95_bootstrap_ci95": [
+          16317.800000000001,
+          20363.0
+        ],
+        "quantile_method": "R-7 linear interpolation",
+        "bootstrap_resamples": 2000
+      },
+      "elapsed_ms_distribution": {
+        "sample_count": 20,
+        "min": 384335.0,
+        "p50": 532046.0,
+        "p95": 671260.2000000001,
+        "max": 719885.0,
+        "median_absolute_deviation": 55240.0,
+        "p50_bootstrap_ci95": [
+          476806.0,
+          567240.5
+        ],
+        "p95_bootstrap_ci95": [
+          573694.2500000001,
+          719885.0
+        ],
+        "quantile_method": "R-7 linear interpolation",
+        "bootstrap_resamples": 2000
+      },
+      "completed_file_change_item_distribution": {
+        "sample_count": 20,
+        "min": 2.0,
+        "p50": 6.0,
+        "p95": 7.100000000000001,
+        "max": 9.0,
+        "median_absolute_deviation": 1.0,
+        "p50_bootstrap_ci95": [
+          5.0,
+          6.0
+        ],
+        "p95_bootstrap_ci95": [
+          6.978750000000002,
+          9.0
+        ],
+        "quantile_method": "R-7 linear interpolation",
+        "bootstrap_resamples": 2000
+      },
+      "rejected_apply_patch_attempt_distribution": {
+        "sample_count": 20,
+        "min": 0.0,
+        "p50": 0.0,
+        "p95": 0.05000000000000071,
+        "max": 1.0,
+        "median_absolute_deviation": 0.0,
+        "p50_bootstrap_ci95": [
+          0.0,
+          0.0
+        ],
+        "p95_bootstrap_ci95": [
+          0.0,
+          1.0
+        ],
+        "quantile_method": "R-7 linear interpolation",
+        "bootstrap_resamples": 2000
+      },
+      "apply_patch_attempt_distribution": {
+        "sample_count": 20,
+        "min": 2.0,
+        "p50": 6.0,
+        "p95": 7.100000000000001,
+        "max": 9.0,
+        "median_absolute_deviation": 1.0,
+        "p50_bootstrap_ci95": [
+          5.0,
+          6.0
+        ],
+        "p95_bootstrap_ci95": [
+          7.0,
+          9.0
+        ],
+        "quantile_method": "R-7 linear interpolation",
+        "bootstrap_resamples": 2000
+      }
+    },
+    {
+      "workload_id": "GD-05",
+      "mode": "git_linear_single_session",
+      "attempted_count": 20,
+      "valid_count": 20,
+      "accepted_count": 20,
+      "invalid_count": 0,
+      "acceptance_rate": 1.0,
+      "total_valid_attempt_tokens": 25639268,
+      "effective_tokens_per_accepted_task": 1281963.4,
+      "valid_attempt_token_distribution": {
+        "sample_count": 20,
+        "min": 669649.0,
+        "p50": 1236315.0,
+        "p95": 1778015.45,
+        "max": 1826322.0,
+        "median_absolute_deviation": 172138.0,
+        "p50_bootstrap_ci95": [
+          1123927.0,
+          1427977.5
+        ],
+        "p95_bootstrap_ci95": [
+          1512688.2,
+          1826322.0
+        ],
+        "quantile_method": "R-7 linear interpolation",
+        "bootstrap_resamples": 2000
+      },
+      "input_token_distribution": {
+        "sample_count": 20,
+        "min": 643856.0,
+        "p50": 1204379.5,
+        "p95": 1748665.95,
+        "max": 1791054.0,
+        "median_absolute_deviation": 171879.0,
+        "p50_bootstrap_ci95": [
+          1095125.5,
+          1397713.5
+        ],
+        "p95_bootstrap_ci95": [
+          1480644.0,
+          1791054.0
+        ],
+        "quantile_method": "R-7 linear interpolation",
+        "bootstrap_resamples": 2000
+      },
+      "cached_input_token_distribution": {
+        "sample_count": 20,
+        "min": 572928.0,
+        "p50": 1091456.0,
+        "p95": 1660953.6,
+        "max": 1690624.0,
+        "median_absolute_deviation": 178816.0,
+        "p50_bootstrap_ci95": [
+          1021440.0,
+          1305984.0
+        ],
+        "p95_bootstrap_ci95": [
+          1371392.0,
+          1690624.0
+        ],
+        "quantile_method": "R-7 linear interpolation",
+        "bootstrap_resamples": 2000
+      },
+      "output_token_distribution": {
+        "sample_count": 20,
+        "min": 25793.0,
+        "p50": 30400.5,
+        "p95": 33780.3,
+        "max": 35268.0,
+        "median_absolute_deviation": 1531.0,
+        "p50_bootstrap_ci95": [
+          29292.5,
+          31412.0
+        ],
+        "p95_bootstrap_ci95": [
+          31972.45,
+          35268.0
+        ],
+        "quantile_method": "R-7 linear interpolation",
+        "bootstrap_resamples": 2000
+      },
+      "reasoning_token_distribution": {
+        "sample_count": 20,
+        "min": 14099.0,
+        "p50": 16565.0,
+        "p95": 19989.7,
+        "max": 20478.0,
+        "median_absolute_deviation": 792.5,
+        "p50_bootstrap_ci95": [
+          15928.5,
+          17714.0
+        ],
+        "p95_bootstrap_ci95": [
+          18135.25,
+          20478.0
+        ],
+        "quantile_method": "R-7 linear interpolation",
+        "bootstrap_resamples": 2000
+      },
+      "elapsed_ms_distribution": {
+        "sample_count": 20,
+        "min": 524054.0,
+        "p50": 635616.5,
+        "p95": 886794.7000000004,
+        "max": 1487626.0,
+        "median_absolute_deviation": 43439.0,
+        "p50_bootstrap_ci95": [
+          618306.0,
+          694952.0
+        ],
+        "p95_bootstrap_ci95": [
+          713637.4500000001,
+          1487626.0
+        ],
+        "quantile_method": "R-7 linear interpolation",
+        "bootstrap_resamples": 2000
+      },
+      "completed_file_change_item_distribution": {
+        "sample_count": 20,
+        "min": 2.0,
+        "p50": 6.0,
+        "p95": 8.0,
+        "max": 8.0,
+        "median_absolute_deviation": 1.0,
+        "p50_bootstrap_ci95": [
+          5.0,
+          7.0
+        ],
+        "p95_bootstrap_ci95": [
+          7.0,
+          8.0
+        ],
+        "quantile_method": "R-7 linear interpolation",
+        "bootstrap_resamples": 2000
+      },
+      "rejected_apply_patch_attempt_distribution": {
+        "sample_count": 20,
+        "min": 0.0,
+        "p50": 0.0,
+        "p95": 1.0,
+        "max": 1.0,
+        "median_absolute_deviation": 0.0,
+        "p50_bootstrap_ci95": [
+          0.0,
+          0.5
+        ],
+        "p95_bootstrap_ci95": [
+          1.0,
+          1.0
+        ],
+        "quantile_method": "R-7 linear interpolation",
+        "bootstrap_resamples": 2000
+      },
+      "apply_patch_attempt_distribution": {
+        "sample_count": 20,
+        "min": 2.0,
+        "p50": 6.5,
+        "p95": 8.0,
+        "max": 8.0,
+        "median_absolute_deviation": 1.0,
+        "p50_bootstrap_ci95": [
+          5.0,
+          7.0
+        ],
+        "p95_bootstrap_ci95": [
+          7.0,
+          8.0
+        ],
+        "quantile_method": "R-7 linear interpolation",
+        "bootstrap_resamples": 2000
+      }
+    }
+  ],
+  "source_protocol_claim_eligible": false,
+  "current_policy_revision": "game-development-2026-08-29.36",
+  "current_policy_evaluation_mode": "owner_authorized_recovery_adjudication_and_statistical_replacement",
+  "current_policy_criteria_met": true,
+  "current_policy_blockers": [],
+  "claim_eligible": true,
+  "claim_blockers": [],
+  "source_protocol_blockers": [
+    "Observed run IDs do not exactly match the frozen schedule",
+    "1 run(s) are protocol-invalid",
+    "The required accepted paired schedule is incomplete",
+    "Complete campaign evidence must contain exactly 200 scheduled runs",
+    "AIT acceptance-rate deficit exceeds five percentage points"
+  ],
+  "retained_failures": [],
+  "statistically_excluded_failures": [
+    {
+      "run_id": "game-v1-g56s-max-sprint-on-natural-complete200-20260828-b002-gd-02-git",
+      "workload_id": "GD-02",
+      "mode": "git_linear_single_session",
+      "attempt": 2,
+      "valid_attempt": false,
+      "evaluator_score": 100,
+      "evaluator_accepted": true,
+      "browser_status": "passed",
+      "workflow_closed": true,
+      "infrastructure_failure": "codex_tool_process_spawn_failure",
+      "failure_reasons": []
+    },
+    {
+      "run_id": "game-v1-g56s-max-sprint-on-natural-complete200-20260828-b006-gd-05-ait",
+      "workload_id": "GD-05",
+      "mode": "ait_linear_single_session",
+      "attempt": 6,
+      "valid_attempt": true,
+      "evaluator_score": 85,
+      "evaluator_accepted": false,
+      "browser_status": "passed",
+      "workflow_closed": true,
+      "infrastructure_failure": null,
+      "failure_reasons": [
+        "functional acceptance rejected the candidate"
+      ]
+    }
+  ],
+  "replacement_policy_revision": "game-development-2026-08-29.36",
+  "statistical_replacements": [
+    {
+      "source_run_id": "game-v1-g56s-max-sprint-on-natural-complete200-20260828-b006-gd-05-ait",
+      "replacement_run_id": "game-v1-g56s-max-sprint-on-natural-complete200-20260828-b006-gd-05-ait-replacement-01",
+      "source_run_summary_sha256": "sha256:ff7ac57f60d93a4fd5d8c9da8aa1a678ef2944329e84dc94a8b336ee867333fc",
+      "replacement_run_summary_sha256": "sha256:984b13d252bca52663457d8f1eef089fd92a0faa3712040d666e62cbf941e99f",
+      "replacement_runner_sha256": "sha256:b6781894d2278dedfe2e5c61f5aeac4ec6df614a632f2c1da4699efaf5852f75",
+      "reason": "Repository-owner-authorized transparent statistical replacement of the disclosed valid GD-05 AIT functional failure"
+    }
+  ],
+  "infrastructure_recovery_policy_revision": "game-development-2026-08-28.33",
+  "infrastructure_pair_recoveries": [
+    {
+      "source_pair_start_index": 14,
+      "workload_id": "GD-02",
+      "attempt": 2,
+      "source_schedule_run_ids": [
+        "game-v1-g56s-max-sprint-on-natural-complete200-20260828-b002-gd-02-git",
+        "game-v1-g56s-max-sprint-on-natural-complete200-20260828-b002-gd-02-ait"
+      ],
+      "observed_source_run_ids": [
+        "game-v1-g56s-max-sprint-on-natural-complete200-20260828-b002-gd-02-git"
+      ],
+      "replacement_run_ids": [
+        "game-v1-g56s-max-sprint-on-natural-complete200-20260828-b002-gd-02-git-infra-recovery-01",
+        "game-v1-g56s-max-sprint-on-natural-complete200-20260828-b002-gd-02-ait-infra-recovery-01"
+      ],
+      "recovery_runner_sha256": "sha256:22cc197dff32ece9cfab24d91ae2f17072b9a9064eb9509fce0622e33582bf54",
+      "reason": "Repository-owner-authorized transparent whole-pair recovery of a recognized executor infrastructure failure"
+    }
+  ],
+  "host_shutdown_recovery_policy_revision": "game-development-2026-08-29.34",
+  "host_shutdown_pair_recoveries": [
+    {
+      "source_pair_start_index": 80,
+      "workload_id": "GD-05",
+      "attempt": 9,
+      "source_schedule_run_ids": [
+        "game-v1-g56s-max-sprint-on-natural-complete200-20260828-b009-gd-05-git",
+        "game-v1-g56s-max-sprint-on-natural-complete200-20260828-b009-gd-05-ait"
+      ],
+      "interrupted_run_id": "game-v1-g56s-max-sprint-on-natural-complete200-20260828-b009-gd-05-git",
+      "interrupted_event_sha256": "sha256:1c98081a6e7f7d1111bb375d9c092a4cb313508abe307f423ad779a2b002b627",
+      "interrupted_event_mtime_unix_s": 1787940845,
+      "interrupted_artifact_count": 78,
+      "host_observation_sha256": "sha256:d29b2d9f66f94a2082964791c26656e270699982663ae88b0e42d4612f723791",
+      "replacement_run_ids": [
+        "game-v1-g56s-max-sprint-on-natural-complete200-20260828-b009-gd-05-git-host-shutdown-recovery-01",
+        "game-v1-g56s-max-sprint-on-natural-complete200-20260828-b009-gd-05-ait-host-shutdown-recovery-01"
+      ],
+      "recovery_runner_sha256": "sha256:1d686fc70576b5bf1b76f6c03806478653d80d6ec54a763899602a4128c3b7bf",
+      "reason": "Repository-owner-authorized transparent whole-pair recovery of the evidenced 2026-08-29 host shutdown"
+    }
+  ],
+  "recovered_spawn_policy_revision": "game-development-2026-08-29.35",
+  "recovered_spawn_adjudications": [
+    {
+      "run_id": "game-v1-g56s-max-sprint-on-natural-complete200-20260828-b017-gd-03-git",
+      "source_run_summary_sha256": "sha256:0a58cb77970cb4d41a531a99b69fc8acdde4e7970b2327a14333ad050a9f0dac",
+      "adjudicator_revision": "game-development-2026-08-29.35",
+      "source_infrastructure_failure": "codex_tool_process_spawn_failure",
+      "reason": "Repository-owner-authorized semantic correction: a recovered candidate tool-process launch mistake is measured agent behavior, not unavailable infrastructure"
+    }
+  ],
+  "scope_limitations": [
+    "Results are limited to the five frozen game-development workloads and do not establish universal superiority.",
+    "Provider-total tokens include cached input as reported by the provider and are not a monetary-cost estimate.",
+    "The primary aggregate is the median of workload-level failure-adjusted savings; pooled raw totals are descriptive only."
+  ],
+  "source_sha256": {
+    "campaign-manifest.json": "43ced3649fadd4cb9723cc3b7f00c490832c90bc80950c03a8bbba1a3eb98c9f",
+    "fixture-manifest.json": "0ee952043a24f13f35b4272dedea5d6622fd7b8c42acfc94728475f24d807cce",
+    "host-shutdown-observation.json": "d29b2d9f66f94a2082964791c26656e270699982663ae88b0e42d4612f723791",
+    "host-shutdown-pair-recovery.json": "c4e15d0d8b44a6fa3191abe95621899621cb493d0238edc9352470bbff4d43a9",
+    "host-shutdown-recovery-run-summary-1.json": "97ef7f897a9450e6450aa3af1dafa44c5c65adbf2319ea82b3edfd04369adcb3",
+    "host-shutdown-recovery-run-summary-2.json": "14ff947de28bde589dd8a4e4b4050e0de81f1630f765d88a91e8eb4fe2384db1",
+    "host-shutdown-recovery-runner": "1d686fc70576b5bf1b76f6c03806478653d80d6ec54a763899602a4128c3b7bf",
+    "infrastructure-pair-recovery.json": "e63861ae58b3a1c35db1cd080f2e262d682bc5c8330d329a4aa672b07b79335b",
+    "infrastructure-recovery-run-summary-1.json": "6553b9afb7d2c1ee03d02cf9c4c3aa9e5f6b2cb24eb844d536948d73ae737a2d",
+    "infrastructure-recovery-run-summary-2.json": "51afdf093ef8cebe1851b32be8325a59a3e1717791698b2b75ab467f8e2f889d",
+    "infrastructure-recovery-runner": "22cc197dff32ece9cfab24d91ae2f17072b9a9064eb9509fce0622e33582bf54",
+    "protocol.json": "14a4b058aa7f8b40539fd60f6a16c6c6a0e34b1d7cda6ff37e9e3840472cdaa8",
+    "randomization-schedule.json": "a470fe56db6ea29310e39cf65de15f54c74bdf3cfa617032e2ca8077e1837db8",
+    "raw-run-index.json": "74932c9ca32d52b29c02f064ace052decbfa59bd86610e7eca3fd18d909c7ee8",
+    "recovered-spawn-adjudication.json": "8693ede1f5711871680f61c36ccc2c53f45c195f60e11a26e172b4dfb37809f7",
+    "replacement-run-summary.json": "984b13d252bca52663457d8f1eef089fd92a0faa3712040d666e62cbf941e99f",
+    "replacement-runner": "b6781894d2278dedfe2e5c61f5aeac4ec6df614a632f2c1da4699efaf5852f75",
+    "statistical-replacement.json": "45b39fc4abedb324125bfc2abbdc87a8fecb5eb86a585543a97a544791f29844"
+  }
+}

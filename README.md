@@ -45,27 +45,34 @@ normal local path remains native and server-free.
 
 ## Measured against Git worktrees
 
-The frozen 1.1.0 game-development benchmark used GPT-5.6 Sol at max reasoning
-effort on five workloads, with 20 admitted paired attempts per workload: 100
-fresh AIT sessions and 100 fresh Git sessions. Functional acceptance was
-100/100 in both treatments.
+Two separately published 200-session campaigns used GPT-5.6 Sol at max
+reasoning on the same five frozen game-development fixtures, with 20 admitted
+paired attempts per workload. Each effective view contains 100 fresh AIT
+sessions and 100 fresh Git sessions, with 100/100 functional acceptance in
+each treatment.
 
-| Measure | Published result |
-| --- | ---: |
-| Workload-median token saving | **34.95%** |
-| Bootstrap 95% confidence interval | **27.85% to 39.77%** |
-| Raw provider tokens | **46,300,272 AIT vs 70,140,925 Git (33.99% lower)** |
-| Workload-median elapsed-time saving | **21.04%** |
+| Campaign | Workflow | Effective sessions | Workload-median token saving (95% CI) | Workload-median elapsed saving |
+| --- | --- | ---: | ---: | ---: |
+| Released 1.1.0 baseline | Sprint off | 100 AIT + 100 Git | **34.95%** (27.85%-39.77%) | **21.04%** |
+| Natural-inspection replication | Sprint on | 100 AIT + 100 Git | **36.28%** (28.26%-41.83%) | **15.22%** |
 
-In other words, the AIT Task/worktree treatment used about one-third fewer raw
-provider tokens and finished about one-fifth faster in this controlled
-campaign. The workload-balanced 34.95% result is the primary token metric; the
-33.99% pooled total is descriptive. These results are scoped to the published
-fixtures, model pin, and linear fresh-session protocol. They are not a promise
-for every workload, and the benchmark did not directly measure high-concurrency
-execution.
+The released baseline used 46,300,272 AIT tokens versus 70,140,925 Git tokens
+(33.99% lower); its evidence history contains 201 executed sessions and one
+excluded functional result. The sprint-on replication used 45,432,262 versus
+71,238,660 (36.23% lower); its evidence history contains 203 executed sessions
+and three disclosed exclusions. The workload-balanced figures in the table
+are the primary metrics; pooled totals are descriptive.
 
-[Read the summary and machine-readable evidence](https://github.com/weita2026/ait-native/tree/v1.1.0/ait-core/release/benchmarks/game-v1-g56s-max-complete200-fx27-20260826).
+The campaigns share fixture bytes, workload matrix, model pin, and symmetric
+read-only inspection allowances. They differ in workflow mode, prompts, AIT
+subject binary, seed, date, and recovery history. They are convergent
+replications, not pooled observations or a causal sprint-on/off A/B test, so
+the 1.33 percentage-point difference is not attributed to sprint mode. Results
+remain scoped to these fixtures and linear fresh sessions; they are not a
+promise for every workload and do not measure high-concurrency execution.
+
+[Released baseline evidence](https://github.com/weita2026/ait-native/tree/v1.1.0/ait-core/release/benchmarks/game-v1-g56s-max-complete200-fx27-20260826) ·
+[Sprint-on replication evidence](https://github.com/weita2026/ait-native/tree/benchmark-sprint-on-20260829/ait-core/release/benchmarks/game-v1-g56s-max-sprint-on-natural-complete200-20260828)
 
 ## Install and initialize
 
