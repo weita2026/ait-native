@@ -1,5 +1,50 @@
 # ait-native
 
+## Why I Built AIT
+
+1. **AI agents often produce one giant commit that means very little.**
+
+   An agent can change dozens of files and dump everything into one commit. The
+   commit shows what changed, but it does not clearly explain what job the agent
+   was trying to finish. I wanted history to be organized around meaningful
+   tasks, not around the moment an agent happened to save its work.
+
+2. **A sprint card should become real engineering work.**
+
+   I wanted a Jira-like workflow where opening a sprint card starts a real,
+   isolated task, and finishing that task means the issue was actually
+   resolved. The ticket, the agent, the code, the validation, and the final
+   result should belong to the same lifecycle.
+
+3. **Traditional Git workflow is built around human behavior.**
+
+   A person usually makes a small change, reviews it, stages it, commits it,
+   rebases it, and moves on. In the vibe-coding era, agents produce task-sized
+   changes much faster. Repeating all that manual Git choreography for every
+   agent starts getting in the way.
+
+4. **Markdown should be more than another file in the repository.**
+
+   Markdown is probably the best shared language between humans and agents.
+   Git can store Markdown, but it does not understand that a checklist item
+   represents a plan, a task, or an acceptance condition. I wanted the intent
+   written in Markdown to stay connected to the code that implements it.
+
+5. **When an agent breaks something, I want answers quickly.**
+
+   I do not want to search through old chats, random commits, and disconnected
+   tickets to understand a regression. AIT keeps the task, revision,
+   validation, agent context, and landing history connected, so `ait blame`
+   can lead from a bad line back to the work that introduced it.
+
+6. **The commands are designed for agents first.**
+
+   The CLI is not designed around what is pleasant for a human to type
+   repeatedly. It is designed around what is difficult for an agent to
+   misunderstand: stable commands, explicit state, structured results, exact
+   workspaces, clear failures, and a clear next action. Humans still decide the
+   intent, review the result, and own the consequences.
+
 [![Latest release](https://img.shields.io/github/v/release/weita2026/ait-native?include_prereleases&sort=semver&label=release)](https://github.com/weita2026/ait-native/releases)
 [![Documentation](https://img.shields.io/badge/docs-ait--native.dev-0ea5e9)](https://ait-native.dev/)
 [![Discussions](https://img.shields.io/github/discussions/weita2026/ait-native?label=discussions)](https://github.com/weita2026/ait-native/discussions)
@@ -73,6 +118,36 @@ promise for every workload and do not measure high-concurrency execution.
 
 [Released baseline evidence](https://github.com/weita2026/ait-native/tree/v1.1.0/ait-core/release/benchmarks/game-v1-g56s-max-complete200-fx27-20260826) ·
 [Sprint-on replication evidence](https://github.com/weita2026/ait-native/tree/benchmark-sprint-on-20260829/ait-core/release/benchmarks/game-v1-g56s-max-sprint-on-natural-complete200-20260828)
+
+### Claude Fable benchmark — still running
+
+We are running a frozen 200-session benchmark comparing AIT's task-oriented
+workflow with an agent-managed local Git-worktree treatment across the same
+five game-development workloads.
+
+**Progress: 22 / 200 sessions**
+
+All 22 observed runs are currently valid and accepted, with no model fallback.
+The campaign is still incomplete and remains `claim_eligible=false`. We will
+continue to all 200 sessions regardless of whether the remaining results favor
+AIT or Git.
+
+The latest balanced checkpoint is 20/200, with two complete AIT/Git pairs for
+each workload:
+
+| Workload | Valid pairs | AIT token saving | Bootstrap CI95 |
+| --- | ---: | ---: | ---: |
+| GD-01 | 2 | 20.32% | 9.13% to 32.72% |
+| GD-02 | 2 | -4.35% | -18.16% to 14.35% |
+| GD-03 | 2 | 37.56% | 6.57% to 52.02% |
+| GD-04 | 2 | 23.77% | 23.50% to 23.97% |
+| GD-05 | 2 | 2.13% | -26.89% to 25.93% |
+
+The workload-median token saving is **20.32%**, with an aggregate bootstrap
+CI95 of **6.57% to 25.93%**. All 20 checkpoint runs were valid and accepted,
+with no statistical exclusions or model fallback. With only two pairs per
+workload, several intervals remain broad or cross zero, so these interim
+numbers are published for transparency, not as a product claim.
 
 ## Install and initialize
 
