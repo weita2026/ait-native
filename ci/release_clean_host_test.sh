@@ -175,19 +175,41 @@ grep -F 'platformPackageName = `@wa120/ait-native-${npmTargetSuffix(row)}`' \
 grep -F 'fail("npm uninstall retained the target platform package")' \
   "${phase_runner}" >/dev/null
 
-family_version=$(jq -er '.family.version' "${repo_root}/ait-release-family.json")
-legacy_platforms=${temporary_root}/legacy-platforms.json
+active_family=${repo_root}/ait-release-family.json
+published_legacy_family=${repo_root}/release/families/1.1.0/ait-release-family.json
+if [[ ! -f ${published_legacy_family} &&
+      -f ${repo_root}/ait-core/release/families/1.1.0/ait-release-family.json ]]; then
+  published_legacy_family=${repo_root}/ait-core/release/families/1.1.0/ait-release-family.json
+fi
+test -f "${published_legacy_family}"
+test ! -L "${published_legacy_family}"
+test "$(sha256_file "${published_legacy_family}")" = \
+  e85722913ed6724eb8f9cbb56fc2fd4a84ebcaad9fa84acb2e2971b2cc6c87fd
+
+family_version=$(jq -er '.family.version' "${active_family}")
+active_platforms=${temporary_root}/active-platforms.json
 jq --arg version "${family_version}" '.version = $version' \
-  "${repo_root}/ci/native_bootstrap_matrix.json" >"${legacy_platforms}"
+  "${repo_root}/ci/native_bootstrap_matrix.json" >"${active_platforms}"
+
+active_matrix_revision=$(jq -er '
+  [.distributions[] |
+    select(.role == "product" and
+      (.channel == "homebrew" or .channel == "apt" or .channel == "winget")) |
+    (.components | index("ait-runner") != null)] |
+  if all then "distribution-target-runner-bundle-32-2026-08-26.1"
+  elif any then error("active native product bundles are inconsistent")
+  else "distribution-target-32-2026-08-17.2"
+  end
+' "${active_family}")
 
 matrix=${temporary_root}/matrix.json
 node "${tool}" matrix \
-  --family "${repo_root}/ait-release-family.json" \
-  --platforms "${legacy_platforms}" \
+  --family "${active_family}" \
+  --platforms "${active_platforms}" \
   --output "${matrix}" >/dev/null
-jq -e '
+jq -e --arg matrix_revision "${active_matrix_revision}" '
   .contract == "ait.release.clean-host.matrix/v1" and
-  .matrix_revision == "distribution-target-32-2026-08-17.2" and
+  .matrix_revision == $matrix_revision and
   .row_count == 32 and (.rows | length) == 32 and
   ([.rows[].id] | unique | length) == 32 and
   .counts == {
@@ -206,6 +228,20 @@ jq -e '
   ] | sort)
 ' "${matrix}" >/dev/null
 
+published_legacy_platforms=${temporary_root}/published-legacy-platforms.json
+jq '.version = "1.1.0"' \
+  "${repo_root}/ci/native_bootstrap_matrix.json" >"${published_legacy_platforms}"
+published_legacy_matrix=${temporary_root}/published-legacy-matrix.json
+node "${tool}" matrix \
+  --family "${published_legacy_family}" \
+  --platforms "${published_legacy_platforms}" \
+  --output "${published_legacy_matrix}" >/dev/null
+jq -e '
+  .matrix_revision == "distribution-target-32-2026-08-17.2" and
+  .row_count == 32 and (.rows | length) == 32 and
+  ([.rows[].id] | unique | length) == 32
+' "${published_legacy_matrix}" >/dev/null
+
 legacy_future_family=${temporary_root}/legacy-future-family.json
 jq '
   .family.version = "1.1.1" |
@@ -215,7 +251,7 @@ jq '
     elif .version_scheme == "pep440" then .version = "1.1.1"
     else . end
   )
-' "${repo_root}/ait-release-family.json" >"${legacy_future_family}"
+' "${published_legacy_family}" >"${legacy_future_family}"
 legacy_future_platforms=${temporary_root}/legacy-future-platforms.json
 jq '.version = "1.1.1"' \
   "${repo_root}/ci/native_bootstrap_matrix.json" >"${legacy_future_platforms}"
@@ -228,22 +264,22 @@ grep -F '1.1+ clean-host qualification requires the native runner-bundle matrix'
 
 altered_published_family=${temporary_root}/altered-published-family.json
 jq '.compatibility.native_protocol = "altered"' \
-  "${repo_root}/ait-release-family.json" >"${altered_published_family}"
+  "${published_legacy_family}" >"${altered_published_family}"
 expect_failure altered-published-native-bundle node "${tool}" matrix \
   --family "${altered_published_family}" \
-  --platforms "${legacy_platforms}" \
+  --platforms "${published_legacy_platforms}" \
   --output "${temporary_root}/altered-published-matrix.json"
 grep -F 'legacy matrix is admitted only for the exact immutable published 1.1.0 family' \
   "${temporary_root}/altered-published-native-bundle.stderr" >/dev/null
 
 runner_bundle_family=${temporary_root}/runner-bundle-family.json
 jq '
-  .family.version = "1.1.0" |
+  .family.version = "1.1.1" |
   .family.channel = "stable" |
-  .family.tag = "v1.1.0" |
+  .family.tag = "v1.1.1" |
   .components |= map(
-    if .version_scheme == "family" then .version = "1.1.0"
-    elif .version_scheme == "pep440" then .version = "1.1.0"
+    if .version_scheme == "family" then .version = "1.1.1"
+    elif .version_scheme == "pep440" then .version = "1.1.1"
     else . end
   ) |
   .distributions |= map(
@@ -252,9 +288,9 @@ jq '
     then .components = ["ait", "ait-server", "ait-runner"]
     else . end
   )
-' "${repo_root}/ait-release-family.json" >"${runner_bundle_family}"
+' "${published_legacy_family}" >"${runner_bundle_family}"
 runner_bundle_platforms=${temporary_root}/runner-bundle-platforms.json
-jq '.version = "1.1.0"' \
+jq '.version = "1.1.1"' \
   "${repo_root}/ci/native_bootstrap_matrix.json" >"${runner_bundle_platforms}"
 runner_bundle_matrix=${temporary_root}/runner-bundle-matrix.json
 node "${tool}" matrix \
@@ -412,11 +448,11 @@ node "${tool}" aggregate \
   --status "${status}" \
   --evidence-root "${evidence_root}" \
   --output-root "${aggregate}" >/dev/null
-jq -e '
+jq -e --arg matrix_revision "${active_matrix_revision}" '
   .contract == "ait.release.clean-host.aggregate/v1" and
   .status == "qualified" and
   .matrix == {admitted_rows: 32, evidence_files: 32, expected_rows: 32,
-    revision: "distribution-target-32-2026-08-17.2"} and
+    revision: $matrix_revision} and
   .failures == [] and
   .promotion == {allowed: true, retry_same_candidate: false, terminal_for_release: false}
 ' "${aggregate}/ait-release.clean-host-status.json" >/dev/null

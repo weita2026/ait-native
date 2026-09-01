@@ -210,8 +210,13 @@ for repository in ait-core ait-server ait-runner ait-python ait-node; do
   write_common_source "${source}" "${repository}"
   case "${repository}" in
     ait-core)
-      mkdir -p "${source}/rust/crates/ait-py" "${source}/docs"
+      mkdir -p \
+        "${source}/rust/crates/ait-py" \
+        "${source}/docs" \
+        "${source}/release/families/1.1.0"
       cp "${repo_root}/ci/release_protected_promotion.sh" "${source}/ci/"
+      cp "${repo_root}/release/families/1.1.0/ait-release-family.json" \
+        "${source}/release/families/1.1.0/ait-release-family.json"
       jq '(.components[] | select(.source_repository == "ait-core") |
         .source_snapshot) = "SNP-010101010101"' \
         "${repo_root}/ait-release-family.json" \
