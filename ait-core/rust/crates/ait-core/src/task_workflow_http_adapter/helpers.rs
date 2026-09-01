@@ -77,10 +77,7 @@ pub(super) fn duration_to_timeout_ms(duration: Duration) -> Option<u64> {
 }
 
 pub(super) fn is_remote_mutation_timeout(err: &TaskWorkflowHttpClientError) -> bool {
-    matches!(err, TaskWorkflowHttpClientError::Transport(message) if {
-        let lowered = message.to_ascii_lowercase();
-        lowered.contains("timed out") || lowered.contains("timeout")
-    })
+    err.is_transport_timeout()
 }
 
 pub(super) fn task_close_error_needs_landed_settle(err: &TaskWorkflowHttpClientError) -> bool {

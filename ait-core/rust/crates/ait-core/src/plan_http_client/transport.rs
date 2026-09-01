@@ -72,6 +72,10 @@ impl PlanHttpClientError {
                 .remote_detail()
                 .is_some_and(|detail| detail.starts_with(RETRYABLE_BUSY_ERROR_PREFIX))
     }
+
+    pub fn is_transport_timeout(&self) -> bool {
+        matches!(self, Self::Transport(message) if message.ends_with(" failed: timed out"))
+    }
 }
 
 const RETRYABLE_BUSY_ERROR_PREFIX: &str = "ait.binary-db.error.v1|retryable_busy|";

@@ -303,6 +303,7 @@ fn response_body_timeout_preserves_canonical_transport_timeout_classification() 
         })
         .expect_err("response body must exceed the request deadline");
 
+    assert!(error.is_transport_timeout());
     assert_eq!(
         error,
         PlanHttpClientError::Transport(format!("POST {url} failed: timed out"))
@@ -329,6 +330,7 @@ fn truncated_response_body_retains_context_without_timeout_classification() {
         .expect_err("truncated response body must fail");
 
     let message = error.to_string();
+    assert!(!error.is_transport_timeout());
     assert!(matches!(error, PlanHttpClientError::Transport(_)));
     assert!(message.starts_with(&format!("POST {url} failed: ")));
     assert!(!message.ends_with("timed out"));

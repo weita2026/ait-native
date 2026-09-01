@@ -177,6 +177,68 @@ fn serve_task_workflow_timeout_then_json(
     )
 }
 
+fn serve_task_workflow_repeated_timeouts_then_json(
+    response: JsonValue,
+) -> (
+    TaskWorkflowHttpClientConfig,
+    JoinHandle<Vec<RecordedHttpRequest>>,
+) {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind repeated-timeout server");
+    let addr = listener
+        .local_addr()
+        .expect("repeated-timeout fixture server addr");
+    let handle = thread::spawn(move || {
+        let mut requests = Vec::new();
+        let mut delayed_responses = Vec::new();
+        for attempt in 0..3 {
+            let (mut stream, _) = listener
+                .accept()
+                .expect("accept repeated-timeout fixture request");
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .expect("set repeated-timeout fixture read timeout");
+            requests.push(read_recorded_http_request(&mut stream));
+            let response_text = response.to_string();
+            if attempt < 2 {
+                delayed_responses.push(thread::spawn(move || {
+                    thread::sleep(Duration::from_millis(40));
+                    let http_response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        response_text.len(),
+                        response_text
+                    );
+                    let _ = stream.write_all(http_response.as_bytes());
+                }));
+                continue;
+            }
+            let http_response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                response_text.len(),
+                response_text
+            );
+            let _ = stream.write_all(http_response.as_bytes());
+        }
+        for delayed_response in delayed_responses {
+            delayed_response
+                .join()
+                .expect("join delayed repeated-timeout fixture response");
+        }
+        requests
+    });
+    (
+        TaskWorkflowHttpClientConfig {
+            base_url: format!("http://{addr}/"),
+            repository_index: Some(crate::server_operational::RepositoryIndex::new(7)),
+            headers: BTreeMap::new(),
+            default_timeout_ms: 20,
+            retry_attempts: 0,
+            retry_backoff_ms: 0,
+            pool_max_idle_per_host: 1,
+        },
+        handle,
+    )
+}
+
 fn read_recorded_http_request(stream: &mut impl Read) -> RecordedHttpRequest {
     let mut buffer = Vec::new();
     let mut chunk = [0_u8; 1024];

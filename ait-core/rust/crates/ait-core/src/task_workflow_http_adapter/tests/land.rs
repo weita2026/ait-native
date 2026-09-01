@@ -147,6 +147,37 @@ fn atomic_task_land_timeout_retries_only_the_identical_atomic_request() {
 }
 
 #[test]
+fn atomic_task_land_repeated_timeouts_resume_the_identical_atomic_request() {
+    let mut response = atomic_task_land_response();
+    response["replayed"] = json!(true);
+    let (mut config, server) = serve_task_workflow_repeated_timeouts_then_json(response);
+    config.repository_index = Some(crate::server_operational::RepositoryIndex::new(7));
+    let mut remote = HttpWorkflowCloseoutRemote::new(config).unwrap();
+
+    let result = remote
+        .submit_task_land(
+            "RCT-1",
+            Some("main"),
+            "merge",
+            "task-land-atomic:key",
+            Some("repo"),
+        )
+        .unwrap();
+    assert_eq!(result["replayed"], true);
+
+    let requests = server.join().unwrap();
+    assert_eq!(requests.len(), 3);
+    assert!(requests.iter().all(|request| request.method == "POST"));
+    assert!(requests
+        .windows(2)
+        .all(|pair| pair[0].target == pair[1].target && pair[0].body == pair[1].body));
+    assert_eq!(
+        requests[0].target,
+        "/v1/native/repository-authorities/7/task-land"
+    );
+}
+
+#[test]
 fn task_land_http_adapter_fixture_roundtrips_submit_get_and_retry() {
     let submit_response = json!({
         "submission_id": "LAND-1",

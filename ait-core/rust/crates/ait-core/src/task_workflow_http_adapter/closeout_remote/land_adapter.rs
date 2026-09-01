@@ -228,7 +228,7 @@ impl HttpWorkflowCloseoutRemote {
         )
     }
 
-    fn resume_task_land_after_retryable_busy(
+    fn resume_task_land_after_retryable_response(
         &mut self,
         request: AtomicTaskLandRequest<'_>,
         mut last_error: TaskWorkflowHttpClientError,
@@ -262,7 +262,9 @@ impl HttpWorkflowCloseoutRemote {
             );
             match self.submit_task_land_once(request, attempt_timeout_ms) {
                 Ok(result) => return Ok(result),
-                Err(error) if error.is_retryable_busy() => last_error = error,
+                Err(error) if error.is_retryable_busy() || is_remote_mutation_timeout(&error) => {
+                    last_error = error
+                }
                 Err(error) => return Err(error),
             }
         }
@@ -504,16 +506,8 @@ impl TaskWorkflowAtomicTaskLandSubmitter for HttpWorkflowCloseoutRemote {
         };
         match self.submit_task_land_once(request, response_deadline_ms) {
             Ok(result) => Ok(result),
-            Err(error) if is_remote_mutation_timeout(&error) => {
-                match self.submit_task_land_once(request, response_deadline_ms) {
-                    Err(retry_error) if retry_error.is_retryable_busy() => {
-                        self.resume_task_land_after_retryable_busy(request, retry_error)
-                    }
-                    retry => retry,
-                }
-            }
-            Err(error) if error.is_retryable_busy() => {
-                self.resume_task_land_after_retryable_busy(request, error)
+            Err(error) if error.is_retryable_busy() || is_remote_mutation_timeout(&error) => {
+                self.resume_task_land_after_retryable_response(request, error)
             }
             Err(error) => Err(error),
         }
