@@ -1083,13 +1083,15 @@ tagged source, source mismatch, or incomplete inventory evidence fails closed:
 ### Phase 2: admit the version-only release delta before tagging
 
 Only after `pre-rc-qualification.json` exists may separate release Tasks advance
-the five component versions and coordinating family to the next RC. Finish their
-normal CI/reviewer changes, generate a second deterministic public export, and
-commit it as the single direct child of the qualified repair commit. Do not tag
-it yet. The admission command requires that the commit is untagged and rejects
-every non-version component change. Only the four generated root family/source
-authority files and their exact coordinator-subtree authority copies may
-change structurally:
+the five component versions and coordinating family to the exact next version
+admitted by `release_pre_rc_delta.mjs`: the next RC ordinal from a qualified RC,
+stable promotion of that RC, or an exact stable patch/minor advance from a
+qualified stable base. Finish their normal CI/reviewer changes, generate a
+second deterministic public export, and commit it as the single direct child
+of the qualified repair commit. Do not tag it yet. The admission command
+requires that the commit is untagged and rejects every non-version component
+change. Only the four generated root family/source authority files and their
+exact coordinator-subtree authority copies may change structurally:
 
 ```bash
 ./ci/release_operator.sh admit \

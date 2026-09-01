@@ -4338,7 +4338,7 @@ mod tests {
 
     #[test]
     fn native_runner_bundle_gate_preserves_only_the_exact_published_legacy_family() {
-        let bytes = include_bytes!("../../../../../ait-release-family.json");
+        let bytes = include_bytes!("../../../../../release/families/1.1.0/ait-release-family.json");
         assert_eq!(
             sha256_hex(bytes),
             PUBLISHED_LEGACY_NATIVE_BUNDLE_MANIFEST_SHA256
