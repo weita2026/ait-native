@@ -820,6 +820,7 @@ fi
 for required_qualification_text in \
   'name: ait pre-RC qualification' \
   'name: Canonical core quality gate' \
+  'rustup toolchain install "${toolchain}" --profile minimal --component rustfmt,clippy' \
   'bash ait-core/ci/run.sh all' \
   'core_quality: "pass"' \
   'runner: windows-11-arm' \
@@ -833,6 +834,8 @@ for required_qualification_text in \
   grep -F -- "${required_qualification_text}" "${qualification_workflow}" >/dev/null
 done
 test "$(grep -Fxc '          bash ait-core/ci/run.sh all' \
+  "${qualification_workflow}")" = 1
+test "$(grep -Fxc '          rustup toolchain install "${toolchain}" --profile minimal --component rustfmt,clippy' \
   "${qualification_workflow}")" = 1
 for forbidden_qualification_text in \
   'contents: write' \

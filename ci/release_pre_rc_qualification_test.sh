@@ -38,6 +38,7 @@ for required in \
   'Require an exact untagged repair commit' \
   'core-quality:' \
   'name: Canonical core quality gate' \
+  'rustup toolchain install "${toolchain}" --profile minimal --component rustfmt,clippy' \
   'bash ait-core/ci/run.sh all' \
   '- core-quality' \
   "git tag --points-at HEAD | grep -Eq '^v[0-9]'" \
@@ -61,6 +62,7 @@ for required in \
 done
 
 test "$(grep -Fxc '          bash ait-core/ci/run.sh all' "${workflow}")" = 1
+test "$(grep -Fxc '          rustup toolchain install "${toolchain}" --profile minimal --component rustfmt,clippy' "${workflow}")" = 1
 
 for forbidden in \
   'contents: write' \

@@ -66,7 +66,7 @@ jobs:
         run: |
           set -euo pipefail
           toolchain=$(jq -r '.rust_toolchain' ci/native_bootstrap_matrix.json)
-          rustup toolchain install "${toolchain}" --profile minimal
+          rustup toolchain install "${toolchain}" --profile minimal --component rustfmt,clippy
           rustup default "${toolchain}"
 
       - name: Run the canonical core quality module
