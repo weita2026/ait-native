@@ -562,7 +562,7 @@ fn parse_response_payload(
     let status = response.status();
     let body_text = response
         .text()
-        .map_err(|err| PlanHttpClientError::Transport(format!("{method} {url} failed: {err}")))?;
+        .map_err(|err| map_transport_error(method, url, err))?;
     if status.is_success() {
         if body_text.trim().is_empty() {
             return Ok(None);
@@ -588,7 +588,7 @@ fn parse_bytes_response_payload(
     let status = response.status();
     let bytes = response
         .bytes()
-        .map_err(|err| PlanHttpClientError::Transport(format!("{method} {url} failed: {err}")))?;
+        .map_err(|err| map_transport_error(method, url, err))?;
     if status.is_success() {
         return Ok(bytes.to_vec());
     }

@@ -88,6 +88,38 @@ fn spawn_scripted_http_server(
     (format!("http://{address}"), handle)
 }
 
+fn spawn_split_body_http_server(
+    advertised_length: usize,
+    body: &'static [u8],
+    body_delay: Duration,
+) -> (String, JoinHandle<()>) {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind split-body HTTP server");
+    let address = listener.local_addr().expect("split-body HTTP address");
+    let handle = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("accept split-body request");
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .expect("set split-body request timeout");
+        let mut request = Vec::new();
+        let mut buffer = [0_u8; 4096];
+        while find_header_end(&request).is_none() {
+            let read = stream.read(&mut buffer).expect("read split-body request");
+            assert!(read > 0, "split-body request ended before headers");
+            request.extend_from_slice(&buffer[..read]);
+        }
+        let headers = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {advertised_length}\r\nConnection: close\r\n\r\n"
+        );
+        stream
+            .write_all(headers.as_bytes())
+            .expect("write split-body response headers");
+        stream.flush().expect("flush split-body response headers");
+        thread::sleep(body_delay);
+        let _ = stream.write_all(body);
+    });
+    (format!("http://{address}"), handle)
+}
+
 fn spawn_concurrent_bytes_server(
     responses: BTreeMap<String, (u16, String)>,
 ) -> (String, Arc<AtomicUsize>, JoinHandle<Vec<String>>) {
@@ -249,6 +281,58 @@ fn mutation_never_retries_a_structured_retryable_busy_response() {
     assert_eq!(manager.inspect().request_count, 1);
     assert_eq!(manager.inspect().retry_count, 0);
     assert_eq!(server.join().expect("join scripted POST server"), ["POST"]);
+}
+
+#[test]
+fn response_body_timeout_preserves_canonical_transport_timeout_classification() {
+    let body = br#"{"status":"completed"}"#;
+    let (base_url, server) =
+        spawn_split_body_http_server(body.len(), body, Duration::from_millis(750));
+    let url = format!("{base_url}/body-timeout");
+    let mut manager = PlanHttpClientManager::new(local_http_config(base_url)).unwrap();
+
+    let error = manager
+        .execute_json(PlanHttpRequestSpec {
+            method: "POST".to_string(),
+            path: "/body-timeout".to_string(),
+            url: url.clone(),
+            query_pairs: Vec::new(),
+            headers: BTreeMap::new(),
+            body: None,
+            timeout_ms: 250,
+        })
+        .expect_err("response body must exceed the request deadline");
+
+    assert_eq!(
+        error,
+        PlanHttpClientError::Transport(format!("POST {url} failed: timed out"))
+    );
+    server.join().expect("join split-body timeout server");
+}
+
+#[test]
+fn truncated_response_body_retains_context_without_timeout_classification() {
+    let (base_url, server) = spawn_split_body_http_server(2, b"{", Duration::ZERO);
+    let url = format!("{base_url}/truncated-body");
+    let mut manager = PlanHttpClientManager::new(local_http_config(base_url)).unwrap();
+
+    let error = manager
+        .execute_json(PlanHttpRequestSpec {
+            method: "POST".to_string(),
+            path: "/truncated-body".to_string(),
+            url: url.clone(),
+            query_pairs: Vec::new(),
+            headers: BTreeMap::new(),
+            body: None,
+            timeout_ms: 5_000,
+        })
+        .expect_err("truncated response body must fail");
+
+    let message = error.to_string();
+    assert!(matches!(error, PlanHttpClientError::Transport(_)));
+    assert!(message.starts_with(&format!("POST {url} failed: ")));
+    assert!(!message.ends_with("timed out"));
+    server.join().expect("join truncated-body server");
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
