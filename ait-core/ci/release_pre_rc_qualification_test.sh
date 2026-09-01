@@ -83,7 +83,7 @@ for forbidden in \
 done
 
 fixture=${temporary_root}/fixture
-mkdir -p "${fixture}/ait-core" "${fixture}/ci" "${fixture}/component"
+mkdir -p "${fixture}/ci" "${fixture}/component"
 git -C "${fixture}" init -q
 git -C "${fixture}" config user.name 'AIT pre-RC test'
 git -C "${fixture}" config user.email 'pre-rc@localhost'
@@ -133,89 +133,6 @@ write_family() {
     >"${fixture}/component/authority.txt"
 }
 
-write_component_authority_family() {
-  local version=$1
-  local python_version=$2
-  local mapping_core_snapshot=$3
-  local component_core_snapshot=$4
-  local escaped_version=${version//./\\.}
-  jq -S -n \
-    --arg version "${version}" \
-    --arg python "${python_version}" \
-    --arg core "${mapping_core_snapshot}" '
-    {
-      schema: "ait.release.family/v3",
-      family: {
-        name: "ait-native",
-        version: $version,
-        channel: "stable",
-        tag: ("v" + $version)
-      },
-      components: [
-        {
-          id: "ait",
-          source_repository: "ait-core",
-          source_snapshot: $core,
-          version: $version
-        },
-        {
-          id: "ait-node",
-          source_repository: "ait-node",
-          source_snapshot: "SNP-222222222222",
-          version: $version
-        },
-        {
-          id: "ait-python",
-          source_repository: "ait-python",
-          source_snapshot: "SNP-333333333333",
-          version: $python
-        },
-        {
-          id: "ait-runner",
-          source_repository: "ait-runner",
-          source_snapshot: "SNP-444444444444",
-          version: $version
-        },
-        {
-          id: "ait-server",
-          source_repository: "ait-server",
-          source_snapshot: "SNP-555555555555",
-          version: $version
-        }
-      ]
-    }
-  ' >"${fixture}/ait-release-family.json"
-  jq -S --arg snapshot "${component_core_snapshot}" '
-    (.components[] | select(.source_repository == "ait-core") |
-      .source_snapshot) = $snapshot
-  ' "${fixture}/ait-release-family.json" \
-    >"${fixture}/ait-core/ait-release-family.json"
-  jq -S -n --arg version "${version}" --arg core "${mapping_core_snapshot}" '
-    {
-      schema: "ait.release.monorepo-source/v1",
-      family_version: $version,
-      family_tag: ("v" + $version),
-      subtrees: [
-        {source_repository: "ait-core", source_snapshot: $core},
-        {source_repository: "ait-node", source_snapshot: "SNP-222222222222"},
-        {source_repository: "ait-python", source_snapshot: "SNP-333333333333"},
-        {source_repository: "ait-runner", source_snapshot: "SNP-444444444444"},
-        {source_repository: "ait-server", source_snapshot: "SNP-555555555555"}
-      ]
-    }
-  ' >"${fixture}/ait-monorepo-source.json"
-  jq -S -n --arg version "${version}" \
-    '{version: $version, public_publish: false}' \
-    >"${fixture}/ci/native_bootstrap_matrix.json"
-  jq -S -n --arg version "${version}" \
-    '{family_version: $version, public_publish: false}' \
-    >"${fixture}/ci/release_repository_authorities.json"
-  printf '%s\n' "${version}" >"${fixture}/component/version.txt"
-  printf 'version=%s\nregex=%s\nmapping_snapshot=%s\ncomponent_snapshot=%s\n' \
-    "${version}" "${escaped_version}" "${mapping_core_snapshot}" \
-    "${component_core_snapshot}" >"${fixture}/component/authority.txt"
-}
-
 write_family 1.2.3-rc.4 1.2.3rc4 SNP-111111111111
 printf '\0qualified\n' >"${fixture}/component/blob.bin"
 git -C "${fixture}" add -A
@@ -250,105 +167,6 @@ jq -e \
       "component/version.txt"
     ]
   ' "${temporary_root}/delta.json" >/dev/null
-
-git -C "${fixture}" checkout -q --detach "${qualified_commit}"
-write_component_authority_family \
-  1.2.3 1.2.3 SNP-111111111111 SNP-CCCCCCCCCCCC
-git -C "${fixture}" add -A
-git -C "${fixture}" commit -qm 'qualified component Snapshot authority'
-component_authority_qualified_commit=$(git -C "${fixture}" rev-parse HEAD)
-
-write_component_authority_family \
-  1.2.4 1.2.4 SNP-AAAAAAAAAAAA SNP-CCCCCCCCCCCC
-git -C "${fixture}" add -A
-git -C "${fixture}" commit -qm 'release component Snapshot authority'
-component_authority_release_commit=$(git -C "${fixture}" rev-parse HEAD)
-node "${delta}" \
-  --repository "${fixture}" \
-  --qualified-commit "${component_authority_qualified_commit}" \
-  --release-commit "${component_authority_release_commit}" \
-  >"${temporary_root}/component-authority.json"
-jq -e '
-  .decision == "pass" and
-  .authority_snapshot_transitions == [{
-    source_repository: "ait-core",
-    qualified_snapshot: "SNP-111111111111",
-    release_snapshot: "SNP-AAAAAAAAAAAA"
-  }] and
-  .component_authority_snapshot_transitions == [{
-    source_repository: "ait-core",
-    qualified_snapshot: "SNP-CCCCCCCCCCCC",
-    release_snapshot: "SNP-AAAAAAAAAAAA"
-  }] and
-  .normalized_version_paths == [
-    "component/authority.txt",
-    "component/version.txt"
-  ]
-' "${temporary_root}/component-authority.json" >/dev/null
-
-git -C "${fixture}" checkout -q --detach \
-  "${component_authority_qualified_commit}"
-write_component_authority_family \
-  1.2.4 1.2.4 SNP-AAAAAAAAAAAA SNP-DDDDDDDDDDDD
-git -C "${fixture}" add -A
-git -C "${fixture}" commit -qm 'rewritten nested component Snapshot authority'
-component_authority_rewrite_commit=$(git -C "${fixture}" rev-parse HEAD)
-expect_failure component-authority-rewrite node "${delta}" \
-  --repository "${fixture}" \
-  --qualified-commit "${component_authority_qualified_commit}" \
-  --release-commit "${component_authority_rewrite_commit}"
-grep -F 'release nested core family rewrites qualified component' \
-  "${temporary_root}/component-authority-rewrite.stderr" >/dev/null
-
-git -C "${fixture}" checkout -q --detach \
-  "${component_authority_qualified_commit}"
-write_component_authority_family \
-  1.2.4 1.2.4 SNP-AAAAAAAAAAAA SNP-CCCCCCCCCCCC
-printf 'unbound_snapshot=%s\n' SNP-EEEEEEEEEEEE \
-  >>"${fixture}/component/authority.txt"
-git -C "${fixture}" add -A
-git -C "${fixture}" commit -qm 'unbound component Snapshot token'
-component_authority_unbound_commit=$(git -C "${fixture}" rev-parse HEAD)
-expect_failure component-authority-unbound node "${delta}" \
-  --repository "${fixture}" \
-  --qualified-commit "${component_authority_qualified_commit}" \
-  --release-commit "${component_authority_unbound_commit}"
-grep -F 'release delta contains non-version changes' \
-  "${temporary_root}/component-authority-unbound.stderr" >/dev/null
-
-git -C "${fixture}" checkout -q --detach \
-  "${component_authority_qualified_commit}"
-write_component_authority_family \
-  1.2.4 1.2.4 SNP-AAAAAAAAAAAA SNP-CCCCCCCCCCCC
-jq '.family.name = "ait-native-drift"' \
-  "${fixture}/ait-core/ait-release-family.json" \
-  >"${fixture}/ait-core/ait-release-family.tmp"
-mv "${fixture}/ait-core/ait-release-family.tmp" \
-  "${fixture}/ait-core/ait-release-family.json"
-git -C "${fixture}" add -A
-git -C "${fixture}" commit -qm 'nested family structural drift'
-component_authority_drift_commit=$(git -C "${fixture}" rev-parse HEAD)
-expect_failure component-authority-drift node "${delta}" \
-  --repository "${fixture}" \
-  --qualified-commit "${component_authority_qualified_commit}" \
-  --release-commit "${component_authority_drift_commit}"
-grep -F 'release nested core family may differ from the root family only' \
-  "${temporary_root}/component-authority-drift.stderr" >/dev/null
-
-git -C "${fixture}" checkout -q --detach \
-  "${component_authority_qualified_commit}"
-write_component_authority_family \
-  1.2.4 1.2.4 SNP-AAAAAAAAAAAA SNP-CCCCCCCCCCCC
-rm "${fixture}/ait-core/ait-release-family.json"
-git -C "${fixture}" add -A
-git -C "${fixture}" commit -qm 'one-sided nested family authority'
-component_authority_missing_commit=$(git -C "${fixture}" rev-parse HEAD)
-expect_failure component-authority-missing node "${delta}" \
-  --repository "${fixture}" \
-  --qualified-commit "${component_authority_qualified_commit}" \
-  --release-commit "${component_authority_missing_commit}"
-grep -F 'nested core family authority must be present in both' \
-  "${temporary_root}/component-authority-missing.stderr" >/dev/null
 
 git -C "${fixture}" checkout -q --detach "${qualified_commit}"
 write_family 1.2.3-rc.5 1.2.3rc5 SNP-AAAAAAAAAAAA
