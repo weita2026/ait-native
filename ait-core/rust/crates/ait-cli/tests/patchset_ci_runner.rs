@@ -633,7 +633,25 @@ fn repo_native_ci_entrypoints_cover_workspace_and_guard_lineage_schema() {
     let root = repo_root_for_patch_ci_manifest();
     let unix = fs::read_to_string(root.join("ci/run.sh")).unwrap();
     let windows = fs::read_to_string(root.join("ci/run.ps1")).unwrap();
+    let schema_authority_test =
+        fs::read_to_string(root.join("rust/crates/ait-core/tests/binary_db_schema_authority.rs"))
+            .unwrap();
     let expected = expected_native_ci_test_invocations();
+
+    assert!(
+        !schema_authority_test.contains("include_bytes!"),
+        "Snapshot-runnable all-targets CI must not require lineage-only Markdown at compile time"
+    );
+    for required in [
+        "std::fs::read(&path)",
+        "ErrorKind::NotFound",
+        "binary_db_v0_bytes_or_skip!()",
+    ] {
+        assert!(
+            schema_authority_test.contains(required),
+            "schema authority test is missing the bounded runtime lineage guard `{required}`"
+        );
+    }
 
     assert_eq!(
         shell_cargo_test_invocations(&unix),
