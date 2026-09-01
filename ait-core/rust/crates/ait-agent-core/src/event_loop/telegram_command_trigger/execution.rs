@@ -92,23 +92,27 @@ fn execute_telegram_command_trigger_operation_json(
         }
     };
 
-    if let Some(mut stdin) = child.stdin.take() {
-        if let Err(exc) = stdin.write_all(stdin_payload.as_bytes()) {
-            return Ok(json!({
-                "kind": kind,
-                "method": "std::process::Command",
-                "ok": false,
-                "returncode": -1,
-                "stdout": "",
-                "stderr": exc.to_string(),
-                "error": exc.to_string(),
-            }));
-        }
-    }
+    let stdin_write_error = child.stdin.take().and_then(|mut stdin| {
+        stdin
+            .write_all(stdin_payload.as_bytes())
+            .err()
+            .filter(|exc| exc.kind() != std::io::ErrorKind::BrokenPipe)
+    });
 
     let output = child
         .wait_with_output()
         .map_err(|exc| format!("failed to wait for Telegram command trigger handler: {exc}"))?;
+    if let Some(exc) = stdin_write_error {
+        return Ok(json!({
+            "kind": kind,
+            "method": "std::process::Command",
+            "ok": false,
+            "returncode": -1,
+            "stdout": "",
+            "stderr": exc.to_string(),
+            "error": exc.to_string(),
+        }));
+    }
     let returncode = output.status.code().unwrap_or(-1);
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();

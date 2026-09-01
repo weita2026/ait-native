@@ -41,6 +41,43 @@ fn command_trigger_execute_operation_runs_handler_in_rust() {
 
 #[test]
 #[cfg(unix)]
+fn command_trigger_result_does_not_depend_on_handler_consuming_stdin() {
+    let stdin_json = json!({"message": "x".repeat(2 * 1_048_576)});
+    let success = agent_telegram_command_trigger_execute_operation_json(&json!({
+        "kind": "run_handler",
+        "handler_command": [
+            "/bin/sh",
+            "-c",
+            r#"exec 0<&-; printf '%s' '{"reply":{"text":"done"}}'"#
+        ],
+        "stdin_json": stdin_json,
+    }))
+    .unwrap();
+
+    assert_eq!(success["ok"], true);
+    assert_eq!(success["returncode"], 0);
+    assert!(success["stdout"].as_str().unwrap().contains("\"done\""));
+    assert_eq!(success["stderr"], "");
+
+    let failure = agent_telegram_command_trigger_execute_operation_json(&json!({
+        "kind": "run_handler",
+        "handler_command": [
+            "/bin/sh",
+            "-c",
+            "exec 0<&-; printf 'boom\\n' >&2; exit 7"
+        ],
+        "stdin_json": {"message": "x".repeat(2 * 1_048_576)},
+    }))
+    .unwrap();
+
+    assert_eq!(failure["ok"], false);
+    assert_eq!(failure["returncode"], 7);
+    assert_eq!(failure["error"], "boom");
+    assert_eq!(failure["stderr"], "boom\n");
+}
+
+#[test]
+#[cfg(unix)]
 fn command_trigger_execute_operation_reports_nonzero_exit() {
     let planned = agent_telegram_command_trigger_execute_operation_json(&json!({
         "kind": "run_handler",
