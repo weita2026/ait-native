@@ -5085,15 +5085,21 @@ fn run_agent_process(
             program.display()
         )
     })?;
-    let mut stdin = child
-        .stdin
-        .take()
-        .ok_or_else(|| format!("{executor_label} benchmark subject has no stdin pipe"))?;
-    stdin
-        .write_all(prompt.as_bytes())
-        .map_err(|error| format!("Failed to write {executor_label} benchmark prompt: {error}"))?;
-    drop(stdin);
-    wait_for_child(&mut child, Duration::from_secs(run_timeout_seconds), start)
+    let prompt_write_error = match child.stdin.take() {
+        Some(mut stdin) => stdin
+            .write_all(prompt.as_bytes())
+            .err()
+            .filter(|error| error.kind() != std::io::ErrorKind::BrokenPipe)
+            .map(|error| format!("Failed to write {executor_label} benchmark prompt: {error}")),
+        None => Some(format!(
+            "{executor_label} benchmark subject has no stdin pipe"
+        )),
+    };
+    let process = wait_for_child(&mut child, Duration::from_secs(run_timeout_seconds), start)?;
+    if let Some(error) = prompt_write_error {
+        return Err(error);
+    }
+    Ok(process)
 }
 
 /// Build the Claude Code headless invocation for one measured lane. The
@@ -8510,6 +8516,54 @@ mod tests {
                 "missing {expected:?} in {reasons:?}"
             );
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn agent_process_reaps_early_stdin_close_and_preserves_exit_status() {
+        let temp = tempfile::tempdir().unwrap();
+        let prompt = "x".repeat(2 * 1_048_576);
+
+        for (name, script, expected_code) in [
+            (
+                "success",
+                "exec 0<&-; printf 'provider-output\\n'; exit 0",
+                0,
+            ),
+            (
+                "failure",
+                "exec 0<&-; printf 'provider-failure\\n' >&2; exit 7",
+                7,
+            ),
+        ] {
+            let mut command = Command::new("/bin/sh");
+            command.args(["-c", script]);
+            let stdout = temp.path().join(format!("{name}.stdout"));
+            let stderr = temp.path().join(format!("{name}.stderr"));
+
+            let process = run_agent_process(
+                command,
+                "fixture",
+                Path::new("/bin/sh"),
+                &prompt,
+                &stdout,
+                &stderr,
+                5,
+            )
+            .unwrap();
+
+            assert_eq!(process.exit_code, Some(expected_code));
+            assert!(!process.timed_out);
+        }
+
+        assert_eq!(
+            fs::read_to_string(temp.path().join("success.stdout")).unwrap(),
+            "provider-output\n"
+        );
+        assert_eq!(
+            fs::read_to_string(temp.path().join("failure.stderr")).unwrap(),
+            "provider-failure\n"
+        );
     }
 
     #[cfg(unix)]
