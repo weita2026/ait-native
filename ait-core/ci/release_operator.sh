@@ -399,6 +399,7 @@ validate_pre_rc_qualification_evidence() {
         workflow_control_commit: $control_commit,
         release_tags_at_qualification: []
       } and
+      .gates.core_quality == "pass" and
       .gates.release_controls == "pass" and
       .gates.command_inventory == "pass" and
       .gates.environment_inventory == "pass" and
@@ -547,6 +548,7 @@ case "${mode}" in
             evidence_sha256: $evidence_sha
           },
           gates: {
+            core_quality: "pass",
             release_controls: "pass",
             command_inventory: "pass",
             environment_inventory: "pass",

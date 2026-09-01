@@ -149,6 +149,7 @@ jq -S -n --arg commit "${qualified_commit}" '
       release_tags_at_qualification: []
     },
     gates: {
+      core_quality: "pass",
       release_controls: "pass",
       command_inventory: "pass",
       environment_inventory: "pass",
@@ -170,6 +171,12 @@ jq -S -n --arg commit "${qualified_commit}" '
     public_endpoint_writes: false
   }
 ' >"${qualification_evidence}/ait-release.pre-rc-qualification.json"
+
+missing_core_quality_evidence=${temporary_root}/missing-core-quality-evidence
+mkdir "${missing_core_quality_evidence}"
+jq 'del(.gates.core_quality)' \
+  "${qualification_evidence}/ait-release.pre-rc-qualification.json" \
+  >"${missing_core_quality_evidence}/ait-release.pre-rc-qualification.json"
 qualification_run=${temporary_root}/qualification-run.json
 qualification_artifact=${temporary_root}/qualification-artifact.json
 jq -S -n --arg commit "${qualified_commit}" '
@@ -193,6 +200,15 @@ jq -S -n --arg name "ait-pre-rc-qualification-${qualified_commit}" '
     workflow_run: {id: 90}
   }
 ' >"${qualification_artifact}"
+
+expect_failure missing-core-quality "${operator}" bind-qualification \
+  --source-root "${source_root}" \
+  --run-record "${qualification_run}" \
+  --artifact-record "${qualification_artifact}" \
+  --evidence-root "${missing_core_quality_evidence}" \
+  --output "${temporary_root}/missing-core-quality-qualification.json"
+grep -F 'pre-RC qualification evidence is incomplete or inconsistent' \
+  "${temporary_root}/missing-core-quality.stderr" >/dev/null
 
 jq '.conclusion = "failure"' "${qualification_run}" \
   >"${temporary_root}/failed-qualification-run.json"
@@ -228,6 +244,7 @@ jq -e --arg commit "${qualified_commit}" '
   .status == "qualified_for_version_only_release" and
   .source.git_commit == $commit and
   .source.release_tag_present == false and
+  .gates.core_quality == "pass" and
   ([.gates[]] | all(. == "pass")) and
   ([.mutation[]] | all(. == false))
 ' "${qualification}" >/dev/null

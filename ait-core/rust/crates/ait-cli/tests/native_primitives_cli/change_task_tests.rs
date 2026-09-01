@@ -1504,6 +1504,7 @@ fn native_task_start_local_scope_bootstraps_main_seed() {
     let temp = init_repo("https://example.test");
     let root = temp.path();
     let ephemeral_root = root.join("ephemeral-root");
+    let _ephemeral_cleanup = WritableTreeOnDrop::new(ephemeral_root.clone());
     write_file(
         &root.join(".ait/config.json"),
         &format!(

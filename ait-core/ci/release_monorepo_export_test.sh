@@ -819,6 +819,9 @@ if grep -F 'contents: write' "${root_workflow}" >/dev/null ||
 fi
 for required_qualification_text in \
   'name: ait pre-RC qualification' \
+  'name: Canonical core quality gate' \
+  'bash ait-core/ci/run.sh all' \
+  'core_quality: "pass"' \
   'runner: windows-11-arm' \
   'target: aarch64-pc-windows-msvc' \
   'runner: windows-2025' \
@@ -829,6 +832,8 @@ for required_qualification_text in \
   'public_endpoint_writes: false'; do
   grep -F -- "${required_qualification_text}" "${qualification_workflow}" >/dev/null
 done
+test "$(grep -Fxc '          bash ait-core/ci/run.sh all' \
+  "${qualification_workflow}")" = 1
 for forbidden_qualification_text in \
   'contents: write' \
   'packages: write' \
@@ -947,6 +952,15 @@ node "${repo_root}/ci/release_monorepo_transform.mjs" \
   'name: tag-first qualification'
 expect_failure qualification-workflow-drift node \
   "${qualification_workflow_drift_output}/build-release.mjs" --validate-only
+
+qualification_core_gate_drift_output=${temporary_root}/qualification-core-gate-drift-output
+cp -R "${output_one}" "${qualification_core_gate_drift_output}"
+node "${repo_root}/ci/release_monorepo_transform.mjs" \
+  "${qualification_core_gate_drift_output}/.github/workflows/ait-release-pre-rc-qualification.yml" \
+  '          bash ait-core/ci/run.sh all' \
+  '          true'
+expect_failure qualification-core-gate-drift node \
+  "${qualification_core_gate_drift_output}/build-release.mjs" --validate-only
 
 prepublish_workflow_drift_output=${temporary_root}/prepublish-workflow-drift-output
 cp -R "${output_one}" "${prepublish_workflow_drift_output}"

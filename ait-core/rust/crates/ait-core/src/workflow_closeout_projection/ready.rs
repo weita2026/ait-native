@@ -192,9 +192,10 @@ pub(crate) fn workflow_ready_suggested_commands(
     apply_owned_continuation: bool,
 ) -> Vec<JsonValue> {
     let next_action_code = optional_string_field(next_action, "code").unwrap_or_default();
-    let candidates = if next_action_code == "external_readiness_blocked" {
-        vec![optional_string_field(next_action, "command")]
-    } else if next_action_code == "patchset_recovery_required" {
+    let candidates = if matches!(
+        next_action_code.as_str(),
+        "external_readiness_blocked" | "patchset_recovery_required"
+    ) {
         vec![optional_string_field(next_action, "command")]
     } else if apply_owned_continuation
         && WORKFLOW_READY_APPLY_OWNED_CODES.contains(&next_action_code.as_str())

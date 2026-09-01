@@ -46,6 +46,36 @@ jobs:
           jq -e '.public_publish == false' ci/release_repository_authorities.json >/dev/null
           node build-release.mjs --validate-only --git-commit '${{ inputs.source_commit }}'
 
+  core-quality:
+    name: Canonical core quality gate
+    needs: contract
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+    steps:
+      - name: Check out the exact repair source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ inputs.source_commit }}
+          fetch-depth: 1
+          path: source
+          persist-credentials: false
+
+      - name: Install the pinned Rust toolchain
+        shell: bash
+        working-directory: source
+        run: |
+          set -euo pipefail
+          toolchain=$(jq -r '.rust_toolchain' ci/native_bootstrap_matrix.json)
+          rustup toolchain install "${toolchain}" --profile minimal
+          rustup default "${toolchain}"
+
+      - name: Run the canonical core quality module
+        shell: bash
+        working-directory: source
+        run: |
+          set -euo pipefail
+          bash ait-core/ci/run.sh all
+
   regression:
     name: Release controls and public-surface regression
     needs: contract
@@ -138,6 +168,7 @@ jobs:
     name: Freeze non-release qualification evidence
     needs:
       - contract
+      - core-quality
       - regression
       - windows-lifecycle
     runs-on: ubuntu-22.04
@@ -161,6 +192,7 @@ jobs:
                   release_tags_at_qualification: []
                 },
                 gates: {
+                  core_quality: "pass",
                   release_controls: "pass",
                   command_inventory: "pass",
                   environment_inventory: "pass",

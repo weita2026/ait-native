@@ -1054,8 +1054,10 @@ AIT_RELEASE_COORDINATOR_CREATED_AT=<unix-seconds> \
 Review the export, commit and push it to public `main` without a tag, validate a
 clean clone, and dispatch the dedicated qualification workflow. That workflow
 has read-only repository permission, performs no build freeze or endpoint
-write, runs release-control plus command/environment inventory regression, and
-executes real core and server initialization on native Windows x64 and arm64:
+write, runs the canonical `ait-core/ci/run.sh all` quality module in parallel
+with release-control plus command/environment inventory regression, and
+executes real core and server initialization on native Windows x64 and arm64.
+Its frozen evidence must record the core-quality pass explicitly:
 
 ```bash
 export AIT_PUBLIC_SOURCE=/absolute/path/to/clean/ait-native

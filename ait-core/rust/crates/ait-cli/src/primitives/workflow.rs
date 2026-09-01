@@ -385,7 +385,7 @@ pub fn workflow_land_payload(
         let (remote_change_id, patchset_is_authoritative) =
             workflow_completed_local_finish_authority(Some(candidate))?;
         let Some(remote_change_id) = remote_change_id else {
-            return workflow_final_snapshot_promotion_preview(&candidate);
+            return workflow_final_snapshot_promotion_preview(candidate);
         };
         let local_change_ref = workflow_completed_local_command_change_ref(candidate)?;
         return workflow_land_payload_with_workspace_mode(
@@ -780,11 +780,19 @@ where
         &resolved_change_id,
         review_message,
         remote_name,
-        ready_patchset_is_authoritative,
-        command_change_ref.as_deref(),
-        None,
+        WorkflowLandApplyStateMode {
+            ready_patchset_is_authoritative,
+            command_change_ref: command_change_ref.as_deref(),
+            initial_state: None,
+        },
         progress,
     )
+}
+
+struct WorkflowLandApplyStateMode<'a> {
+    ready_patchset_is_authoritative: bool,
+    command_change_ref: Option<&'a str>,
+    initial_state: Option<JsonValue>,
 }
 
 fn workflow_land_apply_with_state_mode<F>(
@@ -792,9 +800,7 @@ fn workflow_land_apply_with_state_mode<F>(
     change_id: &str,
     review_message: Option<&str>,
     remote_name: Option<&str>,
-    ready_patchset_is_authoritative: bool,
-    command_change_ref: Option<&str>,
-    mut initial_state: Option<JsonValue>,
+    mut state_mode: WorkflowLandApplyStateMode<'_>,
     mut progress: Option<F>,
 ) -> Result<JsonValue, String>
 where
@@ -817,14 +823,14 @@ where
         None,
     )?;
     loop {
-        let state = if let Some(state) = initial_state.take() {
+        let state = if let Some(state) = state_mode.initial_state.take() {
             state
-        } else if ready_patchset_is_authoritative {
+        } else if state_mode.ready_patchset_is_authoritative {
             workflow_ready_task_land_payload_with_command_ref(
                 repo,
                 change_id,
                 remote_name,
-                command_change_ref,
+                state_mode.command_change_ref,
             )?
         } else {
             workflow_land_payload(repo, change_id, remote_name)?

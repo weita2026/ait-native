@@ -36,6 +36,10 @@ node --check "${delta}"
 for required in \
   'name: ait pre-RC qualification' \
   'Require an exact untagged repair commit' \
+  'core-quality:' \
+  'name: Canonical core quality gate' \
+  'bash ait-core/ci/run.sh all' \
+  '- core-quality' \
   "git tag --points-at HEAD | grep -Eq '^v[0-9]'" \
   'runner: windows-11-arm' \
   'target: aarch64-pc-windows-msvc' \
@@ -48,12 +52,15 @@ for required in \
   'root_command_inventory_is_frozen' \
   'root_ait_agent_namespace_is_absent' \
   'ait.release.pre-rc-qualification/v1' \
+  'core_quality: "pass"' \
   'immutable_release_tag_created: false' \
   'release_receipts_created: false' \
   'public_endpoint_writes: false' \
   'ait-pre-rc-qualification-${{ inputs.source_commit }}'; do
   grep -F -- "${required}" "${workflow}" >/dev/null
 done
+
+test "$(grep -Fxc '          bash ait-core/ci/run.sh all' "${workflow}")" = 1
 
 for forbidden in \
   'contents: write' \
@@ -63,6 +70,8 @@ for forbidden in \
   'twine upload' \
   'gh release create' \
   'docker push' \
+  'cargo clippy' \
+  'cargo fmt' \
   'bash ci/release_monorepo_export_test.sh' \
   'git tag -a'; do
   if grep -F -- "${forbidden}" "${workflow}" >/dev/null; then
