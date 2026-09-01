@@ -316,12 +316,40 @@ fn task_land_registered_line_users(
         .collect())
 }
 
+fn task_land_local_bound_head_state(
+    repo: &RepoRuntime,
+    line_name: &str,
+    current_head: Option<&str>,
+    expected_revision_snapshot_id: &str,
+    allow_empty_head: bool,
+    allow_ancestor_head: bool,
+) -> Result<&'static str, String> {
+    if current_head == Some(expected_revision_snapshot_id) {
+        return Ok("accepted_revision");
+    }
+    if allow_empty_head && current_head.is_none() {
+        return Ok("empty_remote_placeholder");
+    }
+    if allow_ancestor_head
+        && current_head.is_some()
+        && snapshot_distance_if_ancestor(repo, current_head, Some(expected_revision_snapshot_id))?
+            .is_some()
+    {
+        return Ok("accepted_revision_descends_from_feature_head");
+    }
+    Err(format!(
+        "Task feature Line `{line_name}` head drifted from accepted revision `{expected_revision_snapshot_id}` to `{}`; refusing to hide unlanded content.",
+        current_head.unwrap_or("<none>")
+    ))
+}
+
 fn task_land_validate_local_bound_line(
     repo: &RepoRuntime,
     candidate: &JsonValue,
     expected_revision_snapshot_id: &str,
     target_line: Option<&str>,
     allow_empty_head: bool,
+    allow_ancestor_head: bool,
 ) -> Result<JsonValue, String> {
     let line_id = required_string_field(candidate, "line_id")?;
     let line_name = required_string_field(candidate, "line_name")?;
@@ -333,7 +361,7 @@ fn task_land_validate_local_bound_line(
     }
     if target_line == Some(line_name.as_str()) {
         return Err(format!(
-            "Task feature Line `{line_name}` is also the Land target and cannot be archived."
+            "Task feature Line `{line_name}` is also the finish target and cannot be archived."
         ));
     }
     let current_line = repo.current_line_name()?;
@@ -358,14 +386,14 @@ fn task_land_validate_local_bound_line(
         ));
     }
     let current_head = string_field(&current, "head_snapshot_id");
-    if current_head.as_deref() != Some(expected_revision_snapshot_id)
-        && !(allow_empty_head && current_head.is_none())
-    {
-        return Err(format!(
-            "Task feature Line `{line_name}` head drifted from accepted revision `{expected_revision_snapshot_id}` to `{}`; refusing to hide unlanded content.",
-            current_head.as_deref().unwrap_or("<none>")
-        ));
-    }
+    task_land_local_bound_head_state(
+        repo,
+        &line_name,
+        current_head.as_deref(),
+        expected_revision_snapshot_id,
+        allow_empty_head,
+        allow_ancestor_head,
+    )?;
     Ok(current)
 }
 
@@ -375,6 +403,7 @@ pub(in crate::primitives) fn task_land_archive_local_bound_line(
     expected_revision_snapshot_id: &str,
     target_line: Option<&str>,
     allow_empty_head: bool,
+    allow_ancestor_head: bool,
 ) -> Result<JsonValue, String> {
     run_locked_workspace_command(repo, "ait task finish feature line closeout", || {
         let current = task_land_validate_local_bound_line(
@@ -383,9 +412,17 @@ pub(in crate::primitives) fn task_land_archive_local_bound_line(
             expected_revision_snapshot_id,
             target_line,
             allow_empty_head,
+            allow_ancestor_head,
         )?;
         let line_name = required_string_field(candidate, "line_name")?;
-        let empty_head = string_field(&current, "head_snapshot_id").is_none();
+        let head_state = task_land_local_bound_head_state(
+            repo,
+            &line_name,
+            string_field(&current, "head_snapshot_id").as_deref(),
+            expected_revision_snapshot_id,
+            allow_empty_head,
+            allow_ancestor_head,
+        )?;
         let already_archived = string_field(&current, "status").as_deref() == Some("archived");
         let archived = if already_archived {
             current
@@ -395,9 +432,15 @@ pub(in crate::primitives) fn task_land_archive_local_bound_line(
         let archived_line_id = required_string_field(&archived, "line_id")?;
         let expected_line_id = required_string_field(candidate, "line_id")?;
         let archived_head = string_field(&archived, "head_snapshot_id");
+        task_land_local_bound_head_state(
+            repo,
+            &line_name,
+            archived_head.as_deref(),
+            expected_revision_snapshot_id,
+            allow_empty_head,
+            allow_ancestor_head,
+        )?;
         if archived_line_id != expected_line_id
-            || (archived_head.as_deref() != Some(expected_revision_snapshot_id)
-                && !(allow_empty_head && archived_head.is_none()))
             || string_field(&archived, "status").as_deref() != Some("archived")
         {
             return Err(format!(
@@ -407,7 +450,7 @@ pub(in crate::primitives) fn task_land_archive_local_bound_line(
         Ok(json!({
             "status": if already_archived { "already_archived" } else { "archived" },
             "scope": "local",
-            "head_state": if empty_head { "empty_remote_placeholder" } else { "accepted_revision" },
+            "head_state": head_state,
             "line": archived,
         }))
     })
@@ -563,6 +606,7 @@ pub(in crate::primitives) fn task_land_attach_bound_line_closeout(
                 &expected_revision_snapshot_id,
                 target_line.as_deref(),
                 !use_local_scope,
+                !use_local_scope,
             )?;
             let remote = if use_local_scope {
                 json!({
@@ -583,6 +627,7 @@ pub(in crate::primitives) fn task_land_attach_bound_line_closeout(
                 &candidate,
                 &expected_revision_snapshot_id,
                 target_line.as_deref(),
+                !use_local_scope,
                 !use_local_scope,
             )?;
             let already_archived = string_field(&local, "status").as_deref()
@@ -612,7 +657,7 @@ pub(in crate::primitives) fn task_land_attach_bound_line_closeout(
                 "task_id": task_id,
                 "task_status": task_status,
                 "error": error,
-                "detail": "The Land record and Task completion are already authoritative. Repair the reported Line condition, then rerun the same `ait task finish` command to resume closeout without creating a second Land.",
+                "detail": "The internal delivery record and Task completion are already authoritative. Repair the reported Line condition, then rerun the same `ait task finish` command to resume closeout without creating a second delivery record.",
             })
         })
     };

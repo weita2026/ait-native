@@ -2342,7 +2342,7 @@ fn format_hunk(row: &JsonValue) -> Result<String, String> {
         ("task_id", "task"),
         ("change_id", "change"),
         ("patchset_id", "patchset"),
-        ("land_id", "land"),
+        ("land_id", "finish-record"),
         ("submission_id", "submission"),
     ] {
         if let Some(value) = string_field(row, key) {

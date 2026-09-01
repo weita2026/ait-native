@@ -102,6 +102,48 @@ fn completed_local_ready_keeps_selected_patchset_authoritative_over_dirty_worksp
 }
 
 #[test]
+fn ancestry_recovery_does_not_offer_a_patchset_republish_command() {
+    let facts = json!({
+        "change": {"change_id": "RCC-1", "base_line": "main", "status": "active"},
+        "task": {"task_id": "RCT-1", "status": "active"},
+        "patchset": {"patchset_id": "RCP-1"},
+        "workspace": {"clean": true, "workspace_matches_patchset": false},
+        "freshness": {"base_is_fresh": true},
+        "patchset_refresh": {
+            "reason_code": "current_head_behind_patchset",
+            "republish_allowed": false,
+            "summary": "Restore the selected Patchset revision before continuing.",
+            "detail": "The current head is older than the selected revision; do not republish it."
+        },
+        "attestation": null,
+        "policy": null,
+        "external_readiness": null,
+        "payload_seed": {}
+    });
+    let commands = json!({
+        "apply_command": "ait workflow ready RCC-1 --apply",
+        "publish_command": "ait patchset publish RCC-1",
+        "attestation_command": "ait attest put RCP-1"
+    });
+
+    let model = project_workflow_ready_read_model(&facts, &commands, false, false, true).unwrap();
+    let patchset_step = model["steps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|step| step["code"] == "patchset")
+        .unwrap();
+
+    assert_eq!(
+        model["next_action"]["code"],
+        json!("patchset_recovery_required")
+    );
+    assert!(model["next_action"]["command"].is_null());
+    assert!(patchset_step["command"].is_null());
+    assert_eq!(model["suggested_commands"], json!([]));
+}
+
+#[test]
 fn workflow_land_full_read_model_preserves_patchset_ci_status() {
     let facts = json!({
         "change": {"change_id": "RCC-1", "base_line": "main"},

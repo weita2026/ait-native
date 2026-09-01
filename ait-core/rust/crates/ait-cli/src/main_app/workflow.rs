@@ -332,6 +332,19 @@ where
     }
 }
 
+fn workflow_cleanup_worktree_name(cleanup: &JsonMap<String, JsonValue>) -> Option<String> {
+    let worktree_name = string_field(cleanup.get("worktree_name"));
+    if !worktree_name.is_empty() {
+        return Some(worktree_name);
+    }
+    let worktree = cleanup.get("worktree")?.as_object()?;
+    let name = string_field(worktree.get("name"));
+    if !name.is_empty() {
+        return Some(name);
+    }
+    workflow_cleanup_worktree_name(worktree)
+}
+
 fn render_workflow_phase_text(payload: &JsonValue, phase: &str) -> Result<String, String> {
     let obj = payload
         .as_object()
@@ -343,23 +356,33 @@ fn render_workflow_phase_text(payload: &JsonValue, phase: &str) -> Result<String
         string_field(workflow_nested_value(payload, "task", "task_id"))
     });
     let base_line = string_field(workflow_nested_value(payload, "change", "base_line"));
-    let current_line = string_field(workflow_nested_value(payload, "workspace", "current_line"));
+    let current_line = workflow_default_text(
+        string_field(workflow_nested_value(payload, "workspace", "current_line")),
+        || {
+            workflow_default_text(string_field(obj.get("current_line")), || {
+                string_field(obj.get("target_line"))
+            })
+        },
+    );
     let workspace_status = string_field(workflow_nested_value(
         payload,
         "workspace",
         "workspace_status",
     ));
+    let workspace_evaluation =
+        string_field(workflow_nested_value(payload, "workspace", "evaluation"));
     let workspace_clean = workflow_nested_value(payload, "workspace", "clean")
         .and_then(JsonValue::as_bool);
     let workspace_status = workflow_default_text(workspace_status, || match workspace_clean {
         Some(true) => "clean".to_string(),
         Some(false) => "dirty".to_string(),
+        None if workspace_evaluation == "skipped" => "not evaluated".to_string(),
         None => "unknown".to_string(),
     });
-    let changed_count = workflow_default_text(
-        string_field(workflow_nested_value(payload, "workspace", "changed_count")),
-        || "0".to_string(),
-    );
+    let changed_count = workflow_nested_value(payload, "workspace", "changed_count")
+        .filter(|value| !value.is_null())
+        .map(|value| string_field(Some(value)))
+        .filter(|value| !value.is_empty());
     let patchset_id = string_field(workflow_nested_value(payload, "patchset", "patchset_id"));
     let next_action_code = string_field(workflow_nested_value(payload, "next_action", "code"));
     let next_action_summary =
@@ -410,11 +433,12 @@ fn render_workflow_phase_text(payload: &JsonValue, phase: &str) -> Result<String
             current_line
         }
     ));
-    lines.push(format!(
-        "- workspace: {} ({} changed)",
-        workspace_status,
-        changed_count
-    ));
+    lines.push(match changed_count {
+        Some(changed_count) => {
+            format!("- workspace: {workspace_status} ({changed_count} changed)")
+        }
+        None => format!("- workspace: {workspace_status}"),
+    });
     lines.push(format!(
         "- patchset: {}",
         if patchset_id.is_empty() {
@@ -459,16 +483,8 @@ fn render_workflow_phase_text(payload: &JsonValue, phase: &str) -> Result<String
             "unknown".to_string()
         });
         let cleanup_reason = string_field(cleanup.get("reason"));
-        let cleanup_worktree = workflow_default_text(
-            string_field(
-                cleanup
-                    .get("worktree")
-                    .and_then(JsonValue::as_object)
-                    .and_then(|worktree| worktree.get("name"))
-                    .or_else(|| cleanup.get("worktree_name")),
-            ),
-            || "unknown".to_string(),
-        );
+        let cleanup_worktree =
+            workflow_cleanup_worktree_name(cleanup).unwrap_or_else(|| "unknown".to_string());
         lines.push(String::new());
         lines.push("Worktree cleanup".to_string());
         lines.push(format!("- {cleanup_status}: {cleanup_worktree}"));
@@ -766,17 +782,11 @@ fn render_local_task_land_text(payload: &JsonValue) -> Result<String, String> {
 fn workflow_guide_payload(topic: Option<&str>) -> Result<JsonValue, String> {
     let local_land_contract = task_land_scope_contract_json(true);
     let remote_land_contract = task_land_scope_contract_json(false);
-    let local_plan_closeout_policy = string_field(
-        local_land_contract.get("plan_closeout_policy"),
-    );
-    let remote_plan_closeout_policy = string_field(
-        remote_land_contract.get("plan_closeout_policy"),
-    );
     let inventory = json!({
         "topic": "inventory",
         "summary": "Use one inventory surface first, then drill down only where the workflow actually points.",
         "when_to_use": [
-            "You need to answer what remains or what should land next.",
+            "You need to answer what remains or what should finish next.",
             "You are about to rerun queue, task list, or change list in the same turn."
         ],
         "commands": [
@@ -793,7 +803,7 @@ fn workflow_guide_payload(topic: Option<&str>) -> Result<JsonValue, String> {
             {
                 "label": "Change history",
                 "command": "ait change list --all",
-                "detail": "Use the Change inventory instead of adding every non-landed Change to the queue."
+                "detail": "Use the Change inventory instead of adding every unfinished Change to the queue."
             },
             {
                 "label": "One task readiness",
@@ -810,8 +820,8 @@ fn workflow_guide_payload(topic: Option<&str>) -> Result<JsonValue, String> {
             "Do not rerun the same queue or list command in the same turn unless workflow state changed."
         ]
     });
-    let land = json!({
-        "topic": "land",
+    let finish = json!({
+        "topic": "finish",
         "contract_version": TASK_LAND_CONTRACT_VERSION,
         "scope_contracts": {
             "local": local_land_contract.clone(),
@@ -819,8 +829,8 @@ fn workflow_guide_payload(topic: Option<&str>) -> Result<JsonValue, String> {
         },
         "summary": "Use `workflow ready` then `workflow finish` instead of rediscovering low-level remote gates by hand.",
         "when_to_use": [
-            "You want to see what still blocks one remote change from landing.",
-            "You want the helper to advance safe remote-land steps without teaching the low-level gate commands first."
+            "You want to see what still blocks one remote change from finishing.",
+            "You want the helper to advance safe remote-finish steps without teaching the low-level gate commands first."
         ],
         "commands": [
             {
@@ -836,12 +846,12 @@ fn workflow_guide_payload(topic: Option<&str>) -> Result<JsonValue, String> {
             {
                 "label": "Task finish direct",
                 "command": "ait task finish <task-or-change-id>",
-                "detail": format!("Direct finish and recovery command. Dirty local work can add `--message`; remote finish consumes an already-ready selected Patchset. It creates no Review evidence. Contract {TASK_LAND_CONTRACT_VERSION}: solo_local uses `{local_plan_closeout_policy}` Plan closeout; solo_remote uses `{remote_plan_closeout_policy}`. Resume a partial finish by rerunning the reported task-finish command.")
+                "detail": "Direct finish and recovery command. Dirty local work can add `--message`; remote finish consumes an already-ready selected Patchset. It creates no Review evidence. Plan closeout follows the configured scope. Resume a partial finish by rerunning the reported task-finish command."
             },
         ],
         "avoid": [
-            "Do not rediscover the same land path with many separate low-level gate or help commands in one turn.",
-            "Do not use the removed top-level `ait land`; `ait workflow finish` routes shared landing and Task closeout through `ait task finish`."
+            "Do not rediscover the same finish path with many separate low-level gate or help commands in one turn.",
+            "Use only the supported finish actions above; removed aliases are not recovery paths."
         ]
     });
     match topic.map(|value| value.trim().to_ascii_lowercase()) {
@@ -853,16 +863,16 @@ fn workflow_guide_payload(topic: Option<&str>) -> Result<JsonValue, String> {
                     "command": "ait workflow guide inventory"
                 },
                 {
-                    "topic": "land",
-                    "summary": land["summary"],
-                    "command": "ait workflow guide land"
+                    "topic": "finish",
+                    "summary": finish["summary"],
+                    "command": "ait workflow guide finish"
                 }
             ]
         })),
         Some(value) if value == "inventory" => Ok(inventory),
-        Some(value) if value == "land" => Ok(land),
+        Some(value) if value == "finish" => Ok(finish),
         Some(value) => Err(format!(
-            "Unknown workflow guide topic: {value}. Available topics: inventory, land"
+            "Unknown workflow guide topic: {value}. Available topics: inventory, finish"
         )),
     }
 }

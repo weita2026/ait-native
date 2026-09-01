@@ -189,6 +189,40 @@ validate_version_identity() {
     fail 65 'Python version does not match the family channel and version'
 }
 
+validate_pretag_native_bundle() {
+  local family=$1
+  local version=$2
+  local major minor
+  [[ ${version} =~ ^([0-9]+)\.([0-9]+)\. ]] ||
+    fail 65 'release version is not canonical SemVer'
+  major=${BASH_REMATCH[1]}
+  minor=${BASH_REMATCH[2]}
+  if ((major < 1 || (major == 1 && minor < 1))); then
+    return
+  fi
+  jq -e '
+    def exact_runner_bundle:
+      (.components | length) == 3 and
+      (.components | sort) == ["ait", "ait-runner", "ait-server"];
+    ([.distributions[]? |
+      select(
+        .role == "product" and
+        (.channel == "homebrew" or .channel == "apt" or .channel == "winget")
+      )] | length) == 3 and
+    ([.distributions[]? |
+      select(
+        .role == "product" and
+        (.channel == "homebrew" or .channel == "apt" or .channel == "winget")
+      ) | .channel] | sort) == ["apt", "homebrew", "winget"] and
+    ([.distributions[]? |
+      select(
+        .role == "product" and
+        (.channel == "homebrew" or .channel == "apt" or .channel == "winget")
+      )] | all(exact_runner_bundle))
+  ' "${family}" >/dev/null ||
+    fail 65 'pre-tag admission requires exact ait, ait-server, and ait-runner product bundles for Homebrew, apt, and WinGet on 1.1+'
+}
+
 validate_endpoint_config() {
   local config=$1
   local expected_release_id=${2:-}
@@ -569,6 +603,7 @@ case "${mode}" in
     family=${source_root}/ait-release-family.json
     IFS=$'\t' read -r version channel tag python_version < <(release_identity_tsv "${family}")
     validate_version_identity "${version}" "${channel}" "${tag}" "${python_version}"
+    validate_pretag_native_bundle "${family}" "${version}"
     [[ ${channel} == rc || ${channel} == stable ]] ||
       fail 65 'pre-tag admission accepts only an rc or stable release commit'
     if git -C "${source_root}" show-ref --verify --quiet "refs/tags/${tag}"; then
@@ -691,6 +726,7 @@ case "${mode}" in
     done
     IFS=$'\t' read -r version channel tag python_version < <(release_identity_tsv "${family}")
     validate_version_identity "${version}" "${channel}" "${tag}" "${python_version}"
+    validate_pretag_native_bundle "${family}" "${version}"
     source_commit=$(git -C "${source_root}" rev-parse HEAD)
     [[ ${source_commit} =~ ^[0-9a-f]{40}$ ]] || fail 65 'public source HEAD is not a full Git commit'
     [[ -z $(git -C "${source_root}" status --porcelain --untracked-files=all) ]] ||

@@ -26,6 +26,14 @@ expect_failure() {
   test -s "${temporary_root}/${label}.stderr"
 }
 
+sha256_file() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" | awk '{print $1}'
+  else
+    shasum -a 256 "$1" | awk '{print $1}'
+  fi
+}
+
 test -x "${preflight}"
 bash -n "${preflight}"
 test -x "${source_cache}"
@@ -140,6 +148,9 @@ evidence=${temporary_root}/authority.json
 jq -e --arg version "${expected_family_version}" '
   .contract == "ait.release.canonical-authority-preflight/v1" and
   .status == "ready" and .family_version == $version and
+  .family_manifest_sha256 == .canonical_family_manifest_sha256 and
+  .qualification_family_manifest_sha256 == null and
+  .qualification_family_used == false and
   (.repositories | length) == 5 and
   ([.repositories[].repository_index] | sort) == [0, 1, 2, 3, 4] and
   ([.repositories[].selected_snapshot_retained_by_main] | all(. == true)) and
@@ -213,6 +224,9 @@ source_bundles=${temporary_root}/source-bundles
 jq -e --arg version "${expected_family_version}" '
   .contract == "ait.release.source-bundles/v1" and .status == "ready" and
   .family_version == $version and .source_bundle_count == 5 and
+  .family_manifest_sha256 == .canonical_family_manifest_sha256 and
+  .qualification_family_manifest_sha256 == null and
+  .qualification_family_used == false and
   (.bundles | length) == 5 and .recovery_authority_used == false and
   .selected_core_version_authority_verified == true and
   .registry_write == false and .public_publish == false
@@ -235,6 +249,68 @@ expect_failure selected-core-repository-version-drift \
 grep -F 'selected ait-core source authority differs from coordinator family' \
   "${temporary_root}/selected-core-repository-version-drift.stderr" >/dev/null
 unset AIT_TEST_SELECTED_CORE_REPOSITORY_VERSION
+
+qualification_family=${temporary_root}/qualification-family.json
+qualification_snapshot=SNP-ABCDEF012345
+published_core_snapshot=$(jq -er '
+  [.components[] | select(.source_repository == "ait-core") | .source_snapshot] |
+  unique | if length == 1 then .[0] else error("ambiguous fixture") end
+' "${canonical_core}/ait-release-family.json")
+jq --arg snapshot "${qualification_snapshot}" '
+  (.components[] | select(.source_repository == "ait-core") |
+    .source_snapshot) = $snapshot
+' "${canonical_core}/ait-release-family.json" >"${qualification_family}"
+jq --arg snapshot "${qualification_snapshot}" \
+  '."ait-core".snapshot = $snapshot' "${state}" >"${state}.new"
+mv "${state}.new" "${state}"
+
+qualification_evidence=${temporary_root}/qualification-authority.json
+"${preflight}" "${canonical_core}" "${qualification_evidence}" \
+  "${qualification_family}" >/dev/null
+qualification_family_sha=$(sha256_file "${qualification_family}")
+canonical_family_sha=$(sha256_file \
+  "${canonical_core}/ait-release-family.json")
+jq -e --arg snapshot "${qualification_snapshot}" \
+  --arg qualification_sha "${qualification_family_sha}" \
+  --arg canonical_sha "${canonical_family_sha}" '
+  .qualification_family_used == true and
+  .family_manifest_sha256 == $qualification_sha and
+  .qualification_family_manifest_sha256 == $qualification_sha and
+  .canonical_family_manifest_sha256 == $canonical_sha and
+  (.repositories[] | select(.repo_name == "ait-core") |
+    .selected_snapshot == $snapshot)
+' "${qualification_evidence}" >/dev/null
+
+qualification_bundles=${temporary_root}/qualification-source-bundles
+"${repo_root}/ci/release_source_bundles.sh" "${canonical_core}" \
+  "${qualification_bundles}" "${qualification_family}" >/dev/null
+jq -e --arg snapshot "${qualification_snapshot}" \
+  --arg qualification_sha "${qualification_family_sha}" \
+  --arg canonical_sha "${canonical_family_sha}" '
+  .qualification_family_used == true and
+  .family_manifest_sha256 == $qualification_sha and
+  .qualification_family_manifest_sha256 == $qualification_sha and
+  .canonical_family_manifest_sha256 == $canonical_sha and
+  (.bundles[] | select(.repo_name == "ait-core") | .snapshot == $snapshot)
+' "${qualification_bundles}/source-bundles.evidence.json" >/dev/null
+
+jq --arg snapshot "${published_core_snapshot}" \
+  '."ait-core".snapshot = $snapshot' "${state}" >"${state}.new"
+mv "${state}.new" "${state}"
+
+qualification_version_drift=${temporary_root}/qualification-version-drift.json
+jq '.family.version = "9.9.9"' "${qualification_family}" \
+  >"${qualification_version_drift}"
+expect_failure qualification-version-drift "${preflight}" "${canonical_core}" \
+  "${temporary_root}/qualification-version-drift.evidence.json" \
+  "${qualification_version_drift}"
+grep -F 'qualification family may differ only in valid component source_snapshot values' \
+  "${temporary_root}/qualification-version-drift.stderr" >/dev/null
+expect_failure canonical-family-as-qualification "${preflight}" \
+  "${canonical_core}" "${temporary_root}/canonical-family-as-qualification.json" \
+  "${canonical_core}/ait-release-family.json"
+grep -F 'qualification family manifest must be independent from canonical authority' \
+  "${temporary_root}/canonical-family-as-qualification.stderr" >/dev/null
 
 expect_failure existing-output "${preflight}" "${canonical_core}" "${evidence}"
 mkdir "${workspace}/.ait-core-recovery"

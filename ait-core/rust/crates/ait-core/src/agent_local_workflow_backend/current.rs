@@ -131,10 +131,10 @@ fn project_current_workflow(
         ),
         None if has_landed_change => (
             "ready_to_complete",
-            "All linked local Changes are terminal and at least one is landed.",
+            "All linked local Changes are terminal and at least one is applied.",
             "complete_task",
             "Complete task",
-            "Complete the current local Task after its landed Change is verified.",
+            "Complete the current local Task after its applied Change is verified.",
         ),
         None => (
             "planning",

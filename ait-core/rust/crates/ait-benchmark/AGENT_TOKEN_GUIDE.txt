@@ -7,11 +7,17 @@ tokens consumed by fresh coding-agent sessions using two repository surfaces:
 - git_linear_single_session
 - ait_linear_single_session
 
-The AIT core mode is always solo_local with sprint mode off. It must have no
+The AIT core mode is solo_local. Sprint-off and sprint-on campaigns are
+reported separately and never pooled. A sprint-on smoke requires all five
+workloads exactly once in both modes and remains non-claim-eligible; a
+sprint-on complete campaign requires 20 attempts per workload and mode. Both measure
+authoring one exact run-scoped card under `docs/sprints/`, `task start --from`
+binding, task execution, and automatic checklist closeout. The Git treatment
+does not change. Every AIT mode must have no
 default remote, no configured server URL, no remote authority, and no
 ait-server process or command in the measured workflow. The only loopback
 service is the fixture's static game server during browser acceptance.
-The frozen protocol keeps project document loading disabled symmetrically with
+The protocol keeps project document loading disabled symmetrically with
 project_doc_max_bytes=0; the frozen measured prompt carries the mode-specific
 workflow rules. The AIT prompt teaches only one local task start, entry into its
 returned worktree, project editing and validation, and one local task finish.
@@ -20,13 +26,30 @@ isolation lifecycle: one linked-worktree creation on `benchmark-task`, product
 editing and validation inside it, one final candidate commit, fast-forward
 integration onto main, linked-worktree removal, and temporary-branch deletion.
 The repository-command surfaces are explicitly mutually exclusive: both AIT
-accounting-profile prompts prohibit every Git command, including post-validation
-status or diff inspection, and both Git prompts prohibit every AIT command.
-AIT-side change inspection therefore uses ordinary file reads, search, and
-project-local validation.
+accounting-profile prompts prohibit every Git command, and both Git prompts
+prohibit every AIT command. Neither measured prompt names, requires,
+or recommends any local read-only repository inspection command, and neither
+mode must inspect for its lane to be valid. Both prompts carry one identical
+neutral sentence stating that local read-only inspection is neither required
+nor prohibited. The validator admits each mode's own local read-only
+inspection surface as informational when the agent chooses it naturally; its
+token cost remains measured. Remote and management surfaces remain invalid.
 Each accounting profile has separate prompt prose, so steady-state treatments
 contain no first-use initialization, identity, configuration, or baseline
 instructions in either mode.
+Claude campaigns additionally run with
+`CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` so the session issues no auxiliary
+non-pinned model call, pass `--prompt-suggestions false`, do not supply
+`--fallback-model`, and fail closed unless the system init model, every
+assistant model, and the sole terminal `modelUsage` entry all match the pinned
+model. Protocol `.39` also requires `runtime.executor_version` to equal the
+exact measured `claude --version` output before any model request. Terminal
+model-usage token fields must match normalized usage. A
+successful Claude refusal remains provider-token-accounted, protocol-valid
+functional evidence; it is not infrastructure and cannot be accepted.
+The committed Fable smoke and complete manifests additionally pin the exact
+AIT, Git, Node, and browser version outputs so the two phases cannot silently
+measure different toolchains.
 For the steady-state profile, repository admission is performed by the runner
 before model accounting. The Git baseline commit is prepared outside measured
 tokens, but Git linked-worktree creation and complete cleanup remain inside the
@@ -42,9 +65,11 @@ workflow-ready, general inventory, history-list, or task-audit management
 surfaces. Compliance searches and quoted examples are not treated as
 invocations.
 In a measured steady-state AIT lane, exactly one task start and one task finish
-are required, an intermediate Snapshot create is optional, and every other AIT
-invocation is invalid. The prompt tells the agent to retain and directly reuse
-the task ID returned by task start, so no discovery command is needed.
+are required and an intermediate Snapshot create is optional. Additional AIT
+lifecycle, mutation, management, or remote invocations are invalid; naturally
+chosen local read-only inspection and own-CLI help remain informational. The
+prompt tells the agent to retain and directly reuse the task ID returned by
+task start, so no management discovery command is needed.
 A pilot manifest may instead set project_doc_max_bytes to a
 shared value from 1 through 65536 to screen the effect of generated AIT
 AGENTS.md guidance. That diagnostic is admitted only in pilot scope, applies
@@ -70,6 +95,24 @@ Validate the create-new smoke template:
   ait-benchmark agent-token validate \
     --manifest campaigns/agent-token-game-v1/smoke-steady-state.json
 
+Validate the five-pair sprint-card diagnostic template:
+
+  ait-benchmark agent-token validate \
+    --manifest campaigns/agent-token-game-v1/smoke-sprint-on.json
+
+Validate the frozen Claude Fable 5 Max smoke and complete designs:
+
+  ait-benchmark agent-token validate \
+    --manifest campaigns/agent-token-game-v1/fable-max-sprint-on-smoke10.json
+
+  ait-benchmark agent-token validate \
+    --manifest campaigns/agent-token-game-v1/fable-max-sprint-on-complete200.json
+
+Run the smoke in its own absent evidence directory first. Start the separate
+complete campaign only after all 10 smoke lanes are model-pure,
+protocol-valid, evaluator/browser accepted, and cleanly closed. The sign or
+magnitude of smoke token savings is diagnostic and is not a gate.
+
 Materialize one exact starting workload:
 
   ait-benchmark agent-token fixture \
@@ -92,7 +135,7 @@ Execute a campaign into an absent or empty evidence directory:
 Before any model request, the runner first drives the pinned Git executable
 through the exact generated Codex permission profile and requires a complete
 temporary linked-worktree add, empty commit, fast-forward merge, worktree
-removal, and branch deletion. It then uses the exact pinned Codex subject in an
+removal, and branch deletion. It then uses the exact pinned campaign executor in an
 isolated temporary directory and requires 30 separate successful `/bin/pwd`
 shell calls. Every command must complete before the next starts; embedded or
 extended command text, other tool items, and file or workspace changes fail
@@ -111,13 +154,31 @@ campaign before collecting acceptance evidence.
 A protocol-valid candidate that fails functional, browser, or clean-closeout
 acceptance remains a measured outcome: it is retained and acceptance-penalized,
 the safe counterpart is completed, and the runner continues the exact frozen
-suffix without retry. Infrastructure failure still stops immediately. A
-protocol-invalid attempt stops after its pair completes because it cannot enter
-the comparison. Protocol `.27` complete evidence may resume narrowly under the
-`.28` controller only when it is an exact immutable complete-pair prefix with
-identical pinned tool versions. Each new resume records both protocol revisions,
-the no-retry continuation policy, and the executing runner path and SHA-256 in
-append-only provenance; `.26` and other complete predecessors remain read-only.
+suffix without retry. Infrastructure failure still stops immediately. After
+the complete
+matrix, only a manifest that declared
+`functional_replacement_policy=first_valid_unaccepted_lane_once` before any
+session may execute one same-mode replacement for the first valid unaccepted
+lane in frozen schedule order. The source failure remains append-only. A failed
+replacement consumes the authorization and cannot be retried; smoke never has
+this authority. A replacement that passes functional admission is selected
+even if the final token result is unfavorable; claim eligibility is reported
+separately. A protocol-invalid attempt stops after its pair completes because
+it cannot enter
+the comparison. Active `.39` evidence may resume only from an exact immutable
+complete-pair prefix with identical pins, retaining valid unaccepted outcomes
+without rerun. The exact historical `.27` successor-resume exception remains
+supported; `.26` and other complete predecessors remain read-only. Each new
+resume records both protocol revisions, the no-retry continuation policy, and
+the executing runner path and SHA-256 in append-only provenance.
+
+If and only if the complete campaign contains a valid unaccepted lane, execute
+the manifest-authorized replacement explicitly; the command rejects any source
+other than the first such lane in frozen schedule order:
+
+  ait-benchmark agent-token replace \
+    --campaign-dir /path/to/complete-evidence \
+    --source-run-id <first-valid-unaccepted-run-id>
 
 Exact common workload/attempt pairs remain comparable when both summaries are
 protocol-valid and carry normalized provider usage. A difference in successful
@@ -125,8 +186,8 @@ file-change or patch-attempt frequency is measured behavior, not an exclusion.
 Reports keep provider tokens, elapsed time, completed file-change items,
 rejected apply-patch attempts, and total patch attempts as separate dimensions;
 they do not manufacture a weighted composite score. A structured provider
-error event still makes its lane infrastructure-invalid even if Codex later
-recovers and exits zero.
+error event still makes its lane infrastructure-invalid even if the executor
+later recovers and exits zero.
 
 Import one Codex JSONL provider usage stream:
 
@@ -172,9 +233,9 @@ The bundle contains summary.txt, result.json, one sanitized runs.json row for
 every scheduled session, and SHA256SUMS. It excludes private executor streams
 and host-specific absolute paths and refuses an existing output directory.
 
-Run acceptance, invalidity, timeout, and unfavorable token results are retained.
-No failed candidate may be repaired, replaced, or selectively retried under the
-same frozen campaign identity.
-Only qualification scope with complete evidence, acceptable quality parity,
-positive failure-adjusted median savings, and a positive bootstrap 95-percent
-lower bound may be claim eligible.
+Run acceptance, invalidity, timeout, refusal, and unfavorable token results are
+retained. No failed candidate may be repaired or selectively retried outside
+the manifest-declared one-lane policy above or an exact disclosed legacy
+policy. Complete evidence with acceptable quality parity, positive
+failure-adjusted median savings, and a positive bootstrap 95-percent lower
+bound may be claim eligible.

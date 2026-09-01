@@ -1,5 +1,4 @@
 use crate::runtime::RepoRuntime;
-use crate::task_land_contract::{task_land_scope_contract, TASK_LAND_CONTRACT_VERSION};
 use crate::workspace_lock::run_locked_workspace_command;
 use ait_core::json_support::{json, JsonValue};
 use ait_core::plan_sync_execution::execute_plan_sync_command_request_json;
@@ -15,23 +14,106 @@ const MANAGED_START: &str = "<!-- ait:workflow:start -->";
 const MANAGED_END: &str = "<!-- ait:workflow:end -->";
 const PLAN_BINARY_DB_WRITE_LAYOUT: u32 = 1;
 const AGENT_HARNESS_PATH: &str = "AGENTS.md";
+const CLAUDE_HARNESS_PATH: &str = "CLAUDE.md";
+const LEGACY_CLAUDE_POINTER_BODIES: [&str; 2] = [
+    "# CLAUDE\n\nThis repository's agent guidance lives in the file imported below; this\npointer exists because Claude Code auto-loads CLAUDE.md but not AGENTS.md.\n\n@AGENTS.md\n",
+    "# CLAUDE\n\nThis repository's workflow rules live in the file imported below. Read it as\nauthoritative; this file only imports it and never restates its content.\n\n@AGENTS.md\n",
+];
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum GuidanceAudience {
+    Agents,
+    Claude,
+}
 
 pub fn refresh_agent_workflow_harness(repo: &RepoRuntime) -> Result<JsonValue, String> {
-    let path = repo.authoritative_repo_root().join("AGENTS.md");
-    let existing = read_optional_regular_text(&path, "Agent contract")?
-        .unwrap_or_else(|| "# AGENTS\n".to_string());
-    let managed = render_agent_workflow_block(repo);
-    let updated = replace_or_insert_managed_block(&existing, &managed)?;
-    let changed = updated != existing;
-    if changed {
-        write_text_atomically(&path, &updated, 0o644)?;
-    }
+    let (agents, agents_changed, _) = refresh_workflow_document(
+        repo,
+        AGENT_HARNESS_PATH,
+        "AGENTS",
+        "Agent contract",
+        &render_agent_workflow_block(repo),
+        &[],
+    )?;
+    let (claude, claude_changed, claude_existed) = refresh_workflow_document(
+        repo,
+        CLAUDE_HARNESS_PATH,
+        "CLAUDE",
+        "Claude agent contract",
+        &render_claude_workflow_block(repo),
+        &LEGACY_CLAUDE_POINTER_BODIES,
+    )?;
+    let changed = agents_changed || claude_changed;
     Ok(json!({
         "status": if changed { "updated" } else { "unchanged" },
         "changed": changed,
         "artifact_path": AGENT_HARNESS_PATH,
-        "path": path,
+        "artifact_paths": [AGENT_HARNESS_PATH, CLAUDE_HARNESS_PATH],
+        "path": repo.authoritative_repo_root().join(AGENT_HARNESS_PATH),
+        "artifacts": [agents, claude],
+        // Compatibility field retained for consumers of the previous pointer
+        // receipt. It now reports only whether CLAUDE.md predated this refresh.
+        "claude_pointer": if claude_existed { "existing" } else { "created" },
     }))
+}
+
+fn refresh_workflow_document(
+    repo: &RepoRuntime,
+    artifact_path: &str,
+    heading: &str,
+    label: &str,
+    managed: &str,
+    legacy_bodies: &[&str],
+) -> Result<(JsonValue, bool, bool), String> {
+    let path = repo.authoritative_repo_root().join(artifact_path);
+    let original = read_optional_regular_text(&path, label)?;
+    let existed = original.is_some();
+    let existing = match original.as_deref() {
+        Some(body) => strip_legacy_pointer_bodies(body, heading, legacy_bodies),
+        None => format!("# {heading}\n"),
+    };
+    let updated = replace_or_insert_managed_block(&existing, managed, artifact_path)?;
+    let changed = original.as_deref() != Some(updated.as_str());
+    if changed {
+        write_text_atomically(&path, &updated, 0o644)?;
+    }
+    let status = if !existed {
+        "created"
+    } else if changed {
+        "updated"
+    } else {
+        "unchanged"
+    };
+    Ok((
+        json!({
+            "artifact_path": artifact_path,
+            "path": path,
+            "status": status,
+            "changed": changed,
+        }),
+        changed,
+        existed,
+    ))
+}
+
+fn strip_legacy_pointer_bodies(body: &str, heading: &str, legacy_bodies: &[&str]) -> String {
+    let mut cleaned = body.to_string();
+    for legacy_body in legacy_bodies {
+        let Some((legacy_heading, legacy_payload)) = legacy_body.split_once("\n\n") else {
+            continue;
+        };
+        if legacy_heading != format!("# {heading}") {
+            continue;
+        }
+        while let Some(start) = cleaned.find(legacy_payload) {
+            cleaned.replace_range(start..start + legacy_payload.len(), "");
+        }
+    }
+    if cleaned.trim() == format!("# {heading}") {
+        format!("# {heading}\n")
+    } else {
+        cleaned
+    }
 }
 
 pub fn converge_agent_workflow_harness(repo: &RepoRuntime) -> Result<JsonValue, String> {
@@ -76,24 +158,39 @@ where
     } else {
         None
     };
-    let request = agent_harness_plan_sync_request(repo, remote_name.as_deref())?;
-    let plan_sync = execute(&request)?;
-    if plan_sync.get("status").and_then(JsonValue::as_str) != Some("ok") {
-        let error = plan_sync
-            .get("error")
-            .and_then(JsonValue::as_str)
-            .unwrap_or("plan sync returned a non-ok result");
-        return Err(format!(
-            "Generated {AGENT_HARNESS_PATH} was refreshed, but automatic {scope} plan sync failed: {error}"
-        ));
+    let mut plan_syncs = Vec::new();
+    let mut agents_plan_sync = JsonValue::Null;
+    for artifact_path in [AGENT_HARNESS_PATH, CLAUDE_HARNESS_PATH] {
+        let request = agent_harness_plan_sync_request(repo, artifact_path, remote_name.as_deref())?;
+        let plan_sync = execute(&request)?;
+        if plan_sync.get("status").and_then(JsonValue::as_str) != Some("ok") {
+            let error = plan_sync
+                .get("error")
+                .and_then(JsonValue::as_str)
+                .unwrap_or("plan sync returned a non-ok result");
+            return Err(format!(
+                "Generated {artifact_path} was refreshed, but automatic {scope} plan sync failed: {error}"
+            ));
+        }
+        if artifact_path == AGENT_HARNESS_PATH {
+            agents_plan_sync = plan_sync.clone();
+        }
+        plan_syncs.push(json!({
+            "artifact_path": artifact_path,
+            "result": plan_sync,
+        }));
     }
     Ok(json!({
         "status": "synced",
         "scope": scope,
         "remote": remote_name,
         "artifact_path": AGENT_HARNESS_PATH,
+        "artifact_paths": [AGENT_HARNESS_PATH, CLAUDE_HARNESS_PATH],
         "refresh": refresh,
-        "plan_sync": plan_sync,
+        // Preserve the admitted AGENTS.md receipt while adding the complete
+        // two-artifact inventory for direct consumers.
+        "plan_sync": agents_plan_sync,
+        "plan_syncs": plan_syncs,
     }))
 }
 
@@ -112,12 +209,13 @@ fn pending_remote_convergence(
         "error": error,
         "refresh": refresh,
         "plan_sync": JsonValue::Null,
-        "next_action": "Connect or repair the default remote; the default-remote mutation path will retry AGENTS.md convergence automatically.",
+        "next_action": "Connect or repair the default remote; the default-remote mutation path will retry AGENTS.md and CLAUDE.md convergence automatically.",
     })
 }
 
 fn agent_harness_plan_sync_request(
     repo: &RepoRuntime,
+    artifact_path: &str,
     remote_name: Option<&str>,
 ) -> Result<JsonValue, String> {
     let mut payload = json!({
@@ -126,7 +224,7 @@ fn agent_harness_plan_sync_request(
         "repository_index": repo.repository_index(),
         "id_namespace_prefix": repo.id_namespace_prefix(),
         "created_by": repo.actor_identity(),
-        "target": AGENT_HARNESS_PATH,
+        "target": artifact_path,
         "plan_ref": JsonValue::Null,
         "prune": false,
         "local": remote_name.is_none(),
@@ -202,9 +300,7 @@ fn render_effective_workflow_admission(
     workflow_mode: &str,
     sprint_enabled: bool,
     scope_label: &str,
-    land_contract: &crate::task_land_contract::TaskLandScopeContract,
 ) -> String {
-    let mut satisfied = Vec::new();
     let mut action_required = Vec::new();
     let sprint = if sprint_enabled { "on" } else { "off" };
     let binding = effective_plan_binding_mode(repo, sprint_enabled);
@@ -212,307 +308,240 @@ fn render_effective_workflow_admission(
 
     if workflow_mode == "custom" {
         action_required.push(format!(
-            "- entry: mode={}; scopes={} (unsupported workflow combination)",
+            "- mode={}; scope={} (unsupported workflow combination)",
             markdown_code_span(workflow_mode),
-            markdown_code_span(scope_label),
-        ));
-    } else {
-        satisfied.push(format!(
-            "- entry: mode={}; sprint={}; scopes={}",
-            markdown_code_span(workflow_mode),
-            markdown_code_span(sprint),
             markdown_code_span(scope_label),
         ));
     }
     let binding_fact = format!("plan-binding={}", markdown_code_span(&binding));
-    if binding == expected_binding {
-        satisfied.push(format!("- entry: {binding_fact}"));
-    } else {
+    if binding != expected_binding {
         action_required.push(format!(
-            "- entry: {binding_fact} (expected {} for sprint={})",
+            "- {binding_fact} (expected {} for sprint={})",
             markdown_code_span(expected_binding),
             markdown_code_span(sprint),
         ));
     }
 
     let default_remote = repo.default_remote_name();
-    if scope_label == "local" {
-        let remote = match default_remote.as_deref() {
-            Some(name) => format!("{} (inactive)", markdown_code_span(name)),
-            None => markdown_code_span("none"),
-        };
-        satisfied.push(format!(
-            "- entry: default-remote={remote}; transport={}; server-use={}",
-            markdown_code_span("local-only"),
-            markdown_code_span("none"),
-        ));
-    } else {
+    let route_remote = if scope_label == "remote" {
         match default_remote.as_deref() {
-            Some(name) if repo.remote_row(Some(name)).is_ok() => satisfied.push(format!(
-                "- entry: default-remote={}; transport={}",
-                markdown_code_span(name),
-                markdown_code_span("remote"),
-            )),
-            Some(name) => action_required.push(format!(
-                "- entry: default-remote={} (configured remote is unavailable)",
-                markdown_code_span(name),
-            )),
-            None => action_required.push(format!(
-                "- entry: default-remote={} (required by {})",
-                markdown_code_span("unset"),
-                markdown_code_span(workflow_mode),
-            )),
+            Some(name) if repo.remote_row(Some(name)).is_ok() => Some(markdown_code_span(name)),
+            Some(name) => {
+                action_required.push(format!(
+                    "- remote={} (configured remote is unavailable)",
+                    markdown_code_span(name),
+                ));
+                Some(markdown_code_span(name))
+            }
+            None => {
+                action_required.push(format!(
+                    "- remote={} (required by {})",
+                    markdown_code_span("unset"),
+                    markdown_code_span(workflow_mode),
+                ));
+                Some(markdown_code_span("unset"))
+            }
         }
-    }
+    } else {
+        None
+    };
 
     let author_mode = repo.effective_author_mode(None);
-    let model = repo
-        .effective_model_name(None)
-        .map(|value| markdown_code_span(&value))
-        .unwrap_or_else(|| format!("{} (optional)", markdown_code_span("unset")));
-    satisfied.push(format!(
-        "- authoring: author-mode={}; model={model}",
-        markdown_code_span(&author_mode),
-    ));
-
-    let task_review = if repo
-        .config
-        .get("task_review")
-        .and_then(JsonValue::as_bool)
-        .unwrap_or(false)
-    {
-        "required"
-    } else {
-        "automatic"
-    };
-    if repo.task_review_reviewer_identity().is_some() {
-        satisfied.push(format!(
-            "- closeout: review={}; reviewer={}",
-            markdown_code_span(task_review),
-            markdown_code_span("configured"),
-        ));
-    } else {
+    if repo.task_review_reviewer_identity().is_none() {
+        let task_review = if repo
+            .config
+            .get("task_review")
+            .and_then(JsonValue::as_bool)
+            .unwrap_or(false)
+        {
+            "required"
+        } else {
+            "automatic"
+        };
         action_required.push(format!(
-            "- closeout: review={}; reviewer={} (configure user-name)",
+            "- review={}; reviewer={} (configure user-name)",
             markdown_code_span(task_review),
             markdown_code_span("unset"),
         ));
     }
-    satisfied.push(format!(
-        "- closeout: contract={}; readiness={}; plan-closeout={}",
-        markdown_code_span(TASK_LAND_CONTRACT_VERSION),
-        markdown_code_span(land_contract.readiness_policy),
-        markdown_code_span(land_contract.plan_closeout_policy),
-    ));
 
-    let action_section = if action_required.is_empty() {
-        "Action required: none.".to_string()
+    let mut route = format!(
+        "Route: mode={}; sprint={}; scope={}; {binding_fact}; author-mode={}",
+        markdown_code_span(workflow_mode),
+        markdown_code_span(sprint),
+        markdown_code_span(scope_label),
+        markdown_code_span(&author_mode),
+    );
+    if let Some(remote) = route_remote {
+        route.push_str(&format!("; remote={remote}"));
+    }
+    route.push('.');
+
+    let admission = if action_required.is_empty() {
+        r#"Admission: ready. Do not inspect configuration unless an AIT command
+reports `action_required` or the task explicitly changes configuration."#
+            .to_string()
     } else {
-        format!("Action required:\n\n{}", action_required.join("\n"))
+        format!(
+            "Action required before mutation:\n\n{}",
+            action_required.join("\n")
+        )
     };
     format!(
-        r#"### Effective workflow admission
+        r#"### Effective route
 
-Satisfied:
+{route}
 
-{}
-
-{action_section}
-
-`task start` revalidates entry; Snapshot creation and `task finish` revalidate
-authoring and closeout. Inspect configuration only for an action-required item,
-an explicit configuration task, or a validator-reported mismatch."#,
-        satisfied.join("\n"),
+{admission}"#,
     )
 }
 
 pub fn render_agent_workflow_block(repo: &RepoRuntime) -> String {
+    render_workflow_block(repo, GuidanceAudience::Agents)
+}
+
+fn render_claude_workflow_block(repo: &RepoRuntime) -> String {
+    render_workflow_block(repo, GuidanceAudience::Claude)
+}
+
+fn render_workflow_block(repo: &RepoRuntime, audience: GuidanceAudience) -> String {
     let workflow_mode = repo.effective_workflow_mode();
     let sprint_enabled = repo.sprint_enabled();
     let remote_name = repo
         .default_remote_name()
         .unwrap_or_else(|| "origin".to_string());
     let scope_label = effective_agent_harness_scope(repo);
-    let land_contract = task_land_scope_contract(scope_label == "local");
-    let admission = render_effective_workflow_admission(
-        repo,
-        &workflow_mode,
-        sprint_enabled,
-        scope_label,
-        &land_contract,
-    );
+    let admission =
+        render_effective_workflow_admission(repo, &workflow_mode, sprint_enabled, scope_label);
     let plan_sync_command = if scope_label == "remote" {
         format!("ait plan sync <markdown-file-or-dir> --remote {remote_name}")
     } else {
         "ait plan sync <markdown-file-or-dir> --local".to_string()
     };
-    let task_scope = if scope_label == "remote" {
-        format!("remote-backed through `{remote_name}`")
-    } else if scope_label == "local" {
-        "local-only".to_string()
-    } else {
-        "the scopes reported by `ait config show`".to_string()
-    };
     let markdown_sync_rule = if sprint_enabled {
         format!(
-            r#"- Reconcile authored Markdown through `{plan_sync_command}`. The initial
-  sprint card is the command-spelling exception: `task start --from` performs
-  that exact-file Plan sync before code work. Do not hide Markdown lineage
-  inside a code snapshot."#
+            r#"- Sync authored Markdown other than the initial sprint card with
+  `{plan_sync_command}`; do not hide Markdown lineage in a code Snapshot."#
         )
     } else {
         format!(
-            r#"- Any authored Markdown change must be reconciled through
-  `{plan_sync_command}`. Do not hide Markdown lineage inside a code snapshot."#
+            r#"- Sync authored Markdown with `{plan_sync_command}`; do not hide
+  Markdown lineage in a code Snapshot."#
         )
     };
-    let sprint_finish = if scope_label == "remote" {
-        format!(
-            r#"Prepare the exact Patchset with `ait workflow ready <change-id>
-   --apply`, then hand it to the reviewer. The reviewer finishes with `ait
-   workflow finish <change-id> --apply` (adding `--review-message` when asked).
-   After successful land, mark the exact bound checklist item complete and
-   sync its card separately:
-   `ait plan sync <sprint-card-path> --remote {remote_name}`."#
-        )
-    } else {
-        r#"Finish dirty work with `ait task finish <task-or-change-id> --message
-   "<message>"`. If an explicit Snapshot already made the worktree clean, omit
-   `--message`; finish reuses the current Line head. A successful final local
-   Task finish closes and syncs the exact bound sprint checklist item locally."#
-            .to_string()
-    };
-    let non_sprint_finish = if scope_label == "remote" {
-        r#"Prepare the exact Patchset with `ait workflow ready <change-id>
-   --apply`, then hand it to the reviewer. The reviewer finishes with `ait
-   workflow finish <change-id> --apply` (adding `--review-message` when asked)."#
-            .to_string()
-    } else {
-        r#"Finish dirty work with `ait task finish <task-or-change-id> --message
-   "<message>"`. For clean work, omit `--message` and reuse the Line head."#
-            .to_string()
-    };
-    let code_closeout = if scope_label == "remote" {
-        "reviewer-owned `ait workflow finish <change-id> --apply`, which delegates final closeout to the atomic internal Land authority"
-    } else {
-        "`ait task finish <task-or-change-id>`"
-    };
-    let authoring_step = if scope_label == "remote" {
-        r#"Enter the task worktree emitted by `task start`, author the code there,
-   and create a Snapshot with `ait snapshot create --message "<message>"`."#
-    } else {
-        r#"Enter the task worktree emitted by `task start` and author the code there.
-   `ait snapshot create --message "<message>"` remains available for optional
-   intermediate checkpoints; final dirty work can be Snapshotted by Task finish."#
+    let local_finish = r#"For dirty work, run `ait task finish
+   <task-or-change-id> --message "<message>" --local`; when already
+   clean, omit `--message`. Successful Task finish output is authoritative
+   proof of local apply, Task completion, worktree cleanup, and
+   applicable bound-card closeout. Do not follow it with `status`, `diff`, or `audit`
+   unless it fails, reports required action, state is unexpected, or evidence
+   was requested."#;
+    let remote_finish = r#"Create the reviewable Snapshot with `ait snapshot create --message
+   "<message>"`, then run `ait workflow ready <change-id> --apply`. Give the
+   exact Patchset to the reviewer; the reviewer runs `ait workflow finish
+   <change-id> --apply` (and `--review-message` when requested).
+   Workflow finish owns Review, approval, final Policy, and atomic Task closeout.
+   Use direct `ait task finish` only as an already-ready finalizer or a reported
+   recovery command; it creates no Review evidence, publishes no content, runs no
+   CI, and closes no Plan."#;
+
+    let (task_start_verb, edit_root_argument, enter_worktree_suffix) = match audience {
+        GuidanceAudience::Agents => ("Run", "", ""),
+        GuidanceAudience::Claude => (
+            "Select a safe absolute, absent-or-empty Task worktree path outside the\n   canonical repository, then run",
+            " --edit-root <absolute-path>",
+            " && cd <absolute-path>",
+        ),
     };
 
-    let sprint_path = if sprint_enabled {
-        format!(
-            r#"### Task path: sprint mode is on
+    let task_path = match (sprint_enabled, scope_label) {
+        (true, "remote") => format!(
+            r#"### Code-change path
 
-For changes classified as `normal_task` or `fully_governed`:
-
-1. Write a detailed Markdown sprint card under `docs/sprints/` with one stable
-   `[plan-ref: ...]` root and an unchecked checklist item carrying an exact
-   `[ref: ...]`.
-2. Start the task and first change with `ait task start --from
-   <sprint-card-path>#<exact-ref> --intent "<intent>"`.
-   `task start --from` owns exact-file Plan sync in the configured scope,
-   post-sync item taskability validation, canonical Plan binding, Task/Change
-   creation, bound-worktree bootstrap, and the printed `cd` hint. The task is
-   {task_scope}; do not run a separate pre-start Plan sync or copy Plan IDs.
-3. {authoring_step}
-4. {sprint_finish}
+1. Create a detailed card under `docs/sprints/` with one stable
+   `[plan-ref: ...]` and one unchecked item carrying an exact `[ref: ...]`.
+2. {task_start_verb} `ait task start --from <sprint-card-path>#<exact-ref> --intent
+   "<intent>"{edit_root_argument} --remote {remote_name}{enter_worktree_suffix}`. `--from` syncs and binds the
+   initial card; do not pre-sync it or copy Plan IDs.
+3. Work only in the returned `edit_root`.
+4. {remote_finish}
+5. After a successful finish, mark the bound item complete and run `ait plan sync
+   <sprint-card-path> --remote {remote_name}`.
 
 After every context-window compaction, re-read the bound sprint card before
 continuing."#
-        )
-    } else {
-        format!(
-            r#"### Task path: sprint mode is off
+        ),
+        (true, _) => format!(
+            r#"### Code-change path
 
-For changes classified as `normal_task` or `fully_governed`:
+1. Create a detailed card under `docs/sprints/` with one stable
+   `[plan-ref: ...]` and one unchecked item carrying an exact `[ref: ...]`.
+2. {task_start_verb} `ait task start --from <sprint-card-path>#<exact-ref> --intent
+   "<intent>"{edit_root_argument}{enter_worktree_suffix}`. `--from` syncs and binds the initial card; do not
+   pre-sync it or copy Plan IDs.
+3. Work only in the returned `edit_root`. Intermediate `ait snapshot create
+   --message "<message>"` checkpoints are optional.
+4. {local_finish}
 
-1. Start a task and first change with `ait task start --title "<title>"
-   --intent "<intent>"`. The task scope is {task_scope}; a
-   sprint card is not required and `--from` is unavailable while sprint mode
-   is off.
-2. {authoring_step}
-3. {non_sprint_finish}"#
-        )
+After every context-window compaction, re-read the bound sprint card before
+continuing."#
+        ),
+        (false, "remote") => format!(
+            r#"### Code-change path
+
+1. {task_start_verb} `ait task start --title "<title>" --intent "<intent>"{edit_root_argument} --remote
+   {remote_name}{enter_worktree_suffix}`; sprint mode is off, so `--from` is unavailable.
+2. Work only in the returned `edit_root`.
+3. {remote_finish}"#
+        ),
+        (false, _) => format!(
+            r#"### Code-change path
+
+1. {task_start_verb} `ait task start --title "<title>" --intent "<intent>"{edit_root_argument}{enter_worktree_suffix}`; sprint
+   mode is off, so `--from` is unavailable.
+2. Work only in the returned `edit_root`. Intermediate `ait snapshot create
+   --message "<message>"` checkpoints are optional.
+3. {local_finish}"#
+        ),
     };
-
-    let closeout = if scope_label == "remote" {
-        r#"### Remote readiness and land
-
-- `task start` opens the remote task/change lineage. `snapshot create` records
-  the reviewable code state.
-- Prepare snapshot freshness, patchset publication/content synchronization, CI,
-  and attestation explicitly with `ait workflow ready <change-id> --apply`.
-- Hand the exact Patchset to the reviewer. `ait workflow finish <change-id>
-  --apply` owns code Review, Task approval, final Policy, and then delegates the
-  already-ready final mutation to the atomic internal Land authority. Supply `--review-message`
-  when the decision requests structured code-review evidence; required human
-  Review and blocking feedback remain manual stop points.
-- Direct `ait task finish <task-or-change-id>` is the already-ready finalizer and
-  recovery entry. It creates no Review evidence, does not publish/synchronize
-  content, start/wait for CI, or sync Plan state. Success owns remote land, Task
-  completion, target-Line sync, and bound-worktree cleanup."#
-            .to_string()
-    } else if scope_label == "local" {
-        r#"### Local finish
-
-- `task start`, its initial change, Snapshots, and `task finish` stay local unless
-  a command explicitly requests remote promotion.
-- `ait task finish <task-or-change-id> --message "<message>" --local` creates
-  the final Snapshot for dirty work, applies it to the local target Line,
-  completes the Task, cleans the bound worktree, and (when bound) closes the
-  local sprint checklist item. Clean work omits `--message` and reuses the
-  current Line-head Snapshot."#
-            .to_string()
-    } else {
-        r#"### Effective custom closeout
-
-- Run `ait config show` before mutating workflow state and follow its effective
-  plan/task/change scopes explicitly.
-- Use `ait task finish <task-or-change-id>` for the configured closeout path."#
-            .to_string()
+    let edit_root_guidance = match audience {
+        GuidanceAudience::Agents => {
+            r#"If the caller already chose a safe absolute worktree path, add `--edit-root
+<absolute-path>` to Task start; otherwise omit it and use the returned `edit_root`."#
+        }
+        GuidanceAudience::Claude => {
+            r#"The two `<absolute-path>` values must be identical. Do not omit `--edit-root`;
+retain the returned Task ID and verify that its `edit_root` is the selected path."#
+        }
     };
+    let task_path = format!("{task_path}\n\n{edit_root_guidance}");
 
     format!(
         r#"{MANAGED_START}
 ## Effective Ait Workflow (Generated)
 
-`ait init`, relevant `ait config set`/`unset` changes, and default-remote setup
-regenerate this authoritative block from `.ait/config.json` and sync its
-configured target when available.
-
 {admission}
 
-### Rules for every repository mutation
+{task_path}
 
-- Read this block and `docs/plan.md` when it exists.
-- When a regression is found, run `ait blame <path>` (narrow with `--line` or
-  `--start`/`--end`) to identify the responsible Snapshot or Plan revision
-  before choosing the repair.
+### Conditional references
+
+- Read `docs/plan.md` when it exists.
+- For a regression, use `ait blame <path>` before choosing a repair.
 {markdown_sync_rule}
-- `ait workflow ready` and `ait workflow finish` are text-only decision surfaces;
-  never append or recommend `--json` for either command.
-- Every code change must start with a new `ait task start`, be authored in its
-  bound worktree, and finish through {code_closeout}.
-  There is no direct Snapshot-only closeout path.
-- Prefer `ait queue summary` for current actionable inventory, `ait task list
-  --all` and `ait change list --all` for history, and `ait task audit <task-id>`
-  for one task's readiness.
-
-{sprint_path}
-
-{closeout}
+- A Snapshot is a checkpoint, not a substitute for the listed closeout.
+- Only when that question arises: `ait queue summary` shows actionable work,
+  `ait task audit <task-id>` shows readiness, and `ait task list --all` plus
+  `ait change list --all` show history.
 {MANAGED_END}"#,
     )
 }
 
-fn replace_or_insert_managed_block(existing: &str, managed: &str) -> Result<String, String> {
+fn replace_or_insert_managed_block(
+    existing: &str,
+    managed: &str,
+    artifact_path: &str,
+) -> Result<String, String> {
     match (existing.find(MANAGED_START), existing.find(MANAGED_END)) {
         (Some(start), Some(end)) if start <= end => {
             let suffix_start = end + MANAGED_END.len();
@@ -535,10 +564,9 @@ fn replace_or_insert_managed_block(existing: &str, managed: &str) -> Result<Stri
             output.push_str(&existing[insertion..]);
             Ok(output)
         }
-        _ => Err(
-            "AGENTS.md contains an incomplete ait-managed workflow block; restore both managed markers before refreshing config guidance."
-                .to_string(),
-        ),
+        _ => Err(format!(
+            "{artifact_path} contains an incomplete ait-managed workflow block; restore both managed markers before refreshing config guidance."
+        )),
     }
 }
 
@@ -746,89 +774,138 @@ mod tests {
         for mode in ["solo_local", "solo_remote", "team_remote"] {
             for sprint in ["on", "off"] {
                 let rendered = render_agent_workflow_block(&repo(mode, sprint));
-                let scope = if mode == "solo_local" {
-                    "local"
-                } else {
-                    "remote"
-                };
+                let remote = matches!(mode, "solo_remote" | "team_remote");
+                let scope = if remote { "remote" } else { "local" };
                 assert!(rendered.contains(&format!(
-                    "entry: mode=`{mode}`; sprint=`{sprint}`; scopes=`{scope}`"
+                    "Route: mode=`{mode}`; sprint=`{sprint}`; scope=`{scope}`"
                 )));
                 assert!(rendered.contains(&format!(
                     "plan-binding=`{}`",
                     if sprint == "on" { "required" } else { "off" }
                 )));
-                assert!(rendered.contains(&format!("contract=`{TASK_LAND_CONTRACT_VERSION}`")));
-                assert!(rendered.contains(&format!(
-                    "plan-closeout=`{}`",
-                    task_land_scope_contract(mode == "solo_local").plan_closeout_policy
-                )));
+                assert!(rendered.contains("author-mode=`ai_only_experimental`"));
                 assert_eq!(rendered.matches(MANAGED_START).count(), 1);
-                assert!(rendered.contains("`ait init`, relevant `ait config set`/`unset` changes"));
-                assert!(rendered.contains("### Effective workflow admission"));
-                assert!(rendered.contains("Satisfied:"));
-                assert!(rendered.contains("`task start` revalidates entry"));
-                assert!(rendered.contains("author-mode=`ai_only_experimental`; model=`test-model`"));
-                assert!(rendered.contains("review=`automatic`; reviewer=`configured`"));
-                assert!(!rendered.contains("They are currently satisfied"));
+                assert!(rendered.contains("### Effective route"));
+                if remote {
+                    assert!(rendered.contains("Action required before mutation:"));
+                    assert!(rendered.contains("configured remote is unavailable"));
+                } else {
+                    assert!(rendered.contains("Admission: ready."));
+                    assert!(rendered.contains("reports `action_required`"));
+                }
+                assert!(!rendered.contains("Satisfied:"));
+                assert!(!rendered.contains("model=`test-model`"));
+                assert!(!rendered.contains("reviewer=`configured`"));
+                assert!(!rendered.contains("task-land-plan-closeout"));
+                assert!(
+                    !rendered.to_ascii_lowercase().contains("land"),
+                    "{mode}/{sprint} guidance must use finish terminology"
+                );
+                assert!(!rendered.contains("plan-closeout="));
                 assert!(!rendered.contains("ait install"));
-                assert!(rendered.contains("regenerate this authoritative block"));
-                assert!(rendered.contains("default-remote setup\nregenerate this authoritative"));
-                assert!(rendered.contains("Read this block and `docs/plan.md` when it exists"));
-                assert!(!rendered.contains("runtime state may have changed"));
+                assert!(!rendered.contains("regenerate this authoritative block"));
+                assert!(rendered.contains("Read `docs/plan.md` when it exists"));
                 assert!(rendered.contains("ait blame <path>"));
-                assert!(rendered.contains(
-                    "`ait workflow ready` and `ait workflow finish` are text-only decision surfaces"
-                ));
-                assert!(rendered.contains("never append or recommend `--json`"));
                 assert!(!rendered.contains("workflow tier"));
                 assert!(!rendered.contains("--profile quick"));
-                assert!(rendered.contains("Every code change must start"));
-                assert!(rendered.contains("no direct Snapshot-only closeout path"));
+                assert!(rendered.contains("### Code-change path"));
+                assert!(rendered.contains("A Snapshot is a checkpoint, not a substitute"));
                 assert!(!rendered.contains("--base-line"));
                 assert!(
-                    rendered.split_whitespace().count() < 1_024,
-                    "{mode}/{sprint} guidance exceeded the 1,024-token ceiling"
+                    !rendered.to_ascii_lowercase().contains("json"),
+                    "{mode}/{sprint} guidance must not mention JSON output"
                 );
-                if matches!(mode, "solo_remote" | "team_remote") {
+                let (byte_limit, word_limit) = match (remote, sprint) {
+                    (false, "on") => (2_600, 340),
+                    (false, _) => (2_200, 285),
+                    (true, "on") => (3_200, 420),
+                    (true, _) => (2_800, 365),
+                };
+                assert!(
+                    rendered.len() < byte_limit,
+                    "{mode}/{sprint} guidance was {} bytes; limit is {byte_limit}",
+                    rendered.len()
+                );
+                assert!(
+                    rendered.split_whitespace().count() < word_limit,
+                    "{mode}/{sprint} guidance was {} words; limit is {word_limit}",
+                    rendered.split_whitespace().count()
+                );
+                if remote {
+                    assert!(rendered.contains("remote=`upstream`"));
                     assert!(rendered.contains("plan sync <markdown-file-or-dir> --remote upstream"));
-                    assert!(rendered.contains("does not publish/synchronize\n  content"));
-                    assert!(rendered.contains("Hand the exact Patchset to the reviewer"));
-                    assert!(rendered.contains("owns code Review, Task approval, final Policy"));
-                    assert!(rendered.contains(
-                        "delegates the\n  already-ready final mutation to the atomic internal Land authority"
-                    ));
-                    assert!(rendered.contains("It creates no Review evidence"));
-                    assert!(!rendered.contains("attestation, policy, and review state"));
-                    assert!(!rendered.contains("### Local finish"));
+                    assert!(rendered.contains("ait workflow ready <change-id> --apply"));
+                    assert!(rendered.contains("ait workflow finish\n   <change-id> --apply"));
+                    assert!(rendered.contains("Workflow finish owns Review, approval"));
+                    assert!(rendered.contains("atomic Task closeout"));
+                    assert!(!rendered.contains("atomic land"));
+                    assert!(!rendered.contains("After land"));
+                    assert!(rendered.contains("it creates no Review evidence"));
+                    assert!(!rendered.contains("--local"));
+                    assert!(!rendered.contains("authoritative proof of local apply"));
                 } else {
+                    assert!(!rendered.contains("remote=`upstream`"));
                     assert!(rendered.contains("plan sync <markdown-file-or-dir> --local"));
-                    assert!(!rendered.contains("### Remote readiness and land"));
+                    assert!(!rendered.contains("ait workflow ready"));
+                    assert!(!rendered.contains("ait workflow finish"));
+                    assert!(rendered.contains("--local`"));
+                    assert!(rendered.contains("Successful Task finish output is"));
+                    assert!(rendered.contains("Do not follow it with `status`, `diff`, or `audit`"));
                 }
                 if sprint == "on" {
                     assert!(rendered
-                        .contains("ait task start --from\n   <sprint-card-path>#<exact-ref>"));
-                    assert!(rendered.contains("owns exact-file Plan sync"));
-                    assert!(rendered.contains("do not run a separate pre-start Plan sync"));
+                        .contains("ait task start --from <sprint-card-path>#<exact-ref> --intent"));
+                    assert!(rendered.contains("`. `--from` syncs and binds"));
+                    assert!(rendered.contains("pre-sync it or copy Plan IDs"));
                     assert!(!rendered.contains("--plan <plan-id>"));
                     assert!(!rendered.contains("--revision"));
                     assert!(!rendered.contains("--plan-item-ref"));
-                    assert!(rendered.contains("detailed Markdown sprint card"));
+                    assert!(rendered.contains("Create a detailed card under `docs/sprints/`"));
                     assert!(rendered.contains(
                         "After every context-window compaction, re-read the bound sprint card"
                     ));
-                    if matches!(mode, "solo_remote" | "team_remote") {
-                        assert!(
-                            rendered.contains("ait plan sync <sprint-card-path> --remote upstream")
-                        );
+                    if remote {
+                        assert!(rendered
+                            .contains("ait plan sync\n   <sprint-card-path> --remote upstream"));
                     }
                 } else {
                     assert!(rendered.contains("ait task start --title \"<title>\""));
+                    assert!(rendered.contains("mode is off, so `--from` is unavailable"));
                     assert!(rendered.contains("`--from` is unavailable"));
                     assert!(!rendered.contains("--plan-item-ref"));
                     assert!(!rendered.contains("context-window compaction"));
                     assert!(!rendered.contains("Plan ID"));
                 }
+                assert!(rendered.contains("otherwise omit it and use the returned `edit_root`"));
+
+                let claude = render_claude_workflow_block(&repo(mode, sprint));
+                let shared_route =
+                    format!("Route: mode=`{mode}`; sprint=`{sprint}`; scope=`{scope}`");
+                for shared in [
+                    shared_route.as_str(),
+                    "## Effective Ait Workflow (Generated)",
+                    "### Code-change path",
+                    "### Conditional references",
+                    "Read `docs/plan.md` when it exists",
+                ] {
+                    assert!(claude.contains(shared), "missing shared guidance: {shared}");
+                }
+                assert_eq!(claude.matches(MANAGED_START).count(), 1);
+                assert_eq!(claude.matches(MANAGED_END).count(), 1);
+                assert!(claude.contains(
+                    "Select a safe absolute, absent-or-empty Task worktree path outside the"
+                ));
+                assert!(claude.contains("--edit-root <absolute-path>"));
+                assert!(claude.contains("&& cd <absolute-path>"));
+                assert!(
+                    !claude.to_ascii_lowercase().contains("json"),
+                    "{mode}/{sprint} Claude guidance must not mention JSON output"
+                );
+                assert!(claude.contains("Do not omit `--edit-root`"));
+                assert!(!claude.contains("otherwise omit it"));
+                assert!(!claude.contains("@AGENTS.md"));
+                assert!(claude.len() < byte_limit + 400);
+                assert!(claude.split_whitespace().count() < word_limit + 55);
             }
         }
     }
@@ -868,34 +945,32 @@ mod tests {
         let first = replace_or_insert_managed_block(
             "# AGENTS\n\nCustom before.\n",
             &render_agent_workflow_block(&repo("solo_local", "on")),
+            AGENT_HARNESS_PATH,
         )
         .unwrap();
         let second = replace_or_insert_managed_block(
             &first,
             &render_agent_workflow_block(&repo("solo_remote", "off")),
+            AGENT_HARNESS_PATH,
         )
         .unwrap();
         assert!(second.contains("Custom before."));
-        assert!(second.contains("entry: mode=`solo_remote`; sprint=`off`; scopes=`remote`"));
+        assert!(second.contains("Route: mode=`solo_remote`; sprint=`off`; scope=`remote`"));
         assert_eq!(second.matches(MANAGED_START).count(), 1);
         assert_eq!(second.matches(MANAGED_END).count(), 1);
     }
 
     #[test]
-    fn local_admission_distinguishes_absent_and_inactive_default_remotes() {
+    fn local_route_omits_absent_and_inactive_default_remotes() {
         let with_remote = render_agent_workflow_block(&repo("solo_local", "off"));
-        assert!(with_remote.contains(
-            "default-remote=`upstream` (inactive); transport=`local-only`; server-use=`none`"
-        ));
+        assert!(!with_remote.contains("remote=`upstream`"));
         assert!(!with_remote.contains("configured remote is unavailable"));
 
         let mut without_remote = repo("solo_local", "off");
         without_remote.config.remove("default_remote");
         let rendered = render_agent_workflow_block(&without_remote);
-        assert!(
-            rendered.contains("default-remote=`none`; transport=`local-only`; server-use=`none`")
-        );
-        assert!(rendered.contains("Action required: none."));
+        assert!(!rendered.contains("remote=`none`"));
+        assert!(rendered.contains("Admission: ready."));
     }
 
     #[test]
@@ -905,28 +980,27 @@ mod tests {
             .config
             .insert("plan_task_binding".to_string(), json!({"mode": "required"}));
         let rendered = render_agent_workflow_block(&runtime);
-        assert!(
-            rendered.contains("entry: plan-binding=`required` (expected `off` for sprint=`off`)")
-        );
+        assert!(rendered.contains("- plan-binding=`required` (expected `off` for sprint=`off`)"));
+        assert!(rendered.contains("Action required before mutation:"));
         assert!(!rendered.contains("- [x]"));
         assert!(!rendered.contains("- [ ]"));
     }
 
     #[test]
-    fn arbitrary_model_text_is_kept_inside_a_safe_code_span() {
+    fn arbitrary_author_mode_text_is_kept_inside_a_safe_code_span() {
         let mut runtime = repo("solo_local", "off");
         runtime.config.insert(
-            "default_model".to_string(),
-            json!("model`name\nwith whitespace"),
+            "default_author_mode".to_string(),
+            json!("mode`name\nwith whitespace"),
         );
         let rendered = render_agent_workflow_block(&runtime);
-        assert!(rendered.contains("model=``model`name with whitespace``"));
+        assert!(rendered.contains("author-mode=``mode`name with whitespace``"));
 
         runtime
             .config
-            .insert("default_model".to_string(), json!("`edge ticks`"));
+            .insert("default_author_mode".to_string(), json!("`edge ticks`"));
         let rendered = render_agent_workflow_block(&runtime);
-        assert!(rendered.contains("model=`` `edge ticks` ``"));
+        assert!(rendered.contains("author-mode=`` `edge ticks` ``"));
     }
 
     #[test]
@@ -977,10 +1051,10 @@ mod tests {
         }
         fs::write(config_path, JsonValue::Object(config).to_string()).unwrap();
         let repo = RepoRuntime::discover_from_path(temp.path()).unwrap();
-        let mut captured = None;
+        let mut captured = Vec::new();
 
         let convergence = converge_agent_workflow_harness_with_executor(&repo, |request| {
-            captured = Some(request.clone());
+            captured.push(request.clone());
             Ok(json!({"status": "ok", "results": []}))
         })
         .unwrap();
@@ -988,15 +1062,132 @@ mod tests {
         assert_eq!(convergence["status"], "synced");
         assert_eq!(convergence["scope"], "remote");
         assert_eq!(convergence["remote"], "mirror");
-        let request = captured.expect("plan sync request");
-        assert_eq!(request["local"], false);
-        assert_eq!(request["remote_name"], "mirror");
-        assert_eq!(request["remote_repo_name"], "demo-remote");
-        assert_eq!(request["base_url"], "https://example.test");
+        assert_eq!(captured.len(), 2);
+        assert_eq!(captured[0]["target"], AGENT_HARNESS_PATH);
+        assert_eq!(captured[1]["target"], CLAUDE_HARNESS_PATH);
+        for request in captured {
+            assert_eq!(request["local"], false);
+            assert_eq!(request["remote_name"], "mirror");
+            assert_eq!(request["remote_repo_name"], "demo-remote");
+            assert_eq!(request["base_url"], "https://example.test");
+        }
+        assert_eq!(convergence["plan_syncs"].as_array().unwrap().len(), 2);
         let agents = fs::read_to_string(temp.path().join("AGENTS.md")).unwrap();
         assert!(agents.contains("--remote mirror"));
-        assert!(agents.contains("default-remote=`mirror`; transport=`remote`"));
-        assert!(agents.contains("Action required: none."));
+        assert!(agents.contains("remote=`mirror`"));
+        assert!(agents.contains("Admission: ready."));
+        let claude = fs::read_to_string(temp.path().join("CLAUDE.md")).unwrap();
+        assert!(claude.contains("--remote mirror"));
+        assert!(claude.contains("--edit-root <absolute-path>"));
+        assert!(!claude.contains("@AGENTS.md"));
+    }
+
+    #[test]
+    fn claude_mirror_is_created_migrated_and_preserves_user_content() {
+        let temp = tempdir().unwrap();
+        init_repo(&InitRequest {
+            root: temp.path().to_path_buf(),
+            name: Some("demo".to_string()),
+            default_line: "main".to_string(),
+            policy_profile: "prototype".to_string(),
+            default_author_mode: "ai_with_human_review".to_string(),
+            default_model: None,
+            repair_existing: false,
+        })
+        .unwrap();
+        let repo = RepoRuntime::discover_from_path(temp.path()).unwrap();
+        let claude_path = temp.path().join("CLAUDE.md");
+
+        // init_repo itself runs the harness refresh, so remove the mirror to
+        // exercise fresh creation explicitly.
+        if claude_path.exists() {
+            fs::remove_file(&claude_path).unwrap();
+        }
+        let first = refresh_agent_workflow_harness(&repo).unwrap();
+        assert_eq!(first["claude_pointer"], "created");
+        let body = fs::read_to_string(&claude_path).unwrap();
+        assert!(body.contains("## Effective Ait Workflow (Generated)"));
+        assert!(body.contains("--edit-root <absolute-path>"));
+        assert!(body.contains("&& cd <absolute-path>"));
+        assert!(!body.contains("@AGENTS.md"));
+
+        // Idempotent: a second refresh reports existing and changes nothing.
+        let second = refresh_agent_workflow_harness(&repo).unwrap();
+        assert_eq!(second["claude_pointer"], "existing");
+        assert_eq!(second["status"], "unchanged");
+        assert_eq!(fs::read_to_string(&claude_path).unwrap(), body);
+
+        // User-owned content survives while the managed mirror is inserted.
+        fs::write(
+            &claude_path,
+            "# My own instructions\n\nKeep this Claude-specific rule.\n",
+        )
+        .unwrap();
+        let third = refresh_agent_workflow_harness(&repo).unwrap();
+        assert_eq!(third["claude_pointer"], "existing");
+        let with_user_content = fs::read_to_string(&claude_path).unwrap();
+        assert!(with_user_content.starts_with("# My own instructions\n"));
+        assert!(with_user_content.contains("Keep this Claude-specific rule."));
+        assert_eq!(with_user_content.matches(MANAGED_START).count(), 1);
+        let fourth = refresh_agent_workflow_harness(&repo).unwrap();
+        assert_eq!(fourth["status"], "unchanged");
+        assert_eq!(fs::read_to_string(&claude_path).unwrap(), with_user_content);
+
+        // Every shipped AIT-created legacy pointer is replaced rather than
+        // kept as duplicate or dangling guidance.
+        for legacy_body in LEGACY_CLAUDE_POINTER_BODIES {
+            fs::write(&claude_path, legacy_body).unwrap();
+            let migrated = refresh_agent_workflow_harness(&repo).unwrap();
+            assert_eq!(migrated["claude_pointer"], "existing");
+            let migrated_body = fs::read_to_string(&claude_path).unwrap();
+            assert!(migrated_body.starts_with("# CLAUDE\n"));
+            assert!(migrated_body.contains("## Effective Ait Workflow (Generated)"));
+            assert!(!migrated_body.contains("@AGENTS.md"));
+            assert!(!migrated_body.contains("pointer exists because"));
+            assert!(!migrated_body.contains("only imports it"));
+        }
+
+        // Repair the intermediate state produced when an unrecognized legacy
+        // pointer was preserved below an already inserted managed block.
+        let deployed_payload = LEGACY_CLAUDE_POINTER_BODIES[1]
+            .split_once("\n\n")
+            .unwrap()
+            .1;
+        fs::write(
+            &claude_path,
+            format!(
+                "# CLAUDE\n\n{}\n\n{deployed_payload}",
+                render_claude_workflow_block(&repo)
+            ),
+        )
+        .unwrap();
+        refresh_agent_workflow_harness(&repo).unwrap();
+        let repaired = fs::read_to_string(&claude_path).unwrap();
+        assert_eq!(repaired.matches(MANAGED_START).count(), 1);
+        assert!(!repaired.contains("@AGENTS.md"));
+
+        // Removing a known AIT pointer does not remove surrounding user-owned
+        // instructions or arbitrary references with different prose.
+        fs::write(
+            &claude_path,
+            format!("# CLAUDE\n\nKeep my rule.\n\n{deployed_payload}"),
+        )
+        .unwrap();
+        refresh_agent_workflow_harness(&repo).unwrap();
+        let preserved = fs::read_to_string(&claude_path).unwrap();
+        assert!(preserved.contains("Keep my rule."));
+        assert!(!preserved.contains("only imports it"));
+        assert!(!preserved.contains("@AGENTS.md"));
+
+        fs::write(
+            &claude_path,
+            "# CLAUDE\n\nUse @AGENTS.md as optional background for this custom rule.\n",
+        )
+        .unwrap();
+        refresh_agent_workflow_harness(&repo).unwrap();
+        let arbitrary_reference = fs::read_to_string(&claude_path).unwrap();
+        assert!(arbitrary_reference
+            .contains("Use @AGENTS.md as optional background for this custom rule."));
     }
 
     #[test]
@@ -1042,7 +1233,7 @@ mod tests {
         assert_eq!(convergence["reason"], "no_default_remote");
         assert!(!executed);
         let agents = fs::read_to_string(temp.path().join("AGENTS.md")).unwrap();
-        assert!(agents.contains("entry: mode=`solo_remote`; sprint=`on`; scopes=`remote`"));
-        assert!(agents.contains("default-remote=`unset` (required by `solo_remote`)"));
+        assert!(agents.contains("Route: mode=`solo_remote`; sprint=`on`; scope=`remote`"));
+        assert!(agents.contains("remote=`unset` (required by `solo_remote`)"));
     }
 }

@@ -555,6 +555,74 @@ fn debug_override_payload_resolves_linux_location() {
 }
 
 #[test]
+fn explicit_task_edit_root_uses_the_exact_safe_absolute_path() {
+    let (_repo_temp, repo) = repo_with_task_worktree(json!({}));
+    let outside = TempDir::new().unwrap();
+    let requested = outside
+        .path()
+        .canonicalize()
+        .unwrap()
+        .join("known-task-root");
+
+    let location = resolve_explicit_task_worktree_location(&repo, &requested).unwrap();
+
+    assert_eq!(location.target_path, requested);
+    assert_eq!(location.preferred_path, requested);
+    assert!(location.alias_path.is_none());
+    assert_eq!(location.root_source, EXPLICIT_TASK_WORKTREE_ROOT_SOURCE);
+    assert!(!location.ephemeral_enabled);
+}
+
+#[test]
+fn explicit_task_edit_root_rejects_relative_overlap_and_non_directory_paths() {
+    let (_repo_temp, repo) = repo_with_task_worktree(json!({}));
+    let repo_root = repo.authoritative_repo_root().canonicalize().unwrap();
+
+    let relative =
+        resolve_explicit_task_worktree_location(&repo, Path::new("relative/root")).unwrap_err();
+    assert!(relative.contains("absolute path"), "{relative}");
+
+    let descendant =
+        resolve_explicit_task_worktree_location(&repo, &repo_root.join("nested-explicit-root"))
+            .unwrap_err();
+    assert!(descendant.contains("canonical repository"), "{descendant}");
+
+    let ancestor = resolve_explicit_task_worktree_location(
+        &repo,
+        repo_root.parent().expect("repository parent"),
+    )
+    .unwrap_err();
+    assert!(ancestor.contains("canonical repository"), "{ancestor}");
+
+    let outside = TempDir::new().unwrap();
+    let file_path = outside.path().canonicalize().unwrap().join("plain-file");
+    fs::write(&file_path, "preserve\n").unwrap();
+    let non_directory = resolve_explicit_task_worktree_location(&repo, &file_path).unwrap_err();
+    assert!(non_directory.contains("not a directory"), "{non_directory}");
+    assert_eq!(fs::read_to_string(file_path).unwrap(), "preserve\n");
+}
+
+#[cfg(unix)]
+#[test]
+fn explicit_task_edit_root_rejects_symbolic_link_components() {
+    use std::os::unix::fs::symlink;
+
+    let (_repo_temp, repo) = repo_with_task_worktree(json!({}));
+    let outside = TempDir::new().unwrap();
+    let outside = outside.path().canonicalize().unwrap();
+    let real_parent = outside.join("real-parent");
+    let linked_parent = outside.join("linked-parent");
+    fs::create_dir(&real_parent).unwrap();
+    symlink(&real_parent, &linked_parent).unwrap();
+
+    let error = resolve_explicit_task_worktree_location(&repo, &linked_parent.join("task-root"))
+        .unwrap_err();
+
+    assert!(error.contains("symbolic-link"), "{error}");
+    assert!(!real_parent.join("task-root").exists());
+}
+
+#[test]
 fn memory_root_json_round_trip_preserves_macos_fields() {
     let value = json!({
         "kind": "macos_ram_volume",

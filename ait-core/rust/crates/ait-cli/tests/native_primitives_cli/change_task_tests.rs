@@ -190,6 +190,7 @@ fn compact_agent_action_json_drives_the_complete_local_task_loop() {
     assert_eq!(started["command"], "task.start");
     assert_eq!(started["task_id"], "LT-0001");
     assert_eq!(started["change_ref"], "LT-0001/C-01");
+    assert_eq!(started["edit_root_source"], "managed");
     let edit_root = PathBuf::from(
         started["edit_root"]
             .as_str()
@@ -247,6 +248,248 @@ fn compact_agent_action_json_drives_the_complete_local_task_loop() {
     assert_eq!(full_status["current_line"], "main");
     assert!(full_status["snapshot_count"].as_u64().is_some());
     assert!(full_status.get("contract").is_none());
+}
+
+#[test]
+fn explicit_task_edit_root_is_exactly_used_and_removed_after_finish() {
+    let temp = init_repo("https://example.test");
+    let root = temp.path();
+    let explicit_parent = TempDir::new().unwrap();
+    let explicit_root = explicit_parent
+        .path()
+        .canonicalize()
+        .unwrap()
+        .join("caller selected task root");
+    fs::create_dir(&explicit_root).unwrap();
+
+    let started = compact_json_output(
+        root,
+        &[
+            "task",
+            "start",
+            "--local",
+            "--title",
+            "Explicit edit root",
+            "--intent",
+            "use the exact caller-selected path without changing the default allocator",
+            "--edit-root",
+            explicit_root.to_str().unwrap(),
+            "--json",
+        ],
+    );
+
+    assert_eq!(started["edit_root_source"], "explicit");
+    assert_eq!(
+        started["edit_root"].as_str(),
+        Some(explicit_root.to_string_lossy().as_ref())
+    );
+    assert!(explicit_root.is_dir());
+    write_file(
+        &explicit_root.join("src/explicit_edit_root.rs"),
+        "pub fn explicit_edit_root() -> bool { true }\n",
+    );
+
+    let finished = compact_json_output(
+        &explicit_root,
+        &[
+            "task",
+            "finish",
+            "LT-0001",
+            "--message",
+            "Exercise explicit edit-root cleanup",
+            "--local",
+            "--json",
+        ],
+    );
+
+    assert_eq!(finished["ok"], true);
+    assert!(!explicit_root.exists());
+}
+
+#[test]
+fn explicit_task_edit_root_rejects_unsafe_inputs_before_task_creation() {
+    let temp = init_repo("https://example.test");
+    let root = temp.path();
+
+    for (path, expected_error) in [
+        ("relative/task-root".to_string(), "absolute path"),
+        (
+            root.canonicalize()
+                .unwrap()
+                .join("nested-task-root")
+                .to_string_lossy()
+                .to_string(),
+            "canonical repository",
+        ),
+    ] {
+        let output = command_output_with_env(
+            root,
+            &[
+                "task",
+                "start",
+                "--local",
+                "--title",
+                "Rejected explicit root",
+                "--intent",
+                "prove unsafe paths do not create Tasks",
+                "--edit-root",
+                &path,
+                "--json",
+            ],
+            &[],
+        );
+        assert!(!output.status.success());
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains(expected_error), "{stderr}");
+        assert!(json_output(root, &["task", "list", "--all", "--local", "--json"])
+            .as_array()
+            .unwrap()
+            .is_empty());
+    }
+
+    let outside = TempDir::new().unwrap();
+    let occupied_root = outside.path().canonicalize().unwrap().join("occupied");
+    fs::create_dir(&occupied_root).unwrap();
+    let sentinel = occupied_root.join("preserve.txt");
+    fs::write(&sentinel, "user-owned\n").unwrap();
+    let output = command_output_with_env(
+        root,
+        &[
+            "task",
+            "start",
+            "--local",
+            "--title",
+            "Occupied explicit root",
+            "--intent",
+            "preserve unrelated caller content",
+            "--edit-root",
+            occupied_root.to_str().unwrap(),
+            "--json",
+        ],
+        &[],
+    );
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("absent or empty"));
+    assert_eq!(fs::read_to_string(sentinel).unwrap(), "user-owned\n");
+    assert!(json_output(root, &["task", "list", "--all", "--local", "--json"])
+        .as_array()
+        .unwrap()
+        .is_empty());
+}
+
+#[test]
+fn explicit_task_edit_root_registration_conflict_does_not_create_another_task() {
+    let temp = init_repo("https://example.test");
+    let root = temp.path();
+    let outside = TempDir::new().unwrap();
+    let explicit_root = outside
+        .path()
+        .canonicalize()
+        .unwrap()
+        .join("registered-root");
+    let started = compact_json_output(
+        root,
+        &[
+            "task",
+            "start",
+            "--local",
+            "--title",
+            "First explicit root owner",
+            "--intent",
+            "claim the explicit root once",
+            "--edit-root",
+            explicit_root.to_str().unwrap(),
+            "--json",
+        ],
+    );
+    assert_eq!(started["edit_root_source"], "explicit");
+
+    let conflict = command_output_with_env(
+        root,
+        &[
+            "task",
+            "start",
+            "--local",
+            "--title",
+            "Second explicit root owner",
+            "--intent",
+            "prove the existing registration wins",
+            "--edit-root",
+            explicit_root.to_str().unwrap(),
+            "--json",
+        ],
+        &[],
+    );
+    assert!(!conflict.status.success());
+    assert!(String::from_utf8_lossy(&conflict.stderr).contains("already registered"));
+    assert_eq!(
+        json_output(root, &["task", "list", "--all", "--local", "--json"])
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    assert!(explicit_root.join(".ait-worktree.json").is_file());
+    write_file(
+        &explicit_root.join("src/registration_owner.rs"),
+        "pub fn registration_owner() -> bool { true }\n",
+    );
+
+    let finished = compact_json_output(
+        &explicit_root,
+        &[
+            "task",
+            "finish",
+            "LT-0001",
+            "--message",
+            "Finish the original explicit-root owner",
+            "--local",
+            "--json",
+        ],
+    );
+    assert_eq!(finished["ok"], true);
+    assert!(!explicit_root.exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn explicit_task_edit_root_rejects_symlink_components_without_following_them() {
+    use std::os::unix::fs::symlink;
+
+    let temp = init_repo("https://example.test");
+    let root = temp.path();
+    let outside = TempDir::new().unwrap();
+    let outside = outside.path().canonicalize().unwrap();
+    let real_parent = outside.join("real-parent");
+    let linked_parent = outside.join("linked-parent");
+    fs::create_dir(&real_parent).unwrap();
+    symlink(&real_parent, &linked_parent).unwrap();
+    let requested = linked_parent.join("task-root");
+
+    let output = command_output_with_env(
+        root,
+        &[
+            "task",
+            "start",
+            "--local",
+            "--title",
+            "Symlink explicit root",
+            "--intent",
+            "reject symbolic-link components",
+            "--edit-root",
+            requested.to_str().unwrap(),
+            "--json",
+        ],
+        &[],
+    );
+
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("symbolic-link"));
+    assert!(!real_parent.join("task-root").exists());
+    assert!(json_output(root, &["task", "list", "--all", "--local", "--json"])
+        .as_array()
+        .unwrap()
+        .is_empty());
 }
 
 #[test]
@@ -774,6 +1017,12 @@ fn native_remote_task_start_from_uses_one_atomic_mutation_and_no_legacy_posts() 
     let (base_url, log, state, handle) = spawn_fake_remote();
     let temp = init_repo(&base_url);
     let root = temp.path();
+    let explicit_parent = TempDir::new().unwrap();
+    let explicit_root = explicit_parent
+        .path()
+        .canonicalize()
+        .unwrap()
+        .join("atomic-remote-task-root");
     let local_head_before = local_line_head(root, "main");
     {
         let mut guard = state.lock().unwrap();
@@ -806,11 +1055,18 @@ fn native_remote_task_start_from_uses_one_atomic_mutation_and_no_legacy_posts() 
             "docs/sprints/atomic-start.md#atomic-start/implement",
             "--intent",
             "Publish the Plan head and create Task plus Change in one mutation",
+            "--edit-root",
+            explicit_root.to_str().unwrap(),
             "--json",
         ],
     );
 
     assert_eq!(payload["task_id"], "RT-ATOMIC");
+    assert_eq!(payload["worktree"]["root_source"], "explicit");
+    assert_eq!(
+        payload["worktree"]["path"].as_str(),
+        Some(explicit_root.to_string_lossy().as_ref())
+    );
     assert_eq!(payload["change"]["change_id"], "C-01");
     assert_eq!(
         payload["change"]["fork_snapshot_id"].as_str(),
@@ -842,6 +1098,8 @@ fn native_remote_task_start_from_uses_one_atomic_mutation_and_no_legacy_posts() 
             "docs/sprints/atomic-start.md#atomic-start/implement",
             "--intent",
             "Publish the Plan head and create Task plus Change in one mutation",
+            "--edit-root",
+            explicit_root.to_str().unwrap(),
             "--json",
         ],
     );
@@ -852,6 +1110,32 @@ fn native_remote_task_start_from_uses_one_atomic_mutation_and_no_legacy_posts() 
         payload["worktree"]["open_path"]
     );
     assert_eq!(replay["worktree_reused"], true);
+
+    let different_parent = TempDir::new().unwrap();
+    let different_root = different_parent
+        .path()
+        .canonicalize()
+        .unwrap()
+        .join("different-atomic-remote-root");
+    let mismatched_path = command_output_with_env(
+        root,
+        &[
+            "task",
+            "start",
+            "--from",
+            "docs/sprints/atomic-start.md#atomic-start/implement",
+            "--intent",
+            "Publish the Plan head and create Task plus Change in one mutation",
+            "--edit-root",
+            different_root.to_str().unwrap(),
+            "--json",
+        ],
+        &[],
+    );
+    assert!(!mismatched_path.status.success());
+    assert!(String::from_utf8_lossy(&mismatched_path.stderr)
+        .contains("already bound to explicit edit root"));
+    assert!(!different_root.exists());
 
     handle.join().unwrap();
     let logged = log.lock().unwrap().clone();

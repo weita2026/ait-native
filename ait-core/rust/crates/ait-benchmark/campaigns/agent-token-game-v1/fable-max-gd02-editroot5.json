@@ -1,0 +1,53 @@
+{
+  "contract": "ait-agent-token-benchmark-campaign/v1",
+  "campaign_id": "game-v1-claude-fable5-max-gd02-editroot5-20260830",
+  "protocol_revision": "game-development-2026-08-31.48",
+  "campaign_scope": "diagnostic",
+  "accounting_profile": "steady_state_task_cost",
+  "ait_sprint_mode": "off",
+  "functional_replacement_policy": "none",
+  "seed": 2026082832,
+  "attempts_per_cell": 5,
+  "workload_ids": [
+    "GD-02"
+  ],
+  "modes": [
+    "git_linear_single_session",
+    "ait_linear_single_session"
+  ],
+  "model": {
+    "provider": "anthropic",
+    "model_id": "claude-fable-5",
+    "model_revision": "claude-fable-5-provider-canonical-observed-2026-08-29",
+    "reasoning_effort": "max"
+  },
+  "runtime": {
+    "executor": "claude",
+    "codex_program": "codex",
+    "claude_program": "/opt/homebrew/bin/claude",
+    "executor_version": "2.1.235 (Claude Code)",
+    "ait_version": "ait 1.1.0",
+    "git_version": "git version 2.50.1 (Apple Git-155)",
+    "node_version": "v25.9.0",
+    "browser_version": "Google Chrome 151.0.7922.174",
+    "ait_program": "/Users/weita/.local/bin/ait",
+    "git_program": "/usr/bin/git",
+    "node_program": "/opt/homebrew/bin/node",
+    "browser_program": "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+    "fixture_manifest": "../../fixtures/agent-token-game-v1/manifest.json",
+    "run_timeout_seconds": 1800,
+    "ait_first_use_worktree_add_dir": null,
+    "project_doc_max_bytes": 0
+  },
+  "cache_class": "provider_default_fresh_ephemeral_session",
+  "network_policy": "disabled_except_loopback",
+  "tool_policy": "claude_code_local_tools",
+  "bootstrap_resamples": 2000,
+  "limitations": [
+    "Diagnostic only: five paired GD-02 attempts measure whether an explicit --edit-root removes one AIT model request per lane. Never publication eligible and never pooled.",
+    "Compared against game-v1-claude-fable5-max-gd02-sprintoff5-20260830 on absolute AIT request count, not on token saving: the Git arm drifts across campaigns (r=0.855 with execution order) while the AIT arm does not (r=0.220).",
+    "Pre-registered prediction: AIT requests per lane fall from 18.2 to about 17.2. A result at or above 18.2 falsifies the attribution.",
+    "Every pinned axis matches the sprint-off diagnostic except the protocol revision and the measured AIT prompt.",
+    "Token savings direction is not a gate; unfavorable results remain valid diagnostic evidence."
+  ]
+}

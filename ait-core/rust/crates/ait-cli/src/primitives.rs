@@ -194,6 +194,7 @@ pub use snapshot::{
 pub use stash::{stash_apply, stash_drop, stash_list, stash_pop, stash_save, stash_show};
 pub(in crate::primitives) use task::task_create;
 pub use task::{task_audit, task_list, task_show};
+pub(crate) use task_start_from::task_start_from_with_edit_root_and_progress;
 pub use task_start_from::task_start_from_with_progress;
 pub use workflow::{
     task_land_apply, task_land_apply_scoped, task_land_payload, task_land_payload_scoped,

@@ -589,7 +589,7 @@ fn fake_landing_summary(guard: &FakeRemoteState, selected_patchset_id: &str) -> 
         let target_line_head = guard
             .selected_patchset_revision_snapshot_id
             .clone()
-            .unwrap_or_else(|| "SNP-REV".to_string());
+            .unwrap_or_else(|| FIXTURE_REVISION_SNAPSHOT_ID.to_string());
         return json!({
             "submission_id":"LAND-1",
             "patchset_id": selected_patchset_id,
@@ -965,7 +965,7 @@ fn response_for(
             let selected_revision_snapshot_id = guard
                 .selected_patchset_revision_snapshot_id
                 .clone()
-                .unwrap_or_else(|| "SNP-LANDED".to_string());
+                .unwrap_or_else(|| FIXTURE_FINISHED_SNAPSHOT_ID.to_string());
             let landed_snapshot_id = match (
                 guard.remote_head_snapshot_id.as_deref(),
                 guard.selected_patchset_base_snapshot_id.as_deref(),
@@ -1211,7 +1211,7 @@ fn response_for(
             let revision_snapshot_id = guard
                 .selected_patchset_revision_snapshot_id
                 .clone()
-                .unwrap_or_else(|| "SNP-REV".to_string());
+                .unwrap_or_else(|| FIXTURE_REVISION_SNAPSHOT_ID.to_string());
             json!([{
                 "patchset_id": patchset_id,
                 "change_id":"RC-1",
@@ -1231,7 +1231,7 @@ fn response_for(
             let revision_snapshot_id = guard
                 .selected_patchset_revision_snapshot_id
                 .clone()
-                .unwrap_or_else(|| "SNP-REV".to_string());
+                .unwrap_or_else(|| FIXTURE_REVISION_SNAPSHOT_ID.to_string());
             json!([{
                 "patchset_id":"RT-1/C-01/P-01",
                 "change_id":"C-01",
@@ -1252,7 +1252,7 @@ fn response_for(
             let revision_snapshot_id = guard
                 .selected_patchset_revision_snapshot_id
                 .clone()
-                .unwrap_or_else(|| "SNP-REV".to_string());
+                .unwrap_or_else(|| FIXTURE_REVISION_SNAPSHOT_ID.to_string());
             json!({
                 "patchset_id":"RT-1/C-01/P-01",
                 "change_id":"C-01",
@@ -1286,7 +1286,7 @@ fn response_for(
             let revision_snapshot_id = guard
                 .selected_patchset_revision_snapshot_id
                 .clone()
-                .unwrap_or_else(|| "SNP-REV".to_string());
+                .unwrap_or_else(|| FIXTURE_REVISION_SNAPSHOT_ID.to_string());
             json!({
                 "patchset_id": patchset_id,
                 "change_id":"RC-1",
@@ -1307,7 +1307,7 @@ fn response_for(
                 "change_id":"RC-1",
                 "patchset_number":1,
                 "base_snapshot_id": FIXTURE_BASE_SNAPSHOT_ID,
-                "revision_snapshot_id":"SNP-REV",
+                "revision_snapshot_id":FIXTURE_REVISION_SNAPSHOT_ID,
                 "publish_state":"published",
                 "evaluation_state":"pending",
                 "summary":"Native Rust patchset"
@@ -1516,7 +1516,7 @@ fn response_for(
                     let target_line_head = guard
                         .selected_patchset_revision_snapshot_id
                         .clone()
-                        .unwrap_or_else(|| "SNP-LANDED".to_string());
+                        .unwrap_or_else(|| FIXTURE_FINISHED_SNAPSHOT_ID.to_string());
                     return json_response(
                         200,
                         &json!({
@@ -1541,7 +1541,7 @@ fn response_for(
                 guard
                     .selected_patchset_revision_snapshot_id
                     .clone()
-                    .unwrap_or_else(|| "SNP-LANDED".to_string())
+                    .unwrap_or_else(|| FIXTURE_FINISHED_SNAPSHOT_ID.to_string())
             };
             json!({
                 "submission_id":"LAND-1",
@@ -1569,8 +1569,8 @@ fn response_for(
                 "result":{
                     "target_line":"main",
                     "base_snapshot_id": FIXTURE_BASE_SNAPSHOT_ID,
-                    "selected_revision_snapshot_id":"SNP-REV",
-                    "landed_snapshot_id":"SNP-LANDED",
+                    "selected_revision_snapshot_id":FIXTURE_REVISION_SNAPSHOT_ID,
+                    "landed_snapshot_id":FIXTURE_FINISHED_SNAPSHOT_ID,
                     "line_action":"moved",
                     "snapshot_action":"selected_patchset_revision",
                     "archived_lines":["feature/rt-1"],
@@ -1578,16 +1578,16 @@ fn response_for(
                         "already_aligned_equivalent":true,
                         "base_is_fresh":false,
                         "target_line":"main",
-                        "target_line_head":"SNP-LANDED",
+                        "target_line_head":FIXTURE_FINISHED_SNAPSHOT_ID,
                         "expected_base_snapshot_id": FIXTURE_BASE_SNAPSHOT_ID,
-                        "revision_snapshot_id":"SNP-REV",
+                        "revision_snapshot_id":FIXTURE_REVISION_SNAPSHOT_ID,
                         "target_matches_revision_snapshot":true,
                         "target_matches_revision_tree":true,
                         "checked_at":"2026-06-08T00:00:00Z"
                     },
                     "phase_timings_ms":{"total_process_land":1.2}
                 },
-                "result_json":"{\"landed_snapshot_id\":\"SNP-LANDED\"}"
+                "result_json":"{\"landed_snapshot_id\":\"SNP-A11CE5EED002\"}"
             })
         }
         ("POST", "/v1/native/lands/LAND-1:retry")

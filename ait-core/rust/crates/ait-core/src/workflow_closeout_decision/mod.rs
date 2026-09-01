@@ -176,7 +176,7 @@ pub(crate) fn workflow_ready_next_action(
     if change_effectively_landed(&change, landing_summary.as_ref()) {
         let task_status = string_field(&task, "status");
         let detail = if task_status != "completed" {
-            "The change is already landed; `task finish` can still close the Task."
+            "The change is already applied; `task finish` can still close the Task."
         } else {
             "No further ready-workflow action is required."
         };
@@ -207,6 +207,15 @@ pub(crate) fn workflow_ready_next_action(
     {
         if patchset.is_some() {
             if let Some(refresh_context) = optional_obj_field(facts, "patchset_refresh") {
+                if optional_bool_field(&refresh_context, "republish_allowed") == Some(false) {
+                    return json!({
+                        "code": "patchset_recovery_required",
+                        "summary": optional_string_field(&refresh_context, "summary").unwrap_or_else(|| "Recover the selected Patchset revision before continuing.".to_string()),
+                        "detail": optional_string_field(&refresh_context, "detail").unwrap_or_else(|| "Automatic Patchset refresh is disabled because Snapshot ancestry does not prove that the current head is newer than the selected revision.".to_string()),
+                        "command": JsonValue::Null,
+                        "refresh_context": JsonValue::Object(refresh_context),
+                    });
+                }
                 return json!({
                     "code": "refresh_patchset",
                     "summary": optional_string_field(&refresh_context, "summary").unwrap_or_else(|| "Refresh the selected patchset from the current line.".to_string()),
@@ -243,7 +252,7 @@ pub(crate) fn workflow_ready_next_action(
     if !external_readiness_is_ready(external_readiness.as_ref()) {
         return json!({
             "code": "external_readiness_blocked",
-            "summary": "Resolve external readiness blockers before CI and remote land.",
+            "summary": "Resolve external readiness blockers before CI and remote finish.",
             "detail": external_readiness_blocker_detail(external_readiness.as_ref()),
             "command": "ait external doctor",
             "external_readiness": external_readiness
@@ -297,7 +306,7 @@ pub(crate) fn workflow_ready_next_action(
         return json!({
             "code": "record_attestation",
             "summary": "Record attestation for the selected patchset.",
-            "detail": "Policy and landing should work from the compact Attestation gate statement; completed CI evidence remains embedded in the selected Patchset.",
+            "detail": "Policy and finish should work from the compact Attestation gate statement; completed CI evidence remains embedded in the selected Patchset.",
             "command": if patchset_ci_required {
                 JsonValue::String(apply_command.clone())
             } else {
@@ -377,23 +386,23 @@ pub(crate) fn workflow_land_next_action(
     if change_is_landed && string_field(&task, "status") != "completed" {
         return json!({
             "code": "complete_task",
-            "summary": "Complete the task now that the change is landed.",
-            "detail": "The workflow record should match the landed reality.",
+            "summary": "Complete the task now that the change is applied.",
+            "detail": "The workflow record should match the applied target-Line state.",
             "command": command_hint_json(commands, "task_land_command"),
         });
     }
     if landed_fast_path || change_is_landed {
         return json!({
             "code": "done",
-            "summary": "This change and task are already fully landed.",
-            "detail": "No further land workflow action is required.",
+            "summary": "This change and task are already fully finished.",
+            "detail": "No further finish workflow action is required.",
             "command": JsonValue::Null,
         });
     }
     if !ignore_workspace_authoring && !bool_field(&workspace, "clean") {
         return json!({
             "code": "workflow_ready",
-            "summary": "Run workflow ready before review or land.",
+            "summary": "Run workflow ready before review or finish.",
             "detail": "The workspace still has unsaved changes.",
             "command": ready_command,
         });
@@ -406,7 +415,7 @@ pub(crate) fn workflow_land_next_action(
             if let Some(refresh_context) = optional_obj_field(facts, "patchset_refresh") {
                 return json!({
                     "code": "workflow_ready",
-                    "summary": "Run workflow ready before review or land.",
+                    "summary": "Run workflow ready before review or finish.",
                     "detail": optional_string_field(&refresh_context, "detail").unwrap_or_else(|| "The selected patchset is stale and needs a fresh publish from the current line.".to_string()),
                     "command": ready_command,
                     "refresh_context": JsonValue::Object(refresh_context),
@@ -415,8 +424,8 @@ pub(crate) fn workflow_land_next_action(
         }
         return json!({
             "code": "workflow_ready",
-            "summary": "Run workflow ready before review or land.",
-            "detail": "The land workflow still needs a ready patchset from the current line.",
+            "summary": "Run workflow ready before review or finish.",
+            "detail": "The finish workflow still needs a ready patchset from the current line.",
             "command": ready_command,
         });
     }
@@ -426,7 +435,7 @@ pub(crate) fn workflow_land_next_action(
             PatchsetCiGateState::PendingWithJob => {
                 return json!({
                     "code": "workflow_ready",
-                    "summary": "Run workflow ready before review or land.",
+                    "summary": "Run workflow ready before review or finish.",
                     "detail": "Patchset CI is still running for the selected patchset.",
                     "command": ready_command,
                 });
@@ -434,11 +443,11 @@ pub(crate) fn workflow_land_next_action(
             PatchsetCiGateState::NeedsRun => {
                 return json!({
                     "code": "workflow_ready",
-                    "summary": "Run workflow ready before review or land.",
+                    "summary": "Run workflow ready before review or finish.",
                     "detail": if matches!(tests_state.as_str(), "fail" | "failed" | "hard_fail" | "soft_fail") {
                         format!("Patchset CI last reported tests `{tests_state}` for the selected patchset.")
                     } else {
-                        "Remote patchset CI evidence is missing for the selected patchset; local or manual tests pass is not enough for land.".to_string()
+                        "Remote patchset CI evidence is missing for the selected patchset; local or manual tests pass is not enough for finish.".to_string()
                     },
                     "command": ready_command,
                 });
@@ -450,7 +459,7 @@ pub(crate) fn workflow_land_next_action(
     {
         return json!({
             "code": "workflow_ready",
-            "summary": "Run workflow ready before review or land.",
+            "summary": "Run workflow ready before review or finish.",
             "detail": "Attestation evidence is still missing or incomplete for the selected patchset.",
             "command": ready_command,
         });
@@ -458,7 +467,7 @@ pub(crate) fn workflow_land_next_action(
     if review_blocking > 0 {
         return json!({
             "code": "address_blocking_review",
-            "summary": "Resolve the blocking review feedback before land.",
+            "summary": "Resolve the blocking review feedback before finish.",
             "detail": "A blocking review is already recorded on this change.",
             "command": command_hint_json(commands, "review_command"),
         });
@@ -468,8 +477,8 @@ pub(crate) fn workflow_land_next_action(
     {
         return json!({
             "code": "record_code_review_summary",
-            "summary": "Record AI code review before Task approval or Land.",
-            "detail": "An AI agent must inspect this exact Patchset and submit the structured pass-ready summary. Task Land only consumes already-ready review state.",
+            "summary": "Record AI code review before Task approval or finish.",
+            "detail": "An AI agent must inspect this exact Patchset and submit the structured pass-ready summary. Task finish only consumes already-ready review state.",
             "command": command_hint_json(commands, "code_review_summary_command"),
         });
     }
@@ -486,10 +495,10 @@ pub(crate) fn workflow_land_next_action(
                 "Record the required task approval for this change."
             },
             "detail": if task_review_required {
-                "Land still needs task/outcome approval.".to_string()
+                "Finish still needs task/outcome approval.".to_string()
             } else if let Some(reviewer) = auto_review_reviewer.clone() {
                 let mut detail = format!(
-                    "Task/outcome review auto approval is configured. Reviewer-owned Workflow Finish or a successful direct AI code review can record `task_approve` as `{reviewer}` before atomic Task Land."
+                    "Task/outcome review auto approval is configured. Reviewer-owned Workflow Finish or a successful direct AI code review can record `task_approve` as `{reviewer}` before atomic Task closeout."
                 );
                 if team_review_available {
                     detail.push_str(" Preserved team review remains available separately in `team_remote`.");
@@ -522,7 +531,7 @@ pub(crate) fn workflow_land_next_action(
         return json!({
             "code": "evaluate_policy",
             "summary": "Evaluate policy after reviewer approval.",
-            "detail": "Workflow Finish owns the final Policy evaluation before it delegates atomic closeout to Task Land.",
+            "detail": "Workflow Finish owns the final Policy evaluation before it delegates atomic Task closeout.",
             "command": workflow_land_owned_command(
                 "evaluate_policy",
                 command_hint(commands, "apply_command"),
@@ -535,7 +544,7 @@ pub(crate) fn workflow_land_next_action(
     if policy_decision != "pass" {
         return json!({
             "code": "land_blocked",
-            "summary": "Clear the current land preflight blocker before retrying remote land.",
+            "summary": "Clear the current finish preflight blocker before retrying remote finish.",
             "detail": workflow_land_policy_blocker_detail(policy.as_ref(), None, Some(policy_decision.as_str())),
             "command": JsonValue::Null,
         });
@@ -543,11 +552,11 @@ pub(crate) fn workflow_land_next_action(
     if WORKFLOW_LAND_PENDING_STATUSES.contains(&landing_status.as_str()) {
         return json!({
             "code": "waiting_for_land",
-            "summary": "Wait for the remote land submission to reach a terminal result.",
+            "summary": "Wait for the remote finish operation to reach a terminal result.",
             "detail": if let Some(submission_id) = &landing_submission_id {
-                format!("Remote land submission `{submission_id}` is currently `{landing_status}`.")
+                format!("Remote finish operation `{submission_id}` is currently `{landing_status}`.")
             } else {
-                "Remote land submission is still pending.".to_string()
+                "Remote finish operation is still pending.".to_string()
             },
             "command": JsonValue::String(apply_command.clone()),
         });
@@ -562,25 +571,25 @@ pub(crate) fn workflow_land_next_action(
         } else if let Some(submission_id) = &landing_submission_id {
             if !landing_blocker_class.is_empty() {
                 format!(
-                    "Remote land submission `{submission_id}` is blocked by `{landing_blocker_class}`."
+                    "Remote finish operation `{submission_id}` is blocked by `{landing_blocker_class}`."
                 )
             } else {
-                "Remote land is blocked and needs manual resolution before retrying.".to_string()
+                "Remote finish is blocked and needs manual resolution before retrying.".to_string()
             }
         } else {
-            "Remote land is blocked and needs manual resolution before retrying.".to_string()
+            "Remote finish is blocked and needs manual resolution before retrying.".to_string()
         };
         return json!({
             "code": "land_blocked",
-            "summary": "Clear the current land blocker before retrying remote land.",
+            "summary": "Clear the current finish blocker before retrying remote finish.",
             "detail": detail,
             "command": JsonValue::Null,
         });
     }
     json!({
         "code": "submit_land",
-        "summary": "Submit the approved patchset for landing.",
-        "detail": format!("The selected Patchset is ready to submit onto `{target_line}`. `task finish` will re-evaluate Policy as part of Land preflight."),
+        "summary": "Finish the approved patchset.",
+        "detail": format!("The selected Patchset is ready to apply to `{target_line}`. `task finish` will re-evaluate Policy during finish preflight."),
         "command": workflow_land_owned_command(
             "submit_land",
             command_hint(commands, "apply_command"),

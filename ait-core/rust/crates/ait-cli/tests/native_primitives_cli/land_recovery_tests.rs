@@ -315,7 +315,9 @@ fn native_task_land_waits_for_timed_out_in_flight_mutation_then_replays() {
         &["task", "finish", "RT-1", "--json", "--full"],
         &[
             ("AIT_REMOTE_MUTATION_RESPONSE_DEADLINE_SECONDS", "0.02"),
-            ("AIT_REMOTE_MUTATION_SETTLE_WINDOW_SECONDS", "0.04"),
+            // Preserve headroom above the 70 ms fixture mutation when the
+            // integration suite schedules many mock servers in parallel.
+            ("AIT_REMOTE_MUTATION_SETTLE_WINDOW_SECONDS", "0.20"),
             ("AIT_REMOTE_MUTATION_SETTLE_POLL_SECONDS", "0.002"),
         ],
     );

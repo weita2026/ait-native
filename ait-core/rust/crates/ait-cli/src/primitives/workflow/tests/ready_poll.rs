@@ -219,6 +219,8 @@ fn workflow_ready_ci_poll_reuses_workspace_and_refreshes_only_remote_ci_state() 
                 "change_id": "RCC-1",
                 "repo_name": "fixture-ait",
                 "available": true,
+                "ci_run_seq": 1,
+                "ci_completed_at_s": 1_783_814_400_u64,
                 "tests_status": "pass",
                 "selected_suite_ids": ["suite-1"],
                 "suite_result_count": 1,
@@ -272,6 +274,7 @@ fn workflow_ready_ci_poll_reuses_workspace_and_refreshes_only_remote_ci_state() 
         &state,
         "RCC-1",
         Some("mirror"),
+        None,
     )
     .expect("refresh CI-only ready state");
 
@@ -293,6 +296,12 @@ fn workflow_ready_ci_poll_reuses_workspace_and_refreshes_only_remote_ci_state() 
     assert_eq!(remote.ci_readiness_requests.len(), 1);
     assert_eq!(remote.repo_job_requests, 0);
 
+    fs::create_dir_all(repo_tmp.path().join("ci")).expect("CI directory");
+    fs::write(
+        repo_tmp.path().join("ci").join("patch_ci.json"),
+        r#"{"suites":[]}"#,
+    )
+    .expect("CI catalog");
     let mut authoritative_state = state.clone();
     authoritative_state["workspace"] = json!({
         "clean": false,
@@ -313,6 +322,7 @@ fn workflow_ready_ci_poll_reuses_workspace_and_refreshes_only_remote_ci_state() 
         &authoritative_state,
         "RCC-1",
         Some("mirror"),
+        Some("LCT-FINAL/C-01"),
     )
     .expect("refresh authoritative completed-local CI state");
 
@@ -336,6 +346,31 @@ fn workflow_ready_ci_poll_reuses_workspace_and_refreshes_only_remote_ci_state() 
         authoritative_refreshed["next_action"]["code"],
         json!("snapshot_create")
     );
+    assert_eq!(
+        authoritative_refreshed["next_action"]["command"],
+        json!("ait workflow ready LCT-FINAL/C-01 --apply --remote mirror")
+    );
+
+    let mut finish_handoff_state = authoritative_refreshed.clone();
+    finish_handoff_state["attestation"] = json!({
+        "attestation_id": "AT-RCP-1",
+        "patchset_id": "RCP-1",
+        "evaluation_summary": {"tests": "pass"}
+    });
+    let finish_handoff = workflow_project_ready_payload(
+        &repo,
+        &finish_handoff_state,
+        "RCC-1",
+        Some("mirror"),
+        true,
+        Some("LCT-FINAL/C-01"),
+    )
+    .expect("project completed-local finish handoff");
+    assert_eq!(finish_handoff["next_action"]["code"], json!("done"));
+    assert_eq!(
+        finish_handoff["next_action"]["command"],
+        json!("ait workflow finish LCT-FINAL/C-01 --apply --remote mirror")
+    );
 
     remote.ci_statuses.insert(
         "RCP-1".to_string(),
@@ -348,6 +383,7 @@ fn workflow_ready_ci_poll_reuses_workspace_and_refreshes_only_remote_ci_state() 
         &state,
         "RCC-1",
         Some("mirror"),
+        None,
     )
     .expect_err("malformed readiness must fail closed");
     assert!(error.contains("missing non-empty contract"));
@@ -419,6 +455,7 @@ fn workflow_ready_ci_poll_rejects_partial_completed_local_authority() {
         "fixture-ait",
         &state,
         "RCC-1",
+        None,
         None,
     )
     .expect_err("partial completed-local authority must fail closed");

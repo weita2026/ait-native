@@ -560,6 +560,30 @@ mod tests {
     }
 
     #[test]
+    fn measured_ait_workspace_purges_generated_artifacts() {
+        // Every AIT lane used to list AGENTS.md and docs/ while no Git lane
+        // did, and agents spent 1.6-3.0 requests per lane exploring exactly
+        // those artifacts. The purge removes the file and archives its Plan;
+        // the protocol text must state the corrected deletion mechanism.
+        assert_eq!(crate::agent_token::AIT_PURGED_PROJECT_DOCUMENT, "AGENTS.md");
+        let protocol: serde_json::Value =
+            serde_json::from_str(crate::AGENT_TOKEN_PROTOCOL_V1_JSON).unwrap();
+        let policy = protocol["fairness"]["project_document_loading"]
+            .as_str()
+            .expect("project_document_loading is declared");
+        for required in ["deleted", "--prune", "docs", "exploration"] {
+            assert!(
+                policy.contains(required),
+                "project-document policy must state {required:?}: {policy}"
+            );
+        }
+        assert!(
+            !policy.contains("cannot be deleted"),
+            "retired stub-era claim survives: {policy}"
+        );
+    }
+
+    #[test]
     fn compiled_agent_token_protocol_freezes_linear_game_comparison() {
         let protocol: serde_json::Value =
             serde_json::from_str(crate::AGENT_TOKEN_PROTOCOL_V1_JSON).unwrap();
@@ -569,7 +593,42 @@ mod tests {
         );
         assert_eq!(
             protocol["protocol_revision"],
-            serde_json::json!("game-development-2026-08-27.29")
+            serde_json::json!("game-development-2026-08-31.48")
+        );
+        assert_eq!(
+            protocol["sampling"]["codex_app_equivalent_managed_prefix_gate"]
+                ["scheduled_prefix_session_count"],
+            serde_json::json!(10)
+        );
+        assert_eq!(
+            protocol["comparison_families"]["core"]["modes"][0]["id"],
+            serde_json::json!("git_linear_single_session")
+        );
+        assert_eq!(
+            protocol["sampling"]["infrastructure_pair_recovery"]["contract"],
+            serde_json::json!("ait-agent-token-infrastructure-pair-recovery/v1")
+        );
+        assert_eq!(
+            protocol["sampling"]["infrastructure_pair_recovery"]["execution_limit"],
+            serde_json::json!("one recognized executor-infrastructure pair and one two-lane replacement attempt per campaign; no second executor-infrastructure recovery, repair, or retry is admitted; the exact externally evidenced .34 host-shutdown path is a separate bounded contract")
+        );
+        assert_eq!(
+            protocol["sampling"]["host_shutdown_pair_recovery"]["contract"],
+            serde_json::json!("ait-agent-token-host-shutdown-pair-recovery/v1")
+        );
+        assert_eq!(
+            protocol["sampling"]["host_shutdown_pair_recovery"]["source_pair_start_index"],
+            serde_json::json!(80)
+        );
+        assert_eq!(
+            protocol["sampling"]["recovered_spawn_adjudication"]["contract"],
+            serde_json::json!("ait-agent-token-run-adjudication/v1")
+        );
+        assert_eq!(
+            protocol["sampling"]["recovered_spawn_adjudication"]["source_run_summary_sha256"],
+            serde_json::json!(
+                "sha256:0a58cb77970cb4d41a531a99b69fc8acdde4e7970b2327a14333ad050a9f0dac"
+            )
         );
         assert_eq!(
             protocol["sampling"]["statistical_replacement"]["contract"],
@@ -578,13 +637,20 @@ mod tests {
         assert_eq!(
             protocol["sampling"]["statistical_replacement"]["execution_limit"],
             serde_json::json!(
-                "exactly one new AIT session; no second replacement or repair is admitted"
+                "exactly one new same-mode session across the campaign; smoke cannot replace, and no second replacement, repair, activation, or retry is admitted even when the replacement fails"
             )
+        );
+        assert_eq!(
+            protocol["executors"]["claude"]["refusal_policy"],
+            serde_json::json!("a successful terminal result with stop_reason=refusal is valid provider-token-accounted functional model behavior, never executor infrastructure; it cannot be accepted equivalent and may consume the one prospective functional replacement only when the complete manifest declared that policy before execution")
         );
         assert_eq!(
             protocol["executors"]["claude"]["tool_policy"],
             serde_json::json!("claude_code_local_tools")
         );
+        assert!(protocol["executors"]["claude"]["version_pin"]
+            .as_str()
+            .is_some_and(|value| value.contains("runtime.executor_version")));
         assert_eq!(
             protocol["executors"]["codex"]["tool_policy"],
             serde_json::json!("codex_shell_only")
@@ -641,6 +707,12 @@ mod tests {
             )
         );
         assert_eq!(
+            protocol["fairness"]["symmetric_readonly_inspection"]["measured_prompt_policy"],
+            serde_json::json!(
+                "neither mode names, requires, or recommends any local read-only inspection command, and neither mode is required to inspect for its lane to be valid; both measured prompts carry one identical neutral sentence stating that local read-only inspection is neither required nor prohibited, so strategy is chosen naturally by the measured agent"
+            )
+        );
+        assert_eq!(
             protocol["fairness"]["informational_cli_help_introspection"]["cross_tool_policy"],
             serde_json::json!("help of the other mode's CLI remains a mode-exclusion violation")
         );
@@ -666,7 +738,7 @@ mod tests {
             .is_none());
         assert_eq!(
             protocol["product_boundary"]["core_sprint_mode"],
-            serde_json::json!("off")
+            serde_json::json!("manifest-pinned off for the primary campaign; separately reported sprint-on smoke and complete campaigns are admitted")
         );
         assert_eq!(
             protocol["product_boundary"]["ait_server_connection_allowed"],
@@ -682,7 +754,7 @@ mod tests {
         );
         assert!(protocol["sampling"]["complete_campaign"]["revision_note"]
             .as_str()
-            .is_some_and(|value| value.contains("symmetric read-only inspection treatment")));
+            .is_some_and(|value| value.contains("separately reported sprint-on treatment")));
         assert!(
             protocol["sampling"]["atomic_pair_schedule"]["candidate_defect_policy"]
                 .as_str()
@@ -691,7 +763,7 @@ mod tests {
         assert!(
             protocol["sampling"]["immutable_resume"]["valid_unaccepted_outcome_policy"]
                 .as_str()
-                .is_some_and(|value| value.contains("cannot be repaired, replaced, or retried"))
+                .is_some_and(|value| value.contains("declared first_valid_unaccepted_lane_once"))
         );
         assert!(
             protocol["sampling"]["immutable_resume"]["resume_audit_policy"]
@@ -761,7 +833,11 @@ mod tests {
         );
         assert_eq!(
             protocol["provider_usage"]["candidate_tool_process_spawn_failure_policy"],
-            serde_json::json!("retain the invalid run and stop the remaining schedule immediately even when the model recovers and exits zero; recognize both unified CreateProcess stderr and non-unified executor Io/exit-code-minus-one evidence")
+            serde_json::json!("a launch failure is measured candidate behavior when the same session recovers, exits zero without timeout, retains normalized provider usage, and produces a valid non-empty command transcript; count the failed invocation, retry, outputs, and all provider tokens. Otherwise retain the invalid run and stop immediately. Recognize both unified CreateProcess stderr and non-unified executor Io/exit-code-minus-one evidence")
+        );
+        assert_eq!(
+            protocol["publication_eligibility"]["recovered_spawn_successor_executed_session_count"],
+            serde_json::json!(202)
         );
         assert_eq!(
             protocol["publication_eligibility"]

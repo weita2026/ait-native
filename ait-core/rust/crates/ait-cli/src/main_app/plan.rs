@@ -244,8 +244,10 @@ fn build_sync_request(repo: &RepoRuntime, args: &SyncArgs) -> Result<String, Str
     }
     let scope = resolve_plan_scope(repo, args.local, args.remote.as_deref())?;
     let use_local_scope = matches!(scope, ResolvedPlanScope::Local);
+    // Markdown is authored in the active workspace, while plan_storage below
+    // continues to pin Binary DB and content authority to the canonical root.
     let mut payload = json!({
-        "root_path": repo.authoritative_repo_root(),
+        "root_path": repo.workspace_root(),
         "repo_name": repo.repo_name(),
         "repository_index": repo.repository_index(),
         "id_namespace_prefix": repo.id_namespace_prefix(),

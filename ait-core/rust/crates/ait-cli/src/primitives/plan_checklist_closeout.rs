@@ -184,7 +184,7 @@ pub(in crate::primitives) fn close_task_plan_checklist_item(
     let retention = apply_completed_sprint_card_retention(repo, &artifact_path, remote_name)
         .map_err(|error| {
             format!(
-                "Task landed and bound checklist sync succeeded, but sprint-card retention failed: {error}"
+                "Task finish and bound checklist sync succeeded, but sprint-card retention failed: {error}"
             )
         })?;
     Ok(json!({
@@ -415,14 +415,16 @@ fn restore_markdown_after_sync_failure(
     sync_error: &str,
 ) -> String {
     if !updated {
-        return format!("Task landed, but plan sync failed for {artifact_path}: {sync_error}");
+        return format!(
+            "Task finish succeeded, but plan sync failed for {artifact_path}: {sync_error}"
+        );
     }
     match fs::write(resolved_path, original_markdown) {
         Ok(()) => format!(
-            "Task landed, but plan sync failed for {artifact_path}; the automatic checkbox edit was restored: {sync_error}"
+            "Task finish succeeded, but plan sync failed for {artifact_path}; the automatic checkbox edit was restored: {sync_error}"
         ),
         Err(restore_error) => format!(
-            "Task landed and plan sync failed for {artifact_path}; restoring the automatic checkbox edit also failed ({restore_error}): {sync_error}"
+            "Task finish succeeded and plan sync failed for {artifact_path}; restoring the automatic checkbox edit also failed ({restore_error}): {sync_error}"
         ),
     }
 }

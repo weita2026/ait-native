@@ -22,12 +22,13 @@ fn run_task(repo: RepoRuntime, command: TaskCommand) -> Result<ExitCode, String>
                     Ok(())
                 };
                 let mut payload = if let Some(source) = args.source.as_deref() {
-                    task_start_from_with_progress(
+                    task_start_from_with_edit_root_and_progress(
                         &repo,
                         source,
                         &args.intent,
                         args.local,
                         args.remote.as_deref(),
+                        args.edit_root.as_deref(),
                         None,
                         emit_human_progress.then_some(&mut emit_progress),
                     )?
@@ -44,6 +45,7 @@ fn run_task(repo: RepoRuntime, command: TaskCommand) -> Result<ExitCode, String>
                         None,
                         None,
                         None,
+                        args.edit_root.as_deref(),
                         None,
                         emit_human_progress.then_some(&mut emit_progress),
                     )?

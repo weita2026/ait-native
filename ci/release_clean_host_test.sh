@@ -206,6 +206,36 @@ jq -e '
   ] | sort)
 ' "${matrix}" >/dev/null
 
+legacy_future_family=${temporary_root}/legacy-future-family.json
+jq '
+  .family.version = "1.1.1" |
+  .family.tag = "v1.1.1" |
+  .components |= map(
+    if .version_scheme == "family" then .version = "1.1.1"
+    elif .version_scheme == "pep440" then .version = "1.1.1"
+    else . end
+  )
+' "${repo_root}/ait-release-family.json" >"${legacy_future_family}"
+legacy_future_platforms=${temporary_root}/legacy-future-platforms.json
+jq '.version = "1.1.1"' \
+  "${repo_root}/ci/native_bootstrap_matrix.json" >"${legacy_future_platforms}"
+expect_failure future-legacy-native-bundle node "${tool}" matrix \
+  --family "${legacy_future_family}" \
+  --platforms "${legacy_future_platforms}" \
+  --output "${temporary_root}/legacy-future-matrix.json"
+grep -F '1.1+ clean-host qualification requires the native runner-bundle matrix' \
+  "${temporary_root}/future-legacy-native-bundle.stderr" >/dev/null
+
+altered_published_family=${temporary_root}/altered-published-family.json
+jq '.compatibility.native_protocol = "altered"' \
+  "${repo_root}/ait-release-family.json" >"${altered_published_family}"
+expect_failure altered-published-native-bundle node "${tool}" matrix \
+  --family "${altered_published_family}" \
+  --platforms "${legacy_platforms}" \
+  --output "${temporary_root}/altered-published-matrix.json"
+grep -F 'legacy matrix is admitted only for the exact immutable published 1.1.0 family' \
+  "${temporary_root}/altered-published-native-bundle.stderr" >/dev/null
+
 runner_bundle_family=${temporary_root}/runner-bundle-family.json
 jq '
   .family.version = "1.1.0" |

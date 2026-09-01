@@ -226,7 +226,7 @@ fn patch_ci_template(_: &Path) -> PatchCiTemplate {
             "plane": "patchset",
             "default_blocking": true,
             "mode": "gate",
-            "purpose": "Validate this repository before remote land.",
+            "purpose": "Validate this repository before remote finish.",
             "runner": {
                 "kind": "command_bundle",
                 "commands": commands.clone(),

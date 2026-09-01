@@ -104,6 +104,19 @@ fn workflow_ready_apply_output(
                 output.insert(key.to_string(), value.clone());
             }
         }
+        if let Some(local_change_ref) = promotion
+            .get("state")
+            .and_then(|state| state.get("change"))
+            .and_then(|change| {
+                let local_change_id = string_field(change, "change_id")?;
+                change_reference_from_payload(change, Some(&local_change_id)).ok()
+            })
+        {
+            output.insert(
+                "command_change_ref".to_string(),
+                JsonValue::String(local_change_ref),
+            );
+        }
     }
     JsonValue::Object(output)
 }
@@ -133,6 +146,7 @@ where
     let mut final_snapshot_promotion = None;
     let mut ready_patchset_is_authoritative = false;
     let mut effective_change_id = change_id.to_string();
+    let mut command_change_ref = None;
     let mut applied_actions = Vec::new();
     let mut mutation_receipts = Vec::new();
     let mut seen_signatures = BTreeSet::new();
@@ -156,6 +170,7 @@ where
         workflow_final_snapshot_promotion_candidate(repo, change_id, remote_name)?
     {
         ready_patchset_is_authoritative = true;
+        command_change_ref = Some(workflow_completed_local_command_change_ref(&candidate)?);
         let remote_change_id = workflow_final_snapshot_promotion_remote_change_id(&candidate)?;
         let local_change_published = candidate
             .get("state")
@@ -164,11 +179,12 @@ where
             .and_then(JsonValue::as_str)
             == Some("published");
         let remote_is_prepared = local_change_published
-            && workflow_ready_remote_payload_with_patchset_authority(
+            && workflow_ready_remote_payload_with_patchset_authority_and_command_ref(
                 repo,
                 &remote_change_id,
                 remote_name,
                 true,
+                command_change_ref.as_deref(),
             )
             .ok()
             .is_some_and(|state| {
@@ -219,11 +235,12 @@ where
     loop {
         let mut state = {
             let _range = perfetto_range!("ait.workflow_ready.authoritative_state");
-            workflow_ready_remote_payload_with_patchset_authority(
+            workflow_ready_remote_payload_with_patchset_authority_and_command_ref(
                 repo,
                 &effective_change_id,
                 remote_name,
                 ready_patchset_is_authoritative,
+                command_change_ref.as_deref(),
             )?
         };
         let mut code = workflow_nested_text(&state, "next_action", "code").unwrap_or_default();
@@ -244,6 +261,7 @@ where
                             &pending_state,
                             &effective_change_id,
                             remote_name,
+                            command_change_ref.as_deref(),
                         )?;
                         workflow_ready_ci_poll_wait_state(polled_state, &ci_requested_patchsets)
                     })?

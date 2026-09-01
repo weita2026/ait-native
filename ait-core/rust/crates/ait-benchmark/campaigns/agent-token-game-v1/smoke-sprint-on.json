@@ -1,0 +1,39 @@
+{
+  "contract": "ait-agent-token-benchmark-campaign/v1",
+  "campaign_id": "game-v1-smoke-sprint-on-template",
+  "protocol_revision": "game-development-2026-08-31.48",
+  "campaign_scope": "smoke",
+  "accounting_profile": "steady_state_task_cost",
+  "ait_sprint_mode": "on",
+  "functional_replacement_policy": "none",
+  "seed": 20260828,
+  "attempts_per_cell": 1,
+  "workload_ids": ["GD-01", "GD-02", "GD-03", "GD-04", "GD-05"],
+  "modes": ["git_linear_single_session", "ait_linear_single_session"],
+  "model": {
+    "provider": "openai",
+    "model_id": "REPLACE_WITH_PINNED_MODEL_ID",
+    "model_revision": "REPLACE_WITH_PINNED_MODEL_REVISION",
+    "reasoning_effort": "max"
+  },
+  "runtime": {
+    "executor": "codex",
+    "codex_program": "codex",
+    "ait_program": "ait",
+    "git_program": "git",
+    "node_program": "node",
+    "browser_program": null,
+    "fixture_manifest": "../../fixtures/agent-token-game-v1/manifest.json",
+    "run_timeout_seconds": 1800,
+    "ait_first_use_worktree_add_dir": null,
+    "project_doc_max_bytes": 0
+  },
+  "cache_class": "provider_default_fresh_ephemeral_session",
+  "network_policy": "disabled_except_loopback",
+  "tool_policy": "codex_shell_only",
+  "bootstrap_resamples": 2000,
+  "limitations": [
+    "Template only: pin the real model revision and browser program before execution.",
+    "Diagnostic only: all five workloads run once in both modes with natural, unprompted repository inspection strategy; sprint-on results remain separate from sprint-off publication evidence."
+  ]
+}

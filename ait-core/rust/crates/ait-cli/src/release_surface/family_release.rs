@@ -4,6 +4,11 @@ use std::io::Read;
 pub const FAMILY_RELEASE_PROFILE: &str = "family";
 pub(super) const FAMILY_RELEASE_MANIFEST_PATH: &str = "ait-release-family.json";
 pub(super) const FAMILY_RELEASE_MANIFEST_CONTRACT: &str = "ait.release.family/v3";
+const PUBLISHED_LEGACY_NATIVE_BUNDLE_VERSION: &str = "1.1.0";
+const PUBLISHED_LEGACY_NATIVE_BUNDLE_TAG: &str = "v1.1.0";
+const PUBLISHED_LEGACY_NATIVE_BUNDLE_SNAPSHOT: &str = "SNP-1D024C5B512C";
+const PUBLISHED_LEGACY_NATIVE_BUNDLE_MANIFEST_SHA256: &str =
+    "e85722913ed6724eb8f9cbb56fc2fd4a84ebcaad9fa84acb2e2971b2cc6c87fd";
 pub(super) const FAMILY_RELEASE_CANDIDATE_CONTRACT: &str = "ait.release.family.candidate/v1";
 pub(super) const FAMILY_RELEASE_CHECK_CONTRACT: &str = "ait.release.family.check/v1";
 pub(super) const FAMILY_RELEASE_BUILD_CONTRACT: &str = "ait.release.family.build/v1";
@@ -433,6 +438,105 @@ fn validate_family_version(version: &str, channel: &str) -> Result<(), String> {
             "Release channel must be either \"rc\" or \"stable\", got {channel:?}."
         )),
     }
+}
+
+pub(super) fn native_runner_bundle_required(version: &str) -> Result<bool, String> {
+    let base = version
+        .rsplit_once("-rc.")
+        .map(|(base, _)| base)
+        .unwrap_or(version);
+    let (major, minor, _) = stable_version_parts(base).ok_or_else(|| {
+        format!("Family version {version:?} cannot select the native runner-bundle contract.")
+    })?;
+    let major = major
+        .parse::<u64>()
+        .map_err(|_| format!("Family version {version:?} has an out-of-range major component."))?;
+    let minor = minor
+        .parse::<u64>()
+        .map_err(|_| format!("Family version {version:?} has an out-of-range minor component."))?;
+    Ok(major > 1 || (major == 1 && minor >= 1))
+}
+
+pub(super) fn is_exact_published_legacy_native_bundle_source(
+    version: &str,
+    channel: &str,
+    tag: &str,
+    snapshot_id: &str,
+    family_manifest_sha256: &str,
+) -> bool {
+    version == PUBLISHED_LEGACY_NATIVE_BUNDLE_VERSION
+        && channel == "stable"
+        && tag == PUBLISHED_LEGACY_NATIVE_BUNDLE_TAG
+        && snapshot_id == PUBLISHED_LEGACY_NATIVE_BUNDLE_SNAPSHOT
+        && family_manifest_sha256 == PUBLISHED_LEGACY_NATIVE_BUNDLE_MANIFEST_SHA256
+}
+
+fn validate_native_product_bundle_contract(
+    family: &FamilyReleaseManifest,
+    snapshot_id: &str,
+    family_manifest_sha256: &str,
+) -> Result<(), String> {
+    let runner_required = native_runner_bundle_required(&family.family.version)?;
+    let exact_published_exception = is_exact_published_legacy_native_bundle_source(
+        &family.family.version,
+        &family.family.channel,
+        &family.family.tag,
+        snapshot_id,
+        family_manifest_sha256,
+    );
+    let legacy = ["ait", "ait-server"].into_iter().collect::<BTreeSet<_>>();
+    let runner_bundle = ["ait", "ait-server", "ait-runner"]
+        .into_iter()
+        .collect::<BTreeSet<_>>();
+    let native_products = family
+        .distributions
+        .iter()
+        .filter(|distribution| {
+            distribution.role == "product"
+                && matches!(distribution.channel.as_str(), "homebrew" | "apt" | "winget")
+        })
+        .collect::<Vec<_>>();
+    if runner_required && !exact_published_exception {
+        let channels = native_products
+            .iter()
+            .map(|distribution| distribution.channel.as_str())
+            .collect::<BTreeSet<_>>();
+        let required_channels = ["homebrew", "apt", "winget"]
+            .into_iter()
+            .collect::<BTreeSet<_>>();
+        if native_products.len() != 3 || channels != required_channels {
+            return Err(format!(
+                "Family version {:?} must declare exactly one Homebrew, apt, and WinGet native product distribution.",
+                family.family.version
+            ));
+        }
+    }
+
+    for distribution in native_products {
+        let components = distribution
+            .components
+            .iter()
+            .map(String::as_str)
+            .collect::<BTreeSet<_>>();
+        let legacy_components = components == legacy && distribution.components.len() == 2;
+        let runner_components = components == runner_bundle && distribution.components.len() == 3;
+        if runner_components
+            || (legacy_components && (!runner_required || exact_published_exception))
+        {
+            continue;
+        }
+        if legacy_components && runner_required {
+            return Err(format!(
+                "{} product distribution {:?} must bundle ait, ait-server, and ait-runner for family version {:?}; the two-command layout is admitted only for 1.0.x and the exact immutable published 1.1.0 family.",
+                distribution.channel, distribution.identity, family.family.version
+            ));
+        }
+        return Err(format!(
+            "{} product distribution {:?} has an invalid native command component set.",
+            distribution.channel, distribution.identity
+        ));
+    }
+    Ok(())
 }
 
 fn expected_pep440_version(family_version: &str, channel: &str) -> Result<String, String> {
@@ -1085,7 +1189,10 @@ fn family_manifest_from_bundle(bundle: &ReleaseBundle) -> Result<FamilyReleaseMa
         &entry.data,
         "ait-release-family.json must contain valid UTF-8 JSON",
     )?;
-    parse_family_release_manifest(&value)
+    let manifest = parse_family_release_manifest(&value)?;
+    let snapshot_id = required_string_field(&bundle.raw, "snapshot_id")?;
+    validate_native_product_bundle_contract(&manifest, &snapshot_id, &sha256_hex(&entry.data))?;
+    Ok(manifest)
 }
 
 fn family_manifest_sha256(bundle: &ReleaseBundle) -> Result<String, String> {
@@ -1557,6 +1664,11 @@ fn public_git_source_authority(
         "Public Git family manifest must contain valid JSON",
     )?;
     let family = parse_family_release_manifest(&family_value)?;
+    validate_native_product_bundle_contract(
+        &family,
+        &required_string_field(&mapping, "coordinator_snapshot")?,
+        &family_manifest_sha256,
+    )?;
     if string_field(&mapping, "family_version").as_deref() != Some(family.family.version.as_str())
         || string_field(&mapping, "family_tag").as_deref() != Some(family.family.tag.as_str())
     {
@@ -4222,6 +4334,64 @@ mod tests {
         let parsed = parse_family_release_manifest(&manifest("1.0.0", "stable", "1.0.0"))
             .expect("valid stable family manifest");
         assert_eq!(parsed.components[1].version, "1.0.0");
+    }
+
+    #[test]
+    fn native_runner_bundle_gate_preserves_only_the_exact_published_legacy_family() {
+        let bytes = include_bytes!("../../../../../ait-release-family.json");
+        assert_eq!(
+            sha256_hex(bytes),
+            PUBLISHED_LEGACY_NATIVE_BUNDLE_MANIFEST_SHA256
+        );
+        let value: JsonValue = serde_json::from_slice(bytes).unwrap();
+        let family = parse_family_release_manifest(&value).unwrap();
+        validate_native_product_bundle_contract(
+            &family,
+            PUBLISHED_LEGACY_NATIVE_BUNDLE_SNAPSHOT,
+            PUBLISHED_LEGACY_NATIVE_BUNDLE_MANIFEST_SHA256,
+        )
+        .unwrap();
+
+        assert!(validate_native_product_bundle_contract(
+            &family,
+            "SNP-FFFFFFFFFFFF",
+            PUBLISHED_LEGACY_NATIVE_BUNDLE_MANIFEST_SHA256,
+        )
+        .unwrap_err()
+        .contains("must bundle ait, ait-server, and ait-runner"));
+
+        let mut future = family.clone();
+        future.family.version = "1.1.1".to_string();
+        future.family.tag = "v1.1.1".to_string();
+        assert!(validate_native_product_bundle_contract(
+            &future,
+            "SNP-111111111111",
+            &"1".repeat(64),
+        )
+        .is_err());
+
+        for distribution in &mut future.distributions {
+            if distribution.role == "product"
+                && matches!(distribution.channel.as_str(), "homebrew" | "apt" | "winget")
+            {
+                distribution.components.push("ait-runner".to_string());
+            }
+        }
+        validate_native_product_bundle_contract(&future, "SNP-111111111111", &"1".repeat(64))
+            .unwrap();
+
+        future
+            .distributions
+            .retain(|distribution| distribution.channel != "winget");
+        assert!(validate_native_product_bundle_contract(
+            &future,
+            "SNP-111111111111",
+            &"1".repeat(64),
+        )
+        .unwrap_err()
+        .contains("exactly one Homebrew, apt, and WinGet"));
+        assert!(native_runner_bundle_required("1.1.0-rc.1").unwrap());
+        assert!(!native_runner_bundle_required("1.0.9").unwrap());
     }
 
     #[test]

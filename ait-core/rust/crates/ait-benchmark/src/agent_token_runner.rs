@@ -10,29 +10,52 @@ use chrono::Utc;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 
 use crate::agent_token::{
-    extract_and_validate_claude_transcript_with_git_start_proof,
-    extract_and_validate_codex_transcript_with_git_start_proof,
+    extract_and_validate_claude_transcript_with_workflow_options,
+    extract_and_validate_codex_transcript_with_workflow_options,
+    load_agent_token_raw_run_summaries_with_allowed_missing,
+    load_agent_token_run_summaries_with_allowed_missing, protocol_requires_claude_model_evidence,
+    AgentTokenServedModelReport, AgentTokenTranscriptWorkflowOptions,
+};
+use crate::agent_token_replacement::{
+    first_valid_unaccepted_run_id,
+    load_agent_token_campaign_statistical_view_allowing_host_shutdown_partial,
+    statistical_replacement_authorization, AgentTokenStatisticalReplacementAuthorization,
 };
 use crate::{
     build_agent_token_report, build_agent_token_run_adjudication, build_agent_token_schedule,
-    digest_workspace, extract_agent_token_secondary_metrics, import_codex_usage,
+    capture_host_shutdown_observation, classify_host_shutdown_interruption, digest_workspace,
+    extract_agent_token_secondary_metrics, host_shutdown_replacement_run_id, import_codex_usage,
     load_agent_token_campaign, load_agent_token_campaign_for_evidence,
     load_agent_token_campaign_statistical_view, load_agent_token_raw_run_summaries,
-    load_agent_token_run_summaries, materialize_game_fixture, render_agent_token_report_markdown,
-    sha256_digest, write_json_new, write_text_new, AgentTokenAccountingProfile,
-    AgentTokenBrowserReport, AgentTokenCampaignManifest, AgentTokenCommandTranscript,
-    AgentTokenEnvironment, AgentTokenMode, AgentTokenRunSummary, AgentTokenSchedule,
+    load_agent_token_run_summaries, materialize_game_fixture, recognized_infrastructure_failure,
+    render_agent_token_report_markdown, replacement_run_id, sha256_digest, write_json_new,
+    write_text_new, AgentTokenAccountingProfile, AgentTokenAitSprintMode, AgentTokenBrowserReport,
+    AgentTokenCampaignManifest, AgentTokenCommandTranscript, AgentTokenEnvironment,
+    AgentTokenGitWorktreeMode, AgentTokenHostShutdownPairRecoverySelection,
+    AgentTokenInfrastructurePairRecoverySelection, AgentTokenInfrastructureRecoveryArtifact,
+    AgentTokenMode, AgentTokenReport, AgentTokenRunSummary, AgentTokenSchedule,
     AgentTokenScheduleEntry, AgentTokenStatisticalReplacementSelection,
     AGENT_TOKEN_BROWSER_REPORT_CONTRACT, AGENT_TOKEN_ENVIRONMENT_CONTRACT,
-    AGENT_TOKEN_PROTOCOL_REVISION, AGENT_TOKEN_PROTOCOL_V1_JSON, AGENT_TOKEN_REPLACED_RUN_ID,
-    AGENT_TOKEN_REPLACEMENT_CAMPAIGN_ID, AGENT_TOKEN_REPLACEMENT_POLICY_REVISION,
-    AGENT_TOKEN_REPLACEMENT_REASON, AGENT_TOKEN_REPLACEMENT_RUN_ID,
-    AGENT_TOKEN_REPLACEMENT_SELECTION_CONTRACT, AGENT_TOKEN_REPLACEMENT_SELECTION_FILE,
-    AGENT_TOKEN_RUN_SUMMARY_CONTRACT, AGENT_TOKEN_VALID_OUTCOME_RESUMABLE_PROTOCOL_REVISION,
+    AGENT_TOKEN_HOST_SHUTDOWN_RECOVERY_CONTRACT,
+    AGENT_TOKEN_HOST_SHUTDOWN_RECOVERY_POLICY_REVISION, AGENT_TOKEN_HOST_SHUTDOWN_RECOVERY_REASON,
+    AGENT_TOKEN_HOST_SHUTDOWN_RECOVERY_SELECTION_FILE,
+    AGENT_TOKEN_INFRASTRUCTURE_RECOVERY_CONTRACT,
+    AGENT_TOKEN_INFRASTRUCTURE_RECOVERY_POLICY_REVISION,
+    AGENT_TOKEN_INFRASTRUCTURE_RECOVERY_REASON, AGENT_TOKEN_INFRASTRUCTURE_RECOVERY_SELECTION_FILE,
+    AGENT_TOKEN_MODEL_ADMISSION_PREDECESSOR_PROTOCOL_REVISION, AGENT_TOKEN_PROTOCOL_REVISION,
+    AGENT_TOKEN_PROTOCOL_V1_JSON, AGENT_TOKEN_RECOVERED_SPAWN_CAMPAIGN_ID,
+    AGENT_TOKEN_RECOVERED_SPAWN_PAIR_START_INDEX, AGENT_TOKEN_RECOVERED_SPAWN_REASON,
+    AGENT_TOKEN_RECOVERED_SPAWN_RUN_ID, AGENT_TOKEN_REPLACEMENT_SELECTION_CONTRACT,
+    AGENT_TOKEN_REPLACEMENT_SELECTION_FILE, AGENT_TOKEN_RUN_SUMMARY_CONTRACT,
+    AGENT_TOKEN_VALID_OUTCOME_RESUMABLE_PROTOCOL_REVISION,
 };
 
 pub const AGENT_TOKEN_CAMPAIGN_EXECUTION_CONTRACT: &str = "ait-agent-token-benchmark-execution/v1";
 pub const AGENT_TOKEN_CAMPAIGN_RESUME_CONTRACT: &str = "ait-agent-token-campaign-resume/v2";
+pub const AGENT_TOKEN_INFRASTRUCTURE_RECOVERY_EXECUTION_CONTRACT: &str =
+    "ait-agent-token-infrastructure-pair-recovery-execution/v1";
+pub const AGENT_TOKEN_HOST_SHUTDOWN_RECOVERY_EXECUTION_CONTRACT: &str =
+    "ait-agent-token-host-shutdown-pair-recovery-execution/v1";
 pub const AGENT_TOKEN_REPLACEMENT_EXECUTION_CONTRACT: &str =
     "ait-agent-token-statistical-replacement-execution/v1";
 pub const AGENT_TOKEN_RUN_MANIFEST_CONTRACT: &str = "ait-agent-token-run-manifest/v1";
@@ -48,6 +71,9 @@ pub const AGENT_TOKEN_GIT_WORKTREE_PERMISSION_PREFLIGHT_CONTRACT: &str =
     "ait-agent-token-git-worktree-permission-preflight/v1";
 pub const AGENT_TOKEN_GIT_START_STATE_PROOF_CONTRACT: &str =
     "ait-agent-token-git-start-state-proof/v1";
+pub const AGENT_TOKEN_MANAGED_WORKTREE_LIFECYCLE_CONTRACT: &str =
+    "ait-agent-token-managed-worktree-lifecycle/v1";
+pub const AGENT_TOKEN_MODEL_REQUEST_STATE_CONTRACT: &str = "ait-agent-token-model-request-state/v1";
 pub const AGENT_TOKEN_CODEX_PERMISSION_PROFILE_CONTRACT: &str =
     "ait-agent-token-codex-permission-profile/v1";
 pub const AGENT_TOKEN_VALID_CANDIDATE_OUTCOME_CONTINUATION_POLICY: &str =
@@ -59,6 +85,7 @@ const CODEX_PERMISSION_PROFILE_LABEL: &str =
     "permission-profile:ait_benchmark_local_v1(:workspace,no-network)";
 const CODEX_ENABLED_FEATURE_OVERRIDES: &[&str] = &[];
 const CODEX_DISABLED_FEATURE_OVERRIDES: &[&str] = &[];
+const AIT_SPRINT_CARD_PATH: &str = "docs/sprints/benchmark_task.md";
 const CLAUDE_ALLOWED_TOOLS: &[&str] = crate::agent_token::CLAUDE_MEASURED_TOOL_SURFACE;
 const CLAUDE_DISALLOWED_TOOLS: &[&str] =
     &["WebFetch", "WebSearch", "Task", "NotebookEdit", "TodoWrite"];
@@ -141,6 +168,7 @@ fn executor_disabled_feature_overrides(manifest: &AgentTokenCampaignManifest) ->
         crate::agent_token::AgentTokenExecutor::Claude => CLAUDE_DISALLOWED_TOOLS
             .iter()
             .map(|tool| format!("disallowed-tool:{tool}"))
+            .chain(std::iter::once("prompt-suggestions:false".to_string()))
             .collect(),
     }
 }
@@ -181,6 +209,11 @@ pub struct AgentTokenCampaignResume {
     pub requested_additional_pair_count: usize,
     pub added_run_count: usize,
     pub total_run_count: usize,
+    pub raw_run_count: usize,
+    pub infrastructure_recovery_performed: bool,
+    pub host_shutdown_recovery_performed: bool,
+    pub recovered_pair_count: usize,
+    pub statistically_excluded_run_count: usize,
     pub adjudicated_run_count: usize,
     pub stopped_early: bool,
     pub stop_reason: Option<String>,
@@ -311,6 +344,12 @@ pub struct AgentTokenRunManifest {
     pub shared_task_prompt_digest: String,
     pub measured_prompt_digest: String,
     pub workspace: String,
+    #[serde(default)]
+    pub execution_workspace: String,
+    #[serde(default)]
+    pub ait_edit_root_mode: crate::agent_token::AgentTokenAitEditRootMode,
+    #[serde(default)]
+    pub git_worktree_mode: AgentTokenGitWorktreeMode,
     pub network_policy: String,
     pub tool_policy: String,
     pub codex_permission_profile: String,
@@ -324,6 +363,10 @@ pub struct AgentTokenRunManifest {
     pub project_doc_max_bytes: usize,
     pub workflow_mode: String,
     pub sprint_mode: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sprint_card_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sprint_item_ref: Option<String>,
     pub ait_server_allowed: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub git_start_state_proof: Option<String>,
@@ -351,7 +394,17 @@ pub struct AgentTokenWorkflowVerification {
     pub mode: AgentTokenMode,
     pub closed: bool,
     pub workflow_mode: String,
+    #[serde(default)]
+    pub ait_edit_root_mode: crate::agent_token::AgentTokenAitEditRootMode,
+    #[serde(default)]
+    pub git_worktree_mode: AgentTokenGitWorktreeMode,
     pub sprint_mode: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sprint_card_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sprint_item_ref: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sprint_item_closed: Option<bool>,
     pub default_remote_present: bool,
     pub remote_count: Option<u64>,
     pub ait_server_configured: bool,
@@ -366,6 +419,54 @@ pub struct AgentTokenWorkflowVerification {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub git_lineage_matches_start: Option<bool>,
     pub reasons: Vec<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct AgentTokenManagedWorktreeLifecycle {
+    pub contract: String,
+    pub campaign_id: String,
+    pub run_id: String,
+    pub boundary: String,
+    pub desktop_private_ipc_invoked: bool,
+    pub worktree_path: String,
+    pub provision_started_at: String,
+    pub ready_at: String,
+    pub provisioning_elapsed_ms: u64,
+    pub model_started_at: Option<String>,
+    pub model_completed_at: Option<String>,
+    pub model_elapsed_ms: Option<u64>,
+    pub closeout_started_at: Option<String>,
+    pub closed_at: Option<String>,
+    pub closeout_elapsed_ms: Option<u64>,
+    pub starting_head_oid: String,
+    pub worktree_ready_head_oid: Option<String>,
+    pub candidate_head_oid: Option<String>,
+    pub final_main_head_oid: Option<String>,
+    pub worktree_created_before_model: bool,
+    pub host_closeout_after_terminal_model_event: bool,
+    pub host_commit_created: bool,
+    pub main_fast_forwarded: bool,
+    pub worktree_removed: bool,
+    pub closed: bool,
+    pub failure_reasons: Vec<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct AgentTokenModelRequestState {
+    pub contract: String,
+    pub run_id: String,
+    pub executor: String,
+    pub thread_id: Option<String>,
+    pub turn_started_count: usize,
+    pub turn_completed_count: usize,
+    pub turn_failed_count: usize,
+    pub usage_event_count: usize,
+    pub model_reroute_event_count: usize,
+    pub safety_event_count: usize,
+    pub provider_error_event_count: usize,
+    pub terminal_state: String,
+    pub internal_provider_request_count: Option<usize>,
+    pub internal_provider_request_count_authority: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -706,7 +807,7 @@ fn inspect_executor_preflight_events_for(
     }
 }
 
-fn preflight_usage_from_normalized(
+pub(crate) fn preflight_usage_from_normalized(
     usage: &crate::NormalizedAgentTokenUsage,
 ) -> AgentTokenExecutorPreflightUsage {
     AgentTokenExecutorPreflightUsage {
@@ -860,14 +961,30 @@ fn run_executor_preflight(
             git_permission_preflight.failure_reasons.join("; ")
         ));
     }
-    let normalized_usage = match import_executor_usage(
+    let imported_usage = match import_executor_usage(
         manifest,
         &raw_events,
         &format!("{}-executor-preflight", manifest.campaign_id),
         "executor-preflight",
         AgentTokenMode::GitLinearSingleSession,
     ) {
-        Ok(usage) => Some(usage),
+        Ok(imported) => {
+            if imported.provider_refusal {
+                usage_failure_reasons
+                    .push("executor preflight provider returned a refusal".to_string());
+            }
+            if imported
+                .provider_stop_reason
+                .as_deref()
+                .is_some_and(|reason| reason != "end_turn")
+            {
+                usage_failure_reasons.push(format!(
+                    "executor preflight provider stop reason is {:?}, expected end_turn",
+                    imported.provider_stop_reason
+                ));
+            }
+            Some(imported)
+        }
         Err(error) => {
             usage_failure_reasons.push(format!(
                 "executor preflight provider usage is invalid: {error}"
@@ -892,7 +1009,7 @@ fn run_executor_preflight(
         &stderr,
         &process,
         &transcript,
-        normalized_usage.as_ref(),
+        imported_usage.as_ref().map(|imported| &imported.usage),
     );
     let failure_reasons = executor_preflight_failure_reasons(
         &observation,
@@ -900,13 +1017,13 @@ fn run_executor_preflight(
         &initial_workspace_digest,
         final_workspace_digest.as_deref(),
         infrastructure_failure.as_deref(),
-        normalized_usage.as_ref(),
+        imported_usage.as_ref().map(|imported| &imported.usage),
         usage_failure_reasons,
     );
 
-    let usage = normalized_usage
+    let usage = imported_usage
         .as_ref()
-        .map(preflight_usage_from_normalized);
+        .map(|imported| preflight_usage_from_normalized(&imported.usage));
     if let Some(usage) = &usage {
         write_json_line_new(&campaign_dir.join("executor-preflight-usage.jsonl"), usage)?;
     } else {
@@ -963,18 +1080,25 @@ fn run_executor_preflight(
 
 fn protocol_requires_git_start_state_proof(protocol_revision: &str) -> bool {
     protocol_revision == AGENT_TOKEN_PROTOCOL_REVISION
+        || protocol_revision == AGENT_TOKEN_MODEL_ADMISSION_PREDECESSOR_PROTOCOL_REVISION
+        || protocol_revision == crate::AGENT_TOKEN_SPRINT_ON_COMPLETE_PREDECESSOR_PROTOCOL_REVISION
+        || protocol_revision == crate::AGENT_TOKEN_PROMPTED_INSPECTION_PREDECESSOR_PROTOCOL_REVISION
         || protocol_revision == crate::AGENT_TOKEN_PRE_REPLACEMENT_PROTOCOL_REVISION
         || protocol_revision == AGENT_TOKEN_VALID_OUTCOME_RESUMABLE_PROTOCOL_REVISION
 }
 
 fn protocol_continues_valid_candidate_outcomes(protocol_revision: &str) -> bool {
     protocol_revision == AGENT_TOKEN_PROTOCOL_REVISION
+        || protocol_revision == AGENT_TOKEN_MODEL_ADMISSION_PREDECESSOR_PROTOCOL_REVISION
+        || protocol_revision == crate::AGENT_TOKEN_SPRINT_ON_COMPLETE_PREDECESSOR_PROTOCOL_REVISION
         || protocol_revision == crate::AGENT_TOKEN_PRE_REPLACEMENT_PROTOCOL_REVISION
         || protocol_revision == AGENT_TOKEN_VALID_OUTCOME_RESUMABLE_PROTOCOL_REVISION
 }
 
 fn validate_resume_protocol_revision(protocol_revision: &str) -> Result<(), String> {
     if protocol_revision == AGENT_TOKEN_PROTOCOL_REVISION
+        || protocol_revision == AGENT_TOKEN_MODEL_ADMISSION_PREDECESSOR_PROTOCOL_REVISION
+        || protocol_revision == crate::AGENT_TOKEN_SPRINT_ON_COMPLETE_PREDECESSOR_PROTOCOL_REVISION
         || protocol_revision == crate::AGENT_TOKEN_PRE_REPLACEMENT_PROTOCOL_REVISION
         || protocol_revision == AGENT_TOKEN_VALID_OUTCOME_RESUMABLE_PROTOCOL_REVISION
         || protocol_revision == crate::AGENT_TOKEN_LEGACY_RESUMABLE_PROTOCOL_REVISION
@@ -982,12 +1106,81 @@ fn validate_resume_protocol_revision(protocol_revision: &str) -> Result<(), Stri
         return Ok(());
     }
     Err(format!(
-        "Campaign protocol {protocol_revision} is read-only and cannot resume; admitted revisions are {}, {}, {}, and {}",
+        "Campaign protocol {protocol_revision} is read-only and cannot resume; admitted revisions are {}, {}, {}, {}, {}, and {}",
         AGENT_TOKEN_PROTOCOL_REVISION,
+        AGENT_TOKEN_MODEL_ADMISSION_PREDECESSOR_PROTOCOL_REVISION,
+        crate::AGENT_TOKEN_SPRINT_ON_COMPLETE_PREDECESSOR_PROTOCOL_REVISION,
         crate::AGENT_TOKEN_PRE_REPLACEMENT_PROTOCOL_REVISION,
         AGENT_TOKEN_VALID_OUTCOME_RESUMABLE_PROTOCOL_REVISION,
         crate::AGENT_TOKEN_LEGACY_RESUMABLE_PROTOCOL_REVISION
     ))
+}
+
+fn git_workflow_mode_label(mode: AgentTokenGitWorktreeMode) -> &'static str {
+    match mode {
+        AgentTokenGitWorktreeMode::AgentManaged => "git_local",
+        AgentTokenGitWorktreeMode::CodexAppEquivalentManaged => "codex_app_equivalent_managed",
+    }
+}
+
+fn run_manifest_execution_workspace_matches(
+    protocol_revision: &str,
+    recorded: &str,
+    expected: &str,
+) -> bool {
+    recorded == expected
+        || (protocol_revision == AGENT_TOKEN_MODEL_ADMISSION_PREDECESSOR_PROTOCOL_REVISION
+            && recorded.is_empty()
+            && expected == "workspace")
+}
+
+fn git_write_exceptions_for_mode(
+    mode: AgentTokenGitWorktreeMode,
+    main_workspace: &Path,
+    metadata: &Path,
+    task_worktree: &Path,
+) -> Vec<PathBuf> {
+    let mut exceptions = vec![metadata.to_path_buf(), task_worktree.join(".git")];
+    if mode == AgentTokenGitWorktreeMode::AgentManaged {
+        exceptions.push(main_workspace.join(".git"));
+    }
+    exceptions
+}
+
+fn codex_run_permission_profile_matches(
+    profile: &AgentTokenCodexPermissionProfile,
+    run_mode: AgentTokenMode,
+    git_worktree_mode: AgentTokenGitWorktreeMode,
+) -> bool {
+    if profile.contract != AGENT_TOKEN_CODEX_PERMISSION_PROFILE_CONTRACT
+        || profile.name != CODEX_PERMISSION_PROFILE_NAME
+        || profile.extends != CODEX_PERMISSION_PROFILE_PARENT
+        || profile.network_enabled
+    {
+        return false;
+    }
+    if run_mode != AgentTokenMode::GitLinearSingleSession {
+        return true;
+    }
+    let expected_git_write_exception_count = match git_worktree_mode {
+        AgentTokenGitWorktreeMode::AgentManaged => 3,
+        AgentTokenGitWorktreeMode::CodexAppEquivalentManaged => 2,
+    };
+    let primary_workspace = Path::new(&profile.primary_workspace);
+    let additional_workspace_roots = profile
+        .additional_workspace_roots
+        .iter()
+        .map(Path::new)
+        .collect::<Vec<_>>();
+    profile.additional_workspace_roots.len() == 2
+        && profile.git_write_exceptions.len() == expected_git_write_exception_count
+        && profile.git_write_exceptions.iter().all(|exception| {
+            let exception = Path::new(exception);
+            exception.starts_with(primary_workspace)
+                || additional_workspace_roots
+                    .iter()
+                    .any(|root| exception.starts_with(root))
+        })
 }
 
 fn validate_resume_prefix_outcomes(
@@ -1169,7 +1362,20 @@ pub fn run_agent_token_campaign(
             .collect(),
     };
     write_json_new(&output_dir.join("raw-run-index.json"), &index)?;
-    let report = build_agent_token_report(&manifest, &schedule, &runs)?;
+    let mut report = build_agent_token_report(&manifest, &schedule, &runs)?;
+    let run_summary_paths = runs
+        .iter()
+        .map(|run| {
+            (
+                run.run_id.clone(),
+                output_dir
+                    .join("runs")
+                    .join(&run.run_id)
+                    .join("run-summary.json"),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    enrich_agent_token_report_model_composition(&manifest, &runs, &run_summary_paths, &mut report)?;
     write_json_new(&output_dir.join("aggregate-report.json"), &report)?;
     write_json_new(
         &output_dir.join("comparison-report.json"),
@@ -1185,6 +1391,9 @@ pub fn run_agent_token_campaign(
             "current_policy_evaluation_mode": &report.current_policy_evaluation_mode,
             "current_policy_criteria_met": report.current_policy_criteria_met,
             "claim_eligible": report.claim_eligible,
+            "served_models": &report.served_models,
+            "mixed_model_run_count": report.mixed_model_run_count,
+            "fallback_observed_run_count": report.fallback_observed_run_count,
             "pair_admission_policy": &report.pair_admission_policy,
             "comparisons": &report.comparisons,
             "blockers": &report.blockers,
@@ -1224,6 +1433,7 @@ pub fn run_agent_token_campaign(
 pub fn run_agent_token_statistical_replacement(
     campaign_dir: &Path,
     source_run_id: &str,
+    activate_existing: bool,
 ) -> Result<AgentTokenReplacementExecution, String> {
     let campaign_dir = fs::canonicalize(campaign_dir).map_err(|error| {
         format!(
@@ -1233,14 +1443,7 @@ pub fn run_agent_token_statistical_replacement(
     })?;
     let manifest =
         load_agent_token_campaign_for_evidence(&campaign_dir.join("campaign-manifest.json"))?;
-    if manifest.campaign_id != AGENT_TOKEN_REPLACEMENT_CAMPAIGN_ID
-        || source_run_id != AGENT_TOKEN_REPLACED_RUN_ID
-    {
-        return Err(
-            "Statistical replacement is authorized only for the exact named GD-05 AIT source run"
-                .to_string(),
-        );
-    }
+    let authorization = statistical_replacement_authorization(&manifest, source_run_id)?;
     let evidence_errors = validate_agent_token_campaign_evidence(&manifest, &campaign_dir)?;
     if !evidence_errors.is_empty() {
         return Err(format!(
@@ -1257,8 +1460,23 @@ pub fn run_agent_token_statistical_replacement(
     }
     let replacement_root = campaign_dir.join("statistical-replacements/replacement-0001");
     if replacement_root.exists() {
+        if !activate_existing {
+            return Err(format!(
+                "Statistical replacement evidence already exists; pass --activate-existing to revalidate it without rerun: {}",
+                replacement_root.display()
+            ));
+        }
+        return activate_existing_agent_token_statistical_replacement(
+            &campaign_dir,
+            &manifest,
+            authorization,
+            source_run_id,
+            &replacement_root,
+        );
+    }
+    if activate_existing {
         return Err(format!(
-            "Statistical replacement evidence already exists: {}",
+            "No existing statistical replacement evidence is available to activate: {}",
             replacement_root.display()
         ));
     }
@@ -1271,21 +1489,25 @@ pub fn run_agent_token_statistical_replacement(
         .find(|entry| entry.run_id == source_run_id)
         .cloned()
         .ok_or_else(|| format!("Replacement source run {source_run_id} is absent from schedule"))?;
-    if source_entry.workload_id != "GD-05"
-        || source_entry.mode != AgentTokenMode::AitLinearSingleSession
-        || source_entry.attempt != 6
-    {
-        return Err(
-            "Replacement source schedule identity differs from GD-05/AIT attempt 6".to_string(),
-        );
-    }
-    let source_runs = load_agent_token_run_summaries(&campaign_dir)?;
+    let source_runs = load_agent_token_run_summaries_with_allowed_missing(
+        &campaign_dir,
+        Some(crate::AGENT_TOKEN_HOST_SHUTDOWN_INTERRUPTED_RUN_ID),
+    )?;
     let source_run = source_runs
         .iter()
         .find(|run| run.run_id == source_run_id)
         .ok_or_else(|| format!("Replacement source run {source_run_id} is absent"))?;
     if !source_run.valid_attempt || source_run.accepted_equivalent {
         return Err("Replacement source run must be valid and unaccepted".to_string());
+    }
+    if manifest.functional_replacement_policy
+        == crate::AgentTokenFunctionalReplacementPolicy::FirstValidUnacceptedLaneOnce
+        && first_valid_unaccepted_run_id(&schedule, &source_runs) != Some(source_run_id)
+    {
+        return Err(
+            "Prospective replacement must target the first valid unaccepted lane in frozen schedule order"
+                .to_string(),
+        );
     }
 
     let versions = capture_versions(&manifest)?;
@@ -1359,7 +1581,7 @@ pub fn run_agent_token_statistical_replacement(
         copy_file_new(&campaign_dir.join(file), &replacement_root.join(file))?;
     }
     let mut replacement_entry = source_entry;
-    replacement_entry.run_id = AGENT_TOKEN_REPLACEMENT_RUN_ID.to_string();
+    replacement_entry.run_id = authorization.replacement_run_id.to_string();
     write_json_new(
         &replacement_root.join("replacement-entry.json"),
         &replacement_entry,
@@ -1374,7 +1596,7 @@ pub fn run_agent_token_statistical_replacement(
         let result = AgentTokenReplacementExecution {
             contract: AGENT_TOKEN_REPLACEMENT_EXECUTION_CONTRACT,
             campaign_id: manifest.campaign_id,
-            policy_revision: AGENT_TOKEN_REPLACEMENT_POLICY_REVISION.to_string(),
+            policy_revision: authorization.policy_revision.to_string(),
             campaign_dir,
             replacement_root: replacement_root.clone(),
             source_run_id: source_run_id.to_string(),
@@ -1404,7 +1626,7 @@ pub fn run_agent_token_statistical_replacement(
     let selection = AgentTokenStatisticalReplacementSelection {
         contract: AGENT_TOKEN_REPLACEMENT_SELECTION_CONTRACT.to_string(),
         campaign_id: manifest.campaign_id.clone(),
-        policy_revision: AGENT_TOKEN_REPLACEMENT_POLICY_REVISION.to_string(),
+        policy_revision: authorization.policy_revision.to_string(),
         source_run_id: source_run_id.to_string(),
         source_run_summary_sha256: sha256_digest(&fs::read(&source_summary_path).map_err(
             |error| {
@@ -1428,7 +1650,7 @@ pub fn run_agent_token_statistical_replacement(
             })?,
         ),
         replacement_runner_sha256: runner_sha256.clone(),
-        reason: AGENT_TOKEN_REPLACEMENT_REASON.to_string(),
+        reason: authorization.reason.clone(),
         selected_at: Utc::now().to_rfc3339(),
     };
     crate::agent_token_replacement::validate_selection_identity(&selection, &manifest)?;
@@ -1458,7 +1680,7 @@ pub fn run_agent_token_statistical_replacement(
     let result = AgentTokenReplacementExecution {
         contract: AGENT_TOKEN_REPLACEMENT_EXECUTION_CONTRACT,
         campaign_id: manifest.campaign_id,
-        policy_revision: AGENT_TOKEN_REPLACEMENT_POLICY_REVISION.to_string(),
+        policy_revision: authorization.policy_revision.to_string(),
         campaign_dir,
         replacement_root: replacement_root.clone(),
         source_run_id: source_run_id.to_string(),
@@ -1476,10 +1698,207 @@ pub fn run_agent_token_statistical_replacement(
     Ok(result)
 }
 
+fn activate_existing_agent_token_statistical_replacement(
+    campaign_dir: &Path,
+    manifest: &AgentTokenCampaignManifest,
+    authorization: AgentTokenStatisticalReplacementAuthorization,
+    source_run_id: &str,
+    replacement_root: &Path,
+) -> Result<AgentTokenReplacementExecution, String> {
+    let activation_result_path = replacement_root.join("activation-result.json");
+    if activation_result_path.exists() {
+        return Err(format!(
+            "Statistical replacement activation result already exists: {}",
+            activation_result_path.display()
+        ));
+    }
+    let prior_result = decode_json_file::<serde_json::Value>(
+        &replacement_root.join("result.json"),
+        "prior statistical replacement result",
+    )?;
+    if prior_result
+        .get("contract")
+        .and_then(serde_json::Value::as_str)
+        != Some(AGENT_TOKEN_REPLACEMENT_EXECUTION_CONTRACT)
+        || prior_result
+            .get("campaign_id")
+            .and_then(serde_json::Value::as_str)
+            != Some(manifest.campaign_id.as_str())
+        || prior_result
+            .get("source_run_id")
+            .and_then(serde_json::Value::as_str)
+            != Some(source_run_id)
+        || prior_result
+            .get("replacement_run_id")
+            .and_then(serde_json::Value::as_str)
+            != Some(authorization.replacement_run_id.as_str())
+        || prior_result
+            .get("preflight_passed")
+            .and_then(serde_json::Value::as_bool)
+            != Some(true)
+        || prior_result
+            .get("valid_attempt")
+            .and_then(serde_json::Value::as_bool)
+            != Some(true)
+        || prior_result
+            .get("accepted_equivalent")
+            .and_then(serde_json::Value::as_bool)
+            != Some(true)
+        || prior_result
+            .get("selection_activated")
+            .and_then(serde_json::Value::as_bool)
+            != Some(false)
+    {
+        return Err(
+            "Existing statistical replacement result is not the exact valid, accepted, non-activated evidence"
+                .to_string(),
+        );
+    }
+
+    let schedule =
+        crate::load_agent_token_schedule(&campaign_dir.join("randomization-schedule.json"))?;
+    let source_entry = schedule
+        .entries
+        .iter()
+        .find(|entry| entry.run_id == source_run_id)
+        .ok_or_else(|| format!("Replacement source run {source_run_id} is absent from schedule"))?;
+    let replacement_entry = decode_json_file::<AgentTokenScheduleEntry>(
+        &replacement_root.join("replacement-entry.json"),
+        "existing statistical replacement entry",
+    )?;
+    if replacement_entry.run_id != authorization.replacement_run_id
+        || replacement_entry.workload_id != source_entry.workload_id
+        || replacement_entry.mode != source_entry.mode
+        || replacement_entry.attempt != source_entry.attempt
+        || replacement_entry.block_index != source_entry.block_index
+        || replacement_entry.randomized_order != source_entry.randomized_order
+    {
+        return Err(
+            "Existing statistical replacement entry differs from its exact source schedule lane"
+                .to_string(),
+        );
+    }
+
+    let source_runs = load_agent_token_run_summaries_with_allowed_missing(
+        campaign_dir,
+        Some(crate::AGENT_TOKEN_HOST_SHUTDOWN_INTERRUPTED_RUN_ID),
+    )?;
+    let source_run = source_runs
+        .iter()
+        .find(|run| run.run_id == source_run_id)
+        .ok_or_else(|| format!("Replacement source run {source_run_id} is absent"))?;
+    if !source_run.valid_attempt || source_run.accepted_equivalent {
+        return Err("Replacement source run must be valid and unaccepted".to_string());
+    }
+    if manifest.functional_replacement_policy
+        == crate::AgentTokenFunctionalReplacementPolicy::FirstValidUnacceptedLaneOnce
+        && first_valid_unaccepted_run_id(&schedule, &source_runs) != Some(source_run_id)
+    {
+        return Err(
+            "Prospective replacement activation must target the first valid unaccepted lane in frozen schedule order"
+                .to_string(),
+        );
+    }
+    let replacement_summary_path = replacement_root
+        .join("runs")
+        .join(&authorization.replacement_run_id)
+        .join("run-summary.json");
+    let replacement_run = decode_json_file::<AgentTokenRunSummary>(
+        &replacement_summary_path,
+        "existing statistical replacement run summary",
+    )?;
+    let source_summary_path = campaign_dir
+        .join("runs")
+        .join(source_run_id)
+        .join("run-summary.json");
+    let replacement_runner = replacement_root.join("replacement-runner");
+    let replacement_runner_sha256 =
+        sha256_digest(&fs::read(&replacement_runner).map_err(|error| {
+            format!(
+                "Failed to read existing replacement runner {}: {error}",
+                replacement_runner.display()
+            )
+        })?);
+    let selection = AgentTokenStatisticalReplacementSelection {
+        contract: AGENT_TOKEN_REPLACEMENT_SELECTION_CONTRACT.to_string(),
+        campaign_id: manifest.campaign_id.clone(),
+        policy_revision: authorization.policy_revision.to_string(),
+        source_run_id: source_run_id.to_string(),
+        source_run_summary_sha256: sha256_digest(&fs::read(&source_summary_path).map_err(
+            |error| {
+                format!(
+                    "Failed to read replacement source summary {}: {error}",
+                    source_summary_path.display()
+                )
+            },
+        )?),
+        replacement_run_id: authorization.replacement_run_id.to_string(),
+        replacement_run_summary: format!(
+            "statistical-replacements/replacement-0001/runs/{}/run-summary.json",
+            authorization.replacement_run_id
+        ),
+        replacement_run_summary_sha256: sha256_digest(
+            &fs::read(&replacement_summary_path).map_err(|error| {
+                format!(
+                    "Failed to read existing replacement summary {}: {error}",
+                    replacement_summary_path.display()
+                )
+            })?,
+        ),
+        replacement_runner_sha256: replacement_runner_sha256.clone(),
+        reason: authorization.reason.clone(),
+        selected_at: Utc::now().to_rfc3339(),
+    };
+    crate::agent_token_replacement::validate_selection_identity(&selection, manifest)?;
+    crate::agent_token_replacement::validate_replacement_run(
+        manifest,
+        campaign_dir,
+        source_run,
+        &replacement_run,
+        &selection,
+    )?;
+
+    let selection_path = campaign_dir.join(AGENT_TOKEN_REPLACEMENT_SELECTION_FILE);
+    write_json_new(&selection_path, &selection)?;
+    let report = refresh_campaign_derived_views(manifest, &schedule, &source_runs, campaign_dir)?;
+    let prospective_policy = protocol_requires_claude_model_evidence(&manifest.protocol_revision)
+        && manifest.functional_replacement_policy
+            == crate::AgentTokenFunctionalReplacementPolicy::FirstValidUnacceptedLaneOnce;
+    if !prospective_policy && !report.claim_eligible {
+        return Err(
+            "Existing statistical replacement passed artifact validation but did not produce a claim-eligible effective view"
+                .to_string(),
+        );
+    }
+    let result = AgentTokenReplacementExecution {
+        contract: AGENT_TOKEN_REPLACEMENT_EXECUTION_CONTRACT,
+        campaign_id: manifest.campaign_id.clone(),
+        policy_revision: authorization.policy_revision.to_string(),
+        campaign_dir: campaign_dir.to_path_buf(),
+        replacement_root: replacement_root.to_path_buf(),
+        source_run_id: source_run_id.to_string(),
+        replacement_run_id: authorization.replacement_run_id.to_string(),
+        replacement_runner,
+        replacement_runner_sha256,
+        preflight_passed: true,
+        valid_attempt: true,
+        accepted_equivalent: true,
+        selection_activated: true,
+        claim_eligible: report.claim_eligible,
+        failure_reasons: Vec::new(),
+    };
+    write_json_new(&activation_result_path, &result)?;
+    Ok(result)
+}
+
 pub fn resume_agent_token_campaign(
     campaign_dir: &Path,
+    fixture_manifest: Option<&Path>,
     max_pairs: Option<usize>,
     adjudicate_transcripts: bool,
+    adjudicate_recovered_spawn: bool,
+    recover_infrastructure_pair: bool,
+    recover_host_shutdown_pair: bool,
 ) -> Result<AgentTokenCampaignResume, String> {
     if max_pairs == Some(0) {
         return Err("max_pairs must be greater than zero when supplied".to_string());
@@ -1490,12 +1909,51 @@ pub fn resume_agent_token_campaign(
             campaign_dir.display()
         )
     })?;
+    let fixture_manifest = fixture_manifest
+        .map(|path| require_resume_fixture_manifest_identity(&campaign_dir, path))
+        .transpose()?;
     let manifest =
-        load_agent_token_campaign_for_evidence(&campaign_dir.join("campaign-manifest.json"))?;
+        crate::agent_token::load_agent_token_campaign_for_evidence_with_fixture_override(
+            &campaign_dir.join("campaign-manifest.json"),
+            fixture_manifest.as_deref(),
+        )?;
     validate_resume_protocol_revision(&manifest.protocol_revision)?;
     let schedule =
         crate::load_agent_token_schedule(&campaign_dir.join("randomization-schedule.json"))?;
     validate_resume_schedule(&manifest, &schedule)?;
+    if adjudicate_transcripts && adjudicate_recovered_spawn {
+        return Err(
+            "Transcript adjudication and recovered-spawn adjudication are distinct corrections"
+                .to_string(),
+        );
+    }
+    if adjudicate_recovered_spawn {
+        append_recovered_spawn_adjudication(&campaign_dir, &manifest)?;
+    }
+    if recover_infrastructure_pair
+        || recover_host_shutdown_pair
+        || campaign_dir
+            .join(AGENT_TOKEN_INFRASTRUCTURE_RECOVERY_SELECTION_FILE)
+            .is_file()
+        || campaign_dir
+            .join(AGENT_TOKEN_HOST_SHUTDOWN_RECOVERY_SELECTION_FILE)
+            .is_file()
+    {
+        if adjudicate_transcripts {
+            return Err(
+                "Infrastructure pair recovery cannot be combined with transcript adjudication"
+                    .to_string(),
+            );
+        }
+        return resume_agent_token_campaign_with_infrastructure_recovery(
+            campaign_dir,
+            manifest,
+            schedule,
+            max_pairs,
+            recover_infrastructure_pair,
+            recover_host_shutdown_pair,
+        );
+    }
 
     let raw_runs = load_agent_token_raw_run_summaries(&campaign_dir)?;
     if adjudicate_transcripts {
@@ -1507,8 +1965,13 @@ pub fn resume_agent_token_campaign(
     let previous_pair_count = previous_run_count / 2;
     let continue_valid_candidate_outcomes =
         validate_resume_prefix_outcomes(&manifest.protocol_revision, &ordered_runs)?;
-    let prefix_errors =
-        validate_agent_token_campaign_evidence_internal(&manifest, &campaign_dir, false)?;
+    let prefix_errors = validate_agent_token_campaign_evidence_internal(
+        &manifest,
+        &campaign_dir,
+        false,
+        false,
+        &BTreeSet::new(),
+    )?;
     if !prefix_errors.is_empty() {
         return Err(format!(
             "Existing campaign prefix failed immutable evidence validation: {}",
@@ -1588,6 +2051,11 @@ pub fn resume_agent_token_campaign(
         requested_additional_pair_count,
         added_run_count,
         total_run_count: ordered_runs.len(),
+        raw_run_count: ordered_runs.len(),
+        infrastructure_recovery_performed: false,
+        host_shutdown_recovery_performed: false,
+        recovered_pair_count: 0,
+        statistically_excluded_run_count: 0,
         adjudicated_run_count,
         stopped_early,
         stop_reason,
@@ -1595,6 +2063,895 @@ pub fn resume_agent_token_campaign(
     };
     write_json_new(&resume_dir.join("result.json"), &result)?;
     Ok(result)
+}
+
+fn require_resume_fixture_manifest_identity(
+    campaign_dir: &Path,
+    supplied_manifest: &Path,
+) -> Result<PathBuf, String> {
+    let frozen_path = campaign_dir.join("fixture-manifest.json");
+    let frozen = fs::read(&frozen_path).map_err(|error| {
+        format!(
+            "Failed to read frozen campaign fixture manifest {}: {error}",
+            frozen_path.display()
+        )
+    })?;
+    let supplied_path = fs::canonicalize(supplied_manifest).map_err(|error| {
+        format!(
+            "Failed to resolve resume fixture manifest {}: {error}",
+            supplied_manifest.display()
+        )
+    })?;
+    let metadata = fs::symlink_metadata(&supplied_path).map_err(|error| {
+        format!(
+            "Failed to inspect resume fixture manifest {}: {error}",
+            supplied_path.display()
+        )
+    })?;
+    if !metadata.is_file() || metadata.file_type().is_symlink() {
+        return Err(format!(
+            "Resume fixture manifest must resolve to a regular file: {}",
+            supplied_path.display()
+        ));
+    }
+    let supplied = fs::read(&supplied_path).map_err(|error| {
+        format!(
+            "Failed to read resume fixture manifest {}: {error}",
+            supplied_path.display()
+        )
+    })?;
+    if supplied != frozen {
+        return Err(format!(
+            "Resume fixture manifest differs from frozen campaign fixture bytes: frozen={}, supplied={}",
+            sha256_digest(&frozen),
+            sha256_digest(&supplied)
+        ));
+    }
+    Ok(supplied_path)
+}
+
+fn exact_recovered_spawn_partial(
+    manifest: &AgentTokenCampaignManifest,
+    schedule: &AgentTokenSchedule,
+    campaign_dir: &Path,
+    effective_runs: &[AgentTokenRunSummary],
+) -> bool {
+    manifest.campaign_id == AGENT_TOKEN_RECOVERED_SPAWN_CAMPAIGN_ID
+        && effective_runs.len() == AGENT_TOKEN_RECOVERED_SPAWN_PAIR_START_INDEX + 1
+        && effective_runs.last().is_some_and(|run| {
+            run.campaign_id == AGENT_TOKEN_RECOVERED_SPAWN_CAMPAIGN_ID
+                && run.run_id == AGENT_TOKEN_RECOVERED_SPAWN_RUN_ID
+                && run.valid_attempt
+                && run.infrastructure_failure.is_none()
+                && run.usage.is_some()
+                && run.transcript.valid
+        })
+        && schedule
+            .entries
+            .get(AGENT_TOKEN_RECOVERED_SPAWN_PAIR_START_INDEX)
+            .is_some_and(|entry| entry.run_id == AGENT_TOKEN_RECOVERED_SPAWN_RUN_ID)
+        && schedule
+            .entries
+            .get(AGENT_TOKEN_RECOVERED_SPAWN_PAIR_START_INDEX + 1)
+            .is_some_and(|entry| !campaign_dir.join("runs").join(&entry.run_id).exists())
+        && campaign_dir
+            .join("adjudications")
+            .join(format!("{AGENT_TOKEN_RECOVERED_SPAWN_RUN_ID}.json"))
+            .is_file()
+}
+
+fn resume_agent_token_campaign_with_infrastructure_recovery(
+    campaign_dir: PathBuf,
+    manifest: AgentTokenCampaignManifest,
+    schedule: AgentTokenSchedule,
+    max_pairs: Option<usize>,
+    recover_infrastructure_pair: bool,
+    recover_host_shutdown_pair: bool,
+) -> Result<AgentTokenCampaignResume, String> {
+    let host_shutdown_selection_path =
+        campaign_dir.join(AGENT_TOKEN_HOST_SHUTDOWN_RECOVERY_SELECTION_FILE);
+    let allow_host_shutdown_partial =
+        recover_host_shutdown_pair || host_shutdown_selection_path.is_file();
+    // The contaminated pair is the trailing one the recovery is authorized to
+    // replace. Its truncated lane would otherwise abort revalidation before the
+    // recovery contract could act, so exempt exactly those two lanes. Every
+    // other lane stays fully validated, and the set is empty unless this exact
+    // authorization was supplied for a campaign with no prior selection.
+    let selection_exists = campaign_dir
+        .join(AGENT_TOKEN_INFRASTRUCTURE_RECOVERY_SELECTION_FILE)
+        .is_file();
+    let exempt_run_ids = if recover_infrastructure_pair && !selection_exists {
+        infrastructure_recovery_exempt_run_ids(&campaign_dir, &schedule)?
+    } else {
+        BTreeSet::new()
+    };
+    let prefix_errors = validate_agent_token_campaign_evidence_internal(
+        &manifest,
+        &campaign_dir,
+        false,
+        allow_host_shutdown_partial,
+        &exempt_run_ids,
+    )?;
+    if !prefix_errors.is_empty() {
+        return Err(format!(
+            "Existing campaign prefix failed immutable evidence validation: {}",
+            prefix_errors.join("; ")
+        ));
+    }
+    let selection_path = campaign_dir.join(AGENT_TOKEN_INFRASTRUCTURE_RECOVERY_SELECTION_FILE);
+    let raw_runs = if allow_host_shutdown_partial {
+        load_agent_token_raw_run_summaries_with_allowed_missing(
+            &campaign_dir,
+            Some(crate::AGENT_TOKEN_HOST_SHUTDOWN_INTERRUPTED_RUN_ID),
+        )?
+    } else {
+        load_agent_token_raw_run_summaries(&campaign_dir)?
+    };
+    let versions = capture_versions(&manifest)?;
+    let (runner_program, runner_sha256) = current_runner_provenance()?;
+    let scheduled_pair_count = schedule.entries.len() / 2;
+
+    let mut recovery_performed = false;
+    let mut host_shutdown_recovery_performed = false;
+    let mut recovered_spawn_partial = false;
+    let previous_pair_count;
+    let mut added_run_count = 0_usize;
+    let start_entry;
+    if host_shutdown_selection_path.is_file() {
+        if recover_host_shutdown_pair {
+            return Err("Host-shutdown recovery selection already exists".to_string());
+        }
+        let view = load_agent_token_campaign_statistical_view_allowing_host_shutdown_partial(
+            &manifest,
+            &schedule,
+            &campaign_dir,
+        )?;
+        if view.infrastructure_recovery.is_none() || view.host_shutdown_recovery.is_none() {
+            return Err(
+                "Host-shutdown recovery selection did not produce the combined effective view"
+                    .to_string(),
+            );
+        }
+        if !view.effective_runs.len().is_multiple_of(2) {
+            recovered_spawn_partial = exact_recovered_spawn_partial(
+                &manifest,
+                &schedule,
+                &campaign_dir,
+                &view.effective_runs,
+            );
+            if !recovered_spawn_partial {
+                return Err("Host-shutdown recovered campaign ends inside a pair".to_string());
+            }
+        }
+        require_resume_version_identity(&campaign_dir, &raw_runs, &versions)?;
+        previous_pair_count = view.effective_runs.len() / 2;
+        start_entry = view.effective_runs.len();
+    } else if selection_path.is_file() {
+        let view = if recover_host_shutdown_pair {
+            load_agent_token_campaign_statistical_view_allowing_host_shutdown_partial(
+                &manifest,
+                &schedule,
+                &campaign_dir,
+            )?
+        } else {
+            load_agent_token_campaign_statistical_view(&manifest, &schedule, &campaign_dir)?
+        };
+        if view.infrastructure_recovery.is_none() {
+            return Err(
+                "Infrastructure recovery selection did not produce an effective recovery view"
+                    .to_string(),
+            );
+        }
+        if !view.effective_runs.len().is_multiple_of(2) {
+            recovered_spawn_partial = exact_recovered_spawn_partial(
+                &manifest,
+                &schedule,
+                &campaign_dir,
+                &view.effective_runs,
+            );
+            if !recovered_spawn_partial {
+                return Err("Recovered campaign effective prefix ends inside a pair".to_string());
+            }
+        }
+        require_resume_version_identity(&campaign_dir, &raw_runs, &versions)?;
+        previous_pair_count = view.effective_runs.len() / 2;
+        if recover_host_shutdown_pair {
+            added_run_count = execute_host_shutdown_pair_recovery(
+                &manifest,
+                &schedule,
+                view.effective_runs.len(),
+                &campaign_dir,
+                &versions,
+                &runner_program,
+                &runner_sha256,
+            )?;
+            host_shutdown_recovery_performed = true;
+            start_entry = view.effective_runs.len().saturating_add(2);
+        } else {
+            start_entry = view.effective_runs.len();
+        }
+    } else {
+        if recover_host_shutdown_pair {
+            return Err(
+                "Host-shutdown recovery requires the prior infrastructure recovery selection"
+                    .to_string(),
+            );
+        }
+        if !recover_infrastructure_pair {
+            return Err(
+                "Campaign requires --recover-infrastructure-pair to authorize whole-pair recovery"
+                    .to_string(),
+            );
+        }
+        let (ordered_source_runs, pair_start) =
+            classify_infrastructure_recovery_prefix(&schedule, raw_runs)?;
+        require_resume_version_identity(&campaign_dir, &ordered_source_runs, &versions)?;
+        previous_pair_count = pair_start / 2;
+        start_entry = pair_start + 2;
+        added_run_count = execute_infrastructure_pair_recovery(
+            &manifest,
+            &schedule,
+            &ordered_source_runs,
+            pair_start,
+            &campaign_dir,
+            &versions,
+            &runner_program,
+            &runner_sha256,
+        )?;
+        recovery_performed = true;
+    }
+
+    let remaining_pair_count = scheduled_pair_count.saturating_sub(previous_pair_count);
+    let requested_additional_pair_count = max_pairs.unwrap_or(remaining_pair_count);
+    if requested_additional_pair_count > remaining_pair_count {
+        return Err(format!(
+            "max_pairs {requested_additional_pair_count} exceeds the {remaining_pair_count} remaining pairs"
+        ));
+    }
+    if (recovery_performed || host_shutdown_recovery_performed)
+        && requested_additional_pair_count == 0
+    {
+        return Err("Whole-pair recovery requires at least one requested pair".to_string());
+    }
+    let suffix_pair_count =
+        if recovery_performed || host_shutdown_recovery_performed || recovered_spawn_partial {
+            requested_additional_pair_count.saturating_sub(1)
+        } else {
+            requested_additional_pair_count
+        };
+
+    let resume_dir = next_resume_directory(&campaign_dir)?;
+    write_json_new(
+        &resume_dir.join("start.json"),
+        &serde_json::json!({
+            "contract": AGENT_TOKEN_CAMPAIGN_RESUME_CONTRACT,
+            "campaign_id": manifest.campaign_id,
+            "started_at": Utc::now().to_rfc3339(),
+            "source_protocol_revision": manifest.protocol_revision,
+            "controller_protocol_revision": AGENT_TOKEN_PROTOCOL_REVISION,
+            "adjudicator_revision": crate::AGENT_TOKEN_ADJUDICATOR_REVISION,
+            "continuation_policy": if recovered_spawn_partial {
+                AGENT_TOKEN_RECOVERED_SPAWN_REASON
+            } else if host_shutdown_recovery_performed || host_shutdown_selection_path.is_file() {
+                AGENT_TOKEN_HOST_SHUTDOWN_RECOVERY_REASON
+            } else {
+                AGENT_TOKEN_INFRASTRUCTURE_RECOVERY_REASON
+            },
+            "runner_program": runner_program,
+            "runner_sha256": runner_sha256,
+            "previous_pair_count": previous_pair_count,
+            "requested_additional_pair_count": requested_additional_pair_count,
+            "infrastructure_recovery_performed": recovery_performed,
+            "host_shutdown_recovery_performed": host_shutdown_recovery_performed,
+            "recovered_spawn_partial_lane": recovered_spawn_partial,
+            "partial_lane_start_entry": recovered_spawn_partial.then_some(start_entry),
+            "suffix_start_entry": start_entry + usize::from(recovered_spawn_partial),
+            "suffix_pair_count": suffix_pair_count,
+        }),
+    )?;
+
+    let mut stop_reason = None;
+    if recovered_spawn_partial {
+        let entry = schedule.entries.get(start_entry).ok_or_else(|| {
+            "Recovered-spawn continuation is missing its paired schedule entry".to_string()
+        })?;
+        let run = run_one(&manifest, entry, &campaign_dir, &versions)?;
+        let infrastructure_failure = run.infrastructure_failure.clone();
+        let valid_attempt = run.valid_attempt;
+        added_run_count = added_run_count.saturating_add(1);
+        if let Some(reason) = infrastructure_failure {
+            stop_reason = Some(format!("{}: {reason}", entry.run_id));
+        } else if !valid_attempt {
+            stop_reason = Some(format!(
+                "{}/attempt {}: paired_invalid_attempt",
+                entry.workload_id, entry.attempt
+            ));
+        }
+    }
+    let (added_suffix_runs, suffix_stop_reason) = if stop_reason.is_none() {
+        execute_agent_token_pairs(
+            &schedule.entries[start_entry + usize::from(recovered_spawn_partial)..],
+            suffix_pair_count,
+            true,
+            |entry| run_one(&manifest, entry, &campaign_dir, &versions),
+        )?
+    } else {
+        (Vec::new(), None)
+    };
+    if stop_reason.is_none() {
+        stop_reason = suffix_stop_reason;
+    }
+    added_run_count = added_run_count.saturating_add(added_suffix_runs.len());
+    let raw_runs = if host_shutdown_selection_path.is_file() {
+        load_agent_token_run_summaries_with_allowed_missing(
+            &campaign_dir,
+            Some(crate::AGENT_TOKEN_HOST_SHUTDOWN_INTERRUPTED_RUN_ID),
+        )?
+    } else {
+        load_agent_token_run_summaries(&campaign_dir)?
+    };
+    let report = refresh_campaign_derived_views(&manifest, &schedule, &raw_runs, &campaign_dir)?;
+    let adjudicated_run_count = raw_runs
+        .iter()
+        .filter(|run| {
+            campaign_dir
+                .join("adjudications")
+                .join(format!("{}.json", run.run_id))
+                .is_file()
+        })
+        .count();
+    let expected_added_runs = requested_additional_pair_count
+        .saturating_mul(2)
+        .saturating_sub(usize::from(recovered_spawn_partial));
+    let stopped_early = stop_reason.is_some() || added_run_count != expected_added_runs;
+    let result = AgentTokenCampaignResume {
+        contract: AGENT_TOKEN_CAMPAIGN_RESUME_CONTRACT,
+        campaign_id: manifest.campaign_id,
+        campaign_dir,
+        source_protocol_revision: manifest.protocol_revision,
+        controller_protocol_revision: AGENT_TOKEN_PROTOCOL_REVISION.to_string(),
+        adjudicator_revision: crate::AGENT_TOKEN_ADJUDICATOR_REVISION.to_string(),
+        continuation_policy: if recovered_spawn_partial {
+            AGENT_TOKEN_RECOVERED_SPAWN_REASON.to_string()
+        } else if host_shutdown_recovery_performed || host_shutdown_selection_path.is_file() {
+            AGENT_TOKEN_HOST_SHUTDOWN_RECOVERY_REASON.to_string()
+        } else {
+            AGENT_TOKEN_INFRASTRUCTURE_RECOVERY_REASON.to_string()
+        },
+        runner_program,
+        runner_sha256,
+        scheduled_pair_count,
+        previous_pair_count,
+        requested_additional_pair_count,
+        added_run_count,
+        total_run_count: report.observed_run_count,
+        raw_run_count: raw_runs.len(),
+        infrastructure_recovery_performed: recovery_performed,
+        host_shutdown_recovery_performed,
+        recovered_pair_count: if host_shutdown_recovery_performed
+            || host_shutdown_selection_path.is_file()
+        {
+            2
+        } else {
+            1
+        },
+        statistically_excluded_run_count: report.statistically_excluded_run_count,
+        adjudicated_run_count,
+        stopped_early,
+        stop_reason,
+        claim_eligible: report.claim_eligible,
+    };
+    write_json_new(&resume_dir.join("result.json"), &result)?;
+    Ok(result)
+}
+
+/// Names the two lanes of the trailing pair that an authorized infrastructure
+/// recovery will replace. Returns an empty set when the prefix cannot be
+/// classified, so a malformed campaign still fails revalidation normally
+/// rather than silently skipping checks.
+fn infrastructure_recovery_exempt_run_ids(
+    campaign_dir: &Path,
+    schedule: &AgentTokenSchedule,
+) -> Result<BTreeSet<String>, String> {
+    let runs = crate::load_agent_token_run_summaries(campaign_dir)?;
+    Ok(infrastructure_recovery_exempt_run_ids_for(schedule, runs))
+}
+
+fn infrastructure_recovery_exempt_run_ids_for(
+    schedule: &AgentTokenSchedule,
+    runs: Vec<AgentTokenRunSummary>,
+) -> BTreeSet<String> {
+    let Ok((_, pair_start)) = classify_infrastructure_recovery_prefix(schedule, runs) else {
+        return BTreeSet::new();
+    };
+    schedule
+        .entries
+        .get(pair_start..pair_start + 2)
+        .map(|pair| pair.iter().map(|entry| entry.run_id.clone()).collect())
+        .unwrap_or_default()
+}
+
+fn classify_infrastructure_recovery_prefix(
+    schedule: &AgentTokenSchedule,
+    runs: Vec<AgentTokenRunSummary>,
+) -> Result<(Vec<AgentTokenRunSummary>, usize), String> {
+    let mut by_id = runs
+        .into_iter()
+        .map(|run| (run.run_id.clone(), run))
+        .collect::<BTreeMap<_, _>>();
+    let mut ordered = Vec::new();
+    let mut encountered_gap = false;
+    for entry in &schedule.entries {
+        match by_id.remove(&entry.run_id) {
+            Some(run) if !encountered_gap => ordered.push(run),
+            Some(_) => {
+                return Err(format!(
+                    "Existing run {} occurs after a missing schedule entry",
+                    entry.run_id
+                ));
+            }
+            None => encountered_gap = true,
+        }
+    }
+    if let Some(unexpected) = by_id.keys().next() {
+        return Err(format!(
+            "Existing run {unexpected} is absent from the frozen schedule"
+        ));
+    }
+    if ordered.is_empty() {
+        return Err("Infrastructure recovery requires an observed source lane".to_string());
+    }
+    let pair_start = if ordered.len().is_multiple_of(2) {
+        ordered.len().saturating_sub(2)
+    } else {
+        ordered.len() - 1
+    };
+    if !pair_start.is_multiple_of(2) || pair_start + 2 > schedule.entries.len() {
+        return Err(
+            "Infrastructure recovery source does not end inside one frozen pair".to_string(),
+        );
+    }
+    if let Some(run) = ordered[..pair_start].iter().find(|run| !run.valid_attempt) {
+        return Err(format!(
+            "Invalid run {} precedes the recoverable pair",
+            run.run_id
+        ));
+    }
+    let observed_pair = &ordered[pair_start..];
+    if observed_pair.len() > 2
+        || !observed_pair.iter().any(|run| {
+            run.infrastructure_failure
+                .as_deref()
+                .is_some_and(recognized_infrastructure_failure)
+        })
+    {
+        return Err(
+            "The final observed pair lacks a recognized executor infrastructure failure"
+                .to_string(),
+        );
+    }
+    if let Some(run) = observed_pair.iter().find(|run| {
+        !run.valid_attempt
+            && run
+                .infrastructure_failure
+                .as_deref()
+                .is_none_or(|reason| !recognized_infrastructure_failure(reason))
+    }) {
+        return Err(format!(
+            "Final pair run {} is invalid for a non-infrastructure reason",
+            run.run_id
+        ));
+    }
+    Ok((ordered, pair_start))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn execute_infrastructure_pair_recovery(
+    manifest: &AgentTokenCampaignManifest,
+    schedule: &AgentTokenSchedule,
+    ordered_source_runs: &[AgentTokenRunSummary],
+    pair_start: usize,
+    campaign_dir: &Path,
+    versions: &CapturedVersions,
+    runner_program: &Path,
+    runner_sha256: &str,
+) -> Result<usize, String> {
+    let selection_path = campaign_dir.join(AGENT_TOKEN_INFRASTRUCTURE_RECOVERY_SELECTION_FILE);
+    if selection_path.exists() {
+        return Err(format!(
+            "Infrastructure recovery selection already exists: {}",
+            selection_path.display()
+        ));
+    }
+    let recovery_root = campaign_dir.join("infrastructure-recoveries/recovery-0001");
+    if recovery_root.exists() {
+        return Err(format!(
+            "Infrastructure recovery evidence already exists; a second attempt is not admitted: {}",
+            recovery_root.display()
+        ));
+    }
+    fs::create_dir_all(
+        recovery_root
+            .parent()
+            .expect("infrastructure recovery root has a parent"),
+    )
+    .map_err(|error| {
+        format!(
+            "Failed to create infrastructure recovery parent {}: {error}",
+            recovery_root.display()
+        )
+    })?;
+    fs::create_dir(&recovery_root).map_err(|error| {
+        format!(
+            "Failed to create infrastructure recovery root {}: {error}",
+            recovery_root.display()
+        )
+    })?;
+    fs::create_dir(recovery_root.join("runs"))
+        .map_err(|error| format!("Failed to create infrastructure recovery runs: {error}"))?;
+    for file in [
+        "campaign-manifest.json",
+        "fixture-manifest.json",
+        "protocol.json",
+    ] {
+        copy_file_new(&campaign_dir.join(file), &recovery_root.join(file))?;
+    }
+    copy_file_new(runner_program, &recovery_root.join("recovery-runner"))?;
+
+    let pair = &schedule.entries[pair_start..pair_start + 2];
+    let replacement_entries = pair
+        .iter()
+        .map(|entry| {
+            let mut replacement = entry.clone();
+            replacement.run_id = replacement_run_id(&entry.run_id);
+            replacement
+        })
+        .collect::<Vec<_>>();
+    write_json_new(
+        &recovery_root.join("replacement-pair.json"),
+        &serde_json::json!({
+            "contract": AGENT_TOKEN_INFRASTRUCTURE_RECOVERY_CONTRACT,
+            "policy_revision": AGENT_TOKEN_INFRASTRUCTURE_RECOVERY_POLICY_REVISION,
+            "entries": replacement_entries,
+        }),
+    )?;
+    let (preflight, _) = run_executor_preflight(manifest, &recovery_root, versions)?;
+    if !preflight.passed {
+        write_json_new(
+            &recovery_root.join("result.json"),
+            &serde_json::json!({
+                "contract": AGENT_TOKEN_INFRASTRUCTURE_RECOVERY_EXECUTION_CONTRACT,
+                "campaign_id": manifest.campaign_id,
+                "admitted": false,
+                "preflight_passed": false,
+                "failure_reasons": preflight.failure_reasons,
+            }),
+        )?;
+        return Err("Infrastructure recovery executor preflight failed".to_string());
+    }
+
+    let (replacement_runs, stop_reason) =
+        execute_agent_token_pairs(&replacement_entries, 1, true, |entry| {
+            run_one(manifest, entry, &recovery_root, versions)
+        })?;
+    let replacement_admitted = stop_reason.is_none()
+        && replacement_runs.len() == 2
+        && replacement_runs.iter().all(|run| {
+            run.valid_attempt
+                && run.accepted_equivalent
+                && run.infrastructure_failure.is_none()
+                && run.failure_reasons.is_empty()
+        });
+    if !replacement_admitted {
+        write_json_new(
+            &recovery_root.join("result.json"),
+            &serde_json::json!({
+                "contract": AGENT_TOKEN_INFRASTRUCTURE_RECOVERY_EXECUTION_CONTRACT,
+                "campaign_id": manifest.campaign_id,
+                "admitted": false,
+                "preflight_passed": true,
+                "replacement_run_count": replacement_runs.len(),
+                "stop_reason": stop_reason,
+                "failure_reasons": replacement_runs
+                    .iter()
+                    .flat_map(|run| run.failure_reasons.iter().chain(run.invalid_reasons.iter()))
+                    .cloned()
+                    .collect::<Vec<_>>(),
+            }),
+        )?;
+        return Err(
+            "Infrastructure replacement pair did not pass every admission gate".to_string(),
+        );
+    }
+
+    let observed_source_runs = ordered_source_runs[pair_start..]
+        .iter()
+        .map(|run| {
+            recovery_artifact(
+                campaign_dir,
+                &format!("runs/{}/run-summary.json", run.run_id),
+                &run.run_id,
+            )
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    let replacement_artifacts = replacement_runs
+        .iter()
+        .map(|run| {
+            recovery_artifact(
+                campaign_dir,
+                &format!(
+                    "infrastructure-recoveries/recovery-0001/runs/{}/run-summary.json",
+                    run.run_id
+                ),
+                &run.run_id,
+            )
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    let selection = AgentTokenInfrastructurePairRecoverySelection {
+        contract: AGENT_TOKEN_INFRASTRUCTURE_RECOVERY_CONTRACT.to_string(),
+        campaign_id: manifest.campaign_id.clone(),
+        source_protocol_revision: manifest.protocol_revision.clone(),
+        policy_revision: AGENT_TOKEN_INFRASTRUCTURE_RECOVERY_POLICY_REVISION.to_string(),
+        source_pair_start_index: pair_start,
+        workload_id: pair[0].workload_id.clone(),
+        attempt: pair[0].attempt,
+        source_schedule_run_ids: pair.iter().map(|entry| entry.run_id.clone()).collect(),
+        observed_source_runs,
+        replacement_runs: replacement_artifacts,
+        recovery_runner_sha256: runner_sha256.to_string(),
+        reason: AGENT_TOKEN_INFRASTRUCTURE_RECOVERY_REASON.to_string(),
+        selected_at: Utc::now().to_rfc3339(),
+    };
+    crate::agent_token_infrastructure_recovery::validate_selection_identity(
+        &selection, manifest, schedule,
+    )?;
+    write_json_new(&selection_path, &selection)?;
+    let view = load_agent_token_campaign_statistical_view(manifest, schedule, campaign_dir)?;
+    if view.infrastructure_recovery.is_none()
+        || view.effective_runs.len() != pair_start.saturating_add(2)
+    {
+        return Err(
+            "Infrastructure recovery selection did not activate the exact effective prefix"
+                .to_string(),
+        );
+    }
+    write_json_new(
+        &recovery_root.join("result.json"),
+        &serde_json::json!({
+            "contract": AGENT_TOKEN_INFRASTRUCTURE_RECOVERY_EXECUTION_CONTRACT,
+            "campaign_id": manifest.campaign_id,
+            "admitted": true,
+            "preflight_passed": true,
+            "source_pair_start_index": pair_start,
+            "replacement_run_ids": replacement_runs.iter().map(|run| &run.run_id).collect::<Vec<_>>(),
+            "recovery_runner_sha256": runner_sha256,
+        }),
+    )?;
+    Ok(2)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn execute_host_shutdown_pair_recovery(
+    manifest: &AgentTokenCampaignManifest,
+    schedule: &AgentTokenSchedule,
+    effective_prefix_len: usize,
+    campaign_dir: &Path,
+    versions: &CapturedVersions,
+    runner_program: &Path,
+    runner_sha256: &str,
+) -> Result<usize, String> {
+    let selection_path = campaign_dir.join(AGENT_TOKEN_HOST_SHUTDOWN_RECOVERY_SELECTION_FILE);
+    if selection_path.exists() {
+        return Err(format!(
+            "Host-shutdown recovery selection already exists: {}",
+            selection_path.display()
+        ));
+    }
+    let recovery_root = campaign_dir.join("host-shutdown-recoveries/recovery-0001");
+    if recovery_root.exists() {
+        return Err(format!(
+            "Host-shutdown recovery evidence already exists; a second attempt is not admitted: {}",
+            recovery_root.display()
+        ));
+    }
+
+    let interruption = classify_host_shutdown_interruption(
+        manifest,
+        schedule,
+        campaign_dir,
+        effective_prefix_len,
+    )?;
+    let observation = capture_host_shutdown_observation(interruption.event_mtime_unix_s)?;
+
+    fs::create_dir_all(
+        recovery_root
+            .parent()
+            .expect("host-shutdown recovery root has a parent"),
+    )
+    .map_err(|error| {
+        format!(
+            "Failed to create host-shutdown recovery parent {}: {error}",
+            recovery_root.display()
+        )
+    })?;
+    fs::create_dir(&recovery_root).map_err(|error| {
+        format!(
+            "Failed to create host-shutdown recovery root {}: {error}",
+            recovery_root.display()
+        )
+    })?;
+    fs::create_dir(recovery_root.join("runs"))
+        .map_err(|error| format!("Failed to create host-shutdown recovery runs: {error}"))?;
+    for file in [
+        "campaign-manifest.json",
+        "fixture-manifest.json",
+        "protocol.json",
+    ] {
+        copy_file_new(&campaign_dir.join(file), &recovery_root.join(file))?;
+    }
+    copy_file_new(runner_program, &recovery_root.join("recovery-runner"))?;
+    let observation_path = recovery_root.join("host-shutdown-observation.json");
+    write_json_new(&observation_path, &observation)?;
+
+    let pair = &schedule.entries[effective_prefix_len..effective_prefix_len + 2];
+    let replacement_entries = pair
+        .iter()
+        .map(|entry| {
+            let mut replacement = entry.clone();
+            replacement.run_id = host_shutdown_replacement_run_id(&entry.run_id);
+            replacement
+        })
+        .collect::<Vec<_>>();
+    write_json_new(
+        &recovery_root.join("replacement-pair.json"),
+        &serde_json::json!({
+            "contract": AGENT_TOKEN_HOST_SHUTDOWN_RECOVERY_CONTRACT,
+            "policy_revision": AGENT_TOKEN_HOST_SHUTDOWN_RECOVERY_POLICY_REVISION,
+            "entries": replacement_entries,
+        }),
+    )?;
+    let (preflight, _) = run_executor_preflight(manifest, &recovery_root, versions)?;
+    if !preflight.passed {
+        write_json_new(
+            &recovery_root.join("result.json"),
+            &serde_json::json!({
+                "contract": AGENT_TOKEN_HOST_SHUTDOWN_RECOVERY_EXECUTION_CONTRACT,
+                "campaign_id": manifest.campaign_id,
+                "admitted": false,
+                "preflight_passed": false,
+                "failure_reasons": preflight.failure_reasons,
+            }),
+        )?;
+        return Err("Host-shutdown recovery executor preflight failed".to_string());
+    }
+
+    let (replacement_runs, stop_reason) =
+        execute_agent_token_pairs(&replacement_entries, 1, true, |entry| {
+            run_one(manifest, entry, &recovery_root, versions)
+        })?;
+    let replacement_admitted = stop_reason.is_none()
+        && replacement_runs.len() == 2
+        && replacement_runs.iter().all(|run| {
+            run.valid_attempt
+                && run.infrastructure_failure.is_none()
+                && run.invalid_reasons.is_empty()
+                && run.usage.is_some()
+                && run.transcript.valid
+                && run.transcript.errors.is_empty()
+        });
+    if !replacement_admitted {
+        write_json_new(
+            &recovery_root.join("result.json"),
+            &serde_json::json!({
+                "contract": AGENT_TOKEN_HOST_SHUTDOWN_RECOVERY_EXECUTION_CONTRACT,
+                "campaign_id": manifest.campaign_id,
+                "admitted": false,
+                "preflight_passed": true,
+                "replacement_run_count": replacement_runs.len(),
+                "stop_reason": stop_reason,
+                "failure_reasons": replacement_runs
+                    .iter()
+                    .flat_map(|run| run.failure_reasons.iter().chain(run.invalid_reasons.iter()))
+                    .cloned()
+                    .collect::<Vec<_>>(),
+            }),
+        )?;
+        return Err(
+            "Host-shutdown replacement pair did not complete as two protocol-valid lanes"
+                .to_string(),
+        );
+    }
+
+    let replacement_artifacts = replacement_runs
+        .iter()
+        .map(|run| {
+            recovery_artifact(
+                campaign_dir,
+                &format!(
+                    "host-shutdown-recoveries/recovery-0001/runs/{}/run-summary.json",
+                    run.run_id
+                ),
+                &run.run_id,
+            )
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    let observation_relative =
+        "host-shutdown-recoveries/recovery-0001/host-shutdown-observation.json";
+    let observation_bytes = fs::read(&observation_path).map_err(|error| {
+        format!(
+            "Failed to read host-shutdown observation {}: {error}",
+            observation_path.display()
+        )
+    })?;
+    let selection = AgentTokenHostShutdownPairRecoverySelection {
+        contract: AGENT_TOKEN_HOST_SHUTDOWN_RECOVERY_CONTRACT.to_string(),
+        campaign_id: manifest.campaign_id.clone(),
+        source_protocol_revision: manifest.protocol_revision.clone(),
+        policy_revision: AGENT_TOKEN_HOST_SHUTDOWN_RECOVERY_POLICY_REVISION.to_string(),
+        source_pair_start_index: effective_prefix_len,
+        workload_id: pair[0].workload_id.clone(),
+        attempt: pair[0].attempt,
+        source_schedule_run_ids: pair.iter().map(|entry| entry.run_id.clone()).collect(),
+        interrupted_run_id: pair[0].run_id.clone(),
+        interrupted_run_directory: format!("runs/{}", pair[0].run_id),
+        interrupted_artifacts: interruption.artifacts,
+        interrupted_event_path: format!("runs/{}/private/codex-events.raw.jsonl", pair[0].run_id),
+        interrupted_event_sha256: interruption.event_sha256,
+        interrupted_event_mtime_unix_s: interruption.event_mtime_unix_s,
+        terminal_provider_event_observed: false,
+        run_summary_observed: false,
+        host_observation: observation_relative.to_string(),
+        host_observation_sha256: sha256_digest(&observation_bytes),
+        replacement_runs: replacement_artifacts,
+        recovery_runner_sha256: runner_sha256.to_string(),
+        reason: AGENT_TOKEN_HOST_SHUTDOWN_RECOVERY_REASON.to_string(),
+        selected_at: Utc::now().to_rfc3339(),
+    };
+    crate::agent_token_host_shutdown_recovery::validate_host_shutdown_selection_identity(
+        &selection, manifest, schedule,
+    )?;
+    write_json_new(&selection_path, &selection)?;
+    let view = load_agent_token_campaign_statistical_view(manifest, schedule, campaign_dir)?;
+    if view.host_shutdown_recovery.is_none()
+        || view.effective_runs.len() != effective_prefix_len.saturating_add(2)
+    {
+        return Err(
+            "Host-shutdown recovery selection did not activate the exact effective prefix"
+                .to_string(),
+        );
+    }
+    write_json_new(
+        &recovery_root.join("result.json"),
+        &serde_json::json!({
+            "contract": AGENT_TOKEN_HOST_SHUTDOWN_RECOVERY_EXECUTION_CONTRACT,
+            "campaign_id": manifest.campaign_id,
+            "admitted": true,
+            "preflight_passed": true,
+            "source_pair_start_index": effective_prefix_len,
+            "replacement_run_ids": replacement_runs.iter().map(|run| &run.run_id).collect::<Vec<_>>(),
+            "recovery_runner_sha256": runner_sha256,
+        }),
+    )?;
+    Ok(2)
+}
+
+fn recovery_artifact(
+    campaign_dir: &Path,
+    relative: &str,
+    run_id: &str,
+) -> Result<AgentTokenInfrastructureRecoveryArtifact, String> {
+    let path = campaign_dir.join(relative);
+    let bytes = fs::read(&path).map_err(|error| {
+        format!(
+            "Failed to read infrastructure recovery artifact {}: {error}",
+            path.display()
+        )
+    })?;
+    Ok(AgentTokenInfrastructureRecoveryArtifact {
+        run_id: run_id.to_string(),
+        run_summary: relative.to_string(),
+        run_summary_sha256: sha256_digest(&bytes),
+    })
 }
 
 fn validate_resume_schedule(
@@ -1668,6 +3025,40 @@ fn append_supported_run_adjudications(
         write_json_new(&path, &adjudication)?;
     }
     Ok(())
+}
+
+fn append_recovered_spawn_adjudication(
+    campaign_dir: &Path,
+    manifest: &AgentTokenCampaignManifest,
+) -> Result<(), String> {
+    if manifest.campaign_id != AGENT_TOKEN_RECOVERED_SPAWN_CAMPAIGN_ID
+        || manifest.protocol_revision
+            != crate::AGENT_TOKEN_SPRINT_ON_COMPLETE_PREDECESSOR_PROTOCOL_REVISION
+    {
+        return Err(
+            "Recovered-spawn adjudication is not authorized for this campaign or source protocol"
+                .to_string(),
+        );
+    }
+    let adjudication_path = campaign_dir
+        .join("adjudications")
+        .join(format!("{AGENT_TOKEN_RECOVERED_SPAWN_RUN_ID}.json"));
+    if adjudication_path.exists() {
+        return Err(format!(
+            "Recovered-spawn adjudication already exists: {}",
+            adjudication_path.display()
+        ));
+    }
+    let source = decode_json_file::<AgentTokenRunSummary>(
+        &campaign_dir
+            .join("runs")
+            .join(AGENT_TOKEN_RECOVERED_SPAWN_RUN_ID)
+            .join("run-summary.json"),
+        "recovered-spawn source run summary",
+    )?;
+    let adjudication =
+        build_agent_token_run_adjudication(campaign_dir, &source, &manifest.protocol_revision)?;
+    write_json_new(&adjudication_path, &adjudication)
 }
 
 fn require_resume_version_identity(
@@ -1763,6 +3154,98 @@ fn next_resume_directory(campaign_dir: &Path) -> Result<PathBuf, String> {
     Err("Campaign resume ordinal space is exhausted".to_string())
 }
 
+pub fn enrich_agent_token_report_model_composition(
+    manifest: &AgentTokenCampaignManifest,
+    runs: &[AgentTokenRunSummary],
+    run_summary_paths: &BTreeMap<String, PathBuf>,
+    report: &mut AgentTokenReport,
+) -> Result<(), String> {
+    report.served_models.clear();
+    report.mixed_model_run_count = 0;
+    report.fallback_observed_run_count = 0;
+    if manifest.runtime.executor != crate::agent_token::AgentTokenExecutor::Claude
+        || !protocol_requires_claude_model_evidence(&manifest.protocol_revision)
+    {
+        return Ok(());
+    }
+
+    let mut totals = BTreeMap::<(String, String), AgentTokenServedModelReport>::new();
+    for run in runs.iter().filter(|run| run.usage.is_some()) {
+        let summary_path = run_summary_paths.get(&run.run_id).ok_or_else(|| {
+            format!(
+                "Effective run {} has no summary path for model-composition reporting",
+                run.run_id
+            )
+        })?;
+        let run_dir = summary_path.parent().ok_or_else(|| {
+            format!(
+                "Effective run summary has no parent directory: {}",
+                summary_path.display()
+            )
+        })?;
+        let imported = crate::agent_token::import_claude_usage_with_outcome(
+            &run_dir.join("private/codex-events.raw.jsonl"),
+            &run.run_id,
+            &run.workload_id,
+            run.mode,
+            run.accounting_profile,
+            &manifest.model,
+            manifest.claude_model_admission,
+        )?;
+        if run.usage.as_ref() != Some(&imported.usage) {
+            return Err(format!(
+                "Run {} model-composition source differs from normalized usage",
+                run.run_id
+            ));
+        }
+        report.mixed_model_run_count += usize::from(imported.served_models.len() > 1);
+        report.fallback_observed_run_count += usize::from(imported.fallback_observed);
+        for served in imported.served_models {
+            let total = totals
+                .entry((served.model_id.clone(), served.canonical_model.clone()))
+                .or_insert_with(|| AgentTokenServedModelReport {
+                    model_id: served.model_id.clone(),
+                    canonical_model: served.canonical_model.clone(),
+                    ..AgentTokenServedModelReport::default()
+                });
+            total.run_count = total.run_count.saturating_add(1);
+            total.input_tokens = checked_model_report_sum(
+                total.input_tokens,
+                served.input_tokens,
+                &served.model_id,
+            )?;
+            total.cached_input_tokens = checked_model_report_sum(
+                total.cached_input_tokens,
+                served.cached_input_tokens,
+                &served.model_id,
+            )?;
+            total.cache_write_input_tokens = checked_model_report_sum(
+                total.cache_write_input_tokens,
+                served.cache_write_input_tokens,
+                &served.model_id,
+            )?;
+            total.output_tokens = checked_model_report_sum(
+                total.output_tokens,
+                served.output_tokens,
+                &served.model_id,
+            )?;
+            total.provider_total_tokens = checked_model_report_sum(
+                total.provider_total_tokens,
+                served.provider_total_tokens,
+                &served.model_id,
+            )?;
+        }
+    }
+    report.served_models = totals.into_values().collect();
+    Ok(())
+}
+
+fn checked_model_report_sum(current: u64, added: u64, model_id: &str) -> Result<u64, String> {
+    current
+        .checked_add(added)
+        .ok_or_else(|| format!("Served-model token total overflowed u64 for model {model_id}"))
+}
+
 fn refresh_campaign_derived_views(
     manifest: &AgentTokenCampaignManifest,
     schedule: &AgentTokenSchedule,
@@ -1806,8 +3289,14 @@ fn refresh_campaign_derived_views(
     write_json_derived(&campaign_dir.join("raw-run-index.json"), &index)?;
     let statistical_view =
         load_agent_token_campaign_statistical_view(manifest, schedule, campaign_dir)?;
-    let report = statistical_view.report;
-    if statistical_view.selection.is_some() {
+    let mut report = statistical_view.report;
+    enrich_agent_token_report_model_composition(
+        manifest,
+        &statistical_view.effective_runs,
+        &statistical_view.effective_run_summary_paths,
+        &mut report,
+    )?;
+    if statistical_view.selection.is_some() || statistical_view.infrastructure_recovery.is_some() {
         let effective_index = AgentTokenRunIndex {
             contract: AGENT_TOKEN_RUN_INDEX_CONTRACT.to_string(),
             campaign_id: manifest.campaign_id.clone(),
@@ -1840,7 +3329,11 @@ fn refresh_campaign_derived_views(
                             .as_ref()
                             .map(|usage| usage.provider_total_tokens),
                         run_summary: relative.display().to_string(),
-                        adjudication: None,
+                        adjudication: campaign_dir
+                            .join("adjudications")
+                            .join(format!("{}.json", run.run_id))
+                            .is_file()
+                            .then(|| format!("adjudications/{}.json", run.run_id)),
                     })
                 })
                 .collect::<Result<Vec<_>, String>>()?,
@@ -1858,6 +3351,8 @@ fn refresh_campaign_derived_views(
             "campaign_id": report.campaign_id,
             "protocol_revision": report.protocol_revision,
             "campaign_scope": report.campaign_scope,
+            "ait_edit_root_mode": report.ait_edit_root_mode,
+            "git_worktree_mode": report.git_worktree_mode,
             "git_worktree_permission_preflight_passed": git_permission_preflight.passed,
             "executor_preflight_passed": preflight.passed,
             "source_protocol_claim_eligible": report.source_protocol_claim_eligible,
@@ -1865,10 +3360,19 @@ fn refresh_campaign_derived_views(
             "current_policy_evaluation_mode": report.current_policy_evaluation_mode,
             "current_policy_criteria_met": report.current_policy_criteria_met,
             "claim_eligible": report.claim_eligible,
+            "served_models": report.served_models,
+            "mixed_model_run_count": report.mixed_model_run_count,
+            "fallback_observed_run_count": report.fallback_observed_run_count,
             "executed_evidence_run_count": report.executed_evidence_run_count,
             "statistically_excluded_run_count": report.statistically_excluded_run_count,
             "replacement_policy_revision": report.replacement_policy_revision,
             "statistical_replacements": report.statistical_replacements,
+            "infrastructure_recovery_policy_revision": report.infrastructure_recovery_policy_revision,
+            "infrastructure_pair_recoveries": report.infrastructure_pair_recoveries,
+            "host_shutdown_recovery_policy_revision": report.host_shutdown_recovery_policy_revision,
+            "host_shutdown_pair_recoveries": report.host_shutdown_pair_recoveries,
+            "recovered_spawn_policy_revision": report.recovered_spawn_policy_revision,
+            "recovered_spawn_adjudications": report.recovered_spawn_adjudications,
             "pair_admission_policy": report.pair_admission_policy,
             "comparisons": report.comparisons,
             "blockers": report.blockers,
@@ -1877,7 +3381,27 @@ fn refresh_campaign_derived_views(
         }),
     )?;
     let mut claim_boundary = render_agent_token_report_markdown(&report);
-    if report.replacement_policy_revision.is_some() {
+    if report.replacement_policy_revision.is_some()
+        && report.recovered_spawn_policy_revision.is_some()
+    {
+        claim_boundary.push_str(&format!(
+            "\n## Claim Boundary\n\nThe executor-infrastructure and host-shutdown whole-pair recoveries remain separately disclosed and immutable. Raw `b017-gd-03-git` remains byte-for-byte unchanged under its digest-linked recovered-spawn adjudication. The original valid-but-unaccepted GD-05 AIT lane also remains checksummed and disclosed; one exact same-pinned AIT lane was executed once under the repository-owner-authorized statistical-replacement policy and admitted only after passing every original gate. Effective claim eligibility is derived from exactly 200 admitted sessions selected from {} executed evidence sessions with {} exclusions. This exact authorization does not establish a general retry policy or erase the functional failure. The finding remains limited to the pinned game-development workloads, model, accounting profile, and single-session local topology.\n",
+            report.executed_evidence_run_count,
+            report.statistically_excluded_run_count,
+        ));
+    } else if report.recovered_spawn_policy_revision.is_some() {
+        claim_boundary.push_str(
+            "\n## Claim Boundary\n\nThe prior executor-infrastructure and host-shutdown recoveries remain separately disclosed and immutable. Raw `b017-gd-03-git` also remains byte-for-byte unchanged with its original spawn-failure classification; a SHA-256-linked successor adjudication admits the same completed lane because the session recovered, exited zero, retained valid transcript and provider usage, and reached normal evaluation. Its retry and all tokens remain measured, and no successful Git lane was re-executed. Effective claim eligibility requires exactly 200 admitted sessions and separately reports all 202 executed sessions and both exclusions. Functional candidate outcomes remain measured and never authorize retry. The finding remains limited to the pinned game-development workloads, model, accounting profile, and single-session local topology.\n",
+        );
+    } else if report.host_shutdown_recovery_policy_revision.is_some() {
+        claim_boundary.push_str(
+            "\n## Claim Boundary\n\nThe 2026-08-29 host shutdown interrupted one Git lane without a terminal provider event or run summary. The partial directory remains byte-for-byte in place with a checksummed inventory and host observation, and its whole Git/AIT pair was re-executed exactly once under distinct run IDs before continuing the unchanged frozen suffix. The earlier recognized executor-infrastructure recovery remains separately disclosed. Effective claim eligibility requires exactly 200 admitted sessions and separately reports all 202 executed sessions and both exclusions. Functional candidate outcomes remain measured and never authorize retry. The finding remains limited to the pinned game-development workloads, model, accounting profile, and single-session local topology.\n",
+        );
+    } else if report.infrastructure_recovery_policy_revision.is_some() {
+        claim_boundary.push_str(
+            "\n## Claim Boundary\n\nThe recognized executor infrastructure failure and every observed source lane remain immutable in append-only evidence. The contaminated Git/AIT pair is excluded in full, and both same-pinned lanes are re-executed exactly once under the disclosed whole-pair recovery policy. Effective claim eligibility requires exactly 200 admitted sessions and separately reports all executed and excluded evidence. Functional failures, evaluator failures, and workflow failures are never retryable under this policy. The finding remains limited to the pinned game-development workloads, model, accounting profile, and single-session local topology.\n",
+        );
+    } else if report.replacement_policy_revision.is_some() {
         claim_boundary.push_str(
             "\n## Claim Boundary\n\nThe frozen source-protocol result and its disclosed GD-05 AIT failure remain immutable. Effective claim eligibility is derived under the repository-owner-authorized transparent replacement policy from exactly 200 statistically admitted sessions selected from 201 executed evidence sessions. The finding remains limited to the pinned game-development workloads, model, accounting profile, and single-session local topology. It does not connect to `ait-server`, establish a high-concurrency result, or support a universal AIT-versus-Git product claim.\n",
         );
@@ -2017,11 +3541,23 @@ fn run_one(
         .map(|container| container.join("git-task-worktree"));
     let git_metadata_path = (entry.mode == AgentTokenMode::GitLinearSingleSession)
         .then(|| run_dir.join("private/git-metadata"));
+    // An explicit AIT treatment owns a benchmark-supplied path. A returned
+    // treatment deliberately creates no such path: task start chooses the
+    // worktree and the measured agent follows its next_action command.
+    let ait_task_worktree_container = (entry.mode == AgentTokenMode::AitLinearSingleSession
+        && manifest.ait_edit_root_mode == crate::agent_token::AgentTokenAitEditRootMode::Explicit)
+        .then(|| run_dir.join("ait-worktree-runtime"));
+    let ait_task_worktree_path = ait_task_worktree_container
+        .as_ref()
+        .map(|container| container.join("ait-task-worktree"));
     if let Some(path) = git_task_worktree_container.as_deref() {
         prepare_empty_directory(path, "Git task worktree container")?;
     }
     if let Some(path) = git_metadata_path.as_deref() {
         prepare_empty_directory(path, "Git metadata")?;
+    }
+    if let Some(path) = ait_task_worktree_container.as_deref() {
+        prepare_empty_directory(path, "AIT task worktree container")?;
     }
 
     let shared_task = fs::read_to_string(workspace.join("TASK.txt")).map_err(|error| {
@@ -2036,6 +3572,7 @@ fn run_one(
         &shared_task,
         git_task_worktree_path.as_deref(),
         git_metadata_path.as_deref(),
+        ait_task_worktree_path.as_deref(),
     );
     write_text_new(&run_dir.join("prompt.txt"), &prompt)?;
     let shared_task_prompt_digest = sha256_digest(shared_task.as_bytes());
@@ -2068,20 +3605,27 @@ fn run_one(
                 (
                     vec![metadata.clone(), container],
                     Some(path.clone()),
-                    vec![workspace.join(".git"), metadata, path.join(".git")],
+                    git_write_exceptions_for_mode(
+                        manifest.git_worktree_mode,
+                        &workspace,
+                        &metadata,
+                        &path,
+                    ),
                 )
             }
             (
                 crate::AgentTokenAccountingProfile::SteadyStateTaskCost,
                 AgentTokenMode::AitLinearSingleSession,
-            ) => (
-                vec![
+            ) => {
+                let ephemeral =
                     bootstrap_ait(manifest, &workspace, &mut bootstrap_events, &mut sequence)?
-                        .worktree_add_dir,
-                ],
-                None,
-                Vec::new(),
-            ),
+                        .worktree_add_dir;
+                let mut writable_roots = vec![ephemeral];
+                if let Some(container) = ait_task_worktree_container.clone() {
+                    writable_roots.push(container);
+                }
+                (writable_roots, None, Vec::new())
+            }
             (
                 crate::AgentTokenAccountingProfile::FirstUseTotalCost,
                 AgentTokenMode::AitLinearSingleSession,
@@ -2111,7 +3655,12 @@ fn run_one(
                 (
                     vec![metadata.clone(), container],
                     Some(path.clone()),
-                    vec![workspace.join(".git"), metadata, path.join(".git")],
+                    git_write_exceptions_for_mode(
+                        manifest.git_worktree_mode,
+                        &workspace,
+                        &metadata,
+                        &path,
+                    ),
                 )
             }
         };
@@ -2130,8 +3679,39 @@ fn run_one(
             ));
         }
     }
+    let mut managed_worktree_lifecycle = if entry.mode == AgentTokenMode::GitLinearSingleSession
+        && manifest.git_worktree_mode == AgentTokenGitWorktreeMode::CodexAppEquivalentManaged
+    {
+        let worktree = git_task_worktree_path
+            .as_deref()
+            .expect("managed Git mode prepared its worktree path");
+        let starting_head = git_start_state_proof
+            .as_ref()
+            .and_then(|proof| proof.head_oid.as_deref())
+            .ok_or_else(|| {
+                "Managed Git worktree provisioning requires a proven starting HEAD".to_string()
+            })?;
+        Some(provision_managed_git_worktree(
+            manifest,
+            entry,
+            &workspace,
+            worktree,
+            starting_head,
+            &mut bootstrap_events,
+            &mut sequence,
+        )?)
+    } else {
+        None
+    };
+    let execution_workspace = if managed_worktree_lifecycle.is_some() {
+        git_task_worktree_path
+            .as_deref()
+            .expect("managed Git mode prepared its execution worktree")
+    } else {
+        workspace.as_path()
+    };
     let permission_profile =
-        build_codex_permission_profile(&workspace, &add_dirs, &git_write_exceptions)?;
+        build_codex_permission_profile(execution_workspace, &add_dirs, &git_write_exceptions)?;
     write_json_new(
         &run_dir.join("codex-permission-profile.json"),
         &permission_profile,
@@ -2156,6 +3736,13 @@ fn run_one(
         shared_task_prompt_digest,
         measured_prompt_digest,
         workspace: "workspace".to_string(),
+        execution_workspace: execution_workspace
+            .strip_prefix(&run_dir)
+            .unwrap_or(execution_workspace)
+            .display()
+            .to_string(),
+        ait_edit_root_mode: manifest.ait_edit_root_mode,
+        git_worktree_mode: manifest.git_worktree_mode,
         network_policy: manifest.network_policy.clone(),
         tool_policy: manifest.tool_policy.clone(),
         codex_permission_profile: permission_profile.name.clone(),
@@ -2167,13 +3754,21 @@ fn run_one(
         ),
         project_doc_max_bytes: manifest.runtime.project_doc_max_bytes,
         workflow_mode: match entry.mode {
-            AgentTokenMode::GitLinearSingleSession => "git_local".to_string(),
+            AgentTokenMode::GitLinearSingleSession => {
+                git_workflow_mode_label(manifest.git_worktree_mode).to_string()
+            }
             AgentTokenMode::AitLinearSingleSession => "solo_local".to_string(),
         },
         sprint_mode: match entry.mode {
             AgentTokenMode::GitLinearSingleSession => "not_applicable".to_string(),
-            AgentTokenMode::AitLinearSingleSession => "off".to_string(),
+            AgentTokenMode::AitLinearSingleSession => manifest.ait_sprint_mode.as_str().to_string(),
         },
+        sprint_card_path: (entry.mode == AgentTokenMode::AitLinearSingleSession
+            && manifest.ait_sprint_mode == AgentTokenAitSprintMode::On)
+            .then(|| AIT_SPRINT_CARD_PATH.to_string()),
+        sprint_item_ref: (entry.mode == AgentTokenMode::AitLinearSingleSession
+            && manifest.ait_sprint_mode == AgentTokenAitSprintMode::On)
+            .then(|| sprint_item_ref(&entry.run_id)),
         ait_server_allowed: false,
         git_start_state_proof: git_start_state_proof
             .as_ref()
@@ -2183,14 +3778,49 @@ fn run_one(
 
     let raw_events = run_dir.join("private/codex-events.raw.jsonl");
     let codex_stderr = run_dir.join("private/codex.stderr.txt");
-    let codex = run_measured_agent(
+    if let Some(lifecycle) = managed_worktree_lifecycle.as_mut() {
+        lifecycle.model_started_at = Some(Utc::now().to_rfc3339());
+    }
+    let codex_result = run_measured_agent(
         manifest,
-        &workspace,
+        execution_workspace,
         &add_dirs,
         &git_write_exceptions,
         &prompt,
         &raw_events,
         &codex_stderr,
+    );
+    let model_request_state_result =
+        inspect_model_request_state(manifest, &raw_events, &entry.run_id);
+    if let Some(lifecycle) = managed_worktree_lifecycle.as_mut() {
+        lifecycle.model_completed_at = Some(Utc::now().to_rfc3339());
+        lifecycle.model_elapsed_ms = codex_result.as_ref().ok().map(|result| result.elapsed_ms);
+        let mut closeout_events = Vec::new();
+        let mut closeout_sequence = 1_usize;
+        close_managed_git_worktree(
+            manifest,
+            &workspace,
+            git_task_worktree_path
+                .as_deref()
+                .expect("managed Git mode prepared its closeout worktree"),
+            lifecycle,
+            model_request_state_result
+                .as_ref()
+                .is_ok_and(|state| state.terminal_state != "incomplete"),
+            &mut closeout_events,
+            &mut closeout_sequence,
+        )?;
+        write_json_lines_new(
+            &run_dir.join("private/managed-worktree-closeout-events.jsonl"),
+            &closeout_events,
+        )?;
+        write_json_new(&run_dir.join("managed-worktree-lifecycle.json"), lifecycle)?;
+    }
+    let codex = codex_result?;
+    let model_request_state = model_request_state_result?;
+    write_json_new(
+        &run_dir.join("model-request-state.json"),
+        &model_request_state,
     )?;
     let usage_result = import_executor_usage(
         manifest,
@@ -2217,10 +3847,30 @@ fn run_one(
         errors: vec![error],
         observed_required_commands: Vec::new(),
     });
-    let secondary_metrics =
+    let mut secondary_metrics =
         extract_executor_secondary_metrics(manifest, &raw_events, &codex_stderr, &transcript)?;
+    if let Some(lifecycle) = managed_worktree_lifecycle.as_ref() {
+        secondary_metrics.host_worktree_provisioning_elapsed_ms =
+            Some(lifecycle.provisioning_elapsed_ms);
+        secondary_metrics.host_worktree_closeout_elapsed_ms = lifecycle.closeout_elapsed_ms;
+    }
     write_command_events(&run_dir.join("command-events.jsonl"), &transcript)?;
-    let usage = usage_result.ok();
+    let usage_error = usage_result.as_ref().err().cloned();
+    let provider_refusal = usage_result
+        .as_ref()
+        .ok()
+        .is_some_and(|imported| imported.provider_refusal);
+    let provider_stop_reason = usage_result
+        .as_ref()
+        .ok()
+        .and_then(|imported| imported.provider_stop_reason.clone());
+    let provider_completed_normally = match manifest.runtime.executor {
+        crate::agent_token::AgentTokenExecutor::Codex => true,
+        crate::agent_token::AgentTokenExecutor::Claude => {
+            provider_stop_reason.as_deref() == Some("end_turn")
+        }
+    };
+    let usage = usage_result.ok().map(|imported| imported.usage);
     let infrastructure_failure = classify_executor_infrastructure_failure(
         manifest,
         &raw_events,
@@ -2240,9 +3890,11 @@ fn run_one(
     let workflow = verify_workflow(
         manifest,
         entry.mode,
+        &entry.run_id,
         &workspace,
         git_worktree_path.as_deref(),
         git_start_state_proof.as_ref(),
+        managed_worktree_lifecycle.as_ref(),
     )?;
     write_json_new(&run_dir.join("workflow-verification.json"), &workflow)?;
 
@@ -2257,6 +3909,8 @@ fn run_one(
         node_version: versions.node.clone(),
         browser_version: versions.browser.clone(),
         workflow_mode: workflow.workflow_mode.clone(),
+        ait_edit_root_mode: manifest.ait_edit_root_mode,
+        git_worktree_mode: manifest.git_worktree_mode,
         sprint_mode: workflow.sprint_mode.clone(),
         ait_server_connected: workflow.ait_server_configured,
         network_policy: manifest.network_policy.clone(),
@@ -2280,13 +3934,28 @@ fn run_one(
     )
     .ok();
     let mut invalid_reasons = Vec::new();
-    if usage.is_none() {
-        invalid_reasons.push("provider usage is missing or has an unknown schema".to_string());
+    if let Some(error) = usage_error {
+        invalid_reasons.push(format!(
+            "provider usage or model-purity evidence is invalid: {error}"
+        ));
+    }
+    if manifest.runtime.executor == crate::agent_token::AgentTokenExecutor::Claude
+        && provider_stop_reason
+            .as_deref()
+            .is_some_and(|reason| reason != "end_turn" && reason != "refusal")
+    {
+        invalid_reasons.push(format!(
+            "provider terminal stop reason {:?} is unsupported by the frozen Claude outcome contract",
+            provider_stop_reason
+        ));
     }
     if let Some(reason) = infrastructure_failure.as_deref() {
         invalid_reasons.push(format!("candidate infrastructure unavailable: {reason}"));
     }
-    if !transcript.valid {
+    // A successful provider refusal is measured model behavior. It may stop
+    // before issuing any repository command, so the missing workflow
+    // transcript is a functional failure rather than invalid evidence.
+    if !transcript.valid && !provider_refusal {
         invalid_reasons.extend(transcript.errors.iter().cloned());
     }
     if receipt.content_digest != run_manifest.fixture_content_digest {
@@ -2296,8 +3965,17 @@ fn run_one(
         if workflow.workflow_mode != "solo_local" {
             invalid_reasons.push("AIT workflow mode is not solo_local".to_string());
         }
-        if workflow.sprint_mode != "off" {
-            invalid_reasons.push("AIT sprint mode is not off".to_string());
+        if workflow.sprint_mode != manifest.ait_sprint_mode.as_str() {
+            invalid_reasons.push(format!(
+                "AIT sprint mode is not {}",
+                manifest.ait_sprint_mode.as_str()
+            ));
+        }
+        if manifest.ait_sprint_mode == AgentTokenAitSprintMode::On
+            && !provider_refusal
+            && workflow.sprint_item_closed != Some(true)
+        {
+            invalid_reasons.push("AIT sprint item was not automatically closed".to_string());
         }
         if workflow.default_remote_present
             || workflow.remote_count.unwrap_or_default() != 0
@@ -2330,13 +4008,22 @@ fn run_one(
     if !workflow.closed {
         failure_reasons.push("repository workflow did not close cleanly".to_string());
     }
+    if provider_refusal {
+        failure_reasons.push("provider returned a refusal".to_string());
+    } else if !provider_completed_normally {
+        failure_reasons.push(format!(
+            "provider terminal stop reason is {:?}, expected end_turn",
+            provider_stop_reason
+        ));
+    }
     let valid_attempt = invalid_reasons.is_empty();
     let accepted_equivalent = valid_attempt
         && !codex.timed_out
         && codex.exit_code == Some(0)
         && evaluator_accepted
         && browser.status == "passed"
-        && workflow.closed;
+        && workflow.closed
+        && provider_completed_normally;
     let summary = AgentTokenRunSummary {
         contract: AGENT_TOKEN_RUN_SUMMARY_CONTRACT.to_string(),
         campaign_id: manifest.campaign_id.clone(),
@@ -2353,6 +4040,8 @@ fn run_one(
         codex_timed_out: codex.timed_out,
         elapsed_ms: codex.elapsed_ms,
         infrastructure_failure,
+        provider_refusal,
+        provider_stop_reason,
         usage,
         transcript,
         secondary_metrics,
@@ -2373,12 +4062,29 @@ fn run_one(
     Ok(summary)
 }
 
+fn sprint_plan_ref(run_id: &str) -> String {
+    format!("agent-token-benchmark/{run_id}/root")
+}
+
+fn sprint_item_ref(run_id: &str) -> String {
+    format!("agent-token-benchmark/{run_id}/implement")
+}
+
+fn sprint_card_template(run_id: &str) -> String {
+    format!(
+        "# Benchmark task [plan-ref: {plan_ref}]\n\n## Work item\n\n- [ ] Complete the shared benchmark task and its required validation. [ref: {item_ref}]\n",
+        plan_ref = sprint_plan_ref(run_id),
+        item_ref = sprint_item_ref(run_id),
+    )
+}
+
 fn build_measured_prompt(
     manifest: &AgentTokenCampaignManifest,
     entry: &AgentTokenScheduleEntry,
     shared_task: &str,
     git_worktree_path: Option<&Path>,
     git_metadata_path: Option<&Path>,
+    ait_edit_root: Option<&Path>,
 ) -> String {
     let profile = manifest.accounting_profile.as_str();
     let workflow = match (entry.mode, manifest.accounting_profile) {
@@ -2388,11 +4094,20 @@ fn build_measured_prompt(
         ) => {
             let worktree = git_worktree_path
                 .expect("Git prompt requires its benchmark-owned linked-worktree path");
-            format!(
-                "Use only the prepared local Git repository through `{git}` and do not invoke `ait`. Begin in the clean `main` worktree and inspect task-relevant repository state or history explicitly. The runner has proven that the current `HEAD` is this clean `main`, so create exactly one linked worktree with either `{git} worktree add -b benchmark-task {worktree} main` or the equivalent `{git} worktree add -b benchmark-task {worktree}`; no other start point is allowed. Perform every product edit and project validation inside `{worktree}`. After validation, create exactly one candidate commit there. Return to the original `main` worktree, run `{git} merge --ff-only benchmark-task`, `{git} worktree remove {worktree}`, and `{git} branch -d benchmark-task`. These commands complete the measured local lifecycle. Leave `main` clean with the linked worktree and temporary branch removed. Do not copy or redirect `.git`, set `GIT_DIR` or `GIT_WORK_TREE`, or invoke clone, fetch, pull, push, remote, or `ls-remote`.",
+            if manifest.git_worktree_mode
+                == AgentTokenGitWorktreeMode::CodexAppEquivalentManaged
+            {
+                format!(
+                    "Use only the prepared local Git worktree and do not invoke `ait`. You already begin inside the detached managed worktree `{worktree}`, created by the benchmark host from its proven clean `main` HEAD before this model session. Perform every product edit and project validation in the current worktree. Leave the resulting changes in place for host closeout; do not create commits, branches, tags, stashes, or additional worktrees, and do not run Git add, checkout, switch, restore, reset, clean, merge, rebase, cherry-pick, revert, fetch, pull, push, remote, worktree add/remove, or any command that changes Git metadata, refs, index, or registration. Local read-only inspection of this repository is neither required nor prohibited. Do not leave the current worktree or access the parent main worktree. The host will record commit, fast-forward, and cleanup after the terminal model event; those host operations are outside model-token accounting.",
+                    worktree = worktree.display(),
+                )
+            } else {
+                format!(
+                "Use only the prepared local Git repository through `{git}` and do not invoke `ait`. Begin in the clean `main` worktree. The runner has proven that the current `HEAD` is this clean `main`, so create exactly one linked worktree with either `{git} worktree add -b benchmark-task {worktree} main` or the equivalent `{git} worktree add -b benchmark-task {worktree}`; no other start point is allowed. Perform every product edit and project validation inside `{worktree}`. After validation, create exactly one candidate commit there. Return to the original `main` worktree, run `{git} merge --ff-only benchmark-task`, `{git} worktree remove {worktree}`, and `{git} branch -d benchmark-task`. These commands complete the measured local lifecycle. Leave `main` clean with the linked worktree and temporary branch removed. Do not copy or redirect `.git`, set `GIT_DIR` or `GIT_WORK_TREE`, or invoke clone, fetch, pull, push, remote, or `ls-remote`. Local read-only inspection of this repository is neither required nor prohibited.",
                 git = manifest.runtime.git_program.display(),
                 worktree = worktree.display(),
-            )
+                )
+            }
         }
         (
             AgentTokenMode::GitLinearSingleSession,
@@ -2403,7 +4118,7 @@ fn build_measured_prompt(
             let metadata = git_metadata_path
                 .expect("first-use Git prompt requires its writable metadata path");
             format!(
-                "Use only the local Git repository through `{git}` and do not invoke `ait`. Run `{git} init --initial-branch=main --separate-git-dir {metadata} .`, set repository-local `user.name` to `AIT Benchmark Agent` and `user.email` to `benchmark-agent@example.invalid`, and create exactly one baseline commit before editing. Inspect task-relevant repository state or history explicitly, then create exactly one linked worktree with `{git} worktree add -b benchmark-task {worktree} main` and perform every product edit and project validation inside `{worktree}`. After validation, create exactly one candidate commit there. Return to the original `main` worktree, run `{git} merge --ff-only benchmark-task`, `{git} worktree remove {worktree}`, and `{git} branch -d benchmark-task`. Leave `main` clean with the linked worktree and temporary branch removed. Do not copy or otherwise redirect `.git`, set `GIT_DIR` or `GIT_WORK_TREE`, or invoke clone, fetch, pull, push, remote, or `ls-remote`.",
+                "Use only the local Git repository through `{git}` and do not invoke `ait`. Run `{git} init --initial-branch=main --separate-git-dir {metadata} .`, set repository-local `user.name` to `AIT Benchmark Agent` and `user.email` to `benchmark-agent@example.invalid`, and create exactly one baseline commit before editing. Create exactly one linked worktree with `{git} worktree add -b benchmark-task {worktree} main` and perform every product edit and project validation inside `{worktree}`. After validation, create exactly one candidate commit there. Return to the original `main` worktree, run `{git} merge --ff-only benchmark-task`, `{git} worktree remove {worktree}`, and `{git} branch -d benchmark-task`. Leave `main` clean with the linked worktree and temporary branch removed. Do not copy or otherwise redirect `.git`, set `GIT_DIR` or `GIT_WORK_TREE`, or invoke clone, fetch, pull, push, remote, or `ls-remote`. Local read-only inspection of this repository is neither required nor prohibited.",
                 git = manifest.runtime.git_program.display(),
                 worktree = worktree.display(),
                 metadata = metadata.display(),
@@ -2412,15 +4127,40 @@ fn build_measured_prompt(
         (
             AgentTokenMode::AitLinearSingleSession,
             AgentTokenAccountingProfile::SteadyStateTaskCost,
-        ) => format!(
-            "Use the prepared local AIT repository through `{ait}`. Start exactly one unbound task with `{ait} task start --title ... --intent ... --local --json`, retain the returned `task_id`, and enter the returned physical `edit_root` using `next_action.command`. Edit and run project validation there. Pass that `task_id` directly to `{ait} task finish <returned-task-id> --message ... --local --json`. Inspect task-relevant repository state or changes explicitly with `{ait} status` and `{ait} diff`. Those read-only inspection commands are informational and unrestricted. Apart from them, `{ait} task start`, `{ait} task finish`, and `{ait} snapshot create --message ... --json` only when an intermediate checkpoint is necessary, are the complete repository-command set for this run. Do not invoke a repository command outside this set. Do not invoke `git` for status, diff, `diff --check`, log, history, or any other purpose, including after project validation. This candidate intentionally has no Git repository.",
-            ait = manifest.runtime.ait_program.display(),
-        ),
+        ) => {
+            let edit_root = ait_edit_root.map(Path::display);
+            match manifest.ait_sprint_mode {
+            AgentTokenAitSprintMode::Off
+                if manifest.ait_edit_root_mode
+                    == crate::agent_token::AgentTokenAitEditRootMode::Returned =>
+            {
+                format!(
+                "Use the prepared local AIT repository through `{ait}`. Start exactly one unbound task with `{ait} task start --title ... --intent ... --local --json`, retain the returned `task_id`, and enter the returned physical `edit_root` using `next_action.command`. Edit and run project validation there. Pass that `task_id` directly to `{ait} task finish <returned-task-id> --message ... --local --json`. `{ait} task start`, `{ait} task finish`, and `{ait} snapshot create --message ... --json` only when an intermediate checkpoint is necessary, are the complete AIT lifecycle command set for this run; do not invoke any additional AIT lifecycle or management command. Local read-only inspection of this repository is neither required nor prohibited. Do not invoke `git` for any purpose, including after project validation. This candidate intentionally has no Git repository.",
+                ait = manifest.runtime.ait_program.display(),
+                )
+            }
+            AgentTokenAitSprintMode::Off => format!(
+                "Use the prepared local AIT repository through `{ait}`. Start exactly one unbound task and enter its worktree in one step with `{ait} task start --title ... --intent ... --edit-root {edit_root} --local --json && cd {edit_root}`. Retain the returned `task_id`. Edit and run project validation in `{edit_root}`. Pass that `task_id` directly to `{ait} task finish <returned-task-id> --message ... --local --json`. `{ait} task start`, `{ait} task finish`, and `{ait} snapshot create --message ... --json` only when an intermediate checkpoint is necessary, are the complete AIT lifecycle command set for this run; do not invoke any additional AIT lifecycle or management command. Local read-only inspection of this repository is neither required nor prohibited. Do not invoke `git` for any purpose, including after project validation. This candidate intentionally has no Git repository.",
+                ait = manifest.runtime.ait_program.display(),
+                edit_root = edit_root
+                    .expect("explicit AIT prompt requires its benchmark-owned edit root"),
+            ),
+            AgentTokenAitSprintMode::On => format!(
+                "Use the prepared local AIT repository through `{ait}`. Sprint mode is on. Before starting code work, author exactly `{card_path}` with the following Markdown (including the exact refs):\n\n```markdown\n{card}```\n\nStart exactly one bound task and enter its worktree in one step with `{ait} task start --from {card_path}#{item_ref} --intent ... --edit-root {edit_root} --local --json && cd {edit_root}`; do not run a separate plan sync. Retain the returned `task_id`. Edit and run project validation in `{edit_root}`. Pass that `task_id` directly to `{ait} task finish <returned-task-id> --message ... --local --json`; successful finish must automatically close the exact sprint checklist item. `{ait} task start`, `{ait} task finish`, and `{ait} snapshot create --message ... --json` only when an intermediate checkpoint is necessary, are the complete AIT lifecycle command set for this run; do not invoke any additional AIT lifecycle or management command. Local read-only inspection of this repository is neither required nor prohibited. Do not invoke `git` for any purpose, including after project validation. This candidate intentionally has no Git repository.",
+                ait = manifest.runtime.ait_program.display(),
+                card_path = AIT_SPRINT_CARD_PATH,
+                card = sprint_card_template(&entry.run_id),
+                item_ref = sprint_item_ref(&entry.run_id),
+                edit_root = edit_root
+                    .expect("sprint-on AIT prompt requires its benchmark-owned edit root"),
+            ),
+        }
+        },
         (
             AgentTokenMode::AitLinearSingleSession,
             AgentTokenAccountingProfile::FirstUseTotalCost,
         ) => format!(
-            "Use the local AIT repository through `{ait}`. Run `{ait} init`, then `{ait} config set --workflow-mode solo_local --sprint off --default-author-mode ai_only_experimental --default-model {model} --user-name benchmark-agent --user-email benchmark-agent@example.invalid --json`, and create the baseline with `{ait} snapshot create --message ... --json`. Start exactly one unbound task with `{ait} task start --title ... --intent ... --local --json`, retain the returned `task_id`, and enter the returned physical `edit_root` using `next_action.command`. Edit and run project validation there, then pass that `task_id` directly to `{ait} task finish <returned-task-id> --message ... --local --json`. Inspect task-relevant repository state or changes explicitly with `{ait} status` and `{ait} diff`; those read-only inspection commands are informational and unrestricted. Do not invoke `git` for status, diff, `diff --check`, log, history, or any other purpose, including after project validation. This candidate intentionally has no Git repository.",
+            "Use the local AIT repository through `{ait}`. Run `{ait} init`, then `{ait} config set --workflow-mode solo_local --sprint off --default-author-mode ai_only_experimental --default-model {model} --user-name benchmark-agent --user-email benchmark-agent@example.invalid --json`, and create the baseline with `{ait} snapshot create --message ... --json`. Start exactly one unbound task with `{ait} task start --title ... --intent ... --local --json`, retain the returned `task_id`, and enter the returned physical `edit_root` using `next_action.command`. Edit and run project validation there, then pass that `task_id` directly to `{ait} task finish <returned-task-id> --message ... --local --json`. Local read-only inspection of this repository is neither required nor prohibited. Do not invoke `git` for any purpose, including after project validation. This candidate intentionally has no Git repository.",
             ait = manifest.runtime.ait_program.display(),
             model = manifest.model.model_id,
         ),
@@ -2472,6 +4212,226 @@ fn bootstrap_git(
             sequence,
         )?;
     }
+    Ok(())
+}
+
+fn provision_managed_git_worktree(
+    manifest: &AgentTokenCampaignManifest,
+    entry: &AgentTokenScheduleEntry,
+    workspace: &Path,
+    worktree: &Path,
+    starting_head_oid: &str,
+    events: &mut Vec<ExternalCommandEvent>,
+    sequence: &mut usize,
+) -> Result<AgentTokenManagedWorktreeLifecycle, String> {
+    let provision_started_at = Utc::now().to_rfc3339();
+    let start = Instant::now();
+    let worktree_text = worktree.to_str().ok_or_else(|| {
+        format!(
+            "Managed Git worktree path is not valid UTF-8: {}",
+            worktree.display()
+        )
+    })?;
+    run_checked_event(
+        &manifest.runtime.git_program,
+        &["worktree", "add", "--detach", worktree_text, "HEAD"],
+        workspace,
+        "host-managed-worktree-provision",
+        events,
+        sequence,
+    )?;
+    let ready_head = command_output(
+        &manifest.runtime.git_program,
+        &["rev-parse", "--verify", "HEAD"],
+        worktree,
+    )?
+    .trim()
+    .to_string();
+    if ready_head != starting_head_oid {
+        return Err(format!(
+            "Managed worktree ready HEAD {ready_head} differs from proven start {starting_head_oid}"
+        ));
+    }
+    Ok(AgentTokenManagedWorktreeLifecycle {
+        contract: AGENT_TOKEN_MANAGED_WORKTREE_LIFECYCLE_CONTRACT.to_string(),
+        campaign_id: manifest.campaign_id.clone(),
+        run_id: entry.run_id.clone(),
+        boundary: AgentTokenGitWorktreeMode::CodexAppEquivalentManaged
+            .as_str()
+            .to_string(),
+        desktop_private_ipc_invoked: false,
+        worktree_path: worktree.display().to_string(),
+        provision_started_at,
+        ready_at: Utc::now().to_rfc3339(),
+        provisioning_elapsed_ms: elapsed_millis(start),
+        model_started_at: None,
+        model_completed_at: None,
+        model_elapsed_ms: None,
+        closeout_started_at: None,
+        closed_at: None,
+        closeout_elapsed_ms: None,
+        starting_head_oid: starting_head_oid.to_string(),
+        worktree_ready_head_oid: Some(ready_head),
+        candidate_head_oid: None,
+        final_main_head_oid: None,
+        worktree_created_before_model: true,
+        host_closeout_after_terminal_model_event: false,
+        host_commit_created: false,
+        main_fast_forwarded: false,
+        worktree_removed: false,
+        closed: false,
+        failure_reasons: Vec::new(),
+    })
+}
+
+fn close_managed_git_worktree(
+    manifest: &AgentTokenCampaignManifest,
+    workspace: &Path,
+    worktree: &Path,
+    lifecycle: &mut AgentTokenManagedWorktreeLifecycle,
+    terminal_model_event_observed: bool,
+    events: &mut Vec<ExternalCommandEvent>,
+    sequence: &mut usize,
+) -> Result<(), String> {
+    lifecycle.closeout_started_at = Some(Utc::now().to_rfc3339());
+    lifecycle.host_closeout_after_terminal_model_event = terminal_model_event_observed;
+    if !terminal_model_event_observed {
+        lifecycle
+            .failure_reasons
+            .push("Host closeout began without a terminal model event".to_string());
+    }
+    let start = Instant::now();
+    let worktree_text = worktree.to_str().ok_or_else(|| {
+        format!(
+            "Managed Git worktree path is not valid UTF-8: {}",
+            worktree.display()
+        )
+    })?;
+    let observed_head = command_output(
+        &manifest.runtime.git_program,
+        &["rev-parse", "--verify", "HEAD"],
+        worktree,
+    );
+    if observed_head
+        .as_ref()
+        .is_ok_and(|head| head.trim() != lifecycle.starting_head_oid)
+    {
+        lifecycle
+            .failure_reasons
+            .push("Measured session moved detached HEAD before host closeout".to_string());
+    }
+    if let Err(error) = observed_head.as_ref() {
+        lifecycle
+            .failure_reasons
+            .push(format!("Failed to inspect managed-worktree HEAD: {error}"));
+    }
+
+    let add_ok = run_recorded_event(
+        &manifest.runtime.git_program,
+        &["add", "--all"],
+        worktree,
+        "host-managed-worktree-closeout",
+        events,
+        sequence,
+    )?;
+    if !add_ok {
+        lifecycle
+            .failure_reasons
+            .push("Host could not stage managed-worktree changes".to_string());
+    }
+    let commit_ok = add_ok
+        && run_recorded_event(
+            &manifest.runtime.git_program,
+            &[
+                "commit",
+                "--allow-empty",
+                "-m",
+                "Benchmark host-managed candidate",
+            ],
+            worktree,
+            "host-managed-worktree-closeout",
+            events,
+            sequence,
+        )?;
+    lifecycle.host_commit_created = commit_ok;
+    if !commit_ok {
+        lifecycle
+            .failure_reasons
+            .push("Host could not create the managed candidate commit".to_string());
+    }
+
+    if commit_ok {
+        match command_output(
+            &manifest.runtime.git_program,
+            &["rev-parse", "--verify", "HEAD"],
+            worktree,
+        ) {
+            Ok(head) => lifecycle.candidate_head_oid = Some(head.trim().to_string()),
+            Err(error) => lifecycle
+                .failure_reasons
+                .push(format!("Failed to resolve managed candidate HEAD: {error}")),
+        }
+    }
+    if let Some(candidate) = lifecycle.candidate_head_oid.clone() {
+        lifecycle.main_fast_forwarded = run_recorded_event(
+            &manifest.runtime.git_program,
+            &["merge", "--ff-only", candidate.as_str()],
+            workspace,
+            "host-managed-worktree-closeout",
+            events,
+            sequence,
+        )?;
+        if !lifecycle.main_fast_forwarded {
+            lifecycle
+                .failure_reasons
+                .push("Host could not fast-forward main to the managed candidate".to_string());
+        }
+    }
+
+    lifecycle.worktree_removed = run_recorded_event(
+        &manifest.runtime.git_program,
+        &["worktree", "remove", worktree_text],
+        workspace,
+        "host-managed-worktree-closeout",
+        events,
+        sequence,
+    )?;
+    if !lifecycle.worktree_removed {
+        lifecycle
+            .failure_reasons
+            .push("Host could not remove the managed worktree cleanly".to_string());
+        let _ = run_recorded_event(
+            &manifest.runtime.git_program,
+            &["worktree", "remove", "--force", worktree_text],
+            workspace,
+            "host-managed-worktree-cleanup",
+            events,
+            sequence,
+        )?;
+    }
+    if let Ok(head) = command_output(
+        &manifest.runtime.git_program,
+        &["rev-parse", "--verify", "HEAD"],
+        workspace,
+    ) {
+        lifecycle.final_main_head_oid = Some(head.trim().to_string());
+    }
+    if lifecycle.final_main_head_oid != lifecycle.candidate_head_oid {
+        lifecycle
+            .failure_reasons
+            .push("Final main HEAD differs from the managed candidate".to_string());
+    }
+    if worktree.exists() {
+        lifecycle
+            .failure_reasons
+            .push("Managed worktree path still exists after host closeout".to_string());
+    }
+    lifecycle.closeout_elapsed_ms = Some(elapsed_millis(start));
+    lifecycle.closed_at = Some(Utc::now().to_rfc3339());
+    lifecycle.closed = lifecycle.failure_reasons.is_empty()
+        && lifecycle.host_commit_created
+        && lifecycle.main_fast_forwarded
+        && lifecycle.worktree_removed;
     Ok(())
 }
 
@@ -2564,6 +4524,7 @@ fn bootstrap_ait(
         sequence,
     )?;
     let model = manifest.model.model_id.as_str();
+    let sprint_mode = manifest.ait_sprint_mode.as_str();
     run_checked_event(
         &manifest.runtime.ait_program,
         &[
@@ -2572,7 +4533,7 @@ fn bootstrap_ait(
             "--workflow-mode",
             "solo_local",
             "--sprint",
-            "off",
+            sprint_mode,
             "--task-review",
             "automatic",
             "--default-author-mode",
@@ -2590,6 +4551,65 @@ fn bootstrap_ait(
         events,
         sequence,
     )?;
+    // `ait init` and `ait config set` generate an AGENTS.md and a docs/ tree.
+    // No measured Git workspace lists either, and across eleven GD-02
+    // diagnostic lanes agents spent 1.6-3.0 model requests per lane exploring
+    // exactly these artifacts, a structural tax charged only to AIT. Delete
+    // AGENTS.md and archive its Plan through a runner-owned prune sync; the
+    // full lifecycle was verified working without it. The .40 stub approach is
+    // retired: it removed the guidance bytes but left the exploration bait.
+    // Sprint-on keeps docs/ because authoring the card inside it is the
+    // measured treatment; sprint-off removes it too.
+    let project_document_path = workspace.join(crate::agent_token::AIT_PURGED_PROJECT_DOCUMENT);
+    if project_document_path.exists() {
+        // Mirror the generated guidance into the executor'"'"'s native auto-load
+        // channel before removing the file Claude never auto-loads. Marker
+        // tests: Claude Code auto-loads CLAUDE.md under the project setting
+        // source and never auto-loads AGENTS.md, so this delivers the guidance
+        // at zero exploration requests.
+        let guidance = fs::read_to_string(&project_document_path).map_err(|error| {
+            format!(
+                "Failed to read the generated project document {}: {error}",
+                project_document_path.display()
+            )
+        })?;
+        fs::write(workspace.join("CLAUDE.md"), guidance)
+            .map_err(|error| format!("Failed to mirror guidance into CLAUDE.md: {error}"))?;
+        fs::remove_file(&project_document_path).map_err(|error| {
+            format!(
+                "Failed to remove the generated project document {}: {error}",
+                project_document_path.display()
+            )
+        })?;
+        run_checked_event(
+            &manifest.runtime.ait_program,
+            &[
+                "plan",
+                "sync",
+                crate::agent_token::AIT_PURGED_PROJECT_DOCUMENT,
+                "--prune",
+                "--local",
+            ],
+            workspace,
+            "bootstrap",
+            events,
+            sequence,
+        )?;
+    }
+    if manifest.ait_sprint_mode == AgentTokenAitSprintMode::Off {
+        let docs = workspace.join("docs");
+        if docs.exists() {
+            fs::remove_dir_all(&docs).map_err(|error| {
+                format!(
+                    "Failed to remove the generated docs tree {}: {error}",
+                    docs.display()
+                )
+            })?;
+        }
+    }
+    if project_document_path.exists() {
+        return Err("Measured AIT workspace still lists AGENTS.md after the purge".to_string());
+    }
     run_checked_event(
         &manifest.runtime.ait_program,
         &[
@@ -2609,7 +4629,7 @@ fn bootstrap_ait(
         &["config", "show", "--json"],
         workspace,
     )?;
-    validate_solo_local_config(&config)?;
+    validate_solo_local_config(&config, manifest.ait_sprint_mode)?;
     let worktree_add_dir = config
         .pointer("/task_worktree/ephemeral_root/value")
         .and_then(serde_json::Value::as_str)
@@ -3101,7 +5121,9 @@ fn build_claude_command(
         "--no-session-persistence",
         "--strict-mcp-config",
         "--setting-sources",
-        "",
+        "project",
+        "--prompt-suggestions",
+        "false",
         "--settings",
         claude_sandbox_settings_json(add_dirs, git_write_exceptions)?.as_str(),
         "--model",
@@ -3132,6 +5154,10 @@ fn build_claude_command(
     }
     command.current_dir(workspace);
     command.env("NO_COLOR", "1");
+    command.env(
+        crate::agent_token::CLAUDE_SINGLE_MODEL_ENV.0,
+        crate::agent_token::CLAUDE_SINGLE_MODEL_ENV.1,
+    );
     Ok(command)
 }
 
@@ -3194,13 +5220,142 @@ fn run_measured_agent(
     }
 }
 
+fn inspect_model_request_state(
+    manifest: &AgentTokenCampaignManifest,
+    source: &Path,
+    run_id: &str,
+) -> Result<AgentTokenModelRequestState, String> {
+    let source_text = fs::read_to_string(source).map_err(|error| {
+        format!(
+            "Failed to read model request state source {}: {error}",
+            source.display()
+        )
+    })?;
+    let mut state = AgentTokenModelRequestState {
+        contract: AGENT_TOKEN_MODEL_REQUEST_STATE_CONTRACT.to_string(),
+        run_id: run_id.to_string(),
+        executor: manifest.runtime.executor.as_str().to_string(),
+        thread_id: None,
+        turn_started_count: 0,
+        turn_completed_count: 0,
+        turn_failed_count: 0,
+        usage_event_count: 0,
+        model_reroute_event_count: 0,
+        safety_event_count: 0,
+        provider_error_event_count: 0,
+        terminal_state: "incomplete".to_string(),
+        internal_provider_request_count: None,
+        internal_provider_request_count_authority:
+            "unavailable_from_executor_events; turn count is not a provider-request count"
+                .to_string(),
+    };
+    for (index, line) in source_text.lines().enumerate() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let event = serde_json::from_str::<serde_json::Value>(line).map_err(|error| {
+            format!(
+                "Model request state JSONL {} line {} is invalid: {error}",
+                source.display(),
+                index + 1
+            )
+        })?;
+        let event_type = event
+            .get("type")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default();
+        if state.thread_id.is_none() {
+            state.thread_id = event
+                .get("thread_id")
+                .or_else(|| event.get("session_id"))
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string);
+        }
+        match manifest.runtime.executor {
+            crate::agent_token::AgentTokenExecutor::Codex => match event_type {
+                "turn.started" | "turn/started" => state.turn_started_count += 1,
+                "turn.completed" | "turn/completed" => {
+                    state.turn_completed_count += 1;
+                    if event.get("usage").is_some() {
+                        state.usage_event_count += 1;
+                    }
+                }
+                "turn.failed" | "turn/failed" => state.turn_failed_count += 1,
+                "model.rerouted" | "model/rerouted" => state.model_reroute_event_count += 1,
+                "model.safety_buffering.updated"
+                | "model/safetyBufferingUpdated"
+                | "model.safety.updated"
+                | "model/safetyUpdated" => state.safety_event_count += 1,
+                "error" => state.provider_error_event_count += 1,
+                _ => {}
+            },
+            crate::agent_token::AgentTokenExecutor::Claude => {
+                state.model_reroute_event_count += json_type_occurrences(&event, "fallback");
+                match event_type {
+                    "system"
+                        if event.get("subtype").and_then(serde_json::Value::as_str)
+                            == Some("init") =>
+                    {
+                        state.turn_started_count += 1;
+                    }
+                    "result" => {
+                        if event.get("is_error").and_then(serde_json::Value::as_bool) == Some(true)
+                        {
+                            state.turn_failed_count += 1;
+                        } else {
+                            state.turn_completed_count += 1;
+                        }
+                        if event.get("usage").is_some() {
+                            state.usage_event_count += 1;
+                        }
+                    }
+                    "error" => state.provider_error_event_count += 1,
+                    _ => {}
+                }
+            }
+        }
+    }
+    state.terminal_state = if state.turn_failed_count > 0 {
+        "failed"
+    } else if state.turn_completed_count > 0 {
+        "completed"
+    } else {
+        "incomplete"
+    }
+    .to_string();
+    Ok(state)
+}
+
+fn json_type_occurrences(value: &serde_json::Value, expected: &str) -> usize {
+    match value {
+        serde_json::Value::Object(object) => {
+            usize::from(object.get("type").and_then(serde_json::Value::as_str) == Some(expected))
+                + object
+                    .values()
+                    .map(|value| json_type_occurrences(value, expected))
+                    .sum::<usize>()
+        }
+        serde_json::Value::Array(values) => values
+            .iter()
+            .map(|value| json_type_occurrences(value, expected))
+            .sum(),
+        _ => 0,
+    }
+}
+
+struct ImportedExecutorUsage {
+    usage: crate::NormalizedAgentTokenUsage,
+    provider_refusal: bool,
+    provider_stop_reason: Option<String>,
+}
+
 fn import_executor_usage(
     manifest: &AgentTokenCampaignManifest,
     source: &Path,
     run_id: &str,
     workload_id: &str,
     mode: AgentTokenMode,
-) -> Result<crate::NormalizedAgentTokenUsage, String> {
+) -> Result<ImportedExecutorUsage, String> {
     match manifest.runtime.executor {
         crate::agent_token::AgentTokenExecutor::Codex => import_codex_usage(
             source,
@@ -3209,15 +5364,28 @@ fn import_executor_usage(
             mode,
             manifest.accounting_profile,
             &manifest.model,
-        ),
-        crate::agent_token::AgentTokenExecutor::Claude => crate::import_claude_usage(
-            source,
-            run_id,
-            workload_id,
-            mode,
-            manifest.accounting_profile,
-            &manifest.model,
-        ),
+        )
+        .map(|usage| ImportedExecutorUsage {
+            usage,
+            provider_refusal: false,
+            provider_stop_reason: None,
+        }),
+        crate::agent_token::AgentTokenExecutor::Claude => {
+            crate::agent_token::import_claude_usage_with_outcome(
+                source,
+                run_id,
+                workload_id,
+                mode,
+                manifest.accounting_profile,
+                &manifest.model,
+                manifest.claude_model_admission,
+            )
+            .map(|imported| ImportedExecutorUsage {
+                usage: imported.usage,
+                provider_refusal: imported.provider_refusal,
+                provider_stop_reason: Some(imported.provider_stop_reason),
+            })
+        }
     }
 }
 
@@ -3231,21 +5399,35 @@ fn extract_and_validate_executor_transcript(
     let clean_main_head_proven = git_start_state_proof.is_some_and(|proof| proof.passed);
     match manifest.runtime.executor {
         crate::agent_token::AgentTokenExecutor::Codex => {
-            extract_and_validate_codex_transcript_with_git_start_proof(
+            extract_and_validate_codex_transcript_with_workflow_options(
                 source,
                 run_id,
                 mode,
                 manifest.accounting_profile,
-                clean_main_head_proven,
+                AgentTokenTranscriptWorkflowOptions {
+                    ait_sprint_mode: manifest.ait_sprint_mode,
+                    ait_edit_root_mode: (manifest.protocol_revision
+                        == AGENT_TOKEN_PROTOCOL_REVISION)
+                        .then_some(manifest.ait_edit_root_mode),
+                    git_worktree_mode: manifest.git_worktree_mode,
+                    clean_main_head_proven,
+                },
             )
         }
         crate::agent_token::AgentTokenExecutor::Claude => {
-            extract_and_validate_claude_transcript_with_git_start_proof(
+            extract_and_validate_claude_transcript_with_workflow_options(
                 source,
                 run_id,
                 mode,
                 manifest.accounting_profile,
-                clean_main_head_proven,
+                AgentTokenTranscriptWorkflowOptions {
+                    ait_sprint_mode: manifest.ait_sprint_mode,
+                    ait_edit_root_mode: (manifest.protocol_revision
+                        == AGENT_TOKEN_PROTOCOL_REVISION)
+                        .then_some(manifest.ait_edit_root_mode),
+                    git_worktree_mode: manifest.git_worktree_mode,
+                    clean_main_head_proven,
+                },
             )
         }
     }
@@ -3258,7 +5440,15 @@ fn classify_codex_infrastructure_failure(
     transcript: &AgentTokenCommandTranscript,
     usage: Option<&crate::NormalizedAgentTokenUsage>,
 ) -> Option<String> {
-    if codex_tool_process_spawn_failed(raw_events, stderr) {
+    let spawn_failed = codex_tool_process_spawn_failed(raw_events, stderr);
+    let recovered_spawn = spawn_failed
+        && !process.timed_out
+        && process.exit_code == Some(0)
+        && usage.is_some()
+        && transcript.valid
+        && transcript.errors.is_empty()
+        && transcript.command_count > 0;
+    if spawn_failed && !recovered_spawn {
         return Some("codex_tool_process_spawn_failure".to_string());
     }
     let source = fs::read_to_string(raw_events).ok()?;
@@ -3655,9 +5845,11 @@ fn run_browser_acceptance(
 fn verify_workflow(
     manifest: &AgentTokenCampaignManifest,
     mode: AgentTokenMode,
+    run_id: &str,
     workspace: &Path,
     git_worktree_path: Option<&Path>,
     git_start_state_proof: Option<&AgentTokenGitStartStateProof>,
+    managed_worktree_lifecycle: Option<&AgentTokenManagedWorktreeLifecycle>,
 ) -> Result<AgentTokenWorkflowVerification, String> {
     match mode {
         AgentTokenMode::GitLinearSingleSession => {
@@ -3817,12 +6009,70 @@ fn verify_workflow(
                     task_worktree.display()
                 ));
             }
+            if manifest.git_worktree_mode == AgentTokenGitWorktreeMode::CodexAppEquivalentManaged {
+                match managed_worktree_lifecycle {
+                    Some(lifecycle) => {
+                        if lifecycle.contract != AGENT_TOKEN_MANAGED_WORKTREE_LIFECYCLE_CONTRACT
+                            || lifecycle.campaign_id != manifest.campaign_id
+                            || lifecycle.run_id != run_id
+                            || lifecycle.boundary
+                                != AgentTokenGitWorktreeMode::CodexAppEquivalentManaged.as_str()
+                            || lifecycle.desktop_private_ipc_invoked
+                        {
+                            reasons.push(
+                                "Managed-worktree lifecycle identity or product boundary differs"
+                                    .to_string(),
+                            );
+                        }
+                        if lifecycle.worktree_path != task_worktree.display().to_string()
+                            || lifecycle.model_started_at.is_none()
+                            || lifecycle.model_completed_at.is_none()
+                            || lifecycle.closeout_started_at.is_none()
+                            || lifecycle.closed_at.is_none()
+                            || !lifecycle.worktree_created_before_model
+                            || !lifecycle.host_closeout_after_terminal_model_event
+                            || lifecycle.worktree_ready_head_oid.as_deref()
+                                != Some(lifecycle.starting_head_oid.as_str())
+                        {
+                            reasons.push(
+                                "Managed worktree was not proven ready before the measured model turn"
+                                    .to_string(),
+                            );
+                        }
+                        if !lifecycle.host_commit_created
+                            || !lifecycle.main_fast_forwarded
+                            || !lifecycle.worktree_removed
+                            || !lifecycle.closed
+                            || !lifecycle.failure_reasons.is_empty()
+                            || lifecycle.candidate_head_oid.is_none()
+                            || lifecycle.candidate_head_oid != lifecycle.final_main_head_oid
+                        {
+                            reasons.push(
+                                "Managed-worktree host closeout evidence is incomplete".to_string(),
+                            );
+                        }
+                    }
+                    None => reasons.push(
+                        "Managed Git workflow lacks runner-owned lifecycle evidence".to_string(),
+                    ),
+                }
+            } else if managed_worktree_lifecycle.is_some() {
+                reasons.push(
+                    "Agent-managed Git workflow unexpectedly carries host lifecycle evidence"
+                        .to_string(),
+                );
+            }
             Ok(AgentTokenWorkflowVerification {
                 contract: AGENT_TOKEN_WORKFLOW_VERIFICATION_CONTRACT.to_string(),
                 mode,
                 closed: reasons.is_empty(),
-                workflow_mode: "git_local".to_string(),
+                workflow_mode: git_workflow_mode_label(manifest.git_worktree_mode).to_string(),
+                ait_edit_root_mode: manifest.ait_edit_root_mode,
+                git_worktree_mode: manifest.git_worktree_mode,
                 sprint_mode: "not_applicable".to_string(),
+                sprint_card_path: None,
+                sprint_item_ref: None,
+                sprint_item_closed: None,
                 default_remote_present: false,
                 remote_count: None,
                 ait_server_configured: false,
@@ -3898,9 +6148,45 @@ fn verify_workflow(
                     "AIT workflow_mode is {workflow_mode}, expected solo_local"
                 ));
             }
-            if sprint_mode != "off" {
-                reasons.push(format!("AIT sprint mode is {sprint_mode}, expected off"));
+            let expected_sprint_mode = manifest.ait_sprint_mode.as_str();
+            if sprint_mode != expected_sprint_mode {
+                reasons.push(format!(
+                    "AIT sprint mode is {sprint_mode}, expected {expected_sprint_mode}"
+                ));
             }
+            let sprint_card_path = (manifest.ait_sprint_mode == AgentTokenAitSprintMode::On)
+                .then(|| AIT_SPRINT_CARD_PATH.to_string());
+            let sprint_item_ref = (manifest.ait_sprint_mode == AgentTokenAitSprintMode::On)
+                .then(|| sprint_item_ref(run_id));
+            let sprint_item_closed = sprint_item_ref.as_ref().map(|item_ref| {
+                let card_path = workspace.join(AIT_SPRINT_CARD_PATH);
+                match fs::read_to_string(&card_path) {
+                    Ok(card) => {
+                        let plan_ref = sprint_plan_ref(run_id);
+                        let has_plan_ref = card.contains(&format!("[plan-ref: {plan_ref}]"));
+                        let closed_line = card.lines().any(|line| {
+                            line.contains("- [x]") && line.contains(&format!("[ref: {item_ref}]"))
+                        });
+                        if !has_plan_ref {
+                            reasons
+                                .push(format!("AIT sprint card lacks exact plan ref {plan_ref}"));
+                        }
+                        if !closed_line {
+                            reasons.push(format!(
+                                "AIT sprint card item {item_ref} is missing or not closed"
+                            ));
+                        }
+                        has_plan_ref && closed_line
+                    }
+                    Err(error) => {
+                        reasons.push(format!(
+                            "Failed to read AIT sprint card {}: {error}",
+                            card_path.display()
+                        ));
+                        false
+                    }
+                }
+            });
             if default_remote_present {
                 reasons.push("AIT default_remote is configured".to_string());
             }
@@ -3921,7 +6207,12 @@ fn verify_workflow(
                 mode,
                 closed: reasons.is_empty(),
                 workflow_mode,
+                ait_edit_root_mode: manifest.ait_edit_root_mode,
+                git_worktree_mode: manifest.git_worktree_mode,
                 sprint_mode,
+                sprint_card_path,
+                sprint_item_ref,
+                sprint_item_closed,
                 default_remote_present,
                 remote_count,
                 ait_server_configured,
@@ -3937,7 +6228,10 @@ fn verify_workflow(
     }
 }
 
-fn validate_solo_local_config(config: &serde_json::Value) -> Result<(), String> {
+fn validate_solo_local_config(
+    config: &serde_json::Value,
+    expected_sprint_mode: AgentTokenAitSprintMode,
+) -> Result<(), String> {
     let workflow = config
         .pointer("/workflow_mode/value")
         .and_then(serde_json::Value::as_str);
@@ -3947,13 +6241,15 @@ fn validate_solo_local_config(config: &serde_json::Value) -> Result<(), String> 
     let default_remote = config.get("default_remote");
     let server_url = config.pointer("/agent_runtime/server_url");
     if workflow != Some("solo_local")
-        || sprint != Some("off")
+        || sprint != Some(expected_sprint_mode.as_str())
         || default_remote.is_some_and(|value| !value.is_null())
         || server_url.is_some_and(|value| !value.is_null())
     {
         return Err(
-            "AIT bootstrap did not resolve to solo_local, sprint off, null default_remote, and null server_url"
-                .to_string(),
+            format!(
+                "AIT bootstrap did not resolve to solo_local, sprint {}, null default_remote, and null server_url",
+                expected_sprint_mode.as_str()
+            ),
         );
     }
     Ok(())
@@ -3969,7 +6265,7 @@ struct CapturedVersions {
 }
 
 fn capture_versions(manifest: &AgentTokenCampaignManifest) -> Result<CapturedVersions, String> {
-    Ok(CapturedVersions {
+    let versions = CapturedVersions {
         codex: match manifest.runtime.executor {
             crate::agent_token::AgentTokenExecutor::Codex => {
                 program_version(&manifest.runtime.codex_program)?
@@ -3989,7 +6285,41 @@ fn capture_versions(manifest: &AgentTokenCampaignManifest) -> Result<CapturedVer
             .as_deref()
             .map(program_version)
             .transpose()?,
-    })
+    };
+    for (label, expected, observed) in [
+        (
+            "executor",
+            manifest.runtime.executor_version.as_deref(),
+            Some(versions.codex.as_str()),
+        ),
+        (
+            "AIT",
+            manifest.runtime.ait_version.as_deref(),
+            Some(versions.ait.as_str()),
+        ),
+        (
+            "Git",
+            manifest.runtime.git_version.as_deref(),
+            Some(versions.git.as_str()),
+        ),
+        (
+            "Node",
+            manifest.runtime.node_version.as_deref(),
+            Some(versions.node.as_str()),
+        ),
+        (
+            "browser",
+            manifest.runtime.browser_version.as_deref(),
+            versions.browser.as_deref(),
+        ),
+    ] {
+        if expected.is_some() && expected != observed {
+            return Err(format!(
+                "Pinned {label} version drifted: expected {expected:?}, got {observed:?}"
+            ));
+        }
+    }
+    Ok(versions)
 }
 
 fn program_version(program: &Path) -> Result<String, String> {
@@ -4060,6 +6390,37 @@ fn run_checked_event(
         ));
     }
     Ok(())
+}
+
+fn run_recorded_event(
+    program: &Path,
+    args: &[&str],
+    cwd: &Path,
+    phase: &str,
+    events: &mut Vec<ExternalCommandEvent>,
+    sequence: &mut usize,
+) -> Result<bool, String> {
+    let mut command = Command::new(program);
+    command.args(args).current_dir(cwd);
+    let output = command.output().map_err(|error| {
+        format!(
+            "Failed to launch recorded command {} in {}: {error}",
+            program.display(),
+            cwd.display()
+        )
+    })?;
+    let success = output.status.success();
+    events.push(ExternalCommandEvent {
+        sequence: *sequence,
+        phase: phase.to_string(),
+        program: program.display().to_string(),
+        args: args.iter().map(|value| (*value).to_string()).collect(),
+        exit_code: output.status.code(),
+        stdout: String::from_utf8_lossy(&output.stdout).to_string(),
+        stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+    });
+    *sequence += 1;
+    Ok(success)
 }
 
 fn command_output(program: &Path, args: &[&str], cwd: &Path) -> Result<String, String> {
@@ -4297,17 +6658,43 @@ fn write_command_events(
     write_json_lines_new(path, &events)
 }
 
+fn resolve_campaign_evidence_dir(campaign_dir: &Path) -> Result<PathBuf, String> {
+    fs::canonicalize(campaign_dir).map_err(|error| {
+        format!(
+            "Failed to resolve campaign evidence directory {}: {error}",
+            campaign_dir.display()
+        )
+    })
+}
+
 pub fn validate_agent_token_campaign_evidence(
     manifest: &AgentTokenCampaignManifest,
     campaign_dir: &Path,
 ) -> Result<Vec<String>, String> {
-    validate_agent_token_campaign_evidence_internal(manifest, campaign_dir, true)
+    let campaign_dir = resolve_campaign_evidence_dir(campaign_dir)?;
+    validate_agent_token_campaign_evidence_internal(
+        manifest,
+        &campaign_dir,
+        true,
+        campaign_dir
+            .join(AGENT_TOKEN_HOST_SHUTDOWN_RECOVERY_SELECTION_FILE)
+            .is_file(),
+        &BTreeSet::new(),
+    )
 }
 
+/// Revalidates immutable campaign evidence. `exempt_run_ids` skips per-run
+/// checks for exactly the lanes an authorized whole-pair recovery is about to
+/// replace; without it a provider-truncated lane aborts resume before the
+/// recovery contract can reach it. Every other run and every campaign-level
+/// check is unaffected, and the set is empty on every path except that
+/// authorized recovery.
 fn validate_agent_token_campaign_evidence_internal(
     manifest: &AgentTokenCampaignManifest,
     campaign_dir: &Path,
     require_complete: bool,
+    allow_host_shutdown_partial: bool,
+    exempt_run_ids: &BTreeSet<String>,
 ) -> Result<Vec<String>, String> {
     let mut errors = Vec::new();
     for required in [
@@ -4373,6 +6760,11 @@ fn validate_agent_token_campaign_evidence_internal(
         || git_permission_preflight.permission_profile != git_permission_profile
         || git_permission_preflight.codex_version.trim().is_empty()
         || git_permission_preflight.git_version.trim().is_empty()
+        || manifest
+            .runtime
+            .git_version
+            .as_deref()
+            .is_some_and(|expected| git_permission_preflight.git_version != expected)
         || git_permission_preflight.required_command_count != 5
         || git_permission_preflight.executed_command_count != 5
         || git_permission_preflight.successful_command_count != 5
@@ -4455,6 +6847,11 @@ fn validate_agent_token_campaign_evidence_internal(
         || preflight_environment.codex_permission_profile != CODEX_PERMISSION_PROFILE_NAME
         || preflight_environment.codex_permission_profile_parent != CODEX_PERMISSION_PROFILE_PARENT
         || preflight_environment.codex_version.trim().is_empty()
+        || manifest
+            .runtime
+            .executor_version
+            .as_deref()
+            .is_some_and(|expected| preflight_environment.codex_version != expected)
         || preflight_environment.benchmark_enabled_feature_overrides
             != executor_enabled_feature_overrides(manifest)
         || preflight_environment.benchmark_disabled_feature_overrides
@@ -4495,7 +6892,36 @@ fn validate_agent_token_campaign_evidence_internal(
     }) {
         errors.push("executor preflight provider/model usage pin differs".to_string());
     }
-    let observed_preflight = inspect_executor_preflight_events(
+    if protocol_requires_claude_model_evidence(&manifest.protocol_revision)
+        && manifest.runtime.executor == crate::agent_token::AgentTokenExecutor::Claude
+    {
+        match import_executor_usage(
+            manifest,
+            &campaign_dir.join("private/executor-preflight-events.raw.jsonl"),
+            &format!("{}-executor-preflight", manifest.campaign_id),
+            "executor-preflight",
+            AgentTokenMode::GitLinearSingleSession,
+        ) {
+            Ok(imported)
+                if !imported.provider_refusal
+                    && imported.provider_stop_reason.as_deref() == Some("end_turn")
+                    && preflight_usage.as_ref()
+                        == Some(&preflight_usage_from_normalized(&imported.usage)) => {}
+            Ok(_) => errors.push(
+                "executor preflight private Claude model-purity or terminal outcome evidence differs"
+                    .to_string(),
+            ),
+            Err(error) => errors.push(format!(
+                "executor preflight private Claude model-purity evidence is invalid: {error}"
+            )),
+        }
+    }
+    // Claude preflight streams carry no Codex item events, so the pinned
+    // executor's parser must be used here exactly as the initial run does.
+    // Calling the Codex-specific inspection made every counter read zero and
+    // rendered every Claude campaign unresumable.
+    let observed_preflight = inspect_executor_preflight_events_for(
+        manifest,
         &campaign_dir.join("private/executor-preflight-events.raw.jsonl"),
     );
     if observed_preflight.started_command_count != preflight_report.started_command_count
@@ -4521,7 +6947,14 @@ fn validate_agent_token_campaign_evidence_internal(
     }
     let schedule =
         crate::load_agent_token_schedule(&campaign_dir.join("randomization-schedule.json"))?;
-    let runs = crate::load_agent_token_run_summaries(campaign_dir)?;
+    let runs = if allow_host_shutdown_partial {
+        load_agent_token_run_summaries_with_allowed_missing(
+            campaign_dir,
+            Some(crate::AGENT_TOKEN_HOST_SHUTDOWN_INTERRUPTED_RUN_ID),
+        )?
+    } else {
+        crate::load_agent_token_run_summaries(campaign_dir)?
+    };
     if schedule.contract != crate::AGENT_TOKEN_SCHEDULE_CONTRACT {
         errors.push("schedule contract is unsupported".to_string());
     }
@@ -4547,15 +6980,44 @@ fn validate_agent_token_campaign_evidence_internal(
     {
         errors.push("schedule does not preserve adjacent atomic Git/AIT pairs".to_string());
     }
-    if require_complete && runs.len() != schedule.entries.len() {
-        errors.push(format!(
-            "observed {} run summaries for {} scheduled entries",
-            runs.len(),
-            schedule.entries.len()
-        ));
+    // Whole-pair recovery already classified the exact trailing contaminated
+    // pair and supplied only those two run IDs as exemptions. Building the
+    // ordinary statistical view here would reject that same unadjudicated
+    // infrastructure lane before recovery can replace it. Every non-exempt
+    // run is still validated below, and complete validation never accepts an
+    // exemption.
+    if exempt_run_ids.is_empty() {
+        let statistical_view = if allow_host_shutdown_partial {
+            load_agent_token_campaign_statistical_view_allowing_host_shutdown_partial(
+                manifest,
+                &schedule,
+                campaign_dir,
+            )
+        } else {
+            load_agent_token_campaign_statistical_view(manifest, &schedule, campaign_dir)
+        };
+        match statistical_view {
+            Ok(view) if require_complete && view.effective_runs.len() != schedule.entries.len() => {
+                errors.push(format!(
+                    "observed {} statistically admitted run summaries for {} scheduled entries ({} raw source summaries)",
+                    view.effective_runs.len(),
+                    schedule.entries.len(),
+                    runs.len()
+                ));
+            }
+            Ok(_) => {}
+            Err(error) => errors.push(format!(
+                "campaign statistical view failed validation: {error}"
+            )),
+        }
+    } else if require_complete {
+        errors.push("Complete evidence validation cannot exempt recovered run IDs".to_string());
     }
     let mut seen = BTreeSet::new();
     for run in &runs {
+        if exempt_run_ids.contains(&run.run_id) {
+            continue;
+        }
         if run.contract != AGENT_TOKEN_RUN_SUMMARY_CONTRACT {
             errors.push(format!("run {} contract is unsupported", run.run_id));
         }
@@ -4617,6 +7079,41 @@ fn validate_agent_token_campaign_evidence_internal(
                 ));
             }
         }
+        if manifest.protocol_revision == AGENT_TOKEN_PROTOCOL_REVISION {
+            for required in ["model-request-state.json", "private/codex-events.raw.jsonl"] {
+                let path = run_dir.join(required);
+                let metadata = fs::symlink_metadata(&path);
+                if !metadata
+                    .as_ref()
+                    .is_ok_and(|metadata| metadata.is_file() && !metadata.file_type().is_symlink())
+                {
+                    errors.push(format!(
+                        "run {} is missing regular model-state evidence file {required}",
+                        run.run_id
+                    ));
+                }
+            }
+        }
+        let managed_git_run = run.mode == AgentTokenMode::GitLinearSingleSession
+            && manifest.git_worktree_mode == AgentTokenGitWorktreeMode::CodexAppEquivalentManaged;
+        if managed_git_run {
+            for required in [
+                "managed-worktree-lifecycle.json",
+                "private/managed-worktree-closeout-events.jsonl",
+            ] {
+                let path = run_dir.join(required);
+                let metadata = fs::symlink_metadata(&path);
+                if !metadata
+                    .as_ref()
+                    .is_ok_and(|metadata| metadata.is_file() && !metadata.file_type().is_symlink())
+                {
+                    errors.push(format!(
+                        "run {} is missing regular managed-worktree evidence file {required}",
+                        run.run_id
+                    ));
+                }
+            }
+        }
         let git_start_proof_required =
             protocol_requires_git_start_state_proof(&manifest.protocol_revision)
                 && manifest.accounting_profile == AgentTokenAccountingProfile::SteadyStateTaskCost
@@ -4655,13 +7152,11 @@ fn validate_agent_token_campaign_evidence_internal(
         );
         match run_permission_profile.as_ref() {
             Ok(profile)
-                if profile.contract == AGENT_TOKEN_CODEX_PERMISSION_PROFILE_CONTRACT
-                    && profile.name == CODEX_PERMISSION_PROFILE_NAME
-                    && profile.extends == CODEX_PERMISSION_PROFILE_PARENT
-                    && !profile.network_enabled
-                    && (run.mode != AgentTokenMode::GitLinearSingleSession
-                        || (profile.additional_workspace_roots.len() == 2
-                            && profile.git_write_exceptions.len() == 3)) => {}
+                if codex_run_permission_profile_matches(
+                    profile,
+                    run.mode,
+                    manifest.git_worktree_mode,
+                ) => {}
             Ok(_) => errors.push(format!(
                 "run {} Codex permission profile differs",
                 run.run_id
@@ -4682,6 +7177,50 @@ fn validate_agent_token_campaign_evidence_internal(
                     if run_manifest.git_start_state_proof != expected_git_start_proof {
                         errors.push(format!(
                             "run {} Git start-state proof linkage differs",
+                            run.run_id
+                        ));
+                    }
+                    let expected_execution_workspace = if managed_git_run {
+                        "git-worktree-runtime/git-task-worktree"
+                    } else {
+                        "workspace"
+                    };
+                    let expected_workflow_mode = match run.mode {
+                        AgentTokenMode::GitLinearSingleSession => {
+                            git_workflow_mode_label(manifest.git_worktree_mode)
+                        }
+                        AgentTokenMode::AitLinearSingleSession => "solo_local",
+                    };
+                    if run_manifest.ait_edit_root_mode != manifest.ait_edit_root_mode
+                        || run_manifest.git_worktree_mode != manifest.git_worktree_mode
+                        || !run_manifest_execution_workspace_matches(
+                            &manifest.protocol_revision,
+                            &run_manifest.execution_workspace,
+                            expected_execution_workspace,
+                        )
+                        || run_manifest.workflow_mode != expected_workflow_mode
+                    {
+                        errors.push(format!(
+                            "run {} edit-root, Git-worktree ownership, or execution-root evidence differs",
+                            run.run_id
+                        ));
+                    }
+                    let expected_sprint_mode = match run.mode {
+                        AgentTokenMode::GitLinearSingleSession => "not_applicable",
+                        AgentTokenMode::AitLinearSingleSession => manifest.ait_sprint_mode.as_str(),
+                    };
+                    let expected_sprint_card = (run.mode == AgentTokenMode::AitLinearSingleSession
+                        && manifest.ait_sprint_mode == AgentTokenAitSprintMode::On)
+                        .then(|| AIT_SPRINT_CARD_PATH.to_string());
+                    let expected_sprint_item = (run.mode == AgentTokenMode::AitLinearSingleSession
+                        && manifest.ait_sprint_mode == AgentTokenAitSprintMode::On)
+                        .then(|| sprint_item_ref(&run.run_id));
+                    if run_manifest.sprint_mode != expected_sprint_mode
+                        || run_manifest.sprint_card_path != expected_sprint_card
+                        || run_manifest.sprint_item_ref != expected_sprint_item
+                    {
+                        errors.push(format!(
+                            "run {} sprint workflow manifest evidence differs",
                             run.run_id
                         ));
                     }
@@ -4731,22 +7270,57 @@ fn validate_agent_token_campaign_evidence_internal(
                 if workflow.contract != AGENT_TOKEN_WORKFLOW_VERIFICATION_CONTRACT
                     || workflow.mode != run.mode
                     || workflow.closed != run.workflow_closed
+                    || workflow.ait_edit_root_mode != manifest.ait_edit_root_mode
+                    || workflow.git_worktree_mode != manifest.git_worktree_mode
                 {
                     errors.push(format!(
                         "run {} workflow verification linkage differs",
                         run.run_id
                     ));
                 }
+                if run.mode == AgentTokenMode::GitLinearSingleSession
+                    && workflow.workflow_mode != git_workflow_mode_label(manifest.git_worktree_mode)
+                {
+                    errors.push(format!(
+                        "run {} Git workflow ownership label differs",
+                        run.run_id
+                    ));
+                }
+                if run.mode == AgentTokenMode::AitLinearSingleSession {
+                    let expected_sprint_card = (manifest.ait_sprint_mode
+                        == AgentTokenAitSprintMode::On)
+                        .then(|| AIT_SPRINT_CARD_PATH.to_string());
+                    let expected_sprint_item = (manifest.ait_sprint_mode
+                        == AgentTokenAitSprintMode::On)
+                        .then(|| sprint_item_ref(&run.run_id));
+                    let expected_closed = (manifest.ait_sprint_mode == AgentTokenAitSprintMode::On)
+                        .then_some(!run.provider_refusal);
+                    if workflow.workflow_mode != "solo_local"
+                        || workflow.sprint_mode != manifest.ait_sprint_mode.as_str()
+                        || workflow.sprint_card_path != expected_sprint_card
+                        || workflow.sprint_item_ref != expected_sprint_item
+                        || workflow.sprint_item_closed != expected_closed
+                    {
+                        errors.push(format!(
+                            "run {} sprint workflow verification differs",
+                            run.run_id
+                        ));
+                    }
+                }
                 if git_start_proof_required {
                     let proven_start = git_start_proof
                         .as_ref()
                         .and_then(|proof| proof.as_ref().ok())
                         .and_then(|proof| proof.head_oid.as_ref());
-                    if workflow.git_start_head_oid.as_ref() != proven_start
-                        || workflow.git_pre_merge_head_oid.as_ref() != proven_start
-                        || workflow.git_candidate_parent_oid.as_ref() != proven_start
-                        || workflow.git_lineage_matches_start != Some(true)
-                    {
+                    let linkage_differs = if run.provider_refusal {
+                        workflow.git_start_head_oid.as_ref() != proven_start
+                    } else {
+                        workflow.git_start_head_oid.as_ref() != proven_start
+                            || workflow.git_pre_merge_head_oid.as_ref() != proven_start
+                            || workflow.git_candidate_parent_oid.as_ref() != proven_start
+                            || workflow.git_lineage_matches_start != Some(true)
+                    };
+                    if linkage_differs {
                         errors.push(format!(
                             "run {} Git closeout lineage differs from its proven start HEAD",
                             run.run_id
@@ -4755,6 +7329,102 @@ fn validate_agent_token_campaign_evidence_internal(
                 }
             }
             Err(error) => errors.push(error),
+        }
+        if managed_git_run {
+            match decode_json_file::<AgentTokenManagedWorktreeLifecycle>(
+                &run_dir.join("managed-worktree-lifecycle.json"),
+                "managed-worktree lifecycle",
+            ) {
+                Ok(lifecycle) => {
+                    let proven_start = git_start_proof
+                        .as_ref()
+                        .and_then(|proof| proof.as_ref().ok())
+                        .and_then(|proof| proof.head_oid.as_deref());
+                    if lifecycle.contract != AGENT_TOKEN_MANAGED_WORKTREE_LIFECYCLE_CONTRACT
+                        || lifecycle.campaign_id != manifest.campaign_id
+                        || lifecycle.run_id != run.run_id
+                        || lifecycle.boundary
+                            != AgentTokenGitWorktreeMode::CodexAppEquivalentManaged.as_str()
+                        || lifecycle.desktop_private_ipc_invoked
+                        || lifecycle.worktree_path
+                            != run_dir
+                                .join("git-worktree-runtime/git-task-worktree")
+                                .display()
+                                .to_string()
+                        || proven_start != Some(lifecycle.starting_head_oid.as_str())
+                        || lifecycle.worktree_ready_head_oid.as_deref() != proven_start
+                        || lifecycle.model_started_at.is_none()
+                        || lifecycle.model_completed_at.is_none()
+                        || lifecycle.model_elapsed_ms != Some(run.elapsed_ms)
+                        || lifecycle.closeout_started_at.is_none()
+                        || lifecycle.closed_at.is_none()
+                        || lifecycle.closeout_elapsed_ms.is_none()
+                        || !lifecycle.worktree_created_before_model
+                        || !lifecycle.host_closeout_after_terminal_model_event
+                        || !lifecycle.host_commit_created
+                        || !lifecycle.main_fast_forwarded
+                        || !lifecycle.worktree_removed
+                        || !lifecycle.closed
+                        || !lifecycle.failure_reasons.is_empty()
+                        || lifecycle.candidate_head_oid.is_none()
+                        || lifecycle.candidate_head_oid != lifecycle.final_main_head_oid
+                        || run.secondary_metrics.host_worktree_provisioning_elapsed_ms
+                            != Some(lifecycle.provisioning_elapsed_ms)
+                        || run.secondary_metrics.host_worktree_closeout_elapsed_ms
+                            != lifecycle.closeout_elapsed_ms
+                    {
+                        errors.push(format!(
+                            "run {} managed-worktree lifecycle evidence differs",
+                            run.run_id
+                        ));
+                    }
+                }
+                Err(error) => errors.push(error),
+            }
+        } else if run
+            .secondary_metrics
+            .host_worktree_provisioning_elapsed_ms
+            .is_some()
+            || run
+                .secondary_metrics
+                .host_worktree_closeout_elapsed_ms
+                .is_some()
+        {
+            errors.push(format!(
+                "run {} carries host-worktree timing outside a managed Git lane",
+                run.run_id
+            ));
+        }
+        if manifest.protocol_revision == AGENT_TOKEN_PROTOCOL_REVISION {
+            let raw_events = run_dir.join("private/codex-events.raw.jsonl");
+            let recorded = decode_json_file::<AgentTokenModelRequestState>(
+                &run_dir.join("model-request-state.json"),
+                "model request state",
+            );
+            let recomputed = inspect_model_request_state(manifest, &raw_events, &run.run_id);
+            match (recorded, recomputed) {
+                (Ok(recorded), Ok(recomputed)) => {
+                    if recorded != recomputed
+                        || recorded.contract != AGENT_TOKEN_MODEL_REQUEST_STATE_CONTRACT
+                        || recorded.run_id != run.run_id
+                        || recorded.executor != manifest.runtime.executor.as_str()
+                        || recorded.thread_id.is_none()
+                        || recorded.turn_started_count != 1
+                        || recorded.turn_completed_count + recorded.turn_failed_count != 1
+                        || recorded.usage_event_count != 1
+                        || recorded.terminal_state == "incomplete"
+                        || recorded.internal_provider_request_count.is_some()
+                        || recorded.internal_provider_request_count_authority
+                            != "unavailable_from_executor_events; turn count is not a provider-request count"
+                    {
+                        errors.push(format!(
+                            "run {} model-request state is incomplete or differs from raw executor events",
+                            run.run_id
+                        ));
+                    }
+                }
+                (Err(error), _) | (_, Err(error)) => errors.push(error),
+            }
         }
         if let Some(usage) = &run.usage {
             if usage.contract != crate::AGENT_TOKEN_USAGE_CONTRACT
@@ -4765,6 +7435,66 @@ fn validate_agent_token_campaign_evidence_internal(
             {
                 errors.push(format!(
                     "run {} normalized usage linkage differs",
+                    run.run_id
+                ));
+            }
+        }
+        if protocol_requires_claude_model_evidence(&manifest.protocol_revision)
+            && manifest.runtime.executor == crate::agent_token::AgentTokenExecutor::Claude
+        {
+            let raw_events = run_dir.join("private/codex-events.raw.jsonl");
+            let metadata = fs::symlink_metadata(&raw_events);
+            if !metadata
+                .as_ref()
+                .is_ok_and(|metadata| metadata.is_file() && !metadata.file_type().is_symlink())
+            {
+                errors.push(format!(
+                    "run {} is missing regular private Claude model-purity evidence",
+                    run.run_id
+                ));
+            } else {
+                match import_executor_usage(
+                    manifest,
+                    &raw_events,
+                    &run.run_id,
+                    &run.workload_id,
+                    run.mode,
+                ) {
+                    Ok(imported) => {
+                        if run.usage.as_ref() != Some(&imported.usage)
+                            || run.provider_refusal != imported.provider_refusal
+                            || run.provider_stop_reason != imported.provider_stop_reason
+                        {
+                            errors.push(format!(
+                                "run {} normalized usage, model purity, or provider outcome differs from private Claude evidence",
+                                run.run_id
+                            ));
+                        }
+                    }
+                    Err(error) => errors.push(format!(
+                        "run {} private Claude model-purity evidence is invalid: {error}",
+                        run.run_id
+                    )),
+                }
+            }
+            if run.provider_refusal {
+                if !run.valid_attempt
+                    || run.accepted_equivalent
+                    || run.infrastructure_failure.is_some()
+                    || run.provider_stop_reason.as_deref() != Some("refusal")
+                    || !run
+                        .failure_reasons
+                        .iter()
+                        .any(|reason| reason == "provider returned a refusal")
+                {
+                    errors.push(format!(
+                        "run {} Claude refusal is not retained as a valid, unaccepted functional outcome",
+                        run.run_id
+                    ));
+                }
+            } else if run.provider_stop_reason.as_deref() != Some("end_turn") {
+                errors.push(format!(
+                    "run {} Claude terminal stop reason is not end_turn",
                     run.run_id
                 ));
             }
@@ -4798,6 +7528,14 @@ fn validate_agent_token_campaign_evidence_internal(
                     })
                 }) {
                 Ok(environment) => {
+                    if environment.ait_edit_root_mode != manifest.ait_edit_root_mode
+                        || environment.git_worktree_mode != manifest.git_worktree_mode
+                    {
+                        errors.push(format!(
+                            "run {} environment edit-root or Git-worktree ownership differs",
+                            run.run_id
+                        ));
+                    }
                     if environment.project_doc_max_bytes != manifest.runtime.project_doc_max_bytes {
                         errors.push(format!(
                             "run {} environment project-document limit differs",
@@ -4820,6 +7558,34 @@ fn validate_agent_token_campaign_evidence_internal(
                             run.run_id
                         ));
                     }
+                    if manifest
+                        .runtime
+                        .ait_version
+                        .as_deref()
+                        .is_some_and(|expected| environment.ait_version != expected)
+                        || manifest
+                            .runtime
+                            .git_version
+                            .as_deref()
+                            .is_some_and(|expected| environment.git_version != expected)
+                        || manifest
+                            .runtime
+                            .node_version
+                            .as_deref()
+                            .is_some_and(|expected| environment.node_version != expected)
+                        || manifest
+                            .runtime
+                            .browser_version
+                            .as_deref()
+                            .is_some_and(|expected| {
+                                environment.browser_version.as_deref() != Some(expected)
+                            })
+                    {
+                        errors.push(format!(
+                            "run {} environment tool-version pins differ",
+                            run.run_id
+                        ));
+                    }
                     if environment.codex_permission_profile != CODEX_PERMISSION_PROFILE_NAME
                         || environment.codex_permission_profile_parent
                             != CODEX_PERMISSION_PROFILE_PARENT
@@ -4831,12 +7597,13 @@ fn validate_agent_token_campaign_evidence_internal(
                     }
                     if run.mode == AgentTokenMode::AitLinearSingleSession
                         && (environment.workflow_mode != "solo_local"
-                            || environment.sprint_mode != "off"
+                            || environment.sprint_mode != manifest.ait_sprint_mode.as_str()
                             || environment.ait_server_connected)
                     {
                         errors.push(format!(
-                            "run {} environment violates solo_local/sprint-off/no-server",
-                            run.run_id
+                            "run {} environment violates solo_local/sprint-{}/no-server",
+                            run.run_id,
+                            manifest.ait_sprint_mode.as_str()
                         ));
                     }
                 }
@@ -4858,6 +7625,11 @@ mod tests {
             protocol_revision: crate::AGENT_TOKEN_PROTOCOL_REVISION.to_string(),
             campaign_scope: crate::AgentTokenCampaignScope::Smoke,
             accounting_profile: crate::AgentTokenAccountingProfile::SteadyStateTaskCost,
+            ait_sprint_mode: AgentTokenAitSprintMode::Off,
+            ait_edit_root_mode: crate::agent_token::AgentTokenAitEditRootMode::Explicit,
+            git_worktree_mode: AgentTokenGitWorktreeMode::AgentManaged,
+            claude_model_admission: crate::agent_token::AgentTokenClaudeModelAdmission::Strict,
+            functional_replacement_policy: crate::AgentTokenFunctionalReplacementPolicy::None,
             seed: 1,
             attempts_per_cell: 1,
             workload_ids: vec!["GD-01".to_string()],
@@ -4874,6 +7646,11 @@ mod tests {
             runtime: crate::AgentTokenRuntime {
                 executor: crate::agent_token::AgentTokenExecutor::default(),
                 claude_program: None,
+                executor_version: None,
+                ait_version: None,
+                git_version: None,
+                node_version: None,
+                browser_version: None,
                 codex_program: PathBuf::from("codex"),
                 ait_program: PathBuf::from("ait"),
                 git_program: PathBuf::from("git"),
@@ -4936,6 +7713,8 @@ mod tests {
             codex_timed_out: false,
             elapsed_ms: 1,
             infrastructure_failure: infrastructure_failure.map(str::to_string),
+            provider_refusal: false,
+            provider_stop_reason: None,
             usage: None,
             transcript: AgentTokenCommandTranscript {
                 contract: crate::AGENT_TOKEN_TRANSCRIPT_CONTRACT.to_string(),
@@ -4970,6 +7749,152 @@ mod tests {
             invalid_reasons: Vec::new(),
             failure_reasons: Vec::new(),
         }
+    }
+
+    #[test]
+    fn resume_fixture_override_must_match_frozen_campaign_bytes() {
+        let temp = tempfile::tempdir().unwrap();
+        let campaign_dir = temp.path().join("campaign");
+        std::fs::create_dir(&campaign_dir).unwrap();
+        let frozen = b"{\"fixture\":\"frozen\"}\n";
+        std::fs::write(campaign_dir.join("fixture-manifest.json"), frozen).unwrap();
+        let identical = temp.path().join("identical.json");
+        std::fs::write(&identical, frozen).unwrap();
+        let resolved = require_resume_fixture_manifest_identity(&campaign_dir, &identical)
+            .expect("byte-identical fixture override");
+        assert_eq!(resolved, std::fs::canonicalize(&identical).unwrap());
+
+        let different = temp.path().join("different.json");
+        std::fs::write(&different, b"{\"fixture\":\"different\"}\n").unwrap();
+        let error = require_resume_fixture_manifest_identity(&campaign_dir, &different)
+            .expect_err("different fixture override must fail closed");
+        assert!(error.contains("differs from frozen campaign fixture bytes"));
+        assert!(error.contains("sha256:"));
+
+        let missing = temp.path().join("missing.json");
+        let error = require_resume_fixture_manifest_identity(&campaign_dir, &missing)
+            .expect_err("missing fixture override must fail closed");
+        assert!(error.contains("Failed to resolve resume fixture manifest"));
+        assert!(!campaign_dir.join("resumptions").exists());
+    }
+
+    #[test]
+    fn report_discloses_served_model_mix_and_fallback_tokens() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut manifest = test_manifest();
+        manifest.runtime.executor = crate::agent_token::AgentTokenExecutor::Claude;
+        manifest.model.provider = "anthropic".to_string();
+        manifest.model.model_id = "claude-fable-5".to_string();
+        manifest.model.model_revision = "sample".to_string();
+        manifest.model.reasoning_effort = "max".to_string();
+        manifest.claude_model_admission =
+            crate::agent_token::AgentTokenClaudeModelAdmission::AsShipped;
+        let schedule = build_agent_token_schedule(&manifest);
+        let entry = &schedule.entries[0];
+        let run_dir = temp.path().join("run");
+        std::fs::create_dir_all(run_dir.join("private")).unwrap();
+        let raw = run_dir.join("private/codex-events.raw.jsonl");
+        std::fs::write(
+            &raw,
+            concat!(
+                "{\"type\":\"system\",\"subtype\":\"init\",\"model\":\"claude-fable-5\",\"tools\":[\"Bash\",\"Read\",\"Grep\",\"Glob\",\"Edit\",\"Write\"],\"mcp_servers\":[]}\n",
+                "{\"type\":\"assistant\",\"message\":{\"model\":\"claude-fable-5\",\"content\":[]}}\n",
+                "{\"type\":\"assistant\",\"message\":{\"model\":\"claude-opus-5\",\"content\":[{\"type\":\"fallback\"}]}}\n",
+                "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"terminal_reason\":\"completed\",\"stop_reason\":\"end_turn\",\"num_turns\":1,\"usage\":{\"input_tokens\":30,\"cache_read_input_tokens\":700,\"cache_creation_input_tokens\":40,\"output_tokens\":9},\"modelUsage\":{\"claude-fable-5\":{\"inputTokens\":20,\"cacheReadInputTokens\":500,\"cacheCreationInputTokens\":30,\"outputTokens\":6,\"canonicalModel\":\"claude-fable-5\"},\"claude-opus-5\":{\"inputTokens\":10,\"cacheReadInputTokens\":200,\"cacheCreationInputTokens\":10,\"outputTokens\":3,\"canonicalModel\":\"claude-opus-5\"}}}\n"
+            ),
+        )
+        .unwrap();
+        let imported = crate::agent_token::import_claude_usage_with_outcome(
+            &raw,
+            &entry.run_id,
+            &entry.workload_id,
+            entry.mode,
+            manifest.accounting_profile,
+            &manifest.model,
+            manifest.claude_model_admission,
+        )
+        .unwrap();
+        let mut run = pair_test_summary(entry, None, true, true);
+        run.campaign_id = manifest.campaign_id.clone();
+        run.usage = Some(imported.usage);
+        run.provider_stop_reason = Some("end_turn".to_string());
+        let runs = vec![run];
+        let mut report = build_agent_token_report(&manifest, &schedule, &runs).unwrap();
+        let paths = BTreeMap::from([(entry.run_id.clone(), run_dir.join("run-summary.json"))]);
+
+        enrich_agent_token_report_model_composition(&manifest, &runs, &paths, &mut report).unwrap();
+
+        assert_eq!(report.mixed_model_run_count, 1);
+        assert_eq!(report.fallback_observed_run_count, 1);
+        assert_eq!(report.served_models.len(), 2);
+        assert_eq!(report.served_models[0].provider_total_tokens, 556);
+        assert_eq!(report.served_models[1].provider_total_tokens, 223);
+        let markdown = render_agent_token_report_markdown(&report);
+        assert!(markdown.contains("## Served Model Composition"));
+        assert!(markdown.contains("Mixed-model runs: `1`"));
+        assert!(markdown.contains("`claude-opus-5`"));
+    }
+
+    #[test]
+    fn recovery_exemption_names_only_the_trailing_contaminated_pair() {
+        // A provider-truncated lane keeps a summary that fails per-run checks.
+        // The authorized recovery must reach it, so exactly the two lanes of
+        // the trailing pair are exempted and no earlier lane is.
+        let mut manifest = test_manifest();
+        manifest.workload_ids = vec!["GD-01".to_string(), "GD-02".to_string()];
+        let schedule = build_agent_token_schedule(&manifest);
+        assert_eq!(schedule.entries.len(), 4);
+        let runs = schedule
+            .entries
+            .iter()
+            .enumerate()
+            .map(|(index, entry)| {
+                // Realistic truncation: one lane of the trailing pair carries
+                // the recognized provider limit, its counterpart stays valid,
+                // and the first pair is untouched.
+                let truncated = index == 2;
+                let failure = truncated.then_some("provider_usage_limit");
+                pair_test_summary(entry, failure, !truncated, !truncated)
+            })
+            .collect::<Vec<_>>();
+
+        let exempt = infrastructure_recovery_exempt_run_ids_for(&schedule, runs);
+
+        assert_eq!(exempt.len(), 2, "exemption must cover exactly one pair");
+        for entry in &schedule.entries[2..4] {
+            assert!(
+                exempt.contains(&entry.run_id),
+                "trailing lane {} must be exempt",
+                entry.run_id
+            );
+        }
+        for entry in &schedule.entries[..2] {
+            assert!(
+                !exempt.contains(&entry.run_id),
+                "earlier lane {} must stay validated",
+                entry.run_id
+            );
+        }
+    }
+
+    #[test]
+    fn recovery_exemption_is_empty_when_an_earlier_lane_is_invalid() {
+        // classify refuses a prefix whose invalid lane precedes the trailing
+        // pair, so nothing is exempted and revalidation still rejects it.
+        let mut manifest = test_manifest();
+        manifest.workload_ids = vec!["GD-01".to_string(), "GD-02".to_string()];
+        let schedule = build_agent_token_schedule(&manifest);
+        let runs = schedule
+            .entries
+            .iter()
+            .enumerate()
+            .map(|(index, entry)| {
+                let clean = index != 0;
+                pair_test_summary(entry, None, clean, clean)
+            })
+            .collect::<Vec<_>>();
+
+        assert!(infrastructure_recovery_exempt_run_ids_for(&schedule, runs).is_empty());
     }
 
     #[test]
@@ -5017,6 +7942,145 @@ mod tests {
     }
 
     #[test]
+    fn managed_complete_200_accepts_five_pairs_as_its_exact_ten_session_prefix() {
+        let mut manifest = test_manifest();
+        manifest.campaign_scope = crate::AgentTokenCampaignScope::Complete;
+        manifest.attempts_per_cell = 20;
+        manifest.workload_ids = ["GD-01", "GD-02", "GD-03", "GD-04", "GD-05"]
+            .into_iter()
+            .map(str::to_string)
+            .collect();
+        manifest.ait_edit_root_mode = crate::agent_token::AgentTokenAitEditRootMode::Returned;
+        manifest.git_worktree_mode = AgentTokenGitWorktreeMode::CodexAppEquivalentManaged;
+        let schedule = build_agent_token_schedule(&manifest);
+        assert_eq!(schedule.entries.len(), 200);
+        let first_five_pairs = schedule.entries[..10]
+            .iter()
+            .map(|entry| pair_test_summary(entry, None, true, true))
+            .collect::<Vec<_>>();
+
+        let prefix = exact_schedule_prefix(&schedule, first_five_pairs).unwrap();
+        assert_eq!(prefix.len(), 10);
+        assert_eq!(prefix.last().unwrap().run_id, schedule.entries[9].run_id);
+        assert_ne!(schedule.entries[prefix.len()].run_id, prefix[9].run_id);
+        assert_eq!(schedule.entries.len() - prefix.len(), 190);
+    }
+
+    #[test]
+    fn recovered_spawn_partial_is_exact_and_requires_its_missing_counterpart() {
+        let mut manifest = test_manifest();
+        manifest.campaign_id = AGENT_TOKEN_RECOVERED_SPAWN_CAMPAIGN_ID.to_string();
+        manifest.protocol_revision =
+            crate::AGENT_TOKEN_SPRINT_ON_COMPLETE_PREDECESSOR_PROTOCOL_REVISION.to_string();
+        manifest.campaign_scope = crate::AgentTokenCampaignScope::Complete;
+        manifest.ait_sprint_mode = AgentTokenAitSprintMode::On;
+        manifest.seed = 2_026_082_832;
+        manifest.attempts_per_cell = 20;
+        manifest.workload_ids = ["GD-01", "GD-02", "GD-03", "GD-04", "GD-05"]
+            .into_iter()
+            .map(str::to_string)
+            .collect();
+        let schedule = build_agent_token_schedule(&manifest);
+        assert_eq!(
+            schedule.entries[AGENT_TOKEN_RECOVERED_SPAWN_PAIR_START_INDEX].run_id,
+            AGENT_TOKEN_RECOVERED_SPAWN_RUN_ID
+        );
+        let mut effective_runs = schedule.entries[..=AGENT_TOKEN_RECOVERED_SPAWN_PAIR_START_INDEX]
+            .iter()
+            .map(|entry| pair_test_summary(entry, None, true, true))
+            .collect::<Vec<_>>();
+        let last = effective_runs.last_mut().unwrap();
+        last.campaign_id = manifest.campaign_id.clone();
+        last.usage = Some(test_normalized_usage());
+        last.transcript.valid = true;
+        last.transcript.command_count = 1;
+        last.transcript.commands = vec!["pwd".to_string()];
+
+        let temp = tempfile::tempdir().unwrap();
+        let adjudication = temp
+            .path()
+            .join("adjudications")
+            .join(format!("{AGENT_TOKEN_RECOVERED_SPAWN_RUN_ID}.json"));
+        fs::create_dir_all(adjudication.parent().unwrap()).unwrap();
+        fs::write(&adjudication, "{}\n").unwrap();
+        assert!(exact_recovered_spawn_partial(
+            &manifest,
+            &schedule,
+            temp.path(),
+            &effective_runs,
+        ));
+
+        let counterpart = &schedule.entries[AGENT_TOKEN_RECOVERED_SPAWN_PAIR_START_INDEX + 1];
+        fs::create_dir_all(temp.path().join("runs").join(&counterpart.run_id)).unwrap();
+        assert!(!exact_recovered_spawn_partial(
+            &manifest,
+            &schedule,
+            temp.path(),
+            &effective_runs,
+        ));
+    }
+
+    #[test]
+    fn infrastructure_recovery_classifies_only_the_final_contaminated_whole_pair() {
+        let mut manifest = test_manifest();
+        manifest.workload_ids = vec!["GD-01".to_string(), "GD-02".to_string()];
+        let schedule = build_agent_token_schedule(&manifest);
+        let mut runs = schedule.entries[..2]
+            .iter()
+            .map(|entry| pair_test_summary(entry, None, true, true))
+            .collect::<Vec<_>>();
+        runs.push(pair_test_summary(
+            &schedule.entries[2],
+            Some("codex_tool_process_spawn_failure"),
+            false,
+            false,
+        ));
+
+        let (ordered, pair_start) =
+            classify_infrastructure_recovery_prefix(&schedule, runs).unwrap();
+        assert_eq!(pair_start, 2);
+        assert_eq!(ordered.len(), 3);
+
+        let mut functional_failure = schedule.entries[..3]
+            .iter()
+            .map(|entry| pair_test_summary(entry, None, true, true))
+            .collect::<Vec<_>>();
+        functional_failure[2].accepted_equivalent = false;
+        assert!(
+            classify_infrastructure_recovery_prefix(&schedule, functional_failure)
+                .unwrap_err()
+                .contains("lacks a recognized executor infrastructure failure")
+        );
+
+        let mut contaminated_prefix = pair_test_summary(
+            &schedule.entries[0],
+            Some("provider_transport_failure"),
+            false,
+            false,
+        );
+        contaminated_prefix
+            .invalid_reasons
+            .push("infrastructure".to_string());
+        let later_pair = schedule.entries[2..]
+            .iter()
+            .map(|entry| pair_test_summary(entry, None, true, true));
+        let error = classify_infrastructure_recovery_prefix(
+            &schedule,
+            std::iter::once(contaminated_prefix)
+                .chain(std::iter::once(pair_test_summary(
+                    &schedule.entries[1],
+                    None,
+                    true,
+                    true,
+                )))
+                .chain(later_pair)
+                .collect(),
+        )
+        .unwrap_err();
+        assert!(error.contains("precedes the recoverable pair"), "{error}");
+    }
+
+    #[test]
     fn successor_resume_admits_valid_unaccepted_protocol_27_prefix_without_retry() {
         let manifest = test_manifest();
         let schedule = build_agent_token_schedule(&manifest);
@@ -5052,6 +8116,10 @@ mod tests {
     fn complete_predecessors_other_than_protocol_27_remain_read_only() {
         assert!(validate_resume_protocol_revision(AGENT_TOKEN_PROTOCOL_REVISION).is_ok());
         assert!(validate_resume_protocol_revision(
+            AGENT_TOKEN_MODEL_ADMISSION_PREDECESSOR_PROTOCOL_REVISION
+        )
+        .is_ok());
+        assert!(validate_resume_protocol_revision(
             crate::AGENT_TOKEN_LEGACY_RESUMABLE_PROTOCOL_REVISION
         )
         .is_ok());
@@ -5063,9 +8131,49 @@ mod tests {
     }
 
     #[test]
-    fn protocol_27_retains_proof_backed_implicit_main_admission() {
+    fn protocol_46_alone_admits_its_absent_legacy_execution_workspace() {
+        assert!(run_manifest_execution_workspace_matches(
+            AGENT_TOKEN_MODEL_ADMISSION_PREDECESSOR_PROTOCOL_REVISION,
+            "",
+            "workspace",
+        ));
+        assert!(run_manifest_execution_workspace_matches(
+            AGENT_TOKEN_MODEL_ADMISSION_PREDECESSOR_PROTOCOL_REVISION,
+            "workspace",
+            "workspace",
+        ));
+        assert!(!run_manifest_execution_workspace_matches(
+            AGENT_TOKEN_MODEL_ADMISSION_PREDECESSOR_PROTOCOL_REVISION,
+            "different-workspace",
+            "workspace",
+        ));
+        assert!(!run_manifest_execution_workspace_matches(
+            AGENT_TOKEN_MODEL_ADMISSION_PREDECESSOR_PROTOCOL_REVISION,
+            "",
+            "git-worktree-runtime/git-task-worktree",
+        ));
+        assert!(!run_manifest_execution_workspace_matches(
+            AGENT_TOKEN_PROTOCOL_REVISION,
+            "",
+            "workspace",
+        ));
+        assert!(!run_manifest_execution_workspace_matches(
+            crate::AGENT_TOKEN_MANAGED_WORKTREE_PREFLIGHT_PREDECESSOR_PROTOCOL_REVISION,
+            "",
+            "workspace",
+        ));
+    }
+
+    #[test]
+    fn protocols_27_30_and_current_retain_proof_backed_implicit_main_admission() {
         assert!(protocol_requires_git_start_state_proof(
             AGENT_TOKEN_PROTOCOL_REVISION
+        ));
+        assert!(protocol_requires_git_start_state_proof(
+            AGENT_TOKEN_MODEL_ADMISSION_PREDECESSOR_PROTOCOL_REVISION
+        ));
+        assert!(protocol_requires_git_start_state_proof(
+            crate::AGENT_TOKEN_PROMPTED_INSPECTION_PREDECESSOR_PROTOCOL_REVISION
         ));
         assert!(protocol_requires_git_start_state_proof(
             AGENT_TOKEN_VALID_OUTCOME_RESUMABLE_PROTOCOL_REVISION
@@ -5157,6 +8265,56 @@ mod tests {
             build_codex_permission_profile(workspace.path(), &[], &[unrelated.path().join(".git")])
                 .unwrap_err();
         assert!(error.contains("outside the declared workspaces"));
+    }
+
+    #[test]
+    fn app_managed_permission_profile_excludes_the_parent_main_git_pointer() {
+        let temp = tempfile::tempdir().unwrap();
+        let main_workspace = temp.path().join("workspace");
+        let metadata = temp.path().join("git-metadata");
+        let container = temp.path().join("git-worktree-runtime");
+        let task_worktree = container.join("git-task-worktree");
+        let exceptions = git_write_exceptions_for_mode(
+            AgentTokenGitWorktreeMode::CodexAppEquivalentManaged,
+            &main_workspace,
+            &metadata,
+            &task_worktree,
+        );
+
+        assert!(!exceptions.contains(&main_workspace.join(".git")));
+        assert!(exceptions.contains(&metadata));
+        assert!(exceptions.contains(&task_worktree.join(".git")));
+        let profile = build_codex_permission_profile(
+            &task_worktree,
+            &[metadata.clone(), container],
+            &exceptions,
+        )
+        .unwrap();
+        assert!(codex_run_permission_profile_matches(
+            &profile,
+            AgentTokenMode::GitLinearSingleSession,
+            AgentTokenGitWorktreeMode::CodexAppEquivalentManaged,
+        ));
+        assert!(!profile
+            .git_write_exceptions
+            .contains(&main_workspace.join(".git").display().to_string()));
+
+        let mut overbroad = profile;
+        overbroad
+            .git_write_exceptions
+            .push(main_workspace.join(".git").display().to_string());
+        assert!(!codex_run_permission_profile_matches(
+            &overbroad,
+            AgentTokenMode::GitLinearSingleSession,
+            AgentTokenGitWorktreeMode::CodexAppEquivalentManaged,
+        ));
+    }
+
+    #[test]
+    fn evidence_validation_resolves_relative_campaign_roots() {
+        let resolved = resolve_campaign_evidence_dir(Path::new(".")).unwrap();
+        assert!(resolved.is_absolute());
+        assert_eq!(resolved, std::fs::canonicalize(".").unwrap());
     }
 
     #[test]
@@ -5527,7 +8685,84 @@ mod tests {
     }
 
     #[test]
-    fn measured_prompt_teaches_only_the_admitted_local_ait_lifecycle() {
+    fn both_measured_prompts_carry_the_identical_neutral_inspection_admission() {
+        // Protocol .31 removed a suggestion from the Git prompt but a
+        // permission from the AIT prompt, leaving AIT with a bare closed-set
+        // prohibition while Git stayed silently unrestricted. Both prompts must
+        // now carry the same neutral sentence and name no inspection command.
+        const ADMISSION: &str =
+            "Local read-only inspection of this repository is neither required nor prohibited.";
+        let manifest = test_manifest();
+        let worktree = Path::new("/tmp/git-task-worktree");
+
+        for (mode, sprint, git_worktree_mode) in [
+            (
+                AgentTokenMode::GitLinearSingleSession,
+                None,
+                AgentTokenGitWorktreeMode::AgentManaged,
+            ),
+            (
+                AgentTokenMode::GitLinearSingleSession,
+                None,
+                AgentTokenGitWorktreeMode::CodexAppEquivalentManaged,
+            ),
+            (
+                AgentTokenMode::AitLinearSingleSession,
+                Some(AgentTokenAitSprintMode::Off),
+                AgentTokenGitWorktreeMode::AgentManaged,
+            ),
+            (
+                AgentTokenMode::AitLinearSingleSession,
+                Some(AgentTokenAitSprintMode::On),
+                AgentTokenGitWorktreeMode::AgentManaged,
+            ),
+        ] {
+            let mut manifest = manifest.clone();
+            manifest.git_worktree_mode = git_worktree_mode;
+            if let Some(sprint) = sprint {
+                manifest.ait_sprint_mode = sprint;
+            }
+            let entry = AgentTokenScheduleEntry {
+                run_id: "test-b001-gd-01".to_string(),
+                workload_id: "GD-01".to_string(),
+                mode,
+                attempt: 1,
+                block_index: 1,
+                randomized_order: 1,
+            };
+            let prompt = build_measured_prompt(
+                &manifest,
+                &entry,
+                "repair the game",
+                Some(worktree),
+                None,
+                Some(Path::new("/benchmark/ait-task-worktree")),
+            );
+
+            assert!(
+                prompt.matches(ADMISSION).count() == 1,
+                "{mode:?}/{sprint:?}/{git_worktree_mode:?} prompt must carry exactly one admission sentence: {prompt}"
+            );
+            for coaching in [
+                "git status",
+                "git diff",
+                "git log",
+                "git show",
+                "git rev-parse",
+                "ait status",
+                "ait diff",
+                "ait blame",
+            ] {
+                assert!(
+                    !prompt.to_ascii_lowercase().contains(coaching),
+                    "{mode:?}/{sprint:?}/{git_worktree_mode:?} prompt names inspection command {coaching:?}: {prompt}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn measured_prompt_teaches_only_the_admitted_lifecycle_without_inspection_coaching() {
         let manifest = test_manifest();
         let entry = AgentTokenScheduleEntry {
             run_id: "test-b001-gd-01-ait".to_string(),
@@ -5537,25 +8772,51 @@ mod tests {
             block_index: 1,
             randomized_order: 1,
         };
-        let prompt = build_measured_prompt(&manifest, &entry, "repair the game", None, None);
-        assert!(prompt.contains("Use the prepared local AIT repository"));
-        assert!(prompt.contains("task start --title ... --intent ... --local --json"));
-        assert!(prompt.contains("retain the returned `task_id`"));
-        assert!(prompt.contains("task finish <returned-task-id> --message ... --local"));
-        assert!(prompt.contains("complete repository-command set for this run"));
-        assert!(prompt.contains("Do not invoke a repository command outside this set"));
-        assert!(
-            prompt.contains("Do not invoke `git` for status, diff, `diff --check`, log, history")
+        let prompt = build_measured_prompt(
+            &manifest,
+            &entry,
+            "repair the game",
+            None,
+            None,
+            Some(Path::new("/benchmark/ait-task-worktree")),
         );
+        assert!(prompt.contains("Use the prepared local AIT repository"));
+        assert!(prompt.contains("task start --title ... --intent ... --edit-root /benchmark/ait-task-worktree --local --json"));
+        assert!(prompt.contains("Retain the returned `task_id`"));
+        assert!(prompt.contains("--edit-root /benchmark/ait-task-worktree"));
+        assert!(prompt.contains("task finish <returned-task-id> --message ... --local"));
+        assert!(prompt.contains("complete AIT lifecycle command set for this run"));
+        assert!(prompt.contains("do not invoke any additional AIT lifecycle or management command"));
+        assert!(prompt.contains("Do not invoke `git` for any purpose"));
         assert!(prompt.contains("including after project validation"));
         assert!(prompt.contains("This candidate intentionally has no Git repository"));
         assert!(prompt.contains("snapshot create --message ... --json"));
+        for inspection_hint in ["ait status", "ait diff", "ait blame"] {
+            assert!(
+                !prompt.to_ascii_lowercase().contains(inspection_hint),
+                "measured AIT prompt contains inspection coaching {inspection_hint:?}: {prompt}"
+            );
+        }
         for bootstrap in ["first-use", "ait init", "config set", "baseline"] {
             assert!(
                 !prompt.to_ascii_lowercase().contains(bootstrap),
                 "steady-state AIT prompt contains bootstrap treatment {bootstrap:?}: {prompt}"
             );
         }
+        let mut returned_manifest = manifest.clone();
+        returned_manifest.ait_edit_root_mode =
+            crate::agent_token::AgentTokenAitEditRootMode::Returned;
+        let returned_prompt = build_measured_prompt(
+            &returned_manifest,
+            &entry,
+            "repair the game",
+            None,
+            None,
+            None,
+        );
+        assert!(returned_prompt.contains("enter the returned physical `edit_root`"));
+        assert!(returned_prompt.contains("using `next_action.command`"));
+        assert!(!returned_prompt.contains("--edit-root"));
         for retired in [
             "ait-server",
             "remote",
@@ -5592,8 +8853,14 @@ mod tests {
                 block_index: 1,
                 randomized_order: 1,
             };
-            let fixture_prompt =
-                build_measured_prompt(&manifest, &fixture_entry, shared_task.as_str(), None, None);
+            let fixture_prompt = build_measured_prompt(
+                &manifest,
+                &fixture_entry,
+                shared_task.as_str(),
+                None,
+                None,
+                Some(Path::new("/benchmark/ait-task-worktree")),
+            );
             for retired in ["ait-server", "remote", "review", "land"] {
                 assert!(
                     !fixture_prompt.to_ascii_lowercase().contains(retired),
@@ -5602,18 +8869,57 @@ mod tests {
             }
         }
 
+        let mut sprint_on_manifest = manifest.clone();
+        sprint_on_manifest.ait_sprint_mode = AgentTokenAitSprintMode::On;
+        sprint_on_manifest.workload_ids = ["GD-01", "GD-02", "GD-03", "GD-04", "GD-05"]
+            .into_iter()
+            .map(str::to_string)
+            .collect();
+        let sprint_prompt = build_measured_prompt(
+            &sprint_on_manifest,
+            &entry,
+            "repair the game",
+            None,
+            None,
+            Some(Path::new("/benchmark/ait-task-worktree")),
+        );
+        assert!(sprint_prompt.contains("Sprint mode is on"));
+        assert!(sprint_prompt.contains("docs/sprints/benchmark_task.md"));
+        assert!(
+            sprint_prompt.contains("[plan-ref: agent-token-benchmark/test-b001-gd-01-ait/root]")
+        );
+        assert!(sprint_prompt.contains(
+            "task start --from docs/sprints/benchmark_task.md#agent-token-benchmark/test-b001-gd-01-ait/implement"
+        ));
+        assert!(sprint_prompt.contains("do not run a separate plan sync"));
+        assert!(sprint_prompt.contains("automatically close the exact sprint checklist item"));
+        assert!(!sprint_prompt.contains("task start --title"));
+
         let mut first_use_manifest = manifest.clone();
         first_use_manifest.accounting_profile =
             crate::AgentTokenAccountingProfile::FirstUseTotalCost;
-        let first_use_prompt =
-            build_measured_prompt(&first_use_manifest, &entry, "repair the game", None, None);
+        let first_use_prompt = build_measured_prompt(
+            &first_use_manifest,
+            &entry,
+            "repair the game",
+            None,
+            None,
+            Some(Path::new("/benchmark/ait-task-worktree")),
+        );
         assert!(first_use_prompt.contains("ait init"));
         assert!(first_use_prompt.contains("--workflow-mode solo_local --sprint off"));
         assert!(first_use_prompt.contains("snapshot create --message ... --json"));
-        assert!(first_use_prompt
-            .contains("Do not invoke `git` for status, diff, `diff --check`, log, history"));
+        assert!(first_use_prompt.contains("Do not invoke `git` for any purpose"));
         assert!(first_use_prompt.contains("including after project validation"));
         assert!(first_use_prompt.contains("This candidate intentionally has no Git repository"));
+        for inspection_hint in ["ait status", "ait diff", "ait blame"] {
+            assert!(
+                !first_use_prompt
+                    .to_ascii_lowercase()
+                    .contains(inspection_hint),
+                "first-use AIT prompt contains inspection coaching {inspection_hint:?}: {first_use_prompt}"
+            );
+        }
         for retired in ["ait-server", "remote", "review", "land"] {
             assert!(
                 !first_use_prompt.to_ascii_lowercase().contains(retired),
@@ -5633,6 +8939,7 @@ mod tests {
             "repair the game",
             Some(git_worktree),
             Some(git_metadata),
+            Some(Path::new("/benchmark/ait-task-worktree")),
         );
         for bootstrap in ["first-use", "git init", "git config", "baseline"] {
             assert!(
@@ -5657,12 +8964,55 @@ mod tests {
         assert!(git_prompt.contains("Do not copy or redirect `.git`"));
         assert!(git_prompt.contains("set `GIT_DIR` or `GIT_WORK_TREE`"));
         assert!(git_prompt.contains("do not invoke `ait`"));
+        for inspection_hint in ["git status", "git diff", "git log", "git show", "git blame"] {
+            assert!(
+                !git_prompt.to_ascii_lowercase().contains(inspection_hint),
+                "measured Git prompt contains inspection coaching {inspection_hint:?}: {git_prompt}"
+            );
+        }
+        let mut managed_manifest = manifest.clone();
+        managed_manifest.ait_edit_root_mode =
+            crate::agent_token::AgentTokenAitEditRootMode::Returned;
+        managed_manifest.git_worktree_mode = AgentTokenGitWorktreeMode::CodexAppEquivalentManaged;
+        let managed_prompt = build_measured_prompt(
+            &managed_manifest,
+            &git_entry,
+            "repair the game",
+            Some(git_worktree),
+            Some(git_metadata),
+            Some(Path::new("/benchmark/ait-task-worktree")),
+        );
+        for required in [
+            "already begin inside the detached managed worktree",
+            "created by the benchmark host from its proven clean `main` HEAD before this model session",
+            "Leave the resulting changes in place for host closeout",
+            "Do not leave the current worktree or access the parent main worktree",
+            "after the terminal model event",
+            "outside model-token accounting",
+        ] {
+            assert!(
+                managed_prompt.contains(required),
+                "managed Git prompt is missing {required:?}: {managed_prompt}"
+            );
+        }
+        for model_owned in [
+            "worktree add -b benchmark-task",
+            "merge --ff-only benchmark-task",
+            "branch -d benchmark-task",
+            "exactly one candidate commit there",
+        ] {
+            assert!(
+                !managed_prompt.contains(model_owned),
+                "managed Git prompt requires host-owned step {model_owned:?}: {managed_prompt}"
+            );
+        }
         let first_use_git_prompt = build_measured_prompt(
             &first_use_manifest,
             &git_entry,
             "repair the game",
             Some(git_worktree),
             Some(git_metadata),
+            Some(Path::new("/benchmark/ait-task-worktree")),
         );
         assert!(first_use_git_prompt
             .contains("init --initial-branch=main --separate-git-dir /benchmark/git-metadata ."));
@@ -5673,6 +9023,14 @@ mod tests {
             .contains("worktree add -b benchmark-task /benchmark/git-task-worktree main"));
         assert!(!first_use_git_prompt.contains("or the equivalent"));
         assert!(first_use_git_prompt.contains("do not invoke `ait`"));
+        for inspection_hint in ["git status", "git diff", "git log", "git show", "git blame"] {
+            assert!(
+                !first_use_git_prompt
+                    .to_ascii_lowercase()
+                    .contains(inspection_hint),
+                "first-use Git prompt contains inspection coaching {inspection_hint:?}: {first_use_git_prompt}"
+            );
+        }
     }
 
     #[test]
@@ -5811,9 +9169,11 @@ mod tests {
         let verification = verify_workflow(
             &manifest,
             AgentTokenMode::GitLinearSingleSession,
+            "test-b001-gd-01-git",
             &workspace,
             Some(&task_worktree),
             Some(&start_proof),
+            None,
         )
         .unwrap();
         assert!(verification.closed, "{:?}", verification.reasons);
@@ -5828,6 +9188,138 @@ mod tests {
         )
         .unwrap()
         .contains("Repair game"));
+    }
+
+    #[test]
+    fn host_managed_detached_worktree_is_ready_before_model_and_closes_afterward() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = temp.path().join("workspace");
+        let worktree_container = temp.path().join("git-worktree-container");
+        let task_worktree = worktree_container.join("task");
+        let metadata = temp.path().join("git-metadata");
+        fs::create_dir(&workspace).unwrap();
+        fs::create_dir(&worktree_container).unwrap();
+        fs::write(workspace.join("game.txt"), "baseline\n").unwrap();
+        prepare_empty_directory(&metadata, "Git metadata").unwrap();
+
+        let mut manifest = test_manifest();
+        manifest.ait_edit_root_mode = crate::agent_token::AgentTokenAitEditRootMode::Returned;
+        manifest.git_worktree_mode = AgentTokenGitWorktreeMode::CodexAppEquivalentManaged;
+        let entry = AgentTokenScheduleEntry {
+            run_id: "managed-b001-gd-01-git".to_string(),
+            workload_id: "GD-01".to_string(),
+            mode: AgentTokenMode::GitLinearSingleSession,
+            attempt: 1,
+            block_index: 1,
+            randomized_order: 1,
+        };
+        let mut events = Vec::new();
+        let mut sequence = 1;
+        bootstrap_git(&manifest, &workspace, &metadata, &mut events, &mut sequence).unwrap();
+        let start_proof = capture_git_start_state_proof(&manifest, &entry.run_id, &workspace);
+        assert!(start_proof.passed, "{:?}", start_proof.failure_reasons);
+        let start_head = start_proof.head_oid.as_deref().unwrap();
+        let mut lifecycle = provision_managed_git_worktree(
+            &manifest,
+            &entry,
+            &workspace,
+            &task_worktree,
+            start_head,
+            &mut events,
+            &mut sequence,
+        )
+        .unwrap();
+        assert!(task_worktree.is_dir());
+        assert!(command_output(
+            &manifest.runtime.git_program,
+            &["symbolic-ref", "--short", "HEAD"],
+            &task_worktree,
+        )
+        .is_err());
+        lifecycle.model_started_at = Some(Utc::now().to_rfc3339());
+        fs::write(task_worktree.join("game.txt"), "repaired\n").unwrap();
+        lifecycle.model_completed_at = Some(Utc::now().to_rfc3339());
+        lifecycle.model_elapsed_ms = Some(7);
+        let mut closeout_events = Vec::new();
+        let mut closeout_sequence = 1;
+        close_managed_git_worktree(
+            &manifest,
+            &workspace,
+            &task_worktree,
+            &mut lifecycle,
+            true,
+            &mut closeout_events,
+            &mut closeout_sequence,
+        )
+        .unwrap();
+
+        assert!(lifecycle.closed, "{:?}", lifecycle.failure_reasons);
+        assert!(!lifecycle.desktop_private_ipc_invoked);
+        assert_eq!(
+            lifecycle.worktree_ready_head_oid.as_deref(),
+            Some(start_head)
+        );
+        assert_eq!(lifecycle.candidate_head_oid, lifecycle.final_main_head_oid);
+        assert!(!task_worktree.exists());
+        assert_eq!(closeout_events.len(), 4);
+        let verification = verify_workflow(
+            &manifest,
+            entry.mode,
+            &entry.run_id,
+            &workspace,
+            Some(&task_worktree),
+            Some(&start_proof),
+            Some(&lifecycle),
+        )
+        .unwrap();
+        assert!(verification.closed, "{:?}", verification.reasons);
+        assert_eq!(verification.workflow_mode, "codex_app_equivalent_managed");
+    }
+
+    #[test]
+    fn model_request_state_is_recomputed_without_inventing_provider_request_count() {
+        let temp = tempfile::tempdir().unwrap();
+        let codex_stream = temp.path().join("codex.jsonl");
+        fs::write(
+            &codex_stream,
+            concat!(
+                "{\"type\":\"thread.started\",\"thread_id\":\"thread-1\"}\n",
+                "{\"type\":\"turn.started\"}\n",
+                "{\"type\":\"model.rerouted\"}\n",
+                "{\"type\":\"model.safety_buffering.updated\"}\n",
+                "{\"type\":\"turn.completed\",\"usage\":{\"input_tokens\":10,\"output_tokens\":2}}\n"
+            ),
+        )
+        .unwrap();
+        let state = inspect_model_request_state(&test_manifest(), &codex_stream, "run-1").unwrap();
+        assert_eq!(state.thread_id.as_deref(), Some("thread-1"));
+        assert_eq!(state.turn_started_count, 1);
+        assert_eq!(state.turn_completed_count, 1);
+        assert_eq!(state.usage_event_count, 1);
+        assert_eq!(state.model_reroute_event_count, 1);
+        assert_eq!(state.safety_event_count, 1);
+        assert_eq!(state.terminal_state, "completed");
+        assert_eq!(state.internal_provider_request_count, None);
+        assert!(state
+            .internal_provider_request_count_authority
+            .contains("turn count is not a provider-request count"));
+
+        let claude_stream = temp.path().join("claude.jsonl");
+        fs::write(
+            &claude_stream,
+            concat!(
+                "{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"session-1\"}\n",
+                "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"fallback\"}]}}\n",
+                "{\"type\":\"result\",\"is_error\":false,\"usage\":{\"input_tokens\":10,\"output_tokens\":2}}\n"
+            ),
+        )
+        .unwrap();
+        let mut claude_manifest = test_manifest();
+        claude_manifest.runtime.executor = crate::agent_token::AgentTokenExecutor::Claude;
+        let state = inspect_model_request_state(&claude_manifest, &claude_stream, "run-2").unwrap();
+        assert_eq!(state.thread_id.as_deref(), Some("session-1"));
+        assert_eq!(state.model_reroute_event_count, 1);
+        assert_eq!(state.terminal_state, "completed");
     }
 
     #[test]
@@ -6026,6 +9518,30 @@ mod tests {
             None
         );
 
+        // A provider refusal is successful model behavior, not unavailable
+        // infrastructure. The lane remains token-accounted and is rejected by
+        // the functional outcome gate instead.
+        fs::write(
+            &raw_events,
+            concat!(
+                "{\"type\":\"system\",\"subtype\":\"init\"}\n",
+                "{\"type\":\"result\",\"subtype\":\"success\",",
+                "\"is_error\":false,\"stop_reason\":\"refusal\",\"result\":\"cannot comply\"}\n"
+            ),
+        )
+        .unwrap();
+        fs::write(&stderr, "").unwrap();
+        assert_eq!(
+            classify_claude_infrastructure_failure(
+                &raw_events,
+                &stderr,
+                &succeeded,
+                &transcript,
+                Some(&test_normalized_usage()),
+            ),
+            None
+        );
+
         // A session that dies before emitting any terminal result event and
         // before executing any candidate command fails closed.
         fs::write(&raw_events, "{\"type\":\"system\",\"subtype\":\"init\"}\n").unwrap();
@@ -6088,7 +9604,29 @@ mod tests {
             let index = args.iter().position(|arg| arg == flag).unwrap();
             args[index + 1].clone()
         };
-        assert_eq!(pair("--setting-sources"), "");
+        assert_eq!(pair("--setting-sources"), "project");
+        assert_eq!(pair("--prompt-suggestions"), "false");
+        // Claude Code otherwise adds one auxiliary claude-haiku-4-5 call per
+        // session, which makes the terminal modelUsage inventory contain two
+        // models and fails every measured lane closed on model purity.
+        let envs = command
+            .get_envs()
+            .filter_map(|(key, value)| {
+                value.map(|value| {
+                    (
+                        key.to_string_lossy().into_owned(),
+                        value.to_string_lossy().into_owned(),
+                    )
+                })
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            envs.contains(&(
+                crate::agent_token::CLAUDE_SINGLE_MODEL_ENV.0.to_string(),
+                crate::agent_token::CLAUDE_SINGLE_MODEL_ENV.1.to_string(),
+            )),
+            "measured Claude surface must pin the single-model environment: {envs:?}"
+        );
         let settings =
             serde_json::from_str::<serde_json::Value>(&pair("--settings")).expect("settings JSON");
         assert_eq!(settings["sandbox"]["enabled"], serde_json::json!(true));
@@ -6148,6 +9686,7 @@ mod tests {
                 "disallowed-tool:Task".to_string(),
                 "disallowed-tool:NotebookEdit".to_string(),
                 "disallowed-tool:TodoWrite".to_string(),
+                "prompt-suggestions:false".to_string(),
             ]
         );
     }
@@ -6267,7 +9806,7 @@ mod tests {
     }
 
     #[test]
-    fn tool_process_spawn_failure_overrides_success_usage_and_transcript() {
+    fn recovered_tool_process_spawn_failure_is_measured_agent_behavior() {
         let temp = tempfile::tempdir().unwrap();
         let raw_events = temp.path().join("codex-events.raw.jsonl");
         let stderr = temp.path().join("codex.stderr.txt");
@@ -6309,6 +9848,66 @@ mod tests {
                 &stderr,
                 &process,
                 &transcript,
+                Some(&usage),
+            ),
+            None
+        );
+
+        let timed_out = TimedProcessResult {
+            exit_code: Some(0),
+            timed_out: true,
+            elapsed_ms: 1,
+        };
+        assert_eq!(
+            classify_codex_infrastructure_failure(
+                &raw_events,
+                &stderr,
+                &timed_out,
+                &transcript,
+                Some(&usage),
+            )
+            .as_deref(),
+            Some("codex_tool_process_spawn_failure")
+        );
+        let failed = TimedProcessResult {
+            exit_code: Some(1),
+            timed_out: false,
+            elapsed_ms: 1,
+        };
+        assert_eq!(
+            classify_codex_infrastructure_failure(
+                &raw_events,
+                &stderr,
+                &failed,
+                &transcript,
+                Some(&usage),
+            )
+            .as_deref(),
+            Some("codex_tool_process_spawn_failure")
+        );
+        assert_eq!(
+            classify_codex_infrastructure_failure(
+                &raw_events,
+                &stderr,
+                &process,
+                &transcript,
+                None,
+            )
+            .as_deref(),
+            Some("codex_tool_process_spawn_failure")
+        );
+        let empty_transcript = AgentTokenCommandTranscript {
+            command_count: 0,
+            commands: Vec::new(),
+            valid: false,
+            ..transcript
+        };
+        assert_eq!(
+            classify_codex_infrastructure_failure(
+                &raw_events,
+                &stderr,
+                &process,
+                &empty_transcript,
                 Some(&usage),
             )
             .as_deref(),

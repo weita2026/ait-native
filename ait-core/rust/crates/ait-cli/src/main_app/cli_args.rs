@@ -1659,7 +1659,7 @@ enum PlanCommand {
 enum TaskCommand {
     #[command(
         about = "Start one Task and its initial Change locally or on a remote; sprint mode uses one specific file-backed Plan item",
-        override_usage = "ait task start --intent <INTENT> (--from <MARKDOWN_PATH#ITEM_REF> | --title <TITLE>) [--local | --remote <REMOTE>] [--json [--full]]"
+        override_usage = "ait task start --intent <INTENT> (--from <MARKDOWN_PATH#ITEM_REF> | --title <TITLE>) [--edit-root <ABSOLUTE_PATH>] [--local | --remote <REMOTE>] [--json [--full]]"
     )]
     Start(TaskStartArgs),
     #[command(about = "List open Tasks or complete Task history locally or on a remote")]
@@ -1693,17 +1693,17 @@ enum ChangeCommand {
     Revert(ChangeRevertArgs),
     #[command(
         about = "Apply one Change's recorded delta to the current workspace.",
-        long_about = "Apply one Change's recorded fork-to-revision delta to the current Line workspace. This does not create a Snapshot, move the Line head, land the Change, or change remote data."
+        long_about = "Apply one Change's recorded fork-to-revision delta to the current Line workspace. This does not create a Snapshot, move the Line head, finish the Change, or change remote data."
     )]
     Replay(ChangeReplayArgs),
     #[command(
-        about = "Archive one Change without landing it.",
-        long_about = "Archive one local or remote Change without landing code. A successful close also attempts a bounded safe Plan repair for the owning Task."
+        about = "Archive one Change without finishing it.",
+        long_about = "Archive one local or remote Change without applying its code to the target Line. A successful close also attempts a bounded safe Plan repair for the owning Task."
     )]
     Close(ChangeCloseArgs),
     #[command(
         about = "Promote one local draft Change record to a remote.",
-        long_about = "Promote one local draft Change record to the configured or named remote. This does not publish a Patchset, publish current workspace content, or land the Change."
+        long_about = "Promote one local draft Change record to the configured or named remote. This does not publish a Patchset, publish current workspace content, or finish the Change."
     )]
     Publish(ChangePublishArgs),
 }
@@ -2161,7 +2161,7 @@ enum WorkflowCommand {
     )]
     Guide(WorkflowGuideArgs),
     #[command(
-        about = "Inspect Task, Change, Line, worktree, land, and Plan bindings for repair; dry-run is the default and never changes Plan state."
+        about = "Inspect Task, Change, Line, worktree, closeout, and Plan bindings for repair; dry-run is the default and never changes Plan state."
     )]
     Reconcile(WorkflowReconcileArgs),
     #[command(
@@ -2192,6 +2192,12 @@ struct TaskStartArgs {
         conflicts_with = "title"
     )]
     source: Option<String>,
+    #[arg(
+        long,
+        value_name = "ABSOLUTE_PATH",
+        help = "Use this safe absolute path as the Task worktree; omit it to keep automatic managed worktree allocation"
+    )]
+    edit_root: Option<PathBuf>,
     #[arg(
         long,
         conflicts_with = "remote",
@@ -2476,7 +2482,7 @@ struct ChangeReplayArgs {
 struct ChangeCloseArgs {
     #[arg(
         value_name = "TASK_ID/C-##",
-        help = "Task-owned Change to archive without landing."
+        help = "Task-owned Change to archive without applying it to the target Line."
     )]
     change_id: String,
     #[arg(

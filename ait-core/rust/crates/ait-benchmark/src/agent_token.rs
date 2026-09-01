@@ -16,19 +16,99 @@ pub const AGENT_TOKEN_TRANSCRIPT_CONTRACT: &str = "ait-agent-token-command-trans
 pub const AGENT_TOKEN_RUN_SUMMARY_CONTRACT: &str = "ait-agent-token-benchmark-run-summary/v1";
 pub const AGENT_TOKEN_RUN_ADJUDICATION_CONTRACT: &str = "ait-agent-token-run-adjudication/v1";
 pub const AGENT_TOKEN_LEGACY_RESUMABLE_PROTOCOL_REVISION: &str = "game-development-2026-08-24.20";
-pub const AGENT_TOKEN_ADJUDICATOR_REVISION: &str = "game-development-2026-08-24.21";
+pub const AGENT_TOKEN_LEGACY_ADJUDICATOR_REVISION: &str = "game-development-2026-08-24.21";
+pub const AGENT_TOKEN_ADJUDICATOR_REVISION: &str = "game-development-2026-08-29.35";
 /// Exact complete-campaign predecessor whose frozen schedule may be continued
 /// by the successor controller without reclassifying or retrying any existing
 /// valid candidate outcome.
 pub const AGENT_TOKEN_VALID_OUTCOME_RESUMABLE_PROTOCOL_REVISION: &str =
     "game-development-2026-08-26.27";
 pub const AGENT_TOKEN_PRE_REPLACEMENT_PROTOCOL_REVISION: &str = "game-development-2026-08-27.28";
+pub const AGENT_TOKEN_SPRINT_OFF_PREDECESSOR_PROTOCOL_REVISION: &str =
+    "game-development-2026-08-27.29";
+pub const AGENT_TOKEN_PROMPTED_INSPECTION_PREDECESSOR_PROTOCOL_REVISION: &str =
+    "game-development-2026-08-28.30";
+pub const AGENT_TOKEN_NATURAL_INSPECTION_PREDECESSOR_PROTOCOL_REVISION: &str =
+    "game-development-2026-08-28.31";
+pub const AGENT_TOKEN_SPRINT_ON_COMPLETE_PREDECESSOR_PROTOCOL_REVISION: &str =
+    "game-development-2026-08-28.32";
+pub const AGENT_TOKEN_INFRASTRUCTURE_RECOVERY_PREDECESSOR_PROTOCOL_REVISION: &str =
+    "game-development-2026-08-28.33";
+pub const AGENT_TOKEN_HOST_SHUTDOWN_RECOVERY_PREDECESSOR_PROTOCOL_REVISION: &str =
+    "game-development-2026-08-29.34";
+pub const AGENT_TOKEN_MODEL_PURITY_PREDECESSOR_PROTOCOL_REVISION: &str =
+    "game-development-2026-08-29.35";
+/// Exact predecessor whose Git validity rule still forced at least one
+/// read-only discovery invocation. It has no executed source evidence and is
+/// retained only so committed predecessor artifacts stay readable.
+pub const AGENT_TOKEN_FORCED_GIT_DISCOVERY_PREDECESSOR_PROTOCOL_REVISION: &str =
+    "game-development-2026-08-29.37";
+/// Exact predecessor whose frozen Claude executor surface still admitted the
+/// auxiliary non-pinned model call. Its only artifact is one stopped zero-lane
+/// preflight failure, so it carries no measured source evidence.
+pub const AGENT_TOKEN_AUXILIARY_MODEL_PREDECESSOR_PROTOCOL_REVISION: &str =
+    "game-development-2026-08-29.38";
+/// Exact predecessor whose measured AIT workspace still carried the generated
+/// AIT workflow guidance block. Its evidence is one ten-lane Claude smoke.
+pub const AGENT_TOKEN_PROJECT_DOCUMENT_PREDECESSOR_PROTOCOL_REVISION: &str =
+    "game-development-2026-08-29.39";
+/// Exact predecessor whose measured AIT prompt still required the agent to read
+/// the returned `edit_root` before it could enter its Task worktree.
+pub const AGENT_TOKEN_IMPLICIT_EDIT_ROOT_PREDECESSOR_PROTOCOL_REVISION: &str =
+    "game-development-2026-08-30.40";
+/// Exact predecessor whose prompts handed over the edit root but phrased the
+/// chained start-and-enter form as optional; zero measured lanes chained.
+pub const AGENT_TOKEN_OPTIONAL_CHAIN_PREDECESSOR_PROTOCOL_REVISION: &str =
+    "game-development-2026-08-30.41";
+/// Exact predecessor whose measured AIT workspace still listed AGENTS.md and
+/// docs/, charging AIT an exploration tax the Git workspace never pays.
+pub const AGENT_TOKEN_ARTIFACT_TAX_PREDECESSOR_PROTOCOL_REVISION: &str =
+    "game-development-2026-08-30.42";
+/// Exact predecessor with the clean workspace but no guidance delivery; its
+/// evidence is one gated pair with zero artifact references.
+pub const AGENT_TOKEN_BARE_WORKSPACE_PREDECESSOR_PROTOCOL_REVISION: &str =
+    "game-development-2026-08-30.43";
+/// Exact predecessor before edit-root delivery became a declared manifest axis.
+pub const AGENT_TOKEN_FIXED_EDIT_ROOT_PREDECESSOR_PROTOCOL_REVISION: &str =
+    "game-development-2026-08-30.44";
+/// Exact predecessor before model admission became a declared manifest axis.
+pub const AGENT_TOKEN_STRICT_ONLY_PREDECESSOR_PROTOCOL_REVISION: &str =
+    "game-development-2026-08-31.45";
+/// Exact predecessor that introduced the Claude model-admission axis. `.46`
+/// campaigns remain resumable with their frozen agent-owned Git lifecycle.
+pub const AGENT_TOKEN_MODEL_ADMISSION_PREDECESSOR_PROTOCOL_REVISION: &str =
+    "game-development-2026-08-31.46";
+/// Exact predecessor that introduced the separately pinned host-managed
+/// worktree axis. Its two launches stopped before any measured model lane: the
+/// first on copied-fixture permissions and the second on an over-broad Codex
+/// Git-write exception. The immutable zero-lane evidence remains readable,
+/// while `.48` corrects the permission boundary and is the only active form.
+pub const AGENT_TOKEN_MANAGED_WORKTREE_PREFLIGHT_PREDECESSOR_PROTOCOL_REVISION: &str =
+    "game-development-2026-08-31.47";
 pub const AGENT_TOKEN_200_SESSION_PREDECESSOR_PROTOCOL_REVISION: &str =
     "game-development-2026-08-26.26";
 /// Complete-scope predecessor revisions that remain readable as frozen
-/// evidence; campaigns cannot start under them. Protocol `.27` has the sole
-/// narrow continuation exception enforced by the runner.
+/// evidence; campaigns cannot start under them. The runner admits only the
+/// explicitly enumerated narrow continuation and recovery exceptions.
 pub const AGENT_TOKEN_COMPLETE_PREDECESSOR_PROTOCOL_REVISIONS: &[&str] = &[
+    AGENT_TOKEN_MANAGED_WORKTREE_PREFLIGHT_PREDECESSOR_PROTOCOL_REVISION,
+    AGENT_TOKEN_MODEL_ADMISSION_PREDECESSOR_PROTOCOL_REVISION,
+    AGENT_TOKEN_STRICT_ONLY_PREDECESSOR_PROTOCOL_REVISION,
+    AGENT_TOKEN_FIXED_EDIT_ROOT_PREDECESSOR_PROTOCOL_REVISION,
+    AGENT_TOKEN_BARE_WORKSPACE_PREDECESSOR_PROTOCOL_REVISION,
+    AGENT_TOKEN_ARTIFACT_TAX_PREDECESSOR_PROTOCOL_REVISION,
+    AGENT_TOKEN_OPTIONAL_CHAIN_PREDECESSOR_PROTOCOL_REVISION,
+    AGENT_TOKEN_IMPLICIT_EDIT_ROOT_PREDECESSOR_PROTOCOL_REVISION,
+    AGENT_TOKEN_PROJECT_DOCUMENT_PREDECESSOR_PROTOCOL_REVISION,
+    AGENT_TOKEN_AUXILIARY_MODEL_PREDECESSOR_PROTOCOL_REVISION,
+    AGENT_TOKEN_FORCED_GIT_DISCOVERY_PREDECESSOR_PROTOCOL_REVISION,
+    AGENT_TOKEN_MODEL_PURITY_PREDECESSOR_PROTOCOL_REVISION,
+    AGENT_TOKEN_HOST_SHUTDOWN_RECOVERY_PREDECESSOR_PROTOCOL_REVISION,
+    AGENT_TOKEN_INFRASTRUCTURE_RECOVERY_PREDECESSOR_PROTOCOL_REVISION,
+    AGENT_TOKEN_SPRINT_ON_COMPLETE_PREDECESSOR_PROTOCOL_REVISION,
+    AGENT_TOKEN_PROMPTED_INSPECTION_PREDECESSOR_PROTOCOL_REVISION,
+    AGENT_TOKEN_NATURAL_INSPECTION_PREDECESSOR_PROTOCOL_REVISION,
+    AGENT_TOKEN_SPRINT_OFF_PREDECESSOR_PROTOCOL_REVISION,
     AGENT_TOKEN_PRE_REPLACEMENT_PROTOCOL_REVISION,
     AGENT_TOKEN_VALID_OUTCOME_RESUMABLE_PROTOCOL_REVISION,
     AGENT_TOKEN_200_SESSION_PREDECESSOR_PROTOCOL_REVISION,
@@ -40,11 +120,21 @@ pub const AGENT_TOKEN_COMPLETE_PREDECESSOR_PROTOCOL_REVISIONS: &[&str] = &[
 pub const AGENT_TOKEN_REPORT_CONTRACT: &str = "ait-agent-token-benchmark-report/v3";
 pub const AGENT_TOKEN_ENVIRONMENT_CONTRACT: &str = "ait-agent-token-benchmark-environment/v1";
 pub const AGENT_TOKEN_BROWSER_REPORT_CONTRACT: &str = "ait-agent-token-browser-report/v1";
-pub const AGENT_TOKEN_PROTOCOL_REVISION: &str = "game-development-2026-08-27.29";
+pub const AGENT_TOKEN_PROTOCOL_REVISION: &str = "game-development-2026-08-31.48";
+pub const AGENT_TOKEN_RECOVERED_SPAWN_POLICY_REVISION: &str = "game-development-2026-08-29.35";
+pub const AGENT_TOKEN_RECOVERED_SPAWN_CAMPAIGN_ID: &str =
+    "game-v1-g56s-max-sprint-on-natural-complete200-20260828";
+pub const AGENT_TOKEN_RECOVERED_SPAWN_RUN_ID: &str =
+    "game-v1-g56s-max-sprint-on-natural-complete200-20260828-b017-gd-03-git";
+pub const AGENT_TOKEN_RECOVERED_SPAWN_PAIR_START_INDEX: usize = 160;
+pub const AGENT_TOKEN_RECOVERED_SPAWN_SOURCE_SUMMARY_SHA256: &str =
+    "sha256:0a58cb77970cb4d41a531a99b69fc8acdde4e7970b2327a14333ad050a9f0dac";
+pub const AGENT_TOKEN_RECOVERED_SPAWN_REASON: &str = "Repository-owner-authorized semantic correction: a recovered candidate tool-process launch mistake is measured agent behavior, not unavailable infrastructure";
+pub const AGENT_TOKEN_RECOVERED_SPAWN_PAIR_ADMISSION_POLICY: &str = "exact_protocol_valid_pairs_with_transparent_infrastructure_and_host_shutdown_whole_pair_recovery_plus_digest_linked_recovered_spawn_adjudication";
 /// Read-only repository inspection subcommands admitted as informational in
-/// the measured AIT lifecycle, mirroring the Git treatment's unrestricted
-/// `status`/`diff`/`log` inspection: token cost stays measured while the
-/// invocation is neither a lifecycle step nor a forbidden surface.
+/// the measured AIT lifecycle without naming or recommending them in the
+/// measured prompt. Token cost stays measured while the invocation is neither
+/// a lifecycle step nor a forbidden surface.
 pub const AIT_INFORMATIONAL_INSPECTION_SUBCOMMANDS: &[&[&str]] =
     &[&["status"], &["diff"], &["blame"]];
 
@@ -54,6 +144,29 @@ pub const AIT_INFORMATIONAL_INSPECTION_SUBCOMMANDS: &[&[&str]] =
 pub const CLAUDE_MEASURED_TOOL_SURFACE: &[&str] =
     &["Bash", "Read", "Grep", "Glob", "Edit", "Write"];
 
+/// Pins a measured Claude session to exactly one model. Claude Code otherwise
+/// issues one small auxiliary `claude-haiku-4-5` call per session, which makes
+/// the terminal modelUsage inventory contain two models and fails every lane
+/// closed under the model-purity rule. Bisected against the exact measured flag
+/// set: `DISABLE_NON_ESSENTIAL_MODEL_CALLS` has no effect and
+/// `CLAUDE_CODE_SIMPLE` yields no usable stream, while this variable leaves the
+/// success, stop-reason, turn, and tool-call contract intact. It is applied
+/// identically to the executor preflight and to both measured modes.
+pub const CLAUDE_SINGLE_MODEL_ENV: (&str, &str) = ("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1");
+
+/// The measured AIT workspace keeps a content-free project document. `ait init`
+/// and `ait config set` generate an AGENTS.md carrying the effective AIT
+/// workflow block, which no measured Git workspace has. The file cannot be
+/// deleted: it is tracked authored Markdown, so removal makes `ait plan sync`
+/// fail with a missing path and `ait task start` refuse on plan drift.
+/// Overwriting it with this stub and reconciling through a local plan sync
+/// keeps the whole lifecycle working while removing the guidance content.
+/// The generated project document removed from every measured AIT workspace.
+/// Deletion plus `ait plan sync AGENTS.md --prune --local` archives its Plan
+/// and the whole lifecycle keeps working; the earlier stub belief that the
+/// file could not be deleted was wrong.
+pub const AIT_PURGED_PROJECT_DOCUMENT: &str = "AGENTS.md";
+
 pub const AGENT_TOKEN_PAIR_ADMISSION_POLICY: &str =
     "exact_protocol_valid_pair_without_workflow_metric_exclusion";
 const AGENT_TOKEN_COMPLETE_ATTEMPTS_PER_WORKLOAD: usize = 20;
@@ -61,6 +174,31 @@ const AGENT_TOKEN_COMPLETE_SCHEDULED_RUNS: usize = 200;
 const AGENT_TOKEN_PREDECESSOR_COMPLETE_ATTEMPTS_PER_WORKLOAD: usize = 10;
 const GIT_METADATA_CONTEXT_OVERRIDE_ERROR: &str =
     "Git mode overrode the runner-owned isolated repository metadata context";
+
+pub(crate) fn protocol_requires_claude_model_evidence(protocol_revision: &str) -> bool {
+    matches!(
+        protocol_revision,
+        AGENT_TOKEN_PROTOCOL_REVISION
+            | AGENT_TOKEN_MANAGED_WORKTREE_PREFLIGHT_PREDECESSOR_PROTOCOL_REVISION
+            | AGENT_TOKEN_MODEL_ADMISSION_PREDECESSOR_PROTOCOL_REVISION
+            | AGENT_TOKEN_STRICT_ONLY_PREDECESSOR_PROTOCOL_REVISION
+            | AGENT_TOKEN_FIXED_EDIT_ROOT_PREDECESSOR_PROTOCOL_REVISION
+            | AGENT_TOKEN_BARE_WORKSPACE_PREDECESSOR_PROTOCOL_REVISION
+            | AGENT_TOKEN_ARTIFACT_TAX_PREDECESSOR_PROTOCOL_REVISION
+            | AGENT_TOKEN_OPTIONAL_CHAIN_PREDECESSOR_PROTOCOL_REVISION
+            | AGENT_TOKEN_IMPLICIT_EDIT_ROOT_PREDECESSOR_PROTOCOL_REVISION
+            | AGENT_TOKEN_PROJECT_DOCUMENT_PREDECESSOR_PROTOCOL_REVISION
+            | AGENT_TOKEN_AUXILIARY_MODEL_PREDECESSOR_PROTOCOL_REVISION
+            | AGENT_TOKEN_FORCED_GIT_DISCOVERY_PREDECESSOR_PROTOCOL_REVISION
+    )
+}
+
+fn protocol_supports_as_shipped_claude_admission(protocol_revision: &str) -> bool {
+    matches!(
+        protocol_revision,
+        AGENT_TOKEN_PROTOCOL_REVISION | AGENT_TOKEN_MODEL_ADMISSION_PREDECESSOR_PROTOCOL_REVISION
+    )
+}
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
@@ -85,6 +223,29 @@ impl AgentTokenMode {
     }
 }
 
+/// Who owns the Git lane's linked-worktree lifecycle. The legacy treatment
+/// charges worktree creation, commit, integration, and cleanup to the measured
+/// agent. The App-equivalent treatment reproduces Codex Desktop's observable
+/// boundary: a detached worktree exists before the first model event and the
+/// host closes it after the turn. Desktop's private IPC is deliberately not
+/// claimed or inferred.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentTokenGitWorktreeMode {
+    #[default]
+    AgentManaged,
+    CodexAppEquivalentManaged,
+}
+
+impl AgentTokenGitWorktreeMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::AgentManaged => "agent_managed",
+            Self::CodexAppEquivalentManaged => "codex_app_equivalent_managed",
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentTokenAccountingProfile {
@@ -105,6 +266,10 @@ impl AgentTokenAccountingProfile {
 #[serde(rename_all = "snake_case")]
 pub enum AgentTokenCampaignScope {
     Smoke,
+    /// Bounded single-purpose evidence with a free attempt count and no
+    /// full-matrix requirement, used to measure within-cell variance or to
+    /// isolate one mechanism. Never publication eligible and never pooled.
+    Diagnostic,
     Pilot,
     Qualification,
     Complete,
@@ -114,6 +279,7 @@ impl AgentTokenCampaignScope {
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Smoke => "smoke",
+            Self::Diagnostic => "diagnostic",
             Self::Pilot => "pilot",
             Self::Qualification => "qualification",
             Self::Complete => "complete",
@@ -123,6 +289,7 @@ impl AgentTokenCampaignScope {
     fn minimum_attempts(&self) -> usize {
         match self {
             Self::Smoke => 1,
+            Self::Diagnostic => 2,
             Self::Pilot => 10,
             Self::Qualification => 20,
             Self::Complete => AGENT_TOKEN_COMPLETE_ATTEMPTS_PER_WORKLOAD,
@@ -130,7 +297,79 @@ impl AgentTokenCampaignScope {
     }
 
     fn requires_full_workload_matrix(&self) -> bool {
-        !matches!(self, Self::Smoke)
+        !matches!(self, Self::Smoke | Self::Diagnostic)
+    }
+
+    /// Diagnostic campaigns choose their own attempt count so within-cell
+    /// variance can be measured; every other scope pins an exact count.
+    fn pins_exact_attempts(&self) -> bool {
+        !matches!(self, Self::Diagnostic)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentTokenAitSprintMode {
+    #[default]
+    Off,
+    On,
+}
+
+impl AgentTokenAitSprintMode {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::On => "on",
+        }
+    }
+}
+
+/// How the measured AIT prompt delivers the Task worktree location. Campaigns
+/// cannot start under a frozen predecessor revision, so both variants live
+/// under one active revision and are selected per campaign as a pinned axis.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentTokenAitEditRootMode {
+    /// The prompt supplies the benchmark-owned absolute path and the canonical
+    /// chained start-and-enter command, mirroring the Git prompt.
+    #[default]
+    Explicit,
+    /// The prompt withholds the path and instructs the agent to enter the
+    /// `edit_root` returned by Task start, as protocol .40 did.
+    Returned,
+}
+
+impl AgentTokenAitEditRootMode {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Explicit => "explicit",
+            Self::Returned => "returned",
+        }
+    }
+}
+
+/// How a measured Claude session treats a provider-side model substitution.
+/// The runner never supplies `--fallback-model`, yet the provider can still
+/// emit a fallback event mid-session and serve the remainder on another model.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentTokenClaudeModelAdmission {
+    /// Any model outside the pin fails the lane closed.
+    #[default]
+    Strict,
+    /// Measure Claude Code as shipped: admit the session when the pinned model
+    /// is present, and sum every terminal modelUsage entry so no
+    /// provider-reported token is dropped. The per-model composition and any
+    /// fallback events remain verbatim in the retained raw stream.
+    AsShipped,
+}
+
+impl AgentTokenClaudeModelAdmission {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Strict => "strict",
+            Self::AsShipped => "as_shipped",
+        }
     }
 }
 
@@ -142,6 +381,16 @@ pub struct AgentTokenCampaignManifest {
     pub protocol_revision: String,
     pub campaign_scope: AgentTokenCampaignScope,
     pub accounting_profile: AgentTokenAccountingProfile,
+    #[serde(default)]
+    pub ait_sprint_mode: AgentTokenAitSprintMode,
+    #[serde(default)]
+    pub ait_edit_root_mode: AgentTokenAitEditRootMode,
+    #[serde(default)]
+    pub git_worktree_mode: AgentTokenGitWorktreeMode,
+    #[serde(default)]
+    pub claude_model_admission: AgentTokenClaudeModelAdmission,
+    #[serde(default)]
+    pub functional_replacement_policy: AgentTokenFunctionalReplacementPolicy,
     pub seed: u64,
     pub attempts_per_cell: usize,
     pub workload_ids: Vec<String>,
@@ -155,6 +404,23 @@ pub struct AgentTokenCampaignManifest {
     pub bootstrap_resamples: usize,
     #[serde(default)]
     pub limitations: Vec<String>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentTokenFunctionalReplacementPolicy {
+    #[default]
+    None,
+    FirstValidUnacceptedLaneOnce,
+}
+
+impl AgentTokenFunctionalReplacementPolicy {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::FirstValidUnacceptedLaneOnce => "first_valid_unaccepted_lane_once",
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -179,6 +445,18 @@ pub struct AgentTokenRuntime {
     /// and optional for the codex executor.
     #[serde(default)]
     pub claude_program: Option<PathBuf>,
+    /// Exact measured executor `--version` output. Protocol `.37` requires
+    /// this pin for Claude campaigns and checks it before any model request.
+    #[serde(default)]
+    pub executor_version: Option<String>,
+    #[serde(default)]
+    pub ait_version: Option<String>,
+    #[serde(default)]
+    pub git_version: Option<String>,
+    #[serde(default)]
+    pub node_version: Option<String>,
+    #[serde(default)]
+    pub browser_version: Option<String>,
     pub ait_program: PathBuf,
     pub git_program: PathBuf,
     pub node_program: PathBuf,
@@ -227,7 +505,7 @@ pub struct AgentTokenScheduleEntry {
     pub randomized_order: usize,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 pub struct NormalizedAgentTokenUsage {
     pub contract: String,
     pub run_id: String,
@@ -246,6 +524,29 @@ pub struct NormalizedAgentTokenUsage {
     pub provider_total_tokens: u64,
     pub completed_turns: usize,
     pub usage_provenance: String,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+pub struct AgentTokenServedModelUsage {
+    pub model_id: String,
+    pub canonical_model: String,
+    pub input_tokens: u64,
+    pub cached_input_tokens: u64,
+    pub cache_write_input_tokens: u64,
+    pub output_tokens: u64,
+    pub provider_total_tokens: u64,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
+pub struct AgentTokenServedModelReport {
+    pub model_id: String,
+    pub canonical_model: String,
+    pub run_count: usize,
+    pub input_tokens: u64,
+    pub cached_input_tokens: u64,
+    pub cache_write_input_tokens: u64,
+    pub output_tokens: u64,
+    pub provider_total_tokens: u64,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -273,6 +574,10 @@ pub struct AgentTokenEnvironment {
     pub node_version: String,
     pub browser_version: Option<String>,
     pub workflow_mode: String,
+    #[serde(default)]
+    pub ait_edit_root_mode: AgentTokenAitEditRootMode,
+    #[serde(default)]
+    pub git_worktree_mode: AgentTokenGitWorktreeMode,
     pub sprint_mode: String,
     pub ait_server_connected: bool,
     pub network_policy: String,
@@ -321,6 +626,10 @@ pub struct AgentTokenRunSummary {
     pub elapsed_ms: u64,
     #[serde(default)]
     pub infrastructure_failure: Option<String>,
+    #[serde(default)]
+    pub provider_refusal: bool,
+    #[serde(default)]
+    pub provider_stop_reason: Option<String>,
     pub usage: Option<NormalizedAgentTokenUsage>,
     pub transcript: AgentTokenCommandTranscript,
     pub secondary_metrics: AgentTokenSecondaryMetrics,
@@ -364,6 +673,10 @@ pub struct AgentTokenSecondaryMetrics {
     pub help_calls: usize,
     pub file_read_or_search_calls: usize,
     pub tool_calls_by_family: BTreeMap<String, usize>,
+    #[serde(default)]
+    pub host_worktree_provisioning_elapsed_ms: Option<u64>,
+    #[serde(default)]
+    pub host_worktree_closeout_elapsed_ms: Option<u64>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -373,6 +686,14 @@ pub struct AgentTokenReport {
     pub protocol_revision: String,
     pub campaign_scope: String,
     pub accounting_profile: String,
+    #[serde(default)]
+    pub ait_sprint_mode: AgentTokenAitSprintMode,
+    #[serde(default)]
+    pub ait_edit_root_mode: AgentTokenAitEditRootMode,
+    #[serde(default)]
+    pub git_worktree_mode: AgentTokenGitWorktreeMode,
+    #[serde(default)]
+    pub functional_replacement_policy: AgentTokenFunctionalReplacementPolicy,
     pub model: AgentTokenModelPin,
     pub cache_class: String,
     pub network_policy: String,
@@ -388,6 +709,12 @@ pub struct AgentTokenReport {
     #[serde(default)]
     pub statistically_excluded_run_count: usize,
     pub invalid_run_count: usize,
+    #[serde(default)]
+    pub served_models: Vec<AgentTokenServedModelReport>,
+    #[serde(default)]
+    pub mixed_model_run_count: usize,
+    #[serde(default)]
+    pub fallback_observed_run_count: usize,
     pub groups: Vec<AgentTokenGroupReport>,
     pub comparisons: Vec<AgentTokenModeComparison>,
     pub aggregate_median_token_savings_percent: Option<f64>,
@@ -416,9 +743,30 @@ pub struct AgentTokenReport {
     pub replacement_policy_revision: Option<String>,
     #[serde(default)]
     pub statistical_replacements: Vec<AgentTokenStatisticalReplacementRecord>,
+    #[serde(default)]
+    pub infrastructure_recovery_policy_revision: Option<String>,
+    #[serde(default)]
+    pub infrastructure_pair_recoveries: Vec<AgentTokenInfrastructurePairRecoveryRecord>,
+    #[serde(default)]
+    pub host_shutdown_recovery_policy_revision: Option<String>,
+    #[serde(default)]
+    pub host_shutdown_pair_recoveries: Vec<AgentTokenHostShutdownPairRecoveryRecord>,
+    #[serde(default)]
+    pub recovered_spawn_policy_revision: Option<String>,
+    #[serde(default)]
+    pub recovered_spawn_adjudications: Vec<AgentTokenRecoveredSpawnAdjudicationRecord>,
     pub claim_eligible: bool,
     pub blockers: Vec<String>,
     pub limitations: Vec<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct AgentTokenRecoveredSpawnAdjudicationRecord {
+    pub run_id: String,
+    pub source_run_summary_sha256: String,
+    pub adjudicator_revision: String,
+    pub source_infrastructure_failure: String,
+    pub reason: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -429,6 +777,34 @@ pub struct AgentTokenStatisticalReplacementRecord {
     pub replacement_run_summary_sha256: String,
     #[serde(default)]
     pub replacement_runner_sha256: String,
+    pub reason: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct AgentTokenInfrastructurePairRecoveryRecord {
+    pub source_pair_start_index: usize,
+    pub workload_id: String,
+    pub attempt: usize,
+    pub source_schedule_run_ids: Vec<String>,
+    pub observed_source_run_ids: Vec<String>,
+    pub replacement_run_ids: Vec<String>,
+    pub recovery_runner_sha256: String,
+    pub reason: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct AgentTokenHostShutdownPairRecoveryRecord {
+    pub source_pair_start_index: usize,
+    pub workload_id: String,
+    pub attempt: usize,
+    pub source_schedule_run_ids: Vec<String>,
+    pub interrupted_run_id: String,
+    pub interrupted_event_sha256: String,
+    pub interrupted_event_mtime_unix_s: u64,
+    pub interrupted_artifact_count: usize,
+    pub host_observation_sha256: String,
+    pub replacement_run_ids: Vec<String>,
+    pub recovery_runner_sha256: String,
     pub reason: String,
 }
 
@@ -456,6 +832,10 @@ pub struct AgentTokenGroupReport {
     pub rejected_apply_patch_attempt_distribution: Option<DistributionSummary>,
     #[serde(default)]
     pub apply_patch_attempt_distribution: Option<DistributionSummary>,
+    #[serde(default)]
+    pub host_worktree_provisioning_elapsed_ms_distribution: Option<DistributionSummary>,
+    #[serde(default)]
+    pub host_worktree_closeout_elapsed_ms_distribution: Option<DistributionSummary>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -530,7 +910,22 @@ pub fn load_agent_token_campaign(path: &Path) -> Result<AgentTokenCampaignManife
 pub fn load_agent_token_campaign_for_evidence(
     path: &Path,
 ) -> Result<AgentTokenCampaignManifest, String> {
-    let manifest = read_agent_token_campaign(path)?;
+    load_agent_token_campaign_for_evidence_with_fixture_override(path, None)
+}
+
+/// Loads an evidence campaign manifest, optionally replacing the fixture
+/// manifest path. The stored path is relative to the committed campaigns
+/// directory and therefore does not resolve from an evidence directory, so
+/// resume supplies it explicitly. Fixture content is still verified by digest
+/// on every run, so an override cannot swap fixtures silently.
+pub fn load_agent_token_campaign_for_evidence_with_fixture_override(
+    path: &Path,
+    fixture_manifest: Option<&Path>,
+) -> Result<AgentTokenCampaignManifest, String> {
+    let mut manifest = read_agent_token_campaign(path)?;
+    if let Some(fixture) = fixture_manifest {
+        manifest.runtime.fixture_manifest = fixture.to_path_buf();
+    }
     validate_agent_token_campaign_source(&manifest)?;
     Ok(manifest)
 }
@@ -562,10 +957,12 @@ pub fn validate_agent_token_campaign(manifest: &AgentTokenCampaignManifest) -> R
     }
     if !matches!(
         manifest.campaign_scope,
-        AgentTokenCampaignScope::Smoke | AgentTokenCampaignScope::Complete
+        AgentTokenCampaignScope::Smoke
+            | AgentTokenCampaignScope::Diagnostic
+            | AgentTokenCampaignScope::Complete
     ) {
         return Err(format!(
-            "Agent-token protocol {AGENT_TOKEN_PROTOCOL_REVISION} admits only smoke or complete campaign scope, got {}",
+            "Agent-token protocol {AGENT_TOKEN_PROTOCOL_REVISION} admits only smoke, diagnostic, or complete campaign scope, got {}",
             manifest.campaign_scope.as_str()
         ));
     }
@@ -635,7 +1032,15 @@ fn validate_agent_token_campaign_shape(
         );
     }
     let required_attempts = source_required_attempts_per_cell(manifest);
-    if manifest.attempts_per_cell != required_attempts {
+    if !manifest.campaign_scope.pins_exact_attempts() {
+        if manifest.attempts_per_cell < required_attempts {
+            return Err(format!(
+                "{} campaign requires at least {} attempts per workload and mode",
+                manifest.campaign_scope.as_str(),
+                required_attempts
+            ));
+        }
+    } else if manifest.attempts_per_cell != required_attempts {
         return Err(format!(
             "{} campaign requires exactly {} attempts per workload and mode",
             manifest.campaign_scope.as_str(),
@@ -721,10 +1126,56 @@ fn validate_agent_token_campaign_shape(
                     "runtime.claude_program is required for the claude executor".to_string()
                 );
             }
+            if protocol_requires_claude_model_evidence(&manifest.protocol_revision)
+                && manifest
+                    .runtime
+                    .executor_version
+                    .as_deref()
+                    .is_none_or(|version| version.trim().is_empty())
+            {
+                return Err("Pinned Claude campaigns require runtime.executor_version".to_string());
+            }
+            if manifest.claude_model_admission == AgentTokenClaudeModelAdmission::AsShipped
+                && !protocol_supports_as_shipped_claude_admission(&manifest.protocol_revision)
+            {
+                return Err(
+                    "claude_model_admission=as_shipped requires protocol .46 or its active successor"
+                        .to_string(),
+                );
+            }
         }
     }
     if manifest.runtime.run_timeout_seconds < 60 {
         return Err("runtime.run_timeout_seconds must be at least 60".to_string());
+    }
+    for (field, value) in [
+        (
+            "runtime.executor_version",
+            manifest.runtime.executor_version.as_deref(),
+        ),
+        (
+            "runtime.ait_version",
+            manifest.runtime.ait_version.as_deref(),
+        ),
+        (
+            "runtime.git_version",
+            manifest.runtime.git_version.as_deref(),
+        ),
+        (
+            "runtime.node_version",
+            manifest.runtime.node_version.as_deref(),
+        ),
+        (
+            "runtime.browser_version",
+            manifest.runtime.browser_version.as_deref(),
+        ),
+    ] {
+        if value.is_some_and(|value| value.trim().is_empty()) {
+            return Err(format!("{field} must not be empty when declared"));
+        }
+    }
+    if manifest.runtime.browser_version.is_some() && manifest.runtime.browser_program.is_none() {
+        return Err("runtime.browser_version requires runtime.browser_program".to_string());
     }
     if manifest.runtime.project_doc_max_bytes > 65_536 {
         return Err("runtime.project_doc_max_bytes must not exceed 65536".to_string());
@@ -736,6 +1187,86 @@ fn validate_agent_token_campaign_shape(
             "Nonzero runtime.project_doc_max_bytes is admitted only for smoke diagnostics"
                 .to_string(),
         );
+    }
+    if manifest.ait_sprint_mode == AgentTokenAitSprintMode::On {
+        if !matches!(
+            manifest.campaign_scope,
+            AgentTokenCampaignScope::Smoke
+                | AgentTokenCampaignScope::Diagnostic
+                | AgentTokenCampaignScope::Complete
+        ) {
+            return Err(
+                "AIT sprint-on is admitted only for smoke, diagnostic, or complete campaigns"
+                    .to_string(),
+            );
+        }
+        if manifest.accounting_profile != AgentTokenAccountingProfile::SteadyStateTaskCost {
+            return Err("AIT sprint-on requires steady_state_task_cost accounting".to_string());
+        }
+        // A diagnostic campaign deliberately isolates one workload, so the
+        // full-matrix requirement applies only to scopes that can be published.
+        if manifest.campaign_scope != AgentTokenCampaignScope::Diagnostic
+            && workloads != BTreeSet::from(["GD-01", "GD-02", "GD-03", "GD-04", "GD-05"])
+        {
+            return Err("AIT sprint-on must contain all five workloads".to_string());
+        }
+        if manifest.runtime.project_doc_max_bytes != 0 {
+            return Err("AIT sprint-on cannot mix project-document-loading treatment".to_string());
+        }
+    }
+    if manifest.git_worktree_mode == AgentTokenGitWorktreeMode::CodexAppEquivalentManaged {
+        if manifest.protocol_revision != AGENT_TOKEN_PROTOCOL_REVISION
+            && manifest.protocol_revision
+                != AGENT_TOKEN_MANAGED_WORKTREE_PREFLIGHT_PREDECESSOR_PROTOCOL_REVISION
+        {
+            return Err(
+                "codex_app_equivalent_managed is admitted only by the active prospective protocol or its exact zero-lane preflight predecessor"
+                    .to_string(),
+            );
+        }
+        if manifest.runtime.executor != AgentTokenExecutor::Codex {
+            return Err("codex_app_equivalent_managed requires the Codex executor".to_string());
+        }
+        if manifest.accounting_profile != AgentTokenAccountingProfile::SteadyStateTaskCost {
+            return Err(
+                "codex_app_equivalent_managed requires steady_state_task_cost accounting"
+                    .to_string(),
+            );
+        }
+        if manifest.ait_sprint_mode != AgentTokenAitSprintMode::Off {
+            return Err(
+                "codex_app_equivalent_managed is paired only with the sprint-off AIT treatment"
+                    .to_string(),
+            );
+        }
+        if manifest.ait_edit_root_mode != AgentTokenAitEditRootMode::Returned {
+            return Err(
+                "codex_app_equivalent_managed requires AIT task start without --edit-root"
+                    .to_string(),
+            );
+        }
+        if manifest.runtime.project_doc_max_bytes != 0 {
+            return Err(
+                "codex_app_equivalent_managed cannot mix project-document loading treatment"
+                    .to_string(),
+            );
+        }
+    }
+    if manifest.functional_replacement_policy != AgentTokenFunctionalReplacementPolicy::None {
+        if manifest.protocol_revision != AGENT_TOKEN_PROTOCOL_REVISION
+            && !protocol_requires_claude_model_evidence(&manifest.protocol_revision)
+        {
+            return Err(
+                "Functional replacement may be declared only by the active prospective protocol"
+                    .to_string(),
+            );
+        }
+        if manifest.campaign_scope != AgentTokenCampaignScope::Complete {
+            return Err(
+                "Functional replacement is admitted only for complete campaigns; smoke must retain every outcome without replacement"
+                    .to_string(),
+            );
+        }
     }
     for (field, value) in [
         ("runtime.codex_program", &manifest.runtime.codex_program),
@@ -778,6 +1309,14 @@ fn validate_agent_token_campaign_shape(
 fn source_required_attempts_per_cell(manifest: &AgentTokenCampaignManifest) -> usize {
     if manifest.campaign_scope != AgentTokenCampaignScope::Complete
         || manifest.protocol_revision == AGENT_TOKEN_PROTOCOL_REVISION
+        || manifest.protocol_revision
+            == AGENT_TOKEN_MANAGED_WORKTREE_PREFLIGHT_PREDECESSOR_PROTOCOL_REVISION
+        || manifest.protocol_revision == AGENT_TOKEN_MODEL_ADMISSION_PREDECESSOR_PROTOCOL_REVISION
+        || manifest.protocol_revision == AGENT_TOKEN_MODEL_PURITY_PREDECESSOR_PROTOCOL_REVISION
+        || manifest.protocol_revision
+            == AGENT_TOKEN_SPRINT_ON_COMPLETE_PREDECESSOR_PROTOCOL_REVISION
+        || manifest.protocol_revision
+            == AGENT_TOKEN_PROMPTED_INSPECTION_PREDECESSOR_PROTOCOL_REVISION
         || manifest.protocol_revision == AGENT_TOKEN_VALID_OUTCOME_RESUMABLE_PROTOCOL_REVISION
         || manifest.protocol_revision == AGENT_TOKEN_200_SESSION_PREDECESSOR_PROTOCOL_REVISION
     {
@@ -934,26 +1473,41 @@ pub fn import_codex_usage(
     })
 }
 
-/// Import provider usage from a Claude Code stream-json transcript. The
-/// terminal `result` event carries cumulative usage; Claude reports cache
-/// reads and cache writes outside `input_tokens`, so the normalized input
-/// re-adds them to keep the codex semantics where cached input is a subset
-/// of total input and `provider_total_tokens = input + output`.
-pub fn import_claude_usage(
+#[derive(Clone, Debug)]
+pub(crate) struct ImportedClaudeUsage {
+    pub usage: NormalizedAgentTokenUsage,
+    pub served_models: Vec<AgentTokenServedModelUsage>,
+    pub fallback_observed: bool,
+    pub provider_refusal: bool,
+    pub provider_stop_reason: String,
+}
+
+/// Import provider usage and terminal outcome from a Claude Code stream-json
+/// transcript. Protocol `.37` treats the stream itself as model-purity
+/// evidence: the init model, every assistant message, and the terminal
+/// `modelUsage` inventory must all name exactly the pinned model. This rejects
+/// prompt-suggestion or fallback model calls instead of silently omitting
+/// their tokens. A successful `refusal` stop remains valid, token-accounted
+/// model behavior and is returned separately for functional classification.
+pub(crate) fn import_claude_usage_with_outcome(
     source: &Path,
     run_id: &str,
     workload_id: &str,
     mode: AgentTokenMode,
     profile: AgentTokenAccountingProfile,
     model: &AgentTokenModelPin,
-) -> Result<NormalizedAgentTokenUsage, String> {
+    admission: AgentTokenClaudeModelAdmission,
+) -> Result<ImportedClaudeUsage, String> {
     let source_text = fs::read_to_string(source).map_err(|error| {
         format!(
             "Failed to read Claude stream-json usage source {}: {error}",
             source.display()
         )
     })?;
-    let mut result_usage = None;
+    let mut init_seen = false;
+    let mut assistant_event_count = 0_usize;
+    let mut fallback_observed = false;
+    let mut result_event = None;
     for (index, line) in source_text.lines().enumerate() {
         if line.trim().is_empty() {
             continue;
@@ -965,30 +1519,149 @@ pub fn import_claude_usage(
                 index + 1
             )
         })?;
-        if event.get("type").and_then(serde_json::Value::as_str) != Some("result") {
-            continue;
+        fallback_observed |= contains_claude_fallback_event(&event);
+        match event.get("type").and_then(serde_json::Value::as_str) {
+            Some("system")
+                if event.get("subtype").and_then(serde_json::Value::as_str) == Some("init") =>
+            {
+                if init_seen {
+                    return Err(
+                        "Claude stream-json contains more than one system init event".to_string(),
+                    );
+                }
+                init_seen = true;
+                let observed_model = event
+                    .get("model")
+                    .and_then(serde_json::Value::as_str)
+                    .ok_or_else(|| "Claude system init carries no model".to_string())?;
+                if observed_model != model.model_id {
+                    return Err(format!(
+                        "Claude system init model differs from the pin: expected {}, got {}",
+                        model.model_id, observed_model
+                    ));
+                }
+                let observed_tool_values = event
+                    .get("tools")
+                    .and_then(serde_json::Value::as_array)
+                    .ok_or_else(|| "Claude system init carries no tools inventory".to_string())?;
+                if observed_tool_values.len() != CLAUDE_MEASURED_TOOL_SURFACE.len() {
+                    return Err(format!(
+                        "Claude system init tool inventory length differs: expected {}, got {}",
+                        CLAUDE_MEASURED_TOOL_SURFACE.len(),
+                        observed_tool_values.len()
+                    ));
+                }
+                let observed_tools = observed_tool_values
+                    .iter()
+                    .map(|value| {
+                        value.as_str().map(str::to_string).ok_or_else(|| {
+                            "Claude system init tools inventory contains a non-string".to_string()
+                        })
+                    })
+                    .collect::<Result<BTreeSet<_>, _>>()?;
+                let expected_tools = CLAUDE_MEASURED_TOOL_SURFACE
+                    .iter()
+                    .map(|tool| (*tool).to_string())
+                    .collect::<BTreeSet<_>>();
+                if observed_tools != expected_tools {
+                    return Err(format!(
+                        "Claude system init tool inventory differs from the declared surface: expected {}, got {}",
+                        expected_tools.into_iter().collect::<Vec<_>>().join(", "),
+                        observed_tools.into_iter().collect::<Vec<_>>().join(", ")
+                    ));
+                }
+                let mcp_servers = event
+                    .get("mcp_servers")
+                    .and_then(serde_json::Value::as_array)
+                    .ok_or_else(|| {
+                        "Claude system init carries no MCP-server inventory".to_string()
+                    })?;
+                if !mcp_servers.is_empty() {
+                    return Err("Claude system init activated an MCP server".to_string());
+                }
+            }
+            Some("assistant") => {
+                assistant_event_count = assistant_event_count.saturating_add(1);
+                let observed_model = event
+                    .pointer("/message/model")
+                    .and_then(serde_json::Value::as_str)
+                    .ok_or_else(|| "Claude assistant event carries no message model".to_string())?;
+                if observed_model != model.model_id
+                    && admission == AgentTokenClaudeModelAdmission::Strict
+                {
+                    return Err(format!(
+                        "Claude assistant model differs from the pin: expected {}, got {}",
+                        model.model_id, observed_model
+                    ));
+                }
+            }
+            Some("result") => {
+                if result_event.is_some() {
+                    return Err(
+                        "Claude stream-json contains more than one result event".to_string()
+                    );
+                }
+                result_event = Some(event);
+            }
+            Some("prompt_suggestion") => {
+                return Err(
+                    "Claude stream-json emitted a prompt suggestion despite the disabled pin"
+                        .to_string(),
+                );
+            }
+            _ => {}
         }
-        if result_usage.is_some() {
-            return Err("Claude stream-json contains more than one result event".to_string());
-        }
-        let usage = event
-            .get("usage")
-            .and_then(serde_json::Value::as_object)
-            .ok_or_else(|| "Claude result event carries no usage object".to_string())?
-            .clone();
-        let num_turns = event
-            .get("num_turns")
-            .and_then(serde_json::Value::as_u64)
-            .ok_or_else(|| "Claude result event carries no num_turns".to_string())?;
-        result_usage = Some((usage, num_turns));
     }
-    let Some((usage, num_turns)) = result_usage else {
+    if !init_seen {
+        return Err("Claude stream-json contains no system init event".to_string());
+    }
+    if assistant_event_count == 0 {
+        return Err("Claude stream-json contains no assistant event".to_string());
+    }
+    let Some(result) = result_event else {
         return Err("Claude stream-json contains no result usage event".to_string());
     };
-    let direct_input = required_u64(&usage, "input_tokens", 0)?;
-    let cache_read = required_u64(&usage, "cache_read_input_tokens", 0)?;
-    let cache_write = required_u64(&usage, "cache_creation_input_tokens", 0)?;
-    let output_tokens = required_u64(&usage, "output_tokens", 0)?;
+    let subtype = result
+        .get("subtype")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| "Claude result event carries no subtype".to_string())?;
+    let is_error = result
+        .get("is_error")
+        .and_then(serde_json::Value::as_bool)
+        .ok_or_else(|| "Claude result event carries no is_error boolean".to_string())?;
+    if subtype != "success" || is_error {
+        return Err(format!(
+            "Claude terminal result is not successful: subtype={subtype}, is_error={is_error}"
+        ));
+    }
+    let terminal_reason = result
+        .get("terminal_reason")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| "Claude result event carries no terminal_reason".to_string())?;
+    if terminal_reason != "completed" {
+        return Err(format!(
+            "Claude terminal_reason is {terminal_reason}, expected completed"
+        ));
+    }
+    let provider_stop_reason = result
+        .get("stop_reason")
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| "Claude result event carries no stop_reason".to_string())?
+        .to_string();
+    let usage = result
+        .get("usage")
+        .and_then(serde_json::Value::as_object)
+        .ok_or_else(|| "Claude result event carries no usage object".to_string())?
+        .clone();
+    let num_turns = result
+        .get("num_turns")
+        .and_then(serde_json::Value::as_u64)
+        .ok_or_else(|| "Claude result event carries no num_turns".to_string())?;
+    let direct_input = required_claude_u64(&usage, "input_tokens")?;
+    let cache_read = required_claude_u64(&usage, "cache_read_input_tokens")?;
+    let cache_write = required_claude_u64(&usage, "cache_creation_input_tokens")?;
+    let output_tokens = required_claude_u64(&usage, "output_tokens")?;
     let reasoning_tokens = usage
         .get("output_tokens_details")
         .and_then(|details| details.get("thinking_tokens"))
@@ -1008,7 +1681,94 @@ pub fn import_claude_usage(
     if num_turns == 0 {
         return Err("Claude result event reports zero turns".to_string());
     }
-    Ok(NormalizedAgentTokenUsage {
+    let model_usage = result
+        .get("modelUsage")
+        .and_then(serde_json::Value::as_object)
+        .ok_or_else(|| "Claude result event carries no modelUsage inventory".to_string())?;
+    let mut served_models = model_usage
+        .iter()
+        .map(|(model_id, value)| parse_claude_served_model_usage(model_id, value))
+        .collect::<Result<Vec<_>, _>>()?;
+    served_models.sort_by(|left, right| left.model_id.cmp(&right.model_id));
+    if admission == AgentTokenClaudeModelAdmission::Strict {
+        if model_usage.len() != 1 || !model_usage.contains_key(&model.model_id) {
+            return Err(format!(
+                "Claude terminal modelUsage must contain only the pinned model {}; observed {}",
+                model.model_id,
+                model_usage.keys().cloned().collect::<Vec<_>>().join(", ")
+            ));
+        }
+    } else if !model_usage.contains_key(&model.model_id) {
+        return Err(format!(
+            "Claude terminal modelUsage does not contain the pinned model {}; observed {}",
+            model.model_id,
+            model_usage.keys().cloned().collect::<Vec<_>>().join(", ")
+        ));
+    }
+    let pinned_usage = model_usage
+        .get(&model.model_id)
+        .and_then(serde_json::Value::as_object)
+        .expect("the pinned modelUsage entry was checked");
+    if admission == AgentTokenClaudeModelAdmission::Strict {
+        for (model_usage_field, usage_value) in [
+            ("inputTokens", direct_input),
+            ("cacheReadInputTokens", cache_read),
+            ("cacheCreationInputTokens", cache_write),
+            ("outputTokens", output_tokens),
+        ] {
+            let observed = pinned_usage
+                .get(model_usage_field)
+                .and_then(serde_json::Value::as_u64)
+                .ok_or_else(|| {
+                    format!("Claude modelUsage field {model_usage_field} must be u64")
+                })?;
+            if observed != usage_value {
+                return Err(format!(
+                "Claude modelUsage field {model_usage_field} differs from terminal usage: expected {usage_value}, got {observed}"
+            ));
+            }
+        }
+        let canonical_model = pinned_usage
+            .get("canonicalModel")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| "Claude modelUsage carries no canonicalModel".to_string())?;
+        if canonical_model != model.model_id {
+            return Err(format!(
+                "Claude canonical model differs from the pin: expected {}, got {}",
+                model.model_id, canonical_model
+            ));
+        }
+    } else {
+        for (field, terminal, summed) in [
+            (
+                "inputTokens",
+                direct_input,
+                sum_served_model_field(&served_models, |usage| usage.input_tokens)?,
+            ),
+            (
+                "cacheReadInputTokens",
+                cache_read,
+                sum_served_model_field(&served_models, |usage| usage.cached_input_tokens)?,
+            ),
+            (
+                "cacheCreationInputTokens",
+                cache_write,
+                sum_served_model_field(&served_models, |usage| usage.cache_write_input_tokens)?,
+            ),
+            (
+                "outputTokens",
+                output_tokens,
+                sum_served_model_field(&served_models, |usage| usage.output_tokens)?,
+            ),
+        ] {
+            if terminal != summed {
+                return Err(format!(
+                    "Claude summed modelUsage field {field} differs from terminal usage: expected {terminal}, got {summed}"
+                ));
+            }
+        }
+    }
+    let usage = NormalizedAgentTokenUsage {
         contract: AGENT_TOKEN_USAGE_CONTRACT.to_string(),
         run_id: run_id.to_string(),
         workload_id: workload_id.to_string(),
@@ -1025,8 +1785,100 @@ pub fn import_claude_usage(
         reasoning_tokens,
         provider_total_tokens,
         completed_turns: 1,
-        usage_provenance: "claude-code-stream-json:result".to_string(),
+        usage_provenance: if admission == AgentTokenClaudeModelAdmission::AsShipped
+            && served_models.len() > 1
+        {
+            "claude-code-stream-json:result+served-model-sum".to_string()
+        } else {
+            "claude-code-stream-json:result+model-purity".to_string()
+        },
+    };
+    Ok(ImportedClaudeUsage {
+        usage,
+        served_models,
+        fallback_observed,
+        provider_refusal: provider_stop_reason == "refusal",
+        provider_stop_reason,
     })
+}
+
+fn parse_claude_served_model_usage(
+    model_id: &str,
+    value: &serde_json::Value,
+) -> Result<AgentTokenServedModelUsage, String> {
+    let usage = value
+        .as_object()
+        .ok_or_else(|| format!("Claude modelUsage entry {model_id} must be an object"))?;
+    let required = |field: &str| {
+        usage
+            .get(field)
+            .and_then(serde_json::Value::as_u64)
+            .ok_or_else(|| format!("Claude modelUsage entry {model_id} field {field} must be u64"))
+    };
+    let input_tokens = required("inputTokens")?;
+    let cached_input_tokens = required("cacheReadInputTokens")?;
+    let cache_write_input_tokens = required("cacheCreationInputTokens")?;
+    let output_tokens = required("outputTokens")?;
+    let provider_total_tokens = input_tokens
+        .checked_add(cached_input_tokens)
+        .and_then(|sum| sum.checked_add(cache_write_input_tokens))
+        .and_then(|sum| sum.checked_add(output_tokens))
+        .ok_or_else(|| format!("Claude modelUsage entry {model_id} token sum overflowed u64"))?;
+    let canonical_model = usage
+        .get("canonicalModel")
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| format!("Claude modelUsage entry {model_id} carries no canonicalModel"))?;
+    Ok(AgentTokenServedModelUsage {
+        model_id: model_id.to_string(),
+        canonical_model: canonical_model.to_string(),
+        input_tokens,
+        cached_input_tokens,
+        cache_write_input_tokens,
+        output_tokens,
+        provider_total_tokens,
+    })
+}
+
+fn sum_served_model_field(
+    models: &[AgentTokenServedModelUsage],
+    field: impl Fn(&AgentTokenServedModelUsage) -> u64,
+) -> Result<u64, String> {
+    models.iter().try_fold(0_u64, |sum, model| {
+        sum.checked_add(field(model))
+            .ok_or_else(|| "Claude modelUsage aggregate overflowed u64".to_string())
+    })
+}
+
+fn contains_claude_fallback_event(value: &serde_json::Value) -> bool {
+    match value {
+        serde_json::Value::Object(object) => {
+            object.get("type").and_then(serde_json::Value::as_str) == Some("fallback")
+                || object.values().any(contains_claude_fallback_event)
+        }
+        serde_json::Value::Array(values) => values.iter().any(contains_claude_fallback_event),
+        _ => false,
+    }
+}
+
+pub fn import_claude_usage(
+    source: &Path,
+    run_id: &str,
+    workload_id: &str,
+    mode: AgentTokenMode,
+    profile: AgentTokenAccountingProfile,
+    model: &AgentTokenModelPin,
+) -> Result<NormalizedAgentTokenUsage, String> {
+    import_claude_usage_with_outcome(
+        source,
+        run_id,
+        workload_id,
+        mode,
+        profile,
+        model,
+        AgentTokenClaudeModelAdmission::Strict,
+    )
+    .map(|imported| imported.usage)
 }
 
 pub fn extract_and_validate_codex_transcript(
@@ -1038,12 +1890,41 @@ pub fn extract_and_validate_codex_transcript(
     extract_and_validate_codex_transcript_with_git_start_proof(source, run_id, mode, profile, false)
 }
 
+#[derive(Clone, Copy)]
+pub(crate) struct AgentTokenTranscriptWorkflowOptions {
+    pub ait_sprint_mode: AgentTokenAitSprintMode,
+    pub ait_edit_root_mode: Option<AgentTokenAitEditRootMode>,
+    pub git_worktree_mode: AgentTokenGitWorktreeMode,
+    pub clean_main_head_proven: bool,
+}
+
 pub(crate) fn extract_and_validate_codex_transcript_with_git_start_proof(
     source: &Path,
     run_id: &str,
     mode: AgentTokenMode,
     profile: AgentTokenAccountingProfile,
     clean_main_head_proven: bool,
+) -> Result<AgentTokenCommandTranscript, String> {
+    extract_and_validate_codex_transcript_with_workflow_options(
+        source,
+        run_id,
+        mode,
+        profile,
+        AgentTokenTranscriptWorkflowOptions {
+            ait_sprint_mode: AgentTokenAitSprintMode::Off,
+            ait_edit_root_mode: None,
+            git_worktree_mode: AgentTokenGitWorktreeMode::AgentManaged,
+            clean_main_head_proven,
+        },
+    )
+}
+
+pub(crate) fn extract_and_validate_codex_transcript_with_workflow_options(
+    source: &Path,
+    run_id: &str,
+    mode: AgentTokenMode,
+    profile: AgentTokenAccountingProfile,
+    options: AgentTokenTranscriptWorkflowOptions,
 ) -> Result<AgentTokenCommandTranscript, String> {
     let source_text = fs::read_to_string(source).map_err(|error| {
         format!(
@@ -1085,15 +1966,12 @@ pub(crate) fn extract_and_validate_codex_transcript_with_git_start_proof(
         }
     }
 
-    if clean_main_head_proven {
-        validate_agent_token_command_list_with_git_start_proof(
-            commands, run_id, mode, profile, true,
-        )
-    } else {
-        validate_agent_token_command_list(commands, run_id, mode, profile)
-    }
+    validate_agent_token_command_list_with_workflow_options(
+        commands, run_id, mode, profile, options,
+    )
 }
 
+#[cfg(test)]
 fn validate_agent_token_command_list(
     commands: Vec<String>,
     run_id: &str,
@@ -1103,6 +1981,7 @@ fn validate_agent_token_command_list(
     validate_agent_token_command_list_with_git_start_proof(commands, run_id, mode, profile, false)
 }
 
+#[cfg(test)]
 fn validate_agent_token_command_list_with_git_start_proof(
     commands: Vec<String>,
     run_id: &str,
@@ -1110,6 +1989,33 @@ fn validate_agent_token_command_list_with_git_start_proof(
     profile: AgentTokenAccountingProfile,
     clean_main_head_proven: bool,
 ) -> Result<AgentTokenCommandTranscript, String> {
+    validate_agent_token_command_list_with_workflow_options(
+        commands,
+        run_id,
+        mode,
+        profile,
+        AgentTokenTranscriptWorkflowOptions {
+            ait_sprint_mode: AgentTokenAitSprintMode::Off,
+            ait_edit_root_mode: None,
+            git_worktree_mode: AgentTokenGitWorktreeMode::AgentManaged,
+            clean_main_head_proven,
+        },
+    )
+}
+
+fn validate_agent_token_command_list_with_workflow_options(
+    commands: Vec<String>,
+    run_id: &str,
+    mode: AgentTokenMode,
+    profile: AgentTokenAccountingProfile,
+    options: AgentTokenTranscriptWorkflowOptions,
+) -> Result<AgentTokenCommandTranscript, String> {
+    let AgentTokenTranscriptWorkflowOptions {
+        ait_sprint_mode,
+        ait_edit_root_mode,
+        git_worktree_mode,
+        clean_main_head_proven,
+    } = options;
     let mut errors = Vec::new();
     let mut observed_required_commands = Vec::new();
     match mode {
@@ -1119,6 +2025,12 @@ fn validate_agent_token_command_list_with_git_start_proof(
                 .flat_map(|command| git_command_invocations(command))
                 .filter(|invocation| !invocation_is_help_introspection(invocation))
                 .collect::<Vec<_>>();
+            // Local read-only inspection is recorded as observed evidence and
+            // stays token-accounted, but it is never required: the declared
+            // worktree, commit, fast-forward, removal, and branch-deletion
+            // lifecycle already proves Git-mode fidelity, and requiring
+            // discovery here would charge Git an inspection cost that the AIT
+            // branch never pays.
             for (name, subcommand) in [
                 ("git status", &["status"][..]),
                 ("git diff", &["diff"][..]),
@@ -1133,9 +2045,6 @@ fn validate_agent_token_command_list_with_git_start_proof(
                     observed_required_commands.push(name.to_string());
                 }
             }
-            if observed_required_commands.is_empty() {
-                errors.push("Git mode did not show explicit Git discovery behavior".to_string());
-            }
             if commands.iter().any(|command| command_invokes_ait(command)) {
                 errors.push("Git mode invoked AIT".to_string());
             }
@@ -1148,63 +2057,84 @@ fn validate_agent_token_command_list_with_git_start_proof(
             {
                 errors.push(GIT_METADATA_CONTEXT_OVERRIDE_ERROR.to_string());
             }
-            let commit_count = git_invocations
-                .iter()
-                .filter(|invocation| git_invocation_has_subcommand(invocation, &["commit"]))
-                .count();
-            let expected_commit_count = if profile == AgentTokenAccountingProfile::FirstUseTotalCost
-            {
-                2
+            if git_worktree_mode == AgentTokenGitWorktreeMode::CodexAppEquivalentManaged {
+                for invocation in &git_invocations {
+                    if git_invocation_is_app_managed_read_only(invocation) {
+                        observed_required_commands.push(format!(
+                            "read-only git {}",
+                            git_subcommand_arguments(invocation).join(" ")
+                        ));
+                    } else {
+                        errors.push(format!(
+                            "Codex App-equivalent Git lane invoked host-owned mutation: git {}",
+                            git_subcommand_arguments(invocation).join(" ")
+                        ));
+                    }
+                }
+                if profile != AgentTokenAccountingProfile::SteadyStateTaskCost {
+                    errors.push(
+                        "Codex App-equivalent Git lane requires steady-state accounting"
+                            .to_string(),
+                    );
+                }
             } else {
-                1
-            };
-            if commit_count != expected_commit_count {
-                errors.push(format!(
+                let commit_count = git_invocations
+                    .iter()
+                    .filter(|invocation| git_invocation_has_subcommand(invocation, &["commit"]))
+                    .count();
+                let expected_commit_count =
+                    if profile == AgentTokenAccountingProfile::FirstUseTotalCost {
+                        2
+                    } else {
+                        1
+                    };
+                if commit_count != expected_commit_count {
+                    errors.push(format!(
                     "Git mode must execute exactly {expected_commit_count} git commit command(s); observed {commit_count}"
                 ));
-            } else {
-                observed_required_commands.push("git commit".to_string());
-            }
-
-            for (name, subcommand) in [
-                ("git worktree add", &["worktree", "add"][..]),
-                ("git merge", &["merge"][..]),
-                ("git worktree remove", &["worktree", "remove"][..]),
-            ] {
-                let count = git_invocations
-                    .iter()
-                    .filter(|invocation| git_invocation_has_subcommand(invocation, subcommand))
-                    .count();
-                if count != 1 {
-                    errors.push(format!(
-                        "Git mode must execute exactly one {name}; observed {count}"
-                    ));
                 } else {
-                    observed_required_commands.push(name.to_string());
+                    observed_required_commands.push("git commit".to_string());
                 }
-            }
-            let branch_delete_count = git_invocations
-                .iter()
-                .filter(|invocation| {
-                    git_invocation_has_subcommand(invocation, &["branch"])
-                        && invocation
-                            .arguments
-                            .iter()
-                            .any(|argument| matches!(argument.as_str(), "-d" | "--delete"))
-                })
-                .count();
-            if branch_delete_count != 1 {
-                errors.push(format!(
+
+                for (name, subcommand) in [
+                    ("git worktree add", &["worktree", "add"][..]),
+                    ("git merge", &["merge"][..]),
+                    ("git worktree remove", &["worktree", "remove"][..]),
+                ] {
+                    let count = git_invocations
+                        .iter()
+                        .filter(|invocation| git_invocation_has_subcommand(invocation, subcommand))
+                        .count();
+                    if count != 1 {
+                        errors.push(format!(
+                            "Git mode must execute exactly one {name}; observed {count}"
+                        ));
+                    } else {
+                        observed_required_commands.push(name.to_string());
+                    }
+                }
+                let branch_delete_count = git_invocations
+                    .iter()
+                    .filter(|invocation| {
+                        git_invocation_has_subcommand(invocation, &["branch"])
+                            && invocation
+                                .arguments
+                                .iter()
+                                .any(|argument| matches!(argument.as_str(), "-d" | "--delete"))
+                    })
+                    .count();
+                if branch_delete_count != 1 {
+                    errors.push(format!(
                     "Git mode must execute exactly one git branch deletion; observed {branch_delete_count}"
                 ));
-            } else {
-                observed_required_commands.push("git branch --delete".to_string());
-            }
+                } else {
+                    observed_required_commands.push("git branch --delete".to_string());
+                }
 
-            let worktree_add = git_invocations
-                .iter()
-                .find(|invocation| git_invocation_has_subcommand(invocation, &["worktree", "add"]));
-            match worktree_add.map(classify_git_worktree_add_start) {
+                let worktree_add = git_invocations.iter().find(|invocation| {
+                    git_invocation_has_subcommand(invocation, &["worktree", "add"])
+                });
+                match worktree_add.map(classify_git_worktree_add_start) {
                 Some(GitWorktreeAddStart::ExplicitMain) => {}
                 Some(GitWorktreeAddStart::ImplicitHead)
                     if profile == AgentTokenAccountingProfile::SteadyStateTaskCost
@@ -1222,86 +2152,88 @@ fn validate_agent_token_command_list_with_git_start_proof(
                         .to_string(),
                 ),
             }
-            if !git_invocations.iter().any(|invocation| {
-                git_invocation_has_subcommand(invocation, &["merge"])
-                    && invocation_has_option(invocation, "--ff-only")
-                    && invocation
-                        .arguments
-                        .iter()
-                        .any(|argument| argument == "benchmark-task")
-            }) {
-                errors.push(
+                if !git_invocations.iter().any(|invocation| {
+                    git_invocation_has_subcommand(invocation, &["merge"])
+                        && invocation_has_option(invocation, "--ff-only")
+                        && invocation
+                            .arguments
+                            .iter()
+                            .any(|argument| argument == "benchmark-task")
+                }) {
+                    errors.push(
                     "Git mode did not fast-forward main to benchmark-task with git merge --ff-only"
                         .to_string(),
                 );
-            }
-            if !git_invocations.iter().any(|invocation| {
-                git_invocation_has_subcommand(invocation, &["worktree", "remove"])
-                    && invocation
-                        .arguments
-                        .iter()
-                        .any(|argument| argument.ends_with("git-task-worktree"))
-            }) {
-                errors.push(
-                    "Git mode did not remove the declared benchmark-owned linked worktree"
-                        .to_string(),
-                );
-            }
-            if !git_invocations.iter().any(|invocation| {
-                git_invocation_has_subcommand(invocation, &["branch"])
-                    && invocation
-                        .arguments
-                        .iter()
-                        .any(|argument| matches!(argument.as_str(), "-d" | "--delete"))
-                    && invocation
-                        .arguments
-                        .iter()
-                        .any(|argument| argument == "benchmark-task")
-            }) {
-                errors
-                    .push("Git mode did not delete the declared benchmark-task branch".to_string());
-            }
-            if git_invocations.iter().any(|invocation| {
-                ["clone", "fetch", "pull", "push", "remote", "ls-remote"]
-                    .iter()
-                    .any(|subcommand| git_invocation_has_subcommand(invocation, &[*subcommand]))
-            }) {
-                errors.push("Git mode invoked a forbidden remote operation".to_string());
-            }
-            match profile {
-                AgentTokenAccountingProfile::SteadyStateTaskCost => {
-                    if git_invocations
-                        .iter()
-                        .any(|invocation| git_invocation_has_subcommand(invocation, &["init"]))
-                    {
-                        errors.push(
-                            "Steady-state Git mode repeated first-use repository bootstrap"
-                                .to_string(),
-                        );
-                    }
                 }
-                AgentTokenAccountingProfile::FirstUseTotalCost => {
-                    if git_invocations
+                if !git_invocations.iter().any(|invocation| {
+                    git_invocation_has_subcommand(invocation, &["worktree", "remove"])
+                        && invocation
+                            .arguments
+                            .iter()
+                            .any(|argument| argument.ends_with("git-task-worktree"))
+                }) {
+                    errors.push(
+                        "Git mode did not remove the declared benchmark-owned linked worktree"
+                            .to_string(),
+                    );
+                }
+                if !git_invocations.iter().any(|invocation| {
+                    git_invocation_has_subcommand(invocation, &["branch"])
+                        && invocation
+                            .arguments
+                            .iter()
+                            .any(|argument| matches!(argument.as_str(), "-d" | "--delete"))
+                        && invocation
+                            .arguments
+                            .iter()
+                            .any(|argument| argument == "benchmark-task")
+                }) {
+                    errors.push(
+                        "Git mode did not delete the declared benchmark-task branch".to_string(),
+                    );
+                }
+                if git_invocations.iter().any(|invocation| {
+                    ["clone", "fetch", "pull", "push", "remote", "ls-remote"]
                         .iter()
-                        .any(|invocation| git_invocation_has_subcommand(invocation, &["init"]))
-                    {
-                        observed_required_commands.push("git init".to_string());
-                    } else {
-                        errors.push("First-use Git mode did not initialize Git".to_string());
+                        .any(|subcommand| git_invocation_has_subcommand(invocation, &[*subcommand]))
+                }) {
+                    errors.push("Git mode invoked a forbidden remote operation".to_string());
+                }
+                match profile {
+                    AgentTokenAccountingProfile::SteadyStateTaskCost => {
+                        if git_invocations
+                            .iter()
+                            .any(|invocation| git_invocation_has_subcommand(invocation, &["init"]))
+                        {
+                            errors.push(
+                                "Steady-state Git mode repeated first-use repository bootstrap"
+                                    .to_string(),
+                            );
+                        }
                     }
-                    for (required, key) in [
-                        ("git config user.name", "user.name"),
-                        ("git config user.email", "user.email"),
-                    ] {
-                        if git_invocations.iter().any(|invocation| {
-                            git_invocation_has_subcommand(invocation, &["config"])
-                                && invocation.arguments.iter().any(|argument| argument == key)
-                        }) {
-                            observed_required_commands.push(required.to_string());
+                    AgentTokenAccountingProfile::FirstUseTotalCost => {
+                        if git_invocations
+                            .iter()
+                            .any(|invocation| git_invocation_has_subcommand(invocation, &["init"]))
+                        {
+                            observed_required_commands.push("git init".to_string());
                         } else {
-                            errors.push(format!(
+                            errors.push("First-use Git mode did not initialize Git".to_string());
+                        }
+                        for (required, key) in [
+                            ("git config user.name", "user.name"),
+                            ("git config user.email", "user.email"),
+                        ] {
+                            if git_invocations.iter().any(|invocation| {
+                                git_invocation_has_subcommand(invocation, &["config"])
+                                    && invocation.arguments.iter().any(|argument| argument == key)
+                            }) {
+                                observed_required_commands.push(required.to_string());
+                            } else {
+                                errors.push(format!(
                                 "First-use Git mode did not pin repository identity: {required}"
                             ));
+                            }
                         }
                     }
                 }
@@ -1345,6 +2277,28 @@ fn validate_agent_token_command_list_with_git_start_proof(
                     errors.push(format!(
                         "AIT mode must execute exactly one {name}; observed {count}"
                     ));
+                }
+            }
+            if profile == AgentTokenAccountingProfile::SteadyStateTaskCost {
+                if let Some(edit_root_mode) = ait_edit_root_mode {
+                    let task_start_supplies_edit_root = ait_invocations.iter().any(|invocation| {
+                        invocation_has_subcommand(invocation, &["task", "start"])
+                            && invocation_has_option(invocation, "--edit-root")
+                    });
+                    match (edit_root_mode, task_start_supplies_edit_root) {
+                        (AgentTokenAitEditRootMode::Explicit, false) => errors.push(
+                            "AIT explicit edit-root treatment omitted --edit-root from task start"
+                                .to_string(),
+                        ),
+                        (AgentTokenAitEditRootMode::Returned, true) => errors.push(
+                            "AIT returned edit-root treatment supplied forbidden --edit-root"
+                                .to_string(),
+                        ),
+                        (AgentTokenAitEditRootMode::Explicit, true) => observed_required_commands
+                            .push("ait task start with --edit-root".to_string()),
+                        (AgentTokenAitEditRootMode::Returned, false) => observed_required_commands
+                            .push("ait task start without --edit-root".to_string()),
+                    }
                 }
             }
             for required in [["task", "start"], ["task", "finish"]] {
@@ -1405,13 +2359,18 @@ fn validate_agent_token_command_list_with_git_start_proof(
             {
                 errors.push("AIT mode used forbidden solo-local surface: --remote".to_string());
             }
-            if ait_invocations.iter().any(|invocation| {
+            let bound_task_start = ait_invocations.iter().any(|invocation| {
                 invocation_has_subcommand(invocation, &["task", "start"])
                     && invocation_has_option(invocation, "--from")
-            }) {
-                errors.push(
-                    "AIT mode used forbidden solo-local surface: task start --from".to_string(),
-                );
+            });
+            match ait_sprint_mode {
+                AgentTokenAitSprintMode::Off if bound_task_start => errors.push(
+                    "AIT sprint-off mode used forbidden solo-local surface: task start --from"
+                        .to_string(),
+                ),
+                AgentTokenAitSprintMode::On if !bound_task_start => errors
+                    .push("AIT sprint-on mode did not bind task start with --from".to_string()),
+                AgentTokenAitSprintMode::Off | AgentTokenAitSprintMode::On => {}
             }
             for invocation in &ait_invocations {
                 let common_lifecycle = invocation_has_subcommand(invocation, &["task", "start"])
@@ -1520,6 +2479,27 @@ pub(crate) fn extract_and_validate_claude_transcript_with_git_start_proof(
     profile: AgentTokenAccountingProfile,
     clean_main_head_proven: bool,
 ) -> Result<AgentTokenCommandTranscript, String> {
+    extract_and_validate_claude_transcript_with_workflow_options(
+        source,
+        run_id,
+        mode,
+        profile,
+        AgentTokenTranscriptWorkflowOptions {
+            ait_sprint_mode: AgentTokenAitSprintMode::Off,
+            ait_edit_root_mode: None,
+            git_worktree_mode: AgentTokenGitWorktreeMode::AgentManaged,
+            clean_main_head_proven,
+        },
+    )
+}
+
+pub(crate) fn extract_and_validate_claude_transcript_with_workflow_options(
+    source: &Path,
+    run_id: &str,
+    mode: AgentTokenMode,
+    profile: AgentTokenAccountingProfile,
+    options: AgentTokenTranscriptWorkflowOptions,
+) -> Result<AgentTokenCommandTranscript, String> {
     let source_text = fs::read_to_string(source).map_err(|error| {
         format!(
             "Failed to read Claude stream-json transcript source {}: {error}",
@@ -1585,13 +2565,9 @@ pub(crate) fn extract_and_validate_claude_transcript_with_git_start_proof(
             }
         }
     }
-    let mut transcript = if clean_main_head_proven {
-        validate_agent_token_command_list_with_git_start_proof(
-            commands, run_id, mode, profile, true,
-        )?
-    } else {
-        validate_agent_token_command_list(commands, run_id, mode, profile)?
-    };
+    let mut transcript = validate_agent_token_command_list_with_workflow_options(
+        commands, run_id, mode, profile, options,
+    )?;
     if !out_of_surface_tools.is_empty() {
         transcript.valid = false;
         transcript.errors.push(format!(
@@ -1939,6 +2915,34 @@ pub fn build_agent_token_report(
             manifest.bootstrap_resamples,
             distribution_seed ^ 0x80,
         )?;
+        let host_provisioning = valid
+            .iter()
+            .filter_map(|run| run.secondary_metrics.host_worktree_provisioning_elapsed_ms)
+            .collect::<Vec<_>>();
+        let host_worktree_provisioning_elapsed_ms_distribution =
+            if host_provisioning.len() == valid.len() && !valid.is_empty() {
+                summarize_optional_u64(
+                    &host_provisioning,
+                    manifest.bootstrap_resamples,
+                    distribution_seed ^ 0x90,
+                )?
+            } else {
+                None
+            };
+        let host_closeout = valid
+            .iter()
+            .filter_map(|run| run.secondary_metrics.host_worktree_closeout_elapsed_ms)
+            .collect::<Vec<_>>();
+        let host_worktree_closeout_elapsed_ms_distribution =
+            if host_closeout.len() == valid.len() && !valid.is_empty() {
+                summarize_optional_u64(
+                    &host_closeout,
+                    manifest.bootstrap_resamples,
+                    distribution_seed ^ 0xA0,
+                )?
+            } else {
+                None
+            };
         groups.push(AgentTokenGroupReport {
             workload_id,
             mode: mode.as_str().to_string(),
@@ -1962,6 +2966,8 @@ pub fn build_agent_token_report(
             completed_file_change_item_distribution,
             rejected_apply_patch_attempt_distribution,
             apply_patch_attempt_distribution,
+            host_worktree_provisioning_elapsed_ms_distribution,
+            host_worktree_closeout_elapsed_ms_distribution,
         });
     }
     groups.sort_by(|left, right| {
@@ -2161,6 +3167,11 @@ pub fn build_agent_token_report(
             "Project-document-loading diagnostic evidence is not publication eligible".to_string(),
         );
     }
+    if manifest.ait_sprint_mode == AgentTokenAitSprintMode::On
+        && manifest.campaign_scope == AgentTokenCampaignScope::Smoke
+    {
+        blockers.push("AIT sprint-on diagnostic evidence is not publication eligible".to_string());
+    }
     let positive_statistics = aggregate_median_token_savings_percent
         .is_some_and(|saving| saving > 0.0)
         && aggregate_token_savings_bootstrap_ci95.is_some_and(|interval| interval[0] > 0.0);
@@ -2193,6 +3204,9 @@ pub fn build_agent_token_report(
         AgentTokenCampaignScope::Smoke => {
             blockers.push("Smoke evidence is not publication eligible".to_string());
         }
+        AgentTokenCampaignScope::Diagnostic => {
+            blockers.push("diagnostic evidence is never claim eligible".to_string());
+        }
         AgentTokenCampaignScope::Pilot => {
             blockers.push("pilot evidence is never claim eligible".to_string());
         }
@@ -2212,6 +3226,32 @@ pub fn build_agent_token_report(
             manifest.runtime.project_doc_max_bytes
         ));
     }
+    if manifest.ait_sprint_mode == AgentTokenAitSprintMode::On {
+        let scope_label = if manifest.campaign_scope == AgentTokenCampaignScope::Smoke {
+            "smoke result"
+        } else {
+            "complete result"
+        };
+        limitations.push(
+            format!(
+                "The AIT lane measured sprint-card authoring, task binding, and automatic checklist closeout; the Git lane retained its frozen linked-worktree treatment. This {scope_label} is reported separately from sprint-off evidence."
+            ),
+        );
+    }
+    if manifest.git_worktree_mode == AgentTokenGitWorktreeMode::CodexAppEquivalentManaged {
+        limitations.push(
+            "The Git lane reproduces the observable Codex App managed-worktree boundary with runner-owned detached-worktree provisioning and closeout. Codex Desktop's private worktree IPC was not invoked, so this result measures App-equivalent model context rather than Desktop UI implementation latency."
+                .to_string(),
+        );
+    }
+    if manifest.functional_replacement_policy
+        == AgentTokenFunctionalReplacementPolicy::FirstValidUnacceptedLaneOnce
+    {
+        limitations.push(
+            "The complete campaign prospectively permits exactly one same-mode replacement for the first protocol-valid unaccepted lane in frozen schedule order. The raw failure remains disclosed; smoke, token direction, and a failed replacement cannot authorize another execution."
+                .to_string(),
+        );
+    }
 
     Ok(AgentTokenReport {
         contract: AGENT_TOKEN_REPORT_CONTRACT.to_string(),
@@ -2219,6 +3259,10 @@ pub fn build_agent_token_report(
         protocol_revision: manifest.protocol_revision.clone(),
         campaign_scope: manifest.campaign_scope.as_str().to_string(),
         accounting_profile: manifest.accounting_profile.as_str().to_string(),
+        ait_sprint_mode: manifest.ait_sprint_mode,
+        ait_edit_root_mode: manifest.ait_edit_root_mode,
+        git_worktree_mode: manifest.git_worktree_mode,
+        functional_replacement_policy: manifest.functional_replacement_policy,
         model: manifest.model.clone(),
         cache_class: manifest.cache_class.clone(),
         network_policy: manifest.network_policy.clone(),
@@ -2230,6 +3274,9 @@ pub fn build_agent_token_report(
         executed_evidence_run_count: runs.len(),
         statistically_excluded_run_count: 0,
         invalid_run_count,
+        served_models: Vec::new(),
+        mixed_model_run_count: 0,
+        fallback_observed_run_count: 0,
         groups,
         comparisons,
         aggregate_median_token_savings_percent,
@@ -2252,6 +3299,12 @@ pub fn build_agent_token_report(
         source_protocol_blockers: blockers.clone(),
         replacement_policy_revision: None,
         statistical_replacements: Vec::new(),
+        infrastructure_recovery_policy_revision: None,
+        infrastructure_pair_recoveries: Vec::new(),
+        host_shutdown_recovery_policy_revision: None,
+        host_shutdown_pair_recoveries: Vec::new(),
+        recovered_spawn_policy_revision: None,
+        recovered_spawn_adjudications: Vec::new(),
         claim_eligible,
         blockers,
         limitations,
@@ -2296,6 +3349,18 @@ pub fn compare_agent_token_reports(
     }
     if baseline.accounting_profile != candidate.accounting_profile {
         blockers.push("accounting profile differs".to_string());
+    }
+    if baseline.ait_sprint_mode != candidate.ait_sprint_mode {
+        blockers.push("AIT sprint mode differs".to_string());
+    }
+    if baseline.ait_edit_root_mode != candidate.ait_edit_root_mode {
+        blockers.push("AIT edit-root delivery differs".to_string());
+    }
+    if baseline.git_worktree_mode != candidate.git_worktree_mode {
+        blockers.push("Git worktree ownership differs".to_string());
+    }
+    if baseline.functional_replacement_policy != candidate.functional_replacement_policy {
+        blockers.push("functional replacement policy differs".to_string());
     }
     if baseline.model != candidate.model {
         blockers.push("model pin differs".to_string());
@@ -2375,7 +3440,17 @@ pub fn load_agent_token_schedule(path: &Path) -> Result<AgentTokenSchedule, Stri
 pub fn load_agent_token_run_summaries(
     campaign_dir: &Path,
 ) -> Result<Vec<AgentTokenRunSummary>, String> {
-    let mut runs = load_agent_token_raw_run_summaries(campaign_dir)?;
+    load_agent_token_run_summaries_with_allowed_missing(campaign_dir, None)
+}
+
+pub(crate) fn load_agent_token_run_summaries_with_allowed_missing(
+    campaign_dir: &Path,
+    allowed_missing_run_id: Option<&str>,
+) -> Result<Vec<AgentTokenRunSummary>, String> {
+    let mut runs = load_agent_token_raw_run_summaries_with_allowed_missing(
+        campaign_dir,
+        allowed_missing_run_id,
+    )?;
     let manifest_path = campaign_dir.join("campaign-manifest.json");
     let mut adjudication_manifest = None;
     for run in &mut runs {
@@ -2413,6 +3488,13 @@ pub fn load_agent_token_run_summaries(
 pub fn load_agent_token_raw_run_summaries(
     campaign_dir: &Path,
 ) -> Result<Vec<AgentTokenRunSummary>, String> {
+    load_agent_token_raw_run_summaries_with_allowed_missing(campaign_dir, None)
+}
+
+pub(crate) fn load_agent_token_raw_run_summaries_with_allowed_missing(
+    campaign_dir: &Path,
+    allowed_missing_run_id: Option<&str>,
+) -> Result<Vec<AgentTokenRunSummary>, String> {
     let runs_dir = campaign_dir.join("runs");
     let mut entries = fs::read_dir(&runs_dir)
         .map_err(|error| {
@@ -2433,10 +3515,13 @@ pub fn load_agent_token_raw_run_summaries(
         {
             continue;
         }
-        runs.push(read_json(
-            &entry.path().join("run-summary.json"),
-            "agent-token run summary",
-        )?);
+        let summary_path = entry.path().join("run-summary.json");
+        if !summary_path.exists()
+            && allowed_missing_run_id.is_some_and(|allowed| entry.file_name() == allowed)
+        {
+            continue;
+        }
+        runs.push(read_json(&summary_path, "agent-token run summary")?);
     }
     Ok(runs)
 }
@@ -2446,11 +3531,34 @@ pub fn build_agent_token_run_adjudication(
     source: &AgentTokenRunSummary,
     source_protocol_revision: &str,
 ) -> Result<AgentTokenRunAdjudication, String> {
-    if source_protocol_revision != AGENT_TOKEN_LEGACY_RESUMABLE_PROTOCOL_REVISION {
-        return Err(format!(
-            "Transcript adjudication is admitted only for {AGENT_TOKEN_LEGACY_RESUMABLE_PROTOCOL_REVISION}, got {source_protocol_revision}"
-        ));
+    if source_protocol_revision == AGENT_TOKEN_LEGACY_RESUMABLE_PROTOCOL_REVISION {
+        return build_legacy_agent_token_run_adjudication(
+            campaign_dir,
+            source,
+            source_protocol_revision,
+        );
     }
+    if source_protocol_revision == AGENT_TOKEN_SPRINT_ON_COMPLETE_PREDECESSOR_PROTOCOL_REVISION
+        && source.campaign_id == AGENT_TOKEN_RECOVERED_SPAWN_CAMPAIGN_ID
+        && source.run_id == AGENT_TOKEN_RECOVERED_SPAWN_RUN_ID
+    {
+        return build_recovered_spawn_run_adjudication(
+            campaign_dir,
+            source,
+            source_protocol_revision,
+        );
+    }
+    Err(format!(
+        "Run {} is not admitted by a narrow agent-token adjudication contract",
+        source.run_id
+    ))
+}
+
+fn build_legacy_agent_token_run_adjudication(
+    campaign_dir: &Path,
+    source: &AgentTokenRunSummary,
+    source_protocol_revision: &str,
+) -> Result<AgentTokenRunAdjudication, String> {
     if source.invalid_reasons.len() != 1
         || source.invalid_reasons.first().map(String::as_str)
             != Some(GIT_METADATA_CONTEXT_OVERRIDE_ERROR)
@@ -2477,7 +3585,7 @@ pub fn build_agent_token_run_adjudication(
         return Err(format!(
             "Run {} remains transcript-invalid under adjudicator {}: {}",
             source.run_id,
-            AGENT_TOKEN_ADJUDICATOR_REVISION,
+            AGENT_TOKEN_LEGACY_ADJUDICATOR_REVISION,
             transcript.errors.join("; ")
         ));
     }
@@ -2523,9 +3631,148 @@ pub fn build_agent_token_run_adjudication(
         campaign_id: source.campaign_id.clone(),
         run_id: source.run_id.clone(),
         source_protocol_revision: source_protocol_revision.to_string(),
-        adjudicator_revision: AGENT_TOKEN_ADJUDICATOR_REVISION.to_string(),
+        adjudicator_revision: AGENT_TOKEN_LEGACY_ADJUDICATOR_REVISION.to_string(),
         source_run_summary_sha256: sha256_digest(&source_bytes),
         reason: "read-only git rev-parse --git-dir was previously conflated with a global Git metadata override".to_string(),
+        effective_summary,
+    })
+}
+
+fn build_recovered_spawn_run_adjudication(
+    campaign_dir: &Path,
+    source: &AgentTokenRunSummary,
+    source_protocol_revision: &str,
+) -> Result<AgentTokenRunAdjudication, String> {
+    let expected_invalid_reason =
+        "candidate infrastructure unavailable: codex_tool_process_spawn_failure";
+    if source.campaign_id != AGENT_TOKEN_RECOVERED_SPAWN_CAMPAIGN_ID
+        || source.run_id != AGENT_TOKEN_RECOVERED_SPAWN_RUN_ID
+        || source_protocol_revision != AGENT_TOKEN_SPRINT_ON_COMPLETE_PREDECESSOR_PROTOCOL_REVISION
+        || source.mode != AgentTokenMode::GitLinearSingleSession
+        || source.workload_id != "GD-03"
+        || source.attempt != 17
+        || source.block_index != 17
+        || source.infrastructure_failure.as_deref() != Some("codex_tool_process_spawn_failure")
+        || source.invalid_reasons.as_slice() != [expected_invalid_reason]
+        || source.valid_attempt
+        || source.accepted_equivalent
+        || source.codex_exit_code != Some(0)
+        || source.codex_timed_out
+        || source.usage.as_ref().is_none_or(|usage| {
+            usage.completed_turns == 0
+                || usage.provider_total_tokens == 0
+                || usage.run_id != source.run_id
+                || usage.workload_id != source.workload_id
+                || usage.mode != source.mode
+                || usage.accounting_profile != source.accounting_profile
+        })
+        || !source.transcript.valid
+        || !source.transcript.errors.is_empty()
+        || source.transcript.command_count == 0
+        || source.evaluator_exit_code.is_none()
+    {
+        return Err(format!(
+            "Run {} is not the exact recovered-spawn correction candidate",
+            source.run_id
+        ));
+    }
+
+    let run_dir = campaign_dir.join("runs").join(&source.run_id);
+    let source_path = run_dir.join("run-summary.json");
+    let source_bytes = fs::read(&source_path).map_err(|error| {
+        format!(
+            "Failed to read source run summary {}: {error}",
+            source_path.display()
+        )
+    })?;
+    let source_digest = sha256_digest(&source_bytes);
+    if source_digest != AGENT_TOKEN_RECOVERED_SPAWN_SOURCE_SUMMARY_SHA256 {
+        return Err(format!(
+            "Run {} source summary digest differs from the exact recovered-spawn authorization",
+            source.run_id
+        ));
+    }
+
+    let raw_events_path = run_dir.join("private/codex-events.raw.jsonl");
+    let stderr_path = run_dir.join("private/codex.stderr.txt");
+    let raw_events = fs::read_to_string(&raw_events_path).map_err(|error| {
+        format!(
+            "Failed to read recovered-spawn event evidence {}: {error}",
+            raw_events_path.display()
+        )
+    })?;
+    let stderr = fs::read_to_string(&stderr_path).map_err(|error| {
+        format!(
+            "Failed to read recovered-spawn stderr evidence {}: {error}",
+            stderr_path.display()
+        )
+    })?;
+    let spawn_signature = (stderr.contains("codex_core::tools::router: error=exec_command failed")
+        && stderr.contains("CreateProcess"))
+        || raw_events.lines().any(|line| {
+            serde_json::from_str::<serde_json::Value>(line)
+                .ok()
+                .is_some_and(|event| {
+                    event
+                        .pointer("/item/type")
+                        .and_then(serde_json::Value::as_str)
+                        == Some("command_execution")
+                        && event
+                            .pointer("/item/exit_code")
+                            .and_then(serde_json::Value::as_i64)
+                            == Some(-1)
+                })
+        });
+    let successful_command = raw_events.lines().any(|line| {
+        serde_json::from_str::<serde_json::Value>(line)
+            .ok()
+            .is_some_and(|event| {
+                event
+                    .pointer("/item/type")
+                    .and_then(serde_json::Value::as_str)
+                    == Some("command_execution")
+                    && event
+                        .pointer("/item/exit_code")
+                        .and_then(serde_json::Value::as_i64)
+                        == Some(0)
+            })
+    });
+    let terminal_turn = raw_events.lines().any(|line| {
+        serde_json::from_str::<serde_json::Value>(line)
+            .ok()
+            .and_then(|event| {
+                event
+                    .get("type")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string)
+            })
+            .as_deref()
+            == Some("turn.completed")
+    });
+    if !spawn_signature || !successful_command || !terminal_turn {
+        return Err(format!(
+            "Run {} lacks the exact spawn, recovery, or terminal event evidence",
+            source.run_id
+        ));
+    }
+
+    let mut effective_summary = source.clone();
+    effective_summary.infrastructure_failure = None;
+    effective_summary.invalid_reasons.clear();
+    effective_summary.valid_attempt = true;
+    effective_summary.accepted_equivalent = effective_summary.evaluator_accepted
+        && effective_summary.browser.status == "passed"
+        && effective_summary.workflow_closed
+        && effective_summary.failure_reasons.is_empty();
+
+    Ok(AgentTokenRunAdjudication {
+        contract: AGENT_TOKEN_RUN_ADJUDICATION_CONTRACT.to_string(),
+        campaign_id: source.campaign_id.clone(),
+        run_id: source.run_id.clone(),
+        source_protocol_revision: source_protocol_revision.to_string(),
+        adjudicator_revision: AGENT_TOKEN_ADJUDICATOR_REVISION.to_string(),
+        source_run_summary_sha256: source_digest,
+        reason: AGENT_TOKEN_RECOVERED_SPAWN_REASON.to_string(),
         effective_summary,
     })
 }
@@ -2584,6 +3831,14 @@ pub fn render_agent_token_report_markdown(report: &AgentTokenReport) -> String {
     ));
     output.push_str(&format!("- Accounting: `{}`\n", report.accounting_profile));
     output.push_str(&format!(
+        "- AIT edit-root delivery: `{}`\n",
+        report.ait_edit_root_mode.as_str()
+    ));
+    output.push_str(&format!(
+        "- Git worktree ownership: `{}`\n",
+        report.git_worktree_mode.as_str()
+    ));
+    output.push_str(&format!(
         "- Source-protocol claim eligible: `{}`\n",
         report.source_protocol_claim_eligible
     ));
@@ -2634,6 +3889,29 @@ pub fn render_agent_token_report_markdown(report: &AgentTokenReport) -> String {
         "- Pair admission: `{}`\n\n",
         report.pair_admission_policy
     ));
+    if !report.served_models.is_empty() {
+        output.push_str("## Served Model Composition\n\n");
+        output.push_str(&format!(
+            "- Mixed-model runs: `{}`\n- Explicit fallback-observed runs: `{}`\n\n",
+            report.mixed_model_run_count, report.fallback_observed_run_count
+        ));
+        output.push_str("| Served model | Canonical model | Runs | Input | Cache read | Cache write | Output | Total |\n");
+        output.push_str("| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |\n");
+        for model in &report.served_models {
+            output.push_str(&format!(
+                "| `{}` | `{}` | {} | {} | {} | {} | {} | {} |\n",
+                model.model_id,
+                model.canonical_model,
+                model.run_count,
+                model.input_tokens,
+                model.cached_input_tokens,
+                model.cache_write_input_tokens,
+                model.output_tokens,
+                model.provider_total_tokens,
+            ));
+        }
+        output.push('\n');
+    }
     output.push_str("## Workload Results\n\n");
     output.push_str(
         "| Workload | Mode | Attempts | Accepted | Acceptance | Effective tokens | p50 tokens |\n",
@@ -2676,6 +3954,39 @@ pub fn render_agent_token_report_markdown(report: &AgentTokenReport) -> String {
             comparison.acceptance_rate_deficit_percentage_points,
         ));
     }
+    if report.git_worktree_mode == AgentTokenGitWorktreeMode::CodexAppEquivalentManaged {
+        output.push_str("\n## Host-Managed Worktree Overhead\n\n");
+        output.push_str(
+            "These runner-owned times occur outside the terminal model event and are not added to model elapsed or token accounting.\n\n",
+        );
+        output.push_str("| Workload | Provision p50 ms | Closeout p50 ms | Samples |\n");
+        output.push_str("| --- | ---: | ---: | ---: |\n");
+        for group in report
+            .groups
+            .iter()
+            .filter(|group| group.mode == AgentTokenMode::GitLinearSingleSession.as_str())
+        {
+            let provisioning = group
+                .host_worktree_provisioning_elapsed_ms_distribution
+                .as_ref();
+            let closeout = group
+                .host_worktree_closeout_elapsed_ms_distribution
+                .as_ref();
+            output.push_str(&format!(
+                "| {} | {} | {} | {} |\n",
+                group.workload_id,
+                provisioning
+                    .map(|distribution| format!("{:.1}", distribution.p50))
+                    .unwrap_or_else(|| "n/a".to_string()),
+                closeout
+                    .map(|distribution| format!("{:.1}", distribution.p50))
+                    .unwrap_or_else(|| "n/a".to_string()),
+                provisioning
+                    .map(|distribution| distribution.sample_count.to_string())
+                    .unwrap_or_else(|| "0".to_string()),
+            ));
+        }
+    }
     output.push_str("\n## Workflow Efficiency\n\n");
     output.push_str("| Workload | Elapsed Git/AIT ms | Elapsed saving | File changes Git/AIT | File-change reduction | Rejected patches Git/AIT | Rejected reduction | Total patches Git/AIT | Total-patch reduction |\n");
     output.push_str("| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |\n");
@@ -2706,6 +4017,47 @@ pub fn render_agent_token_report_markdown(report: &AgentTokenReport) -> String {
             ));
         }
     }
+    if !report.infrastructure_pair_recoveries.is_empty() {
+        output.push_str("\n## Infrastructure Pair Recovery\n\n");
+        for recovery in &report.infrastructure_pair_recoveries {
+            output.push_str(&format!(
+                "- `{}` attempt {} excluded observed source lane(s) `{}` and admitted the one-time full-pair replacement `{}`: {}\n",
+                recovery.workload_id,
+                recovery.attempt,
+                recovery.observed_source_run_ids.join("`, `"),
+                recovery.replacement_run_ids.join("`, `"),
+                recovery.reason
+            ));
+        }
+    }
+    if !report.host_shutdown_pair_recoveries.is_empty() {
+        output.push_str("\n## Host-Shutdown Pair Recovery\n\n");
+        for recovery in &report.host_shutdown_pair_recoveries {
+            output.push_str(&format!(
+                "- `{}` attempt {} retained and excluded the incomplete lane `{}` ({} inventoried artifacts; event `{}`), then admitted the one-time full-pair replacement `{}`: {}\n",
+                recovery.workload_id,
+                recovery.attempt,
+                recovery.interrupted_run_id,
+                recovery.interrupted_artifact_count,
+                recovery.interrupted_event_sha256,
+                recovery.replacement_run_ids.join("`, `"),
+                recovery.reason
+            ));
+        }
+    }
+    if !report.recovered_spawn_adjudications.is_empty() {
+        output.push_str("\n## Recovered Spawn Adjudication\n\n");
+        for adjudication in &report.recovered_spawn_adjudications {
+            output.push_str(&format!(
+                "- `{}` retains raw failure `{}` at summary SHA-256 `{}` and is admitted by adjudicator `{}`: {}\n",
+                adjudication.run_id,
+                adjudication.source_infrastructure_failure,
+                adjudication.source_run_summary_sha256,
+                adjudication.adjudicator_revision,
+                adjudication.reason
+            ));
+        }
+    }
     if !report.limitations.is_empty() {
         output.push_str("\n## Limitations\n\n");
         for limitation in &report.limitations {
@@ -2718,7 +4070,12 @@ pub fn render_agent_token_report_markdown(report: &AgentTokenReport) -> String {
             output.push_str(&format!("- {blocker}\n"));
         }
     }
-    if report.replacement_policy_revision.is_some() && !report.source_protocol_blockers.is_empty() {
+    if (report.replacement_policy_revision.is_some()
+        || report.infrastructure_recovery_policy_revision.is_some()
+        || report.host_shutdown_recovery_policy_revision.is_some()
+        || report.recovered_spawn_policy_revision.is_some())
+        && !report.source_protocol_blockers.is_empty()
+    {
         output.push_str("\n## Frozen Source-Protocol Blockers\n\n");
         for blocker in &report.source_protocol_blockers {
             output.push_str(&format!("- {blocker}\n"));
@@ -2763,6 +4120,15 @@ fn required_u64(
         .get(field)
         .and_then(serde_json::Value::as_u64)
         .ok_or_else(|| format!("Codex usage line {line} field {field} must be u64"))
+}
+
+fn required_claude_u64(
+    map: &serde_json::Map<String, serde_json::Value>,
+    field: &str,
+) -> Result<u64, String> {
+    map.get(field)
+        .and_then(serde_json::Value::as_u64)
+        .ok_or_else(|| format!("Claude terminal usage field {field} must be u64"))
 }
 
 fn add_optional_u64(
@@ -3170,6 +4536,22 @@ fn git_invocation_has_subcommand(invocation: &CommandInvocation, expected: &[&st
         .zip(expected.iter().copied())
         .all(|(actual, expected)| actual == expected)
         && arguments.len() >= expected.len()
+}
+
+/// Git inspection surface available to a session that starts inside a
+/// host-managed detached worktree. Anything that can move refs, the index, or
+/// worktree registration remains host-owned and fails the measured lane.
+fn git_invocation_is_app_managed_read_only(invocation: &CommandInvocation) -> bool {
+    let arguments = git_subcommand_arguments(invocation);
+    match arguments.first().map(String::as_str) {
+        Some("status" | "diff" | "log" | "show" | "rev-parse" | "ls-files" | "grep") => true,
+        Some("branch") => arguments
+            .iter()
+            .skip(1)
+            .any(|argument| matches!(argument.as_str(), "--show-current" | "--list" | "-l")),
+        Some("worktree") => arguments.get(1).map(String::as_str) == Some("list"),
+        _ => false,
+    }
 }
 
 fn invocation_has_subcommand(invocation: &CommandInvocation, expected: &[&str]) -> bool {
@@ -3884,25 +5266,68 @@ mod tests {
     }
 
     #[test]
-    fn claude_usage_import_normalizes_the_result_event() {
-        let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("tests/fixtures/claude-stream-sample.jsonl");
+    fn claude_usage_import_proves_model_purity_and_preserves_refusal() {
+        let temp = tempfile::tempdir().unwrap();
+        let fixture = temp.path().join("claude-pure.jsonl");
         let model = AgentTokenModelPin {
             provider: "anthropic".to_string(),
-            model_id: "claude-haiku-4-5".to_string(),
+            model_id: "claude-fable-5".to_string(),
             model_revision: "sample".to_string(),
             reasoning_effort: "max".to_string(),
         };
-        let usage = import_claude_usage(
+        let stream = [
+            serde_json::json!({
+                "type": "system",
+                "subtype": "init",
+                "model": "claude-fable-5",
+                "tools": ["Bash", "Read", "Grep", "Glob", "Edit", "Write"],
+                "mcp_servers": [],
+            }),
+            serde_json::json!({
+                "type": "assistant",
+                "message": {"model": "claude-fable-5", "content": [{"type": "text", "text": "cannot comply"}]},
+            }),
+            serde_json::json!({
+                "type": "result",
+                "subtype": "success",
+                "is_error": false,
+                "terminal_reason": "completed",
+                "stop_reason": "refusal",
+                "num_turns": 1,
+                "usage": {
+                    "input_tokens": 18,
+                    "cache_read_input_tokens": 54_125,
+                    "cache_creation_input_tokens": 8_014,
+                    "output_tokens": 159,
+                    "output_tokens_details": {"thinking_tokens": 78},
+                },
+                "modelUsage": {
+                    "claude-fable-5": {
+                        "inputTokens": 18,
+                        "cacheReadInputTokens": 54_125,
+                        "cacheCreationInputTokens": 8_014,
+                        "outputTokens": 159,
+                        "canonicalModel": "claude-fable-5",
+                    }
+                },
+            }),
+        ]
+        .into_iter()
+        .map(|event| event.to_string())
+        .collect::<Vec<_>>()
+        .join("\n");
+        fs::write(&fixture, format!("{stream}\n")).unwrap();
+        let imported = import_claude_usage_with_outcome(
             &fixture,
             "claude-sample",
             "GD-00",
             AgentTokenMode::AitLinearSingleSession,
             AgentTokenAccountingProfile::SteadyStateTaskCost,
             &model,
+            AgentTokenClaudeModelAdmission::Strict,
         )
         .expect("claude usage imports");
-        // Values are pinned to the committed fixture bytes.
+        let usage = imported.usage;
         assert_eq!(usage.input_tokens, 18 + 54_125 + 8_014);
         assert_eq!(usage.cached_input_tokens, Some(54_125));
         assert_eq!(usage.cache_write_input_tokens, Some(8_014));
@@ -3913,10 +5338,208 @@ mod tests {
             usage.input_tokens + usage.output_tokens
         );
         assert_eq!(usage.completed_turns, 1);
-        assert_eq!(usage.usage_provenance, "claude-code-stream-json:result");
+        assert_eq!(
+            usage.usage_provenance,
+            "claude-code-stream-json:result+model-purity"
+        );
+        assert!(imported.provider_refusal);
+        assert_eq!(imported.provider_stop_reason, "refusal");
+    }
+
+    #[test]
+    fn claude_usage_import_rejects_any_additional_model() {
+        let temp = tempfile::tempdir().unwrap();
+        let fixture = temp.path().join("claude-mixed.jsonl");
+        fs::write(
+            &fixture,
+            concat!(
+                "{\"type\":\"system\",\"subtype\":\"init\",\"model\":\"claude-fable-5\",\"tools\":[\"Bash\",\"Read\",\"Grep\",\"Glob\",\"Edit\",\"Write\"],\"mcp_servers\":[]}\n",
+                "{\"type\":\"assistant\",\"message\":{\"model\":\"claude-fable-5\",\"content\":[]}}\n",
+                "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"terminal_reason\":\"completed\",\"stop_reason\":\"end_turn\",\"num_turns\":1,\"usage\":{\"input_tokens\":1,\"cache_read_input_tokens\":0,\"cache_creation_input_tokens\":0,\"output_tokens\":1},\"modelUsage\":{\"claude-fable-5\":{\"inputTokens\":1,\"cacheReadInputTokens\":0,\"cacheCreationInputTokens\":0,\"outputTokens\":1,\"canonicalModel\":\"claude-fable-5\"},\"claude-haiku-4-5-20251001\":{\"inputTokens\":1,\"cacheReadInputTokens\":0,\"cacheCreationInputTokens\":0,\"outputTokens\":1,\"canonicalModel\":\"claude-haiku-4-5\"}}}\n"
+            ),
+        )
+        .unwrap();
+        let model = AgentTokenModelPin {
+            provider: "anthropic".to_string(),
+            model_id: "claude-fable-5".to_string(),
+            model_revision: "sample".to_string(),
+            reasoning_effort: "max".to_string(),
+        };
+        let error = import_claude_usage(
+            &fixture,
+            "claude-mixed",
+            "GD-01",
+            AgentTokenMode::GitLinearSingleSession,
+            AgentTokenAccountingProfile::SteadyStateTaskCost,
+            &model,
+        )
+        .unwrap_err();
+        assert!(
+            error.contains("must contain only the pinned model"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn as_shipped_admission_accepts_provider_fallback_and_counts_every_model() {
+        // The runner supplies no --fallback-model, yet the provider can still
+        // switch mid-session. Under as_shipped the campaign keeps running and
+        // the terminal usage total, which already sums every served model, is
+        // preserved so no provider-reported token is dropped.
+        let temp = tempfile::tempdir().unwrap();
+        let fixture = temp.path().join("claude-fallback.jsonl");
+        fs::write(
+            &fixture,
+            concat!(
+                "{\"type\":\"system\",\"subtype\":\"init\",\"model\":\"claude-fable-5\",\"tools\":[\"Bash\",\"Read\",\"Grep\",\"Glob\",\"Edit\",\"Write\"],\"mcp_servers\":[]}\n",
+                "{\"type\":\"assistant\",\"message\":{\"model\":\"claude-fable-5\",\"content\":[]}}\n",
+                "{\"type\":\"assistant\",\"message\":{\"model\":\"claude-opus-5\",\"content\":[{\"type\":\"fallback\",\"from\":{\"model\":\"claude-fable-5\"},\"to\":{\"model\":\"claude-opus-5\"}}]}}\n",
+                "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"terminal_reason\":\"completed\",\"stop_reason\":\"end_turn\",\"num_turns\":1,\"usage\":{\"input_tokens\":30,\"cache_read_input_tokens\":700,\"cache_creation_input_tokens\":40,\"output_tokens\":9},\"modelUsage\":{\"claude-fable-5\":{\"inputTokens\":20,\"cacheReadInputTokens\":500,\"cacheCreationInputTokens\":30,\"outputTokens\":6,\"canonicalModel\":\"claude-fable-5\"},\"claude-opus-5\":{\"inputTokens\":10,\"cacheReadInputTokens\":200,\"cacheCreationInputTokens\":10,\"outputTokens\":3,\"canonicalModel\":\"claude-opus-5\"}}}\n"
+            ),
+        )
+        .unwrap();
+        let model = AgentTokenModelPin {
+            provider: "anthropic".to_string(),
+            model_id: "claude-fable-5".to_string(),
+            model_revision: "sample".to_string(),
+            reasoning_effort: "max".to_string(),
+        };
+        let args = (
+            "claude-fallback",
+            "GD-01",
+            AgentTokenMode::GitLinearSingleSession,
+            AgentTokenAccountingProfile::SteadyStateTaskCost,
+        );
+
+        let strict = import_claude_usage_with_outcome(
+            &fixture,
+            args.0,
+            args.1,
+            args.2,
+            args.3,
+            &model,
+            AgentTokenClaudeModelAdmission::Strict,
+        )
+        .unwrap_err();
+        assert!(strict.contains("differs from the pin"), "{strict}");
+
+        let imported = import_claude_usage_with_outcome(
+            &fixture,
+            args.0,
+            args.1,
+            args.2,
+            args.3,
+            &model,
+            AgentTokenClaudeModelAdmission::AsShipped,
+        )
+        .expect("as_shipped admits the fallback session");
+        // 30 + 700 + 40 direct/cached/written input, plus 9 output, across both
+        // served models.
+        assert_eq!(imported.usage.input_tokens, 770);
+        assert_eq!(imported.usage.output_tokens, 9);
+        assert_eq!(imported.usage.provider_total_tokens, 779);
+        assert_eq!(
+            imported.usage.usage_provenance,
+            "claude-code-stream-json:result+served-model-sum"
+        );
+        assert!(imported.fallback_observed);
+        assert_eq!(imported.served_models.len(), 2);
+        assert_eq!(imported.served_models[0].model_id, "claude-fable-5");
+        assert_eq!(imported.served_models[0].provider_total_tokens, 556);
+        assert_eq!(imported.served_models[1].model_id, "claude-opus-5");
+        assert_eq!(imported.served_models[1].provider_total_tokens, 223);
+    }
+
+    #[test]
+    fn as_shipped_admission_rejects_terminal_and_per_model_usage_disagreement() {
+        let temp = tempfile::tempdir().unwrap();
+        let fixture = temp.path().join("claude-fallback-drift.jsonl");
+        fs::write(
+            &fixture,
+            concat!(
+                "{\"type\":\"system\",\"subtype\":\"init\",\"model\":\"claude-fable-5\",\"tools\":[\"Bash\",\"Read\",\"Grep\",\"Glob\",\"Edit\",\"Write\"],\"mcp_servers\":[]}\n",
+                "{\"type\":\"assistant\",\"message\":{\"model\":\"claude-fable-5\",\"content\":[]}}\n",
+                "{\"type\":\"assistant\",\"message\":{\"model\":\"claude-opus-5\",\"content\":[{\"type\":\"fallback\"}]}}\n",
+                "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"terminal_reason\":\"completed\",\"stop_reason\":\"end_turn\",\"num_turns\":1,\"usage\":{\"input_tokens\":31,\"cache_read_input_tokens\":700,\"cache_creation_input_tokens\":40,\"output_tokens\":9},\"modelUsage\":{\"claude-fable-5\":{\"inputTokens\":20,\"cacheReadInputTokens\":500,\"cacheCreationInputTokens\":30,\"outputTokens\":6,\"canonicalModel\":\"claude-fable-5\"},\"claude-opus-5\":{\"inputTokens\":10,\"cacheReadInputTokens\":200,\"cacheCreationInputTokens\":10,\"outputTokens\":3,\"canonicalModel\":\"claude-opus-5\"}}}\n"
+            ),
+        )
+        .unwrap();
+        let model = AgentTokenModelPin {
+            provider: "anthropic".to_string(),
+            model_id: "claude-fable-5".to_string(),
+            model_revision: "sample".to_string(),
+            reasoning_effort: "max".to_string(),
+        };
+        let error = import_claude_usage_with_outcome(
+            &fixture,
+            "claude-fallback-drift",
+            "GD-01",
+            AgentTokenMode::GitLinearSingleSession,
+            AgentTokenAccountingProfile::SteadyStateTaskCost,
+            &model,
+            AgentTokenClaudeModelAdmission::AsShipped,
+        )
+        .unwrap_err();
+        assert!(
+            error.contains("summed modelUsage field inputTokens differs"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn claude_usage_import_rejects_prompt_suggestion_events() {
+        let temp = tempfile::tempdir().unwrap();
+        let fixture = temp.path().join("claude-prompt-suggestion.jsonl");
+        fs::write(
+            &fixture,
+            concat!(
+                "{\"type\":\"system\",\"subtype\":\"init\",\"model\":\"claude-fable-5\",\"tools\":[\"Bash\",\"Read\",\"Grep\",\"Glob\",\"Edit\",\"Write\"],\"mcp_servers\":[]}\n",
+                "{\"type\":\"assistant\",\"message\":{\"model\":\"claude-fable-5\",\"content\":[]}}\n",
+                "{\"type\":\"prompt_suggestion\",\"suggestion\":\"continue\"}\n",
+                "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"terminal_reason\":\"completed\",\"stop_reason\":\"end_turn\",\"num_turns\":1,\"usage\":{\"input_tokens\":1,\"cache_read_input_tokens\":0,\"cache_creation_input_tokens\":0,\"output_tokens\":1},\"modelUsage\":{\"claude-fable-5\":{\"inputTokens\":1,\"cacheReadInputTokens\":0,\"cacheCreationInputTokens\":0,\"outputTokens\":1,\"canonicalModel\":\"claude-fable-5\"}}}\n"
+            ),
+        )
+        .unwrap();
+        let model = AgentTokenModelPin {
+            provider: "anthropic".to_string(),
+            model_id: "claude-fable-5".to_string(),
+            model_revision: "sample".to_string(),
+            reasoning_effort: "max".to_string(),
+        };
+        let error = import_claude_usage(
+            &fixture,
+            "claude-prompt-suggestion",
+            "GD-01",
+            AgentTokenMode::GitLinearSingleSession,
+            AgentTokenAccountingProfile::SteadyStateTaskCost,
+            &model,
+        )
+        .unwrap_err();
+        assert!(error.contains("prompt suggestion"), "{error}");
     }
 
     use super::*;
+
+    #[test]
+    fn missing_run_summary_is_skipped_only_for_the_exact_explicit_id() {
+        let temp = tempfile::tempdir().unwrap();
+        let runs = temp.path().join("runs");
+        fs::create_dir(&runs).unwrap();
+        fs::create_dir(runs.join("interrupted-run")).unwrap();
+
+        assert!(load_agent_token_raw_run_summaries(temp.path()).is_err());
+        assert!(load_agent_token_raw_run_summaries_with_allowed_missing(
+            temp.path(),
+            Some("different-run")
+        )
+        .is_err());
+        assert!(load_agent_token_raw_run_summaries_with_allowed_missing(
+            temp.path(),
+            Some("interrupted-run")
+        )
+        .unwrap()
+        .is_empty());
+    }
 
     fn model() -> AgentTokenModelPin {
         AgentTokenModelPin {
@@ -3958,6 +5581,11 @@ mod tests {
             protocol_revision: AGENT_TOKEN_PROTOCOL_REVISION.to_string(),
             campaign_scope: scope,
             accounting_profile: AgentTokenAccountingProfile::SteadyStateTaskCost,
+            ait_sprint_mode: AgentTokenAitSprintMode::Off,
+            ait_edit_root_mode: crate::agent_token::AgentTokenAitEditRootMode::Explicit,
+            git_worktree_mode: AgentTokenGitWorktreeMode::AgentManaged,
+            claude_model_admission: crate::agent_token::AgentTokenClaudeModelAdmission::Strict,
+            functional_replacement_policy: AgentTokenFunctionalReplacementPolicy::None,
             seed: 42,
             attempts_per_cell: scope.minimum_attempts(),
             workload_ids: ["GD-01", "GD-02", "GD-03", "GD-04", "GD-05"]
@@ -3972,6 +5600,11 @@ mod tests {
             runtime: AgentTokenRuntime {
                 executor: AgentTokenExecutor::default(),
                 claude_program: None,
+                executor_version: None,
+                ait_version: None,
+                git_version: None,
+                node_version: None,
+                browser_version: None,
                 codex_program: PathBuf::from("codex"),
                 ait_program: PathBuf::from("ait"),
                 git_program: PathBuf::from("git"),
@@ -4018,6 +5651,221 @@ mod tests {
         assert!(validate_agent_token_campaign(&oversized)
             .unwrap_err()
             .contains("must not exceed 65536"));
+    }
+
+    #[test]
+    fn sprint_on_is_an_exact_five_workload_scope_with_smoke_diagnostic_boundary() {
+        let temp = tempfile::tempdir().unwrap();
+        let fixture = temp.path().join("fixture.json");
+        fs::write(&fixture, "{}\n").unwrap();
+        let mut manifest = validation_manifest(AgentTokenCampaignScope::Smoke, 0, fixture.clone());
+        manifest.ait_sprint_mode = AgentTokenAitSprintMode::On;
+
+        validate_agent_token_campaign(&manifest).unwrap();
+        let schedule = build_agent_token_schedule(&manifest);
+        assert_eq!(schedule.entry_count, 10);
+        let report = build_agent_token_report(&manifest, &schedule, &[]).unwrap();
+        assert_eq!(report.ait_sprint_mode, AgentTokenAitSprintMode::On);
+        assert!(!report.claim_eligible);
+        assert!(report
+            .blockers
+            .iter()
+            .any(|blocker| blocker
+                == "AIT sprint-on diagnostic evidence is not publication eligible"));
+
+        let mut incomplete = manifest.clone();
+        incomplete.workload_ids.pop();
+        assert!(validate_agent_token_campaign(&incomplete)
+            .unwrap_err()
+            .contains("must contain all five workloads"));
+
+        let mut complete = manifest.clone();
+        complete.campaign_scope = AgentTokenCampaignScope::Complete;
+        complete.attempts_per_cell = complete.campaign_scope.minimum_attempts();
+        validate_agent_token_campaign(&complete).unwrap();
+        let complete_schedule = build_agent_token_schedule(&complete);
+        assert_eq!(
+            complete_schedule.entry_count,
+            AGENT_TOKEN_COMPLETE_SCHEDULED_RUNS
+        );
+        let complete_report = build_agent_token_report(&complete, &complete_schedule, &[]).unwrap();
+        assert!(complete_report
+            .blockers
+            .iter()
+            .all(|blocker| blocker
+                != "AIT sprint-on diagnostic evidence is not publication eligible"));
+
+        let mut replacement_complete = complete.clone();
+        replacement_complete.functional_replacement_policy =
+            AgentTokenFunctionalReplacementPolicy::FirstValidUnacceptedLaneOnce;
+        validate_agent_token_campaign(&replacement_complete).unwrap();
+        let replacement_report = build_agent_token_report(
+            &replacement_complete,
+            &build_agent_token_schedule(&replacement_complete),
+            &[],
+        )
+        .unwrap();
+        assert_eq!(
+            replacement_report.functional_replacement_policy,
+            AgentTokenFunctionalReplacementPolicy::FirstValidUnacceptedLaneOnce
+        );
+
+        let mut replacement_smoke = manifest.clone();
+        replacement_smoke.functional_replacement_policy =
+            AgentTokenFunctionalReplacementPolicy::FirstValidUnacceptedLaneOnce;
+        assert!(validate_agent_token_campaign(&replacement_smoke)
+            .unwrap_err()
+            .contains("only for complete campaigns"));
+
+        let mut first_use = manifest.clone();
+        first_use.accounting_profile = AgentTokenAccountingProfile::FirstUseTotalCost;
+        first_use.runtime.ait_first_use_worktree_add_dir = Some(temp.path().to_path_buf());
+        assert!(validate_agent_token_campaign(&first_use)
+            .unwrap_err()
+            .contains("requires steady_state_task_cost"));
+
+        let mut mixed = manifest;
+        mixed.runtime.project_doc_max_bytes = 8_192;
+        assert!(validate_agent_token_campaign(&mixed)
+            .unwrap_err()
+            .contains("cannot mix project-document-loading treatment"));
+    }
+
+    #[test]
+    fn app_equivalent_managed_worktree_is_a_pinned_complete_200_axis() {
+        let temp = tempfile::tempdir().unwrap();
+        let fixture = temp.path().join("fixture.json");
+        fs::write(&fixture, "{}\n").unwrap();
+        let mut managed =
+            validation_manifest(AgentTokenCampaignScope::Complete, 0, fixture.clone());
+        managed.ait_edit_root_mode = AgentTokenAitEditRootMode::Returned;
+        managed.git_worktree_mode = AgentTokenGitWorktreeMode::CodexAppEquivalentManaged;
+
+        validate_agent_token_campaign(&managed).unwrap();
+        let schedule = build_agent_token_schedule(&managed);
+        assert_eq!(schedule.entry_count, 200);
+        assert_eq!(schedule.entries.len(), 200);
+        assert_eq!(schedule.entries[..10].len(), 10);
+        for pair in schedule.entries[..10].chunks_exact(2) {
+            assert_eq!(pair[0].workload_id, pair[1].workload_id);
+            assert_eq!(pair[0].attempt, pair[1].attempt);
+            assert_eq!(
+                pair.iter().map(|entry| entry.mode).collect::<BTreeSet<_>>(),
+                BTreeSet::from([
+                    AgentTokenMode::GitLinearSingleSession,
+                    AgentTokenMode::AitLinearSingleSession,
+                ])
+            );
+        }
+        assert_eq!(
+            serde_json::to_vec(&schedule.entries[..10]).unwrap(),
+            serde_json::to_vec(&build_agent_token_schedule(&managed).entries[..10]).unwrap()
+        );
+
+        let managed_report = build_agent_token_report(&managed, &schedule, &[]).unwrap();
+        assert_eq!(
+            managed_report.git_worktree_mode,
+            AgentTokenGitWorktreeMode::CodexAppEquivalentManaged
+        );
+        assert!(managed_report
+            .limitations
+            .iter()
+            .any(|limitation| limitation.contains("private worktree IPC was not invoked")));
+
+        let mut historical = managed.clone();
+        historical.git_worktree_mode = AgentTokenGitWorktreeMode::AgentManaged;
+        let historical_report =
+            build_agent_token_report(&historical, &build_agent_token_schedule(&historical), &[])
+                .unwrap();
+        assert!(
+            compare_agent_token_reports(&historical_report, &managed_report)
+                .blockers
+                .contains(&"Git worktree ownership differs".to_string())
+        );
+
+        let mut predecessor = managed.clone();
+        predecessor.protocol_revision =
+            AGENT_TOKEN_MODEL_ADMISSION_PREDECESSOR_PROTOCOL_REVISION.to_string();
+        assert!(validate_agent_token_campaign(&predecessor)
+            .unwrap_err()
+            .contains(AGENT_TOKEN_PROTOCOL_REVISION));
+
+        let mut preflight_predecessor = managed.clone();
+        preflight_predecessor.protocol_revision =
+            AGENT_TOKEN_MANAGED_WORKTREE_PREFLIGHT_PREDECESSOR_PROTOCOL_REVISION.to_string();
+        validate_agent_token_campaign_source(&preflight_predecessor)
+            .expect(".47 zero-lane managed-worktree evidence remains readable");
+        assert!(validate_agent_token_campaign(&preflight_predecessor)
+            .unwrap_err()
+            .contains(AGENT_TOKEN_PROTOCOL_REVISION));
+
+        let mut explicit_edit_root = managed.clone();
+        explicit_edit_root.ait_edit_root_mode = AgentTokenAitEditRootMode::Explicit;
+        assert!(validate_agent_token_campaign(&explicit_edit_root)
+            .unwrap_err()
+            .contains("without --edit-root"));
+
+        let mut claude = managed;
+        claude.runtime.executor = AgentTokenExecutor::Claude;
+        claude.runtime.claude_program = Some(PathBuf::from("claude"));
+        claude.runtime.executor_version = Some("test".to_string());
+        claude.model.provider = "anthropic".to_string();
+        claude.tool_policy = "claude_code_local_tools".to_string();
+        assert!(validate_agent_token_campaign(&claude)
+            .unwrap_err()
+            .contains("requires the Codex executor"));
+    }
+
+    #[test]
+    fn active_claude_campaign_requires_an_exact_executor_version_pin() {
+        let temp = tempfile::tempdir().unwrap();
+        let fixture = temp.path().join("fixture.json");
+        fs::write(&fixture, "{}\n").unwrap();
+        let mut manifest = validation_manifest(AgentTokenCampaignScope::Smoke, 0, fixture);
+        manifest.runtime.executor = AgentTokenExecutor::Claude;
+        manifest.runtime.claude_program = Some(PathBuf::from("claude"));
+        manifest.model.provider = "anthropic".to_string();
+        manifest.tool_policy = "claude_code_local_tools".to_string();
+
+        assert!(validate_agent_token_campaign(&manifest)
+            .unwrap_err()
+            .contains("runtime.executor_version"));
+        manifest.runtime.executor_version = Some("2.1.235 (Claude Code)".to_string());
+        validate_agent_token_campaign(&manifest).unwrap();
+
+        let mut predecessor = manifest.clone();
+        predecessor.protocol_revision =
+            AGENT_TOKEN_MODEL_ADMISSION_PREDECESSOR_PROTOCOL_REVISION.to_string();
+        predecessor.claude_model_admission = AgentTokenClaudeModelAdmission::AsShipped;
+        validate_agent_token_campaign_source(&predecessor)
+            .expect(".46 as-shipped Claude evidence remains readable");
+
+        predecessor.protocol_revision =
+            AGENT_TOKEN_STRICT_ONLY_PREDECESSOR_PROTOCOL_REVISION.to_string();
+        assert!(validate_agent_token_campaign_source(&predecessor)
+            .unwrap_err()
+            .contains("as_shipped"));
+    }
+
+    #[test]
+    fn protocol_46_complete_replacement_manifest_remains_readable() {
+        let temp = tempfile::tempdir().unwrap();
+        let fixture = temp.path().join("fixture.json");
+        fs::write(&fixture, "{}\n").unwrap();
+        let mut manifest = validation_manifest(AgentTokenCampaignScope::Complete, 0, fixture);
+        manifest.protocol_revision =
+            AGENT_TOKEN_MODEL_ADMISSION_PREDECESSOR_PROTOCOL_REVISION.to_string();
+        manifest.runtime.executor = AgentTokenExecutor::Claude;
+        manifest.runtime.claude_program = Some(PathBuf::from("claude"));
+        manifest.runtime.executor_version = Some("2.1.235 (Claude Code)".to_string());
+        manifest.model.provider = "anthropic".to_string();
+        manifest.tool_policy = "claude_code_local_tools".to_string();
+        manifest.claude_model_admission = AgentTokenClaudeModelAdmission::AsShipped;
+        manifest.functional_replacement_policy =
+            AgentTokenFunctionalReplacementPolicy::FirstValidUnacceptedLaneOnce;
+
+        validate_agent_token_campaign_source(&manifest)
+            .expect(".46 complete replacement evidence remains readable");
     }
 
     #[test]
@@ -4130,6 +5978,47 @@ mod tests {
     }
 
     #[test]
+    fn sprint_on_transcript_requires_bound_task_start() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("codex.jsonl");
+        write_test_transcript(
+            &source,
+            &[
+                "/opt/ait task start --from docs/sprints/benchmark_task.md#agent-token-benchmark/run-1/implement --intent repair --local --json",
+                "npm test",
+                "/opt/ait task finish LCT-1 --message repair --local --json",
+            ],
+        );
+        let sprint_on = extract_and_validate_codex_transcript_with_workflow_options(
+            &source,
+            "run-1",
+            AgentTokenMode::AitLinearSingleSession,
+            AgentTokenAccountingProfile::SteadyStateTaskCost,
+            AgentTokenTranscriptWorkflowOptions {
+                ait_sprint_mode: AgentTokenAitSprintMode::On,
+                ait_edit_root_mode: None,
+                git_worktree_mode: AgentTokenGitWorktreeMode::AgentManaged,
+                clean_main_head_proven: false,
+            },
+        )
+        .unwrap();
+        assert!(sprint_on.valid, "{:?}", sprint_on.errors);
+
+        let sprint_off = extract_and_validate_codex_transcript(
+            &source,
+            "run-1",
+            AgentTokenMode::AitLinearSingleSession,
+            AgentTokenAccountingProfile::SteadyStateTaskCost,
+        )
+        .unwrap();
+        assert!(!sprint_off.valid);
+        assert!(sprint_off
+            .errors
+            .iter()
+            .any(|error| error.contains("sprint-off mode used forbidden")));
+    }
+
+    #[test]
     fn git_transcript_requires_complete_linked_worktree_lifecycle() {
         let temp = tempfile::tempdir().unwrap();
         let source = temp.path().join("codex.jsonl");
@@ -4168,6 +6057,152 @@ mod tests {
                 transcript.observed_required_commands
             );
         }
+    }
+
+    #[test]
+    fn git_transcript_is_valid_without_any_read_only_discovery() {
+        // The declared worktree lifecycle already proves Git-mode fidelity.
+        // Requiring a discovery invocation would charge Git an inspection cost
+        // that the AIT branch never pays, so a lane that inspects nothing must
+        // stay protocol-valid.
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("codex.jsonl");
+        write_test_transcript(
+            &source,
+            &[
+                "/bin/zsh -lc '/usr/bin/git worktree add -b benchmark-task /tmp/git-task-worktree main'",
+                "/bin/zsh -lc 'cd /tmp/git-task-worktree && npm test && /usr/bin/git add --all && /usr/bin/git commit -m repair'",
+                "/bin/zsh -lc 'cd /tmp/workspace && /usr/bin/git merge --ff-only benchmark-task && /usr/bin/git worktree remove /tmp/git-task-worktree && /usr/bin/git branch -d benchmark-task'",
+            ],
+        );
+
+        let transcript = extract_and_validate_codex_transcript(
+            &source,
+            "run-1",
+            AgentTokenMode::GitLinearSingleSession,
+            AgentTokenAccountingProfile::SteadyStateTaskCost,
+        )
+        .unwrap();
+
+        assert!(transcript.valid, "{:?}", transcript.errors);
+        for absent in [
+            "git status",
+            "git diff",
+            "git log",
+            "git show",
+            "git rev-parse",
+        ] {
+            assert!(
+                !transcript
+                    .observed_required_commands
+                    .contains(&absent.to_string()),
+                "unexpected {absent:?} in {:?}",
+                transcript.observed_required_commands
+            );
+        }
+    }
+
+    #[test]
+    fn app_equivalent_git_transcript_allows_only_optional_read_only_git() {
+        let valid = validate_agent_token_command_list_with_workflow_options(
+            vec![
+                "git status --short".to_string(),
+                "git diff --check".to_string(),
+                "npm test".to_string(),
+            ],
+            "managed-run",
+            AgentTokenMode::GitLinearSingleSession,
+            AgentTokenAccountingProfile::SteadyStateTaskCost,
+            AgentTokenTranscriptWorkflowOptions {
+                ait_sprint_mode: AgentTokenAitSprintMode::Off,
+                ait_edit_root_mode: None,
+                git_worktree_mode: AgentTokenGitWorktreeMode::CodexAppEquivalentManaged,
+                clean_main_head_proven: true,
+            },
+        )
+        .unwrap();
+        assert!(valid.valid, "{:?}", valid.errors);
+        assert!(valid
+            .observed_required_commands
+            .iter()
+            .any(|command| command == "read-only git status --short"));
+        assert!(valid
+            .observed_required_commands
+            .iter()
+            .all(|command| !command.contains("worktree add")));
+
+        for mutation in [
+            "git add --all",
+            "git commit -m repair",
+            "git worktree add --detach /tmp/other HEAD",
+            "git checkout -- game.js",
+        ] {
+            let rejected = validate_agent_token_command_list_with_workflow_options(
+                vec![mutation.to_string()],
+                "managed-run",
+                AgentTokenMode::GitLinearSingleSession,
+                AgentTokenAccountingProfile::SteadyStateTaskCost,
+                AgentTokenTranscriptWorkflowOptions {
+                    ait_sprint_mode: AgentTokenAitSprintMode::Off,
+                    ait_edit_root_mode: None,
+                    git_worktree_mode: AgentTokenGitWorktreeMode::CodexAppEquivalentManaged,
+                    clean_main_head_proven: true,
+                },
+            )
+            .unwrap();
+            assert!(!rejected.valid, "mutation was admitted: {mutation}");
+            assert!(rejected
+                .errors
+                .iter()
+                .any(|error| error.contains("host-owned mutation")));
+        }
+    }
+
+    #[test]
+    fn returned_edit_root_treatment_rejects_task_start_edit_root_override() {
+        let commands = vec![
+            "/opt/ait task start --title repair --intent repair --local --json".to_string(),
+            "npm test".to_string(),
+            "/opt/ait task finish LCT-1 --message repair --local --json".to_string(),
+        ];
+        let returned = validate_agent_token_command_list_with_workflow_options(
+            commands.clone(),
+            "returned-run",
+            AgentTokenMode::AitLinearSingleSession,
+            AgentTokenAccountingProfile::SteadyStateTaskCost,
+            AgentTokenTranscriptWorkflowOptions {
+                ait_sprint_mode: AgentTokenAitSprintMode::Off,
+                ait_edit_root_mode: Some(AgentTokenAitEditRootMode::Returned),
+                git_worktree_mode: AgentTokenGitWorktreeMode::AgentManaged,
+                clean_main_head_proven: false,
+            },
+        )
+        .unwrap();
+        assert!(returned.valid, "{:?}", returned.errors);
+        assert!(returned
+            .observed_required_commands
+            .contains(&"ait task start without --edit-root".to_string()));
+
+        let mut overridden_commands = commands;
+        overridden_commands[0] = "/opt/ait task start --title repair --intent repair --edit-root /tmp/forced --local --json".to_string();
+        let overridden = validate_agent_token_command_list_with_workflow_options(
+            overridden_commands,
+            "returned-run",
+            AgentTokenMode::AitLinearSingleSession,
+            AgentTokenAccountingProfile::SteadyStateTaskCost,
+            AgentTokenTranscriptWorkflowOptions {
+                ait_sprint_mode: AgentTokenAitSprintMode::Off,
+                ait_edit_root_mode: Some(AgentTokenAitEditRootMode::Returned),
+                git_worktree_mode: AgentTokenGitWorktreeMode::AgentManaged,
+                clean_main_head_proven: false,
+            },
+        )
+        .unwrap();
+        assert!(!overridden.valid);
+        assert!(overridden
+            .errors
+            .iter()
+            .any(|error| error.contains("forbidden --edit-root")));
     }
 
     #[test]
@@ -4549,6 +6584,11 @@ mod tests {
             protocol_revision: AGENT_TOKEN_PROTOCOL_REVISION.to_string(),
             campaign_scope: AgentTokenCampaignScope::Smoke,
             accounting_profile: AgentTokenAccountingProfile::SteadyStateTaskCost,
+            ait_sprint_mode: AgentTokenAitSprintMode::Off,
+            ait_edit_root_mode: crate::agent_token::AgentTokenAitEditRootMode::Explicit,
+            git_worktree_mode: AgentTokenGitWorktreeMode::AgentManaged,
+            claude_model_admission: crate::agent_token::AgentTokenClaudeModelAdmission::Strict,
+            functional_replacement_policy: AgentTokenFunctionalReplacementPolicy::None,
             seed: 42,
             attempts_per_cell: 2,
             workload_ids: vec!["GD-01".to_string(), "GD-02".to_string()],
@@ -4560,6 +6600,11 @@ mod tests {
             runtime: AgentTokenRuntime {
                 executor: AgentTokenExecutor::default(),
                 claude_program: None,
+                executor_version: None,
+                ait_version: None,
+                git_version: None,
+                node_version: None,
+                browser_version: None,
                 codex_program: PathBuf::from("codex"),
                 ait_program: PathBuf::from("ait"),
                 git_program: PathBuf::from("git"),
@@ -4640,6 +6685,8 @@ mod tests {
             codex_timed_out: false,
             elapsed_ms: 1,
             infrastructure_failure: None,
+            provider_refusal: false,
+            provider_stop_reason: None,
             usage: Some(NormalizedAgentTokenUsage {
                 contract: AGENT_TOKEN_USAGE_CONTRACT.to_string(),
                 run_id: entry.run_id.clone(),
@@ -4844,7 +6891,12 @@ mod tests {
             );
             predecessor.protocol_revision = (*revision).to_string();
             predecessor.attempts_per_cell = if *revision
-                == AGENT_TOKEN_VALID_OUTCOME_RESUMABLE_PROTOCOL_REVISION
+                == AGENT_TOKEN_MANAGED_WORKTREE_PREFLIGHT_PREDECESSOR_PROTOCOL_REVISION
+                || *revision == AGENT_TOKEN_MODEL_ADMISSION_PREDECESSOR_PROTOCOL_REVISION
+                || *revision == AGENT_TOKEN_MODEL_PURITY_PREDECESSOR_PROTOCOL_REVISION
+                || *revision == AGENT_TOKEN_SPRINT_ON_COMPLETE_PREDECESSOR_PROTOCOL_REVISION
+                || *revision == AGENT_TOKEN_PROMPTED_INSPECTION_PREDECESSOR_PROTOCOL_REVISION
+                || *revision == AGENT_TOKEN_VALID_OUTCOME_RESUMABLE_PROTOCOL_REVISION
                 || *revision == AGENT_TOKEN_200_SESSION_PREDECESSOR_PROTOCOL_REVISION
             {
                 20
@@ -4873,6 +6925,11 @@ mod tests {
             protocol_revision: AGENT_TOKEN_PROTOCOL_REVISION.to_string(),
             campaign_scope: AgentTokenCampaignScope::Smoke,
             accounting_profile: AgentTokenAccountingProfile::SteadyStateTaskCost,
+            ait_sprint_mode: AgentTokenAitSprintMode::Off,
+            ait_edit_root_mode: crate::agent_token::AgentTokenAitEditRootMode::Explicit,
+            git_worktree_mode: AgentTokenGitWorktreeMode::AgentManaged,
+            claude_model_admission: crate::agent_token::AgentTokenClaudeModelAdmission::Strict,
+            functional_replacement_policy: AgentTokenFunctionalReplacementPolicy::None,
             seed: 42,
             attempts_per_cell,
             workload_ids: vec!["GD-01".to_string()],
@@ -4884,6 +6941,11 @@ mod tests {
             runtime: AgentTokenRuntime {
                 executor: AgentTokenExecutor::default(),
                 claude_program: None,
+                executor_version: None,
+                ait_version: None,
+                git_version: None,
+                node_version: None,
+                browser_version: None,
                 codex_program: PathBuf::from("codex"),
                 ait_program: PathBuf::from("ait"),
                 git_program: PathBuf::from("git"),
@@ -5342,6 +7404,11 @@ mod tests {
             protocol_revision: AGENT_TOKEN_PROTOCOL_REVISION.to_string(),
             campaign_scope: AgentTokenCampaignScope::Smoke,
             accounting_profile: AgentTokenAccountingProfile::SteadyStateTaskCost,
+            ait_sprint_mode: AgentTokenAitSprintMode::Off,
+            ait_edit_root_mode: crate::agent_token::AgentTokenAitEditRootMode::Explicit,
+            git_worktree_mode: AgentTokenGitWorktreeMode::AgentManaged,
+            claude_model_admission: crate::agent_token::AgentTokenClaudeModelAdmission::Strict,
+            functional_replacement_policy: AgentTokenFunctionalReplacementPolicy::None,
             seed: 42,
             attempts_per_cell: 3,
             workload_ids: vec!["GD-01".to_string()],
@@ -5353,6 +7420,11 @@ mod tests {
             runtime: AgentTokenRuntime {
                 executor: AgentTokenExecutor::default(),
                 claude_program: None,
+                executor_version: None,
+                ait_version: None,
+                git_version: None,
+                node_version: None,
+                browser_version: None,
                 codex_program: PathBuf::from("codex"),
                 ait_program: PathBuf::from("ait"),
                 git_program: PathBuf::from("git"),

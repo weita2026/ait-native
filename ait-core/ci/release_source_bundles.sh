@@ -3,7 +3,7 @@ set -euo pipefail
 
 usage() {
   printf '%s\n' \
-    'usage: release_source_bundles.sh <canonical-ait-core-root> <source-bundles-output>' >&2
+    'usage: release_source_bundles.sh <canonical-ait-core-root> <source-bundles-output> [<qualification-family-manifest>]' >&2
   exit 64
 }
 
@@ -25,9 +25,10 @@ sha256_file() {
   fi
 }
 
-[[ $# -eq 2 ]] || usage
+[[ $# -eq 2 || $# -eq 3 ]] || usage
 canonical_core=$1
 output=$2
+qualification_family=${3:-}
 [[ ${canonical_core} == /* && -d ${canonical_core} && ! -L ${canonical_core} ]] ||
   fail 66 'canonical ait-core root must be an absolute real directory'
 canonical_core=$(cd "${canonical_core}" && pwd -P)
@@ -44,7 +45,8 @@ output=${output_parent}/$(basename -- "${output}")
 
 preflight=${canonical_core}/ci/release_authority_preflight.sh
 source_cache=${canonical_core}/ci/release_source_cache.sh
-family=${canonical_core}/ait-release-family.json
+canonical_family=${canonical_core}/ait-release-family.json
+family=${canonical_family}
 authorities=${canonical_core}/ci/release_repository_authorities.json
 patch_ci=${canonical_core}/ci/patch_ci.json
 ait_bin=${canonical_core}/.ait/cargo-target/release/ait-cli
@@ -52,10 +54,20 @@ for input in "${preflight}" "${source_cache}" "${ait_bin}"; do
   [[ -x ${input} && ! -L ${input} ]] ||
     fail 66 "required source-bundle executable is unavailable: ${input}"
 done
-for input in "${family}" "${authorities}" "${patch_ci}"; do
+for input in "${canonical_family}" "${authorities}" "${patch_ci}"; do
   [[ -f ${input} && ! -L ${input} ]] ||
     fail 66 "required source-bundle input is unavailable: ${input}"
 done
+qualification_family_used=false
+if [[ -n ${qualification_family} ]]; then
+  [[ ${qualification_family} == /* ]] ||
+    fail 64 'qualification family manifest must be absolute'
+  [[ -f ${qualification_family} && ! -L ${qualification_family} ]] ||
+    fail 66 'qualification family manifest must be a regular non-symlink file'
+  family=$(cd "$(dirname -- "${qualification_family}")" &&
+    printf '%s/%s\n' "$(pwd -P)" "$(basename -- "${qualification_family}")")
+  qualification_family_used=true
+fi
 for command in jq tar; do
   command -v "${command}" >/dev/null 2>&1 ||
     fail 69 "required source-bundle command is unavailable: ${command}"
@@ -109,8 +121,14 @@ cleanup() {
 }
 trap cleanup EXIT HUP INT TERM
 
-"${preflight}" "${canonical_core}" \
-  "${staging}/canonical-authority.evidence.json" >/dev/null
+preflight_args=(
+  "${canonical_core}"
+  "${staging}/canonical-authority.evidence.json"
+)
+if [[ ${qualification_family_used} == true ]]; then
+  preflight_args+=("${family}")
+fi
+"${preflight}" "${preflight_args[@]}" >/dev/null
 
 workspace_root=$(dirname -- "${canonical_core}")
 remote_urls=${staging}/remote-urls.txt
@@ -184,14 +202,22 @@ done < <(jq -er '.repositories | sort_by(.repository_index)[] |
 jq -S -n \
   --arg family_version "${family_version}" \
   --arg family_tag "$(jq -er '.family.tag' "${family}")" \
+  --arg family_manifest_sha256 "$(sha256_file "${family}")" \
+  --arg canonical_family_manifest_sha256 "$(sha256_file "${canonical_family}")" \
   --arg authority_evidence_sha256 \
     "$(sha256_file "${staging}/canonical-authority.evidence.json")" \
+  --argjson qualification_family_used "${qualification_family_used}" \
   --argjson bundles "$(jq -s 'sort_by(.repository_index)' "${rows}")" '
   {
     contract: "ait.release.source-bundles/v1",
     status: "ready",
     family_version: $family_version,
     family_tag: $family_tag,
+    family_manifest_sha256: $family_manifest_sha256,
+    canonical_family_manifest_sha256: $canonical_family_manifest_sha256,
+    qualification_family_manifest_sha256:
+      (if $qualification_family_used then $family_manifest_sha256 else null end),
+    qualification_family_used: $qualification_family_used,
     canonical_authority_evidence_sha256: $authority_evidence_sha256,
     bundles: $bundles,
     source_bundle_count: ($bundles | length),

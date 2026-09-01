@@ -907,6 +907,225 @@ pub(in crate::primitives) fn emit_task_start_progress(
     progress(&payload)
 }
 
+pub(in crate::primitives) fn preflight_explicit_task_edit_root(
+    repo: &RepoRuntime,
+    requested_path: &Path,
+    allow_registered_replay: bool,
+    expected_replay_identity: Option<&str>,
+) -> Result<(), String> {
+    let location =
+        task_worktree_layout::resolve_explicit_task_worktree_location(repo, requested_path)?;
+    let expected_path = location.target_path;
+    let registry_dir = repo.ait_dir.join("worktrees");
+    let mut matching_registrations = Vec::new();
+    let mut matching_replay_identities = Vec::new();
+    if registry_dir.is_dir() {
+        for entry in fs::read_dir(&registry_dir).map_err(|error| {
+            format!(
+                "Failed to inspect worktree registry {}: {error}",
+                registry_dir.display()
+            )
+        })? {
+            let entry = entry.map_err(|error| error.to_string())?;
+            let registry_path = entry.path();
+            if registry_path.extension().and_then(|value| value.to_str()) != Some("json") {
+                continue;
+            }
+            let payload = read_json_value(&registry_path);
+            let Some(registered_path) = string_field(&payload, "path").map(PathBuf::from) else {
+                continue;
+            };
+            let registered_path = resolve_path_strict_false(&registered_path);
+            if expected_replay_identity.is_some()
+                && payload
+                    .get("explicit_start_replay_identity")
+                    .and_then(JsonValue::as_str)
+                    == expected_replay_identity
+            {
+                matching_replay_identities.push((registry_path.clone(), registered_path.clone()));
+            }
+            if registered_path == expected_path {
+                matching_registrations.push((registry_path, payload));
+            }
+        }
+    }
+
+    if matching_replay_identities.len() > 1 {
+        let registrations = matching_replay_identities
+            .iter()
+            .map(|(path, _)| path.display().to_string())
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Err(format!(
+            "Explicit Task-start replay identity has multiple worktree registrations: {registrations}."
+        ));
+    }
+    if let Some((registry_path, registered_path)) = matching_replay_identities.first() {
+        if registered_path != &expected_path {
+            return Err(format!(
+                "This Task start is already bound to explicit edit root `{}` by {}; requested `{}`.",
+                registered_path.display(),
+                registry_path.display(),
+                expected_path.display()
+            ));
+        }
+    }
+
+    if matching_registrations.len() > 1 {
+        let registrations = matching_registrations
+            .iter()
+            .map(|(path, _)| path.display().to_string())
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Err(format!(
+            "Explicit Task edit root `{}` has multiple worktree registrations: {registrations}.",
+            expected_path.display()
+        ));
+    }
+
+    if let Some((registry_path, payload)) = matching_registrations.pop() {
+        let worktree_name = string_field(&payload, "name")
+            .or_else(|| {
+                registry_path
+                    .file_stem()
+                    .and_then(|value| value.to_str())
+                    .map(str::to_string)
+            })
+            .ok_or_else(|| {
+                format!(
+                    "Explicit Task edit-root registration has no worktree name: {}",
+                    registry_path.display()
+                )
+            })?;
+        if !allow_registered_replay {
+            return Err(format!(
+                "Explicit Task edit root `{}` is already registered to worktree `{worktree_name}`.",
+                expected_path.display()
+            ));
+        }
+        if let Some(expected_replay_identity) = expected_replay_identity {
+            if payload
+                .get("explicit_start_replay_identity")
+                .and_then(JsonValue::as_str)
+                != Some(expected_replay_identity)
+            {
+                return Err(format!(
+                    "Explicit worktree `{worktree_name}` belongs to a different Task-start request and cannot be replayed."
+                ));
+            }
+        }
+        if payload.get("root_source").and_then(JsonValue::as_str)
+            != Some(task_worktree_layout::EXPLICIT_TASK_WORKTREE_ROOT_SOURCE)
+            || payload
+                .get("auto_created_for_task")
+                .and_then(JsonValue::as_bool)
+                != Some(true)
+        {
+            return Err(format!(
+                "Explicit Task edit root `{}` belongs to non-explicit worktree `{worktree_name}` and cannot be replayed.",
+                expected_path.display()
+            ));
+        }
+        string_field(&payload, "bound_task_id").ok_or_else(|| {
+            format!("Explicit worktree `{worktree_name}` has no bound Task and cannot be replayed.")
+        })?;
+        let expected_repo_root = resolve_path_strict_false(&repo.authoritative_repo_root());
+        let registered_repo_root = string_field(&payload, "repo_root")
+            .map(PathBuf::from)
+            .map(|path| resolve_path_strict_false(&path));
+        if registered_repo_root.as_deref() != Some(expected_repo_root.as_path()) {
+            return Err(format!(
+                "Explicit worktree `{worktree_name}` is registered to another repository."
+            ));
+        }
+        if !expected_path.is_dir() {
+            return Err(format!(
+                "Explicit worktree `{worktree_name}` is registered at `{}`, but that directory is missing.",
+                expected_path.display()
+            ));
+        }
+        let marker = read_json_value(&expected_path.join(WORKTREE_CONFIG_NAME));
+        let marker_name = string_field(&marker, "worktree_name");
+        let marker_repo_root = string_field(&marker, "repo_root")
+            .map(PathBuf::from)
+            .map(|path| resolve_path_strict_false(&path));
+        let marker_workspace_root = string_field(&marker, "workspace_root")
+            .map(PathBuf::from)
+            .map(|path| resolve_path_strict_false(&path));
+        if marker_name.as_deref() != Some(worktree_name.as_str())
+            || marker_repo_root.as_deref() != Some(expected_repo_root.as_path())
+            || marker_workspace_root.as_deref() != Some(expected_path.as_path())
+        {
+            return Err(format!(
+                "Explicit worktree `{worktree_name}` has inconsistent ownership metadata at `{}`.",
+                expected_path.display()
+            ));
+        }
+        return Ok(());
+    }
+
+    if expected_path.is_dir()
+        && fs::read_dir(&expected_path)
+            .map_err(|error| {
+                format!(
+                    "Failed to inspect explicit Task edit root {}: {error}",
+                    expected_path.display()
+                )
+            })?
+            .next()
+            .is_some()
+    {
+        return Err(format!(
+            "Explicit Task edit root must be absent or empty before it can be claimed: {}",
+            expected_path.display()
+        ));
+    }
+
+    Ok(())
+}
+
+pub(in crate::primitives) fn record_explicit_task_edit_root_replay_identity(
+    repo: &RepoRuntime,
+    payload: &JsonValue,
+    replay_identity: &str,
+) -> Result<(), String> {
+    let Some(worktree) = payload.get("worktree") else {
+        return Err("Task-start payload is missing its worktree.".to_string());
+    };
+    if worktree.get("root_source").and_then(JsonValue::as_str)
+        != Some(task_worktree_layout::EXPLICIT_TASK_WORKTREE_ROOT_SOURCE)
+    {
+        return Ok(());
+    }
+    let worktree_name = required_string_field(worktree, "name")?;
+    let task_id = required_string_field(payload, "task_id")?;
+    let mut metadata = load_worktree_metadata(repo, &worktree_name)?;
+    if metadata.get("bound_task_id").and_then(JsonValue::as_str) != Some(task_id.as_str())
+        || metadata.get("root_source").and_then(JsonValue::as_str)
+            != Some(task_worktree_layout::EXPLICIT_TASK_WORKTREE_ROOT_SOURCE)
+    {
+        return Err(format!(
+            "Explicit worktree `{worktree_name}` changed ownership before its replay identity could be recorded."
+        ));
+    }
+    if let Some(existing) = metadata
+        .get("explicit_start_replay_identity")
+        .and_then(JsonValue::as_str)
+    {
+        if existing != replay_identity {
+            return Err(format!(
+                "Explicit worktree `{worktree_name}` already records a different Task-start replay identity."
+            ));
+        }
+        return Ok(());
+    }
+    metadata.insert(
+        "explicit_start_replay_identity".to_string(),
+        JsonValue::String(replay_identity.to_string()),
+    );
+    save_worktree_metadata(repo, &worktree_name, &metadata)
+}
+
 fn preflight_task_worktree_target(
     repo: &RepoRuntime,
     worktree_name: &str,
@@ -1597,6 +1816,7 @@ pub fn task_start(
         None,
         None,
         None,
+        None,
     )
 }
 
@@ -1610,6 +1830,7 @@ pub(crate) fn task_start_with_progress(
     plan_id: Option<&str>,
     plan_revision_id: Option<&str>,
     plan_item_ref: Option<&str>,
+    explicit_edit_root: Option<&Path>,
     debug_probe_override: Option<&JsonValue>,
     mut progress: Option<&mut TaskStartProgressEmitter<'_>>,
 ) -> Result<JsonValue, String> {
@@ -1624,6 +1845,9 @@ pub(crate) fn task_start_with_progress(
     let resolved_base_line = "main".to_string();
     let resolved_change_title = resolved_title.clone();
     task_start_context_preflight(repo)?;
+    if let Some(explicit_edit_root) = explicit_edit_root {
+        preflight_explicit_task_edit_root(repo, explicit_edit_root, plan_item_ref.is_some(), None)?;
+    }
     let context_preflight_elapsed = elapsed_ms(context_preflight_started);
     let use_local = repo.task_uses_local_scope(local, remote_name)?;
     let remote_base_line_preflight_started = Instant::now();
@@ -1734,6 +1958,7 @@ pub(crate) fn task_start_with_progress(
         Some(change),
         &resolved_base_line,
         use_local,
+        explicit_edit_root,
         debug_probe_override,
         progress,
     )?;
@@ -1765,6 +1990,7 @@ pub(in crate::primitives) fn task_start_bootstrap_created_records_with_progress(
     change: Option<JsonValue>,
     resolved_base_line: &str,
     use_local: bool,
+    explicit_edit_root: Option<&Path>,
     debug_probe_override: Option<&JsonValue>,
     mut progress: Option<&mut TaskStartProgressEmitter<'_>>,
 ) -> Result<JsonValue, String> {
@@ -1773,10 +1999,40 @@ pub(in crate::primitives) fn task_start_bootstrap_created_records_with_progress(
     let change_id = change
         .as_ref()
         .and_then(|row| string_field(row, "change_ref").or_else(|| string_field(row, "change_id")));
+    let explicit_location = explicit_edit_root
+        .map(|path| task_worktree_layout::resolve_explicit_task_worktree_location(repo, path))
+        .transpose()?;
     if let Some(existing) =
         bound_task_worktree_metadata(repo, Some(&task_id), change_id.as_deref())?
     {
         let worktree = worktree_get(repo, Some(&existing.name), false)?;
+        if let Some(explicit_location) = explicit_location.as_ref() {
+            let registered_path = worktree
+                .get("path")
+                .and_then(JsonValue::as_str)
+                .map(PathBuf::from)
+                .ok_or_else(|| {
+                    format!(
+                        "Bound worktree `{}` has no registered path to compare with --edit-root.",
+                        existing.name
+                    )
+                })?;
+            if resolve_path_strict_false(&registered_path) != explicit_location.target_path {
+                return Err(format!(
+                    "Task `{task_id}` is already bound to `{}`, not the requested explicit edit root `{}`.",
+                    registered_path.display(),
+                    explicit_location.target_path.display()
+                ));
+            }
+            if worktree.get("root_source").and_then(JsonValue::as_str)
+                != Some(task_worktree_layout::EXPLICIT_TASK_WORKTREE_ROOT_SOURCE)
+            {
+                return Err(format!(
+                    "Task `{task_id}` is already bound to managed worktree `{}`; it cannot be replayed as an explicit edit root.",
+                    existing.name
+                ));
+            }
+        }
         emit_task_start_progress(
             progress,
             json!({
@@ -1810,11 +2066,14 @@ pub(in crate::primitives) fn task_start_bootstrap_created_records_with_progress(
     }
     let worktree_location_started = Instant::now();
     let worktree_name = resolve_next_task_worktree_name(repo, &task_id)?;
-    let worktree_location = task_worktree_layout::resolve_task_worktree_location_with_debug(
-        repo,
-        &worktree_name,
-        debug_probe_override,
-    )?;
+    let worktree_location = match explicit_location {
+        Some(location) => location,
+        None => task_worktree_layout::resolve_task_worktree_location_with_debug(
+            repo,
+            &worktree_name,
+            debug_probe_override,
+        )?,
+    };
     let worktree_location_elapsed = elapsed_ms(worktree_location_started);
     let worktree_path_text = worktree_location.target_path.to_string_lossy().to_string();
     let worktree_alias_path_text = worktree_location

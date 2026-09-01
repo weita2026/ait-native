@@ -831,7 +831,8 @@ pub(super) fn assert_init_establishes_agent_contract() -> Result<(), String> {
     }
     let agents = fs::read_to_string(repo.join("AGENTS.md")).map_err(|err| err.to_string())?;
     if !agents.contains("<!-- ait:workflow:start -->")
-        || !agents.contains("entry: mode=`solo_local`; sprint=`on`; scopes=`local`")
+        || !agents.contains("Route: mode=`solo_local`; sprint=`on`; scope=`local`")
+        || !agents.contains("ait task start --from <sprint-card-path>#<exact-ref> --intent")
     {
         return Err("init did not create the effective AGENTS.md contract".to_string());
     }

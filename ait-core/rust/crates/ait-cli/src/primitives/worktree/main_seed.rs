@@ -1078,7 +1078,8 @@ pub(in crate::primitives) fn sync_main_seed_after_task_land(
                     }
                 }
             } else {
-                promotion_error = Some("Task land output did not preserve a Task ID.".to_string());
+                promotion_error =
+                    Some("Task finish output did not preserve a Task ID.".to_string());
             }
         }
         let fallback_reason = if normalized_task_status.as_deref() == Some("completed") {

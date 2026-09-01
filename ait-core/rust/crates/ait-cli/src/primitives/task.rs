@@ -707,13 +707,13 @@ where
             (
                 "local_change_landed".to_string(),
                 format!(
-                    "This local Change is landed; Task closeout should be resumed against {target_line}."
+                    "This local Change is applied; Task closeout should be resumed against {target_line}."
                 ),
             )
         } else {
             (
                 "local_change_not_landed".to_string(),
-                format!("This local Change has not been landed onto {target_line}."),
+                format!("This local Change has not been applied to {target_line}."),
             )
         };
         change_rows.push(json!({

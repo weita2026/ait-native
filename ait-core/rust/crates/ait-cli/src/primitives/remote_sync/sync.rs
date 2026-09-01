@@ -2700,7 +2700,7 @@ fn require_solo_local_default_line_push_authority(
         governed_change = governed_change_ref
             .as_deref()
             .map(|change_ref| format!(
-                " Local head contains landed local Change {change_ref}; use that exact Change as the governed promotion subject"
+                " Local head contains finished local Change {change_ref}; use that exact Change as the governed promotion subject"
             ))
             .unwrap_or_default(),
     ))

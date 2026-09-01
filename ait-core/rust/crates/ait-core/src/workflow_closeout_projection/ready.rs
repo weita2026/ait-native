@@ -57,7 +57,7 @@ pub(crate) fn workflow_ready_steps(
             "Patchset",
             "done",
             &format!(
-                "Patchset `{}` is already prepared for the review and land phase.",
+                "Patchset `{}` is already prepared for the review and finish phase.",
                 patchset_id
             ),
             None,
@@ -74,7 +74,11 @@ pub(crate) fn workflow_ready_steps(
             "Patchset",
             "stale",
             &detail,
-            publish_command,
+            if optional_bool_field(&refresh, "republish_allowed") == Some(false) {
+                None
+            } else {
+                publish_command
+            },
         ));
     } else {
         steps.push(workflow_land_step(
@@ -96,7 +100,7 @@ pub(crate) fn workflow_ready_steps(
                 "external",
                 "External",
                 "done",
-                "External materialization is ready for CI and remote land.",
+                "External materialization is ready for CI and remote finish.",
                 None,
             ));
         } else {
@@ -189,6 +193,8 @@ pub(crate) fn workflow_ready_suggested_commands(
 ) -> Vec<JsonValue> {
     let next_action_code = optional_string_field(next_action, "code").unwrap_or_default();
     let candidates = if next_action_code == "external_readiness_blocked" {
+        vec![optional_string_field(next_action, "command")]
+    } else if next_action_code == "patchset_recovery_required" {
         vec![optional_string_field(next_action, "command")]
     } else if apply_owned_continuation
         && WORKFLOW_READY_APPLY_OWNED_CODES.contains(&next_action_code.as_str())

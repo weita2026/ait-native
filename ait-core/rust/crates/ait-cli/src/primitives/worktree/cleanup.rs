@@ -293,7 +293,7 @@ pub(in crate::primitives) fn worktree_cleanup_reason(
             "clean task-complete worktree eligible for explicit cleanup".to_string()
         }
         "after_remote_land" => {
-            "clean task-bound worktree eligible for auto-remove after remote land".to_string()
+            "clean task-bound worktree eligible for auto-remove after remote finish".to_string()
         }
         _ => format!("cleanup policy {cleanup_policy}"),
     }
@@ -562,7 +562,7 @@ pub(in crate::primitives) fn worktree_cleanup_decision(
                     &older_than_label,
                 ));
             } else {
-                protected_reason = Some("waiting for remote land cleanup event".to_string());
+                protected_reason = Some("waiting for remote finish cleanup event".to_string());
             }
         } else if cleanup_policy == "manual_only" && allow_manual_only {
             cleanup_class = "safe_cleanup_candidate".to_string();
@@ -695,7 +695,7 @@ where
         && !force
     {
         return Err(
-            "Authoritative task-land worktree cleanup requires forced removal.".to_string(),
+            "Authoritative Task-finish worktree cleanup requires forced removal.".to_string(),
         );
     }
     let worktree_name = resolve_runtime_worktree_name(repo, Some(name))?;

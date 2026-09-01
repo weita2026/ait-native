@@ -6,16 +6,16 @@ pub(crate) fn workflow_landed_steps_and_suggested_commands(
 ) -> (JsonValue, JsonValue) {
     let patchset_label = optional_nonempty_string(facts, "patchset_label");
     let patchset_detail = if let Some(label) = patchset_label {
-        format!("Patchset `{label}` is already part of the landed history for this change.")
+        format!("Patchset `{label}` is already part of the accepted history for this change.")
     } else {
-        "A landed change already implies patchset publication succeeded earlier.".to_string()
+        "An accepted change already implies patchset publication succeeded earlier.".to_string()
     };
     let steps = json!([
         workflow_land_step(
             "snapshot",
             "Snapshot",
             "done",
-            "No additional authoring snapshot is required because the change is already landed.",
+            "No additional authoring snapshot is required because the change is already applied.",
             None
         ),
         workflow_land_step("patchset", "Patchset", "done", &patchset_detail, None),
@@ -23,29 +23,29 @@ pub(crate) fn workflow_landed_steps_and_suggested_commands(
             "attestation",
             "Attestation",
             "done",
-            "Landing already succeeded, so attestation gating has already cleared.",
+            "Finish already succeeded, so attestation gating has already cleared.",
             None
         ),
         workflow_land_step(
             "review",
             "Review",
             "done",
-            "Landing already succeeded, so review requirements were already satisfied.",
+            "Finish already succeeded, so review requirements were already satisfied.",
             None
         ),
         workflow_land_step(
             "policy",
             "Policy",
             "done",
-            "Landing already succeeded, so policy has already cleared.",
+            "Finish already succeeded, so policy has already cleared.",
             None
         ),
         workflow_land_step(
             "land",
-            "Land",
+            "Finish",
             "done",
             &format!(
-                "Change `{}` already landed on `{}`.",
+                "Change `{}` is already applied to `{}`.",
                 optional_string_field(&field_obj(facts, "change"), "change_id")
                     .unwrap_or_else(|| "unknown".to_string()),
                 string_field(facts, "target_line")
@@ -82,6 +82,15 @@ pub(crate) fn workflow_land_full_steps(
     let patchset_refresh = optional_obj_field(facts, "patchset_refresh");
     let change = field_obj(facts, "change");
     let publish_command = command_hint(command_hints, "publish_command");
+    let refresh_command = if patchset_refresh
+        .as_ref()
+        .and_then(|value| optional_bool_field(value, "republish_allowed"))
+        == Some(false)
+    {
+        None
+    } else {
+        publish_command.clone()
+    };
     let patchset_ci_command = command_hint(command_hints, "patchset_ci_command");
     let attestation_command = command_hint(command_hints, "attestation_command")
         .or_else(|| command_hint(command_hints, "attest_command"));
@@ -96,7 +105,7 @@ pub(crate) fn workflow_land_full_steps(
             "snapshot",
             "Snapshot",
             "pending",
-            "Workspace changes are still dirty, so publishable land state needs a fresh snapshot first.",
+            "Workspace changes are still dirty, so publishable finish state needs a fresh snapshot first.",
             Some("ait snapshot create --message \"reviewable snapshot\"".to_string()),
         ));
     } else {
@@ -128,7 +137,7 @@ pub(crate) fn workflow_land_full_steps(
             "Patchset",
             "done",
             &format!(
-                "Patchset `{}` is already prepared for final-snapshot remote land.",
+                "Patchset `{}` is already prepared for final-snapshot remote finish.",
                 patchset_id
             ),
             None,
@@ -166,7 +175,7 @@ pub(crate) fn workflow_land_full_steps(
                 "Patchset",
                 "stale",
                 &detail,
-                publish_command.clone(),
+                refresh_command.clone(),
             ));
         } else if bool_field(retarget, "needs_retarget") {
             let detail = patchset_refresh
@@ -186,7 +195,7 @@ pub(crate) fn workflow_land_full_steps(
                 "Patchset",
                 "stale",
                 &detail,
-                publish_command.clone(),
+                refresh_command.clone(),
             ));
         } else if !bool_field(facts, "base_is_fresh") {
             let detail = patchset_refresh
@@ -198,7 +207,7 @@ pub(crate) fn workflow_land_full_steps(
                 "Patchset",
                 "stale",
                 &detail,
-                publish_command.clone(),
+                refresh_command.clone(),
             ));
         } else if matches!(
             optional_bool_field(facts, "workspace_matches_patchset"),
@@ -218,7 +227,7 @@ pub(crate) fn workflow_land_full_steps(
                 "Patchset",
                 "stale",
                 &detail,
-                publish_command.clone(),
+                refresh_command.clone(),
             ));
         } else {
             steps.push(workflow_land_step(
@@ -243,7 +252,7 @@ pub(crate) fn workflow_land_full_steps(
             "Patchset",
             "stale",
             &detail,
-            publish_command.clone(),
+            refresh_command.clone(),
         ));
     } else if matches!(
         optional_bool_field(facts, "workspace_matches_patchset"),
@@ -263,7 +272,7 @@ pub(crate) fn workflow_land_full_steps(
             "Patchset",
             "stale",
             &detail,
-            publish_command.clone(),
+            refresh_command,
         ));
     } else {
         steps.push(workflow_land_step(
@@ -387,7 +396,7 @@ pub(crate) fn workflow_land_full_steps(
                 "Code review: {code_review_state}; Task review: pending; Team review: {team_review_state}."
             )
         } else if let Some(reviewer) = auto_review_reviewer {
-            format!("Code review: {code_review_state}; Task review: pending; Team review: {team_review_state}. Reviewer-owned `ait workflow finish --apply` or a successful direct `ait review code submit` can record `task_approve` as `{reviewer}` before atomic Task Land.")
+            format!("Code review: {code_review_state}; Task review: pending; Team review: {team_review_state}. Reviewer-owned `ait workflow finish --apply` or a successful direct `ait review code submit` can record `task_approve` as `{reviewer}` before atomic Task closeout.")
         } else {
             format!(
                 "Code review: {code_review_state}; Task review: pending; Team review: {team_review_state}. `task_review=automatic` requires `ait config` `user_name` before approval can be recorded."
@@ -461,17 +470,17 @@ pub(crate) fn workflow_land_full_steps(
             None,
         ));
     } else {
-        steps.push(workflow_land_step("policy", "Policy", "advisory", &format!("Policy is folded into `task finish` for Patchset `{patchset_id}`; Land preflight will run the authoritative evaluation."), None));
+        steps.push(workflow_land_step("policy", "Policy", "advisory", &format!("Policy is folded into `task finish` for Patchset `{patchset_id}`; finish preflight will run the authoritative evaluation."), None));
     }
 
     let change_status = optional_string_field(&change, "status").unwrap_or_default();
     if change_status == "landed" {
         steps.push(workflow_land_step(
             "land",
-            "Land",
+            "Finish",
             "done",
             &format!(
-                "Change `{}` already landed on `{}`.",
+                "Change `{}` is already applied to `{}`.",
                 string_field(facts, "resolved_change_id"),
                 string_field(facts, "base_line_name")
             ),
@@ -480,9 +489,9 @@ pub(crate) fn workflow_land_full_steps(
     } else if patchset.is_none() {
         steps.push(workflow_land_step(
             "land",
-            "Land",
+            "Finish",
             "waiting",
-            "Landing starts after a patchset exists and clears review/policy.",
+            "Finish starts after a patchset exists and clears review/policy.",
             None,
         ));
     } else if string_field(facts, "landing_status") == "blocked"
@@ -498,16 +507,18 @@ pub(crate) fn workflow_land_full_steps(
         } else if let Some(submission_id) = optional_string_field(facts, "landing_submission_id") {
             let blocker = string_field(facts, "landing_blocker_class");
             if blocker.is_empty() {
-                "Remote land is currently blocked and needs manual resolution before retrying."
+                "Remote finish is currently blocked and needs manual resolution before retrying."
                     .to_string()
             } else {
-                format!("Remote land submission `{submission_id}` is blocked by `{blocker}`.")
+                format!("Remote finish operation `{submission_id}` is blocked by `{blocker}`.")
             }
         } else {
-            "Remote land is currently blocked and needs manual resolution before retrying."
+            "Remote finish is currently blocked and needs manual resolution before retrying."
                 .to_string()
         };
-        steps.push(workflow_land_step("land", "Land", "blocked", &detail, None));
+        steps.push(workflow_land_step(
+            "land", "Finish", "blocked", &detail, None,
+        ));
     } else if int_field(facts, "review_blocking") > 0
         || int_field(facts, "review_approvals") <= 0
         || string_field(facts, "policy_decision") != "pass"
@@ -519,7 +530,7 @@ pub(crate) fn workflow_land_full_steps(
                 Some(string_field(facts, "policy_decision").as_str()),
             )
         } else {
-            "Landing waits for review to clear first.".to_string()
+            "Finish waits for review to clear first.".to_string()
         };
         let command = if policy_has_checks && string_field(facts, "policy_decision") != "pass" {
             None
@@ -528,7 +539,7 @@ pub(crate) fn workflow_land_full_steps(
         };
         steps.push(workflow_land_step(
             "land",
-            "Land",
+            "Finish",
             if policy_has_checks && string_field(facts, "policy_decision") != "pass" {
                 "blocked"
             } else {
@@ -544,7 +555,7 @@ pub(crate) fn workflow_land_full_steps(
         let submission_id = optional_string_field(facts, "landing_submission_id")
             .unwrap_or_else(|| "unknown".to_string());
         let detail = format!(
-            "Remote land submission `{submission_id}` is currently `{}`.",
+            "Remote finish operation `{submission_id}` is currently `{}`.",
             optional_string_field(
                 &landing_summary
                     .clone()
@@ -556,10 +567,10 @@ pub(crate) fn workflow_land_full_steps(
         );
         let command = command_hint(command_hints, "apply_command");
         steps.push(workflow_land_step(
-            "land", "Land", "pending", &detail, command,
+            "land", "Finish", "pending", &detail, command,
         ));
     } else {
-        steps.push(workflow_land_step("land", "Land", "ready", &format!("Change `{}` is ready to submit onto `{}`. `task finish` will re-evaluate Policy as part of Land preflight.", string_field(facts, "resolved_change_id"), string_field(facts, "base_line_name")), land_command));
+        steps.push(workflow_land_step("land", "Finish", "ready", &format!("Change `{}` is ready to apply to `{}`. `task finish` will re-evaluate Policy during finish preflight.", string_field(facts, "resolved_change_id"), string_field(facts, "base_line_name")), land_command));
     }
 
     steps
@@ -573,7 +584,7 @@ pub(crate) fn workflow_land_phase_steps(facts: &JsonValue) -> Vec<JsonValue> {
             "Ready",
             "done",
             &optional_string_field(&ready_next_action, "detail").unwrap_or_else(|| {
-                "Patchset and attestation are ready for review and land.".to_string()
+                "Patchset and attestation are ready for review and finish.".to_string()
             }),
             None,
         );
@@ -596,7 +607,7 @@ pub(crate) fn workflow_land_phase_steps(facts: &JsonValue) -> Vec<JsonValue> {
                 "policy",
                 "Policy",
                 "advisory",
-                "Land preflight will evaluate policy authoritatively.",
+                "Finish preflight will evaluate policy authoritatively.",
                 None,
             ),
         );
@@ -605,9 +616,9 @@ pub(crate) fn workflow_land_phase_steps(facts: &JsonValue) -> Vec<JsonValue> {
             "land",
             workflow_land_step(
                 "land",
-                "Land",
+                "Finish",
                 "waiting",
-                "Landing begins after review clears.",
+                "Finish begins after review clears.",
                 None,
             ),
         );
@@ -618,7 +629,7 @@ pub(crate) fn workflow_land_phase_steps(facts: &JsonValue) -> Vec<JsonValue> {
                 "task",
                 "Task",
                 "pending",
-                "The Change is landed; run task finish again to close the Task slice.",
+                "The Change is already applied; run task finish again to close the Task slice.",
                 optional_string_field(facts, "state_next_action_command").or_else(|| {
                     Some(format!(
                         "ait task finish {}",
@@ -644,7 +655,7 @@ pub(crate) fn workflow_land_phase_steps(facts: &JsonValue) -> Vec<JsonValue> {
                 "task",
                 "Task",
                 "waiting",
-                "Task completion follows a successful land.",
+                "Task completion follows a successful finish.",
                 None,
             )
         };
@@ -656,13 +667,13 @@ pub(crate) fn workflow_land_phase_steps(facts: &JsonValue) -> Vec<JsonValue> {
                 "Ready",
                 "pending",
                 &optional_string_field(&field_obj(facts, "ready_next_action"), "detail")
-                    .unwrap_or_else(|| "Run workflow ready before review or land.".to_string()),
+                    .unwrap_or_else(|| "Run workflow ready before review or finish.".to_string()),
                 optional_string_field(facts, "ready_command"),
             ),
             workflow_land_step("review", "Review", "waiting", "Review starts after `workflow ready` prepares a selected patchset and attestation.", None),
-            workflow_land_step("policy", "Policy", "waiting", "Land preflight will evaluate policy after review clears on a ready patchset.", None),
-            workflow_land_step("land", "Land", "waiting", "Landing starts after `workflow ready` and review are complete.", None),
-            workflow_land_step("task", "Task", "waiting", "Task completion follows a successful land.", None),
+            workflow_land_step("policy", "Policy", "waiting", "Finish preflight will evaluate policy after review clears on a ready patchset.", None),
+            workflow_land_step("land", "Finish", "waiting", "Finish starts after `workflow ready` and review are complete.", None),
+            workflow_land_step("task", "Task", "waiting", "Task completion follows a successful finish.", None),
         ]
     }
 }

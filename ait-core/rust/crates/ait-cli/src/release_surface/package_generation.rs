@@ -405,11 +405,11 @@ pub(super) fn render_release_notes(
     let tasks = landed_tasks_since_previous_release(repo, &previous)?;
     if tasks.is_empty() {
         return Ok(format!(
-            "No landed task records were found since `v{previous_version}`.\n"
+            "No finished task records were found since `v{previous_version}`.\n"
         ));
     }
     let mut lines = vec![format!(
-        "Tasks landed since `v{previous_version}` ({} task{}):",
+        "Tasks finished since `v{previous_version}` ({} task{}):",
         tasks.len(),
         if tasks.len() == 1 { "" } else { "s" }
     )];

@@ -181,6 +181,8 @@ const MATRIX_AUTHORITIES = {
     rowCount: 32,
   },
 };
+const PUBLISHED_LEGACY_NATIVE_BUNDLE_FAMILY_SHA256 =
+  "a778a4f31fd56263294b9c0a07f1c294a1b6a17500c39372e4db15ad709f142c";
 
 function usage(message) {
   if (message) {
@@ -366,6 +368,20 @@ function validatePlatformManifest(platforms, version) {
   }
 }
 
+function runnerBundleVersion(version) {
+  const match = /^(\d+)\.(\d+)\./.exec(version);
+  return Boolean(
+    match &&
+      (Number(match[1]) > 1 ||
+        (Number(match[1]) === 1 && Number(match[2]) >= 1)),
+  );
+}
+
+function exactPublishedLegacyNativeBundleFamily(family) {
+  const digest = sha256Bytes(Buffer.from(JSON.stringify(sortedValue(family))));
+  return digest === PUBLISHED_LEGACY_NATIVE_BUNDLE_FAMILY_SHA256;
+}
+
 function validateFamily(family) {
   if (
     family.schema !== "ait.release.family/v3" ||
@@ -400,6 +416,15 @@ function validateFamily(family) {
     fail("release family distributions differ from the exact clean-host inventory");
   }
   const [matrixRevision, contract] = matches[0];
+  if (
+    runnerBundleVersion(family.family.version) &&
+    matrixRevision === "distribution-target-32-2026-08-17.2" &&
+    !exactPublishedLegacyNativeBundleFamily(family)
+  ) {
+    fail(
+      "1.1+ clean-host qualification requires the native runner-bundle matrix; the legacy matrix is admitted only for the exact immutable published 1.1.0 family",
+    );
+  }
   return {
     version: family.family.version,
     matrixRevision,

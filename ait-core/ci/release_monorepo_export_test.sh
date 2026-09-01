@@ -50,6 +50,20 @@ expect_failure() {
   test -s "${temporary_root}/${label}.stderr"
 }
 
+existing_target_fixture=${temporary_root}/existing-target.txt
+printf 'Release 1.1.0 notes\nVersion @VERSION@\nTag @VERSION@\n' \
+  >"${existing_target_fixture}"
+expect_failure transform-existing-target node \
+  "${repo_root}/ci/release_monorepo_transform.mjs" \
+  "${existing_target_fixture}" '@VERSION@' '1.1.0'
+node "${repo_root}/ci/release_monorepo_transform.mjs" --template-token \
+  "${existing_target_fixture}" '@VERSION@' '1.1.0'
+test "$(grep -Fc '1.1.0' "${existing_target_fixture}")" = 3
+if grep -F '@VERSION@' "${existing_target_fixture}" >/dev/null; then
+  printf 'allowed existing-target transform retained its unique token\n' >&2
+  exit 65
+fi
+
 if (( selftest_mode == 0 )); then
   public_layout=${temporary_root}/public-layout
   public_core=${public_layout}/ait-core
@@ -478,7 +492,7 @@ expect_failure missing-public-storefront node \
   "${missing_public_storefront}/build-release.mjs" --validate-only
 stale_public_storefront=${temporary_root}/stale-public-storefront
 cp -R "${output_one}" "${stale_public_storefront}"
-printf '\nJira-like\n' >>"${stale_public_storefront}/README.md"
+printf '\nparallel AI execution\n' >>"${stale_public_storefront}/README.md"
 expect_failure stale-public-storefront node \
   "${stale_public_storefront}/build-release.mjs" --validate-only
 unresolved_public_storefront=${temporary_root}/unresolved-public-storefront
@@ -655,6 +669,17 @@ for required_readme_text in \
   'ait plan sync' \
   'ait snapshot create' \
   'ait task finish' \
+  'Two separately published 200-session campaigns' \
+  '36.28%' \
+  'benchmark-sprint-on-20260829' \
+  'not pooled observations or a causal sprint-on/off A/B test' \
+  '## Why I Built AIT' \
+  'I wanted a Jira-like workflow where opening a sprint card starts a real,' \
+  '### Claude Fable benchmark — still running' \
+  '**Progress: 22 / 200 sessions**' \
+  'claim_eligible=false' \
+  'The workload-median token saving is **20.32%**, with an aggregate bootstrap' \
+  'numbers are published for transparency, not as a product claim' \
   'package-owned `native/ait_napi.node`' \
   'does not locate or launch a child executable' \
   '## License map' \
@@ -663,7 +688,7 @@ for required_readme_text in \
   'No commercial or proprietary license applies to a public 1.0 source path'; do
   grep -F "${required_readme_text}" "${public_readme}" >/dev/null
 done
-if grep -E '@AIT_[A-Z0-9_]+@|Jira-like|parallel AI execution|mkdir -p docs/sprints|90 seconds|team_remote|ait-native\.dev/services/' \
+if grep -E '@AIT_[A-Z0-9_]+@|parallel AI execution|mkdir -p docs/sprints|90 seconds|team_remote|ait-native\.dev/services/' \
   "${public_readme}" >/dev/null; then
   printf 'public README contains an unresolved token, stale positioning, or manual sprint bootstrap\n' >&2
   exit 65

@@ -109,6 +109,13 @@ fn shell_quote_text(text: &str) -> String {
 fn compact_task_start_payload(payload: &JsonValue) -> JsonValue {
     let worktree = payload.get("worktree").unwrap_or(&JsonValue::Null);
     let edit_root = worktree.get("path").and_then(JsonValue::as_str);
+    let edit_root_source = if worktree.get("root_source").and_then(JsonValue::as_str)
+        == Some(crate::task_worktree_layout::EXPLICIT_TASK_WORKTREE_ROOT_SOURCE)
+    {
+        "explicit"
+    } else {
+        "managed"
+    };
     let next_action = edit_root.map_or(JsonValue::Null, |path| {
         json!({
             "code": "enter_worktree",
@@ -129,6 +136,7 @@ fn compact_task_start_payload(payload: &JsonValue) -> JsonValue {
         "head_snapshot_id": cloned_field(worktree, "head_snapshot_id"),
         "worktree_name": cloned_field(worktree, "name"),
         "edit_root": edit_root,
+        "edit_root_source": edit_root_source,
         "next_action": next_action,
     })
 }
@@ -795,7 +803,7 @@ fn emit_queue_summary_result(payload: &JsonValue, json_output: bool) -> Result<(
                 string_field(summary.get("shared_task_count")),
             ),
             (
-                "ready to land",
+                "ready to finish",
                 string_field(summary.get("ready_to_land_count")),
             ),
             (

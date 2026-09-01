@@ -45,6 +45,88 @@ import { readFileSync } from "node:fs";
 const source = readFileSync(process.argv[2], "utf8");
 const declaration = source.match(/^const CHECKSUM_ASSET_NAME = \/(.*)\/;$/m);
 assert.ok(declaration, "clean-host checksum asset-name rule is missing");
+assert.ok(
+  source.includes(`const OCI_SERVER_RUNTIME_ARGS = Object.freeze([
+  "--listen",
+  "0.0.0.0:8088",
+  "--init-if-missing",
+  "--defer-ci-admission",
+]);`),
+  "OCI server lifecycle must retain the exact documented runtime arguments",
+);
+assert.ok(
+  source.includes(`          reference,
+          ...OCI_SERVER_RUNTIME_ARGS,`),
+  "OCI server lifecycle must pass the documented arguments after the image reference",
+);
+assert.ok(
+  source.includes('const stderr = result.stderr || result.error?.message || "";'),
+  "clean-host command failures must retain spawn and timeout diagnostics",
+);
+assert.ok(
+  source.includes('landed.next_action?.command !== `ait task finish ${changeRef} --local`'),
+  "partial Task closeout must bind its exact returned recovery command",
+);
+assert.equal(
+  source.includes('label: "candidate completed Windows worktree removal"'),
+  false,
+  "partial closeout must not require an already-removed worktree registration",
+);
+assert.ok(
+  source.includes('["task", "finish", changeRef, "--local", "--json"]'),
+  "partial Task closeout must resume with the exact returned Change reference",
+);
+assert.ok(
+  source.includes("agents_sha256: sha256File(agentsPath)"),
+  "upgrade baseline must capture the prior repository workflow guidance",
+);
+assert.ok(
+  source.includes("agentsSha256 !== priorState.agents_sha256"),
+  "upgrade verification must compare the candidate repository guidance with its prior digest",
+);
+assert.ok(
+  source.includes("candidate upgrade replaced the prior repository workflow guidance"),
+  "upgrade verification must fail closed when candidate installation rewrites prior guidance",
+);
+assert.ok(
+  source.includes("prior_workflow_guidance_preserved"),
+  "upgrade evidence must record byte-for-byte prior workflow guidance preservation",
+);
+assert.ok(
+  source.includes('!["1.0.0-rc.6", "1.0.0-rc.10"].includes(priorVersion)'),
+  "only the exact affected legacy versions may admit the Windows init regression",
+);
+assert.ok(
+  source.includes('expected_regression: "legacy_windows_read_only_fsync"'),
+  "bounded legacy Windows init evidence must identify the admitted regression",
+);
+assert.ok(
+  source.includes("for (const component of githubNativeComponents)"),
+  "GitHub installation must consume its shaped native component inventory",
+);
+assert.ok(
+  /row\.channel === "github"[\s\S]*?version === "1\.0\.0-rc\.6"[\s\S]*?components = \[\s*"ait",\s*"ait-agent",\s*"ait-server",\s*"ait-runner",\s*"ait-python",\s*"ait-node",\s*\]/.test(source),
+  "the exact rc.6 GitHub prior row must match its signed historical family manifest",
+);
+assert.ok(
+  /if \(priorState\?\.available === true\) \{[\s\S]*?\} else \{\s*generatedWorkflowCurrent\(agents\);\s*\}/.test(source),
+  "new installs must validate current generated guidance while upgrades preserve prior guidance",
+);
+for (const requiredWindowsCloseout of [
+  '["task", "show", taskId, "--local", "--json"]',
+  '["change", "show", changeRef, "--local", "--json"]',
+  '["line", "show", landed.target_line, "--json"]',
+  '["worktree", "list", "--json"]',
+  '["line", "archive", featureLineName, "--json"]',
+  "windows_partial_task_land_closeout",
+  "second_land_applied: false",
+  "path.basename(worktree) !== started.worktree_name",
+]) {
+  assert.ok(
+    source.includes(requiredWindowsCloseout),
+    `Windows direct partial-closeout verification is missing: ${requiredWindowsCloseout}`,
+  );
+}
 const rule = new RegExp(declaration[1]);
 for (const name of [
   "ait-native_1.0.0~rc.11_amd64.deb",
@@ -123,6 +205,36 @@ jq -e '
     "ubuntu-22.04-arm", "windows-11-arm", "windows-2025"
   ] | sort)
 ' "${matrix}" >/dev/null
+
+legacy_future_family=${temporary_root}/legacy-future-family.json
+jq '
+  .family.version = "1.1.1" |
+  .family.tag = "v1.1.1" |
+  .components |= map(
+    if .version_scheme == "family" then .version = "1.1.1"
+    elif .version_scheme == "pep440" then .version = "1.1.1"
+    else . end
+  )
+' "${repo_root}/ait-release-family.json" >"${legacy_future_family}"
+legacy_future_platforms=${temporary_root}/legacy-future-platforms.json
+jq '.version = "1.1.1"' \
+  "${repo_root}/ci/native_bootstrap_matrix.json" >"${legacy_future_platforms}"
+expect_failure future-legacy-native-bundle node "${tool}" matrix \
+  --family "${legacy_future_family}" \
+  --platforms "${legacy_future_platforms}" \
+  --output "${temporary_root}/legacy-future-matrix.json"
+grep -F '1.1+ clean-host qualification requires the native runner-bundle matrix' \
+  "${temporary_root}/future-legacy-native-bundle.stderr" >/dev/null
+
+altered_published_family=${temporary_root}/altered-published-family.json
+jq '.compatibility.native_protocol = "altered"' \
+  "${repo_root}/ait-release-family.json" >"${altered_published_family}"
+expect_failure altered-published-native-bundle node "${tool}" matrix \
+  --family "${altered_published_family}" \
+  --platforms "${legacy_platforms}" \
+  --output "${temporary_root}/altered-published-matrix.json"
+grep -F 'legacy matrix is admitted only for the exact immutable published 1.1.0 family' \
+  "${temporary_root}/altered-published-native-bundle.stderr" >/dev/null
 
 runner_bundle_family=${temporary_root}/runner-bundle-family.json
 jq '

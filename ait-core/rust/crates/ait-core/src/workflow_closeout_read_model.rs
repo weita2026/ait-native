@@ -279,7 +279,7 @@ pub fn project_workflow_land_phase_read_model(facts: &JsonValue) -> Result<JsonV
         let detail = optional_string_field(&ready_next_action, "detail")
             .or_else(|| optional_string_field(&ready_next_action, "summary"))
             .unwrap_or_else(|| {
-                "The change still needs a ready patchset and attestation before land can continue."
+                "The change still needs a ready patchset and attestation before finish can continue."
                     .to_string()
             });
         insert_json(
@@ -287,7 +287,7 @@ pub fn project_workflow_land_phase_read_model(facts: &JsonValue) -> Result<JsonV
             "next_action",
             json!({
                 "code": "workflow_ready",
-                "summary": "Run workflow ready before review or land.",
+                "summary": "Run workflow ready before review or finish.",
                 "detail": detail,
                 "command": clone_field(facts, "ready_command"),
             }),

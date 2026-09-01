@@ -583,6 +583,7 @@ fn remote_closeout_archives_an_empty_local_placeholder_but_local_closeout_reject
         "SNP-REMOTE-ACCEPTED",
         Some("main"),
         true,
+        true,
     )
     .unwrap();
     assert_eq!(archived["status"], "archived");
@@ -597,6 +598,7 @@ fn remote_closeout_archives_an_empty_local_placeholder_but_local_closeout_reject
         &remote_candidate,
         "SNP-REMOTE-ACCEPTED",
         Some("main"),
+        true,
         true,
     )
     .unwrap();
@@ -614,12 +616,63 @@ fn remote_closeout_archives_an_empty_local_placeholder_but_local_closeout_reject
         "SNP-LOCAL-LANDED",
         Some("main"),
         false,
+        false,
     )
     .expect_err("local closeout must not accept an empty feature Line");
     assert!(error.contains("head drifted"));
     assert_eq!(
         local_line_row(&repo, &local_line_name).unwrap()["status"],
         "active"
+    );
+}
+
+#[test]
+fn remote_closeout_accepts_a_feature_head_ancestor_but_local_closeout_rejects_it() {
+    let (temp, repo, line_name, feature_head, captured) = task_land_line_fixture("RCT-ANCESTOR");
+    fs::write(temp.path().join("later.txt"), "accepted later revision").unwrap();
+    let accepted = create_local_snapshot(
+        temp.path().to_string_lossy().as_ref(),
+        "fixture-ait",
+        "main",
+        Some("accepted aggregate revision"),
+        false,
+    )
+    .unwrap();
+    let accepted_id = required_string_field(&accepted, "snapshot_id").unwrap();
+    assert!(
+        snapshot_distance_if_ancestor(&repo, Some(&feature_head), Some(&accepted_id))
+            .unwrap()
+            .is_some()
+    );
+
+    let local_error = task_land_archive_local_bound_line(
+        &repo,
+        &captured,
+        &accepted_id,
+        Some("main"),
+        false,
+        false,
+    )
+    .expect_err("local closeout must retain exact-head authority");
+    assert!(local_error.contains("head drifted"));
+
+    let remote = task_land_archive_local_bound_line(
+        &repo,
+        &captured,
+        &accepted_id,
+        Some("main"),
+        true,
+        true,
+    )
+    .expect("remote closeout should accept a proven ancestor feature head");
+    assert_eq!(remote["status"], "archived");
+    assert_eq!(
+        remote["head_state"],
+        "accepted_revision_descends_from_feature_head"
+    );
+    assert_eq!(
+        local_line_row(&repo, &line_name).unwrap()["status"],
+        "archived"
     );
 }
 
@@ -1021,6 +1074,7 @@ fn atomic_task_land_output_preserves_existing_contract_with_one_remote_mutation(
     assert_eq!(output["task"]["status"], "completed");
     assert_eq!(output["change"]["status"], "landed");
     assert_eq!(output["patchset"]["patchset_id"], "RCT-ATOMIC/C-01/P-01");
+    assert_eq!(output["workspace"]["current_line"], "main");
     assert!(output["workspace"]["clean"].is_null());
     assert_eq!(output["workspace"]["evaluation"], "skipped");
     assert_eq!(

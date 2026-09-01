@@ -272,7 +272,7 @@ fn preflight_line_rename_references(repo: &RepoRuntime, old_line_name: &str) -> 
     let changes = line_change_usage_index_with_change_store(&change_store)?;
     if let Some(change_ids) = changes.get(old_line_name).filter(|rows| !rows.is_empty()) {
         return Err(format!(
-            "Line {old_line_name} is referenced by active Change(s): {}. Close, land, or retarget them before rename.",
+            "Line {old_line_name} is referenced by active Change(s): {}. Close, finish, or retarget them before rename.",
             change_ids.join(", ")
         ));
     }
@@ -282,7 +282,7 @@ fn preflight_line_rename_references(repo: &RepoRuntime, old_line_name: &str) -> 
         .filter(|rows| !rows.is_empty())
     {
         return Err(format!(
-            "Line {old_line_name} is referenced by active Change(s) on the configured remote: {}. Close, land, or retarget them before rename.",
+            "Line {old_line_name} is referenced by active Change(s) on the configured remote: {}. Close, finish, or retarget them before rename.",
             change_ids.join(", ")
         ));
     }

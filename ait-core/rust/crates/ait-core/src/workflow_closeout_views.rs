@@ -254,10 +254,10 @@ pub fn workflow_applied_action_summary(action: &Value) -> Result<String, String>
                     })
                     .unwrap_or_else(|| "unknown".to_string());
                 format!(
-                    "land request `{submission_id}` is `{status}` and removed bound worktree `{cleanup_worktree}`{suffix}"
+                    "finish operation `{submission_id}` is `{status}` and removed bound worktree `{cleanup_worktree}`{suffix}"
                 )
             } else {
-                format!("land request `{submission_id}` is `{status}`{suffix}")
+                format!("finish operation `{submission_id}` is `{status}`{suffix}")
             }
         }
         "complete_task" => {

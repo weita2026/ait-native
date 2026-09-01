@@ -28,6 +28,8 @@ use tempfile::TempDir;
 use tiny_http::{Response, Server};
 
 const FIXTURE_BASE_SNAPSHOT_ID: &str = "SNP-C95DCC8C7848";
+const FIXTURE_REVISION_SNAPSHOT_ID: &str = "SNP-A11CE5EED001";
+const FIXTURE_FINISHED_SNAPSHOT_ID: &str = "SNP-A11CE5EED002";
 const FIXTURE_REPOSITORY_INDEX: u32 = 7;
 
 struct WritableTreeOnDrop(PathBuf);

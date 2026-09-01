@@ -218,6 +218,33 @@ fn workflow_ready_does_not_claim_final_policy_evaluation() {
     );
 }
 
+#[test]
+fn workflow_ready_fails_closed_when_current_head_is_not_a_proven_newer_revision() {
+    let mut facts = ready_facts(passing_ci_status());
+    facts["workspace"]["workspace_matches_patchset"] = json!(false);
+    facts["patchset_refresh"] = json!({
+        "reason_code": "current_head_behind_patchset",
+        "republish_allowed": false,
+        "summary": "Restore the selected Patchset revision before continuing.",
+        "detail": "The current head is an ancestor of the selected Patchset revision; do not republish it."
+    });
+    let commands = json!({
+        "apply_command": "ait workflow ready RCC-1 --apply",
+        "publish_command": "ait patchset publish RCC-1",
+        "land_command": "ait workflow finish RCC-1 --apply"
+    });
+
+    let action = workflow_ready_next_action(&facts, &commands, false, false, true);
+
+    assert_eq!(action["code"], json!("patchset_recovery_required"));
+    assert!(action["command"].is_null());
+    assert_eq!(action["refresh_context"]["republish_allowed"], json!(false));
+    assert!(action["detail"]
+        .as_str()
+        .unwrap()
+        .contains("do not republish"));
+}
+
 fn land_facts(patchset_ci_status: JsonValue) -> JsonValue {
     json!({
         "change": {

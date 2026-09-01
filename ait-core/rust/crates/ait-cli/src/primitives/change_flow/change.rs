@@ -652,7 +652,7 @@ fn change_publish_status_gate(
     let status = required_string_field(local_change, "status")?;
     if status == "landed" && !allow_landed_local {
         return Err(format!(
-            "Local change {change_id} is already landed locally. {COMPLETED_LOCAL_FINAL_SNAPSHOT_PROMOTION_GUIDANCE}"
+            "Local change {change_id} is already finished locally. {COMPLETED_LOCAL_FINAL_SNAPSHOT_PROMOTION_GUIDANCE}"
         ));
     }
     if status != "draft" && !(allow_landed_local && status == "landed") {

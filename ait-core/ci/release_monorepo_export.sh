@@ -530,9 +530,9 @@ cp "${readme_template}" "${staging}/README.md"
 # The PyPI version must land before the tag: the transform tool rejects a
 # target that already contains its to value, and a stable version such as
 # 1.0.0 is a substring of its own v1.0.0 tag.
-node "${transform_tool}" "${staging}/README.md" \
+node "${transform_tool}" --template-token "${staging}/README.md" \
   '@AIT_PYPI_VERSION@' "${python_version}"
-node "${transform_tool}" "${staging}/README.md" \
+node "${transform_tool}" --template-token "${staging}/README.md" \
   '@AIT_RELEASE_TAG@' "${family_tag}"
 cp "${contributing_template}" "${staging}/CONTRIBUTING.md"
 cp "${security_template}" "${staging}/SECURITY.md"

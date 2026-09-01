@@ -9,6 +9,9 @@ const FAMILY_PACKAGE_CONTENT_CONTRACT: &str = "ait.release.family.package-conten
 const PACKAGE_RECEIPT_FILENAME: &str = "ait-release.package.json";
 const PACKAGE_CHECKSUM_FILENAME: &str = "SHA256SUMS";
 const WINGET_MANIFEST_VERSION: &str = "1.12.0";
+const PUBLISHED_LEGACY_NATIVE_BUNDLE_RELEASE_ID: &str = "REL-FAM-FF166951EF44BE33";
+const PUBLISHED_LEGACY_NATIVE_BUNDLE_FROZEN_MANIFEST_SHA256: &str =
+    "d3b7de529c61c28204559f50aeadc9369a0392a14dc236744047f7bc7ea65e29";
 const NPM_TOP_LEVEL_PACKAGE: &str = "@wa120/ait-native";
 const NPM_ADDON_PACKAGE_PREFIX: &str = "@wa120/ait-native-";
 const NPM_ARCHIVE_PREFIX: &str = "wa120-ait-native";
@@ -553,7 +556,20 @@ fn require_distribution_components(
     Ok(())
 }
 
+fn exact_published_legacy_native_bundle_input(input: &FamilyPackageInput) -> bool {
+    input.release_id == PUBLISHED_LEGACY_NATIVE_BUNDLE_RELEASE_ID
+        && input.frozen_manifest_sha256 == PUBLISHED_LEGACY_NATIVE_BUNDLE_FROZEN_MANIFEST_SHA256
+        && super::family_release::is_exact_published_legacy_native_bundle_source(
+            &input.version,
+            &input.release_channel,
+            &input.tag,
+            &input.snapshot_id,
+            &input.family_manifest_sha256,
+        )
+}
+
 fn require_native_product_components(
+    input: &FamilyPackageInput,
     distribution: &DistributionDefinition,
 ) -> Result<bool, String> {
     let includes_runner = distribution
@@ -563,10 +579,15 @@ fn require_native_product_components(
     if includes_runner {
         require_distribution_components(distribution, &["ait", "ait-server", "ait-runner"])?;
     } else {
-        // Preserve the already-published 1.0.x package inputs exactly. New
-        // family dossiers add the existing runner executable to the product
-        // payload without changing the server-only service contract.
         require_distribution_components(distribution, &["ait", "ait-server"])?;
+        if super::family_release::native_runner_bundle_required(&input.version)?
+            && !exact_published_legacy_native_bundle_input(input)
+        {
+            return Err(format!(
+                "{} product distribution {:?} must bundle ait, ait-server, and ait-runner for family version {:?}; the two-command layout is admitted only for 1.0.x and the exact immutable published 1.1.0 family.",
+                distribution.channel, distribution.identity, input.version
+            ));
+        }
     }
     Ok(includes_runner)
 }
@@ -1347,7 +1368,7 @@ fn assemble_homebrew(
     if distribution.role != "product" {
         return Err("Homebrew ait-native distribution must have product role.".to_string());
     }
-    let includes_runner = require_native_product_components(distribution)?;
+    let includes_runner = require_native_product_components(input, distribution)?;
     let asset_base = github_asset_base(input)?;
     let mut generated = Vec::new();
     let mut archive_rows = BTreeMap::new();
@@ -1694,7 +1715,8 @@ fn assemble_apt(
             product_distributions.len()
         ));
     }
-    let product_includes_runner = require_native_product_components(product_distributions[0])?;
+    let product_includes_runner =
+        require_native_product_components(input, product_distributions[0])?;
     if product_includes_runner && distributions.len() > 2 {
         return Err(
             "apt runner bundle permits only its product package and optional dependency-only ait-runner transition alias."
@@ -1911,7 +1933,7 @@ fn assemble_winget(
     if distribution.role != "product" {
         return Err("WinGet ait-native distribution must have product role.".to_string());
     }
-    let includes_runner = require_native_product_components(distribution)?;
+    let includes_runner = require_native_product_components(input, distribution)?;
     let portable_commands = if includes_runner {
         vec!["ait", "ait-server", "ait-runner"]
     } else {
@@ -3809,7 +3831,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn native_product_component_contract_preserves_legacy_and_admits_runner_bundle() {
+    fn native_product_component_contract_is_versioned_and_fingerprints_the_exception() {
         let distribution = |components: &[&str]| DistributionDefinition {
             channel: "homebrew".to_string(),
             role: "product".to_string(),
@@ -3821,17 +3843,47 @@ mod tests {
             targets: Vec::new(),
         };
 
+        let mut input = npm_validation_input();
+        input.version = "1.0.1".to_string();
+        input.release_channel = "stable".to_string();
+        input.tag = "v1.0.1".to_string();
         assert!(
-            !require_native_product_components(&distribution(&["ait", "ait-server",])).unwrap()
+            !require_native_product_components(&input, &distribution(&["ait", "ait-server"]),)
+                .unwrap()
         );
-        assert!(require_native_product_components(&distribution(&[
-            "ait",
-            "ait-server",
-            "ait-runner",
-        ]))
-        .unwrap());
+
+        input.version = "1.1.1".to_string();
+        input.tag = "v1.1.1".to_string();
         assert!(
-            require_native_product_components(&distribution(&["ait", "ait-runner"]))
+            require_native_product_components(&input, &distribution(&["ait", "ait-server"]),)
+                .unwrap_err()
+                .contains("must bundle ait, ait-server, and ait-runner")
+        );
+        assert!(require_native_product_components(
+            &input,
+            &distribution(&["ait", "ait-server", "ait-runner"]),
+        )
+        .unwrap());
+
+        input.release_id = PUBLISHED_LEGACY_NATIVE_BUNDLE_RELEASE_ID.to_string();
+        input.version = "1.1.0".to_string();
+        input.tag = "v1.1.0".to_string();
+        input.snapshot_id = "SNP-1D024C5B512C".to_string();
+        input.family_manifest_sha256 =
+            "e85722913ed6724eb8f9cbb56fc2fd4a84ebcaad9fa84acb2e2971b2cc6c87fd".to_string();
+        input.frozen_manifest_sha256 =
+            PUBLISHED_LEGACY_NATIVE_BUNDLE_FROZEN_MANIFEST_SHA256.to_string();
+        assert!(
+            !require_native_product_components(&input, &distribution(&["ait", "ait-server"]),)
+                .unwrap()
+        );
+        input.snapshot_id = "SNP-FFFFFFFFFFFF".to_string();
+        assert!(
+            require_native_product_components(&input, &distribution(&["ait", "ait-server"]),)
+                .is_err()
+        );
+        assert!(
+            require_native_product_components(&input, &distribution(&["ait", "ait-runner"]))
                 .unwrap_err()
                 .contains("invalid product component set")
         );

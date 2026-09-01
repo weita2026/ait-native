@@ -590,11 +590,13 @@ pub(in crate::primitives) fn workflow_local_history_entries(
 pub(in crate::primitives) fn workflow_final_snapshot_candidate_from_entry(
     entry: &JsonValue,
     local_target_head: Option<&str>,
+    local_target_head_contains_revision: bool,
     remote_target_head: Option<&str>,
     null_remote_base_snapshot_id: Option<&str>,
     remote_to_revision_distance: Option<i64>,
 ) -> Result<JsonValue, String> {
     let state = entry.get("state").cloned().unwrap_or_else(|| json!({}));
+    let task = state.get("task").cloned().unwrap_or(JsonValue::Null);
     let change = state.get("change").cloned().unwrap_or(JsonValue::Null);
     let local_change_id = required_string_field(&change, "change_id")?;
     let target_line = string_field(&change, "base_line").unwrap_or_else(|| "main".to_string());
@@ -604,9 +606,14 @@ pub(in crate::primitives) fn workflow_final_snapshot_candidate_from_entry(
     let local_target_head = normalized_text(local_target_head).ok_or_else(|| {
         format!("Local target line `{target_line}` has no head snapshot to promote.")
     })?;
-    if local_target_head != revision_snapshot_id {
+    let local_target_head_is_revision = local_target_head == revision_snapshot_id;
+    let published_descendant_resume = !local_target_head_is_revision
+        && local_target_head_contains_revision
+        && string_field(&task, "publication_state").as_deref() == Some("published")
+        && string_field(&change, "publication_state").as_deref() == Some("published");
+    if !local_target_head_is_revision && !published_descendant_resume {
         return Err(format!(
-            "Completed local change {local_change_id} landed at `{revision_snapshot_id}`, but `{target_line}` is now at `{local_target_head}`. Only the latest completed local change that owns the current target-line head can be promoted; select the change for `{local_target_head}`."
+            "Completed local change {local_change_id} landed at `{revision_snapshot_id}`, but `{target_line}` is now at `{local_target_head}`. Only the latest completed local change that owns the current target-line head can be promoted; an already-published Change may resume only when Snapshot ancestry proves that the current head contains its published revision. Select the change for `{local_target_head}` or repair the divergent publication state."
         ));
     }
     let remote_head_initialization_required = normalized_text(remote_target_head).is_none();
@@ -644,6 +651,22 @@ pub(in crate::primitives) fn workflow_final_snapshot_candidate_from_entry(
     candidate.insert(
         "revision_snapshot_id".to_string(),
         JsonValue::String(revision_snapshot_id),
+    );
+    candidate.insert(
+        "local_target_head_snapshot_id".to_string(),
+        JsonValue::String(local_target_head),
+    );
+    candidate.insert(
+        "local_target_head_is_revision".to_string(),
+        JsonValue::Bool(local_target_head_is_revision),
+    );
+    candidate.insert(
+        "local_target_head_contains_revision".to_string(),
+        JsonValue::Bool(!local_target_head_is_revision && local_target_head_contains_revision),
+    );
+    candidate.insert(
+        "published_descendant_resume".to_string(),
+        JsonValue::Bool(published_descendant_resume),
     );
     candidate.insert(
         "aggregate_snapshot_count".to_string(),
@@ -931,9 +954,19 @@ pub(in crate::primitives) fn workflow_final_snapshot_promotion_candidate(
             .or(null_remote_base_snapshot_id.as_deref()),
         Some(&revision_snapshot_id),
     )?;
+    let local_target_head_contains_revision = match local_target_head.as_deref() {
+        Some(local_head) if local_head != revision_snapshot_id => snapshot_distance_if_ancestor(
+            &root_repo,
+            Some(&revision_snapshot_id),
+            Some(local_head),
+        )?
+        .is_some(),
+        _ => false,
+    };
     let mut candidate = workflow_final_snapshot_candidate_from_entry(
         &entry,
         local_target_head.as_deref(),
+        local_target_head_contains_revision,
         remote_target_head.as_deref(),
         null_remote_base_snapshot_id.as_deref(),
         distance,

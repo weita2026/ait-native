@@ -1,9 +1,11 @@
 {
   "contract": "ait-agent-token-benchmark-campaign/v1",
   "campaign_id": "game-v1-smoke-steady-state-template",
-  "protocol_revision": "game-development-2026-08-27.29",
+  "protocol_revision": "game-development-2026-08-31.48",
   "campaign_scope": "smoke",
   "accounting_profile": "steady_state_task_cost",
+  "ait_sprint_mode": "off",
+  "functional_replacement_policy": "none",
   "seed": 20260822,
   "attempts_per_cell": 1,
   "workload_ids": ["GD-01"],

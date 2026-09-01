@@ -50,10 +50,22 @@ fn init_creates_authority_agent_contract_and_configured_sprint_directory() {
     );
     let agents = fs::read_to_string(temp.path().join("AGENTS.md")).unwrap();
     assert!(agents.contains("<!-- ait:workflow:start -->"));
-    assert!(agents.contains("entry: mode=`solo_local`; sprint=`on`; scopes=`local`"));
-    assert!(agents.contains("entry: plan-binding=`required`"));
-    assert!(agents.contains("`task start` revalidates entry"));
-    assert!(agents.contains("Read this block and `docs/plan.md` when it exists"));
+    assert!(agents.contains("Route: mode=`solo_local`; sprint=`on`; scope=`local`"));
+    assert!(agents.contains("plan-binding=`required`"));
+    assert!(agents.contains("ait task start --from <sprint-card-path>#<exact-ref> --intent"));
+    assert!(agents.contains("Work only in the returned `edit_root`"));
+    assert!(agents.contains("--edit-root\n<absolute-path>"));
+    assert!(agents.contains("otherwise omit it and use the returned `edit_root`"));
+    assert!(agents.contains("Read `docs/plan.md` when it exists"));
+    let claude = fs::read_to_string(temp.path().join("CLAUDE.md")).unwrap();
+    assert!(claude.contains("<!-- ait:workflow:start -->"));
+    assert!(claude.contains("Route: mode=`solo_local`; sprint=`on`; scope=`local`"));
+    assert!(claude.contains("--edit-root <absolute-path>"));
+    assert!(claude.contains("&& cd <absolute-path>"));
+    assert!(!agents.to_ascii_lowercase().contains("json"));
+    assert!(!claude.to_ascii_lowercase().contains("json"));
+    assert!(claude.contains("Do not omit `--edit-root`"));
+    assert!(!claude.contains("@AGENTS.md"));
     assert!(temp.path().join("docs/sprints").is_dir());
     for path in ["ait-native.md", "docs/plan.md", "docs/milestone.md"] {
         assert!(!temp.path().join(path).exists(), "unexpected {path}");
@@ -114,6 +126,7 @@ fn recovery_init_is_minimal_and_creates_no_plan_lineage() {
     assert_eq!(payload["action"], "initialized");
     assert!(plans.is_empty());
     assert!(!temp.path().join("AGENTS.md").exists());
+    assert!(!temp.path().join("CLAUDE.md").exists());
     assert!(repo
         .line_store()
         .unwrap()
@@ -205,6 +218,7 @@ fn invalid_creation_values_leave_no_repository_shell() {
             "{field} left an .ait entry"
         );
         assert!(!temp.path().join("AGENTS.md").exists());
+        assert!(!temp.path().join("CLAUDE.md").exists());
         assert!(!temp.path().join("docs").exists());
     }
 }
@@ -325,6 +339,18 @@ fn symbolic_link_authority_paths_fail_closed() {
     symlink(outside.path(), fourth.path().join("docs")).unwrap();
     let error = init_repo(&request(fourth.path())).unwrap_err();
     assert!(error.contains("symbolic-link workflow directory"));
+
+    let fifth = TempDir::new().unwrap();
+    init_repo_for_remote_head_recovery(&request(fifth.path())).unwrap();
+    let outside_claude = outside.path().join("CLAUDE.md");
+    fs::write(&outside_claude, "# Outside Claude\n").unwrap();
+    symlink(&outside_claude, fifth.path().join("CLAUDE.md")).unwrap();
+    let error = init_repo(&request(fifth.path())).unwrap_err();
+    assert!(error.contains("symbolic-link Claude agent contract"));
+    assert_eq!(
+        fs::read_to_string(&outside_claude).unwrap(),
+        "# Outside Claude\n"
+    );
 }
 
 #[test]
@@ -346,6 +372,13 @@ fn wrong_authority_path_kind_fails_without_replacement() {
     let error = init_repo(&request(agents_root.path())).unwrap_err();
     assert!(error.contains("Agent contract must be a regular file"));
     assert!(agents_root.path().join("AGENTS.md").is_dir());
+
+    let claude_root = TempDir::new().unwrap();
+    init_repo_for_remote_head_recovery(&request(claude_root.path())).unwrap();
+    fs::create_dir(claude_root.path().join("CLAUDE.md")).unwrap();
+    let error = init_repo(&request(claude_root.path())).unwrap_err();
+    assert!(error.contains("Claude agent contract must be a regular file"));
+    assert!(claude_root.path().join("CLAUDE.md").is_dir());
 
     let docs_root = TempDir::new().unwrap();
     init_repo_for_remote_head_recovery(&request(docs_root.path())).unwrap();

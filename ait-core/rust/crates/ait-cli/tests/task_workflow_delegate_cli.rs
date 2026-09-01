@@ -200,11 +200,13 @@ fn workflow_guide_is_native_and_not_delegated() {
 
     let mut cmd = Command::cargo_bin("ait-cli").unwrap();
     cmd.current_dir(repo.path())
-        .args(["workflow", "guide", "land"]);
+        .args(["workflow", "guide", "finish"]);
     cmd.assert()
         .success()
-        .stdout(predicate::str::contains("ait workflow guide · land"))
-        .stdout(predicate::str::contains("task-land-plan-closeout/v1"))
+        .stdout(predicate::str::contains("ait workflow guide · finish"))
+        .stdout(predicate::str::contains(
+            "Use `workflow ready` then `workflow finish`",
+        ))
         .stdout(predicate::str::contains(
             "record any required Task approval",
         ))
@@ -213,9 +215,8 @@ fn workflow_guide_is_native_and_not_delegated() {
         ))
         .stdout(predicate::str::contains("It creates no Review evidence"))
         .stdout(predicate::str::contains(
-            "automatic_exact_local_when_final_task_completed",
-        ))
-        .stdout(predicate::str::contains("separate_after_land"));
+            "Plan closeout follows the configured scope",
+        ));
 }
 
 fn assert_unknown_subcommand_fails_closed(repo: &TempDir, args: &[&str], expected_error: &str) {

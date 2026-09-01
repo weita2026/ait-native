@@ -1,0 +1,54 @@
+{
+  "contract": "ait-agent-token-benchmark-campaign/v1",
+  "campaign_id": "game-v1-claude-fable5-max-gd02-editrootcanon5-20260830-r2",
+  "protocol_revision": "game-development-2026-08-31.48",
+  "campaign_scope": "diagnostic",
+  "accounting_profile": "steady_state_task_cost",
+  "ait_sprint_mode": "off",
+  "functional_replacement_policy": "none",
+  "seed": 2026082832,
+  "attempts_per_cell": 5,
+  "workload_ids": [
+    "GD-02"
+  ],
+  "modes": [
+    "git_linear_single_session",
+    "ait_linear_single_session"
+  ],
+  "model": {
+    "provider": "anthropic",
+    "model_id": "claude-fable-5",
+    "model_revision": "claude-fable-5-provider-canonical-observed-2026-08-29",
+    "reasoning_effort": "max"
+  },
+  "runtime": {
+    "executor": "claude",
+    "codex_program": "codex",
+    "claude_program": "/opt/homebrew/bin/claude",
+    "executor_version": "2.1.235 (Claude Code)",
+    "ait_version": "ait 1.1.0",
+    "git_version": "git version 2.50.1 (Apple Git-155)",
+    "node_version": "v25.9.0",
+    "browser_version": "Google Chrome 151.0.7922.174",
+    "ait_program": "/Users/weita/.local/bin/ait",
+    "git_program": "/usr/bin/git",
+    "node_program": "/opt/homebrew/bin/node",
+    "browser_program": "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+    "fixture_manifest": "../../fixtures/agent-token-game-v1/manifest.json",
+    "run_timeout_seconds": 1800,
+    "ait_first_use_worktree_add_dir": null,
+    "project_doc_max_bytes": 0
+  },
+  "cache_class": "provider_default_fresh_ephemeral_session",
+  "network_policy": "disabled_except_loopback",
+  "tool_policy": "claude_code_local_tools",
+  "bootstrap_resamples": 2000,
+  "limitations": [
+    "Rerun -r2: the first gated attempt was killed by a defective observer script that truncated the command at a JSON-escaped quote; the model had in fact issued the exact chained canonical command. No measured lane is retried under the prior identity.",
+    "Diagnostic only: gated execution. Pair 1 runs alone under live observation; an un-chained task start kills the campaign immediately, and further pairs run only on explicit approval.",
+    "Success unit: the AIT lane's task start command is chained with its worktree entry AND both lanes finish protocol-valid, accepted, and workflow-closed.",
+    "Request-count effects are never claimed from one pair.",
+    "Every pinned axis matches the .41 edit-root diagnostic except the protocol revision and the canonical chained prompt sentence.",
+    "Never publication eligible and never pooled."
+  ]
+}

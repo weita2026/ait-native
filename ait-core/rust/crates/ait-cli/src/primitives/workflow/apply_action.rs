@@ -402,6 +402,10 @@ pub(in crate::primitives) fn workflow_ready_apply_action(
                 &repo_name,
             )
         }
+        "patchset_recovery_required" => Ok(json!({
+            "stopped_reason": workflow_nested_text(state, "next_action", "detail")
+                .unwrap_or_else(|| "Automatic Patchset refresh is disabled until Snapshot ancestry and the intended revision are recovered.".to_string()),
+        })),
         _ => Ok(json!({
             "stopped_reason": format!("Workflow ready apply does not own `{code}`; reviewer actions continue through `ait workflow finish`."),
         })),
@@ -671,7 +675,7 @@ pub(in crate::primitives) fn workflow_land_apply_action(
         "snapshot_create" | "publish_patchset" | "refresh_patchset" | "record_attestation"
         | "run_patchset_ci" => Ok(json!({
             "stopped_reason": format!(
-                "Workflow finish does not own `{code}`. Run `ait workflow ready <change-id> --apply` explicitly before land."
+                "Workflow finish does not own `{code}`. Run `ait workflow ready <change-id> --apply` explicitly before finish."
             ),
         })),
         "record_review" => {
@@ -733,7 +737,7 @@ pub(in crate::primitives) fn workflow_land_apply_action(
             )
         }
         "submit_land" | "complete_task" => Ok(json!({
-            "stopped_reason": "Workflow finish final closeout must be executed by its atomic Task Land boundary.",
+            "stopped_reason": "Workflow finish final closeout must be executed by its atomic Task-finish boundary.",
         })),
         "workflow_ready" => Ok(json!({
             "stopped_reason": workflow_nested_text(state, "next_action", "detail")
@@ -743,7 +747,7 @@ pub(in crate::primitives) fn workflow_land_apply_action(
         "land_blocked" => Ok(json!({
             "stopped_reason": workflow_nested_text(state, "next_action", "detail")
                 .or_else(|| workflow_nested_text(state, "next_action", "summary"))
-                .unwrap_or_else(|| "Workflow finish apply stopped because land preflight is blocked.".to_string()),
+                .unwrap_or_else(|| "Workflow finish apply stopped because finish preflight is blocked.".to_string()),
         })),
         "address_blocking_review" => Ok(json!({
             "stopped_reason": "Workflow finish apply stopped because blocking review feedback still needs manual resolution.",

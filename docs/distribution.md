@@ -1,16 +1,57 @@
-# ait-native 1.0.0 Distribution Contract [plan-ref: ait-native-distribution/root]
+# ait-native Distribution Contract [plan-ref: ait-native-distribution/root]
 
 Authority: this centralized product distribution contract. Internal planning
 lineage remains governed by AIT Plan revisions and is not duplicated here.
 
-Status: target contract plus the current and prior RC records. Contract
-sections define the admitted family; dated status sections distinguish the
-frozen RC.6 release identity from historical endpoint evidence.
+Status: current stable-family contract plus immutable historical release and
+RC records. The current stable section below overrides version-relative
+wording in dated historical sections; those records remain evidence for their
+own bytes only.
 
-## RC.6 Release Identity (2026-08-15)
+## Current Stable 1.1.0 Release Identity (2026-08-27)
 
-`v1.0.0-rc.6` is the current immutable release identity and the latest public
-AIT release. Its five source authorities are frozen at these AIT Snapshots:
+`v1.1.0` is the current immutable stable family and public latest release. Its
+five source authorities are frozen at these AIT Snapshots:
+
+| Authority | Snapshot |
+| --- | --- |
+| `ait-core` | `SNP-54923CEF58C8` |
+| `ait-server` | `SNP-20D6928B4018` |
+| `ait-runner` | `SNP-F295CF0F317A` |
+| `ait-python` | `SNP-3C0BE25798EE` |
+| `ait-node` | `SNP-192C18E8EE3C` |
+
+The non-draft, non-prerelease GitHub Release publishes 94 checksum-bound
+assets, including all six target rows for `ait`, `ait-agent`,
+`ait-agent-worker`, `ait-server`, and `ait-runner`; six PyO3 wheels; the
+portable npm envelope and six Node-API addon packages; package metadata; the
+frozen family and source mapping; promotion and endpoint evidence; and the
+published benchmark dossier. PyPI reports 1.1.0 as its current project version,
+and npm routes its `latest` dist-tag to 1.1.0.
+
+The exact immutable 1.1.0 channel composition is:
+
+| Channel | Admitted 1.1.0 composition |
+| --- | --- |
+| GitHub Release | all seven family components across their declared targets |
+| Homebrew | one `ait-native` product containing `ait` and `ait-server` |
+| apt | one `ait-native` product containing `ait` and `ait-server`, plus the separately installable `ait-runner` package |
+| WinGet | one `ait-native` product containing `ait` and `ait-server` |
+| PyPI/pip | one `ait-native` wheel containing `ait`, `ait-server`, and the direct Python binding |
+| npm | one top-level `@wa120/ait-native` Node-API product with an in-process `ait` command and no server binary |
+| OCI | separate immutable `ait-server` and `ait-runner` images |
+
+The published 1.1.0 native product rows are the sole admitted exception to the
+new runner-bundle rule. They are never regenerated. Every later family must
+use the three-command `ait`/`ait-server`/`ait-runner` product bundle for
+Homebrew, apt, and WinGet, with the apt runner name retained only as a
+dependency transition alias. The checked-in family manifest and release
+admission code fail closed on any other 1.1.0-shaped exception.
+
+## Historical RC.6 Release Identity (2026-08-15)
+
+`v1.0.0-rc.6` is an immutable historical release identity. Its five source
+authorities are frozen at these AIT Snapshots:
 
 | Authority | Snapshot |
 | --- | --- |
@@ -34,16 +75,17 @@ publication run `31836538473` succeeded for
 `REL-FAM-7B0B9D945B74D95D`; the Release exposes 84 checksum-bound assets and
 is a non-draft regular Release with `prerelease=false`.
 
-RC.6 is the approved default/latest candidate without being renamed to
-`1.0.0`. GitHub `latest`, every npm package's `latest` dist-tag, and both
-GHCR images' `latest` tag resolve to the already-published RC.6 identities;
-their `rc` aliases remain in place. PyPI has no mutable dist-tag and pip
-excludes prereleases by default, so its selectors remain
-`ait-native==1.0.0rc6` or `pip install --pre ait-native`. Homebrew exposes the
-latest RC through `ait-native-rc`, APT exposes it through `testing`, and the
-WinGet files remain validation assets until a community manifest is reviewed
-and merged. None of these native RC routes authorizes a synthetic stable
-`1.0.0` artifact.
+At its publication checkpoint, RC.6 was the approved default/latest candidate
+without being renamed to `1.0.0`. GitHub `latest`, every npm package's
+`latest` dist-tag, and both GHCR images' `latest` tag then resolved to the RC.6
+identities; later stable publication moved the mutable stable aliases without
+rewriting RC.6. PyPI has no mutable dist-tag and pip excludes prereleases by
+default, so the immutable RC selectors remain
+`ait-native==1.0.0rc6` or `pip install --pre ait-native`. At that checkpoint,
+Homebrew exposed the RC through `ait-native-rc`, APT exposed it through
+`testing`, and the WinGet files remained validation assets pending community
+review. None of those native RC routes authorized a synthetic stable `1.0.0`
+artifact.
 
 The RC.6 protected release dossier binds the exact public Git commit and tag,
 workflow runs, Release ID, asset digests, endpoint receipts, and external
@@ -166,17 +208,17 @@ relabelled as RC.3.
 
 ## Release Family
 
-The public brand and release family are:
+The current public brand and stable release family are:
 
 ```text
 product: ait-native
-version: 1.0.0
+version: 1.1.0
 ```
 
 One frozen release manifest must bind every component, platform artifact,
 package identity, source revision, license, checksum, signature, and clean-host
 receipt. No component may drift to an independent semantic version while
-claiming membership in the 1.0.0 compatibility family.
+claiming membership in the 1.1.0 compatibility family.
 
 ### Internal authority and public source layout
 
@@ -187,7 +229,7 @@ and selected Snapshots remain the inputs to component builds and receipts:
 ait-core     ait-server     ait-runner     ait-python     ait-node
 ```
 
-GitHub source publication is deliberately different: the 1.0 family has one
+GitHub source publication is deliberately different: each public family has one
 public repository, `weita2026/ait-native`, one release commit, and one family
 tag. The deterministic exported tree has these fixed paths:
 
@@ -263,7 +305,7 @@ A clean tagged checkout validates and builds the current host without an AIT
 server:
 
 ```text
-git clone --branch v1.0.0-rc.6 https://github.com/weita2026/ait-native.git
+git clone --branch v1.1.0 https://github.com/weita2026/ait-native.git
 cd ait-native
 ./build-release.sh
 ```
@@ -300,7 +342,7 @@ product admission contract.
 
 ## Distribution Objective
 
-The 1.0.0 distribution objective is broad activation across repositories and
+The current distribution objective is broad activation across repositories and
 supported platforms. A developer should be able to obtain the same admitted
 native `ait` through a familiar operating-system package manager or package
 registry, then complete the same sprint-bound Local loop.
@@ -340,7 +382,7 @@ repository-local execution contract. In particular, the agent:
 4. runs the repository-authored validation or `ci/run` contract instead of
    guessing commands from filenames or language manifests;
 5. records the result as an AIT Snapshot and completes it through the exact
-   local or remote Task-land path printed by the generated workflow; and
+   local or remote Task-finish path printed by the generated workflow; and
 6. reports any failed gate without silently bypassing review, policy, CI, or
    remote authority.
 
@@ -369,12 +411,12 @@ reinterpret the native runtime.
 
 Current `ait-core` source additionally builds the native `aitk` read-only
 history-browser companion. It shares the `ait-core` source/version identity and
-is not a new family component. The frozen stable 1.0.0 manifest below remains
-unchanged; no existing package may claim `aitk` until a later family freezes
+is not a new family component. The frozen stable 1.1.0 manifest below did not
+admit it and remains unchanged; no existing package may claim `aitk` until a later family freezes
 its six-target executable bytes and the affected installer receipts. Local
 source builds and `./ait.sh core install` do install the current executable.
 
-| Component | Public surface | Source authority | License | 1.0.0 role |
+| Component | Public surface | Source authority | License | Stable-family role |
 | --- | --- | --- | --- | --- |
 | `ait` | native executable | `ait-core` | Apache-2.0 | repository and workflow CLI |
 | `ait-agent` | standalone native executable | `ait-core` | Apache-2.0 | public management and supervision of configured agent workers |
@@ -384,7 +426,7 @@ source builds and `./ait.sh core install` do install the current executable.
 | `ait-python` | PyO3 binding payload embedded in PyPI `ait-native` | `ait-python` + pinned `ait-core` | Apache-2.0 | direct in-process integration without a separate PyPI project |
 | `ait-node` | portable JS/TS facade and six Node-API addon packages | `ait-node` + pinned `ait-core` | Apache-2.0 | direct in-process Node.js integration and `ait` command without a separate `ait-node` registry product |
 
-`ait-web` is excluded from 1.0.0.
+`ait-web` is excluded from 1.1.0.
 
 ## License And Source Publication Gate
 
@@ -479,19 +521,19 @@ Channel metadata must preserve the aggregate boundary:
 
 ## Public Channel Roles
 
-| Channel | Published 1.0.x role | 1.1+ role |
-| --- | --- | --- |
-| GitHub Release | Canonical native assets and fallback download for every declared target | Same role, including exact-version component assets |
-| Homebrew | The `ait-native` formula installs `ait` and `ait-server` together on macOS/Linux | The formula installs `ait`, `ait-server`, and `ait-runner` together; RCs use a non-stable route and stable admission follows Homebrew policy |
-| apt | The signed `ait-native` package installs `ait` and `ait-server`; `ait-runner` is separately installable | `ait-native` owns all three executables; the `ait-runner` package name is a dependency-only transition alias to the exact `ait-native` version |
-| WinGet | The `ait-native` product package installs `ait` and `ait-server` on Windows `x64` and `arm64` | The same product package installs all three native executables |
-| PyPI/pip | The sole `ait-native` project publishes platform wheels containing `ait`, `ait-server`, and the direct Python binding | Unchanged; PyPI does not acquire the runner payload |
-| npm | The sole supported top-level `@wa120/ait-native` package exposes the JS/TS API and an in-process `ait` command; it does not install `ait-server` | Unchanged |
-| OCI | Immutable, separate `ait-server` and `ait-runner` images | Unchanged |
+| Channel | Frozen 1.0.x role | Exact published 1.1.0 role | Every later family |
+| --- | --- | --- | --- |
+| GitHub Release | Canonical native assets for every declared target | Same role | Same role, including exact-version component assets |
+| Homebrew | `ait-native` installs `ait` and `ait-server` | Same admitted pair | `ait-native` installs `ait`, `ait-server`, and `ait-runner` together |
+| apt | `ait-native` installs `ait` and `ait-server`; `ait-runner` is separately installable | Same admitted layout | `ait-native` owns all three executables; `ait-runner` is a dependency-only transition alias |
+| WinGet | `ait-native` installs `ait` and `ait-server` | Same admitted pair | The product package installs all three native executables |
+| PyPI/pip | `ait-native` contains `ait`, `ait-server`, and the direct Python binding | Same role | Same role; PyPI does not acquire the runner payload |
+| npm | `@wa120/ait-native` exposes the JS/TS API and in-process `ait` command without `ait-server` | Same role | Same role |
+| OCI | Immutable, separate `ait-server` and `ait-runner` images | Same role | Same role |
 
-The published 1.0.x family dossiers and package bytes remain frozen. The 1.1+
-column is a new family contract; it does not relabel or regenerate a prior
-release.
+Every published dossier and package byte remains frozen. The exact 1.1.0
+two-command native product layout is a hash- and Snapshot-bound exception, not
+permission for another 1.1.x or later family to reuse it.
 
 The shared product-facing identity for all five acquisition channels is
 `ait-native`. The Homebrew formula, apt package, and PyPI project use that
@@ -509,8 +551,11 @@ an explicit owner-approved mapping rather than an ad hoc per-channel alias.
 
 ## Bundled Native Commands Contract
 
-Beginning with 1.1.0, the Homebrew, apt, and WinGet `ait-native` package is one
-install, upgrade, and uninstall unit containing these three commands:
+The exact published 1.1.0 Homebrew, apt, and WinGet product packages remain
+their admitted two-command `ait`/`ait-server` units; apt distributes
+`ait-runner` separately. Every later family makes the Homebrew, apt, and WinGet
+`ait-native` package one install, upgrade, and uninstall unit containing these
+three commands:
 
 ```text
 ait
@@ -518,14 +563,14 @@ ait-server
 ait-runner
 ```
 
-The apt `ait-runner` package remains discoverable only as a dependency-only
-transition alias to the exact `ait-native` version and owns no executable, so
-there is no `/usr/bin/ait-runner` package collision. The PyPI unit retains the
-published two-command `ait`/`ait-server` contract and additionally contains the
-admitted Python binding. npm is not a server bundle: it contains the portable
-JS/TS facade plus the platform-selected Node-API addon and exposes only `ait`
-as a command. Neither registry creates a second product or independently
-selectable version.
+For those later families, the apt `ait-runner` package remains discoverable
+only as a dependency-only transition alias to the exact `ait-native` version
+and owns no executable, so there is no `/usr/bin/ait-runner` collision. The
+PyPI unit retains the published two-command `ait`/`ait-server` contract and
+additionally contains the admitted Python binding. npm is not a server bundle:
+it contains the portable JS/TS facade plus the platform-selected Node-API addon
+and exposes only `ait` as a command. Neither registry creates a second product
+or independently selectable version.
 
 The three native executables retain independent source-component receipts and
 license notices. Package construction must prove that each installed byte is
@@ -602,17 +647,17 @@ remaining inactive after install or upgrade:
 
 | Channel | Explicit activation | Data and lifecycle behavior |
 | --- | --- | --- |
-| Homebrew | `brew services start ait-native-rc` for the generated RC formula, or `brew services start ait-native` for the generated stable formula; stop with the matching `brew services stop` command | The formula executes only `ait-server`. It installs `ait-runner` but does not configure or start a runner daemon. Installation itself starts neither process. |
-| apt | `sudo systemctl daemon-reload && sudo systemctl enable --now ait-server`; stop with `sudo systemctl disable --now ait-server` | The shipped, initially disabled `ait-server.service` uses `DynamicUser`, `StateDirectory=ait-native`, and `/var/lib/ait-native/server-data`. There is no packaged runner unit, and the Debian package has zero maintainer scripts. |
-| WinGet | Resolve `$ctl` from the installed `ait-server.exe` link with the PowerShell snippet below, then run `powershell.exe -NoProfile -ExecutionPolicy Bypass -File $ctl start`; replace `start` with `status` or `stop` as needed | WinGet exposes all three executable portable aliases. The adjacent `ait-server-control.ps1` manages only the server in the user session, stores PID/log state below `%LOCALAPPDATA%\AIT\runtime`, uses `%LOCALAPPDATA%\AIT\server-data`, verifies PID ownership, and does not register a Windows SCM service or runner daemon. |
+| Homebrew | `brew services start ait-native`; stop with `brew services stop ait-native` | The exact 1.1.0 formula executes only `ait-server`, contains no runner, and starts no process during installation. Later runner-bundle formulas retain the same server-only service. |
+| apt | `sudo systemctl daemon-reload && sudo systemctl enable --now ait-server`; stop with `sudo systemctl disable --now ait-server` | The shipped, initially disabled `ait-server.service` uses `DynamicUser`, `StateDirectory=ait-native`, and `/var/lib/ait-native/server-data`. The separately packaged 1.1.0 runner has no unit; later product bundles also register no runner unit. The Debian packages have zero maintainer scripts. |
+| WinGet | Resolve `$ctl` from the installed `ait-server.exe` link with the PowerShell snippet below, then run `powershell.exe -NoProfile -ExecutionPolicy Bypass -File $ctl start`; replace `start` with `status` or `stop` as needed | The exact 1.1.0 product exposes `ait.exe` and `ait-server.exe`. The adjacent `ait-server-control.ps1` manages only the server in the user session, stores PID/log state below `%LOCALAPPDATA%\AIT\runtime`, uses `%LOCALAPPDATA%\AIT\server-data`, verifies PID ownership, and does not register a Windows SCM service or runner daemon. |
 | PyPI/pip | Execute `ait-server`, or pass the installed executable to the user's own service manager | The wheel installs the same native command and adds no install hook or second lifecycle implementation. |
 
 WinGet accepts executable portable command aliases, not the packaged
 PowerShell controller itself. Resolve that supporting file beside the actual
 installed `ait-server` executable rather than treating the `.ps1` file as a WinGet
-alias. Each architecture's installer manifest also identifies `ait.exe`,
-`ait-server.exe`, and `ait-runner.exe` as launch files with
-`InvocationParameter: --help`. This gives
+alias. Each exact 1.1.0 architecture manifest identifies `ait.exe` and
+`ait-server.exe` as launch files with `InvocationParameter: --help`; every
+later runner-bundle manifest adds `ait-runner.exe`. This gives
 WinGet's executable validation a non-mutating invocation that exits without
 initializing a repository or starting the server; it does not alter either
 component's normal user-facing behavior:
@@ -632,34 +677,34 @@ npm has no server-lifecycle row because it does not install `ait-server`.
 
 ### OCI container deployment
 
-The RC publishes two Linux `amd64`/`arm64` images from the exact frozen native
-binaries, without compiling a component or downloading a component during the
-image build:
+The stable family publishes two Linux `amd64`/`arm64` images from the exact
+frozen native binaries, without compiling a component or downloading a
+component during the image build:
 
 ```text
-ghcr.io/weita2026/ait-server:1.0.0-rc.6
-ghcr.io/weita2026/ait-runner:1.0.0-rc.6
+ghcr.io/weita2026/ait-server:1.1.0
+ghcr.io/weita2026/ait-runner:1.1.0
 ```
 
 The immutable version tags are the evidence and deployment boundary. The
-corresponding `:rc` tags are moving RC conveniences and must resolve to the
+corresponding `:latest` tags are moving conveniences and must resolve to the
 same digest before use. Both images run as numeric UID/GID 65532, contain the
 owning component's full legal material and provenance, and use a
 digest-pinned Dockerfile frontend and Debian base image.
 
-After the GHCR endpoint is published, the shortest persistent local server
+With the published GHCR endpoint, the shortest persistent local server
 deployment is:
 
 ```sh
-docker network create ait-native-rc
-docker volume create ait-native-rc-data
+docker network create ait-native
+docker volume create ait-native-data
 docker run --detach \
   --name ait-server \
-  --network ait-native-rc \
+  --network ait-native \
   --publish 127.0.0.1:8088:8088 \
   --restart unless-stopped \
-  --volume ait-native-rc-data:/var/lib/ait \
-  ghcr.io/weita2026/ait-server:1.0.0-rc.6 \
+  --volume ait-native-data:/var/lib/ait \
+  ghcr.io/weita2026/ait-server:1.1.0 \
   --listen 0.0.0.0:8088 \
   --init-if-missing \
   --defer-ci-admission
@@ -680,13 +725,13 @@ under its source root, so it needs persistent runner storage rather than a bind
 mount of the client Repository:
 
 ```sh
-docker volume create ait-native-rc-runner
+docker volume create ait-native-runner
 docker run --detach \
   --name ait-runner \
-  --network ait-native-rc \
+  --network ait-native \
   --restart unless-stopped \
-  --volume ait-native-rc-runner:/var/lib/ait-runner \
-  ghcr.io/weita2026/ait-runner:1.0.0-rc.6 \
+  --volume ait-native-runner:/var/lib/ait-runner \
+  ghcr.io/weita2026/ait-runner:1.1.0 \
   serve \
   --server http://ait-server:8088 \
   --worker-id container-ci-host-01 \
@@ -703,20 +748,20 @@ and the repository-authored validation contract.
 
 The post-publication package names and commands are:
 
-| Channel | RC / stable install command |
+| Channel | Stable 1.1.0 install command |
 | --- | --- |
-| Homebrew | after adding the release tap, `brew install ait-native-rc`; stable uses `brew install ait-native` |
+| Homebrew | after adding the release tap, `brew install ait-native` |
 | apt | after adding the signed AIT repository, `sudo apt install ait-native` |
-| WinGet | RC validation uses `winget install --manifest <generated-manifest-directory>`; stable uses `winget install --id Weita.AitNative --exact` |
-| PyPI | `python -m pip install ait-native==1.0.0rc6` or `python -m pip install --pre ait-native`; PyPI has no mutable `latest` alias |
-| npm | `npm install --global @wa120/ait-native` resolves `latest` to `1.0.0-rc.6`; exact and `@rc` selectors remain supported |
+| WinGet | install the attached exact manifests with `winget install --manifest <manifest-directory>` until `winget search --id Weita.AitNative --exact` confirms the community route; then use `winget install --id Weita.AitNative --exact` |
+| PyPI | `python -m pip install ait-native==1.1.0`; PyPI has no mutable `latest` alias |
+| npm | `npm install --global @wa120/ait-native` resolves `latest` to `1.1.0`; `@1.1.0` remains the immutable selector |
 
 The signed APT route must be added and searched before installation:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/weita2026/apt-ait-native/main/ait-native-archive-keyring.gpg \
   | sudo tee /usr/share/keyrings/ait-native-archive-keyring.gpg >/dev/null
-echo "deb [signed-by=/usr/share/keyrings/ait-native-archive-keyring.gpg] https://raw.githubusercontent.com/weita2026/apt-ait-native/main testing main" \
+echo "deb [signed-by=/usr/share/keyrings/ait-native-archive-keyring.gpg] https://raw.githubusercontent.com/weita2026/apt-ait-native/main stable main" \
   | sudo tee /etc/apt/sources.list.d/ait-native.list
 sudo apt update
 apt-cache search --names-only '^ait-native$'
@@ -724,15 +769,15 @@ apt-cache search --names-only '^ait-runner$'
 sudo apt install ait-native
 ```
 
-The RC.6 publisher performs the same signed update and both exact-name searches
-in an isolated APT client root. It writes successful `apt_cache_search`
-evidence only after both names are found. These identifiers are the release
-contract, not a claim that RC.6 is already live; publication still requires
-the frozen family, signatures, clean-host evidence, and public readback below.
+The 1.1.0 publisher performed the same signed update and both exact-name
+searches in an isolated APT client root. It wrote successful
+`apt_cache_search` evidence only after both names were found. Future publication
+still requires the frozen family, signatures, clean-host evidence, and public
+readback below.
 
 ## Platform Matrix
 
-The public 1.0.0 target set is:
+The current public target set is:
 
 | Rust target | OS | Architecture |
 | --- | --- | --- |
@@ -795,16 +840,16 @@ libc admission contract forward with the direct in-process Node-API runtime.
 Its Linux addon packages must publish and read back `libc: ["glibc"]`, while
 Darwin and Windows must omit the selector.
 
-The published 1.0.x PyPI and native product packages pair `ait` and
-`ait-server` on their admitted targets. Beginning with 1.1.0, Homebrew must
-pair `ait`, `ait-server`, and `ait-runner` on the four admitted macOS/Linux
-targets, apt on the two admitted Linux targets, and WinGet on the two admitted
-Windows targets. PyPI retains its `ait`/`ait-server` plus binding contract. npm
-instead requires the matching Node-API addon for each of the same six targets.
-A channel must not publish a target when any component declared by that
-channel is absent.
+The frozen 1.0.x and exact published 1.1.0 native product packages pair `ait`
+and `ait-server` on their admitted targets; 1.1.0 apt packages the runner
+separately. Every later family must pair `ait`, `ait-server`, and `ait-runner`
+in Homebrew on the four admitted macOS/Linux targets, apt on the two admitted
+Linux targets, and WinGet on the two admitted Windows targets. PyPI retains
+its `ait`/`ait-server` plus binding contract. npm instead requires the matching
+Node-API addon for each of the same six targets. A channel must not publish a
+target when any component declared by that channel is absent.
 
-This six-target matrix is the exact 1.0.0 cross-platform claim. It is not a
+This six-target matrix is the exact current cross-platform claim. It is not a
 claim of support for every operating system or C library. Linux/musl, other
 architectures, mobile platforms, and additional operating systems require an
 explicit later target and their own clean-host evidence.
@@ -814,11 +859,13 @@ governed solely by [the centralized requirements above](#repository-language-neu
 
 ## Compatibility Rules
 
-- Every public component reports or exposes version `1.0.0`.
+- Every public component reports or exposes its frozen family version; the
+  current stable family reports `1.1.0`.
 - Every bundled native command reports the same family version while retaining
-  independent component digests and license notices. The 1.1+ Homebrew, apt,
-  and WinGet product rows require the exact `ait`/`ait-server`/`ait-runner`
-  triple; frozen 1.0.x rows retain their original pair.
+  independent component digests and license notices. Every family after the
+  exact immutable 1.1.0 exception requires the Homebrew, apt, and WinGet
+  `ait`/`ait-server`/`ait-runner` triple; frozen 1.0.x and exact 1.1.0 rows
+  retain their original pair.
 - Server/runner wire contracts are tested against the exact paired artifacts.
 - The Python binding loads package-owned native bytes in-process and does not
   invoke the CLI, inspect ambient `PATH`, or download a runtime after
@@ -885,8 +932,8 @@ The v3 family manifest is the sole release-identity input. An RC uses version
 a stable release uses `X.Y.Z` for both family and Python versions, tag
 `vX.Y.Z`, and channel `stable`. The scripts reject every disagreement among
 those values. Promotion first creates a credential-free protected-CI handoff;
-publisher jobs then promote the frozen bytes without rebuilding. Stable
-`1.0.0` is a separate admitted family build, not an RC tag rename.
+publisher jobs then promote the frozen bytes without rebuilding. Every stable
+`X.Y.Z` is a separate admitted family build, not a corresponding RC tag rename.
 
 ### Script-only next-RC operator SOP
 
@@ -905,8 +952,8 @@ Prerequisites are `bash`, Git, `jq`, Node.js, `base64`, a SHA-256 utility, and
 an authenticated `gh` CLI for live workflow binding or dispatch. Start only
 from the five canonical sibling repository roots. In particular, do not run a
 release from a recovery copy, a task worktree, or a directory whose private
-`.ait` authority is not the retained canonical Binary DB. `remote land` stores
-the landed Snapshot in the local Binary DB that executes the command; using a
+`.ait` authority is not the retained canonical Binary DB. Remote Task finish
+stores the accepted Snapshot in the local Binary DB that executes the command; using a
 second recovery root therefore produces a second local authority even when
 both roots point at the same Remote.
 
@@ -919,16 +966,16 @@ success.
 
 | Gate | Allowed work | Required evidence before exit | Prohibited work |
 | --- | --- | --- | --- |
-| Repair | Bug fixes under the prior version | Local tests, Remote CI, reviewer land | Next-RC versions, tags, receipts, endpoint writes |
+| Repair | Bug fixes under the prior version | Local tests, Remote CI, reviewer finish | Next-RC versions, tags, receipts, endpoint writes |
 | Qualification | Untagged repair export and hosted regression | Successful bound run including Windows x64 and arm64 lifecycle | Release tag, release freeze, protected promotion |
 | Release delta | Exact next-RC version and authority updates only | Successful pre-tag admission against the qualified direct parent | Product behavior or unrelated source changes, any tag before admission |
 | Tagged release | Annotated tag, receipts, protected prepublication, endpoint publication | Admission-bound prepare record and every later gate in order | Rebuilds, evidence substitution, bypass after failure |
 
 ### Phase 1: repair and qualify without an RC
 
-Diagnose and land every repair in non-release Tasks while all version
+Diagnose and finish every repair in non-release Tasks while all version
 authorities retain the prior value. Each affected repository must complete its
-ordinary local and Remote CI and reviewer land. Then select those landed repair
+ordinary local and Remote CI and reviewer finish. Then select those accepted repair
 Snapshots in a non-publishing qualification family, run the authority
 preflight, and materialize the five exact source bundles. This qualification
 family may retain the prior version only as an input format; it is not another
@@ -937,19 +984,44 @@ build or publication of that version.
 Create a new, empty qualification-record directory. The authority preflight
 checks all five repository indexes, identities, clean workspaces, selected
 Snapshots, canonical `main` ancestry, and Remote URLs. The source-bundle
-coordinator does not copy a recovery `.ait` directory:
+coordinator does not copy a recovery `.ait` directory. The external
+qualification manifest must be derived from the canonical published family;
+the preflight admits only `source_snapshot` substitutions and rejects version,
+package-topology, distribution, tag, or other authority changes. It remains an
+input-only, non-publishing selector outside canonical `ait-core`:
 
 ```bash
 export AIT_CANONICAL_CORE=/absolute/path/to/canonical/ait-core
 export AIT_RELEASE_RECORDS=/absolute/path/to/new/qualification-records
+export AIT_QUALIFICATION_FAMILY="${AIT_RELEASE_RECORDS}/qualification-family.json"
 mkdir -p "${AIT_RELEASE_RECORDS}"
+
+jq \
+  --arg core SNP-XXXXXXXXXXXX \
+  --arg server SNP-XXXXXXXXXXXX \
+  --arg runner SNP-XXXXXXXXXXXX \
+  --arg python SNP-XXXXXXXXXXXX \
+  --arg node SNP-XXXXXXXXXXXX '
+    .components |= map(
+      .source_snapshot =
+        if .source_repository == "ait-core" then $core
+        elif .source_repository == "ait-server" then $server
+        elif .source_repository == "ait-runner" then $runner
+        elif .source_repository == "ait-python" then $python
+        elif .source_repository == "ait-node" then $node
+        else error("unexpected source repository")
+        end)
+  ' "${AIT_CANONICAL_CORE}/ait-release-family.json" \
+  >"${AIT_QUALIFICATION_FAMILY}"
 
 ./ci/release_authority_preflight.sh \
   "${AIT_CANONICAL_CORE}" \
-  "${AIT_RELEASE_RECORDS}/00-authority.json"
+  "${AIT_RELEASE_RECORDS}/00-authority.json" \
+  "${AIT_QUALIFICATION_FAMILY}"
 ./ci/release_source_bundles.sh \
   "${AIT_CANONICAL_CORE}" \
-  "${AIT_RELEASE_RECORDS}/source-bundles"
+  "${AIT_RELEASE_RECORDS}/source-bundles" \
+  "${AIT_QUALIFICATION_FAMILY}"
 ```
 
 The public repository settings are part of the release boundary, not an
@@ -963,7 +1035,7 @@ publisher has been migrated to upload every asset to a draft before publishing
 it. The current exact tag ruleset, checksum readback, and protected-environment
 evidence remain authoritative for already-published RCs.
 
-Produce a reviewed deterministic export from the landed repair Snapshots and
+Produce a reviewed deterministic export from the accepted repair Snapshots and
 commit it to public `main` without creating any tag. The exact public repair
 commit must remain untagged through qualification, admission, and receipt
 revalidation:
@@ -973,7 +1045,7 @@ AIT_RELEASE_COORDINATOR_SNAPSHOT=SNP-XXXXXXXXXXXX \
 AIT_RELEASE_COORDINATOR_MANIFEST_HASH=<64-lowercase-hex> \
 AIT_RELEASE_COORDINATOR_CREATED_AT=<unix-seconds> \
 ./ci/release_monorepo_export.sh \
-  /absolute/path/to/ait-release-family.json \
+  "${AIT_QUALIFICATION_FAMILY}" \
   "${AIT_RELEASE_RECORDS}/source-bundles" \
   /absolute/path/to/ait-native-export \
   /absolute/path/to/export-evidence.json
@@ -1011,7 +1083,7 @@ tagged source, source mismatch, or incomplete inventory evidence fails closed:
 ### Phase 2: admit the version-only release delta before tagging
 
 Only after `pre-rc-qualification.json` exists may separate release Tasks advance
-the five component versions and coordinating family to the next RC. Land their
+the five component versions and coordinating family to the next RC. Finish their
 normal CI/reviewer changes, generate a second deterministic public export, and
 commit it as the single direct child of the qualified repair commit. Do not tag
 it yet. The admission command requires that the commit is untagged and rejects
@@ -1068,6 +1140,8 @@ defaults, binds its SHA-256, and optionally dispatches endpoint publication:
   --receipts "${AIT_RELEASE_RECORDS}/02-receipts.json" \
   --run-id <protected-promotion-run-id> \
   --output "${AIT_RELEASE_RECORDS}/03-endpoints.json" \
+  --prior-version <exact-prior-semver> \
+  --prior-python-version <exact-prior-pep440-version> \
   --dispatch
 ```
 
@@ -1078,11 +1152,20 @@ The generated route is `rc`/RC formula/`testing`/WinGet validation for an RC,
 or `latest`/stable formula/`stable`/WinGet community submission for a stable
 release. Endpoint identities, credential *names*, and immutable OCI bases live
 only in `release/endpoint-publication.defaults.json`; secret values never
-enter source or operator records.
+enter source or operator records. The exact prior SemVer and Python version are
+mandatory only with `--dispatch`; they bind the immutable upgrade source and
+must never be replaced by a mutable `latest` selector.
 
-After the endpoint workflow succeeds, copy its numeric run ID and generate the
-checksum-bound endpoint status. This status is deliberately pending; it is not
-the final release decision:
+The dispatched endpoint workflow first freezes a nonpublic candidate and runs
+the exact 32-row install-and-upgrade clean-host matrix. Each install and upgrade
+phase runs as a distinct GitHub-hosted job on a fresh VM. The matrix contains
+six GitHub, six PyPI, six npm, four Homebrew, four apt, two WinGet, and four OCI
+rows. The protected publishing environment cannot load credentials or write an
+endpoint until the aggregate proves all 32 rows against the exact candidate
+bytes.
+
+After that same workflow succeeds, copy its numeric run ID and generate the
+checksum-bound publication status:
 
 ```bash
 ./ci/release_operator.sh status \
@@ -1091,43 +1174,22 @@ the final release decision:
   --output "${AIT_RELEASE_RECORDS}/04-status.json"
 ```
 
-Success proves exact readback for GitHub, PyPI, npm, Homebrew, signed apt, and
-both OCI images. npm success includes equality between each staged package and
-the registry version for the presence and value of `os`, `cpu`, `libc`, addon
-metadata, and optional dependencies; Linux must read back `libc: ["glibc"]`
-while Darwin and Windows must read back no `libc` selector. Success also
-includes `apt-cache search` visibility for `ait-native` and `ait-runner`. RC
-WinGet output stops at validated release assets by contract;
-stable WinGet still requires the generated community manifest to be submitted,
-reviewed, merged, and independently found with `winget search`.
+Success proves the prepublication 32-row qualification plus exact readback for
+GitHub, PyPI, npm, Homebrew, signed apt, and both OCI images. Product rows prove
+install, command origin, default-inactive process behavior, explicit service
+lifecycle where declared, sprint-bound first Task finish, uninstall with user-data
+retention, exact prior-state upgrade, and candidate finish. Every native-bundle
+family after the exact published 1.1.0 exception additionally proves all three
+Homebrew, apt, and WinGet command versions, that installation starts neither
+process, and that the packaged lifecycle remains server-only with no registered
+runner daemon. Direct PyO3 and Node-API rows exercise their bindings in process;
+OCI rows bind immutable digests.
 
-Next dispatch the exact 32-row clean-host lifecycle matrix. The prior version
-and prior Python version are immutable inputs, never a mutable `latest`
-selector. `clean-host` binds the endpoint configuration, pending status,
-candidate tag and commit, frozen six-runner platform authority, and exact
-matrix hash before dispatch:
-
-```bash
-./ci/release_operator.sh clean-host \
-  --config "${AIT_RELEASE_RECORDS}/03-endpoints.json" \
-  --status "${AIT_RELEASE_RECORDS}/04-status.json" \
-  --prior-version <exact-prior-semver> \
-  --prior-python-version <exact-prior-pep440-version> \
-  --output "${AIT_RELEASE_RECORDS}/05-clean-host-request.json" \
-  --dispatch
-```
-
-Each install phase and upgrade phase runs as a distinct GitHub-hosted job on a
-fresh VM. The matrix contains six GitHub, six PyPI, six npm, four Homebrew,
-four apt, two WinGet, and four OCI rows. Product rows prove install, command
-origin, default-inactive process behavior, explicit service lifecycle where
-declared, sprint-bound first-land, uninstall with user-data retention, exact
-prior-state upgrade, and candidate land. The 1.1+ Homebrew, apt, and WinGet
-rows additionally prove all three exact command versions, that installation
-starts neither process, and that the existing packaged lifecycle remains
-server-only with no registered runner daemon. Direct
-PyO3 and Node-API rows exercise their bindings in process; OCI rows bind
-immutable digests.
+npm success includes equality between each staged package and the registry
+version for the presence and value of `os`, `cpu`, `libc`, addon metadata, and
+optional dependencies; Linux must read back `libc: ["glibc"]` while Darwin and
+Windows must read back no `libc` selector. Success also includes
+`apt-cache search` visibility for `ait-native` and `ait-runner`.
 
 The hosted setup activates the runner image's preinstalled Linux Homebrew from
 `/home/linuxbrew/.linuxbrew/bin` and, when necessary, registers the inbox
@@ -1136,26 +1198,23 @@ It does not download or substitute either package manager. Probe evidence
 still records the resolved native command and fails visibly when the declared
 runner image does not supply the required capability.
 
-After the workflow completes, copy only its numeric run ID and close the exact
-request against the immutable row artifact:
+RC WinGet output intentionally stops at validated release assets. For a stable
+release, `04-status.json` reports
+`community_manifest_assets_published_submission_required`: submit the generated
+manifest directory to `microsoft/winget-pkgs`, retain the PR and merge commit,
+and do not call the release complete until a fresh Windows host finds the exact
+version with `winget search --id Weita.AitNative --exact` and `winget show`.
+This external community review is not performed or implied by the endpoint
+workflow.
 
-```bash
-./ci/release_operator.sh clean-host-status \
-  --request "${AIT_RELEASE_RECORDS}/05-clean-host-request.json" \
-  --config "${AIT_RELEASE_RECORDS}/03-endpoints.json" \
-  --status "${AIT_RELEASE_RECORDS}/04-status.json" \
-  --run-id <clean-host-run-id> \
-  --output "${AIT_RELEASE_RECORDS}/06-clean-host-status.json"
-```
-
-Only an exact complete 32-row aggregate produces final status `published`,
-`promotion_allowed: true`, and `next_action: release_complete`. Missing,
-duplicate, unexpected, cross-release, or failed evidence produces terminal
-status `blocked`; the already-published immutable bytes remain preserved and
-the only next action is to repair main and freeze a new release.
+Missing, duplicate, unexpected, cross-release, or failed clean-host evidence
+prevents endpoint publication entirely. If a later endpoint write or readback
+fails, preserve the already-published immutable bytes and repair `main` before
+freezing a new release; never overwrite the failed release's evidence.
 
 For a release that the repository owner explicitly chooses as the default,
-promote only mutable aliases after the final clean-host status above succeeds.
+promote only mutable aliases after `04-status.json` succeeds and, for a stable
+release, after retaining the merged WinGet PR and independent search proof.
 The approval value is the exact `REL-FAM-*` ID from `03-endpoints.json`, not a
 version wildcard. Production promotion runs only through the protected `pypi`
 GitHub environment so the maintainer machine never needs the npm or GHCR
@@ -1172,7 +1231,7 @@ sha256_file() {
 }
 
 endpoint_config="${AIT_RELEASE_RECORDS}/03-endpoints.json"
-operator_status="${AIT_RELEASE_RECORDS}/06-clean-host-status.json"
+operator_status="${AIT_RELEASE_RECORDS}/04-status.json"
 gh workflow run ait-release-latest-alias.yml \
   --repo weita2026/ait-native \
   --ref main \
@@ -1201,11 +1260,12 @@ same script and an older, still-valid endpoint dossier with a new explicit
 approval and evidence path; immutable package versions, tags, and assets are
 never deleted or overwritten.
 
-Preserve `00-authority.json`, source-bundle evidence, export evidence, all six
-operator records, both latest-alias records, workflow artifacts, endpoint
-receipts, clean-host row evidence, and the aggregate SHA-256 inventory together
-as the permanent release dossier. Any rerun must use a new output path and bind
-a new workflow run; scripts never relabel or overwrite earlier evidence.
+Preserve `00-authority.json`, source-bundle evidence, export evidence, every
+operator record, both latest-alias records, workflow artifacts, endpoint
+receipts, clean-host row evidence, the aggregate SHA-256 inventory, and stable
+WinGet PR/merge/search proof together as the permanent release dossier. Any
+rerun must use a new output path and bind a new workflow run; scripts never
+relabel or overwrite earlier evidence.
 
 ### Implemented package-assembly boundary
 
@@ -1222,7 +1282,7 @@ ait release package <REL-FAM-ID> --channel npm --json
 ```
 
 Each command writes below
-`dist/<REL-FAM-ID>/packages/<channel>/`. An admitted 1.1+ runner-bundle
+`dist/<REL-FAM-ID>/packages/<channel>/`. An admitted post-1.1.0 runner-bundle
 matrix produces:
 
 | Channel | Deterministic channel artifacts |
@@ -1543,11 +1603,11 @@ were no longer the blocker. Its remaining publication gates were:
 - prove package-name ownership, credentials, and endpoint configuration
   before the first write, keeping PyPI/npm/Homebrew/apt/WinGet/GitHub/OCI
   publication disabled until all source gates pass; and
-- run clean install, first `ait init`, agent-directed first land, upgrade,
+- run clean install, first `ait init`, agent-directed first Task finish, upgrade,
   uninstall, and endpoint readback on the six declared targets before the RC
   is called published.
 
-The install-to-first-land corpus may contain representative Python, Node.js,
+The install-to-first-Task-finish corpus may contain representative Python, Node.js,
 .NET, PHP, C, C++, and Java repository files, but every case must run the same
 explicit native AIT commands and repository-authored validation. It must not
 add language detection, manifest inspection, framework profiles, or
@@ -1708,13 +1768,13 @@ admission:
   until the final zero-of-37 starting state becomes a complete frozen
   dossier; and
 - Homebrew, apt, npm, PyPI, WinGet, GitHub, and OCI endpoint readback plus
-  clean install, upgrade, uninstall, and install-to-first-land smoke have not
+  clean install, upgrade, uninstall, and install-to-first-Task-finish smoke have not
   been recorded from one final frozen family.
 
 These are 1.0.0 release blockers, not reasons to narrow the declared product
 family.
 
-The install-to-first-land regression corpus may contain representative Python,
+The install-to-first-Task-finish regression corpus may contain representative Python,
 Node.js, .NET, PHP, C, C++, and Java repository files, but every case must run
 the same explicit native AIT commands and repository-authored validation. It
 must not add language detection, manifest inspection, framework profiles, or

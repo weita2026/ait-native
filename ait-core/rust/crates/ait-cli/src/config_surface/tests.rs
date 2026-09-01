@@ -389,11 +389,26 @@ fn config_set_sprint_off_disables_plan_task_binding() {
     assert_eq!(refreshed.config["plan_task_binding"]["mode"], "off");
     assert_eq!(refreshed.effective_workflow_mode(), "solo_local");
     let agents = std::fs::read_to_string(temp.path().join("AGENTS.md")).unwrap();
-    assert!(agents.contains("entry: mode=`solo_local`; sprint=`off`; scopes=`local`"));
-    assert!(agents.contains("entry: plan-binding=`off`"));
-    assert!(agents.contains("`task start` revalidates entry"));
-    assert!(agents.contains("sprint card is not required"));
+    assert!(agents.contains("Route: mode=`solo_local`; sprint=`off`; scope=`local`"));
+    assert!(agents.contains("plan-binding=`off`"));
+    assert!(agents.contains("--title \"<title>\" --intent \"<intent>\"`"));
+    assert!(!agents.to_ascii_lowercase().contains("json"));
     assert!(agents.contains("`--from` is unavailable"));
+    assert!(agents.contains("--edit-root\n<absolute-path>"));
+    let claude = std::fs::read_to_string(temp.path().join("CLAUDE.md")).unwrap();
+    assert!(claude.contains("Route: mode=`solo_local`; sprint=`off`; scope=`local`"));
+    assert!(claude.contains("--title \"<title>\" --intent \"<intent>\" --edit-root"));
+    assert!(claude.contains("&& cd <absolute-path>"));
+    assert!(!claude.to_ascii_lowercase().contains("json"));
+    assert!(claude.contains("Do not omit `--edit-root`"));
+    assert!(!claude.contains("@AGENTS.md"));
+    assert_eq!(
+        payload["agent_harness"]["plan_syncs"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
     assert!(temp.path().join("docs/sprints").is_dir());
 }
 
@@ -433,14 +448,23 @@ fn config_set_workflow_mode_sprint_on_requires_plan_task_binding() {
     assert_eq!(refreshed.config["sprint"], "on");
     assert_eq!(refreshed.config["plan_task_binding"]["mode"], "required");
     let agents = std::fs::read_to_string(temp.path().join("AGENTS.md")).unwrap();
-    assert!(agents.contains("entry: mode=`solo_remote`; sprint=`on`; scopes=`remote`"));
-    assert!(agents.contains("entry: plan-binding=`required`"));
-    assert!(agents.contains("`task start` revalidates entry"));
+    assert!(agents.contains("Route: mode=`solo_remote`; sprint=`on`; scope=`remote`"));
+    assert!(agents.contains("plan-binding=`required`"));
     assert!(agents.contains("ait plan sync <markdown-file-or-dir> --remote origin"));
     assert!(agents.contains("ait task start --from"));
-    assert!(agents.contains("owns exact-file Plan sync"));
+    assert!(agents.contains("`--from` syncs and binds"));
+    assert!(agents.contains("--remote origin`"));
+    assert!(!agents.to_ascii_lowercase().contains("json"));
+    assert!(agents.contains("--edit-root\n<absolute-path>"));
     assert!(!agents.contains("--plan-item-ref"));
     assert!(agents.contains("After every context-window compaction, re-read the bound sprint card"));
-    assert!(agents.contains("patchset publication"));
+    assert!(agents.contains("ait workflow ready <change-id> --apply"));
+    assert!(agents.contains("Workflow finish owns Review, approval"));
+    let claude = std::fs::read_to_string(temp.path().join("CLAUDE.md")).unwrap();
+    assert!(claude.contains("Route: mode=`solo_remote`; sprint=`on`; scope=`remote`"));
+    assert!(claude.contains("--edit-root <absolute-path> --remote origin"));
+    assert!(claude.contains("&& cd <absolute-path>"));
+    assert!(!claude.to_ascii_lowercase().contains("json"));
+    assert!(!claude.contains("@AGENTS.md"));
     assert!(temp.path().join("docs/sprints").is_dir());
 }

@@ -3,7 +3,7 @@ set -euo pipefail
 
 usage() {
   printf '%s\n' \
-    'usage: release_authority_preflight.sh <canonical-ait-core-root> <evidence-output>' >&2
+    'usage: release_authority_preflight.sh <canonical-ait-core-root> <evidence-output> [<qualification-family-manifest>]' >&2
   exit 64
 }
 
@@ -34,9 +34,10 @@ canonical_file() {
   (cd "$(dirname -- "${input}")" && printf '%s/%s\n' "$(pwd -P)" "$(basename -- "${input}")")
 }
 
-[[ $# -eq 2 ]] || usage
+[[ $# -eq 2 || $# -eq 3 ]] || usage
 canonical_core=$1
 evidence_output=$2
+qualification_family=${3:-}
 [[ ${canonical_core} == /* && -d ${canonical_core} && ! -L ${canonical_core} ]] ||
   fail 66 'canonical ait-core root must be an absolute real directory'
 canonical_core=$(canonical_directory "${canonical_core}")
@@ -50,15 +51,45 @@ workspace_root=$(dirname -- "${canonical_core}")
   fail 66 'authority evidence parent must be a real directory'
 evidence_output=$(canonical_file "${evidence_output}")
 
-family=${canonical_core}/ait-release-family.json
+canonical_family=${canonical_core}/ait-release-family.json
+family=${canonical_family}
 authorities=${canonical_core}/ci/release_repository_authorities.json
 ait_bin=${canonical_core}/.ait/cargo-target/release/ait-cli
-for input in "${family}" "${authorities}"; do
+for input in "${canonical_family}" "${authorities}"; do
   [[ -f ${input} && ! -L ${input} ]] ||
     fail 66 "canonical release input must be a regular file: ${input}"
 done
 [[ -x ${ait_bin} && ! -L ${ait_bin} ]] ||
   fail 66 'canonical ait-core native CLI is unavailable or symlinked'
+
+qualification_family_used=false
+if [[ -n ${qualification_family} ]]; then
+  [[ ${qualification_family} == /* ]] ||
+    fail 64 'qualification family manifest must be absolute'
+  [[ -f ${qualification_family} && ! -L ${qualification_family} ]] ||
+    fail 66 'qualification family manifest must be a regular non-symlink file'
+  qualification_family=$(canonical_file "${qualification_family}")
+  [[ ${qualification_family} != "${canonical_family}" ]] ||
+    fail 65 'qualification family manifest must be independent from canonical authority'
+  case "${qualification_family}" in
+    "${canonical_core}"/*)
+      fail 65 'qualification family manifest must remain outside canonical ait-core'
+      ;;
+  esac
+  jq -e --slurpfile canonical "${canonical_family}" '
+    . as $qualification |
+    $canonical[0] as $published |
+    $qualification != $published and
+    (($qualification | del(.components)) == ($published | del(.components))) and
+    (($qualification.components | map(del(.source_snapshot))) ==
+      ($published.components | map(del(.source_snapshot)))) and
+    ([ $qualification.components[].source_snapshot ] |
+      all(type == "string" and test("^SNP-[0-9A-F]{12}$")))
+  ' "${qualification_family}" >/dev/null ||
+    fail 65 'qualification family may differ only in valid component source_snapshot values'
+  family=${qualification_family}
+  qualification_family_used=true
+fi
 
 family_version=$(jq -er '.family.version' "${family}")
 family_tag=$(jq -er '.family.tag' "${family}")
@@ -178,7 +209,9 @@ jq -S -n \
   --arg family_tag "${family_tag}" \
   --arg canonical_core "${canonical_core}" \
   --arg family_sha256 "$(sha256_file "${family}")" \
+  --arg canonical_family_sha256 "$(sha256_file "${canonical_family}")" \
   --arg authorities_sha256 "$(sha256_file "${authorities}")" \
+  --argjson qualification_family_used "${qualification_family_used}" \
   --argjson repositories "${repository_rows}" '
   {
     contract: "ait.release.canonical-authority-preflight/v1",
@@ -187,6 +220,10 @@ jq -S -n \
     family_tag: $family_tag,
     canonical_ait_core_root: $canonical_core,
     family_manifest_sha256: $family_sha256,
+    canonical_family_manifest_sha256: $canonical_family_sha256,
+    qualification_family_manifest_sha256:
+      (if $qualification_family_used then $family_sha256 else null end),
+    qualification_family_used: $qualification_family_used,
     repository_authorities_sha256: $authorities_sha256,
     repositories: $repositories,
     recovery_authority_used: false,

@@ -642,18 +642,39 @@ pub(in crate::primitives) fn task_land_attach_cli_main_seed_sync(
     if output.get("apply_status").and_then(JsonValue::as_str) != Some("done") {
         return;
     }
-    if output
+    let same_head = output
         .get("local_line_sync")
         .and_then(|value| value.get("same_head"))
         .and_then(JsonValue::as_bool)
-        == Some(true)
-    {
+        == Some(true);
+    let local_head_contains_landed_snapshot = output
+        .get("local_line_sync")
+        .and_then(|value| value.get("local_head_contains_landed_snapshot"))
+        .and_then(JsonValue::as_bool)
+        == Some(true);
+    if same_head || local_head_contains_landed_snapshot {
+        let (reason, detail) = if same_head {
+            (
+                "already_at_trusted_local_landed_snapshot",
+                "The remote history promotion landed the Snapshot already held by the local target Line; the prior local Task finish already refreshed the CLI main seed.",
+            )
+        } else {
+            (
+                "local_head_already_contains_landed_snapshot",
+                "The local target Line and CLI main seed already contain the remote landed Snapshot through a newer local descendant; both remain at the newer local head.",
+            )
+        };
+        let preserved_snapshot_id = output
+            .get("local_line_sync")
+            .and_then(|value| string_field(value, "line_head_snapshot_id"))
+            .or_else(|| normalized_text(fallback_snapshot_id));
         output["main_seed_sync"] = json!({
             "status": "skipped",
-            "reason": "already_at_trusted_local_landed_snapshot",
+            "reason": reason,
             "line_name": fallback_target_line,
-            "snapshot_id": fallback_snapshot_id,
-            "detail": "The remote history promotion landed the Snapshot already held by the local target Line; the prior local Task finish already refreshed the CLI main seed.",
+            "snapshot_id": preserved_snapshot_id,
+            "landed_snapshot_id": fallback_snapshot_id,
+            "detail": detail,
         });
         return;
     }
@@ -1050,6 +1071,7 @@ pub(in crate::primitives) fn task_land_atomic_output(
         "landing_summary": land_action_result.clone(),
         "patchset_is_authoritative": true,
         "workspace": {
+            "current_line": target_line,
             "clean": JsonValue::Null,
             "changed_count": JsonValue::Null,
             "changed_paths": [],

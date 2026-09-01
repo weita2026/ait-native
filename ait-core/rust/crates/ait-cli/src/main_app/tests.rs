@@ -2,6 +2,7 @@ use super::*;
 use ait_core::external::update::ExternalUpdateSelection;
 use clap::CommandFactory;
 use std::fs;
+use std::path::Path;
 use tempfile::TempDir;
 
 #[test]
@@ -395,6 +396,7 @@ fn compact_agent_action_projections_keep_only_next_step_evidence() {
             "name": "lct-1",
             "path": "/physical roots/lct-1",
             "open_path": "/alias/lct-1",
+            "root_source": "explicit",
             "current_line": "feature/lct-1",
             "head_snapshot_id": "SNP-AAAA1111"
         },
@@ -402,6 +404,7 @@ fn compact_agent_action_projections_keep_only_next_step_evidence() {
     }));
     assert_eq!(started["change_ref"], "LCT-1/C-01");
     assert_eq!(started["edit_root"], "/physical roots/lct-1");
+    assert_eq!(started["edit_root_source"], "explicit");
     assert_eq!(
         started["next_action"]["command"],
         "cd '/physical roots/lct-1'"
@@ -1212,12 +1215,13 @@ fn workflow_tier_command_and_guide_topic_are_removed() {
         .expect("workflow guide topics");
     assert_eq!(topics.len(), 2);
     assert!(topics.iter().any(|topic| topic["topic"] == "inventory"));
-    assert!(topics.iter().any(|topic| topic["topic"] == "land"));
+    assert!(topics.iter().any(|topic| topic["topic"] == "finish"));
+    assert!(!topics.iter().any(|topic| topic["topic"] == "land"));
     assert!(!topics.iter().any(|topic| topic["topic"] == "tiers"));
 
     let guide_error = workflow_guide_payload(Some("tiers"))
         .expect_err("removed tiers guide topic must be rejected");
-    assert!(guide_error.contains("Available topics: inventory, land"));
+    assert!(guide_error.contains("Available topics: inventory, finish"));
 }
 
 #[test]
@@ -2127,6 +2131,8 @@ fn task_start_parser_keeps_manual_title_required_and_accepts_plan_source_mode() 
         "docs/sprints/card.md#card/implement",
         "--intent",
         "Implement the exact synchronized Plan item",
+        "--edit-root",
+        "/tmp/known-task-root",
         "--remote",
         "origin",
         "--json",
@@ -2143,6 +2149,10 @@ fn task_start_parser_keeps_manual_title_required_and_accepts_plan_source_mode() 
         Some("docs/sprints/card.md#card/implement")
     );
     assert!(args.title.is_none());
+    assert_eq!(
+        args.edit_root.as_deref(),
+        Some(Path::new("/tmp/known-task-root"))
+    );
     assert_eq!(args.remote.as_deref(), Some("origin"));
     assert!(args.json);
 }
@@ -2629,11 +2639,21 @@ fn plan_scope_builders_follow_workflow_defaults_and_explicit_overrides() {
 }
 
 #[test]
-fn plan_sync_from_a_worktree_uses_the_authoritative_repository_root_for_all_scopes() {
+fn plan_sync_from_a_worktree_reads_artifacts_from_workspace_and_keeps_authority_canonical() {
     let temp = TempDir::new().unwrap();
     let authoritative_root = temp.path().join("canonical");
     let worktree_root = temp.path().join("worktree");
     fs::create_dir_all(&authoritative_root).unwrap();
+    init_cmd(&InitRequest {
+        root: authoritative_root.clone(),
+        name: Some("fixture".to_string()),
+        default_line: "main".to_string(),
+        policy_profile: "prototype".to_string(),
+        default_author_mode: "ai_with_human_review".to_string(),
+        default_model: None,
+        repair_existing: false,
+    })
+    .unwrap();
     write_runtime_config(
         &worktree_root,
         r#"{
@@ -2658,33 +2678,60 @@ fn plan_sync_from_a_worktree_uses_the_authoritative_repository_root_for_all_scop
         .unwrap(),
     )
     .unwrap();
+    let technical_root = worktree_root.join("docs/technical");
+    fs::create_dir_all(&technical_root).unwrap();
+    fs::write(
+        technical_root.join("commands.md"),
+        "# Commands\n\nGeneric command reference.\n",
+    )
+    .unwrap();
+    fs::write(
+        technical_root.join("workflow.md"),
+        "# Workflow\n\nGeneric workflow reference.\n",
+    )
+    .unwrap();
 
     let repo = RepoRuntime::discover_from_path(&worktree_root).unwrap();
     assert!(repo.is_worktree());
     assert_ne!(repo.workspace_root(), repo.authoritative_repo_root());
 
-    let local = parse_value_error_string(
-        &build_sync_request(&repo, &plan_sync_test_args(true, None)).unwrap(),
-    )
-    .unwrap();
-    let remote = parse_value_error_string(
-        &build_sync_request(&repo, &plan_sync_test_args(false, Some("origin"))).unwrap(),
-    )
-    .unwrap();
-    let expected_root = repo.authoritative_repo_root().to_string_lossy().to_string();
+    let mut local_args = plan_sync_test_args(true, None);
+    local_args.target = PathBuf::from("docs/technical");
+    let mut remote_args = plan_sync_test_args(false, Some("origin"));
+    remote_args.target = PathBuf::from("docs/technical");
+    let local = parse_value_error_string(&build_sync_request(&repo, &local_args).unwrap()).unwrap();
+    let remote =
+        parse_value_error_string(&build_sync_request(&repo, &remote_args).unwrap()).unwrap();
+    let expected_workspace_root = repo.workspace_root().to_string_lossy().to_string();
+    let expected_authority_root = repo.authoritative_repo_root().to_string_lossy().to_string();
 
     for payload in [&local, &remote] {
-        assert_eq!(payload["root_path"], expected_root);
-        assert_eq!(payload["plan_storage"]["repo_root"], expected_root);
+        assert_eq!(payload["root_path"], expected_workspace_root);
+        assert_eq!(
+            payload["plan_storage"]["repo_root"],
+            expected_authority_root
+        );
         assert_eq!(
             payload["target"],
-            JsonValue::String("docs/sprints/card.md".to_string())
+            JsonValue::String("docs/technical".to_string())
         );
     }
     assert_eq!(local["local"], true);
     assert!(local["base_url"].is_null());
     assert_eq!(remote["local"], false);
     assert_eq!(remote["base_url"], "http://example.test/fixture");
+
+    let sync = execute_plan_sync_command_request_json(&local.to_string()).unwrap();
+    assert_eq!(sync["status"], "ok", "{sync}");
+    let results = sync["results"].as_array().unwrap();
+    assert_eq!(results.len(), 2, "{sync}");
+    assert_eq!(
+        results
+            .iter()
+            .filter_map(|row| row["artifact_path"].as_str())
+            .collect::<Vec<_>>(),
+        ["docs/technical/commands.md", "docs/technical/workflow.md"]
+    );
 }
 
 #[test]
@@ -2979,6 +3026,52 @@ fn workflow_preview_derives_clean_workspace_state_from_boolean_authority() {
 }
 
 #[test]
+fn workflow_finish_renders_atomic_skipped_workspace_and_nested_cleanup_without_unknowns() {
+    let rendered = render_workflow_phase_text(
+        &json!({
+            "change_id": "RCT-9/C-01",
+            "task_id": "RCT-9",
+            "target_line": "main",
+            "change": {
+                "change_id": "RCT-9/C-01",
+                "status": "landed",
+                "base_line": "main"
+            },
+            "task": {"task_id": "RCT-9", "status": "completed"},
+            "workspace": {
+                "clean": JsonValue::Null,
+                "changed_count": JsonValue::Null,
+                "evaluation": "skipped",
+                "reason": "ready_patchset_is_authoritative"
+            },
+            "patchset": {"patchset_id": "RCT-9/C-01/P-01"},
+            "apply_status": "done",
+            "bound_worktree_cleanup": {
+                "status": "removed",
+                "reason": "already_removed_by_workflow_land",
+                "worktree": {
+                    "status": "removed",
+                    "reason": "promoted_to_cli_main_seed",
+                    "removed": true,
+                    "worktree": {"name": "rct-9", "root": "/tmp/rct-9"}
+                }
+            }
+        }),
+        "finish",
+    )
+    .unwrap();
+
+    assert!(rendered.contains("- current line: main"), "{rendered}");
+    assert!(
+        rendered.contains("- workspace: not evaluated"),
+        "{rendered}"
+    );
+    assert!(rendered.contains("- removed: rct-9"), "{rendered}");
+    assert!(!rendered.contains("unknown"), "{rendered}");
+    assert!(!rendered.contains("(0 changed)"), "{rendered}");
+}
+
+#[test]
 fn task_audit_labels_expected_work_as_pending_not_blocked() {
     assert_eq!(
         task_audit_reason_label("continue_task_work"),
@@ -3257,7 +3350,10 @@ fn change_help_explains_retained_behavior_and_hides_compatibility_inputs() {
         close.contains("Archive one local or remote Change"),
         "{close}"
     );
-    assert!(close.contains("without landing code"), "{close}");
+    assert!(
+        close.contains("without applying its code to the target Line"),
+        "{close}"
+    );
 
     let publish = help(Some("publish"));
     assert!(publish.contains("does not publish a Patchset"), "{publish}");

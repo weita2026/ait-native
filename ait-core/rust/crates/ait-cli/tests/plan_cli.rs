@@ -256,10 +256,14 @@ fn local_plan_commands_work_end_to_end() {
 
     let list = json_output(root, &["plan", "list", "--json"]);
     let rows = list.as_array().unwrap();
-    assert_eq!(rows.len(), 2);
+    assert_eq!(rows.len(), 3);
     assert!(rows.iter().any(|row| {
         row["head_artifact_path"].as_str() == Some("AGENTS.md")
             && row["head_artifact_heading"].as_str() == Some("AGENTS")
+    }));
+    assert!(rows.iter().any(|row| {
+        row["head_artifact_path"].as_str() == Some("CLAUDE.md")
+            && row["head_artifact_heading"].as_str() == Some("CLAUDE")
     }));
     assert!(rows
         .iter()
@@ -282,6 +286,60 @@ fn local_plan_commands_work_end_to_end() {
         candidates["summary"]["taskable_item_count"].as_i64(),
         Some(1)
     );
+}
+
+#[test]
+fn local_plan_sync_from_managed_worktree_reads_workspace_directory_end_to_end() {
+    let canonical = init_repo();
+    let canonical_root = canonical.path();
+    let worktree = TempDir::new().unwrap();
+    let worktree_root = worktree.path();
+    write_workflow_config(worktree_root, "solo_local", "local", "http://127.0.0.1:1");
+    write_file(
+        &worktree_root.join(".ait-worktree.json"),
+        &json!({
+            "repo_root": canonical_root.to_string_lossy().to_string(),
+            "workspace_root": worktree_root.to_string_lossy().to_string(),
+            "worktree_name": "fixture-technical",
+            "current_line": "feature/fixture-technical"
+        })
+        .to_string(),
+    );
+    write_file(
+        &worktree_root.join("docs/technical/commands.md"),
+        "# Commands\n\nGeneric command reference.\n",
+    );
+    write_file(
+        &worktree_root.join("docs/technical/workflow.md"),
+        "# Workflow\n\nGeneric workflow reference.\n",
+    );
+
+    let sync = json_output(
+        worktree_root,
+        &["plan", "sync", "docs/technical", "--local", "--json"],
+    );
+    assert_eq!(sync["status"].as_str(), Some("ok"), "{sync}");
+    assert_eq!(sync["scope"].as_str(), Some("directory"));
+    let artifact_paths = sync["results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|row| row["artifact_path"].as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        artifact_paths,
+        ["docs/technical/commands.md", "docs/technical/workflow.md"]
+    );
+
+    let plans = json_output(canonical_root, &["plan", "list", "--local", "--json"]);
+    let tracked_paths = plans
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|row| row["head_artifact_path"].as_str())
+        .collect::<Vec<_>>();
+    assert!(tracked_paths.contains(&"docs/technical/commands.md"));
+    assert!(tracked_paths.contains(&"docs/technical/workflow.md"));
 }
 
 #[test]

@@ -79,6 +79,24 @@ jq -n '
       {id: "ait-runner", source_repository: "ait-runner", version: "1.2.3-rc.4"},
       {id: "ait-python", source_repository: "ait-python", version: "1.2.3rc4"},
       {id: "ait-node", source_repository: "ait-node", version: "1.2.3-rc.4"}
+    ],
+    distributions: [
+      {
+        channel: "homebrew", role: "product", identity: "ait-native",
+        components: ["ait", "ait-server", "ait-runner"]
+      },
+      {
+        channel: "apt", role: "product", identity: "ait-native",
+        components: ["ait", "ait-server", "ait-runner"]
+      },
+      {
+        channel: "apt", role: "standalone", identity: "ait-runner",
+        components: ["ait-runner"]
+      },
+      {
+        channel: "winget", role: "product", identity: "Weita.AitNative",
+        components: ["ait", "ait-server", "ait-runner"]
+      }
     ]
   }
 ' >"${source_root}/ait-release-family.json"
@@ -272,6 +290,37 @@ expect_failure tagged-qualified-after-binding "${operator}" admit \
   --output "${temporary_root}/tagged-qualified-after-binding.json"
 grep -F 'qualified repair commit gained a release tag after qualification' \
   "${temporary_root}/tagged-qualified-after-binding.stderr" >/dev/null
+
+missing_runner_before_tag=${temporary_root}/missing-runner-before-tag
+git clone -q "${source_root}" "${missing_runner_before_tag}"
+configure_git_identity "${missing_runner_before_tag}"
+jq '
+  .distributions |= map(
+    if .role == "product" and
+      (.channel == "homebrew" or .channel == "apt" or .channel == "winget")
+    then .components = ["ait", "ait-server"]
+    else . end
+  )
+' "${missing_runner_before_tag}/ait-release-family.json" \
+  >"${temporary_root}/missing-runner-family.json"
+mv "${temporary_root}/missing-runner-family.json" \
+  "${missing_runner_before_tag}/ait-release-family.json"
+missing_runner_family_sha=$(sha256_file \
+  "${missing_runner_before_tag}/ait-release-family.json")
+jq --arg family_sha "${missing_runner_family_sha}" \
+  '.family_manifest_sha256 = $family_sha' \
+  "${missing_runner_before_tag}/ait-monorepo-source.json" \
+  >"${temporary_root}/missing-runner-mapping.json"
+mv "${temporary_root}/missing-runner-mapping.json" \
+  "${missing_runner_before_tag}/ait-monorepo-source.json"
+git -C "${missing_runner_before_tag}" add -A
+git -C "${missing_runner_before_tag}" commit -qm 'remove runner bundle before tag'
+expect_failure missing-runner-before-tag "${operator}" admit \
+  --source-root "${missing_runner_before_tag}" \
+  --qualification "${qualification}" \
+  --output "${temporary_root}/missing-runner-before-tag.json"
+grep -F 'pre-tag admission requires exact ait, ait-server, and ait-runner product bundles' \
+  "${temporary_root}/missing-runner-before-tag.stderr" >/dev/null
 
 admission=${temporary_root}/admission.json
 "${operator}" admit \

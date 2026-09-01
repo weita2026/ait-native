@@ -1028,6 +1028,8 @@ async function validatePublicReadme() {
   await regularFile(readmePath, "public agent-first README");
   const readme = await readFile(readmePath, "utf8");
   for (const required of [
+    "## Why I Built AIT",
+    "I wanted a Jira-like workflow where opening a sprint card starts a real,",
     "You ask for a change in plain language. AIT gives that work its own sprint",
     "individual developers and maintainers",
     "img.shields.io/github/v/release/weita2026/ait-native",
@@ -1053,6 +1055,15 @@ async function validatePublicReadme() {
     "ait plan sync",
     "ait snapshot create",
     "ait task finish",
+    "Two separately published 200-session campaigns",
+    "36.28%",
+    "benchmark-sprint-on-20260829",
+    "not pooled observations or a causal sprint-on/off A/B test",
+    "### Claude Fable benchmark — still running",
+    "**Progress: 22 / 200 sessions**",
+    "claim_eligible=false",
+    "The workload-median token saving is **20.32%**, with an aggregate bootstrap",
+    "numbers are published for transparency, not as a product claim",
     "It never tries to\ndetect a project type",
     "local work never needs a running `ait-server`",
     "package-owned `native/ait_napi.node`",
@@ -1073,7 +1084,6 @@ async function validatePublicReadme() {
     "ait workflow tier --json",
     "--profile quick",
     "ait workflow local-land",
-    "Jira-like",
     "parallel AI execution",
     "90 seconds",
   ]) {

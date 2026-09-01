@@ -1,0 +1,62 @@
+{
+  "contract": "ait-agent-token-benchmark-campaign/v1",
+  "campaign_id": "game-v1-g56s-max-codex-managed-complete200-20260831-r3",
+  "protocol_revision": "game-development-2026-08-31.48",
+  "campaign_scope": "complete",
+  "accounting_profile": "steady_state_task_cost",
+  "ait_sprint_mode": "off",
+  "ait_edit_root_mode": "returned",
+  "git_worktree_mode": "codex_app_equivalent_managed",
+  "claude_model_admission": "strict",
+  "functional_replacement_policy": "none",
+  "seed": 2026083147,
+  "attempts_per_cell": 20,
+  "workload_ids": [
+    "GD-01",
+    "GD-02",
+    "GD-03",
+    "GD-04",
+    "GD-05"
+  ],
+  "modes": [
+    "git_linear_single_session",
+    "ait_linear_single_session"
+  ],
+  "model": {
+    "provider": "openai",
+    "model_id": "gpt-5.6-sol",
+    "model_revision": "gpt-5.6-sol-provider-alias-observed-2026-08-31",
+    "reasoning_effort": "max"
+  },
+  "runtime": {
+    "executor": "codex",
+    "codex_program": "/Users/weita/.codex/packages/standalone/releases/0.149.0-aarch64-apple-darwin/bin/codex",
+    "executor_version": "codex-cli 0.149.0",
+    "ait_version": "ait 1.1.0",
+    "git_version": "git version 2.50.1 (Apple Git-155)",
+    "node_version": "v25.9.0",
+    "browser_version": "Google Chrome 151.0.7922.174",
+    "ait_program": "/Users/weita/AI_Play_Ground/ait-core/.ait-runtime/agent-token-benchmark/runtime-pins/game-v1-g56s-max-codex-managed-complete200-20260831-r3/ait",
+    "git_program": "/usr/bin/git",
+    "node_program": "/opt/homebrew/bin/node",
+    "browser_program": "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+    "fixture_manifest": "../../fixtures/agent-token-game-v1/manifest.json",
+    "run_timeout_seconds": 1800,
+    "ait_first_use_worktree_add_dir": null,
+    "project_doc_max_bytes": 0
+  },
+  "cache_class": "provider_default_fresh_ephemeral_session",
+  "network_policy": "disabled_except_loopback",
+  "tool_policy": "codex_shell_only",
+  "bootstrap_resamples": 2000,
+  "limitations": [
+    "One frozen complete campaign: five workloads by two modes by twenty attempts equals 200 scheduled sessions. The first --max-pairs 5 execution is the immutable ten-session schedule prefix, not a separate smoke campaign.",
+    "The Git lane reproduces the observable Codex App managed-worktree boundary: the host creates a detached linked worktree before the first model event and closes it after the terminal event. Codex Desktop private IPC is not invoked, and Desktop UI latency is not measured.",
+    "The AIT lane is sprint-off solo_local and omits --edit-root, so the measured agent follows the worktree returned by task start; the Git lane starts directly in its host-prepared worktree. Both use fresh ephemeral Codex sessions, the same task fixture, permission policy, network policy, runtime pins, evaluator, and browser acceptance contract.",
+    "The requested omission of --edit-root intentionally charges AIT for consuming and following task start's returned next_action while Git begins inside its host-prepared worktree. Interpret this as a default product-flow comparison, not an isolated worktree-mechanism comparison.",
+    "model-request-state.json records executor-visible thread identity, turn terminal state, terminal usage, reroute, safety, and provider-error event counts. Internal provider request count is unavailable from Codex events and is never inferred from turn count.",
+    "A zero-lane predecessor with the unsuffixed campaign identity completed its 30-command executor preflight but stopped before the first measured model session because an over-restrictive runtime-pin file mode made the copied fixture transform target read-only. Its 559143 preflight tokens remain separately preserved; no measured lane, mode result, or token direction existed to select or retry.",
+    "A second zero-lane predecessor with the -r2 campaign identity completed its 30-command executor preflight but stopped while constructing the first managed Git lane before model launch because the permission profile inherited an inaccessible parent-main .git write exception. Its 551935 preflight tokens and scaffolded non-model run remain separately preserved; no measured lane, mode result, or token direction existed to select or retry.",
+    "No functional replacement policy is declared: every protocol-valid unaccepted outcome remains acceptance-penalized evidence, and no token or elapsed direction can select continuation."
+  ]
+}

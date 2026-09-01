@@ -7,12 +7,22 @@ function fail(message) {
 }
 
 async function main() {
-  const [filePath, from, to] = process.argv.slice(2);
-  if (filePath === undefined || from === undefined || to === undefined || process.argv.length !== 5) {
-    fail("usage: release_monorepo_transform.mjs <file> <from> <to>");
+  const args = process.argv.slice(2);
+  const templateToken = args[0] === "--template-token";
+  if (templateToken) {
+    args.shift();
+  }
+  const [filePath, from, to] = args;
+  if (filePath === undefined || from === undefined || to === undefined || args.length !== 3) {
+    fail(
+      "usage: release_monorepo_transform.mjs [--template-token] <file> <from> <to>",
+    );
   }
   if (from.length === 0 || to.length === 0 || from === to || to.includes(from)) {
     fail("monorepo transform requires two distinct bounded literal values");
+  }
+  if (templateToken && !/^@[A-Z0-9_]+@$/.test(from)) {
+    fail("monorepo template transform requires an uppercase @TOKEN@ source value");
   }
   const entry = await lstat(filePath);
   if (!entry.isFile() || entry.isSymbolicLink()) {
@@ -20,10 +30,13 @@ async function main() {
   }
   const source = await readFile(filePath, "utf8");
   const occurrences = source.split(from).length - 1;
-  if (occurrences !== 1 || source.includes(to)) {
+  if (
+    (templateToken ? occurrences === 0 : occurrences !== 1) ||
+    (!templateToken && source.includes(to))
+  ) {
     fail(`monorepo transform target must contain its from value exactly once and not contain its to value: ${filePath}`);
   }
-  const transformed = source.replace(from, to);
+  const transformed = templateToken ? source.split(from).join(to) : source.replace(from, to);
   const temporary = `${filePath}.ait-monorepo-transform`;
   try {
     await writeFile(temporary, transformed, { mode: entry.mode & 0o777 });

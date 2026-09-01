@@ -149,6 +149,50 @@ fn agent_token_publication_bundle_is_sanitized_checksummed_and_release_bound() {
 }
 
 #[test]
+fn sprint_on_replication_publication_preserves_current_policy_boundary() {
+    let campaign = "game-v1-g56s-max-sprint-on-natural-complete200-20260828";
+    let bundle = repository_root().join("release/benchmarks").join(campaign);
+    let result: JsonValue =
+        serde_json::from_slice(&std::fs::read(bundle.join("result.json")).unwrap()).unwrap();
+    let runs: JsonValue =
+        serde_json::from_slice(&std::fs::read(bundle.join("runs.json")).unwrap()).unwrap();
+
+    assert_eq!(result["scheduled_run_count"], 200);
+    assert_eq!(result["observed_run_count"], 200);
+    assert_eq!(result["executed_evidence_run_count"], 203);
+    assert_eq!(result["statistically_excluded_run_count"], 3);
+    assert_eq!(result["valid_run_count"], 200);
+    assert_eq!(result["invalid_run_count"], 0);
+    assert_eq!(result["accepted_run_count"], 200);
+    assert_eq!(result["accepted_by_mode"]["ait_linear_single_session"], 100);
+    assert_eq!(result["accepted_by_mode"]["git_linear_single_session"], 100);
+    assert_eq!(result["source_protocol_claim_eligible"], false);
+    assert_eq!(
+        result["current_policy_revision"],
+        "game-development-2026-08-29.36"
+    );
+    assert_eq!(
+        result["current_policy_evaluation_mode"],
+        "owner_authorized_recovery_adjudication_and_statistical_replacement"
+    );
+    assert_eq!(result["current_policy_criteria_met"], true);
+    assert_eq!(result["current_policy_blockers"], serde_json::json!([]));
+    assert_eq!(result["claim_eligible"], true);
+    assert_eq!(result["claim_blockers"], serde_json::json!([]));
+    assert_eq!(runs["runs"].as_array().unwrap().len(), 200);
+    assert_eq!(runs["excluded_runs"].as_array().unwrap().len(), 2);
+    assert_eq!(
+        result["host_shutdown_pair_recoveries"][0]["interrupted_run_id"],
+        "game-v1-g56s-max-sprint-on-natural-complete200-20260828-b009-gd-05-git"
+    );
+
+    let summary = std::fs::read_to_string(bundle.join("summary.txt")).unwrap();
+    assert!(summary.contains("Source-protocol claim eligible: **false**"));
+    assert!(summary.contains("criteria met: **true**"));
+    assert!(summary.contains("Effective recovery-policy-qualified claim eligible: **true**"));
+}
+
+#[test]
 fn protocol_command_exposes_compiled_versioned_contract() {
     Command::cargo_bin("ait-benchmark")
         .unwrap()
@@ -174,12 +218,14 @@ fn agent_token_protocol_and_solo_local_template_validate() {
         .stdout(predicate::str::contains(
             "\"workflow_mode\": \"solo_local\"",
         ))
-        .stdout(predicate::str::contains("\"core_sprint_mode\": \"off\""))
+        .stdout(predicate::str::contains(
+            "\"core_sprint_mode\": \"manifest-pinned off for the primary campaign; separately reported sprint-on smoke and complete campaigns are admitted\"",
+        ))
         .stdout(predicate::str::contains(
             "\"ait_server_connection_allowed\": false",
         ))
         .stdout(predicate::str::contains(
-            "\"protocol_revision\": \"game-development-2026-08-27.29\"",
+            "\"protocol_revision\": \"game-development-2026-08-31.48\"",
         ))
         .stdout(predicate::str::contains(
             "\"contract\": \"ait-agent-token-statistical-replacement/v1\"",
@@ -244,6 +290,17 @@ fn agent_token_protocol_and_solo_local_template_validate() {
         .unwrap()
         .args(["agent-token", "validate", "--manifest"])
         .arg(agent_token_path(
+            "campaigns/agent-token-game-v1/smoke-sprint-on.json",
+        ))
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"sprint_mode\": \"on\""))
+        .stdout(predicate::str::contains("\"ait_server_connected\": false"));
+
+    Command::cargo_bin("ait-benchmark")
+        .unwrap()
+        .args(["agent-token", "validate", "--manifest"])
+        .arg(agent_token_path(
             "campaigns/agent-token-game-v1/smoke-steady-state-claude.json",
         ))
         .assert()
@@ -253,6 +310,55 @@ fn agent_token_protocol_and_solo_local_template_validate() {
             "\"tool_policy\": \"claude_code_local_tools\"",
         ))
         .stdout(predicate::str::contains("\"ait_server_connected\": false"));
+
+    Command::cargo_bin("ait-benchmark")
+        .unwrap()
+        .args(["agent-token", "validate", "--manifest"])
+        .arg(agent_token_path(
+            "campaigns/agent-token-game-v1/fable-max-sprint-on-smoke10.json",
+        ))
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"model_id\": \"claude-fable-5\""))
+        .stdout(predicate::str::contains(
+            "\"executor_version\": \"2.1.235 (Claude Code)\"",
+        ))
+        .stdout(predicate::str::contains("\"ait_version\": \"ait 1.1.0\""))
+        .stdout(predicate::str::contains("\"reasoning_effort\": \"max\""))
+        .stdout(predicate::str::contains("\"scheduled_run_count\": 10"))
+        .stdout(predicate::str::contains(
+            "\"functional_replacement_policy\": \"none\"",
+        ));
+
+    Command::cargo_bin("ait-benchmark")
+        .unwrap()
+        .args(["agent-token", "validate", "--manifest"])
+        .arg(agent_token_path(
+            "campaigns/agent-token-game-v1/fable-max-sprint-on-complete200.json",
+        ))
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"campaign_scope\": \"complete\""))
+        .stdout(predicate::str::contains("\"sprint_mode\": \"on\""))
+        .stdout(predicate::str::contains("\"scheduled_run_count\": 200"))
+        .stdout(predicate::str::contains(
+            "\"functional_replacement_policy\": \"first_valid_unaccepted_lane_once\"",
+        ));
+
+    Command::cargo_bin("ait-benchmark")
+        .unwrap()
+        .args(["agent-token", "validate", "--manifest"])
+        .arg(agent_token_path(
+            "campaigns/agent-token-game-v1/sol-max-codex-managed-complete200.json",
+        ))
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"campaign_scope\": \"complete\""))
+        .stdout(predicate::str::contains("\"scheduled_run_count\": 200"))
+        .stdout(predicate::str::contains("\"model_id\": \"gpt-5.6-sol\""))
+        .stdout(predicate::str::contains(
+            "\"git_worktree_mode\": \"codex_app_equivalent_managed\"",
+        ));
 }
 
 #[test]
@@ -289,6 +395,9 @@ fn agent_token_run_exposes_pair_slicing_and_rejects_retired_run_slicing() {
         .stdout(predicate::str::contains("--campaign-dir"))
         .stdout(predicate::str::contains("--max-pairs"))
         .stdout(predicate::str::contains("--adjudicate-transcripts"))
+        .stdout(predicate::str::contains("--adjudicate-recovered-spawn"))
+        .stdout(predicate::str::contains("--recover-infrastructure-pair"))
+        .stdout(predicate::str::contains("--recover-host-shutdown-pair"))
         .stdout(predicate::str::contains("--max-runs").not());
 }
 
@@ -379,6 +488,61 @@ fn agent_token_schedule_is_frozen_and_create_new() {
         .assert()
         .failure()
         .stderr(predicate::str::contains("without overwriting"));
+
+    for (manifest_name, output_name, expected_count) in [
+        (
+            "fable-max-sprint-on-smoke10.json",
+            "fable-smoke-schedule.json",
+            10,
+        ),
+        (
+            "fable-max-sprint-on-complete200.json",
+            "fable-complete-schedule.json",
+            200,
+        ),
+        (
+            "sol-max-codex-managed-complete200.json",
+            "sol-managed-complete-schedule.json",
+            200,
+        ),
+    ] {
+        let manifest_relative = format!("campaigns/agent-token-game-v1/{manifest_name}");
+        Command::cargo_bin("ait-benchmark")
+            .unwrap()
+            .args(["agent-token", "schedule", "--manifest"])
+            .arg(agent_token_path(&manifest_relative))
+            .arg("--output")
+            .arg(temp.path().join(output_name))
+            .assert()
+            .success()
+            .stdout(predicate::str::contains(format!(
+                "\"entry_count\": {expected_count}"
+            )));
+    }
+    let smoke_schedule: JsonValue = serde_json::from_slice(
+        &std::fs::read(temp.path().join("fable-smoke-schedule.json")).unwrap(),
+    )
+    .unwrap();
+    let complete_schedule: JsonValue = serde_json::from_slice(
+        &std::fs::read(temp.path().join("fable-complete-schedule.json")).unwrap(),
+    )
+    .unwrap();
+    for (smoke, complete) in smoke_schedule["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .zip(complete_schedule["entries"].as_array().unwrap())
+    {
+        for field in [
+            "workload_id",
+            "mode",
+            "attempt",
+            "block_index",
+            "randomized_order",
+        ] {
+            assert_eq!(smoke[field], complete[field]);
+        }
+    }
 }
 
 #[test]

@@ -296,6 +296,67 @@ pub(in crate::primitives) fn workflow_normalize_base_stale_converged_landing_sum
     Some(landing_summary)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::primitives) enum WorkflowPatchsetHeadRelation {
+    Same,
+    CurrentDescendsFromPatchset,
+    PatchsetDescendsFromCurrent,
+    Diverged,
+    Unknown,
+}
+
+impl WorkflowPatchsetHeadRelation {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Same => "same",
+            Self::CurrentDescendsFromPatchset => "current_descends_from_patchset",
+            Self::PatchsetDescendsFromCurrent => "patchset_descends_from_current",
+            Self::Diverged => "diverged",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+pub(in crate::primitives) fn workflow_patchset_head_relation(
+    repo: &RepoRuntime,
+    patchset_revision_snapshot_id: Option<&str>,
+    current_head_snapshot_id: Option<&str>,
+) -> Result<WorkflowPatchsetHeadRelation, String> {
+    let Some(patchset_revision_snapshot_id) = normalized_text(patchset_revision_snapshot_id) else {
+        return Ok(WorkflowPatchsetHeadRelation::Unknown);
+    };
+    let Some(current_head_snapshot_id) = normalized_text(current_head_snapshot_id) else {
+        return Ok(WorkflowPatchsetHeadRelation::Unknown);
+    };
+    if patchset_revision_snapshot_id == current_head_snapshot_id {
+        return Ok(WorkflowPatchsetHeadRelation::Same);
+    }
+    if !local_snapshot_exists(repo, &patchset_revision_snapshot_id)?
+        || !local_snapshot_exists(repo, &current_head_snapshot_id)?
+    {
+        return Ok(WorkflowPatchsetHeadRelation::Unknown);
+    }
+    if snapshot_distance_if_ancestor(
+        repo,
+        Some(&patchset_revision_snapshot_id),
+        Some(&current_head_snapshot_id),
+    )?
+    .is_some()
+    {
+        return Ok(WorkflowPatchsetHeadRelation::CurrentDescendsFromPatchset);
+    }
+    if snapshot_distance_if_ancestor(
+        repo,
+        Some(&current_head_snapshot_id),
+        Some(&patchset_revision_snapshot_id),
+    )?
+    .is_some()
+    {
+        return Ok(WorkflowPatchsetHeadRelation::PatchsetDescendsFromCurrent);
+    }
+    Ok(WorkflowPatchsetHeadRelation::Diverged)
+}
+
 pub(in crate::primitives) fn workflow_target_line_converged_landing_summary(
     landing_summary: Option<JsonValue>,
     patchset: Option<&JsonValue>,
@@ -391,6 +452,7 @@ pub(in crate::primitives) fn workflow_patchset_refresh_context(
     revision_snapshot_id: Option<&str>,
     base_is_fresh: bool,
     workspace_matches_patchset: Option<bool>,
+    head_relation: WorkflowPatchsetHeadRelation,
 ) -> Option<JsonValue> {
     let patchset = patchset?;
     let patchset_id = string_field(patchset, "patchset_id")?;
@@ -401,6 +463,7 @@ pub(in crate::primitives) fn workflow_patchset_refresh_context(
         "patchset_revision_snapshot_id": patchset_revision_snapshot_id,
         "current_head_snapshot_id": revision_snapshot_id,
         "remote_base_snapshot_id": remote_base_snapshot_id,
+        "head_relation": head_relation.as_str(),
     });
     if let Some(worktree_retarget) = worktree_retarget.and_then(JsonValue::as_object) {
         let rebase_state = worktree_retarget
@@ -464,13 +527,62 @@ pub(in crate::primitives) fn workflow_patchset_refresh_context(
             return Some(payload);
         }
     }
+    if workspace_matches_patchset == Some(false)
+        && !matches!(
+            head_relation,
+            WorkflowPatchsetHeadRelation::CurrentDescendsFromPatchset
+        )
+    {
+        payload["republish_allowed"] = JsonValue::Bool(false);
+        payload["rebase_required"] = JsonValue::Bool(false);
+        match head_relation {
+            WorkflowPatchsetHeadRelation::PatchsetDescendsFromCurrent => {
+                payload["reason_code"] =
+                    JsonValue::String("current_head_behind_patchset".to_string());
+                payload["summary"] = JsonValue::String(
+                    "Restore the selected Patchset revision before continuing.".to_string(),
+                );
+                payload["detail"] = JsonValue::String(format!(
+                    "Selected patchset `{patchset_id}` points at revision `{}`, which is a proven descendant of the current line head `{}`. Do not republish the older current head; continue from the selected revision or repair the worktree binding first.",
+                    patchset_revision_snapshot_id.unwrap_or("unknown"),
+                    revision_snapshot_id.unwrap_or("unknown"),
+                ));
+            }
+            WorkflowPatchsetHeadRelation::Diverged => {
+                payload["reason_code"] =
+                    JsonValue::String("head_diverged_recovery_required".to_string());
+                payload["summary"] = JsonValue::String(
+                    "Resolve the divergent head before replacing the selected Patchset."
+                        .to_string(),
+                );
+                payload["detail"] = JsonValue::String(format!(
+                    "Selected patchset `{patchset_id}` points at revision `{}`, while the current line head `{}` is on a divergent Snapshot branch. Automatic republish is disabled until the intended revision is selected explicitly.",
+                    patchset_revision_snapshot_id.unwrap_or("unknown"),
+                    revision_snapshot_id.unwrap_or("unknown"),
+                ));
+            }
+            _ => {
+                payload["reason_code"] = JsonValue::String("head_relation_unproven".to_string());
+                payload["summary"] = JsonValue::String(
+                    "Verify Snapshot ancestry before replacing the selected Patchset.".to_string(),
+                );
+                payload["detail"] = JsonValue::String(format!(
+                    "Selected patchset `{patchset_id}` points at revision `{}`, while the current line head is `{}`. Their Snapshot relationship is not proven locally, so automatic republish is disabled.",
+                    patchset_revision_snapshot_id.unwrap_or("unknown"),
+                    revision_snapshot_id.unwrap_or("unknown"),
+                ));
+            }
+        }
+        return Some(payload);
+    }
     if !base_is_fresh {
         payload["reason_code"] = JsonValue::String("base_moved_republish".to_string());
+        payload["republish_allowed"] = JsonValue::Bool(true);
         payload["rebase_required"] = JsonValue::Bool(false);
         payload["summary"] =
             JsonValue::String("Republish the current head on top of the newer base.".to_string());
         payload["detail"] = JsonValue::String(format!(
-            "Selected patchset `{patchset_id}` still uses base `{}`, but `{base_line_name}` now points at `{}`. The current line head `{}` is already the refresh candidate, so no extra rebase is required; republish it if that newer base is the intended land candidate.",
+            "Selected patchset `{patchset_id}` still uses base `{}`, but `{base_line_name}` now points at `{}`. The current line head `{}` is already the refresh candidate, so no extra rebase is required; republish it if that newer base is the intended finish candidate.",
             patchset_base_snapshot_id.unwrap_or("unknown"),
             remote_base_snapshot_id.unwrap_or("unknown"),
             revision_snapshot_id.unwrap_or("unknown"),
@@ -479,12 +591,13 @@ pub(in crate::primitives) fn workflow_patchset_refresh_context(
     }
     if workspace_matches_patchset == Some(false) {
         payload["reason_code"] = JsonValue::String("head_diverged_republish".to_string());
+        payload["republish_allowed"] = JsonValue::Bool(true);
         payload["rebase_required"] = JsonValue::Bool(false);
         payload["summary"] = JsonValue::String(
             "Republish the newer current head as the selected patchset.".to_string(),
         );
         payload["detail"] = JsonValue::String(format!(
-            "Selected patchset `{patchset_id}` points at revision `{}`, but the current line head is `{}`. No rebase is required; refresh republishes this newer head as the next land candidate.",
+            "Selected patchset `{patchset_id}` points at revision `{}`, but the current line head is `{}`. No rebase is required; refresh republishes this newer head as the next finish candidate.",
             patchset_revision_snapshot_id.unwrap_or("unknown"),
             revision_snapshot_id.unwrap_or("unknown"),
         ));

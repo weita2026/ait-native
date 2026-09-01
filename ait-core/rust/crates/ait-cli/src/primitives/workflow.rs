@@ -164,12 +164,16 @@ pub fn workflow_ready_payload(
             .unwrap_or(JsonValue::Null);
         if string_field(&local_change, "publication_state").as_deref() == Some("published") {
             let remote_change_id = workflow_final_snapshot_promotion_remote_change_id(&candidate)?;
-            if let Ok(remote_state) = workflow_ready_remote_payload_with_patchset_authority(
-                repo,
-                &remote_change_id,
-                remote_name,
-                true,
-            ) {
+            let local_change_ref = workflow_completed_local_command_change_ref(&candidate)?;
+            if let Ok(remote_state) =
+                workflow_ready_remote_payload_with_patchset_authority_and_command_ref(
+                    repo,
+                    &remote_change_id,
+                    remote_name,
+                    true,
+                    Some(&local_change_ref),
+                )
+            {
                 let has_patchset =
                     workflow_nested_text(&remote_state, "patchset", "patchset_id").is_some();
                 let landed = workflow_nested_text(&remote_state, "change", "status").as_deref()
@@ -198,6 +202,22 @@ pub(super) fn workflow_ready_remote_payload_with_patchset_authority(
     remote_name: Option<&str>,
     ready_patchset_is_authoritative: bool,
 ) -> Result<JsonValue, String> {
+    workflow_ready_remote_payload_with_patchset_authority_and_command_ref(
+        repo,
+        change_id,
+        remote_name,
+        ready_patchset_is_authoritative,
+        None,
+    )
+}
+
+fn workflow_ready_remote_payload_with_patchset_authority_and_command_ref(
+    repo: &RepoRuntime,
+    change_id: &str,
+    remote_name: Option<&str>,
+    ready_patchset_is_authoritative: bool,
+    command_change_ref: Option<&str>,
+) -> Result<JsonValue, String> {
     let _payload_range = perfetto_range!("ait.workflow_ready.payload");
     let mut full_state = {
         let _range = perfetto_range!("ait.workflow_ready.payload.land_state");
@@ -217,6 +237,7 @@ pub(super) fn workflow_ready_remote_payload_with_patchset_authority(
         change_id,
         remote_name,
         ready_patchset_is_authoritative,
+        command_change_ref,
     )
 }
 
@@ -226,10 +247,13 @@ fn workflow_project_ready_payload(
     change_id: &str,
     remote_name: Option<&str>,
     ready_patchset_is_authoritative: bool,
+    command_change_ref: Option<&str>,
 ) -> Result<JsonValue, String> {
     let change = full_state.get("change").cloned().unwrap_or(JsonValue::Null);
     let resolved_change_ref = change_reference_from_payload(&change, Some(change_id))
         .unwrap_or_else(|_| change_id.into());
+    let command_change_ref =
+        normalized_text(command_change_ref).unwrap_or_else(|| resolved_change_ref.clone());
     let base_line = full_state
         .get("base_line")
         .cloned()
@@ -243,7 +267,7 @@ fn workflow_project_ready_payload(
     };
     let command_hints = workflow_ready_command_hints(
         repo,
-        resolved_change_ref.as_str(),
+        command_change_ref.as_str(),
         remote_name,
         full_state.get("patchset"),
         base_line_name.as_str(),
@@ -284,6 +308,7 @@ pub(in crate::primitives) fn workflow_ready_ci_poll_payload_with_closeout_remote
     state: &JsonValue,
     change_id: &str,
     remote_name: Option<&str>,
+    command_change_ref: Option<&str>,
 ) -> Result<JsonValue, String>
 where
     R: TaskWorkflowPatchsetReader + TaskWorkflowPatchsetCiStatusReader + ?Sized,
@@ -313,7 +338,40 @@ where
         change_id,
         remote_name,
         ready_patchset_is_authoritative,
+        command_change_ref,
     )
+}
+
+fn workflow_completed_local_finish_authority(
+    candidate: Option<&JsonValue>,
+) -> Result<(Option<String>, bool), String> {
+    let Some(candidate) = candidate else {
+        return Ok((None, false));
+    };
+    let publication_state = candidate
+        .get("state")
+        .and_then(|state| state.get("change"))
+        .and_then(|change| string_field(change, "publication_state"));
+    if publication_state.as_deref() != Some("published") {
+        return Ok((None, false));
+    }
+    Ok((
+        Some(workflow_final_snapshot_promotion_remote_change_id(
+            candidate,
+        )?),
+        true,
+    ))
+}
+
+fn workflow_completed_local_command_change_ref(candidate: &JsonValue) -> Result<String, String> {
+    let change = candidate
+        .get("state")
+        .and_then(|state| state.get("change"))
+        .ok_or_else(|| {
+            "Completed-local workflow candidate is missing local Change state.".to_string()
+        })?;
+    let local_change_id = required_string_field(change, "change_id")?;
+    change_reference_from_payload(change, Some(&local_change_id))
 }
 
 pub fn workflow_land_payload(
@@ -321,33 +379,39 @@ pub fn workflow_land_payload(
     change_id: &str,
     remote_name: Option<&str>,
 ) -> Result<JsonValue, String> {
-    if let Some(candidate) =
-        workflow_final_snapshot_promotion_candidate(repo, change_id, remote_name)?
-    {
-        let publication_state = candidate
-            .get("state")
-            .and_then(|state| state.get("change"))
-            .and_then(|change| string_field(change, "publication_state"));
-        if publication_state.as_deref() != Some("published") {
+    let promotion_candidate =
+        workflow_final_snapshot_promotion_candidate(repo, change_id, remote_name)?;
+    if let Some(candidate) = promotion_candidate.as_ref() {
+        let (remote_change_id, patchset_is_authoritative) =
+            workflow_completed_local_finish_authority(Some(candidate))?;
+        let Some(remote_change_id) = remote_change_id else {
             return workflow_final_snapshot_promotion_preview(&candidate);
-        }
-        let remote_change_id = workflow_final_snapshot_promotion_remote_change_id(&candidate)?;
+        };
+        let local_change_ref = workflow_completed_local_command_change_ref(candidate)?;
         return workflow_land_payload_with_workspace_mode(
             repo,
             &remote_change_id,
             remote_name,
-            false,
+            patchset_is_authoritative,
+            Some(&local_change_ref),
         );
     }
-    workflow_land_payload_with_workspace_mode(repo, change_id, remote_name, false)
+    workflow_land_payload_with_workspace_mode(repo, change_id, remote_name, false, None)
 }
 
-pub(in crate::primitives) fn workflow_ready_task_land_payload(
+fn workflow_ready_task_land_payload_with_command_ref(
     repo: &RepoRuntime,
     change_id: &str,
     remote_name: Option<&str>,
+    command_change_ref: Option<&str>,
 ) -> Result<JsonValue, String> {
-    workflow_land_payload_with_workspace_mode(repo, change_id, remote_name, true)
+    workflow_land_payload_with_workspace_mode(
+        repo,
+        change_id,
+        remote_name,
+        true,
+        command_change_ref,
+    )
 }
 
 fn workflow_land_payload_with_workspace_mode(
@@ -355,6 +419,7 @@ fn workflow_land_payload_with_workspace_mode(
     change_id: &str,
     remote_name: Option<&str>,
     ready_patchset_is_authoritative: bool,
+    command_change_ref: Option<&str>,
 ) -> Result<JsonValue, String> {
     let mut full_state = if ready_patchset_is_authoritative {
         workflow_projected_ready_task_land_state(repo, change_id, remote_name)?
@@ -368,6 +433,8 @@ fn workflow_land_payload_with_workspace_mode(
     }
     let resolved_change_ref = change_reference_from_payload(&change, Some(change_id))
         .unwrap_or_else(|_| change_id.to_string());
+    let command_change_ref =
+        normalized_text(command_change_ref).unwrap_or_else(|| resolved_change_ref.clone());
     let base_line = full_state
         .get("base_line")
         .cloned()
@@ -379,7 +446,7 @@ fn workflow_land_payload_with_workspace_mode(
         &workflow_ready_facts(&full_state)?,
         &workflow_ready_command_hints(
             repo,
-            resolved_change_ref.as_str(),
+            command_change_ref.as_str(),
             remote_name,
             full_state.get("patchset"),
             base_line_name.as_str(),
@@ -588,7 +655,18 @@ pub(super) fn workflow_attach_local_land_sync_from_atomic_response(
         local_line_head_snapshot_id(&root_repo, target_line)?
     };
     let same_head = previous_head_snapshot_id.as_deref() == Some(landed_snapshot_id);
-    if !same_head {
+    let local_head_contains_landed_snapshot = if same_head {
+        false
+    } else {
+        snapshot_distance_if_ancestor(
+            &root_repo,
+            Some(landed_snapshot_id),
+            previous_head_snapshot_id.as_deref(),
+        )?
+        .is_some()
+    };
+    let preserve_local_head = same_head || local_head_contains_landed_snapshot;
+    if !preserve_local_head {
         let _range = perfetto_range!("ait.task_land.local.target_line_update");
         set_local_line_head(&root_repo, target_line, Some(landed_snapshot_id))?;
     }
@@ -598,6 +676,14 @@ pub(super) fn workflow_attach_local_land_sync_from_atomic_response(
             "reason": "already_at_trusted_local_landed_snapshot",
             "line": target_line,
             "snapshot_id": landed_snapshot_id,
+        })
+    } else if local_head_contains_landed_snapshot {
+        json!({
+            "status": "skipped",
+            "reason": "local_head_already_contains_landed_snapshot",
+            "line": target_line,
+            "snapshot_id": previous_head_snapshot_id,
+            "landed_snapshot_id": landed_snapshot_id,
         })
     } else {
         let _range = perfetto_range!("ait.task_land.local.workspace_restore");
@@ -611,6 +697,8 @@ pub(super) fn workflow_attach_local_land_sync_from_atomic_response(
     let local_sync = json!({
         "status": if same_head {
             "already_synced"
+        } else if local_head_contains_landed_snapshot {
+            "local_descendant_preserved"
         } else if string_field(&workspace_restore, "status").as_deref() == Some("failed") {
             "failed"
         } else {
@@ -618,8 +706,14 @@ pub(super) fn workflow_attach_local_land_sync_from_atomic_response(
         },
         "line": target_line,
         "landed_snapshot_id": landed_snapshot_id,
-        "auto_rebase": !same_head,
+        "line_head_snapshot_id": if preserve_local_head {
+            previous_head_snapshot_id.clone()
+        } else {
+            Some(landed_snapshot_id.to_string())
+        },
+        "auto_rebase": !preserve_local_head,
         "same_head": same_head,
+        "local_head_contains_landed_snapshot": local_head_contains_landed_snapshot,
         "source": "task-land-atomic/v1",
         "workspace_restore": workspace_restore,
     });
@@ -658,29 +752,36 @@ pub fn workflow_land_apply<F>(
 where
     F: FnMut(&JsonValue) -> Result<(), String>,
 {
-    let resolved_change_id = if let Some(candidate) =
-        workflow_final_snapshot_promotion_candidate(repo, change_id, remote_name)?
+    let promotion_candidate =
+        workflow_final_snapshot_promotion_candidate(repo, change_id, remote_name)?;
+    let (resolved_change_id, ready_patchset_is_authoritative, command_change_ref) = if let Some(
+        candidate,
+    ) =
+        promotion_candidate.as_ref()
     {
-        let publication_state = candidate
-            .get("state")
-            .and_then(|state| state.get("change"))
-            .and_then(|change| string_field(change, "publication_state"));
-        if publication_state.as_deref() != Some("published") {
+        let (remote_change_id, patchset_is_authoritative) =
+            workflow_completed_local_finish_authority(Some(candidate))?;
+        let Some(remote_change_id) = remote_change_id else {
             let remote_name = normalized_text(remote_name).unwrap_or_else(|| "origin".to_string());
             return Err(format!(
-                "Completed local change {change_id} must pass the explicit ready phase before reviewer land. Run `ait workflow ready {change_id} --apply --remote {remote_name}`, then `ait workflow finish {change_id} --apply --remote {remote_name}`."
+                "Completed local change {change_id} must pass the explicit ready phase before reviewer finish. Run `ait workflow ready {change_id} --apply --remote {remote_name}`, then `ait workflow finish {change_id} --apply --remote {remote_name}`."
             ));
-        }
-        workflow_final_snapshot_promotion_remote_change_id(&candidate)?
+        };
+        (
+            remote_change_id,
+            patchset_is_authoritative,
+            Some(workflow_completed_local_command_change_ref(candidate)?),
+        )
     } else {
-        change_id.to_string()
+        (change_id.to_string(), false, None)
     };
     workflow_land_apply_with_state_mode(
         repo,
         &resolved_change_id,
         review_message,
         remote_name,
-        false,
+        ready_patchset_is_authoritative,
+        command_change_ref.as_deref(),
         None,
         progress,
     )
@@ -692,6 +793,7 @@ fn workflow_land_apply_with_state_mode<F>(
     review_message: Option<&str>,
     remote_name: Option<&str>,
     ready_patchset_is_authoritative: bool,
+    command_change_ref: Option<&str>,
     mut initial_state: Option<JsonValue>,
     mut progress: Option<F>,
 ) -> Result<JsonValue, String>
@@ -718,7 +820,12 @@ where
         let state = if let Some(state) = initial_state.take() {
             state
         } else if ready_patchset_is_authoritative {
-            workflow_ready_task_land_payload(repo, change_id, remote_name)?
+            workflow_ready_task_land_payload_with_command_ref(
+                repo,
+                change_id,
+                remote_name,
+                command_change_ref,
+            )?
         } else {
             workflow_land_payload(repo, change_id, remote_name)?
         };
@@ -929,7 +1036,7 @@ where
                 "code": "submit_land",
                 "result": atomic_output.clone(),
             }))
-            .unwrap_or_else(|_| "completed atomic Task Land".to_string());
+            .unwrap_or_else(|_| "completed atomic Task finish".to_string());
             workflow_progress_emit(
                 &mut progress,
                 "completed",
@@ -937,7 +1044,7 @@ where
                 current_change_id.as_deref(),
                 current_patchset_id.as_deref(),
                 Some(applied_actions.len() + 1),
-                Some("Atomic Task Land committed the reviewer-approved closeout."),
+                Some("Atomic Task finish committed the reviewer-approved closeout."),
                 Some("mutation_accepted"),
                 None,
                 None,
@@ -1033,7 +1140,7 @@ fn workflow_land_attach_atomic_task_land_history(
 ) -> Result<JsonValue, String> {
     let object = output
         .as_object_mut()
-        .ok_or_else(|| "Atomic Task Land output must decode to an object.".to_string())?;
+        .ok_or_else(|| "Atomic Task finish output must decode to an object.".to_string())?;
     let reviewer_action_count = reviewer_actions.len();
     reviewer_actions.extend(
         object
@@ -1250,7 +1357,7 @@ fn workflow_land_local(
             )
         };
         return Err(format!(
-            "Local land target `{target_line}` currently points at `{}`, but selected revision `{revision_snapshot_id}` does not descend from that head.{guidance}",
+            "Local finish target `{target_line}` currently points at `{}`, but selected revision `{revision_snapshot_id}` does not descend from that head.{guidance}",
             previous_target_head_snapshot_id.as_deref().unwrap_or_default()
         ));
     }

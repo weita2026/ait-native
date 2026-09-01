@@ -1,6 +1,84 @@
 use super::*;
 
 #[test]
+fn patchset_refresh_rejects_republishing_an_older_current_head() {
+    let patchset = json!({"patchset_id": "RCT-1/C-01/P-02"});
+    let refresh = workflow_patchset_refresh_context(
+        Some(&patchset),
+        None,
+        "main",
+        Some("SNP-BASE"),
+        Some("SNP-BASE"),
+        Some("SNP-SELECTED"),
+        Some("SNP-OLDER"),
+        true,
+        Some(false),
+        WorkflowPatchsetHeadRelation::PatchsetDescendsFromCurrent,
+    )
+    .expect("older current head requires recovery context");
+
+    assert_eq!(
+        refresh["reason_code"],
+        json!("current_head_behind_patchset")
+    );
+    assert_eq!(refresh["republish_allowed"], json!(false));
+    assert_eq!(
+        refresh["head_relation"],
+        json!("patchset_descends_from_current")
+    );
+    let detail = refresh["detail"].as_str().unwrap();
+    assert!(detail.contains("Do not republish the older current head"));
+    assert!(!detail.contains("newer head"));
+}
+
+#[test]
+fn patchset_refresh_only_republishes_a_proven_newer_current_head() {
+    let patchset = json!({"patchset_id": "RCT-1/C-01/P-02"});
+    let refresh = workflow_patchset_refresh_context(
+        Some(&patchset),
+        None,
+        "main",
+        Some("SNP-BASE"),
+        Some("SNP-BASE"),
+        Some("SNP-SELECTED"),
+        Some("SNP-NEWER"),
+        true,
+        Some(false),
+        WorkflowPatchsetHeadRelation::CurrentDescendsFromPatchset,
+    )
+    .expect("proven newer current head can refresh");
+
+    assert_eq!(refresh["reason_code"], json!("head_diverged_republish"));
+    assert_eq!(refresh["republish_allowed"], json!(true));
+    assert_eq!(
+        refresh["head_relation"],
+        json!("current_descends_from_patchset")
+    );
+}
+
+#[test]
+fn patchset_refresh_fails_closed_when_snapshot_relation_is_unknown() {
+    let patchset = json!({"patchset_id": "RCT-1/C-01/P-02"});
+    let refresh = workflow_patchset_refresh_context(
+        Some(&patchset),
+        None,
+        "main",
+        Some("SNP-BASE"),
+        Some("SNP-BASE"),
+        Some("SNP-SELECTED"),
+        Some("SNP-UNKNOWN"),
+        true,
+        Some(false),
+        WorkflowPatchsetHeadRelation::Unknown,
+    )
+    .expect("unknown relation requires recovery context");
+
+    assert_eq!(refresh["reason_code"], json!("head_relation_unproven"));
+    assert_eq!(refresh["republish_allowed"], json!(false));
+    assert!(!refresh["detail"].as_str().unwrap().contains("newer head"));
+}
+
+#[test]
 fn ready_task_land_workspace_context_does_not_invoke_full_status_reader() {
     let temp = tempdir().unwrap();
     init_repo(&InitRequest {

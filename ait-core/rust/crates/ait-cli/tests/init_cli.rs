@@ -44,9 +44,21 @@ fn init_cli_creates_then_reinitializes_the_agent_contract() {
     assert!(temp.path().join(".ait/config.json").is_file());
     let agents = fs::read_to_string(temp.path().join("AGENTS.md")).unwrap();
     assert!(agents.contains("<!-- ait:workflow:start -->"));
-    assert!(agents.contains("entry: mode=`solo_local`; sprint=`on`; scopes=`local`"));
-    assert!(agents.contains("entry: plan-binding=`required`"));
-    assert!(agents.contains("`task start` revalidates entry"));
+    assert!(agents.contains("Route: mode=`solo_local`; sprint=`on`; scope=`local`"));
+    assert!(agents.contains("plan-binding=`required`"));
+    assert!(agents.contains("ait task start --from <sprint-card-path>#<exact-ref> --intent"));
+    assert!(agents.contains("Work only in the returned `edit_root`"));
+    assert!(agents.contains("otherwise omit it and use the returned `edit_root`"));
+    let claude = fs::read_to_string(temp.path().join("CLAUDE.md")).unwrap();
+    assert!(claude.contains("<!-- ait:workflow:start -->"));
+    assert!(claude.contains("Route: mode=`solo_local`; sprint=`on`; scope=`local`"));
+    assert!(claude.contains("ait task start --from <sprint-card-path>#<exact-ref> --intent"));
+    assert!(claude.contains("--edit-root <absolute-path>"));
+    assert!(claude.contains("&& cd <absolute-path>"));
+    assert!(!agents.to_ascii_lowercase().contains("json"));
+    assert!(!claude.to_ascii_lowercase().contains("json"));
+    assert!(claude.contains("Do not omit `--edit-root`"));
+    assert!(!claude.contains("@AGENTS.md"));
     assert!(temp.path().join("docs/sprints").is_dir());
     for path in ["ait-native.md", "docs/plan.md", "docs/milestone.md"] {
         assert!(!temp.path().join(path).exists(), "unexpected {path}");
@@ -64,6 +76,13 @@ fn init_cli_creates_then_reinitializes_the_agent_contract() {
     assert_eq!(reinitialized["policy_profile"], "prototype");
     assert_eq!(
         fs::read_to_string(temp.path().join("AGENTS.md"))
+            .unwrap()
+            .matches("<!-- ait:workflow:start -->")
+            .count(),
+        1
+    );
+    assert_eq!(
+        fs::read_to_string(temp.path().join("CLAUDE.md"))
             .unwrap()
             .matches("<!-- ait:workflow:start -->")
             .count(),

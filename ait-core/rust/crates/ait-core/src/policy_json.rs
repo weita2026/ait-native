@@ -292,19 +292,19 @@ impl<S> PolicyJson<S> {
             }
             return if let Some(submission_id) = landing_submission_id {
                 format!(
-                    "Remote land submission `{submission_id}` is blocked by policy requirements: {summary}."
+                    "Remote finish operation `{submission_id}` is blocked by policy requirements: {summary}."
                 )
             } else {
-                format!("Land preflight is blocked by policy requirements: {summary}.")
+                format!("Finish preflight is blocked by policy requirements: {summary}.")
             };
         }
         let decision = self.policy_decision_or(policy, fallback_decision);
         if let Some(submission_id) = landing_submission_id {
             format!(
-                "Remote land submission `{submission_id}` is blocked because policy is currently `{decision}`."
+                "Remote finish operation `{submission_id}` is blocked because policy is currently `{decision}`."
             )
         } else {
-            format!("Land preflight is currently blocked because policy is `{decision}`.")
+            format!("Finish preflight is currently blocked because policy is `{decision}`.")
         }
     }
 }

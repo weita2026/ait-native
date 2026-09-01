@@ -24,6 +24,19 @@ const MATRIX_CONTRACT = "ait.release.clean-host.matrix/v1";
 const MAX_CAPTURE = 16 * 1024 * 1024;
 const COMMAND_TIMEOUT_MS = 10 * 60 * 1000;
 const CHECKSUM_ASSET_NAME = /^[A-Za-z0-9][A-Za-z0-9._@+~-]*$/;
+const OCI_SERVER_RUNTIME_ARGS = Object.freeze([
+  "--listen",
+  "0.0.0.0:8088",
+  "--init-if-missing",
+  "--defer-ci-admission",
+]);
+const GITHUB_NATIVE_COMPONENTS = Object.freeze([
+  "ait",
+  "ait-agent",
+  "ait-agent-worker",
+  "ait-server",
+  "ait-runner",
+]);
 const MATRIX_ROW_COUNTS = {
   "distribution-target-32-2026-08-17.2": 32,
   "distribution-target-runner-bundle-32-2026-08-26.1": 32,
@@ -257,7 +270,7 @@ class Recorder {
     });
     const status = result.status ?? (result.error ? 127 : 0);
     const stdout = result.stdout ?? "";
-    const stderr = result.stderr ?? result.error?.message ?? "";
+    const stderr = result.stderr || result.error?.message || "";
     this.commands.push({
       label: options.label ?? "command",
       command: shellCommandText(command, args),
@@ -564,8 +577,11 @@ function generatedWorkflowCurrent(agents) {
   }
 }
 
-function knownRc10WindowsInitRegression(error, priorVersion) {
-  if (process.platform !== "win32" || priorVersion !== "1.0.0-rc.10") {
+function knownLegacyWindowsInitRegression(error, priorVersion) {
+  if (
+    process.platform !== "win32" ||
+    !["1.0.0-rc.6", "1.0.0-rc.10"].includes(priorVersion)
+  ) {
     return false;
   }
   return /^prior ait init failed with 1: Error: sync Binary DB file .*[/\\]\.ait-init-[^/\\]+[/\\]binary-db[/\\]line_name_payload\.bin: Failed to sync file .*[/\\]\.ait-init-[^/\\]+[/\\]binary-db[/\\]line_name_payload\.bin: Access is denied\. \(os error 5\)\s*$/s.test(
@@ -581,7 +597,7 @@ function initializePriorState(recorder, aitSpec, root, priorVersion) {
       label: "prior ait init",
     });
   } catch (error) {
-    if (!knownRc10WindowsInitRegression(error, priorVersion)) {
+    if (!knownLegacyWindowsInitRegression(error, priorVersion)) {
       throw error;
     }
     if (
@@ -592,12 +608,19 @@ function initializePriorState(recorder, aitSpec, root, priorVersion) {
     }
     return {
       available: false,
-      expected_regression: "rc10_windows_read_only_fsync",
+      expected_regression: "legacy_windows_read_only_fsync",
+      prior_version: priorVersion,
     };
   }
   const configPath = path.join(root, ".ait", "config.json");
+  const agentsPath = path.join(root, "AGENTS.md");
   requireRegularFile(configPath, "prior repository config");
-  return { available: true, config_sha256: sha256File(configPath) };
+  requireRegularFile(agentsPath, "prior repository workflow guidance");
+  return {
+    available: true,
+    config_sha256: sha256File(configPath),
+    agents_sha256: sha256File(agentsPath),
+  };
 }
 
 function firstLand(recorder, aitSpec, root, expectedText, priorState = null) {
@@ -642,7 +665,11 @@ function firstLand(recorder, aitSpec, root, expectedText, priorState = null) {
   );
   const taskId = started.task_id;
   const worktree = started.edit_root;
-  if (!/^LT-[0-9]{4,}$/.test(taskId ?? "") || !path.isAbsolute(worktree ?? "")) {
+  if (
+    !/^LT-[0-9]{4,}$/.test(taskId ?? "") ||
+    !/^[a-z0-9][a-z0-9._-]*$/.test(started.worktree_name ?? "") ||
+    !path.isAbsolute(worktree ?? "")
+  ) {
     fail("candidate task start returned no exact Task or worktree");
   }
   const landedFile = path.join(worktree, "first-land.txt");
@@ -673,7 +700,8 @@ function firstLand(recorder, aitSpec, root, expectedText, priorState = null) {
   if (snapshot.parent_snapshot_id !== null) {
     fail("clean-host first land did not author the first Snapshot on an empty default Line");
   }
-  let resumedCloseout = false;
+  let partialCloseoutHandled = false;
+  let windowsPartialCloseoutVerified = false;
   if (
     landed.closeout?.task_status === "completed" &&
     landed.closeout?.status !== "complete"
@@ -681,21 +709,116 @@ function firstLand(recorder, aitSpec, root, expectedText, priorState = null) {
     // Finish consumes the bound worktree's Line head, so it must start
     // inside that worktree; Windows cannot remove a directory that is still
     // a process working directory, so the closeout reports partial with
-    // exit 2. The closeout contract's idempotent_phase_resume finishes the exact
-    // closeout from the repository root, where no process holds the
+    // exit 2. The closeout contract returns the exact Change identity for an
+    // idempotent resume from the Repository root, where no process holds the
     // worktree.
-    landed = jsonSpec(
-      recorder,
-      aitSpec,
-      ["task", "finish", taskId, "--local", "--json"],
-      { cwd: root, label: "candidate task finish closeout resume" },
-    );
-    resumedCloseout = true;
+    const changeRef = landed.change_ref;
+    if (!/^LT-[0-9]{4,}\/C-[0-9]{2,}$/.test(changeRef ?? "")) {
+      fail("partial candidate Task finish returned no exact Change reference");
+    }
+    if (landed.next_action?.command !== `ait task finish ${changeRef} --local`) {
+      fail("partial candidate Task finish returned an inconsistent closeout command");
+    }
+    if (process.platform === "win32") {
+      if (
+        landed.closeout?.change_status !== "landed" ||
+        landed.closeout?.plan_status !== "synced" ||
+        landed.closeout?.line_status !== "failed" ||
+        landed.closeout?.worktree_status !== "failed"
+      ) {
+        fail("Windows partial Task finish did not preserve the exact authoritative closeout state");
+      }
+      const task = jsonSpec(
+        recorder,
+        aitSpec,
+        ["task", "show", taskId, "--local", "--json"],
+        { cwd: root, label: "candidate completed Windows Task readback" },
+      );
+      const change = jsonSpec(
+        recorder,
+        aitSpec,
+        ["change", "show", changeRef, "--local", "--json"],
+        { cwd: root, label: "candidate landed Windows Change readback" },
+      );
+      const mainLine = jsonSpec(
+        recorder,
+        aitSpec,
+        ["line", "show", landed.target_line, "--json"],
+        { cwd: root, label: "candidate landed Windows target Line readback" },
+      );
+      const featureLineName = snapshot.line_name;
+      if (featureLineName !== `feature/${taskId.toLowerCase()}`) {
+        fail("Windows partial Task finish returned an unexpected feature Line identity");
+      }
+      const featureLine = jsonSpec(
+        recorder,
+        aitSpec,
+        ["line", "show", featureLineName, "--json"],
+        { cwd: root, label: "candidate landed Windows feature Line readback" },
+      );
+      const worktrees = jsonSpec(recorder, aitSpec, ["worktree", "list", "--json"], {
+        cwd: root,
+        label: "candidate completed Windows worktree inventory",
+      });
+      if (
+        task.task_id !== taskId ||
+        task.status !== "completed" ||
+        change.change_ref !== changeRef ||
+        change.task_id !== taskId ||
+        change.status !== "landed" ||
+        change.landed_snapshot_id !== landed.landed_snapshot_id ||
+        mainLine.line_name !== landed.target_line ||
+        mainLine.status !== "active" ||
+        mainLine.head_snapshot_id !== landed.landed_snapshot_id ||
+        featureLine.status !== "active" ||
+        featureLine.head_snapshot_id !== landed.landed_snapshot_id ||
+        !Array.isArray(worktrees) ||
+        worktrees.some((row) => row.name === started.worktree_name)
+      ) {
+        fail("Windows partial Task finish authoritative readback is inconsistent");
+      }
+      const archived = jsonSpec(
+        recorder,
+        aitSpec,
+        ["line", "archive", featureLineName, "--json"],
+        { cwd: root, label: "candidate completed Windows feature Line archive" },
+      );
+      if (
+        archived.line_name !== featureLineName ||
+        archived.status !== "archived" ||
+        archived.head_snapshot_id !== landed.landed_snapshot_id
+      ) {
+        fail("Windows partial Task finish feature Line did not archive exactly");
+      }
+      recorder.observations.windows_partial_task_land_closeout = {
+        task_id: taskId,
+        change_ref: changeRef,
+        landed_snapshot_id: landed.landed_snapshot_id,
+        target_line: landed.target_line,
+        feature_line: featureLineName,
+        task_completed: true,
+        change_landed: true,
+        plan_synced: true,
+        worktree_registration_absent: true,
+        feature_line_archived: true,
+        second_land_applied: false,
+      };
+      windowsPartialCloseoutVerified = true;
+    } else {
+      landed = jsonSpec(
+        recorder,
+        aitSpec,
+        ["task", "finish", changeRef, "--local", "--json"],
+        { cwd: root, label: "candidate task finish closeout resume" },
+      );
+    }
+    partialCloseoutHandled = true;
   }
   if (
-    landed.closeout?.task_status !== "completed" ||
-    landed.closeout?.status !== "complete" ||
-    landed.closeout?.plan_status !== "synced"
+    !windowsPartialCloseoutVerified &&
+    (landed.closeout?.task_status !== "completed" ||
+      landed.closeout?.status !== "complete" ||
+      landed.closeout?.plan_status !== "synced")
   ) {
     fail("candidate first land did not complete exact Task and Plan closeout");
   }
@@ -705,17 +828,33 @@ function firstLand(recorder, aitSpec, root, expectedText, priorState = null) {
   if (!readFileSync(sprintPath, "utf8").includes("- [x] Materialize the exact clean-host file.")) {
     fail("candidate first land did not close the exact sprint checklist item");
   }
-  if (resumedCloseout && existsSync(worktree)) {
+  if (partialCloseoutHandled && existsSync(worktree)) {
     // The first attempt could not remove the bound worktree while it was
     // the process working directory; the resumed closeout already released
     // the binding, so the leftover directory is orphaned rehearsal debris.
+    if (path.basename(worktree) !== started.worktree_name) {
+      fail("candidate partial closeout orphan path does not match its exact worktree identity");
+    }
     rmSync(worktree, { recursive: true, force: true });
   }
   if (existsSync(worktree)) {
     fail("candidate first land left its bound worktree behind");
   }
-  const agents = readFileSync(path.join(root, "AGENTS.md"), "utf8");
-  generatedWorkflowCurrent(agents);
+  const agentsPath = path.join(root, "AGENTS.md");
+  requireRegularFile(agentsPath, "candidate repository workflow guidance");
+  const agents = readFileSync(agentsPath, "utf8");
+  if (priorState?.available === true) {
+    const agentsSha256 = sha256Bytes(agents);
+    if (agentsSha256 !== priorState.agents_sha256) {
+      fail("candidate upgrade replaced the prior repository workflow guidance");
+    }
+    recorder.observations.prior_workflow_guidance_preserved = {
+      sha256: agentsSha256,
+      byte_for_byte: true,
+    };
+  } else {
+    generatedWorkflowCurrent(agents);
+  }
   return { root, task_id: taskId, snapshot_id: snapshot.snapshot_id };
 }
 
@@ -867,7 +1006,15 @@ async function githubContext(config, row, version, root, recorder, candidateStag
   const bin = path.join(root, "github-bin");
   mkdirSync(bin, { recursive: true, mode: 0o755 });
   const assets = [];
-  for (const component of ["ait", "ait-agent", "ait-agent-worker", "ait-server", "ait-runner"]) {
+  const githubNativeComponents = row.components.filter((component) =>
+    GITHUB_NATIVE_COMPONENTS.includes(component),
+  );
+  for (const required of ["ait", "ait-agent", "ait-server", "ait-runner"]) {
+    if (!githubNativeComponents.includes(required)) {
+      fail(`GitHub native row is missing required prior-compatible component: ${required}`);
+    }
+  }
+  for (const component of githubNativeComponents) {
     const suffix = row.executable_suffix;
     const name = `${component}-${version}-${row.target}${suffix}`;
     const destination = path.join(bin, `${component}${suffix}`);
@@ -1363,15 +1510,26 @@ function runnerBundleVersion(version) {
 }
 
 function packageRowForVersion(row, version) {
+  let components = row.components;
+  if (row.channel === "github" && row.role === "product" && version === "1.0.0-rc.6") {
+    components = [
+      "ait",
+      "ait-agent",
+      "ait-server",
+      "ait-runner",
+      "ait-python",
+      "ait-node",
+    ];
+  }
   if (
     row.lifecycle === "product" &&
-    row.components.includes("ait-runner") &&
+    components.includes("ait-runner") &&
     ["homebrew", "apt", "winget"].includes(row.channel) &&
     !runnerBundleVersion(version)
   ) {
-    return { ...row, components: ["ait", "ait-server"] };
+    components = ["ait", "ait-server"];
   }
-  return row;
+  return components === row.components ? row : { ...row, components };
 }
 
 function aptAcquireBounds() {
@@ -1969,6 +2127,7 @@ function ociContext(
           "--volume",
           `${volume}:/var/lib/ait`,
           reference,
+          ...OCI_SERVER_RUNTIME_ARGS,
         ],
         { label: "OCI explicit server start" },
       );

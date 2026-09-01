@@ -103,8 +103,55 @@ struct ReconciliationInventoryInput {
     remote_lines: Vec<JsonValue>,
     worktrees: Vec<JsonValue>,
     mutation_receipts: Vec<JsonValue>,
+    local_head_contains_landed_snapshot: BTreeSet<(String, String)>,
     workspace_lock: JsonValue,
     remote_errors: Vec<RemoteReadError>,
+}
+
+fn reconciliation_local_head_containment(
+    repo: &RepoRuntime,
+    local_lines: &[JsonValue],
+    remote_lines: &[JsonValue],
+    remote_changes: &[JsonValue],
+) -> BTreeSet<(String, String)> {
+    let local_heads = local_lines
+        .iter()
+        .filter_map(|line| {
+            Some((
+                required_string_field(line, "line_name").ok()?,
+                string_field(line, "head_snapshot_id")?,
+            ))
+        })
+        .collect::<BTreeMap<_, _>>();
+    let remote_heads = remote_lines
+        .iter()
+        .filter_map(|line| {
+            Some((
+                required_string_field(line, "line_name").ok()?,
+                string_field(line, "head_snapshot_id")?,
+            ))
+        })
+        .collect::<BTreeMap<_, _>>();
+    remote_changes
+        .iter()
+        .filter(|change| string_field(change, "status").as_deref() == Some("landed"))
+        .filter_map(|change| {
+            let target_line = string_field(change, "target_line")
+                .or_else(|| string_field(change, "base_line"))?;
+            let landed_snapshot = landed_snapshot_id(change)?;
+            if remote_heads.get(&target_line) != Some(&landed_snapshot) {
+                return None;
+            }
+            let local_head = local_heads.get(&target_line)?.clone();
+            if local_head == landed_snapshot {
+                return None;
+            }
+            snapshot_distance_if_ancestor(repo, Some(&landed_snapshot), Some(&local_head))
+                .ok()
+                .flatten()
+                .map(|_| (landed_snapshot, local_head))
+        })
+        .collect()
 }
 
 fn nested_string_field(row: &JsonValue, path: &[&str]) -> Option<String> {
@@ -432,6 +479,8 @@ fn read_reconciliation_inventory(
             .chain(remote_tasks.iter().map(|row| ("remote", "task", row)))
             .chain(remote_changes.iter().map(|row| ("remote", "change", row))),
     );
+    let local_head_contains_landed_snapshot =
+        reconciliation_local_head_containment(repo, &local_lines, &remote_lines, &remote_changes);
     Ok(ReconciliationInventoryInput {
         repo_name: repo.repo_name(),
         captured_at: system_event_timestamp(),
@@ -447,6 +496,7 @@ fn read_reconciliation_inventory(
         remote_lines,
         worktrees,
         mutation_receipts,
+        local_head_contains_landed_snapshot,
         workspace_lock: read_workspace_lock_evidence(repo),
         remote_errors,
     })
@@ -1106,7 +1156,7 @@ fn build_reconciliation_inventory(
                 }),
                 "close_task_from_immutable_land_evidence",
                 reconcile_command(input.remote_name.as_deref(), Some(&authoritative_task_id)),
-                "Every linked Change is authoritatively landed while the Task remains active.",
+                "Every linked Change is authoritatively applied while the Task remains active.",
             );
         }
         // Local and Remote Task lifecycle records are independent authorities. In
@@ -1677,7 +1727,7 @@ fn build_reconciliation_inventory(
                         "ait task audit {}",
                         local_task_id.as_deref().unwrap_or("<task-id>")
                     ),
-                    "Independent Local Land evidence exists, but the local Change did not finish. The available records do not contain everything needed to rebuild the missing Local Land safely, so repair will not invent it.",
+                    "Independent local delivery evidence exists, but the local Change did not finish. The available records do not contain everything needed to rebuild the missing delivery record safely, so repair will not invent it.",
                 );
             }
         }
@@ -1702,6 +1752,11 @@ fn build_reconciliation_inventory(
                     .and_then(|line| string_field(line, "head_snapshot_id"));
                 if remote_target_head.as_deref() == Some(landed_snapshot.as_str())
                     && local_target_head.as_deref() != Some(landed_snapshot.as_str())
+                    && !local_target_head.as_ref().is_some_and(|local_head| {
+                        input
+                            .local_head_contains_landed_snapshot
+                            .contains(&(landed_snapshot.clone(), local_head.clone()))
+                    })
                 {
                     let expected_previous_head = land_base_snapshot_id(remote);
                     let cas_precondition_holds = expected_previous_head.is_some()
@@ -1753,7 +1808,7 @@ fn build_reconciliation_inventory(
                                     .unwrap_or_default()
                             )
                         },
-                        "Remote land moved the authoritative target line, but local target-line synchronization did not finish. Automatic repair requires the recorded compare-and-swap base head.",
+                        "Remote finish moved the authoritative target line, but local target-line synchronization did not finish. Automatic repair requires the recorded compare-and-swap base head.",
                     );
                 }
             }
@@ -1965,6 +2020,7 @@ pub(super) fn workflow_reconcile_inventory_with_remote_policy(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::init_surface::{init_repo, InitRequest};
 
     fn fixture_input() -> ReconciliationInventoryInput {
         ReconciliationInventoryInput {
@@ -2056,6 +2112,7 @@ mod tests {
                 "receipt_kind": "land_submission",
                 "receipt": {"submission_id": "LAND-1", "status": "succeeded"},
             })],
+            local_head_contains_landed_snapshot: BTreeSet::new(),
             workspace_lock: json!({
                 "path": "/tmp/reconcile.lock",
                 "state": "idle",
@@ -2122,6 +2179,7 @@ mod tests {
             ],
             worktrees: Vec::new(),
             mutation_receipts: Vec::new(),
+            local_head_contains_landed_snapshot: BTreeSet::new(),
             workspace_lock: json!({
                 "path": "/tmp/reconcile.lock",
                 "state": "idle",
@@ -2470,6 +2528,97 @@ mod tests {
             .expect("diverged target sync finding");
         assert_eq!(finding["disposition"], json!("manual_resolution"));
         assert_eq!(finding["evidence"]["cas_precondition_holds"], json!(false));
+
+        let mut contained_input = fixture_input();
+        contained_input.remote_errors.clear();
+        contained_input.local_lines[0]["head_snapshot_id"] = json!("SNP-NEWER-LOCAL");
+        contained_input.remote_lines[0]["head_snapshot_id"] = json!("SNP-LANDED");
+        contained_input.remote_changes[0]["base_line"] = json!("main");
+        contained_input.remote_changes[0]["base_snapshot_id"] = json!("SNP-BASE");
+        contained_input.remote_changes[0]["landed_snapshot_id"] = json!("SNP-LANDED");
+        contained_input
+            .local_head_contains_landed_snapshot
+            .insert(("SNP-LANDED".to_string(), "SNP-NEWER-LOCAL".to_string()));
+        let contained = build_reconciliation_inventory(contained_input, false, 100).unwrap();
+        assert!(!contained["findings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|finding| {
+                string_field(finding, "code").as_deref() == Some("land.target_sync_interrupted")
+            }));
+    }
+
+    #[test]
+    fn local_target_containment_is_derived_only_from_proven_snapshot_ancestry() {
+        let temp = tempfile::tempdir().unwrap();
+        init_repo(&InitRequest {
+            root: temp.path().to_path_buf(),
+            name: Some("fixture-ait".to_string()),
+            default_line: "main".to_string(),
+            policy_profile: "prototype".to_string(),
+            default_author_mode: "ai_with_human_review".to_string(),
+            default_model: None,
+            repair_existing: false,
+        })
+        .unwrap();
+        fs::write(temp.path().join("history.txt"), "landed\n").unwrap();
+        let landed = create_local_snapshot(
+            temp.path().to_string_lossy().as_ref(),
+            "fixture-ait",
+            "main",
+            Some("remote landed"),
+            false,
+        )
+        .unwrap();
+        let landed_id = required_string_field(&landed, "snapshot_id").unwrap();
+        fs::write(temp.path().join("history.txt"), "newer local\n").unwrap();
+        let newer = create_local_snapshot(
+            temp.path().to_string_lossy().as_ref(),
+            "fixture-ait",
+            "main",
+            Some("newer local"),
+            false,
+        )
+        .unwrap();
+        let newer_id = required_string_field(&newer, "snapshot_id").unwrap();
+        let repo = RepoRuntime::discover_from_path(temp.path()).unwrap();
+
+        let contained = reconciliation_local_head_containment(
+            &repo,
+            &[json!({
+                "line_name": "main",
+                "head_snapshot_id": newer_id,
+            })],
+            &[json!({
+                "line_name": "main",
+                "head_snapshot_id": landed_id,
+            })],
+            &[json!({
+                "status": "landed",
+                "target_line": "main",
+                "landed_snapshot_id": landed_id,
+            })],
+        );
+        assert!(contained.contains(&(landed_id.clone(), newer_id.clone())));
+
+        let unproven = reconciliation_local_head_containment(
+            &repo,
+            &[json!({
+                "line_name": "main",
+                "head_snapshot_id": "SNP-NOT-LOCAL",
+            })],
+            &[json!({
+                "line_name": "main",
+                "head_snapshot_id": landed_id,
+            })],
+            &[json!({
+                "status": "landed",
+                "target_line": "main",
+                "landed_snapshot_id": landed_id,
+            })],
+        );
+        assert!(unproven.is_empty());
     }
 
     #[test]

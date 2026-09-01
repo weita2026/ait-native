@@ -7,6 +7,70 @@ use crate::primitives::workflow::local_completion::{
 use crate::primitives::worktree::create_local_line_with_line_store;
 
 #[test]
+fn patchset_head_relation_preserves_snapshot_direction() {
+    let temp = tempdir().unwrap();
+    init_repo(&InitRequest {
+        root: temp.path().to_path_buf(),
+        name: Some("fixture-ait".to_string()),
+        default_line: "main".to_string(),
+        policy_profile: "prototype".to_string(),
+        default_author_mode: "ai_with_human_review".to_string(),
+        default_model: None,
+        repair_existing: false,
+    })
+    .unwrap();
+    fs::write(temp.path().join("line.txt"), "older\n").unwrap();
+    let older = create_local_snapshot(
+        temp.path().to_string_lossy().as_ref(),
+        "fixture-ait",
+        "main",
+        Some("older head"),
+        false,
+    )
+    .unwrap();
+    let older_snapshot_id = required_string_field(&older, "snapshot_id").unwrap();
+    fs::write(temp.path().join("line.txt"), "selected\n").unwrap();
+    let selected = create_local_snapshot(
+        temp.path().to_string_lossy().as_ref(),
+        "fixture-ait",
+        "main",
+        Some("selected revision"),
+        false,
+    )
+    .unwrap();
+    let selected_snapshot_id = required_string_field(&selected, "snapshot_id").unwrap();
+    let repo = RepoRuntime::discover_from_path(temp.path()).unwrap();
+
+    assert_eq!(
+        workflow_patchset_head_relation(
+            &repo,
+            Some(&selected_snapshot_id),
+            Some(&older_snapshot_id),
+        )
+        .unwrap(),
+        WorkflowPatchsetHeadRelation::PatchsetDescendsFromCurrent
+    );
+    assert_eq!(
+        workflow_patchset_head_relation(
+            &repo,
+            Some(&older_snapshot_id),
+            Some(&selected_snapshot_id),
+        )
+        .unwrap(),
+        WorkflowPatchsetHeadRelation::CurrentDescendsFromPatchset
+    );
+    assert_eq!(
+        workflow_patchset_head_relation(
+            &repo,
+            Some("SNP-000000000000"),
+            Some(&selected_snapshot_id),
+        )
+        .unwrap(),
+        WorkflowPatchsetHeadRelation::Unknown
+    );
+}
+
+#[test]
 fn workflow_local_land_sync_remote_info_accepts_line_and_change_remote_traits() {
     let mut line_remote = FakeLineRemote {
         lines: BTreeMap::from([(
@@ -303,10 +367,57 @@ fn published_completed_local_entry(change_id: &str, landed_snapshot_id: &str) ->
 }
 
 #[test]
+fn completed_local_finish_keeps_the_published_aggregate_patchset_authoritative() {
+    let candidate = workflow_final_snapshot_candidate_from_entry(
+        &published_completed_local_entry("C-01", "SNP-N"),
+        Some("SNP-N"),
+        false,
+        Some("SNP-ZERO"),
+        None,
+        Some(1),
+    )
+    .expect("published completed-local promotion candidate");
+
+    let (remote_change_id, patchset_is_authoritative) =
+        workflow_completed_local_finish_authority(Some(&candidate))
+            .expect("completed-local finish authority");
+
+    assert_eq!(remote_change_id.as_deref(), Some("RCT-REMOTE/C-01"));
+    assert!(patchset_is_authoritative);
+    assert_eq!(
+        workflow_completed_local_command_change_ref(&candidate)
+            .expect("exact completed-local command reference"),
+        "LCT-FINAL/C-01"
+    );
+}
+
+#[test]
+fn unfinished_or_direct_remote_finish_retains_workspace_authoring_checks() {
+    let unpublished = workflow_final_snapshot_candidate_from_entry(
+        &completed_local_entry("C-01", "SNP-N"),
+        Some("SNP-N"),
+        false,
+        Some("SNP-ZERO"),
+        None,
+        Some(1),
+    )
+    .expect("unpublished completed-local promotion candidate");
+
+    let unpublished_authority = workflow_completed_local_finish_authority(Some(&unpublished))
+        .expect("unpublished finish authority");
+    let direct_remote_authority =
+        workflow_completed_local_finish_authority(None).expect("direct remote finish authority");
+
+    assert_eq!(unpublished_authority, (None, false));
+    assert_eq!(direct_remote_authority, (None, false));
+}
+
+#[test]
 fn final_snapshot_promotion_aggregates_remote_head_to_latest_local_head() {
     let candidate = workflow_final_snapshot_candidate_from_entry(
         &completed_local_entry("LCC-FINAL", "SNP-N"),
         Some("SNP-N"),
+        false,
         Some("SNP-ZERO"),
         None,
         Some(5),
@@ -325,6 +436,7 @@ fn final_snapshot_promotion_null_remote_selects_exact_pre_land_base() {
     let candidate = workflow_final_snapshot_candidate_from_entry(
         &completed_local_entry("LCC-FINAL", "SNP-N"),
         Some("SNP-N"),
+        false,
         None,
         Some("SNP-PRE-LAND"),
         Some(1),
@@ -346,6 +458,7 @@ fn final_snapshot_promotion_null_remote_rejects_final_snapshot_as_base() {
     let error = workflow_final_snapshot_candidate_from_entry(
         &completed_local_entry("LCC-FINAL", "SNP-N"),
         Some("SNP-N"),
+        false,
         None,
         Some("SNP-N"),
         Some(0),
@@ -361,6 +474,7 @@ fn final_snapshot_promotion_preview_uses_an_exact_local_change_reference() {
     let mut candidate = workflow_final_snapshot_candidate_from_entry(
         &completed_local_entry("C-01", "SNP-N"),
         Some("SNP-N"),
+        false,
         Some("SNP-ZERO"),
         None,
         Some(1),
@@ -388,6 +502,7 @@ fn final_snapshot_promotion_rejects_an_older_completed_local_row() {
     let error = workflow_final_snapshot_candidate_from_entry(
         &completed_local_entry("LCC-OLDER", "SNP-N-MINUS-ONE"),
         Some("SNP-N"),
+        true,
         Some("SNP-ZERO"),
         None,
         Some(4),
@@ -399,10 +514,52 @@ fn final_snapshot_promotion_rejects_an_older_completed_local_row() {
 }
 
 #[test]
+fn published_final_snapshot_promotion_resumes_from_a_proven_local_descendant() {
+    let candidate = workflow_final_snapshot_candidate_from_entry(
+        &published_completed_local_entry("C-01", "SNP-PUBLISHED"),
+        Some("SNP-NEWER-LOCAL"),
+        true,
+        Some("SNP-REMOTE-BASE"),
+        None,
+        Some(4),
+    )
+    .expect("published promotion should resume from a proven local descendant");
+
+    assert_eq!(candidate["revision_snapshot_id"], json!("SNP-PUBLISHED"));
+    assert_eq!(
+        candidate["local_target_head_snapshot_id"],
+        json!("SNP-NEWER-LOCAL")
+    );
+    assert_eq!(candidate["local_target_head_is_revision"], json!(false));
+    assert_eq!(
+        candidate["local_target_head_contains_revision"],
+        json!(true)
+    );
+    assert_eq!(candidate["published_descendant_resume"], json!(true));
+}
+
+#[test]
+fn published_final_snapshot_promotion_rejects_a_non_descendant_local_head() {
+    let error = workflow_final_snapshot_candidate_from_entry(
+        &published_completed_local_entry("C-01", "SNP-PUBLISHED"),
+        Some("SNP-DIVERGED-LOCAL"),
+        false,
+        Some("SNP-REMOTE-BASE"),
+        None,
+        Some(4),
+    )
+    .expect_err("published promotion must not resume from divergent local history");
+
+    assert!(error.contains("may resume only when Snapshot ancestry proves"));
+    assert!(error.contains("SNP-DIVERGED-LOCAL"));
+}
+
+#[test]
 fn final_snapshot_promotion_rejects_remote_divergence_before_publish() {
     let error = workflow_final_snapshot_candidate_from_entry(
         &completed_local_entry("LCC-FINAL", "SNP-N"),
         Some("SNP-N"),
+        false,
         Some("SNP-REMOTE-DIVERGED"),
         None,
         None,
@@ -1405,5 +1562,186 @@ fn same_head_atomic_sync_skips_line_write_and_main_seed_refresh() {
     assert_eq!(
         output["main_seed_sync"]["reason"],
         "already_at_trusted_local_landed_snapshot"
+    );
+}
+
+#[test]
+fn descendant_atomic_sync_preserves_the_newer_local_head_and_main_seed() {
+    let temp = tempdir().unwrap();
+    init_repo(&InitRequest {
+        root: temp.path().to_path_buf(),
+        name: Some("fixture-ait".to_string()),
+        default_line: "main".to_string(),
+        policy_profile: "prototype".to_string(),
+        default_author_mode: "ai_with_human_review".to_string(),
+        default_model: None,
+        repair_existing: false,
+    })
+    .unwrap();
+    fs::write(temp.path().join("line.txt"), "remote landed\n").unwrap();
+    let landed = create_local_snapshot(
+        temp.path().to_string_lossy().as_ref(),
+        "fixture-ait",
+        "main",
+        Some("remote landed"),
+        false,
+    )
+    .unwrap();
+    let landed_snapshot_id = required_string_field(&landed, "snapshot_id").unwrap();
+    fs::write(temp.path().join("line.txt"), "newer local work\n").unwrap();
+    let local = create_local_snapshot(
+        temp.path().to_string_lossy().as_ref(),
+        "fixture-ait",
+        "main",
+        Some("newer local descendant"),
+        false,
+    )
+    .unwrap();
+    let local_snapshot_id = required_string_field(&local, "snapshot_id").unwrap();
+    let repo = RepoRuntime::discover_from_path(temp.path()).unwrap();
+
+    let result = workflow_attach_local_land_sync_from_atomic_response(
+        &repo,
+        "RCT-1",
+        &json!({"status": "succeeded"}),
+        "main",
+        &landed_snapshot_id,
+    )
+    .unwrap();
+
+    assert_eq!(
+        local_line_head_snapshot_id(&repo, "main")
+            .unwrap()
+            .as_deref(),
+        Some(local_snapshot_id.as_str())
+    );
+    assert_eq!(result["local_sync"]["status"], "local_descendant_preserved");
+    assert_eq!(result["local_sync"]["same_head"], false);
+    assert_eq!(
+        result["local_sync"]["local_head_contains_landed_snapshot"],
+        true
+    );
+    assert_eq!(result["local_sync"]["auto_rebase"], false);
+    assert_eq!(
+        result["local_sync"]["line_head_snapshot_id"],
+        local_snapshot_id
+    );
+    assert_eq!(
+        result["local_sync"]["workspace_restore"]["reason"],
+        "local_head_already_contains_landed_snapshot"
+    );
+    assert_eq!(
+        fs::read_to_string(temp.path().join("line.txt")).unwrap(),
+        "newer local work\n"
+    );
+
+    let mut output = json!({
+        "apply_status": "done",
+        "target_line": "main",
+        "landed_snapshot_id": landed_snapshot_id,
+        "local_line_sync": result["local_sync"].clone(),
+    });
+    let output_landed_snapshot_id = output["landed_snapshot_id"]
+        .as_str()
+        .map(str::to_string)
+        .unwrap();
+    task_land_attach_cli_main_seed_sync(
+        &repo,
+        &mut output,
+        "main",
+        Some(&output_landed_snapshot_id),
+    );
+    assert_eq!(output["main_seed_sync"]["status"], "skipped");
+    assert_eq!(
+        output["main_seed_sync"]["reason"],
+        "local_head_already_contains_landed_snapshot"
+    );
+    assert_eq!(output["main_seed_sync"]["snapshot_id"], local_snapshot_id);
+}
+
+#[test]
+fn divergent_atomic_sync_retains_the_existing_remote_land_update_path() {
+    let temp = tempdir().unwrap();
+    init_repo(&InitRequest {
+        root: temp.path().to_path_buf(),
+        name: Some("fixture-ait".to_string()),
+        default_line: "main".to_string(),
+        policy_profile: "prototype".to_string(),
+        default_author_mode: "ai_with_human_review".to_string(),
+        default_model: None,
+        repair_existing: false,
+    })
+    .unwrap();
+    fs::write(temp.path().join("line.txt"), "base\n").unwrap();
+    let base = create_local_snapshot(
+        temp.path().to_string_lossy().as_ref(),
+        "fixture-ait",
+        "main",
+        Some("shared base"),
+        false,
+    )
+    .unwrap();
+    let base_snapshot_id = required_string_field(&base, "snapshot_id").unwrap();
+    let repo = RepoRuntime::discover_from_path(temp.path()).unwrap();
+    create_local_line_with_line_store(
+        &repo.line_store().unwrap(),
+        "remote-candidate",
+        Some(&base_snapshot_id),
+        "2026-09-01T00:00:00Z",
+    )
+    .unwrap();
+
+    fs::write(temp.path().join("line.txt"), "newer local work\n").unwrap();
+    let local = create_local_snapshot(
+        temp.path().to_string_lossy().as_ref(),
+        "fixture-ait",
+        "main",
+        Some("local branch"),
+        false,
+    )
+    .unwrap();
+    let local_snapshot_id = required_string_field(&local, "snapshot_id").unwrap();
+    fs::write(temp.path().join("line.txt"), "remote branch\n").unwrap();
+    let remote = create_local_snapshot(
+        temp.path().to_string_lossy().as_ref(),
+        "fixture-ait",
+        "remote-candidate",
+        Some("remote branch"),
+        false,
+    )
+    .unwrap();
+    let remote_snapshot_id = required_string_field(&remote, "snapshot_id").unwrap();
+    assert!(snapshot_distance_if_ancestor(
+        &repo,
+        Some(&remote_snapshot_id),
+        Some(&local_snapshot_id)
+    )
+    .unwrap()
+    .is_none());
+
+    let result = workflow_attach_local_land_sync_from_atomic_response(
+        &repo,
+        "RCT-1",
+        &json!({"status": "succeeded"}),
+        "main",
+        &remote_snapshot_id,
+    )
+    .unwrap();
+
+    assert_eq!(
+        local_line_head_snapshot_id(&repo, "main")
+            .unwrap()
+            .as_deref(),
+        Some(remote_snapshot_id.as_str())
+    );
+    assert_eq!(result["local_sync"]["status"], "synced");
+    assert_eq!(
+        result["local_sync"]["local_head_contains_landed_snapshot"],
+        false
+    );
+    assert_eq!(result["local_sync"]["auto_rebase"], true);
+    assert_eq!(
+        fs::read_to_string(temp.path().join("line.txt")).unwrap(),
+        "remote branch\n"
     );
 }

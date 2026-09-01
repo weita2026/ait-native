@@ -725,6 +725,11 @@ pub(in crate::primitives) fn workflow_hydrate_land_state(
         } else {
             Some(revision_snapshot_id == patchset_revision_snapshot_id)
         };
+        let head_relation = workflow_patchset_head_relation(
+            repo,
+            patchset_revision_snapshot_id.as_deref(),
+            revision_snapshot_id.as_deref(),
+        )?;
         let root_repo = workflow_root_repo(repo)?;
         let worktree_retarget = workflow_current_worktree_retarget(
             repo,
@@ -743,6 +748,7 @@ pub(in crate::primitives) fn workflow_hydrate_land_state(
             revision_snapshot_id.as_deref(),
             base_is_fresh,
             workspace_matches_patchset,
+            head_relation,
         );
         let object = remote_state
             .as_object_mut()

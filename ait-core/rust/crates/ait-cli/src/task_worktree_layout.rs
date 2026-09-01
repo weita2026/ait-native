@@ -27,6 +27,7 @@ const DEFAULT_TASK_WORKTREE_ALIAS_ROOT: &str = ".ait-worktree-links";
 const TASK_WORKTREE_ROOT_DIRNAME: &str = ".ait-worktree";
 const INTERNAL_WORKTREE_ROOT_DIRNAME: &str = ".ait-internal";
 const AUTO_DETECTED_EPHEMERAL_ROOT_DIRNAME: &str = ".ait-repos";
+pub(crate) const EXPLICIT_TASK_WORKTREE_ROOT_SOURCE: &str = "explicit";
 const LINUX_MEMORY_BACKED_FSTYPES: &[&str] = &["tmpfs", "ramfs"];
 const WINDOWS_DRIVE_RAMDISK: u32 = 6;
 
@@ -323,6 +324,60 @@ pub(crate) fn resolve_task_worktree_location_with_debug(
             &SystemTaskWorktreeOps,
         )),
     }
+}
+
+pub(crate) fn resolve_explicit_task_worktree_location(
+    repo: &RepoRuntime,
+    requested_path: &Path,
+) -> Result<ManagedWorktreeLocation, String> {
+    if !requested_path.is_absolute() {
+        return Err(format!(
+            "Explicit Task edit root must be an absolute path: {}",
+            requested_path.display()
+        ));
+    }
+
+    let normalized_path = lexical_normalize(requested_path);
+    reject_symbolic_link_path_components(&normalized_path)?;
+    let target_path = resolve_path_strict_false(&normalized_path);
+    let repo_root = resolve_path_strict_false(&repo.authoritative_repo_root());
+    if path_is_relative_to(&target_path, &repo_root)
+        || path_is_relative_to(&repo_root, &target_path)
+    {
+        return Err(format!(
+            "Explicit Task edit root must not equal, contain, or be contained by the canonical repository `{}`: {}",
+            repo_root.display(),
+            target_path.display()
+        ));
+    }
+
+    if target_path.exists() {
+        let metadata = fs::metadata(&target_path).map_err(|error| {
+            format!(
+                "Failed to inspect explicit Task edit root {}: {error}",
+                target_path.display()
+            )
+        })?;
+        if !metadata.is_dir() {
+            return Err(format!(
+                "Explicit Task edit root exists and is not a directory: {}",
+                target_path.display()
+            ));
+        }
+    }
+
+    Ok(ManagedWorktreeLocation {
+        preferred_path: target_path.clone(),
+        target_path,
+        alias_path: None,
+        root_source: EXPLICIT_TASK_WORKTREE_ROOT_SOURCE.to_string(),
+        ephemeral_enabled: false,
+        fallback_reason: None,
+        default_line: None,
+        seed_snapshot_id: None,
+        seed_snapshot_total_bytes: None,
+        main_seed_ram_max_bytes: None,
+    })
 }
 
 pub(crate) fn resolve_main_seed_mirror_location(
@@ -1012,6 +1067,55 @@ fn lexical_normalize(path: &Path) -> PathBuf {
         }
     }
     output
+}
+
+fn reject_symbolic_link_path_components(path: &Path) -> Result<(), String> {
+    let components = path.components().collect::<Vec<_>>();
+    let mut cursor = PathBuf::new();
+    for (index, component) in components.iter().enumerate() {
+        cursor.push(component.as_os_str());
+        if !cursor.is_absolute() {
+            continue;
+        }
+        match fs::symlink_metadata(&cursor) {
+            Ok(metadata) => {
+                if metadata_is_symbolic_link_component(&metadata) {
+                    return Err(format!(
+                        "Explicit Task edit root must not contain symbolic-link path components: {}",
+                        cursor.display()
+                    ));
+                }
+                if index + 1 < components.len() && !metadata.is_dir() {
+                    return Err(format!(
+                        "Explicit Task edit-root path component is not a directory: {}",
+                        cursor.display()
+                    ));
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(format!(
+                    "Failed to inspect explicit Task edit-root path component {}: {error}",
+                    cursor.display()
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn metadata_is_symbolic_link_component(metadata: &fs::Metadata) -> bool {
+    if metadata.file_type().is_symlink() {
+        return true;
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+        return metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0;
+    }
+    #[cfg(not(windows))]
+    false
 }
 
 fn ensure_root_candidate_system(path: &Path) -> Option<PathBuf> {

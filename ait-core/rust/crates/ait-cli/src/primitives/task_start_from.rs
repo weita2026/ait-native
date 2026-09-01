@@ -33,6 +33,7 @@ struct TaskStartPlanBinding {
 
 struct RemoteTaskStartContext<'a> {
     remote: &'a RemoteRow,
+    explicit_edit_root: Option<&'a Path>,
     debug_probe_override: Option<&'a JsonValue>,
     total_started: Instant,
     plan_source_preflight_elapsed: f64,
@@ -44,6 +45,29 @@ pub fn task_start_from_with_progress(
     intent: &str,
     local: bool,
     remote_name: Option<&str>,
+    debug_probe_override: Option<&JsonValue>,
+    progress: Option<&mut TaskStartProgressEmitter<'_>>,
+) -> Result<JsonValue, String> {
+    task_start_from_with_edit_root_and_progress(
+        repo,
+        source,
+        intent,
+        local,
+        remote_name,
+        None,
+        debug_probe_override,
+        progress,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn task_start_from_with_edit_root_and_progress(
+    repo: &RepoRuntime,
+    source: &str,
+    intent: &str,
+    local: bool,
+    remote_name: Option<&str>,
+    explicit_edit_root: Option<&Path>,
     debug_probe_override: Option<&JsonValue>,
     mut progress: Option<&mut TaskStartProgressEmitter<'_>>,
 ) -> Result<JsonValue, String> {
@@ -63,6 +87,22 @@ pub fn task_start_from_with_progress(
     } else {
         Some(repo.remote_row(remote_name)?)
     };
+    let explicit_replay_identity = explicit_edit_root
+        .map(|_| {
+            let title = derive_plan_item_task_title(&source.item_text)?;
+            let intent = normalized_text(Some(intent))
+                .ok_or_else(|| "Task intent must not be empty.".to_string())?;
+            task_start_atomic_idempotency_key(repo, &source, &title, &intent, &title, "main")
+        })
+        .transpose()?;
+    if let Some(explicit_edit_root) = explicit_edit_root {
+        preflight_explicit_task_edit_root(
+            repo,
+            explicit_edit_root,
+            true,
+            explicit_replay_identity.as_deref(),
+        )?;
+    }
     let plan_source_preflight_elapsed = elapsed_ms(plan_source_preflight_started);
 
     emit_task_start_progress(
@@ -86,6 +126,7 @@ pub fn task_start_from_with_progress(
                 remote: remote
                     .as_ref()
                     .ok_or_else(|| "Remote task-start context is missing.".to_string())?,
+                explicit_edit_root,
                 debug_probe_override,
                 total_started,
                 plan_source_preflight_elapsed,
@@ -168,9 +209,13 @@ pub fn task_start_from_with_progress(
             Some(&binding.plan_id),
             Some(&binding.plan_revision_id),
             Some(&source.plan_item_ref),
+            explicit_edit_root,
             debug_probe_override,
             progress.as_deref_mut(),
         )?;
+        if let Some(replay_identity) = explicit_replay_identity.as_deref() {
+            record_explicit_task_edit_root_replay_identity(repo, &payload, replay_identity)?;
+        }
         let nested_task_start_elapsed = elapsed_ms(nested_task_start_started);
         let cd_command = payload
             .pointer("/worktree/cd_command")
@@ -237,6 +282,7 @@ fn task_start_from_remote_atomic_with_progress(
 ) -> Result<JsonValue, String> {
     let RemoteTaskStartContext {
         remote,
+        explicit_edit_root,
         debug_probe_override,
         total_started,
         plan_source_preflight_elapsed,
@@ -416,9 +462,13 @@ fn task_start_from_remote_atomic_with_progress(
         Some(change),
         &resolved_base_line,
         false,
+        explicit_edit_root,
         debug_probe_override,
         progress,
     )?;
+    if explicit_edit_root.is_some() {
+        record_explicit_task_edit_root_replay_identity(repo, &payload, &idempotency_key)?;
+    }
     let cd_command = payload
         .pointer("/worktree/cd_command")
         .and_then(JsonValue::as_str)
@@ -1363,6 +1413,12 @@ mod tests {
         );
         let repo = RepoRuntime::discover_from_path(temp.path()).unwrap();
         let memory = TempDir::new().unwrap();
+        let explicit_parent = TempDir::new().unwrap();
+        let explicit_edit_root = explicit_parent
+            .path()
+            .canonicalize()
+            .unwrap()
+            .join("known-task-root");
         let debug_probe = json!({
             "platform": "linux",
             "linux_detected_memory_roots": [memory.path().to_string_lossy().to_string()],
@@ -1379,12 +1435,13 @@ mod tests {
             Ok(())
         };
 
-        let payload = task_start_from_with_progress(
+        let payload = task_start_from_with_edit_root_and_progress(
             &repo,
             "docs/sprints/card.md#card/start",
             "Exercise the complete local Plan-derived task bootstrap",
             true,
             None,
+            Some(&explicit_edit_root),
             Some(&debug_probe),
             Some(&mut progress),
         )
@@ -1395,6 +1452,11 @@ mod tests {
         assert_eq!(payload["plan_source"]["scope"], "local");
         assert_eq!(payload["plan_source"]["plan_item_ref"], "card/start");
         assert!(payload["change"].get("change_id").is_some());
+        assert_eq!(
+            payload["worktree"]["path"].as_str(),
+            Some(explicit_edit_root.to_string_lossy().as_ref())
+        );
+        assert_eq!(payload["worktree"]["root_source"], "explicit");
         assert!(payload["worktree"].get("open_path").is_some());
         assert_eq!(payload["cd_command"], payload["worktree"]["cd_command"]);
         assert!(payload
@@ -1424,5 +1486,44 @@ mod tests {
         assert!(plan_sync_index < validated_index);
         assert!(validated_index < task_index);
         assert!(task_index < worktree_index);
+
+        let replay = task_start_bootstrap_created_records_with_progress(
+            &repo,
+            payload.clone(),
+            Some(payload["change"].clone()),
+            "main",
+            true,
+            Some(&explicit_edit_root),
+            Some(&debug_probe),
+            None,
+        )
+        .unwrap();
+        assert_eq!(replay["worktree_reused"], true);
+        assert_eq!(
+            replay["worktree"]["path"].as_str(),
+            Some(explicit_edit_root.to_string_lossy().as_ref())
+        );
+
+        let other_parent = TempDir::new().unwrap();
+        let other_edit_root = other_parent
+            .path()
+            .canonicalize()
+            .unwrap()
+            .join("different-task-root");
+        let error = task_start_bootstrap_created_records_with_progress(
+            &repo,
+            payload.clone(),
+            Some(payload["change"].clone()),
+            "main",
+            true,
+            Some(&other_edit_root),
+            Some(&debug_probe),
+            None,
+        )
+        .unwrap_err();
+        assert!(
+            error.contains("not the requested explicit edit root"),
+            "{error}"
+        );
     }
 }

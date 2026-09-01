@@ -19,7 +19,7 @@ pub(super) const CODE_REVIEW_SUMMARY_TEMPLATE_HINT_COMMAND: &str =
 pub(super) const AUTOMATIC_TASK_APPROVAL_COMMENT: &str =
     "Automatic Task approval authorized by repository `task_review=automatic` policy.";
 pub(super) const COMPLETED_LOCAL_FINAL_SNAPSHOT_PROMOTION_GUIDANCE: &str =
-    "To promote completed `solo_local` work, select the latest landed local Change and run `ait workflow ready <local-change-id> --apply --remote <name>` once, then hand the selected Patchset to a reviewer running `ait workflow finish <local-change-id> --apply --remote <name>`. This publishes the consecutive local Task, Change, Snapshot, and Land history while checking only one aggregate Patchset; do not replay earlier local rows with `change publish` or `--all-completed-local`.";
+    "To promote completed `solo_local` work, select the latest finished local Change and run `ait workflow ready <local-change-id> --apply --remote <name>` once, then hand the selected Patchset to a reviewer running `ait workflow finish <local-change-id> --apply --remote <name>`. This publishes the consecutive local Task, Change, Snapshot, and finish history while checking only one aggregate Patchset; do not replay earlier local rows with `change publish` or `--all-completed-local`.";
 pub(super) const APP_DIR: &str = ".ait";
 pub(super) const WORKTREE_CONFIG_NAME: &str = ".ait-worktree.json";
 pub(super) const WORKFLOW_READY_POLL_SECONDS_KEY: &str = "workflow_ready_poll_seconds";
