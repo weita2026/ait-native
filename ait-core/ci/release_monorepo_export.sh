@@ -34,6 +34,7 @@ promotion_workflow=${repo_root}/.github/workflows/ait-release-protected-promotio
 endpoint_workflow=${repo_root}/.github/workflows/pypi-publish.yml
 latest_alias_workflow=${repo_root}/.github/workflows/ait-release-latest-alias.yml
 prepublish_workflow=${repo_root}/.github/workflows/ait-release-prepublish-clean-host.yml
+pretag_workflow=${repo_root}/.github/workflows/ait-release-pre-tag-qualification.yml
 endpoint_defaults=${repo_root}/release/endpoint-publication.defaults.json
 server_dockerfile=${repo_root}/release/oci/ait-server.Dockerfile
 runner_dockerfile=${repo_root}/release/oci/ait-runner.Dockerfile
@@ -44,6 +45,7 @@ release_control_paths=(
   ci/release_clean_host_phase.mjs
   ci/release_clean_host_probe.mjs
   ci/release_clean_host_test.sh
+  ci/release_candidate_promote.sh
   ci/release_endpoint_publication.sh
   ci/release_endpoint_remote.sh
   ci/release_latest_alias.sh
@@ -125,6 +127,7 @@ if [[ ! -d ${template_root} || -L ${template_root} ||
   ! -f ${endpoint_workflow} || -L ${endpoint_workflow} ||
   ! -f ${latest_alias_workflow} || -L ${latest_alias_workflow} ||
   ! -f ${prepublish_workflow} || -L ${prepublish_workflow} ||
+  ! -f ${pretag_workflow} || -L ${pretag_workflow} ||
   ! -f ${endpoint_defaults} || -L ${endpoint_defaults} ||
   ! -f ${server_dockerfile} || -L ${server_dockerfile} ||
   ! -f ${runner_dockerfile} || -L ${runner_dockerfile} ]]; then
@@ -593,12 +596,14 @@ root_promotion_workflow=${staging}/.github/workflows/ait-release-protected-promo
 root_endpoint_workflow=${staging}/.github/workflows/pypi-publish.yml
 root_latest_alias_workflow=${staging}/.github/workflows/ait-release-latest-alias.yml
 root_prepublish_workflow=${staging}/.github/workflows/ait-release-prepublish-clean-host.yml
+root_pretag_workflow=${staging}/.github/workflows/ait-release-pre-tag-qualification.yml
 cp "${receipt_workflow}" "${root_receipt_workflow}"
 cp "${qualification_workflow}" "${root_qualification_workflow}"
 cp "${promotion_workflow}" "${root_promotion_workflow}"
 cp "${endpoint_workflow}" "${root_endpoint_workflow}"
 cp "${latest_alias_workflow}" "${root_latest_alias_workflow}"
 cp "${prepublish_workflow}" "${root_prepublish_workflow}"
+cp "${pretag_workflow}" "${root_pretag_workflow}"
 cp "${server_dockerfile}" "${staging}/release/oci/ait-server.Dockerfile"
 cp "${runner_dockerfile}" "${staging}/release/oci/ait-runner.Dockerfile"
 node "${transform_tool}" \
@@ -633,6 +638,7 @@ chmod 0644 \
   "${root_endpoint_workflow}" \
   "${root_latest_alias_workflow}" \
   "${root_prepublish_workflow}" \
+  "${root_pretag_workflow}" \
   "${staging}/.github/ISSUE_TEMPLATE/bug_report.yml" \
   "${staging}/.github/ISSUE_TEMPLATE/documentation.yml" \
   "${staging}/.github/ISSUE_TEMPLATE/config.yml" \
@@ -649,6 +655,7 @@ chmod 0755 \
   "${staging}/build-release.sh" \
   "${staging}/build-release.mjs" \
   "${staging}/ci/release_clean_host_test.sh" \
+  "${staging}/ci/release_candidate_promote.sh" \
   "${staging}/ci/release_endpoint_publication.sh" \
   "${staging}/ci/release_endpoint_remote.sh" \
   "${staging}/ci/release_latest_alias.sh" \

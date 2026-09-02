@@ -53,6 +53,12 @@ const PREPUBLISH_WORKFLOW = path.join(
   "workflows",
   "ait-release-prepublish-clean-host.yml",
 );
+const PRETAG_WORKFLOW = path.join(
+  ROOT,
+  ".github",
+  "workflows",
+  "ait-release-pre-tag-qualification.yml",
+);
 const ENDPOINT_DEFAULTS = path.join(
   ROOT,
   "release",
@@ -72,6 +78,7 @@ const CLEAN_HOST_CONTROL = path.join(ROOT, "ci", "release_clean_host.mjs");
 const CLEAN_HOST_PHASE = path.join(ROOT, "ci", "release_clean_host_phase.mjs");
 const CLEAN_HOST_PROBE = path.join(ROOT, "ci", "release_clean_host_probe.mjs");
 const CLEAN_HOST_TEST = path.join(ROOT, "ci", "release_clean_host_test.sh");
+const CANDIDATE_PROMOTE = path.join(ROOT, "ci", "release_candidate_promote.sh");
 const PREPUBLISH_STAGE = path.join(ROOT, "ci", "release_prepublish_stage.sh");
 const PREPUBLISH_OCI = path.join(ROOT, "ci", "release_prepublish_oci.sh");
 const PREPUBLISH_VERIFY = path.join(ROOT, "ci", "release_prepublish_verify.mjs");
@@ -486,6 +493,7 @@ async function validateReleaseControl(family) {
     [CLEAN_HOST_PHASE, "root clean-host lifecycle runner"],
     [CLEAN_HOST_PROBE, "root clean-host runner probe"],
     [CLEAN_HOST_TEST, "root clean-host regression"],
+    [CANDIDATE_PROMOTE, "root qualified-candidate promotion control"],
     [PREPUBLISH_STAGE, "root frozen-candidate staging control"],
     [PREPUBLISH_OCI, "root frozen OCI publication control"],
     [PREPUBLISH_VERIFY, "root prepublish evidence verifier"],
@@ -541,6 +549,7 @@ async function validateReleaseControl(family) {
   const cleanHostPhase = await readFile(CLEAN_HOST_PHASE, "utf8");
   const cleanHostProbe = await readFile(CLEAN_HOST_PROBE, "utf8");
   const cleanHostTest = await readFile(CLEAN_HOST_TEST, "utf8");
+  const candidatePromote = await readFile(CANDIDATE_PROMOTE, "utf8");
   const prepublishStage = await readFile(PREPUBLISH_STAGE, "utf8");
   const prepublishOci = await readFile(PREPUBLISH_OCI, "utf8");
   const prepublishVerify = await readFile(PREPUBLISH_VERIFY, "utf8");
@@ -564,11 +573,25 @@ async function validateReleaseControl(family) {
     "ait.release.operator.pre-tag-admission/v1",
     "release tag exists before pre-tag admission",
     "qualified repair commit gained a release tag after qualification",
-    "ait.release.operator.prepare/v2",
+    "ait.release.operator.prepare/v3",
+    "ait.release.operator.receipt-binding/v2",
+    "bind-candidate",
+    "ait.release.operator.pre-tag-candidate-binding/v1",
+    "authorize",
+    "ait.release.operator.tag-binding/v1",
     "--admission",
   ]) {
     if (!releaseOperator.includes(required)) {
       fail(`root release operator is missing ${JSON.stringify(required)}`);
+    }
+  }
+  for (const required of [
+    "ait.release.family.pre-tag-candidate-authority/v1",
+    "ait.release.clean-host.aggregate/v1",
+    "payload_rebuilt: false",
+  ]) {
+    if (!candidatePromote.includes(required)) {
+      fail(`root qualified-candidate promotion control is missing ${JSON.stringify(required)}`);
     }
   }
   for (const required of [
@@ -749,8 +772,12 @@ async function validateProtectedWorkflows() {
     "environment:\n      name: ${{ format('{0}-promotion', inputs.channel) }}",
     "persist-credentials: false",
     "artifact-ids: ${{ inputs.dossier_artifact_id }}",
-    "merge-multiple: true",
     "source_control_commit:",
+    "qualification_run_id:",
+    "candidate_artifact_id:",
+    "aggregate_artifact_id:",
+    "Download the exact pre-tag candidate",
+    "Verify the complete pre-tag qualification before protected approval",
     "bash control/ci/release_protected_promotion.sh",
     "actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a",
     "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02",
@@ -758,6 +785,9 @@ async function validateProtectedWorkflows() {
     if (promotion.split(required).length !== 2) {
       fail(`root protected promotion workflow must contain exactly one ${JSON.stringify(required)}`);
     }
+  }
+  if (promotion.split("merge-multiple: true").length !== 4) {
+    fail("root protected promotion workflow must use exactly three direct artifact downloads");
   }
   if (
     promotion.split(
@@ -832,20 +862,23 @@ async function validateProtectedWorkflows() {
   await regularFile(PREPUBLISH_WORKFLOW, "root prepublish clean-host workflow");
   const prepublishWorkflow = await readFile(PREPUBLISH_WORKFLOW, "utf8");
   for (const required of [
-    "name: ait release prepublish clean host",
+    "name: ait release pre-tag clean host",
     "workflow_call:",
     "permissions:\n  actions: read\n  contents: read",
+    "source_run_id:",
+    "source_artifact_id:",
+    "source_artifact_digest:",
+    "candidate_authority_sha256:",
+    "candidate_authority_b64:",
     "prior_version:",
     "prior_python_version:",
-    "reuse_frozen_candidate:",
-    "candidate_run_id:",
     "candidate_artifact_digest:",
     "candidate_status_sha256:",
     "aggregate_artifact_digest:",
-    "ait-prepublish-candidate-${{ inputs.release_id }}",
-    "ait-prepublish-install-${{ inputs.release_id }}-${{ matrix.id }}",
-    "ait-prepublish-row-${{ inputs.release_id }}-${{ matrix.id }}",
-    "ait-prepublish-clean-host-${{ inputs.release_id }}",
+    "ait-pre-tag-candidate-${{ inputs.release_id }}",
+    "ait-pre-tag-install-${{ inputs.release_id }}-${{ matrix.id }}",
+    "ait-pre-tag-row-${{ inputs.release_id }}-${{ matrix.id }}",
+    "ait-pre-tag-clean-host-${{ inputs.release_id }}",
     "name: Activate preinstalled Linux Homebrew",
     "test -x /home/linuxbrew/.linuxbrew/bin/brew",
     "name: Register inbox Windows Package Manager",
@@ -853,16 +886,15 @@ async function validateProtectedWorkflows() {
     "C:\\Program Files\\Git\\bin\\bash.exe",
     "Split-Path -Parent $gitBash | Out-File -FilePath $env:GITHUB_PATH",
     "AIT_CLEAN_HOST_PYTHON: ${{ steps.python.outputs.python-path }}",
-    "release_prepublish_stage.sh",
+    "release_prepublish_stage.sh --pre-tag",
     "release_prepublish_verify.mjs stage",
     "release_prepublish_verify.mjs qualify",
     "release_clean_host_probe.mjs",
     "release_clean_host_phase.mjs run",
     "release_clean_host.mjs combine",
     "release_clean_host.mjs aggregate",
-    "Download the previously frozen candidate for control-only retry",
-    'cmp "${comparison_root}/ait-release.clean-host-matrix.json" "${matrix}"',
     "run-id: ${{ needs.stage.outputs.candidate_run_id }}",
+    "Recheck tag absence at qualification closeout",
   ]) {
     if (!prepublishWorkflow.includes(required)) {
       fail(`root prepublish workflow must contain ${JSON.stringify(required)}`);
@@ -886,6 +918,20 @@ async function validateProtectedWorkflows() {
   }
   if (prepublishWorkflow.split("retention-days: 90").length !== 5) {
     fail("root prepublish workflow must retain four 90-day evidence artifacts");
+  }
+
+  await regularFile(PRETAG_WORKFLOW, "root pre-tag qualification dispatcher");
+  const pretagWorkflow = await readFile(PRETAG_WORKFLOW, "utf8");
+  for (const required of [
+    "name: ait release pre-tag candidate qualification",
+    "workflow_dispatch:",
+    "uses: ./.github/workflows/ait-release-prepublish-clean-host.yml",
+    "candidate_authority_sha256:",
+    "candidate_authority_b64:",
+  ]) {
+    if (!pretagWorkflow.includes(required)) {
+      fail(`root pre-tag qualification dispatcher must contain ${JSON.stringify(required)}`);
+    }
   }
 
   for (const [filePath, label] of [
@@ -947,19 +993,14 @@ async function validateProtectedWorkflows() {
     "endpoint_config_sha256:",
     "endpoint_config_b64:",
     "protected_run_id:",
-    "prior_version:",
-    "prior_python_version:",
-    "reuse_frozen_candidate:",
-    "candidate_run_id:",
-    "candidate_artifact_id:",
-    "candidate_artifact_digest:",
-    "candidate_status_sha256:",
-    "uses: ./.github/workflows/ait-release-prepublish-clean-host.yml",
-    "needs: prepublish",
+    ".pre_tag_qualification.workflow_run_id",
+    "Download the exact pre-tag candidate",
+    "Download the successful pre-tag qualification",
     "control/ci/release_operator.sh validate-config",
     "control/ci/release_prepublish_verify.mjs qualify",
+    "control/ci/release_candidate_promote.sh",
     "control/ci/release_prepublish_oci.sh publish",
-    "run-id: ${{ needs.prepublish.outputs.candidate_run_id }}",
+    "run-id: ${{ steps.request.outputs.qualification_run_id }}",
     "environment:\n      name: pypi",
     "name: ait-endpoint-publication-${{ inputs.release_id }}",
   ]) {
@@ -972,6 +1013,9 @@ async function validateProtectedWorkflows() {
     "endpoint-publication.rc4.json",
     "31716406486",
     "9188270344",
+    "needs: prepublish",
+    "reuse_frozen_candidate:",
+    "uses: ./.github/workflows/ait-release-prepublish-clean-host.yml",
   ]) {
     if (endpoint.includes(forbidden)) {
       fail(`root endpoint workflow retains ${JSON.stringify(forbidden)}`);
@@ -1651,6 +1695,7 @@ async function validateBuildInputs(expectedGitCommit) {
   for (const required of [
     ".github/workflows/ait-release-component-receipts.yml",
     ".github/workflows/ait-release-pre-rc-qualification.yml",
+    ".github/workflows/ait-release-pre-tag-qualification.yml",
     ".github/workflows/ait-release-prepublish-clean-host.yml",
     ".github/workflows/ait-release-latest-alias.yml",
     ".github/workflows/ait-release-protected-promotion.yml",
@@ -1681,6 +1726,7 @@ async function validateBuildInputs(expectedGitCommit) {
     "ci/release_clean_host_phase.mjs",
     "ci/release_clean_host_probe.mjs",
     "ci/release_clean_host_test.sh",
+    "ci/release_candidate_promote.sh",
     "ci/release_endpoint_publication.sh",
     "ci/release_endpoint_remote.sh",
     "ci/release_latest_alias.sh",

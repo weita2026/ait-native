@@ -94,7 +94,7 @@ done
 # protected-promotion evidence that endpoint publication later consumes.
 for clause in \
   'ait.release.operator.pre-tag-admission/v1' \
-  'ready_for_immutable_tag' \
+  'ready_for_component_receipts' \
   '.tag == {created: false, verified: false}' \
   '([.mutation[]] | all(. == false))' \
   'pre_tag_admission_sha256: $pre_tag_admission_sha256' \
@@ -106,7 +106,7 @@ done
 for clause in \
   '.dossier.pre_tag_admission_verified == true' \
   '.dossier.pre_tag_admission_sha256' \
-  'family dossier pre-tag admission differs from the protected authorization'; do
+  'family dossier pre-tag admission differs from the selected authority'; do
   grep -F -- "${clause}" "${endpoint}" >/dev/null ||
     fail "endpoint publication lost a pre-tag admission clause: ${clause}"
 done
@@ -143,6 +143,15 @@ export AIT_RELEASE_DOSSIER_ARTIFACT_ID=1
 export AIT_RELEASE_FROZEN_MANIFEST_SHA256=cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
 export AIT_RELEASE_GIT_COMMIT=89abcdef0123456789abcdef0123456789abcdef
 export AIT_RELEASE_ID=REL-FAM-0123456789ABCDEF
+export AIT_RELEASE_QUALIFICATION_RUN_ID=2
+export AIT_RELEASE_QUALIFICATION_RUN_ATTEMPT=1
+export AIT_RELEASE_QUALIFICATION_CONTROL_COMMIT=1111111111111111111111111111111111111111
+export AIT_RELEASE_CANDIDATE_ARTIFACT_ID=2
+export AIT_RELEASE_CANDIDATE_ARTIFACT_DIGEST=sha256:2222222222222222222222222222222222222222222222222222222222222222
+export AIT_RELEASE_CANDIDATE_STATUS_SHA256=3333333333333333333333333333333333333333333333333333333333333333
+export AIT_RELEASE_AGGREGATE_ARTIFACT_ID=3
+export AIT_RELEASE_AGGREGATE_ARTIFACT_DIGEST=sha256:4444444444444444444444444444444444444444444444444444444444444444
+export AIT_RELEASE_AGGREGATE_STATUS_SHA256=5555555555555555555555555555555555555555555555555555555555555555
 export AIT_RELEASE_PROTECTED_ENVIRONMENT=rc-promotion
 export AIT_RELEASE_REPOSITORY=weita2026/ait-native
 export AIT_RELEASE_SOURCE_CONTROL_SHA=fedcba9876543210fedcba9876543210fedcba98

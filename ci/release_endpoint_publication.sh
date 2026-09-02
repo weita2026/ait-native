@@ -1,17 +1,28 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ $# -ne 4 ]]; then
+authority_mode=protected
+if [[ ${1:-} == --pre-tag ]]; then
+  authority_mode=pre_tag
+  shift
+fi
+if [[ (${authority_mode} == protected && $# -ne 4) ||
+  (${authority_mode} == pre_tag && $# -ne 3) ]]; then
   printf '%s\n' \
-    'usage: release_endpoint_publication.sh <endpoint-config> <dossier-root> <protected-evidence> <output-root>' >&2
+    'usage: release_endpoint_publication.sh [--pre-tag] <authority-config> <dossier-root> [<protected-evidence>] <output-root>' >&2
   exit 64
 fi
 
 repo_root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 endpoint_config=$1
 dossier_root=$2
-protected_evidence=$3
-output_root=$4
+if [[ ${authority_mode} == protected ]]; then
+  protected_evidence=$3
+  output_root=$4
+else
+  protected_evidence=
+  output_root=$3
+fi
 
 for command in awk bash basename cmp cp diff find jq mv node sed sort tar; do
   if ! command -v "${command}" >/dev/null 2>&1; then
@@ -52,7 +63,9 @@ require_real_directory() {
 
 require_regular_file "${endpoint_config}" 'endpoint configuration'
 require_real_directory "${dossier_root}" 'family dossier root'
-require_regular_file "${protected_evidence}" 'protected authorization evidence'
+if [[ ${authority_mode} == protected ]]; then
+  require_regular_file "${protected_evidence}" 'protected authorization evidence'
+fi
 if [[ ${output_root} != /* || -e ${output_root} || -L ${output_root} ]]; then
   printf 'endpoint-publication output must be a new absolute path: %s\n' "${output_root}" >&2
   exit 73
@@ -62,7 +75,9 @@ require_real_directory "${output_parent}" 'endpoint-publication output parent'
 
 endpoint_config=$(cd "$(dirname -- "${endpoint_config}")" && pwd -P)/$(basename -- "${endpoint_config}")
 dossier_root=$(cd "${dossier_root}" && pwd -P)
-protected_evidence=$(cd "$(dirname -- "${protected_evidence}")" && pwd -P)/$(basename -- "${protected_evidence}")
+if [[ ${authority_mode} == protected ]]; then
+  protected_evidence=$(cd "$(dirname -- "${protected_evidence}")" && pwd -P)/$(basename -- "${protected_evidence}")
+fi
 output_parent=$(cd "${output_parent}" && pwd -P)
 output_root=${output_parent}/$(basename -- "${output_root}")
 
@@ -91,19 +106,25 @@ staging=${temporary_root}/staging
 assets=${staging}/assets
 mkdir -p "${assets}" "${staging}/oci/ait-server" "${staging}/oci/ait-runner"
 
-bash "${repo_root}/ci/release_operator.sh" validate-config \
-  --config "${endpoint_config}" >/dev/null
+if [[ ${authority_mode} == protected ]]; then
+  bash "${repo_root}/ci/release_operator.sh" validate-config \
+    --config "${endpoint_config}" >/dev/null
+else
+  bash "${repo_root}/ci/release_operator.sh" validate-candidate-config \
+    --config "${endpoint_config}" >/dev/null
+fi
 release_channel=$(jq -er '.release.channel' "${endpoint_config}")
 release_version=$(jq -er '.release.version' "${endpoint_config}")
 release_tag=$(jq -er '.release.tag' "${endpoint_config}")
 release_id=$(jq -er '.release.id' "${endpoint_config}")
 
-expected_protected_sha=$(jq -er '.protected_authorization.evidence_sha256' "${endpoint_config}")
-if [[ $(sha256_file "${protected_evidence}") != "${expected_protected_sha}" ]]; then
-  printf 'protected authorization evidence digest is not exact\n' >&2
-  exit 65
-fi
-if ! jq -e --slurpfile config "${endpoint_config}" '
+if [[ ${authority_mode} == protected ]]; then
+  expected_protected_sha=$(jq -er '.protected_authorization.evidence_sha256' "${endpoint_config}")
+  if [[ $(sha256_file "${protected_evidence}") != "${expected_protected_sha}" ]]; then
+    printf 'protected authorization evidence digest is not exact\n' >&2
+    exit 65
+  fi
+  if ! jq -e --slurpfile config "${endpoint_config}" '
   .contract == "ait.release.family.protected-promotion/v1" and
   .status == "authorized_for_explicit_endpoint_promotion" and
   .release_id == $config[0].release.id and
@@ -158,8 +179,9 @@ if ! jq -e --slurpfile config "${endpoint_config}" '
     service_mutation: false
   }
 ' "${protected_evidence}" >/dev/null; then
-  printf 'protected authorization evidence does not authorize this exact release\n' >&2
-  exit 65
+    printf 'protected authorization evidence does not authorize this exact release\n' >&2
+    exit 65
+  fi
 fi
 
 expected_top=${temporary_root}/expected-top
@@ -184,9 +206,16 @@ fi
 
 pre_tag_admission=${dossier_root}/ait-release.pre-tag-admission.json
 require_regular_file "${pre_tag_admission}" 'family dossier pre-tag admission'
+if [[ ${authority_mode} == protected ]]; then
+  expected_pre_tag_admission_sha=$(jq -er \
+    '.dossier.pre_tag_admission_sha256' "${protected_evidence}")
+else
+  expected_pre_tag_admission_sha=$(jq -er \
+    '.pre_rc_admission.admission_sha256' "${endpoint_config}")
+fi
 if [[ $(sha256_file "${pre_tag_admission}") != \
-  $(jq -er '.dossier.pre_tag_admission_sha256' "${protected_evidence}") ]]; then
-  printf 'family dossier pre-tag admission differs from the protected authorization\n' >&2
+  "${expected_pre_tag_admission_sha}" ]]; then
+  printf 'family dossier pre-tag admission differs from the selected authority\n' >&2
   exit 65
 fi
 
@@ -232,7 +261,11 @@ verify_checksum_inventory() {
   printf '%s\n' "${count}"
 }
 
-expected_frozen_count=$(jq -er '.dossier.frozen_checksum_count' "${protected_evidence}")
+if [[ ${authority_mode} == protected ]]; then
+  expected_frozen_count=$(jq -er '.dossier.frozen_checksum_count' "${protected_evidence}")
+else
+  expected_frozen_count=$(jq -er '.frozen_checksum_count' "${endpoint_config}")
+fi
 if [[ $(verify_checksum_inventory "${frozen_checksums}" "${frozen_root}" 'frozen inventory') != \
   "${expected_frozen_count}" ]]; then
   printf 'frozen checksum inventory count differs from protected evidence\n' >&2
@@ -401,6 +434,12 @@ validate_npm_package_archive() {
 
 npm_package_names=${temporary_root}/npm-package-names
 : >"${npm_package_names}"
+package_authority=${temporary_root}/package-authority.json
+if [[ ${authority_mode} == protected ]]; then
+  jq -S '.dossier.packages' "${protected_evidence}" >"${package_authority}"
+else
+  jq -S '.packages' "${endpoint_config}" >"${package_authority}"
+fi
 for channel in apt homebrew npm pypi winget; do
   channel_root=${dossier_root}/packages/${channel}
   receipt=${channel_root}/ait-release.package.json
@@ -408,14 +447,14 @@ for channel in apt homebrew npm pypi winget; do
   require_regular_file "${receipt}" "${channel} package receipt"
   require_regular_file "${checksums}" "${channel} package checksums"
   expected_receipt_sha=$(jq -er --arg channel "${channel}" \
-    '.dossier.packages[] | select(.channel == $channel) | .receipt_sha256' \
-    "${protected_evidence}")
+    '.[] | select(.channel == $channel) | .receipt_sha256' \
+    "${package_authority}")
   expected_checksum_sha=$(jq -er --arg channel "${channel}" \
-    '.dossier.packages[] | select(.channel == $channel) | .checksum_sha256' \
-    "${protected_evidence}")
+    '.[] | select(.channel == $channel) | .checksum_sha256' \
+    "${package_authority}")
   expected_artifact_count=$(jq -er --arg channel "${channel}" \
-    '.dossier.packages[] | select(.channel == $channel) | .artifact_count' \
-    "${protected_evidence}")
+    '.[] | select(.channel == $channel) | .artifact_count' \
+    "${package_authority}")
   if [[ $(sha256_file "${receipt}") != "${expected_receipt_sha}" ||
     $(sha256_file "${checksums}") != "${expected_checksum_sha}" ||
     $(verify_checksum_inventory "${checksums}" "${channel_root}" "${channel} package inventory") != \
@@ -543,8 +582,12 @@ done < <(jq -r '
   [.source_repository, .material_role, .declared_path, .path, .sha256, (.size_bytes | tostring)] | @tsv
 ' "${frozen_manifest}")
 
-copy_asset "${endpoint_config}" 'ait-release.endpoints.json'
-copy_asset "${protected_evidence}" 'ait-release.protected-promotion.json'
+if [[ ${authority_mode} == protected ]]; then
+  copy_asset "${endpoint_config}" 'ait-release.endpoints.json'
+  copy_asset "${protected_evidence}" 'ait-release.protected-promotion.json'
+else
+  copy_asset "${endpoint_config}" 'ait-release.pre-tag-candidate-authority.json'
+fi
 copy_asset "${dossier_root}/ait-monorepo-source.json" 'ait-monorepo-source.json'
 copy_asset "${dossier_root}/ait-native-source-tree.tar.gz" 'ait-native-source-tree.tar.gz'
 copy_asset "${dossier_root}/ait-public-git-source.evidence.json" 'ait-public-git-source.evidence.json'
@@ -716,7 +759,57 @@ if [[ ${release_channel} == rc ]]; then
 else
   winget_stage_status=requires_external_community_submission
 fi
-jq -n \
+if [[ ${authority_mode} == pre_tag ]]; then
+  jq -n \
+    --arg contract 'ait.release.family.pre-tag-candidate-materialization/v1' \
+    --arg status 'frozen_for_pre_tag_clean_host' \
+    --arg release_id "${release_id}" \
+    --arg version "${release_version}" \
+    --arg tag "$(jq -er '.release.tag' "${endpoint_config}")" \
+    --arg candidate_authority_sha256 "$(sha256_file "${endpoint_config}")" \
+    --arg release_checksums_sha256 "$(sha256_file "${release_checksums}")" \
+    --arg winget_stage_status "${winget_stage_status}" \
+    --argjson asset_count "${asset_count}" \
+    --slurpfile config "${endpoint_config}" '
+      {
+        contract: $contract,
+        status: $status,
+        release_id: $release_id,
+        version: $version,
+        tag: $tag,
+        candidate_authority_sha256: $candidate_authority_sha256,
+        release_checksums_sha256: $release_checksums_sha256,
+        release_asset_count: $asset_count,
+        endpoints: $config[0].endpoints,
+        checks: {
+          pre_tag_authority: "pass",
+          protected_authorization: "not_requested",
+          frozen_checksums: "pass",
+          package_receipts: "pass",
+          package_checksums: "pass",
+          github_asset_staging: "pass",
+          oci_context_staging: "pass",
+          winget_community_submission: $winget_stage_status
+        },
+        mutation: {
+          artifact_rebuild: false,
+          component_rebuild: false,
+          credentials_loaded: false,
+          registry_write: false,
+          github_release_write: false,
+          endpoint_repository_write: false,
+          tag_write: false,
+          ait_remote_release_activation: false,
+          service_mutation: false
+        },
+        next_action: {
+          code: "complete_pre_tag_clean_host_matrix",
+          detail: "Qualify every frozen installable byte before creating the immutable tag."
+        }
+      }
+    ' >"${endpoint_receipt}"
+else
+  jq -n \
   --arg contract 'ait.release.family.endpoint-publication/v1' \
   --arg status 'ready_for_authenticated_endpoint_preflight' \
   --arg release_id "${release_id}" \
@@ -765,6 +858,7 @@ jq -n \
       }
     }
   ' >"${endpoint_receipt}"
+fi
 
 chmod 0755 "${staging}" "${assets}" "${staging}/oci" \
   "${staging}/oci/ait-server" "${staging}/oci/ait-runner"

@@ -369,12 +369,14 @@ function validatePlatformManifest(platforms, version) {
 }
 
 function runnerBundleVersion(version) {
-  const match = /^(\d+)\.(\d+)\./.exec(version);
-  return Boolean(
-    match &&
-      (Number(match[1]) > 1 ||
-        (Number(match[1]) === 1 && Number(match[2]) >= 1)),
-  );
+  const match = /^(\d+)\.(\d+)\.(\d+)/.exec(version);
+  if (!match) {
+    return false;
+  }
+  const major = Number(match[1]);
+  const minor = Number(match[2]);
+  const patch = Number(match[3]);
+  return major > 1 || (major === 1 && (minor > 1 || (minor === 1 && patch > 0)));
 }
 
 function exactPublishedLegacyNativeBundleFamily(family) {
@@ -417,9 +419,10 @@ function validateFamily(family) {
   }
   const [matrixRevision, contract] = matches[0];
   if (
-    runnerBundleVersion(family.family.version) &&
     matrixRevision === "distribution-target-32-2026-08-17.2" &&
-    !exactPublishedLegacyNativeBundleFamily(family)
+    (runnerBundleVersion(family.family.version) ||
+      (family.family.version === "1.1.0" &&
+        !exactPublishedLegacyNativeBundleFamily(family)))
   ) {
     fail(
       "1.1+ clean-host qualification requires the native runner-bundle matrix; the legacy matrix is admitted only for the exact immutable published 1.1.0 family",
@@ -579,8 +582,17 @@ function buildMatrix(family, platforms) {
 }
 
 function validateConfigAndStatus(config, status) {
+  const supportedConfig = [
+    "ait.release.family.endpoints/v1",
+    "ait.release.family.pre-tag-candidate-authority/v1",
+  ].includes(config.contract);
+  const expectedStage =
+    config.contract === "ait.release.family.pre-tag-candidate-authority/v1"
+      ? "pre_tag"
+      : "post_authorization";
+  const expectedTagState = expectedStage === "pre_tag" ? "absent" : "present";
   if (
-    config.contract !== "ait.release.family.endpoints/v1" ||
+    !supportedConfig ||
     !/^REL-FAM-[0-9A-F]{16}$/.test(config.release?.id ?? "") ||
     !/^[0-9a-f]{40}$/.test(config.release?.source_commit ?? "")
   ) {
@@ -594,11 +606,13 @@ function validateConfigAndStatus(config, status) {
     status.contract === "ait.release.prepublish.candidate/v1" &&
     status.status === "frozen_candidate_pending_clean_host" &&
     status.release?.source_commit === config.release.source_commit &&
+    status.qualification_stage === expectedStage &&
+    status.tag_state === expectedTagState &&
     /^[0-9a-f]{64}$/.test(status.candidate?.stage_receipt_sha256 ?? "");
   if (!common || !prepublish) {
     fail("status is not the exact frozen prepublish candidate");
   }
-  return "prepublication";
+  return expectedStage === "pre_tag" ? "pre_tag" : "prepublication";
 }
 
 function validateMatrix(matrix, config) {
@@ -635,7 +649,10 @@ function releaseBinding(config, configFile, statusFile) {
   if (!/^sha256:[0-9a-f]{64}$/.test(artifactDigest)) {
     fail("prepublish aggregate lacks the immutable candidate artifact digest", 64);
   }
-  binding.verification_stage = "prepublication";
+  binding.verification_stage =
+    config.contract === "ait.release.family.pre-tag-candidate-authority/v1"
+      ? "pre_tag"
+      : "prepublication";
   binding.candidate_stage_receipt_sha256 = status.candidate.stage_receipt_sha256;
   binding.candidate_artifact_digest = artifactDigest;
   return binding;

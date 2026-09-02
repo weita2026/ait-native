@@ -1,0 +1,58 @@
+name: ait release pre-tag candidate qualification
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_id:
+        description: Exact frozen release-family identity
+        required: true
+        type: string
+      source_run_id:
+        description: Successful untagged component-receipt workflow run ID
+        required: true
+        type: string
+      source_artifact_id:
+        description: Exact frozen family dossier artifact ID
+        required: true
+        type: string
+      source_artifact_digest:
+        description: Exact sha256-prefixed frozen dossier artifact digest
+        required: true
+        type: string
+      candidate_authority_sha256:
+        description: SHA-256 of the pre-tag candidate authority
+        required: true
+        type: string
+      candidate_authority_b64:
+        description: Base64 of the pre-tag candidate authority
+        required: true
+        type: string
+      prior_version:
+        description: Exact prior public SemVer used for upgrade proof
+        required: true
+        type: string
+      prior_python_version:
+        description: Exact prior public PEP 440 version used for upgrade proof
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: ait-release-pre-tag-candidate-${{ inputs.release_id }}
+  cancel-in-progress: false
+
+jobs:
+  qualify:
+    uses: ./.github/workflows/ait-release-prepublish-clean-host.yml
+    with:
+      release_id: ${{ inputs.release_id }}
+      source_run_id: ${{ inputs.source_run_id }}
+      source_artifact_id: ${{ inputs.source_artifact_id }}
+      source_artifact_digest: ${{ inputs.source_artifact_digest }}
+      candidate_authority_sha256: ${{ inputs.candidate_authority_sha256 }}
+      candidate_authority_b64: ${{ inputs.candidate_authority_b64 }}
+      prior_version: ${{ inputs.prior_version }}
+      prior_python_version: ${{ inputs.prior_python_version }}

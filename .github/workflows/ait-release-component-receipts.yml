@@ -110,7 +110,7 @@ jobs:
             echo "source_git_commit=${AIT_SOURCE_GIT_COMMIT}"
           } >>"${GITHUB_OUTPUT}"
 
-      - name: Revalidate qualification, version-only delta, and post-admission tag
+      - name: Revalidate qualification, version-only delta, and untagged release commit
         id: admission
         shell: bash
         working-directory: control
@@ -143,7 +143,7 @@ jobs:
             --arg channel "${channel}" \
             --arg commit "${RELEASE_SOURCE_COMMIT}" '
               .contract == "ait.release.operator.pre-tag-admission/v1" and
-              .status == "ready_for_immutable_tag" and
+              .status == "ready_for_component_receipts" and
               .release == {
                 repository: "weita2026/ait-native",
                 version: $version,
@@ -187,10 +187,22 @@ jobs:
             --release-commit "${RELEASE_SOURCE_COMMIT}" >"${delta}"
           test "$(sha256sum "${delta}" | awk '{print $1}')" = \
             "$(jq -r '.delta.sha256' "${admission}")"
-          test "$(git -C "${GITHUB_WORKSPACE}/source" cat-file -t \
-            "refs/tags/${tag}")" = tag
-          test "$(git -C "${GITHUB_WORKSPACE}/source" rev-list -n 1 \
-            "refs/tags/${tag}")" = "${RELEASE_SOURCE_COMMIT}"
+          if git -C "${GITHUB_WORKSPACE}/source" show-ref --verify --quiet \
+            "refs/tags/${tag}"; then
+            printf 'release tag exists before candidate qualification\n' >&2
+            exit 65
+          fi
+          if git -C "${GITHUB_WORKSPACE}/source" tag \
+            --points-at "${RELEASE_SOURCE_COMMIT}" | grep -Eq '^v[0-9]'; then
+            printf 'release commit has a release tag before candidate qualification\n' >&2
+            exit 65
+          fi
+          public_url="https://github.com/${GITHUB_REPOSITORY}.git"
+          tag_rows="${RUNNER_TEMP}/pre-tag-remote-rows"
+          GIT_ASKPASS=/usr/bin/false GIT_TERMINAL_PROMPT=0 \
+            git -c credential.helper= ls-remote --tags "${public_url}" \
+              "${tag}" "${tag}^{}" >"${tag_rows}"
+          test ! -s "${tag_rows}"
           api="https://api.github.com/repos/${GITHUB_REPOSITORY}"
           run_record="${RUNNER_TEMP}/qualification-run.json"
           artifact_record="${RUNNER_TEMP}/qualification-artifact.json"
@@ -779,5 +791,5 @@ jobs:
             echo "- staged package channels: \`5\`"
             echo "- live AIT server connections: \`0\`"
             echo "- public publication: \`false\`"
-            echo '- next gate: protected approval, signing, clean-install, and endpoint readback'
+            echo '- next gate: freeze and pass the complete pre-tag clean-host install/upgrade matrix'
           } >>"${GITHUB_STEP_SUMMARY}"

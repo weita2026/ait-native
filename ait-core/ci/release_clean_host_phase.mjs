@@ -375,12 +375,22 @@ function validateInputs(options, matrix, config, status) {
     status.status === "frozen_candidate_pending_clean_host" &&
     status.release?.source_commit === config.release?.source_commit &&
     /^([0-9a-f]{64})$/.test(status.candidate?.stage_receipt_sha256 ?? "");
+  const expectedStage =
+    config.contract === "ait.release.family.pre-tag-candidate-authority/v1"
+      ? "pre_tag"
+      : "post_authorization";
+  const expectedTagState = expectedStage === "pre_tag" ? "absent" : "present";
   if (
-    config.contract !== "ait.release.family.endpoints/v1" ||
+    ![
+      "ait.release.family.endpoints/v1",
+      "ait.release.family.pre-tag-candidate-authority/v1",
+    ].includes(config.contract) ||
     !frozenCandidate ||
     status.release?.id !== config.release?.id ||
     status.release?.version !== config.release?.version ||
     status.release?.tag !== config.release?.tag ||
+    status.qualification_stage !== expectedStage ||
+    status.tag_state !== expectedTagState ||
     matrix.release?.version !== config.release?.version ||
     matrix.release?.tag !== config.release?.tag
   ) {
@@ -419,7 +429,10 @@ function releaseBinding(config, status, options) {
   if (!/^sha256:[0-9a-f]{64}$/.test(artifactDigest)) {
     fail("prepublish phase lacks the immutable candidate artifact digest", 64);
   }
-  binding.verification_stage = "prepublication";
+  binding.verification_stage =
+    config.contract === "ait.release.family.pre-tag-candidate-authority/v1"
+      ? "pre_tag"
+      : "prepublication";
   binding.candidate_stage_receipt_sha256 = status.candidate.stage_receipt_sha256;
   binding.candidate_artifact_digest = artifactDigest;
   return binding;
@@ -489,9 +502,23 @@ function verifyCandidateTag(config, recorder) {
   const repository = config.endpoints.github.repository;
   const tag = config.release.tag;
   const remote = `https://github.com/${repository}.git`;
+  const preTag = config.contract === "ait.release.family.pre-tag-candidate-authority/v1";
+  // Pre-tag qualification checks the anonymous remote exactly twice at the
+  // workflow boundary: before candidate materialization and after all 32
+  // clean-host rows have qualified. Repeating the same network read in every
+  // install and upgrade phase adds no authority and makes a failed release
+  // substantially slower. Tagged publication still verifies the exact tag in
+  // every phase because those rows consume public release assets.
+  if (preTag) {
+    if (statusTagState(config) !== "absent") {
+      fail("pre-tag candidate authority does not require an absent tag");
+    }
+    return;
+  }
+  const selectors = [tag, `${tag}^{}`];
   const result = recorder.run(
     requireCommand("git"),
-    ["-c", "credential.helper=", "ls-remote", "--tags", remote, tag, `${tag}^{}`],
+    ["-c", "credential.helper=", "ls-remote", "--tags", remote, ...selectors],
     {
       label: "candidate anonymous Git tag readback",
       env: { ...process.env, GIT_ASKPASS: process.platform === "win32" ? "" : "/usr/bin/false", GIT_TERMINAL_PROMPT: "0" },
@@ -511,6 +538,10 @@ function verifyCandidateTag(config, recorder) {
   if (commit !== config.release.source_commit) {
     fail("candidate public tag does not resolve to the configured source commit");
   }
+}
+
+function statusTagState(config) {
+  return config.tag_authority?.required_state ?? "present";
 }
 
 async function downloadReleaseAsset(repository, tag, name, destination) {
@@ -1501,12 +1532,14 @@ function debianVersion(version) {
 }
 
 function runnerBundleVersion(version) {
-  const match = /^(\d+)\.(\d+)\./.exec(version);
-  return Boolean(
-    match &&
-      (Number(match[1]) > 1 ||
-        (Number(match[1]) === 1 && Number(match[2]) >= 1)),
-  );
+  const match = /^(\d+)\.(\d+)\.(\d+)/.exec(version);
+  if (!match) {
+    return false;
+  }
+  const major = Number(match[1]);
+  const minor = Number(match[2]);
+  const patch = Number(match[3]);
+  return major > 1 || (major === 1 && (minor > 1 || (minor === 1 && patch > 0)));
 }
 
 function packageRowForVersion(row, version) {

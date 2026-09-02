@@ -25,6 +25,15 @@ required_environment=(
   AIT_RELEASE_FROZEN_MANIFEST_SHA256
   AIT_RELEASE_GIT_COMMIT
   AIT_RELEASE_ID
+  AIT_RELEASE_QUALIFICATION_RUN_ID
+  AIT_RELEASE_QUALIFICATION_RUN_ATTEMPT
+  AIT_RELEASE_QUALIFICATION_CONTROL_COMMIT
+  AIT_RELEASE_CANDIDATE_ARTIFACT_ID
+  AIT_RELEASE_CANDIDATE_ARTIFACT_DIGEST
+  AIT_RELEASE_CANDIDATE_STATUS_SHA256
+  AIT_RELEASE_AGGREGATE_ARTIFACT_ID
+  AIT_RELEASE_AGGREGATE_ARTIFACT_DIGEST
+  AIT_RELEASE_AGGREGATE_STATUS_SHA256
   AIT_RELEASE_PROTECTED_ENVIRONMENT
   AIT_RELEASE_REPOSITORY
   AIT_RELEASE_SOURCE_CONTROL_SHA
@@ -57,6 +66,15 @@ if [[ ${AIT_RELEASE_REPOSITORY} != weita2026/ait-native ||
   ! ${AIT_RELEASE_SOURCE_RUN_ID} =~ ^[1-9][0-9]*$ ||
   ! ${AIT_RELEASE_SOURCE_RUN_ATTEMPT} =~ ^[1-9][0-9]*$ ||
   ! ${AIT_RELEASE_DOSSIER_ARTIFACT_ID} =~ ^[1-9][0-9]*$ ||
+  ! ${AIT_RELEASE_QUALIFICATION_RUN_ID} =~ ^[1-9][0-9]*$ ||
+  ! ${AIT_RELEASE_QUALIFICATION_RUN_ATTEMPT} =~ ^[1-9][0-9]*$ ||
+  ! ${AIT_RELEASE_QUALIFICATION_CONTROL_COMMIT} =~ ^[0-9a-f]{40}$ ||
+  ! ${AIT_RELEASE_CANDIDATE_ARTIFACT_ID} =~ ^[1-9][0-9]*$ ||
+  ! ${AIT_RELEASE_CANDIDATE_ARTIFACT_DIGEST} =~ ^sha256:[0-9a-f]{64}$ ||
+  ! ${AIT_RELEASE_CANDIDATE_STATUS_SHA256} =~ ^[0-9a-f]{64}$ ||
+  ! ${AIT_RELEASE_AGGREGATE_ARTIFACT_ID} =~ ^[1-9][0-9]*$ ||
+  ! ${AIT_RELEASE_AGGREGATE_ARTIFACT_DIGEST} =~ ^sha256:[0-9a-f]{64}$ ||
+  ! ${AIT_RELEASE_AGGREGATE_STATUS_SHA256} =~ ^[0-9a-f]{64}$ ||
   ! ${AIT_RELEASE_AUTHORIZATION_RUN_ID} =~ ^[1-9][0-9]*$ ||
   ! ${AIT_RELEASE_AUTHORIZATION_RUN_ATTEMPT} =~ ^[1-9][0-9]*$ ]]; then
   printf 'protected-promotion identity input is invalid\n' >&2
@@ -472,7 +490,7 @@ if ! jq -e \
   --arg tag "${AIT_RELEASE_TAG}" \
   --arg commit "${AIT_RELEASE_GIT_COMMIT}" '
     .contract == "ait.release.operator.pre-tag-admission/v1" and
-    .status == "ready_for_immutable_tag" and
+    .status == "ready_for_component_receipts" and
     .release == {
       repository: $repository,
       version: $version,
@@ -809,6 +827,15 @@ jq -n \
   --arg source_control_sha "${AIT_RELEASE_SOURCE_CONTROL_SHA}" \
   --arg dossier_artifact_id "${AIT_RELEASE_DOSSIER_ARTIFACT_ID}" \
   --arg dossier_artifact_digest "${AIT_RELEASE_DOSSIER_ARTIFACT_DIGEST}" \
+  --arg qualification_run_id "${AIT_RELEASE_QUALIFICATION_RUN_ID}" \
+  --arg qualification_run_attempt "${AIT_RELEASE_QUALIFICATION_RUN_ATTEMPT}" \
+  --arg qualification_control_commit "${AIT_RELEASE_QUALIFICATION_CONTROL_COMMIT}" \
+  --arg candidate_artifact_id "${AIT_RELEASE_CANDIDATE_ARTIFACT_ID}" \
+  --arg candidate_artifact_digest "${AIT_RELEASE_CANDIDATE_ARTIFACT_DIGEST}" \
+  --arg candidate_status_sha256 "${AIT_RELEASE_CANDIDATE_STATUS_SHA256}" \
+  --arg aggregate_artifact_id "${AIT_RELEASE_AGGREGATE_ARTIFACT_ID}" \
+  --arg aggregate_artifact_digest "${AIT_RELEASE_AGGREGATE_ARTIFACT_DIGEST}" \
+  --arg aggregate_status_sha256 "${AIT_RELEASE_AGGREGATE_STATUS_SHA256}" \
   --arg environment "${AIT_RELEASE_PROTECTED_ENVIRONMENT}" \
   --arg authorization_run_id "${AIT_RELEASE_AUTHORIZATION_RUN_ID}" \
   --arg authorization_run_attempt "${AIT_RELEASE_AUTHORIZATION_RUN_ATTEMPT}" \
@@ -881,6 +908,19 @@ jq -n \
           family_release_sha256: $family_release_sha256
         },
         packages: $packages
+      },
+      pre_tag_qualification: {
+        workflow_run_id: $qualification_run_id,
+        workflow_run_attempt: $qualification_run_attempt,
+        workflow_control_commit: $qualification_control_commit,
+        candidate_artifact_id: $candidate_artifact_id,
+        candidate_artifact_digest: $candidate_artifact_digest,
+        candidate_status_sha256: $candidate_status_sha256,
+        aggregate_artifact_id: $aggregate_artifact_id,
+        aggregate_artifact_digest: $aggregate_artifact_digest,
+        aggregate_status_sha256: $aggregate_status_sha256,
+        clean_host_rows: 32,
+        tag_state_at_closeout: "absent"
       },
       authorization: {
         required: true,

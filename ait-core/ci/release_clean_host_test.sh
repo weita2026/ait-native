@@ -93,6 +93,10 @@ assert.ok(
   "upgrade evidence must record byte-for-byte prior workflow guidance preservation",
 );
 assert.ok(
+  source.includes("minor === 1 && patch > 0"),
+  "the exact published 1.1.0 baseline must remain pre-runner-bundle while 1.1.1+ uses the bundle",
+);
+assert.ok(
   source.includes('!["1.0.0-rc.6", "1.0.0-rc.10"].includes(priorVersion)'),
   "only the exact affected legacy versions may admit the Windows init regression",
 );
@@ -166,8 +170,11 @@ grep -F 'process.platform === "win32"' <<<"${python_command_source}" >/dev/null
 grep -F 'explicit setup-python output' <<<"${python_command_source}" >/dev/null
 grep -F 'package_manager_commands = { python: pythonCommand() }' \
   "${phase_runner}" >/dev/null
-grep -F 'ait-prepublish-candidate-${{ inputs.release_id }}' "${workflow}" >/dev/null
-grep -F 'ait-prepublish-clean-host-${{ inputs.release_id }}' "${workflow}" >/dev/null
+grep -F 'ait-pre-tag-candidate-${{ inputs.release_id }}' "${workflow}" >/dev/null
+grep -F 'ait-pre-tag-clean-host-${{ inputs.release_id }}' "${workflow}" >/dev/null
+grep -F 'release commit has a release tag before candidate qualification' \
+  "${repo_root}/.github/workflows/ait-release-component-receipts.yml" >/dev/null
+grep -F 'Recheck tag absence at qualification closeout' "${workflow}" >/dev/null
 grep -F 'release_prepublish_verify.mjs qualify' "${workflow}" >/dev/null
 test "$(grep -c 'mark(checks, "immutable_image_digest")' "${phase_runner}")" = 2
 grep -F 'platformPackageName = `@wa120/ait-native-${npmTargetSuffix(row)}`' \
@@ -349,6 +356,8 @@ jq -n \
     candidate: {
       stage_receipt_sha256: "3333333333333333333333333333333333333333333333333333333333333333"
     },
+    qualification_stage: "post_authorization",
+    tag_state: "present",
     public_endpoint_writes: false
   }
 ' >"${status}"

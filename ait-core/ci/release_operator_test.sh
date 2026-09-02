@@ -3,6 +3,7 @@ set -euo pipefail
 
 repo_root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 operator=${repo_root}/ci/release_operator.sh
+candidate_promote=${repo_root}/ci/release_candidate_promote.sh
 operator_test_tmp_parent=$(CDPATH='' cd -- "${TMPDIR:-/tmp}" && pwd -P)
 temporary_root=$(mktemp -d \
   "${operator_test_tmp_parent}/ait-release-operator-test.XXXXXX")
@@ -36,6 +37,15 @@ sha256_file() {
   fi
 }
 
+write_inventory() {
+  local root=$1
+  local name=$2
+  find "${root}" -type f ! -name "${name}" -print | LC_ALL=C sort |
+    while IFS= read -r file; do
+      printf '%s  %s\n' "$(sha256_file "${file}")" "${file#"${root}/"}"
+    done >"${root}/${name}"
+}
+
 expect_failure() {
   local label=$1
   shift
@@ -48,6 +58,7 @@ expect_failure() {
 }
 
 test -x "${operator}"
+test -x "${candidate_promote}"
 bash -n "${operator}"
 
 source_root=${temporary_root}/public-source
@@ -346,7 +357,7 @@ admission=${temporary_root}/admission.json
   --output "${admission}" >/dev/null
 jq -e --arg qualified "${qualified_commit}" --arg release "${source_commit}" '
   .contract == "ait.release.operator.pre-tag-admission/v1" and
-  .status == "ready_for_immutable_tag" and
+  .status == "ready_for_component_receipts" and
   .qualification.source_commit == $qualified and
   .release.source_commit == $release and
   .tag == {created: false, verified: false} and
@@ -392,7 +403,7 @@ stable_admission=${temporary_root}/stable-admission.json
   --output "${stable_admission}" >/dev/null
 jq -e --arg qualified "${qualified_commit}" --arg release "${stable_commit}" '
   .contract == "ait.release.operator.pre-tag-admission/v1" and
-  .status == "ready_for_immutable_tag" and
+  .status == "ready_for_component_receipts" and
   .release.version == "1.2.3" and
   .release.channel == "stable" and
   .release.python_version == "1.2.3" and
@@ -403,20 +414,21 @@ jq -e --arg qualified "${qualified_commit}" --arg release "${stable_commit}" '
   ([.mutation[]] | all(. == false))
 ' "${stable_admission}" >/dev/null
 
-git -C "${source_root}" tag -a v1.2.3-rc.5 -m 'fixture release tag'
-
 prepare=${temporary_root}/prepare.json
 "${operator}" prepare \
   --source-root "${source_root}" \
   --admission "${admission}" \
+  --prior-version 1.2.3-rc.4 \
+  --prior-python-version 1.2.3rc4 \
   --output "${prepare}" >/dev/null
 jq -e --arg commit "${source_commit}" '
-  .contract == "ait.release.operator.prepare/v2" and
+  .contract == "ait.release.operator.prepare/v3" and
   .status == "ready_for_component_receipts" and
   .release.version == "1.2.3-rc.5" and .release.channel == "rc" and
   .release.python_version == "1.2.3rc5" and .release.source_commit == $commit and
-  .pre_rc_admission.tag_verified_after_admission == true and
+  .pre_rc_admission.release_commit_untagged == true and
   .pre_rc_admission.qualification_workflow_run_id == 90 and
+  .prior_release == {version: "1.2.3-rc.4", python_version: "1.2.3rc4"} and
   .receipt_dispatch.inputs.coordinator_snapshot == "SNP-ABCDEF123456" and
   .receipt_dispatch.inputs.pre_tag_admission_sha256 ==
     .pre_rc_admission.admission_sha256 and
@@ -432,28 +444,32 @@ jq '.family.version = "1.2.3-rc.6"' \
 mv "${temporary_root}/version-drift.json" "${version_drift}/ait-release-family.json"
 expect_failure version-drift "${operator}" prepare \
   --source-root "${version_drift}" --admission "${admission}" \
+  --prior-version 1.2.3-rc.4 --prior-python-version 1.2.3rc4 \
   --output "${temporary_root}/version-drift-output.json"
 grep -F 'family identity is inconsistent' "${temporary_root}/version-drift.stderr" >/dev/null
 expect_failure relative-output "${operator}" prepare \
-  --source-root "${source_root}" --admission "${admission}" --output relative.json
+  --source-root "${source_root}" --admission "${admission}" \
+  --prior-version 1.2.3-rc.4 --prior-python-version 1.2.3rc4 \
+  --output relative.json
 
 expect_failure missing-admission "${operator}" prepare \
   --source-root "${source_root}" \
+  --prior-version 1.2.3-rc.4 --prior-python-version 1.2.3rc4 \
   --output "${temporary_root}/missing-admission-output.json"
 
 lightweight_tag=${temporary_root}/lightweight-tag
 git clone -q "${source_root}" "${lightweight_tag}"
-git -C "${lightweight_tag}" tag -d v1.2.3-rc.5 >/dev/null
 git -C "${lightweight_tag}" tag v1.2.3-rc.5
 expect_failure lightweight-tag "${operator}" prepare \
   --source-root "${lightweight_tag}" \
   --admission "${admission}" \
+  --prior-version 1.2.3-rc.4 --prior-python-version 1.2.3rc4 \
   --output "${temporary_root}/lightweight-tag-output.json"
-grep -F 'public release tag must be an annotated tag object' \
+grep -F 'public release tag exists before candidate qualification' \
   "${temporary_root}/lightweight-tag.stderr" >/dev/null
 
 dossier=${temporary_root}/dossier
-mkdir -p "${dossier}/frozen"
+mkdir -p "${dossier}/frozen" "${dossier}/packages"
 cp "${source_root}/ait-monorepo-source.json" "${dossier}/ait-monorepo-source.json"
 cp "${admission}" "${dossier}/ait-release.pre-tag-admission.json"
 control_commit=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
@@ -506,6 +522,17 @@ jq -n '
   }
 ' >"${dossier}/frozen/ait-release-family.manifest.json"
 printf '%064d  fixture.bin\n' 0 >"${dossier}/frozen/SHA256SUMS"
+for package_channel in apt homebrew npm pypi winget; do
+  package_root=${dossier}/packages/${package_channel}
+  mkdir -p "${package_root}"
+  jq -S -n --arg channel "${package_channel}" '{
+    contract: "ait.release.package/v1",
+    channel: $channel,
+    artifacts: [{name: ($channel + "-fixture"), sha256: ("1" * 64)}]
+  }' >"${package_root}/ait-release.package.json"
+  printf '%064d  %s-fixture\n' 1 "${package_channel}" \
+    >"${package_root}/SHA256SUMS"
+done
 
 receipt_run=${temporary_root}/receipt-run.json
 receipt_artifact=${temporary_root}/receipt-artifact.json
@@ -539,13 +566,16 @@ receipts=${temporary_root}/receipts.json
   --dossier-root "${dossier}" \
   --output "${receipts}" >/dev/null
 jq -e '
-  .contract == "ait.release.operator.receipt-binding/v1" and
-  .status == "ready_for_protected_authorization" and
+  .contract == "ait.release.operator.receipt-binding/v2" and
+  .status == "ready_for_pre_tag_qualification" and
   .release.id == "REL-FAM-0123456789ABCDEF" and
   .source_dossier.workflow_run_id == 101 and
   .source_dossier.artifact_id == 201 and
-  .protected_dispatch.inputs.channel == "rc" and
-  .protected_dispatch.requested == false and
+  .candidate_authority.record.status == "ready_for_pre_tag_clean_host" and
+  .candidate_authority.record.tag_authority.required_state == "absent" and
+  .candidate_authority.record.prior_release.version == "1.2.3-rc.4" and
+  .pre_tag_qualification_dispatch.inputs.prior_version == "1.2.3-rc.4" and
+  .pre_tag_qualification_dispatch.requested == false and
   ([.mutation[]] | all(. == false))
 ' "${receipts}" >/dev/null
 
@@ -573,6 +603,211 @@ expect_failure mutating-prepare "${operator}" bind-receipts \
   --dossier-root "${dossier}" \
   --output "${temporary_root}/mutating-prepare-output.json"
 
+candidate_root=${temporary_root}/pre-tag-candidate
+aggregate_root=${temporary_root}/pre-tag-aggregate
+mkdir -p "${candidate_root}/assets" "${candidate_root}/oci-archives" \
+  "${aggregate_root}/rows"
+jq -S '.candidate_authority.record' "${receipts}" \
+  >"${candidate_root}/ait-release.endpoints.authority.json"
+printf 'pre-tag endpoint materialization\n' \
+  >"${candidate_root}/ait-release.endpoint-publication.json"
+printf 'fixture asset\n' >"${candidate_root}/assets/fixture.bin"
+printf '%s  fixture.bin\n' \
+  "$(sha256_file "${candidate_root}/assets/fixture.bin")" \
+  >"${candidate_root}/assets/SHA256SUMS"
+for component in ait-server ait-runner; do
+  for architecture in amd64 arm64; do
+    printf '%s-%s\n' "${component}" "${architecture}" \
+      >"${candidate_root}/oci-archives/${component}-${architecture}.docker.tar"
+  done
+done
+candidate_oci=${temporary_root}/candidate-oci.json
+jq -S -n --arg root "${candidate_root}" '
+  reduce ["ait-server", "ait-runner"][] as $component ({};
+    reduce ["amd64", "arm64"][] as $architecture (.;
+      ($component + "-" + $architecture + ".docker.tar") as $archive |
+      .[$component][$architecture] = {
+        archive: $archive,
+        sha256: null,
+        reference: ("ait-prepublish/" + $component + ":1.2.3-rc.5-" + $architecture),
+        image_id: ("sha256:" + (if $component == "ait-server" then
+          (if $architecture == "amd64" then "2" else "3" end)
+        else
+          (if $architecture == "amd64" then "4" else "5" end)
+        end) * 64)
+      }
+    ))
+' >"${candidate_oci}"
+for component in ait-server ait-runner; do
+  for architecture in amd64 arm64; do
+    archive=${component}-${architecture}.docker.tar
+    jq --arg component "${component}" --arg architecture "${architecture}" \
+      --arg digest "$(sha256_file "${candidate_root}/oci-archives/${archive}")" \
+      '.[$component][$architecture].sha256 = $digest' "${candidate_oci}" \
+      >"${candidate_oci}.new"
+    mv "${candidate_oci}.new" "${candidate_oci}"
+  done
+done
+candidate_stage=${candidate_root}/ait-release.prepublish-stage.json
+jq -S -n --slurpfile oci "${candidate_oci}" \
+  --arg release_id REL-FAM-0123456789ABCDEF \
+  --arg source_commit "${source_commit}" \
+  --arg config_sha "$(sha256_file "${candidate_root}/ait-release.endpoints.authority.json")" \
+  --arg endpoint_sha "$(sha256_file "${candidate_root}/ait-release.endpoint-publication.json")" \
+  --arg assets_sha "$(sha256_file "${candidate_root}/assets/SHA256SUMS")" '
+  {
+    contract: "ait.release.prepublish.stage/v1",
+    status: "frozen_candidate_staged",
+    release: {
+      id: $release_id,
+      version: "1.2.3-rc.5",
+      tag: "v1.2.3-rc.5",
+      source_commit: $source_commit
+    },
+    qualification_stage: "pre_tag",
+    tag_state: "absent",
+    authority: {
+      endpoint_config_sha256: $config_sha,
+      endpoint_stage_receipt_sha256: $endpoint_sha,
+      assets_checksum_sha256: $assets_sha
+    },
+    oci: $oci[0],
+    mutation: {
+      artifact_rebuild: false,
+      component_rebuild: false,
+      registry_write: false,
+      endpoint_write: false,
+      github_release_write: false,
+      tag_write: false,
+      service_start: false
+    }
+  }
+' >"${candidate_stage}"
+candidate_status=${candidate_root}/ait-release.prepublish-candidate.json
+jq -S -n --slurpfile oci "${candidate_oci}" \
+  --arg release_id REL-FAM-0123456789ABCDEF \
+  --arg source_commit "${source_commit}" \
+  --arg stage_sha "$(sha256_file "${candidate_stage}")" '
+  {
+    contract: "ait.release.prepublish.candidate/v1",
+    status: "frozen_candidate_pending_clean_host",
+    release: {
+      id: $release_id,
+      version: "1.2.3-rc.5",
+      tag: "v1.2.3-rc.5",
+      source_commit: $source_commit
+    },
+    qualification_stage: "pre_tag",
+    tag_state: "absent",
+    candidate: {stage_receipt_sha256: $stage_sha, oci: $oci[0]},
+    public_endpoint_writes: false
+  }
+' >"${candidate_status}"
+write_inventory "${candidate_root}" PREPUBLISH_SHA256SUMS
+
+for ordinal in $(seq 1 32); do
+  printf '{"row":%s}\n' "${ordinal}" \
+    >"${aggregate_root}/rows/row-$(printf '%02d' "${ordinal}").json"
+done
+cp "${candidate_status}" \
+  "${aggregate_root}/ait-release.prepublish-candidate.json"
+candidate_artifact_digest=sha256:6666666666666666666666666666666666666666666666666666666666666666
+jq -S -n \
+  --arg release_id REL-FAM-0123456789ABCDEF \
+  --arg artifact_digest "${candidate_artifact_digest}" \
+  --arg status_sha "$(sha256_file "${candidate_status}")" \
+  --arg stage_sha "$(sha256_file "${candidate_stage}")" \
+  --arg source_commit "${source_commit}" '
+  {
+    contract: "ait.release.clean-host.aggregate/v1",
+    status: "qualified",
+    release: {
+      id: $release_id,
+      version: "1.2.3-rc.5",
+      source_commit: $source_commit,
+      verification_stage: "pre_tag",
+      candidate_artifact_digest: $artifact_digest,
+      candidate_stage_receipt_sha256: $stage_sha,
+      operator_status_sha256: $status_sha
+    },
+    matrix: {expected_rows: 32, admitted_rows: 32, evidence_files: 32},
+    failures: [],
+    promotion: {allowed: true, retry_same_candidate: false, terminal_for_release: false}
+  }
+' >"${aggregate_root}/ait-release.clean-host-status.json"
+write_inventory "${aggregate_root}" SHA256SUMS
+
+candidate_run=${temporary_root}/candidate-run.json
+candidate_artifact=${temporary_root}/candidate-artifact.json
+aggregate_artifact=${temporary_root}/aggregate-artifact.json
+candidate_control=dddddddddddddddddddddddddddddddddddddddd
+jq -S -n --arg head "${candidate_control}" '{
+  id: 104,
+  run_attempt: 1,
+  name: "ait release pre-tag candidate qualification",
+  path: ".github/workflows/ait-release-pre-tag-qualification.yml",
+  event: "workflow_dispatch",
+  status: "completed",
+  conclusion: "success",
+  head_sha: $head
+}' >"${candidate_run}"
+jq -S -n --arg digest "${candidate_artifact_digest}" '{
+  id: 204,
+  name: "ait-pre-tag-candidate-REL-FAM-0123456789ABCDEF",
+  digest: $digest,
+  expired: false,
+  workflow_run: {id: 104}
+}' >"${candidate_artifact}"
+jq -S -n '{
+  id: 205,
+  name: "ait-pre-tag-clean-host-REL-FAM-0123456789ABCDEF",
+  digest: "sha256:7777777777777777777777777777777777777777777777777777777777777777",
+  expired: false,
+  workflow_run: {id: 104}
+}' >"${aggregate_artifact}"
+
+candidate_binding=${temporary_root}/candidate-binding.json
+"${operator}" bind-candidate \
+  --source-root "${source_root}" \
+  --receipts "${receipts}" \
+  --run-record "${candidate_run}" \
+  --candidate-artifact-record "${candidate_artifact}" \
+  --candidate-root "${candidate_root}" \
+  --aggregate-artifact-record "${aggregate_artifact}" \
+  --aggregate-root "${aggregate_root}" \
+  --output "${candidate_binding}" >/dev/null
+jq -e '
+  .contract == "ait.release.operator.pre-tag-candidate-binding/v1" and
+  .status == "ready_for_immutable_tag" and
+  .qualification.clean_host_rows == 32 and
+  .qualification.tag_state_at_closeout == "absent" and
+  .tag == {created: false, verified: false} and
+  ([.mutation[]] | all(. == false))
+' "${candidate_binding}" >/dev/null
+
+expect_failure authorize-before-tag "${operator}" authorize \
+  --source-root "${source_root}" \
+  --candidate "${candidate_binding}" \
+  --output "${temporary_root}/authorize-before-tag.json"
+grep -F 'qualified public release tag must be an annotated tag object' \
+  "${temporary_root}/authorize-before-tag.stderr" >/dev/null
+
+git -C "${source_root}" tag -a v1.2.3-rc.5 -m 'qualified fixture release tag'
+tag_binding=${temporary_root}/tag-binding.json
+"${operator}" authorize \
+  --source-root "${source_root}" \
+  --candidate "${candidate_binding}" \
+  --output "${tag_binding}" >/dev/null
+jq -e '
+  .contract == "ait.release.operator.tag-binding/v1" and
+  .status == "ready_for_protected_authorization" and
+  .tag == {created: true, verified: true, annotated: true} and
+  .qualification.clean_host_rows == 32 and
+  .protected_dispatch.inputs.qualification_run_id == "104" and
+  .protected_dispatch.requested == false and
+  ([.mutation[]] | all(. == false))
+' "${tag_binding}" >/dev/null
+
 protected_run=${temporary_root}/protected-run.json
 protected_artifact=${temporary_root}/protected-artifact.json
 protected_evidence=${temporary_root}/protected-evidence.json
@@ -599,7 +834,7 @@ jq -n '
   }
 ' >"${protected_artifact}"
 jq -n \
-  --slurpfile receipts "${receipts}" \
+  --slurpfile receipts "${tag_binding}" \
   --arg protected_control "${protected_control}" '
   ($receipts[0]) as $r |
   {
@@ -613,6 +848,9 @@ jq -n \
     public_source: {
       repository: $r.release.repository,
       git_commit: $r.release.source_commit,
+      anonymous_tag_readback: true,
+      commit_tree_equal: true,
+      archived_source_equal: true,
       status: "verified"
     },
     dossier: {
@@ -631,6 +869,19 @@ jq -n \
         family_packages_sha256: "2222222222222222222222222222222222222222222222222222222222222222",
         family_release_sha256: "3333333333333333333333333333333333333333333333333333333333333333"
       }
+    },
+    pre_tag_qualification: {
+      workflow_run_id: ($r.qualification.workflow_run_id | tostring),
+      workflow_run_attempt: ($r.qualification.workflow_run_attempt | tostring),
+      workflow_control_commit: $r.qualification.workflow_control_commit,
+      candidate_artifact_id: ($r.qualification.candidate_artifact_id | tostring),
+      candidate_artifact_digest: $r.qualification.candidate_artifact_digest,
+      candidate_status_sha256: $r.qualification.candidate_status_sha256,
+      aggregate_artifact_id: ($r.qualification.aggregate_artifact_id | tostring),
+      aggregate_artifact_digest: $r.qualification.aggregate_artifact_digest,
+      aggregate_status_sha256: $r.qualification.aggregate_status_sha256,
+      clean_host_rows: 32,
+      tag_state_at_closeout: "absent"
     },
     authorization: {
       required: true,
@@ -657,7 +908,7 @@ jq -n \
 
 endpoint_config=${temporary_root}/endpoint-config.json
 "${operator}" bind-authorization \
-  --receipts "${receipts}" \
+  --receipts "${tag_binding}" \
   --run-record "${protected_run}" \
   --artifact-record "${protected_artifact}" \
   --protected-evidence "${protected_evidence}" \
@@ -681,10 +932,26 @@ jq -e '
   .endpoints.oci.moving_tag == "rc"
 ' "${endpoint_config}" >/dev/null
 
+promoted_candidate=${temporary_root}/promoted-candidate
+cp -R "${candidate_root}" "${promoted_candidate}"
+payload_sha_before=$(sha256_file "${promoted_candidate}/assets/fixture.bin")
+"${candidate_promote}" \
+  "${endpoint_config}" "${protected_evidence}" "${aggregate_root}" \
+  "${promoted_candidate}" >/dev/null
+test "$(sha256_file "${promoted_candidate}/assets/fixture.bin")" = \
+  "${payload_sha_before}"
+jq -e '
+  .status == "ready_for_authenticated_endpoint_preflight" and
+  .pre_tag_qualification.clean_host_rows == 32 and
+  .pre_tag_qualification.payload_rebuilt == false and
+  .mutation.artifact_rebuild == false and
+  .mutation.component_rebuild == false
+' "${promoted_candidate}/ait-release.endpoint-publication.json" >/dev/null
+
 jq '.release_id = "REL-FAM-FFFFFFFFFFFFFFFF"' "${protected_evidence}" \
   >"${temporary_root}/altered-evidence.json"
 expect_failure altered-evidence "${operator}" bind-authorization \
-  --receipts "${receipts}" \
+  --receipts "${tag_binding}" \
   --run-record "${protected_run}" \
   --artifact-record "${protected_artifact}" \
   --protected-evidence "${temporary_root}/altered-evidence.json" \
@@ -698,7 +965,7 @@ jq '
   .release.tag = "v1.2.3" |
   .protected_dispatch.inputs.channel = "stable" |
   .protected_dispatch.inputs.tag = "v1.2.3"
-' "${receipts}" >"${stable_receipts}"
+' "${tag_binding}" >"${stable_receipts}"
 stable_evidence=${temporary_root}/stable-evidence.json
 jq '
   .version = "1.2.3" |

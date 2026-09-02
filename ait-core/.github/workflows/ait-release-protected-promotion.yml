@@ -51,6 +51,42 @@ on:
         description: Approved exact frozen SHA256SUMS SHA-256
         required: true
         type: string
+      qualification_run_id:
+        description: Successful pre-tag candidate qualification run ID
+        required: true
+        type: string
+      qualification_run_attempt:
+        description: Exact pre-tag candidate qualification run attempt
+        required: true
+        type: string
+      qualification_control_commit:
+        description: Reviewed workflow commit that ran pre-tag qualification
+        required: true
+        type: string
+      candidate_artifact_id:
+        description: Exact pre-tag candidate artifact ID
+        required: true
+        type: string
+      candidate_artifact_digest:
+        description: Exact sha256-prefixed pre-tag candidate artifact digest
+        required: true
+        type: string
+      candidate_status_sha256:
+        description: Exact pre-tag candidate status SHA-256
+        required: true
+        type: string
+      aggregate_artifact_id:
+        description: Exact complete clean-host aggregate artifact ID
+        required: true
+        type: string
+      aggregate_artifact_digest:
+        description: Exact sha256-prefixed aggregate artifact digest
+        required: true
+        type: string
+      aggregate_status_sha256:
+        description: Exact qualified aggregate status SHA-256
+        required: true
+        type: string
 
 permissions:
   actions: read
@@ -90,6 +126,15 @@ jobs:
           AIT_RELEASE_FROZEN_MANIFEST_SHA256: ${{ inputs.frozen_manifest_sha256 }}
           AIT_RELEASE_GIT_COMMIT: ${{ inputs.source_commit }}
           AIT_RELEASE_ID: ${{ inputs.release_id }}
+          AIT_RELEASE_QUALIFICATION_RUN_ID: ${{ inputs.qualification_run_id }}
+          AIT_RELEASE_QUALIFICATION_RUN_ATTEMPT: ${{ inputs.qualification_run_attempt }}
+          AIT_RELEASE_QUALIFICATION_CONTROL_COMMIT: ${{ inputs.qualification_control_commit }}
+          AIT_RELEASE_CANDIDATE_ARTIFACT_ID: ${{ inputs.candidate_artifact_id }}
+          AIT_RELEASE_CANDIDATE_ARTIFACT_DIGEST: ${{ inputs.candidate_artifact_digest }}
+          AIT_RELEASE_CANDIDATE_STATUS_SHA256: ${{ inputs.candidate_status_sha256 }}
+          AIT_RELEASE_AGGREGATE_ARTIFACT_ID: ${{ inputs.aggregate_artifact_id }}
+          AIT_RELEASE_AGGREGATE_ARTIFACT_DIGEST: ${{ inputs.aggregate_artifact_digest }}
+          AIT_RELEASE_AGGREGATE_STATUS_SHA256: ${{ inputs.aggregate_status_sha256 }}
           AIT_RELEASE_REPOSITORY: ${{ github.repository }}
           AIT_RELEASE_SOURCE_CONTROL_SHA: ${{ inputs.source_control_commit }}
           AIT_RELEASE_SOURCE_RUN_ATTEMPT: ${{ inputs.source_run_attempt }}
@@ -113,6 +158,15 @@ jobs:
           [[ "${AIT_RELEASE_SOURCE_RUN_ATTEMPT}" =~ ^[1-9][0-9]*$ ]]
           [[ "${AIT_RELEASE_DOSSIER_ARTIFACT_ID}" =~ ^[1-9][0-9]*$ ]]
           [[ "${AIT_RELEASE_DOSSIER_ARTIFACT_DIGEST}" =~ ^sha256:[0-9a-f]{64}$ ]]
+          [[ "${AIT_RELEASE_QUALIFICATION_RUN_ID}" =~ ^[1-9][0-9]*$ ]]
+          [[ "${AIT_RELEASE_QUALIFICATION_RUN_ATTEMPT}" =~ ^[1-9][0-9]*$ ]]
+          [[ "${AIT_RELEASE_QUALIFICATION_CONTROL_COMMIT}" =~ ^[0-9a-f]{40}$ ]]
+          [[ "${AIT_RELEASE_CANDIDATE_ARTIFACT_ID}" =~ ^[1-9][0-9]*$ ]]
+          [[ "${AIT_RELEASE_CANDIDATE_ARTIFACT_DIGEST}" =~ ^sha256:[0-9a-f]{64}$ ]]
+          [[ "${AIT_RELEASE_CANDIDATE_STATUS_SHA256}" =~ ^[0-9a-f]{64}$ ]]
+          [[ "${AIT_RELEASE_AGGREGATE_ARTIFACT_ID}" =~ ^[1-9][0-9]*$ ]]
+          [[ "${AIT_RELEASE_AGGREGATE_ARTIFACT_DIGEST}" =~ ^sha256:[0-9a-f]{64}$ ]]
+          [[ "${AIT_RELEASE_AGGREGATE_STATUS_SHA256}" =~ ^[0-9a-f]{64}$ ]]
 
           run_record="${RUNNER_TEMP}/source-run.json"
           artifact_record="${RUNNER_TEMP}/dossier-artifact.json"
@@ -154,6 +208,49 @@ jobs:
               .workflow_run.id == $run_id
             ' "${artifact_record}" >/dev/null
 
+          qualification_run="${RUNNER_TEMP}/qualification-run.json"
+          candidate_artifact="${RUNNER_TEMP}/candidate-artifact.json"
+          aggregate_artifact="${RUNNER_TEMP}/aggregate-artifact.json"
+          for request in \
+            "actions/runs/${AIT_RELEASE_QUALIFICATION_RUN_ID}:${qualification_run}" \
+            "actions/artifacts/${AIT_RELEASE_CANDIDATE_ARTIFACT_ID}:${candidate_artifact}" \
+            "actions/artifacts/${AIT_RELEASE_AGGREGATE_ARTIFACT_ID}:${aggregate_artifact}"; do
+            route=${request%%:*}
+            destination=${request#*:}
+            curl --fail --silent --show-error --location \
+              --header "Authorization: Bearer ${AIT_GITHUB_TOKEN}" \
+              --header 'Accept: application/vnd.github+json' \
+              --header 'X-GitHub-Api-Version: 2022-11-28' \
+              "https://api.github.com/repos/${AIT_RELEASE_REPOSITORY}/${route}" \
+              --output "${destination}"
+          done
+          jq -e \
+            --argjson run_id "${AIT_RELEASE_QUALIFICATION_RUN_ID}" \
+            --argjson attempt "${AIT_RELEASE_QUALIFICATION_RUN_ATTEMPT}" \
+            --arg control "${AIT_RELEASE_QUALIFICATION_CONTROL_COMMIT}" '
+              .id == $run_id and .run_attempt == $attempt and
+              .name == "ait release pre-tag candidate qualification" and
+              .path == ".github/workflows/ait-release-pre-tag-qualification.yml" and
+              .event == "workflow_dispatch" and .status == "completed" and
+              .conclusion == "success" and .head_sha == $control
+            ' "${qualification_run}" >/dev/null
+          jq -e \
+            --argjson id "${AIT_RELEASE_CANDIDATE_ARTIFACT_ID}" \
+            --argjson run_id "${AIT_RELEASE_QUALIFICATION_RUN_ID}" \
+            --arg name "ait-pre-tag-candidate-${AIT_RELEASE_ID}" \
+            --arg digest "${AIT_RELEASE_CANDIDATE_ARTIFACT_DIGEST}" '
+              .id == $id and .name == $name and .digest == $digest and
+              .expired == false and .workflow_run.id == $run_id
+            ' "${candidate_artifact}" >/dev/null
+          jq -e \
+            --argjson id "${AIT_RELEASE_AGGREGATE_ARTIFACT_ID}" \
+            --argjson run_id "${AIT_RELEASE_QUALIFICATION_RUN_ID}" \
+            --arg name "ait-pre-tag-clean-host-${AIT_RELEASE_ID}" \
+            --arg digest "${AIT_RELEASE_AGGREGATE_ARTIFACT_DIGEST}" '
+              .id == $id and .name == $name and .digest == $digest and
+              .expired == false and .workflow_run.id == $run_id
+            ' "${aggregate_artifact}" >/dev/null
+
       - name: Download the exact frozen family dossier
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
@@ -163,6 +260,77 @@ jobs:
           path: dossier
           repository: ${{ github.repository }}
           run-id: ${{ inputs.source_run_id }}
+
+      - name: Download the exact pre-tag candidate
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          artifact-ids: ${{ inputs.candidate_artifact_id }}
+          merge-multiple: true
+          github-token: ${{ github.token }}
+          path: pre-tag-candidate
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.qualification_run_id }}
+
+      - name: Download the complete pre-tag qualification
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          artifact-ids: ${{ inputs.aggregate_artifact_id }}
+          merge-multiple: true
+          github-token: ${{ github.token }}
+          path: pre-tag-aggregate
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.qualification_run_id }}
+
+      - name: Verify the complete pre-tag qualification before protected approval
+        shell: bash
+        run: |
+          set -euo pipefail
+          node control/ci/release_prepublish_verify.mjs stage \
+            --root "${GITHUB_WORKSPACE}/pre-tag-candidate" \
+            --config-sha256 \
+              "$(sha256sum pre-tag-candidate/ait-release.endpoints.authority.json | awk '{print $1}')" \
+            --status-sha256 '${{ inputs.candidate_status_sha256 }}' >/dev/null
+          node control/ci/release_prepublish_verify.mjs qualify \
+            --root "${GITHUB_WORKSPACE}/pre-tag-aggregate" \
+            --candidate-root "${GITHUB_WORKSPACE}/pre-tag-candidate" \
+            --candidate-artifact-digest '${{ inputs.candidate_artifact_digest }}' \
+            --aggregate-sha256 '${{ inputs.aggregate_status_sha256 }}' >/dev/null
+          jq -e \
+            --arg release_id '${{ inputs.release_id }}' \
+            --arg channel '${{ inputs.channel }}' \
+            --arg tag '${{ inputs.tag }}' \
+            --arg source_commit '${{ inputs.source_commit }}' \
+            --arg snapshot '${{ inputs.coordinator_snapshot }}' \
+            --arg frozen_manifest_sha '${{ inputs.frozen_manifest_sha256 }}' \
+            --arg frozen_checksums_sha '${{ inputs.checksum_sha256 }}' \
+            --argjson source_run_id '${{ inputs.source_run_id }}' \
+            --argjson source_run_attempt '${{ inputs.source_run_attempt }}' \
+            --arg source_control '${{ inputs.source_control_commit }}' \
+            --argjson dossier_artifact_id '${{ inputs.dossier_artifact_id }}' \
+            --arg dossier_artifact_digest '${{ inputs.dossier_artifact_digest }}' '
+              .contract == "ait.release.family.pre-tag-candidate-authority/v1" and
+              .status == "ready_for_pre_tag_clean_host" and
+              .release.id == $release_id and .release.channel == $channel and
+              .release.tag == $tag and .release.source_commit == $source_commit and
+              .release.coordinator_snapshot == $snapshot and
+              .release.frozen_manifest_sha256 == $frozen_manifest_sha and
+              .release.frozen_checksums_sha256 == $frozen_checksums_sha and
+              .source_dossier.workflow_run_id == $source_run_id and
+              .source_dossier.workflow_run_attempt == $source_run_attempt and
+              .source_dossier.workflow_control_commit == $source_control and
+              .source_dossier.artifact_id == $dossier_artifact_id and
+              .source_dossier.artifact_digest == $dossier_artifact_digest and
+              .tag_authority.required_state == "absent"
+            ' pre-tag-candidate/ait-release.endpoints.authority.json >/dev/null
+          jq -e --arg release_id '${{ inputs.release_id }}' \
+            --arg source_commit '${{ inputs.source_commit }}' '
+            .status == "qualified" and
+            .release.id == $release_id and
+            .release.source_commit == $source_commit and
+            .release.verification_stage == "pre_tag" and
+            .matrix.expected_rows == 32 and .matrix.admitted_rows == 32 and
+            .matrix.evidence_files == 32 and .failures == []
+          ' pre-tag-aggregate/ait-release.clean-host-status.json >/dev/null
 
       - name: Read the selected public tag anonymously
         shell: bash
@@ -204,6 +372,15 @@ jobs:
           AIT_RELEASE_GIT_COMMIT: ${{ inputs.source_commit }}
           AIT_RELEASE_ID: ${{ inputs.release_id }}
           AIT_RELEASE_PROTECTED_ENVIRONMENT: ${{ format('{0}-promotion', inputs.channel) }}
+          AIT_RELEASE_QUALIFICATION_RUN_ID: ${{ inputs.qualification_run_id }}
+          AIT_RELEASE_QUALIFICATION_RUN_ATTEMPT: ${{ inputs.qualification_run_attempt }}
+          AIT_RELEASE_QUALIFICATION_CONTROL_COMMIT: ${{ inputs.qualification_control_commit }}
+          AIT_RELEASE_CANDIDATE_ARTIFACT_ID: ${{ inputs.candidate_artifact_id }}
+          AIT_RELEASE_CANDIDATE_ARTIFACT_DIGEST: ${{ inputs.candidate_artifact_digest }}
+          AIT_RELEASE_CANDIDATE_STATUS_SHA256: ${{ inputs.candidate_status_sha256 }}
+          AIT_RELEASE_AGGREGATE_ARTIFACT_ID: ${{ inputs.aggregate_artifact_id }}
+          AIT_RELEASE_AGGREGATE_ARTIFACT_DIGEST: ${{ inputs.aggregate_artifact_digest }}
+          AIT_RELEASE_AGGREGATE_STATUS_SHA256: ${{ inputs.aggregate_status_sha256 }}
           AIT_RELEASE_REPOSITORY: ${{ github.repository }}
           AIT_RELEASE_SOURCE_CONTROL_SHA: ${{ inputs.source_control_commit }}
           AIT_RELEASE_SOURCE_RUN_ATTEMPT: ${{ inputs.source_run_attempt }}

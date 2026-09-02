@@ -29,7 +29,23 @@ cleanup() {
 trap cleanup EXIT HUP INT TERM
 
 endpoint_config=${temporary_root}/endpoint-config.json
-jq '.release.channel = "rc" | .endpoints.github.prerelease = true' \
+jq '
+  .release.channel = "rc" |
+  .endpoints.github.prerelease = true |
+  .pre_tag_qualification = {
+    workflow_run_id: 31720000001,
+    workflow_run_attempt: 1,
+    workflow_control_commit: "1111111111111111111111111111111111111111",
+    candidate_artifact_id: 9189000001,
+    candidate_artifact_digest: "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+    candidate_status_sha256: "3333333333333333333333333333333333333333333333333333333333333333",
+    aggregate_artifact_id: 9189000002,
+    aggregate_artifact_digest: "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+    aggregate_status_sha256: "5555555555555555555555555555555555555555555555555555555555555555",
+    clean_host_rows: 32,
+    tag_state_at_closeout: "absent"
+  }
+' \
   "${endpoint_config_source}" >"${endpoint_config}"
 
 sha256_file() {
@@ -116,6 +132,8 @@ jq -e '
     artifact_id: 9188270344,
     artifact_digest: "sha256:35c3fc115bda047ca9b9998f4e23941edb3b95c94e08ef98896fd559b1b146b9"
   } and
+  .pre_tag_qualification.clean_host_rows == 32 and
+  .pre_tag_qualification.tag_state_at_closeout == "absent" and
   .protected_authorization == {
     workflow_run_id: 31721469565,
     workflow_run_attempt: 1,
@@ -167,15 +185,14 @@ for required in \
   'protected_run_id:' \
   'endpoint_config_sha256:' \
   'endpoint_config_b64:' \
-  'reuse_frozen_candidate:' \
-  'candidate_run_id:' \
-  'candidate_artifact_id:' \
-  'candidate_artifact_digest:' \
-  'candidate_status_sha256:' \
-  'uses: ./.github/workflows/ait-release-prepublish-clean-host.yml' \
-  'needs: prepublish' \
+  'qualification_run_id=' \
+  'candidate_artifact_id=' \
+  'aggregate_artifact_id=' \
+  'Download the exact pre-tag candidate' \
+  'Download the successful pre-tag qualification' \
   'control/ci/release_operator.sh validate-config' \
   'control/ci/release_prepublish_verify.mjs qualify' \
+  'control/ci/release_candidate_promote.sh' \
   'control/ci/release_prepublish_oci.sh publish' \
   'control/ci/release_endpoint_remote.sh preflight' \
   'secrets.AIT_NPM_TOKEN' \
@@ -184,18 +201,18 @@ for required in \
   grep -F -- "${required}" "${workflow}" >/dev/null
 done
 for required_prepublish_contract in \
-  'name: ait release prepublish clean host' \
+  'name: ait release pre-tag clean host' \
   'permissions:' \
   'actions: read' \
   'contents: read' \
-  'control/ci/release_prepublish_stage.sh' \
+  'candidate_authority_sha256:' \
+  'control/ci/release_prepublish_stage.sh --pre-tag' \
   'control/ci/release_prepublish_verify.mjs stage' \
   'control/ci/release_clean_host.mjs aggregate' \
-  'Download the previously frozen candidate for control-only retry' \
-  'cmp "${comparison_root}/ait-release.clean-host-matrix.json" "${matrix}"' \
+  'Recheck tag absence at qualification closeout' \
   'run-id: ${{ needs.stage.outputs.candidate_run_id }}' \
-  'ait-prepublish-candidate-${{ inputs.release_id }}' \
-  'ait-prepublish-clean-host-${{ inputs.release_id }}'; do
+  'ait-pre-tag-candidate-${{ inputs.release_id }}' \
+  'ait-pre-tag-clean-host-${{ inputs.release_id }}'; do
   grep -F -- "${required_prepublish_contract}" "${prepublish_workflow}" >/dev/null
 done
 grep -F 'release_endpoint_publication.sh' "${prepublish_stage}" >/dev/null

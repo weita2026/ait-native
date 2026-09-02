@@ -1,17 +1,28 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ $# -ne 4 ]]; then
+authority_mode=protected
+if [[ ${1:-} == --pre-tag ]]; then
+  authority_mode=pre_tag
+  shift
+fi
+if [[ (${authority_mode} == protected && $# -ne 4) ||
+  (${authority_mode} == pre_tag && $# -ne 3) ]]; then
   printf '%s\n' \
-    'usage: release_prepublish_stage.sh <endpoint-config> <dossier-root> <protected-evidence> <output-root>' >&2
+    'usage: release_prepublish_stage.sh [--pre-tag] <authority-config> <dossier-root> [<protected-evidence>] <output-root>' >&2
   exit 64
 fi
 
 repo_root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 endpoint_config=$1
 dossier_root=$2
-protected_evidence=$3
-output_root=$4
+if [[ ${authority_mode} == protected ]]; then
+  protected_evidence=$3
+  output_root=$4
+else
+  protected_evidence=
+  output_root=$3
+fi
 
 for command in awk docker find jq sort; do
   command -v "${command}" >/dev/null 2>&1 || {
@@ -40,8 +51,10 @@ require_regular_file() {
   }
 }
 
-require_regular_file "${endpoint_config}" 'endpoint configuration'
-require_regular_file "${protected_evidence}" 'protected authorization evidence'
+require_regular_file "${endpoint_config}" 'release candidate authority'
+if [[ ${authority_mode} == protected ]]; then
+  require_regular_file "${protected_evidence}" 'protected authorization evidence'
+fi
 [[ ${dossier_root} == /* && -d ${dossier_root} && ! -L ${dossier_root} ]] || {
   printf 'family dossier must be an absolute real directory: %s\n' "${dossier_root}" >&2
   exit 66
@@ -51,15 +64,27 @@ require_regular_file "${protected_evidence}" 'protected authorization evidence'
   exit 73
 }
 
-bash "${repo_root}/ci/release_endpoint_publication.sh" \
-  "${endpoint_config}" "${dossier_root}" "${protected_evidence}" "${output_root}" \
-  >/dev/null
+if [[ ${authority_mode} == protected ]]; then
+  bash "${repo_root}/ci/release_endpoint_publication.sh" \
+    "${endpoint_config}" "${dossier_root}" "${protected_evidence}" "${output_root}" \
+    >/dev/null
+else
+  bash "${repo_root}/ci/release_endpoint_publication.sh" --pre-tag \
+    "${endpoint_config}" "${dossier_root}" "${output_root}" >/dev/null
+fi
 
 release_id=$(jq -er '.release.id' "${endpoint_config}")
 release_version=$(jq -er '.release.version' "${endpoint_config}")
 release_tag=$(jq -er '.release.tag' "${endpoint_config}")
 source_commit=$(jq -er '.release.source_commit' "${endpoint_config}")
 endpoint_config_sha256=$(sha256_file "${endpoint_config}")
+if [[ ${authority_mode} == pre_tag ]]; then
+  tag_state=absent
+  qualification_stage=pre_tag
+else
+  tag_state=present
+  qualification_stage=post_authorization
+fi
 endpoint_stage_receipt=${output_root}/ait-release.endpoint-publication.json
 assets_checksums=${output_root}/assets/SHA256SUMS
 require_regular_file "${endpoint_stage_receipt}" 'endpoint stage receipt'
@@ -124,6 +149,8 @@ jq -S -n \
   --arg version "${release_version}" \
   --arg tag "${release_tag}" \
   --arg source_commit "${source_commit}" \
+  --arg qualification_stage "${qualification_stage}" \
+  --arg tag_state "${tag_state}" \
   --arg endpoint_config_sha256 "${endpoint_config_sha256}" \
   --arg endpoint_stage_receipt_sha256 "$(sha256_file "${endpoint_stage_receipt}")" \
   --arg assets_checksum_sha256 "$(sha256_file "${assets_checksums}")" \
@@ -137,6 +164,8 @@ jq -S -n \
         tag: $tag,
         source_commit: $source_commit
       },
+      qualification_stage: $qualification_stage,
+      tag_state: $tag_state,
       authority: {
         endpoint_config_sha256: $endpoint_config_sha256,
         endpoint_stage_receipt_sha256: $endpoint_stage_receipt_sha256,
@@ -152,7 +181,9 @@ jq -S -n \
         tag_write: false,
         service_start: false
       },
-      next_action: "run_complete_clean_host_matrix_before_publication"
+      next_action: (if $qualification_stage == "pre_tag" then
+        "run_complete_clean_host_matrix_before_immutable_tag"
+      else "run_complete_clean_host_matrix_before_publication" end)
     }
   ' >"${stage_receipt}"
 
@@ -162,6 +193,8 @@ jq -S -n \
   --arg version "${release_version}" \
   --arg tag "${release_tag}" \
   --arg source_commit "${source_commit}" \
+  --arg qualification_stage "${qualification_stage}" \
+  --arg tag_state "${tag_state}" \
   --arg stage_receipt_sha256 "$(sha256_file "${stage_receipt}")" \
   --argjson oci "${oci}" '
     {
@@ -173,6 +206,8 @@ jq -S -n \
         tag: $tag,
         source_commit: $source_commit
       },
+      qualification_stage: $qualification_stage,
+      tag_state: $tag_state,
       candidate: {
         stage_receipt_sha256: $stage_receipt_sha256,
         oci: $oci

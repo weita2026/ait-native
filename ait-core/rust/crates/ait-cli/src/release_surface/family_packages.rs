@@ -1820,8 +1820,15 @@ fn assemble_apt(
             } else {
                 "libc6 (>= 2.28)".to_string()
             };
+            let runner_ownership_transition =
+                product_includes_runner && distribution.role == "product";
+            let ownership_relationships = if runner_ownership_transition {
+                format!("Breaks: ait-runner (<< {version})\nReplaces: ait-runner (<< {version})\n")
+            } else {
+                String::new()
+            };
             let control = format!(
-                "Package: {package_name}\nVersion: {version}\nSection: devel\nPriority: optional\nArchitecture: {architecture}\nMaintainer: AIT maintainers <weita2026@users.noreply.github.com>\nInstalled-Size: {installed_size}\nDepends: {dependencies}\nHomepage: {homepage}\nDescription: {description}\n Built from an immutable AIT family dossier without starting services.\n"
+                "Package: {package_name}\nVersion: {version}\nSection: devel\nPriority: optional\nArchitecture: {architecture}\nMaintainer: AIT maintainers <weita2026@users.noreply.github.com>\nInstalled-Size: {installed_size}\nDepends: {dependencies}\n{ownership_relationships}Homepage: {homepage}\nDescription: {description}\n Built from an immutable AIT family dossier without starting services.\n"
             );
             let control_entries =
                 BTreeMap::from([("control".to_string(), (control.into_bytes(), 0o644))]);
@@ -1856,6 +1863,8 @@ fn assemble_apt(
                     "runner_included": true,
                     "runner_activation": "inactive",
                     "runner_systemd_unit": false,
+                    "breaks": format!("ait-runner (<< {version})"),
+                    "replaces": format!("ait-runner (<< {version})"),
                 })
             } else {
                 json!({

@@ -66,6 +66,25 @@ function jsonAt(commit, relativePath) {
   }
 }
 
+function optionalJsonAt(commit, relativePath) {
+  const matches = git([
+    "ls-tree",
+    "-r",
+    "--name-only",
+    commit,
+    "--",
+    relativePath,
+  ])
+    .trim()
+    .split("\n")
+    .filter(Boolean);
+  if (matches.length === 0) return undefined;
+  if (matches.length !== 1 || matches[0] !== relativePath) {
+    fail(`ambiguous Git path at ${commit}:${relativePath}`);
+  }
+  return jsonAt(commit, relativePath);
+}
+
 const qualifiedFamily = jsonAt(qualifiedCommit, "ait-release-family.json");
 const releaseFamily = jsonAt(releaseCommit, "ait-release-family.json");
 const oldVersion = qualifiedFamily?.family?.version;
@@ -169,6 +188,154 @@ const authoritySnapshotTransitions = expectedSourceRepositories
   }))
   .filter((row) => row.qualified_snapshot !== row.release_snapshot);
 
+function canonicalJson(value) {
+  if (Array.isArray(value)) return value.map(canonicalJson);
+  if (value !== null && typeof value === "object") {
+    return Object.fromEntries(
+      Object.keys(value)
+        .sort()
+        .map((key) => [key, canonicalJson(value[key])]),
+    );
+  }
+  return value;
+}
+
+function familyWithoutComponentSnapshots(family, label) {
+  if (!Array.isArray(family?.components)) {
+    fail(`${label} family component inventory is invalid`);
+  }
+  return canonicalJson({
+    ...family,
+    components: family.components.map((component) => {
+      if (
+        component === null ||
+        typeof component !== "object" ||
+        Array.isArray(component)
+      ) {
+        fail(`${label} family component inventory is invalid`);
+      }
+      const normalized = { ...component };
+      delete normalized.source_snapshot;
+      return normalized;
+    }),
+  });
+}
+
+function componentSourceSnapshots(family, label) {
+  if (!Array.isArray(family?.components)) {
+    fail(`${label} component family Snapshot inventory is invalid`);
+  }
+  const snapshots = new Map();
+  for (const component of family.components) {
+    const repositoryName = component?.source_repository;
+    const snapshot = component?.source_snapshot;
+    if (
+      !expectedSourceRepositories.includes(repositoryName) ||
+      !/^SNP-[0-9A-F]{12}$/.test(snapshot ?? "")
+    ) {
+      fail(`${label} component family Snapshot authority is invalid`);
+    }
+    const existing = snapshots.get(repositoryName);
+    if (existing !== undefined && existing !== snapshot) {
+      fail(`${label} component family Snapshot authority is ambiguous`);
+    }
+    snapshots.set(repositoryName, snapshot);
+  }
+  if (expectedSourceRepositories.some((name) => !snapshots.has(name))) {
+    fail(`${label} component family Snapshot inventory is invalid`);
+  }
+  if (new Set(snapshots.values()).size !== snapshots.size) {
+    fail(`${label} component family Snapshot authority is ambiguous`);
+  }
+  return snapshots;
+}
+
+function requireEqualSnapshots(left, right, message) {
+  if (
+    expectedSourceRepositories.some(
+      (sourceRepository) => left.get(sourceRepository) !== right.get(sourceRepository),
+    )
+  ) {
+    fail(message);
+  }
+}
+
+const nestedFamilyPath = "ait-core/ait-release-family.json";
+const qualifiedNestedFamily = optionalJsonAt(qualifiedCommit, nestedFamilyPath);
+const releaseNestedFamily = optionalJsonAt(releaseCommit, nestedFamilyPath);
+if ((qualifiedNestedFamily === undefined) !== (releaseNestedFamily === undefined)) {
+  fail("nested core family authority must be present in both pre-RC commits");
+}
+
+let componentAuthoritySnapshotTransitions = [];
+if (qualifiedNestedFamily !== undefined) {
+  const qualifiedRootShape = familyWithoutComponentSnapshots(
+    qualifiedFamily,
+    "qualified root",
+  );
+  const qualifiedNestedShape = familyWithoutComponentSnapshots(
+    qualifiedNestedFamily,
+    "qualified nested core",
+  );
+  const releaseRootShape = familyWithoutComponentSnapshots(
+    releaseFamily,
+    "release root",
+  );
+  const releaseNestedShape = familyWithoutComponentSnapshots(
+    releaseNestedFamily,
+    "release nested core",
+  );
+  if (JSON.stringify(qualifiedRootShape) !== JSON.stringify(qualifiedNestedShape)) {
+    fail(
+      "qualified nested core family may differ from the root family only in component source_snapshot values",
+    );
+  }
+  if (JSON.stringify(releaseRootShape) !== JSON.stringify(releaseNestedShape)) {
+    fail(
+      "release nested core family may differ from the root family only in component source_snapshot values",
+    );
+  }
+
+  const qualifiedComponentSnapshots = componentSourceSnapshots(
+    qualifiedNestedFamily,
+    "qualified nested core",
+  );
+  const releaseNestedSnapshots = componentSourceSnapshots(
+    releaseNestedFamily,
+    "release nested core",
+  );
+  const qualifiedRootSnapshots = componentSourceSnapshots(
+    qualifiedFamily,
+    "qualified root",
+  );
+  const releaseComponentSnapshots = componentSourceSnapshots(
+    releaseFamily,
+    "release root",
+  );
+  requireEqualSnapshots(
+    qualifiedRootSnapshots,
+    qualifiedSnapshots,
+    "qualified root family and monorepo mapping Snapshot authorities disagree",
+  );
+  requireEqualSnapshots(
+    releaseComponentSnapshots,
+    releaseSnapshots,
+    "release root family and monorepo mapping Snapshot authorities disagree",
+  );
+  requireEqualSnapshots(
+    qualifiedComponentSnapshots,
+    releaseNestedSnapshots,
+    "release nested core family rewrites qualified component source_snapshot values",
+  );
+  componentAuthoritySnapshotTransitions = expectedSourceRepositories
+    .map((sourceRepository) => ({
+      source_repository: sourceRepository,
+      qualified_snapshot: qualifiedComponentSnapshots.get(sourceRepository),
+      release_snapshot: releaseComponentSnapshots.get(sourceRepository),
+    }))
+    .filter((row) => row.qualified_snapshot !== row.release_snapshot);
+}
+
 function dotEscaped(value, slashCount) {
   return value.replaceAll(".", `${"\\".repeat(slashCount)}.`);
 }
@@ -187,6 +354,10 @@ const tokenTransitions = [
     },
   ]),
   ...authoritySnapshotTransitions.map((row) => ({
+    release: row.release_snapshot,
+    qualified: row.qualified_snapshot,
+  })),
+  ...componentAuthoritySnapshotTransitions.map((row) => ({
     release: row.release_snapshot,
     qualified: row.qualified_snapshot,
   })),
@@ -335,6 +506,7 @@ process.stdout.write(
       qualified_version: oldVersion,
       release_version: newVersion,
       authority_snapshot_transitions: authoritySnapshotTransitions,
+      component_authority_snapshot_transitions: componentAuthoritySnapshotTransitions,
       structural_authority_paths: [...structuralAuthorityPaths],
       normalized_version_paths: normalizedPaths,
       changed_paths: changed,

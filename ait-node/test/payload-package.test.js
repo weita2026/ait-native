@@ -225,7 +225,7 @@ test("npm admits a glibc optional package and omits it for musl", async (context
     `${JSON.stringify(
       {
         name: "@ait-native-test/glibc-addon",
-        version: "1.1.1",
+        version: "1.1.0",
         os: ["linux"],
         cpu: ["x64"],
         libc: ["glibc"],
@@ -268,7 +268,7 @@ test("npm admits a glibc optional package and omits it for musl", async (context
       `${JSON.stringify(
         {
           name: `ait-native-libc-${libc}-consumer`,
-          version: "1.1.1",
+          version: "1.1.0",
           private: true,
           optionalDependencies: {
             "@ait-native-test/glibc-addon": `file:${relativeArchive}`,
@@ -329,7 +329,7 @@ test("packager rejects missing addon, drift, wrong target, and a non-addon", asy
   assert.match(missingAddon.stderr, /missing required npm addon package option --addon/);
 
   const wrongVersion = packagerArgs("check", payload, LOCAL_ADDON, outputRoot);
-  wrongVersion[wrongVersion.indexOf("--version") + 1] = "1.1.1-rc.99";
+  wrongVersion[wrongVersion.indexOf("--version") + 1] = "1.1.0-rc.99";
   const drift = run(process.execPath, wrongVersion);
   assert.notEqual(drift.status, 0);
   assert.match(drift.stderr, /version .* does not match/);

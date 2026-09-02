@@ -184,7 +184,12 @@ function verifyStage(root, configSha, statusSha) {
     service_start: false,
     tag_write: false,
   };
+  const preTag = config.contract === "ait.release.family.pre-tag-candidate-authority/v1";
+  const protectedCandidate = config.contract === "ait.release.family.endpoints/v1";
+  const expectedQualificationStage = preTag ? "pre_tag" : "post_authorization";
+  const expectedTagState = preTag ? "absent" : "present";
   if (
+    (!preTag && !protectedCandidate) ||
     receipt.contract !== "ait.release.prepublish.stage/v1" ||
     receipt.status !== "frozen_candidate_staged" ||
     receipt.authority?.endpoint_config_sha256 !== configSha ||
@@ -194,6 +199,10 @@ function verifyStage(root, configSha, statusSha) {
       sha256File(path.join(root, "assets", "SHA256SUMS")) ||
     status.contract !== "ait.release.prepublish.candidate/v1" ||
     status.status !== "frozen_candidate_pending_clean_host" ||
+    receipt.qualification_stage !== expectedQualificationStage ||
+    status.qualification_stage !== expectedQualificationStage ||
+    receipt.tag_state !== expectedTagState ||
+    status.tag_state !== expectedTagState ||
     status.candidate?.stage_receipt_sha256 !== sha256File(receiptFile) ||
     !same(status.release, receipt.release) ||
     status.release?.id !== config.release?.id ||
@@ -253,10 +262,12 @@ function verifyQualification(root, candidateRoot, artifactDigest, aggregateSha) 
   }
   const aggregate = readJson(aggregateFile, "prepublish aggregate status");
   const status = readJson(candidateStatus, "prepublish candidate status");
+  const expectedVerificationStage =
+    status.qualification_stage === "pre_tag" ? "pre_tag" : "prepublication";
   if (
     aggregate.contract !== "ait.release.clean-host.aggregate/v1" ||
     aggregate.status !== "qualified" ||
-    aggregate.release?.verification_stage !== "prepublication" ||
+    aggregate.release?.verification_stage !== expectedVerificationStage ||
     aggregate.release?.candidate_artifact_digest !== artifactDigest ||
     aggregate.release?.candidate_stage_receipt_sha256 !==
       status.candidate?.stage_receipt_sha256 ||

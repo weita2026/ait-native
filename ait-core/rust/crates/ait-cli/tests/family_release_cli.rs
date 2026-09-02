@@ -1636,6 +1636,8 @@ fn family_package_assembles_native_channels_without_endpoint_mutation() {
     assert!(control.contains("Package: ait-native\n"));
     assert!(control.contains("Version: 1.0.0~rc.1\n"));
     assert!(control.contains("Architecture: amd64\n"));
+    assert!(control.contains("Breaks: ait-runner (<< 1.0.0~rc.1)\n"));
+    assert!(control.contains("Replaces: ait-runner (<< 1.0.0~rc.1)\n"));
     assert_eq!(control_members.len(), 1);
     assert_eq!(
         tar_gz_directory_entries(&debian_members["control.tar.gz"]),
@@ -1714,6 +1716,8 @@ fn family_package_assembles_native_channels_without_endpoint_mutation() {
     let runner_control_members = tar_gz_members(&runner_debian_members["control.tar.gz"]);
     let runner_control = String::from_utf8(runner_control_members["control"].clone()).unwrap();
     assert!(runner_control.contains("Depends: ait-native (= 1.0.0~rc.1), libc6 (>= 2.28)"));
+    assert!(!runner_control.contains("Breaks: ait-runner"));
+    assert!(!runner_control.contains("Replaces: ait-runner"));
     let runner_data_members = tar_gz_members(&runner_debian_members["data.tar.gz"]);
     assert_regular_file_parents_are_directories(&runner_debian_members["data.tar.gz"]);
     assert!(!runner_data_members.contains_key("usr/bin/ait-runner"));
@@ -1735,6 +1739,14 @@ fn family_package_assembles_native_channels_without_endpoint_mutation() {
         "usr/lib/systemd/system/ait-server.service"
     );
     assert_eq!(apt_product_evidence["metadata"]["runner_included"], true);
+    assert_eq!(
+        apt_product_evidence["metadata"]["breaks"],
+        "ait-runner (<< 1.0.0~rc.1)"
+    );
+    assert_eq!(
+        apt_product_evidence["metadata"]["replaces"],
+        "ait-runner (<< 1.0.0~rc.1)"
+    );
     assert_eq!(
         apt_product_evidence["metadata"]["runner_activation"],
         "inactive"

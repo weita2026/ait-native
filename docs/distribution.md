@@ -969,7 +969,9 @@ success.
 | Repair | Bug fixes under the prior version | Local tests, Remote CI, reviewer finish | Next-RC versions, tags, receipts, endpoint writes |
 | Qualification | Untagged repair export and hosted regression | Successful bound run including Windows x64 and arm64 lifecycle | Release tag, release freeze, protected promotion |
 | Release delta | Exact next-RC version and authority updates only | Successful pre-tag admission against the qualified direct parent | Product behavior or unrelated source changes, any tag before admission |
-| Tagged release | Annotated tag, receipts, protected prepublication, endpoint publication | Admission-bound prepare record and every later gate in order | Rebuilds, evidence substitution, bypass after failure |
+| Frozen candidate | Component receipts, package/OCI materialization, and all 32 clean-host install/upgrade rows while untagged | Exact successful candidate and aggregate artifact binding, including the prior versions | Tag creation, protected approval, credentials, endpoint writes |
+| Immutable tag | One annotated tag on the already-qualified candidate commit | Tag binding that carries the exact 32-row candidate evidence into protected authorization | Rebuilds, candidate substitution, tag rewrite |
+| Endpoint publication | Protected authorization, exact qualified-byte reuse, endpoint writes, and readback | Bound protected evidence and endpoint status | Requalification after tagging, payload rebuild, evidence substitution |
 
 ### Phase 1: repair and qualify without an RC
 
@@ -1102,19 +1104,17 @@ exact coordinator-subtree authority copies may change structurally:
   --output "${AIT_RELEASE_RECORDS}/pre-tag-admission.json"
 ```
 
-If admission succeeds, create and push the declared annotated tag exactly once.
-Then, and only then, prepare component receipts. `prepare` requires the exact
-admission record and verifies that the annotated tag now resolves to the same
-admitted commit:
+If admission succeeds, keep the release commit untagged. Prepare component
+receipts with the exact immutable prior versions that every upgrade row must
+install. `prepare` rejects the target tag or any release tag already pointing
+at the candidate commit:
 
 ```bash
-git tag -a "$(jq -r '.family.tag' ait-release-family.json)" \
-  -m "Release $(jq -r '.family.version' ait-release-family.json)"
-git push origin main "$(jq -r '.family.tag' ait-release-family.json)"
-
 ./ci/release_operator.sh prepare \
   --source-root "${AIT_PUBLIC_SOURCE}" \
   --admission "${AIT_RELEASE_RECORDS}/pre-tag-admission.json" \
+  --prior-version <exact-prior-semver> \
+  --prior-python-version <exact-prior-pep440-version> \
   --output "${AIT_RELEASE_RECORDS}/01-prepare.json" \
   --dispatch
 ```
@@ -1122,7 +1122,8 @@ git push origin main "$(jq -r '.family.tag' ait-release-family.json)"
 After the component-receipt workflow succeeds, copy only its numeric run ID.
 The script queries the exact successful run, finds the unique frozen dossier,
 downloads it, and derives its Release ID, artifact ID, digest, control commit,
-Snapshot, and frozen hashes before optionally starting protected promotion:
+Snapshot, frozen hashes, package receipts, and endpoint-neutral candidate
+authority before optionally starting the pre-tag qualification workflow:
 
 ```bash
 cd "${AIT_PUBLIC_SOURCE}"
@@ -1133,49 +1134,77 @@ cd "${AIT_PUBLIC_SOURCE}"
   --dispatch
 ```
 
-Approve that exact run in `rc-promotion` or `stable-promotion`, according to
-the manifest channel. After it succeeds, copy only its numeric run ID. The
-next command verifies the protected artifact and evidence against the frozen
-dossier, generates the canonical endpoint configuration from reviewed static
-defaults, binds its SHA-256, and optionally dispatches endpoint publication:
+The dispatched qualification workflow freezes the exact package and OCI bytes,
+then runs the six runner probes and all 32 clean-install plus exact-prior-version
+upgrade rows before any tag exists. After it succeeds, bind its candidate and
+aggregate artifacts while the public source remains clean and untagged:
 
 ```bash
-./ci/release_operator.sh bind-authorization \
+./ci/release_operator.sh bind-candidate \
+  --source-root "${AIT_PUBLIC_SOURCE}" \
   --receipts "${AIT_RELEASE_RECORDS}/02-receipts.json" \
-  --run-id <protected-promotion-run-id> \
-  --output "${AIT_RELEASE_RECORDS}/03-endpoints.json" \
-  --prior-version <exact-prior-semver> \
-  --prior-python-version <exact-prior-pep440-version> \
+  --run-id <successful-pre-tag-qualification-run-id> \
+  --output "${AIT_RELEASE_RECORDS}/03-candidate.json"
+```
+
+Only `03-candidate.json` with all 32 rows admitted grants tag authority. Create
+and push the annotated tag exactly once, then bind that local readback and
+optionally dispatch protected authorization:
+
+```bash
+cd "${AIT_PUBLIC_SOURCE}"
+git tag -a "$(jq -r '.family.tag' ait-release-family.json)" \
+  -m "Release $(jq -r '.family.version' ait-release-family.json)"
+git push origin main "$(jq -r '.family.tag' ait-release-family.json)"
+
+./ci/release_operator.sh authorize \
+  --source-root "${AIT_PUBLIC_SOURCE}" \
+  --candidate "${AIT_RELEASE_RECORDS}/03-candidate.json" \
+  --output "${AIT_RELEASE_RECORDS}/04-tag-binding.json" \
   --dispatch
 ```
 
-To inspect before dispatch, first omit `--dispatch` and use a distinct output
-filename; outputs are intentionally create-once and are never overwritten.
-Then repeat the same evidence binding with `--dispatch` and a new output file.
+Approve that exact run in `rc-promotion` or `stable-promotion`, according to
+the manifest channel. The protected workflow independently downloads and
+verifies the same dossier, qualified candidate, and 32-row aggregate before it
+authorizes publication. After it succeeds, bind the protected evidence and
+optionally dispatch endpoint publication:
+
+```bash
+./ci/release_operator.sh bind-authorization \
+  --receipts "${AIT_RELEASE_RECORDS}/04-tag-binding.json" \
+  --run-id <protected-promotion-run-id> \
+  --output "${AIT_RELEASE_RECORDS}/05-endpoints.json" \
+  --dispatch
+```
+
+To inspect before either dispatch, first omit `--dispatch` and use a distinct
+output filename; outputs are intentionally create-once and are never
+overwritten. Then repeat the same evidence binding with `--dispatch` and a new
+output file.
 The generated route is `rc`/RC formula/`testing`/WinGet validation for an RC,
 or `latest`/stable formula/`stable`/WinGet community submission for a stable
 release. Endpoint identities, credential *names*, and immutable OCI bases live
 only in `release/endpoint-publication.defaults.json`; secret values never
 enter source or operator records. The exact prior SemVer and Python version are
-mandatory only with `--dispatch`; they bind the immutable upgrade source and
-must never be replaced by a mutable `latest` selector.
+bound at `prepare`; they must never be replaced by a mutable `latest` selector.
 
-The dispatched endpoint workflow first freezes a nonpublic candidate and runs
-the exact 32-row install-and-upgrade clean-host matrix. Each install and upgrade
-phase runs as a distinct GitHub-hosted job on a fresh VM. The matrix contains
-six GitHub, six PyPI, six npm, four Homebrew, four apt, two WinGet, and four OCI
-rows. The protected publishing environment cannot load credentials or write an
-endpoint until the aggregate proves all 32 rows against the exact candidate
-bytes.
+Endpoint publication downloads the already-qualified candidate and aggregate,
+overlays only the final endpoint configuration and protected evidence, and
+recomputes the control checksum envelope. It does not rebuild package, native,
+wheel, npm, WinGet, or OCI payload bytes and does not rerun the matrix after the
+tag. Each earlier install and upgrade phase ran as a distinct GitHub-hosted job
+on a fresh VM. The matrix contains six GitHub, six PyPI, six npm, four Homebrew,
+four apt, two WinGet, and four OCI rows.
 
 After that same workflow succeeds, copy its numeric run ID and generate the
 checksum-bound publication status:
 
 ```bash
 ./ci/release_operator.sh status \
-  --config "${AIT_RELEASE_RECORDS}/03-endpoints.json" \
+  --config "${AIT_RELEASE_RECORDS}/05-endpoints.json" \
   --run-id <endpoint-publication-run-id> \
-  --output "${AIT_RELEASE_RECORDS}/04-status.json"
+  --output "${AIT_RELEASE_RECORDS}/06-status.json"
 ```
 
 Success proves the prepublication 32-row qualification plus exact readback for
@@ -1203,7 +1232,7 @@ still records the resolved native command and fails visibly when the declared
 runner image does not supply the required capability.
 
 RC WinGet output intentionally stops at validated release assets. For a stable
-release, `04-status.json` reports
+release, `06-status.json` reports
 `community_manifest_assets_published_submission_required`: submit the generated
 manifest directory to `microsoft/winget-pkgs`, retain the PR and merge commit,
 and do not call the release complete until a fresh Windows host finds the exact
@@ -1217,9 +1246,9 @@ fails, preserve the already-published immutable bytes and repair `main` before
 freezing a new release; never overwrite the failed release's evidence.
 
 For a release that the repository owner explicitly chooses as the default,
-promote only mutable aliases after `04-status.json` succeeds and, for a stable
+promote only mutable aliases after `06-status.json` succeeds and, for a stable
 release, after retaining the merged WinGet PR and independent search proof.
-The approval value is the exact `REL-FAM-*` ID from `03-endpoints.json`, not a
+The approval value is the exact `REL-FAM-*` ID from `05-endpoints.json`, not a
 version wildcard. Production promotion runs only through the protected `pypi`
 GitHub environment so the maintainer machine never needs the npm or GHCR
 credential. Dispatch the reviewed workflow from public `main` with the exact,
@@ -1234,8 +1263,8 @@ sha256_file() {
   fi
 }
 
-endpoint_config="${AIT_RELEASE_RECORDS}/03-endpoints.json"
-operator_status="${AIT_RELEASE_RECORDS}/04-status.json"
+endpoint_config="${AIT_RELEASE_RECORDS}/05-endpoints.json"
+operator_status="${AIT_RELEASE_RECORDS}/06-status.json"
 gh workflow run ait-release-latest-alias.yml \
   --repo weita2026/ait-native \
   --ref main \
@@ -1375,14 +1404,14 @@ dispatch entrypoint or current control directory. This projection does not
 create another GitHub repository or change any component Snapshot authority.
 
 Before dispatch, use the operator SOP above to bind the successful untagged
-qualification, admit the direct version-only child while it is still untagged,
-and only then create the annotated tag. `prepare --admission` supplies the exact
-admission hash and bytes; do not dispatch this workflow manually. Confirm that
-the selected tag resolves to `source_commit` and that the selected source's
-`ait-monorepo-source.json` names `coordinator_snapshot`. Protect the default
-branch, immutable tag, workflow, and manual dispatch through normal GitHub
-repository controls. A post-tag control correction may change `github.sha` but
-must never rewrite the selected source commit, tag, qualification, or admission.
+qualification and admit the direct version-only child while it is still
+untagged. `prepare --admission` supplies the exact admission hash and bytes;
+do not dispatch this workflow manually. The selected `source_commit` must have
+no release tag, and its `ait-monorepo-source.json` must name
+`coordinator_snapshot`. Protect the default branch, future immutable tag,
+workflow, and manual dispatch through normal GitHub repository controls. A
+later control correction may change `github.sha` but must never rewrite the
+selected source commit, qualification, or admission.
 This workflow has no environment secret and specifically must not receive
 `AIT_RELEASE_SERVER_URL`: GitHub-hosted runners neither connect to an AIT server
 nor download private AIT repository state. PyPI, npm, GitHub Release, Homebrew,
@@ -1403,8 +1432,8 @@ The workflow performs these bounded operations:
    Snapshot before any build command runs;
 2. revalidate the exact successful qualification run and artifact through the
    GitHub Actions API, replay the admitted direct-parent version-only delta,
-   verify the admission digest, and require the annotated tag to resolve to the
-   admitted release commit;
+   verify the admission digest, and require both the target tag and every
+   release tag on the admitted commit to remain absent;
 3. project 31 target/portable receipt jobs and 37 component artifacts from the
    mapped family manifest;
 4. run each repository-owned generic adapter directly in its fixed public
@@ -1442,19 +1471,22 @@ GA dispatch.
 
 The public monorepo root owns
 `.github/workflows/ait-release-protected-promotion.yml` as the sole
-authorization boundary after the immutable handoff. Its job runs only behind
+authorization boundary after the qualified candidate has received its
+immutable tag. Its job runs only behind
 the channel-selected `rc-promotion` or `stable-promotion` GitHub environment
 and accepts exact values for the source
 workflow run and attempt, dossier artifact ID and GitHub artifact digest,
 family Release, tag, public Git commit, source-workflow control commit,
-coordinator Snapshot, frozen-manifest SHA-256, and frozen `SHA256SUMS` SHA-256.
+coordinator Snapshot, frozen-manifest SHA-256, frozen `SHA256SUMS` SHA-256,
+pre-tag qualification run, candidate artifact, and aggregate artifact.
 The source-run API record must identify that exact control commit, while the
 dossier and anonymous tag readback must identify the exact source commit.
 Approval therefore applies to one already-built byte set rather than a version
 label or moving branch.
 
-The protected job reads the selected tag anonymously, downloads only the
-exact dossier artifact from the successful component-receipt run, revalidates
+The protected job reads the selected tag anonymously, downloads the exact
+dossier, qualified candidate, and complete 32-row aggregate artifacts,
+revalidates
 every frozen and assembled-package checksum, proves the tagged checkout is
 byte- and executable-mode-equal to the archived corresponding source, runs the
 tagged public-source contract, projects expected counts only from the reviewed
@@ -1463,7 +1495,8 @@ root control files plus the tagged root family, and asks the frozen host-native
 and attests one `ait.release.family.protected-promotion/v1` evidence record
 containing both source and source-workflow commit identities.
 
-That evidence may set protected authorization and source readback to verified,
+That evidence binds the pre-tag candidate and aggregate identities and may set
+protected authorization and source readback to verified,
 but it still records every artifact rebuild, registry credential load,
 registry write, GitHub Release write, tag write, AIT Remote Release activation,
 and service mutation as false. Its only next action is to request separate

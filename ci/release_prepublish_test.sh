@@ -5,6 +5,7 @@ repo_root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 verifier=${repo_root}/ci/release_prepublish_verify.mjs
 stage_control=${repo_root}/ci/release_prepublish_stage.sh
 oci_control=${repo_root}/ci/release_prepublish_oci.sh
+promotion_control=${repo_root}/ci/release_candidate_promote.sh
 prepublish_workflow=${repo_root}/.github/workflows/ait-release-prepublish-clean-host.yml
 publication_workflow=${repo_root}/.github/workflows/pypi-publish.yml
 temporary_root=$(mktemp -d "${TMPDIR:-/tmp}/ait-release-prepublish-test.XXXXXX")
@@ -63,36 +64,37 @@ require_direct_exact_artifact_downloads() {
 node --check "${verifier}"
 bash -n "${stage_control}"
 bash -n "${oci_control}"
+bash -n "${promotion_control}"
 for required in \
   'permissions:' \
   'actions: read' \
   'contents: read' \
-  'reuse_frozen_candidate:' \
-  'Download the previously frozen candidate for control-only retry' \
-  'cmp "${comparison_root}/ait-release.clean-host-matrix.json" "${matrix}"' \
-  '"failure", "cancelled", "timed_out", "startup_failure",' \
-  '"stale", "action_required"' \
+  'candidate_authority_sha256:' \
+  'candidate_authority_b64:' \
+  'git -c credential.helper= ls-remote --tags' \
+  'release_prepublish_stage.sh --pre-tag' \
   'AIT_NEW_ARTIFACT_DIGEST: ${{ steps.upload.outputs.artifact-digest }}' \
   'if [[ ${candidate_artifact_digest} =~ ^[0-9a-f]{64}$ ]]; then' \
   'candidate_artifact_digest=sha256:${candidate_artifact_digest}' \
   '[[ "${candidate_artifact_digest}" =~ ^sha256:[0-9a-f]{64}$ ]]' \
-  'candidate_run_id: ${{ steps.select.outputs.candidate_run_id }}' \
-  'run-id: ${{ needs.stage.outputs.candidate_run_id }}' \
+  'Recheck tag absence at qualification closeout' \
   'release_prepublish_verify.mjs qualify' \
-  'ait-prepublish-clean-host-${{ inputs.release_id }}'; do
+  'ait-pre-tag-clean-host-${{ inputs.release_id }}'; do
   grep -F -- "${required}" "${prepublish_workflow}" >/dev/null
 done
-grep -F 'needs: prepublish' "${publication_workflow}" >/dev/null
 grep -F 'environment:' "${publication_workflow}" >/dev/null
 for required in \
-  'reuse_frozen_candidate:' \
-  'candidate_run_id:' \
-  'candidate_artifact_id:' \
-  'candidate_artifact_digest:' \
-  'candidate_status_sha256:' \
-  'run-id: ${{ needs.prepublish.outputs.candidate_run_id }}'; do
+  'Download the exact pre-tag candidate' \
+  'Download the successful pre-tag qualification' \
+  'artifact-ids: ${{ steps.request.outputs.candidate_artifact_id }}' \
+  'artifact-ids: ${{ steps.request.outputs.aggregate_artifact_id }}' \
+  'release_candidate_promote.sh'; do
   grep -F -- "${required}" "${publication_workflow}" >/dev/null
 done
+if grep -F 'needs: prepublish' "${publication_workflow}" >/dev/null; then
+  printf 'publication workflow still rebuilds or requalifies after tag creation\n' >&2
+  exit 65
+fi
 require_direct_exact_artifact_downloads "${prepublish_workflow}"
 require_direct_exact_artifact_downloads "${publication_workflow}"
 if grep -E '(^|[[:space:]])(gh release|npm publish|docker push)([[:space:]]|$)' \
@@ -167,6 +169,8 @@ jq -S -n --slurpfile oci "${oci}" \
     tag: "v1.2.3-rc.6",
     source_commit: "1111111111111111111111111111111111111111"
   },
+  qualification_stage: "post_authorization",
+  tag_state: "present",
   authority: {
     endpoint_config_sha256: $config_sha,
     endpoint_stage_receipt_sha256: $endpoint_sha,
@@ -194,6 +198,8 @@ jq -S -n --slurpfile oci "${oci}" \
     tag: "v1.2.3-rc.6",
     source_commit: "1111111111111111111111111111111111111111"
   },
+  qualification_stage: "post_authorization",
+  tag_state: "present",
   candidate: {stage_receipt_sha256: $receipt_sha, oci: $oci[0]},
   public_endpoint_writes: false
 }' >"${status}"

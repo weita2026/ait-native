@@ -2,9 +2,9 @@
   "schema": "ait.release.family/v3",
   "family": {
     "name": "ait-native",
-    "version": "1.1.1",
+    "version": "1.1.0",
     "channel": "stable",
-    "tag": "v1.1.1"
+    "tag": "v1.1.0"
   },
   "targets": [
     "aarch64-apple-darwin",
@@ -81,7 +81,7 @@
       "ecosystem": "native",
       "license": "Apache-2.0",
       "version_scheme": "family",
-      "version": "1.1.1",
+      "version": "1.1.0",
       "artifacts": [
         {
           "kind": "native-executable",
@@ -103,7 +103,7 @@
       "ecosystem": "native",
       "license": "Apache-2.0",
       "version_scheme": "family",
-      "version": "1.1.1",
+      "version": "1.1.0",
       "artifacts": [
         {
           "kind": "native-executable",
@@ -125,7 +125,7 @@
       "ecosystem": "native",
       "license": "Apache-2.0",
       "version_scheme": "family",
-      "version": "1.1.1",
+      "version": "1.1.0",
       "artifacts": [
         {
           "kind": "native-executable",
@@ -147,7 +147,7 @@
       "ecosystem": "native",
       "license": "AGPL-3.0-only",
       "version_scheme": "family",
-      "version": "1.1.1",
+      "version": "1.1.0",
       "artifacts": [
         {
           "kind": "native-executable",
@@ -169,7 +169,7 @@
       "ecosystem": "native",
       "license": "Apache-2.0",
       "version_scheme": "family",
-      "version": "1.1.1",
+      "version": "1.1.0",
       "artifacts": [
         {
           "kind": "native-executable",
@@ -191,7 +191,7 @@
       "ecosystem": "python",
       "license": "Apache-2.0",
       "version_scheme": "pep440",
-      "version": "1.1.1",
+      "version": "1.1.0",
       "artifacts": [
         {
           "kind": "python-wheel",
@@ -213,7 +213,7 @@
       "ecosystem": "node",
       "license": "Apache-2.0",
       "version_scheme": "family",
-      "version": "1.1.1",
+      "version": "1.1.0",
       "artifacts": [
         {
           "kind": "npm-napi-envelope",
@@ -296,8 +296,7 @@
       "identity": "ait-native",
       "components": [
         "ait",
-        "ait-server",
-        "ait-runner"
+        "ait-server"
       ],
       "targets": [
         "aarch64-apple-darwin",
@@ -312,8 +311,7 @@
       "identity": "ait-native",
       "components": [
         "ait",
-        "ait-server",
-        "ait-runner"
+        "ait-server"
       ],
       "targets": [
         "aarch64-unknown-linux-gnu",
@@ -338,8 +336,7 @@
       "identity": "Weita.AitNative",
       "components": [
         "ait",
-        "ait-server",
-        "ait-runner"
+        "ait-server"
       ],
       "targets": [
         "aarch64-pc-windows-msvc",

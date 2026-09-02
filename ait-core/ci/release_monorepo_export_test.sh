@@ -70,6 +70,7 @@ if (( selftest_mode == 0 )); then
   mkdir -p \
     "${public_core}/ci" \
     "${public_core}/release" \
+    "${public_core}/release/families/1.1.0" \
     "${public_core}/release/oci" \
     "${public_core}/.github/workflows" \
     "${public_layout}/docs"
@@ -85,6 +86,7 @@ if (( selftest_mode == 0 )); then
     "${repo_root}/ci/release_clean_host_phase.mjs" \
     "${repo_root}/ci/release_clean_host_probe.mjs" \
     "${repo_root}/ci/release_clean_host_test.sh" \
+    "${repo_root}/ci/release_candidate_promote.sh" \
     "${repo_root}/ci/release_endpoint_publication.sh" \
     "${repo_root}/ci/release_endpoint_remote.sh" \
     "${repo_root}/ci/release_latest_alias.sh" \
@@ -102,6 +104,8 @@ if (( selftest_mode == 0 )); then
     "${repo_root}/ci/release_receipt_matrix_test.sh" \
     "${repo_root}/ci/release_monorepo_transform.mjs" \
     "${public_core}/ci/"
+  cp "${repo_root}/release/families/1.1.0/ait-release-family.json" \
+    "${public_core}/release/families/1.1.0/ait-release-family.json"
   jq --arg version "${family_version}" '.version = $version' \
     "${repo_root}/ci/native_bootstrap_matrix.json" \
     >"${public_core}/ci/native_bootstrap_matrix.json"
@@ -120,6 +124,8 @@ if (( selftest_mode == 0 )); then
     "${public_core}/.github/workflows/ait-release-pre-rc-qualification.yml"
   cp "${repo_root}/.github/workflows/ait-release-prepublish-clean-host.yml" \
     "${public_core}/.github/workflows/ait-release-prepublish-clean-host.yml"
+  cp "${repo_root}/.github/workflows/ait-release-pre-tag-qualification.yml" \
+    "${public_core}/.github/workflows/ait-release-pre-tag-qualification.yml"
   cp "${repo_root}/.github/workflows/ait-release-latest-alias.yml" \
     "${public_core}/.github/workflows/ait-release-latest-alias.yml"
   cp "${repo_root}/.github/workflows/ait-release-protected-promotion.yml" \
@@ -525,6 +531,7 @@ for release_control_path in \
   ci/release_clean_host_phase.mjs \
   ci/release_clean_host_probe.mjs \
   ci/release_clean_host_test.sh \
+  ci/release_candidate_promote.sh \
   ci/release_endpoint_publication.sh \
   ci/release_endpoint_remote.sh \
   ci/release_latest_alias.sh \
@@ -803,16 +810,18 @@ expect_failure byte-policy-drift node \
 root_workflow=${output_one}/.github/workflows/ait-release-component-receipts.yml
 qualification_workflow=${output_one}/.github/workflows/ait-release-pre-rc-qualification.yml
 prepublish_workflow=${output_one}/.github/workflows/ait-release-prepublish-clean-host.yml
+pretag_workflow=${output_one}/.github/workflows/ait-release-pre-tag-qualification.yml
 latest_alias_workflow=${output_one}/.github/workflows/ait-release-latest-alias.yml
 promotion_workflow=${output_one}/.github/workflows/ait-release-protected-promotion.yml
 endpoint_workflow=${output_one}/.github/workflows/pypi-publish.yml
 test -f "${root_workflow}"
 test -f "${qualification_workflow}"
 test -f "${prepublish_workflow}"
+test -f "${pretag_workflow}"
 test -f "${latest_alias_workflow}"
 test -f "${promotion_workflow}"
 test -f "${endpoint_workflow}"
-test "$(find "${output_one}/.github/workflows" -maxdepth 1 -type f | wc -l | tr -d '[:space:]')" = 6
+test "$(find "${output_one}/.github/workflows" -maxdepth 1 -type f | wc -l | tr -d '[:space:]')" = 7
 grep -F '    working-directory: source/ait-core' "${root_workflow}" >/dev/null
 grep -F '          path: release-receipt-matrix.json' \
   "${root_workflow}" >/dev/null
@@ -858,21 +867,21 @@ done
 grep -F 'qualified repair commit gained a release tag after qualification' \
   "${root_workflow}" >/dev/null
 for required_prepublish_text in \
-  'name: ait release prepublish clean host' \
+  'name: ait release pre-tag clean host' \
   'workflow_call:' \
-  'release_prepublish_stage.sh' \
+  'candidate_authority_sha256:' \
+  'release_prepublish_stage.sh --pre-tag' \
   'release_prepublish_verify.mjs qualify' \
   'release_clean_host_probe.mjs' \
   'release_clean_host_phase.mjs run' \
   'release_clean_host.mjs combine' \
   'release_clean_host.mjs aggregate' \
-  'reuse_frozen_candidate:' \
-  'Download the previously frozen candidate for control-only retry' \
-  'cmp "${comparison_root}/ait-release.clean-host-matrix.json" "${matrix}"' \
   'run-id: ${{ needs.stage.outputs.candidate_run_id }}' \
-  'ait-prepublish-clean-host-${{ inputs.release_id }}'; do
+  'ait-pre-tag-clean-host-${{ inputs.release_id }}'; do
   grep -F -- "${required_prepublish_text}" "${prepublish_workflow}" >/dev/null
 done
+grep -F 'uses: ./.github/workflows/ait-release-prepublish-clean-host.yml' \
+  "${pretag_workflow}" >/dev/null
 # shellcheck disable=SC2016
 for required_promotion_text in \
   'name: ait release protected promotion' \
@@ -894,8 +903,9 @@ for endpoint_control in \
   test -f "${endpoint_control}"
 done
 grep -F 'endpoint_config_sha256:' "${endpoint_workflow}" >/dev/null
-grep -F 'reuse_frozen_candidate:' "${endpoint_workflow}" >/dev/null
-grep -F 'run-id: ${{ needs.prepublish.outputs.candidate_run_id }}' \
+grep -F 'Download the exact pre-tag candidate' \
+  "${endpoint_workflow}" >/dev/null
+grep -F 'control/ci/release_candidate_promote.sh' \
   "${endpoint_workflow}" >/dev/null
 grep -F 'control/ci/release_operator.sh validate-config' \
   "${endpoint_workflow}" >/dev/null
@@ -974,7 +984,7 @@ prepublish_workflow_drift_output=${temporary_root}/prepublish-workflow-drift-out
 cp -R "${output_one}" "${prepublish_workflow_drift_output}"
 node "${repo_root}/ci/release_monorepo_transform.mjs" \
   "${prepublish_workflow_drift_output}/.github/workflows/ait-release-prepublish-clean-host.yml" \
-  'name: ait release prepublish clean host' \
+  'name: ait release pre-tag clean host' \
   'name: mutable prepublish gate'
 expect_failure prepublish-workflow-drift node \
   "${prepublish_workflow_drift_output}/build-release.mjs" --validate-only
@@ -992,8 +1002,8 @@ promotion_download_drift_output=${temporary_root}/promotion-download-drift-outpu
 cp -R "${output_one}" "${promotion_download_drift_output}"
 node "${repo_root}/ci/release_monorepo_transform.mjs" \
   "${promotion_download_drift_output}/.github/workflows/ait-release-protected-promotion.yml" \
-  '          merge-multiple: true' \
-  '          merge-multiple: false'
+  '          artifact-ids: ${{ inputs.candidate_artifact_id }}' \
+  '          artifact-ids: 999999'
 expect_failure promotion-download-drift node \
   "${promotion_download_drift_output}/build-release.mjs" --validate-only
 
