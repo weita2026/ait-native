@@ -6,11 +6,11 @@ repo_name = "ait-core"
 repository_index = 0
 remote = "origin"
 line = "main"
-snapshot = "SNP-54923CEF58C8"
+snapshot = "SNP-ED7593DBF982"
 parent_path = ""
 materialize_to = ".ait-external/ait-core"
 license = "Apache-2.0"
-version = "1.1.0"
+version = "1.1.1"
 
 [[node.binding]]
 language = "rust"
