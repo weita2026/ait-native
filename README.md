@@ -1,92 +1,126 @@
 # ait-native
 
-## Why I Built AIT
+**Turn parallel coding-agent sessions into verified, traceable Tasks.**
 
-1. **AI agents often produce one giant commit that means very little.**
+AIT is a local-first CLI for individual developers and maintainers who delegate
+code changes to agents and own the result. Connect each request to its isolated
+worktree, the revision that passed checks, and the history you need when a
+regression appears. Bring your own coding agent; keep intent and acceptance in
+your hands.
 
-   An agent can change dozens of files and dump everything into one commit. The
-   commit shows what changed, but it does not clearly explain what job the agent
-   was trying to finish. I wanted history to be organized around meaningful
-   tasks, not around the moment an agent happened to save its work.
-
-2. **A sprint card should become real engineering work.**
-
-   I wanted a Jira-like workflow where opening a sprint card starts a real,
-   isolated task, and finishing that task means the issue was actually
-   resolved. The ticket, the agent, the code, the validation, and the final
-   result should belong to the same lifecycle.
-
-3. **Traditional Git workflow is built around human behavior.**
-
-   A person usually makes a small change, reviews it, stages it, commits it,
-   rebases it, and moves on. In the vibe-coding era, agents produce task-sized
-   changes much faster. Repeating all that manual Git choreography for every
-   agent starts getting in the way.
-
-4. **Markdown should be more than another file in the repository.**
-
-   Markdown is probably the best shared language between humans and agents.
-   Git can store Markdown, but it does not understand that a checklist item
-   represents a plan, a task, or an acceptance condition. I wanted the intent
-   written in Markdown to stay connected to the code that implements it.
-
-5. **When an agent breaks something, I want answers quickly.**
-
-   I do not want to search through old chats, random commits, and disconnected
-   tickets to understand a regression. AIT keeps the task, revision,
-   validation, agent context, and landing history connected, so `ait blame`
-   can lead from a bad line back to the work that introduced it.
-
-6. **The commands are designed for agents first.**
-
-   The CLI is not designed around what is pleasant for a human to type
-   repeatedly. It is designed around what is difficult for an agent to
-   misunderstand: stable commands, explicit state, structured results, exact
-   workspaces, clear failures, and a clear next action. Humans still decide the
-   intent, review the result, and own the consequences.
-
-[![Latest release](https://img.shields.io/github/v/release/weita2026/ait-native?include_prereleases&sort=semver&label=release)](https://github.com/weita2026/ait-native/releases)
+[![Latest stable release](https://img.shields.io/github/v/release/weita2026/ait-native?label=stable)](https://github.com/weita2026/ait-native/releases)
 [![Documentation](https://img.shields.io/badge/docs-ait--native.dev-0ea5e9)](https://ait-native.dev/)
-[![Discussions](https://img.shields.io/github/discussions/weita2026/ait-native?label=discussions)](https://github.com/weita2026/ait-native/discussions)
 [![License](https://img.shields.io/badge/license-Apache--2.0%20%2B%20AGPL--3.0--only-22c55e)](#license-map)
 
-[Install guide](https://ait-native.dev/local-quickstart/) ·
-[Technical documentation](https://ait-native.dev/technical/) ·
-[Components](https://ait-native.dev/components/) ·
-[Releases](https://github.com/weita2026/ait-native/releases) ·
-[Discussions](https://github.com/weita2026/ait-native/discussions) ·
-[Report a bug](https://github.com/weita2026/ait-native/issues/new/choose)
+**[Try your first Task](https://ait-native.dev/local-quickstart/#first-task)** ·
+[Watch the demo](https://ait-native.dev/demo/#in-action) ·
+[Documentation](https://ait-native.dev/technical/) ·
+[Get help](https://github.com/weita2026/ait-native/discussions)
 
-You ask for a change in plain language. AIT gives that work its own sprint
-item and an isolated worktree, runs your repository's checks, and keeps a
-record of what passed before anything lands — so work a coding agent
-writes stays inspectable and recoverable. Built for
-individual developers and maintainers.
+[繁體中文入門](https://ait-native.dev/zh-tw/local-quickstart/#first-task) ·
+[简体中文入门](https://ait-native.dev/zh-cn/local-quickstart/#first-task)
 
-AIT doesn't care what language your repository is in. It never tries to
-detect a project type: the same workflow runs on Python, Node.js, Rust,
-Java, mixed-language, and non-code repositories.
+## See it in action
 
-Official website: <https://ait-native.dev/>
+[![Recorded AIT Task: initialize, start isolated work, test, finish and trace the result](https://ait-native.dev/public/tour/ait-task-tour.gif)](https://ait-native.dev/demo/#in-action)
 
-## 1.1.0: a Task-driven core built for concurrent agents
+A real AIT 1.1.1 command recording, edited into a 33-second replay. It shows one
+Task completing the same downloadable example below. Paths are shortened;
+playback duration is not a performance measurement.
+[Watch with captions and the full transcript](https://ait-native.dev/demo/#in-action).
 
-AIT Native 1.1.0 makes the **Task** the unit of agent work. Every Task owns
-its Change lineage, feature Line, and isolated worktree. This supports
-high-concurrency operation: commands for independent Tasks can be issued and
-run at the same time across many coding-agent sessions without sharing one
-mutable checkout.
+For multiple Tasks, explore the separate
+[illustrated parallel-work and regression scenarios](https://ait-native.dev/demo/#demo-scene)
+or the [workflow diagram, with Traditional Chinese labels](https://ait-native.dev/public/tour/ait-workflow-zh-tw.png).
 
-Concurrency has an explicit safety boundary: authoring and validation can run
-in parallel, while admission to a shared target Line is revalidated and
-serialized. If the target moved, AIT rebases or stops for a real conflict
-instead of overwriting newer work. It does not make concurrent writes to the
-same worktree safe.
+## Try your first Task
 
-The 1.1.0 core also unifies closeout under `ait task finish` and
-`ait workflow finish`, keeps intermediate `ait snapshot create` checkpoints,
-and adds `ait commit` as a Git-friendly way to create an AIT Snapshot. The
-normal local path remains native and server-free.
+Start in a fresh example folder. You need your own coding agent and Node.js 22+
+for this small example; Node.js is not an AIT repository requirement.
+
+**1. Install AIT.**
+
+```sh
+python -m pip install ait-native==1.1.1
+ait --version
+```
+
+Other package channels are in the [install guide](https://ait-native.dev/local-quickstart/).
+
+**2. Prepare the example.**
+
+[Download the example ZIP](https://ait-native.dev/downloads/ait-first-task.zip)
+and [its SHA-256](https://ait-native.dev/downloads/ait-first-task.sha256).
+Extract it, then open a terminal in the extracted `ait-first-task` folder.
+Replace `your-name` with the name to record for local review.
+
+```sh
+node --test tests/baseline.test.mjs
+ait init
+ait config set --user-name "your-name"
+ait snapshot create --message "Start the AIT example"
+```
+
+The three baseline tests should pass. This initial Snapshot records the unchanged
+example before a Task starts. For an existing project, use the
+[getting-started guide](https://ait-native.dev/technical/getting-started/) instead.
+
+**3. Open the example in your coding agent and give it this request.**
+
+> Read AGENTS.md and follow this repository's AIT workflow. Add openTasks(tasks)
+> to src/tasks.mjs: return a new array of tasks whose done property is not true,
+> preserving order, task objects and input data. Keep taskTitles working. Add
+> focused tests. Do not edit checks/, remove existing tests or add dependencies.
+> Run the existing tests and node checks/first-task.mjs before finishing the Task.
+
+The agent records the sprint item, works in the returned Task worktree, implements
+the change and runs the checks. The generated `AGENTS.md` block supplies the exact
+commands and completion requirements for that repository.
+
+**4. Check the result in the original example folder.**
+
+```sh
+node --test tests/*.test.mjs
+node checks/first-task.mjs
+```
+
+The feature check prints `FIRST_TASK_ACCEPTED`. Also inspect the actual Task finish
+result: the Task completed, its worktree was cleaned, and the bound sprint item
+closed where applicable. Feature acceptance and workflow completion are separate
+checks. Review the change, then try one small task in your own project.
+
+## What you gain
+
+- **Keep the request attached to the work.** A precise Markdown sprint item and
+  its Plan revision stay bound to the Task. After context compression, generated
+  instructions require the agent to reread that item.
+- **Finish against the current project.** Independent Tasks have separate
+  worktrees. AIT rechecks the target, rebases compatible work or stops at a real
+  conflict, and cleans up after successful Task finish.
+- **Find the context when something breaks.** `ait blame` links affected code or
+  Plan text to recorded revisions and available workflow history. The agent uses
+  that evidence to diagnose a problem, make a bounded repair and verify it.
+
+## Why AIT beyond worktrees?
+
+A worktree gives a task its own files. AIT manages the request, revision,
+applicable checks and completion as one Task lifecycle. Evaluate it against the
+agent, Git, issue tracker, CI and scripts you already use:
+
+| Question you need to answer | What AIT records or coordinates |
+| --- | --- |
+| Which request and acceptance conditions belong to this change? | The exact Plan item and revision bound to the Task. |
+| Which result passed, and can it finish against today's target? | Revision identity, applicable evidence, target checks and recoverable finish state. |
+| Where did this later regression come from? | Recorded revision and workflow context available through blame. Unknown provenance stays unknown. |
+
+Authoring and validation can run in parallel; admission to a shared target Line
+is revalidated and serialized. A clean rebase still needs relevant validation.
+Worktree instructions are a workflow constraint, not an operating-system sandbox;
+blame supplies provenance, not automatic diagnosis or repair.
+
+Try the [same workflow scenarios](https://ait-native.dev/demo/) and compare the
+time you spend confirming intent, reviewing, integrating and investigating.
+
 
 ## Measured against Git worktrees
 
@@ -100,6 +134,13 @@ each treatment.
 | --- | --- | ---: | ---: | ---: |
 | Released 1.1.0 baseline | Sprint off | 100 AIT + 100 Git | **34.95%** (27.85%-39.77%) | **21.04%** |
 | Natural-inspection replication | Sprint on | 100 AIT + 100 Git | **36.28%** (28.26%-41.83%) | **15.22%** |
+
+These workload-median provider-token results apply to the named model and frozen
+fixtures. The sessions ran sequentially; they do not measure parallel throughput
+or guarantee savings on your repository.
+
+<details>
+<summary>Methods, exclusions and the incomplete Claude Fable campaign</summary>
 
 The released baseline used 46,300,272 AIT tokens versus 70,140,925 Git tokens
 (33.99% lower); its evidence history contains 201 executed sessions and one
@@ -149,110 +190,118 @@ with no statistical exclusions or model fallback. With only two pairs per
 workload, several intervals remain broad or cross zero, so these interim
 numbers are published for transparency, not as a product claim.
 
-## Install and initialize
+</details>
 
-```sh
-python -m pip install ait-native==1.1.1
-cd path/to/your-repository
-ait --version
-ait init
-```
+## Why I Built AIT
 
-`ait init` sets up the local `.ait` authority, defaults the repository to
-`solo_local` with sprint mode on, creates `docs/sprints/`, and writes the
-repository's own workflow block into `AGENTS.md`. It does not start
-`ait-server`.
+<details>
+<summary>The six problems behind AIT</summary>
 
-`ait config show --json` shows the effective mode and scope. Homebrew, npm,
-APT, WinGet, OCI, and native-archive routes are covered in the
-[install guide](https://ait-native.dev/local-quickstart/).
+1. **AI agents often produce one giant commit that means very little.**
 
-This is the public `v1.1.1` source tree. The tag binds the exported
-source of `ait-core`, `ait-server`, `ait-runner`, `ait-python`, and `ait-node`;
-`ait-monorepo-source.json` records their exact AIT Snapshot mapping.
+   An agent can change dozens of files and dump everything into one commit. The
+   commit shows what changed, but it does not clearly explain what job the agent
+   was trying to finish. I wanted history to be organized around meaningful
+   tasks, not around the moment an agent happened to save its work.
 
-## What `ait init` gives you
+2. **A sprint card should become real engineering work.**
 
-- A repository-local AIT authority, and a generated `AGENTS.md` block that
-  routes the workflow.
-- A sprint-backed Task and a dedicated worktree for every code change.
-- Snapshots, check evidence, `ait blame` for tracing a regression to its
-  revision, and a recoverable Task finish closeout.
-- A server that stays off: local work never needs a running `ait-server`.
+   I wanted a Jira-like workflow where opening a sprint card starts a real,
+   isolated task, and finishing that task means the issue was actually
+   resolved. The ticket, the agent, the code, the validation, and the final
+   result should belong to the same lifecycle.
 
-The generated `AGENTS.md` block is the source of truth for your repository.
-It carries the current commands for your configured workflow and sprint
-modes; the generic examples in this README never override it.
+3. **Traditional Git workflow is built around human behavior.**
 
-## Local and reviewed workflows
+   A person usually makes a small change, reviews it, stages it, commits it,
+   rebases it, and moves on. In the vibe-coding era, agents produce task-sized
+   changes much faster. Repeating all that manual Git choreography for every
+   agent starts getting in the way.
 
-AIT has two workflow presets:
+4. **Markdown should be more than another file in the repository.**
 
-| Mode | Authoring and closeout |
-| --- | --- |
-| `solo_local` | Task, Change, Snapshot, and `ait task finish` all stay local unless you explicitly promote to a remote. No reviewer, no server. |
-| `solo_remote` | You prepare one exact Patchset with `ait workflow ready <change-id> --apply`; a reviewer runs `ait workflow finish <change-id> --apply`. |
+   Markdown is probably the best shared language between humans and agents.
+   Git can store Markdown, but it does not understand that a checklist item
+   represents a plan, a task, or an acceptance condition. I wanted the intent
+   written in Markdown to stay connected to the code that implements it.
 
-With sprint mode on, start from one exact sprint item:
+5. **When an agent breaks something, I want answers quickly.**
 
-```sh
-ait task start --from docs/sprints/<card>.md#<item-ref> --intent "<intent>"
-```
+   I do not want to search through old chats, random commits, and disconnected
+   tickets to understand a regression. AIT keeps the task, revision,
+   validation, agent context, and Task finish history connected, so `ait blame`
+   can lead from a bad line back to the work that introduced it.
 
-With sprint mode off, use `ait task start --title "<title>" --intent
-"<intent>"` instead. Either way, the command creates the Task's bound
-worktree; the code is written there. Standalone `ait snapshot create` remains
-available for intermediate checkpoints.
-Authored Markdown goes through the generated `ait plan sync` scope rather
-than being buried inside a code Snapshot.
+6. **The commands are designed for agents first.**
 
-In a reviewed remote flow, `workflow ready` is the author's side: it takes
-care of Snapshot freshness, publishing the exact Patchset, CI, and
-attestation. `workflow finish` is the reviewer's side: it runs the Review and
-Policy gates, then hands the already-ready change to the atomic internal Land. It
-never redoes the author's build or CI.
+   The CLI is not designed around what is pleasant for a human to type
+   repeatedly. It is designed around what is difficult for an agent to
+   misunderstand: stable commands, explicit state, structured results, exact
+   workspaces, clear failures, and a clear next action. Humans still decide the
+   intent, review the result, and own the consequences.
 
-In `solo_local`, finish dirty work with `ait task finish <task-or-change-id>
---message "<message>"`. Clean work omits `--message` and reuses its current
-Line-head Snapshot. Task finish updates the target Line, completes the Task,
-removes its bound worktree, and closes the bound sprint item when there is one.
+</details>
 
-## Ask for a change
+## Work with your existing tools
 
-Open your coding agent in the initialized repository and say what you want:
+AIT doesn't care what language your repository is in. It never tries to
+detect a project type: build, test and ignore rules come from your repository.
+Your coding agent performs the implementation and chosen checks; AIT manages
+the task lifecycle and enforces the applicable workflow conditions.
 
-> Update the login flow, preserve public behavior, and add the relevant tests.
+`ait init` establishes the local `.ait` authority and generates the repository's
+`AGENTS.md` workflow block. The generated block is the source of truth for the
+effective commands; local work never needs a running `ait-server`.
 
-The agent reads `AGENTS.md`, starts the right kind of Task, works in the
-emitted worktree, runs the checks, creates a Snapshot, and follows your
-configured local or reviewed closeout. To see where things stand, use `ait
-queue summary`, `ait task audit <task-id>`, and the other commands the
-generated block names.
+AIT has two workflow presets: `solo_local` keeps work and Task finish local;
+`solo_remote` adds an explicitly selected server and reviewed completion.
+The agent follows the generated instructions for `ait task start`, intermediate
+`ait snapshot create` checkpoints, Markdown lineage through `ait plan sync`, and
+the applicable `ait task finish` or `ait workflow finish` closeout.
+
+- [Git import, export and exit](https://ait-native.dev/technical/cli/reference/git/)
+- [Feature workflow](https://ait-native.dev/technical/workflows/feature/) and [regression repair](https://ait-native.dev/technical/workflows/regression/)
+- [Components](https://ait-native.dev/components/) and [release status](https://ait-native.dev/proof/)
+
+Current public release: **v1.1.1**. Use the immutable release tag for
+its exact source; `ait-monorepo-source.json` records the component Snapshot
+mapping. Documentation on `main` can advance between releases.
 
 ## What each install route gives you
+
+<details>
+<summary>Package contents and historical version differences</summary>
 
 | Route | Installed surface |
 | --- | --- |
 | PyPI `ait-native` | `ait`, an inactive-by-default `ait-server`, and the direct `ait-python` binding. |
 | npm `@wa120/ait-native` | `ait` and the direct in-process Node-API binding; it does not install `ait-server`. |
-| Homebrew and WinGet | From 1.1, native `ait`, `ait-server`, and `ait-runner` commands; installation starts neither server nor runner. |
-| APT | From 1.1, `ait-native` owns `ait`, `ait-server`, and `ait-runner`; the `ait-runner` package name is a dependency-only transition alias. The shipped service remains server-only. |
+| Homebrew and WinGet | The 1.1.1 product bundle contains native `ait`, `ait-server` and `ait-runner`. Installation starts neither background process. Check release status for channel availability. |
+| APT | In 1.1.1, `ait-native` owns all three commands; `ait-runner` is a dependency-only transition alias. The packaged service remains server-only. |
 | OCI | Separate `ait-server` and `ait-runner` images. |
 | GitHub Release | Checksum-bound native archives and the package assets used by the declared routes. |
 
+The immutable 1.1.0 Homebrew, apt and WinGet product packages contain the
+`ait`/`ait-server` pair; apt offered the runner separately. That historical
+exception is preserved. See the [install guide](https://ait-native.dev/local-quickstart/)
+for current channel instructions and the [release page](https://github.com/weita2026/ait-native/releases)
+for exact assets.
+
+</details>
+
 ## Upgrading from 0.x
 
-There is no `ait install` command in 1.x. Install or upgrade the `ait-native`
-package with your package manager, check it with `ait --version`, and run
-`ait init` only when you are creating a new 1.0 repository authority. Keep
-your Git repository and its history — but don't assume a release candidate
-can migrate an existing 0.x `.ait` authority in place. Keep the old
-authority around for recovery, and use a clean clone or a new repository
-authority unless the release notes for your exact version say migration is
-supported. See the
-[public transition contract](ait-core/docs/distribution.md#public-0x-to-10-transition).
+There is no `ait install` command in 1.x. Upgrade through your package manager
+and check `ait --version`. Preserve an existing `.ait` authority and consult
+the transition instructions for the exact version before migration. New-authority
+setup and an upgrade of existing history are different operations.
+See the [transition contract](ait-core/docs/distribution.md#public-0x-to-10-transition)
+and [Git exit reference](https://ait-native.dev/technical/cli/reference/git/).
 
 ## Build this source tree
+
+<details>
+<summary>Native source builds and language bindings</summary>
 
 From a clean checkout on macOS or Linux:
 
@@ -276,6 +325,17 @@ For Node.js, `import { NativeRuntime, AgentClient } from
 "@wa120/ait-native"` loads the package-owned `native/ait_napi.node` in the
 current process. The npm `ait` command calls the same Rust binding through
 `NativeRuntime.runCli()`; it does not locate or launch a child executable.
+
+</details>
+
+## Share a result or get help
+
+[Ask a question or share a workflow](https://github.com/weita2026/ait-native/discussions)
+or [report a bug](https://github.com/weita2026/ait-native/issues/new/choose).
+Tell us whether your first Task completed, where you needed help, and whether
+you could repeat the workflow on another task. Share only information you can
+publish; a private repository is not required for feedback.
+
 
 ## License map
 
