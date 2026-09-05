@@ -1083,7 +1083,7 @@ async function validatePublicReadme() {
     "ait init",
     "ait --version",
     "## Try your first Task",
-    "## See it in action",
+    "## Follow an AIT Task",
     "https://ait-native.dev/public/tour/ait-task-tour.gif",
     "https://ait-native.dev/local-quickstart/#first-task",
     "https://ait-native.dev/downloads/ait-first-task.zip",
@@ -1140,6 +1140,31 @@ async function validatePublicReadme() {
   }
   if (/@AIT_[A-Z0-9_]+@/u.test(readme)) {
     fail("public README contains an unresolved release token");
+  }
+  const languageLinks = [
+    "[English](README.md)",
+    "[简体中文](README_CN.md)",
+    "[繁體中文](README_ZH.md)",
+  ];
+  for (const name of ["README.md", "README_CN.md", "README_ZH.md"]) {
+    const localizedPath = path.join(ROOT, name);
+    await regularFile(localizedPath, `public README language variant ${name}`);
+    const text = await readFile(localizedPath, "utf8");
+    const navigation = text.split("\n")[2] ?? "";
+    let previous = -1;
+    for (const link of languageLinks) {
+      const index = navigation.indexOf(link);
+      if (index <= previous) fail(`${name} must link English, Simplified Chinese, then Traditional Chinese`);
+      previous = index;
+    }
+    for (const required of [
+      "FIRST_TASK_ACCEPTED", "claim_eligible=false", "34.95%", "36.28%", "20.32%",
+      "@wa120/ait-native", "Apache-2.0", "AGPL-3.0-only", "ait-task-tour.gif",
+      "python -m pip install ait-native==", "./build-release.sh",
+    ]) {
+      if (!text.includes(required)) fail(`${name} is missing ${JSON.stringify(required)}`);
+    }
+    if (/@AIT_[A-Z0-9_]+@/u.test(text)) fail(`${name} contains an unresolved release token`);
   }
 }
 

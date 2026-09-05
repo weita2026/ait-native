@@ -1,5 +1,7 @@
 # ait-native
 
+**[English](README.md)** · [简体中文](README_CN.md) · [繁體中文](README_ZH.md)
+
 **Turn parallel coding-agent sessions into verified, traceable Tasks.**
 
 AIT is a local-first CLI for individual developers and maintainers who delegate
@@ -17,10 +19,10 @@ your hands.
 [Documentation](https://ait-native.dev/technical/) ·
 [Get help](https://github.com/weita2026/ait-native/discussions)
 
-[繁體中文入門](https://ait-native.dev/zh-tw/local-quickstart/#first-task) ·
-[简体中文入门](https://ait-native.dev/zh-cn/local-quickstart/#first-task)
+[简体中文入门](https://ait-native.dev/zh-cn/local-quickstart/#first-task) ·
+[繁體中文入門](https://ait-native.dev/zh-tw/local-quickstart/#first-task)
 
-## See it in action
+## Follow an AIT Task
 
 [![Recorded AIT Task: initialize, start isolated work, test, finish and trace the result](https://ait-native.dev/public/tour/ait-task-tour.gif)](https://ait-native.dev/demo/#in-action)
 
