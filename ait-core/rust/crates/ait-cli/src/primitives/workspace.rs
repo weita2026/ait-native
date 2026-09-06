@@ -8,30 +8,295 @@ use ait_core::snapshot_store::SnapshotStore;
 use ait_core::task_workflow_store::get_task_with_task_workflow_task_store;
 
 pub fn snapshot_create(repo: &RepoRuntime, message: Option<&str>) -> Result<JsonValue, String> {
-    guard_repo_root_pinned_bound_worktree(repo, None, "ait snapshot create")?;
-    guard_current_worktree_task_bound_authoring(repo, "snapshot create")?;
-    snapshot_create_in_current_workspace(repo, message)
+    let binding = current_worktree_snapshot_binding(repo)?;
+    snapshot_create_with_binding(repo, message, Some(binding))
+}
+
+/// Internal operations without a Change argument continue the exact owned
+/// head, or the Task's sole writable Change. Initial worktree hints are not
+/// evidence that a sibling Change owns the current edits.
+pub(super) fn current_worktree_snapshot_binding(
+    repo: &RepoRuntime,
+) -> Result<(ait_core::workflow_binary_db::SnapshotWorkflowBinding, bool), String> {
+    let metadata = current_worktree_metadata(repo)?
+        .ok_or("Snapshot creation requires an active Task worktree")?;
+    let task_id = metadata
+        .bound_task_id
+        .as_deref()
+        .ok_or("Snapshot Task binding is missing")?;
+    let namespace = ait_core::workflow_primitives::workflow_origin_namespace_prefix(
+        "L",
+        Some(&repo.id_namespace_prefix()),
+    )?;
+    let local = task_id.starts_with(&format!("{namespace}T-"));
+    let remote = if local {
+        None
+    } else {
+        repo.default_remote_name()
+    };
+    let changes = change_list(repo, local, remote.as_deref())?;
+    let writable = changes
+        .as_array()
+        .ok_or("Change list must be an array")?
+        .iter()
+        .filter(|change| {
+            change_task_id_from_payload(change).as_deref() == Some(task_id)
+                && matches!(
+                    string_field(change, "status").as_deref(),
+                    Some("draft" | "active" | "review")
+                )
+        })
+        .filter_map(|change| string_field(change, "change_id"))
+        .collect::<Vec<_>>();
+    if let Some(head) = current_line_head_snapshot_id(repo)?.1 {
+        let owners = repo
+            .task_store()?
+            .snapshot_ownership_rows(&[head])
+            .map_err(|error| error.to_string())?;
+        if let Some(change_id) = owners
+            .iter()
+            .filter(|owner| string_field(owner, "task_id").as_deref() == Some(task_id))
+            .filter_map(|owner| string_field(owner, "change_id"))
+            .find(|change_id| writable.contains(change_id))
+        {
+            return validated_snapshot_binding(repo, task_id, &change_id);
+        }
+    }
+    if writable.len() != 1 {
+        return Err(format!("Task {task_id} has no unambiguous writable Change for this Snapshot. Create a checkpoint with `ait snapshot create {task_id}/C-## --message <message>` for the intended Change first."));
+    }
+    validated_snapshot_binding(repo, task_id, &writable[0])
+}
+
+pub(crate) fn parse_snapshot_change_reference(change_ref: &str) -> Result<String, String> {
+    let required_reference =
+        "Snapshot creation requires one complete Task-owned Change reference (TASK_ID/C-##).";
+    let change_ref = normalized_text(Some(change_ref)).ok_or(required_reference)?;
+    let (task_id, change_id) = change_ref.rsplit_once('/').ok_or(required_reference)?;
+    if task_id.is_empty() || task_id.contains('/') || !is_short_change_id(change_id) {
+        return Err(required_reference.to_string());
+    }
+    Ok(change_ref)
+}
+
+pub(crate) fn parse_snapshot_authoring_reference(reference: &str) -> Result<String, String> {
+    let reference =
+        normalized_text(Some(reference)).ok_or("Snapshot creation requires a Task ID.")?;
+    if is_task_id(&reference) {
+        return Ok(reference);
+    }
+    parse_snapshot_change_reference(&reference)
+        .map_err(|_| "Snapshot creation requires a Task ID; advanced callers may use an exact TASK_ID/C-## reference.".to_string())
+}
+
+pub fn snapshot_create_for_reference(
+    repo: &RepoRuntime,
+    reference: &str,
+    message: Option<&str>,
+) -> Result<JsonValue, String> {
+    let reference = parse_snapshot_authoring_reference(reference)?;
+    if !is_task_id(&reference) {
+        return snapshot_create_for_change(repo, &reference, message);
+    }
+    let metadata = current_worktree_metadata(repo)?
+        .ok_or("Snapshot creation requires an active Task worktree; repository-root authoring is forbidden.")?;
+    if metadata.bound_task_id.as_deref() != Some(reference.as_str()) {
+        return Err(format!(
+            "Snapshot expected Task {reference} does not match the current worktree binding."
+        ));
+    }
+    let namespace = ait_core::workflow_primitives::workflow_origin_namespace_prefix(
+        "L",
+        Some(&repo.id_namespace_prefix()),
+    )?;
+    let local = reference.starts_with(&format!("{namespace}T-"));
+    let remote = if local {
+        None
+    } else {
+        Some(
+            repo.default_remote_name()
+                .ok_or("Remote Task Snapshot requires its configured remote authority")?,
+        )
+    };
+    let rows = change_list(repo, local, remote.as_deref())?;
+    let rows = rows.as_array().ok_or("Change inventory must be an array")?;
+    let change = select_task_change_reference(rows, &reference, TaskChangeSelection::Author)?
+        .ok_or_else(|| format!("Task {reference} has no writable work. Inspect `ait task audit {reference}`; Snapshot creation never starts another Change."))?;
+    snapshot_create_for_task(repo, &reference, &change, message)
+}
+
+pub fn snapshot_create_for_change(
+    repo: &RepoRuntime,
+    change_ref: &str,
+    message: Option<&str>,
+) -> Result<JsonValue, String> {
+    let change_ref = parse_snapshot_change_reference(change_ref)?;
+    let (task_id, _) = change_ref
+        .rsplit_once('/')
+        .ok_or("Validated Snapshot Change reference is missing its Task owner")?;
+    snapshot_create_for_task(repo, task_id, &change_ref, message)
+}
+
+pub fn snapshot_create_for_task(
+    repo: &RepoRuntime,
+    task_id: &str,
+    change_id: &str,
+    message: Option<&str>,
+) -> Result<JsonValue, String> {
+    let (binding, local) = validated_snapshot_binding(repo, task_id, change_id)?;
+    snapshot_create_with_binding(repo, message, Some((binding, local)))
+}
+
+pub(super) fn current_worktree_snapshot_store(
+    repo: &RepoRuntime,
+) -> Result<
+    crate::runtime::RepoBinaryDbLocalSnapshotOperationStore<SNAPSHOT_BINARY_DB_WRITE_LAYOUT>,
+    String,
+> {
+    let mut store = repo.local_snapshot_operation_store::<SNAPSHOT_BINARY_DB_WRITE_LAYOUT>(
+        &repo.workspace_root(),
+    )?;
+    if current_worktree_metadata(repo)?.is_some() {
+        let (binding, local) = current_worktree_snapshot_binding(repo)?;
+        if local {
+            store = store.with_workflow_binding(binding, repo.id_namespace_prefix());
+        }
+    }
+    Ok(store)
+}
+
+pub(super) fn validated_snapshot_binding(
+    repo: &RepoRuntime,
+    task_id: &str,
+    change_id: &str,
+) -> Result<(ait_core::workflow_binary_db::SnapshotWorkflowBinding, bool), String> {
+    let task_id = normalized_text(Some(task_id)).ok_or("Snapshot Task ID must not be empty")?;
+    if let Some((owner, _)) = change_id.split_once('/') {
+        if owner != task_id {
+            return Err("Snapshot Change reference belongs to a different Task".to_string());
+        }
+    }
+    let change_id = canonical_change_id(change_id)?;
+    let metadata = current_worktree_metadata(repo)?.ok_or_else(|| {
+        "Snapshot creation requires an active Task and Change in their bound worktree; repository-root authoring is forbidden, including before the first Task.".to_string()
+    })?;
+    if metadata.bound_task_id.as_deref() != Some(task_id.as_str()) {
+        return Err(format!(
+            "Snapshot expected Task {task_id} does not match the current worktree binding."
+        ));
+    }
+    let bindings = task_scoped_worktree_bindings(repo)?;
+    let matches = bindings
+        .iter()
+        .filter(|binding| binding.metadata.bound_task_id.as_deref() == Some(task_id.as_str()))
+        .collect::<Vec<_>>();
+    if matches.len() != 1 {
+        return Err(
+            "Snapshot creation requires exactly one registered worktree for its Task".to_string(),
+        );
+    }
+    let verified =
+        verified_task_scoped_worktree_repo(repo, &task_id, matches[0], "snapshot create")?;
+    if canonical_existing_path(&repo.workspace_root(), "current workspace")?
+        != canonical_existing_path(&verified.workspace_root(), "registered workspace")?
+        || canonical_existing_path(&repo.root, "current repository discovery root")?
+            != canonical_existing_path(&verified.workspace_root(), "registered worktree root")?
+        || repo.current_line_name()? != verified.current_line_name()?
+    {
+        return Err("Snapshot current workspace, Line, or overlay identity disagrees with its registered Task/Change".to_string());
+    }
+    let namespace = ait_core::workflow_primitives::workflow_origin_namespace_prefix(
+        "L",
+        Some(&repo.id_namespace_prefix()),
+    )?;
+    let local = task_id.starts_with(&format!("{namespace}T-"));
+    let remote_name = if local {
+        None
+    } else {
+        Some(
+            repo.default_remote_name()
+                .ok_or("Remote Task Snapshot requires its configured remote authority")?,
+        )
+    };
+    let task = task_show(repo, &task_id, local, remote_name.as_deref())?;
+    let change_ref = change_reference_for_context(Some(&task_id), &change_id)?;
+    let change = change_show(repo, &change_ref, local, remote_name.as_deref(), None)?;
+    if string_field(&task, "task_id").as_deref() != Some(task_id.as_str())
+        || string_field(&task, "status").as_deref() != Some("active")
+    {
+        return Err("Snapshot creation requires the exact active Task; completed or canceled Tasks cannot author".to_string());
+    }
+    if string_field(&change, "change_id").as_deref() != Some(change_id.as_str())
+        || change_task_id_from_payload(&change).as_deref() != Some(task_id.as_str())
+        || !matches!(
+            string_field(&change, "status").as_deref(),
+            Some("draft" | "active" | "review")
+        )
+    {
+        return Err(
+            "Snapshot creation requires a writable Change belonging to the expected Task"
+                .to_string(),
+        );
+    }
+    let binding = ait_core::workflow_binary_db::SnapshotWorkflowBinding {
+        task_id,
+        change_id,
+        worktree_name: metadata.name,
+        line_name: repo.current_line_name()?,
+        author_mode: repo
+            .config
+            .get("default_author_mode")
+            .and_then(JsonValue::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        model_name: String::new(),
+    };
+    if local {
+        repo.task_store()?
+            .validate_snapshot_binding(&binding)
+            .map_err(|error| error.to_string())?;
+    }
+    Ok((binding, local))
 }
 
 /// Snapshot the current workspace without the task-bound authoring guard.
 /// Reserved for callers that already own the authoring boundary (fixtures and
 /// internal orchestration); the public command path stays fail-closed.
+#[cfg(test)]
 pub(in crate::primitives) fn snapshot_create_in_current_workspace(
     repo: &RepoRuntime,
     message: Option<&str>,
+) -> Result<JsonValue, String> {
+    snapshot_create_with_binding(repo, message, None)
+}
+
+fn snapshot_create_with_binding(
+    repo: &RepoRuntime,
+    message: Option<&str>,
+    binding: Option<(ait_core::workflow_binary_db::SnapshotWorkflowBinding, bool)>,
 ) -> Result<JsonValue, String> {
     guard_no_active_line_merge(repo, None, "creating a Snapshot")?;
     guard_no_planning_only_artifact_drift(repo, "ait snapshot create")?;
     let workspace_root = repo.workspace_root();
     let line_name = repo.current_line_name()?;
-    let snapshot_store =
+    let mut snapshot_store =
         repo.local_snapshot_operation_store::<SNAPSHOT_BINARY_DB_WRITE_LAYOUT>(&workspace_root)?;
-    let snapshot = snapshot_store.create_snapshot(
+    if let Some((binding, true)) = binding.as_ref() {
+        snapshot_store =
+            snapshot_store.with_workflow_binding(binding.clone(), repo.id_namespace_prefix());
+    }
+    let mut snapshot = snapshot_store.create_snapshot(
         &repo.repo_name(),
         &line_name,
         message,
         repo.is_worktree(),
     )?;
+    if let Some((binding, _)) = binding {
+        if let Some(output) = snapshot.as_object_mut() {
+            output.insert("task_id".to_string(), json!(binding.task_id));
+            output.insert("change_id".to_string(), json!(binding.change_id));
+        }
+    }
     repo.set_worktree_materialized_snapshot(string_field(&snapshot, "snapshot_id").as_deref())?;
     Ok(snapshot)
 }
@@ -50,7 +315,12 @@ pub fn snapshot_create_explicit(
     touch_line: bool,
     record_workflow_metadata: bool,
 ) -> Result<JsonValue, String> {
-    guard_current_worktree_task_bound_authoring(repo, "snapshot create")?;
+    let (binding, local) = current_worktree_snapshot_binding(repo)?;
+    if repo_name != repo.repo_name() || line_name != binding.line_name {
+        return Err(
+            "Explicit Snapshot repository or Line differs from its Task worktree".to_string(),
+        );
+    }
     guard_no_active_line_merge(repo, None, "creating a Snapshot")?;
     guard_no_planning_only_artifact_drift(repo, "ait snapshot create")?;
     let workspace_root = repo.workspace_root();
@@ -59,8 +329,11 @@ pub fn snapshot_create_explicit(
     let previous_head_snapshot_id = local_line_head_snapshot_id(repo, &line_name)?;
     let previous_line_updated_at = local_line_updated_at(repo, &line_name)?;
     let parent_snapshot_id = normalized_text(parent_snapshot_id);
-    let snapshot_store =
+    let mut snapshot_store =
         repo.local_snapshot_operation_store::<SNAPSHOT_BINARY_DB_WRITE_LAYOUT>(&workspace_root)?;
+    if local {
+        snapshot_store = snapshot_store.with_workflow_binding(binding, repo.id_namespace_prefix());
+    }
     if let Some(parent_snapshot_id) = parent_snapshot_id.as_deref() {
         set_local_line_head(repo, &line_name, Some(parent_snapshot_id))?;
     }
@@ -235,13 +508,6 @@ pub(super) fn guard_patchset_revision_scope(
     let Some(expected_task_id) = metadata.bound_task_id.clone() else {
         return Ok(());
     };
-    let mut expected_change_aliases = BTreeSet::new();
-    if let Some(expected_change_id) = normalized_text(Some(change_id)) {
-        expected_change_aliases.insert(expected_change_id);
-    }
-    if let Some(bound_change_id) = metadata.bound_change_id.clone() {
-        expected_change_aliases.insert(bound_change_id);
-    }
     let ownership_rows = snapshot_ownership_rows(repo, &lineage_snapshot_ids)?;
     let mut ownership_issues = Vec::new();
     for snapshot_id in &lineage_snapshot_ids {
@@ -253,24 +519,11 @@ pub(super) fn guard_patchset_revision_scope(
             continue;
         };
         let owner_task_id = string_field(ownership, "task_id");
-        let owner_change_id = string_field(ownership, "change_id");
         let owner_worktree_name = string_field(ownership, "worktree_name");
         if owner_task_id.as_deref() != Some(expected_task_id.as_str()) {
             ownership_issues.push(format!(
                 "{snapshot_id} (task {})",
                 owner_task_id.unwrap_or_else(|| "none".to_string())
-            ));
-            continue;
-        }
-        if !expected_change_aliases.is_empty()
-            && owner_change_id
-                .as_deref()
-                .map(|value| !expected_change_aliases.contains(value))
-                .unwrap_or(false)
-        {
-            ownership_issues.push(format!(
-                "{snapshot_id} (change {})",
-                owner_change_id.unwrap_or_default()
             ));
             continue;
         }
@@ -294,13 +547,8 @@ pub(super) fn guard_patchset_revision_scope(
         .cloned()
         .collect::<Vec<_>>()
         .join(", ");
-    let change_fragment = expected_change_aliases
-        .iter()
-        .next()
-        .map(|value| format!(" / change `{value}`"))
-        .unwrap_or_default();
     Err(format!(
-        "Current Line head `{revision_snapshot_id}` includes Snapshots that are not owned by bound Task `{expected_task_id}`{change_fragment} between base `{base_snapshot_id}` and the current head: {issue_sample}. Restore or reopen the correct Task worktree before running `ait patchset publish`."
+        "Current Line head `{revision_snapshot_id}` includes Snapshots that are not owned by bound Task `{expected_task_id}` between base `{base_snapshot_id}` and the current head: {issue_sample}. Restore or reopen the correct Task worktree before publishing Change `{change_id}`."
     ))
 }
 
@@ -468,7 +716,6 @@ pub(super) fn worktree_metadata_from_payload(
             .get("auto_created_for_task")
             .and_then(JsonValue::as_bool)
             .unwrap_or(false),
-        created_at: string_field(payload, "created_at"),
         fork_snapshot_id: string_field(payload, "fork_snapshot_id"),
         target_base_line: string_field(payload, "target_base_line"),
         rebase_state: string_field(payload, "rebase_state").unwrap_or_else(|| "idle".to_string()),
@@ -558,7 +805,15 @@ pub(super) fn bound_task_worktree_metadata(
         return Ok(None);
     }
     let normalized_change_id = normalized_text(change_id);
+    let ref_task_id = normalized_change_id
+        .as_deref()
+        .and_then(|reference| reference.split_once('/'))
+        .map(|(owner, _)| owner.to_string());
     let normalized_task_id = normalized_text(task_id);
+    if normalized_task_id.is_some() && ref_task_id.is_some() && normalized_task_id != ref_task_id {
+        return Err("Change reference belongs to a different Task".to_string());
+    }
+    let normalized_task_id = normalized_task_id.or(ref_task_id);
     let canonical_change_id = normalized_change_id
         .as_deref()
         .map(canonical_change_id)
@@ -594,13 +849,14 @@ pub(super) fn bound_task_worktree_metadata(
             .unwrap_or("worktree")
             .to_string();
         let metadata = worktree_metadata_from_payload(&payload, &fallback_name);
-        let change_matches_request = match requested_change_ref.as_deref() {
-            Some(change_ref) => metadata.bound_change_ref.as_deref() == Some(change_ref),
-            None => {
-                canonical_change_id.is_some()
-                    && metadata.bound_change_id.as_ref() == canonical_change_id.as_ref()
-            }
-        };
+        let change_matches_request = normalized_task_id.is_none()
+            && match requested_change_ref.as_deref() {
+                Some(change_ref) => metadata.bound_change_ref.as_deref() == Some(change_ref),
+                None => {
+                    canonical_change_id.is_some()
+                        && metadata.bound_change_id.as_ref() == canonical_change_id.as_ref()
+                }
+            };
         if change_matches_request {
             change_matches.push(metadata);
             continue;
@@ -611,7 +867,7 @@ pub(super) fn bound_task_worktree_metadata(
             task_matches.push(metadata);
         }
     }
-    let mut candidates = if !change_matches.is_empty() {
+    let candidates = if !change_matches.is_empty() {
         if requested_change_ref.is_none() && change_matches.len() > 1 {
             let scopes = change_matches
                 .iter()
@@ -636,16 +892,9 @@ pub(super) fn bound_task_worktree_metadata(
     if candidates.is_empty() {
         return Ok(None);
     }
-    candidates.sort_by(|left, right| {
-        (
-            right.auto_created_for_task,
-            right.created_at.clone().unwrap_or_default(),
-        )
-            .cmp(&(
-                left.auto_created_for_task,
-                left.created_at.clone().unwrap_or_default(),
-            ))
-    });
+    if candidates.len() > 1 {
+        return Err("Exactly one registered worktree is required for a Task; duplicate Task worktrees are ambiguous.".to_string());
+    }
     Ok(candidates.into_iter().next())
 }
 
@@ -1615,17 +1864,39 @@ pub(crate) fn snapshot_ownership_rows(
     if snapshot_ids.is_empty() {
         return Ok(Vec::new());
     }
+    let mut durable = repo
+        .task_store()?
+        .snapshot_ownership_rows(snapshot_ids)
+        .map_err(|error| error.to_string())?;
     let Some(metadata) = current_worktree_metadata(repo)? else {
-        return Ok(Vec::new());
+        return Ok(durable);
     };
+    if metadata
+        .bound_task_id
+        .as_deref()
+        .is_some_and(|id| id.starts_with('L'))
+    {
+        // Unlinked local/imported history is not owned merely because the
+        // current worktree happens to have a Task-shaped Line name.
+        return Ok(durable);
+    }
     let line_name = repo.current_line_name()?;
     let store = snapshot_store(repo)?;
-    bound_worktree_snapshot_ownership_rows_with_snapshot_store(
+    let inferred = bound_worktree_snapshot_ownership_rows_with_snapshot_store(
         &store,
         snapshot_ids,
         &metadata,
         &line_name,
-    )
+    )?;
+    for row in inferred {
+        if !durable
+            .iter()
+            .any(|existing| existing.get("snapshot_id") == row.get("snapshot_id"))
+        {
+            durable.push(row);
+        }
+    }
+    Ok(durable)
 }
 
 pub(super) fn bound_worktree_snapshot_ownership_rows_with_snapshot_store<S>(
@@ -1665,7 +1936,7 @@ where
         rows.push(json!({
             "snapshot_id": snapshot.snapshot_id,
             "task_id": task_id,
-            "change_id": metadata.bound_change_id.clone(),
+            "change_id": JsonValue::Null,
             "worktree_name": metadata.name.clone(),
             "line_name": snapshot.line_name,
             "author_mode": JsonValue::Null,
@@ -1867,6 +2138,12 @@ pub(super) fn apply_workspace_replay_range(
         &affected_paths,
         snapshot_rules_text.as_deref(),
     )?;
+    let source_base_entries = filtered_snapshot_path_rows(
+        repo,
+        Some(source_base_snapshot_id),
+        &affected_paths,
+        snapshot_rules_text.as_deref(),
+    )?;
     let dirty_changed_paths = json_string_list(dirty.get("changed_paths"));
     let requested_set = affected_paths.iter().cloned().collect::<BTreeSet<_>>();
     let dirty_selected_paths = dirty_changed_paths
@@ -1883,32 +2160,108 @@ pub(super) fn apply_workspace_replay_range(
     let mut write_paths = Vec::new();
     let mut remove_paths = Vec::new();
     let mut unchanged_paths = Vec::new();
+    let mut writes = BTreeMap::new();
+    let mut conflicts = BTreeMap::new();
     for rel in &affected_paths {
-        let status = delta_status_by_path
-            .get(rel)
-            .cloned()
-            .unwrap_or_else(|| "unchanged".to_string());
-        let current = workspace_files.get(rel);
-        if status == "deleted" {
-            if current.is_none() {
-                unchanged_paths.push(rel.clone());
-            } else {
-                remove_paths.push(rel.clone());
-            }
+        let absolute = repo.workspace_root().join(rel);
+        if absolute
+            .ancestors()
+            .skip(1)
+            .take_while(|parent| *parent != repo.workspace_root())
+            .any(|parent| fs::symlink_metadata(parent).is_ok_and(|metadata| !metadata.is_dir()))
+        {
+            conflicts.insert(rel.clone(), "parent_path_type".to_string());
             continue;
         }
-        let source_row = source_head_entries.get(rel).ok_or_else(|| {
-            format!(
-                "Replay source snapshot `{source_head_snapshot_id}` is missing the changed file `{rel}`."
-            )
-        })?;
-        let source_sha256 = file_map_row_sha256(source_row).unwrap_or_default();
-        let source_mode = file_map_row_mode(source_row).unwrap_or_default();
-        match current {
-            Some(state) if state.sha256 == source_sha256 && state.mode == source_mode => {
-                unchanged_paths.push(rel.clone());
+        if fs::symlink_metadata(&absolute).is_ok_and(|metadata| !metadata.is_file()) {
+            conflicts.insert(rel.clone(), "path_type".to_string());
+            continue;
+        }
+        let decode = |value: &JsonValue| -> Result<SnapshotFileRow, String> {
+            Ok(SnapshotFileRow {
+                path: rel.clone(),
+                blob_id: required_string_field(value, "blob_id")?,
+                sha256: required_string_field(value, "sha256")?,
+                mode: required_string_field(value, "mode")?,
+                size_bytes: value
+                    .get("size_bytes")
+                    .and_then(JsonValue::as_i64)
+                    .ok_or_else(|| format!("Snapshot file {rel} is missing its size"))?,
+            })
+        };
+        let base = source_base_entries.get(rel).map(decode).transpose()?;
+        let source = source_head_entries.get(rel).map(decode).transpose()?;
+        let current_bytes = workspace_files
+            .get(rel)
+            .map(|_| fs::read(&absolute).map_err(|error| error.to_string()))
+            .transpose()?;
+        let target = workspace_files.get(rel).map(|state| {
+            let blob_id = base
+                .iter()
+                .chain(source.iter())
+                .find(|row| row.sha256 == state.sha256)
+                .map(|row| row.blob_id.clone())
+                .unwrap_or_else(|| format!("workspace:{}", state.sha256));
+            SnapshotFileRow {
+                path: rel.clone(),
+                blob_id,
+                sha256: state.sha256.clone(),
+                mode: state.mode.clone(),
+                size_bytes: current_bytes.as_ref().map_or(0, |bytes| bytes.len() as i64),
             }
-            _ => write_paths.push(rel.clone()),
+        });
+        let read = |row: &SnapshotFileRow| {
+            if target
+                .as_ref()
+                .is_some_and(|target| target.blob_id == row.blob_id)
+            {
+                Ok(current_bytes.clone().unwrap_or_default())
+            } else {
+                read_selected_snapshot_blob_bytes(repo, &row.blob_id)
+            }
+        };
+        use super::line_merge::MergePathAction;
+        let action = super::line_merge::classify_merge_path_with_reader(
+            base.as_ref(),
+            target.as_ref(),
+            source.as_ref(),
+            read,
+        )?;
+        let merged = match action {
+            MergePathAction::Keep => {
+                unchanged_paths.push(rel.clone());
+                None
+            }
+            MergePathAction::Remove => {
+                remove_paths.push(rel.clone());
+                None
+            }
+            MergePathAction::Conflict { kind } => {
+                conflicts.insert(rel.clone(), kind);
+                None
+            }
+            MergePathAction::WriteRow(row) => Some((read(&row)?, row.mode)),
+            MergePathAction::WriteBytes { bytes, mode } => Some((bytes, mode)),
+        };
+        if let Some((bytes, mode)) = merged {
+            parse_mode_bits(Some(&mode))?;
+            if current_bytes.as_ref() == Some(&bytes)
+                && target.as_ref().is_some_and(|row| row.mode == mode)
+            {
+                unchanged_paths.push(rel.clone());
+            } else {
+                write_paths.push(rel.clone());
+                writes.insert(rel.clone(), (bytes, mode));
+            }
+        }
+    }
+
+    // Inspect every destination before the first removal or write, including
+    // ancestor obstructions and ignored files absent from the workspace scan.
+    for rel in &write_paths {
+        let absolute = repo.workspace_root().join(rel);
+        if !workspace_files.contains_key(rel) && fs::symlink_metadata(&absolute).is_ok() {
+            conflicts.insert(rel.clone(), "untracked_destination".to_string());
         }
     }
 
@@ -1919,6 +2272,8 @@ pub(super) fn apply_workspace_replay_range(
         "force": force,
         "dry_run": dry_run,
         "applied": false,
+        "conflict_paths": conflicts.keys().collect::<Vec<_>>(),
+        "conflict_kinds": conflicts,
         "workspace_dirty": !dirty.get("clean").and_then(JsonValue::as_bool).unwrap_or(false),
         "would_overwrite_selected_changes": !dirty_selected_paths.is_empty(),
         "dirty_workspace": dirty,
@@ -1952,6 +2307,12 @@ pub(super) fn apply_workspace_replay_range(
     if dry_run {
         return Ok(result);
     }
+    if !conflicts.is_empty() {
+        return Err(format!(
+            "Workspace replay conflicts; no files were changed: {}",
+            conflicts.keys().cloned().collect::<Vec<_>>().join(", ")
+        ));
+    }
 
     let workspace_root = repo.workspace_root();
     for rel in reverse_depth_sort_paths(remove_paths.clone()) {
@@ -1962,22 +2323,8 @@ pub(super) fn apply_workspace_replay_range(
         }
     }
     for rel in sort_paths(write_paths.clone()) {
-        let source_row = source_head_entries
-            .get(rel.as_str())
-            .ok_or_else(|| format!("Replay source snapshot is missing `{rel}`."))?;
-        let blob_id = file_map_row_blob_id(source_row)
-            .ok_or_else(|| format!("Replay source snapshot row is missing blob_id for `{rel}`."))?;
-        let abs_path = workspace_root.join(&rel);
-        if let Some(parent) = abs_path.parent() {
-            fs::create_dir_all(parent).map_err(|err| err.to_string())?;
-        }
-        if abs_path.exists() && abs_path.is_dir() {
-            return Err(format!("Cannot replay file over directory: {rel}"));
-        }
-        let data = read_selected_snapshot_blob_bytes(repo, &blob_id)?;
-        fs::write(&abs_path, data).map_err(|err| err.to_string())?;
-        let mode = parse_mode_bits(file_map_row_mode(source_row).as_deref())?;
-        set_portable_mode(&abs_path, mode).map_err(|err| err.to_string())?;
+        let (bytes, mode) = &writes[&rel];
+        super::line_merge::write_workspace_bytes(repo, &rel, bytes, mode)?;
     }
     result
         .as_object_mut()

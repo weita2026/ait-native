@@ -57,10 +57,10 @@ ait --version
 node --test tests/baseline.test.mjs
 ait init
 ait config set --user-name "your-name"
-ait snapshot create --message "Start the AIT example"
 ```
 
-三项基准测试应全部通过。这个初始 Snapshot 会在 Task 开始前记录尚未修改的示例。
+三项基准测试应全部通过。Task start 的初始化流程会记录起始基准。
+之后仅能在返回的 Task worktree 内，指定 Task ID 和 Change ID 来建立 checkpoint。
 若使用现有项目，请改依[入门指南](https://ait-native.dev/technical/getting-started/)操作。
 
 **3. 在 coding agent 中打开示例，并给它以下需求。**

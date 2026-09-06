@@ -1,5 +1,6 @@
 use crate::agent_harness::converge_agent_workflow_harness;
 use crate::json_support::{encode_value_pretty_with_newline_error_string, parse_object_or_empty};
+use crate::plan_preferences::{normalize_language, normalize_style, PlanPreferences};
 use crate::runtime::RepoRuntime;
 use crate::task_worktree_layout::config_task_worktree_summary;
 use ait_core::json_support::{json, JsonMap, JsonValue};
@@ -18,6 +19,8 @@ const WORKFLOW_ID_FAMILIES: &[&str] = &[
 const RESERVED_WORKFLOW_TOKENS: &[&str] = &["AT", "LAND", "W"];
 #[derive(Clone, Debug, Default)]
 pub struct ConfigSetRequest {
+    pub plan_language: Option<String>,
+    pub plan_style: Option<String>,
     pub default_author_mode: Option<String>,
     pub default_model: Option<String>,
     pub task_review: Option<String>,
@@ -33,6 +36,12 @@ pub struct ConfigSetRequest {
 impl ConfigSetRequest {
     pub fn updated_keys(&self) -> Vec<&'static str> {
         let mut keys = Vec::new();
+        if self.plan_language.is_some() {
+            keys.push("plan-language");
+        }
+        if self.plan_style.is_some() {
+            keys.push("plan-style");
+        }
         if self.workflow_mode.is_some() {
             keys.push("workflow-mode");
             if self.sprint.is_none() {
@@ -72,6 +81,8 @@ impl ConfigSetRequest {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ConfigUnsetKey {
+    PlanLanguage,
+    PlanStyle,
     DefaultAuthorMode,
     DefaultModel,
     TaskReview,
@@ -85,6 +96,8 @@ pub enum ConfigUnsetKey {
 impl ConfigUnsetKey {
     pub const fn as_str(self) -> &'static str {
         match self {
+            Self::PlanLanguage => "plan-language",
+            Self::PlanStyle => "plan-style",
             Self::DefaultAuthorMode => "default-author-mode",
             Self::DefaultModel => "default-model",
             Self::TaskReview => "task-review",
@@ -98,6 +111,7 @@ impl ConfigUnsetKey {
 }
 
 pub fn config_show(repo: &RepoRuntime) -> Result<JsonValue, String> {
+    let plan_preferences = PlanPreferences::for_repo(repo)?;
     let repository_index = ServerRepositoryAuthorityConfig::from_config_object(&repo.config)?
         .map(|config| config.repository_index.get());
     let workflow_default_scope = workflow_default_scope_summary(repo);
@@ -122,6 +136,8 @@ pub fn config_show(repo: &RepoRuntime) -> Result<JsonValue, String> {
         "worktree_name": worktree_name,
         "active_root_worktree_name": active_root_worktree_name,
         "repo_name": repo.repo_name(),
+        "plan_language": plan_preferences.language_summary(),
+        "plan_style": plan_preferences.style_summary(),
         "repository_index": repository_index,
         "default_line": repo.default_line_name(),
         "current_line": repo.current_line_name()?,
@@ -185,6 +201,8 @@ fn parse_config_set_request(payload: &JsonValue) -> Result<ConfigSetRequest, Str
     reject_unknown_config_set_fields(
         object,
         &[
+            "plan_language",
+            "plan_style",
             "default_author_mode",
             "default_model",
             "task_review",
@@ -198,6 +216,8 @@ fn parse_config_set_request(payload: &JsonValue) -> Result<ConfigSetRequest, Str
         ],
     )?;
     Ok(ConfigSetRequest {
+        plan_language: option_string_field(object, "plan_language")?,
+        plan_style: option_string_field(object, "plan_style")?,
         default_author_mode: option_string_field(object, "default_author_mode")?,
         default_model: option_string_field(object, "default_model")?,
         task_review: option_string_field(object, "task_review")?,
@@ -217,6 +237,12 @@ fn parse_config_set_request(payload: &JsonValue) -> Result<ConfigSetRequest, Str
 fn validate_config_set_request(request: &ConfigSetRequest) -> Result<(), String> {
     if !request_has_updates(request) {
         return Err("No config updates specified".to_string());
+    }
+    if let Some(value) = request.plan_language.as_deref() {
+        normalize_language(value)?;
+    }
+    if let Some(value) = request.plan_style.as_deref() {
+        normalize_style(value)?;
     }
     if let Some(value) = request.default_author_mode.as_deref() {
         normalize_author_mode_value(value)?;
@@ -259,7 +285,9 @@ fn validate_config_set_request(request: &ConfigSetRequest) -> Result<(), String>
 }
 
 fn request_has_updates(request: &ConfigSetRequest) -> bool {
-    request.default_author_mode.is_some()
+    request.plan_language.is_some()
+        || request.plan_style.is_some()
+        || request.default_author_mode.is_some()
         || request.default_model.is_some()
         || request.task_review.is_some()
         || request.task_worktree_alias_root.is_some()
@@ -303,6 +331,15 @@ fn apply_config_set_updates(
     config: &mut JsonMap<String, JsonValue>,
     request: &ConfigSetRequest,
 ) -> Result<(), String> {
+    if let Some(value) = request.plan_language.as_deref() {
+        config.insert(
+            "plan_language".to_string(),
+            json!(normalize_language(value)?),
+        );
+    }
+    if let Some(value) = request.plan_style.as_deref() {
+        config.insert("plan_style".to_string(), json!(normalize_style(value)?));
+    }
     if let Some(value) = request.default_author_mode.as_ref() {
         config.insert(
             "default_author_mode".to_string(),
@@ -413,6 +450,12 @@ fn apply_config_unset(
     key: ConfigUnsetKey,
 ) -> Result<(), String> {
     match key {
+        ConfigUnsetKey::PlanLanguage => {
+            config.remove("plan_language");
+        }
+        ConfigUnsetKey::PlanStyle => {
+            config.remove("plan_style");
+        }
         ConfigUnsetKey::DefaultAuthorMode => {
             config.remove("default_author_mode");
         }
@@ -1005,6 +1048,7 @@ fn update_root_config(
         .join("config.json");
     let mut config = read_json_object(&config_path);
     updater(&mut config)?;
+    PlanPreferences::from_config(&config)?;
     write_json_pretty(&config_path, &JsonValue::Object(config))
 }
 

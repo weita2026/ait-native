@@ -95,7 +95,7 @@ pub use agent_token_host_shutdown_recovery::{
 };
 pub use agent_token_infrastructure_recovery::{
     load_agent_token_infrastructure_recovery_view, recognized_infrastructure_failure,
-    replacement_run_id, AgentTokenInfrastructurePairRecoverySelection,
+    recovery_directory, replacement_run_id, AgentTokenInfrastructurePairRecoverySelection,
     AgentTokenInfrastructureRecoveryArtifact, AgentTokenInfrastructureRecoveryView,
     AGENT_TOKEN_INFRASTRUCTURE_RECOVERY_CONTRACT,
     AGENT_TOKEN_INFRASTRUCTURE_RECOVERY_PAIR_ADMISSION_POLICY,

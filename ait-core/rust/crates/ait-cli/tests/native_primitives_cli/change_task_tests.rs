@@ -3,31 +3,17 @@ fn native_patchset_namespace_supports_list_show_and_select() {
     let (base_url, log, _state, handle) = spawn_fake_remote();
     let (_temp, worktree) = init_worktree_repo(&base_url);
 
-    let listed = json_output(
-        &worktree,
-        &["patchset", "list", "RC-1", "--json"],
-    );
+    let listed = json_output(&worktree, &["patchset", "list", "RC-1", "--json"]);
     let listed_rows = listed.as_array().unwrap();
     assert_eq!(listed_rows[0]["patchset_id"].as_str(), Some("RP-1"));
     assert_eq!(listed_rows[0]["patchset_number"].as_i64(), Some(1));
 
-    let shown = json_output(
-        &worktree,
-        &[
-            "patchset",
-            "show",
-            "RP-1",
-            "--json",
-        ],
-    );
+    let shown = json_output(&worktree, &["patchset", "show", "RP-1", "--json"]);
     assert_eq!(shown["patchset_id"].as_str(), Some("RP-1"));
     assert_eq!(shown["change_id"].as_str(), Some("RC-1"));
     assert_eq!(shown["summary"].as_str(), Some("Native Rust patchset"));
 
-    let selected = json_output(
-        &worktree,
-        &["patchset", "select", "RP-1", "--json"],
-    );
+    let selected = json_output(&worktree, &["patchset", "select", "RP-1", "--json"]);
     assert_eq!(selected["change_id"].as_str(), Some("RC-1"));
     assert_eq!(selected["selected_patchset_id"].as_str(), Some("RP-1"));
 
@@ -68,10 +54,7 @@ fn native_change_namespace_supports_local_and_remote_scopes() {
         local_started["change"]["publication_state"].as_str(),
         Some("local_draft")
     );
-    let local_show = json_output(
-        root,
-        &["change", "show", "C-01", "--local", "--json"],
-    );
+    let local_show = json_output(root, &["change", "show", "C-01", "--local", "--json"]);
     assert_eq!(local_show["change_id"].as_str(), Some("C-01"));
     assert_eq!(local_show["task_id"].as_str(), Some("LT-0001"));
     assert!(log.lock().unwrap().is_empty());
@@ -100,17 +83,11 @@ fn native_change_namespace_supports_revert_and_replay() {
     let (_repo, worktree) = init_worktree_repo(&base_url);
     state.lock().unwrap().remote_head_snapshot_id = Some(FIXTURE_BASE_SNAPSHOT_ID.to_string());
 
-    let snapshot = json_output(
-        &worktree,
-        &[
-            "snapshot",
-            "create",
-            "--message",
-            "change checkpoint",
-            "--json",
-        ],
-    );
+    let snapshot = checkpoint_bound_worktree_fixture(&worktree, "change checkpoint");
     let snapshot_id = snapshot["snapshot_id"].as_str().unwrap().to_string();
+    // Remote revision selection must come from its exact Patchset, even when
+    // this workspace happens to be the source Task's worktree.
+    state.lock().unwrap().selected_patchset_revision_snapshot_id = Some(snapshot_id.clone());
 
     let reverted = json_output(
         &worktree,
@@ -341,10 +318,12 @@ fn explicit_task_edit_root_rejects_unsafe_inputs_before_task_creation() {
         assert!(!output.status.success());
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(stderr.contains(expected_error), "{stderr}");
-        assert!(json_output(root, &["task", "list", "--all", "--local", "--json"])
-            .as_array()
-            .unwrap()
-            .is_empty());
+        assert!(
+            json_output(root, &["task", "list", "--all", "--local", "--json"])
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
     }
 
     let outside = TempDir::new().unwrap();
@@ -371,10 +350,12 @@ fn explicit_task_edit_root_rejects_unsafe_inputs_before_task_creation() {
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("absent or empty"));
     assert_eq!(fs::read_to_string(sentinel).unwrap(), "user-owned\n");
-    assert!(json_output(root, &["task", "list", "--all", "--local", "--json"])
-        .as_array()
-        .unwrap()
-        .is_empty());
+    assert!(
+        json_output(root, &["task", "list", "--all", "--local", "--json"])
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
 }
 
 #[test]
@@ -486,10 +467,12 @@ fn explicit_task_edit_root_rejects_symlink_components_without_following_them() {
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("symbolic-link"));
     assert!(!real_parent.join("task-root").exists());
-    assert!(json_output(root, &["task", "list", "--all", "--local", "--json"])
-        .as_array()
-        .unwrap()
-        .is_empty());
+    assert!(
+        json_output(root, &["task", "list", "--all", "--local", "--json"])
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
 }
 
 #[test]
@@ -667,9 +650,7 @@ fn task_finish_retry_after_post_snapshot_failure_does_not_duplicate_snapshot() {
         .as_array()
         .unwrap()
         .iter()
-        .filter(|row| {
-            row["message"].as_str() == Some("Snapshot before injected Line failure")
-        })
+        .filter(|row| row["message"].as_str() == Some("Snapshot before injected Line failure"))
         .count();
     assert_eq!(created, 1);
 
@@ -732,7 +713,10 @@ fn native_task_start_local_scope_creates_authoritative_rows_and_worktree() {
     assert_eq!(payload["task_id"].as_str(), Some("LT-0001"));
     assert_eq!(payload["publication_state"].as_str(), Some("local_draft"));
     assert_eq!(payload["change"]["change_id"].as_str(), Some("C-01"));
-    assert_eq!(payload["change"]["publication_state"].as_str(), Some("local_draft"));
+    assert_eq!(
+        payload["change"]["publication_state"].as_str(),
+        Some("local_draft")
+    );
     assert_eq!(payload["worktree"]["exists"].as_bool(), Some(true));
     assert!(root.join(".ait/worktrees/lt-0001.json").exists());
     assert!(payload["worktree"]["cargo_target_dir"].is_null());
@@ -749,10 +733,7 @@ fn native_task_start_local_scope_creates_authoritative_rows_and_worktree() {
     let task = json_output(root, &["task", "show", "LT-0001", "--local", "--json"]);
     assert_eq!(task["task_id"].as_str(), Some("LT-0001"));
     assert_eq!(task["status"].as_str(), Some("active"));
-    let change = json_output(
-        root,
-        &["change", "show", "C-01", "--local", "--json"],
-    );
+    let change = json_output(root, &["change", "show", "C-01", "--local", "--json"]);
     assert_eq!(change["change_id"].as_str(), Some("C-01"));
     assert_eq!(change["status"].as_str(), Some("draft"));
 
@@ -787,13 +768,7 @@ fn native_task_start_local_scope_creates_authoritative_rows_and_worktree() {
 
     let contextual = json_output(
         root,
-        &[
-            "change",
-            "show",
-            "LT-0002/C-01",
-            "--local",
-            "--json",
-        ],
+        &["change", "show", "LT-0002/C-01", "--local", "--json"],
     );
     assert_eq!(contextual["change_id"].as_str(), Some("C-01"));
     assert_eq!(contextual["change_ref"].as_str(), Some("LT-0002/C-01"));
@@ -814,7 +789,6 @@ fn native_task_start_local_scope_creates_authoritative_rows_and_worktree() {
         audit["changes"][0]["target_state"].as_str(),
         Some("local_change_not_landed")
     );
-
 }
 
 #[test]
@@ -916,10 +890,7 @@ fn native_task_start_from_emits_one_json_document_and_compact_text_output() {
     assert_eq!(payload["title"], "Add JSON Plan-derived start");
     assert_eq!(payload["title_source"], "plan_item");
     assert_eq!(payload["plan_source"]["scope"], "local");
-    assert_eq!(
-        payload["plan_source"]["plan_item_ref"],
-        "source-start/json"
-    );
+    assert_eq!(payload["plan_source"]["plan_item_ref"], "source-start/json");
     assert_eq!(payload["cd_command"], payload["worktree"]["cd_command"]);
 
     let output = cargo_bin()
@@ -966,8 +937,8 @@ fn native_task_start_from_emits_one_json_document_and_compact_text_output() {
     let compact_stdout = String::from_utf8_lossy(&compact_output.stdout);
     assert!(compact_stdout.contains("ait task start"));
     assert!(compact_stdout.contains("task: LT-"));
-    assert!(compact_stdout.contains("change: LT-"));
-    assert!(compact_stdout.contains("/C-01"));
+    assert!(compact_stdout.contains("title: Add compact Agent Plan-derived start"));
+    assert!(!compact_stdout.contains("C-01"));
     assert!(compact_stdout.contains("next: cd "));
     assert!(!compact_stdout.contains("synchronizing Plan source:"));
     assert!(!compact_stdout.contains("worktree ready:"));
@@ -988,8 +959,11 @@ fn native_task_start_from_emits_one_json_document_and_compact_text_output() {
         .unwrap();
     assert!(audit.status.success());
     let audit_stdout = String::from_utf8_lossy(&audit.stdout);
-    assert!(audit_stdout.contains(&format!("{compact_task_id}/C-01")));
-    assert!(audit_stdout.contains("target_state"));
+    assert!(audit_stdout.contains(compact_task_id));
+    assert!(!audit_stdout.contains("C-01"));
+    assert!(audit_stdout.contains("target: main"));
+    let audit_json = json_output(root, &["task", "audit", compact_task_id, "--local", "--json"]);
+    assert_eq!(audit_json["changes"][0]["change"]["change_id"], "C-01");
     assert!(!audit_stdout.contains("{\"archived_at\""));
 
     let shown = cargo_bin()
@@ -1104,7 +1078,10 @@ fn native_remote_task_start_from_uses_one_atomic_mutation_and_no_legacy_posts() 
         ],
     );
     assert_eq!(replay["task_id"], payload["task_id"]);
-    assert_eq!(replay["change"]["change_id"], payload["change"]["change_id"]);
+    assert_eq!(
+        replay["change"]["change_id"],
+        payload["change"]["change_id"]
+    );
     assert_eq!(
         replay["worktree"]["open_path"],
         payload["worktree"]["open_path"]
@@ -1143,8 +1120,7 @@ fn native_remote_task_start_from_uses_one_atomic_mutation_and_no_legacy_posts() 
     let atomic = logged
         .iter()
         .filter(|row| {
-            row.method == "POST"
-                && row.url == "/v1/native/repository-authorities/7/task-start"
+            row.method == "POST" && row.url == "/v1/native/repository-authorities/7/task-start"
         })
         .collect::<Vec<_>>();
     assert_eq!(atomic.len(), 2);
@@ -1165,15 +1141,13 @@ fn native_remote_task_start_from_uses_one_atomic_mutation_and_no_legacy_posts() 
         .iter()
         .position(|row| {
             row.method == "POST"
-                && row.url
-                    == "/v1/native/repository-authorities/7/remote-sync/zstd-bulk/commit"
+                && row.url == "/v1/native/repository-authorities/7/remote-sync/zstd-bulk/commit"
         })
         .unwrap();
     let atomic_index = logged
         .iter()
         .position(|row| {
-            row.method == "POST"
-                && row.url == "/v1/native/repository-authorities/7/task-start"
+            row.method == "POST" && row.url == "/v1/native/repository-authorities/7/task-start"
         })
         .unwrap();
     assert!(commit_index < atomic_index);
@@ -1245,15 +1219,13 @@ fn native_remote_task_start_from_seeds_local_main_before_atomic_task_change() {
         .iter()
         .position(|row| {
             row.method == "POST"
-                && row.url
-                    == "/v1/native/repository-authorities/7/remote-sync/zstd-bulk/commit"
+                && row.url == "/v1/native/repository-authorities/7/remote-sync/zstd-bulk/commit"
         })
         .expect("expected local-seed zstd commit");
     let atomic_index = logged
         .iter()
         .position(|row| {
-            row.method == "POST"
-                && row.url == "/v1/native/repository-authorities/7/task-start"
+            row.method == "POST" && row.url == "/v1/native/repository-authorities/7/task-start"
         })
         .expect("expected atomic Task start");
     assert!(commit_index < atomic_index);
@@ -1344,8 +1316,7 @@ fn native_remote_task_start_attaches_task_change_only_to_final_plan_revision() {
     let atomic = logged
         .iter()
         .find(|row| {
-            row.method == "POST"
-                && row.url == "/v1/native/repository-authorities/7/task-start"
+            row.method == "POST" && row.url == "/v1/native/repository-authorities/7/task-start"
         })
         .unwrap();
     let body: JsonValue = parse_json(&atomic.body);
@@ -1414,8 +1385,7 @@ fn native_remote_task_start_atomic_failure_never_falls_back_to_legacy_posts() {
         logged
             .iter()
             .filter(|row| {
-                row.method == "POST"
-                    && row.url == "/v1/native/repository-authorities/7/task-start"
+                row.method == "POST" && row.url == "/v1/native/repository-authorities/7/task-start"
             })
             .count(),
         1
@@ -1426,11 +1396,9 @@ fn native_remote_task_start_atomic_failure_never_falls_back_to_legacy_posts() {
     assert!(!logged.iter().any(|row| {
         row.method == "POST" && row.url == "/v1/native/repository-authorities/7/changes"
     }));
-    assert!(
-        fs::read_dir(root.join(".ait/worktrees"))
-            .map(|mut entries| entries.next().is_none())
-            .unwrap_or(true)
-    );
+    assert!(fs::read_dir(root.join(".ait/worktrees"))
+        .map(|mut entries| entries.next().is_none())
+        .unwrap_or(true));
 }
 
 #[test]
@@ -1586,11 +1554,7 @@ fn native_task_start_ignores_disjoint_server_seed_root() {
     );
     let server_seed_snapshot_id = seed_snapshot(root, "server seed source Cargo policy");
     fs::create_dir_all(server_seed.join("src")).unwrap();
-    fs::copy(
-        root.join("src/lib.rs"),
-        server_seed.join("src/lib.rs"),
-    )
-    .unwrap();
+    fs::copy(root.join("src/lib.rs"), server_seed.join("src/lib.rs")).unwrap();
     write_file(
         &server_seed.join("server-only-marker.txt"),
         "must never cross the host boundary\n",
@@ -1616,11 +1580,7 @@ fn native_task_start_ignores_disjoint_server_seed_root() {
         payload["worktree"]["main_seed"]["status"].as_str(),
         Some("refreshed")
     );
-    let client_seed = PathBuf::from(
-        payload["worktree"]["main_seed"]["path"]
-            .as_str()
-            .unwrap(),
-    );
+    let client_seed = PathBuf::from(payload["worktree"]["main_seed"]["path"].as_str().unwrap());
     let _seed_cleanup = WritableTreeOnDrop::new(client_seed.clone());
     let canonical_client_seed = client_seed.canonicalize().unwrap();
     let canonical_client_runtime_root = client_runtime_root.canonicalize().unwrap();
@@ -1659,12 +1619,8 @@ fn native_task_start_ignores_disjoint_server_seed_root() {
     assert!(cargo_target_dir.contains("/cargo-target/task-workspaces/"));
     assert!(cargo_build_dir.contains("/cargo-build/task-workspaces/"));
     assert_ne!(cargo_target_dir, cargo_build_dir);
-    assert!(projected_cargo_config.contains(&format!(
-        "target-dir = \"{cargo_target_dir}\""
-    )));
-    assert!(projected_cargo_config.contains(&format!(
-        "build-dir = \"{cargo_build_dir}\""
-    )));
+    assert!(projected_cargo_config.contains(&format!("target-dir = \"{cargo_target_dir}\"")));
+    assert!(projected_cargo_config.contains(&format!("build-dir = \"{cargo_build_dir}\"")));
     assert!(payload["worktree"]["shell_command"]
         .as_str()
         .unwrap()
@@ -1866,8 +1822,7 @@ fn native_task_start_seeds_a_null_remote_base_from_local_main() {
         .iter()
         .position(|row| {
             row.method == "POST"
-                && row.url
-                    == "/v1/native/repository-authorities/7/remote-sync/zstd-bulk/commit"
+                && row.url == "/v1/native/repository-authorities/7/remote-sync/zstd-bulk/commit"
         })
         .expect("expected atomic local-seed zstd commit");
     let task_create_index = logged
@@ -2021,25 +1976,19 @@ fn native_task_namespace_reads_local_and_remote_scopes() {
     let local_listed = json_output(root, &["task", "list", "--local", "--json"]);
     assert_eq!(local_listed.as_array().unwrap().len(), 1);
     assert_eq!(local_listed[0]["task_id"].as_str(), Some("LT-0001"));
-    let local_shown = json_output(
-        root,
-        &["task", "show", "LT-0001", "--local", "--json"],
-    );
+    let local_shown = json_output(root, &["task", "show", "LT-0001", "--local", "--json"]);
     assert_eq!(local_shown["task_id"].as_str(), Some("LT-0001"));
-    assert_eq!(local_shown["publication_state"].as_str(), Some("local_draft"));
+    assert_eq!(
+        local_shown["publication_state"].as_str(),
+        Some("local_draft")
+    );
     assert!(log.lock().unwrap().is_empty());
 
-    let abandoned = json_output(
-        root,
-        &["task", "abandon", "LT-0001", "--local", "--json"],
-    );
+    let abandoned = json_output(root, &["task", "abandon", "LT-0001", "--local", "--json"]);
     assert_eq!(abandoned["status"].as_str(), Some("abandoned"));
     let bounded_local = json_output(root, &["task", "list", "--local", "--json"]);
     assert!(bounded_local.as_array().unwrap().is_empty());
-    let all_local = json_output(
-        root,
-        &["task", "list", "--local", "--all", "--json"],
-    );
+    let all_local = json_output(root, &["task", "list", "--local", "--all", "--json"]);
     assert_eq!(all_local.as_array().unwrap().len(), 1);
     assert_eq!(all_local[0]["task_id"].as_str(), Some("LT-0001"));
     assert_eq!(all_local[0]["status"].as_str(), Some("abandoned"));
@@ -2089,7 +2038,7 @@ fn native_task_namespace_reads_local_and_remote_scopes() {
         .keys()
         .cloned()
         .collect::<Vec<_>>();
-    assert_eq!(remote_show_keys, vec!["task_id"]);
+    assert_eq!(remote_show_keys, vec!["status", "task_id"]);
 
     handle.join().unwrap();
     let logged = log.lock().unwrap().clone();

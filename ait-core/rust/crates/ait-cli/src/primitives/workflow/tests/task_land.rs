@@ -221,6 +221,39 @@ fn task_land_remote_id_reads_accept_change_and_task_record_remote_traits() {
 }
 
 #[test]
+fn task_finish_remote_selection_ignores_accepted_and_retired_siblings() {
+    let mut remote = FakeWorkflowReadRemote {
+        tasks: BTreeMap::from([(
+            "RT-1".to_string(),
+            json!({"task_id": "RT-1", "status": "active"}),
+        )]),
+        change_rows: vec![
+            json!({"task_id": "RT-1", "change_id": "C-01", "status": "landed"}),
+            json!({"task_id": "RT-1", "change_id": "C-02", "status": "active"}),
+            json!({"task_id": "RT-1", "change_id": "C-03", "status": "superseded"}),
+        ],
+        ..Default::default()
+    };
+    assert_eq!(
+        task_land_remote_change_id_with_task_remote(&mut remote, "fixture-ait", "RT-1").unwrap(),
+        Some("RT-1/C-02".to_string())
+    );
+    remote.change_rows[1]["status"] = json!("archived");
+    assert_eq!(
+        task_land_remote_change_id_with_task_remote(&mut remote, "fixture-ait", "RT-1").unwrap(),
+        Some("RT-1/C-01".to_string())
+    );
+    remote
+        .change_rows
+        .push(json!({"task_id": "RT-1", "change_id": "C-04", "status": "landed"}));
+    assert!(
+        task_land_remote_change_id_with_task_remote(&mut remote, "fixture-ait", "RT-1")
+            .unwrap_err()
+            .contains("multiple finishable changes")
+    );
+}
+
+#[test]
 fn task_land_bound_line_capture_uses_exact_task_identity_and_rejects_ambiguity() {
     let temp = tempdir().unwrap();
     init_repo(&InitRequest {

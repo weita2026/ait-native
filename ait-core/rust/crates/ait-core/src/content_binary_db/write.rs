@@ -915,6 +915,41 @@ where
         Ok(results)
     }
 
+    /// Commit content identity and local workflow ownership in one Binary DB
+    /// transaction. A failed owner check cannot leave an unbound Snapshot.
+    pub fn record_snapshot_with_workflow_binding(
+        &self,
+        scope: BinaryDbCommandScope,
+        input: &BinaryDbSnapshotWriteInput,
+        binding: &crate::workflow_binary_db::SnapshotWorkflowBinding,
+        repo_name: &str,
+        namespace: &str,
+    ) -> StoreResult<bool>
+    where
+        B: Clone,
+    {
+        ensure_content_write_scope(scope)?;
+        if binding.line_name != input.line_name {
+            return Err("Snapshot Link authoring Line does not match its content Snapshot".into());
+        }
+        let workflow =
+            crate::workflow_binary_db::BinaryDbWorkflowStore::<_, WRITE_LAYOUT>::new_with_namespace(
+                self.snapshots.db().clone(),
+                repo_name,
+                namespace,
+            );
+        let mut tx = self.snapshots.begin_write_txn(scope)?;
+        let wrote = self.record_snapshot_with_history_boundary_in_write(&mut tx, input, false)?;
+        workflow.record_snapshot_link_in_write(
+            &mut tx,
+            binding,
+            &input.snapshot_id,
+            parse_created_at_s(&input.created_at)?,
+        )?;
+        tx.commit()?;
+        Ok(wrote)
+    }
+
     pub fn record_snapshot_at_remote_head_history_boundary(
         &self,
         scope: BinaryDbCommandScope,

@@ -85,12 +85,22 @@ pub const AGENT_TOKEN_MODEL_ADMISSION_PREDECESSOR_PROTOCOL_REVISION: &str =
 /// while `.48` corrects the permission boundary and is the only active form.
 pub const AGENT_TOKEN_MANAGED_WORKTREE_PREFLIGHT_PREDECESSOR_PROTOCOL_REVISION: &str =
     "game-development-2026-08-31.47";
+/// Exact predecessor pinned to Claude Code 2.1.235, which returns a 400 for
+/// claude-fable-5-1 and requires 2.1.251 or newer. Executor version is a
+/// pinned axis, so evidence recorded under it is never pooled across the
+/// upgrade.
+pub const AGENT_TOKEN_PRE_UPGRADE_EXECUTOR_PREDECESSOR_PROTOCOL_REVISION: &str =
+    "game-development-2026-08-31.48";
 pub const AGENT_TOKEN_200_SESSION_PREDECESSOR_PROTOCOL_REVISION: &str =
     "game-development-2026-08-26.26";
 /// Complete-scope predecessor revisions that remain readable as frozen
 /// evidence; campaigns cannot start under them. The runner admits only the
 /// explicitly enumerated narrow continuation and recovery exceptions.
 pub const AGENT_TOKEN_COMPLETE_PREDECESSOR_PROTOCOL_REVISIONS: &[&str] = &[
+    AGENT_TOKEN_GATED_RECOVERY_PREDECESSOR_PROTOCOL_REVISION,
+    AGENT_TOKEN_PRE_UPGRADE_BROWSER_PREDECESSOR_PROTOCOL_REVISION,
+    AGENT_TOKEN_PRE_UPGRADE_AIT_SUBJECT_PREDECESSOR_PROTOCOL_REVISION,
+    AGENT_TOKEN_PRE_UPGRADE_EXECUTOR_PREDECESSOR_PROTOCOL_REVISION,
     AGENT_TOKEN_MANAGED_WORKTREE_PREFLIGHT_PREDECESSOR_PROTOCOL_REVISION,
     AGENT_TOKEN_MODEL_ADMISSION_PREDECESSOR_PROTOCOL_REVISION,
     AGENT_TOKEN_STRICT_ONLY_PREDECESSOR_PROTOCOL_REVISION,
@@ -120,7 +130,19 @@ pub const AGENT_TOKEN_COMPLETE_PREDECESSOR_PROTOCOL_REVISIONS: &[&str] = &[
 pub const AGENT_TOKEN_REPORT_CONTRACT: &str = "ait-agent-token-benchmark-report/v3";
 pub const AGENT_TOKEN_ENVIRONMENT_CONTRACT: &str = "ait-agent-token-benchmark-environment/v1";
 pub const AGENT_TOKEN_BROWSER_REPORT_CONTRACT: &str = "ait-agent-token-browser-report/v1";
-pub const AGENT_TOKEN_PROTOCOL_REVISION: &str = "game-development-2026-08-31.48";
+/// Exact predecessor whose measured AIT subject was ait 1.1.0, before the
+/// subject itself moved to 1.1.1. Evidence is never pooled across it.
+pub const AGENT_TOKEN_PRE_UPGRADE_AIT_SUBJECT_PREDECESSOR_PROTOCOL_REVISION: &str =
+    "game-development-2026-08-31.49";
+/// Exact predecessor pinned to Chrome 151, the last runtime axis still stale
+/// after this host's upgrades. Evidence is never pooled across it.
+pub const AGENT_TOKEN_PRE_UPGRADE_BROWSER_PREDECESSOR_PROTOCOL_REVISION: &str =
+    "game-development-2026-08-31.50";
+/// Exact predecessor whose infrastructure recovery gated admission on the
+/// functional outcome and allowed only one recovery per campaign.
+pub const AGENT_TOKEN_GATED_RECOVERY_PREDECESSOR_PROTOCOL_REVISION: &str =
+    "game-development-2026-08-31.51";
+pub const AGENT_TOKEN_PROTOCOL_REVISION: &str = "game-development-2026-08-31.52";
 pub const AGENT_TOKEN_RECOVERED_SPAWN_POLICY_REVISION: &str = "game-development-2026-08-29.35";
 pub const AGENT_TOKEN_RECOVERED_SPAWN_CAMPAIGN_ID: &str =
     "game-v1-g56s-max-sprint-on-natural-complete200-20260828";
@@ -167,6 +189,12 @@ pub const CLAUDE_SINGLE_MODEL_ENV: (&str, &str) = ("CLAUDE_CODE_DISABLE_NONESSEN
 /// file could not be deleted was wrong.
 pub const AIT_PURGED_PROJECT_DOCUMENT: &str = "AGENTS.md";
 
+/// The executor's native auto-load channel. Claude Code reads CLAUDE.md and
+/// never AGENTS.md, so the generated guidance is mirrored here. ait 1.1.1
+/// tracks this path as authored Markdown, so the bootstrap must reconcile it
+/// after writing it.
+pub const CLAUDE_GUIDANCE_DOCUMENT: &str = "CLAUDE.md";
+
 pub const AGENT_TOKEN_PAIR_ADMISSION_POLICY: &str =
     "exact_protocol_valid_pair_without_workflow_metric_exclusion";
 const AGENT_TOKEN_COMPLETE_ATTEMPTS_PER_WORKLOAD: usize = 20;
@@ -193,11 +221,28 @@ pub(crate) fn protocol_requires_claude_model_evidence(protocol_revision: &str) -
     )
 }
 
+/// The axis has been continuously supported since it was introduced, so the
+/// gate expresses "not older than the introducing revision" rather than an
+/// exact match against the active one. Matching only the active revision made
+/// every as_shipped campaign unresumable at the next protocol bump, which
+/// relay execution across protocol work hits immediately.
 fn protocol_supports_as_shipped_claude_admission(protocol_revision: &str) -> bool {
-    matches!(
-        protocol_revision,
-        AGENT_TOKEN_PROTOCOL_REVISION | AGENT_TOKEN_MODEL_ADMISSION_PREDECESSOR_PROTOCOL_REVISION
-    )
+    let Some(observed) = agent_token_revision_ordinal(protocol_revision) else {
+        return false;
+    };
+    let Some(introduced) =
+        agent_token_revision_ordinal(AGENT_TOKEN_MODEL_ADMISSION_PREDECESSOR_PROTOCOL_REVISION)
+    else {
+        return false;
+    };
+    observed >= introduced
+}
+
+/// Parses the trailing ordinal of a `game-development-<date>.<n>` revision.
+/// Ordinals increase monotonically across dates, so comparing them orders the
+/// chain without needing to enumerate every revision.
+fn agent_token_revision_ordinal(protocol_revision: &str) -> Option<u32> {
+    protocol_revision.rsplit_once('.')?.1.parse().ok()
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord)]
@@ -976,12 +1021,18 @@ fn validate_agent_token_campaign_source(
     if revision == AGENT_TOKEN_PROTOCOL_REVISION
         || AGENT_TOKEN_COMPLETE_PREDECESSOR_PROTOCOL_REVISIONS.contains(&revision)
     {
+        // Mirrors the scopes `validate_agent_token_campaign` admits for
+        // execution. Recognizing a narrower set here made a diagnostic campaign
+        // startable but unreadable, so it could never be resumed: earlier
+        // diagnostics finished inside one invocation and never exposed it.
         if !matches!(
             manifest.campaign_scope,
-            AgentTokenCampaignScope::Smoke | AgentTokenCampaignScope::Complete
+            AgentTokenCampaignScope::Smoke
+                | AgentTokenCampaignScope::Diagnostic
+                | AgentTokenCampaignScope::Complete
         ) {
             return Err(format!(
-                "Agent-token protocol {} admits only smoke or complete campaign scope, got {}",
+                "Agent-token protocol {} admits only smoke, diagnostic, or complete campaign scope, got {}",
                 manifest.protocol_revision,
                 manifest.campaign_scope.as_str()
             ));
@@ -3811,6 +3862,20 @@ pub fn write_json_new(path: &Path, value: &impl Serialize) -> Result<(), String>
     write_bytes_new(path, &bytes)
 }
 
+/// Rewrites an evidence file that accumulates entries. Every other evidence
+/// file is create-new; the infrastructure recovery selection is the ordered
+/// list of pair recoveries, which grows as further interruptions are recovered.
+pub fn write_json_overwrite(path: &Path, value: &impl Serialize) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|error| format!("Failed to create {}: {error}", parent.display()))?;
+    }
+    let mut bytes = serde_json::to_vec_pretty(value)
+        .map_err(|error| format!("Failed to encode JSON for {}: {error}", path.display()))?;
+    bytes.push(b'\n');
+    fs::write(path, &bytes).map_err(|error| format!("Failed to write {}: {error}", path.display()))
+}
+
 pub fn write_text_new(path: &Path, value: &str) -> Result<(), String> {
     write_bytes_new(path, value.as_bytes())
 }
@@ -5378,6 +5443,69 @@ mod tests {
             error.contains("must contain only the pinned model"),
             "{error}"
         );
+    }
+
+    #[test]
+    fn evidence_validation_admits_every_scope_execution_admits() {
+        // A diagnostic campaign that starts must also read back, or it can
+        // never be resumed across a provider usage limit. Only the scope rule
+        // is under test, so other manifest fields may still fail validation.
+        let scope_rejected = |scope: AgentTokenCampaignScope| {
+            let mut manifest =
+                validation_manifest(scope, 0, PathBuf::from("fixtures/manifest.json"));
+            manifest.attempts_per_cell = match scope {
+                AgentTokenCampaignScope::Smoke => 1,
+                AgentTokenCampaignScope::Diagnostic => 2,
+                _ => AGENT_TOKEN_COMPLETE_ATTEMPTS_PER_WORKLOAD,
+            };
+            match validate_agent_token_campaign_source(&manifest) {
+                Ok(()) => None,
+                Err(error) => error.contains("campaign scope").then_some(error),
+            }
+        };
+        for scope in [
+            AgentTokenCampaignScope::Smoke,
+            AgentTokenCampaignScope::Diagnostic,
+            AgentTokenCampaignScope::Complete,
+        ] {
+            assert!(
+                scope_rejected(scope).is_none(),
+                "evidence validation must not reject {} on scope: {:?}",
+                scope.as_str(),
+                scope_rejected(scope)
+            );
+        }
+        // A scope the execution validator never admits stays rejected.
+        assert!(scope_rejected(AgentTokenCampaignScope::Pilot).is_some());
+        assert!(scope_rejected(AgentTokenCampaignScope::Qualification).is_some());
+    }
+
+    #[test]
+    fn as_shipped_admission_accepts_every_revision_from_its_introduction_onward() {
+        // Matching only the active revision made an as_shipped campaign
+        // unresumable at the next protocol bump, which relay execution across
+        // protocol work hits immediately.
+        assert!(protocol_supports_as_shipped_claude_admission(
+            AGENT_TOKEN_MODEL_ADMISSION_PREDECESSOR_PROTOCOL_REVISION
+        ));
+        assert!(protocol_supports_as_shipped_claude_admission(
+            AGENT_TOKEN_PROTOCOL_REVISION
+        ));
+        // An intermediate revision recorded between the two.
+        assert!(protocol_supports_as_shipped_claude_admission(
+            "game-development-2026-08-31.51"
+        ));
+        // A revision older than the one that introduced the axis cannot claim
+        // a capability its declared protocol never had.
+        assert!(!protocol_supports_as_shipped_claude_admission(
+            "game-development-2026-08-31.45"
+        ));
+        assert!(!protocol_supports_as_shipped_claude_admission(
+            "game-development-2026-08-26.27"
+        ));
+        assert!(!protocol_supports_as_shipped_claude_admission(
+            "not-a-revision"
+        ));
     }
 
     #[test]

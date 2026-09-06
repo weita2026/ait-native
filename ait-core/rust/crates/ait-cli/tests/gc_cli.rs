@@ -84,7 +84,14 @@ fn gc_binary_runtime_exposes_only_supported_maintenance_operations() {
 
     run_json(
         worktree,
-        &["snapshot", "create", "--message", "base", "--json"],
+        &[
+            "snapshot",
+            "create",
+            "LT-0001/C-01",
+            "--message",
+            "base",
+            "--json",
+        ],
     );
 
     let validate = run_json(root, &["gc", "validate", "--json"]);
@@ -95,7 +102,14 @@ fn gc_binary_runtime_exposes_only_supported_maintenance_operations() {
     write_update(&app);
     run_json(
         worktree,
-        &["snapshot", "create", "--message", "update", "--json"],
+        &[
+            "snapshot",
+            "create",
+            "LT-0001/C-01",
+            "--message",
+            "update",
+            "--json",
+        ],
     );
 
     let stats = run_json(root, &["gc", "stats", "--json"]);
@@ -164,7 +178,14 @@ fn gc_validate_emits_attention_result_before_returning_failure() {
     fs::write(worktree.join("app.txt"), "content requiring a pack\n").unwrap();
     run_json(
         worktree.as_path(),
-        &["snapshot", "create", "--message", "base", "--json"],
+        &[
+            "snapshot",
+            "create",
+            "LT-0001/C-01",
+            "--message",
+            "base",
+            "--json",
+        ],
     );
 
     let pack_path = fs::read_dir(root.join(".ait/objects/packs"))
@@ -200,7 +221,14 @@ fn task_governed_repo_root_rejects_authoring_surfaces() {
     fs::write(worktree.join("seed.txt"), "seed\n").unwrap();
     run_json(
         worktree.as_path(),
-        &["snapshot", "create", "--message", "seed", "--json"],
+        &[
+            "snapshot",
+            "create",
+            "LT-0001/C-01",
+            "--message",
+            "seed",
+            "--json",
+        ],
     );
 
     let task_line = run_json(worktree.as_path(), &["status", "--json"])["current_line"]
@@ -211,7 +239,14 @@ fn task_governed_repo_root_rejects_authoring_surfaces() {
     // Any Task adopts governance: the repo root stops being an authoring surface.
     fs::write(root.join("root.txt"), "root drift\n").unwrap();
     for args in [
-        vec!["snapshot", "create", "--message", "root", "--json"],
+        vec![
+            "snapshot",
+            "create",
+            "LT-0001/C-01",
+            "--message",
+            "root",
+            "--json",
+        ],
         vec!["stash", "save", "--message", "root", "--json"],
         vec!["line", "merge", task_line.as_str(), "--json"],
         vec!["change", "create", "LT-0001", "--title", "root", "--json"],
@@ -226,7 +261,8 @@ fn task_governed_repo_root_rejects_authoring_surfaces() {
             .clone();
         let error = String::from_utf8(output).unwrap();
         assert!(
-            error.contains("not an authoring workspace once tasks govern")
+            error.contains("repository-root authoring is forbidden")
+                || error.contains("not an authoring workspace once tasks govern")
                 || error.contains("requires a task-bound worktree")
                 || error.contains("pinned to bound worktree")
                 || error.contains("code/workspace drift"),

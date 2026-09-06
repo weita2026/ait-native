@@ -178,6 +178,34 @@ fn queue_digest_tracks_visible_action_and_date_without_clock_churn() {
 }
 
 #[test]
+fn hidden_change_identity_still_distinguishes_local_notification_digests() {
+    let payload = |change_id: &str| {
+        json!({
+            "notification_source": "local_current",
+            "items": [{
+                "task": {"task_id": "LCT-1", "title": "Task checkpoint"},
+                "workflow": {"state": "in_progress"},
+                "focus_change": {"change_id": change_id, "status": "active"},
+                "next_action": {"code": "checkpoint", "label": "Create checkpoint"}
+            }]
+        })
+    };
+    let first = format(json!({"kind": "workflow_notification", "payload": payload("C-01")}));
+    let second = format(json!({"kind": "workflow_notification", "payload": payload("C-02")}));
+    assert_eq!(first["text"], second["text"]);
+    let text = first["text"].as_str().unwrap();
+    assert!(
+        text.contains("LCT-1") && text.contains("work status=active"),
+        "{text}"
+    );
+    assert!(!text.contains("C-01"), "{text}");
+    let first_digest = format(json!({"kind": "queue_digest", "payload": payload("C-01")}));
+    let second_digest = format(json!({"kind": "queue_digest", "payload": payload("C-02")}));
+    assert_ne!(first_digest["digest"], second_digest["digest"]);
+    assert_eq!(first_digest["actionable"], true);
+}
+
+#[test]
 fn formats_queue_attention_and_ready_summaries() {
     let payload = json!({
         "summary": {
@@ -304,7 +332,9 @@ fn formats_task_change_audit_and_land_summaries() {
     let audit_text = audit["text"].as_str().unwrap();
     assert!(audit_text.contains("workflow=ready_to_land verdict=ready target=main"));
     assert!(audit_text.contains("recommended=Land change"));
-    assert!(audit_text.contains("Linked changes"));
+    assert!(!audit_text.contains("Linked changes"));
+    assert!(!audit_text.contains("AITC-1"));
+    assert!(audit_text.contains("pending_work=1 applied=0 on_target=1"));
 
     let land = format(json!({
         "kind": "change_land_summary",

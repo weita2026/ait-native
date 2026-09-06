@@ -310,24 +310,6 @@ fn change_revision_snapshot_id(
 ) -> Result<String, String> {
     let change_id = required_string_field(change, "change_id")?;
     let change_ref = change_reference_from_payload(change, None)?;
-    let change_task_id = string_field(change, "task_id");
-    if let Some(metadata) = current_worktree_metadata(repo)? {
-        let exact_binding = metadata.bound_change_ref.as_deref() == Some(change_ref.as_str())
-            && metadata.bound_change_id.as_deref() == Some(change_id.as_str())
-            && change_task_id
-                .as_deref()
-                .is_none_or(|task_id| metadata.bound_task_id.as_deref() == Some(task_id));
-        if exact_binding {
-            let (line_name, head_snapshot_id) = current_line_head_snapshot_id(repo)?;
-            return head_snapshot_id.ok_or_else(|| {
-                format!(
-                    "Bound worktree {} for change {change_id} has no head snapshot on line {line_name}. Create a snapshot before retrying.",
-                    metadata.name
-                )
-            });
-        }
-    }
-
     for field in ["revision_snapshot_id", "landed_snapshot_id"] {
         if let Some(snapshot_id) = string_field(change, field) {
             return Ok(snapshot_id);
@@ -335,8 +317,15 @@ fn change_revision_snapshot_id(
     }
 
     if change_uses_local_scope(repo, local, remote_name)? {
+        if let Some(snapshot_id) = repo
+            .task_store()?
+            .latest_change_snapshot_id(&change_ref)
+            .map_err(|error| error.to_string())?
+        {
+            return Ok(snapshot_id);
+        }
         return Err(format!(
-            "Change {change_id} is not bound to the current worktree, so its authoritative local revision snapshot cannot be resolved from this workspace. Enter its bound task worktree."
+            "Change {change_ref} has no recorded local revision Snapshot. Create an explicitly owned Snapshot in its Task worktree; legacy ownership cannot be inferred from a Line head."
         ));
     }
     let patchset_id = string_field(change, "selected_patchset_id")
@@ -422,12 +411,12 @@ pub fn change_revert(
         &latest_snapshot_id,
         &fork_snapshot_id,
     )?;
-    let (current_line_name, current_head_snapshot_id) =
-        require_current_line_head_snapshot(repo, &latest_snapshot_id, "change revert")?;
-    let result = apply_workspace_revert_range(
+    let (current_line_name, current_head_snapshot_id) = current_line_head_snapshot_id(repo)?;
+    let result = apply_workspace_replay_range(
         repo,
-        Some(&fork_snapshot_id),
-        &current_head_snapshot_id,
+        &latest_snapshot_id,
+        &fork_snapshot_id,
+        current_head_snapshot_id.as_deref(),
         force,
         dry_run,
     )?;
@@ -435,6 +424,7 @@ pub fn change_revert(
         .as_object()
         .cloned()
         .ok_or_else(|| "change revert payload must be an object".to_string())?;
+    payload.insert("target_snapshot_id".to_string(), json!(fork_snapshot_id));
     payload.insert("repo_name".to_string(), JsonValue::String(repo.repo_name()));
     payload.insert(
         "change_id".to_string(),
@@ -460,7 +450,7 @@ pub fn change_revert(
     );
     payload.insert(
         "current_line_head_snapshot_id".to_string(),
-        JsonValue::String(current_head_snapshot_id.clone()),
+        json!(current_head_snapshot_id),
     );
     payload.insert(
         "mutation_scope".to_string(),

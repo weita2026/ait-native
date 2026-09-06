@@ -200,9 +200,11 @@ pub use workflow::{
     task_land_apply, task_land_apply_scoped, task_land_payload, task_land_payload_scoped,
     workflow_land_apply, workflow_land_payload, workflow_ready_apply, workflow_ready_payload,
 };
+pub(crate) use workspace::parse_snapshot_authoring_reference;
 pub use workspace::{
     resolve_task_scoped_execution_repo, run_task_scoped_workspace_command, snapshot_create,
-    snapshot_create_explicit, workflow_workspace_status, workspace_delta, workspace_dirty_diff,
+    snapshot_create_explicit, snapshot_create_for_change, snapshot_create_for_reference,
+    snapshot_create_for_task, workflow_workspace_status, workspace_delta, workspace_dirty_diff,
     workspace_restore, workspace_restore_paths,
 };
 pub(crate) use worktree::task_start_with_progress;

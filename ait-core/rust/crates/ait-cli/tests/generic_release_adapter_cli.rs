@@ -21,6 +21,22 @@ fn run_json(root: &Path, args: &[&str]) -> Value {
     serde_json::from_slice(&output.stdout).expect("ait-cli JSON output")
 }
 
+// Seed imported source content; these tests validate adapter consumption, not
+// public Task/worktree authoring (covered by the Task CLI regression suite).
+fn seed_adapter_snapshot(root: &Path, message: &str) -> Value {
+    use ait_core::local_snapshot::LocalSnapshotWriteStore;
+    let repo = ait_cli::runtime::RepoRuntime::discover_from_path(root).unwrap();
+    repo.local_snapshot_operation_store::<1>(&repo.workspace_root())
+        .unwrap()
+        .create_snapshot(
+            &repo.repo_name(),
+            &repo.current_line_name().unwrap(),
+            Some(message),
+            false,
+        )
+        .unwrap()
+}
+
 #[test]
 fn generic_release_adapter_check_and_build_are_snapshot_derived_without_release_store() {
     let temp = TempDir::new().unwrap();
@@ -76,16 +92,7 @@ fn generic_release_adapter_check_and_build_are_snapshot_derived_without_release_
     .unwrap();
     fs::write(root.join("LICENSE"), "fixture license\n").unwrap();
     fs::write(root.join("NOTICE"), "fixture notice\n").unwrap();
-    let snapshot = run_json(
-        root,
-        &[
-            "snapshot",
-            "create",
-            "--message",
-            "generic adapter fixture",
-            "--json",
-        ],
-    );
+    let snapshot = seed_adapter_snapshot(root, "generic adapter fixture");
 
     let checked = run_json(
         root,
@@ -202,16 +209,7 @@ fn generic_release_adapter_emits_independent_target_receipts_for_matrix_ci() {
     )
     .unwrap();
     fs::write(root.join("component.rs"), "fn main() {}\n").unwrap();
-    run_json(
-        root,
-        &[
-            "snapshot",
-            "create",
-            "--message",
-            "matrix adapter fixture",
-            "--json",
-        ],
-    );
+    seed_adapter_snapshot(root, "matrix adapter fixture");
 
     let first = run_json(
         root,

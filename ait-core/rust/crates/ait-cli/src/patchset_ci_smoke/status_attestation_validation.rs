@@ -596,10 +596,7 @@ pub(super) fn assert_plan_sync_stays_lineage_only() -> Result<(), String> {
     .map_err(|err| err.to_string())?;
 
     json_output(&repo, &["init", "--json"])?;
-    json_output(
-        &repo,
-        &["snapshot", "create", "--message", "seed", "--json"],
-    )?;
+    seed_snapshot_head(&repo, "main", FIXTURE_BASE_SNAPSHOT_ID)?;
     let line_before = json_output(&repo, &["line", "show", "main", "--json"])?;
     let sync_help = command_output(&repo, &["plan", "sync", "--help"])?;
     let sync_payload = json_output(
@@ -643,10 +640,7 @@ pub(super) fn assert_plan_sync_bypasses_root_worktree_guard() -> Result<(), Stri
     .map_err(|err| err.to_string())?;
 
     json_output(&repo, &["init", "--json"])?;
-    json_output(
-        &repo,
-        &["snapshot", "create", "--message", "seed", "--json"],
-    )?;
+    seed_snapshot_head(&repo, "main", FIXTURE_BASE_SNAPSHOT_ID)?;
     json_output(&repo, &["config", "set", "--sprint", "off", "--json"])?;
     let task_id = "RT-ROOT-GUARD";
     let worktree_name = "rt-root-guard";
@@ -684,16 +678,19 @@ pub(super) fn assert_plan_sync_bypasses_root_worktree_guard() -> Result<(), Stri
     .map_err(|err| err.to_string())?;
     let blocked_snapshot = command_output(
         &repo,
-        &["snapshot", "create", "--message", "blocked from root"],
+        &[
+            "snapshot",
+            "create",
+            &format!("{task_id}/C-01"),
+            "--message",
+            "blocked from root",
+        ],
     )?;
     let blocked_output = combined_output(&blocked_snapshot);
     if blocked_snapshot.status == 0
-        || !blocked_output.contains("Repo root is pinned to bound worktree")
+        || !blocked_output.contains("repository-root authoring is forbidden")
     {
         return Err("snapshot create no longer trips the root worktree guard".to_string());
-    }
-    if !blocked_output.contains(task_id) || !blocked_output.contains(worktree_name) {
-        return Err("root worktree guard no longer reports the bound task/worktree".to_string());
     }
     let sync_out = command_output(
         &repo,

@@ -21,6 +21,48 @@ fn output_json(command: &mut Command) -> JsonValue {
 }
 
 #[test]
+#[cfg(target_os = "linux")]
+fn init_cli_detects_linux_language_once_and_config_clear_does_not_redetect() {
+    let temp = TempDir::new().unwrap();
+    let initialized = output_json(
+        cargo_bin()
+            .current_dir(temp.path())
+            .env_remove("LC_ALL")
+            .env_remove("LC_MESSAGES")
+            .env("LANG", "en_US.UTF-8")
+            .env("LANGUAGE", "ja_JP:ko_KR")
+            .args(["init", "--json"]),
+    );
+    assert_eq!(initialized["plan_language"]["value"], "ja-JP");
+    let reinitialized = output_json(
+        cargo_bin()
+            .current_dir(temp.path())
+            .env("LC_ALL", "ko_KR")
+            .env("LANGUAGE", "ko_KR")
+            .args(["init", "--json"]),
+    );
+    assert_eq!(reinitialized["plan_language"]["value"], "ja-JP");
+    let unset = output_json(
+        cargo_bin()
+            .current_dir(temp.path())
+            .env("LC_ALL", "zh_TW.UTF-8")
+            .env("LANGUAGE", "zh_TW")
+            .args(["config", "unset", "plan-language", "--json"]),
+    );
+    assert_eq!(unset["plan_language"]["value"], "en");
+    assert_eq!(unset["plan_language"]["source"], "built_in");
+    let c_locale = TempDir::new().unwrap();
+    let initialized = output_json(
+        cargo_bin()
+            .current_dir(c_locale.path())
+            .env("LC_ALL", "C.UTF-8")
+            .env("LANGUAGE", "zh_TW")
+            .args(["init", "--json"]),
+    );
+    assert_eq!(initialized["plan_language"]["value"], "en");
+}
+
+#[test]
 fn init_cli_creates_then_reinitializes_the_agent_contract() {
     let temp = TempDir::new().unwrap();
     let expected_repo_name = temp

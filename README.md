@@ -60,11 +60,11 @@ Replace `your-name` with the name to record for local review.
 node --test tests/baseline.test.mjs
 ait init
 ait config set --user-name "your-name"
-ait snapshot create --message "Start the AIT example"
 ```
 
-The three baseline tests should pass. This initial Snapshot records the unchanged
-example before a Task starts. For an existing project, use the
+The three baseline tests should pass. Task start records the initial baseline
+through its initialization workflow. Create checkpoints only inside the returned
+Task worktree, with its Task and Change IDs. For an existing project, use the
 [getting-started guide](https://ait-native.dev/technical/getting-started/) instead.
 
 **3. Open the example in your coding agent and give it this request.**

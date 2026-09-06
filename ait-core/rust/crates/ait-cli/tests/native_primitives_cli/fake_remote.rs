@@ -14,8 +14,7 @@ fn spawn_fake_remote() -> SpawnedFakeRemote<FakeRemoteState> {
         let mut received_request = false;
         loop {
             let idle_timeout = if received_request { 2 } else { 10 };
-            let Ok(Some(mut request)) =
-                server.recv_timeout(Duration::from_secs(idle_timeout))
+            let Ok(Some(mut request)) = server.recv_timeout(Duration::from_secs(idle_timeout))
             else {
                 break;
             };
@@ -51,8 +50,7 @@ fn spawn_queue_summary_fallback_remote() -> (
         let mut received_request = false;
         loop {
             let idle_timeout = if received_request { 2 } else { 10 };
-            let Ok(Some(mut request)) =
-                server.recv_timeout(Duration::from_secs(idle_timeout))
+            let Ok(Some(mut request)) = server.recv_timeout(Duration::from_secs(idle_timeout))
             else {
                 break;
             };
@@ -60,83 +58,76 @@ fn spawn_queue_summary_fallback_remote() -> (
             let mut body_bytes = Vec::new();
             request.as_reader().read_to_end(&mut body_bytes).unwrap();
             let body = String::from_utf8_lossy(&body_bytes).to_string();
-        let url = request.url().to_string();
-        let method = request.method().as_str().to_string();
-        log_clone.lock().unwrap().push(RecordedRequest {
-            method: method.clone(),
-            url: url.clone(),
-            body,
-        });
-        let payload = if method == "GET"
-            && url.starts_with(
-                "/v1/native/repository-authorities/7/read/queue-summary?",
-            )
-            && url.contains("status=active")
-        {
-            request
-                .respond(
-                    Response::from_string(r#"{"error":"missing queue bundle"}"#)
-                        .with_status_code(404),
-                )
-                .unwrap();
-            continue;
-        } else if method == "GET"
-            && url.starts_with(
-                "/v1/native/repository-authorities/7/read/task-queue?",
-            )
-            && url.contains("status=active")
-        {
-            json!({
-                "count": 2,
-                "summary": {
-                    "attention_required": 1,
-                    "ready_to_land": 1,
-                    "ready_to_complete": 0
-                },
-                "items": [{
-                    "task_id": "RT-REMOTE",
-                    "focus_change": {
-                        "change_id": "RC-REMOTE-STALE",
-                        "reason": "Remote task queue focus reason."
-                    }
-                }]
-            })
-        } else if method == "GET"
-            && url == "/v1/native/repository-authorities/7/read/reviewer-inbox"
-        {
-            json!({
-                "count": 1,
-                "items": [
-                    {
-                        "change_id": "RC-REMOTE-READY",
-                        "review_state": {"blocking": 0},
-                        "freshness": {"base_is_fresh": true},
-                        "policy_state": {"decision": "pass"},
-                        "attestation": {"completeness": "present"}
+            let url = request.url().to_string();
+            let method = request.method().as_str().to_string();
+            log_clone.lock().unwrap().push(RecordedRequest {
+                method: method.clone(),
+                url: url.clone(),
+                body,
+            });
+            let payload = if method == "GET"
+                && url.starts_with("/v1/native/repository-authorities/7/read/queue-summary?")
+                && url.contains("status=active")
+            {
+                request
+                    .respond(
+                        Response::from_string(r#"{"error":"missing queue bundle"}"#)
+                            .with_status_code(404),
+                    )
+                    .unwrap();
+                continue;
+            } else if method == "GET"
+                && url.starts_with("/v1/native/repository-authorities/7/read/task-queue?")
+                && url.contains("status=active")
+            {
+                json!({
+                    "count": 2,
+                    "summary": {
+                        "attention_required": 1,
+                        "ready_to_land": 1,
+                        "ready_to_complete": 0
                     },
-                    {
-                        "change_id": "RC-REMOTE-STALE",
-                        "review_state": {"blocking": 0},
-                        "freshness": {"base_is_fresh": false},
-                        "policy_state": {"decision": "pending"},
-                        "attestation": {"completeness": "present"}
-                    }
-                ]
-            })
-        } else {
-            json!({"error": format!("unexpected {method} {url}")})
-        };
-        let status = if payload.get("error").is_some() {
-            404
-        } else {
-            200
-        };
-        request
-            .respond(
-                Response::from_string(encode_json(&payload))
-                    .with_status_code(status),
-            )
-            .unwrap();
+                    "items": [{
+                        "task_id": "RT-REMOTE",
+                        "focus_change": {
+                            "change_id": "RC-REMOTE-STALE",
+                            "reason": "Remote task queue focus reason."
+                        }
+                    }]
+                })
+            } else if method == "GET"
+                && url == "/v1/native/repository-authorities/7/read/reviewer-inbox"
+            {
+                json!({
+                    "count": 1,
+                    "items": [
+                        {
+                            "change_id": "RC-REMOTE-READY",
+                            "review_state": {"blocking": 0},
+                            "freshness": {"base_is_fresh": true},
+                            "policy_state": {"decision": "pass"},
+                            "attestation": {"completeness": "present"}
+                        },
+                        {
+                            "change_id": "RC-REMOTE-STALE",
+                            "review_state": {"blocking": 0},
+                            "freshness": {"base_is_fresh": false},
+                            "policy_state": {"decision": "pending"},
+                            "attestation": {"completeness": "present"}
+                        }
+                    ]
+                })
+            } else {
+                json!({"error": format!("unexpected {method} {url}")})
+            };
+            let status = if payload.get("error").is_some() {
+                404
+            } else {
+                200
+            };
+            request
+                .respond(Response::from_string(encode_json(&payload)).with_status_code(status))
+                .unwrap();
         }
     });
     (format!("http://{}", addr), log, handle)
@@ -164,8 +155,7 @@ fn spawn_remote_import_server(
         let mut received_request = false;
         loop {
             let idle_timeout = if received_request { 2 } else { 10 };
-            let Ok(Some(mut request)) =
-                server.recv_timeout(Duration::from_secs(idle_timeout))
+            let Ok(Some(mut request)) = server.recv_timeout(Duration::from_secs(idle_timeout))
             else {
                 break;
             };
@@ -183,9 +173,9 @@ fn spawn_remote_import_server(
             const ZSTD_IMPORT_PREFIX: &str =
                 "/v1/native/repository-authorities/7/remote-sync/zstd-bulk/";
             if method == "GET" {
-                if let Some(snapshot_id) = url.strip_prefix(&format!(
-                    "{ZSTD_IMPORT_PREFIX}import-manifests/"
-                )) {
+                if let Some(snapshot_id) =
+                    url.strip_prefix(&format!("{ZSTD_IMPORT_PREFIX}import-manifests/"))
+                {
                     let response = match zstd_fixture.manifests.get(snapshot_id) {
                         Some(manifest) => Response::from_string(
                             ZstdImportManifestJson::stateless()
@@ -219,8 +209,7 @@ fn spawn_remote_import_server(
                     request.respond(response).unwrap();
                     continue;
                 }
-                if let Some(pack_id) =
-                    url.strip_prefix(&format!("{ZSTD_IMPORT_PREFIX}tree-packs/"))
+                if let Some(pack_id) = url.strip_prefix(&format!("{ZSTD_IMPORT_PREFIX}tree-packs/"))
                 {
                     let response = match zstd_fixture.tree_packs.get(pack_id) {
                         Some(bytes) => Response::from_data(bytes.clone()).with_header(
@@ -238,10 +227,17 @@ fn spawn_remote_import_server(
                 }
             }
             let payload = match (method.as_str(), url.as_str()) {
-                ("GET", "/v1/handshake") => handshake_payload(),
-                ("GET", "/v1/native/repository-authorities/7") => {
-                    repository_payload("fixture-ait")
+                ("GET", "/v1/native/repository-authorities/7/changes") => {
+                    json!([{"task_id":"RT-1","change_id":"RC-1","status":"draft","base_line":"main"}])
                 }
+                ("GET", "/v1/native/repository-authorities/7/tasks/RT-1") => {
+                    json!({"task_id":"RT-1","status":"active"})
+                }
+                ("GET", "/v1/native/repository-authorities/7/changes/RC-1") => {
+                    json!({"task_id":"RT-1","change_id":"RC-1","status":"draft","base_line":"main"})
+                }
+                ("GET", "/v1/handshake") => handshake_payload(),
+                ("GET", "/v1/native/repository-authorities/7") => repository_payload("fixture-ait"),
                 ("GET", candidate) if candidate == line_url.as_str() => json!({
                     "repo_name": "fixture-ait",
                     "line_name": line_name,
@@ -255,10 +251,7 @@ fn spawn_remote_import_server(
                 200
             };
             request
-                .respond(
-                    Response::from_string(encode_json(&payload))
-                        .with_status_code(status),
-                )
+                .respond(Response::from_string(encode_json(&payload)).with_status_code(status))
                 .unwrap();
         }
     });
@@ -365,8 +358,7 @@ fn spawn_closeout_recovery_remote(
         if method == "POST" && url == "/v1/native/repository-authorities/7/task-land" {
             let request_state = Arc::clone(&state_clone);
             thread::spawn(move || {
-                let response =
-                    response_for_closeout_recovery(&method, &url, &body, &request_state);
+                let response = response_for_closeout_recovery(&method, &url, &body, &request_state);
                 let _ = request.respond(response);
             });
             continue;
@@ -676,10 +668,7 @@ fn fake_atomic_task_land_response(
     })
 }
 
-fn fake_atomic_task_start_response(
-    body: &str,
-    state: &Arc<Mutex<FakeRemoteState>>,
-) -> JsonValue {
+fn fake_atomic_task_start_response(body: &str, state: &Arc<Mutex<FakeRemoteState>>) -> JsonValue {
     let request = parse_json(body);
     let plan_operation = request
         .get("plan")
@@ -787,8 +776,7 @@ fn maybe_zstd_download_response(
     if method != "GET" {
         return None;
     }
-    const ZSTD_IMPORT_PREFIX: &str =
-        "/v1/native/repository-authorities/7/remote-sync/zstd-bulk/";
+    const ZSTD_IMPORT_PREFIX: &str = "/v1/native/repository-authorities/7/remote-sync/zstd-bulk/";
     let guard = state.lock().unwrap();
     let fixture = guard.zstd_import_fixture.as_ref()?;
     if let Some(snapshot_id) = url.strip_prefix(&format!("{ZSTD_IMPORT_PREFIX}import-manifests/")) {
@@ -827,8 +815,9 @@ fn maybe_zstd_download_response(
                 )
                 .unwrap(),
             ),
-            None => Response::from_string(format!("unknown tree pack {pack_id}"))
-                .with_status_code(404),
+            None => {
+                Response::from_string(format!("unknown tree pack {pack_id}")).with_status_code(404)
+            }
         });
     }
     None
@@ -844,7 +833,9 @@ fn response_for(
         return response;
     }
     let present_snapshot_id = state.lock().unwrap().remote_head_snapshot_id.clone();
-    if let Some(response) = maybe_zstd_bulk_response(method, url, body, present_snapshot_id, Some(state)) {
+    if let Some(response) =
+        maybe_zstd_bulk_response(method, url, body, present_snapshot_id, Some(state))
+    {
         return response;
     }
     if method == "GET"
@@ -860,18 +851,14 @@ fn response_for(
             .collect::<Vec<_>>();
         return json_response(200, &JsonValue::Array(plans));
     }
-    if method == "GET"
-        && url.starts_with("/v1/native/repository-authorities/7/sprints/")
-    {
+    if method == "GET" && url.starts_with("/v1/native/repository-authorities/7/sprints/") {
         let suffix = url
             .trim_start_matches("/v1/native/repository-authorities/7/sprints/")
             .to_string();
         let plan_id = suffix.split('/').next().unwrap_or_default();
         let plan = state.lock().unwrap().atomic_plan.clone();
         return match plan {
-            Some(plan)
-                if plan.get("plan_id").and_then(JsonValue::as_str) == Some(plan_id) =>
-            {
+            Some(plan) if plan.get("plan_id").and_then(JsonValue::as_str) == Some(plan_id) => {
                 if suffix.ends_with("/revisions") {
                     json_response(200, &JsonValue::Array(vec![plan]))
                 } else {
@@ -1068,11 +1055,15 @@ fn response_for(
         }
         ("GET", "/v1/native/repository-authorities/7/changes") => {
             let guard = state.lock().unwrap();
+            if let Some(rows) = &guard.change_rows_override {
+                return json_response(200, &json!(rows));
+            }
             let has_selected_patchset =
                 !(guard.force_no_selected_patchset && guard.selected_patchset_id.is_none());
             json!([{
                 "change_id":"RC-1",
                 "title":"Published review change",
+                "task_id":"RT-1",
                 "base_line":"main",
                 "current_patchset_number": if has_selected_patchset { 1 } else { 0 },
                 "status":"active"
@@ -1610,7 +1601,8 @@ fn response_for(
                 })
             } else {
                 json!({
-                    "task_id":"RT-1"
+                    "task_id":"RT-1",
+                    "status":"active"
                 })
             }
         }
@@ -1682,16 +1674,14 @@ fn response_for_publish_recovery(
         ("GET", "/v1/native/repository-authorities/7/changes/RC-1") => {
             json_response(404, &json!({"detail":"lane"}))
         }
-        ("GET", "/v1/native/repository-authorities/7/changes") => {
-            json_response(
-                200,
-                &json!([{
-                    "change_id":"RC-1",
-                    "base_line":"main",
-                    "current_patchset_number":0
-                }]),
-            )
-        }
+        ("GET", "/v1/native/repository-authorities/7/changes") => json_response(
+            200,
+            &json!([{
+                "change_id":"RC-1",
+                "base_line":"main",
+                "current_patchset_number":0
+            }]),
+        ),
         ("GET", "/v1/native/repository-authorities/7/lines/main") => {
             let remote_head_snapshot_id = state.lock().unwrap().remote_head_snapshot_id.clone();
             json_response(
@@ -1791,12 +1781,10 @@ fn response_for_bounded_snapshot_sync(
         ("GET", "/v1/native/repository-authorities/7") => {
             json_response(200, &repository_payload("fixture-ait"))
         }
-        ("GET", "/v1/native/repository-authorities/7/changes/RC-1") => {
-            json_response(
-                200,
-                &json!({"change_id":"RC-1","base_line":"main","selected_patchset_id":"RP-1"}),
-            )
-        }
+        ("GET", "/v1/native/repository-authorities/7/changes/RC-1") => json_response(
+            200,
+            &json!({"change_id":"RC-1","base_line":"main","selected_patchset_id":"RP-1"}),
+        ),
         ("GET", "/v1/native/repository-authorities/7/lines/main") => {
             let remote_head_snapshot_id = state.lock().unwrap().remote_head_snapshot_id.clone();
             json_response(
@@ -1869,7 +1857,9 @@ fn response_for_closeout_recovery(
                 Some("task-land-atomic/v1")
             );
             assert!(matches!(
-                request.get("task_or_change_ref").and_then(JsonValue::as_str),
+                request
+                    .get("task_or_change_ref")
+                    .and_then(JsonValue::as_str),
                 Some("RT-1" | "RC-1" | "RT-1/C-01")
             ));
             {
@@ -1909,11 +1899,9 @@ fn response_for_closeout_recovery(
                 let replayed = guard.land_submitted && guard.task_completed;
                 let timeout_before_mutation = !replayed
                     && (guard.land_boundary == CloseoutMutationBoundary::TimeoutBeforeMutation
-                        || guard.task_boundary
-                            == CloseoutMutationBoundary::TimeoutBeforeMutation);
+                        || guard.task_boundary == CloseoutMutationBoundary::TimeoutBeforeMutation);
                 let retryable_busy_after_mutation = !replayed
-                    && guard.land_boundary
-                        == CloseoutMutationBoundary::RetryableBusyAfterMutation;
+                    && guard.land_boundary == CloseoutMutationBoundary::RetryableBusyAfterMutation;
                 let retryable_busy_while_in_flight = !replayed
                     && guard.land_boundary == CloseoutMutationBoundary::MutationInFlight
                     && guard.land_mutation_in_flight;
@@ -2019,9 +2007,9 @@ fn response_for_closeout_recovery(
                     guard.land_response_delay,
                     guard.fixture_seed,
                     guard
-                    .patchset_revision_snapshot_id
-                    .clone()
-                    .unwrap_or_else(|| FIXTURE_BASE_SNAPSHOT_ID.to_string()),
+                        .patchset_revision_snapshot_id
+                        .clone()
+                        .unwrap_or_else(|| FIXTURE_BASE_SNAPSHOT_ID.to_string()),
                 )
             };
             thread::sleep(response_delay);
@@ -2077,26 +2065,24 @@ fn response_for_closeout_recovery(
                 }),
             )
         }
-        ("GET", "/v1/native/repository-authorities/7/changes/RT-1") => {
-            json_response(
-                200,
-                &json!({
-                    "change_id":"RC-WRONG",
-                    "task_id":"RT-WRONG",
-                    "title":"Wrong same-sequence change",
-                    "base_line":"main",
-                    "status":"landed",
-                    "publication_state":"published",
-                    "published_change_id":"RC-WRONG",
-                    "selected_patchset_id":"RP-WRONG",
-                    "landing_summary":{
-                        "submission_id":"LAND-WRONG",
-                        "status":"succeeded",
-                        "result":{"landed_snapshot_id":"SNP-WRONG"}
-                    }
-                }),
-            )
-        }
+        ("GET", "/v1/native/repository-authorities/7/changes/RT-1") => json_response(
+            200,
+            &json!({
+                "change_id":"RC-WRONG",
+                "task_id":"RT-WRONG",
+                "title":"Wrong same-sequence change",
+                "base_line":"main",
+                "status":"landed",
+                "publication_state":"published",
+                "published_change_id":"RC-WRONG",
+                "selected_patchset_id":"RP-WRONG",
+                "landing_summary":{
+                    "submission_id":"LAND-WRONG",
+                    "status":"succeeded",
+                    "result":{"landed_snapshot_id":"SNP-WRONG"}
+                }
+            }),
+        ),
         ("GET", "/v1/native/repository-authorities/7/read/changes/RC-1") => {
             let submitted = state.lock().unwrap().land_submitted;
             let landing_summary = if submitted {
@@ -2367,7 +2353,9 @@ fn response_for_closeout_recovery(
         ("GET", "/v1/native/repository-authorities/7/changes/RC-1/reviews") => {
             let guard = state.lock().unwrap();
             let task_reviews = if guard.task_review_recorded {
-                vec![json!({"reviewer":"Fixture User","patchset_id":"RP-1","action":"task_approve","blocking":false,"comment":"looks fine"})]
+                vec![
+                    json!({"reviewer":"Fixture User","patchset_id":"RP-1","action":"task_approve","blocking":false,"comment":"looks fine"}),
+                ]
             } else {
                 Vec::new()
             };
@@ -2402,18 +2390,16 @@ fn response_for_closeout_recovery(
                 }),
             )
         }
-        ("GET", "/v1/native/repository-authorities/7/patchsets/RP-1/attestation") => {
-            json_response(
-                200,
-                &json!({
-                    "attestation_id":"AT-1",
-                    "patchset_id":"RP-1",
-                    "author_mode":"ai_with_human_review",
-                    "evaluation_summary":{"tests":"pass"},
-                    "provenance_summary":{"policy_readable":true}
-                }),
-            )
-        }
+        ("GET", "/v1/native/repository-authorities/7/patchsets/RP-1/attestation") => json_response(
+            200,
+            &json!({
+                "attestation_id":"AT-1",
+                "patchset_id":"RP-1",
+                "author_mode":"ai_with_human_review",
+                "evaluation_summary":{"tests":"pass"},
+                "provenance_summary":{"policy_readable":true}
+            }),
+        ),
         ("GET", "/v1/native/repository-authorities/7/patchsets/RP-1/policy") => {
             let policy_evaluated = state.lock().unwrap().policy_evaluated;
             json_response(
@@ -2443,7 +2429,11 @@ fn response_for_closeout_recovery(
                 }),
             )
         }
-        _ if method == "GET" && url.starts_with("/v1/native/repository-authorities/7/read/patchsets/RP-1/ci-status") => {
+        _ if method == "GET"
+            && url.starts_with(
+                "/v1/native/repository-authorities/7/read/patchsets/RP-1/ci-status",
+            ) =>
+        {
             json_response(
                 200,
                 &json!({
@@ -2518,11 +2508,7 @@ fn response_for_closeout_recovery(
                     guard.task_completed = true;
                     guard.task_close_mutations += 1;
                 }
-                (
-                    boundary,
-                    guard.task_response_delay,
-                    guard.fixture_seed,
-                )
+                (boundary, guard.task_response_delay, guard.fixture_seed)
             };
             thread::sleep(response_delay);
             if boundary == CloseoutMutationBoundary::TimeoutBeforeMutation {

@@ -76,6 +76,25 @@ fn split_preserving_lines(text: &str) -> Vec<String> {
 fn diff_edits(base: &[String], side: &[String]) -> Vec<TextEdit> {
     capture_diff_slices(Algorithm::Myers, base, side)
         .into_iter()
+        // Equal-length replacements preserve line positions. Split them so
+        // an already-applied edit can be recognized inside a larger adjacent
+        // replacement without hiding a conflicting edit to the same line.
+        .flat_map(|operation| match operation {
+            DiffOp::Replace {
+                old_index,
+                old_len,
+                new_index,
+                new_len,
+            } if old_len == new_len => (0..old_len)
+                .map(|offset| DiffOp::Replace {
+                    old_index: old_index + offset,
+                    old_len: 1,
+                    new_index: new_index + offset,
+                    new_len: 1,
+                })
+                .collect::<Vec<_>>(),
+            operation => vec![operation],
+        })
         .filter_map(|operation| match operation {
             DiffOp::Equal { .. } => None,
             DiffOp::Insert {
@@ -122,6 +141,26 @@ fn edits_overlap(left: &TextEdit, right: &TextEdit) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn replay_deduplicates_a_change_inside_adjacent_later_edits() {
+        assert_eq!(
+            merge_utf8_text_bytes(
+                b"alpha=0\nbeta=0\n",
+                b"alpha=1\nbeta=2\n",
+                b"alpha=1\nbeta=0\n"
+            ),
+            TextMergeOutcome::Merged(b"alpha=1\nbeta=2\n".to_vec())
+        );
+        assert_eq!(
+            merge_utf8_text_bytes(
+                b"alpha=0\nbeta=0\n",
+                b"alpha=2\nbeta=2\n",
+                b"alpha=1\nbeta=0\n"
+            ),
+            TextMergeOutcome::Conflict
+        );
+    }
 
     #[test]
     fn merges_non_overlapping_line_edits_deterministically() {

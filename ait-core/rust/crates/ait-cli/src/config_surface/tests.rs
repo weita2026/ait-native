@@ -17,6 +17,131 @@ fn default_id_namespace_prefix_is_blank() {
 }
 
 #[test]
+fn plan_preferences_set_unset_and_generated_lineage_are_independent_and_stable() {
+    let (temp, repo) = initialized_repo();
+    let updated = config_set_from_payload(
+        &repo,
+        &json!({"plan_language":"ZH-hant-tw","plan_style":"detailed"}),
+    )
+    .unwrap();
+    assert_eq!(
+        updated["plan_language"],
+        json!({"value":"zh-Hant-TW","source":"repo_config"})
+    );
+    assert_eq!(updated["plan_style"]["value"], "detailed");
+    for path in ["AGENTS.md", "CLAUDE.md"] {
+        let text = std::fs::read_to_string(temp.path().join(path)).unwrap();
+        assert!(text.contains("language=`zh-Hant-TW` (BCP 47); style=`detailed`"));
+        assert!(!text.contains("Traditional Chinese"));
+    }
+    let same = config_set_from_payload(
+        &repo,
+        &json!({"plan_language":"zh-Hant-TW","plan_style":"detailed"}),
+    )
+    .unwrap();
+    assert_eq!(same["agent_harness"]["refresh"]["changed"], false);
+    for sync in same["agent_harness"]["plan_syncs"].as_array().unwrap() {
+        for result in sync["result"]["results"].as_array().unwrap() {
+            assert_eq!(result["action"], "unchanged");
+        }
+    }
+    let updated = config_set_from_payload(&repo, &json!({"plan_language":"ko-KR"})).unwrap();
+    assert_eq!(updated["plan_style"]["value"], "detailed");
+    let unset = config_unset(&repo, ConfigUnsetKey::PlanLanguage).unwrap();
+    assert_eq!(
+        unset["plan_language"],
+        json!({"value":"en","source":"built_in"})
+    );
+    assert_eq!(unset["plan_style"]["value"], "detailed");
+    let unset = config_unset(&repo, ConfigUnsetKey::PlanStyle).unwrap();
+    assert_eq!(
+        unset["plan_style"],
+        json!({"value":"concise","source":"built_in"})
+    );
+    let stored = parse_object_or_empty(
+        &std::fs::read_to_string(temp.path().join(".ait/config.json")).unwrap(),
+    );
+    assert!(!stored.contains_key("plan_language"));
+    assert!(!stored.contains_key("plan_style"));
+}
+
+#[test]
+fn invalid_plan_preferences_reject_all_writes_and_allow_explicit_repair() {
+    let (temp, repo) = initialized_repo();
+    let paths = [".ait/config.json", "AGENTS.md", "CLAUDE.md"];
+    let bytes = || paths.map(|path| std::fs::read(temp.path().join(path)).unwrap());
+    for payload in [
+        json!({"plan_language":"ja-JP","plan_style":"invalid"}),
+        json!({"plan_language":null,"plan_style":"concise"}),
+        json!({"plan_language":3}),
+        json!({"plan_style":false}),
+        json!({"plan_language":"zh_TW.UTF-8"}),
+    ] {
+        let before = bytes();
+        assert!(config_set_from_payload(&repo, &payload).is_err());
+        assert_eq!(bytes(), before);
+    }
+    let path = temp.path().join(".ait/config.json");
+    let mut config = parse_object_or_empty(&std::fs::read_to_string(&path).unwrap());
+    config.insert("plan_language".into(), json!(false));
+    std::fs::write(
+        &path,
+        encode_value_pretty_with_newline_error_string(&JsonValue::Object(config)).unwrap(),
+    )
+    .unwrap();
+    let broken = RepoRuntime::discover_from_path(temp.path()).unwrap();
+    assert!(config_show(&broken).unwrap_err().contains("plan_language"));
+    let before = bytes();
+    assert!(config_set_from_payload(&broken, &json!({"default_model":"example"})).is_err());
+    assert_eq!(bytes(), before);
+    let repaired = config_set_from_payload(&broken, &json!({"plan_language":"ja-JP"})).unwrap();
+    assert_eq!(repaired["plan_language"]["value"], "ja-JP");
+    let mut config = parse_object_or_empty(&std::fs::read_to_string(&path).unwrap());
+    config.insert("plan_style".into(), JsonValue::Null);
+    std::fs::write(
+        &path,
+        encode_value_pretty_with_newline_error_string(&JsonValue::Object(config)).unwrap(),
+    )
+    .unwrap();
+    let removed = config_unset(&repo, ConfigUnsetKey::PlanStyle).unwrap();
+    assert_eq!(removed["plan_style"]["value"], "concise");
+}
+
+#[test]
+#[cfg(unix)]
+fn worktree_plan_preferences_use_the_root_and_preserve_worktree_documents() {
+    let (temp, repo) = initialized_repo();
+    config_set_from_payload(
+        &repo,
+        &json!({"plan_language":"zh-TW","plan_style":"detailed"}),
+    )
+    .unwrap();
+    let root = temp.path().canonicalize().unwrap();
+    let worktree = root.join("worktree");
+    std::fs::create_dir(&worktree).unwrap();
+    std::os::unix::fs::symlink(root.join(".ait"), worktree.join(".ait")).unwrap();
+    let overlay = json!({"repo_root":root,"workspace_root":worktree,"worktree_name":"test", "plan_language":false,"plan_style":"broken"});
+    std::fs::write(worktree.join(".ait-worktree.json"), overlay.to_string()).unwrap();
+    std::fs::write(worktree.join("AGENTS.md"), "Existing worktree document\n").unwrap();
+    let repo = RepoRuntime::discover_from_path(&worktree).unwrap();
+    assert_eq!(
+        config_show(&repo).unwrap()["plan_language"]["value"],
+        "zh-TW"
+    );
+    let rendered = crate::agent_harness::render_agent_workflow_block(&repo).unwrap();
+    assert!(rendered.contains("language=`zh-TW` (BCP 47); style=`detailed`"));
+    let updated = config_set_from_payload(&repo, &json!({"plan_language":"ko-KR"})).unwrap();
+    assert_eq!(updated["plan_language"]["value"], "ko-KR");
+    assert!(std::fs::read_to_string(root.join("AGENTS.md"))
+        .unwrap()
+        .contains("language=`ko-KR`"));
+    assert_eq!(
+        std::fs::read_to_string(worktree.join("AGENTS.md")).unwrap(),
+        "Existing worktree document\n"
+    );
+}
+
+#[test]
 fn repository_index_is_read_only_and_removed_payload_fields_fail_before_mutation() {
     let (_temp, repo) = initialized_repo();
     let config_path = repo.root.join(".ait/config.json");
@@ -458,7 +583,7 @@ fn config_set_workflow_mode_sprint_on_requires_plan_task_binding() {
     assert!(agents.contains("--edit-root\n<absolute-path>"));
     assert!(!agents.contains("--plan-item-ref"));
     assert!(agents.contains("After every context-window compaction, re-read the bound sprint card"));
-    assert!(agents.contains("ait workflow ready <change-id> --apply"));
+    assert!(agents.contains("ait workflow ready <task-id> --apply"));
     assert!(agents.contains("Workflow finish owns Review, approval"));
     let claude = std::fs::read_to_string(temp.path().join("CLAUDE.md")).unwrap();
     assert!(claude.contains("Route: mode=`solo_remote`; sprint=`on`; scope=`remote`"));

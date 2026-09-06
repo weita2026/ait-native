@@ -6,19 +6,12 @@ fn prepare_divergent_text_lines(
     source_content: &str,
 ) -> (String, String) {
     write_file(&worktree.join("src/lib.rs"), target_content);
-    let target = json_output(
-        worktree,
-        &[
-            "snapshot",
-            "create",
-            "--message",
-            "target side",
-            "--json",
-        ],
-    );
+    let target = checkpoint_bound_worktree_fixture(worktree, "target side");
     let target_snapshot_id = target["snapshot_id"].as_str().unwrap().to_string();
 
-    let repo_root = worktree.parent().expect("fixture repo root");
+    let overlay = parse_json_file(worktree.join(".ait-worktree.json"));
+    let fixture_repo_root = PathBuf::from(overlay["repo_root"].as_str().unwrap());
+    let repo_root = fixture_repo_root.as_path();
     seed_binary_line(repo_root, "feature/source", FIXTURE_BASE_SNAPSHOT_ID);
     json_output(
         worktree,
@@ -107,10 +100,7 @@ fn native_line_merge_distinguishes_fast_forward_equal_and_already_contains() {
         ],
     );
 
-    let fast_forward = json_output(
-        &worktree,
-        &["line", "merge", "feature/source", "--json"],
-    );
+    let fast_forward = json_output(&worktree, &["line", "merge", "feature/source", "--json"]);
     assert_eq!(fast_forward["status"], json!("fast_forward"));
     assert_eq!(fast_forward["merge_snapshot_created"], json!(false));
     assert!(fast_forward["merge_snapshot_id"].is_null());
@@ -123,33 +113,15 @@ fn native_line_merge_distinguishes_fast_forward_equal_and_already_contains() {
         "source ahead\n"
     );
 
-    let equal = json_output(
-        &worktree,
-        &["line", "merge", "feature/source", "--json"],
-    );
+    let equal = json_output(&worktree, &["line", "merge", "feature/source", "--json"]);
     assert_eq!(equal["status"], json!("already_equal"));
     assert_eq!(equal["merge_snapshot_created"], json!(false));
 
     write_file(&worktree.join("target-only.txt"), "target ahead\n");
-    let target = json_output(
-        &worktree,
-        &[
-            "snapshot",
-            "create",
-            "--message",
-            "target ahead",
-            "--json",
-        ],
-    );
+    let target = checkpoint_bound_worktree_fixture(&worktree, "target ahead");
     let target_snapshot_id = target["snapshot_id"].as_str().unwrap().to_string();
-    let already_contains = json_output(
-        &worktree,
-        &["line", "merge", "feature/source", "--json"],
-    );
-    assert_eq!(
-        already_contains["status"],
-        json!("already_contains_source")
-    );
+    let already_contains = json_output(&worktree, &["line", "merge", "feature/source", "--json"]);
+    assert_eq!(already_contains["status"], json!("already_contains_source"));
     assert_eq!(already_contains["merge_snapshot_created"], json!(false));
     assert_eq!(
         local_line_head(repo_root, "feature/rt-1").as_deref(),
@@ -169,16 +141,7 @@ fn native_line_merge_creates_ordered_two_parent_snapshot_for_clean_divergence() 
         &worktree.join("target-only.txt"),
         "content from the target side\n",
     );
-    let target = json_output(
-        &worktree,
-        &[
-            "snapshot",
-            "create",
-            "--message",
-            "target side",
-            "--json",
-        ],
-    );
+    let target = checkpoint_bound_worktree_fixture(&worktree, "target side");
     let target_snapshot_id = target["snapshot_id"].as_str().unwrap().to_string();
 
     seed_binary_line(repo_root, "feature/source", FIXTURE_BASE_SNAPSHOT_ID);
@@ -251,10 +214,7 @@ fn native_line_merge_creates_ordered_two_parent_snapshot_for_clean_divergence() 
         &worktree,
         &["snapshot", "show", merge_snapshot_id, "--json"],
     );
-    assert_eq!(
-        shown["parent_snapshot_ids"],
-        merged["parent_snapshot_ids"]
-    );
+    assert_eq!(shown["parent_snapshot_ids"], merged["parent_snapshot_ids"]);
     let merged_repo = RepoRuntime::discover_from_path(&worktree).expect("merged runtime");
     let paths = merged_repo
         .local_snapshot_operation_store::<1>(&worktree)
@@ -266,7 +226,10 @@ fn native_line_merge_creates_ordered_two_parent_snapshot_for_clean_divergence() 
         .collect::<BTreeSet<_>>();
     assert!(paths.contains("target-only.txt"));
     assert!(paths.contains("source-only.txt"));
-    assert_eq!(merge_worktree_metadata(repo_root)["merge_state"], json!("idle"));
+    assert_eq!(
+        merge_worktree_metadata(repo_root)["merge_state"],
+        json!("idle")
+    );
 
     handle.join().unwrap();
 }
@@ -274,7 +237,7 @@ fn native_line_merge_creates_ordered_two_parent_snapshot_for_clean_divergence() 
 #[test]
 fn native_line_merge_conflict_preserves_heads_blocks_bypass_and_continues() {
     let (base_url, _log, _state, handle) = spawn_fake_remote();
-    let (temp, worktree) = init_worktree_repo(&base_url);
+    let (temp, worktree, _) = init_cli_local_draft_worktree_repo(&base_url);
     let repo_root = temp.path();
     let (target_snapshot_id, source_snapshot_id) = prepare_divergent_text_lines(
         &worktree,
@@ -282,15 +245,12 @@ fn native_line_merge_conflict_preserves_heads_blocks_bypass_and_continues() {
         "pub fn side() -> &'static str { \"source\" }\n",
     );
 
-    let conflicted = json_output(
-        &worktree,
-        &["line", "merge", "feature/source", "--json"],
-    );
+    let conflicted = json_output(&worktree, &["line", "merge", "feature/source", "--json"]);
     assert_eq!(conflicted["status"].as_str(), Some("conflicted"));
     assert_eq!(conflicted["conflict_paths"], json!(["src/lib.rs"]));
     assert_eq!(conflicted["conflict_kinds"]["src/lib.rs"], json!("text"));
     assert_eq!(
-        local_line_head(repo_root, "feature/rt-1").as_deref(),
+        local_line_head(repo_root, "feature/lt-0001").as_deref(),
         Some(target_snapshot_id.as_str())
     );
     assert_eq!(
@@ -301,10 +261,16 @@ fn native_line_merge_conflict_preserves_heads_blocks_bypass_and_continues() {
     assert!(marker.contains("<<<<<<< AIT target:"));
     assert!(marker.contains(">>>>>>> AIT source:"));
 
-    let metadata = merge_worktree_metadata(repo_root);
+    let metadata = parse_json_file(repo_root.join(".ait/worktrees/lt-0001.json"));
     assert_eq!(metadata["merge_state"], json!("conflicted"));
-    assert_eq!(metadata["merge_target_snapshot_id"], json!(target_snapshot_id));
-    assert_eq!(metadata["merge_source_snapshot_id"], json!(source_snapshot_id));
+    assert_eq!(
+        metadata["merge_target_snapshot_id"],
+        json!(target_snapshot_id)
+    );
+    assert_eq!(
+        metadata["merge_source_snapshot_id"],
+        json!(source_snapshot_id)
+    );
     assert_eq!(
         metadata["merge_pre_workspace_snapshot_id"],
         metadata["merge_target_snapshot_id"]
@@ -312,14 +278,24 @@ fn native_line_merge_conflict_preserves_heads_blocks_bypass_and_continues() {
     let shown_worktree = json_output(&worktree, &["worktree", "show", "--json"]);
     assert_eq!(shown_worktree["merge_state"], json!("conflicted"));
     assert_eq!(shown_worktree["merge_conflict_count"], json!(1));
-    assert_eq!(shown_worktree["merge"]["target_line"], json!("feature/rt-1"));
+    assert_eq!(
+        shown_worktree["merge"]["target_line"],
+        json!("feature/lt-0001")
+    );
     assert_eq!(
         shown_worktree["merge"]["source_line"],
         json!("feature/source")
     );
 
     for args in [
-        vec!["snapshot", "create", "--message", "bypass", "--json"],
+        vec![
+            "snapshot",
+            "create",
+            "LT-0001/C-01",
+            "--message",
+            "bypass",
+            "--json",
+        ],
         vec![
             "worktree",
             "restore",
@@ -339,11 +315,8 @@ fn native_line_merge_conflict_preserves_heads_blocks_bypass_and_continues() {
         );
     }
 
-    let unresolved = command_output_with_env(
-        &worktree,
-        &["line", "merge", "--continue", "--json"],
-        &[],
-    );
+    let unresolved =
+        command_output_with_env(&worktree, &["line", "merge", "--continue", "--json"], &[]);
     assert!(!unresolved.status.success());
     assert!(String::from_utf8_lossy(&unresolved.stderr).contains("conflicts remain unresolved"));
 
@@ -352,15 +325,12 @@ fn native_line_merge_conflict_preserves_heads_blocks_bypass_and_continues() {
         "pub fn side() -> &'static str { \"resolved\" }\n",
     );
     seed_binary_line(repo_root, "feature/source", FIXTURE_BASE_SNAPSHOT_ID);
-    let moved_parent = command_output_with_env(
-        &worktree,
-        &["line", "merge", "--continue", "--json"],
-        &[],
-    );
+    let moved_parent =
+        command_output_with_env(&worktree, &["line", "merge", "--continue", "--json"], &[]);
     assert!(!moved_parent.status.success());
     assert!(String::from_utf8_lossy(&moved_parent.stderr).contains("feature/source moved"));
     assert_eq!(
-        local_line_head(repo_root, "feature/rt-1").as_deref(),
+        local_line_head(repo_root, "feature/lt-0001").as_deref(),
         Some(target_snapshot_id.as_str())
     );
     seed_binary_line(repo_root, "feature/source", &source_snapshot_id);
@@ -380,7 +350,10 @@ fn native_line_merge_conflict_preserves_heads_blocks_bypass_and_continues() {
         continued["parent_snapshot_ids"],
         json!([target_snapshot_id, source_snapshot_id])
     );
-    assert_eq!(merge_worktree_metadata(repo_root)["merge_state"], json!("idle"));
+    assert_eq!(
+        parse_json_file(repo_root.join(".ait/worktrees/lt-0001.json"))["merge_state"],
+        json!("idle")
+    );
     assert_eq!(
         fs::read_to_string(worktree.join("src/lib.rs")).unwrap(),
         "pub fn side() -> &'static str { \"resolved\" }\n"
@@ -401,10 +374,7 @@ fn native_line_merge_abort_restores_exact_target_workspace_without_moving_head()
         "pub fn side() -> &'static str { \"source bytes\" }\n",
     );
 
-    let conflicted = json_output(
-        &worktree,
-        &["line", "merge", "feature/source", "--json"],
-    );
+    let conflicted = json_output(&worktree, &["line", "merge", "feature/source", "--json"]);
     assert_eq!(conflicted["status"].as_str(), Some("conflicted"));
     write_file(&worktree.join("introduced-during-merge.txt"), "remove me\n");
 
@@ -431,8 +401,7 @@ fn native_line_merge_abort_restores_exact_target_workspace_without_moving_head()
 fn native_pull_local_ahead_imports_without_moving_the_line_or_workspace() {
     let remote_temp = init_repo("https://example.test");
     let remote_root = remote_temp.path();
-    let remote_zstd =
-        zstd_remote_import_fixture_from_repo(remote_root, FIXTURE_BASE_SNAPSHOT_ID);
+    let remote_zstd = zstd_remote_import_fixture_from_repo(remote_root, FIXTURE_BASE_SNAPSHOT_ID);
     let (base_url, _log, handle) =
         spawn_remote_import_server("main", FIXTURE_BASE_SNAPSHOT_ID, remote_zstd);
     let temp = init_repo(&base_url);
@@ -449,13 +418,22 @@ fn native_pull_local_ahead_imports_without_moving_the_line_or_workspace() {
     assert!(!rejected_restore.status.success());
     let stderr = String::from_utf8_lossy(&rejected_restore.stderr);
     assert!(stderr.contains("local Line main"), "{stderr}");
-    assert!(stderr.contains("is ahead of remote origin/main"), "{stderr}");
-    assert!(stderr.contains("no Line head or workspace was moved"), "{stderr}");
+    assert!(
+        stderr.contains("is ahead of remote origin/main"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("no Line head or workspace was moved"),
+        "{stderr}"
+    );
     assert_eq!(
         local_line_head(root, "main").as_deref(),
         Some(local_head.as_str())
     );
-    assert_eq!(fs::read(root.join("local-only.txt")).unwrap(), workspace_before);
+    assert_eq!(
+        fs::read(root.join("local-only.txt")).unwrap(),
+        workspace_before
+    );
 
     let pulled = json_output(root, &["pull", "--line", "main", "--json"]);
 
@@ -467,7 +445,10 @@ fn native_pull_local_ahead_imports_without_moving_the_line_or_workspace() {
         local_line_head(root, "main").as_deref(),
         Some(local_head.as_str())
     );
-    assert_eq!(fs::read(root.join("local-only.txt")).unwrap(), workspace_before);
+    assert_eq!(
+        fs::read(root.join("local-only.txt")).unwrap(),
+        workspace_before
+    );
     handle.join().unwrap();
 }
 
@@ -500,8 +481,7 @@ fn native_pull_remote_ahead_fast_forwards_then_equal_is_a_noop() {
     write_file(&remote_root.join("remote-only.txt"), "remote ahead\n");
     let remote_head = seed_snapshot(remote_root, "remote ahead");
     let remote_zstd = zstd_remote_import_fixture_from_repo(remote_root, &remote_head);
-    let (base_url, _log, handle) =
-        spawn_remote_import_server("main", &remote_head, remote_zstd);
+    let (base_url, _log, handle) = spawn_remote_import_server("main", &remote_head, remote_zstd);
     let temp = init_repo(&base_url);
     let root = temp.path();
     let workspace_before = fs::read(root.join("src/lib.rs")).unwrap();
@@ -530,10 +510,7 @@ fn native_pull_remote_ahead_fast_forwards_then_equal_is_a_noop() {
 fn native_pull_divergence_without_strategy_imports_then_fails_closed() {
     let remote_temp = init_repo("https://example.test");
     let remote_root = remote_temp.path();
-    json_output(
-        remote_root,
-        &["line", "create", "feature/rt-1", "--json"],
-    );
+    json_output(remote_root, &["line", "create", "feature/rt-1", "--json"]);
     json_output(
         remote_root,
         &["line", "switch", "feature/rt-1", "--restore", "--json"],
@@ -557,10 +534,7 @@ fn native_pull_divergence_without_strategy_imports_then_fails_closed() {
         ],
     );
     write_file(&worktree.join("local-only.txt"), "local side\n");
-    let target_head = json_output(
-        &worktree,
-        &["snapshot", "create", "--message", "local divergent side", "--json"],
-    )["snapshot_id"]
+    let target_head = checkpoint_bound_worktree_fixture(&worktree, "local divergent side")["snapshot_id"]
         .as_str()
         .unwrap()
         .to_string();
@@ -590,10 +564,7 @@ fn native_pull_divergence_without_strategy_imports_then_fails_closed() {
 fn native_pull_merge_creates_ordered_two_parent_snapshot_for_divergence() {
     let remote_temp = init_repo("https://example.test");
     let remote_root = remote_temp.path();
-    json_output(
-        remote_root,
-        &["line", "create", "feature/rt-1", "--json"],
-    );
+    json_output(remote_root, &["line", "create", "feature/rt-1", "--json"]);
     json_output(
         remote_root,
         &["line", "switch", "feature/rt-1", "--restore", "--json"],
@@ -617,10 +588,7 @@ fn native_pull_merge_creates_ordered_two_parent_snapshot_for_divergence() {
         ],
     );
     write_file(&worktree.join("local-only.txt"), "local side\n");
-    let target_head = json_output(
-        &worktree,
-        &["snapshot", "create", "--message", "local clean side", "--json"],
-    )["snapshot_id"]
+    let target_head = checkpoint_bound_worktree_fixture(&worktree, "local clean side")["snapshot_id"]
         .as_str()
         .unwrap()
         .to_string();
@@ -658,10 +626,7 @@ fn native_pull_merge_creates_ordered_two_parent_snapshot_for_divergence() {
 fn native_pull_merge_conflict_is_resumable_without_a_synthetic_source_line() {
     let remote_temp = init_repo("https://example.test");
     let remote_root = remote_temp.path();
-    json_output(
-        remote_root,
-        &["line", "create", "feature/rt-1", "--json"],
-    );
+    json_output(remote_root, &["line", "create", "feature/rt-1", "--json"]);
     json_output(
         remote_root,
         &["line", "switch", "feature/rt-1", "--restore", "--json"],
@@ -691,10 +656,7 @@ fn native_pull_merge_conflict_is_resumable_without_a_synthetic_source_line() {
         &worktree.join("src/lib.rs"),
         "pub fn side() -> &'static str { \"local\" }\n",
     );
-    let target_head = json_output(
-        &worktree,
-        &["snapshot", "create", "--message", "local conflicting side", "--json"],
-    )["snapshot_id"]
+    let target_head = checkpoint_bound_worktree_fixture(&worktree, "local conflicting side")["snapshot_id"]
         .as_str()
         .unwrap()
         .to_string();

@@ -1372,12 +1372,13 @@ fn snapshot_overlay(
         entry.insert(
             "provenance_confidence".to_string(),
             JsonValue::String(
-                if direct.is_some() {
-                    "bound_worktree_snapshot_line"
-                } else {
-                    "unknown"
-                }
-                .to_string(),
+                direct
+                    .and_then(|row| string_field(row, "ownership_source"))
+                    .map(|source| match source.as_str() {
+                        "durable_snapshot_binding" | "derived_from_recorded_change" => source,
+                        _ => "bound_worktree_snapshot_line".to_string(),
+                    })
+                    .unwrap_or_else(|| "unknown".to_string()),
             ),
         );
         if patchset_revision_snapshot_id.as_deref() == Some(snapshot_id.as_str()) {
@@ -1388,9 +1389,10 @@ fn snapshot_overlay(
             if string_field_obj(&entry, "task_id").is_none() {
                 insert_optional_string(&mut entry, "task_id", target.task_id.clone());
             }
-            if string_field_obj(&entry, "provenance_confidence").as_deref()
-                != Some("bound_worktree_snapshot_line")
-            {
+            if matches!(
+                string_field_obj(&entry, "provenance_confidence").as_deref(),
+                Some("unknown")
+            ) {
                 entry.insert(
                     "provenance_confidence".to_string(),
                     JsonValue::String("derived_from_patchset".to_string()),
@@ -1399,8 +1401,9 @@ fn snapshot_overlay(
         }
         overlay.insert(snapshot_id.clone(), entry);
     }
-    if matches!(target.kind.as_str(), "patchset" | "snapshot") {
-        let mut change_refs = Vec::new();
+    {
+        let mut change_refs =
+            remote_snapshot_change_candidates(repo, snapshot_ids, target, &overlay)?;
         for row in overlay.values() {
             if let Some(change_ref) = overlay_change_reference(row)? {
                 change_refs.push(change_ref);
@@ -1414,6 +1417,11 @@ fn snapshot_overlay(
             let Some(entry) = overlay.get_mut(&snapshot_id) else {
                 continue;
             };
+            if ["task_id", "change_id"].iter().any(|field| {
+                matches!((string_field_obj(entry, field), string_field_obj(&remote_entry, field)), (Some(local), Some(remote)) if local != remote)
+            }) {
+                continue;
+            }
             apply_overlay_defaults(entry, &remote_entry);
             if string_field_obj(entry, "provenance_confidence").as_deref() == Some("unknown") {
                 if let Some(confidence) = string_field_obj(&remote_entry, "provenance_confidence") {
@@ -1426,6 +1434,95 @@ fn snapshot_overlay(
         }
     }
     Ok(overlay)
+}
+
+// An immutable authoring Line is only a lookup hint. Attribution below still
+// requires an exact persisted Patchset revision or accepted Snapshot match.
+fn remote_snapshot_change_candidates(
+    repo: &RepoRuntime,
+    snapshot_ids: &[String],
+    target: &BlameTarget,
+    overlay: &BTreeMap<String, JsonMap<String, JsonValue>>,
+) -> Result<Vec<String>, String> {
+    let Ok(remote) = repo.remote_row(target.remote_name.as_deref()) else {
+        return Ok(Vec::new());
+    };
+    let mut hinted_tasks = BTreeSet::new();
+    for id in snapshot_ids {
+        if overlay
+            .get(id)
+            .is_some_and(|row| string_field_obj(row, "task_id").is_some())
+        {
+            continue;
+        }
+        let metadata = get_local_snapshot_metadata_for_repo(repo, id)?;
+        let Some(line) = string_field(&metadata, "line_name") else {
+            continue;
+        };
+        let Some(task) = line.strip_prefix("feature/") else {
+            continue;
+        };
+        let task = task.to_ascii_uppercase();
+        let Some((prefix, number)) = task.split_once("T-") else {
+            continue;
+        };
+        if prefix.starts_with('R')
+            && !number.is_empty()
+            && number.bytes().all(|b| b.is_ascii_digit())
+        {
+            hinted_tasks.insert(task);
+        }
+    }
+    if hinted_tasks.is_empty() {
+        return Ok(Vec::new());
+    }
+    let repo_name = target
+        .repo_name
+        .clone()
+        .or(remote.repo_name.clone())
+        .unwrap_or_else(|| repo.repo_name());
+    let mut port = http_task_remote(repo, &remote)?;
+    let Ok(changes) = port.list_changes(&repo_name) else {
+        return Ok(Vec::new());
+    };
+    let mut refs = Vec::new();
+    for change in changes {
+        let Some(task) = string_field(&change, "task_id") else {
+            continue;
+        };
+        if !hinted_tasks.contains(&task) {
+            continue;
+        }
+        let Some(id) = string_field(&change, "change_id") else {
+            continue;
+        };
+        let canonical = ChangeJson::stateless().canonical_change_id(&id)?;
+        let reference =
+            ChangeJson::stateless().rolling_server_change_id(Some(&task), &canonical)?;
+        if string_field(&change, "change_ref").is_some_and(|value| value != reference) {
+            continue;
+        }
+        refs.push(reference);
+    }
+    Ok(ordered_unique(&refs))
+}
+
+fn merge_remote_ownership(
+    row: &mut JsonMap<String, JsonValue>,
+    candidate: &JsonMap<String, JsonValue>,
+) {
+    if row.get("ownership_conflict").and_then(JsonValue::as_bool) == Some(true) {
+        return;
+    }
+    if ["task_id", "change_id"].iter().any(|field| {
+        matches!((string_field_obj(row, field), string_field_obj(candidate, field)), (Some(left), Some(right)) if left != right)
+    }) {
+        row.clear();
+        row.insert("ownership_conflict".to_string(), json!(true));
+        row.insert("provenance_confidence".to_string(), json!("unknown"));
+        return;
+    }
+    apply_overlay_defaults(row, candidate);
 }
 
 fn remote_change_overlay(
@@ -1449,6 +1546,9 @@ fn remote_change_overlay(
     let mut task_remote = http_task_remote(repo, &remote_row)?;
     let mut overlay = BTreeMap::new();
     for change_ref in requested {
+        if change_ref.starts_with('L') {
+            continue;
+        }
         let detail = match task_remote.get_change_detail(&change_ref, Some(&repo_name)) {
             Ok(value) => value,
             Err(_) => continue,
@@ -1501,7 +1601,7 @@ fn remote_change_overlay(
                 "provenance_confidence",
                 Some("derived_from_patchset".to_string()),
             );
-            apply_overlay_defaults(row, &defaults);
+            merge_remote_ownership(row, &defaults);
         }
         let Some(landed_snapshot_id) = string_field_obj(&landing_result, "landed_snapshot_id")
         else {
@@ -1535,7 +1635,7 @@ fn remote_change_overlay(
             "provenance_confidence",
             Some("derived_from_land".to_string()),
         );
-        apply_overlay_defaults(row, &defaults);
+        merge_remote_ownership(row, &defaults);
     }
     Ok(overlay)
 }
@@ -2340,8 +2440,6 @@ fn format_hunk(row: &JsonValue) -> Result<String, String> {
     }
     for (key, label) in [
         ("task_id", "task"),
-        ("change_id", "change"),
-        ("patchset_id", "patchset"),
         ("land_id", "finish-record"),
         ("submission_id", "submission"),
     ] {

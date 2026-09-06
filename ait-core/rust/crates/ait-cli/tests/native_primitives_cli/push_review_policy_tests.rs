@@ -13,6 +13,91 @@ fn prepare_root_publication_candidate(root: &Path, message: &str) -> String {
     seed_snapshot(root, message)
 }
 
+#[test]
+fn native_workflow_task_input_preserves_remote_scope_and_exact_patchset_publication() {
+    for default_scope in ["remote", "local"] {
+        let (base_url, log, state, handle) = spawn_fake_remote();
+        let temp = init_repo(&base_url);
+        let root = temp.path();
+        if default_scope == "local" {
+            let path = root.join(".ait/config.json");
+            let mut config = parse_json_file(&path);
+            config["workflow_mode"] = json!("solo_local");
+            config["workflow_default_scope"] = json!("local");
+            config["task_default_scope"] = json!("local");
+            write_file(&path, &encode_json_pretty(&config));
+        }
+        {
+            let mut guard = state.lock().unwrap();
+            guard.remote_head_snapshot_id = Some(FIXTURE_BASE_SNAPSHOT_ID.to_string());
+            guard.force_no_selected_patchset = true;
+        }
+        let revision = prepare_root_publication_candidate(root, "Task publication checkpoint");
+        for phase in ["ready", "finish"] {
+            let preview = cargo_bin().current_dir(root).args(["workflow", phase, "RT-1", "--remote", "origin"]).output().unwrap();
+            assert!(preview.status.success(), "{phase}: {}", String::from_utf8_lossy(&preview.stderr));
+            let text = String::from_utf8_lossy(&preview.stdout);
+            assert!(text.contains("RT-1"), "{text}");
+            assert!(!text.contains("RC-1"), "{text}");
+        }
+        assert!(log.lock().unwrap().iter().all(|row| row.method == "GET"));
+        let output = cargo_bin().current_dir(root).args(["workflow", "ready", "RT-1", "--remote", "origin", "--apply", "--summary", "Task publication"]).output().unwrap();
+        assert!(output.status.success(), "stdout:\n{}\nstderr:\n{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+        handle.join().unwrap();
+        let logged = log.lock().unwrap();
+        let published = logged.iter().filter(|row| row.method == "POST" && row.url == "/v1/native/repository-authorities/7/changes/RC-1/patchsets").collect::<Vec<_>>();
+        assert_eq!(published.len(), 1);
+        let body = parse_json(&published[0].body);
+        assert_eq!(body["base_snapshot_id"], FIXTURE_BASE_SNAPSHOT_ID);
+        assert_eq!(body["revision_snapshot_id"], revision);
+        assert!(!logged.iter().any(|row| row.method == "POST" && row.url == "/v1/native/repository-authorities/7/changes"));
+    }
+}
+
+#[test]
+fn native_workflow_task_input_rejects_remote_ambiguity_without_mutating() {
+    let (base_url, log, state, handle) = spawn_fake_remote();
+    let temp = init_repo(&base_url);
+    let mut rows = (2..=31).map(|n| json!({"task_id": format!("RT-{n}"), "change_id": "C-01", "status": "active"})).collect::<Vec<_>>();
+    rows.extend([
+        json!({"task_id": "RT-1", "change_id": "C-01", "status": "landed"}),
+        json!({"task_id": "RT-1", "change_id": "C-02", "status": "active"}),
+        json!({"task_id": "RT-1", "change_id": "C-03", "status": "superseded"}),
+        json!({"task_id": "RT-1", "change_id": "C-04", "status": "active"}),
+    ]);
+    state.lock().unwrap().change_rows_override = Some(rows);
+    let before = json_output(temp.path(), &["snapshot", "list", "--all", "--json"]);
+    for phase in ["ready", "finish"] {
+        let output = cargo_bin().current_dir(temp.path()).args(["workflow", phase, "RT-1", "--apply"]).output().unwrap();
+        assert!(!output.status.success());
+        let error = String::from_utf8_lossy(&output.stderr);
+        assert!(error.contains("multiple finishable changes"), "{error}");
+        assert!(error.contains("RT-1/C-02") && error.contains("RT-1/C-04"), "{error}");
+    }
+    assert_eq!(json_output(temp.path(), &["snapshot", "list", "--all", "--json"]), before);
+    handle.join().unwrap();
+    assert!(log.lock().unwrap().iter().all(|row| row.method == "GET"));
+}
+
+#[test]
+fn native_remote_task_snapshot_keeps_exact_binding_and_never_creates_missing_work() {
+    let (base_url, log, state, handle) = spawn_fake_remote();
+    let (temp, worktree) = init_worktree_repo(&base_url);
+    let snapshot = json_output(&worktree, &["snapshot", "create", "RT-1", "-m", "Remote Task checkpoint", "--json"]);
+    assert_eq!(snapshot["task_id"], "RT-1");
+    assert_eq!(snapshot["change_id"], "RC-1");
+    assert_eq!(snapshot["message"], "Remote Task checkpoint");
+    let before = json_output(temp.path(), &["snapshot", "list", "--all", "--json"]);
+    write_file(&worktree.join("src/lib.rs"), "pub fn remains_pending() {}\n");
+    state.lock().unwrap().change_rows_override = Some(Vec::new());
+    let rejected = cargo_bin().current_dir(&worktree).args(["snapshot", "create", "RT-1", "-m", "No implicit Change"]).output().unwrap();
+    assert!(!rejected.status.success());
+    assert!(String::from_utf8_lossy(&rejected.stderr).contains("no writable work"));
+    assert_eq!(json_output(temp.path(), &["snapshot", "list", "--all", "--json"]), before);
+    handle.join().unwrap();
+    assert!(log.lock().unwrap().iter().all(|row| row.method == "GET"));
+}
+
 fn prepare_worktree_publication_candidate(worktree: &Path, message: &str) -> String {
     write_file(
         &worktree.join("src/lib.rs"),
@@ -84,14 +169,7 @@ fn register_unrelated_active_worktree(root: &Path) {
 }
 
 fn register_matching_target_worktree(root: &Path) -> PathBuf {
-    register_publication_bound_worktree(
-        root,
-        "rt-1",
-        "feature/rt-1",
-        "RT-1",
-        "RC-1",
-        true,
-    )
+    register_publication_bound_worktree(root, "rt-1", "feature/rt-1", "RT-1", "RC-1", true)
 }
 
 #[test]
@@ -135,8 +213,10 @@ fn native_patchset_publish_from_root_routes_matching_not_active_unrelated_worktr
     let root = temp.path();
     state.lock().unwrap().remote_head_snapshot_id = Some(FIXTURE_BASE_SNAPSHOT_ID.to_string());
     let matching_worktree = register_matching_target_worktree(root);
-    let revision_snapshot_id =
-        prepare_worktree_publication_candidate(&matching_worktree, "matching direct publication pin");
+    let revision_snapshot_id = prepare_worktree_publication_candidate(
+        &matching_worktree,
+        "matching direct publication pin",
+    );
     register_unrelated_active_worktree(root);
 
     let patchset = json_output(
@@ -251,16 +331,7 @@ fn native_patchset_publish_rejects_bound_worktree_retarget_requirement() {
     let root = temp.path();
     state.lock().unwrap().remote_head_snapshot_id = Some(FIXTURE_BASE_SNAPSHOT_ID.to_string());
 
-    let snapshot = json_output(
-        &worktree,
-        &[
-            "snapshot",
-            "create",
-            "--message",
-            "retarget candidate",
-            "--json",
-        ],
-    );
+    let snapshot = checkpoint_bound_worktree_fixture(&worktree, "retarget candidate");
     assert!(snapshot["snapshot_id"]
         .as_str()
         .unwrap()
@@ -315,9 +386,8 @@ fn native_patchset_publish_rejects_bound_worktree_retarget_requirement() {
 
     handle.join().unwrap();
     let logged = log.lock().unwrap().clone();
-    assert!(!logged
-        .iter()
-        .any(|row| row.method == "POST" && row.url == "/v1/native/repository-authorities/7/changes/RC-1/patchsets"));
+    assert!(!logged.iter().any(|row| row.method == "POST"
+        && row.url == "/v1/native/repository-authorities/7/changes/RC-1/patchsets"));
 }
 
 #[test]
@@ -327,16 +397,7 @@ fn native_patchset_publish_uses_unchanged_remote_base_when_local_main_is_ahead()
     let root = temp.path();
     state.lock().unwrap().remote_head_snapshot_id = Some(FIXTURE_BASE_SNAPSHOT_ID.to_string());
 
-    let feature_snapshot = json_output(
-        &worktree,
-        &[
-            "snapshot",
-            "create",
-            "--message",
-            "direct remote candidate",
-            "--json",
-        ],
-    );
+    let feature_snapshot = checkpoint_bound_worktree_fixture(&worktree, "direct remote candidate");
     let feature_snapshot_id = feature_snapshot["snapshot_id"]
         .as_str()
         .unwrap()
@@ -371,10 +432,8 @@ fn native_patchset_publish_uses_unchanged_remote_base_when_local_main_is_ahead()
 
     handle.join().unwrap();
     let logged = log.lock().unwrap().clone();
-    assert!(logged
-        .iter()
-        .any(|row| row.method == "POST"
-            && row.url == "/v1/native/repository-authorities/7/changes/RC-1/patchsets"));
+    assert!(logged.iter().any(|row| row.method == "POST"
+        && row.url == "/v1/native/repository-authorities/7/changes/RC-1/patchsets"));
 }
 
 #[test]
@@ -400,8 +459,7 @@ fn native_workflow_ready_retarget_uses_executing_worktree_not_root_binding() {
         None,
     );
     let other_metadata_path = root.join(".ait/worktrees/rt-other.json");
-    let mut other_metadata: JsonValue =
-        parse_json_file(&other_metadata_path);
+    let mut other_metadata: JsonValue = parse_json_file(&other_metadata_path);
     other_metadata["fork_snapshot_id"] = JsonValue::String(advanced_main_snapshot_id.clone());
     write_file(
         &other_metadata_path,
@@ -409,8 +467,7 @@ fn native_workflow_ready_retarget_uses_executing_worktree_not_root_binding() {
     );
 
     let root_config_path = root.join(".ait/config.json");
-    let mut root_config: JsonValue =
-        parse_json_file(&root_config_path);
+    let mut root_config: JsonValue = parse_json_file(&root_config_path);
     root_config["worktree_name"] = JsonValue::String("rt-other".to_string());
     write_file(
         &root_config_path,
@@ -484,16 +541,7 @@ fn native_workflow_ready_apply_uses_remote_base_when_only_local_main_advanced() 
         guard.remote_head_snapshot_id = Some(FIXTURE_BASE_SNAPSHOT_ID.to_string());
         guard.force_no_selected_patchset = true;
     }
-    let feature_snapshot = json_output(
-        &worktree,
-        &[
-            "snapshot",
-            "create",
-            "--message",
-            "remote workflow candidate",
-            "--json",
-        ],
-    );
+    let feature_snapshot = checkpoint_bound_worktree_fixture(&worktree, "remote workflow candidate");
     let feature_snapshot_id = feature_snapshot["snapshot_id"]
         .as_str()
         .expect("feature snapshot id")
@@ -539,8 +587,7 @@ fn native_workflow_ready_apply_uses_remote_base_when_only_local_main_advanced() 
         .iter()
         .find(|row| {
             row.method == "POST"
-                && row.url
-                    == "/v1/native/repository-authorities/7/changes/RC-1/patchsets"
+                && row.url == "/v1/native/repository-authorities/7/changes/RC-1/patchsets"
         })
         .unwrap_or_else(|| panic!("missing Patchset publication: {logged:#?}"));
     let body = parse_json(&published.body);
@@ -570,14 +617,10 @@ fn native_worktree_rebase_recovers_stale_registry_fork_from_bound_change() {
     let metadata_path = root.join(".ait/worktrees/rt-1.json");
     let mut metadata: JsonValue = parse_json_file(&metadata_path);
     metadata["fork_snapshot_id"] = JsonValue::String(advanced_main_snapshot_id.clone());
-    metadata["last_retargeted_at"] =
-        JsonValue::String("2026-07-15T00:00:00Z".to_string());
+    metadata["last_retargeted_at"] = JsonValue::String("2026-07-15T00:00:00Z".to_string());
     write_file(&metadata_path, &(encode_json_pretty(&metadata) + "\n"));
 
-    let payload = json_output(
-        &worktree,
-        &["worktree", "rebase", "--dry-run", "--json"],
-    );
+    let payload = json_output(&worktree, &["worktree", "rebase", "--dry-run", "--json"]);
     let rebase = &payload["rebase"];
     assert_eq!(
         rebase["old_base_snapshot_id"].as_str(),
@@ -614,10 +657,7 @@ fn native_worktree_rebase_recovers_stale_registry_fork_without_local_change_row(
     metadata["fork_snapshot_id"] = JsonValue::String(advanced_main_snapshot_id.clone());
     write_file(&metadata_path, &(encode_json_pretty(&metadata) + "\n"));
 
-    let payload = json_output(
-        &worktree,
-        &["worktree", "rebase", "--dry-run", "--json"],
-    );
+    let payload = json_output(&worktree, &["worktree", "rebase", "--dry-run", "--json"]);
     let rebase = &payload["rebase"];
     assert_eq!(
         rebase["old_base_snapshot_id"].as_str(),
@@ -648,16 +688,7 @@ fn native_patchset_publish_uses_one_zstd_plan_for_suffix_above_remote_head() {
         &root.join("src/lib.rs"),
         "pub fn example() -> &'static str { \"changed\" }\n",
     );
-    let second_snapshot = json_output(
-        root,
-        &[
-            "snapshot",
-            "create",
-            "--message",
-            "suffix snapshot",
-            "--json",
-        ],
-    );
+    let second_snapshot = seed_snapshot_payload(root, "suffix snapshot");
     let second_snapshot_id = second_snapshot["snapshot_id"].as_str().unwrap().to_string();
 
     let patchset = json_output(
@@ -698,18 +729,14 @@ fn native_patchset_publish_uses_one_zstd_plan_for_suffix_above_remote_head() {
 
     handle.join().unwrap();
     let logged = log.lock().unwrap().clone();
-    assert!(!logged
-        .iter()
-        .any(|row| {
-            row.method == "POST"
-                && row.url == "/v1/native/repository-authorities/7/snapshots:exists"
-        }));
+    assert!(!logged.iter().any(|row| {
+        row.method == "POST" && row.url == "/v1/native/repository-authorities/7/snapshots:exists"
+    }));
     let plan_request = logged
         .iter()
         .find(|row| {
             row.method == "POST"
-                && row.url
-                    == "/v1/native/repository-authorities/7/remote-sync/zstd-bulk/plan"
+                && row.url == "/v1/native/repository-authorities/7/remote-sync/zstd-bulk/plan"
         })
         .expect("expected authoritative zstd plan request");
     let plan_payload: JsonValue = parse_json(&plan_request.body);
@@ -721,9 +748,9 @@ fn native_patchset_publish_uses_one_zstd_plan_for_suffix_above_remote_head() {
         .collect::<Vec<_>>();
     assert_eq!(snapshot_ids, vec![second_snapshot_id.clone()]);
     assert!(logged.iter().any(|row| row.method == "PUT"
-        && row
-            .url
-            .starts_with("/v1/native/repository-authorities/7/remote-sync/zstd-bulk/object-packs/")));
+        && row.url.starts_with(
+            "/v1/native/repository-authorities/7/remote-sync/zstd-bulk/object-packs/"
+        )));
     assert!(logged.iter().any(|row| row.method == "PUT"
         && row
             .url
@@ -809,9 +836,9 @@ fn native_push_uploads_missing_suffix_and_updates_remote_line() {
     assert!(logged.iter().any(|row| row.method == "POST"
         && row.url == "/v1/native/repository-authorities/7/remote-sync/zstd-bulk/plan"));
     assert!(logged.iter().any(|row| row.method == "PUT"
-        && row
-            .url
-            .starts_with("/v1/native/repository-authorities/7/remote-sync/zstd-bulk/object-packs/")));
+        && row.url.starts_with(
+            "/v1/native/repository-authorities/7/remote-sync/zstd-bulk/object-packs/"
+        )));
     assert!(logged.iter().any(|row| row.method == "PUT"
         && row
             .url
@@ -915,7 +942,10 @@ fn native_push_perfetto_trace_names_cover_frontier_pack_pipeline_and_commit() {
         "ait.remote_sync.push.commit_assembly",
         "ait.remote_sync.push.commit_http",
     ] {
-        assert!(names.contains(expected), "missing Perfetto range {expected}");
+        assert!(
+            names.contains(expected),
+            "missing Perfetto range {expected}"
+        );
     }
 }
 
@@ -1031,8 +1061,7 @@ fn native_push_creates_feature_line_from_present_head_without_zstd_commit() {
         .collect::<Vec<_>>();
     assert_eq!(snapshot_ids, vec![FIXTURE_BASE_SNAPSHOT_ID.to_string()]);
     assert!(logged.iter().any(|row| {
-        row.method == "PUT"
-            && row.url == "/v1/native/repository-authorities/7/lines/feature%2Frt-1"
+        row.method == "PUT" && row.url == "/v1/native/repository-authorities/7/lines/feature%2Frt-1"
     }));
     assert!(!logged.iter().any(|row| {
         row.url
@@ -1069,7 +1098,10 @@ fn native_push_updates_stale_feature_line_from_present_head_without_zstd_commit(
         ],
     );
     assert_eq!(created["line_name"].as_str(), Some("feature/rt-1"));
-    assert_eq!(created["head_snapshot_id"].as_str(), Some(feature_snapshot_id.as_str()));
+    assert_eq!(
+        created["head_snapshot_id"].as_str(),
+        Some(feature_snapshot_id.as_str())
+    );
 
     let pushed = json_output(root, &["push", "--line", "feature/rt-1", "--json"]);
     assert_eq!(pushed["remote"].as_str(), Some("origin"));
@@ -1088,7 +1120,10 @@ fn native_push_updates_stale_feature_line_from_present_head_without_zstd_commit(
         pushed["remote_head_snapshot_id"].as_str(),
         Some(FIXTURE_BASE_SNAPSHOT_ID)
     );
-    assert_eq!(pushed["head_snapshot_id"].as_str(), Some(feature_snapshot_id.as_str()));
+    assert_eq!(
+        pushed["head_snapshot_id"].as_str(),
+        Some(feature_snapshot_id.as_str())
+    );
     assert_eq!(
         pushed["remote_line"]["head_snapshot_id"].as_str(),
         Some(feature_snapshot_id.as_str())
@@ -1212,7 +1247,10 @@ fn native_review_namespace_supports_distinct_code_task_team_and_template_lanes()
     );
     assert_eq!(code_review["action"].as_str(), Some("code_review_summary"));
     assert_eq!(code_review["reviewer"].as_str(), Some("ait-cli"));
-    assert_eq!(code_review["task_review"]["mode"].as_str(), Some("automatic"));
+    assert_eq!(
+        code_review["task_review"]["mode"].as_str(),
+        Some("automatic")
+    );
     assert_eq!(
         code_review["task_review"]["reviewer"].as_str(),
         Some("Fixture User")
@@ -1253,12 +1291,10 @@ fn native_review_namespace_supports_distinct_code_task_team_and_template_lanes()
 
     handle.join().unwrap();
     let logged = log.lock().unwrap().clone();
-    assert!(logged
-        .iter()
-        .any(|row| row.method == "POST" && row.url == "/v1/native/repository-authorities/7/changes/RC-1:requestReview"));
-    assert!(logged
-        .iter()
-        .any(|row| row.method == "POST" && row.url == "/v1/native/repository-authorities/7/changes/RC-1/reviews"));
+    assert!(logged.iter().any(|row| row.method == "POST"
+        && row.url == "/v1/native/repository-authorities/7/changes/RC-1:requestReview"));
+    assert!(logged.iter().any(|row| row.method == "POST"
+        && row.url == "/v1/native/repository-authorities/7/changes/RC-1/reviews"));
     let recorded_reviews = logged
         .iter()
         .filter(|row| {
@@ -1268,8 +1304,7 @@ fn native_review_namespace_supports_distinct_code_task_team_and_template_lanes()
         .map(|row| parse_json(&row.body))
         .collect::<Vec<_>>();
     assert!(recorded_reviews.iter().any(|review| {
-        review["action"] == json!("code_review_summary")
-            && review["reviewer"] == json!("ait-cli")
+        review["action"] == json!("code_review_summary") && review["reviewer"] == json!("ait-cli")
     }));
     assert!(recorded_reviews.iter().any(|review| {
         review["action"] == json!("task_approve")
@@ -1277,9 +1312,8 @@ fn native_review_namespace_supports_distinct_code_task_team_and_template_lanes()
             && review["comment"]
                 == json!("Automatic Task approval authorized by repository `task_review=automatic` policy.")
     }));
-    assert!(logged
-        .iter()
-        .any(|row| row.method == "GET" && row.url == "/v1/native/repository-authorities/7/changes/RC-1/reviews"));
+    assert!(logged.iter().any(|row| row.method == "GET"
+        && row.url == "/v1/native/repository-authorities/7/changes/RC-1/reviews"));
 }
 
 #[test]
@@ -1324,12 +1358,10 @@ fn native_policy_namespace_supports_show_and_waive() {
 
     handle.join().unwrap();
     let logged = log.lock().unwrap().clone();
-    assert!(logged
-        .iter()
-        .any(|row| row.method == "GET" && row.url == "/v1/native/repository-authorities/7/patchsets/RP-1/policy"));
-    assert!(logged
-        .iter()
-        .any(|row| row.method == "POST" && row.url == "/v1/native/repository-authorities/7/patchsets/RP-1/waivers"));
+    assert!(logged.iter().any(|row| row.method == "GET"
+        && row.url == "/v1/native/repository-authorities/7/patchsets/RP-1/policy"));
+    assert!(logged.iter().any(|row| row.method == "POST"
+        && row.url == "/v1/native/repository-authorities/7/patchsets/RP-1/waivers"));
 }
 
 #[test]

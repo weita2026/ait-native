@@ -5,16 +5,7 @@ fn init_plain_line_lifecycle_repo() -> TempDir {
         "pub fn line_lifecycle_fixture() -> &'static str { \"ready\" }\n",
     );
     json_output(temp.path(), &["init", "--json"]);
-    json_output(
-        temp.path(),
-        &[
-            "snapshot",
-            "create",
-            "--message",
-            "line lifecycle base",
-            "--json",
-        ],
-    );
+    seed_snapshot_payload(temp.path(), "line lifecycle base");
     temp
 }
 
@@ -64,34 +55,22 @@ fn native_line_rename_reconciles_bound_worktree_and_rejects_collisions() {
     let (base_url, _log, _state, handle) = spawn_fake_remote();
     let (temp, worktree) = init_worktree_repo(&base_url);
     let root = temp.path();
-    let before = json_output(
-        &worktree,
-        &["line", "show", "feature/rt-1", "--json"],
-    );
+    let before = json_output(&worktree, &["line", "show", "feature/rt-1", "--json"]);
     let line_id = before["line_id"].as_str().unwrap().to_string();
-    let active_change = failed_cli(
-        &worktree,
-        &["line", "rename", "main", "trunk", "--json"],
+    let active_change = failed_cli(&worktree, &["line", "rename", "main", "trunk", "--json"]);
+    assert!(
+        active_change.contains("active Change(s)"),
+        "{active_change}"
     );
-    assert!(active_change.contains("active Change(s)"), "{active_change}");
     seed_binary_line(root, "occupied", FIXTURE_BASE_SNAPSHOT_ID);
 
     let collision = failed_cli(
         &worktree,
-        &[
-            "line",
-            "rename",
-            "feature/rt-1",
-            "occupied",
-            "--json",
-        ],
+        &["line", "rename", "feature/rt-1", "occupied", "--json"],
     );
     assert!(collision.contains("Line already exists: occupied"));
     assert_eq!(
-        json_output(
-            &worktree,
-            &["line", "show", "feature/rt-1", "--json"]
-        )["line_id"],
+        json_output(&worktree, &["line", "show", "feature/rt-1", "--json"])["line_id"],
         json!(line_id)
     );
 
@@ -113,10 +92,7 @@ fn native_line_rename_reconciles_bound_worktree_and_rejects_collisions() {
     assert_eq!(registry["line_name"], json!("feature/renamed"));
     assert_eq!(registry["line_id"], json!(line_id));
     assert_eq!(
-        json_output(
-            &worktree,
-            &["line", "show", "feature/renamed", "--json"]
-        )["line_id"],
+        json_output(&worktree, &["line", "show", "feature/renamed", "--json"])["line_id"],
         json!(line_id)
     );
 
@@ -142,17 +118,13 @@ fn native_line_delete_tombstones_ref_preserves_snapshot_and_changes_identity_on_
     );
     let old_line_id = created["line_id"].as_str().unwrap().to_string();
 
-    let deleted = json_output(
-        root,
-        &["line", "delete", "topic/dead", "--yes", "--json"],
-    );
+    let deleted = json_output(root, &["line", "delete", "topic/dead", "--yes", "--json"]);
     assert_eq!(deleted["line_id"], json!(old_line_id));
     assert_eq!(deleted["status"], json!("deleted"));
     assert_eq!(deleted["history_preserved"], json!(true));
     assert_eq!(deleted["tombstone"], json!(true));
     assert_eq!(deleted["snapshots_deleted"], json!(0));
-    assert!(failed_cli(root, &["line", "show", "topic/dead", "--json"])
-        .contains("Unknown line"));
+    assert!(failed_cli(root, &["line", "show", "topic/dead", "--json"]).contains("Unknown line"));
     assert_eq!(
         json_output(root, &["snapshot", "show", head, "--json"])["snapshot_id"],
         json!(head)
@@ -177,11 +149,12 @@ fn native_line_delete_tombstones_ref_preserves_snapshot_and_changes_identity_on_
 fn native_line_delete_rejects_default_current_protected_bound_and_unique_history() {
     let temp = init_plain_line_lifecycle_repo();
     let root = temp.path();
-    assert!(failed_cli(root, &["line", "delete", "main", "--yes", "--json"])
-        .contains("Default line main cannot be deleted"));
+    assert!(
+        failed_cli(root, &["line", "delete", "main", "--yes", "--json"])
+            .contains("Default line main cannot be deleted")
+    );
 
-    let head = json_output(root, &["line", "show", "main", "--json"])
-        ["head_snapshot_id"]
+    let head = json_output(root, &["line", "show", "main", "--json"])["head_snapshot_id"]
         .as_str()
         .unwrap()
         .to_string();
@@ -198,13 +171,7 @@ fn native_line_delete_rejects_default_current_protected_bound_and_unique_history
     );
     assert!(failed_cli(
         root,
-        &[
-            "line",
-            "delete",
-            "review/protected",
-            "--yes",
-            "--json"
-        ]
+        &["line", "delete", "review/protected", "--yes", "--json"]
     )
     .contains("Protected review line"));
 
@@ -222,13 +189,7 @@ fn native_line_delete_rejects_default_current_protected_bound_and_unique_history
     );
     assert!(failed_cli(
         root,
-        &[
-            "line",
-            "delete",
-            "topic/current",
-            "--yes",
-            "--json"
-        ]
+        &["line", "delete", "topic/current", "--yes", "--json"]
     )
     .contains("Current line topic/current cannot be deleted"));
     json_output(root, &["line", "switch", "main", "--json"]);
@@ -264,16 +225,7 @@ fn native_line_delete_rejects_default_current_protected_bound_and_unique_history
             root.display()
         ),
     );
-    let bound = failed_cli(
-        root,
-        &[
-            "line",
-            "delete",
-            "topic/bound",
-            "--yes",
-            "--json",
-        ],
-    );
+    let bound = failed_cli(root, &["line", "delete", "topic/bound", "--yes", "--json"]);
     assert!(bound.contains("still bound"), "{bound}");
 
     json_output(
@@ -289,28 +241,13 @@ fn native_line_delete_rejects_default_current_protected_bound_and_unique_history
         ],
     );
     write_file(&root.join("unique-only.txt"), "unique history\n");
-    json_output(
-        root,
-        &[
-            "snapshot",
-            "create",
-            "--message",
-            "unique line history",
-            "--json",
-        ],
-    );
+    seed_snapshot_payload(root, "unique line history");
     json_output(root, &["line", "switch", "main", "--json"]);
-    let unique = failed_cli(
-        root,
-        &[
-            "line",
-            "delete",
-            "topic/unique",
-            "--yes",
-            "--json",
-        ],
+    let unique = failed_cli(root, &["line", "delete", "topic/unique", "--yes", "--json"]);
+    assert!(
+        unique.contains("unique history that is not verified"),
+        "{unique}"
     );
-    assert!(unique.contains("unique history that is not verified"), "{unique}");
 }
 
 #[test]
@@ -324,13 +261,7 @@ fn native_line_cleanup_text_groups_protection_and_bounds_representative_rows() {
 
     let output = command_output_with_env(
         root,
-        &[
-            "line",
-            "cleanup",
-            "--idle-for",
-            "1m",
-            "--include-protected",
-        ],
+        &["line", "cleanup", "--idle-for", "1m", "--include-protected"],
         &[],
     );
     assert!(output.status.success());
@@ -339,28 +270,20 @@ fn native_line_cleanup_text_groups_protection_and_bounds_representative_rows() {
     assert!(output.contains("line lifecycle is manual_only"));
     assert!(output.contains("protected examples\nline_name\tlifecycle_kind"));
     assert!(output.contains("representative rows"));
-    assert!(output.contains(
-        "more: ait line cleanup --idle-for 1m --include-protected --all"
-    ));
+    assert!(output.contains("more: ait line cleanup --idle-for 1m --include-protected --all"));
 
-    let bounded = command_output_with_env(
-        root,
-        &["line", "cleanup", "--idle-for", "1m"],
-        &[],
-    );
+    let bounded = command_output_with_env(root, &["line", "cleanup", "--idle-for", "1m"], &[]);
     assert!(bounded.status.success());
     let bounded = String::from_utf8_lossy(&bounded.stdout);
-    assert!(bounded.contains(
-        "protected detail: ait line cleanup --idle-for 1m --include-protected --all"
-    ));
+    assert!(bounded
+        .contains("protected detail: ait line cleanup --idle-for 1m --include-protected --all"));
 }
 
 #[test]
 fn native_line_cleanup_previews_by_default_and_requires_yes_to_archive() {
     let temp = init_plain_line_lifecycle_repo();
     let root = temp.path();
-    let head = json_output(root, &["line", "show", "main", "--json"])
-        ["head_snapshot_id"]
+    let head = json_output(root, &["line", "show", "main", "--json"])["head_snapshot_id"]
         .as_str()
         .unwrap()
         .to_string();
@@ -452,10 +375,7 @@ fn native_line_removed_options_fail_before_authority_mutation() {
         let error = failed_cli(root, &args);
         assert!(error.contains("greater than zero"), "{args:?}: {error}");
     }
-    let malformed = failed_cli(
-        root,
-        &["line", "cleanup", "--idle-for", "7天", "--json"],
-    );
+    let malformed = failed_cli(root, &["line", "cleanup", "--idle-for", "7天", "--json"]);
     assert!(malformed.contains("must look like"), "{malformed}");
     let overflow = failed_cli(
         root,
@@ -511,7 +431,10 @@ fn native_line_help_exposes_the_compact_creation_merge_and_cleanup_contract() {
         "--yes",
         "--json",
     ] {
-        assert!(cleanup_help.contains(option), "missing {option}: {cleanup_help}");
+        assert!(
+            cleanup_help.contains(option),
+            "missing {option}: {cleanup_help}"
+        );
     }
     assert!(!cleanup_help.contains("--older-than"));
     assert!(!cleanup_help.contains("--dry-run"));

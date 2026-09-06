@@ -106,7 +106,7 @@ pub(crate) fn workflow_land_full_steps(
             "Snapshot",
             "pending",
             "Workspace changes are still dirty, so publishable finish state needs a fresh snapshot first.",
-            Some("ait snapshot create --message \"reviewable snapshot\"".to_string()),
+            Some("ait snapshot create <task-id>/C-## --message \"reviewable snapshot\"".to_string()),
         ));
     } else {
         steps.push(workflow_land_step(

@@ -182,7 +182,6 @@ fn run_worktree(repo: RepoRuntime, command: WorktreeCommand) -> Result<ExitCode,
                 &[
                     "status",
                     "task_id",
-                    "change_id",
                     "name",
                     "path",
                     "current_line",

@@ -63,7 +63,14 @@ fn native_stash_cli_preserves_the_complete_binary_db_lifecycle() {
 
     let base = run_json(
         worktree.as_path(),
-        &["snapshot", "create", "--message", "base", "--json"],
+        &[
+            "snapshot",
+            "create",
+            "LT-0001/C-01",
+            "--message",
+            "base",
+            "--json",
+        ],
     );
     let base_snapshot_id = base["snapshot_id"].as_str().unwrap().to_string();
 
@@ -158,7 +165,14 @@ fn native_stash_cli_rejects_cross_line_restore_without_mutation() {
 
     let base = run_json(
         worktree.as_path(),
-        &["snapshot", "create", "--message", "base", "--json"],
+        &[
+            "snapshot",
+            "create",
+            "LT-0001/C-01",
+            "--message",
+            "base",
+            "--json",
+        ],
     );
     let base_snapshot_id = base["snapshot_id"].as_str().unwrap().to_string();
     let task_line = run_json(worktree.as_path(), &["status", "--json"])["current_line"]

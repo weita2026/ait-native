@@ -249,6 +249,10 @@ pub struct RepoBinaryDbLocalSnapshotOperationStore<const WRITE_LAYOUT: u32> {
     content: LocalContentBinaryDb<WRITE_LAYOUT>,
     lines: BinaryDbLineStore<LocalBinaryDbFs, WRITE_LAYOUT>,
     worktree_config_path: Option<PathBuf>,
+    workflow_binding: Option<(
+        ait_core::workflow_binary_db::SnapshotWorkflowBinding,
+        String,
+    )>,
 }
 
 pub struct RepoRemoteSyncBinaryDbLocalStore<const WRITE_LAYOUT: u32> {

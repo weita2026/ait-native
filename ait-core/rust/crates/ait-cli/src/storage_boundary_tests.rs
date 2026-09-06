@@ -178,7 +178,7 @@ fn shared_storage_traits_are_backend_neutral() {
 }
 
 #[test]
-fn schema_registry_is_the_exact_twenty_four_file_runtime_authority() {
+fn schema_registry_includes_the_protected_snapshot_ownership_authority() {
     assert_eq!(
         BTreeSet::from([
             PLAN_BIN,
@@ -198,6 +198,10 @@ fn schema_registry_is_the_exact_twenty_four_file_runtime_authority() {
             BLOB_BIN,
             SNAPSHOT_BIN,
             SNAPSHOT_PAYLOAD_BIN,
+            "snapshot_link.bin",
+            "snapshot_link_payload.bin",
+            "task_snapshot_index.bin",
+            "change_snapshot_index.bin",
             OBJECT_PACK_BIN,
             OBJECT_PACK_MEMBER_BIN,
             TREE_PACK_BIN,

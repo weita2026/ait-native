@@ -1589,7 +1589,6 @@ pub(super) struct CurrentWorktreeMetadata {
     pub(super) bound_change_id: Option<String>,
     pub(super) bound_change_ref: Option<String>,
     pub(super) auto_created_for_task: bool,
-    pub(super) created_at: Option<String>,
     pub(super) fork_snapshot_id: Option<String>,
     pub(super) target_base_line: Option<String>,
     pub(super) rebase_state: String,

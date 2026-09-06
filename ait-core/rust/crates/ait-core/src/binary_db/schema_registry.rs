@@ -19,6 +19,10 @@ pub const REPOSITORY_BINARY_DB_BIN_PATHS: &[&str] = &[
     "change_payload.bin",
     "change_land_index.bin",
     "land.bin",
+    "snapshot_link.bin",
+    "snapshot_link_payload.bin",
+    "task_snapshot_index.bin",
+    "change_snapshot_index.bin",
     "blob.bin",
     "snapshot.bin",
     "snapshot_payload.bin",
@@ -56,7 +60,7 @@ mod tests {
             .iter()
             .copied()
             .collect::<BTreeSet<_>>();
-        assert_eq!(unique.len(), 24);
+        assert_eq!(unique.len(), 28);
         assert_eq!(unique.len(), REPOSITORY_BINARY_DB_BIN_PATHS.len());
         assert!(REPOSITORY_BINARY_DB_BIN_PATHS
             .iter()

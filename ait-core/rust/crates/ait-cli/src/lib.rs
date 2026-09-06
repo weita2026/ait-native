@@ -30,6 +30,7 @@ pub(crate) mod filesystem_permissions;
 pub mod init_surface;
 pub(crate) mod json_support;
 pub mod patchset_ci_smoke;
+pub(crate) mod plan_preferences;
 pub mod primitives;
 pub mod release_surface;
 pub mod remote_head_recovery;

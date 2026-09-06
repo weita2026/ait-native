@@ -159,7 +159,8 @@ pub struct AgentTokenCampaignStatisticalView {
     pub effective_run_summary_paths: BTreeMap<String, PathBuf>,
     pub excluded_run_summary_paths: BTreeMap<String, PathBuf>,
     pub selection: Option<AgentTokenStatisticalReplacementSelection>,
-    pub infrastructure_recovery: Option<AgentTokenInfrastructurePairRecoverySelection>,
+    /// Every infrastructure recovery applied, ordered by schedule position.
+    pub infrastructure_recoveries: Vec<AgentTokenInfrastructurePairRecoverySelection>,
     pub host_shutdown_recovery: Option<AgentTokenHostShutdownPairRecoverySelection>,
 }
 
@@ -322,7 +323,7 @@ fn load_agent_token_campaign_statistical_view_internal(
             effective_run_summary_paths: recovery.effective_run_summary_paths,
             excluded_run_summary_paths: recovery.excluded_run_summary_paths,
             selection: None,
-            infrastructure_recovery: Some(recovery.infrastructure_selection),
+            infrastructure_recoveries: vec![recovery.infrastructure_selection],
             host_shutdown_recovery: Some(recovery.selection),
         };
         return apply_optional_statistical_replacement(manifest, campaign_dir, view);
@@ -348,34 +349,40 @@ fn load_agent_token_campaign_statistical_view_internal(
         report.current_policy_criteria_met = report.blockers.is_empty() && report.claim_eligible;
         report.current_policy_blockers = report.blockers.clone();
         report.claim_eligible = report.current_policy_criteria_met;
-        report.executed_evidence_run_count = source_runs
-            .len()
-            .saturating_add(recovery.selection.replacement_runs.len());
+        report.executed_evidence_run_count = source_runs.len().saturating_add(
+            recovery
+                .selections
+                .iter()
+                .map(|selection| selection.replacement_runs.len())
+                .sum(),
+        );
         report.statistically_excluded_run_count = recovery.excluded_runs.len();
         report.pair_admission_policy =
             AGENT_TOKEN_INFRASTRUCTURE_RECOVERY_PAIR_ADMISSION_POLICY.to_string();
         report.infrastructure_recovery_policy_revision =
             Some(AGENT_TOKEN_INFRASTRUCTURE_RECOVERY_POLICY_REVISION.to_string());
-        report.infrastructure_pair_recoveries = vec![AgentTokenInfrastructurePairRecoveryRecord {
-            source_pair_start_index: recovery.selection.source_pair_start_index,
-            workload_id: recovery.selection.workload_id.clone(),
-            attempt: recovery.selection.attempt,
-            source_schedule_run_ids: recovery.selection.source_schedule_run_ids.clone(),
-            observed_source_run_ids: recovery
-                .selection
-                .observed_source_runs
-                .iter()
-                .map(|artifact| artifact.run_id.clone())
-                .collect(),
-            replacement_run_ids: recovery
-                .selection
-                .replacement_runs
-                .iter()
-                .map(|artifact| artifact.run_id.clone())
-                .collect(),
-            recovery_runner_sha256: recovery.selection.recovery_runner_sha256.clone(),
-            reason: recovery.selection.reason.clone(),
-        }];
+        report.infrastructure_pair_recoveries = recovery
+            .selections
+            .iter()
+            .map(|selection| AgentTokenInfrastructurePairRecoveryRecord {
+                source_pair_start_index: selection.source_pair_start_index,
+                workload_id: selection.workload_id.clone(),
+                attempt: selection.attempt,
+                source_schedule_run_ids: selection.source_schedule_run_ids.clone(),
+                observed_source_run_ids: selection
+                    .observed_source_runs
+                    .iter()
+                    .map(|artifact| artifact.run_id.clone())
+                    .collect(),
+                replacement_run_ids: selection
+                    .replacement_runs
+                    .iter()
+                    .map(|artifact| artifact.run_id.clone())
+                    .collect(),
+                recovery_runner_sha256: selection.recovery_runner_sha256.clone(),
+                reason: selection.reason.clone(),
+            })
+            .collect();
         if let Some(adjudication) = recovered_spawn_adjudication_record(campaign_dir)? {
             report.current_policy_revision =
                 AGENT_TOKEN_RECOVERED_SPAWN_POLICY_REVISION.to_string();
@@ -391,10 +398,12 @@ fn load_agent_token_campaign_statistical_view_internal(
                 "Raw run {AGENT_TOKEN_RECOVERED_SPAWN_RUN_ID} remains append-only with its original spawn-failure classification. Its digest-linked successor adjudication counts the recovered retry and all provider tokens as measured agent behavior; no lane was re-executed."
             ));
         }
-        report.limitations.push(format!(
-            "A recognized executor infrastructure failure contaminated the {} attempt {} pair. The observed source lane(s) remain append-only and excluded; both same-pinned lanes were re-executed once under the disclosed whole-pair recovery policy.",
-            recovery.selection.workload_id, recovery.selection.attempt
-        ));
+        for selection in &recovery.selections {
+            report.limitations.push(format!(
+                "A recognized executor infrastructure failure contaminated the {} attempt {} pair. The observed source lane(s) remain append-only and excluded; both same-pinned lanes were re-executed under the disclosed whole-pair recovery policy as recovery {}.",
+                selection.workload_id, selection.attempt, selection.recovery_ordinal
+            ));
+        }
         let view = AgentTokenCampaignStatisticalView {
             report,
             effective_schedule: recovery.effective_schedule,
@@ -403,7 +412,7 @@ fn load_agent_token_campaign_statistical_view_internal(
             effective_run_summary_paths: recovery.effective_run_summary_paths,
             excluded_run_summary_paths: recovery.excluded_run_summary_paths,
             selection: None,
-            infrastructure_recovery: Some(recovery.selection),
+            infrastructure_recoveries: recovery.selections,
             host_shutdown_recovery: None,
         };
         return apply_optional_statistical_replacement(manifest, campaign_dir, view);
@@ -430,7 +439,7 @@ fn load_agent_token_campaign_statistical_view_internal(
             effective_run_summary_paths,
             excluded_run_summary_paths: BTreeMap::new(),
             selection: None,
-            infrastructure_recovery: None,
+            infrastructure_recoveries: Vec::new(),
             host_shutdown_recovery: None,
         });
     }
@@ -458,7 +467,7 @@ fn load_agent_token_campaign_statistical_view_internal(
             effective_run_summary_paths,
             excluded_run_summary_paths: BTreeMap::new(),
             selection: None,
-            infrastructure_recovery: None,
+            infrastructure_recoveries: Vec::new(),
             host_shutdown_recovery: None,
         },
     )

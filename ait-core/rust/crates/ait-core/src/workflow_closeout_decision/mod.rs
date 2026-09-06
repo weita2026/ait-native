@@ -197,7 +197,7 @@ pub(crate) fn workflow_ready_next_action(
                 command_hint(commands, "apply_command"),
                 apply_owned_continuation,
                 Some(apply_command.clone()),
-                Some("ait snapshot create --message \"reviewable snapshot\"".to_string()),
+                Some("ait snapshot create <task-id>/C-## --message \"reviewable snapshot\"".to_string()),
             ),
         });
     }

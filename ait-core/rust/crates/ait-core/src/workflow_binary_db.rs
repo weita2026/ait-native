@@ -25,6 +25,9 @@ use crate::workflow_primitives::{
 use chrono::{DateTime, SecondsFormat, TimeZone, Utc};
 use std::collections::BTreeMap;
 
+mod snapshot_links;
+pub use snapshot_links::SnapshotWorkflowBinding;
+
 pub const BINARY_DB_WORKFLOW_LAYOUT_ID: u32 = 1;
 
 pub const LOCAL_TASK_RECORD_SIZE: u32 = 64;
@@ -489,6 +492,8 @@ impl<B: BinaryDb, const WRITE_LAYOUT: u32> BinaryDbWorkflowStore<B, WRITE_LAYOUT
         require_supported_layout::<WRITE_LAYOUT>()?;
         let rows = self
             .read_rows_with_access(&UnlockedWorkflowReadAccess(&self.db))
+            .map_err(storage_error)?;
+        self.validate_snapshot_link_authority(&UnlockedWorkflowReadAccess(&self.db), &rows)
             .map_err(storage_error)?;
         Ok((rows.tasks.len(), rows.changes.len()))
     }
@@ -2545,7 +2550,7 @@ mod tests {
     use crate::line_binary_db::BinaryDbLineStore;
     use tempfile::TempDir;
 
-    fn fixture(
+    pub(super) fn fixture(
         temp: &TempDir,
     ) -> BinaryDbWorkflowStore<LocalBinaryDbFs, BINARY_DB_WORKFLOW_LAYOUT_ID> {
         let db = LocalBinaryDbFs::new(
@@ -2559,7 +2564,7 @@ mod tests {
         BinaryDbWorkflowStore::new_with_namespace(db, "fixture", "C")
     }
 
-    fn seed_line_and_snapshots(
+    pub(super) fn seed_line_and_snapshots(
         store: &BinaryDbWorkflowStore<LocalBinaryDbFs, 1>,
     ) -> (String, String) {
         let line = BinaryDbLineStore::<_, 1>::new(store.db().clone());

@@ -1472,7 +1472,8 @@ mod solo_local_workflow_notification_tests {
         assert!(text.starts_with("workflow (fixture) · local\n\nCurrent workflow"));
         assert!(text.contains("LT-9 · Current local work"));
         assert!(text.contains("state=in_progress"));
-        assert!(text.contains("change=LC-9 · status=draft"));
+        assert!(text.contains("work status=draft"));
+        assert!(!text.contains("LC-9"));
         assert!(!text.contains("Ready to"));
         assert!(!text.contains("… and"));
 

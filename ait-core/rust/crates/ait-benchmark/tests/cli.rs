@@ -225,7 +225,7 @@ fn agent_token_protocol_and_solo_local_template_validate() {
             "\"ait_server_connection_allowed\": false",
         ))
         .stdout(predicate::str::contains(
-            "\"protocol_revision\": \"game-development-2026-08-31.48\"",
+            "\"protocol_revision\": \"game-development-2026-08-31.52\"",
         ))
         .stdout(predicate::str::contains(
             "\"contract\": \"ait-agent-token-statistical-replacement/v1\"",
@@ -321,9 +321,9 @@ fn agent_token_protocol_and_solo_local_template_validate() {
         .success()
         .stdout(predicate::str::contains("\"model_id\": \"claude-fable-5\""))
         .stdout(predicate::str::contains(
-            "\"executor_version\": \"2.1.235 (Claude Code)\"",
+            "\"executor_version\": \"2.1.258 (Claude Code)\"",
         ))
-        .stdout(predicate::str::contains("\"ait_version\": \"ait 1.1.0\""))
+        .stdout(predicate::str::contains("\"ait_version\": \"ait 1.1.1\""))
         .stdout(predicate::str::contains("\"reasoning_effort\": \"max\""))
         .stdout(predicate::str::contains("\"scheduled_run_count\": 10"))
         .stdout(predicate::str::contains(

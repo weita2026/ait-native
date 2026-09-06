@@ -9,16 +9,7 @@ fn native_patchset_publish_recovers_from_broken_change_read_and_response_path() 
         &root.join("src/lib.rs"),
         "pub fn example() -> &'static str { \"recovery\" }\n",
     );
-    let snapshot = json_output(
-        root,
-        &[
-            "snapshot",
-            "create",
-            "--message",
-            "recovery snapshot",
-            "--json",
-        ],
-    );
+    let snapshot = seed_snapshot_payload(root, "recovery snapshot");
     let snapshot_id = snapshot["snapshot_id"].as_str().unwrap().to_string();
 
     let patchset = json_output(
@@ -125,7 +116,10 @@ fn native_first_local_task_land_materializes_empty_default_line() {
             .or_else(|| started["worktree"]["path"].as_str())
             .expect("first-land worktree path"),
     );
-    write_file(&worktree.join("first-land.txt"), "landed from first Snapshot\n");
+    write_file(
+        &worktree.join("first-land.txt"),
+        "landed from first Snapshot\n",
+    );
     let snapshot = json_output(
         &worktree,
         &[
@@ -140,13 +134,7 @@ fn native_first_local_task_land_materializes_empty_default_line() {
 
     let landed = json_output(
         &worktree,
-        &[
-            "task",
-            "finish",
-            task_id.as_str(),
-            "--local",
-            "--json",
-        ],
+        &["task", "finish", task_id.as_str(), "--local", "--json"],
     );
 
     assert_eq!(landed["task_status"].as_str(), Some("completed"));
@@ -167,12 +155,13 @@ fn native_first_local_task_land_materializes_empty_default_line() {
         fs::read_to_string(root.join("first-land.txt")).expect("canonical first-land file"),
         "landed from first Snapshot\n"
     );
+    assert!(fs::read_to_string(&sprint_card)
+        .expect("closed first-land sprint card")
+        .contains("- [x] Land the first file. [ref: first-land/write]"));
     assert!(
-        fs::read_to_string(&sprint_card)
-            .expect("closed first-land sprint card")
-            .contains("- [x] Land the first file. [ref: first-land/write]")
+        !worktree.exists(),
+        "completed first-land worktree must be removed"
     );
-    assert!(!worktree.exists(), "completed first-land worktree must be removed");
 }
 
 fn assert_closeout_mutated_once(
@@ -180,7 +169,10 @@ fn assert_closeout_mutated_once(
     fixture_seed: u64,
 ) {
     let guard = state.lock().unwrap();
-    assert_eq!(guard.fixture_seed, fixture_seed, "fixture_seed={fixture_seed:#x}");
+    assert_eq!(
+        guard.fixture_seed, fixture_seed,
+        "fixture_seed={fixture_seed:#x}"
+    );
     assert!(guard.land_submitted, "fixture_seed={fixture_seed:#x}");
     assert!(guard.task_completed, "fixture_seed={fixture_seed:#x}");
     assert!(
@@ -246,8 +238,7 @@ fn native_task_land_recovers_land_submit_from_authoritative_land_state() {
             && row.url == "/v1/native/repository-authorities/7/changes/RC-1/reviews"
     }));
     assert!(!logged.iter().any(|row| {
-        row.method == "GET"
-            && row.url == "/v1/native/repository-authorities/7/read/changes/RC-1"
+        row.method == "GET" && row.url == "/v1/native/repository-authorities/7/read/changes/RC-1"
     }));
     assert!(!logged.iter().any(|row| {
         row.method == "GET"
@@ -288,8 +279,7 @@ fn native_task_land_resumes_retryable_busy_with_same_idempotency_key() {
         logged
             .iter()
             .filter(|row| {
-                row.method == "POST"
-                    && row.url == "/v1/native/repository-authorities/7/task-land"
+                row.method == "POST" && row.url == "/v1/native/repository-authorities/7/task-land"
             })
             .count()
             >= 2
@@ -348,8 +338,7 @@ fn native_task_land_waits_for_timed_out_in_flight_mutation_then_replays() {
         logged
             .iter()
             .filter(|row| {
-                row.method == "POST"
-                    && row.url == "/v1/native/repository-authorities/7/task-land"
+                row.method == "POST" && row.url == "/v1/native/repository-authorities/7/task-land"
             })
             .count()
             > 2
@@ -387,9 +376,9 @@ fn native_task_land_recovers_task_completion_from_authoritative_task_state() {
     assert!(logged.iter().any(|row| {
         row.method == "POST" && row.url == "/v1/native/repository-authorities/7/task-land"
     }));
-    assert!(!logged
-        .iter()
-        .any(|row| { row.method == "POST" && row.url == "/v1/native/repository-authorities/7/tasks/RT-1:close" }));
+    assert!(!logged.iter().any(|row| {
+        row.method == "POST" && row.url == "/v1/native/repository-authorities/7/tasks/RT-1:close"
+    }));
 }
 
 #[test]
@@ -433,10 +422,19 @@ fn native_task_land_timeout_before_remote_mutation_stays_failed_and_bounded() {
         guard.land_submit_attempts >= 2,
         "fixture_seed={fixture_seed:#x}"
     );
-    assert_eq!(guard.land_submit_mutations, 0, "fixture_seed={fixture_seed:#x}");
+    assert_eq!(
+        guard.land_submit_mutations, 0,
+        "fixture_seed={fixture_seed:#x}"
+    );
     assert!(!guard.land_submitted, "fixture_seed={fixture_seed:#x}");
-    assert_eq!(guard.task_close_attempts, 0, "fixture_seed={fixture_seed:#x}");
-    assert_eq!(guard.task_close_mutations, 0, "fixture_seed={fixture_seed:#x}");
+    assert_eq!(
+        guard.task_close_attempts, 0,
+        "fixture_seed={fixture_seed:#x}"
+    );
+    assert_eq!(
+        guard.task_close_mutations, 0,
+        "fixture_seed={fixture_seed:#x}"
+    );
     assert!(!guard.task_completed, "fixture_seed={fixture_seed:#x}");
     drop(guard);
     handle.join().unwrap();
@@ -478,7 +476,8 @@ fn run_seeded_closeout_repetition(
             root.display()
         );
         assert_eq!(
-            payload["atomic_task_land"]["replayed"], true,
+            payload["atomic_task_land"]["replayed"],
+            true,
             "fixture_seed={fixture_seed:#x} fixture_root={}",
             root.display()
         );
@@ -538,13 +537,8 @@ fn native_task_land_recovery_passes_thirty_seeded_bounded_jitter_repetitions() {
         let fixture_seed = 0xA17_5177_0000_0000_u64.wrapping_add(repetition);
         let land_delay = deterministic_recovery_jitter(fixture_seed, 13);
         let task_delay = deterministic_recovery_jitter(fixture_seed, 37);
-        let root = run_seeded_closeout_repetition(
-            &base_url,
-            &state,
-            fixture_seed,
-            land_delay,
-            task_delay,
-        );
+        let root =
+            run_seeded_closeout_repetition(&base_url, &state, fixture_seed, land_delay, task_delay);
         assert!(
             fixture_roots.insert(root.clone()),
             "fixture root reused: fixture_seed={fixture_seed:#x} fixture_root={}",
@@ -578,8 +572,7 @@ fn native_task_land_current_worktree_skips_unrelated_backlog_refresh() {
         false,
         Some("manual_only"),
     );
-    let before: JsonValue =
-        parse_json_file(&extra_metadata_path);
+    let before: JsonValue = parse_json_file(&extra_metadata_path);
     assert!(before.get("workspace_status_cache").is_none());
 
     let payload = json_output_with_env(
@@ -618,14 +611,12 @@ fn native_task_land_current_worktree_skips_unrelated_backlog_refresh() {
         )
     );
     assert_eq!(
-        payload["automatic_reconciliation"]["sources"]["workspace_lock"]["metadata"]
-            ["repo_root"]
+        payload["automatic_reconciliation"]["sources"]["workspace_lock"]["metadata"]["repo_root"]
             .as_str(),
         Some(root.canonicalize().unwrap().to_string_lossy().as_ref())
     );
 
-    let after: JsonValue =
-        parse_json_file(&extra_metadata_path);
+    let after: JsonValue = parse_json_file(&extra_metadata_path);
     assert!(after.get("workspace_status_cache").is_none());
     handle.join().unwrap();
 }
@@ -651,8 +642,7 @@ fn native_workflow_finish_apply_delegates_final_closeout_to_atomic_task_land() {
         Some("after_remote_land"),
     );
     let backlog_metadata_path = root.join(".ait/worktrees/rt-backlog.json");
-    let before: JsonValue =
-        parse_json_file(&backlog_metadata_path);
+    let before: JsonValue = parse_json_file(&backlog_metadata_path);
     assert!(before.get("workspace_status_cache").is_none());
 
     let repo = RepoRuntime::discover_from_path(&worktree).unwrap();
@@ -692,8 +682,7 @@ fn native_workflow_finish_apply_delegates_final_closeout_to_atomic_task_land() {
         Some("promoted_to_cli_main_seed" | "task_land_force_close")
     ));
     assert!(backlog_path.exists());
-    let after: JsonValue =
-        parse_json_file(&backlog_metadata_path);
+    let after: JsonValue = parse_json_file(&backlog_metadata_path);
     assert!(after.get("workspace_status_cache").is_none());
     handle.join().unwrap();
     let logged = log.lock().unwrap().clone();
@@ -701,8 +690,7 @@ fn native_workflow_finish_apply_delegates_final_closeout_to_atomic_task_land() {
         logged
             .iter()
             .filter(|row| {
-                row.method == "POST"
-                    && row.url == "/v1/native/repository-authorities/7/task-land"
+                row.method == "POST" && row.url == "/v1/native/repository-authorities/7/task-land"
             })
             .count(),
         1
@@ -719,6 +707,15 @@ fn native_workflow_finish_apply_delegates_final_closeout_to_atomic_task_land() {
 
 #[test]
 fn native_workflow_finish_cli_uses_default_remote_in_solo_local_before_atomic_task_land() {
+    assert_workflow_finish_cli_preserves_review_gates("RC-1");
+}
+
+#[test]
+fn native_workflow_finish_task_input_preserves_exact_review_policy_and_atomic_closeout() {
+    assert_workflow_finish_cli_preserves_review_gates("RT-1");
+}
+
+fn assert_workflow_finish_cli_preserves_review_gates(reference: &str) {
     let (base_url, log, state, handle) = spawn_closeout_recovery_remote();
     let (temp, worktree) = init_worktree_repo(&base_url);
     let config_path = temp.path().join(".ait/config.json");
@@ -747,7 +744,7 @@ fn native_workflow_finish_cli_uses_default_remote_in_solo_local_before_atomic_ta
         &[
             "workflow",
             "finish",
-            "RC-1",
+            reference,
             "--apply",
             "--review-message",
             "Reviewed files: src/lib.rs; Findings: no blocking findings; Risks: low; Tests: cargo test passed; Recommendation: land.",
@@ -786,15 +783,13 @@ fn native_workflow_finish_cli_uses_default_remote_in_solo_local_before_atomic_ta
         .iter()
         .position(|row| {
             row.method == "POST"
-                && row.url
-                    == "/v1/native/repository-authorities/7/patchsets/RP-1:evaluatePolicy"
+                && row.url == "/v1/native/repository-authorities/7/patchsets/RP-1:evaluatePolicy"
         })
         .expect("workflow finish must evaluate final Policy");
     let atomic_land_index = logged
         .iter()
         .position(|row| {
-            row.method == "POST"
-                && row.url == "/v1/native/repository-authorities/7/task-land"
+            row.method == "POST" && row.url == "/v1/native/repository-authorities/7/task-land"
         })
         .expect("workflow finish must delegate to atomic Task Land");
     assert!(code_review_index < task_review_index);
@@ -820,14 +815,7 @@ fn native_task_audit_remote_task_reference_does_not_probe_remote_change() {
     write_file(&config_path, &config);
     let payload = json_output(
         &worktree,
-        &[
-            "task",
-            "audit",
-            "RT-1",
-            "--remote",
-            "origin",
-            "--json",
-        ],
+        &["task", "audit", "RT-1", "--remote", "origin", "--json"],
     );
 
     assert_eq!(
@@ -849,15 +837,7 @@ fn native_task_audit_cli_solo_remote_default_uses_remote_for_unpublished_local_d
     let (base_url, log, _state, handle) = spawn_closeout_recovery_remote();
     let (temp, worktree) = init_local_draft_worktree_repo(&base_url);
 
-    let payload = json_output(
-        &worktree,
-        &[
-            "task",
-            "audit",
-            "RT-1",
-            "--json",
-        ],
-    );
+    let payload = json_output(&worktree, &["task", "audit", "RT-1", "--json"]);
 
     assert_eq!(
         payload["changes"][0]["change"]["change_id"].as_str(),
@@ -876,18 +856,11 @@ fn native_task_audit_cli_solo_remote_default_uses_remote_for_unpublished_local_d
 
 #[test]
 fn native_task_audit_cli_local_override_reads_local_draft() {
-    let (_temp, worktree, _started) =
-        init_cli_local_draft_worktree_repo("http://127.0.0.1:1");
+    let (_temp, worktree, _started) = init_cli_local_draft_worktree_repo("http://127.0.0.1:1");
 
     let payload = json_output(
         &worktree,
-        &[
-            "task",
-            "audit",
-            "LT-0001",
-            "--local",
-            "--json",
-        ],
+        &["task", "audit", "LT-0001", "--local", "--json"],
     );
 
     assert_eq!(payload["audit_source"]["mode"].as_str(), Some("local"));
@@ -904,8 +877,7 @@ fn native_task_audit_cli_local_override_reads_local_draft() {
 
 #[test]
 fn native_task_audit_cli_solo_local_default_does_not_fallback_to_remote() {
-    let (temp, worktree, _started) =
-        init_cli_local_draft_worktree_repo("http://127.0.0.1:1");
+    let (temp, worktree, _started) = init_cli_local_draft_worktree_repo("http://127.0.0.1:1");
     let config_path = temp.path().join(".ait/config.json");
     let config = fs::read_to_string(&config_path)
         .unwrap()
@@ -919,15 +891,7 @@ fn native_task_audit_cli_solo_local_default_does_not_fallback_to_remote() {
         );
     write_file(&config_path, &config);
 
-    let payload = json_output(
-        &worktree,
-        &[
-            "task",
-            "audit",
-            "LT-0001",
-            "--json",
-        ],
-    );
+    let payload = json_output(&worktree, &["task", "audit", "LT-0001", "--json"]);
 
     assert_eq!(payload["audit_source"]["mode"].as_str(), Some("local"));
     assert_eq!(payload["task"]["task_id"].as_str(), Some("LT-0001"));
@@ -944,8 +908,7 @@ fn native_task_land_unscoped_api_does_not_fallback_to_local_authority() {
 
 #[test]
 fn native_local_task_land_from_root_routes_to_exact_bound_worktree() {
-    let (temp, worktree, started) =
-        init_cli_local_draft_worktree_repo("http://127.0.0.1:1");
+    let (temp, worktree, started) = init_cli_local_draft_worktree_repo("http://127.0.0.1:1");
     let root = temp.path();
     let source = "pub fn example() -> &'static str { \"guarded local land\" }\n";
     write_file(&worktree.join("src/lib.rs"), source);
@@ -977,20 +940,14 @@ fn native_local_task_land_from_root_routes_to_exact_bound_worktree() {
         started["worktree"]["fork_snapshot_id"].as_str()
     );
 
-    let landed = json_output(
-        root,
-        &[
-            "task",
-            "finish",
-            "LT-0001",
-            "--local",
-            "--json",
-        ],
-    );
+    let landed = json_output(root, &["task", "finish", "LT-0001", "--local", "--json"]);
 
     assert_eq!(landed["task_status"].as_str(), Some("completed"));
     assert_eq!(landed["change_status"].as_str(), Some("landed"));
-    assert_eq!(landed["landed_snapshot_id"].as_str(), Some(snapshot_id.as_str()));
+    assert_eq!(
+        landed["landed_snapshot_id"].as_str(),
+        Some(snapshot_id.as_str())
+    );
     assert_eq!(fs::read_to_string(root.join("src/lib.rs")).unwrap(), source);
     assert!(!worktree.exists());
     assert!(root.join("lt-other").exists());
@@ -998,8 +955,7 @@ fn native_local_task_land_from_root_routes_to_exact_bound_worktree() {
 
 #[test]
 fn native_local_task_land_from_root_rejects_root_authoring_drift_before_mutation() {
-    let (temp, worktree, started) =
-        init_cli_local_draft_worktree_repo("http://127.0.0.1:1");
+    let (temp, worktree, started) = init_cli_local_draft_worktree_repo("http://127.0.0.1:1");
     let root = temp.path();
     let worktree_source = "pub fn example() -> &'static str { \"target worktree only\" }\n";
     write_file(&worktree.join("src/lib.rs"), worktree_source);
@@ -1027,20 +983,13 @@ fn native_local_task_land_from_root_rejects_root_authoring_drift_before_mutation
     assert!(stderr.contains("code/workspace drift"));
     assert!(stderr.contains("src/root_only.rs"));
     assert_eq!(
-        json_output(root, &["task", "show", "LT-0001", "--local", "--json"])["status"]
-            .as_str(),
+        json_output(root, &["task", "show", "LT-0001", "--local", "--json"])["status"].as_str(),
         Some("active")
     );
     assert_eq!(
         json_output(
             root,
-            &[
-                "change",
-                "show",
-                "LT-0001/C-01",
-                "--local",
-                "--json",
-            ],
+            &["change", "show", "LT-0001/C-01", "--local", "--json",],
         )["status"]
             .as_str(),
         Some("draft")
@@ -1049,14 +998,16 @@ fn native_local_task_land_from_root_rejects_root_authoring_drift_before_mutation
         json_output(root, &["line", "show", "main", "--json"])["head_snapshot_id"],
         started["worktree"]["fork_snapshot_id"]
     );
-    assert_eq!(fs::read_to_string(worktree.join("src/lib.rs")).unwrap(), worktree_source);
+    assert_eq!(
+        fs::read_to_string(worktree.join("src/lib.rs")).unwrap(),
+        worktree_source
+    );
     assert!(worktree.exists());
 }
 
 #[test]
 fn native_task_land_local_apply_lands_snapshot_and_cleans_worktree() {
-    let (temp, worktree, _started) =
-        init_cli_local_draft_worktree_repo("http://127.0.0.1:1");
+    let (temp, worktree, _started) = init_cli_local_draft_worktree_repo("http://127.0.0.1:1");
     let metadata_path = temp.path().join(".ait/worktrees/lt-0001.json");
     let source = "pub fn example() -> &'static str { \"local landed\" }\n";
     write_file(&worktree.join("src/lib.rs"), source);
@@ -1074,13 +1025,7 @@ fn native_task_land_local_apply_lands_snapshot_and_cleans_worktree() {
 
     let payload = json_output(
         &worktree,
-        &[
-            "task",
-            "finish",
-            "LT-0001/C-01",
-            "--local",
-            "--json",
-        ],
+        &["task", "finish", "LT-0001/C-01", "--local", "--json"],
     );
 
     assert_eq!(payload["mode"].as_str(), Some("local"));
@@ -1095,7 +1040,10 @@ fn native_task_land_local_apply_lands_snapshot_and_cleans_worktree() {
     assert_eq!(payload["task_status"].as_str(), Some("completed"));
     assert_eq!(payload["change_status"].as_str(), Some("landed"));
     assert!(payload["auto_snapshot"].is_null());
-    assert_eq!(fs::read_to_string(temp.path().join("src/lib.rs")).unwrap(), source);
+    assert_eq!(
+        fs::read_to_string(temp.path().join("src/lib.rs")).unwrap(),
+        source
+    );
     assert!(!metadata_path.exists());
     assert!(!worktree.exists());
 }
@@ -1132,10 +1080,7 @@ fn native_task_land_apply_force_removes_current_worktree_after_completion() {
     assert!(state.lock().unwrap().land_submitted);
     assert!(state.lock().unwrap().task_completed);
     assert!(payload["workspace"]["clean"].is_null());
-    assert_eq!(
-        payload["workspace"]["evaluation"].as_str(),
-        Some("skipped")
-    );
+    assert_eq!(payload["workspace"]["evaluation"].as_str(), Some("skipped"));
     assert_eq!(
         payload["workspace"]["reason"].as_str(),
         Some("ready_patchset_is_authoritative")
@@ -1204,8 +1149,7 @@ fn native_task_land_promotes_clean_completed_worktree_to_cli_main_seed() {
         &worktree.join("src/lib.rs"),
         "pub fn repo_root_version() -> &'static str { \"root\" }\n",
     );
-    let patchset_revision_snapshot_id =
-        seed_snapshot(&worktree, "task land main-seed promotion");
+    let patchset_revision_snapshot_id = seed_snapshot(&worktree, "task land main-seed promotion");
     state.lock().unwrap().patchset_revision_snapshot_id =
         Some(patchset_revision_snapshot_id.clone());
 
@@ -1224,7 +1168,10 @@ fn native_task_land_promotes_clean_completed_worktree_to_cli_main_seed() {
         "{}",
         encode_json_pretty(&payload)
     );
-    assert_eq!(payload["main_seed_sync"]["status"].as_str(), Some("promoted"));
+    assert_eq!(
+        payload["main_seed_sync"]["status"].as_str(),
+        Some("promoted")
+    );
     assert_eq!(
         payload["main_seed_sync"]["refresh_strategy"].as_str(),
         Some("validated_task_worktree_atomic_promotion")
@@ -1258,9 +1205,11 @@ fn native_task_land_promotes_clean_completed_worktree_to_cli_main_seed() {
     );
     assert!(!root.join(".ait/worktrees/rt-1.json").exists());
     assert!(!worktree.exists());
-    assert!(payload["main_seed_sync"]["phase_timings_ms"]["land_seed_sync_total"]
-        .as_f64()
-        .is_some());
+    assert!(
+        payload["main_seed_sync"]["phase_timings_ms"]["land_seed_sync_total"]
+            .as_f64()
+            .is_some()
+    );
 
     handle.join().unwrap();
 }

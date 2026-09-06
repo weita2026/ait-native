@@ -29,11 +29,11 @@ fn root_command_inventory_is_frozen() {
         [
             "init", "line", "git", "blame", "doctor", "queue", "remote", "release", "repo",
             "config", "external", "status", "diff", "pull", "push", "gc", "stash", "plan", "task",
-            "change", "snapshot", "commit", "tag", "patchset", "review", "attest", "policy",
-            "worktree", "workflow",
+            "snapshot", "commit", "tag", "patchset", "review", "attest", "policy", "worktree",
+            "workflow",
         ]
     );
-    assert_eq!(visible.len(), 29);
+    assert_eq!(visible.len(), 28);
     assert!(!visible.contains(&"agent"));
     assert!(!visible.contains(&"branch"));
 
@@ -50,7 +50,19 @@ fn root_command_inventory_is_frozen() {
         .filter(|subcommand| subcommand.is_hide_set())
         .map(|subcommand| subcommand.get_name())
         .collect::<Vec<_>>();
-    assert_eq!(hidden, ["binary-db", "current-source-cache", "auth"]);
+    assert_eq!(
+        hidden,
+        ["binary-db", "current-source-cache", "auth", "change"]
+    );
+    let change_help = Cli::try_parse_from(["ait", "change", "--help"])
+        .err()
+        .expect("advanced help remains available")
+        .to_string();
+    for subcommand in [
+        "create", "list", "show", "revert", "replay", "close", "publish",
+    ] {
+        assert!(change_help.contains(subcommand), "{change_help}");
+    }
 }
 
 #[test]
@@ -320,7 +332,7 @@ fn agent_action_full_projection_requires_json_on_each_supported_command() {
         vec![
             "ait-cli", "task", "start", "--title", "Task", "--intent", "Intent",
         ],
-        vec!["ait-cli", "snapshot", "create"],
+        vec!["ait-cli", "snapshot", "create", "LT-0001/C-01"],
         vec!["ait-cli", "task", "finish", "LCT-1"],
     ];
 
@@ -828,6 +840,8 @@ fn config_parser_exposes_only_the_admitted_set_and_unset_surface() {
     assert!(args.json);
 
     let request = ConfigSetRequest {
+        plan_language: args.plan_language,
+        plan_style: args.plan_style,
         workflow_mode: args.workflow_mode.map(|value| value.as_str().to_string()),
         sprint: args.sprint.map(|value| value.as_str().to_string()),
         default_author_mode: args
@@ -1496,7 +1510,7 @@ fn change_text_projection_uses_task_scoped_reference_without_nested_json() {
 }
 
 #[test]
-fn snapshot_create_rejects_removed_quick_options_and_accepts_plain_creation() {
+fn snapshot_create_rejects_removed_options_and_accepts_a_change_reference() {
     for option in ["--profile", "--intent", "--validation"] {
         let error = Cli::try_parse_from(["ait", "snapshot", "create", option, "removed-value"])
             .err()
@@ -1510,6 +1524,7 @@ fn snapshot_create_rejects_removed_quick_options_and_accepts_plain_creation() {
         "ait",
         "snapshot",
         "create",
+        "LT-0001/C-01",
         "--message",
         "Normal task Snapshot",
         "--json",
@@ -1522,7 +1537,42 @@ fn snapshot_create_rejects_removed_quick_options_and_accepts_plain_creation() {
         panic!("expected plain snapshot create command");
     };
     assert_eq!(plain.message.as_deref(), Some("Normal task Snapshot"));
+    assert_eq!(plain.change_id, "LT-0001/C-01");
     assert!(plain.json);
+}
+
+#[test]
+fn snapshot_and_commit_require_one_positional_reference_and_reject_split_flags() {
+    for prefix in [vec!["ait", "snapshot", "create"], vec!["ait", "commit"]] {
+        let error = Cli::try_parse_from(prefix.clone())
+            .err()
+            .expect("missing reference must fail");
+        assert_eq!(
+            error.kind(),
+            clap::error::ErrorKind::MissingRequiredArgument
+        );
+        for reference in ["LCT-1", "LA2T-0001", "LCT-1/C-01"] {
+            let mut argv = prefix.clone();
+            argv.push(reference);
+            assert!(Cli::try_parse_from(argv).is_ok(), "{reference}");
+        }
+        for reference in ["C-01", "LCT-1/C-x", "LCT-1//C-01", "src/lib.rs"] {
+            let mut argv = prefix.clone();
+            argv.push(reference);
+            let error = Cli::try_parse_from(argv)
+                .err()
+                .expect("incomplete reference must fail");
+            assert_eq!(error.kind(), clap::error::ErrorKind::ValueValidation);
+        }
+        for option in ["--task-id", "--change-id"] {
+            let mut argv = prefix.clone();
+            argv.extend(["LCT-1/C-01", option, "retired"]);
+            let error = Cli::try_parse_from(argv)
+                .err()
+                .expect("split flags must fail");
+            assert_eq!(error.kind(), clap::error::ErrorKind::UnknownArgument);
+        }
+    }
 }
 
 #[test]
@@ -1531,6 +1581,7 @@ fn git_friendly_commit_and_branch_aliases_reuse_canonical_grammar() {
         "ait",
         "snapshot",
         "create",
+        "LT-0001/C-01",
         "-m",
         "Alias Snapshot",
         "--json",
@@ -1544,12 +1595,22 @@ fn git_friendly_commit_and_branch_aliases_reuse_canonical_grammar() {
         panic!("expected snapshot create command");
     };
 
-    let alias = Cli::try_parse_from(["ait", "commit", "-m", "Alias Snapshot", "--json", "--full"])
-        .expect("commit should parse as the Snapshot creation alias");
+    let alias = Cli::try_parse_from([
+        "ait",
+        "commit",
+        "LT-0001/C-01",
+        "-m",
+        "Alias Snapshot",
+        "--json",
+        "--full",
+    ])
+    .expect("commit should parse as the Snapshot creation alias");
     let Commands::Commit(alias) = alias.command else {
         panic!("expected commit command");
     };
     assert_eq!(alias.message, canonical.message);
+    assert_eq!(canonical.change_id, "LT-0001/C-01");
+    assert_eq!(alias.change_id, canonical.change_id);
     assert_eq!(alias.json, canonical.json);
     assert_eq!(alias.full, canonical.full);
 
@@ -1606,7 +1667,6 @@ fn git_friendly_commit_and_branch_aliases_reuse_canonical_grammar() {
     for args in [
         vec!["ait", "commit", "--amend"],
         vec!["ait", "commit", "-a"],
-        vec!["ait", "commit", "src/lib.rs"],
         vec!["ait", "branch", "feature/example"],
         vec!["ait", "branch", "-d", "feature/example"],
     ] {
@@ -1741,6 +1801,7 @@ fn snapshot_help_explains_public_behavior_and_hides_compatibility_inputs() {
     let create = help(Some("create"));
     for evidence in [
         "advance the current Line head",
+        "<TASK_ID>",
         "--message <MESSAGE>",
         "machine-readable creation payload",
     ] {
@@ -1749,7 +1810,13 @@ fn snapshot_help_explains_public_behavior_and_hides_compatibility_inputs() {
             "missing {evidence:?} in:\n{create}"
         );
     }
-    for removed in ["--profile", "--intent", "--validation"] {
+    for removed in [
+        "--profile",
+        "--intent",
+        "--validation",
+        "--task-id",
+        "--change-id",
+    ] {
         assert!(
             !create.contains(removed),
             "unexpected {removed:?} in:\n{create}"
@@ -2907,6 +2974,7 @@ fn plan_help_documents_every_public_subcommand_and_option_contract() {
 #[test]
 fn local_task_finish_render_compacts_successful_closeout_and_keeps_material_retention() {
     let rendered = render_local_task_land_text(&json!({
+        "task_id": "LCT-1",
         "change_id": "LCC-1",
         "target_line": "main",
         "landed_snapshot_id": "SNP-1",
@@ -2929,10 +2997,59 @@ fn local_task_finish_render_compacts_successful_closeout_and_keeps_material_rete
     }))
     .unwrap();
 
-    assert!(rendered.contains("finished: LCC-1 -> main @ SNP-1"));
+    assert!(rendered.contains("finished: LCT-1 -> main @ SNP-1"));
+    assert!(!rendered.contains("LCC-1"));
     assert!(rendered.contains("closed: task, line, sprint"));
     assert!(rendered.contains("retention: pruned (3 removed, 20 retained)"));
     assert!(!rendered.contains("checklist reason"));
+}
+
+#[test]
+fn task_workflow_text_projects_only_generated_commands_and_preserves_exact_evidence() {
+    for exact in ["RCT-9/C-02", "RC-9"] {
+        let title = "Investigate literal `ait workflow ready LCT-7/C-01`";
+        let payload = json!({
+            "task": {"task_id": "RCT-9", "title": title},
+            "change": {"change_id": exact, "status": "active", "base_line": "main"},
+            "patchset": {"patchset_id": "RCT-9/C-02/P-03", "base_snapshot_id": "SNP-BASE", "revision_snapshot_id": "SNP-REV"},
+            "next_action": {"code": "publish_patchset", "command": format!("ait patchset publish {exact} --summary \"review summary\" --remote upstream")},
+            "commands": {"apply_command": format!("ait workflow ready {exact} --apply")},
+            "message": "Keep literal LCT-7/C-01",
+            "closeout_recovery": {"command": format!("ait task finish {exact} --remote upstream")}
+        });
+        let original = payload.clone();
+        let display = task_workflow_display_payload(&payload, "LCT-7");
+        assert_eq!(display["task"]["title"], title);
+        assert_eq!(display["message"], payload["message"]);
+        assert_eq!(display["patchset"], payload["patchset"]);
+        assert_eq!(display["commands"], payload["commands"]);
+        assert_eq!(
+            display["next_action"]["command"],
+            "ait workflow ready LCT-7 --apply --summary \"review summary\" --remote upstream"
+        );
+        assert_eq!(
+            display["closeout_recovery"]["command"],
+            "ait task finish LCT-7 --remote upstream"
+        );
+        let ready = render_requested_workflow_text(&payload, "ready", "LCT-7").unwrap();
+        assert!(ready.contains(title));
+        assert!(ready.contains("SNP-BASE") && ready.contains("SNP-REV"));
+        assert!(!ready.contains("RCT-9/C-02/P-03"));
+        let finish = render_requested_workflow_text(&payload, "finish", "LCT-7").unwrap();
+        assert!(finish.contains("review evidence: RCT-9/C-02/P-03"));
+        assert_eq!(task_workflow_display_payload(&payload, exact), payload);
+        assert_eq!(payload, original);
+    }
+    let unrelated = "ait task finish RCT-10/C-01 --remote upstream";
+    assert_eq!(
+        task_command_text(unrelated, "LCT-7", "RCT-9", "C-02"),
+        unrelated
+    );
+    let evidence = "ait review task approve RCT-9/C-02 --patchset RCT-9/C-02/P-03";
+    assert_eq!(
+        task_command_text(evidence, "LCT-7", "RCT-9", "C-02"),
+        evidence
+    );
 }
 
 #[test]

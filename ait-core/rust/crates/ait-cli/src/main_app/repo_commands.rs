@@ -54,6 +54,8 @@ fn run_config(repo: RepoRuntime, command: ConfigCommand) -> Result<(), String> {
         }
         ConfigCommand::Set(args) => {
             let request = ConfigSetRequest {
+                plan_language: args.plan_language,
+                plan_style: args.plan_style,
                 default_author_mode: args
                     .default_author_mode
                     .map(|value| value.as_str().to_string()),
@@ -105,6 +107,11 @@ fn emit_config_show_result(payload: &JsonValue, json_output: bool) -> Result<(),
         &[
             ("repo_name", string_field(payload.get("repo_name"))),
             (
+                "plan_language",
+                config_preference_label(payload, "plan_language"),
+            ),
+            ("plan_style", config_preference_label(payload, "plan_style")),
+            (
                 "workspace_root",
                 string_field(payload.get("workspace_root")),
             ),
@@ -135,6 +142,14 @@ fn emit_config_show_result(payload: &JsonValue, json_output: bool) -> Result<(),
     Ok(())
 }
 
+fn config_preference_label(payload: &JsonValue, key: &str) -> String {
+    format!(
+        "{} ({})",
+        string_field(payload[key].get("value")),
+        string_field(payload[key].get("source"))
+    )
+}
+
 fn emit_config_mutation_result(
     title: &str,
     payload: &JsonValue,
@@ -163,6 +178,8 @@ fn emit_config_mutation_result(
 
 fn config_effective_value(payload: &JsonValue, key: &str) -> String {
     let value = match key {
+        "plan-language" => payload.get("plan_language").and_then(|value| value.get("value")),
+        "plan-style" => payload.get("plan_style").and_then(|value| value.get("value")),
         "workflow-mode" => payload.get("workflow_mode").and_then(|value| value.get("value")),
         "sprint" => payload.get("sprint").and_then(|value| value.get("value")),
         "default-author-mode" => payload.get("effective_author_mode"),

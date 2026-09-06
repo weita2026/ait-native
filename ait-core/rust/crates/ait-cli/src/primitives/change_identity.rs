@@ -11,6 +11,77 @@ pub(super) fn is_short_change_id(value: &str) -> bool {
     !ordinal.is_empty() && ordinal.bytes().all(|byte| byte.is_ascii_digit())
 }
 
+pub(super) fn is_task_id(value: &str) -> bool {
+    let Some((prefix, ordinal)) = value.rsplit_once('-') else {
+        return false;
+    };
+    prefix.ends_with('T')
+        && prefix
+            .bytes()
+            .all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit())
+        && !ordinal.is_empty()
+        && ordinal.bytes().all(|byte| byte.is_ascii_digit())
+}
+
+#[derive(Clone, Copy)]
+pub(super) enum TaskChangeSelection {
+    Author,
+    Finish,
+}
+
+/// Select from the complete authority inventory, never from a bounded UI list
+/// or the worktree's initial Change hint. Explicit Change inputs bypass this.
+pub(super) fn select_task_change_reference(
+    rows: &[JsonValue],
+    task_id: &str,
+    selection: TaskChangeSelection,
+) -> Result<Option<String>, String> {
+    let mut candidates = Vec::new();
+    for row in rows {
+        if change_task_id_from_payload(row).as_deref() != Some(task_id) {
+            continue;
+        }
+        let status = required_string_field(row, "status")?;
+        let accepted = match status.as_str() {
+            "archived" | "superseded" | "canceled" | "abandoned" => continue,
+            "draft" | "active" | "review" => false,
+            "ready" | "review_pending" | "blocked" | "gated" | "approved" | "landable" => {
+                if matches!(selection, TaskChangeSelection::Author) {
+                    continue;
+                }
+                false
+            }
+            "landed" => {
+                if matches!(selection, TaskChangeSelection::Author) {
+                    continue;
+                }
+                true
+            }
+            _ => return Err(format!("Task {task_id} has an unsupported work status: {status}. Inspect `ait task audit {task_id}` before continuing.")),
+        };
+        let reference = change_reference_from_payload(row, None)?;
+        // Validate a supplied compound reference against its owning Task too.
+        change_reference_for_context(Some(task_id), &reference)?;
+        candidates.push((reference, accepted));
+    }
+    if candidates.iter().any(|(_, accepted)| !accepted) {
+        candidates.retain(|(_, accepted)| !accepted);
+    }
+    if candidates.len() > 1 {
+        let ids = candidates
+            .iter()
+            .map(|(id, _)| id.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let kind = match selection {
+            TaskChangeSelection::Author => "writable",
+            TaskChangeSelection::Finish => "finishable",
+        };
+        return Err(format!("Task {task_id} has multiple {kind} changes ({ids}); repeat the same command with the intended exact TASK_ID/C-## reference. Advanced selection: `ait change --help`."));
+    }
+    Ok(candidates.pop().map(|(reference, _)| reference))
+}
+
 pub(super) fn change_reference_for_context(
     task_id: Option<&str>,
     change_id: &str,
@@ -83,6 +154,56 @@ pub(super) fn payload_belongs_to_change(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn task_selection_uses_complete_inventory_and_ignores_terminal_siblings() {
+        let mut rows = (1..=30)
+            .map(|i| {
+                json!({
+                    "task_id": format!("RT-{i}"), "change_id": "C-01", "status": "active",
+                })
+            })
+            .collect::<Vec<_>>();
+        rows.extend([
+            json!({"task_id":"RT-31", "change_id":"C-01", "status":"superseded"}),
+            json!({"task_id":"RT-31", "change_id":"C-02", "status":"landed"}),
+            json!({"task_id":"RT-31", "change_id":"C-03", "status":"active"}),
+        ]);
+        for selection in [TaskChangeSelection::Author, TaskChangeSelection::Finish] {
+            assert_eq!(
+                select_task_change_reference(&rows, "RT-31", selection)
+                    .unwrap()
+                    .as_deref(),
+                Some("RT-31/C-03")
+            );
+        }
+        rows.push(json!({"task_id":"RT-31", "change_id":"C-04", "status":"draft"}));
+        assert!(
+            select_task_change_reference(&rows, "RT-31", TaskChangeSelection::Finish)
+                .unwrap_err()
+                .contains("multiple finishable")
+        );
+        rows.pop();
+        rows.last_mut().unwrap()["change_ref"] = json!("RT-32/C-03");
+        assert!(select_task_change_reference(&rows, "RT-31", TaskChangeSelection::Author).is_err());
+    }
+
+    #[test]
+    fn completed_task_selection_does_not_guess_among_accepted_changes() {
+        let rows = vec![
+            json!({"task_id":"LT-1", "change_id":"C-01", "status":"landed"}),
+            json!({"task_id":"LT-1", "change_id":"C-02", "status":"landed"}),
+        ];
+        assert!(select_task_change_reference(&rows, "LT-1", TaskChangeSelection::Finish).is_err());
+        assert_eq!(
+            select_task_change_reference(&rows, "LT-1", TaskChangeSelection::Author).unwrap(),
+            None
+        );
+        let unknown = vec![json!({"task_id":"LT-1", "change_id":"C-01", "status":"unknown"})];
+        assert!(
+            select_task_change_reference(&unknown, "LT-1", TaskChangeSelection::Finish).is_err()
+        );
+    }
 
     #[test]
     fn same_short_change_id_isolated_by_derived_reference() {

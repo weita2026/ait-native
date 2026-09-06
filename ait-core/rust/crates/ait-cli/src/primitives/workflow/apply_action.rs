@@ -313,9 +313,14 @@ pub(in crate::primitives) fn workflow_ready_apply_action(
     match code {
         "snapshot_create" => {
             let _range = perfetto_range!("ait.workflow_ready.action.snapshot_create");
+            let task_id = workflow_nested_text(state, "change", "task_id")
+                .or_else(|| workflow_nested_text(state, "task", "task_id"))
+                .ok_or("Snapshot action requires its resolved Task identity")?;
             Ok(json!({
-                "result": snapshot_create(
+                "result": snapshot_create_for_task(
                     repo,
+                    &task_id,
+                    change_id,
                     Some(snapshot_message.unwrap_or("reviewable snapshot")),
                 )?,
             }))
@@ -675,7 +680,7 @@ pub(in crate::primitives) fn workflow_land_apply_action(
         "snapshot_create" | "publish_patchset" | "refresh_patchset" | "record_attestation"
         | "run_patchset_ci" => Ok(json!({
             "stopped_reason": format!(
-                "Workflow finish does not own `{code}`. Run `ait workflow ready <change-id> --apply` explicitly before finish."
+                "Workflow finish does not own `{code}`. Run `ait workflow ready <task-id> --apply` explicitly before finish."
             ),
         })),
         "record_review" => {

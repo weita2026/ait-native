@@ -65,46 +65,11 @@ where
             Err(_) => return Ok(None),
         };
     let task_id = required_string_field(&task, "task_id")?;
-    let mut candidates = task_land_remote_change_rows_with_task_remote(task_remote, repo_name)?
-        .into_iter()
-        .filter(|row| string_field(row, "task_id").as_deref() == Some(task_id.as_str()))
-        .filter(|row| {
-            !matches!(
-                string_field(row, "status").unwrap_or_default().as_str(),
-                "archived" | "canceled" | "abandoned"
-            )
-        })
-        .collect::<Vec<_>>();
-    candidates.sort_by_key(|row| {
-        (
-            match string_field(row, "status").unwrap_or_default().as_str() {
-                "active" | "ready" | "review_pending" => 0,
-                "draft" => 1,
-                "landed" => 2,
-                _ => 3,
-            },
-            string_field(row, "created_at").unwrap_or_default(),
-            string_field(row, "change_id").unwrap_or_default(),
-        )
-    });
-    if candidates.len() > 1 {
-        let ids = candidates
-            .iter()
-            .filter_map(|row| {
-                change_reference_from_payload(row, None)
-                    .ok()
-                    .or_else(|| string_field(row, "change_id"))
-            })
-            .collect::<Vec<_>>()
-            .join(", ");
-        return Err(format!(
-            "Task {task_id} has multiple finishable changes ({ids}); run `ait task finish <change-id>` for the intended change."
-        ));
-    }
-    candidates
-        .first()
-        .map(|row| change_reference_from_payload(row, None).map(Some))
-        .unwrap_or(Ok(None))
+    select_task_change_reference(
+        &task_land_remote_change_rows_with_task_remote(task_remote, repo_name)?,
+        &task_id,
+        TaskChangeSelection::Finish,
+    )
 }
 
 pub(in crate::primitives) fn task_land_remote_change_read_with_task_remote<R>(
@@ -170,30 +135,11 @@ where
     if family == Some(TaskLandReferenceFamily::Change) {
         return Ok(None);
     }
-    let candidates = workflow_local_change_rows_with_change_store(change_store)?
-        .into_iter()
-        .filter(|row| string_field(row, "task_id").as_deref() == Some(requested_id))
-        .filter(|row| {
-            !matches!(
-                string_field(row, "status").unwrap_or_default().as_str(),
-                "archived" | "canceled" | "abandoned"
-            )
-        })
-        .collect::<Vec<_>>();
-    if candidates.len() > 1 {
-        let ids = candidates
-            .iter()
-            .filter_map(|row| change_reference_from_payload(row, None).ok())
-            .collect::<Vec<_>>()
-            .join(", ");
-        return Err(format!(
-            "Local task {requested_id} has multiple finishable changes ({ids}); run `ait task finish <change-id>` for the intended change."
-        ));
-    }
-    candidates
-        .first()
-        .map(|row| change_reference_from_payload(row, None).map(Some))
-        .unwrap_or(Ok(None))
+    select_task_change_reference(
+        &workflow_local_change_rows_with_change_store(change_store)?,
+        requested_id,
+        TaskChangeSelection::Finish,
+    )
 }
 
 pub(super) fn resolve_task_land_change_id(
@@ -921,18 +867,13 @@ pub(in crate::primitives) fn task_land_exact_atomic_reference(
             "Atomic remote Task Land requires an exact Change reference; `{requested}` has no local Task binding. Use `<task-id>/{requested}` or pass the Task ID."
         ));
     };
-    if metadata.bound_change_id.as_deref() != Some(requested.as_str()) {
-        return Err(format!(
-            "Bound worktree `{}` does not own Change `{requested}`.",
-            metadata.name
-        ));
-    }
-    metadata.bound_change_ref.ok_or_else(|| {
+    let task_id = metadata.bound_task_id.ok_or_else(|| {
         format!(
-            "Bound worktree `{}` cannot derive an exact Change reference for `{requested}`.",
+            "Bound worktree `{}` cannot derive a Task owner for `{requested}`.",
             metadata.name
         )
-    })
+    })?;
+    change_reference_for_context(Some(&task_id), &requested)
 }
 
 fn task_land_reference_task_hint(repo: &RepoRuntime, reference: &str) -> Option<String> {

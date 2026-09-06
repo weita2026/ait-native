@@ -496,6 +496,14 @@ if [[ -x ${output_one}/ait-core/ci/fixture-data.txt ]]; then
 fi
 node --check "${output_one}/build-release.mjs"
 node "${output_one}/build-release.mjs" --validate-only >/dev/null
+for readme_name in README.md README_CN.md README_ZH.md; do
+  test -f "${output_one}/${readme_name}"
+done
+missing_translated_readme=${temporary_root}/missing-translated-readme
+cp -R "${output_one}" "${missing_translated_readme}"
+rm "${missing_translated_readme}/README_CN.md"
+expect_failure missing-translated-readme node \
+  "${missing_translated_readme}/build-release.mjs" --validate-only
 missing_public_storefront=${temporary_root}/missing-public-storefront
 cp -R "${output_one}" "${missing_public_storefront}"
 printf '# ait-native\n' >"${missing_public_storefront}/README.md"
@@ -659,7 +667,7 @@ expect_failure receipt-parent-symlink node "${output_one}/build-release.mjs" \
   --out-dir "${temporary_root}/receipt-parent-link/escaped-receipt"
 public_readme=${output_one}/README.md
 for required_readme_text in \
-  'You ask for a change in plain language. AIT gives that work its own sprint' \
+  'Turn parallel coding-agent sessions into verified, traceable Tasks.' \
   'individual developers and maintainers' \
   "python -m pip install ait-native==${python_version}" \
   'img.shields.io/github/v/release/weita2026/ait-native' \
@@ -667,14 +675,18 @@ for required_readme_text in \
   'https://github.com/weita2026/ait-native/issues/new/choose' \
   'ait init' \
   'ait --version' \
-  '## What `ait init` gives you' \
+  '## Try your first Task' \
+  '## Follow an AIT Task' \
+  'https://ait-native.dev/public/tour/ait-task-tour.gif' \
+  'https://ait-native.dev/local-quickstart/#first-task' \
+  'https://ait-native.dev/downloads/ait-first-task.zip' \
+  'FIRST_TASK_ACCEPTED' \
+  '## Why AIT beyond worktrees?' \
   'https://ait-native.dev/' \
   'https://ait-native.dev/components/' \
   '## Upgrading from 0.x' \
   'There is no `ait install` command in 1.x.' \
   'AIT has two workflow presets' \
-  'ait workflow ready <change-id> --apply' \
-  'ait workflow finish <change-id> --apply' \
   '## What each install route gives you' \
   'AGENTS.md' \
   'ait task start' \

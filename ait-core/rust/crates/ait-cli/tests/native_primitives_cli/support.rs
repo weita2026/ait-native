@@ -3,6 +3,7 @@ use ait_cli::primitives::{
     task_land_apply, task_land_payload, workflow_land_apply, workflow_ready_payload,
 };
 use ait_cli::runtime::RepoRuntime;
+use ait_core::json_support::{json, JsonCodec, JsonEncodeOptions, JsonValue};
 use ait_core::line_store::LineStore;
 use ait_core::local_snapshot::LocalSnapshotTreeReadStore;
 use ait_core::pack_substrate::{PACK_FORMAT_ZSTD_CHUNKED_V1, TREE_PACK_FORMAT_ZSTD_CHUNKED_V1};
@@ -10,10 +11,9 @@ use ait_core::remote_sync_local_store::{
     RemoteSyncLocalStoreContext, RemoteSyncZstdLocalPlanSource, ZstdBulkLocalPlan,
 };
 use ait_core::repository_pack_json::{
-    JsonPayloadContract, ZstdBulkCommitRequest, ZstdImportManifestJson,
-    ZstdImportManifestPayload, ZSTD_IMPORT_MANIFEST_CONTRACT_NAME,
+    JsonPayloadContract, ZstdBulkCommitRequest, ZstdImportManifestJson, ZstdImportManifestPayload,
+    ZSTD_IMPORT_MANIFEST_CONTRACT_NAME,
 };
-use ait_core::json_support::{json, JsonCodec, JsonEncodeOptions, JsonValue};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::Write;
@@ -219,6 +219,7 @@ impl Drop for CloseoutRecoveryServerHandle {
 
 #[derive(Default)]
 struct FakeRemoteState {
+    change_rows_override: Option<Vec<JsonValue>>,
     remote_head_snapshot_id: Option<String>,
     selected_patchset_id: Option<String>,
     selected_patchset_base_snapshot_id: Option<String>,
@@ -279,19 +280,11 @@ fn seed_binary_line(root: &Path, line_name: &str, snapshot_id: &str) {
     let lines = repo.line_store().unwrap();
     if lines.line_by_name(line_name).unwrap().is_none() {
         lines
-            .create_line(
-                line_name,
-                Some(snapshot_id),
-                "2026-06-08T00:00:00Z",
-            )
+            .create_line(line_name, Some(snapshot_id), "2026-06-08T00:00:00Z")
             .unwrap();
     } else {
         lines
-            .set_line_head(
-                line_name,
-                Some(snapshot_id),
-                "2026-06-08T00:00:00Z",
-            )
+            .set_line_head(line_name, Some(snapshot_id), "2026-06-08T00:00:00Z")
             .unwrap();
     }
 }
@@ -340,16 +333,7 @@ fn init_repo_with_fixture_workflow(base_url: &str) -> TempDir {
         .replace("BASE_URL", base_url)
         .as_str(),
     );
-    let base_snapshot = json_output(
-        root,
-        &[
-            "snapshot",
-            "create",
-            "--message",
-            "fixture base snapshot",
-            "--json",
-        ],
-    );
+    let base_snapshot = seed_snapshot_payload(root, "fixture base snapshot");
     assert_eq!(
         base_snapshot["snapshot_id"].as_str(),
         Some(FIXTURE_BASE_SNAPSHOT_ID),
@@ -409,9 +393,7 @@ fn remove_manifest_forbidden_fields(row: &mut JsonValue, fields: &[&str]) {
     }
 }
 
-fn zstd_pack_entry_names_by_blob_id(
-    local_plan: &ZstdBulkLocalPlan,
-) -> BTreeMap<String, String> {
+fn zstd_pack_entry_names_by_blob_id(local_plan: &ZstdBulkLocalPlan) -> BTreeMap<String, String> {
     let mut entry_names = BTreeMap::new();
     for pack in local_plan.object_packs.values() {
         let Some(entries) = pack
@@ -560,7 +542,11 @@ fn zstd_remote_import_fixture_from_repo(
     let repo = RepoRuntime::discover_from_path(repo_root).unwrap();
     let store = repo.remote_sync_local_store::<1>().unwrap();
     let local_plan = store
-        .zstd_bulk_local_plan(&ctx, std::slice::from_ref(&snapshot_id.to_string()), &BTreeSet::new())
+        .zstd_bulk_local_plan(
+            &ctx,
+            std::slice::from_ref(&snapshot_id.to_string()),
+            &BTreeSet::new(),
+        )
         .unwrap();
     let manifest =
         zstd_import_manifest_from_local_plan(repo_root, "fixture-ait", snapshot_id, &local_plan);
@@ -592,9 +578,9 @@ fn assert_zstd_snapshot_download_logged(logged: &[RecordedRequest], snapshot_id:
             "/v1/native/repository-authorities/7/remote-sync/zstd-bulk/object-packs/"
         )));
     assert!(logged.iter().any(|row| row.method == "GET"
-        && row.url.starts_with(
-            "/v1/native/repository-authorities/7/remote-sync/zstd-bulk/tree-packs/"
-        )));
+        && row
+            .url
+            .starts_with("/v1/native/repository-authorities/7/remote-sync/zstd-bulk/tree-packs/")));
     assert!(!logged.iter().any(|row| row.url.ends_with(":pack")));
 }
 
@@ -796,7 +782,9 @@ fn json_output_with_env(root: &Path, args: &[&str], envs: &[(&str, &str)]) -> Js
     if agent_action_command && args.contains(&"--json") && !args.contains(&"--full") {
         effective_args.push("--full");
     }
-    let output = command_output_with_env(root, &effective_args, envs);
+    let owned_args = fixture_snapshot_args(root, &effective_args);
+    let borrowed = owned_args.iter().map(String::as_str).collect::<Vec<_>>();
+    let output = command_output_with_env(root, &borrowed, envs);
     assert!(
         output.status.success(),
         "stdout:\n{}\n\nstderr:\n{}",
@@ -811,7 +799,9 @@ fn json_output(root: &Path, args: &[&str]) -> JsonValue {
 }
 
 fn compact_json_output(root: &Path, args: &[&str]) -> JsonValue {
-    let output = command_output_with_env(root, args, &[]);
+    let owned_args = fixture_snapshot_args(root, args);
+    let borrowed = owned_args.iter().map(String::as_str).collect::<Vec<_>>();
+    let output = command_output_with_env(root, &borrowed, &[]);
     assert!(
         output.status.success(),
         "stdout:\n{}\n\nstderr:\n{}",
@@ -838,14 +828,68 @@ fn action_result<'a>(payload: &'a JsonValue, code: &str) -> &'a JsonValue {
         })
 }
 
+// Seed imported/pre-governance history through the storage fixture boundary.
+// Public authoring behavior is exercised by explicit Task CLI tests.
+fn seed_snapshot_payload(root: &Path, message: &str) -> JsonValue {
+    use ait_core::local_snapshot::LocalSnapshotWriteStore;
+    let repo = RepoRuntime::discover_from_path(root).unwrap();
+    let store = repo
+        .local_snapshot_operation_store::<1>(&repo.workspace_root())
+        .unwrap();
+    let payload = store
+        .create_snapshot(
+            &repo.repo_name(),
+            &repo.current_line_name().unwrap(),
+            Some(message),
+            repo.is_worktree(),
+        )
+        .unwrap();
+    repo.set_worktree_materialized_snapshot(payload["snapshot_id"].as_str())
+        .unwrap();
+    payload
+}
+
 fn seed_snapshot(root: &Path, message: &str) -> String {
-    json_output(
-        root,
-        &["snapshot", "create", "--message", message, "--json"],
-    )["snapshot_id"]
+    seed_snapshot_payload(root, message)["snapshot_id"]
         .as_str()
         .unwrap()
         .to_string()
+}
+
+// Historical remote fixtures use globally numbered RC-* Changes. Prepare
+// their content through the existing guarded internal API; public Snapshot
+// CLI coverage uses real Task-owned C-* references instead.
+fn checkpoint_bound_worktree_fixture(root: &Path, message: &str) -> JsonValue {
+    let repo = RepoRuntime::discover_from_path(root).unwrap();
+    ait_cli::primitives::snapshot_create(&repo, Some(message))
+        .expect("legacy fixture must retain its active Task/worktree authoring checks")
+}
+
+fn fixture_snapshot_args(root: &Path, args: &[&str]) -> Vec<String> {
+    let mut output = args.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+    let reference_index = if args.starts_with(&["snapshot", "create"]) {
+        2
+    } else if args.first() == Some(&"commit") {
+        1
+    } else {
+        return output;
+    };
+    if args.get(reference_index).is_none_or(|arg| arg.starts_with('-'))
+        && !args.contains(&"--task-id") && !args.contains(&"--change-id")
+    {
+        let overlay_path = root.join(".ait-worktree.json");
+        if overlay_path.exists() {
+            let overlay = parse_json_file(overlay_path);
+            let name = overlay["worktree_name"].as_str().unwrap();
+            let metadata =
+                parse_json_file(root.join(".ait/worktrees").join(format!("{name}.json")));
+            output.insert(reference_index, format!("{}/{}",
+                metadata["bound_task_id"].as_str().unwrap(),
+                metadata["bound_change_id"].as_str().unwrap(),
+            ));
+        }
+    }
+    output
 }
 
 fn disable_default_remote(root: &Path) {

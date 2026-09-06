@@ -1,7 +1,7 @@
 #[test]
 fn native_snapshot_json_ignores_the_retired_debug_environment() {
-    let temp = init_repo("https://example.test");
-    let root = temp.path();
+    let (_temp, worktree, _) = init_cli_local_draft_worktree_repo("https://example.test");
+    let root = worktree.as_path();
     write_file(
         &root.join("src/lib.rs"),
         "pub fn example() -> &'static str { \"normal-json\" }\n",
@@ -50,17 +50,14 @@ fn native_snapshot_json_ignores_the_retired_debug_environment() {
 
 #[test]
 fn native_git_friendly_aliases_preserve_snapshot_and_line_contracts() {
-    let temp = init_repo("https://example.test");
-    let root = temp.path();
+    let (_temp, worktree, _) = init_cli_local_draft_worktree_repo("https://example.test");
+    let root = worktree.as_path();
 
     write_file(
         &root.join("src/lib.rs"),
         "pub fn example() -> &'static str { \"alias-commit\" }\n",
     );
-    let alias_snapshot = compact_json_output(
-        root,
-        &["commit", "-m", "Alias Snapshot", "--json"],
-    );
+    let alias_snapshot = compact_json_output(root, &["commit", "-m", "Alias Snapshot", "--json"]);
     let alias_snapshot_id = alias_snapshot["snapshot_id"]
         .as_str()
         .expect("commit alias Snapshot ID")
@@ -68,16 +65,13 @@ fn native_git_friendly_aliases_preserve_snapshot_and_line_contracts() {
     assert!(alias_snapshot_id.starts_with("SNP-"));
     assert_eq!(alias_snapshot["contract"], json!("ait-agent-action/v1"));
     assert_eq!(alias_snapshot["command"], json!("snapshot.create"));
-    assert_eq!(alias_snapshot["line_name"], json!("main"));
+    assert_eq!(alias_snapshot["line_name"], json!("feature/lt-0001"));
     assert_eq!(alias_snapshot["message"], json!("Alias Snapshot"));
     assert_eq!(
-        local_line_head(root, "main").as_deref(),
+        local_line_head(root, "feature/lt-0001").as_deref(),
         Some(alias_snapshot_id.as_str())
     );
-    let alias_shown = json_output(
-        root,
-        &["snapshot", "show", &alias_snapshot_id, "--json"],
-    );
+    let alias_shown = json_output(root, &["snapshot", "show", &alias_snapshot_id, "--json"]);
     assert_eq!(alias_shown["snapshot_id"], json!(alias_snapshot_id));
     assert_eq!(alias_shown["message"], json!("Alias Snapshot"));
 
@@ -87,13 +81,7 @@ fn native_git_friendly_aliases_preserve_snapshot_and_line_contracts() {
     );
     let canonical_snapshot = compact_json_output(
         root,
-        &[
-            "snapshot",
-            "create",
-            "-m",
-            "Canonical Snapshot",
-            "--json",
-        ],
+        &["snapshot", "create", "-m", "Canonical Snapshot", "--json"],
     );
     let canonical_snapshot_id = canonical_snapshot["snapshot_id"]
         .as_str()
@@ -119,14 +107,8 @@ fn native_git_friendly_aliases_preserve_snapshot_and_line_contracts() {
         json!(alias_snapshot_id)
     );
 
-    let branch_created = json_output(
-        root,
-        &["branch", "create", "feature/alias", "--json"],
-    );
-    let line_created = json_output(
-        root,
-        &["line", "create", "feature/canonical", "--json"],
-    );
+    let branch_created = json_output(root, &["branch", "create", "feature/alias", "--json"]);
+    let line_created = json_output(root, &["line", "create", "feature/canonical", "--json"]);
     assert_eq!(
         branch_created
             .as_object()
@@ -150,7 +132,7 @@ fn native_git_friendly_aliases_preserve_snapshot_and_line_contracts() {
     assert!(branch_created.get("switched").is_none());
     assert_eq!(
         json_output(root, &["status", "--json"])["current_line"],
-        json!("main")
+        json!("feature/lt-0001")
     );
 
     assert_eq!(
@@ -173,10 +155,7 @@ fn native_git_friendly_aliases_preserve_snapshot_and_line_contracts() {
         &root.join("src/lib.rs"),
         "pub fn example() -> &'static str { \"unsaved-workspace\" }\n",
     );
-    let switched = json_output(
-        root,
-        &["branch", "switch", "feature/alias", "--json"],
-    );
+    let switched = json_output(root, &["branch", "switch", "feature/alias", "--json"]);
     assert_eq!(switched["line_name"], json!("feature/alias"));
     assert_eq!(
         json_output(root, &["status", "--json"])["current_line"],
@@ -191,8 +170,8 @@ fn native_git_friendly_aliases_preserve_snapshot_and_line_contracts() {
 #[cfg(feature = "perfetto-tracing")]
 #[test]
 fn native_snapshot_perfetto_trace_names_cover_stable_hot_phases() {
-    let temp = init_repo("https://example.test");
-    let root = temp.path();
+    let (_temp, worktree, _) = init_cli_local_draft_worktree_repo("https://example.test");
+    let root = worktree.as_path();
     write_file(
         &root.join("src/lib.rs"),
         "pub fn example() -> &'static str { \"perfetto\" }\n",
@@ -239,7 +218,10 @@ fn native_snapshot_perfetto_trace_names_cover_stable_hot_phases() {
         "ait.core.snapshot.metadata_transaction",
         "ait.core.snapshot.hash_cache_write",
     ] {
-        assert!(names.contains(expected), "missing Perfetto range {expected}");
+        assert!(
+            names.contains(expected),
+            "missing Perfetto range {expected}"
+        );
     }
 }
 
@@ -254,16 +236,7 @@ fn native_snapshot_and_remote_primitives_work_end_to_end() {
         &root.join("src/lib.rs"),
         "pub fn example() -> &'static str { \"reviewable\" }\n",
     );
-    let snapshot = json_output(
-        root,
-        &[
-            "snapshot",
-            "create",
-            "--message",
-            "reviewable snapshot",
-            "--json",
-        ],
-    );
+    let snapshot = seed_snapshot_payload(root, "reviewable snapshot");
     let snapshot_id = snapshot["snapshot_id"].as_str().unwrap().to_string();
     assert!(snapshot_id.starts_with("SNP-"));
 
@@ -352,10 +325,7 @@ fn native_snapshot_and_remote_primitives_work_end_to_end() {
     let policy = json_output(root, &["policy", "eval", &patchset_id, "--json"]);
     assert_eq!(policy["decision"].as_str(), Some("pass"));
 
-    let task_land = json_output(
-        root,
-        &["task", "finish", "RT-1", "--json"],
-    );
+    let task_land = json_output(root, &["task", "finish", "RT-1", "--json"]);
     assert_eq!(
         task_land["apply_status"].as_str(),
         Some("done"),
@@ -373,9 +343,8 @@ fn native_snapshot_and_remote_primitives_work_end_to_end() {
 
     handle.join().unwrap();
     let logged = log.lock().unwrap().clone();
-    assert!(logged
-        .iter()
-        .any(|row| row.method == "POST" && row.url == "/v1/native/repository-authorities/7/changes/RC-1/patchsets"));
+    assert!(logged.iter().any(|row| row.method == "POST"
+        && row.url == "/v1/native/repository-authorities/7/changes/RC-1/patchsets"));
     assert!(logged.iter().any(|row| {
         row.method == "GET"
             && row.url
@@ -386,16 +355,16 @@ fn native_snapshot_and_remote_primitives_work_end_to_end() {
     assert!(logged.iter().any(|row| {
         row.method == "POST"
             && row.url
-                == format!(
-                    "/v1/native/repository-authorities/7/patchsets/{patchset_id}:runCi"
-                )
+                == format!("/v1/native/repository-authorities/7/patchsets/{patchset_id}:runCi")
             && row.body == "{\"trigger\":\"manual_rerun\"}"
     }));
     assert!(logged.iter().any(|row| row.method == "PUT"
-        && row.url == format!("/v1/native/repository-authorities/7/patchsets/{patchset_id}/attestation")
+        && row.url
+            == format!("/v1/native/repository-authorities/7/patchsets/{patchset_id}/attestation")
         && row.body.contains("\"tests\":\"pass\"")));
     assert!(logged.iter().any(|row| row.method == "GET"
-        && row.url == format!("/v1/native/repository-authorities/7/patchsets/{patchset_id}/attestation")));
+        && row.url
+            == format!("/v1/native/repository-authorities/7/patchsets/{patchset_id}/attestation")));
     assert!(logged.iter().any(|row| row.method == "POST"
         && row.url == "/v1/native/repository-authorities/7/changes/RC-1/reviews"
         && row.body.contains("\"action\":\"code_review_summary\"")));
@@ -404,22 +373,22 @@ fn native_snapshot_and_remote_primitives_work_end_to_end() {
             && row.url == "/v1/native/repository-authorities/7/task-land"
             && row.body.contains("\"contract\":\"task-land-atomic/v1\"")
     }));
-    assert!(!logged
-        .iter()
-        .any(|row| row.method == "POST" && row.url == "/v1/native/repository-authorities/7/tasks/RT-1:close"));
+    assert!(!logged.iter().any(|row| row.method == "POST"
+        && row.url == "/v1/native/repository-authorities/7/tasks/RT-1:close"));
 }
 
 #[test]
 fn native_snapshot_create_rejects_clean_workspace_without_advancing_head() {
     let (base_url, _log, _state, handle) = spawn_fake_remote();
-    let temp = init_repo(&base_url);
-    let root = temp.path();
+    let (temp, worktree, _) = init_cli_local_draft_worktree_repo(&base_url);
+    let root = worktree.as_path();
 
     let output = cargo_bin()
         .current_dir(root)
         .args([
             "snapshot",
             "create",
+            "LT-0001/C-01",
             "--message",
             "message-only snapshot",
             "--json",
@@ -436,7 +405,7 @@ fn native_snapshot_create_rejects_clean_workspace_without_advancing_head() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("workspace tree is unchanged from parent snapshot"));
     assert_eq!(
-        local_line_head(root, "main").as_deref(),
+        local_line_head(root, "feature/lt-0001").as_deref(),
         Some(FIXTURE_BASE_SNAPSHOT_ID)
     );
     let snapshots = json_output(root, &["snapshot", "list", "--json"]);
@@ -501,10 +470,7 @@ fn native_task_land_closes_when_base_stale_submit_already_moved_target_to_revisi
         guard.omit_landing_summary_after_base_stale_converged = true;
     }
 
-    let task_land = json_output(
-        root,
-        &["task", "finish", "RT-1", "--json"],
-    );
+    let task_land = json_output(root, &["task", "finish", "RT-1", "--json"]);
 
     assert_eq!(
         task_land["apply_status"].as_str(),
@@ -546,12 +512,12 @@ fn native_task_land_closes_when_base_stale_submit_already_moved_target_to_revisi
     assert!(logged.iter().any(|row| {
         row.method == "POST" && row.url == "/v1/native/repository-authorities/7/task-land"
     }));
-    assert!(!logged
-        .iter()
-        .any(|row| row.method == "POST" && row.url == "/v1/native/repository-authorities/7/tasks/RT-1:close"));
-    assert!(!logged
-        .iter()
-        .any(|row| { row.method == "POST" && row.url == "/v1/native/repository-authorities/7/changes/RC-1/patchsets" }));
+    assert!(!logged.iter().any(|row| row.method == "POST"
+        && row.url == "/v1/native/repository-authorities/7/tasks/RT-1:close"));
+    assert!(!logged.iter().any(|row| {
+        row.method == "POST"
+            && row.url == "/v1/native/repository-authorities/7/changes/RC-1/patchsets"
+    }));
 }
 
 #[test]
@@ -572,10 +538,7 @@ fn native_task_land_submits_when_target_line_already_points_at_revision() {
         guard.selected_patchset_revision_snapshot_id = Some(revision_snapshot_id.clone());
     }
 
-    let task_land = json_output(
-        root,
-        &["task", "finish", "RT-1", "--json"],
-    );
+    let task_land = json_output(root, &["task", "finish", "RT-1", "--json"]);
 
     assert_eq!(
         task_land["apply_status"].as_str(),
@@ -604,9 +567,10 @@ fn native_task_land_submits_when_target_line_already_points_at_revision() {
     assert!(logged.iter().any(|row| {
         row.method == "POST" && row.url == "/v1/native/repository-authorities/7/task-land"
     }));
-    assert!(!logged
-        .iter()
-        .any(|row| { row.method == "POST" && row.url == "/v1/native/repository-authorities/7/changes/RC-1/patchsets" }));
+    assert!(!logged.iter().any(|row| {
+        row.method == "POST"
+            && row.url == "/v1/native/repository-authorities/7/changes/RC-1/patchsets"
+    }));
 }
 
 #[test]
@@ -632,10 +596,7 @@ fn native_task_land_submits_when_target_line_already_contains_revision() {
         guard.selected_patchset_revision_snapshot_id = Some(selected_revision_snapshot_id.clone());
     }
 
-    let task_land = json_output(
-        root,
-        &["task", "finish", "RT-1", "--json"],
-    );
+    let task_land = json_output(root, &["task", "finish", "RT-1", "--json"]);
 
     assert_eq!(
         task_land["apply_status"].as_str(),
@@ -657,15 +618,18 @@ fn native_task_land_submits_when_target_line_already_contains_revision() {
     assert!(logged.iter().any(|row| {
         row.method == "POST" && row.url == "/v1/native/repository-authorities/7/task-land"
     }));
-    assert!(!logged
-        .iter()
-        .any(|row| { row.method == "POST" && row.url == "/v1/native/repository-authorities/7/changes/RC-1/patchsets" }));
+    assert!(!logged.iter().any(|row| {
+        row.method == "POST"
+            && row.url == "/v1/native/repository-authorities/7/changes/RC-1/patchsets"
+    }));
 }
 
 #[test]
 fn native_snapshot_create_prefers_worktree_workspace_root() {
     let (base_url, _log, _state, handle) = spawn_fake_remote();
-    let (_temp, worktree) = init_worktree_repo(&base_url);
+    let (temp, worktree, _) = init_cli_local_draft_worktree_repo(&base_url);
+    write_file(&temp.path().join("src/lib.rs"), "pub fn repo_root_version() -> &'static str { \"root\" }\n");
+    write_file(&worktree.join("src/lib.rs"), "pub fn worktree_version() -> &'static str { \"worktree override\" }\n");
 
     let snapshot = json_output(
         &worktree,
@@ -864,7 +828,9 @@ fn native_worktree_restore_reads_target_snapshot_without_status_manifest_cache()
 #[test]
 fn native_snapshot_namespace_supports_list_show_and_diff() {
     let (base_url, _log, _state, handle) = spawn_fake_remote();
-    let (_temp, worktree) = init_worktree_repo(&base_url);
+    let (temp, worktree, _) = init_cli_local_draft_worktree_repo(&base_url);
+    write_file(&temp.path().join("src/lib.rs"), "pub fn repo_root_version() -> &'static str { \"root\" }\n");
+    write_file(&worktree.join("src/lib.rs"), "pub fn worktree_version() -> &'static str { \"worktree override\" }\n");
 
     let snapshot = json_output(
         &worktree,
@@ -1028,7 +994,10 @@ fn native_snapshot_list_json_is_bounded_until_all_is_explicit() {
     let text = command_output_with_env(root, &["snapshot", "list"], &[]);
     assert!(text.status.success());
     let text = String::from_utf8_lossy(&text.stdout);
-    assert!(text.lines().nth(1).is_some_and(|line| line.starts_with(&latest_snapshot_id)));
+    assert!(text
+        .lines()
+        .nth(1)
+        .is_some_and(|line| line.starts_with(&latest_snapshot_id)));
     assert!(text.contains("shown: 20/26"));
     assert!(text.contains("more: ait snapshot list --all"));
 
@@ -1164,7 +1133,9 @@ fn native_top_level_diff_reports_worktree_dirty_paths_and_name_only() {
 #[test]
 fn native_snapshot_diff_works_without_snapshot_files_view() {
     let (base_url, _log, _state, handle) = spawn_fake_remote();
-    let (_temp, worktree) = init_worktree_repo(&base_url);
+    let (temp, worktree, _) = init_cli_local_draft_worktree_repo(&base_url);
+    write_file(&temp.path().join("src/lib.rs"), "pub fn repo_root_version() -> &'static str { \"root\" }\n");
+    write_file(&worktree.join("src/lib.rs"), "pub fn worktree_version() -> &'static str { \"worktree override\" }\n");
 
     let snapshot = json_output(
         &worktree,
@@ -1222,16 +1193,10 @@ fn native_snapshot_show_defaults_to_bounded_parent_change_evidence() {
     assert!(compact.contains(&format!(
         "more: ait snapshot diff {FIXTURE_BASE_SNAPSHOT_ID} {snapshot_id}"
     )));
-    assert!(compact.contains(&format!(
-        "tree: ait snapshot show {snapshot_id} --files"
-    )));
+    assert!(compact.contains(&format!("tree: ait snapshot show {snapshot_id} --files")));
     assert!(!compact.contains("blob_id"));
 
-    let files = command_output_with_env(
-        root,
-        &["snapshot", "show", &snapshot_id, "--files"],
-        &[],
-    );
+    let files = command_output_with_env(root, &["snapshot", "show", &snapshot_id, "--files"], &[]);
     assert!(files.status.success());
     let files = String::from_utf8_lossy(&files.stdout);
     assert!(files.contains("files\npath\tblob_id\tsize_bytes\tmode"));
@@ -1302,7 +1267,10 @@ fn native_blame_is_read_only_and_snapshot_restore_lines_is_preview_first() {
         ],
     );
     assert_eq!(blame["resolved_snapshot_id"], source_snapshot_id);
-    assert_eq!(fs::read_to_string(root.join("src/lib.rs")).unwrap(), dirty_text);
+    assert_eq!(
+        fs::read_to_string(root.join("src/lib.rs")).unwrap(),
+        dirty_text
+    );
 
     let preview = json_output(
         root,
@@ -1333,7 +1301,10 @@ fn native_blame_is_read_only_and_snapshot_restore_lines_is_preview_first() {
     assert_eq!(preview["unchanged_outside_selected_range"], true);
     assert_eq!(preview["creates_snapshot"], false);
     assert_eq!(preview["applied"], false);
-    assert_eq!(fs::read_to_string(root.join("src/lib.rs")).unwrap(), dirty_text);
+    assert_eq!(
+        fs::read_to_string(root.join("src/lib.rs")).unwrap(),
+        dirty_text
+    );
 
     let human = command_output_with_env(
         root,
@@ -1357,7 +1328,10 @@ fn native_blame_is_read_only_and_snapshot_restore_lines_is_preview_first() {
         "creates_snapshot: false",
         "applied: false",
     ] {
-        assert!(human.contains(evidence), "missing {evidence:?} in:\n{human}");
+        assert!(
+            human.contains(evidence),
+            "missing {evidence:?} in:\n{human}"
+        );
     }
 
     let applied = json_output(
@@ -1455,10 +1429,16 @@ fn native_snapshot_restore_lines_rejects_unsafe_paths_and_content() {
         ),
     ] {
         let output = command_output_with_env(root, &args, &[]);
-        assert!(!output.status.success(), "unsafe restore parsed/applied: {args:?}");
+        assert!(
+            !output.status.success(),
+            "unsafe restore parsed/applied: {args:?}"
+        );
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(stderr.contains(expected), "{args:?}: {stderr}");
-        assert_eq!(fs::read(root.join("src/lines.txt")).unwrap(), original_lines);
+        assert_eq!(
+            fs::read(root.join("src/lines.txt")).unwrap(),
+            original_lines
+        );
     }
 
     write_file(&root.join("src/lines.txt"), "one\n");
@@ -1549,11 +1529,8 @@ fn native_removed_blame_options_fail_before_any_mutation() {
         );
     }
 
-    let numeric_patchset = command_output_with_env(
-        root,
-        &["blame", "src/lib.rs", "--patchset", "7"],
-        &[],
-    );
+    let numeric_patchset =
+        command_output_with_env(root, &["blame", "src/lib.rs", "--patchset", "7"], &[]);
     assert!(!numeric_patchset.status.success());
     assert!(String::from_utf8_lossy(&numeric_patchset.stderr)
         .contains("numeric Repository references are ambiguous"));
@@ -1591,19 +1568,47 @@ fn native_blame_resolves_one_exact_patchset_without_repo_or_change_options() {
     );
     assert_eq!(payload["target"]["kind"], "patchset");
     assert_eq!(payload["target"]["patchset_id"], "RP-1");
-    assert_eq!(
-        payload["resolved_snapshot_id"],
-        FIXTURE_BASE_SNAPSHOT_ID
-    );
+    assert_eq!(payload["resolved_snapshot_id"], FIXTURE_BASE_SNAPSHOT_ID);
     assert_eq!(fs::read(root.join("src/lib.rs")).unwrap(), workspace_before);
 
     handle.join().unwrap();
     let logged = log.lock().unwrap();
     assert!(logged.iter().any(|row| {
-        row.method == "GET"
-            && row.url == "/v1/native/repository-authorities/7/patchsets/RP-1"
+        row.method == "GET" && row.url == "/v1/native/repository-authorities/7/patchsets/RP-1"
     }));
     assert!(!logged.iter().any(|row| row.url.contains("change_ref=")));
+}
+
+#[test]
+fn native_current_line_blame_recovers_published_ownership_after_worktree_cleanup() {
+    let (base_url, log, state, handle) = spawn_fake_remote();
+    let (temp, worktree) = init_worktree_repo(&base_url);
+    let root = temp.path();
+    let snapshot = checkpoint_bound_worktree_fixture(&worktree, "published checkpoint");
+    let id = snapshot["snapshot_id"].as_str().unwrap();
+    {
+        let mut remote = state.lock().unwrap();
+        remote.selected_patchset_revision_snapshot_id = Some(id.to_string());
+        remote.task_completed = true;
+    }
+    seed_binary_line(root, "main", id);
+    fs::copy(worktree.join("src/lib.rs"), root.join("src/lib.rs")).unwrap();
+    fs::remove_file(root.join(".ait/worktrees/rt-1.json")).unwrap();
+    fs::remove_dir_all(&worktree).unwrap();
+    let payload = json_output(root, &["blame", "src/lib.rs", "--json"]);
+    assert_eq!(payload["target"]["kind"], "current_line");
+    assert_eq!(payload["lines"][0]["task_id"], "RT-1");
+    assert_eq!(payload["lines"][0]["change_id"], "RC-1");
+    assert_eq!(
+        payload["lines"][0]["provenance_confidence"],
+        "derived_from_patchset"
+    );
+    handle.join().unwrap();
+    assert!(log
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|row| row.url.ends_with("/changes/RC-1/patchsets")));
 }
 
 #[test]
@@ -1651,7 +1656,9 @@ fn native_blame_keeps_task_scope_from_a_current_format_patchset() {
         "/v1/native/repository-authorities/7/changes/RT-1%2FC-01/patchsets",
     ] {
         assert!(
-            logged.iter().any(|row| row.method == "GET" && row.url == url),
+            logged
+                .iter()
+                .any(|row| row.method == "GET" && row.url == url),
             "missing task-scoped request {url}: {logged:?}"
         );
     }

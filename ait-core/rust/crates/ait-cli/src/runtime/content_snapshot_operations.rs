@@ -16,6 +16,15 @@ pub(super) fn line_record_json(line: &LineRecord) -> JsonValue {
 }
 
 impl<const WRITE_LAYOUT: u32> RepoBinaryDbLocalSnapshotOperationStore<WRITE_LAYOUT> {
+    pub(crate) fn with_workflow_binding(
+        mut self,
+        binding: ait_core::workflow_binary_db::SnapshotWorkflowBinding,
+        namespace: String,
+    ) -> Self {
+        self.workflow_binding = Some((binding, namespace));
+        self
+    }
+
     pub(crate) fn create_detached_empty_snapshot(
         &self,
         repo_name: &str,
@@ -190,12 +199,17 @@ impl<const WRITE_LAYOUT: u32> LocalSnapshotWriteStore
                 }
             }
         }
-        let payload = self.content.create_snapshot_content(
+        let parents = parent_snapshot_id.into_iter().collect::<Vec<_>>();
+        let payload = self.content.create_snapshot_content_with_workflow_binding(
             repo_name,
             line_name,
-            parent_snapshot_id.as_deref(),
+            &parents,
             message,
             is_worktree,
+            ait_core::local_snapshot::SnapshotAuthoringOptions::default(),
+            self.workflow_binding
+                .as_ref()
+                .map(|(binding, namespace)| (binding, namespace.as_str())),
         )?;
         let snapshot_id = payload
             .get("snapshot_id")
@@ -241,12 +255,16 @@ impl<const WRITE_LAYOUT: u32> LocalSnapshotWriteStore
                 return Err(format!("Snapshot parent is missing: {parent_snapshot_id}"));
             }
         }
-        let payload = self.content.create_snapshot_content_with_parents(
+        let payload = self.content.create_snapshot_content_with_workflow_binding(
             repo_name,
             line_name,
             parent_snapshot_ids,
             message,
             is_worktree,
+            ait_core::local_snapshot::SnapshotAuthoringOptions::default(),
+            self.workflow_binding
+                .as_ref()
+                .map(|(binding, namespace)| (binding, namespace.as_str())),
         )?;
         let snapshot_id = payload
             .get("snapshot_id")

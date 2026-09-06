@@ -31,7 +31,9 @@ enum Commands {
     },
     #[command(about = "Attribute selected lines without modifying workspace files.")]
     Blame(BlameArgs),
-    #[command(about = "Inspect effective AIT configuration and host readiness without repairing it.")]
+    #[command(
+        about = "Inspect effective AIT configuration and host readiness without repairing it."
+    )]
     Doctor {
         #[command(subcommand)]
         command: DoctorCommand,
@@ -128,7 +130,7 @@ enum Commands {
         #[command(subcommand)]
         command: TaskCommand,
     },
-    #[command(about = "Create, inspect, publish, or close Task-owned Changes.")]
+    #[command(hide = true, about = "Advanced: create, inspect, publish, or close Task-owned Changes.")]
     Change {
         #[command(subcommand)]
         command: ChangeCommand,
@@ -162,7 +164,9 @@ enum Commands {
         #[command(subcommand)]
         command: PatchsetCommand,
     },
-    #[command(about = "Inspect remote Review state and record team, human Task, or AI code-review evidence.")]
+    #[command(
+        about = "Inspect remote Review state and record team, human Task, or AI code-review evidence."
+    )]
     Review {
         #[command(subcommand)]
         command: ReviewCommand,
@@ -179,13 +183,13 @@ enum Commands {
     },
     #[command(
         about = "Inspect, restore, recover, synchronize, rebase, and remove isolated worktrees.",
-        long_about = "Inspect and maintain isolated worktrees that share repository .ait data while carrying their own checked-out files, current Line, and optional Task/Change binding. Normal Task worktrees are created by task start. Cleanup, prune-stale, and remove require --yes when applied; use --dry-run to preview destructive removal."
+        long_about = "Inspect and maintain isolated worktrees that share repository .ait data while carrying their own checked-out files, current Line, and Task binding. Normal Task worktrees are created by task start. Cleanup, prune-stale, and remove require --yes when applied; use --dry-run to preview destructive removal."
     )]
     Worktree {
         #[command(subcommand)]
         command: WorktreeCommand,
     },
-    #[command(about = "Prepare Changes for review, finish ready work, and repair workflow state.")]
+    #[command(about = "Prepare Tasks for review, finish ready work, and repair workflow state.")]
     Workflow {
         #[command(subcommand)]
         command: WorkflowCommand,
@@ -282,11 +286,17 @@ enum LineCommand {
     Show(LineShowArgs),
     #[command(about = "Archive a local or remote Line without deleting its Snapshots.")]
     Archive(LineArchiveArgs),
-    #[command(about = "Rename a line while preserving its stable identity and reconciling bound pointers.")]
+    #[command(
+        about = "Rename a line while preserving its stable identity and reconciling bound pointers."
+    )]
     Rename(LineRenameArgs),
-    #[command(about = "Delete only a line ref after binding and unique-history protection checks.")]
+    #[command(
+        about = "Delete only a line ref after binding and unique-history protection checks."
+    )]
     Delete(LineDeleteArgs),
-    #[command(about = "Merge one Line into the current Line with resumable conflict state and a two-parent Snapshot.")]
+    #[command(
+        about = "Merge one Line into the current Line with resumable conflict state and a two-parent Snapshot."
+    )]
     Merge(LineMergeArgs),
     #[command(about = "Preview idle temporary Lines, or archive eligible candidates with --yes.")]
     Cleanup(LineCleanupArgs),
@@ -294,11 +304,17 @@ enum LineCommand {
 
 #[derive(Subcommand)]
 enum GitCommand {
-    #[command(about = "Import Git commits, branches, and tags into AIT with a resumable immutable identity map.")]
+    #[command(
+        about = "Import Git commits, branches, and tags into AIT with a resumable immutable identity map."
+    )]
     Import(GitImportArgs),
-    #[command(about = "Export AIT lines, tags, and ordered Snapshot DAG history to Git without force-updating refs.")]
+    #[command(
+        about = "Export AIT lines, tags, and ordered Snapshot DAG history to Git without force-updating refs."
+    )]
     Export(GitExportArgs),
-    #[command(about = "Reconcile a Git endpoint and AIT through checkpointed, divergence-safe ref-set transactions.")]
+    #[command(
+        about = "Reconcile a Git endpoint and AIT through checkpointed, divergence-safe ref-set transactions."
+    )]
     Mirror(GitMirrorArgs),
 }
 
@@ -486,7 +502,9 @@ struct ExternalDoctorArgs {
 struct ExternalLinkArgs {
     #[arg(help = "Unique direct external name declared by ait-external.toml.")]
     name: String,
-    #[arg(help = "Existing local checkout directory; relative paths resolve from the Repository root.")]
+    #[arg(
+        help = "Existing local checkout directory; relative paths resolve from the Repository root."
+    )]
     path: String,
     #[arg(long, help = "Emit the complete machine-readable link result.")]
     json: bool,
@@ -496,7 +514,10 @@ struct ExternalLinkArgs {
 struct ExternalUnlinkArgs {
     #[arg(help = "Local external override name to remove.")]
     name: String,
-    #[arg(long, help = "Emit the complete machine-readable unlink and restoration result.")]
+    #[arg(
+        long,
+        help = "Emit the complete machine-readable unlink and restoration result."
+    )]
     json: bool,
 }
 
@@ -645,7 +666,10 @@ struct LineListArgs {
 #[derive(Args, Clone)]
 struct LineCreateArgs {
     name: String,
-    #[arg(long = "from-snapshot", help = "Start the new Line at this Snapshot instead of the current Line head.")]
+    #[arg(
+        long = "from-snapshot",
+        help = "Start the new Line at this Snapshot instead of the current Line head."
+    )]
     from_snapshot: Option<String>,
     #[arg(long, help = "Select the new Line without changing workspace files.")]
     switch: bool,
@@ -656,9 +680,16 @@ struct LineCreateArgs {
 #[derive(Args, Clone)]
 struct LineSwitchArgs {
     name: String,
-    #[arg(long, help = "Restore the selected Line head's files into the workspace.")]
+    #[arg(
+        long,
+        help = "Restore the selected Line head's files into the workspace."
+    )]
     restore: bool,
-    #[arg(long, requires = "restore", help = "Allow --restore to overwrite conflicting workspace changes.")]
+    #[arg(
+        long,
+        requires = "restore",
+        help = "Allow --restore to overwrite conflicting workspace changes."
+    )]
     force: bool,
     #[arg(long)]
     json: bool,
@@ -728,7 +759,10 @@ struct LineCleanupArgs {
         help = "Restrict cleanup to review_base, review, or wip Lines."
     )]
     cleanup_kind: Option<String>,
-    #[arg(long, help = "Select at most this positive number of oldest candidates.")]
+    #[arg(
+        long,
+        help = "Select at most this positive number of oldest candidates."
+    )]
     limit: Option<usize>,
     #[arg(
         long = "include-protected",
@@ -740,7 +774,10 @@ struct LineCleanupArgs {
         help = "Show every selected row; protected rows still require --include-protected."
     )]
     all: bool,
-    #[arg(long, help = "Archive the eligible candidates; omission is always a read-only preview.")]
+    #[arg(
+        long,
+        help = "Archive the eligible candidates; omission is always a read-only preview."
+    )]
     yes: bool,
     #[arg(long)]
     json: bool,
@@ -748,7 +785,10 @@ struct LineCleanupArgs {
 
 #[derive(Args, Clone)]
 struct QueueSummaryArgs {
-    #[arg(long, help = "Read the review inbox from this configured remote instead of the default remote.")]
+    #[arg(
+        long,
+        help = "Read the review inbox from this configured remote instead of the default remote."
+    )]
     remote: Option<String>,
     #[arg(long, help = "Emit the complete machine-readable summary.")]
     json: bool,
@@ -760,7 +800,10 @@ struct RemoteAddArgs {
     name: String,
     #[arg(help = "Base URL of the AIT server.")]
     url: String,
-    #[arg(long = "default", help = "Use this remote by default for both push and pull.")]
+    #[arg(
+        long = "default",
+        help = "Use this remote by default for both push and pull."
+    )]
     default: bool,
     #[arg(long, help = "Emit the complete machine-readable JSON result.")]
     json: bool,
@@ -774,7 +817,11 @@ struct RemoteListArgs {
 
 #[derive(Args, Clone)]
 struct RemoteRecoverHeadArgs {
-    #[arg(long, value_name = "NAME", help = "Read from this remote; otherwise use the configured default remote.")]
+    #[arg(
+        long,
+        value_name = "NAME",
+        help = "Read from this remote; otherwise use the configured default remote."
+    )]
     remote: Option<String>,
     #[arg(
         long,
@@ -783,7 +830,10 @@ struct RemoteRecoverHeadArgs {
         help = "Use this many parallel pack downloads (1 through 64)."
     )]
     jobs: usize,
-    #[arg(long, help = "Activate the reconstructed generation; omission performs a read-only preview.")]
+    #[arg(
+        long,
+        help = "Activate the reconstructed generation; omission performs a read-only preview."
+    )]
     apply: bool,
     #[arg(long, help = "Emit the complete machine-readable JSON result.")]
     json: bool,
@@ -1339,7 +1389,10 @@ struct PullArgs {
 
 #[derive(Args, Clone)]
 struct PushArgs {
-    #[arg(long, help = "Upload to this configured remote instead of the repository default.")]
+    #[arg(
+        long,
+        help = "Upload to this configured remote instead of the repository default."
+    )]
     remote: Option<String>,
     #[arg(long, help = "Upload this local Line instead of the current Line.")]
     line: Option<String>,
@@ -1434,7 +1487,10 @@ struct BlameArgs {
 
 #[derive(Args, Clone)]
 struct ConfigShowArgs {
-    #[arg(long, help = "Emit the complete machine-readable effective configuration.")]
+    #[arg(
+        long,
+        help = "Emit the complete machine-readable effective configuration."
+    )]
     json: bool,
 }
 
@@ -1513,6 +1569,10 @@ impl ConfigTaskReviewArg {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
 enum ConfigUnsetKeyArg {
+    #[value(name = "plan-language")]
+    PlanLanguage,
+    #[value(name = "plan-style")]
+    PlanStyle,
     #[value(name = "default-author-mode")]
     DefaultAuthorMode,
     #[value(name = "default-model")]
@@ -1534,6 +1594,8 @@ enum ConfigUnsetKeyArg {
 impl ConfigUnsetKeyArg {
     fn into_config_key(self) -> ConfigUnsetKey {
         match self {
+            Self::PlanLanguage => ConfigUnsetKey::PlanLanguage,
+            Self::PlanStyle => ConfigUnsetKey::PlanStyle,
             Self::DefaultAuthorMode => ConfigUnsetKey::DefaultAuthorMode,
             Self::DefaultModel => ConfigUnsetKey::DefaultModel,
             Self::TaskReview => ConfigUnsetKey::TaskReview,
@@ -1550,6 +1612,17 @@ impl ConfigUnsetKeyArg {
 
 #[derive(Args, Clone)]
 struct ConfigSetArgs {
+    #[arg(
+        long,
+        help = "Set the Repository Plan/sprint prose language tag, such as zh-TW, en, ja-JP, or ko-KR. Generated agent contracts stay in English."
+    )]
+    plan_language: Option<String>,
+    #[arg(
+        long,
+        value_parser = ["concise", "detailed"],
+        help = "Set Plan/sprint prose style. Both styles retain goals, acceptance criteria, and verification."
+    )]
+    plan_style: Option<String>,
     #[arg(
         long = "workflow-mode",
         value_enum,
@@ -1568,7 +1641,10 @@ struct ConfigSetArgs {
         help = "Set the default provenance author mode."
     )]
     default_author_mode: Option<ConfigAuthorModeArg>,
-    #[arg(long = "default-model", help = "Set a non-empty default provenance model name.")]
+    #[arg(
+        long = "default-model",
+        help = "Set a non-empty default provenance model name."
+    )]
     default_model: Option<String>,
     #[arg(
         long = "task-review",
@@ -1601,18 +1677,21 @@ struct ConfigSetArgs {
         help = "Set a non-empty local actor email for non-Task-review identity surfaces."
     )]
     user_email: Option<String>,
-    #[arg(long, help = "Emit the complete machine-readable effective configuration after the update.")]
+    #[arg(
+        long,
+        help = "Emit the complete machine-readable effective configuration after the update."
+    )]
     json: bool,
 }
 
 #[derive(Args, Clone)]
 struct ConfigUnsetArgs {
-    #[arg(
-        value_enum,
-        help = "Supported optional user setting to remove."
-    )]
+    #[arg(value_enum, help = "Supported optional user setting to remove.")]
     key: ConfigUnsetKeyArg,
-    #[arg(long, help = "Emit the complete machine-readable effective configuration after removal.")]
+    #[arg(
+        long,
+        help = "Emit the complete machine-readable effective configuration after removal."
+    )]
     json: bool,
 }
 
@@ -1658,7 +1737,7 @@ enum PlanCommand {
 #[derive(Subcommand)]
 enum TaskCommand {
     #[command(
-        about = "Start one Task and its initial Change locally or on a remote; sprint mode uses one specific file-backed Plan item",
+        about = "Start one Task and its worktree locally or on a remote; sprint mode uses one specific file-backed Plan item",
         override_usage = "ait task start --intent <INTENT> (--from <MARKDOWN_PATH#ITEM_REF> | --title <TITLE>) [--edit-root <ABSOLUTE_PATH>] [--local | --remote <REMOTE>] [--json [--full]]"
     )]
     Start(TaskStartArgs),
@@ -1672,9 +1751,7 @@ enum TaskCommand {
         about = TASK_FINISH_COMMAND_ABOUT
     )]
     Finish(TaskFinishArgs),
-    #[command(
-        about = "Permanently abandon one local or remote Task and cancel its open Changes"
-    )]
+    #[command(about = "Permanently abandon one local or remote Task and cancel its open Changes")]
     Abandon(TaskAbandonArgs),
 }
 
@@ -1712,7 +1789,7 @@ enum ChangeCommand {
 enum SnapshotCommand {
     #[command(
         about = "Capture the managed workspace as a new Snapshot.",
-        long_about = "Capture the managed workspace as a new immutable local Snapshot and advance the current Line head. This command does not publish remote data."
+        long_about = "Require the active Task ID matching the current worktree, capture its workspace as a new immutable local Snapshot, and advance the current Line head. Run task start first; repository-root Snapshot creation is forbidden. This command does not publish remote data."
     )]
     Create(SnapshotCreateArgs),
     #[command(
@@ -1772,9 +1849,7 @@ enum StashCommand {
         long_about = "Save modified managed-workspace content as a temporary local-only stash Snapshot without advancing the current Line head. By default, restore the current Line head into the workspace after saving; --keep-workspace leaves the saved files in place."
     )]
     Save(StashSaveArgs),
-    #[command(
-        about = "List active local-only stash metadata without changing the workspace."
-    )]
+    #[command(about = "List active local-only stash metadata without changing the workspace.")]
     List(StashListArgs),
     #[command(
         about = "Inspect metadata for one active local-only stash.",
@@ -1791,9 +1866,7 @@ enum StashCommand {
         long_about = "Replace the entire managed workspace with an active stash Snapshot and drop its stash record only after a successful restore, without moving the current Line head. The current Line must be the stash's source Line. This restores the complete workspace rather than applying a patch or three-way merge."
     )]
     Pop(StashRestoreArgs),
-    #[command(
-        about = "Drop an active stash record without changing workspace content."
-    )]
+    #[command(about = "Drop an active stash record without changing workspace content.")]
     Drop(StashIdArgs),
 }
 
@@ -1822,7 +1895,9 @@ enum PatchsetCommand {
         long_about = "Publish the current local Line head as the next Patchset for CHANGE_ID after validating the bound worktree and synchronizing its revision Snapshot to the selected remote. --summary is required; --author-mode overrides the configured provenance mode for this publication only."
     )]
     Publish(PatchsetPublishArgs),
-    #[command(about = "List the published Patchsets owned by one remote Change without modifying it.")]
+    #[command(
+        about = "List the published Patchsets owned by one remote Change without modifying it."
+    )]
     List(PatchsetListArgs),
     #[command(about = "Show one exact published remote Patchset without modifying it.")]
     Show(PatchsetShowArgs),
@@ -1859,7 +1934,9 @@ enum ReviewCommand {
         #[command(subcommand)]
         command: ReviewTaskCommand,
     },
-    #[command(about = "Generate or submit structured AI code-review evidence attributed to the executing app.")]
+    #[command(
+        about = "Generate or submit structured AI code-review evidence attributed to the executing app."
+    )]
     Code {
         #[command(subcommand)]
         command: ReviewCodeCommand,
@@ -1877,7 +1954,9 @@ enum ReviewTeamCommand {
 
 #[derive(Subcommand)]
 enum ReviewTaskCommand {
-    #[command(about = "Approve one specific Patchset after functional validation; task_review=required only.")]
+    #[command(
+        about = "Approve one specific Patchset after functional validation; task_review=required only."
+    )]
     Approve(ReviewTaskApproveArgs),
     RequestChanges(ReviewTaskRecordArgs),
     Comment(ReviewTaskRecordArgs),
@@ -1909,7 +1988,9 @@ impl ReviewCodeTemplateStyleArg {
 
 #[derive(Subcommand)]
 enum AttestCommand {
-    #[command(about = "Record test, lint, security, license, and authorship evidence for a remote Patchset.")]
+    #[command(
+        about = "Record test, lint, security, license, and authorship evidence for a remote Patchset."
+    )]
     Put(AttestPutArgs),
     #[command(about = "Show recorded evidence for one remote Patchset.")]
     Show(AttestShowArgs),
@@ -2156,20 +2237,18 @@ struct SyncArgs {
 
 #[derive(Subcommand)]
 enum WorkflowCommand {
-    #[command(
-        about = "Show step-by-step guidance for common inventory and finish operations."
-    )]
+    #[command(about = "Show step-by-step guidance for common inventory and finish operations.")]
     Guide(WorkflowGuideArgs),
     #[command(
         about = "Inspect Task, Change, Line, worktree, closeout, and Plan bindings for repair; dry-run is the default and never changes Plan state."
     )]
     Reconcile(WorkflowReconcileArgs),
     #[command(
-        about = "Check or prepare one Change for review and remote finish; changes require --apply."
+        about = "Check or prepare one Task for review and remote finish; preparation requires --apply."
     )]
     Ready(WorkflowReadyArgs),
     #[command(
-        about = "Check or apply remote Review and Policy requirements for one Change's selected Patchset, then safely finish the ready Change."
+        about = "Check or apply remote Review and Policy requirements for a Task's selected submission, then safely finish the ready work."
     )]
     Finish(WorkflowFinishArgs),
 }
@@ -2188,7 +2267,7 @@ struct TaskStartArgs {
     #[arg(
         long = "from",
         value_name = "MARKDOWN_PATH#ITEM_REF",
-        help = "Sprint-only exact file-backed Plan source; syncs, validates, binds, and derives the Task and initial Change title deterministically",
+        help = "Sprint-only exact file-backed Plan source; syncs, validates, binds, and derives the Task title deterministically",
         conflicts_with = "title"
     )]
     source: Option<String>,
@@ -2210,7 +2289,10 @@ struct TaskStartArgs {
         help = "Start the Task on the named remote even when the workflow mode defaults to local"
     )]
     remote: Option<String>,
-    #[arg(long, help = "Emit the compact versioned machine-readable Task-start result")]
+    #[arg(
+        long,
+        help = "Emit the compact versioned machine-readable Task-start result"
+    )]
     json: bool,
     #[arg(
         long,
@@ -2234,9 +2316,15 @@ struct TaskListArgs {
         help = "List Tasks from the named remote even when the workflow mode defaults to local"
     )]
     remote: Option<String>,
-    #[arg(long, help = "Show complete Task history instead of the bounded open view")]
+    #[arg(
+        long,
+        help = "Show complete Task history instead of the bounded open view"
+    )]
     all: bool,
-    #[arg(long, help = "Emit the selected Task inventory as machine-readable JSON")]
+    #[arg(
+        long,
+        help = "Emit the selected Task inventory as machine-readable JSON"
+    )]
     json: bool,
 }
 
@@ -2274,14 +2362,18 @@ struct TaskAuditArgs {
         help = "Check the Task on the named remote even when the workflow mode defaults to local"
     )]
     remote: Option<String>,
-    #[arg(long, help = "Emit the complete machine-readable audit and recommended action")]
+    #[arg(
+        long,
+        help = "Emit the complete machine-readable audit and recommended action"
+    )]
     json: bool,
 }
 
 #[derive(Args, Clone)]
 struct TaskFinishArgs {
     #[arg(
-        help = "Task ID or Change ID to finish onto main. The workflow mode chooses local or remote unless --local or --remote is provided."
+        value_name = "TASK_ID",
+        help = "Task ID to finish onto main. The workflow mode chooses local or remote unless --local or --remote is provided."
     )]
     task_or_change_id: String,
     #[arg(
@@ -2302,7 +2394,10 @@ struct TaskFinishArgs {
         help = "Force closeout through the named remote's already-ready selected Patchset even when the configured workflow mode defaults to local"
     )]
     remote: Option<String>,
-    #[arg(long, help = "Emit the compact versioned machine-readable finish and closeout result")]
+    #[arg(
+        long,
+        help = "Emit the compact versioned machine-readable finish and closeout result"
+    )]
     json: bool,
     #[arg(
         long,
@@ -2373,7 +2468,10 @@ struct ChangeListArgs {
         help = "List Changes from the named remote even when Change commands default to local."
     )]
     remote: Option<String>,
-    #[arg(long, help = "Show complete Change history instead of the bounded open view.")]
+    #[arg(
+        long,
+        help = "Show complete Change history instead of the bounded open view."
+    )]
     all: bool,
     #[arg(
         long,
@@ -2401,7 +2499,10 @@ struct ChangeShowArgs {
         help = "Read the Change from the named remote even when Change commands default to local."
     )]
     remote: Option<String>,
-    #[arg(long, help = "Emit the complete stable machine-readable Change payload.")]
+    #[arg(
+        long,
+        help = "Emit the complete stable machine-readable Change payload."
+    )]
     json: bool,
 }
 
@@ -2434,7 +2535,10 @@ struct ChangeRevertArgs {
         help = "Read the Change's history from the named remote; only local workspace files are changed."
     )]
     remote: Option<String>,
-    #[arg(long, help = "Emit the complete stable machine-readable workspace plan or result.")]
+    #[arg(
+        long,
+        help = "Emit the complete stable machine-readable workspace plan or result."
+    )]
     json: bool,
 }
 
@@ -2474,7 +2578,10 @@ struct ChangeReplayArgs {
         help = "Read the Change's history from the named remote; only local workspace files are changed."
     )]
     remote: Option<String>,
-    #[arg(long, help = "Emit the complete stable machine-readable workspace plan or result.")]
+    #[arg(
+        long,
+        help = "Emit the complete stable machine-readable workspace plan or result."
+    )]
     json: bool,
 }
 
@@ -2497,7 +2604,10 @@ struct ChangeCloseArgs {
         help = "Archive the Change on the named remote even when Change commands default to local."
     )]
     remote: Option<String>,
-    #[arg(long, help = "Emit the complete stable machine-readable closeout payload.")]
+    #[arg(
+        long,
+        help = "Emit the complete stable machine-readable closeout payload."
+    )]
     json: bool,
 }
 
@@ -2514,12 +2624,21 @@ struct ChangePublishArgs {
         help = "Destination remote; omitted uses the repository default remote."
     )]
     remote: Option<String>,
-    #[arg(long, help = "Emit the complete stable machine-readable publication payload.")]
+    #[arg(
+        long,
+        help = "Emit the complete stable machine-readable publication payload."
+    )]
     json: bool,
 }
 
 #[derive(Args, Clone)]
 struct SnapshotCreateArgs {
+    #[arg(
+        value_name = "TASK_ID",
+        value_parser = crate::primitives::parse_snapshot_authoring_reference,
+        help = "Active Task owning the current worktree."
+    )]
+    change_id: String,
     #[arg(
         short = 'm',
         long,
@@ -2527,7 +2646,10 @@ struct SnapshotCreateArgs {
         help = "Record an optional human-readable Snapshot message."
     )]
     message: Option<String>,
-    #[arg(long, help = "Emit the compact versioned machine-readable creation payload.")]
+    #[arg(
+        long,
+        help = "Emit the compact versioned machine-readable creation payload."
+    )]
     json: bool,
     #[arg(
         long,
@@ -2560,7 +2682,10 @@ struct SnapshotShowArgs {
         help = "Show the complete Snapshot tree inventory in text output; JSON is always complete."
     )]
     files: bool,
-    #[arg(long, help = "Emit the complete stable machine-readable Snapshot payload.")]
+    #[arg(
+        long,
+        help = "Emit the complete stable machine-readable Snapshot payload."
+    )]
     json: bool,
 }
 
@@ -2637,7 +2762,10 @@ struct SnapshotRestoreLinesArgs {
         help = "Apply the selected Snapshot lines; omission is always a read-only preview."
     )]
     yes: bool,
-    #[arg(long, help = "Emit the complete stable machine-readable preview or apply result.")]
+    #[arg(
+        long,
+        help = "Emit the complete stable machine-readable preview or apply result."
+    )]
     json: bool,
 }
 
@@ -2658,7 +2786,10 @@ struct SnapshotRevertArgs {
         help = "Preview affected paths and overwrite risk without modifying the workspace."
     )]
     dry_run: bool,
-    #[arg(long, help = "Emit the complete stable machine-readable workspace plan or result.")]
+    #[arg(
+        long,
+        help = "Emit the complete stable machine-readable workspace plan or result."
+    )]
     json: bool,
 }
 
@@ -2686,7 +2817,10 @@ struct SnapshotReplayArgs {
         help = "Preview affected paths and overwrite risk without modifying the workspace."
     )]
     dry_run: bool,
-    #[arg(long, help = "Emit the complete stable machine-readable workspace plan or result.")]
+    #[arg(
+        long,
+        help = "Emit the complete stable machine-readable workspace plan or result."
+    )]
     json: bool,
 }
 
@@ -2735,7 +2869,10 @@ struct SnapshotAncestryArgs {
         help = "Show every result allowed by --limit in text output instead of the nearest 20; JSON already includes all of them."
     )]
     all: bool,
-    #[arg(long, help = "Emit the complete stable machine-readable bounded query payload.")]
+    #[arg(
+        long,
+        help = "Emit the complete stable machine-readable bounded query payload."
+    )]
     json: bool,
 }
 
@@ -2751,7 +2888,10 @@ struct SnapshotIsAncestorArgs {
         help = "Candidate descendant, identified by exact Snapshot ID or local AIT Tag."
     )]
     newer_snapshot_id: String,
-    #[arg(long, help = "Emit the stable machine-readable ancestry decision and distance.")]
+    #[arg(
+        long,
+        help = "Emit the stable machine-readable ancestry decision and distance."
+    )]
     json: bool,
 }
 
@@ -2767,15 +2907,24 @@ struct SnapshotMergeBaseArgs {
         help = "Right Snapshot, identified by exact ID or local AIT Tag."
     )]
     right_snapshot_id: String,
-    #[arg(long, help = "Emit every equally best common ancestor in deterministic order.")]
+    #[arg(
+        long,
+        help = "Emit every equally best common ancestor in deterministic order."
+    )]
     all: bool,
-    #[arg(long, help = "Emit the complete stable machine-readable merge-base result.")]
+    #[arg(
+        long,
+        help = "Emit the complete stable machine-readable merge-base result."
+    )]
     json: bool,
 }
 
 #[derive(Args, Clone)]
 struct StashSaveArgs {
-    #[arg(long, help = "Record an optional human-readable message with the stash.")]
+    #[arg(
+        long,
+        help = "Record an optional human-readable message with the stash."
+    )]
     message: Option<String>,
     #[arg(
         long = "keep-workspace",
@@ -2958,7 +3107,10 @@ struct PatchsetCiStatusArgs {
         help = "Configured remote name; defaults to the repository's default remote."
     )]
     remote: Option<String>,
-    #[arg(long, help = "Emit the complete CI status and fixed recent-job window as stable JSON.")]
+    #[arg(
+        long,
+        help = "Emit the complete CI status and fixed recent-job window as stable JSON."
+    )]
     json: bool,
 }
 
@@ -3025,9 +3177,15 @@ struct ReviewCodeSubmitArgs {
         help = "Structured Reviewed files, Findings, Risks, Tests, and pass Recommendation summary for this specific Patchset."
     )]
     message: String,
-    #[arg(long, help = "Configured remote name; defaults to the repository's default remote.")]
+    #[arg(
+        long,
+        help = "Configured remote name; defaults to the repository's default remote."
+    )]
     remote: Option<String>,
-    #[arg(long, help = "Emit both code and Task review-lane results as stable JSON.")]
+    #[arg(
+        long,
+        help = "Emit both code and Task review-lane results as stable JSON."
+    )]
     json: bool,
 }
 
@@ -3046,7 +3204,10 @@ struct ReviewTaskApproveArgs {
         help = "Non-empty functional-validation evidence from the configured user_name."
     )]
     message: String,
-    #[arg(long, help = "Configured remote name; defaults to the repository's default remote.")]
+    #[arg(
+        long,
+        help = "Configured remote name; defaults to the repository's default remote."
+    )]
     remote: Option<String>,
     #[arg(long, help = "Emit the recorded Task approval as stable JSON.")]
     json: bool,
@@ -3082,7 +3243,10 @@ struct ReviewCodeTemplateArgs {
 struct ReviewShowArgs {
     #[arg(help = "Remote Change ID or supported Change reference to inspect.")]
     change_id: String,
-    #[arg(long, help = "Configured remote name; defaults to the repository's default remote.")]
+    #[arg(
+        long,
+        help = "Configured remote name; defaults to the repository's default remote."
+    )]
     remote: Option<String>,
     #[arg(long, help = "Emit the compact stable machine-readable Review result.")]
     json: bool,
@@ -3203,10 +3367,7 @@ struct WorktreeRestoreArgs {
         help = "Restore one exact workspace-relative path; repeat for more paths and supply --snapshot or --line"
     )]
     paths: Vec<String>,
-    #[arg(
-        long,
-        help = "Overwrite unsaved changes in the selected files"
-    )]
+    #[arg(long, help = "Overwrite unsaved changes in the selected files")]
     force: bool,
     #[arg(
         long = "dry-run",
@@ -3540,6 +3701,7 @@ struct WorkflowReconcileArgs {
 
 #[derive(Args, Clone)]
 struct WorkflowReadyArgs {
+    #[arg(value_name = "TASK_ID", help = "Task to check or prepare for review.")]
     change_id: String,
     #[arg(long)]
     apply: bool,
@@ -3565,7 +3727,7 @@ struct WorkflowReadyArgs {
 
 #[derive(Args, Clone)]
 struct WorkflowFinishArgs {
-    #[arg(help = "Remote Change id to inspect or finish through reviewer-owned closeout.")]
+    #[arg(value_name = "TASK_ID", help = "Task to inspect or finish through reviewer-owned remote closeout.")]
     change_id: String,
     #[arg(
         long,
@@ -3578,7 +3740,10 @@ struct WorkflowFinishArgs {
         help = "Structured exact-Patchset AI review summary authored by the executing reviewer app."
     )]
     review_message: Option<String>,
-    #[arg(long, help = "Use the named remote instead of the configured default remote.")]
+    #[arg(
+        long,
+        help = "Use the named remote instead of the configured default remote."
+    )]
     remote: Option<String>,
 }
 

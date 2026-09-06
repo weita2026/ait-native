@@ -2210,6 +2210,8 @@ fn fixed_record_count(relative_path: &str, byte_size: u64) -> GenerationResult<O
         CHANGE_RECORD_BIN => u64::from(LOCAL_CHANGE_RECORD_SIZE),
         CHANGE_LAND_INDEX_BIN => u64::from(CHANGE_LAND_INDEX_RECORD_SIZE),
         LAND_RECORD_BIN => u64::from(LOCAL_LAND_RECORD_SIZE),
+        "snapshot_link.bin" => 40,
+        "task_snapshot_index.bin" | "change_snapshot_index.bin" => 8,
         "blob.bin" => 64,
         "snapshot.bin" => 88,
         "object_pack.bin" => 32,

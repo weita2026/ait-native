@@ -183,7 +183,7 @@ fn run_workflow(repo: RepoRuntime, command: WorkflowCommand) -> Result<ExitCode,
                     args.remote.as_deref(),
                 )?
             };
-            println!("{}", render_workflow_phase_text(&payload, "ready")?);
+            println!("{}", render_requested_workflow_text(&payload, "ready", &args.change_id)?);
             Ok(ExitCode::SUCCESS)
         }
         WorkflowCommand::Finish(args) => {
@@ -230,7 +230,7 @@ fn run_workflow(repo: RepoRuntime, command: WorkflowCommand) -> Result<ExitCode,
                 );
                 attach_automatic_reconciliation(&mut payload, reconciliation);
             }
-            println!("{}", render_workflow_phase_text(&payload, "finish")?);
+            println!("{}", render_requested_workflow_text(&payload, "finish", &args.change_id)?);
             Ok(ExitCode::SUCCESS)
         }
     }
@@ -345,13 +345,77 @@ fn workflow_cleanup_worktree_name(cleanup: &JsonMap<String, JsonValue>) -> Optio
     workflow_cleanup_worktree_name(worktree)
 }
 
+/// Only rewrite generated command arguments for a Task input whose unique
+/// operation target was already resolved. Never edit IDs inside JSON/evidence.
+fn task_command_text(text: &str, task: &str, mapped_task: &str, exact: &str) -> String {
+    let mut result = text.to_string();
+    for prefix in ["ait snapshot create ", "ait commit ", "ait task finish ", "ait workflow ready ", "ait workflow finish "] {
+        let mut rewritten = String::new();
+        let mut rest = result.as_str();
+        while let Some(start) = rest.find(prefix) {
+            let argument_start = start + prefix.len();
+            rewritten.push_str(&rest[..argument_start]);
+            let tail = &rest[argument_start..];
+            let end = tail.find(|ch: char| ch.is_whitespace() || ch == '`').unwrap_or(tail.len());
+            let argument = &tail[..end];
+            let owner = argument.split_once("/C-").filter(|(_, ordinal)| !ordinal.is_empty() && ordinal.bytes().all(|b| b.is_ascii_digit())).map(|(owner, _)| owner);
+            if matches!(argument, "<task-or-change-id>" | "<change-id>") || (!exact.is_empty() && argument == exact) || owner.is_some_and(|owner| owner == task || owner == mapped_task) {
+                rewritten.push_str(task);
+            } else {
+                rewritten.push_str(argument);
+            }
+            rest = &tail[end..];
+        }
+        rewritten.push_str(rest);
+        result = rewritten;
+    }
+    result
+}
+
+fn task_workflow_display_payload(payload: &JsonValue, requested: &str) -> JsonValue {
+    let mut display = payload.clone();
+    if requested.contains('/') || !requested.rsplit_once('-').is_some_and(|(prefix, ordinal)| prefix.ends_with('T') && !ordinal.is_empty() && ordinal.bytes().all(|b| b.is_ascii_digit())) {
+        return display;
+    }
+    let mapped_task = workflow_payload_task_id(payload).unwrap_or_default();
+    let exact = payload.get("change").and_then(|change| change.get("change_id"))
+        .or_else(|| payload.get("change_id")).and_then(JsonValue::as_str).unwrap_or_default();
+    // Only generated action text is projected. User titles, Snapshot messages,
+    // exact evidence and machine-readable command fields stay byte-for-byte.
+    for pointer in ["/next_action", "/recommended_action", "/closeout_recovery", "/task_land_closeout/recovery"] {
+        if let Some(next) = display.pointer_mut(pointer).and_then(JsonValue::as_object_mut) {
+            for field in ["label", "summary", "detail", "command"] {
+                if let Some(text) = next.get(field).and_then(JsonValue::as_str) {
+                    let text = task_command_text(text, requested, &mapped_task, exact);
+                    next.insert(field.to_string(), JsonValue::String(text));
+                }
+            }
+        }
+    }
+    if let Some(command) = display.pointer("/next_action/command").and_then(JsonValue::as_str) {
+        if let Some(arguments) = command.strip_prefix("ait patchset publish ") {
+            // Ready already owns publication; offer the Task operation while
+            // retaining generated summary and explicit remote options.
+            let candidate = format!("ait workflow ready {arguments}");
+            let projected = task_command_text(&candidate, requested, &mapped_task, exact);
+            let task_prefix = format!("ait workflow ready {requested}");
+            if let Some(options) = projected.strip_prefix(&task_prefix) {
+                display["next_action"]["command"] = json!(format!("{task_prefix} --apply{options}"));
+            }
+        }
+    }
+    display
+}
+
+fn render_requested_workflow_text(payload: &JsonValue, phase: &str, requested: &str) -> Result<String, String> {
+    let display = task_workflow_display_payload(payload, requested);
+    render_workflow_phase_text(&display, phase)
+}
+
 fn render_workflow_phase_text(payload: &JsonValue, phase: &str) -> Result<String, String> {
     let obj = payload
         .as_object()
         .ok_or_else(|| format!("workflow {phase} payload must decode to an object."))?;
-    let change_id = workflow_default_text(string_field(obj.get("change_id")), || {
-        string_field(workflow_nested_value(payload, "change", "change_id"))
-    });
     let task_id = workflow_default_text(string_field(obj.get("task_id")), || {
         string_field(workflow_nested_value(payload, "task", "task_id"))
     });
@@ -395,10 +459,10 @@ fn render_workflow_phase_text(payload: &JsonValue, phase: &str) -> Result<String
 
     let mut lines = vec![format!(
         "ait workflow {phase} · {}",
-        if change_id.is_empty() {
-            "(unknown change)".to_string()
+        if task_id.is_empty() {
+            "(unknown task)".to_string()
         } else {
-            change_id
+            task_id.clone()
         }
     )];
     lines.push(String::new());
@@ -409,6 +473,10 @@ fn render_workflow_phase_text(payload: &JsonValue, phase: &str) -> Result<String
             || "unknown".to_string(),
         )
     ));
+    let title = string_field(workflow_nested_value(payload, "task", "title").or_else(|| payload.get("title")));
+    if !title.is_empty() {
+        lines.push(format!("- title: {title}"));
+    }
     lines.push(format!(
         "- task: {}",
         if task_id.is_empty() {
@@ -439,14 +507,15 @@ fn render_workflow_phase_text(payload: &JsonValue, phase: &str) -> Result<String
         }
         None => format!("- workspace: {workspace_status}"),
     });
-    lines.push(format!(
-        "- patchset: {}",
-        if patchset_id.is_empty() {
-            "none".to_string()
-        } else {
-            patchset_id
+    for key in ["base_snapshot_id", "revision_snapshot_id"] {
+        let snapshot = string_field(workflow_nested_value(payload, "patchset", key));
+        if !snapshot.is_empty() {
+            lines.push(format!("- {}: {snapshot}", key.trim_end_matches("_id").replace('_', " ")));
         }
-    ));
+    }
+    if !patchset_id.is_empty() && (phase == "finish" || next_action_code.contains("review")) {
+        lines.push(format!("- review evidence: {patchset_id}"));
+    }
     if !next_action_code.is_empty()
         || !next_action_summary.is_empty()
         || !next_action_detail.is_empty()
@@ -654,11 +723,7 @@ fn render_local_task_land_text(payload: &JsonValue) -> Result<String, String> {
     let cleanup = obj
         .get("bound_worktree_cleanup")
         .and_then(JsonValue::as_object);
-    let change_id = workflow_default_text(string_field(obj.get("change_ref")), || {
-        workflow_default_text(string_field(obj.get("change_id")), || {
-            "(unknown change)".to_string()
-        })
-    });
+    let task_id = workflow_payload_task_id(payload).unwrap_or_else(|| "(unknown task)".to_string());
     let target_line = workflow_default_text(string_field(obj.get("target_line")), || {
         "unknown".to_string()
     });
@@ -672,8 +737,10 @@ fn render_local_task_land_text(payload: &JsonValue) -> Result<String, String> {
             "complete" | "complete_unbound" | "already_complete"
         );
     let mut lines = vec![format!(
-        "finished: {change_id} -> {target_line} @ {snapshot_id}"
+        "finished: {task_id} -> {target_line} @ {snapshot_id}"
     )];
+    let title = string_field(workflow_nested_value(payload, "task", "title").or_else(|| payload.get("title")));
+    if !title.is_empty() { lines.push(format!("title: {title}")); }
     let mut closed = Vec::new();
     let task_status = string_field(obj.get("task_status"));
     if task_status == "completed" {
@@ -787,7 +854,7 @@ fn workflow_guide_payload(topic: Option<&str>) -> Result<JsonValue, String> {
         "summary": "Use one inventory surface first, then drill down only where the workflow actually points.",
         "when_to_use": [
             "You need to answer what remains or what should finish next.",
-            "You are about to rerun queue, task list, or change list in the same turn."
+            "You are about to rerun queue or task list in the same turn."
         ],
         "commands": [
             {
@@ -801,9 +868,9 @@ fn workflow_guide_payload(topic: Option<&str>) -> Result<JsonValue, String> {
                 "detail": "Use the Task inventory instead of widening the actionable queue to terminal history."
             },
             {
-                "label": "Change history",
-                "command": "ait change list --all",
-                "detail": "Use the Change inventory instead of adding every unfinished Change to the queue."
+                "label": "Snapshot history",
+                "command": "ait snapshot list --all",
+                "detail": "Inspect recorded checkpoints without expanding the actionable queue."
             },
             {
                 "label": "One task readiness",
@@ -811,9 +878,9 @@ fn workflow_guide_payload(topic: Option<&str>) -> Result<JsonValue, String> {
                 "detail": "Prefer this over rebuilding one task from `task show` plus task-scoped `change list`."
             },
             {
-                "label": "One change detail",
-                "command": "ait change show <change-id>",
-                "detail": "Open the focus change only after the queue or task audit points you there."
+                "label": "Advanced work selection",
+                "command": "ait change --help",
+                "detail": "Use exact Change references only when an ambiguity or recovery diagnostic requires them."
             }
         ],
         "avoid": [
@@ -829,23 +896,23 @@ fn workflow_guide_payload(topic: Option<&str>) -> Result<JsonValue, String> {
         },
         "summary": "Use `workflow ready` then `workflow finish` instead of rediscovering low-level remote gates by hand.",
         "when_to_use": [
-            "You want to see what still blocks one remote change from finishing.",
+            "You want to see what still blocks one remote Task from finishing.",
             "You want the helper to advance safe remote-finish steps without teaching the low-level gate commands first."
         ],
         "commands": [
             {
                 "label": "Workflow ready apply",
-                "command": "ait workflow ready <change-id> --apply",
+                "command": "ait workflow ready <task-id> --apply",
                 "detail": "Create any needed snapshot or patchset updates, run patchset CI, and stop once attestation-backed ready state exists."
             },
             {
                 "label": "Workflow finish apply",
-                "command": "ait workflow finish <change-id> --apply",
+                "command": "ait workflow finish <task-id> --apply",
                 "detail": "Review the selected Patchset, record any required Task approval, check final Policy, then safely sync the target Line, complete the Task, and clean up. Add --review-message with the structured review when code-review evidence is required."
             },
             {
                 "label": "Task finish direct",
-                "command": "ait task finish <task-or-change-id>",
+                "command": "ait task finish <task-id>",
                 "detail": "Direct finish and recovery command. Dirty local work can add `--message`; remote finish consumes an already-ready selected Patchset. It creates no Review evidence. Plan closeout follows the configured scope. Resume a partial finish by rerunning the reported task-finish command."
             },
         ],

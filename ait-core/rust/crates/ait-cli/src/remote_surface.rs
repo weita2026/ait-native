@@ -429,7 +429,7 @@ fn generated_patch_ci_message(request: &RemoteAddRequest, template: &PatchCiTemp
            mode: gate\n\
            default_blocking: true\n\
          Edit test commands at `suites[].runner.commands`, then run:\n\
-           ait snapshot create --message \"Configure Patchset CI\"\n\
+           ait snapshot create <task-id> --message \"Configure Patchset CI\"\n\
            {}",
         remote_add_retry_command(request)
     )
@@ -445,7 +445,7 @@ fn patch_ci_not_ready_message(request: &RemoteAddRequest, detail: &str) -> Strin
            default_blocking: true\n\
            runner.commands: [\"your test command\"]\n\
          Include the exact manifest bytes in the current Line head, then retry:\n\
-           ait snapshot create --message \"Configure Patchset CI\"\n\
+           ait snapshot create <task-id> --message \"Configure Patchset CI\"\n\
            {}",
         remote_add_retry_command(request)
     )

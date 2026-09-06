@@ -5,7 +5,11 @@ fn run_snapshot(repo: RepoRuntime, command: SnapshotCommand) -> Result<ExitCode,
             let payload = {
                 let _range = perfetto_range!("ait.cli.snapshot_create.lock_and_author");
                 run_locked_workspace_command(&repo, "ait-cli snapshot create", || {
-                    snapshot_create(&repo, args.message.as_deref())
+                    crate::primitives::snapshot_create_for_reference(
+                        &repo,
+                        &args.change_id,
+                        args.message.as_deref(),
+                    )
                 })?
             };
             {
@@ -165,6 +169,7 @@ fn run_snapshot(repo: RepoRuntime, command: SnapshotCommand) -> Result<ExitCode,
                     "onto_line",
                     "applied",
                     "affected_path_count",
+                    "conflict_paths",
                 ],
             )?;
             Ok(ExitCode::SUCCESS)
@@ -199,10 +204,8 @@ fn run_snapshot(repo: RepoRuntime, command: SnapshotCommand) -> Result<ExitCode,
         }
         SnapshotCommand::IsAncestor(args) => {
             let result = (|| {
-                let older_snapshot_id =
-                    resolve_snapshot_ref_cmd(&repo, &args.older_snapshot_id)?;
-                let newer_snapshot_id =
-                    resolve_snapshot_ref_cmd(&repo, &args.newer_snapshot_id)?;
+                let older_snapshot_id = resolve_snapshot_ref_cmd(&repo, &args.older_snapshot_id)?;
+                let newer_snapshot_id = resolve_snapshot_ref_cmd(&repo, &args.newer_snapshot_id)?;
                 snapshot_is_ancestor_query(&repo, &older_snapshot_id, &newer_snapshot_id)
             })();
             let (payload, is_ancestor) = match snapshot_query_result(result) {
@@ -230,14 +233,8 @@ fn run_snapshot(repo: RepoRuntime, command: SnapshotCommand) -> Result<ExitCode,
         SnapshotCommand::MergeBase(args) => {
             let result = (|| {
                 let left_snapshot_id = resolve_snapshot_ref_cmd(&repo, &args.left_snapshot_id)?;
-                let right_snapshot_id =
-                    resolve_snapshot_ref_cmd(&repo, &args.right_snapshot_id)?;
-                snapshot_merge_base_query(
-                    &repo,
-                    &left_snapshot_id,
-                    &right_snapshot_id,
-                    args.all,
-                )
+                let right_snapshot_id = resolve_snapshot_ref_cmd(&repo, &args.right_snapshot_id)?;
+                snapshot_merge_base_query(&repo, &left_snapshot_id, &right_snapshot_id, args.all)
             })();
             let (payload, found) = match snapshot_query_result(result) {
                 Ok(payload) => payload,
@@ -411,7 +408,10 @@ fn render_snapshot_ancestry(payload: &JsonValue, show_all: bool) -> Result<(), S
         .get("max_depth")
         .and_then(JsonValue::as_u64)
         .unwrap_or(0);
-    let limit = payload.get("limit").and_then(JsonValue::as_u64).unwrap_or(0);
+    let limit = payload
+        .get("limit")
+        .and_then(JsonValue::as_u64)
+        .unwrap_or(0);
     let truncated = payload
         .get("truncated")
         .and_then(JsonValue::as_bool)
@@ -470,7 +470,14 @@ fn render_snapshot_ancestry(payload: &JsonValue, show_all: bool) -> Result<(), S
     }
     if !display_rows.is_empty() {
         println!();
-        println!("{}", if show_all { "history" } else { "nearest history" });
+        println!(
+            "{}",
+            if show_all {
+                "history"
+            } else {
+                "nearest history"
+            }
+        );
         print_bounded_evidence(
             &display_rows,
             &["depth", "snapshot_id", "parent_snapshot_ids"],

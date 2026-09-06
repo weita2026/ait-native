@@ -1287,6 +1287,8 @@ fn validate_local_binary_file(
         CHANGE_RECORD_BIN => Some(u64::from(LOCAL_CHANGE_RECORD_SIZE)),
         CHANGE_LAND_INDEX_BIN => Some(u64::from(CHANGE_LAND_INDEX_RECORD_SIZE)),
         LAND_RECORD_BIN => Some(u64::from(LOCAL_LAND_RECORD_SIZE)),
+        "snapshot_link.bin" => Some(40),
+        "task_snapshot_index.bin" | "change_snapshot_index.bin" => Some(8),
         "blob.bin" => Some(64),
         "snapshot.bin" => Some(88),
         "object_pack.bin" => Some(32),

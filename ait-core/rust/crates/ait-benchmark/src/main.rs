@@ -902,37 +902,37 @@ fn entry(cli: Cli) -> Result<(), String> {
                 }
                 let infrastructure_selection =
                     args.campaign_dir.join("infrastructure-pair-recovery.json");
-                let infrastructure_runner = args
-                    .campaign_dir
-                    .join("infrastructure-recoveries/recovery-0001/recovery-runner");
-                let infrastructure_summaries = statistical_view
-                    .infrastructure_recovery
-                    .as_ref()
-                    .map(|selection| {
-                        selection
-                            .replacement_runs
-                            .iter()
-                            .map(|artifact| args.campaign_dir.join(&artifact.run_summary))
-                            .collect::<Vec<_>>()
-                    })
-                    .unwrap_or_default();
+                // Every recovery carries its own numbered runner and replacement
+                // lanes, so each is digested separately rather than only the first.
+                let mut infrastructure_recovery_files: Vec<(String, PathBuf)> = Vec::new();
+                for selection in &statistical_view.infrastructure_recoveries {
+                    let ordinal = selection.recovery_ordinal;
+                    let runner = args
+                        .campaign_dir
+                        .join(ait_benchmark::recovery_directory(ordinal))
+                        .join("recovery-runner");
+                    if runner.is_file() {
+                        infrastructure_recovery_files
+                            .push((format!("infrastructure-recovery-{ordinal}-runner"), runner));
+                    }
+                    for (index, artifact) in selection.replacement_runs.iter().enumerate() {
+                        infrastructure_recovery_files.push((
+                            format!(
+                                "infrastructure-recovery-{ordinal}-run-summary-{}.json",
+                                index + 1
+                            ),
+                            args.campaign_dir.join(&artifact.run_summary),
+                        ));
+                    }
+                }
                 if infrastructure_selection.is_file() {
                     source_files.push((
                         "infrastructure-pair-recovery.json",
                         infrastructure_selection.as_path(),
                     ));
                 }
-                if infrastructure_runner.is_file() {
-                    source_files.push((
-                        "infrastructure-recovery-runner",
-                        infrastructure_runner.as_path(),
-                    ));
-                }
-                if let Some(path) = infrastructure_summaries.first() {
-                    source_files.push(("infrastructure-recovery-run-summary-1.json", path));
-                }
-                if let Some(path) = infrastructure_summaries.get(1) {
-                    source_files.push(("infrastructure-recovery-run-summary-2.json", path));
+                for (label, path) in &infrastructure_recovery_files {
+                    source_files.push((label.as_str(), path.as_path()));
                 }
                 let host_shutdown_selection =
                     args.campaign_dir.join("host-shutdown-pair-recovery.json");

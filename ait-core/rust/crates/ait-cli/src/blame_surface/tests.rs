@@ -10,6 +10,23 @@ use std::cell::Cell;
 use std::fs;
 use tempfile::TempDir;
 
+#[test]
+fn conflicting_remote_snapshot_owners_stay_unknown_independent_of_order() {
+    let first = json!({"task_id": "RT-1", "change_id": "C-01", "patchset_id": "RT-1/C-01/P-01"});
+    let second = json!({"task_id": "RT-2", "change_id": "C-01", "patchset_id": "RT-2/C-01/P-01"});
+    for candidates in [[&first, &second], [&second, &first]] {
+        let mut row = JsonMap::new();
+        for candidate in candidates {
+            merge_remote_ownership(&mut row, candidate.as_object().unwrap());
+        }
+        merge_remote_ownership(&mut row, first.as_object().unwrap());
+        assert_eq!(row["ownership_conflict"], true);
+        assert_eq!(row["provenance_confidence"], "unknown");
+        assert!(!row.contains_key("task_id"));
+        assert!(!row.contains_key("patchset_id"));
+    }
+}
+
 struct MetadataOnlySnapshotStore {
     snapshot: SnapshotRecord,
     metadata_reads: Cell<usize>,

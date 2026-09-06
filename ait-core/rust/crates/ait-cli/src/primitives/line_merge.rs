@@ -10,7 +10,7 @@ const MERGE_MARKER_PREFIX: &str = "<<<<<<< AIT target:";
 const MERGE_MARKER_SUFFIX: &str = ">>>>>>> AIT source:";
 
 #[derive(Clone, Debug)]
-enum MergePathAction {
+pub(super) enum MergePathAction {
     Keep,
     Remove,
     WriteRow(SnapshotFileRow),
@@ -111,9 +111,7 @@ pub(in crate::primitives) fn start_line_merge_from_snapshot_unlocked(
     require_active_line(&target_line, &target_line_name)?;
     let target_snapshot_id = required_line_head(&target_line, &target_line_name)?;
     require_clean_merge_workspace(repo, &target_snapshot_id)?;
-    let workspace_root = repo.workspace_root();
-    let store =
-        repo.local_snapshot_operation_store::<SNAPSHOT_BINARY_DB_WRITE_LAYOUT>(&workspace_root)?;
+    let store = current_worktree_snapshot_store(repo)?;
 
     if target_snapshot_id == source_snapshot_id {
         return Ok(line_merge_result(
@@ -353,9 +351,7 @@ fn continue_line_merge_unlocked(
     let resolved_message = normalized_text(message)
         .or_else(|| metadata_string(&metadata, "merge_message"))
         .unwrap_or_else(|| format!("Merge line {source_line_name} into {target_line_name}"));
-    let workspace_root = repo.workspace_root();
-    let store =
-        repo.local_snapshot_operation_store::<SNAPSHOT_BINARY_DB_WRITE_LAYOUT>(&workspace_root)?;
+    let store = current_worktree_snapshot_store(repo)?;
     let parents = vec![target_snapshot_id.clone(), source_snapshot_id.clone()];
     let snapshot = store.create_snapshot_with_parents(
         &repo.repo_name(),
@@ -537,6 +533,17 @@ fn classify_merge_path<S>(
 where
     S: LocalSnapshotBlobReadStore + ?Sized,
 {
+    classify_merge_path_with_reader(base, target, source, |row| {
+        store.read_blob_bytes(&row.blob_id)
+    })
+}
+
+pub(super) fn classify_merge_path_with_reader(
+    base: Option<&SnapshotFileRow>,
+    target: Option<&SnapshotFileRow>,
+    source: Option<&SnapshotFileRow>,
+    read: impl Fn(&SnapshotFileRow) -> Result<Vec<u8>, String>,
+) -> Result<MergePathAction, String> {
     if target == source {
         return Ok(MergePathAction::Keep);
     }
@@ -597,9 +604,9 @@ where
         });
     }
 
-    let base_bytes = store.read_blob_bytes(&base.blob_id)?;
-    let target_bytes = store.read_blob_bytes(&target.blob_id)?;
-    let source_bytes = store.read_blob_bytes(&source.blob_id)?;
+    let base_bytes = read(base)?;
+    let target_bytes = read(target)?;
+    let source_bytes = read(source)?;
     Ok(
         match merge_utf8_text_bytes(&base_bytes, &target_bytes, &source_bytes) {
             TextMergeOutcome::Merged(bytes) => MergePathAction::WriteBytes {
@@ -768,7 +775,7 @@ fn render_line_merge_conflict_marker(
     ))
 }
 
-fn write_workspace_bytes(
+pub(super) fn write_workspace_bytes(
     repo: &RepoRuntime,
     path: &str,
     bytes: &[u8],

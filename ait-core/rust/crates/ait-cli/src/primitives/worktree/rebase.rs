@@ -75,7 +75,7 @@ pub fn worktree_restore_owned_head(
             ownership_index.get(snapshot_id),
             snapshot_id,
             &bound_task_id,
-            bound_change_id.as_deref(),
+            None,
             Some(&worktree_name),
         );
         if let Some(foreign_root) = first_foreign_snapshot_id.as_ref() {
@@ -1247,8 +1247,15 @@ pub(super) fn create_snapshot_with_parent(
     let line_name = repo.current_line_name()?;
     let previous_head_snapshot_id = local_line_head_snapshot_id(repo, &line_name)?;
     let workspace_root = repo.workspace_root();
-    let snapshot_store =
+    let mut snapshot_store =
         repo.local_snapshot_operation_store::<SNAPSHOT_BINARY_DB_WRITE_LAYOUT>(&workspace_root)?;
+    if current_worktree_metadata(repo)?.is_some() {
+        let (binding, local) = current_worktree_snapshot_binding(repo)?;
+        if local {
+            snapshot_store =
+                snapshot_store.with_workflow_binding(binding, repo.id_namespace_prefix());
+        }
+    }
     set_local_line_head(repo, &line_name, Some(parent_snapshot_id))?;
     let created = snapshot_store.create_snapshot(
         &repo.repo_name(),
@@ -1338,6 +1345,29 @@ mod selected_binary_line_tests {
             .expect("local target snapshot");
         let local_id = required_string_field(&local, "snapshot_id").expect("local id");
 
+        let task_store = root_repo.task_store().unwrap();
+        let task = ait_core::task_store::TaskStore::create_task(
+            &task_store,
+            "fixture-ait",
+            "Rebase",
+            "Rebase fixture",
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        let task_id = task["task_id"].as_str().unwrap();
+        ait_core::change_store::ChangeStore::create_change(
+            &task_store,
+            task_id,
+            "fixture-ait",
+            "Rebase",
+            "main",
+            None,
+            Some(&base_id),
+        )
+        .unwrap();
         let worktree_name = "remote-task";
         let feature_line = "feature/remote-task";
         root_repo
@@ -1369,6 +1399,8 @@ mod selected_binary_line_tests {
                 "path": worktree_root,
                 "repo_root": root,
                 "line_name": feature_line,
+                "bound_task_id": task_id,
+                "bound_change_id": "C-01",
                 "fork_snapshot_id": base_id,
                 "forked_from_line": "main",
                 "target_base_line": "main",

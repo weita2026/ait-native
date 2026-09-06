@@ -55,6 +55,12 @@ struct TimeWidthPlan {
 
 const TIME_WIDTH_PLANS: &[TimeWidthPlan] = &[
     TimeWidthPlan {
+        name: "snapshot_link.bin",
+        source_record_size: 36,
+        target_record_size: 40,
+        source_time_offsets: &[32],
+    },
+    TimeWidthPlan {
         name: "task.bin",
         source_record_size: 44,
         target_record_size: 64,
@@ -726,7 +732,11 @@ fn target_record_count(relative_path: &str, byte_size: u64) -> GenerationResult<
         return Ok(None);
     };
     let record_size = match name {
-        "task_change_index.bin" | "task_land_index.bin" | "change_land_index.bin" => 8,
+        "task_change_index.bin"
+        | "task_land_index.bin"
+        | "change_land_index.bin"
+        | "task_snapshot_index.bin"
+        | "change_snapshot_index.bin" => 8,
         "plan_item.bin" => 16,
         "object_pack_member.bin" => 16,
         "tree.bin" => 20,

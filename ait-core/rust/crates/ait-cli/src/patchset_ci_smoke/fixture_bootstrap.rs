@@ -499,6 +499,7 @@ fn create_local_lands(root: &Path, local_land_count: usize) -> Result<LocalLandH
             &[
                 "snapshot",
                 "create",
+                &change_ref,
                 "--message",
                 &format!("local history snapshot {ordinal}"),
                 "--json",

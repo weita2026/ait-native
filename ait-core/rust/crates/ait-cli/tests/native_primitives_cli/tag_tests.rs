@@ -57,10 +57,7 @@ fn native_tag_namespace_stores_message_and_resolves_snapshot_refs() {
         &worktree.join("src/lib.rs"),
         "pub fn worktree_version() -> &'static str { \"after baseline\" }\n",
     );
-    let next = json_output(
-        &worktree,
-        &["snapshot", "create", "--message", "after baseline", "--json"],
-    );
+    let next = checkpoint_bound_worktree_fixture(&worktree, "after baseline");
     let next_snapshot_id = next["snapshot_id"].as_str().unwrap();
     let diff = json_output(
         &worktree,

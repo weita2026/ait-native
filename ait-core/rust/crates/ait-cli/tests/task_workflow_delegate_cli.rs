@@ -40,7 +40,8 @@ fn workflow_ready_help_is_consumed_by_clap_without_delegate() {
         .args(["workflow", "ready", "--help"]);
     cmd.assert()
         .success()
-        .stdout(predicate::str::contains("changes require --apply"))
+        .stdout(predicate::str::contains("preparation requires --apply"))
+        .stdout(predicate::str::contains("<TASK_ID>"))
         .stdout(predicate::str::contains("--snapshot-message"))
         .stdout(predicate::str::contains("--author-mode"))
         .stdout(predicate::str::contains("--remote"))
@@ -110,7 +111,7 @@ fn workflow_finish_help_replaces_land_without_top_level_land_or_task_complete() 
         .assert()
         .success()
         .stdout(predicate::str::contains(
-            "selected Patchset, then safely finish the ready Change",
+            "Task's selected submission, then safely finish the ready work",
         ))
         .stdout(predicate::str::contains("--apply"))
         .stdout(predicate::str::contains("--review-message"))

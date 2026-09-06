@@ -125,6 +125,7 @@ fn run_change(repo: RepoRuntime, command: ChangeCommand) -> Result<(), String> {
                     "current_line",
                     "applied",
                     "affected_path_count",
+                    "conflict_paths",
                 ],
             )?;
             Ok(())
@@ -157,6 +158,7 @@ fn run_change(repo: RepoRuntime, command: ChangeCommand) -> Result<(), String> {
                     "onto_line",
                     "applied",
                     "affected_path_count",
+                    "conflict_paths",
                 ],
             )?;
             Ok(())

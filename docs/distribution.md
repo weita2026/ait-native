@@ -8,9 +8,34 @@ RC records. The current stable section below overrides version-relative
 wording in dated historical sections; those records remain evidence for their
 own bytes only.
 
-## Current Stable 1.1.0 Release Identity (2026-08-27)
+## Current Stable 1.1.1 Release Identity (2026-09-02)
 
-`v1.1.0` is the current immutable stable family and public latest release. Its
+The current non-draft, non-prerelease public GitHub release is
+[`v1.1.1`](https://github.com/weita2026/ait-native/releases/tag/v1.1.1), published
+on 2026-09-02. Its exact active family selector is also recorded in
+`ait-release-family.json`. The source tag, packages, receipts and endpoint
+evidence remain immutable; a README or product-document refresh does not create
+another release or rebind those bytes.
+
+The [1.1.1 release card](./sprints/release_1_1_1.md#published-state-2026-09-02)
+records the verified GitHub, PyPI `ait-native`, npm `@wa120/ait-native`,
+Homebrew, apt and OCI publication. It also distinguishes publication from the
+remaining WinGet community submission/search, final latest-alias and
+candidate-bound `ait-web-test` follow-ups. Current availability must be read
+from exact channel evidence; the existence of a WinGet manifest asset does not
+prove community-registry availability.
+
+The 1.1.1 native Homebrew/apt/WinGet product bundle contains `ait`, `ait-server`
+and `ait-runner`, with no background process started on installation. PyPI
+retains the CLI/server pair and direct Python binding; npm retains its scoped
+Node-API product with the in-process `ait` command and no server binary.
+The dated 1.1.0 section below preserves that family's different package
+composition and historical endpoint observations.
+
+## Historical Stable 1.1.0 Release Identity (2026-08-27)
+
+`v1.1.0` was the public latest stable release on 2026-08-27 and remains an
+immutable historical family. Its
 five source authorities are frozen at these AIT Snapshots:
 
 | Authority | Snapshot |
@@ -26,8 +51,8 @@ assets, including all six target rows for `ait`, `ait-agent`,
 `ait-agent-worker`, `ait-server`, and `ait-runner`; six PyO3 wheels; the
 portable npm envelope and six Node-API addon packages; package metadata; the
 frozen family and source mapping; promotion and endpoint evidence; and the
-published benchmark dossier. PyPI reports 1.1.0 as its current project version,
-and npm routes its `latest` dist-tag to 1.1.0.
+published benchmark dossier. At that checkpoint, PyPI reported 1.1.0 as its
+current project version and npm routed its `latest` dist-tag to 1.1.0.
 
 The exact immutable 1.1.0 channel composition is:
 
@@ -746,7 +771,9 @@ their trust boundary; package and container installation do not register or
 reconfigure the runner. It executes only typed work admitted by that server
 and the repository-authored validation contract.
 
-The post-publication package names and commands are:
+The package names and commands below record the 1.1.0 publication checkpoint.
+Unpinned package-manager commands may now select a later family; use the current
+release section above and the current install guide for today's channel state.
 
 | Channel | Stable 1.1.0 install command |
 | --- | --- |
@@ -754,7 +781,7 @@ The post-publication package names and commands are:
 | apt | after adding the signed AIT repository, `sudo apt install ait-native` |
 | WinGet | install the attached exact manifests with `winget install --manifest <manifest-directory>` until `winget search --id Weita.AitNative --exact` confirms the community route; then use `winget install --id Weita.AitNative --exact` |
 | PyPI | `python -m pip install ait-native==1.1.0`; PyPI has no mutable `latest` alias |
-| npm | `npm install --global @wa120/ait-native` resolves `latest` to `1.1.0`; `@1.1.0` remains the immutable selector |
+| npm | At this checkpoint, `npm install --global @wa120/ait-native` resolved `latest` to `1.1.0`; `@1.1.0` remains the immutable selector |
 
 The signed APT route must be added and searched before installation:
 

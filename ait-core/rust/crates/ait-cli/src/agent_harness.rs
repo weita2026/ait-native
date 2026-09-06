@@ -1,3 +1,4 @@
+use crate::plan_preferences::PlanPreferences;
 use crate::runtime::RepoRuntime;
 use crate::workspace_lock::run_locked_workspace_command;
 use ait_core::json_support::{json, JsonValue};
@@ -27,12 +28,14 @@ enum GuidanceAudience {
 }
 
 pub fn refresh_agent_workflow_harness(repo: &RepoRuntime) -> Result<JsonValue, String> {
+    let agents_block = render_agent_workflow_block(repo)?;
+    let claude_block = render_claude_workflow_block(repo)?;
     let (agents, agents_changed, _) = refresh_workflow_document(
         repo,
         AGENT_HARNESS_PATH,
         "AGENTS",
         "Agent contract",
-        &render_agent_workflow_block(repo),
+        &agents_block,
         &[],
     )?;
     let (claude, claude_changed, claude_existed) = refresh_workflow_document(
@@ -40,7 +43,7 @@ pub fn refresh_agent_workflow_harness(repo: &RepoRuntime) -> Result<JsonValue, S
         CLAUDE_HARNESS_PATH,
         "CLAUDE",
         "Claude agent contract",
-        &render_claude_workflow_block(repo),
+        &claude_block,
         &LEGACY_CLAUDE_POINTER_BODIES,
     )?;
     let changed = agents_changed || claude_changed;
@@ -119,6 +122,7 @@ fn strip_legacy_pointer_bodies(body: &str, heading: &str, legacy_bodies: &[&str]
 pub fn converge_agent_workflow_harness(repo: &RepoRuntime) -> Result<JsonValue, String> {
     let root_repo = RepoRuntime::discover_from_path(&repo.authoritative_repo_root())?;
     run_locked_workspace_command(&root_repo, "ait-cli agent harness converge", || {
+        PlanPreferences::for_repo(&root_repo)?;
         ensure_configured_sprint_directory(&root_repo)?;
         converge_agent_workflow_harness_with_executor(&root_repo, |request| {
             execute_plan_sync_command_request_json(&request.to_string())
@@ -396,15 +400,16 @@ reports `action_required` or the task explicitly changes configuration."#
     )
 }
 
-pub fn render_agent_workflow_block(repo: &RepoRuntime) -> String {
+pub fn render_agent_workflow_block(repo: &RepoRuntime) -> Result<String, String> {
     render_workflow_block(repo, GuidanceAudience::Agents)
 }
 
-fn render_claude_workflow_block(repo: &RepoRuntime) -> String {
+fn render_claude_workflow_block(repo: &RepoRuntime) -> Result<String, String> {
     render_workflow_block(repo, GuidanceAudience::Claude)
 }
 
-fn render_workflow_block(repo: &RepoRuntime, audience: GuidanceAudience) -> String {
+fn render_workflow_block(repo: &RepoRuntime, audience: GuidanceAudience) -> Result<String, String> {
+    let prose_guidance = PlanPreferences::for_repo(repo)?.guidance();
     let workflow_mode = repo.effective_workflow_mode();
     let sprint_enabled = repo.sprint_enabled();
     let remote_name = repo
@@ -430,16 +435,16 @@ fn render_workflow_block(repo: &RepoRuntime, audience: GuidanceAudience) -> Stri
         )
     };
     let local_finish = r#"For dirty work, run `ait task finish
-   <task-or-change-id> --message "<message>" --local`; when already
+   <task-id> --message "<message>" --local`; when already
    clean, omit `--message`. Successful Task finish output is authoritative
    proof of local apply, Task completion, worktree cleanup, and
    applicable bound-card closeout. Do not follow it with `status`, `diff`, or `audit`
    unless it fails, reports required action, state is unexpected, or evidence
    was requested."#;
-    let remote_finish = r#"Create the reviewable Snapshot with `ait snapshot create --message
-   "<message>"`, then run `ait workflow ready <change-id> --apply`. Give the
+    let remote_finish = r#"Create the reviewable Snapshot with `ait snapshot create <task-id> --message
+   "<message>"`, then run `ait workflow ready <task-id> --apply`. Give the
    exact Patchset to the reviewer; the reviewer runs `ait workflow finish
-   <change-id> --apply` (and `--review-message` when requested).
+   <task-id> --apply` (and `--review-message` when requested).
    Workflow finish owns Review, approval, final Policy, and atomic Task closeout.
    Use direct `ait task finish` only as an already-ready finalizer or a reported
    recovery command; it creates no Review evidence, publishes no content, runs no
@@ -458,7 +463,7 @@ fn render_workflow_block(repo: &RepoRuntime, audience: GuidanceAudience) -> Stri
         (true, "remote") => format!(
             r#"### Code-change path
 
-1. Create a detailed card under `docs/sprints/` with one stable
+1. Create a complete card under `docs/sprints/` using the prose defaults, with one stable
    `[plan-ref: ...]` and one unchecked item carrying an exact `[ref: ...]`.
 2. {task_start_verb} `ait task start --from <sprint-card-path>#<exact-ref> --intent
    "<intent>"{edit_root_argument} --remote {remote_name}{enter_worktree_suffix}`. `--from` syncs and binds the
@@ -474,13 +479,13 @@ continuing."#
         (true, _) => format!(
             r#"### Code-change path
 
-1. Create a detailed card under `docs/sprints/` with one stable
+1. Create a complete card under `docs/sprints/` using the prose defaults, with one stable
    `[plan-ref: ...]` and one unchecked item carrying an exact `[ref: ...]`.
 2. {task_start_verb} `ait task start --from <sprint-card-path>#<exact-ref> --intent
    "<intent>"{edit_root_argument}{enter_worktree_suffix}`. `--from` syncs and binds the initial card; do not
    pre-sync it or copy Plan IDs.
 3. Work only in the returned `edit_root`. Intermediate `ait snapshot create
-   --message "<message>"` checkpoints are optional.
+   <task-id> --message "<message>"` checkpoints are optional.
 4. {local_finish}
 
 After every context-window compaction, re-read the bound sprint card before
@@ -500,7 +505,7 @@ continuing."#
 1. {task_start_verb} `ait task start --title "<title>" --intent "<intent>"{edit_root_argument}{enter_worktree_suffix}`; sprint
    mode is off, so `--from` is unavailable.
 2. Work only in the returned `edit_root`. Intermediate `ait snapshot create
-   --message "<message>"` checkpoints are optional.
+   <task-id> --message "<message>"` checkpoints are optional.
 3. {local_finish}"#
         ),
     };
@@ -516,11 +521,13 @@ retain the returned Task ID and verify that its `edit_root` is the selected path
     };
     let task_path = format!("{task_path}\n\n{edit_root_guidance}");
 
-    format!(
+    Ok(format!(
         r#"{MANAGED_START}
 ## Effective Ait Workflow (Generated)
 
 {admission}
+
+{prose_guidance}
 
 {task_path}
 
@@ -532,9 +539,13 @@ retain the returned Task ID and verify that its `edit_root` is the selected path
 - A Snapshot is a checkpoint, not a substitute for the listed closeout.
 - Only when that question arises: `ait queue summary` shows actionable work,
   `ait task audit <task-id>` shows readiness, and `ait task list --all` plus
-  `ait change list --all` show history.
+  `ait snapshot list --all` show history.
+- Change IDs are internal to normal Task work. Do not create another Change
+  for checkpoints, review corrections, or checklist steps. If a Task reports
+  ambiguous work, use the exact references in that diagnostic; advanced
+  Change history remains available through `ait change --help`.
 {MANAGED_END}"#,
-    )
+    ))
 }
 
 fn replace_or_insert_managed_block(
@@ -773,7 +784,7 @@ mod tests {
     fn renders_every_mode_and_sprint_combination_as_compact_nonconflicting_guidance() {
         for mode in ["solo_local", "solo_remote", "team_remote"] {
             for sprint in ["on", "off"] {
-                let rendered = render_agent_workflow_block(&repo(mode, sprint));
+                let rendered = render_agent_workflow_block(&repo(mode, sprint)).unwrap();
                 let remote = matches!(mode, "solo_remote" | "team_remote");
                 let scope = if remote { "remote" } else { "local" };
                 assert!(rendered.contains(&format!(
@@ -809,18 +820,30 @@ mod tests {
                 assert!(!rendered.contains("workflow tier"));
                 assert!(!rendered.contains("--profile quick"));
                 assert!(rendered.contains("### Code-change path"));
+                assert!(rendered
+                    .split_whitespace()
+                    .collect::<Vec<_>>()
+                    .join(" ")
+                    .contains("ait snapshot create <task-id>"));
+                assert!(!rendered.contains("--task-id"));
+                assert!(!rendered.contains("--change-id"));
                 assert!(rendered.contains("A Snapshot is a checkpoint, not a substitute"));
                 assert!(!rendered.contains("--base-line"));
                 assert!(
                     !rendered.to_ascii_lowercase().contains("json"),
                     "{mode}/{sprint} guidance must not mention JSON output"
                 );
-                let (byte_limit, word_limit) = match (remote, sprint) {
+                let (base_byte_limit, base_word_limit) = match (remote, sprint) {
                     (false, "on") => (2_600, 340),
                     (false, _) => (2_200, 285),
                     (true, "on") => (3_200, 420),
                     (true, _) => (2_800, 365),
                 };
+                let prose = PlanPreferences::from_config(&JsonMap::new())
+                    .unwrap()
+                    .guidance();
+                let byte_limit = base_byte_limit + prose.len() + 40;
+                let word_limit = base_word_limit + prose.split_whitespace().count() + 6;
                 assert!(
                     rendered.len() < byte_limit,
                     "{mode}/{sprint} guidance was {} bytes; limit is {byte_limit}",
@@ -834,8 +857,8 @@ mod tests {
                 if remote {
                     assert!(rendered.contains("remote=`upstream`"));
                     assert!(rendered.contains("plan sync <markdown-file-or-dir> --remote upstream"));
-                    assert!(rendered.contains("ait workflow ready <change-id> --apply"));
-                    assert!(rendered.contains("ait workflow finish\n   <change-id> --apply"));
+                    assert!(rendered.contains("ait workflow ready <task-id> --apply"));
+                    assert!(rendered.contains("ait workflow finish\n   <task-id> --apply"));
                     assert!(rendered.contains("Workflow finish owns Review, approval"));
                     assert!(rendered.contains("atomic Task closeout"));
                     assert!(!rendered.contains("atomic land"));
@@ -860,7 +883,7 @@ mod tests {
                     assert!(!rendered.contains("--plan <plan-id>"));
                     assert!(!rendered.contains("--revision"));
                     assert!(!rendered.contains("--plan-item-ref"));
-                    assert!(rendered.contains("Create a detailed card under `docs/sprints/`"));
+                    assert!(rendered.contains("Create a complete card under `docs/sprints/`"));
                     assert!(rendered.contains(
                         "After every context-window compaction, re-read the bound sprint card"
                     ));
@@ -878,7 +901,12 @@ mod tests {
                 }
                 assert!(rendered.contains("otherwise omit it and use the returned `edit_root`"));
 
-                let claude = render_claude_workflow_block(&repo(mode, sprint));
+                let claude = render_claude_workflow_block(&repo(mode, sprint)).unwrap();
+                assert!(claude
+                    .split_whitespace()
+                    .collect::<Vec<_>>()
+                    .join(" ")
+                    .contains("ait snapshot create <task-id>"));
                 let shared_route =
                     format!("Route: mode=`{mode}`; sprint=`{sprint}`; scope=`{scope}`");
                 for shared in [
@@ -932,7 +960,7 @@ mod tests {
                 }
             }
 
-            let rendered = render_agent_workflow_block(&runtime);
+            let rendered = render_agent_workflow_block(&runtime).unwrap();
             assert!(
                 rendered.contains(&format!("sprint=`{expected_sprint}`")),
                 "binding mode {binding_mode:?} rendered the wrong sprint mode"
@@ -944,13 +972,13 @@ mod tests {
     fn managed_refresh_is_idempotent_and_preserves_surrounding_governance() {
         let first = replace_or_insert_managed_block(
             "# AGENTS\n\nCustom before.\n",
-            &render_agent_workflow_block(&repo("solo_local", "on")),
+            &render_agent_workflow_block(&repo("solo_local", "on")).unwrap(),
             AGENT_HARNESS_PATH,
         )
         .unwrap();
         let second = replace_or_insert_managed_block(
             &first,
-            &render_agent_workflow_block(&repo("solo_remote", "off")),
+            &render_agent_workflow_block(&repo("solo_remote", "off")).unwrap(),
             AGENT_HARNESS_PATH,
         )
         .unwrap();
@@ -962,13 +990,13 @@ mod tests {
 
     #[test]
     fn local_route_omits_absent_and_inactive_default_remotes() {
-        let with_remote = render_agent_workflow_block(&repo("solo_local", "off"));
+        let with_remote = render_agent_workflow_block(&repo("solo_local", "off")).unwrap();
         assert!(!with_remote.contains("remote=`upstream`"));
         assert!(!with_remote.contains("configured remote is unavailable"));
 
         let mut without_remote = repo("solo_local", "off");
         without_remote.config.remove("default_remote");
-        let rendered = render_agent_workflow_block(&without_remote);
+        let rendered = render_agent_workflow_block(&without_remote).unwrap();
         assert!(!rendered.contains("remote=`none`"));
         assert!(rendered.contains("Admission: ready."));
     }
@@ -979,7 +1007,7 @@ mod tests {
         runtime
             .config
             .insert("plan_task_binding".to_string(), json!({"mode": "required"}));
-        let rendered = render_agent_workflow_block(&runtime);
+        let rendered = render_agent_workflow_block(&runtime).unwrap();
         assert!(rendered.contains("- plan-binding=`required` (expected `off` for sprint=`off`)"));
         assert!(rendered.contains("Action required before mutation:"));
         assert!(!rendered.contains("- [x]"));
@@ -993,13 +1021,13 @@ mod tests {
             "default_author_mode".to_string(),
             json!("mode`name\nwith whitespace"),
         );
-        let rendered = render_agent_workflow_block(&runtime);
+        let rendered = render_agent_workflow_block(&runtime).unwrap();
         assert!(rendered.contains("author-mode=``mode`name with whitespace``"));
 
         runtime
             .config
             .insert("default_author_mode".to_string(), json!("`edge ticks`"));
-        let rendered = render_agent_workflow_block(&runtime);
+        let rendered = render_agent_workflow_block(&runtime).unwrap();
         assert!(rendered.contains("author-mode=`` `edge ticks` ``"));
     }
 
@@ -1157,7 +1185,7 @@ mod tests {
             &claude_path,
             format!(
                 "# CLAUDE\n\n{}\n\n{deployed_payload}",
-                render_claude_workflow_block(&repo)
+                render_claude_workflow_block(&repo).unwrap()
             ),
         )
         .unwrap();

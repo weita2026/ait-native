@@ -23,6 +23,79 @@ fn read_config(root: &Path) -> JsonMap<String, JsonValue> {
 }
 
 #[test]
+fn plan_preferences_persist_once_and_legacy_missing_fields_use_fixed_defaults() {
+    let temp = TempDir::new().unwrap();
+    let initialized = init_repo(&request(temp.path())).unwrap();
+    let mut config = read_config(temp.path());
+    assert_eq!(
+        initialized["plan_language"]["value"],
+        config["plan_language"]
+    );
+    assert_eq!(initialized["plan_language"]["source"], "repo_config");
+    assert_eq!(config["plan_style"], "concise");
+    config.insert("plan_language".into(), json!("ko-KR"));
+    config.insert("plan_style".into(), json!("detailed"));
+    write_json_pretty(
+        &temp.path().join(".ait/config.json"),
+        &JsonValue::Object(config.clone()),
+    )
+    .unwrap();
+    let reinit = init_repo(&request(temp.path())).unwrap();
+    assert_eq!(reinit["plan_language"]["value"], "ko-KR");
+    assert_eq!(reinit["plan_style"]["value"], "detailed");
+    config.remove("plan_language");
+    config.remove("plan_style");
+    write_json_pretty(
+        &temp.path().join(".ait/config.json"),
+        &JsonValue::Object(config),
+    )
+    .unwrap();
+    let before = fs::read(temp.path().join(".ait/config.json")).unwrap();
+    let legacy = init_repo(&request(temp.path())).unwrap();
+    assert_eq!(
+        legacy["plan_language"],
+        json!({"value":"en","source":"built_in"})
+    );
+    assert_eq!(
+        legacy["plan_style"],
+        json!({"value":"concise","source":"built_in"})
+    );
+    assert_eq!(
+        fs::read(temp.path().join(".ait/config.json")).unwrap(),
+        before
+    );
+    fs::remove_file(temp.path().join(".ait/config.json")).unwrap();
+    let mut repair = request(temp.path());
+    repair.repair_existing = true;
+    let repaired = init_repo(&repair).unwrap();
+    assert_eq!(repaired["plan_language"]["source"], "built_in");
+    assert_eq!(repaired["plan_language"]["value"], "en");
+}
+
+#[test]
+fn invalid_saved_plan_preferences_stop_repair_and_harness_before_any_write() {
+    let temp = TempDir::new().unwrap();
+    init_repo(&request(temp.path())).unwrap();
+    let path = temp.path().join(".ait/config.json");
+    let mut config = read_config(temp.path());
+    config.insert("plan_style".into(), json!("verbose"));
+    write_json_pretty(&path, &JsonValue::Object(config)).unwrap();
+    let before = fs::read(&path).unwrap();
+    let agents = fs::read(temp.path().join("AGENTS.md")).unwrap();
+    let claude = fs::read(temp.path().join("CLAUDE.md")).unwrap();
+    fs::remove_file(temp.path().join(".ait/policy.yaml")).unwrap();
+    let mut repair = request(temp.path());
+    repair.repair_existing = true;
+    assert!(init_repo(&repair).unwrap_err().contains("plan_style"));
+    let repo = RepoRuntime::discover_from_path(temp.path()).unwrap();
+    assert!(crate::agent_harness::refresh_agent_workflow_harness(&repo).is_err());
+    assert!(!temp.path().join(".ait/policy.yaml").exists());
+    assert_eq!(fs::read(&path).unwrap(), before);
+    assert_eq!(fs::read(temp.path().join("AGENTS.md")).unwrap(), agents);
+    assert_eq!(fs::read(temp.path().join("CLAUDE.md")).unwrap(), claude);
+}
+
+#[test]
 fn init_creates_authority_agent_contract_and_configured_sprint_directory() {
     let temp = TempDir::new().unwrap();
     fs::write(temp.path().join("README.md"), "base\n").unwrap();

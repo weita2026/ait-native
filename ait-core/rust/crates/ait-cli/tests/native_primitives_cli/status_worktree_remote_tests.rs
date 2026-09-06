@@ -11,16 +11,7 @@ fn native_snapshot_create_excludes_markdown_paths_without_planning_only_artifact
     write_file(&root.join("docs/data.json"), "{\"ok\": true}\n");
     write_file(&root.join("LICENSE"), "license\n");
 
-    let snapshot = json_output(
-        root,
-        &[
-            "snapshot",
-            "create",
-            "--message",
-            "exclude markdown",
-            "--json",
-        ],
-    );
+    let snapshot = seed_snapshot_payload(root, "exclude markdown");
     let snapshot_paths = snapshot["files"]
         .as_array()
         .unwrap()
@@ -172,15 +163,7 @@ fn native_line_cleanup_preview_projects_line_usage_contract() {
     let (temp, _worktree) = init_worktree_repo("http://127.0.0.1:1");
     let root = temp.path();
 
-    let payload = json_output(
-        root,
-        &[
-            "line",
-            "cleanup",
-            "--include-protected",
-            "--json",
-        ],
-    );
+    let payload = json_output(root, &["line", "cleanup", "--include-protected", "--json"]);
     let row = payload["protected"]
         .as_array()
         .unwrap()
@@ -270,7 +253,10 @@ fn native_worktree_removal_surfaces_share_yes_and_dry_run_contract() {
     };
 
     let cleanup_error = failed(&["worktree", "cleanup", "--json"]);
-    assert!(cleanup_error.contains(confirmation_error), "{cleanup_error}");
+    assert!(
+        cleanup_error.contains(confirmation_error),
+        "{cleanup_error}"
+    );
     let cleanup_preview = json_output(root, &["worktree", "cleanup", "--dry-run", "--json"]);
     assert_eq!(cleanup_preview["dry_run"].as_bool(), Some(true));
 
@@ -288,16 +274,10 @@ fn native_worktree_removal_surfaces_share_yes_and_dry_run_contract() {
     let prune_error = failed(&["worktree", "prune-stale", "--json"]);
     assert!(prune_error.contains(confirmation_error), "{prune_error}");
     assert!(prune_registry.is_file());
-    let prune_preview = json_output(
-        root,
-        &["worktree", "prune-stale", "--dry-run", "--json"],
-    );
+    let prune_preview = json_output(root, &["worktree", "prune-stale", "--dry-run", "--json"]);
     assert_eq!(prune_preview["dry_run"].as_bool(), Some(true));
     assert!(prune_registry.is_file());
-    let pruned = json_output(
-        root,
-        &["worktree", "prune-stale", "--yes", "--json"],
-    );
+    let pruned = json_output(root, &["worktree", "prune-stale", "--yes", "--json"]);
     assert_eq!(pruned["pruned_count"].as_i64(), Some(1));
     assert!(!prune_registry.exists());
 
@@ -372,25 +352,13 @@ fn native_worktree_removal_surfaces_share_yes_and_dry_run_contract() {
     assert!(all_stale_registry.is_file());
     let all_stale_preview = json_output(
         root,
-        &[
-            "worktree",
-            "remove",
-            "--all-stale",
-            "--dry-run",
-            "--json",
-        ],
+        &["worktree", "remove", "--all-stale", "--dry-run", "--json"],
     );
     assert_eq!(all_stale_preview["dry_run"].as_bool(), Some(true));
     assert!(all_stale_registry.is_file());
     let all_stale_removed = json_output(
         root,
-        &[
-            "worktree",
-            "remove",
-            "--all-stale",
-            "--yes",
-            "--json",
-        ],
+        &["worktree", "remove", "--all-stale", "--yes", "--json"],
     );
     assert_eq!(all_stale_removed["pruned_count"].as_i64(), Some(1));
     assert!(!all_stale_registry.exists());
@@ -414,8 +382,7 @@ fn native_worktree_doctor_defaults_to_metadata_and_refreshes_on_demand() {
         "pub fn example() -> &'static str { \"ok\" }\n",
     );
     let metadata_path = root.join(".ait/worktrees/rt-doctor.json");
-    let before: JsonValue =
-        parse_json_file(&metadata_path);
+    let before: JsonValue = parse_json_file(&metadata_path);
     assert!(before.get("workspace_status_cache").is_none());
 
     let metadata_payload = json_output(root, &["worktree", "doctor", "--json"]);
@@ -429,8 +396,7 @@ fn native_worktree_doctor_defaults_to_metadata_and_refreshes_on_demand() {
         .unwrap();
     assert_eq!(metadata_row["status_source"].as_str(), Some("unverified"));
     assert_eq!(metadata_row["workspace_status"].as_str(), Some("unknown"));
-    let after_metadata: JsonValue =
-        parse_json_file(&metadata_path);
+    let after_metadata: JsonValue = parse_json_file(&metadata_path);
     assert!(after_metadata.get("workspace_status_cache").is_none());
 
     let refreshed_payload = json_output(root, &["worktree", "doctor", "--refresh", "--json"]);
@@ -444,8 +410,7 @@ fn native_worktree_doctor_defaults_to_metadata_and_refreshes_on_demand() {
         .unwrap();
     assert_eq!(refreshed_row["status_source"].as_str(), Some("verified"));
     assert_eq!(refreshed_row["workspace_status"].as_str(), Some("clean"));
-    let after_refresh: JsonValue =
-        parse_json_file(&metadata_path);
+    let after_refresh: JsonValue = parse_json_file(&metadata_path);
     assert!(after_refresh.get("workspace_status_cache").is_some());
 }
 
@@ -519,13 +484,9 @@ fn native_worktree_refresh_treats_status_cache_persistence_as_best_effort() {
         Some("after_remote_land"),
     );
     let metadata_path = root.join(".ait/worktrees/rt-cached.json");
-    let mut metadata: JsonValue =
-        parse_json_file(&metadata_path);
+    let mut metadata: JsonValue = parse_json_file(&metadata_path);
     metadata["name"] = json!("rt-cache-missing-key");
-    write_file(
-        &metadata_path,
-        &(encode_json_pretty(&metadata) + "\n"),
-    );
+    write_file(&metadata_path, &(encode_json_pretty(&metadata) + "\n"));
 
     let list_payload = json_output(root, &["worktree", "list", "--refresh", "--json"]);
     let cached_row = list_payload
@@ -563,13 +524,9 @@ fn native_worktree_recreate_accepts_dangling_alias_for_registered_target() {
     fs::create_dir_all(alias_path.parent().unwrap()).unwrap();
     std::os::unix::fs::symlink(&worktree_path, &alias_path).unwrap();
     let metadata_path = root.join(".ait/worktrees/rt-recreate.json");
-    let mut metadata: JsonValue =
-        parse_json_file(&metadata_path);
+    let mut metadata: JsonValue = parse_json_file(&metadata_path);
     metadata["alias_path"] = JsonValue::String(alias_path.display().to_string());
-    write_file(
-        &metadata_path,
-        &(encode_json_pretty(&metadata) + "\n"),
-    );
+    write_file(&metadata_path, &(encode_json_pretty(&metadata) + "\n"));
     fs::remove_dir_all(&worktree_path).unwrap();
 
     let recreate = json_output(
@@ -658,7 +615,10 @@ fn native_status_perfetto_trace_names_cover_cache_walk_and_compare() {
         "ait.cli.status.metadata_cache_match",
         "ait.cli.workspace_delta.compare",
     ] {
-        assert!(names.contains(expected), "missing Perfetto range {expected}");
+        assert!(
+            names.contains(expected),
+            "missing Perfetto range {expected}"
+        );
     }
 }
 
@@ -667,16 +627,10 @@ fn native_status_treats_exact_generated_worktree_cargo_projection_as_parent_sour
     let (base_url, _log, _state, handle) = spawn_fake_remote();
     let (temp, worktree) = init_worktree_repo(&base_url);
     let source_config = "# AIT source policy: canonical Cargo settings; task worktrees receive a managed projection.\n[build]\ntarget-dir = \".ait/cargo-target\"\nbuild-dir = \".ait/cargo-build/canonical\"\n\n[alias]\nmanaged-test = [\"test\", \"--profile\", \"ait-ci\"]\n";
-    write_file(
-        &worktree.join(".cargo/config.toml"),
-        source_config,
-    );
+    write_file(&worktree.join(".cargo/config.toml"), source_config);
 
     let snapshot_id = seed_snapshot(&worktree, "source-level cargo config");
-    let worktrees = json_output(
-        temp.path(),
-        &["worktree", "list", "--refresh", "--json"],
-    );
+    let worktrees = json_output(temp.path(), &["worktree", "list", "--refresh", "--json"]);
     let row = worktrees
         .as_array()
         .unwrap()
@@ -687,15 +641,13 @@ fn native_status_treats_exact_generated_worktree_cargo_projection_as_parent_sour
 
     let cargo_config_path = worktree.join(".cargo/config.toml");
     let generated_config = fs::read_to_string(&cargo_config_path).unwrap();
-    assert!(generated_config.starts_with(
-        "# Managed by ait: workspace-isolated final artifacts and intermediates.\n"
-    ));
+    assert!(generated_config
+        .starts_with("# Managed by ait: workspace-isolated final artifacts and intermediates.\n"));
     assert!(generated_config.contains("cargo-target/task-workspaces/rt-1"));
     assert!(generated_config.contains("cargo-build/task-workspaces/rt-1"));
     assert!(generated_config.contains("task-workspaces/rt-1"));
-    assert!(generated_config.contains(
-        "[alias]\nmanaged-test = [\"test\", \"--profile\", \"ait-ci\"]\n"
-    ));
+    assert!(generated_config
+        .contains("[alias]\nmanaged-test = [\"test\", \"--profile\", \"ait-ci\"]\n"));
 
     let status = json_output(&worktree, &["status", "--json"]);
 
@@ -785,16 +737,7 @@ fn configure_remote_patch_ci_snapshot(root: &Path) {
 }
 "#,
     );
-    json_output(
-        root,
-        &[
-            "snapshot",
-            "create",
-            "--message",
-            "configure fixture Patchset CI",
-            "--json",
-        ],
-    );
+    seed_snapshot_payload(root, "configure fixture Patchset CI");
 }
 
 #[test]
@@ -826,7 +769,10 @@ fn native_remote_add_default_persists_remote_config_and_validates_fixed_server_a
 
     assert_eq!(added["name"].as_str(), Some("mirror"));
     assert_eq!(added["url"].as_str(), Some(base_url.as_str()));
-    assert_eq!(added["repo_name"].as_str(), Some(repo_directory_name.as_str()));
+    assert_eq!(
+        added["repo_name"].as_str(),
+        Some(repo_directory_name.as_str())
+    );
     assert_eq!(added["is_default_push"].as_i64(), Some(1));
     assert_eq!(added["is_default_pull"].as_i64(), Some(1));
     assert_eq!(added["patch_ci"]["status"], json!("ready"));
@@ -856,8 +802,7 @@ fn native_remote_add_default_persists_remote_config_and_validates_fixed_server_a
     assert_eq!(mirror["is_default_push"].as_i64(), Some(1));
     assert_eq!(mirror["is_default_pull"].as_i64(), Some(1));
 
-    let config: JsonValue =
-        parse_json_file(root.join(".ait/config.json"));
+    let config: JsonValue = parse_json_file(root.join(".ait/config.json"));
     assert_eq!(config["default_remote"].as_str(), Some("mirror"));
 
     let logged = log.lock().unwrap().clone();
@@ -890,19 +835,16 @@ fn native_remote_add_skips_patch_ci_bootstrap_when_tests_are_disabled() {
         "version: 1\npolicy_id: prototype\ndefaults:\n  require_tests: false\n",
     );
 
-    let added = json_output(
-        root,
-        &["remote", "add", "mirror", &base_url, "--json"],
-    );
+    let added = json_output(root, &["remote", "add", "mirror", &base_url, "--json"]);
 
     assert_eq!(added["patch_ci"]["status"], json!("not_required"));
     assert_eq!(added["patch_ci"]["required"], json!(false));
     assert_eq!(added["repo_name"], json!(repo_directory_name));
     assert!(!root.join("ci/patch_ci.json").exists());
     let logged = log.lock().unwrap();
-    assert!(logged.iter().any(|row| {
-        row.method == "GET" && row.url == "/v1/native/repository-authorities/7"
-    }));
+    assert!(logged
+        .iter()
+        .any(|row| { row.method == "GET" && row.url == "/v1/native/repository-authorities/7" }));
     assert!(!logged
         .iter()
         .any(|row| row.method == "POST" && row.url == "/v1/native/repositories"));
@@ -937,14 +879,19 @@ fn native_remote_add_generates_language_neutral_patch_ci_before_any_remote_conta
         "{stderr}"
     );
     assert!(
-        stderr.contains("No project manifests were inspected and no validation command was inferred."),
+        stderr.contains(
+            "No project manifests were inspected and no validation command was inferred."
+        ),
         "{stderr}"
     );
     assert!(
         stderr.contains("Remote registration was not attempted."),
         "{stderr}"
     );
-    assert!(stderr.contains("CONFIGURE_PATCHSET_TEST_COMMAND"), "{stderr}");
+    assert!(
+        stderr.contains("CONFIGURE_PATCHSET_TEST_COMMAND"),
+        "{stderr}"
+    );
     assert!(!stderr.contains("python3 -m pytest"), "{stderr}");
     assert!(stderr.contains("ait snapshot create"), "{stderr}");
     assert!(
@@ -1041,8 +988,7 @@ fn native_remote_add_does_not_persist_when_server_ensure_fails() {
     assert_eq!(origin["is_default_push"].as_i64(), Some(1));
     assert_eq!(origin["is_default_pull"].as_i64(), Some(1));
 
-    let config: JsonValue =
-        parse_json_file(root.join(".ait/config.json"));
+    let config: JsonValue = parse_json_file(root.join(".ait/config.json"));
     assert_eq!(config["default_remote"].as_str(), Some("origin"));
 }
 
@@ -1079,7 +1025,9 @@ fn native_repo_show_uses_fixed_authority() {
     assert!(logged
         .iter()
         .any(|row| row.method == "GET" && row.url == "/v1/native/repository-authorities/7"));
-    assert!(!logged.iter().any(|row| row.url.contains("/native/admin/repositories")));
+    assert!(!logged
+        .iter()
+        .any(|row| row.url.contains("/native/admin/repositories")));
     handle.join().unwrap();
 }
 
@@ -1103,7 +1051,9 @@ fn native_repository_text_is_decision_complete_without_inline_json() {
     let capabilities = String::from_utf8_lossy(&capabilities.stdout);
     assert!(capabilities.contains("remote sync: 2/2 required ready"));
     assert!(capabilities.contains("pull manifest unavailable (optional)"));
-    assert!(capabilities.contains("decision: Patchset CI submission and zstd remote sync are ready"));
+    assert!(
+        capabilities.contains("decision: Patchset CI submission and zstd remote sync are ready")
+    );
     assert!(capabilities.contains("details: ait repo ci-capabilities --json"));
     assert!(!capabilities.contains("{\""));
 
@@ -1184,7 +1134,10 @@ fn native_queue_summary_json_reports_local_binary_workflow_authority_in_solo_rem
     assert_eq!(payload["local"]["summary"]["task_record_count"], json!(0));
     assert_eq!(payload["local"]["summary"]["change_record_count"], json!(0));
     assert_eq!(payload["local"]["summary"]["draft_task_count"], json!(0));
-    assert_eq!(payload["local"]["summary"]["published_task_count"], json!(0));
+    assert_eq!(
+        payload["local"]["summary"]["published_task_count"],
+        json!(0)
+    );
     assert_eq!(payload["local"]["summary"]["draft_change_count"], json!(0));
     assert_eq!(
         payload["local"]["summary"]["published_change_count"],
@@ -1232,12 +1185,8 @@ fn native_queue_summary_json_falls_back_when_remote_bundle_is_missing() {
         .map(|row| row.url.clone())
         .collect::<Vec<_>>();
     assert_eq!(urls.len(), 3);
-    assert!(urls[0].starts_with(
-        "/v1/native/repository-authorities/7/read/queue-summary?"
-    ));
-    assert!(urls[1].starts_with(
-        "/v1/native/repository-authorities/7/read/task-queue?"
-    ));
+    assert!(urls[0].starts_with("/v1/native/repository-authorities/7/read/queue-summary?"));
+    assert!(urls[1].starts_with("/v1/native/repository-authorities/7/read/task-queue?"));
     assert_eq!(
         urls[2],
         "/v1/native/repository-authorities/7/read/reviewer-inbox"
@@ -1256,11 +1205,8 @@ fn native_pull_line_imports_remote_snapshot_and_moves_local_line_head() {
     write_file(&remote_root.join("src/lib.rs"), remote_source);
     let remote_snapshot_id = seed_snapshot(remote_root, "remote pulled update");
     let remote_zstd = zstd_remote_import_fixture_from_repo(remote_root, &remote_snapshot_id);
-    let (base_url, log, handle) = spawn_remote_import_server(
-        "pulled",
-        &remote_snapshot_id,
-        remote_zstd,
-    );
+    let (base_url, log, handle) =
+        spawn_remote_import_server("pulled", &remote_snapshot_id, remote_zstd);
     let temp = init_repo(&base_url);
     let root = temp.path();
     assert_fixture_repo_is_zstd_only_compatible(root);
@@ -1382,7 +1328,10 @@ fn native_pull_perfetto_trace_names_cover_import_download_and_head_movement() {
         "ait.remote_sync.pull.ancestry_relationship",
         "ait.remote_sync.pull.head_movement",
     ] {
-        assert!(names.contains(expected), "missing Perfetto range {expected}");
+        assert!(
+            names.contains(expected),
+            "missing Perfetto range {expected}"
+        );
     }
 }
 
@@ -1398,11 +1347,8 @@ fn native_pull_line_with_restore_materializes_workspace_and_switches_line() {
     write_file(&remote_root.join("src/lib.rs"), remote_source);
     let remote_snapshot_id = seed_snapshot(remote_root, "remote restored pull");
     let remote_zstd = zstd_remote_import_fixture_from_repo(remote_root, &remote_snapshot_id);
-    let (base_url, log, handle) = spawn_remote_import_server(
-        "pulled",
-        &remote_snapshot_id,
-        remote_zstd,
-    );
+    let (base_url, log, handle) =
+        spawn_remote_import_server("pulled", &remote_snapshot_id, remote_zstd);
     let temp = init_repo(&base_url);
     let root = temp.path();
     assert_fixture_repo_is_zstd_only_compatible(root);
@@ -1453,11 +1399,8 @@ fn native_pull_restore_rejects_dirty_workspace_without_moving_line_head() {
     write_file(&remote_root.join("src/lib.rs"), remote_source);
     let remote_snapshot_id = seed_snapshot(remote_root, "remote dirty protected");
     let remote_zstd = zstd_remote_import_fixture_from_repo(remote_root, &remote_snapshot_id);
-    let (base_url, log, handle) = spawn_remote_import_server(
-        "main",
-        &remote_snapshot_id,
-        remote_zstd,
-    );
+    let (base_url, log, handle) =
+        spawn_remote_import_server("main", &remote_snapshot_id, remote_zstd);
     let temp = init_repo(&base_url);
     let root = temp.path();
     assert_fixture_repo_is_zstd_only_compatible(root);
@@ -1497,11 +1440,8 @@ fn native_pull_restore_force_overwrites_dirty_workspace() {
     write_file(&remote_root.join("src/lib.rs"), remote_source);
     let remote_snapshot_id = seed_snapshot(remote_root, "remote force restored");
     let remote_zstd = zstd_remote_import_fixture_from_repo(remote_root, &remote_snapshot_id);
-    let (base_url, log, handle) = spawn_remote_import_server(
-        "main",
-        &remote_snapshot_id,
-        remote_zstd,
-    );
+    let (base_url, log, handle) =
+        spawn_remote_import_server("main", &remote_snapshot_id, remote_zstd);
     let temp = init_repo(&base_url);
     let root = temp.path();
     assert_fixture_repo_is_zstd_only_compatible(root);

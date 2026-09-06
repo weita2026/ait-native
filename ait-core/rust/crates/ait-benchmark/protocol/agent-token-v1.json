@@ -1,6 +1,6 @@
 {
   "contract": "ait-agent-token-benchmark-protocol/v1",
-  "protocol_revision": "game-development-2026-08-31.48",
+  "protocol_revision": "game-development-2026-08-31.52",
   "subject": {
     "domain": "deterministic-static-web-2d-plane-shooter-development",
     "measured_quantity": "provider-reported token usage of an AI agent completing an accepted equivalent repository task",
@@ -514,10 +514,10 @@
         "provider session failure before candidate execution"
       ],
       "pair_policy": "exclude every observed lane in the contaminated adjacent Git/AIT pair and re-execute both frozen lanes exactly once; never retain an unaffected source counterpart against a replacement lane",
-      "execution_limit": "one recognized executor-infrastructure pair and one two-lane replacement attempt per campaign; no second executor-infrastructure recovery, repair, or retry is admitted; the exact externally evidenced .34 host-shutdown path is a separate bounded contract",
+      "execution_limit": "recognized interruption classes are not capped per campaign, since an interruption says nothing about the result; each recovery is recorded under its own numbered directory with full provenance. Functional defects and evaluator rejection remain absolutely non-retryable, which is the risk the former single-use cap guarded. The exact externally evidenced .34 host-shutdown path is a separate bounded contract",
       "non_retryable_outcomes": "functional defects, evaluator rejection, browser failure, workflow failure, high token use, unfavorable savings, and model strategy are measured outcomes and never authorize recovery",
       "pin_equivalence": "frozen campaign manifest, schedule axes, fixture manifest, prompts, model and reasoning effort, executor version, tool and permission policy, cache class, network policy, and recovery-runner digest",
-      "admission": "both replacement lanes must be protocol-valid, evaluator-accepted, browser-passed, workflow-closed, infrastructure-clean, and carry valid transcript plus normalized provider usage; otherwise the campaign remains stopped",
+      "admission": "both replacement lanes must be protocol-valid and infrastructure-clean and carry a valid transcript plus normalized provider usage. The functional outcome is recorded, not gated: a valid unaccepted replacement is admitted and stays acceptance-penalized like any other valid unaccepted lane, because gating here would let an interruption stop a campaign over a score and would turn recovery into a way to launder outcomes",
       "history": "preserve every original source artifact append-only, checksum all observed contaminated source summaries, checksum both replacement summaries and the recovery runner, and publish the excluded evidence separately",
       "statistical_view": "replace only the exact contaminated schedule pair in the effective view; complete evidence contains 200 admitted sessions plus one or two excluded observed source lanes and two replacement sessions",
       "claim_policy": "effective claim eligibility may be true only when the recovered 200-session matrix satisfies every ordinary acceptance, provenance, and positive-statistics gate",

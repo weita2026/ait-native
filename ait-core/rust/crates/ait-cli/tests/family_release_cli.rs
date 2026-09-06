@@ -119,6 +119,22 @@ fn initialize_internal_repo(root: &Path, name: &str, default_line: &str) {
     .unwrap();
 }
 
+// Package tests consume an imported coordinator Snapshot. Task authoring is
+// exercised by the public workflow tests, not by this release fixture seed.
+fn seed_release_snapshot(root: &Path, message: &str) {
+    use ait_core::local_snapshot::LocalSnapshotWriteStore;
+    let repo = ait_cli::runtime::RepoRuntime::discover_from_path(root).unwrap();
+    repo.local_snapshot_operation_store::<1>(&repo.workspace_root())
+        .unwrap()
+        .create_snapshot(
+            &repo.repo_name(),
+            &repo.current_line_name().unwrap(),
+            Some(message),
+            false,
+        )
+        .unwrap();
+}
+
 fn copy_tree(source: &Path, destination: &Path) {
     fs::create_dir_all(destination).unwrap();
     for row in fs::read_dir(source).unwrap() {
@@ -991,16 +1007,7 @@ fn public_family_release_freezes_six_targets_and_emits_rc_handoff_without_releas
         serde_json::to_vec_pretty(&manifest).unwrap(),
     )
     .unwrap();
-    run_json(
-        root,
-        &[
-            "snapshot",
-            "create",
-            "--message",
-            "bind family RC manifest",
-            "--json",
-        ],
-    );
+    seed_release_snapshot(root, "bind family RC manifest");
 
     let candidate = run_json(
         root,
@@ -1370,16 +1377,7 @@ fn family_package_assembles_native_channels_without_endpoint_mutation() {
         serde_json::to_vec_pretty(&manifest).unwrap(),
     )
     .unwrap();
-    run_json(
-        root,
-        &[
-            "snapshot",
-            "create",
-            "--message",
-            "bind native channel fixture",
-            "--json",
-        ],
-    );
+    seed_release_snapshot(root, "bind native channel fixture");
     let candidate = run_json(
         root,
         &[
@@ -1974,16 +1972,7 @@ fn family_package_assembles_registry_channels_without_endpoint_mutation() {
         serde_json::to_vec_pretty(&manifest).unwrap(),
     )
     .unwrap();
-    run_json(
-        root,
-        &[
-            "snapshot",
-            "create",
-            "--message",
-            "bind registry channel fixture",
-            "--json",
-        ],
-    );
+    seed_release_snapshot(root, "bind registry channel fixture");
     let candidate = run_json(
         root,
         &[
@@ -2485,17 +2474,7 @@ fn family_release_cli_rejects_wrong_channel_and_missing_receipts() {
         serde_json::to_vec_pretty(&manifest).unwrap(),
     )
     .unwrap();
-    run_json(
-        root,
-        &[
-            "snapshot",
-            "create",
-            "--message",
-            "family",
-            "--json",
-            "--full",
-        ],
-    );
+    seed_release_snapshot(root, "family");
 
     let wrong = run(
         root,

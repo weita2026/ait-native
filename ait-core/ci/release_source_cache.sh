@@ -105,13 +105,35 @@ trap cleanup EXIT HUP INT TERM
 (
   cd "${destination}"
   "${ait_bin}" init --json >"${evidence_root}/init.json"
+  "${ait_bin}" config set --workflow-mode solo_local --sprint off \
+    --json >"${evidence_root}/bootstrap-config.json"
+  bootstrap_edit_root="$(cd "${evidence_root}" && pwd -P)/bootstrap-worktree"
+  "${ait_bin}" task start \
+    --title "Release source-cache bootstrap policy" \
+    --intent "Record bootstrap CI and import selector before accepted source hydration" \
+    --local --edit-root "${bootstrap_edit_root}" \
+    --json >"${evidence_root}/bootstrap-task.json"
+  bootstrap_task=$(jq -er --arg root "${bootstrap_edit_root}" '
+    select(.ok == true and .edit_root == $root) |
+    .task_id | select(test("^L[A-Za-z0-9]*T-[0-9]+$"))
+  ' "${evidence_root}/bootstrap-task.json")
+  mkdir -p "${bootstrap_edit_root}/ci"
+  cp "${destination}/ci/patch_ci.json" "${bootstrap_edit_root}/ci/patch_ci.json"
+  cp "${destination}/ait-external.toml" "${bootstrap_edit_root}/ait-external.toml"
+  (
+    cd "${bootstrap_edit_root}"
+    "${ait_bin}" task finish "${bootstrap_task}" \
+      --message "Release source-cache bootstrap policy" --local \
+      --json >"${evidence_root}/bootstrap-finish.json"
+  )
+  jq -e --arg task "${bootstrap_task}" '
+    .ok == true and .task_id == $task and .target_line == "main" and
+    .closeout.task_status == "completed" and .closeout.worktree_status == "removed"
+  ' "${evidence_root}/bootstrap-finish.json" >/dev/null
   if [[ ${bootstrap_line} != main ]]; then
     "${ait_bin}" line rename main "${bootstrap_line}" \
       --json >"${evidence_root}/bootstrap-line.json"
   fi
-  "${ait_bin}" snapshot create \
-    --message "Release source-cache bootstrap policy" \
-    --json >"${evidence_root}/bootstrap-snapshot.json"
   "${ait_bin}" config set \
     --id-namespace-prefix "${namespace}" \
     --json >"${evidence_root}/config.json"

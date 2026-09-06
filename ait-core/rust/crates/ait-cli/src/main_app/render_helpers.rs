@@ -96,10 +96,9 @@ fn compact_status_payload(payload: &JsonValue) -> JsonValue {
 }
 
 fn shell_quote_text(text: &str) -> String {
-    if text
-        .chars()
-        .all(|character| character.is_ascii_alphanumeric() || matches!(character, '/' | '-' | '_' | '.' | ':'))
-    {
+    if text.chars().all(|character| {
+        character.is_ascii_alphanumeric() || matches!(character, '/' | '-' | '_' | '.' | ':')
+    }) {
         text.to_string()
     } else {
         format!("'{}'", text.replace('\'', "'\"'\"'"))
@@ -147,6 +146,8 @@ fn compact_snapshot_create_payload(payload: &JsonValue) -> JsonValue {
         "command": "snapshot.create",
         "ok": true,
         "snapshot_id": cloned_field(payload, "snapshot_id"),
+        "task_id": cloned_field(payload, "task_id"),
+        "change_id": cloned_field(payload, "change_id"),
         "line_name": cloned_field(payload, "line_name"),
         "parent_snapshot_id": cloned_field(payload, "parent_snapshot_id"),
         "message": cloned_field(payload, "message"),
@@ -256,13 +257,7 @@ fn row_recency_key(row: &JsonValue) -> String {
 }
 
 fn row_identity_key(row: &JsonValue) -> String {
-    for field in [
-        "change_ref",
-        "task_id",
-        "plan_id",
-        "snapshot_id",
-        "line_id",
-    ] {
+    for field in ["change_ref", "task_id", "plan_id", "snapshot_id", "line_id"] {
         let value = string_field(row.get(field));
         if !value.is_empty() {
             return value;
@@ -306,11 +301,7 @@ fn print_agent_list(
                     total_count
                 );
             } else {
-                println!(
-                    "shown: {} {label} ({} total)",
-                    matching.len(),
-                    total_count
-                );
+                println!("shown: {} {label} ({} total)", matching.len(), total_count);
             }
         }
         _ => println!("shown: {}/{}", matching.len(), total_count),
@@ -587,10 +578,7 @@ fn emit_status_result(
             .and_then(JsonValue::as_i64)
             .unwrap_or(0);
         if cleanup + protected > 0 {
-            rows.push((
-                "lines",
-                format!("{cleanup} cleanup, {protected} protected"),
-            ));
+            rows.push(("lines", format!("{cleanup} cleanup, {protected} protected")));
         }
     }
     let mut reconciliation_next = String::new();
@@ -617,8 +605,7 @@ fn emit_status_result(
         if protected > 0 {
             findings.push(format!("{protected} protected"));
         }
-        reconciliation_next =
-            status_reconciliation_next(reconciliation, safe, manual, protected);
+        reconciliation_next = status_reconciliation_next(reconciliation, safe, manual, protected);
         if !findings.is_empty() {
             rows.push(("reconciliation", findings.join(", ")));
         }
@@ -723,10 +710,7 @@ fn render_remote_add_text(payload: &JsonValue) -> Result<String, String> {
             String::new(),
             "Patchset CI".to_string(),
             format!("status: {}", string_field(patch_ci.get("status"))),
-            format!(
-                "manifest: {}",
-                string_field(patch_ci.get("manifest_path"))
-            ),
+            format!("manifest: {}", string_field(patch_ci.get("manifest_path"))),
             format!("blocking_suites: {suites}"),
         ]);
         if patch_ci
@@ -736,8 +720,7 @@ fn render_remote_add_text(payload: &JsonValue) -> Result<String, String> {
         {
             lines.extend([
                 "Configure test commands at `suites[].runner.commands`.".to_string(),
-                "Keep `plane: patchset`, `mode: gate`, and `default_blocking: true`."
-                    .to_string(),
+                "Keep `plane: patchset`, `mode: gate`, and `default_blocking: true`.".to_string(),
                 "After future CI changes, create a new Snapshot before pushing.".to_string(),
             ]);
         } else {
@@ -815,10 +798,6 @@ fn emit_queue_summary_result(payload: &JsonValue, json_output: bool) -> Result<(
                 string_field(summary.get("local_draft_task_count")),
             ),
             (
-                "local draft changes",
-                string_field(summary.get("local_draft_change_count")),
-            ),
-            (
                 "workspace changed",
                 string_field(summary.get("workspace_changed_count")),
             ),
@@ -850,6 +829,17 @@ fn emit_task_audit_result(
     if json_output {
         return print_json(payload);
     }
+    let change_rows = payload.get("changes").and_then(JsonValue::as_array);
+    let active = change_rows.map_or(0, |rows| rows.iter().filter(|row| {
+        let change = row.get("change").unwrap_or(row);
+        !matches!(string_field(change.get("status")).as_str(), "landed" | "archived" | "superseded" | "canceled" | "abandoned")
+    }).count());
+    let display = if active <= 1 {
+        task_workflow_display_payload(payload, task_id)
+    } else {
+        payload.clone()
+    };
+    let payload = &display;
     let obj = payload
         .as_object()
         .ok_or_else(|| "task audit payload must decode to an object.".to_string())?;
@@ -869,9 +859,7 @@ fn emit_task_audit_result(
         .get("target")
         .and_then(JsonValue::as_object)
         .ok_or_else(|| "task audit target must decode to an object.".to_string())?;
-    let task_land_closeout = obj
-        .get("task_land_closeout")
-        .and_then(JsonValue::as_object);
+    let task_land_closeout = obj.get("task_land_closeout").and_then(JsonValue::as_object);
     let task_status = string_field(task.get("status"));
     let workflow_state = string_field(workflow.get("state"));
     let action = obj
@@ -937,10 +925,15 @@ fn emit_task_audit_result(
         }
     }
     if let Some(change_rows) = obj.get("changes").and_then(JsonValue::as_array) {
+        // Exact rows remain available when there is an actual choice to make.
+        // A normal single delivery needs only its Task summary above.
+        if active <= 1 {
+            return Ok(());
+        }
         let (projected, has_target_state) = project_task_audit_change_text_rows(change_rows);
         if !projected.is_empty() {
             println!();
-            println!("changes");
+            println!("multiple work items: select an exact reference");
             let columns = if has_target_state {
                 &["change", "status", "target_state"][..]
             } else {
@@ -996,10 +989,7 @@ fn emit_review_record_result(
     )
 }
 
-fn emit_review_code_submit_result(
-    payload: &JsonValue,
-    json_output: bool,
-) -> Result<(), String> {
+fn emit_review_code_submit_result(payload: &JsonValue, json_output: bool) -> Result<(), String> {
     if json_output {
         return print_json(payload);
     }
@@ -1014,18 +1004,12 @@ fn emit_review_code_submit_result(
             ("patchset_id", string_field(payload.get("patchset_id"))),
             ("code_reviewer", string_field(payload.get("reviewer"))),
             ("code_action", string_field(payload.get("action"))),
-            (
-                "task_review_mode",
-                string_field(task_review.get("mode")),
-            ),
+            ("task_review_mode", string_field(task_review.get("mode"))),
             (
                 "task_review_status",
                 string_field(task_review.get("status")),
             ),
-            (
-                "task_reviewer",
-                string_field(task_review.get("reviewer")),
-            ),
+            ("task_reviewer", string_field(task_review.get("reviewer"))),
         ],
     );
     Ok(())
@@ -1195,13 +1179,7 @@ fn task_start_progress_line(payload: &JsonValue) -> Option<String> {
                 .and_then(JsonValue::as_str)
                 .unwrap_or("unknown")
         )),
-        "change_created" => Some(format!(
-            "change created: {}",
-            payload
-                .get("change_id")
-                .and_then(JsonValue::as_str)
-                .unwrap_or("unknown")
-        )),
+        "change_created" => Some("work initialized".to_string()),
         "worktree_bootstrap_started" => {
             let worktree_name = payload
                 .get("worktree_name")
@@ -1273,16 +1251,13 @@ fn emit_task_start_result(
     let obj = payload
         .as_object()
         .ok_or_else(|| "task start payload must decode to an object.".to_string())?;
-    let change_ref = obj
-        .get("change")
-        .map(task_scoped_change_ref)
-        .unwrap_or_default();
+    let title = string_field(obj.get("title").or_else(|| obj.get("task").and_then(|task| task.get("title"))));
     let cd_command = string_field(obj.get("cd_command"));
     print_key_values(
         "ait task start",
         &[
             ("task", string_field(obj.get("task_id"))),
-            ("change", change_ref),
+            ("title", title),
             ("next", cd_command),
         ],
     );
@@ -1315,6 +1290,7 @@ fn emit_snapshot_create_result(
         false,
         &[
             "snapshot_id",
+            "task_id",
             "line_name",
             "parent_snapshot_id",
             "message",
@@ -1324,6 +1300,7 @@ fn emit_snapshot_create_result(
 
 fn emit_task_finish_result(
     payload: &JsonValue,
+    requested: &str,
     json_output: bool,
     full_output: bool,
 ) -> Result<(), String> {
@@ -1334,7 +1311,7 @@ fn emit_task_finish_result(
             print_json(&compact_task_finish_payload(payload))
         };
     }
-    println!("{}", render_task_finish_text(payload)?);
+    println!("{}", render_task_finish_text(&task_workflow_display_payload(payload, requested))?);
     Ok(())
 }
 
@@ -1686,7 +1663,6 @@ fn emit_worktree_show_result(payload: &JsonValue, json_output: bool) -> Result<(
             "workspace_status",
             "changed_count",
             "bound_task_id",
-            "bound_change_id",
             "target_base_line",
             "cleanup_policy",
             "rebase_state",

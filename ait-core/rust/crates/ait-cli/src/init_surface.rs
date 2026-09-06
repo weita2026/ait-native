@@ -1,6 +1,7 @@
 use crate::agent_harness::converge_agent_workflow_harness;
 use crate::config_surface::config_show;
 use crate::json_support::{encode_value_pretty_with_newline_error_string, parse_value};
+use crate::plan_preferences::{detect_language, PlanPreferences, DEFAULT_STYLE};
 use crate::runtime::{RepoBinaryDbStoreFactory, RepoRuntime, SNAPSHOT_BINARY_DB_WRITE_LAYOUT};
 use crate::task_worktree_layout::detect_init_task_worktree_defaults;
 use ait_core::binary_db::{AuthorityId, LocalStateScope};
@@ -133,6 +134,8 @@ fn init_repo_impl(request: &InitRequest) -> Result<JsonValue, String> {
         "repo_root": repo.authoritative_repo_root().to_string_lossy().to_string(),
         "authority_path": repo.ait_dir.to_string_lossy().to_string(),
         "repo_name": repo.repo_name(),
+        "plan_language": config_payload["plan_language"].clone(),
+        "plan_style": config_payload["plan_style"].clone(),
         "default_line": default_line,
         "workflow_mode": config_payload.get("workflow_mode").cloned().unwrap_or(JsonValue::Null),
         "task_worktree": config_payload.get("task_worktree").cloned().unwrap_or(JsonValue::Null),
@@ -154,8 +157,18 @@ pub fn render_human_init(payload: &JsonValue) {
         _ => "Initialized empty",
     };
     println!(
-        "{verb} AIT repository in {}",
-        display_value(payload.get("authority_path"))
+        "{verb} AIT repository in {} (plan={}/{})",
+        display_value(payload.get("authority_path")),
+        display_value(
+            payload
+                .get("plan_language")
+                .and_then(|value| value.get("value"))
+        ),
+        display_value(
+            payload
+                .get("plan_style")
+                .and_then(|value| value.get("value"))
+        )
     );
     if action == "repaired" {
         for repair in payload
@@ -272,6 +285,8 @@ fn fresh_config(
     request: &ValidatedInitRequest,
 ) -> JsonMap<String, JsonValue> {
     let mut config = JsonMap::new();
+    config.insert("plan_language".to_string(), json!(detect_language()));
+    config.insert("plan_style".to_string(), json!(DEFAULT_STYLE));
     config.insert(
         "repo_name".to_string(),
         JsonValue::String(repo_name.to_string()),
@@ -628,6 +643,7 @@ fn exact_nonempty_json_text(value: &JsonValue, field: &str) -> Result<String, St
 }
 
 fn validate_known_config_fields(config: &JsonMap<String, JsonValue>) -> Result<(), String> {
+    PlanPreferences::from_config(config)?;
     for key in [
         "repo_name",
         "default_line",

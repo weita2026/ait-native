@@ -364,6 +364,17 @@ pub fn load_agent_token_host_shutdown_recovery_view(
     {
         return Err("Host-shutdown source pair unexpectedly contains a completed summary".into());
     }
+    // The host-shutdown contract is pinned to one exact campaign that carries a
+    // single infrastructure recovery, so it keeps its original semantics rather
+    // than generalizing over a list.
+    let base_selection = match base.selections.as_slice() {
+        [only] => only.clone(),
+        _ => {
+            return Err(
+                "Host-shutdown recovery requires exactly one infrastructure recovery".into(),
+            )
+        }
+    };
     let mut effective_schedule = base.effective_schedule.clone();
     for (entry, replacement) in effective_schedule.entries
         [selection.source_pair_start_index..selection.source_pair_start_index + 2]
@@ -398,7 +409,7 @@ pub fn load_agent_token_host_shutdown_recovery_view(
         excluded_runs: base.excluded_runs,
         effective_run_summary_paths: effective_paths,
         excluded_run_summary_paths: base.excluded_run_summary_paths,
-        infrastructure_selection: base.selection,
+        infrastructure_selection: base_selection,
         selection,
     }))
 }

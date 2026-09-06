@@ -393,8 +393,15 @@ fn attention_sections(
 }
 
 fn workflow_notification_body_lines(payload: &Map<String, JsonValue>) -> Vec<String> {
+    workflow_notification_body_lines_with_identity(payload, false)
+}
+
+fn workflow_notification_body_lines_with_identity(
+    payload: &Map<String, JsonValue>,
+    include_identity: bool,
+) -> Vec<String> {
     if notification_source(payload).as_deref() == Some("local_current") {
-        return local_current_workflow_body_lines(payload);
+        return local_current_workflow_body_lines(payload, include_identity);
     }
     let mut sections: Vec<(String, Vec<String>)> = Vec::new();
     let attention_items = task_queue_items(payload, &["attention_required"]);
@@ -430,7 +437,10 @@ fn workflow_notification_body_lines(payload: &Map<String, JsonValue>) -> Vec<Str
     lines
 }
 
-fn local_current_workflow_body_lines(payload: &Map<String, JsonValue>) -> Vec<String> {
+fn local_current_workflow_body_lines(
+    payload: &Map<String, JsonValue>,
+    include_identity: bool,
+) -> Vec<String> {
     let current = task_queue_items(payload, &[])
         .into_iter()
         .take(1)
@@ -447,7 +457,11 @@ fn local_current_workflow_body_lines(payload: &Map<String, JsonValue>) -> Vec<St
         if let Some(change_id) = clean_text(field(Some(change), "change_id")) {
             let status =
                 clean_text(field(Some(change), "status")).unwrap_or_else(|| "active".to_string());
-            item_lines.push(format!("  change={change_id} · status={status}"));
+            item_lines.push(if include_identity {
+                format!("  change={change_id} · status={status}")
+            } else {
+                format!("  work status={status}")
+            });
         }
     }
     lines.extend(item_lines);
@@ -459,7 +473,9 @@ fn notification_source(payload: &Map<String, JsonValue>) -> Option<String> {
 }
 
 pub(crate) fn queue_digest(payload: &Map<String, JsonValue>) -> String {
-    let body_lines = workflow_notification_body_lines(payload);
+    // Keep the existing internal identity-sensitive digest. Hiding display IDs
+    // must not suppress a notification when the focused work changes.
+    let body_lines = workflow_notification_body_lines_with_identity(payload, true);
     let mut digest = json!({
         "actionable": !body_lines.is_empty(),
         "lines": body_lines,
@@ -624,11 +640,6 @@ pub(crate) fn format_task_summary(
 ) -> String {
     let task = object_field(Some(detail), "task");
     let workflow = object_field(Some(detail), "workflow");
-    let changes = detail
-        .get("changes")
-        .and_then(JsonValue::as_array)
-        .cloned()
-        .unwrap_or_default();
     let next_action = object_field(Some(detail), "next_action");
     let mut lines = vec![
         format!(
@@ -643,8 +654,7 @@ pub(crate) fn format_task_summary(
         ),
         format!("intent={}", display_field(task, "intent")),
         format!(
-            "linked_changes={} · next={}",
-            changes.len(),
+            "next={}",
             clean_text(field(next_action, "code")).unwrap_or_else(|| "open_task".to_string())
         ),
     ];
@@ -717,7 +727,7 @@ pub(crate) fn format_task_audit_summary(
             clean_text(field(target, "line_name")).unwrap_or_else(|| "main".to_string())
         ),
         format!(
-            "open_changes={} landed={} on_target={}",
+            "pending_work={} applied={} on_target={}",
             display_or_default(field(summary, "open_change_count"), "0"),
             display_or_default(field(summary, "landed_change_count"), "0"),
             display_or_default(field(summary, "effective_on_target_change_count"), "0"),
@@ -735,14 +745,37 @@ pub(crate) fn format_task_audit_summary(
     if !detail_text.is_empty() {
         lines.push(detail_text);
     }
-    if !changes.is_empty() {
+    let open_count = changes
+        .iter()
+        .filter(|row| {
+            let change = row.get("change").unwrap_or(row);
+            !matches!(
+                change.get("status").and_then(JsonValue::as_str),
+                Some("landed" | "archived" | "superseded" | "canceled" | "abandoned")
+            )
+        })
+        .count();
+    if open_count > 1 {
         lines.push(String::new());
-        lines.push("Linked changes".to_string());
-        for row in changes.iter().take(3).filter_map(JsonValue::as_object) {
-            let change = object_field(Some(row), "change");
+        lines.push("Multiple work items: select an exact reference".to_string());
+        for row in changes.iter().filter_map(JsonValue::as_object) {
+            let change = object_field(Some(row), "change").or(Some(row));
+            if matches!(
+                clean_text(field(change, "status")).as_deref(),
+                Some("landed" | "archived" | "superseded" | "canceled" | "abandoned")
+            ) {
+                continue;
+            }
+            let id = clean_text(field(change, "change_ref"))
+                .unwrap_or_else(|| display_field(change, "change_id"));
+            let reference = if id.starts_with("C-") {
+                format!("{}/{id}", display_field(task, "task_id"))
+            } else {
+                id
+            };
             lines.push(format!(
                 "• {} · status={} · target={}",
-                display_field(change, "change_id"),
+                reference,
                 display_field(change, "status"),
                 display_field(Some(row), "target_state")
             ));

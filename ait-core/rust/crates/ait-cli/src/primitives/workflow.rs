@@ -149,11 +149,85 @@ pub(super) fn workflow_current_worktree_retarget(
     Ok(Some(JsonValue::Object(retarget)))
 }
 
+/// Resolve Task input once at the operation boundary. Internal orchestration
+/// continues to carry the exact Change and its selected Patchset identities.
+fn workflow_task_change_reference(
+    repo: &RepoRuntime,
+    requested: &str,
+    remote_name: Option<&str>,
+) -> Result<String, String> {
+    if !is_task_id(requested) {
+        return Ok(requested.to_string());
+    }
+    let namespace = ait_core::workflow_primitives::workflow_origin_namespace_prefix(
+        "L",
+        Some(&repo.id_namespace_prefix()),
+    )?;
+    let local = requested.starts_with(&format!("{namespace}T-"));
+    let scoped_remote = if local {
+        None
+    } else {
+        Some(
+            normalized_text(remote_name)
+                .or_else(|| repo.default_remote_name())
+                .ok_or("Remote workflow requires a configured remote")?,
+        )
+    };
+    let task = task_show(repo, requested, local, scoped_remote.as_deref())?;
+    if string_field(&task, "task_id").as_deref() != Some(requested) {
+        return Err(format!(
+            "Task lookup for {requested} returned another Task."
+        ));
+    }
+    if !matches!(
+        string_field(&task, "status").as_deref(),
+        Some("active" | "completed")
+    ) {
+        return Err(format!(
+            "Task {requested} is not active or completed; it cannot prepare or finish work."
+        ));
+    }
+    let rows = change_list(repo, local, scoped_remote.as_deref())?;
+    let rows = rows.as_array().ok_or("Change inventory must be an array")?;
+    let reference = select_task_change_reference(rows, requested, TaskChangeSelection::Finish)?
+        .ok_or_else(|| format!("Task {requested} has no work available to prepare or finish. Inspect `ait task audit {requested}`."))?;
+    if !local || string_field(&task, "status").as_deref() == Some("completed") {
+        return Ok(reference);
+    }
+    let change = rows
+        .iter()
+        .find(|row| {
+            change_task_id_from_payload(row).as_deref() == Some(requested)
+                && change_reference_from_payload(row, None).is_ok_and(|id| id == reference)
+        })
+        .ok_or("Selected Task work disappeared from its inventory")?;
+    if string_field(change, "publication_state").as_deref() != Some("published")
+        || string_field(&task, "publication_state").as_deref() != Some("published")
+    {
+        return Err(format!("Task {requested} is still local work. Finish it locally before preparing its completed history for remote review."));
+    }
+    let selected_remote = normalized_text(remote_name)
+        .or_else(|| repo.default_remote_name())
+        .ok_or("Remote workflow requires a configured remote")?;
+    for row in [&task, change] {
+        if string_field(row, "published_remote_name").is_some_and(|name| name != selected_remote) {
+            return Err(format!(
+                "Task {requested} was published to another remote; use its recorded remote."
+            ));
+        }
+    }
+    let remote_task = required_string_field(&task, "published_task_id")?;
+    let remote_change = required_string_field(change, "published_change_id")?;
+    change_reference_for_context(Some(&remote_task), &remote_change)
+}
+
 pub fn workflow_ready_payload(
     repo: &RepoRuntime,
     change_id: &str,
     remote_name: Option<&str>,
 ) -> Result<JsonValue, String> {
+    let resolved_reference = workflow_task_change_reference(repo, change_id, remote_name)?;
+    let change_id = resolved_reference.as_str();
     if let Some(candidate) =
         workflow_final_snapshot_promotion_candidate(repo, change_id, remote_name)?
     {
@@ -379,6 +453,8 @@ pub fn workflow_land_payload(
     change_id: &str,
     remote_name: Option<&str>,
 ) -> Result<JsonValue, String> {
+    let resolved_reference = workflow_task_change_reference(repo, change_id, remote_name)?;
+    let change_id = resolved_reference.as_str();
     let promotion_candidate =
         workflow_final_snapshot_promotion_candidate(repo, change_id, remote_name)?;
     if let Some(candidate) = promotion_candidate.as_ref() {
@@ -752,6 +828,8 @@ pub fn workflow_land_apply<F>(
 where
     F: FnMut(&JsonValue) -> Result<(), String>,
 {
+    let resolved_reference = workflow_task_change_reference(repo, change_id, remote_name)?;
+    let change_id = resolved_reference.as_str();
     let promotion_candidate =
         workflow_final_snapshot_promotion_candidate(repo, change_id, remote_name)?;
     let (resolved_change_id, ready_patchset_is_authoritative, command_change_ref) = if let Some(
@@ -1297,7 +1375,11 @@ fn workflow_land_local(
         .unwrap_or(false)
     {
         let current_line_row = local_line_row(repo, &current_line_name)?;
-        normalized_text(snapshot).or_else(|| string_field(&current_line_row, "head_snapshot_id"))
+        normalized_text(snapshot)
+            .or(task_store
+                .latest_change_snapshot_id(&change_ref)
+                .map_err(|error| error.to_string())?)
+            .or_else(|| string_field(&current_line_row, "head_snapshot_id"))
     } else {
         if snapshot.is_some() {
             return Err(
@@ -1327,7 +1409,8 @@ fn workflow_land_local(
                 "Workspace is dirty ({changed_count} changed{changed_paths_hint}); pass `--message <MESSAGE>` to `ait task finish {change_ref} --local`, or create an intermediate Snapshot first."
             )
         })?;
-        let snapshot = snapshot_create(repo, Some(message.as_str()))?;
+        let snapshot =
+            snapshot_create_for_task(repo, &task_id, &change_ref, Some(message.as_str()))?;
         let revision_snapshot_id = required_string_field(&snapshot, "snapshot_id")?;
         created_snapshot = Some(snapshot);
         Some(revision_snapshot_id)
@@ -1374,7 +1457,7 @@ fn workflow_land_local(
                 && string_field(row, "change_id").as_deref() != Some(local_change_id.as_str())
                 && !matches!(
                     string_field(row, "status").unwrap_or_default().as_str(),
-                    "landed" | "archived"
+                    "landed" | "archived" | "canceled" | "abandoned"
                 )
         })
         .collect::<Vec<_>>();

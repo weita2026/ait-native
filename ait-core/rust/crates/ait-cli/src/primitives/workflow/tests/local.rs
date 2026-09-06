@@ -1,10 +1,182 @@
 use super::*;
-use crate::primitives::change_flow::change_local_create_with_change_store;
+use crate::primitives::change_flow::{
+    change_local_close_with_change_store, change_local_create_with_change_store,
+    change_local_mark_published_with_change_store,
+};
 use crate::primitives::workflow::local_completion::{
     workflow_history_prepare_entries, workflow_staged_history_prepare_request,
     workflow_validate_history_publication_response,
 };
 use crate::primitives::worktree::create_local_line_with_line_store;
+
+#[test]
+fn workflow_task_input_uses_recorded_cross_ordinal_publication_without_writes() {
+    for (selected_ordinal, remote_ordinal) in [(1, 2), (2, 1)] {
+        let temp = tempdir().unwrap();
+        init_repo(&InitRequest {
+            root: temp.path().to_path_buf(),
+            name: Some("fixture-ait".to_string()),
+            default_line: "main".to_string(),
+            policy_profile: "prototype".to_string(),
+            default_author_mode: "ai_with_human_review".to_string(),
+            default_model: None,
+            repair_existing: false,
+        })
+        .unwrap();
+        let repo = RepoRuntime::discover_from_path(temp.path()).unwrap();
+        let task_store = repo.task_store().unwrap();
+        let change_store = repo.change_store().unwrap();
+        let task = task_local_create_with_task_store(
+            &task_store,
+            "fixture-ait",
+            "Cross ordinal publication",
+            "Preserve exact remote mapping",
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        let task_id = required_string_field(&task, "task_id").unwrap();
+        let mut selected_ref = String::new();
+        for ordinal in 1..=2 {
+            let change = change_local_create_with_change_store(
+                &change_store,
+                "fixture-ait",
+                &task_id,
+                "Mapped work",
+                "main",
+                None,
+                None,
+            )
+            .unwrap();
+            let reference = required_string_field(&change, "change_ref").unwrap();
+            assert!(reference.ends_with(&format!("/C-{ordinal:02}")));
+            if ordinal == selected_ordinal {
+                selected_ref = reference;
+            } else {
+                change_local_close_with_change_store(&change_store, &reference, "archived")
+                    .unwrap();
+            }
+        }
+        let unpublished =
+            workflow_task_change_reference(&repo, &task_id, Some("origin")).unwrap_err();
+        assert!(unpublished.contains("still local work"), "{unpublished}");
+        let remote_ref = format!("RT-0009/C-{remote_ordinal:02}");
+        task_local_mark_published_with_task_store(
+            &task_store,
+            &task_id,
+            Some("origin"),
+            Some("RT-0009"),
+        )
+        .unwrap();
+        change_local_mark_published_with_change_store(
+            &change_store,
+            &selected_ref,
+            Some("origin"),
+            Some(&remote_ref),
+            false,
+        )
+        .unwrap();
+        let before = change_list(&repo, true, None).unwrap();
+        assert_eq!(
+            workflow_task_change_reference(&repo, &task_id, Some("origin")).unwrap(),
+            remote_ref
+        );
+        assert_eq!(
+            workflow_task_change_reference(&repo, &selected_ref, Some("origin")).unwrap(),
+            selected_ref
+        );
+        let error = workflow_task_change_reference(&repo, &task_id, Some("other")).unwrap_err();
+        assert!(error.contains("another remote"), "{error}");
+        assert_eq!(change_list(&repo, true, None).unwrap(), before);
+    }
+}
+
+#[test]
+fn completed_task_input_keeps_the_existing_history_boundary() {
+    let (_temp, repo, base, revision, reference) = local_land_fixture(1);
+    let (task_id, _) = reference.split_once('/').unwrap();
+    let resolved = workflow_task_change_reference(&repo, task_id, Some("origin")).unwrap();
+    assert_eq!(resolved, reference);
+    let (entries, _) =
+        workflow_local_history_entries(&repo, &resolved, "main", &base, &revision).unwrap();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0]["local_change_ref"], reference);
+    assert_eq!(entries[0]["pre_land_target_snapshot_id"], base);
+    assert_eq!(entries[0]["landed_snapshot_id"], revision);
+}
+
+#[test]
+fn completed_task_input_does_not_bypass_multi_change_history_promotion_limit() {
+    let (temp, repo, base, _, _) = local_land_fixture(0);
+    let task_store = repo.task_store().unwrap();
+    let change_store = repo.change_store().unwrap();
+    let task = task_local_create_with_task_store(
+        &task_store,
+        "fixture-ait",
+        "Two accepted changes",
+        "Preserve promotion boundary",
+        None,
+        None,
+        None,
+        None,
+    )
+    .unwrap();
+    let task_id = required_string_field(&task, "task_id").unwrap();
+    let mut previous = base.clone();
+    let mut last_ref = String::new();
+    for ordinal in 1..=2 {
+        let change = change_local_create_with_change_store(
+            &change_store,
+            "fixture-ait",
+            &task_id,
+            "Independent work",
+            "main",
+            None,
+            Some(&previous),
+        )
+        .unwrap();
+        last_ref = required_string_field(&change, "change_ref").unwrap();
+        fs::write(
+            temp.path().join("history.txt"),
+            format!("accepted {ordinal}"),
+        )
+        .unwrap();
+        let snapshot = create_local_snapshot(
+            temp.path().to_str().unwrap(),
+            "fixture-ait",
+            "main",
+            Some("accepted work"),
+            false,
+        )
+        .unwrap();
+        let revision = required_string_field(&snapshot, "snapshot_id").unwrap();
+        workflow_local_change_land_with_change_store(
+            &change_store,
+            &last_ref,
+            "main",
+            &revision,
+            Some(&previous),
+        )
+        .unwrap();
+        previous = revision;
+    }
+    workflow_local_task_close_with_task_store(&task_store, &task_id, "completed").unwrap();
+    let before = change_list(&repo, true, None).unwrap();
+    assert!(
+        workflow_task_change_reference(&repo, &task_id, Some("origin"))
+            .unwrap_err()
+            .contains("multiple finishable changes")
+    );
+    let error =
+        workflow_local_history_entries(&repo, &last_ref, "main", &base, &previous).unwrap_err();
+    assert!(
+        error.contains("owns more than one included landed Change"),
+        "{error}"
+    );
+    assert_eq!(change_list(&repo, true, None).unwrap(), before);
+}
 
 #[test]
 fn patchset_head_relation_preserves_snapshot_direction() {

@@ -1,0 +1,60 @@
+{
+  "contract": "ait-agent-token-benchmark-campaign/v1",
+  "campaign_id": "game-v1-claude-fable51-max-sprintoff-mirror-smoke10-20260904-r6",
+  "protocol_revision": "game-development-2026-08-31.52",
+  "campaign_scope": "smoke",
+  "accounting_profile": "steady_state_task_cost",
+  "ait_sprint_mode": "off",
+  "functional_replacement_policy": "none",
+  "seed": 2026082832,
+  "attempts_per_cell": 1,
+  "workload_ids": [
+    "GD-01",
+    "GD-02",
+    "GD-03",
+    "GD-04",
+    "GD-05"
+  ],
+  "modes": [
+    "git_linear_single_session",
+    "ait_linear_single_session"
+  ],
+  "model": {
+    "provider": "anthropic",
+    "model_id": "claude-fable-5-1",
+    "model_revision": "claude-fable-5-1-provider-canonical-observed-2026-08-31",
+    "reasoning_effort": "max"
+  },
+  "runtime": {
+    "executor": "claude",
+    "codex_program": "codex",
+    "claude_program": "/opt/homebrew/bin/claude",
+    "executor_version": "2.1.258 (Claude Code)",
+    "ait_version": "ait 1.1.1",
+    "git_version": "git version 2.50.1 (Apple Git-155)",
+    "node_version": "v25.9.0",
+    "browser_version": "Google Chrome 152.0.7977.76",
+    "ait_program": "/Users/weita/.local/bin/ait",
+    "git_program": "/usr/bin/git",
+    "node_program": "/opt/homebrew/bin/node",
+    "browser_program": "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+    "fixture_manifest": "../../fixtures/agent-token-game-v1/manifest.json",
+    "run_timeout_seconds": 1800,
+    "ait_first_use_worktree_add_dir": null,
+    "project_doc_max_bytes": 0
+  },
+  "cache_class": "provider_default_fresh_ephemeral_session",
+  "network_policy": "disabled_except_loopback",
+  "tool_policy": "claude_code_local_tools",
+  "bootstrap_resamples": 2000,
+  "limitations": [
+    "Reissue -r4: earlier attempts stopped before measured work as each stale runtime pin was caught in turn (Claude Code, the AIT subject, then Chrome), and then because ait 1.1.1 tracks the mirrored CLAUDE.md as authored Markdown, which the bootstrap now reconciles.",
+    "Sprint-off smoke on claude-fable-5-1 under Claude Code 2.1.258. Executor version is a pinned axis, so no evidence recorded under 2.1.235 may be pooled with this campaign.",
+    "Ten sessions establish no savings figure. The smoke exists to learn whether three Fable 5 findings still hold: workflow requests staying at two, comparable tool-call batching, and whether the provider substitutes another model.",
+    "Carries the configuration Fable 5 converged on: guidance mirrored into CLAUDE.md and auto-loaded, AGENTS.md and the generated docs tree purged, explicit chained --edit-root start, no functional replacement.",
+    "claude_model_admission is as_shipped: a provider-side substitution does not stop the run and terminal usage already sums every served model.",
+    "Never publication eligible and never pooled."
+  ],
+  "ait_edit_root_mode": "explicit",
+  "claude_model_admission": "as_shipped"
+}

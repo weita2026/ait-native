@@ -143,6 +143,8 @@ where
     F: FnMut(&JsonValue) -> Result<(), String>,
 {
     let _apply_range = perfetto_range!("ait.workflow_ready.apply");
+    let resolved_reference = workflow_task_change_reference(repo, change_id, remote_name)?;
+    let change_id = resolved_reference.as_str();
     let mut final_snapshot_promotion = None;
     let mut ready_patchset_is_authoritative = false;
     let mut effective_change_id = change_id.to_string();

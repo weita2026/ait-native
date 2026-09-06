@@ -58,6 +58,42 @@ impl<const WRITE_LAYOUT: u32> LocalContentBinaryDb<WRITE_LAYOUT> {
         is_worktree: bool,
         options: SnapshotAuthoringOptions,
     ) -> Result<JsonValue, String> {
+        self.create_snapshot_content_with_workflow_binding(
+            repo_name,
+            line_name,
+            parent_snapshot_ids,
+            message,
+            is_worktree,
+            options,
+            None,
+        )
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "preserves the content authoring contract with an optional validated workflow owner"
+    )]
+    pub fn create_snapshot_content_with_workflow_binding(
+        &self,
+        repo_name: &str,
+        line_name: &str,
+        parent_snapshot_ids: &[String],
+        message: Option<&str>,
+        is_worktree: bool,
+        options: SnapshotAuthoringOptions,
+        binding: Option<(&crate::workflow_binary_db::SnapshotWorkflowBinding, &str)>,
+    ) -> Result<JsonValue, String> {
+        if let Some((binding, namespace)) = binding {
+            if !is_worktree || binding.line_name != line_name {
+                return Err(
+                    "Snapshot workflow binding does not match the authoring Line/worktree"
+                        .to_string(),
+                );
+            }
+            crate::workflow_binary_db::BinaryDbWorkflowStore::<_, WRITE_LAYOUT>::new_with_namespace(
+                self.db().clone(), repo_name, namespace,
+            ).validate_snapshot_binding(binding).map_err(|error| error.to_string())?;
+        }
         let _snapshot_range = crate::perfetto_range!("ait.core.snapshot.create");
         let total_started = Instant::now();
         let repo_root = {
@@ -565,25 +601,33 @@ impl<const WRITE_LAYOUT: u32> LocalContentBinaryDb<WRITE_LAYOUT> {
                 ));
             }
         }
-        coordinator.record_snapshot(
-            BinaryDbCommandScope::ContentWrite,
-            &BinaryDbSnapshotWriteInput {
-                snapshot_id: snapshot_id.clone(),
-                parent_snapshot_ids: normalized_parent_snapshot_ids.clone(),
-                root_tree_pack_id: tree_pack_id.clone(),
-                root_entry_ordinal,
-                manifest_hash: revision_hash.clone(),
-                message: normalized_message.clone(),
-                line_name: normalized_line_name.clone(),
-                snapshot_kind: "line".to_string(),
-                file_count: file_entries.len() as i64,
-                total_bytes: file_entries
-                    .iter()
-                    .map(|entry| entry.size_bytes)
-                    .sum::<i64>(),
-                created_at: created_at.clone(),
-            },
-        )?;
+        let snapshot_input = BinaryDbSnapshotWriteInput {
+            snapshot_id: snapshot_id.clone(),
+            parent_snapshot_ids: normalized_parent_snapshot_ids.clone(),
+            root_tree_pack_id: tree_pack_id.clone(),
+            root_entry_ordinal,
+            manifest_hash: revision_hash.clone(),
+            message: normalized_message.clone(),
+            line_name: normalized_line_name.clone(),
+            snapshot_kind: "line".to_string(),
+            file_count: file_entries.len() as i64,
+            total_bytes: file_entries
+                .iter()
+                .map(|entry| entry.size_bytes)
+                .sum::<i64>(),
+            created_at: created_at.clone(),
+        };
+        if let Some((binding, namespace)) = binding {
+            coordinator.record_snapshot_with_workflow_binding(
+                BinaryDbCommandScope::ContentWrite,
+                &snapshot_input,
+                binding,
+                repo_name,
+                namespace,
+            )?;
+        } else {
+            coordinator.record_snapshot(BinaryDbCommandScope::ContentWrite, &snapshot_input)?;
+        }
         #[cfg(feature = "perfetto-tracing")]
         drop(_metadata_range);
         phase_timings_ms.insert(

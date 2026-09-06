@@ -14,6 +14,8 @@ destination=$3
 evidence_output=$4
 template_root=${repo_root}/release/monorepo
 readme_template=${template_root}/README.template
+readme_cn_template=${template_root}/README_CN.template
+readme_zh_template=${template_root}/README_ZH.template
 contributing_template=${template_root}/CONTRIBUTING.template
 security_template=${template_root}/SECURITY.template
 code_of_conduct_template=${template_root}/CODE_OF_CONDUCT.template
@@ -110,6 +112,8 @@ for output in "${destination}" "${evidence_output}"; do
 done
 if [[ ! -d ${template_root} || -L ${template_root} ||
   ! -f ${readme_template} || -L ${readme_template} ||
+  ! -f ${readme_cn_template} || -L ${readme_cn_template} ||
+  ! -f ${readme_zh_template} || -L ${readme_zh_template} ||
   ! -f ${contributing_template} || -L ${contributing_template} ||
   ! -f ${security_template} || -L ${security_template} ||
   ! -f ${code_of_conduct_template} || -L ${code_of_conduct_template} ||
@@ -529,14 +533,13 @@ mkdir -p \
   "${staging}/docs" \
   "${staging}/LICENSES" \
   "${staging}/release/oci"
-cp "${readme_template}" "${staging}/README.md"
-# The PyPI version must land before the tag: the transform tool rejects a
-# target that already contains its to value, and a stable version such as
-# 1.0.0 is a substring of its own v1.0.0 tag.
-node "${transform_tool}" --template-token "${staging}/README.md" \
-  '@AIT_PYPI_VERSION@' "${python_version}"
-node "${transform_tool}" --template-token "${staging}/README.md" \
-  '@AIT_RELEASE_TAG@' "${family_tag}"
+for readme_name in README README_CN README_ZH; do
+  cp "${template_root}/${readme_name}.template" "${staging}/${readme_name}.md"
+  node "${transform_tool}" --template-token "${staging}/${readme_name}.md" \
+    '@AIT_PYPI_VERSION@' "${python_version}"
+  node "${transform_tool}" --template-token "${staging}/${readme_name}.md" \
+    '@AIT_RELEASE_TAG@' "${family_tag}"
+done
 cp "${contributing_template}" "${staging}/CONTRIBUTING.md"
 cp "${security_template}" "${staging}/SECURITY.md"
 cp "${code_of_conduct_template}" "${staging}/CODE_OF_CONDUCT.md"

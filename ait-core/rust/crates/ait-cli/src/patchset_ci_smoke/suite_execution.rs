@@ -117,6 +117,32 @@ impl PatchsetSmokeSuite for StableSmokeSuite {
             .map_err(|_| "fake remote state lock poisoned".to_string())?
             .remote_head_snapshot_id = Some(FIXTURE_BASE_SNAPSHOT_ID.to_string());
 
+        let started = json_output(
+            root,
+            &[
+                "task",
+                "start",
+                "--title",
+                "Stable smoke",
+                "--intent",
+                "Verify the remote workflow",
+                "--json",
+                "--full",
+            ],
+        )?;
+        let task_id = string_field(&started, "task_id").ok_or("Task start omitted task_id")?;
+        let change_id =
+            string_field(&started["change"], "change_id").ok_or("Task start omitted Change")?;
+        let change_ref = format!("{task_id}/{change_id}");
+        let worktree_path = string_field(&started["worktree"], "path")
+            .map(PathBuf::from)
+            .ok_or("Task start omitted worktree path")?;
+        let root = worktree_path.as_path();
+        let change_url = format!(
+            "/v1/native/repository-authorities/7/changes/{}",
+            change_ref.replace('/', "%2F")
+        );
+
         write_file(
             &root.join("src/lib.rs"),
             "pub fn example() -> &'static str { \"reviewable\" }\n",
@@ -126,6 +152,7 @@ impl PatchsetSmokeSuite for StableSmokeSuite {
             &[
                 "snapshot",
                 "create",
+                &change_ref,
                 "--message",
                 "reviewable snapshot",
                 "--json",
@@ -139,7 +166,7 @@ impl PatchsetSmokeSuite for StableSmokeSuite {
             &[
                 "patchset",
                 "publish",
-                "RC-1",
+                &change_ref,
                 "--summary",
                 "Native Rust patchset",
                 "--json",
@@ -173,7 +200,7 @@ impl PatchsetSmokeSuite for StableSmokeSuite {
                 "review",
                 "team",
                 "approve",
-                "RC-1",
+                &change_ref,
                 "--patchset",
                 &patchset_id,
                 "--json",
@@ -189,7 +216,7 @@ impl PatchsetSmokeSuite for StableSmokeSuite {
                 "review",
                 "code",
                 "submit",
-                "RC-1",
+                &change_ref,
                 "--patchset",
                 &patchset_id,
                 "--message",
@@ -220,7 +247,7 @@ impl PatchsetSmokeSuite for StableSmokeSuite {
             return Err("policy eval smoke did not pass".to_string());
         }
 
-        let task_land = json_output(root, &["task", "finish", "RT-1", "--json", "--full"])?;
+        let task_land = json_output(root, &["task", "finish", &change_ref, "--json", "--full"])?;
         if string_field(&task_land, "apply_status").as_deref() != Some("done") {
             return Err(
                 "task finish smoke did not complete the Land and Task closeout".to_string(),
@@ -233,10 +260,10 @@ impl PatchsetSmokeSuite for StableSmokeSuite {
             .lock()
             .map_err(|_| "fake remote log lock poisoned".to_string())?
             .clone();
-        if !logged.iter().any(|row| {
-            row.method == "POST"
-                && row.url == "/v1/native/repository-authorities/7/changes/RC-1/patchsets"
-        }) {
+        if !logged
+            .iter()
+            .any(|row| row.method == "POST" && row.url == format!("{change_url}/patchsets"))
+        {
             return Err(
                 "stable smoke did not publish a patchset to the remote contract".to_string(),
             );
@@ -250,7 +277,7 @@ impl PatchsetSmokeSuite for StableSmokeSuite {
         }
         if !logged.iter().any(|row| {
             row.method == "POST"
-                && row.url == "/v1/native/repository-authorities/7/changes/RC-1/reviews"
+                && row.url == format!("{change_url}/reviews")
                 && row.body.contains("\"action\":\"code_review_summary\"")
         }) {
             return Err("stable smoke did not submit the code review summary".to_string());

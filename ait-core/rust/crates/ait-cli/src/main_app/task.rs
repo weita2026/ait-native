@@ -166,7 +166,7 @@ fn run_task(repo: RepoRuntime, command: TaskCommand) -> Result<ExitCode, String>
                 task_land_automatic_trigger(&payload),
             );
             attach_automatic_reconciliation(&mut payload, reconciliation);
-            emit_task_finish_result(&payload, args.json, args.full)?;
+            emit_task_finish_result(&payload, &args.task_or_change_id, args.json, args.full)?;
             Ok(ExitCode::from(task_land_exit_code(&payload)))
         }
         TaskCommand::Abandon(args) => {

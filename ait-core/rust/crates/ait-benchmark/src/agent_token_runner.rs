@@ -2155,12 +2155,24 @@ fn resume_agent_token_campaign_with_infrastructure_recovery(
     // The contaminated pair is the trailing one the recovery is authorized to
     // replace. Its truncated lane would otherwise abort revalidation before the
     // recovery contract could act, so exempt exactly those two lanes. Every
-    // other lane stays fully validated, and the set is empty unless this exact
-    // authorization was supplied for a campaign with no prior selection.
+    // other lane stays fully validated, and the set is empty unless a genuine
+    // trailing contaminated pair exists.
+    //
+    // A recorded selection grants the exemption on its own. The lane stays in
+    // `runs/` append-only and can never pass validation, so the exemption is a
+    // property of the evidence rather than of the flags on one invocation.
+    // Requiring the flag and no prior selection capped recovery at a single
+    // attempt by another route, which contradicts the `.52` clause that
+    // recognized interruption classes are not capped per campaign, and left a
+    // campaign whose recovery had completed unresumable without re-passing the
+    // flag.
     let selection_exists = campaign_dir
         .join(AGENT_TOKEN_INFRASTRUCTURE_RECOVERY_SELECTION_FILE)
         .is_file();
-    let exempt_run_ids = if recover_infrastructure_pair && !selection_exists {
+    let exempt_run_ids = if infrastructure_recovery_exemption_authorized(
+        recover_infrastructure_pair,
+        selection_exists,
+    ) {
         infrastructure_recovery_exempt_run_ids(&campaign_dir, &schedule)?
     } else {
         BTreeSet::new()
@@ -2206,7 +2218,7 @@ fn resume_agent_token_campaign_with_infrastructure_recovery(
             &schedule,
             &campaign_dir,
         )?;
-        if view.infrastructure_recovery.is_none() || view.host_shutdown_recovery.is_none() {
+        if view.infrastructure_recoveries.is_empty() || view.host_shutdown_recovery.is_none() {
             return Err(
                 "Host-shutdown recovery selection did not produce the combined effective view"
                     .to_string(),
@@ -2226,6 +2238,36 @@ fn resume_agent_token_campaign_with_infrastructure_recovery(
         require_resume_version_identity(&campaign_dir, &raw_runs, &versions)?;
         previous_pair_count = view.effective_runs.len() / 2;
         start_entry = view.effective_runs.len();
+    } else if selection_path.is_file()
+        && !recover_host_shutdown_pair
+        && recover_infrastructure_pair
+        && pending_infrastructure_recovery_pair(&campaign_dir, &schedule, &raw_runs)?
+    {
+        // A later recognized interruption contaminated another pair. The
+        // statistical view requires every unrecovered pair to be valid, so
+        // building it first would reject the very pair this recovery replaces.
+        // The recovery derives its pair start from the frozen schedule prefix,
+        // exactly as the first recovery does, so the view is not needed here.
+        require_resume_version_identity(&campaign_dir, &raw_runs, &versions)?;
+        let recovered_pair_starts = recovered_pair_start_indices(&campaign_dir)?;
+        let (ordered_source_runs, pair_start) = classify_infrastructure_recovery_prefix(
+            &schedule,
+            raw_runs.clone(),
+            &recovered_pair_starts,
+        )?;
+        previous_pair_count = pair_start / 2;
+        start_entry = pair_start + 2;
+        added_run_count = execute_infrastructure_pair_recovery(
+            &manifest,
+            &schedule,
+            &ordered_source_runs,
+            pair_start,
+            &campaign_dir,
+            &versions,
+            &runner_program,
+            &runner_sha256,
+        )?;
+        recovery_performed = true;
     } else if selection_path.is_file() {
         let view = if recover_host_shutdown_pair {
             load_agent_token_campaign_statistical_view_allowing_host_shutdown_partial(
@@ -2236,7 +2278,7 @@ fn resume_agent_token_campaign_with_infrastructure_recovery(
         } else {
             load_agent_token_campaign_statistical_view(&manifest, &schedule, &campaign_dir)?
         };
-        if view.infrastructure_recovery.is_none() {
+        if view.infrastructure_recoveries.is_empty() {
             return Err(
                 "Infrastructure recovery selection did not produce an effective recovery view"
                     .to_string(),
@@ -2254,8 +2296,8 @@ fn resume_agent_token_campaign_with_infrastructure_recovery(
             }
         }
         require_resume_version_identity(&campaign_dir, &raw_runs, &versions)?;
-        previous_pair_count = view.effective_runs.len() / 2;
         if recover_host_shutdown_pair {
+            previous_pair_count = view.effective_runs.len() / 2;
             added_run_count = execute_host_shutdown_pair_recovery(
                 &manifest,
                 &schedule,
@@ -2268,6 +2310,7 @@ fn resume_agent_token_campaign_with_infrastructure_recovery(
             host_shutdown_recovery_performed = true;
             start_entry = view.effective_runs.len().saturating_add(2);
         } else {
+            previous_pair_count = view.effective_runs.len() / 2;
             start_entry = view.effective_runs.len();
         }
     } else {
@@ -2284,7 +2327,7 @@ fn resume_agent_token_campaign_with_infrastructure_recovery(
             );
         }
         let (ordered_source_runs, pair_start) =
-            classify_infrastructure_recovery_prefix(&schedule, raw_runs)?;
+            classify_infrastructure_recovery_prefix(&schedule, raw_runs, &BTreeSet::new())?;
         require_resume_version_identity(&campaign_dir, &ordered_source_runs, &versions)?;
         previous_pair_count = pair_start / 2;
         start_entry = pair_start + 2;
@@ -2449,31 +2492,93 @@ fn resume_agent_token_campaign_with_infrastructure_recovery(
 /// recovery will replace. Returns an empty set when the prefix cannot be
 /// classified, so a malformed campaign still fails revalidation normally
 /// rather than silently skipping checks.
+/// Whether the trailing contaminated pair may be exempted from prefix
+/// revalidation. A recorded selection suffices on its own: the contaminated
+/// lane stays in `runs/` append-only and can never pass validation, so the
+/// exemption follows from the evidence rather than from the flags on one
+/// invocation. This does not decide *which* lanes are exempt — the exempt set
+/// is still empty unless a genuine trailing contaminated pair exists.
+fn infrastructure_recovery_exemption_authorized(
+    recover_infrastructure_pair: bool,
+    selection_exists: bool,
+) -> bool {
+    recover_infrastructure_pair || selection_exists
+}
+
+/// Whether a pair beyond the recorded recoveries is waiting for replacement.
+/// Used so an existing selection continues the suffix when nothing is pending
+/// and authorizes a further recovery when something is.
+fn pending_infrastructure_recovery_pair(
+    campaign_dir: &Path,
+    schedule: &AgentTokenSchedule,
+    raw_runs: &[AgentTokenRunSummary],
+) -> Result<bool, String> {
+    let recovered_pair_starts = recovered_pair_start_indices(campaign_dir)?;
+    Ok(
+        classify_infrastructure_recovery_prefix(
+            schedule,
+            raw_runs.to_vec(),
+            &recovered_pair_starts,
+        )
+        .is_ok(),
+    )
+}
+
+/// Schedule positions of every pair that already carries a recorded recovery.
+fn recovered_pair_start_indices(campaign_dir: &Path) -> Result<BTreeSet<usize>, String> {
+    Ok(
+        crate::agent_token_infrastructure_recovery::load_infrastructure_recovery_selections(
+            campaign_dir,
+        )?
+        .into_iter()
+        .map(|selection| selection.source_pair_start_index)
+        .collect(),
+    )
+}
+
 fn infrastructure_recovery_exempt_run_ids(
     campaign_dir: &Path,
     schedule: &AgentTokenSchedule,
 ) -> Result<BTreeSet<String>, String> {
+    let recovered_pair_starts = recovered_pair_start_indices(campaign_dir)?;
     let runs = crate::load_agent_token_run_summaries(campaign_dir)?;
-    Ok(infrastructure_recovery_exempt_run_ids_for(schedule, runs))
+    Ok(infrastructure_recovery_exempt_run_ids_for(
+        schedule,
+        runs,
+        &recovered_pair_starts,
+    ))
 }
 
 fn infrastructure_recovery_exempt_run_ids_for(
     schedule: &AgentTokenSchedule,
     runs: Vec<AgentTokenRunSummary>,
+    recovered_pair_starts: &BTreeSet<usize>,
 ) -> BTreeSet<String> {
-    let Ok((_, pair_start)) = classify_infrastructure_recovery_prefix(schedule, runs) else {
-        return BTreeSet::new();
-    };
-    schedule
-        .entries
-        .get(pair_start..pair_start + 2)
-        .map(|pair| pair.iter().map(|entry| entry.run_id.clone()).collect())
-        .unwrap_or_default()
+    let mut exempt = BTreeSet::new();
+    // A recovered pair's source lanes stay in `runs/` append-only and can never
+    // pass validation, so they stay exempt for the life of the campaign rather
+    // than only while they are the trailing pair.
+    for pair_start in recovered_pair_starts {
+        if let Some(pair) = schedule.entries.get(*pair_start..pair_start + 2) {
+            exempt.extend(pair.iter().map(|entry| entry.run_id.clone()));
+        }
+    }
+    // Plus the pair a recovery is authorized to replace next, when one is
+    // pending. Every other lane stays fully validated.
+    if let Ok((_, pair_start)) =
+        classify_infrastructure_recovery_prefix(schedule, runs, recovered_pair_starts)
+    {
+        if let Some(pair) = schedule.entries.get(pair_start..pair_start + 2) {
+            exempt.extend(pair.iter().map(|entry| entry.run_id.clone()));
+        }
+    }
+    exempt
 }
 
 fn classify_infrastructure_recovery_prefix(
     schedule: &AgentTokenSchedule,
     runs: Vec<AgentTokenRunSummary>,
+    recovered_pair_starts: &BTreeSet<usize>,
 ) -> Result<(Vec<AgentTokenRunSummary>, usize), String> {
     let mut by_id = runs
         .into_iter()
@@ -2511,7 +2616,22 @@ fn classify_infrastructure_recovery_prefix(
             "Infrastructure recovery source does not end inside one frozen pair".to_string(),
         );
     }
-    if let Some(run) = ordered[..pair_start].iter().find(|run| !run.valid_attempt) {
+    if recovered_pair_starts.contains(&pair_start) {
+        return Err(
+            "The final observed pair already carries a recorded infrastructure recovery"
+                .to_string(),
+        );
+    }
+    // An invalid lane whose pair was already recovered is resolved rather than a
+    // blocker for the pair that still needs replacing; its replacement lanes
+    // live under that recovery's own numbered directory.
+    if let Some((_, run)) = ordered[..pair_start]
+        .iter()
+        .enumerate()
+        .find(|(index, run)| {
+            !run.valid_attempt && !recovered_pair_starts.contains(&(index - index % 2))
+        })
+    {
         return Err(format!(
             "Invalid run {} precedes the recoverable pair",
             run.run_id
@@ -2557,19 +2677,35 @@ fn execute_infrastructure_pair_recovery(
     runner_sha256: &str,
 ) -> Result<usize, String> {
     let selection_path = campaign_dir.join(AGENT_TOKEN_INFRASTRUCTURE_RECOVERY_SELECTION_FILE);
-    if selection_path.exists() {
+    let mut recorded_selections =
+        crate::agent_token_infrastructure_recovery::load_infrastructure_recovery_selections(
+            campaign_dir,
+        )?;
+    if recorded_selections
+        .iter()
+        .any(|selection| selection.source_pair_start_index == pair_start)
+    {
         return Err(format!(
-            "Infrastructure recovery selection already exists: {}",
-            selection_path.display()
+            "Infrastructure recovery already covers the pair starting at {pair_start}"
         ));
     }
-    let recovery_root = campaign_dir.join("infrastructure-recoveries/recovery-0001");
-    if recovery_root.exists() {
-        return Err(format!(
-            "Infrastructure recovery evidence already exists; a second attempt is not admitted: {}",
-            recovery_root.display()
-        ));
-    }
+    // Recognized interruption classes say nothing about the result, so they are
+    // not capped at one per campaign; each recovery is recorded under its own
+    // numbered directory with full provenance. Functional defects and evaluator
+    // rejection remain absolutely non-retryable, which is the risk the former
+    // single-use cap actually guarded against.
+    let recoveries_root = campaign_dir.join("infrastructure-recoveries");
+    let mut ordinal = 1_usize;
+    let recovery_root = loop {
+        let candidate = recoveries_root.join(format!("recovery-{ordinal:04}"));
+        if !candidate.exists() {
+            break candidate;
+        }
+        ordinal += 1;
+        if ordinal > 9999 {
+            return Err("Infrastructure recovery ordinals are exhausted".to_string());
+        }
+    };
     fs::create_dir_all(
         recovery_root
             .parent()
@@ -2603,7 +2739,7 @@ fn execute_infrastructure_pair_recovery(
         .iter()
         .map(|entry| {
             let mut replacement = entry.clone();
-            replacement.run_id = replacement_run_id(&entry.run_id);
+            replacement.run_id = replacement_run_id(&entry.run_id, ordinal);
             replacement
         })
         .collect::<Vec<_>>();
@@ -2634,14 +2770,18 @@ fn execute_infrastructure_pair_recovery(
         execute_agent_token_pairs(&replacement_entries, 1, true, |entry| {
             run_one(manifest, entry, &recovery_root, versions)
         })?;
+    // Admission proves the machine finished the lane, not that the model did
+    // well. A replacement that ran cleanly on the pinned model is admitted even
+    // when it is unaccepted; that lane stays acceptance-penalized like any
+    // other valid unaccepted outcome, which is what
+    // `unfavorable_result_is_valid_evidence` already requires. Gating on the
+    // functional result here would let an interruption stop a campaign because
+    // of a score, and would make recovery a way to launder outcomes.
     let replacement_admitted = stop_reason.is_none()
         && replacement_runs.len() == 2
-        && replacement_runs.iter().all(|run| {
-            run.valid_attempt
-                && run.accepted_equivalent
-                && run.infrastructure_failure.is_none()
-                && run.failure_reasons.is_empty()
-        });
+        && replacement_runs
+            .iter()
+            .all(|run| run.valid_attempt && run.infrastructure_failure.is_none());
     if !replacement_admitted {
         write_json_new(
             &recovery_root.join("result.json"),
@@ -2680,7 +2820,8 @@ fn execute_infrastructure_pair_recovery(
             recovery_artifact(
                 campaign_dir,
                 &format!(
-                    "infrastructure-recoveries/recovery-0001/runs/{}/run-summary.json",
+                    "{}/runs/{}/run-summary.json",
+                    crate::agent_token_infrastructure_recovery::recovery_directory(ordinal),
                     run.run_id
                 ),
                 &run.run_id,
@@ -2692,6 +2833,7 @@ fn execute_infrastructure_pair_recovery(
         campaign_id: manifest.campaign_id.clone(),
         source_protocol_revision: manifest.protocol_revision.clone(),
         policy_revision: AGENT_TOKEN_INFRASTRUCTURE_RECOVERY_POLICY_REVISION.to_string(),
+        recovery_ordinal: ordinal,
         source_pair_start_index: pair_start,
         workload_id: pair[0].workload_id.clone(),
         attempt: pair[0].attempt,
@@ -2705,9 +2847,12 @@ fn execute_infrastructure_pair_recovery(
     crate::agent_token_infrastructure_recovery::validate_selection_identity(
         &selection, manifest, schedule,
     )?;
-    write_json_new(&selection_path, &selection)?;
+    let expected_recovery_count = recorded_selections.len().saturating_add(1);
+    recorded_selections.push(selection);
+    recorded_selections.sort_by_key(|selection| selection.source_pair_start_index);
+    crate::agent_token::write_json_overwrite(&selection_path, &recorded_selections)?;
     let view = load_agent_token_campaign_statistical_view(manifest, schedule, campaign_dir)?;
-    if view.infrastructure_recovery.is_none()
+    if view.infrastructure_recoveries.len() != expected_recovery_count
         || view.effective_runs.len() != pair_start.saturating_add(2)
     {
         return Err(
@@ -2722,6 +2867,7 @@ fn execute_infrastructure_pair_recovery(
             "campaign_id": manifest.campaign_id,
             "admitted": true,
             "preflight_passed": true,
+            "recovery_ordinal": ordinal,
             "source_pair_start_index": pair_start,
             "replacement_run_ids": replacement_runs.iter().map(|run| &run.run_id).collect::<Vec<_>>(),
             "recovery_runner_sha256": runner_sha256,
@@ -3296,7 +3442,9 @@ fn refresh_campaign_derived_views(
         &statistical_view.effective_run_summary_paths,
         &mut report,
     )?;
-    if statistical_view.selection.is_some() || statistical_view.infrastructure_recovery.is_some() {
+    if statistical_view.selection.is_some()
+        || !statistical_view.infrastructure_recoveries.is_empty()
+    {
         let effective_index = AgentTokenRunIndex {
             contract: AGENT_TOKEN_RUN_INDEX_CONTRACT.to_string(),
             campaign_id: manifest.campaign_id.clone(),
@@ -4000,7 +4148,10 @@ fn run_one(
         failure_reasons.push(format!("candidate agent exited with {:?}", codex.exit_code));
     }
     if !evaluator_accepted {
-        failure_reasons.push("functional acceptance rejected the candidate".to_string());
+        failure_reasons.push(
+            crate::agent_token_infrastructure_recovery::FUNCTIONAL_ACCEPTANCE_REJECTED_REASON
+                .to_string(),
+        );
     }
     if browser.status != "passed" {
         failure_reasons.push(format!("browser acceptance status is {}", browser.status));
@@ -4135,18 +4286,18 @@ fn build_measured_prompt(
                     == crate::agent_token::AgentTokenAitEditRootMode::Returned =>
             {
                 format!(
-                "Use the prepared local AIT repository through `{ait}`. Start exactly one unbound task with `{ait} task start --title ... --intent ... --local --json`, retain the returned `task_id`, and enter the returned physical `edit_root` using `next_action.command`. Edit and run project validation there. Pass that `task_id` directly to `{ait} task finish <returned-task-id> --message ... --local --json`. `{ait} task start`, `{ait} task finish`, and `{ait} snapshot create --message ... --json` only when an intermediate checkpoint is necessary, are the complete AIT lifecycle command set for this run; do not invoke any additional AIT lifecycle or management command. Local read-only inspection of this repository is neither required nor prohibited. Do not invoke `git` for any purpose, including after project validation. This candidate intentionally has no Git repository.",
+                "Use the prepared local AIT repository through `{ait}`. Start exactly one unbound task with `{ait} task start --title ... --intent ... --local --json`, retain the returned `task_id`, and enter the returned physical `edit_root` using `next_action.command`. Edit and run project validation there. Pass that `task_id` directly to `{ait} task finish <returned-task-id> --message ... --local --json`. `{ait} task start`, `{ait} task finish`, and `{ait} snapshot create <returned-task-id> --message ... --json` only when an intermediate checkpoint is necessary, are the complete AIT lifecycle command set for this run; do not invoke any additional AIT lifecycle or management command. Local read-only inspection of this repository is neither required nor prohibited. Do not invoke `git` for any purpose, including after project validation. This candidate intentionally has no Git repository.",
                 ait = manifest.runtime.ait_program.display(),
                 )
             }
             AgentTokenAitSprintMode::Off => format!(
-                "Use the prepared local AIT repository through `{ait}`. Start exactly one unbound task and enter its worktree in one step with `{ait} task start --title ... --intent ... --edit-root {edit_root} --local --json && cd {edit_root}`. Retain the returned `task_id`. Edit and run project validation in `{edit_root}`. Pass that `task_id` directly to `{ait} task finish <returned-task-id> --message ... --local --json`. `{ait} task start`, `{ait} task finish`, and `{ait} snapshot create --message ... --json` only when an intermediate checkpoint is necessary, are the complete AIT lifecycle command set for this run; do not invoke any additional AIT lifecycle or management command. Local read-only inspection of this repository is neither required nor prohibited. Do not invoke `git` for any purpose, including after project validation. This candidate intentionally has no Git repository.",
+                "Use the prepared local AIT repository through `{ait}`. Start exactly one unbound task and enter its worktree in one step with `{ait} task start --title ... --intent ... --edit-root {edit_root} --local --json && cd {edit_root}`. Retain the returned `task_id`. Edit and run project validation in `{edit_root}`. Pass that `task_id` directly to `{ait} task finish <returned-task-id> --message ... --local --json`. `{ait} task start`, `{ait} task finish`, and `{ait} snapshot create <returned-task-id> --message ... --json` only when an intermediate checkpoint is necessary, are the complete AIT lifecycle command set for this run; do not invoke any additional AIT lifecycle or management command. Local read-only inspection of this repository is neither required nor prohibited. Do not invoke `git` for any purpose, including after project validation. This candidate intentionally has no Git repository.",
                 ait = manifest.runtime.ait_program.display(),
                 edit_root = edit_root
                     .expect("explicit AIT prompt requires its benchmark-owned edit root"),
             ),
             AgentTokenAitSprintMode::On => format!(
-                "Use the prepared local AIT repository through `{ait}`. Sprint mode is on. Before starting code work, author exactly `{card_path}` with the following Markdown (including the exact refs):\n\n```markdown\n{card}```\n\nStart exactly one bound task and enter its worktree in one step with `{ait} task start --from {card_path}#{item_ref} --intent ... --edit-root {edit_root} --local --json && cd {edit_root}`; do not run a separate plan sync. Retain the returned `task_id`. Edit and run project validation in `{edit_root}`. Pass that `task_id` directly to `{ait} task finish <returned-task-id> --message ... --local --json`; successful finish must automatically close the exact sprint checklist item. `{ait} task start`, `{ait} task finish`, and `{ait} snapshot create --message ... --json` only when an intermediate checkpoint is necessary, are the complete AIT lifecycle command set for this run; do not invoke any additional AIT lifecycle or management command. Local read-only inspection of this repository is neither required nor prohibited. Do not invoke `git` for any purpose, including after project validation. This candidate intentionally has no Git repository.",
+                "Use the prepared local AIT repository through `{ait}`. Sprint mode is on. Before starting code work, author exactly `{card_path}` with the following Markdown (including the exact refs):\n\n```markdown\n{card}```\n\nStart exactly one bound task and enter its worktree in one step with `{ait} task start --from {card_path}#{item_ref} --intent ... --edit-root {edit_root} --local --json && cd {edit_root}`; do not run a separate plan sync. Retain the returned `task_id`. Edit and run project validation in `{edit_root}`. Pass that `task_id` directly to `{ait} task finish <returned-task-id> --message ... --local --json`; successful finish must automatically close the exact sprint checklist item. `{ait} task start`, `{ait} task finish`, and `{ait} snapshot create <returned-task-id> --message ... --json` only when an intermediate checkpoint is necessary, are the complete AIT lifecycle command set for this run; do not invoke any additional AIT lifecycle or management command. Local read-only inspection of this repository is neither required nor prohibited. Do not invoke `git` for any purpose, including after project validation. This candidate intentionally has no Git repository.",
                 ait = manifest.runtime.ait_program.display(),
                 card_path = AIT_SPRINT_CARD_PATH,
                 card = sprint_card_template(&entry.run_id),
@@ -4160,7 +4311,7 @@ fn build_measured_prompt(
             AgentTokenMode::AitLinearSingleSession,
             AgentTokenAccountingProfile::FirstUseTotalCost,
         ) => format!(
-            "Use the local AIT repository through `{ait}`. Run `{ait} init`, then `{ait} config set --workflow-mode solo_local --sprint off --default-author-mode ai_only_experimental --default-model {model} --user-name benchmark-agent --user-email benchmark-agent@example.invalid --json`, and create the baseline with `{ait} snapshot create --message ... --json`. Start exactly one unbound task with `{ait} task start --title ... --intent ... --local --json`, retain the returned `task_id`, and enter the returned physical `edit_root` using `next_action.command`. Edit and run project validation there, then pass that `task_id` directly to `{ait} task finish <returned-task-id> --message ... --local --json`. Local read-only inspection of this repository is neither required nor prohibited. Do not invoke `git` for any purpose, including after project validation. This candidate intentionally has no Git repository.",
+            "Use the local AIT repository through `{ait}`. Run `{ait} init`, then `{ait} config set --workflow-mode solo_local --sprint off --default-author-mode ai_only_experimental --default-model {model} --user-name benchmark-agent --user-email benchmark-agent@example.invalid --json`. Task start creates its internal baseline. Start exactly one unbound task with `{ait} task start --title ... --intent ... --local --json`, retain the returned `task_id`, and enter the returned physical `edit_root` using `next_action.command`. Edit and run project validation there; use `{ait} snapshot create <returned-task-id> --message ... --json` only for an intermediate checkpoint, then pass that `task_id` directly to `{ait} task finish <returned-task-id> --message ... --local --json`. Local read-only inspection of this repository is neither required nor prohibited. Do not invoke `git` for any purpose, including after project validation. This candidate intentionally has no Git repository.",
             ait = manifest.runtime.ait_program.display(),
             model = manifest.model.model_id,
         ),
@@ -4562,7 +4713,7 @@ fn bootstrap_ait(
     // measured treatment; sprint-off removes it too.
     let project_document_path = workspace.join(crate::agent_token::AIT_PURGED_PROJECT_DOCUMENT);
     if project_document_path.exists() {
-        // Mirror the generated guidance into the executor'"'"'s native auto-load
+        // Mirror the generated guidance into the executor's native auto-load
         // channel before removing the file Claude never auto-loads. Marker
         // tests: Claude Code auto-loads CLAUDE.md under the project setting
         // source and never auto-loads AGENTS.md, so this delivers the guidance
@@ -4573,8 +4724,28 @@ fn bootstrap_ait(
                 project_document_path.display()
             )
         })?;
-        fs::write(workspace.join("CLAUDE.md"), guidance)
-            .map_err(|error| format!("Failed to mirror guidance into CLAUDE.md: {error}"))?;
+        fs::write(
+            workspace.join(crate::agent_token::CLAUDE_GUIDANCE_DOCUMENT),
+            guidance,
+        )
+        .map_err(|error| format!("Failed to mirror guidance into CLAUDE.md: {error}"))?;
+        // ait 1.1.1 tracks CLAUDE.md as authored Markdown, so writing it leaves
+        // drift that blocks the very next bootstrap step. Reconcile it here,
+        // where the runner created it, rather than letting an unrelated command
+        // fail later.
+        run_checked_event(
+            &manifest.runtime.ait_program,
+            &[
+                "plan",
+                "sync",
+                crate::agent_token::CLAUDE_GUIDANCE_DOCUMENT,
+                "--local",
+            ],
+            workspace,
+            "bootstrap",
+            events,
+            sequence,
+        )?;
         fs::remove_file(&project_document_path).map_err(|error| {
             format!(
                 "Failed to remove the generated project document {}: {error}",
@@ -7864,7 +8035,7 @@ mod tests {
             })
             .collect::<Vec<_>>();
 
-        let exempt = infrastructure_recovery_exempt_run_ids_for(&schedule, runs);
+        let exempt = infrastructure_recovery_exempt_run_ids_for(&schedule, runs, &BTreeSet::new());
 
         assert_eq!(exempt.len(), 2, "exemption must cover exactly one pair");
         for entry in &schedule.entries[2..4] {
@@ -7884,6 +8055,22 @@ mod tests {
     }
 
     #[test]
+    fn recovery_exemption_survives_a_recorded_selection() {
+        // First attempt: authorized by the flag alone.
+        assert!(infrastructure_recovery_exemption_authorized(true, false));
+        // Repeated attempt: the first attempt wrote the selection, and
+        // requiring its absence capped recovery at one attempt by another
+        // route.
+        assert!(infrastructure_recovery_exemption_authorized(true, true));
+        // Plain resume after a recovery already completed: the contaminated
+        // lane is still present, so it must stay exempt without re-passing the
+        // flag.
+        assert!(infrastructure_recovery_exemption_authorized(false, true));
+        // Nothing authorizes an exemption.
+        assert!(!infrastructure_recovery_exemption_authorized(false, false));
+    }
+
+    #[test]
     fn recovery_exemption_is_empty_when_an_earlier_lane_is_invalid() {
         // classify refuses a prefix whose invalid lane precedes the trailing
         // pair, so nothing is exempted and revalidation still rejects it.
@@ -7900,7 +8087,10 @@ mod tests {
             })
             .collect::<Vec<_>>();
 
-        assert!(infrastructure_recovery_exempt_run_ids_for(&schedule, runs).is_empty());
+        assert!(
+            infrastructure_recovery_exempt_run_ids_for(&schedule, runs, &BTreeSet::new())
+                .is_empty()
+        );
     }
 
     #[test]
@@ -8043,7 +8233,7 @@ mod tests {
         ));
 
         let (ordered, pair_start) =
-            classify_infrastructure_recovery_prefix(&schedule, runs).unwrap();
+            classify_infrastructure_recovery_prefix(&schedule, runs, &BTreeSet::new()).unwrap();
         assert_eq!(pair_start, 2);
         assert_eq!(ordered.len(), 3);
 
@@ -8052,11 +8242,13 @@ mod tests {
             .map(|entry| pair_test_summary(entry, None, true, true))
             .collect::<Vec<_>>();
         functional_failure[2].accepted_equivalent = false;
-        assert!(
-            classify_infrastructure_recovery_prefix(&schedule, functional_failure)
-                .unwrap_err()
-                .contains("lacks a recognized executor infrastructure failure")
-        );
+        assert!(classify_infrastructure_recovery_prefix(
+            &schedule,
+            functional_failure,
+            &BTreeSet::new()
+        )
+        .unwrap_err()
+        .contains("lacks a recognized executor infrastructure failure"));
 
         let mut contaminated_prefix = pair_test_summary(
             &schedule.entries[0],
@@ -8070,20 +8262,74 @@ mod tests {
         let later_pair = schedule.entries[2..]
             .iter()
             .map(|entry| pair_test_summary(entry, None, true, true));
-        let error = classify_infrastructure_recovery_prefix(
-            &schedule,
-            std::iter::once(contaminated_prefix)
+        let contaminated_first_pair = || {
+            std::iter::once(contaminated_prefix.clone())
                 .chain(std::iter::once(pair_test_summary(
                     &schedule.entries[1],
                     None,
                     true,
                     true,
                 )))
-                .chain(later_pair)
-                .collect(),
+                .chain(
+                    schedule.entries[2..]
+                        .iter()
+                        .map(|entry| pair_test_summary(entry, None, true, true)),
+                )
+                .collect::<Vec<_>>()
+        };
+        let _ = later_pair;
+        let error = classify_infrastructure_recovery_prefix(
+            &schedule,
+            contaminated_first_pair(),
+            &BTreeSet::new(),
         )
         .unwrap_err();
         assert!(error.contains("precedes the recoverable pair"), "{error}");
+
+        // Two interruptions in one campaign: the first pair was recovered and a
+        // later pair is contaminated now.
+        let twice_contaminated = || {
+            let mut runs = contaminated_first_pair();
+            let last = runs.len() - 2;
+            runs[last].valid_attempt = false;
+            runs[last].infrastructure_failure = Some("provider_usage_limit".to_string());
+            runs[last]
+                .invalid_reasons
+                .push("infrastructure".to_string());
+            runs
+        };
+
+        // Without the recorded recovery the resolved lane still blocks.
+        let error = classify_infrastructure_recovery_prefix(
+            &schedule,
+            twice_contaminated(),
+            &BTreeSet::new(),
+        )
+        .unwrap_err();
+        assert!(error.contains("precedes the recoverable pair"), "{error}");
+
+        // Once that pair carries a recorded recovery its contaminated lane is
+        // resolved, so the later interruption is still recoverable. Recoveries
+        // are not capped per campaign.
+        let (_, pair_start) = classify_infrastructure_recovery_prefix(
+            &schedule,
+            twice_contaminated(),
+            &BTreeSet::from([0]),
+        )
+        .expect("a resolved earlier pair does not block a later recovery");
+        assert_eq!(pair_start, schedule.entries.len() - 2);
+
+        // The pair that already has a recovery is never recovered twice.
+        let recovered_trailing = classify_infrastructure_recovery_prefix(
+            &schedule,
+            twice_contaminated(),
+            &BTreeSet::from([0, schedule.entries.len() - 2]),
+        )
+        .unwrap_err();
+        assert!(
+            recovered_trailing.contains("already carries a recorded infrastructure recovery"),
+            "{recovered_trailing}"
+        );
     }
 
     #[test]
@@ -8844,7 +9090,7 @@ mod tests {
         assert!(prompt.contains("Do not invoke `git` for any purpose"));
         assert!(prompt.contains("including after project validation"));
         assert!(prompt.contains("This candidate intentionally has no Git repository"));
-        assert!(prompt.contains("snapshot create --message ... --json"));
+        assert!(prompt.contains("snapshot create <returned-task-id> --message ... --json"));
         for inspection_hint in ["ait status", "ait diff", "ait blame"] {
             assert!(
                 !prompt.to_ascii_lowercase().contains(inspection_hint),
@@ -8962,7 +9208,11 @@ mod tests {
         );
         assert!(first_use_prompt.contains("ait init"));
         assert!(first_use_prompt.contains("--workflow-mode solo_local --sprint off"));
-        assert!(first_use_prompt.contains("snapshot create --message ... --json"));
+        assert!(
+            first_use_prompt.contains("snapshot create <returned-task-id> --message ... --json")
+        );
+        assert!(first_use_prompt.contains("Task start creates its internal baseline"));
+        assert!(!first_use_prompt.contains("create the baseline with"));
         assert!(first_use_prompt.contains("Do not invoke `git` for any purpose"));
         assert!(first_use_prompt.contains("including after project validation"));
         assert!(first_use_prompt.contains("This candidate intentionally has no Git repository"));

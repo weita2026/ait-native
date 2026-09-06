@@ -593,7 +593,7 @@ mod tests {
         );
         assert_eq!(
             protocol["protocol_revision"],
-            serde_json::json!("game-development-2026-08-31.48")
+            serde_json::json!("game-development-2026-08-31.52")
         );
         assert_eq!(
             protocol["sampling"]["codex_app_equivalent_managed_prefix_gate"]
@@ -610,7 +610,7 @@ mod tests {
         );
         assert_eq!(
             protocol["sampling"]["infrastructure_pair_recovery"]["execution_limit"],
-            serde_json::json!("one recognized executor-infrastructure pair and one two-lane replacement attempt per campaign; no second executor-infrastructure recovery, repair, or retry is admitted; the exact externally evidenced .34 host-shutdown path is a separate bounded contract")
+            serde_json::json!("recognized interruption classes are not capped per campaign, since an interruption says nothing about the result; each recovery is recorded under its own numbered directory with full provenance. Functional defects and evaluator rejection remain absolutely non-retryable, which is the risk the former single-use cap guarded. The exact externally evidenced .34 host-shutdown path is a separate bounded contract")
         );
         assert_eq!(
             protocol["sampling"]["host_shutdown_pair_recovery"]["contract"],

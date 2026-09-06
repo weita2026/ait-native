@@ -1,15 +1,24 @@
 {
   "contract": "ait-agent-token-benchmark-campaign/v1",
   "campaign_id": "game-v1-claude-fable5-max-sprint-on-natural-smoke10-20260829-r2",
-  "protocol_revision": "game-development-2026-08-31.48",
+  "protocol_revision": "game-development-2026-08-31.52",
   "campaign_scope": "smoke",
   "accounting_profile": "steady_state_task_cost",
   "ait_sprint_mode": "on",
   "functional_replacement_policy": "none",
   "seed": 2026082832,
   "attempts_per_cell": 1,
-  "workload_ids": ["GD-01", "GD-02", "GD-03", "GD-04", "GD-05"],
-  "modes": ["git_linear_single_session", "ait_linear_single_session"],
+  "workload_ids": [
+    "GD-01",
+    "GD-02",
+    "GD-03",
+    "GD-04",
+    "GD-05"
+  ],
+  "modes": [
+    "git_linear_single_session",
+    "ait_linear_single_session"
+  ],
   "model": {
     "provider": "anthropic",
     "model_id": "claude-fable-5",
@@ -20,11 +29,11 @@
     "executor": "claude",
     "codex_program": "codex",
     "claude_program": "/opt/homebrew/bin/claude",
-    "executor_version": "2.1.235 (Claude Code)",
-    "ait_version": "ait 1.1.0",
+    "executor_version": "2.1.258 (Claude Code)",
+    "ait_version": "ait 1.1.1",
     "git_version": "git version 2.50.1 (Apple Git-155)",
     "node_version": "v25.9.0",
-    "browser_version": "Google Chrome 151.0.7922.174",
+    "browser_version": "Google Chrome 152.0.7977.66",
     "ait_program": "/Users/weita/.local/bin/ait",
     "git_program": "/usr/bin/git",
     "node_program": "/opt/homebrew/bin/node",

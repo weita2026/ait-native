@@ -230,6 +230,7 @@ impl<const WRITE_LAYOUT: u32> RepoBinaryDbLocalSnapshotOperationStore<WRITE_LAYO
             content,
             lines,
             worktree_config_path,
+            workflow_binding: None,
         }
     }
 
