@@ -26,7 +26,7 @@ your hands.
 
 [![Recorded AIT Task: initialize, start isolated work, test, finish and trace the result](https://ait-native.dev/public/tour/ait-task-tour.gif)](https://ait-native.dev/demo/#in-action)
 
-A real AIT 1.1.1 command recording, edited into a 33-second replay. It shows one
+Actual AIT command output recorded on 2026-09-07, edited into a 33-second replay. It shows one
 Task completing the same downloadable example below. Paths are shortened;
 playback duration is not a performance measurement.
 [Watch with captions and the full transcript](https://ait-native.dev/demo/#in-action).

@@ -24,7 +24,7 @@ AIT 是以本地工作为主的 CLI，适合将代码修改交给 agent、并对
 
 [![AIT Task 实际录制：初始化、开始隔离工作、测试、完成并追溯结果](https://ait-native.dev/public/tour/ait-task-tour.gif)](https://ait-native.dev/zh-cn/demo/#in-action)
 
-这是 AIT 1.1.1 实际命令输出的录制，剪辑成 33 秒的回放，展示一个 Task 如何完成下方可下载的同一个示例。
+这是 2026-09-07 实际执行 AIT 命令的录制，剪辑成 33 秒的回放，展示一个 Task 如何完成下方可下载的同一个示例。
 路径已简化；播放时间不是性能测量。
 [观看附字幕与完整文字记录的版本](https://ait-native.dev/zh-cn/demo/#in-action)。
 
