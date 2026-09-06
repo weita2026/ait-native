@@ -743,10 +743,6 @@ function firstLand(recorder, aitSpec, root, expectedText, priorState = null) {
     // exit 2. The closeout contract returns a Task-only recovery command for
     // an idempotent resume from the Repository root, where no process holds
     // the worktree.
-    const changeRef = landed.change_ref;
-    if (!/^LT-[0-9]{4,}\/C-[0-9]{2,}$/.test(changeRef ?? "")) {
-      fail("partial candidate Task finish returned invalid internal evidence");
-    }
     if (landed.next_action?.command !== `ait task finish ${taskId} --local`) {
       fail("partial candidate Task finish returned an inconsistent closeout command");
     }
@@ -794,7 +790,6 @@ function firstLand(recorder, aitSpec, root, expectedText, priorState = null) {
       if (
         task.task_id !== taskId ||
         task.status !== "completed" ||
-        change.change_ref !== changeRef ||
         change.task_id !== taskId ||
         change.status !== "landed" ||
         change.landed_snapshot_id !== landed.landed_snapshot_id ||
@@ -823,7 +818,6 @@ function firstLand(recorder, aitSpec, root, expectedText, priorState = null) {
       }
       recorder.observations.windows_partial_task_land_closeout = {
         task_id: taskId,
-        change_ref: changeRef,
         landed_snapshot_id: landed.landed_snapshot_id,
         target_line: landed.target_line,
         feature_line: featureLineName,

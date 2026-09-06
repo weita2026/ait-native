@@ -131,6 +131,11 @@ for (const requiredWindowsCloseout of [
     `Windows direct partial-closeout verification is missing: ${requiredWindowsCloseout}`,
   );
 }
+assert.equal(
+  source.includes("landed.change_ref"),
+  false,
+  "Windows partial closeout must not require an internal Change reference from Task finish",
+);
 const rule = new RegExp(declaration[1]);
 for (const name of [
   "ait-native_1.0.0~rc.11_amd64.deb",
