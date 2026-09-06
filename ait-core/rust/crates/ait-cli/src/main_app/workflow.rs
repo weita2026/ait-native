@@ -345,6 +345,27 @@ fn workflow_cleanup_worktree_name(cleanup: &JsonMap<String, JsonValue>) -> Optio
     workflow_cleanup_worktree_name(worktree)
 }
 
+fn public_workflow_status(status: String) -> String {
+    if status == "landed" {
+        "finished".to_string()
+    } else {
+        status
+    }
+}
+
+fn public_workflow_reason(reason: String) -> String {
+    reason
+        .split('_')
+        .map(|token| match token {
+            "land" => "finish",
+            "landed" => "finished",
+            "landing" => "finishing",
+            _ => token,
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 /// Only rewrite generated command arguments for a Task input whose unique
 /// operation target was already resolved. Never edit IDs inside JSON/evidence.
 fn task_command_text(text: &str, task: &str, mapped_task: &str, exact: &str) -> String {
@@ -583,10 +604,10 @@ fn render_workflow_phase_text(payload: &JsonValue, phase: &str) -> Result<String
     lines.push(String::new());
     lines.push(format!(
         "- status: {}",
-        workflow_default_text(
+        public_workflow_status(workflow_default_text(
             string_field(workflow_nested_value(payload, "change", "status")),
             || "unknown".to_string(),
-        )
+        ))
     ));
     let title = string_field(workflow_nested_value(payload, "task", "title").or_else(|| payload.get("title")));
     if !title.is_empty() {
@@ -666,7 +687,7 @@ fn render_workflow_phase_text(payload: &JsonValue, phase: &str) -> Result<String
         let cleanup_status = workflow_default_text(string_field(cleanup.get("status")), || {
             "unknown".to_string()
         });
-        let cleanup_reason = string_field(cleanup.get("reason"));
+        let cleanup_reason = public_workflow_reason(string_field(cleanup.get("reason")));
         let cleanup_worktree =
             workflow_cleanup_worktree_name(cleanup).unwrap_or_else(|| "unknown".to_string());
         lines.push(String::new());
@@ -686,7 +707,7 @@ fn render_workflow_phase_text(payload: &JsonValue, phase: &str) -> Result<String
         let line_name = workflow_default_text(string_field(closeout.get("line_name")), || {
             "unbound".to_string()
         });
-        let reason = string_field(closeout.get("reason"));
+        let reason = public_workflow_reason(string_field(closeout.get("reason")));
         let error = string_field(closeout.get("error"));
         lines.push(String::new());
         lines.push("Feature Line closeout".to_string());
@@ -705,7 +726,7 @@ fn render_workflow_phase_text(payload: &JsonValue, phase: &str) -> Result<String
         let status = workflow_default_text(string_field(closeout.get("status")), || {
             "unknown".to_string()
         });
-        let reason = string_field(closeout.get("reason"));
+        let reason = public_workflow_reason(string_field(closeout.get("reason")));
         let error = string_field(closeout.get("error"));
         let detail = string_field(closeout.get("detail"));
         let command = string_field(closeout.get("command"));

@@ -3335,6 +3335,8 @@ fn remote_task_finish_render_surfaces_separate_plan_sync_action() {
     assert!(rendered.contains("- archived: feature/rct-1"));
     assert!(rendered.contains("Sprint checklist closeout"));
     assert!(rendered.contains("- deferred"));
+    assert!(rendered.contains("reason: remote plan sync is separate from task finish"));
+    assert!(!rendered.contains("task_land"));
     assert!(rendered
         .contains("Remote task finish completed without reading or synchronizing Plan state."));
     assert!(rendered.contains("ait plan sync <bound-sprint-card-path> --remote origin"));
@@ -3436,11 +3438,18 @@ fn workflow_finish_renders_atomic_skipped_workspace_and_nested_cleanup_without_u
         "{rendered}"
     );
     assert!(rendered.contains("- removed: rct-9"), "{rendered}");
+    assert!(rendered.contains("- status: finished"), "{rendered}");
+    assert!(
+        rendered.contains("reason: already removed by workflow finish"),
+        "{rendered}"
+    );
     assert!(
         rendered.contains("- review evidence: RCT-9/P-01"),
         "{rendered}"
     );
     assert!(!rendered.contains("/C-01/P-01"), "{rendered}");
+    assert!(!rendered.contains("landed"), "{rendered}");
+    assert!(!rendered.contains("workflow_land"), "{rendered}");
     assert!(!rendered.contains("unknown"), "{rendered}");
     assert!(!rendered.contains("(0 changed)"), "{rendered}");
 }
