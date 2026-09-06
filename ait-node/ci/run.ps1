@@ -100,7 +100,7 @@ try {
     $marker = Get-Content -LiteralPath $externalMarker -Raw | ConvertFrom-Json
     if (
         $marker.name -ne "ait-core" -or
-        $marker.snapshot -ne "SNP-ECFA2CA31719"
+        $marker.snapshot -ne "SNP-F0C2AB76E282"
     ) {
         throw "ait-core external marker identity drift"
     }
@@ -114,10 +114,10 @@ try {
 
     $releaseAdapter = Join-Path $projectRoot "release/release-adapter.mjs"
     Invoke-NativeCommand -FilePath $node -ArgumentList @(
-        $releaseAdapter, "build", "portable", "1.1.2"
+        $releaseAdapter, "build", "portable", "1.1.1"
     )
     Invoke-NativeCommand -FilePath $node -ArgumentList @(
-        $releaseAdapter, "smoke", "portable", "1.1.2"
+        $releaseAdapter, "smoke", "portable", "1.1.1"
     )
 }
 finally {
