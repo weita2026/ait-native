@@ -3,8 +3,8 @@ fn run_attest(repo: RepoRuntime, command: AttestCommand) -> Result<(), String> {
         AttestCommand::Put(args) => {
             let payload = attest_put(
                 &repo,
-                args.patchset_id.as_deref(),
-                args.change.as_deref(),
+                Some(&args.patchset_id),
+                None,
                 args.tests.as_deref(),
                 args.lint.as_deref(),
                 args.security.as_deref(),
@@ -23,7 +23,8 @@ fn run_attest(repo: RepoRuntime, command: AttestCommand) -> Result<(), String> {
             Ok(())
         }
         AttestCommand::Show(args) => {
-            let payload = attest_show_cmd(&repo, &args.patchset_id, args.remote.as_deref(), None)?;
+            let payload =
+                attest_show_cmd(&repo, &args.patchset_id, args.remote.as_deref(), None)?;
             emit_result(
                 "ait-cli attest show",
                 &payload,
@@ -71,4 +72,3 @@ fn run_policy(repo: RepoRuntime, command: PolicyCommand) -> Result<(), String> {
         }
     }
 }
-

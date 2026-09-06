@@ -110,7 +110,7 @@ fn task_land_remote_change_id_accepts_change_and_task_record_remote_traits() {
     let err =
         task_land_remote_change_id_with_task_remote(&mut ambiguous_remote, "fixture-ait", "RCT-2")
             .expect_err("ambiguous task changes");
-    assert!(err.contains("multiple finishable changes"));
+    assert!(err.contains("multiple internal finishable work records"));
 }
 
 #[test]
@@ -249,7 +249,7 @@ fn task_finish_remote_selection_ignores_accepted_and_retired_siblings() {
     assert!(
         task_land_remote_change_id_with_task_remote(&mut remote, "fixture-ait", "RT-1")
             .unwrap_err()
-            .contains("multiple finishable changes")
+            .contains("multiple internal finishable work records")
     );
 }
 
@@ -1162,6 +1162,6 @@ fn atomic_task_land_main_seed_failure_is_partial_and_preserves_worktree() {
     assert_eq!(output["bound_worktree_cleanup"]["removed"], false);
     assert_eq!(
         output["closeout_recovery"]["command"],
-        "ait task finish RCT-ATOMIC/C-01"
+        "ait task finish RCT-ATOMIC"
     );
 }

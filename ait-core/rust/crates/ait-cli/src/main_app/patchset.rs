@@ -1,6 +1,8 @@
 fn run_patchset(repo: RepoRuntime, command: PatchsetCommand) -> Result<(), String> {
     match command {
         PatchsetCommand::Publish(args) => {
+            let change_ref =
+                resolve_task_remote_change_input(&repo, &args.change, args.remote.as_deref())?;
             let payload = run_task_scoped_workspace_command(
                 &repo,
                 &args.change,
@@ -11,7 +13,7 @@ fn run_patchset(repo: RepoRuntime, command: PatchsetCommand) -> Result<(), Strin
                 |execution_repo| {
                 patchset_publish(
                     execution_repo,
-                    &args.change,
+                    &change_ref,
                     &args.summary,
                     args.author_mode.map(ConfigAuthorModeArg::as_str),
                     args.remote.as_deref(),
@@ -23,7 +25,7 @@ fn run_patchset(repo: RepoRuntime, command: PatchsetCommand) -> Result<(), Strin
                 &payload,
                 args.json,
                 &[
-                    "change_id",
+                    "patchset_id",
                     "current_line",
                     "base_snapshot_id",
                     "revision_snapshot_id",
@@ -33,7 +35,9 @@ fn run_patchset(repo: RepoRuntime, command: PatchsetCommand) -> Result<(), Strin
             Ok(())
         }
         PatchsetCommand::List(args) => {
-            let payload = patchset_list_cmd(&repo, &args.change, args.remote.as_deref())?;
+            let change_ref =
+                resolve_task_remote_change_input(&repo, &args.change, args.remote.as_deref())?;
+            let payload = patchset_list_cmd(&repo, &change_ref, args.remote.as_deref())?;
             if args.json {
                 print_json(&payload)?;
             } else if let Some(rows) = payload.as_array() {
@@ -54,14 +58,18 @@ fn run_patchset(repo: RepoRuntime, command: PatchsetCommand) -> Result<(), Strin
         PatchsetCommand::Show(args) => {
             let payload =
                 patchset_show_cmd(&repo, &args.patchset_id, args.remote.as_deref())?;
+            let display_payload = if args.json {
+                payload.clone()
+            } else {
+                patchset_show_display_payload(&payload)
+            };
             emit_result(
                 "ait-cli patchset show",
-                &payload,
+                &display_payload,
                 args.json,
                 &[
                     "patchset_id",
                     "patchset_number",
-                    "change_id",
                     "author_mode",
                     "base_snapshot_id",
                     "revision_snapshot_id",
@@ -79,7 +87,7 @@ fn run_patchset(repo: RepoRuntime, command: PatchsetCommand) -> Result<(), Strin
                 "ait-cli patchset select",
                 &payload,
                 args.json,
-                &["change_id", "selected_patchset_id"],
+                &["selected_patchset_id"],
             )?;
             Ok(())
         }
@@ -114,6 +122,30 @@ fn run_patchset(repo: RepoRuntime, command: PatchsetCommand) -> Result<(), Strin
     }
 }
 
+fn patchset_show_display_payload(payload: &JsonValue) -> JsonValue {
+    let Some(obj) = payload.as_object() else {
+        return payload.clone();
+    };
+    let mut display = obj.clone();
+    let readable_summary = obj
+        .get("summary")
+        .and_then(JsonValue::as_str)
+        .and_then(|summary| summary.find('{').map(|start| &summary[start..]))
+        .and_then(crate::json_support::parse_value_option)
+        .and_then(|summary| {
+            summary
+                .get("display_summary")
+                .and_then(JsonValue::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(ToString::to_string)
+        });
+    if let Some(readable_summary) = readable_summary {
+        display.insert("summary".to_string(), JsonValue::String(readable_summary));
+    }
+    JsonValue::Object(display)
+}
+
 fn patchset_ci_status_display_payload(payload: &JsonValue) -> JsonValue {
     let Some(obj) = payload.as_object() else {
         return payload.clone();
@@ -131,11 +163,24 @@ fn patchset_ci_status_display_payload(payload: &JsonValue) -> JsonValue {
             JsonValue::String(message.to_string()),
         );
     }
+    if let Some(action) = payload
+        .get("recommended_action")
+        .and_then(JsonValue::as_str)
+        .map(str::trim)
+        .filter(|action| !action.is_empty())
+    {
+        display.insert(
+            "recommended_action".to_string(),
+            JsonValue::String(action.to_string()),
+        );
+    } else {
+        display.remove("recommended_action");
+    }
     JsonValue::Object(display)
 }
 
 fn patchset_ci_status_display_fields(payload: &JsonValue) -> Vec<&'static str> {
-    let mut fields = vec!["patchset_id", "change_id", "tests_status"];
+    let mut fields = vec!["patchset_id", "tests_status"];
     for optional_field in ["recommended_action", "status_message"] {
         if patchset_ci_status_has_display_field(payload, optional_field) {
             fields.push(optional_field);

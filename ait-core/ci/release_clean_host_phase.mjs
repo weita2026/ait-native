@@ -740,14 +740,14 @@ function firstLand(recorder, aitSpec, root, expectedText, priorState = null) {
     // Finish consumes the bound worktree's Line head, so it must start
     // inside that worktree; Windows cannot remove a directory that is still
     // a process working directory, so the closeout reports partial with
-    // exit 2. The closeout contract returns the exact Change identity for an
-    // idempotent resume from the Repository root, where no process holds the
-    // worktree.
+    // exit 2. The closeout contract returns a Task-only recovery command for
+    // an idempotent resume from the Repository root, where no process holds
+    // the worktree.
     const changeRef = landed.change_ref;
     if (!/^LT-[0-9]{4,}\/C-[0-9]{2,}$/.test(changeRef ?? "")) {
-      fail("partial candidate Task finish returned no exact Change reference");
+      fail("partial candidate Task finish returned invalid internal evidence");
     }
-    if (landed.next_action?.command !== `ait task finish ${changeRef} --local`) {
+    if (landed.next_action?.command !== `ait task finish ${taskId} --local`) {
       fail("partial candidate Task finish returned an inconsistent closeout command");
     }
     if (process.platform === "win32") {
@@ -768,7 +768,7 @@ function firstLand(recorder, aitSpec, root, expectedText, priorState = null) {
       const change = jsonSpec(
         recorder,
         aitSpec,
-        ["change", "show", changeRef, "--local", "--json"],
+        ["change", "show", taskId, "--local", "--json"],
         { cwd: root, label: "candidate landed Windows Change readback" },
       );
       const mainLine = jsonSpec(
@@ -839,7 +839,7 @@ function firstLand(recorder, aitSpec, root, expectedText, priorState = null) {
       landed = jsonSpec(
         recorder,
         aitSpec,
-        ["task", "finish", changeRef, "--local", "--json"],
+        ["task", "finish", taskId, "--local", "--json"],
         { cwd: root, label: "candidate task finish closeout resume" },
       );
     }

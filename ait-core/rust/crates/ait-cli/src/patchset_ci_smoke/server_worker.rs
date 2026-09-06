@@ -80,8 +80,8 @@ pub(super) fn response_for(
         ("POST", "/v1/native/repository-authorities/7/tasks") => {
             let parsed = parse_value_or(body, JsonValue::Null);
             json!({
-                "task_id": parsed.get("task_id").cloned().unwrap_or(JsonValue::String("RT-REMOTE".to_string())),
-                "published_task_id": parsed.get("task_id").cloned().unwrap_or(JsonValue::String("RT-REMOTE".to_string())),
+                "task_id": parsed.get("task_id").cloned().unwrap_or(JsonValue::String("RT-2".to_string())),
+                "published_task_id": parsed.get("task_id").cloned().unwrap_or(JsonValue::String("RT-2".to_string())),
                 "title": parsed.get("title").cloned().unwrap_or(JsonValue::Null),
                 "intent": parsed.get("intent").cloned().unwrap_or(JsonValue::Null),
                 "repo_name":"fixture-ait",
@@ -219,13 +219,30 @@ pub(super) fn response_for(
             completed_local_change_response(url, state)
         }
         ("GET", "/v1/native/repository-authorities/7/changes") => {
-            json!([{
+            let locked = state.lock().unwrap();
+            let mut changes = vec![json!({
                 "change_id":"RC-1",
+                "task_id":"RT-1",
                 "title":"Published review change",
                 "base_line":"main",
                 "current_patchset_number":1,
                 "status":"active"
-            }])
+            })];
+            for (change_id, task_id) in &locked.published_change_task_ids {
+                if change_id == "RC-1" {
+                    continue;
+                }
+                changes.push(json!({
+                    "change_id": change_id,
+                    "task_id": task_id,
+                    "title": "Stable smoke",
+                    "base_line": "main",
+                    "current_patchset_number": if locked.selected_patchset_id.is_some() { 1 } else { 0 },
+                    "selected_patchset_id": locked.selected_patchset_id,
+                    "status": "draft"
+                }));
+            }
+            JsonValue::Array(changes)
         }
         ("POST", "/v1/native/repository-authorities/7/changes") => {
             let parsed = parse_value_or(body, JsonValue::Null);

@@ -13,6 +13,8 @@ pub(crate) fn workflow_ready_steps(
         .as_ref()
         .and_then(|value| optional_string_field(value, "patchset_id"))
         .unwrap_or_default();
+    let task_id = optional_string_field(&field_obj(facts, "task"), "task_id")
+        .unwrap_or_else(|| "unknown".to_string());
     let attestation = optional_obj_field(facts, "attestation");
     let external_readiness = optional_obj_field(facts, "external_readiness");
     let patchset_refresh = optional_obj_field(facts, "patchset_refresh");
@@ -26,9 +28,9 @@ pub(crate) fn workflow_ready_steps(
             "Snapshot",
             "pending",
             "Workspace changes are still dirty, so ready state needs a fresh snapshot first.",
-            Some(
-                "ait snapshot create <task-id>/C-## --message \"reviewable snapshot\"".to_string(),
-            ),
+            Some(format!(
+                "ait snapshot create {task_id} --message \"reviewable snapshot\""
+            )),
         ));
     } else {
         steps.push(workflow_land_step(
@@ -88,10 +90,8 @@ pub(crate) fn workflow_ready_steps(
             "Patchset",
             "done",
             &format!(
-                "Patchset `{}` is published for `{}`.",
-                patchset_id,
-                optional_string_field(&field_obj(facts, "change"), "change_id")
-                    .unwrap_or_else(|| "unknown".to_string())
+                "Patchset `{}` is published for Task `{}`.",
+                patchset_id, task_id
             ),
             None,
         ));
@@ -229,6 +229,7 @@ mod tests {
     fn ready_facts(attestation: JsonValue) -> JsonValue {
         json!({
             "change": {"change_id": "RCC-1"},
+            "task": {"task_id": "RCT-1"},
             "workspace": {
                 "clean": true,
                 "current_line": "feature/rct-1",
@@ -242,7 +243,7 @@ mod tests {
 
     fn command_hints() -> JsonValue {
         json!({
-            "apply_command": "ait workflow ready RCC-1 --apply",
+            "apply_command": "ait workflow ready RCT-1 --apply",
             "patchset_ci_command": "ait patchset rerun-ci RCP-1",
             "attestation_command": "ait patchset rerun-ci RCP-1",
         })
@@ -279,7 +280,7 @@ mod tests {
         assert_eq!(attestation["status"], json!("pending"));
         assert_eq!(
             attestation["command"],
-            json!("ait workflow ready RCC-1 --apply")
+            json!("ait workflow ready RCT-1 --apply")
         );
         assert!(attestation["detail"]
             .as_str()

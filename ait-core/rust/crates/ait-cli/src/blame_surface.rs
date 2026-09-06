@@ -316,13 +316,10 @@ pub fn render_human_blame(payload: &JsonValue) {
         "patchset" => {
             header.push(format!(
                 "target: patchset {}",
-                string_field_obj(&target, "patchset_id").unwrap_or_default()
+                ait_core::public_references::public_patchset_reference(
+                    &string_field_obj(&target, "patchset_id").unwrap_or_default()
+                )
             ));
-            if let Some(change_ref) = string_field_obj(&target, "change_ref")
-                .or_else(|| string_field_obj(&target, "change_id"))
-            {
-                header.push(format!("change: {change_ref}"));
-            }
             if let Some(base_snapshot_id) = string_field_obj(&target, "base_snapshot_id") {
                 header.push(format!("base: {base_snapshot_id}"));
             }
@@ -476,8 +473,7 @@ fn validate_request(request: &BlameRequest) -> Result<(), String> {
         !patchset_id.is_empty() && patchset_id.chars().all(|ch| ch.is_ascii_digit())
     }) {
         return Err(
-            "`--patchset` requires an exact published Patchset ID; numeric repo-scoped refs are ambiguous."
-                .to_string(),
+            "`--patchset` requires a public Patchset reference in TASK_ID/P-## form.".to_string(),
         );
     }
     Ok(())
@@ -490,6 +486,8 @@ fn resolve_blame_target(
     remote_name: Option<&str>,
 ) -> Result<BlameTarget, String> {
     if let Some(patchset_id) = normalized_text(patchset_id) {
+        let patchset_id =
+            crate::primitives::resolve_public_patchset_input(repo, &patchset_id, remote_name)?;
         let (remote_row, resolved_repo_name) = remote_context(repo, remote_name)?;
         let mut closeout_remote = http_closeout_remote(repo, &remote_row)?;
         let patchset = closeout_remote

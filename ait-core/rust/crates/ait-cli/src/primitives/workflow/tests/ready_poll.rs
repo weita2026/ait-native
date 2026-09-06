@@ -348,7 +348,7 @@ fn workflow_ready_ci_poll_reuses_workspace_and_refreshes_only_remote_ci_state() 
     );
     assert_eq!(
         authoritative_refreshed["next_action"]["command"],
-        json!("ait workflow ready LCT-FINAL/C-01 --apply --remote mirror")
+        json!("ait workflow ready LCT-FINAL --apply --remote mirror")
     );
 
     let mut finish_handoff_state = authoritative_refreshed.clone();
@@ -369,7 +369,7 @@ fn workflow_ready_ci_poll_reuses_workspace_and_refreshes_only_remote_ci_state() 
     assert_eq!(finish_handoff["next_action"]["code"], json!("done"));
     assert_eq!(
         finish_handoff["next_action"]["command"],
-        json!("ait workflow finish LCT-FINAL/C-01 --apply --remote mirror")
+        json!("ait workflow finish LCT-FINAL --apply --remote mirror")
     );
 
     remote.ci_statuses.insert(

@@ -30,6 +30,8 @@ use ait_cli::primitives::{
     patchset_rerun_ci as patchset_rerun_ci_cmd, patchset_select as patchset_select_cmd,
     patchset_show as patchset_show_cmd, policy_eval, policy_show, policy_waive, pull as pull_cmd,
     push as push_cmd, queue_summary as queue_summary_cmd, repo_status as repo_status_cmd,
+    resolve_task_author_change_input, resolve_task_finish_change_input,
+    resolve_task_remote_change_input, resolve_task_remote_revision_input,
     resolve_task_scoped_execution_repo, review_code_submit, review_code_template, review_record,
     review_request, review_show, review_task_approve, review_task_record, review_team_approve,
     run_task_scoped_workspace_command, snapshot_ancestry, snapshot_diff,

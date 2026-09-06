@@ -152,7 +152,7 @@ impl PatchsetSmokeSuite for StableSmokeSuite {
             &[
                 "snapshot",
                 "create",
-                &change_ref,
+                &task_id,
                 "--message",
                 "reviewable snapshot",
                 "--json",
@@ -166,7 +166,7 @@ impl PatchsetSmokeSuite for StableSmokeSuite {
             &[
                 "patchset",
                 "publish",
-                &change_ref,
+                &task_id,
                 "--summary",
                 "Native Rust patchset",
                 "--json",
@@ -182,6 +182,16 @@ impl PatchsetSmokeSuite for StableSmokeSuite {
             return Err(
                 "patchset publish smoke did not use the fresh revision snapshot".to_string(),
             );
+        }
+
+        let selected = json_output(root, &["patchset", "select", &patchset_id, "--json"])?;
+        if string_field(&selected, "selected_patchset_id").as_deref() != Some(patchset_id.as_str())
+        {
+            return Err("patchset select smoke did not select the revision Snapshot".to_string());
+        }
+        let shown = json_output(root, &["patchset", "show", &patchset_id, "--json"])?;
+        if string_field(&shown, "revision_snapshot_id").as_deref() != Some(snapshot_id.as_str()) {
+            return Err("patchset show smoke did not resolve the selected revision".to_string());
         }
 
         let ci_status = json_output(root, &["patchset", "ci-status", &patchset_id, "--json"])?;
@@ -200,7 +210,7 @@ impl PatchsetSmokeSuite for StableSmokeSuite {
                 "review",
                 "team",
                 "approve",
-                &change_ref,
+                &task_id,
                 "--patchset",
                 &patchset_id,
                 "--json",
@@ -216,11 +226,11 @@ impl PatchsetSmokeSuite for StableSmokeSuite {
                 "review",
                 "code",
                 "submit",
-                &change_ref,
+                &task_id,
                 "--patchset",
                 &patchset_id,
                 "--message",
-                "Reviewed files: src/lib.rs; Findings: none; Risks: low; Tests: cargo test; Recommendation: land",
+                "Reviewed files: src/lib.rs; Findings: none; Risks: low; Tests: cargo test; Recommendation: finish",
                 "--json",
             ],
         )?;
@@ -247,11 +257,9 @@ impl PatchsetSmokeSuite for StableSmokeSuite {
             return Err("policy eval smoke did not pass".to_string());
         }
 
-        let task_land = json_output(root, &["task", "finish", &change_ref, "--json", "--full"])?;
+        let task_land = json_output(root, &["task", "finish", &task_id, "--json", "--full"])?;
         if string_field(&task_land, "apply_status").as_deref() != Some("done") {
-            return Err(
-                "task finish smoke did not complete the Land and Task closeout".to_string(),
-            );
+            return Err("task finish smoke did not complete the Task closeout".to_string());
         }
 
         remote.stop()?;

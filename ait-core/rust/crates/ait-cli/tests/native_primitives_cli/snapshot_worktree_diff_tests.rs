@@ -245,7 +245,7 @@ fn native_snapshot_and_remote_primitives_work_end_to_end() {
         &[
             "patchset",
             "publish",
-            "RC-1",
+            "RT-1",
             "--summary",
             "Native Rust patchset",
             "--json",
@@ -287,7 +287,7 @@ fn native_snapshot_and_remote_primitives_work_end_to_end() {
             "review",
             "team",
             "approve",
-            "RC-1",
+            "RT-1",
             "--patchset",
             &patchset_id,
             "--json",
@@ -301,7 +301,7 @@ fn native_snapshot_and_remote_primitives_work_end_to_end() {
             "review",
             "code",
             "submit",
-            "RC-1",
+            "RT-1",
             "--patchset",
             &patchset_id,
             "--message",
@@ -324,6 +324,30 @@ fn native_snapshot_and_remote_primitives_work_end_to_end() {
 
     let policy = json_output(root, &["policy", "eval", &patchset_id, "--json"]);
     assert_eq!(policy["decision"].as_str(), Some("pass"));
+
+    for (args, exact_patchset_expected) in [
+        (
+            &["patchset", "ci-status", patchset_id.as_str()][..],
+            true,
+        ),
+        (&["attest", "show", patchset_id.as_str()][..], true),
+        (&["policy", "show", patchset_id.as_str()][..], true),
+        (&["review", "show", "RT-1"][..], false),
+    ] {
+        let output = command_output_with_env(root, args, &[]);
+        assert!(
+            output.status.success(),
+            "{} failed:\n{}",
+            args.join(" "),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let human = String::from_utf8_lossy(&output.stdout);
+        if exact_patchset_expected {
+            assert!(human.contains(patchset_id.as_str()), "stdout:\n{human}");
+        }
+        assert!(!human.contains("change_id"), "stdout:\n{human}");
+        assert!(!human.contains("RC-1"), "stdout:\n{human}");
+    }
 
     let task_land = json_output(root, &["task", "finish", "RT-1", "--json"]);
     assert_eq!(
@@ -435,6 +459,8 @@ fn native_patchset_ci_status_human_output_surfaces_reset_notice() {
         String::from_utf8_lossy(&output.stderr)
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("patchset_id: RP-RESET"), "stdout:\n{stdout}");
+    assert!(!stdout.contains("change_id:"), "stdout:\n{stdout}");
     assert!(stdout.contains("recommended_action"), "stdout:\n{stdout}");
     assert!(
         stdout.contains("rebase_patchset_to_latest_main"),
@@ -1533,7 +1559,7 @@ fn native_removed_blame_options_fail_before_any_mutation() {
         command_output_with_env(root, &["blame", "src/lib.rs", "--patchset", "7"], &[]);
     assert!(!numeric_patchset.status.success());
     assert!(String::from_utf8_lossy(&numeric_patchset.stderr)
-        .contains("numeric Repository references are ambiguous"));
+        .contains("TASK_ID/P-##"));
 
     assert_eq!(fs::read(root.join("src/lib.rs")).unwrap(), workspace_before);
     assert_eq!(local_line_head(root, "main"), head_before);
@@ -1570,6 +1596,25 @@ fn native_blame_resolves_one_exact_patchset_without_repo_or_change_options() {
     assert_eq!(payload["target"]["patchset_id"], "RP-1");
     assert_eq!(payload["resolved_snapshot_id"], FIXTURE_BASE_SNAPSHOT_ID);
     assert_eq!(fs::read(root.join("src/lib.rs")).unwrap(), workspace_before);
+
+    let human = command_output_with_env(
+        root,
+        &[
+            "blame",
+            "src/lib.rs",
+            "--patchset",
+            "RP-1",
+            "--remote",
+            "origin",
+            "--line",
+            "1",
+        ],
+        &[],
+    );
+    assert!(human.status.success());
+    let human = String::from_utf8_lossy(&human.stdout);
+    assert!(human.contains("target: patchset RP-1"), "stdout:\n{human}");
+    assert!(!human.contains("change: RC-1"), "stdout:\n{human}");
 
     handle.join().unwrap();
     let logged = log.lock().unwrap();

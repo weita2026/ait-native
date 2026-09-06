@@ -15,7 +15,7 @@ pub fn print_list(rows: &[JsonValue], columns: &[&str]) {
         };
         let cells = columns
             .iter()
-            .map(|name| cell(obj.get(*name)))
+            .map(|name| public_cell(name, obj.get(*name)))
             .collect::<Vec<_>>();
         println!("{}", cells.join("\t"));
     }
@@ -28,7 +28,21 @@ pub fn print_key_values(title: &str, rows: &[(&str, String)]) {
         .unwrap_or_else(|| title.to_string());
     println!("{public_title}");
     for (key, value) in rows.iter().filter(|(_, value)| !value.trim().is_empty()) {
+        let value = if key.ends_with("patchset_id") {
+            ait_core::public_references::public_patchset_reference(value)
+        } else {
+            ait_core::public_references::public_work_reference_text(value)
+        };
         println!("{key}: {value}");
+    }
+}
+
+fn public_cell(name: &str, value: Option<&JsonValue>) -> String {
+    let value = cell(value);
+    if name.ends_with("patchset_id") {
+        ait_core::public_references::public_patchset_reference(&value)
+    } else {
+        ait_core::public_references::public_work_reference_text(&value)
     }
 }
 

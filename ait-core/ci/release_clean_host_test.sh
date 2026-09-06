@@ -64,8 +64,8 @@ assert.ok(
   "clean-host command failures must retain spawn and timeout diagnostics",
 );
 assert.ok(
-  source.includes('landed.next_action?.command !== `ait task finish ${changeRef} --local`'),
-  "partial Task closeout must bind its exact returned recovery command",
+  source.includes('landed.next_action?.command !== `ait task finish ${taskId} --local`'),
+  "partial Task closeout must bind its Task-only recovery command",
 );
 assert.equal(
   source.includes('label: "candidate completed Windows worktree removal"'),
@@ -73,8 +73,8 @@ assert.equal(
   "partial closeout must not require an already-removed worktree registration",
 );
 assert.ok(
-  source.includes('["task", "finish", changeRef, "--local", "--json"]'),
-  "partial Task closeout must resume with the exact returned Change reference",
+  source.includes('["task", "finish", taskId, "--local", "--json"]'),
+  "partial Task closeout must resume with the Task ID",
 );
 assert.ok(
   source.includes("agents_sha256: sha256File(agentsPath)"),
@@ -118,7 +118,7 @@ assert.ok(
 );
 for (const requiredWindowsCloseout of [
   '["task", "show", taskId, "--local", "--json"]',
-  '["change", "show", changeRef, "--local", "--json"]',
+  '["change", "show", taskId, "--local", "--json"]',
   '["line", "show", landed.target_line, "--json"]',
   '["worktree", "list", "--json"]',
   '["line", "archive", featureLineName, "--json"]',

@@ -841,7 +841,7 @@ fn workflow_patchset_ci_contract_uses_single_catalog_path() {
     assert!(workflow_patchset_ci_contract_exists(&repo));
     let hints = workflow_ready_command_hints(
         &repo,
-        "RC-1",
+        "RCT-1",
         None,
         Some(&json!({"patchset_id":"RP-1"})),
         "main",
@@ -873,7 +873,7 @@ fn workflow_patchset_ci_contract_ignores_legacy_suite_dir_without_catalog() {
     assert!(!workflow_patchset_ci_contract_exists(&repo));
     let hints = workflow_ready_command_hints(
         &repo,
-        "RC-1",
+        "RCT-1",
         None,
         Some(&json!({"patchset_id":"RP-1"})),
         "main",
@@ -902,7 +902,7 @@ fn workflow_command_hints_preserve_explicit_remote_scope() {
 
     let ready = workflow_ready_command_hints(
         &repo,
-        "RCT-9/C-01",
+        "RCT-9",
         Some("mirror"),
         Some(&patchset),
         "main",
@@ -910,11 +910,11 @@ fn workflow_command_hints_preserve_explicit_remote_scope() {
     );
     assert_eq!(
         ready["apply_command"],
-        json!("ait workflow ready RCT-9/C-01 --apply --remote mirror")
+        json!("ait workflow ready RCT-9 --apply --remote mirror")
     );
     assert_eq!(
         ready["patchset_ci_command"],
-        json!("ait patchset rerun-ci RCT-9/C-01/P-02 --remote mirror")
+        json!("ait patchset rerun-ci RCT-9/P-02 --remote mirror")
     );
     assert_eq!(ready["review_command"], JsonValue::Null);
     assert_eq!(ready["manual_review_command"], JsonValue::Null);
@@ -922,7 +922,7 @@ fn workflow_command_hints_preserve_explicit_remote_scope() {
     assert_eq!(ready["policy_command"], JsonValue::Null);
     assert_eq!(
         ready["land_command"],
-        json!("ait workflow finish RCT-9/C-01 --apply --remote mirror")
+        json!("ait workflow finish RCT-9 --apply --remote mirror")
     );
 
     let land = workflow_land_command_hints(
@@ -939,26 +939,25 @@ fn workflow_command_hints_preserve_explicit_remote_scope() {
     );
     assert_eq!(
         land["apply_command"],
-        json!("ait workflow finish RCT-9/C-01 --apply --remote mirror")
+        json!("ait workflow finish RCT-9 --apply --remote mirror")
     );
     assert_eq!(
         land["ready_command"],
-        json!("ait workflow ready RCT-9/C-01 --apply --remote mirror")
+        json!("ait workflow ready RCT-9 --apply --remote mirror")
     );
     assert_eq!(
         land["review_command"],
-        json!("ait review show RCT-9/C-01 --remote mirror")
+        json!("ait review show RCT-9 --remote mirror")
     );
     assert_eq!(
         land["task_land_command"],
-        json!("ait task finish RCT-9/C-01 --remote mirror")
+        json!("ait task finish RCT-9 --remote mirror")
     );
 
-    let local =
-        workflow_ready_command_hints(&repo, "LCT-9/C-01", None, Some(&patchset), "main", None);
+    let local = workflow_ready_command_hints(&repo, "LCT-9", None, Some(&patchset), "main", None);
     assert_eq!(
         local["land_command"],
-        json!("ait workflow finish LCT-9/C-01 --apply")
+        json!("ait workflow finish LCT-9 --apply")
     );
     assert!(!local["apply_command"]
         .as_str()
@@ -990,7 +989,9 @@ fn workflow_review_hints_distinguish_required_and_automatic_task_review_owners()
     );
     assert_eq!(
         required["review_command"],
-        json!("ait review task approve RCT-9/C-01 --patchset RCT-9/C-01/P-02 --message \"<functional validation>\" --remote mirror")
+        json!(
+            "ait review task approve RCT-9 --patchset RCT-9/P-02 --message \"<functional validation>\" --remote mirror"
+        )
     );
     assert_eq!(required["auto_review_reviewer"], JsonValue::Null);
 
@@ -1017,10 +1018,10 @@ fn workflow_review_hints_distinguish_required_and_automatic_task_review_owners()
     assert_eq!(automatic["manual_review_command"], JsonValue::Null);
     assert_eq!(
         automatic["review_command"],
-        json!("ait workflow finish RCT-9/C-01 --apply --remote mirror")
+        json!("ait workflow finish RCT-9 --apply --remote mirror")
     );
     assert_ne!(
         automatic["review_command"],
-        json!("ait task finish RCT-9/C-01 --remote mirror")
+        json!("ait task finish RCT-9 --remote mirror")
     );
 }

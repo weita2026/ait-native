@@ -54,9 +54,10 @@ fn workflow_completed_local_entry_if_present(
         [] => return Ok(None),
         [change] => change.clone(),
         _ => {
-            return Err(format!(
-                "Local Change identity {change_id:?} is ambiguous across completed Tasks; use the exact `<task-id>/<change-id>` reference."
-            ))
+            return Err(
+                "The requested local work is ambiguous across completed Tasks. Inspect `ait task audit <task-id> --json` and retry with the Task ID."
+                    .to_string(),
+            )
         }
     };
     if string_field(&change, "status").as_deref() != Some("landed") {
@@ -71,7 +72,7 @@ fn workflow_completed_local_entry_if_present(
         && string_field(&task, "publication_state").as_deref() != Some("published")
     {
         return Err(format!(
-            "Local completed change {change_id} is marked published while task {task_id} is not; repair the partial publication state before promotion."
+            "Task {task_id} has inconsistent completed-work publication state; repair it before promotion."
         ));
     }
     workflow_completed_local_entry_from_rows(task, change, remote_name).map(Some)
@@ -1052,6 +1053,7 @@ pub(in crate::primitives) fn workflow_final_snapshot_promotion_preview(
     let state = candidate.get("state").cloned().unwrap_or_else(|| json!({}));
     let task = state.get("task").cloned().unwrap_or(JsonValue::Null);
     let change = state.get("change").cloned().unwrap_or(JsonValue::Null);
+    let local_task_id = required_string_field(&task, "task_id")?;
     let local_change_id = required_string_field(&change, "change_id")?;
     let local_change_ref = change_reference_from_payload(&change, Some(local_change_id.as_str()))?;
     let target_line = string_field(&change, "base_line").unwrap_or_else(|| "main".to_string());
@@ -1061,10 +1063,10 @@ pub(in crate::primitives) fn workflow_final_snapshot_promotion_preview(
         "mode": "solo_local_history_promotion",
         "status": "ready",
         "apply_status": "preview",
-        "task_id": string_field(&task, "task_id"),
+        "task_id": local_task_id,
         "change_id": local_change_id,
         "change_ref": local_change_ref,
-        "local_task_id": string_field(&task, "task_id"),
+        "local_task_id": local_task_id,
         "local_change_id": string_field(&change, "change_id"),
         "local_change_ref": local_change_ref,
         "remote_task_id": string_field(&task, "published_task_id"),
@@ -1083,8 +1085,8 @@ pub(in crate::primitives) fn workflow_final_snapshot_promotion_preview(
         "next_action": {
             "code": "prepare_final_snapshot_promotion",
             "summary": "Promote the consecutive local Task/Change/Snapshot/Land history and run shared CI once on its aggregate Patchset.",
-            "detail": format!("Run `ait workflow ready {local_change_ref} --apply --remote {remote_name}`. After it is ready, hand the selected Patchset to a reviewer running `ait workflow finish {local_change_ref} --apply --remote {remote_name}`."),
-            "command": format!("ait workflow ready {local_change_ref} --apply --remote {remote_name}"),
+            "detail": format!("Run `ait workflow ready {local_task_id} --apply --remote {remote_name}`. After it is ready, give the Task ID and selected Patchset to a reviewer running `ait workflow finish {local_task_id} --apply --remote {remote_name}`."),
+            "command": format!("ait workflow ready {local_task_id} --apply --remote {remote_name}"),
         },
     }))
 }

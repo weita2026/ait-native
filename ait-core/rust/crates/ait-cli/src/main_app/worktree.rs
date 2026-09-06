@@ -165,12 +165,20 @@ fn run_worktree(repo: RepoRuntime, command: WorktreeCommand) -> Result<ExitCode,
             Ok(ExitCode::SUCCESS)
         }
         WorktreeCommand::RecoverTask(args) => {
+            let change_ref = match args.change.as_deref() {
+                Some(change_ref) => change_ref.to_string(),
+                None => resolve_task_remote_change_input(
+                    &repo,
+                    &args.task_id,
+                    args.remote.as_deref(),
+                )?,
+            };
             let payload =
                 run_locked_workspace_command(&repo, "ait-cli worktree recover-task", || {
                     worktree_recover_task(
                         &repo,
                         &args.task_id,
-                        &args.change,
+                        &change_ref,
                         args.remote.as_deref(),
                         args.dry_run,
                     )

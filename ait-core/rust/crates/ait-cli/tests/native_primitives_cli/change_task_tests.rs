@@ -3,7 +3,7 @@ fn native_patchset_namespace_supports_list_show_and_select() {
     let (base_url, log, _state, handle) = spawn_fake_remote();
     let (_temp, worktree) = init_worktree_repo(&base_url);
 
-    let listed = json_output(&worktree, &["patchset", "list", "RC-1", "--json"]);
+    let listed = json_output(&worktree, &["patchset", "list", "RT-1", "--json"]);
     let listed_rows = listed.as_array().unwrap();
     assert_eq!(listed_rows[0]["patchset_id"].as_str(), Some("RP-1"));
     assert_eq!(listed_rows[0]["patchset_number"].as_i64(), Some(1));
@@ -16,6 +16,24 @@ fn native_patchset_namespace_supports_list_show_and_select() {
     let selected = json_output(&worktree, &["patchset", "select", "RP-1", "--json"]);
     assert_eq!(selected["change_id"].as_str(), Some("RC-1"));
     assert_eq!(selected["selected_patchset_id"].as_str(), Some("RP-1"));
+
+    for args in [
+        &["patchset", "list", "RT-1"][..],
+        &["patchset", "show", "RP-1"][..],
+        &["patchset", "select", "RP-1"][..],
+    ] {
+        let output = command_output_with_env(&worktree, args, &[]);
+        assert!(
+            output.status.success(),
+            "{} failed:\n{}",
+            args.join(" "),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let human = String::from_utf8_lossy(&output.stdout);
+        assert!(human.contains("RP-1"), "stdout:\n{human}");
+        assert!(!human.contains("change_id"), "stdout:\n{human}");
+        assert!(!human.contains("RC-1"), "stdout:\n{human}");
+    }
 
     handle.join().unwrap();
     let logged = log.lock().unwrap().clone();
@@ -166,7 +184,7 @@ fn compact_agent_action_json_drives_the_complete_local_task_loop() {
     assert_eq!(started["contract"], "ait-agent-action/v1");
     assert_eq!(started["command"], "task.start");
     assert_eq!(started["task_id"], "LT-0001");
-    assert_eq!(started["change_ref"], "LT-0001/C-01");
+    assert!(started.get("change_ref").is_none());
     assert_eq!(started["edit_root_source"], "managed");
     let edit_root = PathBuf::from(
         started["edit_root"]
@@ -207,7 +225,7 @@ fn compact_agent_action_json_drives_the_complete_local_task_loop() {
     assert_eq!(landed["command"], "task.finish");
     assert_eq!(landed["ok"], true);
     assert_eq!(landed["task_id"], "LT-0001");
-    assert_eq!(landed["change_ref"], "LT-0001/C-01");
+    assert!(landed.get("change_ref").is_none());
     assert_eq!(landed["closeout"]["status"], "complete_unbound");
     assert!(landed["next_action"].is_null());
     assert!(landed.get("task").is_none());

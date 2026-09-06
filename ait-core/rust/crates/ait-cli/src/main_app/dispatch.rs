@@ -2,7 +2,10 @@ fn dispatch_with_args(args: Vec<OsString>) -> ExitCode {
     match run(args) {
         Ok(code) => code,
         Err(err) => {
-            eprintln!("Error: {err}");
+            eprintln!(
+                "Error: {}",
+                ait_core::public_references::public_work_reference_text(&err)
+            );
             ExitCode::from(1)
         }
     }

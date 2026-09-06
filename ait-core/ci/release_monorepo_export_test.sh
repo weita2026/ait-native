@@ -304,7 +304,7 @@ for repository in ait-core ait-server ait-runner ait-python ait-node; do
         'Repository-local authority, a generated AGENTS.md workflow, and an inactive server boundary.' \
         '' \
         '## Local and reviewed closeout' \
-        'Authors run `ait workflow ready <change-id> --apply`; reviewers run `ait workflow finish <change-id> --apply`.' \
+        'Authors run `ait workflow ready <task-id> --apply`; reviewers run `ait workflow finish <task-id> --apply`.' \
         '' \
         '## Upgrading from 0.x' \
         'There is no `ait install` command in 1.0. Install or upgrade `ait-native` through your selected package manager, then run `ait init` only for a new 1.0 repository authority.' \

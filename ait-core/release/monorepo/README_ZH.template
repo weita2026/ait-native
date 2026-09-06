@@ -60,7 +60,7 @@ ait config set --user-name "your-name"
 ```
 
 三項基準測試應全部通過。Task start 的初始化流程會記錄起始基準。
-之後僅能在回傳的 Task worktree 內，指定 Task ID 與 Change ID 來建立 checkpoint。
+之後僅能在回傳的 Task worktree 內，使用 Task ID 建立 checkpoint。
 若使用既有專案，請改依[入門指南](https://ait-native.dev/technical/getting-started/)操作。
 
 **3. 在 coding agent 中開啟範例，並給它以下需求。**

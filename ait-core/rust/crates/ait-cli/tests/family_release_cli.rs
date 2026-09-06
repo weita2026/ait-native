@@ -474,7 +474,7 @@ fn fixture_npm_envelope() -> Vec<u8> {
         (
             "package/README.md".to_string(),
             (
-                b"# ait-native\n\nAIT turns an ordinary coding request into an isolated, sprint-bound repository change with validation evidence. It is for individual developers and maintainers who use coding agents.\n\nOfficial website: <https://ait-native.dev/>\n\n## Install and initialize\n\n```sh\nnpm install --global @wa120/ait-native@1.0.0-rc.2\nait init\n```\n\n## What initialization provides\n\nRepository-local authority, a generated AGENTS.md workflow, and an inactive server boundary.\n\n## Local and reviewed closeout\n\nAuthors run `ait workflow ready <change-id> --apply`; reviewers run `ait workflow finish <change-id> --apply`.\n\n## Upgrading from 0.x\n\nThere is no `ait install` command in 1.0. Install or upgrade `ait-native` through your selected package manager, then run `ait init` only for a new 1.0 repository authority.\n"
+                b"# ait-native\n\nAIT turns an ordinary coding request into an isolated, sprint-bound repository change with validation evidence. It is for individual developers and maintainers who use coding agents.\n\nOfficial website: <https://ait-native.dev/>\n\n## Install and initialize\n\n```sh\nnpm install --global @wa120/ait-native@1.0.0-rc.2\nait init\n```\n\n## What initialization provides\n\nRepository-local authority, a generated AGENTS.md workflow, and an inactive server boundary.\n\n## Local and reviewed closeout\n\nAuthors run `ait workflow ready <task-id> --apply`; reviewers run `ait workflow finish <task-id> --apply`.\n\n## Upgrading from 0.x\n\nThere is no `ait install` command in 1.0. Install or upgrade `ait-native` through your selected package manager, then run `ait init` only for a new 1.0 repository authority.\n"
                     .to_vec(),
                 0o644,
             ),
@@ -2233,8 +2233,8 @@ fn family_package_assembles_registry_channels_without_endpoint_mutation() {
         "Official website: <https://ait-native.dev/>",
         "## Upgrading from 0.x",
         "There is no `ait install` command in 1.x.",
-        "ait workflow ready <change-id> --apply",
-        "ait workflow finish <change-id> --apply",
+        "ait workflow ready <task-id> --apply",
+        "ait workflow finish <task-id> --apply",
     ] {
         assert!(
             metadata.contains(storefront_marker),
@@ -2312,8 +2312,8 @@ fn family_package_assembles_registry_channels_without_endpoint_mutation() {
         "https://ait-native.dev/",
         "## Upgrading from 0.x",
         "There is no `ait install` command in 1.0.",
-        "ait workflow ready <change-id> --apply",
-        "ait workflow finish <change-id> --apply",
+        "ait workflow ready <task-id> --apply",
+        "ait workflow finish <task-id> --apply",
     ] {
         assert!(
             envelope_readme.contains(storefront_marker),

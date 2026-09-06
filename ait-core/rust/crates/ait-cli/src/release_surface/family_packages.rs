@@ -2255,8 +2255,8 @@ fn validate_storefront_readme(
         OFFICIAL_WEBSITE,
         "## Upgrading from 0.x",
         "There is no `ait install` command in 1.",
-        "ait workflow ready <change-id> --apply",
-        "ait workflow finish <change-id> --apply",
+        "ait workflow ready <task-id> --apply",
+        "ait workflow finish <task-id> --apply",
     ] {
         if !readme.contains(required) {
             return Err(format!(
@@ -2405,10 +2405,10 @@ only when explicitly requested.
 ## Local and reviewed closeout
 
 The default local flow finishes dirty work with `ait task finish
-<task-or-change-id> --message "<message>"`; clean work omits `--message`. For a
-reviewed remote flow, the author prepares the exact Patchset and CI evidence
-with `ait workflow ready <change-id> --apply`; a reviewer then runs
-`ait workflow finish <change-id> --apply` for Review, Policy, and atomic closeout.
+<task-id> --message "<message>"`; clean work omits `--message`. For a reviewed
+remote flow, the author prepares the selected Patchset and CI evidence with
+`ait workflow ready <task-id> --apply`; a reviewer then runs
+`ait workflow finish <task-id> --apply` for Review, Policy, and atomic closeout.
 
 ## Upgrading from 0.x
 
@@ -4036,7 +4036,7 @@ mod tests {
             (
                 "package/README.md".to_string(),
                 (
-                    b"# ait-native\n\nAIT turns an ordinary coding request into an isolated, sprint-bound repository change with validation evidence. It is for individual developers and maintainers who use coding agents.\n\nOfficial website: <https://ait-native.dev/>\n\n## Install and initialize\n\n```sh\nnpm install --global @wa120/ait-native@1.0.0-rc.2\nait init\n```\n\n## What initialization provides\n\nRepository-local authority, a generated AGENTS.md workflow, and an inactive server boundary.\n\n## Local and reviewed closeout\n\nAuthors run `ait workflow ready <change-id> --apply`; reviewers run `ait workflow finish <change-id> --apply`.\n\n## Upgrading from 0.x\n\nThere is no `ait install` command in 1.0. Install or upgrade `ait-native` through your selected package manager, then run `ait init` only for a new 1.0 repository authority.\n"
+                    b"# ait-native\n\nAIT turns an ordinary coding request into an isolated, sprint-bound repository change with validation evidence. It is for individual developers and maintainers who use coding agents.\n\nOfficial website: <https://ait-native.dev/>\n\n## Install and initialize\n\n```sh\nnpm install --global @wa120/ait-native@1.0.0-rc.2\nait init\n```\n\n## What initialization provides\n\nRepository-local authority, a generated AGENTS.md workflow, and an inactive server boundary.\n\n## Local and reviewed closeout\n\nAuthors run `ait workflow ready <task-id> --apply`; reviewers run `ait workflow finish <task-id> --apply`.\n\n## Upgrading from 0.x\n\nThere is no `ait install` command in 1.0. Install or upgrade `ait-native` through your selected package manager, then run `ait init` only for a new 1.0 repository authority.\n"
                         .to_vec(),
                     0o644,
                 ),

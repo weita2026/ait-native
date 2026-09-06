@@ -16,10 +16,7 @@ pub(super) fn exact_patchset_id(value: &str) -> Result<String, String> {
     let patchset_id =
         normalized_text(Some(value)).ok_or_else(|| "Patchset ID must be non-empty.".to_string())?;
     if patchset_id.chars().all(|ch| ch.is_ascii_digit()) {
-        return Err(
-            "Exact published Patchset ID required; numeric repo-scoped refs are ambiguous."
-                .to_string(),
-        );
+        return Err("Public Patchset reference required; use TASK_ID/P-##.".to_string());
     }
     Ok(patchset_id)
 }
@@ -351,6 +348,7 @@ pub fn patchset_show(
     remote_name: Option<&str>,
 ) -> Result<JsonValue, String> {
     let patchset_id = exact_patchset_id(patchset_id)?;
+    let patchset_id = resolve_public_patchset_input(repo, &patchset_id, remote_name)?;
     let (remote_row, repo_name) = remote_context(repo, remote_name, None)?;
     let mut closeout_remote = http_closeout_remote(repo, &remote_row)?;
     patchset_show_with_closeout_remote(&mut closeout_remote, &patchset_id, Some(&repo_name), None)
@@ -376,6 +374,7 @@ pub fn patchset_select(
     remote_name: Option<&str>,
 ) -> Result<JsonValue, String> {
     let patchset_id = exact_patchset_id(patchset_id)?;
+    let patchset_id = resolve_public_patchset_input(repo, &patchset_id, remote_name)?;
     let (remote_row, repo_name) = remote_context(repo, remote_name, None)?;
     let mut closeout_remote = http_closeout_remote(repo, &remote_row)?;
     patchset_select_by_id_with_closeout_remote(&mut closeout_remote, &patchset_id, &repo_name)
@@ -422,6 +421,7 @@ pub fn patchset_ci_status(
     remote_name: Option<&str>,
 ) -> Result<JsonValue, String> {
     let patchset_id = exact_patchset_id(patchset_id)?;
+    let patchset_id = resolve_public_patchset_input(repo, &patchset_id, remote_name)?;
     let (remote_row, repo_name) = remote_context(repo, remote_name, None)?;
     let mut closeout_remote = http_closeout_remote(repo, &remote_row)?;
     patchset_ci_status_with_closeout_remote(
@@ -613,6 +613,7 @@ pub fn patchset_rerun_ci(
     remote_name: Option<&str>,
 ) -> Result<JsonValue, String> {
     let patchset_id = exact_patchset_id(patchset_id)?;
+    let patchset_id = resolve_public_patchset_input(repo, &patchset_id, remote_name)?;
     let (remote_row, repo_name) = remote_context(repo, remote_name, None)?;
     let mut closeout_remote = http_closeout_remote(repo, &remote_row)?;
     patchset_run_ci_with_closeout_remote(
@@ -652,10 +653,10 @@ mod patchset_reference_tests {
     #[test]
     fn exact_reference_guard_rejects_numeric_ordinals() {
         let error = exact_patchset_id(" 12 ").expect_err("numeric Patchset ref must be rejected");
-        assert!(error.contains("Exact published Patchset ID required"));
+        assert!(error.contains("TASK_ID/P-##"));
         assert_eq!(
-            exact_patchset_id(" RCT-1/C-01/P-02 ").expect("exact Patchset ID"),
-            "RCT-1/C-01/P-02"
+            exact_patchset_id(" RCT-1/P-02 ").expect("public Patchset ID"),
+            "RCT-1/P-02"
         );
     }
 }

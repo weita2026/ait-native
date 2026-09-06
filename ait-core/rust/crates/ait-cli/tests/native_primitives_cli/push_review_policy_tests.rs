@@ -71,8 +71,9 @@ fn native_workflow_task_input_rejects_remote_ambiguity_without_mutating() {
         let output = cargo_bin().current_dir(temp.path()).args(["workflow", phase, "RT-1", "--apply"]).output().unwrap();
         assert!(!output.status.success());
         let error = String::from_utf8_lossy(&output.stderr);
-        assert!(error.contains("multiple finishable changes"), "{error}");
-        assert!(error.contains("RT-1/C-02") && error.contains("RT-1/C-04"), "{error}");
+        assert!(error.contains("multiple internal finishable work records"), "{error}");
+        assert!(error.contains("ait task audit RT-1"), "{error}");
+        assert!(!error.contains("RT-1/C-02") && !error.contains("RT-1/C-04"), "{error}");
     }
     assert_eq!(json_output(temp.path(), &["snapshot", "list", "--all", "--json"]), before);
     handle.join().unwrap();
@@ -187,7 +188,7 @@ fn native_patchset_publish_ignores_unrelated_active_root_worktree() {
         &[
             "patchset",
             "publish",
-            "RC-1",
+            "RT-1",
             "--summary",
             "Ignore unrelated active worktree",
             "--json",
@@ -224,7 +225,7 @@ fn native_patchset_publish_from_root_routes_matching_not_active_unrelated_worktr
         &[
             "patchset",
             "publish",
-            "RC-1",
+            "RT-1",
             "--summary",
             "Require matching worktree",
             "--json",
@@ -261,7 +262,7 @@ fn native_workflow_ready_apply_ignores_unrelated_active_root_worktree() {
         .args([
             "workflow",
             "ready",
-            "RC-1",
+            "RT-1",
             "--apply",
             "--summary",
             "Ignore unrelated workflow worktree",
@@ -302,7 +303,7 @@ fn native_workflow_ready_apply_from_root_routes_matching_not_active_unrelated_wo
         .args([
             "workflow",
             "ready",
-            "RC-1",
+            "RT-1",
             "--apply",
             "--summary",
             "Require matching workflow worktree",
@@ -365,7 +366,7 @@ fn native_patchset_publish_rejects_bound_worktree_retarget_requirement() {
         .args([
             "patchset",
             "publish",
-            "RC-1",
+            "RT-1",
             "--summary",
             "retarget check",
             "--json",
@@ -415,7 +416,7 @@ fn native_patchset_publish_uses_unchanged_remote_base_when_local_main_is_ahead()
         &[
             "patchset",
             "publish",
-            "RC-1",
+            "RT-1",
             "--summary",
             "Keep direct Remote ancestry",
             "--json",
@@ -558,7 +559,7 @@ fn native_workflow_ready_apply_uses_remote_base_when_only_local_main_advanced() 
         .args([
             "workflow",
             "ready",
-            "RC-1",
+            "RT-1",
             "--apply",
             "--summary",
             "Use authoritative Remote base",
@@ -696,7 +697,7 @@ fn native_patchset_publish_uses_one_zstd_plan_for_suffix_above_remote_head() {
         &[
             "patchset",
             "publish",
-            "RC-1",
+            "RT-1",
             "--summary",
             "Bounded suffix publish",
             "--json",
@@ -1180,7 +1181,7 @@ fn native_review_team_approve_recovers_change_lookup_via_repo_listing() {
             "review",
             "team",
             "approve",
-            "RC-1",
+            "RT-1",
             "--patchset",
             "RP-1",
             "--json",
@@ -1204,7 +1205,7 @@ fn native_review_namespace_supports_distinct_code_task_team_and_template_lanes()
             "review",
             "team",
             "request",
-            "RC-1",
+            "RT-1",
             "--group",
             "core",
             "--patchset",
@@ -1221,7 +1222,7 @@ fn native_review_namespace_supports_distinct_code_task_team_and_template_lanes()
             "review",
             "task",
             "comment",
-            "RC-1",
+            "RT-1",
             "--patchset",
             "RP-1",
             "--message",
@@ -1237,7 +1238,7 @@ fn native_review_namespace_supports_distinct_code_task_team_and_template_lanes()
             "review",
             "code",
             "submit",
-            "RC-1",
+            "RT-1",
             "--patchset",
             "RP-1",
             "--message",
@@ -1260,7 +1261,7 @@ fn native_review_namespace_supports_distinct_code_task_team_and_template_lanes()
         Some("pass")
     );
 
-    let show = json_output(root, &["review", "show", "RC-1", "--json"]);
+    let show = json_output(root, &["review", "show", "RT-1", "--json"]);
     assert_eq!(show["current_patchset_id"].as_str(), Some("RP-1"));
     assert_eq!(show["approvals"].as_i64(), Some(1));
     assert_eq!(
@@ -1271,7 +1272,7 @@ fn native_review_namespace_supports_distinct_code_task_team_and_template_lanes()
 
     let show_with_retired_environment = json_output_with_env(
         root,
-        &["review", "show", "RC-1", "--json"],
+        &["review", "show", "RT-1", "--json"],
         &[(concat!("AIT_JSON_", "MODE"), "debug")],
     );
     assert_eq!(show_with_retired_environment, show);

@@ -47,8 +47,8 @@ If the caller already chose a safe absolute worktree path, add `--edit-root
   `ait task audit <task-id>` shows readiness, and `ait task list --all` plus
   `ait snapshot list --all` show history.
 - Change IDs are internal to normal Task work. Do not create another Change
-  for checkpoints, review corrections, or checklist steps. If a Task reports
-  ambiguous work, use the exact references in that diagnostic; advanced
-  Change history remains available through `ait change --help`.
+  for checkpoints, review corrections, or checklist steps. Patchset CI uses
+  the public `TASK_ID/P-##` Patchset reference. If a Task reports ambiguous work, inspect `ait task
+  audit <task-id>`.
 <!-- ait:workflow:end -->
 

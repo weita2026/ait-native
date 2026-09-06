@@ -2514,6 +2514,7 @@ fn project_workflow_ready_read_model_py(
     let command_hints = rust_workflow_ready_command_hints(
         &ctx,
         string_or_empty(&facts_state, "change", "change_id").as_str(),
+        string_or_empty(&facts_state, "task", "task_id").as_str(),
         facts_state.get("patchset"),
         string_or_empty_root(&facts_state, "base_line_name").as_str(),
         facts_state.get("worktree_retarget"),

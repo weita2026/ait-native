@@ -7,9 +7,10 @@ pub fn policy_eval(
     repo_name_override: Option<&str>,
 ) -> Result<JsonValue, String> {
     guard_no_planning_only_artifact_drift(repo, "ait policy eval")?;
+    let patchset_id = resolve_public_patchset_input(repo, patchset_id, remote_name)?;
     let (remote_row, repo_name) = remote_context(repo, remote_name, repo_name_override)?;
     let mut closeout_remote = http_closeout_remote(repo, &remote_row)?;
-    policy_eval_with_closeout_remote(&mut closeout_remote, patchset_id, &repo_name)
+    policy_eval_with_closeout_remote(&mut closeout_remote, &patchset_id, &repo_name)
 }
 
 pub(in crate::primitives) fn policy_eval_with_closeout_remote<R>(
@@ -31,9 +32,10 @@ pub fn policy_show(
     remote_name: Option<&str>,
     repo_name_override: Option<&str>,
 ) -> Result<JsonValue, String> {
+    let patchset_id = resolve_public_patchset_input(repo, patchset_id, remote_name)?;
     let (remote_row, repo_name) = remote_context(repo, remote_name, repo_name_override)?;
     let mut closeout_remote = http_closeout_remote(repo, &remote_row)?;
-    policy_show_with_closeout_remote(&mut closeout_remote, patchset_id, &repo_name)
+    policy_show_with_closeout_remote(&mut closeout_remote, &patchset_id, &repo_name)
 }
 
 pub(in crate::primitives) fn policy_show_with_closeout_remote<R>(
@@ -59,11 +61,12 @@ pub fn policy_waive(
     repo_name_override: Option<&str>,
 ) -> Result<JsonValue, String> {
     guard_no_planning_only_artifact_drift(repo, "ait policy waive")?;
+    let patchset_id = resolve_public_patchset_input(repo, patchset_id, remote_name)?;
     let (remote_row, repo_name) = remote_context(repo, remote_name, repo_name_override)?;
     let mut closeout_remote = http_closeout_remote(repo, &remote_row)?;
     policy_waive_with_closeout_remote(
         &mut closeout_remote,
-        patchset_id,
+        &patchset_id,
         rule_name,
         reason,
         expires_at,

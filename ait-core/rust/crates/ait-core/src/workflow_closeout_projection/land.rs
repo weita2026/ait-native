@@ -4,6 +4,8 @@ pub(crate) fn workflow_landed_steps_and_suggested_commands(
     facts: &JsonValue,
     next_action: &JsonValue,
 ) -> (JsonValue, JsonValue) {
+    let task_id = optional_string_field(&field_obj(facts, "task"), "task_id")
+        .unwrap_or_else(|| "unknown".to_string());
     let patchset_label = optional_nonempty_string(facts, "patchset_label");
     let patchset_detail = if let Some(label) = patchset_label {
         format!("Patchset `{label}` is already part of the accepted history for this change.")
@@ -45,9 +47,7 @@ pub(crate) fn workflow_landed_steps_and_suggested_commands(
             "Finish",
             "done",
             &format!(
-                "Change `{}` is already applied to `{}`.",
-                optional_string_field(&field_obj(facts, "change"), "change_id")
-                    .unwrap_or_else(|| "unknown".to_string()),
+                "Task `{task_id}` already has accepted work applied to `{}`.",
                 string_field(facts, "target_line")
             ),
             None
@@ -75,6 +75,8 @@ pub(crate) fn workflow_land_full_steps(
         .as_ref()
         .and_then(|value| optional_string_field(value, "patchset_id"))
         .unwrap_or_default();
+    let task_id = optional_string_field(&field_obj(facts, "task"), "task_id")
+        .unwrap_or_else(|| "unknown".to_string());
     let attestation = optional_obj_field(facts, "attestation");
     let policy = optional_obj_field(facts, "policy");
     let landing_summary = optional_obj_field(facts, "landing_summary");
@@ -106,7 +108,9 @@ pub(crate) fn workflow_land_full_steps(
             "Snapshot",
             "pending",
             "Workspace changes are still dirty, so publishable finish state needs a fresh snapshot first.",
-            Some("ait snapshot create <task-id>/C-## --message \"reviewable snapshot\"".to_string()),
+            Some(format!(
+                "ait snapshot create {task_id} --message \"reviewable snapshot\""
+            )),
         ));
     } else {
         steps.push(workflow_land_step(
@@ -235,9 +239,8 @@ pub(crate) fn workflow_land_full_steps(
                 "Patchset",
                 "done",
                 &format!(
-                    "Patchset `{}` is published for `{}`.",
-                    patchset_id,
-                    string_field(facts, "resolved_change_id")
+                    "Patchset `{}` is published for Task `{}`.",
+                    patchset_id, task_id
                 ),
                 None,
             ));
@@ -280,9 +283,8 @@ pub(crate) fn workflow_land_full_steps(
             "Patchset",
             "done",
             &format!(
-                "Patchset `{}` is published for `{}`.",
-                patchset_id,
-                string_field(facts, "resolved_change_id")
+                "Patchset `{}` is published for Task `{}`.",
+                patchset_id, task_id
             ),
             None,
         ));
@@ -382,7 +384,7 @@ pub(crate) fn workflow_land_full_steps(
         } else {
             "unavailable outside team_remote".to_string()
         };
-        steps.push(workflow_land_step("review", "Review", "blocked", &format!("Code review: {code_review_state}; Task review: {task_review_state}; Team review: {team_review_state}. Blocking review feedback exists on `{}`.", string_field(facts, "resolved_change_id")), review_command));
+        steps.push(workflow_land_step("review", "Review", "blocked", &format!("Code review: {code_review_state}; Task review: {task_review_state}; Team review: {team_review_state}. Blocking review feedback exists for Task `{task_id}`."), review_command));
     } else if int_field(facts, "task_review_approvals") <= 0 {
         let team_review_state = if int_field(facts, "team_review_approvals") > 0 {
             format!("{} approval(s)", int_field(facts, "team_review_approvals"))
@@ -480,8 +482,7 @@ pub(crate) fn workflow_land_full_steps(
             "Finish",
             "done",
             &format!(
-                "Change `{}` is already applied to `{}`.",
-                string_field(facts, "resolved_change_id"),
+                "Task `{task_id}` already has accepted work applied to `{}`.",
                 string_field(facts, "base_line_name")
             ),
             None,
@@ -570,7 +571,7 @@ pub(crate) fn workflow_land_full_steps(
             "land", "Finish", "pending", &detail, command,
         ));
     } else {
-        steps.push(workflow_land_step("land", "Finish", "ready", &format!("Change `{}` is ready to apply to `{}`. `task finish` will re-evaluate Policy during finish preflight.", string_field(facts, "resolved_change_id"), string_field(facts, "base_line_name")), land_command));
+        steps.push(workflow_land_step("land", "Finish", "ready", &format!("Task `{task_id}` is ready to finish onto `{}`. `task finish` will re-evaluate Policy during finish preflight.", string_field(facts, "base_line_name")), land_command));
     }
 
     steps
@@ -633,7 +634,7 @@ pub(crate) fn workflow_land_phase_steps(facts: &JsonValue) -> Vec<JsonValue> {
                 optional_string_field(facts, "state_next_action_command").or_else(|| {
                     Some(format!(
                         "ait task finish {}",
-                        optional_string_field(&field_obj(facts, "change"), "change_id")
+                        optional_string_field(&field_obj(facts, "task"), "task_id")
                             .unwrap_or_default()
                     ))
                 }),

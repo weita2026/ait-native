@@ -68,16 +68,13 @@ pub(super) fn select_task_change_reference(
         candidates.retain(|(_, accepted)| !accepted);
     }
     if candidates.len() > 1 {
-        let ids = candidates
-            .iter()
-            .map(|(id, _)| id.as_str())
-            .collect::<Vec<_>>()
-            .join(", ");
         let kind = match selection {
             TaskChangeSelection::Author => "writable",
             TaskChangeSelection::Finish => "finishable",
         };
-        return Err(format!("Task {task_id} has multiple {kind} changes ({ids}); repeat the same command with the intended exact TASK_ID/C-## reference. Advanced selection: `ait change --help`."));
+        return Err(format!(
+            "Task {task_id} has multiple internal {kind} work records; no target was selected. Inspect `ait task audit {task_id} --json`."
+        ));
     }
     Ok(candidates.pop().map(|(reference, _)| reference))
 }
@@ -151,6 +148,134 @@ pub(super) fn payload_belongs_to_change(
         .is_ok_and(|actual| actual == expected_change_ref)
 }
 
+fn resolve_task_change_input(
+    repo: &RepoRuntime,
+    requested: &str,
+    local: bool,
+    remote_name: Option<&str>,
+    selection: TaskChangeSelection,
+) -> Result<String, String> {
+    if !is_task_id(requested) {
+        return Ok(requested.to_string());
+    }
+    if !repo.change_uses_local_scope(local, remote_name) {
+        return super::workflow::workflow_task_change_reference(repo, requested, remote_name);
+    }
+    let task = task_show(repo, requested, true, None)?;
+    if string_field(&task, "task_id").as_deref() != Some(requested) {
+        return Err(format!(
+            "Task lookup for {requested} returned another Task."
+        ));
+    }
+    let rows = change_list(repo, true, None)?;
+    let rows = rows.as_array().ok_or("Change inventory must be an array")?;
+    select_task_change_reference(rows, requested, selection)?.ok_or_else(|| {
+        format!(
+            "Task {requested} has no applicable work. Inspect `ait task audit {requested} --json`."
+        )
+    })
+}
+
+pub fn resolve_task_author_change_input(
+    repo: &RepoRuntime,
+    requested: &str,
+    local: bool,
+    remote_name: Option<&str>,
+) -> Result<String, String> {
+    resolve_task_change_input(
+        repo,
+        requested,
+        local,
+        remote_name,
+        TaskChangeSelection::Author,
+    )
+}
+
+pub fn resolve_task_finish_change_input(
+    repo: &RepoRuntime,
+    requested: &str,
+    local: bool,
+    remote_name: Option<&str>,
+) -> Result<String, String> {
+    resolve_task_change_input(
+        repo,
+        requested,
+        local,
+        remote_name,
+        TaskChangeSelection::Finish,
+    )
+}
+
+pub fn resolve_task_remote_change_input(
+    repo: &RepoRuntime,
+    requested: &str,
+    remote_name: Option<&str>,
+) -> Result<String, String> {
+    super::workflow::workflow_task_change_reference(repo, requested, remote_name)
+}
+
+pub(crate) fn resolve_public_patchset_input(
+    repo: &RepoRuntime,
+    requested: &str,
+    remote_name: Option<&str>,
+) -> Result<String, String> {
+    let requested = normalized_text(Some(requested))
+        .ok_or_else(|| "Patchset ID must be non-empty.".to_string())?;
+    let Some((task_id, patchset_ordinal)) =
+        ait_core::public_references::split_public_patchset_reference(&requested)
+    else {
+        return Ok(requested);
+    };
+    let change_ref = resolve_task_remote_change_input(repo, task_id, remote_name)?;
+    Ok(format!("{change_ref}/{patchset_ordinal}"))
+}
+
+pub fn resolve_task_remote_revision_input(
+    repo: &RepoRuntime,
+    requested: &str,
+    explicit_patchset_id: Option<&str>,
+    remote_name: Option<&str>,
+) -> Result<(String, String), String> {
+    if let Some(patchset_id) = explicit_patchset_id {
+        let change_ref = if is_task_id(requested) {
+            resolve_task_remote_change_input(repo, requested, remote_name)?
+        } else {
+            requested.to_string()
+        };
+        let patchset = patchset_show(repo, patchset_id, remote_name)?;
+        let resolved_patchset_id = required_string_field(&patchset, "patchset_id")?;
+        let expected_change_id = canonical_change_id(&change_ref)?;
+        if !payload_belongs_to_change(&patchset, &expected_change_id, &change_ref) {
+            let task_id = string_field(&patchset, "task_id")
+                .or_else(|| is_task_id(requested).then(|| requested.to_string()))
+                .unwrap_or_else(|| "requested Task".to_string());
+            return Err(format!(
+                "Patchset {patchset_id} does not belong to {task_id}; no review was recorded."
+            ));
+        }
+        return Ok((change_ref, resolved_patchset_id));
+    }
+    if requested.contains("/P-") {
+        let patchset = patchset_show(repo, requested, remote_name)?;
+        let resolved_patchset_id = required_string_field(&patchset, "patchset_id")?;
+        return Ok((
+            change_reference_from_payload(&patchset, None)?,
+            resolved_patchset_id,
+        ));
+    }
+    let change_ref = resolve_task_remote_change_input(repo, requested, remote_name)?;
+    let change = change_show(repo, &change_ref, false, remote_name, None)?;
+    let patchset_id = string_field(&change, "selected_patchset_id")
+        .or_else(|| string_field(&change, "current_patchset_id"))
+        .ok_or_else(|| {
+            let task_id = string_field(&change, "task_id").unwrap_or_else(|| requested.to_string());
+            format!(
+                "Task {task_id} has no selected remote Patchset. Run `ait workflow ready {task_id} --apply`."
+            )
+        })?;
+    Ok((change_ref, patchset_id))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -181,7 +306,7 @@ mod tests {
         assert!(
             select_task_change_reference(&rows, "RT-31", TaskChangeSelection::Finish)
                 .unwrap_err()
-                .contains("multiple finishable")
+                .contains("multiple internal finishable")
         );
         rows.pop();
         rows.last_mut().unwrap()["change_ref"] = json!("RT-32/C-03");

@@ -1,7 +1,9 @@
 use crate::attest_json::AttestJson;
 use crate::json_support::{json, JsonMap, JsonValue};
 
-use crate::workflow_closeout_command_hints::workflow_ready_apply_command;
+use crate::workflow_closeout_command_hints::{
+    workflow_ready_apply_command, workflow_task_owned_command,
+};
 
 pub fn workflow_ready_tests_state(
     attestation: Option<&JsonValue>,
@@ -172,10 +174,29 @@ pub fn workflow_land_phase_facts(
     let ready_state = require_object(Some(ready_state), "ready_state")?;
     let change = payload_dict(state.get("change"));
     let task = payload_dict(state.get("task"));
-    let ready_next_action = payload_dict(ready_state.get("next_action"));
-    let ready_command = optional_string(ready_next_action.get("command")).unwrap_or_else(|| {
-        workflow_ready_apply_command(optional_string(change.get("change_id")).as_deref())
-    });
+    let task_id = optional_string(task.get("task_id"));
+    let change_id = optional_string(change.get("change_id"));
+    let mut ready_next_action = payload_dict(ready_state.get("next_action"));
+    if let Some(command) = optional_string(ready_next_action.get("command")) {
+        ready_next_action.insert(
+            "command".to_string(),
+            JsonValue::String(workflow_task_owned_command(
+                &command,
+                task_id.as_deref(),
+                change_id.as_deref(),
+            )),
+        );
+    }
+    let ready_command = optional_string(ready_next_action.get("command"))
+        .unwrap_or_else(|| workflow_ready_apply_command(task_id.as_deref()));
+    let state_next_action_command = optional_string(
+        state
+            .get("next_action")
+            .and_then(JsonValue::as_object)
+            .and_then(|next| next.get("command")),
+    )
+    .map(|command| workflow_task_owned_command(&command, task_id.as_deref(), change_id.as_deref()))
+    .unwrap_or_default();
     let full_steps = match state.get("steps") {
         Some(JsonValue::Array(steps)) => {
             JsonValue::Object(JsonMap::from_iter(steps.iter().filter_map(|step| {
@@ -195,7 +216,7 @@ pub fn workflow_land_phase_facts(
         "ready_command": ready_command,
         "full_steps": full_steps,
         "payload_seed": JsonValue::Object(state.clone()),
-        "state_next_action_command": optional_string(state.get("next_action").and_then(JsonValue::as_object).and_then(|next| next.get("command"))).unwrap_or_default(),
+        "state_next_action_command": state_next_action_command,
     }))
 }
 

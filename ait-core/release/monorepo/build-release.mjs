@@ -1854,8 +1854,8 @@ async function validateBuildInputs(expectedGitCommit) {
     OFFICIAL_WEBSITE,
     "## Upgrading from 0.x",
     "There is no `ait install` command in 1.0.",
-    "ait workflow ready <change-id> --apply",
-    "ait workflow finish <change-id> --apply",
+    "ait workflow ready <task-id> --apply",
+    "ait workflow finish <task-id> --apply",
   ]) {
     if (!nodeReadme.includes(required)) {
       fail(`npm storefront README is missing ${JSON.stringify(required)}`);

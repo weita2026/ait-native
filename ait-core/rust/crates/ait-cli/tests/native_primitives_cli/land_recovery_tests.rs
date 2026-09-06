@@ -17,7 +17,7 @@ fn native_patchset_publish_recovers_from_broken_change_read_and_response_path() 
         &[
             "patchset",
             "publish",
-            "RC-1",
+            "RT-1",
             "--summary",
             "Recovery publish",
             "--json",
@@ -903,7 +903,7 @@ fn native_task_land_unscoped_api_does_not_fallback_to_local_authority() {
 
     let repo = RepoRuntime::discover_from_path(&worktree).unwrap();
     let error = task_land_payload(&repo, "RT-1", None).unwrap_err();
-    assert!(error.contains("as a remote task or change"));
+    assert!(error.contains("Task `RT-1`"), "{error}");
 }
 
 #[test]

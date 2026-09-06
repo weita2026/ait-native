@@ -24,7 +24,6 @@ fn run_change(repo: RepoRuntime, command: ChangeCommand) -> Result<(), String> {
                 &payload,
                 args.json,
                 &[
-                    "change_id",
                     "task_id",
                     "title",
                     "base_line",
@@ -44,7 +43,6 @@ fn run_change(repo: RepoRuntime, command: ChangeCommand) -> Result<(), String> {
                 );
                 print_json(&payload)?;
             } else if let Some(rows) = payload.as_array() {
-                let rows = project_change_text_rows(rows);
                 let include_publication = rows
                     .iter()
                     .any(|row| row.get("publication_state").is_some());
@@ -52,13 +50,8 @@ fn run_change(repo: RepoRuntime, command: ChangeCommand) -> Result<(), String> {
                     scoped_all_command("ait change list", args.local, args.remote.as_deref());
                 if include_publication {
                     print_agent_list(
-                        &rows,
-                        &[
-                            "change",
-                            "status",
-                            "publication_state",
-                            "title",
-                        ],
+                        rows,
+                        &["task_id", "status", "publication_state", "title"],
                         args.all,
                         &["landed", "archived", "abandoned", "canceled"],
                         Some("open"),
@@ -66,8 +59,8 @@ fn run_change(repo: RepoRuntime, command: ChangeCommand) -> Result<(), String> {
                     );
                 } else {
                     print_agent_list(
-                        &rows,
-                        &["change", "status", "title"],
+                        rows,
+                        &["task_id", "status", "title"],
                         args.all,
                         &["landed", "archived", "abandoned", "canceled"],
                         Some("open"),
@@ -78,9 +71,15 @@ fn run_change(repo: RepoRuntime, command: ChangeCommand) -> Result<(), String> {
             Ok(())
         }
         ChangeCommand::Show(args) => {
-            let payload = change_show_cmd(
+            let change_ref = resolve_task_finish_change_input(
                 &repo,
                 &args.change_id,
+                args.local,
+                args.remote.as_deref(),
+            )?;
+            let payload = change_show_cmd(
+                &repo,
+                &change_ref,
                 args.local,
                 args.remote.as_deref(),
                 None,
@@ -90,23 +89,27 @@ fn run_change(repo: RepoRuntime, command: ChangeCommand) -> Result<(), String> {
                 &payload,
                 args.json,
                 &[
-                    "change_id",
                     "task_id",
                     "title",
                     "base_line",
                     "fork_snapshot_id",
                     "status",
                     "publication_state",
-                    "published_change_id",
                 ],
             )?;
             Ok(())
         }
         ChangeCommand::Revert(args) => {
+            let change_ref = resolve_task_author_change_input(
+                &repo,
+                &args.change_id,
+                args.local,
+                args.remote.as_deref(),
+            )?;
             let payload = run_locked_workspace_command(&repo, "ait-cli change revert", || {
                 change_revert_cmd(
                     &repo,
-                    &args.change_id,
+                    &change_ref,
                     args.force,
                     args.dry_run,
                     args.local,
@@ -119,7 +122,6 @@ fn run_change(repo: RepoRuntime, command: ChangeCommand) -> Result<(), String> {
                 &payload,
                 args.json,
                 &[
-                    "change_id",
                     "fork_snapshot_id",
                     "latest_change_snapshot_id",
                     "current_line",
@@ -131,6 +133,12 @@ fn run_change(repo: RepoRuntime, command: ChangeCommand) -> Result<(), String> {
             Ok(())
         }
         ChangeCommand::Replay(args) => {
+            let change_ref = resolve_task_author_change_input(
+                &repo,
+                &args.change_id,
+                args.local,
+                args.remote.as_deref(),
+            )?;
             let payload = run_locked_workspace_command(&repo, "ait-cli change replay", || {
                 let onto_line = match args.onto.as_deref() {
                     Some(onto_line) => onto_line.to_string(),
@@ -138,7 +146,7 @@ fn run_change(repo: RepoRuntime, command: ChangeCommand) -> Result<(), String> {
                 };
                 change_replay_cmd(
                     &repo,
-                    &args.change_id,
+                    &change_ref,
                     &onto_line,
                     args.force,
                     args.dry_run,
@@ -152,7 +160,6 @@ fn run_change(repo: RepoRuntime, command: ChangeCommand) -> Result<(), String> {
                 &payload,
                 args.json,
                 &[
-                    "change_id",
                     "fork_snapshot_id",
                     "latest_change_snapshot_id",
                     "onto_line",
@@ -164,6 +171,12 @@ fn run_change(repo: RepoRuntime, command: ChangeCommand) -> Result<(), String> {
             Ok(())
         }
         ChangeCommand::Close(args) => {
+            let change_ref = resolve_task_finish_change_input(
+                &repo,
+                &args.change_id,
+                args.local,
+                args.remote.as_deref(),
+            )?;
             let automatic_scope = if repo.change_uses_local_scope(args.local, args.remote.as_deref()) {
                 AutomaticReconciliationScope::Local
             } else {
@@ -171,7 +184,7 @@ fn run_change(repo: RepoRuntime, command: ChangeCommand) -> Result<(), String> {
             };
             let payload = run_locked_workspace_command(&repo, "ait-cli change close", || {
                 let mut payload =
-                    change_close_cmd(&repo, &args.change_id, args.local, args.remote.as_deref())?;
+                    change_close_cmd(&repo, &change_ref, args.local, args.remote.as_deref())?;
                 let task_id = workflow_payload_task_id(&payload);
                 let reconciliation = workflow_reconcile_automatic_best_effort(
                     &repo,
@@ -187,21 +200,21 @@ fn run_change(repo: RepoRuntime, command: ChangeCommand) -> Result<(), String> {
                 "ait-cli change close",
                 &payload,
                 args.json,
-                &["change_id", "status", "publication_state"],
+                &["task_id", "status", "publication_state"],
             )?;
             Ok(())
         }
         ChangeCommand::Publish(args) => {
-            let payload = change_publish_cmd(&repo, &args.change_id, args.remote.as_deref())?;
+            let change_ref = resolve_task_finish_change_input(&repo, &args.change_id, true, None)?;
+            let payload = change_publish_cmd(&repo, &change_ref, args.remote.as_deref())?;
             emit_result(
                 "ait-cli change publish",
                 &payload,
                 args.json,
                 &[
-                    "change_id",
+                    "task_id",
                     "publication_state",
                     "published_remote_name",
-                    "published_change_id",
                 ],
             )?;
             Ok(())

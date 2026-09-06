@@ -164,9 +164,9 @@ pub(crate) fn workflow_ready_next_action(
     let patchset_ci_status = optional_obj_field(facts, "patchset_ci_status");
     let external_readiness = optional_obj_field(facts, "external_readiness");
     let tests_state = string_field(facts, "tests_state");
-    let change_id = optional_string_field(&change, "change_id").unwrap_or_default();
+    let task_id = optional_string_field(&task, "task_id").unwrap_or_default();
     let apply_command = command_hint(commands, "apply_command")
-        .unwrap_or_else(|| format!("ait workflow ready {change_id} --apply"));
+        .unwrap_or_else(|| format!("ait workflow ready {task_id} --apply"));
     let land_command = command_hint(commands, "land_command");
     let patchset_id = patchset
         .as_ref()
@@ -197,7 +197,9 @@ pub(crate) fn workflow_ready_next_action(
                 command_hint(commands, "apply_command"),
                 apply_owned_continuation,
                 Some(apply_command.clone()),
-                Some("ait snapshot create <task-id>/C-## --message \"reviewable snapshot\"".to_string()),
+                Some(format!(
+                    "ait snapshot create {task_id} --message \"reviewable snapshot\""
+                )),
             ),
         });
     }
@@ -368,11 +370,11 @@ pub(crate) fn workflow_land_next_action(
     } else {
         policy_decision_override.to_string()
     };
-    let change_id = optional_string_field(&change, "change_id").unwrap_or_default();
+    let task_id = optional_string_field(&task, "task_id").unwrap_or_default();
     let apply_command = command_hint(commands, "apply_command")
-        .unwrap_or_else(|| format!("ait task finish {change_id}"));
+        .unwrap_or_else(|| format!("ait task finish {task_id}"));
     let ready_command = command_hint(commands, "ready_command")
-        .unwrap_or_else(|| format!("ait workflow ready {change_id} --apply"));
+        .unwrap_or_else(|| format!("ait workflow ready {task_id} --apply"));
     let landing_status = workflow_land_submission_status(landing_summary.as_ref());
     let landing_submission_id = workflow_land_submission_id(landing_summary.as_ref());
     let landing_result = workflow_land_result(landing_summary.as_ref());

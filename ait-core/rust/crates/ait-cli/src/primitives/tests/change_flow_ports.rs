@@ -906,7 +906,7 @@ fn patchset_argument_resolution_accepts_change_and_closeout_remote_traits() {
         Some("fixture-ait"),
     )
     .expect_err("missing patchset and change should fail");
-    assert!(err.contains("Provide PATCHSET_ID or --change"));
+    assert!(err.contains("Provide a Patchset ID"));
 }
 
 #[test]
@@ -975,7 +975,7 @@ fn attestation_put_flow_accepts_change_and_closeout_remote_traits() {
         "fixture-ait",
     )
     .expect_err("missing patchset and change should fail");
-    assert!(err.contains("Provide PATCHSET_ID or --change"));
+    assert!(err.contains("Provide a Patchset ID"));
 }
 
 #[test]

@@ -64,7 +64,7 @@ ait config set --user-name "your-name"
 
 The three baseline tests should pass. Task start records the initial baseline
 through its initialization workflow. Create checkpoints only inside the returned
-Task worktree, with its Task and Change IDs. For an existing project, use the
+Task worktree, using its Task ID. For an existing project, use the
 [getting-started guide](https://ait-native.dev/technical/getting-started/) instead.
 
 **3. Open the example in your coding agent and give it this request.**

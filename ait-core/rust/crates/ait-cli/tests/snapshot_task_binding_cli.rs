@@ -585,12 +585,17 @@ fn task_snapshot_and_commit_keep_exact_identity_and_reject_ambiguous_siblings() 
     fs::write(edit.join("code.rs"), "fn first() {}\n").unwrap();
     let first = json(
         &edit,
-        &["snapshot", "create", &task, "-m", "first", "--json"],
+        &[
+            "snapshot", "create", &task, "-m", "first", "--json", "--full",
+        ],
     );
     assert_eq!(first["task_id"], task);
     assert_eq!(first["change_id"], first_change);
     fs::write(edit.join("code.rs"), "fn first() {}\nfn second() {}\n").unwrap();
-    let committed = json(&edit, &["commit", &task, "-m", "second", "--json"]);
+    let committed = json(
+        &edit,
+        &["commit", &task, "-m", "second", "--json", "--full"],
+    );
     assert_eq!(committed["change_id"], first_change);
     let second = json(
         &edit,
@@ -614,7 +619,8 @@ fn task_snapshot_and_commit_keep_exact_identity_and_reject_ambiguous_siblings() 
     let heads = json(&root, &["line", "list", "--all", "--json"]);
     let rejected = run(&edit, &["snapshot", "create", &task, "-m", "ambiguous"]);
     assert!(!rejected.status.success());
-    assert!(String::from_utf8_lossy(&rejected.stderr).contains("multiple writable changes"));
+    assert!(String::from_utf8_lossy(&rejected.stderr)
+        .contains("multiple internal writable work records"));
     assert_eq!(snapshots(&root), before);
     assert_eq!(json(&root, &["line", "list", "--all", "--json"]), heads);
     // Closing C-01 must select the sole C-02 without rebinding the worktree.
@@ -630,14 +636,19 @@ fn task_snapshot_and_commit_keep_exact_identity_and_reject_ambiguous_siblings() 
     );
     let replacement = json(
         &edit,
-        &["snapshot", "create", &task, "-m", "third", "--json"],
+        &[
+            "snapshot", "create", &task, "-m", "third", "--json", "--full",
+        ],
     );
     assert_eq!(replacement["change_id"], second["change_id"]);
     assert_eq!(
         json(&edit, &["worktree", "show", "--json"])["bound_task_id"],
         task
     );
-    let finished = json(&edit, &["task", "finish", &task, "--local", "--json"]);
+    let finished = json(
+        &edit,
+        &["task", "finish", &task, "--local", "--json", "--full"],
+    );
     assert_eq!(finished["change_ref"], second_ref);
     assert!(!edit.exists());
     let blame = json(&root, &["blame", "code.rs", "--line", "3", "--json"]);

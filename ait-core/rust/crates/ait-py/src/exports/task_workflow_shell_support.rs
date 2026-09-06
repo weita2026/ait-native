@@ -310,11 +310,11 @@ fn local_patchset_ci_catalog_path(root: &Path) -> Option<PathBuf> {
 }
 
 fn workflow_land_patchset_command(
-    change_id: &str,
+    task_id: &str,
     base_line_name: &str,
     worktree_retarget: Option<&JsonValue>,
 ) -> String {
-    let publish_command = format!("ait patchset publish {change_id} --summary \"review summary\"");
+    let publish_command = format!("ait patchset publish {task_id} --summary \"review summary\"");
     let Some(worktree_retarget) = worktree_retarget.and_then(JsonValue::as_object) else {
         return publish_command;
     };
@@ -333,7 +333,8 @@ fn workflow_land_patchset_command(
 
 pub fn workflow_ready_command_hints(
     ctx: &Bound<'_, PyAny>,
-    change_id: &str,
+    _change_id: &str,
+    task_id: &str,
     patchset: Option<&JsonValue>,
     base_line_name: &str,
     worktree_retarget: Option<&JsonValue>,
@@ -342,9 +343,10 @@ pub fn workflow_ready_command_hints(
     let root = ctx_path(ctx, "root")?;
     let patchset_id = patchset
         .and_then(JsonValue::as_object)
-        .and_then(|patchset| normalize_json_text(patchset.get("patchset_id")));
+        .and_then(|patchset| normalize_json_text(patchset.get("patchset_id")))
+        .map(|value| ait_core::public_references::public_patchset_reference(&value));
     let publish_command =
-        workflow_land_patchset_command(change_id, base_line_name, worktree_retarget);
+        workflow_land_patchset_command(task_id, base_line_name, worktree_retarget);
     let patchset_ci_command =
         if let Some(patchset_id) = patchset_id.as_ref().filter(|_| root.is_none()) {
             JsonValue::String(format!("ait patchset rerun-ci {patchset_id}"))
@@ -368,12 +370,12 @@ pub fn workflow_ready_command_hints(
     } else {
         attest_command.clone()
     };
-    let apply_command = format!("ait workflow ready {change_id} --apply");
+    let apply_command = format!("ait workflow ready {task_id} --apply");
     let code_review_summary_command = patchset_id
         .as_ref()
         .map(|patchset_id| {
             JsonValue::String(format!(
-                "ait review code submit {change_id} --patchset {patchset_id} --message \"{CODE_REVIEW_SUMMARY_TEMPLATE}\""
+                "ait review code submit {task_id} --patchset {patchset_id} --message \"{CODE_REVIEW_SUMMARY_TEMPLATE}\""
             ))
         })
         .unwrap_or(JsonValue::Null);
@@ -388,7 +390,7 @@ pub fn workflow_ready_command_hints(
             .as_ref()
             .map(|patchset_id| {
                 JsonValue::String(format!(
-                    "ait review task approve {change_id} --patchset {patchset_id} --message \"<functional validation>\""
+                    "ait review task approve {task_id} --patchset {patchset_id} --message \"<functional validation>\""
                 ))
             })
             .unwrap_or(JsonValue::Null)
@@ -417,15 +419,15 @@ pub fn workflow_ready_command_hints(
         "review_command": review_command,
         "manual_review_command": manual_review_command,
         "auto_review_reviewer": auto_review_reviewer,
-        "land_command": format!("ait task finish {change_id}"),
+        "land_command": format!("ait task finish {task_id}"),
     }))
 }
 
 #[allow(clippy::too_many_arguments)]
 pub fn workflow_land_command_hints(
     ctx: &Bound<'_, PyAny>,
-    change_id: &str,
-    _task_id: &str,
+    _change_id: &str,
+    task_id: &str,
     patchset: Option<&JsonValue>,
     base_line_name: &str,
     _target_line: &str,
@@ -439,10 +441,11 @@ pub fn workflow_land_command_hints(
     let team_review_enabled = team_review_enabled(&config);
     let patchset_id = patchset
         .and_then(JsonValue::as_object)
-        .and_then(|patchset| normalize_json_text(patchset.get("patchset_id")));
-    let apply_command = format!("ait task finish {change_id}");
+        .and_then(|patchset| normalize_json_text(patchset.get("patchset_id")))
+        .map(|value| ait_core::public_references::public_patchset_reference(&value));
+    let apply_command = format!("ait task finish {task_id}");
     let publish_command =
-        workflow_land_patchset_command(change_id, base_line_name, worktree_retarget);
+        workflow_land_patchset_command(task_id, base_line_name, worktree_retarget);
     let patchset_ci_command =
         if let Some(patchset_id) = patchset_id.as_ref().filter(|_| root.is_none()) {
             JsonValue::String(format!("ait patchset rerun-ci {patchset_id}"))
@@ -468,7 +471,7 @@ pub fn workflow_land_command_hints(
     };
     let code_review_summary_command = patchset_id.as_ref().map(|patchset_id| {
         JsonValue::String(format!(
-            "ait review code submit {change_id} --patchset {patchset_id} --message \"{CODE_REVIEW_SUMMARY_TEMPLATE}\""
+            "ait review code submit {task_id} --patchset {patchset_id} --message \"{CODE_REVIEW_SUMMARY_TEMPLATE}\""
         ))
     }).unwrap_or(JsonValue::Null);
     let auto_review_reviewer = if task_review_required {
@@ -481,7 +484,7 @@ pub fn workflow_land_command_hints(
             .as_ref()
             .map(|patchset_id| {
                 JsonValue::String(format!(
-                    "ait review task approve {change_id} --patchset {patchset_id} --message \"<functional validation>\""
+                    "ait review task approve {task_id} --patchset {patchset_id} --message \"<functional validation>\""
                 ))
             })
             .unwrap_or(JsonValue::Null)
@@ -491,19 +494,19 @@ pub fn workflow_land_command_hints(
     let team_review_command = if let Some(patchset_id) = patchset_id.as_ref() {
         if team_review_enabled {
             JsonValue::String(format!(
-                "ait review team approve {change_id} --patchset {patchset_id}"
+                "ait review team approve {task_id} --patchset {patchset_id}"
             ))
         } else {
             JsonValue::Null
         }
     } else if team_review_enabled {
-        JsonValue::String(format!("ait review team approve {change_id}"))
+        JsonValue::String(format!("ait review team approve {task_id}"))
     } else {
         JsonValue::Null
     };
-    let ready_command = format!("ait workflow ready {change_id} --apply");
+    let ready_command = format!("ait workflow ready {task_id} --apply");
     let review_command = if review_blocking > 0 {
-        JsonValue::String(format!("ait review show {change_id}"))
+        JsonValue::String(format!("ait review show {task_id}"))
     } else if task_review_required {
         manual_review_command.clone()
     } else if auto_review_reviewer.is_some() {
@@ -531,7 +534,7 @@ pub fn workflow_land_command_hints(
         "auto_review_reviewer": auto_review_reviewer,
         "policy_command": patchset_id.as_ref().map(|patchset_id| JsonValue::String(format!("ait policy eval {patchset_id}"))).unwrap_or(JsonValue::Null),
         "land_command": land_command,
-        "task_land_command": format!("ait task finish {change_id}"),
+        "task_land_command": format!("ait task finish {task_id}"),
     }))
 }
 

@@ -2691,17 +2691,16 @@ fn require_solo_local_default_line_push_authority(
         "Refusing to {operation} remote `{remote_name}` target Line `{line_name}` with \
          `ait push` while `workflow_mode=solo_local` ({remote_head} -> {local_head}). Immutable \
          Snapshot and pack upload remains available to workflow preparation, but only \
-         authoritative remote Task Land may move this governed Line. Promote the latest \
-         completed local Change with `ait workflow ready <local-change-id> --apply --remote \
+         authoritative remote Task finish may move this governed Line. Promote the latest \
+         completed local Task with `ait workflow ready <task-id> --apply --remote \
          {remote_name}`, then hand it to a reviewer running `ait workflow finish \
-         <local-change-id> --apply --remote {remote_name}`.{governed_change}",
+         <task-id> --apply --remote {remote_name}`.{governed_task}",
         remote_head = remote_head_snapshot_id.unwrap_or("none"),
         local_head = local_head_snapshot_id.unwrap_or("none"),
-        governed_change = governed_change_ref
+        governed_task = governed_change_ref
             .as_deref()
-            .map(|change_ref| format!(
-                " Local head contains finished local Change {change_ref}; use that exact Change as the governed promotion subject"
-            ))
+            .and_then(|change_ref| change_ref.split_once('/').map(|(task_id, _)| task_id))
+            .map(|task_id| format!(" Local head contains finished Task {task_id}; use that Task as the governed promotion subject"))
             .unwrap_or_default(),
     ))
 }

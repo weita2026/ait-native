@@ -165,6 +165,11 @@ pub use change_flow::{
     review_code_submit, review_code_template, review_record, review_request, review_show,
     review_task_approve, review_task_record, review_team_approve, task_abandon,
 };
+pub(crate) use change_identity::resolve_public_patchset_input;
+pub use change_identity::{
+    resolve_task_author_change_input, resolve_task_finish_change_input,
+    resolve_task_remote_change_input, resolve_task_remote_revision_input,
+};
 pub use foundation::ensure_status_manifest;
 pub(in crate::primitives) use foundation::TaskStartBootstrapRequest;
 pub use git_interop::{git_export, git_import, git_mirror};

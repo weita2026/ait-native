@@ -12,7 +12,7 @@ import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const CORE_SNAPSHOT = "SNP-ED7593DBF982";
+const CORE_SNAPSHOT = "SNP-90763344F35E";
 const INTERNAL_CORE_ROOT = path.join(ROOT, ".ait-external", "ait-core");
 const PUBLIC_CORE_ROOT = path.resolve(ROOT, "..", "ait-core");
 const MANIFEST_RELATIVE = path.join("rust", "crates", "ait-napi", "Cargo.toml");

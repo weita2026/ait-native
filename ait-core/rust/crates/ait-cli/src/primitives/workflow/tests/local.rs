@@ -84,6 +84,15 @@ fn workflow_task_input_uses_recorded_cross_ordinal_publication_without_writes() 
             remote_ref
         );
         assert_eq!(
+            crate::primitives::resolve_public_patchset_input(
+                &repo,
+                &format!("{task_id}/P-02"),
+                Some("origin")
+            )
+            .unwrap(),
+            format!("{remote_ref}/P-02")
+        );
+        assert_eq!(
             workflow_task_change_reference(&repo, &selected_ref, Some("origin")).unwrap(),
             selected_ref
         );
@@ -167,7 +176,7 @@ fn completed_task_input_does_not_bypass_multi_change_history_promotion_limit() {
     assert!(
         workflow_task_change_reference(&repo, &task_id, Some("origin"))
             .unwrap_err()
-            .contains("multiple finishable changes")
+            .contains("multiple internal finishable work records")
     );
     let error =
         workflow_local_history_entries(&repo, &last_ref, "main", &base, &previous).unwrap_err();
@@ -661,12 +670,12 @@ fn final_snapshot_promotion_preview_uses_an_exact_local_change_reference() {
     assert_eq!(preview["local_change_ref"], "LCT-FINAL/C-01");
     assert_eq!(
         preview["next_action"]["command"],
-        "ait workflow ready LCT-FINAL/C-01 --apply --remote origin"
+        "ait workflow ready LCT-FINAL --apply --remote origin"
     );
     assert!(preview["next_action"]["detail"]
         .as_str()
         .unwrap()
-        .contains("ait workflow finish LCT-FINAL/C-01 --apply --remote origin"));
+        .contains("ait workflow finish LCT-FINAL --apply --remote origin"));
 }
 
 #[test]

@@ -148,7 +148,7 @@ pub(super) fn resolve_task_land_change_id(
     remote_name: Option<&str>,
 ) -> Result<String, String> {
     let requested_id = normalized_text(Some(task_or_change_id))
-        .ok_or_else(|| "task-or-change-id is required".to_string())?;
+        .ok_or_else(|| "Task ID is required".to_string())?;
     if let Some(change_id) = task_land_remote_change_id(repo, &requested_id, remote_name)? {
         return Ok(change_id);
     }
@@ -160,13 +160,14 @@ pub(super) fn resolve_task_land_change_id(
             && string_field(&local_change, "publication_state").as_deref() != Some("published")
         {
             let remote_name = normalized_text(remote_name).unwrap_or_else(|| "origin".to_string());
+            let task_id = required_string_field(&local_change, "task_id")?;
             return Err(format!(
-                "Local change {local_change_id} is completed but has no ready remote Patchset. Run `ait workflow ready {local_change_id} --apply --remote {remote_name}` to publish its consecutive local workflow history and CI-test the single aggregate Patchset, then hand it to a reviewer running `ait workflow finish {local_change_id} --apply --remote {remote_name}`."
+                "Task {task_id} is completed locally but has no ready remote Patchset. Run `ait workflow ready {task_id} --apply --remote {remote_name}` to publish its consecutive local workflow history and CI-test the single aggregate Patchset, then give the Task ID and selected Patchset to a reviewer running `ait workflow finish {task_id} --apply --remote {remote_name}`."
             ));
         }
     }
     Err(format!(
-        "Could not resolve `{requested_id}` as a remote task or change for `ait task finish`."
+        "Could not resolve Task `{requested_id}` for `ait task finish`."
     ))
 }
 
@@ -179,13 +180,14 @@ pub(in crate::primitives) fn task_land_local_payload(
         return Ok(None);
     }
     let requested_id = normalized_text(Some(task_or_change_id))
-        .ok_or_else(|| "task-or-change-id is required".to_string())?;
+        .ok_or_else(|| "Task ID is required".to_string())?;
     let Some(change_ref) = task_land_local_change_id(repo, &requested_id)? else {
         return Ok(None);
     };
     let change_store = repo.change_store()?;
     let task_store = repo.task_store()?;
     let change = workflow_local_change_read_with_change_store(&change_store, &change_ref)?;
+    let task_id = required_string_field(&change, "task_id")?;
     let change_id = required_string_field(&change, "change_id")?;
     if string_field(&change, "publication_state").as_deref() == Some("published") {
         return Ok(None);
@@ -193,10 +195,9 @@ pub(in crate::primitives) fn task_land_local_payload(
     let change_status = string_field(&change, "status").unwrap_or_default();
     if !matches!(change_status.as_str(), "draft" | "active" | "landed") {
         return Err(format!(
-            "Local change {change_id} is {change_status} and cannot be locally finished"
+            "Local Task {task_id} has work state {change_status} and cannot be locally finished"
         ));
     }
-    let task_id = required_string_field(&change, "task_id")?;
     let task = workflow_local_task_read_with_task_store(&task_store, &task_id)?;
     if string_field(&task, "publication_state").as_deref() == Some("published") {
         return Ok(None);
@@ -231,7 +232,7 @@ pub(in crate::primitives) fn task_land_local_payload(
             "next_action": {
                 "code": "resume_local_task_land_closeout",
                 "summary": "Resume the already-finished local Task's Plan closeout and worktree cleanup without applying it again.",
-                "detail": "Run the same `ait task finish <task-or-change-id>` command. The finished Line, Change, and Task state is reused idempotently.",
+                "detail": "Run the same `ait task finish <task-id>` command. The finished Line, internal work record, and Task state are reused idempotently.",
                 "command": format!("ait task finish {requested_id}"),
             },
         })));
@@ -251,7 +252,7 @@ pub(in crate::primitives) fn task_land_local_payload(
         "next_action": {
             "code": "workflow_land_local",
             "summary": "Finish the local draft change onto its local target line.",
-            "detail": "Run `ait task finish <task-or-change-id> --message <MESSAGE> --local` for dirty work. Clean work reuses the current Line head, so omit --message. You may omit --local when workflow_mode already defaults Task finish to local.",
+            "detail": "Run `ait task finish <task-id> --message <MESSAGE> --local` for dirty work. Clean work reuses the current Line head, so omit --message. You may omit --local when workflow_mode already defaults Task finish to local.",
             "command": format!("ait task finish {requested_id}"),
         },
     })))
@@ -805,8 +806,10 @@ pub fn task_land_payload_scoped(
 ) -> Result<JsonValue, String> {
     let mut output = if use_local_scope {
         task_land_local_payload(repo, task_or_change_id, None)?.ok_or_else(|| {
+            let task_id = task_land_reference_task_hint(repo, task_or_change_id)
+                .unwrap_or_else(|| "<task-id>".to_string());
             format!(
-                "`ait task finish {task_or_change_id}` is using local data, but no unpublished local draft is ready to finish. Pass `--remote <name>` to finish the shared remote Change."
+                "`ait task finish {task_id}` is using local data, but no unpublished local draft is ready to finish. Pass `--remote <name>` to finish the shared remote Task."
             )
         })?
     } else {
@@ -820,8 +823,8 @@ pub(in crate::primitives) fn task_land_exact_atomic_reference(
     repo: &RepoRuntime,
     requested: &str,
 ) -> Result<String, String> {
-    let requested = normalized_text(Some(requested))
-        .ok_or_else(|| "task-or-change-id is required.".to_string())?;
+    let requested =
+        normalized_text(Some(requested)).ok_or_else(|| "Task ID is required.".to_string())?;
     match task_land_reference_family(&requested) {
         Some(TaskLandReferenceFamily::Task) => {
             if let Ok(task_store) = repo.task_store() {
@@ -863,13 +866,14 @@ pub(in crate::primitives) fn task_land_exact_atomic_reference(
         bound_task_worktree_metadata(repo, None, Some(&requested))?
     };
     let Some(metadata) = metadata else {
-        return Err(format!(
-            "Atomic remote Task Land requires an exact Change reference; `{requested}` has no local Task binding. Use `<task-id>/{requested}` or pass the Task ID."
-        ));
+        return Err(
+            "Remote Task finish could not resolve a Task owner for the compatibility input. Pass the Task ID."
+                .to_string(),
+        );
     };
     let task_id = metadata.bound_task_id.ok_or_else(|| {
         format!(
-            "Bound worktree `{}` cannot derive a Task owner for `{requested}`.",
+            "Bound worktree `{}` cannot derive its Task owner. Pass the Task ID.",
             metadata.name
         )
     })?;
@@ -1343,8 +1347,10 @@ where
             None::<fn(&JsonValue) -> Result<(), String>>,
         )?
         .ok_or_else(|| {
+            let task_id = task_land_reference_task_hint(repo, task_or_change_id)
+                .unwrap_or_else(|| "<task-id>".to_string());
             format!(
-                "`ait task finish {task_or_change_id}` is using local data, but no unpublished local draft is ready to finish. Pass `--remote <name>` to finish the shared remote Change."
+                "`ait task finish {task_id}` is using local data, but no unpublished local draft is ready to finish. Pass `--remote <name>` to finish the shared remote Task."
             )
         });
     }

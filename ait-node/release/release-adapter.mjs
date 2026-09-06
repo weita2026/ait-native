@@ -60,8 +60,8 @@ function renderStorefrontReadme(template, version) {
     OFFICIAL_WEBSITE,
     "## Upgrading from 0.x",
     "There is no `ait install` command in 1.0.",
-    "ait workflow ready <change-id> --apply",
-    "ait workflow finish <change-id> --apply",
+    "ait workflow ready <task-id> --apply",
+    "ait workflow finish <task-id> --apply",
   ]) {
     assert.equal(
       readme.includes(required),
@@ -179,7 +179,7 @@ async function validateContract(target, version) {
           payload.version === version &&
           payload.component === "ait-node" &&
           payload.binding_repository === "ait-core" &&
-          payload.binding_snapshot === "SNP-ED7593DBF982" &&
+          payload.binding_snapshot === "SNP-90763344F35E" &&
           payload.addon === "native/ait_napi.node"
         );
       },

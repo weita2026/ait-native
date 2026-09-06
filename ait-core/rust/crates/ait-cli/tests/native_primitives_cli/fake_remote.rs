@@ -1671,6 +1671,10 @@ fn response_for_publish_recovery(
         ("GET", "/v1/native/repository-authorities/7") => {
             json_response(200, &repository_payload("fixture-ait"))
         }
+        ("GET", "/v1/native/repository-authorities/7/tasks/RT-1") => json_response(
+            200,
+            &json!({"task_id":"RT-1","title":"Recovery task","status":"active"}),
+        ),
         ("GET", "/v1/native/repository-authorities/7/changes/RC-1") => {
             json_response(404, &json!({"detail":"lane"}))
         }
@@ -1678,6 +1682,9 @@ fn response_for_publish_recovery(
             200,
             &json!([{
                 "change_id":"RC-1",
+                "change_ref":"RC-1",
+                "task_id":"RT-1",
+                "status":"active",
                 "base_line":"main",
                 "current_patchset_number":0
             }]),
@@ -1781,6 +1788,21 @@ fn response_for_bounded_snapshot_sync(
         ("GET", "/v1/native/repository-authorities/7") => {
             json_response(200, &repository_payload("fixture-ait"))
         }
+        ("GET", "/v1/native/repository-authorities/7/tasks/RT-1") => json_response(
+            200,
+            &json!({"task_id":"RT-1","title":"Bounded sync task","status":"active"}),
+        ),
+        ("GET", "/v1/native/repository-authorities/7/changes") => json_response(
+            200,
+            &json!([{
+                "change_id":"RC-1",
+                "change_ref":"RC-1",
+                "task_id":"RT-1",
+                "status":"active",
+                "base_line":"main",
+                "selected_patchset_id":"RP-1"
+            }]),
+        ),
         ("GET", "/v1/native/repository-authorities/7/changes/RC-1") => json_response(
             200,
             &json!({"change_id":"RC-1","base_line":"main","selected_patchset_id":"RP-1"}),

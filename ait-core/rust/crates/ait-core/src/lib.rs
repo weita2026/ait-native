@@ -63,6 +63,7 @@ pub mod plan_store;
 pub mod plan_workflow_json;
 pub mod policy;
 pub mod policy_json;
+pub mod public_references;
 pub mod ref_names;
 pub mod remote_store;
 pub mod remote_sync_backend;

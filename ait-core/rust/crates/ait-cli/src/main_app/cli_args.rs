@@ -157,8 +157,8 @@ enum Commands {
         command: TagCommand,
     },
     #[command(
-        about = "Publish and inspect remote Change revisions and their CI state.",
-        long_about = "Publish the current local Line head as a remote Change revision, inspect or select specific published Patchsets, and read or manually rerun their remote CI. Published Patchsets exist only on remotes; --remote selects a configured remote and there is no local Patchset mode."
+        about = "Publish and inspect remote Patchsets and their CI state.",
+        long_about = "Publish the current local Line head as a remote Patchset, inspect or select public TASK_ID/P-## Patchset references, and read or manually rerun their remote CI. Published Patchsets exist only on remotes; --remote selects a configured remote."
     )]
     Patchset {
         #[command(subcommand)]
@@ -171,12 +171,12 @@ enum Commands {
         #[command(subcommand)]
         command: ReviewCommand,
     },
-    #[command(about = "Record and inspect evidence for remote Patchsets.")]
+    #[command(about = "Record and inspect evidence for TASK_ID/P-## Patchsets.")]
     Attest {
         #[command(subcommand)]
         command: AttestCommand,
     },
-    #[command(about = "Check, inspect, or waive remote Patchset requirements.")]
+    #[command(about = "Check, inspect, or waive TASK_ID/P-## Patchset requirements.")]
     Policy {
         #[command(subcommand)]
         command: PolicyCommand,
@@ -1460,7 +1460,7 @@ struct BlameArgs {
         long = "patchset",
         value_parser = parse_exact_patchset_id,
         conflicts_with_all = ["snapshot_id", "plan_id", "plan_ref"],
-        help = "Resolve one exact published Patchset ID to its revision Snapshot before blaming."
+        help = "Resolve one public TASK_ID/P-## Patchset reference to its revision Snapshot before blaming."
     )]
     patchset_id: Option<String>,
     #[arg(
@@ -1892,37 +1892,34 @@ enum TagCommand {
 enum PatchsetCommand {
     #[command(
         about = "Publish the current Line head as a new remote Patchset.",
-        long_about = "Publish the current local Line head as the next Patchset for CHANGE_ID after validating the bound worktree and synchronizing its revision Snapshot to the selected remote. --summary is required; --author-mode overrides the configured provenance mode for this publication only."
+        long_about = "Publish the current local Line head as the next Patchset for TASK_ID after validating the bound worktree and synchronizing its revision Snapshot to the selected remote. --summary is required; --author-mode overrides the configured provenance mode for this publication only."
     )]
     Publish(PatchsetPublishArgs),
     #[command(
-        about = "List the published Patchsets owned by one remote Change without modifying it."
+        about = "List the published Patchsets owned by one remote Task without modifying it."
     )]
     List(PatchsetListArgs),
-    #[command(about = "Show one exact published remote Patchset without modifying it.")]
+    #[command(about = "Show one TASK_ID/P-## Patchset without modifying it.")]
     Show(PatchsetShowArgs),
-    #[command(
-        about = "Select one specific Patchset on its owning remote Change.",
-        long_about = "Read the requested Patchset, find its owning remote Change, then make that Patchset the Change's selected revision. The owning Change cannot be supplied or overridden by the caller."
-    )]
+    #[command(about = "Select one TASK_ID/P-## Patchset as its Task's current revision.")]
     Select(PatchsetSelectArgs),
     #[command(
         name = "ci-status",
-        about = "Read CI state for one exact remote Patchset.",
-        long_about = "Read current CI readiness and the 10 most recent CI jobs for one published Patchset without changing remote data."
+        about = "Read CI state for one TASK_ID/P-## Patchset.",
+        long_about = "Read current CI readiness and the 10 most recent CI jobs for one public TASK_ID/P-## Patchset without changing remote data."
     )]
     CiStatus(PatchsetCiStatusArgs),
     #[command(
         name = "rerun-ci",
-        about = "Queue a manual CI rerun for one exact remote Patchset.",
-        long_about = "Queue CI for one exact published Patchset using the fixed trigger manual_rerun. Runner selection and execution profiles remain server policy and cannot be overridden here."
+        about = "Queue a manual CI rerun for one TASK_ID/P-## Patchset.",
+        long_about = "Queue CI for one public TASK_ID/P-## Patchset using the fixed trigger manual_rerun. Runner selection and execution profiles remain server policy and cannot be overridden here."
     )]
     RerunCi(PatchsetRerunCiArgs),
 }
 
 #[derive(Subcommand)]
 enum ReviewCommand {
-    #[command(about = "Show compact remote Review state for one Change.")]
+    #[command(about = "Show compact remote Review state for one Task.")]
     Show(ReviewShowArgs),
     #[command(about = "Manage team governance review; available only in team_remote mode.")]
     Team {
@@ -2020,7 +2017,7 @@ enum WorktreeCommand {
     Restore(WorktreeRestoreArgs),
     #[command(
         about = "Show one registered worktree and its refreshed live status.",
-        long_about = "Show the registered and current Line, checked-out Snapshot, Task/Change binding, cleanup classification, and rebase or merge state for one worktree. NAME may be omitted only when the current checkout belongs to a registered worktree."
+        long_about = "Show the registered and current Line, checked-out Snapshot, Task binding, cleanup classification, and rebase or merge state for one worktree. NAME may be omitted only when the current checkout belongs to a registered worktree."
     )]
     Show(WorktreeShowArgs),
     #[command(
@@ -2483,8 +2480,8 @@ struct ChangeListArgs {
 #[derive(Args, Clone)]
 struct ChangeShowArgs {
     #[arg(
-        value_name = "TASK_ID/C-##",
-        help = "Task-owned Change reference; a bare C-## is accepted only when it identifies one Change."
+        value_name = "TASK_ID",
+        help = "Task whose applicable internal work record will be inspected."
     )]
     change_id: String,
     #[arg(
@@ -2509,8 +2506,8 @@ struct ChangeShowArgs {
 #[derive(Args, Clone)]
 struct ChangeRevertArgs {
     #[arg(
-        value_name = "TASK_ID/C-##",
-        help = "Task-owned Change whose recorded delta will be removed from the workspace."
+        value_name = "TASK_ID",
+        help = "Task whose recorded delta will be removed from the workspace."
     )]
     change_id: String,
     #[arg(
@@ -2545,8 +2542,8 @@ struct ChangeRevertArgs {
 #[derive(Args, Clone)]
 struct ChangeReplayArgs {
     #[arg(
-        value_name = "TASK_ID/C-##",
-        help = "Task-owned Change whose recorded delta will be applied to the workspace."
+        value_name = "TASK_ID",
+        help = "Task whose recorded delta will be applied to the workspace."
     )]
     change_id: String,
     #[arg(
@@ -2588,8 +2585,8 @@ struct ChangeReplayArgs {
 #[derive(Args, Clone)]
 struct ChangeCloseArgs {
     #[arg(
-        value_name = "TASK_ID/C-##",
-        help = "Task-owned Change to archive without applying it to the target Line."
+        value_name = "TASK_ID",
+        help = "Task whose applicable internal work record will be archived without applying it to the target Line."
     )]
     change_id: String,
     #[arg(
@@ -2614,8 +2611,8 @@ struct ChangeCloseArgs {
 #[derive(Args, Clone)]
 struct ChangePublishArgs {
     #[arg(
-        value_name = "TASK_ID/C-##",
-        help = "Local Task-owned draft Change to promote."
+        value_name = "TASK_ID",
+        help = "Local Task whose applicable draft work will be promoted."
     )]
     change_id: String,
     #[arg(
@@ -3013,8 +3010,9 @@ struct TagDeleteArgs {
 #[derive(Args, Clone)]
 struct PatchsetPublishArgs {
     #[arg(
-        value_name = "CHANGE_ID",
-        help = "Exact remote Change ID that will own the new Patchset."
+        value_name = "TASK_ID",
+        value_parser = parse_task_or_legacy_work_reference,
+        help = "Task that will own the new remote Patchset."
     )]
     change: String,
     #[arg(
@@ -3043,8 +3041,9 @@ struct PatchsetPublishArgs {
 #[derive(Args, Clone)]
 struct PatchsetListArgs {
     #[arg(
-        value_name = "CHANGE_ID",
-        help = "Exact remote Change ID whose published Patchsets will be listed."
+        value_name = "TASK_ID",
+        value_parser = parse_task_or_legacy_work_reference,
+        help = "Task whose published Patchsets will be listed."
     )]
     change: String,
     #[arg(
@@ -3062,7 +3061,7 @@ struct PatchsetShowArgs {
     #[arg(
         value_name = "PATCHSET_ID",
         value_parser = parse_exact_patchset_id,
-        help = "Complete published Patchset ID; bare numeric ordinals are rejected."
+        help = "Public Patchset reference (TASK_ID/P-##) to show."
     )]
     patchset_id: String,
     #[arg(
@@ -3080,7 +3079,7 @@ struct PatchsetSelectArgs {
     #[arg(
         value_name = "PATCHSET_ID",
         value_parser = parse_exact_patchset_id,
-        help = "Complete published Patchset ID; its owning Change is derived remotely."
+        help = "Public Patchset reference (TASK_ID/P-##) to select."
     )]
     patchset_id: String,
     #[arg(
@@ -3098,7 +3097,7 @@ struct PatchsetCiStatusArgs {
     #[arg(
         value_name = "PATCHSET_ID",
         value_parser = parse_exact_patchset_id,
-        help = "Complete published Patchset ID; bare numeric ordinals are rejected."
+        help = "Public Patchset reference (TASK_ID/P-##) whose CI state will be read."
     )]
     patchset_id: String,
     #[arg(
@@ -3119,7 +3118,7 @@ struct PatchsetRerunCiArgs {
     #[arg(
         value_name = "PATCHSET_ID",
         value_parser = parse_exact_patchset_id,
-        help = "Complete published Patchset ID to enqueue for a manual rerun."
+        help = "Public Patchset reference (TASK_ID/P-##) that will receive a manual CI rerun."
     )]
     patchset_id: String,
     #[arg(
@@ -3134,10 +3133,16 @@ struct PatchsetRerunCiArgs {
 
 #[derive(Args, Clone)]
 struct ReviewApproveArgs {
+    #[arg(value_name = "TASK_ID", help = "Task receiving the review action.")]
     change_id: String,
     #[arg(long)]
     reviewer: Option<String>,
-    #[arg(long = "patchset")]
+    #[arg(
+        long = "patchset",
+        value_name = "PATCHSET_ID",
+        value_parser = parse_exact_patchset_id,
+        help = "Public Patchset reference (TASK_ID/P-##) receiving the review action; defaults to the Task's selected Patchset."
+    )]
     patchset_id: Option<String>,
     #[arg(long)]
     message: Option<String>,
@@ -3149,10 +3154,16 @@ struct ReviewApproveArgs {
 
 #[derive(Args, Clone)]
 struct ReviewRequestArgs {
+    #[arg(value_name = "TASK_ID", help = "Task for which review is requested.")]
     change_id: String,
     #[arg(long = "group", required = true)]
     reviewer_groups: Vec<String>,
-    #[arg(long = "patchset")]
+    #[arg(
+        long = "patchset",
+        value_name = "PATCHSET_ID",
+        value_parser = parse_exact_patchset_id,
+        help = "Public Patchset reference (TASK_ID/P-##) for which review is requested; defaults to the Task's selected Patchset."
+    )]
     patchset_id: Option<String>,
     #[arg(long)]
     note: Option<String>,
@@ -3164,12 +3175,13 @@ struct ReviewRequestArgs {
 
 #[derive(Args, Clone)]
 struct ReviewCodeSubmitArgs {
-    #[arg(help = "Remote Change that owns the exact reviewed Patchset.")]
+    #[arg(value_name = "TASK_ID", help = "Task that owns the reviewed Patchset.")]
     change_id: String,
     #[arg(
         long = "patchset",
         value_parser = parse_exact_patchset_id,
-        help = "Complete published Patchset ID reviewed by the executing AI app; numeric Repository references are rejected."
+        required = true,
+        help = "Public Patchset reference (TASK_ID/P-##) covered by the code review."
     )]
     patchset_id: String,
     #[arg(
@@ -3191,12 +3203,13 @@ struct ReviewCodeSubmitArgs {
 
 #[derive(Args, Clone)]
 struct ReviewTaskApproveArgs {
-    #[arg(help = "Remote Change that owns the functionally validated Patchset.")]
+    #[arg(value_name = "TASK_ID", help = "Task that owns the validated Patchset.")]
     change_id: String,
     #[arg(
         long = "patchset",
         value_parser = parse_exact_patchset_id,
-        help = "Complete published Patchset ID whose functionality was validated; numeric Repository references are rejected."
+        required = true,
+        help = "Public Patchset reference (TASK_ID/P-##) covered by functional validation."
     )]
     patchset_id: String,
     #[arg(
@@ -3215,8 +3228,14 @@ struct ReviewTaskApproveArgs {
 
 #[derive(Args, Clone)]
 struct ReviewTaskRecordArgs {
+    #[arg(value_name = "TASK_ID", help = "Task receiving the review action.")]
     change_id: String,
-    #[arg(long = "patchset")]
+    #[arg(
+        long = "patchset",
+        value_name = "PATCHSET_ID",
+        value_parser = parse_exact_patchset_id,
+        help = "Public Patchset reference (TASK_ID/P-##) receiving the review action; defaults to the Task's selected Patchset."
+    )]
     patchset_id: Option<String>,
     #[arg(long)]
     message: Option<String>,
@@ -3241,7 +3260,7 @@ struct ReviewCodeTemplateArgs {
 
 #[derive(Args, Clone)]
 struct ReviewShowArgs {
-    #[arg(help = "Remote Change ID or supported Change reference to inspect.")]
+    #[arg(value_name = "TASK_ID", help = "Task whose review state will be inspected.")]
     change_id: String,
     #[arg(
         long,
@@ -3254,9 +3273,12 @@ struct ReviewShowArgs {
 
 #[derive(Args, Clone)]
 struct AttestPutArgs {
-    patchset_id: Option<String>,
-    #[arg(long)]
-    change: Option<String>,
+    #[arg(
+        value_name = "PATCHSET_ID",
+        value_parser = parse_exact_patchset_id,
+        help = "Public Patchset reference (TASK_ID/P-##) that receives evidence."
+    )]
+    patchset_id: String,
     #[arg(long)]
     tests: Option<String>,
     #[arg(long)]
@@ -3277,6 +3299,11 @@ struct AttestPutArgs {
 
 #[derive(Args, Clone)]
 struct AttestShowArgs {
+    #[arg(
+        value_name = "PATCHSET_ID",
+        value_parser = parse_exact_patchset_id,
+        help = "Public Patchset reference (TASK_ID/P-##) whose evidence will be shown."
+    )]
     patchset_id: String,
     #[arg(long)]
     remote: Option<String>,
@@ -3286,6 +3313,11 @@ struct AttestShowArgs {
 
 #[derive(Args, Clone)]
 struct PolicyEvalArgs {
+    #[arg(
+        value_name = "PATCHSET_ID",
+        value_parser = parse_exact_patchset_id,
+        help = "Public Patchset reference (TASK_ID/P-##) whose Policy will be evaluated."
+    )]
     patchset_id: String,
     #[arg(long)]
     remote: Option<String>,
@@ -3295,6 +3327,11 @@ struct PolicyEvalArgs {
 
 #[derive(Args, Clone)]
 struct PolicyShowArgs {
+    #[arg(
+        value_name = "PATCHSET_ID",
+        value_parser = parse_exact_patchset_id,
+        help = "Public Patchset reference (TASK_ID/P-##) whose Policy will be shown."
+    )]
     patchset_id: String,
     #[arg(long)]
     remote: Option<String>,
@@ -3304,6 +3341,11 @@ struct PolicyShowArgs {
 
 #[derive(Args, Clone)]
 struct PolicyWaiveArgs {
+    #[arg(
+        value_name = "PATCHSET_ID",
+        value_parser = parse_exact_patchset_id,
+        help = "Public Patchset reference (TASK_ID/P-##) that receives the waiver request."
+    )]
     patchset_id: String,
     #[arg(long = "rule")]
     rule_name: String,
@@ -3566,10 +3608,11 @@ struct WorktreeRecoverTaskArgs {
     task_id: String,
     #[arg(
         long,
-        value_name = "CHANGE",
-        help = "Existing remote Change ID or Task-owned Change reference"
+        value_name = "INTERNAL_WORK_REF",
+        hide = true,
+        help = "Compatibility-only internal work reference"
     )]
-    change: String,
+    change: Option<String>,
     #[arg(
         long,
         value_name = "REMOTE",
@@ -3678,7 +3721,11 @@ struct WorkflowGuideArgs {
 struct WorkflowReconcileArgs {
     #[arg(long)]
     remote: Option<String>,
-    #[arg(long)]
+    #[arg(
+        long,
+        value_name = "TASK_ID",
+        help = "Limit reconciliation to one exact Task."
+    )]
     task: Option<String>,
     #[arg(long, conflicts_with = "apply")]
     dry_run: bool,
@@ -3774,9 +3821,17 @@ fn parse_exact_patchset_id(value: &str) -> Result<String, String> {
     }
     if patchset_id.chars().all(|ch| ch.is_ascii_digit()) {
         return Err(
-            "complete published Patchset ID required; numeric Repository references are ambiguous"
+            "public Patchset reference required; use TASK_ID/P-##"
                 .to_string(),
         );
     }
     Ok(patchset_id.to_string())
+}
+
+fn parse_task_or_legacy_work_reference(value: &str) -> Result<String, String> {
+    let value = value.trim();
+    if value.is_empty() || value.chars().all(|character| character.is_ascii_digit()) {
+        return Err("Task ID must be non-empty and non-numeric".to_string());
+    }
+    Ok(value.to_string())
 }

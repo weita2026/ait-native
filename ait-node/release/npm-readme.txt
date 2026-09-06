@@ -1,7 +1,7 @@
 # ait-native
 
 AIT turns an ordinary coding request into an isolated, sprint-bound repository
-change with validation evidence and a recoverable land path. It is for
+change with validation evidence and a recoverable closeout path. It is for
 individual developers and maintainers who use coding agents and want the work
 to remain reviewable without inventing a workflow for every repository.
 
@@ -26,7 +26,7 @@ public behavior, and add the relevant tests.”
 - Repository-local AIT authority and a generated `AGENTS.md` workflow router.
 - Sprint-backed Task creation and a dedicated worktree for each code change.
 - Snapshots, validation evidence, regression attribution through `ait blame`,
-  and recoverable Task Land closeout.
+  and recoverable Task finish closeout.
 - An inactive server boundary: local work does not require a running
   `ait-server`.
 
@@ -35,8 +35,8 @@ the result to your coding agent normally; it reads that contract and follows
 the configured local or reviewed closeout path.
 
 For a reviewed remote flow, the author prepares the exact Patchset with
-`ait workflow ready <change-id> --apply`; the reviewer records the decision
-and lands it with `ait workflow finish <change-id> --apply`.
+`ait workflow ready <task-id> --apply`; the reviewer records the decision
+and finishes it with `ait workflow finish <task-id> --apply`.
 
 ## Node.js API
 

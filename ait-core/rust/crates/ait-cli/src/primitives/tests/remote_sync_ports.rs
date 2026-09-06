@@ -1377,8 +1377,8 @@ fn remote_sync_solo_local_push_rejects_initialized_default_line_advance() {
     .expect_err("solo-local push must not advance an initialized remote default Line");
 
     assert!(error.contains("Refusing to advance initialized remote `origin` target Line `main`"));
-    assert!(error.contains("only authoritative remote Task Land may move this governed Line"));
-    assert!(error.contains("ait workflow ready <local-change-id> --apply --remote origin"));
+    assert!(error.contains("only authoritative remote Task finish may move this governed Line"));
+    assert!(error.contains("ait workflow ready <task-id> --apply --remote origin"));
     assert!(error.contains(&base_snapshot_id));
     assert!(error.contains(&head_snapshot_id));
     assert_eq!(remote.line_update_calls, 0);
@@ -1479,11 +1479,11 @@ fn remote_sync_solo_local_push_rejects_null_default_line_initialization() {
     .expect_err("solo-local push must not initialize a null remote default Line");
 
     assert!(error.contains("Refusing to initialize null remote `origin` target Line `main`"));
-    assert!(error.contains("only authoritative remote Task Land may move this governed Line"));
-    assert!(error.contains("ait workflow ready <local-change-id> --apply --remote origin"));
+    assert!(error.contains("only authoritative remote Task finish may move this governed Line"));
+    assert!(error.contains("ait workflow ready <task-id> --apply --remote origin"));
     assert!(error.contains("none"));
     assert!(error.contains(&head_snapshot_id));
-    assert!(error.contains(&change_ref));
+    assert!(!error.contains(&change_ref));
     assert_eq!(remote.line_update_calls, 0);
     assert_eq!(remote.zstd_plan_requests.len(), 0);
     assert_eq!(remote.zstd_commit_requests.len(), 0);

@@ -63,14 +63,13 @@ pub(super) fn current_worktree_snapshot_binding(
         }
     }
     if writable.len() != 1 {
-        return Err(format!("Task {task_id} has no unambiguous writable Change for this Snapshot. Create a checkpoint with `ait snapshot create {task_id}/C-## --message <message>` for the intended Change first."));
+        return Err(format!("Task {task_id} has no unambiguous writable work record for this Snapshot. Inspect `ait task audit {task_id} --json` before creating a checkpoint."));
     }
     validated_snapshot_binding(repo, task_id, &writable[0])
 }
 
 pub(crate) fn parse_snapshot_change_reference(change_ref: &str) -> Result<String, String> {
-    let required_reference =
-        "Snapshot creation requires one complete Task-owned Change reference (TASK_ID/C-##).";
+    let required_reference = "Snapshot creation requires a Task ID.";
     let change_ref = normalized_text(Some(change_ref)).ok_or(required_reference)?;
     let (task_id, change_id) = change_ref.rsplit_once('/').ok_or(required_reference)?;
     if task_id.is_empty() || task_id.contains('/') || !is_short_change_id(change_id) {
@@ -86,7 +85,7 @@ pub(crate) fn parse_snapshot_authoring_reference(reference: &str) -> Result<Stri
         return Ok(reference);
     }
     parse_snapshot_change_reference(&reference)
-        .map_err(|_| "Snapshot creation requires a Task ID; advanced callers may use an exact TASK_ID/C-## reference.".to_string())
+        .map_err(|_| "Snapshot creation requires a Task ID.".to_string())
 }
 
 pub fn snapshot_create_for_reference(
@@ -1014,8 +1013,7 @@ fn task_id_from_direct_change_binding(
             .collect::<Vec<_>>()
             .join(", ");
         return Err(format!(
-            "Exact worktree routing is ambiguous for `{}`: matching bindings are {names}. Use a task-scoped Change reference such as `<task-id>/C-01`.",
-            reference.unwrap_or_default()
+            "Worktree routing is ambiguous across bindings {names}. Pass the owning Task ID."
         ));
     }
     Ok(matches
@@ -1353,8 +1351,8 @@ fn resolve_task_scoped_execution_repo_with_root_guard(
     operation: &str,
     reject_root_drift: bool,
 ) -> Result<RepoRuntime, String> {
-    let reference = normalized_text(Some(reference))
-        .ok_or_else(|| "Task or Change ID must not be empty.".to_string())?;
+    let reference =
+        normalized_text(Some(reference)).ok_or_else(|| "Task ID must not be empty.".to_string())?;
     let bindings = task_scoped_worktree_bindings(repo)?;
     let current_metadata = if repo.is_worktree() {
         current_worktree_metadata(repo)?

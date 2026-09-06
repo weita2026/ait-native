@@ -66,6 +66,171 @@ fn root_command_inventory_is_frozen() {
 }
 
 #[test]
+fn complete_help_tree_never_advertises_change_id_inputs() {
+    fn inspect(command: clap::Command, path: &str) {
+        let mut rendered_command = command.clone();
+        let help = rendered_command.render_long_help().to_string();
+        for forbidden in [
+            "CHANGE_ID",
+            "TASK_ID/C-##",
+            "<change-id>",
+            "<task-or-change-id>",
+            "<local-change-id>",
+        ] {
+            assert!(
+                !help.contains(forbidden),
+                "{path} help exposes {forbidden:?}:\n{help}"
+            );
+        }
+        for child in command.get_subcommands() {
+            inspect(child.clone(), &format!("{path} {}", child.get_name()));
+        }
+    }
+
+    inspect(Cli::command(), "ait");
+}
+
+#[test]
+fn every_identity_bearing_command_advertises_its_owning_resource() {
+    fn help(path: &[&str]) -> String {
+        let mut argv = vec!["ait-cli"];
+        argv.extend_from_slice(path);
+        argv.push("--help");
+        Cli::try_parse_from(argv)
+            .err()
+            .unwrap_or_else(|| panic!("{} --help must render Clap help", path.join(" ")))
+            .to_string()
+    }
+
+    let task_commands: &[&[&str]] = &[
+        &["task", "show"],
+        &["task", "audit"],
+        &["task", "finish"],
+        &["task", "abandon"],
+        &["change", "create"],
+        &["change", "show"],
+        &["change", "revert"],
+        &["change", "replay"],
+        &["change", "close"],
+        &["change", "publish"],
+        &["snapshot", "create"],
+        &["patchset", "publish"],
+        &["patchset", "list"],
+        &["review", "show"],
+        &["worktree", "recover-task"],
+        &["workflow", "ready"],
+        &["workflow", "finish"],
+    ];
+    for path in task_commands {
+        let rendered = help(path);
+        assert!(
+            rendered.contains("<TASK_ID>"),
+            "{} must advertise Task input:\n{rendered}",
+            path.join(" ")
+        );
+        assert!(
+            !rendered.contains("<PATCHSET_ID>"),
+            "{} unexpectedly advertises Patchset input:\n{rendered}",
+            path.join(" ")
+        );
+    }
+
+    let patchset_commands: &[&[&str]] = &[
+        &["patchset", "show"],
+        &["patchset", "select"],
+        &["patchset", "ci-status"],
+        &["patchset", "rerun-ci"],
+        &["attest", "put"],
+        &["attest", "show"],
+        &["policy", "eval"],
+        &["policy", "show"],
+        &["policy", "waive"],
+    ];
+    for path in patchset_commands {
+        let rendered = help(path);
+        assert!(
+            rendered.contains("<PATCHSET_ID>"),
+            "{} must advertise public Patchset input:\n{rendered}",
+            path.join(" ")
+        );
+        assert!(
+            !rendered.contains("<TASK_ID>"),
+            "{} unexpectedly substitutes Task input for Patchset input:\n{rendered}",
+            path.join(" ")
+        );
+    }
+
+    let blame = help(&["blame"]);
+    assert!(
+        blame.contains("--patchset <PATCHSET_ID>"),
+        "blame must retain its public Patchset selector:\n{blame}"
+    );
+
+    let revision_review_commands: &[&[&str]] = &[
+        &["review", "team", "request"],
+        &["review", "team", "approve"],
+        &["review", "team", "request-changes"],
+        &["review", "team", "comment"],
+        &["review", "team", "defer"],
+        &["review", "task", "approve"],
+        &["review", "task", "request-changes"],
+        &["review", "task", "comment"],
+        &["review", "task", "defer"],
+        &["review", "code", "submit"],
+    ];
+    for path in revision_review_commands {
+        let rendered = help(path);
+        for required in ["<TASK_ID>", "--patchset <PATCHSET_ID>"] {
+            assert!(
+                rendered.contains(required),
+                "{} must advertise {required}:\n{rendered}",
+                path.join(" ")
+            );
+        }
+    }
+
+    let snapshot_commands: &[(&[&str], &[&str])] = &[
+        (&["snapshot", "show"], &["<SNAPSHOT_OR_TAG>"]),
+        (
+            &["snapshot", "diff"],
+            &["<OLD_SNAPSHOT_OR_TAG>", "<NEW_SNAPSHOT_OR_TAG>"],
+        ),
+        (&["snapshot", "restore-lines"], &["<SNAPSHOT_ID>", "<PATH>"]),
+        (&["snapshot", "revert"], &["<SNAPSHOT_OR_TAG>"]),
+        (&["snapshot", "replay"], &["<SNAPSHOT_OR_TAG>"]),
+        (&["snapshot", "ancestry"], &["<SNAPSHOT_OR_TAG>"]),
+        (
+            &["snapshot", "is-ancestor"],
+            &["<OLDER_SNAPSHOT_OR_TAG>", "<NEWER_SNAPSHOT_OR_TAG>"],
+        ),
+        (
+            &["snapshot", "merge-base"],
+            &["<LEFT_SNAPSHOT_OR_TAG>", "<RIGHT_SNAPSHOT_OR_TAG>"],
+        ),
+    ];
+    for (path, required) in snapshot_commands {
+        let rendered = help(path);
+        for token in *required {
+            assert!(
+                rendered.contains(token),
+                "{} must advertise {token}:\n{rendered}",
+                path.join(" ")
+            );
+        }
+        for forbidden in ["<TASK_ID>", "<PATCHSET_ID>"] {
+            assert!(
+                !rendered.contains(forbidden),
+                "{} unexpectedly advertises {forbidden}:\n{rendered}",
+                path.join(" ")
+            );
+        }
+    }
+
+    let reconcile = help(&["workflow", "reconcile"]);
+    assert!(reconcile.contains("--task <TASK_ID>"), "{reconcile}");
+}
+
+#[test]
 fn root_help_hides_auth_while_exact_dormant_invocation_remains_parseable() {
     let root_help = Cli::try_parse_from(["ait-cli", "--help"])
         .err()
@@ -414,7 +579,8 @@ fn compact_agent_action_projections_keep_only_next_step_evidence() {
         },
         "automatic_reconciliation": {"findings": [1, 2, 3]}
     }));
-    assert_eq!(started["change_ref"], "LCT-1/C-01");
+    assert!(started.get("change_ref").is_none());
+    assert!(started.get("change_id").is_none());
     assert_eq!(started["edit_root"], "/physical roots/lct-1");
     assert_eq!(started["edit_root_source"], "explicit");
     assert_eq!(
@@ -426,6 +592,8 @@ fn compact_agent_action_projections_keep_only_next_step_evidence() {
 
     let snapshot = compact_snapshot_create_payload(&json!({
         "snapshot_id": "SNP-BBBB2222",
+        "task_id": "LCT-1",
+        "change_id": "LCT-1/C-01",
         "line_name": "feature/lct-1",
         "parent_snapshot_id": "SNP-AAAA1111",
         "message": "Implement compact output",
@@ -434,6 +602,9 @@ fn compact_agent_action_projections_keep_only_next_step_evidence() {
     }));
     assert_eq!(snapshot["command"], "snapshot.create");
     assert_eq!(snapshot["snapshot_id"], "SNP-BBBB2222");
+    assert_eq!(snapshot["task_id"], "LCT-1");
+    assert!(snapshot.get("change_id").is_none());
+    assert!(snapshot.get("change_ref").is_none());
     assert!(snapshot.get("files").is_none());
     assert!(snapshot.get("phase_timings_ms").is_none());
 
@@ -441,6 +612,7 @@ fn compact_agent_action_projections_keep_only_next_step_evidence() {
         "mode": "local",
         "task_id": "LCT-1",
         "change_ref": "LCT-1/C-01",
+        "patchset_id": "RCT-9/C-01/P-02",
         "target_line": "main",
         "landed_snapshot_id": "SNP-BBBB2222",
         "task_status": "completed",
@@ -451,7 +623,7 @@ fn compact_agent_action_projections_keep_only_next_step_evidence() {
         "plan_checklist_closeout": {"status": "synced"},
         "closeout_recovery": {
             "code": "resume_task_land_closeout",
-            "command": "ait task finish LCT-1/C-01 --local",
+            "command": "ait task finish LCT-1 --local",
             "detail": "large recovery explanation"
         },
         "task": {"large": true},
@@ -460,12 +632,33 @@ fn compact_agent_action_projections_keep_only_next_step_evidence() {
     assert_eq!(finished["command"], "task.finish");
     assert_eq!(finished["ok"], false);
     assert_eq!(finished["closeout"]["worktree_status"], "failed");
+    assert_eq!(finished["patchset_id"], "RCT-9/P-02");
     assert_eq!(
         finished["next_action"]["command"],
-        "ait task finish LCT-1/C-01 --local"
+        "ait task finish LCT-1 --local"
     );
     assert!(finished.get("task").is_none());
     assert!(finished.get("change").is_none());
+    assert!(finished.get("change_id").is_none());
+    assert!(finished.get("change_ref").is_none());
+
+    let review = compact_review_show_payload(&json!({
+        "change_id": "RCT-1/C-01",
+        "change_ref": "RCT-1/C-01",
+        "current_patchset_id": "RCT-1/C-01/P-02",
+        "approvals": 1,
+        "blocking": 0,
+        "review_requests": [{
+            "change_id": "RCT-1/C-01",
+            "patchset_id": "RCT-1/C-01/P-02",
+            "reviewer_group": "maintainers"
+        }]
+    }));
+    assert!(review.get("change_id").is_none());
+    assert!(review.get("change_ref").is_none());
+    assert_eq!(review["current_patchset_id"], "RCT-1/P-02");
+    assert_eq!(review["review_requests"][0]["patchset_id"], "RCT-1/P-02");
+    assert!(review["review_requests"][0].get("change_id").is_none());
 
     let remote_finished = compact_task_finish_payload(&json!({
         "task_land_contract": {"scope": "remote"},
@@ -473,6 +666,20 @@ fn compact_agent_action_projections_keep_only_next_step_evidence() {
     }));
     assert_eq!(remote_finished["mode"], "remote");
     assert_eq!(remote_finished["ok"], true);
+}
+
+#[test]
+fn patchset_show_uses_the_history_promotions_readable_summary() {
+    let payload = json!({
+        "patchset_id": "RCT-9/C-01/P-02",
+        "summary": "ait-history-promotion/v1 {\"contract\":\"ait-history-promotion/v1\",\"display_summary\":\"Readable release repair\",\"local_change_id\":\"C-01\"}"
+    });
+    let display = patchset_show_display_payload(&payload);
+    assert_eq!(display["summary"], "Readable release repair");
+    assert!(payload["summary"]
+        .as_str()
+        .unwrap()
+        .contains("local_change_id"));
 }
 
 #[test]
@@ -642,6 +849,21 @@ fn queue_summary_parser_exposes_only_remote_and_json_options() {
     };
     assert_eq!(args.remote.as_deref(), Some("origin"));
     assert!(args.json);
+
+    let selected_patchset_review =
+        Cli::try_parse_from(["ait-cli", "review", "team", "approve", "RCT-1"])
+            .expect("team review keeps its optional selected-Patchset selector");
+    let Commands::Review {
+        command:
+            ReviewCommand::Team {
+                command: ReviewTeamCommand::Approve(args),
+            },
+    } = selected_patchset_review.command
+    else {
+        panic!("expected review team approve");
+    };
+    assert_eq!(args.change_id, "RCT-1");
+    assert!(args.patchset_id.is_none());
 
     let help = match Cli::try_parse_from(["ait-cli", "queue", "summary", "--help"]) {
         Ok(_) => panic!("--help should render clap help"),
@@ -1386,7 +1608,7 @@ fn workflow_finish_replaces_land_and_exposes_only_the_remote_reviewer_contract()
 
     let missing_id = Cli::try_parse_from(["ait", "workflow", "finish"])
         .err()
-        .expect("Workflow finish Change ID must be parser-required")
+        .expect("Workflow finish Task ID must be parser-required")
         .to_string();
     assert!(missing_id.contains("required"), "{missing_id}");
 
@@ -1496,17 +1718,6 @@ fn agent_list_json_payload_honors_bounded_and_complete_history_modes() {
     let complete = complete.as_array().expect("complete JSON array");
     assert_eq!(complete.len(), 26);
     assert!(complete.iter().any(|row| row["status"] == "archived"));
-}
-
-#[test]
-fn change_text_projection_uses_task_scoped_reference_without_nested_json() {
-    let projected = project_change_text_rows(&[json!({
-        "task_id": "LCT-48",
-        "change_id": "C-01",
-        "status": "draft",
-    })]);
-    assert_eq!(projected[0]["change"], "LCT-48/C-01");
-    assert_eq!(projected[0]["status"], "draft");
 }
 
 #[test]
@@ -2284,7 +2495,13 @@ fn task_parser_freezes_the_supported_command_surface() {
         );
     }
     for removed in [
-        "land", "tokens", "canceled", "complete", "restart", "publish",
+        "land",
+        "tokens",
+        "canceled",
+        "complete",
+        "restart",
+        "publish",
+        "ci-status",
     ] {
         assert!(
             !rendered.contains(&format!("\n  {removed}")),
@@ -2293,7 +2510,13 @@ fn task_parser_freezes_the_supported_command_surface() {
     }
 
     for command in [
-        "land", "tokens", "canceled", "complete", "publish", "restart",
+        "land",
+        "tokens",
+        "canceled",
+        "complete",
+        "publish",
+        "restart",
+        "ci-status",
     ] {
         let removed = match Cli::try_parse_from(["ait-cli", "task", command, "LCT-1"]) {
             Ok(_) => panic!("removed task command must not parse"),
@@ -3013,7 +3236,12 @@ fn task_workflow_text_projects_only_generated_commands_and_preserves_exact_evide
             "change": {"change_id": exact, "status": "active", "base_line": "main"},
             "patchset": {"patchset_id": "RCT-9/C-02/P-03", "base_snapshot_id": "SNP-BASE", "revision_snapshot_id": "SNP-REV"},
             "next_action": {"code": "publish_patchset", "command": format!("ait patchset publish {exact} --summary \"review summary\" --remote upstream")},
-            "commands": {"apply_command": format!("ait workflow ready {exact} --apply")},
+            "commands": {
+                "apply_command": format!("ait workflow ready {exact} --apply"),
+                "policy_command": "ait policy eval RCT-9/C-02/P-03"
+            },
+            "apply_status": "stopped",
+            "apply_stopped_reason": "Selected patchset RCT-9/C-02/P-03 is divergent.",
             "message": "Keep literal LCT-7/C-01",
             "closeout_recovery": {"command": format!("ait task finish {exact} --remote upstream")}
         });
@@ -3022,7 +3250,14 @@ fn task_workflow_text_projects_only_generated_commands_and_preserves_exact_evide
         assert_eq!(display["task"]["title"], title);
         assert_eq!(display["message"], payload["message"]);
         assert_eq!(display["patchset"], payload["patchset"]);
-        assert_eq!(display["commands"], payload["commands"]);
+        assert_eq!(
+            display["commands"]["apply_command"],
+            "ait workflow ready LCT-7 --apply"
+        );
+        assert_eq!(
+            display["commands"]["policy_command"],
+            "ait policy eval RCT-9/P-03"
+        );
         assert_eq!(
             display["next_action"]["command"],
             "ait workflow ready LCT-7 --apply --summary \"review summary\" --remote upstream"
@@ -3034,10 +3269,19 @@ fn task_workflow_text_projects_only_generated_commands_and_preserves_exact_evide
         let ready = render_requested_workflow_text(&payload, "ready", "LCT-7").unwrap();
         assert!(ready.contains(title));
         assert!(ready.contains("SNP-BASE") && ready.contains("SNP-REV"));
+        assert!(ready.contains("Selected patchset RCT-9/P-03 is divergent."));
         assert!(!ready.contains("RCT-9/C-02/P-03"));
         let finish = render_requested_workflow_text(&payload, "finish", "LCT-7").unwrap();
-        assert!(finish.contains("review evidence: RCT-9/C-02/P-03"));
-        assert_eq!(task_workflow_display_payload(&payload, exact), payload);
+        assert!(finish.contains("review evidence: RCT-9/P-03"));
+        assert!(!finish.contains(&format!("change: {exact}")));
+        let exact_display = task_workflow_display_payload(&payload, exact);
+        assert_eq!(
+            exact_display["next_action"]["command"],
+            "ait workflow ready RCT-9 --apply --summary \"review summary\" --remote upstream"
+        );
+        assert!(!exact_display
+            .to_string()
+            .contains("ait task finish RCT-9/C-02"));
         assert_eq!(payload, original);
     }
     let unrelated = "ait task finish RCT-10/C-01 --remote upstream";
@@ -3048,7 +3292,15 @@ fn task_workflow_text_projects_only_generated_commands_and_preserves_exact_evide
     let evidence = "ait review task approve RCT-9/C-02 --patchset RCT-9/C-02/P-03";
     assert_eq!(
         task_command_text(evidence, "LCT-7", "RCT-9", "C-02"),
-        evidence
+        "ait review task approve LCT-7 --patchset RCT-9/C-02/P-03"
+    );
+    assert_eq!(
+        replace_standalone_change_reference(
+            "Patchset RCT-9/C-02/P-03 belongs to work RCT-9/C-02.",
+            "RCT-9/C-02",
+            "LCT-7",
+        ),
+        "Patchset RCT-9/C-02/P-03 belongs to work LCT-7."
     );
 }
 
@@ -3184,6 +3436,11 @@ fn workflow_finish_renders_atomic_skipped_workspace_and_nested_cleanup_without_u
         "{rendered}"
     );
     assert!(rendered.contains("- removed: rct-9"), "{rendered}");
+    assert!(
+        rendered.contains("- review evidence: RCT-9/P-01"),
+        "{rendered}"
+    );
+    assert!(!rendered.contains("/C-01/P-01"), "{rendered}");
     assert!(!rendered.contains("unknown"), "{rendered}");
     assert!(!rendered.contains("(0 changed)"), "{rendered}");
 }
@@ -3200,53 +3457,6 @@ fn task_audit_labels_expected_work_as_pending_not_blocked() {
         Some("blocker")
     );
     assert_eq!(task_audit_reason_label("none"), None);
-}
-
-#[test]
-fn task_audit_change_text_projection_accepts_flat_remote_rows() {
-    let rows = vec![json!({
-        "change_id": "C-01",
-        "change_ref": "RWCT-0008/C-01",
-        "task_id": "RWCT-0008",
-        "status": "landed"
-    })];
-
-    let (projected, has_target_state) = project_task_audit_change_text_rows(&rows);
-
-    assert_eq!(projected.len(), 1);
-    assert_eq!(projected[0]["change"], "RWCT-0008/C-01");
-    assert_eq!(projected[0]["status"], "landed");
-    assert_eq!(projected[0]["target_state"], "");
-    assert!(!has_target_state);
-}
-
-#[test]
-fn task_audit_change_text_projection_preserves_nested_local_target_state() {
-    let rows = vec![json!({
-        "change": {
-            "change_id": "C-01",
-            "change_ref": "LCT-0767/C-01",
-            "task_id": "LCT-0767",
-            "status": "draft"
-        },
-        "target_state": "local_change_not_landed"
-    })];
-
-    let (projected, has_target_state) = project_task_audit_change_text_rows(&rows);
-
-    assert_eq!(projected.len(), 1);
-    assert_eq!(projected[0]["change"], "LCT-0767/C-01");
-    assert_eq!(projected[0]["status"], "draft");
-    assert_eq!(projected[0]["target_state"], "local_change_not_landed");
-    assert!(has_target_state);
-}
-
-#[test]
-fn task_audit_change_text_projection_omits_empty_inventory() {
-    let (projected, has_target_state) = project_task_audit_change_text_rows(&[]);
-
-    assert!(projected.is_empty());
-    assert!(!has_target_state);
 }
 
 #[test]
@@ -4195,7 +4405,7 @@ fn worktree_recover_task_parser_accepts_exact_remote_task_and_change() {
         panic!("expected worktree recover-task command");
     };
     assert_eq!(args.task_id, "RSET-0500");
-    assert_eq!(args.change, "RSET-0500/C-01");
+    assert_eq!(args.change.as_deref(), Some("RSET-0500/C-01"));
     assert_eq!(args.remote.as_deref(), Some("origin"));
     assert!(args.dry_run);
     assert!(args.json);
@@ -4256,11 +4466,7 @@ fn worktree_help_documents_every_public_command_and_option_contract() {
         ),
         (
             &["show"],
-            &[
-                "Task/Change binding",
-                "current runtime worktree binding",
-                "--json",
-            ],
+            &["Task binding", "current runtime worktree binding", "--json"],
         ),
         (
             &["path"],
@@ -4335,7 +4541,6 @@ fn worktree_help_documents_every_public_command_and_option_contract() {
             &[
                 "main repository root",
                 "<TASK_ID>",
-                "--change <CHANGE>",
                 "--remote <REMOTE>",
                 "--dry-run",
                 "--json",
@@ -4469,12 +4674,12 @@ fn patchset_publish_parser_rejects_allow_empty() {
 }
 
 #[test]
-fn patchset_parser_exposes_only_the_remote_authority_contract() {
+fn patchset_parser_uses_task_for_ownership_and_patchset_for_revision_operations() {
     let published = Cli::try_parse_from([
         "ait-cli",
         "patchset",
         "publish",
-        "RCT-1/C-01",
+        "RCT-1",
         "--summary",
         "Ready for review",
         "--author-mode",
@@ -4490,7 +4695,7 @@ fn patchset_parser_exposes_only_the_remote_authority_contract() {
     else {
         panic!("expected patchset publish command");
     };
-    assert_eq!(args.change, "RCT-1/C-01");
+    assert_eq!(args.change, "RCT-1");
     assert_eq!(args.summary, "Ready for review");
     assert_eq!(
         args.author_mode,
@@ -4500,36 +4705,40 @@ fn patchset_parser_exposes_only_the_remote_authority_contract() {
     assert!(args.json);
 
     let listed = Cli::try_parse_from([
-        "ait-cli",
-        "patchset",
-        "list",
-        "RCT-1/C-01",
-        "--remote",
-        "mirror",
-        "--json",
+        "ait-cli", "patchset", "list", "RCT-1", "--remote", "mirror", "--json",
     ])
-    .expect("patchset list should accept one positional Change ID");
+    .expect("patchset list should accept one positional Task ID");
     let Commands::Patchset {
         command: PatchsetCommand::List(args),
     } = listed.command
     else {
         panic!("expected patchset list command");
     };
-    assert_eq!(args.change, "RCT-1/C-01");
+    assert_eq!(args.change, "RCT-1");
     assert_eq!(args.remote.as_deref(), Some("mirror"));
     assert!(args.json);
 
     for subcommand in ["show", "select", "ci-status", "rerun-ci"] {
         Cli::try_parse_from([
-            "ait-cli",
-            "patchset",
-            subcommand,
-            "RCT-1/C-01/P-01",
-            "--remote",
-            "mirror",
-            "--json",
+            "ait-cli", "patchset", subcommand, "RCP-1", "--remote", "mirror", "--json",
         ])
         .unwrap_or_else(|error| panic!("patchset {subcommand} should parse: {error}"));
+    }
+
+    for (subcommand, legacy) in [
+        ("publish", "RCT-1/C-01"),
+        ("list", "RCT-1/C-01"),
+        ("show", "RCT-1/C-01/P-01"),
+        ("select", "RCT-1/C-01/P-01"),
+        ("ci-status", "RCT-1/C-01/P-01"),
+        ("rerun-ci", "RCT-1/C-01/P-01"),
+    ] {
+        let mut argv = vec!["ait-cli", "patchset", subcommand, legacy];
+        if subcommand == "publish" {
+            argv.extend(["--summary", "legacy compatibility"]);
+        }
+        Cli::try_parse_from(argv)
+            .unwrap_or_else(|error| panic!("legacy patchset {subcommand} should parse: {error}"));
     }
 
     let root_help = Cli::try_parse_from(["ait-cli", "patchset", "--help"])
@@ -4554,7 +4763,7 @@ fn patchset_parser_exposes_only_the_remote_authority_contract() {
         .expect("patchset publish --help must render Clap help")
         .to_string();
     for text in [
-        "<CHANGE_ID>",
+        "<TASK_ID>",
         "--summary <SUMMARY>",
         "--author-mode <MODE>",
         "human_only",
@@ -4569,9 +4778,9 @@ fn patchset_parser_exposes_only_the_remote_authority_contract() {
     assert!(!publish_help.contains("--change"), "{publish_help}");
 
     let help_cases = [
-        ("list", "<CHANGE_ID>", "without modifying"),
-        ("show", "<PATCHSET_ID>", "without modifying"),
-        ("select", "<PATCHSET_ID>", "owning Change"),
+        ("list", "<TASK_ID>", "without modifying"),
+        ("show", "<PATCHSET_ID>", "TASK_ID/P-##"),
+        ("select", "<PATCHSET_ID>", "current revision"),
         ("ci-status", "<PATCHSET_ID>", "10 most recent"),
         ("rerun-ci", "<PATCHSET_ID>", "manual_rerun"),
     ];
@@ -4634,6 +4843,9 @@ fn patchset_parser_rejects_removed_controls_and_ambiguous_ids() {
             .err()
             .unwrap_or_else(|| panic!("numeric Patchset ref parsed for {subcommand}"));
         assert_eq!(error.kind(), clap::error::ErrorKind::ValueValidation);
+
+        Cli::try_parse_from(["ait-cli", "patchset", subcommand, "RCT-1/P-02"])
+            .unwrap_or_else(|error| panic!("public Patchset ref failed for {subcommand}: {error}"));
     }
 
     let author_mode = Cli::try_parse_from([
@@ -5009,7 +5221,7 @@ fn review_team_command_rejects_non_team_remote_mode() {
         repo,
         ReviewCommand::Team {
             command: ReviewTeamCommand::Approve(ReviewApproveArgs {
-                change_id: "RC-1".to_string(),
+                change_id: "RT-1".to_string(),
                 reviewer: None,
                 patchset_id: Some("RP-1".to_string()),
                 message: None,
@@ -5032,7 +5244,7 @@ fn review_parser_enforces_exact_ai_and_task_review_identity_contracts() {
         "review",
         "code",
         "submit",
-        "RCC-1",
+        "RCT-1",
         "--patchset",
         "RCP-1",
         "--message",
@@ -5051,7 +5263,7 @@ fn review_parser_enforces_exact_ai_and_task_review_identity_contracts() {
     else {
         panic!("expected review code submit");
     };
-    assert_eq!(args.change_id, "RCC-1");
+    assert_eq!(args.change_id, "RCT-1");
     assert_eq!(args.patchset_id, "RCP-1");
     assert_eq!(args.remote.as_deref(), Some("origin"));
     assert!(args.json);
@@ -5061,7 +5273,7 @@ fn review_parser_enforces_exact_ai_and_task_review_identity_contracts() {
         "review",
         "task",
         "approve",
-        "RCC-1",
+        "RCT-1",
         "--patchset",
         "RCP-1",
         "--message",
@@ -5081,15 +5293,6 @@ fn review_parser_enforces_exact_ai_and_task_review_identity_contracts() {
     assert_eq!(args.message, "Validated the requested behavior.");
 
     for argv in [
-        vec![
-            "ait-cli",
-            "review",
-            "code",
-            "submit",
-            "RCC-1",
-            "--message",
-            "summary",
-        ],
         vec![
             "ait-cli",
             "review",
@@ -5198,7 +5401,7 @@ fn review_parser_enforces_exact_ai_and_task_review_identity_contracts() {
         "ait-cli",
         "workflow",
         "finish",
-        "RCC-1",
+        "RCT-1",
         "--apply",
         "--review-message",
         "structured exact-Patchset review",

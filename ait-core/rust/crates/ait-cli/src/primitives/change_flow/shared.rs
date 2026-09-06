@@ -15,9 +15,7 @@ where
         return resolve_patchset_id(closeout_remote, patchset_id, repo_name);
     }
     let Some(change_id) = change_id else {
-        return Err(
-            "Provide PATCHSET_ID or --change so the primitive can resolve a patchset.".to_string(),
-        );
+        return Err("Provide a Patchset ID.".to_string());
     };
     let (resolved_change_ref, selected_patchset_id) =
         change_identity_with_task_remote(task_remote, change_id, repo_name)?;
@@ -49,12 +47,11 @@ where
     R: TaskWorkflowPatchsetReader + TaskWorkflowPatchsetLister + ?Sized,
 {
     if let Some(patchset_id) = patchset_id {
-        return resolve_patchset_id(closeout_remote, patchset_id, repo_name);
+        let patchset_id = resolve_public_patchset_input(repo, patchset_id, remote_name)?;
+        return resolve_patchset_id(closeout_remote, &patchset_id, repo_name);
     }
     let Some(change_id) = change_id else {
-        return Err(
-            "Provide PATCHSET_ID or --change so the primitive can resolve a patchset.".to_string(),
-        );
+        return Err("Provide a Patchset ID.".to_string());
     };
     let remote_row = repo.remote_row(remote_name)?;
     let mut task_remote = http_task_remote(repo, &remote_row)?;

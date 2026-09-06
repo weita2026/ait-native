@@ -443,7 +443,7 @@ fn render_workflow_block(repo: &RepoRuntime, audience: GuidanceAudience) -> Resu
    was requested."#;
     let remote_finish = r#"Create the reviewable Snapshot with `ait snapshot create <task-id> --message
    "<message>"`, then run `ait workflow ready <task-id> --apply`. Give the
-   exact Patchset to the reviewer; the reviewer runs `ait workflow finish
+   Task ID and `TASK_ID/P-##` Patchset reference to the reviewer; the reviewer runs `ait workflow finish
    <task-id> --apply` (and `--review-message` when requested).
    Workflow finish owns Review, approval, final Policy, and atomic Task closeout.
    Use direct `ait task finish` only as an already-ready finalizer or a reported
@@ -541,9 +541,9 @@ retain the returned Task ID and verify that its `edit_root` is the selected path
   `ait task audit <task-id>` shows readiness, and `ait task list --all` plus
   `ait snapshot list --all` show history.
 - Change IDs are internal to normal Task work. Do not create another Change
-  for checkpoints, review corrections, or checklist steps. If a Task reports
-  ambiguous work, use the exact references in that diagnostic; advanced
-  Change history remains available through `ait change --help`.
+  for checkpoints, review corrections, or checklist steps. Patchset CI uses
+  the public `TASK_ID/P-##` Patchset reference. If a Task reports ambiguous work, inspect `ait task
+  audit <task-id>`.
 {MANAGED_END}"#,
     ))
 }

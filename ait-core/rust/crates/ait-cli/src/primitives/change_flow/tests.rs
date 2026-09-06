@@ -1415,7 +1415,7 @@ fn code_review_submit_rejects_numeric_patchset_ref_before_remote_mutation() {
     )
     .expect_err("numeric Patchset ref must fail");
 
-    assert!(error.contains("numeric repo-scoped refs"), "{error}");
+    assert!(error.contains("TASK_ID/P-##"), "{error}");
     assert!(remote.recorded_reviews.is_empty());
     assert!(remote.policies.is_empty());
 }

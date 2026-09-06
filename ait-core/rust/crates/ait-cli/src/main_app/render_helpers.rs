@@ -26,6 +26,15 @@ fn cloned_field(payload: &JsonValue, field: &str) -> JsonValue {
     payload.get(field).cloned().unwrap_or(JsonValue::Null)
 }
 
+fn cloned_public_patchset_field(payload: &JsonValue, field: &str) -> JsonValue {
+    payload
+        .get(field)
+        .and_then(JsonValue::as_str)
+        .map(ait_core::public_references::public_patchset_reference)
+        .map(JsonValue::String)
+        .unwrap_or(JsonValue::Null)
+}
+
 fn compact_status_payload(payload: &JsonValue) -> JsonValue {
     let changed_count = payload
         .get("workspace_changed_count")
@@ -121,16 +130,11 @@ fn compact_task_start_payload(payload: &JsonValue) -> JsonValue {
             "command": format!("cd {}", shell_quote_text(path)),
         })
     });
-    let change_ref = payload
-        .get("change")
-        .map(task_scoped_change_ref)
-        .unwrap_or_default();
     json!({
         "contract": AGENT_ACTION_JSON_CONTRACT,
         "command": "task.start",
         "ok": true,
         "task_id": cloned_field(payload, "task_id"),
-        "change_ref": change_ref,
         "line_name": cloned_field(worktree, "current_line"),
         "head_snapshot_id": cloned_field(worktree, "head_snapshot_id"),
         "worktree_name": cloned_field(worktree, "name"),
@@ -147,7 +151,6 @@ fn compact_snapshot_create_payload(payload: &JsonValue) -> JsonValue {
         "ok": true,
         "snapshot_id": cloned_field(payload, "snapshot_id"),
         "task_id": cloned_field(payload, "task_id"),
-        "change_id": cloned_field(payload, "change_id"),
         "line_name": cloned_field(payload, "line_name"),
         "parent_snapshot_id": cloned_field(payload, "parent_snapshot_id"),
         "message": cloned_field(payload, "message"),
@@ -163,22 +166,28 @@ fn compact_nested_status(payload: &JsonValue, field: &str) -> JsonValue {
 }
 
 fn compact_task_finish_payload(payload: &JsonValue) -> JsonValue {
+    let task_id = string_field(
+        payload
+            .get("task_id")
+            .or_else(|| payload.get("task").and_then(|task| task.get("task_id"))),
+    );
+    let exact_change = string_field(
+        payload
+            .get("change_ref")
+            .or_else(|| payload.get("change_id")),
+    );
     let recovery = payload
         .get("closeout_recovery")
         .filter(|value| value.is_object())
         .map(|value| {
             json!({
                 "code": cloned_field(value, "code"),
-                "command": cloned_field(value, "command"),
+                "command": value.get("command").and_then(JsonValue::as_str).map(|command| {
+                    task_command_text(command, &task_id, &task_id, &exact_change)
+                }),
             })
         })
         .unwrap_or(JsonValue::Null);
-    let change_ref = string_field(payload.get("change_ref"));
-    let change_ref = if change_ref.is_empty() {
-        string_field(payload.get("change_id"))
-    } else {
-        change_ref
-    };
     let mode = payload
         .get("mode")
         .cloned()
@@ -195,8 +204,7 @@ fn compact_task_finish_payload(payload: &JsonValue) -> JsonValue {
         "ok": task_land_exit_code(payload) == 0,
         "mode": mode,
         "task_id": cloned_field(payload, "task_id"),
-        "change_ref": change_ref,
-        "patchset_id": cloned_field(payload, "patchset_id"),
+        "patchset_id": cloned_public_patchset_field(payload, "patchset_id"),
         "target_line": cloned_field(payload, "target_line"),
         "landed_snapshot_id": cloned_field(payload, "landed_snapshot_id"),
         "closeout": {
@@ -358,35 +366,6 @@ fn scoped_all_command(base: &str, local: bool, remote: Option<&str>) -> String {
     command
 }
 
-fn task_scoped_change_ref(change: &JsonValue) -> String {
-    let change_ref = string_field(change.get("change_ref"));
-    if !change_ref.is_empty() {
-        return change_ref;
-    }
-    let task_id = string_field(change.get("task_id"));
-    let change_id = string_field(change.get("change_id"));
-    if !task_id.is_empty() && !change_id.is_empty() && !change_id.contains('/') {
-        format!("{task_id}/{change_id}")
-    } else {
-        change_id
-    }
-}
-
-fn project_change_text_rows(rows: &[JsonValue]) -> Vec<JsonValue> {
-    rows.iter()
-        .map(|row| {
-            let mut projected = row.clone();
-            if let Some(object) = projected.as_object_mut() {
-                object.insert(
-                    "change".to_string(),
-                    JsonValue::String(task_scoped_change_ref(row)),
-                );
-            }
-            projected
-        })
-        .collect()
-}
-
 fn compact_review_show_payload(payload: &JsonValue) -> JsonValue {
     let Some(obj) = payload.as_object() else {
         return payload.clone();
@@ -394,7 +373,6 @@ fn compact_review_show_payload(payload: &JsonValue) -> JsonValue {
 
     let mut compact = ait_core::json_support::JsonMap::new();
     for field in [
-        "change_id",
         "current_patchset_id",
         "approvals",
         "blocking",
@@ -409,7 +387,16 @@ fn compact_review_show_payload(payload: &JsonValue) -> JsonValue {
         "code_review_summary_reviewers",
     ] {
         if let Some(value) = obj.get(field) {
-            compact.insert(field.to_string(), value.clone());
+            let value = if field.ends_with("patchset_id") {
+                value
+                    .as_str()
+                    .map(ait_core::public_references::public_patchset_reference)
+                    .map(JsonValue::String)
+                    .unwrap_or_else(|| value.clone())
+            } else {
+                value.clone()
+            };
+            compact.insert(field.to_string(), value);
         }
     }
 
@@ -421,7 +408,16 @@ fn compact_review_show_payload(payload: &JsonValue) -> JsonValue {
                 let mut compact_row = ait_core::json_support::JsonMap::new();
                 for field in ["patchset_id", "reviewer_group"] {
                     if let Some(value) = row.get(field) {
-                        compact_row.insert(field.to_string(), value.clone());
+                        let value = if field.ends_with("patchset_id") {
+                            value
+                                .as_str()
+                                .map(ait_core::public_references::public_patchset_reference)
+                                .map(JsonValue::String)
+                                .unwrap_or_else(|| value.clone())
+                        } else {
+                            value.clone()
+                        };
+                        compact_row.insert(field.to_string(), value);
                     }
                 }
                 JsonValue::Object(compact_row)
@@ -452,7 +448,16 @@ fn compact_policy_show_payload(payload: &JsonValue) -> JsonValue {
         "evaluated_at",
     ] {
         if let Some(value) = obj.get(field) {
-            compact.insert(field.to_string(), value.clone());
+            let value = if field.ends_with("patchset_id") {
+                value
+                    .as_str()
+                    .map(ait_core::public_references::public_patchset_reference)
+                    .map(JsonValue::String)
+                    .unwrap_or_else(|| value.clone())
+            } else {
+                value.clone()
+            };
+            compact.insert(field.to_string(), value);
         }
     }
 
@@ -924,47 +929,12 @@ fn emit_task_audit_result(
             }
         }
     }
-    if let Some(change_rows) = obj.get("changes").and_then(JsonValue::as_array) {
-        // Exact rows remain available when there is an actual choice to make.
-        // A normal single delivery needs only its Task summary above.
-        if active <= 1 {
-            return Ok(());
-        }
-        let (projected, has_target_state) = project_task_audit_change_text_rows(change_rows);
-        if !projected.is_empty() {
-            println!();
-            println!("multiple work items: select an exact reference");
-            let columns = if has_target_state {
-                &["change", "status", "target_state"][..]
-            } else {
-                &["change", "status"][..]
-            };
-            print_list(&projected, columns);
-        }
+    if active > 1 {
+        println!();
+        println!("multiple internal work records: no public selector is available");
+        println!("evidence: ait task audit {task_id} --json");
     }
     Ok(())
-}
-
-fn project_task_audit_change_text_rows(change_rows: &[JsonValue]) -> (Vec<JsonValue>, bool) {
-    let has_target_state = !change_rows.is_empty()
-        && change_rows
-            .iter()
-            .all(|row| !string_field(row.get("target_state")).is_empty());
-    let projected = change_rows
-        .iter()
-        .map(|row| {
-            let change = row
-                .get("change")
-                .filter(|value| value.is_object())
-                .unwrap_or(row);
-            json!({
-                "change": task_scoped_change_ref(change),
-                "status": string_field(change.get("status")),
-                "target_state": string_field(row.get("target_state")),
-            })
-        })
-        .collect();
-    (projected, has_target_state)
 }
 
 fn task_audit_reason_label(action_code: &str) -> Option<&'static str> {
@@ -985,7 +955,7 @@ fn emit_review_record_result(
         title,
         &payload,
         json_output,
-        &["change_id", "patchset_id", "reviewer", "action"],
+        &["patchset_id", "reviewer", "action"],
     )
 }
 
@@ -1000,7 +970,6 @@ fn emit_review_code_submit_result(payload: &JsonValue, json_output: bool) -> Res
     print_key_values(
         "ait-cli review code submit",
         &[
-            ("change_id", string_field(payload.get("change_id"))),
             ("patchset_id", string_field(payload.get("patchset_id"))),
             ("code_reviewer", string_field(payload.get("reviewer"))),
             ("code_action", string_field(payload.get("action"))),
@@ -1037,7 +1006,6 @@ fn emit_review_show_result(payload: &JsonValue, json_output: bool) -> Result<(),
     print_key_values(
         "ait-cli review show",
         &[
-            ("change_id", string_field(obj.get("change_id"))),
             (
                 "current_patchset_id",
                 string_field(obj.get("current_patchset_id")),

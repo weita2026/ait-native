@@ -277,7 +277,7 @@ where
         + ?Sized,
 {
     if change_id.is_none() && patchset_id.is_none() {
-        return Err("Provide CHANGE_ID so Task finish can resolve a Change.".to_string());
+        return Err("Provide a Task ID so Task finish can resolve its work.".to_string());
     }
     let resolved_patchset_id = normalized_text(patchset_id);
     let mut requested_change = normalized_text(change_id);
@@ -648,7 +648,7 @@ pub(in crate::primitives) fn workflow_hydrate_land_state(
 ) -> Result<JsonValue, String> {
     let _hydrate_range = perfetto_range!("ait.task_land.state_hydration");
     if change_id.is_none() && patchset_id.is_none() {
-        return Err("Provide CHANGE_ID so Task finish can resolve a Change.".to_string());
+        return Err("Provide a Task ID so Task finish can resolve its work.".to_string());
     }
     let (remote_row, repo_name) = remote_context(repo, remote_name, None)?;
     let mut task_remote = http_task_remote(repo, &remote_row)?;

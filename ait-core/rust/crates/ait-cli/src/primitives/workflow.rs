@@ -151,7 +151,7 @@ pub(super) fn workflow_current_worktree_retarget(
 
 /// Resolve Task input once at the operation boundary. Internal orchestration
 /// continues to carry the exact Change and its selected Patchset identities.
-fn workflow_task_change_reference(
+pub(super) fn workflow_task_change_reference(
     repo: &RepoRuntime,
     requested: &str,
     remote_name: Option<&str>,
@@ -318,16 +318,21 @@ fn workflow_ready_remote_payload_with_patchset_authority_and_command_ref(
 fn workflow_project_ready_payload(
     repo: &RepoRuntime,
     full_state: &JsonValue,
-    change_id: &str,
+    _change_id: &str,
     remote_name: Option<&str>,
     ready_patchset_is_authoritative: bool,
     command_change_ref: Option<&str>,
 ) -> Result<JsonValue, String> {
     let change = full_state.get("change").cloned().unwrap_or(JsonValue::Null);
-    let resolved_change_ref = change_reference_from_payload(&change, Some(change_id))
-        .unwrap_or_else(|_| change_id.into());
-    let command_change_ref =
-        normalized_text(command_change_ref).unwrap_or_else(|| resolved_change_ref.clone());
+    let authority_task_id = full_state
+        .get("task")
+        .and_then(|task| string_field(task, "task_id"))
+        .or_else(|| string_field(&change, "task_id"))
+        .ok_or_else(|| "Workflow state is missing its Task identity.".to_string())?;
+    let task_id = command_change_ref
+        .and_then(|reference| reference.split_once('/').map(|(task_id, _)| task_id))
+        .filter(|task_id| !task_id.is_empty())
+        .unwrap_or(authority_task_id.as_str());
     let base_line = full_state
         .get("base_line")
         .cloned()
@@ -341,7 +346,7 @@ fn workflow_project_ready_payload(
     };
     let command_hints = workflow_ready_command_hints(
         repo,
-        command_change_ref.as_str(),
+        task_id,
         remote_name,
         full_state.get("patchset"),
         base_line_name.as_str(),
@@ -507,10 +512,15 @@ fn workflow_land_payload_with_workspace_mode(
     if string_field(&change, "status").as_deref() == Some("landed") {
         return Ok(full_state);
     }
-    let resolved_change_ref = change_reference_from_payload(&change, Some(change_id))
-        .unwrap_or_else(|_| change_id.to_string());
-    let command_change_ref =
-        normalized_text(command_change_ref).unwrap_or_else(|| resolved_change_ref.clone());
+    let authority_task_id = full_state
+        .get("task")
+        .and_then(|task| string_field(task, "task_id"))
+        .or_else(|| string_field(&change, "task_id"))
+        .ok_or_else(|| "Workflow state is missing its Task identity.".to_string())?;
+    let task_id = command_change_ref
+        .and_then(|reference| reference.split_once('/').map(|(task_id, _)| task_id))
+        .filter(|task_id| !task_id.is_empty())
+        .unwrap_or(authority_task_id.as_str());
     let base_line = full_state
         .get("base_line")
         .cloned()
@@ -522,7 +532,7 @@ fn workflow_land_payload_with_workspace_mode(
         &workflow_ready_facts(&full_state)?,
         &workflow_ready_command_hints(
             repo,
-            command_change_ref.as_str(),
+            task_id,
             remote_name,
             full_state.get("patchset"),
             base_line_name.as_str(),
@@ -830,6 +840,10 @@ where
 {
     let resolved_reference = workflow_task_change_reference(repo, change_id, remote_name)?;
     let change_id = resolved_reference.as_str();
+    let task_id = change_id
+        .split_once('/')
+        .map(|(task_id, _)| task_id)
+        .unwrap_or(change_id);
     let promotion_candidate =
         workflow_final_snapshot_promotion_candidate(repo, change_id, remote_name)?;
     let (resolved_change_id, ready_patchset_is_authoritative, command_change_ref) = if let Some(
@@ -842,7 +856,7 @@ where
         let Some(remote_change_id) = remote_change_id else {
             let remote_name = normalized_text(remote_name).unwrap_or_else(|| "origin".to_string());
             return Err(format!(
-                "Completed local change {change_id} must pass the explicit ready phase before reviewer finish. Run `ait workflow ready {change_id} --apply --remote {remote_name}`, then `ait workflow finish {change_id} --apply --remote {remote_name}`."
+                "Completed local Task {task_id} must pass the explicit ready phase before reviewer finish. Run `ait workflow ready {task_id} --apply --remote {remote_name}`, then `ait workflow finish {task_id} --apply --remote {remote_name}`."
             ));
         };
         (
@@ -1326,34 +1340,32 @@ fn workflow_land_local(
     snapshot_message: Option<&str>,
 ) -> Result<JsonValue, String> {
     let resolved_change_id =
-        normalized_text(Some(change_id)).ok_or_else(|| "change-id is required".to_string())?;
+        normalized_text(Some(change_id)).ok_or_else(|| "Task ID is required".to_string())?;
     let change_store = repo.change_store()?;
     let task_store = repo.task_store()?;
     let change = workflow_local_change_read_with_change_store(&change_store, &resolved_change_id)?;
+    let task_id = required_string_field(&change, "task_id")?;
     let change_status = string_field(&change, "status").unwrap_or_default();
     if change_status == "landed" {
-        return Err(format!(
-            "Local change {resolved_change_id} is already finished"
-        ));
+        return Err(format!("Local Task {task_id} is already finished"));
     }
     if matches!(change_status.as_str(), "archived") {
         return Err(format!(
-            "Local change {resolved_change_id} is {change_status} and cannot be finished"
+            "Local Task {task_id} is {change_status} and cannot be finished"
         ));
     }
     if !matches!(change_status.as_str(), "draft" | "active") {
         return Err(format!(
-            "Local change {resolved_change_id} is {change_status} and cannot be finished"
+            "Local Task {task_id} has work state {change_status} and cannot be finished"
         ));
     }
     if string_field(&change, "publication_state").as_deref() == Some("published") {
         return Err(format!(
-            "Local change {resolved_change_id} has already been published; use `ait task finish` for shared closeout."
+            "Local Task {task_id} has already been published; use `ait task finish {task_id}` for shared closeout."
         ));
     }
     let local_change_id = required_string_field(&change, "change_id")?;
     let change_ref = change_reference_from_payload(&change, Some(&resolved_change_id))?;
-    let task_id = required_string_field(&change, "task_id")?;
     let task = workflow_local_task_read_with_task_store(&task_store, &task_id)?;
     if string_field(&task, "publication_state").as_deref() == Some("published") {
         return Err(format!(
@@ -1406,7 +1418,7 @@ fn workflow_land_local(
                 format!(": {}", changed_paths.join(", "))
             };
             format!(
-                "Workspace is dirty ({changed_count} changed{changed_paths_hint}); pass `--message <MESSAGE>` to `ait task finish {change_ref} --local`, or create an intermediate Snapshot first."
+                "Workspace is dirty ({changed_count} changed{changed_paths_hint}); pass `--message <MESSAGE>` to `ait task finish {task_id} --local`, or create an intermediate Snapshot first."
             )
         })?;
         let snapshot =
@@ -1438,11 +1450,11 @@ fn workflow_land_local(
     {
         let guidance = if repo.is_worktree() {
             format!(
-                " Run `ait worktree rebase --onto {target_line}` in the bound worktree and retry `ait task finish {change_ref} --local`."
+                " Run `ait worktree rebase --onto {target_line}` in the bound worktree and retry `ait task finish {task_id} --local`."
             )
         } else {
             format!(
-                " Rebase or retarget the current line onto `{target_line}` before retrying `ait task finish {change_ref} --local`."
+                " Rebase or retarget the current line onto `{target_line}` before retrying `ait task finish {task_id} --local`."
             )
         };
         return Err(format!(

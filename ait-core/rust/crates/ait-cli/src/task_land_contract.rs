@@ -2,7 +2,7 @@ use ait_core::json_support::{json, JsonValue};
 
 pub const TASK_LAND_CONTRACT_VERSION: &str = "task-land-plan-closeout/v1";
 
-pub const TASK_FINISH_COMMAND_ABOUT: &str = "Finish one Task or selected Change onto main. The configured workflow mode chooses local or remote unless --local or --remote explicitly overrides it. Dirty local work requires --message to create its final Snapshot; clean local work reuses the current Line head. Remote finish consumes an already-ready selected Patchset and rejects --message. Final Task cleanup removes the bound worktree and archives its accepted-head feature Line.";
+pub const TASK_FINISH_COMMAND_ABOUT: &str = "Finish one Task onto main. The configured workflow mode chooses local or remote unless --local or --remote explicitly overrides it. Dirty local work requires --message to create its final Snapshot; clean local work reuses the current Line head. Remote finish consumes an already-ready selected Patchset and rejects --message. Final Task cleanup removes the bound worktree and archives its accepted-head feature Line.";
 
 pub const PLAN_SYNC_COMMAND_ABOUT: &str = "Sync file-backed Markdown into Plan revision history using the workflow mode's local or remote default. solo_local saves local Plan changes; solo_remote updates local Plan history and publishes the changed heads to the configured default remote. --local or --remote overrides that default. Plan sync never creates a Snapshot or advances a Line.";
 
@@ -147,24 +147,21 @@ pub fn task_land_closeout_outcome(output: &JsonValue, use_local_scope: bool) -> 
 }
 
 fn task_land_recovery(output: &JsonValue, use_local_scope: bool) -> JsonValue {
-    let change_id = output
-        .get("change")
-        .and_then(|change| change.get("change_ref"))
+    let task_id = output
+        .get("task_id")
         .and_then(JsonValue::as_str)
-        .or_else(|| output.get("change_ref").and_then(JsonValue::as_str))
-        .or_else(|| output.get("change_id").and_then(JsonValue::as_str))
         .or_else(|| {
             output
-                .get("change")
-                .and_then(|change| change.get("change_id"))
+                .get("task")
+                .and_then(|task| task.get("task_id"))
                 .and_then(JsonValue::as_str)
         })
-        .unwrap_or("<task-or-change-id>");
+        .unwrap_or("<task-id>");
     let scope_flag = if use_local_scope { " --local" } else { "" };
     json!({
         "code": "resume_task_land_closeout",
         "idempotent": true,
-        "command": format!("ait task finish {change_id}{scope_flag}"),
+        "command": format!("ait task finish {task_id}{scope_flag}"),
         "detail": "The code finish is already authoritative. Repair the reported Plan, worktree, or feature-Line condition, then rerun task finish; completed phases are inspected and reused instead of being applied twice.",
     })
 }
@@ -421,6 +418,7 @@ mod tests {
     fn remote_post_land_cleanup_failure_is_partial_and_recoverable() {
         let mut payload = json!({
             "apply_status": "done",
+            "task_id": "RCT-4",
             "change_id": "RCT-4/C-02",
             "task_status": "completed",
             "bound_worktree_cleanup": {
@@ -437,7 +435,7 @@ mod tests {
         assert_eq!(task_land_exit_code(&payload), 2);
         assert_eq!(
             payload["closeout_recovery"]["command"],
-            "ait task finish RCT-4/C-02"
+            "ait task finish RCT-4"
         );
         assert_eq!(payload["closeout_recovery"]["idempotent"], true);
     }

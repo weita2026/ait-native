@@ -349,7 +349,32 @@ fn workflow_cleanup_worktree_name(cleanup: &JsonMap<String, JsonValue>) -> Optio
 /// operation target was already resolved. Never edit IDs inside JSON/evidence.
 fn task_command_text(text: &str, task: &str, mapped_task: &str, exact: &str) -> String {
     let mut result = text.to_string();
-    for prefix in ["ait snapshot create ", "ait commit ", "ait task finish ", "ait workflow ready ", "ait workflow finish "] {
+    for prefix in [
+        "ait snapshot create ",
+        "ait commit ",
+        "ait task finish ",
+        "ait workflow ready ",
+        "ait workflow finish ",
+        "ait change show ",
+        "ait change revert ",
+        "ait change replay ",
+        "ait change close ",
+        "ait change publish ",
+        "ait patchset publish ",
+        "ait patchset list ",
+        "ait review show ",
+        "ait review team request ",
+        "ait review team approve ",
+        "ait review team request-changes ",
+        "ait review team comment ",
+        "ait review team defer ",
+        "ait review task approve ",
+        "ait review task request-changes ",
+        "ait review task comment ",
+        "ait review task defer ",
+        "ait review code submit ",
+        "ait worktree recover-task ",
+    ] {
         let mut rewritten = String::new();
         let mut rest = result.as_str();
         while let Some(start) = rest.find(prefix) {
@@ -372,33 +397,121 @@ fn task_command_text(text: &str, task: &str, mapped_task: &str, exact: &str) -> 
     result
 }
 
+fn replace_standalone_change_reference(text: &str, exact: &str, task: &str) -> String {
+    if exact.is_empty() {
+        return text.to_string();
+    }
+    let mut output = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(start) = rest.find(exact) {
+        let before = rest[..start].chars().next_back();
+        let after = rest[start + exact.len()..].chars().next();
+        let is_identity_character = |character: char| {
+            character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '/')
+        };
+        output.push_str(&rest[..start]);
+        if before.is_some_and(is_identity_character) || after.is_some_and(is_identity_character) {
+            output.push_str(exact);
+        } else {
+            output.push_str(task);
+        }
+        rest = &rest[start + exact.len()..];
+    }
+    output.push_str(rest);
+    output
+}
+
+fn project_generated_workflow_text(
+    object: &mut JsonMap<String, JsonValue>,
+    task: &str,
+    mapped_task: &str,
+    exact: &str,
+) {
+    fn remove_hidden_selector(mut text: String, option: &str) -> String {
+        let needle = format!(" {option} ");
+        while let Some(start) = text.find(&needle) {
+            let value_start = start + needle.len();
+            let value_end = text[value_start..]
+                .find(|character: char| character.is_whitespace() || character == '`')
+                .map(|offset| value_start + offset)
+                .unwrap_or(text.len());
+            text.replace_range(start..value_end, "");
+        }
+        text
+    }
+
+    for (field, value) in object {
+        let generated = matches!(
+            field.as_str(),
+            "label" | "summary" | "detail" | "command" | "error" | "reason"
+        ) || field.ends_with("_command");
+        if !generated {
+            continue;
+        }
+        let Some(text) = value.as_str() else {
+            continue;
+        };
+        let mut projected = task_command_text(text, task, mapped_task, exact);
+        projected = remove_hidden_selector(projected, "--change");
+        if !exact.is_empty() {
+            projected = replace_standalone_change_reference(&projected, exact, task);
+        }
+        projected = ait_core::public_references::public_work_reference_text(&projected);
+        *value = JsonValue::String(projected);
+    }
+}
+
 fn task_workflow_display_payload(payload: &JsonValue, requested: &str) -> JsonValue {
     let mut display = payload.clone();
-    if requested.contains('/') || !requested.rsplit_once('-').is_some_and(|(prefix, ordinal)| prefix.ends_with('T') && !ordinal.is_empty() && ordinal.bytes().all(|b| b.is_ascii_digit())) {
-        return display;
-    }
     let mapped_task = workflow_payload_task_id(payload).unwrap_or_default();
-    let exact = payload.get("change").and_then(|change| change.get("change_id"))
-        .or_else(|| payload.get("change_id")).and_then(JsonValue::as_str).unwrap_or_default();
-    // Only generated action text is projected. User titles, Snapshot messages,
-    // exact evidence and machine-readable command fields stay byte-for-byte.
-    for pointer in ["/next_action", "/recommended_action", "/closeout_recovery", "/task_land_closeout/recovery"] {
+    let exact = payload
+        .get("change")
+        .and_then(|change| change.get("change_id"))
+        .or_else(|| payload.get("change_id"))
+        .and_then(JsonValue::as_str)
+        .unwrap_or_default();
+    let requested_task = requested
+        .split_once('/')
+        .map(|(task, _)| task)
+        .filter(|task| !task.is_empty())
+        .unwrap_or(requested);
+    let display_task = if requested == exact && !mapped_task.is_empty() {
+        mapped_task.as_str()
+    } else if !requested_task.is_empty() {
+        requested_task
+    } else {
+        mapped_task.as_str()
+    };
+    // Only generated action text is projected. User titles and Snapshot
+    // messages stay byte-for-byte. The complete machine payload is unchanged.
+    for pointer in [
+        "/next_action",
+        "/recommended_action",
+        "/closeout_recovery",
+        "/task_land_closeout/recovery",
+        "/commands",
+        "/plan_checklist_closeout",
+        "/bound_worktree_cleanup",
+        "/bound_line_closeout",
+    ] {
         if let Some(next) = display.pointer_mut(pointer).and_then(JsonValue::as_object_mut) {
-            for field in ["label", "summary", "detail", "command"] {
-                if let Some(text) = next.get(field).and_then(JsonValue::as_str) {
-                    let text = task_command_text(text, requested, &mapped_task, exact);
-                    next.insert(field.to_string(), JsonValue::String(text));
-                }
-            }
+            project_generated_workflow_text(next, display_task, &mapped_task, exact);
         }
+    }
+    if let Some(stopped_reason) = display
+        .get_mut("apply_stopped_reason")
+        .and_then(|value| value.as_str())
+        .map(ait_core::public_references::public_work_reference_text)
+    {
+        display["apply_stopped_reason"] = JsonValue::String(stopped_reason);
     }
     if let Some(command) = display.pointer("/next_action/command").and_then(JsonValue::as_str) {
         if let Some(arguments) = command.strip_prefix("ait patchset publish ") {
             // Ready already owns publication; offer the Task operation while
             // retaining generated summary and explicit remote options.
             let candidate = format!("ait workflow ready {arguments}");
-            let projected = task_command_text(&candidate, requested, &mapped_task, exact);
-            let task_prefix = format!("ait workflow ready {requested}");
+            let projected = task_command_text(&candidate, display_task, &mapped_task, exact);
+            let task_prefix = format!("ait workflow ready {display_task}");
             if let Some(options) = projected.strip_prefix(&task_prefix) {
                 display["next_action"]["command"] = json!(format!("{task_prefix} --apply{options}"));
             }
@@ -447,7 +560,9 @@ fn render_workflow_phase_text(payload: &JsonValue, phase: &str) -> Result<String
         .filter(|value| !value.is_null())
         .map(|value| string_field(Some(value)))
         .filter(|value| !value.is_empty());
-    let patchset_id = string_field(workflow_nested_value(payload, "patchset", "patchset_id"));
+    let patchset_id = ait_core::public_references::public_patchset_reference(&string_field(
+        workflow_nested_value(payload, "patchset", "patchset_id"),
+    ));
     let next_action_code = string_field(workflow_nested_value(payload, "next_action", "code"));
     let next_action_summary =
         string_field(workflow_nested_value(payload, "next_action", "summary"));
@@ -878,9 +993,9 @@ fn workflow_guide_payload(topic: Option<&str>) -> Result<JsonValue, String> {
                 "detail": "Prefer this over rebuilding one task from `task show` plus task-scoped `change list`."
             },
             {
-                "label": "Advanced work selection",
-                "command": "ait change --help",
-                "detail": "Use exact Change references only when an ambiguity or recovery diagnostic requires them."
+                "label": "Task diagnostic",
+                "command": "ait task audit <task-id> --json",
+                "detail": "Inspect complete Task evidence when history is ambiguous or recovery needs more detail."
             }
         ],
         "avoid": [
