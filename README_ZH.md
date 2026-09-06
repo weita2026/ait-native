@@ -40,7 +40,7 @@ Node.js 並非 AIT 對儲存庫的通用要求。
 **1. 安裝 AIT。**
 
 ```sh
-python -m pip install ait-native==1.1.1
+python -m pip install ait-native==1.1.2
 ait --version
 ```
 
@@ -228,7 +228,7 @@ Agent 依產生的指示執行 `ait task start`、以 `ait snapshot create` 保�
 - [功能工作流](https://ait-native.dev/technical/workflows/feature/)與[回歸修復](https://ait-native.dev/technical/workflows/regression/)
 - [元件](https://ait-native.dev/zh-tw/components/)與[發行狀態](https://ait-native.dev/zh-tw/proof/)
 
-目前公開版本：**v1.1.1**。如需該版本的確切原始碼，請使用不可變的發行標籤；
+目前公開版本：**v1.1.2**。如需該版本的確切原始碼，請使用不可變的發行標籤；
 `ait-monorepo-source.json` 記錄元件 Snapshot 映射。兩次發行之間，`main` 的文件可能繼續更新。
 
 ## 各安裝通路提供什麼
