@@ -43,7 +43,7 @@ for this small example; Node.js is not an AIT repository requirement.
 **1. Install AIT.**
 
 ```sh
-python -m pip install ait-native==1.1.1
+python -m pip install ait-native==1.1.2
 ait --version
 ```
 
@@ -265,7 +265,7 @@ the applicable `ait task finish` or `ait workflow finish` closeout.
 - [Feature workflow](https://ait-native.dev/technical/workflows/feature/) and [regression repair](https://ait-native.dev/technical/workflows/regression/)
 - [Components](https://ait-native.dev/components/) and [release status](https://ait-native.dev/proof/)
 
-Current public release: **v1.1.1**. Use the immutable release tag for
+Current public release: **v1.1.2**. Use the immutable release tag for
 its exact source; `ait-monorepo-source.json` records the component Snapshot
 mapping. Documentation on `main` can advance between releases.
 
