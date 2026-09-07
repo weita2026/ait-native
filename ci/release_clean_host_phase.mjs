@@ -1660,13 +1660,15 @@ function aptContext(row, version, recorder, upgrade = false, candidateStage = nu
       )
     : `${packageName}=${expectedVersion}`;
   const transitionalRunnerAlias =
-    packageName === "ait-runner" && candidateStage && runnerBundleVersion(version);
+    packageName === "ait-runner" && runnerBundleVersion(version);
   const selectors = transitionalRunnerAlias
     ? [
-        localCandidateAsset(
-          candidateStage,
-          `ait-native_${expectedVersion}_${architecture}.deb`,
-        ),
+        candidateStage
+          ? localCandidateAsset(
+              candidateStage,
+              `ait-native_${expectedVersion}_${architecture}.deb`,
+            )
+          : `ait-native=${expectedVersion}`,
         selector,
       ]
     : [selector];

@@ -41,8 +41,32 @@ test "$(grep -c 'CHECKSUM_ASSET_NAME.test(match\[2\])' "${phase_runner}")" = 2
 node --input-type=module - "${phase_runner}" <<'NODE'
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import vm from "node:vm";
 
 const source = readFileSync(process.argv[2], "utf8");
+
+// Exercise the actual apt command builder against a repository with newer native versions.
+const aptFunction = source.slice(source.indexOf("function aptContext("), source.indexOf("\nfunction ", source.indexOf("function aptContext(") + 1));
+const calls = [];
+const stop = new Error("command captured");
+const context = vm.createContext({
+  debianVersion: (version) => version,
+  runnerBundleVersion: (version) => version !== "1.1.0",
+  localCandidateAsset: (root, name) => root + "/" + name,
+  aptAcquireBounds: () => [],
+});
+vm.runInContext(aptFunction + "\nthis.apt = aptContext;", context);
+function aptArgs(version, stage = null, lifecycle = "standalone-runner") {
+  assert.throws(() => context.apt({ lifecycle, architecture: "arm64" }, version, {
+    run(command, args) { calls.push({ command, args: Array.from(args) }); throw stop; },
+  }, false, stage), (error) => error === stop);
+  return calls.at(-1).args.slice(4);
+}
+assert.deepEqual(aptArgs("1.1.1"), ["ait-native=1.1.1", "ait-runner=1.1.1"]);
+assert.deepEqual(aptArgs("1.1.0"), ["ait-runner=1.1.0"]);
+assert.deepEqual(aptArgs("1.1.3", "/frozen"), ["/frozen/ait-native_1.1.3_arm64.deb", "/frozen/ait-runner_1.1.3_arm64.deb"]);
+assert.deepEqual(aptArgs("1.1.1", null, "product"), ["ait-native=1.1.1"]);
+
 const declaration = source.match(/^const CHECKSUM_ASSET_NAME = \/(.*)\/;$/m);
 assert.ok(declaration, "clean-host checksum asset-name rule is missing");
 assert.ok(
