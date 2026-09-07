@@ -40,7 +40,7 @@ Node.js 并非 AIT 对仓库的通用要求。
 **1. 安装 AIT。**
 
 ```sh
-python -m pip install ait-native==1.1.2
+python -m pip install ait-native==1.1.3
 ait --version
 ```
 
@@ -228,7 +228,7 @@ Agent 根据生成的指示执行 `ait task start`、以 `ait snapshot create` �
 - [功能工作流](https://ait-native.dev/technical/workflows/feature/)与[回归修复](https://ait-native.dev/technical/workflows/regression/)
 - [组件](https://ait-native.dev/zh-cn/components/)与[发行状态](https://ait-native.dev/zh-cn/proof/)
 
-当前公开版本：**v1.1.2**。如需该版本的确切源代码，请使用不可变的发行标签；
+当前公开版本：**v1.1.3**。如需该版本的确切源代码，请使用不可变的发行标签；
 `ait-monorepo-source.json` 记录组件 Snapshot 映射。两次发行之间，`main` 的文档可能继续更新。
 
 ## 各安装渠道提供什么

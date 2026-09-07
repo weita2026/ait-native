@@ -12,7 +12,7 @@ import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const CORE_SNAPSHOT = "SNP-14DB5CBF3602";
+const CORE_SNAPSHOT = "SNP-7D8A2FE37AF0";
 const INTERNAL_CORE_ROOT = path.join(ROOT, ".ait-external", "ait-core");
 const PUBLIC_CORE_ROOT = path.resolve(ROOT, "..", "ait-core");
 const MANIFEST_RELATIVE = path.join("rust", "crates", "ait-napi", "Cargo.toml");
@@ -92,7 +92,7 @@ function assertLockedNode(lock) {
     parent_path: "",
     materialize_to: ".ait-external/ait-core",
     license: "Apache-2.0",
-    version: "1.1.2",
+    version: "1.1.3",
   };
   const expectedBinding = {
     language: "rust",
