@@ -7,6 +7,9 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  acceptedComponentCloseouts,
+  closeoutReadinessProbes,
+  coordinatorCard,
   copyOrVerify,
   materializeDirectory,
   replaceComponentSources,
@@ -43,6 +46,68 @@ try {
   assert.equal(stableAdvance("1.1.2", "1.1.3"), true);
   assert.equal(stableAdvance("1.1.3", "1.2.0"), true);
   assert.equal(stableAdvance("1.1.2", "1.1.4"), false);
+
+  const coordinator = coordinatorCard(version, pin);
+  assert.equal(coordinator.relative, "docs/sprints/release_1_1_3_coordinator_snp-222222222222.md");
+  assert.equal(coordinator.ref, "release-1-1-3/family-coordinator-snp-222222222222");
+  assert.deepEqual(coordinatorCard(version, pin), coordinator);
+  assert.notEqual(coordinatorCard(version, "SNP-333333333333").relative, coordinator.relative);
+  assert.throws(() => coordinatorCard(version, "invalid"), /Core Snapshot is invalid/);
+
+  const closeoutRoots = Object.fromEntries(
+    ["core", "server", "runner", "python", "node"].map((component) => [
+      component,
+      path.join(temporary, component),
+    ]),
+  );
+  const sourceComponents = Object.fromEntries(
+    ["core", "server", "runner", "python", "node"].map((component, index) => [
+      component,
+      {
+        task: `${component === "core" ? "LC" : "R"}T-${String(1100 + index).padStart(4, "0")}`,
+        snapshot: `SNP-${String(index + 1).repeat(12)}`,
+        edit_root: path.join(temporary, `source-${component}`),
+        stage: component === "core" || component === "server" ? "finished_local" : "snapshot_ready",
+      },
+    ]),
+  );
+  const coordinatorCloseout = {
+    task: "LCT-1200",
+    snapshot: "SNP-AAAAAAAAAAAA",
+    edit_root: path.join(temporary, "coordinator"),
+    stage: "finished_local",
+  };
+  const closeouts = acceptedComponentCloseouts(
+    { roots: closeoutRoots },
+    { components: sourceComponents, coordinator: coordinatorCloseout },
+  );
+  assert.deepEqual(
+    closeouts.map(({ id, task, snapshot, finish_local_before_ready }) => ({
+      id,
+      task,
+      snapshot,
+      finish_local_before_ready,
+    })),
+    [
+      { id: "core", task: coordinatorCloseout.task, snapshot: coordinatorCloseout.snapshot, finish_local_before_ready: true },
+      { id: "server", task: sourceComponents.server.task, snapshot: sourceComponents.server.snapshot, finish_local_before_ready: true },
+      { id: "runner", task: sourceComponents.runner.task, snapshot: sourceComponents.runner.snapshot, finish_local_before_ready: false },
+      { id: "python", task: sourceComponents.python.task, snapshot: sourceComponents.python.snapshot, finish_local_before_ready: false },
+      { id: "node", task: sourceComponents.node.task, snapshot: sourceComponents.node.snapshot, finish_local_before_ready: false },
+    ],
+  );
+  assert.equal(sourceComponents.core.snapshot, "SNP-111111111111");
+  assert.notEqual(closeouts[0].snapshot, sourceComponents.core.snapshot);
+  const readiness = closeoutReadinessProbes("/exact/ait", closeouts);
+  assert.deepEqual(
+    readiness.map(({ id, cwd, argv }) => ({ id, cwd, argv })),
+    closeouts.map((row) => ({
+      id: `preflight-closeout-${row.id}`,
+      cwd: row.finish_local_before_ready ? row.repository_root : row.edit_root,
+      argv: ["/exact/ait", "workflow", "ready", row.task, "--remote", "origin"],
+    })),
+  );
+  assert.equal(readiness.some(({ argv }) => argv.includes("--apply")), false);
 
   const core = path.join(temporary, "core");
   write(core, "rust/Cargo.toml", repeated(oldVersion, 1));

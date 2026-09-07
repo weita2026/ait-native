@@ -385,13 +385,47 @@ function card(component, version, snapshot = null) {
   };
 }
 
-function coordinatorCard(version) {
-  const ref = `release-${version.replaceAll(".", "-")}/family-coordinator`;
+function coordinatorCard(version, coreSnapshot) {
+  if (!SNAPSHOT_RE.test(coreSnapshot ?? "")) throw new Error("coordinator Core Snapshot is invalid");
+  const identity = coreSnapshot.toLowerCase();
+  const ref = `release-${version.replaceAll(".", "-")}/family-coordinator-${identity}`;
   return {
     ref,
-    relative: `docs/sprints/release_${version.replaceAll(".", "_")}_coordinator_automated.md`,
-    content: `# Stable ${version} Family Coordination [plan-ref: ait-core/release/${version}-coordinator-automated]\n\n## Goal\n\nBind the five accepted component Snapshots for stable ${version}.\n\n## Scope\n\n- Change only component source Snapshot selectors in the root family manifest.\n- Preserve versions, distribution policy, and component order.\n\n## Acceptance criteria\n\n- Every family component selects its prepared public Snapshot.\n- The normalized diff contains only ait-release-family.json.\n- The coordinator Task and Snapshot are retained for source export.\n\n## Work item\n\n- [ ] [ref: ${ref}] Bind the stable ${version} component Snapshots.\n`,
+    relative: `docs/sprints/release_${version.replaceAll(".", "_")}_coordinator_${identity}.md`,
+    content: `# Stable ${version} Family Coordination [plan-ref: ait-core/release/${version}-coordinator-${identity}]\n\n## Goal\n\nBind the five accepted component Snapshots for stable ${version}.\n\n## Scope\n\n- Change only component source Snapshot selectors in the root family manifest.\n- Preserve versions, distribution policy, and component order.\n\n## Acceptance criteria\n\n- Every family component selects its prepared public Snapshot.\n- The normalized diff contains only ait-release-family.json.\n- The coordinator Task and Snapshot are retained for source export.\n\n## Work item\n\n- [ ] [ref: ${ref}] Bind the stable ${version} component Snapshots.\n`,
   };
+}
+
+function acceptedComponentCloseouts(request, state) {
+  return COMPONENTS.map((component) => {
+    const row = component === "core" ? state.coordinator : state.components[component];
+    if (
+      !row || !TASK_RE.test(row.task ?? "") || !SNAPSHOT_RE.test(row.snapshot ?? "") ||
+      typeof row.edit_root !== "string" || !path.isAbsolute(row.edit_root) ||
+      !new Set(["finished_local", "snapshot_ready"]).has(row.stage)
+    ) {
+      fail(`release closeout identity is incomplete: ${component}`);
+    }
+    return {
+      id: component,
+      task: row.task,
+      snapshot: row.snapshot,
+      patchset: null,
+      repository_root: request.roots[component],
+      edit_root: row.edit_root,
+      remote: "origin",
+      finish_local_before_ready: row.stage === "finished_local",
+      review_message: reviewMessage(component),
+    };
+  });
+}
+
+function closeoutReadinessProbes(ait, closeouts) {
+  return closeouts.map((row) => ({
+    id: `preflight-closeout-${row.id}`,
+    cwd: row.finish_local_before_ready === true ? row.repository_root : row.edit_root,
+    argv: [ait, "workflow", "ready", row.task, "--remote", row.remote ?? "origin"],
+  }));
 }
 
 function reviewMessage(component) {
@@ -428,7 +462,7 @@ async function main() {
   }
   const plan = [
     "preflight", "validate_inventories", "freeze_prior", "prepare_core", "verify_core_equivalence", "prepare_server",
-    "prepare_runner", "prepare_python", "prepare_node", "coordinate_family", "refresh_coordinator_artifacts", "compile_accepted_input", "run_conductor",
+    "prepare_runner", "prepare_python", "prepare_node", "coordinate_family", "refresh_coordinator_artifacts", "preflight_component_closeouts", "compile_accepted_input", "run_conductor",
   ];
   if (mode === "plan") {
     process.stdout.write(`${JSON.stringify({ contract: "ait.release.prepare-plan/v1", status: "pass", version: request.release.version, prior_version: request.release.prior_version, remote: remoteUrl, phases: plan }, null, 2)}\n`);
@@ -717,7 +751,7 @@ async function main() {
   if (!done("coordinate_family")) {
     let coordinator = state.coordinator;
     if (!coordinator) {
-      const generated = coordinatorCard(request.release.version);
+      const generated = coordinatorCard(request.release.version, core.snapshot);
       writeExact(path.join(request.roots.core, generated.relative), generated.content);
       const started = runJson("start-coordinator", request.roots.core, [ait, "task", "start", "--from", `${generated.relative}#${generated.ref}`, "--intent", `Bind stable ${request.release.version} family component Snapshots`, "--local", "--json"]);
       if (!TASK_RE.test(started.task_id ?? "") || typeof started.edit_root !== "string" || !path.isAbsolute(started.edit_root)) {
@@ -775,6 +809,16 @@ async function main() {
     complete("refresh_coordinator_artifacts");
   }
 
+  if (!done("preflight_component_closeouts")) {
+    const closeouts = acceptedComponentCloseouts(request, state);
+    for (const probe of closeoutReadinessProbes(ait, closeouts)) {
+      run(probe.id, probe.cwd, probe.argv);
+    }
+    complete("preflight_component_closeouts", {
+      tasks: closeouts.map(({ id, task }) => ({ id, task })),
+    });
+  }
+
   if (!done("compile_accepted_input")) {
     const finalFamily = path.join(request.records_root, "final-family.json");
     const finalCoordinator = path.join(request.records_root, "final-coordinator.json");
@@ -783,20 +827,7 @@ async function main() {
     writeOrVerify(finalCoordinator, coordinator, "frozen final coordinator");
     const webComponents = path.join(request.records_root, "web-components.json");
     writeOrVerify(webComponents, `${JSON.stringify(Object.fromEntries(COMPONENTS.map((component) => [component, state.components[component].snapshot])), null, 2)}\n`, "derived Web component Snapshots");
-    const closeouts = COMPONENTS.map((component) => {
-      const row = state.components[component];
-      return {
-        id: component,
-        task: row.task,
-        snapshot: row.snapshot,
-        patchset: null,
-        repository_root: request.roots[component],
-        edit_root: row.edit_root,
-        remote: "origin",
-        finish_local_before_ready: row.stage === "finished_local",
-        review_message: reviewMessage(component),
-      };
-    });
+    const closeouts = acceptedComponentCloseouts(request, state);
     const accepted = {
       contract: "ait.release.accepted-input/v1",
       release: request.release,
@@ -835,4 +866,13 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   main().catch((error) => fail(error?.message ?? String(error)));
 }
 
-export { copyOrVerify, materializeDirectory, replaceComponentSources, stableAdvance, writeOrVerify };
+export {
+  acceptedComponentCloseouts,
+  closeoutReadinessProbes,
+  coordinatorCard,
+  copyOrVerify,
+  materializeDirectory,
+  replaceComponentSources,
+  stableAdvance,
+  writeOrVerify,
+};

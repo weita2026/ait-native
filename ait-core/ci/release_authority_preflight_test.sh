@@ -74,7 +74,12 @@ state=${temporary_root}/state.json
 jq -n --slurpfile family "${canonical_core}/ait-release-family.json" '
   reduce ($family[0].components[] |
     {key: .source_repository, value: .source_snapshot}) as $row ({};
-      .[$row.key] = {snapshot: $row.value, dirty: false})
+      .[$row.key] = {
+        snapshot: $row.value,
+        main: $row.value,
+        relation: "retained",
+        dirty: false
+      })
 ' >"${state}"
 
 while IFS=$'\t' read -r repo_name repository_index namespace; do
@@ -104,6 +109,8 @@ set -euo pipefail
 state=${AIT_TEST_AUTHORITY_STATE:?}
 repo=${PWD##*/}
 snapshot=$(jq -er --arg repo "${repo}" '.[$repo].snapshot' "${state}")
+main=$(jq -er --arg repo "${repo}" '.[$repo].main' "${state}")
+relation=$(jq -er --arg repo "${repo}" '.[$repo].relation' "${state}")
 case "${1:-} ${2:-}" in
   'status --json')
     dirty=$(jq -r --arg repo "${repo}" '.[$repo].dirty' "${state}")
@@ -122,20 +129,32 @@ case "${1:-} ${2:-}" in
     ;;
   'line show')
     [[ ${3:-} == main && ${4:-} == --json ]] || exit 64
-    jq -n --arg snapshot "${snapshot}" \
+    jq -n --arg snapshot "${main}" \
       '{line_name: "main", head_snapshot_id: $snapshot}'
     ;;
   'snapshot is-ancestor')
-    [[ ${3:-} == "${snapshot}" && ${4:-} == "${snapshot}" && ${5:-} == --json ]] || exit 2
-    jq -n --arg snapshot "${snapshot}" '
+    older=${3:-}
+    newer=${4:-}
+    [[ ${5:-} == --json ]] || exit 2
+    is_ancestor=false
+    if [[ ${older} == "${snapshot}" && ${newer} == "${main}" && \
+      ( ${snapshot} == "${main}" || ${relation} == retained ) ]]; then
+      is_ancestor=true
+    elif [[ ${older} == "${main}" && ${newer} == "${snapshot}" && \
+      ${relation} == pending ]]; then
+      is_ancestor=true
+    fi
+    jq -n --arg older "${older}" --arg newer "${newer}" \
+      --argjson is_ancestor "${is_ancestor}" '
       {
         contract: "snapshot-is-ancestor/v1",
-        older_snapshot_id: $snapshot,
-        newer_snapshot_id: $snapshot,
-        is_ancestor: true,
-        distance: 0
+        older_snapshot_id: $older,
+        newer_snapshot_id: $newer,
+        is_ancestor: $is_ancestor,
+        distance: (if $is_ancestor then 1 else null end)
       }
     '
+    [[ ${is_ancestor} == true ]]
     ;;
   *) exit 64 ;;
 esac
@@ -151,9 +170,11 @@ jq -e --arg version "${expected_family_version}" '
   .family_manifest_sha256 == .canonical_family_manifest_sha256 and
   .qualification_family_manifest_sha256 == null and
   .qualification_family_used == false and
+  .historical_family_used == false and
   (.repositories | length) == 5 and
   ([.repositories[].repository_index] | sort) == [0, 1, 2, 3, 4] and
   ([.repositories[].selected_snapshot_retained_by_main] | all(. == true)) and
+  ([.repositories[].selected_snapshot_descends_from_main] | all(. == false)) and
   ([.repositories[].workspace_clean] | all(. == true)) and
   .recovery_authority_used == false and .registry_write == false and
   .public_publish == false
@@ -261,7 +282,8 @@ jq --arg snapshot "${qualification_snapshot}" '
     .source_snapshot) = $snapshot
 ' "${canonical_core}/ait-release-family.json" >"${qualification_family}"
 jq --arg snapshot "${qualification_snapshot}" \
-  '."ait-core".snapshot = $snapshot' "${state}" >"${state}.new"
+  '."ait-core".snapshot = $snapshot | ."ait-core".relation = "pending"' \
+  "${state}" >"${state}.new"
 mv "${state}.new" "${state}"
 
 qualification_evidence=${temporary_root}/qualification-authority.json
@@ -274,11 +296,14 @@ jq -e --arg snapshot "${qualification_snapshot}" \
   --arg qualification_sha "${qualification_family_sha}" \
   --arg canonical_sha "${canonical_family_sha}" '
   .qualification_family_used == true and
+  .historical_family_used == false and
   .family_manifest_sha256 == $qualification_sha and
   .qualification_family_manifest_sha256 == $qualification_sha and
   .canonical_family_manifest_sha256 == $canonical_sha and
   (.repositories[] | select(.repo_name == "ait-core") |
-    .selected_snapshot == $snapshot)
+    .selected_snapshot == $snapshot and
+    .selected_snapshot_retained_by_main == false and
+    .selected_snapshot_descends_from_main == true)
 ' "${qualification_evidence}" >/dev/null
 
 qualification_bundles=${temporary_root}/qualification-source-bundles
@@ -294,8 +319,94 @@ jq -e --arg snapshot "${qualification_snapshot}" \
   (.bundles[] | select(.repo_name == "ait-core") | .snapshot == $snapshot)
 ' "${qualification_bundles}/source-bundles.evidence.json" >/dev/null
 
+IFS=. read -r family_major family_minor family_patch <<<"${expected_family_version}"
+if (( family_patch > 0 )); then
+  historical_version=${family_major}.${family_minor}.$((family_patch - 1))
+elif (( family_minor > 0 )); then
+  historical_version=${family_major}.$((family_minor - 1)).0
+else
+  printf 'authority fixture has no stable predecessor: %s\n' \
+    "${expected_family_version}" >&2
+  exit 65
+fi
+historical_family=${temporary_root}/historical-family.json
+jq --arg version "${historical_version}" '
+  .family.version = $version |
+  .family.tag = ("v" + $version) |
+  .components |= map(.version = $version)
+' "${qualification_family}" >"${historical_family}"
+historical_evidence=${temporary_root}/historical-authority.json
+"${preflight}" "${canonical_core}" "${historical_evidence}" \
+  "${historical_family}" >/dev/null
+jq -e --arg version "${historical_version}" '
+  .status == "ready" and .family_version == $version and
+  .qualification_family_used == true and .historical_family_used == true
+' "${historical_evidence}" >/dev/null
+
+historical_bundles=${temporary_root}/historical-source-bundles
+"${repo_root}/ci/release_source_bundles.sh" "${canonical_core}" \
+  "${historical_bundles}" "${historical_family}" >/dev/null
+jq -e --arg version "${historical_version}" '
+  .status == "ready" and .family_version == $version and
+  .qualification_family_used == true
+' "${historical_bundles}/source-bundles.evidence.json" >/dev/null
+
+IFS=. read -r historical_major historical_minor historical_patch \
+  <<<"${historical_version}"
+if (( historical_patch > 0 )); then
+  skipped_version=${historical_major}.${historical_minor}.$((historical_patch - 1))
+elif (( historical_minor > 0 )); then
+  skipped_version=${historical_major}.$((historical_minor - 1)).0
+else
+  printf 'authority fixture has no skipped stable predecessor: %s\n' \
+    "${expected_family_version}" >&2
+  exit 65
+fi
+skipped_family=${temporary_root}/skipped-family.json
+jq --arg version "${skipped_version}" '
+  .family.version = $version |
+  .family.tag = ("v" + $version) |
+  .components |= map(.version = $version)
+' "${qualification_family}" >"${skipped_family}"
+expect_failure skipped-family "${preflight}" "${canonical_core}" \
+  "${temporary_root}/skipped-family.evidence.json" "${skipped_family}"
+grep -F 'qualification family may differ only by one stable advance and valid source_snapshot values' \
+  "${temporary_root}/skipped-family.stderr" >/dev/null
+
+future_version=${family_major}.${family_minor}.$((family_patch + 1))
+future_family=${temporary_root}/future-family.json
+jq --arg version "${future_version}" '
+  .family.version = $version |
+  .family.tag = ("v" + $version) |
+  .components |= map(.version = $version)
+' "${qualification_family}" >"${future_family}"
+expect_failure future-family "${preflight}" "${canonical_core}" \
+  "${temporary_root}/future-family.evidence.json" "${future_family}"
+grep -F 'qualification family may differ only by one stable advance and valid source_snapshot values' \
+  "${temporary_root}/future-family.stderr" >/dev/null
+
+structural_family=${temporary_root}/structural-family.json
+jq '.components[0].license = "MIT"' "${historical_family}" \
+  >"${structural_family}"
+expect_failure structural-family "${preflight}" "${canonical_core}" \
+  "${temporary_root}/structural-family.evidence.json" "${structural_family}"
+grep -F 'qualification family may differ only by one stable advance and valid source_snapshot values' \
+  "${temporary_root}/structural-family.stderr" >/dev/null
+
 jq --arg snapshot "${published_core_snapshot}" \
-  '."ait-core".snapshot = $snapshot' "${state}" >"${state}.new"
+  '."ait-core".snapshot = $snapshot | ."ait-core".relation = "retained"' \
+  "${state}" >"${state}.new"
+mv "${state}.new" "${state}"
+
+jq '."ait-node".main = "SNP-BBBBBBBBBBBB" | ."ait-node".relation = "divergent"' \
+  "${state}" >"${state}.new"
+mv "${state}.new" "${state}"
+expect_failure divergent-component "${preflight}" "${canonical_core}" \
+  "${temporary_root}/divergent.json"
+grep -F 'selected release Snapshot diverges from canonical main: ait-node' \
+  "${temporary_root}/divergent-component.stderr" >/dev/null
+jq '."ait-node".main = ."ait-node".snapshot | ."ait-node".relation = "retained"' \
+  "${state}" >"${state}.new"
 mv "${state}.new" "${state}"
 
 qualification_version_drift=${temporary_root}/qualification-version-drift.json
@@ -304,7 +415,7 @@ jq '.family.version = "9.9.9"' "${qualification_family}" \
 expect_failure qualification-version-drift "${preflight}" "${canonical_core}" \
   "${temporary_root}/qualification-version-drift.evidence.json" \
   "${qualification_version_drift}"
-grep -F 'qualification family may differ only in valid component source_snapshot values' \
+grep -F 'qualification family may differ only by one stable advance and valid source_snapshot values' \
   "${temporary_root}/qualification-version-drift.stderr" >/dev/null
 expect_failure canonical-family-as-qualification "${preflight}" \
   "${canonical_core}" "${temporary_root}/canonical-family-as-qualification.json" \

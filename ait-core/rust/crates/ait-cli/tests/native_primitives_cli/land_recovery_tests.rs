@@ -71,7 +71,7 @@ fn closeout_recovery_json(root: &Path, fixture_seed: u64, phase: &str) -> JsonVa
 }
 
 #[test]
-fn native_first_local_task_land_materializes_empty_default_line() {
+fn native_first_local_task_finish_descends_from_task_start_baseline() {
     let temp = TempDir::new().expect("first-land repository tempdir");
     let root = temp.path();
     initialize_repo(&InitRequest {
@@ -110,6 +110,12 @@ fn native_first_local_task_land_materializes_empty_default_line() {
         .as_str()
         .expect("first-land Task ID")
         .to_string();
+    let baseline_snapshot_id = started["worktree"]["head_snapshot_id"].clone();
+    assert!(baseline_snapshot_id.is_string());
+    assert_eq!(
+        started["change"]["fork_snapshot_id"],
+        baseline_snapshot_id
+    );
     let worktree = PathBuf::from(
         started["worktree"]["open_path"]
             .as_str()
@@ -130,7 +136,7 @@ fn native_first_local_task_land_materializes_empty_default_line() {
             "--json",
         ],
     );
-    assert_eq!(snapshot["parent_snapshot_id"], JsonValue::Null);
+    assert_eq!(snapshot["parent_snapshot_id"], baseline_snapshot_id);
 
     let landed = json_output(
         &worktree,

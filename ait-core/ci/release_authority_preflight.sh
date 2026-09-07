@@ -63,6 +63,8 @@ done
   fail 66 'canonical ait-core native CLI is unavailable or symlinked'
 
 qualification_family_used=false
+historical_family_used=false
+canonical_family_version=$(jq -er '.family.version' "${canonical_family}")
 if [[ -n ${qualification_family} ]]; then
   [[ ${qualification_family} == /* ]] ||
     fail 64 'qualification family manifest must be absolute'
@@ -77,24 +79,43 @@ if [[ -n ${qualification_family} ]]; then
       ;;
   esac
   jq -e --slurpfile canonical "${canonical_family}" '
+    def stable($value):
+      ($value | type == "string") and
+      ($value | test("^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$"));
+    def stable_advance($prior; $next):
+      stable($prior) and stable($next) and
+      ($prior | split(".") | map(tonumber)) as $old |
+      ($next | split(".") | map(tonumber)) as $new |
+      (($new[0] == $old[0] and $new[1] == $old[1] and $new[2] == ($old[2] + 1)) or
+       ($new[0] == $old[0] and $new[1] == ($old[1] + 1) and $new[2] == 0));
+    def normalized:
+      .family |= del(.version, .tag) |
+      .components |= map(del(.version, .source_snapshot));
     . as $qualification |
     $canonical[0] as $published |
     $qualification != $published and
-    (($qualification | del(.components)) == ($published | del(.components))) and
-    (($qualification.components | map(del(.source_snapshot))) ==
-      ($published.components | map(del(.source_snapshot)))) and
+    (($qualification | normalized) == ($published | normalized)) and
+    (($qualification.family.version == $published.family.version) or
+      stable_advance($qualification.family.version; $published.family.version)) and
+    ($qualification.family.tag == ("v" + $qualification.family.version)) and
+    ([ $qualification.components[] |
+      .version == $qualification.family.version ] | all) and
     ([ $qualification.components[].source_snapshot ] |
       all(type == "string" and test("^SNP-[0-9A-F]{12}$")))
   ' "${qualification_family}" >/dev/null ||
-    fail 65 'qualification family may differ only in valid component source_snapshot values'
+    fail 65 'qualification family may differ only by one stable advance and valid source_snapshot values'
   family=${qualification_family}
   qualification_family_used=true
+  qualification_family_version=$(jq -er '.family.version' "${qualification_family}")
+  if [[ ${qualification_family_version} != "${canonical_family_version}" ]]; then
+    historical_family_used=true
+  fi
 fi
 
 family_version=$(jq -er '.family.version' "${family}")
 family_tag=$(jq -er '.family.tag' "${family}")
 [[ ${family_tag} == v${family_version} ]] || fail 65 'family tag and version differ'
-jq -e --arg version "${family_version}" '
+jq -e --arg version "${canonical_family_version}" '
   .contract == "ait.release.repository-authorities/v1" and
   .schema_version == 1 and .family_version == $version and
   .source_line == "main" and .public_publish == false and
@@ -151,15 +172,45 @@ while IFS=$'\t' read -r repo_name repository_index namespace; do
   status_record=${temporary_root}/${repo_name}-status.json
   snapshot_record=${temporary_root}/${repo_name}-snapshot.json
   line_record=${temporary_root}/${repo_name}-line.json
-  ancestry_record=${temporary_root}/${repo_name}-ancestry.json
+  retained_record=${temporary_root}/${repo_name}-retained-ancestry.json
+  descendant_record=${temporary_root}/${repo_name}-descendant-ancestry.json
   (
     cd "${repo_root}"
     "${ait_bin}" status --json >"${status_record}"
     "${ait_bin}" snapshot show "${source_snapshot}" --json >"${snapshot_record}"
     "${ait_bin}" line show main --json >"${line_record}"
-    "${ait_bin}" snapshot is-ancestor "${source_snapshot}" \
-      "$(jq -er '.head_snapshot_id' "${line_record}")" --json >"${ancestry_record}"
   )
+  main_snapshot=$(jq -er '.head_snapshot_id | select(test("^SNP-[0-9A-F]{12}$"))' \
+    "${line_record}")
+  selected_retained=false
+  selected_descends=false
+  if (
+    cd "${repo_root}" &&
+      "${ait_bin}" snapshot is-ancestor "${source_snapshot}" \
+        "${main_snapshot}" --json >"${retained_record}"
+  ); then
+    jq -e --arg older "${source_snapshot}" --arg newer "${main_snapshot}" '
+      .contract == "snapshot-is-ancestor/v1" and
+      .older_snapshot_id == $older and .newer_snapshot_id == $newer and
+      .is_ancestor == true
+    ' "${retained_record}" >/dev/null ||
+      fail 65 "selected release Snapshot retention evidence differs: ${repo_name}"
+    selected_retained=true
+  elif (
+    cd "${repo_root}" &&
+      "${ait_bin}" snapshot is-ancestor "${main_snapshot}" \
+        "${source_snapshot}" --json >"${descendant_record}"
+  ); then
+    jq -e --arg older "${main_snapshot}" --arg newer "${source_snapshot}" '
+      .contract == "snapshot-is-ancestor/v1" and
+      .older_snapshot_id == $older and .newer_snapshot_id == $newer and
+      .is_ancestor == true
+    ' "${descendant_record}" >/dev/null ||
+      fail 65 "selected release Snapshot descendant evidence differs: ${repo_name}"
+    selected_descends=true
+  else
+    fail 65 "selected release Snapshot diverges from canonical main: ${repo_name}"
+  fi
   jq -e --arg repo "${repo_name}" '
     .repo_name == $repo and .workspace.status == "clean" and
     .workspace.changed_count == 0
@@ -169,19 +220,15 @@ while IFS=$'\t' read -r repo_name repository_index namespace; do
     '.snapshot_id == $snapshot and (.manifest_hash | test("^[0-9a-f]{64}$"))' \
     "${snapshot_record}" >/dev/null ||
     fail 65 "selected release Snapshot is absent from canonical Binary DB: ${repo_name}"
-  jq -e --arg older "${source_snapshot}" '
-    .contract == "snapshot-is-ancestor/v1" and
-    .older_snapshot_id == $older and .is_ancestor == true
-  ' "${ancestry_record}" >/dev/null ||
-    fail 65 "selected release Snapshot is not retained by canonical main: ${repo_name}"
-
   jq -cn \
     --arg repo_name "${repo_name}" \
     --argjson repository_index "${repository_index}" \
     --arg namespace "${namespace}" \
     --arg snapshot "${source_snapshot}" \
     --arg manifest_hash "$(jq -er '.manifest_hash' "${snapshot_record}")" \
-    --arg main_head "$(jq -er '.head_snapshot_id' "${line_record}")" \
+    --arg main_head "${main_snapshot}" \
+    --argjson selected_retained "${selected_retained}" \
+    --argjson selected_descends "${selected_descends}" \
     --arg version "${component_version}" \
     --arg license "${component_license}" \
     --arg remote_url "$(jq -er '.remotes.origin.url' "${config}")" '
@@ -192,7 +239,8 @@ while IFS=$'\t' read -r repo_name repository_index namespace; do
       selected_snapshot: $snapshot,
       selected_manifest_hash: $manifest_hash,
       canonical_main_head: $main_head,
-      selected_snapshot_retained_by_main: true,
+      selected_snapshot_retained_by_main: $selected_retained,
+      selected_snapshot_descends_from_main: $selected_descends,
       version: $version,
       license: $license,
       remote: "origin",
@@ -212,6 +260,7 @@ jq -S -n \
   --arg canonical_family_sha256 "$(sha256_file "${canonical_family}")" \
   --arg authorities_sha256 "$(sha256_file "${authorities}")" \
   --argjson qualification_family_used "${qualification_family_used}" \
+  --argjson historical_family_used "${historical_family_used}" \
   --argjson repositories "${repository_rows}" '
   {
     contract: "ait.release.canonical-authority-preflight/v1",
@@ -224,6 +273,7 @@ jq -S -n \
     qualification_family_manifest_sha256:
       (if $qualification_family_used then $family_sha256 else null end),
     qualification_family_used: $qualification_family_used,
+    historical_family_used: $historical_family_used,
     repository_authorities_sha256: $authorities_sha256,
     repositories: $repositories,
     recovery_authority_used: false,

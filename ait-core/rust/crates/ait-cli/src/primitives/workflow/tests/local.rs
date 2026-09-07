@@ -909,6 +909,235 @@ fn local_land_fixture(
 }
 
 #[test]
+fn history_promotion_uses_rebased_pre_land_target_as_remote_fork() {
+    let temp = tempdir().expect("rebased history tempdir");
+    init_repo(&InitRequest {
+        root: temp.path().to_path_buf(),
+        name: Some("fixture-ait".to_string()),
+        default_line: "main".to_string(),
+        policy_profile: "prototype".to_string(),
+        default_author_mode: "ai_with_human_review".to_string(),
+        default_model: None,
+        repair_existing: false,
+    })
+    .expect("init rebased history repo");
+    fs::write(temp.path().join("history.txt"), "common base").expect("base fixture");
+    let base = create_local_snapshot(
+        temp.path().to_string_lossy().as_ref(),
+        "fixture-ait",
+        "main",
+        Some("common base"),
+        false,
+    )
+    .expect("base snapshot");
+    let base_snapshot_id = required_string_field(&base, "snapshot_id").unwrap();
+    let repo = RepoRuntime::discover_from_path(temp.path()).expect("rebased history runtime");
+    create_local_line_with_line_store(
+        &repo.line_store().unwrap(),
+        "feature/old-main",
+        Some(&base_snapshot_id),
+        "2026-09-07T00:00:00Z",
+    )
+    .expect("old main line");
+    fs::write(temp.path().join("history.txt"), "old main").expect("old main fixture");
+    let old_fork = create_local_snapshot(
+        temp.path().to_string_lossy().as_ref(),
+        "fixture-ait",
+        "feature/old-main",
+        Some("old main head"),
+        false,
+    )
+    .expect("old fork snapshot");
+    let old_fork_snapshot_id = required_string_field(&old_fork, "snapshot_id").unwrap();
+
+    let task_store = repo.task_store().unwrap();
+    let change_store = repo.change_store().unwrap();
+    let task = task_local_create_with_task_store(
+        &task_store,
+        "fixture-ait",
+        "Rebased local Task",
+        "Publish after replacing the target ancestry",
+        None,
+        None,
+        None,
+        None,
+    )
+    .unwrap();
+    let task_id = required_string_field(&task, "task_id").unwrap();
+    let change = change_local_create_with_change_store(
+        &change_store,
+        "fixture-ait",
+        &task_id,
+        "Rebased local Change",
+        "main",
+        None,
+        Some(&old_fork_snapshot_id),
+    )
+    .unwrap();
+    let change_ref = required_string_field(&change, "change_ref").unwrap();
+
+    set_local_line_head(&repo, "main", Some(&base_snapshot_id)).expect("replace local main");
+    fs::write(temp.path().join("history.txt"), "replacement main")
+        .expect("replacement main fixture");
+    let replacement = create_local_snapshot(
+        temp.path().to_string_lossy().as_ref(),
+        "fixture-ait",
+        "main",
+        Some("replacement main head"),
+        false,
+    )
+    .expect("replacement main snapshot");
+    let replacement_snapshot_id = required_string_field(&replacement, "snapshot_id").unwrap();
+    let feature_line = task_feature_line_name(&task_id).unwrap();
+    create_local_line_with_line_store(
+        &repo.line_store().unwrap(),
+        &feature_line,
+        Some(&replacement_snapshot_id),
+        "2026-09-07T00:00:01Z",
+    )
+    .expect("rebased feature line");
+    fs::write(temp.path().join("history.txt"), "rebased result").expect("rebased result fixture");
+    let landed = create_local_snapshot(
+        temp.path().to_string_lossy().as_ref(),
+        "fixture-ait",
+        &feature_line,
+        Some("rebased feature head"),
+        false,
+    )
+    .expect("rebased landed snapshot");
+    let landed_snapshot_id = required_string_field(&landed, "snapshot_id").unwrap();
+    workflow_local_change_land_with_change_store(
+        &change_store,
+        &change_ref,
+        "main",
+        &landed_snapshot_id,
+        Some(&replacement_snapshot_id),
+    )
+    .unwrap();
+    workflow_local_task_close_with_task_store(&task_store, &task_id, "completed").unwrap();
+
+    let (entries, _) = workflow_local_history_entries(
+        &repo,
+        &change_ref,
+        "main",
+        &replacement_snapshot_id,
+        &landed_snapshot_id,
+    )
+    .expect("rebased history promotion");
+    assert_eq!(entries.len(), 1);
+    assert_eq!(
+        entries[0]["promotion_fork_snapshot_id"],
+        replacement_snapshot_id
+    );
+    assert_eq!(
+        entries[0]["promotion_fork_source"],
+        "rebased_pre_land_target"
+    );
+    let prepared = workflow_history_prepare_entries(&repo, &json!({"history_entries": entries}))
+        .expect("rebased remote request");
+    assert_eq!(
+        prepared[0]["change"]["fork_snapshot_id"],
+        replacement_snapshot_id
+    );
+    let stored = workflow_local_change_read_with_change_store(&change_store, &change_ref).unwrap();
+    assert_eq!(stored["fork_snapshot_id"], old_fork_snapshot_id);
+}
+
+#[test]
+fn history_promotion_rejects_unrelated_historical_and_pre_land_forks() {
+    let temp = tempdir().expect("unrelated history tempdir");
+    init_repo(&InitRequest {
+        root: temp.path().to_path_buf(),
+        name: Some("fixture-ait".to_string()),
+        default_line: "main".to_string(),
+        policy_profile: "prototype".to_string(),
+        default_author_mode: "ai_with_human_review".to_string(),
+        default_model: None,
+        repair_existing: false,
+    })
+    .expect("init unrelated history repo");
+    fs::write(temp.path().join("history.txt"), "common base").expect("base fixture");
+    let base = create_local_snapshot(
+        temp.path().to_string_lossy().as_ref(),
+        "fixture-ait",
+        "main",
+        Some("common base"),
+        false,
+    )
+    .unwrap();
+    let base_snapshot_id = required_string_field(&base, "snapshot_id").unwrap();
+    let repo = RepoRuntime::discover_from_path(temp.path()).unwrap();
+    let branch_snapshot = |line: &str, value: &str| {
+        create_local_line_with_line_store(
+            &repo.line_store().unwrap(),
+            line,
+            Some(&base_snapshot_id),
+            "2026-09-07T00:00:00Z",
+        )
+        .unwrap();
+        fs::write(temp.path().join("history.txt"), value).unwrap();
+        let snapshot = create_local_snapshot(
+            temp.path().to_string_lossy().as_ref(),
+            "fixture-ait",
+            line,
+            Some(value),
+            false,
+        )
+        .unwrap();
+        required_string_field(&snapshot, "snapshot_id").unwrap()
+    };
+    let historical_fork = branch_snapshot("feature/historical", "historical fork");
+    let pre_land_target = branch_snapshot("feature/pre-land", "unrelated pre-land");
+    let landed_snapshot_id = branch_snapshot("feature/landed", "unrelated landed");
+    let task_store = repo.task_store().unwrap();
+    let change_store = repo.change_store().unwrap();
+    let task = task_local_create_with_task_store(
+        &task_store,
+        "fixture-ait",
+        "Reject unrelated history",
+        "Keep history promotion fail-closed",
+        None,
+        None,
+        None,
+        None,
+    )
+    .unwrap();
+    let task_id = required_string_field(&task, "task_id").unwrap();
+    let change = change_local_create_with_change_store(
+        &change_store,
+        "fixture-ait",
+        &task_id,
+        "Reject unrelated history",
+        "main",
+        None,
+        Some(&historical_fork),
+    )
+    .unwrap();
+    let change_ref = required_string_field(&change, "change_ref").unwrap();
+    workflow_local_change_land_with_change_store(
+        &change_store,
+        &change_ref,
+        "main",
+        &landed_snapshot_id,
+        Some(&pre_land_target),
+    )
+    .unwrap();
+    workflow_local_task_close_with_task_store(&task_store, &task_id, "completed").unwrap();
+
+    let error = workflow_local_history_entries(
+        &repo,
+        &change_ref,
+        "main",
+        &pre_land_target,
+        &landed_snapshot_id,
+    )
+    .expect_err("unrelated promotion boundaries must fail closed");
+    assert!(error.contains("descends from neither"), "{error}");
+    assert!(error.contains(&historical_fork), "{error}");
+    assert!(error.contains(&pre_land_target), "{error}");
+}
+
+#[test]
 fn history_promotion_collects_ten_consecutive_local_lands() {
     let (_temp, repo, base_snapshot_id, final_snapshot_id, final_change_ref) =
         ten_local_land_fixture();

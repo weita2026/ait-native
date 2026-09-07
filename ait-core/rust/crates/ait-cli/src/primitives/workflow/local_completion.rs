@@ -417,6 +417,40 @@ pub(super) fn workflow_effective_pre_land_target_snapshot_id(
         .map(|snapshot_id| (snapshot_id, true))
 }
 
+fn workflow_history_promotion_fork_snapshot_id(
+    repo: &RepoRuntime,
+    local_change_ref: &str,
+    historical_fork_snapshot_id: &str,
+    pre_land_target_snapshot_id: &str,
+    landed_snapshot_id: &str,
+) -> Result<(String, &'static str), String> {
+    if snapshot_distance_if_ancestor(
+        repo,
+        Some(historical_fork_snapshot_id),
+        Some(landed_snapshot_id),
+    )?
+    .is_some()
+    {
+        return Ok((historical_fork_snapshot_id.to_string(), "historical_fork"));
+    }
+    if pre_land_target_snapshot_id != landed_snapshot_id
+        && snapshot_distance_if_ancestor(
+            repo,
+            Some(pre_land_target_snapshot_id),
+            Some(landed_snapshot_id),
+        )?
+        .is_some()
+    {
+        return Ok((
+            pre_land_target_snapshot_id.to_string(),
+            "rebased_pre_land_target",
+        ));
+    }
+    Err(format!(
+        "Completed local Change {local_change_ref} landed at `{landed_snapshot_id}`, which descends from neither its historical fork `{historical_fork_snapshot_id}` nor its recorded pre-Land target `{pre_land_target_snapshot_id}`."
+    ))
+}
+
 pub(in crate::primitives) fn workflow_local_history_entries(
     repo: &RepoRuntime,
     selected_change_id: &str,
@@ -495,6 +529,7 @@ pub(in crate::primitives) fn workflow_local_history_entries(
                 &current_snapshot_id,
                 &recorded_pre_land_snapshot_id,
             )?;
+        let promotion_fork_boundary_snapshot_id = pre_land_snapshot_id.clone();
         let (pre_land_snapshot_id, adopted_boundary_snapshot_ids) =
             workflow_adopt_unowned_direct_boundary(
                 repo,
@@ -519,16 +554,18 @@ pub(in crate::primitives) fn workflow_local_history_entries(
                 "Local history Change {local_change_ref} is marked published while Task {local_task_id} is not; repair the invalid publication ordering before promotion."
             ));
         }
-        let fork_snapshot_id = string_field(&change, "fork_snapshot_id").ok_or_else(|| {
-            format!("Completed local Change {local_change_ref} is missing its historical fork.")
-        })?;
-        if snapshot_distance_if_ancestor(repo, Some(&fork_snapshot_id), Some(&current_snapshot_id))?
-            .is_none()
-        {
-            return Err(format!(
-                "Completed local Change {local_change_ref} landed at `{current_snapshot_id}`, which does not descend from its historical fork `{fork_snapshot_id}`."
-            ));
-        }
+        let historical_fork_snapshot_id =
+            string_field(&change, "fork_snapshot_id").ok_or_else(|| {
+                format!("Completed local Change {local_change_ref} is missing its historical fork.")
+            })?;
+        let (promotion_fork_snapshot_id, promotion_fork_source) =
+            workflow_history_promotion_fork_snapshot_id(
+                repo,
+                &local_change_ref,
+                &historical_fork_snapshot_id,
+                &promotion_fork_boundary_snapshot_id,
+                &current_snapshot_id,
+            )?;
         if let Some(artifact_path) = workflow_history_plan_artifact_path(repo, &task)? {
             plan_artifact_paths.push(artifact_path);
         }
@@ -550,6 +587,8 @@ pub(in crate::primitives) fn workflow_local_history_entries(
             "local_change_ref": local_change_ref,
             "task": task,
             "change": change,
+            "promotion_fork_snapshot_id": promotion_fork_snapshot_id,
+            "promotion_fork_source": promotion_fork_source,
             "pre_land_target_snapshot_id": pre_land_snapshot_id,
             "pre_land_boundary_source": if pre_land_boundary_recovered {
                 "task_owned_snapshot_lineage_recovery"
@@ -1232,7 +1271,7 @@ pub(super) fn workflow_history_prepare_entries(
                 "change": {
                     "title": required_string_field(change, "title")?,
                     "base_line": required_string_field(change, "base_line")?,
-                    "fork_snapshot_id": required_string_field(change, "fork_snapshot_id")?,
+                    "fork_snapshot_id": required_string_field(entry, "promotion_fork_snapshot_id")?,
                 },
                 "pre_land_target_snapshot_id": required_string_field(entry, "pre_land_target_snapshot_id")?,
                 "landed_snapshot_id": required_string_field(entry, "landed_snapshot_id")?,

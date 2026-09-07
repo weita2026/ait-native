@@ -9,9 +9,20 @@
     "ait-release-family.json",
     "ait-release.json",
     "ci/native_bootstrap_matrix.json",
+    "ci/release_authority_preflight.sh",
+    "ci/release_authority_preflight_test.sh",
     "ci/release_repository_authorities.json",
+    "ci/release_source_equivalence_test.sh",
+    "ci/release_stable_prepare.mjs",
+    "ci/release_stable_prepare_test.mjs",
+    "ci/release_stable_test.sh",
+    "release/core-version-equivalence.json",
+    "release/stable-conductor.recipe.json",
     "rust/Cargo.lock",
-    "rust/Cargo.toml"
+    "rust/Cargo.toml",
+    "rust/crates/ait-cli/src/primitives/workflow/local_completion.rs",
+    "rust/crates/ait-cli/src/primitives/workflow/tests/local.rs",
+    "rust/crates/ait-cli/tests/native_primitives_cli/land_recovery_tests.rs"
   ],
   "required_equal_paths": [
     "ci/release_clean_host_phase.mjs",

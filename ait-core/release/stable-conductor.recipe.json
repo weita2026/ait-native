@@ -9,7 +9,7 @@
           "type": "command",
           "cwd": "{{values.core_root}}",
           "mutation": false,
-          "argv": ["{{values.core_root}}/ci/release_authority_preflight.sh", "{{values.core_root}}", "{{records_root}}/00-authority.json", "{{values.final_family}}"],
+          "argv": ["{{values.core_root}}/ci/release_authority_preflight.sh", "{{values.core_root}}", "{{records_root}}/00-authority.json"],
           "outputs": ["{{records_root}}/00-authority.json"]
         }
       ]

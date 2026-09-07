@@ -70,9 +70,16 @@ jq -e '
     "web_admission","tag","protected_promotion","endpoint_publication","winget_submission",
     "latest_alias","closeout"
   ] and
+  (.phases[] | select(.id == "source_preflight") | .actions[] |
+    select(.id == "source-authority-preflight") | .argv) == [
+      ($workspace + "/ait-core/ci/release_authority_preflight.sh"),
+      ($workspace + "/ait-core"),
+      ($records + "/00-authority.json")
+    ] and
   ([.phases[] | select(.id == "component_release") | .actions[] | .patchset] | sort) ==
     ["RCT-1001/P-01","RNT-1005/P-01","RPT-1004/P-01","RRT-1003/P-01","RST-1002/P-01"]
-' "${records}/conductor-plan.json" >/dev/null
+' --arg workspace "${workspace}" --arg records "${records}" \
+  "${records}/conductor-plan.json" >/dev/null
 if grep -E '[A-Z]+T-[0-9]{4}/C-[0-9]{2}' "${records}/conductor-plan.json"; then
   printf 'stable release plan exposed an internal Change reference\n' >&2
   exit 1
