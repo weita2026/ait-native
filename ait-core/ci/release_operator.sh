@@ -418,10 +418,11 @@ fetch_artifact_record() {
   local output=$4
   local listing=${temporary_root}/artifacts-${run_id}.json
   require_gh
-  gh api "repos/${repository}/actions/runs/${run_id}/artifacts?per_page=100" >"${listing}"
+  gh api --paginate "repos/${repository}/actions/runs/${run_id}/artifacts?per_page=100" |
+    jq -s '{artifacts: [.[].artifacts[]]}' >"${listing}"
   jq -e --arg name "${artifact_name}" '
-    [.artifacts[] | select(.name == $name)] |
-    if length == 1 then .[0] else error("artifact identity is not unique") end
+    [.artifacts[] | select(.name == $name and .expired == false)] |
+    if length > 0 then max_by(.id) else error("artifact identity is unavailable") end
   ' "${listing}" >"${output}"
 }
 
@@ -432,10 +433,13 @@ fetch_single_prefixed_artifact_record() {
   local output=$4
   local listing=${temporary_root}/artifacts-${run_id}.json
   require_gh
-  gh api "repos/${repository}/actions/runs/${run_id}/artifacts?per_page=100" >"${listing}"
+  gh api --paginate "repos/${repository}/actions/runs/${run_id}/artifacts?per_page=100" |
+    jq -s '{artifacts: [.[].artifacts[]]}' >"${listing}"
   jq -e --arg prefix "${prefix}" '
-    [.artifacts[] | select(.name | startswith($prefix))] |
-    if length == 1 then .[0] else error("prefixed artifact identity is not unique") end
+    [.artifacts[] | select(.expired == false and (.name | startswith($prefix)))] as $matches |
+    ($matches | map(.name) | unique) as $names |
+    if ($names | length) == 1 then ($matches | max_by(.id))
+    else error("prefixed artifact identity is unavailable or ambiguous") end
   ' "${listing}" >"${output}"
 }
 
@@ -444,10 +448,17 @@ download_run_artifact() {
   local run_id=$2
   local artifact_name=$3
   local destination=$4
+  local artifact_record=${temporary_root}/download-artifact-${run_id}-$(printf '%s' "${artifact_name}" | cksum | awk '{print $1}').json
+  local artifact_archive=${artifact_record%.json}.zip
+  local artifact_id
   require_gh
+  command -v unzip >/dev/null 2>&1 || fail 69 'unzip is required for live workflow artifact binding'
+  fetch_artifact_record "${repository}" "${run_id}" "${artifact_name}" "${artifact_record}"
+  artifact_id=$(jq -er '.id' "${artifact_record}")
   mkdir "${destination}"
-  gh run download "${run_id}" --repo "${repository}" \
-    --name "${artifact_name}" --dir "${destination}"
+  gh api -H 'Accept: application/vnd.github+json' \
+    "repos/${repository}/actions/artifacts/${artifact_id}/zip" >"${artifact_archive}"
+  unzip -q "${artifact_archive}" -d "${destination}"
 }
 
 validate_workflow_run() {

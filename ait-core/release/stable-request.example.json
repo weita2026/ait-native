@@ -1,0 +1,41 @@
+{
+  "contract": "ait.release.request/v1",
+  "release": {
+    "channel": "stable",
+    "prior_version": "1.1.2",
+    "version": "1.1.3"
+  },
+  "records_root": "/absolute/release-records/1.1.3",
+  "github_repository": "weita2026/ait-native",
+  "winget_fork": "weita2026/winget-pkgs",
+  "roots": {
+    "core": "/absolute/AI_Play_Ground/ait-core",
+    "server": "/absolute/AI_Play_Ground/ait-server",
+    "runner": "/absolute/AI_Play_Ground/ait-runner",
+    "python": "/absolute/AI_Play_Ground/ait-python",
+    "node": "/absolute/AI_Play_Ground/ait-node"
+  },
+  "paths": {
+    "public_source": "/absolute/release-records/1.1.3/public-source",
+    "web_test_root": "/absolute/AI_Play_Ground/ait-web-test",
+    "personal_root": "/absolute/AI_Play_Ground/ait-web-personal",
+    "personal_bin": "/absolute/AI_Play_Ground/ait-web-personal/.ait-runtime/cargo-target/debug/ait-web-personal",
+    "community_bin": "/absolute/AI_Play_Ground/ait-web-community/.ait-runtime/cargo-target/debug/ait-web-community",
+    "community_cli_bin": "/absolute/AI_Play_Ground/ait-web-community/.ait-runtime/cargo-target/debug/ait-web-community-cli",
+    "chrome": "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+  },
+  "web": {
+    "server_url": "http://127.0.0.1:8088/",
+    "server_data": "/absolute/AIT_Runtime/server-data",
+    "seed": 20260907
+  },
+  "server_refresh": {
+    "stop_argv": ["/absolute/service-manager", "stop", "ait-server"],
+    "start_argv": ["/absolute/service-manager", "start", "ait-server"],
+    "health_url": "http://127.0.0.1:8088/healthz",
+    "env": {
+      "AIT_NATIVE_SERVER_DATA": "/absolute/AIT_Runtime/server-data",
+      "AIT_NATIVE_SERVER_CI_RAM_ROOT": "/absolute/memory-backed/runtime"
+    }
+  }
+}

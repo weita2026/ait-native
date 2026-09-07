@@ -1,0 +1,332 @@
+{
+  "contract": "ait.release.conductor-recipe/v1",
+  "phases": [
+    {
+      "id": "source_preflight",
+      "actions": [
+        {
+          "id": "source-authority-preflight",
+          "type": "command",
+          "cwd": "{{values.core_root}}",
+          "mutation": false,
+          "argv": ["{{values.core_root}}/ci/release_authority_preflight.sh", "{{values.core_root}}", "{{records_root}}/00-authority.json", "{{values.final_family}}"],
+          "outputs": ["{{records_root}}/00-authority.json"]
+        }
+      ]
+    },
+    {
+      "id": "prior_qualification",
+      "actions": [
+        {
+          "id": "export-prior-source",
+          "type": "command",
+          "cwd": "{{values.core_root}}",
+          "mutation": false,
+          "argv": ["{{values.core_root}}/ci/release_export_source.sh", "prior", "{{values.core_root}}", "{{values.prior_family}}", "{{values.prior_coordinator}}", "{{records_root}}/prior-source"],
+          "outputs": ["{{records_root}}/prior-source"]
+        }
+      ]
+    },
+    {
+      "id": "component_release",
+      "actions": [
+        {
+          "$for_each": "collections.component_closeouts",
+          "template": {
+            "id": "closeout-{{item.id}}",
+            "type": "ait_closeout",
+            "task": "{{item.task}}",
+            "snapshot": "{{item.snapshot}}",
+            "patchset": "{{item.patchset}}",
+            "repository_root": "{{item.repository_root}}",
+            "edit_root": "{{item.edit_root}}",
+            "remote": "{{item.remote}}",
+            "finish_local_before_ready": "{{item.finish_local_before_ready}}",
+            "review_message": "{{item.review_message}}"
+          }
+        }
+      ]
+    },
+    {
+      "id": "candidate_freeze",
+      "actions": [
+        {
+          "id": "export-final-source",
+          "type": "command",
+          "cwd": "{{values.core_root}}",
+          "mutation": false,
+          "argv": ["{{values.core_root}}/ci/release_export_source.sh", "final", "{{values.core_root}}", "{{values.final_family}}", "{{values.final_coordinator}}", "{{records_root}}/final-source"],
+          "outputs": ["{{records_root}}/final-source"]
+        }
+      ]
+    },
+    {
+      "id": "public_qualification",
+      "actions": [
+        {
+          "id": "publish-qualification-source",
+          "type": "command",
+          "cwd": "{{values.public_source}}",
+          "mutation": true,
+          "argv": ["{{values.core_root}}/ci/release_public_source.sh", "publish-qualification", "{{values.public_source}}", "{{records_root}}/prior-source/export-a", "{{records_root}}/public-qualification"],
+          "probe": {
+            "cwd": "{{values.public_source}}",
+            "argv": ["{{values.core_root}}/ci/release_public_source.sh", "probe-qualification", "{{values.public_source}}", "{{records_root}}/prior-source/export-a", "{{records_root}}/public-qualification"]
+          },
+          "outputs": ["{{records_root}}/public-qualification"]
+        },
+        {
+          "id": "qualify-public-source",
+          "type": "github_workflow",
+          "cwd": "{{values.public_source}}",
+          "repository": "{{values.github_repository}}",
+          "workflow": "ait-release-pre-rc-qualification.yml",
+          "head_sha_path": "{{records_root}}/public-qualification/head.txt",
+          "dispatch_argv": ["gh", "workflow", "run", "ait-release-pre-rc-qualification.yml", "--repo", "{{values.github_repository}}", "--ref", "main", "-f", "source_commit={head_sha}"],
+          "max_wait_minutes": 360,
+          "bind": {
+            "cwd": "{{values.public_source}}",
+            "argv": ["{{values.core_root}}/ci/release_operator.sh", "bind-qualification", "--source-root", "{{values.public_source}}", "--run-id", "{run_id}", "--output", "{{records_root}}/pre-rc-qualification.json"],
+            "outputs": ["{{records_root}}/pre-rc-qualification.json"]
+          }
+        }
+      ]
+    },
+    {
+      "id": "candidate_admission",
+      "actions": [
+        {
+          "id": "publish-final-source",
+          "type": "command",
+          "cwd": "{{values.public_source}}",
+          "mutation": true,
+          "argv": ["{{values.core_root}}/ci/release_public_source.sh", "publish-final", "{{values.public_source}}", "{{records_root}}/final-source/export-a", "{{records_root}}/public-qualification/head.txt", "{{records_root}}/public-final"],
+          "probe": {
+            "cwd": "{{values.public_source}}",
+            "argv": ["{{values.core_root}}/ci/release_public_source.sh", "probe-final", "{{values.public_source}}", "{{records_root}}/final-source/export-a", "{{records_root}}/public-qualification/head.txt", "{{records_root}}/public-final"]
+          },
+          "outputs": ["{{records_root}}/public-final"]
+        },
+        {
+          "id": "admit-version-delta",
+          "type": "command",
+          "cwd": "{{values.public_source}}",
+          "mutation": false,
+          "argv": ["{{values.core_root}}/ci/release_operator.sh", "admit", "--source-root", "{{values.public_source}}", "--qualification", "{{records_root}}/pre-rc-qualification.json", "--output", "{{records_root}}/pre-tag-admission.json"],
+          "outputs": ["{{records_root}}/pre-tag-admission.json"]
+        }
+      ]
+    },
+    {
+      "id": "component_receipts",
+      "actions": [
+        {
+          "id": "prepare-component-receipts",
+          "type": "command",
+          "cwd": "{{values.public_source}}",
+          "mutation": false,
+          "argv": ["{{values.core_root}}/ci/release_operator.sh", "prepare", "--source-root", "{{values.public_source}}", "--admission", "{{records_root}}/pre-tag-admission.json", "--prior-version", "{{release.prior_version}}", "--prior-python-version", "{{release.prior_version}}", "--output", "{{records_root}}/prepare.json"],
+          "outputs": ["{{records_root}}/prepare.json"]
+        },
+        {
+          "id": "collect-component-receipts",
+          "type": "github_workflow",
+          "cwd": "{{values.public_source}}",
+          "repository": "{{values.github_repository}}",
+          "workflow": "ait-release-component-receipts.yml",
+          "head_sha_path": "{{records_root}}/public-final/head.txt",
+          "dispatch_argv": ["node", "{{values.core_root}}/ci/release_workflow_dispatch.mjs", "--record", "{{records_root}}/prepare.json", "--selector", "receipt_dispatch"],
+          "max_wait_minutes": 360,
+          "bind": {
+            "cwd": "{{values.public_source}}",
+            "argv": ["{{values.core_root}}/ci/release_operator.sh", "bind-receipts", "--prepare", "{{records_root}}/prepare.json", "--run-id", "{run_id}", "--output", "{{records_root}}/receipts.json"],
+            "outputs": ["{{records_root}}/receipts.json"]
+          }
+        }
+      ]
+    },
+    {
+      "id": "clean_host_qualification",
+      "actions": [
+        {
+          "id": "qualify-frozen-candidate",
+          "type": "github_workflow",
+          "cwd": "{{values.public_source}}",
+          "repository": "{{values.github_repository}}",
+          "workflow": "ait-release-pre-tag-qualification.yml",
+          "head_sha_path": "{{records_root}}/public-final/head.txt",
+          "dispatch_argv": ["node", "{{values.core_root}}/ci/release_workflow_dispatch.mjs", "--record", "{{records_root}}/receipts.json", "--selector", "pre_tag_qualification_dispatch"],
+          "max_wait_minutes": 720,
+          "bind": {
+            "cwd": "{{values.public_source}}",
+            "argv": ["{{values.core_root}}/ci/release_operator.sh", "bind-candidate", "--source-root", "{{values.public_source}}", "--receipts", "{{records_root}}/receipts.json", "--run-id", "{run_id}", "--output", "{{records_root}}/candidate.json"],
+            "outputs": ["{{records_root}}/candidate.json"]
+          }
+        },
+        {
+          "id": "cache-frozen-candidate",
+          "type": "command",
+          "cwd": "{{values.core_root}}",
+          "mutation": false,
+          "argv": ["{{values.core_root}}/ci/release_artifact_cache.sh", "{{values.github_repository}}", "{candidate_run_id}", "ait-pre-tag-candidate-{release_id}", "{{records_root}}/candidate-cache"],
+          "bindings": {
+            "candidate_run_id": {"path": "{{records_root}}/candidate.json", "format": "json", "selector": "qualification.workflow_run_id"},
+            "release_id": {"path": "{{records_root}}/candidate.json", "format": "json", "selector": "release.id"}
+          },
+          "outputs": ["{{records_root}}/candidate-cache"]
+        },
+        {
+          "id": "materialize-host-candidate",
+          "type": "command",
+          "cwd": "{{values.core_root}}",
+          "mutation": true,
+          "argv": ["{{values.core_root}}/ci/release_candidate_materialize.sh", "materialize", "{{release.version}}", "{{records_root}}/candidate-cache", "{{records_root}}/candidate-bin"],
+          "probe": {
+            "cwd": "{{values.core_root}}",
+            "argv": ["{{values.core_root}}/ci/release_candidate_materialize.sh", "probe", "{{release.version}}", "{{records_root}}/candidate-cache", "{{records_root}}/candidate-bin"]
+          },
+          "outputs": ["{{records_root}}/candidate-bin"]
+        }
+      ]
+    },
+    {
+      "id": "web_admission",
+      "actions": [
+        {
+          "id": "bind-web-admission-input",
+          "type": "command",
+          "cwd": "{{values.web_test_root}}",
+          "mutation": false,
+          "argv": ["node", "{{values.core_root}}/ci/release_web_admission_init.mjs", "--candidate", "{{records_root}}/candidate.json", "--components", "{{values.web_components}}", "--repository", "{{values.web_test_root}}", "--ait", "{{records_root}}/candidate-bin/ait", "--server-bin", "{{records_root}}/candidate-bin/ait-server", "--personal-root", "{{values.personal_root}}", "--personal-bin", "{{values.personal_bin}}", "--community-bin", "{{values.community_bin}}", "--community-cli-bin", "{{values.community_cli_bin}}", "--server-url", "{{values.server_url}}", "--seed", "{{values.web_seed}}", "--output", "{{records_root}}/web-admission/qualification-input.json"],
+          "outputs": ["{{records_root}}/web-admission/qualification-input.json"]
+        },
+        {
+          "id": "run-web-admission",
+          "type": "command",
+          "cwd": "{{values.web_test_root}}",
+          "mutation": false,
+          "argv": ["{{values.core_root}}/ci/release_web_admission.sh", "run", "--input", "{{records_root}}/web-admission/qualification-input.json", "--repository", "{{values.web_test_root}}", "--ait", "{{records_root}}/candidate-bin/ait", "--personal-bin", "{{values.personal_bin}}", "--community-bin", "{{values.community_bin}}", "--community-cli-bin", "{{values.community_cli_bin}}", "--server-url", "{{values.server_url}}", "--server-bin", "{{records_root}}/candidate-bin/ait-server", "--server-data", "{{values.server_data}}", "--chrome", "{{values.chrome}}", "--output-dir", "{{records_root}}/web-admission"],
+          "outputs": ["{{records_root}}/web-admission/web-admission.json"]
+        }
+      ]
+    },
+    {
+      "id": "tag",
+      "actions": [
+        {
+          "id": "publish-immutable-tag",
+          "type": "command",
+          "cwd": "{{values.public_source}}",
+          "mutation": true,
+          "argv": ["{{values.core_root}}/ci/release_public_source.sh", "publish-tag", "{{values.public_source}}", "{{records_root}}/candidate.json", "{{records_root}}/public-tag"],
+          "probe": {
+            "cwd": "{{values.public_source}}",
+            "argv": ["{{values.core_root}}/ci/release_public_source.sh", "probe-tag", "{{values.public_source}}", "{{records_root}}/candidate.json", "{{records_root}}/public-tag"]
+          },
+          "outputs": ["{{records_root}}/public-tag"]
+        }
+      ]
+    },
+    {
+      "id": "protected_promotion",
+      "actions": [
+        {
+          "id": "prepare-protected-promotion",
+          "type": "command",
+          "cwd": "{{values.public_source}}",
+          "mutation": false,
+          "argv": ["{{values.core_root}}/ci/release_operator.sh", "authorize", "--source-root", "{{values.public_source}}", "--candidate", "{{records_root}}/candidate.json", "--output", "{{records_root}}/tag-binding.json"],
+          "outputs": ["{{records_root}}/tag-binding.json"]
+        },
+        {
+          "id": "run-protected-promotion",
+          "type": "github_workflow",
+          "cwd": "{{values.public_source}}",
+          "repository": "{{values.github_repository}}",
+          "workflow": "ait-release-protected-promotion.yml",
+          "approve_environments": ["stable-promotion"],
+          "head_sha_path": "{{records_root}}/public-final/head.txt",
+          "dispatch_argv": ["node", "{{values.core_root}}/ci/release_workflow_dispatch.mjs", "--record", "{{records_root}}/tag-binding.json", "--selector", "protected_dispatch"],
+          "max_wait_minutes": 1440,
+          "bind": {
+            "cwd": "{{values.public_source}}",
+            "argv": ["{{values.core_root}}/ci/release_operator.sh", "bind-authorization", "--receipts", "{{records_root}}/tag-binding.json", "--run-id", "{run_id}", "--output", "{{records_root}}/endpoints.json"],
+            "outputs": ["{{records_root}}/endpoints.json"]
+          }
+        }
+      ]
+    },
+    {
+      "id": "endpoint_publication",
+      "actions": [
+        {
+          "id": "publish-endpoints",
+          "type": "github_workflow",
+          "cwd": "{{values.public_source}}",
+          "repository": "{{values.github_repository}}",
+          "workflow": "pypi-publish.yml",
+          "approve_environments": ["pypi"],
+          "head_sha_path": "{{records_root}}/public-final/head.txt",
+          "dispatch_argv": ["node", "{{values.core_root}}/ci/release_workflow_dispatch.mjs", "--record", "{{records_root}}/endpoints.json", "--selector", "endpoint_publication"],
+          "max_wait_minutes": 1440,
+          "bind": {
+            "cwd": "{{values.public_source}}",
+            "argv": ["{{values.core_root}}/ci/release_operator.sh", "status", "--config", "{{records_root}}/endpoints.json", "--run-id", "{run_id}", "--output", "{{records_root}}/operator-status.json"],
+            "outputs": ["{{records_root}}/operator-status.json"]
+          }
+        }
+      ]
+    },
+    {
+      "id": "winget_submission",
+      "actions": [
+        {
+          "id": "submit-winget",
+          "type": "command",
+          "cwd": "{{values.core_root}}",
+          "mutation": true,
+          "argv": ["node", "{{values.core_root}}/ci/release_winget_submit.mjs", "submit", "--version", "{{release.version}}", "--manifests", "{{records_root}}/candidate-cache/payload", "--output", "{{records_root}}/winget-submission.json", "--release-repository", "{{values.github_repository}}", "--fork", "{{values.winget_fork}}", "--upstream", "microsoft/winget-pkgs"],
+          "probe": {
+            "cwd": "{{values.core_root}}",
+            "argv": ["node", "{{values.core_root}}/ci/release_winget_submit.mjs", "probe", "--version", "{{release.version}}", "--manifests", "{{records_root}}/candidate-cache/payload", "--output", "{{records_root}}/winget-submission.json", "--release-repository", "{{values.github_repository}}", "--fork", "{{values.winget_fork}}", "--upstream", "microsoft/winget-pkgs"]
+          },
+          "outputs": ["{{records_root}}/winget-submission.json"]
+        }
+      ]
+    },
+    {
+      "id": "latest_alias",
+      "actions": [
+        {
+          "id": "promote-latest-aliases",
+          "type": "github_workflow",
+          "cwd": "{{values.public_source}}",
+          "repository": "{{values.github_repository}}",
+          "workflow": "ait-release-latest-alias.yml",
+          "approve_environments": ["pypi"],
+          "head_sha_path": "{{records_root}}/public-final/head.txt",
+          "dispatch_argv": ["node", "{{values.core_root}}/ci/release_workflow_dispatch.mjs", "--record", "{{records_root}}/endpoints.json", "--status-record", "{{records_root}}/operator-status.json", "--selector", "latest_alias"],
+          "max_wait_minutes": 1440,
+          "bind": {
+            "cwd": "{{values.core_root}}",
+            "argv": ["{{values.core_root}}/ci/release_artifact_cache.sh", "{{values.github_repository}}", "{run_id}", "ait-release-latest-alias-", "{{records_root}}/latest-alias-cache"],
+            "outputs": ["{{records_root}}/latest-alias-cache"]
+          }
+        }
+      ]
+    },
+    {
+      "id": "closeout",
+      "actions": [
+        {
+          "id": "release-closeout",
+          "type": "command",
+          "cwd": "{{values.core_root}}",
+          "mutation": false,
+          "argv": ["node", "{{values.core_root}}/ci/release_closeout.mjs", "--records-root", "{{records_root}}", "--version", "{{release.version}}", "--output", "{{records_root}}/release-closeout.json"],
+          "outputs": ["{{records_root}}/release-closeout.json"]
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,21 @@
+{
+  "contract": "ait.release.source-equivalence-policy/v1",
+  "ignored_root_entries": [
+    ".ait",
+    ".ait-runtime",
+    ".git"
+  ],
+  "expected_changed_paths": [
+    "ait-release-family.json",
+    "ait-release.json",
+    "ci/native_bootstrap_matrix.json",
+    "ci/release_repository_authorities.json",
+    "rust/Cargo.lock",
+    "rust/Cargo.toml"
+  ],
+  "required_equal_paths": [
+    "ci/release_clean_host_phase.mjs",
+    "ci/release_clean_host_test.sh"
+  ],
+  "family_manifest": "ait-release-family.json"
+}

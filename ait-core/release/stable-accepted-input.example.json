@@ -1,0 +1,88 @@
+{
+  "contract": "ait.release.accepted-input/v1",
+  "release": {
+    "channel": "stable",
+    "prior_version": "1.1.2",
+    "version": "1.1.3"
+  },
+  "records_root": "/absolute/release-records/1.1.3",
+  "github_repository": "weita2026/ait-native",
+  "winget_fork": "weita2026/winget-pkgs",
+  "paths": {
+    "core_root": "/absolute/AI_Play_Ground/ait-core",
+    "public_source": "/absolute/release-records/1.1.3/public-source",
+    "prior_family": "/absolute/release-records/1.1.3/prior-family.json",
+    "prior_coordinator": "/absolute/release-records/1.1.3/prior-coordinator.json",
+    "final_family": "/absolute/AI_Play_Ground/ait-core/ait-release-family.json",
+    "final_coordinator": "/absolute/release-records/1.1.3/final-coordinator.json",
+    "web_components": "/absolute/release-records/1.1.3/web-components.json",
+    "web_test_root": "/absolute/AI_Play_Ground/ait-web-test",
+    "personal_root": "/absolute/AI_Play_Ground/ait-web-personal",
+    "personal_bin": "/absolute/AI_Play_Ground/ait-web-personal/.ait-runtime/cargo-target/debug/ait-web-personal",
+    "community_bin": "/absolute/AI_Play_Ground/ait-web-community/.ait-runtime/cargo-target/debug/ait-web-community",
+    "community_cli_bin": "/absolute/AI_Play_Ground/ait-web-community/.ait-runtime/cargo-target/debug/ait-web-community-cli",
+    "chrome": "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+  },
+  "web": {
+    "server_url": "http://127.0.0.1:8088/",
+    "server_data": "/absolute/AIT_Runtime/server-data",
+    "seed": 20260822
+  },
+  "component_closeouts": [
+    {
+      "id": "core",
+      "task": "RCT-0001",
+      "snapshot": "SNP-000000000001",
+      "patchset": "RCT-0001/P-01",
+      "repository_root": "/absolute/AI_Play_Ground/ait-core",
+      "edit_root": "/absolute/task-worktrees/core",
+      "remote": "origin",
+      "finish_local_before_ready": false,
+      "review_message": "Reviewed files: Core release component. Findings: Version and source bindings are accepted. Risks: Limited to the frozen release delta. Tests: Required Core gates passed. Recommendation: Approve."
+    },
+    {
+      "id": "server",
+      "task": "RST-0002",
+      "snapshot": "SNP-000000000002",
+      "patchset": "RST-0002/P-01",
+      "repository_root": "/absolute/AI_Play_Ground/ait-server",
+      "edit_root": "/absolute/task-worktrees/server",
+      "remote": "origin",
+      "finish_local_before_ready": false,
+      "review_message": "Reviewed files: Server release component. Findings: Version and source bindings are accepted. Risks: Limited to the frozen release delta. Tests: Required Server gates passed. Recommendation: Approve."
+    },
+    {
+      "id": "runner",
+      "task": "RRT-0003",
+      "snapshot": "SNP-000000000003",
+      "patchset": "RRT-0003/P-01",
+      "repository_root": "/absolute/AI_Play_Ground/ait-runner",
+      "edit_root": "/absolute/task-worktrees/runner",
+      "remote": "origin",
+      "finish_local_before_ready": false,
+      "review_message": "Reviewed files: Runner release component. Findings: Version and source bindings are accepted. Risks: Limited to the frozen release delta. Tests: Required Runner gates passed. Recommendation: Approve."
+    },
+    {
+      "id": "python",
+      "task": "RPT-0004",
+      "snapshot": "SNP-000000000004",
+      "patchset": "RPT-0004/P-01",
+      "repository_root": "/absolute/AI_Play_Ground/ait-python",
+      "edit_root": "/absolute/task-worktrees/python",
+      "remote": "origin",
+      "finish_local_before_ready": false,
+      "review_message": "Reviewed files: Python release component. Findings: Version and source bindings are accepted. Risks: Limited to the frozen release delta. Tests: Required Python gates passed. Recommendation: Approve."
+    },
+    {
+      "id": "node",
+      "task": "RNT-0005",
+      "snapshot": "SNP-000000000005",
+      "patchset": "RNT-0005/P-01",
+      "repository_root": "/absolute/AI_Play_Ground/ait-node",
+      "edit_root": "/absolute/task-worktrees/node",
+      "remote": "origin",
+      "finish_local_before_ready": false,
+      "review_message": "Reviewed files: Node release component. Findings: Version and source bindings are accepted. Risks: Limited to the frozen release delta. Tests: Required Node gates passed. Recommendation: Approve."
+    }
+  ]
+}

@@ -41,6 +41,22 @@ require_match "${license}" '^[0-9A-Za-z.+-]+$' 'component license'
 require_match "${source_line}" '^[A-Za-z0-9._/-]+$' 'source Line'
 require_match "${bootstrap_line}" '^[A-Za-z0-9._/-]+$' 'bootstrap Line'
 
+write_external_manifest() {
+  local output=$1
+  {
+    printf '[[external]]\n'
+    printf 'name = "release-source"\n'
+    printf 'repo_name = "%s"\n' "${repo_name}"
+    printf 'repository_index = %s\n' "${repository_index}"
+    printf 'remote = "origin"\n'
+    printf 'line = "%s"\n' "${source_line}"
+    printf 'snapshot = "%s"\n' "${source_snapshot}"
+    printf 'materialize_to = "%s"\n' "${reserved_materialization}"
+    printf 'license = "%s"\n' "${license}"
+    printf 'version = "%s"\n' "${version}"
+  } >"${output}"
+}
+
 if [[ ${source_line} == "${bootstrap_line}" ]]; then
   printf 'source Line and bootstrap Line must differ\n' >&2
   exit 64
@@ -75,18 +91,6 @@ fi
 
 mkdir -p "${destination}/ci"
 cp "${bootstrap_ci_manifest}" "${destination}/ci/patch_ci.json"
-{
-  printf '[[external]]\n'
-  printf 'name = "release-source"\n'
-  printf 'repo_name = "%s"\n' "${repo_name}"
-  printf 'repository_index = %s\n' "${repository_index}"
-  printf 'remote = "origin"\n'
-  printf 'line = "%s"\n' "${source_line}"
-  printf 'snapshot = "%s"\n' "${source_snapshot}"
-  printf 'materialize_to = "%s"\n' "${reserved_materialization}"
-  printf 'license = "%s"\n' "${license}"
-  printf 'version = "%s"\n' "${version}"
-} >"${destination}/ait-external.toml"
 
 evidence_root=$(mktemp -d "${TMPDIR:-/tmp}/ait-release-source-evidence.XXXXXX")
 cleanup() {
@@ -119,7 +123,7 @@ trap cleanup EXIT HUP INT TERM
   ' "${evidence_root}/bootstrap-task.json")
   mkdir -p "${bootstrap_edit_root}/ci"
   cp "${destination}/ci/patch_ci.json" "${bootstrap_edit_root}/ci/patch_ci.json"
-  cp "${destination}/ait-external.toml" "${bootstrap_edit_root}/ait-external.toml"
+  write_external_manifest "${bootstrap_edit_root}/ait-external.toml"
   (
     cd "${bootstrap_edit_root}"
     "${ait_bin}" task finish "${bootstrap_task}" \

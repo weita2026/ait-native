@@ -77,7 +77,7 @@
     {
       "id": "ait",
       "source_repository": "ait-core",
-      "source_snapshot": "SNP-5F23AAA81581",
+      "source_snapshot": "SNP-7F3B8FC803C3",
       "ecosystem": "native",
       "license": "Apache-2.0",
       "version_scheme": "family",
@@ -99,7 +99,7 @@
     {
       "id": "ait-agent",
       "source_repository": "ait-core",
-      "source_snapshot": "SNP-5F23AAA81581",
+      "source_snapshot": "SNP-7F3B8FC803C3",
       "ecosystem": "native",
       "license": "Apache-2.0",
       "version_scheme": "family",
@@ -121,7 +121,7 @@
     {
       "id": "ait-agent-worker",
       "source_repository": "ait-core",
-      "source_snapshot": "SNP-5F23AAA81581",
+      "source_snapshot": "SNP-7F3B8FC803C3",
       "ecosystem": "native",
       "license": "Apache-2.0",
       "version_scheme": "family",
@@ -165,7 +165,7 @@
     {
       "id": "ait-runner",
       "source_repository": "ait-runner",
-      "source_snapshot": "SNP-8F4E6B0D3E26",
+      "source_snapshot": "SNP-670E609BA156",
       "ecosystem": "native",
       "license": "Apache-2.0",
       "version_scheme": "family",
@@ -187,7 +187,7 @@
     {
       "id": "ait-python",
       "source_repository": "ait-python",
-      "source_snapshot": "SNP-D3F494D890E0",
+      "source_snapshot": "SNP-44411631470D",
       "ecosystem": "python",
       "license": "Apache-2.0",
       "version_scheme": "pep440",
@@ -209,7 +209,7 @@
     {
       "id": "ait-node",
       "source_repository": "ait-node",
-      "source_snapshot": "SNP-D7E6D19FE0BA",
+      "source_snapshot": "SNP-16828CA88E1B",
       "ecosystem": "node",
       "license": "Apache-2.0",
       "version_scheme": "family",

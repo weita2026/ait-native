@@ -299,6 +299,7 @@ fn task_start_from_remote_atomic_with_progress(
     let context_preflight_elapsed = elapsed_ms(context_preflight_started);
     let title_elapsed = elapsed_ms(title_started);
 
+    ensure_task_start_local_base_snapshot(repo, &resolved_base_line)?;
     let remote_repo_name = remote.repo_name.clone().unwrap_or_else(|| repo.repo_name());
     let remote_base_line_preflight_started = Instant::now();
     let mut task_remote = http_task_remote(repo, remote)?;

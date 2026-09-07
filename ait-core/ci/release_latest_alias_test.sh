@@ -70,6 +70,19 @@ jq -S -n --slurpfile defaults "${defaults}" \
       artifact_id: 201,
       artifact_digest: "sha256:1111111111111111111111111111111111111111111111111111111111111111"
     },
+    pre_tag_qualification: {
+      workflow_run_id: 104,
+      workflow_run_attempt: 2,
+      workflow_control_commit: "6666666666666666666666666666666666666666",
+      candidate_artifact_id: 204,
+      candidate_artifact_digest: "sha256:7777777777777777777777777777777777777777777777777777777777777777",
+      candidate_status_sha256: "8888888888888888888888888888888888888888888888888888888888888888",
+      aggregate_artifact_id: 205,
+      aggregate_artifact_digest: "sha256:9999999999999999999999999999999999999999999999999999999999999999",
+      aggregate_status_sha256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      clean_host_rows: 32,
+      tag_state_at_closeout: "absent"
+    },
     protected_authorization: {
       workflow_run_id: 102,
       workflow_run_attempt: 1,

@@ -696,6 +696,72 @@ fn task_finish_retry_after_post_snapshot_failure_does_not_duplicate_snapshot() {
 }
 
 #[test]
+fn native_first_task_start_captures_the_existing_workspace_as_its_base() {
+    let temp = TempDir::new().unwrap();
+    let root = temp.path();
+    write_file(
+        &root.join("src/tasks.mjs"),
+        "export const tasks = ['existing'];\n",
+    );
+    initialize_repo(&InitRequest {
+        root: root.to_path_buf(),
+        name: Some("fresh-example".to_string()),
+        default_line: "main".to_string(),
+        policy_profile: "prototype".to_string(),
+        default_author_mode: "ai_with_human_review".to_string(),
+        default_model: None,
+        repair_existing: false,
+    })
+    .unwrap();
+    write_file(
+        &root.join(".ait/config.json"),
+        r#"{
+  "repo_name": "fresh-example",
+  "default_line": "main",
+  "workflow_default_scope": "local",
+  "task_default_scope": "local",
+  "sprint": "off",
+  "plan_task_binding": {"mode": "off"},
+  "user_name": "Fixture User"
+}"#,
+    );
+    let before = json_output(root, &["line", "show", "main", "--json"]);
+    assert!(before["head_snapshot_id"].is_null());
+
+    let payload = json_output(
+        root,
+        &[
+            "task",
+            "start",
+            "--local",
+            "--title",
+            "First governed edit",
+            "--intent",
+            "preserve the existing project",
+            "--json",
+        ],
+    );
+    let worktree = PathBuf::from(payload["worktree"]["path"].as_str().unwrap());
+    assert_eq!(
+        fs::read_to_string(worktree.join("src/tasks.mjs")).unwrap(),
+        "export const tasks = ['existing'];\n"
+    );
+    let main = json_output(root, &["line", "show", "main", "--json"]);
+    assert_eq!(
+        payload["worktree"]["head_snapshot_id"],
+        main["head_snapshot_id"]
+    );
+    assert_eq!(
+        payload["change"]["fork_snapshot_id"],
+        main["head_snapshot_id"]
+    );
+    let baseline_id = main["head_snapshot_id"].as_str().unwrap();
+    let baseline = json_output(root, &["snapshot", "show", baseline_id, "--json"]);
+    assert_eq!(baseline["message"], "Initialize Task base");
+    assert!(baseline["file_count"].as_i64().unwrap() >= 1);
+}
+
+#[test]
 fn native_task_start_local_scope_creates_authoritative_rows_and_worktree() {
     let temp = init_repo("https://example.test");
     let root = temp.path();

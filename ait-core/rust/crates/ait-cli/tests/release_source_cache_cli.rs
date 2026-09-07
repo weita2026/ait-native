@@ -80,6 +80,7 @@ fn source_cache_records_bootstrap_policy_through_a_completed_task_before_remote_
     );
     let snapshot_id = line["head_snapshot_id"].as_str().unwrap();
     let snapshot = run_json(&destination, &["snapshot", "show", snapshot_id, "--json"]);
+    assert_eq!(snapshot["message"], "Release source-cache bootstrap policy");
     let paths: Vec<_> = snapshot["files"]
         .as_array()
         .unwrap()
@@ -88,6 +89,17 @@ fn source_cache_records_bootstrap_policy_through_a_completed_task_before_remote_
         .collect();
     assert!(paths.contains(&"ci/patch_ci.json"));
     assert!(paths.contains(&"ait-external.toml"));
+    let parent_id = snapshot["parent_snapshot_ids"][0].as_str().unwrap();
+    let parent = run_json(&destination, &["snapshot", "show", parent_id, "--json"]);
+    assert_eq!(parent["message"], "Initialize Task base");
+    let parent_paths: Vec<_> = parent["files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|file| file["path"].as_str().unwrap())
+        .collect();
+    assert!(parent_paths.contains(&"ci/patch_ci.json"));
+    assert!(!parent_paths.contains(&"ait-external.toml"));
     let tasks = run_json(&destination, &["task", "list", "--all", "--json"]);
     let tasks = tasks.as_array().unwrap();
     assert_eq!(tasks.len(), 1);

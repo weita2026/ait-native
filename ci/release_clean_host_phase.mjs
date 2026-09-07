@@ -658,6 +658,15 @@ function firstLand(recorder, aitSpec, root, expectedText, priorState = null) {
   if (!existsSync(root)) {
     mkdirSync(root, { recursive: false, mode: 0o755 });
   }
+  const existingProjectText = "export const existingProject = true;\n";
+  const existingProjectPath = path.join(root, "existing-project.mjs");
+  if (existsSync(existingProjectPath)) {
+    if (readFileSync(existingProjectPath, "utf8") !== existingProjectText) {
+      fail("clean-host existing project fixture changed before Task start");
+    }
+  } else {
+    writeFileSync(existingProjectPath, existingProjectText, { encoding: "utf8", mode: 0o644 });
+  }
   const configPath = path.join(root, ".ait", "config.json");
   if (!existsSync(configPath)) {
     jsonSpec(recorder, aitSpec, ["init", "--json"], {
@@ -666,6 +675,9 @@ function firstLand(recorder, aitSpec, root, expectedText, priorState = null) {
     });
   }
   requireRegularFile(configPath, "candidate repository config");
+  if (readFileSync(existingProjectPath, "utf8") !== existingProjectText) {
+    fail("candidate ait init did not preserve the existing project file");
+  }
   if (
     priorState?.available === true &&
     sha256File(configPath) !== priorState.config_sha256
@@ -703,6 +715,31 @@ function firstLand(recorder, aitSpec, root, expectedText, priorState = null) {
   ) {
     fail("candidate task start returned no exact Task or worktree");
   }
+  if (readFileSync(path.join(worktree, "existing-project.mjs"), "utf8") !== existingProjectText) {
+    fail("candidate task start did not materialize the existing project file");
+  }
+  const baselineId = started.head_snapshot_id;
+  if (!/^SNP-[0-9A-F]{12}$/.test(baselineId ?? "")) {
+    fail("candidate task start returned no initial project baseline");
+  }
+  const baseline = jsonSpec(
+    recorder,
+    aitSpec,
+    ["snapshot", "show", baselineId, "--json"],
+    { cwd: root, label: "candidate initial project baseline show" },
+  );
+  const existingProjectDigest = sha256Bytes(existingProjectText);
+  if (
+    baseline.snapshot_id !== baselineId ||
+    baseline.parent_snapshot_id !== null ||
+    baseline.message !== "Initialize Task base" ||
+    !Array.isArray(baseline.files) ||
+    !baseline.files.some((entry) =>
+      entry.path === "existing-project.mjs" && entry.sha256 === existingProjectDigest
+    )
+  ) {
+    fail("candidate Task-start baseline did not capture the exact existing project file");
+  }
   const landedFile = path.join(worktree, "first-land.txt");
   writeFileSync(landedFile, expectedText, { encoding: "utf8", mode: 0o644 });
   let landed = jsonSpec(
@@ -728,8 +765,8 @@ function firstLand(recorder, aitSpec, root, expectedText, priorState = null) {
   if (!/^SNP-[0-9A-F]{12}$/.test(snapshot.snapshot_id ?? "")) {
     fail("candidate Snapshot identity is invalid");
   }
-  if (snapshot.parent_snapshot_id !== null) {
-    fail("clean-host first land did not author the first Snapshot on an empty default Line");
+  if (snapshot.parent_snapshot_id !== baselineId) {
+    fail("clean-host first Task Snapshot did not descend from the Task-start project baseline");
   }
   let partialCloseoutHandled = false;
   let windowsPartialCloseoutVerified = false;
@@ -850,6 +887,9 @@ function firstLand(recorder, aitSpec, root, expectedText, priorState = null) {
   if (readFileSync(path.join(root, "first-land.txt"), "utf8") !== expectedText) {
     fail("candidate first land reported success without materializing the file");
   }
+  if (readFileSync(existingProjectPath, "utf8") !== existingProjectText) {
+    fail("candidate first land changed the existing project file");
+  }
   if (!readFileSync(sprintPath, "utf8").includes("- [x] Materialize the exact clean-host file.")) {
     fail("candidate first land did not close the exact sprint checklist item");
   }
@@ -880,6 +920,14 @@ function firstLand(recorder, aitSpec, root, expectedText, priorState = null) {
   } else {
     generatedWorkflowCurrent(agents);
   }
+  recorder.observations.task_start_project_baseline = {
+    baseline_snapshot_id: baselineId,
+    project_path: "existing-project.mjs",
+    project_sha256: existingProjectDigest,
+    init_preserved: true,
+    task_start_materialized: true,
+    first_task_descended: true,
+  };
   return { root, task_id: taskId, snapshot_id: snapshot.snapshot_id };
 }
 

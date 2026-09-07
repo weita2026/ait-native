@@ -52,6 +52,32 @@ pub(in crate::primitives) fn ensure_task_feature_line(
     })
 }
 
+pub(in crate::primitives) fn ensure_task_start_local_base_snapshot(
+    repo: &RepoRuntime,
+    base_line_name: &str,
+) -> Result<Option<JsonValue>, String> {
+    let line = local_line_row(repo, base_line_name)
+        .map_err(|err| format!("failed to read Task start base Line `{base_line_name}`: {err}"))?;
+    if string_field(&line, "head_snapshot_id").is_some() {
+        return Ok(None);
+    }
+    let workspace_root = repo.workspace_root();
+    let snapshot = repo
+        .local_snapshot_operation_store::<SNAPSHOT_BINARY_DB_WRITE_LAYOUT>(&workspace_root)?
+        .create_snapshot(
+            &repo.repo_name(),
+            base_line_name,
+            Some("Initialize Task base"),
+            false,
+        )
+        .map_err(|err| {
+            format!(
+                "failed to capture the initial `{base_line_name}` workspace before Task creation: {err}"
+            )
+        })?;
+    Ok(Some(snapshot))
+}
+
 enum TaskFeatureLineBootstrapTarget {
     Existing(JsonValue),
     Create(String),
@@ -1850,6 +1876,7 @@ pub(crate) fn task_start_with_progress(
     }
     let context_preflight_elapsed = elapsed_ms(context_preflight_started);
     let use_local = repo.task_uses_local_scope(local, remote_name)?;
+    ensure_task_start_local_base_snapshot(repo, &resolved_base_line)?;
     let remote_base_line_preflight_started = Instant::now();
     let remote_base_line_context = if !use_local {
         let (remote_row, repo_name) = remote_context(repo, remote_name, None)?;
