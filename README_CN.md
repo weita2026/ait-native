@@ -231,7 +231,7 @@ Agent 根据生成的指示执行 `ait task start`、以 `ait snapshot create` �
 当前公开版本：**v1.1.4**。如需该版本的确切源代码，请使用不可变的发行标签；
 `ait-monorepo-source.json` 记录组件 Snapshot 映射。两次发行之间，`main` 的文档可能继续更新。
 
-核对日期 2026-10-07：稳定版 1.1.4 已通过 GitHub、PyPI、npm、Homebrew、APT 与 GHCR 发布，稳定别名也已回读。[WinGet 1.1.4 PR 448064](https://github.com/microsoft/winget-pkgs/pull/448064) 仍待社区审查与新的 Windows 源查验。Windows 用户可先使用[已核对的 1.1.4 发行归档](https://github.com/weita2026/ait-native/releases/tag/v1.1.4)。此时间点之后的变化请查看[发布状态](https://ait-native.dev/zh-cn/proof/)。
+核对日期 2026-10-07：稳定版 1.1.4 已通过 GitHub、PyPI、npm、Homebrew、APT 与 GHCR 发布，稳定别名也已回读。[WinGet 1.1.4 PR 448064](https://github.com/microsoft/winget-pkgs/pull/448064) 已合并，并通过新的公共源查询与 Windows x64 实际安装验证。[安装证据](https://github.com/weita2026/ait-native/actions/runs/37589427613)。Windows 用户可先使用[已核对的 1.1.4 发行归档](https://github.com/weita2026/ait-native/releases/tag/v1.1.4)。此时间点之后的变化请查看[发布状态](https://ait-native.dev/zh-cn/proof/)。
 
 官网技术参考与 PDF 保留归档的 1.1.1 源码及命令回执。安装请使用[当前快速上手](https://ait-native.dev/zh-cn/local-quickstart/)，工作流命令以已安装版本生成的 AGENTS.md 为准。录制演示与 benchmark 实验保留原版本及日期。
 
