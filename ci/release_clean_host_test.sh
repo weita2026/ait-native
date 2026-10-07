@@ -180,10 +180,9 @@ for (const name of [
 }
 NODE
 test "$(grep -c 'name: Activate preinstalled Linux Homebrew' "${workflow}")" = 3
-test "$(grep -c 'name: Register inbox Windows Package Manager' "${workflow}")" = 3
+test "$(grep -c 'name: Bootstrap Windows Package Manager' "${workflow}")" = 3
 grep -F 'test -x /home/linuxbrew/.linuxbrew/bin/brew' "${workflow}" >/dev/null
-grep -F 'Add-AppxPackage -RegisterByFamilyName -MainPackage Microsoft.DesktopAppInstaller_8wekyb3d8bbwe' \
-  "${workflow}" >/dev/null
+test "$(grep -Fc './control/ci/release_winget_bootstrap.ps1' "${workflow}")" = 3
 test "$(grep -Fc "\$gitBash = 'C:\Program Files\Git\bin\bash.exe'" \
   "${workflow}")" = 3
 test "$(grep -Fc 'Split-Path -Parent $gitBash | Out-File -FilePath $env:GITHUB_PATH' \

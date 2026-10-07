@@ -303,7 +303,9 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: ait-winget-bootstrap-${{ github.job }}-${{ matrix.target }}-${{ strategy.job-index }}
-          path: winget-bootstrap*.log
+          path: |
+            winget-bootstrap*.log
+            winget-bootstrap-error.txt
           if-no-files-found: warn
 
 
@@ -371,7 +373,9 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: ait-winget-bootstrap-${{ github.job }}-${{ matrix.target }}-${{ strategy.job-index }}
-          path: winget-bootstrap*.log
+          path: |
+            winget-bootstrap*.log
+            winget-bootstrap-error.txt
           if-no-files-found: warn
 
 
@@ -483,7 +487,9 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: ait-winget-bootstrap-${{ github.job }}-${{ matrix.target }}-${{ strategy.job-index }}
-          path: winget-bootstrap*.log
+          path: |
+            winget-bootstrap*.log
+            winget-bootstrap-error.txt
           if-no-files-found: warn
 
 
