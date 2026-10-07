@@ -33,7 +33,7 @@ jobs:
           MERGE_COMMIT_SHA: ${{ inputs.merge_commit_sha }}
         run: |
           $ErrorActionPreference = 'Stop'
-          if ($env:RELEASE_VERSION -notmatch '^\d+\.\d+\.\d+$' -or $env:SUBMISSION_SHA256 -notmatch '^[a-f0-9]{64}$' -or $env:MERGE_COMMIT_SHA -notmatch '^[a-f0-9]{40}$' -or $env:RELEASE_ID -notmatch '^REL-[A-Z0-9]+$') { throw 'Invalid release identity' }
+          if ($env:RELEASE_VERSION -notmatch '^\d+\.\d+\.\d+$' -or $env:SUBMISSION_SHA256 -notmatch '^[a-f0-9]{64}$' -or $env:MERGE_COMMIT_SHA -notmatch '^[a-f0-9]{40}$' -or $env:RELEASE_ID -cnotmatch '^REL-FAM-[0-9A-F]{16}$(?![\s\S])') { throw 'Invalid release identity' }
           if (-not (Get-Command winget.exe -ErrorAction SilentlyContinue)) {
             Add-AppxPackage -RegisterByFamilyName -MainPackage Microsoft.DesktopAppInstaller_8wekyb3d8bbwe
           }
