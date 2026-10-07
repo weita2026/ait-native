@@ -24,6 +24,14 @@ jobs:
     runs-on: windows-2022
     timeout-minutes: 20
     steps:
+      - name: Check out exact release control
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Bootstrap WinGet with Windows PowerShell
+        shell: powershell
+        run: ./ci/release_winget_bootstrap.ps1
       - name: Discover and install exact version from the public WinGet source
         shell: pwsh
         env:
@@ -33,55 +41,64 @@ jobs:
           MERGE_COMMIT_SHA: ${{ inputs.merge_commit_sha }}
         run: |
           $ErrorActionPreference = 'Stop'
-          if ($env:RELEASE_VERSION -notmatch '^\d+\.\d+\.\d+$' -or $env:SUBMISSION_SHA256 -notmatch '^[a-f0-9]{64}$' -or $env:MERGE_COMMIT_SHA -notmatch '^[a-f0-9]{40}$' -or $env:RELEASE_ID -cnotmatch '^REL-FAM-[0-9A-F]{16}$(?![\s\S])') { throw 'Invalid release identity' }
-          if (-not (Get-Command winget.exe -ErrorAction SilentlyContinue)) {
-            Add-AppxPackage -RegisterByFamilyName -MainPackage Microsoft.DesktopAppInstaller_8wekyb3d8bbwe
-          }
-          Get-Command winget.exe -ErrorAction Stop | Out-Null
-          winget source update --name winget --disable-interactivity
-          if ($LASTEXITCODE -ne 0) { throw 'WinGet source update failed' }
-          $visible = $false
-          for ($attempt = 1; $attempt -le 12; $attempt++) {
-            $readback = winget show --id Weita.AitNative --exact --version $env:RELEASE_VERSION --source winget --accept-source-agreements --disable-interactivity 2>&1
-            $exitCode = $LASTEXITCODE
-            $readback | Out-File -Encoding utf8 winget-readback.txt
-            if ($exitCode -eq 0 -and ($readback -join "`n") -match 'Weita\.AitNative' -and ($readback -join "`n") -match [regex]::Escape($env:RELEASE_VERSION)) { $visible = $true; break }
-            if ($attempt -lt 12) {
-              Start-Sleep -Seconds 60
-              winget source update --name winget --disable-interactivity
-              if ($LASTEXITCODE -ne 0) { throw 'WinGet source refresh failed' }
+          Start-Transcript -Path winget-verification.log -Force
+          try {
+            if ($env:RELEASE_VERSION -notmatch '^\d+\.\d+\.\d+$' -or $env:SUBMISSION_SHA256 -notmatch '^[a-f0-9]{64}$' -or $env:MERGE_COMMIT_SHA -notmatch '^[a-f0-9]{40}$' -or $env:RELEASE_ID -cnotmatch '^REL-FAM-[0-9A-F]{16}$(?![\s\S])') { throw 'Invalid release identity' }
+            Get-Command winget.exe -ErrorAction Stop | Out-Null
+            winget source update --name winget --disable-interactivity
+            if ($LASTEXITCODE -ne 0) { throw 'WinGet source update failed' }
+            $visible = $false
+            for ($attempt = 1; $attempt -le 12; $attempt++) {
+              $readback = winget show --id Weita.AitNative --exact --version $env:RELEASE_VERSION --source winget --accept-source-agreements --disable-interactivity 2>&1
+              $exitCode = $LASTEXITCODE
+              $readback | Out-File -Encoding utf8 winget-readback.txt
+              if ($exitCode -eq 0 -and ($readback -join "`n") -match 'Weita\.AitNative' -and ($readback -join "`n") -match [regex]::Escape($env:RELEASE_VERSION)) { $visible = $true; break }
+              if ($attempt -lt 12) {
+                Start-Sleep -Seconds 60
+                winget source update --name winget --disable-interactivity
+                if ($LASTEXITCODE -ne 0) { throw 'WinGet source refresh failed' }
+              }
             }
+            if (-not $visible) { throw 'Exact WinGet version is not discoverable yet; retry failed job later' }
+            @{contract='ait.release.winget-discovery/v1';status='discoverable';version=$env:RELEASE_VERSION;release_id=$env:RELEASE_ID;submission_sha256=$env:SUBMISSION_SHA256;merge_commit_sha=$env:MERGE_COMMIT_SHA;package_id='Weita.AitNative';source='winget';checked_at=[DateTime]::UtcNow.ToString('o')} | ConvertTo-Json | Set-Content -Encoding utf8 winget-discovery.json
+            $links = Join-Path $env:LOCALAPPDATA 'Microsoft\WinGet\Links'
+            foreach ($command in @('ait', 'ait-server', 'ait-runner')) {
+              if (Test-Path (Join-Path $links "$command.exe")) { throw "Fresh host already contains $command" }
+            }
+            $install = winget install --id Weita.AitNative --exact --version $env:RELEASE_VERSION --source winget --scope user --architecture x64 --accept-source-agreements --accept-package-agreements --disable-interactivity --silent --log "$PWD\winget-install.log" 2>&1
+            $installExit = $LASTEXITCODE
+            $install | Out-File -Encoding utf8 winget-install-readback.txt
+            if ($installExit -ne 0) { throw "WinGet installation failed: $installExit" }
+            $commands = @()
+            foreach ($command in @('ait', 'ait-server', 'ait-runner')) {
+              $executable = Join-Path $links "$command.exe"
+              if (-not (Test-Path $executable -PathType Leaf)) { throw "Installed command is missing: $command" }
+              $reported = & $executable --version 2>&1
+              $commandExit = $LASTEXITCODE
+              $reportedText = ($reported -join "`n").Trim()
+              if ($commandExit -ne 0 -or $reportedText -cne "$command $env:RELEASE_VERSION") { throw "Installed version differs: $command => $reportedText" }
+              $commands += @{name=$command;reported_version=$reportedText;sha256=(Get-FileHash -Algorithm SHA256 $executable).Hash.ToLowerInvariant();bytes=(Get-Item $executable).Length}
+            }
+            @{contract='ait.release.winget-installation/v1';status='installed_verified';version=$env:RELEASE_VERSION;release_id=$env:RELEASE_ID;submission_sha256=$env:SUBMISSION_SHA256;merge_commit_sha=$env:MERGE_COMMIT_SHA;package_id='Weita.AitNative';source='winget';architecture='x64';scope='user';fresh_host=$true;commands=$commands;checked_at=[DateTime]::UtcNow.ToString('o')} | ConvertTo-Json -Depth 6 | Set-Content -Encoding utf8 winget-installation.json
+          } catch {
+            $_ | Format-List * -Force | Out-File -Encoding utf8 winget-verification-error.txt
+            throw
+          } finally {
+            Stop-Transcript
           }
-          if (-not $visible) { throw 'Exact WinGet version is not discoverable yet; retry failed job later' }
-          @{contract='ait.release.winget-discovery/v1';status='discoverable';version=$env:RELEASE_VERSION;release_id=$env:RELEASE_ID;submission_sha256=$env:SUBMISSION_SHA256;merge_commit_sha=$env:MERGE_COMMIT_SHA;package_id='Weita.AitNative';source='winget';checked_at=[DateTime]::UtcNow.ToString('o')} | ConvertTo-Json | Set-Content -Encoding utf8 winget-discovery.json
-          $links = Join-Path $env:LOCALAPPDATA 'Microsoft\WinGet\Links'
-          foreach ($command in @('ait', 'ait-server', 'ait-runner')) {
-            if (Test-Path (Join-Path $links "$command.exe")) { throw "Fresh host already contains $command" }
-          }
-          $install = winget install --id Weita.AitNative --exact --version $env:RELEASE_VERSION --source winget --scope user --architecture x64 --accept-source-agreements --accept-package-agreements --disable-interactivity --silent --log "$PWD\winget-install.log" 2>&1
-          $installExit = $LASTEXITCODE
-          $install | Out-File -Encoding utf8 winget-install-readback.txt
-          if ($installExit -ne 0) { throw "WinGet installation failed: $installExit" }
-          $commands = @()
-          foreach ($command in @('ait', 'ait-server', 'ait-runner')) {
-            $executable = Join-Path $links "$command.exe"
-            if (-not (Test-Path $executable -PathType Leaf)) { throw "Installed command is missing: $command" }
-            $reported = & $executable --version 2>&1
-            $commandExit = $LASTEXITCODE
-            $reportedText = ($reported -join "`n").Trim()
-            if ($commandExit -ne 0 -or $reportedText -cne "$command $env:RELEASE_VERSION") { throw "Installed version differs: $command => $reportedText" }
-            $commands += @{name=$command;reported_version=$reportedText;sha256=(Get-FileHash -Algorithm SHA256 $executable).Hash.ToLowerInvariant();bytes=(Get-Item $executable).Length}
-          }
-          @{contract='ait.release.winget-installation/v1';status='installed_verified';version=$env:RELEASE_VERSION;release_id=$env:RELEASE_ID;submission_sha256=$env:SUBMISSION_SHA256;merge_commit_sha=$env:MERGE_COMMIT_SHA;package_id='Weita.AitNative';source='winget';architecture='x64';scope='user';fresh_host=$true;commands=$commands;checked_at=[DateTime]::UtcNow.ToString('o')} | ConvertTo-Json -Depth 6 | Set-Content -Encoding utf8 winget-installation.json
       - name: Save exact discovery and installation evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: ait-winget-discovery-${{ inputs.version }}
           path: |
+            winget-bootstrap.log
+            winget-bootstrap-error.txt
+            winget-verification.log
+            winget-verification-error.txt
             winget-discovery.json
             winget-readback.txt
             winget-installation.json
             winget-install-readback.txt
             winget-install.log
-          if-no-files-found: error
+          if-no-files-found: warn
