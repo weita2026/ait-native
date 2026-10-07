@@ -287,20 +287,25 @@ jobs:
           test -x /home/linuxbrew/.linuxbrew/bin/brew
           echo /home/linuxbrew/.linuxbrew/bin >>"${GITHUB_PATH}"
 
-      - name: Register inbox Windows Package Manager
+      - name: Bootstrap Windows Package Manager
         if: runner.os == 'Windows'
-        shell: pwsh
+        shell: powershell
         run: |
-          if (-not (Get-Command winget.exe -ErrorAction SilentlyContinue)) {
-            Add-AppxPackage -RegisterByFamilyName -MainPackage Microsoft.DesktopAppInstaller_8wekyb3d8bbwe
-          }
-          $winget = Get-Command winget.exe -ErrorAction Stop
-          Split-Path -Parent $winget.Source | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          ./control/ci/release_winget_bootstrap.ps1
           $gitBash = 'C:\Program Files\Git\bin\bash.exe'
           if (-not (Test-Path -LiteralPath $gitBash -PathType Leaf)) {
             throw "Hosted runner Git Bash is missing: $gitBash"
           }
           Split-Path -Parent $gitBash | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Save Windows bootstrap diagnostics
+        if: always() && runner.os == 'Windows'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ait-winget-bootstrap-${{ github.job }}-${{ matrix.target }}-${{ strategy.job-index }}
+          path: winget-bootstrap*.log
+          if-no-files-found: warn
+
 
       - name: Probe exact runner capabilities
         shell: bash
@@ -350,20 +355,25 @@ jobs:
           test -x /home/linuxbrew/.linuxbrew/bin/brew
           echo /home/linuxbrew/.linuxbrew/bin >>"${GITHUB_PATH}"
 
-      - name: Register inbox Windows Package Manager
+      - name: Bootstrap Windows Package Manager
         if: runner.os == 'Windows'
-        shell: pwsh
+        shell: powershell
         run: |
-          if (-not (Get-Command winget.exe -ErrorAction SilentlyContinue)) {
-            Add-AppxPackage -RegisterByFamilyName -MainPackage Microsoft.DesktopAppInstaller_8wekyb3d8bbwe
-          }
-          $winget = Get-Command winget.exe -ErrorAction Stop
-          Split-Path -Parent $winget.Source | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          ./control/ci/release_winget_bootstrap.ps1
           $gitBash = 'C:\Program Files\Git\bin\bash.exe'
           if (-not (Test-Path -LiteralPath $gitBash -PathType Leaf)) {
             throw "Hosted runner Git Bash is missing: $gitBash"
           }
           Split-Path -Parent $gitBash | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Save Windows bootstrap diagnostics
+        if: always() && runner.os == 'Windows'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ait-winget-bootstrap-${{ github.job }}-${{ matrix.target }}-${{ strategy.job-index }}
+          path: winget-bootstrap*.log
+          if-no-files-found: warn
+
 
       - name: Download the immutable pre-tag candidate
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
@@ -457,20 +467,25 @@ jobs:
           test -x /home/linuxbrew/.linuxbrew/bin/brew
           echo /home/linuxbrew/.linuxbrew/bin >>"${GITHUB_PATH}"
 
-      - name: Register inbox Windows Package Manager
+      - name: Bootstrap Windows Package Manager
         if: runner.os == 'Windows'
-        shell: pwsh
+        shell: powershell
         run: |
-          if (-not (Get-Command winget.exe -ErrorAction SilentlyContinue)) {
-            Add-AppxPackage -RegisterByFamilyName -MainPackage Microsoft.DesktopAppInstaller_8wekyb3d8bbwe
-          }
-          $winget = Get-Command winget.exe -ErrorAction Stop
-          Split-Path -Parent $winget.Source | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          ./control/ci/release_winget_bootstrap.ps1
           $gitBash = 'C:\Program Files\Git\bin\bash.exe'
           if (-not (Test-Path -LiteralPath $gitBash -PathType Leaf)) {
             throw "Hosted runner Git Bash is missing: $gitBash"
           }
           Split-Path -Parent $gitBash | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Save Windows bootstrap diagnostics
+        if: always() && runner.os == 'Windows'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ait-winget-bootstrap-${{ github.job }}-${{ matrix.target }}-${{ strategy.job-index }}
+          path: winget-bootstrap*.log
+          if-no-files-found: warn
+
 
       - name: Download the immutable pre-tag candidate
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4

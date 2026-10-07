@@ -1,0 +1,60 @@
+name: ait release WinGet pre-review
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        required: true
+        type: string
+      release_id:
+        required: true
+        type: string
+      manifests_b64:
+        description: Base64 JSON mapping the three manifest filenames to their exact base64 bytes
+        required: true
+        type: string
+permissions:
+  contents: read
+concurrency:
+  group: ait-winget-pre-review-${{ inputs.version }}
+  cancel-in-progress: false
+jobs:
+  install:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - architecture: x64
+            runner: windows-2022
+          - architecture: arm64
+            runner: windows-11-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    steps:
+      - name: Check out exact release control
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Bootstrap WinGet with Windows PowerShell
+        shell: powershell
+        run: ./ci/release_winget_bootstrap.ps1
+      - name: Validate and install exact candidate manifests
+        shell: pwsh
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+          RELEASE_ID: ${{ inputs.release_id }}
+          MANIFESTS_B64: ${{ inputs.manifests_b64 }}
+          INSTALL_ARCH: ${{ matrix.architecture }}
+        run: ./ci/release_winget_pre_review.ps1
+      - name: Preserve pre-review evidence and errors
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ait-winget-pre-review-${{ inputs.version }}-${{ matrix.architecture }}
+          path: |
+            winget-bootstrap*.log
+            winget-bootstrap-error.txt
+            winget-pre-review*
+            winget-manifest-validation.txt
+            winget-install*
+          if-no-files-found: warn
