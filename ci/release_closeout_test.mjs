@@ -37,7 +37,12 @@ try{
  assert.notEqual(run().status,0);
  merge.status='merged';write('winget-status.json',merge);assert.notEqual(run().status,0);
  discovery.status='discoverable';discovery.version='1.1.3';write('winget-discovery-cache/payload/winget-discovery.json',discovery);assert.notEqual(run().status,0);
- discovery.version='1.1.4';write('winget-discovery-cache/payload/winget-discovery.json',discovery);assert.equal(run().status,0);
+ discovery.version='1.1.4';write('winget-discovery-cache/payload/winget-discovery.json',discovery);assert.notEqual(run().status,0);
+ const installation={...discovery,contract:'ait.release.winget-installation/v1',status:'installed_verified',source:'winget',package_id:'Weita.AitNative',architecture:'x64',scope:'user',fresh_host:true,commands:['ait','ait-server','ait-runner'].map(name=>({name,reported_version:`${name} 1.1.4`,sha256:'b'.repeat(64)}))};
+ for(const [key,value] of Object.entries({status:'pending',version:'1.1.3',release_id:'wrong-family',submission_sha256:'0'.repeat(64),merge_commit_sha:'0'.repeat(40),source:'local',architecture:'arm64',fresh_host:false,commands:[]})) {
+   write('winget-discovery-cache/payload/winget-installation.json',{...installation,[key]:value});assert.notEqual(run().status,0,key);
+ }
+ write('winget-discovery-cache/payload/winget-installation.json',installation);assert.equal(run().status,0);
  assert.equal(JSON.parse(readFileSync(path.join(root,'release-closeout.json'))).status,'published');
  assert.equal(run().status,73);console.log('closeout pending/merge/discovery tests passed');
 }finally{rmSync(root,{recursive:true,force:true});}

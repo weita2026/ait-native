@@ -42,6 +42,7 @@ const status = readRecord("operator-status.json", "endpoint status");
 const winget = readRecord("winget-submission.json", "WinGet submission");
 const wingetStatus = readRecord("winget-status.json", "WinGet merge status");
 const discovery = readRecord("winget-discovery-cache/payload/winget-discovery.json", "WinGet discovery");
+const installation = readRecord("winget-discovery-cache/payload/winget-installation.json", "WinGet public-source installation");
 const latest = readRecord("latest-alias-cache/cache.json", "latest-alias cache");
 const releaseId = candidate.document.release?.id;
 if (
@@ -59,6 +60,13 @@ if (
   discovery.document.version !== version || discovery.document.release_id !== releaseId ||
   discovery.document.submission_sha256 !== winget.sha256 ||
   discovery.document.merge_commit_sha !== wingetStatus.document.pull_request?.merge_commit_sha ||
+  installation.document.contract !== "ait.release.winget-installation/v1" || installation.document.status !== "installed_verified" ||
+  installation.document.version !== version || installation.document.release_id !== releaseId ||
+  installation.document.submission_sha256 !== winget.sha256 || installation.document.merge_commit_sha !== wingetStatus.document.pull_request?.merge_commit_sha ||
+  installation.document.source !== "winget" || installation.document.package_id !== "Weita.AitNative" ||
+  installation.document.architecture !== "x64" || installation.document.fresh_host !== true || installation.document.scope !== "user" ||
+  installation.document.commands?.length !== 3 ||
+  !["ait", "ait-server", "ait-runner"].every(name => installation.document.commands?.filter(row => row.name === name && row.reported_version === `${name} ${version}` && /^[a-f0-9]{64}$/.test(row.sha256)).length === 1) ||
   latest.document.contract !== "ait.release.artifact-cache/v1" || latest.document.status !== "complete"
 ) fail("release closeout evidence is incomplete or inconsistent");
 
@@ -69,7 +77,7 @@ for (const relative of ["conductor-plan.json", "conductor-state.json"]) {
   }
 }
 
-const records = [candidate, web, tag, endpoints, status, winget, wingetStatus, discovery, latest];
+const records = [candidate, web, tag, endpoints, status, winget, wingetStatus, discovery, installation, latest];
 const closeout = {
   contract: "ait.release.closeout/v1",
   release: { id: releaseId, version, tag: `v${version}` },
@@ -79,6 +87,8 @@ const closeout = {
   latest_aliases: "promoted",
   winget: {
     status: "discoverable",
+    installation: "installed_verified",
+    installation_architecture: "x64",
     pull_request: winget.document.pull_request,
   },
   public_cli_identity: { internal_change_references_in_plan_or_state: 0 },
