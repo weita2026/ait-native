@@ -13,7 +13,12 @@ try {
     if (-not $bundle.ContainsKey($name)) { throw "Missing manifest: $name" }
     $bytes = [Convert]::FromBase64String($bundle[$name])
     $text = [Text.Encoding]::UTF8.GetString($bytes)
-    if ($text -notmatch '(?m)^PackageIdentifier: Weita\.AitNative\r?$' -or $text -notmatch "(?m)^PackageVersion: $([regex]::Escape($env:RELEASE_VERSION))\r?`$") { throw 'Manifest identity differs' }
+    $identities = @($text -split '\r?\n' | Where-Object { $_ -match '^PackageIdentifier:' })
+    $versions = @($text -split '\r?\n' | Where-Object { $_ -match '^PackageVersion:' })
+    if ($identities.Count -ne 1 -or $versions.Count -ne 1) { throw 'Ambiguous manifest identity' }
+    $identifier = ($identities[0] -split ':',2)[1].Trim().Trim('"').Trim("'")
+    $version = ($versions[0] -split ':',2)[1].Trim().Trim('"').Trim("'")
+    if ($identifier -cne 'Weita.AitNative' -or $version -cne $env:RELEASE_VERSION) { throw 'Manifest identity differs' }
     [IO.File]::WriteAllBytes((Join-Path "$PWD\manifests" $name),$bytes)
     $manifestHashes[$name] = (Get-FileHash "manifests\$name" -Algorithm SHA256).Hash.ToLowerInvariant()
   }
