@@ -260,13 +260,13 @@ The current public brand and stable release family are:
 
 ```text
 product: ait-native
-version: 1.1.0
+version: 1.1.4
 ```
 
 One frozen release manifest must bind every component, platform artifact,
 package identity, source revision, license, checksum, signature, and clean-host
 receipt. No component may drift to an independent semantic version while
-claiming membership in the 1.1.0 compatibility family.
+claiming membership in the current 1.1.4 compatibility family.
 
 ### Internal authority and public source layout
 
@@ -353,7 +353,7 @@ A clean tagged checkout validates and builds the current host without an AIT
 server:
 
 ```text
-git clone --branch v1.1.0 https://github.com/weita2026/ait-native.git
+git clone --branch v1.1.4 https://github.com/weita2026/ait-native.git
 cd ait-native
 ./build-release.sh
 ```
@@ -730,8 +730,8 @@ frozen native binaries, without compiling a component or downloading a
 component during the image build:
 
 ```text
-ghcr.io/weita2026/ait-server:1.1.0
-ghcr.io/weita2026/ait-runner:1.1.0
+ghcr.io/weita2026/ait-server:1.1.4
+ghcr.io/weita2026/ait-runner:1.1.4
 ```
 
 The immutable version tags are the evidence and deployment boundary. The
@@ -752,7 +752,7 @@ docker run --detach \
   --publish 127.0.0.1:8088:8088 \
   --restart unless-stopped \
   --volume ait-native-data:/var/lib/ait \
-  ghcr.io/weita2026/ait-server:1.1.0 \
+  ghcr.io/weita2026/ait-server:1.1.4 \
   --listen 0.0.0.0:8088 \
   --init-if-missing \
   --defer-ci-admission
@@ -779,7 +779,7 @@ docker run --detach \
   --network ait-native \
   --restart unless-stopped \
   --volume ait-native-runner:/var/lib/ait-runner \
-  ghcr.io/weita2026/ait-runner:1.1.0 \
+  ghcr.io/weita2026/ait-runner:1.1.4 \
   serve \
   --server http://ait-server:8088 \
   --worker-id container-ci-host-01 \
@@ -910,7 +910,7 @@ governed solely by [the centralized requirements above](#repository-language-neu
 ## Compatibility Rules
 
 - Every public component reports or exposes its frozen family version; the
-  current stable family reports `1.1.0`.
+  current stable family reports `1.1.4`.
 - Every bundled native command reports the same family version while retaining
   independent component digests and license notices. Every family after the
   exact immutable 1.1.0 exception requires the Homebrew, apt, and WinGet
