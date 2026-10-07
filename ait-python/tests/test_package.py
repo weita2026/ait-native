@@ -67,7 +67,7 @@ def test_package_declares_the_apache_rc_identity() -> None:
     )
     project = pyproject["project"]
 
-    assert project["version"] == ait_python.__version__ == "1.1.3"
+    assert project["version"] == ait_python.__version__ == "1.1.4"
     assert project["license"] == "Apache-2.0"
     assert project["license-files"] == ["LICENSE", "NOTICE"]
     assert "Apache License" in (ROOT / "LICENSE").read_text(encoding="utf-8")
@@ -102,7 +102,7 @@ def test_package_declares_the_apache_rc_identity() -> None:
     assert ".ait-external/ait-core/rust/Cargo.toml" in generator
 
     installed = metadata("ait-python")
-    assert installed["Version"] == "1.1.3"
+    assert installed["Version"] == "1.1.4"
     assert installed["License-Expression"] == "Apache-2.0"
     assert installed.get_all("License-File") == ["LICENSE", "NOTICE"]
 

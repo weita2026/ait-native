@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import { resolveNativeManifest } from "../scripts/native-build.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const VERSION = "1.1.3";
+const VERSION = "1.1.4";
 const CORE_SNAPSHOT = "SNP-D8DD5ACBA74B";
 const PACKAGE_NAME = "@wa120/ait-native";
 const PRODUCT_DESCRIPTION =
@@ -227,7 +227,7 @@ test("cross-platform CI uses one logical runner and builds the addon first", asy
   const windows = await readFile(path.join(ROOT, "ci", "run.ps1"), "utf8");
   for (const source of [unix, windows]) {
     assert.match(source, /native:build/);
-    assert.match(source, /1\.1\.3/);
+    assert.match(source, /1\.1\.4/);
     assert.match(source, /ait-external/);
     assert.doesNotMatch(source, /1\.1\.0-rc\.1(?!\d)/);
   }

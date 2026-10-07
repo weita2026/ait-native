@@ -66,5 +66,5 @@ bash ci/generate_notice.sh --check
 npm run native:build
 npm test
 npm run check
-node release/release-adapter.mjs build portable 1.1.3
-node release/release-adapter.mjs smoke portable 1.1.3
+node release/release-adapter.mjs build portable 1.1.4
+node release/release-adapter.mjs smoke portable 1.1.4

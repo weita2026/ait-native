@@ -92,7 +92,7 @@ function assertLockedNode(lock) {
     parent_path: "",
     materialize_to: ".ait-external/ait-core",
     license: "Apache-2.0",
-    version: "1.1.3",
+    version: "1.1.4",
   };
   const expectedBinding = {
     language: "rust",
