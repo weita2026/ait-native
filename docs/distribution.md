@@ -8,12 +8,17 @@ RC records. The current stable section below overrides version-relative
 wording in dated historical sections; those records remain evidence for their
 own bytes only.
 
-## Current Stable 1.1.1 Release Identity (2026-09-02)
+## Current Stable 1.1.3 Release Identity (2026-10-06)
 
-The current non-draft, non-prerelease public GitHub release is
+The current published stable release is [v1.1.3](https://github.com/weita2026/ait-native/releases/tag/v1.1.3), published on 2026-09-07. WinGet [PR 430868](https://github.com/microsoft/winget-pkgs/pull/430868) merged on 2026-09-11. Merge evidence does not replace a fresh exact-version WinGet discovery receipt.
+
+The working family template is preparing 1.1.4; it is not evidence that 1.1.4 has been published. Historical artifacts, candidates and receipts remain immutable. New release closeout requires endpoint readback, latest aliases, Web admission, WinGet merge and a candidate-bound Windows discovery receipt.
+
+## Historical Stable 1.1.1 Release Identity (2026-09-02)
+
+The non-draft, non-prerelease public GitHub release at this historical checkpoint was
 [`v1.1.1`](https://github.com/weita2026/ait-native/releases/tag/v1.1.1), published
-on 2026-09-02. Its exact active family selector is also recorded in
-`ait-release-family.json`. The source tag, packages, receipts and endpoint
+on 2026-09-02. Its exact family selector remains in the immutable release artifacts. The source tag, packages, receipts and endpoint
 evidence remain immutable; a README or product-document refresh does not create
 another release or rebind those bytes.
 
@@ -1013,44 +1018,26 @@ build or publication of that version.
 Create a new, empty qualification-record directory. The authority preflight
 checks all five repository indexes, identities, clean workspaces, selected
 Snapshots, canonical `main` ancestry, and Remote URLs. The source-bundle
-coordinator does not copy a recovery `.ait` directory. The external
-qualification manifest must be derived from the canonical published family;
-the preflight admits only `source_snapshot` substitutions and rejects version,
-package-topology, distribution, tag, or other authority changes. It remains an
-input-only, non-publishing selector outside canonical `ait-core`:
+coordinator does not copy a recovery `.ait` directory. The family binding is
+`ait-external.lock` in `ait-native`; the preflight requires every direct
+component external to be materialized, clean, and pinned to a distinct
+Snapshot, and every nested Core pin to equal the direct Core pin:
 
 ```bash
-export AIT_CANONICAL_CORE=/absolute/path/to/canonical/ait-core
+export AIT_NATIVE_ROOT=/absolute/path/to/ait-native
 export AIT_RELEASE_RECORDS=/absolute/path/to/new/qualification-records
-export AIT_QUALIFICATION_FAMILY="${AIT_RELEASE_RECORDS}/qualification-family.json"
 mkdir -p "${AIT_RELEASE_RECORDS}"
 
-jq \
-  --arg core SNP-XXXXXXXXXXXX \
-  --arg server SNP-XXXXXXXXXXXX \
-  --arg runner SNP-XXXXXXXXXXXX \
-  --arg python SNP-XXXXXXXXXXXX \
-  --arg node SNP-XXXXXXXXXXXX '
-    .components |= map(
-      .source_snapshot =
-        if .source_repository == "ait-core" then $core
-        elif .source_repository == "ait-server" then $server
-        elif .source_repository == "ait-runner" then $runner
-        elif .source_repository == "ait-python" then $python
-        elif .source_repository == "ait-node" then $node
-        else error("unexpected source repository")
-        end)
-  ' "${AIT_CANONICAL_CORE}/ait-release-family.json" \
-  >"${AIT_QUALIFICATION_FAMILY}"
-
-./ci/release_authority_preflight.sh \
-  "${AIT_CANONICAL_CORE}" \
-  "${AIT_RELEASE_RECORDS}/00-authority.json" \
-  "${AIT_QUALIFICATION_FAMILY}"
-./ci/release_source_bundles.sh \
-  "${AIT_CANONICAL_CORE}" \
-  "${AIT_RELEASE_RECORDS}/source-bundles" \
-  "${AIT_QUALIFICATION_FAMILY}"
+cd "${AIT_NATIVE_ROOT}"
+ait external update ait-core --to SNP-XXXXXXXXXXXX
+ait external update ait-server --to SNP-XXXXXXXXXXXX
+ait external update ait-runner --to SNP-XXXXXXXXXXXX
+ait external update ait-python --to SNP-XXXXXXXXXXXX
+ait external update ait-node --to SNP-XXXXXXXXXXXX
+./ci/release_authority_preflight.sh "${AIT_NATIVE_ROOT}" \
+  "${AIT_RELEASE_RECORDS}/00-authority.json"
+./ci/release_source_bundles.sh "${AIT_NATIVE_ROOT}" \
+  "${AIT_RELEASE_RECORDS}/source-bundles"
 ```
 
 The public repository settings are part of the release boundary, not an
@@ -1070,14 +1057,8 @@ commit must remain untagged through qualification, admission, and receipt
 revalidation:
 
 ```bash
-AIT_RELEASE_COORDINATOR_SNAPSHOT=SNP-XXXXXXXXXXXX \
-AIT_RELEASE_COORDINATOR_MANIFEST_HASH=<64-lowercase-hex> \
-AIT_RELEASE_COORDINATOR_CREATED_AT=<unix-seconds> \
-./ci/release_monorepo_export.sh \
-  "${AIT_QUALIFICATION_FAMILY}" \
-  "${AIT_RELEASE_RECORDS}/source-bundles" \
-  /absolute/path/to/ait-native-export \
-  /absolute/path/to/export-evidence.json
+./ci/release_export_source.sh "${AIT_NATIVE_ROOT}" <prior-version> \
+  "${AIT_RELEASE_RECORDS}/release-source"
 ```
 
 Review the export, commit and push it to public `main` without a tag, validate a

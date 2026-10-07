@@ -607,7 +607,11 @@ fn run_line(repo: RepoRuntime, command: LineCommand) -> Result<(), String> {
             )?;
         }
         LineCommand::Show(args) => {
-            let payload = line_show(&repo, args.name.as_deref())?;
+            let payload = if args.remote.is_some() {
+                line_show_remote(&repo, args.name.as_deref(), args.remote.as_deref())?
+            } else {
+                line_show(&repo, args.name.as_deref())?
+            };
             emit_result(
                 "ait-cli line show",
                 &payload,

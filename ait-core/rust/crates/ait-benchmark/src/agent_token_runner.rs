@@ -42,7 +42,8 @@ use crate::{
     AGENT_TOKEN_INFRASTRUCTURE_RECOVERY_CONTRACT,
     AGENT_TOKEN_INFRASTRUCTURE_RECOVERY_POLICY_REVISION,
     AGENT_TOKEN_INFRASTRUCTURE_RECOVERY_REASON, AGENT_TOKEN_INFRASTRUCTURE_RECOVERY_SELECTION_FILE,
-    AGENT_TOKEN_MODEL_ADMISSION_PREDECESSOR_PROTOCOL_REVISION, AGENT_TOKEN_PROTOCOL_REVISION,
+    AGENT_TOKEN_MODEL_ADMISSION_PREDECESSOR_PROTOCOL_REVISION,
+    AGENT_TOKEN_PRE_CACHE_TRACE_PREDECESSOR_PROTOCOL_REVISION, AGENT_TOKEN_PROTOCOL_REVISION,
     AGENT_TOKEN_PROTOCOL_V1_JSON, AGENT_TOKEN_RECOVERED_SPAWN_CAMPAIGN_ID,
     AGENT_TOKEN_RECOVERED_SPAWN_PAIR_START_INDEX, AGENT_TOKEN_RECOVERED_SPAWN_REASON,
     AGENT_TOKEN_RECOVERED_SPAWN_RUN_ID, AGENT_TOKEN_REPLACEMENT_SELECTION_CONTRACT,
@@ -74,6 +75,8 @@ pub const AGENT_TOKEN_GIT_START_STATE_PROOF_CONTRACT: &str =
 pub const AGENT_TOKEN_MANAGED_WORKTREE_LIFECYCLE_CONTRACT: &str =
     "ait-agent-token-managed-worktree-lifecycle/v1";
 pub const AGENT_TOKEN_MODEL_REQUEST_STATE_CONTRACT: &str = "ait-agent-token-model-request-state/v1";
+pub const AGENT_TOKEN_CACHE_REQUEST_USAGE_CONTRACT: &str = "ait-agent-token-cache-request-usage/v1";
+pub const AGENT_TOKEN_CACHE_TRACE_SUMMARY_CONTRACT: &str = "ait-agent-token-cache-trace-summary/v1";
 pub const AGENT_TOKEN_CODEX_PERMISSION_PROFILE_CONTRACT: &str =
     "ait-agent-token-codex-permission-profile/v1";
 pub const AGENT_TOKEN_VALID_CANDIDATE_OUTCOME_CONTINUATION_POLICY: &str =
@@ -324,6 +327,10 @@ pub struct AgentTokenExecutorPreflightReport {
     pub final_workspace_digest: Option<String>,
     pub infrastructure_failure: Option<String>,
     pub usage: Option<AgentTokenExecutorPreflightUsage>,
+    #[serde(default)]
+    pub internal_provider_request_count: Option<usize>,
+    #[serde(default)]
+    pub cache_trace_reconciled: bool,
     pub passed: bool,
     pub failure_reasons: Vec<String>,
 }
@@ -467,6 +474,57 @@ pub struct AgentTokenModelRequestState {
     pub terminal_state: String,
     pub internal_provider_request_count: Option<usize>,
     pub internal_provider_request_count_authority: String,
+}
+
+/// Redacted per-inference cache diagnostics. This deliberately carries no
+/// prompt text, response or thread identifiers, cache-key value, or path.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct AgentTokenCacheRequestUsage {
+    pub contract: String,
+    pub run_id: String,
+    pub request_index: usize,
+    pub request_status: String,
+    pub model_id: String,
+    pub elapsed_ms: u64,
+    pub input_tokens: Option<u64>,
+    pub cached_input_tokens: Option<u64>,
+    pub uncached_input_tokens: Option<u64>,
+    pub cache_write_input_tokens: Option<u64>,
+    pub output_tokens: Option<u64>,
+    pub reasoning_tokens: Option<u64>,
+    pub provider_total_tokens: Option<u64>,
+    pub has_previous_response_id: bool,
+    pub prompt_cache_key_scope: String,
+    pub prompt_cache_options_present: bool,
+    pub request_input_item_count: usize,
+    pub preceding_tool_call_count: usize,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct AgentTokenCacheTraceSummary {
+    pub contract: String,
+    pub run_id: String,
+    pub request_count: usize,
+    pub completed_request_count: usize,
+    pub failed_request_count: usize,
+    pub input_tokens: u64,
+    pub cached_input_tokens: u64,
+    pub uncached_input_tokens: u64,
+    pub cache_write_input_tokens: u64,
+    pub output_tokens: u64,
+    pub reasoning_tokens: u64,
+    pub provider_total_tokens: u64,
+    pub initial_request_count: usize,
+    pub continuation_request_count: usize,
+    pub cache_hit_request_count: usize,
+    pub cache_miss_request_count: usize,
+    pub continuation_cache_hit_count: usize,
+    pub continuation_cache_miss_count: usize,
+    pub thread_scoped_cache_key_request_count: usize,
+    pub other_cache_key_request_count: usize,
+    pub absent_cache_key_request_count: usize,
+    pub response_chained_request_count: usize,
+    pub reconciled_with_terminal_usage: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -961,10 +1019,11 @@ fn run_executor_preflight(
             git_permission_preflight.failure_reasons.join("; ")
         ));
     }
+    let preflight_run_id = format!("{}-executor-preflight", manifest.campaign_id);
     let imported_usage = match import_executor_usage(
         manifest,
         &raw_events,
-        &format!("{}-executor-preflight", manifest.campaign_id),
+        &preflight_run_id,
         "executor-preflight",
         AgentTokenMode::GitLinearSingleSession,
     ) {
@@ -992,9 +1051,49 @@ fn run_executor_preflight(
             None
         }
     };
+    let cache_trace_summary =
+        if manifest.runtime.executor == crate::agent_token::AgentTokenExecutor::Codex {
+            match imported_usage.as_ref() {
+                Some(imported) => {
+                    let trace_result =
+                        inspect_model_request_state(manifest, &raw_events, &preflight_run_id)
+                            .and_then(|model_state| {
+                                codex_rollout_trace_root(&raw_events).and_then(|trace_root| {
+                                    parse_codex_cache_trace(
+                                        &trace_root,
+                                        model_state.thread_id.as_deref(),
+                                        &manifest.model.model_id,
+                                        &preflight_run_id,
+                                        &imported.usage,
+                                    )
+                                })
+                            });
+                    match trace_result {
+                        Ok((rows, summary)) => {
+                            write_cache_trace_artifacts(
+                                &campaign_dir.join("executor-preflight-cache-request-usage.jsonl"),
+                                &campaign_dir.join("executor-preflight-cache-trace-summary.json"),
+                                &rows,
+                                &summary,
+                            )?;
+                            Some(summary)
+                        }
+                        Err(error) => {
+                            usage_failure_reasons.push(format!(
+                                "executor preflight cache trace is invalid: {error}"
+                            ));
+                            None
+                        }
+                    }
+                }
+                None => None,
+            }
+        } else {
+            None
+        };
     let transcript = AgentTokenCommandTranscript {
         contract: crate::AGENT_TOKEN_TRANSCRIPT_CONTRACT.to_string(),
-        run_id: format!("{}-executor-preflight", manifest.campaign_id),
+        run_id: preflight_run_id,
         mode: AgentTokenMode::GitLinearSingleSession,
         accounting_profile: manifest.accounting_profile,
         command_count: observation.observed_command_count,
@@ -1068,6 +1167,12 @@ fn run_executor_preflight(
         final_workspace_digest,
         infrastructure_failure,
         usage,
+        internal_provider_request_count: cache_trace_summary
+            .as_ref()
+            .map(|summary| summary.request_count),
+        cache_trace_reconciled: cache_trace_summary
+            .as_ref()
+            .is_some_and(|summary| summary.reconciled_with_terminal_usage),
         passed: failure_reasons.is_empty(),
         failure_reasons,
     };
@@ -1079,12 +1184,17 @@ fn run_executor_preflight(
 }
 
 fn protocol_requires_git_start_state_proof(protocol_revision: &str) -> bool {
-    protocol_revision == AGENT_TOKEN_PROTOCOL_REVISION
+    protocol_has_model_request_state(protocol_revision)
         || protocol_revision == AGENT_TOKEN_MODEL_ADMISSION_PREDECESSOR_PROTOCOL_REVISION
         || protocol_revision == crate::AGENT_TOKEN_SPRINT_ON_COMPLETE_PREDECESSOR_PROTOCOL_REVISION
         || protocol_revision == crate::AGENT_TOKEN_PROMPTED_INSPECTION_PREDECESSOR_PROTOCOL_REVISION
         || protocol_revision == crate::AGENT_TOKEN_PRE_REPLACEMENT_PROTOCOL_REVISION
         || protocol_revision == AGENT_TOKEN_VALID_OUTCOME_RESUMABLE_PROTOCOL_REVISION
+}
+
+fn protocol_has_model_request_state(protocol_revision: &str) -> bool {
+    protocol_revision == AGENT_TOKEN_PROTOCOL_REVISION
+        || protocol_revision == AGENT_TOKEN_PRE_CACHE_TRACE_PREDECESSOR_PROTOCOL_REVISION
 }
 
 fn protocol_continues_valid_candidate_outcomes(protocol_revision: &str) -> bool {
@@ -3965,11 +4075,7 @@ fn run_one(
         write_json_new(&run_dir.join("managed-worktree-lifecycle.json"), lifecycle)?;
     }
     let codex = codex_result?;
-    let model_request_state = model_request_state_result?;
-    write_json_new(
-        &run_dir.join("model-request-state.json"),
-        &model_request_state,
-    )?;
+    let mut model_request_state = model_request_state_result?;
     let usage_result = import_executor_usage(
         manifest,
         &raw_events,
@@ -4019,6 +4125,49 @@ fn run_one(
         }
     };
     let usage = usage_result.ok().map(|imported| imported.usage);
+    let mut cache_trace_error = None;
+    if manifest.runtime.executor == crate::agent_token::AgentTokenExecutor::Codex {
+        match usage.as_ref() {
+            Some(usage) => {
+                let cache_trace_result =
+                    codex_rollout_trace_root(&raw_events).and_then(|trace_root| {
+                        parse_codex_cache_trace(
+                            &trace_root,
+                            model_request_state.thread_id.as_deref(),
+                            &manifest.model.model_id,
+                            &entry.run_id,
+                            usage,
+                        )
+                    });
+                match cache_trace_result {
+                    Ok((rows, summary)) => {
+                        write_cache_trace_artifacts(
+                            &run_dir.join("cache-request-usage.jsonl"),
+                            &run_dir.join("cache-trace-summary.json"),
+                            &rows,
+                            &summary,
+                        )?;
+                        model_request_state.internal_provider_request_count =
+                            Some(summary.request_count);
+                        model_request_state.internal_provider_request_count_authority =
+                            "private_codex_rollout_trace:inference_completed.token_usage"
+                                .to_string();
+                        secondary_metrics.model_calls = summary.request_count;
+                    }
+                    Err(error) => cache_trace_error = Some(error),
+                }
+            }
+            None => {
+                cache_trace_error = Some(
+                    "terminal usage is unavailable for per-inference reconciliation".to_string(),
+                );
+            }
+        }
+    }
+    write_json_new(
+        &run_dir.join("model-request-state.json"),
+        &model_request_state,
+    )?;
     let infrastructure_failure = classify_executor_infrastructure_failure(
         manifest,
         &raw_events,
@@ -4086,6 +4235,9 @@ fn run_one(
         invalid_reasons.push(format!(
             "provider usage or model-purity evidence is invalid: {error}"
         ));
+    }
+    if let Some(error) = cache_trace_error {
+        invalid_reasons.push(format!("per-inference cache trace is invalid: {error}"));
     }
     if manifest.runtime.executor == crate::agent_token::AgentTokenExecutor::Claude
         && provider_stop_reason
@@ -4281,6 +4433,18 @@ fn build_measured_prompt(
         ) => {
             let edit_root = ait_edit_root.map(Path::display);
             match manifest.ait_sprint_mode {
+            AgentTokenAitSprintMode::Off
+                if retain_generated_project_document(manifest)
+                    && manifest.ait_edit_root_mode
+                        == crate::agent_token::AgentTokenAitEditRootMode::Explicit =>
+            {
+                format!(
+                    "Use the prepared local AIT repository through `{ait}` and follow its loaded `AGENTS.md`. Start exactly one unbound Task with the caller-selected `--edit-root {edit_root}` and `--local`; retain its Task ID, enter that edit root, make the product edit, and run project validation there. Finish the same Task with a message and `--local`. An intermediate Task Snapshot is optional; do not use any other AIT lifecycle or management command. Do not invoke `git`; this candidate intentionally has no Git repository.",
+                    ait = manifest.runtime.ait_program.display(),
+                    edit_root = edit_root
+                        .expect("explicit AIT prompt requires its benchmark-owned edit root"),
+                )
+            }
             AgentTokenAitSprintMode::Off
                 if manifest.ait_edit_root_mode
                     == crate::agent_token::AgentTokenAitEditRootMode::Returned =>
@@ -4660,6 +4824,85 @@ fn capture_git_start_state_proof(
     }
 }
 
+fn retain_generated_project_document(manifest: &AgentTokenCampaignManifest) -> bool {
+    manifest.runtime.project_doc_max_bytes > 0
+        && manifest.runtime.executor == crate::agent_token::AgentTokenExecutor::Codex
+}
+
+fn mirror_agents_guidance_for_claude(manifest: &AgentTokenCampaignManifest) -> bool {
+    manifest.runtime.executor == crate::agent_token::AgentTokenExecutor::Claude
+}
+
+fn create_ait_steady_state_baseline(
+    manifest: &AgentTokenCampaignManifest,
+    workspace: &Path,
+    events: &mut Vec<ExternalCommandEvent>,
+    sequence: &mut usize,
+) -> Result<(), String> {
+    let run_dir = workspace.parent().ok_or_else(|| {
+        format!(
+            "AIT benchmark workspace has no run directory: {}",
+            workspace.display()
+        )
+    })?;
+    let edit_root = run_dir.join("private/ait-baseline-worktree");
+    if edit_root.exists() {
+        return Err(format!(
+            "AIT baseline worktree path already exists: {}",
+            edit_root.display()
+        ));
+    }
+    let edit_root_text = edit_root.to_str().ok_or_else(|| {
+        format!(
+            "AIT baseline worktree path is not valid UTF-8: {}",
+            edit_root.display()
+        )
+    })?;
+    run_checked_event(
+        &manifest.runtime.ait_program,
+        &[
+            "task",
+            "start",
+            "--title",
+            "Benchmark fixture baseline",
+            "--intent",
+            "Establish the runner-owned steady-state baseline",
+            "--edit-root",
+            edit_root_text,
+            "--local",
+            "--json",
+        ],
+        workspace,
+        "bootstrap-baseline",
+        events,
+        sequence,
+    )?;
+    let start = events
+        .last()
+        .and_then(|event| serde_json::from_str::<serde_json::Value>(&event.stdout).ok())
+        .ok_or_else(|| "AIT baseline task start did not emit valid JSON".to_string())?;
+    let task_id = start
+        .get("task_id")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| "AIT baseline task start JSON has no task_id".to_string())?
+        .to_string();
+    run_checked_event(
+        &manifest.runtime.ait_program,
+        &["task", "abandon", &task_id, "--local"],
+        workspace,
+        "bootstrap-baseline",
+        events,
+        sequence,
+    )?;
+    if edit_root.exists() {
+        return Err(format!(
+            "AIT baseline task abandon left its worktree behind: {}",
+            edit_root.display()
+        ));
+    }
+    Ok(())
+}
+
 fn bootstrap_ait(
     manifest: &AgentTokenCampaignManifest,
     workspace: &Path,
@@ -4675,7 +4918,11 @@ fn bootstrap_ait(
         sequence,
     )?;
     let model = manifest.model.model_id.as_str();
-    let sprint_mode = manifest.ait_sprint_mode.as_str();
+    // Bootstrap under sprint-off so the runner can create and abandon one
+    // unbound Task before the provider turn. That Task establishes AIT's
+    // internal baseline outside measured model time. Restore the requested
+    // sprint mode immediately afterward.
+    let sprint_mode = AgentTokenAitSprintMode::Off.as_str();
     run_checked_event(
         &manifest.runtime.ait_program,
         &[
@@ -4702,70 +4949,123 @@ fn bootstrap_ait(
         events,
         sequence,
     )?;
+    create_ait_steady_state_baseline(manifest, workspace, events, sequence)?;
+    if manifest.ait_sprint_mode != AgentTokenAitSprintMode::Off {
+        run_checked_event(
+            &manifest.runtime.ait_program,
+            &[
+                "config",
+                "set",
+                "--workflow-mode",
+                "solo_local",
+                "--sprint",
+                manifest.ait_sprint_mode.as_str(),
+                "--task-review",
+                "automatic",
+                "--default-author-mode",
+                "ai_only_experimental",
+                "--default-model",
+                model,
+                "--user-name",
+                "benchmark-agent",
+                "--user-email",
+                "benchmark-agent@example.invalid",
+                "--json",
+            ],
+            workspace,
+            "bootstrap",
+            events,
+            sequence,
+        )?;
+    }
     // `ait init` and `ait config set` generate an AGENTS.md and a docs/ tree.
-    // No measured Git workspace lists either, and across eleven GD-02
-    // diagnostic lanes agents spent 1.6-3.0 model requests per lane exploring
-    // exactly these artifacts, a structural tax charged only to AIT. Delete
-    // AGENTS.md and archive its Plan through a runner-owned prune sync; the
-    // full lifecycle was verified working without it. The .40 stub approach is
-    // retired: it removed the guidance bytes but left the exploration bait.
-    // Sprint-on keeps docs/ because authoring the card inside it is the
-    // measured treatment; sprint-off removes it too.
+    // Claim-oriented campaigns disable project documents and purge AGENTS.md:
+    // across eleven GD-02 diagnostic lanes agents spent 1.6-3.0 model requests
+    // per lane exploring the AIT-only artifacts. A smoke diagnostic with a
+    // nonzero project_doc_max_bytes intentionally retains AGENTS.md for Codex
+    // so the campaign label matches the document the executor can auto-load.
+    // Claude reads CLAUDE.md instead, so only its executor path mirrors the
+    // guidance. Codex must not pay for a duplicate CLAUDE.md artifact. Sprint-on
+    // keeps docs/ because authoring the card inside it is the measured
+    // treatment; sprint-off removes it too.
     let project_document_path = workspace.join(crate::agent_token::AIT_PURGED_PROJECT_DOCUMENT);
+    let retain_codex_project_document = retain_generated_project_document(manifest);
     if project_document_path.exists() {
-        // Mirror the generated guidance into the executor's native auto-load
-        // channel before removing the file Claude never auto-loads. Marker
-        // tests: Claude Code auto-loads CLAUDE.md under the project setting
-        // source and never auto-loads AGENTS.md, so this delivers the guidance
-        // at zero exploration requests.
-        let guidance = fs::read_to_string(&project_document_path).map_err(|error| {
-            format!(
-                "Failed to read the generated project document {}: {error}",
-                project_document_path.display()
+        if mirror_agents_guidance_for_claude(manifest) {
+            // Claude Code auto-loads CLAUDE.md under the project setting source
+            // and never auto-loads AGENTS.md, so mirror before pruning AGENTS.
+            let guidance = fs::read_to_string(&project_document_path).map_err(|error| {
+                format!(
+                    "Failed to read the generated project document {}: {error}",
+                    project_document_path.display()
+                )
+            })?;
+            fs::write(
+                workspace.join(crate::agent_token::CLAUDE_GUIDANCE_DOCUMENT),
+                guidance,
             )
-        })?;
-        fs::write(
-            workspace.join(crate::agent_token::CLAUDE_GUIDANCE_DOCUMENT),
-            guidance,
-        )
-        .map_err(|error| format!("Failed to mirror guidance into CLAUDE.md: {error}"))?;
-        // ait 1.1.1 tracks CLAUDE.md as authored Markdown, so writing it leaves
-        // drift that blocks the very next bootstrap step. Reconcile it here,
-        // where the runner created it, rather than letting an unrelated command
-        // fail later.
-        run_checked_event(
-            &manifest.runtime.ait_program,
-            &[
-                "plan",
-                "sync",
-                crate::agent_token::CLAUDE_GUIDANCE_DOCUMENT,
-                "--local",
-            ],
-            workspace,
-            "bootstrap",
-            events,
-            sequence,
-        )?;
-        fs::remove_file(&project_document_path).map_err(|error| {
-            format!(
-                "Failed to remove the generated project document {}: {error}",
-                project_document_path.display()
-            )
-        })?;
-        run_checked_event(
-            &manifest.runtime.ait_program,
-            &[
-                "plan",
-                "sync",
-                crate::agent_token::AIT_PURGED_PROJECT_DOCUMENT,
-                "--prune",
-                "--local",
-            ],
-            workspace,
-            "bootstrap",
-            events,
-            sequence,
-        )?;
+            .map_err(|error| format!("Failed to mirror guidance into CLAUDE.md: {error}"))?;
+            run_checked_event(
+                &manifest.runtime.ait_program,
+                &[
+                    "plan",
+                    "sync",
+                    crate::agent_token::CLAUDE_GUIDANCE_DOCUMENT,
+                    "--local",
+                ],
+                workspace,
+                "bootstrap",
+                events,
+                sequence,
+            )?;
+        }
+        if !retain_codex_project_document {
+            fs::remove_file(&project_document_path).map_err(|error| {
+                format!(
+                    "Failed to remove the generated project document {}: {error}",
+                    project_document_path.display()
+                )
+            })?;
+            run_checked_event(
+                &manifest.runtime.ait_program,
+                &[
+                    "plan",
+                    "sync",
+                    crate::agent_token::AIT_PURGED_PROJECT_DOCUMENT,
+                    "--prune",
+                    "--local",
+                ],
+                workspace,
+                "bootstrap",
+                events,
+                sequence,
+            )?;
+        }
+    }
+    if manifest.runtime.executor == crate::agent_token::AgentTokenExecutor::Codex {
+        let claude_document = workspace.join(crate::agent_token::CLAUDE_GUIDANCE_DOCUMENT);
+        if claude_document.exists() {
+            fs::remove_file(&claude_document).map_err(|error| {
+                format!(
+                    "Failed to remove non-native project document {}: {error}",
+                    claude_document.display()
+                )
+            })?;
+            run_checked_event(
+                &manifest.runtime.ait_program,
+                &[
+                    "plan",
+                    "sync",
+                    crate::agent_token::CLAUDE_GUIDANCE_DOCUMENT,
+                    "--prune",
+                    "--local",
+                ],
+                workspace,
+                "bootstrap",
+                events,
+                sequence,
+            )?;
+        }
     }
     if manifest.ait_sprint_mode == AgentTokenAitSprintMode::Off {
         let docs = workspace.join("docs");
@@ -4778,23 +5078,13 @@ fn bootstrap_ait(
             })?;
         }
     }
-    if project_document_path.exists() {
-        return Err("Measured AIT workspace still lists AGENTS.md after the purge".to_string());
+    if retain_codex_project_document != project_document_path.exists() {
+        return Err(if retain_codex_project_document {
+            "Measured Codex pilot workspace is missing its retained AGENTS.md".to_string()
+        } else {
+            "Measured AIT workspace still lists AGENTS.md after the purge".to_string()
+        });
     }
-    run_checked_event(
-        &manifest.runtime.ait_program,
-        &[
-            "snapshot",
-            "create",
-            "--message",
-            "Benchmark fixture baseline",
-            "--json",
-        ],
-        workspace,
-        "bootstrap",
-        events,
-        sequence,
-    )?;
     let config = command_json(
         &manifest.runtime.ait_program,
         &["config", "show", "--json"],
@@ -5212,7 +5502,15 @@ fn run_codex(
     stdout_path: &Path,
     stderr_path: &Path,
 ) -> Result<TimedProcessResult, String> {
-    let command = build_codex_command(manifest, workspace, add_dirs, git_write_exceptions)?;
+    let mut command = build_codex_command(manifest, workspace, add_dirs, git_write_exceptions)?;
+    let trace_root = codex_rollout_trace_root(stdout_path)?;
+    fs::create_dir(&trace_root).map_err(|error| {
+        format!(
+            "Failed to create private Codex rollout trace root {}: {error}",
+            trace_root.display()
+        )
+    })?;
+    command.env("CODEX_ROLLOUT_TRACE_ROOT", &trace_root);
     run_agent_process(
         command,
         "Codex",
@@ -5222,6 +5520,25 @@ fn run_codex(
         stderr_path,
         manifest.runtime.run_timeout_seconds,
     )
+}
+
+fn codex_rollout_trace_root(stdout_path: &Path) -> Result<PathBuf, String> {
+    let parent = stdout_path.parent().ok_or_else(|| {
+        format!(
+            "Codex event stream path has no parent: {}",
+            stdout_path.display()
+        )
+    })?;
+    let file_name = stdout_path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| {
+            format!(
+                "Codex event stream path has no UTF-8 file name: {}",
+                stdout_path.display()
+            )
+        })?;
+    Ok(parent.join(format!("{file_name}.rollout-trace")))
 }
 
 /// Launch a measured agent subject with the shared stdin-prompt, redirected
@@ -5503,6 +5820,528 @@ fn inspect_model_request_state(
     Ok(state)
 }
 
+#[derive(Deserialize)]
+struct CodexRolloutTraceManifest {
+    schema_version: u64,
+    rollout_id: String,
+    root_thread_id: String,
+    raw_event_log: String,
+    payloads_dir: String,
+}
+
+struct PendingCodexInference {
+    started_at_unix_ms: u64,
+    model_id: String,
+    has_previous_response_id: bool,
+    prompt_cache_key_scope: String,
+    prompt_cache_options_present: bool,
+    request_input_item_count: usize,
+    preceding_tool_call_count: usize,
+}
+
+fn read_private_trace_json(path: &Path, label: &str) -> Result<serde_json::Value, String> {
+    let metadata = fs::symlink_metadata(path)
+        .map_err(|error| format!("Private Codex {label} is unavailable: {error}"))?;
+    if !metadata.is_file() || metadata.file_type().is_symlink() {
+        return Err(format!(
+            "Private Codex {label} is not a regular non-symlink file"
+        ));
+    }
+    let source = fs::read_to_string(path)
+        .map_err(|error| format!("Private Codex {label} cannot be read: {error}"))?;
+    serde_json::from_str(&source)
+        .map_err(|error| format!("Private Codex {label} JSON is invalid: {error}"))
+}
+
+fn safe_trace_payload_path(
+    bundle_dir: &Path,
+    payloads_dir: &str,
+    relative_path: &str,
+) -> Result<PathBuf, String> {
+    let payloads = Path::new(payloads_dir);
+    let relative = Path::new(relative_path);
+    let is_safe_relative = |path: &Path| {
+        !path.is_absolute()
+            && path.components().all(|component| {
+                matches!(
+                    component,
+                    std::path::Component::Normal(_) | std::path::Component::CurDir
+                )
+            })
+    };
+    if !is_safe_relative(payloads)
+        || !is_safe_relative(relative)
+        || (payloads != Path::new(".") && !relative.starts_with(payloads))
+    {
+        return Err("Private Codex trace payload path escapes its bundle".to_string());
+    }
+    let payload_dir_path = bundle_dir.join(payloads);
+    let payload_dir_metadata = fs::symlink_metadata(&payload_dir_path).map_err(|error| {
+        format!("Private Codex trace payload directory is unavailable: {error}")
+    })?;
+    if !payload_dir_metadata.is_dir() || payload_dir_metadata.file_type().is_symlink() {
+        return Err(
+            "Private Codex trace payload directory is not a regular non-symlink directory"
+                .to_string(),
+        );
+    }
+    Ok(bundle_dir.join(relative))
+}
+
+fn required_json_u64(
+    object: &serde_json::Value,
+    pointer: &str,
+    label: &str,
+) -> Result<u64, String> {
+    object
+        .pointer(pointer)
+        .and_then(serde_json::Value::as_u64)
+        .ok_or_else(|| format!("Private Codex inference response lacks integer {label}"))
+}
+
+fn parse_codex_cache_trace(
+    trace_root: &Path,
+    expected_thread_id: Option<&str>,
+    expected_model_id: &str,
+    run_id: &str,
+    terminal_usage: &crate::NormalizedAgentTokenUsage,
+) -> Result<
+    (
+        Vec<AgentTokenCacheRequestUsage>,
+        AgentTokenCacheTraceSummary,
+    ),
+    String,
+> {
+    let root_metadata = fs::symlink_metadata(trace_root)
+        .map_err(|error| format!("Private Codex rollout trace root is unavailable: {error}"))?;
+    if !root_metadata.is_dir() || root_metadata.file_type().is_symlink() {
+        return Err(
+            "Private Codex rollout trace root is not a regular non-symlink directory".to_string(),
+        );
+    }
+    let mut bundles = fs::read_dir(trace_root)
+        .map_err(|error| format!("Private Codex rollout trace root cannot be read: {error}"))?
+        .map(|entry| entry.map_err(|error| error.to_string()))
+        .collect::<Result<Vec<_>, _>>()?;
+    bundles.sort_by_key(|entry| entry.file_name());
+    if bundles.len() != 1 {
+        return Err(format!(
+            "Private Codex rollout trace root contains {} entries; expected exactly one bundle",
+            bundles.len()
+        ));
+    }
+    let bundle = bundles.remove(0);
+    let bundle_metadata = bundle
+        .metadata()
+        .map_err(|error| format!("Private Codex rollout trace bundle is unavailable: {error}"))?;
+    if !bundle_metadata.is_dir() || bundle.file_type().is_ok_and(|kind| kind.is_symlink()) {
+        return Err(
+            "Private Codex rollout trace bundle is not a regular non-symlink directory".to_string(),
+        );
+    }
+    let bundle_dir = bundle.path();
+    let manifest_value =
+        read_private_trace_json(&bundle_dir.join("manifest.json"), "trace manifest")?;
+    let trace_manifest: CodexRolloutTraceManifest = serde_json::from_value(manifest_value)
+        .map_err(|error| format!("Private Codex trace manifest shape is invalid: {error}"))?;
+    if trace_manifest.schema_version != 1 {
+        return Err(format!(
+            "Private Codex trace schema must be 1, got {}",
+            trace_manifest.schema_version
+        ));
+    }
+    if trace_manifest.rollout_id != trace_manifest.root_thread_id {
+        return Err("Private Codex trace rollout and root-thread identity differ".to_string());
+    }
+    if expected_thread_id != Some(trace_manifest.root_thread_id.as_str()) {
+        return Err("Private Codex trace root thread differs from executor events".to_string());
+    }
+    let trace_path =
+        safe_trace_payload_path(&bundle_dir, ".", trace_manifest.raw_event_log.as_str())?;
+    let trace_metadata = fs::symlink_metadata(&trace_path)
+        .map_err(|error| format!("Private Codex trace event log is unavailable: {error}"))?;
+    if !trace_metadata.is_file() || trace_metadata.file_type().is_symlink() {
+        return Err("Private Codex trace event log is not a regular non-symlink file".to_string());
+    }
+    let trace_source = fs::read_to_string(&trace_path)
+        .map_err(|error| format!("Private Codex trace event log cannot be read: {error}"))?;
+    let mut pending = BTreeMap::<String, PendingCodexInference>::new();
+    let mut rows = Vec::new();
+    let mut expected_sequence = 1_u64;
+    let mut preceding_tool_call_count = 0_usize;
+    for (line_index, line) in trace_source.lines().enumerate() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let event: serde_json::Value = serde_json::from_str(line).map_err(|error| {
+            format!(
+                "Private Codex trace event line {} is invalid JSON: {error}",
+                line_index + 1
+            )
+        })?;
+        let schema_version = event
+            .get("schema_version")
+            .and_then(serde_json::Value::as_u64);
+        let sequence = event.get("seq").and_then(serde_json::Value::as_u64);
+        if schema_version != Some(1) || sequence != Some(expected_sequence) {
+            return Err(format!(
+                "Private Codex trace event line {} has invalid schema or sequence",
+                line_index + 1
+            ));
+        }
+        expected_sequence = expected_sequence.saturating_add(1);
+        if event.get("rollout_id").and_then(serde_json::Value::as_str)
+            != Some(trace_manifest.rollout_id.as_str())
+        {
+            return Err("Private Codex trace event has a different rollout identity".to_string());
+        }
+        let event_type = event
+            .pointer("/payload/type")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default();
+        match event_type {
+            "tool_call_ended" => {
+                preceding_tool_call_count = preceding_tool_call_count.saturating_add(1);
+            }
+            "inference_started" => {
+                let inference_call_id = event
+                    .pointer("/payload/inference_call_id")
+                    .and_then(serde_json::Value::as_str)
+                    .ok_or_else(|| {
+                        "Private Codex inference start lacks a call identity".to_string()
+                    })?;
+                if event
+                    .pointer("/payload/thread_id")
+                    .and_then(serde_json::Value::as_str)
+                    != Some(trace_manifest.root_thread_id.as_str())
+                    || event.get("thread_id").and_then(serde_json::Value::as_str)
+                        != Some(trace_manifest.root_thread_id.as_str())
+                {
+                    return Err(
+                        "Private Codex inference start names a different thread".to_string()
+                    );
+                }
+                let model_id = event
+                    .pointer("/payload/model")
+                    .and_then(serde_json::Value::as_str)
+                    .ok_or_else(|| "Private Codex inference start lacks a model".to_string())?;
+                if model_id != expected_model_id {
+                    return Err(format!(
+                        "Private Codex inference used model {model_id}, expected {expected_model_id}"
+                    ));
+                }
+                let request_path = event
+                    .pointer("/payload/request_payload/path")
+                    .and_then(serde_json::Value::as_str)
+                    .ok_or_else(|| {
+                        "Private Codex inference start lacks a request payload".to_string()
+                    })?;
+                let request_path = safe_trace_payload_path(
+                    &bundle_dir,
+                    trace_manifest.payloads_dir.as_str(),
+                    request_path,
+                )?;
+                let request = read_private_trace_json(&request_path, "inference request")?;
+                if request.get("model").and_then(serde_json::Value::as_str)
+                    != Some(expected_model_id)
+                {
+                    return Err(
+                        "Private Codex inference request names a different model".to_string()
+                    );
+                }
+                let prompt_cache_key_scope = match request
+                    .get("prompt_cache_key")
+                    .and_then(serde_json::Value::as_str)
+                {
+                    Some(value) if value == trace_manifest.root_thread_id => "thread",
+                    Some(_) => "other",
+                    None => "absent",
+                }
+                .to_string();
+                let pending_inference = PendingCodexInference {
+                    started_at_unix_ms: event
+                        .get("wall_time_unix_ms")
+                        .and_then(serde_json::Value::as_u64)
+                        .ok_or_else(|| {
+                            "Private Codex inference start lacks a timestamp".to_string()
+                        })?,
+                    model_id: model_id.to_string(),
+                    has_previous_response_id: request
+                        .get("previous_response_id")
+                        .is_some_and(|value| !value.is_null()),
+                    prompt_cache_key_scope,
+                    prompt_cache_options_present: request
+                        .get("prompt_cache_options")
+                        .is_some_and(|value| !value.is_null()),
+                    request_input_item_count: request
+                        .get("input")
+                        .and_then(serde_json::Value::as_array)
+                        .ok_or_else(|| {
+                            "Private Codex inference request lacks an input array".to_string()
+                        })?
+                        .len(),
+                    preceding_tool_call_count,
+                };
+                preceding_tool_call_count = 0;
+                if pending
+                    .insert(inference_call_id.to_string(), pending_inference)
+                    .is_some()
+                {
+                    return Err("Private Codex trace repeats an inference identity".to_string());
+                }
+            }
+            "inference_completed" => {
+                let inference_call_id = event
+                    .pointer("/payload/inference_call_id")
+                    .and_then(serde_json::Value::as_str)
+                    .ok_or_else(|| {
+                        "Private Codex inference completion lacks a call identity".to_string()
+                    })?;
+                let started = pending.remove(inference_call_id).ok_or_else(|| {
+                    "Private Codex inference completion has no matching start".to_string()
+                })?;
+                let response_path = event
+                    .pointer("/payload/response_payload/path")
+                    .and_then(serde_json::Value::as_str)
+                    .ok_or_else(|| {
+                        "Private Codex inference completion lacks a response payload".to_string()
+                    })?;
+                let response_path = safe_trace_payload_path(
+                    &bundle_dir,
+                    trace_manifest.payloads_dir.as_str(),
+                    response_path,
+                )?;
+                let response = read_private_trace_json(&response_path, "inference response")?;
+                let input_tokens =
+                    required_json_u64(&response, "/token_usage/input_tokens", "input_tokens")?;
+                let cached_input_tokens = required_json_u64(
+                    &response,
+                    "/token_usage/cached_input_tokens",
+                    "cached_input_tokens",
+                )?;
+                let cache_write_input_tokens = required_json_u64(
+                    &response,
+                    "/token_usage/cache_write_input_tokens",
+                    "cache_write_input_tokens",
+                )?;
+                let output_tokens =
+                    required_json_u64(&response, "/token_usage/output_tokens", "output_tokens")?;
+                let reasoning_tokens = required_json_u64(
+                    &response,
+                    "/token_usage/reasoning_output_tokens",
+                    "reasoning_output_tokens",
+                )?;
+                let provider_total_tokens =
+                    required_json_u64(&response, "/token_usage/total_tokens", "total_tokens")?;
+                if cached_input_tokens > input_tokens {
+                    return Err(
+                        "Private Codex inference cached input exceeds input tokens".to_string()
+                    );
+                }
+                if reasoning_tokens > output_tokens {
+                    return Err(
+                        "Private Codex inference reasoning output exceeds output tokens"
+                            .to_string(),
+                    );
+                }
+                if provider_total_tokens != input_tokens.saturating_add(output_tokens) {
+                    return Err(
+                        "Private Codex inference provider total does not equal input plus output"
+                            .to_string(),
+                    );
+                }
+                let completed_at = event
+                    .get("wall_time_unix_ms")
+                    .and_then(serde_json::Value::as_u64)
+                    .ok_or_else(|| {
+                        "Private Codex inference completion lacks a timestamp".to_string()
+                    })?;
+                let elapsed_ms = completed_at
+                    .checked_sub(started.started_at_unix_ms)
+                    .ok_or_else(|| {
+                        "Private Codex inference completion predates its start".to_string()
+                    })?;
+                rows.push(AgentTokenCacheRequestUsage {
+                    contract: AGENT_TOKEN_CACHE_REQUEST_USAGE_CONTRACT.to_string(),
+                    run_id: run_id.to_string(),
+                    request_index: rows.len() + 1,
+                    request_status: "completed".to_string(),
+                    model_id: started.model_id,
+                    elapsed_ms,
+                    input_tokens: Some(input_tokens),
+                    cached_input_tokens: Some(cached_input_tokens),
+                    uncached_input_tokens: Some(input_tokens - cached_input_tokens),
+                    cache_write_input_tokens: Some(cache_write_input_tokens),
+                    output_tokens: Some(output_tokens),
+                    reasoning_tokens: Some(reasoning_tokens),
+                    provider_total_tokens: Some(provider_total_tokens),
+                    has_previous_response_id: started.has_previous_response_id,
+                    prompt_cache_key_scope: started.prompt_cache_key_scope,
+                    prompt_cache_options_present: started.prompt_cache_options_present,
+                    request_input_item_count: started.request_input_item_count,
+                    preceding_tool_call_count: started.preceding_tool_call_count,
+                });
+            }
+            "inference_failed" => {
+                let inference_call_id = event
+                    .pointer("/payload/inference_call_id")
+                    .and_then(serde_json::Value::as_str)
+                    .ok_or_else(|| {
+                        "Private Codex inference failure lacks a call identity".to_string()
+                    })?;
+                let started = pending.remove(inference_call_id).ok_or_else(|| {
+                    "Private Codex inference failure has no matching start".to_string()
+                })?;
+                if event
+                    .pointer("/payload/partial_response_payload")
+                    .is_some_and(|value| !value.is_null())
+                {
+                    return Err(
+                        "Private Codex failed inference carries unsupported partial usage"
+                            .to_string(),
+                    );
+                }
+                let failed_at = event
+                    .get("wall_time_unix_ms")
+                    .and_then(serde_json::Value::as_u64)
+                    .ok_or_else(|| {
+                        "Private Codex inference failure lacks a timestamp".to_string()
+                    })?;
+                let elapsed_ms = failed_at
+                    .checked_sub(started.started_at_unix_ms)
+                    .ok_or_else(|| {
+                        "Private Codex inference failure predates its start".to_string()
+                    })?;
+                rows.push(AgentTokenCacheRequestUsage {
+                    contract: AGENT_TOKEN_CACHE_REQUEST_USAGE_CONTRACT.to_string(),
+                    run_id: run_id.to_string(),
+                    request_index: rows.len() + 1,
+                    request_status: "failed".to_string(),
+                    model_id: started.model_id,
+                    elapsed_ms,
+                    input_tokens: None,
+                    cached_input_tokens: None,
+                    uncached_input_tokens: None,
+                    cache_write_input_tokens: None,
+                    output_tokens: None,
+                    reasoning_tokens: None,
+                    provider_total_tokens: None,
+                    has_previous_response_id: started.has_previous_response_id,
+                    prompt_cache_key_scope: started.prompt_cache_key_scope,
+                    prompt_cache_options_present: started.prompt_cache_options_present,
+                    request_input_item_count: started.request_input_item_count,
+                    preceding_tool_call_count: started.preceding_tool_call_count,
+                });
+            }
+            _ => {}
+        }
+    }
+    if !pending.is_empty() {
+        return Err("Private Codex trace contains an incomplete inference".to_string());
+    }
+    if !rows.iter().any(|row| row.request_status == "completed") {
+        return Err("Private Codex trace contains no completed inference".to_string());
+    }
+    let sum = |select: fn(&AgentTokenCacheRequestUsage) -> Option<u64>| {
+        rows.iter().fold(0_u64, |total, row| {
+            total.saturating_add(select(row).unwrap_or_default())
+        })
+    };
+    let input_tokens = sum(|row| row.input_tokens);
+    let cached_input_tokens = sum(|row| row.cached_input_tokens);
+    let uncached_input_tokens = sum(|row| row.uncached_input_tokens);
+    let cache_write_input_tokens = sum(|row| row.cache_write_input_tokens);
+    let output_tokens = sum(|row| row.output_tokens);
+    let reasoning_tokens = sum(|row| row.reasoning_tokens);
+    let provider_total_tokens = sum(|row| row.provider_total_tokens);
+    let reconciled = input_tokens == terminal_usage.input_tokens
+        && cached_input_tokens == terminal_usage.cached_input_tokens.unwrap_or_default()
+        && cache_write_input_tokens == terminal_usage.cache_write_input_tokens.unwrap_or_default()
+        && output_tokens == terminal_usage.output_tokens
+        && reasoning_tokens == terminal_usage.reasoning_tokens.unwrap_or_default()
+        && provider_total_tokens == terminal_usage.provider_total_tokens;
+    if !reconciled {
+        return Err(
+            "Private Codex per-inference usage does not reconcile with terminal usage".to_string(),
+        );
+    }
+    let summary = AgentTokenCacheTraceSummary {
+        contract: AGENT_TOKEN_CACHE_TRACE_SUMMARY_CONTRACT.to_string(),
+        run_id: run_id.to_string(),
+        request_count: rows.len(),
+        completed_request_count: rows
+            .iter()
+            .filter(|row| row.request_status == "completed")
+            .count(),
+        failed_request_count: rows
+            .iter()
+            .filter(|row| row.request_status == "failed")
+            .count(),
+        input_tokens,
+        cached_input_tokens,
+        uncached_input_tokens,
+        cache_write_input_tokens,
+        output_tokens,
+        reasoning_tokens,
+        provider_total_tokens,
+        initial_request_count: rows
+            .iter()
+            .filter(|row| !row.has_previous_response_id)
+            .count(),
+        continuation_request_count: rows
+            .iter()
+            .filter(|row| row.has_previous_response_id)
+            .count(),
+        cache_hit_request_count: rows
+            .iter()
+            .filter(|row| row.cached_input_tokens.is_some_and(|tokens| tokens > 0))
+            .count(),
+        cache_miss_request_count: rows
+            .iter()
+            .filter(|row| row.cached_input_tokens == Some(0))
+            .count(),
+        continuation_cache_hit_count: rows
+            .iter()
+            .filter(|row| {
+                row.has_previous_response_id
+                    && row.cached_input_tokens.is_some_and(|tokens| tokens > 0)
+            })
+            .count(),
+        continuation_cache_miss_count: rows
+            .iter()
+            .filter(|row| row.has_previous_response_id && row.cached_input_tokens == Some(0))
+            .count(),
+        thread_scoped_cache_key_request_count: rows
+            .iter()
+            .filter(|row| row.prompt_cache_key_scope == "thread")
+            .count(),
+        other_cache_key_request_count: rows
+            .iter()
+            .filter(|row| row.prompt_cache_key_scope == "other")
+            .count(),
+        absent_cache_key_request_count: rows
+            .iter()
+            .filter(|row| row.prompt_cache_key_scope == "absent")
+            .count(),
+        response_chained_request_count: rows
+            .iter()
+            .filter(|row| row.has_previous_response_id)
+            .count(),
+        reconciled_with_terminal_usage: true,
+    };
+    Ok((rows, summary))
+}
+
+fn write_cache_trace_artifacts(
+    rows_path: &Path,
+    summary_path: &Path,
+    rows: &[AgentTokenCacheRequestUsage],
+    summary: &AgentTokenCacheTraceSummary,
+) -> Result<(), String> {
+    write_json_lines_new(rows_path, rows)?;
+    write_json_new(summary_path, summary)
+}
+
 fn json_type_occurrences(value: &serde_json::Value, expected: &str) -> usize {
     match value {
         serde_json::Value::Object(object) => {
@@ -5583,9 +6422,10 @@ fn extract_and_validate_executor_transcript(
                 manifest.accounting_profile,
                 AgentTokenTranscriptWorkflowOptions {
                     ait_sprint_mode: manifest.ait_sprint_mode,
-                    ait_edit_root_mode: (manifest.protocol_revision
-                        == AGENT_TOKEN_PROTOCOL_REVISION)
-                        .then_some(manifest.ait_edit_root_mode),
+                    ait_edit_root_mode: protocol_has_model_request_state(
+                        &manifest.protocol_revision,
+                    )
+                    .then_some(manifest.ait_edit_root_mode),
                     git_worktree_mode: manifest.git_worktree_mode,
                     clean_main_head_proven,
                 },
@@ -5599,9 +6439,10 @@ fn extract_and_validate_executor_transcript(
                 manifest.accounting_profile,
                 AgentTokenTranscriptWorkflowOptions {
                     ait_sprint_mode: manifest.ait_sprint_mode,
-                    ait_edit_root_mode: (manifest.protocol_revision
-                        == AGENT_TOKEN_PROTOCOL_REVISION)
-                        .then_some(manifest.ait_edit_root_mode),
+                    ait_edit_root_mode: protocol_has_model_request_state(
+                        &manifest.protocol_revision,
+                    )
+                    .then_some(manifest.ait_edit_root_mode),
                     git_worktree_mode: manifest.git_worktree_mode,
                     clean_main_head_proven,
                 },
@@ -6788,6 +7629,25 @@ fn decode_json_file<T: DeserializeOwned>(path: &Path, kind: &str) -> Result<T, S
         .map_err(|error| format!("Failed to decode {kind} {}: {error}", path.display()))
 }
 
+fn decode_json_lines_file<T: DeserializeOwned>(path: &Path, kind: &str) -> Result<Vec<T>, String> {
+    let source = fs::read_to_string(path)
+        .map_err(|error| format!("Failed to read {kind} {}: {error}", path.display()))?;
+    source
+        .lines()
+        .enumerate()
+        .filter(|(_, line)| !line.trim().is_empty())
+        .map(|(index, line)| {
+            serde_json::from_str(line).map_err(|error| {
+                format!(
+                    "Failed to decode {kind} {} line {}: {error}",
+                    path.display(),
+                    index + 1
+                )
+            })
+        })
+        .collect()
+}
+
 fn ensure_parent(path: &Path) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
@@ -6903,6 +7763,36 @@ fn validate_agent_token_campaign_evidence_internal(
             errors.push(format!(
                 "campaign is missing regular evidence file {required}"
             ));
+        }
+    }
+    if manifest.protocol_revision == AGENT_TOKEN_PROTOCOL_REVISION
+        && manifest.runtime.executor == crate::agent_token::AgentTokenExecutor::Codex
+    {
+        for required in [
+            "executor-preflight-cache-request-usage.jsonl",
+            "executor-preflight-cache-trace-summary.json",
+        ] {
+            let path = campaign_dir.join(required);
+            let metadata = fs::symlink_metadata(&path);
+            if !metadata
+                .as_ref()
+                .is_ok_and(|metadata| metadata.is_file() && !metadata.file_type().is_symlink())
+            {
+                errors.push(format!(
+                    "campaign is missing regular cache-trace evidence file {required}"
+                ));
+            }
+        }
+        let trace_root = codex_rollout_trace_root(
+            &campaign_dir.join("private/executor-preflight-events.raw.jsonl"),
+        );
+        if trace_root.as_ref().is_err()
+            || trace_root.as_ref().is_ok_and(|path| {
+                !fs::symlink_metadata(path)
+                    .is_ok_and(|metadata| metadata.is_dir() && !metadata.file_type().is_symlink())
+            })
+        {
+            errors.push("campaign is missing its private preflight rollout trace".to_string());
         }
     }
     let preflight_prompt =
@@ -7068,6 +7958,62 @@ fn validate_agent_token_campaign_evidence_internal(
             || usage.completed_turns != 1
     }) {
         errors.push("executor preflight provider/model usage pin differs".to_string());
+    }
+    if manifest.protocol_revision == AGENT_TOKEN_PROTOCOL_REVISION
+        && manifest.runtime.executor == crate::agent_token::AgentTokenExecutor::Codex
+    {
+        let preflight_run_id = format!("{}-executor-preflight", manifest.campaign_id);
+        let raw_events = campaign_dir.join("private/executor-preflight-events.raw.jsonl");
+        let recomputed = import_executor_usage(
+            manifest,
+            &raw_events,
+            &preflight_run_id,
+            "executor-preflight",
+            AgentTokenMode::GitLinearSingleSession,
+        )
+        .and_then(|imported| {
+            inspect_model_request_state(manifest, &raw_events, &preflight_run_id).and_then(
+                |model_state| {
+                    codex_rollout_trace_root(&raw_events).and_then(|trace_root| {
+                        parse_codex_cache_trace(
+                            &trace_root,
+                            model_state.thread_id.as_deref(),
+                            &manifest.model.model_id,
+                            &preflight_run_id,
+                            &imported.usage,
+                        )
+                    })
+                },
+            )
+        });
+        let recorded_rows = decode_json_lines_file::<AgentTokenCacheRequestUsage>(
+            &campaign_dir.join("executor-preflight-cache-request-usage.jsonl"),
+            "executor preflight cache request usage",
+        );
+        let recorded_summary = decode_json_file::<AgentTokenCacheTraceSummary>(
+            &campaign_dir.join("executor-preflight-cache-trace-summary.json"),
+            "executor preflight cache trace summary",
+        );
+        match (recomputed, recorded_rows, recorded_summary) {
+            (Ok((rows, summary)), Ok(recorded_rows), Ok(recorded_summary))
+                if rows == recorded_rows
+                    && summary == recorded_summary
+                    && preflight_report.internal_provider_request_count
+                        == Some(summary.request_count)
+                    && preflight_report.cache_trace_reconciled => {}
+            (Err(error), _, _) | (_, Err(error), _) | (_, _, Err(error)) => errors.push(error),
+            _ => errors.push(
+                "executor preflight cache trace differs from its redacted evidence or report"
+                    .to_string(),
+            ),
+        }
+    } else if preflight_report.internal_provider_request_count.is_some()
+        || preflight_report.cache_trace_reconciled
+    {
+        errors.push(
+            "executor preflight reports Codex cache tracing outside the current Codex contract"
+                .to_string(),
+        );
     }
     if protocol_requires_claude_model_evidence(&manifest.protocol_revision)
         && manifest.runtime.executor == crate::agent_token::AgentTokenExecutor::Claude
@@ -7256,7 +8202,7 @@ fn validate_agent_token_campaign_evidence_internal(
                 ));
             }
         }
-        if manifest.protocol_revision == AGENT_TOKEN_PROTOCOL_REVISION {
+        if protocol_has_model_request_state(&manifest.protocol_revision) {
             for required in ["model-request-state.json", "private/codex-events.raw.jsonl"] {
                 let path = run_dir.join(required);
                 let metadata = fs::symlink_metadata(&path);
@@ -7269,6 +8215,37 @@ fn validate_agent_token_campaign_evidence_internal(
                         run.run_id
                     ));
                 }
+            }
+        }
+        if manifest.protocol_revision == AGENT_TOKEN_PROTOCOL_REVISION
+            && manifest.runtime.executor == crate::agent_token::AgentTokenExecutor::Codex
+        {
+            for required in ["cache-request-usage.jsonl", "cache-trace-summary.json"] {
+                let path = run_dir.join(required);
+                let metadata = fs::symlink_metadata(&path);
+                if !metadata
+                    .as_ref()
+                    .is_ok_and(|metadata| metadata.is_file() && !metadata.file_type().is_symlink())
+                {
+                    errors.push(format!(
+                        "run {} is missing regular cache-trace evidence file {required}",
+                        run.run_id
+                    ));
+                }
+            }
+            let trace_root =
+                codex_rollout_trace_root(&run_dir.join("private/codex-events.raw.jsonl"));
+            if trace_root.as_ref().is_err()
+                || trace_root.as_ref().is_ok_and(|path| {
+                    !fs::symlink_metadata(path).is_ok_and(|metadata| {
+                        metadata.is_dir() && !metadata.file_type().is_symlink()
+                    })
+                })
+            {
+                errors.push(format!(
+                    "run {} is missing its private Codex rollout trace directory",
+                    run.run_id
+                ));
             }
         }
         let managed_git_run = run.mode == AgentTokenMode::GitLinearSingleSession
@@ -7572,15 +8549,63 @@ fn validate_agent_token_campaign_evidence_internal(
                 run.run_id
             ));
         }
-        if manifest.protocol_revision == AGENT_TOKEN_PROTOCOL_REVISION {
+        if protocol_has_model_request_state(&manifest.protocol_revision) {
             let raw_events = run_dir.join("private/codex-events.raw.jsonl");
             let recorded = decode_json_file::<AgentTokenModelRequestState>(
                 &run_dir.join("model-request-state.json"),
                 "model request state",
             );
-            let recomputed = inspect_model_request_state(manifest, &raw_events, &run.run_id);
+            let recomputed = inspect_model_request_state(manifest, &raw_events, &run.run_id)
+                .and_then(|mut state| {
+                    if manifest.protocol_revision == AGENT_TOKEN_PROTOCOL_REVISION
+                        && manifest.runtime.executor
+                            == crate::agent_token::AgentTokenExecutor::Codex
+                    {
+                        let usage = run.usage.as_ref().ok_or_else(|| {
+                            "Run lacks terminal usage for cache-trace validation".to_string()
+                        })?;
+                        let trace_root = codex_rollout_trace_root(&raw_events)?;
+                        let (recomputed_rows, recomputed_summary) = parse_codex_cache_trace(
+                            &trace_root,
+                            state.thread_id.as_deref(),
+                            &manifest.model.model_id,
+                            &run.run_id,
+                            usage,
+                        )?;
+                        let recorded_rows = decode_json_lines_file::<AgentTokenCacheRequestUsage>(
+                            &run_dir.join("cache-request-usage.jsonl"),
+                            "cache request usage",
+                        )?;
+                        let recorded_summary = decode_json_file::<AgentTokenCacheTraceSummary>(
+                            &run_dir.join("cache-trace-summary.json"),
+                            "cache trace summary",
+                        )?;
+                        if recorded_rows != recomputed_rows
+                            || recorded_summary != recomputed_summary
+                        {
+                            return Err(
+                                "Redacted cache-trace evidence differs from the private trace"
+                                    .to_string(),
+                            );
+                        }
+                        state.internal_provider_request_count =
+                            Some(recomputed_summary.request_count);
+                        state.internal_provider_request_count_authority =
+                            "private_codex_rollout_trace:inference_completed.token_usage"
+                                .to_string();
+                        if run.secondary_metrics.model_calls != recomputed_summary.request_count {
+                            return Err("Run model-call metric differs from per-inference trace"
+                                .to_string());
+                        }
+                    }
+                    Ok(state)
+                });
             match (recorded, recomputed) {
                 (Ok(recorded), Ok(recomputed)) => {
+                    let codex_cache_trace_required = manifest.protocol_revision
+                        == AGENT_TOKEN_PROTOCOL_REVISION
+                        && manifest.runtime.executor
+                            == crate::agent_token::AgentTokenExecutor::Codex;
                     if recorded != recomputed
                         || recorded.contract != AGENT_TOKEN_MODEL_REQUEST_STATE_CONTRACT
                         || recorded.run_id != run.run_id
@@ -7590,9 +8615,14 @@ fn validate_agent_token_campaign_evidence_internal(
                         || recorded.turn_completed_count + recorded.turn_failed_count != 1
                         || recorded.usage_event_count != 1
                         || recorded.terminal_state == "incomplete"
-                        || recorded.internal_provider_request_count.is_some()
-                        || recorded.internal_provider_request_count_authority
-                            != "unavailable_from_executor_events; turn count is not a provider-request count"
+                        || (codex_cache_trace_required
+                            && (recorded.internal_provider_request_count.is_none()
+                                || recorded.internal_provider_request_count_authority
+                                    != "private_codex_rollout_trace:inference_completed.token_usage"))
+                        || (!codex_cache_trace_required
+                            && (recorded.internal_provider_request_count.is_some()
+                                || recorded.internal_provider_request_count_authority
+                                    != "unavailable_from_executor_events; turn count is not a provider-request count"))
                     {
                         errors.push(format!(
                             "run {} model-request state is incomplete or differs from raw executor events",
@@ -8459,6 +9489,15 @@ mod tests {
             project_document_loading_label(8_192),
             "enabled_symmetrically_pilot_diagnostic_project_doc_max_bytes_8192"
         );
+
+        let mut manifest = test_manifest();
+        assert!(!retain_generated_project_document(&manifest));
+        assert!(!mirror_agents_guidance_for_claude(&manifest));
+        manifest.runtime.project_doc_max_bytes = 8_192;
+        assert!(retain_generated_project_document(&manifest));
+        manifest.runtime.executor = crate::agent_token::AgentTokenExecutor::Claude;
+        assert!(!retain_generated_project_document(&manifest));
+        assert!(mirror_agents_guidance_for_claude(&manifest));
     }
 
     #[test]
@@ -9335,6 +10374,35 @@ mod tests {
                 "first-use Git prompt contains inspection coaching {inspection_hint:?}: {first_use_git_prompt}"
             );
         }
+    }
+
+    #[test]
+    fn project_document_prompt_defers_to_loaded_guidance_without_repeating_commands() {
+        let mut manifest = test_manifest();
+        manifest.runtime.project_doc_max_bytes = 8_192;
+        let entry = AgentTokenScheduleEntry {
+            run_id: "test-b001-gd-01-ait".to_string(),
+            workload_id: "GD-01".to_string(),
+            mode: AgentTokenMode::AitLinearSingleSession,
+            attempt: 1,
+            block_index: 1,
+            randomized_order: 1,
+        };
+        let prompt = build_measured_prompt(
+            &manifest,
+            &entry,
+            "repair the game",
+            None,
+            None,
+            Some(Path::new("/benchmark/ait-task-worktree")),
+        );
+
+        assert!(prompt.contains("follow its loaded `AGENTS.md`"));
+        assert!(prompt.contains("caller-selected `--edit-root /benchmark/ait-task-worktree`"));
+        assert!(prompt.contains("Finish the same Task"));
+        assert!(!prompt.contains("task start --title"));
+        assert!(!prompt.contains("task finish <returned-task-id>"));
+        assert!(!prompt.contains("next_action.command"));
     }
 
     #[test]
@@ -10272,6 +11340,192 @@ mod tests {
         )
         .unwrap();
         assert_eq!(count_rejected_apply_patch_attempts(&stderr).unwrap(), 4);
+    }
+
+    #[test]
+    fn codex_cache_trace_is_redacted_and_reconciles_every_inference() {
+        let temp = tempfile::tempdir().unwrap();
+        let trace_root = temp.path().join("trace-root");
+        let bundle = trace_root.join("trace-secret");
+        let payloads = bundle.join("payloads");
+        fs::create_dir_all(&payloads).unwrap();
+        let thread_id = "secret-thread-uuid";
+        fs::write(
+            bundle.join("manifest.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "schema_version": 1,
+                "trace_id": "secret-trace-id",
+                "rollout_id": thread_id,
+                "root_thread_id": thread_id,
+                "started_at_unix_ms": 1,
+                "raw_event_log": "trace.jsonl",
+                "payloads_dir": "payloads"
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        for (name, value) in [
+            (
+                "1.json",
+                serde_json::json!({
+                    "model": "test-model",
+                    "prompt_cache_key": thread_id,
+                    "input": [{"role": "user"}]
+                }),
+            ),
+            (
+                "2.json",
+                serde_json::json!({
+                    "token_usage": {
+                        "input_tokens": 10,
+                        "cached_input_tokens": 0,
+                        "cache_write_input_tokens": 0,
+                        "output_tokens": 3,
+                        "reasoning_output_tokens": 1,
+                        "total_tokens": 13
+                    }
+                }),
+            ),
+            (
+                "3.json",
+                serde_json::json!({
+                    "model": "test-model",
+                    "previous_response_id": "secret-response-id",
+                    "prompt_cache_key": thread_id,
+                    "input": [{"type": "function_call_output"}]
+                }),
+            ),
+            (
+                "4.json",
+                serde_json::json!({
+                    "token_usage": {
+                        "input_tokens": 13,
+                        "cached_input_tokens": 8,
+                        "cache_write_input_tokens": 0,
+                        "output_tokens": 2,
+                        "reasoning_output_tokens": 0,
+                        "total_tokens": 15
+                    }
+                }),
+            ),
+            (
+                "5.json",
+                serde_json::json!({
+                    "model": "test-model",
+                    "previous_response_id": "secret-response-id",
+                    "prompt_cache_key": thread_id,
+                    "input": [{"type": "function_call_output"}]
+                }),
+            ),
+        ] {
+            fs::write(payloads.join(name), serde_json::to_vec(&value).unwrap()).unwrap();
+        }
+        let events = [
+            serde_json::json!({
+                "schema_version": 1, "seq": 1, "wall_time_unix_ms": 10,
+                "rollout_id": thread_id, "thread_id": thread_id,
+                "payload": {"type": "inference_started", "inference_call_id": "secret-call-1", "thread_id": thread_id, "model": "test-model", "request_payload": {"path": "payloads/1.json"}}
+            }),
+            serde_json::json!({
+                "schema_version": 1, "seq": 2, "wall_time_unix_ms": 15,
+                "rollout_id": thread_id, "thread_id": thread_id,
+                "payload": {"type": "inference_completed", "inference_call_id": "secret-call-1", "response_id": "secret-response-1", "response_payload": {"path": "payloads/2.json"}}
+            }),
+            serde_json::json!({
+                "schema_version": 1, "seq": 3, "wall_time_unix_ms": 16,
+                "rollout_id": thread_id, "thread_id": thread_id,
+                "payload": {"type": "tool_call_ended", "tool_call_id": "secret-tool"}
+            }),
+            serde_json::json!({
+                "schema_version": 1, "seq": 4, "wall_time_unix_ms": 20,
+                "rollout_id": thread_id, "thread_id": thread_id,
+                "payload": {"type": "inference_started", "inference_call_id": "secret-failed-call", "thread_id": thread_id, "model": "test-model", "request_payload": {"path": "payloads/5.json"}}
+            }),
+            serde_json::json!({
+                "schema_version": 1, "seq": 5, "wall_time_unix_ms": 27,
+                "rollout_id": thread_id, "thread_id": thread_id,
+                "payload": {"type": "inference_failed", "inference_call_id": "secret-failed-call", "error": "redacted by parser", "partial_response_payload": null}
+            }),
+            serde_json::json!({
+                "schema_version": 1, "seq": 6, "wall_time_unix_ms": 28,
+                "rollout_id": thread_id, "thread_id": thread_id,
+                "payload": {"type": "inference_started", "inference_call_id": "secret-call-2", "thread_id": thread_id, "model": "test-model", "request_payload": {"path": "payloads/3.json"}}
+            }),
+            serde_json::json!({
+                "schema_version": 1, "seq": 7, "wall_time_unix_ms": 35,
+                "rollout_id": thread_id, "thread_id": thread_id,
+                "payload": {"type": "inference_completed", "inference_call_id": "secret-call-2", "response_id": "secret-response-2", "response_payload": {"path": "payloads/4.json"}}
+            }),
+        ];
+        let trace_jsonl = events
+            .iter()
+            .map(|event| serde_json::to_string(event).unwrap())
+            .collect::<Vec<_>>()
+            .join("\n");
+        fs::write(bundle.join("trace.jsonl"), format!("{trace_jsonl}\n")).unwrap();
+        let mut usage = test_normalized_usage();
+        usage.model_id = "test-model".to_string();
+        usage.input_tokens = 23;
+        usage.cached_input_tokens = Some(8);
+        usage.cache_write_input_tokens = Some(0);
+        usage.output_tokens = 5;
+        usage.reasoning_tokens = Some(1);
+        usage.provider_total_tokens = 28;
+
+        let (rows, summary) = parse_codex_cache_trace(
+            &trace_root,
+            Some(thread_id),
+            "test-model",
+            "public-run",
+            &usage,
+        )
+        .unwrap();
+
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[0].uncached_input_tokens, Some(10));
+        assert_eq!(rows[1].request_status, "failed");
+        assert_eq!(rows[1].cached_input_tokens, None);
+        assert_eq!(rows[1].preceding_tool_call_count, 1);
+        assert!(rows[1].has_previous_response_id);
+        assert_eq!(rows[2].cached_input_tokens, Some(8));
+        assert_eq!(rows[2].uncached_input_tokens, Some(5));
+        assert_eq!(summary.request_count, 3);
+        assert_eq!(summary.completed_request_count, 2);
+        assert_eq!(summary.failed_request_count, 1);
+        assert_eq!(summary.cache_hit_request_count, 1);
+        assert_eq!(summary.continuation_cache_hit_count, 1);
+        assert!(summary.reconciled_with_terminal_usage);
+        let redacted = serde_json::to_string(&(rows, summary)).unwrap();
+        for secret in [
+            thread_id,
+            "secret-trace-id",
+            "secret-response-id",
+            "secret-call-1",
+            "secret-response-2",
+        ] {
+            assert!(!redacted.contains(secret));
+        }
+
+        usage.input_tokens += 1;
+        assert!(parse_codex_cache_trace(
+            &trace_root,
+            Some(thread_id),
+            "test-model",
+            "public-run",
+            &usage,
+        )
+        .unwrap_err()
+        .contains("does not reconcile"));
+    }
+
+    #[test]
+    fn codex_cache_trace_rejects_payload_parent_traversal() {
+        let temp = tempfile::tempdir().unwrap();
+        assert!(
+            safe_trace_payload_path(temp.path(), "payloads", "payloads/../secret.json")
+                .unwrap_err()
+                .contains("escapes")
+        );
     }
 
     #[test]

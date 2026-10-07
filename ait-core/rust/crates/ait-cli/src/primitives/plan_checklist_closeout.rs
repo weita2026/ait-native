@@ -143,8 +143,13 @@ pub(in crate::primitives) fn close_task_plan_checklist_item(
         }));
     }
     let updated = closeout.status == PlanChecklistCloseoutStatus::Updated;
+    let (closeout_markdown, nested_closed_count) = if updated {
+        close_nested_open_checkboxes(&closeout.markdown, closeout.line_number)
+    } else {
+        (closeout.markdown.clone(), 0)
+    };
     if updated {
-        fs::write(resolved_path, &closeout.markdown).map_err(|err| {
+        fs::write(resolved_path, &closeout_markdown).map_err(|err| {
             format!("Failed to close bound checklist item in {artifact_path}: {err}")
         })?;
     }
@@ -200,9 +205,104 @@ pub(in crate::primitives) fn close_task_plan_checklist_item(
         "artifact_selector": artifact_selector,
         "line_number": closeout.line_number,
         "updated": updated,
+        "nested_closed_count": nested_closed_count,
         "sync": sync,
         "retention": retention,
     }))
+}
+
+fn leading_indent(line: &str) -> usize {
+    line.chars().take_while(|c| *c == ' ' || *c == '\t').count()
+}
+
+fn is_open_checkbox_line(trimmed: &str) -> bool {
+    ["- [ ] ", "* [ ] ", "+ [ ] "]
+        .iter()
+        .any(|marker| trimmed.starts_with(marker))
+        || ["- [ ]", "* [ ]", "+ [ ]"].contains(&trimmed)
+}
+
+/// Close open checkbox items nested directly beneath the bound item (deeper
+/// indentation, no blank line or heading in between). Returns the rewritten
+/// Markdown and how many nested items were closed.
+pub(crate) fn close_nested_open_checkboxes(
+    markdown: &str,
+    bound_line_number: Option<i64>,
+) -> (String, usize) {
+    let Some(bound_line_number) = bound_line_number.filter(|value| *value >= 1) else {
+        return (markdown.to_string(), 0);
+    };
+    let mut lines = markdown
+        .split_inclusive('\n')
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    let bound_index = (bound_line_number - 1) as usize;
+    let Some(bound_line) = lines.get(bound_index) else {
+        return (markdown.to_string(), 0);
+    };
+    let base_indent = leading_indent(bound_line);
+    let mut closed = 0;
+    for line in lines.iter_mut().skip(bound_index + 1) {
+        let trimmed_end = line.trim_end_matches(['\n', '\r']);
+        if trimmed_end.trim().is_empty() || trimmed_end.trim_start().starts_with('#') {
+            break;
+        }
+        let indent = leading_indent(trimmed_end);
+        if indent <= base_indent {
+            break;
+        }
+        // A nested item with its own `[ref: ...]` is independently bindable by
+        // another Task; only that Task may close it.
+        if is_open_checkbox_line(trimmed_end.trim_start()) && !trimmed_end.contains("[ref:") {
+            if let Some(position) = line.find("[ ]") {
+                line.replace_range(position..position + 3, "[x]");
+                closed += 1;
+            }
+        }
+    }
+    (lines.concat(), closed)
+}
+
+#[cfg(test)]
+mod nested_checkbox_tests {
+    use super::close_nested_open_checkboxes;
+
+    #[test]
+    fn nested_open_items_close_with_the_bound_item_and_stop_at_siblings() {
+        let markdown = "# Card [plan-ref: c/root]\n\n- [x] Ship it [ref: c/ship]\n  - [ ] step one\n  - [x] step two\n    - [ ] deeper\n  - plain note\n- [ ] sibling [ref: c/other]\n";
+        let (rewritten, closed) = close_nested_open_checkboxes(markdown, Some(3));
+        assert_eq!(closed, 2, "{rewritten}");
+        assert!(rewritten.contains("  - [x] step one\n"));
+        assert!(rewritten.contains("    - [x] deeper\n"));
+        assert!(
+            rewritten.contains("- [ ] sibling [ref: c/other]\n"),
+            "{rewritten}"
+        );
+        assert!(rewritten.contains("  - plain note\n"));
+    }
+
+    #[test]
+    fn nested_items_with_their_own_ref_stay_open() {
+        let markdown = "- [x] Parent [ref: c/parent]\n  - [ ] child step\n  - [ ] own task [ref: c/child]\n  - [ ] another step\n";
+        let (rewritten, closed) = close_nested_open_checkboxes(markdown, Some(1));
+        assert_eq!(closed, 2, "{rewritten}");
+        assert!(
+            rewritten.contains("  - [ ] own task [ref: c/child]\n"),
+            "{rewritten}"
+        );
+        assert!(rewritten.contains("  - [x] child step\n"));
+        assert!(rewritten.contains("  - [x] another step\n"));
+    }
+
+    #[test]
+    fn blank_lines_headings_and_missing_lines_end_the_scan() {
+        let markdown = "- [x] Ship [ref: c/ship]\n\n  - [ ] after blank\n";
+        assert_eq!(close_nested_open_checkboxes(markdown, Some(1)).1, 0);
+        let markdown = "- [x] Ship [ref: c/ship]\n## Acceptance\n  - [ ] under heading\n";
+        assert_eq!(close_nested_open_checkboxes(markdown, Some(1)).1, 0);
+        assert_eq!(close_nested_open_checkboxes(markdown, Some(99)).1, 0);
+        assert_eq!(close_nested_open_checkboxes(markdown, None).1, 0);
+    }
 }
 
 pub(in crate::primitives) fn inspect_task_plan_checklist_item(

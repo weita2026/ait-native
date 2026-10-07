@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 #[test]
 fn environment_inventory_sizes_are_frozen() {
-    assert_eq!(ENVIRONMENT_VARIABLES.len(), 24);
+    assert_eq!(ENVIRONMENT_VARIABLES.len(), 30);
     assert_eq!(REMOVED_ENVIRONMENT_NAMES.len(), 80);
 }
 

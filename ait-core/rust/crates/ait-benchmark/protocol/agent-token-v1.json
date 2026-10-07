@@ -1,6 +1,6 @@
 {
   "contract": "ait-agent-token-benchmark-protocol/v1",
-  "protocol_revision": "game-development-2026-08-31.52",
+  "protocol_revision": "game-development-2026-09-09.55",
   "subject": {
     "domain": "deterministic-static-web-2d-plane-shooter-development",
     "measured_quantity": "provider-reported token usage of an AI agent completing an accepted equivalent repository task",
@@ -13,6 +13,8 @@
       "program": "codex CLI in exec mode",
       "session_log_authority": "codex exec --json event stream",
       "usage_authority": "turn.completed usage events",
+      "cache_diagnostic_authority": "CODEX_ROLLOUT_TRACE_ROOT private rollout trace inference_completed token_usage; per-inference sums must exactly reconcile with turn.completed, which remains the aggregate accounting authority",
+      "cache_diagnostic_privacy": "raw rollout traces remain under private/; public redacted rows omit prompt text, paths, response IDs, thread IDs, inference IDs, and cache-key values",
       "tool_policy": "codex_shell_only",
       "feature_overrides": "none",
       "completed_file_change_authority": "completed Codex file_change items",
@@ -119,7 +121,7 @@
   "accounting_profiles": {
     "steady_state_task_cost": {
       "repository_bootstrap_in_primary_total": false,
-      "measurement_start": "fresh agent task instruction",
+      "measurement_start": "fresh agent task instruction after the runner has established each mode's clean baseline revision",
       "measurement_end": "accepted local workflow closeout; for codex_app_equivalent_managed the model measurement ends at its terminal event and runner-owned Git closeout latency is retained separately"
     },
     "first_use_total_cost": {
@@ -210,6 +212,7 @@
     "claude_model_purity_policy": "fail closed unless init model, every assistant model, and the sole terminal modelUsage key/canonicalModel equal the manifest model_id and the terminal modelUsage token fields equal the normalized terminal usage source",
     "claude_refusal_accounting": "retain a successful refusal as a protocol-valid unaccepted functional lane with every provider token included; never classify it as infrastructure",
     "provider_session_failure_policy": "retain a lane with any structured provider error event as infrastructure-invalid even when later commands, usage, or exit status appear successful",
+    "codex_per_inference_cache_diagnostic": "for current Codex evidence, record every internal provider inference attempt with status, response-chaining presence, and cache-key scope; completed attempts carry input, cached input, uncached input, cache-write input, output, and reasoning output, while a fully observed failure with no partial response carries null usage; terminal reconciliation sums only completed attempts and fails closed on missing, ambiguous, cross-model, cross-thread, unsafe-path, partially reported failed, or unreconciled traces",
     "candidate_tool_process_spawn_failure_policy": "a launch failure is measured candidate behavior when the same session recovers, exits zero without timeout, retains normalized provider usage, and produces a valid non-empty command transcript; count the failed invocation, retry, outputs, and all provider tokens. Otherwise retain the invalid run and stop immediately. Recognize both unified CreateProcess stderr and non-unified executor Io/exit-code-minus-one evidence",
     "overlapping_field_double_count_allowed": false
   },
@@ -238,6 +241,7 @@
     "benchmark_enabled_feature_overrides": [],
     "benchmark_disabled_feature_overrides": [],
     "token_accounting": "record separately as admission overhead; never include in AIT or Git metrics",
+    "codex_cache_trace_admission": "current Codex preflight must preserve its private rollout trace and publish redacted per-inference rows plus a summary that exactly reconciles with terminal preflight usage",
     "failure_policy": "preserve create-new preflight evidence, start zero candidate lanes, emit a stopped execution result, and require a new campaign identity after runtime recovery"
   },
   "primary_metrics": {
@@ -268,6 +272,9 @@
     "reasoning_tokens",
     "agent_turns",
     "model_calls",
+    "per_inference_cached_and_uncached_input_tokens",
+    "cache_hit_and_miss_request_counts",
+    "continuation_request_count_and_cache_key_scope",
     "model_terminal_state_and_executor_event_counts",
     "host_worktree_provisioning_and_closeout_elapsed_ms",
     "tool_calls_by_family",
@@ -334,7 +341,7 @@
     "fresh_workspace_per_run": true,
     "fresh_agent_session_per_run": true,
     "conversation_carryover_allowed": false,
-    "project_document_loading": "disabled symmetrically with project_doc_max_bytes=0; mode rules come only from the frozen measured prompt. The AIT-generated AGENTS.md is deleted after ait config set and its Plan archived through a runner-owned ait plan sync AGENTS.md --prune --local, and sprint-off also deletes the generated docs tree, so the measured AIT listing matches the Git listing and carries no exploration bait; sprint-on keeps docs because card authoring inside it is the measured treatment. The earlier stub-era claim that the file could not be deleted was wrong. No measured workspace in either mode carries project-document workflow guidance",
+    "project_document_loading": "project_doc_max_bytes=0 deletes the executor-native project document and generated docs tree before the measured turn. A nonzero value is smoke-diagnostic only: Codex retains only generated AGENTS.md, Claude retains only CLAUDE.md, and the prompt defers to that loaded guidance without repeating exact lifecycle commands. Non-native generated guidance is pruned during runner bootstrap. Results from different project-document settings are never pooled",
     "measured_ait_treatment": "accounting-profile-specific prose; steady-state contains only one local task start, returned worktree entry, project editing and validation, optional intermediate Snapshot, and one local task finish; every Git command is explicitly prohibited; local read-only AIT inspection remains informational and token-accounted but is not named, required, recommended, or forbidden by the measured prompt; environment admission is runner-owned outside model accounting",
     "measured_ait_management_commands_allowed": false,
     "measured_ait_allowed_commands": [
@@ -372,10 +379,10 @@
       "measured_prompt_policy": "neither mode names, requires, or recommends any local read-only inspection command, and neither mode is required to inspect for its lane to be valid; both measured prompts carry one identical neutral sentence stating that local read-only inspection is neither required nor prohibited, so strategy is chosen naturally by the measured agent",
       "remote_authority_policy": "never informational: any remote-carrying inspection remains a mode violation",
       "management_surface_policy": "unchanged: task list, change list, task audit, queue summary, plan, workflow, and remote surfaces remain forbidden",
-      "prior_revision_note": "revisions through game-development-2026-08-25.24 denied the AIT inspection channel while coaching project-local validation as a substitute; revisions .25 through .30 admitted both channels but explicitly prompted inspection; .31 is the first revision that admits both channels without naming either one in the measured prompt; .32 additionally admits a separately reported complete sprint-on campaign; .33 adds transparent whole-pair recovery for one recognized executor infrastructure failure; .34 adds only the exact evidenced host-shutdown whole-pair recovery; .35 counts an in-session recovered tool launch as measured behavior and adds one exact digest-linked historical correction; .36 is an exact post-campaign Sol replacement policy rather than a source protocol; .37 prospectively pins Claude model purity, disables prompt suggestions, classifies refusal as functional behavior, and admits a manifest-declared symmetric one-lane functional replacement; .38 removes the forced Git read-only discovery validity requirement and gives both measured prompts one identical neutral inspection-admission sentence that names no inspection command; .39 pins CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 into the frozen Claude executor surface so a measured session's terminal modelUsage contains exactly the pinned model; .40 neutralizes the AIT-generated project-document workflow guidance before the baseline Snapshot so neither measured workspace carries project-document guidance; .41 supplies the measured AIT agent an explicit benchmark-owned --edit-root path exactly as the measured Git prompt already supplies its linked-worktree path, removing a discovery round-trip that had no Git counterpart; .42 states the chained start-and-enter command as the single canonical AIT start step after .41's optional phrasing produced zero chained lanes; .43 deletes AGENTS.md and the sprint-off docs tree from the measured AIT workspace, removing a 1.6-3.0 request-per-lane exploration tax observed in every diagnostic AIT lane and charged to no Git lane; .44 mirrors the generated guidance into CLAUDE.md and scopes setting sources to the project so the executor's native auto-load channel delivers it at zero exploration requests, a declared product-reality asymmetry under diagnostic test; .45 makes measured AIT edit-root delivery a declared manifest axis, ait_edit_root_mode, with explicit supplying the benchmark-owned path and the canonical chained start command and returned withholding it as .40 did, so both variants are selectable per campaign without stranding successors; .46 adds the claude_model_admission axis so a campaign may measure Claude Code as shipped; .47 adds git_worktree_mode, fail-closed App-equivalent detached-worktree lifecycle proof, explicit executor-derived model-request state without inferring hidden provider request counts, and freezes this managed-worktree campaign to returned AIT edit-root delivery so task start receives no --edit-root; .48 preserves the frozen experiment and corrects the managed Git Codex permission surface by excluding the inaccessible parent-main .git pointer after both .47 launches stopped before any measured model lane"
+      "prior_revision_note": "revisions through game-development-2026-08-25.24 denied the AIT inspection channel while coaching project-local validation as a substitute; revisions .25 through .30 admitted both channels but explicitly prompted inspection; .31 is the first revision that admits both channels without naming either one in the measured prompt; .32 additionally admits a separately reported complete sprint-on campaign; .33 adds transparent whole-pair recovery for one recognized executor infrastructure failure; .34 adds only the exact evidenced host-shutdown whole-pair recovery; .35 counts an in-session recovered tool launch as measured behavior and adds one exact digest-linked historical correction; .36 is an exact post-campaign Sol replacement policy rather than a source protocol; .37 prospectively pins Claude model purity, disables prompt suggestions, classifies refusal as functional behavior, and admits a manifest-declared symmetric one-lane functional replacement; .38 removes the forced Git read-only discovery validity requirement and gives both measured prompts one identical neutral inspection-admission sentence that names no inspection command; .39 pins CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 into the frozen Claude executor surface so a measured session's terminal modelUsage contains exactly the pinned model; .40 neutralizes the AIT-generated project-document workflow guidance before the baseline Snapshot so neither measured workspace carries project-document guidance; .41 supplies the measured AIT agent an explicit benchmark-owned --edit-root path exactly as the measured Git prompt already supplies its linked-worktree path, removing a discovery round-trip that had no Git counterpart; .42 states the chained start-and-enter command as the single canonical AIT start step after .41's optional phrasing produced zero chained lanes; .43 deletes AGENTS.md and the sprint-off docs tree from the measured AIT workspace, removing a 1.6-3.0 request-per-lane exploration tax observed in every diagnostic AIT lane and charged to no Git lane; .44 mirrors the generated guidance into CLAUDE.md and scopes setting sources to the project so the executor's native auto-load channel delivers it at zero exploration requests, a declared product-reality asymmetry under diagnostic test; .45 makes measured AIT edit-root delivery a declared manifest axis; .46 adds the Claude model-admission axis; .47 adds the managed Git worktree axis; .48 corrects its permission boundary; .49-.52 preserve subject, browser, executor, and recovery upgrades; .53 establishes AIT's baseline before model timing, prunes non-native guidance, avoids prompt duplication when project guidance is loaded, and introduces parent-path validation; .54 makes that validation heredoc-aware after .53 stopped with zero complete pairs; .55 adds private Codex rollout tracing and redacted, reconciled per-inference cache diagnostics without changing the aggregate accounting authority"
     },
     "measured_git_treatment": "manifest-selected ownership: agent_managed retains the historical lifecycle charged to the model; codex_app_equivalent_managed has the runner create a detached linked worktree from the proven clean main HEAD before the first model event, starts the fresh Codex session there, forbids model-owned Git mutation or lifecycle operations, and records separately timed host commit, fast-forward, and removal after the terminal event; every AIT command is explicitly prohibited",
-    "cross_mode_repository_command_exclusion": "mutually exclusive and fail-closed: AIT treatment prohibits every Git command, and Git treatment prohibits every AIT command",
+    "cross_mode_repository_command_exclusion": "mutually exclusive and fail-closed: AIT treatment prohibits every Git command, Git treatment prohibits every AIT command, and measured AIT shell commands that traverse a parent path from the declared edit root invalidate the lane",
     "measured_git_required_commands": [
       "steady-state: git worktree add -b benchmark-task <benchmark-owned-path> main, or omit main only with the runner-owned clean-main HEAD proof",
       "first-use: git worktree add -b benchmark-task <benchmark-owned-path> main",
@@ -599,12 +606,15 @@
       "browser-report.json",
       "environment.json",
       "model-request-state.json",
+      "cache-request-usage.jsonl (current Codex only)",
+      "cache-trace-summary.json (current Codex only)",
       "git-start-state-proof.json (steady-state Git only)",
       "managed-worktree-lifecycle.json (codex_app_equivalent_managed Git only)",
       "workflow-verification.json",
       "run-summary.json",
       "private/codex-events.raw.jsonl (legacy filename for the configured executor stream)",
       "private/codex.stderr.txt (legacy filename for configured executor stderr)",
+      "private/codex-events.raw.jsonl.rollout-trace/ (current Codex raw rollout trace)",
       "private/managed-worktree-closeout-events.jsonl (codex_app_equivalent_managed Git only)"
     ],
     "per_campaign": [
@@ -615,10 +625,13 @@
       "executor-preflight-usage.jsonl",
       "executor-preflight-environment.json",
       "executor-preflight-permission-profile.json",
+      "executor-preflight-cache-request-usage.jsonl (current Codex only)",
+      "executor-preflight-cache-trace-summary.json (current Codex only)",
       "git-worktree-permission-profile.json",
       "git-worktree-permission-preflight-report.json",
       "private/executor-preflight-events.raw.jsonl",
       "private/executor-preflight.stderr.txt",
+      "private/executor-preflight-events.raw.jsonl.rollout-trace/ (current Codex raw rollout trace)",
       "private/git-worktree-permission-preflight-events.jsonl",
       "raw-run-index.json",
       "aggregate-report.json",
@@ -710,7 +723,7 @@
     "source_protocol_revision_authority": "the immutable campaign manifest",
     "source_campaign_scope_authority": "the immutable campaign manifest",
     "source_claim_eligibility_policy": "evaluate under the declared source protocol without relabeling its campaign scope",
-    "predecessor_complete_campaign_policy": ".22 through .25 complete evidence remains readable only at its original 100-session shape; .26 through .30 retain their frozen 200-session rules; .31 retains natural inspection; .32 additionally retains its sprint-on complete authority and is narrowly resumable under the provenance-recorded .33 infrastructure controller, exact .34 host-shutdown controller, and exact digest-linked .35 recovered-spawn correction; .33 through .46 remain readable as frozen predecessors under their exact declared axes, with .46 retaining agent-managed Git lifecycle; predecessors are never reinterpreted or relabeled as current App-equivalent source evidence",
+    "predecessor_complete_campaign_policy": ".22 through .25 complete evidence remains readable only at its original 100-session shape; .26 through .30 retain their frozen 200-session rules; .31 retains natural inspection; .32 additionally retains its sprint-on complete authority and is narrowly resumable under the provenance-recorded .33 infrastructure controller, exact .34 host-shutdown controller, and exact digest-linked .35 recovered-spawn correction; .33 through .54 remain readable as frozen predecessors under their exact declared axes, with .54 retaining aggregate-only Codex usage evidence; predecessors are never reinterpreted or relabeled as current per-inference source evidence",
     "legacy_pilot_policy": "pilot evidence remains pilot and is never source-protocol claim eligible",
     "current_policy_reanalysis": "report separately as retrospective criteria satisfaction; it never changes source scope or source-protocol claim eligibility",
     "replacement_qualified_publication_policy": "the exact legacy .29/.36 or prospectively manifest-declared .37 replacement-qualified statistical view may publish claim_eligible=true while separately retaining source_protocol_claim_eligible=false, the original failure, its exclusion, the same-mode replacement, the one-execution limit, and all provenance digests",

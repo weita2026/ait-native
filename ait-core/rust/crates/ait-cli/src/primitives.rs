@@ -140,7 +140,9 @@ mod foundation;
 mod git_interop;
 mod line;
 mod line_merge;
+mod plan_backed_summary;
 mod plan_checklist_closeout;
+mod plan_markdown_materialization;
 mod queue;
 mod reconciliation;
 mod remote_sync;
@@ -151,6 +153,7 @@ mod sprint_card_retention;
 mod stash;
 mod status_cache;
 mod task;
+mod task_quick;
 mod task_start_from;
 mod workflow;
 mod workspace;
@@ -175,10 +178,16 @@ pub(in crate::primitives) use foundation::TaskStartBootstrapRequest;
 pub use git_interop::{git_export, git_import, git_mirror};
 pub use line::{
     line_archive, line_cleanup, line_create, line_delete, line_list, line_rename, line_set_head,
-    line_show, line_switch, repo_status,
+    line_show, line_show_remote, line_switch, repo_status,
 };
 pub(in crate::primitives) use line_merge::guard_no_active_line_merge;
 pub use line_merge::line_merge;
+pub(crate) use plan_backed_summary::{
+    plan_backed_markdown_summary, plan_backed_markdown_text_lines,
+    plan_markdown_presync_text_lines, plan_sync_root_path, presync_plan_markdown_drift,
+    PLAN_BACKED_MARKDOWN_PAYLOAD_KEY, PLAN_MARKDOWN_PRESYNC_PAYLOAD_KEY,
+};
+pub(crate) use plan_markdown_materialization::plan_markdown_materialization_text_lines;
 pub use queue::queue_summary;
 pub use reconciliation::{
     workflow_reconcile_apply, workflow_reconcile_automatic,
@@ -199,13 +208,22 @@ pub use snapshot::{
 pub use stash::{stash_apply, stash_drop, stash_list, stash_pop, stash_save, stash_show};
 pub(in crate::primitives) use task::task_create;
 pub use task::{task_audit, task_list, task_show};
+pub(crate) use task_quick::task_quick_with_edit_root_and_progress;
+#[cfg(test)]
+pub(crate) use task_quick::QUICK_TASK_REQUIRES_SPRINT_MESSAGE;
 pub(crate) use task_start_from::task_start_from_with_edit_root_and_progress;
 pub use task_start_from::task_start_from_with_progress;
+#[cfg(test)]
+pub(crate) use workflow::{review_message_required_error, review_summary_missing_sections_error};
 pub use workflow::{
     task_land_apply, task_land_apply_scoped, task_land_payload, task_land_payload_scoped,
     workflow_land_apply, workflow_land_payload, workflow_ready_apply, workflow_ready_payload,
 };
 pub(crate) use workspace::parse_snapshot_authoring_reference;
+#[cfg(test)]
+pub(crate) use workspace::{
+    planning_only_artifact_sync_command, render_planning_only_artifact_drift_error,
+};
 pub use workspace::{
     resolve_task_scoped_execution_repo, run_task_scoped_workspace_command, snapshot_create,
     snapshot_create_explicit, snapshot_create_for_change, snapshot_create_for_reference,

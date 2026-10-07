@@ -369,7 +369,7 @@ pub(in crate::primitives) fn workflow_ready_apply_action(
                 &remote_row.name,
                 &repo_name,
                 change_id,
-                summary.unwrap_or("review summary"),
+                &ready_publish_summary(summary, state),
                 &resolved_author_mode,
                 auto_rebase,
                 "ready",
@@ -415,6 +415,46 @@ pub(in crate::primitives) fn workflow_ready_apply_action(
             "stopped_reason": format!("Workflow ready apply does not own `{code}`; reviewer actions continue through `ait workflow finish`."),
         })),
     }
+}
+
+/// The Patchset summary: the explicit `--summary`, else the Task title, else a
+/// neutral placeholder.
+pub(crate) fn ready_publish_summary(summary: Option<&str>, state: &JsonValue) -> String {
+    normalized_text(summary)
+        .or_else(|| workflow_nested_text(state, "task", "title"))
+        .unwrap_or_else(|| "review summary".to_string())
+}
+
+/// Finish may record the compact Attestation only from an already passing
+/// (or not required) Patchset CI result; it never runs CI itself.
+pub(crate) fn workflow_finish_may_record_attestation(state: &JsonValue) -> bool {
+    let tests_status = state
+        .get("patchset_ci_status")
+        .and_then(|value| value.get("tests_status"))
+        .or_else(|| {
+            state
+                .get("patchset")
+                .and_then(|value| value.get("patchset_ci"))
+                .and_then(|value| value.get("tests_status"))
+        })
+        .and_then(JsonValue::as_str)
+        .map(str::trim)
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    matches!(tests_status.as_str(), "pass" | "not_required")
+}
+
+pub(crate) fn review_message_required_error() -> String {
+    format!(
+        "Workflow finish apply needs --review-message containing the code review summary before it can record code review evidence. Fill this template and pass it as one --review-message value:\n{CODE_REVIEW_SUMMARY_NUMBERED_TEMPLATE}\nPrint it again with `{CODE_REVIEW_SUMMARY_TEMPLATE_HINT_COMMAND}`."
+    )
+}
+
+pub(crate) fn review_summary_missing_sections_error(missing: &[String]) -> String {
+    format!(
+        "Code review summary is missing sections with non-placeholder content: {}. Every numbered section needs real content:\n{CODE_REVIEW_SUMMARY_NUMBERED_TEMPLATE}\nPrint the template again with `{CODE_REVIEW_SUMMARY_TEMPLATE_HINT_COMMAND}`.",
+        missing.join(", ")
+    )
 }
 
 fn workflow_land_patchset_id(patchset: &JsonValue, message: &str) -> Result<String, String> {
@@ -569,10 +609,7 @@ where
 {
     let missing = missing_code_review_summary_sections(review_message);
     if !missing.is_empty() {
-        return Err(format!(
-            "Code review summary is missing sections with non-placeholder content: {}.",
-            missing.join(", ")
-        ));
+        return Err(review_summary_missing_sections_error(&missing));
     }
     workflow_record_review_action_with_closeout_remote(
         closeout_remote,
@@ -677,12 +714,37 @@ pub(in crate::primitives) fn workflow_land_apply_action(
     let _action_range = perfetto_range!("ait.workflow_land.workflow_action");
     let patchset = state.get("patchset").cloned().unwrap_or(JsonValue::Null);
     match code {
-        "snapshot_create" | "publish_patchset" | "refresh_patchset" | "record_attestation"
-        | "run_patchset_ci" => Ok(json!({
-            "stopped_reason": format!(
-                "Workflow finish does not own `{code}`. Run `ait workflow ready <task-id> --apply` explicitly before finish."
-            ),
-        })),
+        "snapshot_create" | "publish_patchset" | "refresh_patchset" | "run_patchset_ci" => {
+            Ok(json!({
+                "stopped_reason": format!(
+                    "Workflow finish does not own `{code}`. Run `ait workflow ready <task-id> --apply` explicitly before finish."
+                ),
+            }))
+        }
+        "record_attestation" => {
+            let _range = perfetto_range!("ait.workflow_land.action.record_attestation");
+            if !workflow_finish_may_record_attestation(state) {
+                return Ok(json!({
+                    "stopped_reason": "Workflow finish does not own `record_attestation` while Patchset CI has no passing result. Run `ait workflow ready <task-id> --apply` so it completes Patchset CI first.",
+                }));
+            }
+            guard_no_planning_only_artifact_drift(repo, "ait workflow finish")?;
+            let (remote_row, repo_name) = remote_context(repo, remote_name, None)?;
+            let mut closeout_remote = http_closeout_remote(repo, &remote_row)?;
+            let resolved_author_mode = repo.effective_author_mode(None);
+            let resolved_model_name = repo.effective_model_name(None);
+            workflow_ready_record_attestation_with_closeout_remote(
+                &mut closeout_remote,
+                &patchset,
+                None,
+                None,
+                None,
+                None,
+                &resolved_author_mode,
+                resolved_model_name,
+                &repo_name,
+            )
+        }
         "record_review" => {
             let _range = perfetto_range!("ait.workflow_land.action.record_review");
             if workflow_task_review_required(repo) {
@@ -717,9 +779,8 @@ pub(in crate::primitives) fn workflow_land_apply_action(
             let resolved_reviewer = repo.ai_code_review_reviewer_identity().ok_or_else(|| {
                 "Workflow finish apply needs a reviewer identity before it can record code review evidence.".to_string()
             })?;
-            let review_message = normalized_text(review_message).ok_or_else(|| {
-                "Workflow finish apply needs --review-message containing the code review summary before it can record code review evidence.".to_string()
-            })?;
+            let review_message =
+                normalized_text(review_message).ok_or_else(review_message_required_error)?;
             let (remote_row, repo_name) = remote_context(repo, remote_name, None)?;
             let mut closeout_remote = http_closeout_remote(repo, &remote_row)?;
             workflow_land_record_code_review_summary_with_closeout_remote(
@@ -827,5 +888,47 @@ mod remote_base_authority_tests {
         .unwrap_err();
 
         assert!(error.contains("has no authoritative head Snapshot"));
+    }
+}
+
+#[cfg(test)]
+mod finish_attestation_tests {
+    use super::*;
+
+    #[test]
+    fn finish_records_attestation_only_from_passing_or_not_required_ci() {
+        assert!(workflow_finish_may_record_attestation(&json!({
+            "patchset_ci_status": {"tests_status": "pass"}
+        })));
+        assert!(workflow_finish_may_record_attestation(&json!({
+            "patchset": {"patchset_ci": {"tests_status": "not_required"}}
+        })));
+        assert!(!workflow_finish_may_record_attestation(&json!({
+            "patchset_ci_status": {"tests_status": "pending"}
+        })));
+        assert!(!workflow_finish_may_record_attestation(&json!({
+            "patchset_ci_status": {"tests_status": "fail"}
+        })));
+        assert!(!workflow_finish_may_record_attestation(&json!({})));
+    }
+
+    #[test]
+    fn ready_summary_prefers_explicit_then_task_title() {
+        let state = json!({"task": {"title": "Fix the badge"}});
+        assert_eq!(ready_publish_summary(Some(" custom "), &state), "custom");
+        assert_eq!(ready_publish_summary(None, &state), "Fix the badge");
+        assert_eq!(ready_publish_summary(None, &json!({})), "review summary");
+    }
+
+    #[test]
+    fn review_message_errors_embed_the_numbered_template() {
+        let required = review_message_required_error();
+        assert!(required.contains("1. Reviewed files"), "{required}");
+        assert!(required.contains("5. Recommendation"), "{required}");
+        assert!(required.contains("`ait review code template --style numbered`"));
+        let missing =
+            review_summary_missing_sections_error(&["Risks".to_string(), "Tests".to_string()]);
+        assert!(missing.starts_with("Code review summary is missing sections with non-placeholder content: Risks, Tests."), "{missing}");
+        assert!(missing.contains("3. Risks"), "{missing}");
     }
 }

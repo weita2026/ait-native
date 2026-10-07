@@ -112,6 +112,7 @@ pub(crate) fn create_binary_test_snapshot(
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct LocalPlanHeadArtifact {
+    pub plan_index: u32,
     pub status: String,
     pub artifact_path: String,
     pub artifact_blob_id: Option<String>,

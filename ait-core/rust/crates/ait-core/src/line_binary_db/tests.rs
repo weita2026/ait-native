@@ -542,10 +542,18 @@ fn canonical_line_reads_use_read_committed_guard() {
         .db()
         .begin_write_txn(BinaryDbCommandScope::ContentWrite)
         .unwrap();
+    // Bound the wait so the busy error is observable without a 10 s delay,
+    // then prove the reader really waited that long before giving up.
+    crate::binary_db::BINARY_DB_READ_WAIT_MS.store(300, std::sync::atomic::Ordering::Relaxed);
+    let started = std::time::Instant::now();
     assert!(store
         .list_lines()
         .unwrap_err()
         .contains("Binary DB writer is active"));
+    assert!(
+        started.elapsed() >= std::time::Duration::from_millis(250),
+        "reader must wait for the writer before reporting busy"
+    );
     writer.commit().unwrap();
     assert!(store.list_lines().is_ok());
 }

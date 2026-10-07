@@ -143,7 +143,7 @@ fn run_workflow(repo: RepoRuntime, command: WorkflowCommand) -> Result<ExitCode,
             Ok(ExitCode::SUCCESS)
         }
         WorkflowCommand::Ready(args) => {
-            let payload = if args.apply {
+            let apply_once = || {
                 run_task_scoped_workspace_command(
                     &repo,
                     &args.change_id,
@@ -167,7 +167,10 @@ fn run_workflow(repo: RepoRuntime, command: WorkflowCommand) -> Result<ExitCode,
                             None::<fn(&JsonValue) -> Result<(), String>>,
                         )
                     },
-                )?
+                )
+            };
+            let mut payload = if args.apply {
+                apply_once()?
             } else {
                 let execution_repo = resolve_task_scoped_execution_repo(
                     &repo,
@@ -183,6 +186,26 @@ fn run_workflow(repo: RepoRuntime, command: WorkflowCommand) -> Result<ExitCode,
                     args.remote.as_deref(),
                 )?
             };
+            attach_runner_hint_best_effort(&repo, args.remote.as_deref(), &mut payload);
+            if args.run_ci_once {
+                let outcome = match payload.get(RUNNER_HINT_PAYLOAD_KEY).cloned() {
+                    Some(hint) => {
+                        let outcome = run_ci_once(&hint);
+                        let mut reapplied = apply_once()?;
+                        attach_runner_hint_best_effort(&repo, args.remote.as_deref(), &mut reapplied);
+                        payload = reapplied;
+                        outcome
+                    }
+                    None => json!({
+                        "status": "skipped",
+                        "reason": "no_runner_hint",
+                        "detail": "Patchset CI was not queued without a runner, so no one-shot runner was needed.",
+                    }),
+                };
+                if let Some(object) = payload.as_object_mut() {
+                    object.insert(CI_RUNNER_ONCE_PAYLOAD_KEY.to_string(), outcome);
+                }
+            }
             println!("{}", render_requested_workflow_text(&payload, "ready", &args.change_id)?);
             Ok(ExitCode::SUCCESS)
         }
@@ -230,6 +253,7 @@ fn run_workflow(repo: RepoRuntime, command: WorkflowCommand) -> Result<ExitCode,
                 );
                 attach_automatic_reconciliation(&mut payload, reconciliation);
             }
+            attach_runner_hint_best_effort(&repo, args.remote.as_deref(), &mut payload);
             println!("{}", render_requested_workflow_text(&payload, "finish", &args.change_id)?);
             Ok(ExitCode::SUCCESS)
         }
@@ -543,7 +567,20 @@ fn task_workflow_display_payload(payload: &JsonValue, requested: &str) -> JsonVa
 
 fn render_requested_workflow_text(payload: &JsonValue, phase: &str, requested: &str) -> Result<String, String> {
     let display = task_workflow_display_payload(payload, requested);
-    render_workflow_phase_text(&display, phase)
+    let rendered = render_workflow_phase_text(&display, phase)?;
+    Ok(append_runner_hint_text(rendered, payload))
+}
+
+fn append_runner_hint_text(mut rendered: String, payload: &JsonValue) -> String {
+    if let Some(text) = ci_runner_once_text(payload) {
+        rendered.push_str("\n\n");
+        rendered.push_str(&text);
+    }
+    if let Some(text) = runner_hint_text(payload) {
+        rendered.push_str("\n\n");
+        rendered.push_str(&text);
+    }
+    rendered
 }
 
 fn render_workflow_phase_text(payload: &JsonValue, phase: &str) -> Result<String, String> {
@@ -811,7 +848,8 @@ fn render_task_finish_text(payload: &JsonValue) -> Result<String, String> {
         let old_title = format!("ait workflow {}", "finish");
         render_workflow_phase_text(payload, "finish")?.replacen(&old_title, "ait task finish", 1)
     };
-    Ok(append_task_land_contract_text(rendered, payload))
+    let rendered = append_task_land_contract_text(rendered, payload);
+    Ok(append_runner_hint_text(rendered, payload))
 }
 
 fn append_task_land_contract_text(mut rendered: String, payload: &JsonValue) -> String {
@@ -952,6 +990,10 @@ fn render_local_task_land_text(payload: &JsonValue) -> Result<String, String> {
             }
         }
     }
+    lines.extend(pre_finish_hooks_text_lines(payload));
+    lines.extend(plan_markdown_presync_text_lines(payload));
+    lines.extend(plan_markdown_materialization_text_lines(payload));
+    lines.extend(post_finish_hooks_text_lines(payload));
     if !closed.is_empty() {
         lines.insert(1, format!("closed: {}", closed.join(", ")));
     }

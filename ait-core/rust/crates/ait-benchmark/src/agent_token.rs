@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -97,6 +97,9 @@ pub const AGENT_TOKEN_200_SESSION_PREDECESSOR_PROTOCOL_REVISION: &str =
 /// evidence; campaigns cannot start under them. The runner admits only the
 /// explicitly enumerated narrow continuation and recovery exceptions.
 pub const AGENT_TOKEN_COMPLETE_PREDECESSOR_PROTOCOL_REVISIONS: &[&str] = &[
+    AGENT_TOKEN_PRE_CACHE_TRACE_PREDECESSOR_PROTOCOL_REVISION,
+    AGENT_TOKEN_PRE_HEREDOC_FIX_PREDECESSOR_PROTOCOL_REVISION,
+    AGENT_TOKEN_PRE_FAIRNESS_FIX_PREDECESSOR_PROTOCOL_REVISION,
     AGENT_TOKEN_GATED_RECOVERY_PREDECESSOR_PROTOCOL_REVISION,
     AGENT_TOKEN_PRE_UPGRADE_BROWSER_PREDECESSOR_PROTOCOL_REVISION,
     AGENT_TOKEN_PRE_UPGRADE_AIT_SUBJECT_PREDECESSOR_PROTOCOL_REVISION,
@@ -142,7 +145,20 @@ pub const AGENT_TOKEN_PRE_UPGRADE_BROWSER_PREDECESSOR_PROTOCOL_REVISION: &str =
 /// functional outcome and allowed only one recovery per campaign.
 pub const AGENT_TOKEN_GATED_RECOVERY_PREDECESSOR_PROTOCOL_REVISION: &str =
     "game-development-2026-08-31.51";
-pub const AGENT_TOKEN_PROTOCOL_REVISION: &str = "game-development-2026-08-31.52";
+/// Exact predecessor whose project-document pilot charged AIT's initial
+/// baseline creation to the measured Task start and did not reject parent-path
+/// traversal from the declared edit root.
+pub const AGENT_TOKEN_PRE_FAIRNESS_FIX_PREDECESSOR_PROTOCOL_REVISION: &str =
+    "game-development-2026-08-31.52";
+/// Zero-complete-pair predecessor whose parent-path validator inspected
+/// heredoc payload text as shell arguments.
+pub const AGENT_TOKEN_PRE_HEREDOC_FIX_PREDECESSOR_PROTOCOL_REVISION: &str =
+    "game-development-2026-09-08.53";
+/// Exact predecessor before Codex per-inference cache diagnostics became
+/// required evidence. Its aggregate `turn.completed` accounting stays valid.
+pub const AGENT_TOKEN_PRE_CACHE_TRACE_PREDECESSOR_PROTOCOL_REVISION: &str =
+    "game-development-2026-09-08.54";
+pub const AGENT_TOKEN_PROTOCOL_REVISION: &str = "game-development-2026-09-09.55";
 pub const AGENT_TOKEN_RECOVERED_SPAWN_POLICY_REVISION: &str = "game-development-2026-08-29.35";
 pub const AGENT_TOKEN_RECOVERED_SPAWN_CAMPAIGN_ID: &str =
     "game-v1-g56s-max-sprint-on-natural-complete200-20260828";
@@ -2291,6 +2307,14 @@ fn validate_agent_token_command_list_with_workflow_options(
             }
         }
         AgentTokenMode::AitLinearSingleSession => {
+            for command in commands
+                .iter()
+                .filter(|command| command_traverses_parent_path(command))
+            {
+                errors.push(format!(
+                    "AIT mode traversed a parent path outside the declared edit root: {command}"
+                ));
+            }
             let ait_invocations = commands
                 .iter()
                 .flat_map(|command| ait_command_invocations(command))
@@ -4165,6 +4189,29 @@ fn resolve_campaign_paths(
             manifest_path.display()
         )
     })?;
+    // Bare command names keep PATH lookup. Explicit relative executable paths
+    // belong to the campaign file, not a later attempt's working directory.
+    let program_base = if parent.is_absolute() {
+        parent.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map_err(|error| format!("Failed to resolve campaign directory: {error}"))?
+            .join(parent)
+    };
+    for program in [
+        &mut manifest.runtime.codex_program,
+        &mut manifest.runtime.ait_program,
+        &mut manifest.runtime.git_program,
+        &mut manifest.runtime.node_program,
+    ]
+    .into_iter()
+    .chain(manifest.runtime.claude_program.iter_mut())
+    .chain(manifest.runtime.browser_program.iter_mut())
+    {
+        if program.is_relative() && program.components().count() > 1 {
+            *program = program_base.join(&*program);
+        }
+    }
     if manifest.runtime.fixture_manifest.is_relative() {
         manifest.runtime.fixture_manifest = parent.join(&manifest.runtime.fixture_manifest);
     }
@@ -4467,6 +4514,62 @@ fn command_invocations(command: &str) -> Vec<CommandInvocation> {
         }
     }
     invocations
+}
+
+fn command_traverses_parent_path(command: &str) -> bool {
+    let command_without_heredoc_bodies = strip_shell_heredoc_bodies(command);
+    command_invocations(&command_without_heredoc_bodies)
+        .iter()
+        .any(|invocation| {
+            !invocation_executable_is(
+                invocation,
+                &[
+                    "bash",
+                    "bash.exe",
+                    "cmd",
+                    "cmd.exe",
+                    "powershell",
+                    "powershell.exe",
+                    "pwsh",
+                    "pwsh.exe",
+                    "sh",
+                    "zsh",
+                ],
+            ) && invocation.arguments.iter().any(|argument| {
+                argument
+                    .replace('\\', "/")
+                    .split('/')
+                    .any(|part| part == "..")
+            })
+        })
+}
+
+fn strip_shell_heredoc_bodies(command: &str) -> String {
+    let mut output = String::new();
+    let mut delimiters = VecDeque::new();
+    for line in command.lines() {
+        if let Some(delimiter) = delimiters.front() {
+            if line.trim() == delimiter {
+                delimiters.pop_front();
+            }
+            output.push('\n');
+            continue;
+        }
+        output.push_str(line);
+        output.push('\n');
+        for word in line.split_ascii_whitespace() {
+            let delimiter = word.strip_prefix("<<-").or_else(|| word.strip_prefix("<<"));
+            let Some(delimiter) = delimiter else {
+                continue;
+            };
+            let delimiter = delimiter
+                .trim_matches(|character| matches!(character, '\'' | '"' | ';' | ')' | '('));
+            if !delimiter.is_empty() {
+                delimiters.push_back(delimiter.to_string());
+            }
+        }
+    }
+    output
 }
 
 /// Expand `$NAME` and `${NAME}` occurrences from bindings assigned earlier in
@@ -5165,15 +5268,52 @@ mod tests {
     }
 
     #[test]
+    fn campaign_program_paths_keep_bare_lookup_and_anchor_explicit_relative_paths() {
+        let mut manifest: AgentTokenCampaignManifest = serde_json::from_str(include_str!(
+            "../campaigns/agent-token-game-v1/astra-medium-agents-ab-current-smoke10.json"
+        ))
+        .expect("portable campaign decodes");
+        manifest.runtime.ait_program = PathBuf::from("../../pins/lean/bin/ait");
+        manifest.runtime.codex_program = PathBuf::from("codex");
+        manifest.runtime.git_program = std::env::current_dir()
+            .expect("current directory")
+            .join("absolute-git");
+        let absolute_git = manifest.runtime.git_program.clone();
+        manifest.runtime.claude_program = Some(PathBuf::from("./tools/claude"));
+        manifest.runtime.browser_program = Some(PathBuf::from("browser"));
+        let campaign = Path::new("campaigns/example.json");
+        let base = std::env::current_dir()
+            .expect("current directory")
+            .join("campaigns");
+
+        resolve_campaign_paths(campaign, &mut manifest).expect("paths resolve");
+
+        assert_eq!(manifest.runtime.codex_program, Path::new("codex"));
+        assert_eq!(manifest.runtime.git_program, absolute_git);
+        assert_eq!(
+            manifest.runtime.ait_program,
+            base.join("../../pins/lean/bin/ait")
+        );
+        assert!(manifest.runtime.ait_program.is_absolute());
+        assert_eq!(
+            manifest.runtime.claude_program.as_deref(),
+            Some(base.join("./tools/claude").as_path())
+        );
+        assert_eq!(
+            manifest.runtime.browser_program.as_deref(),
+            Some(Path::new("browser"))
+        );
+    }
+
+    #[test]
     fn same_tool_help_introspection_is_admitted_and_cross_tool_stays_forbidden() {
-        // The exact r5-lane phrasing must now validate cleanly alongside the
-        // frozen lifecycle.
+        // Preserve the r5-lane command shape with a synthetic absolute home.
         let commands = vec![
-            "/Users/weita/.local/bin/ait --help 2>&1 | head -50".to_string(),
-            "/Users/weita/.local/bin/ait task start --title t --intent i --local --json"
+            "/home/benchmark/.local/bin/ait --help 2>&1 | head -50".to_string(),
+            "/home/benchmark/.local/bin/ait task start --title t --intent i --local --json"
                 .to_string(),
             "npm test 2>&1 | tail -25".to_string(),
-            "/Users/weita/.local/bin/ait task finish LT-0001 --message m --local --json"
+            "/home/benchmark/.local/bin/ait task finish LT-0001 --message m --local --json"
                 .to_string(),
         ];
         let transcript = validate_agent_token_command_list(
@@ -6144,6 +6284,55 @@ mod tests {
             .errors
             .iter()
             .any(|error| error.contains("sprint-off mode used forbidden")));
+    }
+
+    #[test]
+    fn ait_transcript_rejects_parent_path_traversal_from_edit_root() {
+        let commands = vec![
+            "/opt/ait task start --title repair --intent repair --edit-root /tmp/task --local --json".to_string(),
+            "find .. -name AGENTS.md -print".to_string(),
+            "npm test".to_string(),
+            "/opt/ait task finish LCT-1 --message repair --local --json".to_string(),
+        ];
+        let transcript = validate_agent_token_command_list_with_workflow_options(
+            commands,
+            "parent-path-run",
+            AgentTokenMode::AitLinearSingleSession,
+            AgentTokenAccountingProfile::SteadyStateTaskCost,
+            AgentTokenTranscriptWorkflowOptions {
+                ait_sprint_mode: AgentTokenAitSprintMode::Off,
+                ait_edit_root_mode: Some(AgentTokenAitEditRootMode::Explicit),
+                git_worktree_mode: AgentTokenGitWorktreeMode::AgentManaged,
+                clean_main_head_proven: false,
+            },
+        )
+        .unwrap();
+
+        assert!(!transcript.valid);
+        assert!(transcript
+            .errors
+            .iter()
+            .any(|error| error.contains("traversed a parent path")));
+
+        let heredoc = validate_agent_token_command_list_with_workflow_options(
+            vec![
+                "/opt/ait task start --title repair --intent repair --edit-root /tmp/task --local --json".to_string(),
+                "cat > scripts/check.mjs <<'EOF'\nimport '../src/game.js';\nEOF".to_string(),
+                "npm test".to_string(),
+                "/opt/ait task finish LCT-1 --message repair --local --json".to_string(),
+            ],
+            "heredoc-run",
+            AgentTokenMode::AitLinearSingleSession,
+            AgentTokenAccountingProfile::SteadyStateTaskCost,
+            AgentTokenTranscriptWorkflowOptions {
+                ait_sprint_mode: AgentTokenAitSprintMode::Off,
+                ait_edit_root_mode: Some(AgentTokenAitEditRootMode::Explicit),
+                git_worktree_mode: AgentTokenGitWorktreeMode::AgentManaged,
+                clean_main_head_proven: false,
+            },
+        )
+        .unwrap();
+        assert!(heredoc.valid, "{:?}", heredoc.errors);
     }
 
     #[test]

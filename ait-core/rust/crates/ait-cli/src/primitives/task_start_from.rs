@@ -1088,6 +1088,12 @@ fn derive_plan_item_task_title(item_text: &str) -> Result<String, String> {
     validate_task_title(&normalized)
 }
 
+/// Title validation shared with `ait task quick`; the generated card item
+/// text must satisfy the same rules as a hand-authored checklist item.
+pub(super) fn validate_quick_task_title(title: &str) -> Result<String, String> {
+    derive_plan_item_task_title(title)
+}
+
 fn validate_task_title(title: &str) -> Result<String, String> {
     if title.is_empty() {
         return Err(

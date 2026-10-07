@@ -98,9 +98,9 @@ jobs:
               (.coordinator_created_at | test("^(0|[1-9][0-9]*)$")) and
               .public_publish == false
             ' "${AIT_PUBLIC_SOURCE_ROOT}/ait-monorepo-source.json" >/dev/null
-          ./ci/release_receipt_matrix_test.sh
-          jq -e -f ci/native_bootstrap_matrix.jq \
-            ci/native_bootstrap_matrix.json >/dev/null
+          "${AIT_CONTROL_ROOT}/ci/release_receipt_matrix_test.sh"
+          jq -e -f "${AIT_CONTROL_ROOT}/ci/native_bootstrap_matrix.jq" \
+            "${AIT_CONTROL_ROOT}/ci/native_bootstrap_matrix.json" >/dev/null
           {
             echo "coordinator_snapshot=${coordinator_snapshot}"
             echo "family_version=$(jq -r '.family.version' \

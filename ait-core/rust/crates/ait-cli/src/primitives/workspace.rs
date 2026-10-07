@@ -1,5 +1,5 @@
 use super::*;
-use crate::runtime::SNAPSHOT_BINARY_DB_WRITE_LAYOUT;
+use crate::runtime::{LocalPlanHeadArtifact, SNAPSHOT_BINARY_DB_WRITE_LAYOUT};
 use ait_core::local_snapshot::{
     LocalSnapshotBlobReadStore, LocalSnapshotReadStore, LocalSnapshotTreeReadStore,
 };
@@ -1665,10 +1665,13 @@ pub(super) fn guard_current_worktree_task_scope(
     ))
 }
 
-fn current_markdown_plan_head_blob_ids(
+/// Active Markdown Plan heads grouped by artifact path. One path may carry
+/// several Plans (multi-root sprint cards); every consumer that decides
+/// whether a workspace copy is in sync must reason over the whole group.
+pub(crate) fn plan_markdown_head_groups(
     repo: &RepoRuntime,
-) -> Result<BTreeMap<String, BTreeSet<String>>, String> {
-    let mut tracked = BTreeMap::<String, BTreeSet<String>>::new();
+) -> Result<BTreeMap<String, Vec<LocalPlanHeadArtifact>>, String> {
+    let mut grouped = BTreeMap::<String, Vec<LocalPlanHeadArtifact>>::new();
     let heads = repo.local_plan_head_artifacts().map_err(|err| {
         format!(
             "Unable to inspect local Markdown Plan history before creating workflow data: {err}"
@@ -1678,11 +1681,37 @@ fn current_markdown_plan_head_blob_ids(
         if matches!(head.status.as_str(), "archived" | "superseded") {
             continue;
         }
-        track_markdown_plan_head(
-            &mut tracked,
-            &head.artifact_path,
-            head.artifact_blob_id.as_deref(),
-        );
+        if !is_markdown_artifact_path(&head.artifact_path) {
+            continue;
+        }
+        if head
+            .artifact_blob_id
+            .as_deref()
+            .map(str::trim)
+            .is_none_or(str::is_empty)
+        {
+            continue;
+        }
+        grouped
+            .entry(head.artifact_path.clone())
+            .or_default()
+            .push(head);
+    }
+    Ok(grouped)
+}
+
+fn current_markdown_plan_head_blob_ids(
+    repo: &RepoRuntime,
+) -> Result<BTreeMap<String, BTreeSet<String>>, String> {
+    let mut tracked = BTreeMap::<String, BTreeSet<String>>::new();
+    for (artifact_path, heads) in plan_markdown_head_groups(repo)? {
+        for head in heads {
+            track_markdown_plan_head(
+                &mut tracked,
+                &artifact_path,
+                head.artifact_blob_id.as_deref(),
+            );
+        }
     }
     Ok(tracked)
 }
@@ -1755,7 +1784,7 @@ fn collect_tracked_markdown_drift_paths(repo: &RepoRuntime) -> Result<Vec<String
     Ok(dirty.into_iter().collect())
 }
 
-pub(super) fn collect_planning_only_artifact_drift_paths(
+pub(crate) fn collect_planning_only_artifact_drift_paths(
     repo: &RepoRuntime,
 ) -> Result<Vec<String>, String> {
     let mut paths = BTreeSet::new();
@@ -1773,14 +1802,67 @@ pub(super) fn guard_no_planning_only_artifact_drift(
     if dirty_paths.is_empty() {
         return Ok(());
     }
-    let sample = summarize_path_sample(&dirty_paths);
-    let first = dirty_paths
-        .first()
-        .cloned()
-        .unwrap_or_else(|| "docs/plan.md".to_string());
-    Err(format!(
-        "Refusing to run `{operation}` while authored Markdown drift is present. Reconcile it first with `ait plan sync {first}` and add `--remote <name>` only when the Markdown update must reach shared plan state. Planning-only paths: {sample}."
+    let entries = dirty_paths
+        .iter()
+        .map(|path| (path.clone(), planning_only_artifact_is_missing(repo, path)))
+        .collect::<Vec<_>>();
+    Err(render_planning_only_artifact_drift_error(
+        operation, &entries,
     ))
+}
+
+fn planning_only_artifact_is_missing(repo: &RepoRuntime, artifact_path: &str) -> bool {
+    artifact_path_candidates(repo, artifact_path)
+        .iter()
+        .all(|candidate| !candidate.is_file())
+}
+
+/// Exact local repair command for one drifted Plan-backed Markdown path. A
+/// deleted file needs `--prune` so its Plan is archived instead of re-read.
+pub(crate) fn planning_only_artifact_sync_command(artifact_path: &str, missing: bool) -> String {
+    if missing {
+        format!("ait plan sync {artifact_path} --prune --local")
+    } else {
+        format!("ait plan sync {artifact_path} --local")
+    }
+}
+
+const PLANNING_ONLY_DRIFT_COMMANDS_SHOWN: usize = 6;
+
+pub(crate) fn render_planning_only_artifact_drift_error(
+    operation: &str,
+    entries: &[(String, bool)],
+) -> String {
+    let shown = entries
+        .iter()
+        .take(PLANNING_ONLY_DRIFT_COMMANDS_SHOWN)
+        .collect::<Vec<_>>();
+    let commands = shown
+        .iter()
+        .map(|(path, missing)| {
+            let command = planning_only_artifact_sync_command(path, *missing);
+            if *missing {
+                format!("`{command}` (file was deleted)")
+            } else {
+                format!("`{command}`")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("; ");
+    let more = entries.len().saturating_sub(shown.len());
+    let more_text = if more > 0 {
+        format!(" and {more} more")
+    } else {
+        String::new()
+    };
+    let sample = shown
+        .iter()
+        .map(|(path, _)| path.as_str())
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "Refusing to run `{operation}` while authored Markdown drift is present. Sync each path, then retry: {commands}{more_text}. Use `--remote <name>` instead of `--local` only when the Markdown update must reach shared plan state. Planning-only paths: {sample}{more_text}."
+    )
 }
 
 #[cfg(test)]

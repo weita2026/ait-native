@@ -698,6 +698,11 @@ struct LineSwitchArgs {
 #[derive(Args, Clone)]
 struct LineShowArgs {
     name: Option<String>,
+    #[arg(
+        long,
+        help = "Read the Line from the named remote instead of local state; read-only"
+    )]
+    remote: Option<String>,
     #[arg(long)]
     json: bool,
 }
@@ -1589,6 +1594,8 @@ enum ConfigUnsetKeyArg {
     UserName,
     #[value(name = "user-email")]
     UserEmail,
+    #[value(name = "post-finish-hooks")]
+    PostFinishHooks,
 }
 
 impl ConfigUnsetKeyArg {
@@ -1606,6 +1613,7 @@ impl ConfigUnsetKeyArg {
             Self::IdNamespacePrefix => ConfigUnsetKey::IdNamespacePrefix,
             Self::UserName => ConfigUnsetKey::UserName,
             Self::UserEmail => ConfigUnsetKey::UserEmail,
+            Self::PostFinishHooks => ConfigUnsetKey::PostFinishHooks,
         }
     }
 }
@@ -1678,6 +1686,12 @@ struct ConfigSetArgs {
     )]
     user_email: Option<String>,
     #[arg(
+        long = "post-finish-hooks",
+        value_name = "JSON",
+        help = "Set hooks.post_finish: a JSON array of {\"run\": [argv...], \"on_failure\": \"warn\"|\"fail\"} entries that run in the repository root after a successful local Task finish."
+    )]
+    post_finish_hooks: Option<String>,
+    #[arg(
         long,
         help = "Emit the complete machine-readable effective configuration after the update."
     )]
@@ -1741,6 +1755,11 @@ enum TaskCommand {
         override_usage = "ait task start --intent <INTENT> (--from <MARKDOWN_PATH#ITEM_REF> | --title <TITLE>) [--edit-root <ABSOLUTE_PATH>] [--local | --remote <REMOTE>] [--json [--full]]"
     )]
     Start(TaskStartArgs),
+    #[command(
+        about = "Start a Task from a generated minimal sprint card; sprint mode only",
+        override_usage = "ait task quick --intent <INTENT> [--title <TITLE>] [--edit-root <ABSOLUTE_PATH>] [--local | --remote <REMOTE>] [--json [--full]]"
+    )]
+    Quick(TaskQuickArgs),
     #[command(about = "List open Tasks or complete Task history locally or on a remote")]
     List(TaskListArgs),
     #[command(about = "Show one local or remote Task")]
@@ -2300,6 +2319,49 @@ struct TaskStartArgs {
 }
 
 #[derive(Args, Clone)]
+struct TaskQuickArgs {
+    #[arg(
+        long,
+        help = "Required Task intent; it becomes the generated card summary and, without --title, the Task title"
+    )]
+    intent: String,
+    #[arg(
+        long,
+        help = "Task title for the generated sprint card and Task; defaults to the intent"
+    )]
+    title: Option<String>,
+    #[arg(
+        long,
+        value_name = "ABSOLUTE_PATH",
+        help = "Use this safe absolute path as the Task worktree; omit it to keep automatic managed worktree allocation"
+    )]
+    edit_root: Option<PathBuf>,
+    #[arg(
+        long,
+        conflicts_with = "remote",
+        help = "Start the Task locally even when the workflow mode defaults to a remote"
+    )]
+    local: bool,
+    #[arg(
+        long,
+        conflicts_with = "local",
+        help = "Start the Task on the named remote even when the workflow mode defaults to local"
+    )]
+    remote: Option<String>,
+    #[arg(
+        long,
+        help = "Emit the compact versioned machine-readable Task-start result"
+    )]
+    json: bool,
+    #[arg(
+        long,
+        requires = "json",
+        help = "With --json, emit the previous complete Task-start result"
+    )]
+    full: bool,
+}
+
+#[derive(Args, Clone)]
 struct TaskListArgs {
     #[arg(
         long,
@@ -2379,6 +2441,11 @@ struct TaskFinishArgs {
         help = "Create the final Snapshot from dirty local work before finishing; clean local work reuses the current Line head. Remote finish rejects this option."
     )]
     message: Option<String>,
+    #[arg(
+        long = "sync-plan-markdown",
+        help = "Before the final Snapshot, run `ait plan sync <path> --local` for every drifted Plan-backed Markdown path reachable from this worktree and report them; unreachable drift is still refused. Local finish only."
+    )]
+    sync_plan_markdown: bool,
     #[arg(
         long,
         conflicts_with = "remote",
@@ -3768,6 +3835,12 @@ struct WorkflowReadyArgs {
     author_mode: Option<ConfigAuthorModeArg>,
     #[arg(long, requires = "apply")]
     model: Option<String>,
+    #[arg(
+        long = "run-ci-once",
+        requires = "apply",
+        help = "When Patchset CI is queued with no runner claiming it, run one dedicated `ait-runner serve --once` here and re-apply ready so the CI result is attested in this invocation"
+    )]
+    run_ci_once: bool,
     #[arg(long)]
     remote: Option<String>,
 }

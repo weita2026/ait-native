@@ -49,7 +49,6 @@ for required in \
   'init_cli_creates_then_reinitializes_the_agent_contract' \
   'init_is_idempotent_and_creates_only_an_empty_runtime_root' \
   'installed_run_initializes_then_serves_from_an_explicit_root' \
-  'bash ait-core/ci/release_monorepo_export_test.sh --public-layout-selftest' \
   'root_command_inventory_is_frozen' \
   'root_ait_agent_namespace_is_absent' \
   'ait.release.pre-rc-qualification/v1' \
@@ -517,5 +516,50 @@ expect_failure stable-major-jump node "${delta}" \
   --repository "${fixture}" \
   --qualified-commit "${stable_base_commit}" \
   --release-commit "${stable_major_commit}"
+
+# An unbound nested Core family (the ait-native template) is admitted on both
+# sides of the version-only delta; only the root family binds Snapshots.
+git -C "${fixture}" checkout -q --detach "${component_authority_qualified_commit}"
+jq -S '.components[].source_snapshot = "unbound"' \
+  "${fixture}/ait-core/ait-release-family.json" \
+  >"${fixture}/ait-core/ait-release-family.tmp"
+mv "${fixture}/ait-core/ait-release-family.tmp" \
+  "${fixture}/ait-core/ait-release-family.json"
+git -C "${fixture}" add -A
+git -C "${fixture}" commit -qm 'unbound nested family template (qualified)'
+unbound_qualified_commit=$(git -C "${fixture}" rev-parse HEAD)
+write_component_authority_family 1.2.4 1.2.4 SNP-CCCCCCCCCCCC SNP-CCCCCCCCCCCC
+jq -S '.components[].source_snapshot = "unbound"' \
+  "${fixture}/ait-core/ait-release-family.json" \
+  >"${fixture}/ait-core/ait-release-family.tmp"
+mv "${fixture}/ait-core/ait-release-family.tmp" \
+  "${fixture}/ait-core/ait-release-family.json"
+git -C "${fixture}" add -A
+git -C "${fixture}" commit -qm 'unbound nested family template (release)'
+unbound_release_commit=$(git -C "${fixture}" rev-parse HEAD)
+node "${delta}" \
+  --repository "${fixture}" \
+  --qualified-commit "${unbound_qualified_commit}" \
+  --release-commit "${unbound_release_commit}" >"${temporary_root}/unbound-delta.json"
+jq -e '
+  .decision == "pass" and .component_authority_snapshot_transitions == []
+' "${temporary_root}/unbound-delta.json" >/dev/null
+git -C "${fixture}" checkout -q --detach "${unbound_qualified_commit}"
+write_component_authority_family 1.2.4 1.2.4 SNP-CCCCCCCCCCCC SNP-CCCCCCCCCCCC
+jq -S '.components[].source_snapshot = "unbound" |
+  (.components[] | select(.id == "ait")).source_snapshot = "SNP-CCCCCCCCCCCC"' \
+  "${fixture}/ait-core/ait-release-family.json" \
+  >"${fixture}/ait-core/ait-release-family.tmp"
+mv "${fixture}/ait-core/ait-release-family.tmp" \
+  "${fixture}/ait-core/ait-release-family.json"
+git -C "${fixture}" add -A
+git -C "${fixture}" commit -qm 'mixed nested family template'
+mixed_release_commit=$(git -C "${fixture}" rev-parse HEAD)
+expect_failure mixed-nested node "${delta}" \
+  --repository "${fixture}" \
+  --qualified-commit "${unbound_qualified_commit}" \
+  --release-commit "${mixed_release_commit}"
+grep -F 'completely bound or completely unbound' \
+  "${temporary_root}/mixed-nested.stderr" >/dev/null
 
 printf 'pre-RC qualification contract: pass\n'

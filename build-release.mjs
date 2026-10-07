@@ -1726,6 +1726,7 @@ async function validateBuildInputs(expectedGitCommit) {
     ".github/workflows/ait-release-pre-tag-qualification.yml",
     ".github/workflows/ait-release-prepublish-clean-host.yml",
     ".github/workflows/ait-release-latest-alias.yml",
+    ".github/workflows/ait-release-winget-discovery.yml",
     ".github/workflows/ait-release-protected-promotion.yml",
     ".github/workflows/pypi-publish.yml",
     ".gitattributes",

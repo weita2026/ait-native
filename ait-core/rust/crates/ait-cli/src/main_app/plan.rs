@@ -3,10 +3,16 @@ const PLAN_BINARY_DB_WRITE_LAYOUT: u32 = 1;
 fn run_plan(repo: RepoRuntime, command: PlanCommand) -> Result<(), String> {
     match command {
         PlanCommand::List(args) => {
-            let payload = execute_plan_list_command_request_json(&build_query_request(
+            let mut payload = execute_plan_list_command_request_json(&build_query_request(
                 &repo,
                 &args.scope,
             )?)?;
+            if matches!(
+                resolve_plan_scope(&repo, args.scope.local, args.scope.remote.as_deref())?,
+                ResolvedPlanScope::Local
+            ) {
+                annotate_plan_rows_with_workspace_match(&repo, &mut payload);
+            }
             if args.scope.json {
                 return print_json(&payload);
             }
@@ -22,6 +28,7 @@ fn run_plan(repo: RepoRuntime, command: PlanCommand) -> Result<(), String> {
                     "plan_id",
                     "status",
                     "publication_state",
+                    "head_match",
                     "title",
                 ],
                 args.all,
@@ -105,9 +112,29 @@ fn run_plan(repo: RepoRuntime, command: PlanCommand) -> Result<(), String> {
             render_inspect_like(&payload)
         }
         PlanCommand::Sync(args) => {
-            let payload = run_locked_workspace_command(&repo, "ait-cli plan sync", || {
+            let mut payload = run_locked_workspace_command(&repo, "ait-cli plan sync", || {
                 execute_plan_sync_command_request_json(&build_sync_request(&repo, &args)?)
-            })?;
+            })
+            .map_err(|error| plan_sync_missing_path_hint(&args, error))?;
+            match payload.get("error").cloned() {
+                Some(JsonValue::String(error)) => {
+                    payload["error"] = JsonValue::String(plan_sync_missing_path_hint(&args, error));
+                }
+                Some(JsonValue::Object(mut error)) => {
+                    if let Some(message) = error
+                        .get("message")
+                        .and_then(JsonValue::as_str)
+                        .map(ToString::to_string)
+                    {
+                        error.insert(
+                            "message".to_string(),
+                            JsonValue::String(plan_sync_missing_path_hint(&args, message)),
+                        );
+                        payload["error"] = JsonValue::Object(error);
+                    }
+                }
+                _ => {}
+            }
             if args.json {
                 print_json(&payload)?;
                 return match plan_sync_terminal_error(&payload) {
@@ -238,6 +265,85 @@ fn build_candidates_request(repo: &RepoRuntime, args: &CandidatesArgs) -> Result
     Ok(payload.to_string())
 }
 
+/// A tracked Plan artifact whose file is gone cannot be re-read; only
+/// `--prune` archives it. Say so instead of stopping at the raw path error.
+fn plan_sync_missing_path_hint(args: &SyncArgs, error: String) -> String {
+    plan_sync_missing_path_hint_text(
+        &args.target.display().to_string(),
+        args.prune,
+        args.local,
+        args.remote.as_deref(),
+        error,
+    )
+}
+
+pub(crate) fn plan_sync_missing_path_hint_text(
+    target: &str,
+    prune: bool,
+    _local: bool,
+    remote: Option<&str>,
+    error: String,
+) -> String {
+    if prune || !error.contains("Path does not exist") {
+        return error;
+    }
+    let scope = if let Some(remote) = remote {
+        format!(" --remote {remote}")
+    } else {
+        " --local".to_string()
+    };
+    format!(
+        "{error} If this Plan-backed Markdown was deleted on purpose, archive its Plan with `ait plan sync {target} --prune{scope}`; a plain sync cannot read a missing file."
+    )
+}
+
+/// Annotate local Plan rows with whether the workspace copy of the head
+/// artifact matches the recorded head. One path may carry several Plans, so
+/// the answer is per row and a `false` on one row is not drift by itself.
+fn annotate_plan_rows_with_workspace_match(repo: &RepoRuntime, payload: &mut JsonValue) {
+    let Some(rows) = payload.as_array_mut() else {
+        return;
+    };
+    for row in rows.iter_mut() {
+        let Some(object) = row.as_object_mut() else {
+            continue;
+        };
+        let head_path = object
+            .get("head_artifact_path")
+            .and_then(JsonValue::as_str)
+            .map(ToString::to_string);
+        let head_blob = object
+            .get("head_artifact_blob_id")
+            .and_then(JsonValue::as_str)
+            .map(ToString::to_string);
+        let workspace_blob = head_path.as_deref().and_then(|path| {
+            [repo.workspace_root(), repo.authoritative_repo_root()]
+                .iter()
+                .map(|root| root.join(path))
+                .find(|candidate| candidate.is_file())
+                .and_then(|candidate| std::fs::read_to_string(candidate).ok())
+                .map(|text| ait_core::object_diff::artifact_blob_id(&text))
+        });
+        let matches = match (&workspace_blob, &head_blob) {
+            (Some(workspace), Some(head)) => JsonValue::Bool(workspace == head),
+            _ => JsonValue::Null,
+        };
+        object.insert(
+            "head_match".to_string(),
+            JsonValue::String(match &matches {
+                JsonValue::Bool(true) => "yes".to_string(),
+                JsonValue::Bool(false) => "no".to_string(),
+                _ => "missing".to_string(),
+            }),
+        );
+        object.insert("head_artifact_matches_workspace".to_string(), matches);
+        object.insert(
+            "workspace_artifact_blob_id".to_string(),
+            workspace_blob.map(JsonValue::String).unwrap_or(JsonValue::Null),
+        );
+    }
+}
+
 fn build_sync_request(repo: &RepoRuntime, args: &SyncArgs) -> Result<String, String> {
     if args.rebase && args.reconcile {
         return Err("--rebase cannot be combined with --reconcile".to_string());
@@ -247,7 +353,7 @@ fn build_sync_request(repo: &RepoRuntime, args: &SyncArgs) -> Result<String, Str
     // Markdown is authored in the active workspace, while plan_storage below
     // continues to pin Binary DB and content authority to the canonical root.
     let mut payload = json!({
-        "root_path": repo.workspace_root(),
+        "root_path": plan_sync_root_path(repo, &args.target),
         "repo_name": repo.repo_name(),
         "repository_index": repo.repository_index(),
         "id_namespace_prefix": repo.id_namespace_prefix(),

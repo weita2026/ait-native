@@ -5,7 +5,17 @@ use ait_cli::auth_surface::{
 use ait_cli::blame_surface::{blame as blame_cmd, render_human_blame, BlameRequest};
 use ait_cli::config_surface::{
     config_set as config_set_cmd, config_show as config_show_cmd, config_unset as config_unset_cmd,
-    ConfigSetRequest, ConfigUnsetKey,
+    post_finish_hooks_for_repo, ConfigSetRequest, ConfigUnsetKey,
+};
+use ait_cli::post_finish_hooks::{
+    acquire_hooks_lock, post_finish_hooks_text_lines, pre_finish_hooks_for_roots,
+    pre_finish_hooks_text_lines, run_post_finish_hooks, task_finish_exit_code,
+    PostFinishHookContext,
+    POST_FINISH_HOOKS_PAYLOAD_KEY, PRE_FINISH_HOOKS_PAYLOAD_KEY,
+};
+use ait_cli::runner_hint::{
+    attach_runner_hint_best_effort, ci_runner_once_text, run_ci_once, runner_hint_text,
+    CI_RUNNER_ONCE_PAYLOAD_KEY, RUNNER_HINT_PAYLOAD_KEY,
 };
 use ait_cli::doctor_surface::{
     doctor_memory_root, doctor_plan_authority, doctor_plan_authority_for_repository,
@@ -25,10 +35,15 @@ use ait_cli::primitives::{
     change_revert as change_revert_cmd, change_show as change_show_cmd,
     git_export as git_export_cmd, git_import as git_import_cmd, git_mirror as git_mirror_cmd,
     line_archive, line_cleanup, line_create, line_delete, line_list, line_merge, line_rename,
-    line_show, line_switch, patchset_ci_status as patchset_ci_status_cmd,
+    line_show, line_show_remote, line_switch, patchset_ci_status as patchset_ci_status_cmd,
     patchset_list as patchset_list_cmd, patchset_publish,
     patchset_rerun_ci as patchset_rerun_ci_cmd, patchset_select as patchset_select_cmd,
-    patchset_show as patchset_show_cmd, policy_eval, policy_show, policy_waive, pull as pull_cmd,
+    patchset_show as patchset_show_cmd, plan_backed_markdown_summary,
+    plan_backed_markdown_text_lines, plan_markdown_materialization_text_lines,
+    plan_markdown_presync_text_lines, plan_sync_root_path, policy_eval,
+    presync_plan_markdown_drift, PLAN_BACKED_MARKDOWN_PAYLOAD_KEY,
+    PLAN_MARKDOWN_PRESYNC_PAYLOAD_KEY,
+    policy_show, policy_waive, pull as pull_cmd,
     push as push_cmd, queue_summary as queue_summary_cmd, repo_status as repo_status_cmd,
     resolve_task_author_change_input, resolve_task_finish_change_input,
     resolve_task_remote_change_input, resolve_task_remote_revision_input,
@@ -37,7 +52,8 @@ use ait_cli::primitives::{
     run_task_scoped_workspace_command, snapshot_ancestry, snapshot_diff,
     snapshot_is_ancestor_query, snapshot_list, snapshot_merge_base_query, snapshot_replay,
     snapshot_revert, snapshot_show, stash_apply, stash_drop, stash_list, stash_pop, stash_save,
-    stash_show, task_abandon, task_audit, task_land_apply_scoped, task_list, task_show,
+    stash_show, task_abandon, task_audit, task_land_apply_scoped, task_list,
+    task_quick_with_edit_root_and_progress, task_show,
     task_start_from_with_edit_root_and_progress, task_start_with_progress, workflow_land_apply,
     workflow_land_payload, workflow_ready_apply, workflow_ready_payload, workflow_reconcile_apply,
     workflow_reconcile_automatic, workflow_reconcile_automatic_best_effort,
@@ -80,7 +96,7 @@ use ait_cli::tag_surface::{
     TagCreateRequest,
 };
 use ait_cli::task_land_contract::{
-    task_land_exit_code, task_land_scope_contract_json, PLAN_SYNC_COMMAND_ABOUT,
+    task_land_scope_contract_json, PLAN_SYNC_COMMAND_ABOUT,
     TASK_FINISH_COMMAND_ABOUT, TASK_LAND_CONTRACT_VERSION,
 };
 use ait_cli::workspace_lock::run_locked_workspace_command;

@@ -10,6 +10,10 @@ mod task_land;
 mod task_line_closeout;
 mod wait_hint;
 
+#[cfg(test)]
+pub(crate) use apply_action::{
+    review_message_required_error, review_summary_missing_sections_error,
+};
 pub(super) use apply_action::{workflow_land_apply_action, workflow_ready_apply_action};
 
 pub(super) use apply_support::{

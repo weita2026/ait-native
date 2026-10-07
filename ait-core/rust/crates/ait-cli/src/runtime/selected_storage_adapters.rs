@@ -351,6 +351,7 @@ impl RepoRuntime {
             .filter_map(|plan| {
                 plan.head_revision.map(|head| {
                     Ok(LocalPlanHeadArtifact {
+                        plan_index: plan.plan_index,
                         status: plan.record.status_name().to_string(),
                         artifact_path: head
                             .payload

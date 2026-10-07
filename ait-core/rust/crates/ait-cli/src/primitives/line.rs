@@ -44,6 +44,32 @@ pub fn line_show(repo: &RepoRuntime, name: Option<&str>) -> Result<JsonValue, St
     local_line_row(repo, &resolved_name)
 }
 
+/// Read one Line row from the named remote without touching local state.
+pub fn line_show_remote(
+    repo: &RepoRuntime,
+    name: Option<&str>,
+    remote_name: Option<&str>,
+) -> Result<JsonValue, String> {
+    let resolved_name = match normalized_text(name) {
+        Some(name) => name,
+        None => repo.current_line_name()?,
+    };
+    let (remote_row, repo_name) = super::task::remote_context(repo, remote_name, None)?;
+    let mut task_remote = super::task::http_task_remote(repo, &remote_row)?;
+    let mut row = task_remote
+        .get_line(&repo_name, &resolved_name)
+        .map_err(|err| err.to_string())?;
+    if let Some(object) = row.as_object_mut() {
+        object.insert(
+            "remote".to_string(),
+            JsonValue::String(remote_row.name.clone()),
+        );
+        object.insert("remote_repo_name".to_string(), JsonValue::String(repo_name));
+        object.insert("scope".to_string(), JsonValue::String("remote".to_string()));
+    }
+    Ok(row)
+}
+
 #[cfg(test)]
 pub(super) fn line_show_with_line_store<S>(store: &S, line_name: &str) -> Result<JsonValue, String>
 where

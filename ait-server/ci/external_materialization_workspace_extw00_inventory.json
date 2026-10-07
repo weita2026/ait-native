@@ -8,7 +8,7 @@
   "observed_at": "2026-07-05",
   "baseline": {
     "repo_root": {
-      "path": "/Users/weita/AI_Play_Ground/ait-server",
+      "path": "<repository-root>",
       "external_status": {
         "materialized": 1,
         "missing": 0,
@@ -42,7 +42,7 @@
     },
     "task_worktree": {
       "name": "rset-0169",
-      "path": "/Users/weita/AI_Play_Ground/ait-server/.ait-worktree-links/rset-0169",
+      "path": "<repository-root>/.ait-worktree-links/rset-0169",
       "workspace_status": {
         "state": "clean",
         "changed_files": 0

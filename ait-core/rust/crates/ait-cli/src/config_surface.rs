@@ -1,6 +1,12 @@
 use crate::agent_harness::converge_agent_workflow_harness;
-use crate::json_support::{encode_value_pretty_with_newline_error_string, parse_object_or_empty};
+use crate::json_support::{
+    encode_value, encode_value_pretty_with_newline_error_string, parse_object_or_empty, parse_value,
+};
 use crate::plan_preferences::{normalize_language, normalize_style, PlanPreferences};
+use crate::post_finish_hooks::{
+    parse_post_finish_hooks, post_finish_hooks_from_config, post_finish_hooks_json, PostFinishHook,
+    HOOKS_CONFIG_KEY, POST_FINISH_HOOKS_CONFIG_FIELD,
+};
 use crate::runtime::RepoRuntime;
 use crate::task_worktree_layout::config_task_worktree_summary;
 use ait_core::json_support::{json, JsonMap, JsonValue};
@@ -31,6 +37,7 @@ pub struct ConfigSetRequest {
     pub sprint: Option<String>,
     pub user_name: Option<String>,
     pub user_email: Option<String>,
+    pub post_finish_hooks: Option<String>,
 }
 
 impl ConfigSetRequest {
@@ -75,6 +82,9 @@ impl ConfigSetRequest {
         if self.user_email.is_some() {
             keys.push("user-email");
         }
+        if self.post_finish_hooks.is_some() {
+            keys.push("post-finish-hooks");
+        }
         keys
     }
 }
@@ -91,6 +101,7 @@ pub enum ConfigUnsetKey {
     IdNamespacePrefix,
     UserName,
     UserEmail,
+    PostFinishHooks,
 }
 
 impl ConfigUnsetKey {
@@ -106,6 +117,7 @@ impl ConfigUnsetKey {
             Self::IdNamespacePrefix => "id-namespace-prefix",
             Self::UserName => "user-name",
             Self::UserEmail => "user-email",
+            Self::PostFinishHooks => "post-finish-hooks",
         }
     }
 }
@@ -161,7 +173,71 @@ pub fn config_show(repo: &RepoRuntime) -> Result<JsonValue, String> {
         "sprint": sprint_summary(repo),
         "plan_task_binding": plan_task_binding_summary(repo),
         "web_inbox_defaults": web_inbox_defaults_summary(repo),
+        "hooks": hooks_summary(repo),
     }))
+}
+
+fn root_config_object(repo: &RepoRuntime) -> JsonMap<String, JsonValue> {
+    read_json_object(
+        &repo
+            .authoritative_repo_root()
+            .join(".ait")
+            .join("config.json"),
+    )
+}
+
+fn hooks_summary(repo: &RepoRuntime) -> JsonValue {
+    let mut summary = match post_finish_hooks_from_config(&root_config_object(repo)) {
+        Ok(hooks) => json!({
+            "post_finish": post_finish_hooks_json(&hooks),
+            "post_finish_count": hooks.len(),
+            "source": if hooks.is_empty() { "unset" } else { "repo_config" },
+        }),
+        Err(error) => json!({
+            "post_finish": [],
+            "post_finish_count": 0,
+            "source": "invalid",
+            "error": error,
+        }),
+    };
+    let pre_finish = match crate::post_finish_hooks::pre_finish_hooks_for_roots(
+        &repo.workspace_root(),
+        &repo.authoritative_repo_root(),
+    ) {
+        Ok(Some((path, hooks))) => json!({
+            "pre_finish": post_finish_hooks_json(&hooks),
+            "pre_finish_count": hooks.len(),
+            "pre_finish_source": path.to_string_lossy().to_string(),
+        }),
+        Ok(None) => json!({
+            "pre_finish": [],
+            "pre_finish_count": 0,
+            "pre_finish_source": "unset",
+        }),
+        Err(error) => json!({
+            "pre_finish": [],
+            "pre_finish_count": 0,
+            "pre_finish_source": "invalid",
+            "pre_finish_error": error,
+        }),
+    };
+    if let (Some(target), Some(extra)) = (summary.as_object_mut(), pre_finish.as_object()) {
+        for (key, value) in extra {
+            target.insert(key.clone(), value.clone());
+        }
+    }
+    summary
+}
+
+/// Hooks declared in the canonical repository config; a worktree runtime
+/// resolves to the same root file.
+pub fn post_finish_hooks_for_repo(repo: &RepoRuntime) -> Result<Vec<PostFinishHook>, String> {
+    post_finish_hooks_from_config(&root_config_object(repo))
+}
+
+fn parse_post_finish_hooks_text(text: &str) -> Result<Vec<PostFinishHook>, String> {
+    let value = parse_value(text, "--post-finish-hooks")?;
+    parse_post_finish_hooks(&value)
 }
 
 pub fn config_set(repo: &RepoRuntime, request: &ConfigSetRequest) -> Result<JsonValue, String> {
@@ -213,6 +289,7 @@ fn parse_config_set_request(payload: &JsonValue) -> Result<ConfigSetRequest, Str
             "sprint",
             "user_name",
             "user_email",
+            "post_finish_hooks",
         ],
     )?;
     Ok(ConfigSetRequest {
@@ -231,6 +308,11 @@ fn parse_config_set_request(payload: &JsonValue) -> Result<ConfigSetRequest, Str
         sprint: option_string_field(object, "sprint")?,
         user_name: option_string_field(object, "user_name")?,
         user_email: option_string_field(object, "user_email")?,
+        post_finish_hooks: match object.get("post_finish_hooks") {
+            None | Some(JsonValue::Null) => None,
+            Some(JsonValue::String(text)) => Some(text.clone()),
+            Some(value) => Some(encode_value(value, "post_finish_hooks")?),
+        },
     })
 }
 
@@ -281,6 +363,9 @@ fn validate_config_set_request(request: &ConfigSetRequest) -> Result<(), String>
     if let Some(value) = request.sprint.as_deref() {
         normalize_public_toggle_value(value, "--sprint")?;
     }
+    if let Some(value) = request.post_finish_hooks.as_deref() {
+        parse_post_finish_hooks_text(value)?;
+    }
     Ok(())
 }
 
@@ -297,6 +382,7 @@ fn request_has_updates(request: &ConfigSetRequest) -> bool {
         || request.sprint.is_some()
         || request.user_name.is_some()
         || request.user_email.is_some()
+        || request.post_finish_hooks.is_some()
 }
 
 fn require_nonempty_config_text(value: &str, option_name: &str) -> Result<(), String> {
@@ -351,6 +437,23 @@ fn apply_config_set_updates(
         config.insert(
             "default_model".to_string(),
             JsonValue::String(value.trim().to_string()),
+        );
+    }
+
+    if let Some(value) = request.post_finish_hooks.as_deref() {
+        let hooks = parse_post_finish_hooks_text(value)?;
+        let mut hooks_config = config
+            .get(HOOKS_CONFIG_KEY)
+            .and_then(JsonValue::as_object)
+            .cloned()
+            .unwrap_or_default();
+        hooks_config.insert(
+            POST_FINISH_HOOKS_CONFIG_FIELD.to_string(),
+            post_finish_hooks_json(&hooks),
+        );
+        config.insert(
+            HOOKS_CONFIG_KEY.to_string(),
+            JsonValue::Object(hooks_config),
         );
     }
 
@@ -464,6 +567,22 @@ fn apply_config_unset(
         }
         ConfigUnsetKey::TaskReview => {
             config.remove("task_review");
+        }
+        ConfigUnsetKey::PostFinishHooks => {
+            let Some(hooks) = config
+                .get(HOOKS_CONFIG_KEY)
+                .and_then(JsonValue::as_object)
+                .cloned()
+            else {
+                return Ok(());
+            };
+            let mut hooks = hooks;
+            hooks.remove(POST_FINISH_HOOKS_CONFIG_FIELD);
+            if hooks.is_empty() {
+                config.remove(HOOKS_CONFIG_KEY);
+            } else {
+                config.insert(HOOKS_CONFIG_KEY.to_string(), JsonValue::Object(hooks));
+            }
         }
         ConfigUnsetKey::TaskWorktreeAliasRoot | ConfigUnsetKey::TaskWorktreeMainSeedRamMaxBytes => {
             let Some(value) = config.get("task_worktree") else {

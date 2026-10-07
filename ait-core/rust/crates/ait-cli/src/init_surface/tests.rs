@@ -129,7 +129,7 @@ fn init_creates_authority_agent_contract_and_configured_sprint_directory() {
     assert!(agents.contains("Work only in the returned `edit_root`"));
     assert!(agents.contains("--edit-root\n<absolute-path>"));
     assert!(agents.contains("otherwise omit it and use the returned `edit_root`"));
-    assert!(agents.contains("Read `docs/plan.md` when it exists"));
+    assert!(agents.contains("Read `docs/plan.md` Current Priorities only"));
     let claude = fs::read_to_string(temp.path().join("CLAUDE.md")).unwrap();
     assert!(claude.contains("<!-- ait:workflow:start -->"));
     assert!(claude.contains("Route: mode=`solo_local`; sprint=`on`; scope=`local`"));

@@ -1,0 +1,158 @@
+{
+  "contract": "ait.public-source.path-provenance/v1",
+  "source_snapshot": "SNP-8CE1F484DCF6",
+  "scope": "Public portable configurations and explicitly deidentified derived fixtures. Original bytes remain immutable in the referenced private Snapshot and retained release records. These copies are not new benchmark runs or replacement historical evidence.",
+  "historical_metrics_changed": false,
+  "rows": [
+    {
+      "path": "rust/crates/ait-benchmark/campaigns/agent-token-game-v1/astra-medium-agents-ab-current-smoke10.json",
+      "kind": "portable-campaign-configuration",
+      "original_sha256": "db6fe826f1e274a5b9a214efc50a668eddcbce5e019d10be0a7ac66451439bf1",
+      "public_copy_sha256": "5579eeca72d815853a9205208cda17ba4d214007d5c392b8fa086a6e205c2dfa"
+    },
+    {
+      "path": "rust/crates/ait-benchmark/campaigns/agent-token-game-v1/astra-medium-agents-ab-current-suffix4.json",
+      "kind": "portable-campaign-configuration",
+      "original_sha256": "70e626039bfc16933e98a1921b1c3421369ef2e93eee9504f401c165c641e7f8",
+      "public_copy_sha256": "009a5baffb109d0441ebb23aef43ac3e86de19ec16e79730742d7e5ec1b90a72"
+    },
+    {
+      "path": "rust/crates/ait-benchmark/campaigns/agent-token-game-v1/astra-medium-agents-ab-lean-cache-trace-smoke10.json",
+      "kind": "portable-campaign-configuration",
+      "original_sha256": "04c2eed910e6575fdd2e6c2ed0bc827024cb1b75c612d1384ffa1538941d909d",
+      "public_copy_sha256": "f28a2ce5c34a4fa39083e1bf76b689fd96e96de384cf81e7286356bc635c0703"
+    },
+    {
+      "path": "rust/crates/ait-benchmark/campaigns/agent-token-game-v1/astra-medium-agents-ab-lean-smoke10.json",
+      "kind": "portable-campaign-configuration",
+      "original_sha256": "57c8b5d7dbe753cb7f6f3721e6129c8ff1ceb412a66ea86e41ac7580f76cd4e7",
+      "public_copy_sha256": "b53caf87ea78ccf823ec4abdde7a1833eef94cdb9254590bf6eb36bcbee723dd"
+    },
+    {
+      "path": "rust/crates/ait-benchmark/campaigns/agent-token-game-v1/astra-medium-agents-smoke10.json",
+      "kind": "portable-campaign-configuration",
+      "original_sha256": "ef8e1d7109f4dcf46d49a70a7cc271687d970b430ef3a9be8f8669b8fd38ebdb",
+      "public_copy_sha256": "139861c423027735d9b0d0fef3cdec077ffa856827fe787fdaa18b109e744d28"
+    },
+    {
+      "path": "rust/crates/ait-benchmark/campaigns/agent-token-game-v1/fable-max-gd02-clean5.json",
+      "kind": "portable-campaign-configuration",
+      "original_sha256": "fa043ff066d764e719735ccf5de2da932062a1d67002614411747ea6f50f3f62",
+      "public_copy_sha256": "63d4c92f457294377e4176e8db2aecccef537fc0855a99ae622035efece325d7"
+    },
+    {
+      "path": "rust/crates/ait-benchmark/campaigns/agent-token-game-v1/fable-max-gd02-editroot5.json",
+      "kind": "portable-campaign-configuration",
+      "original_sha256": "f0d1b779d470363b69c34db353db99807cad68f7182693d4fcdec469c356f6d7",
+      "public_copy_sha256": "0cd6b09ee4dae218c1cd4e94e198b358c8f8d81e582468db6265c0befe50957e"
+    },
+    {
+      "path": "rust/crates/ait-benchmark/campaigns/agent-token-game-v1/fable-max-gd02-editrootcanon5.json",
+      "kind": "portable-campaign-configuration",
+      "original_sha256": "210bf48db7d330106b20f2015eca128d3d2792829721fa7054e337b5e108e66b",
+      "public_copy_sha256": "a8a68e662972612100f800c6b7c3525fbd19458f7c79d7fb9483b3bcae664f68"
+    },
+    {
+      "path": "rust/crates/ait-benchmark/campaigns/agent-token-game-v1/fable-max-gd02-mirror5.json",
+      "kind": "portable-campaign-configuration",
+      "original_sha256": "d0a674e747ecd6747cef6e508af03093fc1edddc2ca00ec39eab95da26976b92",
+      "public_copy_sha256": "49edb70819df86ea0b58b204571d6dbe7e53c574ed5a5ddbc313e21d408ee7c1"
+    },
+    {
+      "path": "rust/crates/ait-benchmark/campaigns/agent-token-game-v1/fable-max-gd02-sprintoff5.json",
+      "kind": "portable-campaign-configuration",
+      "original_sha256": "aef1e27974c1c5f8baee0f33b21dacc2f83fb3d7dbdecca530fa1758153175cb",
+      "public_copy_sha256": "c45bb286b003eb9d2d9ea97a3c001773efec85735a462db7bcfc6eb0dca3d760"
+    },
+    {
+      "path": "rust/crates/ait-benchmark/campaigns/agent-token-game-v1/fable-max-gd02-variance5.json",
+      "kind": "portable-campaign-configuration",
+      "original_sha256": "508672aa71e608fbe170f1afce352fed7f11ba0e28d030254f411c8af59a632c",
+      "public_copy_sha256": "02763b3125f38cb61764d4e76c5a80bc808c61796058a5327bacc0dc5b3370d2"
+    },
+    {
+      "path": "rust/crates/ait-benchmark/campaigns/agent-token-game-v1/fable-max-sprint-on-complete200.json",
+      "kind": "portable-campaign-configuration",
+      "original_sha256": "1615c22cd55a6bad393a045123c1dd345b01d9e453d0ed2271563760806b2ed8",
+      "public_copy_sha256": "08de491308a9805606f8aeab0f91fc2caf0f5f225169628a9d2057eff0b4ed69"
+    },
+    {
+      "path": "rust/crates/ait-benchmark/campaigns/agent-token-game-v1/fable-max-sprint-on-smoke10.json",
+      "kind": "portable-campaign-configuration",
+      "original_sha256": "d3b76dfb06e3e672fb416ccfe7a7294655e27a2b73af2fa8724512f1e58af55c",
+      "public_copy_sha256": "b316be8f199a12a9a12ea55e4ce69cff36abc443c902cebc67f6f1c067728efa"
+    },
+    {
+      "path": "rust/crates/ait-benchmark/campaigns/agent-token-game-v1/fable-max-sprintoff-mirror-complete200.json",
+      "kind": "portable-campaign-configuration",
+      "original_sha256": "c3a786527079bdb186a470f63688ad415a101bf138abea44891b689f36647a86",
+      "public_copy_sha256": "48d87c42fc991e1548e615251311ec8b2a593dcf6d249c508fd9fd7d080e6c69"
+    },
+    {
+      "path": "rust/crates/ait-benchmark/campaigns/agent-token-game-v1/fable-max-sprintoff-mirror-noeditroot-cont.json",
+      "kind": "portable-campaign-configuration",
+      "original_sha256": "a73da4db9aafff49f38ffbaf5e73524a2d825b5a7cec937315556ed88585b15c",
+      "public_copy_sha256": "8123cfee57304be51d19e32de31e0855bfb16a2f6d35329818bd41e6789dd387"
+    },
+    {
+      "path": "rust/crates/ait-benchmark/campaigns/agent-token-game-v1/fable-max-sprintoff-mirror-noeditroot10.json",
+      "kind": "portable-campaign-configuration",
+      "original_sha256": "7b4dddecfca3cafb47279fdc9ccbf6b2894ecd8d18c55e72b500ecfd74786961",
+      "public_copy_sha256": "4984ad50f78beed538f0eefe51f3a466fca98b32258a46d350fb320a0ada54a2"
+    },
+    {
+      "path": "rust/crates/ait-benchmark/campaigns/agent-token-game-v1/fable-max-sprintoff-mirror-smoke10.json",
+      "kind": "portable-campaign-configuration",
+      "original_sha256": "f027b37c9cb58cfbca6d2e071eb638bf36d8fa05c68fe703f38de80326439888",
+      "public_copy_sha256": "42c3524d03c2b2d1d71b044cce82ddc92ffbe5836d60ba141c0738a225b01340"
+    },
+    {
+      "path": "rust/crates/ait-benchmark/campaigns/agent-token-game-v1/fable51-max-sprintoff-mirror-diag20.json",
+      "kind": "portable-campaign-configuration",
+      "original_sha256": "1c328e8d5845ff060ceb1b2140c53c623e95ab6c857f9096688b89287b90365c",
+      "public_copy_sha256": "e3065c4fea022eff220c1182c5d2e6129b30ac29fcad45fae63bbfc0a25ff655"
+    },
+    {
+      "path": "rust/crates/ait-benchmark/campaigns/agent-token-game-v1/fable51-max-sprintoff-mirror-smoke10-r5.json",
+      "kind": "portable-campaign-configuration",
+      "original_sha256": "5f79691d5e824f4102466c46a5ae7bb7ed77e724d68006d9da351182eba15de6",
+      "public_copy_sha256": "155d5019bc25d7ddef9e02d6877e9898b1f2dc1a51745aaef1cee7e821575b3d"
+    },
+    {
+      "path": "rust/crates/ait-benchmark/campaigns/agent-token-game-v1/fable51-max-sprintoff-mirror-smoke10-r6.json",
+      "kind": "portable-campaign-configuration",
+      "original_sha256": "046fac2914a950f948a90ab3e70b904cc153ed29895c468d391fd4007f750fc7",
+      "public_copy_sha256": "16c1fb4e135998bc54b72a42d6a2ade0b135d54fa5096f007e49f553f11b6a77"
+    },
+    {
+      "path": "rust/crates/ait-benchmark/campaigns/agent-token-game-v1/fable51-max-sprintoff-mirror-smoke10.json",
+      "kind": "portable-campaign-configuration",
+      "original_sha256": "a550619f110440f49434cd1c19bf4555cbda55ea2c216254b5f1e606edeb4629",
+      "public_copy_sha256": "36578f8df63811e21ff0e08c60b27259813bfcb0a3bfd64d7ae3a65efc94dca0"
+    },
+    {
+      "path": "rust/crates/ait-benchmark/campaigns/agent-token-game-v1/sol-max-codex-managed-complete200.json",
+      "kind": "portable-campaign-configuration",
+      "original_sha256": "9172ee4bd2aef46c08cd54dcb74e4b450163ed536506200541d413e9f4a422eb",
+      "public_copy_sha256": "71e29437990028b4fdbc5a5cda415714a6fa4bf4804df74d761277dfcb22809b"
+    },
+    {
+      "path": "rust/crates/ait-benchmark/fixtures/agent-token-recovery/valid-low-score-replacement-run-summary.json",
+      "kind": "deidentified-derived-test-fixture",
+      "original_sha256": "897590fa24c14f69bba9d370929c34f0c11e064a3944660275ae95e1cb4f84bb",
+      "public_copy_sha256": "db097ef2c8b604a282b2438e7ad06a86c3300ac42aab38926a901948dd5df563"
+    },
+    {
+      "path": "rust/crates/ait-benchmark/tests/fixtures/claude-opus-preflight-sample.jsonl",
+      "kind": "deidentified-derived-test-fixture",
+      "original_sha256": "a3778f45ca76840ada42ac351aee9582b4ae66e84ecc33cecb2897415b17ec7a",
+      "public_copy_sha256": "95750d793acb0b1ed0f9728aeb4e9176b6cce66a92bdd157bf84ade9429358c4"
+    },
+    {
+      "path": "rust/crates/ait-benchmark/tests/fixtures/claude-stream-sample.jsonl",
+      "kind": "deidentified-derived-test-fixture",
+      "original_sha256": "c1cf304bb958980e9f593dca5dd3607d78ce855a1205319455bbf6f37b3b90e4",
+      "public_copy_sha256": "d6f263df08f0494d73de6fe47832cc230601cb48aa3113ac0ba7c18e290a5a1d"
+    }
+  ]
+}

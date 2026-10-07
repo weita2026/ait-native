@@ -1,0 +1,14 @@
+{
+  "contract": "ait.public-source.path-provenance/v1",
+  "source_snapshot": "SNP-752FA3B30469",
+  "scope": "Public portable configurations and explicitly deidentified derived fixtures. Original bytes remain immutable in the referenced private Snapshot and retained release records. These copies are not new benchmark runs or replacement historical evidence.",
+  "historical_metrics_changed": false,
+  "rows": [
+    {
+      "path": "ci/external_materialization_workspace_extw00_inventory.json",
+      "kind": "deidentified-historical-inventory-copy",
+      "original_sha256": "a553e1a84cd6f67dac9d9ca7b39893ca0543ab300c1c8bcbfb03e788fe354c43",
+      "public_copy_sha256": "62eacdc072b43b6048250f5db3af67f3d1715bb74c58ee417390b2324dc20a4d"
+    }
+  ]
+}

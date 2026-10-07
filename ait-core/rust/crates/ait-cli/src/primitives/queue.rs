@@ -32,7 +32,33 @@ fn queue_actionable_local_changes(local_changes: &[JsonValue]) -> Vec<JsonValue>
         .collect()
 }
 
+pub(crate) const QUEUE_STALE_TASK_DAYS: i64 = 30;
+
+/// Active local Tasks whose last update is older than `threshold_days`.
+pub(crate) fn queue_stale_task_ids(
+    local_tasks: &[JsonValue],
+    now: chrono::DateTime<chrono::Utc>,
+    threshold_days: i64,
+) -> Vec<String> {
+    let cutoff = now - chrono::Duration::days(threshold_days);
+    local_tasks
+        .iter()
+        .filter(|row| string_field(row, "status").as_deref() == Some("active"))
+        .filter(|row| {
+            let stamp = string_field(row, "updated_at")
+                .or_else(|| string_field(row, "created_at"))
+                .unwrap_or_default();
+            chrono::DateTime::parse_from_rfc3339(&stamp.replace('Z', "+00:00"))
+                .map(|value| value.with_timezone(&chrono::Utc) < cutoff)
+                .unwrap_or(false)
+        })
+        .filter_map(|row| string_field(row, "task_id"))
+        .collect()
+}
+
 fn queue_local_summary(local_tasks: &[JsonValue], local_changes: &[JsonValue]) -> JsonValue {
+    let stale_task_ids =
+        queue_stale_task_ids(local_tasks, chrono::Utc::now(), QUEUE_STALE_TASK_DAYS);
     let unpublished_tasks = local_tasks
         .iter()
         .filter(|row| string_field(row, "publication_state").as_deref() != Some("published"))
@@ -62,6 +88,10 @@ fn queue_local_summary(local_tasks: &[JsonValue], local_changes: &[JsonValue]) -
         "unpublished_change_record_count": unpublished_changes,
         "active_draft_task_count": actionable_draft_tasks.len(),
         "open_draft_change_count": actionable_draft_changes.len(),
+        "stale_task_count": stale_task_ids.len(),
+        "stale_task_days": QUEUE_STALE_TASK_DAYS,
+        "stale_task_ids": stale_task_ids.iter().take(5).cloned().collect::<Vec<_>>(),
+        "stale_task_command": if stale_task_ids.is_empty() { JsonValue::Null } else { json!("ait task list --all --local") },
     })
 }
 
@@ -259,6 +289,7 @@ pub fn queue_summary(repo: &RepoRuntime, remote_name: Option<&str>) -> Result<Js
             "ready_to_complete_count": task_queue_summary.get("ready_to_complete").and_then(JsonValue::as_i64).unwrap_or(0),
             "reviewer_inbox_count": reviewer_inbox.get("count").and_then(JsonValue::as_i64).unwrap_or(0),
             "local_draft_task_count": local_summary.get("draft_task_count").and_then(JsonValue::as_i64).unwrap_or(0),
+            "stale_task_count": local_summary.get("stale_task_count").and_then(JsonValue::as_i64).unwrap_or(0),
             "local_draft_change_count": local_summary.get("draft_change_count").and_then(JsonValue::as_i64).unwrap_or(0),
             "workspace_dirty": workspace.get("clean").and_then(JsonValue::as_bool) == Some(false),
             "workspace_changed_count": workspace.get("changed_count").and_then(JsonValue::as_i64).unwrap_or(0),

@@ -221,9 +221,19 @@ function familyWithoutComponentSnapshots(family, label) {
   });
 }
 
-function componentSourceSnapshots(family, label) {
+function componentSourceSnapshots(family, label, allowUnbound = false) {
   if (!Array.isArray(family?.components)) {
     fail(`${label} component family Snapshot inventory is invalid`);
+  }
+  const unbound = family.components.filter((component) => component?.source_snapshot === "unbound").length;
+  if (unbound > 0) {
+    if (!allowUnbound || unbound !== family.components.length) {
+      fail(`${label} component family must be either completely bound or completely unbound`);
+    }
+    if (family.components.some((component) => !expectedSourceRepositories.includes(component?.source_repository))) {
+      fail(`${label} component family Snapshot authority is invalid`);
+    }
+    return null;
   }
   const snapshots = new Map();
   for (const component of family.components) {
@@ -299,11 +309,16 @@ if (qualifiedNestedFamily !== undefined) {
   const qualifiedComponentSnapshots = componentSourceSnapshots(
     qualifiedNestedFamily,
     "qualified nested core",
+    true,
   );
   const releaseNestedSnapshots = componentSourceSnapshots(
     releaseNestedFamily,
     "release nested core",
+    true,
   );
+  if ((qualifiedComponentSnapshots === null) !== (releaseNestedSnapshots === null)) {
+    fail("nested core family binding state must agree between pre-RC commits");
+  }
   const qualifiedRootSnapshots = componentSourceSnapshots(
     qualifiedFamily,
     "qualified root",
@@ -322,18 +337,20 @@ if (qualifiedNestedFamily !== undefined) {
     releaseSnapshots,
     "release root family and monorepo mapping Snapshot authorities disagree",
   );
-  requireEqualSnapshots(
-    qualifiedComponentSnapshots,
-    releaseNestedSnapshots,
-    "release nested core family rewrites qualified component source_snapshot values",
-  );
-  componentAuthoritySnapshotTransitions = expectedSourceRepositories
-    .map((sourceRepository) => ({
-      source_repository: sourceRepository,
-      qualified_snapshot: qualifiedComponentSnapshots.get(sourceRepository),
-      release_snapshot: releaseComponentSnapshots.get(sourceRepository),
-    }))
-    .filter((row) => row.qualified_snapshot !== row.release_snapshot);
+  if (qualifiedComponentSnapshots !== null) {
+    requireEqualSnapshots(
+      qualifiedComponentSnapshots,
+      releaseNestedSnapshots,
+      "release nested core family rewrites qualified component source_snapshot values",
+    );
+    componentAuthoritySnapshotTransitions = expectedSourceRepositories
+      .map((sourceRepository) => ({
+        source_repository: sourceRepository,
+        qualified_snapshot: qualifiedComponentSnapshots.get(sourceRepository),
+        release_snapshot: releaseComponentSnapshots.get(sourceRepository),
+      }))
+      .filter((row) => row.qualified_snapshot !== row.release_snapshot);
+  }
 }
 
 function dotEscaped(value, slashCount) {

@@ -69,6 +69,7 @@ fn run_config(repo: RepoRuntime, command: ConfigCommand) -> Result<(), String> {
                 sprint: args.sprint.map(|value| value.as_str().to_string()),
                 user_name: args.user_name,
                 user_email: args.user_email,
+                post_finish_hooks: args.post_finish_hooks,
             };
             let keys = request.updated_keys();
             let payload = config_set_cmd(&repo, &request)?;
@@ -198,6 +199,9 @@ fn config_effective_value(payload: &JsonValue, key: &str) -> String {
             .and_then(|value| value.get("value")),
         "user-name" => payload.get("user_name"),
         "user-email" => payload.get("user_email"),
+        "post-finish-hooks" => payload
+            .get("hooks")
+            .and_then(|value| value.get("post_finish_count")),
         _ => None,
     };
     match value {

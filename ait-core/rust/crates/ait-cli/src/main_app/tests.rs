@@ -1076,6 +1076,7 @@ fn config_parser_exposes_only_the_admitted_set_and_unset_surface() {
         id_namespace_prefix: args.id_namespace_prefix,
         user_name: args.user_name,
         user_email: args.user_email,
+        post_finish_hooks: args.post_finish_hooks,
     };
     assert_eq!(
         request.updated_keys(),
@@ -1116,6 +1117,7 @@ fn config_parser_exposes_only_the_admitted_set_and_unset_surface() {
         ("id-namespace-prefix", ConfigUnsetKey::IdNamespacePrefix),
         ("user-name", ConfigUnsetKey::UserName),
         ("user-email", ConfigUnsetKey::UserEmail),
+        ("post-finish-hooks", ConfigUnsetKey::PostFinishHooks),
     ] {
         let parsed = Cli::try_parse_from(["ait-cli", "config", "unset", raw, "--json"])
             .unwrap_or_else(|error| panic!("{raw}: {error}"));
@@ -2433,6 +2435,127 @@ fn task_start_parser_keeps_manual_title_required_and_accepts_plan_source_mode() 
     );
     assert_eq!(args.remote.as_deref(), Some("origin"));
     assert!(args.json);
+}
+
+#[test]
+fn line_show_parser_accepts_remote_and_ready_parser_accepts_run_ci_once() {
+    let parsed = Cli::try_parse_from([
+        "ait-cli", "line", "show", "main", "--remote", "origin", "--json",
+    ])
+    .unwrap();
+    let Commands::Line {
+        command: LineCommand::Show(args),
+    } = parsed.command
+    else {
+        panic!("expected line show command");
+    };
+    assert_eq!(args.name.as_deref(), Some("main"));
+    assert_eq!(args.remote.as_deref(), Some("origin"));
+    assert!(args.json);
+
+    let parsed = Cli::try_parse_from([
+        "ait-cli",
+        "workflow",
+        "ready",
+        "RCT-1",
+        "--apply",
+        "--run-ci-once",
+    ])
+    .unwrap();
+    let Commands::Workflow {
+        command: WorkflowCommand::Ready(args),
+    } = parsed.command
+    else {
+        panic!("expected workflow ready command");
+    };
+    assert!(args.apply);
+    assert!(args.run_ci_once);
+    assert!(
+        Cli::try_parse_from(["ait-cli", "workflow", "ready", "RCT-1", "--run-ci-once"]).is_err()
+    );
+}
+
+#[test]
+fn task_quick_parser_accepts_intent_only_and_optional_title() {
+    let parsed = Cli::try_parse_from([
+        "ait-cli",
+        "task",
+        "quick",
+        "--intent",
+        "Refresh the release badge",
+        "--edit-root",
+        "/tmp/quick-task-root",
+        "--json",
+    ])
+    .expect("task quick needs only --intent");
+    let Commands::Task {
+        command: TaskCommand::Quick(args),
+    } = parsed.command
+    else {
+        panic!("expected task quick command");
+    };
+    assert_eq!(args.intent, "Refresh the release badge");
+    assert!(args.title.is_none());
+    assert_eq!(
+        args.edit_root.as_deref(),
+        Some(Path::new("/tmp/quick-task-root"))
+    );
+    assert!(args.json);
+    assert!(!args.full);
+
+    let parsed = Cli::try_parse_from([
+        "ait-cli",
+        "task",
+        "quick",
+        "--title",
+        "Badge refresh",
+        "--intent",
+        "Refresh the release badge",
+        "--local",
+    ])
+    .unwrap();
+    let Commands::Task {
+        command: TaskCommand::Quick(args),
+    } = parsed.command
+    else {
+        panic!("expected task quick command");
+    };
+    assert_eq!(args.title.as_deref(), Some("Badge refresh"));
+    assert!(args.local);
+
+    assert!(Cli::try_parse_from(["ait-cli", "task", "quick", "--title", "x"]).is_err());
+    assert!(Cli::try_parse_from([
+        "ait-cli", "task", "quick", "--intent", "x", "--local", "--remote", "origin"
+    ])
+    .is_err());
+    assert!(Cli::try_parse_from(["ait-cli", "task", "quick", "--intent", "x", "--full"]).is_err());
+}
+
+#[test]
+fn config_set_parser_accepts_post_finish_hooks_json_and_unset_key() {
+    let parsed = Cli::try_parse_from([
+        "ait-cli",
+        "config",
+        "set",
+        "--post-finish-hooks",
+        r#"[{"run":["./ait.sh","core","build"]}]"#,
+    ])
+    .unwrap();
+    let Commands::Config {
+        command: ConfigCommand::Set(args),
+    } = parsed.command
+    else {
+        panic!("expected config set command");
+    };
+    assert_eq!(
+        args.post_finish_hooks.as_deref(),
+        Some(r#"[{"run":["./ait.sh","core","build"]}]"#)
+    );
+    let request = ConfigSetRequest {
+        post_finish_hooks: args.post_finish_hooks,
+        ..ConfigSetRequest::default()
+    };
+    assert_eq!(request.updated_keys(), vec!["post-finish-hooks"]);
 }
 
 #[test]
@@ -5842,4 +5965,90 @@ fn external_help_explains_modes_safety_and_machine_output() {
 
     let unlink = help(Some("unlink"));
     assert!(unlink.contains("restore"), "{unlink}");
+}
+
+#[test]
+fn compact_finish_keeps_hook_repair_context_without_reopening_completed_task() {
+    for status in ["failed", "partial"] {
+        let payload = json!({
+            "task_id": "LCT-1", "closeout_status": "complete",
+            "task_status": "completed",
+            "bound_worktree_cleanup": {"status": "removed"},
+            "post_finish_hooks": {
+                "status": status, "configured_count": 2, "failed_count": 1,
+                "repo_root": "/repo with spaces",
+                "hooks": [
+                    {"index": 0, "status": "succeeded", "stdout_tail": "irrelevant success"},
+                    {"index": 1, "status": "failed", "run": ["./build", "two words"],
+                     "exit_code": 7, "on_failure": "fail", "stderr_tail": "   ",
+                     "stdout_tail": "missing input: config.toml\nBuild failed"}
+                ]
+            }
+        });
+        let compact = compact_task_finish_payload(&payload);
+        assert_eq!(compact["closeout"]["task_status"], "completed");
+        assert!(compact["next_action"].is_null());
+        assert_eq!(compact["post_finish_hooks"]["cwd"], "/repo with spaces");
+        let failures = compact["post_finish_hooks"]["failures"].as_array().unwrap();
+        assert_eq!(failures.len(), 1);
+        assert_eq!(failures[0]["run"], json!(["./build", "two words"]));
+        assert_eq!(
+            failures[0]["diagnostic"],
+            "missing input: config.toml\nBuild failed"
+        );
+        assert_eq!(failures[0]["exit_code"], 7);
+    }
+}
+
+#[test]
+fn compact_finish_normal_hooks_keep_existing_summary_and_recovery_keeps_cause() {
+    let payload = json!({"post_finish_hooks": {
+        "status": "complete", "configured_count": 1, "failed_count": 0,
+        "repo_root": "/repo", "hooks": [{"status": "succeeded", "stdout_tail": "large output"}]
+    }});
+    assert_eq!(
+        compact_post_finish_hooks(&payload),
+        json!({
+            "status": "complete", "configured_count": 1, "failed_count": 0
+        })
+    );
+    let recovery = compact_task_finish_payload(&json!({
+        "task_id": "LCT-1", "closeout_status": "partial",
+        "closeout_recovery": {"code": "resume_task_land_closeout",
+            "command": "ait task finish LCT-1 --local", "cwd": "/repo",
+            "detail": "Remove the reported lock only after its owner exits."}
+    }));
+    assert_eq!(recovery["next_action"]["cwd"], "/repo");
+    assert_eq!(
+        recovery["next_action"]["detail"],
+        "Remove the reported lock only after its owner exits."
+    );
+}
+
+#[test]
+fn compact_finish_reports_cleanup_cause_without_an_audit_round_trip() {
+    let result = compact_task_finish_payload(&json!({
+        "task_id": "LCT-1", "task_status": "completed", "closeout_status": "partial",
+        "bound_worktree_cleanup": {"status": "failed", "error": "worktree is locked", "path": "/repo/work"}
+    }));
+    assert_eq!(
+        result["closeout"]["issues"]["bound_worktree_cleanup"]["error"],
+        "worktree is locked"
+    );
+    assert_eq!(
+        result["closeout"]["issues"]["bound_worktree_cleanup"]["path"],
+        "/repo/work"
+    );
+    assert_eq!(result["closeout"]["task_status"], "completed");
+}
+
+#[test]
+fn compact_finish_keeps_hook_setup_errors_without_hook_entries() {
+    let result = compact_post_finish_hooks(&json!({"post_finish_hooks": {
+        "status": "failed", "error": "hook lock unavailable", "repo_root": "/repo",
+        "configured_count": 1, "failed_count": 0, "hooks": []
+    }}));
+    assert_eq!(result["error"], "hook lock unavailable");
+    assert_eq!(result["cwd"], "/repo");
+    assert!(result.get("failures").is_none());
 }

@@ -78,6 +78,25 @@ fn queue_local_summary_counts_actionable_rows_and_totals() {
 }
 
 #[test]
+fn stale_tasks_are_active_rows_older_than_the_threshold() {
+    let now = chrono::DateTime::parse_from_rfc3339("2026-09-08T00:00:00+00:00")
+        .unwrap()
+        .with_timezone(&chrono::Utc);
+    let rows = vec![
+        json!({"task_id": "LT-1", "status": "active", "updated_at": "2026-07-01T00:00:00Z"}),
+        json!({"task_id": "LT-2", "status": "active", "updated_at": "2026-09-01T00:00:00Z"}),
+        json!({"task_id": "LT-3", "status": "completed", "updated_at": "2026-01-01T00:00:00Z"}),
+        json!({"task_id": "LT-4", "status": "active", "created_at": "2026-06-01T00:00:00Z"}),
+        json!({"task_id": "LT-5", "status": "active", "updated_at": "not a date"}),
+    ];
+    assert_eq!(
+        queue_stale_task_ids(&rows, now, QUEUE_STALE_TASK_DAYS),
+        vec!["LT-1", "LT-4"]
+    );
+    assert!(queue_stale_task_ids(&rows, now, 365).is_empty());
+}
+
+#[test]
 fn queue_summary_bundle_missing_detects_native_read_404_only() {
     assert!(queue_summary_bundle_missing(
         "GET /v1/native/repository-authorities/7/read/queue-summary?status=active failed with 404"

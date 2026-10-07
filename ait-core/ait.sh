@@ -3,7 +3,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PATH="/Users/weita/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:${PATH:-}"
+PATH="${CARGO_HOME:-${HOME}/.cargo}/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:${PATH:-}"
 DEFAULT_REPOSITORY_CARGO_BUILD_MAX_BYTES=4294967296
 DEFAULT_CANONICAL_CARGO_BUILD_MAX_BYTES=1073741824
 CANONICAL_CARGO_BUILD_DIRNAME="canonical"

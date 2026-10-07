@@ -17,6 +17,8 @@ macro_rules! perfetto_range {
     };
 }
 
+#[cfg(test)]
+mod actionable_messages;
 pub mod agent_harness;
 pub mod agent_surface;
 pub mod aitk_surface;
@@ -31,6 +33,7 @@ pub mod init_surface;
 pub(crate) mod json_support;
 pub mod patchset_ci_smoke;
 pub(crate) mod plan_preferences;
+pub mod post_finish_hooks;
 pub mod primitives;
 pub mod release_surface;
 pub mod remote_head_recovery;
@@ -39,6 +42,7 @@ pub mod remote_surface;
 pub mod render;
 pub mod repo_surface;
 pub mod repository_retirement;
+pub mod runner_hint;
 pub mod runtime;
 pub mod snapshot_restore_surface;
 pub mod tag_surface;

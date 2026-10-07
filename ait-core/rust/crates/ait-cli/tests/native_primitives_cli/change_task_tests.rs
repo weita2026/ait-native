@@ -1521,6 +1521,7 @@ fn native_task_start_uses_remote_task_payload_contract() {
             "change",
             "intent",
             "phase_timings_ms",
+            "plan_backed_markdown",
             "published_task_id",
             "repo_name",
             "task_id",

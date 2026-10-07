@@ -1,0 +1,61 @@
+{
+  "contract": "ait-agent-token-benchmark-campaign/v1",
+  "campaign_id": "game-v1-g6a-medium-agents-ab-lean-cache-trace-smoke10-20260909-r3",
+  "protocol_revision": "game-development-2026-09-09.55",
+  "campaign_scope": "smoke",
+  "accounting_profile": "steady_state_task_cost",
+  "ait_sprint_mode": "off",
+  "ait_edit_root_mode": "explicit",
+  "git_worktree_mode": "agent_managed",
+  "claude_model_admission": "strict",
+  "functional_replacement_policy": "none",
+  "seed": 2026090802,
+  "attempts_per_cell": 1,
+  "workload_ids": [
+    "GD-01",
+    "GD-02",
+    "GD-03",
+    "GD-04",
+    "GD-05"
+  ],
+  "modes": [
+    "git_linear_single_session",
+    "ait_linear_single_session"
+  ],
+  "model": {
+    "provider": "openai",
+    "model_id": "gpt-6-astra",
+    "model_revision": "gpt-6-astra-provider-alias-observed-2026-09-08",
+    "reasoning_effort": "medium"
+  },
+  "runtime": {
+    "executor": "codex",
+    "codex_program": "/Applications/ChatGPT.app/Contents/Resources/codex",
+    "executor_version": "codex-cli 0.153.4",
+    "ait_version": "ait 1.1.4",
+    "git_version": "git version 2.50.1 (Apple Git-155)",
+    "node_version": "v25.9.0",
+    "browser_version": "Google Chrome 152.0.7977.84",
+    "ait_program": "../../../../../.ait-runtime/agent-token-benchmark/toolchains/astra-medium-agents-ab-20260908/lean/bin/ait",
+    "git_program": "/usr/bin/git",
+    "node_program": "/opt/homebrew/bin/node",
+    "browser_program": "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+    "fixture_manifest": "../../fixtures/agent-token-game-v1/manifest.json",
+    "run_timeout_seconds": 1800,
+    "ait_first_use_worktree_add_dir": null,
+    "project_doc_max_bytes": 8192
+  },
+  "cache_class": "provider_default_fresh_ephemeral_session",
+  "network_policy": "disabled_except_loopback",
+  "tool_policy": "codex_shell_only",
+  "bootstrap_resamples": 2000,
+  "limitations": [
+    "This diagnostic retains the prior lean-guidance arm's AIT subject, generated AGENTS.md, seed, workloads, executor, model, reasoning effort, permissions, prompts, and fresh ephemeral session policy.",
+    "CODEX_ROLLOUT_TRACE_ROOT is enabled symmetrically for preflight and every AIT and Git lane; raw request and response payloads remain private.",
+    "Aggregate turn.completed usage remains the accounting authority; redacted per-inference rows are diagnostic and must reconcile exactly.",
+    "The local Codex 0.153.4 rollout trace surface is pinned diagnostic behavior, not a stable public executor API.",
+    "An unsuffixed zero-lane launch is preserved separately after stopping on the pre-existing Chrome 152.0.7977.76 pin; r2 and this r3 identity pin the observed Chrome 152.0.7977.84 runtime before model execution.",
+    "The r2 draft stopped after four pairs because its initial trace parser rejected one fully observed transport-failed inference that Codex retried in-session; r3 records failed attempts with null usage, counts them as model calls, and reconciles terminal usage over completed inferences only.",
+    "Ten sessions are diagnostic evidence only and cannot authorize a 200-session claim."
+  ]
+}

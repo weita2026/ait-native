@@ -1,0 +1,6 @@
+{
+  "pre_finish": [
+    { "run": ["cargo", "fmt", "--all", "--check", "--manifest-path", "rust/Cargo.toml"] },
+    { "run": ["cargo", "clippy", "-p", "ait-cli", "--all-targets", "--manifest-path", "rust/Cargo.toml", "--", "-D", "warnings"] }
+  ]
+}

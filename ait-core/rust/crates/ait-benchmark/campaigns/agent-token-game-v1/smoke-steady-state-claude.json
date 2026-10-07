@@ -1,7 +1,7 @@
 {
   "contract": "ait-agent-token-benchmark-campaign/v1",
   "campaign_id": "game-v1-smoke-steady-state-claude-template",
-  "protocol_revision": "game-development-2026-08-31.52",
+  "protocol_revision": "game-development-2026-09-09.55",
   "campaign_scope": "smoke",
   "accounting_profile": "steady_state_task_cost",
   "ait_sprint_mode": "off",

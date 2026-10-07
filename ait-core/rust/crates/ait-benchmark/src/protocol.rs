@@ -560,27 +560,26 @@ mod tests {
     }
 
     #[test]
-    fn measured_ait_workspace_purges_generated_artifacts() {
-        // Every AIT lane used to list AGENTS.md and docs/ while no Git lane
-        // did, and agents spent 1.6-3.0 requests per lane exploring exactly
-        // those artifacts. The purge removes the file and archives its Plan;
-        // the protocol text must state the corrected deletion mechanism.
+    fn measured_ait_workspace_declares_native_project_document_treatment() {
         assert_eq!(crate::agent_token::AIT_PURGED_PROJECT_DOCUMENT, "AGENTS.md");
         let protocol: serde_json::Value =
             serde_json::from_str(crate::AGENT_TOKEN_PROTOCOL_V1_JSON).unwrap();
         let policy = protocol["fairness"]["project_document_loading"]
             .as_str()
             .expect("project_document_loading is declared");
-        for required in ["deleted", "--prune", "docs", "exploration"] {
+        for required in [
+            "project_doc_max_bytes=0",
+            "smoke-diagnostic only",
+            "Codex retains only generated AGENTS.md",
+            "Claude retains only CLAUDE.md",
+            "without repeating exact lifecycle commands",
+            "never pooled",
+        ] {
             assert!(
                 policy.contains(required),
                 "project-document policy must state {required:?}: {policy}"
             );
         }
-        assert!(
-            !policy.contains("cannot be deleted"),
-            "retired stub-era claim survives: {policy}"
-        );
     }
 
     #[test]
@@ -593,7 +592,7 @@ mod tests {
         );
         assert_eq!(
             protocol["protocol_revision"],
-            serde_json::json!("game-development-2026-08-31.52")
+            serde_json::json!("game-development-2026-09-09.55")
         );
         assert_eq!(
             protocol["sampling"]["codex_app_equivalent_managed_prefix_gate"]

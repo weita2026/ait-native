@@ -1,5 +1,8 @@
 use super::*;
 use crate::primitives::plan_checklist_closeout::close_task_plan_checklist_item;
+use crate::primitives::plan_markdown_materialization::{
+    materialize_plan_markdown_after_local_finish, PLAN_MARKDOWN_MATERIALIZATION_PAYLOAD_KEY,
+};
 use crate::task_land_contract::attach_task_land_contract;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -361,8 +364,40 @@ where
         None,
         captured_bound_line,
     );
+    // Materialize first so the bound card's root copy carries the Plan head
+    // before the checklist closeout compares and closes it.
+    task_land_attach_plan_markdown_materialization(&closeout_repo, &mut output);
     task_land_attach_plan_checklist_closeout(&closeout_repo, &mut output, true, None);
     Ok(Some(output))
+}
+
+/// Write Plan-backed Markdown heads back into the canonical root after a
+/// completed local apply. Never changes `closeout_status`; problems are
+/// reported inside `plan_markdown_materialization`.
+pub(in crate::primitives) fn task_land_attach_plan_markdown_materialization(
+    repo: &RepoRuntime,
+    output: &mut JsonValue,
+) {
+    if output.get("apply_status").and_then(JsonValue::as_str) != Some("done") {
+        return;
+    }
+    let result = run_locked_workspace_command(
+        repo,
+        "ait task finish plan markdown materialization",
+        || Ok(materialize_plan_markdown_after_local_finish(repo)),
+    )
+    .unwrap_or_else(|error| {
+        json!({
+            "status": "failed",
+            "error": error,
+        })
+    });
+    if let Some(object) = output.as_object_mut() {
+        object.insert(
+            PLAN_MARKDOWN_MATERIALIZATION_PAYLOAD_KEY.to_string(),
+            result,
+        );
+    }
 }
 
 pub(in crate::primitives) fn task_land_attach_plan_checklist_closeout(

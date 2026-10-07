@@ -12,6 +12,34 @@ use tempfile::NamedTempFile;
 use std::os::unix::fs::PermissionsExt;
 
 const MANAGED_START: &str = "<!-- ait:workflow:start -->";
+/// Facts an agent otherwise learns from a refusal. Kept short and stable so
+/// every session reads them once at start; the sync command follows the
+/// effective scope.
+pub fn render_worktree_facts(scope_label: &str, remote_name: &str) -> String {
+    let (sync_command, finish_clause) = if scope_label == "remote" {
+        (
+            format!("ait plan sync <path> --remote {remote_name}"),
+            String::new(),
+        )
+    } else {
+        (
+            "ait plan sync <path> --local".to_string(),
+            "; `ait task finish` refuses unsynced drift unless given\n  `--sync-plan-markdown`"
+                .to_string(),
+        )
+    };
+    format!(
+        r#"### Worktree facts
+
+- `docs/` in a Task worktree is a shared link to the repository root.
+- Plan-backed Markdown moves through `{sync_command}`, never code
+  Snapshots{finish_clause}.
+- Plan-backed Markdown outside `docs/` is absent from worktrees; edit it at the root.
+- One Markdown file may bind several Plans; `ait plan list` shows `head_match`.
+- `ait task quick --intent "<intent>" --edit-root <absolute-path>` covers small changes.
+- `hooks.post_finish` (see `ait config show`) runs after each successful local finish."#
+    )
+}
 const MANAGED_END: &str = "<!-- ait:workflow:end -->";
 const PLAN_BINARY_DB_WRITE_LAYOUT: u32 = 1;
 const AGENT_HARNESS_PATH: &str = "AGENTS.md";
@@ -416,6 +444,7 @@ fn render_workflow_block(repo: &RepoRuntime, audience: GuidanceAudience) -> Resu
         .default_remote_name()
         .unwrap_or_else(|| "origin".to_string());
     let scope_label = effective_agent_harness_scope(repo);
+    let worktree_facts = render_worktree_facts(scope_label, &remote_name);
     let admission =
         render_effective_workflow_admission(repo, &workflow_mode, sprint_enabled, scope_label);
     let plan_sync_command = if scope_label == "remote" {
@@ -521,6 +550,39 @@ retain the returned Task ID and verify that its `edit_root` is the selected path
     };
     let task_path = format!("{task_path}\n\n{edit_root_guidance}");
 
+    let supplemental_guidance = if !sprint_enabled && scope_label == "local" {
+        format!(
+            r#"### Worktree and recovery rules
+
+- Stay inside `edit_root`; do not search parent directories. `docs/` there is
+  shared with the repository root.
+- Sync authored Markdown with `{plan_sync_command}`; never hide it in a code
+  Snapshot.
+- For regressions, run `ait blame <path>` before repair. If AIT reports
+  `action_required` or ambiguity, follow its recovery and use `ait task audit`
+  only when directed or when evidence is requested."#
+        )
+    } else {
+        format!(
+            r#"{worktree_facts}
+
+### Conditional references
+
+- Read `docs/plan.md` Current Priorities only for product-scope, release, or
+  public-contract changes.
+- For a regression, use `ait blame <path>` before choosing a repair.
+{markdown_sync_rule}
+- A Snapshot is a checkpoint, not a substitute for the listed closeout.
+- Only when that question arises: `ait queue summary` shows actionable work,
+  `ait task audit <task-id>` shows readiness, and `ait task list --all` plus
+  `ait snapshot list --all` show history.
+- Change IDs are internal to normal Task work. Do not create another Change
+  for checkpoints, review corrections, or checklist steps. Patchset CI uses
+  the public `TASK_ID/P-##` Patchset reference. If a Task reports ambiguous work, inspect `ait task
+  audit <task-id>`."#
+        )
+    };
+
     Ok(format!(
         r#"{MANAGED_START}
 ## Effective Ait Workflow (Generated)
@@ -531,19 +593,7 @@ retain the returned Task ID and verify that its `edit_root` is the selected path
 
 {task_path}
 
-### Conditional references
-
-- Read `docs/plan.md` when it exists.
-- For a regression, use `ait blame <path>` before choosing a repair.
-{markdown_sync_rule}
-- A Snapshot is a checkpoint, not a substitute for the listed closeout.
-- Only when that question arises: `ait queue summary` shows actionable work,
-  `ait task audit <task-id>` shows readiness, and `ait task list --all` plus
-  `ait snapshot list --all` show history.
-- Change IDs are internal to normal Task work. Do not create another Change
-  for checkpoints, review corrections, or checklist steps. Patchset CI uses
-  the public `TASK_ID/P-##` Patchset reference. If a Task reports ambiguous work, inspect `ait task
-  audit <task-id>`.
+{supplemental_guidance}
 {MANAGED_END}"#,
     ))
 }
@@ -787,6 +837,7 @@ mod tests {
                 let rendered = render_agent_workflow_block(&repo(mode, sprint)).unwrap();
                 let remote = matches!(mode, "solo_remote" | "team_remote");
                 let scope = if remote { "remote" } else { "local" };
+                let lean_local_sprint_off = !remote && sprint == "off";
                 assert!(rendered.contains(&format!(
                     "Route: mode=`{mode}`; sprint=`{sprint}`; scope=`{scope}`"
                 )));
@@ -815,11 +866,31 @@ mod tests {
                 assert!(!rendered.contains("plan-closeout="));
                 assert!(!rendered.contains("ait install"));
                 assert!(!rendered.contains("regenerate this authoritative block"));
-                assert!(rendered.contains("Read `docs/plan.md` when it exists"));
+                assert!(!rendered.contains("Read `docs/plan.md` when it exists"));
+                assert_eq!(
+                    rendered.contains("Read `docs/plan.md` Current Priorities only"),
+                    !lean_local_sprint_off
+                );
                 assert!(rendered.contains("ait blame <path>"));
                 assert!(!rendered.contains("workflow tier"));
                 assert!(!rendered.contains("--profile quick"));
                 assert!(rendered.contains("### Code-change path"));
+                assert_eq!(
+                    rendered.contains("### Worktree facts"),
+                    !lean_local_sprint_off
+                );
+                assert_eq!(
+                    rendered.contains("### Worktree and recovery rules"),
+                    lean_local_sprint_off
+                );
+                assert_eq!(
+                    rendered.contains("do not search parent directories"),
+                    lean_local_sprint_off
+                );
+                assert_eq!(
+                    rendered.contains("--sync-plan-markdown"),
+                    !remote && !lean_local_sprint_off
+                );
                 assert!(rendered
                     .split_whitespace()
                     .collect::<Vec<_>>()
@@ -827,7 +898,10 @@ mod tests {
                     .contains("ait snapshot create <task-id>"));
                 assert!(!rendered.contains("--task-id"));
                 assert!(!rendered.contains("--change-id"));
-                assert!(rendered.contains("A Snapshot is a checkpoint, not a substitute"));
+                assert_eq!(
+                    rendered.contains("A Snapshot is a checkpoint, not a substitute"),
+                    !lean_local_sprint_off
+                );
                 assert!(!rendered.contains("--base-line"));
                 assert!(
                     !rendered.to_ascii_lowercase().contains("json"),
@@ -842,8 +916,13 @@ mod tests {
                 let prose = PlanPreferences::from_config(&JsonMap::new())
                     .unwrap()
                     .guidance();
-                let byte_limit = base_byte_limit + prose.len() + 40;
-                let word_limit = base_word_limit + prose.split_whitespace().count() + 6;
+                let facts =
+                    render_worktree_facts(if remote { "remote" } else { "local" }, "upstream");
+                let byte_limit = base_byte_limit + prose.len() + facts.len() + 40;
+                let word_limit = base_word_limit
+                    + prose.split_whitespace().count()
+                    + facts.split_whitespace().count()
+                    + 6;
                 assert!(
                     rendered.len() < byte_limit,
                     "{mode}/{sprint} guidance was {} bytes; limit is {byte_limit}",
@@ -909,13 +988,21 @@ mod tests {
                     .contains("ait snapshot create <task-id>"));
                 let shared_route =
                     format!("Route: mode=`{mode}`; sprint=`{sprint}`; scope=`{scope}`");
-                for shared in [
+                let mut shared_guidance = vec![
                     shared_route.as_str(),
                     "## Effective Ait Workflow (Generated)",
                     "### Code-change path",
-                    "### Conditional references",
-                    "Read `docs/plan.md` when it exists",
-                ] {
+                ];
+                if lean_local_sprint_off {
+                    shared_guidance.push("### Worktree and recovery rules");
+                    shared_guidance.push("do not search parent directories");
+                    assert!(!claude.contains("### Conditional references"));
+                    assert!(!claude.contains("Read `docs/plan.md` Current Priorities only"));
+                } else {
+                    shared_guidance.push("### Conditional references");
+                    shared_guidance.push("Read `docs/plan.md` Current Priorities only");
+                }
+                for shared in shared_guidance {
                     assert!(claude.contains(shared), "missing shared guidance: {shared}");
                 }
                 assert_eq!(claude.matches(MANAGED_START).count(), 1);

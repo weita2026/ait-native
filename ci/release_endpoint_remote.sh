@@ -454,7 +454,9 @@ validate_npm_remote_state() {
 
 wait_for_npm_remote_state() {
   local attempt=1
-  local max_attempts=12
+  local max_attempts=${AIT_RELEASE_VISIBILITY_ATTEMPTS:-40}
+  local delay=${AIT_RELEASE_VISIBILITY_DELAY_SECONDS:-15}
+  [[ ${max_attempts} =~ ^[1-9][0-9]*$ && ${max_attempts} -le 120 && ${delay} =~ ^[0-9]+$ && ${delay} -le 60 ]] || return 64
   local readback_status
   while ((attempt <= max_attempts)); do
     if validate_npm_remote_state true; then
@@ -468,11 +470,11 @@ wait_for_npm_remote_state() {
     if ((attempt == max_attempts)); then
       printf 'npm package set did not become fully visible after %s attempts\n' \
         "${max_attempts}" >&2
-      return 65
+      return 75
     fi
     printf 'waiting for npm package-set visibility (%s/%s)\n' \
       "${attempt}" "${max_attempts}" >&2
-    sleep 5
+    sleep "${delay}"
     attempt=$((attempt + 1))
   done
 }
@@ -547,7 +549,9 @@ validate_pypi_remote_state() {
 
 wait_for_pypi_remote_state() {
   local attempt=1
-  local max_attempts=12
+  local max_attempts=${AIT_RELEASE_VISIBILITY_ATTEMPTS:-40}
+  local delay=${AIT_RELEASE_VISIBILITY_DELAY_SECONDS:-15}
+  [[ ${max_attempts} =~ ^[1-9][0-9]*$ && ${max_attempts} -le 120 && ${delay} =~ ^[0-9]+$ && ${delay} -le 60 ]] || return 64
   local readback_status
   while ((attempt <= max_attempts)); do
     if validate_pypi_remote_state true; then
@@ -561,11 +565,11 @@ wait_for_pypi_remote_state() {
     if ((attempt == max_attempts)); then
       printf 'PyPI release wheel set did not become fully visible after %s attempts\n' \
         "${max_attempts}" >&2
-      return 65
+      return 75
     fi
     printf 'waiting for PyPI release wheel-set visibility (%s/%s)\n' \
       "${attempt}" "${max_attempts}" >&2
-    sleep 5
+    sleep "${delay}"
     attempt=$((attempt + 1))
   done
 }

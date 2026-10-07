@@ -88,10 +88,14 @@ macro_rules! define_environment_contract {
 define_environment_contract!(
     AIT_AGENT_CONFIG_PATH => (Bootstrap, Agent, false, "Path to the typed Agent worker manifest."),
     AIT_AGENT_RUST_WORKER_BINARY => (Bootstrap, Agent, false, "Explicit native ait-agent-worker executable selected by the public manager."),
+    AIT_CHANGED_PATHS_FILE => (Automation, Cli, false, "Path to a file listing the applied Snapshot's changed paths, one per line, exported to finish hooks."),
+    AIT_CHANGED_PATH_COUNT => (Automation, Cli, false, "Number of changed paths in the applied Snapshot, exported to finish hooks."),
+    AIT_CHANGE_REF => (Automation, Cli, false, "Public Change reference of the finishing Task, exported to finish hooks."),
     AIT_DISCORD_APPLICATION_ID => (Credential, Agent, false, "Discord application identity used by the selected worker."),
     AIT_DISCORD_BOT_TOKEN => (Credential, Agent, true, "Discord bot credential for the selected worker."),
     AIT_DISCORD_PUBLIC_KEY => (Credential, Agent, false, "Discord verification public key for the selected worker."),
     AIT_EXTERNAL_CORE_REPO_ROOT => (Bootstrap, Core, false, "Explicit source root for the external-core diagnostic adapter."),
+    AIT_FINISHED_SNAPSHOT_ID => (Automation, Cli, false, "Snapshot applied by the finishing Task, exported to finish hooks."),
     AIT_LINE_CHANNEL_ACCESS_TOKEN => (Credential, Agent, true, "LINE channel access credential for the selected worker."),
     AIT_LINE_CHANNEL_SECRET => (Credential, Agent, true, "LINE channel verification secret for the selected worker."),
     AIT_NATIVE_ACTOR => (Configuration, Core, false, "Actor identity claim attached to local authorship and remote requests."),
@@ -106,6 +110,8 @@ define_environment_contract!(
     AIT_SHARED_CARGO_TARGET_DIR => (Automation, Release, false, "Explicit shared Cargo target directory used by release smoke."),
     AIT_SLACK_APP_TOKEN => (Credential, Agent, true, "Slack app-level credential for the selected worker."),
     AIT_SLACK_SIGNING_SECRET => (Credential, Agent, true, "Slack request verification secret for the selected worker."),
+    AIT_TARGET_LINE => (Automation, Cli, false, "Line the finishing Task applied onto, exported to finish hooks."),
+    AIT_TASK_ID => (Automation, Cli, false, "Task identifier of the finishing Task, exported to finish hooks."),
     AIT_TELEGRAM_BOT_TOKEN => (Credential, Agent, true, "Telegram bot credential for the selected worker."),
     AIT_TELEGRAM_OPENAI_API_KEY => (Credential, Agent, true, "Telegram-scoped OpenAI credential for the selected worker."),
     AIT_TELEGRAM_WEBHOOK_SECRET => (Credential, Agent, true, "Telegram webhook verification secret for the selected worker."),
@@ -214,7 +220,7 @@ mod tests {
 
     #[test]
     fn registry_is_sorted_unique_and_excludes_removed_names() {
-        assert_eq!(ENVIRONMENT_VARIABLES.len(), 24);
+        assert_eq!(ENVIRONMENT_VARIABLES.len(), 30);
         let names = ENVIRONMENT_VARIABLES
             .iter()
             .map(|entry| entry.name)

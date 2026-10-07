@@ -2,6 +2,15 @@
 
 use super::*;
 
+/// Total time a shared read may wait for an active writer before the
+/// retryable busy error is returned. A writer commit is short, so readers
+/// almost always succeed within the window; tests set 0 to pin the immediate
+/// error.
+pub static BINARY_DB_READ_WAIT_MS: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(10_000);
+const READ_WAIT_INITIAL_DELAY_MS: u64 = 25;
+const READ_WAIT_MAX_DELAY_MS: u64 = 250;
+
 #[derive(Debug)]
 pub struct BinaryDbCommandLockSet {
     scope: BinaryDbCommandScope,
@@ -230,24 +239,41 @@ impl BinaryDbReadLockSet {
             .map_err(|e| file_io_error_to_binary("create Binary DB read lock directory", e))?;
         let mut paths: Vec<PathBuf> = Vec::new();
         let mut locks: Vec<BinaryDbHeldReadLock> = Vec::new();
+        let deadline = std::time::Instant::now()
+            + std::time::Duration::from_millis(
+                BINARY_DB_READ_WAIT_MS.load(std::sync::atomic::Ordering::Relaxed),
+            );
         for name in read_scope.lock_file_names() {
             let path = lock_root.join(name);
-            let guard = match files
-                .acquire_process_lock(&path, FileIoLockMode::Shared, FileIoLockWait::Nonblocking)
-                .map_err(|e| {
-                    file_io_error_to_binary(
-                        format!("open Binary DB read lock {}", path.display()),
-                        e,
+            let mut delay = std::time::Duration::from_millis(READ_WAIT_INITIAL_DELAY_MS);
+            let guard = loop {
+                let attempt = files
+                    .acquire_process_lock(
+                        &path,
+                        FileIoLockMode::Shared,
+                        FileIoLockWait::Nonblocking,
                     )
-                })? {
-                Some(guard) => guard,
-                None => {
-                    for lock in &mut locks {
-                        let _ = lock.guard.release();
+                    .map_err(|e| {
+                        file_io_error_to_binary(
+                            format!("open Binary DB read lock {}", path.display()),
+                            e,
+                        )
+                    })?;
+                match attempt {
+                    Some(guard) => break guard,
+                    None if std::time::Instant::now() < deadline => {
+                        std::thread::sleep(delay);
+                        delay = (delay * 2)
+                            .min(std::time::Duration::from_millis(READ_WAIT_MAX_DELAY_MS));
                     }
-                    return Err(BinaryDbError::retryable_busy(
-                        "Binary DB writer is active; retry read after writer commits",
-                    ));
+                    None => {
+                        for lock in &mut locks {
+                            let _ = lock.guard.release();
+                        }
+                        return Err(BinaryDbError::retryable_busy(
+                            "Binary DB writer is active; retry read after writer commits",
+                        ));
+                    }
                 }
             };
             paths.push(path);

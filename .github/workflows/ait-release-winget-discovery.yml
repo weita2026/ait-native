@@ -1,0 +1,60 @@
+name: ait release WinGet discovery
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        required: true
+        type: string
+      release_id:
+        required: true
+        type: string
+      submission_sha256:
+        required: true
+        type: string
+      merge_commit_sha:
+        required: true
+        type: string
+permissions:
+  contents: read
+concurrency:
+  group: ait-winget-discovery-${{ inputs.version }}
+  cancel-in-progress: false
+jobs:
+  discover:
+    runs-on: windows-2022
+    timeout-minutes: 20
+    steps:
+      - name: Discover exact version in the public WinGet source
+        shell: pwsh
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+          RELEASE_ID: ${{ inputs.release_id }}
+          SUBMISSION_SHA256: ${{ inputs.submission_sha256 }}
+          MERGE_COMMIT_SHA: ${{ inputs.merge_commit_sha }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:RELEASE_VERSION -notmatch '^\d+\.\d+\.\d+$' -or $env:SUBMISSION_SHA256 -notmatch '^[a-f0-9]{64}$' -or $env:MERGE_COMMIT_SHA -notmatch '^[a-f0-9]{40}$' -or $env:RELEASE_ID -notmatch '^REL-[A-Z0-9]+$') { throw 'Invalid release identity' }
+          if (-not (Get-Command winget.exe -ErrorAction SilentlyContinue)) {
+            Add-AppxPackage -RegisterByFamilyName -MainPackage Microsoft.DesktopAppInstaller_8wekyb3d8bbwe
+          }
+          Get-Command winget.exe -ErrorAction Stop | Out-Null
+          winget source update --name winget --disable-interactivity
+          if ($LASTEXITCODE -ne 0) { throw 'WinGet source update failed' }
+          $visible = $false
+          for ($attempt = 1; $attempt -le 12; $attempt++) {
+            $readback = winget show --id Weita.AitNative --exact --version $env:RELEASE_VERSION --source winget --accept-source-agreements --disable-interactivity 2>&1
+            $exitCode = $LASTEXITCODE
+            $readback | Out-File -Encoding utf8 winget-readback.txt
+            if ($exitCode -eq 0 -and ($readback -join "`n") -match 'Weita\.AitNative' -and ($readback -join "`n") -match [regex]::Escape($env:RELEASE_VERSION)) { $visible = $true; break }
+            if ($attempt -lt 12) { Start-Sleep -Seconds 60 }
+          }
+          if (-not $visible) { throw 'Exact WinGet version is not discoverable yet; retry failed job later' }
+          @{contract='ait.release.winget-discovery/v1';status='discoverable';version=$env:RELEASE_VERSION;release_id=$env:RELEASE_ID;submission_sha256=$env:SUBMISSION_SHA256;merge_commit_sha=$env:MERGE_COMMIT_SHA;package_id='Weita.AitNative';source='winget';checked_at=[DateTime]::UtcNow.ToString('o')} | ConvertTo-Json | Set-Content -Encoding utf8 winget-discovery.json
+      - name: Save exact discovery evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: ait-winget-discovery-${{ inputs.version }}
+          path: |
+            winget-discovery.json
+            winget-readback.txt
+          if-no-files-found: error

@@ -101,7 +101,21 @@ fn compact_status_payload(payload: &JsonValue) -> JsonValue {
         },
         "worktree": worktree,
         "next_action": next_action,
+        "evidence": compact_evidence("ait status --json --full"),
     })
+}
+
+/// A read-only command that returns the complete state behind a compact
+/// payload without repeating the mutation that produced it.
+fn compact_evidence(command: impl Into<String>) -> JsonValue {
+    json!({ "command": command.into() })
+}
+
+fn compact_evidence_for_id(prefix: &str, id: Option<&str>) -> JsonValue {
+    match id.map(str::trim).filter(|value| !value.is_empty()) {
+        Some(id) => compact_evidence(format!("{prefix} {id} --json")),
+        None => JsonValue::Null,
+    }
 }
 
 fn shell_quote_text(text: &str) -> String {
@@ -140,7 +154,16 @@ fn compact_task_start_payload(payload: &JsonValue) -> JsonValue {
         "worktree_name": cloned_field(worktree, "name"),
         "edit_root": edit_root,
         "edit_root_source": edit_root_source,
+        "quick_card": payload
+            .get("quick_card")
+            .and_then(|card| card.get("artifact_path"))
+            .cloned()
+            .unwrap_or(JsonValue::Null),
         "next_action": next_action,
+        "evidence": compact_evidence_for_id(
+            "ait task show",
+            payload.get("task_id").and_then(JsonValue::as_str),
+        ),
     })
 }
 
@@ -154,6 +177,10 @@ fn compact_snapshot_create_payload(payload: &JsonValue) -> JsonValue {
         "line_name": cloned_field(payload, "line_name"),
         "parent_snapshot_id": cloned_field(payload, "parent_snapshot_id"),
         "message": cloned_field(payload, "message"),
+        "evidence": compact_evidence_for_id(
+            "ait snapshot show",
+            payload.get("snapshot_id").and_then(JsonValue::as_str),
+        ),
     })
 }
 
@@ -180,12 +207,18 @@ fn compact_task_finish_payload(payload: &JsonValue) -> JsonValue {
         .get("closeout_recovery")
         .filter(|value| value.is_object())
         .map(|value| {
-            json!({
+            let mut action = json!({
                 "code": cloned_field(value, "code"),
                 "command": value.get("command").and_then(JsonValue::as_str).map(|command| {
                     task_command_text(command, &task_id, &task_id, &exact_change)
                 }),
-            })
+            });
+            for field in ["detail", "cwd"] {
+                if let Some(value) = value.get(field).filter(|value| !value.is_null()) {
+                    action[field] = value.clone();
+                }
+            }
+            action
         })
         .unwrap_or(JsonValue::Null);
     let mode = payload
@@ -198,10 +231,10 @@ fn compact_task_finish_payload(payload: &JsonValue) -> JsonValue {
                 .cloned()
         })
         .unwrap_or(JsonValue::Null);
-    json!({
+    let mut summary = json!({
         "contract": AGENT_ACTION_JSON_CONTRACT,
         "command": "task.finish",
-        "ok": task_land_exit_code(payload) == 0,
+        "ok": task_finish_exit_code(payload) == 0,
         "mode": mode,
         "task_id": cloned_field(payload, "task_id"),
         "patchset_id": cloned_public_patchset_field(payload, "patchset_id"),
@@ -214,9 +247,98 @@ fn compact_task_finish_payload(payload: &JsonValue) -> JsonValue {
             "worktree_status": compact_nested_status(payload, "bound_worktree_cleanup"),
             "line_status": compact_nested_status(payload, "bound_line_closeout"),
             "plan_status": compact_nested_status(payload, "plan_checklist_closeout"),
+            "plan_markdown_status": compact_nested_status(payload, "plan_markdown_materialization"),
         },
+        "post_finish_hooks": compact_post_finish_hooks(payload),
         "next_action": recovery,
-    })
+        "evidence": compact_evidence_for_id("ait task audit", Some(task_id.as_str())),
+    });
+    let mut issues = json!({});
+    for field in [
+        "bound_worktree_cleanup",
+        "bound_line_closeout",
+        "plan_checklist_closeout",
+        "plan_markdown_materialization",
+    ] {
+        let Some(component) = payload.get(field) else {
+            continue;
+        };
+        if !matches!(
+            component.get("status").and_then(JsonValue::as_str),
+            Some("failed" | "blocked" | "partial" | "deferred")
+        ) {
+            continue;
+        }
+        let mut detail = json!({});
+        for key in ["reason", "error", "detail", "path"] {
+            if let Some(value) = component.get(key).filter(|value| !value.is_null()) {
+                detail[key] = value.clone();
+            }
+        }
+        if detail.as_object().is_some_and(|object| !object.is_empty()) {
+            issues[field] = detail;
+        }
+    }
+    if issues.as_object().is_some_and(|object| !object.is_empty()) {
+        summary["closeout"]["issues"] = issues;
+    }
+    summary
+}
+
+fn compact_post_finish_hooks(payload: &JsonValue) -> JsonValue {
+    let Some(result) = payload
+        .get(POST_FINISH_HOOKS_PAYLOAD_KEY)
+        .and_then(JsonValue::as_object)
+    else {
+        return JsonValue::Null;
+    };
+    let mut summary = json!({
+        "status": result.get("status").cloned().unwrap_or(JsonValue::Null),
+        "configured_count": result.get("configured_count").cloned().unwrap_or(JsonValue::Null),
+        "failed_count": result.get("failed_count").cloned().unwrap_or(JsonValue::Null),
+    });
+    if matches!(
+        result.get("status").and_then(JsonValue::as_str),
+        Some("failed" | "partial")
+    ) {
+        if let Some(error) = result.get("error") {
+            summary["error"] = error.clone();
+        }
+        if let Some(root) = result.get("repo_root") {
+            summary["cwd"] = root.clone();
+        }
+    }
+    let failures: Vec<JsonValue> = result
+        .get("hooks")
+        .and_then(JsonValue::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|entry| {
+            !matches!(
+                entry.get("status").and_then(JsonValue::as_str),
+                Some("succeeded" | "skipped")
+            )
+        })
+        .map(|entry| {
+            let mut failure = json!({});
+            for field in ["index", "status", "run", "exit_code", "on_failure"] {
+                if let Some(value) = entry.get(field) {
+                    failure[field] = value.clone();
+                }
+            }
+            if let Some(detail) = ait_cli::post_finish_hooks::hook_failure_diagnostic(entry) {
+                failure["diagnostic"] = json!(detail);
+            }
+            failure
+        })
+        .collect();
+    if !failures.is_empty() {
+        summary["failures"] = json!(failures);
+        if let Some(root) = result.get("repo_root") {
+            summary["cwd"] = root.clone();
+        }
+    }
+    summary
 }
 
 fn print_bounded_evidence(
@@ -814,8 +936,21 @@ fn emit_queue_summary_result(payload: &JsonValue, json_output: bool) -> Result<(
                 "stale worktrees",
                 string_field(summary.get("stale_worktree_count")),
             ),
+            (
+                "stale tasks",
+                string_field(summary.get("stale_task_count")),
+            ),
         ],
     );
+    let stale = summary
+        .get("stale_task_count")
+        .and_then(JsonValue::as_i64)
+        .unwrap_or(0);
+    if stale > 0 {
+        println!(
+            "stale: {stale} active local Task(s) without an update for 30+ days; review with `ait task list --all --local`, then `ait task abandon <task-id> --local` each one that is done."
+        );
+    }
     if let Some(error) = remote.get("error").and_then(JsonValue::as_str) {
         if !error.trim().is_empty() {
             println!();
@@ -1229,6 +1364,9 @@ fn emit_task_start_result(
             ("next", cd_command),
         ],
     );
+    for line in plan_backed_markdown_text_lines(payload) {
+        println!("{line}");
+    }
     if let Some(error) = obj
         .get("automatic_reconciliation")
         .and_then(|value| value.get("error"))
