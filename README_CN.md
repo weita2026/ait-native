@@ -231,6 +231,10 @@ Agent 根据生成的指示执行 `ait task start`、以 `ait snapshot create` �
 当前公开版本：**v1.1.4**。如需该版本的确切源代码，请使用不可变的发行标签；
 `ait-monorepo-source.json` 记录组件 Snapshot 映射。两次发行之间，`main` 的文档可能继续更新。
 
+核对日期 2026-10-07：稳定版 1.1.4 已通过 GitHub、PyPI、npm、Homebrew、APT 与 GHCR 发布，稳定别名也已回读。[WinGet 1.1.4 PR 448064](https://github.com/microsoft/winget-pkgs/pull/448064) 仍待社区审查与新的 Windows 源查验。Windows 用户可先使用[已核对的 1.1.4 发行归档](https://github.com/weita2026/ait-native/releases/tag/v1.1.4)。此时间点之后的变化请查看[发布状态](https://ait-native.dev/zh-cn/proof/)。
+
+官网技术参考与 PDF 保留归档的 1.1.1 源码及命令回执。安装请使用[当前快速上手](https://ait-native.dev/zh-cn/local-quickstart/)，工作流命令以已安装版本生成的 AGENTS.md 为准。录制演示与 benchmark 实验保留原版本及日期。
+
 ## 各安装渠道提供什么
 
 <details>
@@ -240,8 +244,8 @@ Agent 根据生成的指示执行 `ait task start`、以 `ait snapshot create` �
 | --- | --- |
 | PyPI `ait-native` | `ait`、默认不启动的 `ait-server`，以及直接 `ait-python` 绑定。 |
 | npm `@wa120/ait-native` | `ait` 及直接在进程内运作的 Node-API 绑定；不安装 `ait-server`。 |
-| Homebrew 与 WinGet | 1.1.1 产品组合包含原生 `ait`、`ait-server` 与 `ait-runner`。安装时不启动任何后台进程；渠道可用性请查阅发行状态。 |
-| APT | 在 1.1.1，`ait-native` 拥有全部三个命令；`ait-runner` 是仅声明依赖关系的过渡别名。软件包内的服务仍仅适用服务器。 |
+| Homebrew 与 WinGet | 1.1.4 产品组合包含原生 `ait`、`ait-server` 与 `ait-runner`。安装时不启动任何后台进程；渠道可用性请查阅发行状态。 |
+| APT | 在 1.1.4，`ait-native` 拥有全部三个命令；`ait-runner` 是仅声明依赖关系的过渡别名。软件包内的服务仍仅适用服务器。 |
 | OCI | 分开提供 `ait-server` 与 `ait-runner` 镜像。 |
 | GitHub Release | 绑定校验码的原生压缩包，以及各声明渠道使用的软件包资产。 |
 

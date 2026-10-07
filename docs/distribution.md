@@ -8,11 +8,29 @@ RC records. The current stable section below overrides version-relative
 wording in dated historical sections; those records remain evidence for their
 own bytes only.
 
-## Current Stable 1.1.3 Release Identity (2026-10-06)
+## Current Stable 1.1.4 Release Identity (2026-10-07)
 
-The current published stable release is [v1.1.3](https://github.com/weita2026/ait-native/releases/tag/v1.1.3), published on 2026-09-07. WinGet [PR 430868](https://github.com/microsoft/winget-pkgs/pull/430868) merged on 2026-09-11. Merge evidence does not replace a fresh exact-version WinGet discovery receipt.
+The current published stable release is [v1.1.4](https://github.com/weita2026/ait-native/releases/tag/v1.1.4), published on 2026-10-07 with 91 immutable assets. Its tag remains bound to `4990eea85831ddfae8975e227d36dd280e3bfa7c` and release family `REL-FAM-79B1908F60843FE4`. Documentation updates on public `main` do not change the tag, component Snapshots or release bytes.
 
-The working family template is preparing 1.1.4; it is not evidence that 1.1.4 has been published. Historical artifacts, candidates and receipts remain immutable. New release closeout requires endpoint readback, latest aliases, Web admission, WinGet merge and a candidate-bound Windows discovery receipt.
+| Channel | Verified 1.1.4 status |
+| --- | --- |
+| GitHub Release | Published; exact native and package assets read back. |
+| PyPI | `ait-native==1.1.4`; six platform wheels published and read back. |
+| npm | `@wa120/ait-native@1.1.4` and six platform packages published; all seven `latest` aliases verified. |
+| Homebrew | Stable `weita2026/ait-native` formula and four exact archive checksums verified. |
+| APT | Signed `stable` suite verified for `amd64` and `arm64`; `ait-native` owns all three native commands and `ait-runner` remains a dependency-only transition alias. |
+| GHCR | `ghcr.io/weita2026/ait-server:1.1.4` and `ghcr.io/weita2026/ait-runner:1.1.4` verified for Linux amd64/arm64; both `latest` aliases resolve to the same version digests. |
+| WinGet | [PR 448064](https://github.com/microsoft/winget-pkgs/pull/448064) remains pending community review and fresh exact-version Windows discovery at this checkpoint. No current 1.1.4 WinGet availability claim. |
+
+Publication evidence: [endpoint readback run 37575608290](https://github.com/weita2026/ait-native/actions/runs/37575608290) and [latest-alias run 37577319006](https://github.com/weita2026/ait-native/actions/runs/37577319006). Published channels and aliases are complete; overall release closeout still requires WinGet merge and candidate-bound Windows discovery. [Current status](https://ait-native.dev/proof/) tracks subsequent observations.
+
+While WinGet is pending, download the verified [Windows x64 ZIP](https://github.com/weita2026/ait-native/releases/download/v1.1.4/ait-native-1.1.4-x86_64-pc-windows-msvc.zip) or [Windows ARM64 ZIP](https://github.com/weita2026/ait-native/releases/download/v1.1.4/ait-native-1.1.4-aarch64-pc-windows-msvc.zip) and compare [SHA256SUMS](https://github.com/weita2026/ait-native/releases/download/v1.1.4/SHA256SUMS). Native product archives contain `ait`, `ait-server` and `ait-runner`; installation starts neither background process. PyPI retains the native CLI/server pair and direct Python binding; npm retains the in-process Node-API binding and `ait` command without a server binary.
+
+## Historical Stable 1.1.3 Release Identity (2026-10-06)
+
+At this historical checkpoint, the published stable release was [v1.1.3](https://github.com/weita2026/ait-native/releases/tag/v1.1.3), published on 2026-09-07. WinGet [PR 430868](https://github.com/microsoft/winget-pkgs/pull/430868) merged on 2026-09-11. Merge evidence does not replace a fresh exact-version WinGet discovery receipt.
+
+At that checkpoint the working family template was preparing 1.1.4; it is not evidence that 1.1.4 has been published. Historical artifacts, candidates and receipts remain immutable. New release closeout requires endpoint readback, latest aliases, Web admission, WinGet merge and a candidate-bound Windows discovery receipt.
 
 ## Historical Stable 1.1.1 Release Identity (2026-09-02)
 
