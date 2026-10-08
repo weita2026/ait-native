@@ -63,15 +63,21 @@ ait config set --user-name "your-name"
 之后仅能在返回的 Task worktree 内，使用 Task ID 建立 checkpoint。
 若使用现有项目，请改依[入门指南](https://ait-native.dev/technical/getting-started/)操作。
 
-**3. 在 coding agent 中打开示例，并给它以下需求。**
+**3. 初始化完成后，从示例文件夹打开全新的 coding agent 对话。**
 
-> 阅读 AGENTS.md，遵循此仓库的 AIT 工作流。在 src/tasks.mjs 新增 openTasks(tasks)：
+`ait init` 会在 `AGENTS.md` 与 `CLAUDE.md` 生成受管理的工作流区块。
+支持对应仓库指引文件的工具，可在对话开始时加载。接着交办以下需求：
+
+> 在 src/tasks.mjs 新增 openTasks(tasks)：
 > 返回新的数组，包含 done 属性不等于 true 的任务，保留原有顺序、任务对象及输入数据。
 > 保持 taskTitles 正常工作，加入针对性的测试。不要修改 checks/、移除现有测试或新增依赖包。
 > 完成 Task 前，执行现有测试及 node checks/first-task.mjs。
 
 Agent 会记录 sprint 项目，在返回的 Task worktree 中实现修改并执行检查。
-生成的 `AGENTS.md` 区块会提供该仓库适用的确切命令与完成要求。
+生成的指引区块会提供该仓库适用的确切命令与完成要求。
+
+若工具不会自动加载仓库指引，请先设置其指引文件集成，或请它读取生成的文件后再试。
+详见[快速上手排错](https://ait-native.dev/zh-cn/local-quickstart/#first-task)。
 
 **4. 回到原始示例文件夹检查结果。**
 
@@ -216,7 +222,7 @@ Sprint 启用的重复实验分别使用 45,432,262 与 71,238,660 tokens（减�
 AIT 不限定仓库使用哪种语言，也不尝试检测项目类型；构建、测试与忽略规则都来自你的仓库。
 Coding agent 负责实现及选定的检查；AIT 管理任务生命周期，并执行适用的工作流条件。
 
-`ait init` 建立本地 `.ait` 权威数据，并生成仓库的 `AGENTS.md` 工作流区块。
+`ait init` 建立本地 `.ait` 权威数据，并在 `AGENTS.md` 与 `CLAUDE.md` 生成受管理的工作流区块。
 该生成的区块是有效命令的依据；本地工作不需要执行中的 `ait-server`。
 
 AIT 有两种工作流默认模式：`solo_local` 将工作与 Task finish 保留在本地；

@@ -67,17 +67,24 @@ through its initialization workflow. Create checkpoints only inside the returned
 Task worktree, using its Task ID. For an existing project, use the
 [getting-started guide](https://ait-native.dev/technical/getting-started/) instead.
 
-**3. Open the example in your coding agent and give it this request.**
+**3. After initialization, start a fresh coding-agent session in the example folder.**
 
-> Read AGENTS.md and follow this repository's AIT workflow. Add openTasks(tasks)
-> to src/tasks.mjs: return a new array of tasks whose done property is not true,
+`ait init` creates managed workflow blocks in `AGENTS.md` and `CLAUDE.md`.
+Agents that support the corresponding repository instruction file can load it
+when the session starts. Give the agent this request:
+
+> Add openTasks(tasks) to src/tasks.mjs: return a new array of tasks whose done property is not true,
 > preserving order, task objects and input data. Keep taskTitles working. Add
 > focused tests. Do not edit checks/, remove existing tests or add dependencies.
 > Run the existing tests and node checks/first-task.mjs before finishing the Task.
 
 The agent records the sprint item, works in the returned Task worktree, implements
-the change and runs the checks. The generated `AGENTS.md` block supplies the exact
+the change and runs the checks. The generated instruction block supplies the exact
 commands and completion requirements for that repository.
+
+If your tool does not load repository instructions automatically, configure its
+instruction-file integration or ask it to read the generated file before retrying.
+See the [Quickstart troubleshooting](https://ait-native.dev/local-quickstart/#first-task).
 
 **4. Check the result in the original example folder.**
 
@@ -251,8 +258,8 @@ detect a project type: build, test and ignore rules come from your repository.
 Your coding agent performs the implementation and chosen checks; AIT manages
 the task lifecycle and enforces the applicable workflow conditions.
 
-`ait init` establishes the local `.ait` authority and generates the repository's
-`AGENTS.md` workflow block. The generated block is the source of truth for the
+`ait init` establishes the local `.ait` authority and generates managed workflow
+blocks in `AGENTS.md` and `CLAUDE.md`. The generated block is the source of truth for the
 effective commands; local work never needs a running `ait-server`.
 
 AIT has two workflow presets: `solo_local` keeps work and Task finish local;
