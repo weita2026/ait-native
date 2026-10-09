@@ -180,9 +180,9 @@ reqwest	0.12.28	MIT OR Apache-2.0	Sean McArthur <sean@seanmonstar.com>	https://g
 ring	0.17.14	Apache-2.0 AND ISC		https://github.com/briansmith/ring
 rustc-hash	2.1.3	Apache-2.0 OR MIT	The Rust Project Developers	https://github.com/rust-lang/rustc-hash
 rustix	1.1.4	Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT	Dan Gohman <dev@sunfishcode.online>, Jakub Konka <kubkon@jakubkonka.com>	https://github.com/bytecodealliance/rustix
-rustls	0.23.42	Apache-2.0 OR ISC OR MIT		https://github.com/rustls/rustls
+rustls	0.23.45	Apache-2.0 OR ISC OR MIT		https://github.com/rustls/rustls
 rustls-pki-types	1.15.0	MIT OR Apache-2.0		https://github.com/rustls/pki-types
-rustls-webpki	0.103.13	ISC		https://github.com/rustls/webpki
+rustls-webpki	0.103.15	ISC		https://github.com/rustls/webpki
 rustversion	1.0.23	MIT OR Apache-2.0	David Tolnay <dtolnay@gmail.com>	https://github.com/dtolnay/rustversion
 ryu	1.0.23	Apache-2.0 OR BSL-1.0	David Tolnay <dtolnay@gmail.com>	https://github.com/dtolnay/ryu
 semver	1.0.28	MIT OR Apache-2.0	David Tolnay <dtolnay@gmail.com>	https://github.com/dtolnay/semver
@@ -4437,7 +4437,7 @@ THE SOFTWARE.
 
 --- SHA-256 5b698ca13897be3afdb7174256fa1574f8c6892b8bea1a66dd6469d3fe27885a ---
 Used by:
-- rustls-webpki 0.103.13 (LICENSE)
+- rustls-webpki 0.103.15 (LICENSE)
 
 Except as otherwise noted, this project is licensed under the following
 (ISC-style) terms:
@@ -5483,7 +5483,7 @@ SOFTWARE.
 --- SHA-256 709e3175b4212f7b13aa93971c9f62ff8c69ec45ad8c6532a7e0c41d7a7d6f8c ---
 Used by:
 - hyper-rustls 0.27.9 (LICENSE-MIT)
-- rustls 0.23.42 (LICENSE-MIT)
+- rustls 0.23.45 (LICENSE-MIT)
 
 Copyright (c) 2016 Joseph Birr-Pixton <jpixton@gmail.com>
 
@@ -5835,7 +5835,7 @@ DEALINGS IN THE SOFTWARE.
 --- SHA-256 7cfafc877eccc46c0e346ccbaa5c51bb6b894d2b818e617d970211e232785ad4 ---
 Used by:
 - hyper-rustls 0.27.9 (LICENSE-ISC)
-- rustls 0.23.42 (LICENSE-ISC)
+- rustls 0.23.45 (LICENSE-ISC)
 
 ISC License (ISC)
 Copyright (c) 2016, Joseph Birr-Pixton <jpixton@gmail.com>
@@ -7591,7 +7591,7 @@ Used by:
 - regex-automata 0.4.16 (LICENSE-APACHE)
 - regex-syntax 0.8.11 (LICENSE-APACHE)
 - rustix 1.1.4 (LICENSE-APACHE)
-- rustls 0.23.42 (LICENSE-APACHE)
+- rustls 0.23.45 (LICENSE-APACHE)
 - similar 2.7.0 (LICENSE)
 - smallvec 1.15.2 (LICENSE-APACHE)
 - socket2 0.6.5 (LICENSE-APACHE)
