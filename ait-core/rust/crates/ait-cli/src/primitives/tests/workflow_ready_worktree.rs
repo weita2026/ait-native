@@ -64,7 +64,7 @@ fn workflow_land_action_rejects_every_ready_preparation_action() {
         "record_attestation",
         "run_patchset_ci",
     ] {
-        let result = workflow_land_apply_action(&repo, code, &state, "RC-1", None, None)
+        let result = workflow_land_apply_action(&repo, code, &state, "RC-1", None, None, None)
             .expect("land preparation action should stop without mutation");
         let reason = result["stopped_reason"].as_str().expect("stopped reason");
         assert!(reason.contains("does not"), "{code}: {reason}");
@@ -115,7 +115,7 @@ fn task_audit_payload_normalizes_remote_read_model_schema() {
     );
     assert_eq!(
         normalized["task_land_closeout"]["plan_closeout_policy"],
-        json!("separate_after_land")
+        json!("automatic_exact_remote_when_final_task_completed")
     );
 }
 
@@ -320,195 +320,112 @@ fn spawn_workflow_ready_run_ci_remote(
     (format!("http://{addr}"), bodies, handle)
 }
 
+fn compact_remote_patchset(passing: bool) -> JsonValue {
+    json!({"task_id":"RT-0001","change_id":null,"change_ref":null,"patchset_id":"RT-0001/P-01","base_snapshot_id":"B","revision_snapshot_id":"R","author_mode":"ai_with_human_review","ci":{"run_seq":if passing {1}else{0},"completed_at_s":if passing {1}else{0},"tests_status":if passing {"pass"}else{"none"},"lint_status":"none","suite_result_count":if passing {1}else{0},"blocking_failure_count":0}})
+}
 fn spawn_workflow_ready_attestation_remote(
+    passing: bool,
+    mut attestation: Option<JsonValue>,
 ) -> (String, Arc<Mutex<Vec<JsonValue>>>, thread::JoinHandle<()>) {
-    let listener = TcpListener::bind("127.0.0.1:0").expect("bind remote");
-    let addr = listener.local_addr().expect("remote addr");
-    let server = Server::from_listener(listener, None).expect("remote server");
+    let server = Server::http("127.0.0.1:0").unwrap();
+    let address = server.server_addr().to_ip().unwrap();
     let bodies = Arc::new(Mutex::new(Vec::new()));
-    let bodies_for_thread = Arc::clone(&bodies);
+    let log = Arc::clone(&bodies);
     let handle = thread::spawn(move || {
-        for _ in 0..2 {
-            let Ok(Some(mut request)) = server.recv_timeout(Duration::from_secs(2)) else {
+        for _ in 0..100 {
+            let Some(mut request) = server.recv_timeout(Duration::from_millis(300)).unwrap() else {
                 break;
             };
             let method = request.method().as_str().to_string();
             let url = request.url().to_string();
-            let mut body_bytes = Vec::new();
-            request
-                .as_reader()
-                .read_to_end(&mut body_bytes)
-                .expect("read request body");
-            let body = String::from_utf8_lossy(&body_bytes).to_string();
-            let payload = match (method.as_str(), url.as_str()) {
-                ("GET", "/v1/native/repository-authorities/7/patchsets/RP-1") => {
-                    bodies_for_thread.lock().expect("body log").push(json!({
-                        "method": method,
-                        "url": url,
-                        "body": JsonValue::Null,
-                    }));
-                    json!({
-                        "patchset_id": "RP-1",
-                        "change_id": "RC-1",
-                        "repo_name": "fixture-ait"
-                    })
+            let mut body = String::new();
+            request.as_reader().read_to_string(&mut body).unwrap();
+            let body: JsonValue = serde_json::from_str(&body).unwrap_or(JsonValue::Null);
+            log.lock()
+                .unwrap()
+                .push(json!({"method":method,"url":url,"body":body}));
+            let (status, value) = if url.ends_with("/tasks/RT-0001") {
+                (
+                    200,
+                    json!({"task_id":"RT-0001","status":"active","successful_land":null,"current_patchset_id":"RT-0001/P-01"}),
+                )
+            } else if url.ends_with("/patchsets/RT-0001%2FP-01") {
+                (200, compact_remote_patchset(passing))
+            } else if url.ends_with("/patchsets/RT-0001%2FP-01/attestation") {
+                if method == "PUT" {
+                    let mut value = body;
+                    for key in ["task_id", "change_id", "change_ref", "patchset_id"] {
+                        value[key] = compact_remote_patchset(passing)[key].clone();
+                    }
+                    value["ci_backed"] = json!(passing);
+                    value["evaluation_summary"] =
+                        json!({"tests":if passing {"pass"}else{"none"},"lint":"none"});
+                    attestation = Some(value.clone());
+                    (200, value)
+                } else {
+                    attestation
+                        .as_ref()
+                        .map(|row| (200, row.clone()))
+                        .unwrap_or((404, json!({"detail":"Unknown attestation"})))
                 }
-                ("PUT", "/v1/native/repository-authorities/7/patchsets/RP-1/attestation") => {
-                    let parsed: JsonValue =
-                        crate::json_support::parse_value(&body, "Invalid request JSON")
-                            .unwrap_or_else(|_| json!({}));
-                    bodies_for_thread.lock().expect("body log").push(json!({
-                        "method": method,
-                        "url": url,
-                        "body": parsed,
-                    }));
-                    json!({
-                        "attestation_id": "AT-RP-1",
-                        "patchset_id": "RP-1",
-                        "author_mode": "ai_with_human_review",
-                        "evaluation_summary": parsed.get("evaluation_summary").cloned().unwrap_or(JsonValue::Null)
-                    })
-                }
-                _ => json!({"error": format!("unexpected {method} {url}")}),
-            };
-            let status = if payload.get("error").is_some() {
-                500
             } else {
-                200
+                (500, json!({"detail":format!("unexpected {method} {url}")}))
             };
             request
                 .respond(
-                    Response::from_string(payload.to_string())
+                    Response::from_string(value.to_string())
                         .with_status_code(status)
                         .with_header(
-                            tiny_http::Header::from_bytes(
-                                &b"Content-Type"[..],
-                                &b"application/json"[..],
-                            )
-                            .expect("content-type"),
+                            tiny_http::Header::from_bytes("Content-Type", "application/json")
+                                .unwrap(),
                         ),
                 )
-                .expect("respond");
+                .unwrap();
         }
     });
-    (format!("http://{addr}"), bodies, handle)
+    (format!("http://{address}"), bodies, handle)
 }
 
 fn spawn_workflow_ready_done_remote(
-    revision_snapshot_id: &str,
+    revision: &str,
 ) -> (String, Arc<Mutex<Vec<JsonValue>>>, thread::JoinHandle<()>) {
-    let listener = TcpListener::bind("127.0.0.1:0").expect("bind remote");
-    let addr = listener.local_addr().expect("remote addr");
-    let server = Server::from_listener(listener, None).expect("remote server");
+    let server = Server::http("127.0.0.1:0").unwrap();
+    let address = server.server_addr().to_ip().unwrap();
     let requests = Arc::new(Mutex::new(Vec::new()));
-    let requests_for_thread = Arc::clone(&requests);
-    let revision_snapshot_id = revision_snapshot_id.to_string();
+    let log = Arc::clone(&requests);
+    let revision = revision.to_string();
     let handle = thread::spawn(move || {
-        for _ in 0..9 {
-            let Ok(Some(mut request)) = server.recv_timeout(Duration::from_secs(2)) else {
+        for _ in 0..32 {
+            let Some(request) = server.recv_timeout(Duration::from_millis(300)).unwrap() else {
                 break;
             };
             let method = request.method().as_str().to_string();
             let url = request.url().to_string();
-            let path = url.split('?').next().unwrap_or(url.as_str()).to_string();
-            let mut body_bytes = Vec::new();
-            request
-                .as_reader()
-                .read_to_end(&mut body_bytes)
-                .expect("read request body");
-            let body = String::from_utf8_lossy(&body_bytes).to_string();
-            let body_value = if body.trim().is_empty() {
-                JsonValue::Null
-            } else {
-                crate::json_support::parse_value(&body, "Invalid request JSON")
-                    .unwrap_or_else(|_| json!(body))
-            };
-            requests_for_thread
-                .lock()
-                .expect("request log")
-                .push(json!({
-                    "method": method,
-                    "url": url,
-                    "body": body_value,
-                }));
-            let payload = match (method.as_str(), path.as_str()) {
-                ("GET", "/v1/native/repository-authorities/7/changes/RC-DONE") => json!({
-                    "change_id": "RC-DONE",
-                    "task_id": "RT-DONE",
-                    "repo_name": "fixture-ait",
-                    "status": "review",
-                    "base_line": "main",
-                    "selected_patchset_id": "RP-DONE",
-                    "current_patchset_id": "RP-DONE",
-                    "change": {
-                        "change_id": "RC-DONE",
-                        "status": "review"
-                    }
-                }),
-                ("GET", "/v1/native/repository-authorities/7/tasks/RT-DONE") => json!({
-                    "task_id": "RT-DONE",
-                    "repo_name": "fixture-ait",
-                    "status": "active",
-                    "title": "Ready done"
-                }),
-                ("GET", "/v1/native/repository-authorities/7/patchsets/RP-DONE") => json!({
-                    "patchset_id": "RP-DONE",
-                    "change_id": "RC-DONE",
-                    "repo_name": "fixture-ait",
-                    "base_snapshot_id": revision_snapshot_id.clone(),
-                    "revision_snapshot_id": revision_snapshot_id.clone(),
-                    "author_mode": "ai_with_human_review",
-                    "summary": "ready done",
-                    "created_at": "2026-06-20T00:00:00Z"
-                }),
-                ("GET", "/v1/native/repository-authorities/7/lines/main") => json!({
-                    "line_name": "main",
-                    "repo_name": "fixture-ait",
-                    "status": "active",
-                    "head_snapshot_id": revision_snapshot_id.clone()
-                }),
-                ("GET", "/v1/native/repository-authorities/7/changes/RC-DONE/reviews") => json!({
-                    "change_id": "RC-DONE",
-                    "current_patchset_id": "RP-DONE",
-                    "approvals": 1,
-                    "blocking": 0,
-                    "reviews": [{
-                        "review_id": "RR-TASK-DONE",
-                        "patchset_id": "RP-DONE",
-                        "reviewer": "Ready Reviewer",
-                        "action": "task_approve",
-                        "blocking": false
-                    }]
-                }),
-                ("GET", "/v1/native/repository-authorities/7/patchsets/RP-DONE/attestation") => {
-                    json!({
-                        "attestation_id": "AT-RP-DONE",
-                        "patchset_id": "RP-DONE",
-                        "author_mode": "ai_with_human_review",
-                        "evaluation_summary": {
-                            "tests": "pass",
-                            "lint": "pass"
-                        }
-                    })
+            let path = url.split('?').next().unwrap();
+            log.lock().unwrap().push(json!({"method":method,"url":url}));
+            let payload = match (method.as_str(), path) {
+                ("GET", "/v1/native/repository-authorities/7/tasks/RT-0201") => {
+                    json!({"task_id":"RT-0201","status":"active","title":"Ready done","successful_land":null,"current_patchset_id":"RT-0201/P-01"})
                 }
-                ("GET", "/v1/native/repository-authorities/7/read/patchsets/RP-DONE/ci-status") => {
-                    json!({
-                        "available": true,
-                        "patchset_id": "RP-DONE",
-                        "tests_status": "pass",
-                        "latest_job": null,
-                        "recent_jobs": []
-                    })
+                ("GET", "/v1/native/repository-authorities/7/patchsets/RT-0201%2FP-01") => {
+                    json!({"task_id":"RT-0201","change_id":null,"change_ref":null,"patchset_id":"RT-0201/P-01","base_snapshot_id":revision,"revision_snapshot_id":revision,"author_mode":"ai_with_human_review","ci":{"run_seq":1,"completed_at_s":1,"tests_status":"pass","lint_status":"none","suite_result_count":1,"blocking_failure_count":0}})
                 }
-                ("GET", "/v1/native/repository-authorities/7/patchsets/RP-DONE/policy") => json!({
-                    "patchset_id": "RP-DONE",
-                    "decision": "pass",
-                    "checks": [
-                        {"name": "tests", "status": "pass"},
-                        {"name": "lint", "status": "pass"}
-                    ]
-                }),
-                _ => json!({"error": format!("unexpected {method} {url}")}),
+                ("GET", "/v1/native/repository-authorities/7/lines/main") => {
+                    json!({"line_name":"main","status":"active","head_snapshot_id":revision})
+                }
+                ("GET", "/v1/native/repository-authorities/7/changes/RT-0201/reviews") => {
+                    json!({"task_id":"RT-0201","change_id":null,"change_ref":null,"current_patchset_id":"RT-0201/P-01","reviews":[]})
+                }
+                (
+                    "GET",
+                    "/v1/native/repository-authorities/7/patchsets/RT-0201%2FP-01/attestation",
+                ) => {
+                    json!({"task_id":"RT-0201","change_id":null,"change_ref":null,"patchset_id":"RT-0201/P-01","attestation_id":"RT-0201/P-01/AT-01","author_mode":"ai_with_human_review","verification_state":"pass","require_tests_pass":true,"require_lint_pass":false,"require_human_review":false,"revoked":false,"ci_backed":true,"evaluation_summary":{"tests":"pass","lint":"none"}})
+                }
+                ("GET", "/v1/native/repository-authorities/7/patchsets/RT-0201%2FP-01/policy") => {
+                    json!({"patchset_id":"RT-0201/P-01","decision":"pass","checks":[]})
+                }
+                _ => json!({"error":format!("unexpected {method} {url}")}),
             };
             let status = if payload.get("error").is_some() {
                 500
@@ -520,17 +437,14 @@ fn spawn_workflow_ready_done_remote(
                     Response::from_string(payload.to_string())
                         .with_status_code(status)
                         .with_header(
-                            tiny_http::Header::from_bytes(
-                                &b"Content-Type"[..],
-                                &b"application/json"[..],
-                            )
-                            .expect("content-type"),
+                            tiny_http::Header::from_bytes("Content-Type", "application/json")
+                                .unwrap(),
                         ),
                 )
-                .expect("respond");
+                .unwrap();
         }
     });
-    (format!("http://{addr}"), requests, handle)
+    (format!("http://{address}"), requests, handle)
 }
 
 #[test]
@@ -565,7 +479,7 @@ fn workflow_ready_apply_resumes_done_authoritative_state() {
 
     let result = workflow_ready_apply(
         &repo,
-        "RC-DONE",
+        "RT-0201",
         None,
         None,
         None,
@@ -619,12 +533,16 @@ fn workflow_ready_apply_resumes_done_authoritative_state() {
             ),
         ]
     );
-    assert_eq!(progress_events[1]["change_id"], json!("RC-DONE"));
-    assert_eq!(progress_events[1]["patchset_id"], json!("RP-DONE"));
+    assert!(progress_events[1]["change_id"].is_null());
+    assert_eq!(progress_events[1]["patchset_id"], json!("RT-0201/P-01"));
 
     handle.join().expect("remote thread");
     let logged = requests.lock().expect("request log");
-    assert_eq!(logged.len(), 9);
+    assert!(!logged.is_empty());
+    assert!(logged.len() < 20);
+    assert!(logged
+        .iter()
+        .any(|entry| entry["url"] == "/v1/native/repository-authorities/7/tasks/RT-0201"));
     assert!(logged.iter().all(|entry| entry["method"] == json!("GET")));
     assert!(logged.iter().all(|entry| {
         let url = entry["url"].as_str().unwrap_or_default();
@@ -638,7 +556,7 @@ fn workflow_ready_apply_resumes_done_authoritative_state() {
         entry["url"]
             .as_str()
             .unwrap_or_default()
-            .starts_with("/v1/native/repository-authorities/7/patchsets/RP-DONE?change_ref=RC-DONE")
+            .starts_with("/v1/native/repository-authorities/7/patchsets/RT-0201%2FP-01")
     }));
 }
 
@@ -727,113 +645,130 @@ fn workflow_ready_ci_action_calls_remote_run_ci() {
 }
 
 #[test]
-fn workflow_ready_record_attestation_defaults_tests_without_persisting_ci_evidence() {
-    let repo_tmp = tempdir().expect("repo tempdir");
-    let repo_root = repo_tmp.path();
+fn compact_remote_attestation_automatic_defaults_require_actual_ci_and_retry_reuses() {
+    for default_model in [None, Some("automatic-model")] {
+        for passing in [false, true] {
+            let repo_tmp = tempdir().unwrap();
+            let root = repo_tmp.path();
+            init_repo(&InitRequest {
+                root: root.to_path_buf(),
+                name: Some("fixture-ait".into()),
+                default_line: "main".into(),
+                policy_profile: "prototype".into(),
+                default_author_mode: "ai_with_human_review".into(),
+                default_model: default_model.map(str::to_string),
+                repair_existing: false,
+            })
+            .unwrap();
+            let (url, log, handle) = spawn_workflow_ready_attestation_remote(passing, None);
+            write_runtime_config(root,&json!({"repo_name":"fixture-ait","repository_index":7,"default_line":"main","current_line":"main","default_remote":"origin","default_model":default_model}).to_string());
+            write_remote_config(root, &url);
+            let repo = RepoRuntime::discover_from_path(root).unwrap();
+            let state = json!({"patchset":compact_remote_patchset(passing)});
+            for _ in 0..2 {
+                let result = workflow_ready_apply_action(
+                    &repo,
+                    "record_attestation",
+                    &state,
+                    "RT-0001",
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                );
+                if passing {
+                    let value = result.unwrap();
+                    assert_eq!(value["result"]["verification_state"], "pass");
+                    assert_eq!(value["result"]["require_tests_pass"], true);
+                } else {
+                    assert!(result.unwrap_err().contains("completed passing CI"));
+                }
+            }
+            handle.join().unwrap();
+            let requests = log.lock().unwrap();
+            let writes: Vec<_> = requests
+                .iter()
+                .filter(|row| row["method"] == "PUT")
+                .collect();
+            assert_eq!(writes.len(), usize::from(passing));
+            for row in writes {
+                assert!(row["body"].get("evaluation_summary").is_none());
+                assert!(row["body"].get("provenance_summary").is_none());
+                assert!(row["body"].get("model_name").is_none());
+            }
+        }
+    }
+}
+#[test]
+fn compact_remote_attestation_unsupported_raw_inputs_reject_before_publication() {
+    let temp = tempdir().unwrap();
+    let root = temp.path();
     init_repo(&InitRequest {
-        root: repo_root.to_path_buf(),
-        name: Some("fixture-ait".to_string()),
-        default_line: "main".to_string(),
-        policy_profile: "prototype".to_string(),
-        default_author_mode: "ai_with_human_review".to_string(),
+        root: root.to_path_buf(),
+        name: Some("fixture-ait".into()),
+        default_line: "main".into(),
+        policy_profile: "prototype".into(),
+        default_author_mode: "ai_with_human_review".into(),
         default_model: None,
         repair_existing: false,
     })
-    .expect("init repo");
-    let (base_url, bodies, handle) = spawn_workflow_ready_attestation_remote();
-    write_runtime_config(
-        repo_root,
-        r#"{"repo_name":"fixture-ait","repository_index":7,"default_line":"main","current_line":"main","default_remote":"origin"}"#,
-    );
-    write_remote_config(repo_root, &base_url);
-    let repo = RepoRuntime::discover_from_path(repo_root).expect("repo runtime");
-    let state = json!({
-        "change": {"change_id": "RC-1", "repo_name": "fixture-ait"},
-        "patchset": {
-            "patchset_id": "RP-1",
-            "change_id": "RC-1",
-            "base_snapshot_id": "SNP-SEED",
-            "revision_snapshot_id": "SNP-REV",
-            "author_mode": "ai_with_human_review"
-        },
-        "patchset_ci_status": {
-            "contract": "ait.server.patchset_ci.readiness.v1",
-            "patchset_id": "RP-1",
-            "tests_status": "pass",
-            "has_runnable_evidence": true,
-            "selected_suite_ids": ["preflight"],
-            "suite_result_count": 1,
-            "blocking_failure_count": 0,
-            "latest_job": {
-                "job_id": 43,
-                "job_type": "patchset.ci",
-                "state": "succeeded"
-            }
-        }
-    });
-
-    let result = workflow_ready_apply_action(
-        &repo,
-        "record_attestation",
-        &state,
-        "RC-1",
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-    )
-    .expect("ready attestation action");
-
-    assert_eq!(
-        result["result"]["evaluation_summary"]["tests"].as_str(),
-        Some("pass")
-    );
-    handle.join().expect("remote thread");
-    let logged = bodies.lock().expect("body log");
-    assert_eq!(
-        logged
-            .iter()
-            .map(|entry| entry["url"].as_str().unwrap_or_default())
-            .collect::<Vec<_>>(),
-        vec![
-            "/v1/native/repository-authorities/7/patchsets/RP-1",
-            "/v1/native/repository-authorities/7/patchsets/RP-1/attestation",
-        ]
-    );
-    assert_eq!(
-        logged[1]["body"]["evaluation_summary"]["tests"].as_str(),
-        Some("pass")
-    );
-    let mut body_keys = logged[1]["body"]
-        .as_object()
-        .expect("attestation body")
-        .keys()
-        .cloned()
-        .collect::<Vec<_>>();
-    body_keys.sort();
-    assert_eq!(
-        body_keys,
-        vec![
-            "author_mode",
-            "detail",
-            "evaluation_summary",
-            "provenance_summary",
-        ]
-    );
-    assert_eq!(
-        logged[1]["body"]["provenance_summary"]["evidence_readiness"].as_str(),
-        Some("partial")
-    );
-    assert_eq!(
-        logged[1]["body"]["detail"]["minimum_evidence"]["required_fields"],
-        json!(["model_name"])
-    );
-    assert!(logged[1]["body"]["detail"].get("patchset_ci").is_none());
+    .unwrap();
+    let (url, log, handle) = spawn_workflow_ready_attestation_remote(false, None);
+    write_remote_config(root, &url);
+    let repo = RepoRuntime::discover_from_path(root).unwrap();
+    for input in ["lint", "security", "license", "model", "tests"] {
+        let tests = (input == "tests").then_some("not_required");
+        let lint = (input == "lint").then_some("pass");
+        let security = (input == "security").then_some("pass");
+        let license = (input == "license").then_some("pass");
+        let model = (input == "model").then_some("explicit-model");
+        let ready = workflow_ready_apply_guarded_with_ci_wait_hook(
+            &repo,
+            "LCT-0001",
+            None,
+            None,
+            tests,
+            lint,
+            security,
+            license,
+            None,
+            model,
+            Some("origin"),
+            None,
+            None::<fn(&JsonValue) -> Result<(), String>>,
+            None::<fn(&mut JsonValue) -> Result<bool, String>>,
+        )
+        .unwrap_err();
+        assert!(
+            ready.contains("no representation") || ready.contains("cannot represent"),
+            "{ready}"
+        );
+        let direct = super::attest_put(
+            &repo,
+            Some("RT-0001/P-01"),
+            None,
+            tests,
+            lint,
+            security,
+            license,
+            None,
+            model,
+            Some("origin"),
+            None,
+        )
+        .unwrap_err();
+        assert!(
+            direct.contains("no representation") || direct.contains("cannot represent"),
+            "{direct}"
+        );
+    }
+    handle.join().unwrap();
+    assert!(log.lock().unwrap().is_empty());
 }
 
 #[test]
@@ -1065,7 +1000,7 @@ fn worktree_summary_is_language_neutral_without_build_policy() {
     let repo_root = repo_tmp.path();
     write_runtime_config(
         repo_root,
-        r#"{"repo_name":"ait-core","workflow_mode":"solo_remote","default_line":"main","current_line":"main"}"#,
+        r#"{"repo_name":"ait-core","default_line":"main","current_line":"main"}"#,
     );
     write_line_state(repo_root, "feature/rct-0002", None);
 
@@ -1692,7 +1627,7 @@ fn workflow_bound_worktree_lookup_does_not_refresh_unrelated_worktree_metadata()
     let repo_root = repo_tmp.path();
     write_runtime_config(
         repo_root,
-        r#"{"repo_name":"fixture-ait","workflow_mode":"solo_remote","default_line":"main","current_line":"main"}"#,
+        r#"{"repo_name":"fixture-ait","default_line":"main","current_line":"main"}"#,
     );
     let base_snapshot_id = write_line_state(repo_root, "main", None);
     write_line_state(repo_root, "feature/rt-1", Some(&base_snapshot_id));

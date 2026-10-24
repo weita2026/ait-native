@@ -10,6 +10,8 @@ pub struct PlanRecord {
     pub created_at_s: u64,
     pub updated_at_s: u64,
     pub published_at_s: u64,
+    /// Remote layout 2 only. Zero represents unknown historical attribution.
+    pub actor_index_plus1: u32,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -28,6 +30,8 @@ pub struct PlanRevisionRecord {
     pub root_entry_ordinal: u32,
     pub created_at_s: u64,
     pub published_at_s: u64,
+    /// Remote layout 2 only. Immutable revision authorship, or zero for history.
+    pub actor_index_plus1: u32,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -55,6 +59,9 @@ pub enum PlanItemCheckboxState {
     Reserved,
 }
 impl PlanRecord {
+    pub fn actor_key_index(&self) -> Option<u32> {
+        self.actor_index_plus1.checked_sub(1)
+    }
     pub fn state(&self) -> PlanState {
         match self.plan_meta & 0b0000_0011 {
             0 => PlanState::Draft,
@@ -99,6 +106,13 @@ impl PlanRecord {
 }
 
 impl PlanRevisionRecord {
+    pub fn actor_key_index(&self) -> Option<u32> {
+        self.actor_index_plus1.checked_sub(1)
+    }
+    pub fn is_raw_git_artifact(&self) -> bool {
+        self.revision_meta & 0b0010_0000 != 0
+    }
+
     pub fn is_published(&self) -> bool {
         self.revision_meta & 0b0000_0001 != 0
     }

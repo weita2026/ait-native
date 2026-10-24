@@ -1,0 +1,54 @@
+#![recursion_limit = "256"]
+
+extern crate self as ait_cli;
+
+mod main_app;
+
+pub use main_app::{entry, entry_with_args};
+
+#[cfg(test)]
+#[path = "../../../test_support.rs"]
+mod workspace_test_support;
+
+#[macro_export]
+macro_rules! perfetto_range {
+    ($name:literal) => {
+        ait_core::perfetto_range!($name)
+    };
+}
+
+#[cfg(test)]
+mod actionable_messages;
+pub mod agent_harness;
+pub mod agent_surface;
+pub mod aitk_surface;
+pub mod auth_surface;
+pub mod blame_surface;
+pub mod config_surface;
+pub mod doctor_surface;
+pub(crate) mod external_readiness_gate;
+pub mod external_surface;
+pub(crate) mod filesystem_permissions;
+pub mod init_surface;
+pub(crate) mod json_support;
+pub mod patchset_ci_smoke;
+pub(crate) mod plan_preferences;
+pub mod post_finish_hooks;
+pub mod primitives;
+pub mod release_surface;
+pub mod remote_head_recovery;
+pub(crate) mod remote_repository;
+pub mod remote_surface;
+pub mod render;
+pub mod repo_surface;
+pub mod repository_retirement;
+pub mod runner_hint;
+pub mod runtime;
+pub mod snapshot_restore_surface;
+pub mod tag_surface;
+pub mod task_land_contract;
+pub(crate) mod task_worktree_layout;
+pub mod workspace_lock;
+
+#[cfg(test)]
+mod storage_boundary_tests;

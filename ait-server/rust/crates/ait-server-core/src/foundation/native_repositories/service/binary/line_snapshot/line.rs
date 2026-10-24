@@ -5,6 +5,8 @@ where
     D: ServerRemoteBinaryDb + BinaryDbIndexAppender + Clone,
 {
     pub fn ensure_default_line(&self) -> Result<(), NativeRepositoryError> {
+        crate::foundation::workflow_package::require_ordinary_remote_line(&self.default_line)
+            .map_err(NativeRepositoryError::bad_request)?;
         if !self.default_line_exists()? {
             self.content_lines()
                 .create_line(&self.default_line, 0, now_timestamp_s())
@@ -92,15 +94,9 @@ where
         let head_snapshot_id = match record.head_snapshot_index() {
             Some(index) => {
                 let raw = read
-                    .read_record(
-                        ServerBinarySnapshotCodec::<SERVER_CONTENT_BINARY_LAYOUT_ID>::record_file(),
-                        index,
-                    )
+                    .read_record(ServerBinarySnapshotCodec::<2>::record_file(), index)
                     .map_err(binary_native_repository_store_error)?;
-                let snapshot =
-                    ServerBinarySnapshotCodec::<SERVER_CONTENT_BINARY_LAYOUT_ID>::decode_record(
-                        &raw,
-                    )
+                let snapshot = ServerBinarySnapshotCodec::<2>::decode_record(&raw)
                     .map_err(binary_native_repository_store_error)?;
                 Some(server_snapshot_id_from_hash48(snapshot.snapshot_hash48))
             }
@@ -139,6 +135,8 @@ where
     {
         self.ensure_repository(repo_name)?;
         let line_name = normalize_required_text(line_name, "line_name")?;
+        crate::foundation::workflow_package::require_ordinary_remote_line(&line_name)
+            .map_err(NativeRepositoryError::bad_request)?;
         let target_snapshot_id = normalize_optional_text(request.head_snapshot_id.clone())
             .ok_or_else(|| {
                 NativeRepositoryError::bad_request(

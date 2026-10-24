@@ -378,10 +378,6 @@ pub(super) fn register(py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult
         module.getattr("task_status_details")?,
     )?;
     module.add(
-        "normalize_workflow_mode",
-        module.getattr("normalize_workflow_mode")?,
-    )?;
-    module.add(
         "normalize_publication_state",
         module.getattr("normalize_publication_state")?,
     )?;

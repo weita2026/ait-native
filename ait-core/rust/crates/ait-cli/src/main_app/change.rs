@@ -14,6 +14,7 @@ fn run_change(repo: RepoRuntime, command: ChangeCommand) -> Result<(), String> {
                     &args.task_id,
                     &args.title,
                     args.base_line.as_deref(),
+                    args.fork_snapshot.as_deref(),
                     args.local,
                     args.remote.as_deref(),
                 )
@@ -71,7 +72,7 @@ fn run_change(repo: RepoRuntime, command: ChangeCommand) -> Result<(), String> {
             Ok(())
         }
         ChangeCommand::Show(args) => {
-            let change_ref = resolve_task_finish_change_input(
+            let change_ref = resolve_task_inspect_change_input(
                 &repo,
                 &args.change_id,
                 args.local,
@@ -90,6 +91,8 @@ fn run_change(repo: RepoRuntime, command: ChangeCommand) -> Result<(), String> {
                 args.json,
                 &[
                     "task_id",
+                    "change_ref",
+                    "change_id",
                     "title",
                     "base_line",
                     "fork_snapshot_id",

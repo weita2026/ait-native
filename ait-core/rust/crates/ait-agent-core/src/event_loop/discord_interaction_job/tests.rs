@@ -63,7 +63,6 @@ fn request(payload: JsonValue) -> JsonValue {
         "application_id": "123456789012345678",
         "runtime_target": {
             "mode": "remote",
-            "workflow_mode": "solo_remote",
             "repo_name": "ait",
             "remote_name": "origin",
             "server_url": "http://127.0.0.1:1",
@@ -474,7 +473,6 @@ fn local_application_command_forwards_provider_configuration() {
     let backend = StubBackend::new();
     let mut command = request(interaction_payload());
     command["runtime_target"]["mode"] = json!("local");
-    command["runtime_target"]["workflow_mode"] = json!("solo_local");
     command["runtime_target"]["repo_root"] = json!("/tmp/discord-repo");
     command["runtime_target"]["server_url"] = JsonValue::Null;
     command["local_reply"] = json!({
@@ -486,4 +484,19 @@ fn local_application_command_forwards_provider_configuration() {
     let turn = &backend.calls.borrow()[0];
     assert_eq!(turn["target"]["mode"], "local");
     assert_eq!(turn["local_reply"]["program"], "/usr/bin/codex");
+}
+
+#[test]
+fn retired_execution_modes_are_rejected_before_any_port_runs() {
+    let state = StubState::empty();
+    let backend = StubBackend::new();
+    for mode in ["solo_local", "solo_remote", "team_remote"] {
+        let mut retired = request(interaction_payload());
+        retired["runtime_target"]["workflow_mode"] = json!(mode);
+        let error =
+            execute_with_discord_interaction_job_ports(&state, &backend, &retired).unwrap_err();
+        assert!(error.contains("Retired execution field `workflow_mode`"));
+    }
+    assert!(state.calls.borrow().is_empty());
+    assert!(backend.calls.borrow().is_empty());
 }

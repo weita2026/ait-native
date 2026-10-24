@@ -131,8 +131,70 @@ pub(super) async fn native_repository_authority_zstd_bulk_plan(
 pub(super) async fn native_repository_authority_zstd_bulk_commit(
     State(state): State<ServerState>,
     Path(repository_index): Path<String>,
-    Json(request): Json<JsonValue>,
-) -> Result<impl IntoResponse, ApiError> {
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Response, ApiError> {
+    use ait_server_core::foundation::workflow_package_contract::PACKAGE_CONTENT_TYPE;
+    if headers
+        .get(CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split(';').next())
+        == Some(PACKAGE_CONTENT_TYPE)
+    {
+        if body.is_empty() {
+            for name in [
+                "content-type",
+                "x-ait-package-sha256",
+                "x-ait-actor-key-index",
+                "x-ait-worker-job-index",
+            ] {
+                if headers.get_all(name).iter().count() != 1 {
+                    return Err(ApiError::bad_request(format!(
+                        "Retained package request requires one unambiguous {name} header"
+                    )));
+                }
+            }
+        }
+        let repository_index = parse_canonical_index(&repository_index, "repository_index")?;
+        let hash = headers
+            .get("x-ait-package-sha256")
+            .and_then(|value| value.to_str().ok())
+            .ok_or_else(|| ApiError::bad_request("Package upload requires X-Ait-Package-Sha256"))?
+            .to_string();
+        let actor = headers
+            .get("x-ait-actor-key-index")
+            .and_then(|value| value.to_str().ok())
+            .ok_or_else(|| {
+                ApiError::bad_request("Package upload requires X-Ait-Actor-Key-Index")
+            })?;
+        let actor = parse_canonical_index(actor, "actor_key_index")?;
+        let job = headers
+            .get("x-ait-worker-job-index")
+            .map(|value| {
+                value
+                    .to_str()
+                    .map_err(|_| ApiError::bad_request("Worker Job header is not text"))
+                    .and_then(|value| parse_canonical_index(value, "worker_job_index"))
+            })
+            .transpose()?;
+        let runtime = state.operational_binary.clone();
+        let (payload, active) = task::spawn_blocking(move || runtime.prepare_workflow_package(repository_index, actor, &hash, job, &body, NATIVE_ZSTD_BULK_BODY_LIMIT_BYTES))
+            .await.map_err(|error| ApiError::internal(format!("Package preparation worker failed: {error}")))?
+            .map_err(|error| if error.kind() == ait_server_core::foundation::remote_binary_db::BinaryDbErrorKind::InvalidDomainData
+                && (job.is_some() || error.contains("differs") || error.contains("execution") || error.contains("unavailable")) {
+                    ApiError::conflict(error.to_string())
+                } else { map_operational_error(error) })?;
+        return Ok((
+            if active {
+                StatusCode::ACCEPTED
+            } else {
+                StatusCode::OK
+            },
+            ok_json(payload).1,
+        )
+            .into_response());
+    }
+    let request = parse_json_body::<JsonValue>(&body, "zstd bulk commit payload")?;
     let runtime = state.runtime_service.clone();
     let result = task::spawn_blocking(move || {
         runtime.commit_repository_zstd_bulk(&repository_index, &request)
@@ -143,7 +205,7 @@ pub(super) async fn native_repository_authority_zstd_bulk_commit(
             "numeric Repository zstd commit worker failed: {error}"
         ))
     })?;
-    map_json_result(result)
+    map_json_result(result).map(IntoResponse::into_response)
 }
 
 pub(super) async fn native_repository_authority_get_zstd_import_manifest(
@@ -410,9 +472,20 @@ pub(super) async fn native_get_snapshot_tail(
 ) -> Result<Response, ApiError> {
     let service = state.repository_service.clone();
     let snapshot_id = parse_snapshot_tail(&snapshot_tail)?;
+    let owner_snapshot_id = snapshot_id.clone();
+    let owner_repository_index = parse_canonical_index(&repository_index, "repository_index")?;
+    let operational = state.operational_binary.clone();
     let payload = run_repository_call(move || {
         service.export_snapshot(&repository_index, &snapshot_id, query)
     })
     .await?;
+    let owner = task::spawn_blocking(move || {
+        operational.snapshot_workflow_owner(owner_repository_index, &owner_snapshot_id)
+    })
+    .await
+    .map_err(|error| ApiError::internal(format!("Snapshot owner read worker failed: {error}")))?
+    .map_err(|error| ApiError::internal(error.to_string()))?;
+    let mut payload = payload;
+    payload["workflow_owner"] = owner;
     Ok(ok_json(payload).into_response())
 }

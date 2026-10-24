@@ -21,7 +21,8 @@ pub use bootstrap::{task_resolve_worktree_location, task_start, worktree_recover
 pub(super) use cleanup::{
     cleanup_candidate_sort_key, cleanup_registered_worktree_cargo_build_dir,
     coerce_worktree_datetime, finalize_promoted_worktree_registration, remove_one_worktree,
-    remove_one_worktree_after_authoritative_task_land, worktree_cleanup_decision,
+    remove_one_worktree_after_authoritative_task_land, remove_one_worktree_after_task_abandon,
+    worktree_cleanup_decision,
 };
 pub use cleanup::{
     worktree_cleanup, worktree_cleanup_candidates, worktree_prune_stale, worktree_remove,
@@ -43,6 +44,7 @@ pub(in crate::primitives) use registry::*;
 pub use restore::{
     worktree_recreate, worktree_restore, worktree_sync, worktree_sync_all, worktree_touch_usage,
 };
+pub(crate) use status::worktree_show;
 pub(in crate::primitives) use status::*;
 pub use status::{worktree_doctor, worktree_get, worktree_list, worktree_status};
 

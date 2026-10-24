@@ -1,0 +1,38 @@
+{
+  "command": "external doctor",
+  "repo_name": "ait-core",
+  "release_ready": false,
+  "checked": {
+    "manifest": true,
+    "lockfile": true,
+    "materialization": true,
+    "bindings": true,
+    "licenses": true
+  },
+  "findings": [
+    {
+      "code": "external_local_link_active",
+      "severity": "error",
+      "release_blocking": true,
+      "name": "ait-db",
+      "path": ".ait-external/ait-db",
+      "message": "local link override is active"
+    },
+    {
+      "code": "external_license_boundary",
+      "severity": "error",
+      "release_blocking": true,
+      "name": "ait-server-plugin",
+      "path": ".ait-external/ait-server-plugin",
+      "message": "declared license is not allowed for this consumer boundary"
+    },
+    {
+      "code": "external_binding_path_missing",
+      "severity": "warning",
+      "release_blocking": false,
+      "name": "ait-db",
+      "path": ".ait-external/ait-db/python",
+      "message": "declared Python binding path is missing"
+    }
+  ]
+}

@@ -2,12 +2,12 @@ use ait_core::json_support::{json, JsonValue};
 
 pub const TASK_LAND_CONTRACT_VERSION: &str = "task-land-plan-closeout/v1";
 
-pub const TASK_FINISH_COMMAND_ABOUT: &str = "Finish one Task onto main. The configured workflow mode chooses local or remote unless --local or --remote explicitly overrides it. Dirty local work requires --message to create its final Snapshot; clean local work reuses the current Line head. Remote finish consumes an already-ready selected Patchset and rejects --message. Final Task cleanup removes the bound worktree and archives its accepted-head feature Line.";
+pub const TASK_FINISH_COMMAND_ABOUT: &str = "Finish one Task onto main. Finish locally by default; --remote explicitly selects a remote. Dirty local work requires --message to create its final Snapshot; clean local work reuses the current Line head. Remote finish consumes an already-ready selected Patchset and rejects --message. Final Task cleanup removes the bound worktree and archives its accepted-head feature Line.";
 
-pub const PLAN_SYNC_COMMAND_ABOUT: &str = "Sync file-backed Markdown into Plan revision history using the workflow mode's local or remote default. solo_local saves local Plan changes; solo_remote updates local Plan history and publishes the changed heads to the configured default remote. --local or --remote overrides that default. Plan sync never creates a Snapshot or advances a Line.";
+pub const PLAN_SYNC_COMMAND_ABOUT: &str = "Sync file-backed Markdown into local Plan revision history. --remote explicitly publishes to a registered remote. Plan sync never creates a Snapshot or advances a Line.";
 
 pub const LOCAL_PLAN_CLOSEOUT_POLICY: &str = "automatic_exact_local_when_final_task_completed";
-pub const REMOTE_PLAN_CLOSEOUT_POLICY: &str = "separate_after_land";
+pub const REMOTE_PLAN_CLOSEOUT_POLICY: &str = "automatic_exact_remote_when_final_task_completed";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct TaskLandScopeContract {
@@ -108,6 +108,12 @@ pub fn task_land_closeout_outcome(output: &JsonValue, use_local_scope: bool) -> 
     let plan_closeout = output
         .get("plan_checklist_closeout")
         .and_then(JsonValue::as_object);
+    if output
+        .get("team_finish_log")
+        .is_some_and(|log| log["status"] != "synced")
+    {
+        return "partial";
+    }
     if plan_closeout
         .and_then(|value| value.get("reason"))
         .and_then(JsonValue::as_str)
@@ -115,17 +121,43 @@ pub fn task_land_closeout_outcome(output: &JsonValue, use_local_scope: bool) -> 
     {
         return "change_landed_task_active";
     }
-    if !use_local_scope {
-        return "execution_complete_plan_separate";
-    }
-    if output.get("task_status").and_then(JsonValue::as_str) != Some("completed") {
+    let task_status = output
+        .get("task_status")
+        .and_then(JsonValue::as_str)
+        .or_else(|| {
+            output
+                .get("task")
+                .and_then(|task| task.get("status"))
+                .and_then(JsonValue::as_str)
+        });
+    if task_status != Some("completed") {
         return "change_landed_task_active";
+    }
+    // A promoted local Task can bind an already checked origin. The team log
+    // independently verifies that exact completed item and synchronizes it.
+    if !use_local_scope
+        && output["team_finish_log"]["status"] == "synced"
+        && output["team_finish_log"]["bound_item_completed"] == true
+        && plan_closeout.is_some_and(|c| {
+            c.get("reason").and_then(JsonValue::as_str) == Some("origin_plan_item_not_taskable")
+        })
+    {
+        return "complete";
     }
     match plan_closeout
         .and_then(|value| value.get("status"))
         .and_then(JsonValue::as_str)
     {
         Some("synced") => "complete",
+        Some("already_synced")
+            if !use_local_scope
+                && plan_closeout
+                    .and_then(|value| value.get("reason"))
+                    .and_then(JsonValue::as_str)
+                    == Some("history_promotion_plan_lineage_prepared") =>
+        {
+            "complete"
+        }
         Some("skipped")
             if plan_closeout
                 .and_then(|value| value.get("reason"))
@@ -157,7 +189,16 @@ fn task_land_recovery(output: &JsonValue, use_local_scope: bool) -> JsonValue {
                 .and_then(JsonValue::as_str)
         })
         .unwrap_or("<task-id>");
-    let scope_flag = if use_local_scope { " --local" } else { "" };
+    let scope_flag = if use_local_scope {
+        " --local".to_string()
+    } else {
+        output
+            .get("plan_checklist_closeout")
+            .and_then(|value| value.get("remote"))
+            .and_then(JsonValue::as_str)
+            .map(|remote| format!(" --remote '{}'", remote.replace('\'', "'\"'\"'")))
+            .unwrap_or_default()
+    };
     json!({
         "code": "resume_task_land_closeout",
         "idempotent": true,
@@ -246,23 +287,18 @@ pub fn attach_task_audit_land_contract(output: &mut JsonValue, use_local_scope: 
             .and_then(JsonValue::as_str)
             .is_some()
     {
-        let artifact_path = plan_evidence
-            .as_ref()
-            .and_then(|value| value.get("artifact_path"))
-            .and_then(JsonValue::as_str)
-            .unwrap_or("<bound-sprint-card-path>");
         let remote_name = plan_evidence
             .as_ref()
             .and_then(|value| value.get("remote"))
             .and_then(JsonValue::as_str)
             .unwrap_or("<remote>");
         (
-            "execution_complete_plan_separate",
+            "partial",
             json!({
-                "code": "sync_bound_plan_separately",
+                "code": "resume_task_land_closeout",
                 "idempotent": true,
-                "command": format!("ait plan sync {artifact_path} --remote {remote_name}"),
-                "detail": "The exact bound item is still open in the current remote Plan head. Mark it complete in the bound sprint card, then synchronize that card separately.",
+                "command": format!("ait task finish {task_id} --remote {remote_name}"),
+                "detail": "The exact bound item is still open in the current remote Plan head. Rerun remote Task finish to automatically close and sync it without reapplying completed code.",
             }),
         )
     } else if task_status == "completed" {
@@ -279,7 +315,7 @@ pub fn attach_task_audit_land_contract(output: &mut JsonValue, use_local_scope: 
                 "idempotent": true,
                 "command": format!("ait plan show {plan_id} --remote {remote_name}"),
                 "detail": if plan_item_ref.is_some() {
-                    "The remote Task is complete, but current evidence does not prove whether the exact bound Plan item is done. Inspect the Plan before deciding whether a separate sync is needed."
+                    "The remote Task is complete, but current evidence does not prove whether the exact bound Plan item is done. Inspect the Plan, then resume remote Task finish to converge automatic closeout."
                 } else {
                     "The remote Task is complete, but its Plan binding has no exact item reference. Inspect the Plan binding before attempting closeout."
                 },
@@ -381,21 +417,24 @@ mod tests {
     }
 
     #[test]
-    fn remote_land_records_separate_plan_closeout_as_successful_execution() {
+    fn remote_plan_failure_is_partial_and_retry_preserves_explicit_remote() {
         let mut payload = json!({
             "apply_status": "done",
-            "task_status": "completed",
-            "plan_checklist_closeout": {
-                "status": "deferred",
-                "reason": "remote_plan_sync_is_separate_from_task_land"
-            },
+            "task": {"task_id": "RCT-1", "status": "completed"},
+            "plan_checklist_closeout": {"status": "failed", "remote": "review-server"}
         });
         attach_task_land_contract(&mut payload, false);
+        assert_eq!(payload["closeout_status"], "partial");
+        assert_eq!(task_land_exit_code(&payload), 2);
         assert_eq!(
-            payload["closeout_status"],
-            "execution_complete_plan_separate"
+            payload["closeout_recovery"]["command"],
+            "ait task finish RCT-1 --remote 'review-server'"
         );
+        payload["plan_checklist_closeout"]["status"] = json!("synced");
+        attach_task_land_contract(&mut payload, false);
+        assert_eq!(payload["closeout_status"], "complete");
         assert_eq!(task_land_exit_code(&payload), 0);
+        assert!(payload.get("closeout_recovery").is_none());
     }
 
     #[test]
@@ -426,8 +465,7 @@ mod tests {
                 "error": "fixture"
             },
             "plan_checklist_closeout": {
-                "status": "deferred",
-                "reason": "remote_plan_sync_is_separate_from_task_land"
+                "status": "synced"
             },
         });
         attach_task_land_contract(&mut payload, false);
@@ -453,7 +491,7 @@ mod tests {
             },
             "plan_checklist_closeout": {
                 "status": "deferred",
-                "reason": "remote_plan_sync_is_separate_from_task_land"
+                "reason": "fixture_plan_pending"
             },
         });
         attach_task_land_contract(&mut payload, false);
@@ -530,13 +568,30 @@ mod tests {
             }
         });
         attach_task_audit_land_contract(&mut payload, false);
-        assert_eq!(
-            payload["task_land_closeout"]["status"],
-            "execution_complete_plan_separate"
-        );
+        assert_eq!(payload["task_land_closeout"]["status"], "partial");
         assert_eq!(
             payload["task_land_closeout"]["recovery"]["command"],
-            "ait plan sync docs/sprints/release.md --remote origin"
+            "ait task finish RCT-8 --remote origin"
         );
+    }
+}
+
+#[cfg(test)]
+mod team_log_tests {
+    use super::*;
+    #[test]
+    fn failed_team_document_sync_is_recoverable_without_reopening_task() {
+        let mut output = json!({"apply_status":"done","task_status":"completed","task_id":"RT-1","plan_checklist_closeout":{"status":"synced","remote":"origin"},"team_finish_log":{"status":"pending","error":"offline"}});
+        attach_task_land_contract(&mut output, false);
+        assert_eq!(output["task_status"], "completed");
+        assert_eq!(output["closeout_status"], "partial");
+        assert_eq!(task_land_exit_code(&output), 2);
+        assert!(output["closeout_recovery"]["command"]
+            .as_str()
+            .unwrap()
+            .contains("RT-1"));
+        output["team_finish_log"]["status"] = json!("synced");
+        attach_task_land_contract(&mut output, false);
+        assert_eq!(output["closeout_status"], "complete");
     }
 }

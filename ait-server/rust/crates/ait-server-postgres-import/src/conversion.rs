@@ -1572,7 +1572,7 @@ fn validate_patchset_redundancy(
     }
     if let Some(value) = optional_positive_u32(payload, "change_seq")? {
         if source_kind == SourcePatchsetIdentityKind::Canonical
-            && value != patchset.change_sequence()
+            && Some(value) != patchset.change_sequence()
         {
             return Err("payload change_seq disagrees with Change authority".to_string());
         }
@@ -1844,7 +1844,7 @@ fn validate_result_domain_values(
         }
     }
     if let Some(value) = optional_positive_u32(result, "change_seq")? {
-        if patchset.is_none_or(|patchset| value != patchset.change_sequence()) {
+        if patchset.is_none_or(|patchset| Some(value) != patchset.change_sequence()) {
             return Err("result_json change_seq disagrees with fixed Change".to_string());
         }
     }
@@ -2327,7 +2327,7 @@ fn rewrite_patchsets(target: &Path, repository: &PreparedRepository) -> Result<(
             }
         }
     }
-    let mut corrected = 1_u32.to_le_bytes().to_vec();
+    let mut corrected = 2_u32.to_le_bytes().to_vec();
     for (index, legacy) in repository
         .domain
         .patchsets_by_index
@@ -2348,9 +2348,9 @@ fn rewrite_patchsets(target: &Path, repository: &PreparedRepository) -> Result<(
         let frozen = V0FrozenPatchsetRecord {
             patchset_meta: legacy.patchset_meta,
             patch_ordinal: legacy.patch_ordinal,
-            change_ordinal: legacy.change_ordinal,
+            change_ordinal_plus1: legacy.change_ordinal_plus1,
             reserved0: legacy.reserved0,
-            change_index: legacy.change_index,
+            task_index: legacy.task_index,
             previous_task_patchset_index_plus1: legacy.previous_task_patchset_index_plus1,
             previous_change_patchset_index_plus1: legacy.previous_change_patchset_index_plus1,
             base_snapshot_index: legacy.base_snapshot_index,

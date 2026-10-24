@@ -155,7 +155,7 @@ fn remote_sync_stale_recovery_is_content_only() -> StoreResult<()> {
     let (db, root, _ctx) = make_db();
     fs::create_dir_all(&root).expect("failed to create authority root");
     let pack_file = BinaryFileId::new("object_pack.bin", 1, 28, BinaryDbFileFamily::Content);
-    let content_file = BinaryFileId::new("snapshot.bin", 1, 84, BinaryDbFileFamily::Content);
+    let content_file = BinaryFileId::new("snapshot.bin", 2, 84, BinaryDbFileFamily::Content);
     let workflow_file = task_file_id();
     let journal_path = root.join(BinaryDbCommandScope::ServerRemoteSyncCommit.journal_file_name());
 

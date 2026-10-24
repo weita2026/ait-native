@@ -12,6 +12,23 @@ use tempfile::NamedTempFile;
 use std::os::unix::fs::PermissionsExt;
 
 const MANAGED_START: &str = "<!-- ait:workflow:start -->";
+const TEAM_REVIEW_GUIDANCE: &str = "\n\nFresh team candidates default to independent agent code review through\n`ai_only_experimental`. A valid explicit author mode takes precedence.\nKeep the saved solo default and every sealed candidate's original mode and\nidentity. Use an independent Reviewer; a missing Reviewer requires assignment.\nReal CI, Task approval and mandatory Policy still apply. Do not fabricate human\napproval or add per-batch human approval solely because of the saved default.";
+const GUIDANCE_REUSE: &str = "\
+Use complete applicable guidance already in context without fetching it again.
+A new Task in the same repository and scope needs its new card and necessary
+references, not unchanged instructions. Read missing, changed or newly applicable
+guidance once. After context compaction, re-read applicable repository guidance
+and the current work order. Existing ownership and finish gates still apply.";
+const TOOL_DISCIPLINE: &str = "\
+Before a query, identify the missing fact and reuse authoritative facts still
+valid in context. Batch independent searches and reads; filter results before
+returning them to the model. After truncation, retrieve only the missing segment.";
+const WORKSPACE_IGNORE_GUIDANCE: &str = "\
+Before the first build/test or Snapshot-producing finish, review `.aitignore`
+in `edit_root`. AIT does not automatically load `.gitignore`. Exclude only
+confirmed generated/cache/local-secret paths, not broad data categories.
+New rules can exclude previously snapshotted paths from new Snapshots;
+inspect affected paths before capture. Old Snapshot history remains intact.";
 /// Facts an agent otherwise learns from a refusal. Kept short and stable so
 /// every session reads them once at start; the sync command follows the
 /// effective scope.
@@ -28,6 +45,8 @@ pub fn render_worktree_facts(scope_label: &str, remote_name: &str) -> String {
                 .to_string(),
         )
     };
+    let quick_rule =
+        "`ait task quick --intent \"<intent>\" --edit-root <absolute-path>` covers small changes.";
     format!(
         r#"### Worktree facts
 
@@ -36,7 +55,7 @@ pub fn render_worktree_facts(scope_label: &str, remote_name: &str) -> String {
   Snapshots{finish_clause}.
 - Plan-backed Markdown outside `docs/` is absent from worktrees; edit it at the root.
 - One Markdown file may bind several Plans; `ait plan list` shows `head_match`.
-- `ait task quick --intent "<intent>" --edit-root <absolute-path>` covers small changes.
+- {quick_rule}
 - `hooks.post_finish` (see `ait config show`) runs after each successful local finish."#
     )
 }
@@ -86,6 +105,52 @@ pub fn refresh_agent_workflow_harness(repo: &RepoRuntime) -> Result<JsonValue, S
         // receipt. It now reports only whether CLAUDE.md predated this refresh.
         "claude_pointer": if claude_existed { "existing" } else { "created" },
     }))
+}
+
+/// Import only fills absent guidance. Explicit init/config convergence keeps
+/// its existing refresh semantics; import must not replace custom or old pins.
+pub(crate) fn validate_import_guidance(repo: &RepoRuntime) -> Result<(), String> {
+    render_agent_workflow_block(repo)?;
+    render_claude_workflow_block(repo)?;
+    for name in [AGENT_HARNESS_PATH, CLAUDE_HARNESS_PATH] {
+        if let Some(body) =
+            read_optional_regular_text(&repo.authoritative_repo_root().join(name), name)?
+        {
+            replace_or_insert_managed_block(&body, "", name)?;
+            if body.matches(MANAGED_START).count() > 1 || body.matches(MANAGED_END).count() > 1 {
+                return Err(format!("{name} contains duplicate ait-managed workflow blocks; existing content was preserved"));
+            }
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn create_import_guidance_if_absent(
+    repo: &RepoRuntime,
+) -> Result<Vec<(String, bool)>, String> {
+    let mut result = Vec::new();
+    for (path, heading, managed) in [
+        (
+            AGENT_HARNESS_PATH,
+            "AGENTS",
+            render_agent_workflow_block(repo)?,
+        ),
+        (
+            CLAUDE_HARNESS_PATH,
+            "CLAUDE",
+            render_claude_workflow_block(repo)?,
+        ),
+    ] {
+        let body = replace_or_insert_managed_block(&format!("# {heading}\n"), &managed, path)?;
+        let created = crate::init_surface::write_workspace_file_if_absent(
+            &repo.authoritative_repo_root().join(path),
+            body.as_bytes(),
+            0o644,
+        )?;
+        result.push((path.to_string(), created));
+    }
+    validate_import_guidance(repo)?;
+    Ok(result)
 }
 
 fn refresh_workflow_document(
@@ -166,34 +231,11 @@ where
     F: FnMut(&JsonValue) -> Result<JsonValue, String>,
 {
     let refresh = refresh_agent_workflow_harness(repo)?;
-    let scope = effective_agent_harness_scope(repo);
-    let remote_name = if scope == "remote" {
-        let Some(remote_name) = repo.default_remote_name() else {
-            return Ok(pending_remote_convergence(
-                refresh,
-                "no_default_remote",
-                None,
-                None,
-            ));
-        };
-        match repo.remote_row(Some(&remote_name)) {
-            Ok(_) => Some(remote_name),
-            Err(error) => {
-                return Ok(pending_remote_convergence(
-                    refresh,
-                    "default_remote_unavailable",
-                    Some(remote_name),
-                    Some(error),
-                ));
-            }
-        }
-    } else {
-        None
-    };
+    let scope = "local";
     let mut plan_syncs = Vec::new();
     let mut agents_plan_sync = JsonValue::Null;
     for artifact_path in [AGENT_HARNESS_PATH, CLAUDE_HARNESS_PATH] {
-        let request = agent_harness_plan_sync_request(repo, artifact_path, remote_name.as_deref())?;
+        let request = agent_harness_plan_sync_request(repo, artifact_path)?;
         let plan_sync = execute(&request)?;
         if plan_sync.get("status").and_then(JsonValue::as_str) != Some("ok") {
             let error = plan_sync
@@ -215,7 +257,7 @@ where
     Ok(json!({
         "status": "synced",
         "scope": scope,
-        "remote": remote_name,
+        "remote": JsonValue::Null,
         "artifact_path": AGENT_HARNESS_PATH,
         "artifact_paths": [AGENT_HARNESS_PATH, CLAUDE_HARNESS_PATH],
         "refresh": refresh,
@@ -226,31 +268,11 @@ where
     }))
 }
 
-fn pending_remote_convergence(
-    refresh: JsonValue,
-    reason: &str,
-    remote_name: Option<String>,
-    error: Option<String>,
-) -> JsonValue {
-    json!({
-        "status": "pending",
-        "scope": "remote",
-        "remote": remote_name,
-        "artifact_path": AGENT_HARNESS_PATH,
-        "reason": reason,
-        "error": error,
-        "refresh": refresh,
-        "plan_sync": JsonValue::Null,
-        "next_action": "Connect or repair the default remote; the default-remote mutation path will retry AGENTS.md and CLAUDE.md convergence automatically.",
-    })
-}
-
 fn agent_harness_plan_sync_request(
     repo: &RepoRuntime,
     artifact_path: &str,
-    remote_name: Option<&str>,
 ) -> Result<JsonValue, String> {
-    let mut payload = json!({
+    Ok(json!({
         "root_path": repo.authoritative_repo_root(),
         "repo_name": repo.repo_name(),
         "repository_index": repo.repository_index(),
@@ -259,42 +281,14 @@ fn agent_harness_plan_sync_request(
         "target": artifact_path,
         "plan_ref": JsonValue::Null,
         "prune": false,
-        "local": remote_name.is_none(),
+        "local": true,
         "remote_name": JsonValue::Null,
         "remote_repo_name": JsonValue::Null,
         "base_url": JsonValue::Null,
         "rebase": false,
         "reconcile": false,
         "plan_storage": repo.plan_binary_db_storage_request::<PLAN_BINARY_DB_WRITE_LAYOUT>()?,
-    });
-    if let Some(remote_name) = remote_name {
-        let remote = repo.remote_row(Some(remote_name))?;
-        let object = payload
-            .as_object_mut()
-            .ok_or_else(|| "Agent harness plan sync request must be an object.".to_string())?;
-        object.insert("remote_name".to_string(), JsonValue::String(remote.name));
-        object.insert(
-            "remote_repo_name".to_string(),
-            JsonValue::String(remote.repo_name.unwrap_or_else(|| repo.repo_name())),
-        );
-        object.insert("base_url".to_string(), JsonValue::String(remote.url));
-    }
-    Ok(payload)
-}
-
-fn effective_agent_harness_scope(repo: &RepoRuntime) -> &'static str {
-    match repo.effective_workflow_mode().as_str() {
-        "solo_local" => "local",
-        "solo_remote" | "team_remote" => "remote",
-        _ => match repo
-            .config
-            .get("workflow_default_scope")
-            .and_then(JsonValue::as_str)
-        {
-            Some("remote") => "remote",
-            _ => "local",
-        },
-    }
+    }))
 }
 
 fn markdown_code_span(value: &str) -> String {
@@ -327,24 +321,12 @@ fn effective_plan_binding_mode(repo: &RepoRuntime, sprint_enabled: bool) -> Stri
         })
 }
 
-fn render_effective_workflow_admission(
-    repo: &RepoRuntime,
-    workflow_mode: &str,
-    sprint_enabled: bool,
-    scope_label: &str,
-) -> String {
+fn render_effective_workflow_admission(repo: &RepoRuntime, sprint_enabled: bool) -> String {
     let mut action_required = Vec::new();
     let sprint = if sprint_enabled { "on" } else { "off" };
     let binding = effective_plan_binding_mode(repo, sprint_enabled);
     let expected_binding = if sprint_enabled { "required" } else { "off" };
 
-    if workflow_mode == "custom" {
-        action_required.push(format!(
-            "- mode={}; scope={} (unsupported workflow combination)",
-            markdown_code_span(workflow_mode),
-            markdown_code_span(scope_label),
-        ));
-    }
     let binding_fact = format!("plan-binding={}", markdown_code_span(&binding));
     if binding != expected_binding {
         action_required.push(format!(
@@ -354,60 +336,18 @@ fn render_effective_workflow_admission(
         ));
     }
 
-    let default_remote = repo.default_remote_name();
-    let route_remote = if scope_label == "remote" {
-        match default_remote.as_deref() {
-            Some(name) if repo.remote_row(Some(name)).is_ok() => Some(markdown_code_span(name)),
-            Some(name) => {
-                action_required.push(format!(
-                    "- remote={} (configured remote is unavailable)",
-                    markdown_code_span(name),
-                ));
-                Some(markdown_code_span(name))
-            }
-            None => {
-                action_required.push(format!(
-                    "- remote={} (required by {})",
-                    markdown_code_span("unset"),
-                    markdown_code_span(workflow_mode),
-                ));
-                Some(markdown_code_span("unset"))
-            }
-        }
-    } else {
-        None
-    };
-
     let author_mode = repo.effective_author_mode(None);
-    if repo.task_review_reviewer_identity().is_none() {
-        let task_review = if repo
-            .config
-            .get("task_review")
-            .and_then(JsonValue::as_bool)
-            .unwrap_or(false)
-        {
-            "required"
-        } else {
-            "automatic"
-        };
-        action_required.push(format!(
-            "- review={}; reviewer={} (configure user-name)",
-            markdown_code_span(task_review),
-            markdown_code_span("unset"),
-        ));
-    }
 
-    let mut route = format!(
-        "Route: mode={}; sprint={}; scope={}; {binding_fact}; author-mode={}",
-        markdown_code_span(workflow_mode),
+    let route = format!(
+        "Route: sprint={}; scope=`local`; {binding_fact}; author-mode={}.",
         markdown_code_span(sprint),
-        markdown_code_span(scope_label),
         markdown_code_span(&author_mode),
     );
-    if let Some(remote) = route_remote {
-        route.push_str(&format!("; remote={remote}"));
-    }
-    route.push('.');
+    let review = if repo.team_review_enabled() {
+        TEAM_REVIEW_GUIDANCE
+    } else {
+        ""
+    };
 
     let admission = if action_required.is_empty() {
         r#"Admission: ready. Do not inspect configuration unless an AIT command
@@ -422,7 +362,7 @@ reports `action_required` or the task explicitly changes configuration."#
     format!(
         r#"### Effective route
 
-{route}
+{route}{review}
 
 {admission}"#,
     )
@@ -438,20 +378,11 @@ fn render_claude_workflow_block(repo: &RepoRuntime) -> Result<String, String> {
 
 fn render_workflow_block(repo: &RepoRuntime, audience: GuidanceAudience) -> Result<String, String> {
     let prose_guidance = PlanPreferences::for_repo(repo)?.guidance();
-    let workflow_mode = repo.effective_workflow_mode();
     let sprint_enabled = repo.sprint_enabled();
-    let remote_name = repo
-        .default_remote_name()
-        .unwrap_or_else(|| "origin".to_string());
-    let scope_label = effective_agent_harness_scope(repo);
-    let worktree_facts = render_worktree_facts(scope_label, &remote_name);
-    let admission =
-        render_effective_workflow_admission(repo, &workflow_mode, sprint_enabled, scope_label);
-    let plan_sync_command = if scope_label == "remote" {
-        format!("ait plan sync <markdown-file-or-dir> --remote {remote_name}")
-    } else {
-        "ait plan sync <markdown-file-or-dir> --local".to_string()
-    };
+    // Shared command routing remains local; team review affects fresh author mode.
+    let worktree_facts = render_worktree_facts("local", "");
+    let admission = render_effective_workflow_admission(repo, sprint_enabled);
+    let plan_sync_command = "ait plan sync <markdown-file-or-dir> --local";
     let markdown_sync_rule = if sprint_enabled {
         format!(
             r#"- Sync authored Markdown other than the initial sprint card with
@@ -464,21 +395,11 @@ fn render_workflow_block(repo: &RepoRuntime, audience: GuidanceAudience) -> Resu
         )
     };
     let local_finish = r#"For dirty work, run `ait task finish
-   <task-id> --message "<message>" --local`; when already
-   clean, omit `--message`. Successful Task finish output is authoritative
-   proof of local apply, Task completion, worktree cleanup, and
-   applicable bound-card closeout. Do not follow it with `status`, `diff`, or `audit`
-   unless it fails, reports required action, state is unexpected, or evidence
-   was requested."#;
-    let remote_finish = r#"Create the reviewable Snapshot with `ait snapshot create <task-id> --message
-   "<message>"`, then run `ait workflow ready <task-id> --apply`. Give the
-   Task ID and `TASK_ID/P-##` Patchset reference to the reviewer; the reviewer runs `ait workflow finish
-   <task-id> --apply` (and `--review-message` when requested).
-   Workflow finish owns Review, approval, final Policy, and atomic Task closeout.
-   Use direct `ait task finish` only as an already-ready finalizer or a reported
-   recovery command; it creates no Review evidence, publishes no content, runs no
-   CI, and closes no Plan."#;
-
+   <task-id> --message "<message>" --local`; if clean, omit `--message`.
+   Successful Task finish output is authoritative proof of local apply,
+   Task completion, worktree cleanup, and bound-card closeout.
+   Do not follow it with `status`, `diff`, or `audit`
+   except for failure, required action, unexpected state, or requested evidence."#;
     let (task_start_verb, edit_root_argument, enter_worktree_suffix) = match audience {
         GuidanceAudience::Agents => ("Run", "", ""),
         GuidanceAudience::Claude => (
@@ -488,55 +409,31 @@ fn render_workflow_block(repo: &RepoRuntime, audience: GuidanceAudience) -> Resu
         ),
     };
 
-    let task_path = match (sprint_enabled, scope_label) {
-        (true, "remote") => format!(
+    let task_path = if sprint_enabled {
+        format!(
             r#"### Code-change path
 
-1. Create a complete card under `docs/sprints/` using the prose defaults, with one stable
-   `[plan-ref: ...]` and one unchecked item carrying an exact `[ref: ...]`.
+1. Create a complete card under `docs/sprints/` using prose defaults: one stable
+   `[plan-ref: ...]` and one exact unchecked `[ref: ...]` item.
 2. {task_start_verb} `ait task start --from <sprint-card-path>#<exact-ref> --intent
-   "<intent>"{edit_root_argument} --remote {remote_name}{enter_worktree_suffix}`. `--from` syncs and binds the
-   initial card; do not pre-sync it or copy Plan IDs.
-3. Work only in the returned `edit_root`.
-4. {remote_finish}
-5. After a successful finish, mark the bound item complete and run `ait plan sync
-   <sprint-card-path> --remote {remote_name}`.
-
-After every context-window compaction, re-read the bound sprint card before
-continuing."#
-        ),
-        (true, _) => format!(
-            r#"### Code-change path
-
-1. Create a complete card under `docs/sprints/` using the prose defaults, with one stable
-   `[plan-ref: ...]` and one unchecked item carrying an exact `[ref: ...]`.
-2. {task_start_verb} `ait task start --from <sprint-card-path>#<exact-ref> --intent
-   "<intent>"{edit_root_argument}{enter_worktree_suffix}`. `--from` syncs and binds the initial card; do not
+   "<intent>"{edit_root_argument}{enter_worktree_suffix}`. `--from` syncs and binds the card; do not
    pre-sync it or copy Plan IDs.
-3. Work only in the returned `edit_root`. Intermediate `ait snapshot create
-   <task-id> --message "<message>"` checkpoints are optional.
+3. Work only in the returned `edit_root`. Optional checkpoints: `ait snapshot create
+   <task-id> --message "<message>"`.
 4. {local_finish}
 
-After every context-window compaction, re-read the bound sprint card before
-continuing."#
-        ),
-        (false, "remote") => format!(
-            r#"### Code-change path
-
-1. {task_start_verb} `ait task start --title "<title>" --intent "<intent>"{edit_root_argument} --remote
-   {remote_name}{enter_worktree_suffix}`; sprint mode is off, so `--from` is unavailable.
-2. Work only in the returned `edit_root`.
-3. {remote_finish}"#
-        ),
-        (false, _) => format!(
+After every context-window compaction, re-read the bound sprint card."#
+        )
+    } else {
+        format!(
             r#"### Code-change path
 
 1. {task_start_verb} `ait task start --title "<title>" --intent "<intent>"{edit_root_argument}{enter_worktree_suffix}`; sprint
    mode is off, so `--from` is unavailable.
-2. Work only in the returned `edit_root`. Intermediate `ait snapshot create
-   <task-id> --message "<message>"` checkpoints are optional.
+2. Work only in the returned `edit_root`. Optional checkpoints: `ait snapshot create
+   <task-id> --message "<message>"`.
 3. {local_finish}"#
-        ),
+        )
     };
     let edit_root_guidance = match audience {
         GuidanceAudience::Agents => {
@@ -548,9 +445,9 @@ continuing."#
 retain the returned Task ID and verify that its `edit_root` is the selected path."#
         }
     };
-    let task_path = format!("{task_path}\n\n{edit_root_guidance}");
+    let task_path = format!("{task_path}\n\n{edit_root_guidance}\n\nInitial Task work creates no Change. Revisions need a meaningfully titled\nChange from the exact reviewed Snapshot; reuse for corrections. Finish\napplies once; recovery reuses its receipt.");
 
-    let supplemental_guidance = if !sprint_enabled && scope_label == "local" {
+    let supplemental_guidance = if !sprint_enabled {
         format!(
             r#"### Worktree and recovery rules
 
@@ -573,7 +470,7 @@ retain the returned Task ID and verify that its `edit_root` is the selected path
 - For a regression, use `ait blame <path>` before choosing a repair.
 {markdown_sync_rule}
 - A Snapshot is a checkpoint, not a substitute for the listed closeout.
-- Only when that question arises: `ait queue summary` shows actionable work,
+- As needed: `ait queue summary` shows actionable work,
   `ait task audit <task-id>` shows readiness, and `ait task list --all` plus
   `ait snapshot list --all` show history.
 - Change IDs are internal to normal Task work. Do not create another Change
@@ -591,7 +488,13 @@ retain the returned Task ID and verify that its `edit_root` is the selected path
 
 {prose_guidance}
 
+{GUIDANCE_REUSE}
+
+{TOOL_DISCIPLINE}
+
 {task_path}
+
+{WORKSPACE_IGNORE_GUIDANCE}
 
 {supplemental_guidance}
 {MANAGED_END}"#,
@@ -631,7 +534,7 @@ fn replace_or_insert_managed_block(
     }
 }
 
-fn ensure_configured_sprint_directory(repo: &RepoRuntime) -> Result<(), String> {
+pub(crate) fn ensure_configured_sprint_directory(repo: &RepoRuntime) -> Result<(), String> {
     if !repo.sprint_enabled() {
         return Ok(());
     }
@@ -793,16 +696,12 @@ mod tests {
     use std::path::PathBuf;
     use tempfile::tempdir;
 
-    fn repo(mode: &str, sprint: &str) -> RepoRuntime {
+    fn repo(teams: bool, sprint: &str) -> RepoRuntime {
         let mut config = JsonMap::new();
         config.insert("repo_name".to_string(), json!("demo"));
         config.insert("default_line".to_string(), json!("main"));
-        config.insert("workflow_mode".to_string(), json!(mode));
-        let scope = if matches!(mode, "solo_remote" | "team_remote") {
-            "remote"
-        } else {
-            "local"
-        };
+        config.insert("agent_teams".to_string(), json!(teams));
+        let scope = "local";
         for key in [
             "workflow_default_scope",
             "task_default_scope",
@@ -831,16 +730,14 @@ mod tests {
     }
 
     #[test]
-    fn renders_every_mode_and_sprint_combination_as_compact_nonconflicting_guidance() {
-        for mode in ["solo_local", "solo_remote", "team_remote"] {
+    fn renders_teams_and_sprint_combinations_as_compact_nonconflicting_guidance() {
+        for teams in [false, true] {
             for sprint in ["on", "off"] {
-                let rendered = render_agent_workflow_block(&repo(mode, sprint)).unwrap();
-                let remote = matches!(mode, "solo_remote" | "team_remote");
+                let rendered = render_agent_workflow_block(&repo(teams, sprint)).unwrap();
+                let remote = false;
                 let scope = if remote { "remote" } else { "local" };
                 let lean_local_sprint_off = !remote && sprint == "off";
-                assert!(rendered.contains(&format!(
-                    "Route: mode=`{mode}`; sprint=`{sprint}`; scope=`{scope}`"
-                )));
+                assert!(rendered.contains(&format!("Route: sprint=`{sprint}`; scope=`{scope}`")));
                 assert!(rendered.contains(&format!(
                     "plan-binding=`{}`",
                     if sprint == "on" { "required" } else { "off" }
@@ -861,7 +758,7 @@ mod tests {
                 assert!(!rendered.contains("task-land-plan-closeout"));
                 assert!(
                     !rendered.to_ascii_lowercase().contains("land"),
-                    "{mode}/{sprint} guidance must use finish terminology"
+                    "{teams}/{sprint} guidance must use finish terminology"
                 );
                 assert!(!rendered.contains("plan-closeout="));
                 assert!(!rendered.contains("ait install"));
@@ -905,7 +802,7 @@ mod tests {
                 assert!(!rendered.contains("--base-line"));
                 assert!(
                     !rendered.to_ascii_lowercase().contains("json"),
-                    "{mode}/{sprint} guidance must not mention JSON output"
+                    "{teams}/{sprint} guidance must not mention JSON output"
                 );
                 let (base_byte_limit, base_word_limit) = match (remote, sprint) {
                     (false, "on") => (2_600, 340),
@@ -918,19 +815,34 @@ mod tests {
                     .guidance();
                 let facts =
                     render_worktree_facts(if remote { "remote" } else { "local" }, "upstream");
-                let byte_limit = base_byte_limit + prose.len() + facts.len() + 40;
+                let byte_limit = base_byte_limit
+                    + prose.len()
+                    + facts.len()
+                    + WORKSPACE_IGNORE_GUIDANCE.len()
+                    + GUIDANCE_REUSE.len()
+                    + TOOL_DISCIPLINE.len()
+                    + if teams { TEAM_REVIEW_GUIDANCE.len() } else { 0 }
+                    + 40;
                 let word_limit = base_word_limit
                     + prose.split_whitespace().count()
                     + facts.split_whitespace().count()
+                    + WORKSPACE_IGNORE_GUIDANCE.split_whitespace().count()
+                    + GUIDANCE_REUSE.split_whitespace().count()
+                    + TOOL_DISCIPLINE.split_whitespace().count()
+                    + if teams {
+                        TEAM_REVIEW_GUIDANCE.split_whitespace().count()
+                    } else {
+                        0
+                    }
                     + 6;
                 assert!(
                     rendered.len() < byte_limit,
-                    "{mode}/{sprint} guidance was {} bytes; limit is {byte_limit}",
+                    "{teams}/{sprint} guidance was {} bytes; limit is {byte_limit}",
                     rendered.len()
                 );
                 assert!(
                     rendered.split_whitespace().count() < word_limit,
-                    "{mode}/{sprint} guidance was {} words; limit is {word_limit}",
+                    "{teams}/{sprint} guidance was {} words; limit is {word_limit}",
                     rendered.split_whitespace().count()
                 );
                 if remote {
@@ -980,14 +892,34 @@ mod tests {
                 }
                 assert!(rendered.contains("otherwise omit it and use the returned `edit_root`"));
 
-                let claude = render_claude_workflow_block(&repo(mode, sprint)).unwrap();
+                let claude = render_claude_workflow_block(&repo(teams, sprint)).unwrap();
+                for guidance in [&rendered, &claude] {
+                    assert_eq!(guidance.matches(WORKSPACE_IGNORE_GUIDANCE).count(), 1);
+                    assert_eq!(guidance.matches(GUIDANCE_REUSE).count(), 1);
+                    assert_eq!(guidance.matches(TOOL_DISCIPLINE).count(), 1);
+                    for team_rule in [
+                        "docs/roles/",
+                        "ait team",
+                        "ASSIGN",
+                        "READY",
+                        "role_revision",
+                        "contacts",
+                        "usage reviews",
+                    ] {
+                        assert!(!guidance.contains(team_rule), "{team_rule}: {guidance}");
+                    }
+                    assert!(guidance.contains("review `.aitignore`\nin `edit_root`"));
+                    assert!(guidance.contains("first build/test or Snapshot-producing finish"));
+                    assert!(guidance.contains("does not automatically load `.gitignore`"));
+                    assert!(guidance.contains("previously snapshotted paths from new Snapshots"));
+                    assert!(guidance.contains("not broad data categories"));
+                }
                 assert!(claude
                     .split_whitespace()
                     .collect::<Vec<_>>()
                     .join(" ")
                     .contains("ait snapshot create <task-id>"));
-                let shared_route =
-                    format!("Route: mode=`{mode}`; sprint=`{sprint}`; scope=`{scope}`");
+                let shared_route = format!("Route: sprint=`{sprint}`; scope=`{scope}`");
                 let mut shared_guidance = vec![
                     shared_route.as_str(),
                     "## Effective Ait Workflow (Generated)",
@@ -1014,13 +946,65 @@ mod tests {
                 assert!(claude.contains("&& cd <absolute-path>"));
                 assert!(
                     !claude.to_ascii_lowercase().contains("json"),
-                    "{mode}/{sprint} Claude guidance must not mention JSON output"
+                    "{teams}/{sprint} Claude guidance must not mention JSON output"
                 );
                 assert!(claude.contains("Do not omit `--edit-root`"));
                 assert!(!claude.contains("otherwise omit it"));
                 assert!(!claude.contains("@AGENTS.md"));
                 assert!(claude.len() < byte_limit + 400);
                 assert!(claude.split_whitespace().count() < word_limit + 55);
+            }
+        }
+    }
+
+    #[test]
+    fn teams_preserve_shared_local_commands_and_add_independent_review_guidance() {
+        for sprint in ["on", "off"] {
+            for default in [Some("upstream"), None] {
+                let mut runtime = repo(true, sprint);
+                if default.is_none() {
+                    runtime.config.remove("default_remote");
+                }
+                for audience in [GuidanceAudience::Agents, GuidanceAudience::Claude] {
+                    let team = render_workflow_block(&runtime, audience).unwrap();
+                    runtime.config.insert("agent_teams".into(), json!(false));
+                    let solo = render_workflow_block(&runtime, audience).unwrap();
+                    runtime.config.insert("agent_teams".into(), json!(true));
+                    assert_eq!(team.replace(TEAM_REVIEW_GUIDANCE, ""), solo);
+                    assert!(team.contains("a missing Reviewer requires assignment"));
+                    assert!(!solo.contains("Fresh team candidates"));
+                    assert!(team.contains("scope=`local`"));
+                    assert!(team.contains("Admission: ready."));
+                    assert!(!team.contains("configured remote is unavailable"));
+                    for absent in [
+                        "Newton",
+                        "Coordinator",
+                        "<scope-args>",
+                        "work-order",
+                        "role",
+                        "ait team",
+                        "ait workflow ready",
+                        "notification",
+                        "successful JSON receipt",
+                    ] {
+                        assert!(!team.contains(absent), "shared guidance contains {absent}");
+                    }
+                    assert_eq!(team.matches(MANAGED_START).count(), 1);
+                    assert_eq!(team.matches(WORKSPACE_IGNORE_GUIDANCE).count(), 1);
+                    assert_eq!(
+                        team.contains("--from <sprint-card-path>#<exact-ref>"),
+                        sprint == "on"
+                    );
+                    assert_eq!(team.contains("--title \"<title>\""), sprint == "off");
+                    assert_eq!(
+                        team.contains("&& cd <absolute-path>"),
+                        matches!(audience, GuidanceAudience::Claude)
+                    );
+                    assert!(runtime.task_uses_local_scope(false, None).unwrap());
+                    assert!(!runtime
+                        .task_uses_local_scope(false, Some("upstream"))
+                        .unwrap());
+                }
             }
         }
     }
@@ -1034,7 +1018,7 @@ mod tests {
             (Some("strict"), "off"),
             (Some("off"), "off"),
         ] {
-            let mut runtime = repo("solo_local", "on");
+            let mut runtime = repo(false, "on");
             runtime.config.remove("sprint");
             match binding_mode {
                 Some(mode) => {
@@ -1059,29 +1043,29 @@ mod tests {
     fn managed_refresh_is_idempotent_and_preserves_surrounding_governance() {
         let first = replace_or_insert_managed_block(
             "# AGENTS\n\nCustom before.\n",
-            &render_agent_workflow_block(&repo("solo_local", "on")).unwrap(),
+            &render_agent_workflow_block(&repo(false, "on")).unwrap(),
             AGENT_HARNESS_PATH,
         )
         .unwrap();
         let second = replace_or_insert_managed_block(
             &first,
-            &render_agent_workflow_block(&repo("solo_remote", "off")).unwrap(),
+            &render_agent_workflow_block(&repo(false, "off")).unwrap(),
             AGENT_HARNESS_PATH,
         )
         .unwrap();
         assert!(second.contains("Custom before."));
-        assert!(second.contains("Route: mode=`solo_remote`; sprint=`off`; scope=`remote`"));
+        assert!(second.contains("Route: sprint=`off`; scope=`local`"));
         assert_eq!(second.matches(MANAGED_START).count(), 1);
         assert_eq!(second.matches(MANAGED_END).count(), 1);
     }
 
     #[test]
     fn local_route_omits_absent_and_inactive_default_remotes() {
-        let with_remote = render_agent_workflow_block(&repo("solo_local", "off")).unwrap();
+        let with_remote = render_agent_workflow_block(&repo(false, "off")).unwrap();
         assert!(!with_remote.contains("remote=`upstream`"));
         assert!(!with_remote.contains("configured remote is unavailable"));
 
-        let mut without_remote = repo("solo_local", "off");
+        let mut without_remote = repo(false, "off");
         without_remote.config.remove("default_remote");
         let rendered = render_agent_workflow_block(&without_remote).unwrap();
         assert!(!rendered.contains("remote=`none`"));
@@ -1090,7 +1074,7 @@ mod tests {
 
     #[test]
     fn mismatched_plan_binding_is_action_required_without_markdown_checkboxes() {
-        let mut runtime = repo("solo_local", "off");
+        let mut runtime = repo(false, "off");
         runtime
             .config
             .insert("plan_task_binding".to_string(), json!({"mode": "required"}));
@@ -1102,8 +1086,52 @@ mod tests {
     }
 
     #[test]
+    fn absent_review_identity_does_not_block_admission_or_hide_binding_mismatches() {
+        for task_review in [false, true] {
+            for sprint in ["on", "off"] {
+                for mismatch in [false, true] {
+                    let mut runtime = repo(true, sprint);
+                    runtime.config.remove("user_name");
+                    runtime.config.remove("user_email");
+                    runtime
+                        .config
+                        .insert("task_review".into(), json!(task_review));
+                    assert!(runtime.task_review_reviewer_identity().is_none());
+                    if mismatch {
+                        runtime.config.insert(
+                            "plan_task_binding".into(),
+                            json!({"mode":if sprint=="on"{"off"}else{"required"}}),
+                        );
+                    }
+                    for rendered in [
+                        render_agent_workflow_block(&runtime).unwrap(),
+                        render_claude_workflow_block(&runtime).unwrap(),
+                    ] {
+                        assert_eq!(
+                            rendered.contains("Admission: ready."),
+                            !mismatch,
+                            "{rendered}"
+                        );
+                        assert_eq!(
+                            rendered.contains("Action required before mutation:"),
+                            mismatch,
+                            "{rendered}"
+                        );
+                        if mismatch {
+                            assert!(rendered.contains("(expected"));
+                        }
+                        assert!(!rendered.contains("configure user-name"), "{rendered}");
+                        assert!(!rendered.contains("reviewer=`unset`"), "{rendered}");
+                        assert!(!rendered.contains("user_email"), "{rendered}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
     fn arbitrary_author_mode_text_is_kept_inside_a_safe_code_span() {
-        let mut runtime = repo("solo_local", "off");
+        let mut runtime = repo(false, "off");
         runtime.config.insert(
             "default_author_mode".to_string(),
             json!("mode`name\nwith whitespace"),
@@ -1119,7 +1147,7 @@ mod tests {
     }
 
     #[test]
-    fn remote_convergence_uses_the_configured_default_remote_after_refresh() {
+    fn local_convergence_ignores_inactive_remote_defaults_after_refresh() {
         let temp = tempdir().unwrap();
         init_repo(&InitRequest {
             root: temp.path().to_path_buf(),
@@ -1175,24 +1203,24 @@ mod tests {
         .unwrap();
 
         assert_eq!(convergence["status"], "synced");
-        assert_eq!(convergence["scope"], "remote");
-        assert_eq!(convergence["remote"], "mirror");
+        assert_eq!(convergence["scope"], "local");
+        assert!(convergence["remote"].is_null());
         assert_eq!(captured.len(), 2);
         assert_eq!(captured[0]["target"], AGENT_HARNESS_PATH);
         assert_eq!(captured[1]["target"], CLAUDE_HARNESS_PATH);
         for request in captured {
-            assert_eq!(request["local"], false);
-            assert_eq!(request["remote_name"], "mirror");
-            assert_eq!(request["remote_repo_name"], "demo-remote");
-            assert_eq!(request["base_url"], "https://example.test");
+            assert_eq!(request["local"], true);
+            assert!(request["remote_name"].is_null());
+            assert!(request["remote_repo_name"].is_null());
+            assert!(request["base_url"].is_null());
         }
         assert_eq!(convergence["plan_syncs"].as_array().unwrap().len(), 2);
         let agents = fs::read_to_string(temp.path().join("AGENTS.md")).unwrap();
-        assert!(agents.contains("--remote mirror"));
-        assert!(agents.contains("remote=`mirror`"));
+        assert!(agents.contains("--local"));
+        assert!(!agents.contains("remote=`mirror`"));
         assert!(agents.contains("Admission: ready."));
         let claude = fs::read_to_string(temp.path().join("CLAUDE.md")).unwrap();
-        assert!(claude.contains("--remote mirror"));
+        assert!(claude.contains("--local"));
         assert!(claude.contains("--edit-root <absolute-path>"));
         assert!(!claude.contains("@AGENTS.md"));
     }
@@ -1306,7 +1334,7 @@ mod tests {
     }
 
     #[test]
-    fn remote_convergence_without_a_remote_is_explicitly_pending() {
+    fn local_convergence_does_not_require_a_default_remote() {
         let temp = tempdir().unwrap();
         init_repo(&InitRequest {
             root: temp.path().to_path_buf(),
@@ -1325,7 +1353,6 @@ mod tests {
                 "default_line": "main",
                 "current_line": "main",
                 "default_remote": null,
-                "workflow_mode": "solo_remote",
                 "workflow_default_scope": "remote",
                 "task_default_scope": "remote",
                 "change_default_scope": "remote",
@@ -1344,11 +1371,10 @@ mod tests {
         })
         .unwrap();
 
-        assert_eq!(convergence["status"], "pending");
-        assert_eq!(convergence["reason"], "no_default_remote");
-        assert!(!executed);
+        assert_eq!(convergence["status"], "synced");
+        assert!(executed);
         let agents = fs::read_to_string(temp.path().join("AGENTS.md")).unwrap();
-        assert!(agents.contains("Route: mode=`solo_remote`; sprint=`on`; scope=`remote`"));
-        assert!(agents.contains("remote=`unset` (required by `solo_remote`)"));
+        assert!(agents.contains("Route: sprint=`on`; scope=`local`"));
+        assert!(!agents.contains("required by `solo_remote`"));
     }
 }

@@ -11,7 +11,7 @@ use crate::runtime::{
     AgentRuntimeBackend, AgentRuntimeBindingStore, SelectedAitRuntimeBackend,
     AGENT_RUNTIME_BACKEND_CONTRACT,
 };
-use crate::transport_config::{AgentRuntimeMode, AgentRuntimeTarget, AgentWorkflowMode};
+use crate::transport_config::{AgentRuntimeMode, AgentRuntimeTarget};
 
 const CONTRACT: &str = "ait_agent_core.event_loop.TelegramCommandRuntimeExecution.v1";
 const MIGRATION_STAGE: &str = "rust_agent_telegram_command_runtime_execution";
@@ -156,7 +156,6 @@ impl<B> SelectedBackendTelegramCommandRuntimeReadPort<B> {
     fn target_payload_for(target: &AgentRuntimeTarget) -> JsonValue {
         let mut payload = json!({
             "mode": target.mode.as_str(),
-            "workflow_mode": target.workflow_mode.as_str(),
             "repo_name": target.repo_name,
         });
         match target.mode {
@@ -226,18 +225,13 @@ where
     B: AgentRuntimeBackend + Send + Sync + 'static,
 {
     fn read_workflow_notification(&self) -> Result<JsonValue, String> {
-        if self.target.workflow_mode != AgentWorkflowMode::SoloLocal {
+        if self.target.mode == AgentRuntimeMode::Remote {
             return notification_payload_with_source(self.read_task_queue()?, "remote_queue");
-        }
-        if self.target.mode != AgentRuntimeMode::Local {
-            return Err(
-                "solo_local workflow notifications require a local runtime target".to_string(),
-            );
         }
         if self.target.server_url.is_some() {
             let mut remote_target = self.target.clone();
             remote_target.mode = AgentRuntimeMode::Remote;
-            if let Ok(payload) = self.read_object_for(&remote_target, "read_task_queue", json!({}))
+            if let Ok(payload) = self.read_object_for(&remote_target, "probe_task_queue", json!({}))
             {
                 return notification_payload_with_source(payload, "remote_queue");
             }
@@ -1302,7 +1296,7 @@ fn execution_error(
 }
 
 #[cfg(test)]
-mod solo_local_workflow_notification_tests {
+mod local_workflow_notification_tests {
     use std::path::PathBuf;
     use std::sync::Mutex;
 
@@ -1367,14 +1361,9 @@ mod solo_local_workflow_notification_tests {
         }
     }
 
-    fn target(
-        workflow_mode: AgentWorkflowMode,
-        mode: AgentRuntimeMode,
-        with_server: bool,
-    ) -> AgentRuntimeTarget {
+    fn target(mode: AgentRuntimeMode, with_server: bool) -> AgentRuntimeTarget {
         AgentRuntimeTarget {
             mode,
-            workflow_mode,
             repo_name: "fixture".to_string(),
             repo_root: PathBuf::from("/tmp/fixture"),
             remote_name: with_server.then(|| "origin".to_string()),
@@ -1383,10 +1372,10 @@ mod solo_local_workflow_notification_tests {
     }
 
     #[test]
-    fn solo_local_prefers_optional_server_and_falls_back_to_one_local_current_item() {
+    fn local_notification_prefers_optional_server_and_falls_back_to_one_local_current_item() {
         let connected_backend = HybridBackend::new(true);
         let connected = SelectedBackendTelegramCommandRuntimeReadPort::with_backend(
-            target(AgentWorkflowMode::SoloLocal, AgentRuntimeMode::Local, true),
+            target(AgentRuntimeMode::Local, true),
             Some(1.0),
             connected_backend,
         );
@@ -1402,7 +1391,7 @@ mod solo_local_workflow_notification_tests {
 
         let disconnected_backend = HybridBackend::new(false);
         let disconnected = SelectedBackendTelegramCommandRuntimeReadPort::with_backend(
-            target(AgentWorkflowMode::SoloLocal, AgentRuntimeMode::Local, true),
+            target(AgentRuntimeMode::Local, true),
             Some(1.0),
             disconnected_backend,
         );
@@ -1414,12 +1403,13 @@ mod solo_local_workflow_notification_tests {
         let requests = disconnected.backend.requests.lock().unwrap();
         assert_eq!(requests.len(), 2);
         assert_eq!(requests[0]["target"]["mode"], "remote");
+        assert_eq!(requests[0]["operation"], "probe_task_queue");
         assert_eq!(requests[1]["target"]["mode"], "local");
         assert_eq!(requests[1]["operation"], "read_current_workflow");
 
         let local_only_backend = HybridBackend::new(false);
         let local_only = SelectedBackendTelegramCommandRuntimeReadPort::with_backend(
-            target(AgentWorkflowMode::SoloLocal, AgentRuntimeMode::Local, false),
+            target(AgentRuntimeMode::Local, false),
             None,
             local_only_backend,
         );
@@ -1431,14 +1421,10 @@ mod solo_local_workflow_notification_tests {
     }
 
     #[test]
-    fn remote_workflow_modes_never_use_the_solo_local_fallback() {
+    fn required_remote_reads_never_use_the_local_fallback() {
         let backend = HybridBackend::new(false);
         let reader = SelectedBackendTelegramCommandRuntimeReadPort::with_backend(
-            target(
-                AgentWorkflowMode::SoloRemote,
-                AgentRuntimeMode::Remote,
-                true,
-            ),
+            target(AgentRuntimeMode::Remote, true),
             Some(1.0),
             backend,
         );

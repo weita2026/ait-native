@@ -28,12 +28,12 @@ fn root_command_inventory_is_frozen() {
         visible,
         [
             "init", "line", "git", "blame", "doctor", "queue", "remote", "release", "repo",
-            "config", "external", "status", "diff", "pull", "push", "gc", "stash", "plan", "task",
-            "snapshot", "commit", "tag", "patchset", "review", "attest", "policy", "worktree",
-            "workflow",
+            "config", "team", "external", "status", "diff", "pull", "push", "gc", "stash", "plan",
+            "task", "snapshot", "commit", "tag", "patchset", "review", "attest", "policy",
+            "worktree", "workflow",
         ]
     );
-    assert_eq!(visible.len(), 28);
+    assert_eq!(visible.len(), 29);
     assert!(!visible.contains(&"agent"));
     assert!(!visible.contains(&"branch"));
 
@@ -108,7 +108,6 @@ fn every_identity_bearing_command_advertises_its_owning_resource() {
         &["task", "finish"],
         &["task", "abandon"],
         &["change", "create"],
-        &["change", "show"],
         &["change", "revert"],
         &["change", "replay"],
         &["change", "close"],
@@ -134,6 +133,14 @@ fn every_identity_bearing_command_advertises_its_owning_resource() {
             path.join(" ")
         );
     }
+
+    let change_show = help(&["change", "show"]);
+    assert!(change_show.contains("<TASK_ID[/C-##]>"), "{change_show}");
+    assert!(
+        change_show.contains("A Task alone requires exactly one retained Change"),
+        "{change_show}"
+    );
+    assert!(!change_show.contains("<PATCHSET_ID>"), "{change_show}");
 
     let patchset_commands: &[&[&str]] = &[
         &["patchset", "show"],
@@ -603,7 +610,7 @@ fn compact_agent_action_projections_keep_only_next_step_evidence() {
     assert_eq!(snapshot["command"], "snapshot.create");
     assert_eq!(snapshot["snapshot_id"], "SNP-BBBB2222");
     assert_eq!(snapshot["task_id"], "LCT-1");
-    assert!(snapshot.get("change_id").is_none());
+    assert_eq!(snapshot["change_id"], "LCT-1/C-01");
     assert!(snapshot.get("change_ref").is_none());
     assert!(snapshot.get("files").is_none());
     assert!(snapshot.get("phase_timings_ms").is_none());
@@ -662,7 +669,7 @@ fn compact_agent_action_projections_keep_only_next_step_evidence() {
 
     let remote_finished = compact_task_finish_payload(&json!({
         "task_land_contract": {"scope": "remote"},
-        "closeout_status": "execution_complete_plan_separate"
+        "closeout_status": "complete"
     }));
     assert_eq!(remote_finished["mode"], "remote");
     assert_eq!(remote_finished["ok"], true);
@@ -1017,8 +1024,8 @@ fn config_parser_exposes_only_the_admitted_set_and_unset_surface() {
         "ait-cli",
         "config",
         "set",
-        "--workflow-mode",
-        "solo_local",
+        "--agent-teams",
+        "enabled",
         "--sprint",
         "off",
         "--default-author-mode",
@@ -1046,7 +1053,7 @@ fn config_parser_exposes_only_the_admitted_set_and_unset_surface() {
     else {
         panic!("expected config set command");
     };
-    assert_eq!(args.workflow_mode, Some(ConfigWorkflowModeArg::SoloLocal));
+    assert_eq!(args.agent_teams.as_deref(), Some("enabled"));
     assert_eq!(args.sprint, Some(ConfigToggleArg::Off));
     assert_eq!(
         args.default_author_mode,
@@ -1062,9 +1069,10 @@ fn config_parser_exposes_only_the_admitted_set_and_unset_surface() {
     assert!(args.json);
 
     let request = ConfigSetRequest {
+        agent_teams: args.agent_teams,
+        agent_team_size: args.agent_team_size,
         plan_language: args.plan_language,
         plan_style: args.plan_style,
-        workflow_mode: args.workflow_mode.map(|value| value.as_str().to_string()),
         sprint: args.sprint.map(|value| value.as_str().to_string()),
         default_author_mode: args
             .default_author_mode
@@ -1081,7 +1089,7 @@ fn config_parser_exposes_only_the_admitted_set_and_unset_surface() {
     assert_eq!(
         request.updated_keys(),
         vec![
-            "workflow-mode",
+            "agent-teams",
             "sprint",
             "default-author-mode",
             "default-model",
@@ -1095,11 +1103,11 @@ fn config_parser_exposes_only_the_admitted_set_and_unset_surface() {
     );
     assert_eq!(
         ConfigSetRequest {
-            workflow_mode: Some("solo_local".to_string()),
+            agent_teams: Some("enabled".to_string()),
             ..ConfigSetRequest::default()
         }
         .updated_keys(),
-        vec!["workflow-mode", "sprint"]
+        vec!["agent-teams"]
     );
 
     for (raw, expected) in [
@@ -1221,7 +1229,7 @@ fn config_help_documents_the_complete_public_contract() {
         .expect("config set help")
         .to_string();
     for option in [
-        "--workflow-mode",
+        "--agent-teams",
         "--sprint",
         "--default-author-mode",
         "--default-model",
@@ -1236,9 +1244,8 @@ fn config_help_documents_the_complete_public_contract() {
         assert!(set_help.contains(option), "missing {option}: {set_help}");
     }
     for value in [
-        "solo_local",
-        "solo_remote",
-        "team_remote",
+        "enabled",
+        "disabled",
         "human_only",
         "human_with_ai_assist",
         "ai_with_human_review",
@@ -1558,6 +1565,132 @@ fn workflow_ready_parser_requires_apply_for_every_mutation_input() {
 }
 
 #[test]
+fn workflow_json_is_optional_full_requires_json_and_identity_is_explicit() {
+    for phase in ["ready", "finish"] {
+        let parsed = Cli::try_parse_from([
+            "ait",
+            "workflow",
+            phase,
+            "RCT-1",
+            "--json",
+            "--full",
+            "--expected-identity",
+            "candidate.json",
+            "--remote",
+            "review",
+        ]);
+        assert!(parsed.is_ok(), "{phase}: JSON/full/identity must parse");
+        assert!(Cli::try_parse_from(["ait", "workflow", phase, "RCT-1", "--full"]).is_err());
+        assert!(Cli::try_parse_from(["ait", "workflow", phase, "RCT-1"]).is_ok());
+    }
+}
+
+#[test]
+fn workflow_guarded_finish_never_runs_unguarded_automatic_reconciliation() {
+    assert!(workflow_finish_should_reconcile(true, false));
+    assert!(!workflow_finish_should_reconcile(true, true));
+    assert!(!workflow_finish_should_reconcile(false, false));
+    assert!(!workflow_finish_should_reconcile(false, true));
+}
+
+#[test]
+fn workflow_identity_file_parser_preserves_package_pin_without_downgrading_to_formal_workflow() {
+    let temp = TempDir::new().unwrap();
+    let path = temp.path().join("identity.json");
+    let expected = json!({"repository_index":0,"package_hash":"ab".repeat(32),"worker_job_index":0,
+        "base_snapshot_id":"SNP-000000000001","revision_snapshot_id":"SNP-000000000002"});
+    fs::write(&path, expected.to_string()).unwrap();
+    let parsed = read_workflow_expected_identity_input(Some(&path))
+        .unwrap()
+        .unwrap();
+    let ait_core::workflow_expected_identity::WorkflowExpectedIdentityInput::Package(identity) =
+        parsed
+    else {
+        panic!("package identity")
+    };
+    assert_eq!(identity.to_value(), expected);
+    assert!(read_workflow_expected_identity(Some(&path))
+        .unwrap_err()
+        .contains("formal-Patchset"));
+    let legacy = json!({"repository_index":0,"patchset_id":"RCT-1/P-01","base_snapshot_id":"B","revision_snapshot_id":"R"});
+    fs::write(&path, legacy.to_string()).unwrap();
+    assert_eq!(
+        read_workflow_expected_identity(Some(&path))
+            .unwrap()
+            .unwrap()
+            .patchset_id,
+        "RCT-1/P-01"
+    );
+}
+
+#[test]
+fn workflow_compact_json_preserves_native_action_identity_and_named_remote() {
+    let mut payload = json!({
+        "apply_status":"stopped", "task":{"task_id":"RCT-1"},
+        "change":{"status":"review"},
+        "identity":{"repository_index":7,"patchset_id":"RCT-1/C-01/P-02","revision_snapshot_id":"R","base_snapshot_id":"B"},
+        "next_action":{"code":"record_code_review_summary","command":"ait workflow finish RCT-1/C-01 --apply --remote review"},
+        "apply_stopped_reason":"review required"
+    });
+    let compact = compact_workflow_payload(&payload, "finish", "LCT-8", Some("review"));
+    assert_eq!(compact["ok"], false);
+    assert_eq!(compact["identity"], payload["identity"]);
+    assert_eq!(compact["next_action"], payload["next_action"]);
+    assert_eq!(compact["remote_name"], "review");
+    assert!(compact["evidence"]["command"]
+        .as_str()
+        .unwrap()
+        .contains("--remote review"));
+    payload["apply_status"] = json!("done");
+    payload["next_action"] = json!({"code":"done"});
+    assert_eq!(
+        compact_workflow_payload(&payload, "ready", "LCT-8", Some("review"))["ok"],
+        true
+    );
+    // Change status review is valid when the ready phase is done.
+    assert_eq!(payload["change"]["status"], "review");
+}
+
+#[test]
+fn workflow_finish_reuses_partial_closeout_projection_without_reporting_success() {
+    let payload = json!({
+        "apply_status":"done", "task_land_contract":{"scope":"remote"},
+        "task_id":"RCT-1", "task_status":"completed", "change_status":"landed",
+        "closeout_status":"partial", "patchset_id":"RCT-1/C-01/P-01",
+        "identity":{"repository_index":7,"patchset_id":"RCT-1/C-01/P-01"},
+        "closeout_recovery":{"code":"retry_cleanup","command":"ait task finish RCT-1 --remote review"},
+        "bound_worktree_cleanup":{"status":"failed","reason":"retained"}
+    });
+    let compact = compact_workflow_payload(&payload, "finish", "RCT-1", Some("review"));
+    assert_eq!(compact["ok"], false);
+    assert_eq!(compact["closeout"]["status"], "partial");
+    assert_eq!(compact["next_action"]["code"], "retry_cleanup");
+    assert_eq!(compact["identity"], payload["identity"]);
+}
+
+#[test]
+fn workflow_package_expected_identity_survives_compact_and_text_output_while_ci_is_pending() {
+    let expected = json!({"repository_index":0,"package_hash":"ab".repeat(32),"worker_job_index":0,
+        "base_snapshot_id":"SNP-000000000001","revision_snapshot_id":"SNP-000000000002"});
+    let payload = json!({"apply_status":"stopped","task":{"task_id":"LCT-8"},
+        "next_action":{"code":"waiting_for_ci"},"expected_identity":expected});
+    for phase in ["ready", "finish"] {
+        let compact = compact_workflow_payload(&payload, phase, "LCT-8", Some("origin"));
+        assert_eq!(compact["expected_identity"], expected);
+        assert_eq!(compact["ok"], false);
+        let rendered = render_workflow_phase_text(&payload, phase).unwrap();
+        let object = rendered
+            .lines()
+            .find_map(|line| line.strip_prefix("- expected_identity: "))
+            .unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(object).unwrap(),
+            expected
+        );
+    }
+}
+
+#[test]
 fn workflow_finish_replaces_land_and_exposes_only_the_remote_reviewer_contract() {
     let removed_land = Cli::try_parse_from(["ait", "workflow", "land", "RCC-1"])
         .err()
@@ -1590,12 +1723,10 @@ fn workflow_finish_replaces_land_and_exposes_only_the_remote_reviewer_contract()
         ("--license", Some("pass")),
         ("--author-mode", Some("human_only")),
         ("--model", Some("gpt-5")),
-        ("--reviewer", Some("spoofed")),
         ("--target", Some("main")),
         ("--mode", Some("direct")),
         ("--local", None),
         ("--all-completed-local", None),
-        ("--json", None),
     ] {
         let mut argv = vec!["ait", "workflow", "finish", "RCC-1", option];
         if let Some(value) = value {
@@ -1619,7 +1750,15 @@ fn workflow_finish_replaces_land_and_exposes_only_the_remote_reviewer_contract()
         .expect("Workflow finish help must render")
         .to_string();
     assert!(help.contains("Usage: ait workflow finish"), "{help}");
-    for retained in ["--apply", "--review-message", "--remote"] {
+    for retained in [
+        "--apply",
+        "--review-message",
+        "--reviewer",
+        "--remote",
+        "--json",
+        "--full",
+        "--expected-identity",
+    ] {
         assert!(help.contains(retained), "missing {retained}: {help}");
     }
     for removed in [
@@ -1631,12 +1770,10 @@ fn workflow_finish_replaces_land_and_exposes_only_the_remote_reviewer_contract()
         "--license",
         "--author-mode",
         "--model",
-        "--reviewer",
         "--target",
         "--mode",
         "--local",
         "--all-completed-local",
-        "--json",
     ] {
         assert!(
             !help.contains(removed),
@@ -2934,7 +3071,6 @@ fn remote_plan_query_carries_binary_storage_context_without_retired_backend_path
 }
 
 fn plan_scope_runtime(
-    workflow_mode: &str,
     workflow_default_scope: &str,
     default_remote: bool,
 ) -> (TempDir, RepoRuntime) {
@@ -2949,7 +3085,6 @@ fn plan_scope_runtime(
         &format!(
             r#"{{
   "repo_name": "fixture",
-  "workflow_mode": "{workflow_mode}",
   "workflow_default_scope": "{workflow_default_scope}",
   "task_default_scope": "{workflow_default_scope}",
   "change_default_scope": "{workflow_default_scope}",
@@ -2989,7 +3124,6 @@ fn plan_sync_test_args(local: bool, remote: Option<&str>) -> SyncArgs {
         prune: false,
         local,
         remote: remote.map(str::to_string),
-        rebase: false,
         reconcile: false,
         json: true,
     }
@@ -2997,7 +3131,7 @@ fn plan_sync_test_args(local: bool, remote: Option<&str>) -> SyncArgs {
 
 #[test]
 fn plan_scope_builders_follow_workflow_defaults_and_explicit_overrides() {
-    let (_local_temp, local_repo) = plan_scope_runtime("solo_local", "local", true);
+    let (_local_temp, local_repo) = plan_scope_runtime("local", true);
     let local_default = plan_query_payload(&local_repo, false, None).unwrap();
     assert_eq!(local_default["scope"], "local");
     assert!(local_default.get("base_url").is_none());
@@ -3006,11 +3140,10 @@ fn plan_scope_builders_follow_workflow_defaults_and_explicit_overrides() {
     assert_eq!(local_remote_override["scope"], "remote");
     assert_eq!(local_remote_override["remote"], "origin");
 
-    let (_remote_temp, remote_repo) = plan_scope_runtime("solo_remote", "remote", true);
+    let (_remote_temp, remote_repo) = plan_scope_runtime("remote", true);
     let remote_default = plan_query_payload(&remote_repo, false, None).unwrap();
-    assert_eq!(remote_default["scope"], "remote");
-    assert_eq!(remote_default["remote"], "origin");
-    assert_eq!(remote_default["base_url"], "http://example.test/fixture");
+    assert_eq!(remote_default["scope"], "local");
+    assert!(remote_default.get("base_url").is_none());
 
     let remote_local_override = plan_query_payload(&remote_repo, true, None).unwrap();
     assert_eq!(remote_local_override["scope"], "local");
@@ -3021,7 +3154,7 @@ fn plan_scope_builders_follow_workflow_defaults_and_explicit_overrides() {
             &remote_repo,
             &CandidatesArgs {
                 local: false,
-                remote: None,
+                remote: Some("origin".into()),
                 include_all: true,
                 contains: Some("alpha,beta".to_string()),
                 json: true,
@@ -3035,7 +3168,7 @@ fn plan_scope_builders_follow_workflow_defaults_and_explicit_overrides() {
     assert_eq!(candidates["contains_terms"], json!(["alpha", "beta"]));
 
     let remote_sync = parse_value_error_string(
-        &build_sync_request(&remote_repo, &plan_sync_test_args(false, None)).unwrap(),
+        &build_sync_request(&remote_repo, &plan_sync_test_args(false, Some("origin"))).unwrap(),
     )
     .unwrap();
     assert_eq!(remote_sync["local"], false);
@@ -3052,11 +3185,30 @@ fn plan_scope_builders_follow_workflow_defaults_and_explicit_overrides() {
 }
 
 #[test]
+fn plan_sync_request_carries_the_effective_config_pair_without_actor_cache() {
+    let (_temp, mut repo) = plan_scope_runtime("remote", true);
+    repo.config.insert("user_name".into(), json!(" Alice "));
+    repo.config
+        .insert("user_email".into(), json!(" A@Example "));
+    let payload = parse_value_error_string(
+        &build_sync_request(&repo, &plan_sync_test_args(false, Some("origin"))).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(payload["user_name"], " Alice ");
+    assert_eq!(payload["user_email"], " A@Example ");
+    assert!(payload.get("actor_key_index").is_none());
+}
+
+#[test]
 fn plan_sync_from_a_worktree_reads_artifacts_from_workspace_and_keeps_authority_canonical() {
     let temp = TempDir::new().unwrap();
     let authoritative_root = temp.path().join("canonical");
     let worktree_root = temp.path().join("worktree");
     fs::create_dir_all(&authoritative_root).unwrap();
+    fs::create_dir_all(&worktree_root).unwrap();
+    // macOS temporary paths may enter through /var's alias of /private/var.
+    let authoritative_root = authoritative_root.canonicalize().unwrap();
+    let worktree_root = worktree_root.canonicalize().unwrap();
     init_cmd(&InitRequest {
         root: authoritative_root.clone(),
         name: Some("fixture".to_string()),
@@ -3148,37 +3300,85 @@ fn plan_sync_from_a_worktree_reads_artifacts_from_workspace_and_keeps_authority_
 }
 
 #[test]
+fn duplicate_role_index_stops_file_and_directory_plan_sync_before_revision_write() {
+    let temp = TempDir::new().unwrap();
+    let root = temp.path();
+    init_cmd(&InitRequest {
+        root: root.to_path_buf(),
+        name: Some("fixture".to_string()),
+        default_line: "main".to_string(),
+        policy_profile: "prototype".to_string(),
+        default_author_mode: "ai_with_human_review".to_string(),
+        default_model: None,
+        repair_existing: false,
+    })
+    .unwrap();
+    let roles = root.join("docs/roles");
+    fs::create_dir_all(&roles).unwrap();
+    let original = roles.join("1_Developer.md");
+    fs::write(&original, "# Developer\n\nFirst revision.\n").unwrap();
+    let repo = RepoRuntime::discover_from_path(root).unwrap();
+    let mut args = plan_sync_test_args(true, None);
+    args.target = PathBuf::from("docs/roles/1_Developer.md");
+    let request = build_sync_request(&repo, &args).unwrap();
+    let initial = execute_plan_sync_command_request_json(&request).unwrap();
+    assert_eq!(initial["status"], "ok", "{initial}");
+    assert_eq!(initial["results"][0]["action"], "created");
+
+    fs::write(&original, "# Developer\n\nSecond revision.\n").unwrap();
+    let alias = roles.join("01_Designer.md");
+    fs::write(&alias, "# Designer\n").unwrap();
+    for target in ["docs/roles/1_Developer.md", "docs/roles"] {
+        args.target = PathBuf::from(target);
+        let failed =
+            execute_plan_sync_command_request_json(&build_sync_request(&repo, &args).unwrap())
+                .unwrap();
+        assert_eq!(failed["status"], "failed", "{failed}");
+        assert!(failed["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("Duplicate role index 1"));
+        assert!(failed["results"].as_array().unwrap().is_empty());
+    }
+
+    fs::create_dir_all(root.join("docs/notes")).unwrap();
+    fs::write(root.join("docs/notes/unrelated.md"), "# Unrelated\n").unwrap();
+    args.target = PathBuf::from("docs/notes/unrelated.md");
+    let unrelated =
+        execute_plan_sync_command_request_json(&build_sync_request(&repo, &args).unwrap()).unwrap();
+    assert_eq!(unrelated["status"], "ok", "{unrelated}");
+
+    fs::remove_file(alias).unwrap();
+    args.target = PathBuf::from("docs/roles/1_Developer.md");
+    let after =
+        execute_plan_sync_command_request_json(&build_sync_request(&repo, &args).unwrap()).unwrap();
+    assert_eq!(after["status"], "ok", "{after}");
+    assert_eq!(after["results"][0]["action"], "updated", "{after}");
+    assert_ne!(
+        after["results"][0]["plan_revision_id"],
+        initial["results"][0]["plan_revision_id"]
+    );
+    let retry =
+        execute_plan_sync_command_request_json(&build_sync_request(&repo, &args).unwrap()).unwrap();
+    assert_eq!(retry["status"], "ok", "{retry}");
+    assert_eq!(
+        retry["results"][0]["plan_revision_id"],
+        after["results"][0]["plan_revision_id"]
+    );
+}
+
+#[test]
 fn remote_default_plan_scope_without_a_default_remote_fails_closed() {
-    let (_temp, repo) = plan_scope_runtime("solo_remote", "remote", false);
-    let query_error = plan_query_payload(&repo, false, None).unwrap_err();
-    assert!(
-        query_error.contains("No remote configured"),
-        "{query_error}"
+    let (_temp, repo) = plan_scope_runtime("remote", false);
+    assert_eq!(
+        plan_query_payload(&repo, false, None).unwrap()["scope"],
+        "local"
     );
-
-    let candidates_error = build_candidates_request(
-        &repo,
-        &CandidatesArgs {
-            local: false,
-            remote: None,
-            include_all: false,
-            contains: None,
-            json: true,
-        },
-    )
-    .unwrap_err();
-    assert!(
-        candidates_error.contains("No remote configured"),
-        "{candidates_error}"
-    );
-
-    let sync_error = build_sync_request(&repo, &plan_sync_test_args(false, None)).unwrap_err();
-    assert!(sync_error.contains("No remote configured"), "{sync_error}");
-
-    let empty_remote = plan_query_payload(&repo, false, Some("  ")).unwrap_err();
-    assert!(
-        empty_remote.contains("requires a non-empty remote name"),
-        "{empty_remote}"
+    assert!(build_sync_request(&repo, &plan_sync_test_args(false, None)).is_ok());
+    assert!(plan_query_payload(&repo, false, Some("  ")).is_err());
+    assert_eq!(
+        plan_query_payload(&repo, false, Some("origin")).unwrap()["scope"],
+        "remote"
     );
 }
 
@@ -3199,14 +3399,6 @@ fn plan_parser_rejects_scope_retry_and_human_expansion_conflicts() {
             "--remote",
             "origin",
         ],
-        vec![
-            "ait",
-            "plan",
-            "sync",
-            "docs/plan.md",
-            "--rebase",
-            "--reconcile",
-        ],
         vec!["ait", "plan", "list", "--all", "--json"],
         vec!["ait", "plan", "revisions", "PR-1", "--all", "--json"],
     ] {
@@ -3220,8 +3412,15 @@ fn plan_parser_rejects_scope_retry_and_human_expansion_conflicts() {
         );
     }
 
-    Cli::try_parse_from(["ait", "plan", "sync", "docs/plan.md", "--rebase"])
-        .expect("effective solo_remote scope can satisfy --rebase at runtime");
+    let removed = Cli::try_parse_from(["ait", "plan", "sync", "docs/plan.md", "--rebase"])
+        .err()
+        .expect("removed flag");
+    assert_eq!(removed.kind(), clap::error::ErrorKind::UnknownArgument);
+    for flags in [vec!["--local"], vec!["--remote", "origin"]] {
+        let mut argv = vec!["ait", "plan", "sync", "docs/plan.md"];
+        argv.extend(flags);
+        Cli::try_parse_from(argv).expect("normal sync needs no recovery switch");
+    }
 }
 
 #[test]
@@ -3231,8 +3430,8 @@ fn plan_help_documents_every_public_subcommand_and_option_contract() {
         .expect("help should be rendered")
         .to_string();
     for fragment in [
-        "solo_local",
-        "solo_remote",
+        "locally",
+        "--remote",
         "list",
         "show",
         "revisions",
@@ -3295,10 +3494,9 @@ fn plan_help_documents_every_public_subcommand_and_option_contract() {
                 "--prune",
                 "--local",
                 "--remote",
-                "--rebase",
-                "--reconcile",
+                "automatically rebase",
                 "--json",
-                "solo_remote",
+                "local Plan",
                 "Snapshot",
                 "Line",
             ],
@@ -3428,7 +3626,7 @@ fn task_workflow_text_projects_only_generated_commands_and_preserves_exact_evide
 }
 
 #[test]
-fn remote_task_finish_render_surfaces_separate_plan_sync_action() {
+fn remote_task_finish_render_surfaces_automatic_plan_sync() {
     let rendered = render_task_finish_text(&json!({
         "change": {
             "change_id": "RCT-1/C-01",
@@ -3445,10 +3643,9 @@ fn remote_task_finish_render_surfaces_separate_plan_sync_action() {
             "line_name": "feature/rct-1"
         },
         "plan_checklist_closeout": {
-            "status": "deferred",
-            "reason": "remote_plan_sync_is_separate_from_task_land",
-            "detail": "Remote task finish completed without reading or synchronizing Plan state.",
-            "command": "ait plan sync <bound-sprint-card-path> --remote origin"
+            "status": "synced",
+            "reason": "checklist_closed",
+            "artifact_path": "docs/sprints/remote.md"
         }
     }))
     .unwrap();
@@ -3457,12 +3654,10 @@ fn remote_task_finish_render_surfaces_separate_plan_sync_action() {
     assert!(rendered.contains("Feature Line closeout"));
     assert!(rendered.contains("- archived: feature/rct-1"));
     assert!(rendered.contains("Sprint checklist closeout"));
-    assert!(rendered.contains("- deferred"));
-    assert!(rendered.contains("reason: remote plan sync is separate from task finish"));
+    assert!(rendered.contains("- synced"));
+    assert!(rendered.contains("reason: checklist closed"));
     assert!(!rendered.contains("task_land"));
-    assert!(rendered
-        .contains("Remote task finish completed without reading or synchronizing Plan state."));
-    assert!(rendered.contains("ait plan sync <bound-sprint-card-path> --remote origin"));
+    assert!(!rendered.contains("ait plan sync <bound-sprint-card-path>"));
 }
 
 #[test]
@@ -3773,10 +3968,12 @@ fn change_help_explains_retained_behavior_and_hides_compatibility_inputs() {
 
     let create = help(Some("create"));
     assert!(
-        create.contains("defaults to the bound worktree target Line"),
+        create.contains("local revisions default to the current Task Line"),
         "{create}"
     );
     assert!(create.contains("--base-line <LINE>"), "{create}");
+    assert!(create.contains("--fork-snapshot <SNAPSHOT>"), "{create}");
+    assert!(create.contains("Exact reviewed Task Snapshot"), "{create}");
 
     let list = help(Some("list"));
     assert!(
@@ -4663,7 +4860,7 @@ fn worktree_help_documents_every_public_command_and_option_contract() {
             &["recreate"],
             &[
                 "Task-bound worktree",
-                "selected remote Patchset revision",
+                "current remote Patchset revision",
                 "--dry-run",
                 "--json",
             ],
@@ -4912,7 +5109,7 @@ fn patchset_parser_uses_task_for_ownership_and_patchset_for_revision_operations(
     let help_cases = [
         ("list", "<TASK_ID>", "without modifying"),
         ("show", "<PATCHSET_ID>", "TASK_ID/P-##"),
-        ("select", "<PATCHSET_ID>", "current revision"),
+        ("select", "<PATCHSET_ID>", "without selection writes"),
         ("ci-status", "<PATCHSET_ID>", "10 most recent"),
         ("rerun-ci", "<PATCHSET_ID>", "manual_rerun"),
     ];
@@ -5342,11 +5539,11 @@ fn release_native_bundle_parser_requires_explicit_matrix_directory() {
 }
 
 #[test]
-fn review_team_command_rejects_non_team_remote_mode() {
+fn review_team_command_rejects_disabled_teams() {
     let temp = TempDir::new().unwrap();
     write_runtime_config(
         temp.path(),
-        r#"{"repo_name":"fixture","workflow_mode":"solo_remote","workflow_default_scope":"remote","task_default_scope":"remote","change_default_scope":"remote"}"#,
+        r#"{"repo_name":"fixture","workflow_default_scope":"remote","task_default_scope":"remote","change_default_scope":"remote"}"#,
     );
     let repo = RepoRuntime::discover_from_path(temp.path()).unwrap();
     let result = run_review(
@@ -5366,7 +5563,7 @@ fn review_team_command_rejects_non_team_remote_mode() {
     assert!(result
         .err()
         .unwrap()
-        .contains("only available when `workflow_mode=team_remote`"));
+        .contains("only available when Agent Teams is enabled"));
 }
 
 #[test]
@@ -5377,6 +5574,8 @@ fn review_parser_enforces_exact_ai_and_task_review_identity_contracts() {
         "code",
         "submit",
         "RCT-1",
+        "--reviewer",
+        "Einstein",
         "--patchset",
         "RCP-1",
         "--message",
@@ -5396,6 +5595,7 @@ fn review_parser_enforces_exact_ai_and_task_review_identity_contracts() {
         panic!("expected review code submit");
     };
     assert_eq!(args.change_id, "RCT-1");
+    assert_eq!(args.reviewer.as_deref(), Some("Einstein"));
     assert_eq!(args.patchset_id, "RCP-1");
     assert_eq!(args.remote.as_deref(), Some("origin"));
     assert!(args.json);
@@ -5448,19 +5648,6 @@ fn review_parser_enforces_exact_ai_and_task_review_identity_contracts() {
             "summary",
             "--verdict",
             "pass",
-        ],
-        vec![
-            "ait-cli",
-            "review",
-            "code",
-            "submit",
-            "RCC-1",
-            "--patchset",
-            "RCP-1",
-            "--message",
-            "summary",
-            "--reviewer",
-            "spoofed-app",
         ],
         vec![
             "ait-cli",
@@ -6051,4 +6238,177 @@ fn compact_finish_keeps_hook_setup_errors_without_hook_entries() {
     assert_eq!(result["error"], "hook lock unavailable");
     assert_eq!(result["cwd"], "/repo");
     assert!(result.get("failures").is_none());
+}
+
+#[test]
+fn team_handoff_survives_finish_projections_without_changing_exit_status() {
+    use crate::team_remote::{attach_finish_handoff, FinishScope, UnavailableCoordinatorSource};
+    for scope in [FinishScope::Local, FinishScope::Remote] {
+        for closeout in ["complete", "partial"] {
+            let mut payload = json!({
+                "mode": if scope == FinishScope::Local {"local"} else {"remote"},
+                "task_id":"LCT-1", "apply_status":"done", "task_status":"completed",
+                "closeout_status":closeout, "task_land_contract":{"scope":"remote","version":"test"},
+                "landed_snapshot_id":"SNP-1", "patchset_id":"RCT-1/P-01"
+            });
+            let exit = task_finish_exit_code(&payload);
+            let solo_compact = compact_task_finish_payload(&payload);
+            assert!(solo_compact.get("team_handoff").is_none());
+            attach_finish_handoff(
+                true,
+                std::path::Path::new("/repo"),
+                scope,
+                &mut payload,
+                &UnavailableCoordinatorSource,
+            );
+            assert_eq!(task_finish_exit_code(&payload), exit);
+            let expected = payload["team_handoff"].clone();
+            assert_eq!(
+                compact_task_finish_payload(&payload)["team_handoff"],
+                expected
+            );
+            assert_eq!(
+                compact_workflow_payload(&payload, "finish", "LCT-1", None)["team_handoff"],
+                expected
+            );
+            let text = render_task_finish_text(&payload).unwrap();
+            assert_eq!(text.matches("Handoff blocked:").count(), 1);
+            let workflow_text =
+                render_requested_workflow_text(&payload, "finish", "LCT-1").unwrap();
+            assert_eq!(workflow_text.matches("Handoff blocked:").count(), 1);
+            assert_eq!(payload["team_handoff"], expected);
+        }
+    }
+}
+
+#[test]
+fn native_team_fields_survive_ready_and_finish_without_receipt_projection() {
+    for phase in ["ready", "finish"] {
+        let payload = json!({
+            "task_id":"RT-1", "apply_status":"done","next_action":{"code":"done"},
+            "task_status":"completed","closeout_status":"complete",
+            "landed_snapshot_id":"SNP-final",
+            "identity":{"repository_index":40,"patchset_id":"RT-1/C-01/P-02",
+                "revision_snapshot_id":"SNP-final","base_snapshot_id":"SNP-base"},
+            "team_handoff":{"delivery_state":"complete","task_id":"RT-1",
+                "coordinator":{"session_id":"session-newton"}},
+            "team_finish_log":{"status":"synced"},
+            "team_receipt":{"stale":"must not project"},
+        });
+        let workflow = compact_workflow_payload(&payload, phase, "RT-1", Some("origin"));
+        assert!(workflow.get("team_receipt").is_none());
+        assert_eq!(
+            workflow["team_handoff"]["coordinator"]["session_id"],
+            "session-newton"
+        );
+        assert_eq!(workflow["team_finish_log"]["status"], "synced");
+        assert_eq!(workflow["identity"]["patchset_id"], "RT-1/C-01/P-02");
+        let finish = compact_task_finish_payload(&payload);
+        assert!(finish.get("team_receipt").is_none());
+        assert_eq!(finish["closeout"]["status"], "complete");
+        assert_eq!(finish["landed_snapshot_id"], "SNP-final");
+        assert_eq!(task_finish_exit_code(&payload), 0);
+    }
+}
+
+#[test]
+fn team_finish_log_is_visible_in_compact_and_text_output() {
+    let mut payload = json!({"apply_status":"done","task_status":"completed","task_id":"RT-1","team_finish_log":{"status":"pending","error":"sync offline"}});
+    crate::task_land_contract::attach_task_land_contract(&mut payload, false);
+    assert_eq!(
+        compact_task_finish_payload(&payload)["team_finish_log"]["status"],
+        "pending"
+    );
+    assert_eq!(
+        compact_workflow_payload(&payload, "finish", "RT-1", Some("origin"))["team_finish_log"]
+            ["status"],
+        "pending"
+    );
+    assert!(render_task_finish_text(&payload)
+        .unwrap()
+        .contains("sync offline"));
+    assert!(render_requested_workflow_text(&payload, "finish", "RT-1")
+        .unwrap()
+        .contains("Team sprint log"));
+    payload.as_object_mut().unwrap().remove("team_finish_log");
+    assert!(compact_task_finish_payload(&payload)
+        .get("team_finish_log")
+        .is_none());
+    assert!(!render_task_finish_text(&payload)
+        .unwrap()
+        .contains("Team sprint log"));
+}
+
+#[test]
+fn agent_team_count_defaults_to_eight_only_when_option_is_present() {
+    for retired in ["--agent-team-size", "--workflow-mode"] {
+        assert!(Cli::try_parse_from(["ait-cli", "config", "set", retired, "4"]).is_err());
+    }
+    let parsed =
+        Cli::try_parse_from(["ait-cli", "config", "set", "--agent-teams", "enabled"]).unwrap();
+    let Commands::Config {
+        command: ConfigCommand::Set(args),
+    } = parsed.command
+    else {
+        panic!("config set")
+    };
+    assert_eq!(args.agent_teams.as_deref(), Some("enabled"));
+    assert!(args.agent_team_size.is_none());
+}
+
+#[test]
+fn package_task_review_selector_requires_absolute_path_and_strict_package_identity() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("package identity.json");
+    let identity = json!({"repository_index":0,"package_hash":"ab".repeat(32),"worker_job_index":0,"base_snapshot_id":"SNP-000000000001","revision_snapshot_id":"SNP-000000000002"});
+    std::fs::write(&path, identity.to_string()).unwrap();
+    let selector = format!("@{}", path.display());
+    assert_eq!(
+        read_package_review_identity(&selector)
+            .unwrap()
+            .unwrap()
+            .to_value(),
+        identity
+    );
+    for operation in ["approve", "request-changes", "comment", "defer"] {
+        assert!(Cli::try_parse_from([
+            "ait-cli",
+            "review",
+            "task",
+            operation,
+            "LT-0001",
+            "--patchset",
+            &selector,
+            "--message",
+            "Validated exact package"
+        ])
+        .is_ok());
+    }
+    for invalid in [
+        "@-",
+        "@relative.json",
+        "@https://example.test/id.json",
+        " @/tmp/id.json",
+    ] {
+        assert!(
+            parse_review_patchset_selector(invalid).is_err(),
+            "{invalid}"
+        );
+    }
+    assert!(read_package_review_identity("@/nonexistent/identity.json").is_err());
+    assert!(read_package_review_identity("RT-0001/P-01")
+        .unwrap()
+        .is_none());
+    for bad in [
+        json!({"expected_identity":identity}),
+        json!({"repository_index":0,"patchset_id":"RT-0001/P-01","base_snapshot_id":"SNP-000000000001","revision_snapshot_id":"SNP-000000000002"}),
+        {
+            let mut mixed = identity.clone();
+            mixed["patchset_id"] = json!("RT-0001/P-01");
+            mixed
+        },
+    ] {
+        std::fs::write(&path, bad.to_string()).unwrap();
+        assert!(read_package_review_identity(&selector).is_err());
+    }
 }

@@ -26,7 +26,9 @@ impl RoutedBinaryWorkflowStore {
             .repositories
             .resolve_workflow_runtime(repository_index)
             .map_err(|error| error.to_string())?;
-        let store = BinaryDbServerWorkflowV0Store::new_remote_frozen(db, &namespace)?.into_arc();
+        let store = BinaryDbServerWorkflowV0Store::new_remote_frozen(db, &namespace)?
+            .with_repository_index(entry.repository_index)
+            .into_arc();
         Ok((entry.repo_name, store))
     }
 
@@ -124,6 +126,9 @@ impl RoutedBinaryWorkflowStore {
     }
 
     fn store_for_change(&self, change_id: &str) -> Result<Arc<dyn ServerWorkflowStore>, String> {
+        if !change_id.contains("/C-") {
+            return self.store_for_task(change_id);
+        }
         self.locate_store(&format!("change {change_id}"), |store| {
             store.get_change(None, change_id)
         })

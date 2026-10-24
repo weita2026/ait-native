@@ -1,10 +1,121 @@
 use super::*;
 
 #[derive(Default)]
-struct BinaryBlobReadSession {
+pub(crate) struct BinaryBlobReadSession {
     pack_readers: BTreeMap<String, crate::pack_substrate::PackEntryArchive>,
     resolved_blobs: BTreeMap<String, Vec<u8>>,
     resolving_blobs: BTreeSet<String>,
+    reader_stamps: BTreeMap<String, (u64, Option<std::time::SystemTime>)>,
+    reader_used: BTreeMap<String, u64>,
+    clock: u64,
+    chunk_budget: Option<usize>,
+    admission_stamps: Option<BTreeMap<String, (u64, Option<std::time::SystemTime>)>>,
+}
+
+impl BinaryBlobReadSession {
+    /// A command-local, fixed ceiling for strict Git history admission.
+    /// Ordinary reads keep the existing 32 MiB budget.
+    pub(crate) fn for_git_admission() -> Self {
+        Self {
+            chunk_budget: Some(256 * 1024 * 1024),
+            admission_stamps: Some(BTreeMap::new()),
+            ..Self::default()
+        }
+    }
+    /// One bounded alias batch uses the ordinary32MiB reader ceiling, while
+    /// stamps also survive eviction until both namespace appends commit.
+    pub(crate) fn for_git_alias_batch() -> Self {
+        Self {
+            admission_stamps: Some(BTreeMap::new()),
+            ..Self::default()
+        }
+    }
+    #[cfg(test)]
+    pub(crate) fn for_cache_profile(bytes: usize) -> Self {
+        assert!(bytes <= 512 * 1024 * 1024);
+        Self {
+            chunk_budget: Some(bytes),
+            ..Self::default()
+        }
+    }
+    #[cfg(test)]
+    pub(crate) fn evict_readers_for_test(&mut self) {
+        self.pack_readers.clear();
+        self.reader_stamps.clear();
+        self.reader_used.clear();
+        self.clear_logical_values();
+        // Admission stamps intentionally survive reader and chunk eviction.
+    }
+    #[cfg(test)]
+    pub(crate) fn admitted_pack_paths_for_test(&self) -> Vec<std::path::PathBuf> {
+        self.admission_stamps
+            .iter()
+            .flat_map(|s| s.keys())
+            .map(|key| std::path::PathBuf::from(key.split_once('\n').unwrap().1))
+            .collect()
+    }
+    #[cfg(test)]
+    pub(crate) fn profile_cached_chunk_bytes(&self) -> usize {
+        self.pack_readers
+            .values()
+            .map(|r| r.cached_chunk_bytes())
+            .sum()
+    }
+    #[cfg(test)]
+    pub(crate) fn logical_values_empty_for_test(&self) -> bool {
+        self.resolved_blobs.is_empty() && self.resolving_blobs.is_empty()
+    }
+    pub(crate) fn clear_logical_values(&mut self) {
+        self.resolved_blobs.clear();
+        self.resolving_blobs.clear();
+    }
+
+    /// Identity proofs never outlive the command's immutable read transaction.
+    /// Retain stamps even for evicted readers, and fail if a verified pack moves.
+    pub(crate) fn verify_admission_stamps(&self) -> StoreResult<()> {
+        for (key, expected) in self
+            .admission_stamps
+            .iter()
+            .flat_map(|stamps| stamps.iter())
+        {
+            let (_, path) = key.split_once('\n').ok_or("invalid reader key")?;
+            let meta = std::fs::metadata(path)
+                .map_err(|e| format!("verified Git pack disappeared: {e}"))?;
+            if (meta.len(), meta.modified().ok()) != *expected {
+                return Err("verified immutable Git pack changed during admission".into());
+            }
+        }
+        Ok(())
+    }
+
+    fn trim_chunks(&mut self, current: &str) {
+        const BUDGET: usize = 32 * 1024 * 1024;
+        let budget = self.chunk_budget.unwrap_or(BUDGET);
+        while self
+            .pack_readers
+            .values()
+            .map(|r| r.cached_chunk_bytes())
+            .sum::<usize>()
+            > budget
+        {
+            let oldest = self
+                .reader_used
+                .iter()
+                .filter(|(key, _)| key.as_str() != current)
+                .min_by_key(|(_, used)| **used)
+                .map(|(key, _)| key.clone());
+            if let Some(key) = oldest {
+                self.pack_readers.remove(&key);
+                self.reader_stamps.remove(&key);
+                self.reader_used.remove(&key);
+            } else {
+                if let Some(reader) = self.pack_readers.get_mut(current) {
+                    reader.clear_cached_chunks();
+                }
+                break;
+            }
+        }
+    }
 }
 
 impl<B, const WRITE_LAYOUT: u32> BinaryDbBlobStore<B, WRITE_LAYOUT>
@@ -36,7 +147,7 @@ where
         self.read_blob_bytes_for_id_with_session(read, blob_id, &mut session, 0, None)
     }
 
-    fn read_blob_bytes_for_id_with_session(
+    pub(crate) fn read_blob_bytes_for_id_with_session(
         &self,
         read: &BinaryDbReadTxn<'_, B>,
         blob_id: &str,
@@ -44,9 +155,6 @@ where
         depth: usize,
         legacy_blob_index_by_id: Option<&BTreeMap<String, u32>>,
     ) -> StoreResult<Option<Vec<u8>>> {
-        if let Some(bytes) = session.resolved_blobs.get(blob_id) {
-            return Ok(Some(bytes.clone()));
-        }
         let view = if let Some(indexes) = legacy_blob_index_by_id {
             indexes
                 .get(&blob_id.to_ascii_lowercase())
@@ -79,7 +187,7 @@ where
         self.read_blob_bytes_for_view_with_session(read, view, &mut session, depth, None)
     }
 
-    fn read_blob_bytes_for_view_with_session(
+    pub(crate) fn read_blob_bytes_for_view_with_session(
         &self,
         read: &BinaryDbReadTxn<'_, B>,
         view: &BinaryBlobView,
@@ -88,6 +196,20 @@ where
         legacy_blob_index_by_id: Option<&BTreeMap<String, u32>>,
     ) -> StoreResult<Vec<u8>> {
         if let Some(bytes) = session.resolved_blobs.get(&view.blob_id) {
+            if view.record.is_tombstone()
+                || view.record.is_pruned()
+                || bytes.len() as u64 != view.size_bytes
+                || {
+                    #[cfg(test)]
+                    crate::binary_db::read_profile::note(
+                        "cached_blob_sha256_bytes",
+                        bytes.len() as u64,
+                    );
+                    Sha256::digest(bytes).as_slice() != view.record.sha256
+                }
+            {
+                return Err(format!("cached blob {} metadata/hash mismatch", view.blob_id).into());
+            }
             return Ok(bytes.clone());
         }
         if depth > crate::pack_substrate::MAX_DELTA_CHAIN_READ_DEPTH {
@@ -154,44 +276,52 @@ where
         let pack_path = absolute_repo_path(self.repo_root(), &pack.pack_path)?;
         let pack_path_text = path_to_str(&pack_path)?.to_string();
         let pack_reader_key = format!("{}\n{}", pack.pack_format, pack_path_text);
+        // Resolve the authoritative base chain even when the immediate base has
+        // an entry in this pack: that entry may itself depend on another pack.
+        if let Some(base_blob_id) = member.base_blob_id.as_ref().filter(|id| !id.is_empty()) {
+            self.read_blob_bytes_for_id_with_session(
+                read,
+                base_blob_id,
+                session,
+                depth + 1,
+                legacy_blob_index_by_id,
+            )?
+            .ok_or_else(|| format!("missing authoritative base blob {base_blob_id}"))?;
+        }
+        let metadata = std::fs::metadata(&pack_path).map_err(|e| e.to_string())?;
+        let stamp = (metadata.len(), metadata.modified().ok());
+        if session.reader_stamps.get(&pack_reader_key) != Some(&stamp) {
+            session.pack_readers.remove(&pack_reader_key);
+        }
         if !session.pack_readers.contains_key(&pack_reader_key) {
             let reader = crate::pack_substrate::PackEntryArchive::open_with_format(
                 &pack_path_text,
                 &pack.pack_format,
             )?;
             session.pack_readers.insert(pack_reader_key.clone(), reader);
+            session.reader_stamps.insert(pack_reader_key.clone(), stamp);
         }
-        let mut base_map = BTreeMap::new();
-        if let Some(base_blob_id) = member.base_blob_id.as_ref() {
-            if !base_blob_id.is_empty() {
-                let base_entry_name = format!("blobs/{base_blob_id}");
-                let base_is_in_same_pack = session
-                    .pack_readers
-                    .get_mut(&pack_reader_key)
-                    .ok_or_else(|| format!("missing object-pack reader for {}", pack.pack_id))?
-                    .has_entry(&base_entry_name);
-                if !base_is_in_same_pack {
-                    if let Some(base) = self.read_blob_bytes_for_id_with_session(
-                        read,
-                        base_blob_id,
-                        session,
-                        depth + 1,
-                        legacy_blob_index_by_id,
-                    )? {
-                        base_map.insert(base_blob_id.clone(), base);
-                    }
+        if let Some(stamps) = &mut session.admission_stamps {
+            if let Some(previous) = stamps.insert(pack_reader_key.clone(), stamp) {
+                if previous != stamp {
+                    return Err("verified immutable Git pack changed during admission".into());
                 }
             }
         }
+        session.clock += 1;
+        session
+            .reader_used
+            .insert(pack_reader_key.clone(), session.clock);
         let bytes = session
             .pack_readers
             .get_mut(&pack_reader_key)
             .ok_or_else(|| format!("missing object-pack reader for {}", pack.pack_id))?
             .read_entry(
                 &member.entry_name,
-                (!base_map.is_empty()).then_some(&base_map),
+                Some(&session.resolved_blobs),
                 crate::pack_substrate::MAX_DELTA_CHAIN_READ_DEPTH,
             )?;
+        session.trim_chunks(&pack_reader_key);
         if u64::try_from(bytes.len()).ok() != Some(view.size_bytes) {
             return Err(format!(
                 "blob {} size mismatch: expected {}, got {}",
@@ -201,9 +331,14 @@ where
             )
             .into());
         }
-        let mut hasher = Sha256::new();
-        hasher.update(&bytes);
-        let digest = hasher.finalize();
+
+        let digest = {
+            let mut hasher = Sha256::new();
+            hasher.update(&bytes);
+            hasher.finalize()
+        };
+        #[cfg(test)]
+        crate::binary_db::read_profile::note("resolved_blob_sha256_bytes", bytes.len() as u64);
         if digest.as_slice() != view.record.sha256 {
             return Err(format!("blob {} sha256 mismatch", view.blob_id).into());
         }

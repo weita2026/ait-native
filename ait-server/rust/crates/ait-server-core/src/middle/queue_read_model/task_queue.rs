@@ -118,6 +118,9 @@ fn task_queue_entry(
     task_changes: &[&JsonMap<String, JsonValue>],
     index: &QueueIndex<'_>,
 ) -> JsonValue {
+    if task.contains_key("current_patchset_id") {
+        return task_candidate_queue_entry(task, task_changes, index);
+    }
     let mut open_changes = 0;
     let mut reviewable_changes = 0;
     let mut landed_changes = 0;
@@ -325,6 +328,64 @@ fn task_queue_entry(
         "next_action": next_action,
         "updated_at": updated_at,
     })
+}
+
+fn task_candidate_queue_entry(
+    task: &JsonMap<String, JsonValue>,
+    changes: &[&JsonMap<String, JsonValue>],
+    index: &QueueIndex<'_>,
+) -> JsonValue {
+    let candidate = index.current_task_patchset(task);
+    let id = candidate.and_then(|row| object_text(row, "patchset_id"));
+    let policy = policy_summary(id.as_deref(), index);
+    let review = review_summary(task, id.as_deref(), index);
+    let attestation = attestation_summary(id.as_deref(), index);
+    let status = object_text(task, "status").unwrap_or_default();
+    let mut state =
+        object_text(task, "workflow_state").unwrap_or_else(|| "in_progress".to_string());
+    let invalid = candidate.is_some_and(|row| {
+        row.get("withdrawn").and_then(JsonValue::as_bool) == Some(true)
+            || row.get("invalidated").and_then(JsonValue::as_bool) == Some(true)
+            || object_text(row, "publish_state").as_deref() == Some("superseded")
+    });
+    let history = candidate.is_some_and(|row| {
+        row.get("governance_authority").and_then(JsonValue::as_bool) == Some(false)
+    });
+    if status == TASK_STATUS_COMPLETED {
+        state = "completed".to_string();
+    } else if status == TASK_STATUS_ABANDONED || status == TASK_STATUS_LEGACY_CANCELED {
+        state = "abandoned".to_string();
+    } else if history {
+        state = "history".to_string();
+    } else if invalid || object_text(task, "current_patchset_id").is_some() && candidate.is_none() {
+        state = "attention_required".to_string();
+    }
+    let reason = match state.as_str() {
+        "completed" => "Task is completed.",
+        "abandoned" => "Task is abandoned.",
+        "ready_to_land" => {
+            "The current Task candidate has passed its required review and validation."
+        }
+        "in_review" => "The current Task candidate is awaiting review.",
+        "validation_pending" => "The current Task candidate is awaiting validation.",
+        "attention_required" => "The current Task candidate needs attention.",
+        "history" => "Imported local history is preserved.",
+        _ => "Continue work on the Task candidate.",
+    };
+    let terminal = matches!(state.as_str(), "completed" | "abandoned" | "history");
+    let focus=candidate.map(|row|json!({"task_id":object_text(task,"task_id"),"patchset_id":object_text(row,"patchset_id"),
+        "change_ref":object_text(row,"change_ref"),"change_id":object_text(row,"change_id"),"patchset_number":patchset_number(row),
+        "policy_decision":policy["decision"],"reason":reason}));
+    json!({"task":task,"workflow":{"state":state,"reason":reason},"current_patchset":candidate,
+        "changes":{"total":changes.len(),"open":changes.iter().filter(|row|!matches!(object_text(row,"status").as_deref(),Some("landed"|"archived"|"abandoned"|"superseded"))).count(),
+            "landed":changes.iter().filter(|row|object_text(row,"status").as_deref()==Some("landed")).count(),"patchsets":usize::from(candidate.is_some())},
+        "focus_change":null,"focus_candidate":focus,"primary_reason":reason,"primary_gate":null,
+        "policy_state":policy,"review_state":{"approvals":review.approvals,"blocking":review.blocking,"comments":review.comments},
+        "attention":{"blocking_reviews":review.blocking,"missing_attestation":usize::from(candidate.is_some()&&attestation.is_none()),
+            "ready_to_land":usize::from(state=="ready_to_land")},
+        "ci_summary":candidate.and_then(|row|row.get("ci")).cloned().unwrap_or(JsonValue::Null),
+        "next_action":{"code":if terminal {"open_history"} else {"open_task"},"label":if terminal {"Open task history"} else {"Open task"},"detail":reason,"change_id":null},
+        "updated_at":object_text(task,"updated_at")})
 }
 
 fn task_next_action(

@@ -45,26 +45,28 @@ fn workflow_ready_help_is_consumed_by_clap_without_delegate() {
         .stdout(predicate::str::contains("--snapshot-message"))
         .stdout(predicate::str::contains("--author-mode"))
         .stdout(predicate::str::contains("--remote"))
-        .stdout(predicate::str::contains("--json").not());
+        .stdout(predicate::str::contains("--json"));
 }
 
 #[test]
-fn text_only_workflow_commands_reject_json_without_parser_hints() {
+fn workflow_json_flags_parse_and_mistyped_values_fail_before_runtime() {
     let repo = make_repo();
-
     for subcommand in ["ready", "finish"] {
-        for json_arg in ["--json", "--json=true"] {
-            let mut cmd = Command::cargo_bin("ait-cli").unwrap();
-            cmd.current_dir(repo.path())
-                .args(["workflow", subcommand, "RCC-1", json_arg]);
-            cmd.assert()
-                .failure()
-                .stderr(predicate::str::contains(
-                    "unexpected argument '--json' found",
-                ))
-                .stderr(predicate::str::contains("tip:").not())
-                .stderr(predicate::str::contains("-- --json").not());
-        }
+        Command::cargo_bin("ait-cli")
+            .unwrap()
+            .current_dir(repo.path())
+            .args(["workflow", subcommand, "RCC-1", "--json", "--help"])
+            .assert()
+            .success();
+        Command::cargo_bin("ait-cli")
+            .unwrap()
+            .current_dir(repo.path())
+            .args(["workflow", subcommand, "RCC-1", "--json=true"])
+            .assert()
+            .failure()
+            .stderr(predicate::str::contains(
+                "unexpected value 'true' for '--json'",
+            ));
     }
 }
 
@@ -129,7 +131,7 @@ fn workflow_finish_help_replaces_land_without_top_level_land_or_task_complete() 
         .stdout(predicate::str::contains("--mode").not())
         .stdout(predicate::str::contains("--local").not())
         .stdout(predicate::str::contains("--all-completed-local").not())
-        .stdout(predicate::str::contains("--json").not());
+        .stdout(predicate::str::contains("--json"));
 
     let mut top_level_land_help = Command::cargo_bin("ait-cli").unwrap();
     top_level_land_help
@@ -161,9 +163,7 @@ fn task_finish_and_plan_sync_help_publish_the_same_scope_contract() {
     task_finish
         .assert()
         .success()
-        .stdout(predicate::str::contains(
-            "configured workflow mode chooses local or remote",
-        ))
+        .stdout(predicate::str::contains("Finish locally by default"))
         .stdout(predicate::str::contains(
             "Dirty local work requires --message",
         ))
@@ -184,15 +184,8 @@ fn task_finish_and_plan_sync_help_publish_the_same_scope_contract() {
         .stdout(predicate::str::contains(
             "Plan sync never creates a Snapshot or advances a Line",
         ))
-        .stdout(predicate::str::contains(
-            "solo_local saves local Plan changes",
-        ))
-        .stdout(predicate::str::contains(
-            "solo_remote updates local Plan history and publishes the changed heads",
-        ))
-        .stdout(predicate::str::contains(
-            "--local or --remote overrides that default",
-        ));
+        .stdout(predicate::str::contains("local Plan revision history"))
+        .stdout(predicate::str::contains("--remote explicitly publishes"));
 }
 
 #[test]

@@ -116,7 +116,7 @@ fn config(local_stt: bool) -> (TempDir, TelegramWorkerConfig) {
     fs::create_dir(temp.path().join(".ait")).expect("ait dir");
     fs::write(
         temp.path().join(".ait/config.json"),
-        json!({"repo_name": "input-fixture", "workflow_mode": "solo_local"}).to_string(),
+        json!({"repo_name": "input-fixture"}).to_string(),
     )
     .expect("repo config");
     let mut worker = json!({

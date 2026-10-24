@@ -54,6 +54,7 @@ dependencies = [
  "sha2 0.10.9",
  "similar",
  "tempfile",
+ "windows-sys 0.61.2",
  "zip",
  "zstd",
 ]

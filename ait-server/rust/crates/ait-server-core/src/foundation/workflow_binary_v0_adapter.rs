@@ -13,4 +13,5 @@ mod tests;
 
 pub use store::{
     validate_frozen_server_workflow_v0, validate_server_workflow_v0, BinaryDbServerWorkflowV0Store,
+    UserActorIdentity,
 };

@@ -73,6 +73,11 @@ enum Commands {
         #[command(subcommand)]
         command: ConfigCommand,
     },
+    #[command(about = "Read current Agent Teams contacts and session health.")]
+    Team {
+        #[command(subcommand)]
+        command: TeamCommand,
+    },
     #[command(
         about = "Manage reproducible external Repository dependencies.",
         long_about = "Inspect, diagnose, resolve, pin, restore, and locally link external Repository dependencies declared by ait-external.toml. Resolution writes an exact ait-external.lock; generated content is placed at each repository-relative destination declared in the manifest."
@@ -119,7 +124,7 @@ enum Commands {
     },
     #[command(
         about = "Inspect and sync local or remote Plans.",
-        long_about = "Inspect, select, and sync Plan revision history. Without --local or --remote, solo_local uses local Plans and solo_remote uses the configured default remote. Either flag explicitly overrides that default. Remote sync updates local Plan history before publishing; no Plan command creates a Snapshot or advances a Line."
+        long_about = "Inspect, select, and sync Plan revision history. Plans are saved locally by default. --remote explicitly selects a registered remote. Remote sync updates local Plan history before publishing; no Plan command creates a Snapshot or advances a Line."
     )]
     Plan {
         #[command(subcommand)]
@@ -130,7 +135,10 @@ enum Commands {
         #[command(subcommand)]
         command: TaskCommand,
     },
-    #[command(hide = true, about = "Advanced: create, inspect, publish, or close Task-owned Changes.")]
+    #[command(
+        hide = true,
+        about = "Advanced: create, inspect, publish, or close Task-owned Changes."
+    )]
     Change {
         #[command(subcommand)]
         command: ChangeCommand,
@@ -158,7 +166,7 @@ enum Commands {
     },
     #[command(
         about = "Publish and inspect remote Patchsets and their CI state.",
-        long_about = "Publish the current local Line head as a remote Patchset, inspect or select public TASK_ID/P-## Patchset references, and read or manually rerun their remote CI. Published Patchsets exist only on remotes; --remote selects a configured remote."
+        long_about = "Publish the current local Line head as a remote Patchset, inspect or validate the exact current public TASK_ID/P-## Patchset reference, and read or manually rerun their remote CI. Published Patchsets exist only on remotes; --remote selects a configured remote."
     )]
     Patchset {
         #[command(subcommand)]
@@ -197,8 +205,58 @@ enum Commands {
 }
 
 #[derive(Subcommand)]
+enum TeamCommand {
+    #[command(about = "Prepare an existing team member session without starting work.")]
+    Session {
+        #[command(subcommand)]
+        command: TeamSessionCommand,
+    },
+
+    #[command(about = "Read current local bindings and check native session availability without changing sessions.")]
+    Contacts {
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum TeamSessionCommand {
+    #[command(about = "Acknowledge the current conversation's offered role and verify its activation metadata.")]
+    Acknowledge {
+        #[arg(long)]
+        activation: String,
+        #[arg(long)]
+        json: bool,
+    },
+    #[command(about = "Create, reuse or recover one Agent session; replacement requires proven absence and never starts work.")]
+    Ensure {
+        #[arg(long)]
+        agent: u32,
+        /// Numbered role MD index for an additional member or role change.
+        #[arg(long)]
+        role: Option<u32>,
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Subcommand)]
 enum BinaryDbCommand {
     UpgradeU64Seconds(BinaryDbUpgradeU64SecondsArgs),
+    #[command(hide = true)]
+    AgentPool50(BinaryDbAgentPool50Args),
+}
+
+#[derive(Args, Clone)]
+struct BinaryDbAgentPool50Args {
+    #[arg(long = "repo-root", default_value = ".")]
+    repo_root: PathBuf,
+    #[arg(long = "generation-root")]
+    generation_root: PathBuf,
+    #[arg(long)]
+    activate: bool,
+    #[arg(long)]
+    json: bool,
 }
 
 #[derive(Args, Clone)]
@@ -304,6 +362,12 @@ enum LineCommand {
 
 #[derive(Subcommand)]
 enum GitCommand {
+    #[command(about = "Stage and validate retained legacy Git/Tag evidence, then explicitly activate the conversion.")]
+    Migrate(GitMigrateArgs),
+    #[command(
+        about = "Check Git indexes and incomplete trailing data; apply recovery only after validation."
+    )]
+    Recover(GitRecoverArgs),
     #[command(
         about = "Import Git commits, branches, and tags into AIT with a resumable immutable identity map."
     )]
@@ -313,9 +377,34 @@ enum GitCommand {
     )]
     Export(GitExportArgs),
     #[command(
+        about = "Restore one exact imported Git commit, including its native Markdown revisions, into a new directory."
+    )]
+    Restore(GitRestoreArgs),
+    #[command(
         about = "Reconcile a Git endpoint and AIT through checkpointed, divergence-safe ref-set transactions."
     )]
     Mirror(GitMirrorArgs),
+}
+
+#[derive(Args, Clone)]
+struct GitMigrateArgs {
+    #[arg(long, value_name = "PATH", help = "Persistent isolated generation used for conversion and recovery.")]
+    staging_root: PathBuf,
+    #[arg(long, help = "Activate the validated staged conversion; preserve the original data.")]
+    apply: bool,
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Args, Clone)]
+struct GitRecoverArgs {
+    #[arg(
+        long,
+        help = "Apply recovery only after validation; otherwise report problems without changing stored data."
+    )]
+    apply: bool,
+    #[arg(long)]
+    json: bool,
 }
 
 #[derive(Args, Clone)]
@@ -346,6 +435,14 @@ struct GitExportArgs {
         help = "Local Git repository path to update, or a new path whose parent already exists."
     )]
     target: String,
+    #[arg(long, help = "Select an exact imported Git generation.")]
+    generation: Option<String>,
+    #[arg(
+        long,
+        requires = "generation",
+        help = "Export only this exact imported commit closure with detached HEAD."
+    )]
+    git_object: Option<String>,
     #[arg(
         long = "all-lines-and-tags",
         help = "Export every headed AIT Line and every AIT Tag instead of only the current Line."
@@ -357,6 +454,18 @@ struct GitExportArgs {
     )]
     dry_run: bool,
     #[arg(long, help = "Emit the complete machine-readable JSON result.")]
+    json: bool,
+}
+
+#[derive(Args, Clone)]
+struct GitRestoreArgs {
+    #[arg(long)]
+    generation: String,
+    #[arg(long)]
+    git_object: String,
+    #[arg(long, help = "New directory receiving the complete exact source tree.")]
+    target: PathBuf,
+    #[arg(long)]
     json: bool,
 }
 
@@ -627,7 +736,7 @@ enum ConfigCommand {
     Set(Box<ConfigSetArgs>),
     #[command(
         about = "Remove one supported user setting.",
-        long_about = "Delete exactly one optional user setting from repository configuration, then refresh effective configuration and generated workflow guidance. Fallbacks are: default-author-mode -> ai_with_human_review; default-model -> unset; task-review -> automatic; task-worktree-alias-root -> .ait-worktree-links; task-worktree-main-seed-ram-max-bytes -> no configured budget; id-namespace-prefix -> empty; user-name and user-email -> unset while actor detection remains available. Internal Repository indexes, workflow-mode, sprint, derived local/remote settings, and Plan bindings cannot be unset."
+        long_about = "Delete exactly one optional user setting from repository configuration, then refresh effective configuration and generated workflow guidance. Fallbacks are: default-author-mode -> ai_with_human_review; default-model -> unset; task-review -> automatic; task-worktree-alias-root -> .ait-worktree-links; task-worktree-main-seed-ram-max-bytes -> no configured budget; id-namespace-prefix -> empty; user-name and user-email -> unset while actor detection remains available. Internal Repository indexes, sprint, derived local/remote settings, and Plan bindings cannot be unset."
     )]
     Unset(ConfigUnsetArgs),
 }
@@ -1500,26 +1609,6 @@ struct ConfigShowArgs {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
-enum ConfigWorkflowModeArg {
-    #[value(name = "solo_local")]
-    SoloLocal,
-    #[value(name = "solo_remote")]
-    SoloRemote,
-    #[value(name = "team_remote")]
-    TeamRemote,
-}
-
-impl ConfigWorkflowModeArg {
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::SoloLocal => "solo_local",
-            Self::SoloRemote => "solo_remote",
-            Self::TeamRemote => "team_remote",
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
 enum ConfigToggleArg {
     On,
     Off,
@@ -1620,6 +1709,10 @@ impl ConfigUnsetKeyArg {
 
 #[derive(Args, Clone)]
 struct ConfigSetArgs {
+    #[arg(long, value_parser=["enabled","disabled"])]
+    agent_teams: Option<String>,
+    #[arg(skip)]
+    agent_team_size: Option<i64>,
     #[arg(
         long,
         help = "Set the Repository Plan/sprint prose language tag, such as zh-TW, en, ja-JP, or ko-KR. Generated agent contracts stay in English."
@@ -1631,12 +1724,6 @@ struct ConfigSetArgs {
         help = "Set Plan/sprint prose style. Both styles retain goals, acceptance criteria, and verification."
     )]
     plan_style: Option<String>,
-    #[arg(
-        long = "workflow-mode",
-        value_enum,
-        help = "Set the complete workflow preset. This chooses where Workflow, Task, and Change commands run and defaults sprint mode to on unless --sprint is supplied."
-    )]
-    workflow_mode: Option<ConfigWorkflowModeArg>,
     #[arg(
         long = "sprint",
         value_enum,
@@ -1657,7 +1744,7 @@ struct ConfigSetArgs {
     #[arg(
         long = "task-review",
         value_enum,
-        help = "Set Task outcome review policy. Required waits for review; automatic records task_approve using configured user_name."
+        help = "Set Task outcome review policy. Required waits for human review; automatic records task_approve as the acting AI Reviewer."
     )]
     task_review: Option<ConfigTaskReviewArg>,
     #[arg(
@@ -1713,17 +1800,17 @@ struct ConfigUnsetArgs {
 enum PlanCommand {
     #[command(
         about = "List local Plans or Plans from a remote.",
-        long_about = "List Plans locally, from --remote, or from the location selected by the workflow mode. Human output is bounded to active Plans unless --all is supplied; JSON always returns the complete command result and therefore rejects --all. This command is read-only."
+        long_about = "List Plans locally by default, or from --remote. Human output is bounded to active Plans unless --all is supplied; JSON always returns the complete command result and therefore rejects --all. This command is read-only."
     )]
     List(PlanListArgs),
     #[command(
         about = "Show one Plan and its selected revision.",
-        long_about = "Show one Plan locally, from --remote, or from the location selected by the workflow mode. Without --revision, show the current head revision. Local selectors include PR-<ordinal>, artifact:<path>, title:<title>, and published-plan:<index>; remote selectors are the identifiers returned by remote plan list. This command is read-only."
+        long_about = "Show one Plan locally by default, or from --remote. Without --revision, show the current head revision. Local selectors include PR-<ordinal>, artifact:<path>, title:<title>, and published-plan:<index>; remote selectors are the identifiers returned by remote plan list. This command is read-only."
     )]
     Show(ShowArgs),
     #[command(
         about = "List revision history for one Plan.",
-        long_about = "List one Plan's revisions newest first, using local data, --remote, or the location selected by the workflow mode. Human output is bounded unless --all is supplied; JSON already returns the complete command result and therefore rejects --all. This command is read-only."
+        long_about = "List one Plan's revisions newest first, using local data by default, or --remote. Human output is bounded unless --all is supplied; JSON already returns the complete command result and therefore rejects --all. This command is read-only."
     )]
     Revisions(PlanIdArgs),
     #[command(
@@ -1770,7 +1857,7 @@ enum TaskCommand {
         about = TASK_FINISH_COMMAND_ABOUT
     )]
     Finish(TaskFinishArgs),
-    #[command(about = "Permanently abandon one local or remote Task and cancel its open Changes")]
+    #[command(about = "Abandon a Task, cancel its open Changes, and clean its eligible owned local worktree; retry incomplete local cleanup with the same command")]
     Abandon(TaskAbandonArgs),
 }
 
@@ -1808,7 +1895,7 @@ enum ChangeCommand {
 enum SnapshotCommand {
     #[command(
         about = "Capture the managed workspace as a new Snapshot.",
-        long_about = "Require the active Task ID matching the current worktree, capture its workspace as a new immutable local Snapshot, and advance the current Line head. Run task start first; repository-root Snapshot creation is forbidden. This command does not publish remote data."
+        long_about = "Capture the workspace for its active Task or exact Task/Change. Local Tasks persist locally and advance the current Line head. Remote Tasks persist content and exact Task/Change ownership at the pinned server, then advance the current Line head after verified readback. --resume completes an already acknowledged exact remote capture. Run task start first; repository-root Snapshot creation is forbidden."
     )]
     Create(SnapshotCreateArgs),
     #[command(
@@ -1920,7 +2007,7 @@ enum PatchsetCommand {
     List(PatchsetListArgs),
     #[command(about = "Show one TASK_ID/P-## Patchset without modifying it.")]
     Show(PatchsetShowArgs),
-    #[command(about = "Select one TASK_ID/P-## Patchset as its Task's current revision.")]
+    #[command(about = "Validate the exact live latest Task Patchset without selection writes.")]
     Select(PatchsetSelectArgs),
     #[command(
         name = "ci-status",
@@ -1940,7 +2027,7 @@ enum PatchsetCommand {
 enum ReviewCommand {
     #[command(about = "Show compact remote Review state for one Task.")]
     Show(ReviewShowArgs),
-    #[command(about = "Manage team governance review; available only in team_remote mode.")]
+    #[command(about = "Manage team governance review; available when Agent Teams is enabled.")]
     Team {
         #[command(subcommand)]
         command: ReviewTeamCommand,
@@ -2079,13 +2166,13 @@ enum WorktreeCommand {
     Sync(WorktreeSyncArgs),
     #[command(
         about = "Recreate a missing registered Task worktree.",
-        long_about = "Recreate the recorded path and alias of a Task-bound worktree whose registered path is missing. Recovery selects the first locally available current-Line head, fork Snapshot, or selected remote Patchset revision. An existing or unbound worktree is rejected; --dry-run validates and reports the candidate without creating its files."
+        long_about = "Recreate the recorded path and alias of a Task-bound worktree whose registered path is missing. Recovery selects the first locally available current-Line head, fork Snapshot, or current remote Patchset revision. An existing or unbound worktree is rejected; --dry-run validates and reports the candidate without creating its files."
     )]
     Recreate(WorktreeRecreateArgs),
     #[command(
         name = "recover-task",
         about = "Recover a local authoring worktree for an existing remote Task and Change.",
-        long_about = "Run from the main repository root to validate an active or draft remote Task and its draft or review Change, then recreate their local feature Line and Task-bound worktree. This command does not create a remote Task or Change. If a registration already exists but its path is missing, use worktree recreate instead."
+        long_about = "Run from the main repository root to validate an existing remote Task and writable Change. Recover their Task worktree or verify an existing registered worktree and pin its capture server and repository. This command does not create a remote Task or Change. If a registration exists but its path is missing, use worktree recreate."
     )]
     RecoverTask(WorktreeRecoverTaskArgs),
     #[command(
@@ -2111,14 +2198,14 @@ struct QueryScopeArgs {
     #[arg(
         long,
         conflicts_with = "remote",
-        help = "Use local Plans even when the workflow mode defaults to a remote"
+        help = "Use local Plans by default"
     )]
     local: bool,
     #[arg(
         long,
         conflicts_with = "local",
         value_name = "NAME",
-        help = "Use Plans from the named remote even when the workflow mode defaults to local"
+        help = "Use Plans from the named remote explicitly"
     )]
     remote: Option<String>,
     #[arg(long, help = "Emit the complete stable machine-readable payload")]
@@ -2176,14 +2263,14 @@ struct CandidatesArgs {
     #[arg(
         long,
         conflicts_with = "remote",
-        help = "Use local Plans even when the workflow mode defaults to a remote"
+        help = "Use local Plans by default"
     )]
     local: bool,
     #[arg(
         long,
         conflicts_with = "local",
         value_name = "NAME",
-        help = "Use Plans from the named remote even when the workflow mode defaults to local"
+        help = "Use Plans from the named remote explicitly"
     )]
     remote: Option<String>,
     #[arg(
@@ -2222,25 +2309,18 @@ struct SyncArgs {
     #[arg(
         long,
         conflicts_with = "remote",
-        help = "Sync local Plan history only, even when the workflow mode defaults to a remote; never create a Snapshot or advance a Line"
+        help = "Sync local Plan history only, by default; never create a Snapshot or advance a Line"
     )]
     local: bool,
     #[arg(
         long,
         conflicts_with = "local",
         value_name = "NAME",
-        help = "Sync local Plan history, then publish the updated heads to the named remote even when the workflow mode defaults to local"
+        help = "Sync local Plan history, then automatically rebase and publish verified updated heads to the named remote explicitly"
     )]
     remote: Option<String>,
     #[arg(
         long,
-        conflicts_with = "reconcile",
-        help = "When using a remote, replay the current local Plan head after the remote rejects divergent history"
-    )]
-    rebase: bool,
-    #[arg(
-        long,
-        conflicts_with = "rebase",
         help = "Safely adopt verified divergent or mixed Plan identity before effective local reconciliation or remote publication"
     )]
     reconcile: bool,
@@ -2264,7 +2344,7 @@ enum WorkflowCommand {
     )]
     Ready(WorkflowReadyArgs),
     #[command(
-        about = "Check or apply remote Review and Policy requirements for a Task's selected submission, then safely finish the ready work."
+        about = "Check or apply remote Review and Policy requirements for a Task's current candidate, then safely finish the ready work."
     )]
     Finish(WorkflowFinishArgs),
 }
@@ -2296,13 +2376,13 @@ struct TaskStartArgs {
     #[arg(
         long,
         conflicts_with = "remote",
-        help = "Start the Task locally even when the workflow mode defaults to a remote"
+        help = "Start the Task locally by default"
     )]
     local: bool,
     #[arg(
         long,
         conflicts_with = "local",
-        help = "Start the Task on the named remote even when the workflow mode defaults to local"
+        help = "Start the Task on the named remote explicitly"
     )]
     remote: Option<String>,
     #[arg(
@@ -2339,13 +2419,13 @@ struct TaskQuickArgs {
     #[arg(
         long,
         conflicts_with = "remote",
-        help = "Start the Task locally even when the workflow mode defaults to a remote"
+        help = "Start the Task locally by default"
     )]
     local: bool,
     #[arg(
         long,
         conflicts_with = "local",
-        help = "Start the Task on the named remote even when the workflow mode defaults to local"
+        help = "Start the Task on the named remote explicitly"
     )]
     remote: Option<String>,
     #[arg(
@@ -2366,13 +2446,13 @@ struct TaskListArgs {
     #[arg(
         long,
         conflicts_with = "remote",
-        help = "List local Tasks even when the workflow mode defaults to a remote"
+        help = "List local Tasks by default"
     )]
     local: bool,
     #[arg(
         long,
         conflicts_with = "local",
-        help = "List Tasks from the named remote even when the workflow mode defaults to local"
+        help = "List Tasks from the named remote explicitly"
     )]
     remote: Option<String>,
     #[arg(
@@ -2393,13 +2473,13 @@ struct TaskShowArgs {
     #[arg(
         long,
         conflicts_with = "remote",
-        help = "Read the local Task even when the workflow mode defaults to a remote"
+        help = "Read the local Task by default"
     )]
     local: bool,
     #[arg(
         long,
         conflicts_with = "local",
-        help = "Read the Task from the named remote even when the workflow mode defaults to local"
+        help = "Read the Task from the named remote explicitly"
     )]
     remote: Option<String>,
     #[arg(long, help = "Emit the complete machine-readable Task record")]
@@ -2412,13 +2492,13 @@ struct TaskAuditArgs {
     #[arg(
         long,
         conflicts_with = "remote",
-        help = "Check the local Task even when the workflow mode defaults to a remote"
+        help = "Check the local Task by default"
     )]
     local: bool,
     #[arg(
         long,
         conflicts_with = "local",
-        help = "Check the Task on the named remote even when the workflow mode defaults to local"
+        help = "Check the Task on the named remote explicitly"
     )]
     remote: Option<String>,
     #[arg(
@@ -2432,7 +2512,7 @@ struct TaskAuditArgs {
 struct TaskFinishArgs {
     #[arg(
         value_name = "TASK_ID",
-        help = "Task ID to finish onto main. The workflow mode chooses local or remote unless --local or --remote is provided."
+        help = "Task ID to finish onto main. Finish locally by default; --remote explicitly selects a remote."
     )]
     task_or_change_id: String,
     #[arg(
@@ -2449,13 +2529,13 @@ struct TaskFinishArgs {
     #[arg(
         long,
         conflicts_with = "remote",
-        help = "Force local draft finish even when the configured workflow mode defaults to remote"
+        help = "Force local draft finish by default"
     )]
     local: bool,
     #[arg(
         long,
         conflicts_with = "local",
-        help = "Force closeout through the named remote's already-ready selected Patchset even when the configured workflow mode defaults to local"
+        help = "Force closeout through the named remote's already-ready current Patchset explicitly"
     )]
     remote: Option<String>,
     #[arg(
@@ -2473,17 +2553,18 @@ struct TaskFinishArgs {
 
 #[derive(Args, Clone)]
 struct TaskAbandonArgs {
+    #[arg(help = "Task ID, or @<absolute package identity file> with explicit --remote.")]
     task_id: String,
     #[arg(
         long,
         conflicts_with = "remote",
-        help = "Abandon the local Task even when the workflow mode defaults to a remote"
+        help = "Abandon the local Task by default"
     )]
     local: bool,
     #[arg(
         long,
         conflicts_with = "local",
-        help = "Abandon the Task on the named remote even when the workflow mode defaults to local"
+        help = "Abandon the Task on the named remote explicitly"
     )]
     remote: Option<String>,
     #[arg(long, help = "Emit the complete machine-readable terminal Task record")]
@@ -2499,9 +2580,11 @@ struct ChangeCreateArgs {
     #[arg(
         long = "base-line",
         value_name = "LINE",
-        help = "Base Line assertion; defaults to the bound worktree target Line, then the repository default Line."
+        help = "Base Line assertion; local revisions default to the current Task Line."
     )]
     base_line: Option<String>,
+    #[arg(long = "fork-snapshot",value_name = "SNAPSHOT",help = "Exact reviewed Task Snapshot assertion; remote revisions use the current Task candidate revision. Record the revision before editing.")]
+    fork_snapshot: Option<String>,
     #[arg(
         long,
         conflicts_with = "remote",
@@ -2547,8 +2630,8 @@ struct ChangeListArgs {
 #[derive(Args, Clone)]
 struct ChangeShowArgs {
     #[arg(
-        value_name = "TASK_ID",
-        help = "Task whose applicable internal work record will be inspected."
+        value_name = "TASK_ID[/C-##]",
+        help = "Inspect the exact Change, including terminal revisions. A Task alone requires exactly one retained Change."
     )]
     change_id: String,
     #[arg(
@@ -2697,10 +2780,13 @@ struct ChangePublishArgs {
 
 #[derive(Args, Clone)]
 struct SnapshotCreateArgs {
+    #[arg(long = "resume", value_name = "SNAPSHOT_ID", conflicts_with = "message",
+        help = "Resume one exact remote capture already acknowledged by the server; never backfill ownership.")]
+    resume_snapshot_id: Option<String>,
     #[arg(
         value_name = "TASK_ID",
         value_parser = crate::primitives::parse_snapshot_authoring_reference,
-        help = "Active Task owning the current worktree."
+        help = "Active Task or full Task/Change reference owning the current worktree."
     )]
     change_id: String,
     #[arg(
@@ -3146,7 +3232,7 @@ struct PatchsetSelectArgs {
     #[arg(
         value_name = "PATCHSET_ID",
         value_parser = parse_exact_patchset_id,
-        help = "Public Patchset reference (TASK_ID/P-##) to select."
+        help = "Exact live latest Task Patchset (TASK_ID/P-##) to validate without selection writes."
     )]
     patchset_id: String,
     #[arg(
@@ -3155,7 +3241,7 @@ struct PatchsetSelectArgs {
         help = "Configured remote name; defaults to the repository's default remote."
     )]
     remote: Option<String>,
-    #[arg(long, help = "Emit the complete selection result as stable JSON.")]
+    #[arg(long, help = "Emit the complete current-candidate validation result as stable JSON.")]
     json: bool,
 }
 
@@ -3208,7 +3294,7 @@ struct ReviewApproveArgs {
         long = "patchset",
         value_name = "PATCHSET_ID",
         value_parser = parse_exact_patchset_id,
-        help = "Public Patchset reference (TASK_ID/P-##) receiving the review action; defaults to the Task's selected Patchset."
+        help = "Public Patchset reference (TASK_ID/P-##) receiving the review action; defaults to the Task's current Patchset."
     )]
     patchset_id: Option<String>,
     #[arg(long)]
@@ -3229,7 +3315,7 @@ struct ReviewRequestArgs {
         long = "patchset",
         value_name = "PATCHSET_ID",
         value_parser = parse_exact_patchset_id,
-        help = "Public Patchset reference (TASK_ID/P-##) for which review is requested; defaults to the Task's selected Patchset."
+        help = "Public Patchset reference (TASK_ID/P-##) for which review is requested; defaults to the Task's current Patchset."
     )]
     patchset_id: Option<String>,
     #[arg(long)]
@@ -3242,6 +3328,11 @@ struct ReviewRequestArgs {
 
 #[derive(Args, Clone)]
 struct ReviewCodeSubmitArgs {
+    #[arg(
+        long,
+        help = "Acting AI Reviewer's own name; must match its native Agent binding when present."
+    )]
+    reviewer: Option<String>,
     #[arg(value_name = "TASK_ID", help = "Task that owns the reviewed Patchset.")]
     change_id: String,
     #[arg(
@@ -3270,13 +3361,16 @@ struct ReviewCodeSubmitArgs {
 
 #[derive(Args, Clone)]
 struct ReviewTaskApproveArgs {
-    #[arg(value_name = "TASK_ID", help = "Task that owns the validated Patchset.")]
+    #[arg(
+        value_name = "TASK_ID",
+        help = "Task that owns the validated Patchset."
+    )]
     change_id: String,
     #[arg(
         long = "patchset",
-        value_parser = parse_exact_patchset_id,
+        value_parser = parse_review_patchset_selector,
         required = true,
-        help = "Public Patchset reference (TASK_ID/P-##) covered by functional validation."
+        help = "Public TASK_ID/P-## or @<absolute-path> to the exact package identity covered by functional validation."
     )]
     patchset_id: String,
     #[arg(
@@ -3300,8 +3394,8 @@ struct ReviewTaskRecordArgs {
     #[arg(
         long = "patchset",
         value_name = "PATCHSET_ID",
-        value_parser = parse_exact_patchset_id,
-        help = "Public Patchset reference (TASK_ID/P-##) receiving the review action; defaults to the Task's selected Patchset."
+        value_parser = parse_review_patchset_selector,
+        help = "Public TASK_ID/P-## or @<absolute-path> to an exact package identity; defaults to the Task's current formal Patchset."
     )]
     patchset_id: Option<String>,
     #[arg(long)]
@@ -3327,7 +3421,10 @@ struct ReviewCodeTemplateArgs {
 
 #[derive(Args, Clone)]
 struct ReviewShowArgs {
-    #[arg(value_name = "TASK_ID", help = "Task whose review state will be inspected.")]
+    #[arg(
+        value_name = "TASK_ID",
+        help = "Task whose review state will be inspected."
+    )]
     change_id: String,
     #[arg(
         long,
@@ -3346,17 +3443,17 @@ struct AttestPutArgs {
         help = "Public Patchset reference (TASK_ID/P-##) that receives evidence."
     )]
     patchset_id: String,
-    #[arg(long)]
+    #[arg(long, help = "Manual remote verification: unknown, pending, pass or fail. Does not supply CI results or disable required CI.")]
     tests: Option<String>,
-    #[arg(long)]
+    #[arg(long, help = "Explicit --lint is unsupported by the remote compact Attestation contract.")]
     lint: Option<String>,
-    #[arg(long)]
+    #[arg(long, help = "Explicit --security is unsupported by the remote compact Attestation contract.")]
     security: Option<String>,
-    #[arg(long)]
+    #[arg(long, help = "Explicit --license is unsupported by the remote compact Attestation contract.")]
     license: Option<String>,
     #[arg(long = "author-mode")]
     author_mode: Option<String>,
-    #[arg(long)]
+    #[arg(long, help = "Explicit --model is unsupported by the remote compact Attestation contract.")]
     model: Option<String>,
     #[arg(long)]
     remote: Option<String>,
@@ -3823,17 +3920,17 @@ struct WorkflowReadyArgs {
     snapshot_message: Option<String>,
     #[arg(long, requires = "apply")]
     summary: Option<String>,
-    #[arg(long, requires = "apply")]
+    #[arg(long, requires = "apply", help = "Manual verification: unknown, pending, pass or fail; actual required CI is independent.")]
     tests: Option<String>,
-    #[arg(long, requires = "apply")]
+    #[arg(long, requires = "apply", help = "Explicit --lint is unsupported by remote compact Attestations.")]
     lint: Option<String>,
-    #[arg(long, requires = "apply")]
+    #[arg(long, requires = "apply", help = "Explicit --security is unsupported by remote compact Attestations.")]
     security: Option<String>,
-    #[arg(long, requires = "apply")]
+    #[arg(long, requires = "apply", help = "Explicit --license is unsupported by remote compact Attestations.")]
     license: Option<String>,
     #[arg(long = "author-mode", requires = "apply")]
     author_mode: Option<ConfigAuthorModeArg>,
-    #[arg(long, requires = "apply")]
+    #[arg(long, requires = "apply", help = "Explicit --model is unsupported by remote compact Attestations.")]
     model: Option<String>,
     #[arg(
         long = "run-ci-once",
@@ -3842,12 +3939,31 @@ struct WorkflowReadyArgs {
     )]
     run_ci_once: bool,
     #[arg(long)]
+    json: bool,
+    #[arg(long, requires = "json")]
+    full: bool,
+    #[arg(
+        long,
+        value_name = "PATH",
+        help = "Exact JSON identity of a formal Patchset or a package hash/Job, Repository and base/final Snapshots."
+    )]
+    expected_identity: Option<PathBuf>,
+    #[arg(long)]
     remote: Option<String>,
 }
 
 #[derive(Args, Clone)]
 struct WorkflowFinishArgs {
-    #[arg(value_name = "TASK_ID", help = "Task to inspect or finish through reviewer-owned remote closeout.")]
+    #[arg(
+        long,
+        requires = "apply",
+        help = "Acting AI Reviewer's own name for code review and permitted automatic Task approval."
+    )]
+    reviewer: Option<String>,
+    #[arg(
+        value_name = "TASK_ID",
+        help = "Task to inspect or finish through reviewer-owned remote closeout."
+    )]
     change_id: String,
     #[arg(
         long,
@@ -3857,9 +3973,19 @@ struct WorkflowFinishArgs {
     #[arg(
         long = "review-message",
         requires = "apply",
-        help = "Structured exact-Patchset AI review summary authored by the executing reviewer app."
+        help = "Structured exact-Patchset AI review summary authored by the acting Reviewer."
     )]
     review_message: Option<String>,
+    #[arg(long)]
+    json: bool,
+    #[arg(long, requires = "json")]
+    full: bool,
+    #[arg(
+        long,
+        value_name = "PATH",
+        help = "JSON identity to validate through guarded atomic closeout; requires server support."
+    )]
+    expected_identity: Option<PathBuf>,
     #[arg(
         long,
         help = "Use the named remote instead of the configured default remote."
@@ -3887,16 +4013,23 @@ fn parse_positive_usize(value: &str) -> Result<usize, String> {
     Ok(number)
 }
 
+fn parse_review_patchset_selector(value: &str) -> Result<String, String> {
+    if let Some(path) = value.trim().strip_prefix('@') {
+        if value.trim() != value || !std::path::Path::new(path).is_absolute() {
+            return Err("Package --patchset selector requires @<absolute-path> without surrounding whitespace".into());
+        }
+        return Ok(value.to_string());
+    }
+    parse_exact_patchset_id(value)
+}
+
 fn parse_exact_patchset_id(value: &str) -> Result<String, String> {
     let patchset_id = value.trim();
     if patchset_id.is_empty() {
         return Err("Patchset ID must be non-empty".to_string());
     }
     if patchset_id.chars().all(|ch| ch.is_ascii_digit()) {
-        return Err(
-            "public Patchset reference required; use TASK_ID/P-##"
-                .to_string(),
-        );
+        return Err("public Patchset reference required; use TASK_ID/P-##".to_string());
     }
     Ok(patchset_id.to_string())
 }

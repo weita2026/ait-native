@@ -1,3 +1,98 @@
+#[test]
+fn native_git_import_repeated_objects_use_two_persistent_batch_processes() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let source = TempDir::new().unwrap();
+    fixture_git(source.path(), &["init", "-b", "main"]);
+    fixture_git(source.path(), &["config", "user.name", "Batch Fixture"]);
+    fixture_git(
+        source.path(),
+        &["config", "user.email", "batch@example.com"],
+    );
+    for index in 0..32 {
+        write_file(
+            &source.path().join(format!("unchanged-{index}.txt")),
+            "same immutable blob\n",
+        );
+    }
+    let pointer = "version https://git-lfs.github.com/spec/v1\noid sha256:fixture\nsize 123\n";
+    write_file(&source.path().join("pointer-a"), pointer);
+    write_file(&source.path().join("pointer-b"), pointer);
+    fs::write(source.path().join("binary"), (0..=255).collect::<Vec<u8>>()).unwrap();
+    for index in 0..8 {
+        write_file(&source.path().join("counter"), &format!("{index}\n"));
+        fixture_git(source.path(), &["add", "."]);
+        fixture_git(
+            source.path(),
+            &["commit", "-m", &format!("revision {index}")],
+        );
+    }
+    let instrumentation = TempDir::new().unwrap();
+    let real_git = Command::new("sh")
+        .args(["-c", "command -v git"])
+        .output()
+        .unwrap();
+    assert!(real_git.status.success());
+    let real_git = String::from_utf8(real_git.stdout)
+        .unwrap()
+        .trim()
+        .to_string();
+    let quoted_git = format!("'{}'", real_git.replace('\'', "'\\''"));
+    let wrapper = instrumentation.path().join("git");
+    write_file(&wrapper, &format!("#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$AIT_TEST_GIT_CALL_LOG\"\nexec {quoted_git} \"$@\"\n"));
+    fs::set_permissions(&wrapper, fs::Permissions::from_mode(0o755)).unwrap();
+    let calls_file = instrumentation.path().join("git-calls.txt");
+    let path = format!(
+        "{}:{}",
+        instrumentation.path().display(),
+        std::env::var("PATH").unwrap()
+    );
+    let log = calls_file.to_string_lossy();
+    let ait = init_empty_ait_git_interop_repo();
+    let report = json_output_with_env(
+        ait.path(),
+        &[
+            "git",
+            "import",
+            source.path().to_string_lossy().as_ref(),
+            "--dry-run",
+            "--json",
+        ],
+        &[("PATH", &path), ("AIT_TEST_GIT_CALL_LOG", &log)],
+    );
+    assert_eq!(report["status"], json!("dry_run"));
+    assert_eq!(report["commit_count"], json!(8));
+    assert_eq!(report["mutated"], json!(false));
+    assert_eq!(
+        git_import_classification(&report, "lfs_pointers")["count"],
+        json!(16)
+    );
+    let calls = fs::read_to_string(calls_file).unwrap();
+    let cat_file_calls = calls
+        .lines()
+        .filter(|line| line.split_whitespace().any(|arg| arg == "cat-file"))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        cat_file_calls.len(),
+        2,
+        "per-file cat-file processes must not return: {calls}"
+    );
+    assert!(cat_file_calls
+        .iter()
+        .any(|line| line.ends_with("cat-file --batch")));
+    assert!(cat_file_calls
+        .iter()
+        .any(|line| line.ends_with("cat-file --batch-check")));
+    assert_eq!(
+        calls
+            .lines()
+            .filter(|line| line.contains(" ls-tree -r -z "))
+            .count(),
+        8
+    );
+    assert!(!ait.path().join(".ait/git-interop/v1").exists());
+}
+
 fn fixture_git(root: &Path, args: &[&str]) -> String {
     let output = Command::new("git")
         .current_dir(root)
@@ -84,12 +179,18 @@ fn build_git_interop_fixture() -> TempDir {
         .permissions();
     permissions.set_mode(0o755);
     fs::set_permissions(source.path().join("scripts/run.sh"), permissions).unwrap();
-    write_file(&source.path().join("資料/說明.txt"), "Unicode path 與訊息\n");
+    write_file(
+        &source.path().join("資料/說明.txt"),
+        "Unicode path 與訊息\n",
+    );
     fs::write(source.path().join("binary.dat"), [0_u8, 1, 2, 0xff, 0, 9]).unwrap();
     symlink("README.md", source.path().join("README.link")).unwrap();
     fixture_git(source.path(), &["add", "--all"]);
     fixture_git(source.path(), &["commit", "-m", "根提交 root"]);
-    fixture_git(source.path(), &["commit", "--allow-empty", "-m", "empty commit"]);
+    fixture_git(
+        source.path(),
+        &["commit", "--allow-empty", "-m", "empty commit"],
+    );
     fixture_git(source.path(), &["tag", "lightweight"]);
     fixture_git(
         source.path(),
@@ -134,7 +235,10 @@ fn build_git_golden_history_matrix_fixture() -> TempDir {
     executable.set_mode(0o755);
     fs::set_permissions(source.path().join("scripts/run.sh"), executable).unwrap();
     write_file(&source.path().join("資料/說明.txt"), "Unicode golden\n");
-    write_file(&source.path().join("move/from/file.txt"), "directory move\n");
+    write_file(
+        &source.path().join("move/from/file.txt"),
+        "directory move\n",
+    );
     write_file(&source.path().join("rename-me.txt"), "file rename\n");
     write_file(
         &source.path().join("large.bin"),
@@ -172,7 +276,11 @@ fn build_git_golden_history_matrix_fixture() -> TempDir {
     fixture_git(source.path(), &["add", "--all"]);
     fixture_git(
         source.path(),
-        &["commit", "-m", "rename file move directory and remove executable bit"],
+        &[
+            "commit",
+            "-m",
+            "rename file move directory and remove executable bit",
+        ],
     );
 
     fixture_git(source.path(), &["switch", "-c", "clean-side"]);
@@ -202,7 +310,10 @@ fn build_git_golden_history_matrix_fixture() -> TempDir {
         .output()
         .expect("run conflicting merge");
     assert!(!conflict.status.success());
-    write_file(&source.path().join("conflict.txt"), "resolved main + side\n");
+    write_file(
+        &source.path().join("conflict.txt"),
+        "resolved main + side\n",
+    );
     fixture_git(source.path(), &["add", "conflict.txt"]);
     fixture_git(source.path(), &["commit", "-m", "resolved conflict merge"]);
     let resolved_merge = fixture_git(source.path(), &["rev-parse", "HEAD"]);
@@ -222,26 +333,12 @@ fn build_git_golden_history_matrix_fixture() -> TempDir {
     let tree_b = fixture_git(source.path(), &["rev-parse", "HEAD^{tree}"]);
     let criss_left = fixture_git_with_stdin(
         source.path(),
-        &[
-            "commit-tree",
-            &tree_a,
-            "-p",
-            &criss_a,
-            "-p",
-            &criss_b,
-        ],
+        &["commit-tree", &tree_a, "-p", &criss_a, "-p", &criss_b],
         b"criss-cross left\n",
     );
     let criss_right = fixture_git_with_stdin(
         source.path(),
-        &[
-            "commit-tree",
-            &tree_b,
-            "-p",
-            &criss_b,
-            "-p",
-            &criss_a,
-        ],
+        &["commit-tree", &tree_b, "-p", &criss_b, "-p", &criss_a],
         b"criss-cross right\n",
     );
     fixture_git(
@@ -312,13 +409,13 @@ fn build_git_golden_history_matrix_fixture() -> TempDir {
     );
 
     fixture_git(source.path(), &["branch", "legacy", "main"]);
-    fixture_git(
-        source.path(),
-        &["branch", "-m", "legacy", "renamed/legacy"],
-    );
+    fixture_git(source.path(), &["branch", "-m", "legacy", "renamed/legacy"]);
     fixture_git(source.path(), &["branch", "deleted", "main"]);
     fixture_git(source.path(), &["branch", "-D", "deleted"]);
-    fixture_git(source.path(), &["notes", "add", "-m", "golden note", "main"]);
+    fixture_git(
+        source.path(),
+        &["notes", "add", "-m", "golden note", "main"],
+    );
     fixture_git(source.path(), &["fsck", "--full", "--no-dangling"]);
     source
 }
@@ -356,14 +453,45 @@ fn git_import_classification<'a>(payload: &'a JsonValue, kind: &str) -> &'a Json
         .unwrap_or_else(|| panic!("missing Git import classification {kind}"))
 }
 
-fn git_interop_mappings(root: &Path) -> Vec<JsonValue> {
-    let mut paths = fs::read_dir(root.join(".ait/git-interop/v1/mappings"))
-        .expect("Git interop mappings")
-        .map(|entry| entry.expect("Git interop mapping entry").path())
-        .filter(|path| path.is_file())
-        .collect::<Vec<_>>();
-    paths.sort();
-    paths.into_iter().map(parse_json_file).collect()
+fn git_interop_mappings(
+    root: &Path,
+) -> Vec<(
+    ait_core::git_binary_db::GitCommitMappingRecord,
+    String,
+    Vec<u8>,
+)> {
+    use ait_core::binary_db::{AuthorityId, BinaryDbReadTxn};
+    use ait_core::git_binary_db::*;
+    let repo = RepoRuntime::discover_from_path(root).unwrap();
+    let content = repo.binary_db_stores::<1>().content();
+    let db = GitInteropBundle::open(root,false).unwrap().database(root,AuthorityId::new("fixture"));
+    let objects = LocalGitObjectStore::open(db.clone(), content.clone()).unwrap();
+    let history = GitHistoryStore::open(db).unwrap();
+    let generations = history.generations().unwrap();
+    let read = BinaryDbReadTxn::new(content.db());
+    history
+        .commit_mappings()
+        .into_iter()
+        .map(|mapping| {
+            let snapshot = content
+                .snapshots()
+                .snapshot_view_at(&read, mapping.snapshot_index)
+                .unwrap();
+            let body = objects
+                .get(
+                    generations[mapping.generation_index as usize].source_repository_index,
+                    1,
+                    &mapping.object_id,
+                )
+                .unwrap()
+                .unwrap()
+                .1;
+            (mapping, snapshot.snapshot_id, body)
+        })
+        .collect()
+}
+fn fixture_oid_hex(id: &[u8]) -> String {
+    id.iter().map(|v| format!("{v:02x}")).collect()
 }
 
 #[test]
@@ -410,8 +538,13 @@ fn native_git_import_export_roundtrip_reuses_objects_and_preserves_git_semantics
         ],
     );
     assert_eq!(imported["status"], json!("completed"));
+    assert_eq!(imported["plan_hash"], dry_run["plan_hash"]);
+    assert_eq!(imported["classifications"], dry_run["classifications"]);
     assert_eq!(imported["commit_count"], json!(source_commit_count));
-    assert_eq!(imported["imported_commit_count"], json!(source_commit_count));
+    assert_eq!(
+        imported["imported_commit_count"],
+        json!(source_commit_count)
+    );
     assert_eq!(imported["line_count"], json!(2));
     assert_eq!(imported["tag_count"], json!(2));
     assert_eq!(imported["head_symbolic_ref"], json!("refs/heads/main"));
@@ -421,10 +554,7 @@ fn native_git_import_export_roundtrip_reuses_objects_and_preserves_git_semantics
             .is_string()
     );
     assert!(
-        json_output(
-            ait.path(),
-            &["line", "show", "feature/topic", "--json"]
-        )["head_snapshot_id"]
+        json_output(ait.path(), &["line", "show", "feature/topic", "--json"])["head_snapshot_id"]
             .is_string()
     );
     assert_eq!(
@@ -461,10 +591,7 @@ fn native_git_import_export_roundtrip_reuses_objects_and_preserves_git_semantics
         "refs/heads/main"
     );
     assert_eq!(
-        fixture_git(
-            &target,
-            &["rev-list", "--all", "--topo-order", "--parents"]
-        ),
+        fixture_git(&target, &["rev-list", "--all", "--topo-order", "--parents"]),
         source_graph
     );
     fixture_git(&target, &["fsck", "--full", "--no-dangling"]);
@@ -486,12 +613,10 @@ fn native_git_import_export_roundtrip_reuses_objects_and_preserves_git_semantics
         fs::read_to_string(checkout.join("資料/說明.txt")).unwrap(),
         "Unicode path 與訊息\n"
     );
-    assert!(
-        fs::symlink_metadata(checkout.join("README.link"))
-            .unwrap()
-            .file_type()
-            .is_symlink()
-    );
+    assert!(fs::symlink_metadata(checkout.join("README.link"))
+        .unwrap()
+        .file_type()
+        .is_symlink());
     assert_ne!(
         fs::metadata(checkout.join("scripts/run.sh"))
             .unwrap()
@@ -526,7 +651,10 @@ fn native_git_import_export_roundtrip_reuses_objects_and_preserves_git_semantics
     assert_eq!(replayed_export["status"], json!("no_op"));
     assert_eq!(replayed_export["replayed"], json!(true));
 
-    write_file(&source.path().join("incremental.txt"), "incremental history\n");
+    write_file(
+        &source.path().join("incremental.txt"),
+        "incremental history\n",
+    );
     fixture_git(source.path(), &["add", "incremental.txt"]);
     fixture_git(source.path(), &["commit", "-m", "incremental commit"]);
     let refreshed_source_refs = git_ref_map(source.path());
@@ -565,7 +693,10 @@ fn native_git_import_export_roundtrip_reuses_objects_and_preserves_git_semantics
     );
     assert!(!refused.status.success());
     let stderr = String::from_utf8_lossy(&refused.stderr);
-    assert!(stderr.contains("refuses to overwrite refs/heads/main"), "{stderr}");
+    assert!(
+        stderr.contains("refuses to overwrite refs/heads/main"),
+        "{stderr}"
+    );
     assert_eq!(
         fixture_git(&target, &["rev-parse", "refs/heads/main"]),
         feature_head
@@ -595,10 +726,9 @@ fn native_git_import_export_roundtrip_reuses_objects_and_preserves_git_semantics
     assert_eq!(git_ref_map(&target), refreshed_source_refs);
     fixture_git(&target, &["fsck", "--full", "--no-dangling"]);
 
-    let mapping_count = fs::read_dir(ait.path().join(".ait/git-interop/v1/mappings"))
-        .unwrap()
-        .count();
-    assert!(mapping_count >= source_commit_count + source_refs.len());
+    let mapping_count = git_interop_mappings(ait.path()).len();
+    assert!(mapping_count > source_commit_count);
+    assert!(!ait.path().join(".ait/git-interop/v1/mappings").exists());
 }
 
 #[test]
@@ -641,52 +771,50 @@ fn native_git_import_automatically_resumes_the_same_immutable_plan() {
         "{stderr}"
     );
 
-    let operations_root = ait.path().join(".ait/git-interop/v1/operations");
-    let operation_paths = fs::read_dir(&operations_root)
-        .expect("interrupted import operations")
-        .map(|entry| entry.expect("interrupted import operation").path())
-        .collect::<Vec<_>>();
-    assert_eq!(operation_paths.len(), 1);
-    let interrupted_checkpoint = parse_json_file(&operation_paths[0]);
-    assert_eq!(interrupted_checkpoint["state"], json!("running"));
-    assert_eq!(interrupted_checkpoint["next_ref_index"], json!(2));
-    let operation_id = interrupted_checkpoint["operation_id"]
-        .as_str()
-        .expect("interrupted operation ID")
-        .to_string();
-
-    let mut mismatched_checkpoint = interrupted_checkpoint.clone();
-    mismatched_checkpoint
-        .as_object_mut()
-        .expect("checkpoint object")
-        .insert("plan_hash".to_string(), json!("GIP-MISMATCH"));
-    write_file(
-        &operation_paths[0],
-        &(encode_json_pretty(&mismatched_checkpoint) + "\n"),
+    let dry = json_output(
+        ait.path(),
+        &[
+            "git",
+            "import",
+            source.path().to_str().unwrap(),
+            "--all-branches-and-tags",
+            "--dry-run",
+            "--json",
+        ],
     );
+    let operation_id = dry["operation_id"].as_str().unwrap().to_string();
+    let checkpoint_path = "git_operation_checkpoint.bin";
+    let interrupted_checkpoint = native_git_bytes(ait.path(), checkpoint_path);
+    let refs_path = "git_ref_mapping.bin";
+    let frozen_refs = native_git_bytes(ait.path(), refs_path);
+    assert_eq!(interrupted_checkpoint.len(), 4 + 44);
+    assert_eq!(interrupted_checkpoint[4], 0);
+    assert_eq!(
+        u32::from_le_bytes(interrupted_checkpoint[36..40].try_into().unwrap()),
+        2
+    );
+    assert!(!ait.path().join(".ait/git-interop/v1/operations").exists());
+    let mut mismatched_checkpoint = interrupted_checkpoint.clone();
+    mismatched_checkpoint[20..32].fill(255);
+    native_git_write(ait.path(), checkpoint_path, &mismatched_checkpoint);
     let mismatched = command_output_with_env(
         ait.path(),
         &[
             "git",
             "import",
-            source.path().to_string_lossy().as_ref(),
+            source.path().to_str().unwrap(),
             "--all-branches-and-tags",
             "--json",
         ],
         &[],
     );
     assert!(!mismatched.status.success());
-    let stderr = String::from_utf8_lossy(&mismatched.stderr);
-    assert!(stderr.contains("does not match the current immutable plan"));
-    write_file(
-        &operation_paths[0],
-        &(encode_json_pretty(&interrupted_checkpoint) + "\n"),
-    );
+    assert!(String::from_utf8_lossy(&mismatched.stderr)
+        .contains("does not match the current immutable plan"));
+    assert_eq!(mismatched_checkpoint, native_git_bytes(ait.path(), checkpoint_path));
+    native_git_write(ait.path(), checkpoint_path, &interrupted_checkpoint);
 
-    json_output(
-        ait.path(),
-        &["tag", "delete", "lightweight", "--json"],
-    );
+    json_output(ait.path(), &["tag", "delete", "lightweight", "--json"]);
     let resumed = json_output(
         ait.path(),
         &[
@@ -700,9 +828,10 @@ fn native_git_import_automatically_resumes_the_same_immutable_plan() {
     assert_eq!(resumed["status"], json!("completed"));
     assert_eq!(resumed["operation_id"], json!(operation_id));
     assert_eq!(resumed["tag_count"], json!(2));
+    let resumed_refs = native_git_bytes(ait.path(), refs_path);
+    assert_eq!(&resumed_refs[..frozen_refs.len()], frozen_refs.as_slice());
     assert!(
-        json_output(ait.path(), &["line", "show", "git-main", "--json"])
-            ["head_snapshot_id"]
+        json_output(ait.path(), &["line", "show", "git-main", "--json"])["head_snapshot_id"]
             .is_string()
     );
     assert_eq!(
@@ -747,7 +876,10 @@ fn native_git_import_reports_sha256_as_an_explicit_unsupported_capability() {
     );
     assert_eq!(report["status"], json!("blocked"));
     assert_eq!(report["git_object_format"], json!("sha256"));
-    assert_eq!(report["blockers"][0]["kind"], json!("unsupported_object_format"));
+    assert_eq!(
+        report["blockers"][0]["kind"],
+        json!("unsupported_object_format")
+    );
     assert_eq!(report["mutated"], json!(false));
     assert!(!ait.path().join(".ait/git-interop/v1").exists());
 
@@ -879,10 +1011,7 @@ fn native_git_import_fails_closed_for_replace_refs_and_submodules() {
             &format!("160000,{gitlink_object},vendor/dependency"),
         ],
     );
-    fixture_git(
-        submodule_source.path(),
-        &["commit", "-m", "add gitlink"],
-    );
+    fixture_git(submodule_source.path(), &["commit", "-m", "add gitlink"]);
     let submodule_ait = init_empty_ait_git_interop_repo();
     let submodule_report = json_output(
         submodule_ait.path(),
@@ -919,8 +1048,7 @@ fn native_git_import_fails_closed_for_replace_refs_and_submodules() {
     assert!(String::from_utf8_lossy(&submodule_blocked.stderr)
         .contains("stopped before changing any AIT Snapshot or ref"));
     assert_eq!(
-        json_output(submodule_ait.path(), &["line", "show", "main", "--json"])
-            ["head_snapshot_id"],
+        json_output(submodule_ait.path(), &["line", "show", "main", "--json"])["head_snapshot_id"],
         JsonValue::Null
     );
     assert!(!submodule_ait
@@ -935,10 +1063,7 @@ fn native_ait_snapshots_export_deterministically_and_roundtrip_back_through_ait(
 
     let ait = init_empty_ait_git_interop_repo();
     write_file(&ait.path().join("native.txt"), "native root\n");
-    write_file(
-        &ait.path().join("bin/tool.sh"),
-        "#!/bin/sh\necho native\n",
-    );
+    write_file(&ait.path().join("bin/tool.sh"), "#!/bin/sh\necho native\n");
     let mut permissions = fs::metadata(ait.path().join("bin/tool.sh"))
         .unwrap()
         .permissions();
@@ -1070,10 +1195,7 @@ fn native_git_roundtrip_golden_history_matrix_preserves_supported_semantics() {
         .lines()
         .map(|line| line.split_whitespace().next().expect("commit graph row"))
         .collect::<BTreeSet<_>>();
-    let source_main_tree = fixture_git(
-        source.path(),
-        &["ls-tree", "-r", "refs/heads/main"],
-    );
+    let source_main_tree = fixture_git(source.path(), &["ls-tree", "-r", "refs/heads/main"]);
     let resolved_merge = fixture_git(
         source.path(),
         &[
@@ -1123,12 +1245,12 @@ fn native_git_roundtrip_golden_history_matrix_preserves_supported_semantics() {
             "--json",
         ],
     );
-    assert_eq!(dry_run["status"], json!("dry_run"));
     assert_eq!(dry_run["commit_count"], json!(source_commit_ids.len()));
+    assert_eq!(dry_run["status"], json!("blocked"));
     for (kind, count, disposition) in [
         ("signed_commits", 1, "preserved_raw_unverified"),
         ("signed_tags", 1, "preserved_raw_unverified"),
-        ("notes_refs", 1, "preserved_git_only"),
+        ("notes_refs", 1, "unsupported"),
     ] {
         let row = git_import_classification(&dry_run, kind);
         assert_eq!(row["count"], json!(count));
@@ -1139,6 +1261,24 @@ fn native_git_roundtrip_golden_history_matrix_preserves_supported_semantics() {
     assert_eq!(lfs["disposition"], json!("pointer_content_preserved"));
     assert_eq!(dry_run["mutated"], json!(false));
     assert!(!ait.path().join(".ait/git-interop/v1").exists());
+
+    let rejected_notes = command_output_with_env(
+        ait.path(),
+        &[
+            "git",
+            "import",
+            source.path().to_str().unwrap(),
+            "--all-branches-and-tags",
+            "--json",
+        ],
+        &[],
+    );
+    assert!(!rejected_notes.status.success());
+    assert!(
+        String::from_utf8_lossy(&rejected_notes.stderr).contains("notes ref(s) are unsupported")
+    );
+    assert!(!ait.path().join(".ait/git-interop/v1").exists());
+    fixture_git(source.path(), &["update-ref", "-d", "refs/notes/commits"]);
 
     let imported = json_output(
         ait.path(),
@@ -1155,34 +1295,42 @@ fn native_git_roundtrip_golden_history_matrix_preserves_supported_semantics() {
     assert_eq!(imported["line_count"], json!(7));
     assert_eq!(imported["tag_count"], json!(3));
 
-    let mappings = git_interop_mappings(ait.path());
-    let commit_mappings = mappings
-        .iter()
-        .filter(|mapping| mapping["kind"] == json!("commit"))
-        .collect::<Vec<_>>();
+    let commit_mappings = git_interop_mappings(ait.path());
     assert_eq!(commit_mappings.len(), source_commit_ids.len());
     for object_id in &source_commit_ids {
-        let mapping = commit_mappings
+        let (mapping, snapshot_id, raw) = commit_mappings
             .iter()
-            .find(|mapping| mapping["git_object_id"] == json!(object_id))
-            .unwrap_or_else(|| panic!("missing mapping for Git commit {object_id}"));
-        assert!(mapping["snapshot_id"].is_string());
-        assert!(mapping["git_tree_object_id"].is_string());
-        assert!(mapping["parent_git_object_ids"].is_array());
-        assert!(mapping["author"].is_object());
-        assert!(mapping["committer"].is_object());
-        assert!(mapping["message_base64"].is_string());
-        assert!(mapping["raw_commit_base64"].is_string());
-        assert!(mapping["file_modes"].is_array());
+            .find(|(m, _, _)| fixture_oid_hex(&m.object_id) == **object_id)
+            .unwrap_or_else(|| panic!("missing mapping for {object_id}"));
+        assert!(snapshot_id.starts_with("SNP-"));
+        assert!(mapping.mapping_meta & 8 != 0);
+        let original = Command::new("git")
+            .current_dir(source.path())
+            .args(["cat-file", "commit", object_id])
+            .output()
+            .unwrap();
+        assert!(original.status.success());
+        assert_eq!(*raw, original.stdout);
+        assert_eq!(
+            fixture_oid_hex(&mapping.tree_object_id),
+            fixture_git(
+                source.path(),
+                &["rev-parse", &format!("{object_id}^{{tree}}")]
+            )
+        );
     }
     let signed_commit = source_refs["refs/heads/signed"].as_str();
-    assert_eq!(
+    assert!(
         commit_mappings
             .iter()
-            .find(|mapping| mapping["git_object_id"] == json!(signed_commit))
-            .expect("signed commit mapping")["signed"],
-        json!(true)
+            .find(|(m, _, _)| fixture_oid_hex(&m.object_id) == signed_commit)
+            .unwrap()
+            .0
+            .mapping_meta
+            & 1
+            != 0
     );
+    assert!(!ait.path().join(".ait/git-interop/v1/mappings").exists());
 
     let targets = TempDir::new().expect("golden export targets");
     let target = targets.path().join("golden.git");
@@ -1306,16 +1454,13 @@ fn native_git_roundtrip_golden_history_matrix_preserves_supported_semantics() {
         ],
     );
     assert_eq!(second_import["status"], json!("completed"));
-    assert_eq!(second_import["commit_count"], json!(source_commit_ids.len()));
+    assert_eq!(
+        second_import["commit_count"],
+        json!(source_commit_ids.len())
+    );
     let second_commit_ids = git_interop_mappings(second_ait.path())
         .into_iter()
-        .filter(|mapping| mapping["kind"] == json!("commit"))
-        .map(|mapping| {
-            mapping["git_object_id"]
-                .as_str()
-                .expect("second-round Git object ID")
-                .to_string()
-        })
+        .map(|(mapping, _, _)| fixture_oid_hex(&mapping.object_id))
         .collect::<BTreeSet<_>>();
     assert_eq!(
         second_commit_ids,
@@ -1414,17 +1559,12 @@ fn native_git_mirror_reconciles_one_sided_changes_and_stops_divergence() {
     );
     assert_eq!(renamed["status"], json!("completed"));
     assert_eq!(renamed["state"], json!("equal"));
-    assert!(json_output(
-        ait.path(),
-        &["line", "show", "feature/renamed", "--json"]
-    )["head_snapshot_id"]
-        .is_string());
+    assert!(
+        json_output(ait.path(), &["line", "show", "feature/renamed", "--json"])["head_snapshot_id"]
+            .is_string()
+    );
     for removed in ["feature/topic", "doomed"] {
-        let output = command_output_with_env(
-            ait.path(),
-            &["line", "show", removed, "--json"],
-            &[],
-        );
+        let output = command_output_with_env(ait.path(), &["line", "show", removed, "--json"], &[]);
         assert!(!output.status.success(), "{removed} should be tombstoned");
     }
 

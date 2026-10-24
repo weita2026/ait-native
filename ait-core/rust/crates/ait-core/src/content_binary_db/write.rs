@@ -84,6 +84,14 @@ pub struct BinaryDbSnapshotWriteInput {
     pub created_at: String,
 }
 
+/// In-memory replay instruction, not a persisted record or wire contract.
+/// The source's fixed ownership supplies the output's Task/optional Change.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BinaryDbSnapshotReplayWriteInput {
+    pub source_snapshot_id: String,
+    pub snapshot: BinaryDbSnapshotWriteInput,
+}
+
 pub struct BinaryDbContentWriteCoordinator<'a, B, const WRITE_LAYOUT: u32>
 where
     B: BinaryDb,
@@ -950,6 +958,61 @@ where
         Ok(wrote)
     }
 
+    /// Append a completed history replay atomically without reopening its
+    /// owners or changing their successful receipts/publication mappings.
+    /// Every output must be new; unchanged replay reuses IDs without writing.
+    pub fn record_replayed_snapshots(
+        &self,
+        scope: BinaryDbCommandScope,
+        inputs: &[BinaryDbSnapshotReplayWriteInput],
+        repo_name: &str,
+        namespace: &str,
+    ) -> StoreResult<()>
+    where
+        B: Clone,
+    {
+        ensure_content_write_scope(scope)?;
+        if inputs.is_empty() {
+            return Ok(());
+        }
+        let workflow =
+            crate::workflow_binary_db::BinaryDbWorkflowStore::<_, WRITE_LAYOUT>::new_with_namespace(
+                self.snapshots.db().clone(),
+                repo_name,
+                namespace,
+            );
+        let mut tx = self.snapshots.begin_write_txn(scope)?;
+        for replay in inputs {
+            if lookup_snapshot_index_in_write::<B, _, WRITE_LAYOUT>(
+                &tx,
+                &replay.snapshot.snapshot_id,
+                false,
+            )?
+            .is_some()
+            {
+                return Err(
+                    "History replay may only author a new Snapshot, including after tombstoning"
+                        .into(),
+                );
+            }
+            if !self.record_snapshot_with_history_boundary_in_write(
+                &mut tx,
+                &replay.snapshot,
+                false,
+            )? {
+                return Err("History replay may only author a new Snapshot; reuse existing IDs without capture".into());
+            }
+            workflow.record_replayed_snapshot_link_in_write(
+                &mut tx,
+                &replay.source_snapshot_id,
+                &replay.snapshot.snapshot_id,
+                parse_created_at_s(&replay.snapshot.created_at)?,
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
     pub fn record_snapshot_at_remote_head_history_boundary(
         &self,
         scope: BinaryDbCommandScope,
@@ -1300,13 +1363,25 @@ where
     B: BinaryDb,
     F: BinaryDbFsyncPolicy,
 {
+    lookup_snapshot_index_in_write::<B, F, WRITE_LAYOUT>(tx, snapshot_id, true)
+}
+
+fn lookup_snapshot_index_in_write<B, F, const WRITE_LAYOUT: u32>(
+    tx: &BinaryDbWriteTxn<'_, B, F>,
+    snapshot_id: &str,
+    live_only: bool,
+) -> StoreResult<Option<u32>>
+where
+    B: BinaryDb,
+    F: BinaryDbFsyncPolicy,
+{
     let key = snapshot_id_index_key(snapshot_id)?;
     for index in newest_unique_candidates(
         tx.lookup_index(BinarySnapshotCodec::<WRITE_LAYOUT>::id_index(), &key)?,
     ) {
         let raw = tx.read_record(BinarySnapshotCodec::<WRITE_LAYOUT>::record_file(), index)?;
         let record = BinarySnapshotCodec::<WRITE_LAYOUT>::decode_record(&raw)?;
-        if !record.is_tombstone()
+        if (!live_only || !record.is_tombstone())
             && snapshot_id_from_hash48(record.snapshot_hash48()).eq_ignore_ascii_case(snapshot_id)
         {
             return Ok(Some(index));

@@ -17,6 +17,10 @@ pub(in crate::pack_substrate) fn validate_zstd_chunked_index(
     expected_pack_format: &str,
     data_end: Option<u64>,
 ) -> Result<(), String> {
+    #[cfg(test)]
+    if kind == ZSTD_CHUNKED_INDEX_KIND_OBJECT {
+        crate::binary_db::read_profile::note("object_index_structural_validations", 0);
+    }
     if pack_index.pack_format != expected_pack_format {
         return Err(format!(
             "Invalid zstd chunked pack: unsupported pack_format {}",

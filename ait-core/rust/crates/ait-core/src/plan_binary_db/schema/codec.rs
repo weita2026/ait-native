@@ -3,8 +3,8 @@ use crate::binary_db::{BinaryFileId, BinaryPayloadFileId, StoreResult};
 use super::files::{
     PLAN_BIN, PLAN_ITEM_BIN, PLAN_ITEM_PAYLOAD_BIN, PLAN_ITEM_RECORD_SIZE,
     PLAN_ITEM_RECORD_SIZE_USIZE, PLAN_LAYOUT_ID, PLAN_PAYLOAD_BIN, PLAN_RECORD_SIZE,
-    PLAN_RECORD_SIZE_USIZE, PLAN_REVISION_BIN, PLAN_REVISION_PAYLOAD_BIN,
-    PLAN_REVISION_RECORD_SIZE, PLAN_REVISION_RECORD_SIZE_USIZE,
+    PLAN_REVISION_BIN, PLAN_REVISION_PAYLOAD_BIN, PLAN_REVISION_RECORD_SIZE, REMOTE_PLAN_LAYOUT_ID,
+    REMOTE_PLAN_RECORD_SIZE, REMOTE_PLAN_REVISION_RECORD_SIZE,
 };
 use super::payloads::{PlanItemPayload, PlanPayload, PlanRevisionPayload};
 use super::records::{PlanItemRecord, PlanRecord, PlanRevisionRecord};
@@ -15,19 +15,23 @@ pub struct PlanItemCodec<const LAYOUT: u32>;
 
 impl<const LAYOUT: u32> PlanCodec<LAYOUT> {
     pub const LAYOUT_ID: u32 = LAYOUT;
-    pub const RECORD_SIZE: u32 = PLAN_RECORD_SIZE;
+    pub const RECORD_SIZE: u32 = if LAYOUT == REMOTE_PLAN_LAYOUT_ID {
+        REMOTE_PLAN_RECORD_SIZE
+    } else {
+        PLAN_RECORD_SIZE
+    };
 
     pub fn record_file() -> BinaryFileId {
-        BinaryFileId::new(PLAN_BIN, LAYOUT, PLAN_RECORD_SIZE)
+        BinaryFileId::new(PLAN_BIN, LAYOUT, Self::RECORD_SIZE)
     }
 
     pub fn payload_file() -> BinaryPayloadFileId {
-        BinaryPayloadFileId::new(PLAN_PAYLOAD_BIN, LAYOUT)
+        BinaryPayloadFileId::new(PLAN_PAYLOAD_BIN, PLAN_LAYOUT_ID)
     }
 
     pub fn encode_record(record: &PlanRecord) -> StoreResult<Vec<u8>> {
         ensure_supported_codec_layout(LAYOUT)?;
-        let mut out = Vec::with_capacity(PLAN_RECORD_SIZE_USIZE);
+        let mut out = Vec::with_capacity(Self::RECORD_SIZE as usize);
         push_u8(&mut out, record.plan_meta);
         push_u8(&mut out, record.reserved0);
         push_u16(&mut out, record.payload_len);
@@ -38,13 +42,14 @@ impl<const LAYOUT: u32> PlanCodec<LAYOUT> {
         push_u64(&mut out, record.created_at_s);
         push_u64(&mut out, record.updated_at_s);
         push_u64(&mut out, record.published_at_s);
-        require_encoded_len(&out, PLAN_RECORD_SIZE_USIZE, "PlanRecord")?;
+        encode_actor_tail::<LAYOUT>(&mut out, record.actor_index_plus1)?;
+        require_encoded_len(&out, Self::RECORD_SIZE as usize, "PlanRecord")?;
         Ok(out)
     }
 
     pub fn decode_record(raw: &[u8]) -> StoreResult<PlanRecord> {
         ensure_supported_codec_layout(LAYOUT)?;
-        require_raw_len(raw, PLAN_RECORD_SIZE_USIZE, "PlanRecord")?;
+        require_raw_len(raw, Self::RECORD_SIZE as usize, "PlanRecord")?;
         let mut cursor = Cursor::new(raw);
         Ok(PlanRecord {
             plan_meta: cursor.take_u8("plan_meta")?,
@@ -58,6 +63,11 @@ impl<const LAYOUT: u32> PlanCodec<LAYOUT> {
             created_at_s: cursor.take_u64("created_at_s")?,
             updated_at_s: cursor.take_u64("updated_at_s")?,
             published_at_s: cursor.take_u64("published_at_s")?,
+            actor_index_plus1: if LAYOUT == REMOTE_PLAN_LAYOUT_ID {
+                cursor.take_u32("actor_index_plus1")?
+            } else {
+                0
+            },
         })
     }
 
@@ -77,19 +87,23 @@ impl<const LAYOUT: u32> PlanCodec<LAYOUT> {
 
 impl<const LAYOUT: u32> PlanRevisionCodec<LAYOUT> {
     pub const LAYOUT_ID: u32 = LAYOUT;
-    pub const RECORD_SIZE: u32 = PLAN_REVISION_RECORD_SIZE;
+    pub const RECORD_SIZE: u32 = if LAYOUT == REMOTE_PLAN_LAYOUT_ID {
+        REMOTE_PLAN_REVISION_RECORD_SIZE
+    } else {
+        PLAN_REVISION_RECORD_SIZE
+    };
 
     pub fn record_file() -> BinaryFileId {
-        BinaryFileId::new(PLAN_REVISION_BIN, LAYOUT, PLAN_REVISION_RECORD_SIZE)
+        BinaryFileId::new(PLAN_REVISION_BIN, LAYOUT, Self::RECORD_SIZE)
     }
 
     pub fn payload_file() -> BinaryPayloadFileId {
-        BinaryPayloadFileId::new(PLAN_REVISION_PAYLOAD_BIN, LAYOUT)
+        BinaryPayloadFileId::new(PLAN_REVISION_PAYLOAD_BIN, PLAN_LAYOUT_ID)
     }
 
     pub fn encode_record(record: &PlanRevisionRecord) -> StoreResult<Vec<u8>> {
         ensure_supported_codec_layout(LAYOUT)?;
-        let mut out = Vec::with_capacity(PLAN_REVISION_RECORD_SIZE_USIZE);
+        let mut out = Vec::with_capacity(Self::RECORD_SIZE as usize);
         push_u8(&mut out, record.revision_meta);
         push_u8(&mut out, record.reserved0);
         push_u16(&mut out, record.payload_len);
@@ -104,13 +118,14 @@ impl<const LAYOUT: u32> PlanRevisionCodec<LAYOUT> {
         push_u32(&mut out, record.root_entry_ordinal);
         push_u64(&mut out, record.created_at_s);
         push_u64(&mut out, record.published_at_s);
-        require_encoded_len(&out, PLAN_REVISION_RECORD_SIZE_USIZE, "PlanRevisionRecord")?;
+        encode_actor_tail::<LAYOUT>(&mut out, record.actor_index_plus1)?;
+        require_encoded_len(&out, Self::RECORD_SIZE as usize, "PlanRevisionRecord")?;
         Ok(out)
     }
 
     pub fn decode_record(raw: &[u8]) -> StoreResult<PlanRevisionRecord> {
         ensure_supported_codec_layout(LAYOUT)?;
-        require_raw_len(raw, PLAN_REVISION_RECORD_SIZE_USIZE, "PlanRevisionRecord")?;
+        require_raw_len(raw, Self::RECORD_SIZE as usize, "PlanRevisionRecord")?;
         let mut cursor = Cursor::new(raw);
         Ok(PlanRevisionRecord {
             revision_meta: cursor.take_u8("revision_meta")?,
@@ -127,6 +142,11 @@ impl<const LAYOUT: u32> PlanRevisionCodec<LAYOUT> {
             root_entry_ordinal: cursor.take_u32("root_entry_ordinal")?,
             created_at_s: cursor.take_u64("created_at_s")?,
             published_at_s: cursor.take_u64("published_at_s")?,
+            actor_index_plus1: if LAYOUT == REMOTE_PLAN_LAYOUT_ID {
+                cursor.take_u32("actor_index_plus1")?
+            } else {
+                0
+            },
         })
     }
 
@@ -194,11 +214,11 @@ impl<const LAYOUT: u32> PlanItemCodec<LAYOUT> {
     pub const RECORD_SIZE: u32 = PLAN_ITEM_RECORD_SIZE;
 
     pub fn record_file() -> BinaryFileId {
-        BinaryFileId::new(PLAN_ITEM_BIN, LAYOUT, PLAN_ITEM_RECORD_SIZE)
+        BinaryFileId::new(PLAN_ITEM_BIN, PLAN_LAYOUT_ID, PLAN_ITEM_RECORD_SIZE)
     }
 
     pub fn payload_file() -> BinaryPayloadFileId {
-        BinaryPayloadFileId::new(PLAN_ITEM_PAYLOAD_BIN, LAYOUT)
+        BinaryPayloadFileId::new(PLAN_ITEM_PAYLOAD_BIN, PLAN_LAYOUT_ID)
     }
 
     pub fn encode_record(record: &PlanItemRecord) -> StoreResult<Vec<u8>> {
@@ -278,8 +298,17 @@ impl<const LAYOUT: u32> PlanItemCodec<LAYOUT> {
     }
 }
 
+fn encode_actor_tail<const LAYOUT: u32>(out: &mut Vec<u8>, actor: u32) -> StoreResult<()> {
+    if LAYOUT == REMOTE_PLAN_LAYOUT_ID {
+        push_u32(out, actor);
+    } else if actor != 0 {
+        return Err("Local Plan layout 1 cannot persist Actor attribution".into());
+    }
+    Ok(())
+}
+
 fn ensure_supported_codec_layout(layout: u32) -> StoreResult<()> {
-    if layout == PLAN_LAYOUT_ID {
+    if matches!(layout, PLAN_LAYOUT_ID | REMOTE_PLAN_LAYOUT_ID) {
         return Ok(());
     }
     Err(format!(

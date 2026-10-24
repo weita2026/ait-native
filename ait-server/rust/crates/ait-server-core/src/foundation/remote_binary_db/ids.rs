@@ -398,16 +398,18 @@ pub enum BinaryDbCommandScope {
     /// A serving Plan-bound Task start owns Plan plus Workflow so the selected
     /// Plan head, Task, and initial Change become visible atomically.
     ServerTaskStart,
-    /// The only serving composite mutation: Content plus Workflow for an
+    /// A serving composite mutation: Content plus Workflow for an
     /// atomic line advance and Land workflow append.
     ServerLand,
     /// A remote-sync metadata commit. Raw pack bytes were published earlier,
     /// so the transaction owns Content only despite its historical name.
     ServerRemoteSyncCommit,
+    /// Atomic Snapshot content plus exact capture-time workflow ownership.
+    ServerSnapshotCapture,
 }
 
 impl BinaryDbCommandScope {
-    pub const ALL: [Self; 9] = [
+    pub const ALL: [Self; 10] = [
         Self::General,
         Self::ServerContent,
         Self::ServerLand,
@@ -417,6 +419,7 @@ impl BinaryDbCommandScope {
         Self::ServerRepositoryPack,
         Self::ServerTaskStart,
         Self::ServerWorkflow,
+        Self::ServerSnapshotCapture,
     ];
 
     pub const fn lock_file_names(self) -> &'static [&'static str] {
@@ -435,7 +438,14 @@ impl BinaryDbCommandScope {
             Self::ServerRepositoryPack => &["server-repository-pack.write.lock"],
             Self::ServerContent => &["server-content.write.lock"],
             Self::ServerTaskStart => &["server-plan.write.lock", "server-workflow.write.lock"],
-            Self::ServerLand => &["server-content.write.lock", "server-workflow.write.lock"],
+            Self::ServerLand => &[
+                "server-content.write.lock",
+                "server-queue.write.lock",
+                "server-workflow.write.lock",
+            ],
+            Self::ServerSnapshotCapture => {
+                &["server-content.write.lock", "server-workflow.write.lock"]
+            }
             Self::ServerRemoteSyncCommit => &["server-content.write.lock"],
         }
     }
@@ -452,7 +462,12 @@ impl BinaryDbCommandScope {
             Self::ServerRepositoryPack => BinaryDbReadScope::REPOSITORY_PACK,
             Self::ServerContent | Self::ServerRemoteSyncCommit => BinaryDbReadScope::CONTENT,
             Self::ServerTaskStart => BinaryDbReadScope::PLAN.union(BinaryDbReadScope::WORKFLOW),
-            Self::ServerLand => BinaryDbReadScope::CONTENT.union(BinaryDbReadScope::WORKFLOW),
+            Self::ServerLand => BinaryDbReadScope::CONTENT
+                .union(BinaryDbReadScope::WORKFLOW)
+                .union(BinaryDbReadScope::QUEUE),
+            Self::ServerSnapshotCapture => {
+                BinaryDbReadScope::CONTENT.union(BinaryDbReadScope::WORKFLOW)
+            }
         }
     }
 
@@ -461,7 +476,7 @@ impl BinaryDbCommandScope {
             Self::General => true,
             Self::ServerLand => matches!(
                 requested,
-                Self::ServerLand | Self::ServerContent | Self::ServerWorkflow
+                Self::ServerLand | Self::ServerContent | Self::ServerWorkflow | Self::ServerQueue
             ),
             Self::ServerTaskStart => matches!(
                 requested,
@@ -470,6 +485,10 @@ impl BinaryDbCommandScope {
             Self::ServerRemoteSyncCommit => matches!(
                 requested,
                 Self::ServerRemoteSyncCommit | Self::ServerContent
+            ),
+            Self::ServerSnapshotCapture => matches!(
+                requested,
+                Self::ServerSnapshotCapture | Self::ServerContent | Self::ServerWorkflow
             ),
             _ => self as u8 == requested as u8,
         }
@@ -496,6 +515,7 @@ impl BinaryDbCommandScope {
             Self::ServerTaskStart => "server-task-start.write.journal",
             Self::ServerLand => "server-land.write.journal",
             Self::ServerRemoteSyncCommit => "server-remote-sync-commit.write.journal",
+            Self::ServerSnapshotCapture => "server-snapshot-capture.write.journal",
         }
     }
 

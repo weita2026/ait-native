@@ -1,6 +1,7 @@
 use crate::foundation::remote_binary_db::{BinaryDbFileFamily, BinaryFileId, BinaryPayloadFileId};
 
 pub(super) const PLAN_LAYOUT_ID: u32 = 1;
+pub(super) const REMOTE_PLAN_LAYOUT_ID: u32 = 2;
 
 pub(super) const PLAN_BIN: &str = "plan.bin";
 pub(super) const PLAN_PAYLOAD_BIN: &str = "plan_payload.bin";
@@ -11,6 +12,8 @@ pub(super) const PLAN_ITEM_PAYLOAD_BIN: &str = "plan_item_payload.bin";
 
 pub(super) const PLAN_RECORD_SIZE: u32 = 48;
 pub(super) const PLAN_REVISION_RECORD_SIZE: u32 = 56;
+pub(super) const REMOTE_PLAN_RECORD_SIZE: u32 = 52;
+pub(super) const REMOTE_PLAN_REVISION_RECORD_SIZE: u32 = 60;
 pub(super) const PLAN_ITEM_RECORD_SIZE: u32 = 16;
 
 pub(super) const PLAN_STATE_DRAFT_META: u8 = 0;
@@ -54,12 +57,16 @@ pub(super) struct CompactPlanLayoutSpec {
 
 impl CompactPlanLayoutSpec {
     fn record_file(self, file: CompactPlanFile) -> BinaryFileId {
-        BinaryFileId::new(
-            file.path(),
-            self.layout_id,
-            file.record_size(),
-            BinaryDbFileFamily::Plan,
-        )
+        let (layout, width) = match (file, self.layout_id) {
+            (CompactPlanFile::Plan, REMOTE_PLAN_LAYOUT_ID) => {
+                (REMOTE_PLAN_LAYOUT_ID, REMOTE_PLAN_RECORD_SIZE)
+            }
+            (CompactPlanFile::PlanRevision, REMOTE_PLAN_LAYOUT_ID) => {
+                (REMOTE_PLAN_LAYOUT_ID, REMOTE_PLAN_REVISION_RECORD_SIZE)
+            }
+            _ => (PLAN_LAYOUT_ID, file.record_size()),
+        };
+        BinaryFileId::new(file.path(), layout, width, BinaryDbFileFamily::Plan)
     }
 }
 
@@ -70,6 +77,9 @@ pub(super) const COMPACT_PLAN_LAYOUT_V1: CompactPlanLayoutSpec = CompactPlanLayo
 pub(super) fn compact_plan_layout_for(layout: u32) -> Result<CompactPlanLayoutSpec, String> {
     match layout {
         PLAN_LAYOUT_ID => Ok(COMPACT_PLAN_LAYOUT_V1),
+        REMOTE_PLAN_LAYOUT_ID => Ok(CompactPlanLayoutSpec {
+            layout_id: REMOTE_PLAN_LAYOUT_ID,
+        }),
         _ => Err(format!(
             "unsupported compact Plan Binary DB layout {layout}"
         )),
@@ -107,6 +117,7 @@ pub(super) struct PlanRecord {
     pub(super) created_at_s: u64,
     pub(super) updated_at_s: u64,
     pub(super) published_at_s: u64,
+    pub(super) actor_index_plus1: u32,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -125,6 +136,7 @@ pub(super) struct PlanRevisionRecord {
     pub(super) root_entry_ordinal: u32,
     pub(super) created_at_s: u64,
     pub(super) published_at_s: u64,
+    pub(super) actor_index_plus1: u32,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -154,7 +166,7 @@ pub(super) struct PlanItemPayload {
 }
 
 pub(super) fn plan_file() -> BinaryFileId {
-    plan_file_for(PLAN_LAYOUT_ID).expect("server Plan Binary DB v1 plan file must be supported")
+    plan_file_for(REMOTE_PLAN_LAYOUT_ID).expect("server Remote Plan layout must be supported")
 }
 
 pub(super) fn plan_payload_file() -> BinaryPayloadFileId {
@@ -162,8 +174,8 @@ pub(super) fn plan_payload_file() -> BinaryPayloadFileId {
 }
 
 pub(super) fn plan_revision_file() -> BinaryFileId {
-    plan_revision_file_for(PLAN_LAYOUT_ID)
-        .expect("server Plan Binary DB v1 plan revision file must be supported")
+    plan_revision_file_for(REMOTE_PLAN_LAYOUT_ID)
+        .expect("server Remote Plan revision layout must be supported")
 }
 
 pub(super) fn plan_revision_payload_file() -> BinaryPayloadFileId {

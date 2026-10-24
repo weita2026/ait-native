@@ -28,6 +28,60 @@ where
         Ok(latest)
     }
 
+    pub(super) fn require_finish_evidence<A: ReadV0>(
+        &self,
+        read: &A,
+        index: u32,
+        patchset: V0PatchsetRecord,
+    ) -> Result<(), String> {
+        let task = self
+            .read_task(read, patchset.task_index)
+            .map_err(|e| e.to_string())?;
+        let (_, attestation) = self
+            .latest_attestation_for_patchset(read, index)?
+            .ok_or("TASK_LAND_NOT_READY: current candidate has no Attestation")?;
+        let (_, policy) = self
+            .latest_policy_decision(read, index)?
+            .ok_or("TASK_LAND_NOT_READY: current candidate has no Policy decision")?;
+        if task.task_meta & TASK_META_READY_TO_LAND == 0
+            || task.task_meta
+                & (TASK_META_REVIEW_PENDING | TASK_META_VALIDATION_PENDING | TASK_META_BLOCKED)
+                != 0
+            || patchset.patchset_meta & PATCHSET_EVALUATION_PENDING != 0
+            || attestation.patch_ordinal != patchset.patch_ordinal
+            || attestation.change_ordinal_plus1 != patchset.change_ordinal_plus1
+            || attestation.attest_meta & ATTEST_REVOKED != 0
+            || attestation.attest_meta & ATTEST_VERIFICATION_MASK != 2
+            || policy.patch_ordinal != patchset.patch_ordinal
+            || policy.change_ordinal_plus1 != patchset.change_ordinal_plus1
+            || policy.policy_meta & POLICY_DECISION_MASK != 1
+        {
+            return Err("TASK_LAND_NOT_READY: exact current candidate evidence is pending, invalid or blocked".to_string());
+        }
+        if attestation.attest_meta & ATTEST_REQUIRE_TESTS_PASS != 0
+            && (patchset.ci_completed_at_s == 0
+                || patchset.ci_run_seq == 0
+                || patchset.ci_status(CI_STATUS_OVERALL_SHIFT) != CI_STATUS_PASS
+                || patchset.ci_status(CI_STATUS_TESTS_SHIFT) != CI_STATUS_PASS
+                || patchset.ci_suite_result_count == 0
+                || patchset.ci_blocking_failure_count != 0)
+        {
+            return Err("TASK_LAND_NOT_READY: exact Patchset CI has not passed".to_string());
+        }
+        if attestation.attest_meta & ATTEST_REQUIRE_LINT_PASS != 0
+            && (patchset.ci_completed_at_s == 0
+                || patchset.ci_status(CI_STATUS_LINT_SHIFT) != CI_STATUS_PASS)
+        {
+            return Err("TASK_LAND_NOT_READY: exact Patchset lint has not passed".to_string());
+        }
+        if attestation.attest_meta & ATTEST_REQUIRE_HUMAN_REVIEW != 0
+            && self.live_human_review_approvals(read, index)? == 0
+        {
+            return Err("TASK_LAND_NOT_READY: exact Patchset human Review is missing".to_string());
+        }
+        Ok(())
+    }
+
     pub(super) fn attestation_at(
         &self,
         read: &BinaryDbReadTxn<'_, D>,
@@ -42,13 +96,14 @@ where
         if record.attest_meta & ATTEST_TOMBSTONE != 0 {
             return Err(format!("Unknown Attestation index {index}"));
         }
-        let (_, change, patchset) = self.change_for_patchset_index(read, record.patchset_index)?;
+        let (workflow_owner, patchset) =
+            self.owner_for_patchset_index(read, record.patchset_index)?;
         if record.patch_ordinal != patchset.patch_ordinal
-            || record.change_ordinal != change.change_ordinal
+            || record.change_ordinal_plus1 != patchset.change_ordinal_plus1
         {
             return Err("Binary DB v0 Attestation ownership ordinals disagree".to_string());
         }
-        let patchset_id = self.patchset_id(change, patchset.patch_ordinal);
+        let patchset_id = self.patchset_public_id(patchset);
         let author_mode = match (patchset.patchset_meta & PATCHSET_AUTHOR_MODE_MASK) >> 2 {
             0 => "human_only",
             1 => "human_with_ai_assist",
@@ -67,11 +122,11 @@ where
             _ => unreachable!(),
         };
         Ok(json!({
-            "attestation_id": self.attestation_id(change.task_index, record.attest_ordinal),
+            "attestation_id": self.attestation_id(workflow_owner.task_index, record.attest_ordinal),
             "repo_id": self.db.repo_id().as_str(),
-            "task_id": self.task_id(change.task_index),
-            "change_id": format!("C-{:02}", change.change_ordinal + 1),
-            "change_ref": self.change_ref(change.task_index, change.change_ordinal),
+            "task_id": self.task_id(workflow_owner.task_index),
+            "change_id": workflow_owner.change.map(|(_, change)| format!("C-{:02}", change.change_ordinal + 1)),
+            "change_ref": workflow_owner.change.map(|(_, change)| self.change_ref(workflow_owner.task_index, change.change_ordinal)),
             "patchset_id": patchset_id,
             "verification_state": verification_state,
             "revoked": record.attest_meta & ATTEST_REVOKED != 0,
@@ -180,13 +235,13 @@ where
         if record.policy_meta & POLICY_TOMBSTONE != 0 {
             return Err(format!("Unknown Policy index {index}"));
         }
-        let (_, change, patchset) = self.change_for_patchset_index(read, record.patchset_index)?;
+        let (_, patchset) = self.owner_for_patchset_index(read, record.patchset_index)?;
         if record.patch_ordinal != patchset.patch_ordinal
-            || record.change_ordinal != change.change_ordinal
+            || record.change_ordinal_plus1 != patchset.change_ordinal_plus1
         {
             return Err("Binary DB v0 Policy ownership ordinals disagree".to_string());
         }
-        let patchset_id = self.patchset_id(change, patchset.patch_ordinal);
+        let patchset_id = self.patchset_public_id(patchset);
         let checks = self
             .policy_checks_at(read, record)?
             .into_iter()
@@ -203,7 +258,7 @@ where
         }))
     }
 
-    fn latest_live_review_approvals<A: ReadV0>(
+    fn live_human_review_approvals<A: ReadV0>(
         &self,
         read: &A,
         patchset_index: u32,
@@ -211,7 +266,7 @@ where
         let count = read
             .record_count_v0(WorkflowBinaryV0Codec::review_file())
             .map_err(|error| Self::error("Policy Review read", error))?;
-        let mut approvals = 0_usize;
+        let mut decisions = BTreeMap::new();
         for index in 0..count {
             let review = WorkflowBinaryV0Codec::decode_review(
                 &read
@@ -219,10 +274,26 @@ where
                     .map_err(|error| Self::error("Policy Review read", error))?,
             )
             .map_err(|error| Self::error("Policy Review decode", error))?;
-            if review.patchset_index == patchset_index
-                && review.review_meta & REVIEW_TOMBSTONE == 0
-                && review.review_meta & REVIEW_ACTION_MASK == 2
+            if review.patchset_index == patchset_index && review.review_meta & REVIEW_TOMBSTONE == 0
             {
+                let actor_index = review
+                    .actor_index_plus1
+                    .checked_sub(1)
+                    .ok_or_else(|| "Policy Review has no Actor".to_string())?;
+                match review.review_meta & REVIEW_ACTION_MASK {
+                    2 => {
+                        decisions.insert(actor_index, true);
+                    }
+                    3 | 4 => {
+                        decisions.insert(actor_index, false);
+                    }
+                    _ => {}
+                }
+            }
+        }
+        let mut approvals = 0;
+        for (actor_index, approved) in decisions {
+            if approved && self.actor_at(read, actor_index)?.0.actor_meta & 0b111 == 0 {
                 approvals += 1;
             }
         }
@@ -257,184 +328,35 @@ where
     }
 
     fn land_index_for_id<A: ReadV0>(&self, read: &A, submission_id: &str) -> Result<u32, String> {
-        let (change_ref, _) = submission_id
+        let (task_id, _) = submission_id
             .rsplit_once("/L-")
-            .ok_or_else(|| format!("{submission_id:?} is not a normalized Land identity"))?;
-        let change_index = self.change_index_for_ref(read, change_ref)?;
-        let ordinal = Self::parse_owned_ordinal(submission_id, change_ref, "L")?;
-        let count = read
-            .record_count_v0(WorkflowBinaryV0Codec::land_file())
-            .map_err(|error| Self::error("Land identity read", error))?;
-        let mut found = None;
-        for index in 0..count {
-            let record = WorkflowBinaryV0Codec::decode_land(
+            .ok_or("Invalid Task Land identity")?;
+        let task_index = self.task_index_for_id(read, task_id)?;
+        let ordinal = Self::parse_owned_ordinal(submission_id, task_id, "L")?;
+        let mut cursor = self
+            .task_inventory(read, "task_land_index.bin", task_index)?
+            .latest_index_plus1
+            .checked_sub(1);
+        let mut seen = BTreeSet::new();
+        while let Some(index) = cursor {
+            if !seen.insert(index) {
+                return Err("Task Land inventory has a cycle".to_string());
+            }
+            let land = WorkflowBinaryV0Codec::decode_land(
                 &read
                     .read_record_v0(WorkflowBinaryV0Codec::land_file(), index)
-                    .map_err(|error| Self::error("Land identity read", error))?,
+                    .map_err(|e| e.to_string())?,
             )
-            .map_err(|error| Self::error("Land identity decode", error))?;
-            if record.land_meta & LAND_TOMBSTONE == 0
-                && record.change_index == change_index
-                && record.land_ordinal == ordinal
-                && found.replace(index).is_some()
-            {
-                return Err(format!(
-                    "Duplicate Binary DB v0 Land identity: {submission_id}"
-                ));
+            .map_err(|e| e.to_string())?;
+            if land.task_index != task_index {
+                return Err("Task Land owner disagrees".to_string());
             }
+            if land.land_meta & LAND_TOMBSTONE == 0 && land.land_ordinal == ordinal {
+                return Ok(index);
+            }
+            cursor = land.previous_task_land_index_plus1.checked_sub(1);
         }
-        found.ok_or_else(|| format!("Unknown land: {submission_id}"))
-    }
-
-    pub(super) fn land_at<A: ReadV0>(&self, read: &A, index: u32) -> Result<JsonValue, String> {
-        let record = WorkflowBinaryV0Codec::decode_land(
-            &read
-                .read_record_v0(WorkflowBinaryV0Codec::land_file(), index)
-                .map_err(|error| Self::error("Land read", error))?,
-        )
-        .map_err(|error| Self::error("Land decode", error))?;
-        if record.land_meta & LAND_TOMBSTONE != 0 {
-            return Err(format!("Unknown Land index {index}"));
-        }
-        let change = self
-            .read_change(read, record.change_index)
-            .map_err(|error| Self::error("Land Change read", error))?;
-        let patchset = self
-            .read_patchset(read, record.patchset_index)
-            .map_err(|error| Self::error("Land Patchset read", error))?;
-        if record.change_ordinal != change.change_ordinal
-            || patchset.change_index != record.change_index
-        {
-            return Err("Binary DB v0 Land ownership relation disagrees".to_string());
-        }
-        let line_raw = read
-            .read_record_v0(
-                crate::foundation::server_content_binary_db::ServerBinaryLineCodec::<1>::record_file(),
-                record.target_line_index_plus1 - 1,
-            )
-            .map_err(|error| Self::error("Land target Line read", error))?;
-        let line_record =
-            crate::foundation::server_content_binary_db::ServerBinaryLineCodec::<1>::decode_record(
-                &line_raw,
-            )
-            .map_err(|error| Self::error("Land target Line decode", error))?;
-        let target_line = self.content_line_name(read, &line_record)?;
-        let snapshot_id = |plus1: u32| -> Result<JsonValue, String> {
-            plus1
-                .checked_sub(1)
-                .map(|snapshot_index| {
-                    self.content_snapshot_id(read, snapshot_index)
-                        .map(JsonValue::String)
-                        .map_err(|error| format!("Land Snapshot read failed: {error}"))
-                })
-                .transpose()
-                .map(|value| value.unwrap_or(JsonValue::Null))
-        };
-        let pre_target = snapshot_id(record.pre_land_target_snapshot_index_plus1)?;
-        let landed_snapshot = snapshot_id(record.landed_snapshot_index_plus1)?;
-        let base_snapshot = self
-            .content_snapshot_id(read, patchset.base_snapshot_index)
-            .map_err(|error| format!("Land base Snapshot read failed: {error}"))?;
-        let revision_snapshot = self
-            .content_snapshot_id(read, patchset.revision_snapshot_index)
-            .map_err(|error| format!("Land revision Snapshot read failed: {error}"))?;
-        let patchset_summary_raw = read
-            .read_payload_v0(
-                WorkflowBinaryV0Codec::patchset_summary_file(),
-                patchset.summary_offset,
-                u32::from(patchset.summary_len),
-            )
-            .map_err(|error| Self::error("Land Patchset summary read", error))?;
-        let patchset_summary = WorkflowBinaryV0Codec::decode_single_text_payload(
-            &patchset_summary_raw,
-            "Land Patchset summary",
-        )
-        .map_err(|error| Self::error("Land Patchset summary decode", error))?;
-        let (source_kind, governance_authority) =
-            history_promotion::source_kind_for_summary(patchset_summary);
-        let status = match record.land_meta & LAND_STATUS_MASK {
-            LAND_STATUS_QUEUED => "queued",
-            LAND_STATUS_RUNNING => "running",
-            LAND_STATUS_SUCCEEDED => "succeeded",
-            LAND_STATUS_BLOCKED => "blocked",
-            LAND_STATUS_FAILED => "failed",
-            LAND_STATUS_CANCELED => "canceled",
-            LAND_STATUS_UPDATING => "updating",
-            _ => return Err("Binary DB v0 Land status is reserved".to_string()),
-        };
-        let mode = match (record.land_meta & LAND_MODE_MASK) >> 5 {
-            LAND_MODE_DIRECT => "direct",
-            LAND_MODE_MERGE => "merge",
-            LAND_MODE_FF_ONLY => "ff-only",
-            _ => return Err("Binary DB v0 Land mode is reserved".to_string()),
-        };
-        let failure = match record.failure_kind {
-            0 => None,
-            1 => Some("BASE_STALE"),
-            2 => Some("POLICY_BLOCKED"),
-            3 => Some("REVIEW_BLOCKED"),
-            4 => Some("CI_BLOCKED"),
-            5 => Some("CONFLICT"),
-            6 => Some("TARGET_UPDATE_FAILED"),
-            7 => Some("INTERNAL_ERROR"),
-            _ => return Err("Binary DB v0 Land failure kind is reserved".to_string()),
-        };
-        let line_action = if status != "succeeded" {
-            JsonValue::Null
-        } else if landed_snapshot == pre_target
-            && landed_snapshot.as_str() == Some(revision_snapshot.as_str())
-        {
-            json!("already_at_selected_patchset_revision")
-        } else if landed_snapshot == pre_target {
-            json!("already_contains_selected_patchset_revision")
-        } else {
-            json!("moved")
-        };
-        let result = if status == "succeeded" {
-            json!({
-                "landed_snapshot_id": landed_snapshot,
-                "selected_revision_snapshot_id": revision_snapshot,
-                "target_line": target_line,
-                "base_snapshot_id": base_snapshot,
-                "target_line_head": pre_target,
-                "line_action": line_action,
-                "current_head_contains_selected_revision": line_action == json!("already_contains_selected_patchset_revision"),
-                "snapshot_action": if line_action == json!("already_contains_selected_patchset_revision") { "selected_patchset_revision_already_contained" } else { "selected_patchset_revision" },
-            })
-        } else {
-            json!({
-                "blocker_class": failure,
-                "target_line": target_line,
-                "target_line_head": pre_target,
-                "expected_base_snapshot_id": base_snapshot,
-                "selected_revision_snapshot_id": revision_snapshot,
-                "current_head_contains_selected_revision": false,
-            })
-        };
-        let change_ref = self.change_ref(change.task_index, change.change_ordinal);
-        let patchset_id = self.patchset_id(change, patchset.patch_ordinal);
-        Ok(json!({
-            "submission_id": self.land_id(&change_ref, record.land_ordinal),
-            "repo_name": self.db.repo_name().as_str(),
-            "repo_id": self.db.repo_id().as_str(),
-            "land_seq": index + 1,
-            "change_id": format!("C-{:02}", change.change_ordinal + 1),
-            "change_ref": change_ref,
-            "patchset_id": patchset_id,
-            "source_kind": source_kind,
-            "governance_authority": governance_authority,
-            "target_line": target_line,
-            "mode": mode,
-            "status": status,
-            "failure_kind": failure,
-            "result": result,
-            "result_json": serde_json::to_string(&result)
-                .map_err(|error| format!("failed to render derived Land result: {error}"))?,
-            "landed_snapshot_id": landed_snapshot,
-            "line_action": line_action,
-            "created_at": Self::timestamp(record.submitted_at_s)?,
-            "updated_at": Self::timestamp(record.updated_at_s)?,
-        }))
+        Err(format!("Unknown Land {submission_id}"))
     }
 }
 
@@ -443,157 +365,13 @@ where
     D: ServerRemoteBinaryDb + BinaryDbIndexAppender + Clone + Send + Sync + 'static,
 {
     fn put_attestation(&self, patchset_id: &str, payload: &JsonValue) -> Result<JsonValue, String> {
-        let operation = "ServerWorkflowAttestationStore::put_attestation";
-        let payload = Self::required_object(payload, "attestation input")?;
-        if payload
-            .get("detail")
-            .and_then(JsonValue::as_object)
-            .is_some_and(|detail| detail.contains_key("patchset_ci"))
-        {
-            return Err(
-                "Attestation input must not contain patchset_ci; CI completion belongs to Patchset"
-                    .to_string(),
-            );
-        }
-        let now = Self::now_s()?;
         let mut tx =
             BinaryDbWriteTxn::begin_serving(&self.db, BinaryDbCommandScope::ServerWorkflow)
-                .map_err(|error| Self::error(operation, error))?;
-        let patchset_index = self.patchset_index_for_id(&tx, patchset_id)?;
-        self.require_patchset_governance_authority(
-            &tx,
-            patchset_index,
-            patchset_id,
-            "Attestation mutation",
-        )?;
-        let (_, mut change, mut patchset) = self.change_for_patchset_index(&tx, patchset_index)?;
-        if change.selected_patchset_index_plus1 != patchset_index + 1 {
-            return Err(format!(
-                "Patchset {patchset_id} is not the selected Patchset for its Change"
-            ));
-        }
-        if let Some(author_mode) = Self::optional_text(payload, "author_mode") {
-            let expected = Self::author_mode_bits(&author_mode)?;
-            if patchset.patchset_meta & PATCHSET_AUTHOR_MODE_MASK != expected {
-                return Err(format!(
-                    "Attestation author_mode {author_mode:?} disagrees with Patchset authority"
-                ));
-            }
-        }
-        let verification = match Self::optional_text(payload, "verification_state").as_deref() {
-            None | Some("unknown") => 0,
-            Some("pending") => 1,
-            Some("pass") => 2,
-            Some("fail") => 3,
-            Some(value) => {
-                return Err(format!(
-                    "unsupported Binary DB v0 Attestation verification_state {value:?}"
-                ))
-            }
-        };
-        let mut attest_meta = verification;
-        if Self::optional_bool(payload, "revoked").unwrap_or(false) {
-            attest_meta |= ATTEST_REVOKED;
-        }
-        if Self::optional_bool(payload, "require_tests_pass").unwrap_or(true) {
-            attest_meta |= ATTEST_REQUIRE_TESTS_PASS;
-        }
-        if Self::optional_bool(payload, "require_human_review").unwrap_or(false) {
-            attest_meta |= ATTEST_REQUIRE_HUMAN_REVIEW;
-        }
-        if Self::optional_bool(payload, "require_lint_pass").unwrap_or(false) {
-            attest_meta |= ATTEST_REQUIRE_LINT_PASS;
-        }
-        if patchset.ci_completed_at_s != 0 {
-            attest_meta |= ATTEST_CI_BACKED;
-        }
-        let mut task_owner = WorkflowBinaryV0Codec::decode_ordinal_index(
-            &tx.read_record(
-                WorkflowBinaryV0Codec::chain_index_file("task_attest_index.bin"),
-                change.task_index,
-            )
-            .map_err(|error| Self::error(operation, error))?,
-        )
-        .map_err(|error| Self::error(operation, error))?;
-        if task_owner.next_ordinal >= 64 {
-            return Err(format!(
-                "Task {} has exhausted its v0 Attestation ordinals",
-                self.task_id(change.task_index)
-            ));
-        }
-        let mut patch_inventory = WorkflowBinaryV0Codec::decode_inventory_index(
-            &tx.read_record(
-                WorkflowBinaryV0Codec::chain_index_file("patchset_attest_index.bin"),
-                patchset_index,
-            )
-            .map_err(|error| Self::error(operation, error))?,
-        )
-        .map_err(|error| Self::error(operation, error))?;
-        let record = V0AttestRecord {
-            attest_meta,
-            attest_ordinal: task_owner.next_ordinal,
-            patch_ordinal: patchset.patch_ordinal,
-            change_ordinal: change.change_ordinal,
-            patchset_index,
-            previous_task_attest_index_plus1: task_owner.latest_index_plus1,
-            previous_patchset_attest_index_plus1: patch_inventory.latest_index_plus1,
-            created_at_s: now,
-        };
-        let raw = WorkflowBinaryV0Codec::encode_attest(record)
-            .map_err(|error| Self::error(operation, error))?;
-        let attest_index = tx
-            .append_record(WorkflowBinaryV0Codec::attest_file(), &raw)
-            .map_err(|error| Self::error(operation, error))?;
-        task_owner.latest_index_plus1 = attest_index + 1;
-        task_owner.count = task_owner
-            .count
-            .checked_add(1)
-            .ok_or_else(|| "Task Attestation count exceeds u16".to_string())?;
-        task_owner.next_ordinal = task_owner
-            .next_ordinal
-            .checked_add(1)
-            .ok_or_else(|| "Task Attestation ordinal overflow".to_string())?;
-        tx.overwrite_record(
-            WorkflowBinaryV0Codec::chain_index_file("task_attest_index.bin"),
-            change.task_index,
-            &WorkflowBinaryV0Codec::encode_ordinal_index(task_owner)
-                .map_err(|error| Self::error(operation, error))?,
-        )
-        .map_err(|error| Self::error(operation, error))?;
-        patch_inventory.latest_index_plus1 = attest_index + 1;
-        patch_inventory.count = patch_inventory
-            .count
-            .checked_add(1)
-            .ok_or_else(|| "Patchset Attestation count exceeds u16".to_string())?;
-        tx.overwrite_record(
-            WorkflowBinaryV0Codec::chain_index_file("patchset_attest_index.bin"),
-            patchset_index,
-            &WorkflowBinaryV0Codec::encode_inventory_index(patch_inventory)
-                .map_err(|error| Self::error(operation, error))?,
-        )
-        .map_err(|error| Self::error(operation, error))?;
-        patchset.patchset_meta |= PATCHSET_EVALUATION_PENDING;
-        tx.overwrite_record(
-            WorkflowBinaryV0Codec::patchset_file(),
-            patchset_index,
-            &self
-                .encode_patchset_replacement(&tx, patchset_index, patchset)
-                .map_err(|error| Self::error(operation, error))?,
-        )
-        .map_err(|error| Self::error(operation, error))?;
-        change.change_meta |= CHANGE_META_VALIDATION_PENDING;
-        change.change_meta &= !(CHANGE_META_READY_TO_LAND | CHANGE_META_BLOCKED);
-        change.updated_at_s = now;
-        tx.overwrite_record(
-            WorkflowBinaryV0Codec::change_file(),
-            patchset.change_index,
-            &WorkflowBinaryV0Codec::encode_change(change)
-                .map_err(|error| Self::error(operation, error))?,
-        )
-        .map_err(|error| Self::error(operation, error))?;
-        tx.commit().map_err(|error| Self::error(operation, error))?;
-        let read = BinaryDbReadTxn::new(&self.db);
-        self.attestation_at(&read, attest_index)
+                .map_err(|error| Self::error("Attestation write", error))?;
+        let index = self.put_attestation_in_write(&mut tx, patchset_id, payload, Self::now_s()?)?;
+        tx.commit()
+            .map_err(|error| Self::error("Attestation commit", error))?;
+        self.attestation_at(&BinaryDbReadTxn::new(&self.db), index)
     }
 
     fn get_attestation(&self, patchset_id: &str) -> Result<JsonValue, String> {
@@ -601,7 +379,14 @@ where
         let patchset_index = self.patchset_index_for_id(&read, patchset_id)?;
         let (index, _) = self
             .latest_attestation_for_patchset(&read, patchset_index)?
-            .ok_or_else(|| format!("Unknown attestation for patchset: {patchset_id}"))?;
+            .ok_or_else(|| {
+                crate::foundation::remote_binary_db::binary_db_typed_runtime_error(
+                    "Attestation read",
+                    BinaryDbError::missing_data(format!(
+                        "Unknown attestation for patchset: {patchset_id}"
+                    )),
+                )
+            })?;
         self.attestation_at(&read, index)
     }
 }
@@ -624,191 +409,13 @@ where
     }
 
     fn evaluate_policy(&self, patchset_id: &str) -> Result<JsonValue, String> {
-        let operation = "ServerWorkflowPolicyStore::evaluate_policy";
-        let now = Self::now_s()?;
         let mut tx =
             BinaryDbWriteTxn::begin_serving(&self.db, BinaryDbCommandScope::ServerWorkflow)
-                .map_err(|error| Self::error(operation, error))?;
-        let patchset_index = self.patchset_index_for_id(&tx, patchset_id)?;
-        self.require_patchset_governance_authority(
-            &tx,
-            patchset_index,
-            patchset_id,
-            "Policy evaluation",
-        )?;
-        let (_, mut change, mut patchset) = self.change_for_patchset_index(&tx, patchset_index)?;
-        let attestation = self
-            .latest_attestation_for_patchset(&tx, patchset_index)?
-            .map(|(_, record)| record);
-        let approvals = self.latest_live_review_approvals(&tx, patchset_index)?;
-        let require_tests = attestation
-            .map(|record| record.attest_meta & ATTEST_REQUIRE_TESTS_PASS != 0)
-            .unwrap_or(true);
-        let require_lint =
-            attestation.is_some_and(|record| record.attest_meta & ATTEST_REQUIRE_LINT_PASS != 0);
-        let require_human =
-            attestation.is_some_and(|record| record.attest_meta & ATTEST_REQUIRE_HUMAN_REVIEW != 0);
-        let ci_passes = patchset.ci_completed_at_s != 0
-            && patchset.ci_status(CI_STATUS_OVERALL_SHIFT) == CI_STATUS_PASS
-            && patchset.ci_status(CI_STATUS_TESTS_SHIFT) == CI_STATUS_PASS
-            && patchset.ci_suite_result_count > 0
-            && patchset.ci_blocking_failure_count == 0;
-        let lint_passes = patchset.ci_completed_at_s != 0
-            && patchset.ci_status(CI_STATUS_LINT_SHIFT) == CI_STATUS_PASS;
-        let mut checks = vec![V0PolicyCheckRecord {
-            check_kind: 0,
-            check_status: if attestation.is_some() { 3 } else { 2 },
-            subject_ordinal: 0,
-            detail_flags: 0,
-        }];
-        checks.push(V0PolicyCheckRecord {
-            check_kind: 3,
-            check_status: if !require_tests {
-                1
-            } else if ci_passes {
-                3
-            } else {
-                2
-            },
-            subject_ordinal: 0,
-            detail_flags: 0,
-        });
-        checks.push(V0PolicyCheckRecord {
-            check_kind: 4,
-            check_status: if !require_lint {
-                1
-            } else if lint_passes {
-                3
-            } else {
-                2
-            },
-            subject_ordinal: 0,
-            detail_flags: 0,
-        });
-        checks.push(V0PolicyCheckRecord {
-            check_kind: 7,
-            check_status: if !require_human {
-                1
-            } else if approvals > 0 {
-                3
-            } else {
-                2
-            },
-            subject_ordinal: 0,
-            detail_flags: 0,
-        });
-        let decision_kind = if checks
-            .iter()
-            .all(|check| matches!(check.check_status, 1 | 3))
-        {
-            1
-        } else {
-            0
-        };
-        let mut owner = WorkflowBinaryV0Codec::decode_ordinal_index(
-            &tx.read_record(
-                WorkflowBinaryV0Codec::chain_index_file("patchset_policy_index.bin"),
-                patchset_index,
-            )
-            .map_err(|error| Self::error(operation, error))?,
-        )
-        .map_err(|error| Self::error(operation, error))?;
-        if owner.next_ordinal >= 64 {
-            return Err(format!(
-                "Patchset {patchset_id} has exhausted its v0 Policy ordinals"
-            ));
-        }
-        let mut inventory =
-            self.task_inventory_in_write(&tx, "task_policy_index.bin", change.task_index)?;
-        let first_check = tx
-            .record_count(WorkflowBinaryV0Codec::policy_check_file())
-            .map_err(|error| Self::error(operation, error))?;
-        for check in &checks {
-            tx.append_record(
-                WorkflowBinaryV0Codec::policy_check_file(),
-                &WorkflowBinaryV0Codec::encode_policy_check(*check)
-                    .map_err(|error| Self::error(operation, error))?,
-            )
-            .map_err(|error| Self::error(operation, error))?;
-        }
-        self.sync_file(&tx, "policy_check.bin")
-            .map_err(|error| Self::error(operation, error))?;
-        let record = V0PolicyRecord {
-            policy_meta: decision_kind,
-            policy_ordinal: owner.next_ordinal,
-            patch_ordinal: patchset.patch_ordinal,
-            change_ordinal: change.change_ordinal,
-            patchset_index,
-            previous_task_policy_index_plus1: inventory.latest_index_plus1,
-            previous_patchset_policy_index_plus1: owner.latest_index_plus1,
-            first_check_index_plus1: first_check + 1,
-            check_count: u16::try_from(checks.len())
-                .map_err(|_| "Policy Check count exceeds u16".to_string())?,
-            reserved0: 0,
-            created_at_s: now,
-        };
-        let policy_index = tx
-            .append_record(
-                WorkflowBinaryV0Codec::policy_file(),
-                &WorkflowBinaryV0Codec::encode_policy(record)
-                    .map_err(|error| Self::error(operation, error))?,
-            )
-            .map_err(|error| Self::error(operation, error))?;
-        owner.latest_index_plus1 = policy_index + 1;
-        owner.count = owner
-            .count
-            .checked_add(1)
-            .ok_or_else(|| "Patchset Policy count exceeds u16".to_string())?;
-        owner.next_ordinal += 1;
-        tx.overwrite_record(
-            WorkflowBinaryV0Codec::chain_index_file("patchset_policy_index.bin"),
-            patchset_index,
-            &WorkflowBinaryV0Codec::encode_ordinal_index(owner)
-                .map_err(|error| Self::error(operation, error))?,
-        )
-        .map_err(|error| Self::error(operation, error))?;
-        inventory.latest_index_plus1 = policy_index + 1;
-        inventory.count = inventory
-            .count
-            .checked_add(1)
-            .ok_or_else(|| "Task Policy count exceeds u16".to_string())?;
-        tx.overwrite_record(
-            WorkflowBinaryV0Codec::chain_index_file("task_policy_index.bin"),
-            change.task_index,
-            &WorkflowBinaryV0Codec::encode_inventory_index(inventory)
-                .map_err(|error| Self::error(operation, error))?,
-        )
-        .map_err(|error| Self::error(operation, error))?;
-        if decision_kind == 1 {
-            patchset.patchset_meta &= !PATCHSET_EVALUATION_PENDING;
-            change.change_meta &= !(CHANGE_META_VALIDATION_PENDING | CHANGE_META_BLOCKED);
-            if change.change_meta & CHANGE_META_REVIEW_PENDING == 0 {
-                change.change_meta |= CHANGE_META_READY_TO_LAND;
-            }
-        } else {
-            patchset.patchset_meta |= PATCHSET_EVALUATION_PENDING;
-            change.change_meta |= CHANGE_META_VALIDATION_PENDING;
-            change.change_meta &= !CHANGE_META_READY_TO_LAND;
-        }
-        change.updated_at_s = now;
-        tx.overwrite_record(
-            WorkflowBinaryV0Codec::patchset_file(),
-            patchset_index,
-            &self
-                .encode_patchset_replacement(&tx, patchset_index, patchset)
-                .map_err(|error| Self::error(operation, error))?,
-        )
-        .map_err(|error| Self::error(operation, error))?;
-        tx.overwrite_record(
-            WorkflowBinaryV0Codec::change_file(),
-            patchset.change_index,
-            &WorkflowBinaryV0Codec::encode_change(change)
-                .map_err(|error| Self::error(operation, error))?,
-        )
-        .map_err(|error| Self::error(operation, error))?;
-        tx.commit().map_err(|error| Self::error(operation, error))?;
-        let read = BinaryDbReadTxn::new(&self.db);
-        self.policy_at(&read, policy_index)
+                .map_err(|error| Self::error("Policy write", error))?;
+        let index = self.evaluate_policy_in_write(&mut tx, patchset_id, Self::now_s()?)?;
+        tx.commit()
+            .map_err(|error| Self::error("Policy commit", error))?;
+        self.policy_at(&BinaryDbReadTxn::new(&self.db), index)
     }
 
     fn run_patchset_ci(&self, patchset_id: &str, payload: &JsonValue) -> Result<JsonValue, String> {
@@ -827,7 +434,9 @@ where
             patchset_id,
             "CI execution",
         )?;
-        let (_, mut change, mut patchset) = self.change_for_patchset_index(&tx, patchset_index)?;
+        let (workflow_owner, mut patchset) = self.owner_for_patchset_index(&tx, patchset_index)?;
+        self.require_current_patchset(&tx, patchset_index, patchset)?;
+        self.require_active_owner(&tx, workflow_owner)?;
         if patchset.ci_run_seq > 0 && (patchset.ci_completed_at_s == 0 || !requests_new_run) {
             drop(tx);
             let read = BinaryDbReadTxn::new(&self.db);
@@ -852,16 +461,18 @@ where
         )
         .map_err(|error| Self::error(operation, error))?;
         let now = Self::now_s()?;
-        change.change_meta |= CHANGE_META_VALIDATION_PENDING;
-        change.change_meta &= !(CHANGE_META_READY_TO_LAND | CHANGE_META_BLOCKED);
-        change.updated_at_s = now;
-        tx.overwrite_record(
-            WorkflowBinaryV0Codec::change_file(),
-            patchset.change_index,
-            &WorkflowBinaryV0Codec::encode_change(change)
-                .map_err(|error| Self::error(operation, error))?,
-        )
-        .map_err(|error| Self::error(operation, error))?;
+        self.update_owner_state(
+            &mut tx,
+            workflow_owner,
+            TASK_META_VALIDATION_PENDING,
+            TASK_META_READY_TO_LAND | TASK_META_BLOCKED,
+            now,
+            None,
+            |change| {
+                change.change_meta |= CHANGE_META_VALIDATION_PENDING;
+                change.change_meta &= !(CHANGE_META_READY_TO_LAND | CHANGE_META_BLOCKED);
+            },
+        )?;
         tx.commit().map_err(|error| Self::error(operation, error))?;
         let read = BinaryDbReadTxn::new(&self.db);
         self.patchset_at(&read, patchset_index)
@@ -928,7 +539,7 @@ where
             patchset_id,
             "CI completion",
         )?;
-        let (_, mut change, mut patchset) = self.change_for_patchset_index(&tx, patchset_index)?;
+        let (workflow_owner, mut patchset) = self.owner_for_patchset_index(&tx, patchset_index)?;
         if patchset.ci_run_seq != run_seq || patchset.ci_completed_at_s != 0 {
             return Err(format!(
                 "stale Patchset CI completion for run {run_seq}; current run is {}",
@@ -952,16 +563,28 @@ where
         )
         .map_err(|error| Self::error(operation, error))?;
         let now = Self::now_s()?;
-        change.change_meta |= CHANGE_META_VALIDATION_PENDING;
-        change.change_meta &= !(CHANGE_META_READY_TO_LAND | CHANGE_META_BLOCKED);
-        change.updated_at_s = now;
-        tx.overwrite_record(
-            WorkflowBinaryV0Codec::change_file(),
-            patchset.change_index,
-            &WorkflowBinaryV0Codec::encode_change(change)
-                .map_err(|error| Self::error(operation, error))?,
-        )
-        .map_err(|error| Self::error(operation, error))?;
+        if self
+            .current_task_patchset(&tx, workflow_owner.task_index)?
+            .map(|(index, _)| index)
+            == Some(patchset_index)
+            && !self
+                .read_task(&tx, workflow_owner.task_index)
+                .map_err(|e| e.to_string())?
+                .is_terminal()
+        {
+            self.update_owner_state(
+                &mut tx,
+                workflow_owner,
+                TASK_META_VALIDATION_PENDING,
+                TASK_META_READY_TO_LAND | TASK_META_BLOCKED,
+                now,
+                None,
+                |change| {
+                    change.change_meta |= CHANGE_META_VALIDATION_PENDING;
+                    change.change_meta &= !(CHANGE_META_READY_TO_LAND | CHANGE_META_BLOCKED);
+                },
+            )?;
+        }
         tx.commit().map_err(|error| Self::error(operation, error))?;
         let read = BinaryDbReadTxn::new(&self.db);
         self.patchset_at(&read, patchset_index)
@@ -994,419 +617,15 @@ where
         self.submit_land(&change_ref, &prepared)
     }
 
-    fn submit_land(&self, change_id: &str, payload: &JsonValue) -> Result<JsonValue, String> {
-        let operation = "ServerWorkflowLandStore::submit_land";
-        let payload = Self::required_object(payload, "land submit payload")?;
-        let atomic_task_land =
-            Self::optional_text(payload, "contract").as_deref() == Some("task-land-atomic/v1");
-        #[cfg(feature = "perfetto-tracing")]
-        let _atomic_submit_trace = atomic_task_land.then(|| {
-            crate::perfetto_trace::PerfettoRange::new("ait.server.task_land.atomic.submit")
-        });
-        let idempotency_key = if atomic_task_land {
-            Some(Self::required_text(payload, "idempotency_key")?)
-        } else {
-            None
-        };
-        let target_line = Self::required_text(payload, "target_line")?;
-        let mode_text = Self::required_text(payload, "mode")?;
-        let mode = match mode_text.as_str() {
-            "direct" => LAND_MODE_DIRECT,
-            "merge" => LAND_MODE_MERGE,
-            "ff-only" => LAND_MODE_FF_ONLY,
-            _ => return Err(format!("unsupported Binary DB v0 Land mode {mode_text:?}")),
-        };
-        let requested_patchset = Self::optional_text(payload, "patchset_id");
-        let explicit_submission = Self::optional_text(payload, "submission_id");
-        let expected_head = Self::optional_text(payload, "expected_head_snapshot_id")
-            .or_else(|| Self::optional_text(payload, "expected_target_line_head"));
-        if atomic_task_land {
-            let requested_ref = Self::required_text(payload, "task_or_change_ref")?;
-            self.apply_staged_history_receipts_before_atomic_land(
-                change_id,
-                &requested_ref,
-                &target_line,
-                requested_patchset.as_deref(),
-                expected_head.as_deref(),
-            )?;
+    fn submit_land(&self, reference: &str, payload: &JsonValue) -> Result<JsonValue, String> {
+        self.request_actor(Self::required_object(payload, "Land submit payload")?)?;
+        let mut tx = BinaryDbWriteTxn::begin_serving(&self.db, BinaryDbCommandScope::ServerLand)
+            .map_err(|error| error.to_string())?;
+        let (result, _, changed) = self.submit_land_in_write(&mut tx, reference, payload, false)?;
+        if changed {
+            tx.commit().map_err(|error| error.to_string())?;
         }
-        let now = Self::now_s()?;
-        #[cfg(feature = "perfetto-tracing")]
-        let writer_trace = atomic_task_land.then(|| {
-            crate::perfetto_trace::PerfettoRange::new(
-                "ait.server.task_land.atomic.writer_critical_section",
-            )
-        });
-        let mut tx = {
-            #[cfg(feature = "perfetto-tracing")]
-            let _trace = atomic_task_land.then(|| {
-                crate::perfetto_trace::PerfettoRange::new_lane(
-                    "ait.server.task_land.atomic.writer_admission",
-                )
-            });
-            BinaryDbWriteTxn::begin_serving(&self.db, BinaryDbCommandScope::ServerLand)
-                .map_err(|error| Self::error(operation, error))?
-        };
-        #[cfg(feature = "perfetto-tracing")]
-        let revalidation_trace = atomic_task_land.then(|| {
-            crate::perfetto_trace::PerfettoRange::new(
-                "ait.server.task_land.atomic.authoritative_revalidation",
-            )
-        });
-        let change_index = self.change_index_for_ref(&tx, change_id)?;
-        let mut change = self
-            .read_change(&tx, change_index)
-            .map_err(|error| Self::error(operation, error))?;
-        if atomic_task_land {
-            let requested_ref = Self::required_text(payload, "task_or_change_ref")?;
-            let resolved_ref = self.resolve_task_land_change_ref_in_read(&tx, &requested_ref)?;
-            if resolved_ref != change_id {
-                return Err(format!(
-                    "Atomic Task Land reference changed during admission: expected {change_id}, resolved {resolved_ref}."
-                ));
-            }
-        }
-        let selected_patchset_index = change
-            .selected_patchset_index_plus1
-            .checked_sub(1)
-            .ok_or_else(|| format!("No selected Patchset found for Change {change_id}"))?;
-        let patchset_index = match requested_patchset.as_deref() {
-            Some(patchset_id) => {
-                let requested = self.patchset_index_for_id(&tx, patchset_id)?;
-                if requested != selected_patchset_index {
-                    return Err(format!(
-                        "Patchset {patchset_id} is not the selected Patchset for Change {change_id}"
-                    ));
-                }
-                requested
-            }
-            None => selected_patchset_index,
-        };
-        let patchset = self
-            .read_patchset(&tx, patchset_index)
-            .map_err(|error| Self::error(operation, error))?;
-        if patchset.change_index != change_index {
-            return Err(format!(
-                "accepted Patchset does not belong to Change {change_id}"
-            ));
-        }
-        self.require_patchset_governance_authority(
-            &tx,
-            patchset_index,
-            &self.patchset_id(change, patchset.patch_ordinal),
-            "direct Land submission",
-        )?;
-        if patchset.patchset_meta & 0b11 != 0 {
-            return Err(format!(
-                "selected Patchset for Change {change_id} is withdrawn or invalidated"
-            ));
-        }
-        let patchset_id = self.patchset_id(change, patchset.patch_ordinal);
-        let lines =
-            ServerBinaryDbLineStore::<D, SERVER_CONTENT_BINARY_LAYOUT_ID>::new(self.db.clone());
-        let snapshots =
-            ServerBinaryDbSnapshotStore::<D, SERVER_CONTENT_BINARY_LAYOUT_ID>::new(self.db.clone());
-        let (target_line_index, line) = lines
-            .line_by_name_in_write(&tx, &target_line)
-            .map_err(|error| Self::error(operation, error))?
-            .ok_or_else(|| {
-                format!("CANONICAL_LINE_MISSING: target line {target_line} does not exist")
-            })?;
-        let current_head_index = line.head_snapshot_index();
-        let current_head = current_head_index
-            .map(|index| {
-                snapshots
-                    .snapshot_id_at_in_write(&tx, index)
-                    .map_err(|error| Self::error(operation, error))
-            })
-            .transpose()?;
-        if expected_head.is_some() && expected_head.as_deref() != current_head.as_deref() {
-            return Err(format!(
-                "STALE_TARGET_LINE: {}:{} expected {:?}, current {:?}",
-                self.db.repo_name().as_str(),
-                target_line,
-                expected_head.as_deref(),
-                current_head.as_deref()
-            ));
-        }
-        let base_snapshot_id = snapshots
-            .snapshot_id_at_in_write(&tx, patchset.base_snapshot_index)
-            .map_err(|error| Self::error(operation, error))?;
-        let revision_snapshot_id = snapshots
-            .snapshot_id_at_in_write(&tx, patchset.revision_snapshot_index)
-            .map_err(|error| Self::error(operation, error))?;
-        let current_contains_revision = match current_head_index {
-            Some(head) if head != patchset.revision_snapshot_index => snapshots
-                .snapshot_chain_contains_ancestor_in_write(
-                    &tx,
-                    patchset.revision_snapshot_index,
-                    head,
-                )
-                .map_err(|error| Self::error(operation, error))?,
-            _ => false,
-        };
-        let blocked = current_head.as_deref().is_some_and(|head| {
-            head != base_snapshot_id && head != revision_snapshot_id && !current_contains_revision
-        });
-        if atomic_task_land && change.lifecycle() == CHANGE_LIFECYCLE_LANDED {
-            let (existing_index, existing) = self
-                .latest_succeeded_land(&tx, change_index)?
-                .ok_or_else(|| {
-                    format!(
-                        "Atomic Task Land found landed Change {change_id} without a successful Land record."
-                    )
-                })?;
-            let existing_mode = (existing.land_meta & LAND_MODE_MASK) >> 5;
-            if existing.patchset_index != patchset_index
-                || existing.target_line_index_plus1 != target_line_index + 1
-                || existing_mode != mode
-            {
-                return Err(format!(
-                    "TASK_LAND_IDEMPOTENCY_CONFLICT: landed Change {change_id} does not match the selected Patchset, target Line, or mode."
-                ));
-            }
-            let task_changed = self.complete_task_in_write(&mut tx, change.task_index, now)?;
-            #[cfg(feature = "perfetto-tracing")]
-            drop(revalidation_trace);
-            let result = {
-                #[cfg(feature = "perfetto-tracing")]
-                let _trace = crate::perfetto_trace::PerfettoRange::new(
-                    "ait.server.task_land.atomic.response_projection",
-                );
-                self.atomic_task_land_result_in_write(
-                    &tx,
-                    change_index,
-                    patchset_index,
-                    existing_index,
-                    idempotency_key.as_deref().unwrap_or_default(),
-                    true,
-                )?
-            };
-            if task_changed {
-                {
-                    #[cfg(feature = "perfetto-tracing")]
-                    let _trace = crate::perfetto_trace::PerfettoRange::new(
-                        "ait.server.task_land.atomic.transaction_commit",
-                    );
-                    tx.commit().map_err(|error| Self::error(operation, error))?;
-                }
-            }
-            drop(tx);
-            #[cfg(feature = "perfetto-tracing")]
-            drop(writer_trace);
-            return Ok(result);
-        }
-        if atomic_task_land && change.lifecycle() == CHANGE_LIFECYCLE_ARCHIVED {
-            return Err(format!(
-                "Change {change_id} is archived and cannot be completed by Atomic Task Land."
-            ));
-        }
-        if atomic_task_land && change.change_meta & CHANGE_META_READY_TO_LAND == 0 {
-            return Err(format!(
-                "TASK_LAND_NOT_READY: Change {change_id} does not have an already-ready selected Patchset. Run `ait workflow ready {change_id} --apply` before Task Land."
-            ));
-        }
-        if atomic_task_land && blocked {
-            return Err(format!(
-                "TASK_LAND_TARGET_LINE_BLOCKED: target Line {target_line} no longer contains the selected Patchset base for Change {change_id}."
-            ));
-        }
-        #[cfg(feature = "perfetto-tracing")]
-        drop(revalidation_trace);
-        if atomic_task_land && change.lifecycle() != CHANGE_LIFECYCLE_LANDED {
-            #[cfg(feature = "perfetto-tracing")]
-            let _trace = crate::perfetto_trace::PerfettoRange::new(
-                "ait.server.task_land.atomic.history_receipt_mutation",
-            );
-            self.apply_history_receipts_in_land_write(
-                &mut tx,
-                patchset_index,
-                change_index,
-                &target_line,
-                target_line_index,
-                current_head_index,
-            )?;
-        }
-        #[cfg(feature = "perfetto-tracing")]
-        let aggregate_mutation_trace = atomic_task_land.then(|| {
-            crate::perfetto_trace::PerfettoRange::new(
-                "ait.server.task_land.atomic.aggregate_land_mutation",
-            )
-        });
-        let mut owner = WorkflowBinaryV0Codec::decode_ordinal_index(
-            &tx.read_record(
-                WorkflowBinaryV0Codec::chain_index_file("change_land_index.bin"),
-                change_index,
-            )
-            .map_err(|error| Self::error(operation, error))?,
-        )
-        .map_err(|error| Self::error(operation, error))?;
-        let ordinal = owner.next_ordinal;
-        let canonical_id = self.land_id(change_id, ordinal);
-        if let Some(explicit) = explicit_submission.as_deref() {
-            if let Ok(existing_index) = self.land_index_for_id(&tx, explicit) {
-                let existing = self.land_at(&BinaryDbReadTxn::new(&self.db), existing_index)?;
-                if existing.get("change_ref").and_then(JsonValue::as_str) == Some(change_id)
-                    && existing.get("patchset_id").and_then(JsonValue::as_str)
-                        == Some(patchset_id.as_str())
-                    && existing.get("target_line").and_then(JsonValue::as_str)
-                        == Some(target_line.as_str())
-                    && existing.get("mode").and_then(JsonValue::as_str) == Some(mode_text.as_str())
-                {
-                    return Ok(existing);
-                }
-                return Err(format!(
-                    "LAND_IDEMPOTENCY_CONFLICT: submission {explicit} disagrees with this request"
-                ));
-            }
-            if explicit != canonical_id {
-                return Err(format!(
-                    "Binary DB v0 Land identity is derived as {canonical_id}, not {explicit}"
-                ));
-            }
-        }
-        if matches!(
-            change.lifecycle(),
-            CHANGE_LIFECYCLE_LANDED | CHANGE_LIFECYCLE_ARCHIVED
-        ) {
-            return Err(format!(
-                "Change {change_id} cannot accept a new Land attempt"
-            ));
-        }
-        if owner.next_ordinal >= 64 {
-            return Err(format!(
-                "Change {change_id} has exhausted its v0 Land ordinals"
-            ));
-        }
-        let mut inventory =
-            self.task_inventory_in_write(&tx, "task_land_index.bin", change.task_index)?;
-        let succeeded = !blocked;
-        let landed_index = if succeeded {
-            if current_head.as_deref() == Some(revision_snapshot_id.as_str())
-                || current_contains_revision
-            {
-                current_head_index.expect("successful contained revision has a line head")
-            } else {
-                patchset.revision_snapshot_index
-            }
-        } else {
-            0
-        };
-        let mut land_meta = if succeeded {
-            LAND_STATUS_SUCCEEDED | LAND_HAS_LANDED_SNAPSHOT
-        } else {
-            LAND_STATUS_BLOCKED
-        } | (mode << 5);
-        if current_head_index.is_some() {
-            land_meta |= LAND_HAS_PRE_TARGET;
-        }
-        if succeeded && landed_index != current_head_index.unwrap_or(u32::MAX) {
-            lines
-                .set_line_head_in_tx(&mut tx, &target_line, current_head_index, landed_index, now)
-                .map_err(|error| Self::error(operation, error))?;
-        }
-        let record = V0LandRecord {
-            land_meta,
-            land_ordinal: ordinal,
-            change_ordinal: change.change_ordinal,
-            failure_kind: if blocked { 1 } else { 0 },
-            change_index,
-            patchset_index,
-            previous_task_land_index_plus1: inventory.latest_index_plus1,
-            previous_change_land_index_plus1: owner.latest_index_plus1,
-            pre_land_target_snapshot_index_plus1: current_head_index.map_or(0, |index| index + 1),
-            landed_snapshot_index_plus1: if succeeded { landed_index + 1 } else { 0 },
-            submitted_at_s: now,
-            updated_at_s: now,
-            target_line_index_plus1: target_line_index + 1,
-        };
-        let land_index = tx
-            .append_record(
-                WorkflowBinaryV0Codec::land_file(),
-                &WorkflowBinaryV0Codec::encode_land(record)
-                    .map_err(|error| Self::error(operation, error))?,
-            )
-            .map_err(|error| Self::error(operation, error))?;
-        owner.latest_index_plus1 = land_index + 1;
-        owner.count = owner
-            .count
-            .checked_add(1)
-            .ok_or_else(|| "Change Land count exceeds u16".to_string())?;
-        owner.next_ordinal += 1;
-        tx.overwrite_record(
-            WorkflowBinaryV0Codec::chain_index_file("change_land_index.bin"),
-            change_index,
-            &WorkflowBinaryV0Codec::encode_ordinal_index(owner)
-                .map_err(|error| Self::error(operation, error))?,
-        )
-        .map_err(|error| Self::error(operation, error))?;
-        inventory.latest_index_plus1 = land_index + 1;
-        inventory.count = inventory
-            .count
-            .checked_add(1)
-            .ok_or_else(|| "Task Land count exceeds u16".to_string())?;
-        tx.overwrite_record(
-            WorkflowBinaryV0Codec::chain_index_file("task_land_index.bin"),
-            change.task_index,
-            &WorkflowBinaryV0Codec::encode_inventory_index(inventory)
-                .map_err(|error| Self::error(operation, error))?,
-        )
-        .map_err(|error| Self::error(operation, error))?;
-        if succeeded {
-            change.change_meta =
-                (change.change_meta & CHANGE_META_HAS_PATCHSETS) | CHANGE_LIFECYCLE_LANDED;
-        } else {
-            change.change_meta |= CHANGE_META_BLOCKED;
-            change.change_meta &= !CHANGE_META_READY_TO_LAND;
-        }
-        change.updated_at_s = now;
-        tx.overwrite_record(
-            WorkflowBinaryV0Codec::change_file(),
-            change_index,
-            &WorkflowBinaryV0Codec::encode_change(change)
-                .map_err(|error| Self::error(operation, error))?,
-        )
-        .map_err(|error| Self::error(operation, error))?;
-        if atomic_task_land && succeeded {
-            self.complete_task_in_write(&mut tx, change.task_index, now)?;
-        }
-        #[cfg(feature = "perfetto-tracing")]
-        drop(aggregate_mutation_trace);
-        let atomic_result = if atomic_task_land {
-            Some({
-                #[cfg(feature = "perfetto-tracing")]
-                let _trace = crate::perfetto_trace::PerfettoRange::new(
-                    "ait.server.task_land.atomic.response_projection",
-                );
-                self.atomic_task_land_result_in_write(
-                    &tx,
-                    change_index,
-                    patchset_index,
-                    land_index,
-                    idempotency_key.as_deref().unwrap_or_default(),
-                    false,
-                )?
-            })
-        } else {
-            None
-        };
-        {
-            #[cfg(feature = "perfetto-tracing")]
-            let _trace = atomic_task_land.then(|| {
-                crate::perfetto_trace::PerfettoRange::new(
-                    "ait.server.task_land.atomic.transaction_commit",
-                )
-            });
-            tx.commit().map_err(|error| Self::error(operation, error))?;
-        }
-        drop(tx);
-        #[cfg(feature = "perfetto-tracing")]
-        drop(writer_trace);
-        if let Some(result) = atomic_result {
-            return Ok(result);
-        }
-        let read = BinaryDbReadTxn::new(&self.db);
-        self.land_at(&read, land_index)
+        Ok(result)
     }
 
     fn get_land(&self, repo_name: Option<&str>, submission_id: &str) -> Result<JsonValue, String> {
@@ -1416,5 +635,722 @@ where
         let read = BinaryDbReadTxn::new(&self.db);
         let index = self.land_index_for_id(&read, submission_id)?;
         self.land_at(&read, index)
+    }
+}
+
+impl<D> BinaryDbServerWorkflowV0Store<D>
+where
+    D: ServerRemoteBinaryDb + BinaryDbIndexAppender + Clone + Send + Sync + 'static,
+{
+    pub(super) fn package_attestation_meta(
+        payload: &JsonMap<String, JsonValue>,
+        author_mode_bits: u8,
+        ci_backed: bool,
+    ) -> Result<u8, String> {
+        if let Some(author_mode) = Self::optional_text(payload, "author_mode") {
+            let expected = Self::author_mode_bits(&author_mode)?;
+            if author_mode_bits & PATCHSET_AUTHOR_MODE_MASK != expected {
+                return Err(format!(
+                    "Attestation author_mode {author_mode:?} disagrees with Patchset authority"
+                ));
+            }
+        }
+        let verification = match Self::optional_text(payload, "verification_state").as_deref() {
+            None | Some("unknown") => 0,
+            Some("pending") => 1,
+            Some("pass") => 2,
+            Some("fail") => 3,
+            Some(value) => {
+                return Err(format!(
+                    "unsupported Binary DB v0 Attestation verification_state {value:?}"
+                ))
+            }
+        };
+        let mut attest_meta = verification;
+        if Self::optional_bool(payload, "revoked").unwrap_or(false) {
+            attest_meta |= ATTEST_REVOKED;
+        }
+        if Self::optional_bool(payload, "require_tests_pass").unwrap_or(true) {
+            attest_meta |= ATTEST_REQUIRE_TESTS_PASS;
+        }
+        if Self::optional_bool(payload, "require_human_review").unwrap_or(false) {
+            attest_meta |= ATTEST_REQUIRE_HUMAN_REVIEW;
+        }
+        if Self::optional_bool(payload, "require_lint_pass").unwrap_or(false) {
+            attest_meta |= ATTEST_REQUIRE_LINT_PASS;
+        }
+        if ci_backed {
+            attest_meta |= ATTEST_CI_BACKED;
+        }
+        Ok(attest_meta)
+    }
+    pub(super) fn put_attestation_in_write<F: BinaryDbFsyncPolicy>(
+        &self,
+        tx: &mut BinaryDbWriteTxn<'_, D, F>,
+        patchset_id: &str,
+        payload: &JsonValue,
+        now: u64,
+    ) -> Result<u32, String> {
+        let operation = "ServerWorkflowAttestationStore::put_attestation";
+        let payload = Self::required_object(payload, "attestation input")?;
+        if payload
+            .get("detail")
+            .and_then(JsonValue::as_object)
+            .is_some_and(|detail| detail.contains_key("patchset_ci"))
+        {
+            return Err(
+                "Attestation input must not contain patchset_ci; CI completion belongs to Patchset"
+                    .to_string(),
+            );
+        }
+        let patchset_index = self.patchset_index_for_id(tx, patchset_id)?;
+        self.require_patchset_governance_authority(
+            tx,
+            patchset_index,
+            patchset_id,
+            "Attestation mutation",
+        )?;
+        let (workflow_owner, mut patchset) = self.owner_for_patchset_index(tx, patchset_index)?;
+        self.require_current_patchset(tx, patchset_index, patchset)?;
+        self.require_active_owner(tx, workflow_owner)?;
+        let attest_meta = Self::package_attestation_meta(
+            payload,
+            patchset.patchset_meta,
+            patchset.ci_completed_at_s != 0,
+        )?;
+        let mut task_owner = WorkflowBinaryV0Codec::decode_ordinal_index(
+            &tx.read_record(
+                WorkflowBinaryV0Codec::chain_index_file("task_attest_index.bin"),
+                workflow_owner.task_index,
+            )
+            .map_err(|error| Self::error(operation, error))?,
+        )
+        .map_err(|error| Self::error(operation, error))?;
+        if task_owner.next_ordinal >= 64 {
+            return Err(format!(
+                "Task {} has exhausted its v0 Attestation ordinals",
+                self.task_id(workflow_owner.task_index)
+            ));
+        }
+        let mut patch_inventory = WorkflowBinaryV0Codec::decode_inventory_index(
+            &tx.read_record(
+                WorkflowBinaryV0Codec::chain_index_file("patchset_attest_index.bin"),
+                patchset_index,
+            )
+            .map_err(|error| Self::error(operation, error))?,
+        )
+        .map_err(|error| Self::error(operation, error))?;
+        let record = V0AttestRecord {
+            attest_meta,
+            attest_ordinal: task_owner.next_ordinal,
+            patch_ordinal: patchset.patch_ordinal,
+            change_ordinal_plus1: patchset.change_ordinal_plus1,
+            patchset_index,
+            previous_task_attest_index_plus1: task_owner.latest_index_plus1,
+            previous_patchset_attest_index_plus1: patch_inventory.latest_index_plus1,
+            created_at_s: now,
+        };
+        let raw = WorkflowBinaryV0Codec::encode_attest(record)
+            .map_err(|error| Self::error(operation, error))?;
+        let attest_index = tx
+            .append_record(WorkflowBinaryV0Codec::attest_file(), &raw)
+            .map_err(|error| Self::error(operation, error))?;
+        task_owner.latest_index_plus1 = attest_index + 1;
+        task_owner.count = task_owner
+            .count
+            .checked_add(1)
+            .ok_or_else(|| "Task Attestation count exceeds u16".to_string())?;
+        task_owner.next_ordinal = task_owner
+            .next_ordinal
+            .checked_add(1)
+            .ok_or_else(|| "Task Attestation ordinal overflow".to_string())?;
+        tx.overwrite_record(
+            WorkflowBinaryV0Codec::chain_index_file("task_attest_index.bin"),
+            workflow_owner.task_index,
+            &WorkflowBinaryV0Codec::encode_ordinal_index(task_owner)
+                .map_err(|error| Self::error(operation, error))?,
+        )
+        .map_err(|error| Self::error(operation, error))?;
+        patch_inventory.latest_index_plus1 = attest_index + 1;
+        patch_inventory.count = patch_inventory
+            .count
+            .checked_add(1)
+            .ok_or_else(|| "Patchset Attestation count exceeds u16".to_string())?;
+        tx.overwrite_record(
+            WorkflowBinaryV0Codec::chain_index_file("patchset_attest_index.bin"),
+            patchset_index,
+            &WorkflowBinaryV0Codec::encode_inventory_index(patch_inventory)
+                .map_err(|error| Self::error(operation, error))?,
+        )
+        .map_err(|error| Self::error(operation, error))?;
+        patchset.patchset_meta |= PATCHSET_EVALUATION_PENDING;
+        tx.overwrite_record(
+            WorkflowBinaryV0Codec::patchset_file(),
+            patchset_index,
+            &self
+                .encode_patchset_replacement(tx, patchset_index, patchset)
+                .map_err(|error| Self::error(operation, error))?,
+        )
+        .map_err(|error| Self::error(operation, error))?;
+        self.update_owner_state(
+            tx,
+            workflow_owner,
+            TASK_META_VALIDATION_PENDING,
+            TASK_META_READY_TO_LAND | TASK_META_BLOCKED,
+            now,
+            None,
+            |change| {
+                change.change_meta |= CHANGE_META_VALIDATION_PENDING;
+                change.change_meta &= !(CHANGE_META_READY_TO_LAND | CHANGE_META_BLOCKED);
+            },
+        )?;
+        Ok(attest_index)
+    }
+}
+
+impl<D> BinaryDbServerWorkflowV0Store<D>
+where
+    D: ServerRemoteBinaryDb + BinaryDbIndexAppender + Clone + Send + Sync + 'static,
+{
+    pub(super) fn evaluate_policy_in_write<F: BinaryDbFsyncPolicy>(
+        &self,
+        tx: &mut BinaryDbWriteTxn<'_, D, F>,
+        patchset_id: &str,
+        now: u64,
+    ) -> Result<u32, String> {
+        let operation = "ServerWorkflowPolicyStore::evaluate_policy";
+        let patchset_index = self.patchset_index_for_id(tx, patchset_id)?;
+        self.require_patchset_governance_authority(
+            tx,
+            patchset_index,
+            patchset_id,
+            "Policy evaluation",
+        )?;
+        let (workflow_owner, mut patchset) = self.owner_for_patchset_index(tx, patchset_index)?;
+        self.require_current_patchset(tx, patchset_index, patchset)?;
+        self.require_active_owner(tx, workflow_owner)?;
+        let attestation = self
+            .latest_attestation_for_patchset(tx, patchset_index)?
+            .map(|(_, record)| record);
+        let approvals = self.live_human_review_approvals(tx, patchset_index)?;
+        let require_tests = attestation
+            .map(|record| record.attest_meta & ATTEST_REQUIRE_TESTS_PASS != 0)
+            .unwrap_or(true);
+        let require_lint =
+            attestation.is_some_and(|record| record.attest_meta & ATTEST_REQUIRE_LINT_PASS != 0);
+        let require_human =
+            attestation.is_some_and(|record| record.attest_meta & ATTEST_REQUIRE_HUMAN_REVIEW != 0);
+        let ci_passes = patchset.ci_completed_at_s != 0
+            && patchset.ci_status(CI_STATUS_OVERALL_SHIFT) == CI_STATUS_PASS
+            && patchset.ci_status(CI_STATUS_TESTS_SHIFT) == CI_STATUS_PASS
+            && patchset.ci_suite_result_count > 0
+            && patchset.ci_blocking_failure_count == 0;
+        let lint_passes = patchset.ci_completed_at_s != 0
+            && patchset.ci_status(CI_STATUS_LINT_SHIFT) == CI_STATUS_PASS;
+        let mut checks = vec![V0PolicyCheckRecord {
+            check_kind: 0,
+            check_status: if attestation.is_some_and(|record| {
+                record.attest_meta & ATTEST_REVOKED == 0
+                    && record.attest_meta & ATTEST_VERIFICATION_MASK == 2
+            }) {
+                3
+            } else {
+                2
+            },
+            subject_ordinal: 0,
+            detail_flags: 0,
+        }];
+        checks.push(V0PolicyCheckRecord {
+            check_kind: 3,
+            check_status: if !require_tests {
+                1
+            } else if ci_passes {
+                3
+            } else {
+                2
+            },
+            subject_ordinal: 0,
+            detail_flags: 0,
+        });
+        checks.push(V0PolicyCheckRecord {
+            check_kind: 4,
+            check_status: if !require_lint {
+                1
+            } else if lint_passes {
+                3
+            } else {
+                2
+            },
+            subject_ordinal: 0,
+            detail_flags: 0,
+        });
+        checks.push(V0PolicyCheckRecord {
+            check_kind: 7,
+            check_status: if !require_human {
+                1
+            } else if approvals > 0 {
+                3
+            } else {
+                2
+            },
+            subject_ordinal: 0,
+            detail_flags: 0,
+        });
+        let decision_kind = if checks
+            .iter()
+            .all(|check| matches!(check.check_status, 1 | 3))
+        {
+            1
+        } else {
+            0
+        };
+        let mut owner = WorkflowBinaryV0Codec::decode_ordinal_index(
+            &tx.read_record(
+                WorkflowBinaryV0Codec::chain_index_file("patchset_policy_index.bin"),
+                patchset_index,
+            )
+            .map_err(|error| Self::error(operation, error))?,
+        )
+        .map_err(|error| Self::error(operation, error))?;
+        if owner.next_ordinal >= 64 {
+            return Err(format!(
+                "Patchset {patchset_id} has exhausted its v0 Policy ordinals"
+            ));
+        }
+        let mut inventory =
+            self.task_inventory_in_write(tx, "task_policy_index.bin", workflow_owner.task_index)?;
+        let first_check = tx
+            .record_count(WorkflowBinaryV0Codec::policy_check_file())
+            .map_err(|error| Self::error(operation, error))?;
+        for check in &checks {
+            tx.append_record(
+                WorkflowBinaryV0Codec::policy_check_file(),
+                &WorkflowBinaryV0Codec::encode_policy_check(*check)
+                    .map_err(|error| Self::error(operation, error))?,
+            )
+            .map_err(|error| Self::error(operation, error))?;
+        }
+        self.sync_file(tx, "policy_check.bin")
+            .map_err(|error| Self::error(operation, error))?;
+        let record = V0PolicyRecord {
+            policy_meta: decision_kind,
+            policy_ordinal: owner.next_ordinal,
+            patch_ordinal: patchset.patch_ordinal,
+            change_ordinal_plus1: patchset.change_ordinal_plus1,
+            patchset_index,
+            previous_task_policy_index_plus1: inventory.latest_index_plus1,
+            previous_patchset_policy_index_plus1: owner.latest_index_plus1,
+            first_check_index_plus1: first_check + 1,
+            check_count: u16::try_from(checks.len())
+                .map_err(|_| "Policy Check count exceeds u16".to_string())?,
+            reserved0: 0,
+            created_at_s: now,
+        };
+        let policy_index = tx
+            .append_record(
+                WorkflowBinaryV0Codec::policy_file(),
+                &WorkflowBinaryV0Codec::encode_policy(record)
+                    .map_err(|error| Self::error(operation, error))?,
+            )
+            .map_err(|error| Self::error(operation, error))?;
+        owner.latest_index_plus1 = policy_index + 1;
+        owner.count = owner
+            .count
+            .checked_add(1)
+            .ok_or_else(|| "Patchset Policy count exceeds u16".to_string())?;
+        owner.next_ordinal += 1;
+        tx.overwrite_record(
+            WorkflowBinaryV0Codec::chain_index_file("patchset_policy_index.bin"),
+            patchset_index,
+            &WorkflowBinaryV0Codec::encode_ordinal_index(owner)
+                .map_err(|error| Self::error(operation, error))?,
+        )
+        .map_err(|error| Self::error(operation, error))?;
+        inventory.latest_index_plus1 = policy_index + 1;
+        inventory.count = inventory
+            .count
+            .checked_add(1)
+            .ok_or_else(|| "Task Policy count exceeds u16".to_string())?;
+        tx.overwrite_record(
+            WorkflowBinaryV0Codec::chain_index_file("task_policy_index.bin"),
+            workflow_owner.task_index,
+            &WorkflowBinaryV0Codec::encode_inventory_index(inventory)
+                .map_err(|error| Self::error(operation, error))?,
+        )
+        .map_err(|error| Self::error(operation, error))?;
+        if decision_kind == 1 {
+            patchset.patchset_meta &= !PATCHSET_EVALUATION_PENDING;
+        } else {
+            patchset.patchset_meta |= PATCHSET_EVALUATION_PENDING;
+        }
+        tx.overwrite_record(
+            WorkflowBinaryV0Codec::patchset_file(),
+            patchset_index,
+            &self
+                .encode_patchset_replacement(tx, patchset_index, patchset)
+                .map_err(|error| Self::error(operation, error))?,
+        )
+        .map_err(|error| Self::error(operation, error))?;
+        let task = self
+            .read_task(tx, workflow_owner.task_index)
+            .map_err(|e| e.to_string())?;
+        let ready = decision_kind == 1 && task.task_meta & TASK_META_REVIEW_PENDING == 0;
+        self.update_owner_state(
+            tx,
+            workflow_owner,
+            if ready {
+                TASK_META_READY_TO_LAND
+            } else if decision_kind == 0 {
+                TASK_META_VALIDATION_PENDING
+            } else {
+                0
+            },
+            TASK_META_READY_TO_LAND
+                | if decision_kind == 1 {
+                    TASK_META_VALIDATION_PENDING | TASK_META_BLOCKED
+                } else {
+                    0
+                },
+            now,
+            None,
+            |change| {
+                if decision_kind == 1 {
+                    change.change_meta &= !(CHANGE_META_VALIDATION_PENDING | CHANGE_META_BLOCKED);
+                    if change.change_meta & CHANGE_META_REVIEW_PENDING == 0 {
+                        change.change_meta |= CHANGE_META_READY_TO_LAND;
+                    }
+                } else {
+                    change.change_meta |= CHANGE_META_VALIDATION_PENDING;
+                    change.change_meta &= !CHANGE_META_READY_TO_LAND;
+                }
+            },
+        )?;
+        Ok(policy_index)
+    }
+}
+
+impl<D> BinaryDbServerWorkflowV0Store<D>
+where
+    D: ServerRemoteBinaryDb + BinaryDbIndexAppender + Clone + Send + Sync + 'static,
+{
+    pub(super) fn submit_land_in_write<F: BinaryDbFsyncPolicy>(
+        &self,
+        tx: &mut BinaryDbWriteTxn<'_, D, F>,
+        reference: &str,
+        payload: &JsonValue,
+        package: bool,
+    ) -> Result<(JsonValue, u32, bool), String> {
+        let payload = Self::required_object(payload, "Land submit payload")?;
+        let contract = Self::optional_text(payload, "contract");
+        let atomic = matches!(
+            contract.as_deref(),
+            Some(super::task_land::ATOMIC_CONTRACT | super::task_land::GUARDED_CONTRACT)
+        );
+        if contract.is_some() && !atomic {
+            return Err("Unsupported Task Land contract".to_string());
+        }
+        let expected = if contract.as_deref() == Some(super::task_land::GUARDED_CONTRACT) {
+            Some(
+                payload
+                    .get("expected_identity")
+                    .ok_or("Guarded atomic Task Land requires expected_identity")?,
+            )
+        } else {
+            None
+        };
+        let key = if atomic {
+            Self::required_text(payload, "idempotency_key")?
+        } else {
+            String::new()
+        };
+        let target = Self::required_text(payload, "target_line")?;
+        if self.task_prefix.starts_with('R') {
+            crate::foundation::workflow_package::require_ordinary_remote_line(&target)?;
+        }
+        let mode_text = Self::required_text(payload, "mode")?;
+        let mode = match mode_text.as_str() {
+            "direct" => LAND_MODE_DIRECT,
+            "merge" => LAND_MODE_MERGE,
+            "ff-only" => LAND_MODE_FF_ONLY,
+            _ => return Err(format!("Unsupported Land mode {mode_text}")),
+        };
+        let requested_patchset = Self::optional_text(payload, "patchset_id");
+        let expected_head = Self::optional_text(payload, "expected_head_snapshot_id")
+            .or_else(|| Self::optional_text(payload, "expected_target_line_head"));
+        let actor_index_plus1 = self.request_actor_in_write(tx, payload)?;
+        let requested = self.workflow_owner(tx, reference)?;
+        if atomic {
+            let path_ref = Self::required_text(payload, "task_or_change_ref")?;
+            if self.owner_ref(self.workflow_owner(tx, &path_ref)?) != self.owner_ref(requested) {
+                return Err("Atomic Task Land reference changed during admission".to_string());
+            }
+        }
+        let lines =
+            ServerBinaryDbLineStore::<D, SERVER_CONTENT_BINARY_LAYOUT_ID>::new(self.db.clone());
+        let (target_index, line) = lines
+            .line_by_name_in_write(tx, &target)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| {
+                format!("CANONICAL_LINE_MISSING: target Line {target} does not exist")
+            })?;
+        // A successful receipt is authoritative even if the target or latest candidate subsequently changes.
+        if let Some((land_index, receipt)) =
+            self.task_successful_receipt(tx, requested.task_index)?
+        {
+            let patchset = self
+                .read_patchset(tx, receipt.patchset_index)
+                .map_err(|e| e.to_string())?;
+            self.require_patchset_owner(tx, reference, patchset)?;
+            self.validate_expected_patchset_in_read(tx, receipt.patchset_index, expected)?;
+            let original_head = receipt
+                .pre_land_target_snapshot_index_plus1
+                .checked_sub(1)
+                .map(|index| self.content_snapshot_id(tx, index))
+                .transpose()?;
+            if receipt.target_line_index_plus1 != target_index + 1
+                || (receipt.land_meta & LAND_MODE_MASK) >> 5 != mode
+                || requested_patchset.as_ref().is_some_and(|id| {
+                    self.patchset_index_for_id(tx, id).ok() != Some(receipt.patchset_index)
+                })
+                || expected_head
+                    .as_ref()
+                    .is_some_and(|head| Some(head.as_str()) != original_head.as_deref())
+                || receipt.landed_snapshot_index_plus1 != patchset.revision_snapshot_index + 1
+            {
+                return Err("TASK_LAND_IDEMPOTENCY_CONFLICT: accepted candidate, target, mode or applied result differs".to_string());
+            }
+            if Self::optional_text(payload, "submission_id").is_some_and(|id| {
+                id != self.land_id(&self.task_id(requested.task_index), receipt.land_ordinal)
+            }) {
+                return Err(
+                    "LAND_IDEMPOTENCY_CONFLICT: accepted submission identity differs".to_string(),
+                );
+            }
+            let completed = self.complete_task_in_write(
+                tx,
+                requested.task_index,
+                receipt.updated_at_s,
+                receipt.actor_index_plus1,
+            )?;
+            let result = if atomic {
+                self.atomic_task_land_result_in_write(
+                    tx,
+                    requested.task_index,
+                    receipt.patchset_index,
+                    land_index,
+                    &key,
+                    true,
+                    expected,
+                )?
+            } else {
+                self.land_at(tx, land_index)?
+            };
+            return Ok((result, land_index, completed));
+        }
+        let (patchset_index, patchset) = self
+            .current_task_patchset(tx, requested.task_index)?
+            .ok_or("Task has no current Patchset")?;
+        let owner = self.require_patchset_owner(tx, reference, patchset)?;
+        self.require_current_patchset(tx, patchset_index, patchset)?;
+        self.require_active_owner(tx, owner)?;
+        self.validate_expected_patchset_in_read(tx, patchset_index, expected)?;
+        if requested_patchset
+            .as_ref()
+            .is_some_and(|id| self.patchset_index_for_id(tx, id).ok() != Some(patchset_index))
+        {
+            return Err(
+                "EXPECTED_CANDIDATE_MISMATCH: requested Patchset is no longer current".to_string(),
+            );
+        }
+        self.require_patchset_governance_authority(
+            tx,
+            patchset_index,
+            &self.patchset_public_id(patchset),
+            "Remote acceptance",
+        )?;
+        if !atomic
+            && self
+                .history_manifest_for_patchset(tx, patchset_index)?
+                .is_some()
+        {
+            return Err(
+                "AGGREGATE_ATOMIC_FINISH_REQUIRED: aggregate acceptance requires atomic Task Land"
+                    .to_string(),
+            );
+        }
+        self.require_finish_evidence(tx, patchset_index, patchset)?;
+        let head = line.head_snapshot_index();
+        let head_id = head
+            .map(|index| self.content_snapshot_id(tx, index))
+            .transpose()?;
+        if expected_head
+            .as_deref()
+            .is_some_and(|expected| Some(expected) != head_id.as_deref())
+        {
+            return Err("STALE_TARGET_LINE: expected target head differs".to_string());
+        }
+        let snapshots =
+            ServerBinaryDbSnapshotStore::<D, SERVER_CONTENT_BINARY_LAYOUT_ID>::new(self.db.clone());
+        if head == Some(patchset.revision_snapshot_index) {
+            return Err("REMOTE_APPLY_RECEIPT_MISSING: target already has the candidate without this Task's receipt".to_string());
+        }
+        if let Some(head) = head {
+            if snapshots
+                .snapshot_chain_contains_ancestor_in_write(
+                    tx,
+                    patchset.revision_snapshot_index,
+                    head,
+                )
+                .map_err(|e| e.to_string())?
+            {
+                return Err("REMOTE_APPLY_RECEIPT_MISSING: target already contains the candidate without this Task's receipt".to_string());
+            }
+        }
+        if head != Some(patchset.base_snapshot_index) {
+            return Err(
+                "TASK_LAND_TARGET_LINE_BLOCKED: target no longer equals the exact candidate base"
+                    .to_string(),
+            );
+        }
+        if package {
+            self.apply_history_receipts_with_package_mode(
+                tx,
+                patchset_index,
+                owner.task_index,
+                &target,
+                target_index,
+                head,
+                true,
+            )?;
+        } else {
+            self.apply_history_receipts_in_land_write(
+                tx,
+                patchset_index,
+                owner.task_index,
+                &target,
+                target_index,
+                head,
+            )?;
+        }
+        let mut inventory = self.task_inventory(tx, "task_land_index.bin", owner.task_index)?;
+        let mut cursor = inventory.latest_index_plus1.checked_sub(1);
+        let mut seen = BTreeSet::new();
+        let mut ordinals = BTreeSet::new();
+        while let Some(index) = cursor {
+            if !seen.insert(index) {
+                return Err("Task Land inventory has a cycle".to_string());
+            }
+            let land = WorkflowBinaryV0Codec::decode_land(
+                &tx.read_record(WorkflowBinaryV0Codec::land_file(), index)
+                    .map_err(|e| e.to_string())?,
+            )
+            .map_err(|e| e.to_string())?;
+            if land.task_index != owner.task_index || !ordinals.insert(land.land_ordinal) {
+                return Err("Task Land owner/ordinal disagrees".to_string());
+            }
+            cursor = land.previous_task_land_index_plus1.checked_sub(1);
+        }
+        if seen.len() != usize::from(inventory.count) {
+            return Err("Task Land count disagrees".to_string());
+        }
+        let ordinal = ordinals.last().map_or(0, |n| n + 1);
+        if ordinal >= 64 {
+            return Err("Task has exhausted its Land ordinals".to_string());
+        }
+        if Self::optional_text(payload, "submission_id")
+            .is_some_and(|id| id != self.land_id(&self.task_id(owner.task_index), ordinal))
+        {
+            return Err("LAND_IDEMPOTENCY_CONFLICT: next Task Land identity differs".to_string());
+        }
+        let mut change_inventory = owner
+            .change
+            .map(|(index, _)| self.owner_ordinal_index(tx, "change_land_index.bin", index))
+            .transpose()?;
+        let now = Self::now_s()?;
+        lines
+            .set_line_head_in_tx(tx, &target, head, patchset.revision_snapshot_index, now)
+            .map_err(|e| e.to_string())?;
+        let receipt = V0LandRecord {
+            actor_index_plus1,
+            land_meta: LAND_STATUS_SUCCEEDED
+                | LAND_HAS_PRE_TARGET
+                | LAND_HAS_LANDED_SNAPSHOT
+                | (mode << 5),
+            land_ordinal: ordinal,
+            change_ordinal_plus1: owner.change_ordinal_plus1(),
+            task_index: owner.task_index,
+            patchset_index,
+            previous_task_land_index_plus1: inventory.latest_index_plus1,
+            previous_change_land_index_plus1: change_inventory
+                .as_ref()
+                .map_or(0, |i| i.latest_index_plus1),
+            pre_land_target_snapshot_index_plus1: patchset.base_snapshot_index + 1,
+            landed_snapshot_index_plus1: patchset.revision_snapshot_index + 1,
+            submitted_at_s: now,
+            updated_at_s: now,
+            target_line_index_plus1: target_index + 1,
+            failure_kind: 0,
+        };
+        let land_index = tx
+            .append_record(
+                WorkflowBinaryV0Codec::land_file(),
+                &WorkflowBinaryV0Codec::encode_land(receipt).map_err(|e| e.to_string())?,
+            )
+            .map_err(|e| e.to_string())?;
+        inventory.latest_index_plus1 = land_index + 1;
+        inventory.count = inventory
+            .count
+            .checked_add(1)
+            .ok_or("Task Land count exceeds u16")?;
+        tx.overwrite_record(
+            WorkflowBinaryV0Codec::chain_index_file("task_land_index.bin"),
+            owner.task_index,
+            &WorkflowBinaryV0Codec::encode_inventory_index(inventory).map_err(|e| e.to_string())?,
+        )
+        .map_err(|e| e.to_string())?;
+        if let (Some((change_index, _)), Some(index)) = (owner.change, change_inventory.as_mut()) {
+            index.latest_index_plus1 = land_index + 1;
+            index.count = index
+                .count
+                .checked_add(1)
+                .ok_or("Change Land count exceeds u16")?;
+            index.next_ordinal = ordinal + 1;
+            tx.overwrite_record(
+                WorkflowBinaryV0Codec::chain_index_file("change_land_index.bin"),
+                change_index,
+                &WorkflowBinaryV0Codec::encode_ordinal_index(*index).map_err(|e| e.to_string())?,
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        self.update_owner_state(
+            tx,
+            owner,
+            0,
+            TASK_META_READY_TO_LAND
+                | TASK_META_BLOCKED
+                | TASK_META_REVIEW_PENDING
+                | TASK_META_VALIDATION_PENDING,
+            now,
+            Some(actor_index_plus1),
+            |change| {
+                change.change_meta =
+                    (change.change_meta & CHANGE_META_HAS_PATCHSETS) | CHANGE_LIFECYCLE_LANDED
+            },
+        )?;
+        self.complete_task_in_write(tx, owner.task_index, now, actor_index_plus1)?;
+        let result = if atomic {
+            self.atomic_task_land_result_in_write(
+                tx,
+                owner.task_index,
+                patchset_index,
+                land_index,
+                &key,
+                false,
+                expected,
+            )?
+        } else {
+            self.land_at(tx, land_index)?
+        };
+        Ok((result, land_index, true))
     }
 }

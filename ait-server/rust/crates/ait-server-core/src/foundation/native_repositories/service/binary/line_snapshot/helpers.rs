@@ -1,5 +1,41 @@
 use super::*;
 
+pub(in super::super) fn snapshot_parent_ids(
+    value: &JsonValue,
+) -> Result<Vec<String>, NativeRepositoryError> {
+    let first = binary_json_text(value, "parent_snapshot_id");
+    let Some(values) = value.get("parent_snapshot_ids") else {
+        return Ok(first.into_iter().collect());
+    };
+    let values = values.as_array().ok_or_else(|| {
+        NativeRepositoryError::bad_request("Snapshot parent_snapshot_ids must be an array")
+    })?;
+    if values.len() > 1024 {
+        return Err(NativeRepositoryError::bad_request(
+            "Snapshot parent count exceeds the existing edge bound",
+        ));
+    }
+    let mut seen = BTreeSet::new();
+    let mut parents = Vec::new();
+    for value in values {
+        let id = value.as_str().filter(|id| !id.is_empty()).ok_or_else(|| {
+            NativeRepositoryError::bad_request("Snapshot parent ID must be a nonempty string")
+        })?;
+        if !seen.insert(id) {
+            return Err(NativeRepositoryError::bad_request(
+                "Snapshot parent IDs are duplicated",
+            ));
+        }
+        parents.push(id.to_string());
+    }
+    if first.as_deref() != parents.first().map(String::as_str) {
+        return Err(NativeRepositoryError::bad_request(
+            "Snapshot first-parent cache disagrees with ordered parents",
+        ));
+    }
+    Ok(parents)
+}
+
 pub(in super::super) fn now_timestamp_s() -> u64 {
     u64::try_from(chrono::Utc::now().timestamp())
         .expect("current system time must not precede the Unix epoch")

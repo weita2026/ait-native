@@ -57,7 +57,6 @@
   "product_boundary": {
     "implementation_language": "Rust",
     "python_allowed": false,
-    "workflow_mode": "solo_local",
     "core_sprint_mode": "manifest-pinned off for the primary campaign; separately reported sprint-on smoke and complete campaigns are admitted",
     "git_worktree_mode": "manifest-pinned axis: agent_managed retains the historical measured lifecycle; codex_app_equivalent_managed starts the model inside a host-created detached linked worktree and records host closeout after the terminal model event without claiming Desktop private IPC",
     "public_ait_command": false,
@@ -81,8 +80,8 @@
         },
         {
           "id": "ait_linear_single_session",
-          "repository_surface": "current solo_local manifest-pinned AIT Task, Snapshot, and local Task-finish workflow; primary publication remains sprint-off while sprint-on complete campaigns are reported separately",
-          "required_evidence": "runner-admitted solo_local authority with the exact manifest sprint and edit-root-delivery modes plus measured task start, task finish, and task-relevant local AIT workflow commands; returned mode forbids --edit-root and follows task start's next_action command"
+          "repository_surface": "current local manifest-pinned AIT Task, Snapshot, and local Task-finish workflow; primary publication remains sprint-off while sprint-on complete campaigns are reported separately",
+          "required_evidence": "runner-admitted local authority with the exact manifest sprint and edit-root-delivery modes plus measured task start, task finish, and task-relevant local AIT workflow commands; returned mode forbids --edit-root and follows task start's next_action command"
         }
       ],
       "excluded_topologies": [
@@ -313,7 +312,7 @@
       "copied-third-party-game-assets",
       "disabled-tests",
       "prompt-or-fixture-tampering",
-      "workflow-mode-substitution",
+      "workflow-scope-substitution",
       "human-repair-required"
     ]
   },

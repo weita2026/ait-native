@@ -322,7 +322,6 @@ impl NativeTelegramUpdateLifecycleRuntime {
     fn runtime_target_json(&self) -> JsonValue {
         let mut target = json!({
             "mode": self.runtime_target.mode.as_str(),
-            "workflow_mode": self.runtime_target.workflow_mode.as_str(),
             "repo_name": self.runtime_target.repo_name,
             "repo_root": self.runtime_target.repo_root.to_string_lossy(),
         });

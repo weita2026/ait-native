@@ -1,10 +1,12 @@
 use super::*;
+mod team_finish_log;
 use crate::primitives::sprint_card_retention::apply_completed_sprint_card_retention;
 use ait_core::object_diff::artifact_blob_id;
 use ait_core::plan_command_execution::execute_plan_show_command_request_json;
 use ait_core::plan_filesystem::{is_markdown_artifact_path, resolve_repo_artifact_path};
 use ait_core::plan_items::{close_plan_item_checkbox, PlanChecklistCloseoutStatus};
 use ait_core::plan_sync_execution::execute_plan_sync_command_request_json;
+pub(in crate::primitives) use team_finish_log::{append_team_finish_log, team_finish_log_enabled};
 
 const PLAN_BINARY_DB_WRITE_LAYOUT: u32 = 1;
 
@@ -166,22 +168,29 @@ pub(in crate::primitives) fn close_task_plan_checklist_item(
     let sync = match sync_result {
         Ok(sync) if sync.get("status").and_then(JsonValue::as_str) == Some("ok") => sync,
         Ok(sync) => {
-            let error = string_field(&sync, "error")
+            let error = sync
+                .get("error")
+                .and_then(|error| string_field(error, "message"))
+                .or_else(|| string_field(&sync, "error"))
                 .unwrap_or_else(|| "plan sync returned a non-ok result".to_string());
             return Err(restore_markdown_after_sync_failure(
+                repo,
                 resolved_path,
                 &markdown,
                 updated,
                 &artifact_path,
+                artifact_selector.as_deref(),
                 &error,
             ));
         }
         Err(error) => {
             return Err(restore_markdown_after_sync_failure(
+                repo,
                 resolved_path,
                 &markdown,
                 updated,
                 &artifact_path,
+                artifact_selector.as_deref(),
                 &error,
             ));
         }
@@ -442,7 +451,7 @@ fn shown_plan_revision<'a>(
     plan_id: &str,
     label: &str,
 ) -> Result<&'a JsonValue, String> {
-    payload
+    let revision = payload
         .get("revision")
         .or_else(|| payload.get("head_revision"))
         .or_else(|| {
@@ -450,7 +459,13 @@ fn shown_plan_revision<'a>(
                 .get("plan")
                 .and_then(|value| value.get("head_revision"))
         })
-        .ok_or_else(|| format!("Plan {plan_id} has no {label} revision for checklist closeout."))
+        .ok_or_else(|| format!("Plan {plan_id} has no {label} revision for checklist closeout."))?;
+    if string_field(revision, "plan_id").as_deref() != Some(plan_id) {
+        return Err(format!(
+            "Plan {plan_id} {label} revision has missing or different Plan authority."
+        ));
+    }
+    Ok(revision)
 }
 
 fn validate_origin_plan_item(
@@ -486,7 +501,10 @@ fn validate_origin_plan_item(
         }));
     }
     let item = matches[0];
-    if string_field(item, "checkbox_state").as_deref() == Some("none") {
+    if !matches!(
+        string_field(item, "checkbox_state").as_deref(),
+        Some("open" | "done")
+    ) {
         return Some(json!({
             "status": "skipped",
             "reason": "origin_plan_item_not_checkbox",
@@ -495,7 +513,13 @@ fn validate_origin_plan_item(
             "plan_item_ref": plan_item_ref,
         }));
     }
-    if item.get("taskable_hint").and_then(JsonValue::as_bool) != Some(true) {
+    // Remote item projections omit this local derived hint. A unique exact ref
+    // and a known checkbox state supply its eligibility; an explicit negative
+    // or malformed hint must still fail closed.
+    if item
+        .get("taskable_hint")
+        .is_some_and(|hint| hint.as_bool() != Some(true))
+    {
         return Some(json!({
             "status": "skipped",
             "reason": "origin_plan_item_not_taskable",
@@ -508,10 +532,12 @@ fn validate_origin_plan_item(
 }
 
 fn restore_markdown_after_sync_failure(
+    repo: &RepoRuntime,
     resolved_path: &str,
     original_markdown: &str,
     updated: bool,
     artifact_path: &str,
+    artifact_selector: Option<&str>,
     sync_error: &str,
 ) -> String {
     if !updated {
@@ -520,9 +546,24 @@ fn restore_markdown_after_sync_failure(
         );
     }
     match fs::write(resolved_path, original_markdown) {
-        Ok(()) => format!(
-            "Task finish succeeded, but plan sync failed for {artifact_path}; the automatic checkbox edit was restored: {sync_error}"
-        ),
+        Ok(()) => {
+            // Remote publication can fail after its local revision is committed.
+            // Restore the local Plan view too, so the normal Markdown barrier
+            // admits a retry of the existing apply receipt. Keep both revisions
+            // in native history; never bypass drift checks or apply code again.
+            let restored = (|| {
+                let request = plan_sync_request(repo, artifact_path, artifact_selector, None, false)?;
+                let result = execute_plan_sync_command_request_json(&request.to_string())?;
+                if result["status"].as_str() != Some("ok") {
+                    return Err(format!("local Plan restore sync returned {result}"));
+                }
+                Ok(())
+            })();
+            match restored {
+                Ok(()) => format!("Task finish succeeded, but plan sync failed for {artifact_path}; the automatic checkbox edit and local Plan view were restored: {sync_error}"),
+                Err(error) => format!("Task finish succeeded, but plan sync failed for {artifact_path}; the automatic checkbox edit was restored, but local Plan restore sync failed ({error}): {sync_error}"),
+            }
+        }
         Err(restore_error) => format!(
             "Task finish succeeded and plan sync failed for {artifact_path}; restoring the automatic checkbox edit also failed ({restore_error}): {sync_error}"
         ),
@@ -542,6 +583,8 @@ pub(super) fn plan_sync_request(
         "repository_index": repo.repository_index(),
         "id_namespace_prefix": repo.id_namespace_prefix(),
         "created_by": repo.actor_identity(),
+        "user_name": repo.config.get("user_name"),
+        "user_email": repo.config.get("user_email"),
         "target": artifact_path,
         "plan_ref": artifact_selector,
         "prune": prune,
@@ -583,11 +626,11 @@ mod tests {
     use std::path::PathBuf;
     use tempfile::tempdir;
 
-    fn repo(mode: &str) -> RepoRuntime {
+    pub(super) fn repo(teams: bool) -> RepoRuntime {
         let mut config = JsonMap::new();
         config.insert("repo_name".to_string(), json!("demo"));
         config.insert("default_line".to_string(), json!("main"));
-        config.insert("workflow_mode".to_string(), json!(mode));
+        config.insert("agent_teams".into(), json!(teams));
         config.insert("default_remote".to_string(), json!("origin"));
         RepoRuntime {
             root: PathBuf::from("/repo"),
@@ -600,18 +643,17 @@ mod tests {
     #[test]
     fn unbound_tasks_skip_without_plan_reads_or_writes() {
         assert_eq!(
-            close_task_plan_checklist_item(&repo("solo_local"), &json!({}), None).unwrap()
-                ["reason"],
+            close_task_plan_checklist_item(&repo(false), &json!({}), None).unwrap()["reason"],
             "no_plan_binding"
         );
         assert_eq!(
-            close_task_plan_checklist_item(&repo("solo_local"), &json!({"plan_id": "PL-1"}), None,)
+            close_task_plan_checklist_item(&repo(false), &json!({"plan_id": "PL-1"}), None,)
                 .unwrap()["reason"],
             "no_plan_item_ref"
         );
         assert_eq!(
             close_task_plan_checklist_item(
-                &repo("solo_local"),
+                &repo(false),
                 &json!({
                     "plan_id": "PL-1",
                     "plan_item_ref": "card/item"
@@ -625,14 +667,8 @@ mod tests {
 
     #[test]
     fn closeout_requests_follow_the_explicit_land_scope() {
-        let local = plan_sync_request(
-            &repo("solo_local"),
-            "docs/sprint.md",
-            Some("root"),
-            None,
-            false,
-        )
-        .unwrap();
+        let local =
+            plan_sync_request(&repo(false), "docs/sprint.md", Some("root"), None, false).unwrap();
         assert_eq!(local["local"], true);
         assert!(local["remote_name"].is_null());
         assert_eq!(local["plan_ref"], "root");
@@ -647,6 +683,7 @@ mod tests {
         let shown = |checkbox_state: &str| {
             json!({
                 "head_revision": {
+                    "plan_id": "PR-8",
                     "plan_revision_id": "plan-revision:9",
                     "artifact_path": "docs/sprints/release.md",
                     "artifact_selector": "release/root",
@@ -678,6 +715,84 @@ mod tests {
                 .unwrap();
         assert_eq!(invalid["status"], "invalid");
         assert_eq!(invalid["reason"], "head_plan_item_not_checkbox");
+    }
+
+    #[test]
+    fn origin_eligibility_uses_exact_checkbox_authority_when_hint_is_omitted() {
+        let revision = |items: JsonValue| json!({"items": items});
+        let item = json!({"plan_item_ref":"card/run", "checkbox_state":"open"});
+        assert!(validate_origin_plan_item(
+            &revision(json!([item.clone()])),
+            "PR-8",
+            "plan-revision:9",
+            "card/run"
+        )
+        .is_none());
+        for (field, value, reason) in [
+            (
+                "taskable_hint",
+                json!(false),
+                "origin_plan_item_not_taskable",
+            ),
+            (
+                "taskable_hint",
+                JsonValue::Null,
+                "origin_plan_item_not_taskable",
+            ),
+            (
+                "taskable_hint",
+                json!("true"),
+                "origin_plan_item_not_taskable",
+            ),
+            (
+                "checkbox_state",
+                json!("none"),
+                "origin_plan_item_not_checkbox",
+            ),
+            (
+                "checkbox_state",
+                JsonValue::Null,
+                "origin_plan_item_not_checkbox",
+            ),
+            (
+                "checkbox_state",
+                json!("reserved"),
+                "origin_plan_item_not_checkbox",
+            ),
+        ] {
+            let mut invalid = item.clone();
+            invalid[field] = value;
+            assert_eq!(
+                validate_origin_plan_item(
+                    &revision(json!([invalid])),
+                    "PR-8",
+                    "plan-revision:9",
+                    "card/run"
+                )
+                .unwrap()["reason"],
+                reason,
+                "{field}"
+            );
+        }
+        for (items, reason) in [
+            (json!([]), "origin_plan_item_missing"),
+            (json!([item.clone(), item]), "origin_plan_item_ambiguous"),
+        ] {
+            assert_eq!(
+                validate_origin_plan_item(&revision(items), "PR-8", "plan-revision:9", "card/run")
+                    .unwrap()["reason"],
+                reason
+            );
+        }
+    }
+
+    #[test]
+    fn shown_revision_rejects_missing_or_different_plan_authority() {
+        for plan in [JsonValue::Null, json!("PR-OTHER")] {
+            let shown =
+                json!({"head_revision":{"plan_id":plan,"plan_revision_id":"plan-revision:9"}});
+            assert!(shown_plan_revision(&shown, "PR-8", "head").is_err());
+        }
     }
 
     #[test]
@@ -805,3 +920,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "plan_checklist_closeout_remote_tests.rs"]
+mod remote_tests;

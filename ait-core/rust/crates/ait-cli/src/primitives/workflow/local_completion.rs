@@ -1,81 +1,101 @@
 use super::*;
 use crate::primitives::change_flow::change_local_mark_published_with_change_store;
 use crate::primitives::plan_checklist_closeout::plan_sync_request;
+use ait_core::task_store::TaskStore;
 
-fn workflow_completed_local_entry_from_rows(
-    task: JsonValue,
-    change: JsonValue,
-    remote_name: Option<&str>,
-) -> Result<JsonValue, String> {
-    let task_id = required_string_field(&task, "task_id")?;
-    let change_id = required_string_field(&change, "change_id")?;
-    let target_line = string_field(&change, "base_line").unwrap_or_else(|| "main".to_string());
-    let remote_task_id = string_field(&task, "published_task_id").unwrap_or_default();
-    let remote_change_id =
-        string_field(&change, "published_change_id").unwrap_or_else(|| change_id.clone());
-    Ok(json!({
-        "status": "ready",
-        "task_id": task_id,
-        "change_id": change_id,
-        "target_line": target_line,
-        "remote": remote_name,
-        "remote_task_id": remote_task_id,
-        "remote_change_id": remote_change_id,
-        "state": {
-            "routing": {
-                "kind": "completed_local",
-                "local_task_id": string_field(&task, "task_id"),
-                "local_change_id": string_field(&change, "change_id"),
-                "remote_task_id": string_field(&task, "published_task_id"),
-                "remote_change_id": string_field(&change, "published_change_id").or_else(|| string_field(&change, "change_id")),
-                "target_line": target_line,
-            },
-            "task": task,
-            "change": change,
-        },
-    }))
-}
-
-fn workflow_completed_local_entry_if_present(
+pub(super) fn workflow_completed_local_entry_if_present(
     repo: &RepoRuntime,
-    change_id: &str,
+    reference: &str,
     remote_name: Option<&str>,
 ) -> Result<Option<JsonValue>, String> {
-    let change_store = repo.change_store()?;
-    let task_store = repo.task_store()?;
-    let matching_changes = workflow_local_change_rows_with_change_store(&change_store)?
-        .into_iter()
-        .filter(|row| {
-            string_field(row, "change_id").as_deref() == Some(change_id)
-                || string_field(row, "change_ref").as_deref() == Some(change_id)
-        })
-        .collect::<Vec<_>>();
-    let change = match matching_changes.as_slice() {
-        [] => return Ok(None),
-        [change] => change.clone(),
-        _ => {
-            return Err(
-                "The requested local work is ambiguous across completed Tasks. Inspect `ait task audit <task-id> --json` and retry with the Task ID."
-                    .to_string(),
-            )
-        }
-    };
-    if string_field(&change, "status").as_deref() != Some("landed") {
+    let namespace = ait_core::workflow_primitives::workflow_origin_namespace_prefix(
+        "L",
+        Some(&repo.id_namespace_prefix()),
+    )?;
+    if is_task_id(reference) && !reference.starts_with(&format!("{namespace}T-")) {
         return Ok(None);
     }
-    let task_id = required_string_field(&change, "task_id")?;
-    let task = workflow_local_task_read_with_task_store(&task_store, &task_id)?;
+    let task_store = repo.task_store()?;
+    let task_id = if is_task_id(reference) {
+        reference.to_string()
+    } else {
+        let rows = task_store.changes_for_task(reference.split('/').next().unwrap_or(reference));
+        let changes = match rows {
+            Ok(rows) => rows,
+            Err(_) => workflow_local_change_rows_with_change_store(&repo.change_store()?)?,
+        };
+        let matches = changes
+            .iter()
+            .filter(|row| {
+                string_field(row, "change_ref").as_deref() == Some(reference)
+                    || string_field(row, "change_id").as_deref() == Some(reference)
+            })
+            .collect::<Vec<_>>();
+        match matches.as_slice() {
+            [] => return Ok(None),
+            [row] => required_string_field(row, "task_id")?,
+            _ => return Err("Completed work is ambiguous; use its exact Task ID.".into()),
+        }
+    };
+    let task = match workflow_local_task_read_with_task_store(&task_store, &task_id) {
+        Ok(task) => task,
+        Err(_) if !is_task_id(reference) => return Ok(None),
+        Err(error) => return Err(error),
+    };
     if string_field(&task, "status").as_deref() != Some("completed") {
         return Ok(None);
+    }
+    let Some(receipt) = task_store
+        .local_task_receipt(&task_id)
+        .map_err(|e| e.to_string())?
+    else {
+        return Ok(None);
+    };
+    let change_ref = string_field(&receipt, "change_ref");
+    let change = change_ref
+        .as_deref()
+        .map(|id| workflow_local_change_read_with_change_store(&repo.change_store()?, id))
+        .transpose()?
+        .unwrap_or(JsonValue::Null);
+    if !is_task_id(reference)
+        && change_ref.as_deref() != Some(reference)
+        && string_field(&change, "change_id").as_deref() != Some(reference)
+    {
+        return Err("Requested revision is not the Task receipt's associated Change.".into());
     }
     if string_field(&change, "publication_state").as_deref() == Some("published")
         && string_field(&task, "publication_state").as_deref() != Some("published")
     {
         return Err(format!(
-            "Task {task_id} has inconsistent completed-work publication state; repair it before promotion."
+            "Task {task_id} has inconsistent completed-work publication state."
         ));
     }
-    workflow_completed_local_entry_from_rows(task, change, remote_name).map(Some)
+    let remote_task_id = string_field(&task, "published_task_id");
+    let remote_change_id = string_field(&change, "published_change_id");
+    let target_line = required_string_field(&receipt, "target_line")?;
+    Ok(Some(json!({
+        "status":"ready", "task_id":task_id,
+        "change_id":string_field(&change,"change_id"), "target_line":target_line,
+        "remote":remote_name, "remote_task_id":remote_task_id,
+        "remote_change_id":remote_change_id,
+        "state":{
+            "routing":{"kind":"completed_local", "local_task_id":task_id,
+                "local_change_id":string_field(&change,"change_id"),
+                "remote_task_id":remote_task_id,"remote_change_id":remote_change_id,
+                "target_line":target_line},
+            "task":task,"change":change,"local_finish":receipt
+        }
+    })))
+}
+
+// Real local candidates carry their Task receipt. The Change projection remains
+// a compatibility input for pure projection callers, never remote acceptance.
+fn workflow_local_completion_evidence(state: &JsonValue) -> &JsonValue {
+    state
+        .get("local_finish")
+        .filter(|v| !v.is_null())
+        .or_else(|| state.get("change"))
+        .unwrap_or(&JsonValue::Null)
 }
 
 const HISTORY_PROMOTION_STAGE_ENTRY_COUNT: usize = 64;
@@ -307,9 +327,6 @@ fn workflow_recover_task_owned_pre_land_boundary(
             "Completed local Change {local_change_ref} has a genuinely empty Land boundary at its fork Snapshot `{landed_snapshot_id}`."
         ));
     }
-    let task_lines = task_feature_line_candidates(&local_task_id)?
-        .into_iter()
-        .collect::<BTreeSet<_>>();
     let mut cursor = landed_snapshot_id.to_string();
     let mut seen = BTreeSet::new();
 
@@ -330,19 +347,21 @@ fn workflow_recover_task_owned_pre_land_boundary(
                 "Completed local Change {local_change_ref} empty-boundary recovery reached non-Line Snapshot `{cursor}` of kind `{snapshot_kind}`."
             ));
         }
-        let snapshot_line = required_string_field(&snapshot, "line_name")?;
-        if !task_lines.contains(&snapshot_line) {
+        let owners = repo
+            .task_store()?
+            .snapshot_ownership_rows(std::slice::from_ref(&cursor))
+            .map_err(|e| e.to_string())?;
+        if !owners.iter().any(|owner| {
+            string_field(owner, "task_id").as_deref() == Some(&local_task_id)
+                && string_field(owner, "change_id").as_deref() == Some(&local_change_id)
+        }) {
             if cursor == landed_snapshot_id {
-                return Err(format!(
-                    "Completed local Change {local_change_ref} has an empty Land boundary, but landed Snapshot `{cursor}` belongs to `{snapshot_line}` instead of the Task feature Line."
-                ));
+                return Err(format!("Completed revision {local_change_ref} has no exact numeric ownership for boundary recovery."));
             }
             if snapshot_distance_if_ancestor(repo, Some(&fork_snapshot_id), Some(&cursor))?
                 .is_none()
             {
-                return Err(format!(
-                    "Completed local Change {local_change_ref} recovered boundary `{cursor}` does not descend from historical fork `{fork_snapshot_id}`."
-                ));
+                return Err(format!("Recovered boundary {cursor} does not descend from exact fork {fork_snapshot_id}."));
             }
             return Ok(cursor);
         }
@@ -417,7 +436,7 @@ pub(super) fn workflow_effective_pre_land_target_snapshot_id(
         .map(|snapshot_id| (snapshot_id, true))
 }
 
-fn workflow_history_promotion_fork_snapshot_id(
+pub(super) fn workflow_history_promotion_fork_snapshot_id(
     repo: &RepoRuntime,
     local_change_ref: &str,
     historical_fork_snapshot_id: &str,
@@ -453,178 +472,170 @@ fn workflow_history_promotion_fork_snapshot_id(
 
 pub(in crate::primitives) fn workflow_local_history_entries(
     repo: &RepoRuntime,
-    selected_change_id: &str,
+    selected_reference: &str,
     target_line: &str,
     base_snapshot_id: &str,
     revision_snapshot_id: &str,
 ) -> Result<(Vec<JsonValue>, Vec<String>), String> {
-    let change_store = repo.change_store()?;
     let task_store = repo.task_store()?;
-    let change_rows = workflow_local_change_rows_with_change_store(&change_store)?;
-    let mut landed_changes_by_snapshot = BTreeMap::<String, Vec<&JsonValue>>::new();
-    for row in &change_rows {
-        if string_field(row, "status").as_deref() != Some("landed")
-            || string_field(row, "target_line")
-                .or_else(|| string_field(row, "base_line"))
-                .as_deref()
-                != Some(target_line)
-        {
-            continue;
-        }
-        if let Some(landed_snapshot_id) = string_field(row, "landed_snapshot_id") {
-            landed_changes_by_snapshot
-                .entry(landed_snapshot_id)
-                .or_default()
-                .push(row);
+    let tasks = task_store
+        .list_completed_tasks_with_landed_changes()
+        .map_err(|e| e.to_string())?;
+    let receipts = tasks
+        .iter()
+        .filter_map(|task| task.get("local_finish"))
+        .filter(|receipt| string_field(receipt, "target_line").as_deref() == Some(target_line))
+        .cloned()
+        .collect::<Vec<_>>();
+    let mut by_snapshot = BTreeMap::<String, Vec<&JsonValue>>::new();
+    for receipt in &receipts {
+        if let Some(id) = string_field(receipt, "landed_snapshot_id") {
+            by_snapshot.entry(id).or_default().push(receipt);
         }
     }
-    let mut current_snapshot_id = revision_snapshot_id.to_string();
-    let mut reversed = Vec::new();
+    let mut cursor = revision_snapshot_id.to_string();
+    let mut entries = Vec::new();
     let mut seen_tasks = BTreeSet::new();
-    let mut seen_changes = BTreeSet::new();
-    let mut plan_artifact_paths = Vec::new();
-
-    while current_snapshot_id != base_snapshot_id {
-        let change = match landed_changes_by_snapshot
-            .get(&current_snapshot_id)
-            .map(Vec::as_slice)
-            .unwrap_or_default()
-        {
-            [] => {
-                return Err(format!(
-                    "Local Land history has a gap before Snapshot `{current_snapshot_id}`; no landed Change on `{target_line}` owns that target head."
-                ))
-            }
-            [change] => (*change).clone(),
-            _ => {
-                return Err(format!(
-                    "Local Land history is ambiguous at Snapshot `{current_snapshot_id}`; multiple landed Changes claim the same target head."
-                ))
-            }
+    let mut plan_paths = Vec::new();
+    while cursor != base_snapshot_id {
+        let receipt=match by_snapshot.get(&cursor).map(Vec::as_slice).unwrap_or_default() {
+            []=>return Err(format!("Local Land history has a gap before Snapshot {cursor}; no successful Task receipt on {target_line} owns that target head.")),
+            [receipt]=>*receipt,
+            _=>return Err(format!("Local Land history is ambiguous at Snapshot {cursor}; multiple Task receipts claim the same target head.")),
         };
-        let local_change_id = required_string_field(&change, "change_id")?;
-        let local_task_id = required_string_field(&change, "task_id")?;
-        let local_change_ref = string_field(&change, "change_ref")
-            .unwrap_or_else(|| format!("{local_task_id}/{local_change_id}"));
-        if !seen_changes.insert(local_change_ref.clone()) {
+        let task_id = required_string_field(receipt, "task_id")?;
+        if !seen_tasks.insert(task_id.clone()) {
             return Err(format!(
-                "Local Land history cycles through Change {local_change_ref}."
+                "Local receipt history cycles through Task {task_id}."
             ));
         }
-        if !seen_tasks.insert(local_task_id.clone()) {
-            return Err(format!(
-                "History promotion currently requires one completed Task per local Land; Task {local_task_id} owns more than one included landed Change."
-            ));
-        }
-        let recorded_pre_land_snapshot_id =
-            string_field(&change, "pre_land_target_snapshot_id").ok_or_else(|| {
-                format!(
-                    "Completed local Change {local_change_ref} is missing pre_land_target_snapshot_id."
+        let task = tasks
+            .iter()
+            .find(|task| string_field(task, "task_id").as_deref() == Some(&task_id))
+            .ok_or("Completed receipt Task disappeared")?
+            .clone();
+        let change_ref = string_field(receipt, "change_ref");
+        let change = change_ref
+            .as_deref()
+            .map(|id| workflow_local_change_read_with_change_store(&repo.change_store()?, id))
+            .transpose()?
+            .unwrap_or(JsonValue::Null);
+        let change_id = string_field(&change, "change_id");
+        let label = change_ref.as_deref().unwrap_or(&task_id);
+        let recorded_pre = required_string_field(receipt, "pre_land_target_snapshot_id")?;
+        let (pre, recovered) = if recorded_pre == cursor {
+            if change.is_null() {
+                (
+                    workflow_recover_task_receipt_boundary(repo, &task_id, &cursor)?,
+                    true,
                 )
-            })?;
-        let (pre_land_snapshot_id, pre_land_boundary_recovered) =
-            workflow_effective_pre_land_target_snapshot_id(
-                repo,
-                &change,
-                &current_snapshot_id,
-                &recorded_pre_land_snapshot_id,
-            )?;
-        let promotion_fork_boundary_snapshot_id = pre_land_snapshot_id.clone();
-        let (pre_land_snapshot_id, adopted_boundary_snapshot_ids) =
-            workflow_adopt_unowned_direct_boundary(
-                repo,
-                &landed_changes_by_snapshot,
-                &local_change_ref,
-                target_line,
-                base_snapshot_id,
-                &pre_land_snapshot_id,
-            )?;
-        let task = workflow_local_task_read_with_task_store(&task_store, &local_task_id)?;
-        if string_field(&task, "status").as_deref() != Some("completed") {
-            return Err(format!(
-                "Local Land history Change {local_change_ref} belongs to Task {local_task_id}, which is not completed."
-            ));
-        }
-        let task_is_published =
-            string_field(&task, "publication_state").as_deref() == Some("published");
-        let change_is_published =
+            } else {
+                workflow_effective_pre_land_target_snapshot_id(
+                    repo,
+                    &change,
+                    &cursor,
+                    &recorded_pre,
+                )?
+            }
+        } else {
+            (recorded_pre, false)
+        };
+        let fork_boundary = pre.clone();
+        let (pre, adopted) = workflow_adopt_unowned_direct_boundary(
+            repo,
+            &by_snapshot,
+            label,
+            target_line,
+            base_snapshot_id,
+            &pre,
+        )?;
+        let published = string_field(&task, "publication_state").as_deref() == Some("published");
+        let change_published =
             string_field(&change, "publication_state").as_deref() == Some("published");
-        if change_is_published && !task_is_published {
+        if change_published && !published {
             return Err(format!(
-                "Local history Change {local_change_ref} is marked published while Task {local_task_id} is not; repair the invalid publication ordering before promotion."
+                "Local history Change {label} is published while Task {task_id} is not."
             ));
         }
-        let historical_fork_snapshot_id =
-            string_field(&change, "fork_snapshot_id").ok_or_else(|| {
-                format!("Completed local Change {local_change_ref} is missing its historical fork.")
-            })?;
-        let (promotion_fork_snapshot_id, promotion_fork_source) =
+        let (fork, source) = if let Some(fork) = string_field(&change, "fork_snapshot_id") {
             workflow_history_promotion_fork_snapshot_id(
                 repo,
-                &local_change_ref,
-                &historical_fork_snapshot_id,
-                &promotion_fork_boundary_snapshot_id,
-                &current_snapshot_id,
-            )?;
-        if let Some(artifact_path) = workflow_history_plan_artifact_path(repo, &task)? {
-            plan_artifact_paths.push(artifact_path);
+                label,
+                &fork,
+                &fork_boundary,
+                &cursor,
+            )?
+        } else {
+            (fork_boundary, "task_receipt_boundary")
+        };
+        if let Some(path) = workflow_history_plan_artifact_path(repo, &task)? {
+            plan_paths.push(path);
         }
-        let snapshots = workflow_history_snapshot_rows(
-            repo,
-            &local_change_ref,
-            &pre_land_snapshot_id,
-            &current_snapshot_id,
+        let snapshots = workflow_history_snapshot_rows(repo, label, &pre, &cursor)?;
+        let landed_at = workflow_history_epoch_seconds(
+            receipt.get("updated_at"),
+            &format!("Task {task_id} receipt updated_at"),
         )?;
-        let landed_at_s = workflow_history_epoch_seconds(
-            change.get("landed_at"),
-            &format!("Change {local_change_ref} landed_at"),
-        )?;
-        let landed_snapshot_id = current_snapshot_id.clone();
-        let next_snapshot_id = pre_land_snapshot_id.clone();
-        reversed.push(json!({
-            "local_task_id": local_task_id,
-            "local_change_id": local_change_id,
-            "local_change_ref": local_change_ref,
-            "task": task,
-            "change": change,
-            "promotion_fork_snapshot_id": promotion_fork_snapshot_id,
-            "promotion_fork_source": promotion_fork_source,
-            "pre_land_target_snapshot_id": pre_land_snapshot_id,
-            "pre_land_boundary_source": if pre_land_boundary_recovered {
-                "task_owned_snapshot_lineage_recovery"
-            } else {
-                "land_record"
-            },
-            "landed_snapshot_id": landed_snapshot_id,
-            "landed_at_s": landed_at_s,
-            "adopted_boundary_snapshot_ids": adopted_boundary_snapshot_ids,
-            "snapshots": snapshots,
-            "already_published": task_is_published,
-            "publication_recovery_required": task_is_published && !change_is_published,
-        }));
-        current_snapshot_id = next_snapshot_id;
+        entries.push(json!({"local_task_id":task_id,"local_change_id":change_id,"local_change_ref":change_ref,
+            "task":task,"change":change,"local_finish":receipt,
+            "promotion_fork_snapshot_id":fork,"promotion_fork_source":source,
+            "pre_land_target_snapshot_id":pre,"pre_land_boundary_source":if recovered {"task_owned_snapshot_lineage_recovery"}else{"land_record"},
+            "landed_snapshot_id":cursor,"landed_at_s":landed_at,
+            "adopted_boundary_snapshot_ids":adopted,"snapshots":snapshots,
+            "already_published":published,"publication_recovery_required":published&&!change.is_null()&&!change_published}));
+        cursor = pre;
     }
-    reversed.reverse();
-    if reversed.is_empty() {
-        return Err("History promotion has no local Land entries.".to_string());
-    }
-    let final_change_id = reversed
+    entries.reverse();
+    let last = entries
         .last()
-        .and_then(|entry| string_field(entry, "local_change_id"))
-        .ok_or_else(|| "History promotion final entry has no Change identity.".to_string())?;
-    let final_change_ref = reversed
-        .last()
-        .and_then(|entry| string_field(entry, "local_change_ref"))
-        .ok_or_else(|| "History promotion final entry has no Change reference.".to_string())?;
-    if final_change_id != selected_change_id && final_change_ref != selected_change_id {
-        return Err(format!(
-            "Selected local Change {selected_change_id} is not the final Change in the consecutive Land chain; the chain ends at {final_change_ref}."
-        ));
+        .ok_or("History promotion has no local Task receipts.")?;
+    if !["local_task_id", "local_change_id", "local_change_ref"]
+        .iter()
+        .any(|field| string_field(last, field).as_deref() == Some(selected_reference))
+    {
+        return Err(format!("Selected local work {selected_reference} is not the final Task in the consecutive receipt chain."));
     }
     Ok((
-        reversed,
-        workflow_unique_history_plan_artifact_paths(plan_artifact_paths),
+        entries,
+        workflow_unique_history_plan_artifact_paths(plan_paths),
     ))
+}
+
+pub(super) fn workflow_recover_task_receipt_boundary(
+    repo: &RepoRuntime,
+    task_id: &str,
+    head: &str,
+) -> Result<String, String> {
+    let store = repo.task_store()?;
+    let mut cursor = head.to_string();
+    let mut seen = BTreeSet::new();
+    for _ in 0..MAX_HISTORY_PROMOTION_SNAPSHOTS_PER_ENTRY {
+        if !seen.insert(cursor.clone()) {
+            return Err("Task receipt boundary contains a Snapshot cycle".into());
+        }
+        let owners = store
+            .snapshot_ownership_rows(std::slice::from_ref(&cursor))
+            .map_err(|e| e.to_string())?;
+        let owned = owners
+            .iter()
+            .any(|row| string_field(row, "task_id").as_deref() == Some(task_id));
+        if !owned {
+            if cursor == head {
+                return Err(
+                    "Task receipt has no exact numeric Snapshot ownership for boundary recovery"
+                        .into(),
+                );
+            }
+            return Ok(cursor);
+        }
+        let snapshot = snapshot_show(repo, &cursor)?;
+        let parents = workflow_history_snapshot_parent_ids(&snapshot)?;
+        let [parent] = parents.as_slice() else {
+            return Err("Task receipt boundary requires one exact Snapshot parent".into());
+        };
+        cursor = parent.clone();
+    }
+    Err("Task receipt boundary exceeds the bounded Snapshot inventory".into())
 }
 
 pub(in crate::primitives) fn workflow_final_snapshot_candidate_from_entry(
@@ -638,9 +649,12 @@ pub(in crate::primitives) fn workflow_final_snapshot_candidate_from_entry(
     let state = entry.get("state").cloned().unwrap_or_else(|| json!({}));
     let task = state.get("task").cloned().unwrap_or(JsonValue::Null);
     let change = state.get("change").cloned().unwrap_or(JsonValue::Null);
-    let local_change_id = required_string_field(&change, "change_id")?;
-    let target_line = string_field(&change, "base_line").unwrap_or_else(|| "main".to_string());
-    let revision_snapshot_id = string_field(&change, "landed_snapshot_id").ok_or_else(|| {
+    let local_change_id = required_string_field(&task, "task_id")?;
+    let receipt = workflow_local_completion_evidence(&state);
+    let target_line = string_field(receipt, "target_line")
+        .or_else(|| string_field(&change, "base_line"))
+        .unwrap_or_else(|| "main".to_string());
+    let revision_snapshot_id = string_field(receipt, "landed_snapshot_id").ok_or_else(|| {
         format!("Completed local change {local_change_id} is missing landed_snapshot_id.")
     })?;
     let local_target_head = normalized_text(local_target_head).ok_or_else(|| {
@@ -650,7 +664,8 @@ pub(in crate::primitives) fn workflow_final_snapshot_candidate_from_entry(
     let published_descendant_resume = !local_target_head_is_revision
         && local_target_head_contains_revision
         && string_field(&task, "publication_state").as_deref() == Some("published")
-        && string_field(&change, "publication_state").as_deref() == Some("published");
+        && (change.is_null()
+            || string_field(&change, "publication_state").as_deref() == Some("published"));
     if !local_target_head_is_revision && !published_descendant_resume {
         return Err(format!(
             "Completed local change {local_change_id} landed at `{revision_snapshot_id}`, but `{target_line}` is now at `{local_target_head}`. Only the latest completed local change that owns the current target-line head can be promoted; an already-published Change may resume only when Snapshot ancestry proves that the current head contains its published revision. Select the change for `{local_target_head}` or repair the divergent publication state."
@@ -682,7 +697,7 @@ pub(in crate::primitives) fn workflow_final_snapshot_candidate_from_entry(
         .ok_or_else(|| "Completed-local promotion entry must be an object.".to_string())?;
     candidate.insert(
         "mode".to_string(),
-        JsonValue::String("solo_local_history_promotion".to_string()),
+        JsonValue::String("completed_local_history_promotion".to_string()),
     );
     candidate.insert(
         "base_snapshot_id".to_string(),
@@ -727,67 +742,82 @@ fn workflow_same_head_published_remote_change_id(
     entry: &JsonValue,
     revision_snapshot_id: &str,
 ) -> Result<String, String> {
-    let state = entry.get("state").cloned().unwrap_or_else(|| json!({}));
-    let task = state.get("task").cloned().unwrap_or(JsonValue::Null);
-    let change = state.get("change").cloned().unwrap_or(JsonValue::Null);
-    let local_task_id = required_string_field(&task, "task_id")?;
-    let local_change_id = required_string_field(&change, "change_id")?;
-    let task_published = string_field(&task, "publication_state").as_deref() == Some("published");
-    let change_published =
-        string_field(&change, "publication_state").as_deref() == Some("published");
-    let remote_task_id = string_field(&task, "published_task_id");
-    let remote_change_id = string_field(&change, "published_change_id");
-    if !task_published
-        || !change_published
-        || remote_task_id.is_none()
-        || remote_change_id.is_none()
-    {
-        return Err(format!(
-            "Remote target Line already equals final local Snapshot \
-             `{revision_snapshot_id}`, but completed local Change {local_change_id} and Task \
-             {local_task_id} do not have complete remote publication records. \
-             Refusing to treat this as completed promotion or skip aggregate Patchset CI; the \
-             remote target head moved without a matching successful remote Land."
-        ));
+    let task = &entry["state"]["task"];
+    if string_field(task, "publication_state").as_deref() != Some("published") {
+        return Err(format!("Remote target equals {revision_snapshot_id}, but the local Task has no exact publication mapping; no actual remote receipt is proven."));
     }
-    Ok(remote_change_id.expect("checked above"))
+    required_string_field(task, "published_task_id")
 }
 
 pub(in crate::primitives) fn workflow_same_head_remote_land_authority(
     entry: &JsonValue,
-    remote_change: Option<&JsonValue>,
+    remote_task: Option<&JsonValue>,
     revision_snapshot_id: &str,
 ) -> Result<JsonValue, String> {
-    let remote_change_id =
-        workflow_same_head_published_remote_change_id(entry, revision_snapshot_id)?;
-    let remote_change = remote_change.ok_or_else(|| {
-        format!(
-            "Remote target Line already equals final local Snapshot \
-             `{revision_snapshot_id}`, but published Change {remote_change_id} could not be read. \
-             Aggregate Patchset CI cannot be skipped without a matching successful remote Land."
-        )
-    })?;
-    let remote_status = string_field(remote_change, "status");
-    let remote_landed_snapshot_id = string_field(remote_change, "landed_snapshot_id");
-    if remote_status.as_deref() != Some("landed")
-        || remote_landed_snapshot_id.as_deref() != Some(revision_snapshot_id)
-    {
-        return Err(format!(
-            "Remote target Line already equals final local Snapshot \
-             `{revision_snapshot_id}`, but published Change {remote_change_id} is `{status}` at \
-             `{landed_snapshot}`. Refusing to skip aggregate Patchset CI because no exact \
-             successful remote Land owns the target-Line head.",
-            status = remote_status.as_deref().unwrap_or("unknown"),
-            landed_snapshot = remote_landed_snapshot_id.as_deref().unwrap_or("none"),
-        ));
+    let task_id = workflow_same_head_published_remote_change_id(entry, revision_snapshot_id)?;
+    let task =
+        remote_task.ok_or("Published remote Task could not be read; actual receipt required")?;
+    let receipt=ait_core::land_json::LandJson::stateless().task_successful_receipt(task,&task_id,None)?.ok_or("Remote Task has no actual successful receipt; imported local completion is not remote acceptance")?;
+    if string_field(&receipt, "landed_snapshot_id").as_deref() != Some(revision_snapshot_id) {
+        return Err("Remote Task receipt does not own the exact applied target Snapshot".into());
     }
-    Ok(json!({
-        "status": "verified",
-        "authority": "remote_landed_change",
-        "remote_change_id": remote_change_id,
-        "remote_change_status": remote_status,
-        "landed_snapshot_id": remote_landed_snapshot_id,
-    }))
+    if let Some(expected) = string_field(&entry["state"]["change"], "published_change_id") {
+        if string_field(&receipt, "change_ref").as_deref() != Some(&expected) {
+            return Err("Remote Task receipt has another exact revision association".into());
+        }
+    }
+    Ok(
+        json!({"status":"verified","authority":"remote_task_successful_receipt","remote_task_id":task_id,"receipt":receipt,"landed_snapshot_id":revision_snapshot_id}),
+    )
+}
+
+pub(super) fn workflow_remote_line_head(
+    line: &JsonValue,
+    target: &str,
+) -> Result<Option<String>, String> {
+    if required_string_field(line, "line_name")? != target {
+        return Err("Remote Line lookup returned another target".into());
+    }
+    match line.get("head_snapshot_id") {
+        Some(JsonValue::Null) => Ok(None),
+        Some(JsonValue::String(id)) if !id.is_empty() && id.trim() == id => Ok(Some(id.clone())),
+        _ => Err("Remote Line requires an explicit nullable head_snapshot_id".into()),
+    }
+}
+
+pub(super) fn workflow_null_remote_base_from_entry(
+    repo: &RepoRuntime,
+    entry: &JsonValue,
+) -> Result<(String, bool), String> {
+    let state = &entry["state"];
+    let receipt = workflow_local_completion_evidence(state);
+    let target = required_string_field(receipt, "target_line")?;
+    if target != repo.default_line_name() {
+        return Err("Null-head initialization only admits the configured default Line".into());
+    }
+    let revision = required_string_field(receipt, "landed_snapshot_id")?;
+    let recorded = required_string_field(receipt, "pre_land_target_snapshot_id")?;
+    let boundary = if state["change"].is_null() && recorded == revision {
+        (
+            workflow_recover_task_receipt_boundary(
+                repo,
+                &required_string_field(&state["task"], "task_id")?,
+                &revision,
+            )?,
+            true,
+        )
+    } else {
+        workflow_effective_pre_land_target_snapshot_id(
+            repo,
+            &state["change"],
+            &revision,
+            &recorded,
+        )?
+    };
+    if boundary.0 == revision {
+        return Err(format!("Refusing to initialize null remote `{target}` directly at final local Snapshot `{revision}`; an earlier pre-finish boundary is required."));
+    }
+    Ok(boundary)
 }
 
 pub(in crate::primitives) fn workflow_initialize_null_remote_base_with_task_remote<R>(
@@ -815,7 +845,8 @@ where
         repo_name,
         target_line,
     )?;
-    if let Some(current_head_snapshot_id) = string_field(&preflight_line, "head_snapshot_id") {
+    if let Some(current_head_snapshot_id) = workflow_remote_line_head(&preflight_line, target_line)?
+    {
         if current_head_snapshot_id == base_snapshot_id {
             return Ok(json!({
                 "status": "already_initialized",
@@ -850,7 +881,7 @@ where
                 repo_name,
                 target_line,
             )?;
-            let initialized_head_snapshot_id = string_field(&line, "head_snapshot_id");
+            let initialized_head_snapshot_id = workflow_remote_line_head(&line, target_line)?;
             if initialized_head_snapshot_id.as_deref() != Some(base_snapshot_id) {
                 return Err(format!(
                     "Completed-local null-head initialization returned `{}` for Remote `{}` target Line `{target_line}` instead of selected pre-land base `{base_snapshot_id}`.",
@@ -879,7 +910,7 @@ where
                     remote_row.name,
                 )
             })?;
-            let winner_snapshot_id = string_field(&winner, "head_snapshot_id");
+            let winner_snapshot_id = workflow_remote_line_head(&winner, target_line)?;
             if winner_snapshot_id.as_deref() == Some(base_snapshot_id) {
                 return Ok(json!({
                     "status": "initialized",
@@ -916,9 +947,12 @@ pub(in crate::primitives) fn workflow_final_snapshot_promotion_candidate(
         .and_then(|state| state.get("change"))
         .cloned()
         .unwrap_or(JsonValue::Null);
-    let target_line =
-        string_field(&change, "base_line").unwrap_or_else(|| root_repo.default_line_name());
-    let revision_snapshot_id = string_field(&change, "landed_snapshot_id").ok_or_else(|| {
+    let state = &entry["state"];
+    let receipt = workflow_local_completion_evidence(state);
+    let target_line = string_field(receipt, "target_line")
+        .or_else(|| string_field(&change, "base_line"))
+        .unwrap_or_else(|| root_repo.default_line_name());
+    let revision_snapshot_id = string_field(receipt, "landed_snapshot_id").ok_or_else(|| {
         format!("Completed local change {change_id} is missing landed_snapshot_id.")
     })?;
     let local_target_head = local_line_head_snapshot_id(&root_repo, &target_line)?;
@@ -927,7 +961,7 @@ pub(in crate::primitives) fn workflow_final_snapshot_promotion_candidate(
     let remote_line = task_remote
         .get_line(&repo_name, &target_line)
         .map_err(|err| err.to_string())?;
-    let remote_target_head = string_field(&remote_line, "head_snapshot_id");
+    let remote_target_head = workflow_remote_line_head(&remote_line, &target_line)?;
     let (null_remote_base_snapshot_id, null_remote_base_recovered) = if remote_target_head.is_none()
     {
         if target_line != root_repo.default_line_name() {
@@ -936,18 +970,8 @@ pub(in crate::primitives) fn workflow_final_snapshot_promotion_candidate(
                     root_repo.default_line_name()
                 ));
         }
-        let recorded_pre_land_snapshot_id =
-                string_field(&change, "pre_land_target_snapshot_id").ok_or_else(|| {
-                    format!(
-                        "Completed local change {change_id} is missing pre_land_target_snapshot_id required to initialize null remote `{target_line}`."
-                    )
-                })?;
-        let (base_snapshot_id, recovered) = workflow_effective_pre_land_target_snapshot_id(
-            &root_repo,
-            &change,
-            &revision_snapshot_id,
-            &recorded_pre_land_snapshot_id,
-        )?;
+        let (base_snapshot_id, recovered) =
+            workflow_null_remote_base_from_entry(&root_repo, &entry)?;
         (Some(base_snapshot_id), Some(recovered))
     } else {
         (None, None)
@@ -957,7 +981,7 @@ pub(in crate::primitives) fn workflow_final_snapshot_promotion_candidate(
             let remote_change_id =
                 workflow_same_head_published_remote_change_id(&entry, &revision_snapshot_id)?;
             let remote_change = task_remote
-                .get_change(&remote_change_id, Some(&repo_name))
+                .get_task(&remote_change_id, Some(&repo_name))
                 .map_err(|err| {
                     format!("Failed to verify the remote Land for {remote_change_id}: {err}")
                 })?;
@@ -1033,7 +1057,7 @@ pub(in crate::primitives) fn workflow_final_snapshot_promotion_candidate(
     if let Some(object) = candidate.as_object_mut() {
         object.insert(
             "mode".to_string(),
-            JsonValue::String("solo_local_history_promotion".to_string()),
+            JsonValue::String("completed_local_history_promotion".to_string()),
         );
         object.insert("remote_line".to_string(), remote_line);
         object.insert(
@@ -1076,14 +1100,11 @@ pub(in crate::primitives) fn workflow_final_snapshot_promotion_candidate(
 pub(in crate::primitives) fn workflow_final_snapshot_promotion_remote_change_id(
     candidate: &JsonValue,
 ) -> Result<String, String> {
-    candidate
-        .get("state")
-        .and_then(|state| state.get("change"))
-        .and_then(|change| {
-            string_field(change, "published_change_id")
-                .or_else(|| string_field(change, "change_id"))
-        })
-        .ok_or_else(|| "Final-snapshot promotion candidate is missing change identity.".to_string())
+    let state = &candidate["state"];
+    string_field(&state["change"], "published_change_id")
+        .or_else(|| string_field(&state["task"], "published_task_id"))
+        .or_else(|| string_field(&state["task"], "task_id"))
+        .ok_or_else(|| "Final-snapshot promotion candidate is missing Task identity.".to_string())
 }
 
 pub(in crate::primitives) fn workflow_final_snapshot_promotion_preview(
@@ -1093,13 +1114,18 @@ pub(in crate::primitives) fn workflow_final_snapshot_promotion_preview(
     let task = state.get("task").cloned().unwrap_or(JsonValue::Null);
     let change = state.get("change").cloned().unwrap_or(JsonValue::Null);
     let local_task_id = required_string_field(&task, "task_id")?;
-    let local_change_id = required_string_field(&change, "change_id")?;
-    let local_change_ref = change_reference_from_payload(&change, Some(local_change_id.as_str()))?;
-    let target_line = string_field(&change, "base_line").unwrap_or_else(|| "main".to_string());
+    let local_change_id = string_field(&change, "change_id");
+    let local_change_ref = local_change_id
+        .as_deref()
+        .map(|id| change_reference_from_payload(&change, Some(id)))
+        .transpose()?;
+    let target_line = string_field(workflow_local_completion_evidence(&state), "target_line")
+        .or_else(|| string_field(&change, "base_line"))
+        .unwrap_or_else(|| "main".to_string());
     let remote_name =
         string_field(candidate, "remote_name").unwrap_or_else(|| "origin".to_string());
     Ok(json!({
-        "mode": "solo_local_history_promotion",
+        "mode": "completed_local_history_promotion",
         "status": "ready",
         "apply_status": "preview",
         "task_id": local_task_id,
@@ -1109,7 +1135,7 @@ pub(in crate::primitives) fn workflow_final_snapshot_promotion_preview(
         "local_change_id": string_field(&change, "change_id"),
         "local_change_ref": local_change_ref,
         "remote_task_id": string_field(&task, "published_task_id"),
-        "remote_change_id": workflow_final_snapshot_promotion_remote_change_id(candidate)?,
+        "remote_change_id": string_field(&change,"published_change_id"),
         "routing": state.get("routing").cloned().unwrap_or(JsonValue::Null),
         "task": task,
         "change": change,
@@ -1124,13 +1150,13 @@ pub(in crate::primitives) fn workflow_final_snapshot_promotion_preview(
         "next_action": {
             "code": "prepare_final_snapshot_promotion",
             "summary": "Promote the consecutive local Task/Change/Snapshot/Land history and run shared CI once on its aggregate Patchset.",
-            "detail": format!("Run `ait workflow ready {local_task_id} --apply --remote {remote_name}`. After it is ready, give the Task ID and selected Patchset to a reviewer running `ait workflow finish {local_task_id} --apply --remote {remote_name}`."),
+            "detail": format!("Run `ait workflow ready {local_task_id} --apply --remote {remote_name}`. After it is ready, give the Task ID and current Patchset to a reviewer running `ait workflow finish {local_task_id} --apply --remote {remote_name}`."),
             "command": format!("ait workflow ready {local_task_id} --apply --remote {remote_name}"),
         },
     }))
 }
 
-fn workflow_sync_history_plan_artifacts(
+pub(super) fn workflow_sync_history_plan_artifacts(
     repo: &RepoRuntime,
     remote_name: &str,
     candidate: &JsonValue,
@@ -1257,8 +1283,8 @@ pub(super) fn workflow_history_prepare_entries(
                 workflow_remote_plan_linkage_for_local_task(repo, task)?;
             Ok(json!({
                 "local_task_id": required_string_field(entry, "local_task_id")?,
-                "local_change_id": required_string_field(entry, "local_change_id")?,
-                "local_change_ref": required_string_field(entry, "local_change_ref")?,
+                "local_change_id": workflow_optional_history_text(entry,"local_change_id")?,
+                "local_change_ref": workflow_optional_history_text(entry,"local_change_ref")?,
                 "expected_remote_task_id": expected_remote_task_id,
                 "expected_remote_change_ref": expected_remote_change_ref,
                 "task": {
@@ -1268,11 +1294,11 @@ pub(super) fn workflow_history_prepare_entries(
                     "origin_plan_revision_id": published_revision_id,
                     "plan_item_ref": published_plan_item_ref,
                 },
-                "change": {
+                "change": if change.is_null() { JsonValue::Null } else { json!({
                     "title": required_string_field(change, "title")?,
                     "base_line": required_string_field(change, "base_line")?,
                     "fork_snapshot_id": required_string_field(entry, "promotion_fork_snapshot_id")?,
-                },
+                }) },
                 "pre_land_target_snapshot_id": required_string_field(entry, "pre_land_target_snapshot_id")?,
                 "landed_snapshot_id": required_string_field(entry, "landed_snapshot_id")?,
                 "landed_at_s": entry.get("landed_at_s").cloned().ok_or_else(|| {
@@ -1296,7 +1322,8 @@ fn workflow_expected_history_publication_ids(
         .get("change")
         .ok_or_else(|| "History promotion entry is missing local Change data.".to_string())?;
     let local_task_id = required_string_field(entry, "local_task_id")?;
-    let local_change_ref = required_string_field(entry, "local_change_ref")?;
+    let local_change_ref =
+        string_field(entry, "local_change_ref").unwrap_or_else(|| local_task_id.clone());
     let task_is_published = string_field(task, "publication_state").as_deref() == Some("published");
     let change_is_published =
         string_field(change, "publication_state").as_deref() == Some("published");
@@ -1342,7 +1369,7 @@ fn workflow_expected_history_publication_ids(
     Ok((expected_remote_task_id, expected_remote_change_ref))
 }
 
-fn workflow_history_idempotency_key(
+pub(super) fn workflow_history_idempotency_key(
     repo: &RepoRuntime,
     target_line: &str,
     base_snapshot_id: &str,
@@ -1352,7 +1379,7 @@ fn workflow_history_idempotency_key(
     let mut bytes = Vec::new();
     let repository_index = repo.require_repository_index()?.to_string();
     for part in [
-        "history-promotion-prepare/v1",
+        "history-promotion-prepare/v3",
         repository_index.as_str(),
         target_line,
         base_snapshot_id,
@@ -1368,14 +1395,18 @@ fn workflow_history_idempotency_key(
             "pre_land_target_snapshot_id",
             "landed_snapshot_id",
         ] {
-            bytes.extend_from_slice(required_string_field(entry, field)?.as_bytes());
+            bytes.extend_from_slice(
+                workflow_optional_history_text(entry, field)?
+                    .unwrap_or_default()
+                    .as_bytes(),
+            );
             bytes.push(0);
         }
     }
-    Ok(format!("history-promotion:{}", sha256_hex_bytes(&bytes)))
+    Ok(format!("history-promotion-v3:{}", sha256_hex_bytes(&bytes)))
 }
 
-fn workflow_staged_history_promotion_id(
+pub(super) fn workflow_staged_history_promotion_id(
     repo: &RepoRuntime,
     target_line: &str,
     base_snapshot_id: &str,
@@ -1385,7 +1416,7 @@ fn workflow_staged_history_promotion_id(
     let mut bytes = Vec::new();
     let repository_index = repo.require_repository_index()?.to_string();
     for part in [
-        "history-promotion-prepare/v2",
+        "history-promotion-prepare/v3",
         repository_index.as_str(),
         target_line,
         base_snapshot_id,
@@ -1401,7 +1432,11 @@ fn workflow_staged_history_promotion_id(
             "pre_land_target_snapshot_id",
             "landed_snapshot_id",
         ] {
-            bytes.extend_from_slice(required_string_field(entry, field)?.as_bytes());
+            bytes.extend_from_slice(
+                workflow_optional_history_text(entry, field)?
+                    .unwrap_or_default()
+                    .as_bytes(),
+            );
             bytes.push(0);
         }
     }
@@ -1433,7 +1468,11 @@ fn workflow_history_stage_idempotency_key(
             "pre_land_target_snapshot_id",
             "landed_snapshot_id",
         ] {
-            bytes.extend_from_slice(required_string_field(entry, field)?.as_bytes());
+            bytes.extend_from_slice(
+                workflow_optional_history_text(entry, field)?
+                    .unwrap_or_default()
+                    .as_bytes(),
+            );
             bytes.push(0);
         }
     }
@@ -1499,7 +1538,7 @@ pub(super) fn workflow_staged_history_prepare_request(
         entries,
     )?;
     Ok(json!({
-        "contract": "history-promotion-prepare/v2",
+        "contract": "history-promotion-prepare/v3",
         "promotion_id": promotion_id,
         "idempotency_key": idempotency_key,
         "target_line": target_line,
@@ -1527,42 +1566,41 @@ pub(in crate::primitives) fn workflow_mark_history_published(
         workflow_validate_history_publication_response(candidate_entries, response_entries)?;
     let task_store = repo.task_store()?;
     let change_store = repo.change_store()?;
-    validated
-        .into_iter()
-        .map(|mapping| {
-            let task = task_local_mark_published_with_task_store(
-                &task_store,
-                &mapping.local_task_id,
-                Some(remote_name),
-                Some(&mapping.remote_task_id),
-            )?;
-            let change = change_local_mark_published_with_change_store(
-                &change_store,
-                &mapping.local_change_ref,
-                Some(remote_name),
-                Some(&mapping.remote_change_ref),
-                true,
-            )?;
-            Ok(json!({
-                "local_task_id": mapping.local_task_id,
-                "local_change_id": mapping.local_change_id,
-                "local_change_ref": mapping.local_change_ref,
-                "remote_task_id": mapping.remote_task_id,
-                "remote_change_ref": mapping.remote_change_ref,
-                "task": task,
-                "change": change,
-            }))
-        })
-        .collect()
+    validated.into_iter().map(|mapping| {
+        let task=task_local_mark_published_with_task_store(&task_store,&mapping.local_task_id,Some(remote_name),Some(&mapping.remote_task_id))?;
+        let change=match (&mapping.local_change_ref,&mapping.remote_change_ref) {
+            (Some(local),Some(remote))=>change_local_mark_published_with_change_store(&change_store,local,Some(remote_name),Some(remote),true)?,
+            (None,None)=>JsonValue::Null,
+            _=>return Err("History publication optional Change mapping changed after validation".into()),
+        };
+        Ok(json!({"local_task_id":mapping.local_task_id,"local_change_id":mapping.local_change_id,
+            "local_change_ref":mapping.local_change_ref,"remote_task_id":mapping.remote_task_id,
+            "remote_change_ref":mapping.remote_change_ref,"task":task,"change":change}))
+    }).collect()
 }
 
 #[derive(Debug, Eq, PartialEq)]
 pub(super) struct ValidatedHistoryPublicationMapping {
     local_task_id: String,
-    local_change_id: String,
-    local_change_ref: String,
+    local_change_id: Option<String>,
+    local_change_ref: Option<String>,
     remote_task_id: String,
-    remote_change_ref: String,
+    remote_change_ref: Option<String>,
+}
+
+fn workflow_optional_history_text(
+    value: &JsonValue,
+    field: &str,
+) -> Result<Option<String>, String> {
+    match value.get(field) {
+        None | Some(JsonValue::Null) => Ok(None),
+        Some(JsonValue::String(text)) if !text.is_empty() && text.trim() == text => {
+            Ok(Some(text.clone()))
+        }
+        _ => Err(format!(
+            "History {field} must be exact nonempty text or null."
+        )),
+    }
 }
 
 pub(super) fn workflow_validate_history_publication_response(
@@ -1570,75 +1608,37 @@ pub(super) fn workflow_validate_history_publication_response(
     response_entries: &[JsonValue],
 ) -> Result<Vec<ValidatedHistoryPublicationMapping>, String> {
     if candidate_entries.len() != response_entries.len() {
-        return Err(
-            "History promotion response mapping count changed after validation.".to_string(),
-        );
+        return Err("History promotion response mapping count changed after validation.".into());
     }
-    let mut remote_task_ids = std::collections::BTreeSet::new();
-    let mut remote_change_refs = std::collections::BTreeSet::new();
-    candidate_entries
-        .iter()
-        .zip(response_entries.iter())
-        .map(|(local, remote)| {
-            let local_task_id = required_string_field(local, "local_task_id")?;
-            let local_change_id = required_string_field(local, "local_change_id")?;
-            let local_change_ref = required_string_field(local, "local_change_ref")?;
-            for (field, expected) in [
-                ("local_task_id", local_task_id.as_str()),
-                ("local_change_id", local_change_id.as_str()),
-                ("local_change_ref", local_change_ref.as_str()),
-            ] {
-                let actual = required_string_field(remote, field)?;
-                if actual != expected {
-                    return Err(format!(
-                        "History promotion response {field} {actual} does not match requested identity {expected}."
-                    ));
-                }
+    let mut tasks = BTreeSet::new();
+    let mut changes = BTreeSet::new();
+    candidate_entries.iter().zip(response_entries).map(|(local,remote)| {
+        let local_task_id=required_string_field(local,"local_task_id")?;
+        if string_field(remote,"local_task_id").as_deref()!=Some(&local_task_id) {return Err("History promotion response local_task_id differs.".into());}
+        let local_change_id=workflow_optional_history_text(local,"local_change_id")?;
+        let local_change_ref=workflow_optional_history_text(local,"local_change_ref")?;
+        for field in ["local_change_id","local_change_ref"] {
+            if workflow_optional_history_text(local,field)?!=workflow_optional_history_text(remote,field)? {
+                return Err(format!("History promotion response {field} differs."));
             }
-            let remote_task_id = required_string_field(remote, "task_id")?;
-            let remote_change_ref = required_string_field(remote, "change_ref")?;
-            let (remote_owner, remote_child) = remote_change_ref.rsplit_once('/').ok_or_else(|| {
-                format!(
-                    "History promotion response Change {remote_change_ref} has no Remote Task owner."
-                )
-            })?;
-            if remote_owner != remote_task_id || remote_child.is_empty() {
-                return Err(format!(
-                    "History promotion response Change {remote_change_ref} is not owned by Remote Task {remote_task_id}."
-                ));
-            }
-            let (expected_remote_task_id, expected_remote_change_ref) =
-                workflow_expected_history_publication_ids(local)?;
-            if expected_remote_task_id
-                .as_deref()
-                .is_some_and(|expected| expected != remote_task_id)
-                || expected_remote_change_ref
-                    .as_deref()
-                    .is_some_and(|expected| expected != remote_change_ref)
-            {
-                return Err(format!(
-                    "History promotion response attempts to replace the immutable publication mapping for {local_change_ref}."
-                ));
-            }
-            if !remote_task_ids.insert(remote_task_id.clone()) {
-                return Err(format!(
-                    "History promotion response repeats Remote Task {remote_task_id}."
-                ));
-            }
-            if !remote_change_refs.insert(remote_change_ref.clone()) {
-                return Err(format!(
-                    "History promotion response repeats Remote Change {remote_change_ref}."
-                ));
-            }
-            Ok(ValidatedHistoryPublicationMapping {
-                local_task_id,
-                local_change_id,
-                local_change_ref,
-                remote_task_id,
-                remote_change_ref,
-            })
-        })
-        .collect()
+        }
+        if local_change_id.is_some()!=local_change_ref.is_some() {return Err("Incomplete local Change identity in history.".into());}
+        let remote_task_id=required_string_field(remote,"task_id")?;
+        let remote_change_ref=workflow_optional_history_text(remote,"change_ref")?;
+        if remote_change_ref.is_some()!=local_change_ref.is_some() {return Err("History promotion response changed optional Change ownership.".into());}
+        if let Some(reference)=&remote_change_ref {
+            let (owner,child)=reference.rsplit_once('/').ok_or("Remote Change has no Task owner")?;
+            if owner!=remote_task_id || !is_short_change_id(child) {return Err(format!("History promotion Change {reference} is not owned by Task {remote_task_id}."));}
+            if !changes.insert(reference.clone()) {return Err(format!("History promotion repeats Remote Change {reference}."));}
+        }
+        let (expected_task,expected_change)=workflow_expected_history_publication_ids(local)?;
+        if expected_task.as_deref().is_some_and(|id|id!=remote_task_id)
+            || expected_change.as_ref().is_some_and(|id|Some(id)!=remote_change_ref.as_ref()) {
+            return Err(format!("History promotion response attempts to replace the immutable publication mapping for {local_task_id}."));
+        }
+        if !tasks.insert(remote_task_id.clone()) {return Err(format!("History promotion repeats Remote Task {remote_task_id}."));}
+        Ok(ValidatedHistoryPublicationMapping{local_task_id,local_change_id,local_change_ref,remote_task_id,remote_change_ref})
+    }).collect()
 }
 
 pub(in crate::primitives) fn workflow_prepare_final_snapshot_promotion(
@@ -1652,6 +1652,11 @@ pub(in crate::primitives) fn workflow_prepare_final_snapshot_promotion(
     let root_repo = workflow_root_repo(repo)?;
     let (remote_row, repo_name) = remote_context(&root_repo, remote_name, None)?;
     let publication_remote_name = contextual_publication_remote_name(remote_row.name.as_str())?;
+    crate::primitives::workspace::remote_capture::require_v2_authority(
+        &root_repo,
+        &remote_row,
+        &repo_name,
+    )?;
     let mut candidate = {
         let _range = perfetto_range!("ait.workflow_ready.history_promotion.collect");
         workflow_final_snapshot_promotion_candidate(&root_repo, change_id, remote_name)?
@@ -1734,9 +1739,10 @@ pub(in crate::primitives) fn workflow_prepare_final_snapshot_promotion(
     let task = state.get("task").cloned().unwrap_or(JsonValue::Null);
     let change = state.get("change").cloned().unwrap_or(JsonValue::Null);
     let task_id = required_string_field(&task, "task_id")?;
-    let local_change_id = required_string_field(&change, "change_id")?;
-    let base_line =
-        string_field(&change, "base_line").unwrap_or_else(|| root_repo.default_line_name());
+    let local_change_id = string_field(&change, "change_id");
+    let base_line = string_field(workflow_local_completion_evidence(&state), "target_line")
+        .or_else(|| string_field(&change, "base_line"))
+        .unwrap_or_else(|| root_repo.default_line_name());
     let base_snapshot_id = required_string_field(&candidate, "base_snapshot_id")?;
     let revision_snapshot_id = required_string_field(&candidate, "revision_snapshot_id")?;
     let candidate_entries = candidate
@@ -1777,7 +1783,7 @@ pub(in crate::primitives) fn workflow_prepare_final_snapshot_promotion(
             &request_entries,
         )?;
         let request = json!({
-            "contract": "history-promotion-prepare/v1",
+            "contract": "history-promotion-prepare/v3",
             "idempotency_key": idempotency_key,
             "target_line": base_line,
             "base_snapshot_id": base_snapshot_id,
@@ -1872,7 +1878,12 @@ pub(in crate::primitives) fn workflow_prepare_final_snapshot_promotion(
                     ("change_ref", &mut remote_change_refs),
                     ("receipt_patchset_id", &mut receipt_patchset_ids),
                 ] {
-                    let identity = required_string_field(mapping, field)?;
+                    let Some(identity) = workflow_optional_history_text(mapping, field)? else {
+                        if field == "change_ref" {
+                            continue;
+                        }
+                        return Err(format!("Staged history requires {field}"));
+                    };
                     if !seen.insert(identity.clone()) {
                         return Err(format!(
                                 "Staged history promotion repeats Remote {field} `{identity}` across stages."
@@ -1919,10 +1930,7 @@ pub(in crate::primitives) fn workflow_prepare_final_snapshot_promotion(
         .get("task_id")
         .and_then(JsonValue::as_str)
         .ok_or_else(|| "History promotion aggregate is missing task_id.".to_string())?;
-    let remote_change_id = aggregate
-        .get("change_ref")
-        .and_then(JsonValue::as_str)
-        .ok_or_else(|| "History promotion aggregate is missing change_ref.".to_string())?;
+    let remote_change_id = aggregate.get("change_ref").and_then(JsonValue::as_str);
     let patchset_id = aggregate
         .get("patchset_id")
         .and_then(JsonValue::as_str)
@@ -1932,7 +1940,7 @@ pub(in crate::primitives) fn workflow_prepare_final_snapshot_promotion(
         .cloned()
         .ok_or_else(|| "History promotion aggregate is missing Patchset data.".to_string())?;
     Ok(json!({
-        "mode": "solo_local_history_promotion",
+        "mode": "completed_local_history_promotion",
         "routing": state.get("routing").cloned().unwrap_or(JsonValue::Null),
         "local_task_id": task_id,
         "local_change_id": local_change_id,
@@ -1947,12 +1955,513 @@ pub(in crate::primitives) fn workflow_prepare_final_snapshot_promotion(
         "snapshot_sync": snapshot_sync,
         "patchset": patchset,
         "patchset_id": patchset_id,
-        "selection": {
-            "status": "selected_by_history_prepare",
+        "current_candidate": {
+            "status": "latest_committed",
             "patchset_id": patchset_id,
         },
         "publication_mappings": publication_mappings,
         "history_promotion": prepared,
         "remote_base_initialization": remote_base_initialization,
     }))
+}
+
+pub(super) fn workflow_history_candidate_identity(
+    repo: &RepoRuntime,
+    patchset: &JsonValue,
+) -> Result<WorkflowExpectedIdentity, String> {
+    Ok(WorkflowExpectedIdentity {
+        repository_index: repo.require_repository_index()?.get(),
+        patchset_id: required_string_field(patchset, "patchset_id")?,
+        base_snapshot_id: required_string_field(patchset, "base_snapshot_id")?,
+        revision_snapshot_id: required_string_field(patchset, "revision_snapshot_id")?,
+    })
+}
+
+fn workflow_history_manifest(patchset: &JsonValue) -> Result<JsonValue, String> {
+    let summary = required_string_field(patchset, "summary")?;
+    let encoded = summary.strip_prefix("ait-history-promotion/v1 ").ok_or(
+        "AGGREGATE_HISTORY_MANIFEST_REQUIRED: current candidate has no native aggregate manifest.",
+    )?;
+    crate::json_support::parse_value(encoded, "Invalid aggregate manifest")
+}
+
+pub(super) fn workflow_supported_correction_manifest(
+    patchset: &JsonValue,
+) -> Result<JsonValue, String> {
+    let manifest = workflow_history_manifest(patchset)?;
+    if !manifest["stage_ordinal"].is_null()
+        || !manifest["promotion_id"].is_null()
+        || !matches!(
+            manifest["contract"].as_str(),
+            Some("ait-history-promotion/v3" | "ait-history-promotion-correction/v2")
+        )
+    {
+        return Err("AGGREGATE_CORRECTION_UNSUPPORTED: aggregate correction requires an explicit supported contract.".into());
+    }
+    Ok(manifest)
+}
+
+// This is a read-only dispatch check. The existing prepare transaction still
+// validates the complete remote receipt/Plan/content/current-candidate window.
+pub(super) fn workflow_history_remote_is_prepared(
+    repo: &RepoRuntime,
+    candidate: &JsonValue,
+    state: &JsonValue,
+) -> Result<bool, String> {
+    let task_id = required_string_field(&candidate["state"]["task"], "published_task_id")?;
+    if state["task"]["task_id"].as_str() != Some(&task_id) {
+        return Err(
+            "HISTORY_PROMOTION_CANDIDATE_MISMATCH: published Task ownership differs.".into(),
+        );
+    }
+    let patchset = &state["patchset"];
+    // Accepted receipt readback has already validated its exact historical
+    // candidate. Do not replace that authority with the Task's newer latest.
+    if state["patchset_source"].as_str() == Some("accepted_task_receipt") {
+        if state["landing_summary"]["status"].as_str() == Some("succeeded")
+            && state["landing_summary"]["task_id"].as_str() == Some(&task_id)
+            && state["landing_summary"]["patchset_id"] == patchset["patchset_id"]
+        {
+            return Ok(true);
+        }
+        return Err(
+            "HISTORY_PROMOTION_CANDIDATE_MISMATCH: successful receipt authority differs.".into(),
+        );
+    }
+    if patchset.is_null() && state["task"]["current_patchset_id"].is_null() {
+        return Ok(false);
+    }
+    let change =
+        ait_core::workflow_expected_identity::validate_patchset_owner_fields(patchset, &task_id)?;
+    if state["task"]["current_patchset_id"] != patchset["patchset_id"]
+        || state["task"]["status"].as_str() != Some("active")
+        || patchset["withdrawn"].as_bool() == Some(true)
+        || patchset["invalidated"].as_bool() == Some(true)
+        || patchset["publish_state"].as_str() == Some("superseded")
+        || state["freshness"]["base_is_fresh"].as_bool() == Some(false)
+        || patchset["source_kind"].as_str() != Some("history_promotion_aggregate")
+    {
+        return Err("HISTORY_PROMOTION_CANDIDATE_MISMATCH: current aggregate is missing, stale or unrelated.".into());
+    }
+    let manifest = workflow_history_manifest(patchset)?;
+    let contract = required_string_field(&manifest, "contract")?;
+    let legacy = contract == "ait-history-promotion/v1";
+    if !legacy
+        && !matches!(
+            contract.as_str(),
+            "ait-history-promotion/v3" | "ait-history-promotion-correction/v2"
+        )
+    {
+        return Err("HISTORY_PROMOTION_UNSUPPORTED: unknown aggregate cannot authorize preparation or reuse.".into());
+    }
+    let base = required_string_field(candidate, "base_snapshot_id")?;
+    let revision = required_string_field(candidate, "revision_snapshot_id")?;
+    let receipt_revision = if contract == "ait-history-promotion-correction/v2" {
+        required_string_field(&manifest["correction"], "receipt_revision_snapshot_id")?
+    } else {
+        if !manifest["correction"].is_null() {
+            return Err(
+                "HISTORY_PROMOTION_CANDIDATE_MISMATCH: unexpected correction metadata.".into(),
+            );
+        }
+        required_string_field(&manifest, "revision_snapshot_id")?
+    };
+    let target = string_field(candidate, "target_line")
+        .or_else(|| {
+            string_field(
+                workflow_local_completion_evidence(&candidate["state"]),
+                "target_line",
+            )
+        })
+        .ok_or("History candidate has no exact target Line")?;
+    if manifest["aggregate"]["task_id"].as_str() != Some(&task_id)
+        || manifest["base_snapshot_id"].as_str() != Some(&base)
+        || patchset["base_snapshot_id"].as_str() != Some(&base)
+        || manifest["target_line"].as_str() != Some(&target)
+        || receipt_revision != revision
+        || manifest["revision_snapshot_id"] != patchset["revision_snapshot_id"]
+    {
+        return Err(
+            "HISTORY_PROMOTION_CANDIDATE_MISMATCH: aggregate batch boundary differs.".into(),
+        );
+    }
+    let historical_id = required_string_field(&manifest["aggregate"], "patchset_id")?;
+    if legacy {
+        if change.is_some() {
+            return Err("HISTORY_PROMOTION_CANDIDATE_MISMATCH: legacy continuation requires Task-only current ownership.".into());
+        }
+        // Validate quoted source-era text only. Never resolve its removed Change
+        // or send this historical reference to a current lookup/mutation port.
+        let historical_change =
+            workflow_optional_history_text(&manifest["aggregate"], "change_ref")?;
+        ait_core::workflow_expected_identity::validate_patchset_reference_owner(
+            &historical_id,
+            &task_id,
+            historical_change.as_deref(),
+        )?;
+        if historical_id.rsplit_once("/P-").map(|p| p.1)
+            != patchset["patchset_id"]
+                .as_str()
+                .and_then(|id| id.rsplit_once("/P-").map(|p| p.1))
+        {
+            return Err(
+                "HISTORY_PROMOTION_CANDIDATE_MISMATCH: historical candidate ordinal differs."
+                    .into(),
+            );
+        }
+    } else {
+        let mut identity = workflow_history_candidate_identity(repo, patchset)?;
+        identity.patchset_id = historical_id;
+        identity.validate_patchset(identity.repository_index, patchset)?;
+        if workflow_optional_history_text(&manifest["aggregate"], "change_ref")? != change {
+            return Err(
+                "HISTORY_PROMOTION_CANDIDATE_MISMATCH: aggregate Change association differs."
+                    .into(),
+            );
+        }
+    }
+    let all_entries = candidate["history_entries"]
+        .as_array()
+        .ok_or("History candidate entries missing")?;
+    let staged = !manifest["stage_ordinal"].is_null() || !manifest["promotion_id"].is_null();
+    let entries = if staged {
+        let ordinal = all_entries.len().saturating_sub(1) / HISTORY_PROMOTION_STAGE_ENTRY_COUNT;
+        let start = ordinal * HISTORY_PROMOTION_STAGE_ENTRY_COUNT;
+        if contract != "ait-history-promotion/v3"
+            || all_entries.len() <= HISTORY_PROMOTION_STAGE_ENTRY_COUNT
+            || manifest["stage_ordinal"].as_u64() != Some(ordinal as u64)
+            || manifest["total_entry_count"].as_u64() != Some(all_entries.len() as u64)
+            || manifest["final_stage"].as_bool() != Some(true)
+            || manifest["stage_revision_snapshot_id"].as_str() != Some(&revision)
+            || manifest["stage_base_snapshot_id"]
+                != all_entries[start]["pre_land_target_snapshot_id"]
+            || manifest["promotion_id"].as_str()
+                != Some(&workflow_staged_history_promotion_id(
+                    repo,
+                    &target,
+                    &base,
+                    &revision,
+                    all_entries,
+                )?)
+        {
+            return Err(
+                "HISTORY_PROMOTION_CANDIDATE_MISMATCH: final staged batch identity differs.".into(),
+            );
+        }
+        &all_entries[start..]
+    } else {
+        all_entries.as_slice()
+    };
+    let receipts = manifest["entries"]
+        .as_array()
+        .ok_or("Aggregate receipt entries missing")?;
+    if entries.is_empty() || entries.len() != receipts.len() {
+        return Err("HISTORY_PROMOTION_CANDIDATE_MISMATCH: receipt batch size differs.".into());
+    }
+    let mut owners = BTreeSet::new();
+    let mut previous = if staged {
+        required_string_field(&entries[0], "pre_land_target_snapshot_id")?
+    } else {
+        base
+    };
+    for (entry, receipt) in entries.iter().zip(receipts) {
+        let (remote_task, remote_change) = workflow_expected_history_publication_ids(entry)?;
+        if remote_task.is_none()
+            || entry["pre_land_target_snapshot_id"].as_str() != Some(&previous)
+            || entry["landed_at_s"].as_u64().is_none_or(|time| time == 0)
+            || receipt["task_id"].as_str() != remote_task.as_deref()
+            || !owners.insert(remote_task)
+            || [
+                "local_task_id",
+                "pre_land_target_snapshot_id",
+                "landed_snapshot_id",
+                "landed_at_s",
+            ]
+            .iter()
+            .any(|key| entry[*key] != receipt[*key])
+            || (legacy
+                && (!entry["change"].is_null()
+                    || !entry["local_change_id"].is_null()
+                    || !entry["local_change_ref"].is_null()
+                    || remote_change.is_some()))
+            || (!legacy
+                && (workflow_optional_history_text(receipt, "change_ref")? != remote_change
+                    || ["local_change_id", "local_change_ref"]
+                        .iter()
+                        .any(|key| entry[*key] != receipt[*key])))
+        {
+            return Err(
+                "HISTORY_PROMOTION_CANDIDATE_MISMATCH: exact local/remote receipt tuple differs."
+                    .into(),
+            );
+        }
+        previous = required_string_field(entry, "landed_snapshot_id")?;
+    }
+    if previous != receipt_revision
+        || receipts.last().unwrap()["task_id"].as_str() != Some(&task_id)
+    {
+        return Err("HISTORY_PROMOTION_CANDIDATE_MISMATCH: receipt chain has another final boundary or owner.".into());
+    }
+    if contract == "ait-history-promotion-correction/v2" {
+        let current_revision = required_string_field(patchset, "revision_snapshot_id")?;
+        if current_revision == receipt_revision
+            || snapshot_distance_if_ancestor(
+                repo,
+                Some(&receipt_revision),
+                Some(&current_revision),
+            )?
+            .is_none()
+        {
+            return Err("HISTORY_PROMOTION_CANDIDATE_MISMATCH: correction does not descend from its receipt boundary.".into());
+        }
+    }
+    Ok(!legacy)
+}
+
+pub(super) fn workflow_prepare_aggregate_correction(
+    repo: &RepoRuntime,
+    state: &JsonValue,
+    summary: Option<&str>,
+    author_mode: Option<&str>,
+    remote_name: Option<&str>,
+) -> Result<Option<JsonValue>, String> {
+    let patchset = &state["patchset"];
+    if patchset["source_kind"].as_str() != Some("history_promotion_aggregate") {
+        return Ok(None);
+    }
+    let (capture_target, _) = remote_context(repo, remote_name, None)?;
+    guard_capture_publication_target(repo, &capture_target)?;
+    if !repo.is_worktree() {
+        return Err(
+            "AGGREGATE_CORRECTION_REQUIRED: use the existing Task-bound authoring worktree."
+                .to_string(),
+        );
+    }
+    let prior_id = required_string_field(patchset, "patchset_id")?;
+    let prior_revision = required_string_field(patchset, "revision_snapshot_id")?;
+    let base_snapshot_id = required_string_field(patchset, "base_snapshot_id")?;
+    let base_line = string_field(&state["base_line"], "line_name")
+        .or_else(|| string_field(state, "base_line_name"))
+        .unwrap_or_else(|| repo.default_line_name());
+    let task_id = required_string_field(&state["task"], "task_id")?;
+    let prior_change = workflow_optional_history_text(patchset, "change_ref")?;
+    let worktree_name = resolve_runtime_worktree_name(repo, None)?;
+    let metadata = JsonValue::Object(load_worktree_metadata(repo, &worktree_name)?);
+    if string_field(&metadata, "bound_task_id").as_deref() != Some(task_id.as_str())
+        || string_field(&metadata, "rebase_state").as_deref() == Some("conflicted")
+    {
+        return Err(
+            "AGGREGATE_CORRECTION_REQUIRED: worktree ownership or recovery state differs."
+                .to_string(),
+        );
+    }
+    if workflow_workspace_status(repo, None, None)?["clean"].as_bool() != Some(true) {
+        return Err(
+            "AGGREGATE_CORRECTION_REQUIRED: capture the corrected source before preparation."
+                .to_string(),
+        );
+    }
+    let line_name = repo.current_line_name()?;
+    let revision_snapshot_id = local_line_head_snapshot_id(repo, &line_name)?
+        .ok_or_else(|| "Aggregate correction has no captured revision.".to_string())?;
+    if revision_snapshot_id == prior_revision
+        || snapshot_distance_if_ancestor(repo, Some(&prior_revision), Some(&revision_snapshot_id))?
+            .is_none()
+    {
+        return Err("AGGREGATE_CORRECTION_REQUIRED: correction must descend from the selected reviewed revision.".to_string());
+    }
+    let manifest = workflow_supported_correction_manifest(patchset)?;
+    if manifest["aggregate"]["patchset_id"] != prior_id
+        || manifest["aggregate"]["task_id"] != task_id
+        || workflow_optional_history_text(&manifest["aggregate"], "change_ref")? != prior_change
+        || manifest["base_snapshot_id"] != base_snapshot_id
+        || manifest["revision_snapshot_id"] != prior_revision
+        || manifest["entries"].as_array().is_none_or(Vec::is_empty)
+    {
+        return Err(
+            "AGGREGATE_HISTORY_MANIFEST_REQUIRED: selected manifest and candidate identity differ."
+                .to_string(),
+        );
+    }
+    let receipt_revision = manifest["correction"]["receipt_revision_snapshot_id"]
+        .as_str()
+        .unwrap_or(&prior_revision);
+    let snapshots =
+        workflow_history_snapshot_rows(repo, &task_id, receipt_revision, &revision_snapshot_id)?;
+    let ids = snapshots
+        .iter()
+        .map(|row| required_string_field(row, "snapshot_id"))
+        .collect::<Result<Vec<_>, _>>()?;
+    let provenance = resolved_snapshot_ownership_rows(repo, &ids)?;
+    let final_owners = provenance
+        .iter()
+        .filter(|row| row["snapshot_id"].as_str() == Some(&revision_snapshot_id))
+        .collect::<Vec<_>>();
+    let [final_owner] = final_owners.as_slice() else {
+        return Err("Correction revision requires unique live numeric ownership".into());
+    };
+    if string_field(final_owner, "task_id").as_deref() != Some(&task_id) {
+        return Err("Correction Snapshot belongs to another Task".into());
+    }
+    let change_ref = string_field(final_owner, "change_id")
+        .map(|child| change_reference_for_context(Some(&task_id), &child))
+        .transpose()?;
+    if prior_change.is_some() && change_ref.is_none() {
+        return Err("Correction cannot drop its real Change association".into());
+    }
+    if change_ref != prior_change {
+        if let Some(reference) = change_ref.as_deref() {
+            let change = change_show(repo, reference, false, remote_name, None)?;
+            if string_field(&change, "fork_snapshot_id").as_deref() != Some(&prior_revision) {
+                return Err(
+                    "New correction Change must fork at the exact reviewed prior revision".into(),
+                );
+            }
+        }
+    }
+    let suffix_start = if receipt_revision == prior_revision {
+        0
+    } else {
+        ids.iter()
+            .position(|id| id == &prior_revision)
+            .ok_or("Correction lost its original validated prefix")?
+            + 1
+    };
+    for (ordinal, id) in ids.iter().enumerate() {
+        let owners = provenance
+            .iter()
+            .filter(|row| row["snapshot_id"].as_str() == Some(id))
+            .collect::<Vec<_>>();
+        let snapshot_reader = repo
+            .local_snapshot_operation_store::<SNAPSHOT_BINARY_DB_WRITE_LAYOUT>(
+                &repo.workspace_root(),
+            )?;
+        let authoring_line = snapshot_by_id_with_snapshot_store(&snapshot_reader, id)?
+            .ok_or("Correction Snapshot missing")?
+            .line_name;
+        let expected_change = if ordinal >= suffix_start {
+            change_ref.clone()
+        } else {
+            owners
+                .first()
+                .and_then(|owner| string_field(owner, "change_id"))
+                .map(|child| change_reference_for_context(Some(&task_id), &child))
+                .transpose()?
+        };
+        if owners.len() != 1
+            || !workflow_aggregate_correction_owner_matches(
+                owners[0],
+                &task_id,
+                expected_change.as_deref(),
+                &worktree_name,
+                &authoring_line,
+            )
+        {
+            return Err(format!(
+                "Correction Snapshot {id} has missing, foreign or conflicting numeric ownership"
+            ));
+        }
+    }
+    let expected_receipts_sha256 = sha256_hex_bytes(&crate::json_support::encode_value_to_vec(
+        &manifest["entries"],
+        "Failed to encode aggregate receipts",
+    )?);
+    let repository_index = repo.require_repository_index()?.get();
+    let expected_identity = json!({"repository_index":repository_index,"patchset_id":prior_id,
+        "base_snapshot_id":base_snapshot_id,"revision_snapshot_id":prior_revision});
+    let mut request = json!({
+        "contract":"history-promotion-correction-prepare/v2",
+        "expected_identity":expected_identity,"expected_receipts_sha256":expected_receipts_sha256,
+        "target_line":base_line,"revision_snapshot_id":revision_snapshot_id,
+        "author_mode":repo.effective_author_mode(author_mode),
+        "summary":summary.unwrap_or("Preserve aggregate history through review correction"),
+        "snapshots":snapshots
+    });
+    let idempotency_key = format!(
+        "history-correction:{}",
+        sha256_hex_bytes(&crate::json_support::encode_value_to_vec(
+            &request,
+            "Failed to encode aggregate correction identity",
+        )?)
+    );
+    request["idempotency_key"] = json!(idempotency_key);
+    let (remote_row, repo_name) = remote_context(repo, remote_name, None)?;
+    let mut task_remote = http_task_remote(repo, &remote_row)?;
+    let remote_line = task_remote
+        .get_line(&repo_name, &base_line)
+        .map_err(|e| e.to_string())?;
+    if string_field(&remote_line, "head_snapshot_id").as_deref() != Some(base_snapshot_id.as_str())
+    {
+        return Err("STALE_HISTORY_PROMOTION_BASE: aggregate correction cannot change its promoted history base.".to_string());
+    }
+    let snapshot_sync = sync_patchset_revision_snapshot(
+        repo,
+        &remote_row,
+        &repo_name,
+        &line_name,
+        &revision_snapshot_id,
+        &base_line,
+    )?;
+    let mut closeout_remote = http_closeout_remote(repo, &remote_row)?;
+    let result = TaskWorkflowHistoryPromotionPreparer::prepare_history_promotion(
+        &mut closeout_remote,
+        &repo_name,
+        &request,
+    )
+    .map_err(|e| {
+        format!(
+            "Aggregate correction preparation failed; ordinary publication is not a fallback: {e}"
+        )
+    })?;
+    if workflow_optional_history_text(&result["aggregate"], "change_ref")? != change_ref
+        || string_field(&result["aggregate"], "task_id").as_deref() != Some(&task_id)
+    {
+        return Err(
+            "Correction response changed its exact captured Task/Change association".into(),
+        );
+    }
+    let expected_original = manifest["correction"]["original_patchset_id"]
+        .as_str()
+        .unwrap_or(&prior_id);
+    if result["correction"]["original_patchset_id"].as_str() != Some(expected_original)
+        || result["correction"]["receipt_revision_snapshot_id"].as_str() != Some(receipt_revision)
+    {
+        return Err(
+            "Aggregate correction response changed its original history authority.".to_string(),
+        );
+    }
+    let patchset_id = result["aggregate"]["patchset_id"]
+        .as_str()
+        .ok_or_else(|| "Aggregate correction response has no Patchset.".to_string())?
+        .to_string();
+    Ok(Some(
+        json!({"result":result,"patchset_id":patchset_id,"snapshot_sync":snapshot_sync,
+        "aggregate_correction":true,"current_candidate":{"status":"latest_committed"}}),
+    ))
+}
+
+// Current worktree hints are never historical Change ownership evidence.
+pub(super) fn workflow_aggregate_correction_owner_matches(
+    owner: &JsonValue,
+    task_id: &str,
+    change_ref: Option<&str>,
+    _worktree_name: &str,
+    line_name: &str,
+) -> bool {
+    if owner["task_id"].as_str() != Some(task_id)
+        || owner["line_name"].as_str() != Some(line_name)
+        || !matches!(
+            owner["ownership_source"].as_str(),
+            Some("durable_snapshot_binding" | "durable_remote_snapshot_binding")
+        )
+    {
+        return false;
+    }
+    match (owner["change_id"].as_str(), change_ref) {
+        (Some(actual), Some(expected)) => {
+            actual == expected || actual == expected.rsplit('/').next().unwrap_or(expected)
+        }
+        (None, None) => true,
+        _ => false,
+    }
 }

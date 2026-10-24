@@ -46,6 +46,7 @@ mod request_specs;
 mod response;
 mod transport;
 mod transport_ports;
+mod workflow_package_endpoints;
 
 pub use self::request_specs::*;
 use self::response::{
@@ -60,6 +61,7 @@ pub use self::transport::{
     PlanHttpTransport,
 };
 
+mod actor_registration;
 mod auth_endpoints;
 mod ci_jobs;
 mod metrics_readiness;
@@ -69,6 +71,7 @@ mod repository_admin;
 mod server_operational_endpoints;
 mod task_endpoints;
 
+pub use self::actor_registration::RemoteActorIdentity;
 pub use self::auth_endpoints::*;
 pub use self::ci_jobs::*;
 pub use self::metrics_readiness::*;

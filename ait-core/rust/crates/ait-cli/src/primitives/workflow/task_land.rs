@@ -1,4 +1,5 @@
 use super::*;
+mod local_finish;
 use crate::primitives::plan_checklist_closeout::close_task_plan_checklist_item;
 use crate::primitives::plan_markdown_materialization::{
     materialize_plan_markdown_after_local_finish, PLAN_MARKDOWN_MATERIALIZATION_PAYLOAD_KEY,
@@ -179,86 +180,7 @@ pub(in crate::primitives) fn task_land_local_payload(
     task_or_change_id: &str,
     remote_name: Option<&str>,
 ) -> Result<Option<JsonValue>, String> {
-    if remote_name.is_some() {
-        return Ok(None);
-    }
-    let requested_id = normalized_text(Some(task_or_change_id))
-        .ok_or_else(|| "Task ID is required".to_string())?;
-    let Some(change_ref) = task_land_local_change_id(repo, &requested_id)? else {
-        return Ok(None);
-    };
-    let change_store = repo.change_store()?;
-    let task_store = repo.task_store()?;
-    let change = workflow_local_change_read_with_change_store(&change_store, &change_ref)?;
-    let task_id = required_string_field(&change, "task_id")?;
-    let change_id = required_string_field(&change, "change_id")?;
-    if string_field(&change, "publication_state").as_deref() == Some("published") {
-        return Ok(None);
-    }
-    let change_status = string_field(&change, "status").unwrap_or_default();
-    if !matches!(change_status.as_str(), "draft" | "active" | "landed") {
-        return Err(format!(
-            "Local Task {task_id} has work state {change_status} and cannot be locally finished"
-        ));
-    }
-    let task = workflow_local_task_read_with_task_store(&task_store, &task_id)?;
-    if string_field(&task, "publication_state").as_deref() == Some("published") {
-        return Ok(None);
-    }
-    let task_status = string_field(&task, "status").unwrap_or_default();
-    if !matches!(task_status.as_str(), "active" | "completed") {
-        return Err(format!(
-            "Local task {task_id} is {task_status} and cannot be locally finished"
-        ));
-    }
-    let target_line = string_field(&change, "target_line")
-        .or_else(|| string_field(&change, "base_line"))
-        .unwrap_or_else(|| repo.default_line_name());
-    let workspace = workflow_workspace_status(repo, None, None)?;
-    if change_status == "landed" {
-        return Ok(Some(json!({
-            "mode": "local",
-            "status": "landed_closeout_recovery",
-            "apply_status": "preview",
-            "already_landed": true,
-            "task_id": task_id,
-            "change_id": change_id,
-            "change_ref": change_ref,
-            "target_line": target_line,
-            "line_name": target_line,
-            "landed_snapshot_id": string_field(&change, "landed_snapshot_id"),
-            "task_status": task_status,
-            "change_status": change_status,
-            "task": task,
-            "change": change,
-            "workspace": workspace,
-            "next_action": {
-                "code": "resume_local_task_land_closeout",
-                "summary": "Resume the already-finished local Task's Plan closeout and worktree cleanup without applying it again.",
-                "detail": "Run the same `ait task finish <task-id>` command. The finished Line, internal work record, and Task state are reused idempotently.",
-                "command": format!("ait task finish {requested_id}"),
-            },
-        })));
-    }
-    Ok(Some(json!({
-        "mode": "local",
-        "status": "ready",
-        "apply_status": "preview",
-        "task_id": task_id,
-        "change_id": change_id,
-        "change_ref": change_ref,
-        "target_line": target_line,
-        "line_name": target_line,
-        "task": task,
-        "change": change,
-        "workspace": workspace,
-        "next_action": {
-            "code": "workflow_land_local",
-            "summary": "Finish the local draft change onto its local target line.",
-            "detail": "Run `ait task finish <task-id> --message <MESSAGE> --local` for dirty work. Clean work reuses the current Line head, so omit --message. You may omit --local when workflow_mode already defaults Task finish to local.",
-            "command": format!("ait task finish {requested_id}"),
-        },
-    })))
+    local_finish::payload(repo, task_or_change_id, remote_name)
 }
 
 pub(in crate::primitives) fn task_land_apply_local<F>(
@@ -272,103 +194,13 @@ pub(in crate::primitives) fn task_land_apply_local<F>(
 where
     F: FnMut(&JsonValue) -> Result<(), String>,
 {
-    let Some(local_payload) = task_land_local_payload(repo, task_or_change_id, remote_name)? else {
-        return Ok(None);
-    };
-    let closeout_repo = workflow_root_repo(repo)?;
-    let change_id = required_string_field(&local_payload, "change_id")?;
-    let change_ref = required_string_field(&local_payload, "change_ref")?;
-    let task_id = required_string_field(&local_payload, "task_id")?;
-    guard_repo_root_pinned_bound_worktree(repo, Some(&task_id), "ait task finish")?;
-    guard_repo_root_bound_task_worktree(
+    local_finish::apply(
         repo,
-        Some(&task_id),
-        Some(&change_ref),
-        "ait task finish",
-    )?;
-    let captured_bound_line = task_land_capture_bound_line(&closeout_repo, &task_id);
-    let already_landed = local_payload
-        .get("already_landed")
-        .and_then(JsonValue::as_bool)
-        .unwrap_or(false);
-    let mut output = if already_landed {
-        let task_status = required_string_field(&local_payload, "task_status")?;
-        let cleanup = workflow_bound_worktree_cleanup_after_local_land(
-            &closeout_repo,
-            &task_id,
-            &task_status,
-            "landed",
-        )
-        .unwrap_or_else(|error| {
-            json!({
-                "status": "failed",
-                "reason": "recovery_cleanup_failed",
-                "error": error,
-                "task_id": task_id,
-            })
-        });
-        json!({
-            "change_id": change_id,
-            "change_ref": change_ref,
-            "task_id": task_id,
-            "target_line": local_payload["target_line"],
-            "line_name": local_payload["line_name"],
-            "landed_snapshot_id": local_payload["landed_snapshot_id"],
-            "change_status": "landed",
-            "task_status": task_status,
-            "current_line": closeout_repo.current_line_name()?,
-            "workspace_action": "unchanged",
-            "repo_root_restore": {
-                "status": "skipped",
-                "reason": "already_landed_closeout_recovery"
-            },
-            "bound_worktree_cleanup": cleanup,
-            "execution_status": "already_landed",
-        })
-    } else {
-        workflow_land_local(repo, &change_ref, target, None, snapshot_message)?
-    };
-    if let Some(output_obj) = output.as_object_mut() {
-        output_obj.insert(
-            "change_id".to_string(),
-            JsonValue::String(change_id.clone()),
-        );
-        output_obj.insert(
-            "change_ref".to_string(),
-            JsonValue::String(change_ref.clone()),
-        );
-        output_obj.insert("mode".to_string(), JsonValue::String("local".to_string()));
-        output_obj.insert(
-            "apply_status".to_string(),
-            JsonValue::String("done".to_string()),
-        );
-        output_obj.insert(
-            "task".to_string(),
-            local_payload
-                .get("task")
-                .cloned()
-                .unwrap_or(JsonValue::Null),
-        );
-        output_obj.insert(
-            "change".to_string(),
-            local_payload
-                .get("change")
-                .cloned()
-                .unwrap_or(JsonValue::Null),
-        );
-    }
-    task_land_attach_bound_line_closeout(
-        &closeout_repo,
-        &mut output,
-        true,
-        None,
-        captured_bound_line,
-    );
-    // Materialize first so the bound card's root copy carries the Plan head
-    // before the checklist closeout compares and closes it.
-    task_land_attach_plan_markdown_materialization(&closeout_repo, &mut output);
-    task_land_attach_plan_checklist_closeout(&closeout_repo, &mut output, true, None);
-    Ok(Some(output))
+        task_or_change_id,
+        snapshot_message,
+        target,
+        remote_name,
+    )
 }
 
 /// Write Plan-backed Markdown heads back into the canonical root after a
@@ -411,7 +243,7 @@ pub(in crate::primitives) fn task_land_attach_plan_checklist_closeout(
         return;
     }
     if !use_local_scope {
-        let result = if task_land_task_status(output).as_deref() != Some("completed") {
+        let mut result = if task_land_task_status(output).as_deref() != Some("completed") {
             json!({
                 "status": "deferred",
                 "reason": "task_still_active",
@@ -422,10 +254,34 @@ pub(in crate::primitives) fn task_land_attach_plan_checklist_closeout(
                 "detail": "This Change landed, but peer Changes keep the Task active. Leave the bound Plan item open until the final Change completes the Task.",
             })
         } else {
-            task_land_deferred_remote_plan_checklist_closeout(repo, output, remote_name)
+            task_land_remote_plan_checklist_closeout(repo, output, remote_name)
         };
+        result["remote"] = json!(normalized_text(remote_name)
+            .or_else(|| repo.default_remote_name())
+            .unwrap_or_else(|| "origin".to_string()));
         if let Some(object) = output.as_object_mut() {
             object.insert("plan_checklist_closeout".to_string(), result);
+        }
+        if crate::primitives::plan_checklist_closeout::team_finish_log_enabled(
+            repo,
+            output,
+            use_local_scope,
+        ) {
+            let result = (|| {
+                let root = workflow_root_repo(repo)?;
+                let remote = normalized_text(remote_name)
+                    .or_else(|| root.default_remote_name())
+                    .ok_or("Missing remote for team finish log")?;
+                run_locked_workspace_command(&root, "team remote finish log", || {
+                    crate::primitives::plan_checklist_closeout::append_team_finish_log(
+                        &root, output, &remote,
+                    )
+                })
+            })().unwrap_or_else(|error: String| json!({
+                "status":"pending", "error":error,
+                "detail":"Remote Task completed; sprint log sync is pending. Repair the condition and retry the same remote Task finish."
+            }));
+            output["team_finish_log"] = result;
         }
         attach_task_land_contract(output, false);
         return;
@@ -464,7 +320,7 @@ pub(in crate::primitives) fn task_land_attach_plan_checklist_closeout(
         json!({
             "status": "failed",
             "error": error,
-            "detail": "Code land and Task completion succeeded, but the bound sprint checklist did not close automatically. Resolve the reported error, then run `ait plan sync <artifact>` in the same local or remote location.",
+            "detail": "Local code finish and Task completion succeeded, but automatic sprint closeout failed. Repair the reported condition and rerun the same local Task finish to resume closeout.",
         })
     });
     if let Some(object) = output.as_object_mut() {
@@ -473,7 +329,7 @@ pub(in crate::primitives) fn task_land_attach_plan_checklist_closeout(
     attach_task_land_contract(output, true);
 }
 
-fn task_land_deferred_remote_plan_checklist_closeout(
+fn task_land_remote_plan_checklist_closeout(
     repo: &RepoRuntime,
     output: &JsonValue,
     remote_name: Option<&str>,
@@ -514,20 +370,25 @@ fn task_land_deferred_remote_plan_checklist_closeout(
     let remote = normalized_text(remote_name)
         .or_else(|| repo.default_remote_name())
         .unwrap_or_else(|| "origin".to_string());
-    let command = format!("ait plan sync <bound-sprint-card-path> --remote {remote}");
-    json!({
-        "status": "deferred",
-        "reason": "remote_plan_sync_is_separate_from_task_land",
-        "scope": "remote",
-        "remote": remote,
-        "task_id": task_land_task_id(output),
-        "plan_id": task.and_then(|task| string_field(task, "plan_id")),
-        "origin_plan_revision_id": task.and_then(|task| string_field(task, "origin_plan_revision_id")),
-        "plan_item_ref": task.and_then(|task| string_field(task, "plan_item_ref")),
-        "updated": false,
-        "detail": "Remote task finish completed without reading or synchronizing Plan state. Mark the exact bound checklist item complete in its Markdown sprint card, then run the separate Plan sync command.",
-        "command": command,
-    })
+    let result = (|| {
+        let task = task.ok_or_else(|| {
+            "Remote task finish output did not preserve its task binding.".to_string()
+        })?;
+        let root_repo = workflow_root_repo(repo)?;
+        run_locked_workspace_command(
+            &root_repo,
+            "ait task finish sprint checklist closeout",
+            || close_task_plan_checklist_item(&root_repo, task, Some(&remote)),
+        )
+    })();
+    let mut result = result.unwrap_or_else(|error| json!({
+        "status": "failed",
+        "error": error,
+        "detail": "Remote code finish and Task completion succeeded, but automatic sprint closeout failed. Repair the reported condition and rerun the same remote Task finish to resume closeout.",
+    }));
+    result["scope"] = json!("remote");
+    result["remote"] = json!(remote);
+    result
 }
 
 pub(in crate::primitives) fn task_land_existing_bound_worktree_cleanup(
@@ -621,6 +482,13 @@ pub(in crate::primitives) fn task_land_attach_cli_main_seed_sync(
     fallback_target_line: &str,
     fallback_snapshot_id: Option<&str>,
 ) {
+    if output["repo_root_restore"]["reason"].as_str()
+        == Some("target_advanced_after_successful_apply")
+    {
+        output["main_seed_sync"] = json!({"status":"skipped","reason":"target_advanced_after_successful_apply",
+            "line_name":fallback_target_line,"snapshot_id":output["repo_root_restore"]["target_snapshot_id"]});
+        return;
+    }
     if output.get("apply_status").and_then(JsonValue::as_str) != Some("done") {
         return;
     }
@@ -940,7 +808,7 @@ fn task_land_atomic_idempotency_key(
     let repository_index = repo.require_repository_index()?.to_string();
     let mut bytes = Vec::new();
     for part in [
-        "task-land-atomic/v1",
+        "task-land-atomic/v2",
         repository_index.as_str(),
         task_or_change_ref,
         normalized_text(target)
@@ -1007,9 +875,8 @@ pub(in crate::primitives) fn task_land_atomic_output(
         .ok_or_else(|| "Task finish server response is missing Task data.".to_string())?;
     let change = atomic_response
         .get("change")
-        .filter(|value| value.is_object())
         .cloned()
-        .ok_or_else(|| "Task finish server response is missing Change data.".to_string())?;
+        .unwrap_or(JsonValue::Null);
     let patchset = atomic_response
         .get("patchset")
         .filter(|value| value.is_object())
@@ -1021,8 +888,8 @@ pub(in crate::primitives) fn task_land_atomic_output(
         .cloned()
         .ok_or_else(|| "Task finish server response is missing Land data.".to_string())?;
     let task_id = required_string_field(atomic_response, "task_id")?;
-    let change_id = required_string_field(atomic_response, "change_id")?;
-    let change_ref = required_string_field(atomic_response, "change_ref")?;
+    let change_id = string_field(atomic_response, "change_id");
+    let change_ref = string_field(atomic_response, "change_ref");
     let patchset_id = required_string_field(atomic_response, "patchset_id")?;
     let target_line = required_string_field(atomic_response, "target_line")?;
     let landed_snapshot_id = required_string_field(atomic_response, "landed_snapshot_id")?;
@@ -1039,7 +906,7 @@ pub(in crate::primitives) fn task_land_atomic_output(
         "task_status": "completed",
         "change_id": change_id,
         "change_ref": change_ref,
-        "change_status": "landed",
+        "change_status": change_ref.as_ref().map(|_|"landed"),
         "patchset_id": patchset_id,
         "target_line": target_line,
         "landed_snapshot_id": landed_snapshot_id,
@@ -1060,7 +927,7 @@ pub(in crate::primitives) fn task_land_atomic_output(
             "read_scope": "line_and_bound_worktree_metadata_only",
         },
         "atomic_task_land": {
-            "contract": "task-land-atomic/v1",
+            "contract": atomic_response["contract"].clone(),
             "idempotency_key": atomic_response["idempotency_key"].clone(),
             "replayed": atomic_response["replayed"].clone(),
             "remote_mutation_count": 1,
@@ -1163,10 +1030,37 @@ pub(in crate::primitives) fn task_land_defer_bound_cleanup(
     }
 }
 
+fn task_land_guarded_idempotency_key(
+    base: &str,
+    expected: Option<&WorkflowExpectedIdentity>,
+) -> Result<String, String> {
+    let Some(expected) = expected else {
+        return Ok(base.to_string());
+    };
+    expected.validate()?;
+    use sha2::{Digest, Sha256};
+    let bytes =
+        crate::json_support::encode_value_to_vec(&json!(expected), "Expected candidate identity")?;
+    Ok(format!("{base}:guard:{:x}", Sha256::digest(bytes)))
+}
+
 pub fn task_land_apply<F>(
     repo: &RepoRuntime,
     task_or_change_id: &str,
     remote_name: Option<&str>,
+    progress: Option<F>,
+) -> Result<JsonValue, String>
+where
+    F: FnMut(&JsonValue) -> Result<(), String>,
+{
+    task_land_apply_guarded(repo, task_or_change_id, remote_name, None, progress)
+}
+
+pub(super) fn task_land_apply_guarded<F>(
+    repo: &RepoRuntime,
+    task_or_change_id: &str,
+    remote_name: Option<&str>,
+    expected: Option<&WorkflowExpectedIdentity>,
     mut progress: Option<F>,
 ) -> Result<JsonValue, String>
 where
@@ -1190,6 +1084,7 @@ where
     let mut closeout_remote = http_closeout_remote(repo, &remote_row)?;
     let idempotency_key =
         task_land_atomic_idempotency_key(repo, &task_or_change_ref, Some("main"), "direct")?;
+    let idempotency_key = task_land_guarded_idempotency_key(&idempotency_key, expected)?;
     let preflight_elapsed = elapsed_ms(preflight_started);
 
     workflow_progress_emit(
@@ -1210,18 +1105,19 @@ where
     let atomic_response = {
         let _range = perfetto_range!("ait.task_land.atomic_remote_closeout");
         closeout_remote
-            .submit_task_land(
+            .submit_task_land_guarded(
                 &task_or_change_ref,
                 Some("main"),
                 "direct",
                 &idempotency_key,
                 Some(&repo_name),
+                expected,
             )
             .map_err(|error| error.to_string())?
     };
     let atomic_remote_elapsed = elapsed_ms(atomic_remote_started);
     let response_task_id = required_string_field(&atomic_response, "task_id")?;
-    let response_change_id = required_string_field(&atomic_response, "change_id")?;
+    let response_change_id = string_field(&atomic_response, "change_id");
     let response_patchset_id = required_string_field(&atomic_response, "patchset_id")?;
     let response_target_line = required_string_field(&atomic_response, "target_line")?;
     let response_snapshot_id = required_string_field(&atomic_response, "landed_snapshot_id")?;
@@ -1229,7 +1125,7 @@ where
         &mut progress,
         "completed",
         "atomic_task_land",
-        Some(&response_change_id),
+        response_change_id.as_deref(),
         Some(&response_patchset_id),
         Some(1),
         None,
@@ -1377,7 +1273,7 @@ where
             repo,
             task_or_change_id,
             snapshot_message,
-            Some("main"),
+            None,
             None,
             None::<fn(&JsonValue) -> Result<(), String>>,
         )?
@@ -1393,4 +1289,40 @@ where
         return Err("`--message` is available only for local `ait task finish`; remote finish consumes an already-ready selected Patchset.".to_string());
     }
     task_land_apply(repo, task_or_change_id, remote_name, progress)
+}
+
+#[cfg(test)]
+mod guard_tests {
+    use super::*;
+    #[test]
+    fn guarded_atomic_key_keeps_legacy_and_binds_every_expected_field() {
+        let value = json!({"repository_index":7,"patchset_id":"RT-1/P-01","revision_snapshot_id":"R","base_snapshot_id":"B"});
+        let expected = WorkflowExpectedIdentity::from_value(&value).unwrap();
+        let pinned = task_land_guarded_idempotency_key("legacy-key", Some(&expected)).unwrap();
+        assert_eq!(
+            task_land_guarded_idempotency_key("legacy-key", None).unwrap(),
+            "legacy-key"
+        );
+        assert_eq!(
+            pinned,
+            task_land_guarded_idempotency_key("legacy-key", Some(&expected)).unwrap()
+        );
+        for (field, replacement) in [
+            ("repository_index", json!(8)),
+            ("patchset_id", json!("RT-2/P-01")),
+            ("revision_snapshot_id", json!("R2")),
+            ("base_snapshot_id", json!("B2")),
+        ] {
+            let mut changed = value.clone();
+            changed[field] = replacement;
+            assert_ne!(
+                pinned,
+                task_land_guarded_idempotency_key(
+                    "legacy-key",
+                    Some(&WorkflowExpectedIdentity::from_value(&changed).unwrap())
+                )
+                .unwrap()
+            );
+        }
+    }
 }

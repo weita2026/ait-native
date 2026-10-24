@@ -26,6 +26,14 @@ where
 
 pub fn workspace_command_lock_path(repo: &RepoRuntime) -> PathBuf {
     let workspace_root = workspace_root(repo);
+    workspace_root
+        .join(".ait")
+        .join("workspace")
+        .join("locks")
+        .join(workspace_lock_filename(&workspace_root))
+}
+
+fn workspace_lock_filename(workspace_root: &Path) -> String {
     let mut hasher = Sha256::new();
     hasher.update(workspace_root.to_string_lossy().as_bytes());
     let digest = hasher.finalize();
@@ -33,11 +41,7 @@ pub fn workspace_command_lock_path(repo: &RepoRuntime) -> PathBuf {
     for byte in digest {
         hex.push_str(&format!("{byte:02x}"));
     }
-    workspace_root
-        .join(".ait")
-        .join("workspace")
-        .join("locks")
-        .join(format!("{}.lock", &hex[..16]))
+    format!("{}.lock", &hex[..16])
 }
 
 fn workspace_root(repo: &RepoRuntime) -> PathBuf {
@@ -63,11 +67,51 @@ impl WorkspaceCommandLock {
     pub fn acquire(repo: &RepoRuntime, command_name: &str) -> Result<Self, String> {
         let workspace_root = workspace_root(repo);
         let lock_path = workspace_command_lock_path(repo);
+        Self::acquire_at(workspace_root, lock_path, command_name, false)
+    }
+
+    pub(crate) fn try_acquire(repo: &RepoRuntime, command_name: &str) -> Result<Self, String> {
+        Self::acquire_at(
+            workspace_root(repo),
+            workspace_command_lock_path(repo),
+            command_name,
+            true,
+        )
+    }
+
+    pub(crate) fn try_acquire_workspace(
+        repo: &RepoRuntime,
+        workspace_root: &Path,
+        command_name: &str,
+    ) -> Result<Self, String> {
+        // The shared lock survives removal of the worktree's .ait link/root.
+        let lock_path = repo
+            .authoritative_repo_root()
+            .join(".ait/workspace/locks")
+            .join(workspace_lock_filename(workspace_root));
+        Self::acquire_at(workspace_root.to_path_buf(), lock_path, command_name, true)
+    }
+
+    fn acquire_at(
+        workspace_root: PathBuf,
+        lock_path: PathBuf,
+        command_name: &str,
+        nonblocking: bool,
+    ) -> Result<Self, String> {
         let parent = lock_path
             .parent()
             .ok_or_else(|| "Workspace command lock path has no parent.".to_string())?;
         fs::create_dir_all(parent).map_err(|err| err.to_string())?;
-        if let Some(metadata) = borrowable_workspace_lock_metadata(&lock_path, &workspace_root) {
+        let borrowed = if nonblocking {
+            read_lock_metadata(&lock_path).filter(|metadata| {
+                can_borrow_physical_token_lock(metadata, &lock_path, &workspace_root)
+                    || (metadata.get("owner_token").is_none()
+                        && can_borrow_legacy_process_lock(metadata, &lock_path, &workspace_root))
+            })
+        } else {
+            borrowable_workspace_lock_metadata(&lock_path, &workspace_root)
+        };
+        if let Some(metadata) = borrowed {
             return Ok(Self {
                 state: WorkspaceCommandLockState::Borrowed,
                 metadata,
@@ -81,7 +125,13 @@ impl WorkspaceCommandLock {
             .write(true)
             .open(&lock_path)
             .map_err(|err| err.to_string())?;
-        file.lock_exclusive().map_err(|err| err.to_string())?;
+        if nonblocking {
+            file.try_lock_exclusive().map_err(|error| format!(
+                "Workspace {} is busy; cannot run {command_name} while another command holds its writer lock: {error}", workspace_root.display()
+            ))?;
+        } else {
+            file.lock_exclusive().map_err(|err| err.to_string())?;
+        }
         let owner_token = new_owner_token(&workspace_root);
         let metadata = json!({
             "command": command_name,
@@ -224,6 +274,25 @@ fn metadata_u32(metadata: &JsonValue, key: &str) -> Option<u32> {
 
 fn path_string_eq(value: &str, path: &Path) -> bool {
     value == path.to_string_lossy()
+}
+
+fn can_borrow_physical_token_lock(metadata: &JsonValue, lock_path: &Path, root: &Path) -> bool {
+    if !lock_is_held_by_another_process(lock_path) {
+        return false;
+    }
+    if can_borrow_token_lock(metadata, lock_path, root) {
+        return true;
+    }
+    let same_file = metadata_string(metadata, "lock_path")
+        .and_then(|value| Path::new(value).canonicalize().ok())
+        .zip(lock_path.canonicalize().ok())
+        .is_some_and(|(left, right)| left == right);
+    if !same_file {
+        return false;
+    }
+    let mut resolved = metadata.clone();
+    resolved["lock_path"] = json!(lock_path);
+    can_borrow_token_lock(&resolved, lock_path, root)
 }
 
 fn lock_is_held_by_another_process(lock_path: &Path) -> bool {

@@ -1,5 +1,9 @@
 use super::*;
-use crate::primitives::change_flow::change_create_with_task_remote;
+
+#[cfg(test)]
+mod capture_pin_init_tests;
+#[cfg(all(test, unix))]
+mod cargo_capacity_tests;
 
 pub(in crate::primitives) fn task_start_change_bootstrap_lineage(
     change: Option<&JsonValue>,
@@ -315,11 +319,21 @@ pub(in crate::primitives) fn ensure_worktree_runtime_layout(
 pub(in crate::primitives) fn ensure_repository_shared_cargo_build_dir(
     repo_root: &Path,
 ) -> Result<PathBuf, String> {
+    ensure_repository_cargo_build_selection(repo_root, cargo_build_location(repo_root))
+}
+
+fn ensure_repository_cargo_build_selection(
+    repo_root: &Path,
+    selected: CargoBuildLocation,
+) -> Result<PathBuf, String> {
     let ait_dir = repo_root.join(APP_DIR);
     let shared_ait_dir = fs::canonicalize(&ait_dir).unwrap_or(ait_dir);
     let shared_path = shared_ait_dir.join(SHARED_CARGO_BUILD_DIRNAME);
     match fs::metadata(&shared_path) {
         Ok(metadata) if metadata.is_dir() => {
+            if let Some(reason) = selected.fallback_reason {
+                return ensure_cargo_ssd_fallback(repo_root, reason);
+            }
             return Ok(fs::canonicalize(&shared_path).unwrap_or(shared_path));
         }
         Ok(_) => {
@@ -370,8 +384,7 @@ pub(in crate::primitives) fn ensure_repository_shared_cargo_build_dir(
                 repo_root.join(path)
             }
         })
-        .map(|path| resolve_path_strict_false(&path))
-        .filter(|path| path.is_dir());
+        .map(|path| resolve_path_strict_false(&path));
     let Some(memory_root) = configured_memory_root else {
         if dangling_link {
             return Err(format!(
@@ -419,6 +432,9 @@ pub(in crate::primitives) fn ensure_repository_shared_cargo_build_dir(
                 physical_path.display()
             ));
         }
+        if let Some(reason) = selected.fallback_reason {
+            return ensure_cargo_ssd_fallback(repo_root, reason);
+        }
         fs::create_dir_all(&physical_path).map_err(|err| {
             format!(
                 "Failed to recreate repository shared Cargo build directory {}: {err}",
@@ -427,12 +443,27 @@ pub(in crate::primitives) fn ensure_repository_shared_cargo_build_dir(
         })?;
         return Ok(fs::canonicalize(&shared_path).unwrap_or(physical_path));
     }
+    if let Some(reason) = selected.fallback_reason {
+        return ensure_cargo_ssd_fallback(repo_root, reason);
+    }
     fs::create_dir_all(&physical_path).map_err(|err| err.to_string())?;
     if let Some(parent) = shared_path.parent() {
         fs::create_dir_all(parent).map_err(|err| err.to_string())?;
     }
     create_directory_link(&shared_path, &physical_path)?;
     Ok(physical_path)
+}
+
+fn ensure_cargo_ssd_fallback(repo_root: &Path, reason: &str) -> Result<PathBuf, String> {
+    let path = validate_ssd_cargo_build_root(repo_root)?;
+    fs::create_dir_all(&path).map_err(|error| {
+        format!(
+            "Cannot create Cargo SSD fallback {}: {error}",
+            path.display()
+        )
+    })?;
+    eprintln!("Cargo RAM-to-SSD fallback: {reason}; {}", path.display());
+    Ok(path)
 }
 
 pub(in crate::primitives) fn materialize_worktree_cargo_config(
@@ -452,6 +483,22 @@ pub(in crate::primitives) fn materialize_worktree_cargo_config_for_workspace(
     }
     if !cargo_worktree_integration_enabled(repo_root, target_path) {
         return Ok(());
+    }
+    ensure_repository_shared_cargo_build_dir(repo_root)?;
+    let build_leaf = worktree_cargo_build_dir(projected_workspace_root);
+    if build_leaf.starts_with(ssd_cargo_build_root(projected_workspace_root)) {
+        match fs::symlink_metadata(&build_leaf) {
+            Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => {
+                return Err(format!(
+                    "Cargo SSD build leaf is not a physical directory: {}",
+                    build_leaf.display()
+                ))
+            }
+            Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
+                return Err(error.to_string())
+            }
+            _ => {}
+        }
     }
     let config_path = target_path.join(WORKTREE_CARGO_CONFIG_RELATIVE_PATH);
     if path_exists_or_directory_link(&config_path) {
@@ -674,8 +721,13 @@ pub fn worktree_recover_task(
         ));
     }
     let (remote_row, repo_name) = remote_context(repo, remote_name, None)?;
+    crate::primitives::workspace::remote_capture::require_v2_authority(
+        repo,
+        &remote_row,
+        &repo_name,
+    )?;
     let mut task_remote = http_task_remote(repo, &remote_row)?;
-    worktree_recover_task_with_task_remote(
+    let result = worktree_recover_task_with_task_remote(
         repo,
         &mut task_remote,
         &remote_row.name,
@@ -684,7 +736,17 @@ pub fn worktree_recover_task(
         change_id,
         dry_run,
         None,
-    )
+    )?;
+    if !dry_run {
+        let name = result
+            .get("worktree")
+            .and_then(|value| value.get("name"))
+            .or_else(|| result.get("name"))
+            .and_then(JsonValue::as_str)
+            .ok_or("Recovered Task worktree name is missing")?;
+        pin_remote_capture_authority(repo, name, &remote_row)?;
+    }
+    Ok(result)
 }
 
 fn cleanup_unregistered_task_worktree_materialization(
@@ -762,14 +824,8 @@ where
 {
     let task_id = normalized_text(Some(task_id))
         .ok_or_else(|| "Task id is required to recover a worktree.".to_string())?;
-    let change_id = normalized_text(Some(change_id))
-        .ok_or_else(|| "Change id is required to recover a worktree.".to_string())?;
-    if let Some(existing) = bound_task_worktree_metadata(repo, Some(&task_id), Some(&change_id))? {
-        return Err(format!(
-            "Task `{task_id}` is already registered to worktree `{}`. Enter that worktree or run `ait worktree recreate {}` if its path is missing.",
-            existing.name, existing.name
-        ));
-    }
+    let change_id = normalized_text(Some(change_id));
+    let existing = bound_task_worktree_metadata(repo, Some(&task_id), change_id.as_deref())?;
 
     let task = task_remote
         .get_task(&task_id, Some(repo_name))
@@ -793,43 +849,63 @@ where
         ));
     }
 
-    let change = task_remote
-        .get_change(&change_id, Some(repo_name))
-        .map_err(|err| err.to_string())?;
-    let returned_change_id = required_string_field(&change, "change_id")?;
-    let returned_change_ref = change_reference_from_payload(&change, Some(&change_id))?;
-    let requested_canonical = canonical_change_id(&change_id)?;
-    let returned_canonical = canonical_change_id(&returned_change_id)?;
-    if returned_canonical != requested_canonical
-        || (change_id != requested_canonical && returned_change_ref != change_id)
-    {
-        return Err(format!(
+    let change = if let Some(change_id) = change_id.as_deref() {
+        let change = task_remote
+            .get_change(change_id, Some(repo_name))
+            .map_err(|err| err.to_string())?;
+        let returned_change_id = required_string_field(&change, "change_id")?;
+        let returned_change_ref = change_reference_from_payload(&change, Some(change_id))?;
+        let requested_canonical = canonical_change_id(change_id)?;
+        let returned_canonical = canonical_change_id(&returned_change_id)?;
+        if returned_canonical != requested_canonical
+            || (change_id != requested_canonical && returned_change_ref != change_id)
+        {
+            return Err(format!(
             "Remote change lookup for `{change_id}` returned unrelated change `{returned_change_ref}`."
         ));
-    }
-    let change_task_id = required_string_field(&change, "task_id")?;
-    if change_task_id != task_id {
-        return Err(format!(
-            "Remote change `{change_id}` belongs to task `{change_task_id}`, not `{task_id}`."
-        ));
-    }
-    let change_repo_name = required_string_field(&change, "repo_name")?;
-    if change_repo_name != repo_name {
-        return Err(format!(
+        }
+        let change_task_id = required_string_field(&change, "task_id")?;
+        if change_task_id != task_id {
+            return Err(format!(
+                "Remote change `{change_id}` belongs to task `{change_task_id}`, not `{task_id}`."
+            ));
+        }
+        let change_repo_name = required_string_field(&change, "repo_name")?;
+        if change_repo_name != repo_name {
+            return Err(format!(
             "Remote change `{change_id}` belongs to repository `{change_repo_name}`, not `{repo_name}`."
         ));
-    }
-    let change_status = required_string_field(&change, "status")?;
-    if !matches!(change_status.as_str(), "draft" | "review") {
-        return Err(format!(
+        }
+        let change_status = required_string_field(&change, "status")?;
+        if !matches!(change_status.as_str(), "draft" | "review") {
+            return Err(format!(
             "Remote change `{change_id}` has status `{change_status}` and cannot recover an authoring worktree."
         ));
+        }
+        Some(change)
+    } else {
+        None
+    };
+    let returned_canonical = change
+        .as_ref()
+        .and_then(|row| string_field(row, "change_id"));
+    let base_line = change
+        .as_ref()
+        .and_then(|row| string_field(row, "base_line"))
+        .unwrap_or_else(|| repo.default_line_name());
+    if let Some(existing) = existing {
+        let verified = verify_registered_task_worktree(repo, &task_id)?;
+        return Ok(json!({"status":"already_registered", "task_id":task_id,
+            "change_id":returned_canonical, "remote_name":remote_name,"repo_name":repo_name,
+            "dry_run":dry_run,"worktree":{"name":existing.name,"path":verified.workspace_root()}}));
     }
-    let base_line = required_string_field(&change, "base_line")?;
-    if let Some(fork_snapshot_id) = string_field(&change, "fork_snapshot_id") {
+    if let Some(fork_snapshot_id) = change
+        .as_ref()
+        .and_then(|row| string_field(row, "fork_snapshot_id"))
+    {
         if !local_snapshot_exists(repo, &fork_snapshot_id)? {
             return Err(format!(
-                "Remote change `{change_id}` forks from `{fork_snapshot_id}`, which is not available in the local Binary snapshot store. Pull the base line before recovering the task worktree."
+                "Remote Task `{task_id}` revision forks from `{fork_snapshot_id}`, which is not available in the local Binary snapshot store. Pull the base line before recovering the task worktree."
             ));
         }
     }
@@ -862,7 +938,7 @@ where
             "alias_path": alias_path,
             "current_line": task_feature_line_name(&task_id)?,
             "base_line": base_line,
-            "fork_snapshot_id": string_field(&change, "fork_snapshot_id"),
+            "fork_snapshot_id": change.as_ref().and_then(|row|string_field(row,"fork_snapshot_id")),
             "dry_run": true,
         }));
     }
@@ -871,7 +947,7 @@ where
         repo,
         TaskStartBootstrapRequest {
             task: &task,
-            change: Some(&change),
+            change: change.as_ref(),
             base_line_name: &base_line,
             local: false,
             worktree_name: &worktree_name,
@@ -910,7 +986,7 @@ where
                 JsonValue::String("recovered".to_string()),
             ),
             ("task_id".to_string(), JsonValue::String(task_id)),
-            ("change_id".to_string(), JsonValue::String(change_id)),
+            ("change_id".to_string(), json!(change_id)),
             (
                 "remote_name".to_string(),
                 JsonValue::String(remote_name.to_string()),
@@ -1716,30 +1792,6 @@ where
     }
 }
 
-fn task_start_remote_initial_change_with_task_remote<R>(
-    task_remote: &mut R,
-    repo_name: &str,
-    task_id: &str,
-    title: &str,
-    base_line: &str,
-    preflight_line_row: &JsonValue,
-) -> Result<JsonValue, String>
-where
-    R: TaskWorkflowRemoteChangeCreator + TaskWorkflowLineagePayloadBuilder + ?Sized,
-{
-    let lineage_payload =
-        task_remote.change_lineage_payload(base_line, Some(preflight_line_row))?;
-    change_create_with_task_remote(
-        task_remote,
-        repo_name,
-        task_id,
-        title,
-        base_line,
-        None,
-        &lineage_payload,
-    )
-}
-
 pub(in crate::primitives) fn task_start_root_preflight(repo: &RepoRuntime) -> Result<(), String> {
     if repo.is_worktree() {
         return Err(format!(
@@ -1758,6 +1810,7 @@ pub(in crate::primitives) fn task_start_context_preflight(
     guard_no_planning_only_artifact_drift(repo, "ait task start")
 }
 
+#[cfg(test)]
 pub(in crate::primitives) fn worktree_remote_change_read_with_task_remote<R>(
     task_remote: &mut R,
     repo_name: &str,
@@ -1793,22 +1846,40 @@ pub(in crate::primitives) fn worktree_remote_patchset_revision_candidate_with_re
     change_ref: &str,
 ) -> Result<Option<JsonValue>, String>
 where
-    T: TaskWorkflowRemoteChangeReader + ?Sized,
+    T: TaskWorkflowRemoteChangeReader + TaskWorkflowRemoteTaskReader + ?Sized,
     C: TaskWorkflowPatchsetReader + ?Sized,
 {
-    let remote_change =
-        worktree_remote_change_read_with_task_remote(task_remote, repo_name, change_ref)?;
-    let Some(patchset_id) = string_field(&remote_change, "selected_patchset_id")
-        .or_else(|| string_field(&remote_change, "current_patchset_id"))
-    else {
+    let (owner, current) = crate::primitives::change_flow::change_identity_with_task_remote(
+        task_remote,
+        change_ref,
+        Some(repo_name),
+    )?;
+    let Some(patchset_id) = current else {
         return Ok(None);
     };
     let patchset = worktree_remote_patchset_read_with_closeout_remote(
         closeout_remote,
         repo_name,
         &patchset_id,
-        change_ref,
+        &owner,
     )?;
+    let task_id = if is_task_id(&owner) {
+        owner.as_str()
+    } else {
+        owner.rsplit_once('/').ok_or("Change has no Task owner")?.0
+    };
+    let association =
+        ait_core::workflow_expected_identity::validate_patchset_owner_fields(&patchset, task_id)?;
+    if !is_task_id(&owner) && association.as_deref() != Some(owner.as_str()) {
+        return Err("Current candidate belongs to another revision".into());
+    }
+    ait_core::workflow_expected_identity::WorkflowExpectedIdentity {
+        repository_index: 0,
+        patchset_id: patchset_id.clone(),
+        base_snapshot_id: required_string_field(&patchset, "base_snapshot_id")?,
+        revision_snapshot_id: required_string_field(&patchset, "revision_snapshot_id")?,
+    }
+    .validate_patchset(0, &patchset)?;
     let Some(snapshot_id) = string_field(&patchset, "revision_snapshot_id") else {
         return Ok(None);
     };
@@ -1819,7 +1890,7 @@ where
         "source": "remote_patchset_revision",
         "snapshot_id": snapshot_id,
         "available_locally": true,
-        "change_id": string_field(&remote_change, "change_id").unwrap_or_else(|| change_ref.to_string()),
+        "task_id":task_id, "change_id": patchset["change_id"], "change_ref":association,
         "patchset_id": patchset_id,
     })))
 }
@@ -1869,13 +1940,18 @@ pub(crate) fn task_start_with_progress(
     let resolved_intent = normalized_text(Some(intent))
         .ok_or_else(|| "Task intent must not be empty.".to_string())?;
     let resolved_base_line = "main".to_string();
-    let resolved_change_title = resolved_title.clone();
     task_start_context_preflight(repo)?;
     if let Some(explicit_edit_root) = explicit_edit_root {
         preflight_explicit_task_edit_root(repo, explicit_edit_root, plan_item_ref.is_some(), None)?;
     }
     let context_preflight_elapsed = elapsed_ms(context_preflight_started);
     let use_local = repo.task_uses_local_scope(local, remote_name)?;
+    if !use_local {
+        let (remote, repo_name) = remote_context(repo, remote_name, None)?;
+        crate::primitives::workspace::remote_capture::require_v2_authority(
+            repo, &remote, &repo_name,
+        )?;
+    }
     ensure_task_start_local_base_snapshot(repo, &resolved_base_line)?;
     let remote_base_line_preflight_started = Instant::now();
     let remote_base_line_context = if !use_local {
@@ -1906,16 +1982,31 @@ pub(crate) fn task_start_with_progress(
     let remote_base_line_preflight_elapsed = elapsed_ms(remote_base_line_preflight_started);
 
     let task_create_started = Instant::now();
-    let task = task_create(
-        repo,
-        &resolved_title,
-        &resolved_intent,
-        local,
-        remote_name,
-        plan_id,
-        plan_revision_id,
-        plan_item_ref,
-    )?;
+    let task = if let Some((remote_row, repo_name, _)) = remote_base_line_context.as_ref() {
+        let mut task_remote = http_task_remote(repo, remote_row)?;
+        task_remote_create_flow_with_task_remote(
+            repo,
+            &mut task_remote,
+            repo_name,
+            &resolved_title,
+            &resolved_intent,
+            None,
+            plan_id,
+            plan_revision_id,
+            plan_item_ref,
+        )?
+    } else {
+        task_create(
+            repo,
+            &resolved_title,
+            &resolved_intent,
+            true,
+            None,
+            plan_id,
+            plan_revision_id,
+            plan_item_ref,
+        )?
+    };
     let task_create_elapsed = elapsed_ms(task_create_started);
     let task_id = required_string_field(&task, "task_id")?;
     emit_task_start_progress(
@@ -1926,65 +2017,23 @@ pub(crate) fn task_start_with_progress(
         }),
     )?;
     let change_create_started = Instant::now();
-    let recovery_scope = if local {
-        " --local".to_string()
-    } else if let Some(remote_name) = normalized_text(remote_name) {
-        format!(" --remote {}", shell_escape(Path::new(&remote_name)))
-    } else {
-        String::new()
-    };
-    let recovery_command = format!(
-        "ait change create {} --title {} --base-line {}{}",
-        shell_escape(Path::new(&task_id)),
-        shell_escape(Path::new(&resolved_change_title)),
-        shell_escape(Path::new(&resolved_base_line)),
-        recovery_scope,
-    );
-    let change = if use_local {
-        crate::primitives::change_flow::change_create_for_worktree_bootstrap(
-            repo,
-            &task_id,
-            &resolved_change_title,
-            Some(&resolved_base_line),
-            local,
-            remote_name,
-        )
-    } else {
-        let (remote_row, repo_name, line_row) =
-            remote_base_line_context.as_ref().ok_or_else(|| {
-                "Remote Task initial Change is missing its validated main-Line context."
-                    .to_string()
-            })?;
-        let mut task_remote = http_task_remote(repo, remote_row)?;
-        task_start_remote_initial_change_with_task_remote(
-            &mut task_remote,
-            repo_name,
-            &task_id,
-            &resolved_change_title,
-            &resolved_base_line,
-            line_row,
-        )
-    }
-    .map_err(|err| {
-        format!(
-            "Task {task_id} was created, but the initial change could not be created: {err}. Recover without creating another task by running `{recovery_command}`."
-        )
-    })?;
+    let change = None;
     let change_create_elapsed = elapsed_ms(change_create_started);
     emit_task_start_progress(
         progress.as_deref_mut(),
         json!({
-            "phase": "change_created",
-            "change_id": string_field(&change, "change_id"),
+            "phase": "initial_work_ready",
+            "change_id": change.as_ref().and_then(|change| string_field(change, "change_id")),
         }),
     )?;
 
     let mut payload = task_start_bootstrap_created_records_with_progress(
         repo,
         task,
-        Some(change),
+        change,
         &resolved_base_line,
         use_local,
+        remote_base_line_context.as_ref().map(|(row, _, _)| row),
         explicit_edit_root,
         debug_probe_override,
         progress,
@@ -2017,12 +2066,18 @@ pub(in crate::primitives) fn task_start_bootstrap_created_records_with_progress(
     change: Option<JsonValue>,
     resolved_base_line: &str,
     use_local: bool,
+    capture_remote: Option<&RemoteRow>,
     explicit_edit_root: Option<&Path>,
     debug_probe_override: Option<&JsonValue>,
     mut progress: Option<&mut TaskStartProgressEmitter<'_>>,
 ) -> Result<JsonValue, String> {
     let total_started = Instant::now();
     let task_id = required_string_field(&task, "task_id")?;
+    if use_local == capture_remote.is_some() {
+        return Err(format!(
+            "Task {task_id} was created, but worktree setup lacks its exact capture scope"
+        ));
+    }
     let change_id = change
         .as_ref()
         .and_then(|row| string_field(row, "change_ref").or_else(|| string_field(row, "change_id")));
@@ -2032,6 +2087,22 @@ pub(in crate::primitives) fn task_start_bootstrap_created_records_with_progress(
     if let Some(existing) =
         bound_task_worktree_metadata(repo, Some(&task_id), change_id.as_deref())?
     {
+        if let Some(remote) = capture_remote {
+            require_remote_capture_authority(repo, &existing.name, remote).map_err(|err| {
+                format!(
+                    "Task {task_id} was created, but its existing worktree cannot be reused: {err}"
+                )
+            })?;
+        } else {
+            let proof = worktree_show(repo, Some(&existing.name), false).map_err(|err| {
+                format!(
+                    "Task {task_id} was created, but its existing worktree cannot be reused: {err}"
+                )
+            })?;
+            if !proof["capture_authority"].is_null() {
+                return Err(format!("Task {task_id} was created, but its existing worktree has a Remote capture authority and cannot be reused for Local work"));
+            }
+        }
         let worktree = worktree_get(repo, Some(&existing.name), false)?;
         if let Some(explicit_location) = explicit_location.as_ref() {
             let registered_path = worktree
@@ -2137,6 +2208,12 @@ pub(in crate::primitives) fn task_start_bootstrap_created_records_with_progress(
         },
         progress.as_deref_mut(),
     )
+    .and_then(|bootstrap| {
+        if let Some(remote) = capture_remote {
+            pin_remote_capture_authority(repo, &worktree_name, remote)?;
+        }
+        Ok(bootstrap)
+    })
     .map_err(|err| match change.as_ref() {
         Some(change_row) => format!(
             "Task {} and change {} were created, but the bound worktree could not be created: {err}",

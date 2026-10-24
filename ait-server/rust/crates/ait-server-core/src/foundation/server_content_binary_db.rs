@@ -6,7 +6,8 @@ use crate::foundation::remote_binary_db::{
 
 pub const SERVER_CONTENT_BINARY_LAYOUT_ID: u32 = 1;
 pub const SERVER_LINE_RECORD_SIZE: u32 = 40;
-pub const SERVER_SNAPSHOT_RECORD_SIZE: u32 = 88;
+pub const LEGACY_SERVER_SNAPSHOT_RECORD_SIZE: u32 = 88;
+pub const SERVER_SNAPSHOT_RECORD_SIZE: u32 = 92;
 pub const SERVER_SNAPSHOT_PARENT_EDGE_RECORD_SIZE: u32 = 12;
 pub const SERVER_FIXED_INDEX_RECORD_SIZE: u32 = 12;
 pub const SERVER_LINE_BIN: &str = "line.bin";

@@ -3,10 +3,8 @@ const PLAN_BINARY_DB_WRITE_LAYOUT: u32 = 1;
 fn run_plan(repo: RepoRuntime, command: PlanCommand) -> Result<(), String> {
     match command {
         PlanCommand::List(args) => {
-            let mut payload = execute_plan_list_command_request_json(&build_query_request(
-                &repo,
-                &args.scope,
-            )?)?;
+            let mut payload =
+                execute_plan_list_command_request_json(&build_query_request(&repo, &args.scope)?)?;
             if matches!(
                 resolve_plan_scope(&repo, args.scope.local, args.scope.remote.as_deref())?,
                 ResolvedPlanScope::Local
@@ -113,6 +111,7 @@ fn run_plan(repo: RepoRuntime, command: PlanCommand) -> Result<(), String> {
         }
         PlanCommand::Sync(args) => {
             let mut payload = run_locked_workspace_command(&repo, "ait-cli plan sync", || {
+                crate::agent_teams::before_plan_sync(&repo, &args.target, args.prune)?;
                 execute_plan_sync_command_request_json(&build_sync_request(&repo, &args)?)
             })
             .map_err(|error| plan_sync_missing_path_hint(&args, error))?;
@@ -339,15 +338,14 @@ fn annotate_plan_rows_with_workspace_match(repo: &RepoRuntime, payload: &mut Jso
         object.insert("head_artifact_matches_workspace".to_string(), matches);
         object.insert(
             "workspace_artifact_blob_id".to_string(),
-            workspace_blob.map(JsonValue::String).unwrap_or(JsonValue::Null),
+            workspace_blob
+                .map(JsonValue::String)
+                .unwrap_or(JsonValue::Null),
         );
     }
 }
 
 fn build_sync_request(repo: &RepoRuntime, args: &SyncArgs) -> Result<String, String> {
-    if args.rebase && args.reconcile {
-        return Err("--rebase cannot be combined with --reconcile".to_string());
-    }
     let scope = resolve_plan_scope(repo, args.local, args.remote.as_deref())?;
     let use_local_scope = matches!(scope, ResolvedPlanScope::Local);
     // Markdown is authored in the active workspace, while plan_storage below
@@ -358,6 +356,8 @@ fn build_sync_request(repo: &RepoRuntime, args: &SyncArgs) -> Result<String, Str
         "repository_index": repo.repository_index(),
         "id_namespace_prefix": repo.id_namespace_prefix(),
         "created_by": repo.actor_identity(),
+        "user_name": repo.config.get("user_name"),
+        "user_email": repo.config.get("user_email"),
         "target": args.target,
         "plan_ref": args.plan_ref,
         "prune": args.prune,
@@ -365,9 +365,8 @@ fn build_sync_request(repo: &RepoRuntime, args: &SyncArgs) -> Result<String, Str
         "remote_name": JsonValue::Null,
         "remote_repo_name": JsonValue::Null,
         "base_url": JsonValue::Null,
-        "rebase": args.rebase,
         "reconcile": args.reconcile,
-        "plan_storage": repo.plan_binary_db_storage_request::<PLAN_BINARY_DB_WRITE_LAYOUT>()?,
+        "plan_storage": repo.standalone_plan_sync_storage_request()?,
     });
     if let ResolvedPlanScope::Remote {
         name,
@@ -379,10 +378,7 @@ fn build_sync_request(repo: &RepoRuntime, args: &SyncArgs) -> Result<String, Str
             .as_object_mut()
             .ok_or("Sync request payload must be an object.")?;
         obj.insert("remote_name".to_string(), JsonValue::String(name));
-        obj.insert(
-            "remote_repo_name".to_string(),
-            JsonValue::String(repo_name),
-        );
+        obj.insert("remote_repo_name".to_string(), JsonValue::String(repo_name));
         obj.insert("base_url".to_string(), JsonValue::String(url));
     }
     Ok(payload.to_string())
@@ -623,9 +619,7 @@ fn render_sync_like(payload: &JsonValue) -> Result<(), String> {
     if let Some(error) = plan_sync_terminal_error(payload) {
         return Err(error);
     }
-    let summary = payload
-        .get("summary")
-        .and_then(JsonValue::as_object);
+    let summary = payload.get("summary").and_then(JsonValue::as_object);
     print_key_values(
         "ait-cli plan sync",
         &[

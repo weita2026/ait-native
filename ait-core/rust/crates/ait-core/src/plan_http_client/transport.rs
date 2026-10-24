@@ -126,6 +126,10 @@ pub struct PlanHttpClientStats {
 #[derive(Debug)]
 pub struct PlanHttpClientManager {
     pub(crate) config: PlanHttpClientConfig,
+    /// Attribution resolved for one caller operation, never persisted or shared
+    /// between Repository authorities.
+    pub(crate) actor_context: Option<(RepositoryIndex, u32)>,
+    pub(crate) actor_registration: Option<super::actor_registration::RequestActorRegistration>,
     pub(crate) client: Option<Client>,
     pub(crate) request_count: usize,
     pub(crate) retry_count: usize,
@@ -138,6 +142,8 @@ impl PlanHttpClientManager {
         let client = build_client(&normalized_config)?;
         Ok(Self {
             config: normalized_config,
+            actor_context: None,
+            actor_registration: None,
             client: Some(client),
             request_count: 0,
             retry_count: 0,
@@ -160,19 +166,23 @@ impl PlanHttpClientManager {
 
     pub fn close(&mut self) -> PlanHttpClientStats {
         self.client = None;
+        self.actor_context = None;
+        self.actor_registration = None;
         self.closed = true;
         self.inspect()
     }
 
     pub(super) fn execute_json(
         &mut self,
-        spec: PlanHttpRequestSpec,
+        mut spec: PlanHttpRequestSpec,
     ) -> PlanHttpClientResult<Option<Value>> {
         if self.closed {
             return Err(PlanHttpClientError::Closed(
                 "Rust plan HTTP client manager is already closed.".to_string(),
             ));
         }
+        require_secure_transport(&spec.url)?;
+        self.attach_workflow_actor(&mut spec)?;
         let Some(client) = self.client.as_ref() else {
             return Err(PlanHttpClientError::Closed(
                 "Rust plan HTTP client manager is not available.".to_string(),
@@ -211,6 +221,46 @@ impl PlanHttpClientManager {
         }
     }
 
+    /// Startup health intentionally uses HTTP503 while upgrading. Preserve its
+    /// progress body without entering the fixed generic busy-read retry loop.
+    pub fn get_upgrade_health(
+        &mut self,
+    ) -> PlanHttpClientResult<crate::workflow_admission::UpgradeHealth> {
+        let spec = super::build_get_server_health_request_spec(&self.config)?;
+        if self.closed {
+            return Err(PlanHttpClientError::Closed("HTTP client is closed".into()));
+        }
+        require_secure_transport(&spec.url)?;
+        let client = self
+            .client
+            .as_ref()
+            .ok_or_else(|| PlanHttpClientError::Closed("HTTP client is unavailable".into()))?;
+        self.request_count += 1;
+        let response = perform_request(client, &spec)
+            .map_err(|error| map_transport_error(&spec.method, &spec.url, error))?;
+        let status = response.status().as_u16();
+        if !matches!(status, 200 | 503) {
+            return parse_response_payload(&spec.method, &spec.url, response).and_then(|_| {
+                Err(PlanHttpClientError::Remote(
+                    "Unexpected health HTTP status".into(),
+                ))
+            });
+        }
+        let body = response
+            .text()
+            .map_err(|error| map_transport_error(&spec.method, &spec.url, error))?;
+        let value = JsonCodec::parse_value_with_error_prefix(&body, "Invalid health JSON")
+            .map_err(|error| PlanHttpClientError::Remote(error.to_string()))?;
+        let health = crate::workflow_admission::UpgradeHealth::from_value(&value)
+            .map_err(PlanHttpClientError::Remote)?;
+        if health.ready != (status == 200) {
+            return Err(PlanHttpClientError::Remote(
+                "Health readiness disagrees with HTTP status".into(),
+            ));
+        }
+        Ok(health)
+    }
+
     pub(super) fn execute_bytes(
         &mut self,
         spec: PlanHttpBytesRequestSpec,
@@ -225,6 +275,7 @@ impl PlanHttpClientManager {
                 "Rust plan HTTP client manager is not available.".to_string(),
             ));
         };
+        require_secure_transport(&spec.url)?;
         let mut transport_attempt = 0usize;
         let mut busy_read_retry_count = 0usize;
         loop {
@@ -301,6 +352,8 @@ impl PlanHttpClientManager {
                         scope.spawn(move || {
                             let mut worker = PlanHttpClientManager {
                                 config: worker_config,
+                                actor_context: None,
+                                actor_registration: None,
                                 client: Some(client),
                                 request_count: 0,
                                 retry_count: 0,
@@ -485,14 +538,47 @@ fn normalize_base_url(base_url: &str) -> PlanHttpClientResult<String> {
     if !normalized.ends_with('/') {
         normalized.push('/');
     }
-    Url::parse(&normalized).map_err(|err| {
-        PlanHttpClientError::Invalid(format!("Invalid plan HTTP base_url `{base_url}`: {err}"))
-    })?;
+    require_secure_transport(&normalized)?;
     Ok(normalized)
 }
 
+fn require_secure_transport(value: &str) -> PlanHttpClientResult<()> {
+    let url = Url::parse(value)
+        .map_err(|_| PlanHttpClientError::Invalid("Invalid Plan HTTP URL.".to_string()))?;
+    let loopback = url.host_str().is_some_and(|host| {
+        host.eq_ignore_ascii_case("localhost")
+            || host
+                .trim_start_matches('[')
+                .trim_end_matches(']')
+                .parse::<std::net::IpAddr>()
+                .is_ok_and(|address| address.is_loopback())
+    });
+    if url.host_str().is_some() && (url.scheme() == "https" || (url.scheme() == "http" && loopback))
+    {
+        return Ok(());
+    }
+    // Do not include the URL: its path/query may carry session identifiers.
+    Err(PlanHttpClientError::Invalid(
+        "Plan HTTP requires HTTPS; plaintext HTTP is allowed only for loopback development endpoints."
+            .to_string(),
+    ))
+}
+
 fn build_client(config: &PlanHttpClientConfig) -> PlanHttpClientResult<Client> {
-    let mut builder = Client::builder().pool_max_idle_per_host(config.pool_max_idle_per_host);
+    let mut builder = Client::builder()
+        .pool_max_idle_per_host(config.pool_max_idle_per_host)
+        .redirect(reqwest::redirect::Policy::custom(|attempt| {
+            if attempt.previous().len() >= 10 {
+                return attempt.error("Plan HTTP redirect limit exceeded");
+            }
+            if require_secure_transport(attempt.url().as_str()).is_err()
+                || (attempt.url().scheme() == "http"
+                    && attempt.previous().iter().any(|url| url.scheme() == "https"))
+            {
+                return attempt.error("Plan HTTP refused an insecure redirect");
+            }
+            attempt.follow()
+        }));
     if config.default_timeout_ms > 0 {
         builder = builder.timeout(Duration::from_millis(config.default_timeout_ms));
     }

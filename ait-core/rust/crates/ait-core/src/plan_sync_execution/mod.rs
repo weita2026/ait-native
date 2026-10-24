@@ -23,6 +23,8 @@ mod remote_client;
 mod remote_ports;
 mod request_runtime;
 mod result_projection;
+pub mod role_index_guard;
+mod scoped_storage;
 mod shared;
 
 use self::adoption_repair::{
@@ -307,6 +309,7 @@ impl<S> RemoteSyncCommitJson<S> {
     ) -> ZstdBulkCommitRequest {
         let _ = &self.store;
         ZstdBulkCommitRequest {
+            capture_binding: None,
             contract: None,
             generation_key: Some(generation_key.to_string()),
             object_packs,
@@ -401,6 +404,9 @@ struct SyncRequest {
     repository_index: Option<RepositoryIndex>,
     id_namespace_prefix: Option<String>,
     created_by: Option<String>,
+    user_name: Option<String>,
+    user_email: Option<String>,
+    current_actor_revision_ids: BTreeSet<String>,
     target: String,
     plan_ref: Option<String>,
     prune: bool,
@@ -446,7 +452,11 @@ impl PlanSyncStorageRequest {
         }
     }
 
-    fn binary_db(&self, expected_repo_name: &str) -> Result<(LocalBinaryDbFs, PathBuf), String> {
+    fn binary_db(
+        &self,
+        expected_repo_name: &str,
+        standalone: bool,
+    ) -> Result<(LocalBinaryDbFs, PathBuf), String> {
         self.require_binary_layout()?;
         let authority_root = self.authority_root.as_deref().ok_or_else(|| {
             "plan_storage.authority_root is required for Binary DB plan sync.".to_string()
@@ -460,6 +470,9 @@ impl PlanSyncStorageRequest {
         let current_line_state_scope = self.current_line_state_scope.ok_or_else(|| {
             "plan_storage.current_line_state_scope is required for Binary DB plan sync.".to_string()
         })?;
+        if standalone && self.activation_pointer.is_some() {
+            return scoped_storage::open(self, expected_repo_name);
+        }
         if let Some(pointer) = self.activation_pointer.as_deref() {
             let (generation, guard) =
                 crate::binary_db_generation::admit_activated_binary_db_generation_for_runtime(
@@ -552,12 +565,14 @@ pub fn execute_plan_sync_command_request_json(payload_json: &str) -> Result<Json
 fn execute_plan_sync_command_request<F, I>(
     file_io_store: &F,
     identity_source: &I,
-    request: SyncRequest,
+    mut request: SyncRequest,
 ) -> Result<JsonValue, String>
 where
     F: FileIoStore + ?Sized,
     I: PlanSyncWorkflowIdentitySource + ?Sized,
 {
+    validate_runtime_flags(&request)?;
+    enable_automatic_sync_rebase(&mut request);
     let publish_remote = request.base_url.is_some();
     let divergent_retry_mode = if request.rebase {
         Some("rebase")
@@ -566,7 +581,6 @@ where
     } else {
         None
     };
-    validate_runtime_flags(&request)?;
     let history_publish = request.history_publish_plan_id.is_some();
 
     let sync_target = match resolve_sync_target(&request, request.prune || publish_remote) {
@@ -584,6 +598,18 @@ where
             ));
         }
     };
+    if let Err(err) = role_index_guard::validate_before_sync(&request, &sync_target) {
+        return Ok(plan_sync_payload(
+            "failed",
+            &request,
+            Some(&sync_target),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Some(err),
+        ));
+    }
     let artifacts = if history_publish {
         Vec::new()
     } else {
@@ -641,7 +667,10 @@ where
         ));
     }
 
-    let (binary_db, pack_root) = request.plan_storage.binary_db(&request.repo_name)?;
+    let standalone = request.task_start.is_none() && request.history_publish_plan_id.is_none();
+    let (binary_db, pack_root) = request
+        .plan_storage
+        .binary_db(&request.repo_name, standalone)?;
     let binary_plan_store = BinaryDbPlanSyncLocalStore::<PLAN_SYNC_BINARY_DB_WRITE_LAYOUT>::from_db(
         request.repo_name.clone(),
         binary_db.clone(),

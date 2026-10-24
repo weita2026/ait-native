@@ -12,12 +12,16 @@ use ait_core::server_operational::{
 use reqwest::blocking::{Client, RequestBuilder, Response};
 use serde_json::{Value as JsonValue, json};
 
+use crate::control::ExecutionControl;
 use crate::protocol::{
     DELIVERY_CONTRACT, LEGACY_NATIVE_JOB_CONTRACT, MAX_REQUEST_BYTES, NATIVE_JOB_CONTRACT,
     NativeJobRequest, NativeResult, SourceSpec,
 };
 use crate::{NativeExecutor, RunnerError};
 use crate::{RemotePackKind, RemoteSnapshotProvider, RemoteSnapshotReference};
+
+mod package_source;
+use package_source::ClaimedSourceProvider;
 
 const BINARY_QUEUE_SERVICE_CONTRACT: &str = "ait.server.worker-job.service.v1";
 const LEGACY_QUEUE_SERVICE_CONTRACT: &str = "ait.server.worker_queue.service.v1";
@@ -85,6 +89,7 @@ struct HeartbeatLease {
     stop: mpsc::Sender<()>,
     thread: thread::JoinHandle<()>,
     error: Arc<Mutex<Option<String>>>,
+    control: ExecutionControl,
 }
 
 impl ServerClient {
@@ -100,6 +105,7 @@ impl ServerClient {
         }
         let client = Client::builder()
             .timeout(DEFAULT_HTTP_TIMEOUT)
+            .redirect(reqwest::redirect::Policy::none())
             .build()
             .map_err(|error| {
                 RunnerError::Server(format!("could not create HTTP client: {error}"))
@@ -301,9 +307,38 @@ impl ServerClient {
         )?;
         let heartbeat =
             HeartbeatLease::start_binary(self.clone(), claimed.proof.clone(), heartbeat_interval);
-        let execution = executor.execute_with_provider(&claimed.request, Some(self));
-        if let Err(error) = heartbeat.finish() {
+        let control = heartbeat.control.clone();
+        let provider = ClaimedSourceProvider {
+            client: self,
+            claim: claimed,
+            control: &control,
+        };
+        let execution =
+            executor.execute_claimed(&claimed.request, &provider, claimed.proof.key(), &control);
+        self.finish_binary_execution(claimed, execution, heartbeat, worker_id)
+    }
+
+    fn finish_binary_execution(
+        &self,
+        claimed: &BinaryClaim,
+        execution: Result<NativeResult, RunnerError>,
+        heartbeat: HeartbeatLease,
+        worker_id: Option<&str>,
+    ) -> Result<JsonValue, RunnerError> {
+        let control = heartbeat.control.clone();
+        let heartbeat_result = heartbeat.finish();
+        // Incomplete cleanup cannot acknowledge release of the owned attempt.
+        let execution = match execution {
+            Err(error @ RunnerError::Cleanup(_)) => return Err(error),
+            other => other,
+        };
+        if let Err(error) = heartbeat_result {
             return self.fail_binary_after_claim(claimed, error);
+        }
+        // The last in-flight heartbeat can cancel while execution is cleaning
+        // up or joining the heartbeat thread, before terminal reporting.
+        if control.is_cancelled() {
+            return self.fail_binary_after_claim(claimed, RunnerError::Cancelled);
         }
         let result = match execution {
             Ok(result) => result,
@@ -340,7 +375,8 @@ impl ServerClient {
             worker_id.to_string(),
             heartbeat_interval,
         );
-        let execution = executor.execute_with_provider(&request, Some(self));
+        let execution =
+            executor.execute_with_control(&request, Some(self), None, &heartbeat.control);
         if let Err(error) = heartbeat.finish() {
             return self.fail_legacy_after_claim(claimed.job_id, worker_id, error);
         }
@@ -392,7 +428,8 @@ impl ServerClient {
     ) -> Result<JsonValue, RunnerError> {
         let key = claimed.proof.key();
         let message = error.bounded_message(MAX_FAILURE_MESSAGE_CHARS);
-        match self.fail_binary_job(&claimed.proof, &message, true) {
+        let retryable = !matches!(error, RunnerError::Cancelled);
+        match self.fail_binary_job(&claimed.proof, &message, retryable) {
             Ok(_) => Err(RunnerError::Process(format!(
                 "Worker Job {key} attempt {} failed and ait-server acknowledged fail: {message}",
                 claimed.proof.attempt_count
@@ -476,10 +513,22 @@ impl ServerClient {
         &self,
         proof: &WorkerLeaseProof,
         request_timeout: Duration,
-    ) -> Result<u8, RunnerError> {
+    ) -> Result<bool, RunnerError> {
         let payload =
             self.binary_lease_operation("heartbeat", proof, None, Some(request_timeout))?;
-        parse_binary_job_state(&payload, proof, "heartbeat", &[2])
+        parse_binary_job_state(&payload, proof, "heartbeat", &[2])?;
+        if payload["job"].get("cancel_requested").is_some() {
+            return Err(RunnerError::Server(
+                "heartbeat cancel_requested must be a top-level envelope field".into(),
+            ));
+        }
+        match payload.get("cancel_requested") {
+            None => Ok(false),
+            Some(JsonValue::Bool(value)) => Ok(*value),
+            Some(_) => Err(RunnerError::Server(
+                "heartbeat cancel_requested must be a boolean".into(),
+            )),
+        }
     }
 
     fn complete_binary_job(
@@ -532,6 +581,7 @@ impl ServerClient {
             body["detail"] = detail;
         }
         self.binary_operation(&path, operation, body, request_timeout)
+            .map_err(|error| error.redact(&proof.lease_token))
     }
 
     fn binary_operation(
@@ -759,10 +809,13 @@ impl QueueProtocol {
 impl HeartbeatLease {
     fn start_binary(client: ServerClient, proof: WorkerLeaseProof, interval: Duration) -> Self {
         let request_timeout = heartbeat_request_timeout(interval);
-        Self::start(interval, move || {
-            client
-                .heartbeat_binary_job(&proof, request_timeout)
-                .map(|_| ())
+        let control = ExecutionControl::default();
+        let heartbeat_control = control.clone();
+        Self::start_with_control(interval, control, move || {
+            if client.heartbeat_binary_job(&proof, request_timeout)? {
+                heartbeat_control.cancel();
+            }
+            Ok(())
         })
     }
 
@@ -777,13 +830,25 @@ impl HeartbeatLease {
         })
     }
 
-    fn start<F>(interval: Duration, mut heartbeat: F) -> Self
+    fn start<F>(interval: Duration, heartbeat: F) -> Self
+    where
+        F: FnMut() -> Result<(), RunnerError> + Send + 'static,
+    {
+        Self::start_with_control(interval, ExecutionControl::default(), heartbeat)
+    }
+
+    fn start_with_control<F>(
+        interval: Duration,
+        control: ExecutionControl,
+        mut heartbeat: F,
+    ) -> Self
     where
         F: FnMut() -> Result<(), RunnerError> + Send + 'static,
     {
         let (stop, stopped) = mpsc::channel();
         let error = Arc::new(Mutex::new(None));
         let thread_error = Arc::clone(&error);
+        let thread_control = control.clone();
         let thread = thread::spawn(move || {
             loop {
                 match stopped.recv_timeout(interval) {
@@ -791,6 +856,7 @@ impl HeartbeatLease {
                     Err(mpsc::RecvTimeoutError::Timeout) => {}
                 }
                 if let Err(heartbeat_error) = heartbeat() {
+                    thread_control.cancel();
                     if let Ok(mut slot) = thread_error.lock() {
                         *slot = Some(heartbeat_error.to_string());
                     }
@@ -802,6 +868,7 @@ impl HeartbeatLease {
             stop,
             thread,
             error,
+            control,
         }
     }
 
@@ -1138,6 +1205,14 @@ fn parse_binary_claim_field(
         SourceSpec::RemoteSnapshot {
             repository_index, ..
         } if *repository_index == key.repository_index => {}
+        SourceSpec::WorkflowPackage {
+            repository_index, ..
+        } if *repository_index == key.repository_index && job_kind == 7 => {}
+        SourceSpec::WorkflowPackage { .. } => {
+            return Err(RunnerError::Server(
+                "workflow_package must match the claimed Repository and patchset.ci Job".into(),
+            ));
+        }
         SourceSpec::RemoteSnapshot {
             repository_index, ..
         } => {
@@ -1148,7 +1223,7 @@ fn parse_binary_claim_field(
         }
         _ => {
             return Err(RunnerError::Server(
-                "claimed native-job.v3 requires numeric remote_snapshot source routing".to_string(),
+                "claimed native-job.v3 requires numeric remote_snapshot or workflow_package source routing".to_string(),
             ));
         }
     }
@@ -1872,11 +1947,10 @@ mod tests {
             ),
         ]);
         let client = ServerClient::new(&server.url, None).unwrap();
-        assert_eq!(
-            client
+        assert!(
+            !client
                 .heartbeat_binary_job(&proof, Duration::from_secs(5))
-                .unwrap(),
-            2
+                .unwrap()
         );
         assert_eq!(
             client
@@ -1928,6 +2002,85 @@ mod tests {
         wrong_route["runtime_request"]["source"]["repository_index"] = json!(8);
         let payload = binary_service("claim", "claimed_job", wrong_route);
         assert!(parse_binary_claim_field(&payload, "claimed_job", "claim").is_err());
+    }
+
+    #[test]
+    fn package_claims_require_the_original_repository_and_patchset_job() {
+        let key = WorkerJobKey::new(RepositoryIndex::new(4), WorkerJobIndex::new(0));
+        let mut claim = binary_claim(key, 2, "00112233445566778899aabbccddeeff", 7);
+        claim["runtime_request"]["source"] = json!({
+            "kind":"workflow_package", "repository_index":4,
+            "package_hash":"a".repeat(64), "base_snapshot_id":"SNP-000000000001",
+            "revision_snapshot_id":"SNP-000000000002"
+        });
+        let parsed = parse_binary_claim_field(
+            &binary_service("claim", "claimed_job", claim.clone()),
+            "claimed_job",
+            "claim",
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(parsed.proof.key(), key);
+        claim["runtime_request"]["source"]["repository_index"] = json!(5);
+        assert!(
+            parse_binary_claim_field(
+                &binary_service("claim", "claimed_job", claim.clone()),
+                "claimed_job",
+                "claim"
+            )
+            .is_err()
+        );
+        claim["runtime_request"]["source"]["repository_index"] = json!(4);
+        claim["job_kind"] = json!(11);
+        claim["job_type"] = json!("repo.ci");
+        assert!(
+            parse_binary_claim_field(
+                &binary_service("claim", "claimed_job", claim),
+                "claimed_job",
+                "claim"
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn heartbeat_cancellation_is_a_boolean_envelope_signal_after_claim_identity_validation() {
+        let key = WorkerJobKey::new(RepositoryIndex::new(4), WorkerJobIndex::new(0));
+        let proof = WorkerLeaseProof::new(key, 2, "00112233445566778899aabbccddeeff").unwrap();
+        let omitted = binary_service("heartbeat", "job", binary_job_state(key, 2, 2));
+        let mut requested = omitted.clone();
+        requested["cancel_requested"] = json!(true);
+        let mut invalid = omitted.clone();
+        invalid["cancel_requested"] = JsonValue::Null;
+        let mut nested = omitted.clone();
+        nested["job"]["cancel_requested"] = json!(true);
+        let mut wrong_attempt = requested.clone();
+        wrong_attempt["job"]["attempt_count"] = json!(3);
+        let server = MockServer::start(
+            [omitted, requested, invalid, nested, wrong_attempt]
+                .into_iter()
+                .map(|reply| (200, reply))
+                .collect(),
+        );
+        let client = ServerClient::new(&server.url, None).unwrap();
+        assert!(
+            !client
+                .heartbeat_binary_job(&proof, Duration::from_secs(1))
+                .unwrap()
+        );
+        assert!(
+            client
+                .heartbeat_binary_job(&proof, Duration::from_secs(1))
+                .unwrap()
+        );
+        for _ in 0..3 {
+            assert!(
+                client
+                    .heartbeat_binary_job(&proof, Duration::from_secs(1))
+                    .is_err()
+            );
+        }
+        assert_eq!(server.finish().len(), 5);
     }
 
     #[test]

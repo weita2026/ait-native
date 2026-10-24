@@ -12,6 +12,7 @@ mod snapshot;
 mod zstd;
 
 pub(super) use helpers::now_timestamp_s;
+pub(super) use helpers::snapshot_parent_ids;
 use helpers::{
     decode_optional_sha256, json_u32, json_u64, manifest_hash_text, timestamp_s, timestamp_string,
 };

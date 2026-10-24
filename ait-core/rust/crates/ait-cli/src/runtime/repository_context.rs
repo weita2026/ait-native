@@ -1,6 +1,24 @@
 use super::*;
 
 impl RepoRuntime {
+    pub fn remote_actor_identity(
+        &self,
+    ) -> Result<ait_core::plan_http_client::RemoteActorIdentity, String> {
+        let component = |key: &str| {
+            self.config
+                .get(key)
+                .and_then(JsonValue::as_str)
+                .ok_or_else(|| {
+                    format!("Actor-aware Remote mutation requires effective AIT config {key}.")
+                })
+        };
+        ait_core::plan_http_client::RemoteActorIdentity::new(
+            component("user_name")?,
+            component("user_email")?,
+        )
+        .map_err(|error| error.to_string())
+    }
+
     pub fn repository_index(&self) -> Option<RepositoryIndex> {
         ServerRepositoryAuthorityConfig::from_config_object(&self.config)
             .ok()
@@ -122,12 +140,18 @@ impl RepoRuntime {
     }
 
     pub fn effective_author_mode(&self, requested: Option<&str>) -> String {
-        nonempty(requested.map(str::to_string))
-            .or_else(|| {
-                self.config
-                    .get("default_author_mode")
-                    .and_then(as_nonempty_string)
-            })
+        // Fresh candidates use the effective default. Sealed candidates must
+        // retain their original mode; current configuration is no such proof.
+        // Preserve invalid explicit input for the existing mode validators.
+        if let Some(requested) = requested {
+            return requested.trim().to_string();
+        }
+        if self.team_review_enabled() {
+            return "ai_only_experimental".to_string();
+        }
+        self.config
+            .get("default_author_mode")
+            .and_then(as_nonempty_string)
             .unwrap_or_else(|| DEFAULT_AUTHOR_MODE.to_string())
     }
 
@@ -150,73 +174,9 @@ impl RepoRuntime {
     }
 
     pub fn ai_code_review_reviewer_identity(&self) -> Option<String> {
-        command_executable_basename()
-    }
-
-    pub fn effective_workflow_mode(&self) -> String {
-        let configured_mode = self
-            .config
-            .get("workflow_mode")
-            .and_then(as_nonempty_string);
-        let workflow_scope = self
-            .config
-            .get("workflow_default_scope")
-            .and_then(as_nonempty_string)
-            .unwrap_or_else(|| DEFAULT_WORKFLOW_SCOPE.to_string());
-        let task_scope = self
-            .config
-            .get("task_default_scope")
-            .and_then(as_nonempty_string)
-            .unwrap_or_else(|| workflow_scope.clone());
-        let change_scope = self
-            .config
-            .get("change_default_scope")
-            .and_then(as_nonempty_string)
-            .unwrap_or_else(|| workflow_scope.clone());
-        let binding_mode = self
-            .config
-            .get("plan_task_binding")
-            .and_then(plan_task_binding_mode)
-            .unwrap_or_else(|| DEFAULT_PLAN_TASK_BINDING_MODE.to_string());
-        if let Some(mode) = configured_mode.as_deref() {
-            let preset = match mode {
-                "solo_local" => Some(("local", "local", "local", "required")),
-                "solo_remote" => Some(("remote", "remote", "remote", "required")),
-                "team_remote" => Some(("remote", "remote", "remote", "required")),
-                _ => None,
-            };
-            if let Some((preset_workflow, preset_task, preset_change, preset_binding)) = preset {
-                if workflow_scope == preset_workflow
-                    && task_scope == preset_task
-                    && change_scope == preset_change
-                    && (binding_mode == preset_binding || binding_mode == "off")
-                {
-                    return mode.to_string();
-                }
-            }
-        }
-        if workflow_scope == "local"
-            && task_scope == "local"
-            && change_scope == "local"
-            && matches!(binding_mode.as_str(), "required" | "off")
-        {
-            return "solo_local".to_string();
-        }
-        if workflow_scope == "remote"
-            && task_scope == "remote"
-            && change_scope == "remote"
-            && matches!(binding_mode.as_str(), "advisory" | "off")
-        {
-            return "solo_remote".to_string();
-        }
-        if workflow_scope == "remote"
-            && task_scope == "remote"
-            && change_scope == "remote"
-            && binding_mode == "required"
-        {
-            return "team_remote".to_string();
-        }
-        "custom".to_string()
+        crate::reviewer_identity::ActingReviewer::resolve(self, None)
+            .ok()
+            .map(|reviewer| reviewer.name)
     }
 
     pub fn sprint_enabled(&self) -> bool {
@@ -230,7 +190,7 @@ impl RepoRuntime {
     }
 
     pub fn team_review_enabled(&self) -> bool {
-        self.effective_workflow_mode() == "team_remote"
+        crate::agent_teams::enabled(self)
     }
 
     fn formatted_user_identity(&self) -> Option<String> {
@@ -258,17 +218,7 @@ impl RepoRuntime {
         if nonempty(remote_requested.map(str::to_string)).is_some() {
             return Ok(false);
         }
-        let configured = self
-            .config
-            .get("task_default_scope")
-            .and_then(as_nonempty_string)
-            .or_else(|| {
-                self.config
-                    .get("workflow_default_scope")
-                    .and_then(as_nonempty_string)
-            })
-            .unwrap_or_else(|| DEFAULT_WORKFLOW_SCOPE.to_string());
-        Ok(configured == "local")
+        Ok(true)
     }
 
     pub fn change_uses_local_scope(
@@ -282,17 +232,7 @@ impl RepoRuntime {
         if nonempty(remote_requested.map(str::to_string)).is_some() {
             return false;
         }
-        let configured = self
-            .config
-            .get("change_default_scope")
-            .and_then(as_nonempty_string)
-            .or_else(|| {
-                self.config
-                    .get("workflow_default_scope")
-                    .and_then(as_nonempty_string)
-            })
-            .unwrap_or_else(|| DEFAULT_WORKFLOW_SCOPE.to_string());
-        configured == "local"
+        true
     }
 
     pub fn workflow_uses_local_scope(
@@ -306,10 +246,6 @@ impl RepoRuntime {
         if nonempty(remote_requested.map(str::to_string)).is_some() {
             return false;
         }
-        self.config
-            .get("workflow_default_scope")
-            .and_then(as_nonempty_string)
-            .unwrap_or_else(|| DEFAULT_WORKFLOW_SCOPE.to_string())
-            == "local"
+        true
     }
 }

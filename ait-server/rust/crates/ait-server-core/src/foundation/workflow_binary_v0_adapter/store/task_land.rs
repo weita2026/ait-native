@@ -1,76 +1,93 @@
 use super::*;
 
+pub(super) const ATOMIC_CONTRACT: &str = "task-land-atomic/v2";
+pub(super) const GUARDED_CONTRACT: &str = "task-land-atomic-guarded/v2";
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ExpectedIdentity {
+    repository_index: u32,
+    patchset_id: String,
+    revision_snapshot_id: String,
+    base_snapshot_id: String,
+}
+
 impl<D> BinaryDbServerWorkflowV0Store<D>
 where
     D: ServerRemoteBinaryDb + BinaryDbIndexAppender + Clone + Send + Sync + 'static,
 {
+    pub(super) fn validate_expected_patchset_in_read<A: ReadV0>(
+        &self,
+        read: &A,
+        patchset_index: u32,
+        expected: Option<&JsonValue>,
+    ) -> Result<(), String> {
+        let Some(value) = expected else {
+            return Ok(());
+        };
+        let expected: ExpectedIdentity = serde_json::from_value(value.clone())
+            .map_err(|e| format!("Invalid guarded expected_identity: {e}"))?;
+        if self.repository_index != Some(expected.repository_index) {
+            return Err("EXPECTED_CANDIDATE_MISMATCH: numeric Repository authority differs or is unavailable".to_string());
+        }
+        let patchset = self
+            .read_patchset(read, patchset_index)
+            .map_err(|e| e.to_string())?;
+        self.patchset_owner(read, patchset)?;
+        if self.patchset_index_for_id(read, &expected.patchset_id).ok() != Some(patchset_index)
+            || self.content_snapshot_id(read, patchset.base_snapshot_index)?
+                != expected.base_snapshot_id
+            || self.content_snapshot_id(read, patchset.revision_snapshot_index)?
+                != expected.revision_snapshot_id
+        {
+            return Err(
+                "EXPECTED_CANDIDATE_MISMATCH: Patchset, revision or base changed".to_string(),
+            );
+        }
+        Ok(())
+    }
+
+    pub(super) fn validate_expected_identity_in_read<A: ReadV0>(
+        &self,
+        read: &A,
+        task_index: u32,
+        expected: Option<&JsonValue>,
+    ) -> Result<(), String> {
+        let (index, patchset) = self
+            .current_task_patchset(read, task_index)?
+            .ok_or("EXPECTED_CANDIDATE_MISMATCH: Task has no current Patchset")?;
+        self.require_current_patchset(read, index, patchset)?;
+        self.validate_expected_patchset_in_read(read, index, expected)
+    }
+
     pub(super) fn resolve_task_land_change_ref_in_read<A: ReadV0>(
         &self,
         read: &A,
         task_or_change_ref: &str,
     ) -> Result<String, String> {
-        let requested = task_or_change_ref.trim();
-        if requested.is_empty() {
-            return Err("Atomic Task Land requires task_or_change_ref.".to_string());
-        }
-        if requested.contains("/C-") {
-            let change_index = self.change_index_for_ref(read, requested)?;
-            let change = self
-                .read_change(read, change_index)
-                .map_err(|error| Self::error("Atomic Task Land Change resolve", error))?;
-            return Ok(self.change_ref(change.task_index, change.change_ordinal));
-        }
-
-        let task_index = self.task_index_for_id(read, requested)?;
-        let owner = self.owner_ordinal_index(read, "task_change_index.bin", task_index)?;
-        let mut cursor = owner.latest_index_plus1.checked_sub(1);
-        let mut candidates = Vec::new();
-        let mut visited = BTreeSet::new();
-        while let Some(change_index) = cursor {
-            if !visited.insert(change_index) {
-                return Err(format!(
-                    "Task {} Change inventory contains a cycle at index {change_index}.",
-                    self.task_id(task_index)
-                ));
-            }
-            let change = self
-                .read_change(read, change_index)
-                .map_err(|error| Self::error("Atomic Task Land Change inventory", error))?;
-            if change.task_index != task_index {
-                return Err(format!(
-                    "Task {} Change inventory points at another Task.",
-                    self.task_id(task_index)
-                ));
-            }
-            if change.remote_meta & 1 == 0
-                && change.change_state & CHANGE_STATE_CANCELED == 0
-                && change.lifecycle() != CHANGE_LIFECYCLE_ARCHIVED
-            {
-                candidates.push(self.change_ref(task_index, change.change_ordinal));
-            }
-            cursor = change.previous_change_index_plus1.checked_sub(1);
-        }
-        candidates.sort();
-        match candidates.as_slice() {
-            [change_ref] => Ok(change_ref.clone()),
-            [] => Err(format!(
-                "Task {} has no landable Change.",
-                self.task_id(task_index)
-            )),
-            _ => Err(format!(
-                "Task {} has multiple landable Changes ({}); submit the exact Change reference.",
-                self.task_id(task_index),
-                candidates.join(", ")
-            )),
-        }
+        Ok(self.owner_ref(self.workflow_owner(read, task_or_change_ref.trim())?))
     }
 
     pub(super) fn resolve_task_land_change_ref_from_store(
         &self,
-        task_or_change_ref: &str,
+        reference: &str,
     ) -> Result<String, String> {
-        let read = BinaryDbReadTxn::new(&self.db);
-        self.resolve_task_land_change_ref_in_read(&read, task_or_change_ref)
+        self.resolve_task_land_change_ref_in_read(&BinaryDbReadTxn::new(&self.db), reference)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn submit_task_land_after_prepare_for_test<F>(
+        &self,
+        reference: &str,
+        payload: &JsonValue,
+        competing_update: F,
+    ) -> Result<JsonValue, String>
+    where
+        F: FnOnce() -> Result<(), String>,
+    {
+        let (owner_ref, prepared) = self.prepare_atomic_task_land_payload(reference, payload)?;
+        competing_update()?;
+        self.submit_land(&owner_ref, &prepared)
     }
 
     pub(super) fn prepare_atomic_task_land_payload(
@@ -78,85 +95,113 @@ where
         task_or_change_ref: &str,
         payload: &JsonValue,
     ) -> Result<(String, JsonValue), String> {
-        const CONTRACT: &str = "task-land-atomic/v1";
         let payload = Self::required_object(payload, "atomic Task Land payload")?;
-        if Self::required_text(payload, "contract")? != CONTRACT {
-            return Err(format!("Atomic Task Land contract must be {CONTRACT:?}."));
+        self.request_actor(payload)?;
+        let contract = Self::required_text(payload, "contract")?;
+        if contract != ATOMIC_CONTRACT && contract != GUARDED_CONTRACT {
+            return Err(format!(
+                "Atomic Task Land contract must be {ATOMIC_CONTRACT:?} or {GUARDED_CONTRACT:?}"
+            ));
         }
-        let idempotency_key = Self::required_text(payload, "idempotency_key")?;
-        if idempotency_key.len() > 256 {
-            return Err("Atomic Task Land idempotency_key exceeds 256 bytes.".to_string());
-        }
-        if let Some(requested) = Self::optional_text(payload, "task_or_change_ref") {
-            if requested != task_or_change_ref.trim() {
-                return Err(
-                    "Atomic Task Land path and payload task_or_change_ref disagree.".to_string(),
-                );
+        let expected = if contract == GUARDED_CONTRACT {
+            Some(
+                payload
+                    .get("expected_identity")
+                    .ok_or("Guarded atomic Task Land requires expected_identity")?,
+            )
+        } else {
+            if payload.contains_key("expected_identity") {
+                return Err(format!("expected_identity requires {GUARDED_CONTRACT}"));
             }
+            None
+        };
+        let key = Self::required_text(payload, "idempotency_key")?;
+        if key.len() > 256 {
+            return Err("Atomic Task Land idempotency_key exceeds 256 bytes".to_string());
+        }
+        if Self::optional_text(payload, "task_or_change_ref")
+            .is_some_and(|reference| reference != task_or_change_ref.trim())
+        {
+            return Err(
+                "Atomic Task Land path and payload task_or_change_ref disagree".to_string(),
+            );
         }
         let read = BinaryDbReadTxn::new(&self.db);
-        let change_ref = self.resolve_task_land_change_ref_in_read(&read, task_or_change_ref)?;
-        let change_index = self.change_index_for_ref(&read, &change_ref)?;
-        let change = self.change_at(&read, change_index)?;
+        let requested = self.workflow_owner(&read, task_or_change_ref.trim())?;
+        // Resolve accepted identity before current candidate or target freshness.
+        let index = match self.task_successful_receipt(&read, requested.task_index)? {
+            Some((_, receipt)) => receipt.patchset_index,
+            None => {
+                self.current_task_patchset(&read, requested.task_index)?
+                    .ok_or("Task has no current Patchset")?
+                    .0
+            }
+        };
+        let patchset = self
+            .read_patchset(&read, index)
+            .map_err(|e| e.to_string())?;
+        self.require_patchset_owner(&read, task_or_change_ref, patchset)?;
+        self.validate_expected_patchset_in_read(&read, index, expected)?;
         let mut prepared = payload.clone();
         prepared.insert(
             "task_or_change_ref".to_string(),
-            JsonValue::String(task_or_change_ref.trim().to_string()),
+            json!(task_or_change_ref.trim()),
         );
         if Self::optional_text(&prepared, "target_line").is_none() {
+            let Some((change_index, _)) = requested.change else {
+                return Err("Task-only atomic Land requires target_line".to_string());
+            };
             prepared.insert(
                 "target_line".to_string(),
-                change
-                    .get("base_line")
-                    .cloned()
-                    .ok_or_else(|| "Atomic Task Land Change is missing base_line.".to_string())?,
+                self.change_at(&read, change_index)?["base_line"].clone(),
             );
         }
-        Ok((change_ref, JsonValue::Object(prepared)))
+        Ok((self.owner_ref(requested), JsonValue::Object(prepared)))
     }
 
-    pub(super) fn atomic_task_land_result_in_write<F>(
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn atomic_task_land_result_in_write<F: BinaryDbFsyncPolicy>(
         &self,
         write: &BinaryDbWriteTxn<'_, D, F>,
-        change_index: u32,
+        task_index: u32,
         patchset_index: u32,
         land_index: u32,
-        idempotency_key: &str,
+        key: &str,
         replayed: bool,
-    ) -> Result<JsonValue, String>
-    where
-        F: BinaryDbFsyncPolicy,
-    {
-        let change_record = self
-            .read_change(write, change_index)
-            .map_err(|error| Self::error("Atomic Task Land Change result", error))?;
-        let task = self.task_at_in_write(write, change_record.task_index)?;
-        let change = self.change_at(write, change_index)?;
+        expected: Option<&JsonValue>,
+    ) -> Result<JsonValue, String> {
+        let record = self
+            .read_patchset(write, patchset_index)
+            .map_err(|e| e.to_string())?;
+        let owner = self.patchset_owner(write, record)?;
+        if owner.task_index != task_index {
+            return Err("Receipt Task identity disagrees".to_string());
+        }
+        let task = self.task_at_in_write(write, task_index)?;
+        let change = owner
+            .change
+            .map(|(index, _)| self.change_at(write, index))
+            .transpose()?
+            .unwrap_or(JsonValue::Null);
         let patchset = self.patchset_at_in_write(write, patchset_index)?;
         let land = self.land_at(write, land_index)?;
-        let history_promotion = self
-            .history_manifest_for_patchset(write, patchset_index)?
-            .unwrap_or(JsonValue::Null);
-        Ok(json!({
-            "contract": "task-land-atomic/v1",
-            "repo_name": self.db.repo_name().as_str(),
-            "repo_id": self.db.repo_id().as_str(),
-            "idempotency_key": idempotency_key,
-            "replayed": replayed,
-            "status": land.get("status").cloned().unwrap_or(JsonValue::Null),
-            "task_id": task.get("task_id").cloned().unwrap_or(JsonValue::Null),
-            "task_status": task.get("status").cloned().unwrap_or(JsonValue::Null),
-            "change_id": change.get("change_id").cloned().unwrap_or(JsonValue::Null),
-            "change_ref": change.get("change_ref").cloned().unwrap_or(JsonValue::Null),
-            "change_status": change.get("status").cloned().unwrap_or(JsonValue::Null),
-            "patchset_id": patchset.get("patchset_id").cloned().unwrap_or(JsonValue::Null),
-            "target_line": land.get("target_line").cloned().unwrap_or(JsonValue::Null),
-            "landed_snapshot_id": land.get("landed_snapshot_id").cloned().unwrap_or(JsonValue::Null),
-            "history_promotion": history_promotion,
-            "task": task,
-            "change": change,
-            "patchset": patchset,
-            "land": land,
-        }))
+        self.validate_expected_patchset_in_read(write, patchset_index, expected)?;
+        let mut result = json!({
+            "contract": ATOMIC_CONTRACT, "repo_name": self.db.repo_name().as_str(),
+            "repo_id": self.db.repo_id().as_str(), "idempotency_key": key,
+            "replayed": replayed, "status": land["status"], "task_id": task["task_id"],
+            "task_status": task["status"], "change_id": change["change_id"],
+            "change_ref": change["change_ref"], "change_status": change["status"],
+            "patchset_id": patchset["patchset_id"], "target_line": land["target_line"],
+            "landed_snapshot_id": land["landed_snapshot_id"],
+            "history_promotion": self.history_manifest_for_patchset(write, patchset_index)?,
+            "task": task, "change": change, "patchset": patchset, "land": land,
+        });
+        if let Some(expected) = expected {
+            result["contract"] = json!(GUARDED_CONTRACT);
+            result["repository_index"] = json!(self.repository_index);
+            result["expected_identity"] = expected.clone();
+        }
+        Ok(result)
     }
 }

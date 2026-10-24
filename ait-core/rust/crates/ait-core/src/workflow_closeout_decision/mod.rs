@@ -3,10 +3,10 @@ use crate::json_support::{json, JsonMap as Map, JsonValue};
 use crate::workflow_closeout_model_support::{
     bool_field, command_hint, command_hint_json, external_readiness_blocker_detail,
     external_readiness_is_ready, field_obj, int_field, optional_bool_field, optional_obj_field,
-    optional_string_field, string_field, workflow_land_change_effectively_landed,
-    workflow_land_policy_blocker_detail, workflow_land_result, workflow_land_result_blocker_class,
-    workflow_land_stale_policy_blocker_cleared, workflow_land_submission_id,
-    workflow_land_submission_status,
+    optional_string_field, string_field, workflow_land_policy_blocker_detail, workflow_land_result,
+    workflow_land_result_blocker_class, workflow_land_stale_policy_blocker_cleared,
+    workflow_land_submission_id, workflow_land_submission_status,
+    workflow_task_has_successful_receipt,
 };
 
 pub(crate) const WORKFLOW_LAND_PENDING_STATUSES: &[&str] = &["queued", "running"];
@@ -138,11 +138,51 @@ fn patchset_ci_job_is_patchset_ci(job: &Map<String, JsonValue>) -> bool {
     optional_string_field(job, "job_type").as_deref() == Some("patchset.ci")
 }
 
-pub(crate) fn change_effectively_landed(
-    change: &Map<String, JsonValue>,
-    landing_summary: Option<&Map<String, JsonValue>>,
-) -> bool {
-    workflow_land_change_effectively_landed(change, landing_summary)
+fn compact_statement(
+    attestation: Option<&Map<String, JsonValue>>,
+) -> Result<crate::attest_json::RemoteAttestationStatement, String> {
+    attestation
+        .map(|row| {
+            crate::attest_json::RemoteAttestationStatement::from_readback(&JsonValue::Object(
+                row.clone(),
+            ))
+        })
+        .unwrap_or_else(|| Ok(Default::default()))
+}
+
+fn required_ci_gate(
+    statement: &crate::attest_json::RemoteAttestationStatement,
+    status: Option<&Map<String, JsonValue>>,
+) -> PatchsetCiGateState {
+    if !statement.require_tests_pass && !statement.require_lint_pass {
+        return PatchsetCiGateState::Pass;
+    }
+    let mut gate = patchset_ci_gate_state(status);
+    if !statement.require_tests_pass
+        && gate == PatchsetCiGateState::NeedsRun
+        && status.is_some_and(|row| {
+            patchset_ci_status_has_completed_patchset_state(row)
+                && patchset_ci_status_has_runnable_evidence(row)
+                && optional_string_field(row, "lint_status").as_deref() == Some("pass")
+        })
+    {
+        gate = PatchsetCiGateState::Pass;
+    }
+    if gate == PatchsetCiGateState::Pass
+        && statement.require_lint_pass
+        && status
+            .and_then(|s| s.get("lint_status"))
+            .and_then(JsonValue::as_str)
+            != Some("pass")
+    {
+        return PatchsetCiGateState::NeedsRun;
+    }
+    gate
+}
+
+fn compact_verification_passes(statement: &crate::attest_json::RemoteAttestationStatement) -> bool {
+    statement.verification_state == crate::attest_json::RemoteVerificationState::Pass
+        && !statement.revoked
 }
 
 pub(crate) fn workflow_ready_next_action(
@@ -152,11 +192,9 @@ pub(crate) fn workflow_ready_next_action(
     patchset_is_authoritative: bool,
     apply_owned_continuation: bool,
 ) -> JsonValue {
-    let change = field_obj(facts, "change");
     let task = field_obj(facts, "task");
     let workspace = field_obj(facts, "workspace");
     let patchset = optional_obj_field(facts, "patchset");
-    let landing_summary = optional_obj_field(facts, "landing_summary");
     let base_is_fresh = bool_field(&field_obj(facts, "freshness"), "base_is_fresh");
     let workspace_matches_patchset =
         optional_bool_field(&field_obj(facts, "workspace"), "workspace_matches_patchset");
@@ -172,8 +210,11 @@ pub(crate) fn workflow_ready_next_action(
         .as_ref()
         .and_then(|value| optional_string_field(value, "patchset_id"))
         .unwrap_or_default();
-    let patchset_ci_required = command_hint(commands, "patchset_ci_command").is_some();
-    if change_effectively_landed(&change, landing_summary.as_ref()) {
+    let statement = compact_statement(attestation.as_ref());
+    let patchset_ci_required = statement
+        .as_ref()
+        .map_or(true, |s| s.require_tests_pass || s.require_lint_pass);
+    if workflow_task_has_successful_receipt(&task) {
         let task_status = string_field(&task, "status");
         let detail = if task_status != "completed" {
             "The change is already applied; `task finish` can still close the Task."
@@ -263,8 +304,20 @@ pub(crate) fn workflow_ready_next_action(
                 .unwrap_or(JsonValue::Null),
         });
     }
+    if let Err(error) = statement.as_ref() {
+        return json!({"code":"attestation_incompatible","summary":"Read a compatible compact Attestation before continuing.","detail":error,"command":JsonValue::Null});
+    }
+    let statement = statement.expect("compact statement validated");
+    if attestation.is_some() && !compact_verification_passes(&statement) {
+        return json!({
+            "code": "record_attestation",
+            "summary": "Resolve the existing compact verification statement.",
+            "detail": "Unknown, pending, failed or revoked verification requires an explicit genuine manual statement; automatic ready cannot overwrite it.",
+            "command": JsonValue::Null,
+        });
+    }
     if patchset_ci_required {
-        match patchset_ci_gate_state(patchset_ci_status.as_ref()) {
+        match required_ci_gate(&statement, patchset_ci_status.as_ref()) {
             PatchsetCiGateState::Pass => {}
             PatchsetCiGateState::PendingWithJob => {
                 return json!({
@@ -302,9 +355,7 @@ pub(crate) fn workflow_ready_next_action(
             }
         }
     }
-    if attestation.is_none()
-        || (!tests_state.is_empty() && !matches!(tests_state.as_str(), "pass" | "not_required"))
-    {
+    if attestation.is_none() {
         return json!({
             "code": "record_attestation",
             "summary": "Record attestation for the selected patchset.",
@@ -349,7 +400,6 @@ pub(crate) fn workflow_land_next_action(
     landing_summary_override: Option<Map<String, JsonValue>>,
     task_review_required: bool,
 ) -> JsonValue {
-    let change = field_obj(facts, "change");
     let task = field_obj(facts, "task");
     let workspace = field_obj(facts, "workspace");
     let patchset = optional_obj_field(facts, "patchset");
@@ -384,7 +434,7 @@ pub(crate) fn workflow_land_next_action(
         &landing_blocker_class,
         &policy_decision,
     );
-    let change_is_landed = change_effectively_landed(&change, landing_summary.as_ref());
+    let change_is_landed = workflow_task_has_successful_receipt(&task);
     if change_is_landed && string_field(&task, "status") != "completed" {
         return json!({
             "code": "complete_task",
@@ -431,8 +481,14 @@ pub(crate) fn workflow_land_next_action(
             "command": ready_command,
         });
     }
-    if command_hint(commands, "patchset_ci_command").is_some() {
-        match patchset_ci_gate_state(patchset_ci_status.as_ref()) {
+    let statement = match compact_statement(attestation.as_ref()) {
+        Ok(statement) => statement,
+        Err(error) => {
+            return json!({"code":"attestation_incompatible","summary":"Read a compatible compact Attestation before continuing.","detail":error,"command":JsonValue::Null})
+        }
+    };
+    if statement.require_tests_pass || statement.require_lint_pass {
+        match required_ci_gate(&statement, patchset_ci_status.as_ref()) {
             PatchsetCiGateState::Pass => {}
             PatchsetCiGateState::PendingWithJob => {
                 return json!({
@@ -456,9 +512,7 @@ pub(crate) fn workflow_land_next_action(
             }
         }
     }
-    if attestation.is_none()
-        || (!tests_state.is_empty() && !matches!(tests_state.as_str(), "pass" | "not_required"))
-    {
+    if attestation.is_none() || !compact_verification_passes(&statement) {
         return json!({
             "code": "workflow_ready",
             "summary": "Run workflow ready before review or finish.",
@@ -503,21 +557,21 @@ pub(crate) fn workflow_land_next_action(
                     "Task/outcome review auto approval is configured. Reviewer-owned Workflow Finish or a successful direct AI code review can record `task_approve` as `{reviewer}` before atomic Task closeout."
                 );
                 if team_review_available {
-                    detail.push_str(" Preserved team review remains available separately in `team_remote`.");
+                    detail.push_str(" Preserved team review remains available separately in Agent Teams.");
                 }
                 detail
             } else {
                 let mut detail =
-                    "Task/outcome review auto approval is configured, but `ait config` `user_name` is not set."
+                    "Task/outcome review auto approval is configured. Supply the acting Reviewer's own name with `--reviewer` at the review operation."
                         .to_string();
                 if team_review_available {
-                    detail.push_str(" Preserved team review remains available separately in `team_remote`.");
+                    detail.push_str(" Preserved team review remains available separately in Agent Teams.");
                 }
                 detail
             },
             "command": workflow_land_owned_command(
                 "record_review",
-                command_hint(commands, "apply_command"),
+                command_hint(commands, if task_review_required { "apply_command" } else { "review_command" }),
                 apply_owned_continuation,
                 Some(apply_command.clone()),
                 command_hint(commands, "review_command"),

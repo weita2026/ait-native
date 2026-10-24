@@ -1,6 +1,73 @@
 use super::*;
 
 #[test]
+fn review_lane_counts_keep_bot_and_user_actors_distinct_without_requiring_humans() {
+    let summary = json!({"reviews":[
+        {"patchset_id":"P-1","reviewer":"Einstein","reviewer_kind":"user","action":"task_approve"},
+        {"patchset_id":"P-1","reviewer":"Einstein","reviewer_kind":"bot","action":"task_defer"},
+        {"patchset_id":"P-1","reviewer":"Faraday","reviewer_kind":"bot","action":"task_approve"},
+        {"patchset_id":"P-1","reviewer":"Legacy Human","action":"task_approve"},
+        {"patchset_id":"P-1","reviewer":"Faraday","reviewer_kind":"bot","action":"approve"},
+        {"patchset_id":"P-OLD","reviewer":"Other","reviewer_kind":"user","action":"task_approve"}
+    ]});
+    let counts = workflow_review_lane_counts(&summary, Some("P-1"));
+    assert_eq!(counts["task_approvals"], 3);
+    assert_eq!(counts["eligible_task_approvals"], 3);
+    assert_eq!(counts["team_approvals"], 1);
+    assert_eq!(counts["approvals"], 3);
+    assert_eq!(counts["human_approvals"], 1);
+    assert_eq!(counts["human_task_approvals"], 1);
+    let bots = json!({"reviews":[{"patchset_id":"P-1","reviewer":"Faraday","reviewer_kind":"bot","action":"task_approve"}]});
+    let counts = workflow_review_lane_counts(&bots, Some("P-1"));
+    assert_eq!(counts["task_approvals"], 1);
+    assert_eq!(counts["human_task_approvals"], 0);
+    let unknown = json!({"reviews":[{"patchset_id":"P-1","reviewer":"Unknown","reviewer_kind":null,"action":"task_approve"}]});
+    assert_eq!(
+        workflow_review_lane_counts(&unknown, Some("P-1"))["human_approvals"],
+        0
+    );
+}
+
+#[test]
+fn review_lane_human_counts_require_positive_kind_evidence_in_rows_or_summary() {
+    for kind in [
+        None,
+        Some(JsonValue::Null),
+        Some(json!("unknown")),
+        Some(json!("bot")),
+        Some(json!("service_account")),
+        Some(json!("user")),
+    ] {
+        let mut row =
+            json!({"patchset_id":"P-1","reviewer":"Legacy Human","action":"task_approve"});
+        let human = i64::from(kind.as_ref().is_some_and(|kind| kind == "user"));
+        if let Some(kind) = kind {
+            row["reviewer_kind"] = kind;
+        }
+        let counts = workflow_review_lane_counts(&json!({"reviews":[row]}), Some("P-1"));
+        assert_eq!(
+            counts["task_approvals"], 1,
+            "generic legacy approval remains applicable"
+        );
+        assert_eq!(counts["approvals"], 1);
+        assert_eq!(counts["human_approvals"], human);
+        assert_eq!(counts["human_task_approvals"], human);
+        assert_eq!(counts["eligible_human_approvals"], human);
+    }
+    let mut summary = json!({"current_patchset_id":"P-1","task_approvals":1,"approvals":1});
+    let counts = workflow_review_lane_counts(&summary, Some("P-1"));
+    assert_eq!(counts["task_approvals"], 1);
+    assert_eq!(counts["human_task_approvals"], 0);
+    assert_eq!(counts["human_approvals"], 0);
+    assert_eq!(counts["eligible_human_approvals"], 0);
+    summary["human_task_approvals"] = json!(1);
+    summary["human_approvals"] = json!(1);
+    let counts = workflow_review_lane_counts(&summary, Some("P-1"));
+    assert_eq!(counts["human_task_approvals"], 1);
+    assert_eq!(counts["human_approvals"], 1);
+}
+
+#[test]
 fn patchset_refresh_rejects_republishing_an_older_current_head() {
     let patchset = json!({"patchset_id": "RCT-1/C-01/P-02"});
     let refresh = workflow_patchset_refresh_context(
@@ -168,18 +235,18 @@ fn workflow_land_patchset_read_accepts_closeout_remote_trait() {
 #[test]
 fn workflow_land_ci_read_uses_bounded_readiness_and_fails_closed() {
     let patchset = json!({
-        "patchset_id": "RCP-1",
-        "change_id": "RCC-1"
+        "patchset_id": "RT-0200/P-01",
+        "task_id":"RT-0200","change_id":"C-01","change_ref":"RT-0200/C-01"
     });
     let mut remote = FakeWorkflowCloseoutRemote {
-        patchsets: BTreeMap::from([("RCP-1".to_string(), patchset.clone())]),
+        patchsets: BTreeMap::from([("RT-0200/P-01".to_string(), patchset.clone())]),
         ci_statuses: BTreeMap::from([(
-            "RCP-1".to_string(),
+            "RT-0200/P-01".to_string(),
             json!({
-                "contract": "ait.server.patchset_ci.readiness.v1",
+                "contract": "ait.server.patchset_ci.readiness.v2",
                 "projection": "readiness",
-                "patchset_id": "RCP-1",
-                "change_id": "RCC-1",
+                "patchset_id": "RT-0200/P-01",
+                "task_id":"RT-0200","change_id":"C-01","change_ref":"RT-0200/C-01",
                 "repo_name": "fixture-ait",
                 "available": true,
                 "tests_status": "pass",
@@ -198,7 +265,7 @@ fn workflow_land_ci_read_uses_bounded_readiness_and_fails_closed() {
     let readiness = workflow_land_patchset_ci_status_read_with_closeout_remote(
         &mut remote,
         "fixture-ait",
-        Some("RCP-1"),
+        Some("RT-0200/P-01"),
     )
     .expect("bounded readiness");
     assert_eq!(readiness["projection"], json!("readiness"));
@@ -207,13 +274,13 @@ fn workflow_land_ci_read_uses_bounded_readiness_and_fails_closed() {
     assert_eq!(remote.repo_job_requests, 0);
 
     remote.ci_statuses.insert(
-        "RCP-1".to_string(),
-        json!({"patchset_id": "RCP-1", "tests_status": "pass"}),
+        "RT-0200/P-01".to_string(),
+        json!({"patchset_id": "RT-0200/P-01", "tests_status": "pass"}),
     );
     assert!(workflow_land_patchset_ci_status_read_with_closeout_remote(
         &mut remote,
         "fixture-ait",
-        Some("RCP-1"),
+        Some("RT-0200/P-01"),
     )
     .is_none());
     assert_eq!(remote.repo_job_requests, 0);
@@ -391,7 +458,7 @@ fn workflow_land_attestation_read_accepts_closeout_remote_trait() {
             "LCP-1".to_string(),
             json!({
                 "patchset_id": "LCP-1",
-                "tests_status": "pass"
+                "verification_state":"pass","require_tests_pass":true,"require_human_review":false,"require_lint_pass":false,"revoked":false,"ci_backed":false
             }),
         )]),
         ..Default::default()
@@ -402,19 +469,20 @@ fn workflow_land_attestation_read_accepts_closeout_remote_trait() {
         "fixture-ait",
         Some("LCP-1"),
     )
-    .expect("read workflow finish attestation");
-    assert_eq!(attestation["tests_status"], json!("pass"));
+    .expect("read workflow finish attestation")
+    .expect("statement");
+    assert_eq!(attestation["verification_state"], json!("pass"));
 
     let missing = workflow_land_attestation_read_with_closeout_remote(
         &mut remote,
         "fixture-ait",
         Some("LCP-MISSING"),
     );
-    assert!(missing.is_none());
+    assert!(missing.unwrap().is_none());
 
     let no_patchset =
         workflow_land_attestation_read_with_closeout_remote(&mut remote, "fixture-ait", None);
-    assert!(no_patchset.is_none());
+    assert!(no_patchset.unwrap().is_none());
 
     assert_eq!(
         remote.attestation_requests,
@@ -470,334 +538,221 @@ fn workflow_land_review_summary_read_accepts_closeout_remote_trait() {
 
 #[test]
 fn workflow_land_remote_state_accepts_read_capability_traits() {
-    let mut task_remote = FakeWorkflowReadRemote {
+    let task = "RT-0200";
+    let change = "RT-0200/C-01";
+    let id = "RT-0200/P-02";
+    let candidate = json!({"task_id":task,"change_id":"C-01","change_ref":change,"patchset_id":id,"base_snapshot_id":"SNP-BASE","revision_snapshot_id":"SNP-REVISION","author_mode":"ai_with_human_review","ci":{"run_seq":1,"completed_at_s":1,"tests_status":"pass","lint_status":"none","suite_result_count":1,"blocking_failure_count":0}});
+    let mut tasks = FakeWorkflowReadRemote {
         tasks: BTreeMap::from([(
-            "RCT-REMOTE".to_string(),
-            json!({
-                "task_id": "RCT-REMOTE",
-                "title": "remote hydration"
-            }),
+            task.into(),
+            json!({"task_id":task,"status":"active","successful_land":null,"current_patchset_id":id}),
         )]),
         changes: BTreeMap::from([(
-            "RCC-REMOTE".to_string(),
-            json!({
-                "change_id": "RCC-REMOTE",
-                "task_id": "RCT-REMOTE",
-                "status": "ready",
-                "base_line": "main",
-                "selected_patchset_id": "RCP-REMOTE-2"
-            }),
+            change.into(),
+            json!({"task_id":task,"change_id":"C-01","change_ref":change,"status":"review","base_line":"main","selected_patchset_id":"RT-0200/P-01"}),
         )]),
         lines: BTreeMap::from([(
-            "main".to_string(),
-            json!({
-                "line_name": "main",
-                "head_snapshot_id": "SNP-BASE"
-            }),
-        )]),
-        change_details: BTreeMap::from([(
-            "RCC-REMOTE".to_string(),
-            json!({
-                "change_id": "RCC-REMOTE",
-                "landing_summary": {
-                    "status": "blocked",
-                    "patchset_id": "RCP-REMOTE-2",
-                    "result": {
-                        "blocker_class": "POLICY_BLOCKED"
-                    }
-                }
-            }),
+            "main".into(),
+            json!({"line_name":"main","head_snapshot_id":"SNP-BASE"}),
         )]),
         ..Default::default()
     };
-    let mut read_remote = FakeWorkflowRemoteStateReadRemote {
-        patchsets: BTreeMap::from([(
-            "RCP-REMOTE-2".to_string(),
-            json!({
-                "patchset_id": "RCP-REMOTE-2",
-                "change_id": "RCC-REMOTE",
-                "base_snapshot_id": "SNP-BASE",
-                "revision_snapshot_id": "SNP-REVISION",
-                "author_mode": "ai_with_human_review",
-                "ci_run_seq": 1,
-                "ci_completed_at_s": 1_783_814_400_u64,
-                "ci": {
-                    "run_seq": 1,
-                    "completed_at_s": 1_783_814_400_u64,
-                    "overall_status": "pass",
-                    "tests_status": "pass",
-                    "lint_status": "none",
-                    "selected_suite_count": 1,
-                    "suite_result_count": 1,
-                    "blocking_failure_count": 0
-                }
-            }),
-        )]),
+    let mut remote = FakeWorkflowRemoteStateReadRemote {
+        patchsets: BTreeMap::from([(id.into(), candidate)]),
         reviews: BTreeMap::from([(
-            "RCC-REMOTE".to_string(),
-            json!({
-                "change_id": "RCC-REMOTE",
-                "reviews": [
-                    {
-                        "patchset_id": "RCP-REMOTE-2",
-                        "reviewer": "alice",
-                        "action": "approve"
-                    },
-                    {
-                        "patchset_id": "RCP-REMOTE-2",
-                        "reviewer": "bot",
-                        "action": "code_review_summary",
-                        "comment": "Summary\n\nTesting\n\nRisks\n\nNotes"
-                    }
-                ]
-            }),
+            task.into(),
+            json!({"task_id":task,"reviews":[{"patchset_id":id,"reviewer":"alice","action":"task_approve","actor_type":"user"},{"patchset_id":id,"reviewer":"bot","action":"code_review_summary"}]}),
         )]),
         attestations: BTreeMap::from([(
-            "RCP-REMOTE-2".to_string(),
-            json!({
-                "patchset_id": "RCP-REMOTE-2",
-                "author_mode": "ai_with_human_review",
-                "evaluation_summary": {
-                    "tests": "pass"
-                }
-            }),
+            id.into(),
+            json!({"task_id":task,"change_id":"C-01","change_ref":change,"patchset_id":id,"author_mode":"ai_with_human_review","verification_state":"pass","require_tests_pass":true,"require_lint_pass":false,"require_human_review":false,"revoked":false,"ci_backed":true,"evaluation_summary":{"tests":"pass","lint":"none"}}),
         )]),
         policies: BTreeMap::from([(
-            "RCP-REMOTE-2".to_string(),
-            json!({
-                "patchset_id": "RCP-REMOTE-2",
-                "decision": "pass",
-                "checks": [
-                    {
-                        "name": "tests",
-                        "status": "pass"
-                    }
-                ]
-            }),
+            id.into(),
+            json!({"patchset_id":id,"decision":"pass","checks":[]}),
         )]),
         ..Default::default()
     };
-
-    let state = workflow_land_remote_state_with_remotes(
-        &mut task_remote,
-        &mut read_remote,
+    for authoritative in [false, true] {
+        let state = workflow_land_remote_state_with_remotes(
+            &mut tasks,
+            &mut remote,
+            "fixture-ait",
+            Some(change),
+            None,
+            authoritative,
+        )
+        .unwrap();
+        assert_eq!(state["landed"], false);
+        assert_eq!(state["resolved_change_id"], "C-01");
+        assert_eq!(state["resolved_change_ref"], change);
+        assert_eq!(state["patchset_source"], "task_latest");
+        assert_eq!(state["patchset"]["patchset_id"], id);
+        assert_eq!(state["tests_state"], "pass");
+        assert_eq!(state["policy_decision"], "pass");
+        assert_eq!(
+            state["patchset_ci_status"]["projection"],
+            "embedded_patchset"
+        );
+        assert!(state["landing_summary"].is_null());
+    }
+    assert!(tasks.change_detail_requests.is_empty());
+    assert!(remote.ci_status_requests.is_empty());
+    assert_eq!(remote.review_requests.len(), 2);
+    remote.patchsets.get_mut(id).unwrap()["ci"] =
+        json!({"run_seq":2,"completed_at_s":0,"tests_status":"pending","suite_result_count":0});
+    remote.ci_statuses.insert(id.into(),json!({"contract":"ait.server.patchset_ci.readiness.v2","projection":"readiness","repo_name":"fixture-ait","patchset_id":id,"task_id":task,"change_id":"C-01","change_ref":change,"available":true,"tests_status":"pending","ci_run_seq":2,"ci_completed_at_s":0,"selected_suite_ids":["rust_core"],"suite_result_count":0,"blocking_failure_count":0,"has_runnable_evidence":true,"recent_limit_applied":10,"latest_job":{"job_type":"patchset.ci","state":"running"},"recent_jobs":[]}));
+    let pending = workflow_land_remote_state_with_remotes(
+        &mut tasks,
+        &mut remote,
         "fixture-ait",
-        Some("RCC-REMOTE"),
+        Some(change),
         None,
         false,
     )
-    .expect("hydrate workflow finish remote state");
-
-    assert_eq!(state["landed"], json!(false));
-    assert_eq!(state["resolved_change_id"], json!("RCC-REMOTE"));
-    assert_eq!(state["patchset_source"], json!("selected"));
-    assert_eq!(state["patchset"]["patchset_id"], json!("RCP-REMOTE-2"));
-    assert_eq!(state["remote_base_snapshot_id"], json!("SNP-BASE"));
-    assert_eq!(state["tests_state"], json!("pass"));
-    assert_eq!(state["policy_decision"], json!("pass"));
-    assert_eq!(state["review_approvals"], json!(1));
-    assert_eq!(state["team_review_approvals"], json!(1));
-    assert_eq!(state["landing_status"], json!("blocked"));
-    assert_eq!(state["stale_policy_blocker_cleared"], json!(true));
-    assert_eq!(state["patchset_ci_status"]["tests_status"], json!("pass"));
+    .unwrap();
     assert_eq!(
-        state["patchset_ci_status"]["projection"],
-        json!("embedded_patchset")
+        pending["patchset_ci_status"]["latest_job"]["state"],
+        "running"
     );
-    assert_eq!(task_remote.line_requests.len(), 1);
-    assert_eq!(task_remote.change_detail_requests.len(), 1);
-    assert_eq!(read_remote.review_requests.len(), 1);
-    assert_eq!(read_remote.attestation_requests.len(), 1);
-    assert_eq!(read_remote.policy_requests.len(), 1);
-    assert!(read_remote.ci_status_requests.is_empty());
-
-    task_remote.change_detail_requests.clear();
-    read_remote.ci_status_requests.clear();
-    let authoritative_state = workflow_land_remote_state_with_remotes(
-        &mut task_remote,
-        &mut read_remote,
+    assert_eq!(remote.ci_status_requests.len(), 1);
+    let error = workflow_land_remote_state_with_remotes(
+        &mut tasks,
+        &mut remote,
         "fixture-ait",
-        Some("RCC-REMOTE"),
-        None,
-        true,
+        Some(change),
+        Some("RT-0200/P-03"),
+        false,
     )
-    .expect("hydrate ready task-land state from persisted evidence");
-    assert_eq!(authoritative_state["tests_state"], json!("pass"));
-    assert_eq!(authoritative_state["policy_decision"], json!("pass"));
-    assert_eq!(
-        authoritative_state["patchset_ci_status"]["tests_status"],
-        json!("pass")
-    );
-    assert!(task_remote.change_detail_requests.is_empty());
-    assert!(read_remote.ci_status_requests.is_empty());
-
-    let pending_patchset = read_remote
-        .patchsets
-        .get_mut("RCP-REMOTE-2")
-        .expect("pending patchset fixture");
-    pending_patchset["ci_run_seq"] = json!(2);
-    pending_patchset["ci_completed_at_s"] = json!(0);
-    pending_patchset["ci"] = json!({
-        "run_seq": 2,
-        "completed_at_s": 0,
-        "overall_status": "pending",
-        "tests_status": "pending",
-        "lint_status": "none",
-        "selected_suite_count": 1,
-        "suite_result_count": 0,
-        "blocking_failure_count": 0
-    });
-    read_remote.ci_statuses.insert(
-        "RCP-REMOTE-2".to_string(),
-        json!({
-            "contract": "ait.server.patchset_ci.readiness.v1",
-            "projection": "readiness",
-            "patchset_id": "RCP-REMOTE-2",
-            "change_id": "RCC-REMOTE",
-            "repo_name": "fixture-ait",
-            "available": true,
-            "ci_run_seq": 2,
-            "ci_completed_at_s": 0,
-            "tests_status": "pending",
-            "selected_suite_ids": ["rust_core"],
-            "suite_result_count": 0,
-            "blocking_failure_count": 0,
-            "has_runnable_evidence": true,
-            "recent_limit_applied": 10,
-            "latest_job": {
-                "job_type": "patchset.ci",
-                "state": "running"
-            },
-            "recent_jobs": []
-        }),
-    );
-    let pending_state = workflow_land_remote_state_with_remotes(
-        &mut task_remote,
-        &mut read_remote,
+    .unwrap_err();
+    assert!(error.contains("Unknown patchset"));
+    remote.patchsets.get_mut(id).unwrap()["invalidated"] = json!(true);
+    let error = workflow_land_remote_state_with_remotes(
+        &mut tasks,
+        &mut remote,
         "fixture-ait",
-        Some("RCC-REMOTE"),
+        Some(change),
         None,
         false,
     )
-    .expect("hydrate incomplete CI from Worker Job readiness");
-    assert_eq!(
-        pending_state["patchset_ci_status"]["latest_job"]["state"],
-        json!("running")
-    );
-    assert_eq!(read_remote.ci_status_requests.len(), 1);
+    .unwrap_err();
+    assert!(error.contains("latest candidate is withdrawn or invalidated"));
+}
 
-    let err = workflow_land_remote_state_with_remotes(
-        &mut task_remote,
-        &mut read_remote,
-        "fixture-ait",
-        Some("RCC-REMOTE"),
-        Some("RCP-MISSING"),
-        false,
-    )
-    .expect_err("missing explicit patchset should fail");
-    assert!(err.contains("Unknown patchset"));
+fn accepted_fixture_receipt(task: &str, change: Option<&str>, id: &str) -> JsonValue {
+    json!({"repository_index":7,"submission_id":format!("{task}/L-01"),"task_id":task,"change_id":change.map(|value|value.rsplit('/').next().unwrap()),"change_ref":change,"patchset_id":id,"base_snapshot_id":"B","revision_snapshot_id":"R","target_line":"main","target_line_index":0,"pre_land_target_snapshot_id":"B","landed_snapshot_id":"R","mode":"direct","status":"succeeded","created_at":"2026-10-18T00:00:00Z","updated_at":"2026-10-18T00:00:00Z"})
 }
 
 #[test]
 fn workflow_land_remote_state_landed_change_short_circuits_closeout_reads() {
-    let mut task_remote = FakeWorkflowReadRemote {
+    let task = "RT-0202";
+    let change = "RT-0202/C-01";
+    let id = "RT-0202/P-01";
+    let mut tasks = FakeWorkflowReadRemote {
         tasks: BTreeMap::from([(
-            "RCT-LANDED".to_string(),
-            json!({
-                "task_id": "RCT-LANDED",
-                "title": "landed task"
-            }),
+            task.into(),
+            json!({"task_id":task,"status":"completed","successful_land":accepted_fixture_receipt(task,Some(change),id),"current_patchset_id":"RT-0202/P-02"}),
         )]),
         changes: BTreeMap::from([(
-            "RCC-LANDED".to_string(),
-            json!({
-                "change_id": "RCC-LANDED",
-                "task_id": "RCT-LANDED",
-                "status": "landed",
-                "base_line": "main",
-                "selected_patchset_id": "RCP-LANDED-1"
-            }),
+            change.into(),
+            json!({"task_id":task,"change_id":"C-01","change_ref":change,"status":"landed","base_line":"main"}),
         )]),
         ..Default::default()
     };
-    let mut closeout_remote = FakeWorkflowRemoteStateReadRemote::default();
-
+    let mut remote = FakeWorkflowRemoteStateReadRemote {
+        patchsets: BTreeMap::from([(
+            id.into(),
+            json!({"task_id":task,"change_id":"C-01","change_ref":change,"patchset_id":id,"base_snapshot_id":"B","revision_snapshot_id":"R"}),
+        )]),
+        ..Default::default()
+    };
     let state = workflow_land_remote_state_with_remotes(
-        &mut task_remote,
-        &mut closeout_remote,
+        &mut tasks,
+        &mut remote,
         "fixture-ait",
-        Some("RCC-LANDED"),
+        Some(change),
         None,
         false,
     )
-    .expect("hydrate already-landed workflow finish remote state");
-
-    assert_eq!(state["landed"], json!(true));
-    assert_eq!(state["resolved_change_id"], json!("RCC-LANDED"));
-    assert_eq!(state["patchset_source"], json!("selected"));
-    assert_eq!(state["patchset"]["patchset_id"], json!("RCP-LANDED-1"));
-    assert_eq!(state["base_line_name"], json!("main"));
-    assert!(task_remote.line_requests.is_empty());
-    assert!(task_remote.change_detail_requests.is_empty());
-    assert!(closeout_remote.requests.is_empty());
-    assert!(closeout_remote.review_requests.is_empty());
-    assert!(closeout_remote.attestation_requests.is_empty());
-    assert!(closeout_remote.policy_requests.is_empty());
+    .unwrap();
+    assert_eq!(state["landed"], true);
+    assert_eq!(state["patchset_source"], "accepted_task_receipt");
+    assert_eq!(state["patchset"]["patchset_id"], id);
+    assert_eq!(
+        state["landing_summary"]["submission_id"],
+        format!("{task}/L-01")
+    );
+    assert!(tasks.line_requests.is_empty());
+    assert!(tasks.change_detail_requests.is_empty());
+    assert_eq!(remote.requests.len(), 1);
+    assert!(remote.review_requests.is_empty());
+    assert!(remote.attestation_requests.is_empty());
+    assert!(remote.policy_requests.is_empty());
+    tasks.tasks.get_mut(task).unwrap()["successful_land"] = JsonValue::Null;
+    let error = workflow_land_remote_state_with_remotes(
+        &mut tasks,
+        &mut remote,
+        "fixture-ait",
+        Some(change),
+        None,
+        false,
+    )
+    .unwrap_err();
+    assert!(error.contains("no actual successful receipt"));
 }
 
 #[test]
 fn workflow_land_uses_change_ref_to_isolate_duplicate_short_ids() {
-    let mut task_remote = FakeWorkflowReadRemote {
+    let task = "RT-2";
+    let change = "RT-2/C-01";
+    let id = "RT-2/P-01";
+    let mut tasks = FakeWorkflowReadRemote {
         tasks: BTreeMap::from([(
-            "RT-2".to_string(),
-            json!({"task_id": "RT-2", "title": "second task"}),
+            task.into(),
+            json!({"task_id":task,"status":"completed","current_patchset_id":id,"successful_land":accepted_fixture_receipt(task,Some(change),id)}),
         )]),
         changes: BTreeMap::from([(
-            "RT-2/C-01".to_string(),
-            json!({
-                "change_id": "C-01",
-                "change_ref": "RT-2/C-01",
-                "task_id": "RT-2",
-                "status": "landed",
-                "base_line": "main"
-            }),
+            change.into(),
+            json!({"task_id":task,"change_id":"C-01","change_ref":change,"status":"landed"}),
         )]),
         ..Default::default()
     };
-    let mut closeout_remote = FakeWorkflowRemoteStateReadRemote {
-        patchsets: BTreeMap::from([(
-            "RP-WRONG".to_string(),
-            json!({
-                "patchset_id": "RP-WRONG",
-                "change_id": "RT-1/C-01"
-            }),
-        )]),
+    let mut remote = FakeWorkflowRemoteStateReadRemote {
+        patchsets: BTreeMap::from([
+            (
+                id.into(),
+                json!({"task_id":task,"change_id":"C-01","change_ref":change,"patchset_id":id,"base_snapshot_id":"B","revision_snapshot_id":"R"}),
+            ),
+            (
+                "RT-1/P-01".into(),
+                json!({"task_id":"RT-1","change_id":"C-01","change_ref":"RT-1/C-01","patchset_id":"RT-1/P-01","base_snapshot_id":"B","revision_snapshot_id":"R"}),
+            ),
+        ]),
         ..Default::default()
     };
-
     let state = workflow_land_remote_state_with_remotes(
-        &mut task_remote,
-        &mut closeout_remote,
+        &mut tasks,
+        &mut remote,
         "fixture-ait",
-        Some("RT-2/C-01"),
+        Some(change),
         None,
         false,
     )
-    .expect("explicit ref routes the intended task-local change");
-    assert_eq!(state["resolved_change_id"], json!("C-01"));
-    assert_eq!(state["resolved_change_ref"], json!("RT-2/C-01"));
-    assert_eq!(task_remote.change_requests[0].0, "RT-2/C-01");
-
-    let error = workflow_land_remote_state_with_remotes(
-        &mut task_remote,
-        &mut closeout_remote,
+    .unwrap();
+    assert_eq!(state["resolved_change_id"], "C-01");
+    assert_eq!(state["resolved_change_ref"], change);
+    assert_eq!(tasks.change_requests[0].0, change);
+    assert!(workflow_land_remote_state_with_remotes(
+        &mut tasks,
+        &mut remote,
         "fixture-ait",
-        Some("RT-2/C-01"),
-        Some("RP-WRONG"),
-        false,
+        Some(change),
+        Some("RT-1/P-01"),
+        false
     )
-    .expect_err("same short id from another task must not match");
-    assert!(error.contains("does not belong to change RT-2/C-01"));
+    .is_err());
+    assert!(remote.review_requests.is_empty());
+    assert!(remote.attestation_requests.is_empty());
 }
 
 #[test]
@@ -903,4 +858,218 @@ fn workflow_land_record_code_review_summary_accepts_patchset_and_review_traits()
     .expect_err("placeholder code review summary should be rejected");
     assert!(err.contains("Findings"));
     assert_eq!(remote.recorded_reviews.len(), 1);
+}
+
+#[test]
+fn aggregate_correction_refresh_preserves_ancestry_instead_of_ordinary_rebase() {
+    let patchset =
+        json!({"patchset_id":"RCT-1/C-01/P-02","source_kind":"history_promotion_aggregate"});
+    let retarget =
+        json!({"needs_retarget":true,"fork_snapshot_id":"SNP-SELECTED","rebase_state":"idle"});
+    let result = workflow_patchset_refresh_context(
+        Some(&patchset),
+        Some(&retarget),
+        "main",
+        Some("SNP-BASE"),
+        Some("SNP-BASE"),
+        Some("SNP-SELECTED"),
+        Some("SNP-CORRECTED"),
+        true,
+        Some(false),
+        WorkflowPatchsetHeadRelation::CurrentDescendsFromPatchset,
+    )
+    .unwrap();
+    assert_eq!(result["reason_code"], "aggregate_correction");
+    assert_eq!(result["republish_allowed"], true);
+    assert_eq!(result["rebase_required"], false);
+    let stale = workflow_patchset_refresh_context(
+        Some(&patchset),
+        Some(&retarget),
+        "main",
+        Some("SNP-MOVED"),
+        Some("SNP-BASE"),
+        Some("SNP-SELECTED"),
+        Some("SNP-CORRECTED"),
+        false,
+        Some(false),
+        WorkflowPatchsetHeadRelation::CurrentDescendsFromPatchset,
+    )
+    .unwrap();
+    assert_eq!(stale["republish_allowed"], false);
+    let foreign = workflow_patchset_refresh_context(
+        Some(&patchset),
+        None,
+        "main",
+        Some("SNP-BASE"),
+        Some("SNP-BASE"),
+        Some("SNP-SELECTED"),
+        Some("SNP-FOREIGN"),
+        true,
+        Some(false),
+        WorkflowPatchsetHeadRelation::Diverged,
+    )
+    .unwrap();
+    assert_eq!(foreign["republish_allowed"], false);
+}
+
+#[test]
+fn aggregate_correction_receipt_encoding_matches_server_digest_bytes() {
+    // Receipt hashes cross the CLI/server boundary. Preserve compact serde bytes,
+    // including object key order, escaping, Unicode and integer timestamps.
+    let entries = json!([{
+        "local_task_id": "LCT-1086",
+        "local_change_id": "C-01",
+        "base_snapshot_id": "SNP-BASE",
+        "revision_snapshot_id": "SNP-RECEIPT",
+        "summary": "修正\n\"review\"\\receipt",
+        "snapshots": [{"snapshot_id":"SNP-RECEIPT","created_at_s":1792052112_i64}]
+    }]);
+    let cli_bytes = crate::json_support::encode_value_to_vec(&entries, "receipt").unwrap();
+    let server_bytes = serde_json::to_vec(&entries).unwrap();
+    assert_eq!(cli_bytes, server_bytes);
+    assert_eq!(
+        sha256_hex_bytes(&cli_bytes),
+        sha256_hex_bytes(&server_bytes)
+    );
+    assert_eq!(
+        crate::json_support::parse_value(std::str::from_utf8(&cli_bytes).unwrap(), "receipt")
+            .unwrap(),
+        entries
+    );
+}
+
+#[test]
+fn aggregate_correction_command_hints_use_guarded_ready_in_retargeted_worktree() {
+    let temp = tempdir().unwrap();
+    init_repo(&InitRequest {
+        root: temp.path().to_path_buf(),
+        name: Some("fixture-ait".to_string()),
+        default_line: "main".to_string(),
+        policy_profile: "prototype".to_string(),
+        default_author_mode: "ai_with_human_review".to_string(),
+        default_model: None,
+        repair_existing: false,
+    })
+    .unwrap();
+    let repo = RepoRuntime::discover_from_path(temp.path()).unwrap();
+    let patchset = json!({"patchset_id":"RCT-1/C-01/P-02",
+        "source_kind":"history_promotion_aggregate"});
+    let retarget = json!({"needs_retarget":true,"rebase_state":"idle"});
+    let hints = workflow_ready_command_hints(
+        &repo,
+        "RCT-1",
+        Some("origin"),
+        Some(&patchset),
+        "main",
+        Some(&retarget),
+    );
+    assert_eq!(
+        hints["publish_command"],
+        "ait workflow ready RCT-1 --apply --remote origin"
+    );
+    let normal = workflow_ready_command_hints(
+        &repo,
+        "RCT-1",
+        Some("origin"),
+        None,
+        "main",
+        Some(&retarget),
+    );
+    assert_eq!(normal["publish_command"], "ait worktree rebase --onto main");
+}
+
+#[test]
+fn aggregate_correction_rejects_inferred_change_ownership_and_foreign_evidence() {
+    use super::super::local_completion::workflow_aggregate_correction_owner_matches;
+    use crate::primitives::workspace::bound_worktree_snapshot_ownership_rows_with_snapshot_store;
+    use crate::primitives::worktree::create_local_line_with_line_store;
+    let temp = tempdir().unwrap();
+    init_repo(&InitRequest {
+        root: temp.path().to_path_buf(),
+        name: Some("fixture-ait".to_string()),
+        default_line: "main".to_string(),
+        policy_profile: "prototype".to_string(),
+        default_author_mode: "ai_with_human_review".to_string(),
+        default_model: None,
+        repair_existing: false,
+    })
+    .unwrap();
+    fs::write(temp.path().join("source.txt"), "original").unwrap();
+    let base = create_local_snapshot(
+        temp.path().to_str().unwrap(),
+        "fixture-ait",
+        "main",
+        Some("base"),
+        false,
+    )
+    .unwrap();
+    let base_id = required_string_field(&base, "snapshot_id").unwrap();
+    let repo = RepoRuntime::discover_from_path(temp.path()).unwrap();
+    let line = "feature/rct-1";
+    create_local_line_with_line_store(
+        &repo.line_store().unwrap(),
+        line,
+        Some(&base_id),
+        "2026-10-15T00:00:00Z",
+    )
+    .unwrap();
+    fs::write(temp.path().join("source.txt"), "correction").unwrap();
+    let snapshot = create_local_snapshot(
+        temp.path().to_str().unwrap(),
+        "fixture-ait",
+        line,
+        Some("correction"),
+        false,
+    )
+    .unwrap();
+    let id = required_string_field(&snapshot, "snapshot_id").unwrap();
+    let metadata = CurrentWorktreeMetadata {
+        name: "rct-1".to_string(),
+        bound_task_id: Some("RCT-1".to_string()),
+        bound_change_id: Some("C-01".to_string()),
+        bound_change_ref: Some("RCT-1/C-01".to_string()),
+        fork_snapshot_id: Some(base_id),
+        ..Default::default()
+    };
+    let rows = bound_worktree_snapshot_ownership_rows_with_snapshot_store(
+        &repo
+            .local_snapshot_operation_store::<SNAPSHOT_BINARY_DB_WRITE_LAYOUT>(
+                &repo.workspace_root(),
+            )
+            .unwrap(),
+        &[id],
+        &metadata,
+        line,
+    )
+    .unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["change_id"], JsonValue::Null);
+    let matches = |owner: &JsonValue| {
+        workflow_aggregate_correction_owner_matches(
+            owner,
+            "RCT-1",
+            Some("RCT-1/C-01"),
+            "rct-1",
+            line,
+        )
+    };
+    assert!(!matches(&rows[0]));
+    for (field, value) in [
+        ("task_id", "RCT-2"),
+        ("change_id", "C-02"),
+        ("change_id", "RCT-2/C-01"),
+        ("worktree_name", "rct-2"),
+        ("line_name", "feature/rct-2"),
+        ("ownership_source", "durable_snapshot_binding"),
+    ] {
+        let mut foreign = rows[0].clone();
+        foreign[field] = json!(value);
+        assert!(!matches(&foreign), "accepted foreign {field}={value}");
+    }
+    for change in ["C-01", "RCT-1/C-01"] {
+        let mut durable = rows[0].clone();
+        durable["change_id"] = json!(change);
+        durable["ownership_source"] = json!("durable_snapshot_binding");
+        assert!(matches(&durable));
+    }
 }

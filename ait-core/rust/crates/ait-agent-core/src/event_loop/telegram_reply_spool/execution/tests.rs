@@ -416,7 +416,10 @@ fn public_outcomes_errors_and_entry_debug_are_secret_safe() {
         "{outcome_debug} {entries_debug} {planner_error:?} {planner_error} {state_error:?} {state_error}"
     );
     for secret in secret_values {
-        assert!(!rendered.contains(secret), "leaked {secret}: {rendered}");
+        assert!(
+            !rendered.contains(secret),
+            "redaction assertion failed: sensitive value was present"
+        );
     }
 }
 

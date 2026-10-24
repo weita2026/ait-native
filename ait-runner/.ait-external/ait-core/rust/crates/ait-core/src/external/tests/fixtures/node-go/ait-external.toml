@@ -1,0 +1,19 @@
+[[external]]
+name = "ait-db"
+repo_name = "ait-db"
+repository_index = 11
+remote = "origin"
+line = "main"
+snapshot = "SNP-DB-NODE-GO"
+materialize_to = ".ait-external/ait-db"
+license = "Apache-2.0"
+
+[external.bindings.node]
+kind = "file-package"
+path = "js"
+package = "@ait/db"
+
+[external.bindings.go]
+kind = "replace-path"
+path = "go"
+module = "ait.dev/ait-db"

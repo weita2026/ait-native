@@ -29,8 +29,8 @@ mod binary;
 #[path = "service/pack_policy.rs"]
 mod pack_policy;
 
-pub use binary::BinaryDbNativeRepositoryService;
 pub(super) use binary::{binary_created_at_value, binary_json_text, binary_snapshot_id};
+pub use binary::{BinaryDbNativeRepositoryService, PreparedWorkflowPackageContent};
 pub(super) use pack_policy::{
     normalize_status, remote_sync_capabilities, repository_json,
     repository_pack_storage_capability_json, REPOSITORY_PACK_STORAGE_PAYLOAD_FIELD,

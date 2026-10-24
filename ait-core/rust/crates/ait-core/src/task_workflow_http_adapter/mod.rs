@@ -713,24 +713,14 @@ pub fn put_attestation_with_task_workflow_closeout_remote<R>(
     remote: &mut R,
     patchset_id: &str,
     author_mode: &str,
-    evaluation_summary: &Value,
-    provenance_summary: &Value,
-    detail: &Value,
+    statement: &crate::attest_json::RemoteAttestationStatement,
     repo_name: Option<&str>,
     exact_id: bool,
 ) -> TaskWorkflowHttpClientResult<Value>
 where
     R: TaskWorkflowAttestationWriter + ?Sized,
 {
-    remote.put_attestation(
-        patchset_id,
-        author_mode,
-        evaluation_summary,
-        provenance_summary,
-        detail,
-        repo_name,
-        exact_id,
-    )
+    remote.put_attestation(patchset_id, author_mode, statement, repo_name, exact_id)
 }
 
 pub fn get_attestation_with_task_workflow_closeout_remote<R>(

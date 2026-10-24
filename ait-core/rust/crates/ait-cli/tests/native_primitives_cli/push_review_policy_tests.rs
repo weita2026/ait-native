@@ -22,7 +22,6 @@ fn native_workflow_task_input_preserves_remote_scope_and_exact_patchset_publicat
         if default_scope == "local" {
             let path = root.join(".ait/config.json");
             let mut config = parse_json_file(&path);
-            config["workflow_mode"] = json!("solo_local");
             config["workflow_default_scope"] = json!("local");
             config["task_default_scope"] = json!("local");
             write_file(&path, &encode_json_pretty(&config));
@@ -779,11 +778,13 @@ fn native_push_uploads_missing_suffix_and_updates_remote_line() {
         "pub fn example() -> &'static str { \"pushed\" }\n",
     );
     let snapshot_id = seed_snapshot(root, "push suffix snapshot");
+seed_binary_line(root, "feature/rt-1", &snapshot_id);
+state.lock().unwrap().selected_patchset_revision_snapshot_id = Some(FIXTURE_BASE_SNAPSHOT_ID.to_string());
 
-    let pushed = json_output(root, &["push", "--line", "main", "--json"]);
+    let pushed = json_output(root, &["push", "--line", "feature/rt-1", "--json"]);
     assert_eq!(pushed["remote"].as_str(), Some("origin"));
     assert_eq!(pushed["repo_name"].as_str(), Some("fixture-ait"));
-    assert_eq!(pushed["line"].as_str(), Some("main"));
+    assert_eq!(pushed["line"].as_str(), Some("feature/rt-1"));
     assert_eq!(pushed["checked_snapshots"].as_i64(), Some(1));
     assert_eq!(pushed["uploaded_snapshots"].as_i64(), Some(1));
     assert_eq!(pushed["skipped_snapshots"].as_i64(), Some(0));
@@ -852,6 +853,7 @@ fn native_push_uploads_missing_suffix_and_updates_remote_line() {
         })
         .expect("expected zstd bulk commit");
     let commit_payload: JsonValue = parse_json(&commit_request.body);
+    assert_eq!(commit_payload["line_update"]["line_name"], "feature/rt-1");
     assert!(commit_payload["snapshots"]
         .as_array()
         .expect("zstd commit snapshots")
@@ -890,10 +892,12 @@ fn native_push_json_ignores_the_retired_debug_environment() {
         &root.join("src/lib.rs"),
         "pub fn example() -> &'static str { \"normal-timing\" }\n",
     );
-    seed_snapshot(root, "normal timing push");
+    let snapshot_id = seed_snapshot(root, "normal timing push");
+seed_binary_line(root, "feature/rt-1", &snapshot_id);
+state.lock().unwrap().selected_patchset_revision_snapshot_id = Some(FIXTURE_BASE_SNAPSHOT_ID.to_string());
     let normal = json_output_with_env(
         root,
-        &["push", "--line", "main", "--json"],
+        &["push", "--line", "feature/rt-1", "--json"],
         &[(concat!("AIT_JSON_", "MODE"), "debug")],
     );
     assert!(normal.get("phase_timings_ms").is_none());
@@ -912,13 +916,15 @@ fn native_push_perfetto_trace_names_cover_frontier_pack_pipeline_and_commit() {
         &root.join("src/lib.rs"),
         "pub fn example() -> &'static str { \"push-perfetto\" }\n",
     );
-    seed_snapshot(root, "push Perfetto");
+    let snapshot_id = seed_snapshot(root, "push Perfetto");
+seed_binary_line(root, "feature/rt-1", &snapshot_id);
+state.lock().unwrap().selected_patchset_revision_snapshot_id = Some(FIXTURE_BASE_SNAPSHOT_ID.to_string());
     let trace_path = root.join(".ait-runtime/push.perfetto.json");
     fs::create_dir_all(trace_path.parent().unwrap()).unwrap();
     let trace_text = trace_path.to_string_lossy().to_string();
     let _ = json_output_with_env(
         root,
-        &["push", "--line", "main", "--json"],
+        &["push", "--line", "feature/rt-1", "--json"],
         &[("AIT_PERFETTO_TRACE", trace_text.as_str())],
     );
     handle.join().unwrap();
@@ -1239,6 +1245,7 @@ fn native_review_namespace_supports_distinct_code_task_team_and_template_lanes()
             "code",
             "submit",
             "RT-1",
+            "--reviewer", "Einstein",
             "--patchset",
             "RP-1",
             "--message",
@@ -1247,14 +1254,15 @@ fn native_review_namespace_supports_distinct_code_task_team_and_template_lanes()
         ],
     );
     assert_eq!(code_review["action"].as_str(), Some("code_review_summary"));
-    assert_eq!(code_review["reviewer"].as_str(), Some("ait-cli"));
+    assert_eq!(code_review["reviewer"].as_str(), Some("Einstein"));
+    assert_eq!(code_review["reviewer_kind"].as_str(), Some("bot"));
     assert_eq!(
         code_review["task_review"]["mode"].as_str(),
         Some("automatic")
     );
     assert_eq!(
         code_review["task_review"]["reviewer"].as_str(),
-        Some("Fixture User")
+        Some("Einstein")
     );
     assert_eq!(
         code_review["task_review"]["policy_refresh"]["decision"].as_str(),
@@ -1305,11 +1313,12 @@ fn native_review_namespace_supports_distinct_code_task_team_and_template_lanes()
         .map(|row| parse_json(&row.body))
         .collect::<Vec<_>>();
     assert!(recorded_reviews.iter().any(|review| {
-        review["action"] == json!("code_review_summary") && review["reviewer"] == json!("ait-cli")
+        review["action"] == json!("code_review_summary") && review["reviewer"] == json!("Einstein") && review["reviewer_kind"] == json!("bot")
     }));
     assert!(recorded_reviews.iter().any(|review| {
         review["action"] == json!("task_approve")
-            && review["reviewer"] == json!("Fixture User")
+            && review["reviewer"] == json!("Einstein")
+            && review["reviewer_kind"] == json!("bot")
             && review["comment"]
                 == json!("Automatic Task approval authorized by repository `task_review=automatic` policy.")
     }));

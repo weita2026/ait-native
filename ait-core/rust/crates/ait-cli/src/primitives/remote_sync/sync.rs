@@ -760,6 +760,7 @@ fn run_zstd_bulk_upload<R>(
     line_name: Option<&str>,
     head_snapshot_id: Option<&str>,
     expected_head_snapshot_id: Option<&str>,
+    capture_binding: Option<&ait_core::repository_pack_json::SnapshotCaptureBinding>,
 ) -> Result<ZstdBulkUploadResult, String>
 where
     R: TaskWorkflowZstdPackUploader + ?Sized,
@@ -811,6 +812,15 @@ where
         local_plan.snapshot_order.clone()
     };
     missing_snapshot_ids.retain(|snapshot_id| local_plan.snapshots.contains_key(snapshot_id));
+    // Ordinary history/bootstrap publication preserves unknown authorship.
+    // Only the exact fresh capture binding can attribute its new target row;
+    // the request Actor never supplies authorship for historical ancestors.
+    // A replay must still carry its target row for immutable ownership checks.
+    if let Some(binding) = capture_binding {
+        if !missing_snapshot_ids.contains(&binding.snapshot_id) {
+            missing_snapshot_ids.push(binding.snapshot_id.clone());
+        }
+    }
 
     let missing_object_pack_ids = remote_plan.missing_object_pack_ids.clone();
     let present_object_pack_ids = remote_plan.present_object_pack_ids.clone();
@@ -918,7 +928,7 @@ where
     let uploaded_tree_packs = uploaded_tree_pack_responses.len() as i64;
 
     let commit_assembly_started = Instant::now();
-    let commit_request = {
+    let mut commit_request = {
         let _range = perfetto_range!("ait.workflow_ready.publish.zstd_bulk.commit_plan");
         let _stable_range = perfetto_range!("ait.remote_sync.push.commit_assembly");
         let commit_plan = zstd_bulk_commit_local_plan(
@@ -939,6 +949,10 @@ where
             expected_head_snapshot_id,
         )?
     };
+    if let Some(binding) = capture_binding {
+        commit_request.contract = Some("ait.remote_sync.zstd_bulk.capture.v1".to_string());
+        commit_request.capture_binding = Some(binding.clone());
+    }
     let commit_assembly_ms = remote_sync_elapsed_ms(commit_assembly_started);
     let commit_http_started = Instant::now();
     let commit_response = {
@@ -2457,6 +2471,7 @@ where
             None,
             None,
             None,
+            None,
         )?;
         let remote_present_set = upload
             .remote_plan
@@ -2545,6 +2560,7 @@ where
         Some(line_name),
         Some(snapshot_id),
         None,
+        None,
     )?;
     let remote_plan_payload = ZstdBulkPlanResponseJson::stateless()
         .encode_value(&upload.remote_plan)
@@ -2616,7 +2632,7 @@ where
     )
 }
 
-fn solo_local_default_line_push_governed_change_ref(
+fn default_line_push_governed_change_ref(
     repo: &RepoRuntime,
     local_head_snapshot_id: Option<&str>,
 ) -> Result<Option<String>, String> {
@@ -2661,21 +2677,18 @@ fn solo_local_default_line_push_governed_change_ref(
         .map(|(_, change_ref)| change_ref))
 }
 
-fn require_solo_local_default_line_push_authority(
+fn require_default_line_push_authority(
     repo: &RepoRuntime,
     remote_name: &str,
     line_name: &str,
     local_head_snapshot_id: Option<&str>,
     remote_head_snapshot_id: Option<&str>,
 ) -> Result<(), String> {
-    if repo.effective_workflow_mode() != "solo_local"
-        || line_name != repo.default_line_name()
-        || remote_head_snapshot_id == local_head_snapshot_id
-    {
+    if line_name != repo.default_line_name() || remote_head_snapshot_id == local_head_snapshot_id {
         return Ok(());
     }
     let governed_change_ref = if remote_head_snapshot_id.is_none() {
-        solo_local_default_line_push_governed_change_ref(repo, local_head_snapshot_id)?
+        default_line_push_governed_change_ref(repo, local_head_snapshot_id)?
     } else {
         None
     };
@@ -2689,7 +2702,7 @@ fn require_solo_local_default_line_push_authority(
     };
     Err(format!(
         "Refusing to {operation} remote `{remote_name}` target Line `{line_name}` with \
-         `ait push` while `workflow_mode=solo_local` ({remote_head} -> {local_head}). Immutable \
+         `ait push` ({remote_head} -> {local_head}). Immutable \
          Snapshot and pack upload remains available to workflow preparation, but only \
          authoritative remote Task finish may move this governed Line. Promote the latest \
          completed local Task with `ait workflow ready <task-id> --apply --remote \
@@ -2736,7 +2749,7 @@ where
     let expected_remote_head_snapshot_id = expected_remote_line
         .as_ref()
         .and_then(|line| string_field(line, "head_snapshot_id"));
-    require_solo_local_default_line_push_authority(
+    require_default_line_push_authority(
         repo,
         remote_name,
         line_name,
@@ -2864,6 +2877,7 @@ where
             Some(line_name),
             Some(&head_snapshot_id),
             expected_remote_head_snapshot_id.as_deref(),
+            None,
         )?;
         let remote_present_set = upload
             .remote_plan
@@ -3052,4 +3066,34 @@ where
     payload.insert("head_snapshot_id".to_string(), json!(revision_snapshot_id));
     payload.insert("remote_repository".to_string(), remote_repository);
     Ok(sync)
+}
+
+/// Only a newly authored capture may use this path. Ordinary preparation never claims ownership.
+pub(in crate::primitives) fn upload_snapshot_capture<R>(
+    repo: &RepoRuntime,
+    remote: &mut R,
+    repo_name: &str,
+    binding: &ait_core::repository_pack_json::SnapshotCaptureBinding,
+    capabilities: &RemoteSyncCapabilities,
+) -> Result<(), String>
+where
+    R: TaskWorkflowZstdPackUploader + ?Sized,
+{
+    let plan = remote_sync_snapshot_sync_plan(repo, &binding.snapshot_id, None)?;
+    let ids = plan.snapshot_ids_bounded_by(None)?;
+    require_snapshot_dag_remote_capability(capabilities, &plan.multi_parent_snapshot_ids())?;
+    require_zstd_bulk_upload_backend(&ids, &BTreeSet::new(), capabilities)?;
+    run_zstd_bulk_upload(
+        repo,
+        remote,
+        repo_name,
+        &ids,
+        &BTreeSet::new(),
+        None,
+        None,
+        None,
+        None,
+        Some(binding),
+    )?;
+    Ok(())
 }

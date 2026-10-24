@@ -4,6 +4,7 @@ use super::*;
 pub(super) enum PayloadSyncBoundary {
     BeforeReference,
     TransactionCommit,
+    PackageMaterialization,
 }
 
 impl<D> BinaryDbServerWorkflowV0Store<D>
@@ -50,7 +51,7 @@ where
         let read = BinaryDbReadTxn::new(&self.db);
         let raw = read
             .read_record(
-                BinaryFileId::new("plan_revision.bin", 1, 56, BinaryDbFileFamily::Plan),
+                crate::foundation::server_plan_binary_db::remote_plan_revision_file(),
                 revision_index,
             )
             .map_err(|error| Self::error("Task Plan binding", error))?;
@@ -173,6 +174,7 @@ where
         linked_at_s: u64,
         now: u64,
         payload_sync_boundary: PayloadSyncBoundary,
+        actor_index_plus1: u32,
     ) -> Result<(u32, String), String>
     where
         F: BinaryDbFsyncPolicy,
@@ -203,6 +205,7 @@ where
                 .map_err(|error| Self::error(operation, error))?;
         }
         let record = V0TaskRecord {
+            actor_index_plus1,
             task_meta: if revision_plus1 == 0 {
                 0
             } else {
@@ -240,6 +243,7 @@ where
         task_index: u32,
         task_id: &str,
         now: u64,
+        actor_index_plus1: u32,
     ) -> Result<(u32, String), String>
     where
         F: BinaryDbFsyncPolicy,
@@ -252,6 +256,7 @@ where
             now,
             None,
             PayloadSyncBoundary::BeforeReference,
+            actor_index_plus1,
         )
     }
 
@@ -265,6 +270,7 @@ where
         now: u64,
         historical_fork_snapshot_index_plus1: Option<u32>,
         payload_sync_boundary: PayloadSyncBoundary,
+        actor_index_plus1: u32,
     ) -> Result<(u32, String), String>
     where
         F: BinaryDbFsyncPolicy,
@@ -272,6 +278,11 @@ where
         let operation = "ServerWorkflowChangeStore::append_change_in_write";
         let title = Self::required_text(payload, "title")?;
         let base_line = Self::required_text(payload, "base_line")?;
+        if payload_sync_boundary != PayloadSyncBoundary::PackageMaterialization
+            && self.task_prefix.starts_with('R')
+        {
+            crate::foundation::workflow_package::require_ordinary_remote_line(&base_line)?;
+        }
         let explicit_id = Self::optional_text(payload, "change_id");
         let title_bytes = WorkflowBinaryV0Codec::encode_single_text_payload(&title, "Change title")
             .map_err(|error| Self::error(operation, error))?;
@@ -305,9 +316,35 @@ where
             .line_by_name_in_write(tx, &base_line)
             .map_err(|error| Self::error(operation, error))?
             .ok_or_else(|| format!("Unknown canonical base Line: {base_line}"))?;
-        let fork_snapshot_index_plus1 =
+        let mut fork_snapshot_index_plus1 =
             historical_fork_snapshot_index_plus1.unwrap_or(line.head_snapshot_index_plus1);
-        if let Some(requested_fork) = Self::optional_text(payload, "fork_snapshot_id") {
+        let requested_fork = Self::optional_text(payload, "fork_snapshot_id");
+        let current_candidate = if historical_fork_snapshot_index_plus1.is_none()
+            && (requested_fork.is_some()
+                || self.repository_index.is_some() && self.task_prefix.starts_with('R'))
+        {
+            self.current_task_patchset(tx, task_index)?
+        } else {
+            None
+        };
+        if let Some((candidate_index, candidate)) = current_candidate {
+            self.require_current_patchset(tx, candidate_index, candidate)?;
+            let requested_fork = requested_fork
+                .as_deref()
+                .ok_or("Explicit revision fork must name the exact current Task candidate")?;
+            if self.content_snapshot_id(tx, candidate.revision_snapshot_index)? != requested_fork {
+                return Err(
+                    "Explicit revision fork differs from the exact current Task candidate".into(),
+                );
+            }
+            let binding = self
+                .capture_binding_with_access(tx, candidate.revision_snapshot_index)?
+                .ok_or("Explicit revision fork lacks durable numeric Snapshot ownership")?;
+            if binding["task_id"].as_str() != Some(task_id) {
+                return Err("Explicit revision fork belongs to another Task".into());
+            }
+            fork_snapshot_index_plus1 = candidate.revision_snapshot_index + 1;
+        } else if let Some(requested_fork) = requested_fork {
             let actual = fork_snapshot_index_plus1
                 .checked_sub(1)
                 .map(|index| {
@@ -319,9 +356,11 @@ where
                 })
                 .transpose()?;
             if actual.as_deref() != Some(requested_fork.as_str()) {
-                return Err(format!(
-                    "Change fork_snapshot_id {requested_fork} does not equal base Line head {actual:?}"
-                ));
+                return Err(if historical_fork_snapshot_index_plus1.is_some() {
+                    "History Change fork differs from its admitted exact fork".into()
+                } else {
+                    "Explicit revision fork must be the exact current Task candidate".into()
+                });
             }
         }
         let change_index = tx
@@ -335,6 +374,7 @@ where
                 .map_err(|error| Self::error(operation, error))?;
         }
         let record = V0ChangeRecord {
+            actor_index_plus1,
             change_meta: CHANGE_LIFECYCLE_DRAFT,
             remote_meta: 0,
             payload_len: u16::try_from(range.payload_len)
@@ -345,7 +385,7 @@ where
             payload_offset: range.payload_offset,
             task_index,
             previous_change_index_plus1: task_index_row.latest_index_plus1,
-            selected_patchset_index_plus1: 0,
+            reserved_selected_patchset: 0,
             fork_snapshot_index_plus1,
             created_at_s: now,
             updated_at_s: now,
@@ -383,17 +423,14 @@ where
         Ok((change_index, change_ref))
     }
 
-    pub(super) fn task_for_plan_binding_in_write<F>(
+    pub(super) fn task_for_plan_binding_in_write<A: ReadV0>(
         &self,
-        tx: &BinaryDbWriteTxn<'_, D, F>,
+        tx: &A,
         revision_plus1: u32,
         item_plus1: u32,
-    ) -> Result<Option<u32>, String>
-    where
-        F: BinaryDbFsyncPolicy,
-    {
+    ) -> Result<Option<u32>, String> {
         let count = tx
-            .record_count(WorkflowBinaryV0Codec::task_file())
+            .record_count_v0(WorkflowBinaryV0Codec::task_file())
             .map_err(|error| Self::error("Task Plan binding inventory", error))?;
         for task_index in 0..count {
             let task = self
@@ -418,15 +455,13 @@ where
         plan_item_ref: &str,
         idempotency_key: &str,
         task_index: u32,
-        change_index: u32,
         replayed: bool,
     ) -> Result<JsonValue, String> {
         let plan = BinaryDbServerPlanService::new(self.db.clone()).get_plan(&binding.plan_id)?;
         let read = BinaryDbReadTxn::new(&self.db);
         let task = self.task_at(&read, task_index)?;
-        let change = self.change_at(&read, change_index)?;
         Ok(json!({
-            "contract": "task-start-atomic/v1",
+            "contract": "task-start-atomic/v2",
             "repo_name": self.db.repo_name().as_str(),
             "repo_id": self.db.repo_id().as_str(),
             "idempotency_key": idempotency_key,
@@ -438,7 +473,7 @@ where
             "plan": plan,
             "task_id": self.task_id(task_index),
             "task": task,
-            "change": change,
+            "change": null,
         }))
     }
 
@@ -448,7 +483,6 @@ where
         plan_item_ref: &str,
         idempotency_key: &str,
         task_payload: &JsonMap<String, JsonValue>,
-        change_payload: &JsonMap<String, JsonValue>,
         task_index: u32,
     ) -> Result<JsonValue, String> {
         let read = BinaryDbReadTxn::new(&self.db);
@@ -463,57 +497,8 @@ where
                 }
             }
         }
-        let change_count = read
-            .record_count(WorkflowBinaryV0Codec::change_file())
-            .map_err(|error| Self::error("Atomic task-start replay Change inventory", error))?;
-        let mut initial_change_index = None;
-        for change_index in 0..change_count {
-            let change = self
-                .read_change(&read, change_index)
-                .map_err(|error| Self::error("Atomic task-start replay Change inventory", error))?;
-            if change.remote_meta & 1 == 0
-                && change.task_index == task_index
-                && change.change_ordinal == 0
-                && initial_change_index.replace(change_index).is_some()
-            {
-                return Err(format!(
-                    "Task {} has multiple initial Changes.",
-                    self.task_id(task_index)
-                ));
-            }
-        }
-        let change_index = initial_change_index.ok_or_else(|| {
-            format!(
-                "Task {} has no initial Change for atomic replay.",
-                self.task_id(task_index)
-            )
-        })?;
-        let change = self.change_at(&read, change_index)?;
-        for field in [
-            "title",
-            "base_line",
-            "change_id",
-            "fork_snapshot_id",
-            "forked_from_line",
-        ] {
-            if let Some(requested) = change_payload.get(field).filter(|value| !value.is_null()) {
-                if change.get(field) != Some(requested) {
-                    return Err(format!(
-                        "Atomic task-start replay conflicts with existing Change {} field {field}.",
-                        change["change_ref"].as_str().unwrap_or("<unknown>")
-                    ));
-                }
-            }
-        }
         drop(read);
-        self.atomic_task_start_result(
-            binding,
-            plan_item_ref,
-            idempotency_key,
-            task_index,
-            change_index,
-            true,
-        )
+        self.atomic_task_start_result(binding, plan_item_ref, idempotency_key, task_index, true)
     }
 
     pub(super) fn complete_task_in_write<F>(
@@ -521,6 +506,7 @@ where
         tx: &mut BinaryDbWriteTxn<'_, D, F>,
         task_index: u32,
         now: u64,
+        actor_index_plus1: u32,
     ) -> Result<bool, String>
     where
         F: BinaryDbFsyncPolicy,
@@ -538,6 +524,7 @@ where
                 self.task_id(task_index)
             ));
         }
+        record.actor_index_plus1 = actor_index_plus1;
         let mut dependency = WorkflowBinaryV0Codec::encode_task(record)
             .map_err(|error| Self::error(operation, error))?;
         dependency[52..60].copy_from_slice(&now.to_le_bytes());
@@ -576,13 +563,14 @@ where
         repo_name: &str,
         payload: &JsonValue,
     ) -> Result<JsonValue, String> {
-        const CONTRACT: &str = "task-start-atomic/v1";
+        const CONTRACT: &str = "task-start-atomic/v2";
         let operation = "ServerWorkflowTaskStore::start_plan_bound_task";
         self.repo_scope(operation, repo_name)?;
         let payload = Self::required_object(payload, "atomic task-start payload")?;
         if Self::required_text(payload, "contract")? != CONTRACT {
             return Err(format!("Atomic task-start contract must be {CONTRACT:?}."));
         }
+        self.request_actor(payload)?;
         let idempotency_key = Self::required_text(payload, "idempotency_key")?;
         if idempotency_key.len() > 256 {
             return Err("Atomic task-start idempotency_key exceeds 256 bytes.".to_string());
@@ -595,10 +583,20 @@ where
             .get("task")
             .and_then(JsonValue::as_object)
             .ok_or_else(|| "Atomic task-start payload requires a task object.".to_string())?;
-        let change_payload = payload
-            .get("change")
-            .and_then(JsonValue::as_object)
-            .ok_or_else(|| "Atomic task-start payload requires a change object.".to_string())?;
+        if task_payload.contains_key("actor_key_index")
+            || plan_operation.get("actor_key_index").is_some()
+            || plan_operation
+                .get("payload")
+                .and_then(|value| value.get("actor_key_index"))
+                .is_some()
+        {
+            return Err(
+                "Atomic task-start actor_key_index must appear only at the top level".into(),
+            );
+        }
+        if payload.get("change").is_some_and(|value| !value.is_null()) {
+            return Err("Atomic task-start creates only a Task; create an explicit revision Change separately.".to_string());
+        }
         for field in ["plan_id", "origin_plan_revision_id", "plan_item_ref"] {
             if task_payload
                 .get(field)
@@ -609,22 +607,14 @@ where
                 ));
             }
         }
-        if change_payload
-            .get("task_id")
-            .is_some_and(|value| !value.is_null())
-        {
-            return Err(
-                "Atomic task-start change.task_id is server-derived from the Task append."
-                    .to_string(),
-            );
-        }
-
         let plan_service = BinaryDbServerPlanService::new(self.db.clone());
         let prepared =
             plan_service.prepare_task_start_plan(repo_name, plan_operation, &plan_item_ref)?;
         let now = Self::now_s()?;
         let mut tx = plan_service.begin_task_start_write(&prepared)?;
-        let binding = plan_service.apply_task_start_plan(&mut tx, &prepared, now)?;
+        let actor_index_plus1 = self.request_actor_in_write(tx.workflow_write()?, payload)?;
+        let binding =
+            plan_service.apply_task_start_plan(&mut tx, &prepared, now, actor_index_plus1)?;
         let revision_plus1 = binding
             .revision_index
             .checked_add(1)
@@ -650,11 +640,10 @@ where
                 &plan_item_ref,
                 &idempotency_key,
                 task_payload,
-                change_payload,
                 existing_task_index,
             );
         }
-        let (task_index, task_id, change_index) = {
+        let (task_index, task_id) = {
             let workflow_tx = tx.workflow_write()?;
             let (task_index, task_id) = self.append_task_in_write(
                 workflow_tx,
@@ -664,21 +653,14 @@ where
                 now,
                 now,
                 PayloadSyncBoundary::BeforeReference,
+                actor_index_plus1,
             )?;
-            let (change_index, _) = self.append_change_in_write(
-                workflow_tx,
-                change_payload,
-                task_index,
-                &task_id,
-                now,
-            )?;
-            (task_index, task_id, change_index)
+            (task_index, task_id)
         };
         tx.set_commit_point(ServerPlanBinaryDbCommitPoint::TaskStarted {
             plan_index: binding.plan_index,
             revision_index: binding.revision_index,
             task_index,
-            change_index,
         })?;
         tx.commit()?;
         debug_assert_eq!(task_id, self.task_id(task_index));
@@ -687,7 +669,6 @@ where
             &plan_item_ref,
             &idempotency_key,
             task_index,
-            change_index,
             false,
         )
     }
@@ -696,6 +677,7 @@ where
         let operation = "ServerWorkflowTaskStore::create_task";
         self.repo_scope(operation, repo_name)?;
         let payload = Self::required_object(payload, "task create payload")?;
+        self.request_actor(payload)?;
         let (revision_plus1, item_plus1, linked_at_s) =
             self.resolve_plan_binding_for_create(payload)?;
         let now = Self::now_s()?;
@@ -703,6 +685,7 @@ where
             let mut tx =
                 BinaryDbWriteTxn::begin_serving(&self.db, BinaryDbCommandScope::ServerWorkflow)
                     .map_err(|error| Self::error(operation, error))?;
+            let actor_index_plus1 = self.request_actor_in_write(&tx, payload)?;
             let (task_index, _) = self.append_task_in_write(
                 &mut tx,
                 payload,
@@ -711,6 +694,7 @@ where
                 linked_at_s,
                 now,
                 PayloadSyncBoundary::BeforeReference,
+                actor_index_plus1,
             )?;
             tx.commit().map_err(|error| Self::error(operation, error))?;
             task_index
@@ -750,6 +734,7 @@ where
     fn close_task(&self, task_id: &str, payload: &JsonValue) -> Result<JsonValue, String> {
         let operation = "ServerWorkflowTaskStore::close_task";
         let payload = Self::required_object(payload, "task close payload")?;
+        self.request_actor(payload)?;
         let status = Self::required_text(payload, "status")?;
         let terminal_bit = match status.as_str() {
             "completed" => TASK_META_COMPLETED,
@@ -765,8 +750,10 @@ where
             BinaryDbWriteTxn::begin_serving(&self.db, BinaryDbCommandScope::ServerWorkflow)
                 .map_err(|error| Self::error(operation, error))?;
         let task_index = self.task_index_for_id(&tx, task_id)?;
+        let actor_index_plus1 = self.request_actor_in_write(&tx, payload)?;
         if terminal_bit == TASK_META_COMPLETED {
-            let changed = self.complete_task_in_write(&mut tx, task_index, now)?;
+            let changed =
+                self.complete_task_in_write(&mut tx, task_index, now, actor_index_plus1)?;
             if changed {
                 tx.commit().map_err(|error| Self::error(operation, error))?;
             } else {
@@ -786,6 +773,7 @@ where
         if record.is_terminal() {
             return Err(format!("Task {task_id} is already terminal"));
         }
+        record.actor_index_plus1 = actor_index_plus1;
         let mut dependency = WorkflowBinaryV0Codec::encode_task(record)
             .map_err(|error| Self::error(operation, error))?;
         dependency[52..60].copy_from_slice(&now.to_le_bytes());
@@ -815,29 +803,50 @@ where
         let read = BinaryDbReadTxn::new(&self.db);
         let task_index = self.task_index_for_id(&read, task_ref)?;
         let task = self.task_at(&read, task_index)?;
-        let change_count = read
-            .record_count(WorkflowBinaryV0Codec::change_file())
-            .map_err(|error| Self::error("ServerWorkflowTaskStore::read_task_audit", error))?;
+        let mut cursor = self
+            .owner_ordinal_index(&read, "task_change_index.bin", task_index)?
+            .latest_index_plus1
+            .checked_sub(1);
+        let mut visited = BTreeSet::new();
         let mut changes = Vec::new();
-        for index in 0..change_count {
-            let record = self
-                .read_change(&read, index)
-                .map_err(|error| Self::error("ServerWorkflowTaskStore::read_task_audit", error))?;
-            if record.remote_meta & 1 == 0 && record.task_index == task_index {
+        while let Some(index) = cursor {
+            if !visited.insert(index) {
+                return Err("Task audit Change inventory has a cycle".to_string());
+            }
+            let change = self.read_change(&read, index).map_err(|e| e.to_string())?;
+            if change.task_index != task_index {
+                return Err("Task audit Change belongs to another Task".to_string());
+            }
+            if change.remote_meta & 1 == 0 {
                 changes.push(self.change_at(&read, index)?);
             }
+            cursor = change.previous_change_index_plus1.checked_sub(1);
         }
         let landed = changes
             .iter()
-            .filter(|row| row.get("status").and_then(JsonValue::as_str) == Some("landed"))
+            .filter(|change| change["status"] == "landed")
             .count();
         let open = changes.len() - landed;
-        let task_status = task.get("status").and_then(JsonValue::as_str);
-        let verdict = match task_status {
-            Some("completed") => "task_completed",
+        let receipt = self.task_successful_receipt(&read, task_index)?;
+        let current = self.current_task_patchset(&read, task_index)?;
+        let current_value = current
+            .map(|(index, _)| self.patchset_at_with_diff_stats(&read, index, JsonValue::Null))
+            .transpose()?;
+        let land = receipt
+            .map(|(index, _)| self.land_at(&read, index))
+            .transpose()?;
+        let verdict = match task["status"].as_str() {
+            Some("completed") if receipt.is_some() => "task_completed",
+            Some("completed") => "completion_receipt_missing",
             Some("abandoned" | "canceled" | "cancelled") => "task_abandoned",
-            _ if open == 0 && landed > 0 => "ready_to_close",
-            _ if changes.is_empty() => "no_changes",
+            _ if receipt.is_some() => "ready_to_close",
+            _ if current.is_some_and(|(index, patchset)| {
+                self.require_finish_evidence(&read, index, patchset).is_ok()
+            }) =>
+            {
+                "ready_to_land"
+            }
+            _ if current.is_none() => "no_patchsets",
             _ => "in_progress",
         };
         let lines =
@@ -861,6 +870,8 @@ where
             "target_line": target_line,
             "target_line_head": target_head,
             "changes": changes,
+            "current_patchset": current_value,
+            "land": land,
             "summary": {
                 "verdict": verdict,
                 "total_changes": landed + open,
@@ -880,14 +891,22 @@ where
         let operation = "ServerWorkflowChangeStore::create_change";
         self.repo_scope(operation, repo_name)?;
         let payload = Self::required_object(payload, "change create payload")?;
+        self.request_actor(payload)?;
         let task_id = Self::required_text(payload, "task_id")?;
         let now = Self::now_s()?;
         let mut tx =
             BinaryDbWriteTxn::begin_serving(&self.db, BinaryDbCommandScope::ServerWorkflow)
                 .map_err(|error| Self::error(operation, error))?;
         let task_index = self.task_index_for_id(&tx, &task_id)?;
-        let (change_index, _) =
-            self.append_change_in_write(&mut tx, payload, task_index, &task_id, now)?;
+        let actor_index_plus1 = self.request_actor_in_write(&tx, payload)?;
+        let (change_index, _) = self.append_change_in_write(
+            &mut tx,
+            payload,
+            task_index,
+            &task_id,
+            now,
+            actor_index_plus1,
+        )?;
         tx.commit().map_err(|error| Self::error(operation, error))?;
         let read = BinaryDbReadTxn::new(&self.db);
         self.change_at(&read, change_index)
@@ -912,11 +931,20 @@ where
                 .read_change(&read, index)
                 .map_err(|error| Self::error("ServerWorkflowChangeStore::list_changes", error))?;
             if record.remote_meta & 1 == 0 {
-                rows.push(self.change_at_with_precomputed_latest_success(
-                    &read,
-                    index,
-                    Some(latest_succeeded_lands.get(&index).copied()),
-                )?);
+                rows.push(
+                    self.change_at_with_precomputed_latest_success(
+                        &read,
+                        index,
+                        Some(
+                            latest_succeeded_lands
+                                .get(&record.task_index)
+                                .copied()
+                                .filter(|(_, receipt)| {
+                                    receipt.change_ordinal_plus1 == record.change_ordinal + 1
+                                }),
+                        ),
+                    )?,
+                );
             }
         }
         rows.reverse();
@@ -935,6 +963,7 @@ where
     fn close_change(&self, change_id: &str, payload: &JsonValue) -> Result<JsonValue, String> {
         let operation = "ServerWorkflowChangeStore::close_change";
         let payload = Self::required_object(payload, "change close payload")?;
+        self.request_actor(payload)?;
         let status = Self::required_text(payload, "status")?;
         let (canceled, superseded) =
             match status.as_str() {
@@ -956,6 +985,7 @@ where
             BinaryDbWriteTxn::begin_serving(&self.db, BinaryDbCommandScope::ServerWorkflow)
                 .map_err(|error| Self::error(operation, error))?;
         let index = self.change_index_for_ref(&tx, change_id)?;
+        let actor_index_plus1 = self.request_actor_in_write(&tx, payload)?;
         let mut record = self
             .read_change(&tx, index)
             .map_err(|error| Self::error(operation, error))?;
@@ -979,6 +1009,7 @@ where
         record.change_state = if canceled { CHANGE_STATE_CANCELED } else { 0 };
         record.updated_at_s = now;
         record.archived_at_s = now;
+        record.actor_index_plus1 = actor_index_plus1;
         let raw = WorkflowBinaryV0Codec::encode_change(record)
             .map_err(|error| Self::error(operation, error))?;
         tx.overwrite_record(WorkflowBinaryV0Codec::change_file(), index, &raw)

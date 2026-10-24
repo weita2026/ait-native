@@ -5,18 +5,54 @@ const REVIEWABLE_CHANGE_STATES: &[&str] = &["review", "gated", "approved", "land
 pub fn reviewer_inbox_read_model(input: &ReviewerInboxInput) -> Result<JsonValue, String> {
     let index = ReviewerInboxIndex::new(input);
     let mut items = Vec::new();
-    for change in input
+    let mut owners = input
         .changes
         .iter()
         .filter(|change| repo_matches(input.repo_name.as_deref(), change))
+        .filter(|change| {
+            !index
+                .task_for_change(change)
+                .is_some_and(|task| task.contains_key("current_patchset_id"))
+        })
         .filter(|change| {
             object_text(change, "status")
                 .map(|status| REVIEWABLE_CHANGE_STATES.contains(&status.as_str()))
                 .unwrap_or(false)
         })
-    {
-        let change_id = object_text(change, "change_id").unwrap_or_default();
-        let current_patchset = index.current_patchset(change);
+        .map(|change| (change, false))
+        .collect::<Vec<_>>();
+    owners.extend(
+        input
+            .tasks
+            .iter()
+            .filter(|task| {
+                task.contains_key("current_patchset_id")
+                    && repo_matches(input.repo_name.as_deref(), task)
+                    && object_text(task, "status").as_deref() == Some("active")
+            })
+            .map(|task| (task, true)),
+    );
+    for (change, task_owned) in owners {
+        let current_patchset = if task_owned {
+            index.current_task_patchset(change)
+        } else {
+            index.current_patchset(change)
+        };
+        if task_owned
+            && current_patchset.is_none_or(|patchset| {
+                patchset
+                    .get("governance_authority")
+                    .and_then(JsonValue::as_bool)
+                    == Some(false)
+            })
+        {
+            continue;
+        }
+        let change_id = if task_owned {
+            current_patchset.and_then(|patchset| object_text(patchset, "change_id"))
+        } else {
+            object_text(change, "change_id")
+        };
         let current_patchset_id =
             current_patchset.and_then(|patchset| object_text(patchset, "patchset_id"));
         let current_policy = index.policy_summary(current_patchset_id.as_deref());
@@ -39,8 +75,14 @@ pub fn reviewer_inbox_read_model(input: &ReviewerInboxInput) -> Result<JsonValue
         if !matches_filter(Some(tests_state.as_str()), input.tests.as_deref()) {
             continue;
         }
-        let review_summary = index.review_summary(&change_id, current_patchset_id.as_deref());
-        let requested_groups = index.requested_groups(&change_id, current_patchset_id.as_deref());
+        let review_summary = index.review_summary(
+            change_id.as_deref().unwrap_or_default(),
+            current_patchset_id.as_deref(),
+        );
+        let requested_groups = index.requested_groups(
+            change_id.as_deref().unwrap_or_default(),
+            current_patchset_id.as_deref(),
+        );
         let freshness = index.freshness(change, current_patchset);
         let freshness_state =
             value_text(&freshness, "state").unwrap_or_else(|| "stale".to_string());
@@ -55,9 +97,16 @@ pub fn reviewer_inbox_read_model(input: &ReviewerInboxInput) -> Result<JsonValue
         if !matches_review_filter(&review_summary, &requested_groups, input.review.as_deref()) {
             continue;
         }
-        let task = index.task_for_change(change);
-        let patchsets = index.patchsets_for_change(&change_id);
-        let selected_patchset = index.selected_patchset(change);
+        let task = if task_owned {
+            Some(change)
+        } else {
+            index.task_for_change(change)
+        };
+        let patchsets = if task_owned {
+            index.patchsets_for_task(change)
+        } else {
+            index.patchsets_for_change(change_id.as_deref().unwrap_or_default())
+        };
         let provenance = current_attestation
             .as_ref()
             .and_then(|attestation| attestation.get("provenance_summary"))
@@ -75,15 +124,12 @@ pub fn reviewer_inbox_read_model(input: &ReviewerInboxInput) -> Result<JsonValue
                 "status": task.as_ref().and_then(|task| object_text(task, "status")),
                 "intent": task.as_ref().and_then(|task| object_text(task, "intent")),
             },
-            "change_status": object_text(change, "status"),
+            "change_status": (!task_owned).then(|| object_text(change, "status")).flatten(),
+            "workflow_state": task.and_then(|task| object_text(task, "workflow_state")),
             "current_patchset": {
                 "patchset_id": current_patchset_id,
                 "patchset_number": current_patchset.map(patchset_number).unwrap_or(0),
             },
-            "selected_patchset": selected_patchset.map(|patchset| json!({
-                "patchset_id": object_text(patchset, "patchset_id"),
-                "patchset_number": patchset_number(patchset),
-            })),
             "patchsets": patchsets.into_iter().map(|patchset| json!({
                 "patchset_id": object_text(patchset, "patchset_id"),
                 "patchset_number": patchset_number(patchset),
@@ -107,7 +153,7 @@ pub fn reviewer_inbox_read_model(input: &ReviewerInboxInput) -> Result<JsonValue
                 "tests": tests_state,
                 "updated_at": current_attestation.as_ref().and_then(|attestation| value_text(attestation, "updated_at")),
             },
-            "landing_summary": index.latest_land_summary(&change_id),
+            "landing_summary": if task_owned { change.get("successful_land").cloned() } else { index.latest_land_summary(change_id.as_deref().unwrap_or_default()) },
             "requested_groups": requested_groups,
             "updated_at": object_text(change, "updated_at"),
         }));
@@ -134,6 +180,9 @@ pub fn reviewer_inbox_read_model(input: &ReviewerInboxInput) -> Result<JsonValue
 struct ReviewerInboxIndex<'a> {
     tasks_by_repo_task: HashMap<(String, String), &'a JsonMap<String, JsonValue>>,
     patchsets_by_change: HashMap<String, Vec<&'a JsonMap<String, JsonValue>>>,
+    patchsets_by_task: HashMap<(String, String), Vec<&'a JsonMap<String, JsonValue>>>,
+    reviews_by_patchset: HashMap<String, Vec<&'a JsonMap<String, JsonValue>>>,
+    requests_by_patchset: HashMap<String, Vec<&'a JsonMap<String, JsonValue>>>,
     reviews_by_change: HashMap<String, Vec<&'a JsonMap<String, JsonValue>>>,
     review_requests_by_change: HashMap<String, Vec<&'a JsonMap<String, JsonValue>>>,
     attestations_by_patchset: HashMap<String, &'a JsonMap<String, JsonValue>>,
@@ -153,6 +202,15 @@ impl<'a> ReviewerInboxIndex<'a> {
             }
         }
         for patchset in &input.patchsets {
+            if let Some(key) =
+                object_text(patchset, "repo_name").zip(object_text(patchset, "task_id"))
+            {
+                index
+                    .patchsets_by_task
+                    .entry(key)
+                    .or_default()
+                    .push(patchset);
+            }
             if let Some(change_id) = object_text(patchset, "change_id") {
                 index
                     .patchsets_by_change
@@ -165,6 +223,13 @@ impl<'a> ReviewerInboxIndex<'a> {
             patchsets.sort_by_key(|left| patchset_number(left));
         }
         for review in &input.reviews {
+            if let Some(id) = object_text(review, "patchset_id") {
+                index
+                    .reviews_by_patchset
+                    .entry(id)
+                    .or_default()
+                    .push(review);
+            }
             if let Some(change_id) = object_text(review, "change_id") {
                 index
                     .reviews_by_change
@@ -174,6 +239,13 @@ impl<'a> ReviewerInboxIndex<'a> {
             }
         }
         for request in &input.review_requests {
+            if let Some(id) = object_text(request, "patchset_id") {
+                index
+                    .requests_by_patchset
+                    .entry(id)
+                    .or_default()
+                    .push(request);
+            }
             if let Some(change_id) = object_text(request, "change_id") {
                 index
                     .review_requests_by_change
@@ -256,6 +328,13 @@ impl<'a> ReviewerInboxIndex<'a> {
         &self,
         change: &JsonMap<String, JsonValue>,
     ) -> Option<&'a JsonMap<String, JsonValue>> {
+        if change.contains_key("current_patchset_id") {
+            return self.patchset_for_change_field(
+                change,
+                "current_patchset_id",
+                "current_patchset_number",
+            );
+        }
         self.patchset_for_change_field(change, "current_patchset_id", "current_patchset_number")
             .or_else(|| {
                 let change_id = object_text(change, "change_id")?;
@@ -263,11 +342,24 @@ impl<'a> ReviewerInboxIndex<'a> {
             })
     }
 
-    fn selected_patchset(
+    fn patchsets_for_task(
         &self,
-        change: &JsonMap<String, JsonValue>,
+        task: &JsonMap<String, JsonValue>,
+    ) -> Vec<&'a JsonMap<String, JsonValue>> {
+        object_text(task, "repo_name")
+            .zip(object_text(task, "task_id"))
+            .and_then(|key| self.patchsets_by_task.get(&key).cloned())
+            .unwrap_or_default()
+    }
+
+    fn current_task_patchset(
+        &self,
+        task: &JsonMap<String, JsonValue>,
     ) -> Option<&'a JsonMap<String, JsonValue>> {
-        self.patchset_for_change_field(change, "selected_patchset_id", "selected_patchset_number")
+        let id = object_text(task, "current_patchset_id")?;
+        self.patchsets_for_task(task)
+            .into_iter()
+            .find(|patchset| object_text(patchset, "patchset_id").as_deref() == Some(id.as_str()))
     }
 
     fn patchsets_for_change(&self, change_id: &str) -> Vec<&'a JsonMap<String, JsonValue>> {
@@ -300,9 +392,14 @@ impl<'a> ReviewerInboxIndex<'a> {
     }
 
     fn review_summary(&self, change_id: &str, patchset_id: Option<&str>) -> JsonValue {
-        let reviews = self
-            .reviews_by_change
-            .get(change_id)
+        let reviews = patchset_id
+            .and_then(|id| self.reviews_by_patchset.get(id))
+            .or_else(|| {
+                patchset_id
+                    .is_none()
+                    .then(|| self.reviews_by_change.get(change_id))
+                    .flatten()
+            })
             .into_iter()
             .flatten()
             .map(|review| (*review).clone())
@@ -313,9 +410,14 @@ impl<'a> ReviewerInboxIndex<'a> {
     }
 
     fn requested_groups(&self, change_id: &str, patchset_id: Option<&str>) -> Vec<String> {
-        let groups = self
-            .review_requests_by_change
-            .get(change_id)
+        let groups = patchset_id
+            .and_then(|id| self.requests_by_patchset.get(id))
+            .or_else(|| {
+                patchset_id
+                    .is_none()
+                    .then(|| self.review_requests_by_change.get(change_id))
+                    .flatten()
+            })
             .into_iter()
             .flatten()
             .filter(|request| {

@@ -1,0 +1,12 @@
+{
+  "contract": "ait-agent-token-game-source-transform/v1",
+  "workload_id": "GD-03",
+  "replacements": [
+    {
+      "path": "src/game.js",
+      "from": "export const PAUSED_TIME_ADVANCES = false;",
+      "to": "export const PAUSED_TIME_ADVANCES = true;",
+      "expected_matches": 1
+    }
+  ]
+}

@@ -55,6 +55,17 @@ pub enum RemotePackKind {
 }
 
 pub trait RemoteSnapshotProvider: Send + Sync {
+    fn download_workflow_package(
+        &self,
+        _source: &crate::workflow_package::WorkflowPackageReference,
+        _destination: &Path,
+        _maximum_bytes: u64,
+    ) -> Result<u64, RunnerError> {
+        Err(RunnerError::InvalidRequest(
+            "workflow_package requires a Job-bound source provider".into(),
+        ))
+    }
+
     fn fetch_import_manifest(
         &self,
         source: &RemoteSnapshotReference,
@@ -1009,6 +1020,22 @@ fn materialize_declared_externals(
     aggregate_stats: &mut MaterializationStats,
 ) -> Result<BTreeMap<String, String>, RunnerError> {
     let lock_path = workspace.join("ait-external.lock");
+    match fs::symlink_metadata(&lock_path) {
+        Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_file() => {
+            return Err(RunnerError::InvalidRequest(
+                "ait-external.lock must be a regular file in the tested tree".into(),
+            ));
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(BTreeMap::new()),
+        Err(error) => {
+            return Err(RunnerError::fs(
+                "inspect ait-external.lock",
+                &lock_path,
+                error,
+            ));
+        }
+    }
     let lock_bytes = match fs::read(&lock_path) {
         Ok(bytes) => bytes,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -1292,6 +1319,9 @@ fn required_text(value: &JsonValue, field: &str, label: &str) -> Result<String, 
 
 fn write_materialized_file(path: &Path, bytes: &[u8], mode: &str) -> Result<(), RunnerError> {
     let permissions = parse_file_permissions(mode)?;
+    if permissions & 0o170000 == 0o120000 {
+        return write_materialized_symlink(path, bytes);
+    }
     let mut file = OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -1303,7 +1333,7 @@ fn write_materialized_file(path: &Path, bytes: &[u8], mode: &str) -> Result<(), 
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(path, fs::Permissions::from_mode(permissions))
+        fs::set_permissions(path, fs::Permissions::from_mode(permissions & 0o7777))
             .map_err(|error| RunnerError::fs("set Snapshot file permissions", path, error))?;
     }
     #[cfg(not(unix))]
@@ -1317,16 +1347,54 @@ fn parse_file_permissions(mode: &str) -> Result<u32, RunnerError> {
     let digits = mode.strip_prefix("0o").ok_or_else(|| {
         RunnerError::InvalidRequest(format!("blob materialization uses malformed mode `{mode}`"))
     })?;
-    if digits.len() != 3 || !digits.bytes().all(|byte| matches!(byte, b'0'..=b'7')) {
+    if ![3, 6].contains(&digits.len()) || !digits.bytes().all(|byte| matches!(byte, b'0'..=b'7')) {
         return Err(RunnerError::InvalidRequest(format!(
             "blob materialization uses unsupported mode `{mode}`"
         )));
     }
-    u32::from_str_radix(digits, 8).map_err(|_| {
+    let value = u32::from_str_radix(digits, 8).map_err(|_| {
         RunnerError::InvalidRequest(format!(
             "blob materialization uses unsupported mode `{mode}`"
         ))
-    })
+    })?;
+    if digits.len() == 6 && !matches!(value & 0o170000, 0o100000 | 0o120000) {
+        return Err(RunnerError::InvalidRequest(format!(
+            "unsupported native file mode `{mode}`"
+        )));
+    }
+    Ok(value)
+}
+
+#[cfg(unix)]
+fn write_materialized_symlink(path: &Path, target: &[u8]) -> Result<(), RunnerError> {
+    use std::os::unix::ffi::OsStrExt;
+    std::os::unix::fs::symlink(std::ffi::OsStr::from_bytes(target), path)
+        .map_err(|error| RunnerError::fs("create Snapshot symlink", path, error))
+}
+
+#[cfg(windows)]
+fn write_materialized_symlink(path: &Path, target: &[u8]) -> Result<(), RunnerError> {
+    let target = std::str::from_utf8(target).map_err(|_| {
+        RunnerError::InvalidRequest(
+            "Snapshot symlink target is not representable on Windows".into(),
+        )
+    })?;
+    let result = if path
+        .parent()
+        .is_some_and(|parent| parent.join(target).is_dir())
+    {
+        std::os::windows::fs::symlink_dir(target, path)
+    } else {
+        std::os::windows::fs::symlink_file(target, path)
+    };
+    result.map_err(|error| RunnerError::fs("create Snapshot symlink", path, error))
+}
+
+#[cfg(not(any(unix, windows)))]
+fn write_materialized_symlink(_path: &Path, _target: &[u8]) -> Result<(), RunnerError> {
+    Err(RunnerError::InvalidRequest(
+        "Snapshot symlinks are unsupported on this platform".into(),
+    ))
 }
 
 fn ensure_empty_directory(path: &Path, label: &str) -> Result<(), RunnerError> {
@@ -1670,6 +1738,9 @@ mod tests {
         assert_eq!(parse_file_permissions("0o600").unwrap(), 0o600);
         assert_eq!(parse_file_permissions("0o644").unwrap(), 0o644);
         assert_eq!(parse_file_permissions("0o755").unwrap(), 0o755);
+        assert_eq!(parse_file_permissions("0o100600").unwrap(), 0o100600);
+        assert_eq!(parse_file_permissions("0o120777").unwrap(), 0o120777);
+        assert!(parse_file_permissions("0o040755").is_err());
         assert!(parse_file_permissions("0o4755").is_err());
         assert!(parse_file_permissions("0755").is_err());
         assert!(parse_file_permissions("0o888").is_err());

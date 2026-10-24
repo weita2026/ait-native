@@ -2391,7 +2391,7 @@ other verified installation routes, use the [official quickstart]({OFFICIAL_QUIC
 
 ## What initialization provides
 
-`ait init` creates repository-local authority, defaults to `solo_local` with
+`ait init` creates repository-local authority, defaults to local operation with
 sprint mode on, creates the sprint directory, and writes the effective workflow
 router to `AGENTS.md`. Local work uses bound Task worktrees, Snapshots, and
 atomic Task finish. The server remains off.

@@ -1,0 +1,16 @@
+{
+  "contract": "ait-vcs-benchmark-normalization/v1",
+  "benchmark_id": "ait-stage4-focused-status-baseline-2026-07-19",
+  "source_manifest_digest": "sha256:5294fcf000fd04790a89e3ff8636308f52783038a420cb985f5a0384c246540e",
+  "normalized_manifest_digest": "sha256:179203c29b746c8687887d901be38844b570d7178217160d60ade089be4d3574",
+  "output_path": "rust/crates/ait-benchmark/evidence/stage4-2026-07-19/baseline-manifest.json",
+  "replacement_count": 10,
+  "required_bindings": [
+    "ait-benchmark",
+    "baseline-ait-cli",
+    "baseline-ait-workspace",
+    "baseline-git-workspace",
+    "git"
+  ],
+  "portable": true
+}

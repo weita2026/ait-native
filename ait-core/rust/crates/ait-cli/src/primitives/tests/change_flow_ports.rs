@@ -582,7 +582,7 @@ fn patchset_publish_helpers_accept_change_line_and_closeout_remote_traits() {
 }
 
 #[test]
-fn patchset_publish_full_flow_accepts_change_line_snapshot_and_closeout_remote_traits() {
+fn patchset_publish_full_flow_rejects_unbound_change_line_snapshot_and_closeout_remote_traits() {
     let repo_tmp = tempdir().expect("repo tempdir");
     let repo_root = repo_tmp.path();
     init_repo(&InitRequest {
@@ -615,15 +615,19 @@ fn patchset_publish_full_flow_accepts_change_line_snapshot_and_closeout_remote_t
         false,
     )
     .expect("create revision snapshot");
-    let revision_snapshot_id =
+    let _revision_snapshot_id =
         required_string_field(&revision_snapshot, "snapshot_id").expect("revision snapshot id");
     set_runtime_repository_index(repo_root, 7);
     let repo = RepoRuntime::discover_from_path(repo_root).expect("repo runtime");
     let mut task_remote = FakeChangeRemote {
+        tasks: BTreeMap::from([(
+            "RCT-0083".into(),
+            json!({"task_id":"RCT-0083","status":"active","successful_land":null,"current_patchset_id":null}),
+        )]),
         changes: vec![json!({
             "repo_name": "fixture-ait",
-            "change_id": "RCC-PATCHSET-FLOW",
-            "task_id": "RCT-PATCHSET-FLOW",
+            "change_id": "RCT-0083/C-01",
+            "task_id": "RCT-0083",
             "base_line": "main"
         })],
         lines: vec![json!({
@@ -655,50 +659,28 @@ fn patchset_publish_full_flow_accepts_change_line_snapshot_and_closeout_remote_t
     };
     let mut closeout_remote = FakeWorkspaceCloseoutRemote::default();
 
-    let payload = patchset_publish_flow_with_task_and_closeout_remotes(
+    let error = patchset_publish_flow_with_task_and_closeout_remotes(
         &repo,
         &mut task_remote,
         &mut closeout_remote,
         "origin",
         "fixture-ait",
-        "RCC-PATCHSET-FLOW",
+        "RCT-0083/C-01",
         "trait full patchset publish",
         "ai_with_human_review",
     )
-    .expect("publish patchset through trait remotes");
-
-    assert_eq!(payload["change_id"], json!("RCC-PATCHSET-FLOW"));
-    assert_eq!(payload["base_snapshot_id"], json!(base_snapshot_id));
-    assert_eq!(payload["revision_snapshot_id"], json!(revision_snapshot_id));
-    assert_eq!(payload["current_line"], json!("main"));
-    assert_eq!(
-        payload["patchset"]["summary"],
-        json!("trait full patchset publish")
+    .expect_err("unbound Snapshot must fail before publication");
+    assert!(
+        error.contains("remote") || error.contains("Remote"),
+        "{error}"
     );
-    assert_eq!(payload["snapshot_sync"]["uploaded_snapshots"], json!(1));
-    assert_eq!(payload["snapshot_sync"]["line_updated"], json!(false));
-    assert_eq!(
-        payload["snapshot_sync"]["line_update_skipped_reason"],
-        json!("current line is the change base line")
-    );
-    assert_eq!(
-        payload["snapshot_sync"]["remote_sync_backend"]["backend"],
-        json!("zstd_pack_bulk")
-    );
-    assert_eq!(task_remote.zstd_plan_requests.len(), 1);
-    assert_eq!(task_remote.zstd_commit_requests.len(), 1);
-    let committed_snapshot_ids = task_remote.zstd_commit_requests[0]["snapshots"]
-        .as_array()
-        .expect("zstd commit snapshots")
-        .iter()
-        .filter_map(|snapshot| string_field(snapshot, "snapshot_id"))
-        .collect::<Vec<_>>();
-    assert!(committed_snapshot_ids.contains(&revision_snapshot_id));
-    assert_eq!(closeout_remote.patchsets.len(), 1);
+    assert!(closeout_remote.patchsets.is_empty());
+    assert!(task_remote.zstd_plan_requests.is_empty());
 }
 
 #[test]
-fn workflow_publish_patchset_action_accepts_change_line_snapshot_and_closeout_remote_traits() {
+fn workflow_publish_patchset_action_rejects_unbound_change_line_snapshot_and_closeout_remote_traits(
+) {
     let repo_tmp = tempdir().expect("repo tempdir");
     let repo_root = repo_tmp.path();
     init_repo(&InitRequest {
@@ -731,15 +713,19 @@ fn workflow_publish_patchset_action_accepts_change_line_snapshot_and_closeout_re
         false,
     )
     .expect("create revision snapshot");
-    let revision_snapshot_id =
+    let _revision_snapshot_id =
         required_string_field(&revision_snapshot, "snapshot_id").expect("revision snapshot id");
     set_runtime_repository_index(repo_root, 7);
     let repo = RepoRuntime::discover_from_path(repo_root).expect("repo runtime");
     let mut task_remote = FakeChangeRemote {
+        tasks: BTreeMap::from([(
+            "RCT-0084".into(),
+            json!({"task_id":"RCT-0084","status":"active","successful_land":null,"current_patchset_id":null}),
+        )]),
         changes: vec![json!({
             "repo_name": "fixture-ait",
-            "change_id": "RCC-WORKFLOW-PUBLISH",
-            "task_id": "RCT-WORKFLOW-PUBLISH",
+            "change_id": "RCT-0084/C-01",
+            "task_id": "RCT-0084",
             "base_line": "main"
         })],
         lines: vec![json!({
@@ -775,160 +761,212 @@ fn workflow_publish_patchset_action_accepts_change_line_snapshot_and_closeout_re
         "line_name": "feature/lct-0159",
     });
 
-    let payload = workflow_publish_patchset_action_with_task_and_closeout_remotes(
+    let error = workflow_publish_patchset_action_with_task_and_closeout_remotes(
         &repo,
         &mut task_remote,
         &mut closeout_remote,
         "origin",
         "fixture-ait",
-        "RCC-WORKFLOW-PUBLISH",
+        "RCT-0084/C-01",
         "trait workflow patchset publish",
         "ai_with_human_review",
         Some(auto_rebase.clone()),
         "ready",
     )
-    .expect("publish and select patchset through workflow trait helper");
+    .expect_err("unbound Snapshot must fail before publication");
+    assert!(
+        error.contains("remote") || error.contains("Remote"),
+        "{error}"
+    );
+    assert!(closeout_remote.patchsets.is_empty());
+    assert!(task_remote.zstd_plan_requests.is_empty());
+}
 
-    assert_eq!(payload["patchset_id"], json!("RCP-RCC-WORKFLOW-PUBLISH-1"));
-    assert_eq!(
-        payload["result"]["patchset"]["summary"],
-        json!("trait workflow patchset publish")
-    );
-    assert_eq!(
-        payload["result"]["revision_snapshot_id"],
-        json!(revision_snapshot_id)
-    );
-    assert_eq!(payload["auto_rebase"], auto_rebase);
-    assert_eq!(payload["result"]["auto_rebase"], auto_rebase);
-    assert_eq!(payload["selection"]["selected"], json!(true));
-    assert_eq!(
-        payload["selection"]["patchset_id"],
-        json!("RCP-RCC-WORKFLOW-PUBLISH-1")
-    );
-    assert_eq!(
-        payload["result"]["snapshot_sync"]["remote_sync_backend"]["backend"],
-        json!("zstd_pack_bulk")
-    );
-    assert_eq!(task_remote.zstd_plan_requests.len(), 1);
-    assert_eq!(task_remote.zstd_commit_requests.len(), 1);
-    let committed_snapshot_ids = task_remote.zstd_commit_requests[0]["snapshots"]
-        .as_array()
-        .expect("zstd commit snapshots")
-        .iter()
-        .filter_map(|snapshot| string_field(snapshot, "snapshot_id"))
-        .collect::<Vec<_>>();
-    assert!(committed_snapshot_ids.contains(&revision_snapshot_id));
-    assert_eq!(closeout_remote.patchsets.len(), 1);
-    assert_eq!(closeout_remote.selected_patchsets.len(), 1);
+fn current_candidate_port_fixture(
+    task: &str,
+    change: Option<&str>,
+    ordinal: u8,
+) -> (FakeChangeRemote, FakeWorkspaceCloseoutRemote) {
+    let id = format!("{task}/P-{ordinal:02}");
+    let child = change.map(|reference| reference.rsplit('/').next().unwrap());
+    let changes = change.map(|reference| json!({"repo_name":"fixture-ait","task_id":task,"change_id":reference,"change_ref":reference})).into_iter().collect();
+    let task_remote = FakeChangeRemote {
+        tasks: BTreeMap::from([(
+            task.into(),
+            json!({"task_id":task,"status":"active","successful_land":null,"current_patchset_id":id}),
+        )]),
+        changes,
+        ..Default::default()
+    };
+    let closeout = FakeWorkspaceCloseoutRemote {
+        patchsets: BTreeMap::from([(
+            id.clone(),
+            json!({"patchset_id":id,"task_id":task,"change_id":child,"change_ref":change,"base_snapshot_id":"B","revision_snapshot_id":"R","author_mode":"ai_with_human_review"}),
+        )]),
+        ..Default::default()
+    };
+    (task_remote, closeout)
+}
+
+fn remote_revision_fixture() -> (FakeChangeRemote, FakeWorkspaceCloseoutRemote) {
+    let (mut tasks, mut closeout) = current_candidate_port_fixture("RT-0108", None, 1);
+    tasks
+        .lines
+        .push(json!({"repo_name":"fixture-ait","line_name":"main","head_snapshot_id":"S0"}));
+    let candidate = closeout.patchsets.get_mut("RT-0108/P-01").unwrap();
+    candidate["base_snapshot_id"] = json!("S0");
+    candidate["revision_snapshot_id"] = json!("S1");
+    (tasks, closeout)
+}
+
+#[test]
+fn remote_revision_creation_forks_current_reviewed_revision_instead_of_main() {
+    for assertion in [None, Some("S1")] {
+        let (mut tasks, mut closeout) = remote_revision_fixture();
+        let created = super::change_flow::change_create_remote_revision_with_remotes(
+            &mut tasks,
+            &mut closeout,
+            "fixture-ait",
+            "RT-0108",
+            "Actual correction",
+            "main",
+            assertion,
+        )
+        .unwrap();
+        assert_eq!(created["change_ref"], "RT-0108/C-01");
+        assert_eq!(created["fork_snapshot_id"], "S1");
+        assert_eq!(tasks.changes.len(), 1);
+        assert_eq!(tasks.changes[0]["fork_snapshot_id"], "S1");
+        assert_eq!(closeout.patchset_reads, vec!["RT-0108/P-01"]);
+    }
+}
+
+#[test]
+fn remote_revision_creation_rejects_bad_assertions_or_candidate_without_effects() {
+    for case in 0..6 {
+        let (mut tasks, mut closeout) = remote_revision_fixture();
+        let mut assertion = None;
+        match case {
+            0 => assertion = Some("S0"),
+            1 => assertion = Some("FOREIGN"),
+            2 => {
+                closeout.patchsets.get_mut("RT-0108/P-01").unwrap()["invalidated"] = json!(true);
+            }
+            3 => {
+                closeout.patchsets.get_mut("RT-0108/P-01").unwrap()["task_id"] = json!("RT-0109");
+            }
+            4 => {
+                tasks
+                    .tasks
+                    .get_mut("RT-0108")
+                    .unwrap()
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("current_patchset_id");
+            }
+            _ => {
+                tasks.tasks.get_mut("RT-0108").unwrap()["current_patchset_id"] =
+                    json!("RT-0108/P-02");
+            }
+        }
+        assert!(
+            super::change_flow::change_create_remote_revision_with_remotes(
+                &mut tasks,
+                &mut closeout,
+                "fixture-ait",
+                "RT-0108",
+                "Actual correction",
+                "main",
+                assertion
+            )
+            .is_err(),
+            "case {case}"
+        );
+        assert!(tasks.changes.is_empty(), "case {case}");
+    }
+}
+
+#[test]
+fn remote_revision_creation_rechecks_candidate_before_creation_and_keeps_no_candidate_boundary() {
+    let (mut tasks, mut closeout) = remote_revision_fixture();
+    let original = tasks.tasks["RT-0108"].clone();
+    let mut moved = original.clone();
+    moved["current_patchset_id"] = json!("RT-0108/P-02");
+    tasks.task_read_sequence = VecDeque::from([original, moved]);
+    let error = super::change_flow::change_create_remote_revision_with_remotes(
+        &mut tasks,
+        &mut closeout,
+        "fixture-ait",
+        "RT-0108",
+        "Actual correction",
+        "main",
+        None,
+    )
+    .unwrap_err();
+    assert!(error.contains("candidate changed"), "{error}");
+    assert!(tasks.changes.is_empty());
+    let (mut tasks, mut closeout) = remote_revision_fixture();
+    tasks.tasks.get_mut("RT-0108").unwrap()["current_patchset_id"] = JsonValue::Null;
+    let created = super::change_flow::change_create_remote_revision_with_remotes(
+        &mut tasks,
+        &mut closeout,
+        "fixture-ait",
+        "RT-0108",
+        "Initial explicit revision",
+        "main",
+        None,
+    )
+    .unwrap();
+    assert_eq!(created["fork_snapshot_id"], "S0");
+    assert!(closeout.patchset_reads.is_empty());
 }
 
 #[test]
 fn patchset_argument_resolution_accepts_change_and_closeout_remote_traits() {
-    let mut change_remote = FakeChangeRemote {
-        changes: vec![
-            json!({
-                "repo_name": "fixture-ait",
-                "change_id": "RCC-SELECTED",
-                "selected_patchset_id": "RCP-SELECTED-2"
-            }),
-            json!({
-                "repo_name": "fixture-ait",
-                "change_id": "RCC-LATEST"
-            }),
-        ],
-        ..Default::default()
-    };
-    let mut closeout_remote = FakeWorkspaceCloseoutRemote {
-        patchsets: BTreeMap::from([
-            (
-                "RCP-DIRECT-1".to_string(),
-                json!({
-                    "patchset_id": "RCP-DIRECT-1",
-                    "change_id": "RCC-DIRECT",
-                    "patchset_number": 1
-                }),
-            ),
-            (
-                "RCP-LATEST-1".to_string(),
-                json!({
-                    "patchset_id": "RCP-LATEST-1",
-                    "change_id": "RCC-LATEST",
-                    "patchset_number": 1
-                }),
-            ),
-            (
-                "RCP-LATEST-3".to_string(),
-                json!({
-                    "patchset_id": "RCP-LATEST-3",
-                    "change_id": "RCC-LATEST",
-                    "patchset_number": 3
-                }),
-            ),
-        ]),
-        ..Default::default()
-    };
-
-    let direct = resolve_patchset_argument_with_task_and_closeout_remotes(
-        &mut change_remote,
-        &mut closeout_remote,
-        Some("RCP-DIRECT-1"),
+    let (mut task_remote, mut closeout) = current_candidate_port_fixture("RT-0105", None, 2);
+    let resolved = resolve_patchset_argument_with_task_and_closeout_remotes(
+        &mut task_remote,
+        &mut closeout,
         None,
+        Some("RT-0105"),
         Some("fixture-ait"),
     )
-    .expect("resolve direct patchset id");
-    assert_eq!(direct, "RCP-DIRECT-1");
-
-    let selected = resolve_patchset_argument_with_task_and_closeout_remotes(
-        &mut change_remote,
-        &mut closeout_remote,
+    .unwrap();
+    assert_eq!(resolved, "RT-0105/P-02");
+    closeout.patchsets.insert("RT-0105/P-01".into(), json!({"patchset_id":"RT-0105/P-01","task_id":"RT-0105","change_id":null,"change_ref":null,"base_snapshot_id":"B","revision_snapshot_id":"R"}));
+    closeout.patchsets.get_mut("RT-0105/P-02").unwrap()["invalidated"] = json!(true);
+    assert!(resolve_patchset_argument_with_task_and_closeout_remotes(
+        &mut task_remote,
+        &mut closeout,
         None,
-        Some("RCC-SELECTED"),
-        Some("fixture-ait"),
+        Some("RT-0105"),
+        Some("fixture-ait")
     )
-    .expect("resolve selected patchset from change identity");
-    assert_eq!(selected, "RCP-SELECTED-2");
-
-    let latest = resolve_patchset_argument_with_task_and_closeout_remotes(
-        &mut change_remote,
-        &mut closeout_remote,
-        None,
-        Some("RCC-LATEST"),
-        Some("fixture-ait"),
-    )
-    .expect("resolve latest patchset from closeout listing");
-    assert_eq!(latest, "RCP-LATEST-3");
-
+    .is_err());
     let err = resolve_patchset_argument_with_task_and_closeout_remotes(
-        &mut change_remote,
-        &mut closeout_remote,
+        &mut task_remote,
+        &mut closeout,
         None,
         None,
         Some("fixture-ait"),
     )
-    .expect_err("missing patchset and change should fail");
+    .unwrap_err();
     assert!(err.contains("Provide a Patchset ID"));
 }
 
 #[test]
 fn attestation_put_flow_accepts_change_and_closeout_remote_traits() {
-    let mut change_remote = FakeChangeRemote {
-        changes: vec![json!({
-            "repo_name": "fixture-ait",
-            "change_id": "RCC-ATTEST",
-            "selected_patchset_id": "RCP-ATTEST-2"
-        })],
-        ..Default::default()
-    };
-    let mut closeout_remote = FakeWorkspaceCloseoutRemote::default();
+    let (mut change_remote, mut closeout_remote) =
+        current_candidate_port_fixture("RT-0101", Some("RT-0101/C-01"), 2);
 
     let attestation = attestation_put_flow_with_task_and_closeout_remotes(
         &mut change_remote,
         &mut closeout_remote,
         None,
-        Some("RCC-ATTEST"),
+        Some("RT-0101/C-01"),
         Some("pass"),
-        Some("warn"),
-        Some("pass"),
+        None,
+        None,
         None,
         "ai_with_human_review",
         Some("gpt-5".to_string()),
@@ -936,28 +974,13 @@ fn attestation_put_flow_accepts_change_and_closeout_remote_traits() {
     )
     .expect("put attestation through reusable flow");
 
-    assert_eq!(attestation["patchset_id"], json!("RCP-ATTEST-2"));
-    assert_eq!(attestation["evaluation_summary"]["tests"], json!("pass"));
-    assert_eq!(attestation["evaluation_summary"]["lint"], json!("warn"));
-    assert_eq!(
-        attestation["evaluation_summary"]["security_scan"],
-        json!("pass")
-    );
-    assert!(attestation["evaluation_summary"]
-        .get("license_scan")
-        .is_none());
-    assert_eq!(
-        attestation["provenance_summary"]["model_name"],
-        json!("gpt-5")
-    );
-    assert_eq!(
-        attestation["detail"]["minimum_evidence"]["policy_readable"],
-        json!(true)
-    );
-
+    assert_eq!(attestation["patchset_id"], json!("RT-0101/P-02"));
+    assert_eq!(attestation["verification_state"], "pass");
+    assert!(attestation.get("provenance_summary").is_none());
+    assert_eq!(attestation["evaluation_summary"]["tests"], "none");
     let stored = closeout_remote
         .attestations
-        .get("RCP-ATTEST-2")
+        .get("RT-0101/P-02")
         .expect("stored attestation");
     assert_eq!(stored["repo_name"], json!("fixture-ait"));
 
@@ -980,20 +1003,13 @@ fn attestation_put_flow_accepts_change_and_closeout_remote_traits() {
 
 #[test]
 fn review_record_flow_accepts_change_and_closeout_remote_traits() {
-    let mut change_remote = FakeChangeRemote {
-        changes: vec![json!({
-            "repo_name": "fixture-ait",
-            "change_id": "RCC-REVIEW",
-            "selected_patchset_id": "RCP-REVIEW-2"
-        })],
-        ..Default::default()
-    };
-    let mut closeout_remote = FakeWorkspaceCloseoutRemote::default();
+    let (mut change_remote, mut closeout_remote) =
+        current_candidate_port_fixture("RT-0102", Some("RT-0102/C-01"), 2);
 
     let recorded = review_record_flow_with_task_and_closeout_remotes(
         &mut change_remote,
         &mut closeout_remote,
-        "RCC-REVIEW",
+        "RT-0102/C-01",
         None,
         "alice@example.com",
         "approve",
@@ -1003,8 +1019,8 @@ fn review_record_flow_accepts_change_and_closeout_remote_traits() {
     )
     .expect("record review through reusable flow");
 
-    assert_eq!(recorded["change_id"], json!("RCC-REVIEW"));
-    assert_eq!(recorded["patchset_id"], json!("RCP-REVIEW-2"));
+    assert_eq!(recorded["change_id"], json!("RT-0102/C-01"));
+    assert_eq!(recorded["patchset_id"], json!("RT-0102/P-02"));
     assert_eq!(recorded["reviewer"], json!("alice@example.com"));
     assert_eq!(recorded["action"], json!("approve"));
     assert_eq!(recorded["comment"], json!("looks good"));
@@ -1012,15 +1028,15 @@ fn review_record_flow_accepts_change_and_closeout_remote_traits() {
 
     let reviews = closeout_remote
         .reviews
-        .get("RCC-REVIEW")
+        .get("RT-0102/C-01")
         .expect("stored reviews");
     assert_eq!(reviews.len(), 1);
-    assert_eq!(reviews[0]["patchset_id"], json!("RCP-REVIEW-2"));
+    assert_eq!(reviews[0]["patchset_id"], json!("RT-0102/P-02"));
 
     let err = review_record_flow_with_task_and_closeout_remotes(
         &mut change_remote,
         &mut closeout_remote,
-        "RCC-REVIEW",
+        "RT-0102/C-01",
         Some("RCP-MISSING"),
         "alice@example.com",
         "approve",
@@ -1034,21 +1050,14 @@ fn review_record_flow_accepts_change_and_closeout_remote_traits() {
 
 #[test]
 fn review_request_flow_accepts_change_and_closeout_remote_traits() {
-    let mut change_remote = FakeChangeRemote {
-        changes: vec![json!({
-            "repo_name": "fixture-ait",
-            "change_id": "RCC-REQUEST",
-            "selected_patchset_id": "RCP-REQUEST-2"
-        })],
-        ..Default::default()
-    };
-    let mut closeout_remote = FakeWorkspaceCloseoutRemote::default();
+    let (mut change_remote, mut closeout_remote) =
+        current_candidate_port_fixture("RT-0103", Some("RT-0103/C-01"), 2);
     let reviewer_groups = vec!["core".to_string(), "release".to_string()];
 
     let requested = review_request_flow_with_task_and_closeout_remotes(
         &mut change_remote,
         &mut closeout_remote,
-        "RCC-REQUEST",
+        "RT-0103/C-01",
         None,
         &reviewer_groups,
         Some("please review"),
@@ -1056,22 +1065,22 @@ fn review_request_flow_accepts_change_and_closeout_remote_traits() {
     )
     .expect("request review through reusable flow");
 
-    assert_eq!(requested["change_id"], json!("RCC-REQUEST"));
-    assert_eq!(requested["patchset_id"], json!("RCP-REQUEST-2"));
+    assert_eq!(requested["change_id"], json!("RT-0103/C-01"));
+    assert_eq!(requested["patchset_id"], json!("RT-0103/P-02"));
     assert_eq!(requested["reviewer_groups"], json!(["core", "release"]));
     assert_eq!(requested["note"], json!("please review"));
 
     let requests = closeout_remote
         .review_requests
-        .get("RCC-REQUEST")
+        .get("RT-0103/C-01")
         .expect("stored review requests");
     assert_eq!(requests.len(), 1);
-    assert_eq!(requests[0]["patchset_id"], json!("RCP-REQUEST-2"));
+    assert_eq!(requests[0]["patchset_id"], json!("RT-0103/P-02"));
 
     let err = review_request_flow_with_task_and_closeout_remotes(
         &mut change_remote,
         &mut closeout_remote,
-        "RCC-REQUEST",
+        "RT-0103/C-01",
         Some("RCP-MISSING"),
         &reviewer_groups,
         None,
@@ -1159,23 +1168,16 @@ fn land_submit_flow_accepts_change_and_closeout_remote_traits() {
 
 #[test]
 fn change_identity_accepts_change_remote_trait() {
-    let mut remote = FakeChangeRemote {
-        changes: vec![json!({
-            "repo_name": "fixture-ait",
-            "change_id": "RCC-IDENTITY",
-            "selected_patchset_id": "RCP-IDENTITY-1"
-        })],
-        ..Default::default()
-    };
+    let (mut remote, _) = current_candidate_port_fixture("RT-0104", Some("RT-0104/C-01"), 1);
 
     let identity = super::change_flow::change_identity_with_task_remote(
         &mut remote,
-        "RCC-IDENTITY",
+        "RT-0104/C-01",
         Some("fixture-ait"),
     )
     .expect("resolve change identity");
-    assert_eq!(identity.0, "RCC-IDENTITY");
-    assert_eq!(identity.1.as_deref(), Some("RCP-IDENTITY-1"));
+    assert_eq!(identity.0, "RT-0104/C-01");
+    assert_eq!(identity.1.as_deref(), Some("RT-0104/P-01"));
 
     let err = super::change_flow::change_identity_with_task_remote(
         &mut remote,
@@ -1298,4 +1300,112 @@ fn patchset_helpers_accept_single_capability_ports() {
     )
     .expect("run patchset CI through single-capability port");
     assert_eq!(queued["queued"], json!(true));
+}
+
+#[test]
+fn compact_attestation_manual_states_retry_and_optional_no_ci_preserve_history() {
+    use ait_core::attest_json::{RemoteAttestationStatement, RemoteVerificationState};
+    let (_, mut remote) = current_candidate_port_fixture("RT-0109", None, 1);
+    let id = "RT-0109/P-01";
+    for (tests, state, writes) in [
+        (None, "unknown", 1),
+        (None, "unknown", 1),
+        (Some("pass"), "pass", 2),
+        (Some("pending"), "pending", 3),
+        (Some("fail"), "fail", 4),
+    ] {
+        let value = crate::primitives::change_flow::attestation_put_payload_with_closeout_remote(
+            &mut remote,
+            id,
+            tests,
+            None,
+            None,
+            None,
+            "ai_with_human_review",
+            Some("automatic-model".into()),
+            "fixture-ait",
+        )
+        .unwrap();
+        assert_eq!(value["verification_state"], state);
+        assert_eq!(value["require_tests_pass"], true);
+        assert_eq!(value["evaluation_summary"]["tests"], "none");
+        assert_eq!(remote.attestation_writes, writes);
+    }
+    let mut value = remote.attestations[id].clone();
+    value["verification_state"] = json!("pass");
+    value["require_tests_pass"] = json!(false);
+    value["ci_backed"] = json!(false);
+    remote.attestations.insert(id.into(), value);
+    let patchset = remote.patchsets[id].clone();
+    let before = remote.attestation_writes;
+    for _ in 0..2 {
+        let result = workflow_ready_record_attestation_with_closeout_remote(
+            &mut remote,
+            &patchset,
+            None,
+            None,
+            None,
+            None,
+            "ai_with_human_review",
+            None,
+            "fixture-ait",
+        )
+        .unwrap();
+        assert_eq!(result["result"]["require_tests_pass"], false);
+        assert_eq!(result["result"]["evaluation_summary"]["tests"], "none");
+        assert_eq!(result["result"]["ci_backed"], false);
+    }
+    assert_eq!(remote.attestation_writes, before);
+    let mut required = RemoteAttestationStatement {
+        verification_state: RemoteVerificationState::Pass,
+        require_tests_pass: false,
+        ..Default::default()
+    };
+    required.retain_requirements_from(&RemoteAttestationStatement::default());
+    assert!(required.require_tests_pass);
+}
+
+#[test]
+fn compact_attestation_nonpassing_or_incompatible_auto_readback_stops_without_append() {
+    let (_, mut remote) = current_candidate_port_fixture("RT-0110", None, 1);
+    let id = "RT-0110/P-01";
+    let patchset = remote.patchsets[id].clone();
+    for state in ["unknown", "pending", "fail", "revoked", "incompatible"] {
+        let mut value = json!({"task_id":"RT-0110","change_id":null,"change_ref":null,"patchset_id":id,"author_mode":"ai_with_human_review","verification_state":if state=="revoked" {"pass"}else{state},"require_tests_pass":false,"require_lint_pass":false,"require_human_review":false,"revoked":state=="revoked","ci_backed":false});
+        if state == "incompatible" {
+            value = json!({"evaluation_summary":{"tests":"pass"}});
+        }
+        remote.attestations.insert(id.into(), value);
+        for _ in 0..2 {
+            assert!(workflow_ready_record_attestation_with_closeout_remote(
+                &mut remote,
+                &patchset,
+                None,
+                None,
+                None,
+                None,
+                "ai_with_human_review",
+                None,
+                "fixture-ait"
+            )
+            .is_err());
+        }
+        assert_eq!(remote.attestation_writes, 0);
+    }
+    remote.attestations.clear();
+    remote.patchsets.get_mut(id).unwrap()["revision_snapshot_id"] = json!("CHANGED");
+    assert!(workflow_ready_record_attestation_with_closeout_remote(
+        &mut remote,
+        &patchset,
+        Some("pass"),
+        None,
+        None,
+        None,
+        "ai_with_human_review",
+        None,
+        "fixture-ait"
+    )
+    .unwrap_err()
+    .contains("candidate changed"));
+    assert_eq!(remote.attestation_writes, 0);
 }

@@ -1329,7 +1329,18 @@ fn snapshot_overlay(
     snapshot_ids: &[String],
     target: &BlameTarget,
 ) -> Result<BTreeMap<String, JsonMap<String, JsonValue>>, String> {
-    let direct_rows = crate::primitives::resolved_snapshot_ownership_rows(repo, snapshot_ids)?;
+    let mut direct_rows = crate::primitives::resolved_snapshot_ownership_rows(repo, snapshot_ids)?;
+    if let Some(remote_name) = target.remote_name.as_deref() {
+        let remote_rows = crate::primitives::resolved_remote_snapshot_ownership_rows(
+            repo,
+            snapshot_ids,
+            Some(remote_name),
+        )?;
+        for remote in remote_rows {
+            direct_rows.retain(|local| local["snapshot_id"] != remote["snapshot_id"]);
+            direct_rows.push(remote);
+        }
+    }
     let direct_by_snapshot = direct_rows
         .into_iter()
         .filter_map(|row| string_field(&row, "snapshot_id").map(|snapshot_id| (snapshot_id, row)))
@@ -1339,6 +1350,13 @@ fn snapshot_overlay(
     for snapshot_id in snapshot_ids {
         let direct = direct_by_snapshot.get(snapshot_id);
         let mut entry = JsonMap::new();
+        if let Some(row) = direct {
+            for field in ["ownership_conflict", "accepted_task_ids"] {
+                if let Some(value) = row.get(field) {
+                    entry.insert(field.to_string(), value.clone());
+                }
+            }
+        }
         insert_optional_string(
             &mut entry,
             "task_id",
@@ -1373,13 +1391,18 @@ fn snapshot_overlay(
                 direct
                     .and_then(|row| string_field(row, "ownership_source"))
                     .map(|source| match source.as_str() {
-                        "durable_snapshot_binding" | "derived_from_recorded_change" => source,
-                        _ => "bound_worktree_snapshot_line".to_string(),
+                        "durable_snapshot_binding"
+                        | "durable_remote_snapshot_binding"
+                        | "derived_from_recorded_change"
+                        | "derived_from_recorded_task_receipt" => source,
+                        _ => "unknown".to_string(),
                     })
                     .unwrap_or_else(|| "unknown".to_string()),
             ),
         );
-        if patchset_revision_snapshot_id.as_deref() == Some(snapshot_id.as_str()) {
+        if patchset_revision_snapshot_id.as_deref() == Some(snapshot_id.as_str())
+            && entry.get("ownership_conflict").and_then(JsonValue::as_bool) != Some(true)
+        {
             insert_optional_string(&mut entry, "patchset_id", target.patchset_id.clone());
             if string_field_obj(&entry, "change_id").is_none() {
                 insert_optional_string(&mut entry, "change_id", target.change_id.clone());
@@ -1415,6 +1438,9 @@ fn snapshot_overlay(
             let Some(entry) = overlay.get_mut(&snapshot_id) else {
                 continue;
             };
+            if entry.get("ownership_conflict").and_then(JsonValue::as_bool) == Some(true) {
+                continue;
+            }
             if ["task_id", "change_id"].iter().any(|field| {
                 matches!((string_field_obj(entry, field), string_field_obj(&remote_entry, field)), (Some(local), Some(remote)) if local != remote)
             }) {
@@ -1656,6 +1682,8 @@ fn line_row_payload(
         "message": snapshot_row.get("message").cloned().unwrap_or(JsonValue::Null),
         "created_at": snapshot_row.get("created_at").cloned().unwrap_or(JsonValue::Null),
         "task_id": overlay.get("task_id").cloned().unwrap_or(JsonValue::Null),
+        "ownership_conflict": overlay.get("ownership_conflict").cloned().unwrap_or(json!(false)),
+        "accepted_task_ids": overlay.get("accepted_task_ids").cloned().unwrap_or_else(||json!([])),
         "change_id": overlay.get("change_id").cloned().unwrap_or(JsonValue::Null),
         "patchset_id": overlay.get("patchset_id").cloned().unwrap_or(JsonValue::Null),
         "land_id": overlay.get("land_id").cloned().unwrap_or(JsonValue::Null),
@@ -1756,6 +1784,8 @@ fn line_signature(row: &JsonValue) -> Vec<String> {
         "plan_id",
         "plan_revision_id",
         "task_id",
+        "ownership_conflict",
+        "accepted_task_ids",
         "change_id",
         "patchset_id",
         "land_id",

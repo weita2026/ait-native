@@ -412,3 +412,46 @@ fn task_workflow_detail_rejects_non_object_payloads() {
     let err = TaskWorkflowDetailInput::from_value(&json!([])).expect_err("arrays are invalid");
     assert!(err.contains("task workflow detail read-model payload must be a JSON object"));
 }
+
+#[test]
+fn task_owned_detail_uses_current_candidate_then_actual_accepted_receipt() {
+    let mut payload = json!({
+        "task":{"task_id":"RT-0001","repo_name":"repo","status":"active",
+            "current_patchset_id":"RT-0001/P-02","successful_land":null},
+        "repository":{"repo_name":"repo","default_line":"main"},
+        "changes":[],
+        "patchsets":[
+            {"task_id":"RT-0001","repo_name":"repo","patchset_id":"RT-0001/P-01","patchset_number":1},
+            {"task_id":"RT-0001","repo_name":"repo","patchset_id":"RT-0001/P-02","patchset_number":2}
+        ],
+        "reviews":[{"patchset_id":"RT-0001/P-01","action":"approve"}]
+    });
+    let detail =
+        task_workflow_detail_read_model(&TaskWorkflowDetailInput::from_value(&payload).unwrap())
+            .unwrap();
+    assert_eq!(detail["changes"], json!([]));
+    assert_eq!(detail["display_patchset"]["patchset_id"], "RT-0001/P-02");
+    assert!(detail["accepted_patchset"].is_null());
+    assert_eq!(detail["review_summary"]["approvals"], 0);
+    payload["task"]["status"] = json!("completed");
+    let missing =
+        task_workflow_detail_read_model(&TaskWorkflowDetailInput::from_value(&payload).unwrap())
+            .unwrap();
+    assert!(missing["accepted_patchset"].is_null());
+    assert_eq!(
+        missing["combined_recommendation"]["task_review_verdict"],
+        "defer"
+    );
+    payload["task"]["successful_land"] =
+        json!({"status":"succeeded","patchset_id":"RT-0001/P-01","target_line":"main"});
+    let completed =
+        task_workflow_detail_read_model(&TaskWorkflowDetailInput::from_value(&payload).unwrap())
+            .unwrap();
+    assert_eq!(completed["current_patchset"]["patchset_id"], "RT-0001/P-02");
+    assert_eq!(
+        completed["accepted_patchset"]["patchset_id"],
+        "RT-0001/P-01"
+    );
+    assert_eq!(completed["display_patchset"]["patchset_id"], "RT-0001/P-01");
+    assert_eq!(completed["review_summary"]["approvals"], 1);
+}

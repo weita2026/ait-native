@@ -418,6 +418,7 @@ fn handshake_payload() -> JsonValue {
         "authority_backend": "binary_v0",
         "contract_version": "ait.agent_server_protocol.v2",
         "supported_async_job_types": ["patchset.ci"],
+        "operational_capabilities": {"review_actor_identity_v1":true},
         "ci_capabilities": {
             "patchset_run_ci_route": true,
             "repository_pack_storage": {
@@ -615,7 +616,7 @@ fn fake_atomic_task_land_response(
     submission_id: &str,
 ) -> JsonValue {
     json!({
-        "contract": "task-land-atomic/v1",
+        "contract": "task-land-atomic/v2",
         "repo_name": "fixture-ait",
         "repo_id": "repo-fixture-ait",
         "idempotency_key": request.get("idempotency_key").cloned().unwrap_or(JsonValue::Null),
@@ -748,7 +749,7 @@ fn fake_atomic_task_start_response(body: &str, state: &Arc<Mutex<FakeRemoteState
         "current_patchset_number": 0,
     });
     let response = json!({
-        "contract": "task-start-atomic/v1",
+        "contract": "task-start-atomic/v2",
         "repo_name": "fixture-ait",
         "repo_id": "repo-fixture-ait",
         "idempotency_key": request.get("idempotency_key").cloned().unwrap_or(JsonValue::Null),
@@ -881,7 +882,13 @@ fn response_for(
         );
     }
     let payload = match (method, url) {
-        ("GET", "/healthz") | ("GET", "/v1/handshake") => handshake_payload(),
+        ("GET", "/healthz") | ("GET", "/v1/handshake") => {
+            let mut payload = handshake_payload();
+            if state.lock().unwrap().unsupported_review_actor_identity {
+                payload["operational_capabilities"] = json!({});
+            }
+            payload
+        }
         ("GET", "/v1/native/repository-authorities/7") => {
             repository_payload("fixture-ait")
         }
@@ -929,7 +936,7 @@ fn response_for(
             let request = parse_json(body);
             assert_eq!(
                 request.get("contract").and_then(JsonValue::as_str),
-                Some("task-land-atomic/v1")
+                Some("task-land-atomic/v2")
             );
             assert_eq!(
                 request.get("task_or_change_ref").and_then(JsonValue::as_str),
@@ -1361,12 +1368,19 @@ fn response_for(
         }
         ("POST", "/v1/native/repository-authorities/7/changes/RC-1/reviews") => {
             let parsed: JsonValue = parse_json(body);
-            json!({
+            let mut review = json!({
                 "change_id":"RC-1",
                 "patchset_id": parsed.get("patchset_id").cloned().unwrap_or(JsonValue::Null),
                 "reviewer": parsed.get("reviewer").cloned().unwrap_or(JsonValue::Null),
+                "reviewer_kind": parsed.get("reviewer_kind").cloned().unwrap_or(json!("user")),
                 "action": parsed.get("action").cloned().unwrap_or(JsonValue::Null)
-            })
+            });
+            let mut guard = state.lock().unwrap();
+            if let Some(kind) = guard.review_readback_kind_override.as_ref() {
+                review["reviewer_kind"] = json!(kind);
+            }
+            guard.recorded_actor_reviews.push(review.clone());
+            review
         }
         ("GET", "/v1/native/repository-authorities/7/changes/RC-1/reviews") => {
             let patchset_id = state
@@ -1756,6 +1770,7 @@ fn response_for_publish_recovery(
                     "change_id":"RC-1",
                     "patchset_id": parsed.get("patchset_id").cloned().unwrap_or(JsonValue::Null),
                     "reviewer": parsed.get("reviewer").cloned().unwrap_or(JsonValue::Null),
+                    "reviewer_kind": parsed.get("reviewer_kind").cloned().unwrap_or(json!("user")),
                     "action": parsed.get("action").cloned().unwrap_or(JsonValue::Null)
                 }),
             )
@@ -1858,6 +1873,61 @@ fn response_for_bounded_snapshot_sync(
     }
 }
 
+fn closeout_plan_response(
+    method: &str,
+    url: &str,
+    body: &str,
+    state: &Arc<Mutex<CloseoutRecoveryRemoteState>>,
+) -> Option<Response<std::io::Cursor<Vec<u8>>>> {
+    let mut state = state.lock().unwrap();
+    let completed = state.task_completed;
+    let fixture = state.plan_closeout.as_mut()?;
+    let path = url.split('?').next().unwrap();
+    let prefix = "/v1/native/repository-authorities/7/sprints";
+    if method == "GET" && path == "/v1/native/repository-authorities/7/tasks/RT-1" {
+        return Some(json_response(200, &fixture.bound_task(completed)));
+    }
+    if method == "GET" && path == "/v1/native/repository-authorities/7/tasks" {
+        return Some(json_response(200, &json!([fixture.bound_task(completed)])));
+    }
+    if method == "GET" && path.contains("/remote-sync/") {
+        return Some(json_response(404, &json!({"detail":"fixture pack absent"})));
+    }
+    if path == prefix && method == "GET" {
+        return Some(json_response(200, &json!([fixture.plan.clone()])));
+    }
+    let plan_path = format!("{prefix}/{}", fixture.plan["plan_id"].as_str().unwrap());
+    if path != plan_path && !path.starts_with(&format!("{plan_path}/")) {
+        return None;
+    }
+    if method == "GET" {
+        let payload = if path.ends_with("/revisions") {
+            json!(fixture.revisions.clone())
+        } else if path.contains("/revisions/") {
+            let id = path.rsplit('/').next().unwrap().replace("%3A", ":").replace("%3a", ":");
+            fixture.revisions.iter().find(|r| r["plan_revision_id"] == id).cloned().unwrap_or(JsonValue::Null)
+        } else {
+            fixture.plan.clone()
+        };
+        return Some(json_response(200, &payload));
+    }
+    if method == "POST" && path.ends_with("/revisions") {
+        if fixture.fail_sync {
+            return Some(json_response(503, &json!({"detail":"injected Plan sync failure after code apply"})));
+        }
+        let mut revision = parse_json(body);
+        revision["plan_id"] = fixture.plan["plan_id"].clone();
+        revision["plan_revision_id"] = json!(format!("plan-revision:{}", 100 + fixture.revisions.len()));
+        revision["parent_plan_revision_id"] = fixture.plan["head_revision_id"].clone();
+        revision["revision_number"] = json!(fixture.revisions.len() + 1);
+        fixture.plan["head_revision_id"] = revision["plan_revision_id"].clone();
+        fixture.plan["head_revision"] = revision.clone();
+        fixture.revisions.push(revision);
+        return Some(json_response(200, &fixture.plan));
+    }
+    Some(json_response(404, &json!({"detail":"unexpected Plan fixture request"})))
+}
+
 fn response_for_closeout_recovery(
     method: &str,
     url: &str,
@@ -1867,6 +1937,9 @@ fn response_for_closeout_recovery(
     if let Some(response) = maybe_zstd_bulk_response(method, url, body, None, None) {
         return response;
     }
+    if let Some(response) = closeout_plan_response(method, url, body, state) {
+        return response;
+    }
     match (method, url) {
         ("GET", "/v1/handshake") => json_response(200, &handshake_payload()),
         ("GET", "/v1/native/repository-authorities/7") => {
@@ -1874,10 +1947,8 @@ fn response_for_closeout_recovery(
         }
         ("POST", "/v1/native/repository-authorities/7/task-land") => {
             let request = parse_json(body);
-            assert_eq!(
-                request.get("contract").and_then(JsonValue::as_str),
-                Some("task-land-atomic/v1")
-            );
+            let guarded = request["contract"].as_str() == Some(ait_core::workflow_expected_identity::GUARDED_TASK_LAND_CONTRACT);
+            assert!(guarded || request["contract"].as_str() == Some("task-land-atomic/v2"));
             assert!(matches!(
                 request
                     .get("task_or_change_ref")
@@ -1886,6 +1957,21 @@ fn response_for_closeout_recovery(
             ));
             {
                 let guard = state.lock().unwrap();
+                if guard.guarded_base_snapshot_id.is_some() && !guarded {
+                    return json_response(409, &json!({"detail":"fixture requires guarded finish"}));
+                }
+                if guarded {
+                    let actual = json!({
+                        "patchset_id":"RP-1",
+                        "revision_snapshot_id":guard.patchset_revision_snapshot_id.as_deref().unwrap_or(FIXTURE_BASE_SNAPSHOT_ID),
+                        "base_snapshot_id":guard.guarded_base_snapshot_id.as_deref().unwrap_or(FIXTURE_BASE_SNAPSHOT_ID)
+                    });
+                    let validation = ait_core::workflow_expected_identity::WorkflowExpectedIdentity::from_value(&request["expected_identity"])
+                        .and_then(|expected| expected.validate_patchset(FIXTURE_REPOSITORY_INDEX, &actual));
+                    if let Err(error) = validation {
+                        return json_response(409, &json!({"detail":error}));
+                    }
+                }
                 if guard.enforce_reviewer_workflow
                     && (!guard.code_review_recorded
                         || !guard.task_review_recorded
@@ -2002,16 +2088,23 @@ fn response_for_closeout_recovery(
                     }),
                 );
             }
-            json_response(
-                200,
-                &fake_atomic_task_land_response(
+            let mut response = fake_atomic_task_land_response(
                     &request,
                     replayed,
                     &landed_snapshot_id,
                     "RP-1",
                     "LAND-REC",
-                ),
-            )
+                );
+            if let Some(plan) = &state.lock().unwrap().plan_closeout {
+                response["task"] = plan.bound_task(true);
+            }
+            if guarded {
+                response["contract"] = request["contract"].clone();
+                response["repository_index"] = json!(FIXTURE_REPOSITORY_INDEX);
+                response["expected_identity"] = request["expected_identity"].clone();
+                response["patchset"]["base_snapshot_id"] = request["expected_identity"]["base_snapshot_id"].clone();
+            }
+            json_response(200, &response)
         }
         ("POST", "/v1/native/repository-authorities/7/changes/RC-1:submit") => {
             let (boundary, response_delay, fixture_seed, landed_snapshot_id) = {
@@ -2358,6 +2451,7 @@ fn response_for_closeout_recovery(
                     "change_id":"RC-1",
                     "patchset_id": parsed.get("patchset_id").cloned().unwrap_or(JsonValue::Null),
                     "reviewer": parsed.get("reviewer").cloned().unwrap_or(JsonValue::Null),
+                    "reviewer_kind": parsed.get("reviewer_kind").cloned().unwrap_or(json!("user")),
                     "action": parsed.get("action").cloned().unwrap_or(JsonValue::Null)
                 }),
             )
@@ -2375,9 +2469,9 @@ fn response_for_closeout_recovery(
         ("GET", "/v1/native/repository-authorities/7/changes/RC-1/reviews") => {
             let guard = state.lock().unwrap();
             let task_reviews = if guard.task_review_recorded {
-                vec![
-                    json!({"reviewer":"Fixture User","patchset_id":"RP-1","action":"task_approve","blocking":false,"comment":"looks fine"}),
-                ]
+                let mut review = json!({"reviewer":"Fixture User","reviewer_kind":guard.existing_task_review_kind.as_deref().unwrap_or("user"),"patchset_id":"RP-1","action":"task_approve","blocking":false,"comment":"looks fine"});
+                if guard.omit_task_review_kind { review.as_object_mut().unwrap().remove("reviewer_kind"); }
+                vec![review]
             } else {
                 Vec::new()
             };
@@ -2459,7 +2553,7 @@ fn response_for_closeout_recovery(
             json_response(
                 200,
                 &json!({
-                    "contract":"ait.server.patchset_ci.readiness.v1",
+                    "contract":"ait.server.patchset_ci.readiness.v2",
                     "patchset_id":"RP-1",
                     "change_id":"RC-1",
                     "tests_status":"pass",

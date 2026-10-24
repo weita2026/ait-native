@@ -167,7 +167,10 @@ fn assert_secret_safe(metadata: &JsonValue) {
         "reader-secret",
         "telegram-secret",
     ] {
-        assert!(!rendered.contains(secret), "metadata leaked {secret}");
+        assert!(
+            !rendered.contains(secret),
+            "redaction assertion failed: sensitive value was present"
+        );
     }
     assert_eq!(metadata["downloaded_bytes_exposed"], false);
     assert_eq!(metadata["token_bearing_url_exposed"], false);

@@ -4,11 +4,17 @@
 //! activated only after its manifest, checksums, schema, and content closure
 //! have been validated.
 
+mod agent_pool_50;
 mod generation_activation;
 mod generation_capture;
 mod generation_content_closure;
 mod generation_content_indexes;
+mod generation_git;
+mod generation_git_delta;
 mod generation_manifest;
+mod local_change_cleanup;
+mod local_land_upgrade;
+mod local_upgrade_cursors;
 mod u64_second_upgrade;
 
 use std::collections::BTreeMap;
@@ -17,16 +23,31 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc;
 use std::thread;
 
+pub use agent_pool_50::{
+    agent_pool_50_complete, agent_pool_50_generation_valid, stage_agent_pool_50,
+    AgentPool50Options, AgentPool50Report,
+};
 pub use generation_activation::{
     activate_binary_db_generation, admit_activated_binary_db_generation,
     admit_activated_binary_db_generation_for_runtime, binary_db_activation_lock_root,
     snapshot_binary_db_authority_fingerprint, ActivatedBinaryDbGeneration,
     BinaryDbGenerationActivationOptions, BinaryDbGenerationActivationReport,
 };
+pub(crate) use generation_activation::{configured_repo_name, require_direct_authority_directory};
 pub use generation_capture::{
-    capture_binary_db_generation, CaptureBinaryDbGenerationOptions, CaptureBinaryDbGenerationReport,
+    capture_binary_db_generation, capture_binary_db_generation_preserving_ordinals,
+    seal_binary_db_generation, validate_binary_db_generation, CaptureBinaryDbGenerationOptions,
+    CaptureBinaryDbGenerationReport,
+};
+pub use generation_git_delta::{
+    restage_binary_db_git_delta_whole_packs, resume_binary_db_git_delta_repack,
+    stage_binary_db_git_delta_repack, GitDeltaRepackReport,
 };
 pub use generation_manifest::GenerationFileManifest;
+pub use local_land_upgrade::{
+    stage_local_land_upgrade, StageLocalLandUpgradeOptions, StageLocalLandUpgradeReport,
+    LOCAL_LAND_V1_SOURCE_SELECTOR,
+};
 pub use u64_second_upgrade::{
     stage_binary_db_u64_second_upgrade, StageBinaryDbU64SecondUpgradeOptions,
     StageBinaryDbU64SecondUpgradeReport, U32_TIME_V0_SOURCE_SELECTOR,

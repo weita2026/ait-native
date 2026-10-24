@@ -1,17 +1,14 @@
-//! Durable local Snapshot ownership, using the protected layout-1 link records.
+//! Durable numeric Snapshot ownership, using the protected layout-2 link records.
 use super::*;
 
-const LINK_SIZE: u32 = 40;
+const LINK_SIZE: u32 = AUTHORITATIVE_SNAPSHOT_LINK_RECORD_SIZE;
 const INDEX_SIZE: u32 = 8;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SnapshotWorkflowBinding {
     pub task_id: String,
     pub change_id: String,
-    pub worktree_name: String,
     pub line_name: String,
-    pub author_mode: String,
-    pub model_name: String,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -42,124 +39,7 @@ impl OwnerIndex {
     }
 }
 
-#[derive(Clone, Debug)]
-struct Link {
-    meta: u8,
-    ordinal: u8,
-    payload_len: u16,
-    payload_offset: u64,
-    task: u32,
-    change_plus1: u32,
-    snapshot: u32,
-    previous_task: u32,
-    previous_change: u32,
-    created_at_s: u64,
-}
-
-impl Link {
-    fn encode(&self) -> Vec<u8> {
-        let mut out = vec![self.meta, self.ordinal];
-        out.extend_from_slice(&self.payload_len.to_le_bytes());
-        out.extend_from_slice(&self.payload_offset.to_le_bytes());
-        for value in [
-            self.task,
-            self.change_plus1,
-            self.snapshot,
-            self.previous_task,
-            self.previous_change,
-        ] {
-            out.extend_from_slice(&value.to_le_bytes());
-        }
-        out.extend_from_slice(&self.created_at_s.to_le_bytes());
-        out
-    }
-
-    fn decode(raw: &[u8]) -> StoreResult<Self> {
-        require_raw_size(raw, LINK_SIZE, "Snapshot Link")?;
-        if raw[0] & 0x40 != 0 {
-            return Err("Snapshot Link has reserved metadata".into());
-        }
-        let u32_at = |offset| u32::from_le_bytes(raw[offset..offset + 4].try_into().unwrap());
-        let value = Self {
-            meta: raw[0],
-            ordinal: raw[1],
-            payload_len: u16::from_le_bytes(raw[2..4].try_into().unwrap()),
-            payload_offset: u64::from_le_bytes(raw[4..12].try_into().unwrap()),
-            task: u32_at(12),
-            change_plus1: u32_at(16),
-            snapshot: u32_at(20),
-            previous_task: u32_at(24),
-            previous_change: u32_at(28),
-            created_at_s: u64::from_le_bytes(raw[32..40].try_into().unwrap()),
-        };
-        if (value.meta & 1 != 0) != (value.change_plus1 != 0) {
-            return Err("Snapshot Link Change flag disagrees with its pointer".into());
-        }
-        Ok(value)
-    }
-}
-
-impl SnapshotWorkflowBinding {
-    fn encode(&self) -> StoreResult<Vec<u8>> {
-        let fields = [
-            &self.worktree_name,
-            &self.line_name,
-            &self.task_id,
-            &self.change_id,
-            &self.author_mode,
-            &self.model_name,
-        ];
-        let mut out = Vec::new();
-        for field in &fields[..5] {
-            out.extend_from_slice(
-                &u16::try_from(field.len())
-                    .map_err(|_| "Snapshot Link field exceeds u16")?
-                    .to_le_bytes(),
-            );
-        }
-        for field in fields {
-            out.extend_from_slice(field.as_bytes());
-        }
-        u16::try_from(out.len()).map_err(|_| "Snapshot Link payload exceeds u16")?;
-        Ok(out)
-    }
-
-    fn decode(raw: &[u8]) -> StoreResult<Self> {
-        if raw.len() < 10 {
-            return Err("Snapshot Link payload is truncated".into());
-        }
-        let mut offset = 10;
-        let mut fields = Vec::new();
-        for index in 0..5 {
-            let size = usize::from(u16::from_le_bytes(
-                raw[index * 2..index * 2 + 2].try_into().unwrap(),
-            ));
-            let end = offset + size;
-            let bytes = raw
-                .get(offset..end)
-                .ok_or("Snapshot Link payload field is truncated")?;
-            fields.push(
-                std::str::from_utf8(bytes)
-                    .map_err(|_| "Snapshot Link payload is not UTF-8")?
-                    .to_string(),
-            );
-            offset = end;
-        }
-        fields.push(
-            std::str::from_utf8(&raw[offset..])
-                .map_err(|_| "Snapshot Link model is not UTF-8")?
-                .to_string(),
-        );
-        Ok(Self {
-            worktree_name: fields[0].clone(),
-            line_name: fields[1].clone(),
-            task_id: fields[2].clone(),
-            change_id: fields[3].clone(),
-            author_mode: fields[4].clone(),
-            model_name: fields[5].clone(),
-        })
-    }
-}
+type Link = SnapshotLinkRecord;
 
 type SnapshotLinkInventory = (
     Vec<(Link, SnapshotWorkflowBinding)>,
@@ -177,10 +57,7 @@ impl<B: BinaryDb, const L: u32> BinaryDbWorkflowStore<B, L> {
     }
 
     fn snapshot_link_file() -> BinaryFileId {
-        fixed_file::<L>("snapshot_link.bin", LINK_SIZE)
-    }
-    fn snapshot_link_payload_file() -> BinaryPayloadFileId {
-        payload_file::<L>("snapshot_link_payload.bin")
+        BinaryFileId::new("snapshot_link.bin", SNAPSHOT_LINK_LAYOUT_ID, LINK_SIZE)
     }
     fn snapshot_owner_file(task: bool) -> BinaryFileId {
         fixed_file::<L>(
@@ -193,102 +70,166 @@ impl<B: BinaryDb, const L: u32> BinaryDbWorkflowStore<B, L> {
         )
     }
 
+    fn snapshot_link_read_file(&self) -> BinaryFileId {
+        if self.legacy_land_reader {
+            BinaryFileId::new("snapshot_link.bin", 1, 40)
+        } else {
+            Self::snapshot_link_file()
+        }
+    }
+    fn snapshot_authoring_line<A: WorkflowReadAccess>(
+        access: &A,
+        index: u32,
+    ) -> StoreResult<String> {
+        let row = BinarySnapshotCodec::<1>::decode_record(
+            &access.read_record(BinarySnapshotCodec::<1>::record_file(), index)?,
+        )?;
+        if row.is_tombstone() {
+            return Err("Snapshot Link content is tombstoned".into());
+        }
+        if let Some(line) = row.line_index_plus1.checked_sub(1) {
+            return line_name_at(access, line);
+        }
+        if !row.has_line_name_payload() {
+            return Err("Linked Content Snapshot has no authoring Line".into());
+        }
+        let raw = access.read_payload(
+            BinarySnapshotCodec::<1>::payload_file(),
+            row.payload_offset,
+            u32::from(row.payload_len),
+        )?;
+        Ok(
+            BinarySnapshotCodec::<1>::decode_payload(&raw, true, row.has_additional_parents())?
+                .line_name,
+        )
+    }
+    pub(super) fn snapshot_owners_with_access<A: WorkflowReadAccess>(
+        &self,
+        access: &A,
+        rows: &WorkflowRows,
+    ) -> StoreResult<Vec<(SnapshotLinkRecord, SnapshotWorkflowBinding)>> {
+        self.snapshot_links(access, rows, true)
+            .map(|(links, _, _)| links)
+    }
+
     fn snapshot_links<A: WorkflowReadAccess>(
         &self,
         access: &A,
         rows: &WorkflowRows,
         verify_namespace: bool,
     ) -> StoreResult<SnapshotLinkInventory> {
+        use super::legacy_snapshot_links::{LegacySnapshotLink, LegacySnapshotLinkPayload};
         let mut tasks = vec![OwnerIndex::default(); rows.tasks.len()];
         let mut changes = vec![OwnerIndex::default(); rows.changes.len()];
-        let count = access.record_count(Self::snapshot_link_file())?;
         let mut links = Vec::new();
         let mut seen = BTreeMap::new();
-        for index in 0..count {
-            let link = Link::decode(&access.read_record(Self::snapshot_link_file(), index)?)?;
-            let payload = SnapshotWorkflowBinding::decode(&access.read_payload(
-                Self::snapshot_link_payload_file(),
-                link.payload_offset,
-                u32::from(link.payload_len),
-            )?)?;
-            let task_id = self.local_task_id(link.task)?;
-            let payload_id_matches = if verify_namespace {
-                payload.task_id == task_id
+        for index in 0..access.record_count(self.snapshot_link_read_file())? {
+            let raw = access.read_record(self.snapshot_link_read_file(), index)?;
+            let legacy = if self.legacy_land_reader {
+                Some(LegacySnapshotLink::decode(&raw)?)
             } else {
-                // Detached generation admission has no repository configuration.
-                // Check the encoded local namespace and exact physical identity.
-                let (prefix, _) = payload
-                    .task_id
-                    .split_once("T-")
-                    .ok_or("Invalid Snapshot Link Task ID")?;
-                let namespace = prefix
-                    .strip_prefix('L')
-                    .ok_or("Snapshot Link has a non-local Task")?;
-                let prefix = workflow_origin_namespace_prefix("L", Some(namespace))?;
-                payload.task_id == format!("{prefix}T-{:04}", u64::from(link.task) + 1)
+                None
             };
-            if !payload_id_matches || !rows.tasks.contains_key(&task_id) {
-                return Err("Snapshot Link Task identity disagrees with its fixed owner".into());
-            }
+            let link = if let Some(old) = &legacy {
+                Link {
+                    meta: old.meta & !0x38,
+                    ordinal: old.ordinal,
+                    task: old.task,
+                    change_plus1: old.change_plus1,
+                    snapshot: old.snapshot,
+                    created_at_s: old.created_at_s,
+                }
+            } else {
+                Link::decode(&raw)?
+            };
+            let task_id = self.local_task_id(link.task)?;
             let task = tasks
                 .get_mut(link.task as usize)
                 .ok_or("Snapshot Link Task is missing")?;
-            if task.count >= 256
-                || link.ordinal != task.count as u8
-                || link.previous_task != task.latest
-            {
-                return Err("Snapshot Link Task chain or ordinal is inconsistent".into());
+            if task.count >= 256 || u16::from(link.ordinal) != task.count {
+                return Err("Snapshot Link Task ordinal is inconsistent".into());
             }
-            task.latest = index + 1;
-            task.count += 1;
-            // count=256 proves exhaustion; the last representable next slot is
-            // never allocated again. No Snapshot ordinal wraps or is reused.
-            task.next = if task.count == 256 {
-                255
-            } else {
-                task.count as u8
-            };
+            let mut change_id = String::new();
             if let Some(change_index) = link.change_plus1.checked_sub(1) {
-                let change_record = LocalChangeRecord::decode(
+                let record = LocalChangeRecord::decode(
                     &access.read_record(Self::change_record_file(), change_index)?,
                 )?;
-                if change_record.task_index != link.task
-                    || render_change_id(change_record.change_ordinal) != payload.change_id
-                {
-                    return Err("Snapshot Link Change disagrees with its Task or payload".into());
+                if record.task_index != link.task {
+                    return Err("Snapshot Link Change belongs to another Task".into());
                 }
+                change_id = render_change_id(record.change_ordinal);
                 let change = changes
                     .get_mut(change_index as usize)
                     .ok_or("Snapshot Link Change is missing")?;
-                if link.previous_change != change.latest {
-                    return Err("Snapshot Link Change chain is inconsistent".into());
+                if legacy
+                    .as_ref()
+                    .is_some_and(|old| old.previous_change != change.latest)
+                {
+                    return Err("Legacy Snapshot Link Change chain is inconsistent".into());
                 }
                 change.latest = index + 1;
                 change.count = change
                     .count
                     .checked_add(1)
                     .ok_or("Snapshot Link Change count overflow")?;
-            } else if link.previous_change != 0 || !payload.change_id.is_empty() {
-                return Err("Snapshot Link has Change data without a Change".into());
             }
+            if let Some(old) = &legacy {
+                let payload = LegacySnapshotLinkPayload::decode(&access.read_payload(
+                    BinaryPayloadFileId::new("snapshot_link_payload.bin", 1),
+                    old.payload_offset,
+                    u32::from(old.payload_len),
+                )?)?;
+                let task_matches = if verify_namespace {
+                    payload.task_id == task_id
+                } else {
+                    let (prefix, _) = payload
+                        .task_id
+                        .split_once("T-")
+                        .ok_or("Invalid legacy Snapshot Link Task")?;
+                    let namespace = prefix
+                        .strip_prefix('L')
+                        .ok_or("Non-local legacy Snapshot Link Task")?;
+                    payload.task_id
+                        == format!(
+                            "{}T-{:04}",
+                            workflow_origin_namespace_prefix("L", Some(namespace))?,
+                            u64::from(link.task) + 1
+                        )
+                };
+                if !task_matches
+                    || payload.change_id != change_id
+                    || old.previous_task != task.latest
+                    || (link.change_plus1 == 0 && old.previous_change != 0)
+                    || (old.meta & 8 != 0) == payload.worktree_name.is_empty()
+                    || (old.meta & 16 != 0) == payload.line_name.is_empty()
+                    || (old.meta & 32 != 0)
+                        != (!payload.author_mode.is_empty() || !payload.model_name.is_empty())
+                {
+                    return Err(
+                        "Legacy Snapshot Link fixed/payload ownership or flags disagree".into(),
+                    );
+                }
+            }
+            task.latest = index + 1;
+            task.count += 1;
+            task.next = task.count.min(255) as u8;
             let snapshot_id = snapshot_id_at(access, link.snapshot)?;
             if link.meta & 0x80 == 0 && seen.insert(snapshot_id, index).is_some() {
                 return Err("Snapshot has multiple live ownership links".into());
             }
-            if (link.meta & 8 != 0) == payload.worktree_name.is_empty()
-                || (link.meta & 16 != 0) == payload.line_name.is_empty()
-                || (link.meta & 32 != 0)
-                    != (!payload.author_mode.is_empty() || !payload.model_name.is_empty())
-            {
-                return Err("Snapshot Link flags disagree with its payload".into());
-            }
-            links.push((link, payload));
+            let line_name = Self::snapshot_authoring_line(access, link.snapshot)?;
+            links.push((
+                link,
+                SnapshotWorkflowBinding {
+                    task_id,
+                    change_id,
+                    line_name,
+                },
+            ));
         }
         for (is_task, expected) in [(true, &tasks), (false, &changes)] {
             let file = Self::snapshot_owner_file(is_task);
             let actual_count = access.record_count(file.clone())?;
-            // Older generations have no link families. A shorter aligned
-            // inventory is only valid for the newly appended owners with no links.
             if actual_count as usize > expected.len() {
                 return Err("Snapshot owner index has extra rows".into());
             }
@@ -299,7 +240,9 @@ impl<B: BinaryDb, const L: u32> BinaryDbWorkflowStore<B, L> {
                     OwnerIndex::default()
                 };
                 if actual != *expected {
-                    return Err("Snapshot owner index disagrees with its durable chain".into());
+                    return Err(
+                        "Snapshot owner index disagrees with fixed ownership and ordinals".into(),
+                    );
                 }
             }
         }
@@ -310,32 +253,47 @@ impl<B: BinaryDb, const L: u32> BinaryDbWorkflowStore<B, L> {
         &self,
         rows: &WorkflowRows,
         binding: &SnapshotWorkflowBinding,
-    ) -> PlanStoreResult<(u32, u32)> {
+    ) -> PlanStoreResult<(u32, Option<u32>)> {
         let task_index = self.task_index_for_id(rows, &binding.task_id)?;
         let change_ref = format!("{}/{}", binding.task_id, binding.change_id);
-        let change_index = self.change_index_for_id(rows, &change_ref)?;
+        let change_index = if binding.change_id.is_empty() {
+            None
+        } else {
+            Some(self.change_index_for_id(rows, &change_ref)?)
+        };
         let task = &rows.tasks[&binding.task_id];
-        let change = &rows.changes[&change_ref];
-        if task["status"].as_str() != Some("active") {
+        if task["status"].as_str() != Some("active") || !task["local_finish"].is_null() {
             return Err(PlanStoreError::Invalid(
                 "Snapshot authoring requires an active Task".to_string(),
             ));
         }
-        if !matches!(
-            change["status"].as_str(),
-            Some("draft" | "active" | "review")
-        ) || change["task_id"].as_str() != Some(binding.task_id.as_str())
-        {
+        if change_index.is_some() {
+            let change = &rows.changes[&change_ref];
+            if !matches!(
+                change["status"].as_str(),
+                Some("draft" | "active" | "review")
+            ) || change["task_id"].as_str() != Some(binding.task_id.as_str())
+            {
+                return Err(PlanStoreError::Invalid(
+                    "Snapshot authoring requires a writable Change owned by the Task".to_string(),
+                ));
+            }
+        } else if rows.changes.values().any(|change| {
+            change["task_id"] == binding.task_id
+                && matches!(
+                    change["status"].as_str(),
+                    Some("draft" | "active" | "review")
+                )
+        }) {
             return Err(PlanStoreError::Invalid(
-                "Snapshot authoring requires a writable Change owned by the Task".to_string(),
+                "Select the exact active revision Change before authoring".into(),
             ));
         }
-        if binding.worktree_name.trim().is_empty() || binding.line_name.trim().is_empty() {
+        if binding.line_name.trim().is_empty() {
             return Err(PlanStoreError::Invalid(
                 "Snapshot authoring requires a bound worktree and Line".to_string(),
             ));
         }
-        binding.encode().map_err(storage_error)?;
         Ok((task_index, change_index))
     }
 
@@ -357,6 +315,26 @@ impl<B: BinaryDb, const L: u32> BinaryDbWorkflowStore<B, L> {
         Ok(())
     }
 
+    /// Read-only budget check before history replay/Plan publication. Fixed
+    /// owner-link counts include tombstones and are not reusable ordinals.
+    pub fn validate_replay_snapshot_capacity(
+        &self,
+        additions: &std::collections::BTreeMap<String, usize>,
+    ) -> PlanStoreResult<()> {
+        let read = BinaryDbReadTxn::new(&self.db);
+        let rows = self.read_rows_with_access(&read).map_err(storage_error)?;
+        let (_, tasks, _) = self
+            .snapshot_links(&read, &rows, true)
+            .map_err(storage_error)?;
+        for (task_id, additional) in additions {
+            let index = self.task_index_for_id(&rows, task_id)?;
+            if usize::from(tasks[index as usize].count).saturating_add(*additional) > 256 {
+                return Err(PlanStoreError::Invalid(format!("Task {task_id} has insufficient capacity for replay within its 256 Snapshot links")));
+            }
+        }
+        Ok(())
+    }
+
     pub(crate) fn record_snapshot_link_in_write<F: BinaryDbFsyncPolicy>(
         &self,
         tx: &mut BinaryDbWriteTxn<'_, B, F>,
@@ -368,7 +346,76 @@ impl<B: BinaryDb, const L: u32> BinaryDbWorkflowStore<B, L> {
         let (task_index, change_index) = self
             .validate_snapshot_owner(&rows, binding)
             .map_err(|e| e.to_string())?;
-        let (links, mut tasks, mut changes) = self.snapshot_links(tx, &rows, true)?;
+        self.append_snapshot_link_in_write(
+            tx,
+            &rows,
+            binding,
+            (task_index, change_index),
+            snapshot_id,
+            created_at_s,
+        )
+    }
+
+    /// Restricted history replay admission. Derive the exact owner from a live
+    /// source link, never caller-supplied attribution or receipt inference.
+    /// Ordinary capture continues to require an active Task/writable Change.
+    pub(crate) fn record_replayed_snapshot_link_in_write<F: BinaryDbFsyncPolicy>(
+        &self,
+        tx: &mut BinaryDbWriteTxn<'_, B, F>,
+        source_snapshot_id: &str,
+        snapshot_id: &str,
+        created_at_s: u64,
+    ) -> StoreResult<()> {
+        if source_snapshot_id == snapshot_id {
+            return Err("History replay may only bind a new Snapshot".into());
+        }
+        let rows = self.read_rows_with_access(tx)?;
+        let (links, _, _) = self.snapshot_links(tx, &rows, true)?;
+        let source_index = snapshot_index_by_id(tx, source_snapshot_id)?
+            .ok_or("History replay source Snapshot is missing")?;
+        let (source, binding) = links
+            .iter()
+            .find(|(link, _)| link.snapshot == source_index && link.meta & 0x80 == 0)
+            .ok_or("History replay requires exact live source Snapshot ownership")?;
+        let task = &rows.tasks[&binding.task_id];
+        if task["status"].as_str() != Some("completed")
+            || !self
+                .receipt_at(tx, source.task)?
+                .is_some_and(|receipt| receipt.is_succeeded())
+        {
+            return Err(
+                "History replay requires the completed owner's original successful receipt".into(),
+            );
+        }
+        let snapshot_index = snapshot_index_by_id(tx, snapshot_id)?
+            .ok_or("History replay output Snapshot is missing")?;
+        if links
+            .iter()
+            .any(|(link, _)| link.snapshot == snapshot_index)
+        {
+            return Err("History replay cannot rebind an existing Snapshot link".into());
+        }
+        self.append_snapshot_link_in_write(
+            tx,
+            &rows,
+            binding,
+            (source.task, source.change_plus1.checked_sub(1)),
+            snapshot_id,
+            created_at_s,
+        )
+    }
+
+    fn append_snapshot_link_in_write<F: BinaryDbFsyncPolicy>(
+        &self,
+        tx: &mut BinaryDbWriteTxn<'_, B, F>,
+        rows: &WorkflowRows,
+        binding: &SnapshotWorkflowBinding,
+        owner: (u32, Option<u32>),
+        snapshot_id: &str,
+        created_at_s: u64,
+    ) -> StoreResult<()> {
+        let (task_index, change_index) = owner;
+        let (links, mut tasks, mut changes) = self.snapshot_links(tx, rows, true)?;
         let snapshot_index =
             snapshot_index_by_id(tx, snapshot_id)?.ok_or("Snapshot Link content is missing")?;
         if let Some((_, existing)) = links
@@ -384,29 +431,18 @@ impl<B: BinaryDb, const L: u32> BinaryDbWorkflowStore<B, L> {
         let task = &mut tasks[task_index as usize];
         let ordinal =
             u8::try_from(task.count).map_err(|_| "Task has exhausted its 256 Snapshot links")?;
-        let change = &mut changes[change_index as usize];
-        let payload = binding.encode()?;
-        let locator = tx.append_payload(Self::snapshot_link_payload_file(), &payload)?;
+        if binding.line_name != Self::snapshot_authoring_line(tx, snapshot_index)? {
+            return Err("Snapshot binding Line differs from immutable Content Snapshot".into());
+        }
         let link = Link {
-            meta: 1
-                | 8
-                | 16
-                | if binding.author_mode.is_empty() && binding.model_name.is_empty() {
-                    0
-                } else {
-                    32
-                },
+            meta: u8::from(change_index.is_some()),
             ordinal,
-            payload_len: payload.len() as u16,
-            payload_offset: locator.payload_offset,
             task: task_index,
-            change_plus1: change_index + 1,
+            change_plus1: change_index.map_or(0, |index| index + 1),
             snapshot: snapshot_index,
-            previous_task: task.latest,
-            previous_change: change.latest,
             created_at_s,
         };
-        let index = tx.append_record(Self::snapshot_link_file(), &link.encode())?;
+        let index = tx.append_record(Self::snapshot_link_file(), &link.encode()?)?;
         task.latest = index + 1;
         task.count += 1;
         task.next = if task.count == 256 {
@@ -414,25 +450,113 @@ impl<B: BinaryDb, const L: u32> BinaryDbWorkflowStore<B, L> {
         } else {
             task.count as u8
         };
-        change.latest = index + 1;
-        change.count = change
-            .count
-            .checked_add(1)
-            .ok_or("Snapshot Link Change count overflow")?;
-        for (is_task, owners, modified) in
-            [(true, tasks, task_index), (false, changes, change_index)]
-        {
+        if let Some(change_index) = change_index {
+            let change = &mut changes[change_index as usize];
+            change.latest = index + 1;
+            change.count = change
+                .count
+                .checked_add(1)
+                .ok_or("Snapshot Link Change count overflow")?;
+        }
+        for (is_task, owners, modified) in [
+            (true, tasks, Some(task_index)),
+            (false, changes, change_index),
+        ] {
             let file = Self::snapshot_owner_file(is_task);
             let old_count = tx.record_count(file.clone())?;
             for (index, owner) in owners.iter().enumerate() {
                 if index >= old_count as usize {
                     tx.append_record(file.clone(), &owner.encode(is_task))?;
-                } else if index == modified as usize {
+                } else if Some(index as u32) == modified {
                     tx.overwrite_record(file.clone(), index as u32, &owner.encode(is_task))?;
                 }
             }
         }
         Ok(())
+    }
+
+    pub(super) fn latest_owned_snapshot_index<A: WorkflowReadAccess>(
+        &self,
+        access: &A,
+        task: u32,
+        change: Option<u32>,
+        skip_archived_revisions: bool,
+    ) -> StoreResult<Option<u32>> {
+        let is_task = change.is_none();
+        let owner = change.unwrap_or(task);
+        let file = Self::snapshot_owner_file(is_task);
+        let head = if owner < access.record_count(file.clone())? {
+            OwnerIndex::decode(&access.read_record(file, owner)?, is_task)?
+        } else {
+            OwnerIndex::default()
+        };
+        if head.count > 256 || (is_task && head.next != head.count.min(255) as u8) {
+            return Err("Invalid Snapshot owner index".into());
+        }
+        let mut count = 0u16;
+        let mut latest = None::<(u8, u32)>;
+        let mut live = None::<(u8, u32)>;
+        let mut ordinals = [false; 256];
+        // Without predecessor slots, inspect fixed owner refs. Global neighbors
+        // are never interpreted as an owner's predecessor.
+        for index in 0..access.record_count(Self::snapshot_link_file())? {
+            let link = Link::decode(&access.read_record(Self::snapshot_link_file(), index)?)?;
+            if link.task != task || change.is_some_and(|change| link.change_plus1 != change + 1) {
+                continue;
+            }
+            if ordinals[link.ordinal as usize] {
+                return Err("Duplicate Task-scoped Snapshot ordinal".into());
+            }
+            ordinals[link.ordinal as usize] = true;
+            count = count
+                .checked_add(1)
+                .ok_or("Snapshot owner count overflow")?;
+            if latest.is_none_or(|(ordinal, _)| link.ordinal > ordinal) {
+                latest = Some((link.ordinal, index + 1));
+            }
+            let archived = if skip_archived_revisions {
+                link.change_plus1
+                    .checked_sub(1)
+                    .map(|index| -> StoreResult<bool> {
+                        let row = LocalChangeRecord::decode(
+                            &access.read_record(Self::change_record_file(), index)?,
+                        )?;
+                        if row.task_index != task {
+                            return Err("Snapshot revision belongs to another Task".into());
+                        }
+                        Ok(row.change_meta & 3 == 3 || row.change_state != 0)
+                    })
+                    .transpose()?
+                    .unwrap_or(false)
+            } else {
+                false
+            };
+            if link.meta & 0x80 == 0
+                && !archived
+                && live.is_none_or(|(ordinal, _)| link.ordinal > ordinal)
+            {
+                live = Some((link.ordinal, link.snapshot));
+            }
+        }
+        if count != head.count
+            || latest.map_or(0, |(_, index)| index) != head.latest
+            || (is_task && (0..count).any(|ordinal| !ordinals[ordinal as usize]))
+        {
+            return Err("Snapshot owner index disagrees with fixed ownership and ordinals".into());
+        }
+        Ok(live.map(|(_, snapshot)| snapshot))
+    }
+
+    pub fn latest_task_snapshot_id(&self, task_id: &str) -> PlanStoreResult<Option<String>> {
+        let read = BinaryDbReadTxn::new(&self.db);
+        let task = self
+            .point_task_index(&read, task_id)
+            .map_err(storage_error)?;
+        self.latest_owned_snapshot_index(&read, task, None, false)
+            .map_err(storage_error)?
+            .map(|index| snapshot_id_at(&read, index))
+            .transpose()
+            .map_err(storage_error)
     }
 
     /// Resolve the latest live checkpoint of this exact Task-owned Change.
@@ -441,20 +565,18 @@ impl<B: BinaryDb, const L: u32> BinaryDbWorkflowStore<B, L> {
         let read = BinaryDbReadTxn::new(&self.db);
         let rows = self.read_rows_with_access(&read).map_err(storage_error)?;
         let change_index = self.change_index_for_id(&rows, change_ref)?;
-        let (links, _, changes) = self
-            .snapshot_links(&read, &rows, true)
-            .map_err(storage_error)?;
-        let mut cursor = changes[change_index as usize].latest;
-        while let Some(index) = cursor.checked_sub(1) {
-            let (link, _) = &links[index as usize];
-            if link.meta & 0x80 == 0 {
-                return snapshot_id_at(&read, link.snapshot)
-                    .map(Some)
-                    .map_err(storage_error);
-            }
-            cursor = link.previous_change;
-        }
-        Ok(None)
+        let task = LocalChangeRecord::decode(
+            &read
+                .read_record(Self::change_record_file(), change_index)
+                .map_err(storage_error)?,
+        )
+        .map_err(storage_error)?
+        .task_index;
+        self.latest_owned_snapshot_index(&read, task, Some(change_index), false)
+            .map_err(storage_error)?
+            .map(|index| snapshot_id_at(&read, index))
+            .transpose()
+            .map_err(storage_error)
     }
 
     pub fn snapshot_ownership_rows(
@@ -480,37 +602,141 @@ impl<B: BinaryDb, const L: u32> BinaryDbWorkflowStore<B, L> {
             }
             output.push(json!({
                 "snapshot_id": snapshot_id, "task_id": binding.task_id,
-                "change_id": binding.change_id, "worktree_name": nonempty(Some(&binding.worktree_name)),
-                "line_name": nonempty(Some(&binding.line_name)), "author_mode": nonempty(Some(&binding.author_mode)),
-                "model_name": nonempty(Some(&binding.model_name)), "created_at": link.created_at_s.to_string(),
+                "change_id": nonempty(Some(&binding.change_id)),
+                "line_name": nonempty(Some(&binding.line_name)), "created_at": link.created_at_s.to_string(),
                 "ownership_source": "durable_snapshot_binding",
             }));
         }
-        // A legacy accepted boundary is evidence for exactly that Snapshot,
-        // never for every ancestor or an inferred Task-shaped Line name.
+        // A successful Task receipt proves exactly its accepted Snapshot. No
+        // ancestor inference survives removal of a legacy initial Change.
         for snapshot_id in snapshot_ids {
+            let receipts = rows
+                .tasks
+                .values()
+                .filter(|task| {
+                    task["local_finish"]["landed_snapshot_id"].as_str() == Some(snapshot_id)
+                })
+                .collect::<Vec<_>>();
+            // A fixed live ownership link is authoring authority. Another
+            // Task may accept that same Snapshot in a no-op finish; its receipt
+            // does not erase or replace the explicit authoring binding.
             if output
                 .iter()
                 .any(|row| row["snapshot_id"].as_str() == Some(snapshot_id))
             {
                 continue;
             }
-            let owners = rows
-                .changes
-                .values()
-                .filter(|change| change["landed_snapshot_id"].as_str() == Some(snapshot_id))
-                .collect::<Vec<_>>();
-            if owners.len() == 1 {
+            if receipts.len() == 1
+                && !output
+                    .iter()
+                    .any(|row| row["snapshot_id"].as_str() == Some(snapshot_id))
+            {
+                let receipt = &receipts[0]["local_finish"];
+                let line = snapshot_index_by_id(&read, snapshot_id)
+                    .map_err(storage_error)?
+                    .map(|index| Self::snapshot_authoring_line(&read, index))
+                    .transpose()
+                    .map_err(storage_error)?;
+                let change = receipt["change_ref"]
+                    .as_str()
+                    .and_then(|id| id.rsplit('/').next());
                 output.push(json!({
-                    "snapshot_id": snapshot_id, "task_id": owners[0]["task_id"],
-                    "change_id": owners[0]["change_id"],
-                    "ownership_source": "derived_from_recorded_change",
+                    "snapshot_id":snapshot_id,"task_id":receipts[0]["task_id"],
+                    "change_id":change,"line_name":line,"ownership_source":"derived_from_recorded_task_receipt",
+                }));
+            } else if receipts.len() > 1 {
+                let accepted_tasks = receipts
+                    .iter()
+                    .map(|task| task["task_id"].clone())
+                    .collect::<Vec<_>>();
+                output.push(json!({
+                    "snapshot_id":snapshot_id,"task_id":null,"change_id":null,
+                    "ownership_source":"ambiguous_recorded_task_receipts",
+                    "ownership_conflict":true,"accepted_task_ids":accepted_tasks,
                 }));
             }
         }
         Ok(output)
     }
+
+    /// The original governed source is the fixed owner-link prefix through
+    /// the real successful receipt Snapshot. Restricted replays append later
+    /// ordinals and cannot change this set, including after a process restart.
+    pub fn completed_task_source_snapshots(
+        &self,
+        task_id: &str,
+    ) -> PlanStoreResult<Vec<(String, SnapshotWorkflowBinding)>> {
+        let read = BinaryDbReadTxn::new(&self.db);
+        let rows = self.read_rows_with_access(&read).map_err(storage_error)?;
+        self.completed_task_source_snapshots_with_access(&read, &rows, task_id)
+    }
+
+    pub(super) fn completed_task_source_snapshots_with_access<A: WorkflowReadAccess>(
+        &self,
+        read: &A,
+        rows: &WorkflowRows,
+        task_id: &str,
+    ) -> PlanStoreResult<Vec<(String, SnapshotWorkflowBinding)>> {
+        let index = self.task_index_for_id(rows, task_id)?;
+        if rows.tasks[task_id]["status"].as_str() != Some("completed")
+            || !self
+                .receipt_at(read, index)
+                .map_err(storage_error)?
+                .is_some_and(|receipt| receipt.is_succeeded())
+        {
+            return Err(PlanStoreError::Invalid(
+                "Original source selection requires a completed Task with its successful receipt"
+                    .into(),
+            ));
+        }
+        let receipt_id = rows.tasks[task_id]["local_finish"]["landed_snapshot_id"]
+            .as_str()
+            .ok_or_else(|| {
+                PlanStoreError::Invalid("Original successful Snapshot identity is missing".into())
+            })?;
+        let (links, _, _) = self
+            .snapshot_links(read, rows, true)
+            .map_err(storage_error)?;
+        let receipt_index = snapshot_index_by_id(read, receipt_id)
+            .map_err(storage_error)?
+            .ok_or_else(|| {
+                PlanStoreError::Invalid("Original receipt Snapshot is unavailable".into())
+            })?;
+        let cutoff = links
+            .iter()
+            .find(|(link, _)| {
+                link.task == index && link.snapshot == receipt_index && link.meta & 0x80 == 0
+            })
+            .map(|(link, _)| link.ordinal)
+            .ok_or_else(|| {
+                PlanStoreError::Invalid("Original receipt has no exact fixed source owner".into())
+            })?;
+        if links
+            .iter()
+            .any(|(link, _)| link.task == index && link.ordinal <= cutoff && link.meta & 0x80 != 0)
+        {
+            return Err(PlanStoreError::Invalid(
+                "Original source contains a deleted Snapshot link; its exact set is unavailable"
+                    .into(),
+            ));
+        }
+        links
+            .into_iter()
+            .filter(|(link, _)| {
+                link.task == index && link.ordinal <= cutoff && link.meta & 0x80 == 0
+            })
+            .map(|(link, owner)| {
+                Ok((
+                    snapshot_id_at(read, link.snapshot).map_err(storage_error)?,
+                    owner,
+                ))
+            })
+            .collect()
+    }
 }
+
+#[cfg(test)]
+mod replay_tests;
 
 #[cfg(test)]
 mod tests {
@@ -548,10 +774,7 @@ mod tests {
         SnapshotWorkflowBinding {
             task_id,
             change_id: "C-01".to_string(),
-            worktree_name: "owned".to_string(),
             line_name: "main".to_string(),
-            author_mode: "ai_with_human_review".to_string(),
-            model_name: "模型".to_string(),
         }
     }
 
@@ -632,7 +855,7 @@ mod tests {
             std::fs::metadata(temp.path().join("binary-db/snapshot_link.bin"))
                 .unwrap()
                 .len(),
-            4 + 2 * 40
+            4 + 2 * 22
         );
         assert_eq!(
             std::fs::metadata(temp.path().join("binary-db/task_snapshot_index.bin"))
@@ -713,60 +936,128 @@ mod tests {
 
     #[test]
     fn legacy_attribution_requires_one_exact_recorded_acceptance() {
+        // Seed converted historical evidence, which predates Snapshot links.
+        fn historical(store: &BinaryDbWorkflowStore<LocalBinaryDbFs, 1>, task: u32, change: u32) {
+            let mut tx =
+                BinaryDbWriteTxn::begin(store.db(), BinaryDbCommandScope::General).unwrap();
+            let row = LocalLandRecord {
+                land_meta: 2 | LAND_META_HAS_PRE_LAND | LAND_META_HAS_LANDED,
+                land_ordinal: 0,
+                change_ordinal_plus1: 1,
+                failure_kind: 0,
+                task_index: task,
+                previous_task_land_index_plus1: 0,
+                previous_change_land_index_plus1: 0,
+                pre_land_target_snapshot_index_plus1: 1,
+                landed_snapshot_index_plus1: 2,
+                submitted_at_s: 1,
+                updated_at_s: 1,
+                target_line_index_plus1: 1,
+            };
+            let index = tx
+                .append_record(
+                    BinaryDbWorkflowStore::<LocalBinaryDbFs, 1>::land_record_file(),
+                    &row.encode().unwrap(),
+                )
+                .unwrap();
+            tx.overwrite_record(
+                BinaryDbWorkflowStore::<LocalBinaryDbFs, 1>::task_land_index_file(),
+                task,
+                &TaskLandIndexRecord {
+                    latest_land_index_plus1: index + 1,
+                    land_count: 1,
+                    reserved0: 0,
+                }
+                .encode(),
+            )
+            .unwrap();
+            tx.overwrite_record(
+                BinaryDbWorkflowStore::<LocalBinaryDbFs, 1>::change_land_index_file(),
+                change,
+                &ChangeLandIndexRecord {
+                    latest_land_index_plus1: index + 1,
+                    land_count: 1,
+                    next_land_ordinal: 1,
+                    reserved0: 0,
+                }
+                .encode(),
+            )
+            .unwrap();
+            let file = BinaryDbWorkflowStore::<LocalBinaryDbFs, 1>::change_record_file();
+            let mut raw = tx.read_record(file.clone(), change).unwrap();
+            raw[0] = (raw[0] & !3) | 2;
+            tx.overwrite_record(file, change, &raw).unwrap();
+            tx.commit().unwrap();
+        }
         let temp = TempDir::new().unwrap();
         let store = fixture(&temp);
         let (base, accepted) = seed_line_and_snapshots(&store);
-        let binding = owner(&store, &base);
-        ChangeStore::land_change(
-            &store,
-            &format!("{}/C-01", binding.task_id),
-            "main",
-            &accepted,
-            Some(&base),
-        )
-        .unwrap();
+        let _binding = owner(&store, &base);
+        historical(&store, 0, 0);
         let rows = store
             .snapshot_ownership_rows(&[base.clone(), accepted.clone()])
             .unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0]["snapshot_id"], accepted);
-        assert_eq!(rows[0]["ownership_source"], "derived_from_recorded_change");
-        let other = owner(&store, &base);
-        ChangeStore::land_change(
-            &store,
-            &format!("{}/C-01", other.task_id),
-            "main",
-            &accepted,
-            Some(&base),
-        )
-        .unwrap();
+        assert_eq!(
+            rows[0]["ownership_source"],
+            "derived_from_recorded_task_receipt"
+        );
+        let _other = owner(&store, &base);
+        historical(&store, 1, 1);
+        let ambiguous = store.snapshot_ownership_rows(&[base, accepted]).unwrap();
+        assert_eq!(ambiguous.len(), 1);
+        assert!(ambiguous[0]["task_id"].is_null());
+        assert_eq!(ambiguous[0]["ownership_conflict"], true);
+        assert_eq!(
+            ambiguous[0]["accepted_task_ids"].as_array().unwrap().len(),
+            2
+        );
         assert!(store
-            .snapshot_ownership_rows(&[base, accepted])
+            .local_task_receipt(&_binding.task_id)
             .unwrap()
-            .is_empty());
+            .is_some());
+        assert!(store.local_task_receipt(&_other.task_id).unwrap().is_some());
     }
 
     #[test]
-    fn payload_bounds_and_reserved_bits_are_rejected() {
-        let value = SnapshotWorkflowBinding {
-            task_id: "LCT-0001".into(),
-            change_id: "C-01".into(),
-            worktree_name: "修復".into(),
-            line_name: "feature/repair".into(),
-            author_mode: "ai_with_human_review".into(),
-            model_name: "模型".into(),
+    fn layout_two_offsets_and_retired_flags_are_exact() {
+        let row = Link {
+            meta: 1,
+            ordinal: 255,
+            task: 0,
+            change_plus1: 7,
+            snapshot: 11,
+            created_at_s: u64::from(u32::MAX) + 5,
         };
+        let bytes = row.encode().unwrap();
+        assert_eq!(bytes.len(), 22);
+        assert_eq!(&bytes[2..6], &0u32.to_le_bytes());
+        assert_eq!(&bytes[6..10], &7u32.to_le_bytes());
+        assert_eq!(&bytes[10..14], &11u32.to_le_bytes());
+        assert_eq!(&bytes[14..22], &row.created_at_s.to_le_bytes());
+        assert_eq!(Link::decode(&bytes).unwrap(), row);
+        for bit in [8, 16, 32, 64] {
+            let mut invalid = bytes.clone();
+            invalid[0] |= bit;
+            assert!(Link::decode(&invalid).is_err());
+        }
+        let mirror = RemoteMirrorSnapshotLinkRecord {
+            link: row,
+            remote_meta: 15,
+            fetched_at_s: u64::from(u32::MAX) + 9,
+        };
+        let bytes = mirror.encode().unwrap();
+        assert_eq!(bytes.len(), 34);
+        assert_eq!(&bytes[6..10], &0u32.to_le_bytes());
+        assert_eq!(&bytes[26..34], &mirror.fetched_at_s.to_le_bytes());
         assert_eq!(
-            SnapshotWorkflowBinding::decode(&value.encode().unwrap()).unwrap(),
-            value
+            RemoteMirrorSnapshotLinkRecord::decode(&bytes).unwrap(),
+            mirror
         );
-        assert!(SnapshotWorkflowBinding::decode(&[0; 9]).is_err());
-        let mut invalid = value.clone();
-        invalid.model_name = "x".repeat(65_536);
-        assert!(invalid.encode().is_err());
-        let mut raw = vec![0; 40];
-        raw[0] = 0x40;
-        assert!(Link::decode(&raw).is_err());
+        let mut invalid = bytes;
+        invalid[5] = 1;
+        assert!(RemoteMirrorSnapshotLinkRecord::decode(&invalid).is_err());
     }
 
     #[test]
@@ -803,11 +1094,147 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("256"));
+        assert_eq!(
+            store
+                .latest_task_snapshot_id(&binding.task_id)
+                .unwrap()
+                .as_deref(),
+            Some("SNP-000000000100")
+        );
         let rows = store.read_rows().unwrap();
         let read = BinaryDbReadTxn::new(store.db());
         let (links, tasks, _) = store.snapshot_links(&read, &rows, true).unwrap();
         assert_eq!(links.last().unwrap().0.ordinal, 255);
         assert_eq!(tasks[0].count, 256);
         assert_eq!(links.len(), 256);
+        store
+            .validate_replay_snapshot_capacity(&BTreeMap::from([(binding.task_id.clone(), 0)]))
+            .unwrap();
+        assert!(store
+            .validate_replay_snapshot_capacity(&BTreeMap::from([(binding.task_id, 1)]))
+            .unwrap_err()
+            .to_string()
+            .contains("256"));
+    }
+    #[test]
+    fn interleaved_owners_reopen_and_skip_their_latest_tombstone() {
+        let temp = TempDir::new().unwrap();
+        let store = fixture(&temp);
+        let (first, second) = seed_line_and_snapshots(&store);
+        let a = owner(&store, &first);
+        let b = owner(&store, &first);
+        bind(&store, &a, &first).unwrap();
+        bind(&store, &b, &second).unwrap();
+        let third = "SNP-000000000003";
+        let file = BinarySnapshotCodec::<1>::record_file();
+        let mut tx =
+            BinaryDbWriteTxn::begin(store.db(), BinaryDbCommandScope::SnapshotWrite).unwrap();
+        let mut content =
+            BinarySnapshotCodec::<1>::decode_record(&tx.read_record(file.clone(), 1).unwrap())
+                .unwrap();
+        content.snapshot_hash48 = snapshot_hash48_from_id(third).unwrap();
+        tx.append_record(
+            file,
+            &BinarySnapshotCodec::<1>::encode_record(&content).unwrap(),
+        )
+        .unwrap();
+        tx.commit().unwrap();
+        bind(&store, &a, third).unwrap();
+        let file = BinaryDbWorkflowStore::<LocalBinaryDbFs, 1>::snapshot_link_file();
+        let mut tx = BinaryDbWriteTxn::begin(store.db(), BinaryDbCommandScope::General).unwrap();
+        let mut raw = tx.read_record(file.clone(), 2).unwrap();
+        raw[0] |= 0x80;
+        tx.overwrite_record(file, 2, &raw).unwrap();
+        tx.commit().unwrap();
+        let reopened = fixture(&temp);
+        assert_eq!(
+            reopened
+                .latest_task_snapshot_id(&a.task_id)
+                .unwrap()
+                .as_deref(),
+            Some(first.as_str())
+        );
+        assert_eq!(
+            reopened
+                .latest_change_snapshot_id(&format!("{}/C-01", a.task_id))
+                .unwrap()
+                .as_deref(),
+            Some(first.as_str())
+        );
+        assert_eq!(
+            reopened
+                .latest_task_snapshot_id(&b.task_id)
+                .unwrap()
+                .as_deref(),
+            Some(second.as_str())
+        );
+        assert!(!temp
+            .path()
+            .join("binary-db/snapshot_link_payload.bin")
+            .exists());
+    }
+    #[test]
+    fn numeric_change_and_content_line_survive_base_changes_and_other_task_acceptance() {
+        let temp = TempDir::new().unwrap();
+        let store = fixture(&temp);
+        let (first, _) = seed_line_and_snapshots(&store);
+        let a = owner(&store, &first);
+        bind(&store, &a, &first).unwrap();
+        let _b = owner(&store, &first);
+        crate::line_binary_db::BinaryDbLineStore::<_, 1>::new(store.db().clone())
+            .append_line_for_bootstrap(
+                "other-base",
+                "active",
+                Some("2026-07-24T00:00:00Z"),
+                Some("2026-07-24T00:00:00Z"),
+                None,
+                None,
+            )
+            .unwrap();
+        let mut tx = BinaryDbWriteTxn::begin(store.db(), BinaryDbCommandScope::General).unwrap();
+        let file = BinaryDbWorkflowStore::<LocalBinaryDbFs, 1>::change_record_file();
+        let mut raw = tx.read_record(file.clone(), 0).unwrap();
+        raw[56..60].copy_from_slice(&2u32.to_le_bytes());
+        tx.overwrite_record(file, 0, &raw).unwrap();
+        let receipt = LocalLandRecord {
+            land_meta: 2 | LAND_META_HAS_LANDED,
+            land_ordinal: 0,
+            change_ordinal_plus1: 0,
+            failure_kind: 0,
+            task_index: 1,
+            previous_task_land_index_plus1: 0,
+            previous_change_land_index_plus1: 0,
+            pre_land_target_snapshot_index_plus1: 0,
+            landed_snapshot_index_plus1: 1,
+            submitted_at_s: 1,
+            updated_at_s: 1,
+            target_line_index_plus1: 1,
+        };
+        tx.append_record(
+            BinaryDbWorkflowStore::<LocalBinaryDbFs, 1>::land_record_file(),
+            &receipt.encode().unwrap(),
+        )
+        .unwrap();
+        tx.overwrite_record(
+            BinaryDbWorkflowStore::<LocalBinaryDbFs, 1>::task_land_index_file(),
+            1,
+            &TaskLandIndexRecord {
+                latest_land_index_plus1: 1,
+                land_count: 1,
+                reserved0: 0,
+            }
+            .encode(),
+        )
+        .unwrap();
+        tx.commit().unwrap();
+        let reopened = fixture(&temp);
+        let rows = reopened.snapshot_ownership_rows(&[first]).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["task_id"], a.task_id);
+        assert_eq!(rows[0]["change_id"], "C-01");
+        assert_eq!(rows[0]["line_name"], "main");
+        for field in ["worktree_name", "author_mode", "model_name"] {
+            assert!(rows[0].get(field).is_none());
+        }
     }
 }

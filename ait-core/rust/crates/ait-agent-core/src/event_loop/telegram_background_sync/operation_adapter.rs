@@ -11,7 +11,7 @@ use crate::event_loop::telegram_workflow_notifications::{
     DefaultTelegramWorkflowNotificationFormatter, NativeTelegramWorkflowNotificationMessagePort,
 };
 use crate::runtime::AgentRuntimeBindingStore;
-use crate::transport_config::{AgentRuntimeMode, AgentRuntimeTarget, AgentWorkflowMode};
+use crate::transport_config::AgentRuntimeTarget;
 
 const OPERATION_REQUEST_CONTRACT: &str =
     "ait_agent_core.event_loop.TelegramBackgroundSyncOperationRequest.v2";
@@ -257,8 +257,6 @@ fn validate_configuration(
         || timeout.is_some_and(|value| !value.is_finite() || value <= 0.0)
         || ait_web_url
             .is_some_and(|value| value.trim().is_empty() || value.len() > MAX_CONFIG_BYTES)
-        || target.mode == AgentRuntimeMode::Local
-            && target.workflow_mode != AgentWorkflowMode::SoloLocal
     {
         return Err("Telegram background operation configuration is invalid.".to_string());
     }

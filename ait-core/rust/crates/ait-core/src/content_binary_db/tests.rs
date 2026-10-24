@@ -1171,6 +1171,190 @@ fn content_binary_db_reads_historical_cross_pack_chain_beyond_writer_depth() {
 }
 
 #[test]
+fn content_binary_db_mixed_delta_chain_rejects_cycle_depth_fk_and_checksum() {
+    use crate::pack_substrate::{
+        build_git_binary_delta_member, write_pack_archive_with_format, MAX_DELTA_CHAIN_READ_DEPTH,
+        PACK_FORMAT_ZSTD_CHUNKED_V1,
+    };
+    let temp = tempdir().unwrap();
+    let db = local_db(temp.path());
+    let authority = db.authority_root().0.clone();
+    let blobs = BinaryDbBlobStore::<_, TEST_LAYOUT>::new(db.clone(), temp.path());
+    let packs = BinaryDbObjectPackStore::<_, TEST_LAYOUT>::new(db, temp.path());
+    let versions = (0..6)
+        .map(|n| {
+            let mut bytes = vec![b'a'; 4096];
+            bytes[n] = b'A' + n as u8;
+            bytes
+        })
+        .collect::<Vec<_>>();
+    let hashes = versions.iter().map(|v| sha256(v)).collect::<Vec<_>>();
+    let ids = hashes.iter().map(blob_id_from_sha256).collect::<Vec<_>>();
+    let mut tx = blobs
+        .begin_write_txn_with_fsync_policy(
+            BinaryDbCommandScope::ContentWrite,
+            BinaryDbNoopFsyncPolicy,
+        )
+        .unwrap();
+    let mut first_pack = None;
+    // Two same-pack chains, with each pack's first delta depending on the
+    // previous pack. The deepest read traverses five authoritative bases.
+    for (group, (start, end)) in [(0, 0), (1, 2), (3, 5)].into_iter().enumerate() {
+        let hash = 0x2000_0000_0000 + group as u64;
+        let (pack_hash_hi16, pack_hash_lo32) = split_hash48(hash);
+        let id = object_pack_id_from_hash48(hash);
+        let path = temp
+            .path()
+            .join(object_pack_relative_path(&id, PACK_FORMAT_ZSTD_CHUNKED_V1).unwrap());
+        let members = (start..=end)
+            .map(|depth| {
+                if depth == 0 {
+                    json!({"entry_name": format!("blobs/{}", ids[0]), "blob_id": ids[0], "data": versions[0]})
+                } else {
+                    build_git_binary_delta_member(&format!("blobs/{}", ids[depth]), &ids[depth], &ids[depth-1], &versions[depth-1], &versions[depth], depth)
+                }
+            })
+            .collect::<Vec<_>>();
+        write_pack_archive_with_format(
+            path.to_str().unwrap(),
+            &id,
+            "2026-07-15T00:00:00Z",
+            &json!(members),
+            PACK_FORMAT_ZSTD_CHUNKED_V1,
+        )
+        .unwrap();
+        if start == 0 {
+            first_pack = Some((path, id));
+        }
+        let (pack_index, _) = packs
+            .append_object_pack_with_id_index(
+                &mut tx,
+                &BinaryObjectPackRecord {
+                    pack_meta: BinaryObjectPackRecord::META_READY,
+                    pack_format_kind: 1,
+                    pack_hash_hi16,
+                    pack_hash_lo32,
+                    first_member_index: start as u32,
+                    member_count: (end - start + 1) as u32,
+                    total_bytes: ((end - start + 1) * 4096) as u64,
+                    created_at_s: 1,
+                },
+            )
+            .unwrap();
+        for (depth, hash) in hashes.iter().enumerate().take(end + 1).skip(start) {
+            let (blob_index, _) = blobs
+                .append_blob_with_id_index(
+                    &mut tx,
+                    &BinaryBlobRecord {
+                        blob_meta: BinaryBlobRecord::META_HAS_PACK_MEMBER,
+                        hash_kind: 0,
+                        reserved0: 0,
+                        size_bytes: 4096,
+                        pack_member_index_plus1: depth as u32 + 1,
+                        created_at_s: 1,
+                        pruned_at_s: 0,
+                        sha256: *hash,
+                    },
+                )
+                .unwrap();
+            packs
+                .append_object_pack_member_record(
+                    &mut tx,
+                    &BinaryObjectPackMemberRecord {
+                        member_meta: u8::from(depth != 0),
+                        delta_chain_depth: depth as u8,
+                        reserved0: 0,
+                        pack_index,
+                        blob_index,
+                        base_blob_index_plus1: depth as u32,
+                    },
+                )
+                .unwrap();
+        }
+    }
+    tx.commit().unwrap();
+    let read_deepest = || {
+        let read = blobs.begin_read_txn();
+        blobs.read_blob_bytes_for_id(&read, &ids[5])
+    };
+    assert_eq!(read_deepest().unwrap(), Some(versions[5].clone()));
+    let member_path = authority.join("object_pack_member.bin");
+    let original = std::fs::read(&member_path).unwrap();
+    for (name, expected, base, depth) in [
+        ("cycle", "cyclic", Some(6u32), None),
+        ("wrong FK", "", Some(u32::MAX), None),
+        (
+            "persisted depth",
+            "safety read limit",
+            None,
+            Some((MAX_DELTA_CHAIN_READ_DEPTH + 1) as u8),
+        ),
+    ] {
+        let mut invalid = original.clone();
+        // Corrupt an ancestor in the preceding pack, not merely the target.
+        let at = 4 + 2 * 16;
+        if let Some(base) = base {
+            invalid[at + 12..at + 16].copy_from_slice(&base.to_le_bytes());
+        }
+        if let Some(depth) = depth {
+            invalid[at + 1] = depth;
+        }
+        std::fs::write(&member_path, invalid).unwrap();
+        let error = read_deepest().expect_err(name).to_string();
+        assert!(error.contains(expected), "{name}: {error}");
+        std::fs::write(&member_path, &original).unwrap();
+        assert_eq!(read_deepest().unwrap(), Some(versions[5].clone()));
+    }
+    let (path, id) = first_pack.unwrap();
+    let old_pack = std::fs::read(&path).unwrap();
+    let mut wrong_body = versions[0].clone();
+    wrong_body[100] ^= 1;
+    write_pack_archive_with_format(
+        path.to_str().unwrap(),
+        &id,
+        "2026-07-15T00:00:00Z",
+        &json!([{
+            "entry_name": format!("blobs/{}", ids[0]), "blob_id": ids[0], "data": wrong_body,
+        }]),
+        PACK_FORMAT_ZSTD_CHUNKED_V1,
+    )
+    .unwrap();
+    assert!(read_deepest()
+        .unwrap_err()
+        .to_string()
+        .contains("sha256 mismatch"));
+    std::fs::write(&path, &old_pack).unwrap();
+    let mut cached = BinaryBlobReadSession::default();
+    {
+        let read = blobs.begin_read_txn();
+        assert_eq!(
+            blobs
+                .read_blob_bytes_for_id_with_session(&read, &ids[5], &mut cached, 0, None)
+                .unwrap(),
+            Some(versions[5].clone())
+        );
+    }
+    cached.clear_logical_values();
+    let mut damaged = old_pack.clone();
+    *damaged.last_mut().unwrap() ^= 1;
+    std::fs::write(&path, damaged).unwrap();
+    assert!(
+        read_deepest().is_err(),
+        "damaged pack trailer/checksum must fail"
+    );
+    let read = blobs.begin_read_txn();
+    assert!(
+        blobs
+            .read_blob_bytes_for_id_with_session(&read, &ids[5], &mut cached, 0, None)
+            .is_err(),
+        "retained chunk cache must invalidate a changed pack and preserve checksum rejection"
+    );
+    drop(read);
+    std::fs::write(&path, old_pack).unwrap();
+    assert_eq!(read_deepest().unwrap(), Some(versions[5].clone()));
+}
+
+#[test]
 fn content_binary_db_resolves_tree_payload_and_snapshot_manifest() {
     let temp = tempdir().expect("tempdir");
     let db = local_db(temp.path());

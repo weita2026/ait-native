@@ -1,0 +1,956 @@
+use std::collections::{BTreeMap, BTreeSet};
+use std::fs;
+use std::path::Path;
+
+use serde::Serialize;
+use sha2::{Digest, Sha256};
+
+use crate::model::{
+    BenchmarkManifest, CampaignScope, CellSpec, FixtureDeclaration, FixtureScale, SampleClass,
+    Temperature,
+};
+use crate::MANIFEST_CONTRACT;
+
+const REQUIRED_FEATURES: &[&str] = &[
+    "small_text",
+    "large_binary",
+    "deep_directories",
+    "ignored_files",
+    "renames",
+    "branches",
+    "merge_history",
+];
+
+const REQUIRED_CELLS: &[(&str, Temperature, SampleClass)] = &[
+    (
+        "init_import",
+        Temperature::Cold,
+        SampleClass::ProcessNetwork,
+    ),
+    ("status_clean", Temperature::Cold, SampleClass::Local),
+    ("status_clean", Temperature::Warm, SampleClass::Local),
+    ("status_small_edit", Temperature::Warm, SampleClass::Local),
+    ("snapshot_first", Temperature::Cold, SampleClass::Local),
+    ("snapshot_noop", Temperature::Warm, SampleClass::Local),
+    (
+        "snapshot_small_delta",
+        Temperature::Warm,
+        SampleClass::Local,
+    ),
+    (
+        "snapshot_large_delta",
+        Temperature::Warm,
+        SampleClass::Local,
+    ),
+    ("push_empty", Temperature::Cold, SampleClass::ProcessNetwork),
+    (
+        "push_incremental",
+        Temperature::Warm,
+        SampleClass::ProcessNetwork,
+    ),
+    (
+        "pull_fast_forward",
+        Temperature::Warm,
+        SampleClass::ProcessNetwork,
+    ),
+    (
+        "pull_non_fast_forward",
+        Temperature::Warm,
+        SampleClass::ProcessNetwork,
+    ),
+    ("ancestry", Temperature::Warm, SampleClass::Local),
+    ("merge_base", Temperature::Warm, SampleClass::Local),
+    (
+        "git_round_trip",
+        Temperature::Cold,
+        SampleClass::ProcessNetwork,
+    ),
+];
+
+#[derive(Clone, Debug, Serialize)]
+pub struct ValidationReport {
+    pub contract: &'static str,
+    pub benchmark_id: String,
+    pub protocol_revision: String,
+    pub campaign_scope: String,
+    pub manifest_digest: String,
+    pub fixture_count: usize,
+    pub cell_count: usize,
+    pub valid: bool,
+    pub errors: Vec<String>,
+    pub warnings: Vec<String>,
+}
+
+pub fn load_manifest(path: &Path) -> Result<(BenchmarkManifest, String), String> {
+    let bytes = fs::read(path).map_err(|error| {
+        format!(
+            "Failed to read benchmark manifest {}: {error}",
+            path.display()
+        )
+    })?;
+    let digest = format!("sha256:{:x}", Sha256::digest(&bytes));
+    let manifest = serde_json::from_slice::<BenchmarkManifest>(&bytes).map_err(|error| {
+        format!(
+            "Failed to decode benchmark manifest {}: {error}",
+            path.display()
+        )
+    })?;
+    Ok((manifest, digest))
+}
+
+pub fn validate_manifest(manifest: &BenchmarkManifest, manifest_digest: &str) -> ValidationReport {
+    let mut errors = Vec::new();
+    let mut warnings = Vec::new();
+
+    if manifest.contract != MANIFEST_CONTRACT {
+        errors.push(format!(
+            "contract must be {MANIFEST_CONTRACT}, got {}",
+            manifest.contract
+        ));
+    }
+    require_text("benchmark_id", &manifest.benchmark_id, &mut errors);
+    require_text(
+        "protocol_revision",
+        &manifest.protocol_revision,
+        &mut errors,
+    );
+    if manifest.sampling.warmup_iterations < 5 {
+        errors.push("sampling.warmup_iterations must be at least 5".to_string());
+    }
+    if manifest.sampling.measured_local_iterations < 50 {
+        errors.push("sampling.measured_local_iterations must be at least 50".to_string());
+    }
+    if manifest.sampling.measured_cold_iterations < 30 {
+        errors.push("sampling.measured_cold_iterations must be at least 30".to_string());
+    }
+    if manifest.bootstrap_resamples < 1_000 {
+        errors.push("bootstrap_resamples must be at least 1000".to_string());
+    }
+
+    validate_environment(manifest, &mut errors);
+    let fixture_by_id = validate_fixtures(manifest, &mut errors, &mut warnings);
+    validate_cells(manifest, &fixture_by_id, &mut errors);
+    match manifest.campaign_scope {
+        CampaignScope::FullMatrix => validate_matrix(manifest, &fixture_by_id, &mut errors),
+        CampaignScope::FocusedSlice => {
+            if manifest.cells.is_empty() {
+                errors.push("focused_slice must declare at least one benchmark cell".to_string());
+            }
+            warnings.push(
+                "focused_slice evidence is never claim eligible and cannot satisfy the release matrix"
+                    .to_string(),
+            );
+        }
+    }
+
+    ValidationReport {
+        contract: MANIFEST_CONTRACT,
+        benchmark_id: manifest.benchmark_id.clone(),
+        protocol_revision: manifest.protocol_revision.clone(),
+        campaign_scope: manifest.campaign_scope.as_str().to_string(),
+        manifest_digest: manifest_digest.to_string(),
+        fixture_count: manifest.fixtures.len(),
+        cell_count: manifest.cells.len(),
+        valid: errors.is_empty(),
+        errors,
+        warnings,
+    }
+}
+
+fn validate_environment(manifest: &BenchmarkManifest, errors: &mut Vec<String>) {
+    let environment = &manifest.environment;
+    for (field, value) in [
+        ("captured_at", environment.captured_at.as_str()),
+        ("os", environment.os.as_str()),
+        ("architecture", environment.architecture.as_str()),
+        ("filesystem", environment.filesystem.as_str()),
+        ("storage_medium", environment.storage_medium.as_str()),
+        ("cpu", environment.cpu.as_str()),
+        ("rust_version", environment.rust_version.as_str()),
+        ("git_version", environment.git_version.as_str()),
+        ("ait_version", environment.ait_version.as_str()),
+        (
+            "repository_snapshot",
+            environment.repository_snapshot.as_str(),
+        ),
+        ("server_revision", environment.server_revision.as_str()),
+        ("network_profile", environment.network_profile.as_str()),
+        ("cache_drop_method", environment.cache_drop_method.as_str()),
+    ] {
+        require_text(&format!("environment.{field}"), value, errors);
+    }
+    if environment.memory_bytes == 0 {
+        errors.push("environment.memory_bytes must be greater than zero".to_string());
+    }
+}
+
+fn validate_fixtures<'a>(
+    manifest: &'a BenchmarkManifest,
+    errors: &mut Vec<String>,
+    warnings: &mut Vec<String>,
+) -> BTreeMap<&'a str, &'a FixtureDeclaration> {
+    let mut by_id = BTreeMap::new();
+    let mut kinds_by_scale = BTreeMap::<&str, BTreeSet<String>>::new();
+    for fixture in &manifest.fixtures {
+        if fixture.fixture_id.trim().is_empty() {
+            errors.push("fixture_id must not be empty".to_string());
+            continue;
+        }
+        if by_id.insert(fixture.fixture_id.as_str(), fixture).is_some() {
+            errors.push(format!("duplicate fixture_id: {}", fixture.fixture_id));
+        }
+        require_text(
+            &format!("fixture {} revision", fixture.fixture_id),
+            &fixture.revision,
+            errors,
+        );
+        require_text(
+            &format!("fixture {} source", fixture.fixture_id),
+            &fixture.source,
+            errors,
+        );
+        require_text(
+            &format!("fixture {} redistribution", fixture.fixture_id),
+            &fixture.redistribution,
+            errors,
+        );
+        if !is_sha256(&fixture.content_digest) {
+            errors.push(format!(
+                "fixture {} content_digest must be sha256:<64 lowercase hex>",
+                fixture.fixture_id
+            ));
+        }
+        validate_scale_bounds(fixture, errors);
+        let features = fixture
+            .features
+            .iter()
+            .map(String::as_str)
+            .collect::<BTreeSet<_>>();
+        for required in REQUIRED_FEATURES {
+            if !features.contains(required) {
+                errors.push(format!(
+                    "fixture {} is missing required feature {required}",
+                    fixture.fixture_id
+                ));
+            }
+        }
+        let normalized_kind = fixture.kind.trim().to_ascii_lowercase();
+        if !matches!(normalized_kind.as_str(), "synthetic" | "real") {
+            errors.push(format!(
+                "fixture {} kind must be synthetic or real",
+                fixture.fixture_id
+            ));
+        }
+        kinds_by_scale
+            .entry(fixture.scale.as_str())
+            .or_default()
+            .insert(normalized_kind);
+    }
+    let required_scales = match manifest.campaign_scope {
+        CampaignScope::FullMatrix => ["small", "medium", "large"]
+            .into_iter()
+            .map(str::to_string)
+            .collect::<BTreeSet<_>>(),
+        CampaignScope::FocusedSlice => manifest
+            .cells
+            .iter()
+            .filter_map(|cell| by_id.get(cell.fixture_id.as_str()))
+            .map(|fixture| fixture.scale.as_str().to_string())
+            .collect::<BTreeSet<_>>(),
+    };
+    for scale in required_scales {
+        let kinds = kinds_by_scale
+            .get(scale.as_str())
+            .cloned()
+            .unwrap_or_default();
+        for kind in ["synthetic", "real"] {
+            if !kinds.contains(kind) {
+                errors.push(format!(
+                    "{scale} scale must declare at least one {kind} fixture"
+                ));
+            }
+        }
+    }
+    if manifest.fixtures.iter().any(|fixture| {
+        fixture.kind.eq_ignore_ascii_case("real")
+            && fixture.redistribution.eq_ignore_ascii_case("unspecified")
+    }) {
+        warnings.push(
+            "real fixture redistribution should state public, private, or restricted constraints"
+                .to_string(),
+        );
+    }
+    by_id
+}
+
+fn validate_scale_bounds(fixture: &FixtureDeclaration, errors: &mut Vec<String>) {
+    const MIB: u64 = 1024 * 1024;
+    const GIB: u64 = 1024 * MIB;
+    let valid = match fixture.scale {
+        FixtureScale::Small => {
+            fixture.file_count <= 1_000
+                && fixture.total_bytes <= 100 * MIB
+                && fixture.history_nodes <= 500
+        }
+        FixtureScale::Medium => {
+            (10_000..=50_000).contains(&fixture.file_count)
+                && (GIB..=5 * GIB).contains(&fixture.total_bytes)
+                && (10_000..=50_000).contains(&fixture.history_nodes)
+        }
+        FixtureScale::Large => {
+            (fixture.file_count >= 100_000 || fixture.total_bytes >= 10 * GIB)
+                && fixture.history_nodes >= 100_000
+        }
+    };
+    if !valid {
+        errors.push(format!(
+            "fixture {} does not satisfy {} scale file/byte/history bounds",
+            fixture.fixture_id,
+            fixture.scale.as_str()
+        ));
+    }
+}
+
+fn validate_cells<'a>(
+    manifest: &'a BenchmarkManifest,
+    fixture_by_id: &BTreeMap<&'a str, &'a FixtureDeclaration>,
+    errors: &mut Vec<String>,
+) {
+    let mut ids = BTreeSet::new();
+    for cell in &manifest.cells {
+        if !ids.insert(cell.cell_id.as_str()) {
+            errors.push(format!("duplicate cell_id: {}", cell.cell_id));
+        }
+        if !fixture_by_id.contains_key(cell.fixture_id.as_str()) {
+            errors.push(format!(
+                "cell {} references unknown fixture {}",
+                cell.cell_id, cell.fixture_id
+            ));
+        }
+        let roles = cell
+            .subjects
+            .iter()
+            .map(|subject| subject.role.trim().to_ascii_lowercase())
+            .collect::<Vec<_>>();
+        for required_role in ["ait", "git"] {
+            if roles
+                .iter()
+                .filter(|role| role.as_str() == required_role)
+                .count()
+                != 1
+            {
+                errors.push(format!(
+                    "cell {} must contain exactly one {required_role} subject",
+                    cell.cell_id
+                ));
+            }
+        }
+        let mut subject_ids = BTreeSet::new();
+        for subject in &cell.subjects {
+            if !subject_ids.insert(subject.subject_id.as_str()) {
+                errors.push(format!(
+                    "cell {} has duplicate subject_id {}",
+                    cell.cell_id, subject.subject_id
+                ));
+            }
+            validate_command(
+                &format!(
+                    "cell {} subject {} command",
+                    cell.cell_id, subject.subject_id
+                ),
+                &subject.command,
+                errors,
+            );
+            validate_command(
+                &format!(
+                    "cell {} subject {} history_node_probe",
+                    cell.cell_id, subject.subject_id
+                ),
+                &subject.history_node_probe,
+                errors,
+            );
+            validate_command(
+                &format!(
+                    "cell {} subject {} outcome_probe",
+                    cell.cell_id, subject.subject_id
+                ),
+                &subject.outcome_probe,
+                errors,
+            );
+            for (index, command) in subject
+                .reset_commands
+                .iter()
+                .chain(subject.prepare_commands.iter())
+                .chain(subject.cleanup_commands.iter())
+                .enumerate()
+            {
+                validate_command(
+                    &format!(
+                        "cell {} subject {} lifecycle command {}",
+                        cell.cell_id, subject.subject_id, index
+                    ),
+                    command,
+                    errors,
+                );
+            }
+            if subject.metadata_excludes.is_empty() {
+                errors.push(format!(
+                    "cell {} subject {} must declare VCS metadata exclusions",
+                    cell.cell_id, subject.subject_id
+                ));
+            }
+        }
+    }
+}
+
+fn validate_command(label: &str, command: &crate::model::CommandSpec, errors: &mut Vec<String>) {
+    if command.program.trim().is_empty() {
+        errors.push(format!("{label} program must not be empty"));
+    }
+    if command.expected_exit_codes.is_empty() {
+        errors.push(format!("{label} expected_exit_codes must not be empty"));
+    }
+}
+
+fn validate_matrix<'a>(
+    manifest: &'a BenchmarkManifest,
+    fixture_by_id: &BTreeMap<&'a str, &'a FixtureDeclaration>,
+    errors: &mut Vec<String>,
+) {
+    for scale in ["small", "medium", "large"] {
+        for (operation, temperature, sample_class) in REQUIRED_CELLS {
+            let present = manifest.cells.iter().any(|cell| {
+                fixture_by_id
+                    .get(cell.fixture_id.as_str())
+                    .is_some_and(|fixture| fixture.scale.as_str() == scale)
+                    && cell.operation == *operation
+                    && cell.temperature == *temperature
+                    && cell.sample_class == *sample_class
+            });
+            if !present {
+                errors.push(format!(
+                    "matrix is missing {scale}/{operation}/{}/{}",
+                    temperature.as_str(),
+                    sample_class.as_str()
+                ));
+            }
+        }
+    }
+}
+
+fn require_text(field: &str, value: &str, errors: &mut Vec<String>) {
+    if value.trim().is_empty() {
+        errors.push(format!("{field} must not be empty"));
+    }
+}
+
+fn is_sha256(value: &str) -> bool {
+    value.strip_prefix("sha256:").is_some_and(|hex| {
+        hex.len() == 64
+            && hex
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+    })
+}
+
+pub(crate) fn fixture_for_cell<'a>(
+    manifest: &'a BenchmarkManifest,
+    cell: &CellSpec,
+) -> Result<&'a FixtureDeclaration, String> {
+    manifest
+        .fixtures
+        .iter()
+        .find(|fixture| fixture.fixture_id == cell.fixture_id)
+        .ok_or_else(|| {
+            format!(
+                "Cell {} references unknown fixture {}",
+                cell.cell_id, cell.fixture_id
+            )
+        })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use crate::model::{
+        CommandSpec, EnvironmentPin, FixtureDeclaration, SamplingPolicy, SubjectSpec,
+    };
+
+    use super::*;
+
+    #[test]
+    fn sha256_contract_is_lowercase_and_exact() {
+        assert!(is_sha256(&format!("sha256:{}", "a".repeat(64))));
+        assert!(!is_sha256(&format!("sha256:{}", "A".repeat(64))));
+        assert!(!is_sha256("sha256:abc"));
+    }
+
+    #[test]
+    fn complete_multiscale_matrix_is_valid_and_missing_cell_is_not() {
+        let mut manifest = complete_manifest();
+        let report = validate_manifest(&manifest, &format!("sha256:{}", "b".repeat(64)));
+        assert!(report.valid, "{:?}", report.errors);
+        assert_eq!(report.cell_count, REQUIRED_CELLS.len() * 3);
+
+        manifest.cells.pop();
+        manifest.sampling.measured_local_iterations = 49;
+        let report = validate_manifest(&manifest, &format!("sha256:{}", "b".repeat(64)));
+        assert!(!report.valid);
+        assert!(report
+            .errors
+            .iter()
+            .any(|error| error.contains("measured_local_iterations")));
+        assert!(report
+            .errors
+            .iter()
+            .any(|error| error.contains("matrix is missing")));
+    }
+
+    #[test]
+    fn focused_slice_validates_declared_scale_but_never_the_release_matrix() {
+        let mut manifest = complete_manifest();
+        manifest.campaign_scope = CampaignScope::FocusedSlice;
+        manifest
+            .fixtures
+            .retain(|fixture| fixture.scale.as_str() == "small");
+        manifest
+            .cells
+            .retain(|cell| cell.cell_id == "small-status_clean-warm-local");
+        let report = validate_manifest(&manifest, &format!("sha256:{}", "b".repeat(64)));
+        assert!(report.valid, "{:?}", report.errors);
+        assert_eq!(report.campaign_scope, "focused_slice");
+        assert_eq!(report.cell_count, 1);
+        assert!(report
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("never claim eligible")));
+        assert!(!report
+            .errors
+            .iter()
+            .any(|error| error.contains("matrix is missing")));
+    }
+
+    #[test]
+    fn compiled_protocol_asset_matches_implementation_axes() {
+        let protocol: serde_json::Value = serde_json::from_str(crate::PROTOCOL_V1_JSON).unwrap();
+        assert_eq!(
+            protocol["contract"],
+            serde_json::json!("ait-vcs-benchmark-protocol/v1")
+        );
+        assert_eq!(
+            protocol["required_cells_per_scale"]
+                .as_array()
+                .unwrap()
+                .len(),
+            REQUIRED_CELLS.len()
+        );
+        assert_eq!(
+            protocol["sampling"]["minimum_measured_local_iterations"],
+            serde_json::json!(50)
+        );
+        assert_eq!(
+            protocol["campaign_scopes"]["focused_slice"],
+            serde_json::json!("One or more explicitly selected cells with full sample counts; useful for engineering evidence but never claim eligible.")
+        );
+        assert_eq!(
+            protocol["portable_manifests"]["binding_placeholder"],
+            serde_json::json!("{binding:<name>}")
+        );
+    }
+
+    #[test]
+    fn measured_ait_workspace_declares_native_project_document_treatment() {
+        assert_eq!(crate::agent_token::AIT_PURGED_PROJECT_DOCUMENT, "AGENTS.md");
+        let protocol: serde_json::Value =
+            serde_json::from_str(crate::AGENT_TOKEN_PROTOCOL_V1_JSON).unwrap();
+        let policy = protocol["fairness"]["project_document_loading"]
+            .as_str()
+            .expect("project_document_loading is declared");
+        for required in [
+            "project_doc_max_bytes=0",
+            "smoke-diagnostic only",
+            "Codex retains only generated AGENTS.md",
+            "Claude retains only CLAUDE.md",
+            "without repeating exact lifecycle commands",
+            "never pooled",
+        ] {
+            assert!(
+                policy.contains(required),
+                "project-document policy must state {required:?}: {policy}"
+            );
+        }
+    }
+
+    #[test]
+    fn compiled_agent_token_protocol_freezes_linear_game_comparison() {
+        let protocol: serde_json::Value =
+            serde_json::from_str(crate::AGENT_TOKEN_PROTOCOL_V1_JSON).unwrap();
+        assert_eq!(
+            protocol["contract"],
+            serde_json::json!("ait-agent-token-benchmark-protocol/v1")
+        );
+        assert_eq!(
+            protocol["protocol_revision"],
+            serde_json::json!("game-development-2026-09-09.55")
+        );
+        assert_eq!(
+            protocol["sampling"]["codex_app_equivalent_managed_prefix_gate"]
+                ["scheduled_prefix_session_count"],
+            serde_json::json!(10)
+        );
+        assert_eq!(
+            protocol["comparison_families"]["core"]["modes"][0]["id"],
+            serde_json::json!("git_linear_single_session")
+        );
+        assert_eq!(
+            protocol["sampling"]["infrastructure_pair_recovery"]["contract"],
+            serde_json::json!("ait-agent-token-infrastructure-pair-recovery/v1")
+        );
+        assert_eq!(
+            protocol["sampling"]["infrastructure_pair_recovery"]["execution_limit"],
+            serde_json::json!("recognized interruption classes are not capped per campaign, since an interruption says nothing about the result; each recovery is recorded under its own numbered directory with full provenance. Functional defects and evaluator rejection remain absolutely non-retryable, which is the risk the former single-use cap guarded. The exact externally evidenced .34 host-shutdown path is a separate bounded contract")
+        );
+        assert_eq!(
+            protocol["sampling"]["host_shutdown_pair_recovery"]["contract"],
+            serde_json::json!("ait-agent-token-host-shutdown-pair-recovery/v1")
+        );
+        assert_eq!(
+            protocol["sampling"]["host_shutdown_pair_recovery"]["source_pair_start_index"],
+            serde_json::json!(80)
+        );
+        assert_eq!(
+            protocol["sampling"]["recovered_spawn_adjudication"]["contract"],
+            serde_json::json!("ait-agent-token-run-adjudication/v1")
+        );
+        assert_eq!(
+            protocol["sampling"]["recovered_spawn_adjudication"]["source_run_summary_sha256"],
+            serde_json::json!(
+                "sha256:0a58cb77970cb4d41a531a99b69fc8acdde4e7970b2327a14333ad050a9f0dac"
+            )
+        );
+        assert_eq!(
+            protocol["sampling"]["statistical_replacement"]["contract"],
+            serde_json::json!("ait-agent-token-statistical-replacement/v1")
+        );
+        assert_eq!(
+            protocol["sampling"]["statistical_replacement"]["execution_limit"],
+            serde_json::json!(
+                "exactly one new same-mode session across the campaign; smoke cannot replace, and no second replacement, repair, activation, or retry is admitted even when the replacement fails"
+            )
+        );
+        assert_eq!(
+            protocol["executors"]["claude"]["refusal_policy"],
+            serde_json::json!("a successful terminal result with stop_reason=refusal is valid provider-token-accounted functional model behavior, never executor infrastructure; it cannot be accepted equivalent and may consume the one prospective functional replacement only when the complete manifest declared that policy before execution")
+        );
+        assert_eq!(
+            protocol["executors"]["claude"]["tool_policy"],
+            serde_json::json!("claude_code_local_tools")
+        );
+        assert!(protocol["executors"]["claude"]["version_pin"]
+            .as_str()
+            .is_some_and(|value| value.contains("runtime.executor_version")));
+        assert_eq!(
+            protocol["executors"]["codex"]["tool_policy"],
+            serde_json::json!("codex_shell_only")
+        );
+        assert_eq!(protocol["workloads"].as_array().unwrap().len(), 5);
+        assert_eq!(
+            protocol["comparison_families"]["core"]["modes"]
+                .as_array()
+                .unwrap()
+                .len(),
+            2
+        );
+        assert_eq!(
+            protocol["product_boundary"]["python_allowed"],
+            serde_json::json!(false)
+        );
+        assert_eq!(
+            protocol["product_boundary"]["workflow_mode"],
+            serde_json::json!("solo_local")
+        );
+        assert_eq!(
+            protocol["mixed_workflow_metrics"]["weighted_composite_score_allowed"],
+            serde_json::json!(false)
+        );
+        assert_eq!(
+            protocol["fairness"]["measured_ait_management_commands_allowed"],
+            serde_json::json!(false)
+        );
+        assert!(
+            protocol["fairness"]["git_worktree_start_point_admission"]["implicit_head"]
+                .as_str()
+                .is_some_and(|value| value.contains("git-start-state-proof.json"))
+        );
+        assert!(
+            protocol["fairness"]["git_worktree_start_point_admission"]["first_use"]
+                .as_str()
+                .is_some_and(|value| value.contains("rejected"))
+        );
+        assert_eq!(
+            protocol["fairness"]["measured_ait_allowed_commands"]
+                .as_array()
+                .unwrap()
+                .len(),
+            5
+        );
+        assert_eq!(
+            protocol["fairness"]["symmetric_readonly_inspection"]["ait_channel"],
+            serde_json::json!(["ait status", "ait diff", "ait blame"])
+        );
+        assert_eq!(
+            protocol["fairness"]["symmetric_readonly_inspection"]["remote_authority_policy"],
+            serde_json::json!(
+                "never informational: any remote-carrying inspection remains a mode violation"
+            )
+        );
+        assert_eq!(
+            protocol["fairness"]["symmetric_readonly_inspection"]["measured_prompt_policy"],
+            serde_json::json!(
+                "neither mode names, requires, or recommends any local read-only inspection command, and neither mode is required to inspect for its lane to be valid; both measured prompts carry one identical neutral sentence stating that local read-only inspection is neither required nor prohibited, so strategy is chosen naturally by the measured agent"
+            )
+        );
+        assert_eq!(
+            protocol["fairness"]["informational_cli_help_introspection"]["cross_tool_policy"],
+            serde_json::json!("help of the other mode's CLI remains a mode-exclusion violation")
+        );
+        assert!(protocol["fairness"]["measured_ait_treatment"]
+            .as_str()
+            .is_some_and(|value| value.contains("one local task start")));
+        assert_eq!(
+            protocol["fairness"]["measured_git_required_commands"]
+                .as_array()
+                .unwrap()
+                .len(),
+            6
+        );
+        assert!(protocol["fairness"]["measured_git_treatment"]
+            .as_str()
+            .is_some_and(|value| value.contains("linked worktree")));
+        assert_eq!(
+            protocol["sampling"]["paired_comparison_admission"]["workflow_metric_asymmetry_policy"],
+            serde_json::json!("retain the pair and report the difference")
+        );
+        assert!(protocol["sampling"]
+            .get("paired_apply_patch_admission")
+            .is_none());
+        assert_eq!(
+            protocol["product_boundary"]["core_sprint_mode"],
+            serde_json::json!("manifest-pinned off for the primary campaign; separately reported sprint-on smoke and complete campaigns are admitted")
+        );
+        assert_eq!(
+            protocol["product_boundary"]["ait_server_connection_allowed"],
+            serde_json::json!(false)
+        );
+        assert_eq!(
+            protocol["sampling"]["complete_campaign"]["scheduled_run_count"],
+            serde_json::json!(200)
+        );
+        assert_eq!(
+            protocol["sampling"]["complete_campaign"]["paired_attempts_per_workload"],
+            serde_json::json!(20)
+        );
+        assert!(protocol["sampling"]["complete_campaign"]["revision_note"]
+            .as_str()
+            .is_some_and(|value| value.contains("separately reported sprint-on treatment")));
+        assert!(
+            protocol["sampling"]["atomic_pair_schedule"]["candidate_defect_policy"]
+                .as_str()
+                .is_some_and(|value| value.contains("continue the exact suffix without retry"))
+        );
+        assert!(
+            protocol["sampling"]["immutable_resume"]["valid_unaccepted_outcome_policy"]
+                .as_str()
+                .is_some_and(|value| value.contains("declared first_valid_unaccepted_lane_once"))
+        );
+        assert!(
+            protocol["sampling"]["immutable_resume"]["resume_audit_policy"]
+                .as_str()
+                .is_some_and(|value| value.contains("runner SHA-256"))
+        );
+        assert_eq!(
+            protocol["publication_eligibility"]["required_scope"],
+            serde_json::json!("complete")
+        );
+        assert_eq!(
+            protocol["publication_provenance"]["legacy_pilot_policy"],
+            serde_json::json!(
+                "pilot evidence remains pilot and is never source-protocol claim eligible"
+            )
+        );
+        assert!(
+            protocol["publication_provenance"]["predecessor_complete_campaign_policy"]
+                .as_str()
+                .is_some_and(|value| value.contains("never reinterpreted"))
+        );
+        assert!(
+            protocol["publication_provenance"]["current_policy_reanalysis"]
+                .as_str()
+                .is_some_and(|value| value.contains("never changes source scope"))
+        );
+        assert_eq!(
+            protocol["sampling"]["paired_comparison_admission"]["total_patch_attempt_authority"],
+            serde_json::json!(
+                "completed file-change items plus rejected apply-patch attempts under the \
+                 pinned executor's authorities"
+            )
+        );
+        assert_eq!(
+            protocol["executor_preflight"]["required_separate_read_only_shell_commands"],
+            serde_json::json!(30)
+        );
+        assert_eq!(
+            protocol["executor_preflight"]["required_started_command_items"],
+            serde_json::json!(30)
+        );
+        assert_eq!(
+            protocol["executor_preflight"]["unexpected_non_command_tool_items_allowed"],
+            serde_json::json!(0)
+        );
+        assert_eq!(
+            protocol["executor_preflight"]["benchmark_disabled_feature_overrides"],
+            serde_json::json!([])
+        );
+        assert_eq!(
+            protocol["executor_preflight"]["git_worktree_permission_probe_required"],
+            serde_json::json!(true)
+        );
+        assert_eq!(
+            protocol["fairness"]["permission_profile"]["name"],
+            serde_json::json!("ait_benchmark_local_v1")
+        );
+        assert_eq!(
+            protocol["fairness"]["permission_profile"]["danger_full_access_allowed"],
+            serde_json::json!(false)
+        );
+        assert_eq!(
+            protocol["sampling"]["atomic_pair_schedule"]["slice_unit"],
+            serde_json::json!(
+                "--max-pairs counts complete adjacent Git/AIT pairs; --max-runs is retired"
+            )
+        );
+        assert_eq!(
+            protocol["provider_usage"]["candidate_tool_process_spawn_failure_policy"],
+            serde_json::json!("a launch failure is measured candidate behavior when the same session recovers, exits zero without timeout, retains normalized provider usage, and produces a valid non-empty command transcript; count the failed invocation, retry, outputs, and all provider tokens. Otherwise retain the invalid run and stop immediately. Recognize both unified CreateProcess stderr and non-unified executor Io/exit-code-minus-one evidence")
+        );
+        assert_eq!(
+            protocol["publication_eligibility"]["recovered_spawn_successor_executed_session_count"],
+            serde_json::json!(202)
+        );
+        assert_eq!(
+            protocol["publication_eligibility"]
+                ["maximum_ait_acceptance_rate_deficit_percentage_points"],
+            serde_json::json!(5)
+        );
+    }
+
+    fn complete_manifest() -> BenchmarkManifest {
+        let mut fixtures = Vec::new();
+        for (scale, file_count, total_bytes, history_nodes) in [
+            (FixtureScale::Small, 512, 16 * 1024 * 1024, 256),
+            (FixtureScale::Medium, 10_000, 1024 * 1024 * 1024, 10_000),
+            (
+                FixtureScale::Large,
+                100_000,
+                10 * 1024 * 1024 * 1024,
+                100_000,
+            ),
+        ] {
+            for kind in ["synthetic", "real"] {
+                fixtures.push(FixtureDeclaration {
+                    fixture_id: format!("{}-{kind}-v1", scale.as_str()),
+                    revision: "1".to_string(),
+                    scale,
+                    kind: kind.to_string(),
+                    source: format!("fixture://{}-{kind}", scale.as_str()),
+                    redistribution: if kind == "real" {
+                        "restricted; local measurement only".to_string()
+                    } else {
+                        "generated; redistributable".to_string()
+                    },
+                    content_digest: format!("sha256:{}", "a".repeat(64)),
+                    file_count,
+                    total_bytes,
+                    history_nodes,
+                    features: REQUIRED_FEATURES
+                        .iter()
+                        .map(|feature| (*feature).to_string())
+                        .collect(),
+                });
+            }
+        }
+        let command = CommandSpec {
+            program: "/usr/bin/true".to_string(),
+            args: vec![],
+            cwd: None,
+            env: BTreeMap::new(),
+            expected_exit_codes: vec![0],
+        };
+        let mut cells = Vec::new();
+        for scale in ["small", "medium", "large"] {
+            for (operation, temperature, sample_class) in REQUIRED_CELLS {
+                cells.push(CellSpec {
+                    cell_id: format!(
+                        "{scale}-{operation}-{}-{}",
+                        temperature.as_str(),
+                        sample_class.as_str()
+                    ),
+                    fixture_id: format!("{scale}-synthetic-v1"),
+                    operation: (*operation).to_string(),
+                    temperature: *temperature,
+                    sample_class: *sample_class,
+                    subjects: ["ait", "git"]
+                        .iter()
+                        .map(|role| SubjectSpec {
+                            subject_id: format!("{role}-{scale}"),
+                            role: (*role).to_string(),
+                            workspace_root: PathBuf::from(format!("/fixtures/{scale}/{role}")),
+                            metadata_excludes: vec![".ait".to_string(), ".git".to_string()],
+                            command: command.clone(),
+                            reset_commands: vec![],
+                            prepare_commands: vec![],
+                            cleanup_commands: vec![],
+                            history_node_probe: command.clone(),
+                            outcome_probe: command.clone(),
+                            metrics_json_path: None,
+                        })
+                        .collect(),
+                });
+            }
+        }
+        BenchmarkManifest {
+            contract: MANIFEST_CONTRACT.to_string(),
+            benchmark_id: "matrix-v1".to_string(),
+            protocol_revision: "vcs-performance-2026-07-19.1".to_string(),
+            campaign_scope: CampaignScope::FullMatrix,
+            seed: 42,
+            sampling: SamplingPolicy {
+                warmup_iterations: 5,
+                measured_local_iterations: 50,
+                measured_cold_iterations: 30,
+            },
+            environment: EnvironmentPin {
+                captured_at: "2026-07-19T00:00:00Z".to_string(),
+                os: "macOS".to_string(),
+                architecture: "arm64".to_string(),
+                filesystem: "APFS".to_string(),
+                storage_medium: "NVMe".to_string(),
+                cpu: "test CPU".to_string(),
+                memory_bytes: 16 * 1024 * 1024 * 1024,
+                rust_version: "rustc test".to_string(),
+                git_version: "git test".to_string(),
+                ait_version: "ait fixture".to_string(),
+                repository_snapshot: "SNP-TEST".to_string(),
+                server_revision: "server-test".to_string(),
+                network_profile: "loopback".to_string(),
+                cache_drop_method: "declared reset commands".to_string(),
+                command_options: BTreeMap::new(),
+            },
+            fixtures,
+            cells,
+            bootstrap_resamples: 1_000,
+            limitations: vec!["test fixture declarations only".to_string()],
+        }
+    }
+}

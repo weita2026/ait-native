@@ -77,10 +77,10 @@ fn native_change_namespace_supports_local_and_remote_scopes() {
     assert_eq!(local_show["task_id"].as_str(), Some("LT-0001"));
     assert!(log.lock().unwrap().is_empty());
 
-    let remote_show = json_output(root, &["change", "show", "RC-1", "--json"]);
+    let remote_show = json_output(root, &["change", "show", "RC-1", "--remote", "origin", "--json"]);
     assert_eq!(remote_show["change_id"].as_str(), Some("RC-1"));
 
-    let remote_closed = json_output(root, &["change", "close", "RC-1", "--json"]);
+    let remote_closed = json_output(root, &["change", "close", "RC-1", "--remote", "origin", "--json"]);
     assert_eq!(remote_closed["change_id"].as_str(), Some("RC-1"));
     assert_eq!(remote_closed["status"].as_str(), Some("archived"));
 
@@ -1108,7 +1108,7 @@ fn native_remote_task_start_from_uses_one_atomic_mutation_and_no_legacy_posts() 
         root,
         &[
             "task",
-            "start",
+            "start", "--remote", "origin",
             "--from",
             "docs/sprints/atomic-start.md#atomic-start/implement",
             "--intent",
@@ -1138,7 +1138,7 @@ fn native_remote_task_start_from_uses_one_atomic_mutation_and_no_legacy_posts() 
     );
     assert_eq!(
         payload["plan_source"]["transport_contract"],
-        "task-start-atomic/v1"
+        "task-start-atomic/v2"
     );
     assert!(payload["phase_timings_ms"]["atomic_remote_start"]
         .as_f64()
@@ -1151,7 +1151,7 @@ fn native_remote_task_start_from_uses_one_atomic_mutation_and_no_legacy_posts() 
         root,
         &[
             "task",
-            "start",
+            "start", "--remote", "origin",
             "--from",
             "docs/sprints/atomic-start.md#atomic-start/implement",
             "--intent",
@@ -1182,7 +1182,7 @@ fn native_remote_task_start_from_uses_one_atomic_mutation_and_no_legacy_posts() 
         root,
         &[
             "task",
-            "start",
+            "start", "--remote", "origin",
             "--from",
             "docs/sprints/atomic-start.md#atomic-start/implement",
             "--intent",
@@ -1209,7 +1209,7 @@ fn native_remote_task_start_from_uses_one_atomic_mutation_and_no_legacy_posts() 
         .collect::<Vec<_>>();
     assert_eq!(atomic.len(), 2);
     let atomic_body: JsonValue = parse_json(&atomic[0].body);
-    assert_eq!(atomic_body["contract"], "task-start-atomic/v1");
+    assert_eq!(atomic_body["contract"], "task-start-atomic/v2");
     assert_eq!(atomic_body["plan"]["action"], "create");
     assert!(atomic_body["task"].get("plan_id").is_none());
     assert!(atomic_body["change"].get("task_id").is_none());
@@ -1264,7 +1264,7 @@ fn native_remote_task_start_from_seeds_local_main_before_atomic_task_change() {
         root,
         &[
             "task",
-            "start",
+            "start", "--remote", "origin",
             "--from",
             "docs/sprints/atomic-empty-start.md#atomic-empty-start/implement",
             "--intent",
@@ -1381,7 +1381,7 @@ fn native_remote_task_start_attaches_task_change_only_to_final_plan_revision() {
         root,
         &[
             "task",
-            "start",
+            "start", "--remote", "origin",
             "--from",
             "docs/sprints/atomic-revise.md#atomic-revise/implement",
             "--intent",
@@ -1449,7 +1449,7 @@ fn native_remote_task_start_atomic_failure_never_falls_back_to_legacy_posts() {
         .current_dir(root)
         .args([
             "task",
-            "start",
+            "start", "--remote", "origin",
             "--from",
             "docs/sprints/atomic-failure.md#atomic-failure/implement",
             "--intent",
@@ -1496,7 +1496,7 @@ fn native_task_start_uses_remote_task_payload_contract() {
         root,
         &[
             "task",
-            "start",
+            "start", "--remote", "origin",
             "--title",
             "Bootstrap remote workflow",
             "--intent",
@@ -1738,7 +1738,7 @@ fn native_task_start_uses_remote_base_when_local_line_is_ahead() {
         root,
         &[
             "task",
-            "start",
+            "start", "--remote", "origin",
             "--title",
             "Use authoritative remote base",
             "--intent",
@@ -1809,7 +1809,7 @@ fn native_task_start_uses_remote_base_when_remote_line_is_ahead() {
         root,
         &[
             "task",
-            "start",
+            "start", "--remote", "origin",
             "--title",
             "Use imported remote base",
             "--intent",
@@ -1868,7 +1868,7 @@ fn native_task_start_seeds_a_null_remote_base_from_local_main() {
         root,
         &[
             "task",
-            "start",
+            "start", "--remote", "origin",
             "--title",
             "Use existing local main",
             "--intent",
@@ -2014,6 +2014,8 @@ fn native_change_create_recovers_existing_remote_task_with_contextual_id() {
             "change",
             "create",
             "RT-REMOTE",
+            "--remote",
+            "origin",
             "--title",
             "Recover remote task",
             "--base-line",

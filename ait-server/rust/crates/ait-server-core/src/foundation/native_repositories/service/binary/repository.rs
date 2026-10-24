@@ -1,4 +1,5 @@
 use super::*;
+use crate::foundation::workflow_binary_v0_adapter::BinaryDbServerWorkflowV0Store;
 
 const MAX_ZSTD_BULK_MUTATIONS: usize = 100_000;
 
@@ -22,6 +23,7 @@ where
             db,
             default_line: default_main_line(),
             id_namespace_prefix: "BIN".to_string(),
+            snapshot_capture_authority: None,
             created_at: now_rfc3339(),
             pull_catalog_cache: Arc::new(BinaryZstdPullCatalogCache::default()),
         }
@@ -29,6 +31,12 @@ where
 
     pub fn with_default_line(mut self, default_line: impl Into<String>) -> Self {
         self.default_line = default_line.into();
+        self
+    }
+
+    /// Supplied by numeric Repository routing, never by an HTTP payload.
+    pub fn with_snapshot_capture_authority(mut self, index: u32, namespace: String) -> Self {
+        self.snapshot_capture_authority = Some((index, namespace));
         self
     }
 
@@ -118,6 +126,9 @@ where
             updated_at: self.created_at.clone(),
         };
         let mut payload = repository_json(row);
+        if self.snapshot_capture_authority.is_some() {
+            payload["snapshot_capture_binding_contract"] = json!("ait.snapshot_capture_binding.v2");
+        }
         let object = payload.as_object_mut().ok_or_else(|| {
             NativeRepositoryError::internal("repository payload must be a JSON object")
         })?;
@@ -209,6 +220,8 @@ where
     ) -> Result<JsonValue, NativeRepositoryError> {
         self.ensure_repository(repo_name)?;
         let line_name = normalize_required_text(line_name, "line_name")?;
+        crate::foundation::workflow_package::require_ordinary_remote_line(&line_name)
+            .map_err(NativeRepositoryError::bad_request)?;
         let head_snapshot_id = normalize_optional_text(request.head_snapshot_id);
         let expected_head_snapshot_id = normalize_optional_text(request.expected_head_snapshot_id);
 
@@ -286,6 +299,8 @@ where
             )));
         }
         let line_name = normalize_required_text(line_name, "line_name")?;
+        crate::foundation::workflow_package::require_ordinary_remote_line(&line_name)
+            .map_err(NativeRepositoryError::bad_request)?;
         if line_name == self.default_line {
             return Err(NativeRepositoryError::bad_request(format!(
                 "Default line {line_name} cannot be archived"
@@ -589,6 +604,16 @@ where
             crate::perfetto_trace::PerfettoRange::new("ait.server.remote_sync.zstd_commit");
         let started = std::time::Instant::now();
         let commit_once = || -> Result<JsonValue, NativeRepositoryError> {
+            let contract = RemoteSyncCommitJson::stateless();
+            let request_object = contract.zstd_bulk_commit_object(&request)?;
+            let workflow = if self.snapshot_capture_authority.is_some() {
+                self.snapshot_capture_workflow_store()?
+            } else {
+                BinaryDbServerWorkflowV0Store::new_frozen(self.db.clone())
+            };
+            workflow
+                .request_actor(request_object)
+                .map_err(NativeRepositoryError::bad_request)?;
             #[cfg(feature = "perfetto-tracing")]
             let ensure_repository_trace = crate::perfetto_trace::PerfettoRange::new(
                 "ait.server.remote_sync.zstd_commit.ensure_repository",
@@ -601,8 +626,24 @@ where
             let decode_validate_trace = crate::perfetto_trace::PerfettoRange::new(
                 "ait.server.remote_sync.zstd_commit.decode_validate",
             );
-            let contract = RemoteSyncCommitJson::stateless();
-            let request_object = contract.zstd_bulk_commit_object(&request)?;
+            let capture_binding = request_object.get("capture_binding");
+            if request_object.get("contract").and_then(JsonValue::as_str)
+                == Some("ait.remote_sync.zstd_bulk.capture.v1")
+                && capture_binding.is_none()
+            {
+                return Err(NativeRepositoryError::bad_request(
+                    "Capture contract requires capture_binding",
+                ));
+            }
+            if capture_binding.is_some()
+                && (request_object.get("contract").and_then(JsonValue::as_str)
+                    != Some("ait.remote_sync.zstd_bulk.capture.v1")
+                    || self.snapshot_capture_authority.is_none())
+            {
+                return Err(NativeRepositoryError::bad_request(
+                    "Unsupported Snapshot capture authority contract",
+                ));
+            }
             let object_pack_values =
                 contract.zstd_bulk_commit_values(request_object, "object_packs")?;
             let tree_pack_values =
@@ -612,6 +653,22 @@ where
             let tree_locator_values =
                 contract.zstd_bulk_commit_values(request_object, "tree_locators")?;
             let snapshot_values = contract.zstd_bulk_commit_values(request_object, "snapshots")?;
+            if let Some(binding) = capture_binding {
+                let id = binding["snapshot_id"].as_str().ok_or_else(|| {
+                    NativeRepositoryError::bad_request("Capture Snapshot ID is required")
+                })?;
+                if snapshot_values
+                    .iter()
+                    .filter(|row| row["snapshot_id"].as_str() == Some(id))
+                    .count()
+                    != 1
+                    || request_object
+                        .get("line_update")
+                        .is_some_and(|v| !v.is_null())
+                {
+                    return Err(NativeRepositoryError::bad_request("Capture must name exactly one supplied Snapshot and cannot update a remote Line"));
+                }
+            }
             let requested_mutation_count = object_pack_values
                 .len()
                 .saturating_add(tree_pack_values.len())
@@ -860,9 +917,35 @@ where
             );
             let mut tx = BinaryDbWriteTxn::begin_serving(
                 &self.db,
-                BinaryDbCommandScope::ServerRemoteSyncCommit,
+                BinaryDbCommandScope::ServerSnapshotCapture,
             )
             .map_err(binary_native_repository_store_error)?;
+            let actor_index_plus1 = workflow
+                .request_actor_in_write(&tx, request_object)
+                .map_err(NativeRepositoryError::bad_request)?;
+            let capture_was_existing = match capture_binding {
+                Some(binding) => self
+                    .content_snapshots()
+                    .snapshot_by_id_in_write(
+                        &tx,
+                        binding["snapshot_id"].as_str().ok_or_else(|| {
+                            NativeRepositoryError::bad_request("Capture Snapshot ID is required")
+                        })?,
+                    )
+                    .map_err(binary_native_repository_store_error)?
+                    .is_some(),
+                None => false,
+            };
+            for mutation in &snapshot_mutations {
+                workflow
+                    .require_fresh_task_capture_binding(
+                        &tx,
+                        &mutation.snapshot_id,
+                        mutation.value["line_name"].as_str().unwrap_or("main"),
+                        capture_binding.and_then(|binding| binding["snapshot_id"].as_str()),
+                    )
+                    .map_err(NativeRepositoryError::bad_request)?;
+            }
             #[cfg(feature = "perfetto-tracing")]
             drop(writer_admission_trace);
 
@@ -908,37 +991,54 @@ where
             let content_append_trace = crate::perfetto_trace::PerfettoRange::new(
                 "ait.server.remote_sync.zstd_commit.transaction_mutation.content_append",
             );
-            for pack in &object_packs {
-                let pack_id = binary_json_text(pack, "pack_id").ok_or_else(|| {
-                    NativeRepositoryError::internal("object pack mutation is missing pack_id")
-                })?;
-                let locators = blob_locators
-                    .iter()
-                    .filter(|locator| {
-                        binary_json_text(locator, "pack_id").as_deref() == Some(pack_id.as_str())
-                    })
-                    .cloned()
-                    .collect::<Vec<_>>();
-                content
-                    .append_object_pack_in_tx(&mut tx, pack, &locators)
-                    .map_err(binary_native_repository_store_error)?;
-            }
-            for pack in &tree_packs {
-                let pack_id = binary_json_text(pack, "pack_id").ok_or_else(|| {
-                    NativeRepositoryError::internal("tree pack mutation is missing pack_id")
-                })?;
-                let locators = tree_locators
-                    .iter()
-                    .filter(|locator| {
-                        binary_json_text(locator, "tree_pack_id").as_deref()
-                            == Some(pack_id.as_str())
-                    })
-                    .cloned()
-                    .collect::<Vec<_>>();
-                content
-                    .append_tree_pack_in_tx(&mut tx, pack, &locators)
-                    .map_err(binary_native_repository_store_error)?;
-            }
+            let object_pack_groups = object_packs
+                .iter()
+                .map(|pack| {
+                    let pack_id = binary_json_text(pack, "pack_id").ok_or_else(|| {
+                        NativeRepositoryError::internal("object pack mutation is missing pack_id")
+                    })?;
+                    let locators = blob_locators
+                        .iter()
+                        .filter(|locator| {
+                            binary_json_text(locator, "pack_id").as_deref()
+                                == Some(pack_id.as_str())
+                        })
+                        .cloned()
+                        .collect::<Vec<_>>();
+                    Ok((pack, locators))
+                })
+                .collect::<Result<Vec<_>, NativeRepositoryError>>()?;
+            let object_pack_batch = object_pack_groups
+                .iter()
+                .map(|(pack, locators)| (*pack, locators.as_slice()))
+                .collect::<Vec<_>>();
+            content
+                .append_object_packs_in_tx(&mut tx, &object_pack_batch)
+                .map_err(binary_native_repository_store_error)?;
+            let tree_pack_groups = tree_packs
+                .iter()
+                .map(|pack| {
+                    let pack_id = binary_json_text(pack, "pack_id").ok_or_else(|| {
+                        NativeRepositoryError::internal("tree pack mutation is missing pack_id")
+                    })?;
+                    let locators = tree_locators
+                        .iter()
+                        .filter(|locator| {
+                            binary_json_text(locator, "tree_pack_id").as_deref()
+                                == Some(pack_id.as_str())
+                        })
+                        .cloned()
+                        .collect::<Vec<_>>();
+                    Ok((pack, locators))
+                })
+                .collect::<Result<Vec<_>, NativeRepositoryError>>()?;
+            let tree_pack_batch = tree_pack_groups
+                .iter()
+                .map(|(pack, locators)| (*pack, locators.as_slice()))
+                .collect::<Vec<_>>();
+            content
+                .append_tree_packs_in_tx(&mut tx, &tree_pack_batch)
+                .map_err(binary_native_repository_store_error)?;
             #[cfg(feature = "perfetto-tracing")]
             drop(content_append_trace);
 
@@ -952,7 +1052,24 @@ where
                     repo_name,
                     &mutation.snapshot_id,
                     &mutation.value,
+                    if capture_binding.and_then(|binding| binding["snapshot_id"].as_str())
+                        == Some(mutation.snapshot_id.as_str())
+                    {
+                        actor_index_plus1
+                    } else {
+                        0
+                    },
                 )?;
+            }
+            if let Some(binding) = capture_binding {
+                self.snapshot_capture_workflow_store()?
+                    .record_snapshot_capture_in_write(
+                        &mut tx,
+                        binding,
+                        capture_was_existing,
+                        actor_index_plus1,
+                    )
+                    .map_err(NativeRepositoryError::bad_request)?;
             }
             #[cfg(feature = "perfetto-tracing")]
             drop(snapshot_append_trace);

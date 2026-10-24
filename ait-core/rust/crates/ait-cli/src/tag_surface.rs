@@ -4,7 +4,7 @@ use ait_core::line_store::{line_by_name_with_line_store, LineStore};
 use ait_core::snapshot_store::{snapshot_exists_with_snapshot_store, SnapshotStore};
 use ait_core::tag_store::{
     create_tag_with_store, delete_tag_with_store, list_tags_with_store, new_tag_record,
-    tag_by_name_with_store, FilesystemTagStore, TagRecord,
+    tag_by_name_with_store, BinaryDbTagStore, TagRecord,
 };
 use chrono::{SecondsFormat, Utc};
 
@@ -121,8 +121,20 @@ fn require_snapshot_exists(repo: &RepoRuntime, snapshot_id: &str) -> Result<(), 
     }
 }
 
-fn tag_store(repo: &RepoRuntime) -> Result<FilesystemTagStore, String> {
-    FilesystemTagStore::new(repo.authoritative_repo_root().to_string_lossy().as_ref())
+pub(crate) fn tag_store(repo: &RepoRuntime) -> Result<BinaryDbTagStore, String> {
+    let root = repo.authoritative_repo_root().join(".ait/refs/tags");
+    if root.is_dir()
+        && std::fs::read_dir(&root)
+            .map_err(|e| e.to_string())?
+            .any(|entry| {
+                entry.is_ok_and(|entry| entry.path().extension().is_some_and(|ext| ext == "json"))
+            })
+    {
+        return Err("legacy_tag_migration_required: preserve legacy Tag evidence and convert it before native Tag runtime admission".into());
+    }
+    Ok(BinaryDbTagStore::new(
+        repo.binary_db_stores::<1>().content(),
+    ))
 }
 
 fn line_store(repo: &RepoRuntime) -> Result<impl LineStore, String> {

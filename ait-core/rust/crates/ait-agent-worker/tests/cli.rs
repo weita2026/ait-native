@@ -75,7 +75,7 @@ fn slack_fixture_repo(local_reply: Option<&JsonValue>) -> tempfile::TempDir {
     fs::create_dir_all(temp.path().join(".ait/agent-runtime")).expect("runtime dir");
     fs::write(
         temp.path().join(".ait/config.json"),
-        r#"{"repo_name":"fixture","workflow_mode":"solo_local"}"#,
+        r#"{"repo_name":"fixture"}"#,
     )
     .expect("repo config");
     let local_reply = local_reply
@@ -107,7 +107,7 @@ fn discord_fixture_repo() -> tempfile::TempDir {
     fs::create_dir_all(temp.path().join(".ait/agent-runtime")).expect("runtime dir");
     fs::write(
         temp.path().join(".ait/config.json"),
-        r#"{"repo_name":"fixture","workflow_mode":"solo_local"}"#,
+        r#"{"repo_name":"fixture"}"#,
     )
     .expect("repo config");
     fs::write(
@@ -543,7 +543,7 @@ fn direct_worker_run_argv_loads_the_manifest_backed_worker() {
     let repo = fixture_repo();
     fs::write(
         repo.path().join(".ait/config.json"),
-        r#"{"repo_name":"fixture","workflow_mode":"solo_local"}"#,
+        r#"{"repo_name":"fixture"}"#,
     )
     .expect("repo config");
     fs::write(
@@ -580,7 +580,7 @@ fn telegram_stdin_webhook_executes_from_manifest_backed_worker_argv() {
     let repo = fixture_repo();
     fs::write(
         repo.path().join(".ait/config.json"),
-        r#"{"repo_name":"fixture","workflow_mode":"solo_local"}"#,
+        r#"{"repo_name":"fixture"}"#,
     )
     .expect("repo config");
     let output = worker_command()
@@ -625,7 +625,7 @@ fn telegram_stdin_webhook_rejects_malformed_input_secret_safely() {
     let repo = fixture_repo();
     fs::write(
         repo.path().join(".ait/config.json"),
-        r#"{"repo_name":"fixture","workflow_mode":"solo_local"}"#,
+        r#"{"repo_name":"fixture"}"#,
     )
     .expect("repo config");
     let raw = "{private-parser-secret";

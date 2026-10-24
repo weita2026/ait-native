@@ -231,6 +231,7 @@ impl<const WRITE_LAYOUT: u32> RepoBinaryDbLocalSnapshotOperationStore<WRITE_LAYO
             lines,
             worktree_config_path,
             workflow_binding: None,
+            defer_line_advance: false,
         }
     }
 
@@ -372,6 +373,25 @@ impl RepoRuntime {
         &self,
     ) -> Result<JsonValue, String> {
         Ok(self.binary_db_storage_request::<WRITE_LAYOUT>())
+    }
+
+    /// Standalone Plan sync admits only its Plan/content files in the Core
+    /// executor. Other operations continue to use full runtime admission.
+    pub fn standalone_plan_sync_storage_request(&self) -> Result<JsonValue, String> {
+        let root = self
+            .authoritative_repo_root()
+            .canonicalize()
+            .map_err(|error| format!("Cannot resolve Plan repository root: {error}"))?;
+        let authority = root.join(APP_DIR).join(BINARY_DB_DIR);
+        Ok(ait_core::json_support::json!({
+            "write_layout": 1,
+            "authority_root": authority,
+            "activation_pointer": authority,
+            "pack_root": root,
+            "repo_root": root,
+            "local_authority_id": format!("local:{}", self.repo_name()),
+            "current_line_state_scope": if self.is_worktree() { "task" } else { "repository" },
+        }))
     }
 
     pub fn snapshot_binary_db_storage_request<const WRITE_LAYOUT: u32>(

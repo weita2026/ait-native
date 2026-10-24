@@ -1,0 +1,85 @@
+{
+  "version": "ait.plan-binary-db.golden-bytes.v1",
+  "layout_id": 1,
+  "cases": [
+    {
+      "id": "plan_record",
+      "kind": "plan_record",
+      "input": {
+        "plan_meta": 1,
+        "reserved0": 0,
+        "payload_len": 5,
+        "payload_offset_hex": "0102030405060708",
+        "latest_revision_index_plus1": 9,
+        "published_plan_index_plus1": 10,
+        "published_latest_revision_index_plus1": 11,
+        "created_at_s": 12,
+        "updated_at_s": 13,
+        "published_at_s": 14
+      },
+      "expected_bytes": [1, 0, 5, 0, 8, 7, 6, 5, 4, 3, 2, 1, 9, 0, 0, 0, 10, 0, 0, 0, 11, 0, 0, 0, 12, 0, 0, 0, 0, 0, 0, 0, 13, 0, 0, 0, 0, 0, 0, 0, 14, 0, 0, 0, 0, 0, 0, 0]
+    },
+    {
+      "id": "plan_payload",
+      "kind": "plan_payload",
+      "input": {"title": "Parity Plan"},
+      "expected_bytes": [80, 97, 114, 105, 116, 121, 32, 80, 108, 97, 110]
+    },
+    {
+      "id": "plan_revision_record",
+      "kind": "plan_revision_record",
+      "input": {
+        "revision_meta": 2,
+        "reserved0": 0,
+        "payload_len": 7,
+        "revision_number": 3,
+        "item_count": 4,
+        "payload_offset_hex": "1112131415161718",
+        "plan_index": 5,
+        "previous_revision_index_plus1": 6,
+        "item_start_index": 7,
+        "published_revision_index_plus1": 8,
+        "root_tree_pack_index_plus1": 9,
+        "root_entry_ordinal": 10,
+        "created_at_s": 11,
+        "published_at_s": 12
+      },
+      "expected_bytes": [2, 0, 7, 0, 3, 0, 4, 0, 24, 23, 22, 21, 20, 19, 18, 17, 5, 0, 0, 0, 6, 0, 0, 0, 7, 0, 0, 0, 8, 0, 0, 0, 9, 0, 0, 0, 10, 0, 0, 0, 11, 0, 0, 0, 0, 0, 0, 0, 12, 0, 0, 0, 0, 0, 0, 0]
+    },
+    {
+      "id": "plan_revision_payload",
+      "kind": "plan_revision_payload",
+      "input": {
+        "title_snapshot": "Title",
+        "summary": "Sum",
+        "artifact_path": "docs/a.md",
+        "artifact_selector": "root",
+        "artifact_heading": "Heading",
+        "artifact_blob_id": "BLB-123"
+      },
+      "expected_bytes": [5, 0, 3, 0, 9, 0, 4, 0, 7, 0, 84, 105, 116, 108, 101, 83, 117, 109, 100, 111, 99, 115, 47, 97, 46, 109, 100, 114, 111, 111, 116, 72, 101, 97, 100, 105, 110, 103, 66, 76, 66, 45, 49, 50, 51]
+    },
+    {
+      "id": "plan_item_record",
+      "kind": "plan_item_record",
+      "input": {
+        "item_meta": 13,
+        "reserved0": 0,
+        "payload_len": 13,
+        "payload_offset_hex": "0000000000000015",
+        "line_number": 34
+      },
+      "expected_bytes": [13, 0, 13, 0, 21, 0, 0, 0, 0, 0, 0, 0, 34, 0, 0, 0]
+    },
+    {
+      "id": "plan_item_payload",
+      "kind": "plan_item_payload",
+      "input": {
+        "plan_item_ref": "SBDB/PARITY-11",
+        "text": "Exact ref",
+        "heading_path": ["Binary DB", "Fixtures"]
+      },
+      "expected_bytes": [14, 0, 9, 0, 2, 0, 83, 66, 68, 66, 47, 80, 65, 82, 73, 84, 89, 45, 49, 49, 69, 120, 97, 99, 116, 32, 114, 101, 102, 9, 0, 66, 105, 110, 97, 114, 121, 32, 68, 66, 8, 0, 70, 105, 120, 116, 117, 114, 101, 115]
+    }
+  ]
+}

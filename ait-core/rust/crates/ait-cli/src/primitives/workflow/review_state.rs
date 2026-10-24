@@ -101,7 +101,8 @@ pub(in crate::primitives) fn workflow_review_lane_counts(
     patchset_id: Option<&str>,
 ) -> JsonValue {
     if let Some(reviews) = review_summary.get("reviews").and_then(JsonValue::as_array) {
-        let mut latest_by_reviewer_lane: BTreeMap<(String, String), JsonValue> = BTreeMap::new();
+        let mut latest_by_reviewer_lane: BTreeMap<(String, String, String), JsonValue> =
+            BTreeMap::new();
         let mut blocking_count = 0i64;
         for review in reviews {
             if !review.is_object() {
@@ -116,6 +117,7 @@ pub(in crate::primitives) fn workflow_review_lane_counts(
             if let Some(decision_lane) = workflow_review_decision_lane(&action) {
                 latest_by_reviewer_lane.insert(
                     (
+                        workflow_reviewer_kind(review).to_string(),
                         string_field(review, "reviewer").unwrap_or_default(),
                         decision_lane.to_string(),
                     ),
@@ -147,14 +149,30 @@ pub(in crate::primitives) fn workflow_review_lane_counts(
                     Some("task_approve") | Some("approve")
                 )
             })
-            .map(|review| string_field(review, "reviewer").unwrap_or_default())
+            .map(|review| {
+                (
+                    workflow_reviewer_kind(review),
+                    string_field(review, "reviewer").unwrap_or_default(),
+                )
+            })
             .collect::<BTreeSet<_>>();
+        let human_approvals = approval_reviewers
+            .iter()
+            .filter(|(kind, _)| *kind == "user")
+            .count();
+        let human_task_approvals = latest_by_reviewer_lane
+            .values()
+            .filter(|review| {
+                workflow_reviewer_kind(review) == "user"
+                    && string_field(review, "action").as_deref() == Some("task_approve")
+            })
+            .count();
         return json!({
             "task_approvals": task_approvals,
             "team_approvals": team_approvals,
-            "human_approvals": approval_reviewers.len() as i64,
-            "eligible_human_approvals": approval_reviewers.len() as i64,
-            "human_task_approvals": task_approvals,
+            "human_approvals": human_approvals as i64,
+            "eligible_human_approvals": human_approvals as i64,
+            "human_task_approvals": human_task_approvals as i64,
             "eligible_task_approvals": task_approvals,
             "approvals": approval_reviewers.len() as i64,
             "blocking": blocking_count,
@@ -165,15 +183,24 @@ pub(in crate::primitives) fn workflow_review_lane_counts(
     json!({
         "task_approvals": review_summary.get("task_approvals").and_then(JsonValue::as_i64).unwrap_or_default(),
         "team_approvals": review_summary.get("team_approvals").and_then(JsonValue::as_i64).unwrap_or_default(),
-        "human_approvals": review_summary.get("human_approvals").and_then(JsonValue::as_i64).or_else(|| review_summary.get("approvals").and_then(JsonValue::as_i64)).unwrap_or_default(),
-        "eligible_human_approvals": review_summary.get("approvals").and_then(JsonValue::as_i64).unwrap_or_default(),
-        "human_task_approvals": review_summary.get("human_task_approvals").and_then(JsonValue::as_i64).or_else(|| review_summary.get("task_approvals").and_then(JsonValue::as_i64)).unwrap_or_default(),
+        "human_approvals": review_summary.get("human_approvals").and_then(JsonValue::as_i64).unwrap_or_default(),
+        "eligible_human_approvals": review_summary.get("eligible_human_approvals").and_then(JsonValue::as_i64).or_else(|| review_summary.get("human_approvals").and_then(JsonValue::as_i64)).unwrap_or_default(),
+        "human_task_approvals": review_summary.get("human_task_approvals").and_then(JsonValue::as_i64).unwrap_or_default(),
         "eligible_task_approvals": review_summary.get("task_approvals").and_then(JsonValue::as_i64).unwrap_or_default(),
         "approvals": review_summary.get("approvals").and_then(JsonValue::as_i64).unwrap_or_default(),
         "blocking": review_summary.get("blocking").and_then(JsonValue::as_i64).unwrap_or_default(),
         "current_patchset_id": string_field(review_summary, "current_patchset_id"),
         "reviews": review_summary.get("reviews").cloned().unwrap_or(JsonValue::Array(Vec::new())),
     })
+}
+
+fn workflow_reviewer_kind(review: &JsonValue) -> &str {
+    // Legacy requests may omit kind, but readback must positively establish
+    // user kind before a record can count toward a human-only approval total.
+    review
+        .get("reviewer_kind")
+        .and_then(JsonValue::as_str)
+        .unwrap_or("unknown")
 }
 
 pub(in crate::primitives) fn workflow_requires_code_review_summary(
@@ -207,22 +234,7 @@ pub(in crate::primitives) fn workflow_requires_code_review_summary(
     content_class == "code_change" && AI_RELATED_AUTHOR_MODES.contains(&author_mode)
 }
 
-pub(in crate::primitives) fn workflow_relevant_landing_summary(
-    landing_summary: Option<&JsonValue>,
-    patchset: Option<&JsonValue>,
-) -> Option<JsonValue> {
-    let summary = landing_summary?.as_object()?;
-    let patchset_id = patchset.and_then(|value| string_field(value, "patchset_id"));
-    let landing_patchset_id = string_field(&JsonValue::Object(summary.clone()), "patchset_id");
-    if let (Some(selected_patchset_id), Some(land_patchset_id)) = (patchset_id, landing_patchset_id)
-    {
-        if selected_patchset_id != land_patchset_id {
-            return None;
-        }
-    }
-    Some(JsonValue::Object(summary.clone()))
-}
-
+#[cfg(test)]
 pub(in crate::primitives) fn workflow_base_stale_converged_snapshot_id(
     landing_summary: &JsonValue,
     patchset_revision_snapshot_id: Option<&str>,
@@ -252,48 +264,6 @@ pub(in crate::primitives) fn workflow_base_stale_converged_snapshot_id(
         .and_then(JsonValue::as_str)
         .and_then(|value| normalized_text(Some(value)))?;
     (target_line_head == patchset_revision_snapshot_id).then_some(target_line_head)
-}
-
-pub(in crate::primitives) fn workflow_normalize_base_stale_converged_landing_summary(
-    landing_summary: Option<JsonValue>,
-    patchset_revision_snapshot_id: Option<&str>,
-) -> Option<JsonValue> {
-    let mut landing_summary = landing_summary?;
-    let Some(landed_snapshot_id) =
-        workflow_base_stale_converged_snapshot_id(&landing_summary, patchset_revision_snapshot_id)
-    else {
-        return Some(landing_summary);
-    };
-    let Some(summary) = landing_summary.as_object_mut() else {
-        return Some(landing_summary);
-    };
-    if !summary.contains_key("original_status") {
-        let original_status = summary
-            .get("status")
-            .cloned()
-            .unwrap_or_else(|| JsonValue::String("blocked".to_string()));
-        summary.insert("original_status".to_string(), original_status);
-    }
-    summary.insert(
-        "status".to_string(),
-        JsonValue::String("landed".to_string()),
-    );
-    summary.insert(
-        "status_source".to_string(),
-        JsonValue::String("base_stale_target_line_already_at_revision".to_string()),
-    );
-    summary.insert("base_stale_converged".to_string(), JsonValue::Bool(true));
-    let result = summary.entry("result").or_insert_with(|| json!({}));
-    if let Some(result) = result.as_object_mut() {
-        result
-            .entry("landed_snapshot_id".to_string())
-            .or_insert_with(|| JsonValue::String(landed_snapshot_id));
-        result
-            .entry("line_action".to_string())
-            .or_insert_with(|| JsonValue::String("already_moved".to_string()));
-        result.insert("base_stale_converged".to_string(), JsonValue::Bool(true));
-    }
-    Some(landing_summary)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -357,90 +327,9 @@ pub(in crate::primitives) fn workflow_patchset_head_relation(
     Ok(WorkflowPatchsetHeadRelation::Diverged)
 }
 
-pub(in crate::primitives) fn workflow_target_line_converged_landing_summary(
-    landing_summary: Option<JsonValue>,
-    patchset: Option<&JsonValue>,
-    change_id: &str,
-    target_line: &str,
-    remote_base_snapshot_id: Option<&str>,
-    patchset_base_snapshot_id: Option<&str>,
-    patchset_revision_snapshot_id: Option<&str>,
-) -> Option<JsonValue> {
-    let landing_summary = workflow_normalize_base_stale_converged_landing_summary(
-        landing_summary,
-        patchset_revision_snapshot_id,
-    );
-    if landing_summary.is_some() {
-        return landing_summary;
-    }
-    let remote_base_snapshot_id = remote_base_snapshot_id?;
-    let patchset_base_snapshot_id = patchset_base_snapshot_id?;
-    let patchset_revision_snapshot_id = patchset_revision_snapshot_id?;
-    if remote_base_snapshot_id != patchset_revision_snapshot_id {
-        return None;
-    }
-    if patchset_base_snapshot_id == patchset_revision_snapshot_id {
-        return None;
-    }
-
-    let base_stale_converged = patchset_base_snapshot_id != remote_base_snapshot_id;
-    let mut result = JsonMap::from_iter([
-        (
-            "landed_snapshot_id".to_string(),
-            JsonValue::String(patchset_revision_snapshot_id.to_string()),
-        ),
-        (
-            "target_line_head".to_string(),
-            JsonValue::String(remote_base_snapshot_id.to_string()),
-        ),
-        (
-            "line_action".to_string(),
-            JsonValue::String("already_moved".to_string()),
-        ),
-        (
-            "target_line_already_at_revision".to_string(),
-            JsonValue::Bool(true),
-        ),
-    ]);
-    if base_stale_converged {
-        result.insert("base_stale_converged".to_string(), JsonValue::Bool(true));
-    }
-
-    let mut summary = JsonMap::from_iter([
-        (
-            "status".to_string(),
-            JsonValue::String("landed".to_string()),
-        ),
-        (
-            "status_source".to_string(),
-            JsonValue::String("target_line_already_at_revision".to_string()),
-        ),
-        (
-            "target_line".to_string(),
-            JsonValue::String(target_line.to_string()),
-        ),
-        (
-            "target_line_already_at_revision".to_string(),
-            JsonValue::Bool(true),
-        ),
-        (
-            "change_id".to_string(),
-            JsonValue::String(change_id.to_string()),
-        ),
-        ("result".to_string(), JsonValue::Object(result)),
-    ]);
-    if let Some(patchset_id) = patchset.and_then(|value| string_field(value, "patchset_id")) {
-        summary.insert("patchset_id".to_string(), JsonValue::String(patchset_id));
-    }
-    if base_stale_converged {
-        summary.insert("base_stale_converged".to_string(), JsonValue::Bool(true));
-    }
-    Some(JsonValue::Object(summary))
-}
-
 #[expect(
     clippy::too_many_arguments,
-    reason = "refresh context mirrors independently optional workflow facts"
+    reason = "refresh compares the captured candidate, workspace and target authority together"
 )]
 pub(in crate::primitives) fn workflow_patchset_refresh_context(
     patchset: Option<&JsonValue>,
@@ -465,6 +354,37 @@ pub(in crate::primitives) fn workflow_patchset_refresh_context(
         "remote_base_snapshot_id": remote_base_snapshot_id,
         "head_relation": head_relation.as_str(),
     });
+    if patchset["source_kind"].as_str() == Some("history_promotion_aggregate")
+        && workspace_matches_patchset == Some(false)
+    {
+        let conflicted = worktree_retarget
+            .and_then(|v| v.get("rebase_state"))
+            .and_then(JsonValue::as_str)
+            == Some("conflicted");
+        if !base_is_fresh
+            || conflicted
+            || !matches!(
+                head_relation,
+                WorkflowPatchsetHeadRelation::CurrentDescendsFromPatchset
+            )
+        {
+            payload["reason_code"] = json!("aggregate_correction_recovery_required");
+            payload["republish_allowed"] = json!(false);
+            payload["rebase_required"] = json!(false);
+            payload["summary"] = json!(
+                "Resolve aggregate identity, ancestry or base drift before preparing a correction."
+            );
+            payload["detail"] = json!("Ordinary rebase/publication cannot preserve this aggregate's source history closeout. Keep the selected candidate and resolve its exact authority first.");
+        } else {
+            payload["reason_code"] = json!("aggregate_correction");
+            payload["republish_allowed"] = json!(true);
+            payload["rebase_required"] = json!(false);
+            payload["summary"] =
+                json!("Prepare the descendant correction while preserving aggregate receipts.");
+            payload["detail"] = json!("Native correction prepare retains the original receipt chain and Snapshot ancestry, binds the corrected revision and requires new candidate CI and review.");
+        }
+        return Some(payload);
+    }
     if let Some(worktree_retarget) = worktree_retarget.and_then(JsonValue::as_object) {
         let rebase_state = worktree_retarget
             .get("rebase_state")

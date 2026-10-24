@@ -1,4 +1,4 @@
-use crate::filesystem_permissions::{portable_mode, set_portable_mode};
+use crate::filesystem_permissions::{portable_mode, set_portable_mode, set_portable_symlink_mode};
 use crate::remote_repository::read_remote_repository_authority;
 #[cfg(test)]
 use crate::runtime::create_binary_test_snapshot as create_local_snapshot;
@@ -62,7 +62,7 @@ use ait_core::snapshot_store::{
     normalize_snapshot_parent_set, snapshot_by_id_with_snapshot_store, SnapshotRecord,
     SnapshotStore,
 };
-use ait_core::tag_store::{FilesystemTagStore, TagStore};
+use ait_core::tag_store::TagStore;
 use ait_core::task_lifecycle::build_task_audit_verdict_payload;
 #[cfg(test)]
 use ait_core::task_store::has_tasks_with_task_store;
@@ -90,10 +90,10 @@ use ait_core::task_workflow_remote_traits::{
     TaskWorkflowPatchsetCiStatusReader, TaskWorkflowRemoteTaskCloser,
 };
 use ait_core::task_workflow_store::{
-    TaskWorkflowChangeCloser, TaskWorkflowChangeCreator, TaskWorkflowChangeLander,
-    TaskWorkflowChangeLister, TaskWorkflowChangePublisher, TaskWorkflowChangeReader,
-    TaskWorkflowTaskCloser, TaskWorkflowTaskCreator, TaskWorkflowTaskLister,
-    TaskWorkflowTaskPublisher, TaskWorkflowTaskReader,
+    TaskWorkflowChangeCloser, TaskWorkflowChangeCreator, TaskWorkflowChangeLister,
+    TaskWorkflowChangePublisher, TaskWorkflowChangeReader, TaskWorkflowTaskCloser,
+    TaskWorkflowTaskCreator, TaskWorkflowTaskLister, TaskWorkflowTaskPublisher,
+    TaskWorkflowTaskReader,
 };
 use ait_core::time_identity::build_plan_workflow_id_payload_json;
 use ait_core::workflow_closeout_facts::{
@@ -161,21 +161,25 @@ mod worktree;
 
 pub(in crate::primitives) use change_flow::task_close;
 pub use change_flow::{
-    attest_put, attest_show, change_close, change_create, change_list, change_publish,
-    change_replay, change_revert, change_show, land_retry, land_show, land_submit,
+    attest_put, attest_show, change_close, change_create, change_create_revision, change_list,
+    change_publish, change_replay, change_revert, change_show, land_retry, land_show, land_submit,
     patchset_ci_status, patchset_list, patchset_publish, patchset_publish_explicit,
     patchset_rerun_ci, patchset_select, patchset_show, policy_eval, policy_show, policy_waive,
-    review_code_submit, review_code_template, review_record, review_request, review_show,
-    review_task_approve, review_task_record, review_team_approve, task_abandon,
+    review_code_submit, review_code_submit_with_reviewer, review_code_template, review_record,
+    review_request, review_show, review_task_approve, review_task_record, review_team_approve,
+    task_abandon,
 };
 pub(crate) use change_identity::resolve_public_patchset_input;
 pub use change_identity::{
     resolve_task_author_change_input, resolve_task_finish_change_input,
-    resolve_task_remote_change_input, resolve_task_remote_revision_input,
+    resolve_task_inspect_change_input, resolve_task_remote_change_input,
+    resolve_task_remote_revision_input,
 };
 pub use foundation::ensure_status_manifest;
 pub(in crate::primitives) use foundation::TaskStartBootstrapRequest;
-pub use git_interop::{git_export, git_import, git_mirror};
+pub use git_interop::{
+    git_export, git_export_selection, git_import, git_migrate, git_mirror, git_recover, git_restore,
+};
 pub use line::{
     line_archive, line_cleanup, line_create, line_delete, line_list, line_rename, line_set_head,
     line_show, line_show_remote, line_switch, repo_status,
@@ -213,11 +217,17 @@ pub(crate) use task_quick::task_quick_with_edit_root_and_progress;
 pub(crate) use task_quick::QUICK_TASK_REQUIRES_SPRINT_MESSAGE;
 pub(crate) use task_start_from::task_start_from_with_edit_root_and_progress;
 pub use task_start_from::task_start_from_with_progress;
+pub(crate) use workflow::workflow_package_accepted_retry;
 #[cfg(test)]
 pub(crate) use workflow::{review_message_required_error, review_summary_missing_sections_error};
 pub use workflow::{
     task_land_apply, task_land_apply_scoped, task_land_payload, task_land_payload_scoped,
-    workflow_land_apply, workflow_land_payload, workflow_ready_apply, workflow_ready_payload,
+    validate_workflow_expected_identity, workflow_finish_apply_guarded_with_reviewer,
+    workflow_identity_payload, workflow_land_apply, workflow_land_apply_guarded,
+    workflow_land_payload, workflow_package_abandon, workflow_package_finish,
+    workflow_package_ready, workflow_package_source_requested, workflow_package_task_review,
+    workflow_ready_apply, workflow_ready_apply_guarded_with_ci_wait_hook,
+    workflow_ready_apply_with_ci_wait_hook, workflow_ready_payload, PackageReadyOptions,
 };
 pub(crate) use workspace::parse_snapshot_authoring_reference;
 #[cfg(test)]
@@ -225,12 +235,14 @@ pub(crate) use workspace::{
     planning_only_artifact_sync_command, render_planning_only_artifact_drift_error,
 };
 pub use workspace::{
-    resolve_task_scoped_execution_repo, run_task_scoped_workspace_command, snapshot_create,
-    snapshot_create_explicit, snapshot_create_for_change, snapshot_create_for_reference,
-    snapshot_create_for_task, workflow_workspace_status, workspace_delta, workspace_dirty_diff,
-    workspace_restore, workspace_restore_paths,
+    resolve_task_scoped_execution_repo, resume_remote_snapshot_capture,
+    run_task_scoped_workspace_command, snapshot_create, snapshot_create_explicit,
+    snapshot_create_for_change, snapshot_create_for_reference, snapshot_create_for_task,
+    workflow_workspace_status, workspace_delta, workspace_dirty_diff, workspace_restore,
+    workspace_restore_paths,
 };
 pub(crate) use worktree::task_start_with_progress;
+pub(crate) use worktree::worktree_show;
 pub use worktree::{
     task_ensure_main_seed_mirror, task_resolve_main_seed_mirror_location,
     task_resolve_worktree_location, task_start, worktree_abort_rebase, worktree_bind_existing,
@@ -253,6 +265,14 @@ use runtime_support::*;
 use status_cache::*;
 use task::*;
 use workspace::*;
+
+pub(crate) fn resolved_remote_snapshot_ownership_rows(
+    repo: &RepoRuntime,
+    ids: &[String],
+    remote_name: Option<&str>,
+) -> Result<Vec<JsonValue>, String> {
+    workspace::remote_capture::ownership_rows_for_remote(repo, ids, remote_name)
+}
 
 pub(crate) fn resolved_snapshot_ownership_rows(
     repo: &RepoRuntime,

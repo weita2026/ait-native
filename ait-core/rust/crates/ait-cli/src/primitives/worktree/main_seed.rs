@@ -66,9 +66,8 @@ fn validate_workspace_cargo_projection_for_snapshot(
             config_path.display()
         ));
     };
-    if actual != current_actual
-        || normalize_workspace_cargo_projection_target(workspace_path, &actual)
-            != normalize_workspace_cargo_projection_target(workspace_path, &expected)
+    if normalize_workspace_cargo_projection_target(workspace_path, &current_actual)
+        != normalize_workspace_cargo_projection_target(workspace_path, &expected)
     {
         return Err(format!(
             "Managed Cargo file does not match Snapshot {target_snapshot_id}: expected_sha256={}, actual_sha256={}.",
@@ -2432,6 +2431,59 @@ mod selected_binary_main_seed_tests {
         assert_eq!(
             fs::read_to_string(seed_path.join("nested/file.txt")).expect("seed nested"),
             "seed nested\n"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn main_seed_materialization_preserves_links_without_chmodding_their_targets() {
+        use std::os::unix::fs::{symlink, PermissionsExt};
+        let (temp, repo) = binary_snapshot_repo();
+        let root = repo.workspace_root();
+        write_file(&root.join("secret.txt"), "secret");
+        set_portable_mode(&root.join("secret.txt"), 0o600).unwrap();
+        symlink("secret.txt", root.join("alias")).unwrap();
+        symlink("missing", root.join("dangling")).unwrap();
+        let snapshot = repo
+            .local_snapshot_operation_store::<SNAPSHOT_BINARY_DB_WRITE_LAYOUT>(&root)
+            .unwrap()
+            .create_snapshot("fixture-ait", "main", Some("seed links"), false)
+            .unwrap();
+        let snapshot_id = required_string_field(&snapshot, "snapshot_id").unwrap();
+        let rules = snapshot_rules_state_from_snapshot_id(&repo, Some(&snapshot_id)).unwrap();
+        let seed_path = temp.path().join("main-seed-links");
+        let seed = materialize_worktree_runtime_layout(
+            &repo,
+            "main-seed-links",
+            &seed_path,
+            "main",
+            "2026-10-21T00:00:00Z",
+            None,
+        )
+        .unwrap();
+        materialize_main_seed_snapshot(&seed, &snapshot_id, None, &rules, 0.0).unwrap();
+        for (name, target) in [("alias", "secret.txt"), ("dangling", "missing")] {
+            assert!(fs::symlink_metadata(seed_path.join(name))
+                .unwrap()
+                .file_type()
+                .is_symlink());
+            assert_eq!(
+                fs::read_link(seed_path.join(name)).unwrap(),
+                Path::new(target)
+            );
+        }
+        assert_eq!(
+            fs::metadata(seed_path.join("secret.txt"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o400
+        );
+        assert!(
+            validate_main_seed_baseline(&seed, &snapshot_id, rules.text.as_deref())
+                .unwrap()
+                .clean
         );
     }
 

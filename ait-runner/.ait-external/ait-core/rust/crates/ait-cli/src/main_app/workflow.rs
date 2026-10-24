@@ -1,0 +1,1244 @@
+fn reconciliation_scope_label(scope: &AutomaticReconciliationScope) -> &'static str {
+    match scope {
+        AutomaticReconciliationScope::Local => "local",
+        AutomaticReconciliationScope::Remote(_) => "remote",
+    }
+}
+
+fn run_automatic_reconciliation_locked(
+    repo: &RepoRuntime,
+    scope: AutomaticReconciliationScope,
+    task_filter: Option<&str>,
+    trigger: AutomaticReconciliationTrigger,
+) -> JsonValue {
+    let scope_label = reconciliation_scope_label(&scope);
+    let command = format!("ait-cli automatic reconciliation {}", trigger.label());
+    let root_repo = match RepoRuntime::discover_from_path(&repo.authoritative_repo_root()) {
+        Ok(root_repo) => root_repo,
+        Err(error) => {
+            return json!({
+                "contract": "workflow-automatic-reconciliation/v1",
+                "automatic": true,
+                "status": "failed_non_blocking",
+                "trigger": trigger.label(),
+                "scope": scope_label,
+                "task_filter": task_filter,
+                "safe_only": true,
+                "mutated": false,
+                "error": format!("Failed to run automatic repair from the main repository root: {error}"),
+                "next_command": "ait workflow reconcile --dry-run",
+            });
+        }
+    };
+    match run_locked_workspace_command(&root_repo, &command, || {
+        Ok(workflow_reconcile_automatic_best_effort(
+            &root_repo,
+            scope,
+            task_filter,
+            trigger,
+            None,
+        ))
+    }) {
+        Ok(payload) => payload,
+        Err(error) => json!({
+            "contract": "workflow-automatic-reconciliation/v1",
+            "automatic": true,
+            "status": "failed_non_blocking",
+            "trigger": trigger.label(),
+            "scope": scope_label,
+            "task_filter": task_filter,
+            "safe_only": true,
+            "mutated": false,
+            "error": error,
+            "next_command": "ait workflow reconcile --dry-run",
+        }),
+    }
+}
+
+fn attach_automatic_reconciliation(payload: &mut JsonValue, reconciliation: JsonValue) {
+    if let Some(object) = payload.as_object_mut() {
+        object.insert("automatic_reconciliation".to_string(), reconciliation);
+    }
+}
+
+fn workflow_payload_task_id(payload: &JsonValue) -> Option<String> {
+    payload
+        .get("task_id")
+        .and_then(JsonValue::as_str)
+        .or_else(|| {
+            payload
+                .get("task")
+                .and_then(JsonValue::as_object)
+                .and_then(|task| task.get("task_id"))
+                .and_then(JsonValue::as_str)
+        })
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+}
+
+fn task_land_automatic_trigger(payload: &JsonValue) -> AutomaticReconciliationTrigger {
+    let recovery = payload
+        .get("execution_status")
+        .and_then(JsonValue::as_str)
+        .is_some_and(|status| status == "already_landed")
+        || payload
+            .get("status")
+            .and_then(JsonValue::as_str)
+            .is_some_and(|status| status.contains("recovery"))
+        || payload.get("closeout_recovery").is_some();
+    if recovery {
+        AutomaticReconciliationTrigger::LandRecovery
+    } else {
+        AutomaticReconciliationTrigger::LandTerminal
+    }
+}
+
+fn run_workflow(repo: RepoRuntime, command: WorkflowCommand) -> Result<ExitCode, String> {
+    match command {
+        WorkflowCommand::Guide(args) => {
+            let payload = workflow_guide_payload(args.topic.as_deref())?;
+            println!("{}", render_workflow_guide_text(&payload)?);
+            Ok(ExitCode::SUCCESS)
+        }
+        WorkflowCommand::Reconcile(args) => {
+            let payload = if args.scheduled {
+                run_locked_workspace_command(
+                    &repo,
+                    "ait-cli workflow reconcile --scheduled",
+                    || {
+                        workflow_reconcile_automatic(
+                            &repo,
+                            AutomaticReconciliationScope::Remote(args.remote.clone()),
+                            args.task.as_deref(),
+                            AutomaticReconciliationTrigger::ScheduledRemote,
+                            Some(args.limit),
+                        )
+                    },
+                )?
+            } else if args.apply {
+                run_locked_workspace_command(&repo, "ait-cli workflow reconcile --apply", || {
+                    workflow_reconcile_apply(
+                        &repo,
+                        args.remote.as_deref(),
+                        args.task.as_deref(),
+                        args.safe_only,
+                        Some(args.limit),
+                    )
+                })?
+            } else {
+                workflow_reconcile_inventory(
+                    &repo,
+                    args.remote.as_deref(),
+                    args.task.as_deref(),
+                    args.safe_only,
+                    Some(args.limit),
+                )?
+            };
+            if args.json {
+                print_json(&payload)?;
+            } else {
+                println!("{}", render_workflow_reconcile_text(&payload)?);
+            }
+            Ok(ExitCode::SUCCESS)
+        }
+        WorkflowCommand::Ready(args) => {
+            let apply_once = || {
+                run_task_scoped_workspace_command(
+                    &repo,
+                    &args.change_id,
+                    true,
+                    true,
+                    args.remote.as_deref(),
+                    "ait-cli workflow ready --apply",
+                    |execution_repo| {
+                        workflow_ready_apply(
+                            execution_repo,
+                            &args.change_id,
+                            args.snapshot_message.as_deref(),
+                            args.summary.as_deref(),
+                            args.tests.as_deref(),
+                            args.lint.as_deref(),
+                            args.security.as_deref(),
+                            args.license.as_deref(),
+                            args.author_mode.map(ConfigAuthorModeArg::as_str),
+                            args.model.as_deref(),
+                            args.remote.as_deref(),
+                            None::<fn(&JsonValue) -> Result<(), String>>,
+                        )
+                    },
+                )
+            };
+            let mut payload = if args.apply {
+                apply_once()?
+            } else {
+                let execution_repo = resolve_task_scoped_execution_repo(
+                    &repo,
+                    &args.change_id,
+                    true,
+                    true,
+                    args.remote.as_deref(),
+                    "ait-cli workflow ready",
+                )?;
+                workflow_ready_payload(
+                    &execution_repo,
+                    &args.change_id,
+                    args.remote.as_deref(),
+                )?
+            };
+            attach_runner_hint_best_effort(&repo, args.remote.as_deref(), &mut payload);
+            if args.run_ci_once {
+                let outcome = match payload.get(RUNNER_HINT_PAYLOAD_KEY).cloned() {
+                    Some(hint) => {
+                        let outcome = run_ci_once(&hint);
+                        let mut reapplied = apply_once()?;
+                        attach_runner_hint_best_effort(&repo, args.remote.as_deref(), &mut reapplied);
+                        payload = reapplied;
+                        outcome
+                    }
+                    None => json!({
+                        "status": "skipped",
+                        "reason": "no_runner_hint",
+                        "detail": "Patchset CI was not queued without a runner, so no one-shot runner was needed.",
+                    }),
+                };
+                if let Some(object) = payload.as_object_mut() {
+                    object.insert(CI_RUNNER_ONCE_PAYLOAD_KEY.to_string(), outcome);
+                }
+            }
+            println!("{}", render_requested_workflow_text(&payload, "ready", &args.change_id)?);
+            Ok(ExitCode::SUCCESS)
+        }
+        WorkflowCommand::Finish(args) => {
+            let mut payload = if args.apply {
+                run_task_scoped_workspace_command(
+                    &repo,
+                    &args.change_id,
+                    true,
+                    true,
+                    args.remote.as_deref(),
+                    "ait-cli workflow finish --apply",
+                    |execution_repo| {
+                        workflow_land_apply(
+                            execution_repo,
+                            &args.change_id,
+                            args.review_message.as_deref(),
+                            args.remote.as_deref(),
+                            None::<fn(&JsonValue) -> Result<(), String>>,
+                        )
+                    },
+                )?
+            } else {
+                let execution_repo = resolve_task_scoped_execution_repo(
+                    &repo,
+                    &args.change_id,
+                    true,
+                    true,
+                    args.remote.as_deref(),
+                    "ait-cli workflow finish",
+                )?;
+                workflow_land_payload(
+                    &execution_repo,
+                    &args.change_id,
+                    args.remote.as_deref(),
+                )?
+            };
+            if args.apply {
+                let task_id = workflow_payload_task_id(&payload);
+                let reconciliation = run_automatic_reconciliation_locked(
+                    &repo,
+                    AutomaticReconciliationScope::Remote(args.remote.clone()),
+                    task_id.as_deref(),
+                    task_land_automatic_trigger(&payload),
+                );
+                attach_automatic_reconciliation(&mut payload, reconciliation);
+            }
+            attach_runner_hint_best_effort(&repo, args.remote.as_deref(), &mut payload);
+            println!("{}", render_requested_workflow_text(&payload, "finish", &args.change_id)?);
+            Ok(ExitCode::SUCCESS)
+        }
+    }
+}
+
+fn render_workflow_reconcile_text(payload: &JsonValue) -> Result<String, String> {
+    let object = payload
+        .as_object()
+        .ok_or_else(|| "workflow reconcile payload must decode to an object.".to_string())?;
+    let summary = object
+        .get("summary")
+        .and_then(JsonValue::as_object)
+        .ok_or_else(|| "workflow reconcile payload is missing summary.".to_string())?;
+    let mut lines = vec!["ait workflow reconcile".to_string(), String::new()];
+    lines.push(format!(
+        "- status: {}",
+        string_field(object.get("status"))
+    ));
+    lines.push(format!(
+        "- mode: {}",
+        string_field(object.get("mode"))
+    ));
+    lines.push(format!(
+        "- repository: {}",
+        string_field(object.get("repo_name"))
+    ));
+    let remote = string_field(object.get("remote_name"));
+    lines.push(format!(
+        "- remote: {}",
+        if remote.is_empty() { "(local only)" } else { &remote }
+    ));
+    lines.push(format!(
+        "- findings: {} returned, {} remaining",
+        string_field(summary.get("returned_finding_count")),
+        string_field(summary.get("remaining_count"))
+    ));
+    lines.push(String::new());
+    lines.push("Findings".to_string());
+    let findings = object
+        .get("findings")
+        .and_then(JsonValue::as_array)
+        .cloned()
+        .unwrap_or_default();
+    if findings.is_empty() {
+        lines.push("- none".to_string());
+    } else {
+        for finding in findings.iter().take(25) {
+            let identities = finding
+                .get("identities")
+                .and_then(JsonValue::as_object)
+                .map(|identities| {
+                    identities
+                        .values()
+                        .filter_map(JsonValue::as_str)
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                })
+                .unwrap_or_default();
+            lines.push(format!(
+                "- [{}] {}{}",
+                string_field(finding.get("disposition")),
+                string_field(finding.get("code")),
+                if identities.is_empty() {
+                    String::new()
+                } else {
+                    format!(" · {identities}")
+                }
+            ));
+        }
+        if findings.len() > 25 {
+            lines.push(format!("- … {} more in JSON output", findings.len() - 25));
+        }
+    }
+    lines.push(String::new());
+    lines.push("Next action".to_string());
+    lines.push(format!(
+        "- {}",
+        string_field(object.get("next_command"))
+    ));
+    Ok(lines.join("\n"))
+}
+
+fn workflow_nested_value<'a>(
+    payload: &'a JsonValue,
+    section: &str,
+    key: &str,
+) -> Option<&'a JsonValue> {
+    payload.as_object()?.get(section)?.as_object()?.get(key)
+}
+
+fn workflow_default_text<F>(value: String, fallback: F) -> String
+where
+    F: FnOnce() -> String,
+{
+    if value.is_empty() {
+        fallback()
+    } else {
+        value
+    }
+}
+
+fn workflow_cleanup_worktree_name(cleanup: &JsonMap<String, JsonValue>) -> Option<String> {
+    let worktree_name = string_field(cleanup.get("worktree_name"));
+    if !worktree_name.is_empty() {
+        return Some(worktree_name);
+    }
+    let worktree = cleanup.get("worktree")?.as_object()?;
+    let name = string_field(worktree.get("name"));
+    if !name.is_empty() {
+        return Some(name);
+    }
+    workflow_cleanup_worktree_name(worktree)
+}
+
+fn public_workflow_status(status: String) -> String {
+    if status == "landed" {
+        "finished".to_string()
+    } else {
+        status
+    }
+}
+
+fn public_workflow_reason(reason: String) -> String {
+    reason
+        .split('_')
+        .map(|token| match token {
+            "land" => "finish",
+            "landed" => "finished",
+            "landing" => "finishing",
+            _ => token,
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Only rewrite generated command arguments for a Task input whose unique
+/// operation target was already resolved. Never edit IDs inside JSON/evidence.
+fn task_command_text(text: &str, task: &str, mapped_task: &str, exact: &str) -> String {
+    let mut result = text.to_string();
+    for prefix in [
+        "ait snapshot create ",
+        "ait commit ",
+        "ait task finish ",
+        "ait workflow ready ",
+        "ait workflow finish ",
+        "ait change show ",
+        "ait change revert ",
+        "ait change replay ",
+        "ait change close ",
+        "ait change publish ",
+        "ait patchset publish ",
+        "ait patchset list ",
+        "ait review show ",
+        "ait review team request ",
+        "ait review team approve ",
+        "ait review team request-changes ",
+        "ait review team comment ",
+        "ait review team defer ",
+        "ait review task approve ",
+        "ait review task request-changes ",
+        "ait review task comment ",
+        "ait review task defer ",
+        "ait review code submit ",
+        "ait worktree recover-task ",
+    ] {
+        let mut rewritten = String::new();
+        let mut rest = result.as_str();
+        while let Some(start) = rest.find(prefix) {
+            let argument_start = start + prefix.len();
+            rewritten.push_str(&rest[..argument_start]);
+            let tail = &rest[argument_start..];
+            let end = tail.find(|ch: char| ch.is_whitespace() || ch == '`').unwrap_or(tail.len());
+            let argument = &tail[..end];
+            let owner = argument.split_once("/C-").filter(|(_, ordinal)| !ordinal.is_empty() && ordinal.bytes().all(|b| b.is_ascii_digit())).map(|(owner, _)| owner);
+            if matches!(argument, "<task-or-change-id>" | "<change-id>") || (!exact.is_empty() && argument == exact) || owner.is_some_and(|owner| owner == task || owner == mapped_task) {
+                rewritten.push_str(task);
+            } else {
+                rewritten.push_str(argument);
+            }
+            rest = &tail[end..];
+        }
+        rewritten.push_str(rest);
+        result = rewritten;
+    }
+    result
+}
+
+fn replace_standalone_change_reference(text: &str, exact: &str, task: &str) -> String {
+    if exact.is_empty() {
+        return text.to_string();
+    }
+    let mut output = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(start) = rest.find(exact) {
+        let before = rest[..start].chars().next_back();
+        let after = rest[start + exact.len()..].chars().next();
+        let is_identity_character = |character: char| {
+            character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '/')
+        };
+        output.push_str(&rest[..start]);
+        if before.is_some_and(is_identity_character) || after.is_some_and(is_identity_character) {
+            output.push_str(exact);
+        } else {
+            output.push_str(task);
+        }
+        rest = &rest[start + exact.len()..];
+    }
+    output.push_str(rest);
+    output
+}
+
+fn project_generated_workflow_text(
+    object: &mut JsonMap<String, JsonValue>,
+    task: &str,
+    mapped_task: &str,
+    exact: &str,
+) {
+    fn remove_hidden_selector(mut text: String, option: &str) -> String {
+        let needle = format!(" {option} ");
+        while let Some(start) = text.find(&needle) {
+            let value_start = start + needle.len();
+            let value_end = text[value_start..]
+                .find(|character: char| character.is_whitespace() || character == '`')
+                .map(|offset| value_start + offset)
+                .unwrap_or(text.len());
+            text.replace_range(start..value_end, "");
+        }
+        text
+    }
+
+    for (field, value) in object {
+        let generated = matches!(
+            field.as_str(),
+            "label" | "summary" | "detail" | "command" | "error" | "reason"
+        ) || field.ends_with("_command");
+        if !generated {
+            continue;
+        }
+        let Some(text) = value.as_str() else {
+            continue;
+        };
+        let mut projected = task_command_text(text, task, mapped_task, exact);
+        projected = remove_hidden_selector(projected, "--change");
+        if !exact.is_empty() {
+            projected = replace_standalone_change_reference(&projected, exact, task);
+        }
+        projected = ait_core::public_references::public_work_reference_text(&projected);
+        *value = JsonValue::String(projected);
+    }
+}
+
+fn task_workflow_display_payload(payload: &JsonValue, requested: &str) -> JsonValue {
+    let mut display = payload.clone();
+    let mapped_task = workflow_payload_task_id(payload).unwrap_or_default();
+    let exact = payload
+        .get("change")
+        .and_then(|change| change.get("change_id"))
+        .or_else(|| payload.get("change_id"))
+        .and_then(JsonValue::as_str)
+        .unwrap_or_default();
+    let requested_task = requested
+        .split_once('/')
+        .map(|(task, _)| task)
+        .filter(|task| !task.is_empty())
+        .unwrap_or(requested);
+    let display_task = if requested == exact && !mapped_task.is_empty() {
+        mapped_task.as_str()
+    } else if !requested_task.is_empty() {
+        requested_task
+    } else {
+        mapped_task.as_str()
+    };
+    // Only generated action text is projected. User titles and Snapshot
+    // messages stay byte-for-byte. The complete machine payload is unchanged.
+    for pointer in [
+        "/next_action",
+        "/recommended_action",
+        "/closeout_recovery",
+        "/task_land_closeout/recovery",
+        "/commands",
+        "/plan_checklist_closeout",
+        "/bound_worktree_cleanup",
+        "/bound_line_closeout",
+    ] {
+        if let Some(next) = display.pointer_mut(pointer).and_then(JsonValue::as_object_mut) {
+            project_generated_workflow_text(next, display_task, &mapped_task, exact);
+        }
+    }
+    if let Some(stopped_reason) = display
+        .get_mut("apply_stopped_reason")
+        .and_then(|value| value.as_str())
+        .map(ait_core::public_references::public_work_reference_text)
+    {
+        display["apply_stopped_reason"] = JsonValue::String(stopped_reason);
+    }
+    if let Some(command) = display.pointer("/next_action/command").and_then(JsonValue::as_str) {
+        if let Some(arguments) = command.strip_prefix("ait patchset publish ") {
+            // Ready already owns publication; offer the Task operation while
+            // retaining generated summary and explicit remote options.
+            let candidate = format!("ait workflow ready {arguments}");
+            let projected = task_command_text(&candidate, display_task, &mapped_task, exact);
+            let task_prefix = format!("ait workflow ready {display_task}");
+            if let Some(options) = projected.strip_prefix(&task_prefix) {
+                display["next_action"]["command"] = json!(format!("{task_prefix} --apply{options}"));
+            }
+        }
+    }
+    display
+}
+
+fn render_requested_workflow_text(payload: &JsonValue, phase: &str, requested: &str) -> Result<String, String> {
+    let display = task_workflow_display_payload(payload, requested);
+    let rendered = render_workflow_phase_text(&display, phase)?;
+    Ok(append_runner_hint_text(rendered, payload))
+}
+
+fn append_runner_hint_text(mut rendered: String, payload: &JsonValue) -> String {
+    if let Some(text) = ci_runner_once_text(payload) {
+        rendered.push_str("\n\n");
+        rendered.push_str(&text);
+    }
+    if let Some(text) = runner_hint_text(payload) {
+        rendered.push_str("\n\n");
+        rendered.push_str(&text);
+    }
+    rendered
+}
+
+fn render_workflow_phase_text(payload: &JsonValue, phase: &str) -> Result<String, String> {
+    let obj = payload
+        .as_object()
+        .ok_or_else(|| format!("workflow {phase} payload must decode to an object."))?;
+    let task_id = workflow_default_text(string_field(obj.get("task_id")), || {
+        string_field(workflow_nested_value(payload, "task", "task_id"))
+    });
+    let base_line = string_field(workflow_nested_value(payload, "change", "base_line"));
+    let current_line = workflow_default_text(
+        string_field(workflow_nested_value(payload, "workspace", "current_line")),
+        || {
+            workflow_default_text(string_field(obj.get("current_line")), || {
+                string_field(obj.get("target_line"))
+            })
+        },
+    );
+    let workspace_status = string_field(workflow_nested_value(
+        payload,
+        "workspace",
+        "workspace_status",
+    ));
+    let workspace_evaluation =
+        string_field(workflow_nested_value(payload, "workspace", "evaluation"));
+    let workspace_clean = workflow_nested_value(payload, "workspace", "clean")
+        .and_then(JsonValue::as_bool);
+    let workspace_status = workflow_default_text(workspace_status, || match workspace_clean {
+        Some(true) => "clean".to_string(),
+        Some(false) => "dirty".to_string(),
+        None if workspace_evaluation == "skipped" => "not evaluated".to_string(),
+        None => "unknown".to_string(),
+    });
+    let changed_count = workflow_nested_value(payload, "workspace", "changed_count")
+        .filter(|value| !value.is_null())
+        .map(|value| string_field(Some(value)))
+        .filter(|value| !value.is_empty());
+    let patchset_id = ait_core::public_references::public_patchset_reference(&string_field(
+        workflow_nested_value(payload, "patchset", "patchset_id"),
+    ));
+    let next_action_code = string_field(workflow_nested_value(payload, "next_action", "code"));
+    let next_action_summary =
+        string_field(workflow_nested_value(payload, "next_action", "summary"));
+    let next_action_detail = string_field(workflow_nested_value(payload, "next_action", "detail"));
+    let next_action_command =
+        string_field(workflow_nested_value(payload, "next_action", "command"));
+    let apply_status = string_field(obj.get("apply_status"));
+    let stopped_reason = string_field(obj.get("apply_stopped_reason"));
+
+    let mut lines = vec![format!(
+        "ait workflow {phase} · {}",
+        if task_id.is_empty() {
+            "(unknown task)".to_string()
+        } else {
+            task_id.clone()
+        }
+    )];
+    lines.push(String::new());
+    lines.push(format!(
+        "- status: {}",
+        public_workflow_status(workflow_default_text(
+            string_field(workflow_nested_value(payload, "change", "status")),
+            || "unknown".to_string(),
+        ))
+    ));
+    let title = string_field(workflow_nested_value(payload, "task", "title").or_else(|| payload.get("title")));
+    if !title.is_empty() {
+        lines.push(format!("- title: {title}"));
+    }
+    lines.push(format!(
+        "- task: {}",
+        if task_id.is_empty() {
+            "unknown".to_string()
+        } else {
+            task_id
+        }
+    ));
+    lines.push(format!(
+        "- base line: {}",
+        if base_line.is_empty() {
+            "unknown".to_string()
+        } else {
+            base_line
+        }
+    ));
+    lines.push(format!(
+        "- current line: {}",
+        if current_line.is_empty() {
+            "unknown".to_string()
+        } else {
+            current_line
+        }
+    ));
+    lines.push(match changed_count {
+        Some(changed_count) => {
+            format!("- workspace: {workspace_status} ({changed_count} changed)")
+        }
+        None => format!("- workspace: {workspace_status}"),
+    });
+    for key in ["base_snapshot_id", "revision_snapshot_id"] {
+        let snapshot = string_field(workflow_nested_value(payload, "patchset", key));
+        if !snapshot.is_empty() {
+            lines.push(format!("- {}: {snapshot}", key.trim_end_matches("_id").replace('_', " ")));
+        }
+    }
+    if !patchset_id.is_empty() && (phase == "finish" || next_action_code.contains("review")) {
+        lines.push(format!("- review evidence: {patchset_id}"));
+    }
+    if !next_action_code.is_empty()
+        || !next_action_summary.is_empty()
+        || !next_action_detail.is_empty()
+    {
+        lines.push(String::new());
+        lines.push("Next action".to_string());
+        if !next_action_summary.is_empty() {
+            lines.push(format!("- {}", next_action_summary));
+            if !next_action_detail.is_empty() {
+                lines.push(format!("  {}", next_action_detail));
+            }
+        } else if !next_action_detail.is_empty() {
+            lines.push(format!("- {}", next_action_detail));
+        } else {
+            lines.push(format!("- {}", next_action_code));
+        }
+        if !next_action_command.is_empty() {
+            lines.push(format!("  {}", next_action_command));
+        }
+    }
+    if !apply_status.is_empty() {
+        lines.push(String::new());
+        lines.push("Apply status".to_string());
+        lines.push(format!("- {}", apply_status));
+        if !stopped_reason.is_empty() {
+            lines.push(format!("  {}", stopped_reason));
+        }
+    }
+    if let Some(cleanup) = obj
+        .get("bound_worktree_cleanup")
+        .and_then(JsonValue::as_object)
+    {
+        let cleanup_status = workflow_default_text(string_field(cleanup.get("status")), || {
+            "unknown".to_string()
+        });
+        let cleanup_reason = public_workflow_reason(string_field(cleanup.get("reason")));
+        let cleanup_worktree =
+            workflow_cleanup_worktree_name(cleanup).unwrap_or_else(|| "unknown".to_string());
+        lines.push(String::new());
+        lines.push("Worktree cleanup".to_string());
+        lines.push(format!("- {cleanup_status}: {cleanup_worktree}"));
+        if !cleanup_reason.is_empty() {
+            lines.push(format!("  reason: {cleanup_reason}"));
+        }
+    }
+    if let Some(closeout) = obj
+        .get("bound_line_closeout")
+        .and_then(JsonValue::as_object)
+    {
+        let status = workflow_default_text(string_field(closeout.get("status")), || {
+            "unknown".to_string()
+        });
+        let line_name = workflow_default_text(string_field(closeout.get("line_name")), || {
+            "unbound".to_string()
+        });
+        let reason = public_workflow_reason(string_field(closeout.get("reason")));
+        let error = string_field(closeout.get("error"));
+        lines.push(String::new());
+        lines.push("Feature Line closeout".to_string());
+        lines.push(format!("- {status}: {line_name}"));
+        if !reason.is_empty() {
+            lines.push(format!("  reason: {reason}"));
+        }
+        if !error.is_empty() {
+            lines.push(format!("  error: {error}"));
+        }
+    }
+    if let Some(closeout) = obj
+        .get("plan_checklist_closeout")
+        .and_then(JsonValue::as_object)
+    {
+        let status = workflow_default_text(string_field(closeout.get("status")), || {
+            "unknown".to_string()
+        });
+        let reason = public_workflow_reason(string_field(closeout.get("reason")));
+        let error = string_field(closeout.get("error"));
+        let detail = string_field(closeout.get("detail"));
+        let command = string_field(closeout.get("command"));
+        lines.push(String::new());
+        lines.push("Sprint checklist closeout".to_string());
+        lines.push(format!("- {status}"));
+        if !reason.is_empty() {
+            lines.push(format!("  reason: {reason}"));
+        }
+        if !error.is_empty() {
+            lines.push(format!("  error: {error}"));
+        }
+        if !detail.is_empty() {
+            lines.push(format!("  {detail}"));
+        }
+        if !command.is_empty() {
+            lines.push(format!("  {command}"));
+        }
+        if let Some(retention) = closeout.get("retention").and_then(JsonValue::as_object) {
+            let retention_status = workflow_default_text(
+                string_field(retention.get("status")),
+                || "unknown".to_string(),
+            );
+            let removed = retention
+                .get("removed_count")
+                .and_then(JsonValue::as_u64)
+                .unwrap_or(0);
+            let retained = retention
+                .get("retained_completed_count")
+                .and_then(JsonValue::as_u64)
+                .unwrap_or(0);
+            lines.push(format!(
+                "  retention: {retention_status} ({removed} removed, {retained} completed retained)"
+            ));
+        }
+    }
+    if let Some(reconciliation) = obj
+        .get("automatic_reconciliation")
+        .and_then(JsonValue::as_object)
+    {
+        let trigger = reconciliation
+            .get("automatic_trigger")
+            .and_then(JsonValue::as_object)
+            .and_then(|trigger| trigger.get("trigger"))
+            .or_else(|| reconciliation.get("trigger"));
+        let remaining_safe = reconciliation
+            .get("apply_summary")
+            .and_then(JsonValue::as_object)
+            .and_then(|summary| summary.get("remaining_safe_count"));
+        let status = string_field_or_default(reconciliation.get("status"), "unknown");
+        let mutated = reconciliation
+            .get("mutated")
+            .and_then(JsonValue::as_bool)
+            .unwrap_or(false);
+        let error = string_field(reconciliation.get("error"));
+        let remaining_safe_count = remaining_safe.and_then(JsonValue::as_i64).unwrap_or(0);
+        if mutated
+            || !error.is_empty()
+            || remaining_safe_count > 0
+            || !matches!(status.as_str(), "complete" | "completed" | "success" | "ok")
+        {
+            lines.push(String::new());
+            lines.push("Automatic reconciliation".to_string());
+            lines.push(format!(
+                "- {}: {status} (mutated {mutated}, {remaining_safe_count} safe remaining)",
+                string_field_or_default(trigger, "terminal"),
+            ));
+            if !error.is_empty() {
+                lines.push(format!("  non-blocking error: {error}"));
+            }
+        }
+    }
+    Ok(lines.join("\n"))
+}
+
+fn render_task_finish_text(payload: &JsonValue) -> Result<String, String> {
+    let rendered = if payload.get("mode").and_then(JsonValue::as_str) == Some("local")
+        && payload.get("apply_status").and_then(JsonValue::as_str) == Some("done")
+    {
+        render_local_task_land_text(payload)?
+    } else {
+        let old_title = format!("ait workflow {}", "finish");
+        render_workflow_phase_text(payload, "finish")?.replacen(&old_title, "ait task finish", 1)
+    };
+    let rendered = append_task_land_contract_text(rendered, payload);
+    Ok(append_runner_hint_text(rendered, payload))
+}
+
+fn append_task_land_contract_text(mut rendered: String, payload: &JsonValue) -> String {
+    let Some(contract) = payload
+        .get("task_land_contract")
+        .and_then(JsonValue::as_object)
+    else {
+        return rendered;
+    };
+    let version = workflow_default_text(string_field(contract.get("version")), || {
+        "unknown".to_string()
+    });
+    let closeout_status = workflow_default_text(string_field(payload.get("closeout_status")), || {
+        "unknown".to_string()
+    });
+    if matches!(
+        closeout_status.as_str(),
+        "complete" | "complete_unbound" | "already_complete"
+    ) {
+        return rendered;
+    }
+    rendered.push_str(&format!(
+        "\n\ntask-finish contract: {version}\ncloseout: {closeout_status}"
+    ));
+    if let Some(recovery) = payload
+        .get("closeout_recovery")
+        .and_then(JsonValue::as_object)
+    {
+        let detail = string_field(recovery.get("detail"));
+        let command = string_field(recovery.get("command"));
+        if !detail.is_empty() {
+            rendered.push_str(&format!("\nrecovery: {detail}"));
+        }
+        if !command.is_empty() {
+            rendered.push_str(&format!("\n{command}"));
+        }
+    }
+    rendered
+}
+
+fn render_local_task_land_text(payload: &JsonValue) -> Result<String, String> {
+    let obj = payload
+        .as_object()
+        .ok_or_else(|| "local Task Finish payload must decode to an object.".to_string())?;
+    let cleanup = obj
+        .get("bound_worktree_cleanup")
+        .and_then(JsonValue::as_object);
+    let task_id = workflow_payload_task_id(payload).unwrap_or_else(|| "(unknown task)".to_string());
+    let target_line = workflow_default_text(string_field(obj.get("target_line")), || {
+        "unknown".to_string()
+    });
+    let snapshot_id = workflow_default_text(string_field(obj.get("landed_snapshot_id")), || {
+        "unknown".to_string()
+    });
+    let closeout_status = string_field(obj.get("closeout_status"));
+    let closeout_incomplete = !closeout_status.is_empty()
+        && !matches!(
+            closeout_status.as_str(),
+            "complete" | "complete_unbound" | "already_complete"
+        );
+    let mut lines = vec![format!(
+        "finished: {task_id} -> {target_line} @ {snapshot_id}"
+    )];
+    let title = string_field(workflow_nested_value(payload, "task", "title").or_else(|| payload.get("title")));
+    if !title.is_empty() { lines.push(format!("title: {title}")); }
+    let mut closed = Vec::new();
+    let task_status = string_field(obj.get("task_status"));
+    if task_status == "completed" {
+        closed.push("task");
+    } else if !task_status.is_empty() {
+        lines.push(format!("task: {task_status}"));
+    }
+    if let Some(cleanup) = cleanup {
+        let status = string_field(cleanup.get("status"));
+        if matches!(status.as_str(), "removed" | "already_removed") {
+            closed.push("worktree");
+        } else if closeout_incomplete && !status.is_empty() {
+            lines.push(format!("worktree: {status}"));
+        }
+    }
+    if let Some(closeout) = obj
+        .get("bound_line_closeout")
+        .and_then(JsonValue::as_object)
+    {
+        let status = workflow_default_text(string_field(closeout.get("status")), || {
+            "unknown".to_string()
+        });
+        let line_name = workflow_default_text(string_field(closeout.get("line_name")), || {
+            "unbound".to_string()
+        });
+        if matches!(status.as_str(), "archived" | "already_archived") {
+            closed.push("line");
+        } else if closeout_incomplete {
+            lines.push(format!("line: {status} ({line_name})"));
+        }
+        let error = string_field(closeout.get("error"));
+        if !error.is_empty() {
+            lines.push(format!("line error: {error}"));
+        }
+    }
+    if let Some(closeout) = obj
+        .get("plan_checklist_closeout")
+        .and_then(JsonValue::as_object)
+    {
+        let status = workflow_default_text(string_field(closeout.get("status")), || {
+            "unknown".to_string()
+        });
+        let reason = string_field(closeout.get("reason"));
+        let error = string_field(closeout.get("error"));
+        if matches!(status.as_str(), "synced" | "already_synced") {
+            closed.push("sprint");
+        } else if closeout_incomplete {
+            lines.push(format!("sprint: {status}"));
+            if !reason.is_empty() {
+                lines.push(format!("sprint reason: {reason}"));
+            }
+        }
+        if !error.is_empty() {
+            lines.push(format!("sprint error: {error}"));
+        }
+        if let Some(retention) = closeout.get("retention").and_then(JsonValue::as_object) {
+            let retention_status = workflow_default_text(
+                string_field(retention.get("status")),
+                || "unknown".to_string(),
+            );
+            let removed = retention
+                .get("removed_count")
+                .and_then(JsonValue::as_u64)
+                .unwrap_or(0);
+            let retained = retention
+                .get("retained_completed_count")
+                .and_then(JsonValue::as_u64)
+                .unwrap_or(0);
+            if removed > 0 {
+                lines.push(format!(
+                    "retention: {retention_status} ({removed} removed, {retained} retained)"
+                ));
+            }
+        }
+    }
+    lines.extend(pre_finish_hooks_text_lines(payload));
+    lines.extend(plan_markdown_presync_text_lines(payload));
+    lines.extend(plan_markdown_materialization_text_lines(payload));
+    lines.extend(post_finish_hooks_text_lines(payload));
+    if !closed.is_empty() {
+        lines.insert(1, format!("closed: {}", closed.join(", ")));
+    }
+    if closeout_incomplete {
+        lines.push(format!("closeout: {closeout_status}"));
+    }
+    if let Some(reconciliation) = obj
+        .get("automatic_reconciliation")
+        .and_then(JsonValue::as_object)
+    {
+        let status = string_field_or_default(reconciliation.get("status"), "unknown");
+        let mutated = reconciliation
+            .get("mutated")
+            .and_then(JsonValue::as_bool)
+            .unwrap_or(false);
+        let error = string_field(reconciliation.get("error"));
+        if mutated {
+            lines.push(format!("reconciled: {status}"));
+        }
+        if !error.is_empty() {
+            lines.push(format!("reconciliation error: {error}"));
+        } else if !matches!(status.as_str(), "complete" | "completed" | "success" | "ok")
+            && status != "unknown"
+        {
+            lines.push(format!("reconciliation: {status}"));
+        }
+    }
+    Ok(lines.join("\n"))
+}
+
+fn workflow_guide_payload(topic: Option<&str>) -> Result<JsonValue, String> {
+    let local_land_contract = task_land_scope_contract_json(true);
+    let remote_land_contract = task_land_scope_contract_json(false);
+    let inventory = json!({
+        "topic": "inventory",
+        "summary": "Use one inventory surface first, then drill down only where the workflow actually points.",
+        "when_to_use": [
+            "You need to answer what remains or what should finish next.",
+            "You are about to rerun queue or task list in the same turn."
+        ],
+        "commands": [
+            {
+                "label": "Shared queue",
+                "command": "ait queue summary",
+                "detail": "Use this first for the current actionable Task, review, local draft, workspace, and worktree picture."
+            },
+            {
+                "label": "Task history",
+                "command": "ait task list --all",
+                "detail": "Use the Task inventory instead of widening the actionable queue to terminal history."
+            },
+            {
+                "label": "Snapshot history",
+                "command": "ait snapshot list --all",
+                "detail": "Inspect recorded checkpoints without expanding the actionable queue."
+            },
+            {
+                "label": "One task readiness",
+                "command": "ait task audit <task-id>",
+                "detail": "Prefer this over rebuilding one task from `task show` plus task-scoped `change list`."
+            },
+            {
+                "label": "Task diagnostic",
+                "command": "ait task audit <task-id> --json",
+                "detail": "Inspect complete Task evidence when history is ambiguous or recovery needs more detail."
+            }
+        ],
+        "avoid": [
+            "Do not rerun the same queue or list command in the same turn unless workflow state changed."
+        ]
+    });
+    let finish = json!({
+        "topic": "finish",
+        "contract_version": TASK_LAND_CONTRACT_VERSION,
+        "scope_contracts": {
+            "local": local_land_contract.clone(),
+            "remote": remote_land_contract.clone(),
+        },
+        "summary": "Use `workflow ready` then `workflow finish` instead of rediscovering low-level remote gates by hand.",
+        "when_to_use": [
+            "You want to see what still blocks one remote Task from finishing.",
+            "You want the helper to advance safe remote-finish steps without teaching the low-level gate commands first."
+        ],
+        "commands": [
+            {
+                "label": "Workflow ready apply",
+                "command": "ait workflow ready <task-id> --apply",
+                "detail": "Create any needed snapshot or patchset updates, run patchset CI, and stop once attestation-backed ready state exists."
+            },
+            {
+                "label": "Workflow finish apply",
+                "command": "ait workflow finish <task-id> --apply",
+                "detail": "Review the selected Patchset, record any required Task approval, check final Policy, then safely sync the target Line, complete the Task, and clean up. Add --review-message with the structured review when code-review evidence is required."
+            },
+            {
+                "label": "Task finish direct",
+                "command": "ait task finish <task-id>",
+                "detail": "Direct finish and recovery command. Dirty local work can add `--message`; remote finish consumes an already-ready selected Patchset. It creates no Review evidence. Plan closeout follows the configured scope. Resume a partial finish by rerunning the reported task-finish command."
+            },
+        ],
+        "avoid": [
+            "Do not rediscover the same finish path with many separate low-level gate or help commands in one turn.",
+            "Use only the supported finish actions above; removed aliases are not recovery paths."
+        ]
+    });
+    match topic.map(|value| value.trim().to_ascii_lowercase()) {
+        None => Ok(json!({
+            "topics": [
+                {
+                    "topic": "inventory",
+                    "summary": inventory["summary"],
+                    "command": "ait workflow guide inventory"
+                },
+                {
+                    "topic": "finish",
+                    "summary": finish["summary"],
+                    "command": "ait workflow guide finish"
+                }
+            ]
+        })),
+        Some(value) if value == "inventory" => Ok(inventory),
+        Some(value) if value == "finish" => Ok(finish),
+        Some(value) => Err(format!(
+            "Unknown workflow guide topic: {value}. Available topics: inventory, finish"
+        )),
+    }
+}
+
+fn render_workflow_guide_text(data: &JsonValue) -> Result<String, String> {
+    let topic = data
+        .get("topic")
+        .and_then(JsonValue::as_str)
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    if topic.is_empty() {
+        let mut lines = vec!["ait workflow guides".to_string(), String::new()];
+        if let Some(rows) = data.get("topics").and_then(JsonValue::as_array) {
+            for row in rows {
+                let topic = row
+                    .get("topic")
+                    .and_then(JsonValue::as_str)
+                    .unwrap_or("")
+                    .trim();
+                let summary = row
+                    .get("summary")
+                    .and_then(JsonValue::as_str)
+                    .unwrap_or("")
+                    .trim();
+                let command = row
+                    .get("command")
+                    .and_then(JsonValue::as_str)
+                    .unwrap_or("")
+                    .trim();
+                if !topic.is_empty() {
+                    lines.push(format!("- {topic}: {summary} ({command})"));
+                }
+            }
+        }
+        return Ok(lines.join("\n"));
+    }
+
+    let mut lines = vec![
+        format!("ait workflow guide · {topic}"),
+        String::new(),
+        data.get("summary")
+            .and_then(JsonValue::as_str)
+            .unwrap_or("")
+            .trim()
+            .to_string(),
+    ];
+
+    let when_to_use = data
+        .get("when_to_use")
+        .and_then(JsonValue::as_array)
+        .cloned()
+        .unwrap_or_default();
+    if !when_to_use.is_empty() {
+        lines.push(String::new());
+        lines.push("When to use".to_string());
+        for item in when_to_use {
+            if let Some(text) = item.as_str() {
+                let text = text.trim();
+                if !text.is_empty() {
+                    lines.push(format!("- {text}"));
+                }
+            }
+        }
+    }
+
+    let commands = data
+        .get("commands")
+        .and_then(JsonValue::as_array)
+        .cloned()
+        .unwrap_or_default();
+    if !commands.is_empty() {
+        lines.push(String::new());
+        lines.push("Recommended commands".to_string());
+        for row in commands {
+            let label = row
+                .get("label")
+                .and_then(JsonValue::as_str)
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            let command = row
+                .get("command")
+                .and_then(JsonValue::as_str)
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            let detail = row
+                .get("detail")
+                .and_then(JsonValue::as_str)
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            if !label.is_empty() && !command.is_empty() {
+                lines.push(format!("- {label}: {command}"));
+            } else if !command.is_empty() {
+                lines.push(format!("- {command}"));
+            }
+            if !detail.is_empty() {
+                lines.push(format!("  {detail}"));
+            }
+        }
+    }
+
+    let avoid = data
+        .get("avoid")
+        .and_then(JsonValue::as_array)
+        .cloned()
+        .unwrap_or_default();
+    if !avoid.is_empty() {
+        lines.push(String::new());
+        lines.push("Avoid".to_string());
+        for item in avoid {
+            if let Some(text) = item.as_str() {
+                let text = text.trim();
+                if !text.is_empty() {
+                    lines.push(format!("- {text}"));
+                }
+            }
+        }
+    }
+
+    Ok(lines.join("\n"))
+}

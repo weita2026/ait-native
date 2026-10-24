@@ -223,12 +223,20 @@ fn run_task(repo: RepoRuntime, command: TaskCommand) -> Result<ExitCode, String>
             } else {
                 AutomaticReconciliationScope::Remote(scoped_remote_name.clone())
             };
-            let reconciliation = run_automatic_reconciliation_locked(
+            let incomplete_local_closeout=use_local_scope && (
+                payload["apply_status"].as_str()!=Some("done")
+                || payload["repo_root_restore"]["status"].as_str()==Some("failed")
+                || payload["bound_worktree_cleanup"]["status"].as_str()==Some("failed"));
+            let reconciliation = if incomplete_local_closeout {
+                json!({"contract":"workflow-automatic-reconciliation/v1","automatic":true,"status":"skipped",
+                    "scope":"local","mutated":false,"reason":"task_closeout_recovery_pending",
+                    "task_filter":task_id,"detail":"Preserve worktree registration until exact Task closeout recovery succeeds."})
+            } else {run_automatic_reconciliation_locked(
                 &repo,
                 scope,
                 task_id.as_deref(),
                 task_land_automatic_trigger(&payload),
-            );
+            )};
             attach_automatic_reconciliation(&mut payload, reconciliation);
             if let (Some(presync), Some(object)) = (presync, payload.as_object_mut()) {
                 object.insert(PLAN_MARKDOWN_PRESYNC_PAYLOAD_KEY.to_string(), presync);
@@ -241,33 +249,65 @@ fn run_task(repo: RepoRuntime, command: TaskCommand) -> Result<ExitCode, String>
             } else {
                 attach_runner_hint_best_effort(&repo, scoped_remote_name.as_deref(), &mut payload);
             }
+            crate::team_remote::attach_finish_handoff(
+                crate::agent_teams::enabled(&repo),
+                &repo.authoritative_repo_root(),
+                if use_local_scope { crate::team_remote::FinishScope::Local }
+                else { crate::team_remote::FinishScope::Remote },
+                &mut payload,
+                &crate::agent_teams::CoordinatorSource,
+            );
             emit_task_finish_result(&payload, &args.task_or_change_id, args.json, args.full)?;
             Ok(ExitCode::from(task_finish_exit_code(&payload)))
         }
         TaskCommand::Abandon(args) => {
+            if args.task_id.starts_with('@') {
+                if args.local || args.remote.as_deref().is_none_or(|name|name.trim().is_empty()) {
+                    return Err("Package abandonment requires explicit --remote <name> and rejects --local".into());
+                }
+                let identity=read_package_review_identity(&args.task_id)?.ok_or("Package abandonment requires an exact identity file")?;
+                let payload=crate::primitives::workflow_package_abandon(&repo,args.remote.as_deref().expect("explicit remote"),&identity)?;
+                emit_result("ait-cli task abandon",&payload,args.json,&["state","expected_identity","detail"])?;
+                return Ok(ExitCode::from(u8::from(payload["complete"].as_bool()!=Some(true))));
+            }
             let use_local_scope = repo.task_uses_local_scope(args.local, args.remote.as_deref())?;
             let automatic_scope = if use_local_scope {
                 AutomaticReconciliationScope::Local
             } else {
                 AutomaticReconciliationScope::Remote(args.remote.clone())
             };
-            let payload = run_locked_workspace_command(&repo, "ait-cli task abandon", || {
+            let operation_repo = if use_local_scope {
+                RepoRuntime::discover_from_path(&repo.authoritative_repo_root())?
+            } else { repo.clone() };
+            let operation = || {
                 let mut payload = task_abandon(
                     &repo,
                     &args.task_id,
                     args.local,
                     args.remote.as_deref(),
                 )?;
-                let reconciliation = workflow_reconcile_automatic_best_effort(
-                    &repo,
-                    automatic_scope,
-                    Some(&args.task_id),
-                    AutomaticReconciliationTrigger::TaskTerminal,
-                    None,
-                );
+                let reconciliation = if use_local_scope && payload["already_abandoned"] == true {
+                    json!({"status":"skipped","reason":"already_abandoned_cleanup_only","mutated":false})
+                } else {
+                    workflow_reconcile_automatic_best_effort(
+                        &operation_repo,
+                        automatic_scope,
+                        Some(&args.task_id),
+                        AutomaticReconciliationTrigger::TaskTerminal,
+                        None,
+                    )
+                };
                 attach_automatic_reconciliation(&mut payload, reconciliation);
                 Ok(payload)
-            })?;
+            };
+            let payload = if use_local_scope {
+                let _writer = crate::workspace_lock::WorkspaceCommandLock::try_acquire(
+                    &operation_repo, "ait-cli task abandon",
+                )?;
+                operation()?
+            } else {
+                run_locked_workspace_command(&repo, "ait-cli task abandon", operation)?
+            };
             emit_result(
                 "ait-cli task abandon",
                 &payload,

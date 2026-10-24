@@ -111,6 +111,7 @@ dependencies = [
  "toml",
  "windows-sys 0.61.2",
  "zip",
+ "zstd 0.13.3",
 ]
 
 [[package]]
@@ -129,6 +130,7 @@ dependencies = [
  "sha1",
  "sha2",
  "similar",
+ "tar",
  "tempfile",
  "toml",
  "windows-sys 0.61.2",

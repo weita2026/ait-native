@@ -566,6 +566,9 @@ pub(in crate::repository_pack_json) fn commit_request_to_value(
     request: &ZstdBulkCommitRequest,
 ) -> Result<JsonValue, String> {
     let mut object = JsonMap::new();
+    if let Some(binding) = &request.capture_binding {
+        object.insert("capture_binding".to_string(), binding.to_value());
+    }
     insert_optional_string(&mut object, "contract", &request.contract);
     insert_optional_string(&mut object, "generation_key", &request.generation_key);
     object.insert(
@@ -605,6 +608,10 @@ pub(in crate::repository_pack_json) fn commit_request_from_value(
 ) -> Result<ZstdBulkCommitRequest, String> {
     let object = object_from_value(value, "zstd bulk commit request")?;
     Ok(ZstdBulkCommitRequest {
+        capture_binding: object
+            .get("capture_binding")
+            .map(SnapshotCaptureBinding::from_value)
+            .transpose()?,
         contract: opt_string(&object, "contract")?,
         generation_key: opt_string(&object, "generation_key")?,
         object_packs: object_vec_from_field(&object, "object_packs", object_pack_row_from_object)?,

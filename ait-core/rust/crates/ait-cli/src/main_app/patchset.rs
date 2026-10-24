@@ -87,7 +87,7 @@ fn run_patchset(repo: RepoRuntime, command: PatchsetCommand) -> Result<(), Strin
                 "ait-cli patchset select",
                 &payload,
                 args.json,
-                &["selected_patchset_id"],
+                &["current_patchset_id", "selection_changed"],
             )?;
             Ok(())
         }

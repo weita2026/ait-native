@@ -377,15 +377,6 @@ fn task_status_details_py(py: Python<'_>, value: Option<&str>) -> PyResult<Py<Py
     .unbind())
 }
 
-#[pyfunction(name = "normalize_workflow_mode")]
-fn normalize_workflow_mode_py(py: Python<'_>, value: Option<&str>) -> PyResult<Py<PyAny>> {
-    let normalized = workflow_mode_value(value).map_err(PyValueError::new_err)?;
-    Ok(match normalized {
-        Some(value) => value.into_pyobject(py)?.unbind().into_any(),
-        None => py.None(),
-    })
-}
-
 #[pyfunction(name = "normalize_publication_state")]
 fn normalize_publication_state_py(py: Python<'_>, value: Option<&str>) -> PyResult<Py<PyAny>> {
     let normalized = publication_state_value(value).map_err(PyValueError::new_err)?;
@@ -610,7 +601,6 @@ fn register_workflow_policy(_py: Python<'_>, module: &Bound<'_, PyModule>) -> Py
     module.add_function(wrap_pyfunction!(decode_ref_name_py, module)?)?;
     module.add_function(wrap_pyfunction!(normalize_task_status_py, module)?)?;
     module.add_function(wrap_pyfunction!(task_status_details_py, module)?)?;
-    module.add_function(wrap_pyfunction!(normalize_workflow_mode_py, module)?)?;
     module.add_function(wrap_pyfunction!(normalize_publication_state_py, module)?)?;
     module.add_function(wrap_pyfunction!(
         publication_state_has_unpublished_head_py,

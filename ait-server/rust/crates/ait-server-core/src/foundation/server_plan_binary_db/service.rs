@@ -6,6 +6,13 @@ impl<D, const WRITE_LAYOUT: u32> BinaryDbServerPlanService<D, WRITE_LAYOUT>
 where
     D: ServerRemoteBinaryDb + BinaryDbIndexAppender + Clone,
 {
+    fn request_actor(&self, payload: &JsonMap<String, JsonValue>) -> Result<u32, String> {
+        crate::foundation::workflow_binary_v0_adapter::BinaryDbServerWorkflowV0Store::new_frozen(
+            self.db().clone(),
+        )
+        .request_actor(payload)
+    }
+
     pub fn list_plans(
         &self,
         repo_name: &str,
@@ -38,6 +45,7 @@ where
         let payload = payload
             .as_object()
             .ok_or_else(|| "plan create payload must be a JSON object.".to_string())?;
+        self.request_actor(payload)?;
         if payload.contains_key("plan_id") {
             return Err(
                 "Plan Binary DB create does not accept caller-supplied `plan_id`; identity is assigned as `PR-<index>`."
@@ -64,23 +72,32 @@ where
         )?;
         let now = utc_now_string();
         let now_s = timestamp_s(&now)?;
+        let revision_payload = PlanRevisionPayload {
+            title_snapshot: title.clone(),
+            summary: summary.clone().unwrap_or_default(),
+            artifact_path: artifact_path.clone(),
+            artifact_selector: artifact_selector.clone().unwrap_or_default(),
+            artifact_heading: artifact_heading.clone(),
+            artifact_blob_id: packed_content
+                .as_ref()
+                .map(|content| content.blob_id.clone())
+                .unwrap_or_default(),
+        };
 
         let plan_id = {
             let mut tx = self
                 .store
                 .begin_write(ServerPlanBinaryDbWritePurpose::CreatePlan)?;
+            let actor_index_plus1 = tx.request_actor(payload)?;
+            if let Some(index) =
+                tx.matching_head(None, &title, &status, &revision_payload, &items)?
+            {
+                drop(tx);
+                return self.get_plan(&server_plan_ref(index));
+            }
             let plan_index = tx.record_count(plan_file())?;
             let revision_index = tx.record_count(plan_revision_file())?;
             let plan_id = server_plan_ref(plan_index);
-            let plan_revision_id = server_revision_ref(revision_index);
-            let blob = packed_content.as_ref().map(|content| {
-                content.blob_json(
-                    &plan_revision_id,
-                    repo_name,
-                    self.db().repo_id().as_str(),
-                    &now,
-                )
-            });
             let item_start_index = tx.record_count(plan_item_file())?;
             tx.append_items(&items)?;
             let item_count = u16_len(items.len(), "Binary DB plan item count")?;
@@ -95,6 +112,7 @@ where
                 created_at_s: now_s,
                 updated_at_s: now_s,
                 published_at_s: 0,
+                actor_index_plus1,
             };
             let committed_plan_index = tx.append_plan(plan_record, title.as_bytes())?;
             if committed_plan_index != plan_index {
@@ -117,17 +135,7 @@ where
                 root_entry_ordinal: 0,
                 created_at_s: now_s,
                 published_at_s: 0,
-            };
-            let revision_payload = PlanRevisionPayload {
-                title_snapshot: title.clone(),
-                summary: summary.clone().unwrap_or_default(),
-                artifact_path: artifact_path.clone(),
-                artifact_selector: artifact_selector.clone().unwrap_or_default(),
-                artifact_heading: artifact_heading.clone(),
-                artifact_blob_id: blob
-                    .as_ref()
-                    .and_then(|blob| optional_text(blob, "blob_id"))
-                    .unwrap_or_default(),
+                actor_index_plus1,
             };
             let committed_revision_index =
                 tx.append_plan_revision(revision_record, &revision_payload)?;
@@ -160,6 +168,7 @@ where
         let payload = payload
             .as_object()
             .ok_or_else(|| "plan status payload must be a JSON object.".to_string())?;
+        self.request_actor(payload)?;
         let status = normalize_plan_status(Some(required_text(payload, "status")?.as_str()))?;
         let now = utc_now_string();
         let now_s = timestamp_s(&now)?;
@@ -177,9 +186,15 @@ where
                 current.plan_index,
                 &record,
             )?;
+            let actor_index_plus1 = tx.request_actor(payload)?;
+            if current.status == status {
+                drop(tx);
+                return self.get_plan(plan_id);
+            }
             let mut next = record;
             next.plan_meta = plan_meta_with_status(next.plan_meta, &status)?;
             next.updated_at_s = now_s;
+            next.actor_index_plus1 = actor_index_plus1;
             tx.overwrite_plan(current.plan_index, next, current.title.as_bytes())?;
             tx.set_commit_point(ServerPlanBinaryDbCommitPoint::PlanStatusUpdated {
                 plan_index: current.plan_index,
@@ -289,12 +304,12 @@ where
     where
         F: BinaryDbFsyncPolicy,
     {
-        let revision = ServerPlanRevisionCodec::<PLAN_LAYOUT_ID>::decode_record(
+        let revision = ServerPlanRevisionCodec::<WRITE_LAYOUT>::decode_record(
             &write
                 .read_record(plan_revision_file(), revision_index)
                 .map_err(binary_error)?,
         )?;
-        let plan = ServerPlanCodec::<PLAN_LAYOUT_ID>::decode_record(
+        let plan = ServerPlanCodec::<WRITE_LAYOUT>::decode_record(
             &write
                 .read_record(plan_file(), revision.plan_index)
                 .map_err(binary_error)?,
@@ -342,6 +357,7 @@ where
         let payload = payload
             .as_object()
             .ok_or_else(|| "plan revise payload must be a JSON object.".to_string())?;
+        self.request_actor(payload)?;
         let artifact = normalize_plan_revision_artifact(payload)?;
         let artifact_path = required_text(&artifact, "artifact_path")?;
         let artifact_selector = optional_text(&artifact, "artifact_selector");
@@ -368,6 +384,7 @@ where
             current_head_revision_index,
             current_head_revision_id,
             previous_revision_number,
+            current_head_parent_id,
         ) = {
             let read = self.store.read_txn();
             let current_plan = self.store.plan_meta_by_id_with_read(&read, plan_id)?;
@@ -377,7 +394,7 @@ where
             let current_head_revision_index =
                 plan_record.latest_revision_index_plus1.checked_sub(1);
             let current_head_revision_id = current_head_revision_index.map(server_revision_ref);
-            let previous_revision_number = current_head_revision_index
+            let (previous_revision_number, current_head_parent_id) = current_head_revision_index
                 .map(|revision_index| {
                     let revision = self
                         .store
@@ -388,20 +405,29 @@ where
                             revision.plan_index, current_plan.plan_index
                         ));
                     }
-                    Ok(revision.revision_number)
+                    Ok((
+                        revision.revision_number,
+                        revision
+                            .previous_revision_index_plus1
+                            .checked_sub(1)
+                            .map(server_revision_ref),
+                    ))
                 })
                 .transpose()?
-                .unwrap_or(0);
+                .unwrap_or((0, None));
             (
                 current_plan,
                 plan_record,
                 current_head_revision_index,
                 current_head_revision_id,
                 previous_revision_number,
+                current_head_parent_id,
             )
         };
         if let Some(expected) = expected_head_revision_id.as_deref() {
-            if current_head_revision_id.as_deref() != Some(expected) {
+            if current_head_revision_id.as_deref() != Some(expected)
+                && current_head_parent_id.as_deref() != Some(expected)
+            {
                 return Err(format!(
                     "Plan {plan_id} head advanced: expected {expected}, got {}",
                     current_head_revision_id.as_deref().unwrap_or("")
@@ -412,22 +438,53 @@ where
             .as_deref()
             .unwrap_or(current_plan.title.as_str())
             .to_string();
+        let revision_payload = PlanRevisionPayload {
+            title_snapshot: title.clone(),
+            summary: summary.clone().unwrap_or_default(),
+            artifact_path: artifact_path.clone(),
+            artifact_selector: artifact_selector.clone().unwrap_or_default(),
+            artifact_heading: artifact_heading.clone(),
+            artifact_blob_id: packed_content
+                .as_ref()
+                .map(|content| content.blob_id.clone())
+                .unwrap_or_default(),
+        };
         let previous_revision_index_plus1 = current_head_revision_index
             .map(revision_index_plus1)
             .transpose()?
             .unwrap_or(0);
-        let revision_number = previous_revision_number
-            .checked_add(1)
-            .ok_or_else(|| "Binary DB plan revision_number overflow".to_string())?;
-
         {
             let mut tx = self.store.begin_write_with_plan_cas(
                 ServerPlanBinaryDbWritePurpose::RevisePlan,
                 current_plan.plan_index,
                 &plan_record,
             )?;
+            let actor_index_plus1 = tx.request_actor(payload)?;
+            if tx
+                .matching_head(
+                    Some(current_plan.plan_index),
+                    &title,
+                    &current_plan.status,
+                    &revision_payload,
+                    &items,
+                )?
+                .is_some()
+            {
+                drop(tx);
+                return self.get_plan(plan_id);
+            }
+            if let Some(expected) = expected_head_revision_id.as_deref() {
+                if current_head_revision_id.as_deref() != Some(expected) {
+                    return Err(format!(
+                        "Plan {plan_id} head advanced: expected {expected}, got {}",
+                        current_head_revision_id.as_deref().unwrap_or("")
+                    ));
+                }
+            }
             let revision_index = tx.record_count(plan_revision_file())?;
-            let plan_revision_id = server_revision_ref(revision_index);
+            let revision_number = previous_revision_number
+                .checked_add(1)
+                .ok_or_else(|| "Binary DB plan revision_number overflow".to_string())?;
             let item_start_index = tx.record_count(plan_item_file())?;
             tx.append_items(&items)?;
             let item_count = u16_len(items.len(), "Binary DB plan item count")?;
@@ -446,25 +503,7 @@ where
                 root_entry_ordinal: 0,
                 created_at_s: now_s,
                 published_at_s: 0,
-            };
-            let blob = packed_content.as_ref().map(|content| {
-                content.blob_json(
-                    &plan_revision_id,
-                    self.db().repo_name().as_str(),
-                    current_plan.repo_id.as_str(),
-                    &now,
-                )
-            });
-            let revision_payload = PlanRevisionPayload {
-                title_snapshot: title.clone(),
-                summary: summary.clone().unwrap_or_default(),
-                artifact_path: artifact_path.clone(),
-                artifact_selector: artifact_selector.clone().unwrap_or_default(),
-                artifact_heading: artifact_heading.clone(),
-                artifact_blob_id: blob
-                    .as_ref()
-                    .and_then(|blob| optional_text(blob, "blob_id"))
-                    .unwrap_or_default(),
+                actor_index_plus1,
             };
             let committed_revision_index =
                 tx.append_plan_revision(revision_record, &revision_payload)?;
@@ -476,6 +515,7 @@ where
             let mut next_plan = plan_record;
             next_plan.latest_revision_index_plus1 = revision_index_plus1(revision_index)?;
             next_plan.updated_at_s = now_s;
+            next_plan.actor_index_plus1 = actor_index_plus1;
             tx.overwrite_plan(current_plan.plan_index, next_plan, title.as_bytes())?;
             tx.set_commit_point(ServerPlanBinaryDbCommitPoint::PlanRevised {
                 plan_index: current_plan.plan_index,
@@ -490,8 +530,12 @@ where
         &self,
         _plan_id: &str,
         _plan_revision_id: &str,
-        _payload: &JsonValue,
+        payload: &JsonValue,
     ) -> Result<JsonValue, String> {
+        let payload = payload
+            .as_object()
+            .ok_or("Plan artifact payload must be a JSON object")?;
+        self.request_actor(payload)?;
         Err(
             "supporting Plan artifact writes are not part of the compact layout-1 Plan schema; only the six schema-defined Plan files are permitted"
                 .to_string(),

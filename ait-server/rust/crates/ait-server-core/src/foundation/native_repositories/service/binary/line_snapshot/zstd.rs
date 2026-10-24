@@ -309,16 +309,18 @@ where
         let mut tx =
             BinaryDbWriteTxn::begin_serving(&self.db, BinaryDbCommandScope::ServerRemoteSyncCommit)
                 .map_err(binary_native_repository_store_error)?;
-        for (pack, locators) in prepared {
-            if tree_locator {
-                self.repository_content()
-                    .append_tree_pack_in_tx(&mut tx, &pack, &locators)
-                    .map_err(binary_native_repository_store_error)?;
-            } else {
-                self.repository_content()
-                    .append_object_pack_in_tx(&mut tx, &pack, &locators)
-                    .map_err(binary_native_repository_store_error)?;
-            }
+        let batch = prepared
+            .iter()
+            .map(|(pack, locators)| (pack, locators.as_slice()))
+            .collect::<Vec<_>>();
+        if tree_locator {
+            self.repository_content()
+                .append_tree_packs_in_tx(&mut tx, &batch)
+                .map_err(binary_native_repository_store_error)?;
+        } else {
+            self.repository_content()
+                .append_object_packs_in_tx(&mut tx, &batch)
+                .map_err(binary_native_repository_store_error)?;
         }
         self.invalidate_zstd_pull_catalog()?;
         tx.commit()
@@ -379,7 +381,7 @@ where
             let root_tree_pack_id = required_json_text(object, "root_tree_pack_id")
                 .map_err(NativeRepositoryError::bad_request)?;
             snapshot_ids.insert(snapshot_id);
-            if let Some(parent_id) = optional_json_text(object, "parent_snapshot_id") {
+            for parent_id in snapshot_parent_ids(value)? {
                 snapshot_ids.insert(parent_id);
             }
             metadata_keys.insert((BINARY_ZSTD_TREE_PACK_KIND.to_string(), root_tree_pack_id));
@@ -2133,6 +2135,45 @@ where
         Ok(cleaned)
     }
 
+    pub(in super::super) fn stage_package_pack_read(
+        &self,
+        repo: &str,
+        row: &JsonValue,
+        bytes: Vec<u8>,
+        tree: bool,
+        read: &mut BinaryZstdCommitReadSet,
+    ) -> Result<(), NativeRepositoryError> {
+        let id = binary_json_text(row, "pack_id")
+            .ok_or_else(|| NativeRepositoryError::bad_request("Package pack ID missing"))?;
+        let kind = if tree {
+            BINARY_ZSTD_TREE_PACK_KIND
+        } else {
+            BINARY_ZSTD_OBJECT_PACK_KIND
+        };
+        let metadata = self.binary_zstd_pack_metadata(repo, &id, &bytes, tree, false, None)?;
+        if let Some(existing) = read.metadata(kind, &id)? {
+            let path = if tree {
+                self.repository_content().tree_pack_path(&id)
+            } else {
+                self.repository_content().object_pack_path(&id)
+            };
+            let canonical = std::fs::read(path)
+                .map_err(|error| NativeRepositoryError::internal(error.to_string()))?;
+            if canonical != bytes {
+                return Err(NativeRepositoryError::conflict(format!(
+                    "Package immutable pack {id} differs"
+                )));
+            }
+            if binary_json_text(existing, "status").as_deref() == Some("ready") {
+                return Ok(());
+            }
+        }
+        read.metadata
+            .insert((kind.into(), id.clone()), Some(metadata));
+        read.pack_payloads.insert((tree, id), bytes);
+        Ok(())
+    }
+
     pub(in super::super) fn prepare_binary_zstd_pack_from_commit(
         &self,
         repo_name: &str,
@@ -2353,7 +2394,28 @@ where
         let line_name = optional_json_text(object, "line_name").unwrap_or_else(default_main_line);
         let file_count = required_i64_field(object, "file_count")?;
         let total_bytes = required_i64_field(object, "total_bytes")?;
-        if let Some(parent) = parent_snapshot_id.as_deref() {
+        let parents = snapshot_parent_ids(&JsonValue::Object(object.clone()))?;
+        if parents.len() > 1024 {
+            return Err(NativeRepositoryError::bad_request(
+                "Snapshot exceeds 1024 ordered parents",
+            ));
+        }
+        u32::try_from(file_count)
+            .map_err(|_| NativeRepositoryError::bad_request("Snapshot file_count exceeds u32"))?;
+        u32::try_from(root_entry_ordinal)
+            .map_err(|_| NativeRepositoryError::bad_request("Snapshot root ordinal exceeds u32"))?;
+        u64::try_from(total_bytes)
+            .map_err(|_| NativeRepositoryError::bad_request("Snapshot total_bytes is negative"))?;
+        let payload = ServerBinarySnapshotPayload {
+            line_name: line_name.clone(),
+            message: optional_json_text(object, "message"),
+        };
+        let bytes = ServerBinarySnapshotCodec::<2>::encode_payload(&payload)
+            .map_err(binary_native_repository_store_error)?;
+        u16::try_from(bytes.len()).map_err(|_| {
+            NativeRepositoryError::bad_request("Snapshot payload exceeds u16 byte capacity")
+        })?;
+        for parent in &parents {
             if read_set.snapshot(parent)?.is_none() && !incoming_seen.contains(parent) {
                 return Err(NativeRepositoryError::bad_request(format!(
                     "Snapshot {snapshot_id} parent {parent} is not present in repository {repo_name} or earlier in this zstd bulk commit"
@@ -2393,6 +2455,7 @@ where
             "repo_id": self.repo_id(),
             "snapshot_id": snapshot_id,
             "parent_snapshot_id": parent_snapshot_id,
+            "parent_snapshot_ids": parents,
             "root_tree_pack_id": root_tree_pack_id,
             "root_entry_ordinal": root_entry_ordinal,
             "manifest_hash": optional_json_text(object, "manifest_hash").unwrap_or_default(),

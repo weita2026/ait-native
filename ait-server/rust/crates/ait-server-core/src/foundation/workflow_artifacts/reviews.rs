@@ -37,8 +37,10 @@ pub fn review_summary_from_rows(
         }
     });
 
-    let mut latest_decision_by_reviewer_lane: BTreeMap<(String, &'static str), ReviewDecision> =
-        BTreeMap::new();
+    let mut latest_decision_by_reviewer_lane: BTreeMap<
+        (String, String, &'static str),
+        ReviewDecision,
+    > = BTreeMap::new();
     let mut blocking_count = 0usize;
     let mut comment_count = 0usize;
     let mut structured_code_review_summary_reviewers = BTreeSet::new();
@@ -46,10 +48,20 @@ pub fn review_summary_from_rows(
 
     for (_, review) in &ordered {
         let action = optional_text(review.get("action")).unwrap_or_default();
+        let reviewer_kind = review
+            .get("reviewer_kind")
+            .and_then(JsonValue::as_str)
+            .unwrap_or("unknown")
+            .to_string();
         if let Some(decision_lane) = review_decision_lane(&action) {
             latest_decision_by_reviewer_lane.insert(
-                (raw_text(review.get("reviewer")), decision_lane),
+                (
+                    reviewer_kind.clone(),
+                    raw_text(review.get("reviewer")),
+                    decision_lane,
+                ),
                 ReviewDecision {
+                    reviewer_kind: reviewer_kind.clone(),
                     reviewer: raw_text(review.get("reviewer")),
                     normalized_reviewer: normalized_reviewer(review.get("reviewer")),
                     action: action.clone(),
@@ -74,7 +86,8 @@ pub fn review_summary_from_rows(
             if is_structured_code_review_summary_text(review.get("comment")) {
                 code_review_summary_count += 1;
                 if let Some(reviewer) = normalized_reviewer(review.get("reviewer")) {
-                    structured_code_review_summary_reviewers.insert(reviewer);
+                    structured_code_review_summary_reviewers
+                        .insert((reviewer_kind.clone(), reviewer));
                 }
             }
         }
@@ -99,7 +112,7 @@ pub fn review_summary_from_rows(
                 TASK_REVIEW_APPROVE_ACTION | TEAM_REVIEW_APPROVE_ACTION
             )
         })
-        .map(|decision| decision.reviewer.clone())
+        .map(|decision| (decision.reviewer_kind.clone(), decision.reviewer.clone()))
         .collect::<BTreeSet<_>>();
     let human_approval_reviewers = latest_decisions
         .iter()
@@ -109,12 +122,22 @@ pub fn review_summary_from_rows(
                 TASK_REVIEW_APPROVE_ACTION | TEAM_REVIEW_APPROVE_ACTION
             )
         })
-        .filter_map(|decision| human_reviewer(decision.normalized_reviewer.as_deref()))
+        .filter_map(|decision| {
+            human_reviewer(
+                &decision.reviewer_kind,
+                decision.normalized_reviewer.as_deref(),
+            )
+        })
         .collect::<BTreeSet<_>>();
     let human_task_approval_reviewers = latest_decisions
         .iter()
         .filter(|decision| decision.action == TASK_REVIEW_APPROVE_ACTION)
-        .filter_map(|decision| human_reviewer(decision.normalized_reviewer.as_deref()))
+        .filter_map(|decision| {
+            human_reviewer(
+                &decision.reviewer_kind,
+                decision.normalized_reviewer.as_deref(),
+            )
+        })
         .collect::<BTreeSet<_>>();
     let independent_human_approval_count = human_approval_reviewers
         .difference(&structured_code_review_summary_reviewers)
@@ -208,6 +231,7 @@ pub fn is_structured_code_review_summary_text(value: Option<&JsonValue>) -> bool
 }
 
 struct ReviewDecision {
+    reviewer_kind: String,
     reviewer: String,
     normalized_reviewer: Option<String>,
     action: String,
@@ -235,9 +259,11 @@ fn normalized_reviewer(value: Option<&JsonValue>) -> Option<String> {
     optional_text(value).map(|text| text.to_lowercase())
 }
 
-fn human_reviewer(value: Option<&str>) -> Option<String> {
-    match value {
-        Some(value) if value != "anonymous" => Some(value.to_string()),
+fn human_reviewer(kind: &str, value: Option<&str>) -> Option<(String, String)> {
+    match (kind, value) {
+        ("user", Some(value)) if value != "anonymous" => {
+            Some((kind.to_string(), value.to_string()))
+        }
         _ => None,
     }
 }

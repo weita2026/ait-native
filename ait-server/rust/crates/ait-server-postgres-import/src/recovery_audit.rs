@@ -275,7 +275,8 @@ fn audit_repository(
         patchsets.push(json!({
             "patchset_index": identity.index,
             "patchset_id": patchset_id,
-            "change_index": identity.record.change_index,
+            "task_index": identity.record.task_index,
+            "change_index": identity.change_index,
             "base_snapshot_id": domain.snapshot_id(identity.record.base_snapshot_index)?,
             "revision_snapshot_id": domain.snapshot_id(identity.record.revision_snapshot_index)?,
             "created_at_s": identity.record.created_at_s,
@@ -305,7 +306,8 @@ fn audit_repository(
             Ok(json!({
                 "land_id": land_id,
                 "land_ordinal": record.land_ordinal,
-                "change_index": record.change_index,
+                "task_index": record.task_index,
+                "change_index": identity.change_index,
                 "patchset_index": record.patchset_index,
                 "patchset_revision_snapshot_id": domain.snapshot_id(patchset.revision_snapshot_index)?,
                 "pre_land_target_snapshot_id": optional_snapshot_id(&domain, record.pre_land_target_snapshot_index_plus1)?,

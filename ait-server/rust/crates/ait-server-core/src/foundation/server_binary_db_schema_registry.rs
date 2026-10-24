@@ -1,8 +1,9 @@
 use crate::foundation::remote_binary_db::BinaryDbFileFamily;
 
 pub const SERVER_BINARY_DB_LAYOUT_ID: u32 = 1;
+// Core PR-182 / plan-revision:5060; LCT-1117/SNP-8F6F4940869F Actor record contract.
 pub const SERVER_BINARY_DB_V0_AUTHORITY_SHA256: &str =
-    "41989f27330ed4d2a8b9fefc2cdd332812ea00c09d4540f023a1cc5f59fd66be";
+    "0a7b7098581a07095aca47511beb80abca4cf18886033bec7cbbe157583f8f86";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ServerBinaryDbBinSchema {
@@ -35,25 +36,28 @@ const fn layout_one(path: &'static str, family: BinaryDbFileFamily) -> ServerBin
     schema(path, SERVER_BINARY_DB_LAYOUT_ID, family)
 }
 
+const fn layout_two(path: &'static str, family: BinaryDbFileFamily) -> ServerBinaryDbBinSchema {
+    schema(path, 2, family)
+}
+
 pub const SERVER_BINARY_DB_BIN_SCHEMAS: &[ServerBinaryDbBinSchema] = &[
     layout_one("actor.bin", BinaryDbFileFamily::Workflow),
     layout_one("actor_payload.bin", BinaryDbFileFamily::Workflow),
-    layout_one("attest.bin", BinaryDbFileFamily::Workflow),
-    layout_one("task.bin", BinaryDbFileFamily::Workflow),
+    layout_two("attest.bin", BinaryDbFileFamily::Workflow),
+    layout_two("task.bin", BinaryDbFileFamily::Workflow),
     layout_one("task_payload.bin", BinaryDbFileFamily::Workflow),
-    layout_one("change.bin", BinaryDbFileFamily::Workflow),
+    layout_two("change.bin", BinaryDbFileFamily::Workflow),
     layout_one("change_payload.bin", BinaryDbFileFamily::Workflow),
-    layout_one("patchset.bin", BinaryDbFileFamily::Workflow),
+    layout_two("patchset.bin", BinaryDbFileFamily::Workflow),
     layout_one("patchset_summary_payload.bin", BinaryDbFileFamily::Workflow),
-    layout_one("review.bin", BinaryDbFileFamily::Workflow),
+    layout_two("review.bin", BinaryDbFileFamily::Workflow),
     layout_one("review_payload.bin", BinaryDbFileFamily::Workflow),
-    layout_one("policy.bin", BinaryDbFileFamily::Workflow),
+    layout_two("policy.bin", BinaryDbFileFamily::Workflow),
     layout_one("policy_check.bin", BinaryDbFileFamily::Workflow),
-    layout_one("land.bin", BinaryDbFileFamily::Workflow),
-    layout_one("waiver.bin", BinaryDbFileFamily::Workflow),
+    layout_two("land.bin", BinaryDbFileFamily::Workflow),
+    layout_two("waiver.bin", BinaryDbFileFamily::Workflow),
     layout_one("waiver_payload.bin", BinaryDbFileFamily::Workflow),
-    layout_one("snapshot_link.bin", BinaryDbFileFamily::Workflow),
-    layout_one("snapshot_link_payload.bin", BinaryDbFileFamily::Workflow),
+    layout_two("snapshot_link.bin", BinaryDbFileFamily::Workflow),
     layout_one("change_land_index.bin", BinaryDbFileFamily::Workflow),
     layout_one("change_patchset_index.bin", BinaryDbFileFamily::Workflow),
     layout_one("change_snapshot_index.bin", BinaryDbFileFamily::Workflow),
@@ -71,7 +75,7 @@ pub const SERVER_BINARY_DB_BIN_SCHEMAS: &[ServerBinaryDbBinSchema] = &[
     layout_one("task_waiver_index.bin", BinaryDbFileFamily::Workflow),
     layout_one("line.bin", BinaryDbFileFamily::Content),
     layout_one("line_name_payload.bin", BinaryDbFileFamily::Content),
-    layout_one("snapshot.bin", BinaryDbFileFamily::Content),
+    layout_two("snapshot.bin", BinaryDbFileFamily::Content),
     layout_one("snapshot_payload.bin", BinaryDbFileFamily::Content),
     layout_one("snapshot_parent_edge.bin", BinaryDbFileFamily::Content),
     layout_one("blob.bin", BinaryDbFileFamily::Content),
@@ -82,9 +86,9 @@ pub const SERVER_BINARY_DB_BIN_SCHEMAS: &[ServerBinaryDbBinSchema] = &[
     layout_one("tree_entry_range.bin", BinaryDbFileFamily::Content),
     layout_one("tree_name_payload.bin", BinaryDbFileFamily::Content),
     layout_one("tree_pack.bin", BinaryDbFileFamily::Content),
-    layout_one("plan.bin", BinaryDbFileFamily::Plan),
+    layout_two("plan.bin", BinaryDbFileFamily::Plan),
     layout_one("plan_payload.bin", BinaryDbFileFamily::Plan),
-    layout_one("plan_revision.bin", BinaryDbFileFamily::Plan),
+    layout_two("plan_revision.bin", BinaryDbFileFamily::Plan),
     layout_one("plan_revision_payload.bin", BinaryDbFileFamily::Plan),
     layout_one("plan_item.bin", BinaryDbFileFamily::Plan),
     layout_one("plan_item_payload.bin", BinaryDbFileFamily::Plan),
@@ -139,23 +143,23 @@ pub fn server_binary_db_fixed_record_size(path: &str) -> Option<u32> {
         "actor.bin" => Some(36),
         "attest.bin" => Some(24),
         "blob.bin" => Some(64),
-        "change.bin" => Some(68),
-        "land.bin" => Some(48),
+        "change.bin" => Some(72),
+        "land.bin" => Some(52),
         "line.bin" => Some(40),
         "object_pack.bin" => Some(32),
         "object_pack_member.bin" => Some(16),
         "patchset.bin" => Some(65),
-        "plan.bin" => Some(48),
+        "plan.bin" => Some(52),
         "plan_item.bin" => Some(16),
-        "plan_revision.bin" => Some(56),
+        "plan_revision.bin" => Some(60),
         "policy.bin" => Some(32),
         "policy_check.bin" => Some(8),
         "review.bin" => Some(40),
         "repository.bin" => Some(33),
-        "snapshot.bin" => Some(88),
-        "snapshot_link.bin" => Some(40),
+        "snapshot.bin" => Some(92),
+        "snapshot_link.bin" => Some(22),
         "snapshot_parent_edge.bin" => Some(12),
-        "task.bin" => Some(60),
+        "task.bin" => Some(64),
         "tree.bin" => Some(20),
         "tree_entry.bin" => Some(16),
         "tree_entry_range.bin" => Some(4),
@@ -230,13 +234,13 @@ mod tests {
 
     #[test]
     fn server_binary_db_bin_registry_is_unique_and_uses_declared_layouts() {
-        assert_eq!(SERVER_BINARY_DB_BIN_SCHEMAS.len(), 52);
+        assert_eq!(SERVER_BINARY_DB_BIN_SCHEMAS.len(), 51);
         assert_eq!(
             SERVER_BINARY_DB_BIN_SCHEMAS
                 .iter()
                 .filter(|schema| schema.family == BinaryDbFileFamily::Workflow)
                 .count(),
-            33
+            32
         );
         assert_eq!(
             SERVER_BINARY_DB_BIN_SCHEMAS
@@ -267,7 +271,15 @@ mod tests {
                 schema.path
             );
             assert_eq!(
-                schema.layout_id, SERVER_BINARY_DB_LAYOUT_ID,
+                schema.layout_id,
+                if matches!(
+                    schema.path,
+                    "plan.bin" | "plan_revision.bin" | "snapshot.bin"
+                ) {
+                    2
+                } else {
+                    crate::foundation::workflow_binary_v0::workflow_record_layout(schema.path)
+                },
                 "{} layout",
                 schema.path
             );
@@ -275,7 +287,7 @@ mod tests {
         assert_eq!(WORKFLOW_V0_LAYOUT_ID, 1);
         assert_eq!(
             SERVER_BINARY_DB_V0_AUTHORITY_SHA256,
-            "41989f27330ed4d2a8b9fefc2cdd332812ea00c09d4540f023a1cc5f59fd66be"
+            "0a7b7098581a07095aca47511beb80abca4cf18886033bec7cbbe157583f8f86"
         );
         assert_eq!(SERVER_BINARY_DB_INDEX_SCHEMAS.len(), 9);
         let index_paths = SERVER_BINARY_DB_INDEX_SCHEMAS

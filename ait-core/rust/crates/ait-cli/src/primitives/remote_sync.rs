@@ -10,25 +10,25 @@ pub(super) use local_store::{
     RemoteSyncLocalSnapshotParent, RemoteSyncLocalSnapshotSource, RemoteSyncLocalStoreContext,
     RemoteSyncZstdLocalPlanSource, ZstdBulkLocalPack, ZstdBulkLocalPlan,
 };
+pub(super) use sync::{
+    build_zstd_bulk_local_plan, hydrate_remote_snapshot_chain_with_task_remote_and_capabilities,
+    initialize_remote_null_head_line_with_snapshot_via_zstd, ordered_object_pack_metadata,
+    ordered_tree_pack_metadata, remote_sync_line_read_with_task_remote,
+    set_or_create_local_line_head, sync_patchset_revision_snapshot,
+    sync_patchset_revision_snapshot_with_task_remote, upload_snapshot_capture,
+};
 pub(crate) use sync::{
     hydrate_remote_snapshot_boundary_for_repo, remote_sync_snapshot_content_complete_for_repo,
-};
-pub(super) use sync::{
-    hydrate_remote_snapshot_chain_with_task_remote_and_capabilities,
-    initialize_remote_null_head_line_with_snapshot_via_zstd,
-    remote_sync_line_read_with_task_remote, set_or_create_local_line_head,
-    sync_patchset_revision_snapshot, sync_patchset_revision_snapshot_with_task_remote,
 };
 pub use sync::{pull, push, upload_snapshot_chain};
 
 #[cfg(test)]
 pub(super) use sync::{
-    build_zstd_bulk_local_plan, build_zstd_bulk_local_plan_with_source,
+    build_zstd_bulk_local_plan_with_source,
     hydrate_remote_snapshot_boundary_with_task_remote_and_capabilities,
     local_remote_sync_inventory_for_snapshots,
     local_remote_sync_inventory_for_snapshots_with_source,
-    local_repo_snapshot_ids_topological_with_source, ordered_object_pack_metadata,
-    ordered_tree_pack_metadata, pull_line_with_task_remote_and_capabilities,
+    local_repo_snapshot_ids_topological_with_source, pull_line_with_task_remote_and_capabilities,
     pull_with_remote_sync_backend, push_line_to_remote_with_task_remote_and_capabilities,
     push_with_remote_sync_backend, remote_repository_authority_http_config,
     remote_sync_line_head_with_task_remote, remote_sync_line_update_with_task_remote,

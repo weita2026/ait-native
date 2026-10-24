@@ -7,6 +7,9 @@ use super::*;
 pub fn task_workflow_detail_read_model(
     input: &TaskWorkflowDetailInput,
 ) -> Result<JsonValue, String> {
+    if input.task.contains_key("current_patchset_id") {
+        return task_candidate_detail(input);
+    }
     let task_id = required_text(&input.task, "task_id")?;
     let task_repo = required_text(&input.task, "repo_name")?;
     let index = WorkflowDetailIndex::new(input);
@@ -32,10 +35,7 @@ pub fn task_workflow_detail_read_model(
         let change_id = object_text(change, "change_id").unwrap_or_default();
         change_ids.insert(change_id.clone());
         let current_patchset = index.current_patchset(change).map(json_object);
-        let selected_patchset = index.selected_patchset(change).map(json_object);
-        let display_patchset = selected_patchset
-            .clone()
-            .or_else(|| current_patchset.clone());
+        let display_patchset = current_patchset.clone();
         let display_patchset_id = display_patchset
             .as_ref()
             .and_then(|patchset| value_text(patchset, "patchset_id"));
@@ -111,7 +111,6 @@ pub fn task_workflow_detail_read_model(
         change_rows.push(json!({
             "change": JsonValue::Object(change.clone()),
             "current_patchset": current_patchset,
-            "selected_patchset": selected_patchset,
             "display_patchset": display_patchset,
             "review_summary": review_summary,
             "policy_summary": policy_summary,
@@ -166,4 +165,180 @@ pub fn task_workflow_detail_read_model(
         "combined_recommendation": combined_recommendation,
         "timeline": index.task_timeline(&task_id, &change_ids, &patchset_ids),
     }))
+}
+
+fn task_candidate_detail(input: &TaskWorkflowDetailInput) -> Result<JsonValue, String> {
+    let task_id = required_text(&input.task, "task_id")?;
+    let repo = required_text(&input.task, "repo_name")?;
+    let index = WorkflowDetailIndex::new(input);
+    let patchsets = input
+        .patchsets
+        .iter()
+        .filter(|row| {
+            object_text(row, "task_id").as_deref() == Some(task_id.as_str())
+                && object_text(row, "repo_name").as_deref() == Some(repo.as_str())
+        })
+        .collect::<Vec<_>>();
+    let find = |id: Option<String>| {
+        id.and_then(|id| {
+            patchsets
+                .iter()
+                .find(|row| object_text(row, "patchset_id").as_deref() == Some(id.as_str()))
+                .copied()
+        })
+    };
+    let current = find(object_text(&input.task, "current_patchset_id"));
+    let receipt = input
+        .task
+        .get("successful_land")
+        .filter(|value| value["status"] == "succeeded");
+    let accepted = find(receipt.and_then(|value| value_text(value, "patchset_id")));
+    let completed = object_text(&input.task, "status").as_deref() == Some("completed");
+    let abandoned = matches!(
+        object_text(&input.task, "status").as_deref(),
+        Some("abandoned" | "canceled")
+    );
+    let terminal = completed || abandoned;
+    let display = if completed && receipt.is_some() {
+        accepted
+    } else {
+        current
+    };
+    let id = display.and_then(|row| object_text(row, "patchset_id"));
+    let policy = index.policy_summary(id.as_deref());
+    let attestation = index.attestation_summary(id.as_deref());
+    let reviews = input
+        .reviews
+        .iter()
+        .filter(|row| object_text(row, "patchset_id").as_deref() == id.as_deref() && id.is_some())
+        .cloned()
+        .collect::<Vec<_>>();
+    let review_counts = review_summary_from_rows(&reviews, id.as_deref());
+    let review = json!({"summary":review_counts,"approvals":review_counts.get("approval_count"),
+        "blocking":review_counts.get("blocking_count"),"comments":review_counts.get("comment_count"),"reviews":reviews});
+    let target = receipt
+        .and_then(|row| value_text(row, "target_line"))
+        .or_else(|| object_text(&input.repository, "default_line"));
+    let head = target
+        .as_deref()
+        .and_then(|line| index.line_head(&repo, line));
+    let fresh = display
+        .and_then(|row| object_text(row, "base_snapshot_id"))
+        .zip(head.clone())
+        .map(|(base, head)| base == head);
+    let delta = id.as_deref().and_then(|id| index.delta_for_patchset(id));
+    let files = delta
+        .as_ref()
+        .and_then(|row| row.get("files"))
+        .and_then(JsonValue::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let insertions = files
+        .iter()
+        .filter_map(|row| row.get("insertions").and_then(int_value))
+        .sum::<i64>();
+    let deletions = files
+        .iter()
+        .filter_map(|row| row.get("deletions").and_then(int_value))
+        .sum::<i64>();
+    let paths = files
+        .iter()
+        .filter_map(|row| value_text(row, "path"))
+        .collect::<BTreeSet<_>>();
+    let changes = input
+        .changes
+        .iter()
+        .filter(|row| {
+            object_text(row, "task_id").as_deref() == Some(task_id.as_str())
+                && object_text(row, "repo_name").as_deref() == Some(repo.as_str())
+        })
+        .collect::<Vec<_>>();
+    let change_ids = changes
+        .iter()
+        .filter_map(|row| object_text(row, "change_id"))
+        .collect::<BTreeSet<_>>();
+    let patchset_ids = patchsets
+        .iter()
+        .filter_map(|row| object_text(row, "patchset_id"))
+        .collect::<BTreeSet<_>>();
+    let landed = changes
+        .iter()
+        .filter(|row| object_text(row, "status").as_deref() == Some("landed"))
+        .count();
+    let open = changes
+        .iter()
+        .filter(|row| {
+            !matches!(
+                object_text(row, "status").as_deref(),
+                Some("landed" | "archived" | "superseded" | "abandoned")
+            )
+        })
+        .count();
+    let mut gaps = Vec::new();
+    if completed && receipt.is_none() {
+        gaps.push("A successful remote receipt is missing.");
+    }
+    if display.is_none() {
+        gaps.push("No exact Task candidate is available.");
+    }
+    if display.is_some_and(|row| {
+        row.get("governance_authority").and_then(JsonValue::as_bool) == Some(false)
+    }) {
+        gaps.push("Review the aggregate Task candidate.");
+    }
+    if !terminal {
+        if display.is_some_and(|row| {
+            row.get("withdrawn").and_then(JsonValue::as_bool) == Some(true)
+                || row.get("invalidated").and_then(JsonValue::as_bool) == Some(true)
+                || object_text(row, "publish_state").as_deref() == Some("superseded")
+        }) {
+            gaps.push("The current Task candidate is unavailable.");
+        }
+        if attestation.is_none() {
+            gaps.push("Attestation is pending.");
+        }
+        if policy["decision"] != "pass" {
+            gaps.push("Validation is pending.");
+        }
+        if review["blocking"].as_i64().unwrap_or(0) > 0 {
+            gaps.push("Review changes are requested.");
+        }
+        if fresh == Some(false) {
+            gaps.push("The candidate base differs from the target Line head.");
+        }
+        if object_text(&input.task, "workflow_state").as_deref() != Some("ready_to_land") {
+            gaps.push("Review and validation of the current Task candidate are pending.");
+        }
+    }
+    let ready = !abandoned && gaps.is_empty() && display.is_some();
+    let action = if abandoned || completed && receipt.is_some() {
+        "stop"
+    } else if ready {
+        "land"
+    } else {
+        "revise"
+    };
+    let summary = json!({"change_count":changes.len(),"open_change_count":open,"landed_change_count":landed,"patchset_count":patchsets.len()});
+    let aggregate = json!({"change_count":changes.len(),"patchset_count":usize::from(display.is_some()),"file_entries":files.len(),
+        "unique_paths":paths.len(),"insertions":insertions,"deletions":deletions,"files":files});
+    let boundary = json!({"crossed":!patchsets.is_empty(),"state":if patchsets.is_empty(){"local_execution"}else{"shared_workflow"}});
+    let task_review = json!({"source":"derived_from_workflow_state","intent_summary":object_text(&input.task,"intent"),
+        "completion_summary":if completed&&receipt.is_some(){"The Task has an accepted remote receipt."}else if ready{"The current Task candidate is ready."}else{"The current Task candidate requires review or validation."},
+        "effect_summary":format!("{} paths, {insertions} insertions, {deletions} deletions.",paths.len()),
+        "acceptance_status":if ready{"complete"}else{"defer"},"unresolved_gaps":gaps,"suggested_next_action":action,
+        "operator_confirmation_required":!terminal,"shared_boundary":boundary});
+    let code_review = json!({"source":"derived_from_task_candidate_policy_state","touched_components":paths.into_iter().take(8).collect::<Vec<_>>(),
+        "regression_concerns":gaps,"coverage_summary":"Review and validation are scoped to the exact Task candidate.",
+        "risk_summary":if ready{"Candidate gates passed."}else{"Candidate gates are pending."},
+        "promotion_recommendation":action,"verdict":if ready{"safe_to_promote"}else{"needs_fix"},"human_checkable":true});
+    Ok(
+        json!({"task":input.task,"repository":input.repository,"changes":changes.into_iter().map(|change|json!({"change":change})).collect::<Vec<_>>(),
+        "current_patchset":current,"accepted_patchset":accepted,"display_patchset":display,"successful_land":receipt,
+        "review_summary":review,"policy_summary":policy,"attestation_summary":attestation,"freshness":{"base_is_fresh":fresh,"current_base_head":head},
+        "delta":delta,"workflow_context":workflow_context("task","task",&task_id,object_text(&input.task,"title").as_deref().unwrap_or("")),
+        "summary":summary,"aggregate_diff":aggregate,"task_review":task_review,"code_review":code_review,
+        "combined_recommendation":{"task_review_verdict":if ready{"complete"}else{"defer"},"code_review_verdict":if ready{"safe_to_promote"}else{"needs_fix"},
+            "action":action,"reason":if ready{"The exact Task candidate has passed its gates."}else{"The exact Task candidate has pending gates."},"shared_boundary":boundary},
+        "timeline":index.task_timeline(&task_id,&change_ids,&patchset_ids)}),
+    )
 }

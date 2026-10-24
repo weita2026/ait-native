@@ -8,7 +8,7 @@ use crate::content_binary_db::{BinaryTreeCodec, BinaryTreePackCodec, BinaryTreeP
 
 use super::{
     BinaryDbPlanStore, PlanCodec, PlanItemPayload, PlanItemRecord, PlanPayload, PlanRecord,
-    PlanRevisionPayload, PlanRevisionRecord, PlanRevisionRootUpdate, PLAN_RECORD_SIZE,
+    PlanRevisionPayload, PlanRevisionRecord, PlanRevisionRootUpdate,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -133,7 +133,7 @@ where
         self.ensure_commit_point_open("read a record count")?;
         if file == BinaryDbPlanStore::<B, WRITE_LAYOUT>::plan_file() {
             if let Some(bytes) = self.staged_plan_file.as_deref() {
-                return staged_plan_record_count(bytes);
+                return staged_plan_record_count::<WRITE_LAYOUT>(bytes);
             }
         }
         self.write.record_count(file)
@@ -189,12 +189,12 @@ where
             ));
         }
 
-        let tree_pack_file = BinaryTreePackCodec::<WRITE_LAYOUT>::record_file();
-        let tree_file = BinaryTreeCodec::<WRITE_LAYOUT>::record_file();
+        let tree_pack_file = BinaryTreePackCodec::<1>::record_file();
+        let tree_file = BinaryTreeCodec::<1>::record_file();
         self.write.track_record_file(tree_pack_file.clone())?;
         self.write.track_record_file(tree_file.clone())?;
 
-        let pack = BinaryTreePackCodec::<WRITE_LAYOUT>::decode_record(
+        let pack = BinaryTreePackCodec::<1>::decode_record(
             &self.write.read_record(tree_pack_file, tree_pack_index)?,
         )?;
         if !pack.is_ready() || pack.is_tombstone() {
@@ -217,9 +217,8 @@ where
             .first_tree_index
             .checked_add(record.root_entry_ordinal)
             .ok_or_else(|| BinaryDbError::corruption("Plan revision root tree index overflow"))?;
-        let tree = BinaryTreeCodec::<WRITE_LAYOUT>::decode_record(
-            &self.write.read_record(tree_file, tree_index)?,
-        )?;
+        let tree =
+            BinaryTreeCodec::<1>::decode_record(&self.write.read_record(tree_file, tree_index)?)?;
         if tree.is_tombstone() {
             return Err(BinaryDbError::invalid_domain_data(format!(
                 "Plan revision root tree {tree_index} is tombstoned"
@@ -248,7 +247,7 @@ where
             .staged_plan_file
             .as_mut()
             .unwrap_or_else(|| unreachable!("staged Plan root must be initialized"));
-        let index = staged_plan_record_count(bytes)?;
+        let index = staged_plan_record_count::<WRITE_LAYOUT>(bytes)?;
         bytes.extend_from_slice(&encoded);
         Ok((index, record))
     }
@@ -320,7 +319,7 @@ where
             .staged_plan_file
             .as_mut()
             .unwrap_or_else(|| unreachable!("staged Plan root must be initialized"));
-        let count = staged_plan_record_count(bytes)?;
+        let count = staged_plan_record_count::<WRITE_LAYOUT>(bytes)?;
         if plan_index >= count {
             return Err(BinaryDbError::missing_data(format!(
                 "plan record index {plan_index} out of range for staged plan.bin count {count}"
@@ -431,7 +430,7 @@ where
 
     fn current_plan_record_locked(&self, plan_index: u32) -> StoreResult<PlanRecord> {
         if let Some(bytes) = self.staged_plan_file.as_deref() {
-            let count = staged_plan_record_count(bytes)?;
+            let count = staged_plan_record_count::<WRITE_LAYOUT>(bytes)?;
             if plan_index >= count {
                 return Err(BinaryDbError::missing_data(format!(
                     "plan record index {plan_index} out of range for staged plan.bin count {count}"
@@ -477,9 +476,9 @@ where
     }
 }
 
-fn staged_plan_record_count(bytes: &[u8]) -> StoreResult<u32> {
+fn staged_plan_record_count<const LAYOUT: u32>(bytes: &[u8]) -> StoreResult<u32> {
     let header_len = usize::try_from(BIN_FILE_HEADER_BYTES).unwrap_or(4);
-    let record_size = usize::try_from(PLAN_RECORD_SIZE)
+    let record_size = usize::try_from(PlanCodec::<LAYOUT>::RECORD_SIZE)
         .map_err(|_| "Plan record size overflows usize".to_string())?;
     let body_len = bytes
         .len()

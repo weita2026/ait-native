@@ -1,3 +1,7 @@
+use crate::foundation::remote_actor_metadata::{
+    RemoteChangeActorCodec, RemoteChangeActorRecord, RemoteLandActorCodec, RemoteLandActorRecord,
+    RemoteTaskActorCodec, RemoteTaskActorRecord,
+};
 use crate::foundation::remote_binary_db::{
     BinaryDbError, BinaryDbFileFamily, BinaryFileId, BinaryIndexId, BinaryPayloadFileId,
     StoreResult,
@@ -5,16 +9,19 @@ use crate::foundation::remote_binary_db::{
 
 pub const WORKFLOW_V0_LAYOUT_ID: u32 = 1;
 
-pub const TASK_RECORD_SIZE: u32 = 60;
-pub const CHANGE_RECORD_SIZE: u32 = 68;
+pub const LEGACY_TASK_RECORD_SIZE: u32 = 60;
+pub const TASK_RECORD_SIZE: u32 = 64;
+pub const LEGACY_CHANGE_RECORD_SIZE: u32 = 68;
+pub const CHANGE_RECORD_SIZE: u32 = 72;
 pub const PATCHSET_RECORD_SIZE: u32 = 65;
 pub const ATTEST_RECORD_SIZE: u32 = 24;
 pub const ACTOR_RECORD_SIZE: u32 = 36;
 pub const REVIEW_RECORD_SIZE: u32 = 40;
 pub const POLICY_RECORD_SIZE: u32 = 32;
 pub const POLICY_CHECK_RECORD_SIZE: u32 = 8;
-pub const LAND_RECORD_SIZE: u32 = 48;
-pub const SNAPSHOT_LINK_RECORD_SIZE: u32 = 40;
+pub const LEGACY_LAND_RECORD_SIZE: u32 = 48;
+pub const LAND_RECORD_SIZE: u32 = 52;
+pub const SNAPSHOT_LINK_RECORD_SIZE: u32 = 22;
 pub const WAIVER_RECORD_SIZE: u32 = 44;
 pub const CHAIN_INDEX_RECORD_SIZE: u32 = 8;
 
@@ -94,19 +101,24 @@ pub const LAND_MODE_FF_ONLY: u8 = 2;
 pub const SNAPSHOT_LINK_HAS_CHANGE: u8 = 1 << 0;
 pub const SNAPSHOT_LINK_HAS_SESSION: u8 = 1 << 1;
 pub const SNAPSHOT_LINK_HAS_CHECKPOINT: u8 = 1 << 2;
-pub const SNAPSHOT_LINK_HAS_WORKTREE_NAME: u8 = 1 << 3;
-pub const SNAPSHOT_LINK_HAS_LINE_NAME: u8 = 1 << 4;
-pub const SNAPSHOT_LINK_HAS_AUTHOR_OR_MODEL: u8 = 1 << 5;
 pub const SNAPSHOT_LINK_TOMBSTONE: u8 = 1 << 7;
-pub const SNAPSHOT_LINK_KNOWN_MASK: u8 = 0b1011_1111;
+pub const SNAPSHOT_LINK_KNOWN_MASK: u8 = 0b1000_0111;
 
 pub const WAIVER_REVOKED: u8 = 1 << 0;
 pub const WAIVER_TOMBSTONE: u8 = 1 << 7;
 
+pub fn workflow_record_layout(path: &str) -> u32 {
+    match path {
+        "task.bin" | "change.bin" | "patchset.bin" | "attest.bin" | "review.bin" | "policy.bin"
+        | "land.bin" | "waiver.bin" | "snapshot_link.bin" => 2,
+        _ => WORKFLOW_V0_LAYOUT_ID,
+    }
+}
+
 pub fn workflow_record_file(path: &'static str, record_size: u32) -> BinaryFileId {
     BinaryFileId::new(
         path,
-        WORKFLOW_V0_LAYOUT_ID,
+        workflow_record_layout(path),
         record_size,
         BinaryDbFileFamily::Workflow,
     )
@@ -129,6 +141,7 @@ pub struct V0TaskRecord {
     pub plan_linked_at_s: u64,
     pub fetched_at_s: u64,
     pub closed_at_s: u64,
+    pub actor_index_plus1: u32,
 }
 
 impl V0TaskRecord {
@@ -148,13 +161,14 @@ pub struct V0ChangeRecord {
     pub payload_offset: u64,
     pub task_index: u32,
     pub previous_change_index_plus1: u32,
-    pub selected_patchset_index_plus1: u32,
+    pub reserved_selected_patchset: u32,
     pub fork_snapshot_index_plus1: u32,
     pub created_at_s: u64,
     pub updated_at_s: u64,
     pub fetched_at_s: u64,
     pub base_line_index_plus1: u32,
     pub archived_at_s: u64,
+    pub actor_index_plus1: u32,
 }
 
 impl V0ChangeRecord {
@@ -168,9 +182,9 @@ impl V0ChangeRecord {
 pub struct V0PatchsetRecord {
     pub patchset_meta: u8,
     pub patch_ordinal: u8,
-    pub change_ordinal: u8,
+    pub change_ordinal_plus1: u8,
     pub reserved0: u8,
-    pub change_index: u32,
+    pub task_index: u32,
     pub previous_task_patchset_index_plus1: u32,
     pub previous_change_patchset_index_plus1: u32,
     pub base_snapshot_index: u32,
@@ -201,9 +215,9 @@ impl V0PatchsetRecord {
 pub struct V0FrozenPatchsetRecord {
     pub patchset_meta: u8,
     pub patch_ordinal: u8,
-    pub change_ordinal: u8,
+    pub change_ordinal_plus1: u8,
     pub reserved0: u8,
-    pub change_index: u32,
+    pub task_index: u32,
     pub previous_task_patchset_index_plus1: u32,
     pub previous_change_patchset_index_plus1: u32,
     pub base_snapshot_index: u32,
@@ -231,7 +245,7 @@ pub struct V0AttestRecord {
     pub attest_meta: u8,
     pub attest_ordinal: u8,
     pub patch_ordinal: u8,
-    pub change_ordinal: u8,
+    pub change_ordinal_plus1: u8,
     pub patchset_index: u32,
     pub previous_task_attest_index_plus1: u32,
     pub previous_patchset_attest_index_plus1: u32,
@@ -254,7 +268,7 @@ pub struct V0ReviewRecord {
     pub review_meta: u8,
     pub review_ordinal: u8,
     pub patch_ordinal: u8,
-    pub change_ordinal: u8,
+    pub change_ordinal_plus1: u8,
     pub actor_index_plus1: u32,
     pub patchset_index: u32,
     pub previous_task_review_index_plus1: u32,
@@ -270,7 +284,7 @@ pub struct V0PolicyRecord {
     pub policy_meta: u8,
     pub policy_ordinal: u8,
     pub patch_ordinal: u8,
-    pub change_ordinal: u8,
+    pub change_ordinal_plus1: u8,
     pub patchset_index: u32,
     pub previous_task_policy_index_plus1: u32,
     pub previous_patchset_policy_index_plus1: u32,
@@ -292,9 +306,9 @@ pub struct V0PolicyCheckRecord {
 pub struct V0LandRecord {
     pub land_meta: u8,
     pub land_ordinal: u8,
-    pub change_ordinal: u8,
+    pub change_ordinal_plus1: u8,
     pub failure_kind: u8,
-    pub change_index: u32,
+    pub task_index: u32,
     pub patchset_index: u32,
     pub previous_task_land_index_plus1: u32,
     pub previous_change_land_index_plus1: u32,
@@ -303,19 +317,16 @@ pub struct V0LandRecord {
     pub submitted_at_s: u64,
     pub updated_at_s: u64,
     pub target_line_index_plus1: u32,
+    pub actor_index_plus1: u32,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct V0SnapshotLinkRecord {
     pub link_meta: u8,
     pub snapshot_ordinal: u8,
-    pub payload_len: u16,
-    pub payload_offset: u64,
     pub task_index: u32,
     pub change_index_plus1: u32,
     pub content_snapshot_index: u32,
-    pub previous_task_snapshot_link_index_plus1: u32,
-    pub previous_change_snapshot_link_index_plus1: u32,
     pub created_at_s: u64,
 }
 
@@ -324,7 +335,7 @@ pub struct V0WaiverRecord {
     pub waiver_meta: u8,
     pub waiver_ordinal: u8,
     pub patch_ordinal: u8,
-    pub change_ordinal: u8,
+    pub change_ordinal_plus1: u8,
     pub patchset_index: u32,
     pub previous_task_waiver_index_plus1: u32,
     pub previous_patchset_waiver_index_plus1: u32,
@@ -362,16 +373,6 @@ pub struct V0ActorPayload {
     pub user_id: String,
     pub email: String,
     pub memo: String,
-}
-
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct V0SnapshotLinkPayload {
-    pub worktree_name: String,
-    pub line_name: String,
-    pub task_id: String,
-    pub change_id: String,
-    pub author_mode: String,
-    pub model_name: String,
 }
 
 pub struct WorkflowBinaryV0Codec;
@@ -437,10 +438,6 @@ impl WorkflowBinaryV0Codec {
         workflow_record_file("snapshot_link.bin", SNAPSHOT_LINK_RECORD_SIZE)
     }
 
-    pub fn snapshot_link_payload_file() -> BinaryPayloadFileId {
-        workflow_payload_file("snapshot_link_payload.bin")
-    }
-
     pub fn waiver_file() -> BinaryFileId {
         workflow_record_file("waiver.bin", WAIVER_RECORD_SIZE)
     }
@@ -464,8 +461,20 @@ impl WorkflowBinaryV0Codec {
     }
 
     pub fn encode_task(record: V0TaskRecord) -> StoreResult<Vec<u8>> {
+        let prefix = Self::encode_task_prefix(record)?
+            .try_into()
+            .map_err(|_| BinaryDbError::corruption("invalid Task prefix width"))?;
+        Ok(RemoteTaskActorCodec::encode_record(
+            &RemoteTaskActorRecord {
+                prefix,
+                actor_index_plus1: record.actor_index_plus1,
+            },
+        ))
+    }
+
+    pub(crate) fn encode_task_prefix(record: V0TaskRecord) -> StoreResult<Vec<u8>> {
         validate_task(record)?;
-        let mut out = Vec::with_capacity(TASK_RECORD_SIZE as usize);
+        let mut out = Vec::with_capacity(LEGACY_TASK_RECORD_SIZE as usize);
         out.push(record.task_meta);
         out.push(record.remote_meta);
         push_u16(&mut out, record.payload_len);
@@ -477,12 +486,20 @@ impl WorkflowBinaryV0Codec {
         push_u64(&mut out, record.plan_linked_at_s);
         push_u64(&mut out, record.fetched_at_s);
         push_u64(&mut out, record.closed_at_s);
-        finish_encode(out, TASK_RECORD_SIZE, "RemoteTaskRecord")
+        finish_encode(out, LEGACY_TASK_RECORD_SIZE, "RemoteTaskRecord")
     }
 
     pub fn decode_task(raw: &[u8]) -> StoreResult<V0TaskRecord> {
-        let mut input = Cursor::new(raw, TASK_RECORD_SIZE, "RemoteTaskRecord")?;
+        let actor = RemoteTaskActorCodec::decode_record(raw)?;
+        let mut record = Self::decode_task_prefix(&actor.prefix)?;
+        record.actor_index_plus1 = actor.actor_index_plus1;
+        Ok(record)
+    }
+
+    pub(crate) fn decode_task_prefix(raw: &[u8]) -> StoreResult<V0TaskRecord> {
+        let mut input = Cursor::new(raw, LEGACY_TASK_RECORD_SIZE, "RemoteTaskRecord")?;
         let record = V0TaskRecord {
+            actor_index_plus1: 0,
             task_meta: input.u8()?,
             remote_meta: input.u8()?,
             payload_len: input.u16()?,
@@ -501,8 +518,20 @@ impl WorkflowBinaryV0Codec {
     }
 
     pub fn encode_change(record: V0ChangeRecord) -> StoreResult<Vec<u8>> {
+        let prefix = Self::encode_change_prefix(record)?
+            .try_into()
+            .map_err(|_| BinaryDbError::corruption("invalid Change prefix width"))?;
+        Ok(RemoteChangeActorCodec::encode_record(
+            &RemoteChangeActorRecord {
+                prefix,
+                actor_index_plus1: record.actor_index_plus1,
+            },
+        ))
+    }
+
+    pub(crate) fn encode_change_prefix(record: V0ChangeRecord) -> StoreResult<Vec<u8>> {
         validate_change(record)?;
-        let mut out = Vec::with_capacity(CHANGE_RECORD_SIZE as usize);
+        let mut out = Vec::with_capacity(LEGACY_CHANGE_RECORD_SIZE as usize);
         out.push(record.change_meta);
         out.push(record.remote_meta);
         push_u16(&mut out, record.payload_len);
@@ -512,19 +541,27 @@ impl WorkflowBinaryV0Codec {
         push_u64(&mut out, record.payload_offset);
         push_u32(&mut out, record.task_index);
         push_u32(&mut out, record.previous_change_index_plus1);
-        push_u32(&mut out, record.selected_patchset_index_plus1);
+        push_u32(&mut out, record.reserved_selected_patchset);
         push_u32(&mut out, record.fork_snapshot_index_plus1);
         push_u64(&mut out, record.created_at_s);
         push_u64(&mut out, record.updated_at_s);
         push_u64(&mut out, record.fetched_at_s);
         push_u32(&mut out, record.base_line_index_plus1);
         push_u64(&mut out, record.archived_at_s);
-        finish_encode(out, CHANGE_RECORD_SIZE, "RemoteChangeRecord")
+        finish_encode(out, LEGACY_CHANGE_RECORD_SIZE, "RemoteChangeRecord")
     }
 
     pub fn decode_change(raw: &[u8]) -> StoreResult<V0ChangeRecord> {
-        let mut input = Cursor::new(raw, CHANGE_RECORD_SIZE, "RemoteChangeRecord")?;
+        let actor = RemoteChangeActorCodec::decode_record(raw)?;
+        let mut record = Self::decode_change_prefix(&actor.prefix)?;
+        record.actor_index_plus1 = actor.actor_index_plus1;
+        Ok(record)
+    }
+
+    pub(crate) fn decode_change_prefix(raw: &[u8]) -> StoreResult<V0ChangeRecord> {
+        let mut input = Cursor::new(raw, LEGACY_CHANGE_RECORD_SIZE, "RemoteChangeRecord")?;
         let record = V0ChangeRecord {
+            actor_index_plus1: 0,
             change_meta: input.u8()?,
             remote_meta: input.u8()?,
             payload_len: input.u16()?,
@@ -534,7 +571,7 @@ impl WorkflowBinaryV0Codec {
             payload_offset: input.u64()?,
             task_index: input.u32()?,
             previous_change_index_plus1: input.u32()?,
-            selected_patchset_index_plus1: input.u32()?,
+            reserved_selected_patchset: input.u32()?,
             fork_snapshot_index_plus1: input.u32()?,
             created_at_s: input.u64()?,
             updated_at_s: input.u64()?,
@@ -552,9 +589,9 @@ impl WorkflowBinaryV0Codec {
         let mut out = Vec::with_capacity(PATCHSET_RECORD_SIZE as usize);
         out.push(record.patchset_meta);
         out.push(record.patch_ordinal);
-        out.push(record.change_ordinal);
+        out.push(record.change_ordinal_plus1);
         out.push(record.reserved0);
-        push_u32(&mut out, record.change_index);
+        push_u32(&mut out, record.task_index);
         push_u32(&mut out, record.previous_task_patchset_index_plus1);
         push_u32(&mut out, record.previous_change_patchset_index_plus1);
         push_u32(&mut out, record.base_snapshot_index);
@@ -577,9 +614,9 @@ impl WorkflowBinaryV0Codec {
         let record = V0PatchsetRecord {
             patchset_meta: input.u8()?,
             patch_ordinal: input.u8()?,
-            change_ordinal: input.u8()?,
+            change_ordinal_plus1: input.u8()?,
             reserved0: input.u8()?,
-            change_index: input.u32()?,
+            task_index: input.u32()?,
             previous_task_patchset_index_plus1: input.u32()?,
             previous_change_patchset_index_plus1: input.u32()?,
             base_snapshot_index: input.u32()?,
@@ -605,9 +642,9 @@ impl WorkflowBinaryV0Codec {
         let mut out = Vec::with_capacity(PATCHSET_RECORD_SIZE as usize);
         out.push(record.patchset_meta);
         out.push(record.patch_ordinal);
-        out.push(record.change_ordinal);
+        out.push(record.change_ordinal_plus1);
         out.push(record.reserved0);
-        push_u32(&mut out, record.change_index);
+        push_u32(&mut out, record.task_index);
         push_u32(&mut out, record.previous_task_patchset_index_plus1);
         push_u32(&mut out, record.previous_change_patchset_index_plus1);
         push_u32(&mut out, record.base_snapshot_index);
@@ -630,9 +667,9 @@ impl WorkflowBinaryV0Codec {
         let record = V0FrozenPatchsetRecord {
             patchset_meta: input.u8()?,
             patch_ordinal: input.u8()?,
-            change_ordinal: input.u8()?,
+            change_ordinal_plus1: input.u8()?,
             reserved0: input.u8()?,
-            change_index: input.u32()?,
+            task_index: input.u32()?,
             previous_task_patchset_index_plus1: input.u32()?,
             previous_change_patchset_index_plus1: input.u32()?,
             base_snapshot_index: input.u32()?,
@@ -656,12 +693,12 @@ impl WorkflowBinaryV0Codec {
     pub fn encode_attest(record: V0AttestRecord) -> StoreResult<Vec<u8>> {
         validate_ordinal(record.attest_ordinal, "Attestation")?;
         validate_ordinal(record.patch_ordinal, "Attestation Patchset")?;
-        validate_ordinal(record.change_ordinal, "Attestation Change")?;
+        validate_optional_change_ordinal(record.change_ordinal_plus1, "Attestation Change")?;
         let mut out = Vec::with_capacity(ATTEST_RECORD_SIZE as usize);
         out.push(record.attest_meta);
         out.push(record.attest_ordinal);
         out.push(record.patch_ordinal);
-        out.push(record.change_ordinal);
+        out.push(record.change_ordinal_plus1);
         push_u32(&mut out, record.patchset_index);
         push_u32(&mut out, record.previous_task_attest_index_plus1);
         push_u32(&mut out, record.previous_patchset_attest_index_plus1);
@@ -675,7 +712,7 @@ impl WorkflowBinaryV0Codec {
             attest_meta: input.u8()?,
             attest_ordinal: input.u8()?,
             patch_ordinal: input.u8()?,
-            change_ordinal: input.u8()?,
+            change_ordinal_plus1: input.u8()?,
             patchset_index: input.u32()?,
             previous_task_attest_index_plus1: input.u32()?,
             previous_patchset_attest_index_plus1: input.u32()?,
@@ -684,7 +721,7 @@ impl WorkflowBinaryV0Codec {
         input.finish()?;
         validate_ordinal(record.attest_ordinal, "Attestation")?;
         validate_ordinal(record.patch_ordinal, "Attestation Patchset")?;
-        validate_ordinal(record.change_ordinal, "Attestation Change")?;
+        validate_optional_change_ordinal(record.change_ordinal_plus1, "Attestation Change")?;
         Ok(record)
     }
 
@@ -735,7 +772,7 @@ impl WorkflowBinaryV0Codec {
         out.push(record.review_meta);
         out.push(record.review_ordinal);
         out.push(record.patch_ordinal);
-        out.push(record.change_ordinal);
+        out.push(record.change_ordinal_plus1);
         push_u32(&mut out, record.actor_index_plus1);
         push_u32(&mut out, record.patchset_index);
         push_u32(&mut out, record.previous_task_review_index_plus1);
@@ -753,7 +790,7 @@ impl WorkflowBinaryV0Codec {
             review_meta: input.u8()?,
             review_ordinal: input.u8()?,
             patch_ordinal: input.u8()?,
-            change_ordinal: input.u8()?,
+            change_ordinal_plus1: input.u8()?,
             actor_index_plus1: input.u32()?,
             patchset_index: input.u32()?,
             previous_task_review_index_plus1: input.u32()?,
@@ -774,7 +811,7 @@ impl WorkflowBinaryV0Codec {
         out.push(record.policy_meta);
         out.push(record.policy_ordinal);
         out.push(record.patch_ordinal);
-        out.push(record.change_ordinal);
+        out.push(record.change_ordinal_plus1);
         push_u32(&mut out, record.patchset_index);
         push_u32(&mut out, record.previous_task_policy_index_plus1);
         push_u32(&mut out, record.previous_patchset_policy_index_plus1);
@@ -791,7 +828,7 @@ impl WorkflowBinaryV0Codec {
             policy_meta: input.u8()?,
             policy_ordinal: input.u8()?,
             patch_ordinal: input.u8()?,
-            change_ordinal: input.u8()?,
+            change_ordinal_plus1: input.u8()?,
             patchset_index: input.u32()?,
             previous_task_policy_index_plus1: input.u32()?,
             previous_patchset_policy_index_plus1: input.u32()?,
@@ -829,13 +866,25 @@ impl WorkflowBinaryV0Codec {
     }
 
     pub fn encode_land(record: V0LandRecord) -> StoreResult<Vec<u8>> {
+        let prefix = Self::encode_land_prefix(record)?
+            .try_into()
+            .map_err(|_| BinaryDbError::corruption("invalid Land prefix width"))?;
+        Ok(RemoteLandActorCodec::encode_record(
+            &RemoteLandActorRecord {
+                prefix,
+                actor_index_plus1: record.actor_index_plus1,
+            },
+        ))
+    }
+
+    pub(crate) fn encode_land_prefix(record: V0LandRecord) -> StoreResult<Vec<u8>> {
         validate_land(record)?;
-        let mut out = Vec::with_capacity(LAND_RECORD_SIZE as usize);
+        let mut out = Vec::with_capacity(LEGACY_LAND_RECORD_SIZE as usize);
         out.push(record.land_meta);
         out.push(record.land_ordinal);
-        out.push(record.change_ordinal);
+        out.push(record.change_ordinal_plus1);
         out.push(record.failure_kind);
-        push_u32(&mut out, record.change_index);
+        push_u32(&mut out, record.task_index);
         push_u32(&mut out, record.patchset_index);
         push_u32(&mut out, record.previous_task_land_index_plus1);
         push_u32(&mut out, record.previous_change_land_index_plus1);
@@ -844,17 +893,25 @@ impl WorkflowBinaryV0Codec {
         push_u64(&mut out, record.submitted_at_s);
         push_u64(&mut out, record.updated_at_s);
         push_u32(&mut out, record.target_line_index_plus1);
-        finish_encode(out, LAND_RECORD_SIZE, "ServerLandRecord")
+        finish_encode(out, LEGACY_LAND_RECORD_SIZE, "ServerLandRecord")
     }
 
     pub fn decode_land(raw: &[u8]) -> StoreResult<V0LandRecord> {
-        let mut input = Cursor::new(raw, LAND_RECORD_SIZE, "ServerLandRecord")?;
+        let actor = RemoteLandActorCodec::decode_record(raw)?;
+        let mut record = Self::decode_land_prefix(&actor.prefix)?;
+        record.actor_index_plus1 = actor.actor_index_plus1;
+        Ok(record)
+    }
+
+    pub(crate) fn decode_land_prefix(raw: &[u8]) -> StoreResult<V0LandRecord> {
+        let mut input = Cursor::new(raw, LEGACY_LAND_RECORD_SIZE, "ServerLandRecord")?;
         let record = V0LandRecord {
+            actor_index_plus1: 0,
             land_meta: input.u8()?,
             land_ordinal: input.u8()?,
-            change_ordinal: input.u8()?,
+            change_ordinal_plus1: input.u8()?,
             failure_kind: input.u8()?,
-            change_index: input.u32()?,
+            task_index: input.u32()?,
             patchset_index: input.u32()?,
             previous_task_land_index_plus1: input.u32()?,
             previous_change_land_index_plus1: input.u32()?,
@@ -874,13 +931,9 @@ impl WorkflowBinaryV0Codec {
         let mut out = Vec::with_capacity(SNAPSHOT_LINK_RECORD_SIZE as usize);
         out.push(record.link_meta);
         out.push(record.snapshot_ordinal);
-        push_u16(&mut out, record.payload_len);
-        push_u64(&mut out, record.payload_offset);
         push_u32(&mut out, record.task_index);
         push_u32(&mut out, record.change_index_plus1);
         push_u32(&mut out, record.content_snapshot_index);
-        push_u32(&mut out, record.previous_task_snapshot_link_index_plus1);
-        push_u32(&mut out, record.previous_change_snapshot_link_index_plus1);
         push_u64(&mut out, record.created_at_s);
         finish_encode(
             out,
@@ -898,13 +951,9 @@ impl WorkflowBinaryV0Codec {
         let record = V0SnapshotLinkRecord {
             link_meta: input.u8()?,
             snapshot_ordinal: input.u8()?,
-            payload_len: input.u16()?,
-            payload_offset: input.u64()?,
             task_index: input.u32()?,
             change_index_plus1: input.u32()?,
             content_snapshot_index: input.u32()?,
-            previous_task_snapshot_link_index_plus1: input.u32()?,
-            previous_change_snapshot_link_index_plus1: input.u32()?,
             created_at_s: input.u64()?,
         };
         input.finish()?;
@@ -918,7 +967,7 @@ impl WorkflowBinaryV0Codec {
         out.push(record.waiver_meta);
         out.push(record.waiver_ordinal);
         out.push(record.patch_ordinal);
-        out.push(record.change_ordinal);
+        out.push(record.change_ordinal_plus1);
         push_u32(&mut out, record.patchset_index);
         push_u32(&mut out, record.previous_task_waiver_index_plus1);
         push_u32(&mut out, record.previous_patchset_waiver_index_plus1);
@@ -936,7 +985,7 @@ impl WorkflowBinaryV0Codec {
             waiver_meta: input.u8()?,
             waiver_ordinal: input.u8()?,
             patch_ordinal: input.u8()?,
-            change_ordinal: input.u8()?,
+            change_ordinal_plus1: input.u8()?,
             patchset_index: input.u32()?,
             previous_task_waiver_index_plus1: input.u32()?,
             previous_patchset_waiver_index_plus1: input.u32()?,
@@ -1008,6 +1057,37 @@ impl WorkflowBinaryV0Codec {
                 "workflow ordinal index reserved/ordinal value is invalid",
             ));
         }
+        Ok(record)
+    }
+
+    // Task Snapshot links alone use all 256 ordinals in the existing u8 field.
+    // The count distinguishes the exhausted index from the final free ordinal.
+    pub fn encode_task_snapshot_index(record: V0OrdinalIndexRecord) -> StoreResult<Vec<u8>> {
+        if record.reserved0 != 0
+            || record.count > 256
+            || record.next_ordinal != u8::try_from(record.count).unwrap_or(u8::MAX)
+        {
+            return Err(invalid("Task Snapshot index count/ordinal is invalid"));
+        }
+        let mut out = Vec::with_capacity(CHAIN_INDEX_RECORD_SIZE as usize);
+        push_u32(&mut out, record.latest_index_plus1);
+        push_u16(&mut out, record.count);
+        out.push(record.next_ordinal);
+        out.push(record.reserved0);
+        finish_encode(out, CHAIN_INDEX_RECORD_SIZE, "TaskSnapshotIndexRecord")
+    }
+
+    pub fn decode_task_snapshot_index(raw: &[u8]) -> StoreResult<V0OrdinalIndexRecord> {
+        let mut input = Cursor::new(raw, CHAIN_INDEX_RECORD_SIZE, "TaskSnapshotIndexRecord")?;
+        let record = V0OrdinalIndexRecord {
+            latest_index_plus1: input.u32()?,
+            count: input.u16()?,
+            next_ordinal: input.u8()?,
+            reserved0: input.u8()?,
+        };
+        input.finish()?;
+        Self::encode_task_snapshot_index(record)
+            .map_err(|_| corrupt("Task Snapshot index count/ordinal is invalid"))?;
         Ok(record)
     }
 
@@ -1130,81 +1210,6 @@ impl WorkflowBinaryV0Codec {
             memo: utf8(&raw[email_end..], "Actor memo")?.to_string(),
         })
     }
-
-    pub fn encode_snapshot_link_payload(payload: &V0SnapshotLinkPayload) -> StoreResult<Vec<u8>> {
-        let lengths = [
-            payload.worktree_name.len(),
-            payload.line_name.len(),
-            payload.task_id.len(),
-            payload.change_id.len(),
-            payload.author_mode.len(),
-        ];
-        let encoded_lengths = lengths
-            .map(|len| u16::try_from(len).map_err(|_| invalid("Snapshot Link field exceeds u16")))
-            .into_iter()
-            .collect::<StoreResult<Vec<_>>>()?;
-        let total = 10_usize
-            .checked_add(lengths.iter().sum::<usize>())
-            .and_then(|value| value.checked_add(payload.model_name.len()))
-            .ok_or_else(|| invalid("Snapshot Link payload length overflow"))?;
-        if total > usize::from(u16::MAX) {
-            return Err(invalid("Snapshot Link payload exceeds u16::MAX"));
-        }
-        let mut out = Vec::with_capacity(total);
-        for len in encoded_lengths {
-            push_u16(&mut out, len);
-        }
-        out.extend_from_slice(payload.worktree_name.as_bytes());
-        out.extend_from_slice(payload.line_name.as_bytes());
-        out.extend_from_slice(payload.task_id.as_bytes());
-        out.extend_from_slice(payload.change_id.as_bytes());
-        out.extend_from_slice(payload.author_mode.as_bytes());
-        out.extend_from_slice(payload.model_name.as_bytes());
-        Ok(out)
-    }
-
-    pub fn decode_snapshot_link_payload(raw: &[u8]) -> StoreResult<V0SnapshotLinkPayload> {
-        if raw.len() < 10 {
-            return Err(corrupt("Snapshot Link payload is truncated"));
-        }
-        let mut lengths = [0_usize; 5];
-        for (index, length) in lengths.iter_mut().enumerate() {
-            let start = index * 2;
-            *length = usize::from(u16::from_le_bytes(
-                raw[start..start + 2].try_into().unwrap(),
-            ));
-        }
-        let mut offset = 10_usize;
-        let mut take = |len: usize, label: &str| -> StoreResult<String> {
-            let end = offset
-                .checked_add(len)
-                .ok_or_else(|| corrupt(format!("{label} length overflow")))?;
-            let bytes = raw
-                .get(offset..end)
-                .ok_or_else(|| corrupt(format!("{label} is truncated")))?;
-            offset = end;
-            Ok(utf8(bytes, label)?.to_string())
-        };
-        let worktree_name = take(lengths[0], "Snapshot Link worktree_name")?;
-        let line_name = take(lengths[1], "Snapshot Link line_name")?;
-        let task_id = take(lengths[2], "Snapshot Link task_id")?;
-        let change_id = take(lengths[3], "Snapshot Link change_id")?;
-        let author_mode = take(lengths[4], "Snapshot Link author_mode")?;
-        let model_name = utf8(
-            raw.get(offset..)
-                .ok_or_else(|| corrupt("Snapshot Link model_name is truncated"))?,
-            "Snapshot Link model_name",
-        )?
-        .to_string();
-        Ok(V0SnapshotLinkPayload {
-            worktree_name,
-            line_name,
-            task_id,
-            change_id,
-            author_mode,
-            model_name,
-        })
-    }
 }
 
 fn validate_task(record: V0TaskRecord) -> StoreResult<()> {
@@ -1232,6 +1237,7 @@ fn validate_task(record: V0TaskRecord) -> StoreResult<()> {
 fn validate_change(record: V0ChangeRecord) -> StoreResult<()> {
     if record.remote_meta & !REMOTE_META_KNOWN_MASK != 0
         || record.reserved1 != 0
+        || record.reserved_selected_patchset != 0
         || record.change_state & !1 != 0
     {
         return Err(invalid("Remote Change has reserved metadata"));
@@ -1261,7 +1267,10 @@ fn validate_patchset(record: V0PatchsetRecord) -> StoreResult<()> {
         return Err(invalid("Patchset reserved byte or summary is invalid"));
     }
     validate_ordinal(record.patch_ordinal, "Patchset")?;
-    validate_ordinal(record.change_ordinal, "Patchset Change")?;
+    validate_optional_change_ordinal(record.change_ordinal_plus1, "Patchset Change")?;
+    if record.change_ordinal_plus1 == 0 && record.previous_change_patchset_index_plus1 != 0 {
+        return Err(invalid("Task-only Patchset retains a Change predecessor"));
+    }
     if (record.patchset_meta >> 2) & 0b111 == 7
         || matches!(
             (record.patchset_meta & PATCHSET_PUBLISH_STATE_MASK) >> 5,
@@ -1304,9 +1313,9 @@ fn validate_frozen_patchset(record: V0FrozenPatchsetRecord) -> StoreResult<()> {
     validate_patchset(V0PatchsetRecord {
         patchset_meta: record.patchset_meta,
         patch_ordinal: record.patch_ordinal,
-        change_ordinal: record.change_ordinal,
+        change_ordinal_plus1: record.change_ordinal_plus1,
         reserved0: record.reserved0,
-        change_index: record.change_index,
+        task_index: record.task_index,
         previous_task_patchset_index_plus1: record.previous_task_patchset_index_plus1,
         previous_change_patchset_index_plus1: record.previous_change_patchset_index_plus1,
         base_snapshot_index: record.base_snapshot_index,
@@ -1327,7 +1336,7 @@ fn validate_frozen_patchset(record: V0FrozenPatchsetRecord) -> StoreResult<()> {
 fn validate_review(record: V0ReviewRecord) -> StoreResult<()> {
     validate_ordinal(record.review_ordinal, "Review")?;
     validate_ordinal(record.patch_ordinal, "Review Patchset")?;
-    validate_ordinal(record.change_ordinal, "Review Change")?;
+    validate_optional_change_ordinal(record.change_ordinal_plus1, "Review Change")?;
     if record.reserved0 != 0 || record.actor_index_plus1 == 0 {
         return Err(invalid(
             "Review reserved/payload/Actor authority is invalid",
@@ -1360,7 +1369,7 @@ fn validate_review(record: V0ReviewRecord) -> StoreResult<()> {
 fn validate_policy(record: V0PolicyRecord) -> StoreResult<()> {
     validate_ordinal(record.policy_ordinal, "Policy")?;
     validate_ordinal(record.patch_ordinal, "Policy Patchset")?;
-    validate_ordinal(record.change_ordinal, "Policy Change")?;
+    validate_optional_change_ordinal(record.change_ordinal_plus1, "Policy Change")?;
     if record.reserved0 != 0
         || record.policy_meta & !(POLICY_DECISION_MASK | POLICY_TOMBSTONE) != 0
         || record.policy_meta & POLICY_DECISION_MASK > 4
@@ -1391,7 +1400,10 @@ fn validate_policy_check(record: V0PolicyCheckRecord) -> StoreResult<()> {
 
 fn validate_land(record: V0LandRecord) -> StoreResult<()> {
     validate_ordinal(record.land_ordinal, "Land")?;
-    validate_ordinal(record.change_ordinal, "Land Change")?;
+    validate_optional_change_ordinal(record.change_ordinal_plus1, "Land Change")?;
+    if record.change_ordinal_plus1 == 0 && record.previous_change_land_index_plus1 != 0 {
+        return Err(invalid("Task-only Land retains a Change predecessor"));
+    }
     if record.target_line_index_plus1 == 0 {
         return Err(invalid("Land target Line is required"));
     }
@@ -1420,10 +1432,8 @@ fn validate_land(record: V0LandRecord) -> StoreResult<()> {
 }
 
 fn validate_snapshot_link(record: V0SnapshotLinkRecord) -> StoreResult<()> {
-    if record.link_meta & !SNAPSHOT_LINK_KNOWN_MASK != 0 || record.payload_len < 10 {
-        return Err(invalid(
-            "Snapshot Link reserved metadata or payload length is invalid",
-        ));
+    if record.link_meta & !SNAPSHOT_LINK_KNOWN_MASK != 0 {
+        return Err(invalid("Snapshot Link reserved metadata is invalid"));
     }
     if (record.link_meta & SNAPSHOT_LINK_HAS_CHANGE != 0) != (record.change_index_plus1 != 0) {
         return Err(invalid("Snapshot Link Change flag and reference disagree"));
@@ -1437,8 +1447,16 @@ fn validate_waiver(record: V0WaiverRecord) -> StoreResult<()> {
     }
     validate_ordinal(record.waiver_ordinal, "Waiver")?;
     validate_ordinal(record.patch_ordinal, "Waiver Patchset")?;
-    validate_ordinal(record.change_ordinal, "Waiver Change")?;
+    validate_optional_change_ordinal(record.change_ordinal_plus1, "Waiver Change")?;
     Ok(())
+}
+
+fn validate_optional_change_ordinal(value: u8, label: &str) -> StoreResult<()> {
+    if value <= 64 {
+        Ok(())
+    } else {
+        Err(invalid(format!("{label} optional ordinal exceeds 64")))
+    }
 }
 
 fn validate_ordinal(value: u8, label: &str) -> StoreResult<()> {
@@ -1590,6 +1608,7 @@ mod tests {
     #[test]
     fn every_server_v0_record_has_exact_u64_second_offsets() {
         let task = V0TaskRecord {
+            actor_index_plus1: 0,
             task_meta: 1,
             remote_meta: 2,
             payload_len: 3,
@@ -1614,6 +1633,7 @@ mod tests {
         assert_eq!(WorkflowBinaryV0Codec::decode_task(&task_raw).unwrap(), task);
 
         let change = V0ChangeRecord {
+            actor_index_plus1: 0,
             change_meta: CHANGE_LIFECYCLE_ACTIVE,
             remote_meta: 2,
             payload_len: 3,
@@ -1623,7 +1643,7 @@ mod tests {
             payload_offset: 5,
             task_index: 6,
             previous_change_index_plus1: 7,
-            selected_patchset_index_plus1: 8,
+            reserved_selected_patchset: 0,
             fork_snapshot_index_plus1: 9,
             created_at_s: 10,
             updated_at_s: 11,
@@ -1636,7 +1656,7 @@ mod tests {
         assert_eq!(
             &change_raw[..32],
             &[
-                1, 2, 3, 0, 4, 0, 0, 0, 5, 0, 0, 0, 0, 0, 0, 0, 6, 0, 0, 0, 7, 0, 0, 0, 8, 0, 0, 0,
+                1, 2, 3, 0, 4, 0, 0, 0, 5, 0, 0, 0, 0, 0, 0, 0, 6, 0, 0, 0, 7, 0, 0, 0, 0, 0, 0, 0,
                 9, 0, 0, 0
             ]
         );
@@ -1652,9 +1672,9 @@ mod tests {
         let patchset = V0PatchsetRecord {
             patchset_meta: 0b1000_0100,
             patch_ordinal: 2,
-            change_ordinal: 3,
+            change_ordinal_plus1: 3,
             reserved0: 0,
-            change_index: 4,
+            task_index: 4,
             previous_task_patchset_index_plus1: 5,
             previous_change_patchset_index_plus1: 6,
             base_snapshot_index: 7,
@@ -1690,7 +1710,7 @@ mod tests {
             attest_meta: 10,
             attest_ordinal: 1,
             patch_ordinal: 2,
-            change_ordinal: 3,
+            change_ordinal_plus1: 3,
             patchset_index: 4,
             previous_task_attest_index_plus1: 5,
             previous_patchset_attest_index_plus1: 6,
@@ -1734,7 +1754,7 @@ mod tests {
             review_meta: 2,
             review_ordinal: 1,
             patch_ordinal: 2,
-            change_ordinal: 3,
+            change_ordinal_plus1: 3,
             actor_index_plus1: 4,
             patchset_index: 5,
             previous_task_review_index_plus1: 6,
@@ -1756,7 +1776,7 @@ mod tests {
             policy_meta: 1,
             policy_ordinal: 1,
             patch_ordinal: 2,
-            change_ordinal: 3,
+            change_ordinal_plus1: 3,
             patchset_index: 4,
             previous_task_policy_index_plus1: 5,
             previous_patchset_policy_index_plus1: 6,
@@ -1787,14 +1807,15 @@ mod tests {
         );
 
         let land = V0LandRecord {
+            actor_index_plus1: 0,
             land_meta: LAND_STATUS_SUCCEEDED
                 | LAND_HAS_PRE_TARGET
                 | LAND_HAS_LANDED_SNAPSHOT
                 | (LAND_MODE_MERGE << 5),
             land_ordinal: 1,
-            change_ordinal: 2,
+            change_ordinal_plus1: 2,
             failure_kind: 0,
-            change_index: 3,
+            task_index: 3,
             patchset_index: 4,
             previous_task_land_index_plus1: 5,
             previous_change_land_index_plus1: 6,
@@ -1814,18 +1835,14 @@ mod tests {
         let link = V0SnapshotLinkRecord {
             link_meta: SNAPSHOT_LINK_HAS_CHANGE,
             snapshot_ordinal: u8::MAX,
-            payload_len: 10,
-            payload_offset: 2,
             task_index: 3,
             change_index_plus1: 4,
             content_snapshot_index: 5,
-            previous_task_snapshot_link_index_plus1: 6,
-            previous_change_snapshot_link_index_plus1: 7,
             created_at_s: 8,
         };
         let link_raw = WorkflowBinaryV0Codec::encode_snapshot_link(link).unwrap();
         assert_eq!(link_raw.len(), SNAPSHOT_LINK_RECORD_SIZE as usize);
-        assert_eq!(&link_raw[32..40], &8_u64.to_le_bytes());
+        assert_eq!(&link_raw[14..22], &8_u64.to_le_bytes());
         assert_eq!(
             WorkflowBinaryV0Codec::decode_snapshot_link(&link_raw).unwrap(),
             link
@@ -1835,7 +1852,7 @@ mod tests {
             waiver_meta: WAIVER_REVOKED,
             waiver_ordinal: 1,
             patch_ordinal: 2,
-            change_ordinal: 3,
+            change_ordinal_plus1: 3,
             patchset_index: 4,
             previous_task_waiver_index_plus1: 5,
             previous_patchset_waiver_index_plus1: 6,
@@ -1860,9 +1877,9 @@ mod tests {
         let record = V0FrozenPatchsetRecord {
             patchset_meta: 0,
             patch_ordinal: 0,
-            change_ordinal: 0,
+            change_ordinal_plus1: 1,
             reserved0: 0,
-            change_index: 1,
+            task_index: 1,
             previous_task_patchset_index_plus1: 2,
             previous_change_patchset_index_plus1: 3,
             base_snapshot_index: 4,
@@ -1939,19 +1956,6 @@ mod tests {
             WorkflowBinaryV0Codec::decode_actor_payload(&raw).unwrap(),
             actor
         );
-        let link = V0SnapshotLinkPayload {
-            worktree_name: "worktree".to_string(),
-            line_name: "main".to_string(),
-            task_id: "T-0001".to_string(),
-            change_id: "C-01".to_string(),
-            author_mode: "human_only".to_string(),
-            model_name: String::new(),
-        };
-        let raw = WorkflowBinaryV0Codec::encode_snapshot_link_payload(&link).unwrap();
-        assert_eq!(
-            WorkflowBinaryV0Codec::decode_snapshot_link_payload(&raw).unwrap(),
-            link
-        );
         assert_eq!(
             WorkflowBinaryV0Codec::encode_review_payload("").unwrap(),
             Vec::<u8>::new()
@@ -2017,7 +2021,6 @@ mod tests {
         assert!(
             WorkflowBinaryV0Codec::encode_snapshot_link(V0SnapshotLinkRecord {
                 link_meta: 1 << 6,
-                payload_len: 10,
                 ..V0SnapshotLinkRecord::default()
             })
             .is_err()
@@ -2025,7 +2028,6 @@ mod tests {
         assert!(
             WorkflowBinaryV0Codec::encode_snapshot_link(V0SnapshotLinkRecord {
                 link_meta: SNAPSHOT_LINK_HAS_CHANGE,
-                payload_len: 10,
                 change_index_plus1: 0,
                 ..V0SnapshotLinkRecord::default()
             })
@@ -2037,7 +2039,6 @@ mod tests {
             ..V0WaiverRecord::default()
         })
         .is_err());
-        assert!(WorkflowBinaryV0Codec::decode_snapshot_link_payload(&[0; 9]).is_err());
         assert!(WorkflowBinaryV0Codec::decode_actor_payload(&[0, 0, 0]).is_err());
     }
 

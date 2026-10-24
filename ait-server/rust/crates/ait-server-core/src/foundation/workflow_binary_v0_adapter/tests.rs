@@ -5,7 +5,7 @@ use crate::foundation::remote_binary_db::{
     StoreGeneration, StorePath,
 };
 use crate::foundation::server_binary_db_schema_registry::{
-    SERVER_BINARY_DB_BIN_SCHEMAS, SERVER_BINARY_DB_INDEX_SCHEMAS, SERVER_BINARY_DB_LAYOUT_ID,
+    SERVER_BINARY_DB_BIN_SCHEMAS, SERVER_BINARY_DB_INDEX_SCHEMAS,
 };
 use crate::foundation::server_content_binary_db::{
     server_snapshot_hash48_from_id, ServerBinaryDbLineStore, ServerBinaryDbSnapshotStore,
@@ -30,7 +30,18 @@ use std::fs;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
-type TestDb = FilesystemServerRemoteBinaryDb;
+pub(super) type TestDb = FilesystemServerRemoteBinaryDb;
+
+#[path = "tests/actor_registration.rs"]
+mod actor_registration;
+#[path = "tests/legacy_history.rs"]
+mod legacy_history;
+#[path = "tests/review_actors.rs"]
+mod review_actors;
+#[path = "tests/task_owned.rs"]
+mod task_owned;
+#[path = "tests/workflow_package.rs"]
+mod workflow_package;
 
 fn temporary_root(label: &str) -> StorePath {
     static NEXT: AtomicU64 = AtomicU64::new(0);
@@ -41,23 +52,26 @@ fn temporary_root(label: &str) -> StorePath {
     )))
 }
 
-fn initialized_db(label: &str) -> TestDb {
+pub(super) fn initialized_db(label: &str) -> TestDb {
+    let db = empty_initialized_db(label);
+    ensure_actor_fixture(&db);
+    db
+}
+
+pub(super) fn empty_initialized_db(label: &str) -> TestDb {
     let authority_root = temporary_root(label);
     fs::create_dir_all(authority_root.as_path()).expect("create v0 fixture authority");
-    for path in SERVER_BINARY_DB_BIN_SCHEMAS
+    for (path, layout_id) in SERVER_BINARY_DB_BIN_SCHEMAS
         .iter()
-        .map(|schema| schema.path)
+        .map(|schema| (schema.path, schema.layout_id))
         .chain(
             SERVER_BINARY_DB_INDEX_SCHEMAS
                 .iter()
-                .map(|schema| schema.path),
+                .map(|schema| (schema.path, schema.layout_id)),
         )
     {
-        fs::write(
-            authority_root.as_path().join(path),
-            SERVER_BINARY_DB_LAYOUT_ID.to_le_bytes(),
-        )
-        .unwrap_or_else(|error| panic!("initialize {path}: {error}"));
+        fs::write(authority_root.as_path().join(path), layout_id.to_le_bytes())
+            .unwrap_or_else(|error| panic!("initialize {path}: {error}"));
     }
     FilesystemServerRemoteBinaryDb::test_fixture(
         RepoId::new("REPO-V0"),
@@ -76,7 +90,7 @@ fn remote_task_identity_preserves_origin_for_empty_and_nonempty_namespaces() {
     let task = empty_namespace
         .create_task(
             "repo",
-            &json!({
+            &json!({"actor_key_index":0,
                 "title": "Empty namespace Remote Task",
                 "intent": "Preserve RT identity"
             }),
@@ -98,7 +112,7 @@ fn remote_task_identity_preserves_origin_for_empty_and_nonempty_namespaces() {
     let task = namespaced
         .create_task(
             "repo",
-            &json!({
+            &json!({"actor_key_index":0,
                 "title": "Namespaced Remote Task",
                 "intent": "Preserve RSET identity"
             }),
@@ -120,6 +134,7 @@ fn seed_content(db: &TestDb) {
         message: Some("Binary DB v0 adapter fixture".to_string()),
     };
     let record = |snapshot_id: &str, parent_snapshot_index_plus1: u32| ServerBinarySnapshotRecord {
+        actor_index_plus1: 0,
         snapshot_meta: 0,
         history_flags: 0,
         payload_len: 0,
@@ -161,7 +176,7 @@ fn activation_repair_normalizes_active_patchset_ci_job_locator() {
     active
         .create_task(
             "repo",
-            &json!({
+            &json!({"actor_key_index":0,
                 "title": "Active Patchset",
                 "intent": "Exercise active Patchset locator normalization"
             }),
@@ -170,7 +185,7 @@ fn activation_repair_normalizes_active_patchset_ci_job_locator() {
     active
         .create_change(
             "repo",
-            &json!({
+            &json!({"actor_key_index":0,
                 "task_id": "T-0001",
                 "title": "Active Patchset Change",
                 "base_line": "main"
@@ -180,7 +195,7 @@ fn activation_repair_normalizes_active_patchset_ci_job_locator() {
     active
         .publish_patchset(
             "T-0001/C-01",
-            &json!({
+            &json!({"actor_key_index":0,
                 "base_snapshot_id": "SNP-0000000000A1",
                 "revision_snapshot_id": "SNP-0000000000A2",
                 "summary": "active Patchset locator fixture",
@@ -229,7 +244,7 @@ fn activation_repair_normalizes_active_patchset_ci_job_locator() {
     );
 }
 
-fn seed_history_content(db: &TestDb, local_land_count: usize) -> Vec<String> {
+pub(super) fn seed_history_content(db: &TestDb, local_land_count: usize) -> Vec<String> {
     let lines = ServerBinaryDbLineStore::<_, SERVER_CONTENT_BINARY_LAYOUT_ID>::new(db.clone());
     let snapshots =
         ServerBinaryDbSnapshotStore::<_, SERVER_CONTENT_BINARY_LAYOUT_ID>::new(db.clone());
@@ -245,6 +260,7 @@ fn seed_history_content(db: &TestDb, local_land_count: usize) -> Vec<String> {
     for ordinal in 0..=local_land_count {
         let snapshot_id = format!("SNP-{:012X}", ordinal + 1);
         let record = ServerBinarySnapshotRecord {
+            actor_index_plus1: 0,
             snapshot_meta: 0,
             history_flags: 0,
             payload_len: 0,
@@ -272,7 +288,7 @@ fn seed_history_content(db: &TestDb, local_land_count: usize) -> Vec<String> {
     snapshot_ids
 }
 
-fn history_promotion_request(snapshot_ids: &[String]) -> JsonValue {
+pub(super) fn history_promotion_request(snapshot_ids: &[String]) -> JsonValue {
     let entries = snapshot_ids
         .windows(2)
         .enumerate()
@@ -305,8 +321,8 @@ fn history_promotion_request(snapshot_ids: &[String]) -> JsonValue {
             })
         })
         .collect::<Vec<_>>();
-    json!({
-        "contract": "history-promotion-prepare/v1",
+    json!({"actor_key_index":0,
+        "contract":"history-promotion-prepare/v3",
         "idempotency_key": "history-promotion:ten-local-lands",
         "target_line": "main",
         "base_snapshot_id": snapshot_ids.first().unwrap(),
@@ -317,7 +333,7 @@ fn history_promotion_request(snapshot_ids: &[String]) -> JsonValue {
     })
 }
 
-fn staged_history_promotion_request(
+pub(super) fn staged_history_promotion_request(
     snapshot_ids: &[String],
     stage_ordinal: usize,
     previous_stage_patchset_id: Option<&str>,
@@ -329,8 +345,8 @@ fn staged_history_promotion_request(
     let stage_start = stage_ordinal * 64;
     let stage_end = (stage_start + 64).min(all_entries.len());
     let final_stage = stage_end == all_entries.len();
-    json!({
-        "contract": "history-promotion-prepare/v2",
+    json!({"actor_key_index":0,
+        "contract": "history-promotion-prepare/v3",
         "promotion_id": format!(
             "history-promotion:{}:{}",
             snapshot_ids.first().unwrap(),
@@ -352,9 +368,26 @@ fn staged_history_promotion_request(
     })
 }
 
+fn ensure_actor_fixture(db: &TestDb) {
+    let count = BinaryDbReadTxn::new(db)
+        .record_count(WorkflowBinaryV0Codec::actor_file())
+        .unwrap();
+    if count == 0 {
+        BinaryDbServerWorkflowV0Store::new_frozen(db.clone())
+            .resolve_user_actor(&UserActorIdentity::new("fixture", "fixture@example.test").unwrap())
+            .unwrap();
+    }
+}
+
+fn plan_service(db: TestDb) -> BinaryDbServerPlanService<TestDb> {
+    ensure_actor_fixture(&db);
+    BinaryDbServerPlanService::new(db)
+}
+
 fn atomic_plan_payload(title: &str, item_ref: &str) -> JsonValue {
     json!({
         "title": title,
+        "actor_key_index":0,
         "status": "draft",
         "summary": format!("{title} summary"),
         "artifact_path": "docs/sprints/atomic-task-start.md",
@@ -372,30 +405,31 @@ fn atomic_plan_payload(title: &str, item_ref: &str) -> JsonValue {
 fn atomic_task_start_request(
     idempotency_key: &str,
     item_ref: &str,
-    plan: JsonValue,
+    mut plan: JsonValue,
     task_title: &str,
-    change_title: &str,
-    base_line: &str,
+    _change_title: &str,
+    _base_line: &str,
 ) -> JsonValue {
+    if let Some(payload) = plan.get_mut("payload").and_then(JsonValue::as_object_mut) {
+        payload.remove("actor_key_index");
+    }
     json!({
-        "contract": "task-start-atomic/v1",
+        "contract": "task-start-atomic/v2",
+        "actor_key_index":0,
         "idempotency_key": idempotency_key,
         "plan_item_ref": item_ref,
         "plan": plan,
         "task": {
             "title": task_title,
             "intent": format!("Complete {task_title}")
-        },
-        "change": {
-            "title": change_title,
-            "base_line": base_line
         }
     })
 }
 
 #[test]
-fn atomic_task_start_creates_plan_task_and_change_and_replays_exact_binding() {
+fn atomic_task_start_creates_only_task_and_replays_exact_binding() {
     let db = initialized_db("atomic-task-start-create-replay");
+    ensure_actor_fixture(&db);
     seed_content(&db);
     let store = BinaryDbServerWorkflowV0Store::new(db.clone());
     let item_ref = "ATOMIC-START-01";
@@ -416,7 +450,7 @@ fn atomic_task_start_creates_plan_task_and_change_and_replays_exact_binding() {
         )
         .expect("atomically create Plan, Task, and Change");
 
-    assert_eq!(created["contract"], "task-start-atomic/v1");
+    assert_eq!(created["contract"], "task-start-atomic/v2");
     assert_eq!(created["replayed"], false);
     assert_eq!(created["plan_action"], "created");
     assert_eq!(created["plan_id"], "PR-0");
@@ -429,8 +463,7 @@ fn atomic_task_start_creates_plan_task_and_change_and_replays_exact_binding() {
         "plan-revision:0"
     );
     assert_eq!(created["task"]["plan_item_ref"], item_ref);
-    assert_eq!(created["change"]["change_ref"], "T-0001/C-01");
-    assert_eq!(created["change"]["base_line"], "main");
+    assert!(created["change"].is_null());
 
     let replayed_create = store
         .start_plan_bound_task(
@@ -488,7 +521,7 @@ fn atomic_task_start_creates_plan_task_and_change_and_replays_exact_binding() {
             .expect("list replayed Changes")
             .as_array()
             .map(Vec::len),
-        Some(1)
+        Some(0)
     );
 
     let conflict = store
@@ -514,28 +547,25 @@ fn atomic_task_start_creates_plan_task_and_change_and_replays_exact_binding() {
 #[test]
 fn atomic_task_start_rolls_back_plan_and_workflow_when_change_is_invalid() {
     let db = initialized_db("atomic-task-start-rollback");
+    ensure_actor_fixture(&db);
     seed_content(&db);
     let store = BinaryDbServerWorkflowV0Store::new(db.clone());
     let item_ref = "ATOMIC-ROLLBACK-01";
+    let mut rejected = atomic_task_start_request(
+        "reject-auto-change",
+        item_ref,
+        json!({"action":"create","payload":atomic_plan_payload("Reject auto Change",item_ref)}),
+        "Task",
+        "Change",
+        "main",
+    );
+    rejected["change"] = json!({"title":"Implicit Change","base_line":"main"});
     let error = store
-        .start_plan_bound_task(
-            "repo",
-            &atomic_task_start_request(
-                "atomic-rollback-1",
-                item_ref,
-                json!({
-                    "action": "create",
-                    "payload": atomic_plan_payload("Atomic rollback", item_ref)
-                }),
-                "Rollback Task",
-                "Invalid Line Change",
-                "missing-line",
-            ),
-        )
+        .start_plan_bound_task("repo", &rejected)
         .expect_err("unknown base Line must abort the composite transaction");
-    assert!(error.contains("Unknown canonical base Line"), "{error}");
+    assert!(error.contains("creates only a Task"), "{error}");
 
-    let plans = BinaryDbServerPlanService::new(db.clone())
+    let plans = plan_service(db.clone())
         .list_plans("repo", None)
         .expect("list Plans after rollback");
     assert_eq!(plans.as_array().map(Vec::len), Some(0));
@@ -568,7 +598,7 @@ fn atomic_task_start_rolls_back_plan_and_workflow_when_change_is_invalid() {
 fn atomic_task_start_revise_uses_head_cas_and_validates_open_item_before_write() {
     let db = initialized_db("atomic-task-start-revise-cas");
     seed_content(&db);
-    let plans = BinaryDbServerPlanService::new(db.clone());
+    let plans = plan_service(db.clone());
     plans
         .create_plan("repo", &atomic_plan_payload("Existing Plan", "EXISTING-01"))
         .expect("create existing Plan");
@@ -691,7 +721,7 @@ fn atomic_task_start_revise_uses_head_cas_and_validates_open_item_before_write()
             .expect("list Changes after rejected writes")
             .as_array()
             .map(Vec::len),
-        Some(1)
+        Some(0)
     );
 }
 
@@ -699,7 +729,7 @@ fn seed_task_change_and_patchset(store: &BinaryDbServerWorkflowV0Store<TestDb>) 
     store
         .create_task(
             "repo",
-            &json!({
+            &json!({"actor_key_index":0,
                 "task_id": "T-0001",
                 "title": "Project selected Patchset",
                 "intent": "Keep Change reads on fixed workflow authority"
@@ -709,7 +739,7 @@ fn seed_task_change_and_patchset(store: &BinaryDbServerWorkflowV0Store<TestDb>) 
     store
         .create_change(
             "repo",
-            &json!({
+            &json!({"actor_key_index":0,
                 "change_id": "C-01",
                 "task_id": "T-0001",
                 "title": "Narrow selected Patchset projection",
@@ -720,7 +750,7 @@ fn seed_task_change_and_patchset(store: &BinaryDbServerWorkflowV0Store<TestDb>) 
     store
         .publish_patchset(
             "T-0001/C-01",
-            &json!({
+            &json!({"actor_key_index":0,
                 "base_snapshot_id": "SNP-0000000000A1",
                 "revision_snapshot_id": "SNP-0000000000A2",
                 "summary": "selected Patchset fixture",
@@ -803,7 +833,7 @@ fn change_creation_and_close_commit_lifecycle_in_one_change_record() {
     store
         .create_task(
             "repo",
-            &json!({
+            &json!({"actor_key_index":0,
                 "task_id": "T-0001",
                 "title": "Inline Change lifecycle",
                 "intent": "Keep base Line and archive time in change.bin"
@@ -813,7 +843,7 @@ fn change_creation_and_close_commit_lifecycle_in_one_change_record() {
     let created = store
         .create_change(
             "repo",
-            &json!({
+            &json!({"actor_key_index":0,
                 "change_id": "C-01",
                 "task_id": "T-0001",
                 "title": "Inline lifecycle fields",
@@ -838,7 +868,10 @@ fn change_creation_and_close_commit_lifecycle_in_one_change_record() {
         .exists());
 
     let closed = store
-        .close_change("T-0001/C-01", &json!({ "status": "archived" }))
+        .close_change(
+            "T-0001/C-01",
+            &json!({"actor_key_index":0, "status": "archived" }),
+        )
         .expect("close Change");
     assert_eq!(closed["status"], "archived");
     assert_eq!(closed["base_line"], "main");
@@ -863,7 +896,7 @@ fn task_local_short_change_selectors_are_unique_only_with_task_context() {
         store
             .create_task(
                 "repo",
-                &json!({
+                &json!({"actor_key_index":0,
                     "task_id": task_id,
                     "title": title,
                     "intent": "Prove Change ordinals are Task-local"
@@ -878,7 +911,7 @@ fn task_local_short_change_selectors_are_unique_only_with_task_context() {
         let change = store
             .create_change(
                 "repo",
-                &json!({
+                &json!({"actor_key_index":0,
                     "change_id": requested_change_id,
                     "task_id": task_id,
                     "title": format!("{title} Change"),
@@ -946,6 +979,7 @@ fn queue_latest_succeeded_lands_selects_once_per_change_and_fails_closed() {
     let land = |change_index: u32, land_ordinal: u8, status: u8, tombstone: bool| {
         let succeeded = status == LAND_STATUS_SUCCEEDED;
         V0LandRecord {
+            actor_index_plus1: 0,
             land_meta: status
                 | if succeeded {
                     LAND_HAS_LANDED_SNAPSHOT
@@ -954,9 +988,9 @@ fn queue_latest_succeeded_lands_selects_once_per_change_and_fails_closed() {
                 }
                 | if tombstone { LAND_TOMBSTONE } else { 0 },
             land_ordinal,
-            change_ordinal: 0,
+            change_ordinal_plus1: 1,
             failure_kind: 0,
-            change_index,
+            task_index: change_index,
             patchset_index: 0,
             previous_task_land_index_plus1: 0,
             previous_change_land_index_plus1: 0,
@@ -980,22 +1014,22 @@ fn queue_latest_succeeded_lands_selects_once_per_change_and_fails_closed() {
     .map(|record| WorkflowBinaryV0Codec::encode_land(record).expect("encode fixture Land"))
     .collect::<Vec<_>>();
 
-    let latest = store
+    assert!(store
         .latest_succeeded_lands_from_records(&records)
-        .expect("select latest succeeded Lands");
+        .unwrap_err()
+        .contains("multiple successful receipts"));
+    let unambiguous = [
+        records[0].clone(),
+        records[1].clone(),
+        records[4].clone(),
+        records[5].clone(),
+    ];
+    let latest = store
+        .latest_succeeded_lands_from_records(&unambiguous)
+        .unwrap();
     assert_eq!(latest.len(), 2);
-    assert_eq!(
-        latest
-            .get(&0)
-            .map(|(index, land)| (*index, land.land_ordinal)),
-        Some((2, 2))
-    );
-    assert_eq!(
-        latest
-            .get(&1)
-            .map(|(index, land)| (*index, land.land_ordinal)),
-        Some((5, 1))
-    );
+    assert_eq!(latest[&0].1.land_ordinal, 0);
+    assert_eq!(latest[&1].1.land_ordinal, 1);
 
     let malformed = vec![vec![0_u8; 35]];
     let error = store
@@ -1012,7 +1046,7 @@ fn change_list_projects_greatest_successful_land_from_one_inventory() {
     store
         .create_task(
             "repo",
-            &json!({
+            &json!({"actor_key_index":0,
                 "task_id": "T-0001",
                 "title": "Bound Change list Land reads",
                 "intent": "Project all Change lifecycle facts from one Land inventory"
@@ -1023,7 +1057,7 @@ fn change_list_projects_greatest_successful_land_from_one_inventory() {
         store
             .create_change(
                 "repo",
-                &json!({
+                &json!({"actor_key_index":0,
                     "change_id": change_id,
                     "task_id": "T-0001",
                     "title": title,
@@ -1040,6 +1074,7 @@ fn change_list_projects_greatest_successful_land_from_one_inventory() {
                 tombstone: bool,
                 landed_snapshot_index_plus1: u32,
                 updated_at_s: u64| V0LandRecord {
+        actor_index_plus1: 0,
         land_meta: status
             | if status == LAND_STATUS_SUCCEEDED {
                 LAND_HAS_LANDED_SNAPSHOT
@@ -1048,9 +1083,9 @@ fn change_list_projects_greatest_successful_land_from_one_inventory() {
             }
             | if tombstone { LAND_TOMBSTONE } else { 0 },
         land_ordinal,
-        change_ordinal,
+        change_ordinal_plus1: change_ordinal + 1,
         failure_kind: 0,
-        change_index,
+        task_index: change_index,
         patchset_index: 0,
         previous_task_land_index_plus1: 0,
         previous_change_land_index_plus1: 0,
@@ -1077,26 +1112,8 @@ fn change_list_projects_greatest_successful_land_from_one_inventory() {
     }
     write.commit().expect("commit Land fixtures");
 
-    let changes = store.list_changes("repo").expect("list Changes");
-    let changes = changes.as_array().expect("Change list array");
-    assert_eq!(changes.len(), 2);
-    assert_eq!(changes[0]["change_ref"], json!("T-0001/C-02"));
-    assert!(changes[0]["target_line"].is_null());
-    assert!(changes[0]["landed_at"].is_null());
-    assert!(changes[0]["landed_snapshot_id"].is_null());
-    assert_eq!(changes[1]["change_ref"], json!("T-0001/C-01"));
-    assert_eq!(changes[1]["target_line"], json!("main"));
-    assert_eq!(changes[1]["landed_at"], json!("1970-01-01T00:00:30+00:00"));
-    assert_eq!(changes[1]["landed_snapshot_id"], json!("SNP-0000000000A2"));
-
-    let landed = store
-        .get_change(Some("repo"), "T-0001/C-01")
-        .expect("read landed Change");
-    assert_eq!(landed["landed_snapshot_id"], json!("SNP-0000000000A2"));
-    let unlanded = store
-        .get_change(Some("repo"), "T-0001/C-02")
-        .expect("read unlanded Change");
-    assert!(unlanded["landed_snapshot_id"].is_null());
+    let error = store.list_changes("repo").unwrap_err();
+    assert!(error.contains("multiple successful receipts"), "{error}");
 }
 
 #[test]
@@ -1107,26 +1124,22 @@ fn change_reads_project_selected_patchset_without_snapshot_tree_hydration() {
     seed_task_change_and_patchset(&store);
 
     let read = BinaryDbReadTxn::new(&db);
-    let mut revision = ServerBinarySnapshotCodec::<SERVER_CONTENT_BINARY_LAYOUT_ID>::decode_record(
+    let mut revision = ServerBinarySnapshotCodec::<2>::decode_record(
         &read
-            .read_record(
-                ServerBinarySnapshotCodec::<SERVER_CONTENT_BINARY_LAYOUT_ID>::record_file(),
-                1,
-            )
+            .read_record(ServerBinarySnapshotCodec::<2>::record_file(), 1)
             .expect("read revision Snapshot"),
     )
     .expect("decode revision Snapshot");
     drop(read);
     revision.snapshot_meta |= ServerBinarySnapshotRecord::META_HAS_ROOT_LOCATOR;
     revision.root_tree_pack_index_plus1 = 1;
-    let revision_raw =
-        ServerBinarySnapshotCodec::<SERVER_CONTENT_BINARY_LAYOUT_ID>::encode_record(&revision)
-            .expect("encode revision Snapshot with unavailable Tree locator");
+    let revision_raw = ServerBinarySnapshotCodec::<2>::encode_record(&revision)
+        .expect("encode revision Snapshot with unavailable Tree locator");
     let mut write = BinaryDbWriteTxn::begin(&db, BinaryDbCommandScope::ServerContent)
         .expect("begin Snapshot fixture rewrite");
     write
         .overwrite_record(
-            ServerBinarySnapshotCodec::<SERVER_CONTENT_BINARY_LAYOUT_ID>::record_file(),
+            ServerBinarySnapshotCodec::<2>::record_file(),
             1,
             &revision_raw,
         )
@@ -1183,14 +1196,14 @@ fn change_reads_project_selected_patchset_without_snapshot_tree_hydration() {
         .as_array()
         .and_then(|rows| rows.first())
         .expect("one Change row");
-    assert_eq!(row["selected_patchset_id"], json!("T-0001/C-01/P-01"));
-    assert_eq!(row["selected_patchset_number"], json!(1));
+    assert_eq!(row["current_patchset_id"], json!("T-0001/C-01/P-01"));
+    assert_eq!(row["current_patchset_number"], json!(1));
 
     let change = store
         .get_change(Some("repo"), "T-0001/C-01")
         .expect("get Change");
-    assert_eq!(change["selected_patchset_id"], json!("T-0001/C-01/P-01"));
-    assert_eq!(change["selected_patchset_number"], json!(1));
+    assert_eq!(change["current_patchset_id"], json!("T-0001/C-01/P-01"));
+    assert_eq!(change["current_patchset_number"], json!(1));
 }
 
 #[test]
@@ -1202,7 +1215,7 @@ fn selected_patchset_projection_rejects_another_change_owner() {
     store
         .create_change(
             "repo",
-            &json!({
+            &json!({"actor_key_index":0,
                 "change_id": "C-02",
                 "task_id": "T-0001",
                 "title": "Second Change",
@@ -1213,7 +1226,7 @@ fn selected_patchset_projection_rejects_another_change_owner() {
     store
         .publish_patchset(
             "T-0001/C-02",
-            &json!({
+            &json!({"actor_key_index":0,
                 "base_snapshot_id": "SNP-0000000000A1",
                 "revision_snapshot_id": "SNP-0000000000A3",
                 "summary": "second Change Patchset",
@@ -1223,16 +1236,15 @@ fn selected_patchset_projection_rejects_another_change_owner() {
         .expect("publish second Change Patchset");
 
     let read = BinaryDbReadTxn::new(&db);
-    let mut first_change = WorkflowBinaryV0Codec::decode_change(
+    let first_change = WorkflowBinaryV0Codec::decode_change(
         &read
             .read_record(WorkflowBinaryV0Codec::change_file(), 0)
             .expect("read first Change"),
     )
     .expect("decode first Change");
     drop(read);
-    first_change.selected_patchset_index_plus1 = 2;
-    let raw = WorkflowBinaryV0Codec::encode_change(first_change)
-        .expect("encode cross-owned selected Patchset reference");
+    let mut raw = WorkflowBinaryV0Codec::encode_change(first_change).unwrap();
+    raw[24..28].copy_from_slice(&2_u32.to_le_bytes());
     let mut write = BinaryDbWriteTxn::begin(&db, BinaryDbCommandScope::ServerWorkflow)
         .expect("begin Change fixture rewrite");
     write
@@ -1243,10 +1255,7 @@ fn selected_patchset_projection_rejects_another_change_owner() {
     let error = store
         .get_change(Some("repo"), "T-0001/C-01")
         .expect_err("cross-owned selected Patchset must fail closed");
-    assert_eq!(
-        error,
-        "Binary DB v0 selected Patchset belongs to another Change"
-    );
+    assert!(error.contains("reserved metadata"), "{error}");
 }
 
 #[test]
@@ -1264,7 +1273,7 @@ fn selected_patchset_projection_rejects_disagreeing_change_ordinal() {
     )
     .expect("decode selected Patchset");
     drop(read);
-    patchset.change_ordinal = 1;
+    patchset.change_ordinal_plus1 = 2;
     let raw = WorkflowBinaryV0Codec::encode_patchset(patchset)
         .expect("encode disagreeing Change ordinal");
     let mut write = BinaryDbWriteTxn::begin(&db, BinaryDbCommandScope::ServerWorkflow)
@@ -1277,15 +1286,12 @@ fn selected_patchset_projection_rejects_disagreeing_change_ordinal() {
     let error = store
         .get_change(Some("repo"), "T-0001/C-01")
         .expect_err("disagreeing Change ordinal must fail closed");
-    assert_eq!(
-        error,
-        "Binary DB v0 selected Patchset Change ordinal disagrees"
-    );
+    assert!(error.contains("Unknown change"), "{error}");
 }
 
 #[test]
 fn actor_lookup_decodes_plus_one_targets_and_preserves_collision_candidates() {
-    let db = initialized_db("actor-lookup-plus-one");
+    let db = empty_initialized_db("actor-lookup-plus-one");
     let index = WorkflowBinaryV0Codec::actor_lookup_index();
     assert!(index.stores_record_index_plus_one());
     let key = 0x8877_6655_4433_2211_u64.to_le_bytes();
@@ -1317,13 +1323,201 @@ fn actor_lookup_decodes_plus_one_targets_and_preserves_collision_candidates() {
 }
 
 fn atomic_task_land_request(task_or_change_ref: &str) -> JsonValue {
-    json!({
-        "contract": "task-land-atomic/v1",
+    json!({"actor_key_index":0,
+        "contract":"task-land-atomic/v2",
         "idempotency_key": format!("atomic-land:{task_or_change_ref}"),
         "task_or_change_ref": task_or_change_ref,
         "target_line": "main",
         "mode": "direct"
     })
+}
+
+fn guarded_atomic_task_land_request() -> JsonValue {
+    let mut payload = atomic_task_land_request("T-0001");
+    payload["contract"] = json!("task-land-atomic-guarded/v2");
+    payload["expected_identity"] = json!({
+        "repository_index":7, "patchset_id":"T-0001/P-01",
+        "revision_snapshot_id":"SNP-0000000000A2", "base_snapshot_id":"SNP-0000000000A1"
+    });
+    payload
+}
+
+#[test]
+fn guarded_atomic_task_land_preserves_legacy_and_identical_replay() {
+    let db = initialized_db("guarded-atomic-replay");
+    seed_content(&db);
+    let store = BinaryDbServerWorkflowV0Store::new(db.clone()).with_repository_index(7);
+    prepare_ready_atomic_task_land(&store, "SNP-0000000000A2");
+    let request = guarded_atomic_task_land_request();
+    let first = store.submit_task_land("T-0001", &request).unwrap();
+    assert_eq!(first["contract"], "task-land-atomic-guarded/v2");
+    assert_eq!(first["expected_identity"], request["expected_identity"]);
+    assert_eq!(first["repository_index"], 7);
+    assert_eq!(first["task_status"], "completed");
+    let replay = store.submit_task_land("T-0001", &request).unwrap();
+    assert_eq!(replay["replayed"], true);
+    assert_eq!(replay["landed_snapshot_id"], first["landed_snapshot_id"]);
+    let legacy = store
+        .submit_task_land("T-0001", &atomic_task_land_request("T-0001"))
+        .unwrap();
+    assert_eq!(legacy["contract"], "task-land-atomic/v2");
+    assert_eq!(legacy["replayed"], true);
+    let mut changed = request;
+    changed["expected_identity"]["revision_snapshot_id"] = json!("SNP-0000000000A3");
+    assert!(store.submit_task_land("T-0001", &changed).is_err());
+    let read = BinaryDbReadTxn::new(&db);
+    assert_eq!(
+        read.record_count(WorkflowBinaryV0Codec::land_file())
+            .unwrap(),
+        1
+    );
+}
+
+#[test]
+fn guarded_atomic_task_land_wrong_repo_patchset_revision_base_fail_before_append() {
+    for (field, value) in [
+        ("repository_index", json!(8)),
+        ("patchset_id", json!("T-0002/P-01")),
+        ("revision_snapshot_id", json!("SNP-0000000000A3")),
+        ("base_snapshot_id", json!("SNP-0000000000A2")),
+    ] {
+        let db = initialized_db(&format!("guarded-atomic-{field}"));
+        seed_content(&db);
+        let store = BinaryDbServerWorkflowV0Store::new(db.clone()).with_repository_index(7);
+        prepare_ready_atomic_task_land(&store, "SNP-0000000000A2");
+        let mut request = guarded_atomic_task_land_request();
+        request["expected_identity"][field] = value;
+        let error = store.submit_task_land("T-0001", &request).unwrap_err();
+        assert!(
+            error.contains("EXPECTED_CANDIDATE_MISMATCH"),
+            "{field}: {error}"
+        );
+        let read = BinaryDbReadTxn::new(&db);
+        assert_eq!(
+            read.record_count(WorkflowBinaryV0Codec::land_file())
+                .unwrap(),
+            0
+        );
+        let change = store.get_change(Some("repo"), "T-0001/C-01").unwrap();
+        assert_ne!(change["status"], "landed");
+    }
+}
+
+#[test]
+fn guarded_atomic_task_land_revalidates_competing_selection_after_admission() {
+    let db = initialized_db("guarded-atomic-selection-race");
+    seed_content(&db);
+    let store = BinaryDbServerWorkflowV0Store::new(db.clone()).with_repository_index(7);
+    prepare_ready_atomic_task_land(&store, "SNP-0000000000A2");
+    let result = store.submit_task_land_after_prepare_for_test(
+        "T-0001",
+        &guarded_atomic_task_land_request(),
+        || {
+            store.publish_patchset("T-0001/C-01", &json!({"actor_key_index":0,
+            "base_snapshot_id":"SNP-0000000000A1", "revision_snapshot_id":"SNP-0000000000A3",
+            "summary":"competing candidate", "author_mode":"ai_with_human_review"
+        }))?;
+            store
+                .select_patchset(
+                    "T-0001/C-01",
+                    &json!({"actor_key_index":0,"patchset_id":"T-0001/C-01/P-02"}),
+                )
+                .map(|_| ())
+        },
+    );
+    assert!(result.unwrap_err().contains("EXPECTED_CANDIDATE_MISMATCH"));
+    let read = BinaryDbReadTxn::new(&db);
+    assert_eq!(
+        read.record_count(WorkflowBinaryV0Codec::land_file())
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        store.get_change(Some("repo"), "T-0001/C-01").unwrap()["current_patchset_id"],
+        "T-0001/C-01/P-02"
+    );
+}
+
+#[test]
+fn guarded_atomic_task_land_never_ignores_guard_under_legacy_contract_or_unscoped_store() {
+    let db = initialized_db("guarded-atomic-contract");
+    seed_content(&db);
+    let store = BinaryDbServerWorkflowV0Store::new(db.clone());
+    prepare_ready_atomic_task_land(&store, "SNP-0000000000A2");
+    let mut request = guarded_atomic_task_land_request();
+    assert!(store
+        .submit_task_land("T-0001", &request)
+        .unwrap_err()
+        .contains("numeric Repository"));
+    request["contract"] = json!("task-land-atomic/v2");
+    assert!(store
+        .submit_task_land("T-0001", &request)
+        .unwrap_err()
+        .contains("requires task-land-atomic-guarded"));
+}
+
+#[test]
+fn guarded_atomic_task_land_rejects_advanced_head_and_mismatched_legacy_receipt() {
+    let db = initialized_db("guarded-atomic-legacy-receipt");
+    seed_content(&db);
+    let store = BinaryDbServerWorkflowV0Store::new(db.clone()).with_repository_index(7);
+    prepare_ready_atomic_task_land(&store, "SNP-0000000000A2");
+    let lines = ServerBinaryDbLineStore::<_, SERVER_CONTENT_BINARY_LAYOUT_ID>::new(db.clone());
+    lines.set_line_head("main", 3, 3).unwrap();
+    let error = store
+        .submit_task_land("T-0001", &guarded_atomic_task_land_request())
+        .unwrap_err();
+    assert!(error.contains("REMOTE_APPLY_RECEIPT_MISSING"));
+    assert_eq!(
+        BinaryDbReadTxn::new(&db)
+            .record_count(WorkflowBinaryV0Codec::land_file())
+            .unwrap(),
+        0
+    );
+    let unguarded = store
+        .submit_task_land("T-0001", &atomic_task_land_request("T-0001"))
+        .unwrap_err();
+    assert!(unguarded.contains("REMOTE_APPLY_RECEIPT_MISSING"));
+    assert_eq!(
+        BinaryDbReadTxn::new(&db)
+            .record_count(WorkflowBinaryV0Codec::land_file())
+            .unwrap(),
+        0
+    );
+}
+
+#[test]
+fn guarded_atomic_task_land_rejects_invalidated_or_withdrawn_before_append() {
+    for flag in [1, 2] {
+        let db = initialized_db(&format!("guarded-atomic-nonlive-{flag}"));
+        seed_content(&db);
+        let store = BinaryDbServerWorkflowV0Store::new(db.clone()).with_repository_index(7);
+        prepare_ready_atomic_task_land(&store, "SNP-0000000000A2");
+        let read = BinaryDbReadTxn::new(&db);
+        let mut patchset = WorkflowBinaryV0Codec::decode_patchset(
+            &read
+                .read_record(WorkflowBinaryV0Codec::patchset_file(), 0)
+                .unwrap(),
+        )
+        .unwrap();
+        drop(read);
+        patchset.patchset_meta |= flag;
+        let raw = WorkflowBinaryV0Codec::encode_patchset(patchset).unwrap();
+        let mut tx = BinaryDbWriteTxn::begin(&db, BinaryDbCommandScope::ServerWorkflow).unwrap();
+        tx.overwrite_record(WorkflowBinaryV0Codec::patchset_file(), 0, &raw)
+            .unwrap();
+        tx.commit().unwrap();
+        let error = store
+            .submit_task_land("T-0001", &guarded_atomic_task_land_request())
+            .unwrap_err();
+        assert!(error.contains("EXPECTED_CANDIDATE_MISMATCH"));
+        assert_eq!(
+            BinaryDbReadTxn::new(&db)
+                .record_count(WorkflowBinaryV0Codec::land_file())
+                .unwrap(),
+            0
+        );
+    }
 }
 
 fn prepare_ready_atomic_task_land(
@@ -1333,7 +1527,7 @@ fn prepare_ready_atomic_task_land(
     store
         .create_task(
             "repo",
-            &json!({
+            &json!({"actor_key_index":0,
                 "title": "Ready Atomic Task Land",
                 "intent": "Prepare an already-ready selected Patchset"
             }),
@@ -1342,7 +1536,7 @@ fn prepare_ready_atomic_task_land(
     store
         .create_change(
             "repo",
-            &json!({
+            &json!({"actor_key_index":0,
                 "task_id": "T-0001",
                 "title": "Ready Atomic Task Land Change",
                 "base_line": "main"
@@ -1352,7 +1546,7 @@ fn prepare_ready_atomic_task_land(
     store
         .publish_patchset(
             "T-0001/C-01",
-            &json!({
+            &json!({"actor_key_index":0,
                 "base_snapshot_id": "SNP-0000000000A1",
                 "revision_snapshot_id": revision_snapshot_id,
                 "summary": "ready atomic Task Land",
@@ -1395,7 +1589,7 @@ fn atomic_task_land_commits_land_change_task_and_line_and_replays_without_append
     store
         .create_task(
             "repo",
-            &json!({
+            &json!({"actor_key_index":0,
                 "title": "Atomic Task Land",
                 "intent": "Close all Task Land state in one transaction"
             }),
@@ -1404,7 +1598,7 @@ fn atomic_task_land_commits_land_change_task_and_line_and_replays_without_append
     store
         .create_change(
             "repo",
-            &json!({
+            &json!({"actor_key_index":0,
                 "task_id": "T-0001",
                 "title": "Atomic Task Land Change",
                 "base_line": "main"
@@ -1414,7 +1608,7 @@ fn atomic_task_land_commits_land_change_task_and_line_and_replays_without_append
     store
         .publish_patchset(
             "T-0001/C-01",
-            &json!({
+            &json!({"actor_key_index":0,
                 "base_snapshot_id": "SNP-0000000000A1",
                 "revision_snapshot_id": "SNP-0000000000A2",
                 "summary": "ready atomic Task Land",
@@ -1452,14 +1646,14 @@ fn atomic_task_land_commits_land_change_task_and_line_and_replays_without_append
     let landed = store
         .submit_task_land("T-0001", &request)
         .expect("atomically land Task");
-    assert_eq!(landed["contract"], "task-land-atomic/v1");
+    assert_eq!(landed["contract"], "task-land-atomic/v2");
     assert_eq!(landed["replayed"], false);
     assert_eq!(landed["status"], "succeeded");
     assert_eq!(landed["task"]["status"], "completed");
     assert_eq!(landed["task"]["task_seq"], 1);
     assert_eq!(landed["change"]["status"], "landed");
     assert_eq!(landed["change"]["change_ref"], "T-0001/C-01");
-    assert_eq!(landed["change"]["selected_patchset_id"], "T-0001/C-01/P-01");
+    assert_eq!(landed["change"]["current_patchset_id"], "T-0001/C-01/P-01");
     assert_eq!(landed["patchset"]["patchset_id"], "T-0001/C-01/P-01");
     assert_eq!(landed["patchset"]["patchset_number"], 1);
     assert_eq!(landed["land"]["land_seq"], 1);
@@ -1487,7 +1681,7 @@ fn atomic_task_land_commits_land_change_task_and_line_and_replays_without_append
             .expect("read physical Land"),
     )
     .expect("decode physical Land");
-    assert_eq!(physical_land.change_index, 0);
+    assert_eq!(physical_land.task_index, 0);
     assert_eq!(physical_land.patchset_index, 0);
     let physical_change = WorkflowBinaryV0Codec::decode_change(
         &read
@@ -1496,7 +1690,7 @@ fn atomic_task_land_commits_land_change_task_and_line_and_replays_without_append
     )
     .expect("decode physical Change");
     assert_eq!(physical_change.task_index, 0);
-    assert_eq!(physical_change.selected_patchset_index_plus1, 1);
+    assert_eq!(physical_change.reserved_selected_patchset, 0);
 }
 
 #[test]
@@ -1509,7 +1703,7 @@ fn task_audit_terminal_status_precedes_landed_change_readiness() {
     store
         .submit_land(
             "T-0001/C-01",
-            &json!({
+            &json!({"actor_key_index":0,
                 "target_line": "main",
                 "mode": "direct"
             }),
@@ -1518,12 +1712,15 @@ fn task_audit_terminal_status_precedes_landed_change_readiness() {
     let active = store
         .read_task_audit("repo", "T-0001", "main")
         .expect("audit active Task with landed Change");
-    assert_eq!(active["task"]["status"], "active");
-    assert_eq!(active["summary"]["verdict"], "ready_to_close");
-    assert_eq!(active["verdict"]["status"], "ready_to_close");
+    assert_eq!(active["task"]["status"], "completed");
+    assert_eq!(active["summary"]["verdict"], "task_completed");
+    assert_eq!(active["verdict"]["status"], "task_completed");
 
     store
-        .close_task("T-0001", &json!({"status": "completed"}))
+        .close_task(
+            "T-0001",
+            &json!({"actor_key_index":0,"status": "completed"}),
+        )
         .expect("complete landed Task");
     let completed = store
         .read_task_audit("repo", "T-0001", "main")
@@ -1603,7 +1800,7 @@ fn atomic_task_land_rolls_back_when_response_projection_fails() {
 fn history_promotion_preserves_ten_local_receipts_and_lands_one_aggregate() {
     let db = initialized_db("history-promotion-ten-local-lands");
     let snapshot_ids = seed_history_content(&db, 10);
-    let plan_service = BinaryDbServerPlanService::new(db.clone());
+    let plan_service = plan_service(db.clone());
     let plans = (0..10)
         .map(|ordinal| {
             let item_ref = format!("HISTORY-PROMOTION-{:02}", ordinal + 1);
@@ -1634,7 +1831,7 @@ fn history_promotion_preserves_ten_local_receipts_and_lands_one_aggregate() {
         .prepare_history_promotion("repo", &request)
         .expect("prepare ten local histories");
     let prepare_elapsed_ms = prepare_started.elapsed().as_secs_f64() * 1_000.0;
-    assert_eq!(prepared["contract"], "history-promotion-prepare/v1");
+    assert_eq!(prepared["contract"], "history-promotion-prepare/v3");
     assert_eq!(prepared["replayed"], false);
     assert_eq!(prepared["entries"].as_array().unwrap().len(), 10);
     assert_eq!(
@@ -1677,7 +1874,7 @@ fn history_promotion_preserves_ten_local_receipts_and_lands_one_aggregate() {
     let receipt_land_error = store
         .submit_land(
             first_entry["change_ref"].as_str().unwrap(),
-            &json!({
+            &json!({"actor_key_index":0,
                 "target_line": "main",
                 "mode": "direct"
             }),
@@ -1733,8 +1930,8 @@ fn history_promotion_preserves_ten_local_receipts_and_lands_one_aggregate() {
         "pass"
     );
 
-    let land_request = json!({
-        "contract": "task-land-atomic/v1",
+    let land_request = json!({"actor_key_index":0,
+        "contract":"task-land-atomic/v2",
         "idempotency_key": "atomic-land:history-promotion-ten",
         "task_or_change_ref": aggregate_change_ref,
         "target_line": "main",
@@ -1782,7 +1979,7 @@ fn history_promotion_preserves_ten_local_receipts_and_lands_one_aggregate() {
     assert_eq!(
         read.record_count(WorkflowBinaryV0Codec::land_file())
             .expect("Land count"),
-        11
+        1
     );
     assert_eq!(
         read.record_count(WorkflowBinaryV0Codec::policy_file())
@@ -1794,30 +1991,39 @@ fn history_promotion_preserves_ten_local_receipts_and_lands_one_aggregate() {
     for (ordinal, entry) in prepared["entries"].as_array().unwrap().iter().enumerate() {
         let task = store
             .get_task(Some("repo"), entry["task_id"].as_str().unwrap())
-            .expect("read completed promoted Task");
-        assert_eq!(task["status"], "completed");
+            .unwrap();
+        let final_task = ordinal + 1 == prepared["entries"].as_array().unwrap().len();
+        assert_eq!(
+            task["status"],
+            if final_task { "completed" } else { "active" }
+        );
         assert_eq!(task["plan_id"], plans[ordinal].0["plan_id"]);
         assert_eq!(
             task["origin_plan_revision_id"],
             plans[ordinal].0["head_revision_id"]
         );
         assert_eq!(task["plan_item_ref"], plans[ordinal].1);
-        let change = store
-            .get_change(Some("repo"), entry["change_ref"].as_str().unwrap())
-            .expect("read landed promoted Change");
-        assert_eq!(change["status"], "landed");
-        let receipt_land = store
-            .get_land(
-                Some("repo"),
-                &format!("{}/L-01", entry["change_ref"].as_str().unwrap()),
-            )
-            .expect("read imported receipt Land");
-        assert_eq!(receipt_land["source_kind"], "imported_local_land_receipt");
-        assert_eq!(receipt_land["governance_authority"], false);
+        let receipt = store
+            .get_patchset(None, entry["receipt_patchset_id"].as_str().unwrap())
+            .unwrap();
+        assert_eq!(receipt["source_kind"], "imported_local_land_receipt");
+        assert_eq!(receipt["governance_authority"], false);
         assert_eq!(
-            receipt_land["result"]["target_line_head"],
+            receipt["base_snapshot_id"],
             request["entries"][ordinal]["pre_land_target_snapshot_id"]
         );
+        assert_eq!(
+            receipt["revision_snapshot_id"],
+            request["entries"][ordinal]["landed_snapshot_id"]
+        );
+        if !final_task {
+            assert!(store
+                .get_land(
+                    None,
+                    &format!("{}/L-01", entry["task_id"].as_str().unwrap())
+                )
+                .is_err());
+        }
     }
     let aggregate_land = store
         .get_land(
@@ -1844,7 +2050,7 @@ fn history_promotion_preserves_ten_local_receipts_and_lands_one_aggregate() {
         BinaryDbReadTxn::new(&db)
             .record_count(WorkflowBinaryV0Codec::land_file())
             .expect("Land count after replay"),
-        11
+        1
     );
     eprintln!(
         "AIT_SERVER_HISTORY_TIMINGS {}",
@@ -1867,7 +2073,7 @@ fn staged_history_promotion_preserves_sixty_five_receipts_with_recoverable_close
     let stage_zero = store
         .prepare_history_promotion("repo", &stage_zero_request)
         .expect("prepare first bounded history stage");
-    assert_eq!(stage_zero["contract"], "history-promotion-prepare/v2");
+    assert_eq!(stage_zero["contract"], "history-promotion-prepare/v3");
     assert_eq!(stage_zero["stage_ordinal"], 0);
     assert_eq!(stage_zero["final_stage"], false);
     assert_eq!(stage_zero["entries"].as_array().unwrap().len(), 64);
@@ -1923,6 +2129,18 @@ fn staged_history_promotion_preserves_sixty_five_receipts_with_recoverable_close
     );
     assert_eq!(
         prepared["aggregate"]["patchset"]["governance_authority"],
+        true
+    );
+
+    let (previous_owner, previous_patch) = stage_zero_patchset_id.rsplit_once("/P-").unwrap();
+    let previous_task = previous_owner.split('/').next().unwrap();
+    let mut short_retry = final_request.clone();
+    short_retry["previous_stage_patchset_id"] =
+        json!(format!("{previous_task}/P-{previous_patch}"));
+    assert_eq!(
+        store
+            .prepare_history_promotion("repo", &short_retry)
+            .unwrap()["replayed"],
         true
     );
 
@@ -1982,7 +2200,7 @@ fn staged_history_promotion_preserves_sixty_five_receipts_with_recoverable_close
         BinaryDbReadTxn::new(&db)
             .record_count(WorkflowBinaryV0Codec::land_file())
             .expect("partial receipt Land count"),
-        64
+        0
     );
     store
         .apply_staged_history_receipts_before_atomic_land_for_test(
@@ -1997,7 +2215,7 @@ fn staged_history_promotion_preserves_sixty_five_receipts_with_recoverable_close
         BinaryDbReadTxn::new(&db)
             .record_count(WorkflowBinaryV0Codec::land_file())
             .expect("replayed partial receipt Land count"),
-        64
+        0
     );
     let read = BinaryDbReadTxn::new(&db);
     let lines = ServerBinaryDbLineStore::<_, SERVER_CONTENT_BINARY_LAYOUT_ID>::new(db.clone());
@@ -2008,8 +2226,8 @@ fn staged_history_promotion_preserves_sixty_five_receipts_with_recoverable_close
     assert_eq!(line.head_snapshot_index_plus1, 1);
     drop(read);
 
-    let land_request = json!({
-        "contract": "task-land-atomic/v1",
+    let land_request = json!({"actor_key_index":0,
+        "contract":"task-land-atomic/v2",
         "idempotency_key": "atomic-land:history-promotion-sixty-five",
         "task_or_change_ref": aggregate_change_ref,
         "target_line": "main",
@@ -2044,7 +2262,7 @@ fn staged_history_promotion_preserves_sixty_five_receipts_with_recoverable_close
     assert_eq!(
         read.record_count(WorkflowBinaryV0Codec::land_file())
             .expect("staged Land count"),
-        66
+        1
     );
     let (_, line) = lines
         .line_by_name(&read, "main")
@@ -2061,9 +2279,84 @@ fn staged_history_promotion_preserves_sixty_five_receipts_with_recoverable_close
         BinaryDbReadTxn::new(&db)
             .record_count(WorkflowBinaryV0Codec::land_file())
             .expect("staged Land count after replay"),
-        66
+        1
     );
     validate_frozen_server_workflow_v0(&db).expect("validate staged frozen v0 workflow");
+}
+
+#[test]
+fn guarded_atomic_task_land_validates_staged_history_transactions_and_replay() {
+    let db = initialized_db("guarded-atomic-staged-history");
+    let snapshots = seed_history_content(&db, 65);
+    let store = BinaryDbServerWorkflowV0Store::new_frozen(db.clone()).with_repository_index(7);
+    let first = store
+        .prepare_history_promotion(
+            "repo",
+            &staged_history_promotion_request(&snapshots, 0, None),
+        )
+        .unwrap();
+    let previous = first["stage"]["patchset_id"].as_str().unwrap();
+    let prepared = store
+        .prepare_history_promotion(
+            "repo",
+            &staged_history_promotion_request(&snapshots, 1, Some(previous)),
+        )
+        .unwrap();
+    let change = prepared["aggregate"]["change_ref"].as_str().unwrap();
+    let patchset = prepared["aggregate"]["patchset_id"].as_str().unwrap();
+    store
+        .record_review(
+            change,
+            &json!({"patchset_id":patchset,"reviewer":"owner","action":"approve"}),
+        )
+        .unwrap();
+    store
+        .put_attestation(
+            patchset,
+            &json!({"verification_state":"pass","require_tests_pass":false}),
+        )
+        .unwrap();
+    assert_eq!(store.evaluate_policy(patchset).unwrap()["decision"], "pass");
+    let request = json!({"actor_key_index":0,
+        "contract":"task-land-atomic-guarded/v2", "task_or_change_ref":change,
+        "idempotency_key":"guarded-atomic-staged", "target_line":"main", "mode":"direct",
+        "expected_identity":{"repository_index":7,"patchset_id":patchset,"base_snapshot_id":snapshots.first().unwrap(),"revision_snapshot_id":snapshots.last().unwrap()}
+    });
+    let mut wrong = request.clone();
+    wrong["expected_identity"]["repository_index"] = json!(8);
+    assert!(store
+        .submit_task_land(change, &wrong)
+        .unwrap_err()
+        .contains("EXPECTED_CANDIDATE_MISMATCH"));
+    assert_eq!(
+        BinaryDbReadTxn::new(&db)
+            .record_count(WorkflowBinaryV0Codec::land_file())
+            .unwrap(),
+        0
+    );
+    let result = store.submit_task_land(change, &request).unwrap();
+    assert_eq!(result["expected_identity"], request["expected_identity"]);
+    assert_eq!(
+        result["landed_snapshot_id"],
+        snapshots.last().unwrap().as_str()
+    );
+    assert_eq!(
+        BinaryDbReadTxn::new(&db)
+            .record_count(WorkflowBinaryV0Codec::land_file())
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        store.submit_task_land(change, &request).unwrap()["replayed"],
+        true
+    );
+    assert_eq!(
+        BinaryDbReadTxn::new(&db)
+            .record_count(WorkflowBinaryV0Codec::land_file())
+            .unwrap(),
+        1
+    );
+    validate_frozen_server_workflow_v0(&db).unwrap();
 }
 
 #[cfg(feature = "perfetto-tracing")]
@@ -2125,8 +2418,8 @@ fn perfetto_history_promotion_and_atomic_land_ten_by_thirty() {
             "pass"
         );
 
-        let land_request = json!({
-            "contract": "task-land-atomic/v1",
+        let land_request = json!({"actor_key_index":0,
+            "contract":"task-land-atomic/v2",
             "idempotency_key": format!("atomic-land:perfetto-sample-{sample}"),
             "task_or_change_ref": aggregate_change_ref,
             "target_line": "main",
@@ -2190,7 +2483,7 @@ fn perfetto_history_promotion_and_atomic_land_ten_by_thirty() {
 fn history_promotion_resolves_plan_binding_before_opening_workflow_writer() {
     let db = initialized_db("history-promotion-plan-binding-before-writer");
     let snapshot_ids = seed_history_content(&db, 1);
-    let plan = BinaryDbServerPlanService::new(db.clone())
+    let plan = plan_service(db.clone())
         .create_plan(
             "repo",
             &atomic_plan_payload("History promotion Plan", "HISTORY-PROMOTION-01"),
@@ -2230,7 +2523,7 @@ fn history_promotion_supersedes_an_abandoned_plan_bound_task() {
     let db = initialized_db("history-promotion-abandoned-plan-binding");
     let snapshot_ids = seed_history_content(&db, 1);
     let item_ref = "HISTORY-ABANDONED-01";
-    let plan = BinaryDbServerPlanService::new(db.clone())
+    let plan = plan_service(db.clone())
         .create_plan(
             "repo",
             &atomic_plan_payload("Abandoned history binding", item_ref),
@@ -2255,13 +2548,21 @@ fn history_promotion_supersedes_an_abandoned_plan_bound_task() {
         )
         .expect("start first Plan-bound Task");
     let abandoned_task_id = abandoned["task_id"].as_str().unwrap();
-    let abandoned_change_ref = abandoned["change"]["change_ref"].as_str().unwrap();
+    let abandoned_change = store.create_change("repo",&json!({"actor_key_index":0,"task_id":abandoned_task_id,"title":"Abandoned explicit revision","base_line":"main"})).unwrap();
+    let abandoned_change_ref = abandoned_change["change_ref"].as_str().unwrap();
     store
-        .close_task(abandoned_task_id, &json!({"status": "abandoned"}))
+        .close_change(
+            abandoned_change_ref,
+            &json!({"actor_key_index":0,"status":"superseded"}),
+        )
+        .unwrap();
+
+    store
+        .close_task(
+            abandoned_task_id,
+            &json!({"actor_key_index":0,"status": "abandoned"}),
+        )
         .expect("abandon first Task");
-    store
-        .close_change(abandoned_change_ref, &json!({"status": "superseded"}))
-        .expect("supersede first Change");
 
     let mut request = history_promotion_request(&snapshot_ids);
     request["idempotency_key"] = json!("history-promotion:abandoned-plan-binding");
@@ -2311,7 +2612,7 @@ fn history_promotion_rejects_active_or_completed_plan_bindings_without_a_receipt
     let db = initialized_db("history-promotion-active-plan-binding");
     let snapshot_ids = seed_history_content(&db, 1);
     let item_ref = "HISTORY-ACTIVE-01";
-    let plan = BinaryDbServerPlanService::new(db.clone())
+    let plan = plan_service(db.clone())
         .create_plan(
             "repo",
             &atomic_plan_payload("Active history binding", item_ref),
@@ -2351,7 +2652,10 @@ fn history_promotion_rejects_active_or_completed_plan_bindings_without_a_receipt
         "{error}"
     );
     store
-        .close_task(active_task_id, &json!({"status": "completed"}))
+        .close_task(
+            active_task_id,
+            &json!({"actor_key_index":0,"status": "completed"}),
+        )
         .expect("complete first Task");
     request["idempotency_key"] = json!("history-promotion:completed-plan-binding");
     let completed_error = store
@@ -2452,7 +2756,7 @@ fn history_promotion_rejects_a_fully_retired_exact_receipt_without_replacement()
     let db = initialized_db("history-promotion-retired-receipt-owner");
     let snapshot_ids = seed_history_content(&db, 1);
     let item_ref = "HISTORY-RETIRED-RECEIPT-01";
-    let plan = BinaryDbServerPlanService::new(db.clone())
+    let plan = plan_service(db.clone())
         .create_plan(
             "repo",
             &atomic_plan_payload("Retired receipt rejection", item_ref),
@@ -2481,7 +2785,10 @@ fn history_promotion_rejects_a_fully_retired_exact_receipt_without_replacement()
         .expect("old receipt Patchset id")
         .to_string();
     store
-        .close_task(&old_task_id, &json!({"status": "abandoned"}))
+        .close_task(
+            &old_task_id,
+            &json!({"actor_key_index":0,"status": "abandoned"}),
+        )
         .expect("cancel old receipt Task");
 
     let mut incomplete_retirement = request.clone();
@@ -2496,7 +2803,10 @@ fn history_promotion_rejects_a_fully_retired_exact_receipt_without_replacement()
     );
 
     store
-        .close_change(&old_change_ref, &json!({"status": "archived"}))
+        .close_change(
+            &old_change_ref,
+            &json!({"actor_key_index":0,"status": "archived"}),
+        )
         .expect("archive old receipt Change");
     let mut expected_retry = request.clone();
     expected_retry["idempotency_key"] = json!("history-promotion:retired-receipt-expected");
@@ -2597,7 +2907,7 @@ fn history_promotion_rejects_a_missing_expected_publication_owner_before_append(
 fn history_promotion_reuses_receipts_when_an_unlanded_chain_is_extended() {
     let db = initialized_db("history-promotion-extended-retry");
     let snapshot_ids = seed_history_content(&db, 2);
-    let plan_service = BinaryDbServerPlanService::new(db.clone());
+    let plan_service = plan_service(db.clone());
     let plans = (0..2)
         .map(|ordinal| {
             let item_ref = format!("HISTORY-EXTENDED-{:02}", ordinal + 1);
@@ -2835,13 +3145,16 @@ fn atomic_task_land_rolls_back_land_change_and_line_when_task_completion_fails()
     let store = BinaryDbServerWorkflowV0Store::new(db.clone());
     prepare_ready_atomic_task_land(&store, "SNP-0000000000A2");
     store
-        .close_task("T-0001", &json!({"status": "abandoned"}))
+        .close_task(
+            "T-0001",
+            &json!({"actor_key_index":0,"status": "abandoned"}),
+        )
         .expect("abandon Task before Land");
 
     let error = store
         .submit_task_land("T-0001/C-01", &atomic_task_land_request("T-0001/C-01"))
         .expect_err("terminal Task must roll back the atomic Land transaction");
-    assert!(error.contains("already terminal"), "{error}");
+    assert!(error.contains("terminal"), "{error}");
     assert_eq!(
         store.get_task(None, "T-0001").expect("read Task")["status"],
         "abandoned"
@@ -2873,7 +3186,7 @@ fn atomic_task_land_rejects_non_ready_and_ambiguous_task_without_mutation() {
     store
         .create_task(
             "repo",
-            &json!({
+            &json!({"actor_key_index":0,
                 "title": "Atomic Task Land preconditions",
                 "intent": "Reject incomplete closeout"
             }),
@@ -2882,7 +3195,7 @@ fn atomic_task_land_rejects_non_ready_and_ambiguous_task_without_mutation() {
     store
         .create_change(
             "repo",
-            &json!({
+            &json!({"actor_key_index":0,
                 "task_id": "T-0001",
                 "title": "First Change",
                 "base_line": "main"
@@ -2892,7 +3205,7 @@ fn atomic_task_land_rejects_non_ready_and_ambiguous_task_without_mutation() {
     store
         .publish_patchset(
             "T-0001/C-01",
-            &json!({
+            &json!({"actor_key_index":0,
                 "base_snapshot_id": "SNP-0000000000A1",
                 "revision_snapshot_id": "SNP-0000000000A2",
                 "summary": "not ready",
@@ -2921,19 +3234,23 @@ fn atomic_task_land_rejects_non_ready_and_ambiguous_task_without_mutation() {
     store
         .create_change(
             "repo",
-            &json!({
+            &json!({"actor_key_index":0,
                 "task_id": "T-0001",
                 "title": "Second Change",
                 "base_line": "main"
             }),
         )
         .expect("create second Change");
-    let ambiguous = store
-        .resolve_task_land_change_ref("T-0001")
-        .expect_err("ambiguous Task must require exact Change");
+    assert_eq!(
+        store.resolve_task_land_change_ref("T-0001").unwrap(),
+        "T-0001"
+    );
+    let wrong_change = store
+        .submit_task_land("T-0001/C-02", &atomic_task_land_request("T-0001/C-02"))
+        .unwrap_err();
     assert!(
-        ambiguous.contains("multiple landable Changes"),
-        "{ambiguous}"
+        wrong_change.contains("different Task or explicit Change"),
+        "{wrong_change}"
     );
 }
 
@@ -2946,7 +3263,7 @@ fn runtime_writes_keep_patch_review_policy_and_land_ordinals_in_v0_scope() {
     let task = store
         .create_task(
             "repo",
-            &json!({
+            &json!({"actor_key_index":0,
                 "task_id": "T-0001",
                 "title": "Wire Binary DB v0",
                 "intent": "Exercise exact v0 runtime scopes"
@@ -2957,7 +3274,7 @@ fn runtime_writes_keep_patch_review_policy_and_land_ordinals_in_v0_scope() {
     let change = store
         .create_change(
             "repo",
-            &json!({
+            &json!({"actor_key_index":0,
                 "change_id": "C-01",
                 "task_id": "T-0001",
                 "title": "Exact ordinal scopes",
@@ -2970,7 +3287,7 @@ fn runtime_writes_keep_patch_review_policy_and_land_ordinals_in_v0_scope() {
     let patchset_one = store
         .publish_patchset(
             "T-0001/C-01",
-            &json!({
+            &json!({"actor_key_index":0,
                 "base_snapshot_id": "SNP-0000000000A1",
                 "revision_snapshot_id": "SNP-0000000000A2",
                 "summary": "first Patchset",
@@ -3008,7 +3325,7 @@ fn runtime_writes_keep_patch_review_policy_and_land_ordinals_in_v0_scope() {
     let patchset_two = store
         .publish_patchset(
             "T-0001/C-01",
-            &json!({
+            &json!({"actor_key_index":0,
                 "base_snapshot_id": "SNP-0000000000A1",
                 "revision_snapshot_id": "SNP-0000000000A3",
                 "summary": "second Patchset",
@@ -3018,7 +3335,10 @@ fn runtime_writes_keep_patch_review_policy_and_land_ordinals_in_v0_scope() {
         .expect("publish second Patchset");
     assert_eq!(patchset_two["patchset_id"], "T-0001/C-01/P-02");
     store
-        .select_patchset("T-0001/C-01", &json!({"patchset_id": "T-0001/C-01/P-02"}))
+        .select_patchset(
+            "T-0001/C-01",
+            &json!({"actor_key_index":0,"patchset_id": "T-0001/C-01/P-02"}),
+        )
         .expect("select second Patchset");
     let review_two = store
         .record_review(
@@ -3078,8 +3398,8 @@ fn runtime_writes_keep_patch_review_policy_and_land_ordinals_in_v0_scope() {
     let land = store
         .submit_land(
             "T-0001/C-01",
-            &json!({
-                "submission_id": "T-0001/C-01/L-01",
+            &json!({"actor_key_index":0,
+                "submission_id": "T-0001/L-01",
                 "patchset_id": "T-0001/C-01/P-02",
                 "target_line": "main",
                 "expected_head_snapshot_id": "SNP-0000000000A1",
@@ -3087,7 +3407,7 @@ fn runtime_writes_keep_patch_review_policy_and_land_ordinals_in_v0_scope() {
             }),
         )
         .expect("land selected Patchset");
-    assert_eq!(land["submission_id"], "T-0001/C-01/L-01");
+    assert_eq!(land["submission_id"], "T-0001/L-01");
     assert_eq!(land["status"], "succeeded");
 
     validate_frozen_server_workflow_v0(&db).expect("validate exact frozen v0 authority");
@@ -3105,7 +3425,7 @@ fn runtime_writes_keep_patch_review_policy_and_land_ordinals_in_v0_scope() {
     assert_eq!(
         patchsets
             .iter()
-            .map(|record| (record.change_index, record.patch_ordinal))
+            .map(|record| (record.task_index, record.patch_ordinal))
             .collect::<Vec<_>>(),
         vec![(0, 0), (0, 1)]
     );
@@ -3149,13 +3469,13 @@ fn runtime_writes_keep_patch_review_policy_and_land_ordinals_in_v0_scope() {
             .expect("read Land"),
     )
     .expect("decode Land");
-    assert_eq!(land_record.change_index, 0);
+    assert_eq!(land_record.task_index, 0);
     assert_eq!(land_record.patchset_index, 1);
     assert_eq!(land_record.land_ordinal, 0);
     assert_eq!(
         read.record_count(WorkflowBinaryV0Codec::actor_file())
             .expect("Actor count"),
-        1
+        2
     );
 }
 
@@ -3169,7 +3489,7 @@ fn historical_policy_suite_catalog_is_independent_from_patchset_compact_ci_count
         store
             .create_task(
                 "repo",
-                &json!({
+                &json!({"actor_key_index":0,
                     "task_id": "T-0001",
                     "title": "Preserve historical Policy catalog",
                     "intent": "Validate independent Policy and compact CI projections"
@@ -3179,7 +3499,7 @@ fn historical_policy_suite_catalog_is_independent_from_patchset_compact_ci_count
         store
             .create_change(
                 "repo",
-                &json!({
+                &json!({"actor_key_index":0,
                     "change_id": "C-01",
                     "task_id": "T-0001",
                     "title": "Independent historical Policy catalog",
@@ -3190,7 +3510,7 @@ fn historical_policy_suite_catalog_is_independent_from_patchset_compact_ci_count
         store
             .publish_patchset(
                 "T-0001/C-01",
-                &json!({
+                &json!({"actor_key_index":0,
                     "base_snapshot_id": "SNP-0000000000A1",
                     "revision_snapshot_id": "SNP-0000000000A2",
                     "summary": "historical Policy catalog fixture",

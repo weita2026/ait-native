@@ -4,6 +4,8 @@ use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum RunnerError {
+    #[error("claimed execution was cancelled")]
+    Cancelled,
     #[error("invalid native job request: {0}")]
     InvalidRequest(String),
     #[error("filesystem operation `{operation}` failed for `{path}`: {source}")]
@@ -24,6 +26,24 @@ pub enum RunnerError {
 }
 
 impl RunnerError {
+    pub(crate) fn redact(self, secret: &str) -> Self {
+        if secret.is_empty() {
+            return self;
+        }
+        match self {
+            Self::InvalidRequest(message) => {
+                Self::InvalidRequest(message.replace(secret, "<redacted>"))
+            }
+            Self::Process(message) => Self::Process(message.replace(secret, "<redacted>")),
+            Self::ServerUnavailable(message) => {
+                Self::ServerUnavailable(message.replace(secret, "<redacted>"))
+            }
+            Self::Server(message) => Self::Server(message.replace(secret, "<redacted>")),
+            Self::Cleanup(message) => Self::Cleanup(message.replace(secret, "<redacted>")),
+            other => other,
+        }
+    }
+
     pub fn fs(operation: &'static str, path: impl AsRef<Path>, source: std::io::Error) -> Self {
         Self::FileSystem {
             operation,

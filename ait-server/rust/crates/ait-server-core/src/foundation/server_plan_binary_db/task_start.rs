@@ -443,6 +443,7 @@ where
         tx: &mut ServerPlanBinaryDbWriteTxn<'_, D, BinaryDbStoreFsyncPolicy<'_, D>, WRITE_LAYOUT>,
         prepared: &PreparedTaskStartPlan,
         now_s: u64,
+        actor_index_plus1: u32,
     ) -> Result<TaskStartPlanBinding, String> {
         match &prepared.kind {
             PreparedTaskStartPlanKind::Create { revision } => {
@@ -463,6 +464,7 @@ where
                         created_at_s: now_s,
                         updated_at_s: now_s,
                         published_at_s: 0,
+                        actor_index_plus1,
                     },
                     revision.title.as_bytes(),
                 )?;
@@ -487,6 +489,7 @@ where
                         root_entry_ordinal: 0,
                         created_at_s: now_s,
                         published_at_s: 0,
+                        actor_index_plus1,
                     },
                     &revision_payload(revision),
                 )?;
@@ -533,6 +536,7 @@ where
                         root_entry_ordinal: 0,
                         created_at_s: now_s,
                         published_at_s: 0,
+                        actor_index_plus1,
                     },
                     &revision_payload(revision),
                 )?;
@@ -545,6 +549,7 @@ where
                 next_plan.latest_revision_index_plus1 = revision_index_plus1(revision_index)?;
                 next_plan.plan_meta = plan_meta_with_status(next_plan.plan_meta, &revision.status)?;
                 next_plan.updated_at_s = now_s;
+                next_plan.actor_index_plus1 = actor_index_plus1;
                 tx.overwrite_plan(*plan_index, next_plan, revision.title.as_bytes())?;
                 task_start_plan_binding(
                     "revised",

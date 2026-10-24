@@ -4,24 +4,6 @@ impl<D> BinaryDbServerWorkflowV0Store<D>
 where
     D: ServerRemoteBinaryDb + BinaryDbIndexAppender + Clone + Send + Sync + 'static,
 {
-    pub(super) fn patchset_owner_index_in_write<F>(
-        &self,
-        tx: &BinaryDbWriteTxn<'_, D, F>,
-        change_index: u32,
-    ) -> Result<V0OrdinalIndexRecord, String>
-    where
-        F: BinaryDbFsyncPolicy,
-    {
-        WorkflowBinaryV0Codec::decode_ordinal_index(
-            &tx.read_record(
-                WorkflowBinaryV0Codec::chain_index_file("change_patchset_index.bin"),
-                change_index,
-            )
-            .map_err(|error| Self::error("Change Patchset index read", error))?,
-        )
-        .map_err(|error| Self::error("Change Patchset index decode", error))
-    }
-
     pub(super) fn task_inventory_in_write<F>(
         &self,
         tx: &BinaryDbWriteTxn<'_, D, F>,
@@ -80,21 +62,129 @@ where
         Ok(kind << 2)
     }
 
-    pub(super) fn change_for_patchset_index<A: ReadV0>(
+    pub(super) fn owner_for_patchset_index<A: ReadV0>(
         &self,
         read: &A,
         patchset_index: u32,
-    ) -> Result<(u32, V0ChangeRecord, V0PatchsetRecord), String> {
+    ) -> Result<(WorkflowOwner, V0PatchsetRecord), String> {
         let patchset = self
             .read_patchset(read, patchset_index)
-            .map_err(|error| Self::error("Patchset relation read", error))?;
-        let change = self
-            .read_change(read, patchset.change_index)
-            .map_err(|error| Self::error("Patchset Change relation read", error))?;
-        if patchset.change_ordinal != change.change_ordinal {
-            return Err("Binary DB v0 Patchset Change ordinal relation disagrees".to_string());
+            .map_err(|e| e.to_string())?;
+        Ok((self.patchset_owner(read, patchset)?, patchset))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn append_candidate_in_write<F: BinaryDbFsyncPolicy>(
+        &self,
+        tx: &mut BinaryDbWriteTxn<'_, D, F>,
+        owner: WorkflowOwner,
+        base: u32,
+        revision: u32,
+        summary: &str,
+        author_mode: &str,
+        now: u64,
+        actor_index_plus1: u32,
+    ) -> Result<u32, String> {
+        self.require_active_owner(tx, owner)?;
+        let ordinal = self.next_task_patchset_ordinal(tx, owner.task_index)?;
+        let mut inventory = self.task_inventory(tx, "task_patchset_index.bin", owner.task_index)?;
+        let mut change_inventory = owner
+            .change
+            .map(|(index, _)| self.owner_ordinal_index(tx, "change_patchset_index.bin", index))
+            .transpose()?;
+        let bytes = WorkflowBinaryV0Codec::encode_single_text_payload(summary, "Patchset summary")
+            .map_err(|e| e.to_string())?;
+        let range = tx
+            .append_payload(WorkflowBinaryV0Codec::patchset_summary_file(), &bytes)
+            .map_err(|e| e.to_string())?;
+        self.sync_file(tx, "patchset_summary_payload.bin")
+            .map_err(|e| e.to_string())?;
+        let record = V0PatchsetRecord {
+            patchset_meta: Self::author_mode_bits(author_mode)? | PATCHSET_EVALUATION_PENDING,
+            patch_ordinal: ordinal,
+            task_index: owner.task_index,
+            change_ordinal_plus1: owner.change_ordinal_plus1(),
+            previous_task_patchset_index_plus1: inventory.latest_index_plus1,
+            previous_change_patchset_index_plus1: change_inventory
+                .as_ref()
+                .map_or(0, |i| i.latest_index_plus1),
+            base_snapshot_index: base,
+            revision_snapshot_index: revision,
+            created_at_s: now,
+            summary_offset: range.payload_offset,
+            summary_len: u16::try_from(range.payload_len)
+                .map_err(|_| "Patchset summary exceeds u16")?,
+            ..V0PatchsetRecord::default()
+        };
+        let index = tx
+            .append_record(
+                WorkflowBinaryV0Codec::patchset_file(),
+                &self
+                    .encode_new_patchset(record)
+                    .map_err(|e| e.to_string())?,
+            )
+            .map_err(|e| e.to_string())?;
+        self.append_patchset_index_rows(tx, index)
+            .map_err(|e| e.to_string())?;
+        if let Some(previous) = inventory.latest_index_plus1.checked_sub(1) {
+            let mut old = self
+                .read_patchset(tx, previous)
+                .map_err(|e| e.to_string())?;
+            old.patchset_meta = (old.patchset_meta & !PATCHSET_PUBLISH_STATE_MASK) | (2 << 5);
+            tx.overwrite_record(
+                WorkflowBinaryV0Codec::patchset_file(),
+                previous,
+                &self
+                    .encode_patchset_replacement(tx, previous, old)
+                    .map_err(|e| e.to_string())?,
+            )
+            .map_err(|e| e.to_string())?;
         }
-        Ok((patchset.change_index, change, patchset))
+        inventory.latest_index_plus1 = index + 1;
+        inventory.count = inventory
+            .count
+            .checked_add(1)
+            .ok_or("Task Patchset count exceeds u16")?;
+        tx.overwrite_record(
+            WorkflowBinaryV0Codec::chain_index_file("task_patchset_index.bin"),
+            owner.task_index,
+            &WorkflowBinaryV0Codec::encode_inventory_index(inventory).map_err(|e| e.to_string())?,
+        )
+        .map_err(|e| e.to_string())?;
+        if let (Some((change_index, _)), Some(change_inventory)) =
+            (owner.change, change_inventory.as_mut())
+        {
+            change_inventory.latest_index_plus1 = index + 1;
+            change_inventory.count = change_inventory
+                .count
+                .checked_add(1)
+                .ok_or("Change Patchset count exceeds u16")?;
+            change_inventory.next_ordinal = ordinal + 1;
+            tx.overwrite_record(
+                WorkflowBinaryV0Codec::chain_index_file("change_patchset_index.bin"),
+                change_index,
+                &WorkflowBinaryV0Codec::encode_ordinal_index(*change_inventory)
+                    .map_err(|e| e.to_string())?,
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        self.update_owner_state(
+            tx,
+            owner,
+            TASK_META_REVIEW_PENDING | TASK_META_VALIDATION_PENDING,
+            TASK_META_READY_TO_LAND | TASK_META_BLOCKED,
+            now,
+            Some(actor_index_plus1),
+            |change| {
+                change.change_meta = (change.change_meta & !CHANGE_META_LIFECYCLE_MASK)
+                    | CHANGE_LIFECYCLE_ACTIVE
+                    | CHANGE_META_HAS_PATCHSETS
+                    | CHANGE_META_REVIEW_PENDING
+                    | CHANGE_META_VALIDATION_PENDING;
+                change.change_meta &= !(CHANGE_META_READY_TO_LAND | CHANGE_META_BLOCKED);
+            },
+        )?;
+        Ok(index)
     }
 
     fn actor_key_hash(user_name: &str) -> u64 {
@@ -147,7 +237,20 @@ where
             email: String::new(),
             memo: String::new(),
         };
-        let hash = Self::actor_key_hash(user_name);
+        self.find_or_create_actor_payload(tx, &payload, actor_kind, now)
+    }
+
+    pub(super) fn find_or_create_actor_payload<F>(
+        &self,
+        tx: &mut BinaryDbWriteTxn<'_, D, F>,
+        payload: &V0ActorPayload,
+        actor_kind: u8,
+        now: u64,
+    ) -> Result<u32, String>
+    where
+        F: BinaryDbFsyncPolicy,
+    {
+        let hash = Self::actor_key_hash(&payload.user_name);
         let key = hash.to_le_bytes();
         let candidates = tx
             .lookup_index(WorkflowBinaryV0Codec::actor_lookup_index(), &key)
@@ -156,9 +259,9 @@ where
             let (mut record, candidate_payload) = self.actor_in_write(tx, index)?;
             if record.actor_meta & 0x80 == 0
                 && record.actor_meta & 0b111 == actor_kind
-                && candidate_payload == payload
+                && &candidate_payload == payload
             {
-                if now > record.last_seen_at_s {
+                if record.created_at_s != 0 && now > record.last_seen_at_s {
                     record.last_seen_at_s = now;
                     let raw = WorkflowBinaryV0Codec::encode_actor(record)
                         .map_err(|error| Self::error("Actor encode", error))?;
@@ -168,7 +271,7 @@ where
                 return Ok(index);
             }
         }
-        let bytes = WorkflowBinaryV0Codec::encode_actor_payload(&payload)
+        let bytes = WorkflowBinaryV0Codec::encode_actor_payload(payload)
             .map_err(|error| Self::error("Actor payload encode", error))?;
         let range = tx
             .append_payload(WorkflowBinaryV0Codec::actor_payload_file(), &bytes)
@@ -176,7 +279,14 @@ where
         self.sync_file(tx, "actor_payload.bin")
             .map_err(|error| Self::error("Actor payload sync", error))?;
         let record = V0ActorRecord {
-            actor_meta: actor_kind,
+            actor_meta: actor_kind
+                | if payload.user_id.is_empty() {
+                    0
+                } else {
+                    1 << 3
+                }
+                | if payload.email.is_empty() { 0 } else { 1 << 4 }
+                | if payload.memo.is_empty() { 0 } else { 1 << 5 },
             reserved0: 0,
             payload_len: u16::try_from(range.payload_len)
                 .map_err(|_| "Actor payload exceeds u16".to_string())?,
@@ -197,14 +307,14 @@ where
         Ok(index)
     }
 
-    fn actor_at(
+    pub(super) fn actor_at<A: ReadV0>(
         &self,
-        read: &BinaryDbReadTxn<'_, D>,
+        read: &A,
         actor_index: u32,
     ) -> Result<(V0ActorRecord, V0ActorPayload), String> {
         let record = WorkflowBinaryV0Codec::decode_actor(
             &read
-                .read_record(WorkflowBinaryV0Codec::actor_file(), actor_index)
+                .read_record_v0(WorkflowBinaryV0Codec::actor_file(), actor_index)
                 .map_err(|error| Self::error("Actor read", error))?,
         )
         .map_err(|error| Self::error("Actor decode", error))?;
@@ -214,7 +324,7 @@ where
             ));
         }
         let raw = read
-            .read_payload(
+            .read_payload_v0(
                 WorkflowBinaryV0Codec::actor_payload_file(),
                 record.payload_offset,
                 u32::from(record.payload_len),
@@ -242,15 +352,22 @@ where
         let patchset = self
             .read_patchset(read, record.patchset_index)
             .map_err(|error| Self::error("Review Patchset read", error))?;
-        let change = self
-            .read_change(read, patchset.change_index)
-            .map_err(|error| Self::error("Review Change read", error))?;
+        let owner = self.patchset_owner(read, patchset)?;
         if record.patch_ordinal != patchset.patch_ordinal
-            || record.change_ordinal != change.change_ordinal
+            || record.change_ordinal_plus1 != patchset.change_ordinal_plus1
         {
             return Err("Binary DB v0 Review ownership ordinals disagree".to_string());
         }
-        let (_, actor) = self.actor_at(read, record.actor_index_plus1 - 1)?;
+        let (actor_record, actor) = self.actor_at(read, record.actor_index_plus1 - 1)?;
+        let reviewer_kind = match actor_record.actor_meta & 0b111 {
+            0 => "user",
+            1 => "team",
+            2 => "bot",
+            3 => "service_account",
+            4 => "automation",
+            5 => "unknown",
+            _ => return Err("Review references an invalid Actor kind".to_string()),
+        };
         let message_raw = read
             .read_payload(
                 WorkflowBinaryV0Codec::review_payload_file(),
@@ -280,19 +397,22 @@ where
             (4, false, false, false) => "dismiss",
             _ => return Err("Binary DB v0 Review action/modifier mapping is invalid".to_string()),
         };
-        let change_ref = self.change_ref(change.task_index, change.change_ordinal);
-        let patchset_id = self.patchset_id(change, patchset.patch_ordinal);
+        let change_ref = owner
+            .change
+            .map(|(_, change)| self.change_ref(owner.task_index, change.change_ordinal));
+        let patchset_id = self.patchset_public_id(patchset);
         let is_request = action_kind == 0;
         Ok(json!({
             "review_id": self.review_id(&patchset_id, record.review_ordinal),
             "repo_name": self.db.repo_name().as_str(),
             "repo_id": self.db.repo_id().as_str(),
-            "task_id": self.task_id(change.task_index),
-            "change_id": format!("C-{:02}", change.change_ordinal + 1),
+            "task_id": self.task_id(owner.task_index),
+            "change_id": owner.change.map(|(_, change)| format!("C-{:02}", change.change_ordinal + 1)),
             "change_ref": change_ref,
             "patchset_id": patchset_id,
             "requested_groups": if is_request { json!([actor.user_name]) } else { json!([]) },
             "reviewer": if is_request { JsonValue::Null } else { json!(actor.user_name) },
+            "reviewer_kind": reviewer_kind,
             "action": action,
             "comment": message,
             "note": if is_request { json!(message) } else { JsonValue::Null },
@@ -311,35 +431,70 @@ where
         review_meta: u8,
         message: &str,
         explicit_review_id: Option<&str>,
+        request_actor: Option<&JsonMap<String, JsonValue>>,
     ) -> Result<JsonValue, String> {
         let operation = "Binary DB v0 Review append";
-        let message_bytes = WorkflowBinaryV0Codec::encode_review_payload(message)
-            .map_err(|error| Self::error(operation, error))?;
-        let now = Self::now_s()?;
         let mut tx =
             BinaryDbWriteTxn::begin_serving(&self.db, BinaryDbCommandScope::ServerWorkflow)
                 .map_err(|error| Self::error(operation, error))?;
-        let change_index = self.change_index_for_ref(&tx, change_id)?;
-        let patchset_index = self.patchset_index_for_id(&tx, patchset_id)?;
+        let index = self.append_review_in_write(
+            &mut tx,
+            change_id,
+            patchset_id,
+            actor_name,
+            actor_kind,
+            review_meta,
+            message,
+            explicit_review_id,
+            request_actor,
+            None,
+            Self::now_s()?,
+        )?;
+        tx.commit().map_err(|error| Self::error(operation, error))?;
+        self.review_at(&BinaryDbReadTxn::new(&self.db), index)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn append_review_in_write<F: BinaryDbFsyncPolicy>(
+        &self,
+        tx: &mut BinaryDbWriteTxn<'_, D, F>,
+        change_id: &str,
+        patchset_id: &str,
+        actor_name: &str,
+        actor_kind: u8,
+        review_meta: u8,
+        message: &str,
+        explicit_review_id: Option<&str>,
+        request_actor: Option<&JsonMap<String, JsonValue>>,
+        accepted_actor_index: Option<u32>,
+        now: u64,
+    ) -> Result<u32, String> {
+        let operation = "Binary DB v0 Review append";
+        let message_bytes = WorkflowBinaryV0Codec::encode_review_payload(message)
+            .map_err(|error| Self::error(operation, error))?;
+        let patchset_index = self.patchset_index_for_id(tx, patchset_id)?;
+        let request_actor_index_plus1 = request_actor
+            .map(|payload| self.request_actor_in_write(tx, payload))
+            .transpose()?;
         self.require_patchset_governance_authority(
-            &tx,
+            tx,
             patchset_index,
             patchset_id,
             "Review mutation",
         )?;
-        let (owner_change_index, change, patchset) =
-            self.change_for_patchset_index(&tx, patchset_index)?;
-        if owner_change_index != change_index {
-            return Err(format!(
-                "Patchset {patchset_id} does not belong to Change {change_id}"
-            ));
-        }
-        if change.selected_patchset_index_plus1 != patchset_index + 1 {
-            return Err(format!(
-                "Patchset {patchset_id} is not the selected Patchset for Change {change_id}"
-            ));
-        }
-        let actor_index = self.find_or_create_actor(&mut tx, actor_name, actor_kind, now)?;
+        let patchset = self
+            .read_patchset(tx, patchset_index)
+            .map_err(|e| e.to_string())?;
+        let workflow_owner = self.require_patchset_owner(tx, change_id, patchset)?;
+        self.require_current_patchset(tx, patchset_index, patchset)?;
+        self.require_active_owner(tx, workflow_owner)?;
+        let actor_index = match accepted_actor_index {
+            Some(index) => {
+                self.actor_at(tx, index)?;
+                index
+            }
+            None => self.find_or_create_actor(tx, actor_name, actor_kind, now)?,
+        };
         let mut owner = WorkflowBinaryV0Codec::decode_ordinal_index(
             &tx.read_record(
                 WorkflowBinaryV0Codec::chain_index_file("patchset_review_index.bin"),
@@ -363,17 +518,17 @@ where
             }
         }
         let mut inventory =
-            self.task_inventory_in_write(&tx, "task_review_index.bin", change.task_index)?;
+            self.task_inventory_in_write(tx, "task_review_index.bin", workflow_owner.task_index)?;
         let range = tx
             .append_payload(WorkflowBinaryV0Codec::review_payload_file(), &message_bytes)
             .map_err(|error| Self::error(operation, error))?;
-        self.sync_file(&tx, "review_payload.bin")
+        self.sync_file(tx, "review_payload.bin")
             .map_err(|error| Self::error(operation, error))?;
         let record = V0ReviewRecord {
             review_meta,
             review_ordinal: ordinal,
             patch_ordinal: patchset.patch_ordinal,
-            change_ordinal: change.change_ordinal,
+            change_ordinal_plus1: patchset.change_ordinal_plus1,
             actor_index_plus1: actor_index + 1,
             patchset_index,
             previous_task_review_index_plus1: inventory.latest_index_plus1,
@@ -412,14 +567,14 @@ where
             .map_err(|error| Self::error(operation, error))?;
         tx.overwrite_record(
             WorkflowBinaryV0Codec::chain_index_file("task_review_index.bin"),
-            change.task_index,
+            workflow_owner.task_index,
             &inventory_raw,
         )
         .map_err(|error| Self::error(operation, error))?;
         let mut updated_patchset = patchset;
         updated_patchset.patchset_meta |= PATCHSET_EVALUATION_PENDING;
         let patchset_raw = self
-            .encode_patchset_replacement(&tx, patchset_index, updated_patchset)
+            .encode_patchset_replacement(tx, patchset_index, updated_patchset)
             .map_err(|error| Self::error(operation, error))?;
         tx.overwrite_record(
             WorkflowBinaryV0Codec::patchset_file(),
@@ -427,29 +582,38 @@ where
             &patchset_raw,
         )
         .map_err(|error| Self::error(operation, error))?;
-        let mut updated_change = change;
-        updated_change.change_meta |= CHANGE_META_VALIDATION_PENDING;
-        updated_change.change_meta &= !(CHANGE_META_READY_TO_LAND | CHANGE_META_BLOCKED);
-        match review_meta & REVIEW_ACTION_MASK {
-            0 | 3 => updated_change.change_meta |= CHANGE_META_REVIEW_PENDING,
-            2 | 4 => updated_change.change_meta &= !CHANGE_META_REVIEW_PENDING,
-            _ => {}
-        }
-        updated_change.updated_at_s = now;
-        let change_raw = WorkflowBinaryV0Codec::encode_change(updated_change)
-            .map_err(|error| Self::error(operation, error))?;
-        tx.overwrite_record(
-            WorkflowBinaryV0Codec::change_file(),
-            change_index,
-            &change_raw,
-        )
-        .map_err(|error| Self::error(operation, error))?;
-        tx.commit().map_err(|error| Self::error(operation, error))?;
-        let read = BinaryDbReadTxn::new(&self.db);
-        self.review_at(&read, review_index)
+        let review_action = review_meta & REVIEW_ACTION_MASK;
+        let review_set = if matches!(review_action, 0 | 3) {
+            TASK_META_REVIEW_PENDING
+        } else {
+            0
+        };
+        let review_clear = if matches!(review_action, 2 | 4) {
+            TASK_META_REVIEW_PENDING
+        } else {
+            0
+        };
+        self.update_owner_state(
+            tx,
+            workflow_owner,
+            TASK_META_VALIDATION_PENDING | review_set,
+            TASK_META_READY_TO_LAND | TASK_META_BLOCKED | review_clear,
+            now,
+            request_actor_index_plus1,
+            |change| {
+                change.change_meta |= CHANGE_META_VALIDATION_PENDING;
+                change.change_meta &= !(CHANGE_META_READY_TO_LAND | CHANGE_META_BLOCKED);
+                match review_action {
+                    0 | 3 => change.change_meta |= CHANGE_META_REVIEW_PENDING,
+                    2 | 4 => change.change_meta &= !CHANGE_META_REVIEW_PENDING,
+                    _ => {}
+                }
+            },
+        )?;
+        Ok(review_index)
     }
 
-    fn review_meta_for_action(action: &str, blocking: bool) -> Result<u8, String> {
+    pub(super) fn review_meta_for_action(action: &str, blocking: bool) -> Result<u8, String> {
         let value = match action {
             "request" => 0,
             "comment" => 1,
@@ -472,47 +636,35 @@ impl<D> ServerWorkflowPatchsetStore for BinaryDbServerWorkflowV0Store<D>
 where
     D: ServerRemoteBinaryDb + BinaryDbIndexAppender + Clone + Send + Sync + 'static,
 {
-    fn select_patchset(&self, change_id: &str, payload: &JsonValue) -> Result<JsonValue, String> {
-        let operation = "ServerWorkflowPatchsetStore::select_patchset";
+    fn select_patchset(
+        &self,
+        task_or_change_ref: &str,
+        payload: &JsonValue,
+    ) -> Result<JsonValue, String> {
         let payload = Self::required_object(payload, "patchset select payload")?;
+        self.request_actor(payload)?;
         let patchset_id = Self::required_text(payload, "patchset_id")?;
-        let now = Self::now_s()?;
-        let mut tx =
-            BinaryDbWriteTxn::begin_serving(&self.db, BinaryDbCommandScope::ServerWorkflow)
-                .map_err(|error| Self::error(operation, error))?;
-        let change_index = self.change_index_for_ref(&tx, change_id)?;
-        let patchset_index = self.patchset_index_for_id(&tx, &patchset_id)?;
-        self.require_patchset_governance_authority(
-            &tx,
-            patchset_index,
-            &patchset_id,
-            "Patchset selection",
-        )?;
-        let patchset = self
-            .read_patchset(&tx, patchset_index)
-            .map_err(|error| Self::error(operation, error))?;
-        if patchset.change_index != change_index {
-            return Err(format!(
-                "Patchset {patchset_id} does not belong to Change {change_id}"
-            ));
-        }
-        if patchset.patchset_meta & 0b11 != 0 {
-            return Err(format!(
-                "Patchset {patchset_id} is withdrawn or invalidated"
-            ));
-        }
-        let mut change = self
-            .read_change(&tx, change_index)
-            .map_err(|error| Self::error(operation, error))?;
-        change.selected_patchset_index_plus1 = patchset_index + 1;
-        change.updated_at_s = now;
-        let raw = WorkflowBinaryV0Codec::encode_change(change)
-            .map_err(|error| Self::error(operation, error))?;
-        tx.overwrite_record(WorkflowBinaryV0Codec::change_file(), change_index, &raw)
-            .map_err(|error| Self::error(operation, error))?;
-        tx.commit().map_err(|error| Self::error(operation, error))?;
         let read = BinaryDbReadTxn::new(&self.db);
-        self.change_at(&read, change_index)
+        let index = self.patchset_index_for_id(&read, &patchset_id)?;
+        let patchset = self
+            .read_patchset(&read, index)
+            .map_err(|e| e.to_string())?;
+        self.require_patchset_owner(&read, task_or_change_ref, patchset)?;
+        self.require_current_patchset(&read, index, patchset)?;
+        self.require_patchset_governance_authority(
+            &read,
+            index,
+            &patchset_id,
+            "current candidate readback",
+        )?;
+        let patchset_id = self.patchset_public_id(patchset);
+        Ok(
+            json!({"task_id": self.task_id(patchset.task_index), "patchset_id": patchset_id,
+        "current_patchset_id": patchset_id, "selection_changed": false,
+        "change_id": patchset.change_ordinal_plus1.checked_sub(1).map(|n|format!("C-{:02}",n+1)),
+        "change_ref": patchset.change_ordinal_plus1.checked_sub(1).map(|n|self.change_ref(patchset.task_index,n)),
+        "patchset": self.patchset_at(&read, index)?}),
+        )
     }
 
     fn get_patchset(
@@ -528,177 +680,109 @@ where
         self.patchset_at(&read, index)
     }
 
-    fn publish_patchset(&self, change_id: &str, payload: &JsonValue) -> Result<JsonValue, String> {
-        let operation = "ServerWorkflowPatchsetStore::publish_patchset";
+    fn publish_patchset(
+        &self,
+        task_or_change_ref: &str,
+        payload: &JsonValue,
+    ) -> Result<JsonValue, String> {
         let payload = Self::required_object(payload, "patchset publish payload")?;
-        let base_snapshot_id = Self::required_text(payload, "base_snapshot_id")?;
-        let revision_snapshot_id = Self::required_text(payload, "revision_snapshot_id")?;
+        self.request_actor(payload)?;
+        let base_id = Self::required_text(payload, "base_snapshot_id")?;
+        let revision_id = Self::required_text(payload, "revision_snapshot_id")?;
         let summary = Self::required_text(payload, "summary")?;
         let author_mode = Self::required_text(payload, "author_mode")?;
-        let explicit_id = Self::optional_text(payload, "patchset_id");
-        let explicit_number = payload
-            .get("patchset_number")
-            .and_then(JsonValue::as_u64)
-            .and_then(|value| u8::try_from(value).ok());
-        let summary_bytes =
-            WorkflowBinaryV0Codec::encode_single_text_payload(&summary, "Patchset summary")
-                .map_err(|error| Self::error(operation, error))?;
-        let now = Self::now_s()?;
+        if [
+            history_promotion::HISTORY_PROMOTION_SUMMARY_PREFIX,
+            history_promotion::HISTORY_PROMOTION_STAGE_SUMMARY_PREFIX,
+            history_promotion::LOCAL_LAND_RECEIPT_SUMMARY_PREFIX,
+        ]
+        .iter()
+        .any(|prefix| summary.starts_with(prefix))
+        {
+            return Err("AGGREGATE_REFRESH_REQUIRED: reserved history authority requires native history prepare".to_string());
+        }
         let mut tx =
             BinaryDbWriteTxn::begin_serving(&self.db, BinaryDbCommandScope::ServerWorkflow)
-                .map_err(|error| Self::error(operation, error))?;
-        let change_index = self.change_index_for_ref(&tx, change_id)?;
-        let mut change = self
-            .read_change(&tx, change_index)
-            .map_err(|error| Self::error(operation, error))?;
-        if matches!(
-            change.lifecycle(),
-            CHANGE_LIFECYCLE_LANDED | CHANGE_LIFECYCLE_ARCHIVED
-        ) {
-            return Err(format!("Change {change_id} cannot accept a new Patchset"));
+                .map_err(|e| e.to_string())?;
+        let owner = self.workflow_owner(&tx, task_or_change_ref)?;
+        let actor_index_plus1 = self.request_actor_in_write(&tx, payload)?;
+        self.require_active_owner(&tx, owner)?;
+        if self
+            .latest_history_manifest_for_task(&tx, owner.task_index)?
+            .is_some()
+        {
+            return Err("AGGREGATE_REFRESH_REQUIRED: preserve typed history through native correction prepare".to_string());
         }
         let snapshots =
             ServerBinaryDbSnapshotStore::<D, SERVER_CONTENT_BINARY_LAYOUT_ID>::new(self.db.clone());
-        let (base_snapshot_index, base_snapshot) = snapshots
-            .snapshot_by_id_in_write(&tx, &base_snapshot_id)
-            .map_err(|error| Self::error(operation, error))?
-            .ok_or_else(|| format!("Unknown base Snapshot {base_snapshot_id}"))?;
-        let (revision_snapshot_index, revision_snapshot) = snapshots
-            .snapshot_by_id_in_write(&tx, &revision_snapshot_id)
-            .map_err(|error| Self::error(operation, error))?
-            .ok_or_else(|| format!("Unknown revision Snapshot {revision_snapshot_id}"))?;
+        let (base, base_record) = snapshots
+            .snapshot_by_id_in_write(&tx, &base_id)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| format!("Unknown base Snapshot {base_id}"))?;
+        let (revision, revision_record) = snapshots
+            .snapshot_by_id_in_write(&tx, &revision_id)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| format!("Unknown revision Snapshot {revision_id}"))?;
         let content = ServerBinaryRepositoryContentStore::new(self.db.clone());
         content
-            .snapshot_file_map_in_write(&tx, &base_snapshot)
-            .map_err(|error| Self::error("Patchset base Snapshot Tree comparison", error))?;
+            .snapshot_file_map_in_write(&tx, &base_record)
+            .map_err(|e| e.to_string())?;
         content
-            .snapshot_file_map_in_write(&tx, &revision_snapshot)
-            .map_err(|error| Self::error("Patchset revision Snapshot Tree comparison", error))?;
-        let count = tx
-            .record_count(WorkflowBinaryV0Codec::patchset_file())
-            .map_err(|error| Self::error(operation, error))?;
-        for index in 0..count {
-            let existing = self
-                .read_patchset(&tx, index)
-                .map_err(|error| Self::error(operation, error))?;
-            if existing.change_index == change_index
-                && existing.base_snapshot_index == base_snapshot_index
-                && existing.revision_snapshot_index == revision_snapshot_index
+            .snapshot_file_map_in_write(&tx, &revision_record)
+            .map_err(|e| e.to_string())?;
+        self.require_patchset_capture_range(&tx, owner, base, revision)?;
+        if let Some((index, current)) = self.current_task_patchset(&tx, owner.task_index)? {
+            if self.history_manifest_for_patchset(&tx, index)?.is_some() {
+                return Err("AGGREGATE_REFRESH_REQUIRED: preserve aggregate history through native correction prepare".to_string());
+            }
+            if current.change_ordinal_plus1 == owner.change_ordinal_plus1()
+                && current.base_snapshot_index == base
+                && current.revision_snapshot_index == revision
             {
+                self.require_current_patchset(&tx, index, current)?;
+                if Self::optional_text(payload, "patchset_id")
+                    .is_some_and(|id| self.patchset_index_for_id(&tx, &id).ok() != Some(index))
+                    || payload
+                        .get("patchset_number")
+                        .and_then(JsonValue::as_u64)
+                        .is_some_and(|n| n != u64::from(current.patch_ordinal) + 1)
+                {
+                    return Err(
+                        "Patchset retry identity disagrees with current candidate".to_string()
+                    );
+                }
                 drop(tx);
-                let read = BinaryDbReadTxn::new(&self.db);
-                return self.patchset_at(&read, index);
+                return self.patchset_at(&BinaryDbReadTxn::new(&self.db), index);
             }
         }
-        let mut owner = self.patchset_owner_index_in_write(&tx, change_index)?;
-        if owner.next_ordinal >= 64 {
-            return Err(format!(
-                "Change {change_id} has exhausted its v0 Patchset ordinals"
-            ));
-        }
-        let ordinal = owner.next_ordinal;
-        let canonical_id = format!("{change_id}/P-{:02}", ordinal + 1);
-        if let Some(explicit) = explicit_id.as_deref() {
-            if explicit != canonical_id {
-                return Err(format!(
-                    "Binary DB v0 Patchset identity is derived as {canonical_id}, not {explicit}"
-                ));
-            }
-        }
-        if explicit_number.is_some_and(|number| number != ordinal + 1) {
-            return Err(format!(
-                "Binary DB v0 next Patchset number is {}, not {:?}",
-                ordinal + 1,
-                explicit_number
-            ));
-        }
-        let mut inventory =
-            self.task_inventory_in_write(&tx, "task_patchset_index.bin", change.task_index)?;
-        let range = tx
-            .append_payload(
-                WorkflowBinaryV0Codec::patchset_summary_file(),
-                &summary_bytes,
-            )
-            .map_err(|error| Self::error(operation, error))?;
-        self.sync_file(&tx, "patchset_summary_payload.bin")
-            .map_err(|error| Self::error(operation, error))?;
-        let record = V0PatchsetRecord {
-            patchset_meta: Self::author_mode_bits(&author_mode)? | PATCHSET_EVALUATION_PENDING,
+        let ordinal = self.next_task_patchset_ordinal(&tx, owner.task_index)?;
+        let expected_id = self.patchset_public_id(V0PatchsetRecord {
+            task_index: owner.task_index,
+            change_ordinal_plus1: owner.change_ordinal_plus1(),
             patch_ordinal: ordinal,
-            change_ordinal: change.change_ordinal,
-            reserved0: 0,
-            change_index,
-            previous_task_patchset_index_plus1: inventory.latest_index_plus1,
-            previous_change_patchset_index_plus1: owner.latest_index_plus1,
-            base_snapshot_index,
-            revision_snapshot_index,
-            created_at_s: now,
-            ci_completed_at_s: 0,
-            ci_run_seq: 0,
-            ci_selected_suite_count: 0,
-            ci_suite_result_count: 0,
-            ci_blocking_failure_count: 0,
-            ci_status_bits: 0,
-            summary_offset: range.payload_offset,
-            summary_len: u16::try_from(range.payload_len)
-                .map_err(|_| "Patchset summary exceeds u16".to_string())?,
-            ci_worker_job_index_plus1: 0,
-        };
-        let raw = self
-            .encode_new_patchset(record)
-            .map_err(|error| Self::error(operation, error))?;
-        let patchset_index = tx
-            .append_record(WorkflowBinaryV0Codec::patchset_file(), &raw)
-            .map_err(|error| Self::error(operation, error))?;
-        self.append_patchset_index_rows(&mut tx, patchset_index)
-            .map_err(|error| Self::error(operation, error))?;
-        owner.latest_index_plus1 = patchset_index + 1;
-        owner.count = owner
-            .count
-            .checked_add(1)
-            .ok_or_else(|| "Change Patchset count exceeds u16".to_string())?;
-        owner.next_ordinal = ordinal + 1;
-        let owner_raw = WorkflowBinaryV0Codec::encode_ordinal_index(owner)
-            .map_err(|error| Self::error(operation, error))?;
-        tx.overwrite_record(
-            WorkflowBinaryV0Codec::chain_index_file("change_patchset_index.bin"),
-            change_index,
-            &owner_raw,
-        )
-        .map_err(|error| Self::error(operation, error))?;
-        inventory.latest_index_plus1 = patchset_index + 1;
-        inventory.count = inventory
-            .count
-            .checked_add(1)
-            .ok_or_else(|| "Task Patchset count exceeds u16".to_string())?;
-        let inventory_raw = WorkflowBinaryV0Codec::encode_inventory_index(inventory)
-            .map_err(|error| Self::error(operation, error))?;
-        tx.overwrite_record(
-            WorkflowBinaryV0Codec::chain_index_file("task_patchset_index.bin"),
-            change.task_index,
-            &inventory_raw,
-        )
-        .map_err(|error| Self::error(operation, error))?;
-        change.change_meta = (change.change_meta & !CHANGE_META_LIFECYCLE_MASK)
-            | CHANGE_LIFECYCLE_ACTIVE
-            | CHANGE_META_HAS_PATCHSETS
-            | CHANGE_META_REVIEW_PENDING
-            | CHANGE_META_VALIDATION_PENDING;
-        if change.selected_patchset_index_plus1 == 0 {
-            change.selected_patchset_index_plus1 = patchset_index + 1;
+            ..V0PatchsetRecord::default()
+        });
+        if Self::optional_text(payload, "patchset_id")
+            .is_some_and(|id| !self.new_patchset_ref_matches(&id, owner, ordinal))
+            || payload
+                .get("patchset_number")
+                .and_then(JsonValue::as_u64)
+                .is_some_and(|n| n != u64::from(ordinal) + 1)
+        {
+            return Err(format!("Next Task Patchset identity is {expected_id}"));
         }
-        change.updated_at_s = now;
-        let change_raw = WorkflowBinaryV0Codec::encode_change(change)
-            .map_err(|error| Self::error(operation, error))?;
-        tx.overwrite_record(
-            WorkflowBinaryV0Codec::change_file(),
-            change_index,
-            &change_raw,
-        )
-        .map_err(|error| Self::error(operation, error))?;
-        tx.commit().map_err(|error| Self::error(operation, error))?;
-        let read = BinaryDbReadTxn::new(&self.db);
-        self.patchset_at(&read, patchset_index)
+        let index = self.append_candidate_in_write(
+            &mut tx,
+            owner,
+            base,
+            revision,
+            &summary,
+            &author_mode,
+            Self::now_s()?,
+            actor_index_plus1,
+        )?;
+        tx.commit().map_err(|e| e.to_string())?;
+        self.patchset_at(&BinaryDbReadTxn::new(&self.db), index)
     }
 
     fn list_patchsets(
@@ -710,7 +794,7 @@ where
             self.repo_scope("ServerWorkflowPatchsetStore::list_patchsets", repo_name)?;
         }
         let read = BinaryDbReadTxn::new(&self.db);
-        let change_index = self.change_index_for_ref(&read, change_ref)?;
+        let owner = self.workflow_owner(&read, change_ref)?;
         let count = read
             .record_count(WorkflowBinaryV0Codec::patchset_file())
             .map_err(|error| Self::error("ServerWorkflowPatchsetStore::list_patchsets", error))?;
@@ -719,7 +803,10 @@ where
             let record = self.read_patchset(&read, index).map_err(|error| {
                 Self::error("ServerWorkflowPatchsetStore::list_patchsets", error)
             })?;
-            if record.change_index == change_index {
+            if record.task_index == owner.task_index
+                && (owner.change.is_none()
+                    || record.change_ordinal_plus1 == owner.change_ordinal_plus1())
+            {
                 rows.push((record.patch_ordinal, self.patchset_at(&read, index)?));
             }
         }
@@ -736,6 +823,10 @@ where
 {
     fn request_review(&self, change_id: &str, payload: &JsonValue) -> Result<JsonValue, String> {
         let payload = Self::required_object(payload, "review request payload")?;
+        self.request_actor(payload)?;
+        if payload.contains_key("reviewer_kind") {
+            return Err("reviewer_kind conflicts with a team Review request".to_string());
+        }
         let patchset_id = Self::required_text(payload, "patchset_id")?;
         let groups = payload
             .get("reviewer_groups")
@@ -761,6 +852,7 @@ where
             0,
             &note,
             explicit.as_deref(),
+            Some(payload),
         )
     }
 
@@ -768,7 +860,26 @@ where
         let payload = Self::required_object(payload, "review record payload")?;
         let patchset_id = Self::required_text(payload, "patchset_id")?;
         let reviewer = Self::required_text(payload, "reviewer")?;
+        let actor_kind = match payload.get("reviewer_kind") {
+            None => 0,
+            Some(JsonValue::String(kind)) if kind == "user" => 0,
+            Some(JsonValue::String(kind)) if kind == "bot" => 2,
+            _ => return Err("reviewer_kind must be \"user\" or \"bot\"".to_string()),
+        };
         let action = Self::required_text(payload, "action")?;
+        if action == "request"
+            || ["reviewer_groups", "requested_groups"].iter().any(|field| {
+                match payload.get(*field) {
+                    None | Some(JsonValue::Null) => false,
+                    Some(JsonValue::Array(groups)) => !groups.is_empty(),
+                    Some(_) => true,
+                }
+            })
+        {
+            return Err(
+                "Team Review requests must use reviewer_groups through request_review".to_string(),
+            );
+        }
         let message = Self::optional_text(payload, "comment").unwrap_or_default();
         let blocking = Self::optional_bool(payload, "blocking").unwrap_or(false);
         let review_meta = Self::review_meta_for_action(&action, blocking)?;
@@ -777,16 +888,17 @@ where
             change_id,
             &patchset_id,
             &reviewer,
-            0,
+            actor_kind,
             review_meta,
             &message,
             explicit.as_deref(),
+            None,
         )
     }
 
     fn list_reviews(&self, change_id: &str) -> Result<JsonValue, String> {
         let read = BinaryDbReadTxn::new(&self.db);
-        let change_index = self.change_index_for_ref(&read, change_id)?;
+        let owner = self.workflow_owner(&read, change_id)?;
         let count = read
             .record_count(WorkflowBinaryV0Codec::review_file())
             .map_err(|error| Self::error("ServerWorkflowReviewStore::list_reviews", error))?;
@@ -806,7 +918,10 @@ where
             let patchset = self
                 .read_patchset(&read, record.patchset_index)
                 .map_err(|error| Self::error("ServerWorkflowReviewStore::list_reviews", error))?;
-            if patchset.change_index == change_index {
+            if patchset.task_index == owner.task_index
+                && (owner.change.is_none()
+                    || patchset.change_ordinal_plus1 == owner.change_ordinal_plus1())
+            {
                 rows.push(self.review_at(&read, index)?);
             }
         }
@@ -832,8 +947,9 @@ where
             })
             .count();
         Ok(json!({
-            "change_id": change_id.rsplit('/').next().unwrap_or(change_id),
-            "change_ref": change_id,
+            "task_id": self.task_id(owner.task_index),
+            "change_id": owner.change.map(|(_, change)| format!("C-{:02}", change.change_ordinal + 1)),
+            "change_ref": owner.change.map(|(_, change)| self.change_ref(owner.task_index, change.change_ordinal)),
             "reviews": rows,
             "approvals": approvals,
             "blocking": blocking,

@@ -1,7 +1,5 @@
-use ait_agent_core::{agent_management_binding_json, language_binding_info_json};
-use ait_agent_worker::{
-    agent_worker_capabilities_binding_json, agent_worker_transaction_binding_json,
-};
+use ait_agent_core::language_binding_info_json;
+use ait_agent_core::language_bindings::CHAT_INTEGRATIONS_RETIRED_MESSAGE;
 use ait_core::json_support::{JsonCodec, JsonEncodeOptions, JsonValue};
 use napi::{Error, Result};
 use napi_derive::napi;
@@ -22,30 +20,19 @@ pub fn binding_info_json() -> Result<String> {
 
 #[napi(js_name = "agentWorkerCapabilitiesJson")]
 pub fn agent_worker_capabilities_json() -> Result<String> {
-    agent_worker_capabilities_binding_json()
-        .map_err(Error::from_reason)
-        .and_then(encode)
+    Err(Error::from_reason(CHAT_INTEGRATIONS_RETIRED_MESSAGE))
 }
 
 #[napi(js_name = "agentManagementJson")]
 pub fn agent_management_json(request_json: String) -> Result<String> {
-    let request = parse_request(&request_json)?;
-    agent_management_binding_json(&request)
-        .map_err(Error::from_reason)
-        .and_then(encode)
+    let _ = request_json;
+    Err(Error::from_reason(CHAT_INTEGRATIONS_RETIRED_MESSAGE))
 }
 
 #[napi(js_name = "agentWorkerTransactionJson")]
 pub fn agent_worker_transaction_json(request_json: String) -> Result<String> {
-    let request = parse_request(&request_json)?;
-    agent_worker_transaction_binding_json(&request)
-        .map_err(Error::from_reason)
-        .and_then(encode)
-}
-
-fn parse_request(text: &str) -> Result<JsonValue> {
-    JsonCodec::parse_value_with_error_prefix(text, "invalid AIT N-API request JSON")
-        .map_err(|error| Error::from_reason(error.to_string()))
+    let _ = request_json;
+    Err(Error::from_reason(CHAT_INTEGRATIONS_RETIRED_MESSAGE))
 }
 
 fn encode(value: JsonValue) -> Result<String> {
@@ -68,10 +55,27 @@ mod tests {
     }
 
     #[test]
-    fn malformed_request_fails_at_the_addon_boundary() {
-        let error = agent_management_json("{".to_string()).expect_err("invalid request");
-
-        assert!(error.reason.contains("invalid AIT N-API request JSON"));
+    fn chat_exports_fail_before_request_parsing_or_runtime_execution() {
+        assert_eq!(
+            agent_worker_capabilities_json()
+                .expect_err("retired capabilities")
+                .reason,
+            CHAT_INTEGRATIONS_RETIRED_MESSAGE
+        );
+        for request in [
+            "{",
+            r#"{"operation":"start","name":"retired","repo_root":"/unavailable/retired-chat","manifest_path":"/unavailable/retired-chat/workers.json","worker_binary":"/unavailable/retired-chat/worker"}"#,
+        ] {
+            for result in [
+                agent_management_json(request.to_string()),
+                agent_worker_transaction_json(request.to_string()),
+            ] {
+                assert_eq!(
+                    result.expect_err("retired chat call").reason,
+                    CHAT_INTEGRATIONS_RETIRED_MESSAGE
+                );
+            }
+        }
     }
 
     #[test]

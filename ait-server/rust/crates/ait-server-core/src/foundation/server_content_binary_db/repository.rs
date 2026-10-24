@@ -6,9 +6,41 @@ use crate::foundation::pack_substrate::{
 use crate::foundation::remote_binary_db::{BinaryDbReadScope, BinaryIndexKeyRef};
 use serde_json::{json, Value as JsonValue};
 use sha2::{Digest, Sha256};
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
 use std::fs;
 use std::path::PathBuf;
+
+struct ObjectBatchPlan<'a> {
+    pending: Vec<(&'a JsonValue, &'a [JsonValue])>,
+    resolved: BTreeMap<String, u32>,
+    existing: BTreeMap<String, ServerBinaryBlobView>,
+    blobs: BTreeMap<String, (u32, u64)>,
+    next_blob_index: u32,
+}
+
+struct TreeBatchPlan {
+    pending: Vec<PreparedTreePackAppend>,
+    indices: BTreeMap<String, u32>,
+    blobs: BTreeMap<String, (u32, u64)>,
+    next_tree_index: u32,
+}
+
+struct PreparedTreePackAppend {
+    metadata: JsonValue,
+    entries: Vec<JsonValue>,
+    locator_by_id: BTreeMap<String, JsonValue>,
+    rows_by_tree: BTreeMap<String, Vec<JsonValue>>,
+    ordinal_by_tree: BTreeMap<String, u32>,
+}
+
+#[derive(Eq, PartialEq)]
+struct TreeBatchEntryIdentity {
+    name: String,
+    kind: String,
+    target: String,
+    mode: u16,
+    size: Option<u64>,
+}
 
 #[cfg(test)]
 std::thread_local! {
@@ -1650,14 +1682,12 @@ where
         }
         if include_snapshot {
             record_files.extend([
-                ServerBinarySnapshotCodec::<SERVER_CONTENT_BINARY_LAYOUT_ID>::record_file(),
+                ServerBinarySnapshotCodec::<2>::record_file(),
                 ServerBinarySnapshotParentEdgeCodec::<SERVER_CONTENT_BINARY_LAYOUT_ID>::record_file(
                 ),
             ]);
-            payload_files
-                .push(ServerBinarySnapshotCodec::<SERVER_CONTENT_BINARY_LAYOUT_ID>::payload_file());
-            index_files
-                .push(ServerBinarySnapshotCodec::<SERVER_CONTENT_BINARY_LAYOUT_ID>::id_index());
+            payload_files.push(ServerBinarySnapshotCodec::<2>::payload_file());
+            index_files.push(ServerBinarySnapshotCodec::<2>::id_index());
         }
         if let Some(line_write) = line_write {
             record_files
@@ -1704,13 +1734,208 @@ where
     where
         F: BinaryDbFsyncPolicy,
     {
+        self.append_object_packs_in_tx(tx, &[(pack, locators)])
+    }
+
+    /// Resolve Blob references across the incoming batch without changing pack
+    /// order or bytes. Whole packs can depend on each other while their Blob
+    /// representations still have an acyclic path to full or stored content.
+    pub fn append_object_packs_in_tx<F>(
+        &self,
+        tx: &mut BinaryDbWriteTxn<'_, D, F>,
+        packs: &[(&JsonValue, &[JsonValue])],
+    ) -> StoreResult<()>
+    where
+        F: BinaryDbFsyncPolicy,
+    {
+        let plan = self.plan_object_packs(tx, packs)?;
+        for (pack, locators) in plan.pending {
+            self.append_object_pack_with_bases_in_tx(
+                tx,
+                pack,
+                locators,
+                &plan.resolved,
+                &plan.existing,
+            )?;
+        }
+        if tx.record_count(blob_file())? != plan.next_blob_index {
+            return Err("object pack batch blob allocation drift".into());
+        }
+        Ok(())
+    }
+
+    fn plan_object_packs<'a>(
+        &self,
+        access: &impl ReadAccess,
+        packs: &[(&'a JsonValue, &'a [JsonValue])],
+    ) -> StoreResult<ObjectBatchPlan<'a>> {
+        let mut pending = Vec::new();
+        let mut seen_packs = BTreeSet::new();
+        let mut incoming = Vec::new();
+        let mut required_blob_ids = BTreeSet::new();
+        let mut incoming_content = BTreeMap::new();
+        let mut next_blob_index = access.count(blob_file())?;
+        for &(pack, locators) in packs {
+            let pack_id = required_text(pack, "pack_id")?;
+            if !seen_packs.insert(pack_id.to_ascii_uppercase())
+                || object_pack_with_access(access, &pack_id)?.is_some()
+            {
+                continue;
+            }
+            prepare_object_locators(pack, locators)?;
+            let entries = pack
+                .get("pack_index")
+                .and_then(|index| index.get("entries"))
+                .and_then(JsonValue::as_array)
+                .ok_or_else(|| "object pack index is missing entries".to_string())?;
+            let locator_by_id = locators
+                .iter()
+                .map(|locator| Ok((required_text(locator, "blob_id")?, locator)))
+                .collect::<StoreResult<BTreeMap<_, _>>>()?;
+            for entry in entries {
+                let blob_id = required_text(entry, "blob_id")?;
+                let locator = locator_by_id.get(&blob_id);
+                let sha256 = match locator {
+                    Some(locator) => required_text(locator, "sha256")?,
+                    None => required_text(entry, "checksum")?,
+                };
+                let sha256 = parse_sha256(&sha256)?;
+                if blob_id_from_sha256(&sha256) != blob_id {
+                    return Err(format!("blob {blob_id} does not match its sha256").into());
+                }
+                let size = match locator {
+                    Some(locator) => locator.get("size_bytes"),
+                    None => entry.get("uncompressed_byte_length"),
+                }
+                .and_then(JsonValue::as_u64)
+                .ok_or_else(|| "blob locator is missing size_bytes".to_string())?;
+                let normalized = blob_id.to_ascii_uppercase();
+                if incoming_content
+                    .insert(normalized.clone(), (sha256, size))
+                    .is_some_and(|previous| previous != (sha256, size))
+                {
+                    return Err(BinaryDbError::invalid_domain_data(format!("blob {blob_id} already exists with different content before new pack {pack_id}")));
+                }
+                required_blob_ids.insert(normalized.clone());
+                let base = match locator {
+                    Some(locator) => locator.get("pack_base_blob_id"),
+                    None => entry.get("base_blob_id"),
+                }
+                .and_then(JsonValue::as_str)
+                .filter(|id| !id.is_empty())
+                .map(str::to_string);
+                if let Some(base) = &base {
+                    required_blob_ids.insert(base.to_ascii_uppercase());
+                }
+                incoming.push((normalized, base, next_blob_index));
+                next_blob_index = next_blob_index
+                    .checked_add(1)
+                    .ok_or_else(|| "blob index overflow".to_string())?;
+            }
+            pending.push((pack, locators));
+        }
+
+        // Read canonical Blobs before staging forward references. Reading a
+        // partially staged member would try to dereference its future base.
+        let existing_blobs = blobs_with_access(access, &required_blob_ids)?;
+        for (id, (sha256, size)) in &incoming_content {
+            if let Some(existing) = existing_blobs.get(id) {
+                if existing.record.sha256 != *sha256 || existing.record.size_bytes != *size {
+                    return Err(BinaryDbError::invalid_domain_data(format!(
+                        "blob {id} already exists with different content before incoming batch"
+                    )));
+                }
+            }
+        }
+        let mut resolved = existing_blobs
+            .iter()
+            .map(|(id, view)| (id.clone(), view.blob_index))
+            .collect::<BTreeMap<_, _>>();
+        // Blob-ID indexes select the first live physical record. A later full
+        // copy cannot silently replace an earlier cyclic representation.
+        let mut declared = BTreeMap::new();
+        for (position, (id, _, _)) in incoming.iter().enumerate() {
+            declared.entry(id.as_str()).or_insert(position);
+        }
+        let mut dependents = BTreeMap::<String, Vec<usize>>::new();
+        for (position, (id, base, index)) in incoming.iter().enumerate() {
+            if let Some(base) = base {
+                let normalized = base.to_ascii_uppercase();
+                if !declared.contains_key(normalized.as_str())
+                    && !resolved.contains_key(&normalized)
+                {
+                    return Err(format!("delta base blob {base} is missing").into());
+                }
+                if declared.get(id.as_str()) == Some(&position) {
+                    dependents.entry(normalized).or_default().push(position);
+                }
+            } else if declared.get(id.as_str()) == Some(&position) {
+                resolved.entry(id.clone()).or_insert(*index);
+            }
+        }
+        let mut ready = resolved.keys().cloned().collect::<VecDeque<_>>();
+        while let Some(base) = ready.pop_front() {
+            for position in dependents.remove(&base).into_iter().flatten() {
+                let (id, _, index) = &incoming[position];
+                if let std::collections::btree_map::Entry::Vacant(entry) =
+                    resolved.entry(id.clone())
+                {
+                    entry.insert(*index);
+                    ready.push_back(id.clone());
+                }
+            }
+        }
+        for (_, base, _) in &incoming {
+            if let Some(base) = base {
+                if !resolved.contains_key(&base.to_ascii_uppercase()) {
+                    return Err(format!(
+                        "object pack batch contains a cyclic delta base reference to {base}"
+                    )
+                    .into());
+                }
+            }
+        }
+        let mut blobs = existing_blobs
+            .iter()
+            .map(|(id, view)| (id.clone(), (view.blob_index, view.record.size_bytes)))
+            .collect::<BTreeMap<_, _>>();
+        for (id, (_, size)) in incoming_content {
+            blobs.entry(id.clone()).or_insert((resolved[&id], size));
+        }
+        let member_count =
+            u32::try_from(incoming.len()).map_err(|_| "Object member count exceeds u32")?;
+        access
+            .count(object_pack_member_file())?
+            .checked_add(member_count)
+            .ok_or("Object member physical capacity exhausted")?;
+        access
+            .count(object_pack_file())?
+            .checked_add(u32::try_from(pending.len()).map_err(|_| "Object pack count exceeds u32")?)
+            .ok_or("Object pack physical capacity exhausted")?;
+        Ok(ObjectBatchPlan {
+            pending,
+            resolved,
+            existing: existing_blobs,
+            blobs,
+            next_blob_index,
+        })
+    }
+
+    fn append_object_pack_with_bases_in_tx<F>(
+        &self,
+        tx: &mut BinaryDbWriteTxn<'_, D, F>,
+        pack: &JsonValue,
+        locators: &[JsonValue],
+        base_blob_indices: &BTreeMap<String, u32>,
+        existing_blobs: &BTreeMap<String, ServerBinaryBlobView>,
+    ) -> StoreResult<()>
+    where
+        F: BinaryDbFsyncPolicy,
+    {
         #[cfg(feature = "perfetto-tracing")]
         let _trace =
             crate::perfetto_trace::PerfettoRange::new("ait.server.content.append_object_pack");
         let pack_id = required_text(pack, "pack_id")?;
-        if object_pack_with_access(tx, &pack_id)?.is_some() {
-            return Ok(());
-        }
         let pack_index_value = pack
             .get("pack_index")
             .ok_or_else(|| "object pack metadata is missing pack_index".to_string())?;
@@ -1718,92 +1943,7 @@ where
             .get("entries")
             .and_then(JsonValue::as_array)
             .ok_or_else(|| "object pack index is missing entries".to_string())?;
-        let mut locator_by_id = locators
-            .iter()
-            .map(|locator| Ok((required_text(locator, "blob_id")?, locator.clone())))
-            .collect::<StoreResult<BTreeMap<_, _>>>()?;
-        if locator_by_id.len() != locators.len() {
-            return Err("object pack contains duplicate blob locators".into());
-        }
-
-        let mut physical_blob_ids = BTreeSet::new();
-        for entry in entries {
-            let blob_id = required_text(entry, "blob_id")?;
-            if !physical_blob_ids.insert(blob_id.clone()) {
-                return Err(
-                    format!("object pack {pack_id} contains duplicate blob {blob_id}").into(),
-                );
-            }
-        }
-        let unexpected_locator_ids = locator_by_id
-            .keys()
-            .filter(|blob_id| !physical_blob_ids.contains(*blob_id))
-            .cloned()
-            .collect::<Vec<_>>();
-        if !unexpected_locator_ids.is_empty() {
-            return Err(format!(
-                "object pack {pack_id} has locators for blobs absent from its physical index: {unexpected_locator_ids:?}"
-            )
-            .into());
-        }
-        let pack_created_at = pack.get("created_at").cloned().unwrap_or(JsonValue::Null);
-        for entry in entries {
-            let blob_id = required_text(entry, "blob_id")?;
-            if locator_by_id.contains_key(&blob_id) {
-                continue;
-            }
-            let sha256 = required_text(entry, "checksum")?;
-            let size_bytes = entry
-                .get("uncompressed_byte_length")
-                .and_then(JsonValue::as_u64)
-                .ok_or_else(|| {
-                    format!(
-                        "object pack {pack_id} blob {blob_id} has invalid uncompressed_byte_length"
-                    )
-                })?;
-            let pack_entry_type = required_text(entry, "entry_type")?;
-            let pack_chain_depth = entry
-                .get("chain_depth")
-                .and_then(JsonValue::as_u64)
-                .ok_or_else(|| {
-                    format!("object pack {pack_id} blob {blob_id} has invalid chain_depth")
-                })?;
-            locator_by_id.insert(
-                blob_id.clone(),
-                json!({
-                    "blob_id": blob_id,
-                    "sha256": sha256,
-                    "size_bytes": size_bytes,
-                    "pack_entry_type": pack_entry_type,
-                    "pack_base_blob_id": entry.get("base_blob_id").cloned().unwrap_or(JsonValue::Null),
-                    "pack_chain_depth": pack_chain_depth,
-                    "created_at": pack_created_at.clone(),
-                }),
-            );
-        }
-
-        let mut required_blob_ids = BTreeSet::new();
-        for entry in entries {
-            let blob_id = required_text(entry, "blob_id")?;
-            let locator = locator_by_id
-                .get(&blob_id)
-                .ok_or_else(|| format!("object pack {pack_id} is missing locator for {blob_id}"))?;
-            required_blob_ids.insert(blob_id.to_ascii_uppercase());
-            if let Some(base_blob_id) = locator
-                .get("pack_base_blob_id")
-                .and_then(JsonValue::as_str)
-                .filter(|value| !value.is_empty())
-            {
-                required_blob_ids.insert(base_blob_id.to_ascii_uppercase());
-            }
-        }
-        #[cfg(feature = "perfetto-tracing")]
-        let existing_lookup_trace = crate::perfetto_trace::PerfettoRange::new(
-            "ait.server.content.append_object_pack.existing_lookup",
-        );
-        let existing_blobs = blobs_with_access(tx, &required_blob_ids)?;
-        #[cfg(feature = "perfetto-tracing")]
-        drop(existing_lookup_trace);
+        let locator_by_id = prepare_object_locators(pack, locators)?;
 
         #[cfg(feature = "perfetto-tracing")]
         let write_trace = crate::perfetto_trace::PerfettoRange::new(
@@ -1888,13 +2028,10 @@ where
             let base_blob_index_plus1 = match base_blob_id {
                 Some(base_id) => {
                     let normalized_base_id = base_id.to_ascii_uppercase();
-                    let base_index = match blob_indices.get(&normalized_base_id).copied() {
-                        Some(index) => index,
-                        None => existing_blobs
-                            .get(&normalized_base_id)
-                            .map(|view| view.blob_index)
-                            .ok_or_else(|| format!("delta base blob {base_id} is missing"))?,
-                    };
+                    let base_index = base_blob_indices
+                        .get(&normalized_base_id)
+                        .copied()
+                        .ok_or_else(|| format!("delta base blob {base_id} is missing"))?;
                     base_index
                         .checked_add(1)
                         .ok_or_else(|| "base blob index overflow".to_string())?
@@ -1957,13 +2094,256 @@ where
     where
         F: BinaryDbFsyncPolicy,
     {
+        self.append_tree_packs_in_tx(tx, &[(pack, locators)])
+    }
+
+    /// Plan every incoming Tree before staging normalized rows. Pack order and
+    /// physical archive ordinals remain unchanged, including mutual pack groups.
+    pub fn append_tree_packs_in_tx<F>(
+        &self,
+        tx: &mut BinaryDbWriteTxn<'_, D, F>,
+        packs: &[(&JsonValue, &[JsonValue])],
+    ) -> StoreResult<()>
+    where
+        F: BinaryDbFsyncPolicy,
+    {
+        let plan = self.plan_tree_packs(tx, packs, &BTreeMap::new(), None)?;
+        for prepared in plan.pending {
+            self.append_prepared_tree_pack_in_tx(tx, prepared, &plan.indices, &plan.blobs)?;
+        }
+        if tx.record_count(tree_file())? != plan.next_tree_index
+            || tx.record_count(tree_entry_range_file())? != plan.next_tree_index
+        {
+            return Err("tree pack batch allocation drift".into());
+        }
+        Ok(())
+    }
+
+    /// The same pure conversion used by the writer, with symbolic Blob indexes
+    /// and sealed archive paths. It allocates no authoritative records.
+    pub fn validate_package_batches(
+        &self,
+        objects: &[(&JsonValue, &[JsonValue])],
+        trees: &[(&JsonValue, &[JsonValue])],
+        inputs: &std::path::Path,
+    ) -> StoreResult<()> {
+        let read = BinaryDbReadTxn::new(&self.db);
+        let objects = self.plan_object_packs(&read, objects)?;
+        self.plan_tree_packs(&read, trees, &objects.blobs, Some(inputs))?;
+        Ok(())
+    }
+
+    fn plan_tree_packs(
+        &self,
+        access: &impl ReadAccess,
+        packs: &[(&JsonValue, &[JsonValue])],
+        incoming_blobs: &BTreeMap<String, (u32, u64)>,
+        package_inputs: Option<&std::path::Path>,
+    ) -> StoreResult<TreeBatchPlan> {
+        let mut pending = Vec::new();
+        let mut seen_packs = BTreeSet::new();
+        let mut referenced_trees = BTreeSet::new();
+        let mut referenced_blobs = BTreeSet::new();
+        for &(pack, locators) in packs {
+            let id = required_text(pack, "pack_id")?;
+            if !seen_packs.insert(id.to_ascii_uppercase())
+                || tree_pack_with_access(access, &id)?.is_some()
+            {
+                continue;
+            }
+            let prepared = self.prepare_tree_pack_append(pack, locators, package_inputs)?;
+            for (tree, rows) in &prepared.rows_by_tree {
+                referenced_trees.insert(tree.to_ascii_uppercase());
+                for row in rows {
+                    let target = required_text(row, "target_id")?.to_ascii_uppercase();
+                    match tree_entry_kind(&required_text(row, "entry_type")?)? {
+                        0 => {
+                            referenced_blobs.insert(target);
+                        }
+                        1 => {
+                            referenced_trees.insert(target);
+                        }
+                        _ => unreachable!("tree_entry_kind only returns blob or tree"),
+                    }
+                }
+            }
+            pending.push(prepared);
+        }
+        // These are canonical reads before any forward Tree reference exists.
+        // Object/Blob staging has already completed in the caller's transaction.
+        let mut blobs = blobs_with_access(access, &referenced_blobs)?
+            .into_iter()
+            .map(|(id, view)| (id, (view.blob_index, view.record.size_bytes)))
+            .collect::<BTreeMap<_, _>>();
+        for id in &referenced_blobs {
+            if let Some(value) = incoming_blobs.get(id) {
+                blobs.entry(id.clone()).or_insert(*value);
+            }
+        }
+        let existing_trees = trees_with_access(access, &referenced_trees)?;
+        let mut tree_indices = existing_trees
+            .iter()
+            .map(|(id, tree)| (id.clone(), tree.tree_index))
+            .collect::<BTreeMap<_, _>>();
+        let mut next_tree_index = access.count(tree_file())?;
+        for prepared in &pending {
+            for entry in &prepared.entries {
+                let id = required_text(entry, "tree_id")?.to_ascii_uppercase();
+                tree_indices.entry(id).or_insert(next_tree_index);
+                next_tree_index = next_tree_index
+                    .checked_add(1)
+                    .ok_or_else(|| "tree index overflow".to_string())?;
+            }
+        }
+        let mut incoming_content = BTreeMap::new();
+        let mut dependencies = BTreeMap::<String, BTreeSet<String>>::new();
+        let mut existing_cache = ServerBinaryTreeReadCache::default();
+        for prepared in &pending {
+            let pack_id = required_text(&prepared.metadata, "pack_id")?;
+            for (tree_id, rows) in &prepared.rows_by_tree {
+                let id = tree_id.to_ascii_uppercase();
+                let mut names = BTreeSet::new();
+                if rows
+                    .iter()
+                    .any(|row| !names.insert(row["entry_name"].as_str()))
+                {
+                    return Err("Tree contains duplicate entry names".into());
+                }
+                let identity = rows
+                    .iter()
+                    .map(tree_batch_entry_identity)
+                    .collect::<StoreResult<Vec<_>>>()?;
+                match incoming_content.entry(id.clone()) {
+                    std::collections::btree_map::Entry::Vacant(entry) => {
+                        entry.insert(identity);
+                    }
+                    std::collections::btree_map::Entry::Occupied(entry)
+                        if entry.get() != &identity =>
+                    {
+                        return Err(BinaryDbError::invalid_domain_data(format!(
+                            "tree {tree_id} already exists with different content before incoming batch"
+                        )));
+                    }
+                    _ => {}
+                }
+                if let Some(existing) = existing_trees.get(&id) {
+                    validate_existing_tree_content(
+                        self,
+                        access,
+                        existing,
+                        rows,
+                        &pack_id,
+                        &mut existing_cache,
+                    )?;
+                } else {
+                    dependencies.entry(id.clone()).or_default();
+                }
+                for row in rows {
+                    let name = required_text(row, "entry_name")?;
+                    let kind = tree_entry_kind(&required_text(row, "entry_type")?)?;
+                    let target = required_text(row, "target_id")?;
+                    let normalized = target.to_ascii_uppercase();
+                    match kind {
+                        0 => {
+                            let blob = blobs.get(&normalized).ok_or_else(|| {
+                                format!("blob {target} is missing for tree entry {name}")
+                            })?;
+                            match row.get("size_bytes") {
+                                None | Some(JsonValue::Null) => {}
+                                Some(size) if size.as_u64() == Some(blob.1) => {}
+                                Some(_) => {
+                                    return Err(format!(
+                                        "blob {target} size disagrees for tree entry {name}"
+                                    )
+                                    .into())
+                                }
+                            }
+                        }
+                        1 => {
+                            if row.get("size_bytes").is_some_and(|size| !size.is_null()) {
+                                return Err(format!(
+                                    "child tree {target} has size_bytes for entry {name}"
+                                )
+                                .into());
+                            }
+                            if !tree_indices.contains_key(&normalized) {
+                                return Err(format!(
+                                    "tree {target} is missing for tree entry {name}"
+                                )
+                                .into());
+                            }
+                            if !existing_trees.contains_key(&id)
+                                && !existing_trees.contains_key(&normalized)
+                            {
+                                dependencies
+                                    .entry(id.clone())
+                                    .or_default()
+                                    .insert(normalized);
+                            }
+                        }
+                        _ => unreachable!("tree_entry_kind only returns blob or tree"),
+                    }
+                }
+            }
+        }
+        let mut parents = BTreeMap::<String, Vec<String>>::new();
+        let mut ready = VecDeque::new();
+        for (id, children) in &dependencies {
+            if children.is_empty() {
+                ready.push_back(id.clone());
+            }
+            for child in children {
+                parents.entry(child.clone()).or_default().push(id.clone());
+            }
+        }
+        let mut resolved = 0usize;
+        while let Some(child) = ready.pop_front() {
+            resolved += 1;
+            for parent in parents.remove(&child).into_iter().flatten() {
+                let remaining = dependencies
+                    .get_mut(&parent)
+                    .expect("incoming parent was planned");
+                remaining.remove(&child);
+                if remaining.is_empty() {
+                    ready.push_back(parent);
+                }
+            }
+        }
+        if resolved != dependencies.len() {
+            return Err("tree pack batch contains a cyclic Tree reference".into());
+        }
+        let mut next_entry = access.count(tree_entry_file())?;
+        for pack in &pending {
+            prefixed_hash48(&required_text(&pack.metadata, "pack_id")?, "TPK-")?;
+            timestamp_s(pack.metadata.get("created_at"))?;
+            for rows in pack.rows_by_tree.values() {
+                next_entry = next_entry
+                    .checked_add(u32::try_from(rows.len()).map_err(|_| "Tree entries exceed u32")?)
+                    .ok_or("Tree entry physical capacity exhausted")?;
+            }
+        }
+        access
+            .count(tree_pack_file())?
+            .checked_add(u32::try_from(pending.len()).map_err(|_| "Tree packs exceed u32")?)
+            .ok_or("Tree pack physical capacity exhausted")?;
+        Ok(TreeBatchPlan {
+            pending,
+            indices: tree_indices,
+            blobs,
+            next_tree_index,
+        })
+    }
+
+    fn prepare_tree_pack_append(
+        &self,
+        pack: &JsonValue,
+        locators: &[JsonValue],
+        package_inputs: Option<&std::path::Path>,
+    ) -> StoreResult<PreparedTreePackAppend> {
         #[cfg(feature = "perfetto-tracing")]
         let _trace =
             crate::perfetto_trace::PerfettoRange::new("ait.server.content.append_tree_pack");
         let pack_id = required_text(pack, "pack_id")?;
-        if tree_pack_with_access(tx, &pack_id)?.is_some() {
-            return Ok(());
-        }
         let pack_format = required_text(pack, "pack_format")?;
         if pack_format != TREE_PACK_FORMAT_ZSTD_CHUNKED_V1 {
             return Err(format!(
@@ -2033,7 +2413,9 @@ where
         let archive_decode_trace = crate::perfetto_trace::PerfettoRange::new(
             "ait.server.content.append_tree_pack.archive_decode",
         );
-        let pack_path = self.tree_pack_path(&pack_id);
+        let pack_path = package_inputs
+            .map(|inputs| inputs.join("trees").join(&pack_id))
+            .unwrap_or_else(|| self.tree_pack_path(&pack_id));
         let pack_path_text = pack_path
             .to_str()
             .ok_or_else(|| format!("tree pack path is not UTF-8: {}", pack_path.display()))?;
@@ -2098,109 +2480,32 @@ where
         #[cfg(feature = "perfetto-tracing")]
         drop(archive_decode_trace);
 
-        #[cfg(feature = "perfetto-tracing")]
-        let dependency_lookup_trace = crate::perfetto_trace::PerfettoRange::new(
-            "ait.server.content.append_tree_pack.dependency_lookup",
-        );
-        let mut referenced_blob_ids = BTreeSet::new();
-        let mut referenced_tree_ids = BTreeSet::new();
-        for entry in entries {
-            referenced_tree_ids.insert(required_text(entry, "tree_id")?.to_ascii_uppercase());
-        }
-        for rows in rows_by_tree.values() {
-            for row in rows {
-                let target_id = required_text(row, "target_id")?;
-                match tree_entry_kind(required_text(row, "entry_type")?.as_str())? {
-                    0 => {
-                        referenced_blob_ids.insert(target_id.to_ascii_uppercase());
-                    }
-                    1 => {
-                        referenced_tree_ids.insert(target_id.to_ascii_uppercase());
-                    }
-                    _ => unreachable!("tree_entry_kind only returns blob or tree"),
-                }
-            }
-        }
-        let existing_blobs = blobs_with_access(tx, &referenced_blob_ids)?;
-        let existing_trees = trees_with_access(tx, &referenced_tree_ids)?;
-        #[cfg(feature = "perfetto-tracing")]
-        drop(dependency_lookup_trace);
+        Ok(PreparedTreePackAppend {
+            metadata: pack.clone(),
+            entries: entries.clone(),
+            locator_by_id,
+            rows_by_tree,
+            ordinal_by_tree,
+        })
+    }
 
-        #[cfg(feature = "perfetto-tracing")]
-        let prepare_trace = crate::perfetto_trace::PerfettoRange::new(
-            "ait.server.content.append_tree_pack.prepare_records",
-        );
+    fn append_prepared_tree_pack_in_tx<F>(
+        &self,
+        tx: &mut BinaryDbWriteTxn<'_, D, F>,
+        prepared: PreparedTreePackAppend,
+        tree_indices: &BTreeMap<String, u32>,
+        existing_blobs: &BTreeMap<String, (u32, u64)>,
+    ) -> StoreResult<()>
+    where
+        F: BinaryDbFsyncPolicy,
+    {
+        let pack = &prepared.metadata;
+        let pack_id = required_text(pack, "pack_id")?;
+        let entries = &prepared.entries;
+        let locator_by_id = &prepared.locator_by_id;
+        let rows_by_tree = &prepared.rows_by_tree;
+        let ordinal_by_tree = &prepared.ordinal_by_tree;
         let first_tree_index = tx.record_count(tree_file())?;
-        let incoming_tree_ids = entries
-            .iter()
-            .map(|entry| Ok(required_text(entry, "tree_id")?.to_ascii_uppercase()))
-            .collect::<StoreResult<BTreeSet<_>>>()?;
-        let mut existing_tree_cache = ServerBinaryTreeReadCache::default();
-        for entry in entries {
-            let tree_id = required_text(entry, "tree_id")?;
-            if let Some(existing) = existing_trees.get(&tree_id.to_ascii_uppercase()) {
-                validate_existing_tree_content(
-                    self,
-                    tx,
-                    existing,
-                    rows_by_tree
-                        .get(&tree_id)
-                        .ok_or_else(|| format!("tree pack {pack_id} has no rows for {tree_id}"))?,
-                    &pack_id,
-                    &mut existing_tree_cache,
-                )?;
-            }
-            for row in rows_by_tree
-                .get(&tree_id)
-                .ok_or_else(|| format!("tree pack {pack_id} has no rows for {tree_id}"))?
-            {
-                let entry_name = required_text(row, "entry_name")?;
-                let entry_kind = tree_entry_kind(required_text(row, "entry_type")?.as_str())?;
-                let target_id = required_text(row, "target_id")?;
-                tree_entry_mode_bits(
-                    required_text(row, "entry_type")?.as_str(),
-                    required_text(row, "mode")?.as_str(),
-                )?;
-                match entry_kind {
-                    0 => {
-                        let blob = existing_blobs
-                            .get(&target_id.to_ascii_uppercase())
-                            .ok_or_else(|| {
-                                format!("blob {target_id} is missing for tree entry {entry_name}")
-                            })?;
-                        match row.get("size_bytes") {
-                            None | Some(JsonValue::Null) => {}
-                            Some(value) if value.as_u64() == Some(blob.record.size_bytes) => {}
-                            Some(_) => {
-                                return Err(format!(
-                                    "blob {target_id} size disagrees for tree entry {entry_name}"
-                                )
-                                .into())
-                            }
-                        }
-                    }
-                    1 => {
-                        if row.get("size_bytes").is_some_and(|value| !value.is_null()) {
-                            return Err(format!(
-                                "child tree {target_id} has size_bytes for entry {entry_name}"
-                            )
-                            .into());
-                        }
-                        if !incoming_tree_ids.contains(&target_id.to_ascii_uppercase())
-                            && !existing_trees.contains_key(&target_id.to_ascii_uppercase())
-                        {
-                            return Err(format!(
-                                "tree {target_id} is missing for tree entry {entry_name}"
-                            )
-                            .into());
-                        }
-                    }
-                    _ => unreachable!("tree_entry_kind only returns blob or tree"),
-                }
-            }
-        }
-        #[cfg(feature = "perfetto-tracing")]
-        drop(prepare_trace);
 
         #[cfg(feature = "perfetto-tracing")]
         let write_trace =
@@ -2212,17 +2517,6 @@ where
             )));
         }
         let first_entry_index = tx.record_count(tree_entry_file())?;
-        let incoming_tree_indices = entries
-            .iter()
-            .enumerate()
-            .map(|(offset, entry)| {
-                let tree_id = required_text(entry, "tree_id")?.to_ascii_uppercase();
-                let tree_index = first_tree_index
-                    .checked_add(u32::try_from(offset).map_err(|_| "tree offset exceeds u32")?)
-                    .ok_or_else(|| "tree index overflow".to_string())?;
-                Ok((tree_id, tree_index))
-            })
-            .collect::<StoreResult<BTreeMap<_, _>>>()?;
         let mut next_entry_index = first_entry_index;
         let mut entry_records = Vec::new();
         let mut expected_entry_indices = Vec::new();
@@ -2251,20 +2545,15 @@ where
                 let target_index = match entry_kind {
                     0 => existing_blobs
                         .get(&target_id.to_ascii_uppercase())
-                        .map(|blob| blob.blob_index)
+                        .map(|blob| blob.0)
                         .ok_or_else(|| {
                             BinaryDbError::invalid_domain_data(format!(
                                 "blob {target_id} is missing for normalized tree entry {entry_name}"
                             ))
                         })?,
-                    1 => incoming_tree_indices
+                    1 => tree_indices
                         .get(&target_id.to_ascii_uppercase())
                         .copied()
-                        .or_else(|| {
-                            existing_trees
-                                .get(&target_id.to_ascii_uppercase())
-                                .map(|tree| tree.tree_index)
-                        })
                         .ok_or_else(|| {
                             BinaryDbError::invalid_domain_data(format!(
                                 "tree {target_id} is missing for normalized tree entry {entry_name}"
@@ -2372,6 +2661,141 @@ where
         drop(write_trace);
         Ok(())
     }
+}
+
+fn prepare_object_locators(
+    pack: &JsonValue,
+    locators: &[JsonValue],
+) -> StoreResult<BTreeMap<String, JsonValue>> {
+    let pack_id = required_text(pack, "pack_id")?;
+    if required_text(pack, "pack_format")? != PACK_FORMAT_ZSTD_CHUNKED_V1 {
+        return Err("Unsupported Object pack format".into());
+    }
+    prefixed_hash48(&pack_id, "PCK-")?;
+    timestamp_s(pack.get("created_at"))?;
+    let entries = pack
+        .get("pack_index")
+        .and_then(|p| p.get("entries"))
+        .and_then(JsonValue::as_array)
+        .ok_or("Object pack entries missing")?;
+    let mut locator_by_id = locators
+        .iter()
+        .map(|locator| Ok((required_text(locator, "blob_id")?, locator.clone())))
+        .collect::<StoreResult<BTreeMap<_, _>>>()?;
+    if locator_by_id.len() != locators.len() {
+        return Err("object pack contains duplicate blob locators".into());
+    }
+
+    let mut physical_blob_ids = BTreeSet::new();
+    for entry in entries {
+        let blob_id = required_text(entry, "blob_id")?;
+        if !physical_blob_ids.insert(blob_id.clone()) {
+            return Err(format!("object pack {pack_id} contains duplicate blob {blob_id}").into());
+        }
+    }
+    let unexpected_locator_ids = locator_by_id
+        .keys()
+        .filter(|blob_id| !physical_blob_ids.contains(*blob_id))
+        .cloned()
+        .collect::<Vec<_>>();
+    if !unexpected_locator_ids.is_empty() {
+        return Err(format!(
+                "object pack {pack_id} has locators for blobs absent from its physical index: {unexpected_locator_ids:?}"
+            )
+            .into());
+    }
+    let pack_created_at = pack.get("created_at").cloned().unwrap_or(JsonValue::Null);
+    for entry in entries {
+        let blob_id = required_text(entry, "blob_id")?;
+        if locator_by_id.contains_key(&blob_id) {
+            continue;
+        }
+        let sha256 = required_text(entry, "checksum")?;
+        let size_bytes = entry
+            .get("uncompressed_byte_length")
+            .and_then(JsonValue::as_u64)
+            .ok_or_else(|| {
+                format!("object pack {pack_id} blob {blob_id} has invalid uncompressed_byte_length")
+            })?;
+        let pack_entry_type = required_text(entry, "entry_type")?;
+        let pack_chain_depth = entry
+            .get("chain_depth")
+            .and_then(JsonValue::as_u64)
+            .ok_or_else(|| {
+                format!("object pack {pack_id} blob {blob_id} has invalid chain_depth")
+            })?;
+        locator_by_id.insert(
+            blob_id.clone(),
+            json!({
+                "blob_id": blob_id,
+                "sha256": sha256,
+                "size_bytes": size_bytes,
+                "pack_entry_type": pack_entry_type,
+                "pack_base_blob_id": entry.get("base_blob_id").cloned().unwrap_or(JsonValue::Null),
+                "pack_chain_depth": pack_chain_depth,
+                "created_at": pack_created_at.clone(),
+            }),
+        );
+    }
+
+    for locator in locator_by_id.values() {
+        timestamp_s(locator.get("created_at"))?;
+        let depth = locator
+            .get("pack_chain_depth")
+            .and_then(JsonValue::as_u64)
+            .and_then(|n| u8::try_from(n).ok())
+            .ok_or("Object delta depth exceeds u8")?;
+        let kind = match locator["pack_entry_type"].as_str() {
+            Some("full") => 0,
+            Some("delta") => 1,
+            _ => return Err("Unsupported Object member kind".into()),
+        };
+        let base = locator
+            .get("pack_base_blob_id")
+            .and_then(JsonValue::as_str)
+            .filter(|s| !s.is_empty());
+        if let Some(base) = base {
+            prefixed_hex_key(base, "BLB-", 10)?;
+        }
+        let _ = encode_object_pack_member(&ServerBinaryObjectPackMemberRecord {
+            member_meta: ZSTD_MEMBER_COMPRESSION_META | kind,
+            delta_chain_depth: depth,
+            pack_index: 0,
+            blob_index: 0,
+            base_blob_index_plus1: u32::from(base.is_some()),
+        });
+        if (kind == 0 && (base.is_some() || depth != 0))
+            || (kind == 1 && (base.is_none() || depth == 0))
+        {
+            return Err("Object member base/depth differs from its kind".into());
+        }
+    }
+    Ok(locator_by_id)
+}
+
+fn tree_batch_entry_identity(row: &JsonValue) -> StoreResult<TreeBatchEntryIdentity> {
+    let name = required_text(row, "entry_name")?;
+    validate_tree_entry_name(&name)?;
+    u8::try_from(name.len()).map_err(|_| {
+        BinaryDbError::invalid_domain_data(format!("tree entry name exceeds 255 bytes: {name:?}"))
+    })?;
+    let kind = required_text(row, "entry_type")?;
+    let mode = tree_entry_mode_bits(&kind, &required_text(row, "mode")?)?;
+    let size = match row.get("size_bytes") {
+        None | Some(JsonValue::Null) => None,
+        Some(value) => Some(value.as_u64().ok_or_else(|| {
+            BinaryDbError::invalid_domain_data(format!(
+                "tree entry {name:?} size_bytes is not u64 or null"
+            ))
+        })?),
+    };
+    Ok(TreeBatchEntryIdentity {
+        name,
+        kind,
+        target: required_text(row, "target_id")?.to_ascii_uppercase(),
+        mode,
+        size,
+    })
 }
 
 fn validate_existing_tree_content<D>(
@@ -4234,10 +4658,10 @@ where
         "ait.server.content.validate_snapshot_aggregates_v0",
     );
     let mut aggregate_cache = BTreeMap::new();
-    let snapshot_file = ServerBinarySnapshotCodec::<SERVER_CONTENT_BINARY_LAYOUT_ID>::record_file();
+    let snapshot_file = ServerBinarySnapshotCodec::<2>::record_file();
     let snapshot_count = read.record_count(snapshot_file.clone())?;
     for snapshot_index in 0..snapshot_count {
-        let snapshot = ServerBinarySnapshotCodec::<SERVER_CONTENT_BINARY_LAYOUT_ID>::decode_record(
+        let snapshot = ServerBinarySnapshotCodec::<2>::decode_record(
             &read.read_record(snapshot_file.clone(), snapshot_index)?,
         )?;
         if !snapshot.is_tombstone() {

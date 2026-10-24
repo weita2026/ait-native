@@ -6,7 +6,7 @@ use ait_server::installed_lifecycle::{
     PreparedLifecycle,
 };
 use ait_server::{
-    build_router, build_startup_router, ensure_durable_runtime_access,
+    build_router_with_upgrade_progress, build_startup_router, ensure_durable_runtime_access,
     ensure_startup_runtime_access, initialize_installed_runtime,
 };
 use ait_server_core::foundation::server_binary_lifecycle::ServerBinaryLifecycleConfig;
@@ -36,6 +36,13 @@ async fn main() {
                 eprintln!("ait-server runtime configuration failed:\n{message}");
                 process::exit(78);
             });
+
+    runtime_config
+        .validate_repository_scope()
+        .unwrap_or_else(|message| {
+            eprintln!("ait-server runtime scope configuration failed:\n{message}");
+            process::exit(78);
+        });
 
     match prepared.command {
         LifecycleCommand::Init => {
@@ -112,7 +119,10 @@ async fn serve(address: SocketAddr, runtime_config: ServerBinaryLifecycleConfig)
     println!("ait-server bound on {address}; validating Binary DB registry");
     let (startup_app, startup_handle) = build_startup_router();
     let mut serving = Box::pin(server.serve(startup_app.into_make_service()));
-    let mut loading = tokio::task::spawn_blocking(move || build_router(runtime_config));
+    let progress_handle = startup_handle.clone();
+    let mut loading = tokio::task::spawn_blocking(move || {
+        build_router_with_upgrade_progress(runtime_config, progress_handle.progress_tracker())
+    });
     let app = tokio::select! {
         loaded = &mut loading => match loaded {
             Ok(app) => app,

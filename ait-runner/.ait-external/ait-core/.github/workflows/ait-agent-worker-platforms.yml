@@ -1,0 +1,70 @@
+name: ait-core Rust workspace platforms
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/ait-agent-worker-platforms.yml"
+      - "rust/**"
+      - "ci/**"
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/ait-agent-worker-platforms.yml"
+      - "rust/**"
+      - "ci/**"
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  checks: write
+
+jobs:
+  workspace-platform:
+    if: github.event_name != 'schedule'
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - windows-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+
+      - name: Install stable Rust components
+        run: rustup update stable --no-self-update && rustup default stable && rustup component add rustfmt clippy
+
+      - name: Check formatting
+        run: cargo fmt --manifest-path rust/Cargo.toml --all -- --check
+
+      - name: Lint complete Rust workspace
+        run: cargo clippy --manifest-path rust/Cargo.toml --workspace --all-targets --all-features --locked -- -D warnings
+
+      - name: Test complete locked Rust workspace
+        run: cargo test --manifest-path rust/Cargo.toml --workspace --all-targets --all-features --locked
+
+      - name: Report native manager identity
+        run: cargo run --manifest-path rust/Cargo.toml -p ait-cli --bin ait-agent -- --version
+
+      - name: Report native worker capabilities
+        run: cargo run --manifest-path rust/Cargo.toml -p ait-agent-worker -- capabilities --json
+
+  dependency-audit:
+    name: RustSec dependency audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+
+      - name: Audit locked Rust dependencies
+        uses: rustsec/audit-check@v2.0.0
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          working-directory: rust

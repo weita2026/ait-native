@@ -1106,6 +1106,14 @@ where
         })
     }
 
+    fn index_rollback_image(&self, index: &BinaryIndexId) -> StoreResult<Option<Vec<u8>>> {
+        let path = self.resolve_index_path(index)?;
+        match self.files.metadata_len(&path)? {
+            Some(_) => self.files.read_bytes(&path).map(Some),
+            None => Ok(None),
+        }
+    }
+
     fn lookup_index(
         &self,
         index: BinaryIndexId,

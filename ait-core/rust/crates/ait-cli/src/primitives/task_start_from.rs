@@ -1,4 +1,3 @@
-use super::change_flow::validate_short_remote_change_id;
 use super::*;
 use ait_core::plan_command_execution::execute_plan_inspect_command_request_json;
 use ait_core::plan_filesystem::{resolve_repo_artifact_path, PlanFilesystemError};
@@ -299,8 +298,13 @@ fn task_start_from_remote_atomic_with_progress(
     let context_preflight_elapsed = elapsed_ms(context_preflight_started);
     let title_elapsed = elapsed_ms(title_started);
 
-    ensure_task_start_local_base_snapshot(repo, &resolved_base_line)?;
     let remote_repo_name = remote.repo_name.clone().unwrap_or_else(|| repo.repo_name());
+    crate::primitives::workspace::remote_capture::require_v2_authority(
+        repo,
+        remote,
+        &remote_repo_name,
+    )?;
+    ensure_task_start_local_base_snapshot(repo, &resolved_base_line)?;
     let remote_base_line_preflight_started = Instant::now();
     let mut task_remote = http_task_remote(repo, remote)?;
     let remote_base_line = task_start_remote_base_line_preflight_with_task_remote(
@@ -329,17 +333,14 @@ fn task_start_from_remote_atomic_with_progress(
         &resolved_base_line,
     )?;
     let atomic_context = json!({
-        "contract": "task-start-atomic/v1",
+        "contract": "task-start-atomic/v2",
         "idempotency_key": idempotency_key,
         "plan_item_ref": source.plan_item_ref,
         "task": {
             "title": resolved_title,
             "intent": resolved_intent,
         },
-        "change": {
-            "title": resolved_change_title,
-            "base_line": resolved_base_line,
-        },
+        "change": null,
     });
     let plan_sync_started = Instant::now();
     let sync = execute_plan_sync_command_request_json(
@@ -430,39 +431,17 @@ fn task_start_from_remote_atomic_with_progress(
             "task_id": task_id,
         }),
     )?;
-    let change = atomic
-        .get("change")
-        .filter(|value| value.is_object())
-        .cloned()
-        .ok_or_else(|| "Atomic task-start response is missing `change`.".to_string())?;
-    let change =
-        ChangeJson::stateless().normalize_remote_change_payload(&change, Some(&task_id))?;
-    validate_short_remote_change_id(&change, &task_id)?;
-    for (field, expected) in [
-        ("task_id", task_id.as_str()),
-        ("title", resolved_change_title.as_str()),
-        ("base_line", resolved_base_line.as_str()),
-    ] {
-        if change.get(field).and_then(JsonValue::as_str) != Some(expected) {
-            return Err(format!(
-                "Atomic task-start Change returned unexpected {field}; expected {expected:?}."
-            ));
-        }
+    if atomic.get("change").is_some_and(|value| !value.is_null()) {
+        return Err("Atomic task-start v2 returned an implicit initial Change.".into());
     }
-    emit_task_start_progress(
-        progress.as_deref_mut(),
-        json!({
-            "phase": "change_created",
-            "change_id": string_field(&change, "change_id"),
-        }),
-    )?;
 
     let mut payload = task_start_bootstrap_created_records_with_progress(
         repo,
         task,
-        Some(change),
+        None,
         &resolved_base_line,
         false,
+        Some(remote),
         explicit_edit_root,
         debug_probe_override,
         progress,
@@ -498,7 +477,7 @@ fn task_start_from_remote_atomic_with_progress(
             "local_plan_id": binding.local_plan_id,
             "local_plan_revision_id": binding.local_plan_revision_id,
             "sync_action": binding.sync_action,
-            "transport_contract": "task-start-atomic/v1",
+            "transport_contract": "task-start-atomic/v2",
         }),
     );
     if let Some(cd_command) = cd_command {
@@ -764,6 +743,8 @@ fn build_task_start_plan_sync_request(
         "repository_index": repo.repository_index(),
         "id_namespace_prefix": repo.id_namespace_prefix(),
         "created_by": repo.actor_identity(),
+        "user_name": repo.config.get("user_name"),
+        "user_email": repo.config.get("user_email"),
         "target": source.artifact_path,
         "plan_ref": source.artifact_selector,
         "prune": false,
@@ -1458,7 +1439,14 @@ mod tests {
         assert_eq!(payload["title_source"], "plan_item");
         assert_eq!(payload["plan_source"]["scope"], "local");
         assert_eq!(payload["plan_source"]["plan_item_ref"], "card/start");
-        assert!(payload["change"].get("change_id").is_some());
+        assert!(payload["change"].is_null());
+        assert!(
+            ait_core::task_workflow_store::TaskWorkflowChangeLister::list_changes(
+                &repo.change_store().unwrap()
+            )
+            .unwrap()
+            .is_empty()
+        );
         assert_eq!(
             payload["worktree"]["path"].as_str(),
             Some(explicit_edit_root.to_string_lossy().as_ref())
@@ -1497,9 +1485,10 @@ mod tests {
         let replay = task_start_bootstrap_created_records_with_progress(
             &repo,
             payload.clone(),
-            Some(payload["change"].clone()),
+            None,
             "main",
             true,
+            None,
             Some(&explicit_edit_root),
             Some(&debug_probe),
             None,
@@ -1523,6 +1512,7 @@ mod tests {
             Some(payload["change"].clone()),
             "main",
             true,
+            None,
             Some(&other_edit_root),
             Some(&debug_probe),
             None,

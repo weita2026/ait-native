@@ -44,22 +44,14 @@ fn language_binding_info_py(py: Python<'_>) -> PyResult<Py<PyDict>> {
 
 #[pyfunction(name = "ait_agent_worker_capabilities")]
 fn ait_agent_worker_capabilities_py(py: Python<'_>) -> PyResult<Py<PyDict>> {
-    let payload = py
-        .detach(agent_worker_capabilities_binding_json)
-        .map_err(PyRuntimeError::new_err)?;
-    render_json_dict(py, payload)
+    let _ = py;
+    Err(PyRuntimeError::new_err(CHAT_INTEGRATIONS_RETIRED_MESSAGE))
 }
 
 #[pyfunction(name = "ait_agent_management")]
-fn ait_agent_management_py(
-    py: Python<'_>,
-    request: Bound<'_, PyAny>,
-) -> PyResult<Py<PyAny>> {
-    let request = parse_json_value(request, "request")?;
-    let payload = py
-        .detach(move || agent_management_binding_json(&request))
-        .map_err(PyRuntimeError::new_err)?;
-    render_json_value(py, payload)
+fn ait_agent_management_py(py: Python<'_>, request: Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
+    let _ = (py, request);
+    Err(PyRuntimeError::new_err(CHAT_INTEGRATIONS_RETIRED_MESSAGE))
 }
 
 #[pyfunction(name = "ait_agent_worker_transaction")]
@@ -67,11 +59,8 @@ fn ait_agent_worker_transaction_py(
     py: Python<'_>,
     request: Bound<'_, PyAny>,
 ) -> PyResult<Py<PyAny>> {
-    let request = parse_json_value(request, "request")?;
-    let payload = py
-        .detach(move || agent_worker_transaction_binding_json(&request))
-        .map_err(PyRuntimeError::new_err)?;
-    render_json_value(py, payload)
+    let _ = (py, request);
+    Err(PyRuntimeError::new_err(CHAT_INTEGRATIONS_RETIRED_MESSAGE))
 }
 
 #[pyfunction(name = "transport_envelope_ir_version")]
@@ -118,11 +107,8 @@ fn ait_agent_web_runtime_execute_py(
     py: Python<'_>,
     request: Bound<'_, PyAny>,
 ) -> PyResult<Py<PyAny>> {
-    let request_value = parse_json_value(request, "request")?;
-    let result = py
-        .detach(move || agent_web_runtime_execute_json(&request_value))
-        .map_err(PyValueError::new_err)?;
-    render_json_value(py, result)
+    let _ = (py, request);
+    Err(PyValueError::new_err(CHAT_INTEGRATIONS_RETIRED_MESSAGE))
 }
 
 #[pyfunction(name = "worker_manifest_ir_version")]
@@ -169,15 +155,9 @@ fn worker_manifest_select_telegram_worker_py(
 }
 
 #[pyfunction(name = "ait_agent_env_file_load")]
-fn ait_agent_env_file_load_py(
-    py: Python<'_>,
-    request: Bound<'_, PyAny>,
-) -> PyResult<Py<PyDict>> {
-    let request_value = parse_json_value(request, "request")?;
-    let payload = py
-        .detach(move || agent_env_file_load_json(&request_value))
-        .map_err(PyValueError::new_err)?;
-    render_json_dict(py, payload)
+fn ait_agent_env_file_load_py(py: Python<'_>, request: Bound<'_, PyAny>) -> PyResult<Py<PyDict>> {
+    let _ = (py, request);
+    Err(PyValueError::new_err(CHAT_INTEGRATIONS_RETIRED_MESSAGE))
 }
 
 #[pyfunction(name = "ait_agent_telegram_workflow_notification_format")]
@@ -185,10 +165,8 @@ fn ait_agent_telegram_workflow_notification_format_py(
     py: Python<'_>,
     request: Bound<'_, PyAny>,
 ) -> PyResult<Py<PyDict>> {
-    let request_value = parse_json_value(request, "request")?;
-    let payload = agent_telegram_workflow_notification_format_json(&request_value)
-        .map_err(PyValueError::new_err)?;
-    render_json_dict(py, payload)
+    let _ = (py, request);
+    Err(PyValueError::new_err(CHAT_INTEGRATIONS_RETIRED_MESSAGE))
 }
 
 #[pyfunction(name = "ait_agent_telegram_turn_input_plan")]
@@ -196,10 +174,8 @@ fn ait_agent_telegram_turn_input_plan_py(
     py: Python<'_>,
     request: Bound<'_, PyAny>,
 ) -> PyResult<Py<PyDict>> {
-    let request_value = parse_json_value(request, "request")?;
-    let payload =
-        agent_telegram_turn_input_plan_json(&request_value).map_err(PyValueError::new_err)?;
-    render_json_dict(py, payload)
+    let _ = (py, request);
+    Err(PyValueError::new_err(CHAT_INTEGRATIONS_RETIRED_MESSAGE))
 }
 
 #[pyfunction(name = "ait_agent_telegram_message_delivery_execute")]
@@ -207,17 +183,14 @@ fn ait_agent_telegram_message_delivery_execute_py(
     py: Python<'_>,
     request: Bound<'_, PyAny>,
 ) -> PyResult<Py<PyDict>> {
-    let request_value = parse_json_value(request, "request")?;
-    let payload = py
-        .detach(move || agent_telegram_message_delivery_execute_json(&request_value))
-        .map_err(PyValueError::new_err)?;
-    validate_telegram_message_delivery_export(&payload).map_err(PyRuntimeError::new_err)?;
-    render_json_dict(py, payload)
+    let _ = (py, request);
+    Err(PyValueError::new_err(CHAT_INTEGRATIONS_RETIRED_MESSAGE))
 }
 
+// Retain historical payload validation for its internal contract tests.
+#[cfg(test)]
 fn validate_telegram_message_delivery_export(payload: &JsonValue) -> Result<(), &'static str> {
-    const INVALID: &str =
-        "Rust Telegram message delivery returned an invalid export contract.";
+    const INVALID: &str = "Rust Telegram message delivery returned an invalid export contract.";
     let object = payload.as_object().ok_or(INVALID)?;
     if object.get("contract").and_then(JsonValue::as_str)
         != Some("ait_agent_core.event_loop.TelegramMessageDeliveryExecution.v1")
@@ -249,7 +222,10 @@ fn validate_telegram_message_delivery_export(payload: &JsonValue) -> Result<(), 
             .get("formatted_text_exposed")
             .and_then(JsonValue::as_bool)
             != Some(false)
-        || object.get("plain_text_exposed").and_then(JsonValue::as_bool) != Some(false)
+        || object
+            .get("plain_text_exposed")
+            .and_then(JsonValue::as_bool)
+            != Some(false)
     {
         return Err(INVALID);
     }
@@ -261,10 +237,8 @@ fn ait_agent_telegram_workflow_query_plan_py(
     py: Python<'_>,
     request: Bound<'_, PyAny>,
 ) -> PyResult<Py<PyDict>> {
-    let request_value = parse_json_value(request, "request")?;
-    let payload =
-        agent_telegram_workflow_query_plan_json(&request_value).map_err(PyValueError::new_err)?;
-    render_json_dict(py, payload)
+    let _ = (py, request);
+    Err(PyValueError::new_err(CHAT_INTEGRATIONS_RETIRED_MESSAGE))
 }
 
 #[pyfunction(name = "transport_envelope_build_binding_metadata")]
@@ -442,15 +416,9 @@ fn transport_envelope_compact_reply_envelope_py(
 
 fn register_agent_runtime(_py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(language_binding_info_py, module)?)?;
-    module.add_function(wrap_pyfunction!(
-        ait_agent_worker_capabilities_py,
-        module
-    )?)?;
+    module.add_function(wrap_pyfunction!(ait_agent_worker_capabilities_py, module)?)?;
     module.add_function(wrap_pyfunction!(ait_agent_management_py, module)?)?;
-    module.add_function(wrap_pyfunction!(
-        ait_agent_worker_transaction_py,
-        module
-    )?)?;
+    module.add_function(wrap_pyfunction!(ait_agent_worker_transaction_py, module)?)?;
     module.add_function(wrap_pyfunction!(transport_envelope_ir_version_py, module)?)?;
     module.add_function(wrap_pyfunction!(transport_envelope_schema_py, module)?)?;
     module.add_function(wrap_pyfunction!(

@@ -2,6 +2,9 @@ use super::local_ports::PlanSyncLocalRevisionArtifact;
 use super::*;
 use std::cell::{Cell, RefCell};
 
+#[path = "owner_attribution_tests.rs"]
+mod owner_attribution_tests;
+
 #[derive(Default)]
 struct BoundaryBlobStore {
     calls: RefCell<Vec<String>>,
@@ -247,6 +250,9 @@ impl PlanSyncRemoteRevisionReader for BoundaryRemote {
 
 fn boundary_request(rebase: bool) -> SyncRequest {
     SyncRequest {
+        user_name: Some("Alice".into()),
+        user_email: Some("alice@example".into()),
+        current_actor_revision_ids: BTreeSet::new(),
         root_path: "/tmp/ait-plan-boundary-test".to_string(),
         repo_name: "ait_test".to_string(),
         repository_index: Some(RepositoryIndex::new(7)),
@@ -925,8 +931,9 @@ fn duplicate_current_plan_reconcile_rejects_tied_latest_timestamp() {
 }
 
 #[test]
-fn explicit_rebase_adopts_verified_head_without_reading_unavailable_history() {
-    let request = boundary_request(true);
+fn automatic_rebase_adopts_verified_head_without_reading_unavailable_history() {
+    let mut request = boundary_request(false);
+    enable_automatic_sync_rebase(&mut request);
     let artifact = boundary_artifact();
     let remote_body = "# Verified Remote Boundary\n";
     let remote_blob_id = artifact_blob_id(remote_body);
@@ -995,8 +1002,9 @@ fn explicit_rebase_adopts_verified_head_without_reading_unavailable_history() {
 }
 
 #[test]
-fn explicit_rebase_splits_published_stale_identity_at_a_distinct_local_plan() {
-    let request = boundary_request(true);
+fn automatic_rebase_splits_published_stale_identity_at_a_distinct_local_plan() {
+    let mut request = boundary_request(false);
+    enable_automatic_sync_rebase(&mut request);
     let artifact = boundary_artifact();
     let remote_body = "# Canonical Remote Boundary\n";
     let remote_blob_id = artifact_blob_id(remote_body);
@@ -1091,8 +1099,9 @@ fn explicit_rebase_splits_published_stale_identity_at_a_distinct_local_plan() {
 }
 
 #[test]
-fn explicit_published_rebase_rejects_head_selector_mismatch_before_local_mutation() {
-    let request = boundary_request(true);
+fn automatic_published_rebase_rejects_head_selector_mismatch_before_local_mutation() {
+    let mut request = boundary_request(false);
+    enable_automatic_sync_rebase(&mut request);
     let artifact = boundary_artifact();
     let remote_body = "# Canonical Remote Boundary\n";
     let remote_blob_id = artifact_blob_id(remote_body);
@@ -1152,8 +1161,9 @@ fn explicit_published_rebase_rejects_head_selector_mismatch_before_local_mutatio
 }
 
 #[test]
-fn explicit_rebase_rejects_head_hash_mismatch_before_local_mutation() {
-    let request = boundary_request(true);
+fn automatic_rebase_rejects_head_hash_mismatch_before_local_mutation() {
+    let mut request = boundary_request(false);
+    enable_automatic_sync_rebase(&mut request);
     let artifact = boundary_artifact();
     let remote_plan = boundary_remote_plan("BLB-declared-wrong");
     let (mut local_inventory, mut remote_inventory) =

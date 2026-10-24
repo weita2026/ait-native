@@ -1,3 +1,4 @@
+#[path="../support/native_home.rs"] mod native_home;
 use ait_cli::init_surface::{init_repo as initialize_repo, InitRequest};
 use ait_cli::primitives::{
     task_land_apply, task_land_payload, workflow_land_apply, workflow_ready_payload,
@@ -124,11 +125,15 @@ enum CloseoutMutationBoundary {
 }
 
 struct CloseoutRecoveryRemoteState {
+    plan_closeout: Option<CloseoutPlanFixture>,
+    guarded_base_snapshot_id: Option<String>,
     land_submitted: bool,
     task_completed: bool,
     enforce_reviewer_workflow: bool,
     code_review_recorded: bool,
     task_review_recorded: bool,
+    existing_task_review_kind: Option<String>,
+    omit_task_review_kind: bool,
     policy_evaluated: bool,
     patchset_revision_snapshot_id: Option<String>,
     land_boundary: CloseoutMutationBoundary,
@@ -147,11 +152,15 @@ struct CloseoutRecoveryRemoteState {
 impl Default for CloseoutRecoveryRemoteState {
     fn default() -> Self {
         Self {
+            plan_closeout: None,
+            guarded_base_snapshot_id: None,
             land_submitted: false,
             task_completed: false,
             enforce_reviewer_workflow: false,
             code_review_recorded: true,
             task_review_recorded: true,
+            existing_task_review_kind: None,
+            omit_task_review_kind: false,
             policy_evaluated: true,
             patchset_revision_snapshot_id: None,
             land_boundary: CloseoutMutationBoundary::MutateBeforeResponse,
@@ -179,6 +188,8 @@ impl CloseoutRecoveryRemoteState {
         task_response_delay: Duration,
     ) {
         self.land_submitted = false;
+        self.plan_closeout = None;
+        self.guarded_base_snapshot_id = None;
         self.task_completed = false;
         self.enforce_reviewer_workflow = false;
         self.code_review_recorded = true;
@@ -196,6 +207,23 @@ impl CloseoutRecoveryRemoteState {
         self.land_mutation_in_flight = false;
         self.atomic_task_land_idempotency_key = None;
         self.fixture_seed = fixture_seed;
+    }
+}
+
+struct CloseoutPlanFixture {
+    plan: JsonValue,
+    revisions: Vec<JsonValue>,
+    fail_sync: bool,
+}
+
+impl CloseoutPlanFixture {
+    fn bound_task(&self, completed: bool) -> JsonValue {
+        json!({
+            "task_id":"RT-1", "status":if completed { "completed" } else { "active" },
+            "plan_id":self.plan["plan_id"],
+            "origin_plan_revision_id":self.revisions[0]["plan_revision_id"],
+            "plan_item_ref":"finish/ship"
+        })
     }
 }
 
@@ -219,6 +247,9 @@ impl Drop for CloseoutRecoveryServerHandle {
 
 #[derive(Default)]
 struct FakeRemoteState {
+    unsupported_review_actor_identity: bool,
+    review_readback_kind_override: Option<String>,
+    recorded_actor_reviews: Vec<JsonValue>,
     change_rows_override: Option<Vec<JsonValue>>,
     remote_head_snapshot_id: Option<String>,
     selected_patchset_id: Option<String>,
@@ -249,20 +280,6 @@ fn write_file(path: &Path, content: &str) {
     }
     let mut handle = fs::File::create(path).unwrap();
     handle.write_all(content.as_bytes()).unwrap();
-}
-
-fn encode_ref_name(name: &str) -> String {
-    let mut out = String::new();
-    for byte in name.as_bytes() {
-        let ch = *byte as char;
-        if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.' | '~') {
-            out.push(ch);
-        } else {
-            out.push('%');
-            out.push_str(&format!("{byte:02X}"));
-        }
-    }
-    out
 }
 
 fn local_line_head(root: &Path, line_name: &str) -> Option<String> {
@@ -306,15 +323,18 @@ fn init_repo_with_fixture_workflow(base_url: &str) -> TempDir {
         repair_existing: false,
     })
     .unwrap();
+    // Remote fixtures bind the historical source-only Snapshot ID below.
+    // Init scaffolding is covered by init_cli and is not part of that tree.
+    fs::remove_file(root.join(".aitignore")).unwrap();
     write_file(
         &root.join(".ait/config.json"),
         r#"{
   "repo_name": "fixture-ait",
   "repository_index": 7,
+  "agent_teams": true,
   "id_namespace_prefix": "",
   "default_line": "main",
   "default_remote": "origin",
-  "workflow_mode": "team_remote",
   "remotes": {
     "origin": {
       "remote_id": 1,
@@ -761,7 +781,7 @@ fn cargo_bin() -> Command {
 
 fn command_output_with_env(root: &Path, args: &[&str], envs: &[(&str, &str)]) -> Output {
     let mut command = cargo_bin();
-    command.current_dir(root).args(args);
+    command.current_dir(root).args(args).env("CODEX_HOME",native_home::path());
     for (key, value) in envs {
         command.env(key, value);
     }

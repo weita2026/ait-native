@@ -64,6 +64,7 @@ define_environment_contract!(
     AIT_NATIVE_SERVER_CI_RAM_RECLAIM_TARGET_BYTES => (Configuration, false, "Optional post-reclamation free-byte target for the validated server CI RAM root."),
     AIT_NATIVE_SERVER_CI_RAM_ROOT => (HostBoundary, false, "Absolute memory-backed host root used for isolated server CI work."),
     AIT_NATIVE_SERVER_DATA => (Bootstrap, false, "Durable server authority root used when --data is not supplied."),
+    AIT_NATIVE_SERVER_EXCLUDED_REPOSITORY_INDEXES => (Configuration, false, "Optional comma-separated canonical u32 Repository indexes excluded from conversion, serving and Workers; unset excludes none. Malformed or unknown indexes reject startup. This does not prove historical migration membership."),
     AIT_OBJECT_PACK_CHUNK_MIB => (Configuration, false, "Positive object-pack write chunk size in mebibytes."),
     AIT_PERFETTO_TRACE => (Diagnostic, false, "Output path enabling opt-in Perfetto trace capture in a tracing-enabled build."),
     AIT_TREE_PACK_CHUNK_MIB => (Configuration, false, "Positive Tree-pack write chunk size in mebibytes."),

@@ -1,0 +1,15 @@
+[[external]]
+name = "ait-db"
+repo_name = "ait-db"
+repository_index = 11
+remote = "origin"
+line = "main"
+snapshot = "SNP-DB-DIRECT"
+materialize_to = ".ait-external/ait-db"
+license = "Apache-2.0"
+version = "0.1.0"
+
+[external.bindings.rust]
+kind = "cargo-path"
+path = "rust/crates/ait-db"
+package = "ait-db"

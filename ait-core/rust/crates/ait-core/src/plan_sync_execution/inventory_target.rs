@@ -759,7 +759,7 @@ where
     let mut remote_plan = None;
     let mut remote_continuity = None;
     if request.base_url.is_some()
-        && (local_plan.is_none() || !local_fully_published || request.reconcile)
+        && (local_plan.is_none() || !local_fully_published || request.reconcile || request.rebase)
     {
         let (mut candidate, mut continuity) = select_existing_plan_with_continuity(
             Path::new(&request.root_path),

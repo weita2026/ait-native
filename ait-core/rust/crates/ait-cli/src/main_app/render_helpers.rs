@@ -174,6 +174,7 @@ fn compact_snapshot_create_payload(payload: &JsonValue) -> JsonValue {
         "ok": true,
         "snapshot_id": cloned_field(payload, "snapshot_id"),
         "task_id": cloned_field(payload, "task_id"),
+        "change_id": cloned_field(payload, "change_id"),
         "line_name": cloned_field(payload, "line_name"),
         "parent_snapshot_id": cloned_field(payload, "parent_snapshot_id"),
         "message": cloned_field(payload, "message"),
@@ -253,6 +254,12 @@ fn compact_task_finish_payload(payload: &JsonValue) -> JsonValue {
         "next_action": recovery,
         "evidence": compact_evidence_for_id("ait task audit", Some(task_id.as_str())),
     });
+    if let Some(handoff) = payload.get("team_handoff") {
+        summary["team_handoff"] = handoff.clone();
+    }
+    if let Some(log) = payload.get("team_finish_log") {
+        summary["team_finish_log"] = log.clone();
+    }
     let mut issues = json!({});
     for field in [
         "bound_worktree_cleanup",

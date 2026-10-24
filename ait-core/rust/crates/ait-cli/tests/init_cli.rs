@@ -1,3 +1,5 @@
+#[path = "support/native_home.rs"]
+mod native_home;
 use ait_core::json_support::{JsonCodec, JsonValue};
 use assert_cmd::prelude::*;
 use predicates::prelude::*;
@@ -6,7 +8,11 @@ use std::process::Command;
 use tempfile::TempDir;
 
 fn cargo_bin() -> Command {
-    Command::cargo_bin("ait-cli").unwrap()
+    let mut c = Command::cargo_bin("ait-cli").unwrap();
+    c.env("CODEX_HOME", native_home::path())
+        .env_remove("CODEX_THREAD_ID")
+        .env_remove("CODEX_SESSION_ID");
+    c
 }
 
 fn output_json(command: &mut Command) -> JsonValue {
@@ -84,23 +90,29 @@ fn init_cli_creates_then_reinitializes_the_agent_contract() {
     assert_eq!(initialized["default_author_mode"], "ai_with_human_review");
     assert!(initialized["default_model"].is_null());
     assert!(temp.path().join(".ait/config.json").is_file());
+    let ignore = fs::read_to_string(temp.path().join(".aitignore")).unwrap();
+    assert!(!ignore.is_empty());
+    assert!(ignore.lines().all(|line| line.starts_with('#')));
     let agents = fs::read_to_string(temp.path().join("AGENTS.md")).unwrap();
     assert!(agents.contains("<!-- ait:workflow:start -->"));
-    assert!(agents.contains("Route: mode=`solo_local`; sprint=`on`; scope=`local`"));
+    assert!(agents.contains("Route: sprint=`on`; scope=`local`"));
     assert!(agents.contains("plan-binding=`required`"));
     assert!(agents.contains("ait task start --from <sprint-card-path>#<exact-ref> --intent"));
     assert!(agents.contains("Work only in the returned `edit_root`"));
     assert!(agents.contains("otherwise omit it and use the returned `edit_root`"));
     let claude = fs::read_to_string(temp.path().join("CLAUDE.md")).unwrap();
     assert!(claude.contains("<!-- ait:workflow:start -->"));
-    assert!(claude.contains("Route: mode=`solo_local`; sprint=`on`; scope=`local`"));
+    assert!(claude.contains("Route: sprint=`on`; scope=`local`"));
     assert!(claude.contains("ait task start --from <sprint-card-path>#<exact-ref> --intent"));
     assert!(claude.contains("--edit-root <absolute-path>"));
     assert!(claude.contains("&& cd <absolute-path>"));
-    assert!(!agents.to_ascii_lowercase().contains("json"));
-    assert!(!claude.to_ascii_lowercase().contains("json"));
+
     assert!(claude.contains("Do not omit `--edit-root`"));
     assert!(!claude.contains("@AGENTS.md"));
+    for guidance in [&agents, &claude] {
+        assert!(guidance.contains("review `.aitignore`\nin `edit_root`"));
+        assert!(guidance.contains("first build/test or Snapshot-producing finish"));
+    }
     assert!(temp.path().join("docs/sprints").is_dir());
     for path in ["ait-native.md", "docs/plan.md", "docs/milestone.md"] {
         assert!(!temp.path().join(path).exists(), "unexpected {path}");
@@ -116,6 +128,10 @@ fn init_cli_creates_then_reinitializes_the_agent_contract() {
     assert_eq!(reinitialized["repo_name"], expected_repo_name);
     assert_eq!(reinitialized["default_line"], "main");
     assert_eq!(reinitialized["policy_profile"], "prototype");
+    assert_eq!(
+        fs::read_to_string(temp.path().join(".aitignore")).unwrap(),
+        ignore
+    );
     assert_eq!(
         fs::read_to_string(temp.path().join("AGENTS.md"))
             .unwrap()
@@ -144,6 +160,73 @@ fn init_cli_invalid_input_leaves_no_ait_entry() {
         .stderr(predicate::str::contains("Unknown policy profile"));
 
     assert!(fs::symlink_metadata(temp.path().join(".ait")).is_err());
+    assert!(fs::symlink_metadata(temp.path().join(".aitignore")).is_err());
+}
+
+#[test]
+fn init_cli_preserves_empty_ignore_and_does_not_scaffold_on_reinit() {
+    let temp = TempDir::new().unwrap();
+    let ignore = temp.path().join(".aitignore");
+    fs::write(&ignore, b"").unwrap();
+    output_json(
+        cargo_bin()
+            .current_dir(temp.path())
+            .args(["init", "--json"]),
+    );
+    assert!(fs::read(&ignore).unwrap().is_empty());
+    fs::remove_file(&ignore).unwrap();
+    let result = output_json(
+        cargo_bin()
+            .current_dir(temp.path())
+            .args(["init", "--json"]),
+    );
+    assert_eq!(result["action"], "reinitialized");
+    assert!(!ignore.exists());
+}
+
+#[test]
+fn fresh_init_ignore_scaffold_survives_the_first_task_worktree_and_finish() {
+    let temp = TempDir::new().unwrap();
+    let parent = temp.path().canonicalize().unwrap();
+    let root = parent.join("repo");
+    let edit_root = parent.join("task");
+    fs::create_dir(&root).unwrap();
+    output_json(cargo_bin().current_dir(&root).args(["init", "--json"]));
+    let ignore = fs::read(root.join(".aitignore")).unwrap();
+    output_json(
+        cargo_bin()
+            .current_dir(&root)
+            .args(["config", "set", "--sprint", "off", "--json"]),
+    );
+    let started = output_json(cargo_bin().current_dir(&root).args([
+        "task",
+        "start",
+        "--title",
+        "First code",
+        "--intent",
+        "Verify init scaffold in the first Task",
+        "--edit-root",
+        edit_root.to_str().unwrap(),
+        "--local",
+        "--json",
+    ]));
+    assert_eq!(fs::read(edit_root.join(".aitignore")).unwrap(), ignore);
+    fs::write(edit_root.join("data.csv"), "input,value\nfirst,1\n").unwrap();
+    output_json(cargo_bin().current_dir(&edit_root).args([
+        "task",
+        "finish",
+        started["task_id"].as_str().unwrap(),
+        "--message",
+        "Keep project data with comment-only ignore rules",
+        "--local",
+        "--json",
+    ]));
+    assert_eq!(fs::read(root.join(".aitignore")).unwrap(), ignore);
+    assert_eq!(
+        fs::read_to_string(root.join("data.csv")).unwrap(),
+        "input,value\nfirst,1\n"
+    );
+    assert!(!edit_root.exists());
 }
 
 #[test]

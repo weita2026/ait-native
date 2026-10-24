@@ -1,6 +1,6 @@
 use crate::json_support::JsonValue as Value;
 
-use super::http_client_types::TaskWorkflowHttpClientResult;
+use super::http_client_types::{TaskWorkflowHttpClientError, TaskWorkflowHttpClientResult};
 
 pub trait TaskWorkflowReviewRequester {
     #[allow(clippy::too_many_arguments)]
@@ -16,6 +16,36 @@ pub trait TaskWorkflowReviewRequester {
 }
 
 pub trait TaskWorkflowReviewRecorder {
+    #[allow(clippy::too_many_arguments)]
+    fn record_review_as_actor(
+        &mut self,
+        change_id: &str,
+        patchset_id: &str,
+        reviewer: &str,
+        reviewer_kind: &str,
+        action: &str,
+        comment: Option<&str>,
+        blocking: bool,
+        repo_name: Option<&str>,
+        exact_id: bool,
+    ) -> TaskWorkflowHttpClientResult<Value> {
+        if reviewer_kind != "user" {
+            return Err(TaskWorkflowHttpClientError::Invalid(
+                "Review adapter cannot verify this Actor kind; no review recorded".into(),
+            ));
+        }
+        self.record_review(
+            change_id,
+            patchset_id,
+            reviewer,
+            action,
+            comment,
+            blocking,
+            repo_name,
+            exact_id,
+        )
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn record_review(
         &mut self,

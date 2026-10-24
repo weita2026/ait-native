@@ -634,7 +634,6 @@ pub struct AgentTokenEnvironment {
     pub git_version: String,
     pub node_version: String,
     pub browser_version: Option<String>,
-    pub workflow_mode: String,
     #[serde(default)]
     pub ait_edit_root_mode: AgentTokenAitEditRootMode,
     #[serde(default)]
@@ -6771,7 +6770,7 @@ mod tests {
             &source,
             &[
                 "/bin/zsh -lc '/opt/ait init --json'",
-                "/bin/zsh -lc '/opt/ait config set workflow.mode solo_local --json'",
+                "/bin/zsh -lc '/opt/ait config set --sprint on --json'",
                 "/bin/zsh -lc '/opt/ait snapshot create --message baseline --json'",
                 "/bin/zsh -lc '/opt/ait task start --title fix --intent fix --local'",
                 "/bin/zsh -lc 'npm test'",

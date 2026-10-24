@@ -42,7 +42,7 @@ fn workflow_land_preserves_reviewer_actions_before_atomic_task_land_history() {
     );
     assert_eq!(
         merged["reviewer_workflow"]["finalizer"].as_str(),
-        Some("task-land-atomic/v1")
+        Some("task-land-atomic/v2")
     );
 }
 
@@ -469,6 +469,8 @@ fn task_land_remote_line_closeout_verifies_stable_identity_when_available() {
 fn authoritative_resume_reads_the_selected_patchset_revision_for_line_closeout() {
     let patchset_id = "RCT-1216/C-01/P-01";
     let output = json!({
+        "task_id":"RCT-1216",
+        "land":{"patchset_id":patchset_id},
         "patchset_is_authoritative": true,
         "patchset_source": "selected",
         "change": {
@@ -488,6 +490,7 @@ fn authoritative_resume_reads_the_selected_patchset_revision_for_line_closeout()
         patchsets: BTreeMap::from([(
             patchset_id.to_string(),
             json!({
+                "task_id":"RCT-1216",
                 "patchset_id": patchset_id,
                 "change_id": "C-01",
                 "change_ref": "RCT-1216/C-01",
@@ -522,7 +525,7 @@ fn authoritative_resume_reads_the_selected_patchset_revision_for_line_closeout()
         &mismatched_output,
     )
     .expect_err("selected/projection mismatch must fail closed");
-    assert!(error.contains("finish result names"));
+    assert!(error.contains("different Patchset"));
 }
 
 fn task_land_line_fixture(
@@ -918,15 +921,20 @@ fn local_task_land_reuses_already_landed_state_for_idempotent_closeout() {
     )
     .unwrap();
     let change_id = change["change_id"].as_str().unwrap();
-    workflow_local_change_land_with_change_store(
-        &change_store,
-        change_id,
-        "main",
-        &landed_snapshot_id,
-        None,
-    )
-    .unwrap();
-    workflow_local_task_close_with_task_store(&task_store, task_id, "completed").unwrap();
+    let reference = format!("{task_id}/{change_id}");
+    super::local::bind_fixture_snapshot(&repo, task_id, Some(change_id), &landed_snapshot_id)
+        .unwrap();
+    let receipt = task_store
+        .finish_local_task(
+            task_id,
+            &landed_snapshot_id,
+            "main",
+            Some(&landed_snapshot_id),
+            Some(&reference),
+            None,
+        )
+        .unwrap();
+    let receipt_before = task_store.local_task_receipt(task_id).unwrap().unwrap();
 
     let recovered = task_land_apply_local(
         &repo,
@@ -939,6 +947,11 @@ fn local_task_land_reuses_already_landed_state_for_idempotent_closeout() {
     .unwrap()
     .unwrap();
 
+    assert_eq!(recovered["local_finish"], receipt);
+    assert_eq!(
+        task_store.local_task_receipt(task_id).unwrap().unwrap(),
+        receipt_before
+    );
     assert_eq!(recovered["execution_status"], "already_landed");
     assert_eq!(recovered["change_status"], "landed");
     assert_eq!(recovered["task_status"], "completed");
@@ -950,7 +963,7 @@ fn local_task_land_reuses_already_landed_state_for_idempotent_closeout() {
 }
 
 #[test]
-fn remote_task_land_defers_plan_sync_without_remote_or_plan_access() {
+fn remote_task_land_reports_failed_automatic_plan_sync_as_partial() {
     let temp = tempdir().unwrap();
     init_repo(&InitRequest {
         root: temp.path().to_path_buf(),
@@ -974,30 +987,24 @@ fn remote_task_land_defers_plan_sync_without_remote_or_plan_access() {
         }
     });
 
-    // This remote deliberately does not exist. A Plan show/sync or remote-row
-    // lookup would make the closeout fail instead of producing this result.
     task_land_attach_plan_checklist_closeout(
         &repo,
         &mut output,
         false,
         Some("unconfigured-origin"),
     );
-
-    let closeout = &output["plan_checklist_closeout"];
-    assert_eq!(closeout["status"], json!("deferred"));
+    assert_eq!(output["plan_checklist_closeout"]["status"], "failed");
     assert_eq!(
-        closeout["reason"],
-        json!("remote_plan_sync_is_separate_from_task_land")
+        output["plan_checklist_closeout"]["remote"],
+        "unconfigured-origin"
     );
-    assert_eq!(closeout["remote"], json!("unconfigured-origin"));
-    assert_eq!(closeout["task_id"], json!("RCT-REMOTE-DONE"));
-    assert_eq!(closeout["plan_id"], json!("PR-42"));
-    assert_eq!(closeout["plan_item_ref"], json!("remote-land/implement"));
-    assert_eq!(
-        closeout["command"],
-        json!("ait plan sync <bound-sprint-card-path> --remote unconfigured-origin")
-    );
-    assert_eq!(closeout["updated"], json!(false));
+    assert_eq!(output["closeout_status"], "partial");
+    assert_eq!(task_land_exit_code(&output), 2);
+    assert_eq!(output["task"]["status"], "completed");
+    assert!(output["closeout_recovery"]["command"]
+        .as_str()
+        .unwrap()
+        .contains("--remote 'unconfigured-origin'"));
 }
 
 #[test]
@@ -1037,7 +1044,7 @@ fn remote_non_final_change_keeps_bound_plan_item_open() {
 
 fn atomic_task_land_cli_response() -> JsonValue {
     json!({
-        "contract": "task-land-atomic/v1",
+        "contract": "task-land-atomic/v2",
         "repo_name": "fixture-ait",
         "repository_index": 7,
         "idempotency_key": "task-land-atomic:key",
@@ -1118,10 +1125,7 @@ fn atomic_task_land_output_preserves_existing_contract_with_one_remote_mutation(
         output["workspace"]["read_scope"],
         "line_and_bound_worktree_metadata_only"
     );
-    assert_eq!(
-        output["closeout_status"],
-        "execution_complete_plan_separate"
-    );
+    assert_eq!(output["closeout_status"], "partial");
 }
 
 #[test]
@@ -1164,4 +1168,31 @@ fn atomic_task_land_main_seed_failure_is_partial_and_preserves_worktree() {
         output["closeout_recovery"]["command"],
         "ait task finish RCT-ATOMIC"
     );
+}
+
+#[test]
+fn remote_sprint_closeout_preserves_unbound_and_promoted_history() {
+    let temp = tempdir().unwrap();
+    init_repo(&InitRequest {
+        root: temp.path().to_path_buf(),
+        name: Some("fixture-ait".to_string()),
+        default_line: "main".to_string(),
+        policy_profile: "prototype".to_string(),
+        default_author_mode: "ai_with_human_review".to_string(),
+        default_model: None,
+        repair_existing: false,
+    })
+    .unwrap();
+    let repo = RepoRuntime::discover_from_path(temp.path()).unwrap();
+    let mut output =
+        json!({"apply_status":"done", "task":{"task_id":"RCT-1","status":"completed"}});
+    task_land_attach_plan_checklist_closeout(&repo, &mut output, false, Some("unused"));
+    assert_eq!(output["closeout_status"], "complete_unbound");
+    output["history_promotion"] = json!({"prepared":true});
+    task_land_attach_plan_checklist_closeout(&repo, &mut output, false, Some("unused"));
+    assert_eq!(
+        output["plan_checklist_closeout"]["status"],
+        "already_synced"
+    );
+    assert_eq!(output["closeout_status"], "complete");
 }

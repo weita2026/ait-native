@@ -1,5 +1,22 @@
 fn run_git_command(repo: RepoRuntime, command: GitCommand) -> Result<(), String> {
     match command {
+        GitCommand::Migrate(args) => {
+            let payload = run_locked_workspace_command(&repo, "ait-cli git migrate", || {
+                git_migrate_cmd(&repo, &args.staging_root, args.apply)
+            })?;
+            emit_result("ait-cli git migrate", &payload, args.json, &["status", "mutated", "staging_root"])
+        }
+        GitCommand::Recover(args) => {
+            let payload = run_locked_workspace_command(&repo, "ait-cli git recover", || {
+                git_recover_cmd(&repo, args.apply)
+            })?;
+            emit_result(
+                "ait-cli git recover",
+                &payload,
+                args.json,
+                &["status", "mutated", "repair_files"],
+            )
+        }
         GitCommand::Import(args) => {
             let payload = run_locked_workspace_command(&repo, "ait-cli git import", || {
                 git_import_cmd(
@@ -25,16 +42,19 @@ fn run_git_command(repo: RepoRuntime, command: GitCommand) -> Result<(), String>
                     "line_count",
                     "tag_count",
                     "mutated",
+                    "workspace_bootstrap",
                 ],
             )
         }
         GitCommand::Export(args) => {
             let payload = run_locked_workspace_command(&repo, "ait-cli git export", || {
-                git_export_cmd(
+                git_export_selection_cmd(
                     &repo,
                     &args.target,
                     args.all_lines_and_tags,
                     args.dry_run,
+                    args.generation.as_deref(),
+                    args.git_object.as_deref(),
                 )
             })?;
             emit_result(
@@ -58,14 +78,27 @@ fn run_git_command(repo: RepoRuntime, command: GitCommand) -> Result<(), String>
                 ],
             )
         }
+        GitCommand::Restore(args) => {
+            let payload = run_locked_workspace_command(&repo, "ait-cli git restore", || {
+                git_restore_cmd(&repo, &args.generation, &args.git_object, &args.target)
+            })?;
+            emit_result(
+                "ait-cli git restore",
+                &payload,
+                args.json,
+                &[
+                    "status",
+                    "generation_id",
+                    "git_object_id",
+                    "file_count",
+                    "markdown_count",
+                    "target",
+                ],
+            )
+        }
         GitCommand::Mirror(args) => {
             let payload = run_locked_workspace_command(&repo, "ait-cli git mirror", || {
-                git_mirror_cmd(
-                    &repo,
-                    &args.endpoint,
-                    &args.direction,
-                    args.dry_run,
-                )
+                git_mirror_cmd(&repo, &args.endpoint, &args.direction, args.dry_run)
             })?;
             emit_result(
                 "ait-cli git mirror",

@@ -26,14 +26,10 @@ pub(super) fn run_tg1_check(
     }
 }
 
-pub(super) fn body_mentions_pass_tests(body: &str) -> bool {
-    let Some(payload) = parse_value_option(body) else {
-        return body.contains("\"tests\"") && body.contains("pass");
-    };
-    matches!(
-        payload.get("evaluation_summary").and_then(JsonValue::as_object),
-        Some(evaluation_summary) if evaluation_summary.get("tests").and_then(JsonValue::as_str) == Some("pass")
-    ) || payload.get("tests").and_then(JsonValue::as_str) == Some("pass")
+pub(super) fn body_records_manual_pass_verification(body: &str) -> bool {
+    parse_value_option(body).is_some_and(|payload| {
+        payload["verification_state"] == "pass" && payload["require_tests_pass"] == true
+    })
 }
 
 pub(super) fn is_attestation_request(url: &str) -> bool {
@@ -828,10 +824,23 @@ pub(super) fn assert_init_establishes_agent_contract() -> Result<(), String> {
     }
     let agents = fs::read_to_string(repo.join("AGENTS.md")).map_err(|err| err.to_string())?;
     if !agents.contains("<!-- ait:workflow:start -->")
-        || !agents.contains("Route: mode=`solo_local`; sprint=`on`; scope=`local`")
+        || !agents.contains("Route: sprint=`on`; scope=`local`")
         || !agents.contains("ait task start --from <sprint-card-path>#<exact-ref> --intent")
+        || agents.contains("Newton")
+        || agents.contains("<scope-args>")
     {
         return Err("init did not create the effective AGENTS.md contract".to_string());
+    }
+    json_output(
+        &repo,
+        &["config", "set", "--agent-teams", "disabled", "--json"],
+    )?;
+    let solo = fs::read_to_string(repo.join("AGENTS.md")).map_err(|err| err.to_string())?;
+    if !solo.contains("Route: sprint=`on`; scope=`local`")
+        || solo.contains("scope=`work-order`")
+        || solo != agents
+    {
+        return Err("disabling Agent Teams did not preserve the solo contract".to_string());
     }
     if !repo.join("docs/sprints").is_dir() {
         return Err("sprint-on init did not create docs/sprints/".to_string());

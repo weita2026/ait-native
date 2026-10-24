@@ -12,12 +12,8 @@ pub(in super::super) async fn native_publish_repository_authority_patchset(
         move || {
             let (_, workflow) =
                 repository_authority_workflow_store(routed_workflow.as_ref(), &repo_id)?;
-            let resolved_change = workflow.get_change(None, &change_ref)?;
-            let change_ref = resolved_change
-                .get("change_ref")
-                .and_then(JsonValue::as_str)
-                .ok_or_else(|| "resolved change is missing change_ref".to_string())?;
-            workflow.publish_patchset(change_ref, &payload)
+            let change_ref = workflow_owner_ref(workflow.as_ref(), &change_ref)?;
+            workflow.publish_patchset(&change_ref, &payload)
         },
     )
     .await

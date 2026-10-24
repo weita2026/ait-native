@@ -45,14 +45,12 @@ fn fixture(remote: bool, public_key: Option<&str>) -> TempDir {
     let config = if remote {
         json!({
             "repo_name": "discord-fixture",
-            "workflow_mode": "solo_remote",
             "default_remote": "origin",
             "remotes": {"origin": {"url": "http://127.0.0.1:8088"}},
         })
     } else {
         json!({
             "repo_name": "discord-fixture",
-            "workflow_mode": "solo_local",
         })
     };
     fs::write(temp.path().join(".ait/config.json"), config.to_string()).expect("repo config");
@@ -158,7 +156,7 @@ fn signed_interaction_dispatches_typed_job_and_returns_minimal_redacted_output()
     let requests = executor.requests.borrow();
     assert_eq!(requests.len(), 1);
     let job = &requests[0];
-    assert_eq!(job["runtime_target"]["mode"], "remote");
+    assert_eq!(job["runtime_target"]["mode"], "local");
     assert_eq!(job["runtime_target"]["repo_name"], "discord-fixture");
     assert_eq!(
         job["interaction_payload"]["channel_id"],
@@ -252,7 +250,7 @@ fn local_mode_dispatches_repo_root_to_the_rust_interaction_job() {
     let requests = executor.requests.borrow();
     assert_eq!(requests.len(), 1);
     assert_eq!(requests[0]["runtime_target"]["mode"], "local");
-    assert_eq!(requests[0]["runtime_target"]["workflow_mode"], "solo_local");
+    assert!(requests[0]["runtime_target"].get("workflow_mode").is_none());
     assert_eq!(
         requests[0]["runtime_target"]["repo_root"],
         temp.path()

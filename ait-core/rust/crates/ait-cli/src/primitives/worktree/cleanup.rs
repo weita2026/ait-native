@@ -1,4 +1,5 @@
 use super::*;
+use ait_core::binary_db::{BinaryDbCommandLockSet, BinaryDbCommandScope, StorePath};
 
 pub fn worktree_cleanup_candidates(
     repo: &RepoRuntime,
@@ -669,6 +670,7 @@ pub(in crate::primitives) fn coerce_worktree_datetime(value: Option<&str>) -> Da
 enum WorktreeRemovalWorkspaceStatusPolicy {
     Inspect,
     SkipForAuthoritativeTaskLand,
+    SkipForAbandonedTask,
 }
 
 fn read_worktree_removal_workspace_status(
@@ -691,12 +693,15 @@ fn preflight_worktree_removal_with_status_reader<F>(
 where
     F: FnOnce(&RepoRuntime) -> Result<JsonValue, String>,
 {
-    if workspace_status_policy == WorktreeRemovalWorkspaceStatusPolicy::SkipForAuthoritativeTaskLand
-        && !force
-    {
-        return Err(
-            "Authoritative Task-finish worktree cleanup requires forced removal.".to_string(),
-        );
+    if workspace_status_policy != WorktreeRemovalWorkspaceStatusPolicy::Inspect && !force {
+        return Err(if workspace_status_policy
+            == WorktreeRemovalWorkspaceStatusPolicy::SkipForAbandonedTask
+        {
+            "Abandoned Task worktree cleanup requires forced removal."
+        } else {
+            "Authoritative Task-finish worktree cleanup requires forced removal."
+        }
+        .to_string());
     }
     let worktree_name = resolve_runtime_worktree_name(repo, Some(name))?;
     let metadata = load_worktree_metadata(repo, &worktree_name)?;
@@ -711,7 +716,8 @@ where
                 None => None,
             }
         }
-        WorktreeRemovalWorkspaceStatusPolicy::SkipForAuthoritativeTaskLand => None,
+        WorktreeRemovalWorkspaceStatusPolicy::SkipForAuthoritativeTaskLand
+        | WorktreeRemovalWorkspaceStatusPolicy::SkipForAbandonedTask => None,
     };
     if let Some(status) = worktree_status.as_ref() {
         if !status
@@ -730,7 +736,7 @@ where
         "name": worktree_name,
         "path": worktree_path.to_string_lossy().to_string(),
         "metadata_path": worktree_registry_path(repo, &worktree_name).to_string_lossy().to_string(),
-        "workspace_status": if workspace_status_policy == WorktreeRemovalWorkspaceStatusPolicy::SkipForAuthoritativeTaskLand {
+        "workspace_status": if workspace_status_policy != WorktreeRemovalWorkspaceStatusPolicy::Inspect {
             "not_evaluated"
         } else if worktree_status.as_ref().is_none_or(|value| value.get("clean").and_then(JsonValue::as_bool).unwrap_or(false)) {
             "clean"
@@ -738,11 +744,19 @@ where
             "dirty"
         },
     });
-    if workspace_status_policy == WorktreeRemovalWorkspaceStatusPolicy::SkipForAuthoritativeTaskLand
-    {
+    if workspace_status_policy != WorktreeRemovalWorkspaceStatusPolicy::Inspect {
         removal["workspace_status_evaluation"] = JsonValue::String("skipped".to_string());
         removal["workspace_status_reason"] =
-            JsonValue::String("ready_remote_task_land_is_authoritative".to_string());
+            JsonValue::String(
+                if workspace_status_policy
+                    == WorktreeRemovalWorkspaceStatusPolicy::SkipForAbandonedTask
+                {
+                    "explicit_task_abandonment_is_authoritative"
+                } else {
+                    "ready_remote_task_land_is_authoritative"
+                }
+                .to_string(),
+            );
         removal["workspace_read_scope"] =
             JsonValue::String("bound_worktree_metadata_only".to_string());
     }
@@ -805,6 +819,19 @@ pub(in crate::primitives) fn remove_one_worktree_after_authoritative_task_land(
     )
 }
 
+pub(in crate::primitives) fn remove_one_worktree_after_task_abandon(
+    repo: &RepoRuntime,
+    name: &str,
+) -> Result<JsonValue, String> {
+    remove_one_worktree_with_policy(
+        repo,
+        name,
+        true,
+        true,
+        WorktreeRemovalWorkspaceStatusPolicy::SkipForAbandonedTask,
+    )
+}
+
 fn copy_worktree_removal_workspace_evaluation(source: &JsonValue, target: &mut JsonValue) {
     let Some(target_obj) = target.as_object_mut() else {
         return;
@@ -851,7 +878,7 @@ pub(in crate::primitives) fn cleanup_registered_worktree_cargo_build_dir(
     worktree_path: &Path,
     worktree_name: &str,
 ) -> Result<JsonValue, String> {
-    let Some(cache_path) = registered_worktree_cargo_build_dir(worktree_path, worktree_name) else {
+    let Some(_) = registered_worktree_cargo_build_dir(worktree_path, worktree_name) else {
         return Ok(json!({
             "status": "not_managed",
             "removed": false,
@@ -864,11 +891,30 @@ pub(in crate::primitives) fn cleanup_registered_worktree_cargo_build_dir(
         .ok_or_else(|| {
             format!("Task Cargo target directory is not bound to worktree {worktree_name}.")
         })?;
-    let cache_path_text = cache_path.to_string_lossy().to_string();
+    cleanup_worktree_cargo_dirs(
+        worktree_name,
+        task_worktree_cargo_build_dirs(worktree_path, worktree_name)?,
+        target_path,
+    )
+}
+
+fn cleanup_worktree_cargo_dirs(
+    worktree_name: &str,
+    cache_paths: Vec<PathBuf>,
+    target_path: PathBuf,
+) -> Result<JsonValue, String> {
+    let cache_path_text = cache_paths
+        .first()
+        .ok_or("Task Cargo cache inventory is empty")?
+        .to_string_lossy()
+        .to_string();
     let target_path_text = target_path.to_string_lossy().to_string();
-    let cache_exists = path_exists_or_directory_link(&cache_path);
+    let cache_paths = cache_paths
+        .into_iter()
+        .filter(|path| path_exists_or_directory_link(path))
+        .collect::<Vec<_>>();
     let target_exists = path_exists_or_directory_link(&target_path);
-    if !cache_exists && !target_exists {
+    if cache_paths.is_empty() && !target_exists {
         return Ok(json!({
             "status": "absent",
             "removed": false,
@@ -877,17 +923,14 @@ pub(in crate::primitives) fn cleanup_registered_worktree_cargo_build_dir(
             "target_removed": false,
         }));
     }
-    for (path, label, exists) in [
-        (&cache_path, "build cache", cache_exists),
-        (&target_path, "target artifact directory", target_exists),
-    ] {
-        if !exists {
-            continue;
-        }
+    for path in cache_paths
+        .iter()
+        .chain(target_exists.then_some(&target_path))
+    {
         let metadata = fs::symlink_metadata(path).map_err(|err| err.to_string())?;
         if metadata.file_type().is_symlink() || !metadata.is_dir() {
             return Err(format!(
-                "Refusing to remove a Task Cargo {label} that is not a physical directory: {}",
+                "Refusing to remove a Task Cargo cache/artifact that is not a physical directory: {}",
                 path.display()
             ));
         }
@@ -895,8 +938,8 @@ pub(in crate::primitives) fn cleanup_registered_worktree_cargo_build_dir(
 
     let mut locks = Vec::new();
     let mut lock_paths = Vec::new();
-    if cache_exists {
-        lock_paths.extend(worktree_cargo_lock_paths(&cache_path)?);
+    for path in &cache_paths {
+        lock_paths.extend(worktree_cargo_lock_paths(path)?);
     }
     if target_exists {
         lock_paths.extend(worktree_cargo_lock_paths(&target_path)?);
@@ -934,8 +977,8 @@ pub(in crate::primitives) fn cleanup_registered_worktree_cargo_build_dir(
     if target_exists {
         remove_tree_force(&target_path)?;
     }
-    if cache_exists {
-        remove_tree_force(&cache_path)?;
+    for path in &cache_paths {
+        remove_tree_force(path)?;
     }
     drop(locks);
     Ok(json!({
@@ -1006,6 +1049,24 @@ fn remove_one_worktree_with_policy(
     force: bool,
     workspace_status_policy: WorktreeRemovalWorkspaceStatusPolicy,
 ) -> Result<JsonValue, String> {
+    remove_one_worktree_with_policy_observed(
+        repo,
+        name,
+        delete_path,
+        force,
+        workspace_status_policy,
+        |_| {},
+    )
+}
+
+fn remove_one_worktree_with_policy_observed(
+    repo: &RepoRuntime,
+    name: &str,
+    delete_path: bool,
+    force: bool,
+    workspace_status_policy: WorktreeRemovalWorkspaceStatusPolicy,
+    mut observe_retirement: impl FnMut(bool),
+) -> Result<JsonValue, String> {
     let removal =
         preflight_worktree_removal_with_policy(repo, name, force, workspace_status_policy)?;
     let worktree_name = required_string_field(&removal, "name")?;
@@ -1014,8 +1075,21 @@ fn remove_one_worktree_with_policy(
     let alias_path = metadata_string(&metadata, "alias_path").map(PathBuf::from);
     let marker_path = worktree_path.join(WORKTREE_CONFIG_NAME);
     let ait_link = worktree_path.join(APP_DIR);
+    let abandoned =
+        workspace_status_policy == WorktreeRemovalWorkspaceStatusPolicy::SkipForAbandonedTask;
     let cargo_build_cache_cleanup = if delete_path {
-        cleanup_registered_worktree_cargo_build_dir(&worktree_path, &worktree_name)?
+        if abandoned {
+            // Native owner/registration were verified by abandonment. This
+            // also recovers after its last overlay/root entries disappeared.
+            let (_, target) = task_worktree_cargo_dirs(repo, &worktree_name);
+            cleanup_worktree_cargo_dirs(
+                &worktree_name,
+                task_worktree_cargo_build_dirs(&repo.authoritative_repo_root(), &worktree_name)?,
+                target,
+            )?
+        } else {
+            cleanup_registered_worktree_cargo_build_dir(&worktree_path, &worktree_name)?
+        }
     } else {
         json!({
             "status": "not_requested",
@@ -1023,10 +1097,20 @@ fn remove_one_worktree_with_policy(
             "path": JsonValue::Null,
         })
     };
-    if marker_path.exists() {
+    // Admission reads registered overlays/cursors under the same metadata
+    // lock family. Keep their retirement atomic with respect to that reader.
+    // Preflight and cache cleanup above must not run under this writer: they
+    // may open the DB or acquire their own locks.
+    let _metadata_cleanup = BinaryDbCommandLockSet::acquire(
+        &StorePath::from(repo.authoritative_repo_root().join(".ait/binary-db")),
+        BinaryDbCommandScope::General,
+    )
+    .map_err(|error| error.to_string())?;
+    observe_retirement(false);
+    if !abandoned && marker_path.exists() {
         fs::remove_file(&marker_path).map_err(|err| err.to_string())?;
     }
-    if path_exists_or_directory_link(&ait_link) {
+    if !abandoned && path_exists_or_directory_link(&ait_link) {
         remove_path_entry(&ait_link)?;
     }
     if delete_path && worktree_path.exists() {
@@ -1040,7 +1124,20 @@ fn remove_one_worktree_with_policy(
             .collect::<Result<Vec<_>, _>>()?;
         children.sort_by(|left, right| right.cmp(left));
         for child in children {
+            if abandoned && (child == marker_path || child == ait_link) {
+                continue;
+            }
             remove_tree_force(&child)?;
+        }
+        // Retain owner evidence until only the overlay/link remain. Interrupted
+        // abandonment can then verify and resume without a new receipt.
+        if abandoned {
+            if path_exists_or_directory_link(&ait_link) {
+                remove_path_entry(&ait_link)?;
+            }
+            if marker_path.exists() {
+                fs::remove_file(&marker_path).map_err(|err| err.to_string())?;
+            }
         }
         if worktree_path.exists() {
             fs::remove_dir(&worktree_path).map_err(|err| err.to_string())?;
@@ -1051,12 +1148,23 @@ fn remove_one_worktree_with_policy(
             remove_path_entry(alias_path)?;
         }
     }
+    let clear_root_binding = || {
+        update_root_config(repo, |config| {
+            if config.get("worktree_name").and_then(JsonValue::as_str)
+                == Some(worktree_name.as_str())
+            {
+                config.remove("worktree_name");
+            }
+        })
+    };
+    if abandoned {
+        clear_root_binding()?;
+    }
     fs::remove_file(worktree_registry_path(repo, &worktree_name)).map_err(|err| err.to_string())?;
-    update_root_config(repo, |config| {
-        if config.get("worktree_name").and_then(JsonValue::as_str) == Some(worktree_name.as_str()) {
-            config.remove("worktree_name");
-        }
-    })?;
+    observe_retirement(true);
+    if !abandoned {
+        clear_root_binding()?;
+    }
     let mut output = json!({
         "name": worktree_name,
         "path": worktree_path.to_string_lossy().to_string(),
@@ -1240,6 +1348,122 @@ mod tests {
         .expect("write worktree metadata");
     }
 
+    fn write_registered_cursor(repo: &RepoRuntime, name: &str, worktree: &Path) -> Vec<u8> {
+        let task = crate::primitives::task::task_create(
+            repo,
+            "Cursor lifetime",
+            "Keep operation state within its worktree lifetime",
+            true,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("create cursor owner Task");
+        let task_id = required_string_field(&task, "task_id").expect("cursor Task identity");
+        for path in [
+            worktree_registry_path(repo, name),
+            worktree.join(WORKTREE_CONFIG_NAME),
+        ] {
+            let mut metadata = read_json_object_value(&path);
+            metadata.insert("bound_task_id".into(), json!(task_id));
+            write_json_pretty(&path, &JsonValue::Object(metadata)).expect("bind cursor owner");
+        }
+        let mut bytes = vec![0; 32];
+        bytes[..4].copy_from_slice(&1u32.to_le_bytes());
+        fs::create_dir_all(worktree.join(".ait-worktree")).expect("cursor directory");
+        fs::write(worktree.join(".ait-worktree/cursor.bin"), &bytes).expect("write cursor");
+        bytes
+    }
+
+    #[test]
+    fn current_admission_and_finish_or_abandon_cursor_retirement_are_exclusive() {
+        use ait_core::binary_db_generation::admit_activated_binary_db_generation_for_runtime;
+        use std::sync::mpsc;
+
+        for policy in [
+            WorktreeRemovalWorkspaceStatusPolicy::SkipForAuthoritativeTaskLand,
+            WorktreeRemovalWorkspaceStatusPolicy::SkipForAbandonedTask,
+        ] {
+            let temp = tempdir().expect("repo tempdir");
+            init_repo(&InitRequest {
+                root: temp.path().to_path_buf(),
+                name: Some("fixture-ait".to_string()),
+                default_line: "main".to_string(),
+                policy_profile: "prototype".to_string(),
+                default_author_mode: "ai_with_human_review".to_string(),
+                default_model: None,
+                repair_existing: false,
+            })
+            .expect("init repo");
+            let repo = RepoRuntime::discover_from_path(temp.path()).expect("repo runtime");
+            let root = repo.authoritative_repo_root();
+            let authority = root.join(".ait/binary-db");
+            let name = "rt-cursor-retirement";
+            let worktree = root.join(name);
+            write_removable_task_worktree(&repo, name, &worktree);
+            write_registered_cursor(&repo, name, &worktree);
+            admit_activated_binary_db_generation_for_runtime(&root, &authority, "fixture-ait")
+                .expect("admit live cursor fixture");
+            let lock_path = BinaryDbCommandLockSet::lock_paths(
+                &StorePath::from(authority.clone()),
+                BinaryDbCommandScope::General,
+            )[0]
+            .clone();
+            let mut admission = None;
+            let mut observations = 0;
+            let removal = remove_one_worktree_with_policy_observed(
+                &repo,
+                name,
+                true,
+                true,
+                policy,
+                |retired| {
+                    observations += 1;
+                    let probe = fs::File::open(&lock_path).expect("open metadata lock");
+                    assert_eq!(
+                        FileExt::try_lock_shared(&probe).unwrap_err().kind(),
+                        std::io::ErrorKind::WouldBlock,
+                        "admission reader must be excluded throughout destructive cleanup"
+                    );
+                    assert_eq!(worktree_registry_path(&repo, name).exists(), !retired);
+                    assert_eq!(worktree.join(".ait-worktree/cursor.bin").exists(), !retired);
+                    if !retired {
+                        assert!(worktree.join(WORKTREE_CONFIG_NAME).exists());
+                        let (started, entering) = mpsc::sync_channel(0);
+                        let root = root.clone();
+                        let authority = authority.clone();
+                        admission = Some(std::thread::spawn(move || {
+                            started.send(()).expect("signal admission entry");
+                            admit_activated_binary_db_generation_for_runtime(
+                                &root,
+                                &authority,
+                                "fixture-ait",
+                            )
+                        }));
+                        entering.recv().expect("concurrent admission entered");
+                    }
+                },
+            )
+            .expect("retire worktree while another root opens");
+            assert_eq!(observations, 2);
+            assert_eq!(removal["removed"], json!(true));
+            assert!(!worktree.exists());
+            admission
+                .unwrap()
+                .join()
+                .expect("admission thread")
+                .expect("current admission survives complete cursor/registry retirement");
+            let task_file = authority.join("task.bin");
+            let malformed = 99u32.to_le_bytes();
+            fs::write(&task_file, malformed).expect("malform permanent authority header");
+            admit_activated_binary_db_generation_for_runtime(&root, &authority, "fixture-ait")
+                .map(|_| ())
+                .expect_err("cleanup must not relax permanent authority validation");
+            assert_eq!(fs::read(task_file).unwrap(), malformed);
+        }
+    }
+
     #[test]
     fn terminal_worktree_removal_reclaims_exact_idle_cargo_build_cache() {
         let temp = tempdir().expect("repo tempdir");
@@ -1270,6 +1494,11 @@ mod tests {
         fs::write(target_profile_path.join(".cargo-artifact-lock"), "")
             .expect("Cargo artifact lock");
         fs::write(target_profile_path.join("ait-cli"), "binary").expect("Task final artifact");
+        let ssd = ssd_cargo_build_root(&worktree_path).join("task-workspaces");
+        fs::create_dir_all(ssd.join(worktree_name)).unwrap();
+        fs::write(ssd.join(worktree_name).join("intermediate"), "SSD cache").unwrap();
+        fs::create_dir_all(ssd.join("another-task")).unwrap();
+        fs::write(ssd.join("another-task/keep"), "foreign Task").unwrap();
 
         let removal = remove_one_worktree_after_authoritative_task_land(&repo, worktree_name)
             .expect("terminal worktree removal");
@@ -1286,6 +1515,53 @@ mod tests {
         assert!(!cache_path.exists());
         assert!(!target_path.exists());
         assert!(!worktree_path.exists());
+        assert!(!ssd.join(worktree_name).exists());
+        assert_eq!(
+            fs::read_to_string(ssd.join("another-task/keep")).unwrap(),
+            "foreign Task"
+        );
+    }
+
+    #[test]
+    fn fallback_cache_writer_blocks_all_owned_cache_cleanup_until_released() {
+        let temp = tempdir().unwrap();
+        init_repo(&InitRequest {
+            root: temp.path().to_path_buf(),
+            name: Some("fixture-ait".into()),
+            default_line: "main".into(),
+            policy_profile: "prototype".into(),
+            default_author_mode: "ai_with_human_review".into(),
+            default_model: None,
+            repair_existing: false,
+        })
+        .unwrap();
+        let repo = RepoRuntime::discover_from_path(temp.path()).unwrap();
+        let name = "rt-ssd-active";
+        let worktree = temp.path().join(name);
+        write_removable_task_worktree(&repo, name, &worktree);
+        let primary = registered_worktree_cargo_build_dir(&worktree, name).unwrap();
+        fs::create_dir_all(&primary).unwrap();
+        fs::write(primary.join("keep"), "RAM or primary cache").unwrap();
+        let fallback = ssd_cargo_build_root(&worktree)
+            .join("task-workspaces")
+            .join(name);
+        fs::create_dir_all(&fallback).unwrap();
+        let lock = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(fallback.join(".ait-ci-build-lease"))
+            .unwrap();
+        FileExt::lock_exclusive(&lock).unwrap();
+        assert!(remove_one_worktree_after_authoritative_task_land(&repo, name).is_err());
+        assert!(worktree.is_dir());
+        assert!(primary.join("keep").is_file());
+        assert!(fallback.is_dir());
+        FileExt::unlock(&lock).unwrap();
+        remove_one_worktree_after_authoritative_task_land(&repo, name).unwrap();
+        assert!(!fallback.exists());
+        assert!(!primary.exists());
     }
 
     #[test]
@@ -1305,6 +1581,7 @@ mod tests {
         let worktree_name = "rt-active-cache";
         let worktree_path = temp.path().join(worktree_name);
         write_removable_task_worktree(&repo, worktree_name, &worktree_path);
+        let cursor = write_registered_cursor(&repo, worktree_name, &worktree_path);
         let cache_path = registered_worktree_cargo_build_dir(&worktree_path, worktree_name)
             .expect("registered cache path");
         let profile_path = cache_path.join("ait-ci");
@@ -1325,6 +1602,10 @@ mod tests {
         assert!(cache_path.exists());
         assert!(worktree_path.exists());
         assert!(worktree_registry_path(&repo, worktree_name).is_file());
+        assert_eq!(
+            fs::read(worktree_path.join(".ait-worktree/cursor.bin")).unwrap(),
+            cursor
+        );
         FileExt::unlock(&active_lock).expect("release active Cargo lock");
 
         let removal = remove_one_worktree_after_authoritative_task_land(&repo, worktree_name)

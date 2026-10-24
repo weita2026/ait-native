@@ -17,7 +17,6 @@ fn repo(config: JsonValue) -> TempDir {
 fn local_repo() -> TempDir {
     repo(json!({
         "repo_name": "typed-fixture",
-        "workflow_mode": "solo_local",
         "default_model": "repo-default-model"
     }))
 }
@@ -438,10 +437,9 @@ fn transport_config_line_handles_disabled_timeout_overrides_and_redaction() {
 }
 
 #[test]
-fn transport_config_discord_handles_remote_runtime_disabled_timeouts_and_redaction() {
+fn transport_config_discord_handles_optional_remote_disabled_timeouts_and_redaction() {
     let temp = repo(json!({
         "repo_name": "remote-fixture",
-        "workflow_mode": "solo_remote",
         "default_remote": "origin",
         "remotes": {
             "origin": {"url": "https://ait.example.test///"}
@@ -488,7 +486,7 @@ fn transport_config_discord_handles_remote_runtime_disabled_timeouts_and_redacti
     assert_eq!(discord.http_user_agent, "manifest-canonical-agent");
     assert_eq!(discord.bind_port, 8092);
     assert_eq!(discord.interaction_path, "/interact");
-    assert_eq!(discord.shared.runtime_target.mode, AgentRuntimeMode::Remote);
+    assert_eq!(discord.shared.runtime_target.mode, AgentRuntimeMode::Local);
     assert_eq!(
         discord.shared.runtime_target.server_url.as_deref(),
         Some("https://ait.example.test")
@@ -651,33 +649,26 @@ fn transport_config_validates_and_preserves_typed_local_reply_settings() {
 }
 
 #[test]
-fn transport_config_legacy_scope_defaults_remain_readable_and_bad_remote_fails_closed() {
-    let legacy = repo(json!({"repo_name": "legacy"}));
-    let config = resolve(
-        &legacy,
-        "telegram/main",
-        json!({"kind": "telegram", "name": "main", "token": "token"}),
-        "",
-        BTreeMap::new(),
-    )
-    .expect("legacy local config");
-    assert_eq!(
-        config.shared().runtime_target.workflow_mode,
-        AgentWorkflowMode::SoloLocal
-    );
-
-    let invalid_remote = repo(json!({
-        "workflow_mode": "team_remote",
-        "default_remote": "origin",
-        "remotes": {"origin": {}}
-    }));
-    let error = resolve(
-        &invalid_remote,
-        "telegram/main",
-        json!({"kind": "telegram", "name": "main", "token": "token"}),
-        "",
-        BTreeMap::new(),
-    )
-    .expect_err("remote URL required");
-    assert!(error.contains("server URL"));
+fn transport_config_ignores_retired_presets_without_rewriting_config() {
+    for mode in ["solo_local", "solo_remote", "team_remote", "unknown"] {
+        let config_json = json!({"repo_name": "fixture", "workflow_mode": mode,
+            "workflow_default_scope": "remote", "task_default_scope": "remote",
+            "change_default_scope": "remote", "agent_teams": true,
+            "default_remote": "origin", "remotes": {"origin": {}}});
+        let temp = repo(config_json);
+        let path = temp.path().join(".ait/config.json");
+        let before = fs::read(&path).unwrap();
+        let config = resolve(
+            &temp,
+            "telegram/main",
+            json!({"kind": "telegram", "name": "main", "token": "token"}),
+            "",
+            BTreeMap::new(),
+        )
+        .unwrap();
+        assert_eq!(config.shared().runtime_target.mode, AgentRuntimeMode::Local);
+        assert!(config.shared().runtime_target.server_url.is_none());
+        assert!(!config.redacted_json().to_string().contains("workflow_mode"));
+        assert_eq!(fs::read(path).unwrap(), before);
+    }
 }

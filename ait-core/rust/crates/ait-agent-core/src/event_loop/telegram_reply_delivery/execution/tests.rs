@@ -690,7 +690,10 @@ fn assert_secret_safe(rendered: &str) {
         "planner-secret",
         "private-file-id",
     ] {
-        assert!(!rendered.contains(secret), "public value leaked {secret}");
+        assert!(
+            !rendered.contains(secret),
+            "redaction assertion failed: sensitive value was present"
+        );
     }
 }
 

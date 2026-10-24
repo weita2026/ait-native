@@ -5,6 +5,9 @@ fn run_snapshot(repo: RepoRuntime, command: SnapshotCommand) -> Result<ExitCode,
             let payload = {
                 let _range = perfetto_range!("ait.cli.snapshot_create.lock_and_author");
                 run_locked_workspace_command(&repo, "ait-cli snapshot create", || {
+                    if let Some(id) = args.resume_snapshot_id.as_deref() {
+                        return crate::primitives::resume_remote_snapshot_capture(&repo, &args.change_id, id);
+                    }
                     crate::primitives::snapshot_create_for_reference(
                         &repo,
                         &args.change_id,

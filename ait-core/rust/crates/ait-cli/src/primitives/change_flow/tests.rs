@@ -165,23 +165,55 @@ impl TaskWorkflowReviewLister for FakeReviewLister {
     }
 }
 
+impl TaskWorkflowPatchsetReader for FakeAttestationWriter {
+    fn get_patchset(
+        &mut self,
+        patchset_id: &str,
+        _repo: Option<&str>,
+        _change: Option<&str>,
+    ) -> TaskWorkflowHttpClientResult<JsonValue> {
+        Ok(
+            json!({"patchset_id":patchset_id,"task_id":"RT-0083","change_id":null,"change_ref":null,"author_mode":"ai_with_human_review","base_snapshot_id":"SNP-BASE","revision_snapshot_id":"SNP-REV"}),
+        )
+    }
+}
+impl TaskWorkflowAttestationReader for FakeAttestationWriter {
+    fn get_attestation(
+        &mut self,
+        _patchset_id: &str,
+        _repo: Option<&str>,
+        _exact: bool,
+    ) -> TaskWorkflowHttpClientResult<JsonValue> {
+        Err(TaskWorkflowHttpClientError::RemoteResponse {
+            method: "GET".into(),
+            url: "attestation".into(),
+            status: 404,
+            detail: "Unknown attestation".into(),
+        })
+    }
+}
+
 impl TaskWorkflowAttestationWriter for FakeAttestationWriter {
     fn put_attestation(
         &mut self,
         patchset_id: &str,
         author_mode: &str,
-        evaluation_summary: &JsonValue,
-        provenance_summary: &JsonValue,
-        detail: &JsonValue,
+        statement: &ait_core::attest_json::RemoteAttestationStatement,
         repo_name: Option<&str>,
         _exact_id: bool,
     ) -> TaskWorkflowHttpClientResult<JsonValue> {
         Ok(json!({
             "patchset_id": patchset_id,
             "author_mode": author_mode,
-            "evaluation_summary": evaluation_summary,
-            "provenance_summary": provenance_summary,
-            "detail": detail,
+            "task_id":"RT-0083",
+            "change_id":null,
+            "change_ref":null,
+            "verification_state": statement.verification_state,
+            "require_tests_pass": statement.require_tests_pass,
+            "require_lint_pass": statement.require_lint_pass,
+            "require_human_review": statement.require_human_review,
+            "revoked": statement.revoked,
+            "ci_backed": false,
             "repo_name": repo_name,
         }))
     }
@@ -420,14 +452,20 @@ impl TaskWorkflowPatchsetSelector for FakeCloseoutRemote {
                 "POST select patchset {patchset_id} failed: 404 Unknown patchset"
             ))
         })?;
-        if string_field(&patchset, "change_id").as_deref() != Some(change_id) {
+        if string_field(&patchset, "task_id").as_deref() != Some(change_id)
+            && string_field(&patchset, "change_id").as_deref() != Some(change_id)
+        {
             return Err(TaskWorkflowHttpClientError::Remote(format!(
                 "Patchset {patchset_id} does not belong to change {change_id}"
             )));
         }
         Ok(json!({
-            "change_id": change_id,
-            "selected_patchset_id": patchset_id,
+            "task_id": patchset["task_id"],
+            "change_id": patchset["change_id"],
+            "change_ref": patchset["change_ref"],
+            "patchset_id": patchset_id,
+            "current_patchset_id": patchset_id,
+            "selection_changed": false,
             "patchset": patchset
         }))
     }
@@ -510,6 +548,33 @@ impl TaskWorkflowRepoJobLister for FakeCloseoutRemote {
 }
 
 impl TaskWorkflowReviewRecorder for FakeCloseoutRemote {
+    #[allow(clippy::too_many_arguments)]
+    fn record_review_as_actor(
+        &mut self,
+        change_id: &str,
+        patchset_id: &str,
+        reviewer: &str,
+        reviewer_kind: &str,
+        action: &str,
+        comment: Option<&str>,
+        blocking: bool,
+        repo_name: Option<&str>,
+        exact_id: bool,
+    ) -> TaskWorkflowHttpClientResult<JsonValue> {
+        let mut result = self.record_review(
+            change_id,
+            patchset_id,
+            reviewer,
+            action,
+            comment,
+            blocking,
+            repo_name,
+            exact_id,
+        )?;
+        result["reviewer_kind"] = json!(reviewer_kind);
+        Ok(result)
+    }
+
     fn record_review(
         &mut self,
         change_id: &str,
@@ -556,18 +621,21 @@ impl TaskWorkflowAttestationWriter for FakeCloseoutRemote {
         &mut self,
         patchset_id: &str,
         author_mode: &str,
-        evaluation_summary: &JsonValue,
-        provenance_summary: &JsonValue,
-        detail: &JsonValue,
+        statement: &ait_core::attest_json::RemoteAttestationStatement,
         repo_name: Option<&str>,
         _exact_id: bool,
     ) -> TaskWorkflowHttpClientResult<JsonValue> {
+        let patchset = &self.patchsets[patchset_id];
         let payload = json!({
+            "task_id":patchset["task_id"],"change_id":patchset["change_id"],"change_ref":patchset["change_ref"],
             "patchset_id": patchset_id,
             "author_mode": author_mode,
-            "evaluation_summary": evaluation_summary,
-            "provenance_summary": provenance_summary,
-            "detail": detail,
+            "verification_state": statement.verification_state,
+            "require_tests_pass": statement.require_tests_pass,
+            "require_lint_pass": statement.require_lint_pass,
+            "require_human_review": statement.require_human_review,
+            "revoked": statement.revoked,
+            "ci_backed": false,
             "repo_name": repo_name
         });
         self.attestations
@@ -584,9 +652,12 @@ impl TaskWorkflowAttestationReader for FakeCloseoutRemote {
         _exact_id: bool,
     ) -> TaskWorkflowHttpClientResult<JsonValue> {
         self.attestations.get(patchset_id).cloned().ok_or_else(|| {
-            TaskWorkflowHttpClientError::Remote(format!(
-                "GET attestation {patchset_id} failed: 404 Unknown attestation"
-            ))
+            TaskWorkflowHttpClientError::RemoteResponse {
+                method: "GET".into(),
+                url: format!("attestation/{patchset_id}"),
+                status: 404,
+                detail: "Unknown attestation".into(),
+            }
         })
     }
 }
@@ -931,16 +1002,16 @@ fn patchset_ci_readiness_accepts_bounded_contract_without_repo_job_scan() {
             "RCP-0083-1".to_string(),
             json!({
                 "patchset_id": "RCP-0083-1",
-                "change_id": "RCC-0083"
+                "task_id":"RT-0083", "change_ref":"RT-0083/C-01", "change_id": "C-01"
             }),
         )]),
         ci_statuses: BTreeMap::from([(
             "RCP-0083-1".to_string(),
             json!({
-                "contract": "ait.server.patchset_ci.readiness.v1",
+                "contract": "ait.server.patchset_ci.readiness.v2",
                 "projection": "readiness",
                 "patchset_id": "RCP-0083-1",
-                "change_id": "RCC-0083",
+                "task_id":"RT-0083", "change_ref":"RT-0083/C-01", "change_id": "C-01",
                 "repo_name": "fixture-ait",
                 "available": true,
                 "tests_status": "pass",
@@ -1111,6 +1182,7 @@ fn patchset_command_helpers_accept_closeout_remote_trait() {
                 "RCP-0083-2".to_string(),
                 json!({
                     "patchset_id": "RCP-0083-2",
+                    "task_id": "RT-0083",
                     "change_id": "RCC-0083",
                     "patchset_number": 2
                 }),
@@ -1139,7 +1211,8 @@ fn patchset_command_helpers_accept_closeout_remote_trait() {
         patchset_select_by_id_with_closeout_remote(&mut remote, "RCP-0083-2", "fixture-ait")
             .expect("patchset select by authoritative Patchset owner");
     assert_eq!(selected["change_id"], json!("RCC-0083"));
-    assert_eq!(selected["selected_patchset_id"], json!("RCP-0083-2"));
+    assert_eq!(selected["current_patchset_id"], json!("RCP-0083-2"));
+    assert_eq!(selected["selection_changed"], false);
 }
 
 #[test]
@@ -1309,29 +1382,26 @@ fn code_review_submit_records_distinct_code_and_automatic_task_lanes() {
         &mut remote,
         "RCC-0083",
         "RCP-0083-1",
-        "codex",
-        Some("Alice Example"),
+        "Einstein",
+        Some("Einstein"),
         summary,
         "fixture-ait",
     )
     .expect("submit AI and automatic Task review");
 
     assert_eq!(submitted["action"], json!("code_review_summary"));
-    assert_eq!(submitted["reviewer"], json!("codex"));
+    assert_eq!(submitted["reviewer"], json!("Einstein"));
     assert_eq!(submitted["task_review"]["mode"], json!("automatic"));
     assert_eq!(submitted["task_review"]["status"], json!("recorded"));
-    assert_eq!(submitted["task_review"]["reviewer"], json!("Alice Example"));
+    assert_eq!(submitted["task_review"]["reviewer"], json!("Einstein"));
     assert_eq!(remote.recorded_reviews.len(), 2);
     assert_eq!(
         remote.recorded_reviews[0]["action"],
         json!("code_review_summary")
     );
-    assert_eq!(remote.recorded_reviews[0]["reviewer"], json!("codex"));
+    assert_eq!(remote.recorded_reviews[0]["reviewer"], json!("Einstein"));
     assert_eq!(remote.recorded_reviews[1]["action"], json!("task_approve"));
-    assert_eq!(
-        remote.recorded_reviews[1]["reviewer"],
-        json!("Alice Example")
-    );
+    assert_eq!(remote.recorded_reviews[1]["reviewer"], json!("Einstein"));
     assert_eq!(
         remote.recorded_reviews[1]["comment"],
         json!(AUTOMATIC_TASK_APPROVAL_COMMENT)
@@ -1388,7 +1458,7 @@ fn code_review_submit_rejects_invalid_summary_before_remote_mutation() {
         "RCC-0083",
         "RCP-0083-1",
         "codex",
-        Some("Alice Example"),
+        Some("codex"),
         "looks good",
         "fixture-ait",
     )
@@ -1409,7 +1479,7 @@ fn code_review_submit_rejects_numeric_patchset_ref_before_remote_mutation() {
         "RCC-0083",
         "1",
         "codex",
-        Some("Alice Example"),
+        Some("codex"),
         summary,
         "fixture-ait",
     )
@@ -1421,7 +1491,7 @@ fn code_review_submit_rejects_numeric_patchset_ref_before_remote_mutation() {
 }
 
 #[test]
-fn automatic_code_review_requires_configured_user_name_before_remote_access() {
+fn automatic_code_review_requires_acting_reviewer_before_remote_access() {
     let temp = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(temp.path().join(".ait")).unwrap();
     std::fs::write(
@@ -1441,51 +1511,84 @@ fn automatic_code_review_requires_configured_user_name_before_remote_access() {
     )
     .expect_err("missing automatic reviewer must fail before remote access");
 
-    assert!(error.contains("`user_name`"), "{error}");
+    assert!(error.contains("--reviewer"), "{error}");
     assert!(!error.contains("remote"), "{error}");
+}
+
+#[test]
+fn native_task_review_still_requires_user_name_under_both_review_policies() {
+    for required in [false, true] {
+        for email in [None, Some("reviewer@example.com")] {
+            let temp = tempfile::tempdir().unwrap();
+            std::fs::create_dir_all(temp.path().join(".ait")).unwrap();
+            std::fs::write(
+                temp.path().join(".ait/config.json"),
+                json!({"repo_name":"fixture","task_review":required,"user_email":email})
+                    .to_string(),
+            )
+            .unwrap();
+            let repo = RepoRuntime::discover_from_path(temp.path()).unwrap();
+            let error = review_task_record(
+                &repo,
+                "LCT-0001",
+                "task_comment",
+                false,
+                Some("LCT-0001/P-01"),
+                Some("Reviewed the candidate"),
+                Some("missing-remote"),
+            )
+            .expect_err("missing configured user_name must fail before remote access");
+            assert!(error.contains("`user_name`"), "{error}");
+            assert!(!error.contains("remote"), "{error}");
+            if required {
+                let error = review_task_approve(
+                    &repo,
+                    "LCT-0001",
+                    "LCT-0001/P-01",
+                    "Validated the functional outcome",
+                    Some("missing-remote"),
+                )
+                .expect_err("required approval must still reject missing identity");
+                assert!(error.contains("`user_name`"), "{error}");
+                assert!(!error.contains("remote"), "{error}");
+            }
+        }
+    }
 }
 
 #[test]
 fn attestation_policy_helpers_accept_closeout_remote_trait() {
     let mut remote = FakeCloseoutRemote::default();
-    let evaluation = json!({
-        "tests": "pass",
-        "lint": "pass"
-    });
-    let provenance = json!({
-        "source": "test"
-    });
-    let detail = json!({
-        "evidence": ["unit"]
-    });
+    remote.patchsets.insert("RT-0083/P-01".into(),json!({"patchset_id":"RT-0083/P-01","task_id":"RT-0083","change_id":null,"change_ref":null,"author_mode":"ai_with_human_review","base_snapshot_id":"SNP-BASE","revision_snapshot_id":"SNP-REV"}));
 
     let attestation = attestation_put_with_closeout_remote(
         &mut remote,
-        "RCP-0083-1",
+        "RT-0083/P-01",
         "ai_with_human_review",
-        &evaluation,
-        &provenance,
-        &detail,
+        &ait_core::attest_json::RemoteAttestationStatement {
+            verification_state: ait_core::attest_json::RemoteVerificationState::Pass,
+            ..Default::default()
+        },
         "fixture-ait",
     )
     .expect("put attestation");
-    assert_eq!(attestation["evaluation_summary"]["tests"], json!("pass"));
+    assert_eq!(attestation["verification_state"], json!("pass"));
 
-    let shown = attestation_show_with_closeout_remote(&mut remote, "RCP-0083-1", "fixture-ait")
+    let shown = attestation_show_with_closeout_remote(&mut remote, "RT-0083/P-01", "fixture-ait")
         .expect("show attestation");
     assert_eq!(shown["author_mode"], json!("ai_with_human_review"));
 
-    let evaluated = policy_eval_with_closeout_remote(&mut remote, "RCP-0083-1", "fixture-ait")
+    let evaluated = policy_eval_with_closeout_remote(&mut remote, "RT-0083/P-01", "fixture-ait")
         .expect("evaluate policy");
     assert_eq!(evaluated["decision"], json!("pass"));
 
-    let policy = policy_show_with_closeout_remote(&mut remote, "RCP-0083-1", "fixture-ait")
+    let policy = policy_show_with_closeout_remote(&mut remote, "RT-0083/P-01", "fixture-ait")
         .expect("show policy");
     assert_eq!(policy["evaluated"], json!(true));
 
     let waiver = policy_waive_with_closeout_remote(
         &mut remote,
-        "RCP-0083-1",
+        "RT-0083/P-01",
         "ci.required",
         "temporary maintenance",
         Some("2026-12-31T00:00:00Z"),
@@ -1527,30 +1630,21 @@ fn policy_helpers_accept_single_capability_ports() {
 fn attestation_helpers_accept_single_capability_ports() {
     let mut writer = FakeAttestationWriter;
     let mut reader = FakeAttestationReader;
-    let evaluation = json!({
-        "tests": "pass",
-        "lint": "pass"
-    });
-    let provenance = json!({
-        "source": "test"
-    });
-    let detail = json!({
-        "evidence": ["unit"]
-    });
 
     let attestation = attestation_put_with_closeout_remote(
         &mut writer,
-        "RCP-0083-1",
+        "RT-0083/P-01",
         "ai_with_human_review",
-        &evaluation,
-        &provenance,
-        &detail,
+        &ait_core::attest_json::RemoteAttestationStatement {
+            verification_state: ait_core::attest_json::RemoteVerificationState::Pass,
+            ..Default::default()
+        },
         "fixture-ait",
     )
     .expect("put attestation");
-    assert_eq!(attestation["evaluation_summary"]["tests"], json!("pass"));
+    assert_eq!(attestation["verification_state"], json!("pass"));
 
-    let shown = attestation_show_with_closeout_remote(&mut reader, "RCP-0083-1", "fixture-ait")
+    let shown = attestation_show_with_closeout_remote(&mut reader, "RT-0083/P-01", "fixture-ait")
         .expect("show attestation");
     assert_eq!(shown["author_mode"], json!("ai_with_human_review"));
 }

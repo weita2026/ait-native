@@ -654,7 +654,7 @@ fn task_workflow_review_record_py(
 }
 
 #[pyfunction(name = "task_workflow_review_code_submit")]
-#[pyo3(signature = (repo_root, change_id, patchset_id, *, message, remote_name=None))]
+#[pyo3(signature = (repo_root, change_id, patchset_id, *, message, remote_name=None, reviewer=None))]
 fn task_workflow_review_code_submit_py(
     py: Python<'_>,
     repo_root: &str,
@@ -662,14 +662,16 @@ fn task_workflow_review_code_submit_py(
     patchset_id: &str,
     message: &str,
     remote_name: Option<&str>,
+    reviewer: Option<&str>,
 ) -> PyResult<Py<PyDict>> {
     let repo = discover_task_workflow_repo(repo_root)?;
     let payload = py.detach(|| {
-        task_workflow_primitives::review_code_submit(
+        task_workflow_primitives::review_code_submit_with_reviewer(
             &repo,
             change_id,
             patchset_id,
             message,
+            reviewer,
             remote_name,
         )
     });
@@ -2717,21 +2719,24 @@ fn workflow_ready_apply_direct_py(
 }
 
 #[pyfunction(name = "workflow_land_apply_direct")]
-#[pyo3(signature = (repo_root, change_id, review_message=None, remote_name=None))]
+#[pyo3(signature = (repo_root, change_id, review_message=None, remote_name=None, reviewer=None))]
 fn workflow_land_apply_direct_py(
     py: Python<'_>,
     repo_root: &str,
     change_id: &str,
     review_message: Option<&str>,
     remote_name: Option<&str>,
+    reviewer: Option<&str>,
 ) -> PyResult<Py<PyDict>> {
     let repo = discover_task_workflow_repo(repo_root)?;
     let payload = py.detach(|| {
-        task_workflow_primitives::workflow_land_apply(
+        task_workflow_primitives::workflow_finish_apply_guarded_with_reviewer(
             &repo,
             change_id,
             review_message,
+            reviewer,
             remote_name,
+            None,
             None::<fn(&JsonValue) -> Result<(), String>>,
         )
     });

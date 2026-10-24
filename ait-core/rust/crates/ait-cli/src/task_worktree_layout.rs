@@ -1187,7 +1187,7 @@ fn nearest_existing_ancestor(path: &Path) -> Option<PathBuf> {
     None
 }
 
-fn linux_mount_fstype_for_path(path: &Path) -> Option<String> {
+pub(crate) fn linux_mount_fstype_for_path(path: &Path) -> Option<String> {
     let anchor = nearest_existing_ancestor(path)?;
     let anchor_text = anchor.to_string_lossy();
     let mountinfo = fs::read_to_string("/proc/self/mountinfo").ok()?;

@@ -112,14 +112,8 @@ fn inspect_external_status_report_with_diagnostics(
     include_diagnostics: bool,
 ) -> ExternalResult<ExternalStatusReport> {
     let nodes = status_nodes_for_inspection(&manifest, lockfile.as_ref())?;
-    let materializations = if include_diagnostics {
-        nodes
-            .iter()
-            .map(|node| inspect_external_materialization(repo_root, node))
-            .collect::<ExternalResult<Vec<_>>>()?
-    } else {
-        inspect_external_materializations_with_hash_cache(repo_root, &nodes)?
-    };
+    let materializations =
+        inspect_external_materializations(repo_root, &nodes, &local_links, !include_diagnostics)?;
     let binding_checks = if include_diagnostics {
         inspect_external_binding_paths(repo_root, &nodes)?
     } else {
@@ -143,13 +137,17 @@ fn inspect_external_status_report_with_diagnostics(
     })
 }
 
-fn inspect_external_materializations_with_hash_cache(
+fn inspect_external_materializations(
     repo_root: &Path,
     nodes: &[ExternalLockNode],
+    local_links: &[ExternalLocalLinkOverride],
+    use_cache: bool,
 ) -> ExternalResult<Vec<ExternalMaterializationObservation>> {
     let loaded_cache = {
         let _range = crate::perfetto_range!("ait.core.external_projection.hash_cache_read");
-        load_external_materialization_hash_cache(repo_root)
+        use_cache
+            .then(|| load_external_materialization_hash_cache(repo_root))
+            .flatten()
     };
     let mut refreshed_roots = BTreeMap::new();
     let mut observations = Vec::with_capacity(nodes.len());
@@ -160,19 +158,62 @@ fn inspect_external_materializations_with_hash_cache(
             let cached_root = loaded_cache
                 .as_ref()
                 .and_then(|cache| cache.roots.get(&node.materialize_to));
-            let inspected =
-                inspect_external_materialization_with_hash_cache(repo_root, node, cached_root)?;
+            let root = node.materialization_path();
+            let child_roots = nodes
+                .iter()
+                .filter(|child| child.materialization_parent_path().as_ref() == Some(&root))
+                .map(|child| {
+                    child
+                        .materialization_path()
+                        .strip_prefix(&root)
+                        .unwrap()
+                        .to_path_buf()
+                })
+                .collect::<Vec<_>>();
+            let inspected = inspect_external_materialization_with_hash_cache(
+                repo_root,
+                node,
+                cached_root,
+                &child_roots,
+            )?;
             if let Some(cache_root) = inspected.cache_root {
                 refreshed_roots.insert(node.materialize_to.clone(), cache_root);
             }
             observations.push(inspected.observation);
         }
     }
+    // A clean parent may only be projected out of the worktree when its entire
+    // delegated closure is valid. In particular, a stale child Snapshot is not
+    // a clean ownership boundary even if that child's files match its marker.
+    let invalid_roots = nodes
+        .iter()
+        .zip(&observations)
+        .filter(|(node, observed)| {
+            observed.state != ExternalObservedMaterializationState::Generated
+                || observed.snapshot.as_deref() != Some(node.snapshot.as_str())
+                || local_links.iter().any(|link| link.name == node.name)
+        })
+        .map(|(node, _)| node.materialization_path())
+        .collect::<Vec<_>>();
+    for (node, observed) in nodes.iter().zip(&mut observations) {
+        let root = node.materialization_path();
+        if observed.state == ExternalObservedMaterializationState::Generated
+            && invalid_roots
+                .iter()
+                .any(|child| child != &root && child.starts_with(&root))
+        {
+            *observed = dirty_node(
+                node,
+                "locked descendant materialization is not current and intact",
+            );
+            refreshed_roots.remove(&node.materialize_to);
+        }
+    }
     let cache_changed = loaded_cache
         .as_ref()
         .map(|cache| cache.roots != refreshed_roots)
         .unwrap_or(!refreshed_roots.is_empty());
-    if cache_changed {
+    if use_cache && cache_changed {
         let _range = crate::perfetto_range!("ait.core.external_projection.hash_cache_write");
         let _ = write_external_materialization_hash_cache(repo_root, refreshed_roots);
     }
@@ -590,7 +631,7 @@ pub fn inspect_external_materialization(
     repo_root: &Path,
     node: &ExternalLockNode,
 ) -> ExternalResult<ExternalMaterializationObservation> {
-    inspect_external_materialization_with_hash_cache(repo_root, node, None)
+    inspect_external_materialization_with_hash_cache(repo_root, node, None, &[])
         .map(|inspected| inspected.observation)
 }
 
@@ -612,6 +653,7 @@ fn inspect_external_materialization_with_hash_cache(
     repo_root: &Path,
     node: &ExternalLockNode,
     cached_root: Option<&ExternalMaterializationHashCacheRoot>,
+    child_roots: &[PathBuf],
 ) -> ExternalResult<ExternalMaterializationInspection> {
     let destination = safe_destination(repo_root, &node.materialize_to)?;
     match fs::symlink_metadata(&destination) {
@@ -626,7 +668,7 @@ fn inspect_external_materialization_with_hash_cache(
         Ok(metadata) if !metadata.is_dir() => Ok(ExternalMaterializationInspection::without_cache(
             dirty_node(node, "materialization path is not a directory"),
         )),
-        Ok(_) => inspect_existing_directory(&destination, node, cached_root),
+        Ok(_) => inspect_existing_directory(&destination, node, cached_root, child_roots),
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
             Ok(ExternalMaterializationInspection::without_cache(
                 ExternalMaterializationObservation::missing(node),
@@ -646,6 +688,7 @@ fn inspect_existing_directory(
     destination: &Path,
     node: &ExternalLockNode,
     cached_root: Option<&ExternalMaterializationHashCacheRoot>,
+    child_roots: &[PathBuf],
 ) -> ExternalResult<ExternalMaterializationInspection> {
     let marker_path = destination.join(EXTERNAL_MATERIALIZER_MARKER);
     let marker_metadata = match fs::symlink_metadata(&marker_path) {
@@ -686,6 +729,7 @@ fn inspect_existing_directory(
             &marker,
             &marker_sha256,
             matching_cached_root,
+            child_roots,
         ),
         ExternalMaterializerMarkerRecord::Legacy { .. } => {
             Ok(ExternalMaterializationInspection::without_cache(
@@ -749,6 +793,7 @@ fn validate_materialized_directory(
     marker: &ExternalMaterializerMarkerV3,
     marker_sha256: &str,
     cached_root: Option<&ExternalMaterializationHashCacheRoot>,
+    child_roots: &[PathBuf],
 ) -> ExternalResult<ExternalMaterializationInspection> {
     if marker.name != node.name
         || marker.repo_name != node.repo_name
@@ -768,6 +813,7 @@ fn validate_materialized_directory(
     let (live_files, cache_files) = collect_live_materialized_file_entries(
         destination,
         cached_root.map(|cached| &cached.files),
+        child_roots,
     )?;
     let mut live_by_path = live_files
         .into_iter()
@@ -818,6 +864,7 @@ fn validate_materialized_directory(
 fn collect_live_materialized_file_entries(
     destination: &Path,
     cached_files: Option<&BTreeMap<String, ExternalMaterializationHashCacheFile>>,
+    child_roots: &[PathBuf],
 ) -> ExternalResult<(
     Vec<ExternalMaterializerMarkerFileEntry>,
     BTreeMap<String, ExternalMaterializationHashCacheFile>,
@@ -830,6 +877,7 @@ fn collect_live_materialized_file_entries(
         cached_files,
         &mut entries,
         &mut refreshed_files,
+        child_roots,
     )?;
     entries.sort_by(|left, right| left.path.cmp(&right.path));
     Ok((entries, refreshed_files))
@@ -841,6 +889,7 @@ fn collect_live_materialized_file_entries_recursive(
     cached_files: Option<&BTreeMap<String, ExternalMaterializationHashCacheFile>>,
     entries: &mut Vec<ExternalMaterializerMarkerFileEntry>,
     refreshed_files: &mut BTreeMap<String, ExternalMaterializationHashCacheFile>,
+    child_roots: &[PathBuf],
 ) -> ExternalResult<()> {
     for entry in fs::read_dir(cursor).map_err(|err| {
         ExternalError::with_code(
@@ -877,12 +926,16 @@ fn collect_live_materialized_file_entries_recursive(
             ));
         }
         if metadata.is_dir() {
+            if child_roots.iter().any(|child| path == root.join(child)) {
+                continue;
+            }
             collect_live_materialized_file_entries_recursive(
                 root,
                 &path,
                 cached_files,
                 entries,
                 refreshed_files,
+                child_roots,
             )?;
             continue;
         }
@@ -895,7 +948,7 @@ fn collect_live_materialized_file_entries_recursive(
                 ),
             ));
         }
-        if path.file_name() == Some(OsStr::new(EXTERNAL_MATERIALIZER_MARKER)) {
+        if path == root.join(EXTERNAL_MATERIALIZER_MARKER) {
             continue;
         }
         let relative = path.strip_prefix(root).map_err(|_| {

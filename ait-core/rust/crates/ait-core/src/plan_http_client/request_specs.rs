@@ -156,6 +156,7 @@ mod planning_session_specs;
 mod repository_specs;
 mod server_operational_specs;
 mod task_specs;
+mod workflow_package_specs;
 
 pub use self::auth_specs::*;
 pub use self::ci_job_specs::*;
@@ -164,3 +165,4 @@ pub use self::planning_session_specs::*;
 pub use self::repository_specs::*;
 pub use self::server_operational_specs::*;
 pub use self::task_specs::*;
+pub use self::workflow_package_specs::*;

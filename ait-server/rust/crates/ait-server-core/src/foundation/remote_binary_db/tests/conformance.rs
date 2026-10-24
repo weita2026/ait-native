@@ -143,7 +143,7 @@ fn outcome(error: BinaryDbError) -> &'static str {
 
 fn schema_fixture_path(path: &str) -> &str {
     match path {
-        "vector.bin" => "task.bin",
+        "vector.bin" => "actor.bin",
         "overwrite.bin" | "record.bin" => "blob.bin",
         "payload.bin" => "snapshot_payload.bin",
         "index.bin" => "schema-conformance.idx",
@@ -182,9 +182,20 @@ fn initialize_files(root: &Path, files: &BTreeMap<String, Option<String>>) {
 
 fn assert_expected_files(root: &Path, vector: &ExtendedVector) {
     for (relative, expected_hex) in &vector.expected_files {
+        let mut expected_hex = expected_hex.clone();
+        if vector.operation == "authorized_plan_family_commit" && relative == "plan.bin" {
+            // The shared generic vector uses layout1. This Server adapter writes
+            // the declared Remote Plan layout2 header and the same body bytes.
+            if let Some(expected) = &mut expected_hex {
+                let mut bytes = decode_hex(expected);
+                assert_eq!(&bytes[..4], &1u32.to_le_bytes());
+                bytes[..4].copy_from_slice(&2u32.to_le_bytes());
+                *expected = encode_hex(&bytes);
+            }
+        }
         assert_eq!(
             after_hex(&root.join(schema_fixture_path(relative))),
-            *expected_hex,
+            expected_hex,
             "{} exact bytes for {relative}",
             vector.id
         );
@@ -656,11 +667,20 @@ fn server_binary_db_extended_conformance_v2() {
                     BinaryDbNoopFsyncPolicy,
                 )
                 .expect("begin authorized family vector");
+                let mut file = extended_record(vector, fixture.layout_id, BinaryDbFileFamily::Plan);
+                let bytes = decode_hex(required(&vector.argument_hex, "argument_hex", &vector.id));
+                // This generic storage vector owns its arbitrary record width;
+                // use the declared Remote Plan header for the Server adapter.
+                if file.as_str() == "plan.bin" && file.layout_id() == 1 {
+                    file = BinaryFileId::new(
+                        "plan.bin",
+                        2,
+                        file.record_size(),
+                        BinaryDbFileFamily::Plan,
+                    );
+                }
                 write
-                    .append_record(
-                        extended_record(vector, fixture.layout_id, BinaryDbFileFamily::Plan),
-                        &decode_hex(required(&vector.argument_hex, "argument_hex", &vector.id)),
-                    )
+                    .append_record(file, &bytes)
                     .expect("append authorized Plan record");
                 write.commit().expect("commit authorized Plan record");
                 "success"

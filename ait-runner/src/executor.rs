@@ -9,13 +9,14 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use ait_core::server_operational::{
-    NATIVE_JOB_REPOSITORY_CI_UNIX_PATH, NATIVE_JOB_REPOSITORY_CI_WINDOWS_PATH,
+    NATIVE_JOB_REPOSITORY_CI_UNIX_PATH, NATIVE_JOB_REPOSITORY_CI_WINDOWS_PATH, WorkerJobKey,
 };
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use sha2::{Digest, Sha256};
 
 use crate::RunnerError;
+use crate::control::ExecutionControl;
 use crate::environment_contract::names::{AIT_RUNNER_ATTEMPT_ROOT, AIT_RUNNER_WORKSPACE};
 use crate::materialize::{
     MaterializationStats, RemoteSnapshotProvider, RemoteSnapshotReference,
@@ -26,6 +27,7 @@ use crate::protocol::{
     NATIVE_RESULT_CONTRACT, NativeJobRequest, NativeResult, STREAM_TAIL_BYTES, SourceSpec,
     StreamEvidence, SuiteResult, TerminalStatus, TestStatus,
 };
+use crate::workflow_package::{WorkflowPackageReference, materialize_workflow_package};
 
 const MAX_SOURCE_ENTRIES: u64 = 1_000_000;
 const PROCESS_POLL_INTERVAL: Duration = Duration::from_millis(10);
@@ -165,6 +167,27 @@ impl NativeExecutor {
         request: &NativeJobRequest,
         provider: Option<&dyn RemoteSnapshotProvider>,
     ) -> Result<NativeResult, RunnerError> {
+        self.execute_with_control(request, provider, None, &ExecutionControl::default())
+    }
+
+    pub(crate) fn execute_claimed(
+        &self,
+        request: &NativeJobRequest,
+        provider: &dyn RemoteSnapshotProvider,
+        key: WorkerJobKey,
+        control: &ExecutionControl,
+    ) -> Result<NativeResult, RunnerError> {
+        self.execute_with_control(request, Some(provider), Some(key), control)
+    }
+
+    pub(crate) fn execute_with_control(
+        &self,
+        request: &NativeJobRequest,
+        provider: Option<&dyn RemoteSnapshotProvider>,
+        key: Option<WorkerJobKey>,
+        control: &ExecutionControl,
+    ) -> Result<NativeResult, RunnerError> {
+        control.check()?;
         let preflight = self.preflight(request)?;
         let attempt_parent = prepare_attempt_parent(&self.config.attempt_root)?;
         if preflight
@@ -177,7 +200,13 @@ impl NativeExecutor {
             ));
         }
         let mut attempt = AttemptGuard::create(&attempt_parent)?;
-        let run_result = self.execute_in_attempt(request, &preflight, &attempt, provider);
+        let run_result =
+            self.execute_in_attempt(request, &preflight, &attempt, provider, key, control);
+        let run_result = if control.is_cancelled() {
+            Err(RunnerError::Cancelled)
+        } else {
+            run_result
+        };
         let cleanup_result = attempt.cleanup();
         match (run_result, cleanup_result) {
             (Ok(mut result), Ok(())) => {
@@ -206,7 +235,10 @@ impl NativeExecutor {
         preflight: &Preflight,
         attempt: &AttemptGuard,
         provider: Option<&dyn RemoteSnapshotProvider>,
+        key: Option<WorkerJobKey>,
+        control: &ExecutionControl,
     ) -> Result<NativeResult, RunnerError> {
+        control.check()?;
         let workspace = attempt.path.join("workspace");
         fs::create_dir(&workspace)
             .map_err(|error| RunnerError::fs("create workspace", &workspace, error))?;
@@ -246,6 +278,45 @@ impl NativeExecutor {
                 (materialized.stats, materialized.environment)
             }
             (
+                SourceSpec::WorkflowPackage {
+                    repository_index,
+                    package_hash,
+                    base_snapshot_id,
+                    revision_snapshot_id,
+                },
+                None,
+            ) => {
+                let key = key.ok_or_else(|| {
+                    RunnerError::InvalidRequest(
+                        "workflow_package requires its original claimed Job context".into(),
+                    )
+                })?;
+                if key.repository_index != *repository_index {
+                    return Err(RunnerError::InvalidRequest(
+                        "workflow_package Repository does not match the claimed Job".into(),
+                    ));
+                }
+                let provider = provider.ok_or_else(|| {
+                    RunnerError::InvalidRequest(
+                        "workflow_package requires a Job-bound source provider".into(),
+                    )
+                })?;
+                let materialized = materialize_workflow_package(
+                    provider,
+                    &WorkflowPackageReference {
+                        key,
+                        package_hash: package_hash.clone(),
+                        base_snapshot_id: base_snapshot_id.clone(),
+                        revision_snapshot_id: revision_snapshot_id.clone(),
+                    },
+                    &workspace,
+                    &attempt.path.join("package"),
+                    &attempt.path.join("packs"),
+                    control,
+                )?;
+                (materialized.stats, materialized.environment)
+            }
+            (
                 SourceSpec::LegacyRemoteSnapshot {
                     repo_name,
                     repo_id,
@@ -280,6 +351,7 @@ impl NativeExecutor {
             }
         };
 
+        control.check()?;
         let working_directory = workspace.join(&request.command.working_directory);
         let working_directory = canonical_directory(
             &working_directory,
@@ -319,6 +391,7 @@ impl NativeExecutor {
             &stdout_path,
             &stderr_path,
             Duration::from_millis(request.timeout_ms),
+            control,
         )?;
 
         let status = if process.timed_out {
@@ -905,6 +978,7 @@ fn execute_process(
     stdout_path: &Path,
     stderr_path: &Path,
     timeout: Duration,
+    control: &ExecutionControl,
 ) -> Result<ProcessOutcome, RunnerError> {
     let mut command = Command::new(&invocation.program);
     command
@@ -935,7 +1009,7 @@ fn execute_process(
     let stdout_thread = thread::spawn(move || capture_stream(stdout, &stdout_path));
     let stderr_thread = thread::spawn(move || capture_stream(stderr, &stderr_path));
 
-    let wait_result = wait_for_process(&mut child, pid, timeout);
+    let wait_result = wait_for_process(&mut child, pid, timeout, control);
     if wait_result.is_err() {
         terminate_process_group(pid);
         let _ = child.kill();
@@ -960,9 +1034,11 @@ fn wait_for_process(
     child: &mut Child,
     pid: u32,
     timeout: Duration,
+    control: &ExecutionControl,
 ) -> Result<(ExitStatus, bool), RunnerError> {
     let started = Instant::now();
     loop {
+        control.check()?;
         if let Some(status) = child.try_wait().map_err(|error| {
             RunnerError::Process(format!("could not poll repository CI entrypoint: {error}"))
         })? {

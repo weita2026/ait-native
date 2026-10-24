@@ -349,7 +349,7 @@ fn native_snapshot_and_remote_primitives_work_end_to_end() {
         assert!(!human.contains("RC-1"), "stdout:\n{human}");
     }
 
-    let task_land = json_output(root, &["task", "finish", "RT-1", "--json"]);
+    let task_land = json_output(root, &["task", "finish", "RT-1", "--remote", "origin", "--json"]);
     assert_eq!(
         task_land["apply_status"].as_str(),
         Some("done"),
@@ -395,7 +395,7 @@ fn native_snapshot_and_remote_primitives_work_end_to_end() {
     assert!(logged.iter().any(|row| {
         row.method == "POST"
             && row.url == "/v1/native/repository-authorities/7/task-land"
-            && row.body.contains("\"contract\":\"task-land-atomic/v1\"")
+            && row.body.contains("\"contract\":\"task-land-atomic/v2\"")
     }));
     assert!(!logged.iter().any(|row| row.method == "POST"
         && row.url == "/v1/native/repository-authorities/7/tasks/RT-1:close"));
@@ -496,7 +496,7 @@ fn native_task_land_closes_when_base_stale_submit_already_moved_target_to_revisi
         guard.omit_landing_summary_after_base_stale_converged = true;
     }
 
-    let task_land = json_output(root, &["task", "finish", "RT-1", "--json"]);
+    let task_land = json_output(root, &["task", "finish", "RT-1", "--remote", "origin", "--json"]);
 
     assert_eq!(
         task_land["apply_status"].as_str(),
@@ -564,7 +564,7 @@ fn native_task_land_submits_when_target_line_already_points_at_revision() {
         guard.selected_patchset_revision_snapshot_id = Some(revision_snapshot_id.clone());
     }
 
-    let task_land = json_output(root, &["task", "finish", "RT-1", "--json"]);
+    let task_land = json_output(root, &["task", "finish", "RT-1", "--remote", "origin", "--json"]);
 
     assert_eq!(
         task_land["apply_status"].as_str(),
@@ -622,7 +622,7 @@ fn native_task_land_submits_when_target_line_already_contains_revision() {
         guard.selected_patchset_revision_snapshot_id = Some(selected_revision_snapshot_id.clone());
     }
 
-    let task_land = json_output(root, &["task", "finish", "RT-1", "--json"]);
+    let task_land = json_output(root, &["task", "finish", "RT-1", "--remote", "origin", "--json"]);
 
     assert_eq!(
         task_land["apply_status"].as_str(),

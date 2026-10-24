@@ -329,6 +329,28 @@ pub(super) fn worktree_cargo_build_dir(root: &Path) -> PathBuf {
     build_root.join(CANONICAL_CARGO_BUILD_DIRNAME)
 }
 
+// Capture recognizes both placements regardless of today's RAM capacity. The
+// exact current Task namespace is required for logical and resolved roots.
+fn task_cargo_build_projection_dirs(root: &Path) -> Vec<PathBuf> {
+    let Some(name) = managed_worktree_name(root) else {
+        return Vec::new();
+    };
+    let ait = root.join(".ait");
+    let shared = fs::canonicalize(&ait).unwrap_or(ait);
+    let primary = lexical_normalize(&shared.join(SHARED_CARGO_BUILD_DIRNAME));
+    // Only the primary root has a managed RAM symlink. SSD storage is a
+    // physical sibling; an arbitrary SSD symlink target is not a projection.
+    let resolved = fs::canonicalize(&primary).unwrap_or_else(|_| primary.clone());
+    let mut paths = Vec::new();
+    for base in [primary, resolved, shared.join("cargo-build-ssd")] {
+        let path = base.join(MANAGED_WORKTREE_CARGO_BUILD_DIRNAME).join(&name);
+        if !paths.contains(&path) {
+            paths.push(path);
+        }
+    }
+    paths
+}
+
 fn managed_worktree_name(root: &Path) -> Option<String> {
     let contents = fs::read_to_string(root.join(WORKTREE_CONFIG_NAME)).ok()?;
     let payload = JsonCodec::parse_value(&contents, "worktree marker").ok()?;
@@ -408,7 +430,7 @@ fn matches_generated_worktree_cargo_config_text(root: &Path, contents: &str) -> 
     };
     let repository_canonical_build_dir =
         repository_shared_build_dir.join(CANONICAL_CARGO_BUILD_DIRNAME);
-    let build_lines = [
+    let mut build_lines = vec![
         format!(
             "build-dir = {}",
             encoded_cargo_path(&worktree_cargo_build_dir(root))
@@ -439,6 +461,12 @@ fn matches_generated_worktree_cargo_config_text(root: &Path, contents: &str) -> 
         "build-dir = \"rust/target\"".to_string(),
         "build-dir = \"target\"".to_string(),
     ];
+    for path in task_cargo_build_projection_dirs(root) {
+        let line = format!("build-dir = {}", encoded_cargo_path(&path));
+        if !build_lines.contains(&line) {
+            build_lines.push(line);
+        }
+    }
     let body = &lines[2..build_section_end];
     if body
         .iter()

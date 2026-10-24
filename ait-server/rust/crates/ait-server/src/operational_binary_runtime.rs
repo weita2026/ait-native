@@ -8,10 +8,10 @@ use crate::repository_retirement::{
 use ait_server_core::foundation::native_repositories::BinaryDbNativeRepositoryService;
 use ait_server_core::foundation::operational_binary_v0::{
     REPOSITORY_LIFECYCLE_ACTIVE, REPOSITORY_LIFECYCLE_PURGED, REPOSITORY_LIFECYCLE_RETIRING,
-    WORKER_JOB_ERROR_RETRYABLE_EXECUTION, WORKER_JOB_ERROR_TERMINAL_EXECUTION,
-    WORKER_JOB_KIND_PATCHSET_CI, WORKER_JOB_KIND_REPO_CI, WORKER_JOB_OUTCOME_COMPLETED,
-    WORKER_JOB_STATE_FAILED, WORKER_JOB_STATE_QUEUED, WORKER_JOB_STATE_RUNNING,
-    WORKER_JOB_STATE_SUCCEEDED,
+    WORKER_JOB_ERROR_LEASE_EXPIRED, WORKER_JOB_ERROR_RETRYABLE_EXECUTION,
+    WORKER_JOB_ERROR_TERMINAL_EXECUTION, WORKER_JOB_KIND_PATCHSET_CI, WORKER_JOB_KIND_REPO_CI,
+    WORKER_JOB_OUTCOME_COMPLETED, WORKER_JOB_OUTCOME_FAILED, WORKER_JOB_STATE_FAILED,
+    WORKER_JOB_STATE_QUEUED, WORKER_JOB_STATE_RUNNING, WORKER_JOB_STATE_SUCCEEDED,
 };
 use ait_server_core::foundation::remote_binary_db::{
     sync_filesystem_directory, BinaryDbError, BinaryDbErrorKind, BinaryDbReadTxn,
@@ -38,14 +38,24 @@ use ait_server_core::foundation::server_operational_runtime_leases::{
 };
 use ait_server_core::foundation::server_operational_worker_jobs::{
     merge_ready_candidates, ServerOperationalWorkerJobStore, WorkerJobDomainAuthority,
-    WorkerJobEntry,
+    WorkerJobEntry, WorkerJobKey,
+};
+use ait_server_core::foundation::server_repository_scope::ServerRepositoryScope;
+use ait_server_core::foundation::server_workflow_upgrade::{
+    admit_workflow_generation, admit_workflow_generation_with_progress,
+    validate_workflow_completion, WorkflowUpgradeProgress, WORKFLOW_UPGRADE_COMPLETION_SCHEMA,
+};
+#[cfg(test)]
+use ait_server_core::foundation::server_workflow_upgrade::{
+    admit_workflow_generation_with_admission, WorkflowGenerationAdmission,
 };
 use ait_server_core::foundation::workflow_binary_v0::{
     CI_STATUS_ERROR, CI_STATUS_FAIL, CI_STATUS_NONE, CI_STATUS_PASS,
 };
 use ait_server_core::foundation::workflow_binary_v0_adapter::{
-    validate_frozen_server_workflow_v0, BinaryDbServerWorkflowV0Store,
+    validate_frozen_server_workflow_v0, BinaryDbServerWorkflowV0Store, UserActorIdentity,
 };
+use ait_server_core::foundation::workflow_package::WorkflowPackage;
 use fs2::FileExt;
 use serde::Deserialize;
 use serde_json::{json, Value as JsonValue};
@@ -91,6 +101,9 @@ const MAX_LIST_LIMIT: usize = 1_000;
 const MAX_CLAIM_CANDIDATES: usize = 1_024;
 const MAX_FAILURE_DETAIL_CHARS: usize = 4_096;
 const MAX_RESTORE_SESSIONS: usize = 64;
+
+#[path = "operational_binary_runtime/workflow_packages.rs"]
+mod workflow_packages;
 const DEFAULT_RESTORE_SESSION_TTL_S: u64 = 24 * 60 * 60;
 const DEFAULT_RESTORE_STAGING_MAX_BYTES: u64 = 64 * 1024 * 1024 * 1024;
 const RESTORE_STAGING_LOCK_FILE: &str = ".restore-sessions.lock";
@@ -299,11 +312,16 @@ struct OperationalRepositoryRuntime {
 #[derive(Clone)]
 pub(crate) struct OperationalBinaryRuntime {
     registry: ServerOperationalRepositoryRegistry,
+    repository_scope: ServerRepositoryScope,
     repositories: Arc<RwLock<BTreeMap<u32, OperationalRepositoryRuntime>>>,
     registration_lock: Arc<Mutex<()>>,
     retirement_exports: Arc<Mutex<BTreeMap<u32, RemoteExportManifest>>>,
     restore_sessions: Arc<Mutex<BTreeMap<String, RestoreSession>>>,
     restore_staging_parent: PathBuf,
+    package_worktrees: PathBuf,
+    package_operation_lock: Arc<Mutex<()>>,
+    preformal_reset_jobs: Arc<BTreeSet<WorkerJobKey>>,
+    preformal_stopped_attempts: Arc<BTreeMap<WorkerJobKey, u16>>,
     _restore_staging_lock: Arc<File>,
     restore_session_ttl_s: u64,
     restore_staging_max_bytes: u64,
@@ -312,27 +330,98 @@ pub(crate) struct OperationalBinaryRuntime {
     retry_delay_s: u32,
 }
 
+#[derive(Default)]
+struct RuntimeAdmission {
+    restore_lock: Option<File>,
+    repository_scope: ServerRepositoryScope,
+}
+
 impl OperationalBinaryRuntime {
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn repository_indexes(&self) -> Vec<u32> {
-        self.repositories
-            .read()
-            .expect("Repository runtime lock is poisoned")
-            .keys()
-            .copied()
+        self.registry
+            .list()
+            .expect("Runtime Repository registry remains valid")
+            .into_iter()
+            .map(|entry| entry.repository_index)
             .collect()
     }
 
     pub(crate) fn ensure_from_config(config: &ServerBinaryLifecycleConfig) -> Result<Self, String> {
-        let activation = ensure_runtime_activation(config)?;
-        Self::from_activation_with_restore_limits(
-            &activation,
-            config.runtime_lease_replica.clone(),
-            DEFAULT_LEASE_DURATION_S,
-            DEFAULT_RETRY_DELAY_S,
-            DEFAULT_RESTORE_SESSION_TTL_S,
-            DEFAULT_RESTORE_STAGING_MAX_BYTES,
-        )
+        Self::ensure_from_config_with_admitter(config, admit_workflow_generation)
+    }
+
+    pub(crate) fn ensure_from_config_with_progress(
+        config: &ServerBinaryLifecycleConfig,
+        mut observer: impl FnMut(WorkflowUpgradeProgress),
+    ) -> Result<Self, String> {
+        Self::ensure_from_config_with_admitter(config, |config, source| {
+            admit_workflow_generation_with_progress(config, source, &mut observer)
+        })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn ensure_from_config_with_disposition(
+        config: &ServerBinaryLifecycleConfig,
+        disposition: Option<&WorkflowGenerationAdmission>,
+    ) -> Result<Self, String> {
+        match disposition {
+            Some(admission) => Self::ensure_from_config_with_admitter(config, |config, source| {
+                admit_workflow_generation_with_admission(config, source, admission)
+            }),
+            None => Self::ensure_from_config(config),
+        }
+    }
+
+    fn ensure_from_config_with_admitter(
+        config: &ServerBinaryLifecycleConfig,
+        admit: impl FnOnce(
+            &ServerBinaryLifecycleConfig,
+            &ServerBinaryActivation,
+        ) -> Result<ServerBinaryActivation, String>,
+    ) -> Result<Self, String> {
+        ensure_runtime_activation(config)?;
+        config.with_exclusive_admission(|| {
+            let source = ensure_runtime_activation(config)?;
+            let completion = read_regular_file(&source.completion_file)?;
+            if sha256(&completion) != source.completion_sha256 {
+                return Err("Binary activation completion changed before startup admission".into());
+            }
+            validate_completion(
+                &source.generation_root,
+                &source.completion_file,
+                &completion,
+            )?;
+            let registry = ServerOperationalRepositoryRegistry::new(
+                source.generation_root.join("global"),
+                source.generation_root.join("repositories"),
+            )
+            .map_err(|error| error.to_string())?;
+            config
+                .repository_scope
+                .validate_known(&registry.list().map_err(|error| error.to_string())?)?;
+            let source_staging = restore_staging_parent(&source.generation_root)
+                .map_err(|error| error.to_string())?;
+            let mut source_service_lock = Some(acquire_restore_staging_lock(&source_staging)?);
+            let activation = admit(config, &source)?;
+            let admitted_lock = if activation.generation_root == source.generation_root {
+                source_service_lock.take()
+            } else {
+                None
+            };
+            Self::from_activation_with_admission_lock(
+                &activation,
+                config.runtime_lease_replica.clone(),
+                DEFAULT_LEASE_DURATION_S,
+                DEFAULT_RETRY_DELAY_S,
+                DEFAULT_RESTORE_SESSION_TTL_S,
+                DEFAULT_RESTORE_STAGING_MAX_BYTES,
+                RuntimeAdmission {
+                    restore_lock: admitted_lock,
+                    repository_scope: config.repository_scope.clone(),
+                },
+            )
+        })
     }
 
     #[cfg(test)]
@@ -352,6 +441,7 @@ impl OperationalBinaryRuntime {
         )
     }
 
+    #[cfg(test)]
     fn from_activation_with_restore_limits(
         activation: &ServerBinaryActivation,
         lease_replica: PathBuf,
@@ -359,6 +449,26 @@ impl OperationalBinaryRuntime {
         retry_delay_s: u32,
         restore_session_ttl_s: u64,
         restore_staging_max_bytes: u64,
+    ) -> Result<Self, String> {
+        Self::from_activation_with_admission_lock(
+            activation,
+            lease_replica,
+            lease_duration_s,
+            retry_delay_s,
+            restore_session_ttl_s,
+            restore_staging_max_bytes,
+            RuntimeAdmission::default(),
+        )
+    }
+
+    fn from_activation_with_admission_lock(
+        activation: &ServerBinaryActivation,
+        lease_replica: PathBuf,
+        lease_duration_s: u32,
+        retry_delay_s: u32,
+        restore_session_ttl_s: u64,
+        restore_staging_max_bytes: u64,
+        admission: RuntimeAdmission,
     ) -> Result<Self, String> {
         let completion_bytes = read_regular_file(&activation.completion_file)?;
         if sha256(&completion_bytes) != activation.completion_sha256 {
@@ -371,13 +481,14 @@ impl OperationalBinaryRuntime {
             &activation.completion_file,
             &completion_bytes,
         )?;
-        Self::open_generation_with_restore_limits(
+        Self::open_generation_with_admission_lock(
             activation.generation_root.clone(),
             lease_replica,
             lease_duration_s,
             retry_delay_s,
             restore_session_ttl_s,
             restore_staging_max_bytes,
+            admission,
         )
     }
 
@@ -398,6 +509,7 @@ impl OperationalBinaryRuntime {
         )
     }
 
+    #[cfg(test)]
     fn open_generation_with_restore_limits(
         generation_root: PathBuf,
         lease_replica: PathBuf,
@@ -406,6 +518,30 @@ impl OperationalBinaryRuntime {
         restore_session_ttl_s: u64,
         restore_staging_max_bytes: u64,
     ) -> Result<Self, String> {
+        Self::open_generation_with_admission_lock(
+            generation_root,
+            lease_replica,
+            lease_duration_s,
+            retry_delay_s,
+            restore_session_ttl_s,
+            restore_staging_max_bytes,
+            RuntimeAdmission::default(),
+        )
+    }
+
+    fn open_generation_with_admission_lock(
+        generation_root: PathBuf,
+        lease_replica: PathBuf,
+        lease_duration_s: u32,
+        retry_delay_s: u32,
+        restore_session_ttl_s: u64,
+        restore_staging_max_bytes: u64,
+        admission: RuntimeAdmission,
+    ) -> Result<Self, String> {
+        let RuntimeAdmission {
+            restore_lock: admitted_lock,
+            repository_scope,
+        } = admission;
         require_positive_runtime_durations(lease_duration_s, retry_delay_s)?;
         if restore_session_ttl_s == 0 {
             return Err("Repository restore session TTL must be positive".to_string());
@@ -441,6 +577,7 @@ impl OperationalBinaryRuntime {
         let entries = registry
             .validate()
             .map_err(|error| format!("validate Binary Repository registry: {error}"))?;
+        repository_scope.validate_known(&entries)?;
         if entries.len() < manifest.repository_count {
             return Err(format!(
                 "Binary v0 generation Repository registry is shorter than its activation baseline: manifest={}, registry={}",
@@ -451,6 +588,9 @@ impl OperationalBinaryRuntime {
 
         let mut repositories = BTreeMap::new();
         for entry in entries {
+            if !repository_scope.includes(&entry) {
+                continue;
+            }
             let authority_root = registry
                 .resolve_authority_directory(entry.repository_index)
                 .map_err(|error| {
@@ -473,18 +613,65 @@ impl OperationalBinaryRuntime {
 
         let restore_staging_parent = restore_staging_parent(&generation_root)
             .map_err(|error| format!("prepare Repository restore staging: {error}"))?;
-        let restore_staging_lock = acquire_restore_staging_lock(&restore_staging_parent)?;
+        let restore_staging_lock = match admitted_lock {
+            Some(lock) => lock,
+            None => acquire_restore_staging_lock(&restore_staging_parent)?,
+        };
         cleanup_abandoned_restore_staging(&restore_staging_parent)?;
+        let package_worktrees = lease_replica
+            .parent()
+            .ok_or("Lease replica has no managed parent")?
+            .join("workflow-packages")
+            .join(
+                generation_root
+                    .file_name()
+                    .ok_or("Generation has no basename")?,
+            );
+        fs::create_dir_all(&package_worktrees)
+            .map_err(|error| format!("prepare managed package worktrees: {error}"))?;
+        let package_worktrees = canonical_real_directory(&package_worktrees)?;
+        if package_worktrees.starts_with(&generation_root) {
+            return Err("Managed package worktrees must be outside Binary authority".into());
+        }
         let (leases, _) =
             ServerOperationalRuntimeLeases::open(lease_replica, [generation_root.clone()])
                 .map_err(|error| format!("open Binary runtime lease replica: {error}"))?;
+        let mut preformal_reset_jobs = BTreeSet::new();
+        let mut preformal_stopped_attempts = BTreeMap::new();
+        for repository in repositories.values() {
+            for job in repository
+                .jobs
+                .list()
+                .map_err(|error| format!("inspect preformal reset identity: {error}"))?
+            {
+                if !job.record.is_tombstoned()
+                    && job.record.job_kind == WORKER_JOB_KIND_PATCHSET_CI
+                    && job.record.patchset_index_plus1 == 0
+                {
+                    preformal_reset_jobs.insert(job.key);
+                    if (job.record.state_kind == WORKER_JOB_STATE_SUCCEEDED
+                        && job.record.outcome_kind == WORKER_JOB_OUTCOME_COMPLETED)
+                        || (job.record.state_kind == WORKER_JOB_STATE_FAILED
+                            && job.record.outcome_kind == WORKER_JOB_OUTCOME_FAILED
+                            && job.record.error_kind == WORKER_JOB_ERROR_TERMINAL_EXECUTION)
+                    {
+                        preformal_stopped_attempts.insert(job.key, job.record.attempt_count);
+                    }
+                }
+            }
+        }
         let runtime = Self {
             registry,
+            repository_scope,
             repositories: Arc::new(RwLock::new(repositories)),
             registration_lock: Arc::new(Mutex::new(())),
             retirement_exports: Arc::new(Mutex::new(BTreeMap::new())),
             restore_sessions: Arc::new(Mutex::new(BTreeMap::new())),
             restore_staging_parent,
+            package_worktrees,
+            package_operation_lock: Arc::new(Mutex::new(())),
+            preformal_reset_jobs: Arc::new(preformal_reset_jobs),
+            preformal_stopped_attempts: Arc::new(preformal_stopped_attempts),
             _restore_staging_lock: Arc::new(restore_staging_lock),
             restore_session_ttl_s,
             restore_staging_max_bytes,
@@ -492,7 +679,15 @@ impl OperationalBinaryRuntime {
             lease_duration_s,
             retry_delay_s,
         };
-        runtime.reconcile(now_s()?)?;
+        let now = now_s()?;
+        for store in runtime.stores() {
+            store
+                .invalidate_prepared_ci_after_restart(now)
+                .map_err(|error| {
+                    format!("invalidate preformal Jobs after Server restart: {error}")
+                })?;
+        }
+        runtime.reconcile(now)?;
         Ok(runtime)
     }
 
@@ -502,6 +697,7 @@ impl OperationalBinaryRuntime {
                 "contract": OPERATIONAL_CAPABILITY_CONTRACT,
                 "repository_identity": "binary-repository-index.v0",
                 "worker_job_identity": "binary-worker-job-key.v0",
+                "review_actor_identity_v1": true,
                 "runner_contracts": [NATIVE_JOB_V3_CONTRACT],
             }
         })
@@ -513,6 +709,20 @@ impl OperationalBinaryRuntime {
     ) -> StoreResult<(OperationalRepositoryEntry, OperationalDb)> {
         let repository = self.repository(repository_index)?;
         Ok((repository.entry.clone(), repository.authority.db().clone()))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn repository_worker_runtime(
+        &self,
+        repository_index: u32,
+    ) -> StoreResult<(
+        ServerOperationalWorkerJobStore,
+        ServerOperationalRuntimeLeases,
+    )> {
+        Ok((
+            self.repository(repository_index)?.jobs.clone(),
+            self.leases.clone(),
+        ))
     }
 
     pub(crate) fn repository_native_service(
@@ -531,19 +741,34 @@ impl OperationalBinaryRuntime {
             .read()
             .expect("Repository runtime lock is poisoned")
             .values()
-            .filter(|repository| {
-                !repository.entry.record.is_tombstoned()
-                    && repository.entry.record.lifecycle_kind != REPOSITORY_LIFECYCLE_PURGED
-            })
+            .filter(|repository| self.repository_scope.includes(&repository.entry))
             .map(|repository| repository.entry.repository_index)
             .collect()
     }
 
+    #[cfg(test)]
     pub(crate) fn register_repository(
         &self,
         repository_name: &str,
         namespace_ascii: [u8; 2],
         policy_flags: u8,
+    ) -> StoreResult<JsonValue> {
+        self.register_repository_with_actor(
+            repository_name,
+            namespace_ascii,
+            policy_flags,
+            None,
+            None,
+        )
+    }
+
+    pub(crate) fn register_repository_with_actor(
+        &self,
+        repository_name: &str,
+        namespace_ascii: [u8; 2],
+        policy_flags: u8,
+        repository_index: Option<u32>,
+        identity: Option<&UserActorIdentity>,
     ) -> StoreResult<JsonValue> {
         if repository_name.is_empty() {
             return Err(invalid("Repository name is empty"));
@@ -554,6 +779,18 @@ impl OperationalBinaryRuntime {
             .lock()
             .map_err(|_| BinaryDbError::other("Repository registration lock is poisoned"))?;
 
+        if let Some(index) = repository_index {
+            self.require_active_repository(index)?;
+            let existing = self.registry.get(index)?;
+            if existing.repo_name != repository_name
+                || existing.record.namespace_ascii != namespace_ascii
+                || existing.record.policy_flags != policy_flags
+            {
+                return Err(invalid("Repository registration metadata conflict"));
+            }
+            return self.registration_with_actor(existing, false, identity);
+        }
+
         if namespace_ascii != [0, 0] {
             if let Some(existing) = self
                 .registry
@@ -561,6 +798,7 @@ impl OperationalBinaryRuntime {
                 .into_iter()
                 .next()
             {
+                self.require_repository_not_excluded(existing.repository_index)?;
                 if existing.record.lifecycle_kind == REPOSITORY_LIFECYCLE_RETIRING {
                     return Err(invalid(format!(
                         "Repository namespace {:?} is retiring at index {}; finish retirement before registering it again",
@@ -576,7 +814,7 @@ impl OperationalBinaryRuntime {
                     )));
                 }
                 self.ensure_repository_runtime(existing.clone())?;
-                return Ok(repository_registration_projection(existing, false));
+                return self.registration_with_actor(existing, false, identity);
             }
         }
 
@@ -594,7 +832,32 @@ impl OperationalBinaryRuntime {
             },
         )?;
         self.ensure_repository_runtime(entry.clone())?;
-        Ok(repository_registration_projection(entry, true))
+        self.registration_with_actor(entry, true, identity)
+    }
+
+    fn registration_with_actor(
+        &self,
+        entry: OperationalRepositoryEntry,
+        created: bool,
+        identity: Option<&UserActorIdentity>,
+    ) -> StoreResult<JsonValue> {
+        let key = identity
+            .map(|identity| {
+                let db = self
+                    .repository(entry.repository_index)?
+                    .authority
+                    .db()
+                    .clone();
+                BinaryDbServerWorkflowV0Store::new_frozen(db)
+                    .resolve_user_actor(identity)
+                    .map_err(BinaryDbError::other)
+            })
+            .transpose()?;
+        let mut projection = repository_registration_projection(entry, created);
+        if let Some(key) = key {
+            projection["actor_key_index"] = json!(key);
+        }
+        Ok(projection)
     }
 
     pub(crate) fn enqueue_patchset_ci(
@@ -639,6 +902,22 @@ impl OperationalBinaryRuntime {
         self.repository(repository_index)?
             .authority
             .snapshot_index_for_id(snapshot_id)
+    }
+
+    pub(crate) fn snapshot_workflow_owner(
+        &self,
+        repository_index: u32,
+        snapshot_id: &str,
+    ) -> StoreResult<JsonValue> {
+        let repository = self.repository(repository_index)?;
+        let workflow = BinaryDbServerWorkflowV0Store::new_remote_frozen(
+            repository.authority.db().clone(),
+            &namespace_text(repository.entry.record.namespace_ascii),
+        )
+        .map_err(BinaryDbError::corruption)?;
+        workflow
+            .snapshot_workflow_owner(snapshot_id)
+            .map_err(BinaryDbError::corruption)
     }
 
     pub(crate) fn patchset_ci_jobs(
@@ -707,12 +986,14 @@ impl OperationalBinaryRuntime {
 
     pub(crate) fn repository_authority(&self, repository_index: u32) -> StoreResult<JsonValue> {
         let repository = self.repository(repository_index)?;
+        let mut projection = repository_projection(&repository.entry);
+        projection["snapshot_capture_binding_contract"] = json!("ait.snapshot_capture_binding.v2");
         let pack_storage =
             ServerBinaryRepositoryContentStore::new(repository.authority.db().clone())
                 .repository_pack_storage_payload()?;
         Ok(json!({
             "contract": "ait.server.repository-authority.v1",
-            "repository": repository_projection(&repository.entry),
+            "repository": projection,
             "pack_storage": pack_storage,
         }))
     }
@@ -728,7 +1009,7 @@ impl OperationalBinaryRuntime {
         let repositories = repositories
             .values()
             .filter(|repository| {
-                repository.entry.record.lifecycle_kind != REPOSITORY_LIFECYCLE_PURGED
+                self.repository_scope.includes(&repository.entry)
                     && repository_name.is_none_or(|name| repository.entry.repo_name == name)
             })
             .map(|repository| repository_projection(&repository.entry))
@@ -745,6 +1026,7 @@ impl OperationalBinaryRuntime {
     }
 
     pub(crate) fn require_active_repository(&self, repository_index: u32) -> StoreResult<()> {
+        self.require_repository_not_excluded(repository_index)?;
         let entry = self.registry.get(repository_index)?;
         if entry.record.is_tombstoned()
             || entry.record.lifecycle_kind != REPOSITORY_LIFECYCLE_ACTIVE
@@ -766,6 +1048,7 @@ impl OperationalBinaryRuntime {
         &self,
         repository_index: u32,
     ) -> StoreResult<JsonValue> {
+        self.require_repository_not_excluded(repository_index)?;
         let _registration = self
             .registration_lock
             .lock()
@@ -802,6 +1085,7 @@ impl OperationalBinaryRuntime {
     }
 
     pub(crate) fn repository_retirement(&self, repository_index: u32) -> StoreResult<JsonValue> {
+        self.require_repository_not_excluded(repository_index)?;
         let _registration = self
             .registration_lock
             .lock()
@@ -821,6 +1105,7 @@ impl OperationalBinaryRuntime {
         &self,
         repository_index: u32,
     ) -> StoreResult<JsonValue> {
+        self.require_repository_not_excluded(repository_index)?;
         let _registration = self
             .registration_lock
             .lock()
@@ -871,6 +1156,7 @@ impl OperationalBinaryRuntime {
         repository_index: u32,
         file_path: &str,
     ) -> StoreResult<Vec<u8>> {
+        self.require_repository_not_excluded(repository_index)?;
         let _registration = self
             .registration_lock
             .lock()
@@ -908,6 +1194,7 @@ impl OperationalBinaryRuntime {
         repository_index: u32,
         payload: &JsonValue,
     ) -> StoreResult<JsonValue> {
+        self.require_repository_not_excluded(repository_index)?;
         let acknowledged: RemoteExportManifest =
             decode_request(payload, "Repository retirement purge acknowledgement")?;
         acknowledged.validate()?;
@@ -1315,16 +1602,48 @@ impl OperationalBinaryRuntime {
         }))
     }
 
+    pub(crate) fn worker_job_package(
+        &self,
+        repository_index: u32,
+        worker_job_index: u32,
+        hash: [u8; 32],
+        attempt_count: u16,
+        token: RuntimeLeaseToken,
+    ) -> Result<
+        Option<Vec<u8>>,
+        ait_server_core::foundation::server_operational_runtime_leases::RuntimePackageDownloadError,
+    > {
+        use ait_server_core::foundation::server_operational_runtime_leases::RuntimePackageDownloadError;
+        let repository = self
+            .repository(repository_index)
+            .map_err(RuntimePackageDownloadError::Ownership)?;
+        self.leases.download_prepared_ci_package(
+            &repository.jobs,
+            worker_job_index,
+            attempt_count,
+            token,
+            hash,
+            now_s_store,
+        )
+    }
+
     pub(crate) fn worker_job(
         &self,
         repository_index: u32,
         worker_job_index: u32,
     ) -> StoreResult<JsonValue> {
         let repository = self.repository(repository_index)?;
-        let entry = repository.jobs.get(worker_job_index)?;
+        let entry = repository
+            .jobs
+            .get_optional(worker_job_index)?
+            .ok_or_else(|| BinaryDbError::missing_data("Worker Job was not found"))?;
+        if entry.record.patchset_index_plus1 != 0 {
+            self.observe_committed_package_cleanup(&repository, entry);
+        }
         Ok(json!({
             "contract": WORKER_JOB_SERVICE_CONTRACT,
             "job": self.job_projection(&repository, entry)?,
+            "package_execution": self.package_execution_projection(&repository, entry),
         }))
     }
 
@@ -1364,7 +1683,7 @@ impl OperationalBinaryRuntime {
             repositories
                 .values()
                 .filter(|repository| {
-                    repository.entry.record.lifecycle_kind != REPOSITORY_LIFECYCLE_PURGED
+                    self.repository_scope.includes(&repository.entry)
                         && repository_filter.as_ref().is_none_or(|filter| {
                             filter.contains(&repository.entry.repository_index)
                         })
@@ -1378,6 +1697,17 @@ impl OperationalBinaryRuntime {
         );
         for entry in candidates {
             let repository = self.repository(entry.key.repository_index)?;
+            if entry.record.job_kind == WORKER_JOB_KIND_PATCHSET_CI
+                && entry.record.patchset_index_plus1 == 0
+                && !repository
+                    .jobs
+                    .prepared_ci_runtime()
+                    .recoverable_selection(entry.key)
+            {
+                // Guarded ready may recover the exact retained source. An
+                // unresolved package must not block unrelated queued Jobs.
+                continue;
+            }
             let runtime_request = self.runtime_request(&repository, entry)?;
             match self.leases.claim(
                 &repository.jobs,
@@ -1426,7 +1756,12 @@ impl OperationalBinaryRuntime {
             now_s_store()?,
             self.lease_duration_s,
         )?;
-        Ok(lease_response("heartbeat", grant.worker_job))
+        let mut response = lease_response("heartbeat", grant.worker_job);
+        response["cancel_requested"] = json!(repository
+            .jobs
+            .prepared_ci_runtime()
+            .cancel_requested(grant.worker_job.key)?);
+        Ok(response)
     }
 
     pub(crate) fn complete_worker_job(
@@ -1448,12 +1783,17 @@ impl OperationalBinaryRuntime {
         let now = now_s_store()?;
         let completed = match current.record.job_kind {
             WORKER_JOB_KIND_PATCHSET_CI => {
-                let patchset_index = minus_one_required(
-                    current.record.patchset_index_plus1,
-                    "patchset.ci Patchset",
-                )?;
-                let closure = repository.authority.patchset_closure(patchset_index)?;
-                let evidence = compact_native_result(detail, closure.ci_run_seq, now)?;
+                let patchset_index = minus_one(current.record.patchset_index_plus1);
+                let run_seq = patchset_index
+                    .map(|index| {
+                        repository
+                            .authority
+                            .patchset_closure(index)
+                            .map(|closure| closure.ci_run_seq)
+                    })
+                    .transpose()?
+                    .unwrap_or(1);
+                let evidence = compact_native_result(detail, run_seq, now)?;
                 self.leases
                     .complete_with_domain_commit(
                         &repository.jobs,
@@ -1462,12 +1802,16 @@ impl OperationalBinaryRuntime {
                         token,
                         WORKER_JOB_OUTCOME_COMPLETED,
                         now,
-                        |_| {
-                            repository.authority.commit_patchset_ci_evidence(
-                                patchset_index,
-                                worker_job_index,
-                                evidence,
-                            )
+                        |entry| {
+                            if let Some(patchset_index) = patchset_index {
+                                repository.authority.commit_patchset_ci_evidence(
+                                    patchset_index,
+                                    worker_job_index,
+                                    evidence,
+                                )
+                            } else {
+                                repository.jobs.commit_prepared_ci_result(entry, evidence)
+                            }
                         },
                     )?
                     .0
@@ -1516,7 +1860,12 @@ impl OperationalBinaryRuntime {
         let current = repository.jobs.get(worker_job_index)?;
         require_external_runner_kind(current.record.job_kind)?;
         let now = now_s_store()?;
-        let can_retry = retryable && current.record.attempt_count < current.record.max_attempts;
+        let can_retry = retryable
+            && current.record.attempt_count < current.record.max_attempts
+            && !repository
+                .jobs
+                .prepared_ci_runtime()
+                .cancel_requested(current.key)?;
         let retry_available_at_s = if can_retry {
             Some(
                 now.checked_add(u64::from(self.retry_delay_s))
@@ -1553,6 +1902,7 @@ impl OperationalBinaryRuntime {
     }
 
     fn repository_any(&self, repository_index: u32) -> StoreResult<OperationalRepositoryRuntime> {
+        self.require_repository_not_excluded(repository_index)?;
         self.repositories
             .read()
             .map_err(|_| BinaryDbError::other("Repository runtime lock is poisoned"))?
@@ -1654,6 +2004,7 @@ impl OperationalBinaryRuntime {
     }
 
     fn ensure_repository_runtime(&self, entry: OperationalRepositoryEntry) -> StoreResult<()> {
+        self.require_repository_not_excluded(entry.repository_index)?;
         if self
             .repositories
             .read()
@@ -1677,9 +2028,7 @@ impl OperationalBinaryRuntime {
             .read()
             .expect("Repository runtime lock is poisoned")
             .values()
-            .filter(|repository| {
-                repository.entry.record.lifecycle_kind != REPOSITORY_LIFECYCLE_PURGED
-            })
+            .filter(|repository| self.repository_scope.includes(&repository.entry))
             .map(|repository| repository.jobs.clone())
             .collect()
     }
@@ -1690,11 +2039,35 @@ impl OperationalBinaryRuntime {
             .map(|_| ())
     }
 
+    pub(crate) fn require_repository_not_excluded(&self, index: u32) -> StoreResult<()> {
+        if self.repository_scope.excludes(index) {
+            return Err(BinaryDbError::missing_data(format!(
+                "Repository index {index} is excluded from this runtime"
+            )));
+        }
+        Ok(())
+    }
+
     fn runtime_request(
         &self,
         repository: &OperationalRepositoryRuntime,
         entry: WorkerJobEntry,
     ) -> StoreResult<JsonValue> {
+        if entry.record.job_kind == WORKER_JOB_KIND_PATCHSET_CI
+            && entry.record.patchset_index_plus1 == 0
+        {
+            let source = repository.jobs.prepared_ci_runtime().source(entry.key)?;
+            let identity = source.expected_identity(entry.key).map_err(invalid)?;
+            return Ok(json!({
+                "contract":NATIVE_JOB_V3_CONTRACT,
+                "label":format!("{}/{}",entry.key.repository_index,entry.key.worker_job_index),
+                "source":{"kind":"workflow_package","repository_index":identity.repository_index,
+                    "package_hash":identity.package_hash,"base_snapshot_id":identity.base_snapshot_id,
+                    "revision_snapshot_id":identity.revision_snapshot_id},
+                "command":{"argv":[NATIVE_JOB_REPOSITORY_CI_ARGV0,"patchset"]},
+                "timeout_ms":DEFAULT_NATIVE_TIMEOUT_MS,
+            }));
+        }
         let (run_mode, snapshot_index) = match entry.record.job_kind {
             WORKER_JOB_KIND_PATCHSET_CI => {
                 let patchset_index =
@@ -1766,7 +2139,9 @@ impl OperationalBinaryRuntime {
             "updated_at_s": entry.record.updated_at_s,
             "tombstoned": entry.record.is_tombstoned(),
         });
-        if entry.record.job_kind == WORKER_JOB_KIND_PATCHSET_CI {
+        if entry.record.job_kind == WORKER_JOB_KIND_PATCHSET_CI
+            && entry.record.patchset_index_plus1 != 0
+        {
             let patchset_index =
                 minus_one_required(entry.record.patchset_index_plus1, "patchset.ci Patchset")?;
             let patchset = repository.authority.frozen_patchset_at(patchset_index)?;
@@ -1784,6 +2159,69 @@ impl OperationalBinaryRuntime {
             });
         }
         Ok(projection)
+    }
+
+    fn package_execution_projection(
+        &self,
+        repository: &OperationalRepositoryRuntime,
+        entry: WorkerJobEntry,
+    ) -> JsonValue {
+        if entry.record.job_kind != WORKER_JOB_KIND_PATCHSET_CI || entry.record.is_tombstoned() {
+            return JsonValue::Null;
+        }
+        let runtime = repository.jobs.prepared_ci_runtime();
+        let Ok(source) = runtime.source(entry.key) else {
+            return JsonValue::Null;
+        };
+        let Ok(identity) = source.expected_identity(entry.key) else {
+            return JsonValue::Null;
+        };
+        let author_mode = (|| {
+            source.verify().ok()?;
+            let worktree = self
+                .package_worktrees
+                .join(entry.key.repository_index.to_string())
+                .join(&identity.package_hash)
+                .join(entry.key.worker_job_index.to_string());
+            if source.worktree() != worktree {
+                return None;
+            }
+            let raw = fs::read(source.package()).ok()?;
+            let manifest = WorkflowPackage::read_sealed_manifest(
+                &raw,
+                source.sha256(),
+                entry.key.repository_index,
+                usize::MAX,
+            )
+            .ok()?;
+            if manifest.base_snapshot_id != identity.base_snapshot_id
+                || manifest.revision_snapshot_id != identity.revision_snapshot_id
+                || manifest.target_line != source.target().target_line
+            {
+                return None;
+            }
+            Some(manifest.author_mode)
+        })();
+        let available = author_mode.is_some();
+        let evidence = runtime.evidence(entry.key).ok().flatten();
+        let ci_state = match entry.record.state_kind {
+            WORKER_JOB_STATE_QUEUED => "queued",
+            WORKER_JOB_STATE_RUNNING => "running",
+            WORKER_JOB_STATE_FAILED
+                if entry.record.error_kind == WORKER_JOB_ERROR_LEASE_EXPIRED =>
+            {
+                "interrupted"
+            }
+            WORKER_JOB_STATE_FAILED => "failed",
+            WORKER_JOB_STATE_SUCCEEDED => {
+                ait_server_core::foundation::prepared_ci_runtime::prepared_ci_state(evidence)
+            }
+            _ => "unknown",
+        };
+        let selected = runtime.recoverable_selection(entry.key);
+        json!({"expected_identity":identity,"ci_state":ci_state,"author_mode":author_mode,
+            "availability":if available {"available"} else {"unavailable"},
+            "recoverable":available && selected && matches!(ci_state,"queued"|"running"|"passed")})
     }
 }
 
@@ -1860,6 +2298,17 @@ fn open_repository_runtime(
         StorePath::new(authority_root.clone()),
         StoreGeneration::new(1),
     );
+    let authority = Arc::new(FrozenAuthority::new(db.clone()));
+    let domain: Arc<dyn WorkerJobDomainAuthority> = authority.clone();
+    let jobs = ServerOperationalWorkerJobStore::new(entry.repository_index, authority_root, domain)
+        .map_err(|error| {
+            format!(
+                "open Binary Worker Job store for Repository {}: {error}",
+                entry.repository_index
+            )
+        })?;
+    jobs.recover_prepared_ci_publication(&db)
+        .map_err(|error| format!("recover Repository publication: {error}"))?;
     let native = BinaryDbNativeRepositoryService::new(db.clone()).with_default_line("main");
     native.ensure_default_line().map_err(|error| {
         format!(
@@ -1881,15 +2330,6 @@ fn open_repository_runtime(
             entry.repository_index
         );
     }
-    let authority = Arc::new(FrozenAuthority::new(db.clone()));
-    let domain: Arc<dyn WorkerJobDomainAuthority> = authority.clone();
-    let jobs = ServerOperationalWorkerJobStore::new(entry.repository_index, authority_root, domain)
-        .map_err(|error| {
-            format!(
-                "open Binary Worker Job store for Repository {}: {error}",
-                entry.repository_index
-            )
-        })?;
     let ci_job_locators = jobs
         .patchset_ci_locators_for_activation_repair()
         .map_err(|error| {
@@ -1916,6 +2356,14 @@ fn open_repository_runtime(
             entry.repository_index
         )
     })?;
+    ait_server_core::foundation::server_plan_binary_db::BinaryDbServerPlanService::new(db.clone())
+        .validate_metadata()
+        .map_err(|error| {
+            format!(
+                "validate Binary Plan metadata for Repository {}: {error}",
+                entry.repository_index
+            )
+        })?;
     jobs.recover().map_err(|error| {
         format!(
             "recover Binary Worker Job store for Repository {}: {error}",
@@ -2534,6 +2982,9 @@ fn validate_completion(
                     )
                 })?;
             let expected_report_schema = match completion.schema.as_str() {
+                WORKFLOW_UPGRADE_COMPLETION_SCHEMA => {
+                    return validate_workflow_completion(generation_root, completion_bytes)
+                }
                 POSTGRES_CONVERSION_COMPLETION_SCHEMA => POSTGRES_CONVERSION_REPORT_SCHEMA,
                 U64_SECOND_UPGRADE_COMPLETION_SCHEMA => U64_SECOND_UPGRADE_REPORT_SCHEMA,
                 LEGACY_PLAN_LINEAGE_COMPLETION_SCHEMA => LEGACY_PLAN_LINEAGE_REPORT_SCHEMA,
@@ -2669,6 +3120,10 @@ fn corrupt(message: impl Into<String>) -> BinaryDbError {
     BinaryDbError::corruption(message)
 }
 
+#[cfg(all(test, unix))]
+#[path = "operational_binary_runtime_actual_source_tests.rs"]
+mod actual_source_tests;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2751,6 +3206,238 @@ mod tests {
     }
 
     #[test]
+    fn normal_startup_uses_the_existing_serving_repository_view() {
+        use ait_server_core::foundation::operational_binary_v0::{
+            ServerOperationalBinaryV0Codec, OPERATIONAL_REPOSITORY_RECORD_SIZE,
+            REPOSITORY_META_TOMBSTONED,
+        };
+        let root = TestDirectory::new("nonserving-startup");
+        let config =
+            ServerBinaryLifecycleConfig::from_server_data_root(root.0.join("server-data")).unwrap();
+        initialize_installed_runtime(&config).unwrap();
+        let source = config.activation().unwrap().unwrap();
+        ServerOperationalRepositoryRegistry::new(
+            source.generation_root.join("global"),
+            source.generation_root.join("repositories"),
+        )
+        .unwrap()
+        .append_repository(&RepositoryCreateSpec {
+            repo_name: "nonserving-fixture".into(),
+            namespace_ascii: [0, 0],
+            policy_flags: 0x83,
+            created_at_s: 100,
+        })
+        .unwrap();
+        let registry_path = source.generation_root.join("global/repository.bin");
+        let mut bytes = fs::read(&registry_path).unwrap();
+        let start = 4 + 4 * OPERATIONAL_REPOSITORY_RECORD_SIZE as usize;
+        let end = start + OPERATIONAL_REPOSITORY_RECORD_SIZE as usize;
+        let mut record =
+            ServerOperationalBinaryV0Codec::decode_repository(&bytes[start..end]).unwrap();
+        record.repository_meta |= REPOSITORY_META_TOMBSTONED;
+        bytes[start..end]
+            .copy_from_slice(&ServerOperationalBinaryV0Codec::encode_repository(record).unwrap());
+        fs::write(&registry_path, &bytes).unwrap();
+        ServerOperationalRepositoryRegistry::new(
+            source.generation_root.join("global"),
+            source.generation_root.join("repositories"),
+        )
+        .unwrap()
+        .recover()
+        .unwrap();
+        let opaque = source.generation_root.join("repositories/4/worker_job.bin");
+        fs::write(&opaque, b"Opaque nonserving authority").unwrap();
+        for _ in 0..2 {
+            let runtime = OperationalBinaryRuntime::ensure_from_config(&config).unwrap();
+            assert_eq!(runtime.repository_indexes(), vec![0, 1, 2, 3, 4]);
+            assert_eq!(runtime.serving_repository_indexes(), vec![0, 1, 2, 3]);
+            assert_eq!(fs::read(&opaque).unwrap(), b"Opaque nonserving authority");
+            assert_eq!(fs::read(&registry_path).unwrap(), bytes);
+        }
+    }
+
+    #[test]
+    fn configured_exclusion_blocks_fallback_and_worker_access_without_registry_mutation() {
+        let root = TestDirectory::new("configured-exclusion");
+        let mut config =
+            ServerBinaryLifecycleConfig::from_server_data_root(root.0.join("server-data")).unwrap();
+        initialize_installed_runtime(&config).unwrap();
+        let source = config.activation().unwrap().unwrap();
+        let registry = ServerOperationalRepositoryRegistry::new(
+            source.generation_root.join("global"),
+            source.generation_root.join("repositories"),
+        )
+        .unwrap();
+        let entry = registry
+            .append_repository(&RepositoryCreateSpec {
+                repo_name: "excluded-fixture".into(),
+                namespace_ascii: *b"XE",
+                policy_flags: 0x83,
+                created_at_s: 100,
+            })
+            .unwrap();
+        let opaque = source.generation_root.join("repositories/4/worker_job.bin");
+        fs::write(&opaque, b"Must not be opened").unwrap();
+        let registry_bytes =
+            fs::read(source.generation_root.join("global/repository.bin")).unwrap();
+        config.repository_scope = ServerRepositoryScope::parse(Some("4")).unwrap();
+        let runtime = OperationalBinaryRuntime::ensure_from_config(&config).unwrap();
+        assert_eq!(runtime.serving_repository_indexes(), vec![0, 1, 2, 3]);
+        assert!(runtime.repository_db(4).is_err());
+        assert!(runtime.ensure_repository_runtime(entry).is_err());
+        assert!(runtime
+            .register_repository("excluded-fixture", *b"XE", 0x83)
+            .is_err());
+        assert!(runtime.begin_repository_retirement(4).is_err());
+        let request = json!({"accepted_runtime_contracts":[NATIVE_JOB_V3_CONTRACT],"accepted_job_kinds":[WORKER_JOB_KIND_PATCHSET_CI]});
+        assert!(runtime.claim_next_worker_job(&request).unwrap()["claimed_job"].is_null());
+        let mut requested = request;
+        requested["repository_indexes"] = json!([4]);
+        assert!(runtime.claim_next_worker_job(&requested).is_err());
+        assert_eq!(fs::read(&opaque).unwrap(), b"Must not be opened");
+        assert_eq!(
+            fs::read(source.generation_root.join("global/repository.bin")).unwrap(),
+            registry_bytes
+        );
+    }
+
+    #[test]
+    fn startup_batch_derives_initial_changes_before_runtime_open() {
+        use ait_server_core::foundation::server_binary_db_schema_registry::SERVER_BINARY_DB_BIN_SCHEMAS;
+        use ait_server_core::foundation::server_workflow_upgrade::workflow_generation_fingerprint;
+        let directory = TestDirectory::new("startup-admitted-workflow-batch");
+        let config = lifecycle_config(&directory);
+        initialize_installed_runtime(&config).unwrap();
+        let source = config.activation().unwrap().unwrap();
+        let authority = source.generation_root.join("repositories/1");
+        let db = OperationalDb::serving_authority(
+            RepoId::new("1"),
+            RepoName::new("ait-server"),
+            StorePath::new(authority.clone()),
+            StoreGeneration::new(1),
+        );
+        let workflow = BinaryDbServerWorkflowV0Store::new_remote_frozen(db.clone(), "SE")
+            .unwrap()
+            .with_repository_index(1);
+        workflow
+            .resolve_user_actor(
+                &ait_server_core::foundation::workflow_binary_v0_adapter::UserActorIdentity::new(
+                    "fixture",
+                    "fixture@example.test",
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        ServerBinaryDbLineStore::<_, 1>::new(db.clone())
+            .create_line("main", 0, 1)
+            .unwrap();
+        let task=workflow.create_task("ait-server",&json!({"actor_key_index":0,"title":"Exact admitted initial work","intent":"Convert one complete database batch"})).unwrap();
+        workflow.create_change("ait-server",&json!({"actor_key_index":0,"task_id":task["task_id"],"title":"Exact admitted initial work","base_line":"main"})).unwrap();
+        let mut tx =
+            BinaryDbWriteTxn::begin_serving(&db, BinaryDbCommandScope::ServerWorkflow).unwrap();
+        let task_record = WorkflowBinaryV0Codec::decode_task(
+            &tx.read_record(WorkflowBinaryV0Codec::task_file(), 0)
+                .unwrap(),
+        )
+        .unwrap();
+        let mut change = WorkflowBinaryV0Codec::decode_change(
+            &tx.read_record(WorkflowBinaryV0Codec::change_file(), 0)
+                .unwrap(),
+        )
+        .unwrap();
+        change.created_at_s = task_record.created_at_s;
+        tx.overwrite_record(
+            WorkflowBinaryV0Codec::change_file(),
+            0,
+            &WorkflowBinaryV0Codec::encode_change(change).unwrap(),
+        )
+        .unwrap();
+        tx.commit().unwrap();
+        drop(tx);
+        for index in 0..4 {
+            let root = source
+                .generation_root
+                .join("repositories")
+                .join(index.to_string());
+            for schema in SERVER_BINARY_DB_BIN_SCHEMAS
+                .iter()
+                .filter(|schema| schema.layout_id == 2)
+            {
+                let path = root.join(schema.path);
+                let mut bytes = fs::read(&path).unwrap();
+                let widths = match schema.path {
+                    "task.bin" => Some((64, 60)),
+                    "change.bin" => Some((72, 68)),
+                    "snapshot.bin" => Some((92, 88)),
+                    "land.bin" => Some((52, 48)),
+                    "plan.bin" => Some((52, 48)),
+                    "plan_revision.bin" => Some((60, 56)),
+                    _ => None,
+                };
+                if let Some((width, prefix)) = widths {
+                    bytes = [
+                        bytes[..4].to_vec(),
+                        bytes[4..]
+                            .chunks_exact(width)
+                            .flat_map(|row| row[..prefix].iter().copied())
+                            .collect(),
+                    ]
+                    .concat();
+                }
+                bytes[..4].copy_from_slice(&1u32.to_le_bytes());
+                fs::write(path, bytes).unwrap();
+            }
+            fs::write(root.join("snapshot_link_payload.bin"), 1u32.to_le_bytes()).unwrap();
+        }
+        let source_fingerprint = workflow_generation_fingerprint(&source.generation_root).unwrap();
+        let pointer = fs::read(&config.activation_pointer).unwrap();
+        let runtime = OperationalBinaryRuntime::ensure_from_config(&config).unwrap();
+        assert_eq!(fs::read(&config.activation_pointer).unwrap(), pointer);
+        assert_eq!(runtime.repository_indexes(), vec![0, 1, 2, 3]);
+        let target = config.activation().unwrap().unwrap();
+        assert_eq!(target, source);
+        let (_, target_db) = runtime.repository_db(1).unwrap();
+        let target_workflow = BinaryDbServerWorkflowV0Store::new_remote_frozen(target_db, "SE")
+            .unwrap()
+            .with_repository_index(1);
+        assert_eq!(
+            target_workflow.list_changes("ait-server").unwrap(),
+            json!([])
+        );
+        assert_eq!(
+            target_workflow
+                .get_task(Some("ait-server"), task["task_id"].as_str().unwrap())
+                .unwrap()["title"],
+            task["title"]
+        );
+        assert_ne!(
+            workflow_generation_fingerprint(&source.generation_root).unwrap(),
+            source_fingerprint
+        );
+        let accepted=target_workflow.create_task("ait-server",&json!({"actor_key_index":0,"title":"Accepted after conversion","intent":"Keep newer writes on restart"})).unwrap();
+        drop(runtime);
+        let reopened = OperationalBinaryRuntime::ensure_from_config(&config).unwrap();
+        assert_eq!(config.activation().unwrap().unwrap(), target);
+        let (_, db) = reopened.repository_db(1).unwrap();
+        let workflow = BinaryDbServerWorkflowV0Store::new_remote_frozen(db, "SE").unwrap();
+        workflow
+            .resolve_user_actor(
+                &ait_server_core::foundation::workflow_binary_v0_adapter::UserActorIdentity::new(
+                    "fixture",
+                    "fixture@example.test",
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        assert_eq!(
+            workflow
+                .get_task(Some("ait-server"), accepted["task_id"].as_str().unwrap())
+                .unwrap()["title"],
+            "Accepted after conversion"
+        );
+    }
+
+    #[test]
     fn compact_native_result_derives_only_fixed_patchset_ci_evidence() {
         let detail = json!({
             "job_kind": WORKER_JOB_KIND_PATCHSET_CI,
@@ -2825,6 +3512,7 @@ mod tests {
         };
         let snapshot_record =
             |snapshot_id: &str, parent_snapshot_index_plus1: u32| ServerBinarySnapshotRecord {
+                actor_index_plus1: 0,
                 snapshot_meta: 0,
                 history_flags: 0,
                 payload_len: 0,
@@ -2859,9 +3547,18 @@ mod tests {
         let active = BinaryDbServerWorkflowV0Store::new_remote(db.clone(), "C")
             .expect("construct active workflow adapter");
         active
+            .resolve_user_actor(
+                &ait_server_core::foundation::workflow_binary_v0_adapter::UserActorIdentity::new(
+                    "fixture",
+                    "fixture@example.test",
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        active
             .create_task(
                 "ait-core",
-                &json!({
+                &json!({"actor_key_index":0,
                     "title": "Post-activation history promotion",
                     "intent": "Exercise active Patchset locator normalization"
                 }),
@@ -2870,7 +3567,7 @@ mod tests {
         active
             .create_change(
                 "ait-core",
-                &json!({
+                &json!({"actor_key_index":0,
                     "task_id": "RCT-0001",
                     "title": "Post-activation aggregate Change",
                     "base_line": "main"
@@ -2880,7 +3577,7 @@ mod tests {
         active
             .publish_patchset(
                 "RCT-0001/C-01",
-                &json!({
+                &json!({"actor_key_index":0,
                     "base_snapshot_id": base,
                     "revision_snapshot_id": revision,
                     "summary": "active aggregate Patchset locator fixture",
@@ -3777,12 +4474,16 @@ mod tests {
         let (_, repository_db) = runtime
             .repository_db(1)
             .expect("open mutable ait-server Repository authority");
+        let actor = BinaryDbServerWorkflowV0Store::new_frozen(repository_db.clone())
+            .resolve_user_actor(&UserActorIdentity::new("fixture", "fixture@example.test").unwrap())
+            .unwrap();
         let plans = BinaryDbServerPlanService::new(repository_db);
         let created = plans
             .create_plan(
                 "ait-server",
                 &json!({
                     "title": "Post-activation Plan",
+                    "actor_key_index":actor,
                     "status": "draft",
                     "artifact_path": "docs/sprints/post_activation.md",
                     "artifact_selector": "post-activation/root",

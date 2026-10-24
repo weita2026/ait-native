@@ -7,6 +7,7 @@ use crate::binary_db::{
 pub mod adapters;
 pub mod read;
 pub mod recovery;
+pub mod remote_actor_profile;
 pub mod schema;
 pub mod write;
 
@@ -25,9 +26,11 @@ pub use recovery::{
 };
 pub use schema::{
     PlanCodec, PlanItemCheckboxState, PlanItemCodec, PlanItemPayload, PlanItemRecord, PlanPayload,
-    PlanRecord, PlanRevisionCodec, PlanRevisionPayload, PlanRevisionRecord, PlanState, PLAN_BIN,
-    PLAN_ITEM_BIN, PLAN_ITEM_PAYLOAD_BIN, PLAN_ITEM_RECORD_SIZE, PLAN_LAYOUT_ID, PLAN_PAYLOAD_BIN,
-    PLAN_RECORD_SIZE, PLAN_REVISION_BIN, PLAN_REVISION_PAYLOAD_BIN, PLAN_REVISION_RECORD_SIZE,
+    PlanRecord, PlanRevisionCodec, PlanRevisionPayload, PlanRevisionRecord, PlanState,
+    RemotePlanCodec, RemotePlanRevisionCodec, PLAN_BIN, PLAN_ITEM_BIN, PLAN_ITEM_PAYLOAD_BIN,
+    PLAN_ITEM_RECORD_SIZE, PLAN_LAYOUT_ID, PLAN_PAYLOAD_BIN, PLAN_RECORD_SIZE, PLAN_REVISION_BIN,
+    PLAN_REVISION_PAYLOAD_BIN, PLAN_REVISION_RECORD_SIZE, REMOTE_PLAN_LAYOUT_ID,
+    REMOTE_PLAN_RECORD_SIZE, REMOTE_PLAN_REVISION_RECORD_SIZE,
 };
 #[cfg(test)]
 pub(crate) use schema::{
@@ -106,7 +109,7 @@ where
         &self,
         command_scope: BinaryDbCommandScope,
     ) -> StoreResult<BinaryDbWriteTxn<'_, B, BinaryDbStoreFsyncPolicy<'_, B>>> {
-        Self::ensure_supported_write_layout()?;
+        Self::ensure_supported_write_layout(command_scope)?;
         BinaryDbWriteTxn::begin(&self.db, command_scope)
     }
 
@@ -118,12 +121,12 @@ where
     where
         F: BinaryDbFsyncPolicy,
     {
-        Self::ensure_supported_write_layout()?;
+        Self::ensure_supported_write_layout(command_scope)?;
         BinaryDbWriteTxn::begin_with_fsync_policy(&self.db, command_scope, fsync_policy)
     }
 
     pub fn plan_file() -> BinaryFileId {
-        PlanCodec::<PLAN_LAYOUT_ID>::record_file()
+        PlanCodec::<WRITE_LAYOUT>::record_file()
     }
 
     pub fn plan_payload_file() -> BinaryPayloadFileId {
@@ -131,7 +134,7 @@ where
     }
 
     pub fn plan_revision_file() -> BinaryFileId {
-        PlanRevisionCodec::<PLAN_LAYOUT_ID>::record_file()
+        PlanRevisionCodec::<WRITE_LAYOUT>::record_file()
     }
 
     pub fn plan_revision_payload_file() -> BinaryPayloadFileId {
@@ -146,8 +149,11 @@ where
         PlanItemCodec::<PLAN_LAYOUT_ID>::payload_file()
     }
 
-    fn ensure_supported_write_layout() -> StoreResult<()> {
-        if WRITE_LAYOUT == PLAN_LAYOUT_ID {
+    fn ensure_supported_write_layout(scope: BinaryDbCommandScope) -> StoreResult<()> {
+        if WRITE_LAYOUT == PLAN_LAYOUT_ID
+            || (WRITE_LAYOUT == REMOTE_PLAN_LAYOUT_ID
+                && scope == BinaryDbCommandScope::PlanSyncRemote)
+        {
             return Ok(());
         }
         Err(BinaryDbError::unsupported(format!(
@@ -156,19 +162,35 @@ where
     }
 
     fn plan_file_for(layout: u32) -> BinaryFileId {
-        BinaryFileId::new(PLAN_BIN, layout, PLAN_RECORD_SIZE)
+        BinaryFileId::new(
+            PLAN_BIN,
+            layout,
+            if layout == REMOTE_PLAN_LAYOUT_ID {
+                REMOTE_PLAN_RECORD_SIZE
+            } else {
+                PLAN_RECORD_SIZE
+            },
+        )
     }
 
-    fn plan_payload_file_for(layout: u32) -> BinaryPayloadFileId {
-        BinaryPayloadFileId::new(PLAN_PAYLOAD_BIN, layout)
+    fn plan_payload_file_for(_layout: u32) -> BinaryPayloadFileId {
+        BinaryPayloadFileId::new(PLAN_PAYLOAD_BIN, PLAN_LAYOUT_ID)
     }
 
     fn plan_revision_file_for(layout: u32) -> BinaryFileId {
-        BinaryFileId::new(PLAN_REVISION_BIN, layout, PLAN_REVISION_RECORD_SIZE)
+        BinaryFileId::new(
+            PLAN_REVISION_BIN,
+            layout,
+            if layout == REMOTE_PLAN_LAYOUT_ID {
+                REMOTE_PLAN_REVISION_RECORD_SIZE
+            } else {
+                PLAN_REVISION_RECORD_SIZE
+            },
+        )
     }
 
-    fn plan_revision_payload_file_for(layout: u32) -> BinaryPayloadFileId {
-        BinaryPayloadFileId::new(PLAN_REVISION_PAYLOAD_BIN, layout)
+    fn plan_revision_payload_file_for(_layout: u32) -> BinaryPayloadFileId {
+        BinaryPayloadFileId::new(PLAN_REVISION_PAYLOAD_BIN, PLAN_LAYOUT_ID)
     }
 
     fn plan_item_file_for(layout: u32) -> BinaryFileId {
@@ -180,32 +202,32 @@ where
     }
 
     fn decode_plan_record(layout: u32, raw: &[u8]) -> StoreResult<PlanRecord> {
-        if layout == PLAN_LAYOUT_ID {
-            PlanCodec::<PLAN_LAYOUT_ID>::decode_record(raw)
+        if layout == WRITE_LAYOUT && matches!(layout, PLAN_LAYOUT_ID | REMOTE_PLAN_LAYOUT_ID) {
+            PlanCodec::<WRITE_LAYOUT>::decode_record(raw)
         } else {
             Self::unsupported_layout("plan.bin", layout)
         }
     }
 
     fn decode_plan_payload(layout: u32, raw: &[u8]) -> StoreResult<PlanPayload> {
-        if layout == PLAN_LAYOUT_ID {
-            PlanCodec::<PLAN_LAYOUT_ID>::decode_payload(raw)
+        if layout == WRITE_LAYOUT && matches!(layout, PLAN_LAYOUT_ID | REMOTE_PLAN_LAYOUT_ID) {
+            PlanCodec::<WRITE_LAYOUT>::decode_payload(raw)
         } else {
             Self::unsupported_layout("plan_payload.bin", layout)
         }
     }
 
     fn decode_plan_revision_record(layout: u32, raw: &[u8]) -> StoreResult<PlanRevisionRecord> {
-        if layout == PLAN_LAYOUT_ID {
-            PlanRevisionCodec::<PLAN_LAYOUT_ID>::decode_record(raw)
+        if layout == WRITE_LAYOUT && matches!(layout, PLAN_LAYOUT_ID | REMOTE_PLAN_LAYOUT_ID) {
+            PlanRevisionCodec::<WRITE_LAYOUT>::decode_record(raw)
         } else {
             Self::unsupported_layout("plan_revision.bin", layout)
         }
     }
 
     fn decode_plan_revision_payload(layout: u32, raw: &[u8]) -> StoreResult<PlanRevisionPayload> {
-        if layout == PLAN_LAYOUT_ID {
-            PlanRevisionCodec::<PLAN_LAYOUT_ID>::decode_payload(raw)
+        if layout == WRITE_LAYOUT && matches!(layout, PLAN_LAYOUT_ID | REMOTE_PLAN_LAYOUT_ID) {
+            PlanRevisionCodec::<WRITE_LAYOUT>::decode_payload(raw)
         } else {
             Self::unsupported_layout("plan_revision_payload.bin", layout)
         }
@@ -355,6 +377,16 @@ where
     where
         F: BinaryDbFsyncPolicy,
     {
+        if WRITE_LAYOUT == REMOTE_PLAN_LAYOUT_ID {
+            let current = PlanRevisionCodec::<WRITE_LAYOUT>::decode_record(
+                &write.read_record(Self::plan_revision_file(), revision_index)?,
+            )?;
+            if current.actor_index_plus1 != record.actor_index_plus1 {
+                return Err(BinaryDbError::invalid_domain_data(
+                    "Remote Plan revision author is immutable",
+                ));
+            }
+        }
         let bytes = PlanRevisionCodec::<WRITE_LAYOUT>::encode_record(record)?;
         write.overwrite_record(Self::plan_revision_file(), revision_index, &bytes)
     }

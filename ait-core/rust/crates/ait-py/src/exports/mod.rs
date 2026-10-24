@@ -1,16 +1,5 @@
-use ait_agent_core::{
-    agent_management_binding_json,
-    event_loop::{
-        agent_telegram_message_delivery_execute_json, agent_telegram_turn_input_plan_json,
-        agent_telegram_workflow_notification_format_json, agent_telegram_workflow_query_plan_json,
-    },
-    language_binding_info_json,
-    transport_config::agent_env_file_load_json,
-    web_runtime::agent_web_runtime_execute_json,
-};
-use ait_agent_worker::{
-    agent_worker_capabilities_binding_json, agent_worker_transaction_binding_json,
-};
+use ait_agent_core::language_binding_info_json;
+use ait_agent_core::language_bindings::CHAT_INTEGRATIONS_RETIRED_MESSAGE;
 use ait_cli::auth_surface::{
     auth_bindings as rust_task_workflow_auth_bindings, auth_grant as rust_task_workflow_auth_grant,
     auth_whoami as rust_task_workflow_auth_whoami, AuthGrantRequest, AuthRemoteRequest,
@@ -248,9 +237,9 @@ use ait_core::workflow_primitives::{
     task_status_details, task_status_value, workflow_error_envelope, workflow_id_matches,
     workflow_id_matches_any_namespace_prefix, workflow_id_namespace_prefix_candidates,
     workflow_id_namespace_prefix_for_value, workflow_id_token, workflow_id_tokens,
-    workflow_mode_value, workflow_origin_namespace_prefix, workflow_success_envelope,
-    WorkflowResultEnvelope, WorkflowStatusDetails, DEFAULT_ID_NAMESPACE_PREFIX,
-    LOCAL_WORKFLOW_ID_NAMESPACE_PREFIX, REMOTE_WORKFLOW_ID_NAMESPACE_PREFIX, WORKFLOW_ID_FAMILIES,
+    workflow_origin_namespace_prefix, workflow_success_envelope, WorkflowResultEnvelope,
+    WorkflowStatusDetails, DEFAULT_ID_NAMESPACE_PREFIX, LOCAL_WORKFLOW_ID_NAMESPACE_PREFIX,
+    REMOTE_WORKFLOW_ID_NAMESPACE_PREFIX, WORKFLOW_ID_FAMILIES,
     WORKFLOW_TASK_CHANGE_ORIGIN_NAMESPACE_PREFIXES,
 };
 use pyo3::exceptions::{PyFileNotFoundError, PyKeyError, PyRuntimeError, PyValueError};
@@ -398,5 +387,102 @@ mod telegram_message_delivery_export_tests {
         let mut leaked_text = delivery;
         leaked_text["plain_text_exposed"] = json!(true);
         assert!(validate_telegram_message_delivery_export(&leaked_text).is_err());
+    }
+}
+
+#[cfg(test)]
+mod chat_binding_retirement_tests {
+    use super::*;
+    use pyo3::types::PyDict;
+    use std::ffi::CString;
+
+    #[test]
+    fn registered_chat_exports_reject_without_request_conversion_or_effects() {
+        Python::initialize();
+        Python::attach(|py| {
+            let module = PyModule::new(py, "ait_py").expect("native module");
+            register_agent_runtime(py, &module).expect("register native exports");
+            let locals = PyDict::new(py);
+            locals.set_item("binding", module).expect("binding local");
+            let script = CString::new(
+                r#"
+import inspect
+import pathlib
+import socket
+import tempfile
+
+message = "Chat integrations are retired in AIT 1.2.0"
+metadata = binding.language_binding_info()
+assert metadata["contract"] == "ait.language.binding.v1"
+assert metadata["supported_surfaces"] == ["ait-core"]
+assert metadata["runtime_authority"] == "rust"
+assert metadata["process_transport_allowed"] is False
+assert binding.transport_envelope_ir_version()
+assert binding.transport_envelope_schema()
+assert binding.runtime_binding_state_default_payload()
+assert binding.worker_manifest_default_config()
+
+class Unconvertible:
+    def __str__(self):
+        raise AssertionError("retired call converted its request")
+
+with tempfile.TemporaryDirectory(prefix="ait-chat-retired-") as directory:
+    root = pathlib.Path(directory)
+    user_data = root / "user-data"
+    user_data.write_bytes(b"preserve user data\x00")
+    env_file = root / "chat.env"
+    env_file.write_text("AIT_TEST_SECRET=retired-test\n")
+    worker = root / "worker"
+    worker.write_text('#!/bin/sh\nprintf invoked > "$0.called"\n')
+    worker.chmod(0o700)
+    before = {p.name: p.read_bytes() for p in root.iterdir()}
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        listener.listen()
+        listener.setblocking(False)
+        request = {
+            "operation": "start", "name": "retired", "transport": "telegram",
+            "repo_root": directory, "cwd": directory,
+            "manifest_path": str(root / "workers.json"),
+            "worker_binary": str(worker), "path": str(env_file),
+            "env_file": str(env_file), "state_path": str(user_data),
+            "url": "http://127.0.0.1:%d/" % listener.getsockname()[1],
+        }
+        for name, error_type in [
+            ("ait_agent_worker_capabilities", RuntimeError),
+            ("ait_agent_management", RuntimeError),
+            ("ait_agent_worker_transaction", RuntimeError),
+            ("ait_agent_web_runtime_execute", ValueError),
+            ("ait_agent_env_file_load", ValueError),
+            ("ait_agent_telegram_workflow_notification_format", ValueError),
+            ("ait_agent_telegram_turn_input_plan", ValueError),
+            ("ait_agent_telegram_message_delivery_execute", ValueError),
+            ("ait_agent_telegram_workflow_query_plan", ValueError),
+        ]:
+            function = getattr(binding, name)
+            inputs = [None] if name.endswith("capabilities") else [request, Unconvertible()]
+            for value in inputs:
+                args = {} if name.endswith("capabilities") else {"request": value}
+                inspect.signature(function).bind(**args)
+                try:
+                    function(**args)
+                except error_type as error:
+                    assert str(error) == message, (name, error)
+                else:
+                    raise AssertionError(name + " unexpectedly succeeded")
+        try:
+            connection, _ = listener.accept()
+        except BlockingIOError:
+            pass
+        else:
+            connection.close()
+            raise AssertionError("retired chat export used network")
+    assert {p.name: p.read_bytes() for p in root.iterdir()} == before
+"#,
+            )
+            .expect("test script");
+            py.run(script.as_c_str(), Some(&locals), Some(&locals))
+                .expect("native retirement contract");
+        });
     }
 }

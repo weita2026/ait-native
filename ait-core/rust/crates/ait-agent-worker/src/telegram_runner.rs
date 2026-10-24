@@ -1459,7 +1459,7 @@ mod tests {
         fs::create_dir(temp.path().join(".ait")).expect("ait dir");
         fs::write(
             temp.path().join(".ait/config.json"),
-            r#"{"repo_name":"fixture","workflow_mode":"solo_local"}"#,
+            r#"{"repo_name":"fixture"}"#,
         )
         .expect("repo config");
         let config = resolve_agent_worker_config(AgentWorkerConfigInput {

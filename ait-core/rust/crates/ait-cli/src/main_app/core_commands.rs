@@ -1,5 +1,5 @@
 fn run_init(args: InitArgs) -> Result<(), String> {
-    let payload = init_cmd(&InitRequest {
+    let mut payload = init_cmd(&InitRequest {
         root: env::current_dir().map_err(|err| err.to_string())?,
         name: None,
         default_line: "main".to_string(),
@@ -8,10 +8,19 @@ fn run_init(args: InitArgs) -> Result<(), String> {
         default_model: None,
         repair_existing: args.repair_existing,
     })?;
+    let repo=RepoRuntime::discover()?;
+    payload["agent_team_bootstrap"]=crate::agent_teams::bootstrap(&repo);
     if args.json {
         print_json(&payload)?;
     } else {
         render_human_init(&payload);
+        if let Some(team)=payload.get("agent_team_bootstrap") {
+            if let Some(activation)=crate::agent_teams::render_activation(team){println!("{activation}");}
+            else if team["status"]=="disabled"{println!("Agent Teams assets synchronized; sessions disabled.");}
+            else if let Some(id)=team["session_id"].as_str(){println!("有專案需求或問題，請找 Newton\nSession ID: {id}\nResume: codex resume {id}");}
+            else{println!("Newton session setup pending: {}",team["detail"]);}
+            if let Some(condition)=team["condition"].as_str(){println!("{condition}");}
+        }
     }
     Ok(())
 }

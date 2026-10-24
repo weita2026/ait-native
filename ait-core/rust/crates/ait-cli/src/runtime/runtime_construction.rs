@@ -36,6 +36,9 @@ impl RepoRuntime {
                 if worktree_config_path.exists() {
                     let overlay = read_json_object(&worktree_config_path);
                     for (key, value) in overlay {
+                        if key == "agent_teams" {
+                            continue;
+                        }
                         if !value.is_null() {
                             config.insert(key, value);
                         }
@@ -108,13 +111,4 @@ pub(super) fn plan_task_binding_mode(value: &JsonValue) -> Option<String> {
             }),
         _ => None,
     }
-}
-
-pub(super) fn command_executable_basename() -> Option<String> {
-    let argv0 = env::args().next()?;
-    let basename = PathBuf::from(argv0)
-        .file_name()
-        .and_then(|value| value.to_str())
-        .map(|value| value.trim().to_string())?;
-    nonempty(Some(basename))
 }

@@ -27,7 +27,11 @@ pub(crate) fn workspace_ignore_policy(
     runtime_root: Option<&str>,
     external_materialization_roots: &[String],
 ) -> JsonValue {
-    let mut operational_roots = vec![".ait".to_string(), ".ait-runtime".to_string()];
+    let mut operational_roots = vec![
+        ".ait".to_string(),
+        ".ait-runtime".to_string(),
+        ".ait-worktree".to_string(),
+    ];
     let mut external_roots = external_materialization_roots.to_vec();
     let mut runtime_roots = Vec::new();
     if let Some(value) = runtime_root {
@@ -43,7 +47,7 @@ pub(crate) fn workspace_ignore_policy(
     runtime_roots.dedup();
     let custom_patterns = load_workspace_ignore_rule_sources(repo_root);
     let mut payload = json!({
-        "dir_names": [".ait", ".ait-runtime", ".git", "__pycache__", ".pytest_cache", ".venv", "venv", ".mypy_cache"],
+        "dir_names": [".ait", ".ait-runtime", ".ait-worktree", ".git", "__pycache__", ".pytest_cache", ".venv", "venv", ".mypy_cache"],
         "file_names": [".DS_Store", ".ait-worktree.json"],
         "operational_roots": operational_roots,
         "external_materialization_roots": external_roots,

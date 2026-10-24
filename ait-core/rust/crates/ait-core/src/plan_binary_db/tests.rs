@@ -385,6 +385,7 @@ fn seed_plan_read_surface_fixture(store: &LocalTestPlanStore) {
         .append_plan(
             &mut tx,
             PlanRecord {
+                actor_index_plus1: 0,
                 plan_meta: 0b0000_0100,
                 reserved0: 0,
                 payload_len: 0,
@@ -405,6 +406,7 @@ fn seed_plan_read_surface_fixture(store: &LocalTestPlanStore) {
         .append_plan(
             &mut tx,
             PlanRecord {
+                actor_index_plus1: 0,
                 plan_meta: 0b0000_0001,
                 reserved0: 0,
                 payload_len: 0,
@@ -478,6 +480,7 @@ fn seed_plan_read_surface_fixture(store: &LocalTestPlanStore) {
         .append_plan_revision(
             &mut tx,
             PlanRevisionRecord {
+                actor_index_plus1: 0,
                 revision_meta: 0b0000_1000,
                 reserved0: 0,
                 payload_len: 0,
@@ -507,6 +510,7 @@ fn seed_plan_read_surface_fixture(store: &LocalTestPlanStore) {
         .append_plan_revision(
             &mut tx,
             PlanRevisionRecord {
+                actor_index_plus1: 0,
                 revision_meta: 0b0000_1001,
                 reserved0: 0,
                 payload_len: 0,
@@ -536,6 +540,7 @@ fn seed_plan_read_surface_fixture(store: &LocalTestPlanStore) {
         .append_plan_revision(
             &mut tx,
             PlanRevisionRecord {
+                actor_index_plus1: 0,
                 revision_meta: 0b0000_1000,
                 reserved0: 0,
                 payload_len: 0,
@@ -728,6 +733,7 @@ fn plan_binary_db_has_explicit_local_and_remote_adapters() {
         title_bytes: b"Local plan".to_vec(),
     };
     let local_record = PlanRecord {
+        actor_index_plus1: 0,
         plan_meta: 1,
         reserved0: 0,
         payload_len: 0,
@@ -762,6 +768,7 @@ fn plan_binary_db_has_explicit_local_and_remote_adapters() {
         title_bytes: b"Remote plan".to_vec(),
     };
     let remote_record = PlanRecord {
+        actor_index_plus1: 0,
         plan_meta: 2,
         reserved0: 0,
         payload_len: 0,
@@ -824,6 +831,7 @@ fn remote_plan_sync_publish_txn_uses_remote_locks_and_plan_revision_commit_point
     let (_plan_index, _plan_record) = tx
         .append_plan(
             PlanRecord {
+                actor_index_plus1: 0,
                 plan_meta: 1,
                 reserved0: 0,
                 payload_len: 0,
@@ -859,6 +867,7 @@ fn remote_plan_sync_publish_txn_uses_remote_locks_and_plan_revision_commit_point
     let (revision_index, revision_record) = tx
         .append_plan_revision_commit(
             PlanRevisionRecord {
+                actor_index_plus1: 0,
                 revision_meta: 1,
                 reserved0: 0,
                 payload_len: 0,
@@ -1010,6 +1019,7 @@ fn local_plan_sync_txn_rejects_stale_plan_state_under_the_write_lock() {
         LocalStateScope::Repository,
     );
     let base_record = PlanRecord {
+        actor_index_plus1: 0,
         plan_meta: 0,
         reserved0: 0,
         payload_len: 0,
@@ -1033,6 +1043,7 @@ fn local_plan_sync_txn_rejects_stale_plan_state_under_the_write_lock() {
             .expect("plan should append");
         tx.append_plan_revision_commit(
             PlanRevisionRecord {
+                actor_index_plus1: 0,
                 revision_meta: 0,
                 reserved0: 0,
                 payload_len: 0,
@@ -1129,6 +1140,7 @@ fn plan_root_fault_boundaries_expose_only_complete_old_or_new_state() {
             .expect("old root remains current");
         let revision_result = tx.append_plan_revision_commit(
             PlanRevisionRecord {
+                actor_index_plus1: 0,
                 revision_meta: 0,
                 reserved0: 0,
                 payload_len: 0,
@@ -1323,6 +1335,7 @@ fn seed_atomic_plan_root(authority: &Path, repo_root: &Path) {
         .expect("begin seed transaction");
     tx.append_plan(
         PlanRecord {
+            actor_index_plus1: 0,
             plan_meta: 0,
             reserved0: 0,
             payload_len: 0,
@@ -1341,6 +1354,7 @@ fn seed_atomic_plan_root(authority: &Path, repo_root: &Path) {
     .expect("append seed plan");
     tx.append_plan_revision_commit(
         PlanRevisionRecord {
+            actor_index_plus1: 0,
             revision_meta: 0,
             reserved0: 0,
             payload_len: 0,
@@ -1379,6 +1393,7 @@ fn local_plan_sync_txn_rejects_missing_revision_content_root_before_append() {
         LocalStateScope::Repository,
     );
     let record = PlanRevisionRecord {
+        actor_index_plus1: 0,
         revision_meta: 0,
         reserved0: 0,
         payload_len: 0,
@@ -1447,6 +1462,7 @@ fn remote_plan_sync_artifact_attach_overwrites_root_locator_in_plan_revision_bin
         .append_plan_revision(
             &mut seed,
             PlanRevisionRecord {
+                actor_index_plus1: 0,
                 revision_meta: 0,
                 reserved0: 0,
                 payload_len: 0,
@@ -1599,6 +1615,7 @@ fn plan_binary_db_artifact_filter_fails_closed_on_invalid_utf8() {
         .append_plan(
             &mut tx,
             PlanRecord {
+                actor_index_plus1: 0,
                 plan_meta: 0b0000_0001,
                 reserved0: 0,
                 payload_len: 0,
@@ -1619,6 +1636,7 @@ fn plan_binary_db_artifact_filter_fails_closed_on_invalid_utf8() {
         .append_plan_revision(
             &mut tx,
             PlanRevisionRecord {
+                actor_index_plus1: 0,
                 revision_meta: 0,
                 reserved0: 0,
                 payload_len: 0,
@@ -1713,6 +1731,7 @@ fn plan_binary_db_scan_plan_heads_filters_active_artifact_and_contains_terms() {
 #[test]
 fn plan_record_codec_round_trips_48_bytes() {
     let record = PlanRecord {
+        actor_index_plus1: 0,
         plan_meta: 0b0000_0101,
         reserved0: 0,
         payload_len: 12,
@@ -1736,6 +1755,7 @@ fn plan_record_codec_round_trips_48_bytes() {
 #[test]
 fn plan_revision_record_codec_round_trips_56_bytes_without_textual_id() {
     let record = PlanRevisionRecord {
+        actor_index_plus1: 0,
         revision_meta: 0b0000_1001,
         reserved0: 0,
         payload_len: 31,
@@ -1764,6 +1784,7 @@ fn plan_revision_record_codec_round_trips_56_bytes_without_textual_id() {
 fn plan_codecs_round_trip_full_u64_seconds() {
     for seconds in [u64::from(u32::MAX) + 1, u64::MAX] {
         let plan = PlanRecord {
+            actor_index_plus1: 0,
             plan_meta: 0,
             reserved0: 0,
             payload_len: 1,
@@ -1782,6 +1803,7 @@ fn plan_codecs_round_trip_full_u64_seconds() {
         );
 
         let revision = PlanRevisionRecord {
+            actor_index_plus1: 0,
             revision_meta: 0,
             reserved0: 0,
             payload_len: 1,
@@ -1889,6 +1911,7 @@ fn plan_binary_db_heading_path_storage_has_no_json_codec_contract() {
 #[test]
 fn plan_revision_root_locator_is_part_of_the_canonical_revision_record() {
     let record = PlanRevisionRecord {
+        actor_index_plus1: 0,
         revision_meta: 0,
         reserved0: 0,
         payload_len: 0,
@@ -1926,6 +1949,7 @@ fn plan_binary_db_txn_append_and_read_plan_records_and_payloads() {
         title_bytes: b"Plan title".to_vec(),
     };
     let plan_record = PlanRecord {
+        actor_index_plus1: 0,
         plan_meta: 0b0000_0001,
         reserved0: 0,
         payload_len: 0,
@@ -1951,6 +1975,7 @@ fn plan_binary_db_txn_append_and_read_plan_records_and_payloads() {
         artifact_blob_id_bytes: b"BLB-1".to_vec(),
     };
     let revision_record = PlanRevisionRecord {
+        actor_index_plus1: 0,
         revision_meta: 0b0000_0001,
         reserved0: 0,
         payload_len: 0,
@@ -2076,6 +2101,7 @@ fn plan_binary_db_txn_enforces_write_layout_headers() {
         .expect("begin plan write txn");
 
     let bad_revision_record = PlanRevisionRecord {
+        actor_index_plus1: 0,
         revision_meta: 0,
         reserved0: 0,
         payload_len: 0,
@@ -2207,6 +2233,7 @@ fn plan_binary_db_complete_golden_fixture_matches_server_wire_contract() {
         match case.kind.as_str() {
             "plan_record" => {
                 let value = PlanRecord {
+                    actor_index_plus1: 0,
                     plan_meta: golden_u8(input, "plan_meta"),
                     reserved0: golden_u8(input, "reserved0"),
                     payload_len: golden_u16(input, "payload_len"),
@@ -2255,6 +2282,7 @@ fn plan_binary_db_complete_golden_fixture_matches_server_wire_contract() {
             }
             "plan_revision_record" => {
                 let revision = PlanRevisionRecord {
+                    actor_index_plus1: 0,
                     revision_meta: golden_u8(input, "revision_meta"),
                     reserved0: golden_u8(input, "reserved0"),
                     payload_len: golden_u16(input, "payload_len"),

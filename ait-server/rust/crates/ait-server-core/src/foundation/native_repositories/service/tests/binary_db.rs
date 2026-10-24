@@ -259,8 +259,8 @@ fn native_snapshot_binary_db_uses_schema_tree_entries_for_export_and_materializa
     let committed = service
         .commit_zstd_bulk(
             "repo-bin",
-            json!({
-                "contract": "ait.remote_sync.zstd_bulk.commit.v1",
+            json!({"actor_key_index":0,
+                "contract":"ait.remote_sync.zstd_bulk.commit.v1",
                 "object_packs": [],
                 "tree_packs": [],
                 "blob_locators": [],
@@ -322,9 +322,7 @@ fn native_snapshot_binary_db_uses_schema_tree_entries_for_export_and_materializa
     assert!(repository_content.tree(&content.tree_id).unwrap().is_some());
     assert_eq!(
         authority_db
-            .record_count(
-                ServerBinarySnapshotCodec::<SERVER_CONTENT_BINARY_LAYOUT_ID>::record_file(),
-            )
+            .record_count(ServerBinarySnapshotCodec::<2>::record_file(),)
             .expect("canonical snapshot count should read"),
         1
     );
@@ -621,8 +619,8 @@ fn binary_zstd_import_manifest_expands_every_selected_tree_pack_member() {
     service
         .commit_zstd_bulk(
             "repo-bin",
-            json!({
-                "contract": "ait.remote_sync.zstd_bulk.commit.v1",
+            json!({"actor_key_index":0,
+                "contract":"ait.remote_sync.zstd_bulk.commit.v1",
                 "object_packs": [],
                 "tree_packs": [],
                 "blob_locators": [],
@@ -821,8 +819,8 @@ fn binary_zstd_import_manifest_expands_every_selected_tree_pack_member() {
     service
         .commit_zstd_bulk(
             "repo-bin",
-            json!({
-                "contract": "ait.remote_sync.zstd_bulk.commit.v1",
+            json!({"actor_key_index":0,
+                "contract":"ait.remote_sync.zstd_bulk.commit.v1",
                 "object_packs": [],
                 "tree_packs": [],
                 "blob_locators": [],
@@ -985,8 +983,8 @@ fn binary_zstd_pull_catalog_ignores_unreachable_physical_only_tree_pack() {
     let invalid_root = service
         .commit_zstd_bulk(
             "repo-bin",
-            json!({
-                "contract": "ait.remote_sync.zstd_bulk.commit.v1",
+            json!({"actor_key_index":0,
+                "contract":"ait.remote_sync.zstd_bulk.commit.v1",
                 "object_packs": [],
                 "tree_packs": [],
                 "blob_locators": [],
@@ -1016,8 +1014,8 @@ fn binary_zstd_pull_catalog_ignores_unreachable_physical_only_tree_pack() {
     service
         .commit_zstd_bulk(
             "repo-bin",
-            json!({
-                "contract": "ait.remote_sync.zstd_bulk.commit.v1",
+            json!({"actor_key_index":0,
+                "contract":"ait.remote_sync.zstd_bulk.commit.v1",
                 "object_packs": [],
                 "tree_packs": [],
                 "blob_locators": [],
@@ -1083,16 +1081,16 @@ fn binary_zstd_pull_manifest_reads_snapshot_authority_once_for_a_long_chain() {
         fs::remove_dir_all(&root).expect("stale pull catalog root should remove");
     }
     fs::create_dir_all(&root).expect("pull catalog root should create");
-    for path in SERVER_BINARY_DB_BIN_SCHEMAS
+    for (path, layout_id) in SERVER_BINARY_DB_BIN_SCHEMAS
         .iter()
-        .map(|schema| schema.path)
+        .map(|schema| (schema.path, schema.layout_id))
         .chain(
             SERVER_BINARY_DB_INDEX_SCHEMAS
                 .iter()
-                .map(|schema| schema.path),
+                .map(|schema| (schema.path, schema.layout_id)),
         )
     {
-        fs::write(root.join(path), SERVER_BINARY_DB_LAYOUT_ID.to_le_bytes())
+        fs::write(root.join(path), layout_id.to_le_bytes())
             .expect("pull catalog Binary DB file should initialize");
     }
     let files = FaultInjectingServerBinaryDbStore::new(ServerBinaryDbFilesystemStore);
@@ -1112,8 +1110,8 @@ fn binary_zstd_pull_manifest_reads_snapshot_authority_once_for_a_long_chain() {
     service
         .commit_zstd_bulk(
             "repo-bin",
-            json!({
-                "contract": "ait.remote_sync.zstd_bulk.commit.v1",
+            json!({"actor_key_index":0,
+                "contract":"ait.remote_sync.zstd_bulk.commit.v1",
                 "object_packs": [],
                 "tree_packs": [],
                 "blob_locators": [],
@@ -1306,8 +1304,8 @@ fn binary_zstd_pull_manifest_reads_snapshot_authority_once_for_a_long_chain() {
     service
         .commit_zstd_bulk(
             "repo-bin",
-            json!({
-                "contract": "ait.remote_sync.zstd_bulk.commit.v1",
+            json!({"actor_key_index":0,
+                "contract":"ait.remote_sync.zstd_bulk.commit.v1",
                 "object_packs": [],
                 "tree_packs": [],
                 "blob_locators": [],

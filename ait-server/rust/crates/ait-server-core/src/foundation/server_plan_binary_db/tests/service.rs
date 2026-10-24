@@ -1,7 +1,7 @@
 use super::*;
 
 fn packed_payload(
-    service: &BinaryDbServerPlanServiceV1<FilesystemServerRemoteBinaryDb>,
+    service: &BinaryDbServerPlanServiceV2<FilesystemServerRemoteBinaryDb>,
     label: &str,
     title: &str,
     item_ref: &str,
@@ -18,7 +18,7 @@ fn packed_payload(
 }
 
 fn packed_payload_at_path(
-    service: &BinaryDbServerPlanServiceV1<FilesystemServerRemoteBinaryDb>,
+    service: &BinaryDbServerPlanServiceV2<FilesystemServerRemoteBinaryDb>,
     label: &str,
     title: &str,
     item_ref: &str,
@@ -419,7 +419,7 @@ fn unsupported_artifact_write_route_fails_without_writes() {
         .put_plan_revision_artifacts(
             "PR-0",
             "plan-revision:0",
-            &json!({"artifacts": [{"artifact_path": "docs/extra.md", "body": "extra"}]}),
+            &json!({"actor_key_index":0,"artifacts": [{"artifact_path": "docs/extra.md", "body": "extra"}]}),
         )
         .expect_err("unsupported artifact write route must fail");
     assert!(error.contains("not part of the compact layout-1 Plan schema"));

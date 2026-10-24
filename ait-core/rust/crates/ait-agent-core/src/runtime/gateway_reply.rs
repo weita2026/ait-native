@@ -332,10 +332,26 @@ impl AgentLocalReplyProvider for ExternalProcessAgentLocalReplyProvider {
     }
 }
 
+fn reject_retired_execution_mode(request: &JsonValue) -> Result<(), String> {
+    if request.get("workflow_mode").is_some()
+        || request
+            .get("target")
+            .and_then(|target| target.get("workflow_mode"))
+            .is_some()
+    {
+        return Err(
+            "Retired execution field `workflow_mode`; resubmit with explicit target.mode."
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
 /// Executes a chat turn without reading or mutating an AIT session. Codex owns
 /// conversation history; this layer only supplies transport identity and the
 /// latest input to the versioned gateway provider.
 pub fn agent_gateway_reply_runtime_execute_json(request: &JsonValue) -> Result<JsonValue, String> {
+    reject_retired_execution_mode(request)?;
     let operation = request
         .get("operation")
         .and_then(JsonValue::as_str)
@@ -359,6 +375,7 @@ pub fn execute_with_agent_gateway_reply_provider<P>(
 where
     P: AgentLocalReplyProvider + ?Sized,
 {
+    reject_retired_execution_mode(request)?;
     let request = required_object(Some(request), "gateway reply runtime request")?;
     let operation = required_text(request.get("operation"), "operation")?;
     if !matches!(operation.as_str(), "create_turn" | "create_telegram_turn") {
@@ -904,7 +921,6 @@ mod tests {
             "operation": "create_turn",
             "target": {
                 "mode": "remote",
-                "workflow_mode": "solo_remote",
                 "repo_name": "fixture",
                 "repo_root": "/tmp/fixture",
                 "server_url": "http://127.0.0.1:1",
@@ -930,6 +946,25 @@ mod tests {
                 "turn_timeout_seconds": 30,
             },
         })
+    }
+
+    #[test]
+    fn retired_modes_fail_before_provider_configuration_or_execution() {
+        let provider = RecordingProvider::default();
+        for authority in ["local", "remote"] {
+            for mode in ["solo_local", "solo_remote", "team_remote"] {
+                let mut retired = request();
+                retired["target"]["mode"] = json!(authority);
+                retired["target"]["workflow_mode"] = json!(mode);
+                let error =
+                    execute_with_agent_gateway_reply_provider(&provider, &retired).unwrap_err();
+                assert!(error.contains("Retired execution field `workflow_mode`"));
+                retired["local_reply"] = JsonValue::Null;
+                let error = agent_gateway_reply_runtime_execute_json(&retired).unwrap_err();
+                assert!(error.contains("Retired execution field `workflow_mode`"));
+            }
+        }
+        assert!(provider.requests.borrow().is_empty());
     }
 
     #[test]

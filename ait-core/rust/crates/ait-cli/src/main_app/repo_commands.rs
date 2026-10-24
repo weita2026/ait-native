@@ -54,6 +54,8 @@ fn run_config(repo: RepoRuntime, command: ConfigCommand) -> Result<(), String> {
         }
         ConfigCommand::Set(args) => {
             let request = ConfigSetRequest {
+                agent_teams: args.agent_teams,
+                agent_team_size: args.agent_team_size,
                 plan_language: args.plan_language,
                 plan_style: args.plan_style,
                 default_author_mode: args
@@ -64,7 +66,6 @@ fn run_config(repo: RepoRuntime, command: ConfigCommand) -> Result<(), String> {
                 task_worktree_alias_root: args.task_worktree_alias_root,
                 task_worktree_main_seed_ram_max_bytes: args
                     .task_worktree_main_seed_ram_max_bytes,
-                workflow_mode: args.workflow_mode.map(|value| value.as_str().to_string()),
                 id_namespace_prefix: args.id_namespace_prefix,
                 sprint: args.sprint.map(|value| value.as_str().to_string()),
                 user_name: args.user_name,
@@ -72,8 +73,29 @@ fn run_config(repo: RepoRuntime, command: ConfigCommand) -> Result<(), String> {
                 post_finish_hooks: args.post_finish_hooks,
             };
             let keys = request.updated_keys();
-            let payload = config_set_cmd(&repo, &request)?;
+            let mut payload = config_set_cmd(&repo, &request)?;
+            if request.agent_teams.as_deref()==Some("enabled") {
+                let deployment = crate::agent_teams::bootstrap(&RepoRuntime::discover_from_path(&repo.authoritative_repo_root())?);
+                payload["team_bootstrap"] = deployment;
+            }
             emit_config_mutation_result("ait-cli config set", &payload, args.json, &keys)?;
+            if let Some(deployment) = payload.get("team_bootstrap") {
+                if !args.json {
+                    println!("\nTeam sessions: {}", deployment["status"].as_str().unwrap_or("blocked"));
+                    if let Some(activation)=crate::agent_teams::render_activation(deployment) {
+                        println!("{activation}");
+                    } else if let Some(id) = deployment["session_id"].as_str() {
+                        println!("有專案需求或問題，請找 Newton\nSession ID: {id}\nResume: codex resume {id}");
+                    }
+                    if let Some(detail) = deployment["detail"].as_str() {
+                        println!("Configuration saved; session setup requires attention: {detail}");
+                    }
+                    if let Some(condition)=deployment["condition"].as_str(){println!("{condition}");}
+                }
+                if !matches!(deployment["status"].as_str(), Some("ready" | "activation_required")) {
+                    return Err("Configuration saved, but team sessions are not ready; see team_bootstrap for recovery details.".into());
+                }
+            }
         }
         ConfigCommand::Unset(args) => {
             let key = args.key.into_config_key();
@@ -140,6 +162,9 @@ fn emit_config_show_result(payload: &JsonValue, json_output: bool) -> Result<(),
             ),
         ],
     );
+    if let Some(count) = payload["agent_team"]["configured_member_count"].as_u64() {
+        print_key_values("Agent team", &[("members", count.to_string())]);
+    }
     Ok(())
 }
 
@@ -181,7 +206,6 @@ fn config_effective_value(payload: &JsonValue, key: &str) -> String {
     let value = match key {
         "plan-language" => payload.get("plan_language").and_then(|value| value.get("value")),
         "plan-style" => payload.get("plan_style").and_then(|value| value.get("value")),
-        "workflow-mode" => payload.get("workflow_mode").and_then(|value| value.get("value")),
         "sprint" => payload.get("sprint").and_then(|value| value.get("value")),
         "default-author-mode" => payload.get("effective_author_mode"),
         "default-model" => payload.get("effective_model"),

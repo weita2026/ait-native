@@ -308,9 +308,7 @@ impl TaskWorkflowAttestationWriter for FakeWorkflowCloseoutRemote {
         &mut self,
         _patchset_id: &str,
         _author_mode: &str,
-        _evaluation_summary: &JsonValue,
-        _provenance_summary: &JsonValue,
-        _detail: &JsonValue,
+        _statement: &ait_core::attest_json::RemoteAttestationStatement,
         _repo_name: Option<&str>,
         _exact_id: bool,
     ) -> TaskWorkflowHttpClientResult<JsonValue> {
@@ -331,9 +329,12 @@ impl TaskWorkflowAttestationReader for FakeWorkflowCloseoutRemote {
             exact_id,
         ));
         self.attestations.get(patchset_id).cloned().ok_or_else(|| {
-            TaskWorkflowHttpClientError::Remote(format!(
-                "GET attestation {patchset_id} failed: 404 Unknown attestation"
-            ))
+            TaskWorkflowHttpClientError::RemoteResponse {
+                method: "GET".into(),
+                url: format!("attestation/{patchset_id}"),
+                status: 404,
+                detail: "Unknown attestation".into(),
+            }
         })
     }
 }
@@ -512,9 +513,12 @@ impl TaskWorkflowAttestationReader for FakeWorkflowRemoteStateReadRemote {
             exact_id,
         ));
         self.attestations.get(patchset_id).cloned().ok_or_else(|| {
-            TaskWorkflowHttpClientError::Remote(format!(
-                "GET attestation {patchset_id} failed: 404 Unknown attestation"
-            ))
+            TaskWorkflowHttpClientError::RemoteResponse {
+                method: "GET".into(),
+                url: format!("attestation/{patchset_id}"),
+                status: 404,
+                detail: "Unknown attestation".into(),
+            }
         })
     }
 }
@@ -603,6 +607,33 @@ impl TaskWorkflowPatchsetReader for FakeWorkflowReviewActionRemote {
 }
 
 impl TaskWorkflowReviewRecorder for FakeWorkflowReviewActionRemote {
+    #[allow(clippy::too_many_arguments)]
+    fn record_review_as_actor(
+        &mut self,
+        change_id: &str,
+        patchset_id: &str,
+        reviewer: &str,
+        reviewer_kind: &str,
+        action: &str,
+        comment: Option<&str>,
+        blocking: bool,
+        repo_name: Option<&str>,
+        exact_id: bool,
+    ) -> TaskWorkflowHttpClientResult<JsonValue> {
+        let mut result = self.record_review(
+            change_id,
+            patchset_id,
+            reviewer,
+            action,
+            comment,
+            blocking,
+            repo_name,
+            exact_id,
+        )?;
+        result["reviewer_kind"] = json!(reviewer_kind);
+        Ok(result)
+    }
+
     fn record_review(
         &mut self,
         change_id: &str,
@@ -676,6 +707,33 @@ impl TaskWorkflowPatchsetReader for FakeWorkflowReviewOnlyActionRemote {
 }
 
 impl TaskWorkflowReviewRecorder for FakeWorkflowReviewOnlyActionRemote {
+    #[allow(clippy::too_many_arguments)]
+    fn record_review_as_actor(
+        &mut self,
+        change_id: &str,
+        patchset_id: &str,
+        reviewer: &str,
+        reviewer_kind: &str,
+        action: &str,
+        comment: Option<&str>,
+        blocking: bool,
+        repo_name: Option<&str>,
+        exact_id: bool,
+    ) -> TaskWorkflowHttpClientResult<JsonValue> {
+        let mut result = self.record_review(
+            change_id,
+            patchset_id,
+            reviewer,
+            action,
+            comment,
+            blocking,
+            repo_name,
+            exact_id,
+        )?;
+        result["reviewer_kind"] = json!(reviewer_kind);
+        Ok(result)
+    }
+
     fn record_review(
         &mut self,
         change_id: &str,

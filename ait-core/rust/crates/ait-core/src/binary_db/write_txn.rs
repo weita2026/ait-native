@@ -1,6 +1,7 @@
 //! Binary DB write transaction lifecycle and rollback tracking.
 
 use super::*;
+use std::cell::RefCell;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct BinaryDbRollbackFile {
@@ -56,6 +57,7 @@ pub struct BinaryDbWriteTxn<'a, B: BinaryDb + ?Sized, F: BinaryDbFsyncPolicy> {
     touched_directories: Vec<PathBuf>,
     rollback_files: Vec<BinaryDbRollbackFile>,
     rollback_records: Vec<BinaryDbRollbackRecord>,
+    index_cache: RefCell<BinaryDbReadCache>,
     commit_outcome: Option<BinaryDbCommitOutcome>,
     finished: bool,
 }
@@ -89,6 +91,7 @@ where
             touched_directories: Vec::new(),
             rollback_files: Vec::new(),
             rollback_records: Vec::new(),
+            index_cache: RefCell::new(BinaryDbReadCache::default()),
             commit_outcome: None,
             finished: false,
         })
@@ -137,7 +140,8 @@ where
         index: BinaryIndexId,
         key: BinaryIndexKeyRef<'_>,
     ) -> StoreResult<Vec<u32>> {
-        self.db.lookup_index(index, key)
+        self.db
+            .lookup_index_in_read_txn(index, key, &mut self.index_cache.borrow_mut())
     }
 
     pub fn append_record(
@@ -269,11 +273,40 @@ where
 
     pub fn commit(&mut self) -> StoreResult<BinaryDbCommitOutcome> {
         if let Some(outcome) = &self.commit_outcome {
+            self.db.publish_directory_checkpoint()?;
             return Ok(outcome.clone());
         }
         self.ensure_commit_open()?;
         self.sync_touched_dependencies()?;
-        Ok(self.finish_committed())
+        self.finish_committed()
+    }
+
+    /// Flushes the pending record and dependencies before writing exactly its
+    /// first metadata byte, then flushes that marker. A marker-write failure
+    /// crosses an uncertain commit point and must never restore before-images.
+    pub fn commit_with_record_marker(
+        &mut self,
+        file: BinaryFileId,
+        record_index: u32,
+        marker: u8,
+    ) -> StoreResult<BinaryDbCommitOutcome> {
+        self.ensure_write_open()?;
+        let path = store_path_for(self.db.authority_root(), file.relative_path())?;
+        if !self.touched_files.contains(&path) {
+            return Err(BinaryDbError::invalid_domain_data(
+                "commit marker requires a pending owner record",
+            ));
+        }
+        self.sync_touched_dependencies()?;
+        let published = self
+            .db
+            .overwrite_record_marker(file, record_index, marker, &mut self.write_context)
+            .and_then(|()| self.fsync_policy.sync_file(&path));
+        if let Err(error) = published {
+            self.finish_crossed_commit_point();
+            return Err(BinaryDbError::new(error.kind(),format!("{error}. Record commit marker may already be committed; inspect authority before retrying.")));
+        }
+        self.finish_committed()
     }
 
     /// Durably flushes dependency files, atomically publishes one complete
@@ -291,6 +324,7 @@ where
         publish_label: &str,
     ) -> StoreResult<BinaryDbCommitOutcome> {
         if let Some(outcome) = &self.commit_outcome {
+            self.db.publish_directory_checkpoint()?;
             return Ok(outcome.clone());
         }
         self.ensure_commit_open()?;
@@ -334,7 +368,7 @@ where
             // effort after the authority commit is durable.
             let _ = self.fsync_policy.sync_directory(&staging_directory);
         }
-        Ok(self.finish_committed())
+        self.finish_committed()
     }
 
     fn ensure_commit_open(&self) -> StoreResult<()> {
@@ -356,14 +390,17 @@ where
         Ok(())
     }
 
-    fn finish_committed(&mut self) -> BinaryDbCommitOutcome {
+    fn finish_committed(&mut self) -> StoreResult<BinaryDbCommitOutcome> {
         self.rollback_files.clear();
         self.rollback_records.clear();
         self.write_context.finish();
         self.finished = true;
         let outcome = BinaryDbCommitOutcome::new(self.lock.release().err());
         self.commit_outcome = Some(outcome.clone());
-        outcome
+        if !self.touched_files.is_empty() || !self.touched_directories.is_empty() {
+            self.db.publish_directory_checkpoint()?;
+        }
+        Ok(outcome)
     }
 
     fn finish_crossed_commit_point(&mut self) -> Option<BinaryDbError> {
@@ -450,7 +487,17 @@ where
     ) -> StoreResult<()> {
         self.ensure_write_open()?;
         self.track_index_file_for_write(index.clone())?;
-        self.db
-            .append_index_candidate(index, key, record_index, &mut self.write_context)
+        self.db.append_index_candidate(
+            index.clone(),
+            key,
+            record_index,
+            &mut self.write_context,
+        )?;
+        let mut cache = self.index_cache.borrow_mut();
+        cache.index_files.remove(&index);
+        if let Some(parsed) = cache.parsed_index_candidates.get_mut(&index) {
+            parsed.entry(key.to_vec()).or_default().push(record_index);
+        }
+        Ok(())
     }
 }

@@ -1,10 +1,16 @@
+#[path = "support/native_home.rs"]
+mod native_home;
+#[path = "support/agent_teams_cli.rs"]
+mod team_fixture;
 use assert_cmd::prelude::*;
 use predicates::prelude::*;
 use std::process::Command;
 use tempfile::TempDir;
 
 fn cargo_bin() -> Command {
-    Command::cargo_bin("ait-cli").unwrap()
+    let mut c = Command::cargo_bin("ait-cli").unwrap();
+    c.env("CODEX_HOME", native_home::path());
+    c
 }
 
 #[test]
@@ -177,4 +183,59 @@ fn config_show_json_keeps_required_mode_explicit_without_automatic_reviewer() {
         .success()
         .stdout(predicate::str::contains("\"value\": \"required\""))
         .stdout(predicate::str::contains("\"automatic_reviewer\": null"));
+}
+
+#[test]
+fn init_and_config_regenerate_stale_identity_reminders_without_configuring_identity() {
+    use std::fs;
+    for policy in ["automatic", "required"] {
+        let temp = team_fixture::fixture();
+        team_fixture::run(
+            &temp,
+            &["config", "set", "--task-review", policy, "--json"],
+            true,
+        );
+        for command in [
+            &["init", "--json"][..],
+            &["config", "set", "--plan-style", "concise", "--json"][..],
+        ] {
+            for name in ["AGENTS.md", "CLAUDE.md"] {
+                // Seed old generated output in this isolated fixture. Only the
+                // native init/config convergence removes the obsolete reminder.
+                let current = fs::read_to_string(temp.path().join(name)).unwrap();
+                let stale=current.replacen("### Code-change path",&format!("Action required before mutation:\n\n- review=`{policy}`; reviewer=`unset` (configure user-name)\n\n### Code-change path"),1);
+                assert!(stale.contains("configure user-name"));
+                fs::write(
+                    temp.path().join(name),
+                    stale + "\nRepository-specific guidance is preserved.\n",
+                )
+                .unwrap();
+            }
+            team_fixture::run(&temp, command, true);
+            for name in ["AGENTS.md", "CLAUDE.md"] {
+                let updated = fs::read_to_string(temp.path().join(name)).unwrap();
+                assert!(
+                    updated.contains("Admission: ready."),
+                    "{policy}/{name}: {updated}"
+                );
+                assert!(
+                    !updated.contains("Action required before mutation:"),
+                    "{policy}/{name}: {updated}"
+                );
+                assert!(
+                    !updated.contains("configure user-name"),
+                    "{policy}/{name}: {updated}"
+                );
+                assert!(
+                    !updated.contains("reviewer=`unset`"),
+                    "{policy}/{name}: {updated}"
+                );
+                assert!(updated.contains("Repository-specific guidance is preserved."));
+            }
+            let shown = team_fixture::run(&temp, &["config", "show", "--json"], true);
+            assert_eq!(shown["task_review"]["value"], policy);
+            assert!(shown["user_name"].is_null());
+            assert!(shown["user_email"].is_null());
+        }
+    }
 }

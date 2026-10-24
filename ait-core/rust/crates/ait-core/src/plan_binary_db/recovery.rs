@@ -236,6 +236,31 @@ fn analyze_plan_authority(authority_root: &Path) -> Result<RecoveryAnalysis, Str
         actions.push(action);
     }
 
+    // Adopting raw Git descriptors makes every complete revision slot
+    // permanent. An unpublished raw owner needs the typed Git recovery path;
+    // generic Plan recovery must never reclaim its complete dependency tail.
+    let raw_revision_bytes = read_optional(&authority_root.join(PLAN_REVISION_BIN))?;
+    let pinned = raw_revision_bytes.as_ref().is_some_and(|bytes| {
+        bytes.len() >= 4
+            && bytes[4..]
+                .chunks_exact(PLAN_REVISION_RECORD_SIZE as usize)
+                .any(|row| row[0] & 32 != 0)
+    });
+    if pinned {
+        if raw_revision_bytes.as_ref().unwrap()[..4] != PLAN_LAYOUT_ID.to_le_bytes() {
+            return Err("raw Git revision slots have an unsupported layout; restore without reclaiming complete slots".into());
+        }
+        for (ordinal, raw) in raw_revision_bytes.as_ref().unwrap()[4..]
+            .chunks_exact(PLAN_REVISION_RECORD_SIZE as usize)
+            .enumerate()
+        {
+            let row = PlanRevisionCodec::<PLAN_LAYOUT_ID>::decode_record(raw)?;
+            if row.is_raw_git_artifact() && row.plan_index as usize >= plans.len() {
+                return Err(format!("raw Git PlanRevision[{ordinal}] reserves unpublished Plan[{}]; use typed Git recovery and preserve all complete physical slots",row.plan_index));
+            }
+        }
+    }
+
     let plan_payload_ranges = plans
         .iter()
         .enumerate()
@@ -253,7 +278,7 @@ fn analyze_plan_authority(authority_root: &Path) -> Result<RecoveryAnalysis, Str
         actions.push(action);
     }
 
-    let head_revisions = plans
+    let mut head_revisions = plans
         .iter()
         .enumerate()
         .filter_map(|(plan_index, plan)| {
@@ -261,11 +286,37 @@ fn analyze_plan_authority(authority_root: &Path) -> Result<RecoveryAnalysis, Str
                 .map(|revision_index| (plan_index as u32, revision_index))
         })
         .collect::<Vec<_>>();
+    // AgentRole pins survive pruning of the owning Plan. Validate the role
+    // family before allowing generic recovery to reclaim dependency tails.
+    if let Some(bytes) = read_optional(&authority_root.join("agent_roles.bin"))? {
+        if bytes.len() < 4
+            || bytes[..4] != PLAN_LAYOUT_ID.to_le_bytes()
+            || (bytes.len() - 4) % 8 != 0
+        {
+            return Err("Invalid AgentRole authority; refusing Plan recovery".into());
+        }
+        for role in bytes[4..].chunks_exact(8) {
+            let revisions = raw_revision_bytes
+                .as_ref()
+                .ok_or("AgentRole revision authority missing")?;
+            let index = crate::agent_binary_db::decode_role(role)?;
+            let start = 4_u64 + u64::from(index) * u64::from(PLAN_REVISION_RECORD_SIZE);
+            let start = usize::try_from(start).map_err(|_| "Role revision offset overflow")?;
+            let raw = revisions
+                .get(start..start + PLAN_REVISION_RECORD_SIZE as usize)
+                .ok_or("AgentRole revision missing")?;
+            let revision = PlanRevisionCodec::<PLAN_LAYOUT_ID>::decode_record(raw)?;
+            if revision.is_tombstone() || revision.plan_index as usize >= plans.len() {
+                return Err("AgentRole revision is not retained".into());
+            }
+            head_revisions.push((revision.plan_index, index));
+        }
+    }
     let revisions = load_fixed_dependency(
         authority_root,
         PLAN_REVISION_BIN,
         PLAN_REVISION_RECORD_SIZE,
-        !head_revisions.is_empty(),
+        !head_revisions.is_empty() || pinned,
     )?;
     let mut reachable_revisions = BTreeSet::new();
     let mut revision_records = Vec::<(u32, PlanRevisionRecord)>::new();
@@ -293,6 +344,16 @@ fn analyze_plan_authority(authority_root: &Path) -> Result<RecoveryAnalysis, Str
                 revision_records.push((revision_index, record.clone()));
             }
             next = record.previous_revision_index();
+        }
+    }
+    if pinned {
+        for ordinal in 0..revisions.complete_count {
+            if reachable_revisions.insert(ordinal) {
+                let row = PlanRevisionCodec::<PLAN_LAYOUT_ID>::decode_record(fixed_record(
+                    &revisions, ordinal,
+                )?)?;
+                revision_records.push((ordinal, row));
+            }
         }
     }
     if let Some(action) = prefix_action_for_dependency(
@@ -675,6 +736,24 @@ mod tests {
     use tempfile::tempdir;
 
     #[test]
+    fn agent_role_pin_preserves_revision_without_a_plan_head() {
+        let temp = tempdir().unwrap();
+        let authority = temp.path().join("db");
+        fs::create_dir_all(&authority).unwrap();
+        seed_complete_plan(&authority);
+        let mut plans = fs::read(authority.join(PLAN_BIN)).unwrap();
+        plans[16..20].copy_from_slice(&0_u32.to_le_bytes());
+        fs::write(authority.join(PLAN_BIN), plans).unwrap();
+        write_fixed_file(&authority.join("agent_roles.bin"), &[vec![0; 8]]);
+        let before = fs::read(authority.join(PLAN_REVISION_BIN)).unwrap();
+        let analysis = analyze_plan_authority(&authority).unwrap();
+        assert!(analysis.actions.is_empty());
+        assert_eq!(fs::read(authority.join(PLAN_REVISION_BIN)).unwrap(), before);
+        fs::write(authority.join("agent_roles.bin"), [1, 0, 0, 0, 0]).unwrap();
+        assert!(analyze_plan_authority(&authority).is_err());
+    }
+
+    #[test]
     fn recovery_removes_only_unreferenced_empty_and_header_only_plan_files() {
         let temp = tempdir().expect("tempdir");
         let authority = temp.path().join(".ait/binary-db");
@@ -707,6 +786,7 @@ mod tests {
         let authority = temp.path().join(".ait/binary-db");
         fs::create_dir_all(&authority).expect("create authority");
         let record = PlanRecord {
+            actor_index_plus1: 0,
             plan_meta: 0,
             reserved0: 0,
             payload_len: 5,
@@ -890,6 +970,7 @@ mod tests {
             &revision_payload,
         );
         let revision = PlanRevisionRecord {
+            actor_index_plus1: 0,
             revision_meta: 0,
             reserved0: 0,
             payload_len: u16::try_from(revision_payload.len()).expect("revision payload length"),
@@ -914,6 +995,7 @@ mod tests {
         );
 
         let plan = PlanRecord {
+            actor_index_plus1: 0,
             plan_meta: 0,
             reserved0: 0,
             payload_len: u16::try_from(plan_payload.len()).expect("plan payload length"),

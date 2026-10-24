@@ -323,7 +323,7 @@ fn native_scheduled_reconciliation_is_remote_bounded_and_safe_only() {
 }
 
 #[test]
-fn native_task_terminal_hook_reconciles_clean_bound_worktree() {
+fn native_task_abandon_cleans_owned_root_before_terminal_reconciliation() {
     let temp = init_repo("https://example.test");
     let root = temp.path();
     let config_path = root.join(".ait/config.json");
@@ -370,12 +370,8 @@ fn native_task_terminal_hook_reconciles_clean_bound_worktree() {
     );
     assert_eq!(abandoned["automatic_reconciliation"]["safe_only"], json!(true));
     assert_eq!(abandoned["automatic_reconciliation"]["mutated"], json!(true));
-    let change_id = started["change"]["change_id"].as_str().unwrap();
-    let canceled_change = json_output(
-        root,
-        &["change", "show", change_id, "--local", "--json"],
-    );
-    assert_eq!(canceled_change["status"], json!("canceled"));
+    assert_eq!(abandoned["bound_worktree_cleanup"]["status"], json!("removed"));
+    assert!(started["change"].is_null(), "initial work owns no revision Change");
     let audit = json_output(
         root,
         &["task", "audit", task_id, "--local", "--json"],
@@ -393,7 +389,9 @@ fn native_task_terminal_hook_reconciles_clean_bound_worktree() {
     assert!(!worktree.exists());
     let line_after_worktree_cleanup =
         json_output(root, &["line", "show", "feature/lwtt-0001", "--json"]);
-    assert_eq!(line_after_worktree_cleanup["status"], json!("active"));
+    assert_eq!(line_after_worktree_cleanup["status"], json!("archived"));
+    let before = json_output(root, &["task", "show", task_id, "--local", "--json"]);
+    let receipts = reconciliation_receipt_paths(root);
 
     let repeated = json_output(
         root,
@@ -402,13 +400,11 @@ fn native_task_terminal_hook_reconciles_clean_bound_worktree() {
     assert_eq!(repeated["status"], json!("abandoned"));
     assert_eq!(
         repeated["automatic_reconciliation"]["mutated"],
-        json!(true)
+        json!(false)
     );
-    let preserved_change = json_output(
-        root,
-        &["change", "show", change_id, "--local", "--json"],
-    );
-    assert_eq!(preserved_change["status"], json!("canceled"));
+    assert_eq!(repeated["automatic_reconciliation"]["status"], json!("skipped"));
+    assert_eq!(receipts, reconciliation_receipt_paths(root));
+    assert_eq!(before, json_output(root, &["task", "show", task_id, "--local", "--json"]));
     let feature_line = json_output(root, &["line", "show", "feature/lwtt-0001", "--json"]);
     assert_eq!(feature_line["status"], json!("archived"));
 }
@@ -628,7 +624,7 @@ fn native_reconcile_bounded_continuations_converge_without_duplicate_receipts() 
 }
 
 #[test]
-fn native_task_change_worktree_line_cleanup_converges_across_bounded_passes() {
+fn native_task_abandon_exposes_line_cleanup_in_the_initial_bounded_pass() {
     let temp = init_repo("https://example.test");
     let root = temp.path();
     configure_local_reconciliation_repo(root);
@@ -646,13 +642,7 @@ fn native_task_change_worktree_line_cleanup_converges_across_bounded_passes() {
         ],
     );
     let task_id = started["task_id"].as_str().unwrap();
-    let change_id = started["change"]["change_id"].as_str().unwrap();
     let line_name = format!("feature/{}", task_id.to_ascii_lowercase());
-    let closed_change = json_output(
-        root,
-        &["change", "close", change_id, "--local", "--json"],
-    );
-    assert_eq!(closed_change["status"], json!("archived"));
     let abandoned = json_output(
         root,
         &["task", "abandon", task_id, "--local", "--json"],
@@ -660,7 +650,7 @@ fn native_task_change_worktree_line_cleanup_converges_across_bounded_passes() {
     assert_eq!(abandoned["automatic_reconciliation"]["mutated"], json!(true));
     assert_eq!(
         abandoned["automatic_reconciliation"]["apply_summary"]["remaining_safe_count"],
-        json!(1)
+        json!(0)
     );
 
     let continued = json_output(
@@ -677,7 +667,7 @@ fn native_task_change_worktree_line_cleanup_converges_across_bounded_passes() {
             "--json",
         ],
     );
-    assert_eq!(continued["mutated"], json!(true));
+    assert_eq!(continued["mutated"], json!(false));
     assert_eq!(continued["apply_summary"]["remaining_safe_count"], json!(0));
     let line = json_output(root, &["line", "show", &line_name, "--json"]);
     assert_eq!(line["status"], json!("archived"));

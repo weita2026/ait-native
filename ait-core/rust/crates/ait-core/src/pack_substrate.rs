@@ -1,6 +1,5 @@
 use crate::json_support::{json, JsonMap as Map, JsonNumber as Number, JsonValue};
 use sha2::{Digest, Sha256};
-use similar::{capture_diff_slices, Algorithm, DiffOp};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -140,6 +139,8 @@ pub fn validate_content_addressed_zstd_pack_reuse(
     Ok(sha256_hex(&remote_index_bytes))
 }
 
+mod chunk_layout;
+mod delta_encoder;
 mod format;
 mod index_json;
 mod object;
@@ -148,6 +149,7 @@ mod types;
 mod util;
 mod zstd;
 
+pub(crate) use chunk_layout::ObjectPackChunkLayout;
 pub use format::*;
 use index_json::*;
 pub use object::*;
@@ -158,3 +160,6 @@ use zstd::*;
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod chunk_layout_tests;

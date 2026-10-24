@@ -186,6 +186,9 @@ impl RoutedBinaryRuntimeService {
             "repository_index": index,
             "patchset_index": patchset_index,
             "patchset_id": patchset_id,
+            "task_id": patchset["task_id"],
+            "change_ref": patchset["change_ref"],
+            "change_id": patchset["change_id"],
             "ci_run_seq": run_seq,
             "ci_completed_at_s": if completed_at_s == 0 {
                 JsonValue::Null
@@ -207,6 +210,7 @@ impl RoutedBinaryRuntimeService {
         project_patchset_ci_status(
             status,
             projection,
+            patchset.get("task_id").and_then(JsonValue::as_str),
             patchset.get("change_id").and_then(JsonValue::as_str),
             patchset.get("change_ref").and_then(JsonValue::as_str),
             &repo_name,
@@ -664,6 +668,7 @@ fn patchset_ci_status_recent_limit(
 fn project_patchset_ci_status(
     mut status: JsonValue,
     projection: Option<&str>,
+    task_id: Option<&str>,
     change_id: Option<&str>,
     change_ref: Option<&str>,
     repo_name: &str,
@@ -686,8 +691,18 @@ fn project_patchset_ci_status(
                 format!("Patchset CI readiness projection is missing non-empty {field}.")
             })
     };
-    let change_id = required_identity(change_id, "change_id")?;
-    let change_ref = required_identity(change_ref, "change_ref")?;
+    let task_id = required_identity(task_id, "task_id")?;
+    match (change_id, change_ref) {
+        (None, None) => {}
+        (Some(id), Some(reference))
+            if reference.strip_prefix(&format!("{task_id}/")) == Some(id)
+                && id
+                    .strip_prefix("C-")
+                    .filter(|digits| digits.len() == 2)
+                    .and_then(|digits| digits.parse::<u8>().ok())
+                    .is_some_and(|n| (1..=64).contains(&n)) => {}
+        _ => return Err("Patchset CI readiness has an invalid optional Change owner".to_string()),
+    }
     let repo_name = required_identity(Some(repo_name), "repo_name")?;
     let object = status
         .as_object_mut()
@@ -706,9 +721,10 @@ fn project_patchset_ci_status(
         .unwrap_or_default();
     object.insert(
         "contract".to_string(),
-        json!("ait.server.patchset_ci.readiness.v1"),
+        json!("ait.server.patchset_ci.readiness.v2"),
     );
     object.insert("projection".to_string(), json!("readiness"));
+    object.insert("task_id".to_string(), json!(task_id));
     object.insert("change_id".to_string(), json!(change_id));
     object.insert("change_ref".to_string(), json!(change_ref));
     object.insert("repo_name".to_string(), json!(repo_name));
@@ -752,13 +768,22 @@ mod tests {
         });
 
         assert_eq!(
-            project_patchset_ci_status(ordinary.clone(), None, None, None, "ait-web-test", 1_000,)
-                .expect("ordinary projection"),
+            project_patchset_ci_status(
+                ordinary.clone(),
+                None,
+                None,
+                None,
+                None,
+                "ait-web-test",
+                1_000,
+            )
+            .expect("ordinary projection"),
             ordinary
         );
         let readiness = project_patchset_ci_status(
             ordinary,
             Some("readiness"),
+            Some("RWTT-0057"),
             Some("C-01"),
             Some("RWTT-0057/C-01"),
             "ait-web-test",
@@ -767,7 +792,7 @@ mod tests {
         .expect("readiness projection");
         assert_eq!(
             readiness["contract"],
-            json!("ait.server.patchset_ci.readiness.v1")
+            json!("ait.server.patchset_ci.readiness.v2")
         );
         assert_eq!(readiness["projection"], json!("readiness"));
         assert_eq!(readiness["patchset_id"], json!("RWTT-0057/C-01/P-01"));
@@ -791,6 +816,7 @@ mod tests {
         assert!(project_patchset_ci_status(
             json!({}),
             Some("readiness"),
+            Some("RWTT-0057"),
             None,
             Some("RWTT-0057/C-01"),
             "ait-web-test",

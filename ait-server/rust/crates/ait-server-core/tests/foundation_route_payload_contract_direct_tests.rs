@@ -100,6 +100,25 @@ fn native_route_payload_contract_preserves_representative_defaults() {
     );
 
     let release = model(&payload, "ReleasePublishRequest");
+    let attestation = model(&payload, "UpsertAttestationRequest");
+    assert_eq!(
+        field(attestation, "verification_state")["default"]["value"],
+        "unknown"
+    );
+    assert_eq!(
+        field(attestation, "require_tests_pass")["default"]["value"],
+        true
+    );
+    assert_eq!(
+        field(attestation, "require_human_review")["default"]["value"],
+        false
+    );
+    assert_eq!(field(attestation, "revoked")["default"]["value"], false);
+    assert!(attestation["fields"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|field| field["name"] != "evaluation_summary" && field["name"] != "ci_backed"));
     assert_eq!(
         field(release, "artifacts")["default"],
         json!({"kind": "factory", "factory": "list", "value": []})

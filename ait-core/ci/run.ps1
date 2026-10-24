@@ -45,6 +45,8 @@ try {
     $env:CARGO_TARGET_DIR = $cargoTargetRoot
     $env:CARGO_BUILD_BUILD_DIR = Join-Path $cargoBuildRoot "{workspace-path-hash}"
     $env:CARGO_INCREMENTAL = "0"
+    # CI links executable binding tests, even if its caller built an extension.
+    Remove-Item Env:\PYO3_BUILD_EXTENSION_MODULE -ErrorAction SilentlyContinue
 
     Set-Location -LiteralPath $repoRoot
     Invoke-Checked "cargo" @("fmt", "--manifest-path", "rust/Cargo.toml", "--all", "--", "--check")
@@ -72,7 +74,10 @@ try {
             "-p", "ait-py",
             "--lib",
             "--test", "server_source_ownership",
-            "--test", "patchset_ci_runner", "--no-run"
+            "--test", "patchset_ci_runner", "--test", "workflow_recovery_cli",
+            "--test", "snapshot_task_binding_cli", "--test", "workflow_friction_cli",
+            "--test", "plan_cli", "--test", "workflow_package_frozen_candidate_cli",
+            "--test", "workflow_package_accepted_retry_cli", "--no-run"
         )
         Invoke-Checked "cargo" @(
             "test", "--manifest-path", "rust/Cargo.toml", "--profile", "ait-ci",
@@ -86,7 +91,10 @@ try {
             "--locked", "--all-features",
             "-p", "ait-core", "-p", "ait-cli",
             "--test", "server_source_ownership",
-            "--test", "patchset_ci_runner"
+            "--test", "patchset_ci_runner", "--test", "workflow_recovery_cli",
+            "--test", "snapshot_task_binding_cli", "--test", "workflow_friction_cli",
+            "--test", "plan_cli", "--test", "workflow_package_frozen_candidate_cli",
+            "--test", "workflow_package_accepted_retry_cli"
         )
 
         # Markdown is Plan lineage and is intentionally absent from remote Snapshot

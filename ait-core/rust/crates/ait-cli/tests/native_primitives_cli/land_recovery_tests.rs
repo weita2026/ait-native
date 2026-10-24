@@ -57,7 +57,7 @@ const CLOSEOUT_RECOVERY_ENV: [(&str, &str); 3] = [
 fn closeout_recovery_json(root: &Path, fixture_seed: u64, phase: &str) -> JsonValue {
     let output = command_output_with_env(
         root,
-        &["task", "finish", "RT-1", "--json", "--full"],
+        &["task", "finish", "RT-1", "--remote", "origin", "--json", "--full"],
         &CLOSEOUT_RECOVERY_ENV,
     );
     assert!(
@@ -308,7 +308,7 @@ fn native_task_land_waits_for_timed_out_in_flight_mutation_then_replays() {
     let started = Instant::now();
     let output = command_output_with_env(
         root,
-        &["task", "finish", "RT-1", "--json", "--full"],
+        &["task", "finish", "RT-1", "--remote", "origin", "--json", "--full"],
         &[
             ("AIT_REMOTE_MUTATION_RESPONSE_DEADLINE_SECONDS", "0.02"),
             // Preserve headroom above the 70 ms fixture mutation when the
@@ -403,7 +403,7 @@ fn native_task_land_timeout_before_remote_mutation_stays_failed_and_bounded() {
     let started = Instant::now();
     let output = command_output_with_env(
         root,
-        &["task", "finish", "RT-1", "--json", "--full"],
+        &["task", "finish", "RT-1", "--remote", "origin", "--json", "--full"],
         &[
             ("AIT_REMOTE_MUTATION_RESPONSE_DEADLINE_SECONDS", "0.01"),
             ("AIT_REMOTE_MUTATION_SETTLE_WINDOW_SECONDS", "0.05"),
@@ -583,7 +583,7 @@ fn native_task_land_current_worktree_skips_unrelated_backlog_refresh() {
 
     let payload = json_output_with_env(
         &worktree,
-        &["task", "finish", "RT-1", "--json"],
+        &["task", "finish", "RT-1", "--remote", "origin", "--json"],
         &[
             ("AIT_REMOTE_MUTATION_RESPONSE_DEADLINE_SECONDS", "0.05"),
             ("AIT_REMOTE_MUTATION_SETTLE_WINDOW_SECONDS", "1.0"),
@@ -675,7 +675,7 @@ fn native_workflow_finish_apply_delegates_final_closeout_to_atomic_task_land() {
     );
     assert_eq!(
         payload["reviewer_workflow"]["finalizer"].as_str(),
-        Some("task-land-atomic/v1")
+        Some("task-land-atomic/v2")
     );
     assert_eq!(
         payload["atomic_task_land"]["remote_mutation_count"].as_u64(),
@@ -712,7 +712,7 @@ fn native_workflow_finish_apply_delegates_final_closeout_to_atomic_task_land() {
 }
 
 #[test]
-fn native_workflow_finish_cli_uses_default_remote_in_solo_local_before_atomic_task_land() {
+fn native_workflow_finish_cli_uses_default_remote_with_local_defaults_before_atomic_task_land() {
     assert_workflow_finish_cli_preserves_review_gates("RC-1");
 }
 
@@ -721,12 +721,149 @@ fn native_workflow_finish_task_input_preserves_exact_review_policy_and_atomic_cl
     assert_workflow_finish_cli_preserves_review_gates("RT-1");
 }
 
+#[test]
+fn guarded_remote_finish_recovers_plan_sync_with_original_apply_receipt() {
+    let (base_url, log, state, handle) = spawn_closeout_recovery_remote();
+    let (temp, worktree) = init_worktree_repo(&base_url);
+    let root = temp.path();
+    let config_path = root.join(".ait/config.json");
+    let mut config = parse_json_file(&config_path);
+    config["agent_teams"] = json!(false);
+    write_file(&config_path, &encode_json_pretty(&config));
+    let artifact = "docs/sprints/remote-closeout.md";
+    let original = "# Finish [plan-ref: finish/root]\n\n- [ ] Ship [ref: finish/ship]\n- [ ] Other [ref: finish/other]\n";
+    write_file(&root.join(artifact), original);
+    let synced = json_output(root, &["plan", "sync", artifact, "--local", "--json"]);
+    let plan_id = synced["results"][0]["plan_id"].as_str().unwrap();
+    let mut plan = json_output(root, &["plan", "show", plan_id, "--local", "--json"]);
+    for item in plan["head_revision"]["items"].as_array_mut().unwrap() {
+        item.as_object_mut().unwrap().remove("taskable_hint");
+    }
+    write_file(&worktree.join("src/lib.rs"), "pub fn repo_root_version() -> &'static str { \"reviewed\" }\n");
+    let revision_id = seed_snapshot(&worktree, "reviewed closeout candidate");
+    {
+        let mut state = state.lock().unwrap();
+        state.plan_closeout = Some(CloseoutPlanFixture { revisions: vec![plan["head_revision"].clone()], plan, fail_sync: true });
+        state.patchset_revision_snapshot_id = Some(revision_id.clone());
+        state.guarded_base_snapshot_id = Some(FIXTURE_BASE_SNAPSHOT_ID.to_string());
+        state.enforce_reviewer_workflow = true;
+        state.code_review_recorded = false;
+        state.task_review_recorded = false;
+        state.policy_evaluated = false;
+    }
+    let frozen = TempDir::new().unwrap();
+    let expected_path = frozen.path().join("expected.json");
+    let expected = json!({
+        "repository_index":FIXTURE_REPOSITORY_INDEX,
+        "patchset_id":"RP-1",
+        "revision_snapshot_id":revision_id,
+        "base_snapshot_id":FIXTURE_BASE_SNAPSHOT_ID
+    });
+    write_file(&expected_path, &encode_json_pretty(&expected));
+    let guarded_finish = |root: &Path, identity: &Path| command_output_with_env(root, &[
+        "workflow", "finish", "RT-1", "--apply", "--remote", "origin",
+        "--expected-identity", identity.to_str().unwrap(),
+        "--reviewer", "Einstein", "--review-message", "Reviewed files: src/lib.rs; Findings: none; Risks: low; Tests: cargo test passed; Recommendation: finish.",
+        "--json", "--full"
+    ], &[]);
+    for (field, value) in [
+        ("repository_index", json!(8)),
+        ("patchset_id", json!("RP-OTHER")),
+        ("revision_snapshot_id", json!("SNP-000000000098")),
+        ("base_snapshot_id", json!("SNP-000000000099")),
+    ] {
+        let mut mismatch = expected.clone();
+        mismatch[field] = value;
+        let path = frozen.path().join(format!("wrong-{field}.json"));
+        write_file(&path, &encode_json_pretty(&mismatch));
+        let rejected = guarded_finish(&worktree, &path);
+        assert!(!rejected.status.success(), "{field}");
+        assert!(String::from_utf8_lossy(&rejected.stderr).contains("EXPECTED_CANDIDATE_MISMATCH"), "{field}: {}", String::from_utf8_lossy(&rejected.stderr));
+    }
+    assert!(log.lock().unwrap().iter().all(|r| r.method == "GET"));
+    // The final locked authority may change after client preflight has passed.
+    state.lock().unwrap().guarded_base_snapshot_id = Some("SNP-000000000099".to_string());
+    let rejected = guarded_finish(&worktree, &expected_path);
+    assert!(!rejected.status.success());
+    assert!(String::from_utf8_lossy(&rejected.stderr).contains("EXPECTED_CANDIDATE_MISMATCH"), "{}", String::from_utf8_lossy(&rejected.stderr));
+    {
+        let mut state = state.lock().unwrap();
+        assert_eq!(state.land_submit_mutations, 0);
+        assert_eq!(state.task_close_mutations, 0);
+        assert_eq!(state.plan_closeout.as_ref().unwrap().revisions.len(), 1);
+        state.guarded_base_snapshot_id = Some(FIXTURE_BASE_SNAPSHOT_ID.to_string());
+        state.code_review_recorded = false;
+        state.task_review_recorded = false;
+        state.policy_evaluated = false;
+    }
+    assert_eq!(fs::read_to_string(root.join(artifact)).unwrap(), original);
+    let first_output = guarded_finish(&worktree, &expected_path);
+    assert_eq!(first_output.status.code(), Some(2), "stdout: {}\nstderr: {}", String::from_utf8_lossy(&first_output.stdout), String::from_utf8_lossy(&first_output.stderr));
+    let first = parse_json_bytes(&first_output.stdout);
+    assert_eq!(first["apply_status"], "done", "{first}");
+    assert_eq!(first["atomic_task_land"]["contract"], ait_core::workflow_expected_identity::GUARDED_TASK_LAND_CONTRACT);
+    assert_eq!(first["reviewer_workflow"]["finalizer"], ait_core::workflow_expected_identity::GUARDED_TASK_LAND_CONTRACT);
+    assert_eq!(first["closeout_status"], "partial", "{first}");
+    let recovery_command = first["closeout_recovery"]["command"].as_str().unwrap();
+    assert!(recovery_command.starts_with("ait workflow finish "));
+    assert!(recovery_command.contains("--expected-identity"));
+    assert!(recovery_command.contains(expected_path.to_str().unwrap()));
+    assert!(recovery_command.contains("--remote origin"));
+    assert!(first["plan_checklist_closeout"]["error"].as_str().unwrap().contains("injected Plan sync failure"), "{first}");
+    assert_eq!(first["landed_snapshot_id"], revision_id);
+    assert_eq!(fs::read_to_string(root.join(artifact)).unwrap(), original);
+    assert_closeout_mutated_once(&state, 0);
+    let receipt = state.lock().unwrap().atomic_task_land_idempotency_key.clone();
+    let before = json_output(root, &["snapshot", "list", "--all", "--json"]);
+    for field in ["repository_index", "patchset_id", "revision_snapshot_id", "base_snapshot_id"] {
+        let rejected = guarded_finish(root, &frozen.path().join(format!("wrong-{field}.json")));
+        assert!(!rejected.status.success(), "receipt recovery must preserve {field}");
+        assert!(String::from_utf8_lossy(&rejected.stderr).contains("EXPECTED_CANDIDATE_MISMATCH"), "{field}: {}", String::from_utf8_lossy(&rejected.stderr));
+    }
+    assert_closeout_mutated_once(&state, 0);
+    assert_eq!(fs::read_to_string(root.join(artifact)).unwrap(), original);
+    state.lock().unwrap().plan_closeout.as_mut().unwrap().fail_sync = false;
+    let recovery_output = guarded_finish(root, &expected_path);
+    assert!(recovery_output.status.success(), "stdout: {}\nstderr: {}", String::from_utf8_lossy(&recovery_output.stdout), String::from_utf8_lossy(&recovery_output.stderr));
+    let recovered = parse_json_bytes(&recovery_output.stdout);
+    assert_eq!(recovered["apply_status"], "done", "{recovered}");
+    assert_eq!(recovered["closeout_status"], "complete", "{recovered}");
+    assert_eq!(recovered["plan_checklist_closeout"]["status"], "synced");
+    assert_eq!(recovered["atomic_task_land"]["replayed"], true);
+    assert_eq!(recovered["landed_snapshot_id"], first["landed_snapshot_id"]);
+    assert_eq!(state.lock().unwrap().atomic_task_land_idempotency_key, receipt);
+    assert_closeout_mutated_once(&state, 0);
+    assert_eq!(json_output(root, &["snapshot", "list", "--all", "--json"]), before);
+    assert_eq!(fs::read_to_string(root.join(artifact)).unwrap(), original.replacen("- [ ] Ship", "- [x] Ship", 1));
+    let state = state.lock().unwrap();
+    assert_eq!(state.plan_closeout.as_ref().unwrap().revisions.len(), 4,
+        "original, failed closure, restored local Plan, successful closure remain in native history");
+    drop(state);
+    let requests = log.lock().unwrap();
+    let apply_index = requests.iter().position(|r| r.url.ends_with("/task-land")).unwrap();
+    for action in ["code_review_summary", "task_approve"] {
+        assert!(requests[..apply_index].iter().any(|r| r.url.ends_with("/reviews") && r.body.contains(action)));
+    }
+    assert!(requests[..apply_index].iter().any(|r| r.url.ends_with(":evaluatePolicy")));
+    let atomic = requests.iter().filter(|r| r.method == "POST" && r.url.ends_with("/task-land")).collect::<Vec<_>>();
+    assert!(atomic.len() >= 3, "mismatched authority, original apply and receipt recovery must reach the atomic entrypoint");
+    for request in atomic {
+        let body = parse_json(&request.body);
+        assert_eq!(body["contract"], ait_core::workflow_expected_identity::GUARDED_TASK_LAND_CONTRACT);
+        assert_eq!(body["expected_identity"], expected);
+    }
+    assert_eq!(parse_json_file(&expected_path), expected);
+    drop(requests);
+    handle.join().unwrap();
+}
+
 fn assert_workflow_finish_cli_preserves_review_gates(reference: &str) {
     let (base_url, log, state, handle) = spawn_closeout_recovery_remote();
     let (temp, worktree) = init_worktree_repo(&base_url);
     let config_path = temp.path().join(".ait/config.json");
     let mut config: JsonValue = parse_json_file(&config_path);
-    config["workflow_mode"] = json!("solo_local");
+    config["user_name"] = JsonValue::Null;
+    config["user_email"] = JsonValue::Null;
     config["workflow_default_scope"] = json!("local");
     config["task_default_scope"] = json!("local");
     config["change_default_scope"] = json!("local");
@@ -752,7 +889,7 @@ fn assert_workflow_finish_cli_preserves_review_gates(reference: &str) {
             "finish",
             reference,
             "--apply",
-            "--review-message",
+            "--reviewer", "Einstein", "--review-message",
             "Reviewed files: src/lib.rs; Findings: no blocking findings; Risks: low; Tests: cargo test passed; Recommendation: land.",
         ],
         &[],
@@ -798,6 +935,11 @@ fn assert_workflow_finish_cli_preserves_review_gates(reference: &str) {
             row.method == "POST" && row.url == "/v1/native/repository-authorities/7/task-land"
         })
         .expect("workflow finish must delegate to atomic Task Land");
+    for index in [code_review_index, task_review_index] {
+        let review = parse_json(&logged[index].body);
+        assert_eq!(review["reviewer"], "Einstein");
+        assert_eq!(review["reviewer_kind"], "bot");
+    }
     assert!(code_review_index < task_review_index);
     assert!(task_review_index < policy_index);
     assert!(policy_index < atomic_land_index);
@@ -839,11 +981,11 @@ fn native_task_audit_remote_task_reference_does_not_probe_remote_change() {
 }
 
 #[test]
-fn native_task_audit_cli_solo_remote_default_uses_remote_for_unpublished_local_draft() {
+fn native_task_audit_cli_explicit_remote_reads_shared_task_for_unpublished_local_draft() {
     let (base_url, log, _state, handle) = spawn_closeout_recovery_remote();
     let (temp, worktree) = init_local_draft_worktree_repo(&base_url);
 
-    let payload = json_output(&worktree, &["task", "audit", "RT-1", "--json"]);
+    let payload = json_output(&worktree, &["task", "audit", "RT-1", "--remote", "origin", "--json"]);
 
     assert_eq!(
         payload["changes"][0]["change"]["change_id"].as_str(),
@@ -882,7 +1024,7 @@ fn native_task_audit_cli_local_override_reads_local_draft() {
 }
 
 #[test]
-fn native_task_audit_cli_solo_local_default_does_not_fallback_to_remote() {
+fn native_task_audit_cli_local_default_does_not_fallback_to_remote() {
     let (temp, worktree, _started) = init_cli_local_draft_worktree_repo("http://127.0.0.1:1");
     let config_path = temp.path().join(".ait/config.json");
     let config = fs::read_to_string(&config_path)

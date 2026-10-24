@@ -6,6 +6,9 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+mod binary;
+pub use binary::BinaryDbTagStore;
+
 pub const TAG_RECORD_SCHEMA: u32 = 1;
 
 pub type TagStoreResult<T> = Result<T, String>;

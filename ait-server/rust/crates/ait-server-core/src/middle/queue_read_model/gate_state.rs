@@ -19,11 +19,14 @@ pub(super) fn review_summary(
     let mut approvals = HashSet::new();
     let mut blocking = 0;
     let mut comments = 0;
-    for review in index
-        .reviews_by_change_key
-        .get(change_key.as_deref().unwrap_or_default())
-        .into_iter()
-        .flatten()
+    for review in (match patchset_id {
+        Some(id) => index.reviews_by_patchset.get(id),
+        None => index
+            .reviews_by_change_key
+            .get(change_key.as_deref().unwrap_or_default()),
+    })
+    .into_iter()
+    .flatten()
     {
         if patchset_id.is_some() && object_text(review, "patchset_id").as_deref() != patchset_id {
             continue;
@@ -55,16 +58,19 @@ pub(super) fn review_summary(
             comments += 1;
         }
     }
-    let review_requests = index
-        .review_requests_by_change_key
-        .get(change_key.as_deref().unwrap_or_default())
-        .into_iter()
-        .flatten()
-        .filter(|request| {
-            patchset_id.is_none() || object_text(request, "patchset_id").as_deref() == patchset_id
-        })
-        .map(|request| JsonValue::Object((*request).clone()))
-        .collect();
+    let review_requests = (match patchset_id {
+        Some(id) => index.review_requests_by_patchset.get(id),
+        None => index
+            .review_requests_by_change_key
+            .get(change_key.as_deref().unwrap_or_default()),
+    })
+    .into_iter()
+    .flatten()
+    .filter(|request| {
+        patchset_id.is_none() || object_text(request, "patchset_id").as_deref() == patchset_id
+    })
+    .map(|request| JsonValue::Object((*request).clone()))
+    .collect();
     ReviewSummary {
         approvals: approvals.len(),
         blocking,

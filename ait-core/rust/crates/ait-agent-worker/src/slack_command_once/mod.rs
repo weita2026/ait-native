@@ -206,7 +206,6 @@ pub(crate) fn command_job_request(
         "state_path": config.shared.paths.sync_state_path,
         "runtime_target": {
             "mode": target.mode.as_str(),
-            "workflow_mode": target.workflow_mode.as_str(),
             "repo_name": target.repo_name,
             "repo_root": target.repo_root.to_string_lossy().to_string(),
             "remote_name": optional_string_json(target.remote_name.as_deref()),

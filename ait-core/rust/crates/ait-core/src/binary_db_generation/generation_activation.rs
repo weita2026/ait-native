@@ -1,4 +1,9 @@
-use super::generation_content_closure::validate_repository_content_closure;
+use super::generation_content_closure::{
+    validate_repository_content_closure, validate_repository_content_closure_preserving_pack_slots,
+};
+use super::generation_git::{
+    declared_git_leaf, git_inputs, validate_git_root, GIT_DIRECTORY, GIT_PREFIX,
+};
 use super::{GenerationResult, Path, PathBuf};
 use crate::binary_db::{
     AuthorityId, BinaryDbCommandLockSet, BinaryDbCommandScope, BinaryDbReadLockSet,
@@ -70,6 +75,13 @@ struct ClientManifest {
     content_fingerprint: String,
     files: Vec<ClientManifestFile>,
     validation: ClientManifestValidation,
+    #[serde(default)]
+    content_projection: Option<ClientContentProjection>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct ClientContentProjection {
+    source_retained: bool,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -121,6 +133,13 @@ struct AuthorityReplacement {
 pub fn activate_binary_db_generation(
     options: BinaryDbGenerationActivationOptions,
 ) -> GenerationResult<BinaryDbGenerationActivationReport> {
+    activate_binary_db_generation_coordinated(options, false)
+}
+pub(super) fn activate_binary_db_generation_coordinated(
+    options: BinaryDbGenerationActivationOptions,
+    coordination_held: bool,
+) -> GenerationResult<BinaryDbGenerationActivationReport> {
+    let _range = perfetto_range!("ait.database.admission.activation");
     let repo_root = options.repo_root.canonicalize().map_err(|error| {
         format!(
             "invalid repository root {}: {error}",
@@ -129,14 +148,24 @@ pub fn activate_binary_db_generation(
     })?;
     let repo_name = configured_repo_name(&repo_root)?;
     let authority = repo_root.join(".ait/binary-db");
-    let _activation_lock = BinaryDbCommandLockSet::acquire(
-        &binary_db_activation_lock_root(&repo_root),
-        BinaryDbCommandScope::General,
-    )
-    .map_err(|error| format!("failed to acquire Binary DB activation lock: {error}"))?;
+    let _activation_lock = if coordination_held {
+        None
+    } else {
+        Some(
+            BinaryDbCommandLockSet::acquire(
+                &binary_db_activation_lock_root(&repo_root),
+                BinaryDbCommandScope::General,
+            )
+            .map_err(|error| format!("failed to acquire Binary DB activation lock: {error}"))?,
+        )
+    };
     let (generation_root, captured_source_fingerprint) =
         read_generation_activation_precondition(&options.generation_root, &repo_name)?;
     reject_generation_inside_retired_authority(&authority, &generation_root)?;
+    let git_root = repo_root.join(GIT_DIRECTORY);
+    git_inputs(&git_root)?; // Direct roots only, including before lock creation.
+    let _git_lock = crate::git_binary_db::GitInteropBundle::open(&repo_root, true)
+        .map_err(|error| format!("failed to acquire Git activation lock: {error}"))?;
     let expected_current_fingerprint = options
         .expected_current_authority_fingerprint
         .as_deref()
@@ -148,7 +177,13 @@ pub fn activate_binary_db_generation(
         );
     }
     let current_authority_fingerprint = fingerprint_direct_authority_state(&authority)?;
-    if current_authority_fingerprint != expected_current_fingerprint {
+    let git_capture = super::generation_git::git_exists(&generation_root.join(GIT_DIRECTORY));
+    // The existing manifest and exact selected content prove replay after a
+    // dependency-first activation stopped before publishing its new Git root.
+    let selected_git_generation = git_capture
+        && current_authority_fingerprint
+            == fingerprint_direct_authority_contents(&generation_root.join("local"))?;
+    if current_authority_fingerprint != expected_current_fingerprint && !selected_git_generation {
         return Err(format!(
             "stale Binary DB generation: current authority fingerprint changed after capture: expected={expected_current_fingerprint} actual={current_authority_fingerprint}"
         ));
@@ -160,6 +195,7 @@ pub fn activate_binary_db_generation(
                 .to_string(),
         );
     }
+    let publish_git = validate_current_git_capture(&git_root, &verified)?;
 
     let ait_root = repo_root.join(".ait");
     fs::create_dir_all(&ait_root)
@@ -220,6 +256,12 @@ pub fn activate_binary_db_generation(
             rollback,
         ));
     }
+    activation_git_boundary_pause();
+    if publish_git {
+        // All referenced content/pack slots are already durable. A whole new
+        // optional root is published once; old JSON/ODB evidence is untouched.
+        publish_captured_git_root(&git_root, &verified, nonce)?;
+    }
 
     let retired_direct_authority = previous
         .as_ref()
@@ -241,9 +283,106 @@ pub fn activate_binary_db_generation(
         retired_direct_authority,
         retained_previous_authority,
         activation_strategy: replacement.strategy.persisted_name().to_string(),
-        single_syscall_atomic: replacement.strategy.single_syscall_atomic(),
+        single_syscall_atomic: replacement.strategy.single_syscall_atomic() && !publish_git,
         activation_lock_protected: true,
     })
+}
+
+fn validate_current_git_capture(
+    git_root: &Path,
+    verified: &VerifiedGeneration,
+) -> GenerationResult<bool> {
+    let captured: Vec<_> = verified
+        .files
+        .iter()
+        .filter(|file| super::generation_git::git_file(&file.relative_path))
+        .collect();
+    let current = git_inputs(git_root)?;
+    if current.is_empty() {
+        return Ok(!captured.is_empty());
+    }
+    if captured.len() != current.len() {
+        return Err(
+            "stale Git generation: capture must preserve the complete current Git root".into(),
+        );
+    }
+    for ((path, relative), file) in current.iter().zip(captured) {
+        if *relative != file.relative_path
+            || fs::metadata(path).map_err(|e| e.to_string())?.len() != file.byte_size
+            || sha256_file(path)? != file.sha256
+        {
+            return Err(
+                "stale Git generation: current optional Git bytes changed after capture".into(),
+            );
+        }
+    }
+    Ok(false)
+}
+
+fn publish_captured_git_root(
+    git_root: &Path,
+    verified: &VerifiedGeneration,
+    nonce: u128,
+) -> GenerationResult<()> {
+    if let Some(file) = verified
+        .files
+        .iter()
+        .find(|f| f.relative_path == crate::git_binary_db::GIT_INTEROP_BUNDLE_PATH)
+    {
+        let destination = super::generation_git::git_repo(git_root)?.join(&file.relative_path);
+        if destination.exists() || !git_inputs(git_root)?.is_empty() {
+            return Err("Git authority appeared before activation publication".into());
+        }
+        let parent = destination.parent().ok_or("Git bundle has no parent")?;
+        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        let staged = parent.join(format!(".interop.activate-{}-{nonce}", std::process::id()));
+        copy_verified_file(
+            &verified.generation_root.join(&file.relative_path),
+            &staged,
+            file,
+        )?;
+        fs::rename(staged, &destination).map_err(|e| e.to_string())?;
+        return sync_directory(parent);
+    }
+    let parent = git_root.parent().ok_or("Git root has no parent")?;
+    fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    let staged = parent.join(format!(
+        ".binary-v0.activate-{}-{nonce}",
+        std::process::id()
+    ));
+    fs::create_dir(&staged).map_err(|e| e.to_string())?;
+    for file in verified
+        .files
+        .iter()
+        .filter(|file| file.relative_path.starts_with(GIT_PREFIX))
+    {
+        let leaf = file
+            .relative_path
+            .strip_prefix(GIT_PREFIX)
+            .ok_or("Git file lost prefix")?;
+        copy_verified_file(
+            &verified.generation_root.join(&file.relative_path),
+            &staged.join(leaf),
+            file,
+        )?;
+    }
+    sync_directory(&staged)?;
+    if git_root.exists() {
+        return Err("Git root appeared before activation publication".into());
+    }
+    fs::rename(&staged, git_root).map_err(|e| e.to_string())?;
+    // An uncertain directory fsync never removes already-published owners.
+    sync_directory(parent)
+}
+
+fn activation_git_boundary_pause() {
+    #[cfg(test)]
+    if let Some(marker) = std::env::var_os("AIT_GIT_CAPTURE_TEST_PAUSE_MARKER") {
+        fs::write(marker, b"content-dependencies-durable").expect("owned test marker");
+        loop {
+            std::thread::park_timeout(std::time::Duration::from_millis(10));
+        }
+    }
 }
 
 fn replace_authority(
@@ -366,10 +505,7 @@ pub fn binary_db_activation_lock_root(repo_root: &Path) -> StorePath {
     StorePath::from(repo_root.join(".ait").join(ACTIVATION_LOCK_ROOT))
 }
 
-pub fn admit_activated_binary_db_generation(
-    authority: &Path,
-    expected_repo_name: &str,
-) -> GenerationResult<ActivatedBinaryDbGeneration> {
+pub(crate) fn require_direct_authority_directory(authority: &Path) -> GenerationResult<()> {
     let metadata = fs::symlink_metadata(authority).map_err(|error| {
         format!(
             "direct Binary DB authority {} is missing: {error}",
@@ -400,6 +536,25 @@ pub fn admit_activated_binary_db_generation(
             authority.display()
         ));
     }
+    let lock_root = authority.join(".locks");
+    match fs::symlink_metadata(&lock_root) {
+        Ok(metadata) => {
+            if !metadata.file_type().is_dir() {
+                return Err("Binary DB lock authority must be a direct directory".into());
+            }
+            validate_lock_directory(&lock_root)?;
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.to_string()),
+    }
+    Ok(())
+}
+
+pub fn admit_activated_binary_db_generation(
+    authority: &Path,
+    expected_repo_name: &str,
+) -> GenerationResult<ActivatedBinaryDbGeneration> {
+    require_direct_authority_directory(authority)?;
     let authority_root = authority.canonicalize().map_err(|error| {
         format!(
             "direct Binary DB authority {} cannot be resolved: {error}",
@@ -450,11 +605,27 @@ pub fn admit_activated_binary_db_generation_for_runtime(
     ActivatedBinaryDbGeneration,
     std::sync::Arc<std::sync::Mutex<BinaryDbReadLockSet>>,
 )> {
+    let _range = perfetto_range!("ait.database.admission.complete");
+    super::local_land_upgrade::admit_local_receipt_upgrade(
+        repo_root,
+        authority,
+        expected_repo_name,
+    )?;
+    let _reopen = perfetto_range!("ait.database.admission.reopen");
     let guard = BinaryDbReadLockSet::try_acquire(&binary_db_activation_lock_root(repo_root))
         .map_err(|error| format!("Binary DB generation activation is active: {error}"))?;
+    // Reject indirect paths before repair or lock creation can touch them.
+    require_direct_authority_directory(authority)?;
     crate::plan_binary_db::repair_plan_binary_db_authority_if_needed(authority)
         .map_err(|error| format!("Selected Binary DB Plan recovery failed: {error}"))?;
+    // Plan repair may need its own writer lock. Only after it completes, hold
+    // the metadata read lock across both direct and detached validation so an
+    // ordinary transaction cannot expose an incomplete owner/index batch.
+    let _authority_read =
+        BinaryDbReadLockSet::try_acquire(&StorePath::from(authority.to_path_buf()))
+            .map_err(|error| format!("Binary DB metadata writer is active: {error}"))?;
     let generation = admit_activated_binary_db_generation(authority, expected_repo_name)?;
+    super::local_land_upgrade::validate_current(authority, repo_root, expected_repo_name)?;
     Ok((
         generation,
         std::sync::Arc::new(std::sync::Mutex::new(guard)),
@@ -618,6 +789,7 @@ pub(super) fn verify_generation(
         }
         if file.relative_path.starts_with("local/")
             && file.relative_path.ends_with(".bin")
+            && !["local/land.bin", "local/snapshot_link.bin"].contains(&file.relative_path.as_str())
             && file.byte_size <= 4
         {
             return Err(format!(
@@ -650,7 +822,24 @@ pub(super) fn verify_generation(
             &generation_root,
             expected_repo_name,
         )?;
-        validate_repository_content_closure(&authority_root, &generation_root)?;
+        if manifest
+            .content_projection
+            .as_ref()
+            .is_some_and(|projection| projection.source_retained)
+        {
+            validate_repository_content_closure_preserving_pack_slots(
+                &authority_root,
+                &generation_root,
+            )?;
+        } else {
+            validate_repository_content_closure(&authority_root, &generation_root)?;
+        }
+        validate_git_root(
+            &generation_root.join(GIT_DIRECTORY),
+            &authority_root,
+            &generation_root,
+            true,
+        )?;
         Ok(())
     })();
     let validation_lock_root = authority_root.join(".locks");
@@ -760,6 +949,17 @@ pub(super) fn validate_generation_file_path(relative_path: &str) -> GenerationRe
         }
         return Ok(());
     }
+    if let Some(leaf) = relative_path.strip_prefix(GIT_PREFIX) {
+        if declared_git_leaf(leaf) {
+            return Ok(());
+        }
+        return Err(format!(
+            "undeclared optional Git generation file: {relative_path:?}"
+        ));
+    }
+    if relative_path == crate::git_binary_db::GIT_INTEROP_BUNDLE_PATH {
+        return Ok(());
+    }
     Err(format!(
         "Binary DB generation path is outside local/ and .ait/objects/: {relative_path:?}"
     ))
@@ -785,7 +985,9 @@ fn is_canonical_pack_path(value: &str) -> bool {
             .all(|value| value.is_ascii_digit() || (b'A'..=b'F').contains(&value))
 }
 
-fn collect_generation_paths(generation_root: &Path) -> GenerationResult<BTreeSet<String>> {
+pub(super) fn collect_generation_paths(
+    generation_root: &Path,
+) -> GenerationResult<BTreeSet<String>> {
     let mut paths = BTreeSet::new();
     collect_paths_under(generation_root, &generation_root.join("local"), &mut paths)?;
     collect_paths_under(
@@ -793,6 +995,21 @@ fn collect_generation_paths(generation_root: &Path) -> GenerationResult<BTreeSet
         &generation_root.join(".ait/objects"),
         &mut paths,
     )?;
+    let git_root = generation_root.join(GIT_DIRECTORY);
+    if git_root.exists() {
+        collect_paths_under(generation_root, &git_root, &mut paths)?;
+    }
+    let archive = generation_root.join(crate::git_binary_db::GIT_INTEROP_BUNDLE_PATH);
+    if archive.exists() {
+        if !fs::symlink_metadata(&archive)
+            .map_err(|e| e.to_string())?
+            .file_type()
+            .is_file()
+        {
+            return Err("Git bundle is not a direct file".into());
+        }
+        paths.insert(crate::git_binary_db::GIT_INTEROP_BUNDLE_PATH.into());
+    }
     Ok(paths)
 }
 
@@ -1062,7 +1279,7 @@ fn fingerprint_direct_authority_state(authority_root: &Path) -> GenerationResult
     }
 }
 
-fn validate_direct_authority(authority_root: &Path) -> GenerationResult<String> {
+pub(super) fn validate_direct_authority(authority_root: &Path) -> GenerationResult<String> {
     let mut entries = fs::read_dir(authority_root)
         .map_err(|error| format!("failed to inventory {}: {error}", authority_root.display()))?
         .collect::<Result<Vec<_>, _>>()
@@ -1113,7 +1330,10 @@ fn validate_direct_authority(authority_root: &Path) -> GenerationResult<String> 
                 path.display()
             ));
         }
-        if name.ends_with(".bin") && metadata.len() <= 4 {
+        if name.ends_with(".bin")
+            && !["land.bin", "snapshot_link.bin"].contains(&name.as_str())
+            && metadata.len() <= 4
+        {
             return Err(format!(
                 "Binary DB authority contains forbidden header-only file {name:?}"
             ));
@@ -1192,7 +1412,7 @@ fn validate_lock_directory(lock_root: &Path) -> GenerationResult<()> {
     Ok(())
 }
 
-pub(super) fn configured_repo_name(repo_root: &Path) -> GenerationResult<String> {
+pub(crate) fn configured_repo_name(repo_root: &Path) -> GenerationResult<String> {
     let config_path = repo_root.join(".ait/config.json");
     let value: serde_json::Value = serde_json::from_slice(
         &fs::read(&config_path)
@@ -1218,7 +1438,7 @@ fn required_layout_ids() -> BTreeMap<String, u32> {
     ])
 }
 
-fn fingerprint_files(files: &[ClientManifestFile]) -> String {
+pub(super) fn fingerprint_files(files: &[ClientManifestFile]) -> String {
     let mut hasher = Sha256::new();
     for file in files {
         hasher.update(file.relative_path.as_bytes());
@@ -1259,6 +1479,23 @@ fn validate_local_binary_file(
     relative_path: &str,
     byte_size: u64,
 ) -> GenerationResult<()> {
+    validate_local_binary_file_layout(path, relative_path, byte_size, 2)
+}
+
+pub(super) fn validate_layout1_upgrade_file(
+    path: &Path,
+    relative_path: &str,
+    byte_size: u64,
+) -> GenerationResult<()> {
+    validate_local_binary_file_layout(path, relative_path, byte_size, 1)
+}
+
+fn validate_local_binary_file_layout(
+    path: &Path,
+    relative_path: &str,
+    byte_size: u64,
+    land_layout: u32,
+) -> GenerationResult<()> {
     let mut file = fs::File::open(path)
         .map_err(|error| format!("failed to open {}: {error}", path.display()))?;
     let mut header = [0_u8; 4];
@@ -1269,9 +1506,19 @@ fn validate_local_binary_file(
         )
     })?;
     let layout = u32::from_le_bytes(header);
-    if layout != 1 {
+    let expected = if ["local/land.bin", "local/snapshot_link.bin"].contains(&relative_path) {
+        land_layout
+    } else {
+        1
+    };
+    if layout != expected {
+        if relative_path == "local/land.bin" && layout == 1 && expected == 2 {
+            return Err(
+                "Local receipt upgrade must complete at native repository admission".into(),
+            );
+        }
         return Err(format!(
-            "Binary DB generation file has unsupported layout {layout} at {relative_path:?}"
+            "Binary DB generation file has unsupported layout {layout} at {relative_path:?}; expected {expected}. Local layout-1 receipts require complete native repository admission"
         ));
     }
     let Some(name) = relative_path.strip_prefix("local/") else {
@@ -1287,7 +1534,7 @@ fn validate_local_binary_file(
         CHANGE_RECORD_BIN => Some(u64::from(LOCAL_CHANGE_RECORD_SIZE)),
         CHANGE_LAND_INDEX_BIN => Some(u64::from(CHANGE_LAND_INDEX_RECORD_SIZE)),
         LAND_RECORD_BIN => Some(u64::from(LOCAL_LAND_RECORD_SIZE)),
-        "snapshot_link.bin" => Some(40),
+        "snapshot_link.bin" => Some(if land_layout == 1 { 40 } else { 22 }),
         "task_snapshot_index.bin" | "change_snapshot_index.bin" => Some(8),
         "blob.bin" => Some(64),
         "snapshot.bin" => Some(88),
@@ -1374,7 +1621,7 @@ fn sync_directory(path: &Path) -> GenerationResult<()> {
 }
 
 #[cfg(target_os = "macos")]
-fn atomic_exchange(left: &Path, right: &Path) -> std::io::Result<()> {
+pub(super) fn atomic_exchange(left: &Path, right: &Path) -> std::io::Result<()> {
     let left = CString::new(left.as_os_str().as_bytes())?;
     let right = CString::new(right.as_os_str().as_bytes())?;
     let result = unsafe {
@@ -1394,7 +1641,7 @@ fn atomic_exchange(left: &Path, right: &Path) -> std::io::Result<()> {
 }
 
 #[cfg(target_os = "linux")]
-fn atomic_exchange(left: &Path, right: &Path) -> std::io::Result<()> {
+pub(super) fn atomic_exchange(left: &Path, right: &Path) -> std::io::Result<()> {
     let left = CString::new(left.as_os_str().as_bytes())?;
     let right = CString::new(right.as_os_str().as_bytes())?;
     let result = unsafe {
@@ -1415,7 +1662,7 @@ fn atomic_exchange(left: &Path, right: &Path) -> std::io::Result<()> {
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-fn atomic_exchange(_left: &Path, _right: &Path) -> std::io::Result<()> {
+pub(super) fn atomic_exchange(_left: &Path, _right: &Path) -> std::io::Result<()> {
     Err(std::io::Error::new(
         std::io::ErrorKind::Unsupported,
         "atomic Binary DB pointer exchange is unsupported on this platform",

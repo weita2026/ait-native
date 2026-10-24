@@ -49,6 +49,10 @@ for required in \
   'init_cli_creates_then_reinitializes_the_agent_contract' \
   'init_is_idempotent_and_creates_only_an_empty_runtime_root' \
   'installed_run_initializes_then_serves_from_an_explicit_root' \
+  'Run native retained-source regressions for the selected family' \
+  'node ci/release_windows_retained_source.mjs' \
+  'architecture: ${{ matrix.node_arch }}' \
+  'Retain original Windows regression diagnostics' \
   'root_command_inventory_is_frozen' \
   'root_ait_agent_namespace_is_absent' \
   'ait.release.pre-rc-qualification/v1' \
@@ -80,6 +84,54 @@ for forbidden in \
     exit 65
   fi
 done
+
+# Exercise the workflow's actual contract shell in both dispatch modes.
+node - "$workflow" "$temporary_root" <<'NODE'
+const fs = require("node:fs"), path = require("node:path"), assert = require("node:assert/strict");
+const { execFileSync, spawnSync } = require("node:child_process");
+const source = fs.readFileSync(process.argv[2], "utf8"), temporary = process.argv[3];
+const condition = "    if: " + "$" + "{{ !inputs.windows_qa_only }}";
+for (const name of ["core-quality", "qualify"]) {
+  const body = source.split("\n  " + name + ":\n")[1].split(/\n  [a-z-]+:\n/)[0];
+  assert(body.split("\n").includes(condition), "QA must exclude " + name);
+}
+const regression = source.split("\n  regression:\n")[1].split("\n  windows-lifecycle:")[0];
+assert(regression.includes("Run release-order, export, command, and environment controls\n" + condition.replace(/^    /, "        ")));
+assert(regression.includes("Run the single reviewed Unix foreign-owner negative as real root\n        if: " + "$" + "{{ inputs.windows_qa_only }}"));
+assert(regression.includes('sudo -n -- "$qa_test_exe" "$qa_case" --ignored --exact'));
+const block = source.split("      - name: Reject release authority before qualification\n")[1].split("\n  core-quality:")[0];
+const marker = "        run: |\n";
+const shell = block.slice(block.indexOf(marker) + marker.length).split("\n").map(line => line.startsWith("          ") ? line.slice(10) : line).join("\n");
+const expression = "$" + "{{ inputs.windows_qa_only }}";
+const root = path.join(temporary, "qa-contract"), bin = path.join(root, "bin"), calls = path.join(temporary, "qa-node.calls");
+fs.mkdirSync(bin, { recursive: true }); fs.mkdirSync(path.join(root, "ci"));
+for (const name of ["native_bootstrap_matrix.json", "release_repository_authorities.json"]) {
+  fs.writeFileSync(path.join(root, "ci", name), '{"public_publish":false}\n');
+}
+fs.writeFileSync(path.join(bin, "node"), "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$QA_NODE_CALLS\"\n", { mode: 0o755 });
+const git = (...args) => execFileSync("git", ["-C", root, ...args], { encoding: "utf8" }).trim();
+git("init", "-q"); git("config", "user.name", "QA contract fixture"); git("config", "user.email", "qa@example.invalid");
+git("add", ".");
+git("-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null", "commit", "--allow-empty", "--quiet", "-m", "QA fixture");
+const commit = git("rev-parse", "HEAD");
+function run(value, branch) {
+  fs.rmSync(calls, { force: true });
+  const result = spawnSync("bash", ["-c", shell.replaceAll(expression, value)], {
+    cwd: root, encoding: "utf8", env: { ...process.env, PATH: bin + path.delimiter + process.env.PATH,
+      QA_NODE_CALLS: calls, AIT_SOURCE_COMMIT: commit, AIT_CONTROL_COMMIT: commit, GITHUB_REF_NAME: branch },
+  });
+  return { status: result.status, calls: fs.existsSync(calls) ? fs.readFileSync(calls, "utf8").trim().split("\n") : [] };
+}
+assert.deepEqual(run("true", "qa/native-retained-source-lnat-0021"), { status: 0, calls: [] });
+const wrongMode = run("false", "qa/native-retained-source-lnat-0021");
+assert.notEqual(wrongMode.status, 0); assert.deepEqual(wrongMode.calls, []);
+const full = run("false", "main"); assert.equal(full.status, 0); assert.equal(full.calls.length, 1);
+assert.equal(full.calls[0], "build-release.mjs --validate-only --git-commit " + commit);
+git("tag", "v0.0.0");
+const tagged = run("true", "qa/native-retained-source-lnat-0021");
+assert.notEqual(tagged.status, 0); assert.deepEqual(tagged.calls, []);
+console.log("Windows QA isolation and exact untagged-source guards: pass");
+NODE
 
 fixture=${temporary_root}/fixture
 mkdir -p "${fixture}/ait-core" "${fixture}/ci" "${fixture}/component"

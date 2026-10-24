@@ -8,6 +8,9 @@ mod repository;
 mod serialization;
 #[path = "binary/snapshot_export.rs"]
 mod snapshot_export;
+#[path = "binary/workflow_package.rs"]
+mod workflow_package;
+pub use workflow_package::PreparedWorkflowPackageContent;
 
 use line_snapshot::*;
 use serialization::*;
@@ -49,6 +52,7 @@ where
     db: D,
     default_line: String,
     id_namespace_prefix: String,
+    snapshot_capture_authority: Option<(u32, String)>,
     created_at: String,
     pull_catalog_cache: Arc<BinaryZstdPullCatalogCache>,
 }

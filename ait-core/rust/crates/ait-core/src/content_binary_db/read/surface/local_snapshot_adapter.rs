@@ -80,24 +80,11 @@ where
             return Ok(Vec::new());
         };
         let read = self.begin_read_txn();
-        let root_tree_id = self
-            .get_snapshot_view(&read, snapshot_id)?
-            .and_then(|view| view.root_tree_id)
-            .ok_or_else(|| missing_root_tree_pack_locator_error(snapshot_id))?;
-        let mut rows = Vec::new();
-        let mut visited = BTreeSet::new();
-        let mut cache = BinaryDbTreeReadCache::default();
-        collect_binary_snapshot_file_rows::<B, WRITE_LAYOUT>(
+        self.snapshot_tree_file_rows_with_cache(
             &read,
-            self.repo_root(),
-            &root_tree_id,
-            "",
-            &mut rows,
-            &mut visited,
-            &mut cache,
-        )?;
-        rows.sort_by(|left, right| left.path.cmp(&right.path));
-        Ok(rows)
+            snapshot_id,
+            &mut BinaryDbTreeReadCache::default(),
+        )
     }
 
     fn snapshot_tree_path_file_rows(
@@ -346,6 +333,8 @@ where
         for entry in
             list_tree_entry_views_at::<B, WRITE_LAYOUT>(read, repo_root, tree.tree_index, cache)?
         {
+            #[cfg(test)]
+            crate::binary_db::read_profile::note("algo_native_tree_edge_checks", 0);
             let path = join_path(prefix, &entry.entry_name);
             if entry.entry_type == "tree" {
                 collect_binary_snapshot_file_rows::<B, WRITE_LAYOUT>(
@@ -571,4 +560,32 @@ pub(super) fn path_to_str(path: &std::path::Path) -> StoreResult<&str> {
     Ok(path
         .to_str()
         .ok_or_else(|| format!("path is not valid UTF-8: {}", path.display()))?)
+}
+
+impl<B: BinaryDb, const WRITE_LAYOUT: u32> BinaryDbSnapshotStore<B, WRITE_LAYOUT> {
+    /// Caller owns the immutable transaction and the bounded metadata cache.
+    pub(crate) fn snapshot_tree_file_rows_with_cache(
+        &self,
+        read: &BinaryDbReadTxn<'_, B>,
+        snapshot_id: &str,
+        cache: &mut BinaryDbTreeReadCache,
+    ) -> Result<Vec<SnapshotFileRow>, String> {
+        let root_tree_id = self
+            .get_snapshot_view(read, snapshot_id)?
+            .and_then(|view| view.root_tree_id)
+            .ok_or_else(|| missing_root_tree_pack_locator_error(snapshot_id))?;
+        let mut rows = Vec::new();
+        let mut visited = BTreeSet::new();
+        collect_binary_snapshot_file_rows::<B, WRITE_LAYOUT>(
+            read,
+            self.repo_root(),
+            &root_tree_id,
+            "",
+            &mut rows,
+            &mut visited,
+            cache,
+        )?;
+        rows.sort_by(|left, right| left.path.cmp(&right.path));
+        Ok(rows)
+    }
 }

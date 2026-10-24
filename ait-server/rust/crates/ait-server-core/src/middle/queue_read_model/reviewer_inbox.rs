@@ -5,10 +5,21 @@ use super::index::{patchset_number, QueueIndex};
 use super::*;
 
 pub(super) fn reviewer_inbox(input: &QueueReadModelInput, index: &QueueIndex<'_>) -> JsonValue {
+    let task_owned = input
+        .tasks
+        .iter()
+        .filter(|row| row.contains_key("current_patchset_id"))
+        .filter_map(|row| Some((object_text(row, "repo_name")?, object_text(row, "task_id")?)))
+        .collect::<HashSet<_>>();
     let mut items = input
         .changes
         .iter()
         .filter(|change| repo_matches(input.repo_name.as_deref(), change))
+        .filter(|change| {
+            !object_text(change, "repo_name")
+                .zip(object_text(change, "task_id"))
+                .is_some_and(|key| task_owned.contains(&key))
+        })
         .filter(|change| {
             object_text(change, "status")
                 .map(|status| REVIEWABLE_CHANGE_STATES.contains(&status.as_str()))
@@ -49,6 +60,32 @@ pub(super) fn reviewer_inbox(input: &QueueReadModelInput, index: &QueueIndex<'_>
             })
         })
         .collect::<Vec<_>>();
+    for task in input.tasks.iter().filter(|task| {
+        task.contains_key("current_patchset_id")
+            && repo_matches(input.repo_name.as_deref(), task)
+            && object_text(task, "status").as_deref() == Some("active")
+    }) {
+        let Some(candidate) = index.current_task_patchset(task) else {
+            continue;
+        };
+        if candidate
+            .get("governance_authority")
+            .and_then(JsonValue::as_bool)
+            == Some(false)
+        {
+            continue;
+        }
+        let id = object_text(candidate, "patchset_id");
+        let review = review_summary(task, id.as_deref(), index);
+        let policy = policy_summary(id.as_deref(), index);
+        items.push(json!({"task":task,"task_id":object_text(task,"task_id"),"title":object_text(task,"title"),
+            "repo":object_text(task,"repo_name"),"change_id":object_text(candidate,"change_id"),"change_ref":object_text(candidate,"change_ref"),
+            "workflow_state":object_text(task,"workflow_state"),"current_patchset":candidate,
+            "review_state":{"approvals":review.approvals,"blocking":review.blocking,"comments":review.comments},
+            "policy_state":{"decision":policy["decision"]},"requested_groups":review.review_requests,
+            "attestation":{"completeness":if attestation_summary(id.as_deref(),index).is_some(){"summary_present"}else{"missing"}},
+            "freshness":{"base_is_fresh":null,"current_base_head":null},"updated_at":object_text(task,"updated_at")}));
+    }
     items.sort_by(|left, right| {
         value_text(right, "updated_at").cmp(&value_text(left, "updated_at"))
     });

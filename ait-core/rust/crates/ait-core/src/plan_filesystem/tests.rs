@@ -300,6 +300,102 @@ fn exact_task_cargo_config_with_aliases_stays_out_of_visible_workspace_paths() {
 }
 
 #[test]
+fn task_ram_and_ssd_projections_with_aliases_are_capacity_independent() {
+    let root = temp_dir("plan-filesystem-task-build-placements");
+    fs::create_dir_all(root.join(".ait/cargo-build-ssd")).unwrap();
+    fs::create_dir_all(root.join(".cargo")).unwrap();
+    fs::write(
+        root.join(WORKTREE_CONFIG_NAME),
+        r#"{"worktree_name":"task-one"}"#,
+    )
+    .unwrap();
+    let shared = fs::canonicalize(root.join(".ait")).unwrap();
+    for leaf in ["cargo-build", "cargo-build-ssd"] {
+        let build = shared.join(leaf).join("task-workspaces/task-one");
+        fs::write(root.join(WORKTREE_CARGO_CONFIG_RELATIVE_PATH), format!(
+            "{GENERATED_CARGO_CONFIG_HEADER}\n[build]\ntarget-dir = {}\nbuild-dir = {}\n\n[alias]\nfixture-test = [\"test\", \"--profile\", \"ait-ci\"]\n",
+            encoded_cargo_path(&worktree_cargo_target_dir(&root)), encoded_cargo_path(&build),
+        )).unwrap();
+        assert!(
+            list_visible_workspace_paths(root.to_str().unwrap(), None, None)
+                .unwrap()
+                .is_empty(),
+            "{leaf}"
+        );
+    }
+    // An exact target does not legitimize another Task's SSD build directory.
+    fs::write(
+        root.join(WORKTREE_CARGO_CONFIG_RELATIVE_PATH),
+        format!(
+            "{GENERATED_CARGO_CONFIG_HEADER}\n[build]\ntarget-dir = {}\nbuild-dir = {}\n",
+            encoded_cargo_path(&worktree_cargo_target_dir(&root)),
+            encoded_cargo_path(&shared.join("cargo-build-ssd/task-workspaces/foreign-task")),
+        ),
+    )
+    .unwrap();
+    assert_eq!(
+        list_visible_workspace_paths(root.to_str().unwrap(), None, None).unwrap(),
+        vec![WORKTREE_CARGO_CONFIG_RELATIVE_PATH]
+    );
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn resolved_ram_and_logical_ram_projections_remain_recognized_with_ssd_present() {
+    let root = temp_dir("plan-filesystem-resolved-ram");
+    fs::create_dir_all(root.join(".ait/cargo-build-ssd")).unwrap();
+    fs::create_dir_all(root.join("ram-cache")).unwrap();
+    fs::create_dir_all(root.join(".cargo")).unwrap();
+    std::os::unix::fs::symlink(root.join("ram-cache"), root.join(".ait/cargo-build")).unwrap();
+    fs::write(
+        root.join(WORKTREE_CONFIG_NAME),
+        r#"{"worktree_name":"task-one"}"#,
+    )
+    .unwrap();
+    let shared = fs::canonicalize(root.join(".ait")).unwrap();
+    for base in [
+        shared.join("cargo-build"),
+        fs::canonicalize(root.join("ram-cache")).unwrap(),
+    ] {
+        let build = base.join("task-workspaces/task-one");
+        fs::write(root.join(WORKTREE_CARGO_CONFIG_RELATIVE_PATH), format!(
+            "{GENERATED_CARGO_CONFIG_HEADER}\n[build]\ntarget-dir = {}\nbuild-dir = {}\n\n[alias]\nfixture-test = \"test\"\n",
+            encoded_cargo_path(&worktree_cargo_target_dir(&root)), encoded_cargo_path(&build),
+        )).unwrap();
+        assert!(
+            list_visible_workspace_paths(root.to_str().unwrap(), None, None)
+                .unwrap()
+                .is_empty()
+        );
+    }
+    fs::remove_dir(root.join(".ait/cargo-build-ssd")).unwrap();
+    fs::create_dir_all(root.join("foreign-cache")).unwrap();
+    std::os::unix::fs::symlink(
+        root.join("foreign-cache"),
+        root.join(".ait/cargo-build-ssd"),
+    )
+    .unwrap();
+    let foreign = fs::canonicalize(root.join("foreign-cache"))
+        .unwrap()
+        .join("task-workspaces/task-one");
+    fs::write(
+        root.join(WORKTREE_CARGO_CONFIG_RELATIVE_PATH),
+        format!(
+            "{GENERATED_CARGO_CONFIG_HEADER}\n[build]\ntarget-dir = {}\nbuild-dir = {}\n",
+            encoded_cargo_path(&worktree_cargo_target_dir(&root)),
+            encoded_cargo_path(&foreign),
+        ),
+    )
+    .unwrap();
+    assert_eq!(
+        list_visible_workspace_paths(root.to_str().unwrap(), None, None).unwrap(),
+        vec![WORKTREE_CARGO_CONFIG_RELATIVE_PATH]
+    );
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn canonical_source_cargo_config_remains_visible_in_a_worktree() {
     let root = temp_dir("plan-filesystem-source-cargo-config");
     fs::create_dir_all(root.join(".ait")).unwrap();

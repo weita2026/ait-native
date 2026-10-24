@@ -8,9 +8,38 @@ struct AtomicTaskLandRequest<'a> {
     idempotency_key: &'a str,
     repo_name: Option<&'a str>,
     response_deadline_ms: Option<u64>,
+    expected: Option<&'a crate::workflow_expected_identity::WorkflowExpectedIdentity>,
 }
 
 impl HttpWorkflowCloseoutRemote {
+    pub fn submit_task_land_guarded(
+        &mut self,
+        task_or_change_ref: &str,
+        target_line: Option<&str>,
+        mode: &str,
+        idempotency_key: &str,
+        repo_name: Option<&str>,
+        expected: Option<&crate::workflow_expected_identity::WorkflowExpectedIdentity>,
+    ) -> TaskWorkflowHttpClientResult<Value> {
+        let response_deadline_ms = remote_task_land_response_deadline_timeout_ms()
+            .map(|timeout_ms| timeout_ms.min(self.manager.config.default_timeout_ms));
+        let request = AtomicTaskLandRequest {
+            task_or_change_ref,
+            target_line,
+            mode,
+            idempotency_key,
+            repo_name,
+            response_deadline_ms,
+            expected,
+        };
+        match self.submit_task_land_once(request, response_deadline_ms) {
+            Ok(result) => Ok(result),
+            Err(error) if error.is_retryable_busy() || is_remote_mutation_timeout(&error) => {
+                self.resume_task_land_after_retryable_response(request, error)
+            }
+            Err(error) => Err(error),
+        }
+    }
     pub fn submit_task_land(
         &mut self,
         task_or_change_ref: &str,
@@ -122,21 +151,15 @@ impl HttpWorkflowCloseoutRemote {
         repo_name: &str,
         base_snapshot_id: &str,
         revision_snapshot_id: &str,
-        prior_patchset_number: i64,
     ) -> TaskWorkflowHttpClientResult<Option<Value>> {
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {
-            let wire_change_id = self.wire_change_id(change_id)?;
-            let rows = self
-                .manager
-                .list_patchsets(&wire_change_id, Some(repo_name))?;
-            if let Some(recovered) = PatchsetJson::stateless().recover_published_patchset_from_rows(
-                rows,
+            if let Some(recovered) = self.matching_current_candidate(
                 change_id,
+                Some(repo_name),
                 base_snapshot_id,
                 revision_snapshot_id,
-                prior_patchset_number,
-            ) {
+            )? {
                 return Ok(Some(recovered));
             }
             if Instant::now() >= deadline {
@@ -212,20 +235,32 @@ impl HttpWorkflowCloseoutRemote {
     ) -> TaskWorkflowHttpClientResult<Value> {
         let wire_reference = self.atomic_task_land_wire_reference(request.task_or_change_ref)?;
         let result = self.with_temporary_default_timeout(timeout_ms, |remote| {
-            remote.manager.submit_task_land(
+            remote.manager.submit_task_land_guarded(
                 &wire_reference,
                 request.target_line,
                 request.mode,
                 request.idempotency_key,
                 request.repo_name,
+                request.expected,
             )
         })?;
-        self.normalize_atomic_task_land_payload(
+        let result = self.normalize_atomic_task_land_payload(
             result,
             &wire_reference,
             request.idempotency_key,
             request.repo_name,
-        )
+            request.expected,
+        )?;
+        if request
+            .target_line
+            .is_some_and(|line| result["target_line"].as_str() != Some(line))
+            || result["land"]["mode"].as_str() != Some(request.mode)
+        {
+            return Err(PlanHttpClientError::Invalid(
+                "Atomic response target Line or mode differs from request.".to_string(),
+            ));
+        }
+        Ok(result)
     }
 
     fn resume_task_land_after_retryable_response(
@@ -276,17 +311,23 @@ impl HttpWorkflowCloseoutRemote {
         task_or_change_ref: &str,
         idempotency_key: &str,
         repo_name: Option<&str>,
+        expected: Option<&crate::workflow_expected_identity::WorkflowExpectedIdentity>,
     ) -> TaskWorkflowHttpClientResult<Value> {
         let object = payload.as_object().ok_or_else(|| {
             PlanHttpClientError::Invalid("Atomic Task Land response must be an object.".to_string())
         })?;
+        let expected_contract = if expected.is_some() {
+            crate::workflow_expected_identity::GUARDED_TASK_LAND_CONTRACT
+        } else {
+            "task-land-atomic/v2"
+        };
         require_atomic_task_land_text(object, "contract", "response")?
-            .eq("task-land-atomic/v1")
+            .eq(expected_contract)
             .then_some(())
             .ok_or_else(|| {
-                PlanHttpClientError::Invalid(
-                    "Atomic Task Land response contract must be `task-land-atomic/v1`.".to_string(),
-                )
+                PlanHttpClientError::Invalid(format!(
+                    "Atomic Task Land response contract must be `{expected_contract}`."
+                ))
             })?;
         let response_key = require_atomic_task_land_text(object, "idempotency_key", "response")?;
         if response_key != idempotency_key {
@@ -304,23 +345,70 @@ impl HttpWorkflowCloseoutRemote {
             })?;
 
         let task = require_atomic_task_land_object(object, "task")?;
-        let change = require_atomic_task_land_object(object, "change")?;
+        let change = object
+            .get("change")
+            .filter(|v| !v.is_null())
+            .map(|v| {
+                v.as_object().ok_or_else(|| {
+                    PlanHttpClientError::Invalid(
+                        "Atomic Task finish Change must be an object or null".into(),
+                    )
+                })
+            })
+            .transpose()?;
         let patchset = require_atomic_task_land_object(object, "patchset")?;
         let land = require_atomic_task_land_object(object, "land")?;
         let task_id = require_atomic_task_land_text(task, "task_id", "task")?;
-        let change_ref = require_atomic_task_land_text(change, "change_ref", "change")?;
+        let change_ref = change
+            .map(|row| require_atomic_task_land_text(row, "change_ref", "change"))
+            .transpose()?;
         let patchset_id = require_atomic_task_land_text(patchset, "patchset_id", "patchset")?;
         let target_line = require_atomic_task_land_text(land, "target_line", "land")?;
         let landed_snapshot_id = require_atomic_task_land_text(land, "landed_snapshot_id", "land")?;
+        let stored = crate::land_json::LandJson::stateless()
+            .task_successful_receipt(
+                &payload["task"],
+                &task_id,
+                self.manager
+                    .config
+                    .repository_index
+                    .map(|index| index.get()),
+            )
+            .map_err(PlanHttpClientError::Invalid)?
+            .ok_or_else(|| {
+                PlanHttpClientError::Invalid("Atomic Task finish has no actual Task receipt".into())
+            })?;
+        for field in [
+            "submission_id",
+            "task_id",
+            "patchset_id",
+            "target_line",
+            "landed_snapshot_id",
+            "mode",
+        ] {
+            if stored[field] != payload["land"][field] {
+                return Err(PlanHttpClientError::Invalid(format!(
+                    "Atomic Task finish differs from its stored receipt at {field}"
+                )));
+            }
+        }
+        for field in ["base_snapshot_id", "revision_snapshot_id"] {
+            if stored[field] != payload["patchset"][field] {
+                return Err(PlanHttpClientError::Invalid(format!(
+                    "Accepted Patchset differs from the stored receipt at {field}"
+                )));
+            }
+        }
 
         require_atomic_task_land_status(object, "status", &["succeeded", "landed"], "response")?;
         require_atomic_task_land_status(task, "status", &["completed"], "task")?;
-        require_atomic_task_land_status(change, "status", &["landed"], "change")?;
+        if let Some(change) = change {
+            require_atomic_task_land_status(change, "status", &["landed"], "change")?;
+        }
         require_atomic_task_land_status(land, "status", &["succeeded", "landed"], "land")?;
 
         for (field, expected) in [
             ("task_id", task_id.as_str()),
-            ("change_ref", change_ref.as_str()),
             ("patchset_id", patchset_id.as_str()),
             ("target_line", target_line.as_str()),
             ("landed_snapshot_id", landed_snapshot_id.as_str()),
@@ -338,26 +426,50 @@ impl HttpWorkflowCloseoutRemote {
                 "Atomic Task Land response task_status must be `completed`, got `{root_task_status}`."
             )));
         }
-        let root_change_status =
-            require_atomic_task_land_text(object, "change_status", "response")?;
-        if root_change_status != "landed" {
-            return Err(PlanHttpClientError::Invalid(format!(
-                "Atomic Task Land response change_status must be `landed`, got `{root_change_status}`."
-            )));
-        }
-        if let Some(selected_patchset_id) =
-            normalize_optional_text(change.get("selected_patchset_id"))
+        let optional_text = |map: &crate::json_support::JsonMap<String, Value>,
+                             field: &str|
+         -> TaskWorkflowHttpClientResult<Option<String>> {
+            match map.get(field) {
+                None | Some(Value::Null) => Ok(None),
+                Some(Value::String(text)) if !text.is_empty() && text.trim() == text => {
+                    Ok(Some(text.clone()))
+                }
+                _ => Err(PlanHttpClientError::Invalid(format!(
+                    "Atomic Task finish {field} must be exact text or null"
+                ))),
+            }
+        };
+        if optional_text(object, "change_ref")? != change_ref
+            || optional_text(object, "change_status")?.as_deref() != change.map(|_| "landed")
         {
-            if selected_patchset_id != patchset_id {
-                return Err(PlanHttpClientError::Invalid(format!(
-                    "Atomic Task Land selected Patchset `{selected_patchset_id}` disagrees with returned Patchset `{patchset_id}`."
-                )));
+            return Err(PlanHttpClientError::Invalid(
+                "Atomic Task finish optional Change differs between receipt and response".into(),
+            ));
+        }
+        crate::workflow_expected_identity::validate_patchset_reference_owner(
+            &patchset_id,
+            &task_id,
+            change_ref.as_deref(),
+        )
+        .map_err(PlanHttpClientError::Invalid)?;
+        for projection in [patchset, land] {
+            if require_atomic_task_land_text(projection, "task_id", "accepted evidence")? != task_id
+                || optional_text(projection, "change_ref")? != change_ref
+            {
+                return Err(PlanHttpClientError::Invalid(
+                    "Atomic Task finish accepted evidence has a foreign Task or Change".into(),
+                ));
             }
         }
+        if require_atomic_task_land_text(land, "patchset_id", "receipt")? != patchset_id {
+            return Err(PlanHttpClientError::Invalid(
+                "Atomic Task receipt accepted a different Patchset".into(),
+            ));
+        }
         if task_or_change_ref.contains("/C-") {
-            if change_ref != task_or_change_ref {
+            if change_ref.as_deref() != Some(task_or_change_ref) {
                 return Err(PlanHttpClientError::Invalid(format!(
-                    "Atomic Task Land returned Change `{change_ref}`, not requested `{task_or_change_ref}`."
+                    "Atomic Task Land returned Change `{change_ref:?}`, not requested `{task_or_change_ref}`."
                 )));
             }
         } else if task_id != task_or_change_ref {
@@ -372,6 +484,27 @@ impl HttpWorkflowCloseoutRemote {
                 return Err(PlanHttpClientError::Invalid(format!(
                     "Atomic Task Land response repository `{response_repo_name}` does not match `{expected_repo_name}`."
                 )));
+            }
+        }
+        if let Some(expected) = expected {
+            if object.get("repository_index").and_then(Value::as_u64)
+                != Some(u64::from(expected.repository_index))
+            {
+                return Err(PlanHttpClientError::Invalid(
+                    "Guarded atomic response Repository identity differs.".to_string(),
+                ));
+            }
+            expected
+                .validate_patchset(expected.repository_index, &payload["patchset"])
+                .map_err(PlanHttpClientError::Invalid)?;
+            let echoed = crate::workflow_expected_identity::WorkflowExpectedIdentity::from_value(
+                &payload["expected_identity"],
+            )
+            .map_err(PlanHttpClientError::Invalid)?;
+            if echoed != *expected {
+                return Err(PlanHttpClientError::Invalid(
+                    "Guarded atomic response did not commit the expected identity.".to_string(),
+                ));
             }
         }
         Ok(payload)
@@ -494,23 +627,14 @@ impl TaskWorkflowAtomicTaskLandSubmitter for HttpWorkflowCloseoutRemote {
         idempotency_key: &str,
         repo_name: Option<&str>,
     ) -> TaskWorkflowHttpClientResult<Value> {
-        let response_deadline_ms = remote_task_land_response_deadline_timeout_ms()
-            .map(|timeout_ms| timeout_ms.min(self.manager.config.default_timeout_ms));
-        let request = AtomicTaskLandRequest {
+        self.submit_task_land_guarded(
             task_or_change_ref,
             target_line,
             mode,
             idempotency_key,
             repo_name,
-            response_deadline_ms,
-        };
-        match self.submit_task_land_once(request, response_deadline_ms) {
-            Ok(result) => Ok(result),
-            Err(error) if error.is_retryable_busy() || is_remote_mutation_timeout(&error) => {
-                self.resume_task_land_after_retryable_response(request, error)
-            }
-            Err(error) => Err(error),
-        }
+            None,
+        )
     }
 }
 

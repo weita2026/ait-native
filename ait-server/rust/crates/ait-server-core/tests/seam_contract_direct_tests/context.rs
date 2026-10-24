@@ -438,6 +438,7 @@ fn workflow_artifacts_command_shapes_review_summary() {
                 "review_id": 3,
                 "patchset_id": "RSEP-SEAM",
                 "reviewer": "Reviewer",
+                "reviewer_kind": "user",
                 "action": "approve",
                 "comment": "ship",
                 "blocking": false
@@ -446,6 +447,7 @@ fn workflow_artifacts_command_shapes_review_summary() {
                 "review_id": 4,
                 "patchset_id": "RSEP-SEAM",
                 "reviewer": "Reviewer",
+                "reviewer_kind": "user",
                 "action": "code_review_summary",
                 "comment": "Reviewed files: rust/lib.rs; Findings: none; Risks: low; Tests: cargo test; Recommendation: land",
                 "blocking": false

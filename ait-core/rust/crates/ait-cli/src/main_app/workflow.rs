@@ -143,7 +143,46 @@ fn run_workflow(repo: RepoRuntime, command: WorkflowCommand) -> Result<ExitCode,
             Ok(ExitCode::SUCCESS)
         }
         WorkflowCommand::Ready(args) => {
-            let apply_once = || {
+            use ait_core::workflow_expected_identity::WorkflowExpectedIdentityInput as Expected;
+            let expected_path = args.expected_identity.as_deref()
+                .map(std::fs::canonicalize).transpose()
+                .map_err(|error| format!("Resolve expected identity: {error}"))?;
+            let input = read_workflow_expected_identity_input(expected_path.as_deref())?;
+            let mut runner_outcome = None;
+            let mut ci_wait_hook = |pending: &mut JsonValue| {
+                attach_runner_hint_best_effort(&repo, args.remote.as_deref(), pending);
+                let outcome = match pending.get(RUNNER_HINT_PAYLOAD_KEY) {
+                    Some(hint) => run_ci_once(hint),
+                    None => no_runner_hint_outcome(pending, args.remote.as_deref()),
+                };
+                let wait = outcome["status"].as_str() == Some("succeeded");
+                runner_outcome = Some(outcome);
+                Ok(wait)
+            };
+            if matches!(input,Some(Expected::Package(_))) || (input.is_none() && crate::primitives::workflow_package_source_requested(&repo,&args.change_id)?) {
+                if args.snapshot_message.is_some() {
+                    return Err("Completed package history preserves its Snapshot messages; --snapshot-message is not applicable".into());
+                }
+                let expected=match &input {Some(Expected::Package(identity))=>Some(identity),_=>None};
+                let mut payload=if let Some(payload)=crate::primitives::workflow_package_accepted_retry(&repo,&args.change_id,args.remote.as_deref(),expected,args.author_mode.map(ConfigAuthorModeArg::as_str),args.apply && expected.is_some())? {
+                    payload
+                } else {
+                    run_task_scoped_workspace_command(&repo,&args.change_id,true,true,args.remote.as_deref(),"ait-cli workflow ready",|execution_repo| {
+                    crate::primitives::workflow_package_ready(execution_repo,&args.change_id,args.remote.as_deref(),expected,args.apply,crate::primitives::PackageReadyOptions {
+                        summary:args.summary.as_deref(),tests:args.tests.as_deref(),lint:args.lint.as_deref(),security:args.security.as_deref(),license:args.license.as_deref(),author_mode:args.author_mode.map(ConfigAuthorModeArg::as_str),model:args.model.as_deref(),
+                    },args.run_ci_once.then_some(&mut ci_wait_hook))
+                    })?
+                };
+                attach_runner_hint_best_effort(&repo,args.remote.as_deref(),&mut payload);
+                if let Some(path) = expected_path.as_deref() {
+                    payload["expected_identity_path"] = json!(path);
+                }
+                if args.run_ci_once {payload[CI_RUNNER_ONCE_PAYLOAD_KEY]=runner_outcome.unwrap_or_else(||no_runner_hint_outcome(&payload,args.remote.as_deref()));}
+                emit_workflow_result(&repo,&mut payload,"ready",&args.change_id,args.remote.as_deref(),args.json,args.full)?;
+                return Ok(ExitCode::SUCCESS);
+            }
+            let expected=match input {Some(Expected::Patchset(identity))=>Some(identity),_=>None};
+            let mut apply_once = || {
                 run_task_scoped_workspace_command(
                     &repo,
                     &args.change_id,
@@ -152,7 +191,7 @@ fn run_workflow(repo: RepoRuntime, command: WorkflowCommand) -> Result<ExitCode,
                     args.remote.as_deref(),
                     "ait-cli workflow ready --apply",
                     |execution_repo| {
-                        workflow_ready_apply(
+                        workflow_ready_apply_guarded_with_ci_wait_hook(
                             execution_repo,
                             &args.change_id,
                             args.snapshot_message.as_deref(),
@@ -164,7 +203,9 @@ fn run_workflow(repo: RepoRuntime, command: WorkflowCommand) -> Result<ExitCode,
                             args.author_mode.map(ConfigAuthorModeArg::as_str),
                             args.model.as_deref(),
                             args.remote.as_deref(),
+                            expected.as_ref(),
                             None::<fn(&JsonValue) -> Result<(), String>>,
+                            args.run_ci_once.then_some(&mut ci_wait_hook),
                         )
                     },
                 )
@@ -180,36 +221,55 @@ fn run_workflow(repo: RepoRuntime, command: WorkflowCommand) -> Result<ExitCode,
                     args.remote.as_deref(),
                     "ait-cli workflow ready",
                 )?;
-                workflow_ready_payload(
+                let state = workflow_ready_payload(
                     &execution_repo,
                     &args.change_id,
                     args.remote.as_deref(),
-                )?
+                )?;
+                validate_workflow_expected_identity(&execution_repo, &state, expected.as_ref())?;
+                state
             };
             attach_runner_hint_best_effort(&repo, args.remote.as_deref(), &mut payload);
             if args.run_ci_once {
-                let outcome = match payload.get(RUNNER_HINT_PAYLOAD_KEY).cloned() {
-                    Some(hint) => {
-                        let outcome = run_ci_once(&hint);
-                        let mut reapplied = apply_once()?;
-                        attach_runner_hint_best_effort(&repo, args.remote.as_deref(), &mut reapplied);
-                        payload = reapplied;
-                        outcome
-                    }
-                    None => json!({
-                        "status": "skipped",
-                        "reason": "no_runner_hint",
-                        "detail": "Patchset CI was not queued without a runner, so no one-shot runner was needed.",
-                    }),
-                };
+                let outcome = runner_outcome
+                    .unwrap_or_else(|| no_runner_hint_outcome(&payload, args.remote.as_deref()));
                 if let Some(object) = payload.as_object_mut() {
                     object.insert(CI_RUNNER_ONCE_PAYLOAD_KEY.to_string(), outcome);
                 }
             }
-            println!("{}", render_requested_workflow_text(&payload, "ready", &args.change_id)?);
+            emit_workflow_result(
+                &repo,
+                &mut payload,
+                "ready",
+                &args.change_id,
+                args.remote.as_deref(),
+                args.json,
+                args.full,
+            )?;
             Ok(ExitCode::SUCCESS)
         }
         WorkflowCommand::Finish(args) => {
+            let expected_path = args.expected_identity.as_deref().map(|path| {
+                std::fs::canonicalize(path).map_err(|error| format!("Resolve expected identity {}: {error}", path.display()))
+            }).transpose()?;
+            use ait_core::workflow_expected_identity::WorkflowExpectedIdentityInput as Expected;
+            let input = read_workflow_expected_identity_input(expected_path.as_deref())?;
+            if matches!(input,Some(Expected::Package(_))) || (input.is_none() && crate::primitives::workflow_package_source_requested(&repo,&args.change_id)?) {
+                let expected=match &input {Some(Expected::Package(identity))=>Some(identity),_=>None};
+                let mut payload=if let Some(payload)=crate::primitives::workflow_package_accepted_retry(&repo,&args.change_id,args.remote.as_deref(),expected,None,false)? {
+                    payload
+                } else {
+                    let Some(identity)=expected else {return Err("Package finish requires --expected-identity <PATH> containing the exact identity returned by ready".into());};
+                    run_task_scoped_workspace_command(&repo,&args.change_id,true,true,args.remote.as_deref(),"ait-cli workflow finish",|execution_repo|crate::primitives::workflow_package_finish(execution_repo,&args.change_id,args.remote.as_deref(),identity,args.apply,args.reviewer.as_deref(),args.review_message.as_deref()))?
+                };
+                let done=payload["next_action"]["code"].as_str()==Some("done");
+                if let Some(path) = expected_path.as_deref() {
+                    payload["expected_identity_path"] = json!(path);
+                }
+                emit_workflow_result(&repo,&mut payload,"finish",&args.change_id,args.remote.as_deref(),args.json,args.full)?;
+                return Ok(ExitCode::from(u8::from(args.apply && !done)));
+            }
+            let expected=match input {Some(Expected::Patchset(identity))=>Some(identity),_=>None};
             let mut payload = if args.apply {
                 run_task_scoped_workspace_command(
                     &repo,
@@ -219,11 +279,13 @@ fn run_workflow(repo: RepoRuntime, command: WorkflowCommand) -> Result<ExitCode,
                     args.remote.as_deref(),
                     "ait-cli workflow finish --apply",
                     |execution_repo| {
-                        workflow_land_apply(
+                        workflow_finish_apply_guarded_with_reviewer(
                             execution_repo,
                             &args.change_id,
                             args.review_message.as_deref(),
+                            args.reviewer.as_deref(),
                             args.remote.as_deref(),
+                            expected.as_ref(),
                             None::<fn(&JsonValue) -> Result<(), String>>,
                         )
                     },
@@ -237,13 +299,15 @@ fn run_workflow(repo: RepoRuntime, command: WorkflowCommand) -> Result<ExitCode,
                     args.remote.as_deref(),
                     "ait-cli workflow finish",
                 )?;
-                workflow_land_payload(
+                let state = workflow_land_payload(
                     &execution_repo,
                     &args.change_id,
                     args.remote.as_deref(),
-                )?
+                )?;
+                validate_workflow_expected_identity(&execution_repo, &state, expected.as_ref())?;
+                state
             };
-            if args.apply {
+            if workflow_finish_should_reconcile(args.apply, expected.is_some()) {
                 let task_id = workflow_payload_task_id(&payload);
                 let reconciliation = run_automatic_reconciliation_locked(
                     &repo,
@@ -252,12 +316,157 @@ fn run_workflow(repo: RepoRuntime, command: WorkflowCommand) -> Result<ExitCode,
                     task_land_automatic_trigger(&payload),
                 );
                 attach_automatic_reconciliation(&mut payload, reconciliation);
+            } else if args.apply && expected.is_some() {
+                attach_automatic_reconciliation(
+                    &mut payload,
+                    json!({
+                        "status": "skipped", "mutated": false,
+                        "reason": "expected_identity_scope",
+                        "detail": "Guarded finish retains only exact-candidate mutations; reconciliation is a separate explicit action."
+                    }),
+                );
             }
             attach_runner_hint_best_effort(&repo, args.remote.as_deref(), &mut payload);
-            println!("{}", render_requested_workflow_text(&payload, "finish", &args.change_id)?);
-            Ok(ExitCode::SUCCESS)
+            if args.apply && payload["closeout_status"].as_str() == Some("partial") {
+                if let Some(path) = expected_path.as_deref() {
+                    let task = workflow_payload_task_id(&payload).unwrap_or_else(|| args.change_id.clone());
+                    let remote = payload["remote_name"].as_str().or(args.remote.as_deref());
+                    let remote_flag = remote.map(|name| format!(" --remote {}", shell_quote_text(name))).unwrap_or_default();
+                    payload["closeout_recovery"]["command"] = json!(format!(
+                        "ait workflow finish {} --apply --expected-identity {}{remote_flag}",
+                        shell_quote_text(&task), shell_quote_text(&path.to_string_lossy())
+                    ));
+                    payload["closeout_recovery"]["detail"] = json!("Repair the reported closeout condition and replay this guarded finish with the same frozen expected identity; the original apply receipt is reused.");
+                }
+            }
+            if args.apply {
+                crate::team_remote::attach_finish_handoff(
+                    crate::agent_teams::enabled(&repo),
+                    &repo.authoritative_repo_root(),
+                    crate::team_remote::FinishScope::Remote,
+                    &mut payload,
+                    &crate::agent_teams::CoordinatorSource,
+                );
+            }
+            emit_workflow_result(
+                &repo,
+                &mut payload,
+                "finish",
+                &args.change_id,
+                args.remote.as_deref(),
+                args.json,
+                args.full,
+            )?;
+            Ok(ExitCode::from(if args.apply {
+                task_finish_exit_code(&payload)
+            } else {
+                0
+            }))
         }
     }
+}
+
+fn workflow_finish_should_reconcile(apply: bool, guarded: bool) -> bool {
+    apply && !guarded
+}
+
+#[cfg(test)]
+fn read_workflow_expected_identity(
+    path: Option<&std::path::Path>,
+) -> Result<Option<ait_core::workflow_expected_identity::WorkflowExpectedIdentity>, String> {
+    read_workflow_expected_identity_input(path)?
+        .map(|identity| match identity {
+            ait_core::workflow_expected_identity::WorkflowExpectedIdentityInput::Patchset(identity) => Ok(identity),
+            ait_core::workflow_expected_identity::WorkflowExpectedIdentityInput::Package(_) => {
+                Err("Package expected identity cannot select the formal-Patchset workflow path".into())
+            }
+        })
+        .transpose()
+}
+
+fn read_workflow_expected_identity_input(
+    path: Option<&std::path::Path>,
+) -> Result<Option<ait_core::workflow_expected_identity::WorkflowExpectedIdentityInput>, String> {
+    path.map(|path| {
+        let bytes = std::fs::read(path)
+            .map_err(|error| format!("Read expected identity {}: {error}", path.display()))?;
+        ait_core::workflow_expected_identity::WorkflowExpectedIdentityInput::from_slice(&bytes)
+    })
+    .transpose()
+}
+
+fn emit_workflow_result(
+    repo: &RepoRuntime,
+    payload: &mut JsonValue,
+    phase: &str,
+    task: &str,
+    remote: Option<&str>,
+    json_output: bool,
+    full: bool,
+) -> Result<(), String> {
+    if json_output {
+        payload["remote_name"] = json!(remote);
+        payload["identity"] = workflow_identity_payload(repo, payload);
+        if full {
+            print_json(payload)
+        } else {
+            print_json(&compact_workflow_payload(payload, phase, task, remote))
+        }
+    } else {
+        println!("{}", render_requested_workflow_text(payload, phase, task)?);
+        Ok(())
+    }
+}
+
+fn compact_workflow_payload(
+    payload: &JsonValue,
+    phase: &str,
+    requested_task: &str,
+    remote: Option<&str>,
+) -> JsonValue {
+    let completed_closeout = phase == "finish" && payload.get("task_land_contract").is_some();
+    let mut summary = if completed_closeout {
+        compact_task_finish_payload(payload)
+    } else {
+        json!({
+            "contract": AGENT_ACTION_JSON_CONTRACT,
+            "ok": payload["apply_status"] == "done" && payload["next_action"]["code"] == "done",
+            "task_id": payload.get("task_id").or_else(|| payload.get("task").and_then(|task| task.get("task_id"))),
+            "change_status": payload["change"]["status"],
+            "next_action": payload["next_action"],
+            "stopped_reason": payload["apply_stopped_reason"],
+        })
+    };
+    if let Some(handoff) = payload.get("team_handoff") {
+        summary["team_handoff"] = handoff.clone();
+    }
+    if let Some(log) = payload.get("team_finish_log") {
+        summary["team_finish_log"] = log.clone();
+    }
+    summary["command"] = json!(format!("workflow.{phase}"));
+    summary["apply_status"] = payload["apply_status"].clone();
+    summary["identity"] = payload["identity"].clone();
+    if let Some(expected) = payload.get("expected_identity") {
+        summary["expected_identity"] = expected.clone();
+    }
+    for field in ["completion","package_execution","closeout_status","remote_task_id","patchset_id","submission_id"] {
+        if let Some(value)=payload.get(field) {summary[field]=value.clone();}
+    }
+    summary["remote_name"] = json!(remote);
+    // Evidence is an exact native phase read. JSON identities are never replaced
+    // with the display-only local Task reference.
+    let remote_flag = remote
+        .map(|name| format!(" --remote {}", shell_quote_text(name)))
+        .unwrap_or_default();
+    let package_pin = payload.get("expected_identity").is_some_and(|value|
+        ait_core::workflow_expected_identity::PackageWorkflowExpectedIdentity::from_value(value).is_ok());
+    let identity_flag = if package_pin {
+        let path = payload["expected_identity_path"].as_str().map(shell_quote_text)
+            .unwrap_or_else(|| "<PATH>".into());
+        format!(" --expected-identity {path}")
+    } else { String::new() };
+    summary["evidence"] = json!({"command": format!("ait workflow {phase} {}{remote_flag}{identity_flag} --json --full", shell_quote_text(requested_task))});
+    summary
 }
 
 fn render_workflow_reconcile_text(payload: &JsonValue) -> Result<String, String> {
@@ -269,14 +478,8 @@ fn render_workflow_reconcile_text(payload: &JsonValue) -> Result<String, String>
         .and_then(JsonValue::as_object)
         .ok_or_else(|| "workflow reconcile payload is missing summary.".to_string())?;
     let mut lines = vec!["ait workflow reconcile".to_string(), String::new()];
-    lines.push(format!(
-        "- status: {}",
-        string_field(object.get("status"))
-    ));
-    lines.push(format!(
-        "- mode: {}",
-        string_field(object.get("mode"))
-    ));
+    lines.push(format!("- status: {}", string_field(object.get("status"))));
+    lines.push(format!("- mode: {}", string_field(object.get("mode"))));
     lines.push(format!(
         "- repository: {}",
         string_field(object.get("repo_name"))
@@ -284,7 +487,11 @@ fn render_workflow_reconcile_text(payload: &JsonValue) -> Result<String, String>
     let remote = string_field(object.get("remote_name"));
     lines.push(format!(
         "- remote: {}",
-        if remote.is_empty() { "(local only)" } else { &remote }
+        if remote.is_empty() {
+            "(local only)"
+        } else {
+            &remote
+        }
     ));
     lines.push(format!(
         "- findings: {} returned, {} remaining",
@@ -330,10 +537,7 @@ fn render_workflow_reconcile_text(payload: &JsonValue) -> Result<String, String>
     }
     lines.push(String::new());
     lines.push("Next action".to_string());
-    lines.push(format!(
-        "- {}",
-        string_field(object.get("next_command"))
-    ));
+    lines.push(format!("- {}", string_field(object.get("next_command"))));
     Ok(lines.join("\n"))
 }
 
@@ -426,10 +630,20 @@ fn task_command_text(text: &str, task: &str, mapped_task: &str, exact: &str) -> 
             let argument_start = start + prefix.len();
             rewritten.push_str(&rest[..argument_start]);
             let tail = &rest[argument_start..];
-            let end = tail.find(|ch: char| ch.is_whitespace() || ch == '`').unwrap_or(tail.len());
+            let end = tail
+                .find(|ch: char| ch.is_whitespace() || ch == '`')
+                .unwrap_or(tail.len());
             let argument = &tail[..end];
-            let owner = argument.split_once("/C-").filter(|(_, ordinal)| !ordinal.is_empty() && ordinal.bytes().all(|b| b.is_ascii_digit())).map(|(owner, _)| owner);
-            if matches!(argument, "<task-or-change-id>" | "<change-id>") || (!exact.is_empty() && argument == exact) || owner.is_some_and(|owner| owner == task || owner == mapped_task) {
+            let owner = argument
+                .split_once("/C-")
+                .filter(|(_, ordinal)| {
+                    !ordinal.is_empty() && ordinal.bytes().all(|b| b.is_ascii_digit())
+                })
+                .map(|(owner, _)| owner);
+            if matches!(argument, "<task-or-change-id>" | "<change-id>")
+                || (!exact.is_empty() && argument == exact)
+                || owner.is_some_and(|owner| owner == task || owner == mapped_task)
+            {
                 rewritten.push_str(task);
             } else {
                 rewritten.push_str(argument);
@@ -539,7 +753,10 @@ fn task_workflow_display_payload(payload: &JsonValue, requested: &str) -> JsonVa
         "/bound_worktree_cleanup",
         "/bound_line_closeout",
     ] {
-        if let Some(next) = display.pointer_mut(pointer).and_then(JsonValue::as_object_mut) {
+        if let Some(next) = display
+            .pointer_mut(pointer)
+            .and_then(JsonValue::as_object_mut)
+        {
             project_generated_workflow_text(next, display_task, &mapped_task, exact);
         }
     }
@@ -550,7 +767,10 @@ fn task_workflow_display_payload(payload: &JsonValue, requested: &str) -> JsonVa
     {
         display["apply_stopped_reason"] = JsonValue::String(stopped_reason);
     }
-    if let Some(command) = display.pointer("/next_action/command").and_then(JsonValue::as_str) {
+    if let Some(command) = display
+        .pointer("/next_action/command")
+        .and_then(JsonValue::as_str)
+    {
         if let Some(arguments) = command.strip_prefix("ait patchset publish ") {
             // Ready already owns publication; offer the Task operation while
             // retaining generated summary and explicit remote options.
@@ -558,20 +778,37 @@ fn task_workflow_display_payload(payload: &JsonValue, requested: &str) -> JsonVa
             let projected = task_command_text(&candidate, display_task, &mapped_task, exact);
             let task_prefix = format!("ait workflow ready {display_task}");
             if let Some(options) = projected.strip_prefix(&task_prefix) {
-                display["next_action"]["command"] = json!(format!("{task_prefix} --apply{options}"));
+                display["next_action"]["command"] =
+                    json!(format!("{task_prefix} --apply{options}"));
             }
         }
     }
     display
 }
 
-fn render_requested_workflow_text(payload: &JsonValue, phase: &str, requested: &str) -> Result<String, String> {
+fn render_requested_workflow_text(
+    payload: &JsonValue,
+    phase: &str,
+    requested: &str,
+) -> Result<String, String> {
     let display = task_workflow_display_payload(payload, requested);
-    let rendered = render_workflow_phase_text(&display, phase)?;
-    Ok(append_runner_hint_text(rendered, payload))
+    let mut rendered = render_workflow_phase_text(&display, phase)?;
+    if payload["mode"].as_str() == Some("workflow_package") {
+        if let (Some(patchset), Some(submission)) = (
+            payload["patchset_id"].as_str(),
+            payload["submission_id"].as_str(),
+        ) {
+            rendered.push_str(&format!("\n\nOriginal Remote result: {patchset} · {submission}"));
+        }
+    }
+    Ok(crate::team_remote::append_handoff_text(append_runner_hint_text(rendered, &display), &display))
 }
 
 fn append_runner_hint_text(mut rendered: String, payload: &JsonValue) -> String {
+    if let Some(text) = ci_diagnostic_text(payload) {
+        rendered.push_str("\n\n");
+        rendered.push_str(&text);
+    }
     if let Some(text) = ci_runner_once_text(payload) {
         rendered.push_str("\n\n");
         rendered.push_str(&text);
@@ -606,8 +843,8 @@ fn render_workflow_phase_text(payload: &JsonValue, phase: &str) -> Result<String
     ));
     let workspace_evaluation =
         string_field(workflow_nested_value(payload, "workspace", "evaluation"));
-    let workspace_clean = workflow_nested_value(payload, "workspace", "clean")
-        .and_then(JsonValue::as_bool);
+    let workspace_clean =
+        workflow_nested_value(payload, "workspace", "clean").and_then(JsonValue::as_bool);
     let workspace_status = workflow_default_text(workspace_status, || match workspace_clean {
         Some(true) => "clean".to_string(),
         Some(false) => "dirty".to_string(),
@@ -646,7 +883,9 @@ fn render_workflow_phase_text(payload: &JsonValue, phase: &str) -> Result<String
             || "unknown".to_string(),
         ))
     ));
-    let title = string_field(workflow_nested_value(payload, "task", "title").or_else(|| payload.get("title")));
+    let title = string_field(
+        workflow_nested_value(payload, "task", "title").or_else(|| payload.get("title")),
+    );
     if !title.is_empty() {
         lines.push(format!("- title: {title}"));
     }
@@ -683,11 +922,18 @@ fn render_workflow_phase_text(payload: &JsonValue, phase: &str) -> Result<String
     for key in ["base_snapshot_id", "revision_snapshot_id"] {
         let snapshot = string_field(workflow_nested_value(payload, "patchset", key));
         if !snapshot.is_empty() {
-            lines.push(format!("- {}: {snapshot}", key.trim_end_matches("_id").replace('_', " ")));
+            lines.push(format!(
+                "- {}: {snapshot}",
+                key.trim_end_matches("_id").replace('_', " ")
+            ));
         }
     }
     if !patchset_id.is_empty() && (phase == "finish" || next_action_code.contains("review")) {
         lines.push(format!("- review evidence: {patchset_id}"));
+    }
+    if let Some(identity) = obj.get("expected_identity").filter(|value| !value.is_null()) {
+        ait_core::workflow_expected_identity::WorkflowExpectedIdentityInput::from_value(identity)?;
+        lines.push(format!("- expected_identity: {}", crate::json_support::encode_value(identity, "Encode expected identity")?));
     }
     if !next_action_code.is_empty()
         || !next_action_summary.is_empty()
@@ -783,10 +1029,10 @@ fn render_workflow_phase_text(payload: &JsonValue, phase: &str) -> Result<String
             lines.push(format!("  {command}"));
         }
         if let Some(retention) = closeout.get("retention").and_then(JsonValue::as_object) {
-            let retention_status = workflow_default_text(
-                string_field(retention.get("status")),
-                || "unknown".to_string(),
-            );
+            let retention_status =
+                workflow_default_text(string_field(retention.get("status")), || {
+                    "unknown".to_string()
+                });
             let removed = retention
                 .get("removed_count")
                 .and_then(JsonValue::as_u64)
@@ -798,6 +1044,12 @@ fn render_workflow_phase_text(payload: &JsonValue, phase: &str) -> Result<String
             lines.push(format!(
                 "  retention: {retention_status} ({removed} removed, {retained} completed retained)"
             ));
+        }
+    }
+    if let Some(log) = obj.get("team_finish_log") {
+        lines.push(format!("\nTeam sprint log: {}", string_field(log.get("status"))));
+        if let Some(error) = log.get("error").and_then(JsonValue::as_str) {
+            lines.push(format!("  {error}"));
         }
     }
     if let Some(reconciliation) = obj
@@ -849,7 +1101,7 @@ fn render_task_finish_text(payload: &JsonValue) -> Result<String, String> {
         render_workflow_phase_text(payload, "finish")?.replacen(&old_title, "ait task finish", 1)
     };
     let rendered = append_task_land_contract_text(rendered, payload);
-    Ok(append_runner_hint_text(rendered, payload))
+    Ok(crate::team_remote::append_handoff_text(append_runner_hint_text(rendered, payload), payload))
 }
 
 fn append_task_land_contract_text(mut rendered: String, payload: &JsonValue) -> String {
@@ -862,9 +1114,10 @@ fn append_task_land_contract_text(mut rendered: String, payload: &JsonValue) -> 
     let version = workflow_default_text(string_field(contract.get("version")), || {
         "unknown".to_string()
     });
-    let closeout_status = workflow_default_text(string_field(payload.get("closeout_status")), || {
-        "unknown".to_string()
-    });
+    let closeout_status =
+        workflow_default_text(string_field(payload.get("closeout_status")), || {
+            "unknown".to_string()
+        });
     if matches!(
         closeout_status.as_str(),
         "complete" | "complete_unbound" | "already_complete"
@@ -913,8 +1166,12 @@ fn render_local_task_land_text(payload: &JsonValue) -> Result<String, String> {
     let mut lines = vec![format!(
         "finished: {task_id} -> {target_line} @ {snapshot_id}"
     )];
-    let title = string_field(workflow_nested_value(payload, "task", "title").or_else(|| payload.get("title")));
-    if !title.is_empty() { lines.push(format!("title: {title}")); }
+    let title = string_field(
+        workflow_nested_value(payload, "task", "title").or_else(|| payload.get("title")),
+    );
+    if !title.is_empty() {
+        lines.push(format!("title: {title}"));
+    }
     let mut closed = Vec::new();
     let task_status = string_field(obj.get("task_status"));
     if task_status == "completed" {
@@ -971,10 +1228,10 @@ fn render_local_task_land_text(payload: &JsonValue) -> Result<String, String> {
             lines.push(format!("sprint error: {error}"));
         }
         if let Some(retention) = closeout.get("retention").and_then(JsonValue::as_object) {
-            let retention_status = workflow_default_text(
-                string_field(retention.get("status")),
-                || "unknown".to_string(),
-            );
+            let retention_status =
+                workflow_default_text(string_field(retention.get("status")), || {
+                    "unknown".to_string()
+                });
             let removed = retention
                 .get("removed_count")
                 .and_then(JsonValue::as_u64)

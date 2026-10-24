@@ -121,6 +121,36 @@ fn run(mut argv: Vec<OsString>) -> Result<ExitCode, String> {
             Ok(ExitCode::SUCCESS)
         }
         Commands::External { command } => run_external(repo, command),
+        Commands::Team { command: TeamCommand::Session { command: TeamSessionCommand::Acknowledge { activation, json } } } => {
+            let payload = crate::agent_teams::acknowledge(&repo, &activation);
+            if json {print_json(&payload)?;} else {
+                println!("Team activation: {}\nSession ID: {}\n{}",payload["status"],
+                    payload["session_id"].as_str().unwrap_or("unbound"),payload["detail"].as_str().unwrap_or_default());
+            }
+            Ok(if payload["status"]=="ready" {ExitCode::SUCCESS}else{ExitCode::FAILURE})
+        }
+        Commands::Team { command: TeamCommand::Session { command: TeamSessionCommand::Ensure { agent, role, json } } } => {
+            let payload = crate::agent_teams::ensure(&repo,agent,role);
+            if json {print_json(&payload)?;} else {
+                println!("Team session: {}\nAgent: {}\nSession ID: {}\nAction: {}\n{}",
+                    payload["status"],agent,payload["session_id"].as_str().unwrap_or("unbound"),
+                    payload["action"].as_str().unwrap_or("none"),payload["detail"].as_str().unwrap_or_default());
+            }
+            Ok(if payload["status"].as_str()==Some("ready"){ExitCode::SUCCESS}else{ExitCode::FAILURE})
+        }
+        Commands::Team { command: TeamCommand::Contacts { json } } => {
+            let payload = crate::agent_teams::contacts(&repo);
+            if json {
+                print_json(&payload)?;
+            } else {
+                println!("{}", crate::agent_teams::render_contacts(&payload));
+            }
+            Ok(if payload["status"].as_str() == Some("ok") {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::FAILURE
+            })
+        }
         Commands::Status(args) => {
             run_status(repo, args)?;
             Ok(ExitCode::SUCCESS)

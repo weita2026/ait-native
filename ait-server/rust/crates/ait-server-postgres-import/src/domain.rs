@@ -22,7 +22,8 @@ type SourceDb = FilesystemServerRemoteBinaryDb;
 pub(crate) struct PatchsetIdentity {
     pub index: u32,
     pub record: V0PatchsetRecord,
-    pub change: V0ChangeRecord,
+    pub change: Option<V0ChangeRecord>,
+    pub change_index: Option<u32>,
 }
 
 impl PatchsetIdentity {
@@ -30,13 +31,15 @@ impl PatchsetIdentity {
         u32::from(self.record.patch_ordinal) + 1
     }
 
-    pub(crate) fn change_sequence(self) -> u32 {
-        u32::from(self.change.change_ordinal) + 1
+    pub(crate) fn change_sequence(self) -> Option<u32> {
+        self.change
+            .map(|change| u32::from(change.change_ordinal) + 1)
     }
 }
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct LandIdentity {
+    pub change_index: Option<u32>,
     pub record: V0LandRecord,
 }
 
@@ -133,25 +136,33 @@ impl RepositoryDomain {
         let task_prefix = task_prefix(namespace_ascii)?;
         let mut patchsets_by_id = BTreeMap::new();
         for (index, patchset) in patchsets_by_index.iter().copied().enumerate() {
-            let change = *changes.get(patchset.change_index as usize).ok_or_else(|| {
-                format!(
-                    "Patchset {index} references missing Change {}",
-                    patchset.change_index
-                )
-            })?;
-            if change.change_ordinal != patchset.change_ordinal {
-                return Err(format!(
-                    "Patchset {index} Change ordinal disagrees with its owning Change"
-                ));
-            }
-            let task_id = format!("{task_prefix}T-{:04}", change.task_index + 1);
-            let change_ref = format!("{task_id}/C-{:02}", change.change_ordinal + 1);
-            let patchset_id = format!("{change_ref}/P-{:02}", patchset.patch_ordinal + 1);
+            let change = patchset
+                .change_ordinal_plus1
+                .checked_sub(1)
+                .map(|ordinal| {
+                    changes
+                        .iter()
+                        .enumerate()
+                        .find(|(_, change)| {
+                            change.task_index == patchset.task_index
+                                && change.change_ordinal == ordinal
+                        })
+                        .map(|(index, change)| (index as u32, *change))
+                        .ok_or_else(|| format!("Patchset {index} exact optional Change is missing"))
+                })
+                .transpose()?;
+            let task_id = format!("{task_prefix}T-{:04}", patchset.task_index + 1);
+            let owner_ref = change.map_or_else(
+                || task_id.clone(),
+                |(_, change)| format!("{task_id}/C-{:02}", change.change_ordinal + 1),
+            );
+            let patchset_id = format!("{owner_ref}/P-{:02}", patchset.patch_ordinal + 1);
             let identity = PatchsetIdentity {
                 index: u32::try_from(index)
                     .map_err(|_| "Patchset count exceeds u32".to_string())?,
                 record: patchset,
-                change,
+                change: change.map(|(_, record)| record),
+                change_index: change.map(|(index, _)| index),
             };
             if patchsets_by_id
                 .insert(patchset_id.clone(), identity)
@@ -202,23 +213,37 @@ impl RepositoryDomain {
         )?;
         let mut lands_by_id = BTreeMap::new();
         for land in lands {
-            let change = *changes.get(land.change_index as usize).ok_or_else(|| {
-                format!("Land references missing Change index {}", land.change_index)
-            })?;
-            if change.change_ordinal != land.change_ordinal {
-                return Err("Land Change ordinal disagrees with its owning Change".to_string());
+            let patchset = patchsets_by_index
+                .get(land.patchset_index as usize)
+                .ok_or("Land accepted Patchset is missing")?;
+            if patchset.task_index != land.task_index
+                || patchset.change_ordinal_plus1 != land.change_ordinal_plus1
+            {
+                return Err("Land Task/optional Change differs from accepted Patchset".to_string());
             }
-            if land.patchset_index as usize >= patchsets_by_index.len() {
-                return Err(format!(
-                    "Land references missing Patchset index {}",
-                    land.patchset_index
-                ));
-            }
-            let task_id = format!("{task_prefix}T-{:04}", change.task_index + 1);
-            let change_ref = format!("{task_id}/C-{:02}", change.change_ordinal + 1);
-            let land_id = format!("{change_ref}/L-{:02}", land.land_ordinal + 1);
+            let change_index = land
+                .change_ordinal_plus1
+                .checked_sub(1)
+                .map(|ordinal| {
+                    changes
+                        .iter()
+                        .position(|change| {
+                            change.task_index == land.task_index && change.change_ordinal == ordinal
+                        })
+                        .map(|index| index as u32)
+                        .ok_or("Land explicit Change is missing")
+                })
+                .transpose()?;
+            let task_id = format!("{task_prefix}T-{:04}", land.task_index + 1);
+            let land_id = format!("{task_id}/L-{:02}", land.land_ordinal + 1);
             if lands_by_id
-                .insert(land_id.clone(), LandIdentity { record: land })
+                .insert(
+                    land_id.clone(),
+                    LandIdentity {
+                        record: land,
+                        change_index,
+                    },
+                )
                 .is_some()
             {
                 return Err(format!("duplicate Land identity {land_id}"));
@@ -375,9 +400,9 @@ fn logical_patchset_from_frozen(record: V0FrozenPatchsetRecord) -> V0PatchsetRec
     V0PatchsetRecord {
         patchset_meta: record.patchset_meta,
         patch_ordinal: record.patch_ordinal,
-        change_ordinal: record.change_ordinal,
+        change_ordinal_plus1: record.change_ordinal_plus1,
         reserved0: record.reserved0,
-        change_index: record.change_index,
+        task_index: record.task_index,
         previous_task_patchset_index_plus1: record.previous_task_patchset_index_plus1,
         previous_change_patchset_index_plus1: record.previous_change_patchset_index_plus1,
         base_snapshot_index: record.base_snapshot_index,
@@ -490,7 +515,8 @@ mod tests {
                 revision_snapshot_index: 8,
                 ..V0PatchsetRecord::default()
             },
-            change: V0ChangeRecord::default(),
+            change: Some(V0ChangeRecord::default()),
+            change_index: Some(0),
         };
         let mut domain = RepositoryDomain {
             source_root: PathBuf::new(),

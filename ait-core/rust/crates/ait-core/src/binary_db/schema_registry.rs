@@ -20,7 +20,6 @@ pub const REPOSITORY_BINARY_DB_BIN_PATHS: &[&str] = &[
     "change_land_index.bin",
     "land.bin",
     "snapshot_link.bin",
-    "snapshot_link_payload.bin",
     "task_snapshot_index.bin",
     "change_snapshot_index.bin",
     "blob.bin",
@@ -33,6 +32,16 @@ pub const REPOSITORY_BINARY_DB_BIN_PATHS: &[&str] = &[
     "line.bin",
     "line_name_payload.bin",
     "stash.bin",
+    "tag.bin",
+    "tag_payload.bin",
+    "agents.bin",
+    "agents_payload.bin",
+    // Retired Team/Role catalog files remain admitted for historical recovery.
+    // The Agent Teams route writes only agents.bin and agents_payload.bin.
+    "agent_roles.bin",
+    "agent_teams.bin",
+    "agent_teams_payload.bin",
+    "agent_team_membership.bin",
 ];
 
 pub const REPOSITORY_BINARY_DB_INDEX_PATHS: &[&str] = &[
@@ -42,6 +51,7 @@ pub const REPOSITORY_BINARY_DB_INDEX_PATHS: &[&str] = &[
     "tree_id.idx",
     "tree_pack_id.idx",
     "line_name.idx",
+    "tag_name.idx",
 ];
 
 #[cfg(test)]
@@ -60,7 +70,7 @@ mod tests {
             .iter()
             .copied()
             .collect::<BTreeSet<_>>();
-        assert_eq!(unique.len(), 28);
+        assert_eq!(unique.len(), 35);
         assert_eq!(unique.len(), REPOSITORY_BINARY_DB_BIN_PATHS.len());
         assert!(REPOSITORY_BINARY_DB_BIN_PATHS
             .iter()
@@ -81,7 +91,7 @@ mod tests {
             .iter()
             .copied()
             .collect::<BTreeSet<_>>();
-        assert_eq!(unique.len(), 6);
+        assert_eq!(unique.len(), 7);
         assert_eq!(unique.len(), REPOSITORY_BINARY_DB_INDEX_PATHS.len());
         assert!(REPOSITORY_BINARY_DB_INDEX_PATHS
             .iter()

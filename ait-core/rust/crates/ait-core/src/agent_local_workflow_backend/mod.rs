@@ -23,6 +23,12 @@ pub fn agent_local_workflow_backend_execute_json(request: &JsonValue) -> Result<
     let request = request
         .as_object()
         .ok_or_else(|| "local workflow backend request must be an object".to_string())?;
+    if request.contains_key("workflow_mode") {
+        return Err(
+            "Retired execution field `workflow_mode`; resubmit with explicit target.mode."
+                .to_string(),
+        );
+    }
     let operation = required_text(request.get("operation"), "operation")?;
     if !AGENT_LOCAL_WORKFLOW_BACKEND_OPERATIONS.contains(&operation.as_str()) {
         return Err(format!(
@@ -59,9 +65,11 @@ fn validate_target(target: &JsonMap<String, JsonValue>) -> Result<(), String> {
     if mode != "local" {
         return Err("local workflow backend target mode must be `local`".to_string());
     }
-    let workflow_mode = required_text(target.get("workflow_mode"), "target.workflow_mode")?;
-    if workflow_mode != "solo_local" {
-        return Err("local workflow backend target workflow_mode must be `solo_local`".to_string());
+    if target.contains_key("workflow_mode") {
+        return Err(
+            "Retired execution field `workflow_mode`; resubmit with explicit target.mode."
+                .to_string(),
+        );
     }
     let repo_root = required_text(target.get("repo_root"), "target.repo_root")?;
     required_text(target.get("repo_name"), "target.repo_name")?;

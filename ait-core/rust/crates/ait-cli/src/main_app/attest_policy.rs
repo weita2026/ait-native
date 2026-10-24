@@ -18,7 +18,7 @@ fn run_attest(repo: RepoRuntime, command: AttestCommand) -> Result<(), String> {
                 "ait-cli attest put",
                 &payload,
                 args.json,
-                &["patchset_id", "author_mode", "tests", "lint"],
+                &["patchset_id", "author_mode", "verification_state", "revoked", "require_tests_pass", "require_lint_pass", "require_human_review", "ci_backed"],
             )?;
             Ok(())
         }
@@ -29,7 +29,7 @@ fn run_attest(repo: RepoRuntime, command: AttestCommand) -> Result<(), String> {
                 "ait-cli attest show",
                 &payload,
                 args.json,
-                &["attestation_id", "patchset_id", "author_mode"],
+                &["attestation_id", "patchset_id", "author_mode", "verification_state", "revoked", "require_tests_pass", "require_lint_pass", "require_human_review", "ci_backed"],
             )?;
             Ok(())
         }

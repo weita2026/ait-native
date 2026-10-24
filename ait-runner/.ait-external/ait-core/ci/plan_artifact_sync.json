@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "receipts": [
+    {
+      "artifact_path": "docs/sprints/ait_server_postgres_wrapper_removal_plan.md",
+      "artifact_selector": "ait-server-postgres-wrapper-removal/root",
+      "plan_id": "CPL-01KWWTPGWAGGX43MZMBF1F7ZQH",
+      "local_revision_id": "CPR-01KWWVWSYCWMVM9K36NR08ERH6",
+      "remote_revision_id": "PR-3144a6004f46fa2d63d2",
+      "task_id": "RCT-0803",
+      "change_id": "RCC-0803",
+      "purpose": "Snapshot-visible receipt for a remote-synced Markdown plan artifact update."
+    }
+  ]
+}

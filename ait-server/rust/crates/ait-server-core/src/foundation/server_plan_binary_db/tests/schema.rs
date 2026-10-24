@@ -31,8 +31,8 @@ fn server_plan_schema_matches_ait_core_compact_v1_layout() {
         plan_item_payload_file().as_str(),
         super::super::schema::PLAN_ITEM_PAYLOAD_BIN
     );
-    assert_eq!(plan_file().record_size(), 48);
-    assert_eq!(plan_revision_file().record_size(), 56);
+    assert_eq!(plan_file().record_size(), 52);
+    assert_eq!(plan_revision_file().record_size(), 60);
     assert_eq!(plan_item_file().record_size(), 16);
     for file in [plan_file(), plan_revision_file(), plan_item_file()] {
         assert_eq!(file.family(), BinaryDbFileFamily::Plan);
@@ -45,11 +45,11 @@ fn server_plan_schema_matches_ait_core_compact_v1_layout() {
         assert_eq!(payload.family(), BinaryDbFileFamily::Plan);
     }
     assert_eq!(
-        super::super::schema::plan_file_for(PLAN_LAYOUT_ID).unwrap(),
+        super::super::schema::plan_file_for(REMOTE_PLAN_LAYOUT_ID).unwrap(),
         plan_file()
     );
     assert_eq!(
-        super::super::schema::plan_revision_file_for(PLAN_LAYOUT_ID).unwrap(),
+        super::super::schema::plan_revision_file_for(REMOTE_PLAN_LAYOUT_ID).unwrap(),
         plan_revision_file()
     );
     assert_eq!(
@@ -76,6 +76,7 @@ fn server_plan_status_uses_state_bits_and_preserves_published_flags() {
         created_at_s: 0,
         updated_at_s: 0,
         published_at_s: 0,
+        actor_index_plus1: 0,
     };
     assert_eq!(
         plan_status_from_record(&record).expect("published draft should decode"),
@@ -112,6 +113,7 @@ fn server_plan_compact_v1_golden_fixture_matches_core_wire_contract() {
         created_at_s: 12,
         updated_at_s: 13,
         published_at_s: 14,
+        actor_index_plus1: 0,
     };
     let plan_bytes = super::super::codec::ServerPlanCodec::<PLAN_LAYOUT_ID>::encode_record(&plan)
         .expect("compact v1 plan record should encode");
@@ -144,6 +146,7 @@ fn server_plan_compact_v1_golden_fixture_matches_core_wire_contract() {
         root_entry_ordinal: 10,
         created_at_s: 11,
         published_at_s: 12,
+        actor_index_plus1: 0,
     };
     let revision_bytes =
         super::super::codec::ServerPlanRevisionCodec::<PLAN_LAYOUT_ID>::encode_record(&revision)
@@ -258,6 +261,7 @@ fn server_plan_codecs_are_layout_scoped_and_preserve_v1_bytes() {
         created_at_s: 12,
         updated_at_s: 13,
         published_at_s: 14,
+        actor_index_plus1: 0,
     };
     let plan_bytes = super::super::codec::ServerPlanCodec::<PLAN_LAYOUT_ID>::encode_record(&plan)
         .expect("plan record should encode");
@@ -289,6 +293,7 @@ fn server_plan_codecs_are_layout_scoped_and_preserve_v1_bytes() {
         root_entry_ordinal: 10,
         created_at_s: 11,
         published_at_s: 12,
+        actor_index_plus1: 0,
     };
     let revision_bytes =
         super::super::codec::ServerPlanRevisionCodec::<PLAN_LAYOUT_ID>::encode_record(&revision)
@@ -457,6 +462,7 @@ fn server_plan_binary_db_complete_golden_fixture_matches_core_wire_contract() {
                     created_at_s: golden_u64(input, "created_at_s"),
                     updated_at_s: golden_u64(input, "updated_at_s"),
                     published_at_s: golden_u64(input, "published_at_s"),
+                    actor_index_plus1: 0,
                 };
                 assert_eq!(
                     super::super::codec::ServerPlanCodec::<PLAN_LAYOUT_ID>::encode_record(&value)
@@ -510,6 +516,7 @@ fn server_plan_binary_db_complete_golden_fixture_matches_core_wire_contract() {
                     root_entry_ordinal: golden_u32(input, "root_entry_ordinal"),
                     created_at_s: golden_u64(input, "created_at_s"),
                     published_at_s: golden_u64(input, "published_at_s"),
+                    actor_index_plus1: 0,
                 };
                 assert_eq!(
                     super::super::codec::ServerPlanRevisionCodec::<PLAN_LAYOUT_ID>::encode_record(

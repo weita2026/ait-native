@@ -170,6 +170,8 @@ struct FakeQueueRemote {
 
 #[derive(Debug, Default)]
 struct FakeChangeRemote {
+    tasks: BTreeMap<String, JsonValue>,
+    task_read_sequence: VecDeque<JsonValue>,
     detail: Option<JsonValue>,
     changes: Vec<JsonValue>,
     lines: Vec<JsonValue>,
@@ -240,6 +242,7 @@ struct FakeWorkspaceCloseoutRemote {
     patchsets: BTreeMap<String, JsonValue>,
     patchset_reads: Vec<String>,
     attestations: BTreeMap<String, JsonValue>,
+    attestation_writes: usize,
     ci_runs: Vec<JsonValue>,
     reviews: BTreeMap<String, Vec<JsonValue>>,
     review_requests: BTreeMap<String, Vec<JsonValue>>,
@@ -745,6 +748,22 @@ impl TaskWorkflowRemoteChangeDetailReader for FakeChangeRemote {
         self.detail.clone().ok_or_else(|| {
             TaskWorkflowHttpClientError::Remote(format!("missing detail for {change_ref}"))
         })
+    }
+}
+
+impl TaskWorkflowRemoteTaskReader for FakeChangeRemote {
+    fn get_task(
+        &mut self,
+        task_id: &str,
+        _repo_name: Option<&str>,
+    ) -> TaskWorkflowHttpClientResult<JsonValue> {
+        if let Some(task) = self.task_read_sequence.pop_front() {
+            return Ok(task);
+        }
+        self.tasks
+            .get(task_id)
+            .cloned()
+            .ok_or_else(|| TaskWorkflowHttpClientError::Remote(format!("missing Task {task_id}")))
     }
 }
 
@@ -2430,6 +2449,33 @@ impl TaskWorkflowRepoJobLister for FakeWorkspaceCloseoutRemote {
 }
 
 impl TaskWorkflowReviewRecorder for FakeWorkspaceCloseoutRemote {
+    #[allow(clippy::too_many_arguments)]
+    fn record_review_as_actor(
+        &mut self,
+        change_id: &str,
+        patchset_id: &str,
+        reviewer: &str,
+        reviewer_kind: &str,
+        action: &str,
+        comment: Option<&str>,
+        blocking: bool,
+        repo_name: Option<&str>,
+        exact_id: bool,
+    ) -> TaskWorkflowHttpClientResult<JsonValue> {
+        let mut result = self.record_review(
+            change_id,
+            patchset_id,
+            reviewer,
+            action,
+            comment,
+            blocking,
+            repo_name,
+            exact_id,
+        )?;
+        result["reviewer_kind"] = json!(reviewer_kind);
+        Ok(result)
+    }
+
     fn record_review(
         &mut self,
         change_id: &str,
@@ -2479,18 +2525,23 @@ impl TaskWorkflowAttestationWriter for FakeWorkspaceCloseoutRemote {
         &mut self,
         patchset_id: &str,
         author_mode: &str,
-        evaluation_summary: &JsonValue,
-        provenance_summary: &JsonValue,
-        detail: &JsonValue,
+        statement: &ait_core::attest_json::RemoteAttestationStatement,
         repo_name: Option<&str>,
         _exact_id: bool,
     ) -> TaskWorkflowHttpClientResult<JsonValue> {
+        self.attestation_writes += 1;
+        let patchset = &self.patchsets[patchset_id];
         let attestation = json!({
+            "task_id":patchset["task_id"],"change_id":patchset["change_id"],"change_ref":patchset["change_ref"],
+            "evaluation_summary":{"tests":patchset["ci"]["tests_status"].as_str().unwrap_or("none"),"lint":patchset["ci"]["lint_status"].as_str().unwrap_or("none")},
             "patchset_id": patchset_id,
             "author_mode": author_mode,
-            "evaluation_summary": evaluation_summary,
-            "provenance_summary": provenance_summary,
-            "detail": detail,
+            "verification_state": statement.verification_state,
+            "require_tests_pass": statement.require_tests_pass,
+            "require_lint_pass": statement.require_lint_pass,
+            "require_human_review": statement.require_human_review,
+            "revoked": statement.revoked,
+            "ci_backed": false,
             "repo_name": repo_name,
         });
         self.attestations
@@ -2507,9 +2558,12 @@ impl TaskWorkflowAttestationReader for FakeWorkspaceCloseoutRemote {
         _exact_id: bool,
     ) -> TaskWorkflowHttpClientResult<JsonValue> {
         self.attestations.get(patchset_id).cloned().ok_or_else(|| {
-            TaskWorkflowHttpClientError::Remote(format!(
-                "GET attestation {patchset_id} failed: 404 Unknown attestation"
-            ))
+            TaskWorkflowHttpClientError::RemoteResponse {
+                method: "GET".into(),
+                url: format!("attestation/{patchset_id}"),
+                status: 404,
+                detail: "Unknown attestation".into(),
+            }
         })
     }
 }

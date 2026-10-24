@@ -53,6 +53,8 @@ fn write_remote_add_fixture(root: &Path, repository_index: Option<u32>) -> RepoR
     fs::create_dir_all(&ait_dir).unwrap();
     let mut config = json!({
         "repo_name": "duplicate-name",
+        "user_name": "Alice",
+        "user_email": "alice@example.test",
         "default_line": "main",
         "id_namespace_prefix": "R",
         "policy_profile": "prototype",
@@ -67,7 +69,7 @@ fn write_remote_add_fixture(root: &Path, repository_index: Option<u32>) -> RepoR
     .unwrap();
     fs::write(
         ait_dir.join("policy.yaml"),
-        "version: 1\npolicy_id: prototype\ndefaults:\n  require_attestation: true\n  require_tests: false\n",
+        "version: 1\npolicy_id: prototype\ndefaults:\n  require_attestation: true\n  require_tests: true\n",
     )
     .unwrap();
     RepoRuntime::discover_from_path(root).unwrap()
@@ -80,9 +82,10 @@ type RepositoryAuthorityServer = (
 );
 
 fn spawn_repository_authority_server(
-    response: JsonValue,
+    mut response: JsonValue,
     request_count: usize,
 ) -> RepositoryAuthorityServer {
+    response["actor_key_index"] = json!(0);
     let server = Server::http("127.0.0.1:0").unwrap();
     let address = server.server_addr();
     let handle = thread::spawn(move || {
@@ -118,7 +121,7 @@ fn remote_add_registers_and_persists_an_unconfigured_numeric_authority() {
                 "repository_index": 4,
                 "repository_name": "ait-core",
                 "namespace": "R",
-                "policy_flags": 0b1000_0001,
+                "policy_flags": 0b1000_0011,
                 "tombstoned": false,
             }
         }),
@@ -144,12 +147,18 @@ fn remote_add_registers_and_persists_an_unconfigured_numeric_authority() {
         json!({
             "repository_name": "ait-core",
             "namespace": "R",
-            "policy_flags": 0b1000_0001,
+            "policy_flags": 0b1000_0011,
+            "user_name":"Alice", "user_email":"alice@example.test",
         })
     );
     assert_eq!(added["name"], json!("origin"));
     assert_eq!(added["repo_name"], json!("ait-core"));
     assert_eq!(added["patch_ci"]["required"], json!(false));
+    assert_eq!(
+        added["patch_ci"]["delivery_policy_default_requires_tests"],
+        json!(true)
+    );
+    assert!(!root.join("ci").exists());
     assert_eq!(
         read_json_object(&root.join(".ait/config.json")).unwrap()["repository_index"],
         json!(4)
@@ -157,7 +166,7 @@ fn remote_add_registers_and_persists_an_unconfigured_numeric_authority() {
 }
 
 #[test]
-fn remote_add_with_a_configured_index_only_reads_that_numeric_authority() {
+fn remote_add_with_a_configured_index_resolves_actor_without_changing_repository() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().join("ait-core");
     let repo = write_remote_add_fixture(&root, Some(7));
@@ -168,7 +177,7 @@ fn remote_add_with_a_configured_index_only_reads_that_numeric_authority() {
                 "repository_index": 7,
                 "repository_name": "same-display-name",
                 "namespace": "R",
-                "policy_flags": 0b1000_0001,
+                "policy_flags": 0b1000_0011,
                 "tombstoned": false,
             }
         }),
@@ -183,7 +192,7 @@ fn remote_add_with_a_configured_index_only_reads_that_numeric_authority() {
             make_default: false,
         },
     )
-    .expect("configured Repository PK is verified without registration");
+    .expect("configured Repository PK resolves Actor without changing Repository metadata");
     let requests = handle.join().unwrap();
     assert_eq!(
         requests
@@ -192,15 +201,185 @@ fn remote_add_with_a_configured_index_only_reads_that_numeric_authority() {
             .collect::<Vec<_>>(),
         vec![
             ("GET", "/v1/native/repository-authorities/7"),
-            ("GET", "/v1/handshake"),
+            ("POST", "/v1/native/repository-authorities"),
         ]
     );
-    assert!(requests.iter().all(|(_, _, body)| body.is_empty()));
+    assert!(requests[0].2.is_empty());
+    assert_eq!(
+        parse_value(&requests[1].2, "existing registration").unwrap(),
+        json!({
+            "repository_index":7, "repository_name":"same-display-name",
+            "namespace":"R", "policy_flags":0b1000_0011,
+            "user_name":"Alice", "user_email":"alice@example.test",
+        })
+    );
     assert_eq!(added["repo_name"], json!("ait-core"));
     assert_eq!(
         read_json_object(&root.join(".ait/config.json")).unwrap()["repository_index"],
         json!(7)
     );
+}
+
+#[test]
+fn remote_add_rejects_conflicting_or_malformed_authority_before_actor_effects() {
+    let valid = json!({
+        "repository_index":7, "repository_name":"existing name", "namespace":"R",
+        "policy_flags":17, "tombstoned":false,
+    });
+    let cases = [
+        ("namespace mismatch", "namespace", json!("Z")),
+        ("missing namespace", "namespace", JsonValue::Null),
+        ("null namespace", "namespace", JsonValue::Null),
+        ("malformed namespace", "namespace", json!(7)),
+        ("wrong authority", "repository_index", json!(8)),
+        ("tombstoned authority", "tombstoned", json!(true)),
+        ("missing name", "repository_name", JsonValue::Null),
+        ("invalid policy", "policy_flags", json!(256)),
+    ];
+    for (label, field, value) in cases {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("ait-core");
+        let repo = write_remote_add_fixture(&root, Some(7));
+        let before = fs::read(root.join(".ait/config.json")).unwrap();
+        let before_policy = fs::read(root.join(".ait/policy.yaml")).unwrap();
+        let mut authority = valid.clone();
+        if label.starts_with("missing ") {
+            authority.as_object_mut().unwrap().remove(field);
+        } else {
+            authority[field] = value;
+        }
+        let server = Server::http("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", server.server_addr());
+        let finished = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let handler_finished = std::sync::Arc::clone(&finished);
+        let handler = thread::spawn(move || {
+            let mut requests = Vec::new();
+            let mut actor_effects = 0;
+            // Keep accepting after GET: a premature POST receives a valid zero
+            // key so the old candidate reaches its late namespace rejection.
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            loop {
+                let Some(mut request) = server
+                    .recv_timeout(std::time::Duration::from_millis(100))
+                    .unwrap()
+                else {
+                    if handler_finished.load(std::sync::atomic::Ordering::Acquire) {
+                        break;
+                    }
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "remote add did not complete"
+                    );
+                    continue;
+                };
+                let method = request.method().as_str().to_string();
+                let path = request.url().to_string();
+                let mut body = String::new();
+                request.as_reader().read_to_string(&mut body).unwrap();
+                if method == "POST" {
+                    actor_effects += 1;
+                }
+                requests.push((method, path, body));
+                request
+                    .respond(
+                        Response::from_string(
+                            json!({
+                                "repository":authority, "actor_key_index":0,
+                            })
+                            .to_string(),
+                        )
+                        .with_status_code(200),
+                    )
+                    .unwrap();
+            }
+            (requests, actor_effects)
+        });
+        let error = remote_add(
+            &repo,
+            &RemoteAddRequest {
+                name: "origin".into(),
+                url,
+                make_default: true,
+            },
+        )
+        .expect_err(label);
+        finished.store(true, std::sync::atomic::Ordering::Release);
+        assert!(!error.is_empty());
+        let (requests, actor_effects) = handler.join().unwrap();
+        assert_eq!(
+            requests,
+            vec![(
+                "GET".into(),
+                "/v1/native/repository-authorities/7".into(),
+                String::new()
+            )],
+            "{label}"
+        );
+        assert_eq!(actor_effects, 0, "{label}");
+        assert_eq!(
+            fs::read(root.join(".ait/config.json")).unwrap(),
+            before,
+            "{label}"
+        );
+        assert_eq!(
+            fs::read(root.join(".ait/policy.yaml")).unwrap(),
+            before_policy,
+            "{label}"
+        );
+        assert!(
+            remote_list(&repo).unwrap().as_array().unwrap().is_empty(),
+            "{label}"
+        );
+    }
+}
+
+#[test]
+fn metadata_registration_preserves_custom_and_malformed_ci_and_required_policy() {
+    for bytes in [b"user-defined CI contents\n".as_slice(), b"not JSON\xff"] {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("ait-core");
+        let repo = write_remote_add_fixture(&root, None);
+        fs::create_dir(root.join("ci")).unwrap();
+        let path = root.join("ci/patch_ci.json");
+        fs::write(&path, bytes).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o440)).unwrap();
+        }
+        let stamp = fs::metadata(&path).unwrap().modified().unwrap();
+        let permissions = fs::metadata(&path).unwrap().permissions();
+        let policy = fs::read(root.join(".ait/policy.yaml")).unwrap();
+        let (url, handle) = spawn_repository_authority_server(
+            json!({
+                "repository": {"repository_index": 4,"repository_name": "ait-core", "namespace": "R", "policy_flags": 0b1000_0011,"tombstoned": false}
+            }),
+            1,
+        );
+        let added = remote_add(
+            &repo,
+            &RemoteAddRequest {
+                name: "origin".into(),
+                url,
+                make_default: false,
+            },
+        )
+        .unwrap();
+        let requests = handle.join().unwrap();
+        assert_eq!(
+            parse_value(&requests[0].2, "request").unwrap()["policy_flags"],
+            json!(0b1000_0011)
+        );
+        assert_eq!(added["patch_ci"]["status"], json!("deferred_to_workflow"));
+        assert_eq!(
+            added["patch_ci"]["delivery_policy_default_requires_tests"],
+            json!(true)
+        );
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+        assert_eq!(fs::metadata(&path).unwrap().modified().unwrap(), stamp);
+        assert_eq!(fs::metadata(&path).unwrap().permissions(), permissions);
+        assert_eq!(fs::read(root.join(".ait/policy.yaml")).unwrap(), policy);
+    }
 }
 
 #[test]
@@ -231,7 +410,7 @@ fn remote_add_from_a_task_worktree_uses_the_authoritative_root_directory_name() 
                 "repository_index": 7,
                 "repository_name": "legacy-display-name",
                 "namespace": "R",
-                "policy_flags": 0b1000_0001,
+                "policy_flags": 0b1000_0011,
                 "tombstoned": false,
             }
         }),
@@ -450,107 +629,4 @@ fn repository_registration_persists_numeric_index_without_rebinding() {
         .file_name()
         .to_string_lossy()
         .ends_with(".tmp")));
-}
-
-#[test]
-fn patch_ci_template_is_language_neutral_across_project_markers() {
-    let empty = tempfile::tempdir().unwrap();
-    let baseline = patch_ci_template(empty.path());
-    assert_eq!(baseline.commands, vec![PATCH_CI_PLACEHOLDER_COMMAND]);
-    assert_eq!(
-        baseline.manifest["suites"][0]["suite_id"],
-        json!("patchset_gate")
-    );
-
-    for (path, contents) in [
-        ("Cargo.toml", "[workspace]\n"),
-        ("pyproject.toml", "[project]\nname='demo'\n"),
-        ("package.json", "{}\n"),
-        ("Demo.csproj", "<Project />\n"),
-        ("composer.json", "{}\n"),
-        ("CMakeLists.txt", "project(demo C)\n"),
-        ("main.cpp", "int main() { return 0; }\n"),
-        ("pom.xml", "<project />\n"),
-    ] {
-        let fixture = tempfile::tempdir().unwrap();
-        fs::write(fixture.path().join(path), contents).unwrap();
-        let template = patch_ci_template(fixture.path());
-        assert_eq!(template.manifest, baseline.manifest, "marker {path}");
-        assert_eq!(template.commands, baseline.commands, "marker {path}");
-    }
-
-    let encoded = encode_value_pretty_with_newline_error_string(&baseline.manifest).unwrap();
-    for inferred in [
-        "cargo test",
-        "pytest",
-        "npm test",
-        "dotnet test",
-        "composer test",
-        "cmake",
-        "mvn test",
-    ] {
-        assert!(!encoded.contains(inferred), "inferred {inferred}");
-    }
-    let error = validate_patch_ci_manifest(&encoded).unwrap_err();
-    assert!(error.contains(PATCH_CI_PLACEHOLDER_COMMAND), "{error}");
-}
-
-#[test]
-fn patch_ci_validation_requires_a_named_blocking_patchset_gate_and_runner() {
-    let no_gate = r#"{
-      "schema_version": 1,
-      "suites": [{
-        "suite_id": "diagnostic",
-        "plane": "nightly",
-        "default_blocking": false,
-        "mode": "diagnostic",
-        "runner": {"kind": "command_bundle", "commands": ["true"]}
-      }]
-    }"#;
-    let error = validate_patch_ci_manifest(no_gate).unwrap_err();
-    assert!(error.contains("at least one suite"), "{error}");
-
-    let missing_runner = r#"{
-      "schema_version": 1,
-      "suites": [{
-        "suite_id": "unit",
-        "plane": "patchset",
-        "default_blocking": true,
-        "mode": "gate"
-      }]
-    }"#;
-    let error = validate_patch_ci_manifest(missing_runner).unwrap_err();
-    assert!(error.contains("runner"), "{error}");
-}
-
-#[test]
-fn patch_ci_bootstrap_create_is_non_overwriting_and_guidance_is_actionable() {
-    let temp = tempfile::tempdir().unwrap();
-    let path = temp.path().join(PATCH_CI_RELATIVE_PATH);
-    let template = patch_ci_template(temp.path());
-    let encoded = encode_value_pretty_with_newline_error_string(&template.manifest).unwrap();
-
-    write_new_patch_ci_manifest(&path, encoded.as_bytes()).unwrap();
-    assert_eq!(fs::read_to_string(&path).unwrap(), encoded);
-    let error = write_new_patch_ci_manifest(&path, b"replacement").unwrap_err();
-    assert!(error.contains("without overwriting"), "{error}");
-    assert_eq!(fs::read_to_string(&path).unwrap(), encoded);
-
-    let message = generated_patch_ci_message(
-        &RemoteAddRequest {
-            name: "origin".to_string(),
-            url: "https://example.test/repo path".to_string(),
-            make_default: true,
-        },
-        &template,
-    );
-    assert!(message.contains("language-neutral"));
-    assert!(message.contains("No project manifests were inspected"));
-    assert!(message.contains(PATCH_CI_PLACEHOLDER_COMMAND));
-    assert!(message.contains("Remote registration was not attempted."));
-    assert!(message.contains("suites[].runner.commands"));
-    assert!(message.contains("ait snapshot create"));
-    assert!(message.contains("ait remote add origin 'https://example.test/repo path' --default"));
-    assert!(!message.contains("--repo-name"));
-    assert!(!message.contains("--discard-export"));
 }

@@ -15,6 +15,9 @@ mod recovery_audit;
 mod recovery_job_policy;
 mod types;
 mod u64_second_upgrade;
+pub use ait_server_core::foundation::server_workflow_upgrade::{
+    stage_repository_workflow, WorkflowUpgradeReport, WorkflowUpgradeRequest,
+};
 
 pub use activation::{activate_generation, ActivateRequest, ActivateResult};
 pub use conversion::{stage_snapshot, StageRequest, StageResult};

@@ -26,11 +26,11 @@ function Invoke-Format {
 }
 
 function Invoke-Clippy {
-    Invoke-Checked "cargo" @("clippy", "--workspace", "--all-targets", "--", "-D", "warnings")
+    Invoke-Checked "cargo" @("clippy", "--locked", "--workspace", "--all-targets", "--", "-D", "warnings")
 }
 
 function Invoke-Tests {
-    Invoke-Checked "cargo" @("test", "--workspace", "--all-targets")
+    Invoke-Checked "cargo" @("test", "--locked", "--workspace", "--all-targets")
 }
 
 $repoRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..")).Path

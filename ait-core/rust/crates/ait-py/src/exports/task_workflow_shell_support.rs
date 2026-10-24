@@ -13,8 +13,6 @@ use pyo3::exceptions::{PyKeyError, PyValueError};
 use pyo3::prelude::*;
 
 const DEFAULT_TASK_REVIEW: bool = false;
-const DEFAULT_WORKFLOW_SCOPE: &str = "local";
-const DEFAULT_PLAN_TASK_BINDING_MODE: &str = "required";
 const WORKFLOW_READY_POLL_SECONDS_KEY: &str = "workflow_ready_poll_seconds";
 const WORKFLOW_LAND_POLL_SECONDS_KEY: &str = "workflow_land_poll_seconds";
 const WORKFLOW_WAIT_HINT_BOOTSTRAP_MISS: i64 = 0;
@@ -166,71 +164,11 @@ pub fn task_review_enabled(ctx: &Bound<'_, PyAny>) -> PyResult<bool> {
         .unwrap_or(DEFAULT_TASK_REVIEW))
 }
 
-fn plan_task_binding_mode(value: Option<&JsonValue>) -> Option<String> {
-    match value {
-        Some(JsonValue::Object(obj)) => {
-            normalize_json_text(obj.get("mode")).and_then(|mode| match mode.as_str() {
-                "advisory" | "strict" | "required" => Some(mode),
-                _ => None,
-            })
-        }
-        _ => None,
-    }
-}
-
-fn effective_workflow_mode(config: &Map<String, JsonValue>) -> String {
-    let configured_mode = normalize_json_text(config.get("workflow_mode"));
-    let workflow_scope = normalize_json_text(config.get("workflow_default_scope"))
-        .unwrap_or_else(|| DEFAULT_WORKFLOW_SCOPE.to_string());
-    let task_scope = normalize_json_text(config.get("task_default_scope"))
-        .unwrap_or_else(|| workflow_scope.clone());
-    let change_scope = normalize_json_text(config.get("change_default_scope"))
-        .unwrap_or_else(|| workflow_scope.clone());
-    let binding_mode = plan_task_binding_mode(config.get("plan_task_binding"))
-        .unwrap_or_else(|| DEFAULT_PLAN_TASK_BINDING_MODE.to_string());
-    if let Some(mode) = configured_mode.as_deref() {
-        let preset = match mode {
-            "solo_local" => Some(("local", "local", "local", "required")),
-            "solo_remote" => Some(("remote", "remote", "remote", "required")),
-            "team_remote" => Some(("remote", "remote", "remote", "required")),
-            _ => None,
-        };
-        if let Some((preset_workflow, preset_task, preset_change, preset_binding)) = preset {
-            if workflow_scope == preset_workflow
-                && task_scope == preset_task
-                && change_scope == preset_change
-                && binding_mode == preset_binding
-            {
-                return mode.to_string();
-            }
-        }
-    }
-    if workflow_scope == "local"
-        && task_scope == "local"
-        && change_scope == "local"
-        && binding_mode == "required"
-    {
-        return "solo_local".to_string();
-    }
-    if workflow_scope == "remote"
-        && task_scope == "remote"
-        && change_scope == "remote"
-        && binding_mode == "advisory"
-    {
-        return "solo_remote".to_string();
-    }
-    if workflow_scope == "remote"
-        && task_scope == "remote"
-        && change_scope == "remote"
-        && binding_mode == "required"
-    {
-        return "team_remote".to_string();
-    }
-    "custom".to_string()
-}
-
 fn team_review_enabled(config: &Map<String, JsonValue>) -> bool {
-    effective_workflow_mode(config) == "team_remote"
+    config
+        .get("agent_teams")
+        .and_then(JsonValue::as_bool)
+        .unwrap_or(false)
 }
 
 fn lookup_remote_row(config_path: &Path, name: &str) -> PyResult<Map<String, JsonValue>> {
