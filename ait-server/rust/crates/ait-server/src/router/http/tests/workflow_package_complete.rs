@@ -22,6 +22,10 @@ mod restart;
 #[path = "workflow_package_mode_read.rs"]
 mod mode_read;
 
+#[cfg(windows)]
+#[path = "workflow_package_windows_fixture.rs"]
+mod windows_fixture;
+
 const PEER: &str = "SNP-000000000003";
 const ORIGINAL_TASK: &str = "SNP-000000000004";
 const ORIGINAL_CHANGE: &str = "SNP-000000000005";

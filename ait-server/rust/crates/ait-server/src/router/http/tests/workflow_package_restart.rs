@@ -350,31 +350,21 @@ async fn windows_retained_reprepare_holds_hostile_acl_and_junction_before_alloca
             &archive
         };
         let saved_source = root.path().join("saved-source");
-        let foreign = root.path().join("foreign-source");
+        let foreign = root.path().join("foreign source & %PATH% !junction!");
         if case == "junction" {
             fs::rename(worktree.join("source"), &saved_source).unwrap();
             fs::create_dir(&foreign).unwrap();
             fs::write(foreign.join("keep"), b"keep").unwrap();
-            let result = std::process::Command::new("cmd.exe")
-                .args(["/d", "/c", "mklink", "/J"])
-                .arg(worktree.join("source"))
-                .arg(&foreign)
-                .output()
-                .unwrap();
-            assert!(
-                result.status.success(),
-                "{case}: {}",
-                String::from_utf8_lossy(&result.stderr)
-            );
+            windows_fixture::junction(&worktree.join("source"), &foreign);
         } else {
-            let result = std::process::Command::new("icacls.exe")
-                .arg(protected)
-                .args(["/grant", "*S-1-1-0:(W)"])
-                .output()
-                .unwrap();
+            let mut command = std::process::Command::new("icacls.exe");
+            command.arg(protected).args(["/grant", "*S-1-1-0:(W)"]);
+            let result = command.output().unwrap();
             assert!(
                 result.status.success(),
-                "{case}: {}",
+                "{case}: {command:?}: status={}; stdout={}; stderr={}",
+                result.status,
+                String::from_utf8_lossy(&result.stdout),
                 String::from_utf8_lossy(&result.stderr)
             );
         }
@@ -389,14 +379,14 @@ async fn windows_retained_reprepare_holds_hostile_acl_and_junction_before_alloca
             fs::remove_dir(worktree.join("source")).unwrap();
             fs::rename(saved_source, worktree.join("source")).unwrap();
         } else {
-            let result = std::process::Command::new("icacls.exe")
-                .arg(protected)
-                .args(["/remove:g", "*S-1-1-0"])
-                .output()
-                .unwrap();
+            let mut command = std::process::Command::new("icacls.exe");
+            command.arg(protected).args(["/remove:g", "*S-1-1-0"]);
+            let result = command.output().unwrap();
             assert!(
                 result.status.success(),
-                "{case}: {}",
+                "{case}: {command:?}: status={}; stdout={}; stderr={}",
+                result.status,
+                String::from_utf8_lossy(&result.stdout),
                 String::from_utf8_lossy(&result.stderr)
             );
         }

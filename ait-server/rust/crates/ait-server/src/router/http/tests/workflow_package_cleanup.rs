@@ -173,19 +173,7 @@ async fn committed_restart_cleans_only_empty_runtime_containers_without_changing
     #[cfg(unix)]
     symlink(&foreign, &worktree).unwrap();
     #[cfg(windows)]
-    {
-        let result = std::process::Command::new("cmd.exe")
-            .args(["/d", "/c", "mklink", "/J"])
-            .arg(&worktree)
-            .arg(&foreign)
-            .output()
-            .unwrap();
-        assert!(
-            result.status.success(),
-            "native junction fixture failed: {}",
-            String::from_utf8_lossy(&result.stderr)
-        );
-    }
+    windows_fixture::junction(&worktree, &foreign);
     assert!(!finish(&app, &identity).await.0.is_success());
     assert_eq!(fs::read(foreign.join("keep")).unwrap(), b"keep");
     let accepted = immutable_result(&state, &identity);
