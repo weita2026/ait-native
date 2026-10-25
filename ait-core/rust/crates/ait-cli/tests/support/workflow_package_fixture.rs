@@ -667,7 +667,7 @@ impl Fixture {
         (started["task_id"].as_str().unwrap().into(), edit)
     }
     pub fn finish_local(&self, id: &str, edit: &Path) -> String {
-        cli(
+        let output = run(
             edit,
             &[
                 "task",
@@ -679,10 +679,62 @@ impl Fixture {
                 "--json",
                 "--full",
             ],
-        )["landed_snapshot_id"]
-            .as_str()
-            .unwrap()
-            .into()
+        );
+        #[cfg(windows)]
+        let output = self.resume_empty_local_closeout(id, edit, output);
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let finished = output_json(&output);
+        assert_eq!(finished["apply_status"], "done");
+        assert!(matches!(
+            finished["closeout_status"].as_str(),
+            Some("complete" | "complete_unbound")
+        ));
+        assert_eq!(
+            finished["bound_worktree_cleanup"]["status"], "removed",
+            "{finished}"
+        );
+        assert!(!edit.exists());
+        finished["landed_snapshot_id"].as_str().unwrap().into()
+    }
+
+    #[cfg(windows)]
+    fn resume_empty_local_closeout(&self, id: &str, edit: &Path, output: Output) -> Output {
+        let first = output_json(&output);
+        let expected_command = format!("ait task finish {id} --local");
+        if output.status.success()
+            || first["apply_status"] != "done"
+            || first["task_status"] != "completed"
+            || first["local_finish"]["status"] != "succeeded"
+            || first["bound_worktree_cleanup"]["status"] != "failed"
+            || first["closeout_status"] != "partial"
+            || first["closeout_recovery"]["code"] != "resume_task_land_closeout"
+            || first["closeout_recovery"]["idempotent"] != true
+            || first["closeout_recovery"]["command"] != expected_command
+        {
+            return output;
+        }
+        let empty_or_absent = match fs::read_dir(edit) {
+            Ok(mut entries) => entries.next().is_none(),
+            Err(error) => error.kind() == std::io::ErrorKind::NotFound,
+        };
+        if !empty_or_absent {
+            return output;
+        }
+        // The first CLI has exited, releasing its cwd handle. Only an empty or
+        // absent root may use the existing receipt-authorized closeout path.
+        let resumed = run(
+            &self.root,
+            &["task", "finish", id, "--local", "--json", "--full"],
+        );
+        let finished = output_json(&resumed);
+        assert_eq!(finished["local_finish"], first["local_finish"]);
+        assert!(finished["auto_snapshot"].is_null());
+        resumed
     }
     pub fn initial_batch(&self) -> (Vec<String>, String) {
         let (a, edit) = self.start("first");

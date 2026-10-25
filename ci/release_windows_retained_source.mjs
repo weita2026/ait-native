@@ -24,6 +24,8 @@ export const WINDOWS_OWNER_CASES = [
 ];
 export const CORE_CASE = "reviewed_routed_server_restart_reprepares_the_original_sealed_candidate";
 export const CORE_EDIT_ROOT_PREFIX = "task_worktree_layout::tests::explicit_task_edit_root_";
+export const CORE_CLEANUP_PREFIX = "primitives::worktree::cleanup::tests::directory_link_cleanup_";
+export const FIXTURE_LOCAL_FINISH_PREFIX = "fixture_local_finish_";
 const WINDOWS_EDIT_ROOT_CASE = CORE_EDIT_ROOT_PREFIX + "inspects_complete_windows_drive_roots";
 
 export function requiresRetainedSource(version) {
@@ -78,6 +80,29 @@ export function runCoreEditRootCases(cargo, manifest) {
   for (const name of names) requirePassedCase(stdout, name);
 }
 
+export function selectNativePrefixCases(listing, prefix, expectedCount) {
+  const names = listing.split(/\r?\n/).filter(line => line.endsWith(": test"))
+    .map(line => line.slice(0, -6)).filter(name => name.startsWith(prefix));
+  assert.equal(names.length, expectedCount, `native prefix requires ${expectedCount} cases: ${prefix}`);
+  assert.equal(new Set(names).size, names.length, `ambiguous native prefix listing: ${prefix}`);
+  return names;
+}
+
+export function runCoreCloseoutPrerequisites(cargo, manifest) {
+  for (const [label, flags, prefix, count] of [
+    ["core-directory-link-cleanup", ["-p", "ait-cli", "--lib"], CORE_CLEANUP_PREFIX, 3],
+    ["core-fixture-local-finish", ["-p", "ait-cli", "--test", "workflow_package_accepted_retry_cli"], FIXTURE_LOCAL_FINISH_PREFIX, 2],
+  ]) {
+    const names = selectNativePrefixCases(cargo(label + "-case-list", manifest,
+      [...flags, prefix, "--", "--list"]), prefix, count);
+    const stdout = cargo(label, manifest, [...flags, prefix, "--", "--test-threads=1", "--color", "never"]);
+    for (const name of names) requirePassedCase(stdout, name);
+    assert.equal((stdout.match(/^test result:/gm) ?? []).length, 1, `incomplete native group summary: ${prefix}`);
+    assert(new RegExp(`^test result: ok\\. ${count} passed; 0 failed; 0 ignored;`, "m").test(stdout),
+      `native group must execute all ${count} cases without ignored output: ${prefix}`);
+  }
+}
+
 function nativeContext({ target, root, logs }) {
   const arches = { "x86_64-pc-windows-msvc": "x64", "aarch64-pc-windows-msvc": "arm64" };
   assert.equal(process.platform, "win32", "actual native Windows execution is required");
@@ -106,6 +131,7 @@ function executeCases({ target, root, env, run, targetDir, cargo }) {
   const serverManifest = path.join(root, "ait-server/rust/Cargo.toml");
   const coreManifest = path.join(root, "ait-core/rust/Cargo.toml");
   runCoreEditRootCases(cargo, coreManifest);
+  runCoreCloseoutPrerequisites(cargo, coreManifest);
   const serverFlags = ["-p", "ait-server", "--lib"];
   const serverList = cargo("server-native-case-list", serverManifest, [...serverFlags, "--", "--list"]);
   const serverNames = SERVER_CASES.map(name => selectNativeCase(serverList, name));

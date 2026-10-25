@@ -1183,11 +1183,62 @@ mod tests {
     use super::*;
     use crate::init_surface::{init_repo, InitRequest};
     use std::cell::Cell;
+    use std::io::ErrorKind;
     #[cfg(unix)]
     use std::os::unix::fs::symlink as symlink_dir;
     #[cfg(windows)]
     use std::os::windows::fs::symlink_dir;
     use tempfile::tempdir;
+
+    #[test]
+    fn directory_link_cleanup_preserves_live_target_contents() {
+        let temp = tempdir().unwrap();
+        let target = temp.path().join("target");
+        let link = temp.path().join("link");
+        fs::create_dir(&target).unwrap();
+        fs::write(target.join("preserve.txt"), "preserve\n").unwrap();
+        create_directory_link(&link, &target).unwrap();
+
+        remove_path_entry(&link).unwrap();
+
+        assert!(fs::symlink_metadata(&link).is_err_and(|e| e.kind() == ErrorKind::NotFound));
+        assert_eq!(
+            fs::read(target.join("preserve.txt")).unwrap(),
+            b"preserve\n"
+        );
+    }
+
+    #[test]
+    fn directory_link_cleanup_handles_a_dangling_target() {
+        let temp = tempdir().unwrap();
+        let target = temp.path().join("absent-target");
+        let link = temp.path().join("link");
+        create_directory_link(&link, &target).unwrap();
+
+        remove_path_entry(&link).unwrap();
+
+        assert!(fs::symlink_metadata(&link).is_err_and(|e| e.kind() == ErrorKind::NotFound));
+        assert!(!target.exists());
+    }
+
+    #[test]
+    fn directory_link_cleanup_keeps_file_link_targets_intact() {
+        #[cfg(unix)]
+        use std::os::unix::fs::symlink as symlink_file;
+        #[cfg(windows)]
+        use std::os::windows::fs::symlink_file;
+
+        let temp = tempdir().unwrap();
+        let target = temp.path().join("target.txt");
+        let link = temp.path().join("link.txt");
+        fs::write(&target, "preserve\n").unwrap();
+        symlink_file(&target, &link).unwrap();
+
+        remove_path_entry(&link).unwrap();
+
+        assert!(fs::symlink_metadata(&link).is_err_and(|e| e.kind() == ErrorKind::NotFound));
+        assert_eq!(fs::read(&target).unwrap(), b"preserve\n");
+    }
 
     #[test]
     fn metadata_cleanup_decision_does_not_probe_workflow_retired_backend() {

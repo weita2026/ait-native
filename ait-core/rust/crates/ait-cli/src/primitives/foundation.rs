@@ -227,6 +227,13 @@ pub(super) fn path_exists_or_directory_link(path: &Path) -> bool {
 
 pub(super) fn remove_path_entry(path: &Path) -> Result<(), String> {
     let metadata = fs::symlink_metadata(path).map_err(|err| err.to_string())?;
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::FileTypeExt;
+        if metadata.file_type().is_symlink_dir() {
+            return fs::remove_dir(path).map_err(|err| err.to_string());
+        }
+    }
     if metadata.file_type().is_symlink() || metadata.is_file() {
         fs::remove_file(path).map_err(|err| err.to_string())
     } else if metadata.is_dir() {

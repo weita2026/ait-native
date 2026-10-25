@@ -12,6 +12,65 @@ use std::process::Output;
 mod routed_resume;
 
 #[test]
+fn fixture_local_finish_closes_the_worktree_with_one_apply_receipt() {
+    let fixture = Fixture::new();
+    let (task, edit) = fixture.start("local-closeout");
+    fs::write(edit.join("proof.txt"), "one accepted apply\n").unwrap();
+    let snapshot = fixture.finish_local(&task, &edit);
+    let receipt = fixture.task(&task)["local_finish"].clone();
+    let snapshots = fixture.snapshots();
+
+    let repeated = cli(
+        &fixture.root,
+        &["task", "finish", &task, "--local", "--json", "--full"],
+    );
+
+    assert_eq!(repeated["local_finish"], receipt);
+    assert_eq!(repeated["landed_snapshot_id"], snapshot);
+    assert!(repeated["auto_snapshot"].is_null());
+    assert_eq!(fixture.snapshots(), snapshots);
+    assert!(!edit.exists());
+}
+
+#[cfg(windows)]
+#[test]
+fn fixture_local_finish_preserves_nonempty_failed_cleanup() {
+    use std::os::windows::fs::OpenOptionsExt;
+
+    let fixture = Fixture::new();
+    let (task, edit) = fixture.start("blocked-local-closeout");
+    let proof = edit.join("proof.txt");
+    fs::write(&proof, "preserve the blocked file\n").unwrap();
+    // Permit Snapshot reads while withholding FILE_SHARE_DELETE from cleanup.
+    const FILE_SHARE_READ: u32 = 1;
+    let held = fs::OpenOptions::new()
+        .read(true)
+        .share_mode(FILE_SHARE_READ)
+        .open(&proof)
+        .unwrap();
+
+    let failed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        fixture.finish_local(&task, &edit)
+    }));
+    assert!(failed.is_err());
+    let receipt = fixture.task(&task)["local_finish"].clone();
+    assert_eq!(receipt["status"], "succeeded");
+    let snapshots = fixture.snapshots();
+    drop(held);
+
+    let retry = run(
+        &fixture.root,
+        &["task", "finish", &task, "--local", "--json", "--full"],
+    );
+    assert!(!retry.status.success());
+    let retry = output_json(&retry);
+    assert_eq!(retry["local_finish"], receipt);
+    assert_eq!(retry["closeout_status"], "partial");
+    assert_eq!(fixture.snapshots(), snapshots);
+    assert_eq!(fs::read(&proof).unwrap(), b"preserve the blocked file\n");
+}
+
+#[test]
 #[ignore = "requires exact reviewed Server and native Runner artifacts plus a CI RAM root"]
 fn reviewed_routed_server_preserves_sealed_mode_across_real_cli_processes() {
     routed_resume::run_pair();
