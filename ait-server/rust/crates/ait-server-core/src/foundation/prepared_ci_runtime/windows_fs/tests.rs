@@ -149,5 +149,19 @@ fn windows_empty_cleanup_is_atomic_and_preserves_inserted_files_and_active_handl
     assert!(remove_empty(&root, &child_path, || Ok(())).unwrap());
     assert!(remove_empty(&root, &child_path, || Ok(())).unwrap());
     assert!(remove_empty(&root, &root, || Ok(())).is_err());
-    assert!(remove_empty(&root, &root.join("1/../foreign"), || Ok(())).is_err());
+    let protected = root.join("foreign");
+    fs::create_dir(&protected).unwrap();
+    // canonicalize returns a verbatim Windows root. PathBuf::join normalizes
+    // away ParentDir before the cleanup API sees it, so append raw OS text.
+    let mut raw = root.as_os_str().to_os_string();
+    raw.push(r"\1\..\foreign");
+    let traversal = PathBuf::from(raw);
+    assert!(traversal
+        .components()
+        .any(|component| matches!(component, Component::ParentDir)));
+    assert!(remove_empty(&root, &traversal, || {
+        panic!("Traversal reached the directory removal boundary")
+    })
+    .is_err());
+    assert!(protected.is_dir());
 }
