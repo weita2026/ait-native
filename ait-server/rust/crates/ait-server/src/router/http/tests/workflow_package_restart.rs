@@ -14,7 +14,7 @@ async fn retained_reprepare_rejects_foreign_uid_root_even_when_server_can_write(
     );
     let root = TestDirectory::new("retained-foreign-uid-root");
     let (state, app, raw, hash) = fixture(root.path()).await;
-    let (_, ready) = upload(&app, &raw, &hash, None).await;
+    let ready = prepare_package(&app, &raw, &hash).await;
     let job = ready["expected_identity"]["worker_job_index"]
         .as_u64()
         .unwrap() as u32;
@@ -156,7 +156,7 @@ async fn package_restart_reprepares_same_sealed_mode_with_new_ci_and_agent_revie
             fs::read(root.path().join("fixture-tree.zstpack")).unwrap(),
         )]),
     );
-    let (_, prepared) = upload(&app, &raw, &hash, None).await;
+    let prepared = prepare_package(&app, &raw, &hash).await;
     let old_identity = prepared["expected_identity"].clone();
     let old_job = old_identity["worker_job_index"].as_u64().unwrap();
     complete(&app, old_job, "pass").await;
@@ -269,7 +269,7 @@ async fn retained_reprepare_rejects_unknown_reset_and_unavailable_foreign_or_amb
     ] {
         let root = TestDirectory::new("retained-reprepare-negative");
         let (state, app, raw, hash) = fixture(root.path()).await;
-        let (_, ready) = upload(&app, &raw, &hash, None).await;
+        let ready = prepare_package(&app, &raw, &hash).await;
         let job = ready["expected_identity"]["worker_job_index"]
             .as_u64()
             .unwrap() as u32;
@@ -329,7 +329,7 @@ async fn windows_retained_reprepare_holds_hostile_acl_and_junction_before_alloca
     for case in ["writable-parent", "writable-archive", "junction"] {
         let root = TestDirectory::new("windows-retained-source-scope");
         let (state, app, raw, hash) = fixture(root.path()).await;
-        let (_, ready) = upload(&app, &raw, &hash, None).await;
+        let ready = prepare_package(&app, &raw, &hash).await;
         let job = ready["expected_identity"]["worker_job_index"]
             .as_u64()
             .unwrap() as u32;
@@ -413,7 +413,7 @@ async fn retained_reprepare_requires_unambiguous_existing_headers_before_mutatio
     use ait_server_core::foundation::workflow_package_contract::PACKAGE_CONTENT_TYPE;
     let root = TestDirectory::new("retained-reprepare-headers");
     let (state, app, raw, hash) = fixture(root.path()).await;
-    let (_, ready) = upload(&app, &raw, &hash, None).await;
+    let ready = prepare_package(&app, &raw, &hash).await;
     let job = ready["expected_identity"]["worker_job_index"]
         .as_u64()
         .unwrap()
@@ -462,7 +462,7 @@ async fn retained_reprepare_requires_unambiguous_existing_headers_before_mutatio
 async fn retained_reprepare_does_not_guess_a_same_hash_job_as_the_original_replacement() {
     let root = TestDirectory::new("retained-reprepare-origin");
     let (state, app, raw, hash) = fixture(root.path()).await;
-    let (_, original) = upload(&app, &raw, &hash, None).await;
+    let original = prepare_package(&app, &raw, &hash).await;
     let old = original["expected_identity"]["worker_job_index"]
         .as_u64()
         .unwrap() as u32;
@@ -470,7 +470,7 @@ async fn retained_reprepare_does_not_guess_a_same_hash_job_as_the_original_repla
     drop(app);
     drop(state);
     let (state, app) = reopen(root.path());
-    let (_, other) = upload(&app, &raw, &hash, None).await;
+    let other = prepare_package(&app, &raw, &hash).await;
     let old_archive = root
         .path()
         .join("workflow-packages/generation/1")
@@ -490,7 +490,8 @@ async fn retained_reprepare_does_not_guess_a_same_hash_job_as_the_original_repla
     assert_eq!(joined["expected_identity"], other["expected_identity"]);
     assert_eq!(records(&state), before);
     assert!(!old_archive.exists());
-    let (_, retry) = upload(&app, &[], &hash, Some(old)).await;
+    let (status, retry) = upload(&app, &[], &hash, Some(old)).await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{retry}");
     assert_eq!(retry["expected_identity"], other["expected_identity"]);
     assert_eq!(records(&state), before);
     no_publication(&state);
@@ -501,7 +502,7 @@ async fn retained_reprepare_does_not_guess_a_same_hash_job_as_the_original_repla
 async fn retained_reprepare_accepts_a_real_terminal_runner_failure_after_restart() {
     let root = TestDirectory::new("retained-reprepare-terminal-failure");
     let (state, app, raw, hash) = fixture(root.path()).await;
-    let (_, original) = upload(&app, &raw, &hash, None).await;
+    let original = prepare_package(&app, &raw, &hash).await;
     let old = original["expected_identity"]["worker_job_index"]
         .as_u64()
         .unwrap() as u32;
@@ -554,7 +555,7 @@ async fn retained_reprepare_accepts_a_real_terminal_runner_failure_after_restart
 async fn retained_reprepare_without_native_owner_validation_holds_before_allocation_or_cleanup() {
     let root = TestDirectory::new("retained-reprepare-platform-ownership");
     let (state, app, raw, hash) = fixture(root.path()).await;
-    let (_, original) = upload(&app, &raw, &hash, None).await;
+    let original = prepare_package(&app, &raw, &hash).await;
     let old = original["expected_identity"]["worker_job_index"]
         .as_u64()
         .unwrap() as u32;
@@ -583,7 +584,7 @@ async fn retained_reprepare_without_native_owner_validation_holds_before_allocat
 async fn package_restart_failed_tests_cannot_be_upgraded_by_an_old_completion_proof() {
     let root = TestDirectory::new("package-restart-stale-completion");
     let (state, app, raw, hash) = fixture(root.path()).await;
-    let (_, prepared) = upload(&app, &raw, &hash, None).await;
+    let prepared = prepare_package(&app, &raw, &hash).await;
     let identity = prepared["expected_identity"].clone();
     let job = identity["worker_job_index"].as_u64().unwrap();
     let path = format!("{ROUTE}/worker-jobs/{job}");
@@ -629,7 +630,7 @@ async fn package_restart_failed_tests_cannot_be_upgraded_by_an_old_completion_pr
 async fn package_restart_revocation_is_not_cleared_by_replaying_the_old_approval() {
     let root = TestDirectory::new("package-restart-revocation");
     let (state, app, raw, hash) = fixture(root.path()).await;
-    let (_, prepared) = upload(&app, &raw, &hash, None).await;
+    let prepared = prepare_package(&app, &raw, &hash).await;
     let identity = prepared["expected_identity"].clone();
     let job = identity["worker_job_index"].as_u64().unwrap();
     complete(&app, job, "pass").await;

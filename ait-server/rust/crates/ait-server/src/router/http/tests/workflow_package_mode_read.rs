@@ -125,7 +125,7 @@ async fn sealed_mode_read_missing_or_corrupt_source_is_null_without_erasing_ci()
     for case in ["archive-missing", "archive-corrupt", "source-missing"] {
         let root = TestDirectory::new("sealed-mode-read-unavailable");
         let (state, app, raw, hash) = fixture(root.path()).await;
-        let (_, prepared) = upload(&app, &raw, &hash, None).await;
+        let prepared = prepare_package(&app, &raw, &hash).await;
         let job = prepared["expected_identity"]["worker_job_index"]
             .as_u64()
             .unwrap();
@@ -172,7 +172,7 @@ async fn sealed_mode_read_rejects_incomplete_native_binding_and_invalid_manifest
     ] {
         let root = TestDirectory::new("sealed-mode-read-untrusted");
         let (state, app, raw, hash) = fixture(root.path()).await;
-        let (_, prepared) = upload(&app, &raw, &hash, None).await;
+        let prepared = prepare_package(&app, &raw, &hash).await;
         let job = prepared["expected_identity"]["worker_job_index"]
             .as_u64()
             .unwrap() as u32;

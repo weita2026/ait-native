@@ -131,7 +131,37 @@ async fn upload(app: &Router, raw: &[u8], hash: &str, job: Option<u32>) -> (Stat
         .await
         .unwrap();
     let status = response.status();
-    (status, response_json(response).await)
+    let bytes = hyper::body::to_bytes(response.into_body())
+        .await
+        .unwrap_or_else(|error| panic!("Package prepare HTTP {status}: read body: {error}"));
+    let body: JsonValue = serde_json::from_slice(&bytes).unwrap_or_else(|error| {
+        panic!(
+            "Package prepare HTTP {status}: invalid JSON ({error}); body={}",
+            String::from_utf8_lossy(&bytes)
+        )
+    });
+    if status.is_success() {
+        ait_server_core::foundation::workflow_package_contract::PackageExpectedIdentity::parse(
+            &body["expected_identity"],
+        )
+        .unwrap_or_else(|error| panic!("Package prepare HTTP {status}: {error}; body={body}"));
+    } else {
+        eprintln!(
+            "Package prepare job={job:?}, retained={}: HTTP {status}; body={body}",
+            raw.is_empty()
+        );
+    }
+    (status, body)
+}
+
+async fn prepare_package(app: &Router, raw: &[u8], hash: &str) -> JsonValue {
+    let (status, body) = upload(app, raw, hash, None).await;
+    assert_eq!(
+        status,
+        StatusCode::ACCEPTED,
+        "Package prepare HTTP {status}; body={body}"
+    );
+    body
 }
 
 fn no_publication(state: &ServerState) {
@@ -349,7 +379,7 @@ async fn package_http_keeps_preparation_temporary_and_failed_tests_never_authori
 async fn package_http_abandonment_waits_for_exact_owned_worker_and_retries_without_new_job() {
     let root = TestDirectory::new("package-abandon");
     let (state, app, raw, hash) = fixture(root.path()).await;
-    let (_, ready) = upload(&app, &raw, &hash, None).await;
+    let ready = prepare_package(&app, &raw, &hash).await;
     let first = ready["expected_identity"]["worker_job_index"]
         .as_u64()
         .unwrap();
@@ -364,7 +394,7 @@ async fn package_http_abandonment_waits_for_exact_owned_worker_and_retries_witho
         cancelled
     );
     no_publication(&state);
-    let (_, ready) = upload(&app, &raw, &hash, None).await;
+    let ready = prepare_package(&app, &raw, &hash).await;
     let index = ready["expected_identity"]["worker_job_index"]
         .as_u64()
         .unwrap();
@@ -419,11 +449,12 @@ async fn package_http_abandonment_waits_for_exact_owned_worker_and_retries_witho
 async fn package_http_server_restart_invalidates_queued_and_running_jobs_before_fresh_ready() {
     let root = TestDirectory::new("package-restart");
     let (state, app, raw, hash) = fixture(root.path()).await;
-    let (_, ready) = upload(&app, &raw, &hash, None).await;
+    let ready = prepare_package(&app, &raw, &hash).await;
     let old = ready["expected_identity"]["worker_job_index"]
         .as_u64()
         .unwrap();
-    let (_, reused) = upload(&app, &raw, &hash, Some(old as u32)).await;
+    let (status, reused) = upload(&app, &raw, &hash, Some(old as u32)).await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{reused}");
     assert_eq!(reused["expected_identity"], ready["expected_identity"]);
     assert_eq!(reused["reused"], true);
     drop(app);
@@ -445,7 +476,7 @@ async fn package_http_server_restart_invalidates_queued_and_running_jobs_before_
     let (state, app) = reopen();
     let (status, stale) = upload(&app, &raw, &hash, Some(old as u32)).await;
     assert_eq!(status, StatusCode::CONFLICT, "{stale}");
-    let (_, fresh) = upload(&app, &raw, &hash, None).await;
+    let fresh = prepare_package(&app, &raw, &hash).await;
     let running = fresh["expected_identity"]["worker_job_index"]
         .as_u64()
         .unwrap();
@@ -572,7 +603,7 @@ async fn download(app: &Router, index: u64, hash: &str, headers: &[(&str, String
 async fn package_download_requires_the_exact_live_claim_and_strict_proof_headers() {
     let root = TestDirectory::new("package-download-owner");
     let (state, app, raw, hash) = fixture(root.path()).await;
-    let (_, ready) = upload(&app, &raw, &hash, None).await;
+    let ready = prepare_package(&app, &raw, &hash).await;
     let index = ready["expected_identity"]["worker_job_index"]
         .as_u64()
         .unwrap();
@@ -644,7 +675,7 @@ async fn package_download_requires_the_exact_live_claim_and_strict_proof_headers
     );
     let other_root = TestDirectory::new("other-runner-download-proof");
     let (_, other_app, other_raw, other_hash) = fixture(other_root.path()).await;
-    let (_, other_ready) = upload(&other_app, &other_raw, &other_hash, None).await;
+    let other_ready = prepare_package(&other_app, &other_raw, &other_hash).await;
     let (_, other_claim) = call(
         &other_app,
         "POST",
@@ -695,7 +726,7 @@ async fn package_http_missing_source_rejects_old_pin_but_verified_reupload_uses_
 ) {
     let root = TestDirectory::new("package-source-missing");
     let (state, app, raw, hash) = fixture(root.path()).await;
-    let (_, ready) = upload(&app, &raw, &hash, None).await;
+    let ready = prepare_package(&app, &raw, &hash).await;
     let index = ready["expected_identity"]["worker_job_index"]
         .as_u64()
         .unwrap();

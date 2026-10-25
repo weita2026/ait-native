@@ -553,7 +553,7 @@ async fn complete_batch_bulk_commit_imports_mixed_content_and_snapshot_roots() {
 async fn complete_batch_restart_cannot_reuse_terminal_ci_or_governance() {
     let root = TestDirectory::new("package-passed-restart");
     let (state, app, raw, hash) = fixture(root.path()).await;
-    let (_, ready) = upload(&app, &raw, &hash, None).await;
+    let ready = prepare_package(&app, &raw, &hash).await;
     let identity = &ready["expected_identity"];
     let job = identity["worker_job_index"].as_u64().unwrap();
     complete(&app, job, "pass").await;

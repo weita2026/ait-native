@@ -2,6 +2,7 @@ use super::*;
 use ait_server_core::foundation::prepared_ci_runtime::{
     ManagedCiPackage, ManagedCiPackagePaths, PreparedCiTarget,
 };
+use ait_server_core::foundation::remote_binary_db::sync_filesystem_file;
 use ait_server_core::foundation::workflow_package::WorkflowPackage;
 use ait_server_core::foundation::workflow_package_contract::parse_package_hash;
 use ait_server_core::foundation::workflow_package_contract::{
@@ -418,8 +419,7 @@ impl OperationalBinaryRuntime {
                         let package_path = worktree.join("package.zst");
                         fs::write(&package_path, raw)
                             .map_err(|error| BinaryDbError::io("retain original package", error))?;
-                        File::open(&package_path)
-                            .and_then(|file| file.sync_all())
+                        sync_filesystem_file(&package_path)
                             .map_err(|error| BinaryDbError::io("sync original package", error))?;
                         ManagedCiPackage::open(
                             repository_index,

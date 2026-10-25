@@ -30,7 +30,7 @@ async fn reviewed_fixture(root: &FsPath) -> (CompleteFixture, JsonValue) {
 async fn live_download_pin_blocks_full_finish_until_the_last_reader_releases() {
     let root = TestDirectory::new("package-strict-held-download");
     let f = complete_fixture(root.path(), None).await;
-    let (_, ready) = upload(&f.delta.app, &f.delta.raw, &f.delta.hash, None).await;
+    let ready = prepare_package(&f.delta.app, &f.delta.raw, &f.delta.hash).await;
     let identity = &ready["expected_identity"];
     let job = identity["worker_job_index"].as_u64().unwrap();
     let path = format!("{ROUTE}/worker-jobs/{job}");
@@ -708,7 +708,7 @@ async fn known_abandon_removes_only_its_job_and_keeps_a_nonempty_hash_parent() {
 async fn abandon_parent_io_failure_keeps_pending_and_missing_parent_retry_completes() {
     let root = TestDirectory::new("package-strict-abandon-parent");
     let (_, app, raw, hash) = fixture(root.path()).await;
-    let (_, ready) = upload(&app, &raw, &hash, None).await;
+    let ready = prepare_package(&app, &raw, &hash).await;
     let identity = &ready["expected_identity"];
     let parent = hash_parent(root.path(), &hash);
     let path = format!("{ROUTE}/worker-jobs/{}", identity["worker_job_index"]);
@@ -732,7 +732,7 @@ async fn abandon_parent_io_failure_keeps_pending_and_missing_parent_retry_comple
 async fn same_hash_ready_and_abandon_do_not_race_parent_child_creation() {
     let root = TestDirectory::new("package-strict-concurrent-parent");
     let (_, app, raw, hash) = fixture(root.path()).await;
-    let (_, ready) = upload(&app, &raw, &hash, None).await;
+    let ready = prepare_package(&app, &raw, &hash).await;
     let identity = &ready["expected_identity"];
     let path = format!("{ROUTE}/worker-jobs/{}", identity["worker_job_index"]);
     let (prepared, abandoned) = tokio::join!(
