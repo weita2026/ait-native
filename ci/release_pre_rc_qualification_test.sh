@@ -48,7 +48,7 @@ for required in \
   'target: x86_64-pc-windows-msvc' \
   'init_cli_creates_then_reinitializes_the_agent_contract' \
   'init_is_idempotent_and_creates_only_an_empty_runtime_root' \
-  'installed_run_initializes_then_serves_from_an_explicit_root' \
+  'direct_start_initializes_then_serves_from_an_explicit_root' \
   'Run native retained-source regressions for the selected family' \
   'node ci/release_windows_retained_source.mjs' \
   'architecture: ${{ matrix.node_arch }}' \
@@ -84,6 +84,11 @@ for forbidden in \
     exit 65
   fi
 done
+
+if grep -F 'installed_run_initializes_then_serves_from_an_explicit_root' "${workflow}" >/dev/null; then
+  printf 'pre-RC qualification retained a retired Server startup selector\n' >&2
+  exit 65
+fi
 
 # Exercise the workflow's actual contract shell in both dispatch modes.
 node - "$workflow" "$temporary_root" <<'NODE'
@@ -131,6 +136,66 @@ git("tag", "v0.0.0");
 const tagged = run("true", "qa/native-retained-source-lnat-0021");
 assert.notEqual(tagged.status, 0); assert.deepEqual(tagged.calls, []);
 console.log("Windows QA isolation and exact untagged-source guards: pass");
+
+// Execute the workflow's actual Node block. Successful Cargo exit with zero,
+// ignored or wrong-identity output must stop before the next lifecycle case.
+const fresh = source.split("      - name: Execute fresh core and server initialization\n")[1]
+  .split("\n      - name: Run native retained-source regressions")[0];
+assert(fresh.includes("if ($LASTEXITCODE -ne 0)"), "PowerShell must preserve the Node failure");
+const script = fresh.split("          @'\n")[1].split("\n          '@ | node --input-type=module")[0]
+  .split("\n").map(line => line.slice(10)).join("\n");
+const lifecycle = path.join(temporary, "native-initialization"), lifecycleBin = path.join(lifecycle, "bin");
+const lifecycleCalls = path.join(lifecycle, "cargo.calls"), stub = path.join(lifecycle, "cargo-stub.cjs");
+fs.mkdirSync(lifecycleBin, { recursive: true }); fs.mkdirSync(path.join(lifecycle, "source/ci"), { recursive: true });
+fs.copyFileSync(path.join(path.dirname(process.argv[2]), "../../ci/release_windows_retained_source.mjs"),
+  path.join(lifecycle, "source/ci/release_windows_retained_source.mjs"));
+fs.writeFileSync(path.join(lifecycleBin, "cargo"), '#!/bin/sh\nexec "$QA_REAL_NODE" "$QA_CARGO_STUB" "$@"\n', { mode: 0o755 });
+fs.writeFileSync(stub, `
+const fs = require("node:fs"), args = process.argv.slice(2), name = args[args.indexOf("--") - 1];
+fs.appendFileSync(process.env.QA_CARGO_CALLS, JSON.stringify(args) + "\\n");
+const mode = name === process.env.QA_FAIL_CASE ? process.env.QA_CASE_MODE : "pass";
+if (mode === "failure") { process.stderr.write("compile failure\\n"); process.exit(101); }
+if (mode === "zero") process.stdout.write("test result: ok. 0 passed; 0 failed; 0 ignored; 6 filtered out\\n");
+else if (mode === "ignored") process.stdout.write("test " + name + " ... ignored\\ntest result: ok. 0 passed; 0 failed; 1 ignored\\n");
+else {
+  process.stdout.write("test " + (mode === "wrong" ? "another_case" : name) + " ... ok\\n");
+  if (mode !== "missing-summary") process.stdout.write("test result: ok. " + (mode === "multiple" ? 2 : 1) +
+    " passed; 0 failed; " + (mode === "partial" ? 1 : 0) + " ignored; 0 measured\\n");
+  if (mode === "duplicate-summary") process.stdout.write("test result: ok. 0 passed; 0 failed; 1 ignored; 0 measured\\n");
+}
+`);
+function initialize(mode, code = script, cwd = lifecycle,
+  failCase = "init_is_idempotent_and_creates_only_an_empty_runtime_root") {
+  fs.rmSync(lifecycleCalls, { force: true });
+  const result = spawnSync(process.execPath, ["--input-type=module", "-e", code], { cwd, encoding: "utf8",
+    env: { ...process.env, PATH: lifecycleBin + path.delimiter + process.env.PATH, QA_REAL_NODE: process.execPath,
+      QA_CARGO_STUB: stub, QA_CARGO_CALLS: lifecycleCalls, QA_CASE_MODE: mode, QA_FAIL_CASE: failCase } });
+  return { ...result, calls: fs.readFileSync(lifecycleCalls, "utf8").trim().split("\n").map(line => JSON.parse(line)) };
+}
+const initialized = initialize("pass"); assert.equal(initialized.status, 0, initialized.stderr);
+assert.deepEqual(initialized.calls.map(args => args[args.indexOf("--") - 1]), [
+  "init_cli_creates_then_reinitializes_the_agent_contract",
+  "init_is_idempotent_and_creates_only_an_empty_runtime_root",
+  "direct_start_initializes_then_serves_from_an_explicit_root",
+]);
+for (const args of initialized.calls) assert(args.includes("--exact") && args.includes("--locked"));
+for (const mode of ["zero", "ignored", "wrong", "failure", "partial", "multiple", "missing-summary", "duplicate-summary"]) {
+  const stopped = initialize(mode); assert.notEqual(stopped.status, 0, mode); assert.equal(stopped.calls.length, 2, mode);
+}
+const inventory = regression.split("          node --input-type=module <<'NODE'\n")[1]
+  .split("\n          NODE")[0].split("\n").map(line => line.slice(10)).join("\n");
+const inventoried = initialize("pass", inventory, path.join(lifecycle, "source"));
+assert.equal(inventoried.status, 0, inventoried.stderr);
+assert.deepEqual(inventoried.calls.map(args => args[args.indexOf("--") - 1]), [
+  "main_app::tests::root_command_inventory_is_frozen", "root_ait_agent_namespace_is_absent",
+]);
+assert(inventoried.calls[0].includes("--lib"));
+for (const args of inventoried.calls) assert(args.includes("--exact") && args.includes("--locked"));
+for (const mode of ["zero", "ignored", "wrong", "failure", "partial", "multiple", "missing-summary", "duplicate-summary"]) {
+  const stopped = initialize(mode, inventory, path.join(lifecycle, "source"), "main_app::tests::root_command_inventory_is_frozen");
+  assert.notEqual(stopped.status, 0, mode); assert.equal(stopped.calls.length, 1, mode);
+}
+console.log("All five native single-case filters require actual exact execution and stop on failure: pass");
 NODE
 
 fixture=${temporary_root}/fixture

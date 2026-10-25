@@ -1,4 +1,8 @@
 use super::*;
+#[cfg(unix)]
+use std::os::unix::fs::symlink as symlink_dir;
+#[cfg(windows)]
+use std::os::windows::fs::symlink_dir;
 
 #[test]
 fn remote_worktree_retarget_uses_authoritative_change_without_local_change_record() {
@@ -865,8 +869,7 @@ fn write_worktree_registration(
 ) -> PathBuf {
     let worktree_root = root.join("managed").join(name);
     fs::create_dir_all(&worktree_root).expect("worktree dir");
-    std::os::unix::fs::symlink(root.join(".ait"), worktree_root.join(".ait"))
-        .expect("symlink .ait");
+    symlink_dir(root.join(".ait"), worktree_root.join(".ait")).expect("symlink .ait");
     fs::write(
         worktree_root.join(".ait-worktree.json"),
         format!(
@@ -982,8 +985,7 @@ fn language_neutral_worktree_layout_ignores_cargo_manifest_without_source_policy
     fs::write(repo_root.join("Cargo.toml"), "[workspace]\n").expect("Cargo manifest");
     let worktree = repo_root.join("managed/task-one");
     fs::create_dir_all(&worktree).expect("worktree dir");
-    std::os::unix::fs::symlink(repo_root.join(".ait"), worktree.join(".ait"))
-        .expect("shared .ait link");
+    symlink_dir(repo_root.join(".ait"), worktree.join(".ait")).expect("shared .ait link");
 
     ensure_worktree_runtime_layout(repo_root, &worktree).expect("language-neutral runtime layout");
     materialize_worktree_cargo_config(repo_root, &worktree)
@@ -1006,8 +1008,7 @@ fn worktree_summary_is_language_neutral_without_build_policy() {
 
     let worktree_root = repo_root.join("managed").join("rct-0002");
     fs::create_dir_all(&worktree_root).expect("worktree dir");
-    std::os::unix::fs::symlink(repo_root.join(".ait"), worktree_root.join(".ait"))
-        .expect("symlink .ait");
+    symlink_dir(repo_root.join(".ait"), worktree_root.join(".ait")).expect("symlink .ait");
     fs::write(
         worktree_root.join(".ait-worktree.json"),
         format!(
@@ -1019,7 +1020,7 @@ fn worktree_summary_is_language_neutral_without_build_policy() {
     .expect("worktree config");
     let alias_path = repo_root.join(".ait-worktree-links").join("rct-0002");
     fs::create_dir_all(alias_path.parent().expect("alias parent")).expect("alias parent");
-    std::os::unix::fs::symlink(&worktree_root, &alias_path).expect("worktree alias");
+    symlink_dir(&worktree_root, &alias_path).expect("worktree alias");
 
     let repo = RepoRuntime::discover_from_path(repo_root).expect("repo runtime");
     let payload = JsonMap::from_iter([
@@ -1147,8 +1148,7 @@ fn repository_worktrees_share_ram_root_with_cargo_workspace_isolation() {
     for name in ["task-one", "task-two"] {
         let worktree = repo_root.join("managed").join(name);
         fs::create_dir_all(&worktree).expect("worktree");
-        std::os::unix::fs::symlink(repo_root.join(".ait"), worktree.join(".ait"))
-            .expect("shared .ait link");
+        symlink_dir(repo_root.join(".ait"), worktree.join(".ait")).expect("shared .ait link");
         fs::write(
             worktree.join(WORKTREE_CONFIG_NAME),
             json!({"worktree_name": name}).to_string(),
@@ -1264,8 +1264,7 @@ fn repository_cargo_build_setup_preserves_existing_directory_and_custom_config()
 
     let worktree = repo_root.join("managed/custom");
     fs::create_dir_all(worktree.join(".cargo")).expect("custom config parent");
-    std::os::unix::fs::symlink(repo_root.join(".ait"), worktree.join(".ait"))
-        .expect("shared .ait link");
+    symlink_dir(repo_root.join(".ait"), worktree.join(".ait")).expect("shared .ait link");
     let custom_config = worktree.join(".cargo/config.toml");
     fs::write(&custom_config, "[build]\njobs = 3\n").expect("custom config");
     materialize_worktree_cargo_config(repo_root, &worktree).expect("preserve custom config");
@@ -1335,8 +1334,7 @@ fn managed_worktree_cargo_config_upgrades_hash_template_and_uses_exact_task_cach
     write_runtime_config(repo_root, r#"{"repo_name":"fixture"}"#);
     let worktree = repo_root.join("managed/task-one");
     fs::create_dir_all(worktree.join(".cargo")).expect("Cargo config parent");
-    std::os::unix::fs::symlink(repo_root.join(".ait"), worktree.join(".ait"))
-        .expect("shared .ait link");
+    symlink_dir(repo_root.join(".ait"), worktree.join(".ait")).expect("shared .ait link");
     fs::write(
         worktree.join(WORKTREE_CONFIG_NAME),
         json!({"worktree_name": "task-one"}).to_string(),
@@ -1376,8 +1374,7 @@ fn managed_worktree_cargo_config_upgrades_shared_final_artifact_projection() {
     write_runtime_config(repo_root, r#"{"repo_name":"fixture"}"#);
     let worktree = repo_root.join("managed/task-one");
     fs::create_dir_all(worktree.join(".cargo")).expect("Cargo config parent");
-    std::os::unix::fs::symlink(repo_root.join(".ait"), worktree.join(".ait"))
-        .expect("shared .ait link");
+    symlink_dir(repo_root.join(".ait"), worktree.join(".ait")).expect("shared .ait link");
     fs::write(
         worktree.join(WORKTREE_CONFIG_NAME),
         json!({"worktree_name": "task-one"}).to_string(),
@@ -1412,8 +1409,7 @@ fn managed_worktrees_use_distinct_final_artifact_and_intermediate_directories() 
     let second = repo_root.join("managed/task-two");
     for (path, name) in [(&first, "task-one"), (&second, "task-two")] {
         fs::create_dir_all(path.join(".cargo")).expect("Cargo config parent");
-        std::os::unix::fs::symlink(repo_root.join(".ait"), path.join(".ait"))
-            .expect("shared .ait link");
+        symlink_dir(repo_root.join(".ait"), path.join(".ait")).expect("shared .ait link");
         fs::write(
             path.join(WORKTREE_CONFIG_NAME),
             json!({"worktree_name": name}).to_string(),
@@ -1450,8 +1446,7 @@ fn managed_worktree_cargo_config_retargets_copied_main_seed_projection() {
     let worktree = repo_root.join("managed/task-one");
     for (path, name) in [(&seed, "main-seed"), (&worktree, "task-one")] {
         fs::create_dir_all(path.join(".cargo")).expect("Cargo config parent");
-        std::os::unix::fs::symlink(repo_root.join(".ait"), path.join(".ait"))
-            .expect("shared .ait link");
+        symlink_dir(repo_root.join(".ait"), path.join(".ait")).expect("shared .ait link");
         fs::write(
             path.join(WORKTREE_CONFIG_NAME),
             json!({"worktree_name": name}).to_string(),
@@ -1506,8 +1501,7 @@ fn managed_worktree_cargo_config_retargets_copied_previous_task_projection() {
     let current = repo_root.join("managed/task-current");
     for (path, name) in [(&previous, "task-previous"), (&current, "task-current")] {
         fs::create_dir_all(path.join(".cargo")).expect("Cargo config parent");
-        std::os::unix::fs::symlink(repo_root.join(".ait"), path.join(".ait"))
-            .expect("shared .ait link");
+        symlink_dir(repo_root.join(".ait"), path.join(".ait")).expect("shared .ait link");
         fs::write(
             path.join(WORKTREE_CONFIG_NAME),
             json!({"worktree_name": name}).to_string(),
@@ -1549,8 +1543,7 @@ fn managed_worktree_cargo_config_rejects_mismatched_previous_task_projection() {
     let current = repo_root.join("managed/task-current");
     for (path, name) in [(&previous, "task-previous"), (&current, "task-current")] {
         fs::create_dir_all(path.join(".cargo")).expect("Cargo config parent");
-        std::os::unix::fs::symlink(repo_root.join(".ait"), path.join(".ait"))
-            .expect("shared .ait link");
+        symlink_dir(repo_root.join(".ait"), path.join(".ait")).expect("shared .ait link");
         fs::write(
             path.join(WORKTREE_CONFIG_NAME),
             json!({"worktree_name": name}).to_string(),
@@ -1584,8 +1577,7 @@ fn managed_worktree_cargo_config_retargets_legacy_shared_final_main_seed_project
     );
     let worktree = repo_root.join("managed/task-one");
     fs::create_dir_all(worktree.join(".cargo")).expect("Cargo config parent");
-    std::os::unix::fs::symlink(repo_root.join(".ait"), worktree.join(".ait"))
-        .expect("shared .ait link");
+    symlink_dir(repo_root.join(".ait"), worktree.join(".ait")).expect("shared .ait link");
     fs::write(
         worktree.join(WORKTREE_CONFIG_NAME),
         json!({"worktree_name": "task-one"}).to_string(),

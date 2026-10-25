@@ -134,10 +134,12 @@ jobs:
           node ci/release_closeout_test.mjs
           cargo test --locked --manifest-path ait-core/rust/Cargo.toml \
             -p ait-core --test environment_contract
-          cargo test --locked --manifest-path ait-core/rust/Cargo.toml \
-            -p ait-cli root_command_inventory_is_frozen
-          cargo test --locked --manifest-path ait-core/rust/Cargo.toml \
-            -p ait-cli --test agent_cli root_ait_agent_namespace_is_absent
+          node --input-type=module <<'NODE'
+          import { runSingleCargoCase } from "./ci/release_windows_retained_source.mjs";
+          const manifest = ["--manifest-path", "ait-core/rust/Cargo.toml", "-p", "ait-cli"];
+          runSingleCargoCase([...manifest, "--lib"], "main_app::tests::root_command_inventory_is_frozen");
+          runSingleCargoCase([...manifest, "--test", "agent_cli"], "root_ait_agent_namespace_is_absent");
+          NODE
 
       - name: Run the single reviewed Unix foreign-owner negative as real root
         if: ${{ inputs.windows_qa_only }}
@@ -246,12 +248,19 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          cargo test --locked --manifest-path source/ait-core/rust/Cargo.toml `
-            -p ait-cli --test init_cli init_cli_creates_then_reinitializes_the_agent_contract
-          cargo test --locked --manifest-path source/ait-server/rust/Cargo.toml `
-            -p ait-server --test installed_lifecycle init_is_idempotent_and_creates_only_an_empty_runtime_root
-          cargo test --locked --manifest-path source/ait-server/rust/Cargo.toml `
-            -p ait-server --test installed_lifecycle installed_run_initializes_then_serves_from_an_explicit_root
+          @'
+          import { runSingleCargoCase } from "./source/ci/release_windows_retained_source.mjs";
+          const cases = [
+            ["ait-core", "ait-cli", "init_cli", "init_cli_creates_then_reinitializes_the_agent_contract"],
+            ["ait-server", "ait-server", "installed_lifecycle", "init_is_idempotent_and_creates_only_an_empty_runtime_root"],
+            ["ait-server", "ait-server", "installed_lifecycle", "direct_start_initializes_then_serves_from_an_explicit_root"],
+          ];
+          for (const [repository, packageName, binary, name] of cases) {
+            runSingleCargoCase(["--manifest-path", `source/${repository}/rust/Cargo.toml`,
+              "-p", packageName, "--test", binary], name);
+          }
+          '@ | node --input-type=module
+          if ($LASTEXITCODE -ne 0) { throw 'Native initialization case did not execute and pass' }
 
       - name: Run native retained-source regressions for the selected family
         shell: pwsh

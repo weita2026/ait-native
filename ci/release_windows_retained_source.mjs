@@ -45,6 +45,21 @@ export function requirePassedCase(stdout, name) {
     `native case did not execute and pass: ${name}; ignored/zero-test output is not a pass`);
 }
 
+export function runSingleCargoCase(flags, name) {
+  const result = spawnSync("cargo", ["test", "--locked", ...flags, name,
+    "--", "--exact", "--test-threads=1", "--color", "never"],
+    { encoding: "utf8", maxBuffer: 32 * 1024 * 1024 });
+  process.stdout.write(result.stdout ?? "");
+  process.stderr.write(result.stderr ?? "");
+  if (result.error) throw result.error;
+  assert.equal(result.status, 0, `native single case failed: ${name}`);
+  requirePassedCase(result.stdout, name);
+  assert.equal((result.stdout.match(/^test result:/gm) ?? []).length, 1,
+    `native single case requires one complete summary: ${name}`);
+  assert(/^test result: ok\. 1 passed; 0 failed; 0 ignored;/m.test(result.stdout),
+    `native single case requires exactly one pass and zero ignored: ${name}`);
+}
+
 export function selectCoreEditRootCases(listing) {
   const names = listing.split(/\r?\n/).filter(line => line.endsWith(": test"))
     .map(line => line.slice(0, -6)).filter(name => name.startsWith(CORE_EDIT_ROOT_PREFIX));

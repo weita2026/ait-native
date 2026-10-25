@@ -341,6 +341,7 @@ pub(super) fn recover(repo: &RepoRuntime, apply: bool) -> Result<JsonValue, Stri
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
     use crate::init_surface::{init_repo, InitRequest};
     fn git(root: &Path, args: &[&str]) -> Vec<u8> {
         let out = Command::new("git")

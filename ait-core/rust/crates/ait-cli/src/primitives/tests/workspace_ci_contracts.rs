@@ -8,6 +8,10 @@ use ait_core::external::materializer::{
     ExternalMaterializationOptions, ExternalMaterializer, FilesystemExternalMaterializer,
     FixtureExternalContentSource,
 };
+#[cfg(unix)]
+use std::os::unix::fs::symlink as symlink_dir;
+#[cfg(windows)]
+use std::os::windows::fs::symlink_dir;
 use std::path::Path;
 use std::sync::mpsc;
 use std::time::Duration;
@@ -180,8 +184,7 @@ fn discover_markdown_guard_worktree(
 ) -> (PathBuf, RepoRuntime) {
     let worktree_root = repo_root.join(format!(".{worktree_name}-workspace"));
     fs::create_dir_all(&worktree_root).expect("worktree root");
-    std::os::unix::fs::symlink(repo_root.join(".ait"), worktree_root.join(".ait"))
-        .expect("symlink shared .ait");
+    symlink_dir(repo_root.join(".ait"), worktree_root.join(".ait")).expect("symlink shared .ait");
     fs::write(
         worktree_root.join(WORKTREE_CONFIG_NAME),
         json!({
@@ -505,8 +508,7 @@ fn workspace_delta_uses_worktree_ignore_hash_without_persisted_bin_cache() {
     .expect("config");
     fs::write(worktree_root.join(".aitignore"), "target/\n").expect("aitignore");
     fs::write(worktree_root.join("src/lib.rs"), "pub fn fixture() {}\n").expect("source");
-    std::os::unix::fs::symlink(repo_root.join(".ait"), worktree_root.join(".ait"))
-        .expect("symlink .ait");
+    symlink_dir(repo_root.join(".ait"), worktree_root.join(".ait")).expect("symlink .ait");
     fs::write(
         worktree_root.join(WORKTREE_CONFIG_NAME),
         format!(

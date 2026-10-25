@@ -1183,6 +1183,10 @@ mod tests {
     use super::*;
     use crate::init_surface::{init_repo, InitRequest};
     use std::cell::Cell;
+    #[cfg(unix)]
+    use std::os::unix::fs::symlink as symlink_dir;
+    #[cfg(windows)]
+    use std::os::windows::fs::symlink_dir;
     use tempfile::tempdir;
 
     #[test]
@@ -1247,7 +1251,7 @@ mod tests {
         let worktree_name = "rt-authoritative";
         let worktree_path = temp.path().join(worktree_name);
         fs::create_dir_all(&worktree_path).expect("create worktree path");
-        std::os::unix::fs::symlink(temp.path().join(APP_DIR), worktree_path.join(APP_DIR))
+        symlink_dir(temp.path().join(APP_DIR), worktree_path.join(APP_DIR))
             .expect("link worktree authority");
         fs::write(
             worktree_path.join(WORKTREE_CONFIG_NAME),
@@ -1320,7 +1324,7 @@ mod tests {
         worktree_path: &Path,
     ) {
         fs::create_dir_all(worktree_path).expect("create worktree path");
-        std::os::unix::fs::symlink(
+        symlink_dir(
             repo.authoritative_repo_root().join(APP_DIR),
             worktree_path.join(APP_DIR),
         )
