@@ -1,6 +1,7 @@
 use crate::json_support::{parse_value_option, write_pretty_value};
 use crate::runtime::RepoRuntime;
 use ait_core::json_support::{json, JsonValue};
+#[cfg(not(windows))]
 use fs2::FileExt;
 use sha2::{Digest, Sha256};
 use std::env;
@@ -126,11 +127,11 @@ impl WorkspaceCommandLock {
             .open(&lock_path)
             .map_err(|err| err.to_string())?;
         if nonblocking {
-            file.try_lock_exclusive().map_err(|error| format!(
+            lock_workspace_file(&file, true).map_err(|error| format!(
                 "Workspace {} is busy; cannot run {command_name} while another command holds its writer lock: {error}", workspace_root.display()
             ))?;
         } else {
-            file.lock_exclusive().map_err(|err| err.to_string())?;
+            lock_workspace_file(&file, false).map_err(|err| err.to_string())?;
         }
         let owner_token = new_owner_token(&workspace_root);
         let metadata = json!({
@@ -142,15 +143,19 @@ impl WorkspaceCommandLock {
             "owner_token": owner_token,
             "started_at": current_timestamp_string(),
         });
-        file.set_len(0).map_err(|err| err.to_string())?;
-        file.seek(SeekFrom::Start(0))
-            .map_err(|err| err.to_string())?;
-        write_pretty_value(&mut file, &metadata, "Failed to encode JSON").map_err(|err| {
+        let mut encoded = Vec::new();
+        write_pretty_value(&mut encoded, &metadata, "Failed to encode JSON").map_err(|err| {
             err.strip_prefix("Failed to encode JSON: ")
                 .unwrap_or(&err)
                 .to_string()
         })?;
-        file.write_all(b"\n").map_err(|err| err.to_string())?;
+        encoded.push(b'\n');
+        #[cfg(windows)]
+        windows_lock::check_metadata_length(encoded.len() as u64).map_err(|err| err.to_string())?;
+        file.set_len(0).map_err(|err| err.to_string())?;
+        file.seek(SeekFrom::Start(0))
+            .map_err(|err| err.to_string())?;
+        file.write_all(&encoded).map_err(|err| err.to_string())?;
         file.flush().map_err(|err| err.to_string())?;
         let env_guard = WorkspaceLockEnvGuard::set(&owner_token);
         Ok(Self {
@@ -178,7 +183,7 @@ impl Drop for WorkspaceCommandLock {
                 let _ = file.set_len(0);
                 let _ = file.seek(SeekFrom::Start(0));
                 let _ = file.flush();
-                let _ = file.unlock();
+                let _ = unlock_workspace_file(file);
             }
             WorkspaceCommandLockState::Borrowed => {}
         }
@@ -299,9 +304,9 @@ fn lock_is_held_by_another_process(lock_path: &Path) -> bool {
     let Ok(file) = OpenOptions::new().read(true).write(true).open(lock_path) else {
         return false;
     };
-    match file.try_lock_exclusive() {
+    match lock_workspace_file(&file, true) {
         Ok(()) => {
-            let _ = file.unlock();
+            let _ = unlock_workspace_file(&file);
             false
         }
         Err(err) if is_lock_would_block(&err) => true,
@@ -320,9 +325,108 @@ fn is_lock_would_block(err: &std::io::Error) -> bool {
             Some(code) if code == libc::EWOULDBLOCK || code == libc::EAGAIN
         )
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    {
+        err.raw_os_error() == fs2::lock_contended_error().raw_os_error()
+    }
+    #[cfg(not(any(unix, windows)))]
     {
         false
+    }
+}
+
+fn lock_workspace_file(file: &File, nonblocking: bool) -> std::io::Result<()> {
+    #[cfg(windows)]
+    {
+        windows_lock::lock(file, nonblocking)
+    }
+    #[cfg(not(windows))]
+    {
+        if nonblocking {
+            file.try_lock_exclusive()
+        } else {
+            file.lock_exclusive()
+        }
+    }
+}
+
+fn unlock_workspace_file(file: &File) -> std::io::Result<()> {
+    #[cfg(windows)]
+    {
+        windows_lock::unlock(file)
+    }
+    #[cfg(not(windows))]
+    {
+        FileExt::unlock(file)
+    }
+}
+
+#[cfg(windows)]
+mod windows_lock {
+    use std::fs::File;
+    use std::io;
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{
+        LockFileEx, UnlockFileEx, LOCKFILE_EXCLUSIVE_LOCK, LOCKFILE_FAIL_IMMEDIATELY,
+    };
+    use windows_sys::Win32::System::IO::{OVERLAPPED, OVERLAPPED_0, OVERLAPPED_0_0};
+
+    // Windows byte locks also exclude reads through other handles, including
+    // this process's nested/delegated metadata reader. Lock beyond metadata,
+    // within the range covered by existing fs2 whole-file locks. No byte is
+    // written here and locking beyond EOF does not extend the file.
+    pub(super) const LOCK_OFFSET: u64 = i64::MAX as u64 - 1;
+
+    pub(super) fn check_metadata_length(length: u64) -> io::Result<()> {
+        if length > LOCK_OFFSET {
+            Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Workspace lock metadata would overlap its lock byte",
+            ))
+        } else {
+            Ok(())
+        }
+    }
+
+    fn overlapped() -> OVERLAPPED {
+        OVERLAPPED {
+            Anonymous: OVERLAPPED_0 {
+                Anonymous: OVERLAPPED_0_0 {
+                    Offset: LOCK_OFFSET as u32,
+                    OffsetHigh: (LOCK_OFFSET >> 32) as u32,
+                },
+            },
+            ..OVERLAPPED::default()
+        }
+    }
+
+    pub(super) fn lock(file: &File, nonblocking: bool) -> io::Result<()> {
+        let mut overlapped = overlapped();
+        let flags = LOCKFILE_EXCLUSIVE_LOCK
+            | if nonblocking {
+                LOCKFILE_FAIL_IMMEDIATELY
+            } else {
+                0
+            };
+        // The standard File handle is synchronous and remains open throughout
+        // this call. OVERLAPPED supplies only the fixed byte offset.
+        let result = unsafe { LockFileEx(file.as_raw_handle(), flags, 0, 1, 0, &mut overlapped) };
+        if result == 0 {
+            Err(io::Error::last_os_error())
+        } else {
+            Ok(())
+        }
+    }
+
+    pub(super) fn unlock(file: &File) -> io::Result<()> {
+        let mut overlapped = overlapped();
+        // Release exactly the byte acquired on this still-open File handle.
+        let result = unsafe { UnlockFileEx(file.as_raw_handle(), 0, 1, 0, &mut overlapped) };
+        if result == 0 {
+            Err(io::Error::last_os_error())
+        } else {
+            Ok(())
+        }
     }
 }
 

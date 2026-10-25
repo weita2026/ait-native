@@ -26,6 +26,19 @@ export const CORE_CASE = "reviewed_routed_server_restart_reprepares_the_original
 export const CORE_EDIT_ROOT_PREFIX = "task_worktree_layout::tests::explicit_task_edit_root_";
 export const CORE_CLEANUP_PREFIX = "primitives::worktree::cleanup::tests::directory_link_cleanup_";
 export const FIXTURE_LOCAL_FINISH_PREFIX = "fixture_local_finish_";
+export const CORE_WORKSPACE_LOCK_CASE = "workspace_lock::tests::nested_rust_workspace_command_borrows_outer_lock";
+export const CORE_WORKSPACE_LOCK_PREFIX = "workspace_lock::tests::";
+const CORE_WORKSPACE_LOCK_CASES = [
+  "workspace_command_lock_path_matches_hash_contract_shape",
+  "workspace_command_lock_records_metadata_after_blocking_acquire",
+  "nested_rust_workspace_command_borrows_outer_lock",
+  "workspace_lock_delegation_preserves_physical_exclusion",
+  "workspace_lock_conflicts_with_existing_whole_file_locks",
+  "workspace_lock_metadata_cannot_overlap_the_lock_byte",
+  "workspace_lock_token_is_restored_after_owned_lock_drop",
+  "legacy_direct_child_lock_borrow_requires_actual_held_lock",
+  "legacy_same_process_lock_borrow_requires_actual_held_lock",
+].map(name => CORE_WORKSPACE_LOCK_PREFIX + name);
 const FIXTURE_LOCAL_FINISH_CASES = [
   "fixture_local_finish_closes_the_worktree_with_one_apply_receipt",
   "fixture_local_finish_preserves_nonempty_failed_cleanup",
@@ -97,6 +110,7 @@ export function runCoreCloseoutPrerequisites(cargo, manifest) {
     ["core-directory-link-cleanup", ["-p", "ait-cli", "--lib"], CORE_CLEANUP_PREFIX, 3],
     ["core-fixture-local-finish", ["-p", "ait-cli", "--test", "workflow_package_accepted_retry_cli"], FIXTURE_LOCAL_FINISH_PREFIX, 2],
   ]) {
+    if (prefix === FIXTURE_LOCAL_FINISH_PREFIX) runCoreWorkspaceLockCases(cargo, manifest);
     const names = selectNativePrefixCases(cargo(label + "-case-list", manifest,
       [...flags, prefix, "--", "--list"]), prefix, count);
     if (prefix === FIXTURE_LOCAL_FINISH_PREFIX) {
@@ -120,22 +134,122 @@ export function runCoreCloseoutPrerequisites(cargo, manifest) {
   }
 }
 
+export function runCoreWorkspaceLockCases(cargo, manifest) {
+  const flags = ["-p", "ait-cli", "--lib"];
+  const selected = selectNativePrefixCases(cargo("core-workspace-lock-case-list", manifest,
+    [...flags, CORE_WORKSPACE_LOCK_PREFIX, "--", "--list"]), CORE_WORKSPACE_LOCK_PREFIX, 9);
+  assert.deepEqual(selected.slice().sort(), CORE_WORKSPACE_LOCK_CASES.slice().sort(),
+    "require all nine reviewed Windows workspace-lock identities");
+  const stdout = cargo("core-workspace-lock-reentry", manifest,
+    [...flags, CORE_WORKSPACE_LOCK_PREFIX, "--", "--test-threads=1", "--color", "never"]);
+  for (const name of selected) requirePassedCase(stdout, name);
+  assert.equal((stdout.match(/^test result:/gm) ?? []).length, 1, "workspace-lock group needs one complete summary");
+  assert(/^test result: ok\. 9 passed; 0 failed; 0 ignored;/m.test(stdout),
+    "all nine workspace-lock cases must execute with zero ignored");
+}
+
 function nativeCommandEvent(descriptor, event, detail) {
   writeSync(descriptor, "[native-command] " + JSON.stringify({ time: new Date(Date.now()).toISOString(), event, ...detail }) + "\n");
 }
 
-function windowsObservationScript(rootProcessId, stopFile) {
+function windowsObservationScript(rootProcessId, stopFile, stackFile, budgetMs, arch) {
   const literal = value => "'" + value.replaceAll("'", "''") + "'";
   return String.raw`$ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
 $nodeRootId = ${rootProcessId}
 $stopFile = ${literal(stopFile)}
+$stackFile = ${literal(stackFile)}
+$debuggerArch = ${literal(arch === "arm64" ? "arm64" : "x64")}
+$stackAfterMs = ${Math.max(5000, budgetMs - 20000)}
 $watcherId = $PID
 $tracked = @{}
+$script:ownedDebugger = $null
+$stackCapture = $null
+$stackAttempted = $false
+$elapsed = [Diagnostics.Stopwatch]::StartNew()
 function Emit($value) {
   $value.time = [DateTime]::UtcNow.ToString('o')
   [Console]::Error.WriteLine('[native-observe] ' + ($value | ConvertTo-Json -Compress -Depth 8))
   [Console]::Error.Flush()
+}
+function StackForProcess($identity, $capture) {
+  if ($null -eq $capture -or $capture.identity -ne $identity) {
+    return 'unavailable: no stack captured for this tracked process'
+  }
+  return $capture.status
+}
+function CaptureStack($entry) {
+  $candidates = @()
+  foreach ($folder in @([Environment]::GetEnvironmentVariable('ProgramFiles(x86)'), [Environment]::GetEnvironmentVariable('ProgramFiles'))) {
+    if ($folder) { $candidates += Join-Path $folder "Windows Kits\10\Debuggers\$debuggerArch\cdb.exe" }
+  }
+  $available = Get-Command cdb.exe -ErrorAction SilentlyContinue | Select-Object -First 1
+  if ($available) { $candidates += $available.Source }
+  $cdb = $null
+  foreach ($candidate in $candidates) {
+    if (-not [IO.File]::Exists($candidate)) { continue }
+    $reader = $null
+    try {
+      $reader = [IO.BinaryReader]::new([IO.File]::OpenRead($candidate))
+      $null = $reader.BaseStream.Seek(60, [IO.SeekOrigin]::Begin)
+      $offset = $reader.ReadInt32()
+      $null = $reader.BaseStream.Seek($offset + 4, [IO.SeekOrigin]::Begin)
+      $machine = $reader.ReadUInt16()
+      if (($debuggerArch -eq 'x64' -and $machine -eq 0x8664) -or ($debuggerArch -eq 'arm64' -and $machine -eq 0xaa64)) { $cdb = $candidate; break }
+    } catch { } finally { if ($reader) { $reader.Dispose() } }
+  }
+  if (-not $cdb) {
+    Emit @{ event = 'stack-unavailable'; detail = ('no installed native ' + $debuggerArch + ' CDB; no tool installation attempted') }
+    return 'unavailable: matching installed CDB not found'
+  }
+  $debugger = $null
+  try {
+    if ($entry.process.HasExited) { return 'unavailable: owned target exited before capture' }
+    $targetId = $entry.process.Id
+    $symbols = if ($entry.row.ExecutablePath) { [IO.Path]::GetDirectoryName($entry.row.ExecutablePath) } else { '' }
+    $start = [Diagnostics.ProcessStartInfo]::new()
+    $start.FileName = $cdb
+    $start.UseShellExecute = $false
+    $start.CreateNoWindow = $true
+    $start.WorkingDirectory = [IO.Path]::GetDirectoryName($stackFile)
+    $start.EnvironmentVariables['_NT_SYMBOL_PATH'] = ''
+    $start.EnvironmentVariables['_NT_ALT_SYMBOL_PATH'] = ''
+    # -pvr is noninvasive and does not suspend the owned target. Clean stacks
+    # omit argument values; network symbols and debugger shells stay disabled.
+    $start.Arguments = '-pvr -pd -noshell -netsyms:no -p ' + $targetId + ' -y "' + $symbols + '" -logo "' + $stackFile + '" -c "~* kc; qd"'
+    Emit @{ event = 'stack-started'; pid = $targetId; tool = $cdb; output = $stackFile; mode = 'noninvasive, no suspend, local symbols only' }
+    $debugger = [Diagnostics.Process]::Start($start)
+    $script:ownedDebugger = $debugger
+    if (-not $debugger.WaitForExit(5000)) {
+      $debugger.Kill()
+      if (-not $debugger.WaitForExit(5000)) { throw 'owned CDB did not stop after its timeout' }
+      Emit @{ event = 'stack-unavailable'; pid = $targetId; detail = 'owned CDB timed out; any partial output is not a completed capture'; output = $stackFile }
+      return 'unavailable: bounded CDB capture timed out'
+    }
+    if ($debugger.ExitCode -ne 0 -or -not [IO.File]::Exists($stackFile)) {
+      Emit @{ event = 'stack-unavailable'; pid = $targetId; exit_code = $debugger.ExitCode; output = $stackFile; detail = 'CDB did not provide a successful capture' }
+      return 'unavailable: CDB failed or produced no stack file'
+    }
+    $stackText = [IO.File]::ReadAllText($stackFile)
+    if ($stackText -notmatch 'Call Site' -or $stackText -notmatch '(?m)^\s*[0-9a-fA-F]{2,4}\s+\S+') {
+      Emit @{ event = 'stack-unavailable'; pid = $targetId; output = $stackFile; detail = 'raw debugger output contains no recognized stack frames' }
+      return 'unavailable: debugger output has no recognized stack frames'
+    }
+    Emit @{ event = 'stack-recorded'; pid = $targetId; output = $stackFile; detail = 'best-effort non-suspending native debugger output; inspect raw output before attribution' }
+    return ('raw best-effort CDB output: ' + $stackFile)
+  } catch {
+    Emit @{ event = 'stack-unavailable'; detail = $_.Exception.Message; output = $stackFile }
+    return 'unavailable: owned stack observation failed'
+  } finally {
+    if ($debugger) {
+      if (-not $debugger.HasExited) {
+        $debugger.Kill()
+        if (-not $debugger.WaitForExit(5000)) { throw 'owned CDB shutdown remains unconfirmed' }
+      }
+      $debugger.Dispose()
+      $script:ownedDebugger = $null
+    }
+  }
 }
 try {
   $rootProcess = [Diagnostics.Process]::GetProcessById($nodeRootId)
@@ -168,7 +282,8 @@ try {
           try {
             $observed = [Diagnostics.Process]::GetProcessById([int]$row.ProcessId)
             $null = $observed.Handle
-            $tracked[$key] = @{ process = $observed; row = $row }
+            $identity = $key + ':' + $observed.StartTime.ToUniversalTime().Ticks
+            $tracked[$key] = @{ process = $observed; row = $row; identity = $identity }
             $created = if ($row.CreationDate) { $row.CreationDate.ToUniversalTime().ToString('o') } else { 'unavailable' }
             $argv = if ($row.CommandLine) { $row.CommandLine } else { 'unavailable: CIM command line not returned' }
             Emit @{ event = 'started'; pid = $row.ProcessId; parent_pid = $row.ParentProcessId; name = $row.Name; argv = $argv; created = $created; executable = $row.ExecutablePath }
@@ -196,16 +311,40 @@ try {
               }
             } catch { $wait = @(@{ unavailable = $_.Exception.Message }) }
             $argv = if ($entry.row.CommandLine) { $entry.row.CommandLine } else { 'unavailable: CIM command line not returned' }
-            $alive += @{ pid = [int]$key; parent_pid = $entry.row.ParentProcessId; name = $entry.row.Name; argv = $argv; wait = $wait; stack = 'unavailable: not collected by the read-only observer' }
+            $pidStack = StackForProcess $entry.identity $stackCapture
+            $alive += @{ pid = [int]$key; parent_pid = $entry.row.ParentProcessId; name = $entry.row.Name; argv = $argv; wait = $wait; stack = $pidStack }
           }
         } catch { Emit @{ event = 'unavailable'; pid = [int]$key; detail = $_.Exception.Message } }
       }
       Emit @{ event = 'snapshot'; stopping = $stopping; alive = $alive; coverage = 'sampled owned descendants; processes entirely between samples are unavailable' }
+      if (-not $stopping -and -not $stackAttempted -and $elapsed.ElapsedMilliseconds -ge $stackAfterMs) {
+        $stackAttempted = $true
+        $targets = @($tracked.Values | Where-Object { -not $_.process.HasExited } | Sort-Object {
+          if ($_.row.Name -eq 'ait-cli.exe') { 0 }
+          elseif ($_.row.Name -match '^(workflow_package_accepted_retry_cli-|ait_cli-)') { 1 }
+          else { 2 }
+        })
+        if ($targets.Count) {
+          $target = $targets[0]
+          $stackCapture = @{ identity = $target.identity; pid = $target.process.Id; status = (CaptureStack $target) }
+        } else { Emit @{ event = 'stack-unavailable'; detail = 'no live owned target at capture window' } }
+      }
     } catch { Emit @{ event = 'unavailable'; detail = ('local process observation failed: ' + $_.Exception.Message) } }
     if (-not $stopping) { Start-Sleep -Milliseconds 500 }
   } while (-not $stopping)
 } catch { Emit @{ event = 'unavailable'; detail = $_.Exception.Message } }
 finally {
+  if ($script:ownedDebugger) {
+    try {
+      if (-not $script:ownedDebugger.HasExited) { $script:ownedDebugger.Kill() }
+      if (-not $script:ownedDebugger.WaitForExit(5000)) { throw 'owned CDB shutdown was not confirmed' }
+      $script:ownedDebugger.Dispose()
+      $script:ownedDebugger = $null
+    } catch {
+      Emit @{ event = 'observer-closeout-failed'; detail = $_.Exception.Message }
+      [Environment]::Exit(2)
+    }
+  }
   foreach ($entry in $tracked.Values) { $entry.process.Dispose() }
   if ($rootProcess) { $rootProcess.Dispose() }
   [Console]::Error.WriteLine("[native-observe] stopped root=$nodeRootId watcher=$watcherId")
@@ -214,7 +353,7 @@ finally {
 `;
 }
 
-function startWindowsObservation({ label, logs, descriptor, env }) {
+function startWindowsObservation({ label, logs, descriptor, env, budgetMs }) {
   const systemRoot = env.SystemRoot ?? env.SYSTEMROOT;
   const command = systemRoot && path.isAbsolute(systemRoot) && path.join(systemRoot, "System32/WindowsPowerShell/v1.0/powershell.exe");
   const unavailable = detail => nativeCommandEvent(descriptor, "observation-unavailable", { label, detail });
@@ -223,7 +362,7 @@ function startWindowsObservation({ label, logs, descriptor, env }) {
     return () => {};
   }
   const stopFile = path.join(logs, label + ".observer-stop");
-  const script = windowsObservationScript(process.pid, stopFile);
+  const script = windowsObservationScript(process.pid, stopFile, path.join(logs, label + ".stack.txt"), budgetMs, process.arch);
   const observer = spawn(command, ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")],
     { env, stdio: ["ignore", "ignore", descriptor], windowsHide: true });
   let launchError;
@@ -239,7 +378,7 @@ function startWindowsObservation({ label, logs, descriptor, env }) {
     if (stoppedOnce) return;
     stoppedOnce = true;
     writeFileSync(stopFile, "stop\n", { flag: "wx" });
-    const limit = performance.now() + 4000;
+    const limit = performance.now() + 15000;
     while (!contains(stopped) && performance.now() < limit) pause();
     if (!contains(stopped)) { unavailable("observer did not acknowledge stop; terminating only the owned observer"); observer.kill(); }
     // Keep the ChildProcess handle while the OS confirms this exact owned
@@ -249,6 +388,7 @@ function startWindowsObservation({ label, logs, descriptor, env }) {
       { env, encoding: "utf8", timeout: 6500, windowsHide: true });
     rmSync(stopFile, { force: true });
     assert.equal(confirmation.status, 0, "owned process observer did not stop before diagnostic closeout");
+    assert(contains(stopped), "owned observer did not acknowledge completed diagnostic closeout");
   };
   const limit = performance.now() + 5000;
   while (!contains(ready) && !contains(stopped) && performance.now() < limit) pause();
@@ -269,9 +409,10 @@ function nativeContext({ target, root, logs }) {
   function run(label, command, argv) {
     writeFileSync(path.join(logs, label + ".argv"), [command, ...argv].join("\n") + "\n");
     const stdoutFile = path.join(logs, label + ".stdout"), stderrFile = path.join(logs, label + ".stderr");
-    const observe = /^core-fixture-local-finish-case-[12]$/.test(label);
-    const cleanupReserve = observe ? 15000 : 0;
-    const timeout = Math.min(deadline - Date.now() - cleanupReserve, observe ? 10 * 60 * 1000 : Infinity);
+    const lockCase = label === "core-workspace-lock-reentry";
+    const observe = lockCase || /^core-fixture-local-finish-case-[12]$/.test(label);
+    const cleanupReserve = observe ? 30000 : 0;
+    const timeout = Math.min(deadline - Date.now() - cleanupReserve, lockCase ? 120000 : observe ? 10 * 60 * 1000 : Infinity);
     if (timeout <= 0) {
       writeFileSync(stdoutFile, "");
       writeFileSync(stderrFile, "Native retained-source execution budget exhausted before command launch\n");
@@ -284,7 +425,7 @@ function nativeContext({ target, root, logs }) {
       descriptors.push(openSync(stdoutFile, "wx"));
       descriptors.push(openSync(stderrFile, "wx"));
       nativeCommandEvent(descriptors[1], "launch-requested", { label, parent_pid: process.pid, command, argv, timeout_ms: timeout });
-      if (observe) stopObservation = startWindowsObservation({ label, logs, descriptor: descriptors[1], env });
+      if (observe) stopObservation = startWindowsObservation({ label, logs, descriptor: descriptors[1], env, budgetMs: timeout });
       const remaining = Math.min(deadline - Date.now() - cleanupReserve, timeout);
       assert(remaining > 0, `${label}: native retained-source execution budget exhausted before launch`);
       const started = Date.now();

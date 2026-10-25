@@ -5,7 +5,7 @@ import * as fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import vm from "node:vm";
-import { requiresRetainedSource, selectNativeCase, requirePassedCase, runNativeWindowsQa, selectCoreEditRootCases, runCoreEditRootCases, CORE_EDIT_ROOT_PREFIX, CORE_CLEANUP_PREFIX, FIXTURE_LOCAL_FINISH_PREFIX, selectNativePrefixCases, runCoreCloseoutPrerequisites, SERVER_CASES, CORE_CASE } from "./release_windows_retained_source.mjs";
+import { requiresRetainedSource, selectNativeCase, requirePassedCase, runNativeWindowsQa, selectCoreEditRootCases, runCoreEditRootCases, CORE_EDIT_ROOT_PREFIX, CORE_CLEANUP_PREFIX, FIXTURE_LOCAL_FINISH_PREFIX, CORE_WORKSPACE_LOCK_CASE, CORE_WORKSPACE_LOCK_PREFIX, runCoreWorkspaceLockCases, selectNativePrefixCases, runCoreCloseoutPrerequisites, SERVER_CASES, CORE_CASE } from "./release_windows_retained_source.mjs";
 // The workflow imports this module from inline Node with the target as argv[1].
 // That argument is not a script path and must not trigger CLI entry detection.
 const imported = spawnSync(process.execPath, ["--input-type=module", "-e",
@@ -62,6 +62,31 @@ const finishNames = ["closes_the_worktree_with_one_apply_receipt", "preserves_no
 const listing = names => names.map(name => `${name}: test`).join("\r\n") + "\r\n";
 const passed = names => names.map(name => `test ${name} ... ok`).join("\r\n") +
   `\r\ntest result: ok. ${names.length} passed; 0 failed; 0 ignored; 0 measured\r\n`;
+const workspaceNames = ["workspace_command_lock_path_matches_hash_contract_shape", "workspace_command_lock_records_metadata_after_blocking_acquire",
+  "nested_rust_workspace_command_borrows_outer_lock", "workspace_lock_delegation_preserves_physical_exclusion",
+  "workspace_lock_conflicts_with_existing_whole_file_locks", "workspace_lock_metadata_cannot_overlap_the_lock_byte",
+  "workspace_lock_token_is_restored_after_owned_lock_drop", "legacy_direct_child_lock_borrow_requires_actual_held_lock",
+  "legacy_same_process_lock_borrow_requires_actual_held_lock"].map(name => CORE_WORKSPACE_LOCK_PREFIX + name);
+for (const failure of [null, "missing", "duplicate-list", "wrong-list", "wrong-identity", "ignored", "zero", "partial", "duplicate-summary"]) {
+  const calls = [];
+  const execute = () => runCoreWorkspaceLockCases((label, manifest, flags) => {
+    calls.push({ label, flags });
+    if (label.endsWith("-case-list")) return failure === "missing" ? "unrelated: test\n" :
+      listing(failure === "duplicate-list" ? [...workspaceNames.slice(1), workspaceNames[1]] :
+        failure === "wrong-list" ? [...workspaceNames.slice(1), CORE_WORKSPACE_LOCK_PREFIX + "unreviewed"] : workspaceNames);
+    let output = passed(workspaceNames);
+    if (failure === "wrong-identity") output = output.replace(CORE_WORKSPACE_LOCK_CASE, "another_case");
+    if (failure === "ignored") output = output.replace(" ... ok", " ... ignored");
+    if (failure === "zero") output = "test result: ok. 0 passed; 0 failed; 0 ignored;\n";
+    if (failure === "partial") output = output.replace("9 passed; 0 failed; 0 ignored;", "8 passed; 0 failed; 1 ignored;");
+    if (failure === "duplicate-summary") output += "test result: ok. 0 passed; 0 failed; 0 ignored;\n";
+    return output;
+  }, "/fixed/ait-core/rust/Cargo.toml");
+  if (failure === null) execute(); else assert.throws(execute);
+  assert.equal(calls.length, ["missing", "duplicate-list", "wrong-list"].includes(failure) ? 1 : 2);
+  if (calls.length === 2) assert.deepEqual(calls[1].flags,
+    ["-p", "ait-cli", "--lib", CORE_WORKSPACE_LOCK_PREFIX, "--", "--test-threads=1", "--color", "never"]);
+}
 assert.deepEqual(selectNativePrefixCases(listing(cleanupNames), CORE_CLEANUP_PREFIX, 3), cleanupNames);
 for (const names of [[], cleanupNames.slice(1), [...cleanupNames, cleanupNames[0]], [...cleanupNames, CORE_CLEANUP_PREFIX + "extra"]]) {
   assert.throws(() => selectNativePrefixCases(listing(names), CORE_CLEANUP_PREFIX, 3));
@@ -71,6 +96,8 @@ for (const failure of [null, "missing-list", "ignored", "zero", "wrong-identity"
   const calls = [];
   const execute = () => runCoreCloseoutPrerequisites((label, manifest, flags) => {
     calls.push({ label, manifest, flags });
+    if (label === "core-workspace-lock-case-list") return listing(workspaceNames);
+    if (label === "core-workspace-lock-reentry") return passed(workspaceNames);
     const names = label.startsWith("core-directory") ? cleanupNames : finishNames;
     if (label.endsWith("-case-list")) {
       if (failure === "missing-list") return "unrelated: test\n";
@@ -95,16 +122,16 @@ for (const failure of [null, "missing-list", "ignored", "zero", "wrong-identity"
     return output;
   }, "/fixed/ait-core/rust/Cargo.toml");
   if (failure === null) execute(); else assert.throws(execute);
-  assert.equal(calls.length, failure === null || failure === "second-fixture-failure" ? 5 : failure === "missing-list" ? 1 :
-    failure === "wrong-fixture-list" ? 3 : failure.startsWith("fixture-") ? 4 : 2);
+  assert.equal(calls.length, failure === null || failure === "second-fixture-failure" ? 7 : failure === "missing-list" ? 1 :
+    failure === "wrong-fixture-list" ? 5 : failure.startsWith("fixture-") ? 6 : 2);
   for (const call of calls) {
     assert.equal(call.flags.includes("--exact"), /^core-fixture-local-finish-case-\d$/.test(call.label));
     assert.equal(call.flags.includes("--nocapture"), false, "keep the captured libtest stream contract");
   }
   assert.deepEqual(calls[0].flags, ["-p", "ait-cli", "--lib", CORE_CLEANUP_PREFIX, "--", "--list"]);
-  if (calls.length >= 4) {
-    assert.deepEqual(calls[2].flags, ["-p", "ait-cli", "--test", "workflow_package_accepted_retry_cli", FIXTURE_LOCAL_FINISH_PREFIX, "--", "--list"]);
-    for (const [index, call] of calls.slice(3).entries()) assert.deepEqual(call.flags,
+  if (calls.length >= 6) {
+    assert.deepEqual(calls[4].flags, ["-p", "ait-cli", "--test", "workflow_package_accepted_retry_cli", FIXTURE_LOCAL_FINISH_PREFIX, "--", "--list"]);
+    for (const [index, call] of calls.slice(5).entries()) assert.deepEqual(call.flags,
       ["-p", "ait-cli", "--test", "workflow_package_accepted_retry_cli", finishNames[index],
         "--", "--exact", "--test-threads=1", "--color", "never"]);
   }
@@ -168,6 +195,72 @@ try {
   fs.mkdirSync(path.dirname(powershell), { recursive: true }); fs.writeFileSync(powershell, "fixture");
   const observers = [];
   let forcedObserverStops = 0, confirmedStops = 0;
+  const observationPowerShell = process.env.NATIVE_OBSERVATION_POWERSHELL ||
+    (process.platform === "win32" && path.join(process.env.SystemRoot, "System32/WindowsPowerShell/v1.0/powershell.exe"));
+  let stackAttributionChecked = false;
+  function checkStackAttribution(program) {
+    if (!observationPowerShell || stackAttributionChecked) return;
+    assert(path.isAbsolute(observationPowerShell) && fs.statSync(observationPowerShell).isFile());
+    const helper = program.slice(program.indexOf("function StackForProcess("), program.indexOf("function CaptureStack("));
+    const capture = program.match(/^\s*\$stackCapture = @\{ identity = \$target.identity; pid = \$target.process.Id; status = \(CaptureStack \$target\) \}/m)?.[0];
+    const row = program.match(/\$pidStack = StackForProcess[^\n]+\n\s*\$alive \+= @\{[^\n]+/m)?.[0];
+    assert(helper && capture && row, "exercise the actual rendered PowerShell attribution and row construction");
+    // Run the production PowerShell fragments, not a JavaScript reimplementation.
+    // Synthetic entries isolate attribution from Windows CIM/CDB availability.
+    const testProgram = `Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
+${helper}
+function CaptureStack($entry) { return $entry.captureStatus }
+function Rows($entries, $stackCapture) {
+  $alive = @()
+  foreach ($entry in $entries) {
+    $key = [string]$entry.process.Id
+    $argv = $entry.row.CommandLine
+    $wait = @()
+    ${row}
+  }
+  return $alive
+}
+$entries = @(
+  @{ identity = '2916:100'; process = @{ Id = 2916 }; row = @{ ParentProcessId = 100; Name = 'ait_cli-test.exe'; CommandLine = 'test' } },
+  @{ identity = '4504:100'; process = @{ Id = 4504 }; row = @{ ParentProcessId = 2916; Name = 'ait-cli.exe'; CommandLine = 'ait-cli task finish' } },
+  @{ identity = '1200:100'; process = @{ Id = 1200 }; row = @{ ParentProcessId = 100; Name = 'cargo.exe'; CommandLine = 'cargo test' } }
+)
+$unavailable = 'unavailable: no stack captured for this tracked process'
+$statuses = @('raw best-effort CDB output: C:\\owned\\case.stack.txt',
+  'unavailable: owned target exited before capture',
+  'unavailable: matching installed CDB not found',
+  'unavailable: CDB failed or produced no stack file',
+  'unavailable: bounded CDB capture timed out')
+foreach ($status in $statuses) {
+  $target = $entries[1]
+  $target.captureStatus = $status
+  ${capture}
+  $rows = @(Rows $entries $stackCapture)
+  if ($rows.Count -ne 3) { throw 'all three alive processes must retain their own row' }
+  foreach ($item in $rows) {
+    $expected = if ($item.pid -eq 4504) { $status } else { $unavailable }
+    if ($item.stack -ne $expected) { throw ('wrong stack attribution for PID ' + $item.pid) }
+  }
+  # A completed capture cannot transfer to surviving peers after its owner exits.
+  foreach ($item in @(Rows @($entries[0], $entries[2]) $stackCapture)) {
+    if ($item.stack -ne $unavailable) { throw 'exited owner stack transferred to another process' }
+  }
+  # The same numeric PID with another start time is a different tracked entity.
+  $reused = @{ identity = '4504:200'; process = @{ Id = 4504 }; row = $target.row }
+  if ((Rows @($reused) $stackCapture).stack -ne $unavailable) { throw 'stack transferred to a reused PID' }
+}
+foreach ($item in @(Rows $entries $null)) {
+  if ($item.stack -ne $unavailable) { throw 'uncaptured process must be explicitly unavailable' }
+}
+[Console]::Out.WriteLine('PowerShell multi-process stack attribution: pass')`;
+    const result = spawnSync(observationPowerShell, ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand",
+      Buffer.from(testProgram, "utf16le").toString("base64")], { encoding: "utf8", timeout: 15000 });
+    assert.equal(result.status, 0, `${result.error ?? ""}\n${result.stdout}\n${result.stderr}`);
+    assert.match(result.stdout, /PowerShell multi-process stack attribution: pass/);
+    stackAttributionChecked = true;
+    console.log(`PowerShell stack ownership regression: pass; executor-only ${process.platform}/${process.arch}`);
+  }
   context.spawn = (command, args, options) => {
     assert.equal(command, powershell);
     const program = Buffer.from(args.at(-1), "base64").toString("utf16le");
@@ -176,6 +269,9 @@ try {
     assert.equal(rootId, process.pid); assert(path.isAbsolute(stop));
     assert.match(program, /Get-CimInstance -ClassName Win32_Process/);
     assert.match(program, /ParentProcessId/);
+    assert.match(program, /-pvr -pd -noshell -netsyms:no/);
+    assert.doesNotMatch(program, /-pv -p /, "stack capture must not suspend the owned target");
+    checkStackAttribution(program);
     const simulation = `const fs=require('node:fs');fs.writeSync(2,'[native-observe] ready root=${rootId} watcher='+process.pid+'\\n');setInterval(()=>{if(fs.existsSync(${JSON.stringify(stop)})){fs.writeSync(2,'[native-observe] stopped root=${rootId} watcher='+process.pid+'\\n');process.exit(0)}},10);`;
     const child = spawn(process.execPath, ["-e", simulation], options);
     const kill = child.kill.bind(child); child.kill = signal => { forcedObserverStops++; return kill(signal); };
@@ -196,12 +292,15 @@ try {
   const observedBudget = calls.at(-1).timeout;
   assert.equal(observed.run(caseOne, process.execPath, ["-e", script(caseOne, observedLogs)]), stdout);
   const caseTwo = "core-fixture-local-finish-case-2";
-  now = observationStart + observedBudget - 15000 - 200;
+  const lockLabel = "core-workspace-lock-reentry";
+  assert.equal(observed.run(lockLabel, process.execPath, ["-e", script(lockLabel, observedLogs)]), stdout);
+  assert(calls.at(-1).timeout > 0 && calls.at(-1).timeout <= 120000, "workspace reentry has a short execution cap");
+  now = observationStart + observedBudget - 30000 - 200;
   assert.throws(() => observed.run(caseTwo, process.execPath,
     ["-e", script(caseTwo, observedLogs) + "setInterval(()=>{},1000)"]), /case-2 failed/);
   await Promise.all(observers.map(observer => observer.closed));
-  assert.equal(confirmedStops, 2); assert.equal(forcedObserverStops, 0);
-  for (const label of [caseOne, caseTwo]) {
+  assert.equal(confirmedStops, 3); assert.equal(forcedObserverStops, 0);
+  for (const label of [caseOne, caseTwo, lockLabel]) {
     const retained = fs.readFileSync(path.join(observedLogs, label + ".stderr"), "utf8");
     assert.match(retained, /ready root=[\s\S]*command-returned[\s\S]*stopped root=/);
     assert.equal(fs.existsSync(path.join(observedLogs, label + ".observer-stop")), false);
