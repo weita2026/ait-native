@@ -25,6 +25,13 @@ use std::time::Duration;
 pub const MODE: &str = "ai_only_experimental";
 pub const REVIEW: &str = "Reviewed files: frozen package source; Findings: none after inspection; Risks: low; Tests: isolated native CLI checks passed; Recommendation: pass";
 
+pub fn fixture_phase(phase: &str) {
+    use std::io::Write;
+    // Direct stderr remains observable even while libtest captures test output.
+    writeln!(std::io::stderr().lock(), "ait.fixture.phase={phase}")
+        .expect("write fixture phase observation");
+}
+
 pub fn command(root: &Path, args: &[&str]) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_ait-cli"));
     command
@@ -667,6 +674,7 @@ impl Fixture {
         (started["task_id"].as_str().unwrap().into(), edit)
     }
     pub fn finish_local(&self, id: &str, edit: &Path) -> String {
+        fixture_phase("local_finish.initial_cli.begin");
         let output = run(
             edit,
             &[
@@ -680,6 +688,7 @@ impl Fixture {
                 "--full",
             ],
         );
+        fixture_phase("local_finish.initial_cli.returned");
         #[cfg(windows)]
         let output = self.resume_empty_local_closeout(id, edit, output);
         assert!(
@@ -699,6 +708,7 @@ impl Fixture {
             "{finished}"
         );
         assert!(!edit.exists());
+        fixture_phase("local_finish.complete");
         finished["landed_snapshot_id"].as_str().unwrap().into()
     }
 
@@ -727,13 +737,16 @@ impl Fixture {
         }
         // The first CLI has exited, releasing its cwd handle. Only an empty or
         // absent root may use the existing receipt-authorized closeout path.
+        fixture_phase("local_finish.closeout_resume.begin");
         let resumed = run(
             &self.root,
             &["task", "finish", id, "--local", "--json", "--full"],
         );
+        fixture_phase("local_finish.closeout_resume.returned");
         let finished = output_json(&resumed);
         assert_eq!(finished["local_finish"], first["local_finish"]);
         assert!(finished["auto_snapshot"].is_null());
+        fixture_phase("local_finish.closeout_resume.verified");
         resumed
     }
     pub fn initial_batch(&self) -> (Vec<String>, String) {

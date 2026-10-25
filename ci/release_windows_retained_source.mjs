@@ -2,8 +2,8 @@
 // Native Windows protocol regressions. These outputs are not A120 approval or
 // a substitute for the separately required actual independent-agent scenario.
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
+import { spawn, spawnSync } from "node:child_process";
+import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync, writeSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -26,6 +26,10 @@ export const CORE_CASE = "reviewed_routed_server_restart_reprepares_the_original
 export const CORE_EDIT_ROOT_PREFIX = "task_worktree_layout::tests::explicit_task_edit_root_";
 export const CORE_CLEANUP_PREFIX = "primitives::worktree::cleanup::tests::directory_link_cleanup_";
 export const FIXTURE_LOCAL_FINISH_PREFIX = "fixture_local_finish_";
+const FIXTURE_LOCAL_FINISH_CASES = [
+  "fixture_local_finish_closes_the_worktree_with_one_apply_receipt",
+  "fixture_local_finish_preserves_nonempty_failed_cleanup",
+];
 const WINDOWS_EDIT_ROOT_CASE = CORE_EDIT_ROOT_PREFIX + "inspects_complete_windows_drive_roots";
 
 export function requiresRetainedSource(version) {
@@ -95,12 +99,161 @@ export function runCoreCloseoutPrerequisites(cargo, manifest) {
   ]) {
     const names = selectNativePrefixCases(cargo(label + "-case-list", manifest,
       [...flags, prefix, "--", "--list"]), prefix, count);
+    if (prefix === FIXTURE_LOCAL_FINISH_PREFIX) {
+      assert.deepEqual(names.slice().sort(), FIXTURE_LOCAL_FINISH_CASES.slice().sort(),
+        "the two reviewed fixture-closeout identities are required");
+      for (const [index, name] of FIXTURE_LOCAL_FINISH_CASES.entries()) {
+        const stdout = cargo(label + "-case-" + (index + 1), manifest,
+          [...flags, name, "--", "--exact", "--test-threads=1", "--color", "never"]);
+        requirePassedCase(stdout, name);
+        assert.equal((stdout.match(/^test result:/gm) ?? []).length, 1, `incomplete fixture summary: ${name}`);
+        assert(/^test result: ok\. 1 passed; 0 failed; 0 ignored;/m.test(stdout),
+          `fixture case must execute once without ignored output: ${name}`);
+      }
+      continue;
+    }
     const stdout = cargo(label, manifest, [...flags, prefix, "--", "--test-threads=1", "--color", "never"]);
     for (const name of names) requirePassedCase(stdout, name);
     assert.equal((stdout.match(/^test result:/gm) ?? []).length, 1, `incomplete native group summary: ${prefix}`);
     assert(new RegExp(`^test result: ok\\. ${count} passed; 0 failed; 0 ignored;`, "m").test(stdout),
       `native group must execute all ${count} cases without ignored output: ${prefix}`);
   }
+}
+
+function nativeCommandEvent(descriptor, event, detail) {
+  writeSync(descriptor, "[native-command] " + JSON.stringify({ time: new Date(Date.now()).toISOString(), event, ...detail }) + "\n");
+}
+
+function windowsObservationScript(rootProcessId, stopFile) {
+  const literal = value => "'" + value.replaceAll("'", "''") + "'";
+  return String.raw`$ErrorActionPreference = 'Stop'
+[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
+$nodeRootId = ${rootProcessId}
+$stopFile = ${literal(stopFile)}
+$watcherId = $PID
+$tracked = @{}
+function Emit($value) {
+  $value.time = [DateTime]::UtcNow.ToString('o')
+  [Console]::Error.WriteLine('[native-observe] ' + ($value | ConvertTo-Json -Compress -Depth 8))
+  [Console]::Error.Flush()
+}
+try {
+  $rootProcess = [Diagnostics.Process]::GetProcessById($nodeRootId)
+  $null = $rootProcess.Handle
+  [Console]::Error.WriteLine("[native-observe] ready root=$nodeRootId watcher=$watcherId")
+  [Console]::Error.Flush()
+  do {
+    $stopping = [IO.File]::Exists($stopFile) -or $rootProcess.HasExited
+    try {
+      $rows = @(Get-CimInstance -ClassName Win32_Process -OperationTimeoutSec 2 -ErrorAction Stop)
+      $owned = @{}
+      $owned[[string]$nodeRootId] = $true
+      foreach ($key in @($tracked.Keys)) {
+        if (-not $tracked[$key].process.HasExited) { $owned[$key] = $true }
+      }
+      do {
+        $expanded = $false
+        foreach ($row in $rows) {
+          $key = [string]$row.ProcessId
+          if ($row.ProcessId -ne $watcherId -and $owned.ContainsKey([string]$row.ParentProcessId) -and -not $owned.ContainsKey($key)) {
+            $owned[$key] = $true
+            $expanded = $true
+          }
+        }
+      } while ($expanded)
+      foreach ($row in $rows) {
+        $key = [string]$row.ProcessId
+        if ($row.ProcessId -eq $nodeRootId -or $row.ProcessId -eq $watcherId -or -not $owned.ContainsKey($key)) { continue }
+        if (-not $tracked.ContainsKey($key)) {
+          try {
+            $observed = [Diagnostics.Process]::GetProcessById([int]$row.ProcessId)
+            $null = $observed.Handle
+            $tracked[$key] = @{ process = $observed; row = $row }
+            $created = if ($row.CreationDate) { $row.CreationDate.ToUniversalTime().ToString('o') } else { 'unavailable' }
+            $argv = if ($row.CommandLine) { $row.CommandLine } else { 'unavailable: CIM command line not returned' }
+            Emit @{ event = 'started'; pid = $row.ProcessId; parent_pid = $row.ParentProcessId; name = $row.Name; argv = $argv; created = $created; executable = $row.ExecutablePath }
+          } catch {
+            Emit @{ event = 'unavailable'; pid = $row.ProcessId; detail = ('process exited or handle unavailable before sampling: ' + $_.Exception.Message) }
+          }
+        }
+      }
+      $alive = @()
+      foreach ($key in @($tracked.Keys)) {
+        $entry = $tracked[$key]
+        try {
+          $entry.process.Refresh()
+          if ($entry.process.HasExited) {
+            Emit @{ event = 'exited'; pid = [int]$key; exit_code = $entry.process.ExitCode; ended = $entry.process.ExitTime.ToUniversalTime().ToString('o') }
+            $entry.process.Dispose()
+            $tracked.Remove($key)
+          } else {
+            $wait = @()
+            try {
+              foreach ($thread in $entry.process.Threads) {
+                $reason = $null
+                if ([string]$thread.ThreadState -eq 'Wait') { $reason = [string]$thread.WaitReason }
+                $wait += @{ thread_id = $thread.Id; state = [string]$thread.ThreadState; wait_reason = $reason }
+              }
+            } catch { $wait = @(@{ unavailable = $_.Exception.Message }) }
+            $argv = if ($entry.row.CommandLine) { $entry.row.CommandLine } else { 'unavailable: CIM command line not returned' }
+            $alive += @{ pid = [int]$key; parent_pid = $entry.row.ParentProcessId; name = $entry.row.Name; argv = $argv; wait = $wait; stack = 'unavailable: not collected by the read-only observer' }
+          }
+        } catch { Emit @{ event = 'unavailable'; pid = [int]$key; detail = $_.Exception.Message } }
+      }
+      Emit @{ event = 'snapshot'; stopping = $stopping; alive = $alive; coverage = 'sampled owned descendants; processes entirely between samples are unavailable' }
+    } catch { Emit @{ event = 'unavailable'; detail = ('local process observation failed: ' + $_.Exception.Message) } }
+    if (-not $stopping) { Start-Sleep -Milliseconds 500 }
+  } while (-not $stopping)
+} catch { Emit @{ event = 'unavailable'; detail = $_.Exception.Message } }
+finally {
+  foreach ($entry in $tracked.Values) { $entry.process.Dispose() }
+  if ($rootProcess) { $rootProcess.Dispose() }
+  [Console]::Error.WriteLine("[native-observe] stopped root=$nodeRootId watcher=$watcherId")
+  [Console]::Error.Flush()
+}
+`;
+}
+
+function startWindowsObservation({ label, logs, descriptor, env }) {
+  const systemRoot = env.SystemRoot ?? env.SYSTEMROOT;
+  const command = systemRoot && path.isAbsolute(systemRoot) && path.join(systemRoot, "System32/WindowsPowerShell/v1.0/powershell.exe");
+  const unavailable = detail => nativeCommandEvent(descriptor, "observation-unavailable", { label, detail });
+  if (!command || !existsSync(command) || !Number.isInteger(process.pid)) {
+    unavailable("local Windows PowerShell or owning Node PID is unavailable");
+    return () => {};
+  }
+  const stopFile = path.join(logs, label + ".observer-stop");
+  const script = windowsObservationScript(process.pid, stopFile);
+  const observer = spawn(command, ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")],
+    { env, stdio: ["ignore", "ignore", descriptor], windowsHide: true });
+  let launchError;
+  observer.on("error", error => { launchError = String(error); });
+  if (!observer.pid) { unavailable(launchError ?? "observer could not be launched"); return () => {}; }
+  const stderrFile = path.join(logs, label + ".stderr");
+  const contains = marker => readFileSync(stderrFile, "utf8").includes(marker);
+  const pause = () => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50);
+  const ready = `[native-observe] ready root=${process.pid} watcher=${observer.pid}`;
+  const stopped = `[native-observe] stopped root=${process.pid} watcher=${observer.pid}`;
+  let stoppedOnce = false;
+  const stop = () => {
+    if (stoppedOnce) return;
+    stoppedOnce = true;
+    writeFileSync(stopFile, "stop\n", { flag: "wx" });
+    const limit = performance.now() + 4000;
+    while (!contains(stopped) && performance.now() < limit) pause();
+    if (!contains(stopped)) { unavailable("observer did not acknowledge stop; terminating only the owned observer"); observer.kill(); }
+    // Keep the ChildProcess handle while the OS confirms this exact owned
+    // watcher has exited. No Cargo/test/CLI process is killed by observation.
+    const wait = `try { $watched = [Diagnostics.Process]::GetProcessById(${observer.pid}); if (-not $watched.WaitForExit(5000)) { exit 2 }; $watched.Dispose() } catch [ArgumentException] { exit 0 }`;
+    const confirmation = spawnSync(command, ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", wait],
+      { env, encoding: "utf8", timeout: 6500, windowsHide: true });
+    rmSync(stopFile, { force: true });
+    assert.equal(confirmation.status, 0, "owned process observer did not stop before diagnostic closeout");
+  };
+  const limit = performance.now() + 5000;
+  while (!contains(ready) && !contains(stopped) && performance.now() < limit) pause();
+  if (!contains(ready)) { unavailable(launchError ?? "observer unavailable before command launch; see its original stderr"); stop(); return () => {}; }
+  return stop;
 }
 
 function nativeContext({ target, root, logs }) {
@@ -110,13 +263,41 @@ function nativeContext({ target, root, logs }) {
   assert(arches[target] && path.isAbsolute(root) && path.isAbsolute(logs));
   assert(!existsSync(logs), "preserve the original attempt's logs"); mkdirSync(logs, { recursive: true });
   const env = { ...process.env };
+  // Leave time for the existing always-upload step before the 120-minute job
+  // limit. Every command shares this budget; a new command never resets it.
+  const deadline = Date.now() + 90 * 60 * 1000;
   function run(label, command, argv) {
     writeFileSync(path.join(logs, label + ".argv"), [command, ...argv].join("\n") + "\n");
-    const result = spawnSync(command, argv, { cwd: root, env, encoding: "utf8", maxBuffer: 32 * 1024 * 1024 });
-    writeFileSync(path.join(logs, label + ".stdout"), result.stdout ?? "");
-    writeFileSync(path.join(logs, label + ".stderr"), result.stderr ?? String(result.error ?? ""));
+    const stdoutFile = path.join(logs, label + ".stdout"), stderrFile = path.join(logs, label + ".stderr");
+    const observe = /^core-fixture-local-finish-case-[12]$/.test(label);
+    const cleanupReserve = observe ? 15000 : 0;
+    const timeout = Math.min(deadline - Date.now() - cleanupReserve, observe ? 10 * 60 * 1000 : Infinity);
+    if (timeout <= 0) {
+      writeFileSync(stdoutFile, "");
+      writeFileSync(stderrFile, "Native retained-source execution budget exhausted before command launch\n");
+      throw new Error(`${label}: native retained-source execution budget exhausted`);
+    }
+    const descriptors = [];
+    let result;
+    let stopObservation = () => {};
+    try {
+      descriptors.push(openSync(stdoutFile, "wx"));
+      descriptors.push(openSync(stderrFile, "wx"));
+      nativeCommandEvent(descriptors[1], "launch-requested", { label, parent_pid: process.pid, command, argv, timeout_ms: timeout });
+      if (observe) stopObservation = startWindowsObservation({ label, logs, descriptor: descriptors[1], env });
+      const remaining = Math.min(deadline - Date.now() - cleanupReserve, timeout);
+      assert(remaining > 0, `${label}: native retained-source execution budget exhausted before launch`);
+      const started = Date.now();
+      result = spawnSync(command, argv, { cwd: root, env, encoding: "utf8", timeout: remaining,
+        stdio: ["ignore", ...descriptors] });
+      nativeCommandEvent(descriptors[1], "command-returned", { label, pid: result.pid, status: result.status,
+        signal: result.signal, error: result.error ? String(result.error) : null, elapsed_ms: Date.now() - started });
+    } finally {
+      try { stopObservation(); } finally { for (const descriptor of descriptors) closeSync(descriptor); }
+    }
+    if (result.error) appendFileSync(stderrFile, "\n" + String(result.error) + "\n");
     assert.equal(result.status, 0, `${label} failed; original output: ${logs}`);
-    return result.stdout;
+    return readFileSync(stdoutFile, "utf8");
   }
   const rust = run("native-rust-host", "rustc", ["-vV"]);
   assert.equal(/^host: (.+)$/m.exec(rust)?.[1].trim(), target, "cross-compilation is not native evidence");

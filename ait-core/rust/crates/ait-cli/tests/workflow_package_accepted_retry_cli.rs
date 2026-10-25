@@ -12,24 +12,60 @@ use std::process::Output;
 mod routed_resume;
 
 #[test]
+fn fixture_phase_live_output_probe() {
+    // This subprocess probe is armed only by Native's capture-contract driver.
+    // A routine unarmed test run emits no marker and cannot qualify that proof.
+    let Some(release) = std::env::var_os("NATIVE_CAPTURE_RELEASE_FILE") else {
+        return;
+    };
+    let release = std::path::PathBuf::from(release);
+    assert!(release.is_absolute());
+    assert!(fs::symlink_metadata(&release)
+        .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound));
+    fixture_phase("live_output_probe.blocked");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    while !release.is_file() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "Native capture did not release the probe within 20 seconds"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    fixture_phase("live_output_probe.released");
+}
+
+#[test]
 fn fixture_local_finish_closes_the_worktree_with_one_apply_receipt() {
-    let fixture = Fixture::new();
-    let (task, edit) = fixture.start("local-closeout");
-    fs::write(edit.join("proof.txt"), "one accepted apply\n").unwrap();
-    let snapshot = fixture.finish_local(&task, &edit);
-    let receipt = fixture.task(&task)["local_finish"].clone();
-    let snapshots = fixture.snapshots();
+    fixture_phase("finish_once.begin");
+    {
+        let fixture = Fixture::new();
+        fixture_phase("finish_once.fixture_ready");
+        let (task, edit) = fixture.start("local-closeout");
+        fixture_phase("finish_once.task_started");
+        fs::write(edit.join("proof.txt"), "one accepted apply\n").unwrap();
+        fixture_phase("finish_once.proof_written");
+        let snapshot = fixture.finish_local(&task, &edit);
+        fixture_phase("finish_once.finish_returned");
+        let receipt = fixture.task(&task)["local_finish"].clone();
+        fixture_phase("finish_once.receipt_read");
+        let snapshots = fixture.snapshots();
+        fixture_phase("finish_once.snapshots_read");
 
-    let repeated = cli(
-        &fixture.root,
-        &["task", "finish", &task, "--local", "--json", "--full"],
-    );
+        let repeated = cli(
+            &fixture.root,
+            &["task", "finish", &task, "--local", "--json", "--full"],
+        );
+        fixture_phase("finish_once.repeat_returned");
 
-    assert_eq!(repeated["local_finish"], receipt);
-    assert_eq!(repeated["landed_snapshot_id"], snapshot);
-    assert!(repeated["auto_snapshot"].is_null());
-    assert_eq!(fixture.snapshots(), snapshots);
-    assert!(!edit.exists());
+        assert_eq!(repeated["local_finish"], receipt);
+        assert_eq!(repeated["landed_snapshot_id"], snapshot);
+        assert!(repeated["auto_snapshot"].is_null());
+        assert_eq!(fixture.snapshots(), snapshots);
+        fixture_phase("finish_once.final_snapshot_read");
+        assert!(!edit.exists());
+        fixture_phase("finish_once.assertions_done");
+    }
+    fixture_phase("finish_once.teardown_done");
 }
 
 #[cfg(windows)]
@@ -37,37 +73,51 @@ fn fixture_local_finish_closes_the_worktree_with_one_apply_receipt() {
 fn fixture_local_finish_preserves_nonempty_failed_cleanup() {
     use std::os::windows::fs::OpenOptionsExt;
 
-    let fixture = Fixture::new();
-    let (task, edit) = fixture.start("blocked-local-closeout");
-    let proof = edit.join("proof.txt");
-    fs::write(&proof, "preserve the blocked file\n").unwrap();
-    // Permit Snapshot reads while withholding FILE_SHARE_DELETE from cleanup.
-    const FILE_SHARE_READ: u32 = 1;
-    let held = fs::OpenOptions::new()
-        .read(true)
-        .share_mode(FILE_SHARE_READ)
-        .open(&proof)
-        .unwrap();
+    fixture_phase("nonempty_cleanup.begin");
+    {
+        let fixture = Fixture::new();
+        fixture_phase("nonempty_cleanup.fixture_ready");
+        let (task, edit) = fixture.start("blocked-local-closeout");
+        fixture_phase("nonempty_cleanup.task_started");
+        let proof = edit.join("proof.txt");
+        fs::write(&proof, "preserve the blocked file\n").unwrap();
+        // Permit Snapshot reads while withholding FILE_SHARE_DELETE from cleanup.
+        const FILE_SHARE_READ: u32 = 1;
+        let held = fs::OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_READ)
+            .open(&proof)
+            .unwrap();
+        fixture_phase("nonempty_cleanup.proof_held");
 
-    let failed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        fixture.finish_local(&task, &edit)
-    }));
-    assert!(failed.is_err());
-    let receipt = fixture.task(&task)["local_finish"].clone();
-    assert_eq!(receipt["status"], "succeeded");
-    let snapshots = fixture.snapshots();
-    drop(held);
+        let failed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            fixture.finish_local(&task, &edit)
+        }));
+        fixture_phase("nonempty_cleanup.finish_returned");
+        assert!(failed.is_err());
+        let receipt = fixture.task(&task)["local_finish"].clone();
+        fixture_phase("nonempty_cleanup.receipt_read");
+        assert_eq!(receipt["status"], "succeeded");
+        let snapshots = fixture.snapshots();
+        fixture_phase("nonempty_cleanup.snapshots_read");
+        drop(held);
+        fixture_phase("nonempty_cleanup.proof_released");
 
-    let retry = run(
-        &fixture.root,
-        &["task", "finish", &task, "--local", "--json", "--full"],
-    );
-    assert!(!retry.status.success());
-    let retry = output_json(&retry);
-    assert_eq!(retry["local_finish"], receipt);
-    assert_eq!(retry["closeout_status"], "partial");
-    assert_eq!(fixture.snapshots(), snapshots);
-    assert_eq!(fs::read(&proof).unwrap(), b"preserve the blocked file\n");
+        let retry = run(
+            &fixture.root,
+            &["task", "finish", &task, "--local", "--json", "--full"],
+        );
+        fixture_phase("nonempty_cleanup.retry_returned");
+        assert!(!retry.status.success());
+        let retry = output_json(&retry);
+        assert_eq!(retry["local_finish"], receipt);
+        assert_eq!(retry["closeout_status"], "partial");
+        assert_eq!(fixture.snapshots(), snapshots);
+        fixture_phase("nonempty_cleanup.final_snapshot_read");
+        assert_eq!(fs::read(&proof).unwrap(), b"preserve the blocked file\n");
+        fixture_phase("nonempty_cleanup.assertions_done");
+    }
+    fixture_phase("nonempty_cleanup.teardown_done");
 }
 
 #[test]
