@@ -63,12 +63,14 @@ fn wait_ready(server: &mut ChildProcess, client: &mut PlanHttpClientManager) {
 }
 
 fn write_ci_entry(edit: &Path) {
+    // Runner executes repository CI from the materialized workspace root.
+    // Use that same contract on both platforms; PowerShell's Join-Path provider
+    // cannot resolve the Windows verbatim script root used by native Runner.
     #[cfg(windows)]
     fs::write(
         edit.join("ci/run.ps1"),
         r#"$ErrorActionPreference = 'Stop'
-$proofPath = Join-Path $PSScriptRoot '..\proof.txt'
-if ([System.IO.File]::ReadAllText($proofPath) -cne "original sealed source`n") {
+if ([System.IO.File]::ReadAllText('proof.txt') -cne "original sealed source`n") {
     throw 'The executed source differs from the original sealed content.'
 }
 "#,
@@ -85,6 +87,58 @@ if ([System.IO.File]::ReadAllText($proofPath) -cne "original sealed source`n") {
         .unwrap();
         #[cfg(unix)]
         fs::set_permissions(&ci, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_ci_entry_checks_proof_from_normal_and_verbatim_workspaces() {
+    use std::path::{Component, PathBuf, Prefix};
+
+    let temp = tempfile::tempdir().unwrap();
+    let verbatim = temp.path().canonicalize().unwrap().join("workspace");
+    let Some(Component::Prefix(prefix)) = verbatim.components().next() else {
+        panic!("canonical Windows path must have a prefix: {verbatim:?}");
+    };
+    let Prefix::VerbatimDisk(drive) = prefix.kind() else {
+        panic!("test requires a drive-qualified temp directory: {verbatim:?}");
+    };
+    let mut normal = PathBuf::from(format!("{}:\\", char::from(drive)));
+    normal.extend(verbatim.components().skip(2).map(|part| part.as_os_str()));
+    fs::create_dir_all(verbatim.join("ci")).unwrap();
+    write_ci_entry(&verbatim);
+    let powershell = PathBuf::from(std::env::var_os("SystemRoot").expect("Windows SystemRoot"))
+        .join("System32/WindowsPowerShell/v1.0/powershell.exe");
+
+    for proof in ["original sealed source\n", "altered sealed source\n"] {
+        fs::write(verbatim.join("proof.txt"), proof).unwrap();
+        for root in [&normal, &verbatim] {
+            let output = Command::new(&powershell)
+                .args([
+                    "-NoLogo",
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-File",
+                ])
+                .arg(root.join("ci/run.ps1"))
+                .current_dir(root)
+                .output()
+                .unwrap();
+            assert_eq!(
+                output.status.success(),
+                proof == "original sealed source\n",
+                "root={root:?}\n{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr),
+            );
+            if proof != "original sealed source\n" {
+                assert!(
+                    String::from_utf8_lossy(&output.stderr).contains("The executed source differs")
+                );
+            }
+        }
     }
 }
 

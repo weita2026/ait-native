@@ -28,6 +28,7 @@ export const CORE_CLEANUP_PREFIX = "primitives::worktree::cleanup::tests::direct
 export const FIXTURE_LOCAL_FINISH_PREFIX = "fixture_local_finish_";
 export const CORE_WORKSPACE_LOCK_CASE = "workspace_lock::tests::nested_rust_workspace_command_borrows_outer_lock";
 export const CORE_WORKSPACE_LOCK_PREFIX = "workspace_lock::tests::";
+export const CORE_WINDOWS_CI_FIXTURE_CASE = "routed_resume::windows_ci_entry_checks_proof_from_normal_and_verbatim_workspaces";
 const CORE_WORKSPACE_LOCK_CASES = [
   "workspace_command_lock_path_matches_hash_contract_shape",
   "workspace_command_lock_records_metadata_after_blocking_acquire",
@@ -146,6 +147,19 @@ export function runCoreWorkspaceLockCases(cargo, manifest) {
   assert.equal((stdout.match(/^test result:/gm) ?? []).length, 1, "workspace-lock group needs one complete summary");
   assert(/^test result: ok\. 9 passed; 0 failed; 0 ignored;/m.test(stdout),
     "all nine workspace-lock cases must execute with zero ignored");
+}
+
+export function runCoreWindowsCiFixtureCase(cargo, manifest) {
+  const flags = ["-p", "ait-cli", "--test", "workflow_package_accepted_retry_cli"];
+  const name = selectNativeCase(cargo("core-windows-ci-fixture-case-list", manifest,
+    [...flags, CORE_WINDOWS_CI_FIXTURE_CASE, "--", "--list"]), CORE_WINDOWS_CI_FIXTURE_CASE);
+  assert.equal(name, CORE_WINDOWS_CI_FIXTURE_CASE, "require the exact reviewed Windows CI fixture identity");
+  const stdout = cargo("core-windows-ci-fixture", manifest,
+    [...flags, name, "--", "--exact", "--test-threads=1", "--color", "never"]);
+  requirePassedCase(stdout, name);
+  assert.equal((stdout.match(/^test result:/gm) ?? []).length, 1, "Windows CI fixture needs one complete summary");
+  assert(/^test result: ok\. 1 passed; 0 failed; 0 ignored;/m.test(stdout),
+    "Windows CI fixture must execute once with zero ignored");
 }
 
 function nativeCommandEvent(descriptor, event, detail) {
@@ -410,9 +424,10 @@ function nativeContext({ target, root, logs }) {
     writeFileSync(path.join(logs, label + ".argv"), [command, ...argv].join("\n") + "\n");
     const stdoutFile = path.join(logs, label + ".stdout"), stderrFile = path.join(logs, label + ".stderr");
     const lockCase = label === "core-workspace-lock-reentry";
+    const shortCase = lockCase || label === "core-windows-ci-fixture";
     const observe = lockCase || /^core-fixture-local-finish-case-[12]$/.test(label);
     const cleanupReserve = observe ? 30000 : 0;
-    const timeout = Math.min(deadline - Date.now() - cleanupReserve, lockCase ? 120000 : observe ? 10 * 60 * 1000 : Infinity);
+    const timeout = Math.min(deadline - Date.now() - cleanupReserve, shortCase ? 120000 : observe ? 10 * 60 * 1000 : Infinity);
     if (timeout <= 0) {
       writeFileSync(stdoutFile, "");
       writeFileSync(stderrFile, "Native retained-source execution budget exhausted before command launch\n");
@@ -454,6 +469,7 @@ function executeCases({ target, root, env, run, targetDir, cargo }) {
   const coreManifest = path.join(root, "ait-core/rust/Cargo.toml");
   runCoreEditRootCases(cargo, coreManifest);
   runCoreCloseoutPrerequisites(cargo, coreManifest);
+  runCoreWindowsCiFixtureCase(cargo, coreManifest);
   const serverFlags = ["-p", "ait-server", "--lib"];
   const serverList = cargo("server-native-case-list", serverManifest, [...serverFlags, "--", "--list"]);
   const serverNames = SERVER_CASES.map(name => selectNativeCase(serverList, name));

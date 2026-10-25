@@ -5,7 +5,7 @@ import * as fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import vm from "node:vm";
-import { requiresRetainedSource, selectNativeCase, requirePassedCase, runNativeWindowsQa, selectCoreEditRootCases, runCoreEditRootCases, CORE_EDIT_ROOT_PREFIX, CORE_CLEANUP_PREFIX, FIXTURE_LOCAL_FINISH_PREFIX, CORE_WORKSPACE_LOCK_CASE, CORE_WORKSPACE_LOCK_PREFIX, runCoreWorkspaceLockCases, selectNativePrefixCases, runCoreCloseoutPrerequisites, SERVER_CASES, CORE_CASE } from "./release_windows_retained_source.mjs";
+import { requiresRetainedSource, selectNativeCase, requirePassedCase, runNativeWindowsQa, selectCoreEditRootCases, runCoreEditRootCases, CORE_EDIT_ROOT_PREFIX, CORE_CLEANUP_PREFIX, FIXTURE_LOCAL_FINISH_PREFIX, CORE_WORKSPACE_LOCK_CASE, CORE_WORKSPACE_LOCK_PREFIX, runCoreWorkspaceLockCases, CORE_WINDOWS_CI_FIXTURE_CASE, runCoreWindowsCiFixtureCase, selectNativePrefixCases, runCoreCloseoutPrerequisites, SERVER_CASES, CORE_CASE } from "./release_windows_retained_source.mjs";
 // The workflow imports this module from inline Node with the target as argv[1].
 // That argument is not a script path and must not trigger CLI entry detection.
 const imported = spawnSync(process.execPath, ["--input-type=module", "-e",
@@ -62,6 +62,43 @@ const finishNames = ["closes_the_worktree_with_one_apply_receipt", "preserves_no
 const listing = names => names.map(name => `${name}: test`).join("\r\n") + "\r\n";
 const passed = names => names.map(name => `test ${name} ... ok`).join("\r\n") +
   `\r\ntest result: ok. ${names.length} passed; 0 failed; 0 ignored; 0 measured\r\n`;
+for (const failure of [null, "missing", "duplicate-list", "prefixed-identity", "wrong-identity", "ignored", "zero", "partial", "duplicate-summary", "command-failure"]) {
+  const calls = [];
+  const execute = () => runCoreWindowsCiFixtureCase((label, manifest, flags) => {
+    calls.push({ label, manifest, flags });
+    if (label.endsWith("-case-list")) {
+      return listing(failure === "missing" ? [] : failure === "duplicate-list" ? [CORE_WINDOWS_CI_FIXTURE_CASE, CORE_WINDOWS_CI_FIXTURE_CASE] :
+        [failure === "prefixed-identity" ? "unreviewed::" + CORE_WINDOWS_CI_FIXTURE_CASE : CORE_WINDOWS_CI_FIXTURE_CASE]);
+    }
+    if (failure === "command-failure") throw new Error("fixture command failed");
+    let output = passed([CORE_WINDOWS_CI_FIXTURE_CASE]);
+    if (failure === "wrong-identity") output = output.replace(CORE_WINDOWS_CI_FIXTURE_CASE, "another_case");
+    if (failure === "ignored") output = output.replace(" ... ok", " ... ignored");
+    if (failure === "zero") output = "test result: ok. 0 passed; 0 failed; 0 ignored;\n";
+    if (failure === "partial") output = output.replace("1 passed; 0 failed; 0 ignored;", "1 passed; 0 failed; 1 ignored;");
+    if (failure === "duplicate-summary") output += "test result: ok. 1 passed; 0 failed; 0 ignored;\n";
+    return output;
+  }, "/fixed/ait-core/rust/Cargo.toml");
+  if (failure === null) execute(); else assert.throws(execute);
+  assert.equal(calls.length, ["missing", "duplicate-list", "prefixed-identity"].includes(failure) ? 1 : 2);
+  assert.deepEqual(calls[0].flags, ["-p", "ait-cli", "--test", "workflow_package_accepted_retry_cli", CORE_WINDOWS_CI_FIXTURE_CASE, "--", "--list"]);
+  if (calls.length === 2) assert.deepEqual(calls[1].flags, ["-p", "ait-cli", "--test", "workflow_package_accepted_retry_cli", CORE_WINDOWS_CI_FIXTURE_CASE,
+    "--", "--exact", "--test-threads=1", "--color", "never"]);
+}
+// A failed portability prerequisite must stop before Server/Runner execution.
+{
+  const source = fs.readFileSync(new URL("./release_windows_retained_source.mjs", import.meta.url), "utf8");
+  const reached = [];
+  const context = vm.createContext({ path, runCoreWindowsCiFixtureCase,
+    runCoreEditRootCases() { reached.push("edit-root"); },
+    runCoreCloseoutPrerequisites() { reached.push("closeout"); } });
+  vm.runInContext(source.slice(source.indexOf("function executeCases("), source.indexOf("// Explicit non-release QA")) + "\nthis.execute = executeCases;", context);
+  assert.throws(() => context.execute({ root: "/fixed", cargo(label) {
+    reached.push(label);
+    return label.endsWith("-case-list") ? listing([CORE_WINDOWS_CI_FIXTURE_CASE]) : passed(["another_case"]);
+  } }), /did not execute and pass/);
+  assert.deepEqual(reached, ["edit-root", "closeout", "core-windows-ci-fixture-case-list", "core-windows-ci-fixture"]);
+}
 const workspaceNames = ["workspace_command_lock_path_matches_hash_contract_shape", "workspace_command_lock_records_metadata_after_blocking_acquire",
   "nested_rust_workspace_command_borrows_outer_lock", "workspace_lock_delegation_preserves_physical_exclusion",
   "workspace_lock_conflicts_with_existing_whole_file_locks", "workspace_lock_metadata_cannot_overlap_the_lock_byte",
@@ -295,6 +332,9 @@ foreach ($item in @(Rows $entries $null)) {
   const lockLabel = "core-workspace-lock-reentry";
   assert.equal(observed.run(lockLabel, process.execPath, ["-e", script(lockLabel, observedLogs)]), stdout);
   assert(calls.at(-1).timeout > 0 && calls.at(-1).timeout <= 120000, "workspace reentry has a short execution cap");
+  const ciFixtureLabel = "core-windows-ci-fixture";
+  assert.equal(observed.run(ciFixtureLabel, process.execPath, ["-e", script(ciFixtureLabel, observedLogs)]), stdout);
+  assert(calls.at(-1).timeout > 0 && calls.at(-1).timeout <= 120000, "Windows CI fixture has a short execution cap");
   now = observationStart + observedBudget - 30000 - 200;
   assert.throws(() => observed.run(caseTwo, process.execPath,
     ["-e", script(caseTwo, observedLogs) + "setInterval(()=>{},1000)"]), /case-2 failed/);
