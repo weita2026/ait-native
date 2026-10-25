@@ -826,22 +826,54 @@ pub(super) fn assert_init_establishes_agent_contract() -> Result<(), String> {
     if !agents.contains("<!-- ait:workflow:start -->")
         || !agents.contains("Route: sprint=`on`; scope=`local`")
         || !agents.contains("ait task start --from <sprint-card-path>#<exact-ref> --intent")
+        || !agents.contains("author-mode=`ai_only_experimental`")
         || agents.contains("Newton")
         || agents.contains("<scope-args>")
     {
         return Err("init did not create the effective AGENTS.md contract".to_string());
     }
+    let unmanaged = "\nKeep this user-authored repository instruction.\n";
+    for name in ["AGENTS.md", "CLAUDE.md"] {
+        let path = repo.join(name);
+        let body = fs::read_to_string(&path).map_err(|err| err.to_string())?;
+        fs::write(path, format!("{body}{unmanaged}")).map_err(|err| err.to_string())?;
+    }
+    let assert_contract = |setting: &str, author_mode: &str, teams_enabled: bool| {
+        let config = json_output(&repo, &["config", "show", "--json"])?;
+        if config["default_author_mode"] != "ai_with_human_review"
+            || config["effective_author_mode"] != author_mode
+            || config["agent_teams"] != teams_enabled
+        {
+            return Err(format!(
+                "Agent Teams {setting} changed the saved solo or effective author mode"
+            ));
+        }
+        for name in ["AGENTS.md", "CLAUDE.md"] {
+            let body = fs::read_to_string(repo.join(name)).map_err(|err| err.to_string())?;
+            if !body.contains("Route: sprint=`on`; scope=`local`")
+                || !body.contains("ait task start --from <sprint-card-path>#<exact-ref> --intent")
+                || !body.contains(&format!("author-mode=`{author_mode}`"))
+                || body.contains("Fresh team candidates") != teams_enabled
+                || body.contains("scope=`work-order`")
+                || body.contains("Newton")
+                || body.contains("<scope-args>")
+                || body.matches("<!-- ait:workflow:start -->").count() != 1
+                || body.matches("<!-- ait:workflow:end -->").count() != 1
+                || !body.ends_with(unmanaged)
+            {
+                return Err(format!(
+                    "Agent Teams {setting} did not preserve the effective {name} contract"
+                ));
+            }
+        }
+        Ok(())
+    };
+    assert_contract("enabled", "ai_only_experimental", true)?;
     json_output(
         &repo,
         &["config", "set", "--agent-teams", "disabled", "--json"],
     )?;
-    let solo = fs::read_to_string(repo.join("AGENTS.md")).map_err(|err| err.to_string())?;
-    if !solo.contains("Route: sprint=`on`; scope=`local`")
-        || solo.contains("scope=`work-order`")
-        || solo != agents
-    {
-        return Err("disabling Agent Teams did not preserve the solo contract".to_string());
-    }
+    assert_contract("disabled", "ai_with_human_review", false)?;
     if !repo.join("docs/sprints").is_dir() {
         return Err("sprint-on init did not create docs/sprints/".to_string());
     }

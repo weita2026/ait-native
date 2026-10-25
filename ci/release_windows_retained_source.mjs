@@ -23,6 +23,8 @@ export const WINDOWS_OWNER_CASES = [
   "windows_empty_cleanup_is_atomic_and_preserves_inserted_files_and_active_handles",
 ];
 export const CORE_CASE = "reviewed_routed_server_restart_reprepares_the_original_sealed_candidate";
+export const CORE_EDIT_ROOT_PREFIX = "task_worktree_layout::tests::explicit_task_edit_root_";
+const WINDOWS_EDIT_ROOT_CASE = CORE_EDIT_ROOT_PREFIX + "inspects_complete_windows_drive_roots";
 
 export function requiresRetainedSource(version) {
   const match = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-rc\.[1-9]\d*)?$/.exec(version ?? "");
@@ -41,6 +43,24 @@ export function requirePassedCase(stdout, name) {
   const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   assert(new RegExp(`^test ${escaped} \\.\\.\\. ok\\r?$`, "m").test(stdout),
     `native case did not execute and pass: ${name}; ignored/zero-test output is not a pass`);
+}
+
+export function selectCoreEditRootCases(listing) {
+  const names = listing.split(/\r?\n/).filter(line => line.endsWith(": test"))
+    .map(line => line.slice(0, -6)).filter(name => name.startsWith(CORE_EDIT_ROOT_PREFIX));
+  assert(names.includes(WINDOWS_EDIT_ROOT_CASE),
+    "native Windows complete-root regression unavailable; qualification remains HOLD");
+  assert.equal(new Set(names).size, names.length, "ambiguous Core edit-root case listing");
+  return names;
+}
+
+export function runCoreEditRootCases(cargo, manifest) {
+  const flags = ["-p", "ait-cli", "--lib", CORE_EDIT_ROOT_PREFIX];
+  const names = selectCoreEditRootCases(cargo("core-explicit-edit-root-case-list", manifest,
+    [...flags, "--", "--list"]));
+  const stdout = cargo("core-explicit-edit-root", manifest,
+    [...flags, "--", "--test-threads=1", "--color", "never"]);
+  for (const name of names) requirePassedCase(stdout, name);
 }
 
 function nativeContext({ target, root, logs }) {
@@ -70,6 +90,7 @@ function nativeContext({ target, root, logs }) {
 function executeCases({ target, root, env, run, targetDir, cargo }) {
   const serverManifest = path.join(root, "ait-server/rust/Cargo.toml");
   const coreManifest = path.join(root, "ait-core/rust/Cargo.toml");
+  runCoreEditRootCases(cargo, coreManifest);
   const serverFlags = ["-p", "ait-server", "--lib"];
   const serverList = cargo("server-native-case-list", serverManifest, [...serverFlags, "--", "--list"]);
   const serverNames = SERVER_CASES.map(name => selectNativeCase(serverList, name));

@@ -442,8 +442,10 @@ pub(super) fn response_for(
                 .unwrap_or_default();
             let locked = state.lock().unwrap();
             let Some(mut snapshot) = locked.snapshots.get(snapshot_id).cloned() else {
-                return json_response(&json!({"detail": "Snapshot not found"}))
-                    .with_status_code(404);
+                return json_response(&json!({
+                    "detail": format!("Unknown snapshot {snapshot_id} for repository fixture-ait")
+                }))
+                .with_status_code(404);
             };
             snapshot["capture_binding"] = locked
                 .snapshot_capture_bindings
@@ -464,6 +466,11 @@ pub(super) fn response_for(
                 let mut locked = state.lock().unwrap();
                 locked.selected_change_id = Some("RC-1".to_string());
                 locked.selected_patchset_id = Some(current_patchset_id.clone());
+                if let Some(mode) = parsed["author_mode"].as_str() {
+                    locked
+                        .patchset_author_modes
+                        .insert(current_patchset_id.clone(), mode.to_string());
+                }
                 locked.selected_patchset_base_snapshot_id = parsed
                     .get("base_snapshot_id")
                     .and_then(JsonValue::as_str)
@@ -517,6 +524,11 @@ pub(super) fn response_for(
                 locked.patchset_task_id = Some(owner.clone());
                 locked.selected_change_id = change_id.clone();
                 locked.selected_patchset_id = Some(published_id.clone());
+                if let Some(mode) = parsed["author_mode"].as_str() {
+                    locked
+                        .patchset_author_modes
+                        .insert(published_id.clone(), mode.to_string());
+                }
                 locked.selected_patchset_base_snapshot_id = parsed
                     .get("base_snapshot_id")
                     .and_then(JsonValue::as_str)
@@ -564,7 +576,8 @@ pub(super) fn response_for(
                     "publish_state":"published",
                     "evaluation_state":"pending"
                 }),
-                ci_completed
+                ci_completed,
+                &locked,
             )])
         }
         _ if method == "GET"
@@ -601,7 +614,8 @@ pub(super) fn response_for(
                     "publish_state":"published",
                     "evaluation_state":"pending"
                 }),
-                ci_completed
+                ci_completed,
+                &locked,
             )])
         }
         _ if method == "GET"
@@ -638,6 +652,7 @@ pub(super) fn response_for(
                     "summary":"Native Rust patchset"
                 }),
                 ci_completed,
+                &locked,
             )
         }
         _ if method == "GET"
@@ -662,6 +677,7 @@ pub(super) fn response_for(
                     "summary":"Completed local promotion"
                 }),
                 ci_completed,
+                &locked,
             )
         }
         _ if method == "GET"
@@ -699,11 +715,14 @@ pub(super) fn response_for(
                     "summary":"Completed local promotion"
                 }),
                 ci_completed,
+                &locked,
             )
         }
-        ("GET", "/v1/native/repository-authorities/7/patchsets/1") => {
-            with_embedded_patchset_ci(json!({"patchset_id":"RP-1","change_id":"RC-1"}), true)
-        }
+        ("GET", "/v1/native/repository-authorities/7/patchsets/1") => with_embedded_patchset_ci(
+            json!({"patchset_id":"RP-1","change_id":"RC-1"}),
+            true,
+            &state.lock().unwrap(),
+        ),
         ("GET", "/v1/native/repository-authorities/7/patchsets/1?change_ref=RC-1") => {
             with_embedded_patchset_ci(
                 json!({
@@ -717,6 +736,7 @@ pub(super) fn response_for(
                     "summary":"Native Rust patchset"
                 }),
                 true,
+                &state.lock().unwrap(),
             )
         }
         _ if method == "GET"
@@ -1514,11 +1534,21 @@ fn history_promotion_response(body: &str, state: &Arc<Mutex<FakeRemoteState>>) -
     response
 }
 
-fn with_embedded_patchset_ci(mut patchset: JsonValue, completed: bool) -> JsonValue {
+fn with_embedded_patchset_ci(
+    mut patchset: JsonValue,
+    completed: bool,
+    state: &FakeRemoteState,
+) -> JsonValue {
     let Some(object) = patchset.as_object_mut() else {
         return patchset;
     };
-    object.insert("author_mode".into(), json!("ai_with_human_review"));
+    let author_mode = object
+        .get("patchset_id")
+        .and_then(JsonValue::as_str)
+        .and_then(|id| state.patchset_author_modes.get(id))
+        .map(String::as_str)
+        .unwrap_or("ai_with_human_review");
+    object.insert("author_mode".into(), json!(author_mode));
     let (
         run_seq,
         completed_at_s,

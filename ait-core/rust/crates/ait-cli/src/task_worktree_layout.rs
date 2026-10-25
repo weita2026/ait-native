@@ -1074,6 +1074,13 @@ fn reject_symbolic_link_path_components(path: &Path) -> Result<(), String> {
     let mut cursor = PathBuf::new();
     for (index, component) in components.iter().enumerate() {
         cursor.push(component.as_os_str());
+        // A verbatim drive prefix can report absolute before its root separator
+        // is appended. Inspect the complete root, not the bare `\\?\C:` prefix.
+        if matches!(component, Component::Prefix(_))
+            && matches!(components.get(index + 1), Some(Component::RootDir))
+        {
+            continue;
+        }
         if !cursor.is_absolute() {
             continue;
         }

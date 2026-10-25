@@ -180,6 +180,7 @@ struct FakeRemoteState {
     patchset_task_id: Option<String>,
     selected_patchset_base_snapshot_id: Option<String>,
     selected_patchset_revision_snapshot_id: Option<String>,
+    patchset_author_modes: std::collections::BTreeMap<String, String>,
     selected_change_id: Option<String>,
     published_change_task_ids: std::collections::BTreeMap<String, String>,
     ci_run_patchset_ids: BTreeSet<String>,

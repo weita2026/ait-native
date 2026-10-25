@@ -131,6 +131,57 @@ fn mock_current_patchset_validation_rejects_foreign_owners_without_selection_wri
 }
 
 #[test]
+fn mock_patchset_readback_retains_the_published_author_mode() {
+    for author_mode in ["ai_only_experimental", "ai_with_human_review"] {
+        let state = Arc::new(Mutex::new(FakeRemoteState::default()));
+        state.lock().unwrap().created_task_ids.insert("RT-2".into());
+        let (status, published) = mock_response(
+            &state,
+            "POST",
+            "/v1/native/repository-authorities/7/changes/RT-2/patchsets",
+            json!({
+                "base_snapshot_id":"SNP-BASE",
+                "revision_snapshot_id":"SNP-REV",
+                "author_mode":author_mode
+            }),
+        );
+        assert_eq!(status, 200);
+        assert_eq!(published["author_mode"], author_mode);
+        for path in [
+            "/v1/native/repository-authorities/7/changes/RT-2/patchsets",
+            "/v1/native/repository-authorities/7/patchsets/RT-2%2FP-01",
+            "/v1/native/repository-authorities/7/patchsets/RT-2%2FP-01?change_ref=RT-2",
+        ] {
+            let (status, response) = mock_response(&state, "GET", path, JsonValue::Null);
+            assert_eq!(status, 200);
+            let patchset = if response.is_array() {
+                &response[0]
+            } else {
+                &response
+            };
+            assert_eq!(patchset["author_mode"], author_mode, "{path}");
+        }
+    }
+}
+
+#[test]
+fn mock_missing_snapshot_uses_the_exact_native_authority_response() {
+    let state = Arc::new(Mutex::new(FakeRemoteState::default()));
+    let (status, response) = mock_response(
+        &state,
+        "GET",
+        "/v1/native/repository-authorities/7/snapshots/SNP-ABSENT?include_content=false",
+        JsonValue::Null,
+    );
+    assert_eq!(status, 404);
+    assert_eq!(
+        response["detail"],
+        "Unknown snapshot SNP-ABSENT for repository fixture-ait"
+    );
+    assert!(state.lock().unwrap().snapshots.is_empty());
+}
+
+#[test]
 fn mock_task_only_finish_requires_real_candidate_evidence_and_keeps_change_null() {
     let state = Arc::new(Mutex::new(FakeRemoteState::default()));
     {
